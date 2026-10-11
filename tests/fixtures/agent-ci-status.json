@@ -1,0 +1,6 @@
+[
+  {"databaseId": 103, "workflowName": "Deploy the dev preview", "status": "in_progress", "conclusion": "", "headSha": "abcdef0123456789", "createdAt": "2026-10-11T12:00:00Z", "url": "https://github.com/example/editor/actions/runs/103"},
+  {"databaseId": 102, "workflowName": "Browser tests", "status": "completed", "conclusion": "failure", "headSha": "123456789abcdef0", "createdAt": "2026-10-11T11:00:00Z", "url": "https://github.com/example/editor/actions/runs/102"},
+  {"databaseId": 101, "workflowName": "Deploy the dev preview", "status": "completed", "conclusion": "failure", "headSha": "123456789abcdef0", "createdAt": "2026-10-11T10:00:00Z", "url": "https://github.com/example/editor/actions/runs/101"},
+  {"databaseId": 100, "workflowName": "Browser tests", "status": "completed", "conclusion": "success", "headSha": "0000000000000000", "createdAt": "2026-10-10T12:00:00Z", "url": "https://github.com/example/editor/actions/runs/100"}
+]
