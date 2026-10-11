@@ -39,6 +39,21 @@ export function pathInside(path, root) {
   return path === root || path.startsWith(`${root}/`);
 }
 
+export async function pruneWorktree(info, olderThan, { inspect, status, scan, remove }) {
+  const fresh = await inspect();
+  // The inspection awaits Git commands. Recheck status, then synchronously scan
+  // cwd with no further asynchronous checks before starting removal.
+  fresh.dirty = (await status()).length > 0;
+  const path = canonical(info.path);
+  const current = scan();
+  fresh.live = current.paths.some((cwd) => pathInside(cwd, path)) ? true : current.complete ? false : null;
+  const reason = pruneDecision(fresh, olderThan);
+  if (fresh.head !== info.head) return "HEAD changed";
+  if (reason !== "eligible") return reason;
+  await remove();
+  return "removed";
+}
+
 function processes() {
   const paths = [];
   let complete = true;
@@ -126,15 +141,14 @@ async function main(args) {
       console.log(`${JSON.stringify(info.path)}\tbranch=${JSON.stringify(info.branch)}\towner=${JSON.stringify(info.owner || "unknown")}\tdirty=${yesNo(info.dirty)}\tcommit-age=${Number.isFinite(info.commitAge) ? `${info.commitAge.toFixed(1)}d` : "unknown"}\tmerged=${yesNo(info.merged)}\tlive=${yesNo(info.live)}\t${decision}`);
       if (!settings.prune || decision !== "eligible") continue;
       // Recheck cleanliness, HEAD, age and live cwd immediately before removal.
-      const fresh = await inspect(worktrees[i], protectedPaths, targets, processes());
-      const reason = pruneDecision(fresh, settings.olderThan);
-      if (reason !== "eligible" || fresh.head !== info.head) {
-        console.log(`Kept ${JSON.stringify(info.path)}: ${fresh.head !== info.head ? "HEAD changed" : reason}`);
-        continue;
-      }
       try {
-        await git(["worktree", "remove", "--", info.path]);
-        console.log(`Removed ${JSON.stringify(info.path)}`);
+        const reason = await pruneWorktree(info, settings.olderThan, {
+          inspect: () => inspect(worktrees[i], protectedPaths, targets, processes()),
+          status: () => git(["-C", info.path, "status", "--porcelain=v1", "--untracked-files=all"]),
+          scan: () => processes(),
+          remove: () => git(["worktree", "remove", "--", info.path]),
+        });
+        console.log(reason === "removed" ? `Removed ${JSON.stringify(info.path)}` : `Kept ${JSON.stringify(info.path)}: ${reason}`);
       } catch (error) { console.error(error.message.trim()); process.exitCode = 1; }
     }
     if (settings.prune) await git(["worktree", "prune"]);

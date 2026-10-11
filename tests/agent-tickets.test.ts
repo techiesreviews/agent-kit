@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import test from "node:test";
 // @ts-expect-error The script is plain JavaScript without declarations.
 import { loadTickets, parseTicket, resolveTickets } from "../scripts/agents/tickets.mjs";
@@ -42,4 +45,49 @@ test("block dependency lists preserve diagnostic line numbers and duplicate map 
   assert.deepEqual(parsed.problems, []);
   assert.equal(resolveTickets([parsed.ticket]).problems[0].line, 4);
   assert.match(resolveTickets([parsed.ticket, parsed.ticket]).problems[0].message, /Duplicate ticket slug/);
+});
+
+test("flow and block list fixtures retain every blocker across comments and blank lines", () => {
+  const loaded = loadTickets(`${fixtures}/list-forms`);
+  assert.deepEqual(loaded.problems, []);
+  for (const ticket of loaded.tickets) {
+    assert.deepEqual(ticket.blocked_by.map((blocker: { slug: string }) => blocker.slug), ["missing-one", "missing-two"], ticket.file);
+  }
+  const resolved = resolveTickets(loaded.tickets);
+  assert.deepEqual(resolved.frontier, []);
+  assert.deepEqual(resolved.problems.map((problem: { line: number }) => problem.line), [3, 3, 5, 8, 5, 8]);
+  const closed = ["missing-one", "missing-two"].map((slug) => parseTicket("---\nstatus: closed\nblocked_by: []\n---", `${slug}.md`, "alpha").ticket);
+  assert.equal(resolveTickets([...loaded.tickets, ...closed]).frontier.length, 3);
+});
+
+test("unsupported dependency content produces file:line diagnostics and no frontier", () => {
+  const loaded = loadTickets(`${fixtures}/unsupported`);
+  assert.deepEqual(loaded.problems.map((problem: { file: string; line: number }) => [problem.file, problem.line]), [
+    [`${fixtures}/unsupported/alpha/tickets/01-nested.md`, 5],
+    [`${fixtures}/unsupported/alpha/tickets/02-list-mapping.md`, 4],
+    [`${fixtures}/unsupported/alpha/tickets/03-flow-extra.md`, 4],
+    [`${fixtures}/unsupported/alpha/tickets/04-list-extra.md`, 5],
+    [`${fixtures}/unsupported/alpha/tickets/05-empty-item.md`, 4],
+  ]);
+  assert.deepEqual(resolveTickets(loaded.tickets).frontier, []);
+});
+
+test("check and frontier report fixture dependency errors with file:line and exit 1", () => {
+  const script = resolve("scripts/agents/tickets.mjs");
+  for (const fixture of ["list-forms", "unsupported"]) {
+    const cwd = mkdtempSync(join(tmpdir(), "agent-tickets-"));
+    try {
+      mkdirSync(join(cwd, "docs"));
+      symlinkSync(resolve(fixtures, fixture), join(cwd, "docs/wayfinder"), "dir");
+      for (const command of ["check", "frontier"]) {
+        const result = spawnSync(process.execPath, [script, command], { cwd, encoding: "utf8" });
+        assert.equal(result.status, 1, result.stderr);
+        assert.equal(result.stdout, "");
+        assert.match(result.stderr, /docs\/wayfinder\/alpha\/tickets\/.*\.md:\d+: /);
+        assert.match(result.stderr, fixture === "list-forms" ? /Unknown blocked_by ticket/ : /blocked_by/);
+      }
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }
 });

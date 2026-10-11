@@ -25,7 +25,7 @@ function scalar(value) {
   value = uncomment(value);
   if (value.startsWith('"')) return JSON.parse(value);
   if (value.startsWith("'")) {
-    if (!value.endsWith("'")) throw new Error("Unclosed quote");
+    if (!/^'(?:''|[^'])*'$/.test(value)) throw new Error("Malformed quoted scalar");
     return value.slice(1, -1).replaceAll("''", "'");
   }
   return value;
@@ -39,18 +39,25 @@ function inlineList(value) {
   while (token.lastIndex < content.length) {
     const match = token.exec(content);
     if (!match) throw new Error("Malformed blocked_by list");
-    const item = scalar(match[1]);
-    if (!item) throw new Error("Empty blocked_by slug");
-    items.push(item);
+    items.push(dependencySlug(match[1]));
   }
   return items;
+}
+
+function dependencySlug(value) {
+  // Plain mappings, nested collections, anchors and tags are not ticket slugs.
+  // Quoted strings remain scalars even when they contain YAML punctuation.
+  if (!/^["']/.test(value) && (/[:\[\]{},]/.test(value) || /^[&*!>|]/.test(value))) throw new Error("blocked_by items must be scalar ticket slugs");
+  const slug = scalar(value);
+  if (typeof slug !== "string" || !slug) throw new Error("Empty blocked_by slug");
+  return slug;
 }
 
 export function parseTicket(source, file, map) {
   const lines = source.replace(/^\uFEFF/, "").split(/\r?\n/);
   const problems = [];
-  const ticket = { file, map, slug: basename(file, ".md"), title: "", builder: "", status: "", blocked_by: [], lines: {} };
-  const problem = (line, message) => problems.push({ file, line, message });
+  const ticket = { file, map, slug: basename(file, ".md"), title: "", builder: "", status: "", blocked_by: [], lines: {}, valid: true };
+  const problem = (line, message) => { ticket.valid = false; problems.push({ file, line, message }); };
   const end = lines.findIndex((line, i) => i > 0 && line === "---");
   if (lines[0] !== "---" || end < 0) {
     problem(1, "Missing YAML frontmatter");
@@ -62,19 +69,38 @@ export function parseTicket(source, file, map) {
     const [, key, raw] = field;
     if (ticket.lines[key]) { problem(i + 1, `Duplicate ${key}`); continue; }
     ticket.lines[key] = i + 1;
+    let errorLine = i + 1;
     try {
       if (key !== "blocked_by") { ticket[key] = scalar(raw); continue; }
-      let value = uncomment(raw);
-      if (value.startsWith("[")) {
-        while (!value.endsWith("]") && i + 1 < end) value += ` ${uncomment(lines[++i])}`;
-        ticket.blocked_by = inlineList(value).map((slug) => ({ slug, line: ticket.lines[key] }));
-      } else if (!value) {
-        while (i + 1 < end && /^\s+-\s+/.test(lines[i + 1])) {
-          i++;
-          ticket.blocked_by.push({ slug: scalar(lines[i].replace(/^\s+-\s+/, "")), line: i + 1 });
+      // Consume the entire value through the next top-level field. Comments and
+      // blank lines do not end a list; unconsumed nested content is an error.
+      const content = [{ raw, line: i + 1 }];
+      while (i + 1 < end && !/^[\w-]+:/.test(lines[i + 1])) {
+        i++;
+        content.push({ raw: lines[i], line: i + 1 });
+      }
+      let flow;
+      let indentation;
+      for (const entry of content) {
+        errorLine = entry.line;
+        const value = uncomment(entry.raw);
+        if (!value) continue;
+        if (flow !== undefined || value.startsWith("[")) {
+          if (ticket.blocked_by.length || (flow !== undefined && flow.endsWith("]"))) throw new Error("Unexpected blocked_by content");
+          flow = flow === undefined ? value : `${flow} ${value}`;
+          continue;
         }
-      } else throw new Error("blocked_by must be a list");
-    } catch (error) { problem(ticket.lines[key], error.message); }
+        const item = /^(\s*)-\s+(.*)$/.exec(entry.raw);
+        if (!item || entry.line === ticket.lines[key]) throw new Error("blocked_by must be a list of scalar ticket slugs");
+        if (indentation !== undefined && item[1].length !== indentation) throw new Error("Inconsistent blocked_by list indentation");
+        indentation = item[1].length;
+        ticket.blocked_by.push({ slug: dependencySlug(uncomment(item[2])), line: entry.line });
+      }
+      if (flow !== undefined) {
+        errorLine = ticket.lines[key];
+        ticket.blocked_by = inlineList(flow).map((slug) => ({ slug, line: ticket.lines[key] }));
+      }
+    } catch (error) { problem(errorLine, error.message); }
   }
   if (!statuses.has(ticket.status)) problem(ticket.lines.status ?? 1, `Invalid status: ${ticket.status || "(missing)"}`);
   return { ticket, problems };
@@ -91,7 +117,7 @@ export function resolveTickets(tickets) {
   for (const ticket of tickets) for (const blocker of ticket.blocked_by) {
     if (!index.has(`${ticket.map}/${blocker.slug}`)) problems.push({ file: ticket.file, line: blocker.line, message: `Unknown blocked_by ticket in ${ticket.map}: ${blocker.slug}` });
   }
-  const frontier = tickets.filter((ticket) => ticket.status === "open" && ticket.blocked_by.every((blocker) => index.get(`${ticket.map}/${blocker.slug}`)?.status === "closed"));
+  const frontier = tickets.filter((ticket) => ticket.valid && ticket.status === "open" && ticket.blocked_by.every((blocker) => index.get(`${ticket.map}/${blocker.slug}`)?.status === "closed"));
   frontier.sort((a, b) => a.map.localeCompare(b.map) || a.slug.localeCompare(b.slug, "en", { numeric: true }));
   return { frontier, problems };
 }
