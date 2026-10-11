@@ -9,7 +9,7 @@ state="${CLAUDE_AGENT_CAP_STATE_DIR:-${XDG_RUNTIME_DIR:-/tmp}/claude-agent-cap}/
 # Validate before creating state; every state change uses the same lock.
 case $event in
   SubagentStart|SubagentStop) [[ $agent =~ ^[a-zA-Z0-9_-]+$ ]] || exit 0 ;;
-  PreToolUse|PostToolUseFailure)
+  PreToolUse|PostToolUse|PostToolUseFailure)
     [[ $tool == Agent || $tool == Task ]] || exit 0
     [[ $launch =~ ^[a-zA-Z0-9_-]+$ ]] || exit 0
     ;;
@@ -50,8 +50,8 @@ case $event in
   SubagentStop)
     rm -f -- "$state/$agent"
     ;;
-  PostToolUseFailure)
-    # A failed launch only releases its own unconsumed reservation.
+  PostToolUse|PostToolUseFailure)
+    # Reconcile the tool ID even when FIFO assigned another reservation at start.
     [[ $launch != "-" ]] || exit 0
     for entry in "$pending"/*; do
       [[ -f $entry ]] || continue

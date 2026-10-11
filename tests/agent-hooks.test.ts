@@ -252,6 +252,36 @@ test("agent pending reservations expire after three minutes without a start or f
   assert.equal(readdirSync(pending).length, 1);
 });
 
+test("agent completion clears phantom reservations after out-of-order starts and failures", (t) => {
+  const dir = temp(t);
+  const env = { CLAUDE_AGENT_CAP_STATE_DIR: dir, CLAUDE_AGENT_CAP: "2" };
+  for (const tool_name of ["Agent", "Task"]) for (const stopFirst of [false, true]) {
+    const session_id = `${tool_name}-${stopFirst}`;
+    const pending = join(dir, session_id, ".pending");
+    const event = (hook_event_name: string, tool_use_id?: string, agent_id?: string) => {
+      const result = run("agent-cap.sh", { hook_event_name, session_id, tool_name, tool_use_id, agent_id }, env);
+      assert.equal(result.status, 0, result.stderr);
+    };
+    for (let i = 0; i < 3; i++) {
+      const first = `A-${i}`;
+      const second = `B-${i}`;
+      event("PreToolUse", first);
+      event("PreToolUse", second);
+      event("SubagentStart", undefined, second);
+      // FIFO consumes A even though B started; B's tool event must reconcile it.
+      assert.deepEqual(readdirSync(pending).map((file) => readFileSync(join(pending, file), "utf8").trim()), [second]);
+      event("PostToolUseFailure", first);
+      if (stopFirst) event("SubagentStop", undefined, second);
+      event("PostToolUse", second);
+      assert.deepEqual(readdirSync(pending), []);
+      event("PostToolUse", second); // Repeated completion does not change live state.
+      assert.equal(existsSync(join(dir, session_id, second)), !stopFirst);
+      if (!stopFirst) event("SubagentStop", undefined, second);
+      assert.equal(existsSync(join(dir, session_id, second)), false);
+    }
+  }
+});
+
 test("agent cap defaults to five and uses the runtime directory", (t) => {
   const dir = temp(t);
   const env = { XDG_RUNTIME_DIR: dir, CLAUDE_AGENT_CAP_STATE_DIR: "", CLAUDE_AGENT_CAP: "" };
@@ -326,8 +356,9 @@ test("committed Claude settings wire all events to executable hooks", () => {
   const settings = JSON.parse(readFileSync(".claude/settings.json", "utf8")) as {
     hooks: Record<string, { matcher?: string; hooks: { type: string; command: string }[] }[]>;
   };
-  assert.deepEqual(Object.keys(settings.hooks).sort(), ["PostToolUseFailure", "PreToolUse", "SessionStart", "SubagentStart", "SubagentStop"]);
+  assert.deepEqual(Object.keys(settings.hooks).sort(), ["PostToolUse", "PostToolUseFailure", "PreToolUse", "SessionStart", "SubagentStart", "SubagentStop"]);
   assert.deepEqual(settings.hooks.PreToolUse.map((entry) => entry.matcher), ["Bash", "Agent|Task"]);
+  assert.deepEqual(settings.hooks.PostToolUse.map((entry) => entry.matcher), ["Agent|Task"]);
   assert.deepEqual(settings.hooks.PostToolUseFailure.map((entry) => entry.matcher), ["Agent|Task"]);
   for (const entries of Object.values(settings.hooks)) for (const entry of entries) for (const hook of entry.hooks) {
     assert.equal(hook.type, "command");
