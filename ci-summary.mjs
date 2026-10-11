@@ -39,6 +39,19 @@ export function failingSteps(jobs) {
   });
 }
 
+export async function latestWorkflowRuns(gh, branch, head) {
+  const workflows = JSON.parse(await gh(["workflow", "list", "--json", "id,name,state"]));
+  const runs = [];
+  for (const workflow of workflows) {
+    if (workflow.state !== "active") continue;
+    const args = ["run", "list", "--workflow", String(workflow.id), "--branch", branch, "--limit", "1",
+      "--json", "workflowName,status,conclusion,headSha,createdAt,url,databaseId"];
+    if (head) args.push("--commit", head);
+    runs.push(...JSON.parse(await gh(args)));
+  }
+  return runs;
+}
+
 const execute = promisify(execFile);
 async function main(branch, head) {
   const deadline = Date.now() + 20 * 60 * 1000;
@@ -54,10 +67,7 @@ async function main(branch, head) {
   let previous = [];
   const reported = new Set();
   while (Date.now() < deadline) {
-    const args = ["run", "list", "--branch", branch, "--limit", "100",
-      "--json", "workflowName,status,conclusion,headSha,createdAt,url,databaseId"];
-    if (head) args.push("--commit", head);
-    const summary = summarizeRuns(JSON.parse(await gh(args)), head);
+    const summary = summarizeRuns(await latestWorkflowRuns(gh, branch, head), head);
     for (const line of changedLines(summary.lines, previous)) console.log(line);
     previous = summary.lines;
     for (const id of summary.failedRunIds) {
