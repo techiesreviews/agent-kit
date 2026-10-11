@@ -11,7 +11,11 @@ dev_modules=/home/ubulex/Projects/native-site-editor-dev/node_modules
 if [[ -L $dev_modules ]]; then modules=$(realpath "$dev_modules"); else modules=$dev_modules; fi
 [[ -d $modules ]] || { echo "Missing node_modules: $modules" >&2; exit 1; }
 git worktree add -b "$branch" "$path" "$base" >&2
-ln -s "$modules" "$path/node_modules"
 mkdir -p "$path/.scratch"
+owner=${ASE_OWNER:-unknown}
+owner=${owner//$'\n'/ }
+owner=${owner//$'\r'/ }
+printf '%s %s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$owner" "$branch" "$base" > "$path/.scratch/owner"
+ln -s "$modules" "$path/node_modules"
 ln -s /home/ubulex/Projects/native-site-editor/.scratch/native-static-preview "$path/.scratch/native-static-preview"
 printf '%s\n' "$path"
