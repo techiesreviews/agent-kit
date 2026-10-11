@@ -6,7 +6,7 @@ import { dirname, posix, resolve } from "node:path";
 export function reviewComplete(result) {
   const lines = result.replace(/^\uFEFF/, "").split(/\r?\n/).map(line => line.trim());
   while (lines[0] === "") lines.shift();
-  if (/^(```|~~~)[\w-]*$/.test(lines[0] ?? "")) {
+  if (/^(`{3,}[^`]*|~{3,}.*)$/.test(lines[0] ?? "")) {
     lines.shift();
     while (lines[0] === "") lines.shift();
   }

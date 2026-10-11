@@ -18,6 +18,15 @@ test("review completion accepts blank lines, BOM, CRLF and a leading markdown fe
   }
 });
 
+test("review completion accepts longer fences and whitespace before info strings", () => {
+  for (const fence of ["``` markdown", "````markdown", "~~~ text", "````", "~~~~", "~~~~ text", "```\tmarkdown", "```markdown extra", "~~~text `extra`", "```text/plain"]) {
+    assert.equal(reviewComplete(`${fence}\nREVIEW_STATUS: complete\n`), true, fence);
+  }
+  for (const fence of ["``markdown", "~~ text", "```markdown `extra`"]) {
+    assert.equal(reviewComplete(`${fence}\nREVIEW_STATUS: complete\n`), false, fence);
+  }
+});
+
 test("slice brief resolves fixture ticket links and states both axes and validation contract", () => {
   const path = "tests/fixtures/agent-scripts/tickets/01-slice.md";
   const brief = reviewBrief(path, readFileSync(path, "utf8"));
