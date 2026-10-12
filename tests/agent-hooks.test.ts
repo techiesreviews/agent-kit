@@ -352,7 +352,7 @@ test("session env handles npm alone, escaped paths and silent no-op cases", (t) 
   }
 });
 
-test("Claude settings and Codex template share executable Bash and SessionStart hooks", () => {
+test("Claude settings and Codex hooks configuration share executable Bash and SessionStart hooks", () => {
   const settings = JSON.parse(readFileSync(".claude/settings.json", "utf8")) as {
     hooks: Record<string, { matcher?: string; hooks: { type: string; command: string }[] }[]>;
   };

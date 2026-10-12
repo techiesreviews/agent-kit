@@ -5,27 +5,37 @@
 // text (Claude), or null when the CLI already wrote out.md (Codex). The shared
 // runner owns logs, the build contract, deadlines, process groups and Git status.
 import { execFileSync } from "node:child_process";
-import { closeSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { durationMilliseconds, supervise } from "./sol-run.mjs";
 
 const adapters = { codex: codexAdapter, claude: claudeAdapter };
 
 export function inferCli(model) {
-  return /^(claude-|(?:opus|sonnet|haiku|fable)$)/i.test(model) ? "claude" : "codex";
+  return /^(claude-|(?:opus|sonnet|haiku|fable)$)/i.test(claudeModelName(model)) ? "claude" : "codex";
+}
+
+function claudeModelName(model) {
+  return model.replace(/\[1m\]$/i, "");
+}
+
+export function reviewBase(brief, explicit) {
+  const base = explicit ?? /\bgit diff ([\w./-]+)\.\.\.HEAD\b/.exec(brief)?.[1] ?? "origin/dev";
+  if (!/^[\w./-]+$/.test(base) || base.startsWith("-")) throw new Error("Invalid base ref");
+  return base;
 }
 
 export function parseAgentArgs(args, env = {}) {
   const [kind, worktree, brief, ...flags] = args;
   if (!["build", "review"].includes(kind) || !worktree || !brief) {
-    throw new Error("Usage: agent.sh build|review <worktree> <brief> [--model M] [--cli codex|claude] [--effort E]");
+    throw new Error("Usage: agent.sh build|review <worktree> <brief> [--model M] [--cli codex|claude] [--effort E] [--base REF] [--out DIR]");
   }
   const options = { kind, worktree, brief, model: env[kind === "build" ? "ASE_BUILD_MODEL" : "ASE_REVIEW_MODEL"] || "gpt-6.1-sol", effort: "medium" };
   let cli = env.ASE_AGENT_CLI || "";
   const seen = new Set();
   for (let i = 0; i < flags.length; i += 2) {
     const flag = flags[i], value = flags[i + 1];
-    if (!["--model", "--cli", "--effort"].includes(flag) || !value || value.startsWith("--") || seen.has(flag)) {
+    if (!["--model", "--cli", "--effort", "--base", "--out"].includes(flag) || !value || value.startsWith("--") || seen.has(flag)) {
       throw new Error(`Invalid option: ${flag}`);
     }
     seen.add(flag);
@@ -37,6 +47,7 @@ export function parseAgentArgs(args, env = {}) {
   if (!options.model.trim() || options.model.startsWith("-") || /[\r\n]/.test(options.model)) throw new Error("Invalid model");
   // Effort levels belong to each CLI/model; pass new levels through unchanged.
   if (!/^[a-z][a-z0-9_-]*$/.test(options.effort)) throw new Error(`Invalid effort: ${options.effort}`);
+  if (options.base !== undefined) reviewBase("", options.base);
   return options;
 }
 
@@ -46,6 +57,8 @@ export function codexModelMatches(log, requested) {
 }
 
 export function claudeModelMatches(actual, requested) {
+  actual = claudeModelName(actual);
+  requested = claudeModelName(requested);
   if (actual === requested) return true;
   // Aliases intentionally select the current member of a family. Full model
   // names allow only the provider's dated snapshot suffix, never another family.
@@ -80,11 +93,10 @@ export function codexAdapter(options, common, output) {
 
 export function claudeAdapter(options, common) {
   const { kind, model, effort } = options;
-  const reviewTools = "Read Grep Glob Bash(git diff:*) Bash(git log:*) Bash(git show:*)";
   return {
     command: "claude", capture: true,
-    args: ["-p", "--model", model, "--effort", effort, "--permission-mode", kind === "build" ? "acceptEdits" : "default",
-      ...(kind === "build" ? ["--add-dir", common] : ["--allowedTools", reviewTools, "--tools", "Read,Grep,Glob,Bash"]),
+    args: ["-p", "--model", model, "--effort", effort, "--permission-mode", kind === "build" ? "acceptEdits" : "plan",
+      ...(kind === "build" ? ["--add-dir", common] : ["--tools", "Read,Grep,Glob", "--setting-sources", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}']),
       "--output-format", "json"],
     finish: stdout => claudeResult(stdout, model),
   };
@@ -108,10 +120,22 @@ async function run(args) {
   options.worktree = resolve(options.worktree);
   const brief = readFileSync(resolve(options.brief), "utf8");
   const common = execFileSync("git", ["-C", options.worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim();
-  const out = join(options.worktree, ".scratch/agent", options.kind);
+  const artifacts = join(options.worktree, ".scratch/agent");
+  mkdirSync(artifacts, { recursive: true });
+  const out = options.out ? resolve(options.out) : mkdtempSync(join(artifacts, `${options.kind}-${Date.now()}-${process.pid}-`));
   mkdirSync(out, { recursive: true });
+  console.log(`artifacts: ${out}`);
   const output = join(out, "out.md"), logPath = join(out, "run.log"), inputPath = join(out, `brief-${process.pid}.md`);
-  writeFileSync(inputPath, brief + (options.kind === "build" ? buildContract : ""));
+  let prompt = brief;
+  if (options.kind === "review") {
+    const base = reviewBase(brief, options.base);
+    const diff = join(out, "diff.patch"), commits = join(out, "commits.log"), refs = join(out, "refs.txt");
+    writeFileSync(diff, execFileSync("git", ["-C", options.worktree, "diff", `${base}...HEAD`], { maxBuffer: 64 * 1024 * 1024 }));
+    writeFileSync(commits, execFileSync("git", ["-C", options.worktree, "log", "--oneline", `${base}..HEAD`]));
+    writeFileSync(refs, execFileSync("git", ["-C", options.worktree, "rev-parse", "HEAD", base]));
+    prompt += `\nReview scope: git diff ${base}...HEAD. Read ${JSON.stringify(diff)} for the diff, ${JSON.stringify(commits)} for git log --oneline ${base}..HEAD, and ${JSON.stringify(refs)} for HEAD and base SHAs (in that order). These prepared files define the scope; do not run git.\n`;
+  }
+  writeFileSync(inputPath, prompt + (options.kind === "build" ? buildContract : ""));
   rmSync(output, { force: true });
   const adapter = agentInvocation(options, common, output);
   const input = openSync(inputPath, "r"), log = openSync(logPath, "w");

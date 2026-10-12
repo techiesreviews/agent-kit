@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# Usage: review.sh <worktree> <brief-file> <out-dir>; agent review, validate completion.
+# Usage: review.sh <worktree> <brief-file> <out-dir> [--base REF]; agent review, validate completion.
 set -euo pipefail
-[[ $# == 3 ]] || { echo "Usage: review.sh <worktree> <brief-file> <out-dir>" >&2; exit 2; }
+[[ $# == 3 || ( $# == 5 && $4 == --base ) ]] || { echo "Usage: review.sh <worktree> <brief-file> <out-dir> [--base REF]" >&2; exit 2; }
 mkdir -p "$3"
 rm -f "$3/result.md"
 status=0
-"$(dirname "${BASH_SOURCE[0]}")/agent.sh" review "$1" "$2" || status=$?
-out=$(realpath "$1")/.scratch/agent/review
+artifacts=$(realpath "$1")/.scratch/agent
+mkdir -p "$artifacts"
+out=$(mktemp -d "$artifacts/review-$(date +%s)-$$-XXXXXX")
+"$(dirname "${BASH_SOURCE[0]}")/agent.sh" review "$1" "$2" --out "$out" "${@:4}" || status=$?
 if [[ $(realpath "$3") != "$out" && -f $out/run.log ]]; then cp "$out/run.log" "$3/run.log"; fi
 [[ ! -f $out/out.md ]] || cp "$out/out.md" "$3/result.md"
 (( status == 0 )) || exit "$status"

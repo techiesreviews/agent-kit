@@ -19,11 +19,6 @@ export function supervise(duration, command, args, { cwd, input = 0, log, captur
     // timeout implementations, expiry signals all descendants, whichever CLI runs.
     const child = spawn(command, args, { cwd, detached: true, stdio: log === undefined ? "inherit" : [input, "pipe", "pipe"] });
     let stdout = "";
-    if (log !== undefined) {
-      child.stdout.setEncoding("utf8");
-      child.stdout.on("data", chunk => { writeSync(log, chunk); if (capture) stdout += chunk; });
-      child.stderr.on("data", chunk => writeSync(log, chunk));
-    }
     let result;
     function stop(code) {
       result ??= code;
@@ -32,19 +27,43 @@ export function supervise(duration, command, args, { cwd, input = 0, log, captur
         if (error.code !== "ESRCH") console.error(`problem: cannot kill agent process group: ${error.message}`);
       }
     }
+    function fail(error) {
+      console.error(`problem: ${error.message}`);
+      stop(1);
+      // Closing both pipes also bounds close when a descendant holds them open.
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+    }
+    function record(chunk, isStdout) {
+      try {
+        writeSync(log, chunk);
+        if (capture && isStdout) stdout += chunk;
+      } catch (error) { fail(error); }
+    }
+    const recordStdout = chunk => record(chunk, true);
+    const recordStderr = chunk => record(chunk, false);
+    if (log !== undefined) {
+      child.stdout.setEncoding("utf8");
+      child.stdout.on("data", recordStdout);
+      child.stderr.on("data", recordStderr);
+      child.stdout.on("error", fail);
+      child.stderr.on("error", fail);
+    }
     const timer = setTimeout(() => stop(124), milliseconds);
     const interrupt = () => stop(130);
     const terminate = () => stop(143);
     process.once("SIGINT", interrupt);
     process.once("SIGTERM", terminate);
-    child.once("error", error => {
-      console.error(`problem: ${error.message}`);
-      result = 1;
-    });
+    child.once("error", fail);
     child.once("close", (code, signal) => {
       clearTimeout(timer);
       process.removeListener("SIGINT", interrupt);
       process.removeListener("SIGTERM", terminate);
+      child.removeListener("error", fail);
+      child.stdout?.removeListener("data", recordStdout);
+      child.stderr?.removeListener("data", recordStderr);
+      child.stdout?.removeListener("error", fail);
+      child.stderr?.removeListener("error", fail);
       resolve({ status: result ?? code ?? (signal === "SIGINT" ? 130 : 1), stdout });
     });
   });
