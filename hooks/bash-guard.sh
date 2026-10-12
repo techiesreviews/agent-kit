@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: bash-guard.sh < hook.json; reject unsafe Claude Bash commands.
+# Usage: bash-guard.sh < hook.json; reject unsafe agent Bash commands.
 set -euo pipefail
 # Only deliberate policy rejections exit 2; infrastructure errors allow the call.
 trap 'exit 0' ERR
@@ -57,7 +57,7 @@ function inspect(a, n, timed, depth,    i,j,k,name,text) {
       while (j <= n && a[j] ~ /^-/) j++
     }
     if (base(a[j]) == "port.sh" || base(a[j]) == "full-suite.sh")
-      reject("run port.sh directly; use run_in_background for long runs")
+      reject("run port.sh directly; wait for long runs through your CLI")
   }
   if (name == "git") {
     j = i + 1

@@ -55,7 +55,7 @@ const blocked: [string, string][] = [
     "timeout 10 env FOO=bar scripts/agents/full-suite.sh",
     "2>/dev/null timeout 5 scripts/agents/port.sh npm test",
     "timeout 10 bash <<'EOF'\nscripts/agents/port.sh npm test\nEOF",
-  ].map((command): [string, string] => [command, "run port.sh directly; use run_in_background for long runs"]),
+  ].map((command): [string, string] => [command, "run port.sh directly; wait for long runs through your CLI"]),
   ...[
     "pkill node", "pkill -f vite", "killall node", "/usr/bin/pkill -9 -f server",
     "true; killall -9 node", "bash -c 'pkill -f server'", "pgrep -f vite | xargs kill",
@@ -352,7 +352,7 @@ test("session env handles npm alone, escaped paths and silent no-op cases", (t) 
   }
 });
 
-test("committed Claude settings wire all events to executable hooks", () => {
+test("Claude settings and Codex template share executable Bash and SessionStart hooks", () => {
   const settings = JSON.parse(readFileSync(".claude/settings.json", "utf8")) as {
     hooks: Record<string, { matcher?: string; hooks: { type: string; command: string }[] }[]>;
   };
@@ -362,12 +362,85 @@ test("committed Claude settings wire all events to executable hooks", () => {
   assert.deepEqual(settings.hooks.PostToolUseFailure.map((entry) => entry.matcher), ["Agent|Task"]);
   for (const entries of Object.values(settings.hooks)) for (const entry of entries) for (const hook of entry.hooks) {
     assert.equal(hook.type, "command");
-    assert.match(hook.command, /^"\$CLAUDE_PROJECT_DIR"\/scripts\/agents\/hooks\/(bash-guard|agent-cap|session-env)\.sh$/);
-    const script = hook.command.split("/").at(-1)!;
+    assert.match(hook.command, /^bash "\$\{CLAUDE_PROJECT_DIR:-\$\(git rev-parse --show-toplevel\)\}"\/scripts\/agents\/hooks\/run\.sh (bash-guard|agent-cap|session-env)$/);
+    const script = `${hook.command.split(" ").at(-1)!}.sh`;
     assert.equal(spawnSync("/usr/bin/test", ["-x", join(hooks, script)]).status, 0);
+  }
+  assert.equal(spawnSync("/usr/bin/test", ["-x", join(hooks, "run.sh")]).status, 0);
+  const codex: typeof settings = JSON.parse(readFileSync(".codex/hooks.json", "utf8"));
+  assert.deepEqual(Object.keys(codex.hooks).sort(), ["PreToolUse", "SessionStart", "SubagentStart", "SubagentStop"]);
+  assert.deepEqual(codex.hooks.PreToolUse, [settings.hooks.PreToolUse[0]]);
+  for (const event of ["SessionStart", "SubagentStart", "SubagentStop"]) {
+    assert.deepEqual(codex.hooks[event], settings.hooks[event]);
   }
   assert.equal(spawnSync("git", ["check-ignore", ".claude/settings.json"]).status, 1);
   for (const path of [".claude/settings.local.json", ".claude/worktrees/example"]) {
     assert.equal(spawnSync("git", ["check-ignore", path]).status, 0);
+  }
+  assert.equal(spawnSync("git", ["check-ignore", ".codex/hooks.json"]).status, 1);
+  assert.equal(spawnSync("git", ["check-ignore", ".codex/config.toml"]).status, 0);
+});
+
+function codexPayload(command?: string) {
+  return {
+    session_id: "01a1-session", turn_id: "01a1-turn", transcript_path: "/tmp/session.jsonl",
+    cwd: process.cwd(), hook_event_name: command === undefined ? "SessionStart" : "PreToolUse",
+    model: "gpt-5.5", permission_mode: "bypassPermissions",
+    ...(command === undefined ? { source: "startup" } : { tool_name: "Bash", tool_input: { command }, tool_use_id: "call_zF3" }),
+  };
+}
+
+test("Codex Bash payloads block unsafe commands and allow owned work", () => {
+  for (const [command, reason] of blocked) {
+    const result = run("bash-guard.sh", codexPayload(command));
+    assert.equal(result.status, 2, command);
+    assert.equal(result.stderr, `${reason}\n`, command);
+  }
+  for (const command of ["git stash list", "kill -- -1234", "scripts/agents/port.sh npm test", "export PATH=/node24:$PATH; git status --short"]) {
+    const result = run("bash-guard.sh", codexPayload(command));
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout + result.stderr, "");
+  }
+});
+
+test("SessionStart without an env file supplies escaped Node PATH context and otherwise stays silent", (t) => {
+  const dir = join(temp(t), 'space $dollar `tick` "quote"');
+  const env = { ...nodeEnv(dir), CLAUDE_ENV_FILE: "" };
+  const node = join(dir, ".npm/_npx/one/node_modules/node/bin/node");
+  fakeNode(node, "v24.0.1");
+  const result = run("session-env.sh", codexPayload(), env);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stderr, "");
+  const output: { hookSpecificOutput: { hookEventName: string; additionalContext: string } } = JSON.parse(result.stdout);
+  assert.equal(output.hookSpecificOutput.hookEventName, "SessionStart");
+  const context = output.hookSpecificOutput.additionalContext;
+  assert.match(context, /Node >=24 is required/);
+  const command = context.slice(context.indexOf("export PATH="));
+  const sourced = spawnSync("/bin/bash", ["-c", `${command}; printf '%s' "$PATH"`], { env, encoding: "utf8" });
+  assert.equal(sourced.stdout, `${dirname(node)}:${env.PATH}`);
+  fakeNode(join(dir, "current/node"), "v24.0.0");
+  assert.equal(run("session-env.sh", codexPayload(), env).stdout, "");
+  fakeNode(join(dir, "current/node"), "v22.0.0");
+  fakeNode(node, "v23.9.9");
+  assert.equal(run("session-env.sh", codexPayload(), env).stdout, "");
+});
+
+test("hook launcher finds the repo from nested cwd without Claude variables and preserves rejection", () => {
+  const result = spawnSync("/bin/bash", [join(hooks, "run.sh"), "bash-guard"], {
+    cwd: resolve("tests/fixtures"), env: { ...process.env, CLAUDE_PROJECT_DIR: "" },
+    input: JSON.stringify(codexPayload("git stash pop")), encoding: "utf8",
+  });
+  assert.equal(result.status, 2, result.stderr);
+  assert.equal(result.stderr, "commit work in progress on your own branch\n");
+  assert.equal(run("run.sh", {}).status, 0);
+});
+
+test("Codex subagent lifecycle remains harmless, including missing IDs", (t) => {
+  const env = { CLAUDE_AGENT_CAP_STATE_DIR: temp(t), CLAUDE_AGENT_CAP: "1" };
+  for (const agent_id of [undefined, "first", "second"]) for (const hook_event_name of ["SubagentStart", "SubagentStop"]) {
+    const result = run("agent-cap.sh", { ...codexPayload(), hook_event_name, agent_id }, env);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout + result.stderr, "");
+    assert.equal(existsSync(join(env.CLAUDE_AGENT_CAP_STATE_DIR, "01a1-session", "-")), false);
   }
 });

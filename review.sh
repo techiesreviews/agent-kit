@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# Usage: review.sh <worktree> <brief-file> <out-dir>; read-only Sol review, validate completion and model.
+# Usage: review.sh <worktree> <brief-file> <out-dir>; agent review, validate completion.
 set -euo pipefail
 [[ $# == 3 ]] || { echo "Usage: review.sh <worktree> <brief-file> <out-dir>" >&2; exit 2; }
 mkdir -p "$3"
 rm -f "$3/result.md"
-if codex exec -m gpt-6.1-sol -c model_reasoning_effort=medium -s read-only -C "$1" -o "$3/result.md" - < "$2" > "$3/run.log" 2>&1; then :; else
-  echo "problem: codex exec failed; see $3/run.log" >&2; exit 1
-fi
+status=0
+"$(dirname "${BASH_SOURCE[0]}")/agent.sh" review "$1" "$2" || status=$?
+out=$(realpath "$1")/.scratch/agent/review
+if [[ $(realpath "$3") != "$out" && -f $out/run.log ]]; then cp "$out/run.log" "$3/run.log"; fi
+[[ ! -f $out/out.md ]] || cp "$out/out.md" "$3/result.md"
+(( status == 0 )) || exit "$status"
 node --input-type=module - "$3/result.md" "$(dirname "${BASH_SOURCE[0]}")/review-brief.mjs" <<'EOF' || {
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -17,5 +20,4 @@ catch { process.exit(1); }
 EOF
   echo "problem: result lacks REVIEW_STATUS: complete" >&2; exit 1;
 }
-grep -Eq '^[[:space:]]*model:[[:space:]]*gpt-6\.1-sol[[:space:]]*$' "$3/run.log" || { echo "problem: run.log does not name model gpt-6.1-sol" >&2; exit 1; }
 echo ok

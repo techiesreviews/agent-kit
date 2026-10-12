@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: agent-cap.sh < hook.json; track and cap Claude subagents per session.
+# Usage: agent-cap.sh < hook.json; track subagents, cap Claude Agent/Task launches.
 set -euo pipefail
 trap 'exit 0' ERR
 fields=$(jq -er '[.hook_event_name, .session_id, (.agent_id // "-"), (.tool_name // "-"), (.tool_use_id // "-")] | map(select(type == "string")) | select(length == 5) | @tsv' 2>/dev/null)
@@ -8,7 +8,7 @@ IFS=$'\t' read -r event session agent tool launch <<< "$fields"
 state="${CLAUDE_AGENT_CAP_STATE_DIR:-${XDG_RUNTIME_DIR:-/tmp}/claude-agent-cap}/$session"
 # Validate before creating state; every state change uses the same lock.
 case $event in
-  SubagentStart|SubagentStop) [[ $agent =~ ^[a-zA-Z0-9_-]+$ ]] || exit 0 ;;
+  SubagentStart|SubagentStop) [[ $agent != "-" && $agent =~ ^[a-zA-Z0-9_-]+$ ]] || exit 0 ;;
   PreToolUse|PostToolUse|PostToolUseFailure)
     [[ $tool == Agent || $tool == Task ]] || exit 0
     [[ $launch =~ ^[a-zA-Z0-9_-]+$ ]] || exit 0

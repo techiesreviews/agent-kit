@@ -3,7 +3,6 @@
 set -euo pipefail
 trap 'exit 0' ERR
 exec 2>/dev/null
-[[ -n ${CLAUDE_ENV_FILE:-} ]] || exit 0
 jq -e 'select(.hook_event_name == "SessionStart")' >/dev/null 2>&1
 version=$(node --version)
 [[ $version =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+) ]] || exit 0
@@ -30,4 +29,9 @@ best=${best//\\/\\\\}
 best=${best//\"/\\\"}
 best=${best//\$/\\\$}
 best=${best//\`/\\\`}
-printf 'export PATH="%s:$PATH"\n' "$best" >> "$CLAUDE_ENV_FILE"
+if [[ -n ${CLAUDE_ENV_FILE:-} ]]; then
+  printf 'export PATH="%s:$PATH"\n' "$best" >> "$CLAUDE_ENV_FILE"
+else
+  context=$(printf 'Node >=24 is required. Prefix shell commands with: export PATH="%s:$PATH"' "$best")
+  jq -n --arg context "$context" '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $context}}'
+fi
