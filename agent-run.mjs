@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 // Adapters accept {kind, worktree, model, effort}, git common dir and output path.
-// Return {command, args, capture, finish(stdout, runLog)}. Commands read the brief
+// Return {command, args, env, capture, finish(stdout, runLog)}. Commands read the brief
 // on stdin with cwd=worktree; finish verifies the actual model and returns final
 // text (Claude), or null when the CLI already wrote out.md (Codex). The shared
 // runner owns logs, the build contract, deadlines, process groups and Git status.
 import { execFileSync } from "node:child_process";
-import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { durationMilliseconds, supervise } from "./sol-run.mjs";
+import { reviewComplete, reviewFormat, reviewScope } from "./review-brief.mjs";
 
 const adapters = { codex: codexAdapter, claude: claudeAdapter };
 
@@ -19,23 +22,21 @@ function claudeModelName(model) {
   return model.replace(/\[1m\]$/i, "");
 }
 
-export function reviewBase(brief, explicit) {
-  const base = explicit ?? /\bgit diff ([\w./-]+)\.\.\.HEAD\b/.exec(brief)?.[1] ?? "origin/dev";
-  if (!/^[\w./-]+$/.test(base) || base.startsWith("-")) throw new Error("Invalid base ref");
-  return base;
+export function reviewBase(brief, explicit, worktree = process.cwd()) {
+  return reviewScope(brief, { base: explicit }, worktree).base;
 }
 
 export function parseAgentArgs(args, env = {}) {
   const [kind, worktree, brief, ...flags] = args;
   if (!["build", "review"].includes(kind) || !worktree || !brief) {
-    throw new Error("Usage: agent.sh build|review <worktree> <brief> [--model M] [--cli codex|claude] [--effort E] [--base REF] [--out DIR]");
+    throw new Error("Usage: agent.sh build|review <worktree> <brief> [--model M] [--cli codex|claude] [--effort E] [--base REF | --commit SHA] [--out DIR]");
   }
   const options = { kind, worktree, brief, model: env[kind === "build" ? "ASE_BUILD_MODEL" : "ASE_REVIEW_MODEL"] || "gpt-6.1-sol", effort: "medium" };
   let cli = env.ASE_AGENT_CLI || "";
   const seen = new Set();
   for (let i = 0; i < flags.length; i += 2) {
     const flag = flags[i], value = flags[i + 1];
-    if (!["--model", "--cli", "--effort", "--base", "--out"].includes(flag) || !value || value.startsWith("--") || seen.has(flag)) {
+    if (!["--model", "--cli", "--effort", "--base", "--commit", "--out"].includes(flag) || !value || (value.startsWith("--") && !["--base", "--commit"].includes(flag)) || seen.has(flag)) {
       throw new Error(`Invalid option: ${flag}`);
     }
     seen.add(flag);
@@ -47,8 +48,51 @@ export function parseAgentArgs(args, env = {}) {
   if (!options.model.trim() || options.model.startsWith("-") || /[\r\n]/.test(options.model)) throw new Error("Invalid model");
   // Effort levels belong to each CLI/model; pass new levels through unchanged.
   if (!/^[a-z][a-z0-9_-]*$/.test(options.effort)) throw new Error(`Invalid effort: ${options.effort}`);
-  if (options.base !== undefined) reviewBase("", options.base);
+  if (options.base !== undefined && options.commit !== undefined) throw new Error("--base and --commit are mutually exclusive");
   return options;
+}
+
+// Review sessions disable personal skills, plugins, apps, memories and MCP
+// configuration. Builds retain the user's usual Codex home and permissions.
+export const codexReviewConfig = `[skills]
+include_instructions = false
+
+[skills.bundled]
+enabled = false
+
+[features]
+plugins = false
+apps = false
+memories = false
+`;
+
+export function makeCodexReviewHome(sourceHome = process.env.CODEX_HOME || join(homedir(), ".codex")) {
+  const sourceAuth = resolve(sourceHome, "auth.json");
+  if (!existsSync(sourceAuth)) throw new Error(`no Codex auth at ${sourceAuth}`);
+  const home = mkdtempSync(join(tmpdir(), "ase-codex-home-"));
+  try {
+    symlinkSync(sourceAuth, join(home, "auth.json"));
+    writeFileSync(join(home, "config.toml"), codexReviewConfig);
+    return { home, sourceAuth };
+  } catch (error) {
+    rmSync(home, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function closeCodexReviewHome({ home, sourceAuth }) {
+  try {
+    const auth = join(home, "auth.json");
+    if (existsSync(auth) && !lstatSync(auth).isSymbolicLink()) {
+      // Codex may replace the symlink when rotating a refresh token. Preserve
+      // that token atomically before deleting the isolated session directory.
+      const temporary = `${sourceAuth}.${randomUUID()}.tmp`;
+      try {
+        writeFileSync(temporary, readFileSync(auth), { mode: 0o600, flag: "wx" });
+        renameSync(temporary, sourceAuth);
+      } finally { rmSync(temporary, { force: true }); }
+    }
+  } finally { rmSync(home, { recursive: true, force: true }); }
 }
 
 export function codexModelMatches(log, requested) {
@@ -66,14 +110,15 @@ export function claudeModelMatches(actual, requested) {
   return actual.startsWith(`${requested}-`) && /^\d{8}$/.test(actual.slice(requested.length + 1));
 }
 
-export function claudeResult(stdout, requested) {
+export function claudeResult(stdout, requested, allowEmpty = false) {
   const result = JSON.parse(stdout);
   if (result.is_error || (result.subtype && result.subtype !== "success")) throw new Error("Claude reported an unsuccessful result");
   const models = [...Object.keys(result.modelUsage ?? {}), ...(typeof result.model === "string" ? [result.model] : [])];
   if (!models.length || !models.every(model => claudeModelMatches(model, requested))) {
     throw new Error(`Claude result does not name requested model ${requested} (actual: ${models.join(", ") || "missing"})`);
   }
-  if (typeof result.result !== "string" || !result.result.trim()) throw new Error("Claude returned no final report");
+  if (allowEmpty && result.result == null) return "";
+  if (typeof result.result !== "string" || (!allowEmpty && !result.result.trim())) throw new Error("Claude returned no final report");
   return result.result;
 }
 
@@ -81,9 +126,13 @@ export function codexAdapter(options, common, output) {
   const { kind, worktree, model, effort } = options;
   return {
     command: "codex", capture: false,
+    env: options.codexHome ? { CODEX_HOME: options.codexHome } : {},
     args: ["exec", "-m", model, "-c", `model_reasoning_effort=${effort}`, "-s", kind === "build" ? "workspace-write" : "read-only",
       ...(kind === "build" ? ["-c", "sandbox_workspace_write.network_access=true", "--add-dir", common] : []),
       "--dangerously-bypass-hook-trust", "-C", worktree, "-o", output, "-"],
+    resume: session => ["exec", "resume", "-m", model, "-c", `model_reasoning_effort=${effort}`, "-c", 'sandbox_mode="read-only"',
+      "--dangerously-bypass-hook-trust", "-o", output, session, "-"],
+    session: (_stdout, log) => [...log.matchAll(/^session id: (\S+)\s*$/gm)].at(-1)?.[1],
     finish: (_stdout, log) => {
       if (!codexModelMatches(log, model)) throw new Error(`run.log does not name requested model ${model}`);
       return null;
@@ -98,7 +147,9 @@ export function claudeAdapter(options, common) {
     args: ["-p", "--model", model, "--effort", effort, "--permission-mode", kind === "build" ? "acceptEdits" : "plan",
       ...(kind === "build" ? ["--add-dir", common] : ["--tools", "Read,Grep,Glob", "--setting-sources", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}']),
       "--output-format", "json"],
-    finish: stdout => claudeResult(stdout, model),
+    resume: session => [...claudeAdapter(options, common).args, "--resume", session],
+    session: stdout => JSON.parse(stdout).session_id,
+    finish: stdout => claudeResult(stdout, model, kind === "review"),
   };
 }
 
@@ -128,29 +179,68 @@ async function run(args) {
   const output = join(out, "out.md"), logPath = join(out, "run.log"), inputPath = join(out, `brief-${process.pid}.md`);
   let prompt = brief;
   if (options.kind === "review") {
-    const base = reviewBase(brief, options.base);
+    const scope = reviewScope(brief, options, options.worktree);
+    const { base, head, label, commit } = scope;
     const diff = join(out, "diff.patch"), commits = join(out, "commits.log"), refs = join(out, "refs.txt");
-    writeFileSync(diff, execFileSync("git", ["-C", options.worktree, "diff", `${base}...HEAD`], { maxBuffer: 64 * 1024 * 1024 }));
-    writeFileSync(commits, execFileSync("git", ["-C", options.worktree, "log", "--oneline", `${base}..HEAD`]));
-    writeFileSync(refs, execFileSync("git", ["-C", options.worktree, "rev-parse", "HEAD", base]));
-    prompt += `\nReview scope: git diff ${base}...HEAD. Read ${JSON.stringify(diff)} for the diff, ${JSON.stringify(commits)} for git log --oneline ${base}..HEAD, and ${JSON.stringify(refs)} for HEAD and base SHAs (in that order). These prepared files define the scope; do not run git.\n`;
+    const patch = execFileSync("git", ["-C", options.worktree, "diff", ...(commit ? [base, head] : [`${base}...${head}`])], { maxBuffer: 64 * 1024 * 1024 });
+    writeFileSync(diff, patch);
+    writeFileSync(commits, execFileSync("git", ["-C", options.worktree, "log", "--oneline", `${base}..${head}`]));
+    writeFileSync(refs, `${head}\n${base}\n`);
+    if (!patch.length) { console.error(`problem: empty diff for ${label}`); return 1; }
+    prompt = prompt.replaceAll(reviewFormat, "");
+    prompt += `\nReview scope: ${label}. Read ${JSON.stringify(diff)} for the diff, ${JSON.stringify(commits)} for git log --oneline ${base}..${head}, and ${JSON.stringify(refs)} for ${commit ? "commit and parent" : "HEAD and base"} SHAs (in that order). These prepared files define the scope; do not run git.\n${reviewFormat}`;
   }
   writeFileSync(inputPath, prompt + (options.kind === "build" ? buildContract : ""));
   rmSync(output, { force: true });
-  const adapter = agentInvocation(options, common, output);
   const input = openSync(inputPath, "r"), log = openSync(logPath, "w");
+  let reviewHome;
   let status = 1;
   try {
-    const result = await supervise(limit, adapter.command, adapter.args, { cwd: options.worktree, input, log, capture: adapter.capture });
-    status = result.status;
-    if (status === 124) console.error(`problem: agent exceeded timeout=${limit}; process group killed; see ${logPath}`);
-    else if (status) console.error(`problem: ${adapter.command} failed (${status}); see ${logPath}`);
-    try {
-      const report = adapter.finish(result.stdout, readFileSync(logPath, "utf8"));
-      if (report !== null) writeFileSync(output, report + "\n");
-    } catch (error) {
-      console.error(`problem: ${error.message}; see ${logPath}`);
-      status ||= 1;
+    if (options.kind === "review" && options.cli === "codex") {
+      reviewHome = makeCodexReviewHome();
+      options.codexHome = reviewHome.home;
+    }
+    const adapter = agentInvocation(options, common, output);
+    const invoke = async (args, descriptor) => {
+      const previous = Object.fromEntries(Object.keys(adapter.env ?? {}).map(key => [key, process.env[key]]));
+      try {
+        Object.assign(process.env, adapter.env);
+        const previousLog = readFileSync(logPath, "utf8").length;
+        const result = await supervise(limit, adapter.command, args, { cwd: options.worktree, input: descriptor, log, capture: adapter.capture });
+        status = result.status;
+        if (status === 124) console.error(`problem: agent exceeded timeout=${limit}; process group killed; see ${logPath}`);
+        else if (status) console.error(`problem: ${adapter.command} failed (${status}); see ${logPath}`);
+        try {
+          const report = adapter.finish(result.stdout, readFileSync(logPath, "utf8").slice(previousLog));
+          if (report !== null) writeFileSync(output, report + "\n");
+        } catch (error) {
+          console.error(`problem: ${error.message}; see ${logPath}`);
+          status ||= 1;
+        }
+        return result;
+      } finally {
+        for (const [key, value] of Object.entries(previous)) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+      }
+    };
+    const complete = () => existsSync(output) && reviewComplete(readFileSync(output, "utf8"));
+    const result = await invoke(adapter.args, input);
+    if (!status && options.kind === "review" && !complete()) {
+      const session = adapter.session(result.stdout, readFileSync(logPath, "utf8"));
+      if (session) {
+        writeFileSync(inputPath, "Your reply must start with the line REVIEW_STATUS: complete. Send the full review again in the required format.\n");
+        const retryInput = openSync(inputPath, "r");
+        try {
+          rmSync(output, { force: true });
+          await invoke(adapter.resume(session), retryInput);
+        } finally { closeSync(retryInput); }
+      }
+      if (!complete()) {
+        console.error("problem: result lacks REVIEW_STATUS: complete");
+        status ||= 1;
+      }
     }
     try {
       const report = readFileSync(output, "utf8");
@@ -166,6 +256,7 @@ async function run(args) {
     closeSync(input);
     closeSync(log);
     rmSync(inputPath, { force: true });
+    if (reviewHome) closeCodexReviewHome(reviewHome);
   }
 }
 

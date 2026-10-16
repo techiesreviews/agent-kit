@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
-import { reviewBrief, reviewComplete } from "../scripts/agents/review-brief.mjs";
+import { reviewBrief, reviewComplete, reviewFormat } from "../scripts/agents/review-brief.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { unitSummary } from "../scripts/agents/unit-summary.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
@@ -84,15 +84,16 @@ test("Claude context variants retain CLI arguments while verifying the underlyin
   }
 });
 
-test("review base defaults, brief scope and explicit overrides are validated", () => {
-  assert.equal(reviewBase("tiny brief"), "origin/dev");
-  assert.equal(reviewBase("Scope: git diff release/next...HEAD"), "release/next");
-  assert.equal(reviewBase("git diff release/next...HEAD", "HEAD"), "HEAD");
-  // Match the review-brief helper's ref syntax, which excludes shell metacharacters.
-  assert.throws(() => reviewBase("", "--output=x"), /Invalid base ref/);
-  assert.throws(() => reviewBase("", "dev; rm -rf /"), /Invalid base ref/);
-  assert.equal(parseAgentArgs(["review", ".", "brief", "--base", "release/next", "--out", "/out dir"]).out, "/out dir");
-  assert.throws(() => parseAgentArgs(["review", ".", "brief", "--base", "-bad"]), /Invalid base ref/);
+test("review bases resolve through git and missing scope is refused", (t) => {
+  const wt = mkdtempSync(join(tmpdir(), "ase-review-base-"));
+  t.after(() => rmSync(wt, { recursive: true, force: true }));
+  const git = reviewRepository(wt);
+  assert.throws(() => reviewBase("tiny brief", undefined, wt), /brief has no review scope/);
+  assert.equal(reviewBase("Scope: git diff origin/dev...HEAD", undefined, wt), git("rev-parse", "origin/dev").trim());
+  assert.equal(reviewBase("git diff origin/dev...HEAD", "HEAD^", wt), git("rev-parse", "HEAD^").trim());
+  for (const ref of ["--output=x", "dev; rm -rf /", "-bad"]) assert.throws(() => reviewBase("", ref, wt), /cannot resolve commit ref/);
+  assert.equal(parseAgentArgs(["review", wt, "brief", "--base", "HEAD~1", "--out", "/out dir"]).out, "/out dir");
+  assert.throws(() => parseAgentArgs(["review", wt, "brief", "--base", "HEAD", "--commit", "HEAD"]), /mutually exclusive/);
 });
 
 function reviewRepository(wt: string) {
@@ -144,6 +145,8 @@ test("both adapters run through the shared shell entry and compatibility wrapper
   const wt = join(dir, "work tree"), bin = join(dir, "bin"), brief = join(dir, "brief.md");
   mkdirSync(wt); mkdirSync(bin);
   const git = reviewRepository(wt);
+  const sourceHome = join(dir, "codex-home");
+  mkdirSync(sourceHome); writeFileSync(join(sourceHome, "auth.json"), "{}");
   writeFileSync(brief, "tiny brief\n");
   const fake = `#!/usr/bin/env node
 import { readFileSync, writeFileSync } from "node:fs";
@@ -168,10 +171,10 @@ process.exitCode = Number(process.env.ASE_FAKE_EXIT || 0);
   const capture = join(dir, "capture.json");
   const invoke = (script: string, args: string[], overrides: NodeJS.ProcessEnv = {}) => spawnSync("bash", [resolve(`scripts/agents/${script}`), ...args], {
     encoding: "utf8", timeout: 15_000,
-    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ASE_FAKE_CAPTURE: capture, ASE_AGENT_CLI: "", ASE_BUILD_MODEL: "", ASE_REVIEW_MODEL: "", ASE_AGENT_TIMEOUT: "10s", ...overrides },
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CODEX_HOME: sourceHome, ASE_FAKE_CAPTURE: capture, ASE_AGENT_CLI: "", ASE_BUILD_MODEL: "", ASE_REVIEW_MODEL: "", ASE_AGENT_TIMEOUT: "10s", ...overrides },
   });
   for (const model of ["gpt-5.5", "claude-haiku-5-5"]) for (const kind of ["build", "review"]) {
-    const result = invoke("agent.sh", [kind, wt, brief, "--model", model, "--effort", "low"]);
+    const result = invoke("agent.sh", [kind, wt, brief, "--model", model, "--effort", "low", ...(kind === "review" ? ["--base", "origin/dev"] : [])]);
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /REVIEW_STATUS: complete/);
     const recorded: { args: string[]; input: string; cwd: string } = JSON.parse(readFileSync(capture, "utf8"));
@@ -181,7 +184,7 @@ process.exitCode = Number(process.env.ASE_FAKE_EXIT || 0);
     assert.ok(out.startsWith(join(wt, ".scratch/agent", `${kind}-`)));
     if (kind === "build") assert.equal(recorded.input, "tiny brief\n" + buildContract);
     else {
-      assert.match(recorded.input, /Review scope: git diff origin\/dev\.\.\.HEAD/);
+      assert.ok(recorded.input.includes(`Review scope: git diff ${git("rev-parse", "origin/dev").trim()}...HEAD`));
       for (const file of ["diff.patch", "commits.log", "refs.txt"]) assert.ok(recorded.input.includes(JSON.stringify(join(out, file))));
       assert.equal(readFileSync(join(out, "diff.patch"), "utf8"), git("diff", "origin/dev...HEAD"));
       assert.equal(readFileSync(join(out, "commits.log"), "utf8"), git("log", "--oneline", "origin/dev..HEAD"));
@@ -193,27 +196,28 @@ process.exitCode = Number(process.env.ASE_FAKE_EXIT || 0);
   }
   assert.equal(invoke("sol.sh", [wt, brief, "high"], { ASE_BUILD_MODEL: "claude-opus-5-5" }).status, 0);
   const reviewDir = join(dir, "review");
-  assert.equal(invoke("review.sh", [wt, brief, reviewDir], { ASE_REVIEW_MODEL: "claude-haiku-5-5" }).status, 0);
+  assert.equal(invoke("review.sh", [wt, brief, reviewDir, "--base", "origin/dev"], { ASE_REVIEW_MODEL: "claude-haiku-5-5" }).status, 0);
   assert.match(readFileSync(join(reviewDir, "result.md"), "utf8"), /REVIEW_STATUS: complete/);
   assert.match(readFileSync(join(reviewDir, "run.log"), "utf8"), /claude-haiku-5-5/);
-  assert.equal(invoke("review.sh", [wt, brief, reviewDir, "--base", "HEAD"]).status, 0);
-  assert.match(JSON.parse(readFileSync(capture, "utf8")).input, /Review scope: git diff HEAD\.\.\.HEAD/);
+  const empty = invoke("review.sh", [wt, brief, reviewDir, "--base", "HEAD"]);
+  assert.equal(empty.status, 1);
+  assert.match(empty.stderr, /empty diff for/);
   writeFileSync(brief, "Scope: git diff HEAD...HEAD\n");
   const scopedOut = join(dir, "explicit artifacts");
   const scoped = invoke("agent.sh", ["review", wt, brief, "--out", scopedOut]);
-  assert.equal(scoped.status, 0, scoped.stderr);
+  assert.equal(scoped.status, 1, scoped.stderr);
   assert.ok(scoped.stdout.startsWith(`artifacts: ${scopedOut}\n`));
   assert.equal(readFileSync(join(scopedOut, "diff.patch"), "utf8"), "");
   assert.equal(readFileSync(join(scopedOut, "commits.log"), "utf8"), "");
   writeFileSync(brief, "tiny brief\n");
-  const incomplete = invoke("review.sh", [wt, brief, reviewDir], { ASE_FAKE_REPORT: "incomplete" });
+  const incomplete = invoke("review.sh", [wt, brief, reviewDir, "--base", "origin/dev"], { ASE_FAKE_REPORT: "incomplete" });
   assert.equal(incomplete.status, 1);
   assert.match(incomplete.stderr, /lacks REVIEW_STATUS/);
   for (const model of ["gpt-5.5", "claude-haiku-5-5"]) {
-    const mismatch = invoke("agent.sh", ["review", wt, brief, "--model", model], { ASE_FAKE_MODEL: "different-model" });
+    const mismatch = invoke("agent.sh", ["review", wt, brief, "--model", model, "--base", "origin/dev"], { ASE_FAKE_MODEL: "different-model" });
     assert.equal(mismatch.status, 1);
     assert.match(mismatch.stderr, /requested model/);
-    assert.equal(invoke("agent.sh", ["review", wt, brief, "--model", model], { ASE_FAKE_EXIT: "7" }).status, 7);
+    assert.equal(invoke("agent.sh", ["review", wt, brief, "--model", model, "--base", "origin/dev"], { ASE_FAKE_EXIT: "7" }).status, 7);
   }
   const invalid = invoke("agent.sh", ["build", wt, join(dir, "missing.md")]);
   assert.equal(invalid.status, 2);
@@ -225,6 +229,8 @@ test("concurrent reviews copy and validate only their own invocation's report an
   const wt = join(dir, "work"), bin = join(dir, "bin");
   mkdirSync(wt); mkdirSync(bin);
   reviewRepository(wt);
+  const sourceHome = join(dir, "codex-home");
+  mkdirSync(sourceHome); writeFileSync(join(sourceHome, "auth.json"), "{}");
   const children: ReturnType<typeof spawn>[] = [];
   t.after(() => {
     for (const child of children) child.kill("SIGKILL");
@@ -238,7 +244,10 @@ test("concurrent reviews copy and validate only their own invocation's report an
   });
   const fake = `#!/usr/bin/env node
 const { readFileSync, writeFileSync, existsSync } = require("node:fs");
-const args = process.argv.slice(2), name = readFileSync(0, "utf8").split("\\n")[0];
+const args = process.argv.slice(2);
+const input = readFileSync(0, "utf8");
+const name = args[1] === "resume" ? "first" : input.split("\\n")[0];
+console.error("session id: fixture-session");
 console.error("model: " + args[args.indexOf("-m") + 1]);
 console.error("invocation: " + name);
 writeFileSync(args[args.indexOf("-o") + 1], name === "first" ? "incomplete first report\\n" : "REVIEW_STATUS: complete\\nsecond report\\n");
@@ -253,8 +262,8 @@ if (name === "first") {
   function invoke(name: string) {
     const brief = join(dir, `${name}.md`), output = join(dir, name);
     writeFileSync(brief, `${name}\n`);
-    const child = spawn("bash", [resolve("scripts/agents/review.sh"), wt, brief, output], {
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ASE_REVIEW_BARRIER: dir,
+    const child = spawn("bash", [resolve("scripts/agents/review.sh"), wt, brief, output, "--base", "origin/dev"], {
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ASE_REVIEW_BARRIER: dir, CODEX_HOME: sourceHome,
         ASE_AGENT_CLI: "codex", ASE_REVIEW_MODEL: "gpt-5.5", ASE_AGENT_TIMEOUT: "10s" },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -309,10 +318,13 @@ test("review completion accepts longer fences and whitespace before info strings
   }
 });
 
-test("slice brief resolves fixture ticket links and states both axes and validation contract", () => {
+test("slice brief resolves fixture ticket links and states both axes and validation contract", (t) => {
+  const wt = mkdtempSync(join(tmpdir(), "ase-review-brief-"));
+  t.after(() => rmSync(wt, { recursive: true, force: true }));
+  const git = reviewRepository(wt);
   const path = "tests/fixtures/agent-scripts/tickets/01-slice.md";
-  const brief = reviewBrief(path, readFileSync(path, "utf8"));
-  assert.match(brief, /git diff origin\/dev\.\.\.HEAD/);
+  const brief = reviewBrief(path, readFileSync(path, "utf8"), "origin/dev", wt);
+  assert.ok(brief.includes(`git diff ${git("rev-parse", "origin/dev").trim()}...HEAD`));
   assert.ok(brief.includes(path));
   assert.match(brief, /tests\/fixtures\/agent-scripts\/spec\.md/);
   assert.match(brief, /tests\/fixtures\/agent-scripts\/02-decision\.md/);
@@ -321,14 +333,15 @@ test("slice brief resolves fixture ticket links and states both axes and validat
   assert.doesNotMatch(brief, /https:\/\/example.com/);
   assert.match(brief, /Standards axis: apply CODING_STANDARDS\.md/);
   assert.match(brief, /author already ran check\/test\/lint and the touched specs; do not report inability to run tests/);
-  assert.match(brief, /commit:path:line, severity, evidence, and fix/);
-  assert.match(brief, /very first line must be REVIEW_STATUS: complete/);
-  assert.match(reviewBrief(path, "", "release/next"), /git diff release\/next\.\.\.HEAD/);
-  assert.throws(() => reviewBrief(path, "", "dev; rm -rf /"), /Invalid base ref/);
-  assert.throws(() => reviewBrief(path, "", "--output=x"), /Invalid base ref/);
-  const result = spawnSync("bash", ["scripts/agents/review-brief.sh", path], { encoding: "utf8" });
+  assert.match(reviewFormat, /commit:path:line, severity, evidence, and fix/);
+  assert.match(reviewFormat, /very first line must be REVIEW_STATUS: complete/);
+  assert.doesNotMatch(brief, /Required format:/);
+  assert.ok(reviewBrief(path, "", "HEAD^", wt).includes(git("rev-parse", "HEAD^").trim()));
+  assert.throws(() => reviewBrief(path, "", "dev; rm -rf /", wt), /cannot resolve commit ref/);
+  assert.throws(() => reviewBrief(path, "", "--output=x", wt), /cannot resolve commit ref/);
+  const result = spawnSync("bash", [resolve("scripts/agents/review-brief.sh"), resolve(path)], { encoding: "utf8", cwd: wt });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, brief);
+  assert.equal(result.stdout, reviewBrief(resolve(path), readFileSync(path, "utf8"), "origin/dev", wt));
   assert.equal(spawnSync("bash", ["scripts/agents/review-brief.sh"], { encoding: "utf8" }).status, 2);
 });
 
