@@ -124,6 +124,9 @@ async function main(args) {
       }
       ok("rebase");
     }
+    // Lease every push against what we knew of the PR branch before our own fetch (empty: must not exist),
+    // then against our own last push, so a colleague's push to the branch is never overwritten.
+    let pushed = (await execute("guards", "git", ["rev-parse", "--verify", "-q", `refs/remotes/origin/${branch}`])).text.trim();
     await rebase();
     const tests = [];
     for (const [name, argv] of [["check", ["run", "check"]], ["unit", ["test"]], ["lint", ["run", "lint"]]]) {
@@ -145,21 +148,19 @@ async function main(args) {
     const body = join(directory, "body.md");
     writeFileSync(body, `${flags.ticket ? `Ticket: ${title || prTitle} (${flags.ticket})\n\n` : ""}## Summary\n\n${subjects.map(subject => `- ${subject}`).join("\n")}\n\n## Tests\n\n${tests.join("\n")}\n${claude ? "\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n" : ""}`);
     ok("body");
-    const pushArgs = ["push", "--force-with-lease", "origin", `HEAD:refs/heads/${branch}`];
+    const pushArgs = () => ["push", `--force-with-lease=refs/heads/${branch}:${pushed}`, "origin", `HEAD:refs/heads/${branch}`];
     const createArgs = ["pr", "create", "--base", flags.base, "--head", branch, "--title", prTitle, "--body-file", body];
     const reviewArgs = ["review", "--base", `origin/${flags.base}`, "--pr"];
     if (flags.dryRun) {
       console.log(`branch: ${branch}\nbase: ${flags.base}\nHEAD: ${head}\ntitle: ${prTitle}\nbody: ${body}`);
-      for (const command of [["git", ...pushArgs], ["gh", ...createArgs], [kit, ...reviewArgs, "N", ...(flags.ticket ? ["--ticket", flags.ticket] : [])]])
+      for (const command of [["git", ...pushArgs()], ["gh", ...createArgs], [kit, ...reviewArgs, "N", ...(flags.ticket ? ["--ticket", flags.ticket] : [])]])
         console.log(command.map(quote).join(" "));
       if (!flags.noMerge && !flags.release) console.log("gh pr merge N --rebase --delete-branch --repo <owner/name> (or --auto --rebase with a merge queue)");
       kitResult("ok", `dry-run ${head.slice(0, 7)} ${branch} -> ${flags.base}`);
       return 0;
     }
-    // Retries lease against our own last push, so a foreign push to the branch is never overwritten.
-    let pushed;
     const push = async () => {
-      await git("push", pushed ? ["push", `--force-with-lease=refs/heads/${branch}:${pushed}`, "origin", `HEAD:refs/heads/${branch}`] : pushArgs);
+      await git("push", pushArgs());
       pushed = head;
       ok("push");
     };

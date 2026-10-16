@@ -298,6 +298,23 @@ test("local, PR, review, CI and merge failures identify the step and stop", t =>
   }
 });
 
+test("a colleague's commit already on the PR branch is not overwritten by the first push", t => {
+  const f = fixture(t), peer = f.peer();
+  f.gitAt(peer, "checkout", "-q", "-b", "feature/kit-pr"); writeFileSync(join(peer, "foreign.txt"), "foreign\n");
+  f.gitAt(peer, "add", "foreign.txt"); f.gitAt(peer, "commit", "-qm", "foreign"); f.gitAt(peer, "push", "-q", "origin", "feature/kit-pr");
+  const result = f.run(); assert.equal(result.status, 1); assert.match(result.stdout, /RESULT: fail push:/);
+  assert.match(f.gitAt(f.origin, "log", "-1", "--format=%s", "refs/heads/feature/kit-pr"), /foreign/);
+  assert.equal(f.calls().some(call => call.tool === "gh"), false);
+});
+
+test("a rerun after our own earlier push updates the branch", t => {
+  const f = fixture(t);
+  f.git("push", "-q", "origin", "HEAD:refs/heads/feature/kit-pr");
+  const head = f.commit("Third change");
+  const result = f.run(["--no-merge"]); assert.equal(result.status, 0, result.stderr);
+  assert.equal(f.gitAt(f.origin, "rev-parse", "refs/heads/feature/kit-pr"), head);
+});
+
 test("push rejection and an unparseable create URL fail at their steps", t => {
   const f = fixture(t), hook = join(f.origin, "hooks/pre-receive");
   writeFileSync(hook, "#!/bin/sh\necho 'push refused' >&2\nexit 1\n"); chmodSync(hook, 0o755);
