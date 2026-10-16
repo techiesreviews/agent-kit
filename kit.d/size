@@ -34,19 +34,22 @@ function options(args) {
   return { ...flags, base: flags.base ?? "dev" };
 }
 
-/** Values in parsed reports and cache entries are bytes, not displayed KB. */
+/** Values in parsed reports and cache entries are bytes, not displayed KB. The report rounds
+ * to whole KB, so `over` keeps the runner's own verdict when it printed one. */
 export function parseBudget(output) {
   const row = /^cold[ \t]+\S+[ \t]+\S+[ \t]+\S+[ \t]+\S+[ \t]+([^\r\n]+?)[ \t]+(\d+(?:\.\d+)?)[ \t]+(\d+(?:\.\d+)?)[ \t]+KB[ \t]*\r?$/m.exec(output);
   if (!row) throw new Error("missing or unparseable cold budget row");
   const boot = /^(\d+(?:\.\d+)?)\s+KB$/.exec(row[1])?.[1]
     ?? /^Byte budget:\s+(\d+(?:\.\d+)?)\s+KB gzip before first preview paint/m.exec(output)?.[1];
   const values = { boot: Number(boot) * 1024, total: Number(row[3]) * 1024, requests: Number(row[2]) };
-  if (!validMeasurement(values)) throw new Error("missing or unparseable cold boot bytes");
-  return values;
+  if (!validMeasurement({ ...values, over: false })) throw new Error("missing or unparseable cold boot bytes");
+  const verdict = /^Byte budget:.*:\s+(within|OVER)\.\s*$/m.exec(output)?.[1];
+  return { ...values, over: verdict ? verdict === "OVER" : values.boot > budget };
 }
 
 function validMeasurement(value) {
-  return value && [value.boot, value.total, value.requests].every(number => typeof number === "number" && Number.isFinite(number) && number >= 0);
+  return value && typeof value.over === "boolean"
+    && [value.boot, value.total, value.requests].every(number => typeof number === "number" && Number.isFinite(number) && number >= 0);
 }
 
 const kb = bytes => `${Math.round(bytes / 1024)} KB`;
@@ -157,7 +160,7 @@ export async function main(args = process.argv.slice(2)) {
     }
     const delta = key => base ? ` (${formatDelta(now[key] - base[key])})` : "";
     console.log(`boot ${kb(now.boot)}${delta("boot")}, total ${kb(now.total)}${delta("total")}, requests ${now.requests}${base ? ` (${now.requests - base.requests >= 0 ? "+" : ""}${now.requests - base.requests})` : ""}, budget 355 KB`);
-    const over = now.boot > budget;
+    const over = now.over;
     kitResult(over ? "fail" : "ok", over ? `size boot ${kb(now.boot)} over budget 355 KB`
       : `size boot ${kb(now.boot)}${delta("boot")}${base ? ` vs ${flags.base}@${baseCommit.slice(0, 7)}` : ""}, budget 355 KB`);
     return over ? 1 : 0;
