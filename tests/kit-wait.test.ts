@@ -14,8 +14,8 @@ function temp(t: TestContext) {
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   return directory;
 }
-function child(t: TestContext, command: string, args: string[], env = baseEnv) {
-  const process = spawn(command, args, { env, stdio: ["ignore", "pipe", "pipe"] });
+function child(t: TestContext, command: string, args: string[], env = baseEnv, stdin: "ignore" | "pipe" = "ignore") {
+  const process = spawn(command, args, { env, stdio: [stdin, "pipe", "pipe"] });
   t.after(() => { if (process.exitCode === null && process.signalCode === null) process.kill("SIGKILL"); });
   return process;
 }
@@ -31,6 +31,27 @@ function collect(process: ChildProcess) {
 }
 function run(t: TestContext, args: string[], env = baseEnv) {
   return collect(child(t, process.execPath, [script, ...args], env));
+}
+// Resolve with the next complete stdout line matching pattern that arrives after this call.
+function nextLine(process: ChildProcess, pattern: RegExp) {
+  return new Promise<string>((resolve, reject) => {
+    const stream = process.stdout!.setEncoding("utf8");
+    let buffer = "";
+    const stop = () => { stream.off("data", read); stream.off("end", ended); };
+    const read = (text: string) => {
+      const lines = (buffer + text).split("\n");
+      buffer = lines.pop()!;
+      const found = lines.find((line) => pattern.test(line));
+      if (found !== undefined) { stop(); resolve(found); }
+    };
+    const ended = () => { stop(); reject(new Error(`output ended before a line matching ${pattern}`)); };
+    stream.on("data", read).on("end", ended);
+  });
+}
+// Status every poll: each "waiting " line is printed after a full scan of the file and /proc.
+function watchOutput(t: TestContext, file: string, quiet: string) {
+  const wait = child(t, process.execPath, [script, "output", file, "--quiet", quiet], { ...baseEnv, KIT_WAIT_STATUS_MS: "1" });
+  return { wait, output: collect(wait), scanned: () => nextLine(wait, /^waiting /) };
 }
 function result(output: { status: number | null; stdout: string; stderr: string }, status: number, pattern: RegExp) {
   assert.equal(output.status, status, output.stderr + output.stdout);
@@ -120,25 +141,36 @@ test("output stays pending while a live writer holds an unchanged file open", as
 
 test("output waits for a producer that closes the file and appends again before exiting", async (t) => {
   const file = join(temp(t), "output");
-  const writer = child(t, process.execPath, ["-e", 'const fs = require("fs"); const fd = fs.openSync(process.argv[1], "w"); fs.writeSync(fd, "first\\n"); console.log("ready"); setTimeout(() => fs.closeSync(fd), 200); setTimeout(() => fs.appendFileSync(process.argv[1], "second\\n"), 600); setTimeout(() => {}, 800)', file]);
-  await once(writer.stdout!, "data");
-  const pending = run(t, ["output", file, "--quiet", "0.05s", "--timeout", "3"]);
-  const output = await pending;
-  result(output, 0, /finished after /);
-  assert.match(output.stdout, /first\nsecond\nRESULT:/);
-  assert.notEqual(writer.exitCode ?? writer.signalCode, null, "wait must not finish before the producer exits");
+  const writer = child(t, process.execPath, ["-e", 'const fs = require("fs"); const fd = fs.openSync(process.argv[1], "w"); fs.writeSync(fd, "first\\n"); console.log("ready"); require("readline").createInterface({ input: process.stdin }).on("line", (step) => { if (step === "close") { fs.closeSync(fd); console.log("closed"); } else { fs.appendFileSync(process.argv[1], "second\\n"); process.exit(0); } })', file], baseEnv, "pipe");
+  await nextLine(writer, /^ready$/);
+  const { output, scanned } = watchOutput(t, file, "0.05s");
+  await scanned(); // The wait has seen the writer holding the file.
+  writer.stdin!.write("close\n");
+  await nextLine(writer, /^closed$/);
+  await scanned(); // Closed but alive: the wait keeps going well past its quiet period.
+  const exited = once(writer, "exit");
+  writer.stdin!.write("append\n");
+  const finished = result(await output, 0, /finished after /);
+  assert.match(finished, /first\nsecond\nRESULT:/, "wait must not finish before the producer appends and exits");
+  assert.deepEqual(await exited, [0, null]);
 });
 
 test("output size changes restart the quiet period", async (t) => {
   const file = join(temp(t), "output");
   writeFileSync(file, "before\n");
-  const writer = child(t, process.execPath, ["-e", 'setTimeout(() => { require("fs").appendFileSync(process.argv[1], "after\\n"); console.log("written"); }, 150)', file]);
-  const started = Date.now();
-  const output = await run(t, ["output", file, "--quiet", "0.3s", "--timeout", "2"]);
-  result(output, 0, /finished after /);
-  assert.match(output.stdout, /before\nafter\nRESULT:/);
-  assert.ok(Date.now() - started >= 430);
-  assert.equal(writer.exitCode, 0);
+  const writer = child(t, process.execPath, ["-e", 'const fs = require("fs"); const fd = fs.openSync(process.argv[1], "a"); console.log("ready"); process.stdin.once("data", () => { const before = Date.now(); fs.writeSync(fd, "after\\n"); console.log(before); process.exit(0); })', file], baseEnv, "pipe");
+  await nextLine(writer, /^ready$/);
+  const { output, scanned } = watchOutput(t, file, "0.3s");
+  await scanned(); // The wait has recorded the first size and seen the writer.
+  const exited = once(writer, "exit");
+  const appended = nextLine(writer, /^\d+$/);
+  writer.stdin!.write("append\n");
+  const appendedAt = Number(await appended);
+  const finished = result(await output, 0, /finished after /);
+  // The change is seen no earlier than appendedAt, and a full quiet period must follow it.
+  assert.ok(Date.now() - appendedAt >= 300, `finished ${Date.now() - appendedAt}ms after the append`);
+  assert.match(finished, /before\nafter\nRESULT:/);
+  assert.deepEqual(await exited, [0, null]);
 });
 
 test("output timeout names missing files and prints existing content once", async (t) => {
