@@ -1,0 +1,172 @@
+#!/usr/bin/env node
+// kit: measure boot bytes and compare the byte budget with dev
+import { execFileSync, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { ensureBase } from "../shots/compare.mjs";
+
+const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv } = await import(
+  pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
+);
+const budget = 355 * 1024;
+const usage = `Usage: kit size [--no-base] [--base REF]
+       kit size --help
+Default base: dev (origin/dev). --no-base measures only the current worktree.
+Fails when boot exceeds 355 KB gzip before first preview paint.
+KIT_SIZE_RUNNER: executable replacing port.sh, called with the same argv.
+Logs: <root>/.scratch/size/. Commit cache: <main-root>/.scratch/size-cache/.
+`;
+
+function options(args) {
+  const flags = { noBase: false, base: undefined };
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--base") {
+      if (flags.base !== undefined || !args[i + 1] || args[i + 1].startsWith("-")) throw new Error("--base requires one REF");
+      flags.base = args[++i];
+    } else if (arg === "--no-base") {
+      if (flags.noBase) throw new Error("duplicate option: --no-base");
+      flags.noBase = true;
+    } else throw new Error(`unknown argument: ${arg}`);
+  }
+  return { ...flags, base: flags.base ?? "dev" };
+}
+
+/** Values in parsed reports and cache entries are bytes, not displayed KB. */
+export function parseBudget(output) {
+  const row = /^cold[ \t]+\S+[ \t]+\S+[ \t]+\S+[ \t]+\S+[ \t]+([^\r\n]+?)[ \t]+(\d+(?:\.\d+)?)[ \t]+(\d+(?:\.\d+)?)[ \t]+KB[ \t]*\r?$/m.exec(output);
+  if (!row) throw new Error("missing or unparseable cold budget row");
+  const boot = /^(\d+(?:\.\d+)?)\s+KB$/.exec(row[1])?.[1]
+    ?? /^Byte budget:\s+(\d+(?:\.\d+)?)\s+KB gzip before first preview paint/m.exec(output)?.[1];
+  const values = { boot: Number(boot) * 1024, total: Number(row[3]) * 1024, requests: Number(row[2]) };
+  if (!validMeasurement(values)) throw new Error("missing or unparseable cold boot bytes");
+  return values;
+}
+
+function validMeasurement(value) {
+  return value && [value.boot, value.total, value.requests].every(number => typeof number === "number" && Number.isFinite(number) && number >= 0);
+}
+
+const kb = bytes => `${Math.round(bytes / 1024)} KB`;
+
+/** Round the magnitude symmetrically, including negative half-KB deltas. */
+export function formatDelta(bytes) {
+  const rounded = Math.round(Math.abs(bytes) / 1024);
+  return rounded ? `${bytes < 0 ? "-" : "+"}${rounded} KB` : "±0 KB";
+}
+
+function readCache(file, sha) {
+  try {
+    const entry = JSON.parse(readFileSync(file, "utf8"));
+    return entry?.version === 1 && entry.sha === sha && validMeasurement(entry) ? entry : null;
+  } catch { return null; }
+}
+
+function writeCache(directory, sha, measurement) {
+  mkdirSync(directory, { recursive: true });
+  const file = join(directory, `${sha}.json`), temp = `${file}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temp, JSON.stringify({ version: 1, sha, ...measurement }));
+    renameSync(temp, file);
+  } finally { rmSync(temp, { force: true }); }
+}
+
+function git(root, args, required = true) {
+  try {
+    return execFileSync("git", ["-C", root, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  } catch (error) {
+    if (required) throw new Error(String(error.stderr || error.message).trim().split("\n")[0]);
+    return null;
+  }
+}
+
+function clean(root) {
+  return git(root, ["status", "--porcelain", "--untracked-files=all", "--", ".", ":(exclude).scratch"]) === "";
+}
+
+function baseSha(root, ref) {
+  const branch = ref.startsWith("origin/") ? ref.slice(7) : ref;
+  git(root, ["fetch", "-q", "origin", branch], false);
+  const remote = git(root, ["show-ref", "--verify", "--quiet", `refs/remotes/origin/${branch}`], false);
+  const revision = ref === "dev" || remote !== null ? `origin/${branch}` : ref;
+  return git(root, ["rev-parse", "--verify", `${revision}^{commit}`]);
+}
+
+async function measure(root, env, log, state) {
+  console.log(`log: ${log}`);
+  const fd = openSync(log, "w");
+  let status;
+  try {
+    state.check();
+    status = await new Promise((accept, reject) => {
+      const child = spawn(env.KIT_SIZE_RUNNER || resolve(import.meta.dirname, "../port.sh"),
+        // build:ui loads the Vite config without writing into the shared node_modules.
+        ["bash", "-c", 'npm run build:ui && ASE_BUDGET_PORT="$ASE_TEST_PORT" ASE_BUDGET_REPORT_ONLY=1 npm run test:budget -- --no-build'],
+        { cwd: root, env, stdio: ["ignore", fd, fd] });
+      state.child = child;
+      child.once("error", reject);
+      child.once("close", code => accept(code ?? 1));
+    });
+  } finally { state.child = null; closeSync(fd); }
+  state.check();
+  if (status !== 0) throw new Error(`budget runner exited ${status}; log: ${log}`);
+  return parseBudget(readFileSync(log, "utf8"));
+}
+
+export async function main(args = process.argv.slice(2)) {
+  if (args.length === 1 && ["--help", "-h"].includes(args[0])) { process.stdout.write(usage); return 0; }
+  let status = 2, interrupted;
+  const state = { child: null, check: () => { if (interrupted) throw new Error(`interrupted by ${interrupted}`); } };
+  const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
+  const handlers = signals.map(signal => () => { interrupted = signal; state.child?.kill(signal); });
+  signals.forEach((signal, index) => process.on(signal, handlers[index]));
+  try {
+    const flags = options(args);
+    status = 1;
+    const root = resolve(kitRoot()), mainRoot = resolve(kitMainRoot()), env = nodeEnv();
+    const sha = git(root, ["rev-parse", "--verify", "HEAD^{commit}"]);
+    const cache = join(mainRoot, ".scratch/size-cache");
+    const cacheable = clean(root);
+    console.log(`owner: ${kitOwner()}`);
+    // A base cache hit never creates or leases a worktree.
+    async function side(commit, name, canCache, directory) {
+      state.check();
+      const hit = canCache ? readCache(join(cache, `${commit}.json`), commit) : null;
+      console.log(`cache: ${hit ? "hit" : "miss"} ${commit.slice(0, 7)}`);
+      if (hit) return hit;
+      const parent = join(root, ".scratch/size");
+      mkdirSync(parent, { recursive: true });
+      const log = join(mkdtempSync(join(parent, "run-")), `${name}.log`);
+      let setup;
+      try {
+        if (!directory) setup = await ensureBase({ repo: root, mainRoot, sha: commit, modules: join(root, "node_modules") });
+        state.check();
+        const result = await measure(directory || setup.dir, env, log, state);
+        // Do not publish a HEAD measurement if files or HEAD changed during the run.
+        if (canCache && (!directory || (clean(root) && git(root, ["rev-parse", "HEAD"]) === commit))) writeCache(cache, commit, result);
+        return result;
+      } finally { await setup?.release(); }
+    }
+    const now = await side(sha, "now", cacheable, root);
+    let base, baseCommit;
+    if (!flags.noBase) {
+      baseCommit = baseSha(root, flags.base);
+      base = await side(baseCommit, "base", true);
+    }
+    const delta = key => base ? ` (${formatDelta(now[key] - base[key])})` : "";
+    console.log(`boot ${kb(now.boot)}${delta("boot")}, total ${kb(now.total)}${delta("total")}, requests ${now.requests}${base ? ` (${now.requests - base.requests >= 0 ? "+" : ""}${now.requests - base.requests})` : ""}, budget 355 KB`);
+    const over = now.boot > budget;
+    kitResult(over ? "fail" : "ok", over ? `size boot ${kb(now.boot)} over budget 355 KB`
+      : `size boot ${kb(now.boot)}${delta("boot")}${base ? ` vs ${flags.base}@${baseCommit.slice(0, 7)}` : ""}, budget 355 KB`);
+    return over ? 1 : 0;
+  } catch (error) {
+    console.error(`problem: ${error.message}`);
+    if (status === 2) process.stderr.write(usage);
+    kitResult("fail", `size ${error.message}`);
+    return interrupted ? { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }[interrupted] : status;
+  } finally { signals.forEach((signal, index) => process.off(signal, handlers[index])); }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) process.exitCode = await main();
