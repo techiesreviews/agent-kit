@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
-import { comparePackages, lockedPackages, snapshotChanges } from "../scripts/agents/deps-check.mjs";
+import { comparePackages, dependencyClosure, lockedPackages, snapshotChanges } from "../scripts/agents/deps-check.mjs";
 
 const repo = resolve(".");
 const kit = join(repo, "scripts/agents/kit");
 const deps = join(repo, "scripts/agents/kit.d/deps");
 const library = join(repo, "scripts/agents/kit-lib.sh");
+const generateFile = "node -e \"require('node:fs').writeFileSync('generated.json', JSON.stringify('fixture'))\"";
 type LockEntry = { version?: string; optional?: boolean; link?: boolean; resolved?: string };
 
 function writeJson(file: string, value: object) {
@@ -46,13 +49,14 @@ function fixture(t: { after: (fn: () => void) => void }) {
   const add = (spec: string, args: string[] = [], overrides: NodeJS.ProcessEnv = {}) => run([
     "add", spec, "--prefix", prefix, "--lock-file", join(directory, "add.lock"), ...args,
   ], false, overrides);
-  const pack = (name = "newpkg", version = "1.0.0", dependencies: Record<string, string> = {}) => {
+  const pack = (name = "newpkg", version = "1.0.0", dependencies: Record<string, string> = {},
+    postinstall = generateFile) => {
     const source = join(directory, `${name.replaceAll("/", "-")}-${version}`);
     mkdirSync(source);
     writeJson(join(source, "package.json"), { name, version, dependencies,
       bin: { [name.split("/").at(-1)!]: "cli.js" },
-      scripts: { postinstall: "node -e 'process.exit(99)'" } });
-    writeFileSync(join(source, "cli.js"), "#!/usr/bin/env node\nconsole.log('fixture');\n");
+      scripts: { postinstall } });
+    writeFileSync(join(source, "cli.js"), "#!/usr/bin/env node\nconsole.log(require('./generated.json'));\n");
     chmodSync(join(source, "cli.js"), 0o755);
     const result = spawnSync("npm", ["pack", "--ignore-scripts", "--json", "--pack-destination", directory], {
       cwd: source, encoding: "utf8", timeout: 15_000, env,
@@ -62,6 +66,41 @@ function fixture(t: { after: (fn: () => void) => void }) {
     return join(directory, packed[0].filename);
   };
   return { directory, root, prefix, modules, env, lock, install, run, add, pack };
+}
+
+// Seed npm's own cache with packuments and npm-pack tarballs. The registry is
+// deliberately unreachable; every npm invocation retains offline=true.
+async function cachedRegistry(f: ReturnType<typeof fixture>, definitions: {
+  name: string; version: string; dependencies?: Record<string, string>;
+}[]) {
+  const registry = "https://kit-deps.invalid/";
+  const npm = spawnSync("/bin/bash", ["-c", "command -v npm"], { encoding: "utf8", env: f.env }).stdout.trim();
+  const cache: { put: (path: string, key: string, data: Buffer | string, options?: object) => Promise<unknown> } =
+    createRequire(realpathSync(npm))("cacache");
+  const cachePath = join(f.env.npm_config_cache, "_cacache");
+  const packages: Record<string, Record<string, object>> = {};
+  const locked: Record<string, { version: string; resolved: string; integrity: string }> = {};
+  for (const { name, version, dependencies = {} } of definitions) {
+    const tarball = readFileSync(f.pack(name, version, dependencies));
+    const resolved = `${registry}${name}/-/${name}-${version}.tgz`;
+    const integrity = `sha512-${createHash("sha512").update(tarball).digest("base64")}`;
+    await cache.put(cachePath, `fixture:${name}@${version}`, tarball);
+    (packages[name] ??= {})[version] = { name, version, dependencies, hasInstallScript: true,
+      scripts: { postinstall: generateFile }, bin: { [name.split("/").at(-1)!]: "cli.js" },
+      dist: { tarball: resolved, integrity } };
+    locked[`${name}@${version}`] = { version, resolved, integrity };
+  }
+  for (const [name, versions] of Object.entries(packages)) {
+    const url = `${registry}${name}`;
+    const packument = JSON.stringify({ name, "dist-tags": { latest: Object.keys(versions).at(-1) }, versions });
+    for (const accept of ["application/json", "application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*"]) {
+      await cache.put(cachePath, `make-fetch-happen:request-cache:${url}`, packument, { metadata: {
+        time: Date.now(), url, reqHeaders: { accept }, resHeaders: { "content-type": "application/json" },
+        options: { compress: true },
+      } });
+    }
+  }
+  return { registry, locked };
 }
 
 function resultLine(result: ReturnType<typeof spawnSync<string>>, status: number, pattern: RegExp) {
@@ -94,6 +133,28 @@ test("deps pure rules select top-level entries and allow only snapshot additions
   assert.deepEqual(comparePackages(packages, new Map([["@scope/pkg", "1.0.0"]])), []);
   assert.deepEqual(snapshotChanges(new Map([["keep", "1"]]), new Map([["keep", "1"], ["new", "2"]])), []);
   assert.deepEqual(snapshotChanges(new Map([["keep", "1"], ["gone", "2"]]), new Map([["keep", "3"]])), ["keep", "gone"]);
+});
+
+test("deps closure follows nested, scoped, optional and peer dependencies through parents and cycles", () => {
+  const lock = { packages: {
+    "node_modules/newpkg": { version: "1", dependencies: { branch: "*", "@scope/shared": "*" },
+      optionalDependencies: { absent: "*", optional: "*" }, peerDependencies: { absentPeer: "*", peer: "*" } },
+    "node_modules/branch": { version: "1", dependencies: { leaf: "*" } },
+    "node_modules/branch/node_modules/leaf": { version: "2", dependencies: { sibling: "*", "@scope/shared": "*" } },
+    "node_modules/branch/node_modules/sibling": { version: "1", dependencies: { newpkg: "*" } },
+    "node_modules/leaf": { version: "9", dependencies: { unrelated: "*" } },
+    "node_modules/@scope/shared": { version: "1" },
+    "node_modules/optional": { version: "1", optional: true },
+    "node_modules/peer": { version: "1" },
+    "node_modules/unrelated": { version: "1" },
+  } };
+  assert.deepEqual([...dependencyClosure(lock, "newpkg").keys()], [
+    "node_modules/newpkg", "node_modules/branch", "node_modules/branch/node_modules/leaf",
+    "node_modules/branch/node_modules/sibling", "node_modules/@scope/shared", "node_modules/optional", "node_modules/peer",
+  ]);
+  assert.throws(() => dependencyClosure({ packages: {
+    "node_modules/newpkg": { version: "1", dependencies: { missing: "*" } },
+  } }, "newpkg"), /missing locked dependency missing/);
 });
 
 test("deps check matches ordinary and scoped packages, skips links, nested keys and absent optional packages", t => {
@@ -185,6 +246,10 @@ for (const dev of [false, true]) {
     for (const [key, value] of Object.entries(before)) assert.equal(after[key], value, key);
     assert.equal(JSON.parse(readFileSync(join(f.modules, "newpkg/package.json"), "utf8")).version, "1.0.0");
     assert.equal(readlinkSync(join(f.modules, ".bin/newpkg")), "../newpkg/cli.js");
+    assert.equal(JSON.parse(readFileSync(join(f.modules, "newpkg/generated.json"), "utf8")), "fixture");
+    const cli = spawnSync(join(f.modules, ".bin/newpkg"), [], { cwd: f.root, encoding: "utf8", env: f.env });
+    assert.equal(cli.status, 0, cli.stderr);
+    assert.equal(cli.stdout, "fixture\n");
     const manifest = JSON.parse(readFileSync(join(f.root, "package.json"), "utf8"));
     assert.match(manifest[dev ? "devDependencies" : "dependencies"].newpkg, /^file:/);
     const lock = JSON.parse(readFileSync(join(f.root, "package-lock.json"), "utf8"));
@@ -196,6 +261,76 @@ for (const dev of [false, true]) {
     resultLine(f.add(`file:${tarball}`, dev ? ["--dev"] : []), 0, /\(0 packages added to shared node_modules\)$/);
   });
 }
+
+test("deps add uses locked transitive versions even when a newer matching version is cached", async t => {
+  const f = fixture(t);
+  const { registry, locked } = await cachedRegistry(f, [
+    { name: "child", version: "1.0.0" }, { name: "child", version: "1.1.0" },
+    { name: "newpkg", version: "1.0.0", dependencies: { child: "^1" } },
+  ]);
+  writeJson(join(f.root, "package.json"), { name: "fixture", version: "1.0.0", dependencies: { child: "^1" } });
+  f.lock({ "node_modules/child": locked["child@1.0.0"] });
+  f.install("child", "1.0.0");
+  writeFileSync(join(f.modules, "child/keep.txt"), "locked child must survive\n");
+  const before = tree(f.modules);
+  resultLine(f.add("newpkg", [], { npm_config_registry: registry }), 0, /deps add newpkg@1\.0\.0/);
+  for (const [key, value] of Object.entries(before)) assert.equal(tree(f.modules)[key], value, key);
+  const lock = JSON.parse(readFileSync(join(f.root, "package-lock.json"), "utf8"));
+  assert.equal(lock.packages["node_modules/child"].version, "1.0.0");
+  assert.equal(existsSync(join(f.modules, "newpkg/node_modules/child")), false);
+});
+
+test("deps add honours worktree npmrc for both offline npm operations", async t => {
+  const f = fixture(t);
+  const { registry } = await cachedRegistry(f, [{ name: "newpkg", version: "1.0.0" }]);
+  writeFileSync(join(f.root, ".npmrc"), `registry=${registry}\n`);
+  resultLine(f.add("newpkg", [], { npm_config_registry: undefined }), 0, /deps add newpkg@1\.0\.0/);
+  assert.equal(JSON.parse(readFileSync(join(f.modules, "newpkg/generated.json"), "utf8")), "fixture");
+});
+
+for (const reference of [false, true]) {
+  test(`deps add retains root overrides while staging the locked closure${reference ? " with a dependency reference" : ""}`, async t => {
+    const f = fixture(t);
+    const { registry, locked } = await cachedRegistry(f, [
+      { name: "child", version: "1.0.0" }, { name: "child", version: "2.0.0" },
+      { name: "newpkg", version: "1.0.0", dependencies: { child: "^1" } },
+    ]);
+    const overrides = { newpkg: { child: reference ? "$child" : "2.0.0" } };
+    writeJson(join(f.root, "package.json"), { name: "fixture", version: "1.0.0", overrides,
+      ...(reference ? { dependencies: { child: "2.0.0" } } : {}) });
+    if (reference) f.lock({ "node_modules/child": locked["child@2.0.0"] });
+    f.install("child", "2.0.0");
+    const before = tree(f.modules);
+    resultLine(f.add("newpkg", [], { npm_config_registry: registry }), 0, /deps add newpkg@1\.0\.0/);
+    assert.equal(existsSync(join(f.modules, "newpkg/node_modules/child")), false);
+    for (const [key, value] of Object.entries(before)) assert.equal(tree(f.modules)[key], value, key);
+    assert.deepEqual(JSON.parse(readFileSync(join(f.root, "package.json"), "utf8")).overrides, overrides);
+  });
+}
+
+test("deps add validates every staged closure version before writing anything", t => {
+  const f = fixture(t);
+  const child = f.pack("child", "1.0.0", {},
+    "node -e \"const fs=require('node:fs'); const p=require('./package.json'); p.version='9.0.0'; fs.writeFileSync('package.json', JSON.stringify(p));\"");
+  const tarball = f.pack("newpkg", "1.0.0", { child: `file:${child}` });
+  f.install("child", "1.0.0");
+  const shared = tree(f.modules);
+  const worktree = tree(f.root);
+  resultLine(f.add(tarball), 1, /^RESULT: fail deps staged version differs for child: locked 1\.0\.0, staged 9\.0\.0$/);
+  assert.deepEqual(tree(f.modules), shared);
+  assert.deepEqual(tree(f.root), worktree);
+});
+
+test("deps add fails before any shared or manifest write when postinstall fails", t => {
+  const f = fixture(t);
+  f.install("keep-me", "1.0.0");
+  const tarball = f.pack("newpkg", "1.0.0", {}, "node -e 'process.exit(99)'");
+  const shared = tree(f.modules);
+  const worktree = tree(f.root);
+  resultLine(f.add(tarball), 1, /^RESULT: fail deps npm failed: 99$/);
+  assert.deepEqual(tree(f.modules), shared);
+  assert.deepEqual(tree(f.root), worktree);
+});
 
 test("deps add conflicts before copying anything", t => {
   const f = fixture(t);

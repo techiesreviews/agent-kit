@@ -25,6 +25,36 @@ export function lockedPackages(lock) {
   return packages;
 }
 
+/** Follow Node's package lookup through lock keys, including nested packages. */
+export function dependencyClosure(lock, name) {
+  const closure = new Map();
+  const find = (key, dependency) => {
+    if (!packageName(dependency)) throw new Error(`invalid dependency name ${dependency}`);
+    for (let parent = key; ; parent = dirname(parent)) {
+      const candidate = parent === "." ? `node_modules/${dependency}` : `${parent}/node_modules/${dependency}`;
+      if (object(lock.packages[candidate])) return candidate;
+      if (parent === ".") return null;
+    }
+  };
+  const visit = key => {
+    if (closure.has(key)) return;
+    const locked = lock.packages[key];
+    const entry = locked?.link === true ? { ...lock.packages[locked.resolved], ...locked,
+      version: lock.packages[locked.resolved]?.version } : locked;
+    if (!object(entry) || typeof entry.version !== "string") throw new Error(`no resolved version for ${key}`);
+    closure.set(key, entry);
+    for (const dependency of Object.keys({ ...entry.dependencies, ...entry.optionalDependencies, ...entry.peerDependencies })) {
+      const target = find(key, dependency);
+      if (target) visit(target);
+      else if (Object.hasOwn(entry.dependencies ?? {}, dependency) && !Object.hasOwn(entry.optionalDependencies ?? {}, dependency)) {
+        throw new Error(`missing locked dependency ${dependency} of ${key}`);
+      }
+    }
+  };
+  visit(`node_modules/${name}`);
+  return closure;
+}
+
 /** Compare lock entries with installed name -> version values, without filesystem IO. */
 export function comparePackages(packages, installed) {
   return packages.flatMap(({ name, version, optional }) => {
@@ -88,9 +118,7 @@ function snapshot(modules) {
 
 function npm(root, args) {
   console.log(`deps: npm ${args.join(" ")}`);
-  // Lifecycle scripts could mutate unrelated packages. They are never needed to
-  // resolve a lock or copy an additive package tree.
-  const result = spawnSync("npm", [...args, "--ignore-scripts", "--no-audit", "--no-fund"], {
+  const result = spawnSync("npm", [...args, "--no-audit", "--no-fund"], {
     cwd: root, encoding: "utf8", env: process.env, maxBuffer: 10 * 1024 * 1024,
   });
   // Keep npm output off stdout, preserving exactly one machine-readable RESULT.
@@ -123,15 +151,20 @@ function localSpec(root, spec) {
   return null;
 }
 
+function copyNpmrc(root, destination) {
+  try { cpSync(join(root, ".npmrc"), join(destination, ".npmrc")); }
+  catch (error) { if (error.code !== "ENOENT") throw error; }
+}
+
 function resolveLock(root, spec, dev) {
   const scratch = mkdtempSync(join(tmpdir(), "kit-deps-lock-"));
   try {
     for (const name of ["package.json", "package-lock.json"]) {
       writeFileSync(join(scratch, name), `${JSON.stringify(relocate(json(join(root, name)), root, scratch), null, 2)}\n`);
     }
-    try { cpSync(join(root, ".npmrc"), join(scratch, ".npmrc")); }
-    catch (error) { if (error.code !== "ENOENT") throw error; }
-    npm(root, ["install", "--package-lock-only", "--prefix", scratch, ...(dev ? ["--save-dev"] : []), localSpec(root, spec) ?? spec]);
+    copyNpmrc(root, scratch);
+    npm(scratch, ["install", "--package-lock-only", "--ignore-scripts", "--prefix", scratch,
+      ...(dev ? ["--save-dev"] : []), localSpec(root, spec) ?? spec]);
     return {
       manifest: relocate(json(join(scratch, "package.json")), scratch, root),
       lock: relocate(readLock(join(scratch, "package-lock.json")), scratch, root),
@@ -164,13 +197,32 @@ function add(root, options) {
   const previous = dependencies(json(join(root, "package.json")));
   const { manifest, lock } = resolveLock(root, options.spec, options.dev);
   const { name, version } = resolvedPackage(root, options.spec, previous, manifest, lock);
+  const closure = dependencyClosure(lock, name);
+  const topLevel = [...closure].filter(([key]) => !key.slice("node_modules/".length).includes("/node_modules/"));
+  const pins = topLevel.map(([key, entry]) => {
+    const source = entry.resolved;
+    if (entry.link === true || (typeof source === "string" && source.startsWith("file:"))) {
+      return `file:${resolve(root, source.replace(/^file:/, ""))}`;
+    }
+    return `${key.slice("node_modules/".length)}@${entry.version}`;
+  });
   const staging = mkdtempSync(join(tmpdir(), "kit-deps-stage-"));
   try {
-    // A local file/tarball must keep its original source; registry requests use
-    // the exact version npm just resolved, never the original version range.
-    npm(root, ["install", "--no-save", "--no-package-lock", "--install-links", "--prefix", staging,
-      localSpec(root, options.spec) ?? `${name}@${version}`]);
+    writeFileSync(join(staging, "package.json"), `${JSON.stringify({ private: true, overrides: manifest.overrides }, null, 2)}\n`);
+    copyNpmrc(root, staging);
+    // Pin the top-level closure to the lock instead of resolving its ranges
+    // again. Install scripts run here before anything reaches the shared tree.
+    npm(staging, ["install", "--no-save", "--no-package-lock", "--install-links", "--prefix", staging,
+      localSpec(root, options.spec) ?? `${name}@${version}`, ...pins]);
     const stagedModules = join(staging, "node_modules");
+    for (const [key, entry] of topLevel) {
+      const stagedName = key.slice("node_modules/".length);
+      let actual;
+      try { actual = json(join(stagedModules, stagedName, "package.json")).version; }
+      catch (error) { if (error.code !== "ENOENT") throw error; }
+      if (actual === undefined && entry.optional === true) continue;
+      if (actual !== entry.version) throw new Error(`staged version differs for ${stagedName}: locked ${entry.version}, staged ${actual ?? "missing"}`);
+    }
     const staged = snapshot(stagedModules);
     const additions = [];
     // Preflight every package and bin before the first shared-folder write.
@@ -181,7 +233,6 @@ function add(root, options) {
         if (sharedVersion !== stagedVersion) throw new Error(`conflict ${stagedName} shared ${sharedVersion} requested ${stagedVersion}`);
       } else additions.push(stagedName);
     }
-    if (json(join(stagedModules, name, "package.json")).version !== version) throw new Error(`staged version differs for ${name}`);
     const bins = [...staged.keys()].filter(key => key.startsWith(".bin/"));
     for (const bin of bins) {
       if (before.has(bin) && before.get(bin) !== staged.get(bin)) throw new Error(`conflict ${bin}`);

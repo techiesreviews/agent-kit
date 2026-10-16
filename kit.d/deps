@@ -17,7 +17,8 @@ usage() {
   printf '%s\n' \
     'Usage: kit deps check [--lock <file>] [--modules <dir>]' \
     '       kit deps add <pkg>[@version] [--dev] [--prefix <shared parent>] [--lock-file <path>]' \
-    'Check locked versions, or add packages without replacing shared packages.'
+    'Check locked versions, or add packages without replacing shared packages.' \
+    'Add stages the locked dependency closure and runs install scripts in isolation.'
 }
 for argument in "$@"; do
   if [[ $argument == --help || $argument == -h ]]; then
