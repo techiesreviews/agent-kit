@@ -34,7 +34,8 @@ function ticketTitle(file) {
   return title.replace(/^(["'])(.*)\1$/, "$2");
 }
 
-function savedReview(head) {
+// Reuse only a completed review whose scope is this whole PR: HEAD and the merge base.
+function savedReview(head, base) {
   const parent = join(kitMainRoot(), ".scratch/reviews", kitOwner());
   if (!existsSync(parent)) return;
   // Review folder names start with UTC timestamps; numeric sorting handles collision suffixes.
@@ -42,8 +43,10 @@ function savedReview(head) {
     .map(entry => entry.name).sort((a, b) => b.localeCompare(a, "en", { numeric: true }));
   for (const name of folders) {
     const folder = join(parent, name), refs = join(folder, "refs.txt");
-    if (existsSync(refs) && existsSync(join(folder, "result.md")) && readFileSync(refs, "utf8").split(/\r?\n/, 1)[0] === head)
-      return folder;
+    const result = join(folder, "result.md");
+    if (!existsSync(refs) || !existsSync(result)) continue;
+    const [reviewedHead, reviewedBase] = readFileSync(refs, "utf8").split(/\r?\n/);
+    if (reviewedHead === head && reviewedBase === base && /^REVIEW_STATUS: complete$/m.test(readFileSync(result, "utf8"))) return folder;
   }
 }
 
@@ -153,7 +156,13 @@ async function main(args) {
       kitResult("ok", `dry-run ${head.slice(0, 7)} ${branch} -> ${flags.base}`);
       return 0;
     }
-    const push = async () => { await git("push", pushArgs); ok("push"); };
+    // Retries lease against our own last push, so a foreign push to the branch is never overwritten.
+    let pushed;
+    const push = async () => {
+      await git("push", pushed ? ["push", `--force-with-lease=refs/heads/${branch}:${pushed}`, "origin", `HEAD:refs/heads/${branch}`] : pushArgs);
+      pushed = head;
+      ok("push");
+    };
     await push();
     const existing = JSON.parse(await gh("open", ["pr", "list", "--head", branch, "--base", flags.base, "--state", "open", "--json", "number"]));
     let number = existing[0]?.number;
@@ -167,7 +176,7 @@ async function main(args) {
     ok("open");
     console.log(`PR #${number}; review running`);
     step = "review";
-    const saved = savedReview(head);
+    const saved = savedReview(head, await git("review", ["merge-base", `origin/${flags.base}`, "HEAD"]));
     if (saved) {
       const comment = join(directory, "review.md");
       writeFileSync(comment, `Reused review: ${saved}\nHEAD: ${head}\n\n${readFileSync(join(saved, "result.md"), "utf8")}`);
@@ -184,14 +193,14 @@ async function main(args) {
     const queue = await execute("merge", "gh", ["api", "graphql", "-f", "query=query($o:String!,$n:String!,$b:String!){repository(owner:$o,name:$n){mergeQueue(branch:$b){id}}}",
       "-F", `o=${owner}`, "-F", `n=${name}`, "-F", `b=${flags.base}`, "--jq", '.data.repository.mergeQueue.id // ""']);
     if (queue.status === 0 && queue.text.trim()) {
-      await gh("merge", ["pr", "merge", number, "--auto", "--rebase", "--repo", repo]); ok("merge");
+      await gh("merge", ["pr", "merge", number, "--auto", "--rebase", "--match-head-commit", head, "--repo", repo]); ok("merge");
       kitResult("ok", `queued #${number} ${head.slice(0, 7)}`);
       return 0;
     }
     for (let attempt = 1; attempt <= 3; attempt++) {
       console.log(`ci: waiting for PR #${number} checks`);
       await run("ci", kit, ["wait", "ci", "--pr", number]); ok("ci");
-      const merged = await execute("merge", "gh", ["pr", "merge", number, "--rebase", "--delete-branch", "--repo", repo]);
+      const merged = await execute("merge", "gh", ["pr", "merge", number, "--rebase", "--delete-branch", "--match-head-commit", head, "--repo", repo]);
       if (merged.status === 0) {
         const commit = await execute("merge", "gh", ["pr", "view", number, "--json", "mergeCommit", "--jq", ".mergeCommit.oid"]);
         const sha = commit.status === 0 && /^[a-f0-9]{40}$/i.test(commit.text.trim()) ? commit.text.trim() : head;
@@ -199,7 +208,9 @@ async function main(args) {
         kitResult("ok", `merged #${number} ${sha.slice(0, 7)}`);
         return 0;
       }
-      if (!/behind|not up to date|out of date|head branch was modified/i.test(merged.stderr))
+      // --match-head-commit refuses a head we did not push and review: stop rather than merge it.
+      if (/head branch was modified/i.test(merged.stderr)) throw new Error(`PR head is no longer ${head.slice(0, 7)}; review the new head first`);
+      if (!/behind|not up to date|out of date/i.test(merged.stderr))
         throw new Error(merged.failure || merged.stderr.trim().split(/\r?\n/).at(-1) || "gh pr merge failed");
       if (attempt === 3) throw new Error("still behind after 3 attempts");
       await rebase();

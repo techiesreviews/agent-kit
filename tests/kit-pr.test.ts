@@ -39,6 +39,7 @@ else if (tool === "gh") {
         writeFileSync(env.FAKE_ADVANCE + "/upstream.txt", "upstream " + count + "\\n");
         git("add", "upstream.txt"); git("commit", "-m", "advance upstream"); git("push", "origin", "dev");
       }
+      if (env.FAKE_AFTER_PUSH) require("node:child_process").execFileSync(env.FAKE_AFTER_PUSH, { stdio: "ignore", timeout: 10_000 });
       console.error(env.FAKE_BEHIND_TEXT || "head branch is behind"); process.exit(1);
     }
   } else if (action === "pr-view") {
@@ -192,17 +193,32 @@ test("release into main opens but never waits or merges", t => {
   assert.ok(f.ghCalls("create")[0].args.includes("main"));
 });
 
-test("newest matching saved review is posted; missing refs/results and mismatches are skipped", t => {
+test("newest complete saved review of the whole PR is posted; incomplete, partial-scope and mismatched ones are skipped", t => {
   const f = fixture(t), parent = join(f.main, ".scratch/reviews/ak-14");
-  for (const [name, head, report] of [["20261016T100000Z", f.head, "old"], ["20261016T110000Z", f.head, "chosen"],
-    ["20261016T120000Z", "wrong-head", "wrong"], ["20261016T130000Z", f.head, ""]]) {
+  const base = f.git("merge-base", "origin/dev", "HEAD"), parentCommit = f.git("rev-parse", "HEAD~1");
+  const complete = (text: string) => `REVIEW_STATUS: complete\n${text}`;
+  for (const [name, head, reviewedBase, report] of [["20261016T100000Z", f.head, base, complete("old")], ["20261016T110000Z", f.head, base, complete("chosen")],
+    ["20261016T120000Z", "wrong-head", base, complete("wrong")], ["20261016T130000Z", f.head, base, ""],
+    ["20261016T140000Z", f.head, base, "REVIEW_STATUS: incomplete\nhalf a report"], ["20261016T150000Z", f.head, parentCommit, complete("one commit only")]]) {
     const folder = join(parent, name); mkdirSync(folder, { recursive: true });
-    writeFileSync(join(folder, "refs.txt"), `${head}\nbase\n`);
+    writeFileSync(join(folder, "refs.txt"), `${head}\n${reviewedBase}\n`);
     if (report) writeFileSync(join(folder, "result.md"), `${report}\n`);
   }
   const result = f.run(["--no-merge"]);
   assert.equal(result.status, 0, result.stderr); assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "review"), false);
-  assert.equal(f.ghCalls("comment")[0].body, `Reused review: ${join(parent, "20261016T110000Z")}\nHEAD: ${f.head}\n\nchosen\n`);
+  assert.equal(f.ghCalls("comment")[0].body, `Reused review: ${join(parent, "20261016T110000Z")}\nHEAD: ${f.head}\n\n${complete("chosen")}\n`);
+});
+
+test("an incomplete or single-commit review for this HEAD is not reused", t => {
+  for (const kind of ["incomplete", "single-commit"]) {
+    const f = fixture(t), folder = join(f.main, ".scratch/reviews/ak-14/20261016T120000Z");
+    const base = kind === "incomplete" ? f.git("merge-base", "origin/dev", "HEAD") : f.git("rev-parse", "HEAD~1");
+    mkdirSync(folder, { recursive: true }); writeFileSync(join(folder, "refs.txt"), `${f.head}\n${base}\n`);
+    writeFileSync(join(folder, "result.md"), kind === "incomplete" ? "REVIEW_STATUS: incomplete\n" : "REVIEW_STATUS: complete\n");
+    const result = f.run(["--no-merge"]); assert.equal(result.status, 0, result.stderr);
+    assert.ok(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "review"), kind);
+    assert.equal(f.ghCalls("comment").length, 0, kind);
+  }
 });
 
 test("a saved review for another HEAD triggers kit review --pr", t => {
@@ -217,7 +233,7 @@ test("no queue waits for CI then merges with --repo, preserving the local branch
   for (const queueError of [false, true]) {
     const f = fixture(t), result = f.run([], { FAKE_QUEUE_ERROR: queueError ? "1" : "" });
     assert.equal(result.status, 0, result.stderr); assert.match(result.stdout, /RESULT: ok merged #73 abcdef0/);
-    assert.deepEqual(f.ghCalls("merge")[0].args, ["pr", "merge", "73", "--rebase", "--delete-branch", "--repo", "test/repo"]);
+    assert.deepEqual(f.ghCalls("merge")[0].args, ["pr", "merge", "73", "--rebase", "--delete-branch", "--match-head-commit", f.head, "--repo", "test/repo"]);
     const calls = f.calls(), wait = calls.findIndex(call => call.tool === "fake-kit" && call.args[0] === "wait");
     assert.deepEqual(calls[wait].args, ["wait", "ci", "--pr", "73"]);
     assert.ok(wait < calls.findIndex(call => call.args[1] === "merge"));
@@ -229,7 +245,7 @@ test("no queue waits for CI then merges with --repo, preserving the local branch
 test("queue uses auto-rebase, skips wait, and passes owner/name/base to graphql", t => {
   const f = fixture(t), result = f.run([], { FAKE_QUEUE: "1" });
   assert.equal(result.status, 0, result.stderr); assert.match(result.stdout, /RESULT: ok queued #73/);
-  assert.deepEqual(f.ghCalls("merge")[0].args, ["pr", "merge", "73", "--auto", "--rebase", "--repo", "test/repo"]);
+  assert.deepEqual(f.ghCalls("merge")[0].args, ["pr", "merge", "73", "--auto", "--rebase", "--match-head-commit", f.head, "--repo", "test/repo"]);
   assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "wait"), false);
   const graphql = f.calls().find(call => call.args[0] === "api")!;
   for (const value of ["o=test", "n=repo", "b=dev", '.data.repository.mergeQueue.id // ""']) assert.ok(graphql.args.includes(value));
@@ -244,6 +260,24 @@ test("behind retry fetches, rebases, pushes the new HEAD and waits again", t => 
   assert.equal(f.gitAt(f.origin, "rev-parse", "refs/heads/feature/kit-pr"), head);
   assert.ok(result.stdout.includes(`RESULT: ok merged #73 ${head.slice(0, 7)}`));
   assert.equal(result.stdout.split("\n").filter(line => line === "push: ok").length, 2);
+});
+
+test("a PR head changed by someone else is never merged or overwritten", t => {
+  const f = fixture(t), result = f.run([], { FAKE_BEHIND: "1", FAKE_BEHIND_TEXT: "GraphQL: Head branch was modified. Review and try the merge again." });
+  assert.equal(result.status, 1); assert.match(result.stdout, /RESULT: fail merge: PR head is no longer [a-f0-9]{7}; review the new head first/);
+  assert.equal(f.ghCalls("merge").length, 1);
+  assert.equal(result.stdout.split("\n").filter(line => line === "push: ok").length, 1);
+});
+
+test("a retry push leases against our own last push, not a foreign push", t => {
+  const f = fixture(t), peer = f.peer();
+  // The peer pushes to our PR branch while the merge is refused as behind.
+  const sneak = join(f.dir, "sneak.sh");
+  writeFileSync(sneak, `#!/bin/sh\nset -e\ncd "${peer}"\ngit fetch -q origin feature/kit-pr\ngit checkout -q -B feature/kit-pr FETCH_HEAD\necho foreign > foreign.txt\ngit add foreign.txt\ngit commit -qm foreign\ngit push -q origin HEAD:feature/kit-pr\n`);
+  chmodSync(sneak, 0o755);
+  const result = f.run([], { FAKE_BEHIND: "1", FAKE_AFTER_PUSH: sneak });
+  assert.equal(result.status, 1); assert.match(result.stdout, /RESULT: fail push:/);
+  assert.match(f.gitAt(f.origin, "log", "-1", "--format=%s", "refs/heads/feature/kit-pr"), /foreign/);
 });
 
 test("behind failures stop at three merge attempts", t => {
