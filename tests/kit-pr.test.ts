@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -55,6 +55,9 @@ function fixture(t: TestContext) {
   const origin = join(dir, "origin.git"), root = join(dir, "work"), main = join(dir, "main"), bin = join(dir, "bin");
   mkdirSync(bin); mkdirSync(main);
   for (const name of ["npm", "gh", "fake-kit"]) { writeFileSync(join(bin, name), fake); chmodSync(join(bin, name), 0o755); }
+  // kit-lib's nodeEnv puts the Node directory first on PATH; where npm sits beside node (CI), that would
+  // shadow the fake npm. A node link here makes bin the Node directory itself (same fix as kit-deps).
+  symlinkSync(process.execPath, join(bin, "node"));
   const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}:${process.env.PATH}`, KIT_ROOT: root, KIT_MAIN_ROOT: main,
     ASE_OWNER: "ak-14", KIT_PR_KIT: join(bin, "fake-kit"), FAKE_CALLS: join(dir, "calls.jsonl"), CLAUDECODE: "",
     GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
