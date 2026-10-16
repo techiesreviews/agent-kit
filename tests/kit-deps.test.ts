@@ -414,6 +414,9 @@ test("deps add holds its temp flock during both npm operations", t => {
   const bin = join(f.directory, "bin");
   mkdirSync(bin);
   const npm = spawnSync("/bin/bash", ["-c", "command -v npm"], { encoding: "utf8", env: f.env }).stdout.trim();
+  // kit_node puts the Node directory first on PATH; where npm sits beside node (CI), that would
+  // shadow the probe. A node link in the probe directory makes it the Node directory itself.
+  symlinkSync(process.execPath, join(bin, "node"));
   const capture = join(f.directory, "npm-lock-checks");
   writeFileSync(join(bin, "npm"), `#!/bin/bash\nif flock -n "$DEPS_TEST_LOCK" true; then exit 98; fi\nprintf 'locked\\n' >> "$DEPS_TEST_CAPTURE"\nexec "$DEPS_TEST_NPM" "$@"\n`);
   chmodSync(join(bin, "npm"), 0o755);
