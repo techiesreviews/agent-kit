@@ -11,7 +11,9 @@ const usage = `Usage: kit wait pid <pid> [--timeout D]
        kit wait output <file> [--until <regex>] [--quiet D] [--timeout D]
        kit wait ci [--branch B | --pr N | --sha S] [--timeout D]
 Durations: seconds (bare number or s), minutes (m), hours (h). Default timeout: 30m.
-Output quiet period: 5s. CI branch: dev.`;
+Output without --until finishes when every process seen writing the file has exited and its size
+stayed unchanged for the quiet period (default 5s); a writer never seen holding the file is covered
+only by the quiet period. CI branch: dev.`;
 const args = process.argv.slice(2);
 const execute = promisify(execFile);
 const controller = new AbortController();
