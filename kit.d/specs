@@ -4,7 +4,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { combineOutcomes, graphFile, namedSpecs, routeSpecs, selectAffected, selectionLine, specGroups, summarizeRun } from "../specs-affected.mjs";
+import { combineOutcomes, graphFile, namedSpecs, routeSpecs, selectAffected, selectionLine, SHARD_MIN_SPECS, shardCount, specGroups, summarizeRun } from "../specs-affected.mjs";
 
 const { kitRoot, kitOwner, kitResult, nodeEnv } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
@@ -14,7 +14,13 @@ const usage = `Usage: kit specs <spec…> [--list]
        kit specs --help
 Default base: origin/dev. Names accept a spec path or an unambiguous basename.
 --list prints selection reasons and runs nothing.
-KIT_SPECS_RUNNER: executable replacing port.sh, called with the same argv.
+Default selections of >= ${SHARD_MIN_SPECS} files run in parallel shards, balanced by estimated test count.
+Automatic shards: min(4, free port slots, memory cap, load cap), at least 1.
+Tagged groups stay serial and unsharded; smaller default selections keep one run.
+ASE_SPEC_SHARDS: positive integer overriding slots/resources, capped only by file count.
+Each shard uses port.sh, which waits for a slot and its resource gates.
+KIT_SPECS_RUNNER: test executable replacing port.sh; skips probing (assumes 1 free slot).
+KIT_SPECS_FREE_SLOTS: test-only free-slot probe override.
 ASE_KNOWN_FAILURES: registry path (default tests/known-failures.json).
 `;
 
@@ -52,7 +58,34 @@ function snapshot(root) {
 
 const shellQuote = value => `'${value.replaceAll("'", "'\\''")}'`;
 
-async function execute(root, env, run, directory, index) {
+function capacity(env, files) {
+  const requested = env.ASE_SPEC_SHARDS;
+  if (requested !== undefined) return shardCount({ requested, files });
+  let free;
+  if (env.KIT_SPECS_FREE_SLOTS !== undefined) free = Number(env.KIT_SPECS_FREE_SLOTS);
+  else if (env.KIT_SPECS_RUNNER) free = 1;
+  else {
+    // Use the pool's own lock/listener checks, as full-suite.sh does.
+    const probe = `source "$1"
+free_ports=()
+for p in "\${ports[@]}"; do
+  [[ " \${free_ports[*]} " != *" $p "* ]] || continue
+  exec 9>>"$lock_dir/ase-$p.lock"
+  if flock -n 9 && ! slot_listeners "$p"; then free_ports+=("$p"); fi
+  exec 9>&-
+done
+printf '%s\\n' "\${free_ports[@]}"`;
+    const ports = execFileSync("bash", ["-c", probe, "kit-specs-probe", resolve(import.meta.dirname, "../port-common.sh")], { env, encoding: "utf8" });
+    free = ports.trim().split(/\s+/).filter(Boolean).length;
+  }
+  const memoryKb = Number(readFileSync("/proc/meminfo", "utf8").match(/^MemAvailable:\s+(\d+)/m)?.[1] ?? 0);
+  const load = Number(readFileSync("/proc/loadavg", "utf8").split(" ")[0]);
+  const minMemoryKb = Number(env.ASE_MIN_MEM_KB ?? 4194304);
+  const maxLoad = Number(env.ASE_MAX_LOAD ?? execFileSync("nproc", { env, encoding: "utf8" }).trim());
+  return shardCount({ files, free, memoryKb, minMemoryKb, load, maxLoad });
+}
+
+async function execute(root, env, run, directory, index, children) {
   const log = join(directory, `${index}-${run.group}.log`), report = join(directory, `${index}-${run.group}.json`);
   const source = `.scratch/${run.project}/results-${run.project === "native-preview" ? "$((ASE_TEST_PORT + 1))" : "$ASE_TEST_PORT"}.json`;
   const command = run.command.map(arg => arg === "$ASE_TEST_PORT" ? '"$ASE_TEST_PORT"' : shellQuote(arg)).join(" ");
@@ -63,16 +96,10 @@ async function execute(root, env, run, directory, index) {
   let exitCode;
   try {
     exitCode = await new Promise(accept => {
-      const child = spawn(env.KIT_SPECS_RUNNER || resolve(import.meta.dirname, "../port.sh"), ["bash", "-c", script], { cwd: root, env, stdio: ["ignore", fd, fd] });
-      const interrupt = () => child.kill("SIGINT"), terminate = () => child.kill("SIGTERM");
-      process.once("SIGINT", interrupt);
-      process.once("SIGTERM", terminate);
-      const clear = () => {
-        process.removeListener("SIGINT", interrupt);
-        process.removeListener("SIGTERM", terminate);
-      };
+      const child = spawn(env.KIT_SPECS_RUNNER || resolve(import.meta.dirname, "../port.sh"), ["bash", "-c", script], { cwd: root, env, detached: true, stdio: ["ignore", fd, fd] });
+      children.add(child);
       child.once("error", error => { console.error(`problem: ${error.message}`); });
-      child.once("close", code => { clear(); accept(code ?? 1); });
+      child.once("close", code => { children.delete(child); accept(code ?? 1); });
     });
   } finally { closeSync(fd); }
   let json;
@@ -85,6 +112,8 @@ async function main(args) {
   let status = 2;
   try {
     const flags = options(args), root = resolve(kitRoot());
+    // Validate overrides even for small selections and --list (usage errors exit 2).
+    shardCount({ requested: process.env.ASE_SPEC_SHARDS, files: 1 });
     const files = snapshot(root);
     let selected;
     if (flags.affected) {
@@ -100,7 +129,7 @@ async function main(args) {
     if (!selected.length) { kitResult("ok", "specs none affected"); return 0; }
     const available = Object.entries(files).filter(([file]) => /^tests\/(native-save|native-preview)\/[^/]+\.spec\.ts$/.test(file))
       .map(([file, text]) => ({ file, groups: specGroups(file, text) }));
-    const runs = routeSpecs(selected, available);
+    routeSpecs(selected, available); // Validate tagged filters before starting any runs.
     if (flags.list) {
       for (const spec of selected) console.log(selectionLine(spec));
       kitResult("ok", `specs ${selected.length} selected (list only)`);
@@ -108,15 +137,55 @@ async function main(args) {
     }
     status = 1;
     const env = nodeEnv(), parent = join(root, ".scratch/kit-specs");
+    const defaultFiles = selected.filter(spec => spec.groups.includes("default")).length;
+    const sharding = defaultFiles >= SHARD_MIN_SPECS ? capacity(env, defaultFiles) : undefined;
+    const runs = routeSpecs(selected, available, { shards: sharding?.count ?? 1, texts: files });
     mkdirSync(parent, { recursive: true });
     const directory = mkdtempSync(join(parent, "run-"));
     console.log(`owner: ${kitOwner()}`);
     const registry = env.ASE_KNOWN_FAILURES || join(root, "tests/known-failures.json");
     const entries = JSON.parse(readFileSync(registry, "utf8"));
     const outcomes = [];
-    for (const [index, run] of runs.entries()) {
-      const result = await execute(root, env, run, directory, index);
-      outcomes.push(...summarizeRun(run, result.report, { ...result, entries }));
+    const children = new Set();
+    let signal;
+    const forward = value => {
+      signal = value;
+      for (const child of children) {
+        // Each port wrapper owns a process group, including its browser/servers.
+        if (!child.pid) continue;
+        try { process.kill(-child.pid, value); }
+        catch (error) { if (error.code !== "ESRCH") throw error; }
+      }
+    };
+    // Shards run in their own process groups, so a hang-up must be passed on too.
+    const interrupt = () => forward("SIGINT"), terminate = () => forward("SIGTERM"), hangup = () => forward("SIGHUP");
+    process.on("SIGINT", interrupt);
+    process.on("SIGTERM", terminate);
+    process.on("SIGHUP", hangup);
+    try {
+      if (sharding) console.log(env.ASE_SPEC_SHARDS !== undefined
+        ? `shards: ${sharding.count} (ASE_SPEC_SHARDS)`
+        : `shards: ${sharding.count} (free slots ${sharding.free}, memory cap ${sharding.memoryCap}, load cap ${sharding.loadCap})`);
+      const runOne = async (run, index) => {
+        if (signal) return summarizeRun(run, undefined, { log: `Interrupted by ${signal}`, exitCode: 1 });
+        if (sharding && run.group === "default") run = { ...run, command: [...run.command, `--output=${join(directory, `artifacts-${index}`)}`] };
+        try {
+          const result = await execute(root, env, run, directory, index, children);
+          return summarizeRun(run, result.report, { ...result, entries });
+        } catch (error) {
+          // A shard's I/O failure must not abandon its still-running siblings.
+          return summarizeRun(run, undefined, { log: error.message, exitCode: 1, entries });
+        }
+      };
+      const defaults = runs.filter(run => run.group === "default");
+      outcomes.push(...(await Promise.all(defaults.map((run, index) => runOne(run, index)))).flat());
+      for (const [index, run] of runs.entries()) {
+        if (run.group !== "default") outcomes.push(...await runOne(run, index));
+      }
+    } finally {
+      process.removeListener("SIGINT", interrupt);
+      process.removeListener("SIGTERM", terminate);
+      process.removeListener("SIGHUP", hangup);
     }
     const results = combineOutcomes(selected, outcomes);
     for (const result of results) console.log(result.line);
@@ -124,7 +193,7 @@ async function main(args) {
     kitResult(failed.length ? "fail" : "ok", failed.length
       ? `specs ${failed.length} of ${selected.length} failed: ${failed.map(result => basename(result.file) + (result.known ? "(known)" : "")).join(", ")}`
       : `specs ${selected.length}/${selected.length} passed`);
-    return failed.length ? 1 : 0;
+    return signal ? { SIGINT: 130, SIGHUP: 129 }[signal] ?? 143 : failed.length ? 1 : 0;
   } catch (error) {
     console.error(`problem: ${error.message}`);
     if (status === 2) process.stderr.write(usage);
