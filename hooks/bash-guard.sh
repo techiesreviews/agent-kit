@@ -7,12 +7,15 @@ command=$(jq -er 'select(.hook_event_name == "PreToolUse" and .tool_name == "Bas
 reason=$(printf '%s\n' "$command" | awk '
 function base(s) { sub(/^.*\//, "", s); return s }
 function reject(s) { if (!reason) reason = s }
-function inspect(a, n, timed, depth,    i,j,k,name,text) {
+function inspect(a, n, timed, depth, floor,    i,j,k,name,text) {
+  if (a[1] == "done") loopDepth = loopDepth > floor ? loopDepth - 1 : floor
   i = 1
   # Common execution wrappers leave the following word as the command.
   while (i <= n) {
     if (a[i] ~ /^[A-Za-z_][A-Za-z_0-9]*=/) { i++; continue }
     name = base(a[i])
+    if (name == "while" || name == "until") loopDepth++
+    if (name == "for" || name == "select") { loopDepth++; return 0 }
     if (name == "if" || name == "then" || name == "elif" || name == "else" || name == "do" || name == "while" || name == "until" || name == "{" || name == "!" || name == "time") {
       i++; continue
     }
@@ -50,6 +53,8 @@ function inspect(a, n, timed, depth,    i,j,k,name,text) {
     break
   }
   name = base(a[i])
+  if (loopDepth > 0 && name == "sleep")
+    reject("wait with scripts/agents/kit wait (pid, output or ci), not a sleep or pgrep -f loop")
   if (timed) {
     j = i
     if (name ~ /^(ba|da|z|k)?sh$/) {
@@ -71,7 +76,11 @@ function inspect(a, n, timed, depth,    i,j,k,name,text) {
   if (name == "pkill" || name == "killall")
     reject("kill your own PID or process group: kill -- -PGID")
   if (name == "pgrep") for (j = i + 1; j <= n; j++)
-    if (a[j] == "--full" || a[j] ~ /^-[^-]*f/) pattern = 1
+    if (a[j] == "--full" || a[j] ~ /^-[^-]*f/) {
+      pattern = 1
+      if (loopDepth > 0)
+        reject("wait with scripts/agents/kit wait (pid, output or ci), not a sleep or pgrep -f loop")
+    }
   if (pattern && name == "kill")
     reject("kill your own PID or process group: kill -- -PGID")
   if (name ~ /^(ba|da|z|k)?sh$/ || name == "eval") {
@@ -136,10 +145,17 @@ function expansions(s, depth,    i,c,end) {
     if (end) i = end
   }
 }
-function scan(s, timed, depth,    a,n,i,c,q,word,started,escaped,quoted,redirect,strip,end,line,hd,hq,hs,hcode,hn,bound,j,code,body,input,ni) {
+function nested(s, timed, depth, first,    opening) {
+  opening = first ~ /^(while|until|for|select)$/
+  if (opening) loopDepth++
+  scan(s, timed, depth)
+  if (opening) loopDepth--
+}
+function scan(s, timed, depth,    a,n,i,c,q,word,started,escaped,quoted,redirect,strip,end,line,hd,hq,hs,hcode,hdepth,hn,bound,j,code,body,input,ni,floor,saved) {
   # Quotes belong to one argument. Thus literal commit -m strings are skipped;
   # shell -c arguments are scanned explicitly. Never execute the input.
   n = 0
+  floor = loopDepth
   for (i = 1; i <= length(s) + 1; i++) {
     c = substr(s, i, 1)
     if (escaped) { if (c != "\n") word = word c; escaped = 0; continue }
@@ -148,14 +164,14 @@ function scan(s, timed, depth,    a,n,i,c,q,word,started,escaped,quoted,redirect
     if (c == "$" && q != "\047" && substr(s, i + 1, 1) == "(" && substr(s, i + 2, 1) != "(") {
       end = substitutionEnd(s, i + 2)
       if (end && depth < 16) {
-        scan(substr(s, i + 2, end - i - 2), 0, depth + 1)
+        nested(substr(s, i + 2, end - i - 2), 0, depth + 1, a[1])
         word = word "EXPANSION"; started = 1; i = end; continue
       }
     }
     if (c == "`" && q != "\047") {
       end = backtickEnd(s, i + 1)
       if (end && depth < 16) {
-        scan(substr(s, i + 1, end - i - 1), 0, depth + 1)
+        nested(substr(s, i + 1, end - i - 1), 0, depth + 1, a[1])
         word = word "EXPANSION"; started = 1; i = end; continue
       }
     }
@@ -168,6 +184,15 @@ function scan(s, timed, depth,    a,n,i,c,q,word,started,escaped,quoted,redirect
     if (c == "#" && !started) {
       while (i <= length(s) && substr(s, i, 1) != "\n") i++
       c = "\n"
+    }
+    # Arithmetic for headers are a list too, including their semicolons.
+    if (c == "(" && a[1] == "for" && substr(s, i + 1, 1) == "(") {
+      end = substitutionEnd(s, i + 1)
+      if (end) {
+        inspect(a, n, timed, depth, floor)
+        expansions(substr(s, i + 2, end - i - 3), depth)
+        delete a; n = 0; i = end; continue
+      }
     }
     if (c == "<" || c == ">" || (c == "&" && substr(s, i + 1, 1) == ">")) {
       # Only an adjacent unquoted number is a file descriptor. Drop the
@@ -200,10 +225,10 @@ function scan(s, timed, depth,    a,n,i,c,q,word,started,escaped,quoted,redirect
         word = ""; started = 0; quoted = 0; redirect = 0
       }
       if (c == "" || c ~ /[\n;&|()]/) {
-        code = inspect(a, n, timed, depth)
+        code = inspect(a, n, timed, depth, floor)
         if (code && depth < 16) for (j = 1; j <= ni; j++) scan(input[j], timed || code == 2, depth + 1)
         delete input; ni = 0
-        for (j = bound + 1; j <= hn; j++) hcode[j] = code
+        for (j = bound + 1; j <= hn; j++) { hcode[j] = code; hdepth[j] = loopDepth }
         bound = hn; delete a; n = 0
         if (c != "|" || substr(s, i + 1, 1) == "|") pattern = 0
         if (c == "|" && substr(s, i + 1, 1) == "|") i++
@@ -219,15 +244,18 @@ function scan(s, timed, depth,    a,n,i,c,q,word,started,escaped,quoted,redirect
             if (line == hd[j]) break
             body = body line "\n"
           }
+          saved = loopDepth; loopDepth = hdepth[j]
           if (!hq[j]) expansions(body, depth)
           if (hcode[j] && depth < 16) scan(body, timed || hcode[j] == 2, depth + 1)
+          loopDepth = saved
         }
-        delete hd; delete hq; delete hs; delete hcode; hn = 0; bound = 0
+        delete hd; delete hq; delete hs; delete hcode; delete hdepth; hn = 0; bound = 0
       }
       continue
     }
     word = word c; started = 1
   }
+  loopDepth = floor
 }
 { source = source $0 "\n" }
 END { scan(source, 0, 0); if (reason) print reason }
