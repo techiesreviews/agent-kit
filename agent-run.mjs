@@ -6,7 +6,7 @@
 // runner owns logs, the build contract, deadlines, process groups and Git status.
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { durationMilliseconds, supervise } from "./sol-run.mjs";
@@ -212,25 +212,42 @@ function readStatus(path) {
 
 const pause = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 
-// One claim file per resume generation: exactly one caller restarts a dead run;
-// the others wait on the winner. Claims are never deleted, so they never go stale.
-function claimResume(out, generation) {
+// Claims are resume-claim-<generation>.<attempt>, linked into place complete, so
+// exactly one caller restarts a dead run and none is ever half-written. A claim
+// whose holder died before publishing its status is superseded by the next attempt.
+function tryClaim(claim) {
+  const temporary = `${claim}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    writeFileSync(join(out, `resume-claim-${generation}`), `${process.pid}\n`, { flag: "wx" });
+    writeFileSync(temporary, `${process.pid}\n`, { flag: "wx" });
+    linkSync(temporary, claim);
     return true;
   } catch (error) {
     if (error.code === "EEXIST") return false;
     throw error;
+  } finally { rmSync(temporary, { force: true }); }
+}
+
+function claimResume(out, path, generation) {
+  for (let attempt = 0; ; attempt++) {
+    const claim = join(out, `resume-claim-${generation}.${attempt}`);
+    if (tryClaim(claim)) return { won: true };
+    const holder = Number(readFileSync(claim, "utf8"));
+    if (liveRunner(holder) || readStatus(path).resumes >= generation) return { won: false, holder };
   }
 }
 
-async function awaitClaimant(path, out, generation, interval) {
-  const claim = join(out, `resume-claim-${generation}`);
+// Follow the claimed generation to its end; null means its runner died first.
+async function followGeneration(out, path, generation, holder, interval) {
   for (;;) {
-    if (readStatus(path).resumes >= generation) return true;
-    const holder = readFileSync(claim, "utf8").trim();
-    // An empty claim is still being written by its owner.
-    if (holder && !liveRunner(Number(holder))) return false;
+    const current = readStatus(path);
+    if (current.resumes > generation) return null;
+    if (current.resumes === generation) {
+      if (current.state !== "running") {
+        printReport(out);
+        return { code: current.exitCode ?? 1 };
+      }
+      if (!liveRunner(current.pid)) return null;
+    } else if (!liveRunner(holder)) return null;
     await pause(interval);
   }
 }
@@ -262,10 +279,11 @@ async function resumeRun(out) {
       return 1;
     }
     const generation = previous.resumes + 1;
-    if (!claimResume(out, generation)) {
-      if (await awaitClaimant(path, out, generation, interval)) continue;
-      print(process.stderr, `problem: resume ${generation} was claimed by a runner that died before starting; rerun instead\n`);
-      return 1;
+    const claim = claimResume(out, path, generation);
+    if (!claim.won) {
+      const followed = await followGeneration(out, path, generation, claim.holder, interval);
+      if (followed) return followed.code;
+      continue;
     }
     const options = parseAgentArgs([previous.kind, previous.worktree, previous.brief,
       "--model", previous.model, "--cli", previous.cli, "--effort", previous.effort,

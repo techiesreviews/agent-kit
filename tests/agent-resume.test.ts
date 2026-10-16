@@ -275,6 +275,30 @@ test("two waiting resume callers start exactly one replacement and both report i
   assert.equal(f.calls().length, 2); assert.equal(f.status().state, "done"); assert.equal(f.status().resumes, 1);
 });
 
+test("callers waiting on a failing replacement return its exit code and start nothing more", async t => {
+  const f = fixture(t);
+  const original = f.fresh("codex", { FAKE_HOLD: f.hold });
+  const running = await f.running();
+  const callers = [0, 1].map(() => f.start(["--resume", f.out], { FAKE_HOLD: f.hold, FAKE_EXIT: "7" }));
+  for (const caller of callers) await until(() => caller.stdout().includes(`waiting: pid ${running.pid}`), "both callers waiting");
+  process.kill(-running.pgid!, "SIGKILL"); original.child.kill("SIGKILL");
+  await original.done;
+  await until(() => f.status().resumes === 1 && f.calls().length === 2, "one replacement CLI");
+  writeFileSync(f.hold, "go");
+  for (const result of await Promise.all(callers.map(caller => caller.done))) assert.equal(result.code, 7, result.stderr);
+  assert.equal(f.calls().length, 2); assert.equal(f.status().state, "failed"); assert.equal(f.status().resumes, 1);
+});
+
+test("a claim left by a runner that died before starting is superseded once", async t => {
+  const f = fixture(t);
+  f.seed();
+  writeFileSync(join(f.out, "resume-claim-1.0"), "2147483647\n");
+  const result = await f.start(["--resume", f.out]).done;
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(f.calls().length, 1); assert.equal(f.status().resumes, 1); assert.equal(f.status().state, "done");
+  assert.ok(existsSync(join(f.out, "resume-claim-1.1")));
+});
+
 test("a Claude run killed before its final JSON resumes its pre-assigned session", async t => {
   const f = fixture(t);
   const run = f.fresh("claude", { FAKE_HOLD: f.hold });
