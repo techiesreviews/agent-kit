@@ -4,7 +4,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { combineOutcomes, namedSpecs, routeSpecs, selectAffected, selectionLine, specGroups, summarizeRun } from "../specs-affected.mjs";
+import { combineOutcomes, graphFile, namedSpecs, routeSpecs, selectAffected, selectionLine, specGroups, summarizeRun } from "../specs-affected.mjs";
 
 const { kitRoot, kitOwner, kitResult, nodeEnv } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
@@ -44,7 +44,7 @@ function snapshot(root) {
   const paths = git(root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"]).split("\0");
   const files = {};
   for (const file of new Set(paths)) {
-    if (!/^(tests|src|scripts)\//.test(file) || !/\.(?:ts|tsx|js|mjs)$/.test(file) || !existsSync(join(root, file))) continue;
+    if (!graphFile.test(file) || !/\.(?:ts|tsx|js|mjs)$/.test(file) || !existsSync(join(root, file))) continue;
     files[file] = readFileSync(join(root, file), "utf8");
   }
   return files;
