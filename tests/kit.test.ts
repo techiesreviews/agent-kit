@@ -104,6 +104,15 @@ test("kit forwards command help and its exit status without RESULT enforcement",
   assert.deepEqual(results(result.stdout), []);
 });
 
+test("kit treats --help after a subcommand as help, without RESULT enforcement", (t) => {
+  const directory = temp(t);
+  command(directory, "wait", 'printf "Usage: kit wait %s\\n" "$1"');
+  const result = run(["wait", "pid", "--help"], { KIT_COMMANDS_DIR: directory });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "Usage: kit wait pid\n");
+  assert.deepEqual(results(result.stdout), []);
+});
+
 test("kit reports unknown commands on stdout and lists commands on stderr", (t) => {
   const directory = temp(t);
   command(directory, "known", "# kit: a known command");

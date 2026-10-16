@@ -63,7 +63,10 @@ partial=false
 child_pid=''
 signal_status=0
 enforce_result=true
-case ${1-} in --help|-h) enforce_result=false ;; esac
+# Help for a subcommand (`kit wait pid --help`) is usage text, not a run.
+for arg in "$@"; do
+  case $arg in --help|-h) enforce_result=false; break ;; esac
+done
 
 finish() {
   local status=$?
