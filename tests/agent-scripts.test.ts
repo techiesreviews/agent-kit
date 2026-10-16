@@ -128,6 +128,12 @@ test("model verification rejects missing metadata, fallback models and unsuccess
   assert.equal(codexModelMatches("\tmodel: gpt-5.5\n", "gpt-5.5"), true);
   assert.equal(codexModelMatches("model: gpt-5.5\r\n", "gpt-5.5"), true);
   for (const log of ["", "model: gpt-5.5-extra\n", "model: gpt-5.5\nmodel: another\n"]) assert.equal(codexModelMatches(log, "gpt-5.5"), false);
+  // Only Codex header blocks name the model; file contents echoed later in the log do not.
+  const header = (model: string) => `OpenAI Codex v0.163.0\n--------\nworkdir: /w\nmodel: ${model}\nsession id: 1\n--------\nuser\n`;
+  assert.equal(codexModelMatches(`${header("gpt-6.1-sol")}exec\n  model: monaco.editor.ITextModel;\n`, "gpt-6.1-sol"), true);
+  assert.equal(codexModelMatches(`${header("gpt-6.1-sol")}work\n${header("gpt-6.1-sol")}more\n`, "gpt-6.1-sol"), true);
+  assert.equal(codexModelMatches(`${header("gpt-6.1-sol")}work\n${header("gpt-5.5")}more\n`, "gpt-6.1-sol"), false);
+  assert.equal(codexModelMatches(`${header("gpt-5.5")}\n  model: gpt-6.1-sol\n`, "gpt-6.1-sol"), false);
   const json = (models: string[], extra = {}) => JSON.stringify({ result: "report", modelUsage: Object.fromEntries(models.map(model => [model, {}])), ...extra });
   assert.equal(claudeResult(json(["claude-haiku-5-5"]), "claude-haiku-5-5"), "report");
   assert.equal(claudeResult(json(["claude-haiku-5-5-20261001"]), "claude-haiku-5-5"), "report");

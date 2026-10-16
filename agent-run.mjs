@@ -96,8 +96,20 @@ function closeCodexReviewHome({ home, sourceAuth }) {
   } finally { rmSync(home, { recursive: true, force: true }); }
 }
 
+// Codex prints a header block ("OpenAI Codex v…", "--------", settings, "--------") at the
+// start of each run and each resume. Only those blocks name the model: file contents the
+// agent reads later can contain lines such as "  model: monaco.editor.ITextModel;".
+function codexHeaders(log) {
+  const lines = log.split(/\r?\n/), headers = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!/^OpenAI Codex v/.test(lines[i]) || lines[i + 1]?.trim() !== "--------") continue;
+    for (let j = i + 2; j < lines.length && lines[j].trim() !== "--------"; j++) headers.push(lines[j]);
+  }
+  return headers.length ? headers.join("\n") : log;
+}
+
 export function codexModelMatches(log, requested) {
-  const models = [...log.matchAll(/^[\t ]*model:[\t ]*(\S+)[\t ]*\r?$/gm)].map(match => match[1]);
+  const models = [...codexHeaders(log).matchAll(/^[\t ]*model:[\t ]*(\S+)[\t ]*\r?$/gm)].map(match => match[1]);
   return models.length > 0 && models.every(model => model === requested);
 }
 
