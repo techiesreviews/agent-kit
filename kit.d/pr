@@ -1,0 +1,220 @@
+#!/usr/bin/env node
+// kit: open a PR into dev, attach the review, merge when checks pass
+import { spawn } from "node:child_process";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+
+const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv } = await import(
+  pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
+);
+const usage = "Usage: kit pr [--base dev] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release]\n";
+const kit = process.env.KIT_PR_KIT || resolve(import.meta.dirname, "../kit");
+
+function options(args) {
+  const flags = {};
+  for (let i = 0; i < args.length; i++) {
+    const flag = args[i];
+    if (!["--base", "--title", "--ticket", "--no-merge", "--dry-run", "--release"].includes(flag) || Object.hasOwn(flags, flag))
+      throw new Error(`unknown or duplicate option: ${flag}`);
+    if (["--base", "--title", "--ticket"].includes(flag)) {
+      const value = args[++i];
+      if (!value || value.startsWith("-")) throw new Error(`${flag} requires a value`);
+      flags[flag] = value;
+    } else flags[flag] = true;
+  }
+  return { base: flags["--base"] ?? "dev", title: flags["--title"], ticket: flags["--ticket"],
+    noMerge: flags["--no-merge"], dryRun: flags["--dry-run"], release: flags["--release"] };
+}
+
+function ticketTitle(file) {
+  const text = readFileSync(file, "utf8");
+  const front = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text)?.[1];
+  const title = /^title:\s*(.+)$/m.exec(front ?? "")?.[1].trim() ?? "";
+  return title.replace(/^(["'])(.*)\1$/, "$2");
+}
+
+function savedReview(head) {
+  const parent = join(kitMainRoot(), ".scratch/reviews", kitOwner());
+  if (!existsSync(parent)) return;
+  // Review folder names start with UTC timestamps; numeric sorting handles collision suffixes.
+  const folders = readdirSync(parent, { withFileTypes: true }).filter(entry => entry.isDirectory())
+    .map(entry => entry.name).sort((a, b) => b.localeCompare(a, "en", { numeric: true }));
+  for (const name of folders) {
+    const folder = join(parent, name), refs = join(folder, "refs.txt");
+    if (existsSync(refs) && existsSync(join(folder, "result.md")) && readFileSync(refs, "utf8").split(/\r?\n/, 1)[0] === head)
+      return folder;
+  }
+}
+
+const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
+
+async function main(args) {
+  let flags;
+  try { flags = options(args); }
+  catch (error) {
+    process.stderr.write(usage);
+    kitResult("fail", `invalid arguments: ${error.message}`);
+    return 2;
+  }
+  let step = "guards", directory;
+  try {
+    const root = resolve(kitRoot()), env = nodeEnv();
+    directory = join(root, ".scratch/pr", `${new Date().toISOString().replace(/[-:]/g, "")}-${process.pid}`);
+    mkdirSync(directory, { recursive: true });
+    console.log(`logs: ${directory}`);
+
+    // Keep child RESULT lines in logs, so the command has exactly one final RESULT.
+    async function execute(name, command, argv) {
+      step = name;
+      const log = join(directory, `${name}.log`);
+      const fd = openSync(log, "a");
+      let stdout = "", stderr = "", failure;
+      let status;
+      try {
+        status = await new Promise(accept => {
+          const child = spawn(command, argv, { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+          const interrupt = () => child.kill("SIGINT"), terminate = () => child.kill("SIGTERM");
+          process.once("SIGINT", interrupt);
+          process.once("SIGTERM", terminate);
+          child.stdout.setEncoding("utf8");
+          child.stdout.on("data", chunk => { stdout += chunk; appendFileSync(fd, chunk); });
+          child.stderr.setEncoding("utf8");
+          child.stderr.on("data", chunk => { stderr += chunk; appendFileSync(fd, chunk); });
+          child.once("error", error => { failure = error.message; appendFileSync(fd, `${failure}\n`); });
+          child.once("close", code => {
+            process.removeListener("SIGINT", interrupt);
+            process.removeListener("SIGTERM", terminate);
+            accept(code ?? 1);
+          });
+        });
+      } finally { closeSync(fd); }
+      return { status, stderr, text: stdout, failure };
+    }
+    async function run(name, command, argv) {
+      const result = await execute(name, command, argv);
+      if (result.status !== 0) throw new Error(result.failure || result.stderr.trim().split(/\r?\n/).at(-1) || `${command} exited ${result.status}`);
+      return result.text.trim();
+    }
+    const ok = name => console.log(`${name}: ok`);
+    const git = (name, argv) => run(name, "git", argv);
+    const gh = (name, argv) => run(name, "gh", argv);
+    const branchResult = await execute("guards", "git", ["symbolic-ref", "--short", "HEAD"]);
+    if (branchResult.status !== 0) throw new Error("detached HEAD");
+    const branch = branchResult.text.trim();
+    if (["dev", "main", flags.base].includes(branch)) throw new Error(`refusing branch ${branch}`);
+    if (flags.base === "main" && !flags.release) throw new Error("--base main requires --release");
+    if (flags.release && flags.base !== "main") throw new Error("--release requires --base main");
+    await git("guards", ["check-ref-format", `refs/heads/${flags.base}`]);
+    if (await git("guards", ["status", "--porcelain"])) throw new Error("uncommitted changes");
+    ok("guards");
+    await run("deps", kit, ["deps", "check"]); ok("deps");
+
+    async function rebase() {
+      await git("fetch", ["fetch", "-q", "origin"]); ok("fetch");
+      const result = await execute("rebase", "git", ["rebase", `origin/${flags.base}`]);
+      if (result.status !== 0) {
+        const files = await git("rebase", ["-c", "core.quotepath=false", "diff", "--name-only", "--diff-filter=U"]);
+        const aborted = await execute("rebase", "git", ["rebase", "--abort"]);
+        if (files) throw new Error(`conflict in ${files.split(/\r?\n/).join(", ")}${aborted.status ? "; rebase --abort failed" : ""}`);
+        throw new Error(result.stderr.trim().split(/\r?\n/).at(-1) || "git rebase failed");
+      }
+      ok("rebase");
+    }
+    await rebase();
+    const tests = [];
+    for (const [name, argv] of [["check", ["run", "check"]], ["unit", ["test"]], ["lint", ["run", "lint"]]]) {
+      await run(name, "npm", argv); ok(name);
+      tests.push(`- npm ${argv.join(" ")}: ok`);
+    }
+    const specs = await run("specs", kit, ["specs", "--affected", "--base", `origin/${flags.base}`]); ok("specs");
+    tests.push(`- kit specs --affected --base origin/${flags.base}: ${specs.split(/\r?\n/).findLast(line => line.startsWith("RESULT: ")) || "ok"}`);
+
+    step = "body";
+    let head = await git("body", ["rev-parse", "HEAD"]);
+    const range = `origin/${flags.base}..HEAD`;
+    const subjects = (await git("body", ["log", "--reverse", "--format=%s", range])).split(/\r?\n/).filter(Boolean);
+    const title = flags.ticket ? ticketTitle(resolve(root, flags.ticket)) : "";
+    const prTitle = flags.title || title || subjects.at(-1);
+    if (!prTitle) throw new Error("no title or commits ahead of base");
+    const trailers = await git("body", ["log", "--format=%(trailers:key=Co-Authored-By,valueonly)", range]);
+    const claude = env.CLAUDECODE === "1" || /^\s*Claude\b/im.test(trailers);
+    const body = join(directory, "body.md");
+    writeFileSync(body, `${flags.ticket ? `Ticket: ${title || prTitle} (${flags.ticket})\n\n` : ""}## Summary\n\n${subjects.map(subject => `- ${subject}`).join("\n")}\n\n## Tests\n\n${tests.join("\n")}\n${claude ? "\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n" : ""}`);
+    ok("body");
+    const pushArgs = ["push", "--force-with-lease", "origin", `HEAD:refs/heads/${branch}`];
+    const createArgs = ["pr", "create", "--base", flags.base, "--head", branch, "--title", prTitle, "--body-file", body];
+    const reviewArgs = ["review", "--base", `origin/${flags.base}`, "--pr"];
+    if (flags.dryRun) {
+      console.log(`branch: ${branch}\nbase: ${flags.base}\nHEAD: ${head}\ntitle: ${prTitle}\nbody: ${body}`);
+      for (const command of [["git", ...pushArgs], ["gh", ...createArgs], [kit, ...reviewArgs, "N", ...(flags.ticket ? ["--ticket", flags.ticket] : [])]])
+        console.log(command.map(quote).join(" "));
+      if (!flags.noMerge && !flags.release) console.log("gh pr merge N --rebase --delete-branch --repo <owner/name> (or --auto --rebase with a merge queue)");
+      kitResult("ok", `dry-run ${head.slice(0, 7)} ${branch} -> ${flags.base}`);
+      return 0;
+    }
+    const push = async () => { await git("push", pushArgs); ok("push"); };
+    await push();
+    const existing = JSON.parse(await gh("open", ["pr", "list", "--head", branch, "--base", flags.base, "--state", "open", "--json", "number"]));
+    let number = existing[0]?.number;
+    if (number) await gh("open", ["pr", "edit", String(number), "--body-file", body]);
+    else {
+      const created = await gh("open", createArgs);
+      number = /\/pull\/(\d+)/.exec(created)?.[1];
+    }
+    if (!/^[1-9]\d*$/.test(String(number))) throw new Error("could not determine PR number");
+    number = String(number);
+    ok("open");
+    console.log(`PR #${number}; review running`);
+    step = "review";
+    const saved = savedReview(head);
+    if (saved) {
+      const comment = join(directory, "review.md");
+      writeFileSync(comment, `Reused review: ${saved}\nHEAD: ${head}\n\n${readFileSync(join(saved, "result.md"), "utf8")}`);
+      await gh("review", ["pr", "comment", number, "--body-file", comment]);
+    } else await run("review", kit, [...reviewArgs, number, ...(flags.ticket ? ["--ticket", flags.ticket] : [])]);
+    ok("review");
+    if (flags.noMerge || flags.release) {
+      kitResult("ok", `opened #${number} ${head.slice(0, 7)}`);
+      return 0;
+    }
+    const repo = await gh("merge", ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]);
+    const [owner, name] = repo.split("/");
+    if (!owner || !name) throw new Error("could not determine owner/name");
+    const queue = await execute("merge", "gh", ["api", "graphql", "-f", "query=query($o:String!,$n:String!,$b:String!){repository(owner:$o,name:$n){mergeQueue(branch:$b){id}}}",
+      "-F", `o=${owner}`, "-F", `n=${name}`, "-F", `b=${flags.base}`, "--jq", '.data.repository.mergeQueue.id // ""']);
+    if (queue.status === 0 && queue.text.trim()) {
+      await gh("merge", ["pr", "merge", number, "--auto", "--rebase", "--repo", repo]); ok("merge");
+      kitResult("ok", `queued #${number} ${head.slice(0, 7)}`);
+      return 0;
+    }
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      console.log(`ci: waiting for PR #${number} checks`);
+      await run("ci", kit, ["wait", "ci", "--pr", number]); ok("ci");
+      const merged = await execute("merge", "gh", ["pr", "merge", number, "--rebase", "--delete-branch", "--repo", repo]);
+      if (merged.status === 0) {
+        const commit = await execute("merge", "gh", ["pr", "view", number, "--json", "mergeCommit", "--jq", ".mergeCommit.oid"]);
+        const sha = commit.status === 0 && /^[a-f0-9]{40}$/i.test(commit.text.trim()) ? commit.text.trim() : head;
+        ok("merge");
+        kitResult("ok", `merged #${number} ${sha.slice(0, 7)}`);
+        return 0;
+      }
+      if (!/behind|not up to date|out of date|head branch was modified/i.test(merged.stderr))
+        throw new Error(merged.failure || merged.stderr.trim().split(/\r?\n/).at(-1) || "gh pr merge failed");
+      if (attempt === 3) throw new Error("still behind after 3 attempts");
+      await rebase();
+      head = await git("rebase", ["rev-parse", "HEAD"]);
+      await push();
+    }
+  } catch (error) {
+    if (directory && existsSync(join(directory, `${step}.log`))) {
+      const lines = readFileSync(join(directory, `${step}.log`), "utf8").trimEnd().split(/\r?\n/).slice(-30);
+      for (const line of lines) console.error(`  ${line}`);
+    }
+    kitResult("fail", `${step}: ${error.message}`);
+    return 1;
+  }
+}
+
+if (process.argv.length === 3 && ["--help", "-h"].includes(process.argv[2])) process.stdout.write(usage);
+else process.exitCode = await main(process.argv.slice(2));
