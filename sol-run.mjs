@@ -12,7 +12,7 @@ export function durationMilliseconds(duration) {
   return milliseconds;
 }
 
-export function supervise(duration, command, args, { cwd, input = 0, log, capture = false } = {}) {
+export function supervise(duration, command, args, { cwd, input = 0, log, capture = false, onSpawn, onOutput } = {}) {
   const milliseconds = durationMilliseconds(duration);
   return new Promise(resolve => {
     // detached makes the child's PID its process-group ID on Linux. Unlike some
@@ -38,6 +38,7 @@ export function supervise(duration, command, args, { cwd, input = 0, log, captur
       try {
         writeSync(log, chunk);
         if (capture && isStdout) stdout += chunk;
+        onOutput?.(chunk.toString(), isStdout);
       } catch (error) { fail(error); }
     }
     const recordStdout = chunk => record(chunk, true);
@@ -52,19 +53,25 @@ export function supervise(duration, command, args, { cwd, input = 0, log, captur
     const timer = setTimeout(() => stop(124), milliseconds);
     const interrupt = () => stop(130);
     const terminate = () => stop(143);
+    const hangup = () => stop(129);
     process.once("SIGINT", interrupt);
     process.once("SIGTERM", terminate);
+    process.once("SIGHUP", hangup);
     child.once("error", fail);
+    child.once("spawn", () => {
+      try { onSpawn?.(child.pid); } catch (error) { fail(error); }
+    });
     child.once("close", (code, signal) => {
       clearTimeout(timer);
       process.removeListener("SIGINT", interrupt);
       process.removeListener("SIGTERM", terminate);
+      process.removeListener("SIGHUP", hangup);
       child.removeListener("error", fail);
       child.stdout?.removeListener("data", recordStdout);
       child.stderr?.removeListener("data", recordStderr);
       child.stdout?.removeListener("error", fail);
       child.stderr?.removeListener("error", fail);
-      resolve({ status: result ?? code ?? (signal === "SIGINT" ? 130 : 1), stdout });
+      resolve({ status: result ?? code ?? ({ SIGHUP: 129, SIGINT: 130, SIGTERM: 143 }[signal] ?? 1), stdout });
     });
   });
 }

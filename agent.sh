@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
-# Usage: agent.sh build|review <worktree> <brief> [--model M] [--cli codex|claude] [--effort E] [--base REF] [--out DIR]; kit doctor gates kit worktrees.
+# Usage: agent.sh build|review <worktree> <brief> [--model M] [--cli codex|claude] [--effort E] [--base REF] [--out DIR]; agent.sh --resume <out-dir>; kit doctor gates kit worktrees.
 set -euo pipefail
 agent_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 # ASE_SKIP_DOCTOR=1 bypasses the gate for tests only.
 gate=false
-if [[ ${ASE_SKIP_DOCTOR:-} != 1 && -d ${2-} ]] && root=$(git -C "$2" rev-parse --show-toplevel 2>/dev/null); then
+gate_dir=${2-}
+if [[ ${1-} == --resume && ${ASE_SKIP_DOCTOR:-} != 1 && -f $gate_dir/status.json ]]; then
+  gate_dir=$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).worktree)' "$gate_dir/status.json")
+fi
+if [[ ${ASE_SKIP_DOCTOR:-} != 1 && -d $gate_dir ]] && root=$(git -C "$gate_dir" rev-parse --show-toplevel 2>/dev/null); then
   common=$(git -C "$root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=''
   own_common=$(git -C "$agent_dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || own_common=''
   # Gate this repo's worktrees and any other checkout of the kit; unrelated repos (the starter, test repos) pass through.
