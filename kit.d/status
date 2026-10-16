@@ -1,0 +1,156 @@
+#!/usr/bin/env node
+// kit: one table of tickets, PRs, CI and the live preview
+import { execFile } from "node:child_process";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
+import { loadTickets } from "../tickets.mjs";
+
+const { kitRoot, kitResult } = await import(
+  pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
+);
+const usage = "Usage: kit status [map] [--ref <ref>] [--no-fetch] [--help]\n";
+const execute = promisify(execFile);
+const clean = value => String(value).replace(/[\x00-\x1f\x7f]/g, " ").trim();
+function cut(value, width) {
+  const chars = Array.from(clean(value));
+  return chars.length > width ? `${chars.slice(0, width - 1).join("")}…` : chars.join("");
+}
+const print = value => console.log(cut(value, 100));
+const result = (state, text) => kitResult(state, cut(`status ${text}`, state === "ok" ? 89 : 87));
+
+function options(args) {
+  let map, ref, noFetch = false, help = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (["--help", "-h"].includes(arg)) help = true;
+    else if (arg === "--no-fetch" && !noFetch) noFetch = true;
+    else if (arg === "--ref" && ref === undefined && args[i + 1] && !args[i + 1].startsWith("-")) ref = args[++i];
+    else if (!arg.startsWith("-") && /^[\w-]+$/.test(arg) && map === undefined) map = arg;
+    else throw new Error(`invalid argument: ${arg}`);
+  }
+  return { map, ref: ref ?? "origin/dev", noFetch, help };
+}
+
+function reason(error) {
+  if (error.code === "ENOENT") return "executable not found";
+  if (error.killed || error.code === "ETIMEDOUT") return "timed out";
+  return cut(String(error.stderr || error.message).trim().split(/\r?\n/)[0], 48);
+}
+
+async function command(command, args, cwd) {
+  const { stdout } = await execute(command, args, {
+    cwd, encoding: "utf8", timeout: 20_000, killSignal: "SIGKILL", maxBuffer: 32 * 1024 * 1024,
+  });
+  return stdout.trim();
+}
+
+// GitHub returns CheckRun and StatusContext entries in the same PR rollup.
+function ci(checks) {
+  if (!checks.length) return "-";
+  let pending = false;
+  for (const check of checks) {
+    const outcome = (check.conclusion || check.state || "").toLowerCase();
+    const status = (check.status || "").toLowerCase();
+    if (["failure", "error", "cancelled", "canceled", "timed_out", "action_required", "startup_failure"].includes(outcome)) return "fail";
+    if ((status && status !== "completed") || !["success", "skipped", "neutral"].includes(outcome)) pending = true;
+  }
+  return pending ? "run" : "pass";
+}
+
+function ticketPR(ticket, prs) {
+  const slug = ticket.slug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(`(?<![A-Za-z0-9])${slug}(?![A-Za-z0-9-])`);
+  const rank = state => state === "OPEN" ? 0 : state === "MERGED" ? 1 : 2;
+  return prs.filter(pr => [pr.title, pr.body, pr.headRefName].some(text => match.test(text || "")))
+    .sort((a, b) => rank(a.state) - rank(b.state) || b.number - a.number)[0];
+}
+
+async function preview() {
+  try {
+    const url = new URL(process.env.KIT_PREVIEW_URL || "https://preview-editor.techies.tools");
+    url.searchParams.set("kit", String(Date.now()));
+    const response = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(10_000) });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const html = await response.text();
+    const bundle = /(?:^|[\/"'])assets\/(index-[^\/"'?#\s<>]+\.js)(?=[?#"'\s<>]|$)/.exec(html)?.[1];
+    if (!bundle) throw new Error("bundle not found");
+    return { line: `preview: ${bundle}` };
+  } catch (error) {
+    const detail = error.name === "TimeoutError" ? "timed out" : reason(error);
+    return { line: `preview: unknown (${detail})`, note: `preview unavailable (${detail})` };
+  }
+}
+
+async function status(args) {
+  let flags;
+  try { flags = options(args); }
+  catch (error) {
+    process.stderr.write(usage);
+    result("fail", error.message);
+    return 2;
+  }
+  if (flags.help) { process.stdout.write(usage); return 0; }
+  const { map, ref, noFetch } = flags;
+  const root = kitRoot(), notes = [];
+  const git = args => command("git", ["-C", root, ...args], root);
+  try {
+    if (!noFetch && ref.startsWith("origin/")) {
+      try { await git(["fetch", "-q", "origin"]); }
+      catch { notes.push(`fetch failed; using cached ${ref}`); }
+    }
+    const { tickets } = loadTickets("docs/wayfinder", map, { ref, cwd: root });
+    const sha = await git(["rev-parse", "--verify", `${ref}^{commit}`]);
+    const branch = ref.replace(/^(?:refs\/remotes\/)?origin\//, "").replace(/^refs\/heads\//, "");
+    const gh = process.env.KIT_STATUS_GH || "gh";
+    const [github, live] = await Promise.all([
+      Promise.allSettled([
+        command(gh, ["pr", "list", "--state", "all", "--base", branch, "--limit", "200", "--json", "number,state,title,body,headRefName,mergeCommit,statusCheckRollup"], root),
+        command(gh, ["run", "list", "--branch", branch, "--limit", "100", "--json", "headSha,status,conclusion,workflowName,event"], root),
+      ]).then(responses => {
+        const failed = responses.find(response => response.status === "rejected");
+        if (failed) throw failed.reason;
+        const [prs, runs] = responses.map(response => response.value);
+        const data = { prs: JSON.parse(prs), runs: JSON.parse(runs) };
+        if (!Array.isArray(data.prs) || !Array.isArray(data.runs)) throw new Error("invalid gh response");
+        return data;
+      }).catch(error => ({ prs: [], runs: [], unavailable: reason(error) })),
+      preview(),
+    ]);
+    if (github.unavailable) notes.push(`gh unavailable (${github.unavailable}); PR and CI unknown`);
+    if (live.note) notes.push(live.note);
+    const currentRuns = github.runs.filter(run => run.headSha === sha);
+    const older = !currentRuns.length && github.runs.length > 0;
+    const branchCI = github.unavailable ? "?" : ci(currentRuns.length ? currentRuns : github.runs.slice(0, 1));
+    print(`ref ${ref} ${sha.slice(0, 7)}  ${branch} CI: ${branchCI}${older ? " (older sha)" : ""}`);
+    print(live.line);
+    for (const note of notes) print(`note: ${note}`);
+    const widths = [32, 15, 10, 21, 4];
+    const row = cells => print(cells.map((cell, i) => cut(cell, widths[i]).padEnd(widths[i])).join("  ").trimEnd());
+    row(["TICKET", "STATUS", "WHO", "LANDED", "CI"]);
+    tickets.sort((a, b) => a.map.localeCompare(b.map) || a.slug.localeCompare(b.slug, "en", { numeric: true }));
+    const groups = new Set(tickets.map(ticket => ticket.map));
+    let group, open = 0;
+    for (const ticket of tickets) {
+      if (groups.size > 1 && group !== ticket.map) { group = ticket.map; print(`== ${group} ==`); }
+      const landed = ticket.status === "closed"
+        ? await git(["log", ref, "-1", "--format=%h", "-G", "^status:[[:space:]]*closed", "--", ticket.file]) : "";
+      const pr = ticketPR(ticket, github.prs);
+      if (pr?.state === "OPEN") open++;
+      const runs = landed ? github.runs.filter(run => run.headSha?.startsWith(landed)) : [];
+      const ticketCI = github.unavailable ? "?" : ci(runs.length ? runs : pr?.statusCheckRollup || []);
+      const location = pr?.state === "OPEN" ? `#${pr.number} open`
+        : landed ? `${landed}${pr?.state === "MERGED" ? ` #${pr.number}` : ""}` : "-";
+      const who = clean(ticket.assignee || ticket.builder || "-").split(/\s+/)[0];
+      row([ticket.slug, ticket.status, who, location, ticketCI]);
+    }
+    result("ok", `${map || "all"} ${tickets.length} tickets, ${tickets.filter(ticket => ticket.status === "closed").length} closed, ${open} open PRs${notes.length ? ", offline" : ""}`);
+    return 0;
+  } catch (error) {
+    console.error(cut(error.message, 100));
+    result("fail", error.message);
+    return 1;
+  }
+}
+
+process.exitCode = await status(process.argv.slice(2));

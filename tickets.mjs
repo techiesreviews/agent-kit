@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// Usage: tickets.mjs frontier [map] | check; inspect wayfinder ticket dependencies.
+// Usage: tickets.mjs frontier [map] [--ref <ref>] | check [--ref <ref>]; inspect ticket dependencies.
+import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
 
 const statuses = new Set(["open", "closed", "needs-triage", "needs-info", "ready-for-agent", "ready-for-human", "wontfix"]);
 
@@ -56,7 +57,7 @@ function dependencySlug(value) {
 export function parseTicket(source, file, map) {
   const lines = source.replace(/^\uFEFF/, "").split(/\r?\n/);
   const problems = [];
-  const ticket = { file, map, slug: basename(file, ".md"), title: "", builder: "", status: "", blocked_by: [], lines: {}, valid: true };
+  const ticket = { file, map, slug: basename(file, ".md"), title: "", builder: "", assignee: "", status: "", blocked_by: [], lines: {}, valid: true };
   const problem = (line, message) => { ticket.valid = false; problems.push({ file, line, message }); };
   const end = lines.findIndex((line, i) => i > 0 && line === "---");
   if (lines[0] !== "---" || end < 0) {
@@ -64,7 +65,7 @@ export function parseTicket(source, file, map) {
     return { ticket, problems };
   }
   for (let i = 1; i < end; i++) {
-    const field = /^(title|builder|status|blocked_by):\s*(.*)$/.exec(lines[i]);
+    const field = /^(title|builder|assignee|status|blocked_by):\s*(.*)$/.exec(lines[i]);
     if (!field) continue;
     const [, key, raw] = field;
     if (ticket.lines[key]) { problem(i + 1, `Duplicate ${key}`); continue; }
@@ -122,19 +123,34 @@ export function resolveTickets(tickets) {
   return { frontier, problems };
 }
 
-export function loadTickets(root = "docs/wayfinder", map) {
+export function loadTickets(root = "docs/wayfinder", map, { ref, cwd = process.cwd() } = {}) {
   const tickets = [];
   const problems = [];
-  const maps = readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory() && (!map || entry.name === map));
+  let tracked;
+  const git = (args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+  if (ref !== undefined) {
+    root = relative(resolve(cwd), resolve(cwd, root));
+    try { tracked = git(["ls-tree", "-r", "--name-only", ref, "--", root]).split("\n").filter(Boolean); }
+    catch (error) { throw new Error(`Invalid ref: ${ref} (${String(error.stderr || error.message).trim().split("\n")[0]})`); }
+  }
+  const maps = tracked
+    ? [...new Set(tracked.map(file => file.slice(root.length + 1)).filter(file => file.includes("/")).map(file => file.split("/")[0]))].sort().map(name => ({ name }))
+      .filter(entry => !map || entry.name === map)
+    : readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory() && (!map || entry.name === map));
   if (map && !maps.length) throw new Error(`Unknown map: ${map}`);
   for (const entry of maps) for (const folder of ["tickets", "build/tickets"]) {
     const directory = join(root, entry.name, folder);
     let files;
-    try { files = readdirSync(directory).filter((file) => file.endsWith(".md")).sort(); }
+    try {
+      files = tracked
+        ? tracked.filter(file => file.startsWith(`${directory}/`) && !file.slice(directory.length + 1).includes("/") && file.endsWith(".md"))
+          .map(file => basename(file)).sort()
+        : readdirSync(directory).filter((file) => file.endsWith(".md")).sort();
+    }
     catch (error) { if (error.code === "ENOENT") continue; throw error; }
     for (const name of files) {
       const file = join(directory, name);
-      const parsed = parseTicket(readFileSync(file, "utf8"), file, entry.name);
+      const parsed = parseTicket(tracked ? git(["show", `${ref}:${file}`]) : readFileSync(file, "utf8"), file, entry.name);
       tickets.push(parsed.ticket);
       problems.push(...parsed.problems);
     }
@@ -143,14 +159,21 @@ export function loadTickets(root = "docs/wayfinder", map) {
 }
 
 function main(args) {
-  const [command, map] = args;
-  if (!((command === "check" && args.length === 1) || (command === "frontier" && args.length <= 2 && (!map || /^[\w-]+$/.test(map))))) {
-    console.error("Usage: tickets.mjs frontier [map] | check");
+  const [command, ...rest] = args;
+  let map, ref, invalid = false;
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i];
+    if (arg === "--ref" && ref === undefined && rest[i + 1] && !rest[i + 1].startsWith("-")) ref = rest[++i];
+    else if (command === "frontier" && map === undefined && /^[\w-]+$/.test(arg) && !arg.startsWith("-")) map = arg;
+    else invalid = true;
+  }
+  if (!["check", "frontier"].includes(command) || invalid) {
+    console.error("Usage: tickets.mjs frontier [map] [--ref <ref>] | check [--ref <ref>]");
     process.exitCode = 2;
     return;
   }
   try {
-    const loaded = loadTickets("docs/wayfinder", map);
+    const loaded = loadTickets("docs/wayfinder", map, { ref });
     const resolved = resolveTickets(loaded.tickets);
     const problems = [...loaded.problems, ...resolved.problems];
     for (const problem of problems) console.error(`${problem.file}:${problem.line}: ${problem.message}`);

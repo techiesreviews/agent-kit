@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -90,4 +90,94 @@ test("check and frontier report fixture dependency errors with file:line and exi
       rmSync(cwd, { recursive: true, force: true });
     }
   }
+});
+
+test("assignee is a scalar, supports quotes and comments, and defaults to empty", () => {
+  for (const [field, expected] of [["", ""], ["assignee:", ""], ["assignee: # unassigned", ""],
+    ['assignee: "Lex Example" # owner', "Lex Example"], ["assignee: 'Sam O''Neil'", "Sam O'Neil"]]) {
+    const parsed = parseTicket(`---\nstatus: open\n${field}\n---`, "01-ready.md", "alpha");
+    assert.deepEqual(parsed.problems, []);
+    assert.equal(parsed.ticket.assignee, expected);
+  }
+});
+
+test("ref loading and CLI use committed tickets, including maps absent from the working tree", t => {
+  const cwd = mkdtempSync(join(tmpdir(), "agent-tickets-ref-"));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
+    GIT_AUTHOR_NAME: "Kit test", GIT_AUTHOR_EMAIL: "kit@example.com", GIT_COMMITTER_NAME: "Kit test", GIT_COMMITTER_EMAIL: "kit@example.com" };
+  const git = (...args: string[]) => {
+    const run = spawnSync("git", args, { cwd, env, encoding: "utf8", timeout: 5_000 });
+    assert.equal(run.status, 0, run.stderr);
+    return run.stdout.trim();
+  };
+  git("init", "-q", "--initial-branch=dev");
+  const root = "docs/wayfinder";
+  const file = `${root}/alpha/build/tickets/02-ready.md`;
+  const regular = `${root}/alpha/tickets/01-closed.md`;
+  const beta = `${root}/beta/tickets/01-ready.md`;
+  for (const folder of ["alpha/build/tickets", "alpha/tickets", "beta/tickets", "empty"]) mkdirSync(join(cwd, root, folder), { recursive: true });
+  writeFileSync(join(cwd, root, "empty/map.md"), "# Empty map\n");
+  writeFileSync(join(cwd, file), "---\nstatus: open\nassignee: Lex Example\nbuilder: sol\nblocked_by: [01-closed]\n---");
+  writeFileSync(join(cwd, regular), "---\nstatus: closed\n---");
+  writeFileSync(join(cwd, beta), "---\nstatus: open\n---");
+  git("add", "."); git("commit", "-qm", "tickets");
+  const ref = git("rev-parse", "HEAD");
+  writeFileSync(join(cwd, file), "---\nstatus: closed\n---");
+  rmSync(join(cwd, root, "beta"), { recursive: true });
+  mkdirSync(join(cwd, root, "local/tickets"), { recursive: true });
+  writeFileSync(join(cwd, root, "local/tickets/01-local.md"), "---\nstatus: open\n---");
+
+  const loaded = loadTickets(root, undefined, { ref, cwd });
+  assert.deepEqual(loaded.problems, []);
+  assert.deepEqual(loaded.tickets.map((ticket: { file: string }) => ticket.file), [regular, file, beta]);
+  const alpha = loadTickets(root, "alpha", { ref, cwd });
+  assert.equal(alpha.tickets[1].status, "open");
+  assert.equal(alpha.tickets[1].assignee, "Lex Example");
+  assert.deepEqual(loadTickets(root, "empty", { ref, cwd }).tickets, []);
+  assert.equal(loadTickets(join(cwd, root), "alpha").tickets[1].status, "closed");
+  assert.throws(() => loadTickets(root, "local", { ref, cwd }), /Unknown map: local/);
+  assert.throws(() => loadTickets(root, undefined, { ref: "missing-ref", cwd }), /Invalid ref: missing-ref/);
+
+  const script = resolve("scripts/agents/tickets.mjs");
+  const run = (...args: string[]) => spawnSync(process.execPath, [script, ...args], { cwd, env, encoding: "utf8", timeout: 5_000 });
+  for (const args of [["frontier", "alpha", "--ref", ref], ["frontier", "--ref", ref, "alpha"]]) {
+    const output = run(...args);
+    assert.equal(output.status, 0, output.stderr);
+    assert.match(output.stdout, /alpha\/build\/tickets\/02-ready.md\tsol\t02-ready/);
+    assert.doesNotMatch(output.stdout, /beta|local/);
+  }
+  const all = run("frontier", "--ref", "dev");
+  assert.equal(all.status, 0, all.stderr);
+  assert.match(all.stdout, /beta\/tickets\/01-ready.md/);
+  const check = run("check", "--ref", ref);
+  assert.equal(check.status, 0, check.stderr);
+  assert.equal(check.stdout, "Tickets checked: 3\n");
+  const bad = run("frontier", "--ref", "missing-ref");
+  assert.equal(bad.status, 1);
+  assert.match(bad.stderr, /Invalid ref: missing-ref/);
+  for (const args of [["check", "alpha"], ["frontier", "--ref"], ["check", "--ref", ref, "--ref", ref]]) {
+    const invalid = run(...args);
+    assert.equal(invalid.status, 2);
+    assert.match(invalid.stderr, /Usage:.*--ref <ref>/);
+  }
+});
+
+test("ref loading preserves frontmatter and dependency diagnostics", t => {
+  const cwd = mkdtempSync(join(tmpdir(), "agent-tickets-errors-"));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+  const git = (...args: string[]) => {
+    const output = spawnSync("git", args, { cwd, env, encoding: "utf8", timeout: 5_000 });
+    assert.equal(output.status, 0, output.stderr);
+  };
+  git("init", "-q");
+  const file = "docs/wayfinder/alpha/tickets/01-broken.md";
+  mkdirSync(join(cwd, "docs/wayfinder/alpha/tickets"), { recursive: true });
+  writeFileSync(join(cwd, file), "---\nstatus: invalid\nblocked_by: [missing]\n---");
+  git("add", ".");
+  git("-c", "user.name=Kit test", "-c", "user.email=kit@example.com", "commit", "-qm", "bad ticket");
+  const loaded = loadTickets("docs/wayfinder", "alpha", { ref: "HEAD", cwd });
+  assert.deepEqual(loaded.problems, [{ file, line: 2, message: "Invalid status: invalid" }]);
+  assert.deepEqual(resolveTickets(loaded.tickets).problems, [{ file, line: 3, message: "Unknown blocked_by ticket in alpha: missing" }]);
 });
