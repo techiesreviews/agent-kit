@@ -143,6 +143,25 @@ test("doctor accepts a branch cut from an earlier fetched dev tip", (t) => {
   assert.match(result.stdout, /✓ base: 1 commits behind origin\/dev; rebase before landing/);
 });
 
+test("doctor rejects a base that stopped being the dev tip over a day ago, across later fetches", (t) => {
+  const f = fixture(t);
+  const old = git(f.build, "rev-parse", "HEAD");
+  const advance = (name: string, env: NodeJS.ProcessEnv = {}) => {
+    writeFileSync(join(f.dev, name), "new dev work\n");
+    commit(f.dev, name);
+    // Pushing updates the shared origin/dev ref; the reflog records the committer date.
+    const pushed = spawnSync("git", ["-C", f.dev, "push", "origin", "dev"], { encoding: "utf8", env: { ...process.env, ...env } });
+    assert.equal(pushed.status, 0, pushed.stderr);
+    git(f.build, "fetch", "origin");
+  };
+  const twoDaysAgo = `${Math.floor(Date.now() / 1000) - 2 * 86400} +0000`;
+  advance("first.txt", { GIT_COMMITTER_DATE: twoDaysAgo });
+  advance("second.txt");
+  const result = f.run();
+  failure(result, "base");
+  assert.ok(result.stdout.includes(`stale: origin/dev moved on from merge-base ${old.slice(0, 7)} over a day ago`), result.stdout);
+});
+
 test("doctor rejects a common ancestor that was never a fetched dev tip", (t) => {
   const f = fixture(t);
   const old = git(f.build, "rev-parse", "HEAD");
@@ -181,14 +200,18 @@ test("doctor reports Node below 24 without searching the user's installations", 
   failure(f.run([], f.build, { PATH: `${bin}:/usr/bin:/bin`, CLAUDE_NODE_SEARCH_ROOT: empty }, true), "node");
 });
 
-for (const kind of ["missing", "real directory", "dangling link", "different shared directory"]) {
+for (const kind of ["missing", "real directory", "dangling link", "different shared directory", "shared missing", "shared dangling"]) {
   test(`doctor rejects node_modules: ${kind}`, (t) => {
     const f = fixture(t);
     const modules = join(f.build, "node_modules");
     rmSync(modules);
     if (kind === "real directory") mkdirSync(modules);
     if (kind === "dangling link") symlinkSync(join(f.directory, "missing"), modules);
-    if (kind === "different shared directory") {
+    if (kind === "shared missing" || kind === "shared dangling") {
+      rmSync(join(f.dev, "node_modules"), { recursive: true });
+      if (kind === "shared dangling") symlinkSync(join(f.directory, "gone"), join(f.dev, "node_modules"));
+    }
+    if (kind === "different shared directory" || kind.startsWith("shared ")) {
       const other = join(f.directory, "other_modules");
       mkdirSync(other);
       symlinkSync(other, modules);
@@ -292,4 +315,15 @@ test("agent.sh skips other repositories and invalid worktree paths", (t) => {
     assert.equal(result.status, 2, result.stdout + result.stderr);
     assert.doesNotMatch(result.stderr, /kit doctor/);
   }
+});
+
+test("agent.sh gates a separate checkout of the kit", (t) => {
+  const f = gateFixture(t);
+  const clone = join(f.directory, "clone");
+  mkdirSync(join(clone, "scripts/agents"), { recursive: true });
+  git(clone, "init");
+  writeFileSync(join(clone, "scripts/agents/kit"), "#!/bin/bash\n");
+  const result = f.run(clone, join(f.directory, "missing.md"));
+  assert.equal(result.status, 3, result.stdout + result.stderr);
+  assert.match(result.stderr, /agent.sh: kit doctor failed in /);
 });

@@ -3,12 +3,16 @@
 set -euo pipefail
 agent_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 # ASE_SKIP_DOCTOR=1 bypasses the gate for tests only.
-if [[ ${ASE_SKIP_DOCTOR:-} != 1 && -d ${2-} ]] &&
-  [[ $(git -C "$2" rev-parse --is-inside-work-tree 2>/dev/null) == true ]] &&
-  common=$(git -C "$2" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) &&
-  own_common=$(git -C "$agent_dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) &&
-  [[ $(realpath -- "$common") == "$(realpath -- "$own_common")" ]]; then
-  root=$(git -C "$2" rev-parse --show-toplevel)
+gate=false
+if [[ ${ASE_SKIP_DOCTOR:-} != 1 && -d ${2-} ]] && root=$(git -C "$2" rev-parse --show-toplevel 2>/dev/null); then
+  common=$(git -C "$root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=''
+  own_common=$(git -C "$agent_dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || own_common=''
+  # Gate this repo's worktrees and any other checkout of the kit; unrelated repos (the starter, test repos) pass through.
+  if [[ -n $common && -n $own_common && $(realpath -- "$common") == "$(realpath -- "$own_common")" ]] || [[ -f $root/scripts/agents/kit ]]; then
+    gate=true
+  fi
+fi
+if [[ $gate == true ]]; then
   status=0
   output=$(cd -- "$root" && KIT_ROOT="$root" "$agent_dir/kit" doctor --quiet 2>&1) || status=$?
   if (( status != 0 )); then
