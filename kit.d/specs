@@ -1,0 +1,137 @@
+#!/usr/bin/env node
+// kit: run the browser specs a change affects
+import { execFileSync, spawn } from "node:child_process";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { combineOutcomes, namedSpecs, routeSpecs, selectAffected, selectionLine, specGroups, summarizeRun } from "../specs-affected.mjs";
+
+const { kitRoot, kitOwner, kitResult, nodeEnv } = await import(
+  pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
+);
+const usage = `Usage: kit specs <spec…> [--list]
+       kit specs --affected [--base REF] [--list]
+       kit specs --help
+Default base: origin/dev. Names accept a spec path or an unambiguous basename.
+--list prints selection reasons and runs nothing.
+KIT_SPECS_RUNNER: executable replacing port.sh, called with the same argv.
+ASE_KNOWN_FAILURES: registry path (default tests/known-failures.json).
+`;
+
+function options(args) {
+  const flags = { names: [], affected: false, list: false, base: undefined };
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--base") {
+      if (flags.base !== undefined || !args[i + 1] || args[i + 1].startsWith("-")) throw new Error("--base requires one REF");
+      flags.base = args[++i];
+    } else if (["--affected", "--list"].includes(arg)) {
+      const key = arg.slice(2);
+      if (flags[key]) throw new Error(`duplicate option: ${arg}`);
+      flags[key] = true;
+    } else if (arg.startsWith("-")) throw new Error(`unknown option: ${arg}`);
+    else flags.names.push(arg);
+  }
+  if (flags.affected ? flags.names.length : !flags.names.length || flags.base !== undefined) throw new Error("choose spec names or --affected [--base REF]");
+  return flags;
+}
+
+function git(root, args) {
+  return execFileSync("git", ["-c", "core.quotepath=false", "-C", root, ...args], { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+}
+
+function snapshot(root) {
+  const paths = git(root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"]).split("\0");
+  const files = {};
+  for (const file of new Set(paths)) {
+    if (!/^(tests|src|scripts)\//.test(file) || !/\.(?:ts|tsx|js|mjs)$/.test(file) || !existsSync(join(root, file))) continue;
+    files[file] = readFileSync(join(root, file), "utf8");
+  }
+  return files;
+}
+
+const shellQuote = value => `'${value.replaceAll("'", "'\\''")}'`;
+
+async function execute(root, env, run, directory, index) {
+  const log = join(directory, `${index}-${run.group}.log`), report = join(directory, `${index}-${run.group}.json`);
+  const source = `.scratch/${run.project}/results-${run.project === "native-preview" ? "$((ASE_TEST_PORT + 1))" : "$ASE_TEST_PORT"}.json`;
+  const command = run.command.map(arg => arg === "$ASE_TEST_PORT" ? '"$ASE_TEST_PORT"' : shellQuote(arg)).join(" ");
+  // Remove an old port report before starting, then copy while the port lock is held.
+  const script = `source_report="${source}"\nrm -f -- "$source_report"\n${command}\nstatus=$?\nif [ -f "$source_report" ]; then cp -- "$source_report" ${shellQuote(report)} || exit 1; fi\nexit "$status"`;
+  console.log(`log: ${log}`);
+  const fd = openSync(log, "w");
+  let exitCode;
+  try {
+    exitCode = await new Promise(accept => {
+      const child = spawn(env.KIT_SPECS_RUNNER || resolve(import.meta.dirname, "../port.sh"), ["bash", "-c", script], { cwd: root, env, stdio: ["ignore", fd, fd] });
+      const interrupt = () => child.kill("SIGINT"), terminate = () => child.kill("SIGTERM");
+      process.once("SIGINT", interrupt);
+      process.once("SIGTERM", terminate);
+      const clear = () => {
+        process.removeListener("SIGINT", interrupt);
+        process.removeListener("SIGTERM", terminate);
+      };
+      child.once("error", error => { console.error(`problem: ${error.message}`); });
+      child.once("close", code => { clear(); accept(code ?? 1); });
+    });
+  } finally { closeSync(fd); }
+  let json;
+  try { json = JSON.parse(readFileSync(report, "utf8")); }
+  catch { /* A missing or invalid report is summarized as a failed run. */ }
+  return { report: json, log: readFileSync(log, "utf8"), exitCode };
+}
+
+async function main(args) {
+  let status = 2;
+  try {
+    const flags = options(args), root = resolve(kitRoot());
+    const files = snapshot(root);
+    let selected;
+    if (flags.affected) {
+      const base = git(root, ["merge-base", flags.base ?? "origin/dev", "HEAD"]).trim();
+      const changed = [
+        ...git(root, ["diff", "--name-only", "-z", base, "HEAD"]).split("\0"),
+        ...git(root, ["diff", "--name-only", "-z"]).split("\0"),
+        ...git(root, ["diff", "--cached", "--name-only", "-z"]).split("\0"),
+        ...git(root, ["ls-files", "--others", "--exclude-standard", "-z"]).split("\0"),
+      ].filter(Boolean);
+      selected = selectAffected({ files, changed, diff: git(root, ["diff", "--no-ext-diff", "--no-renames", "--unified=0", base, "--", "src/"]) });
+    } else selected = namedSpecs(flags.names, files);
+    if (!selected.length) { kitResult("ok", "specs none affected"); return 0; }
+    const available = Object.entries(files).filter(([file]) => /^tests\/(native-save|native-preview)\/[^/]+\.spec\.ts$/.test(file))
+      .map(([file, text]) => ({ file, groups: specGroups(file, text) }));
+    const runs = routeSpecs(selected, available);
+    if (flags.list) {
+      for (const spec of selected) console.log(selectionLine(spec));
+      kitResult("ok", `specs ${selected.length} selected (list only)`);
+      return 0;
+    }
+    status = 1;
+    const env = nodeEnv(), parent = join(root, ".scratch/kit-specs");
+    mkdirSync(parent, { recursive: true });
+    const directory = mkdtempSync(join(parent, "run-"));
+    console.log(`owner: ${kitOwner()}`);
+    const registry = env.ASE_KNOWN_FAILURES || join(root, "tests/known-failures.json");
+    const entries = JSON.parse(readFileSync(registry, "utf8"));
+    const outcomes = [];
+    for (const [index, run] of runs.entries()) {
+      const result = await execute(root, env, run, directory, index);
+      outcomes.push(...summarizeRun(run, result.report, { ...result, entries }));
+    }
+    const results = combineOutcomes(selected, outcomes);
+    for (const result of results) console.log(result.line);
+    const failed = results.filter(result => result.failed);
+    kitResult(failed.length ? "fail" : "ok", failed.length
+      ? `specs ${failed.length} of ${selected.length} failed: ${failed.map(result => basename(result.file) + (result.known ? "(known)" : "")).join(", ")}`
+      : `specs ${selected.length}/${selected.length} passed`);
+    return failed.length ? 1 : 0;
+  } catch (error) {
+    console.error(`problem: ${error.message}`);
+    if (status === 2) process.stderr.write(usage);
+    kitResult("fail", `specs ${error.message}`);
+    return status;
+  }
+}
+
+if (process.argv.length === 3 && ["--help", "-h"].includes(process.argv[2])) process.stdout.write(usage);
+else process.exitCode = await main(process.argv.slice(2));
