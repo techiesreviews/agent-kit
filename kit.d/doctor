@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# kit: check this worktree is safe to build in
+set -euo pipefail
+# shellcheck source=scripts/agents/kit-lib.sh
+source "${KIT_LIB:-$(dirname -- "${BASH_SOURCE[0]}")/../kit-lib.sh}"
+
+usage() {
+  printf 'Usage: kit doctor [--quiet]\nCheck this worktree is safe to build in.\n'
+}
+quiet=false
+for argument in "$@"; do
+  case $argument in
+    --help|-h) usage; exit 0 ;;
+    --quiet) quiet=true ;;
+    *) usage >&2; kit_result fail "doctor unknown argument $argument"; exit 2 ;;
+  esac
+done
+
+root=$(cd -- "$(kit_root)" && pwd -P)
+main=$(realpath -m -- "$(kit_main_root)")
+dev=$(realpath -m -- "$(kit_main_root)-dev")
+failed=()
+pass() {
+  if [[ $quiet == false ]]; then printf '✓ %s: %s\n' "$1" "$2"; fi
+}
+fail() {
+  failed+=("$1")
+  printf '✗ %s: %s; fix: %s\n' "$1" "$2" "$3"
+}
+
+if [[ $root != "$main" && $root != "$dev" ]]; then
+  pass place "$root"
+else
+  fail place "main or dev worktree ($root)" 'create a worktree with scripts/agents/worktree.sh <branch> origin/dev'
+fi
+
+if ! tip=$(git -C "$root" rev-parse --verify refs/remotes/origin/dev 2>/dev/null); then
+  fail base 'missing origin/dev' 'git fetch origin'
+elif [[ $root == "$dev" ]] && [[ $(git -C "$root" branch --show-current) == dev ]]; then
+  pass base 'dev in the dev worktree'
+elif git -C "$root" merge-base --is-ancestor origin/dev HEAD; then
+  pass base "contains origin/dev ${tip:0:7}"
+else
+  base=$(git -C "$root" merge-base HEAD origin/dev 2>/dev/null) || base=''
+  history=$(git -C "$root" reflog show --format=%H refs/remotes/origin/dev 2>/dev/null) || history=''
+  if [[ -n $base && $'\n'$history$'\n' == *$'\n'"$base"$'\n'* ]]; then
+    behind=$(git -C "$root" rev-list --count HEAD..origin/dev)
+    pass base "$behind commits behind origin/dev; rebase before landing"
+  else
+    base=${base:-none}
+    fail base "not based on origin/dev (merge-base ${base:0:7})" 'rebase onto origin/dev or recreate with scripts/agents/worktree.sh'
+  fi
+fi
+
+missing=()
+for config in .claude/settings.json .codex/hooks.json; do
+  [[ -f $root/$config ]] || missing+=("$config")
+done
+if (( ${#missing[@]} == 0 )); then
+  pass 'hook config' '.claude/settings.json and .codex/hooks.json exist'
+else
+  fail 'hook config' "missing ${missing[*]}" 'restore the missing hook configuration files'
+fi
+
+status=0
+printf '%s\n' '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git stash push -m probe"}}' |
+  CLAUDE_PROJECT_DIR="$root" timeout 5 bash "$root/scripts/agents/hooks/run.sh" bash-guard >/dev/null 2>&1 || status=$?
+if (( status == 2 )); then
+  pass 'hooks live' 'bash-guard rejects the probe (status 2)'
+else
+  fail 'hooks live' "bash-guard returned status $status (expected 2)" 'check jq and scripts/agents/hooks/bash-guard.sh'
+fi
+
+if node=$(kit_node_find); then
+  pass node "$("$node" --version)"
+else
+  fail node 'Node >=24 not found' 'install Node 24 (nvm) or fix PATH'
+fi
+
+modules=''
+if [[ -d $root/node_modules ]]; then modules=$(cd -- "$root/node_modules" && pwd -P); fi
+if [[ $root == "$dev" && -n $modules ]]; then
+  pass node_modules "$modules (dev worktree)"
+elif [[ ! -L $root/node_modules || -z $modules ]]; then
+  fail node_modules 'missing, dangling or non-symlink node_modules' "ln -s \"\$(realpath $dev/node_modules)\" node_modules"
+elif [[ -e $dev/node_modules ]] && [[ $modules != "$(realpath -- "$dev/node_modules")" ]]; then
+  fail node_modules 'node_modules differs from the dev worktree' "ln -s \"\$(realpath $dev/node_modules)\" node_modules"
+else
+  pass node_modules "$modules"
+fi
+
+status=0
+matches=$(git -C "$root" grep -nE '^(<<<<<<<|>>>>>>>)( |$)' 2>/dev/null) || status=$?
+if (( status == 1 )); then
+  pass conflicts 'no conflict markers in tracked files'
+elif (( status == 0 )); then
+  locations=()
+  while IFS=: read -r file line _text; do
+    locations+=("$file:$line")
+    (( ${#locations[@]} < 3 )) || break
+  done <<< "$matches"
+  fail conflicts "${locations[*]}" 'resolve the conflict markers'
+else
+  fail conflicts "git grep returned status $status" 'check tracked files with git grep'
+fi
+
+if (( ${#failed[@]} )); then
+  names=$(IFS=,; printf '%s' "${failed[*]}")
+  kit_result fail "doctor ${#failed[@]} failed: $names"
+  exit 1
+fi
+kit_result ok 'doctor 7/7 checks passed'
