@@ -11,6 +11,7 @@ const status = resolve("scripts/agents/kit.d/status");
 const kit = resolve("scripts/agents/kit");
 const longSlug = "20-this-ticket-name-is-longer-than-thirty-two-characters";
 interface Check { status?: string; conclusion?: string | null; state?: string }
+const passed: Check = { status: "COMPLETED", conclusion: "SUCCESS" };
 interface Run extends Check { headSha: string; workflowName: string; event: string }
 interface PR {
   number: number; state: string; title: string; body: string; headRefName: string;
@@ -99,8 +100,8 @@ async function fixture(t: TestContext) {
     pr(80, "8-neutral", [success, { conclusion: "SKIPPED" }, { conclusion: "NEUTRAL" }]),
     { ...pr(90, "9-empty"), statusCheckRollup: null },
   ];
-  const runCheck = (headSha: string, conclusion: string | null, state = "completed"): Run => ({
-    headSha, status: state, conclusion, workflowName: "CI", event: "push",
+  const runCheck = (headSha: string, conclusion: string | null, state = "completed", workflowName = "CI"): Run => ({
+    headSha, status: state, conclusion, workflowName, event: "push",
   });
   const runs = [runCheck(sha, "success"), runCheck(sha, "skipped"), runCheck(landedFull, "success")];
   async function run(args: string[] = [], overrides: { prs?: PR[]; runs?: Run[]; env?: NodeJS.ProcessEnv; front?: boolean } = {}) {
@@ -172,28 +173,54 @@ test("all maps group and sort, custom ref sets GitHub branch, kit front door dis
   for (const call of f.calls()) assert.equal(call[call.indexOf(call[0] === "pr" ? "--base" : "--branch") + 1], "feature/status");
 });
 
-test("branch CI marks latest older run and prioritizes failures over pending checks", async t => {
+test("branch CI marks latest older run and prioritizes failures over pending workflows", async t => {
   const f = await fixture(t);
   for (const [runs, expected] of [
     [[f.runCheck(f.landedFull, "neutral")], "pass (older sha)"],
     [[f.runCheck(f.sha, null, "in_progress")], "run"],
-    [[f.runCheck(f.sha, null, "queued"), f.runCheck(f.sha, "cancelled")], "fail"],
+    [[f.runCheck(f.sha, null, "queued"), f.runCheck(f.sha, "cancelled", "completed", "Deploy")], "fail"],
     [[], "-"],
   ] satisfies [Run[], string][]) {
     const output = await f.run(["alpha", "--ref", "dev", "--no-fetch"], { runs });
     assert.equal(output.code, 0);
     assert.equal(output.stdout.split("\n")[0], `ref dev ${f.sha.slice(0, 7)}  dev CI: ${expected}`);
-    assert.equal(f.row(output.stdout, "2-foo").at(-1), runs.some(run => run.headSha === f.landedFull) ? "pass" : "fail");
+    assert.equal(f.row(output.stdout, "2-foo").at(-1), runs.some(run => run.headSha === f.landedFull) ? "pass" : "-");
   }
 });
 
-test("closed unmerged PR is only a CI fallback; open PR wins over merged history", async t => {
+test("CI follows the LANDED cell: open PR checks, landed runs, or nothing", async t => {
   const f = await fixture(t);
-  const prs = [f.pr(1, "9-empty", [{ state: "ERROR" }], "CLOSED"), f.pr(2, "12-foo", [{ state: "PENDING" }])];
+  const prs = [f.pr(1, "9-empty", [{ state: "ERROR" }], "CLOSED"), f.pr(2, "12-foo", [{ state: "PENDING" }]),
+    f.pr(42, "2-foo", [{ conclusion: "FAILURE" }]), f.pr(43, "3-pending", [passed], "MERGED")];
   const output = await f.run(["alpha", "--no-fetch"], { prs });
   assert.equal(output.code, 0);
-  assert.deepEqual(f.row(output.stdout, "9-empty"), ["9-empty", "open", "sol", "-", "fail"]);
+  assert.deepEqual(f.row(output.stdout, "9-empty"), ["9-empty", "open", "sol", "-", "-"]);
   assert.deepEqual(f.row(output.stdout, "12-foo"), ["12-foo", "open", "sol", "#2 open", "run"]);
+  // A failing follow-up PR on a closed ticket is shown with its own checks, not the landed run's.
+  assert.deepEqual(f.row(output.stdout, "2-foo"), ["2-foo", "closed", "Lex", "#42 open", "fail"]);
+  // An open ticket whose PR merged shows the merge commit and that commit's runs.
+  assert.deepEqual(f.row(output.stdout, "3-pending"), ["3-pending", "open", "sol", `${f.landed} #43`, "pass"]);
+  // A landed commit without runs never borrows the PR head's checks.
+  const quiet = await f.run(["alpha", "--no-fetch"], { prs: [f.pr(44, "2-foo", [passed], "MERGED")], runs: [] });
+  assert.deepEqual(f.row(quiet.stdout, "2-foo"), ["2-foo", "closed", "Lex", `${f.landed} #44`, "-"]);
+  // A merge commit missing from the ref stays a bare PR number.
+  const elsewhere = { ...f.pr(45, "3-pending", [passed], "MERGED"), mergeCommit: { oid: "f".repeat(40) } };
+  const away = await f.run(["alpha", "--no-fetch"], { prs: [elsewhere] });
+  assert.deepEqual(f.row(away.stdout, "3-pending"), ["3-pending", "open", "sol", "#45 merged", "-"]);
+});
+
+test("only the latest run of each workflow counts for a commit", async t => {
+  const f = await fixture(t);
+  const rerun = [f.runCheck(f.sha, "success"), f.runCheck(f.sha, "failure"),
+    f.runCheck(f.landedFull, "success"), f.runCheck(f.landedFull, "failure")];
+  const output = await f.run(["alpha", "--no-fetch"], { runs: rerun });
+  assert.equal(output.stdout.split("\n")[0], `ref origin/dev ${f.sha.slice(0, 7)}  dev CI: pass`);
+  assert.equal(f.row(output.stdout, "2-foo").at(-1), "pass");
+  const other = [f.runCheck(f.sha, "failure", "completed", "Deploy"), ...rerun,
+    f.runCheck(f.landedFull, "failure", "completed", "Deploy")];
+  const failing = await f.run(["alpha", "--no-fetch"], { runs: other });
+  assert.match(failing.stdout.split("\n")[0], /dev CI: fail$/);
+  assert.equal(f.row(failing.stdout, "2-foo").at(-1), "fail");
 });
 
 test("GitHub failure and unreachable preview retain full git table and successful offline result", async t => {

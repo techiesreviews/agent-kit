@@ -58,6 +58,12 @@ function ci(checks) {
   return pending ? "run" : "pass";
 }
 
+// gh lists runs newest first; only each workflow's latest run counts, as in ci-summary.mjs.
+function latest(runs) {
+  const seen = new Set();
+  return runs.filter(run => !seen.has(run.workflowName) && seen.add(run.workflowName));
+}
+
 function ticketPR(ticket, prs) {
   const slug = ticket.slug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = new RegExp(`(?<![A-Za-z0-9])${slug}(?![A-Za-z0-9-])`);
@@ -94,6 +100,13 @@ async function status(args) {
   const { map, ref, noFetch } = flags;
   const root = kitRoot(), notes = [];
   const git = args => command("git", ["-C", root, ...args], root);
+  const onRef = async oid => {
+    if (!/^[0-9a-f]{40}$/.test(oid || "")) return "";
+    try {
+      await git(["merge-base", "--is-ancestor", oid, ref]);
+      return await git(["rev-parse", "--short", oid]);
+    } catch { return ""; }
+  };
   try {
     if (!noFetch && ref.startsWith("origin/")) {
       try { await git(["fetch", "-q", "origin"]); }
@@ -121,7 +134,7 @@ async function status(args) {
     if (live.note) notes.push(live.note);
     const currentRuns = github.runs.filter(run => run.headSha === sha);
     const older = !currentRuns.length && github.runs.length > 0;
-    const branchCI = github.unavailable ? "?" : ci(currentRuns.length ? currentRuns : github.runs.slice(0, 1));
+    const branchCI = github.unavailable ? "?" : ci(latest(currentRuns.length ? currentRuns : github.runs.slice(0, 1)));
     print(`ref ${ref} ${sha.slice(0, 7)}  ${branch} CI: ${branchCI}${older ? " (older sha)" : ""}`);
     print(live.line);
     for (const note of notes) print(`note: ${note}`);
@@ -133,14 +146,19 @@ async function status(args) {
     let group, open = 0;
     for (const ticket of tickets) {
       if (groups.size > 1 && group !== ticket.map) { group = ticket.map; print(`== ${group} ==`); }
-      const landed = ticket.status === "closed"
-        ? await git(["log", ref, "-1", "--format=%h", "-G", "^status:[[:space:]]*closed", "--", ticket.file]) : "";
       const pr = ticketPR(ticket, github.prs);
       if (pr?.state === "OPEN") open++;
-      const runs = landed ? github.runs.filter(run => run.headSha?.startsWith(landed)) : [];
-      const ticketCI = github.unavailable ? "?" : ci(runs.length ? runs : pr?.statusCheckRollup || []);
+      const merged = pr?.state === "MERGED";
+      // Closed tickets land with the commit that closed them; an open ticket can still have a merged PR.
+      const landed = ticket.status === "closed"
+        ? await git(["log", ref, "-1", "--format=%h", "-G", "^status:[[:space:]]*closed", "--", ticket.file])
+        : merged ? await onRef(pr.mergeCommit?.oid) : "";
+      // CI always describes the commit or PR shown in LANDED.
+      const ticketCI = github.unavailable ? "?"
+        : pr?.state === "OPEN" ? ci(pr.statusCheckRollup || [])
+        : landed ? ci(latest(github.runs.filter(run => run.headSha?.startsWith(landed)))) : "-";
       const location = pr?.state === "OPEN" ? `#${pr.number} open`
-        : landed ? `${landed}${pr?.state === "MERGED" ? ` #${pr.number}` : ""}` : "-";
+        : landed ? `${landed}${merged ? ` #${pr.number}` : ""}` : merged ? `#${pr.number} merged` : "-";
       const who = clean(ticket.assignee || ticket.builder || "-").split(/\s+/)[0];
       row([ticket.slug, ticket.status, who, location, ticketCI]);
     }
