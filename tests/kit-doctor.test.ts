@@ -78,7 +78,8 @@ function failure(result: ReturnType<typeof spawnSync<string>>, name: string) {
 
 test("doctor checks all seven conditions quickly and quiet success prints only RESULT", (t) => {
   const f = fixture(t);
-  assert.equal(statSync(doctor).mode & 0o777, 0o755);
+  // Git tracks only the executable bit; the rest of the mode follows the umask.
+  assert.equal(statSync(doctor).mode & 0o111, 0o111);
   const start = performance.now();
   const result = f.run();
   const elapsed = performance.now() - start;
