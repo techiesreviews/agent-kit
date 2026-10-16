@@ -4,4 +4,23 @@ set -euo pipefail
 # shellcheck source=scripts/agents/kit-lib.sh
 source "${KIT_LIB:-$(dirname -- "${BASH_SOURCE[0]}")/../kit-lib.sh}"
 kit_node
+for arg in "$@"; do
+  if [[ $arg == --help || $arg == -h ]]; then
+    "$KIT_NODE" --import tsx "$(kit_root)/scripts/agents/shots/cli.ts" --help
+    cat <<'HELP'
+Compare: kit shots <screen...>|--steps file --compare <ref> [--width] [--theme] [--out]
+Captures the ref (origin/<ref> when available) before the current checkout,
+then pairs before/after shots in the contact sheet.
+Base worktrees: <kitMainRoot>/.scratch/shots-base/<sha>/ (newest 3 retained).
+Base cache: <baseDir>/.scratch/kit-shots-cache/<key>/, reused per screen/steps/width/theme.
+Compare names shots before/after and overrides a steps file's name.
+HELP
+    exit 0
+  fi
+done
+for arg in "$@"; do
+  if [[ $arg == --compare ]]; then
+    exec "$KIT_NODE" --import tsx "$(kit_root)/scripts/agents/shots/compare.mjs" "$@"
+  fi
+done
 exec "$KIT_NODE" --import tsx "$(kit_root)/scripts/agents/shots/cli.ts" "$@"
