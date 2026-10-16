@@ -13,7 +13,9 @@ const { appendFileSync, existsSync, readFileSync, writeFileSync } = require("nod
 const { basename } = require("node:path");
 const tool = basename(process.argv[1]), args = process.argv.slice(2), env = process.env;
 const bodyIndex = args.indexOf("--body-file");
-appendFileSync(env.FAKE_CALLS, JSON.stringify({ tool, args, ...(bodyIndex >= 0 ? { body: readFileSync(args[bodyIndex + 1], "utf8") } : {}) }) + "\\n");
+const bodyField = args.find(arg => arg.startsWith("body=@"));
+const bodyPath = bodyIndex >= 0 ? args[bodyIndex + 1] : bodyField?.slice("body=@".length);
+appendFileSync(env.FAKE_CALLS, JSON.stringify({ tool, args, ...(bodyPath ? { body: readFileSync(bodyPath, "utf8") } : {}) }) + "\\n");
 const action = tool === "npm" ? (args[0] === "test" ? "unit" : args[1]) : tool === "fake-kit" ? args[0] : args.slice(0, 2).join("-");
 if (env.FAKE_FAIL === action) {
   for (let i = 1; i <= 35; i++) console.error("failure line " + i);
@@ -94,14 +96,15 @@ function fixture(t: TestContext) {
   };
   const calls = (): Call[] => existsSync(env.FAKE_CALLS!) ? readFileSync(env.FAKE_CALLS!, "utf8").trim().split("\n").map(line => JSON.parse(line)) : [];
   const ghCalls = (verb: string) => calls().filter(call => call.tool === "gh" && call.args[0] === "pr" && call.args[1] === verb);
-  const body = () => ghCalls("create").at(-1)?.body || ghCalls("edit").at(-1)?.body || "";
+  const apiCalls = () => calls().filter(call => call.tool === "gh" && call.args[0] === "api");
+  const body = () => ghCalls("create").at(-1)?.body || apiCalls().at(-1)?.body || "";
   const logDir = () => join(root, ".scratch/pr", readdirSync(join(root, ".scratch/pr")).at(-1)!);
   const peer = () => {
     const path = join(dir, "peer"); gitAt(dir, "clone", origin, path);
     gitAt(path, "config", "user.name", "Peer"); gitAt(path, "config", "user.email", "peer@example.com");
     return path;
   };
-  return { dir, root, main, origin, env, git, gitAt, head, commit, run, calls, ghCalls, body, logDir, peer };
+  return { dir, root, main, origin, env, git, gitAt, head, commit, run, calls, ghCalls, apiCalls, body, logDir, peer };
 }
 
 test("help and argument errors, including the kit front door", t => {
@@ -185,7 +188,9 @@ test("explicit title wins; latest subject is the fallback; existing PR body is u
   }
   const f = fixture(t), result = f.run(["--no-merge"], { FAKE_EXISTING: "1" });
   assert.equal(result.status, 0, result.stderr); assert.equal(f.ghCalls("create").length, 0);
-  assert.deepEqual(f.ghCalls("edit")[0].args.slice(0, 4), ["pr", "edit", "73", "--body-file"]);
+  assert.equal(f.ghCalls("edit").length, 0);
+  assert.deepEqual(f.apiCalls()[0].args.slice(0, 5), ["api", "--method", "PATCH", "repos/{owner}/{repo}/pulls/73", "-F"]);
+  assert.match(f.apiCalls()[0].args[5], /^body=@/);
   assert.match(f.body(), /## Summary/);
 });
 

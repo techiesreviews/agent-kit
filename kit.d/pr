@@ -167,7 +167,9 @@ async function main(args) {
     await push();
     const existing = JSON.parse(await gh("open", ["pr", "list", "--head", branch, "--base", flags.base, "--state", "open", "--json", "number"]));
     let number = existing[0]?.number;
-    if (number) await gh("open", ["pr", "edit", String(number), "--body-file", body]);
+    // `gh pr edit` fails on this repo: it queries the retired Projects (classic) field
+    // (repository.pullRequest.projectCards). The REST endpoint updates only the body.
+    if (number) await gh("open", ["api", "--method", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "-F", `body=@${body}`]);
     else {
       const created = await gh("open", createArgs);
       number = /\/pull\/(\d+)/.exec(created)?.[1];
