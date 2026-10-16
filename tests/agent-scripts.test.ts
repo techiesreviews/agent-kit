@@ -111,17 +111,18 @@ function reviewRepository(wt: string) {
   return git;
 }
 
-test("runner review and CI commands follow the per-CLI waiting guidance", () => {
+test("runner review, landing and waiting follow the kit and the per-CLI waiting guidance", () => {
   const runner = readFileSync("docs/agents/runner.md", "utf8");
   assert.ok(runner.split("\n").length <= 96);
-  assert.match(runner, /Claude:.*run_in_background: true/);
-  assert.match(runner, /Codex: run in the foreground or its background terminal; wait for the command to exit/);
-  for (const command of ["scripts/agents/review.sh", "scripts/agents/ci-status.sh dev --wait"]) {
+  assert.match(runner, /Claude runs them with\s+`run_in_background: true`/);
+  assert.match(runner, /Codex runs them in the foreground or its background terminal/);
+  assert.match(runner, /scripts\/agents\/kit wait pid\|output\|ci/);
+  for (const command of ["scripts/agents/kit review --ticket <ticket>", "scripts/agents/kit pr --ticket <ticket>"]) {
     const line = runner.split("\n").find(line => line.includes(command));
-    assert.ok(line);
-    assert.match(line, /follow Waiting above/);
-    assert.doesNotMatch(line, /in the background/);
+    assert.ok(line, command);
+    assert.match(line, /in the background/);
   }
+  assert.doesNotMatch(runner, /\b(?:review|ci-status|land)\.sh/);
 });
 
 test("model verification rejects missing metadata, fallback models and unsuccessful Claude results", () => {
