@@ -30,8 +30,6 @@ if (cli === "codex") {
   process.stderr.write("session id: resume-");
   await new Promise(resolve => setImmediate(resolve));
   console.error("session-123");
-} else {
-  process.stdout.write(JSON.stringify({ result: ${JSON.stringify(report.trimEnd())}, session_id: ${JSON.stringify(session)}, modelUsage: { [model]: {} } }));
 }
 if (process.env.FAKE_DESCENDANT) {
   const descendant = spawn(process.execPath, ["-e", 'setInterval(() => {}, 1000)'], { stdio: "ignore" });
@@ -45,6 +43,12 @@ if (process.env.FAKE_HOLD) {
   });
 }
 if (cli === "codex") writeFileSync(args[args.indexOf("-o") + 1], ${JSON.stringify(report)});
+else {
+  // Like the real CLI, Claude prints its single JSON result (with session_id) only at the end.
+  const flag = ["--session-id", "--resume"].find(name => args.includes(name));
+  const id = flag ? args[args.indexOf(flag) + 1] : ${JSON.stringify(session)};
+  process.stdout.write(JSON.stringify({ result: ${JSON.stringify(report.trimEnd())}, session_id: id, modelUsage: { [model]: {} } }));
+}
 process.exit(Number(process.env.FAKE_EXIT || 0));
 `;
 
@@ -134,7 +138,7 @@ function fixture(t: TestContext) {
   const fresh = (cli = "codex", overrides: NodeJS.ProcessEnv = {}) => start(["build", root, brief, "--out", out,
     "--cli", cli, "--model", cli === "codex" ? "gpt-6.1-sol" : "claude-opus-5-5"], overrides);
   const running = async () => {
-    await until(() => existsSync(statusPath) && status().state === "running" && status().session === session && status().pgid !== null, "running status and session");
+    await until(() => existsSync(statusPath) && status().state === "running" && status().session !== null && status().pgid !== null, "running status and session");
     const value = status();
     groups.add(value.pgid!);
     return value;
@@ -156,12 +160,19 @@ for (const cli of ["codex", "claude"]) test(`${cli} writes running status with a
   assert.equal(status.model, cli === "codex" ? "gpt-6.1-sol" : "claude-opus-5-5");
   assert.equal(status.worktree, f.root); assert.equal(status.brief, f.brief); assert.equal(status.out, f.out);
   assert.equal(status.exitCode, null); assert.equal(status.resumes, 0);
+  const assigned = cli === "codex" ? session : status.session!;
+  if (cli === "claude") {
+    assert.match(assigned, /^[0-9a-f-]{36}$/);
+    await until(() => f.calls().length === 1, "fake CLI call");
+    const [call] = f.calls();
+    assert.deepEqual(call.args.slice(-2), ["--session-id", assigned]);
+  } else assert.equal(status.session, session);
   assert.ok(Number.isFinite(Date.parse(status.started)) && Date.parse(status.updated) >= Date.parse(status.started));
   writeFileSync(f.hold, "go");
   const result = await run.done;
   assert.equal(result.code, 0, result.stderr);
   assert.equal(f.status().state, "done"); assert.equal(f.status().exitCode, 0);
-  assert.equal(f.status().session, session); assert.equal(f.status().pid, status.pid);
+  assert.equal(f.status().session, assigned); assert.equal(f.status().pid, status.pid);
   assert.match(result.stdout, /^artifacts: /); assert.ok(result.stdout.includes(report));
   assert.deepEqual(readdirSync(f.out).sort(), ["out.md", "run.log", "status.json"]);
 });
@@ -244,6 +255,42 @@ test("resume continues when a live runner dies without finalizing its running st
   const result = await resumed.done;
   assert.equal(result.code, 0, result.stderr); assert.equal(f.calls().length, 2);
   assert.equal(f.status().state, "done"); assert.equal(f.status().resumes, 1);
+});
+
+test("two waiting resume callers start exactly one replacement and both report its result", async t => {
+  const f = fixture(t);
+  const original = f.fresh("codex", { FAKE_HOLD: f.hold });
+  const running = await f.running();
+  const callers = [f.start(["--resume", f.out]), f.start(["--resume", f.out])];
+  for (const caller of callers) await until(() => caller.stdout().includes(`waiting: pid ${running.pid}`), "both callers waiting");
+  // App hard kill: runner and CLI group die without finalising the status.
+  process.kill(-running.pgid!, "SIGKILL"); original.child.kill("SIGKILL");
+  await original.done;
+  await until(() => f.status().resumes === 1 && f.calls().length === 2, "one replacement CLI");
+  writeFileSync(f.hold, "go");
+  const results = await Promise.all(callers.map(caller => caller.done));
+  for (const result of results) {
+    assert.equal(result.code, 0, result.stderr); assert.ok(result.stdout.includes(report));
+  }
+  assert.equal(f.calls().length, 2); assert.equal(f.status().state, "done"); assert.equal(f.status().resumes, 1);
+});
+
+test("a Claude run killed before its final JSON resumes its pre-assigned session", async t => {
+  const f = fixture(t);
+  const run = f.fresh("claude", { FAKE_HOLD: f.hold });
+  const { session: assigned } = await f.running();
+  await until(() => f.calls().length === 1, "fake CLI call");
+  run.child.stdout?.destroy(); run.child.stderr?.destroy();
+  run.child.kill("SIGHUP");
+  assert.equal((await run.done).code, 129);
+  assert.equal(f.status().state, "interrupted"); assert.equal(f.status().session, assigned);
+  writeFileSync(f.hold, "go");
+  const result = await f.start(["--resume", f.out]).done;
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(f.calls().length, 2);
+  const resumed = f.calls()[1].args;
+  assert.deepEqual(resumed.slice(-2), ["--resume", assigned]); assert.ok(!resumed.includes("--session-id"));
+  assert.equal(f.status().state, "done"); assert.equal(f.status().session, assigned);
 });
 
 test("a live unrelated pid is treated as dead", async t => {

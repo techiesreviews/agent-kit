@@ -148,8 +148,9 @@ export function claudeAdapter(options, common) {
     command: "claude", capture: true,
     args: ["-p", "--model", model, "--effort", effort, "--permission-mode", kind === "build" ? "acceptEdits" : "plan",
       ...(kind === "build" ? ["--add-dir", common] : ["--tools", "Read,Grep,Glob", "--setting-sources", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}']),
-      "--output-format", "json"],
-    resume: session => [...claudeAdapter(options, common).args, "--resume", session],
+      "--output-format", "json", ...(options.sessionId ? ["--session-id", options.sessionId] : [])],
+    // A resumed session keeps its id; --session-id would demand --fork-session.
+    resume: session => [...claudeAdapter({ ...options, sessionId: undefined }, common).args, "--resume", session],
     session: stdout => JSON.parse(stdout).session_id,
     finish: stdout => claudeResult(stdout, model, kind === "review"),
   };
@@ -205,35 +206,73 @@ function liveRunner(pid) {
   } catch { return false; }
 }
 
+function readStatus(path) {
+  return JSON.parse(readFileSync(path, "utf8"));
+}
+
+const pause = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+
+// One claim file per resume generation: exactly one caller restarts a dead run;
+// the others wait on the winner. Claims are never deleted, so they never go stale.
+function claimResume(out, generation) {
+  try {
+    writeFileSync(join(out, `resume-claim-${generation}`), `${process.pid}\n`, { flag: "wx" });
+    return true;
+  } catch (error) {
+    if (error.code === "EEXIST") return false;
+    throw error;
+  }
+}
+
+async function awaitClaimant(path, out, generation, interval) {
+  const claim = join(out, `resume-claim-${generation}`);
+  for (;;) {
+    if (readStatus(path).resumes >= generation) return true;
+    const holder = readFileSync(claim, "utf8").trim();
+    // An empty claim is still being written by its owner.
+    if (holder && !liveRunner(Number(holder))) return false;
+    await pause(interval);
+  }
+}
+
 async function resumeRun(out) {
   const path = join(out, "status.json");
-  let previous = JSON.parse(readFileSync(path, "utf8"));
-  if (liveRunner(previous.pid)) {
-    const interval = Number(process.env.ASE_RESUME_POLL_MS || 2000);
-    if (!Number.isSafeInteger(interval) || interval <= 0) throw new Error("ASE_RESUME_POLL_MS must be a positive integer");
-    print(process.stdout, `waiting: pid ${previous.pid}\n`);
-    const pid = previous.pid;
-    while (liveRunner(pid)) await new Promise(resolve => setTimeout(resolve, interval));
-    previous = JSON.parse(readFileSync(path, "utf8"));
-    if (previous.state !== "running") {
-      printReport(out);
-      return previous.exitCode;
+  const interval = Number(process.env.ASE_RESUME_POLL_MS || 2000);
+  if (!Number.isSafeInteger(interval) || interval <= 0) throw new Error("ASE_RESUME_POLL_MS must be a positive integer");
+  for (;;) {
+    let previous = readStatus(path);
+    if (liveRunner(previous.pid)) {
+      const pid = previous.pid;
+      print(process.stdout, `waiting: pid ${pid}\n`);
+      while (liveRunner(pid)) await pause(interval);
+      previous = readStatus(path);
+      if (previous.pid !== pid) continue;
+      if (previous.state !== "running") {
+        printReport(out);
+        return previous.exitCode ?? 1;
+      }
     }
+    if (previous.state === "done") { printReport(out); return 0; }
+    if (!previous.session) {
+      print(process.stderr, `problem: no session id recorded in ${path}; rerun instead\n`);
+      return 1;
+    }
+    if (previous.cli === "codex" && previous.kind === "review") {
+      print(process.stderr, "problem: cannot resume a Codex review; its temporary CODEX_HOME was removed; rerun instead\n");
+      return 1;
+    }
+    const generation = previous.resumes + 1;
+    if (!claimResume(out, generation)) {
+      if (await awaitClaimant(path, out, generation, interval)) continue;
+      print(process.stderr, `problem: resume ${generation} was claimed by a runner that died before starting; rerun instead\n`);
+      return 1;
+    }
+    const options = parseAgentArgs([previous.kind, previous.worktree, previous.brief,
+      "--model", previous.model, "--cli", previous.cli, "--effort", previous.effort,
+      ...(previous.base === undefined ? [] : ["--base", previous.base]),
+      ...(previous.commit === undefined ? [] : ["--commit", previous.commit]), "--out", out]);
+    return startRun(options, previous);
   }
-  if (previous.state === "done") { printReport(out); return 0; }
-  if (!previous.session) {
-    print(process.stderr, `problem: no session id recorded in ${path}; rerun instead\n`);
-    return 1;
-  }
-  if (previous.cli === "codex" && previous.kind === "review") {
-    print(process.stderr, "problem: cannot resume a Codex review; its temporary CODEX_HOME was removed; rerun instead\n");
-    return 1;
-  }
-  const options = parseAgentArgs([previous.kind, previous.worktree, previous.brief,
-    "--model", previous.model, "--cli", previous.cli, "--effort", previous.effort,
-    ...(previous.base === undefined ? [] : ["--base", previous.base]),
-    ...(previous.commit === undefined ? [] : ["--commit", previous.commit]), "--out", out]);
-  return startRun(options, previous);
 }
 
 function preparePrompt(options, brief, out) {
@@ -382,13 +421,16 @@ async function startRun(options, previous) {
   mkdirSync(artifacts, { recursive: true });
   const out = options.out ? resolve(options.out) : mkdtempSync(join(artifacts, `${options.kind}-${Date.now()}-${process.pid}-`));
   mkdirSync(out, { recursive: true });
+  // Claude reports its session id only in the final JSON; assign it up front so
+  // a run killed mid-way can still be resumed.
+  if (!previous && options.cli === "claude") options.sessionId = randomUUID();
   const status = {
     pid: process.pid, pgid: null, kind: options.kind, model: options.model, cli: options.cli, effort: options.effort,
     worktree: options.worktree, brief: options.brief, out,
     ...(options.base === undefined ? {} : { base: options.base }),
     ...(options.commit === undefined ? {} : { commit: options.commit }),
     started: previous?.started || new Date().toISOString(), state: "running", exitCode: null,
-    session: previous?.session ?? null, resumes: previous ? previous.resumes + 1 : 0,
+    session: previous?.session ?? options.sessionId ?? null, resumes: previous ? previous.resumes + 1 : 0,
   };
   const update = changes => writeStatus(join(out, "status.json"), status, changes);
   update();
