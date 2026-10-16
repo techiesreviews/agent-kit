@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# kit: check or add npm packages in the shared node_modules
+set -euo pipefail
+# shellcheck source=scripts/agents/kit-lib.sh
+source "${KIT_LIB:-$(dirname -- "${BASH_SOURCE[0]}")/../kit-lib.sh}"
+
+finished=false
+finish() {
+  local status=$?
+  trap - EXIT
+  if [[ $finished == false ]]; then kit_result fail 'deps could not finish'; fi
+  exit "$status"
+}
+trap finish EXIT
+
+usage() {
+  printf '%s\n' \
+    'Usage: kit deps check [--lock <file>] [--modules <dir>]' \
+    '       kit deps add <pkg>[@version] [--dev] [--prefix <shared parent>] [--lock-file <path>]' \
+    'Check locked versions, or add packages without replacing shared packages.'
+}
+for argument in "$@"; do
+  if [[ $argument == --help || $argument == -h ]]; then
+    usage
+    finished=true
+    kit_result ok 'deps help'
+    exit 0
+  fi
+done
+
+KIT_ROOT=$(kit_root)
+ASE_OWNER=$(kit_owner)
+export KIT_ROOT ASE_OWNER
+kit_node
+if [[ ${1-} == add ]]; then
+  lock_file=/tmp/ase-node-modules.lock
+  arguments=("$@")
+  for (( index=1; index < ${#arguments[@]}; index++ )); do
+    if [[ ${arguments[index]} == --lock-file ]]; then
+      lock_file=${arguments[index+1]-}
+      if [[ -z $lock_file || $lock_file == -* ]]; then
+        finished=true
+        kit_result fail 'deps --lock-file needs a path'
+        exit 2
+      fi
+      index=$((index + 1))
+    fi
+  done
+  # Other runners share this folder. Serialize the entire add and never remove
+  # or change their packages; npm itself only writes to an isolated staging tree.
+  exec {lock_fd}>>"$lock_file"
+  flock "$lock_fd"
+  export KIT_DEPS_LOCKED=1
+fi
+status=0
+"$KIT_NODE" "$(dirname -- "${BASH_SOURCE[0]}")/../deps-check.mjs" "$@" || status=$?
+finished=true
+exit "$status"

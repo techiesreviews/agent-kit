@@ -1,0 +1,264 @@
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { kitRoot, kitResult } from "./kit-lib.mjs";
+
+class UsageError extends Error {}
+const object = value => value !== null && typeof value === "object" && !Array.isArray(value);
+const packageName = name => /^(?:@[a-z0-9_~-][a-z0-9_.~-]*\/)?[a-z0-9_~-][a-z0-9_.~-]*$/i.test(name);
+
+/** Select only actual top-level packages; never follow a lock key outside modules. */
+export function lockedPackages(lock) {
+  if (!object(lock) || !object(lock.packages)) throw new UsageError("invalid lock: expected packages object");
+  const packages = [];
+  for (const [key, entry] of Object.entries(lock.packages)) {
+    if (!key.startsWith("node_modules/") || key.includes("/node_modules/")) continue;
+    const name = key.slice("node_modules/".length);
+    if (!packageName(name) || !object(entry)) throw new UsageError(`invalid lock entry ${key}`);
+    if (entry.link === true) continue;
+    if (typeof entry.version !== "string" || !entry.version) throw new UsageError(`invalid lock version for ${name}`);
+    packages.push({ name, version: entry.version, optional: entry.optional === true });
+  }
+  return packages;
+}
+
+/** Compare lock entries with installed name -> version values, without filesystem IO. */
+export function comparePackages(packages, installed) {
+  return packages.flatMap(({ name, version, optional }) => {
+    const actual = installed.get(name);
+    if (actual === undefined && optional) return [];
+    if (actual === version) return [];
+    return [{ name, locked: version, installed: actual,
+      text: actual === undefined ? `missing ${name}@${version}` : `mismatch ${name} locked ${version} installed ${actual}` }];
+  });
+}
+
+/** Existing entries must survive unchanged; additions alone are allowed. */
+export function snapshotChanges(before, after) {
+  return [...before].flatMap(([name, value]) => after.get(name) === value ? [] : [name]);
+}
+
+function json(file) { return JSON.parse(readFileSync(file, "utf8")); }
+function readLock(file) {
+  try { const lock = json(file); lockedPackages(lock); return lock; }
+  catch (error) { throw new UsageError(`cannot read lock ${file}: ${error.message}`); }
+}
+
+function check(lock, modules) {
+  const packages = lockedPackages(lock);
+  const installed = new Map();
+  for (const { name } of packages) {
+    try { installed.set(name, String(json(join(modules, name, "package.json")).version)); }
+    catch (error) {
+      // An unreadable or malformed installed manifest is not a valid match.
+      if (error.code !== "ENOENT") installed.set(name, "unreadable");
+    }
+  }
+  return { packages, mismatches: comparePackages(packages, installed) };
+}
+
+function entries(directory) {
+  try { return readdirSync(directory).sort(); }
+  catch (error) { if (error.code === "ENOENT") return []; throw error; }
+}
+
+function installedPackages(modules) {
+  return entries(modules).filter(name => !name.startsWith(".")).flatMap(name =>
+    name.startsWith("@") ? entries(join(modules, name)).map(child => `${name}/${child}`) : [name]);
+}
+
+function fingerprint(file) {
+  const stat = lstatSync(file);
+  return stat.isSymbolicLink() ? `link:${readlinkSync(file)}` :
+    `file:${stat.mode}:${createHash("sha256").update(readFileSync(file)).digest("hex")}`;
+}
+
+function snapshot(modules) {
+  const result = new Map();
+  for (const name of installedPackages(modules)) {
+    const manifest = join(modules, name, "package.json");
+    result.set(name, `${json(manifest).version}:${fingerprint(manifest)}`);
+  }
+  for (const name of entries(join(modules, ".bin"))) result.set(`.bin/${name}`, fingerprint(join(modules, ".bin", name)));
+  return result;
+}
+
+function npm(root, args) {
+  console.log(`deps: npm ${args.join(" ")}`);
+  // Lifecycle scripts could mutate unrelated packages. They are never needed to
+  // resolve a lock or copy an additive package tree.
+  const result = spawnSync("npm", [...args, "--ignore-scripts", "--no-audit", "--no-fund"], {
+    cwd: root, encoding: "utf8", env: process.env, maxBuffer: 10 * 1024 * 1024,
+  });
+  // Keep npm output off stdout, preserving exactly one machine-readable RESULT.
+  if (result.stdout) process.stderr.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
+  if (result.error || result.status !== 0) throw new Error(`npm failed: ${result.error?.message ?? result.status}`);
+}
+
+function dependencies(manifest) { return { ...manifest.dependencies, ...manifest.devDependencies, ...manifest.optionalDependencies }; }
+
+// npm 9 writes a hidden node_modules/.package-lock.json even with
+// --package-lock-only. Resolve a copy so the worktree's shared symlink is never
+// handed to npm. Rebase local references in both directions, retaining locked
+// versions and worktree-relative file: dependencies (including linked packages).
+function relocate(value, from, to, field = "") {
+  const localPath = path => relative(to, resolve(from, path)).split("\\").join("/");
+  if (typeof value === "string") return value.startsWith("file:") ? `file:${localPath(value.slice(5))}` : value;
+  if (Array.isArray(value)) return value.map(item => relocate(item, from, to));
+  if (!object(value)) return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => {
+    const nextKey = field === "packages" && key && !key.startsWith("node_modules/") ? localPath(key) : key;
+    const nextValue = key === "resolved" && value.link === true && typeof item === "string" ? localPath(item) : relocate(item, from, to, key);
+    return [nextKey, nextValue];
+  }));
+}
+
+function localSpec(root, spec) {
+  if (spec.startsWith("file:")) return `file:${resolve(root, spec.slice(5))}`;
+  if (/^(?:\.{0,2}\/)/.test(spec) || /\.tgz$/.test(spec)) return resolve(root, spec);
+  return null;
+}
+
+function resolveLock(root, spec, dev) {
+  const scratch = mkdtempSync(join(tmpdir(), "kit-deps-lock-"));
+  try {
+    for (const name of ["package.json", "package-lock.json"]) {
+      writeFileSync(join(scratch, name), `${JSON.stringify(relocate(json(join(root, name)), root, scratch), null, 2)}\n`);
+    }
+    try { cpSync(join(root, ".npmrc"), join(scratch, ".npmrc")); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+    npm(root, ["install", "--package-lock-only", "--prefix", scratch, ...(dev ? ["--save-dev"] : []), localSpec(root, spec) ?? spec]);
+    return {
+      manifest: relocate(json(join(scratch, "package.json")), scratch, root),
+      lock: relocate(readLock(join(scratch, "package-lock.json")), scratch, root),
+    };
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+}
+
+function resolvedPackage(root, spec, before, manifest, lock) {
+  const after = dependencies(manifest);
+  let names = Object.keys(after).filter(name => after[name] !== before[name]);
+  if (names.length !== 1) {
+    const named = spec.match(/^(@[^/]+\/[^@/]+|[^@/:]+)(?:@|$)/)?.[1];
+    const local = spec.startsWith("file:") ? spec.slice(5) : spec;
+    names = Object.keys(after).filter(name => name === named || after[name] === spec ||
+      (after[name].startsWith("file:") && resolve(root, after[name].slice(5)) === resolve(root, local)));
+  }
+  if (names.length !== 1) throw new Error(`cannot identify resolved package for ${spec}`);
+  const name = names[0];
+  const entry = lock.packages[`node_modules/${name}`];
+  const resolvedEntry = entry?.link === true ? lock.packages[entry.resolved] : entry;
+  if (!resolvedEntry || typeof resolvedEntry.version !== "string") throw new Error(`no resolved version for ${name}`);
+  return { name, version: resolvedEntry.version };
+}
+
+function add(root, options) {
+  const modules = join(options.prefix, "node_modules");
+  const before = snapshot(modules);
+  const baseline = check(readLock(join(root, "package-lock.json")), modules);
+  console.log(`deps: baseline ${baseline.mismatches.length} mismatches; ${before.size} installed entries`);
+  const previous = dependencies(json(join(root, "package.json")));
+  const { manifest, lock } = resolveLock(root, options.spec, options.dev);
+  const { name, version } = resolvedPackage(root, options.spec, previous, manifest, lock);
+  const staging = mkdtempSync(join(tmpdir(), "kit-deps-stage-"));
+  try {
+    // A local file/tarball must keep its original source; registry requests use
+    // the exact version npm just resolved, never the original version range.
+    npm(root, ["install", "--no-save", "--no-package-lock", "--install-links", "--prefix", staging,
+      localSpec(root, options.spec) ?? `${name}@${version}`]);
+    const stagedModules = join(staging, "node_modules");
+    const staged = snapshot(stagedModules);
+    const additions = [];
+    // Preflight every package and bin before the first shared-folder write.
+    for (const stagedName of installedPackages(stagedModules)) {
+      const stagedVersion = json(join(stagedModules, stagedName, "package.json")).version;
+      if (before.has(stagedName)) {
+        const sharedVersion = json(join(modules, stagedName, "package.json")).version;
+        if (sharedVersion !== stagedVersion) throw new Error(`conflict ${stagedName} shared ${sharedVersion} requested ${stagedVersion}`);
+      } else additions.push(stagedName);
+    }
+    if (json(join(stagedModules, name, "package.json")).version !== version) throw new Error(`staged version differs for ${name}`);
+    const bins = [...staged.keys()].filter(key => key.startsWith(".bin/"));
+    for (const bin of bins) {
+      if (before.has(bin) && before.get(bin) !== staged.get(bin)) throw new Error(`conflict ${bin}`);
+      if (!lstatSync(join(stagedModules, bin)).isSymbolicLink()) throw new Error(`invalid staged bin ${bin}`);
+      const target = resolve(stagedModules, ".bin", readlinkSync(join(stagedModules, bin)));
+      const destination = relative(stagedModules, target);
+      if (destination.startsWith("..") || isAbsolute(destination)) throw new Error(`invalid staged bin target ${bin}`);
+    }
+    const changedDuringStaging = snapshotChanges(before, snapshot(modules));
+    if (changedDuringStaging.length) throw new Error(`shared entries changed: ${changedDuringStaging.join(", ")}`);
+    for (const [file, value] of [["package.json", manifest], ["package-lock.json", lock]]) {
+      writeFileSync(join(root, file), `${JSON.stringify(value, null, 2)}\n`);
+    }
+    for (const addition of additions) {
+      console.log(`deps: copy ${addition}`);
+      mkdirSync(dirname(join(modules, addition)), { recursive: true });
+      cpSync(join(stagedModules, addition), join(modules, addition), { recursive: true, force: false, errorOnExist: true, verbatimSymlinks: true });
+    }
+    for (const bin of bins) {
+      if (before.has(bin)) continue;
+      mkdirSync(join(modules, ".bin"), { recursive: true });
+      symlinkSync(readlinkSync(join(stagedModules, bin)), join(modules, bin));
+    }
+    const changed = snapshotChanges(before, snapshot(modules));
+    if (changed.length) throw new Error(`shared entries removed or changed: ${changed.join(", ")}`);
+    const after = check(lock, modules);
+    const baselineKeys = new Set(baseline.mismatches.map(item => JSON.stringify([item.name, item.locked, item.installed])));
+    const grown = after.mismatches.filter(item => !baselineKeys.has(JSON.stringify([item.name, item.locked, item.installed])));
+    if (grown.length || after.mismatches.some(item => item.name === name)) {
+      throw new Error(`check worsened: ${grown.map(item => item.text).join(", ") || name}`);
+    }
+    return `${name}@${version} (${additions.length} packages added to shared node_modules)`;
+  } finally { rmSync(staging, { recursive: true, force: true }); }
+}
+
+function optionsFor(args, root) {
+  const [command, ...rest] = args;
+  if (command !== "check" && command !== "add") throw new UsageError("expected check or add (see kit deps --help)");
+  const options = { command, lock: join(root, "package-lock.json"), modules: join(root, "node_modules"),
+    prefix: "/home/ubulex/Projects/native-site-editor-dev", spec: "", dev: false };
+  const allowed = command === "check" ? { "--lock": "lock", "--modules": "modules" } : { "--prefix": "prefix", "--lock-file": "lockFile" };
+  for (let index = 0; index < rest.length; index++) {
+    const argument = rest[index];
+    if (command === "add" && argument === "--dev") { options.dev = true; continue; }
+    if (Object.hasOwn(allowed, argument)) {
+      const value = rest[++index];
+      if (!value || value.startsWith("-")) throw new UsageError(`${argument} needs a path`);
+      options[allowed[argument]] = resolve(value);
+    } else if (command === "add" && !argument.startsWith("-") && !options.spec) options.spec = argument;
+    else throw new UsageError(`unexpected argument ${argument}`);
+  }
+  if (command === "add" && !options.spec) throw new UsageError("add needs a package spec");
+  return options;
+}
+
+function main(args) {
+  try {
+    const root = kitRoot();
+    const options = optionsFor(args, root);
+    if (options.command === "add") {
+      if (process.env.KIT_DEPS_LOCKED !== "1") throw new UsageError("use kit deps add to acquire the shared lock");
+      kitResult("ok", `deps add ${add(root, options)}`);
+      return;
+    }
+    const { packages, mismatches } = check(readLock(options.lock), options.modules);
+    for (const item of mismatches) console.log(item.text);
+    if (mismatches.length) {
+      kitResult("fail", `deps check ${mismatches.length} mismatches: ${mismatches.slice(0, 5).map(item => item.name).join(", ")}`);
+      process.exitCode = 1;
+    } else {
+      const skipped = packages.filter(item => item.optional && !existsSync(join(options.modules, item.name, "package.json"))).length;
+      kitResult("ok", `deps check ${packages.length - skipped} packages match` + (skipped ? ` (${skipped} absent optional skipped)` : ""));
+    }
+  } catch (error) {
+    kitResult("fail", `deps ${error.message}`);
+    process.exitCode = error instanceof UsageError ? 2 : 1;
+  }
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main(process.argv.slice(2));
