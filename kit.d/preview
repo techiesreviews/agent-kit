@@ -113,7 +113,11 @@ async function verify(built) {
       const response = await fetch(url, { cache: "no-store", signal: AbortSignal.any([stop.signal, AbortSignal.timeout(Math.min(15_000, Math.max(1, deadline - Date.now())))]) });
       const html = await response.text();
       live = response.ok ? bundle(html) || "unreachable" : "unreachable";
-    } catch { live = "unreachable"; }
+    } catch (error) {
+      // A poll cut short by the verification deadline keeps the bundle the last answer named;
+      // any other failure means the site is unreachable now.
+      if (!(error instanceof DOMException && error.name === "TimeoutError" && Date.now() >= deadline - 1)) live = "unreachable";
+    }
     checkInterrupted();
     if (live === built) return { matches: true, live };
     console.log(`live: ${live}; waiting for ${built}`);
