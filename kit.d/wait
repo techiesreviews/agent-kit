@@ -82,8 +82,10 @@ function tail(text) {
   const lines = text.replace(/\r?\n$/, "").split(/\r?\n/).slice(-20);
   console.log(lines.join("\n"));
 }
-function hasWriter(file) {
+// Return the PIDs that hold the file open for writing right now.
+function writers(file) {
   const path = realpathSync(file);
+  const found = new Set();
   for (const pid of readdirSync("/proc").filter((name) => /^\d+$/.test(name) && Number(name) !== process.pid)) {
     let fds;
     try {
@@ -95,11 +97,11 @@ function hasWriter(file) {
       try {
         if (readlinkSync(`/proc/${pid}/fd/${fd}`) !== path) continue;
         const flags = /^flags:\s+([0-7]+)/m.exec(readFileSync(`/proc/${pid}/fdinfo/${fd}`, "utf8"));
-        if (flags && (parseInt(flags[1], 8) & 3)) return true;
+        if (flags && (parseInt(flags[1], 8) & 3)) { found.add(pid); break; }
       } catch (error) { if (!["EACCES", "ENOENT"].includes(error.code)) throw error; }
     }
   }
-  return false;
+  return found;
 }
 
 async function wait(config) {
@@ -119,6 +121,8 @@ async function wait(config) {
   let changed = started;
   let first = true;
   let outputPrinted = false;
+  // A producer may close the file between writes; keep waiting until every writer seen has exited.
+  const producers = new Set();
   const finish = (ok, message) => {
     if (kind === "output") {
       outputPrinted = true;
@@ -157,7 +161,9 @@ async function wait(config) {
           if (!regex) {
             const nextSize = statSync(target).size;
             if (size !== nextSize) { size = nextSize; changed = Date.now(); }
-            if (!hasWriter(target) && Date.now() - changed >= quiet)
+            for (const pid of writers(target)) producers.add(pid);
+            for (const pid of producers) if (!running(pid)) producers.delete(pid);
+            if (!producers.size && Date.now() - changed >= quiet)
               return finish(true, `output ${target} finished after ${elapsed(Date.now() - started)}`);
           }
         } else size = null;

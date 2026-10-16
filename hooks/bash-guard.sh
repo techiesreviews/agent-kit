@@ -151,7 +151,7 @@ function nested(s, timed, depth, first,    opening) {
   scan(s, timed, depth)
   if (opening) loopDepth--
 }
-function scan(s, timed, depth,    a,n,i,c,q,word,started,escaped,quoted,redirect,strip,end,line,hd,hq,hs,hcode,hdepth,hn,bound,j,code,body,input,ni,floor,saved) {
+function scan(s, timed, depth,    a,n,i,c,q,word,started,escaped,quoted,redirect,strip,end,line,hd,hq,hs,hcode,hdepth,hn,bound,j,code,body,input,ni,floor,saved,expect,skip,k) {
   # Quotes belong to one argument. Thus literal commit -m strings are skipped;
   # shell -c arguments are scanned explicitly. Never execute the input.
   n = 0
@@ -225,7 +225,14 @@ function scan(s, timed, depth,    a,n,i,c,q,word,started,escaped,quoted,redirect
         word = ""; started = 0; quoted = 0; redirect = 0
       }
       if (c == "" || c ~ /[\n;&|()]/) {
-        code = inspect(a, n, timed, depth, floor)
+        # Case patterns are words, not commands: after "case … in" or ";;", up to ")".
+        if (expect && n && (a[1] == "esac" || c !~ /[)|]/)) expect = 0
+        skip = expect && n
+        if (expect && c == ")") expect = 0
+        code = skip ? 0 : inspect(a, n, timed, depth, floor)
+        for (k = 1; k < n && a[k] ~ /^(do|then|else|elif|\{|!)$/; k++) ;
+        if (!skip && n && a[k] == "case") expect = c == "|" || (c != ")" && a[n] == "in")
+        if (c == ";" && substr(s, i + 1, 1) ~ /[;&]/) expect = 1
         if (code && depth < 16) for (j = 1; j <= ni; j++) scan(input[j], timed || code == 2, depth + 1)
         delete input; ni = 0
         for (j = bound + 1; j <= hn; j++) { hcode[j] = code; hdepth[j] = loopDepth }

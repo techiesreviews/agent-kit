@@ -118,6 +118,17 @@ test("output stays pending while a live writer holds an unchanged file open", as
   assert.equal(readFileSync(released, "utf8"), "released", "wait must not finish before the writer releases its file");
 });
 
+test("output waits for a producer that closes the file and appends again before exiting", async (t) => {
+  const file = join(temp(t), "output");
+  const writer = child(t, process.execPath, ["-e", 'const fs = require("fs"); const fd = fs.openSync(process.argv[1], "w"); fs.writeSync(fd, "first\\n"); console.log("ready"); setTimeout(() => fs.closeSync(fd), 200); setTimeout(() => fs.appendFileSync(process.argv[1], "second\\n"), 600); setTimeout(() => {}, 800)', file]);
+  await once(writer.stdout!, "data");
+  const pending = run(t, ["output", file, "--quiet", "0.05s", "--timeout", "3"]);
+  const output = await pending;
+  result(output, 0, /finished after /);
+  assert.match(output.stdout, /first\nsecond\nRESULT:/);
+  assert.notEqual(writer.exitCode ?? writer.signalCode, null, "wait must not finish before the producer exits");
+});
+
 test("output size changes restart the quiet period", async (t) => {
   const file = join(temp(t), "output");
   writeFileSync(file, "before\n");
