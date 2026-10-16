@@ -55,6 +55,31 @@ export function dependencyClosure(lock, name) {
   return closure;
 }
 
+/**
+ * Check every closure entry, nested ones included, against what Node would load
+ * from the staged tree: walk up from the dependent's folder like `require` does.
+ * Only top-level packages are pinned, so this catches nested drift before copying.
+ */
+export function stagedMismatches(closure, staging) {
+  const drift = [];
+  for (const [key, entry] of closure) {
+    const segments = key.split("/node_modules/");
+    const installName = segments.at(-1).replace(/^node_modules\//, "");
+    let parent = segments.length > 1 ? join(staging, segments.slice(0, -1).join("/node_modules/")) : staging;
+    let actual;
+    for (;;) {
+      try { actual = String(json(join(parent, "node_modules", installName, "package.json")).version); break; }
+      catch (error) { if (error.code !== "ENOENT") throw error; }
+      if (parent === staging || !parent.startsWith(staging)) break;
+      parent = dirname(parent);
+      if (parent.endsWith("/node_modules")) parent = dirname(parent);
+    }
+    if (actual === undefined && entry.optional === true) continue;
+    if (actual !== entry.version) drift.push(`${key} locked ${entry.version} staged ${actual ?? "missing"}`);
+  }
+  return drift;
+}
+
 /** Compare lock entries with installed name -> version values, without filesystem IO. */
 export function comparePackages(packages, installed) {
   return packages.flatMap(({ name, version, optional }) => {
@@ -204,7 +229,10 @@ function add(root, options) {
     if (entry.link === true || (typeof source === "string" && source.startsWith("file:"))) {
       return `file:${resolve(root, source.replace(/^file:/, ""))}`;
     }
-    return `${key.slice("node_modules/".length)}@${entry.version}`;
+    const installName = key.slice("node_modules/".length);
+    // An npm alias (`alias: npm:real@^1`) keeps its real package identity in the lock's `name`.
+    return typeof entry.name === "string" && entry.name !== installName
+      ? `${installName}@npm:${entry.name}@${entry.version}` : `${installName}@${entry.version}`;
   });
   const staging = mkdtempSync(join(tmpdir(), "kit-deps-stage-"));
   try {
@@ -215,14 +243,8 @@ function add(root, options) {
     npm(staging, ["install", "--no-save", "--no-package-lock", "--install-links", "--prefix", staging,
       localSpec(root, options.spec) ?? `${name}@${version}`, ...pins]);
     const stagedModules = join(staging, "node_modules");
-    for (const [key, entry] of topLevel) {
-      const stagedName = key.slice("node_modules/".length);
-      let actual;
-      try { actual = json(join(stagedModules, stagedName, "package.json")).version; }
-      catch (error) { if (error.code !== "ENOENT") throw error; }
-      if (actual === undefined && entry.optional === true) continue;
-      if (actual !== entry.version) throw new Error(`staged version differs for ${stagedName}: locked ${entry.version}, staged ${actual ?? "missing"}`);
-    }
+    const drift = stagedMismatches(closure, staging);
+    if (drift.length) throw new Error(`staged versions differ from the lock: ${drift.join(", ")}`);
     const staged = snapshot(stagedModules);
     const additions = [];
     // Preflight every package and bin before the first shared-folder write.

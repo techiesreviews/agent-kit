@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
-import { comparePackages, dependencyClosure, lockedPackages, snapshotChanges } from "../scripts/agents/deps-check.mjs";
+import { comparePackages, dependencyClosure, lockedPackages, snapshotChanges, stagedMismatches } from "../scripts/agents/deps-check.mjs";
 
 const repo = resolve(".");
 const kit = join(repo, "scripts/agents/kit");
@@ -280,6 +280,34 @@ test("deps add uses locked transitive versions even when a newer matching versio
   assert.equal(existsSync(join(f.modules, "newpkg/node_modules/child")), false);
 });
 
+test("deps staged check resolves nested lock entries the way Node loads them", t => {
+  const staging = mkdtempSync(join(tmpdir(), "kit-deps-staged-"));
+  t.after(() => rmSync(staging, { recursive: true, force: true }));
+  const put = (path: string, version: string) => writeJson(join(staging, path, "package.json"), { version });
+  put("node_modules/child", "2.0.0");
+  put("node_modules/a", "1.0.0");
+  put("node_modules/a/node_modules/child", "1.1.0");
+  put("node_modules/@s/b", "1.0.0");
+  const closure = new Map<string, LockEntry>([
+    ["node_modules/a", { version: "1.0.0" }], ["node_modules/child", { version: "2.0.0" }],
+    ["node_modules/a/node_modules/child", { version: "1.0.0" }],
+    ["node_modules/@s/b", { version: "1.0.0" }], ["node_modules/@s/b/node_modules/child", { version: "2.0.0" }],
+    ["node_modules/a/node_modules/gone", { version: "1.0.0", optional: true }],
+  ]);
+  assert.deepEqual(stagedMismatches(closure, staging), ["node_modules/a/node_modules/child locked 1.0.0 staged 1.1.0"]);
+});
+
+test("deps add keeps npm alias identities when pinning the locked closure", async t => {
+  const f = fixture(t);
+  const { registry } = await cachedRegistry(f, [
+    { name: "real", version: "1.0.0" },
+    { name: "newpkg", version: "1.0.0", dependencies: { alias: "npm:real@^1" } },
+  ]);
+  resultLine(f.add("newpkg", [], { npm_config_registry: registry }), 0, /deps add newpkg@1\.0\.0 \(2 packages added/);
+  assert.equal(JSON.parse(readFileSync(join(f.modules, "alias/package.json"), "utf8")).name, "real");
+  assert.equal(existsSync(join(f.modules, "real")), false);
+});
+
 test("deps add honours worktree npmrc for both offline npm operations", async t => {
   const f = fixture(t);
   const { registry } = await cachedRegistry(f, [{ name: "newpkg", version: "1.0.0" }]);
@@ -316,7 +344,7 @@ test("deps add validates every staged closure version before writing anything", 
   f.install("child", "1.0.0");
   const shared = tree(f.modules);
   const worktree = tree(f.root);
-  resultLine(f.add(tarball), 1, /^RESULT: fail deps staged version differs for child: locked 1\.0\.0, staged 9\.0\.0$/);
+  resultLine(f.add(tarball), 1, /^RESULT: fail deps staged versions differ from the lock: node_modules\/child locked 1\.0\.0 staged 9\.0\.0$/);
   assert.deepEqual(tree(f.modules), shared);
   assert.deepEqual(tree(f.root), worktree);
 });
