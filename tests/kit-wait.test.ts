@@ -4,6 +4,7 @@ import { once } from "node:events";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import test, { type TestContext } from "node:test";
 
 const script = resolve("scripts/agents/kit.d/wait");
@@ -153,6 +154,52 @@ test("output waits for a producer that closes the file and appends again before 
   const finished = result(await output, 0, /finished after /);
   assert.match(finished, /first\nsecond\nRESULT:/, "wait must not finish before the producer appends and exits");
   assert.deepEqual(await exited, [0, null]);
+});
+
+// A process that exits while the scan reads its /proc files fails the read with ESRCH. The preload
+// makes that happen on every scan: other processes lose their stat (even pids) or fd list (odd
+// pids), and a reader holding the file loses its fdinfo; the writer's files stay readable.
+const vanishing = `
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+const { KIT_TEST_KEEP_PID: keep, KIT_TEST_READER_PID: reader } = process.env;
+const thrown = { stat: 0, fd: 0, fdinfo: 0 };
+const vanish = (path) => {
+  const match = /^\\/proc\\/(\\d+)\\/(stat|fd|fdinfo)(?:\\/\\d+)?$/.exec(String(path));
+  if (!match || match[1] === keep) return;
+  const [, pid, kind] = match;
+  if (kind !== (pid === reader ? "fdinfo" : Number(pid) % 2 ? "fd" : "stat")) return;
+  thrown[kind]++;
+  throw Object.assign(new Error("ESRCH: no such process, read"), { code: "ESRCH" });
+};
+for (const name of ["readFileSync", "readdirSync"]) {
+  const original = fs[name];
+  fs[name] = function (path, ...rest) { vanish(path); return original.call(this, path, ...rest); };
+}
+syncBuiltinESMExports();
+process.on("exit", () => process.stderr.write("vanished " + JSON.stringify(thrown) + "\\n"));
+`;
+
+test("output keeps tracking its producer while other processes vanish mid-scan", async (t) => {
+  const directory = temp(t);
+  const file = join(directory, "output");
+  const preload = join(directory, "vanishing.mjs");
+  writeFileSync(preload, vanishing);
+  const writer = child(t, process.execPath, ["-e", 'const fs = require("fs"); const fd = fs.openSync(process.argv[1], "w"); fs.writeSync(fd, "first\\n"); console.log("ready"); process.stdin.once("data", () => { fs.writeSync(fd, "second\\n"); process.exit(0); })', file], baseEnv, "pipe");
+  await nextLine(writer, /^ready$/);
+  const reader = child(t, process.execPath, ["-e", 'require("fs").openSync(process.argv[1], "r"); console.log("ready"); process.stdin.once("data", () => {})', file], baseEnv, "pipe");
+  await nextLine(reader, /^ready$/);
+  const wait = child(t, process.execPath, ["--import", pathToFileURL(preload).href, script, "output", file, "--quiet", "0.05s"],
+    { ...baseEnv, KIT_WAIT_STATUS_MS: "1", KIT_TEST_KEEP_PID: String(writer.pid), KIT_TEST_READER_PID: String(reader.pid) });
+  const output = collect(wait);
+  await nextLine(wait, /^waiting /); // A full scan met the vanishing processes and still saw the writer.
+  const exited = once(writer, "exit");
+  writer.stdin!.write("append\n");
+  const finished = result(await output, 0, /finished after /);
+  assert.match(finished, /first\nsecond\nRESULT:/);
+  assert.deepEqual(await exited, [0, null]);
+  const thrown = JSON.parse(/^vanished (.*)$/m.exec((await output).stderr)![1]);
+  for (const kind of ["stat", "fd", "fdinfo"]) assert.ok(thrown[kind] > 0, `no ${kind} read vanished: ${JSON.stringify(thrown)}`);
 });
 
 test("output size changes restart the quiet period", async (t) => {
