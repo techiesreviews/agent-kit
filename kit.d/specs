@@ -124,7 +124,7 @@ async function main(args) {
         ...git(root, ["diff", "--cached", "--name-only", "-z"]).split("\0"),
         ...git(root, ["ls-files", "--others", "--exclude-standard", "-z"]).split("\0"),
       ].filter(Boolean);
-      selected = selectAffected({ files, changed, diff: git(root, ["diff", "--no-ext-diff", "--no-renames", "--unified=0", base, "--", "src/"]) });
+      selected = selectAffected({ files, changed, diff: git(root, ["diff", "--no-ext-diff", "--no-renames", "--unified=0", base, "--", "src/", "tests/native-save/server.ts"]) });
     } else selected = namedSpecs(flags.names, files);
     if (!selected.length) { kitResult("ok", "specs none affected"); return 0; }
     const available = Object.entries(files).filter(([file]) => /^tests\/(native-save|native-preview)\/[^/]+\.spec\.ts$/.test(file))
