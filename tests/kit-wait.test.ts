@@ -157,18 +157,17 @@ test("output waits for a producer that closes the file and appends again before 
 });
 
 // A process that exits while the scan reads its /proc files fails the read with ESRCH. The preload
-// makes that happen on every scan: other processes lose their stat (even pids) or fd list (odd
-// pids), and a reader holding the file loses its fdinfo; the writer's files stay readable.
+// makes that happen on every scan for three processes the test owns: one loses its stat, one its
+// fd list, and a reader holding the file its fdinfo. Every other process reads as usual.
 const vanishing = `
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-const { KIT_TEST_KEEP_PID: keep, KIT_TEST_READER_PID: reader } = process.env;
+const vanishes = { [process.env.KIT_TEST_STAT_PID]: "stat", [process.env.KIT_TEST_FD_PID]: "fd", [process.env.KIT_TEST_READER_PID]: "fdinfo" };
 const thrown = { stat: 0, fd: 0, fdinfo: 0 };
 const vanish = (path) => {
   const match = /^\\/proc\\/(\\d+)\\/(stat|fd|fdinfo)(?:\\/\\d+)?$/.exec(String(path));
-  if (!match || match[1] === keep) return;
-  const [, pid, kind] = match;
-  if (kind !== (pid === reader ? "fdinfo" : Number(pid) % 2 ? "fd" : "stat")) return;
+  if (!match || vanishes[match[1]] !== match[2]) return;
+  const kind = match[2];
   thrown[kind]++;
   throw Object.assign(new Error("ESRCH: no such process, read"), { code: "ESRCH" });
 };
@@ -189,8 +188,9 @@ test("output keeps tracking its producer while other processes vanish mid-scan",
   await nextLine(writer, /^ready$/);
   const reader = child(t, process.execPath, ["-e", 'require("fs").openSync(process.argv[1], "r"); console.log("ready"); process.stdin.once("data", () => {})', file], baseEnv, "pipe");
   await nextLine(reader, /^ready$/);
+  const [stat, fd] = [child(t, "/bin/sleep", ["600"]), child(t, "/bin/sleep", ["600"])];
   const wait = child(t, process.execPath, ["--import", pathToFileURL(preload).href, script, "output", file, "--quiet", "0.05s"],
-    { ...baseEnv, KIT_WAIT_STATUS_MS: "1", KIT_TEST_KEEP_PID: String(writer.pid), KIT_TEST_READER_PID: String(reader.pid) });
+    { ...baseEnv, KIT_WAIT_STATUS_MS: "1", KIT_TEST_STAT_PID: String(stat.pid), KIT_TEST_FD_PID: String(fd.pid), KIT_TEST_READER_PID: String(reader.pid) });
   const output = collect(wait);
   await nextLine(wait, /^waiting /); // A full scan met the vanishing processes and still saw the writer.
   const exited = once(writer, "exit");
