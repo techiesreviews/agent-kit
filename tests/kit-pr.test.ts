@@ -381,6 +381,10 @@ test("focused unit files: changed tests, tests naming a changed helper or fixtur
   assert.deepEqual(focusedUnitFiles(changes, classify(changes), sources), ["tests/a.test.ts", "tests/b.test.ts", "tests/code-map.test.ts"]);
   assert.deepEqual(focusedUnitFiles(rows("fixtures/native-starter/index.html"), { tier: "tests", docs: false }, sources), ["tests/b.test.ts"]);
   assert.deepEqual(focusedUnitFiles(rows("docs/x.md"), { tier: "docs", docs: true }, sources), ["tests/code-map.test.ts"]);
+  // A test that reads a changed docs file (here a JSON one) runs with the docs tier.
+  const owner = { ...sources, "tests/owner-setup.test.ts": 'readFile("docs/native-github-app.json")' };
+  assert.deepEqual(focusedUnitFiles(rows("docs/native-github-app.json"), { tier: "docs", docs: true }, owner),
+    ["tests/code-map.test.ts", "tests/owner-setup.test.ts"]);
 });
 
 test("a docs-only PR runs only doc guards, skips review, and still waits for CI and merges", t => {

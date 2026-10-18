@@ -1,7 +1,7 @@
 // Which local checks `kit pr` runs: the highest tier any changed path reaches. CI on GitHub is the backstop.
 const order = ["docs", "css", "tests", "full"];
 
-/** Unit test files that read the repo's own docs (code map, runner guide, MCP tool list). */
+/** Unit test files that read the repo's own docs (code map, runner guide, MCP tool list); any test naming a changed docs path joins them. */
 export const docsGuardTests = ["tests/agent-scripts.test.ts", "tests/code-map.test.ts", "tests/mcp-runtime.test.ts"];
 
 const unitTest = path => /^tests\/[^/]+\.test\.ts$/.test(path);
@@ -42,7 +42,7 @@ function key(path) {
   return parts.at(-1).replace(/\.[^.]*$/, "").replace(/\.(test|spec)$/, "");
 }
 
-/** Unit test files for a focused run: changed ones, ones naming a changed helper or fixture, and docs guards. */
+/** Unit test files for a focused run: changed ones, ones naming a changed helper, fixture or docs path, and docs guards. */
 export function focusedUnitFiles(changes, plan, sources) {
   const files = new Set();
   const tests = Object.keys(sources);
@@ -52,7 +52,11 @@ export function focusedUnitFiles(changes, plan, sources) {
     const name = key(change.path);
     if (name.length >= 3) for (const test of tests) if (sources[test].includes(name)) files.add(test);
   }
-  if (plan.docs) for (const test of docsGuardTests) if (tests.includes(test)) files.add(test);
+  if (plan.docs) {
+    for (const test of docsGuardTests) if (tests.includes(test)) files.add(test);
+    for (const { path } of changes.filter(change => pathTier(change) === "docs"))
+      for (const test of tests) if (sources[test].includes(path)) files.add(test);
+  }
   return [...files].sort();
 }
 
