@@ -8,14 +8,15 @@ import { pathToFileURL } from "node:url";
 const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const usage = "Usage: kit pr [--base dev] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release]\n";
+const { checkSteps, classify, focusedUnitFiles, parseChanges } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
+const usage = "Usage: kit pr [--base dev] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release] [--full]\n";
 const kit = process.env.KIT_PR_KIT || resolve(import.meta.dirname, "../kit");
 
 function options(args) {
   const flags = {};
   for (let i = 0; i < args.length; i++) {
     const flag = args[i];
-    if (!["--base", "--title", "--ticket", "--no-merge", "--dry-run", "--release"].includes(flag) || Object.hasOwn(flags, flag))
+    if (!["--base", "--title", "--ticket", "--no-merge", "--dry-run", "--release", "--full"].includes(flag) || Object.hasOwn(flags, flag))
       throw new Error(`unknown or duplicate option: ${flag}`);
     if (["--base", "--title", "--ticket"].includes(flag)) {
       const value = args[++i];
@@ -24,7 +25,7 @@ function options(args) {
     } else flags[flag] = true;
   }
   return { base: flags["--base"] ?? "dev", title: flags["--title"], ticket: flags["--ticket"],
-    noMerge: flags["--no-merge"], dryRun: flags["--dry-run"], release: flags["--release"] };
+    noMerge: flags["--no-merge"], dryRun: flags["--dry-run"], release: flags["--release"], full: flags["--full"] };
 }
 
 function ticketTitle(file) {
@@ -128,13 +129,39 @@ async function main(args) {
     // then against our own last push, so a colleague's push to the branch is never overwritten.
     let pushed = (await execute("guards", "git", ["rev-parse", "--verify", "-q", `refs/remotes/origin/${branch}`])).text.trim();
     await rebase();
-    const tests = [];
-    for (const [name, argv] of [["check", ["run", "check"]], ["unit", ["test"]], ["lint", ["run", "lint"]]]) {
-      await run(name, "npm", argv); ok(name);
-      tests.push(`- npm ${argv.join(" ")}: ok`);
+
+    // Scale the local checks to the PR's own diff (merge base to HEAD, after the rebase).
+    step = "tier";
+    const changes = parseChanges(await git("tier", ["-c", "core.quotepath=false", "diff", "--name-status", "--no-renames", `origin/${flags.base}...HEAD`]));
+    const plan = classify(changes, { full: flags.full });
+    const { steps, review } = checkSteps(plan);
+    console.log(`tier: ${plan.tier} (${plan.reason})`);
+    if (plan.tier === "css") console.log("reminder: visible CSS changes need kit shots evidence");
+    const tests = [`Tier: ${plan.tier} (${plan.reason})`, ""];
+    const sources = () => Object.fromEntries(readdirSync(join(root, "tests")).filter(name => name.endsWith(".test.ts"))
+      .map(name => [`tests/${name}`, readFileSync(join(root, "tests", name), "utf8")]));
+    const commands = {
+      check: () => ["npm", ["run", "check"]], unit: () => ["npm", ["test"]], lint: () => ["npm", ["run", "lint"]],
+      colours: () => ["node", ["scripts/check-colours.mjs"]], tickets: () => ["node", ["scripts/agents/tickets.mjs", "check"]],
+      "unit-files": () => {
+        const files = focusedUnitFiles(changes, plan, sources());
+        return files.length ? ["scripts/agents/unit.sh", files] : undefined;
+      },
+    };
+    for (const id of steps) {
+      if (id === "specs") {
+        const specs = await run("specs", kit, ["specs", "--affected", "--base", `origin/${flags.base}`]); ok("specs");
+        tests.push(`- kit specs --affected --base origin/${flags.base}: ${specs.split(/\r?\n/).findLast(line => line.startsWith("RESULT: ")) || "ok"}`);
+        continue;
+      }
+      const name = id === "unit-files" ? "unit" : id, command = commands[id]();
+      if (!command) { console.log("unit: no affected unit tests"); tests.push("- unit: no affected unit tests"); continue; }
+      await run(name, ...command); ok(name);
+      tests.push(`- ${[command[0], ...command[1]].join(" ")}: ok`);
     }
-    const specs = await run("specs", kit, ["specs", "--affected", "--base", `origin/${flags.base}`]); ok("specs");
-    tests.push(`- kit specs --affected --base origin/${flags.base}: ${specs.split(/\r?\n/).findLast(line => line.startsWith("RESULT: ")) || "ok"}`);
+    const skipped = Object.entries({ check: "npm run check", unit: "npm test (all unit tests)", lint: "npm run lint", specs: "kit specs --affected" })
+      .filter(([id]) => !steps.includes(id)).map(([, label]) => label).concat(review ? [] : ["kit review"]);
+    if (skipped.length) tests.push(`- skipped for the ${plan.tier} tier (CI runs the full set): ${skipped.join(", ")}`);
 
     step = "body";
     let head = await git("body", ["rev-parse", "HEAD"]);
@@ -153,7 +180,7 @@ async function main(args) {
     const reviewArgs = ["review", "--base", `origin/${flags.base}`, "--pr"];
     if (flags.dryRun) {
       console.log(`branch: ${branch}\nbase: ${flags.base}\nHEAD: ${head}\ntitle: ${prTitle}\nbody: ${body}`);
-      for (const command of [["git", ...pushArgs()], ["gh", ...createArgs], [kit, ...reviewArgs, "N", ...(flags.ticket ? ["--ticket", flags.ticket] : [])]])
+      for (const command of [["git", ...pushArgs()], ["gh", ...createArgs], ...(review ? [[kit, ...reviewArgs, "N", ...(flags.ticket ? ["--ticket", flags.ticket] : [])]] : [])])
         console.log(command.map(quote).join(" "));
       if (!flags.noMerge && !flags.release) console.log("gh pr merge N --rebase --delete-branch --repo <owner/name> (or --auto --rebase with a merge queue)");
       kitResult("ok", `dry-run ${head.slice(0, 7)} ${branch} -> ${flags.base}`);
@@ -177,15 +204,18 @@ async function main(args) {
     if (!/^[1-9]\d*$/.test(String(number))) throw new Error("could not determine PR number");
     number = String(number);
     ok("open");
-    console.log(`PR #${number}; review running`);
     step = "review";
-    const saved = savedReview(head, await git("review", ["merge-base", `origin/${flags.base}`, "HEAD"]));
-    if (saved) {
-      const comment = join(directory, "review.md");
-      writeFileSync(comment, `Reused review: ${saved}\nHEAD: ${head}\n\n${readFileSync(join(saved, "result.md"), "utf8")}`);
-      await gh("review", ["pr", "comment", number, "--body-file", comment]);
-    } else await run("review", kit, [...reviewArgs, number, ...(flags.ticket ? ["--ticket", flags.ticket] : [])]);
-    ok("review");
+    console.log(`PR #${number}; ${review ? "review running" : `review: skipped (${plan.tier} tier)`}`);
+    // The docs tier has no model review; CI still gates the merge.
+    if (review) {
+      const saved = savedReview(head, await git("review", ["merge-base", `origin/${flags.base}`, "HEAD"]));
+      if (saved) {
+        const comment = join(directory, "review.md");
+        writeFileSync(comment, `Reused review: ${saved}\nHEAD: ${head}\n\n${readFileSync(join(saved, "result.md"), "utf8")}`);
+        await gh("review", ["pr", "comment", number, "--body-file", comment]);
+      } else await run("review", kit, [...reviewArgs, number, ...(flags.ticket ? ["--ticket", flags.ticket] : [])]);
+      ok("review");
+    }
     if (flags.noMerge || flags.release) {
       kitResult("ok", `opened #${number} ${head.slice(0, 7)}`);
       return 0;

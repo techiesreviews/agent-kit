@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
+import { checkSteps, classify, focusedUnitFiles, parseChanges } from "../scripts/agents/pr-tier.mjs";
 
 const pr = resolve("scripts/agents/kit.d/pr");
 const kit = resolve("scripts/agents/kit");
@@ -16,7 +17,8 @@ const bodyIndex = args.indexOf("--body-file");
 const bodyField = args.find(arg => arg.startsWith("body=@"));
 const bodyPath = bodyIndex >= 0 ? args[bodyIndex + 1] : bodyField?.slice("body=@".length);
 appendFileSync(env.FAKE_CALLS, JSON.stringify({ tool, args, ...(bodyPath ? { body: readFileSync(bodyPath, "utf8") } : {}) }) + "\\n");
-const action = tool === "npm" ? (args[0] === "test" ? "unit" : args[1]) : tool === "fake-kit" ? args[0] : args.slice(0, 2).join("-");
+const scripts = { "unit.sh": "unit", "tickets.mjs": "tickets", "check-colours.mjs": "colours" };
+const action = tool === "npm" ? (args[0] === "test" ? "unit" : args[1]) : scripts[tool] || (tool === "fake-kit" ? args[0] : args.slice(0, 2).join("-"));
 if (env.FAKE_FAIL === action) {
   for (let i = 1; i <= 35; i++) console.error("failure line " + i);
   if (tool === "fake-kit") console.log("RESULT: fail child failure");
@@ -51,12 +53,13 @@ else if (tool === "gh") {
 }
 `;
 
-function fixture(t: TestContext) {
+// Default branch: two commits to feature.txt (full tier). `changes` replaces them with one commit of these files.
+function fixture(t: TestContext, changes?: Record<string, string>) {
   const dir = mkdtempSync(join(tmpdir(), "kit-pr-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const origin = join(dir, "origin.git"), root = join(dir, "work"), main = join(dir, "main"), bin = join(dir, "bin");
   mkdirSync(bin); mkdirSync(main);
-  for (const name of ["npm", "gh", "fake-kit"]) { writeFileSync(join(bin, name), fake); chmodSync(join(bin, name), 0o755); }
+  for (const name of ["npm", "gh", "fake-kit", "fake.cjs"]) { writeFileSync(join(bin, name), fake); chmodSync(join(bin, name), 0o755); }
   // kit-lib's nodeEnv puts the Node directory first on PATH; where npm sits beside node (CI), that would
   // shadow the fake npm. A node link here makes bin the Node directory itself (same fix as kit-deps).
   symlinkSync(process.execPath, join(bin, "node"));
@@ -76,6 +79,13 @@ function fixture(t: TestContext) {
   writeFileSync(join(root, ".gitignore"), ".scratch/\n");
   writeFileSync(join(root, "file.txt"), "base\n");
   writeFileSync(join(root, "ticket.md"), '---\ntitle: "Ticket title"\n---\n\nTask\n');
+  // Repo scripts the smaller tiers run, as fakes that record their calls.
+  mkdirSync(join(root, "scripts/agents"), { recursive: true }); mkdirSync(join(root, "tests"));
+  const wrapper = `import { createRequire } from "node:module";\ncreateRequire(import.meta.url)(${JSON.stringify(join(bin, "fake.cjs"))});\n`;
+  for (const path of ["scripts/agents/tickets.mjs", "scripts/check-colours.mjs"]) writeFileSync(join(root, path), wrapper);
+  writeFileSync(join(root, "scripts/agents/unit.sh"), fake); chmodSync(join(root, "scripts/agents/unit.sh"), 0o755);
+  for (const name of ["a", "code-map"]) writeFileSync(join(root, `tests/${name}.test.ts`), `// ${name}\n`);
+  writeFileSync(join(root, "tests/b.test.ts"), 'import "./fakes/thing.ts";\n');
   git("add", "."); git("commit", "-m", "base");
   git("branch", "main"); git("push", "origin", "dev", "main");
   git("checkout", "-b", "feature/kit-pr");
@@ -83,7 +93,11 @@ function fixture(t: TestContext) {
     writeFileSync(join(root, file), content); git("add", file); git("commit", "-m", subject);
     return git("rev-parse", "HEAD");
   };
-  commit("First change"); const head = commit("Second change");
+  let head: string;
+  if (changes) {
+    for (const [file, content] of Object.entries(changes)) { mkdirSync(join(root, file, ".."), { recursive: true }); writeFileSync(join(root, file), content); }
+    git("add", "."); git("commit", "-m", "Scoped change"); head = git("rev-parse", "HEAD");
+  } else { commit("First change"); head = commit("Second change"); }
   const run = (args: string[] = [], overrides: NodeJS.ProcessEnv = {}, front = false) => {
     const result = spawnSync(front ? kit : pr, front ? ["pr", ...args] : args, { cwd: root, env: { ...env, ...overrides }, encoding: "utf8", timeout: 25_000 });
     assert.equal(result.error, undefined, result.error?.message);
@@ -330,4 +344,87 @@ test("push rejection and an unparseable create URL fail at their steps", t => {
   assert.equal(f.calls().some(call => call.tool === "gh"), false);
   rmSync(hook);
   const badUrl = f.run([], { FAKE_BAD_URL: "1" }); assert.equal(badUrl.status, 1); assert.match(badUrl.stdout, /RESULT: fail open: could not determine PR number/);
+});
+
+const rows = (...paths: string[]) => paths.map(path => ({ status: "M", path }));
+
+test("each path reaches a tier and the highest present wins", () => {
+  assert.deepEqual(classify(rows("README.md", "docs/agents/runner.md", "docs/work/x/tickets/1-a.md", "GLOSSARY.md")),
+    { tier: "docs", reason: "4 files, all docs", docs: true });
+  assert.deepEqual(classify(rows("tests/a.test.ts", "fixtures/native-starter/index.html", "tests/native-save/x.spec.ts")),
+    { tier: "tests", reason: "3 files, all tests", docs: false });
+  assert.deepEqual(classify(rows("src/styles/app.css")), { tier: "css", reason: "1 file, all css", docs: false });
+  assert.equal(classify(rows("src/main.ts")).tier, "full");
+  assert.deepEqual(classify(rows("docs/a.md", "src/a.css")), { tier: "css", reason: "2 files, docs + css, highest css", docs: true });
+  assert.equal(classify(rows("docs/a.md", "src/a.css", "tests/a.test.ts")).tier, "tests");
+  assert.deepEqual(classify(rows("docs/a.md", "tests/a.test.ts", "worker/a.ts")), { tier: "full", reason: "3 files, worker/a.ts is code", docs: true });
+  // Markdown inside tests or fixtures is test data; a deleted stylesheet may still be imported.
+  assert.equal(classify(rows("fixtures/actual-starter/AGENTS.md")).tier, "tests");
+  assert.equal(classify([{ status: "D", path: "src/old.css" }]).tier, "full");
+  assert.equal(classify([]).tier, "full");
+  assert.deepEqual(classify(rows("docs/a.md"), { full: true }), { tier: "full", reason: "1 file, --full", docs: false });
+  assert.deepEqual(parseChanges("M\tdocs/a.md\nD\tsrc/b.css\n"), [{ status: "M", path: "docs/a.md" }, { status: "D", path: "src/b.css" }]);
+});
+
+test("tier steps: docs skips unit, specs and review; full keeps today's set", () => {
+  assert.deepEqual(checkSteps({ tier: "docs", docs: true }), { steps: ["tickets", "unit-files"], review: false });
+  assert.deepEqual(checkSteps({ tier: "css", docs: false }), { steps: ["colours", "specs"], review: true });
+  assert.deepEqual(checkSteps({ tier: "css", docs: true }), { steps: ["colours", "tickets", "unit-files", "specs"], review: true });
+  assert.deepEqual(checkSteps({ tier: "tests", docs: false }), { steps: ["check", "unit-files", "lint", "specs"], review: true });
+  assert.deepEqual(checkSteps({ tier: "full", docs: true }), { steps: ["check", "unit", "lint", "specs"], review: true });
+});
+
+test("focused unit files: changed tests, tests naming a changed helper or fixture, and docs guards", () => {
+  const sources = { "tests/a.test.ts": "", "tests/b.test.ts": 'import "./fakes/memory-workspace.ts"; readFileSync("fixtures/native-starter/x")',
+    "tests/code-map.test.ts": "", "tests/c.test.ts": "" };
+  const changes = [...rows("tests/a.test.ts", "tests/fakes/memory-workspace.ts", "docs/x.md"), { status: "D", path: "tests/c.test.ts" }];
+  assert.deepEqual(focusedUnitFiles(changes, classify(changes), sources), ["tests/a.test.ts", "tests/b.test.ts", "tests/code-map.test.ts"]);
+  assert.deepEqual(focusedUnitFiles(rows("fixtures/native-starter/index.html"), { tier: "tests", docs: false }, sources), ["tests/b.test.ts"]);
+  assert.deepEqual(focusedUnitFiles(rows("docs/x.md"), { tier: "docs", docs: true }, sources), ["tests/code-map.test.ts"]);
+});
+
+test("a docs-only PR runs only doc guards, skips review, and still waits for CI and merges", t => {
+  const f = fixture(t, { "docs/guide.md": "# Guide\n", "AGENTS.md": "# Agents\n" }), result = f.run();
+  assert.equal(result.status, 0, result.stderr); assert.match(result.stdout, /RESULT: ok merged #73/);
+  assert.match(result.stdout, /^tier: docs \(2 files, all docs\)$/m); assert.match(result.stdout, /review: skipped \(docs tier\)/);
+  const calls = f.calls();
+  assert.deepEqual(calls.filter(call => call.tool === "tickets.mjs").map(call => call.args), [["check"]]);
+  assert.deepEqual(calls.filter(call => call.tool === "unit.sh").map(call => call.args), [["tests/code-map.test.ts"]]);
+  assert.equal(calls.some(call => call.tool === "npm"), false);
+  assert.equal(calls.some(call => call.tool === "fake-kit" && ["review", "specs"].includes(call.args[0])), false);
+  assert.ok(calls.some(call => call.tool === "fake-kit" && call.args[0] === "wait"));
+  assert.match(f.body(), /Tier: docs \(2 files, all docs\)/);
+  assert.match(f.body(), /skipped for the docs tier \(CI runs the full set\): npm run check, npm test \(all unit tests\), npm run lint, kit specs --affected, kit review/);
+});
+
+test("a tests-only PR runs check, the affected unit files, lint, specs and the review", t => {
+  const f = fixture(t, { "tests/a.test.ts": "// changed\n", "tests/fakes/thing.ts": "export {};\n" }), result = f.run(["--no-merge"]);
+  assert.equal(result.status, 0, result.stderr); assert.match(result.stdout, /^tier: tests \(2 files, all tests\)$/m);
+  const calls = f.calls();
+  assert.deepEqual(calls.filter(call => call.tool === "npm").map(call => call.args), [["run", "check"], ["run", "lint"]]);
+  assert.deepEqual(calls.filter(call => call.tool === "unit.sh").map(call => call.args), [["tests/a.test.ts", "tests/b.test.ts"]]);
+  for (const name of ["specs", "review"]) assert.ok(calls.some(call => call.tool === "fake-kit" && call.args[0] === name), name);
+  assert.ok(f.body().includes("- scripts/agents/unit.sh tests/a.test.ts tests/b.test.ts: ok"));
+});
+
+test("a CSS-only PR runs the colour check and specs, keeps the review and reminds about shots", t => {
+  const f = fixture(t, { "src/styles/app.css": "a { color: var(--ink); }\n" }), result = f.run(["--no-merge"]);
+  assert.equal(result.status, 0, result.stderr); assert.match(result.stdout, /^tier: css \(1 file, all css\)$/m);
+  assert.match(result.stdout, /reminder: visible CSS changes need kit shots evidence/);
+  const calls = f.calls();
+  assert.equal(calls.filter(call => call.tool === "check-colours.mjs").length, 1);
+  assert.equal(calls.some(call => call.tool === "npm" || call.tool === "unit.sh"), false);
+  for (const name of ["specs", "review"]) assert.ok(calls.some(call => call.tool === "fake-kit" && call.args[0] === name), name);
+});
+
+test("--full forces today's checks on a docs-only PR; a failing doc guard stops before push", t => {
+  const f = fixture(t, { "docs/guide.md": "# Guide\n" }), result = f.run(["--full", "--no-merge"]);
+  assert.equal(result.status, 0, result.stderr); assert.match(result.stdout, /^tier: full \(1 file, --full\)$/m);
+  assert.deepEqual(f.calls().filter(call => call.tool === "npm").map(call => call.args), [["run", "check"], ["test"], ["run", "lint"]]);
+  assert.ok(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "review"));
+  for (const action of ["tickets", "unit"]) {
+    const g = fixture(t, { "docs/guide.md": "# Guide\n" }), failed = g.run([], { FAKE_FAIL: action });
+    assert.equal(failed.status, 1); assert.ok(failed.stdout.includes(`RESULT: fail ${action}:`), failed.stdout);
+    assert.equal(g.calls().some(call => call.tool === "gh"), false);
+  }
 });
