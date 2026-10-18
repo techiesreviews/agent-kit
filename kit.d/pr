@@ -161,7 +161,7 @@ async function main(args) {
     }
     const skipped = Object.entries({ check: "npm run check", unit: "npm test (all unit tests)", lint: "npm run lint", specs: "kit specs --affected" })
       .filter(([id]) => !steps.includes(id)).map(([, label]) => label).concat(review ? [] : ["kit review"]);
-    if (skipped.length) tests.push(`- skipped for the ${plan.tier} tier (CI runs the full set): ${skipped.join(", ")}`);
+    if (skipped.length) tests.push(`- skipped for the ${plan.tier} tier (CI still runs check, unit tests, lint and smoke browser tests; no Sol review): ${skipped.join(", ")}`);
 
     step = "body";
     let head = await git("body", ["rev-parse", "HEAD"]);

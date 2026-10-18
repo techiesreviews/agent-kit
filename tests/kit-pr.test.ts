@@ -398,7 +398,7 @@ test("a docs-only PR runs only doc guards, skips review, and still waits for CI 
   assert.equal(calls.some(call => call.tool === "fake-kit" && ["review", "specs"].includes(call.args[0])), false);
   assert.ok(calls.some(call => call.tool === "fake-kit" && call.args[0] === "wait"));
   assert.match(f.body(), /Tier: docs \(2 files, all docs\)/);
-  assert.match(f.body(), /skipped for the docs tier \(CI runs the full set\): npm run check, npm test \(all unit tests\), npm run lint, kit specs --affected, kit review/);
+  assert.match(f.body(), /skipped for the docs tier \(CI still runs check, unit tests, lint and smoke browser tests; no Sol review\): npm run check, npm test \(all unit tests\), npm run lint, kit specs --affected, kit review/);
 });
 
 test("a tests-only PR runs check, the affected unit files, lint, specs and the review", t => {
