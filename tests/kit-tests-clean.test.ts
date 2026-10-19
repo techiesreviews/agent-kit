@@ -29,7 +29,8 @@ test("kit and agent unit tests leave no run folders or temporary files", { timeo
   const before = new Set(entries(artifacts));
   // A private OS temp directory attributes every leftover to this child suite,
   // without racing unrelated tests or builders using the system temp directory.
-  const env = { ...process.env, TMPDIR: temporary, TMP: temporary, TEMP: temporary, TSX_DISABLE_CACHE: "1" };
+  const env = { ...process.env, TMPDIR: temporary, TMP: temporary, TEMP: temporary,
+    TSX_DISABLE_CACHE: "1", NODE_DISABLE_COMPILE_CACHE: "1" };
   // Node otherwise treats this as an existing test worker and runs no files.
   delete env.NODE_TEST_CONTEXT;
   const result = spawnSync(process.execPath, ["--import", "tsx", "--test", "--test-reporter=tap", "--test-concurrency=4", ...files], {
