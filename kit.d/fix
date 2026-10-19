@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // kit: send open review findings back to the original builder
 import { execFileSync, spawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { openFindings } from "../review-findings.mjs";
@@ -96,6 +96,12 @@ async function fix(args) {
     readFileSync(resolve(root, ticket));
     // A branch owns its rounds even if the worktree later switches branches.
     const branch = git("symbolic-ref", "--short", "HEAD");
+    const assertScope = (expectedHead = head) => {
+      if (git("symbolic-ref", "--quiet", "HEAD") !== `refs/heads/${branch}` || git("rev-parse", "HEAD") !== expectedHead) {
+        throw new Error("worktree branch or HEAD changed during fix; refusing stale work");
+      }
+    };
+    assertScope();
     if (git("status", "--porcelain", "--untracked-files=normal")) throw new Error("uncommitted changes before builder resume");
     const directory = join(root, ".scratch/kit-fix", encodeURIComponent(branch));
     mkdirSync(directory, { recursive: true });
@@ -125,23 +131,69 @@ async function fix(args) {
     const reportPath = join(builder.folder, "out.md");
     const previousReport = existsSync(reportPath) ? readFileSync(reportPath, "utf8") : "";
     await execute("builder", agent, ["--resume", builder.folder, "--brief", brief]);
+    assertScope();
     const report = readFileSync(reportPath, "utf8");
     if (!report.startsWith(previousReport)) throw new Error("builder replaced its saved report");
     const declined = declinedFindings(report.slice(previousReport.length));
     const changes = git("status", "--porcelain", "--untracked-files=normal");
     if (!changes && !declined.length) throw new Error("builder made no changes");
+    let reviewHead = head;
     if (changes) {
       const model = builder.status.model;
       const author = /^gpt-6\.1-sol$/i.test(model) ? "GPT-6.1-Sol <noreply@openai.com>"
         : /^(claude-|opus|sonnet|haiku|fable)/i.test(model) ? `${model} <noreply@anthropic.com>` : `${model} <noreply@openai.com>`;
-      await execute("stage", "git", ["add", "-A", "--", "."]);
-      await execute("commit", "git", ["commit", "-m", `Review fixes round ${round}`, "-m", `Co-Authored-By: ${author}`]);
+      // Hold Git's real HEAD and index locks across staging and publication.
+      // A detached, private Git context preserves normal commit hooks while
+      // pinning the parent; publish only the captured branch with an old-OID
+      // check. Keep both locks across awaits and recheck the original scope.
+      const index = resolve(root, git("rev-parse", "--git-path", "index"));
+      const indexLock = `${index}.lock`, stagedIndex = join(directory, `round-${round}-${process.pid}.index`);
+      const headLockPath = resolve(root, git("rev-parse", "--git-path", "HEAD.lock"));
+      const common = git("rev-parse", "--path-format=absolute", "--git-common-dir");
+      assertScope();
+      const lock = openSync(indexLock, "wx");
+      let locked = true, headLock, referenceDirectory;
+      try {
+        headLock = openSync(headLockPath, "wx");
+        assertScope();
+        copyFileSync(index, stagedIndex);
+        referenceDirectory = mkdtempSync(join(directory, `round-${round}-git-`));
+        writeFileSync(join(referenceDirectory, "HEAD"), `${head}\n`);
+        writeFileSync(join(referenceDirectory, "commondir"), `${common}\n`);
+        const context = ["--git-dir", referenceDirectory, "--work-tree", root];
+        const stagedGit = (...argv) => execFileSync("git", [...context, ...argv], {
+          cwd: root,
+          env: { ...env, GIT_INDEX_FILE: stagedIndex }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+        }).trim();
+        await execute("stage", "git", [...context, "add", "-A", "--", "."], { GIT_INDEX_FILE: stagedIndex });
+        assertScope();
+        const message = `Review fixes round ${round}`;
+        await execute("commit", "git", [...context, "commit", "-m", message, "-m", `Co-Authored-By: ${author}`], { GIT_INDEX_FILE: stagedIndex });
+        assertScope();
+        const commit = stagedGit("rev-parse", "HEAD");
+        assertScope();
+        stagedGit("update-ref", "-m", `commit: ${message}`, `refs/heads/${branch}`, commit, head);
+        assertScope(commit);
+        writeFileSync(lock, readFileSync(stagedIndex));
+        renameSync(indexLock, index);
+        locked = false;
+        reviewHead = commit;
+      } finally {
+        closeSync(lock);
+        if (locked) rmSync(indexLock, { force: true });
+        if (headLock !== undefined) { closeSync(headLock); rmSync(headLockPath, { force: true }); }
+        rmSync(stagedIndex, { force: true });
+        rmSync(`${stagedIndex}.lock`, { force: true });
+        if (referenceDirectory) rmSync(referenceDirectory, { recursive: true, force: true });
+      }
     }
+    assertScope(reviewHead);
     const output = await execute("review", kit, ["review", "--ticket", ticket], { ASE_REVIEW_DECLINED: JSON.stringify(declined) });
+    assertScope(reviewHead);
     const evidence = /^RESULT: ok review .+ evidence (.+)$/m.exec(output)?.[1];
     if (!evidence) throw new Error("review did not name its evidence folder");
     const reviewed = resolve(root, evidence), nextResult = join(reviewed, "result.md");
-    if (readFileSync(join(reviewed, "refs.txt"), "utf8").split(/\r?\n/)[0] !== git("rev-parse", "HEAD")) {
+    if (readFileSync(join(reviewed, "refs.txt"), "utf8").split(/\r?\n/)[0] !== reviewHead) {
       throw new Error("new review does not cover HEAD");
     }
     let result = "";

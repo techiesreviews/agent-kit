@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
+import { forEachAwait } from "./support/await-race.ts";
 
 const kit = resolve("scripts/agents/kit"), fix = resolve("scripts/agents/kit.d/fix");
 const briefHelper = resolve("scripts/agents/review-brief.mjs");
@@ -14,7 +15,17 @@ interface Call { args: string[]; input: string; cwd: string }
 
 function fixture(t: TestContext) {
   const dir = mkdtempSync(join(tmpdir(), "ase-kit-fix-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const children: ChildProcess[] = [];
+  const releases: string[] = [];
+  t.after(async () => {
+    for (const path of releases) writeFileSync(path, "cleanup");
+    await Promise.all(children.map(child => {
+      if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+      child.kill("SIGTERM");
+      return new Promise<void>(resolve => child.once("close", () => resolve()));
+    }));
+    rmSync(dir, { recursive: true, force: true });
+  });
   const root = join(dir, "work tree"), main = join(dir, "main"), bin = join(dir, "bin"), commands = join(dir, "commands");
   for (const path of [root, main, bin, commands]) mkdirSync(path);
   const callsFile = join(dir, "calls.jsonl"), reviewCall = join(dir, "review.json");
@@ -39,11 +50,16 @@ function fixture(t: TestContext) {
   git("update-ref", "refs/remotes/origin/dev", base);
   writeFileSync(join(bin, "package.json"), '{"type":"module"}');
   writeFileSync(join(bin, "codex"), `#!/usr/bin/env node
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2), input = readFileSync(0, "utf8");
 appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ args, input, cwd: process.cwd() }) + "\\n");
 console.error("model: " + args[args.indexOf("-m") + 1]);
 console.error("session id: builder-session");
+if (process.env.FAKE_HOLD) await new Promise(resolve => {
+  const timer = setInterval(() => {
+    if (existsSync(process.env.FAKE_HOLD)) { clearInterval(timer); resolve(); }
+  }, 10);
+});
 if (process.env.FAKE_MODE !== "no-change" && process.env.FAKE_MODE !== "decline-only") writeFileSync("file.txt", process.env.FAKE_TEXT || "fixed\\n");
 writeFileSync(args[args.indexOf("-o") + 1], process.env.FAKE_REPORT || "Fixed the real defect.\\n");
 process.exitCode = Number(process.env.FAKE_EXIT || 0);
@@ -92,9 +108,99 @@ console.log("RESULT: ok review git diff origin/dev...HEAD evidence " + directory
     return result;
   };
   const calls = (): Call[] => existsSync(callsFile) ? readFileSync(callsFile, "utf8").trim().split("\n").map(line => JSON.parse(line)) : [];
+  const start = (overrides: NodeJS.ProcessEnv) => {
+    for (const path of [overrides.FAKE_HOLD, overrides.FAKE_HOOK_RELEASE]) if (path) releases.push(path);
+    const child = spawn("bash", [kit, "fix"], { cwd: root, env: { ...env, ...overrides }, stdio: ["ignore", "pipe", "pipe"], timeout: 20_000 });
+    children.push(child);
+    let stdout = "", stderr = "";
+    child.stdout.setEncoding("utf8").on("data", chunk => { stdout += chunk; });
+    child.stderr.setEncoding("utf8").on("data", chunk => { stderr += chunk; });
+    return new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+      child.once("error", reject); child.once("close", status => resolve({ status, stdout, stderr }));
+    });
+  };
   const reviewInput = (): { args: string[]; brief: string } => JSON.parse(readFileSync(reviewCall, "utf8"));
-  return { dir, root, main, ticket, head, base, git, review, builder, run, calls, reviewInput, reviewCall };
+  return { dir, root, main, ticket, head, base, git, review, builder, run, start, calls, reviewInput, reviewCall };
 }
+
+async function until(condition: () => boolean, description: string) {
+  const deadline = Date.now() + 10_000;
+  while (!condition()) {
+    assert.ok(Date.now() < deadline, `deadline waiting for ${description}`);
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+}
+
+for (const disturbance of ["branch", "HEAD"]) test(`kit fix refuses a ${disturbance} change while its builder is held`, async t => {
+  const count = await forEachAwait(race => {
+    const f = fixture(t); f.review(); f.builder();
+    const release = join(f.dir, "release");
+    const result = f.start({ FAKE_HOLD: release });
+    return { f, done: (async () => {
+      await race.port("held builder", () => until(() => f.calls().length > 0, "held builder"))();
+      writeFileSync(release, "go");
+      return result;
+    })() };
+  }, async ({ f }) => {
+    await until(() => f.calls().length > 0, "held builder");
+    if (disturbance === "branch") f.git("switch", "-c", "other-branch");
+    else f.git("commit", "--allow-empty", "-m", "concurrent change");
+  }, async ({ f, done }) => {
+    const result = await done;
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, /branch or HEAD changed/);
+    assert.equal(f.git("diff", "--cached", "--name-only"), "", "fix must not stage anything");
+    assert.equal(f.git("rev-parse", "build/ke-03"), disturbance === "branch" ? f.head : f.git("rev-parse", "HEAD"));
+    assert.equal(f.git("log", "-1", "--format=%s"), disturbance === "branch" ? "build" : "concurrent change");
+    assert.equal(existsSync(f.reviewCall), false, "fix must not start another review");
+    assert.equal(existsSync(join(f.root, ".git/index.lock")), false);
+    assert.equal(readFileSync(join(f.root, "file.txt"), "utf8"), "fixed\n");
+  });
+  assert.equal(count, 1);
+});
+
+test("kit fix holds the real index lock while staging and running the validation hook", async t => {
+  const f = fixture(t); f.review(); f.builder();
+  const hooks = join(f.dir, "hooks"); mkdirSync(hooks);
+  const hook = join(hooks, "pre-commit"), ready = join(f.dir, "hook-ready"), release = join(f.dir, "hook-release");
+  writeFileSync(hook, `#!/usr/bin/env node
+const { existsSync, writeFileSync } = require("node:fs");
+writeFileSync(process.env.FAKE_HOOK_READY, "ready");
+const timer = setInterval(() => {
+  if (existsSync(process.env.FAKE_HOOK_RELEASE)) clearInterval(timer);
+}, 10);
+`);
+  chmodSync(hook, 0o755); f.git("config", "core.hooksPath", hooks);
+  const done = f.start({ FAKE_HOOK_READY: ready, FAKE_HOOK_RELEASE: release });
+  await until(() => existsSync(ready), "pre-commit hook");
+  assert.equal(f.git("diff", "--cached", "--name-only"), "", "staging stays in the private index");
+  const switched = spawnSync("git", ["-C", f.root, "switch", "-c", "racing-branch"], { encoding: "utf8" });
+  assert.notEqual(switched.status, 0); assert.match(switched.stderr, /(?:index|HEAD)\.lock/);
+  assert.equal(f.git("branch", "--show-current"), "build/ke-03");
+  writeFileSync(release, "go");
+  const result = await done;
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(f.git("rev-parse", "HEAD^"), f.head);
+  assert.equal(f.git("status", "--porcelain"), "");
+  assert.equal(existsSync(join(f.root, ".git/index.lock")), false);
+  assert.equal(existsSync(join(f.root, ".git/HEAD.lock")), false);
+});
+
+test("kit fix discards its private index and skips review when the validation hook moves HEAD", t => {
+  const f = fixture(t); f.review(); f.builder();
+  const hooks = join(f.dir, "hooks"); mkdirSync(hooks);
+  const hook = join(hooks, "pre-commit");
+  writeFileSync(hook, `#!/bin/sh\ngit update-ref refs/heads/build/ke-03 ${f.base} ${f.head}\n`);
+  chmodSync(hook, 0o755); f.git("config", "core.hooksPath", hooks);
+  const result = f.run();
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /branch or HEAD changed/);
+  assert.equal(f.git("rev-parse", "HEAD"), f.base);
+  assert.equal(f.git("write-tree"), f.git("rev-parse", `${f.head}^{tree}`), "real index remains untouched");
+  assert.equal(existsSync(f.reviewCall), false);
+  assert.equal(existsSync(join(f.root, ".git/index.lock")), false);
+  assert.deepEqual(readdirSync(join(f.root, ".scratch/kit-fix/build%2Fke-03")).filter(name => name.includes(".index")), []);
+});
 
 test("kit fix help and argument errors do not start a builder", t => {
   const f = fixture(t);
