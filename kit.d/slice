@@ -47,13 +47,18 @@ async function slice(args) {
     const title = /^title:\s*(.+)$/m.exec(source)?.[1].trim().replace(/^(["'])(.*)\1$/, "$2");
     if (!title || !files || !done) throw new Error("ticket must have a title, Files and Done when");
     directory = join(root, ".scratch/kit-slice", basename(ticket, ".md"));
-    mkdirSync(directory, { recursive: true });
     const statePath = join(directory, "state.json");
-    state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, "utf8")) : {
+    const resuming = existsSync(statePath);
+    if (!resuming && git("status", "--porcelain", "--untracked-files=all"))
+      throw new Error("new slice requires a clean worktree; staged, unstaged or untracked changes exist");
+    mkdirSync(directory, { recursive: true });
+    state = resuming ? JSON.parse(readFileSync(statePath, "utf8")) : {
       ticket, branch, model: flags.model, effort: flags.effort, head: git("rev-parse", "HEAD"), finished: [], rounds: 0,
     };
     if (state.ticket !== ticket || state.branch !== branch || state.model !== flags.model || state.effort !== flags.effort)
       throw new Error("saved slice belongs to a different ticket, branch, builder or effort");
+    if (flags.noPr && state.queued && git("rev-parse", "HEAD") !== state.queued.head)
+      throw new Error("queued slice HEAD changed; --no-pr cannot reuse the review of the queued HEAD");
     const save = () => {
       writeFileSync(`${statePath}.tmp`, JSON.stringify(state, null, 2) + "\n");
       renameSync(`${statePath}.tmp`, statePath);

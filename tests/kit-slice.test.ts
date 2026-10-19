@@ -311,3 +311,42 @@ test("queued slice refuses a replacement PR head instead of reporting it merged"
   assert.equal(result.status, 1); assert.match(result.stdout, /queued PR #42 head changed/);
   assert.equal(f.state().finished.includes("pr"), false);
 });
+
+for (const kind of ["staged", "unstaged", "untracked"]) test(`fresh slice refuses unrelated ${kind} work without changing it`, t => {
+  const f = fixture(t), path = join(f.root, "unrelated.txt");
+  if (kind !== "untracked") {
+    writeFileSync(path, "unrelated baseline\n");
+    f.git("add", "unrelated.txt"); f.git("commit", "-m", "unrelated baseline");
+  }
+  writeFileSync(path, "user work to preserve\n");
+  if (kind === "staged") f.git("add", "unrelated.txt");
+  const head = f.git("rev-parse", "HEAD"), status = f.git("status", "--porcelain", "--untracked-files=all");
+  const index = f.git("ls-files", "--stage");
+  const result = f.run();
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /RESULT: fail slice brief: new slice requires a clean worktree/);
+  assert.deepEqual(f.calls(), [], "must not launch the builder or other phases");
+  assert.equal(existsSync(join(f.root, ".scratch/kit-slice/04-ticket")), false, "must not initialize slice state");
+  assert.equal(existsSync(join(f.root, ".scratch/agent-brief.md")), false);
+  assert.equal(readFileSync(path, "utf8"), "user work to preserve\n");
+  assert.equal(f.git("rev-parse", "HEAD"), head);
+  assert.equal(f.git("status", "--porcelain", "--untracked-files=all"), status);
+  assert.equal(f.git("ls-files", "--stage"), index);
+});
+
+test("queued slice refuses --no-pr after local HEAD moves without altering its saved queue", t => {
+  const f = fixture(t);
+  const failed = f.run([], { QUEUE_PR: "1", MERGE_PENDING: "1", ASE_SLICE_MERGE_TIMEOUT_MS: "1" });
+  assert.equal(failed.status, 1); assert.match(failed.stdout, /merge wait timed out/);
+  const queued = f.state(), calls = f.calls();
+  f.git("commit", "--allow-empty", "-m", "new local work after queue timeout");
+  const head = f.git("rev-parse", "HEAD");
+  assert.notEqual(head, queued.reviewedHead);
+  const result = f.run(["--no-pr"]);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /queued slice HEAD changed; --no-pr cannot reuse the review/);
+  assert.doesNotMatch(result.stdout, /RESULT: ok slice|reviewed clean/);
+  assert.deepEqual(f.calls(), calls, "incompatible resume must not launch any phase");
+  assert.deepEqual(f.state(), queued, "keep the queued PR available for a normal wait retry");
+  assert.equal(f.git("rev-parse", "HEAD"), head);
+});
