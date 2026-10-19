@@ -90,20 +90,21 @@ function tail(text) {
   const lines = text.replace(/\r?\n$/, "").split(/\r?\n/).slice(-20);
   console.log(lines.join("\n"));
 }
-async function jobTail(fd) {
+async function jobTail(input, checkJob) {
   const tail = [];
   let lastResult;
   // Long jobs can produce large logs; retain only the tail and last RESULT.
-  const lines = createInterface({ input: createReadStream(null, { fd, autoClose: false }), crlfDelay: Infinity });
+  const lines = createInterface({ input, crlfDelay: Infinity });
   try {
     for await (const line of lines) {
+      if (interrupted) return;
+      checkJob();
       if (line.startsWith("RESULT: ")) lastResult = line;
       tail.push(line);
       if (tail.length > 15) tail.shift();
     }
-  } catch (error) { if (error.code !== "ENOENT") throw error; }
-  if (tail.length) console.log(tail.join("\n"));
-  if (lastResult && !tail.includes(lastResult)) console.log(lastResult);
+  } finally { lines.close(); }
+  return [...tail, ...(lastResult && !tail.includes(lastResult) ? [lastResult] : [])];
 }
 // Return the PIDs that hold the file open for writing right now.
 function writers(file) {
@@ -146,12 +147,22 @@ async function wait(config) {
   let outputPrinted = false;
   const job = kind === "job" ? kitJob(kitJobDirectory(target)) : null;
   let jobLog;
+  let jobStream;
   const checkJob = () => {
     const current = kitJob(job.directory);
     if (current.pid !== job.pid || current.started !== job.started) throw new Error(`job ${target} was replaced`);
   };
   const finishJob = async (code, message, printLog = false) => {
-    if (printLog) await jobTail(jobLog);
+    if (interrupted) return;
+    checkJob();
+    if (printLog) {
+      jobStream = createReadStream(null, { fd: jobLog, signal: controller.signal });
+      jobLog = undefined; // The stream now owns and closes the pinned descriptor.
+      const lines = await jobTail(jobStream, checkJob);
+      if (interrupted) return;
+      checkJob();
+      if (lines.length) console.log(lines.join("\n"));
+    }
     kitResult(code === 0 ? "ok" : "fail", `job ${target} ${message}`);
     process.exitCode = code;
   };
@@ -267,6 +278,7 @@ async function wait(config) {
     kitResult("fail", message);
     process.exitCode = 1;
   } finally {
+    jobStream?.destroy();
     if (jobLog !== undefined) closeSync(jobLog);
   }
   // A signal leaves the interrupted RESULT to the kit front door.

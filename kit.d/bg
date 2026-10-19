@@ -47,6 +47,7 @@ async function wrapper(kind, directory, cwd, command) {
   const gate = new Socket({ fd: 3, readable: true, writable: false });
   let handoff = "";
   for await (const chunk of gate) handoff += chunk;
+  if (terminated) { process.exitCode = 143; return; }
   if (handoff !== "launch\n") return;
   const pgid = kitJobProcess(process.pid).pgid;
   let child;
@@ -136,8 +137,10 @@ async function start(config, directory) {
   const log = join(directory, "log");
   const fd = openSync(log, "w");
   let child;
+  let launched;
   try {
     child = gatedSpawn("setsid", ["nohup", process.execPath, process.argv[1], "--wrapper", directory, config.cwd, ...config.command], ["ignore", fd, fd], launch => {
+      launched = launch;
       writeFileSync(join(directory, "launch.tmp"), JSON.stringify(launch));
       renameSync(join(directory, "launch.tmp"), join(directory, "launch"));
     });
@@ -153,6 +156,7 @@ async function start(config, directory) {
     await delay(10);
   }
   const job = kitJob(directory);
+  if (job.pid !== launched.pid || job.started !== launched.started) throw new Error(`job ${config.name} was replaced during launch`);
   console.log(`name: ${config.name}\npid: ${job.pid}\nlog: ${log}`);
   kitResult("ok", `bg ${config.name} pid ${job.pid}`);
 }

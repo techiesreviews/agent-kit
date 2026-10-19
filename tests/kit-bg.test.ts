@@ -309,6 +309,40 @@ test("bg concurrent starts reserve a name once", async t => {
   assert.deepEqual((await Promise.all([launch(), launch()])).sort(), [0, 1]);
 });
 
+for (const kind of ["--wrapper", "--command"]) test(`bg ${kind} cancels a launch handoff interrupted by TERM`, async t => {
+  const f = fixture(t);
+  const ready = join(f.root, "ready");
+  const term = join(f.root, "term");
+  const ran = join(f.root, "must-not-run");
+  const preload = join(f.root, "handoff.mjs");
+  writeFileSync(preload, `
+import process from "node:process";
+import fs from "node:fs";
+const on = process.on;
+process.on = function (name, listener) {
+  const result = on.call(this, name, listener);
+  if (name === "SIGTERM") {
+    on.call(this, name, () => fs.writeFileSync(${JSON.stringify(term)}, ""));
+    fs.writeFileSync(${JSON.stringify(ready)}, "");
+  }
+  return result;
+};
+`);
+  const wrapper = spawn(process.execPath, ["--import", pathToFileURL(preload).href, script, kind, f.directory("cancelled"), f.root,
+    process.execPath, "-e", "require('fs').writeFileSync(process.argv[1], 'ran');", ran], { env: f.env, stdio: ["ignore", "ignore", "ignore", "pipe"] });
+  t.after(() => wrapper.kill("SIGKILL"));
+  const exited = once(wrapper, "exit");
+  await until(() => existsSync(ready));
+  assert.ok(wrapper.kill("SIGTERM"));
+  await until(() => existsSync(term));
+  const gate = wrapper.stdio[3];
+  assert.ok(gate && "end" in gate);
+  gate.end("launch\n");
+  assert.deepEqual(await exited, [143, null]);
+  assert.equal(existsSync(ran), false);
+  assert.equal(existsSync(f.directory("cancelled")), false);
+});
+
 test("bg stop refuses invalid process identities without signalling another group", async t => {
   const f = fixture(t);
   ok(f.run("identity", "--", process.execPath, "-e", held, join(f.root, "release")));

@@ -174,12 +174,65 @@ syncBuiltinESMExports();
   writeFileSync(release, "");
   const output = await pending;
   assert.doesNotMatch(output.stdout, /replacement/, output.stderr + output.stdout);
-  if (stage === "open") result(output, 1, /job reused was replaced/);
-  else {
-    assert.equal(output.status, 3, output.stderr + output.stdout);
-    assert.match(output.stdout, /original output\nRESULT: fail original\nRESULT: fail job reused exit 3\n$/);
-  }
+  result(output, 1, /job reused was replaced/);
+  assert.doesNotMatch(output.stdout, /original output|RESULT: fail original|job reused exit 3/);
 });
+
+for (const signal of ["SIGINT", "SIGTERM"] satisfies NodeJS.Signals[]) {
+  test(`wait job cancels its held final log stream on ${signal} and closes its descriptor`, async t => {
+    const f = jobFixture(t);
+    f.start("streaming", "console.log('RESULT: ok job-owned');");
+    await jobCondition(() => existsSync(join(f.directory("streaming"), "exit")));
+    const held = join(f.root, "held");
+    const release = join(f.root, "release");
+    const cleanup = join(f.root, "cleanup");
+    const preload = join(f.root, "hold-stream.mjs");
+    writeFileSync(preload, `
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+const original = fs.createReadStream;
+fs.createReadStream = function (path, options) {
+  const stream = original.call(this, path, options);
+  const read = stream._read;
+  let resume;
+  stream._read = function (size) {
+    resume = () => read.call(this, size);
+    fs.writeFileSync(${JSON.stringify(held)}, "");
+  };
+  // Keep the read pending until explicitly released or cancelled by the waiter.
+  const timer = setInterval(() => {
+    if (fs.existsSync(${JSON.stringify(release)})) {
+      stream._read = read;
+      resume?.();
+      clearInterval(timer);
+    }
+  }, 10);
+  stream.once("close", () => clearInterval(timer));
+  process.once("exit", () => {
+    let open = true;
+    try { fs.fstatSync(options.fd); } catch (error) { if (error.code === "EBADF") open = false; else throw error; }
+    fs.writeFileSync(${JSON.stringify(cleanup)}, JSON.stringify({ open, destroyed: stream.destroyed, closed: stream.closed }));
+  });
+  return stream;
+};
+syncBuiltinESMExports();
+`);
+    const pending = child(t, kit, ["wait", "job", "streaming", "--timeout", "1h"],
+      { ...f.env, NODE_OPTIONS: `--import=${pathToFileURL(preload).href}` });
+    const output = collect(pending);
+    await jobCondition(() => existsSync(held));
+    const started = Date.now();
+    assert.ok(pending.kill(signal));
+    try {
+      await jobCondition(() => pending.exitCode !== null || pending.signalCode !== null);
+      assert.ok(Date.now() - started < 2000, "interruption must not wait for the held log");
+      const ended = await output;
+      result(ended, signal === "SIGINT" ? 130 : 143, /fail wait interrupted/);
+      assert.doesNotMatch(ended.stdout, /job-owned|RESULT: .* job streaming/);
+      assert.deepEqual(JSON.parse(readFileSync(cleanup, "utf8")), { open: false, destroyed: true, closed: true });
+    } finally { writeFileSync(release, ""); }
+  });
+}
 
 test("wait job reports SIGKILL without an exit record", async t => {
   const f = jobFixture(t);
