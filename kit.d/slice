@@ -1,0 +1,215 @@
+#!/usr/bin/env node
+// kit: build, commit, review, fix and land one ticket with resumable phases
+import { execFileSync, spawn } from "node:child_process";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { openFindings } from "../review-findings.mjs";
+
+const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv, commitBuilderWork, builderAuthor } = await import(
+  pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
+);
+const usage = "Usage: kit slice --ticket FILE --builder MODEL [--effort high] [--rounds 3] [--no-pr]\nResume saved phases under .scratch/kit-slice/<ticket-slug>/.\nTest overrides: ASE_SLICE_AGENT and ASE_SLICE_KIT name executables.\n";
+
+function options(args) {
+  const flags = { effort: "high", rounds: 3, noPr: false };
+  const seen = new Set();
+  for (let i = 0; i < args.length; i++) {
+    const flag = args[i];
+    if (seen.has(flag)) throw new Error(`duplicate option: ${flag}`);
+    seen.add(flag);
+    if (flag === "--no-pr") { flags.noPr = true; continue; }
+    if (!["--ticket", "--builder", "--effort", "--rounds"].includes(flag) || !args[i + 1] || args[i + 1].startsWith("-"))
+      throw new Error(`invalid option: ${flag}`);
+    flags[flag.slice(2)] = args[++i];
+  }
+  if (!flags.ticket || !flags.builder) throw new Error("--ticket and --builder are required");
+  if (!/^[1-9]\d*$/.test(String(flags.rounds)) || !Number.isSafeInteger(Number(flags.rounds)))
+    throw new Error("--rounds must be a positive integer");
+  flags.rounds = Number(flags.rounds);
+  flags.model = flags.builder === "sol" ? "gpt-6.1-sol" : flags.builder;
+  return flags;
+}
+
+async function slice(args) {
+  let phase = "brief", log, state, directory;
+  try {
+    let flags;
+    try { flags = options(args); } catch (error) { process.stderr.write(usage); throw error; }
+    const root = resolve(kitRoot()), env = nodeEnv();
+    const git = (...argv) => execFileSync("git", ["-C", root, ...argv], { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    const branch = git("branch", "--show-current");
+    if (!branch || ["dev", "main"].includes(branch)) throw new Error("use a build branch, not dev, main or detached HEAD");
+    const ticket = resolve(root, flags.ticket);
+    const source = readFileSync(ticket, "utf8");
+    const section = name => new RegExp(`^## ${name}\\s*\\n([\\s\\S]*?)(?=^## |$(?![\\s\\S]))`, "m").exec(source)?.[1]?.trim();
+    const files = section("Files"), done = section("Done when");
+    const title = /^title:\s*(.+)$/m.exec(source)?.[1].trim().replace(/^(["'])(.*)\1$/, "$2");
+    if (!title || !files || !done) throw new Error("ticket must have a title, Files and Done when");
+    directory = join(root, ".scratch/kit-slice", basename(ticket, ".md"));
+    mkdirSync(directory, { recursive: true });
+    const statePath = join(directory, "state.json");
+    state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, "utf8")) : {
+      ticket, branch, model: flags.model, effort: flags.effort, head: git("rev-parse", "HEAD"), finished: [], rounds: 0,
+    };
+    if (state.ticket !== ticket || state.branch !== branch || state.model !== flags.model || state.effort !== flags.effort)
+      throw new Error("saved slice belongs to a different ticket, branch, builder or effort");
+    const save = () => {
+      writeFileSync(`${statePath}.tmp`, JSON.stringify(state, null, 2) + "\n");
+      renameSync(`${statePath}.tmp`, statePath);
+    };
+    const complete = detail => {
+      if (!state.finished.includes(phase)) state.finished.push(phase);
+      save();
+      console.log(`slice: ${phase} ok${detail ? ` ${detail}` : ""}`);
+    };
+    const begin = name => {
+      phase = name; log = join(directory, `${name}.log`);
+      if (!existsSync(log)) writeFileSync(log, "");
+    };
+    const assertBranch = () => {
+      if (git("branch", "--show-current") !== state.branch) throw new Error("worktree branch changed during slice");
+    };
+    const assertHead = expected => {
+      assertBranch();
+      if (git("rev-parse", "HEAD") !== expected) throw new Error("worktree HEAD changed during slice");
+    };
+    async function execute(command, argv) {
+      const previous = readFileSync(log, "utf8");
+      const fd = openSync(log, "a");
+      let code;
+      try {
+        code = await new Promise((accept, reject) => {
+          const child = spawn(command, argv, { cwd: root, env, stdio: ["ignore", fd, fd] });
+          const interrupt = () => child.kill("SIGINT"), terminate = () => child.kill("SIGTERM");
+          process.once("SIGINT", interrupt); process.once("SIGTERM", terminate);
+          const clear = () => { process.removeListener("SIGINT", interrupt); process.removeListener("SIGTERM", terminate); };
+          child.once("error", error => { clear(); reject(error); });
+          child.once("close", status => { clear(); accept(status ?? 1); });
+        });
+      } finally { closeSync(fd); }
+      assertBranch();
+      return { code, output: readFileSync(log, "utf8").slice(previous.length) };
+    }
+    const requireSuccess = result => {
+      if (result.code !== 0) throw new Error(`command exited ${result.code}; see ${log}`);
+      return result.output;
+    };
+    function reviewEvidence(explicit) {
+      let folders;
+      if (explicit) folders = [resolve(root, explicit)];
+      else {
+        const parent = join(kitMainRoot(), ".scratch/reviews", kitOwner());
+        folders = existsSync(parent) ? readdirSync(parent).sort((a, b) => b.localeCompare(a, "en", { numeric: true })).map(name => join(parent, name)) : [];
+      }
+      for (const folder of folders) {
+        try {
+          if (readFileSync(join(folder, "refs.txt"), "utf8").split(/\r?\n/)[0] === git("rev-parse", "HEAD")) return folder;
+        } catch { /* Incomplete evidence cannot cover HEAD. */ }
+      }
+      throw new Error("no review evidence covers HEAD");
+    }
+    const findings = () => {
+      let text = "";
+      try { text = readFileSync(join(state.review, "result.md"), "utf8"); } catch { /* Fail closed. */ }
+      return openFindings(text).findings;
+    };
+    const kit = env.ASE_SLICE_KIT || resolve(import.meta.dirname, "../kit");
+    const agent = env.ASE_SLICE_AGENT || resolve(import.meta.dirname, "../agent.sh");
+    // A moved HEAD invalidates review and landing, never a finished build.
+    if (state.finished.includes("commit") && state.head !== git("rev-parse", "HEAD")) {
+      state.finished = state.finished.filter(name => !["review", "fix", "pr"].includes(name));
+      state.head = git("rev-parse", "HEAD");
+      delete state.review;
+    }
+    if (state.finished.includes("review")) {
+      let covering = false;
+      try { covering = reviewEvidence(state.review) === state.review; } catch { /* Re-review stale evidence. */ }
+      if (!covering) state.finished = state.finished.filter(name => !["review", "fix", "pr"].includes(name));
+      else if (findings().length) state.finished = state.finished.filter(name => !["fix", "pr"].includes(name));
+    }
+    save();
+    begin("brief");
+    if (!state.finished.includes(phase)) {
+      const brief = join(root, ".scratch/agent-brief.md");
+      writeFileSync(brief, `Ticket: ${flags.ticket}\n\n## Files\n${files}\n\n## Done when\n${done}\n\nAppend \`## Done (YYYY-MM-DD)\` (behaviour, commits, tests, review decisions), set \`status: closed\`, \`assignee: ${kitOwner()}\`.\n\nUse Agent Kit at scripts/agents/kit; run doctor first and the ticket's focused checks; report their RESULT lines. Stay within Files. Leave changes unstaged; the runner commits.\n`);
+      writeFileSync(log, `Brief: ${brief}\n`);
+      complete();
+    }
+    begin("build");
+    if (!state.finished.includes(phase)) {
+      assertHead(state.head);
+      state.build = join(directory, "builder"); save();
+      const output = requireSuccess(await execute(agent, ["build", root, ".scratch/agent-brief.md", "--model", flags.model, "--effort", flags.effort, "--out", state.build]));
+      assertHead(state.head);
+      state.build = resolve(root, /^artifacts: (.+)$/m.exec(output)?.[1] || state.build);
+      complete(state.build);
+    }
+    begin("commit");
+    if (!state.finished.includes(phase)) {
+      try {
+        state.head = commitBuilderWork({ root, branch, head: state.head, message: title, author: builderAuthor(flags.model), env });
+        writeFileSync(log, `${state.head}\n`);
+      } catch (error) { writeFileSync(log, `${error.message}\n`); throw error; }
+      complete(state.head);
+    }
+    begin("review");
+    if (!state.finished.includes(phase)) {
+      const head = state.head;
+      const output = requireSuccess(await execute(kit, ["review", "--ticket", flags.ticket]));
+      assertHead(head);
+      const evidence = /^RESULT: ok review .+ evidence (.+)$/m.exec(output)?.[1];
+      if (!evidence) throw new Error("review did not name its evidence folder");
+      state.review = reviewEvidence(evidence); state.reviewedHead = head;
+      complete(state.review);
+    }
+    begin("fix");
+    if (!state.finished.includes(phase)) {
+      let open = findings();
+      while (open.length && state.rounds < flags.rounds) {
+        assertHead(state.head);
+        const result = await execute(kit, ["fix", "--ticket", flags.ticket, "--review", state.review, "--run", state.build]);
+        // kit fix exits 1 both for command failures and completed reviews with findings.
+        const remaining = /^RESULT: fail fix \d+ open findings \((.+)\/result\.md\)$/m.exec(result.output);
+        if (result.code !== 0 && !remaining) requireSuccess(result);
+        state.review = reviewEvidence(remaining?.[1]);
+        state.head = git("rev-parse", "HEAD"); state.reviewedHead = state.head; state.rounds++;
+        save(); open = findings();
+      }
+      if (open.length) {
+        if (!flags.noPr) {
+          // Open/update the PR, explicitly prohibit merging even if its review changes.
+          const result = await execute(kit, ["pr", "--ticket", flags.ticket, "--no-merge"]);
+          state.pr = /#(\d+)/.exec(result.output)?.[1] || state.pr; save();
+        }
+        // Preserve command output; print only findings in the failure digest.
+        log = join(directory, "findings.log");
+        writeFileSync(log, open.slice(0, 15).map(item => `${item.group}: ${item.text}`).join("\n") + "\n");
+        throw new Error(`${open.length} open findings after ${state.rounds} rounds (${join(state.review, "result.md")})`);
+      }
+      complete(`${state.rounds} rounds`);
+    }
+    begin("pr");
+    if (!flags.noPr && !state.finished.includes(phase)) {
+      assertHead(state.head);
+      const result = await execute(kit, ["pr", "--ticket", flags.ticket]);
+      state.pr = /#(\d+)/.exec(result.output)?.[1] || state.pr; save();
+      const output = requireSuccess(result);
+      const merged = /^RESULT: ok merged #(\d+) ([a-f\d]{7,40})$/m.exec(output);
+      if (!merged) throw new Error("PR did not report a merged commit; see phase log");
+      state.pr = merged[1]; state.sha = merged[2]; complete(`#${state.pr}`);
+    } else if (flags.noPr) console.log("slice: pr ok skipped (--no-pr)");
+    kitResult("ok", `slice ${flags.ticket} ${flags.noPr ? `reviewed clean ${state.head}` : `PR #${state.pr} ${state.sha}`}`);
+    return 0;
+  } catch (error) {
+    console.log(`slice: ${phase} fail`);
+    if (log && existsSync(log)) {
+      for (const line of readFileSync(log, "utf8").trimEnd().split(/\r?\n/).filter(line => !line.startsWith("RESULT:")).slice(-15)) console.error(`  ${line}`);
+    }
+    kitResult("fail", `slice ${phase}: ${error.message}`);
+    return 1;
+  }
+}
+
+if (process.argv.length === 3 && ["--help", "-h"].includes(process.argv[2])) process.stdout.write(usage);
+else process.exitCode = await slice(process.argv.slice(2));

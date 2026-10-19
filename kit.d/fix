@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // kit: send open review findings back to the original builder
 import { execFileSync, spawn } from "node:child_process";
-import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { openFindings } from "../review-findings.mjs";
 
-const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv } = await import(
+const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv, commitBuilderWork, builderAuthor } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const usage = "Usage: kit fix [--review DIR] [--run DIR] [--ticket FILE]\nResume the builder with open findings, commit its fixes, and review again.\n";
@@ -139,53 +139,8 @@ async function fix(args) {
     if (!changes && !declined.length) throw new Error("builder made no changes");
     let reviewHead = head;
     if (changes) {
-      const model = builder.status.model;
-      const author = /^gpt-6\.1-sol$/i.test(model) ? "GPT-6.1-Sol <noreply@openai.com>"
-        : /^(claude-|opus|sonnet|haiku|fable)/i.test(model) ? `${model} <noreply@anthropic.com>` : `${model} <noreply@openai.com>`;
-      // Hold Git's real HEAD and index locks across staging and publication.
-      // A detached, private Git context preserves normal commit hooks while
-      // pinning the parent; publish only the captured branch with an old-OID
-      // check. Keep both locks across awaits and recheck the original scope.
-      const index = resolve(root, git("rev-parse", "--git-path", "index"));
-      const indexLock = `${index}.lock`, stagedIndex = join(directory, `round-${round}-${process.pid}.index`);
-      const headLockPath = resolve(root, git("rev-parse", "--git-path", "HEAD.lock"));
-      const common = git("rev-parse", "--path-format=absolute", "--git-common-dir");
-      assertScope();
-      const lock = openSync(indexLock, "wx");
-      let locked = true, headLock, referenceDirectory;
-      try {
-        headLock = openSync(headLockPath, "wx");
-        assertScope();
-        copyFileSync(index, stagedIndex);
-        referenceDirectory = mkdtempSync(join(directory, `round-${round}-git-`));
-        writeFileSync(join(referenceDirectory, "HEAD"), `${head}\n`);
-        writeFileSync(join(referenceDirectory, "commondir"), `${common}\n`);
-        const context = ["--git-dir", referenceDirectory, "--work-tree", root];
-        const stagedGit = (...argv) => execFileSync("git", [...context, ...argv], {
-          cwd: root,
-          env: { ...env, GIT_INDEX_FILE: stagedIndex }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-        }).trim();
-        await execute("stage", "git", [...context, "add", "-A", "--", "."], { GIT_INDEX_FILE: stagedIndex });
-        assertScope();
-        const message = `Review fixes round ${round}`;
-        await execute("commit", "git", [...context, "commit", "-m", message, "-m", `Co-Authored-By: ${author}`], { GIT_INDEX_FILE: stagedIndex });
-        assertScope();
-        const commit = stagedGit("rev-parse", "HEAD");
-        assertScope();
-        stagedGit("update-ref", "-m", `commit: ${message}`, `refs/heads/${branch}`, commit, head);
-        assertScope(commit);
-        writeFileSync(lock, readFileSync(stagedIndex));
-        renameSync(indexLock, index);
-        locked = false;
-        reviewHead = commit;
-      } finally {
-        closeSync(lock);
-        if (locked) rmSync(indexLock, { force: true });
-        if (headLock !== undefined) { closeSync(headLock); rmSync(headLockPath, { force: true }); }
-        rmSync(stagedIndex, { force: true });
-        rmSync(`${stagedIndex}.lock`, { force: true });
-        if (referenceDirectory) rmSync(referenceDirectory, { recursive: true, force: true });
-      }
+      reviewHead = commitBuilderWork({ root, branch, head, message: `Review fixes round ${round}`,
+        author: builderAuthor(builder.status.model), env });
     }
     assertScope(reviewHead);
     const output = await execute("review", kit, ["review", "--ticket", ticket], { ASE_REVIEW_DECLINED: JSON.stringify(declined) });

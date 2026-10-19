@@ -159,7 +159,7 @@ for (const disturbance of ["branch", "HEAD"]) test(`kit fix refuses a ${disturba
   assert.equal(count, 1);
 });
 
-test("kit fix holds the real index lock while staging and running the validation hook", async t => {
+test("kit fix stages in the normal index and runs the validation hook", async t => {
   const f = fixture(t); f.review(); f.builder();
   const hooks = join(f.dir, "hooks"); mkdirSync(hooks);
   const hook = join(hooks, "pre-commit"), ready = join(f.dir, "hook-ready"), release = join(f.dir, "hook-release");
@@ -173,9 +173,9 @@ const timer = setInterval(() => {
   chmodSync(hook, 0o755); f.git("config", "core.hooksPath", hooks);
   const done = f.start({ FAKE_HOOK_READY: ready, FAKE_HOOK_RELEASE: release });
   await until(() => existsSync(ready), "pre-commit hook");
-  assert.equal(f.git("diff", "--cached", "--name-only"), "", "staging stays in the private index");
-  const switched = spawnSync("git", ["-C", f.root, "switch", "-c", "racing-branch"], { encoding: "utf8" });
-  assert.notEqual(switched.status, 0); assert.match(switched.stderr, /(?:index|HEAD)\.lock/);
+  assert.equal(f.git("diff", "--cached", "--name-only"), "file.txt", "hook sees the normal staged files");
+  assert.equal(existsSync(join(f.root, ".git/index.lock")), false);
+  assert.equal(existsSync(join(f.root, ".git/HEAD.lock")), false);
   assert.equal(f.git("branch", "--show-current"), "build/ke-03");
   writeFileSync(release, "go");
   const result = await done;
@@ -186,7 +186,7 @@ const timer = setInterval(() => {
   assert.equal(existsSync(join(f.root, ".git/HEAD.lock")), false);
 });
 
-test("kit fix discards its private index and skips review when the validation hook moves HEAD", t => {
+test("kit fix fails clearly and skips review when the validation hook moves HEAD", t => {
   const f = fixture(t); f.review(); f.builder();
   const hooks = join(f.dir, "hooks"); mkdirSync(hooks);
   const hook = join(hooks, "pre-commit");
@@ -196,10 +196,10 @@ test("kit fix discards its private index and skips review when the validation ho
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stdout, /branch or HEAD changed/);
   assert.equal(f.git("rev-parse", "HEAD"), f.base);
-  assert.equal(f.git("write-tree"), f.git("rev-parse", `${f.head}^{tree}`), "real index remains untouched");
+  assert.equal(f.git("diff", "--cached", "--name-only"), "file.txt", "staged changes remain available after failure");
   assert.equal(existsSync(f.reviewCall), false);
   assert.equal(existsSync(join(f.root, ".git/index.lock")), false);
-  assert.deepEqual(readdirSync(join(f.root, ".scratch/kit-fix/build%2Fke-03")).filter(name => name.includes(".index")), []);
+  assert.equal(existsSync(join(f.root, ".git/HEAD.lock")), false);
 });
 
 test("kit fix help and argument errors do not start a builder", t => {

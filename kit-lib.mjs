@@ -168,3 +168,40 @@ export function kitJobExit(job) {
   if (!/^\d+$/.test(value) || Number(value) > 255) throw new Error(`invalid job exit status: ${value}`);
   return Number(value);
 }
+
+/** Credit the builder consistently across slice and fix commits. */
+export function builderAuthor(model) {
+  if (/^gpt-6\.1-sol$/i.test(model)) return "GPT-6.1-Sol <noreply@openai.com>";
+  return `${model} <noreply@${/^(claude-|opus|sonnet|haiku|fable)/i.test(model) ? "anthropic" : "openai"}.com>`;
+}
+
+/** Commit through normal Git and hooks, then verify the captured branch and parent. */
+export function commitBuilderWork({ root, branch, head, message, author, env = process.env }) {
+  const run = (...args) => execFileSync("git", ["-C", root, ...args], {
+    cwd: root, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
+  const currentBranch = () => {
+    const branch = run("branch", "--show-current");
+    return branch ? `refs/heads/${branch}` : "";
+  };
+  const assertScope = () => {
+    if (currentBranch() !== `refs/heads/${branch}` || run("rev-parse", "HEAD") !== head)
+      throw new Error("worktree branch or HEAD changed before commit; refusing stale work");
+  };
+  assertScope();
+  run("add", "-A");
+  assertScope();
+  let failure;
+  try { run("commit", "-m", message, "-m", `Co-Authored-By: ${author}`); }
+  catch (error) { failure = error; }
+  const next = run("rev-parse", "HEAD");
+  const parents = run("rev-list", "--parents", "-n", "1", "HEAD").split(/\s+/).slice(1);
+  if (currentBranch() !== `refs/heads/${branch}` || (next !== head && (parents.length !== 1 || parents[0] !== head)))
+    throw new Error("worktree branch or HEAD changed during commit; expected exactly one commit from the captured HEAD");
+  if (failure) {
+    const details = `${failure.stdout || ""}\n${failure.stderr || ""}`.trim();
+    throw new Error(/nothing to commit|no changes added/i.test(details) ? "nothing to commit" : `git commit failed: ${details || failure.message}`);
+  }
+  if (next === head) throw new Error("commit did not advance HEAD by exactly one commit");
+  return next;
+}
