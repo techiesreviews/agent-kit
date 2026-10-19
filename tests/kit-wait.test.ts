@@ -138,6 +138,49 @@ test("wait job deduplicates a RESULT already in the tail and works from a fresh 
   assert.match(output.stdout, /RESULT: ok job restart exit 0\n$/);
 });
 
+for (const stage of ["open", "read"]) test(`wait job keeps output and status together when replaced before log ${stage}`, async t => {
+  const f = jobFixture(t);
+  f.start("reused", "console.log('original output'); console.log('RESULT: fail original'); process.exit(3);");
+  await jobCondition(() => existsSync(join(f.directory("reused"), "exit")));
+  const log = join(f.directory("reused"), "log");
+  const paused = join(f.root, "paused");
+  const release = join(f.root, "release");
+  const preload = join(f.root, "pause-log.mjs");
+  writeFileSync(preload, `
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+const log = ${JSON.stringify(log)};
+const gate = () => {
+  fs.writeFileSync(${JSON.stringify(paused)}, "");
+  const deadline = Date.now() + 5000;
+  while (!fs.existsSync(${JSON.stringify(release)})) {
+    if (Date.now() >= deadline) throw new Error("log gate timed out");
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+  }
+};
+for (const name of ${JSON.stringify(stage === "open" ? ["open", "openSync"] : ["createReadStream"])}) {
+  const original = fs[name];
+  fs[name] = function (path, ...args) {
+    if (String(path) === log || (name === "createReadStream" && typeof args[0]?.fd === "number")) gate();
+    return original.call(this, path, ...args);
+  };
+}
+syncBuiltinESMExports();
+`);
+  const pending = collect(child(t, process.execPath, ["--import", pathToFileURL(preload).href, script, "job", "reused", "--timeout", "10s"], f.env));
+  await jobCondition(() => existsSync(paused));
+  f.start("reused", "console.log('replacement output'); console.log('RESULT: ok replacement');");
+  await jobCondition(() => existsSync(join(f.directory("reused"), "exit")));
+  writeFileSync(release, "");
+  const output = await pending;
+  assert.doesNotMatch(output.stdout, /replacement/, output.stderr + output.stdout);
+  if (stage === "open") result(output, 1, /job reused was replaced/);
+  else {
+    assert.equal(output.status, 3, output.stderr + output.stdout);
+    assert.match(output.stdout, /original output\nRESULT: fail original\nRESULT: fail job reused exit 3\n$/);
+  }
+});
+
 test("wait job reports SIGKILL without an exit record", async t => {
   const f = jobFixture(t);
   const pid = f.start("killed", "setInterval(() => {}, 1000);");

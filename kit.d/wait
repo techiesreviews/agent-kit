@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // kit: wait for a process, an output file or CI checks
 import { execFile } from "node:child_process";
-import { createReadStream, existsSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import { closeSync, createReadStream, existsSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
@@ -90,11 +90,11 @@ function tail(text) {
   const lines = text.replace(/\r?\n$/, "").split(/\r?\n/).slice(-20);
   console.log(lines.join("\n"));
 }
-async function jobTail(directory) {
+async function jobTail(fd) {
   const tail = [];
   let lastResult;
   // Long jobs can produce large logs; retain only the tail and last RESULT.
-  const lines = createInterface({ input: createReadStream(`${directory}/log`), crlfDelay: Infinity });
+  const lines = createInterface({ input: createReadStream(null, { fd, autoClose: false }), crlfDelay: Infinity });
   try {
     for await (const line of lines) {
       if (line.startsWith("RESULT: ")) lastResult = line;
@@ -145,8 +145,13 @@ async function wait(config) {
   let first = true;
   let outputPrinted = false;
   const job = kind === "job" ? kitJob(kitJobDirectory(target)) : null;
+  let jobLog;
+  const checkJob = () => {
+    const current = kitJob(job.directory);
+    if (current.pid !== job.pid || current.started !== job.started) throw new Error(`job ${target} was replaced`);
+  };
   const finishJob = async (code, message, printLog = false) => {
-    if (printLog) await jobTail(job.directory);
+    if (printLog) await jobTail(jobLog);
     kitResult(code === 0 ? "ok" : "fail", `job ${target} ${message}`);
     process.exitCode = code;
   };
@@ -179,17 +184,19 @@ async function wait(config) {
     return (await gh(["api", `repos/{owner}/{repo}/commits/${encodeURIComponent(branch)}`, "--jq", ".sha"])).trim();
   };
   try {
+    // Pin the log before verifying identity; name reuse cannot redirect later async reads.
+    if (job) jobLog = openSync(`${job.directory}/log`, "r");
     while (!interrupted) {
       if (kind !== "job" && !first && Date.now() >= deadline) return finish(false, timeoutMessage());
       if (kind === "pid") {
         if (!running(target)) return finish(true, first ? `pid ${target} not running` : `pid ${target} exited after ${elapsed(Date.now() - started)}`);
       } else if (kind === "job") {
-        const current = kitJob(job.directory);
-        if (current.pid !== job.pid || current.started !== job.started) throw new Error(`job ${target} was replaced`);
+        checkJob();
         if (!kitJobRunning(job)) {
           // Re-read after checking liveness: the wrapper may have just published exit.
           const code = kitJobExit(job);
-          return code !== null ? finishJob(code, `exit ${code}`, true) : finishJob(1, "died without exit status", true);
+          checkJob(); // The captured status and open log must belong to the original job.
+          return await finishJob(code ?? 1, code !== null ? `exit ${code}` : "died without exit status", true);
         }
         if (Date.now() >= deadline) return finishJob(124, `still running, timed out after ${options.timeout ?? "30m"}`);
       } else if (kind === "output") {
@@ -259,6 +266,8 @@ async function wait(config) {
     const message = Date.now() >= deadline ? timeoutMessage() : (error.stderr?.trim() || error.message).split(/\r?\n/)[0];
     kitResult("fail", message);
     process.exitCode = 1;
+  } finally {
+    if (jobLog !== undefined) closeSync(jobLog);
   }
   // A signal leaves the interrupted RESULT to the kit front door.
 }
