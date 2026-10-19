@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // kit: send open review findings back to the original builder
 import { execFileSync, spawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { openFindings } from "../review-findings.mjs";
@@ -9,7 +9,7 @@ import { openFindings } from "../review-findings.mjs";
 const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv, commitBuilderWork, builderAuthor } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const usage = "Usage: kit fix [--review DIR] [--run DIR] [--ticket FILE]\nResume the builder with open findings, commit its fixes, and review again.\n";
+const usage = "Usage: kit fix [--review DIR] [--run DIR] [--ticket FILE]\nResume the builder with open findings, commit its fixes, and review again.\nFailed rounds resume their saved builder/commit/review phase without discarding edits.\n";
 const kit = resolve(import.meta.dirname, "../kit");
 const agent = resolve(import.meta.dirname, "../agent.sh");
 
@@ -76,17 +76,26 @@ async function fix(args) {
   try {
     const root = resolve(kitRoot()), env = nodeEnv();
     const git = (...argv) => execFileSync("git", ["-C", root, ...argv], { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
-    const head = git("rev-parse", "HEAD");
-    const review = flags["--review"] ? resolve(root, flags["--review"]) : coveringReview(head);
+    const branch = git("symbolic-ref", "--short", "HEAD");
+    const directory = join(root, ".scratch/kit-fix", encodeURIComponent(branch));
+    const pendingPath = join(directory, "pending.json");
+    let pending = existsSync(pendingPath) ? JSON.parse(readFileSync(pendingPath, "utf8")) : null;
+    if (pending && (pending.root !== root || pending.branch !== branch ||
+        (flags["--review"] && resolve(root, flags["--review"]) !== pending.review) ||
+        (flags["--run"] && resolve(root, flags["--run"]) !== pending.run) ||
+        (flags["--ticket"] && resolve(root, flags["--ticket"]) !== resolve(root, pending.ticket))))
+      throw new Error("pending fix belongs to a different worktree, branch, review, builder or ticket");
+    const head = pending?.head || git("rev-parse", "HEAD");
+    const review = pending?.review || (flags["--review"] ? resolve(root, flags["--review"]) : coveringReview(head));
     if (!review) throw new Error("no review covers HEAD");
     const resultPath = join(review, "result.md");
-    let original = "";
-    try { original = readFileSync(resultPath, "utf8"); } catch { /* Fail closed below. */ }
+    let original = pending?.original || "";
+    if (!pending) try { original = readFileSync(resultPath, "utf8"); } catch { /* Fail closed below. */ }
     const { findings, readable } = openFindings(original);
     if (!readable) throw new Error(`${findings.length} open findings (${resultPath}): review format unreadable`);
     if (!findings.length) { kitResult("ok", "fix clean"); return 0; }
-    const builder = builderRun(root, flags["--run"]);
-    let ticket = flags["--ticket"];
+    const builder = builderRun(root, pending?.run || flags["--run"]);
+    let ticket = pending?.ticket || flags["--ticket"];
     if (!ticket) {
       const brief = readFileSync(resolve(root, builder.status.brief), "utf8");
       ticket = [...brief.matchAll(/(?:`|\s|^)(docs\/[^\s`]+\.md)/g)].map(match => match[1])
@@ -95,24 +104,34 @@ async function fix(args) {
     if (!ticket) throw new Error("no ticket found in builder brief; pass --ticket FILE");
     readFileSync(resolve(root, ticket));
     // A branch owns its rounds even if the worktree later switches branches.
-    const branch = git("symbolic-ref", "--short", "HEAD");
     const assertScope = (expectedHead = head) => {
       if (git("symbolic-ref", "--quiet", "HEAD") !== `refs/heads/${branch}` || git("rev-parse", "HEAD") !== expectedHead) {
         throw new Error("worktree branch or HEAD changed during fix; refusing stale work");
       }
     };
-    assertScope();
-    if (git("status", "--porcelain", "--untracked-files=normal")) throw new Error("uncommitted changes before builder resume");
-    const directory = join(root, ".scratch/kit-fix", encodeURIComponent(branch));
+    assertScope(pending?.phase === "review" ? pending.reviewHead : head);
+    if (!pending && git("status", "--porcelain", "--untracked-files=normal")) throw new Error("uncommitted changes before builder resume");
     mkdirSync(directory, { recursive: true });
     const rounds = readdirSync(directory).map(name => /^round-(\d+)\.md$/.exec(name)).filter(Boolean).map(match => Number(match[1]));
-    const round = Math.max(0, ...rounds) + 1;
+    const round = pending?.round || Math.max(0, ...rounds) + 1;
     const brief = join(directory, `round-${round}.md`);
-    writeFileSync(brief, `Ticket: ${ticket}\n\nFix real defects within the ticket's Files. For a finding you reject, list it under\n\`Declined:\` with a one-line reason.\n\nOpen findings:\n${findings.map(item => `- ${item.group}: ${item.text}`).join("\n")}\n\nReview evidence (verbatim; Optional nits are not open findings):\n${original}`, { flag: "wx" });
+    if (!pending) writeFileSync(brief, `Ticket: ${ticket}\n\nFix real defects within the ticket's Files. For a finding you reject, list it under\n\`Declined:\` with a one-line reason.\n\nOpen findings:\n${findings.map(item => `- ${item.group}: ${item.text}`).join("\n")}\n\nReview evidence (verbatim; Optional nits are not open findings):\n${original}`, { flag: "wx" });
+
+    const save = () => {
+      writeFileSync(`${pendingPath}.tmp`, JSON.stringify(pending, null, 2) + "\n");
+      renameSync(`${pendingPath}.tmp`, pendingPath);
+    };
+    if (!pending) {
+      pending = { root, branch, head, review, run: builder.folder, ticket, round,
+        original, model: builder.status.model, phase: "builder", declined: [], reviewHead: head };
+      save();
+    }
 
     // Keep child reports and RESULT lines in logs; this command emits one RESULT.
     async function execute(name, command, argv, overrides = {}) {
-      const log = join(directory, `round-${round}-${name}.log`), fd = openSync(log, "a");
+      const log = join(directory, `round-${round}-${name}.log`);
+      const previous = existsSync(log) ? readFileSync(log, "utf8").length : 0;
+      const fd = openSync(log, "a");
       let code;
       try {
         code = await new Promise((accept, reject) => {
@@ -125,23 +144,31 @@ async function fix(args) {
         });
       } finally { closeSync(fd); }
       if (code !== 0) throw new Error(`${name} failed (${code}); see ${log}`);
-      return readFileSync(log, "utf8");
+      return readFileSync(log, "utf8").slice(previous);
     }
 
-    const reportPath = join(builder.folder, "out.md");
-    const previousReport = existsSync(reportPath) ? readFileSync(reportPath, "utf8") : "";
-    await execute("builder", agent, ["--resume", builder.folder, "--brief", brief]);
-    assertScope();
-    const report = readFileSync(reportPath, "utf8");
-    if (!report.startsWith(previousReport)) throw new Error("builder replaced its saved report");
-    const declined = declinedFindings(report.slice(previousReport.length));
-    const changes = git("status", "--porcelain", "--untracked-files=normal");
-    if (!changes && !declined.length) throw new Error("builder made no changes");
-    let reviewHead = head;
-    if (changes) {
-      reviewHead = commitBuilderWork({ root, branch, head, message: `Review fixes round ${round}`,
-        author: builderAuthor(builder.status.model), env });
+    if (pending.phase === "builder") {
+      assertScope();
+      const reportPath = join(builder.folder, "out.md");
+      const previousReport = existsSync(reportPath) ? readFileSync(reportPath, "utf8") : "";
+      await execute("builder", agent, ["--resume", builder.folder, "--brief", brief]);
+      assertScope();
+      const report = readFileSync(reportPath, "utf8");
+      if (!report.startsWith(previousReport)) throw new Error("builder replaced its saved report");
+      const declined = declinedFindings(report.slice(previousReport.length));
+      if (!git("status", "--porcelain", "--untracked-files=normal") && !declined.length)
+        throw new Error("builder made no changes");
+      pending.declined = declined; pending.phase = "commit"; save();
     }
+    if (pending.phase === "commit") {
+      assertScope();
+      if (git("status", "--porcelain", "--untracked-files=normal")) {
+        pending.reviewHead = commitBuilderWork({ root, branch, head, message: `Review fixes round ${round}`,
+          author: builderAuthor(pending.model), env });
+      } else if (!pending.declined.length) throw new Error("pending fix changes are missing; refusing to discard the round");
+      pending.phase = "review"; save();
+    }
+    const reviewHead = pending.reviewHead, declined = pending.declined;
     assertScope(reviewHead);
     const output = await execute("review", kit, ["review", "--ticket", ticket], { ASE_REVIEW_DECLINED: JSON.stringify(declined) });
     assertScope(reviewHead);
@@ -154,6 +181,7 @@ async function fix(args) {
     let result = "";
     try { result = readFileSync(nextResult, "utf8"); } catch { /* Missing evidence is an open finding. */ }
     const remaining = openFindings(result).findings.length;
+    rmSync(pendingPath);
     kitResult(remaining ? "fail" : "ok", remaining ? `fix ${remaining} open findings (${nextResult})` : "fix clean");
     return remaining ? 1 : 0;
   } catch (error) { kitResult("fail", `fix ${error.message}`); return 1; }

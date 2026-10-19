@@ -1,19 +1,29 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
+import { forEachAwait } from "./support/await-race.ts";
 
 const kit = resolve("scripts/agents/kit");
 const clean = "REVIEW_STATUS: complete\nDefects:\nSpec: none\nStandards: none\nValidation gaps: none\nOptional nits: none\n";
 const findings = "REVIEW_STATUS: complete\nDefects:\nSpec:\n- file.txt:1 P1 restore required text\nStandards: none\nValidation gaps: none\nOptional nits: none\n";
 interface Call { phase: string; args: string[] }
-interface State { finished: string[]; build: string; review: string; reviewedHead: string; rounds: number; pr?: string; queued?: { head: string } }
+interface State { finished: string[]; build: string; review: string; reviewedHead: string; rounds: number; pendingFix?: boolean; pr?: string; queued?: { head: string } }
 
 function fixture(t: TestContext) {
   const dir = mkdtempSync(join(tmpdir(), "kit-slice-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const children: ChildProcess[] = [], releases: string[] = [];
+  t.after(async () => {
+    for (const path of releases) writeFileSync(path, "cleanup");
+    await Promise.all(children.map(child => {
+      if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+      child.kill("SIGTERM");
+      return new Promise<void>(accept => child.once("close", () => accept()));
+    }));
+    rmSync(dir, { recursive: true, force: true });
+  });
   const root = join(dir, "work tree"), main = join(dir, "main"), bin = join(dir, "bin");
   for (const path of [root, main, bin]) mkdirSync(path);
   const git = (...args: string[]) => {
@@ -32,7 +42,7 @@ function fixture(t: TestContext) {
   git("add", "-A"); git("commit", "-m", "base");
   const head = git("rev-parse", "HEAD"), callsFile = join(dir, "calls.jsonl");
   const shared = `
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 const args = process.argv.slice(2);
@@ -40,11 +50,18 @@ const git = (...args) => execFileSync("git", args, { encoding: "utf8" }).trim();
 const phase = args[0];
 function call(name) {
   appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ phase: name, args }) + "\\n");
-  if (process.env.FAIL_PHASE === name) {
+  if (process.env.FAIL_PHASE === name || (process.env.FAIL_FIX_REVIEW && name === "review" && round() > 0)) {
     for (let n = 0; n < 40; n++) console.error("failure-detail-" + n);
     console.log("RESULT: fail " + name + " deliberate failure");
     process.exit(7);
   }
+}
+async function hold(name) {
+  if (process.env.HOLD_PHASE !== name) return;
+  writeFileSync(process.env.HOLD_READY, "ready");
+  await new Promise(accept => {
+    const timer = setInterval(() => { if (existsSync(process.env.HOLD_RELEASE)) { clearInterval(timer); accept(); } }, 10);
+  });
 }
 const counter = join(".scratch", "fake-round");
 const round = () => existsSync(counter) ? Number(readFileSync(counter, "utf8")) : 0;
@@ -60,15 +77,24 @@ function evidence() {
   const agent = join(bin, "agent.mjs");
   writeFileSync(agent, `#!/usr/bin/env node\n${shared}
 call("build");
+await hold("build");
 if (!process.env.NO_BUILD_CHANGES) writeFileSync("file.txt", "built\\n");
 const out = args[args.indexOf("--out") + 1];
 mkdirSync(out, { recursive: true });
-writeFileSync(join(out, "status.json"), JSON.stringify({ kind: "build", model: args[args.indexOf("--model") + 1], worktree: process.cwd(), out }));
+writeFileSync(join(out, "status.json"), JSON.stringify({ kind: "build", model: args[args.indexOf("--model") + 1], worktree: process.cwd(), out,
+  pid: 2147483647, cli: "codex", effort: "high", state: "done", exitCode: 0, brief: join(process.cwd(), ".scratch/agent-brief.md"),
+  resumes: 0, session: "builder-session", started: "2026-10-19T00:00:00Z" }));
+writeFileSync(join(out, "out.md"), "Initial builder report.\\n"); writeFileSync(join(out, "run.log"), "initial log\\n");
 console.log("artifacts: " + out);
 `);
   const fakeKit = join(bin, "kit.mjs");
   writeFileSync(fakeKit, `#!/usr/bin/env node\n${shared}
 call(phase);
+await hold(phase);
+if (phase === "fix" && process.env.REAL_FIX) {
+  const result = spawnSync("bash", [${JSON.stringify(kit)}, ...args], { stdio: "inherit" });
+  process.exit(result.status ?? 1);
+}
 if (args.includes("--waive")) throw new Error("waive forbidden");
 if (phase === "review") {
   const { folder } = evidence();
@@ -105,7 +131,7 @@ console.log(JSON.stringify({ state: merged ? "MERGED" : "OPEN", mergeCommit: mer
   headRefOid: process.env.MERGE_CHANGED_HEAD ? "b".repeat(40) : git("rev-parse", "HEAD") }));
 `);
   chmodSync(gh, 0o755); chmodSync(agent, 0o755); chmodSync(fakeKit, 0o755);
-  const env = { ...process.env, KIT_ROOT: root, KIT_MAIN_ROOT: main, ASE_OWNER: "ke-04", ASE_SLICE_AGENT: agent,
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, KIT_ROOT: root, KIT_MAIN_ROOT: main, ASE_OWNER: "ke-04", ASE_SLICE_AGENT: agent,
     ASE_SLICE_KIT: fakeKit, ASE_SLICE_GH: gh, ASE_SLICE_MERGE_POLL_MS: "1", ASE_SLICE_MERGE_TIMEOUT_MS: "5000", FAKE_CALLS: callsFile };
   const args = ["--ticket", ticket, "--builder", "sol"];
   const run = (extra: string[] = [], overrides: NodeJS.ProcessEnv = {}) => {
@@ -119,7 +145,40 @@ console.log(JSON.stringify({ state: merged ? "MERGED" : "OPEN", mergeCommit: mer
   const calls = (): Call[] => existsSync(callsFile) ? readFileSync(callsFile, "utf8").trim().split("\n").map(line => JSON.parse(line)) : [];
   const statePath = join(root, ".scratch/kit-slice/04-ticket/state.json");
   const state = (): State => JSON.parse(readFileSync(statePath, "utf8"));
-  return { dir, root, main, hooks, ticket, git, head, run, calls, state, env };
+  const start = (overrides: NodeJS.ProcessEnv) => {
+    if (overrides.HOLD_RELEASE) releases.push(overrides.HOLD_RELEASE);
+    const child = spawn("bash", [kit, "slice", ...args], { cwd: root, env: { ...env, ...overrides }, stdio: ["ignore", "pipe", "pipe"], timeout: 20_000 });
+    children.push(child);
+    let stdout = "", stderr = "";
+    child.stdout.setEncoding("utf8").on("data", chunk => { stdout += chunk; });
+    child.stderr.setEncoding("utf8").on("data", chunk => { stderr += chunk; });
+    return new Promise<{ status: number | null; stdout: string; stderr: string }>((accept, reject) => {
+      child.once("error", reject); child.once("close", status => accept({ status, stdout, stderr }));
+    });
+  };
+  const realFix = (): NodeJS.ProcessEnv => {
+    const commands = join(dir, "commands"); mkdirSync(commands);
+    symlinkSync(resolve("scripts/agents/kit.d/slice"), join(commands, "slice"));
+    symlinkSync(resolve("scripts/agents/kit.d/fix"), join(commands, "fix"));
+    const review = join(commands, "review");
+    writeFileSync(review, `#!/usr/bin/env node
+const { spawnSync } = require("node:child_process");
+const result = spawnSync(${JSON.stringify(fakeKit)}, ["review", ...process.argv.slice(2)], { stdio: "inherit" });
+process.exit(result.status ?? 1);
+`);
+    chmodSync(review, 0o755);
+    const codex = join(bin, "codex");
+    writeFileSync(codex, `#!/usr/bin/env node\n${shared}
+readFileSync(0, "utf8"); call("resume");
+writeFileSync(counter, String(round() + 1));
+writeFileSync("file.txt", "preserved real fix\\n");
+writeFileSync(args[args.indexOf("-o") + 1], "Fixed the defect.\\n");
+console.error("model: gpt-6.1-sol"); console.error("session id: builder-session");
+`);
+    chmodSync(codex, 0o755);
+    return { REAL_FIX: "1", KIT_COMMANDS_DIR: commands, ASE_SKIP_DOCTOR: "1", ASE_RESUME_POLL_MS: "10", ASE_AGENT_TIMEOUT: "10s" };
+  };
+  return { dir, root, main, hooks, ticket, git, head, run, calls, state, env, start, realFix };
 }
 
 test("kit slice help and invalid options never launch commands", t => {
@@ -349,4 +408,101 @@ test("queued slice refuses --no-pr after local HEAD moves without altering its s
   assert.deepEqual(f.calls(), calls, "incompatible resume must not launch any phase");
   assert.deepEqual(f.state(), queued, "keep the queued PR available for a normal wait retry");
   assert.equal(f.git("rev-parse", "HEAD"), head);
+});
+
+
+async function until(condition: () => boolean, description: string) {
+  const deadline = Date.now() + 10_000;
+  while (!condition()) {
+    assert.ok(Date.now() < deadline, `deadline waiting for ${description}`);
+    await new Promise(accept => setTimeout(accept, 10));
+  }
+}
+
+for (const phase of ["build", "review"]) for (const change of ["branch", "HEAD"])
+  test(`slice refuses ${change} changes while its ${phase} command is held`, async t => {
+    const count = await forEachAwait(race => {
+      const f = fixture(t), ready = join(f.dir, "ready"), release = join(f.dir, "release");
+      const result = f.start({ HOLD_PHASE: phase, HOLD_READY: ready, HOLD_RELEASE: release });
+      return { f, done: (async () => {
+        await race.port(`held ${phase}`, () => until(() => existsSync(ready), `held ${phase}`))();
+        writeFileSync(release, "go");
+        return result;
+      })(), ready };
+    }, async ({ f, ready }) => {
+      await until(() => existsSync(ready), `held ${phase}`);
+      if (change === "branch") f.git("switch", "-c", "other-branch");
+      else f.git("commit", "--allow-empty", "-m", "concurrent change");
+    }, async ({ f, done }) => {
+      const result = await done;
+      assert.equal(result.status, 1, result.stdout + result.stderr);
+      assert.match(result.stdout, new RegExp(`RESULT: fail slice ${phase}: worktree (branch|HEAD) changed`));
+      assert.equal(f.calls().some(call => ["fix", "pr"].includes(call.phase)), false);
+      assert.equal(f.git("log", "-1", "--format=%s"), change === "HEAD" ? "concurrent change" : phase === "build" ? "base" : "Test slice title");
+      if (phase === "build") {
+        assert.equal(f.calls().some(call => call.phase === "review"), false);
+        assert.equal(f.git("diff", "--cached", "--name-only"), "");
+      }
+      assert.equal(existsSync(join(f.root, ".scratch/merged")), false);
+    });
+    assert.equal(count, 1);
+  });
+
+for (const phase of ["commit", "review"]) test(`slice resumes real kit fix's failed ${phase} without repeating its builder`, t => {
+  const f = fixture(t), real = f.realFix();
+  mkdirSync(join(f.root, ".scratch"), { recursive: true });
+  const reject = join(f.root, ".scratch/reject-fix"), hook = join(f.hooks, "pre-commit");
+  writeFileSync(hook, `#!/usr/bin/env node
+const { existsSync, readFileSync } = require("node:fs");
+if (existsSync(".scratch/reject-fix") && readFileSync("file.txt", "utf8").startsWith("preserved real fix")) {
+  console.error("fix hook rejected"); process.exit(1);
+}
+`); chmodSync(hook, 0o755);
+  if (phase === "commit") writeFileSync(reject, "reject");
+  const failed = f.run([], { ...real, CLEAN_AT: "1", ...(phase === "review" ? { FAIL_FIX_REVIEW: "1" } : {}) });
+  assert.equal(failed.status, 1, failed.stdout + failed.stderr);
+  assert.match(failed.stdout, /RESULT: fail slice fix:/);
+  const pendingPath = join(f.root, ".scratch/kit-fix/build%2Fke-04/pending.json");
+  const pending: { phase: string } = JSON.parse(readFileSync(pendingPath, "utf8"));
+  assert.equal(pending.phase, phase);
+  assert.equal(readFileSync(join(f.root, "file.txt"), "utf8"), "preserved real fix\n");
+  assert.equal(f.state().pendingFix, true);
+  if (phase === "commit") {
+    assert.equal(f.git("diff", "--cached", "--name-only"), "file.txt");
+    rmSync(reject);
+  }
+  const result = f.run([], { ...real, CLEAN_AT: "1" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /RESULT: ok slice .* PR #42/);
+  for (const name of ["build", "resume", "pr"]) assert.equal(f.calls().filter(call => call.phase === name).length, 1);
+  assert.equal(f.state().rounds, 1);
+  assert.equal(f.state().pendingFix, undefined);
+  assert.equal(existsSync(pendingPath), false);
+  assert.equal(existsSync(join(f.root, ".scratch/kit-fix/build%2Fke-04/round-2.md")), false);
+  assert.equal(f.git("status", "--porcelain"), "");
+  assert.equal(f.git("log", "-1", "--format=%s"), "Review fixes round 1");
+  assert.equal(f.git("show", "HEAD:file.txt"), "preserved real fix");
+});
+
+test("slice refuses a changed HEAD when resuming a pending real fix commit", t => {
+  const f = fixture(t), real = f.realFix();
+  const hook = join(f.hooks, "pre-commit");
+  writeFileSync(hook, `#!/usr/bin/env node
+const { readFileSync } = require("node:fs");
+if (readFileSync("file.txt", "utf8").startsWith("preserved real fix")) process.exit(1);
+`); chmodSync(hook, 0o755);
+  assert.equal(f.run([], { ...real, CLEAN_AT: "1" }).status, 1);
+  const calls = f.calls();
+  rmSync(hook);
+  f.git("commit", "-m", "concurrent work");
+  const head = f.git("rev-parse", "HEAD");
+  const result = f.run([], { ...real, CLEAN_AT: "1" });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /RESULT: fail slice fix:.*branch or HEAD changed/);
+  assert.equal(f.git("rev-parse", "HEAD"), head);
+  for (const name of ["build", "resume", "review", "pr"]) {
+    assert.equal(f.calls().filter(call => call.phase === name).length, calls.filter(call => call.phase === name).length);
+  }
+  assert.equal(f.state().rounds, 0);
+  assert.equal(f.state().pendingFix, true);
 });
