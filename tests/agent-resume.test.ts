@@ -24,6 +24,7 @@ import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs
 import { basename } from "node:path";
 const cli = basename(process.argv[1]), args = process.argv.slice(2);
 appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ cli, args, input: readFileSync(0, "utf8"), cwd: process.cwd() }) + "\\n");
+if (process.env.FAKE_EVENTS) appendFileSync(process.env.FAKE_EVENTS, JSON.stringify({ phase: "start", pid: process.pid }) + "\\n");
 const model = process.env.FAKE_WRONG_MODEL ? "wrong-model" : args[args.indexOf(cli === "codex" ? "-m" : "--model") + 1];
 if (cli === "codex") {
   if (!process.env.FAKE_NO_MODEL) console.error("model: " + model);
@@ -49,6 +50,7 @@ else {
   const id = flag ? args[args.indexOf(flag) + 1] : ${JSON.stringify(session)};
   process.stdout.write(JSON.stringify({ result: ${JSON.stringify(report.trimEnd())}, session_id: id, modelUsage: { [model]: {} } }));
 }
+if (process.env.FAKE_EVENTS) appendFileSync(process.env.FAKE_EVENTS, JSON.stringify({ phase: "end", pid: process.pid }) + "\\n");
 process.exit(Number(process.env.FAKE_EXIT || 0));
 `;
 
@@ -325,6 +327,61 @@ test("two waiting resume callers start exactly one replacement and both report i
     assert.equal(result.code, 0, result.stderr); assert.ok(result.stdout.includes(report));
   }
   assert.equal(f.calls().length, 2); assert.equal(f.status().state, "done"); assert.equal(f.status().resumes, 1);
+});
+
+for (const cli of ["codex", "claude"]) test(`concurrent ${cli} resumes with distinct briefs both reach the session serially`, async t => {
+  const f = fixture(t);
+  f.seed({ cli, model: cli === "codex" ? "gpt-6.1-sol" : "claude-opus-5-5", state: "failed", exitCode: 7 });
+  const briefs = [join(f.dir, "first.md"), join(f.dir, "second.md")];
+  const prompts = ["Fix the first finding.\n", "Fix the second finding.\n"];
+  briefs.forEach((brief, index) => writeFileSync(brief, prompts[index]));
+  const barrier = join(f.dir, "barrier"), claims = join(f.dir, "claims.jsonl"), events = join(f.dir, "events.jsonl");
+  const loader = join(f.dir, "claim-barrier.mjs"); mkdirSync(barrier);
+  // Intercept only the initial claim's atomic link. Both runners must select
+  // generation 1 before either can publish it, so one necessarily loses.
+  writeFileSync(loader, `
+    import fs from "node:fs";
+    import { syncBuiltinESMExports } from "node:module";
+    if (process.argv[1] === ${JSON.stringify(runner)}) {
+      const link = fs.linkSync;
+      fs.linkSync = function (source, target) {
+        if (target !== ${JSON.stringify(join(f.out, "resume-claim-1.0"))}) return link(source, target);
+        fs.writeFileSync(${JSON.stringify(barrier)} + "/" + process.pid, "ready");
+        const deadline = Date.now() + 15000;
+        const wait = new Int32Array(new SharedArrayBuffer(4));
+        while (fs.readdirSync(${JSON.stringify(barrier)}).length < 2) {
+          if (Date.now() > deadline) throw new Error("claim barrier timed out");
+          Atomics.wait(wait, 0, 0, 10);
+        }
+        try {
+          link(source, target);
+          fs.appendFileSync(${JSON.stringify(claims)}, "won\\n");
+        } catch (error) {
+          fs.appendFileSync(${JSON.stringify(claims)}, error.code + "\\n");
+          throw error;
+        }
+      };
+      syncBuiltinESMExports();
+    }
+  `);
+  const callers = briefs.map(brief => f.start(["--resume", f.out, "--brief", brief], {
+    NODE_OPTIONS: `--import=${loader}`, FAKE_HOLD: f.hold, FAKE_EVENTS: events,
+  }));
+  await until(() => existsSync(claims) && readFileSync(claims, "utf8").trim().split("\n").length === 2, "both generation-1 claim attempts");
+  assert.deepEqual(readFileSync(claims, "utf8").trim().split("\n").sort(), ["EEXIST", "won"]);
+  await f.running();
+  await until(() => f.calls().length === 1, "winning CLI call");
+  assert.equal(f.status().resumes, 1);
+  writeFileSync(f.hold, "go");
+  const results = await Promise.all(callers.map(caller => caller.done));
+  for (const result of results) assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(f.calls().map(call => call.input).sort(), [...prompts].sort());
+  assert.ok(f.calls().every(call => call.cli === cli && call.args.includes(session)));
+  const activity: { phase: string; pid: number }[] = readFileSync(events, "utf8").trim().split("\n").map(line => JSON.parse(line));
+  assert.deepEqual(activity.map(event => event.phase), ["start", "end", "start", "end"]);
+  assert.equal(activity[0].pid, activity[1].pid); assert.equal(activity[2].pid, activity[3].pid);
+  assert.equal(f.status().resumes, 2); assert.equal(f.status().state, "done");
+  assert.equal(readFileSync(join(f.out, "out.md"), "utf8"), "old report\n" + report + report);
 });
 
 test("callers waiting on a failing replacement return its exit code and start nothing more", async t => {

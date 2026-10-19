@@ -299,7 +299,9 @@ async function resumeRun(out, brief) {
     const claim = claimResume(out, path, generation);
     if (!claim.won) {
       const followed = await followGeneration(out, path, generation, claim.holder, interval);
-      if (followed) return followed.code;
+      // A competing generation satisfies a plain resume, but cannot account
+      // for this caller's new prompt. Queue that request in the next generation.
+      if (followed && brief === undefined) return followed.code;
       continue;
     }
     const options = parseAgentArgs([previous.kind, previous.worktree, previous.brief,
