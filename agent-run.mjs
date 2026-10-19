@@ -178,7 +178,7 @@ export function agentInvocation(options, common, output) {
 export const buildContract = `
 ## Build contract
 Leave changes unstaged. Do not commit, push, deploy, spawn agents or use git stash.
-Run npm run check, npm test and npm run lint, plus the ticket's touched specs.
+Run focused unit files for the change (scripts/agents/kit unit --affected; if unavailable, scripts/agents/unit.sh <files>), npm run check when types moved, npm run lint and the ticket's touched specs. kit pr runs the tier's full set.
 Final report: at most 15 lines; changed files, behavior, validation and unresolved risks.
 `;
 

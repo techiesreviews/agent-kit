@@ -378,6 +378,36 @@ test at tests/example.test.ts:2:1
   assert.throws(() => unitSummary("Error: runner crashed"), /lacks pass\/fail counts/);
 });
 
+test("unit summary reads real redirected TAP output and whitespace around spec counts", () => {
+  const log = `TAP version 13
+# Subtest: selected test runs
+ok 1 - selected test runs
+  ---
+  duration_ms: 0.734
+  type: 'test'
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 1
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 128.443
+`;
+  assert.equal(unitSummary(log), "pass 1, fail 0");
+  assert.equal(unitSummary("  ℹ pass \u001b[32m4370\u001b[0m  \r\n  ℹ fail 0\r\n"), "pass 4370, fail 0");
+});
+
+test("build contract directs focused units and type checks and leaves the full tier to kit pr", () => {
+  assert.match(buildContract, /scripts\/agents\/kit unit --affected/);
+  assert.match(buildContract, /scripts\/agents\/unit.sh <files>/);
+  assert.match(buildContract, /npm run check when types moved/);
+  assert.match(buildContract, /kit pr runs the tier's full set/);
+  assert.doesNotMatch(buildContract, /npm test/);
+});
+
 test("Sol expiry kills its process group including a child that ignores TERM", () => {
   const scratch = mkdtempSync(join(tmpdir(), "ase-sol-timeout-"));
   const pidFile = join(scratch, "pids.json");

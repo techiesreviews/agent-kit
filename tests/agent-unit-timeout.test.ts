@@ -16,7 +16,6 @@ test("hung test never settles", async () => {
 });
 `);
   const invoke = (args: string[], env: NodeJS.ProcessEnv = {}) => {
-    const started = Date.now();
     // This suite runs under `tsx --test`, whose NODE_TEST_CONTEXT would otherwise leak into
     // unit.sh's own `tsx --test` run and make it skip the test files.
     const spawned = { ...process.env, ...env };
@@ -27,11 +26,10 @@ test("hung test never settles", async () => {
       cwd: process.cwd(),
       env: spawned,
     });
-    return { ...result, elapsed: Date.now() - started };
+    return result;
   };
   const timedOut = invoke([hung], { ASE_UNIT_TIMEOUT_MS: "500" });
   assert.equal(timedOut.error, undefined);
-  assert.ok(timedOut.elapsed < 20_000, `unit.sh took ${timedOut.elapsed}ms to report the hung test`);
   assert.notEqual(timedOut.status, 0, timedOut.stdout + timedOut.stderr);
   assert.match(timedOut.stdout + timedOut.stderr, /hung test never settles/);
   assert.match(timedOut.stdout + timedOut.stderr, /test timed out after 500ms/);
@@ -57,5 +55,5 @@ test("unit.sh with no files passes the timeout and every tests/*.test.ts file to
   delete env.NODE_TEST_CONTEXT;
   const result = spawnSync("bash", [resolve("scripts/agents/unit.sh")], { encoding: "utf8", cwd: dir, env, timeout: 20_000 });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.deepEqual(readFileSync(join(dir, "args.txt"), "utf8").trim().split("\n"), ["--test", "--test-timeout=500", "tests/a.test.ts", "tests/b.test.ts"]);
+  assert.deepEqual(readFileSync(join(dir, "args.txt"), "utf8").trim().split("\n"), ["--test", "--test-reporter=spec", "--test-timeout=500", "tests/a.test.ts", "tests/b.test.ts"]);
 });

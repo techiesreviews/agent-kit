@@ -136,7 +136,13 @@ function fixture(t: TestContext) {
     writeFileSync(join(out, "out.md"), "old report\n");
     return value;
   };
-  const calls = (): Call[] => existsSync(callsFile) ? readFileSync(callsFile, "utf8").trim().split("\n").map(line => JSON.parse(line)) : [];
+  const calls = (): Call[] => {
+    if (!existsSync(callsFile)) return [];
+    const text = readFileSync(callsFile, "utf8");
+    // The file can exist before appendFileSync writes its record. Only complete
+    // JSONL records prove that the CLI reached the call barrier.
+    return text.slice(0, text.lastIndexOf("\n") + 1).split("\n").filter(Boolean).map(line => JSON.parse(line));
+  };
   const fresh = (cli = "codex", overrides: NodeJS.ProcessEnv = {}) => start(["build", root, brief, "--out", out,
     "--cli", cli, "--model", cli === "codex" ? "gpt-6.1-sol" : "claude-opus-5-5"], overrides);
   const running = async () => {

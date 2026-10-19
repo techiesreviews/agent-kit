@@ -10,9 +10,9 @@ mkdir -p .scratch/unit
 log=.scratch/unit/$(date -u +%Y%m%dT%H%M%S)-$$.log
 status=0
 if (( $# )); then
-  ./node_modules/.bin/tsx --test --test-timeout="$timeout" "$@" > "$log" 2>&1 || status=$?
+  ./node_modules/.bin/tsx --test --test-reporter=spec --test-timeout="$timeout" "$@" > "$log" 2>&1 || status=$?
 else
-  ./node_modules/.bin/tsx --test --test-timeout="$timeout" tests/*.test.ts > "$log" 2>&1 || status=$?
+  ./node_modules/.bin/tsx --test --test-reporter=spec --test-timeout="$timeout" tests/*.test.ts > "$log" 2>&1 || status=$?
 fi
 node "$(dirname "${BASH_SOURCE[0]}")/unit-summary.mjs" "$log" || { (( status )) || status=1; }
 echo "log: $log"

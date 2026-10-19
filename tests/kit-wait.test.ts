@@ -268,14 +268,17 @@ test("pid waits for a child exit through the front door and reports owner and el
   const waiting = child(t, "/bin/bash", [kit, "wait", "pid", String(sleeper.pid), "--timeout", "5"], { ...baseEnv, KIT_WAIT_STATUS_MS: "1" });
   const pending = collect(waiting);
   await nextLine(waiting, /^waiting /);
+  const exited = once(sleeper, "close");
   sleeper.stdin!.end("finish");
+  await exited;
   const output = await pending;
   result(output, 0, /ok pid \d+ exited after \d+(?:ms|s)/);
   assert.match(output.stdout, /^kit wait pid \d+ \(owner wait-test\)\n/);
 });
 
 test("pid timeout fails and idle status is rate limited", async (t) => {
-  const sleeper = child(t, "/bin/sleep", ["10"]);
+  // Stay alive until teardown, however long starting the waiter takes under load.
+  const sleeper = child(t, process.execPath, ["-e", "process.stdin.resume();"], baseEnv, "pipe");
   const output = await run(t, ["pid", String(sleeper.pid), "--timeout", "1"]);
   result(output, 1, /still running, timed out after 1/);
   assert.doesNotMatch(output.stdout, /waiting /);

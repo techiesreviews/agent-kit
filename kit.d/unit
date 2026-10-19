@@ -1,0 +1,127 @@
+#!/usr/bin/env node
+// kit: run focused unit tests or the tests a change affects
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { join, posix, resolve } from "node:path";
+import { graphFile, importsOf } from "../specs-affected.mjs";
+import { unitCounts } from "../unit-summary.mjs";
+import { kitRoot, kitResult, nodeEnv } from "../kit-lib.mjs";
+
+const usage = `Usage: kit unit [files…] [--list]
+       kit unit --affected [--base REF] [--list]
+Default base: origin/dev. No files runs the full unit suite through unit.sh.
+--affected follows relative imports transitively; prints each file and its reason.
+--list prints selection reasons and runs nothing.
+`;
+const unitFile = /^tests\/.*\.test\.ts$/;
+const moduleFile = file => graphFile.test(file) && /\.(?:ts|tsx|js|mjs)$/.test(file);
+function git(root, args) {
+  return execFileSync("git", ["-C", root, ...args], { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+}
+function paths(root, args) { return git(root, args).split("\0").filter(Boolean); }
+function options(args) {
+  const flags = { files: [], affected: false, list: false, base: undefined };
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--base") {
+      if (flags.base !== undefined || !args[i + 1] || args[i + 1].startsWith("-")) throw new Error("--base requires one REF");
+      flags.base = args[++i];
+    } else if (["--affected", "--list"].includes(arg)) {
+      if (flags[arg.slice(2)]) throw new Error(`duplicate option: ${arg}`);
+      flags[arg.slice(2)] = true;
+    } else if (arg.startsWith("-")) throw new Error(`unknown option: ${arg}`);
+    else flags.files.push(arg);
+  }
+  if ((flags.affected && flags.files.length) || (!flags.affected && flags.base !== undefined)) throw new Error("choose files or --affected [--base REF]");
+  return flags;
+}
+function dependency(file, specifier, known) {
+  if (!specifier.startsWith(".") && !specifier.startsWith("/")) return;
+  const target = posix.normalize(specifier.startsWith("/") ? specifier.slice(1) : posix.join(posix.dirname(file), specifier));
+  const extensions = [".ts", ".tsx", ".js", ".mjs"];
+  const stems = [target, ...(target.endsWith(".js") ? [target.slice(0, -3)] : [])];
+  return stems.flatMap(stem => [stem, ...extensions.map(ext => stem + ext), ...extensions.map(ext => `${stem}/index${ext}`)])
+    .find(path => moduleFile(path) && known.has(path));
+}
+function affected(root, files, base) {
+  const ancestor = git(root, ["merge-base", base ?? "origin/dev", "HEAD"]).trim();
+  const changed = new Set([
+    ...paths(root, ["diff", "--name-only", "-z", ancestor, "HEAD"]),
+    ...paths(root, ["diff", "--name-only", "-z"]),
+    ...paths(root, ["diff", "--cached", "--name-only", "-z"]),
+    ...paths(root, ["ls-files", "--others", "--exclude-standard", "-z"]),
+  ]);
+  // Keep deleted modules resolvable so their surviving importers are still selected.
+  const known = new Set([...files, ...changed]), reverse = new Map();
+  for (const file of files.filter(moduleFile)) {
+    for (const specifier of importsOf(readFileSync(join(root, file), "utf8"))) {
+      const target = dependency(file, specifier, known);
+      if (!target) continue;
+      if (!reverse.has(target)) reverse.set(target, new Set());
+      reverse.get(target).add(file);
+    }
+  }
+  const reasons = new Map([...changed].map(file => [file, "changed"]));
+  const queue = [...changed];
+  for (const file of queue) for (const importer of reverse.get(file) ?? []) {
+    if (reasons.has(importer)) continue;
+    reasons.set(importer, changed.has(file) ? `imports ${file}` : `via ${file} (${reasons.get(file)})`);
+    queue.push(importer);
+  }
+  return files.filter(file => unitFile.test(file) && reasons.has(file)).sort().map(file => ({ file, reason: reasons.get(file) }));
+}
+
+async function main(args) {
+  let status = 2;
+  try {
+    const flags = options(args), root = resolve(kitRoot());
+    let selected;
+    if (flags.files.length) {
+      selected = [...new Set(flags.files)].map(file => {
+        if (!existsSync(resolve(root, file))) throw new Error(`test file not found: ${file}`);
+        return { file, reason: "explicit" };
+      });
+    } else {
+      const files = paths(root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"])
+        .filter(file => existsSync(join(root, file)));
+      selected = flags.affected ? affected(root, files, flags.base)
+        : files.filter(file => /^tests\/[^/]+\.test\.ts$/.test(file)).sort().map(file => ({ file, reason: "all" }));
+    }
+    for (const { file, reason } of selected) console.log(`${file} — ${reason}`);
+    if (!selected.length) { kitResult("ok", "unit none affected"); return 0; }
+    if (flags.list) { kitResult("ok", `unit ${selected.length} selected (list only)`); return 0; }
+    status = 1;
+    const env = nodeEnv();
+    // Nested kit invocations must start a real test runner, not inherit node:test's child context.
+    delete env.NODE_TEST_CONTEXT;
+    let output = "";
+    const child = spawn("bash", [resolve(import.meta.dirname, "../unit.sh"), ...selected.map(item => item.file)], { cwd: root, env, detached: true, stdio: ["ignore", "pipe", "inherit"] });
+    const forward = signal => {
+      if (!child.pid) return;
+      try { process.kill(-child.pid, signal); }
+      catch (error) { if (error.code !== "ESRCH") throw error; }
+    };
+    const handlers = ["SIGINT", "SIGTERM", "SIGHUP"].map(signal => [signal, () => forward(signal)]);
+    for (const [signal, handler] of handlers) process.on(signal, handler);
+    child.stdout.setEncoding("utf8").on("data", text => { output += text; process.stdout.write(text); });
+    try {
+      status = await new Promise((accept, reject) => {
+        child.once("error", reject);
+        child.once("close", (code, signal) => accept(code ?? ({ SIGINT: 130, SIGHUP: 129 }[signal] ?? 143)));
+      });
+    } finally { for (const [signal, handler] of handlers) process.removeListener(signal, handler); }
+    const log = /^log: (.+)$/m.exec(output)?.[1];
+    if (!log) throw new Error("unit.sh returned no log path");
+    const counts = unitCounts(readFileSync(resolve(root, log), "utf8"));
+    if (counts.fail || counts.cancelled) status ||= 1;
+    kitResult(status ? "fail" : "ok", `unit ${counts.pass}/${counts.total} (${selected.length} files) log ${log}`);
+    return status;
+  } catch (error) {
+    console.error(`problem: ${error.message}`);
+    if (status === 2) process.stderr.write(usage);
+    kitResult("fail", `unit ${error.message}`);
+    return status || 1;
+  }
+}
+if (process.argv.length === 3 && ["--help", "-h"].includes(process.argv[2])) process.stdout.write(usage);
+else process.exitCode = await main(process.argv.slice(2));
