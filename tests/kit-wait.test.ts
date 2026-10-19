@@ -513,6 +513,31 @@ test("CI failure parser enriches repeated Node spec failures with file and first
   ].join("\n")), ["✖ identity — tests/kit-bg.test.ts:170:1 — AssertionError [ERR_ASSERTION]: wrong group"]);
 });
 
+test("CI failure parser identifies clean-guard child diagnostics outside the retained assertion tail", () => {
+  const childFailure = [
+    "  not ok 7 - stopping group identity", "    ---", "    duration_ms: 10",
+    "    location: 'tests/kit-bg.test.ts:170:1'", "    error: |-",
+    "      expected stopped group", "      second error line", "    code: ERR_ASSERTION", "    ...",
+  ];
+  const trailingOutput = Array.from({ length: 400 }, (_, i) => `ok ${i + 8} - subsequent successful test with enough output to fill the retained tail`);
+  const childOutput = [...childFailure, ...trailingOutput].join("\n");
+  const assertionTail = childOutput.slice(-12_000);
+  assert.doesNotMatch(assertionTail, /stopping group identity|expected stopped group/);
+  const fixture = [
+    "TAP version 13", "# Subtest: kit and agent unit tests leave no run folders or temporary files",
+    "not ok 1 - kit and agent unit tests leave no run folders or temporary files", "  ---",
+    "  location: 'tests/kit-tests-clean.test.ts:15:1'", "  error: |-",
+    ...assertionTail.split("\n").map(line => `    ${line}`), "  code: ERR_ASSERTION", "  ...",
+    // node:test renders t.diagnostic(failures) with a '# ' prefix on every line.
+    ...childFailure.map(line => `# ${line}`),
+    ...trailingOutput.slice(-30).map(line => `# ${line}`), "1..1", "# fail 1",
+  ].map(line => `checks\tKit tests leave no trace\t2026-10-19T12:30:01.123Z ${line}`).join("\n");
+  assert.doesNotMatch(fixture.split("\n").slice(-20).join("\n"), /stopping group identity|expected stopped group/);
+  assert.ok(failingTests(fixture).includes(
+    "not ok 7 - stopping group identity — tests/kit-bg.test.ts:170:1 — expected stopped group",
+  ));
+});
+
 test("CI failure parser reads Playwright progress or detailed failures with their first error", () => {
   const progress = "  ✘  1 [chromium] › tests/native-save/a.spec.ts:20:3 › save (1s)";
   assert.deepEqual(failingTests(progress), [progress.trim().replace(" (1s)", "")]);

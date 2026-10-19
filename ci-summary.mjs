@@ -41,9 +41,9 @@ export function failingSteps(jobs) {
 
 /** Up to ten failure lines with source and first error, before the ordinary log tail. */
 export function failingTests(log) {
-  // gh adds job, step and ISO timestamp columns; preserve reporter indentation.
+  // Remove gh columns and node:test's t.diagnostic() wrapper around child TAP.
   const lines = stripVTControlCharacters(log).split(/\r?\n/)
-    .map(line => line.replace(/^.*?\b\d{4}-\d\d-\d\dT[\d:.]+Z\s?/, ""));
+    .map(line => line.replace(/^.*?\b\d{4}-\d\d-\d\dT[\d:.]+Z\s?/, "").replace(/^\s*#(?: |$)/, ""));
   const playwright = /^\s*\d+\)\s+.*\.spec\.[cm]?[jt]sx?:\d+/;
   const detailedPlaywright = lines.some(line => playwright.test(line));
   const detailedSpec = lines.some(line => /^\s*test at /.test(line));
