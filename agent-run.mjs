@@ -392,13 +392,13 @@ async function invokeAgent(adapter, args, descriptor, context) {
   }
 }
 
-async function executeRun(options, out, previous, update) {
+async function executeRun(options, out, previous, update, brief) {
   const messages = [];
   const limit = process.env.ASE_AGENT_TIMEOUT || process.env.SOL_TIMEOUT || "90m";
   durationMilliseconds(limit);
   const common = execFileSync("git", ["-C", options.worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim();
   const prepared = previous ? { prompt: options.resumePrompt ?? "Continue where you stopped; the brief is unchanged." }
-    : preparePrompt(options, readFileSync(options.brief, "utf8"), out);
+    : preparePrompt(options, brief, out);
   if (prepared.problem) return { status: 1, messages: [prepared.problem] };
   const reportPath = join(out, "out.md"), logPath = join(out, "run.log"), inputPath = join(out, `brief-${process.pid}.md`);
   // A resumed Codex report must not truncate the earlier final report.
@@ -458,9 +458,16 @@ async function executeRun(options, out, previous, update) {
 async function startRun(options, previous) {
   options.worktree = resolve(options.worktree);
   options.brief = resolve(options.brief);
-  const artifacts = join(options.worktree, ".scratch/agent");
-  mkdirSync(artifacts, { recursive: true });
-  const out = options.out ? resolve(options.out) : mkdtempSync(join(artifacts, `${options.kind}-${Date.now()}-${process.pid}-`));
+  // Read a fresh brief before creating any artifacts. Resumes use their saved
+  // session (and an optional prompt already read by resumeRun).
+  const brief = previous ? undefined : readFileSync(options.brief, "utf8");
+  let out;
+  if (options.out) out = resolve(options.out);
+  else {
+    const artifacts = join(options.worktree, ".scratch/agent");
+    mkdirSync(artifacts, { recursive: true });
+    out = mkdtempSync(join(artifacts, `${options.kind}-${Date.now()}-${process.pid}-`));
+  }
   mkdirSync(out, { recursive: true });
   // Claude reports its session id only in the final JSON; assign it up front so
   // a run killed mid-way can still be resumed.
@@ -478,7 +485,7 @@ async function startRun(options, previous) {
   print(process.stdout, `artifacts: ${out}\n`);
   let code = 2, result;
   try {
-    result = await executeRun(options, out, previous, update);
+    result = await executeRun(options, out, previous, update, brief);
     code = result.status;
   } finally {
     // Persist the result before touching stdout/stderr: the app may be gone.

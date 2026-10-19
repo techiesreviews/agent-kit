@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -226,9 +226,11 @@ process.exitCode = Number(process.env.ASE_FAKE_EXIT || 0);
     assert.match(mismatch.stderr, /requested model/);
     assert.equal(invoke("agent.sh", ["review", wt, brief, "--model", model, "--base", "origin/dev"], { ASE_FAKE_EXIT: "7" }).status, 7);
   }
+  const beforeInvalid = readdirSync(join(wt, ".scratch/agent")).sort();
   const invalid = invoke("agent.sh", ["build", wt, join(dir, "missing.md")]);
   assert.equal(invalid.status, 2);
-  assert.equal(existsSync(join(wt, ".scratch/agent/build/brief.md")), false);
+  assert.doesNotMatch(invalid.stdout, /artifacts:/);
+  assert.deepEqual(readdirSync(join(wt, ".scratch/agent")).sort(), beforeInvalid);
 });
 
 test("concurrent reviews copy and validate only their own invocation's report and log", async (t) => {

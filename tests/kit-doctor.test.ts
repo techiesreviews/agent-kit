@@ -271,7 +271,7 @@ function gateFixture(t: { after: (fn: () => void) => void }) {
   const brief = join(directory, "brief.md");
   writeFileSync(brief, "test brief\n");
   const run = (root: string, input = brief, env: NodeJS.ProcessEnv = {}) => spawnSync(
-    "/bin/bash", [join(repo, "scripts/agents/agent.sh"), "build", root, input], {
+    "/bin/bash", [join(repo, "scripts/agents/agent.sh"), "build", root, input, "--out", join(directory, "out")], {
       cwd: directory, encoding: "utf8", timeout: 10_000,
       env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, KIT_COMMANDS_DIR: commands,
         DOCTOR_CAPTURE: capture, ASE_SKIP_DOCTOR: "", ...env },
