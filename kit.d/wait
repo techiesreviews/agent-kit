@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 // kit: wait for a process, an output file or CI checks
 import { execFile } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
-import { kitResult, kitOwner } from "../kit-lib.mjs";
+import { kitResult, kitOwner, kitJob, kitJobDirectory, kitJobExit, kitJobRunning } from "../kit-lib.mjs";
 import { summarizeRuns, failingSteps, latestWorkflowRuns } from "../ci-summary.mjs";
 
 const usage = `Usage: kit wait pid <pid> [--timeout D]
+       kit wait job <name> [--timeout D]
        kit wait output <file> [--until <regex>] [--quiet D] [--timeout D]
        kit wait ci [--branch B | --pr N | --sha S] [--timeout D]
 Durations: seconds (bare number or s), minutes (m), hours (h). Default timeout: 30m.
@@ -43,7 +45,7 @@ function interval(name, fallback) {
 }
 function parse() {
   const kind = args.shift();
-  if (!["pid", "output", "ci"].includes(kind)) throw new Error("expected pid, output or ci");
+  if (!["pid", "job", "output", "ci"].includes(kind)) throw new Error("expected pid, job, output or ci");
   const target = kind === "ci" ? null : args.shift();
   if (!target && kind !== "ci") throw new Error(`missing ${kind} target`);
   const options = {};
@@ -56,6 +58,7 @@ function parse() {
     options[key] = args.shift();
   }
   if (kind === "pid" && !/^\d+$/.test(target)) throw new Error(`invalid pid: ${target}`);
+  if (kind === "job") kitJobDirectory(target);
   if (kind === "ci") {
     if (["branch", "pr", "sha"].filter((key) => key in options).length > 1) throw new Error("choose only one of --branch, --pr or --sha");
     if (options.pr !== undefined && !/^\d+$/.test(options.pr)) throw new Error(`invalid PR: ${options.pr}`);
@@ -86,6 +89,21 @@ function tail(text) {
   if (!text) return;
   const lines = text.replace(/\r?\n$/, "").split(/\r?\n/).slice(-20);
   console.log(lines.join("\n"));
+}
+async function jobTail(directory) {
+  const tail = [];
+  let lastResult;
+  // Long jobs can produce large logs; retain only the tail and last RESULT.
+  const lines = createInterface({ input: createReadStream(`${directory}/log`), crlfDelay: Infinity });
+  try {
+    for await (const line of lines) {
+      if (line.startsWith("RESULT: ")) lastResult = line;
+      tail.push(line);
+      if (tail.length > 15) tail.shift();
+    }
+  } catch (error) { if (error.code !== "ENOENT") throw error; }
+  if (tail.length) console.log(tail.join("\n"));
+  if (lastResult && !tail.includes(lastResult)) console.log(lastResult);
 }
 // Return the PIDs that hold the file open for writing right now.
 function writers(file) {
@@ -126,6 +144,12 @@ async function wait(config) {
   let changed = started;
   let first = true;
   let outputPrinted = false;
+  const job = kind === "job" ? kitJob(kitJobDirectory(target)) : null;
+  const finishJob = async (code, message, printLog = false) => {
+    if (printLog) await jobTail(job.directory);
+    kitResult(code === 0 ? "ok" : "fail", `job ${target} ${message}`);
+    process.exitCode = code;
+  };
   // A producer may close the file between writes; keep waiting until every writer seen has exited.
   const producers = new Set();
   const finish = (ok, message) => {
@@ -156,9 +180,20 @@ async function wait(config) {
   };
   try {
     while (!interrupted) {
-      if (!first && Date.now() >= deadline) return finish(false, timeoutMessage());
+      if (kind !== "job" && !first && Date.now() >= deadline) return finish(false, timeoutMessage());
       if (kind === "pid") {
         if (!running(target)) return finish(true, first ? `pid ${target} not running` : `pid ${target} exited after ${elapsed(Date.now() - started)}`);
+      } else if (kind === "job") {
+        const current = kitJob(job.directory);
+        if (current.pid !== job.pid || current.started !== job.started) throw new Error(`job ${target} was replaced`);
+        let code = kitJobExit(job);
+        if (code !== null) return finishJob(code, `exit ${code}`, true);
+        if (!kitJobRunning(job)) {
+          // Re-read after checking liveness: the wrapper may have just published exit.
+          code = kitJobExit(job);
+          return code !== null ? finishJob(code, `exit ${code}`, true) : finishJob(1, "died without exit status", true);
+        }
+        if (Date.now() >= deadline) return finishJob(124, `still running, timed out after ${options.timeout ?? "30m"}`);
       } else if (kind === "output") {
         const text = content(target);
         if (text !== null) {
@@ -209,7 +244,7 @@ async function wait(config) {
         }
       }
       first = false;
-      if (Date.now() >= deadline) return finish(false, timeoutMessage());
+      if (Date.now() >= deadline) return kind === "job" ? finishJob(124, `still running, timed out after ${options.timeout ?? "30m"}`) : finish(false, timeoutMessage());
       if (Date.now() - lastStatus >= status) {
         console.log(`waiting ${elapsed(Date.now() - started)}: ${kind} ${label}`);
         lastStatus = Date.now();
@@ -238,5 +273,8 @@ else {
     kitResult("fail", error.message);
     process.exitCode = 2;
   }
-  if (config) await wait(config);
+  if (config) {
+    try { await wait(config); }
+    catch (error) { kitResult("fail", error.message); process.exitCode = 1; }
+  }
 }

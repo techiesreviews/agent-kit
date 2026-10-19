@@ -97,3 +97,52 @@ export function kitResult(status = "", text = "") {
   }
   console.log(`RESULT: ${status} ${oneLine(text)}`);
 }
+
+/** Resolve a named job without allowing paths outside the worktree's job folder. */
+export function kitJobDirectory(name) {
+  if (!/^[a-z0-9][a-z0-9._-]*$/.test(name ?? "")) throw new Error(`invalid job name: ${name}`);
+  return join(resolve(kitRoot()), ".scratch/kit-jobs", name);
+}
+
+/** Read a small job record; a missing record is distinct from an unreadable one. */
+export function kitJobRecord(directory, name) {
+  try { return readFileSync(join(directory, name), "utf8").trimEnd(); }
+  catch (error) { if (error.code === "ENOENT") return null; throw error; }
+}
+
+function processIdentity(text) {
+  if (!text) return null;
+  const fields = text.slice(text.lastIndexOf(")") + 2).split(" ");
+  return { state: fields[0], pgid: Number(fields[2]), session: Number(fields[3]), started: fields[19] };
+}
+
+/** Read Linux process identity, treating zombies and concurrently removed /proc files as dead. */
+export function kitJobProcess(pid) {
+  try {
+    const identity = processIdentity(readFileSync(`/proc/${pid}/stat`, "utf8"));
+    return ["Z", "X"].includes(identity.state) ? null : identity;
+  } catch (error) { if (["ENOENT", "ESRCH"].includes(error.code)) return null; throw error; }
+}
+
+/** Pin a job to its original session leader, so stale records never target reused PIDs. */
+export function kitJob(directory) {
+  const pid = Number(kitJobRecord(directory, "pid"));
+  const pgid = Number(kitJobRecord(directory, "pgid"));
+  const identity = processIdentity(kitJobRecord(directory, "identity"));
+  if (!Number.isSafeInteger(pid) || pid <= 1 || pgid !== pid || !identity ||
+      identity.pgid !== pgid || identity.session !== pgid || !/^\d+$/.test(identity.started))
+    throw new Error(`missing or invalid job records: ${directory}`);
+  return { directory, pid, pgid, started: identity.started };
+}
+
+export function kitJobRunning(job) {
+  const current = kitJobProcess(job.pid);
+  return !!current && current.pgid === job.pgid && current.session === job.pgid && current.started === job.started;
+}
+
+export function kitJobExit(job) {
+  const value = kitJobRecord(job.directory, "exit");
+  if (value === null) return null;
+  if (!/^\d+$/.test(value) || Number(value) > 255) throw new Error(`invalid job exit status: ${value}`);
+  return Number(value);
+}

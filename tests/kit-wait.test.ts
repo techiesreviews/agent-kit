@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import test, { type TestContext } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 
 const script = resolve("scripts/agents/kit.d/wait");
 const kit = resolve("scripts/agents/kit");
@@ -70,7 +71,7 @@ function last20(stdout: string, prefix: string) {
 
 test("wait help covers each subcommand and kit lists its summary", async (t) => {
   assert.equal(readFileSync(script, "utf8").split("\n")[1], "// kit: wait for a process, an output file or CI checks");
-  for (const kind of [[], ["pid"], ["output"], ["ci"]]) for (const flag of ["--help", "-h"]) {
+  for (const kind of [[], ["pid"], ["job"], ["output"], ["ci"]]) for (const flag of ["--help", "-h"]) {
     const output = await run(t, [...kind, flag]);
     assert.equal(output.status, 0, output.stderr);
     assert.match(output.stdout, /Usage: kit wait pid/);
@@ -84,9 +85,95 @@ test("wait help covers each subcommand and kit lists its summary", async (t) => 
   assert.doesNotMatch(help.stdout, /RESULT:/);
 });
 
+function jobFixture(t: TestContext) {
+  const root = mkdtempSync(join(tmpdir(), "kit-wait-job-"));
+  const env = { ...baseEnv, KIT_ROOT: root };
+  const directory = (name: string) => join(root, ".scratch/kit-jobs", name);
+  t.after(() => {
+    const jobs = join(root, ".scratch/kit-jobs");
+    if (existsSync(jobs)) for (const name of readdirSync(jobs).filter(name => !name.startsWith(".")))
+      spawnSync(kit, ["bg", "--stop", name], { env, stdio: "ignore" });
+    rmSync(root, { recursive: true, force: true });
+  });
+  const start = (name: string, code: string, ...args: string[]) => {
+    const output = spawnSync(kit, ["bg", name, "--", process.execPath, "-e", code, ...args], { env, encoding: "utf8" });
+    assert.equal(output.status, 0, output.stderr + output.stdout);
+    return Number(readFileSync(join(directory(name), "pid"), "utf8"));
+  };
+  return { root, env, start, directory };
+}
+async function jobCondition(condition: () => boolean) {
+  const deadline = Date.now() + 5000;
+  while (!condition()) {
+    assert.ok(Date.now() < deadline, "job condition timed out");
+    await delay(10);
+  }
+}
+
+for (const status of [0, 3]) test(`wait job returns exit ${status}, prints at most 15 tail lines and the last job RESULT`, async t => {
+  const f = jobFixture(t);
+  const release = join(f.root, "release");
+  f.start("finish", `const fs = require('fs'); console.log('RESULT: ok obsolete'); console.log('RESULT: ok job-owned'); for (let i = 1; i <= 30; i++) console.log('line-' + i); console.error('stderr-tail'); const timer = setInterval(() => { if (fs.existsSync(process.argv[1])) { clearInterval(timer); process.exit(${status}); } }, 10);`, release);
+  const pending = child(t, kit, ["wait", "job", "finish", "--timeout", "5s"], f.env);
+  const output = collect(pending);
+  await nextLine(pending, /^kit wait job /);
+  writeFileSync(release, "");
+  const ended = await output;
+  assert.equal(ended.status, status, ended.stderr + ended.stdout);
+  assert.deepEqual(ended.stdout.split("\n").filter(line => /^line-/.test(line)), Array.from({ length: 14 }, (_, i) => `line-${i + 17}`));
+  assert.ok(ended.stdout.includes("stderr-tail\n"));
+  assert.equal(ended.stdout.split("\n").filter(line => line === "RESULT: ok job-owned").length, 1);
+  assert.doesNotMatch(ended.stdout, /RESULT: ok obsolete/);
+  assert.match(ended.stdout, new RegExp(`RESULT: ${status === 0 ? "ok" : "fail"} job finish exit ${status}\\n$`));
+  assert.equal(readFileSync(join(f.directory("finish"), "exit"), "utf8"), `${status}\n`);
+});
+
+test("wait job deduplicates a RESULT already in the tail and works from a fresh process", async t => {
+  const f = jobFixture(t);
+  f.start("restart", "console.log('RESULT: ok original');");
+  await jobCondition(() => existsSync(join(f.directory("restart"), "exit")));
+  const output = await collect(child(t, kit, ["wait", "job", "restart", "--timeout", "5s"], f.env));
+  assert.equal(output.status, 0, output.stderr + output.stdout);
+  assert.equal(output.stdout.split("\n").filter(line => line === "RESULT: ok original").length, 1);
+  assert.match(output.stdout, /RESULT: ok job restart exit 0\n$/);
+});
+
+test("wait job reports SIGKILL without an exit record", async t => {
+  const f = jobFixture(t);
+  const pid = f.start("killed", "setInterval(() => {}, 1000);");
+  process.kill(-pid, "SIGKILL");
+  const output = await run(t, ["job", "killed", "--timeout", "5s"], f.env);
+  result(output, 1, /job killed died without exit status/);
+  assert.equal(existsSync(join(f.directory("killed"), "exit")), false);
+});
+
+test("wait job timeout returns 124 while preserving the running job for a fresh wait", async t => {
+  const f = jobFixture(t);
+  const release = join(f.root, "release");
+  f.start("pending", "const fs = require('fs'); const timer = setInterval(() => { if (fs.existsSync(process.argv[1])) clearInterval(timer); }, 10);", release);
+  result(await run(t, ["job", "pending", "--timeout", "0.05s"], f.env), 124, /job pending still running, timed out/);
+  assert.equal(existsSync(join(f.directory("pending"), "exit")), false);
+  writeFileSync(release, "");
+  result(await run(t, ["job", "pending", "--timeout", "5s"], f.env), 0, /job pending exit 0/);
+});
+
+test("wait job rejects invalid, absent, or corrupt records", async t => {
+  const f = jobFixture(t);
+  result(await run(t, ["job", "../escape"], f.env), 2, /invalid job name/);
+  result(await run(t, ["job", "absent"], f.env), 1, /missing or invalid job records/);
+  f.start("corrupt", "process.exit(0);");
+  await jobCondition(() => existsSync(join(f.directory("corrupt"), "exit")));
+  writeFileSync(join(f.directory("corrupt"), "exit"), "not a status");
+  result(await run(t, ["job", "corrupt"], f.env), 1, /invalid job exit status/);
+});
+
 test("pid waits for a child exit through the front door and reports owner and elapsed time", async (t) => {
-  const sleeper = child(t, "/bin/sleep", ["0.3"]);
-  const output = await collect(child(t, "/bin/bash", [kit, "wait", "pid", String(sleeper.pid), "--timeout", "2"]));
+  const sleeper = child(t, process.execPath, ["-e", "process.stdin.once('data', () => process.exit(0));"], baseEnv, "pipe");
+  const waiting = child(t, "/bin/bash", [kit, "wait", "pid", String(sleeper.pid), "--timeout", "5"], { ...baseEnv, KIT_WAIT_STATUS_MS: "1" });
+  const pending = collect(waiting);
+  await nextLine(waiting, /^waiting /);
+  sleeper.stdin!.end("finish");
+  const output = await pending;
   result(output, 0, /ok pid \d+ exited after \d+(?:ms|s)/);
   assert.match(output.stdout, /^kit wait pid \d+ \(owner wait-test\)\n/);
 });

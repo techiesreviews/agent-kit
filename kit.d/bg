@@ -1,0 +1,165 @@
+#!/usr/bin/env node
+// kit: start, list or stop detached jobs by name
+import { spawn } from "node:child_process";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { kitJob, kitJobDirectory, kitJobExit, kitJobProcess, kitJobRecord, kitJobRunning, kitResult } from "../kit-lib.mjs";
+
+const usage = `Usage: kit bg <name> [--cwd DIR] -- <command…>
+       kit bg --list
+       kit bg --stop <name>
+Names: [a-z0-9][a-z0-9._-]*. Records/logs: <worktree>/.scratch/kit-jobs/<name>/.
+Jobs use setsid + nohup, their own process group, and stdin /dev/null.
+Stop sends SIGTERM to that group, then SIGKILL after a 2s grace period.`;
+const args = process.argv.slice(2);
+const quote = value => `'${value.replace(/'/g, "'\\''")}'`;
+
+// The wrapper outlives the launcher. Publish pid last, exit last, and trap TERM so
+// a foreground command that ignores it keeps the leader alive until escalation.
+const wrapper = `directory=$1
+cwd=$2
+shift 2
+finish() {
+  status=$?
+  trap - EXIT
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$directory/ended"
+  printf '%s\\n' "$status" > "$directory/exit.tmp"
+  mv -- "$directory/exit.tmp" "$directory/exit"
+}
+trap finish EXIT
+trap 'exit 143' TERM
+IFS= read -r identity < /proc/$$/stat
+printf '%s\\n' "$identity" > "$directory/identity"
+printf '%s\\n' "$$" > "$directory/pgid"
+printf '%s\\n' "$$" > "$directory/pid.tmp"
+mv -- "$directory/pid.tmp" "$directory/pid"
+cd -- "$cwd" || exit 1
+"$@"
+exit $?
+`;
+
+function parse() {
+  if (args[0] === "--list" && args.length === 1) return { kind: "list" };
+  if (args[0] === "--stop" && args.length === 2) return { kind: "stop", name: args[1] };
+  const name = args[0];
+  let index = 1;
+  let cwd = process.cwd();
+  if (args[index] === "--cwd" && args[index + 1]) { cwd = args[index + 1]; index += 2; }
+  if (args[index] !== "--" || !args[index + 1]) throw new Error("expected <name> [--cwd DIR] -- <command…>");
+  return { kind: "start", name, cwd: realpathSync(resolve(cwd)), command: args.slice(index + 1) };
+}
+
+async function lockJob(path, name) {
+  // flock releases on pipe EOF even if the launcher is killed during startup.
+  // Keep the lock in a separate process so detached jobs cannot inherit it.
+  const child = spawn("flock", ["--nonblock", path, "/bin/sh", "-c", "printf 'locked\\n'; read -r release || :"], { stdio: ["pipe", "pipe", "ignore"] });
+  const closed = new Promise(resolve => child.once("close", resolve));
+  child.stdin.on("error", () => {});
+  await new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.stdout.once("data", resolve);
+    child.once("close", () => reject(new Error(`bg ${name} is busy; retry after its current operation`)));
+  });
+  return async () => { child.stdin.end(); await closed; };
+}
+
+function list() {
+  const root = dirname(kitJobDirectory("unused"));
+  const entries = existsSync(root) ? readdirSync(root, { withFileTypes: true }) : [];
+  for (const entry of entries.filter(entry => entry.isDirectory() && /^[a-z0-9]/.test(entry.name)).sort((a, b) => a.name.localeCompare(b.name))) {
+    const directory = kitJobDirectory(entry.name);
+    let state = "died";
+    try {
+      const job = kitJob(directory);
+      const status = kitJobExit(job);
+      state = status !== null ? `exit ${status}` : kitJobRunning(job) ? "running" : "died";
+    } catch { /* An incomplete record is a died job. */ }
+    const started = Date.parse(kitJobRecord(directory, "started"));
+    const age = Number.isFinite(started) ? `${Math.max(0, Math.floor((Date.now() - started) / 1000))}s` : "unknown";
+    console.log(`${entry.name}\t${state}\t${age}\t${join(directory, "log")}`);
+  }
+  kitResult("ok", "bg list");
+}
+
+async function start(config, directory) {
+  if (existsSync(directory)) {
+    const job = kitJob(directory);
+    if (kitJobRunning(job)) throw new Error(`bg ${config.name} already running (pid ${job.pid})`);
+    rmSync(directory, { recursive: true });
+  }
+  mkdirSync(directory);
+  writeFileSync(join(directory, "command"), `${config.command.map(quote).join(" ")}\n`);
+  writeFileSync(join(directory, "cwd"), `${config.cwd}\n`);
+  writeFileSync(join(directory, "started"), `${new Date().toISOString()}\n`);
+  const log = join(directory, "log");
+  const fd = openSync(log, "w");
+  let child;
+  try {
+    child = spawn("setsid", ["nohup", "/bin/bash", "-c", wrapper, "kit-bg", directory, config.cwd, ...config.command], {
+      stdio: ["ignore", fd, fd],
+    });
+  } finally { closeSync(fd); }
+  let failure;
+  child.on("error", error => { failure = error; });
+  child.unref();
+  const deadline = Date.now() + 5000;
+  while (!existsSync(join(directory, "pid"))) {
+    if (failure) throw failure;
+    if (child.exitCode !== null || child.signalCode !== null || Date.now() >= deadline)
+      throw new Error(`bg ${config.name} wrapper failed to start; see ${log}`);
+    await delay(10);
+  }
+  const job = kitJob(directory);
+  console.log(`name: ${config.name}\npid: ${job.pid}\nlog: ${log}`);
+  kitResult("ok", `bg ${config.name} pid ${job.pid}`);
+}
+
+async function stop(name, directory) {
+  const job = kitJob(directory);
+  if (!kitJobRunning(job)) {
+    console.log(`${name}: not running (pid ${job.pid})`);
+    kitResult("ok", `bg stop ${name} not running`);
+    return;
+  }
+  // Pin existing group members too: a command may leave a descendant ignoring
+  // TERM after the wrapper exits. Never escalate against a reused process group.
+  const members = readdirSync("/proc").filter(pid => /^\d+$/.test(pid)).map(pid => ({ pid, identity: kitJobProcess(pid) }))
+    .filter(({ identity }) => identity?.pgid === job.pgid && identity.session === job.pgid);
+  const alive = () => members.some(({ pid, identity }) => {
+    const current = kitJobProcess(pid);
+    return current?.pgid === job.pgid && current.session === job.pgid && current.started === identity.started;
+  });
+  const signal = value => {
+    if (!alive()) return false;
+    try { process.kill(-job.pgid, value); return true; }
+    catch (error) { if (error.code === "ESRCH") return false; throw error; }
+  };
+  signal("SIGTERM");
+  const deadline = Date.now() + 2000;
+  while (alive() && Date.now() < deadline) await delay(25);
+  const escalated = signal("SIGKILL");
+  console.log(`${name}: stopped pid ${job.pid}, process group ${job.pgid} (${escalated ? "SIGTERM, SIGKILL" : "SIGTERM"})`);
+  kitResult("ok", `bg stop ${name} pgid ${job.pgid}`);
+}
+
+if (args[0] === "--help" || args[0] === "-h") console.log(usage);
+else {
+  let unlock;
+  try {
+    const config = parse();
+    if (config.kind === "list") list();
+    else {
+      const directory = kitJobDirectory(config.name);
+      mkdirSync(dirname(directory), { recursive: true });
+      const path = join(dirname(directory), `.${config.name}.lock`);
+      unlock = await lockJob(path, config.name);
+      if (config.kind === "start") await start(config, directory);
+      else await stop(config.name, directory);
+    }
+  } catch (error) {
+    console.error(error.message);
+    kitResult("fail", error.message);
+    process.exitCode = 1;
+  } finally { if (unlock) await unlock(); }
+}
