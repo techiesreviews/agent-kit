@@ -133,6 +133,77 @@ test("bg stop escalates for a TERM-resistant descendant and preserves a sibling"
   ok(f.run("--stop", "stop"));
 });
 
+test("bg keeps a stopping group's identity through grace and an interrupted stop", async t => {
+  const f = fixture(t);
+  const sibling = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  t.after(() => sibling.kill("SIGKILL"));
+  const ready = join(f.root, "descendant");
+  const term = join(f.root, "term");
+  const leaf = 'const fs = require("fs"); process.on("SIGTERM", () => fs.writeFileSync(process.argv[2], "term")); fs.writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000);';
+  const parent = `require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(leaf)}, ...process.argv.slice(1)], {stdio:'ignore'}); setInterval(() => {}, 1000);`;
+  ok(f.run("stopping", "--", process.execPath, "-e", parent, ready, term));
+  await until(() => existsSync(ready));
+  const descendant = Number(readFileSync(ready, "utf8"));
+  t.after(() => { if (live(descendant)) process.kill(descendant, "SIGKILL"); });
+  const directory = f.directory("stopping");
+  const identity = readFileSync(join(directory, "identity"), "utf8");
+  // Pause the actual stop worker after TERM is observed, so the inspection
+  // cannot race its 2s escalation deadline on a busy test machine.
+  const stopper = spawn(process.execPath, [script, "--stop", "stopping"], { env: f.env, stdio: "ignore" });
+  t.after(() => stopper.kill("SIGKILL"));
+  const stopped = once(stopper, "exit");
+  await until(() => existsSync(term));
+  assert.ok(stopper.kill("SIGSTOP"));
+  const waiting = spawnSync(kit, ["wait", "job", "stopping", "--timeout", "0.1s"], { env: f.env, encoding: "utf8" });
+  assert.equal(waiting.status, 124, waiting.stderr + waiting.stdout);
+  assert.match(waiting.stdout, /still running/);
+  assert.match(f.run("--list").stdout, /stopping\trunning\t/);
+  for (const record of ["ended", "exit"]) assert.equal(existsSync(join(directory, record)), false, record);
+  const duplicate = f.run("stopping", "--", "false");
+  assert.equal(duplicate.status, 1, duplicate.stdout);
+  assert.match(duplicate.stdout, /busy|already running/);
+  assert.equal(readFileSync(join(directory, "identity"), "utf8"), identity);
+  stopper.kill("SIGKILL");
+  await stopped;
+  const lock = join(f.root, ".scratch/kit-jobs/.stopping.lock");
+  await until(() => spawnSync("flock", ["--nonblock", lock, "true"]).status === 0);
+  assert.ok(live(descendant));
+  const replacement = f.run("stopping", "--", "false");
+  assert.equal(replacement.status, 1, replacement.stdout);
+  assert.match(replacement.stdout, /already running/);
+  assert.equal(readFileSync(join(directory, "identity"), "utf8"), identity);
+  const output = f.run("--stop", "stopping");
+  ok(output);
+  assert.match(output.stdout, /SIGTERM, SIGKILL/);
+  await until(() => !live(descendant));
+  assert.ok(live(sibling.pid!));
+});
+
+test("bg publishes terminal records only after the group finishes if its supervisor dies", async t => {
+  const f = fixture(t);
+  const ready = join(f.root, "command");
+  const release = join(f.root, "release");
+  const command = `require('fs').writeFileSync(process.argv[2], String(process.pid)); ${held}`;
+  ok(f.run("completion", "--", process.execPath, "-e", command, release, ready));
+  await until(() => existsSync(ready));
+  const pid = Number(readFileSync(ready, "utf8"));
+  t.after(() => { if (live(pid)) process.kill(pid, "SIGKILL"); });
+  const directory = f.directory("completion");
+  const pins: { members: { pid: number }[] } = JSON.parse(readFileSync(join(directory, "members"), "utf8"));
+  const supervisor = pins.members[0].pid;
+  process.kill(supervisor, "SIGKILL");
+  await until(() => !live(supervisor));
+  const waiting = spawnSync(kit, ["wait", "job", "completion", "--timeout", "0.1s"], { env: f.env, encoding: "utf8" });
+  assert.equal(waiting.status, 124, waiting.stderr + waiting.stdout);
+  for (const record of ["ended", "exit"]) assert.equal(existsSync(join(directory, record)), false, record);
+  writeFileSync(release, "");
+  const finished = spawnSync(kit, ["wait", "job", "completion", "--timeout", "5s"], { env: f.env, encoding: "utf8" });
+  assert.equal(finished.status, 137, finished.stderr + finished.stdout);
+  assert.equal(live(pid), false);
+  assert.equal(readFileSync(join(directory, "exit"), "utf8"), "137\n");
+  assert.match(readFileSync(join(directory, "ended"), "utf8"), /Z\n$/);
+});
+
 test("bg survives its launching shell exiting and a simulated restart", async t => {
   const f = fixture(t);
   const output = spawnSync("/bin/bash", ["-c", '"$1" bg survivor -- "$2" -e "$3" "$4"; exit $?', "parent", kit, process.execPath, held, join(f.root, "release")], { env: f.env, encoding: "utf8" });

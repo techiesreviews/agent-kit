@@ -41,31 +41,31 @@ function childStatus(child) {
 }
 
 async function wrapper(kind, directory, cwd, command) {
+  let terminated = false;
+  // Both pinned processes must survive group TERM until descendants finish.
+  process.on("SIGTERM", () => { terminated = true; });
   const gate = new Socket({ fd: 3, readable: true, writable: false });
   let handoff = "";
   for await (const chunk of gate) handoff += chunk;
   if (handoff !== "launch\n") return;
-  if (kind === "--command") {
-    // This pinned supervisor survives the session leader. Keep it alive until
-    // all descendants in the group finish, even if the command daemonizes.
-    const pgid = kitJobProcess(process.pid).pgid;
-    const child = spawn(command[0], command.slice(1), { cwd, stdio: "inherit" });
-    const status = await childStatus(child);
-    while (kitJobGroup(pgid).some(member => member.pid !== pgid && member.pid !== process.pid)) await delay(25);
-    process.exitCode = status;
-    return;
+  const pgid = kitJobProcess(process.pid).pgid;
+  let child;
+  if (kind === "--command") child = spawn(command[0], command.slice(1), { cwd, stdio: "inherit" });
+  else {
+    writeFileSync(join(directory, "identity"), readFileSync(`/proc/${process.pid}/stat`, "utf8"));
+    writeFileSync(join(directory, "pgid"), `${process.pid}\n`);
+    const started = kitJobProcess(process.pid).started;
+    child = gatedSpawn(process.execPath, [process.argv[1], "--command", directory, cwd, ...command], ["ignore", "inherit", "inherit"], member => {
+      writeFileSync(join(directory, "members"), JSON.stringify({ started, members: [member] }));
+      writeFileSync(join(directory, "pid.tmp"), `${process.pid}\n`);
+      renameSync(join(directory, "pid.tmp"), join(directory, "pid"));
+    });
   }
-  let terminated = false;
-  process.on("SIGTERM", () => { terminated = true; });
-  writeFileSync(join(directory, "identity"), readFileSync(`/proc/${process.pid}/stat`, "utf8"));
-  writeFileSync(join(directory, "pgid"), `${process.pid}\n`);
-  const started = kitJobProcess(process.pid).started;
-  const child = gatedSpawn(process.execPath, [process.argv[1], "--command", directory, cwd, ...command], ["ignore", "inherit", "inherit"], member => {
-    writeFileSync(join(directory, "members"), JSON.stringify({ started, members: [member] }));
-    writeFileSync(join(directory, "pid.tmp"), `${process.pid}\n`);
-    renameSync(join(directory, "pid.tmp"), join(directory, "pid"));
-  });
   const status = await childStatus(child);
+  // Recheck the original group after every await and before terminal records.
+  // The supervisor excludes the leader to avoid waiting on each other.
+  while (kitJobGroup(pgid).some(member => member.pid !== pgid && member.pid !== process.pid)) await delay(25);
+  if (kind === "--command") { process.exitCode = status; return; }
   writeFileSync(join(directory, "ended"), `${new Date().toISOString()}\n`);
   writeFileSync(join(directory, "exit.tmp"), `${terminated ? 143 : status}\n`);
   renameSync(join(directory, "exit.tmp"), join(directory, "exit"));
@@ -164,8 +164,8 @@ async function stop(name, directory) {
     kitResult("ok", `bg stop ${name} not running`);
     return;
   }
-  // Pin existing group members too: a command may leave a descendant ignoring
-  // TERM after the wrapper exits. Never escalate against a reused process group.
+  // Keep the original start-time proofs through grace and escalation.
+  // Never escalate against a reused process group.
   const members = kitJobMembers(job);
   const alive = () => members.some(({ pid, started }) => {
     const current = kitJobProcess(pid);
