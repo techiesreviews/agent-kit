@@ -42,15 +42,18 @@ export function openFindings(resultMd) {
   let defects = false, section = "", group = "", pending;
   const clean = text => text.trim().replace(/^#{1,6}\s+/, "").replace(/\*\*|__/g, "")
     .replace(/^(?:[-+*]|\d+[.)])\s+/, "").trim();
+  const lines = resultMd.split(/\r?\n/);
+  const explicitDefects = lines.some(raw => /^Defects(?:\s*[—–-]\s*(?:Spec|Standards))?(?::.*|\s*)$/i.test(clean(raw)));
   const flush = () => {
     if (pending && !/^none\b/i.test(pending.text)) findings.push({ group: pending.group, text: pending.text,
       severity: pending.group === "Validation gaps" ? null : /\bP[0-3]\b/i.exec(pending.text.slice(0, 80))?.[0].toUpperCase() ?? null });
     pending = undefined;
   };
-  for (const raw of resultMd.split(/\r?\n/)) {
+  for (const raw of lines) {
     const text = clean(raw);
     const heading = /^(Defects(?:\s*[—–-]\s*(Spec|Standards))?|Validation gaps|Optional nits|Spec|Standards)(?::\s*(.*)|\s*)$/i.exec(text);
-    if (heading && (!/^(Spec|Standards)$/i.test(heading[1]) || section === "Defects")) {
+    const topGroup = !explicitDefects && section !== "Optional nits" && !/^\s*(?:[-+*]|\d+[.)])\s+/.test(raw);
+    if (heading && (!/^(Spec|Standards)$/i.test(heading[1]) || section === "Defects" || topGroup)) {
       flush();
       const label = heading[1].toLowerCase();
       if (label.startsWith("defects")) {
@@ -58,6 +61,8 @@ export function openFindings(resultMd) {
         section = "Defects";
         group = heading[2] ? heading[2][0].toUpperCase() + heading[2].slice(1).toLowerCase() : "Defects";
       } else if (label === "spec" || label === "standards") {
+        defects = true;
+        section = "Defects";
         group = label[0].toUpperCase() + label.slice(1);
       } else {
         section = label === "validation gaps" ? "Validation gaps" : "Optional nits";

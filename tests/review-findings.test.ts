@@ -126,3 +126,19 @@ test("completed rounds count only round files and exclude the pending round", t 
   assert.equal(completedFixRounds(dir), 2);
   assert.equal(completedFixRounds(join(dir, "missing"), dir), 2);
 });
+
+
+test("round-2 top-level Spec/Standards review parses the P1 defect and validation gap", () => {
+  const defect = 'cd95c9e0:scripts/agents/kit.d/pr:270 — P1: `commitBuilderWork` stages everything with `git add -A`. If another process edits a non-ticket file while staging is held, branch/HEAD checks still pass and that edit is committed. The coverage check at line 272 rejects it only after the branch advances. This violates CODING_STANDARDS.md, “Async writers”: preserve expected sources/files and recheck before writes. Use a ticket-only index and validate the commit’s paths before publishing the branch update.';
+  const gap = 'Add a regression that holds staging, edits a non-ticket file without moving HEAD, then releases staging. Assert that the unrelated edit remains uncommitted and no commit containing it is published locally or remotely.';
+  const body = `Spec: none.\n\nStandards:\n\n- ${defect}\n\nValidation gaps: ${gap}\n\nOptional nits: none.`;
+  assert.deepEqual(openFindings(review(body)), { findings: [finding("Standards", defect, "P1"), finding("Validation gaps", gap)], readable: true });
+  assert.deepEqual(openFindings(body), { findings: [finding("Review", "review format unreadable")], readable: false });
+});
+
+test("implicit defect groups keep optional nits separate and accept a lone top-level group", () => {
+  for (const group of ["Spec", "Standards"]) {
+    assert.deepEqual(openFindings(review(`${group}: P2: Minor defect.\nValidation gaps: none.`)), { findings: [finding(group, "P2: Minor defect.", "P2")], readable: true });
+  }
+  assert.deepEqual(openFindings(review("Spec: none.\nStandards: none.\nValidation gaps: none.\nOptional nits:\n- Spec: Style suggestion.\nStandards: Another nit.")), { findings: [], readable: true });
+});

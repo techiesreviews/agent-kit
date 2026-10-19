@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 // kit: open a PR into dev, attach the review, merge when checks pass
 import { execFileSync, spawn } from "node:child_process";
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { appendFileSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterFixRounds, blockingFindings, completedFixRounds, FIX_ROUNDS, openFindings, reviewCoversHead, sameReviewPatch } from "../review-findings.mjs";
 
-const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv, commitBuilderWork } = await import(
+const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const { checkSteps, classify, focusedUnitFiles, parseChanges } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
@@ -60,6 +61,52 @@ async function savedReview(head, base, patchId, ticket, root) {
 }
 
 const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
+
+// Isolate both HEAD and the index: concurrent work must never enter a follow-up commit.
+function commitFollowups({ root, branch, head, ticket, content, env }) {
+  const run = (args, environment = env) => execFileSync("git", ["-C", root, ...args],
+    { cwd: root, env: environment, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  const file = resolve(root, ticket), path = relative(root, file);
+  const assertScope = (expected = head) => {
+    if (run(["branch", "--show-current"]) !== branch || run(["rev-parse", "HEAD"]) !== expected)
+      throw new Error("worktree branch or HEAD changed during commit; refusing stale work");
+    if (readFileSync(file, "utf8") !== content) throw new Error("ticket changed during follow-ups commit");
+  };
+  assertScope();
+  const directory = mkdtempSync(join(tmpdir(), "kit-follow-up-"));
+  try {
+    const common = run(["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    const gitDir = join(directory, "git"); mkdirSync(gitDir);
+    writeFileSync(join(gitDir, "HEAD"), `${head}\n`);
+    writeFileSync(join(gitDir, "commondir"), `${common}\n`);
+    const indexEnv = { ...env, GIT_INDEX_FILE: join(directory, "index") };
+    run(["read-tree", head], indexEnv);
+    run(["add", "--", path], indexEnv);
+    assertScope();
+    const blob = run(["rev-parse", `:${path}`], indexEnv);
+    const detachedEnv = { ...indexEnv, GIT_DIR: gitDir, GIT_WORK_TREE: root };
+    const message = `docs: ${basename(ticket, ".md")} follow-ups from review`;
+    let failure;
+    try { run(["commit", "-m", message, "-m", "Co-Authored-By: Agent Kit <noreply@openai.com>"], detachedEnv); }
+    catch (error) { failure = error; }
+    assertScope();
+    if (failure) throw new Error(`git commit failed: ${failure.stderr?.toString().trim() || failure.message}`);
+    const next = run(["rev-parse", "HEAD"], detachedEnv);
+    const parents = run(["rev-list", "--parents", "-n", "1", next], detachedEnv).split(/\s+/).slice(1);
+    if (run(["branch", "--show-current"], detachedEnv) || parents.length !== 1 || parents[0] !== head || next === head)
+      throw new Error("follow-ups commit must be one detached commit from the captured HEAD");
+    const paths = run(["diff", "--name-only", "--no-renames", "-z", head, next, "--"], detachedEnv).split("\0").filter(Boolean);
+    if (paths.length !== 1 || paths[0] !== path || run(["rev-parse", `${next}:${path}`], detachedEnv) !== blob)
+      throw new Error("follow-ups commit changed files outside the captured ticket update");
+    assertScope();
+    run(["update-ref", "--no-deref", "-m", `commit: ${message}`, `refs/heads/${branch}`, next, head], detachedEnv);
+    assertScope(next);
+    // Refresh only this ticket in the real index; preserve concurrent staging of other files.
+    run(["restore", "--staged", "--source", next, "--", path]);
+    assertScope(next);
+    return next;
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}
 
 async function main(args) {
   let flags;
@@ -266,10 +313,7 @@ async function main(args) {
       const updated = prefix + done + rest.slice(doneEnd);
       if (updated === original) return;
       writeFileSync(file, updated);
-      // Hooks run on a detached HEAD; publication targets only this branch and old SHA.
-      head = commitBuilderWork({ root, branch, head: reviewedHead,
-        message: `docs: ${basename(flags.ticket, ".md")} follow-ups from review`, author: "Agent Kit <noreply@openai.com>", env });
-      if (!reviewCoversHead(reviewedHead, head, flags.ticket, root)) throw new Error("follow-ups commit changed review coverage");
+      head = commitFollowups({ root, branch, head: reviewedHead, ticket: flags.ticket, content: updated, env });
       await push();
     }
     async function reviewHead() {

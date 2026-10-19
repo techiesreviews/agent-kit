@@ -795,8 +795,8 @@ async function waitForFile(path: string) {
   }
 }
 
-for (const phase of ["stage-before", "stage-after", "pre-commit"]) for (const change of ["branch", "HEAD"])
-  test(`follow-up publication refuses ${change} changes during ${phase}`, async t => {
+for (const phase of ["stage-before", "stage-after", "pre-commit"]) for (const change of ["branch", "HEAD", "unrelated edit"])
+  test(`follow-up publication ${change === "unrelated edit" ? "preserves" : "refuses"} ${change} changes during ${phase}`, async t => {
     const count = await forEachAwait(race => {
       const f = fixture(t);
       f.rounds(3); f.saveReview(minorReview);
@@ -840,12 +840,29 @@ const staging = args.includes("add");
       })() };
     }, async ({ f, ready, realGit }) => {
       await waitForFile(ready);
+      if (change === "unrelated edit") {
+        writeFileSync(join(f.root, "file.txt"), "concurrent unrelated edit\n");
+        return;
+      }
       // These concurrent user actions must bypass the deliberately held Git wrapper/hook.
       const args = change === "branch" ? ["switch", "other-branch"] : ["-c", "core.hooksPath=/dev/null", "commit", "--allow-empty", "-m", "Concurrent HEAD"];
       const result = spawnSync(realGit, ["-C", f.root, ...args], { env: f.env, encoding: "utf8" });
       assert.equal(result.status, 0, result.stderr);
     }, async ({ f, done }) => {
       const result = await done;
+      if (change === "unrelated edit") {
+        assert.equal(result.status, 0, result.stdout + result.stderr);
+        assert.match(result.stdout, /RESULT: ok merged #73/);
+        assert.equal(readFileSync(join(f.root, "file.txt"), "utf8"), "concurrent unrelated edit\n");
+        assert.equal(f.git("show", ":file.txt"), "base", "preserve the real index");
+        assert.equal(f.git("show", "HEAD:file.txt"), "base");
+        assert.equal(f.git("diff", "--name-only", f.head, "HEAD"), "ticket.md");
+        assert.equal(f.git("diff", "--name-only"), "file.txt", "leave unrelated edits uncommitted");
+        const remote = f.gitAt(f.origin, "rev-parse", "refs/heads/feature/kit-pr");
+        assert.equal(remote, f.git("rev-parse", "HEAD"));
+        assert.equal(f.gitAt(f.origin, "show", `${remote}:file.txt`), "base");
+        return;
+      }
       assert.equal(result.status, 1, result.stdout + result.stderr);
       assert.match(result.stdout, /RESULT: fail follow-ups: worktree branch or HEAD changed during commit/);
       assert.equal(f.git("rev-parse", "refs/heads/other-branch"), f.head);
@@ -872,4 +889,26 @@ test("follow-ups create a dated Done section without changing Done when acceptan
   assert.equal(ticket.split("### Follow-ups").length, 2);
   assert.match(ticket, /- Spec \(P2\): P2: Minor defect./);
   assert.match(ticket, /- Validation gaps \(gap\): Add coverage./);
+});
+
+
+test("a hook cannot publish non-ticket paths from the private follow-up index", t => {
+  const f = fixture(t); f.rounds(3); f.saveReview(minorReview);
+  const hooks = join(f.root, ".git/test-hooks"); mkdirSync(hooks);
+  f.git("config", "core.hooksPath", hooks);
+  const hook = join(hooks, "pre-commit");
+  writeFileSync(hook, `#!/usr/bin/env node
+const { writeFileSync } = require("node:fs");
+const { execFileSync } = require("node:child_process");
+writeFileSync("file.txt", "hook's unrelated edit\\n");
+execFileSync("git", ["add", "--", "file.txt"]);
+`); chmodSync(hook, 0o755);
+  const result = f.run(["--ticket", "ticket.md"]);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /RESULT: fail follow-ups: follow-ups commit changed files outside the captured ticket update/);
+  assert.equal(f.git("rev-parse", "HEAD"), f.head, "validate paths before publishing locally");
+  assert.equal(f.gitAt(f.origin, "rev-parse", "refs/heads/feature/kit-pr"), f.head);
+  assert.equal(f.git("show", ":file.txt"), "base");
+  assert.equal(readFileSync(join(f.root, "file.txt"), "utf8"), "hook's unrelated edit\n");
+  assert.equal(f.ghCalls("merge").length, 0);
 });
