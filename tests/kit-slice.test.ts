@@ -102,6 +102,9 @@ if (phase === "review") {
   console.log("RESULT: ok review git diff origin/dev...HEAD evidence " + folder);
 } else if (phase === "fix") {
   writeFileSync(counter, String(round() + 1));
+  const fixes = join(process.cwd(), ".scratch/kit-fix", encodeURIComponent(git("branch", "--show-current")));
+  mkdirSync(fixes, { recursive: true });
+  writeFileSync(join(fixes, "round-" + round() + ".md"), "Completed fix brief");
   writeFileSync("file.txt", "fix round " + round() + "\\n");
   git("add", "-A"); git("commit", "-m", "Review fixes round " + round());
   const { folder, open } = evidence();
@@ -583,4 +586,29 @@ test("ticket-only work after landing reuses review but lands the new HEAD", t =>
   for (const phase of ["build", "review", "fix"]) assert.equal(f.calls().filter(call => call.phase === phase).length, calls.filter(call => call.phase === phase).length);
   assert.equal(f.calls().filter(call => call.phase === "pr").length, 2);
   assert.ok(resumed.stdout.endsWith(`RESULT: ok slice ${f.ticket} PR #42 ${head}\n`));
+});
+
+
+for (const mainRoot of [false, true]) for (const pending of [false, true]) test(`slice resume gates on completed branch rounds (main=${mainRoot}, pending=${pending})`, t => {
+  const f = fixture(t);
+  const options = { CLEAN_AT: "99", MINOR_REVIEW: "1" };
+  const first = f.run(["--rounds", "1", "--no-pr"], options);
+  assert.equal(first.status, 1, first.stdout + first.stderr);
+  assert.equal(f.state().rounds, 1);
+  const calls = f.calls();
+  // Two manual rounds can decline findings without creating a new commit.
+  const folder = join(mainRoot ? f.main : f.root, ".scratch/kit-fix", encodeURIComponent("build/ke-04"));
+  mkdirSync(folder, { recursive: true });
+  for (let n = 1; n <= 3; n++) writeFileSync(join(folder, `round-${n}.md`), "Completed branch fix brief");
+  if (pending) writeFileSync(join(folder, "pending.json"), JSON.stringify({ round: 3 }));
+  writeFileSync(join(f.root, ".scratch/fake-round"), "3");
+  writeFileSync(join(f.state().review, "result.md"), findings.replace("P1", "P2").replace("Standards: none", "Standards: P3: Cosmetic issue"));
+  const resumed = f.run(["--rounds", pending ? "1" : "3"], options);
+  assert.equal(resumed.status, pending ? 1 : 0, resumed.stdout + resumed.stderr);
+  if (pending) assert.match(resumed.stdout, /RESULT: fail slice fix: 2 open findings after 1 rounds/);
+  else assert.match(resumed.stdout, /RESULT: ok slice .* PR #42/);
+  assert.equal(f.state().rounds, 1, "branch history must not consume the slice's invocation budget");
+  for (const phase of ["build", "review", "fix"]) assert.equal(f.calls().filter(call => call.phase === phase).length, calls.filter(call => call.phase === phase).length);
+  assert.equal(f.calls().at(-1)?.args.includes("--no-merge"), pending);
+  assert.equal(existsSync(join(f.root, ".scratch/merged")), !pending);
 });

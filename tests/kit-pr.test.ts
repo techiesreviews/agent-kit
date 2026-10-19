@@ -857,3 +857,19 @@ const staging = args.includes("add");
     });
     assert.equal(count, 1);
   });
+
+
+test("follow-ups create a dated Done section without changing Done when acceptance criteria", t => {
+  const f = fixture(t); f.rounds(3);
+  const original = '---\ntitle: "Ticket title"\n---\n\n## Files\n\n- `file.txt`\n\n## Done when\n\n- Required behaviour is present.\n- Required coverage passes.\n';
+  f.commit("Write acceptance criteria", "ticket.md", original);
+  f.saveReview(minorReview);
+  const result = f.run(["--ticket", "ticket.md"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const ticket = readFileSync(join(f.root, "ticket.md"), "utf8");
+  assert.ok(ticket.startsWith(original.trimEnd() + "\n\n## Done ("), ticket);
+  assert.match(ticket.slice(original.trimEnd().length), /^\n\n## Done \(\d{4}-\d{2}-\d{2}\)\n\n### Follow-ups\n/);
+  assert.equal(ticket.split("### Follow-ups").length, 2);
+  assert.match(ticket, /- Spec \(P2\): P2: Minor defect./);
+  assert.match(ticket, /- Validation gaps \(gap\): Add coverage./);
+});

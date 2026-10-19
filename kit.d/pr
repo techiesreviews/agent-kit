@@ -248,9 +248,9 @@ async function main(args) {
       if (current(["branch", "--show-current"]) !== branch || current(["rev-parse", "HEAD"]) !== reviewedHead ||
           current(["status", "--porcelain"])) throw new Error("worktree changed before recording follow-ups");
       const file = resolve(root, flags.ticket), original = readFileSync(file, "utf8");
-      const sections = [...original.matchAll(/^## Done\b[^\n]*\n/gm)];
+      const sections = [...original.matchAll(/^## Done(?:[ \t]+\(\d{4}-\d{2}-\d{2}\))?[ \t]*\r?$/gm)];
       const start = sections.at(-1)?.index;
-      const prefix = start === undefined ? `${original.trimEnd()}\n\n## Done (${new Date().toISOString().slice(0, 10)})\n` : original.slice(0, start);
+      const prefix = start === undefined ? `${original.trimEnd()}\n\n## Done (${new Date().toISOString().slice(0, 10)})` : original.slice(0, start);
       const rest = start === undefined ? "" : original.slice(start);
       const end = rest.slice(1).search(/^## /m);
       const doneEnd = end < 0 ? rest.length : end + 1;
