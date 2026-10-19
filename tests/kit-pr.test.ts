@@ -26,9 +26,12 @@ if (env.FAKE_FAIL === action) {
   process.exit(1);
 }
 if (tool === "fake-kit" && action === "review") {
-  const folder = join(env.KIT_MAIN_ROOT, ".scratch/reviews", env.ASE_OWNER, "fresh");
+  const count = readFileSync(env.FAKE_CALLS, "utf8").trim().split("\\n").map(line => JSON.parse(line))
+    .filter(call => call.tool === "fake-kit" && call.args[0] === "review").length;
+  const folder = join(env.KIT_MAIN_ROOT, ".scratch/reviews", env.ASE_OWNER, count === 1 ? "fresh" : "fresh-" + count);
   mkdirSync(folder, { recursive: true });
-  if (!env.FAKE_REVIEW_MISSING) writeFileSync(join(folder, "result.md"), env.FAKE_REVIEW || ${JSON.stringify(cleanReview)});
+  const report = (count > 1 && env.FAKE_REBASED_REVIEW) || env.FAKE_REVIEW || ${JSON.stringify(cleanReview)};
+  if (!env.FAKE_REVIEW_MISSING) writeFileSync(join(folder, "result.md"), report);
   const { execFileSync } = require("node:child_process");
   const git = (...argv) => execFileSync("git", argv, { encoding: "utf8" }).trim();
   writeFileSync(join(folder, "refs.txt"), git("rev-parse", "HEAD") + "\\n" + git("merge-base", "origin/dev", "HEAD") + "\\n");
@@ -405,7 +408,7 @@ test("queue uses auto-rebase, skips wait, and passes owner/name/base to graphql"
   for (const value of ["o=test", "n=repo", "b=dev", '.data.repository.mergeQueue.id // ""']) assert.ok(graphql.args.includes(value));
 });
 
-test("behind retry fetches, rebases, pushes the new HEAD and waits again", t => {
+test("behind retry reviews the rebased HEAD before waiting again and merging", t => {
   const f = fixture(t), peer = f.peer();
   const result = f.run([], { FAKE_BEHIND: "1", FAKE_ADVANCE: peer, FAKE_VIEW_ERROR: "1" });
   assert.equal(result.status, 0, result.stderr); assert.equal(f.ghCalls("merge").length, 2);
@@ -414,6 +417,28 @@ test("behind retry fetches, rebases, pushes the new HEAD and waits again", t => 
   assert.equal(f.gitAt(f.origin, "rev-parse", "refs/heads/feature/kit-pr"), head);
   assert.ok(result.stdout.includes(`RESULT: ok merged #73 ${head.slice(0, 7)}`));
   assert.equal(result.stdout.split("\n").filter(line => line === "push: ok").length, 2);
+  const actions = f.calls().filter(call => (call.tool === "fake-kit" && ["review", "wait"].includes(call.args[0]))
+    || (call.tool === "gh" && call.args[1] === "merge"));
+  assert.deepEqual(actions.map(call => call.tool === "gh" ? "merge" : call.args[0]), ["review", "wait", "merge", "review", "wait", "merge"]);
+  const folder = join(f.main, ".scratch/reviews/ak-14/fresh-2");
+  assert.equal(readFileSync(join(folder, "refs.txt"), "utf8"), `${head}\n${f.git("merge-base", "origin/dev", "HEAD")}\n`);
+});
+
+test("findings in the rebased HEAD review stop before another CI wait or merge", t => {
+  const f = fixture(t), peer = f.peer();
+  const report = "REVIEW_STATUS: complete\nDefects:\n- Spec: Rebased HEAD has a defect.\n";
+  const result = f.run([], { FAKE_BEHIND: "1", FAKE_ADVANCE: peer, FAKE_REBASED_REVIEW: report });
+  const head = f.git("rev-parse", "HEAD"), folder = join(f.main, ".scratch/reviews/ak-14/fresh-2");
+  assert.notEqual(head, f.head);
+  assert.equal(f.gitAt(f.origin, "rev-parse", "refs/heads/feature/kit-pr"), head);
+  assert.equal(result.status, 1, result.stderr);
+  assert.equal(result.stdout.trimEnd().split("\n").at(-1), `RESULT: fail pr #73 review has 1 open findings (${join(folder, "result.md")})`);
+  assert.match(result.stdout, /^Spec: Rebased HEAD has a defect\.$/m);
+  assert.equal(readFileSync(join(f.main, ".scratch/reviews/ak-14/fresh/result.md"), "utf8"), cleanReview);
+  assert.equal(readFileSync(join(folder, "refs.txt"), "utf8"), `${head}\n${f.git("merge-base", "origin/dev", "HEAD")}\n`);
+  const actions = f.calls().filter(call => (call.tool === "fake-kit" && ["review", "wait"].includes(call.args[0]))
+    || (call.tool === "gh" && call.args[1] === "merge"));
+  assert.deepEqual(actions.map(call => call.tool === "gh" ? "merge" : call.args[0]), ["review", "wait", "merge", "review"]);
 });
 
 test("a PR head changed by someone else is never merged or overwritten", t => {

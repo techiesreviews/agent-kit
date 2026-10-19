@@ -210,7 +210,9 @@ async function main(args) {
     console.log(`PR #${number}; ${review ? "review running" : `review: skipped (${plan.tier} tier)`}`);
     // The docs tier has no model review; CI still gates the merge.
     let waived = 0;
-    if (review) {
+    async function reviewHead() {
+      if (!review) return true;
+      waived = 0;
       const saved = savedReview(head, await git("review", ["merge-base", `origin/${flags.base}`, "HEAD"]));
       let resultPath;
       if (saved) {
@@ -233,12 +235,14 @@ async function main(args) {
         if (findings.length > 15) console.log(`… and ${findings.length - 15} more`);
         if (!flags.waive) {
           kitResult("fail", `pr #${number} review has ${findings.length} open findings (${resultPath})`);
-          return 1;
+          return false;
         }
         waived = findings.length;
       }
       ok("review");
+      return true;
     }
+    if (!await reviewHead()) return 1;
     if (flags.noMerge || flags.release) {
       kitResult("ok", `opened #${number} ${head.slice(0, 7)}`);
       return 0;
@@ -280,9 +284,11 @@ async function main(args) {
       if (!/behind|not up to date|out of date/i.test(merged.stderr))
         throw new Error(merged.failure || merged.stderr.trim().split(/\r?\n/).at(-1) || "gh pr merge failed");
       if (attempt === 3) throw new Error("still behind after 3 attempts");
+      const reviewedHead = head;
       await rebase();
       head = await git("rebase", ["rev-parse", "HEAD"]);
       await push();
+      if (head !== reviewedHead && !await reviewHead()) return 1;
     }
   } catch (error) {
     if (directory && existsSync(join(directory, `${step}.log`))) {
