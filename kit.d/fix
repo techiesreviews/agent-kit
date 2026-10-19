@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // kit: send open review findings back to the original builder
 import { execFileSync, spawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { openFindings } from "../review-findings.mjs";
@@ -58,12 +58,15 @@ function latestSlice(root, branch) {
 function builderRun(root, explicit, slice) {
   const folders = newestDirectories(join(root, ".scratch/agent")).filter(folder => folder.split("/").at(-1).startsWith("build-"));
   if (slice?.build) folders.unshift(resolve(root, slice.build));
+  const builders = [];
   for (const folder of explicit ? [resolve(root, explicit)] : folders) {
     try {
       const status = JSON.parse(readFileSync(join(folder, "status.json"), "utf8"));
-      if (status.kind === "build" && status.session && realpathSync(status.worktree) === realpathSync(root)) return { folder, status };
+      if (status.kind === "build" && status.session && realpathSync(status.worktree) === realpathSync(root)) builders.push({ folder, status });
     } catch { /* Ignore incomplete or foreign builder records. */ }
   }
+  // A slice's original builder must not hide a newer fallback or manual builder.
+  if (builders.length) return builders.sort((a, b) => (Date.parse(b.status.started) || 0) - (Date.parse(a.status.started) || 0))[0];
   if (explicit) throw new Error("invalid builder run for this worktree");
 }
 
@@ -149,7 +152,13 @@ async function fix(args) {
     };
     if (!pending) {
       const model = builder?.status.model || flags["--builder"] || slice?.model || "gpt-6.1-sol";
-      pending = { root, branch, head, review, note, run: builder?.folder || join(directory, `round-${round}-builder`), ticket, round,
+      let run = builder?.folder;
+      if (!run) {
+        const artifacts = join(root, ".scratch/agent");
+        mkdirSync(artifacts, { recursive: true });
+        run = mkdtempSync(join(artifacts, `build-${Date.now()}-${process.pid}-`));
+      }
+      pending = { root, branch, head, review, note, run, ticket, round,
         original, model: model === "sol" ? "gpt-6.1-sol" : model, fresh: !builder, phase: "builder", declined: [], reviewHead: head };
       save();
     }

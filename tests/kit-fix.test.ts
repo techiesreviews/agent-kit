@@ -270,6 +270,47 @@ test("fresh fallback uses the latest matching slice model and ticket, unless --b
   }
 });
 
+test("subsequent fix rounds resume the fresh builder with its explicit model, ahead of older slice builders", t => {
+  for (const withSlice of [false, true]) {
+    const f = fixture(t); f.review();
+    let older: string | undefined;
+    if (withSlice) {
+      older = f.builder("build-100", { session: null, model: "older-model" });
+      const folder = join(f.root, ".scratch/kit-slice/current"); mkdirSync(folder, { recursive: true });
+      writeFileSync(join(folder, "state.json"), JSON.stringify({
+        model: "older-model", branch: "build/ke-03", ticket: f.ticket, build: older,
+      }));
+    }
+    const first = f.run(["--ticket", f.ticket, "--builder", "explicit-model"], { FAKE_REVIEW_RESULT: findings });
+    assert.equal(first.status, 1, first.stdout + first.stderr);
+    assert.match(first.stdout, /starting fresh agent.sh build \(explicit-model\)/);
+    assert.match(first.stdout, /1 open findings/);
+    const directory = join(f.root, ".scratch/kit-fix/build%2Fke-03");
+    assert.equal(existsSync(join(directory, "pending.json")), false, "completed round clears its pending state");
+    const runs = join(f.root, ".scratch/agent");
+    const fresh = readdirSync(runs).filter(name => name.startsWith("build-") && name !== "build-100");
+    assert.equal(fresh.length, 1, "fresh run remains in normal builder discovery");
+    const statusPath = join(runs, fresh[0], "status.json");
+    const original: { session: string; model: string; resumes: number } = JSON.parse(readFileSync(statusPath, "utf8"));
+    assert.equal(original.model, "explicit-model"); assert.equal(original.resumes, 0);
+    if (older) f.builder("build-100", { model: "older-model", session: "older-session" });
+
+    const second = f.run([], { FAKE_TEXT: "second round fixed\n" });
+    assert.equal(second.status, 0, second.stdout + second.stderr);
+    assert.doesNotMatch(second.stdout, /starting fresh/);
+    assert.equal(f.calls().length, 2);
+    const [build, resume] = f.calls();
+    assert.equal(build.args.includes("resume"), false);
+    assert.deepEqual(resume.args.slice(0, 2), ["exec", "resume"]);
+    assert.ok(resume.args.includes(original.session));
+    assert.equal(resume.args[resume.args.indexOf("-m") + 1], original.model);
+    const updated: { model: string; resumes: number; brief: string } = JSON.parse(readFileSync(statusPath, "utf8"));
+    assert.equal(updated.model, original.model); assert.equal(updated.resumes, 1);
+    assert.equal(updated.brief, join(directory, "round-2.md"));
+    assert.equal(f.git("status", "--porcelain"), "");
+  }
+});
+
 test("kit fix resumes a builder stored in slice state", t => {
   const f = fixture(t); f.review();
   const folder = join(f.root, ".scratch/kit-slice/current"); mkdirSync(folder, { recursive: true });
