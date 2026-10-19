@@ -4,6 +4,7 @@ import { chmodSync, existsSync, globSync, mkdirSync, mkdtempSync, readFileSync, 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { checkSteps, classify } from "../scripts/agents/pr-tier.mjs";
 
 const repo = resolve(".");
 const shell = join(repo, "scripts/agents/agent.sh");
@@ -13,7 +14,7 @@ function entries(directory: string) {
 }
 
 test("kit and agent unit tests leave no run folders or temporary files", { timeout: 240_000 }, t => {
-  // npm test (and the full kit pr tier) runs this glob. Select all kit tests,
+  // The standalone test:kit-clean script runs this guard. Select all kit tests,
   // runner callers and compatibility wrappers, including future test files.
   const files = globSync("tests/*.test.ts").filter(file =>
     resolve(file) !== import.meta.filename &&
@@ -53,6 +54,30 @@ test("kit and agent unit tests leave no run folders or temporary files", { timeo
   const count = Number(/^# tests (\d+)$/m.exec(result.stdout)?.[1]);
   assert.ok(count >= files.length, `child suite must execute tests from ${files.length} files: ${result.stdout.slice(-2000)}`);
   t.diagnostic(`guard ran ${count} tests from ${files.length} files`);
+});
+
+test("npm test excludes the clean guard and CI runs it separately", () => {
+  const { scripts } = JSON.parse(readFileSync(join(repo, "package.json"), "utf8"));
+  const pattern = /--test '([^']+)'$/.exec(scripts.test)?.[1];
+  assert.ok(pattern, "default test command must have a quoted test glob");
+  const files = globSync(pattern).sort();
+  assert.deepEqual(files, globSync("tests/*.test.ts").filter(file => file !== "tests/kit-tests-clean.test.ts").sort());
+  assert.equal(scripts["test:kit-clean"], "tsx --test tests/kit-tests-clean.test.ts");
+  const ci = readFileSync(join(repo, ".github/workflows/ci.yml"), "utf8");
+  assert.equal(ci.match(/run: npm run test:kit-clean\b/g)?.length, 1);
+  assert.match(ci, /run: npm test\n/);
+});
+
+test("the PR full tier runs the clean guard only for agent scripts or kit tests", () => {
+  const steps = (paths: string[], full = false) => checkSteps(classify(paths.map(path => ({ status: "M", path })), { full })).steps;
+  for (const path of ["scripts/agents/kit.d/slice", "scripts/agents/pr-tier.mjs", "tests/kit-wait.test.ts"]) {
+    assert.deepEqual(steps([path, "package.json"]), ["check", "unit", "kit-clean", "lint", "specs"]);
+    assert.ok(steps([path], true).includes("kit-clean"));
+  }
+  for (const paths of [[], ["src/main.ts"], ["package.json"], ["scripts/check-types.mjs"], ["tests/app.test.ts"], ["docs/a.md"]]) {
+    assert.equal(steps(paths, true).includes("kit-clean"), false, paths.join(", "));
+  }
+  assert.equal(steps(["tests/kit-wait.test.ts"]).includes("kit-clean"), false, "standalone guard is a full-tier step");
 });
 
 for (const kind of ["missing", "directory", "dangling link", "unreadable"]) {

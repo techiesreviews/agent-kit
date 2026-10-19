@@ -6,7 +6,7 @@ import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
 import { kitResult, kitOwner, kitJob, kitJobDirectory, kitJobExit, kitJobRunning } from "../kit-lib.mjs";
-import { summarizeRuns, failingSteps, latestWorkflowRuns } from "../ci-summary.mjs";
+import { summarizeRuns, failingSteps, failingTests, latestWorkflowRuns } from "../ci-summary.mjs";
 
 const usage = `Usage: kit wait pid <pid> [--timeout D]
        kit wait job <name> [--timeout D]
@@ -253,7 +253,9 @@ async function wait(config) {
               names.push(runs.find((run) => run.databaseId === id).workflowName);
               const { jobs } = JSON.parse(await gh(["run", "view", String(id), "--json", "jobs"]));
               for (const line of failingSteps(jobs)) console.log(line);
-              tail(await gh(["run", "view", String(id), "--log-failed"]));
+              const log = await gh(["run", "view", String(id), "--log-failed"]);
+              for (const line of failingTests(log)) console.log(line);
+              tail(log);
             }
             return finish(false, `ci ${label} ${head.slice(0, 7)} failed: ${names.join(", ")}`);
           }

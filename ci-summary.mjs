@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Usage: ci-summary.mjs <branch> [head-sha]; read-only CI status for ci-status.sh.
 import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { promisify, stripVTControlCharacters } from "node:util";
 import { pathToFileURL } from "node:url";
 
 const successful = new Set(["success", "neutral", "skipped"]);
@@ -37,6 +37,48 @@ export function failingSteps(jobs) {
     return steps.length ? steps.map((step) => `${job.name}: ${step.name} (${step.conclusion})`) :
       [`${job.name}: ${job.conclusion} (no failed step recorded)`];
   });
+}
+
+/** Up to ten failure lines with source and first error, before the ordinary log tail. */
+export function failingTests(log) {
+  // gh adds job, step and ISO timestamp columns; preserve reporter indentation.
+  const lines = stripVTControlCharacters(log).split(/\r?\n/)
+    .map(line => line.replace(/^.*?\b\d{4}-\d\d-\d\dT[\d:.]+Z\s?/, ""));
+  const playwright = /^\s*\d+\)\s+.*\.spec\.[cm]?[jt]sx?:\d+/;
+  const detailedPlaywright = lines.some(line => playwright.test(line));
+  const detailedSpec = lines.some(line => /^\s*test at /.test(line));
+  const marker = line => /^\s*(?:not ok\s+\d+\b|✖\s+(?!failing tests:))/.test(line) ||
+    (detailedPlaywright ? playwright.test(line) : /^\s*✘\s+/.test(line));
+  const failures = new Map();
+  let source;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^\s*test at /.test(lines[i])) source = lines[i].trim().slice("test at ".length);
+    if (!marker(lines[i])) continue;
+    let end = i + 1;
+    while (end < lines.length && !marker(lines[end]) && !/^\s*test at /.test(lines[end])) end++;
+    const block = lines.slice(i + 1, end);
+    const title = lines[i].trim().replace(/ \([\d.]+m?s\)$/, "")
+      .replace(/^\d+\)\s+/, "✘ ");
+    // The Node spec summary supplies source locations missing from progress lines.
+    if (/^✖/.test(title) && detailedSpec && !source) { i = end - 1; continue; }
+    const location = block.find(line => /^\s*location:/.test(line))?.trim().replace(/^location:\s*['"]?|['"]$/g, "") ||
+      (/^✖/.test(title) ? source : undefined);
+    let error = block.findIndex(line => /^\s*(?:error:|\w*Error(?:\s*\[.*?\])?:)/.test(line));
+    let message = "";
+    if (error >= 0) {
+      message = block[error].trim().replace(/^error:\s*/, "");
+      if (/^[|>][-+]?\s*$/.test(message)) {
+        while (++error < block.length && !block[error].trim()) { /* First error line. */ }
+        message = block[error]?.trim() || "";
+      }
+    }
+    const detail = [title, location, message].filter(Boolean).join(" — ");
+    const key = `${title}\0${location || ""}`;
+    const previous = failures.get(key);
+    if (!previous || detail.length > previous.length) failures.set(key, detail);
+    i = end - 1;
+  }
+  return [...failures.values()].slice(0, 10);
 }
 
 export async function latestWorkflowRuns(gh, branch, head) {
@@ -76,6 +118,7 @@ async function main(branch, head) {
       const { jobs } = JSON.parse(await gh(["run", "view", String(id), "--json", "jobs"]));
       for (const line of failingSteps(jobs)) console.log(line);
       const log = await gh(["run", "view", String(id), "--log-failed"]);
+      for (const line of failingTests(log)) console.log(line);
       console.log(log.trimEnd().split(/\r?\n/).slice(-20).join("\n"));
     }
     if (!head || !summary.pending) {

@@ -164,7 +164,7 @@ async function slice(args) {
     begin("brief");
     if (!state.finished.includes(phase)) {
       const brief = join(root, ".scratch/agent-brief.md");
-      writeFileSync(brief, `Ticket: ${flags.ticket}\n\n## Files\n${files}\n\n## Done when\n${done}\n\nAppend \`## Done (YYYY-MM-DD)\` (behaviour, commits, tests, review decisions), set \`status: closed\`, \`assignee: ${kitOwner()}\`.\n\nUse Agent Kit at scripts/agents/kit; run doctor first and the ticket's focused checks; report their RESULT lines. Stay within Files. Leave changes unstaged; the runner commits.\n`);
+      writeFileSync(brief, `Ticket: ${flags.ticket}\n\n## Files\n${files}\n\n## Done when\n${done}\n\n## Builder contract\nDo not run kit review, kit fix, kit slice, kit pr, kit bg or agent.sh (including scripts/agents/kit forms); the slice runs those commands.\nUse Agent Kit at scripts/agents/kit; run doctor first. Validate with scripts/agents/kit unit --affected and the ticket's focused checks; run npm run check when types moved. Report their RESULT lines.\nStay within Files. Leave changes unstaged; the runner commits. Do not commit, push, deploy, spawn agents or use git stash.\nAppend \`## Done (YYYY-MM-DD)\` describing only behaviour, tests and commits; the slice records review decisions and landing. Do not claim a landing result. Set \`status: closed\`, \`assignee: ${kitOwner()}\`.\n`);
       writeFileSync(log, `Brief: ${brief}\n`);
       complete();
     }

@@ -25,14 +25,16 @@ export function parseChanges(text) {
 /** Pick the tier and a one-line reason, e.g. `docs (12 files, all docs)`. */
 export function classify(changes, { full = false } = {}) {
   const count = `${changes.length} file${changes.length === 1 ? "" : "s"}`;
-  if (full) return { tier: "full", reason: `${count}, --full`, docs: false };
+  const cleanGuard = changes.some(({ path }) => /^scripts\/agents\//.test(path) || /^tests\/kit-.*\.test\.ts$/.test(path))
+    ? { cleanGuard: true } : {};
+  if (full) return { tier: "full", reason: `${count}, --full`, docs: false, ...cleanGuard };
   if (!changes.length) return { tier: "full", reason: "no changed files", docs: false };
   const tiers = changes.map(pathTier);
   const tier = order[Math.max(...tiers.map(name => order.indexOf(name)))];
   const present = order.filter(name => tiers.includes(name));
   const why = tier === "full" ? `${changes[tiers.indexOf("full")].path} is code`
     : present.length === 1 ? `all ${tier}` : `${present.join(" + ")}, highest ${tier}`;
-  return { tier, reason: `${count}, ${why}`, docs: tiers.includes("docs") };
+  return { tier, reason: `${count}, ${why}`, docs: tiers.includes("docs"), ...cleanGuard };
 }
 
 // A helper, fake or fixture is matched to unit tests by name: the fixture folder, else the file's stem.
@@ -63,7 +65,7 @@ export function focusedUnitFiles(changes, plan, sources) {
 /** Ordered local steps for a tier; `review` says whether the Sol review runs. */
 export function checkSteps(plan) {
   const steps = {
-    full: ["check", "unit", "lint", "specs"],
+    full: ["check", "unit", ...(plan.cleanGuard ? ["kit-clean"] : []), "lint", "specs"],
     tests: ["check", "unit-files", "lint", "specs"],
     css: ["colours", ...(plan.docs ? ["tickets", "unit-files"] : []), "specs"],
     docs: ["tickets", "unit-files"],

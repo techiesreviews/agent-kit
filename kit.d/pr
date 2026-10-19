@@ -144,6 +144,7 @@ async function main(args) {
       .map(name => [`tests/${name}`, readFileSync(join(root, "tests", name), "utf8")]));
     const commands = {
       check: () => ["npm", ["run", "check"]], unit: () => ["npm", ["test"]], lint: () => ["npm", ["run", "lint"]],
+      "kit-clean": () => ["npm", ["run", "test:kit-clean"]],
       colours: () => ["node", ["scripts/check-colours.mjs"]], tickets: () => ["node", ["scripts/agents/tickets.mjs", "check"]],
       "unit-files": () => {
         const files = focusedUnitFiles(changes, plan, sources());

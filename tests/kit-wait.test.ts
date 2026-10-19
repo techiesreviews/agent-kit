@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import test, { type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { failingTests } from "../scripts/agents/ci-summary.mjs";
 
 const script = resolve("scripts/agents/kit.d/wait");
 const kit = resolve("scripts/agents/kit");
@@ -457,6 +458,10 @@ case "$1 $2" in
     echo "[{\\"databaseId\\":10,\\"workflowName\\":\\"Checks\\",\\"status\\":\\"$status\\",\\"conclusion\\":\\"$conclusion\\",\\"headSha\\":\\"$sha\\",\\"createdAt\\":\\"2026-10-16\\",\\"url\\":\\"https://example.test/run/10\\"}]" ;;
   'run view')
     if [[ $* == *--log-failed ]]; then
+      echo '  not ok 7 - stopping group identity'
+      echo '    location: tests/kit-bg.test.ts:170:1'
+      echo '    error: |-'
+      echo '      expected stopped group'
       printf 'log-%s\\n' {1..30}
     else
       echo '{"jobs":[{"name":"unit","status":"completed","conclusion":"failure","steps":[{"name":"Test suite","status":"completed","conclusion":"failure"}]}]}'
@@ -478,12 +483,69 @@ test("ci green uses the default branch and pinned per-workflow reads", async (t)
   assert.match(fixture.calls(), new RegExp(`--branch dev --limit 1 .*--commit ${head}`));
 });
 
-test("ci failure prints failed steps and only the last 20 failed log lines", async (t) => {
+test("ci failure prints test details before the last 20 failed log lines", async (t) => {
   const fixture = fakeGh(t, "failed");
   const output = await run(t, ["ci", "--timeout", "2"], fixture.env);
   result(output, 1, /ci dev abcdef0 failed: Checks/);
   assert.match(output.stdout, /unit: Test suite \(failure\)/);
+  assert.match(output.stdout, /not ok 7 - stopping group identity — tests\/kit-bg.test.ts:170:1 — expected stopped group/);
+  assert.ok(output.stdout.indexOf("not ok 7") < output.stdout.indexOf("log-11"));
   last20(output.stdout, "log-");
+});
+
+test("CI failure parser reads nested TAP, gh columns, ANSI and the first error line", () => {
+  const fixture = [
+    "ok 1 - good", "  # Subtest: stopping group identity", "  not ok 2 - stopping group identity",
+    "    duration_ms: 12", "    location: 'tests/kit-bg.test.ts:170:1'", "    error: |-",
+    "      expected stopped group", "      second error line", "    code: ERR_ASSERTION",
+    "not ok 1 - outer suite", "  location: tests/kit-bg.test.ts:20:1", "  error: '1 subtest failed'",
+  ].map(line => `checks\tUnit tests\t2026-10-19T12:30:01.123Z \u001b[31m${line}\u001b[0m`).join("\r\n");
+  assert.deepEqual(failingTests(fixture), [
+    "not ok 2 - stopping group identity — tests/kit-bg.test.ts:170:1 — expected stopped group",
+    "not ok 1 - outer suite — tests/kit-bg.test.ts:20:1 — '1 subtest failed'",
+  ]);
+});
+
+test("CI failure parser enriches repeated Node spec failures with file and first error", () => {
+  assert.deepEqual(failingTests([
+    "✖ identity (1.23ms)", "ℹ tests 1", "✖ failing tests:", "", "test at tests/kit-bg.test.ts:170:1",
+    "✖ identity (1.23ms)", "  AssertionError [ERR_ASSERTION]: wrong group", "    at ignored-stack.ts:1:1",
+  ].join("\n")), ["✖ identity — tests/kit-bg.test.ts:170:1 — AssertionError [ERR_ASSERTION]: wrong group"]);
+});
+
+test("CI failure parser reads Playwright progress or detailed failures with their first error", () => {
+  const progress = "  ✘  1 [chromium] › tests/native-save/a.spec.ts:20:3 › save (1s)";
+  assert.deepEqual(failingTests(progress), [progress.trim().replace(" (1s)", "")]);
+  assert.deepEqual(failingTests([
+    progress, "  ✘  2 [chromium] › tests/native-save/b.spec.ts:30:3 › load (2s)",
+    "  1) [chromium] › tests/native-save/a.spec.ts:20:3 › save ─────",
+    "    Error: save refused", "    ignored detail",
+    "  2) [chromium] › tests/native-save/b.spec.ts:30:3 › load ─────",
+    "    TimeoutError: load timed out", "    ignored detail",
+  ].join("\n")), [
+    "✘ [chromium] › tests/native-save/a.spec.ts:20:3 › save ───── — Error: save refused",
+    "✘ [chromium] › tests/native-save/b.spec.ts:30:3 › load ───── — TimeoutError: load timed out",
+  ]);
+});
+
+test("CI failure parser keeps same-named Node spec tests at different locations", () => {
+  assert.deepEqual(failingTests([
+    "✖ identity (1ms)", "✖ identity (2ms)", "✖ failing tests:",
+    "test at tests/kit-bg.test.ts:170:1", "✖ identity (1ms)", "  Error: first failure",
+    "test at tests/kit-wait.test.ts:50:1", "✖ identity (2ms)", "  Error: second failure",
+  ].join("\n")), [
+    "✖ identity — tests/kit-bg.test.ts:170:1 — Error: first failure",
+    "✖ identity — tests/kit-wait.test.ts:50:1 — Error: second failure",
+  ]);
+});
+
+test("CI failure parser caps the digest at ten lines and ignores successful or empty logs", () => {
+  assert.deepEqual(failingTests(""), []);
+  assert.deepEqual(failingTests("ok 1 - success\n✔ passed\nℹ tests 1"), []);
+  const log = Array.from({ length: 15 }, (_, i) => `not ok ${i + 1} - failure ${i}\n  error: first error`).join("\n");
+  const digest = failingTests(log);
+  assert.equal(digest.length, 10);
+  assert.equal(digest.at(-1), "not ok 10 - failure 9 — first error");
 });
 
 test("ci cancellation follows the fresh branch head without failing the cancelled run", async (t) => {

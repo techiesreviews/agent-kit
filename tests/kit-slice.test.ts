@@ -195,7 +195,13 @@ test("kit slice writes the ticket brief, runs phases in order, credits and commi
   const f = fixture(t), result = f.run();
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const brief = readFileSync(join(f.root, ".scratch/agent-brief.md"), "utf8");
-  for (const text of [f.ticket, "## Files", "`file.txt`", "## Done when", "Required content", "## Done (YYYY-MM-DD)", "behaviour, commits, tests, review decisions", "status: closed", "assignee: ke-04", "scripts/agents/kit"]) assert.ok(brief.includes(text), text);
+  for (const text of [f.ticket, "## Files", "`file.txt`", "## Done when", "Required content", "## Done (YYYY-MM-DD)", "describing only behaviour, tests and commits", "status: closed", "assignee: ke-04", "scripts/agents/kit"]) assert.ok(brief.includes(text), text);
+  assert.match(brief, /Do not run kit review, kit fix, kit slice, kit pr, kit bg or agent\.sh/);
+  assert.match(brief, /the slice runs those commands/);
+  assert.match(brief, /Validate with scripts\/agents\/kit unit --affected/);
+  assert.match(brief, /run npm run check when types moved/);
+  assert.match(brief, /the slice records review decisions and landing/);
+  assert.match(brief, /Leave changes unstaged; the runner commits/);
   assert.deepEqual(result.stdout.split("\n").filter(line => line.startsWith("slice:")).map(line => line.split(" ").slice(0, 3).join(" ")), ["slice: brief ok", "slice: build ok", "slice: commit ok", "slice: review ok", "slice: fix ok", "slice: pr ok"]);
   assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "pr"]);
   const build = f.calls()[0].args;
