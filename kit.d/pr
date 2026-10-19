@@ -4,27 +4,29 @@ import { spawn } from "node:child_process";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { openFindings } from "../review-findings.mjs";
 
 const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const { checkSteps, classify, focusedUnitFiles, parseChanges } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
-const usage = "Usage: kit pr [--base dev] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release] [--full]\n";
+const usage = 'Usage: kit pr [--base dev] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release] [--full] [--waive "<reason>"]\n--waive requires a *-lead owner; records the reason for merging with open findings.\n';
 const kit = process.env.KIT_PR_KIT || resolve(import.meta.dirname, "../kit");
 
 function options(args) {
   const flags = {};
   for (let i = 0; i < args.length; i++) {
     const flag = args[i];
-    if (!["--base", "--title", "--ticket", "--no-merge", "--dry-run", "--release", "--full"].includes(flag) || Object.hasOwn(flags, flag))
+    if (!["--base", "--title", "--ticket", "--no-merge", "--dry-run", "--release", "--full", "--waive"].includes(flag) || Object.hasOwn(flags, flag))
       throw new Error(`unknown or duplicate option: ${flag}`);
-    if (["--base", "--title", "--ticket"].includes(flag)) {
+    if (["--base", "--title", "--ticket", "--waive"].includes(flag)) {
       const value = args[++i];
-      if (!value || value.startsWith("-")) throw new Error(`${flag} requires a value`);
+      if (!value?.trim() || value.startsWith("-")) throw new Error(`${flag} requires a value`);
       flags[flag] = value;
     } else flags[flag] = true;
   }
-  return { base: flags["--base"] ?? "dev", title: flags["--title"], ticket: flags["--ticket"],
+  if (flags["--waive"] && !kitOwner().endsWith("-lead")) throw new Error("--waive requires a *-lead owner");
+  return { base: flags["--base"] ?? "dev", title: flags["--title"], ticket: flags["--ticket"], waive: flags["--waive"],
     noMerge: flags["--no-merge"], dryRun: flags["--dry-run"], release: flags["--release"], full: flags["--full"] };
 }
 
@@ -207,18 +209,48 @@ async function main(args) {
     step = "review";
     console.log(`PR #${number}; ${review ? "review running" : `review: skipped (${plan.tier} tier)`}`);
     // The docs tier has no model review; CI still gates the merge.
+    let waived = 0;
     if (review) {
       const saved = savedReview(head, await git("review", ["merge-base", `origin/${flags.base}`, "HEAD"]));
+      let resultPath;
       if (saved) {
+        resultPath = join(saved, "result.md");
         const comment = join(directory, "review.md");
-        writeFileSync(comment, `Reused review: ${saved}\nHEAD: ${head}\n\n${readFileSync(join(saved, "result.md"), "utf8")}`);
+        writeFileSync(comment, `Reused review: ${saved}\nHEAD: ${head}\n\n${readFileSync(resultPath, "utf8")}`);
         await gh("review", ["pr", "comment", number, "--body-file", comment]);
-      } else await run("review", kit, [...reviewArgs, number, ...(flags.ticket ? ["--ticket", flags.ticket] : [])]);
+      } else {
+        const output = await run("review", kit, [...reviewArgs, number, ...(flags.ticket ? ["--ticket", flags.ticket] : [])]);
+        const evidence = /^RESULT: ok review .+ evidence (.+)$/m.exec(output)?.[1];
+        if (!evidence) throw new Error("review did not name its evidence folder");
+        resultPath = join(resolve(root, evidence), "result.md");
+      }
+      let resultMd = "";
+      try { resultMd = readFileSync(resultPath, "utf8"); }
+      catch { /* Missing or unreadable evidence fails closed through openFindings. */ }
+      const { findings } = openFindings(resultMd);
+      if (findings.length) {
+        for (const finding of findings.slice(0, 15)) console.log(`${finding.group}: ${finding.text.slice(0, 160)}`);
+        if (findings.length > 15) console.log(`… and ${findings.length - 15} more`);
+        if (!flags.waive) {
+          kitResult("fail", `pr #${number} review has ${findings.length} open findings (${resultPath})`);
+          return 1;
+        }
+        waived = findings.length;
+      }
       ok("review");
     }
     if (flags.noMerge || flags.release) {
       kitResult("ok", `opened #${number} ${head.slice(0, 7)}`);
       return 0;
+    }
+    async function recordWaiver() {
+      if (!waived) return;
+      const reason = flags.waive.replace(/[\r\n]+/g, " ");
+      appendFileSync(body, `\nmerged with ${waived} waived findings: ${reason}\n`);
+      await gh("waiver", ["api", "--method", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "-F", `body=@${body}`]);
+      const comment = join(directory, "waiver.md");
+      writeFileSync(comment, `Merged with ${waived} waived findings: ${reason}`);
+      await gh("waiver", ["pr", "comment", number, "--body-file", comment]);
     }
     const repo = await gh("merge", ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]);
     const [owner, name] = repo.split("/");
@@ -227,6 +259,7 @@ async function main(args) {
       "-F", `o=${owner}`, "-F", `n=${name}`, "-F", `b=${flags.base}`, "--jq", '.data.repository.mergeQueue.id // ""']);
     if (queue.status === 0 && queue.text.trim()) {
       await gh("merge", ["pr", "merge", number, "--auto", "--rebase", "--match-head-commit", head, "--repo", repo]); ok("merge");
+      await recordWaiver();
       kitResult("ok", `queued #${number} ${head.slice(0, 7)}`);
       return 0;
     }
@@ -238,6 +271,7 @@ async function main(args) {
         const commit = await execute("merge", "gh", ["pr", "view", number, "--json", "mergeCommit", "--jq", ".mergeCommit.oid"]);
         const sha = commit.status === 0 && /^[a-f0-9]{40}$/i.test(commit.text.trim()) ? commit.text.trim() : head;
         ok("merge");
+        await recordWaiver();
         kitResult("ok", `merged #${number} ${sha.slice(0, 7)}`);
         return 0;
       }

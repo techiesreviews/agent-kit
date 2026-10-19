@@ -8,10 +8,11 @@ import { checkSteps, classify, focusedUnitFiles, parseChanges } from "../scripts
 
 const pr = resolve("scripts/agents/kit.d/pr");
 const kit = resolve("scripts/agents/kit");
+const cleanReview = "REVIEW_STATUS: complete\nDefects:\n- Spec: none.\n- Standards: none.\nValidation gaps: none.\nOptional nits: none.\n";
 interface Call { tool: string; args: string[]; body?: string }
 const fake = `#!/usr/bin/env node
-const { appendFileSync, existsSync, readFileSync, writeFileSync } = require("node:fs");
-const { basename } = require("node:path");
+const { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } = require("node:fs");
+const { basename, join } = require("node:path");
 const tool = basename(process.argv[1]), args = process.argv.slice(2), env = process.env;
 const bodyIndex = args.indexOf("--body-file");
 const bodyField = args.find(arg => arg.startsWith("body=@"));
@@ -24,7 +25,15 @@ if (env.FAKE_FAIL === action) {
   if (tool === "fake-kit") console.log("RESULT: fail child failure");
   process.exit(1);
 }
-if (tool === "fake-kit") console.log("RESULT: ok " + args[0] + " done");
+if (tool === "fake-kit" && action === "review") {
+  const folder = join(env.KIT_MAIN_ROOT, ".scratch/reviews", env.ASE_OWNER, "fresh");
+  mkdirSync(folder, { recursive: true });
+  if (!env.FAKE_REVIEW_MISSING) writeFileSync(join(folder, "result.md"), env.FAKE_REVIEW || ${JSON.stringify(cleanReview)});
+  const { execFileSync } = require("node:child_process");
+  const git = (...argv) => execFileSync("git", argv, { encoding: "utf8" }).trim();
+  writeFileSync(join(folder, "refs.txt"), git("rev-parse", "HEAD") + "\\n" + git("merge-base", "origin/dev", "HEAD") + "\\n");
+  console.log("RESULT: ok review git diff base...HEAD evidence " + folder);
+} else if (tool === "fake-kit") console.log("RESULT: ok " + args[0] + " done");
 else if (tool === "gh") {
   if (action === "pr-list") console.log(env.FAKE_EXISTING ? '[{"number":73}]' : "[]");
   else if (action === "pr-create") console.log(env.FAKE_BAD_URL ? "no URL" : "https://github.com/test/repo/pull/73");
@@ -118,15 +127,24 @@ function fixture(t: TestContext, changes?: Record<string, string>) {
     gitAt(path, "config", "user.name", "Peer"); gitAt(path, "config", "user.email", "peer@example.com");
     return path;
   };
-  return { dir, root, main, origin, env, git, gitAt, head, commit, run, calls, ghCalls, apiCalls, body, logDir, peer };
+  const saveReview = (report: string, owner = env.ASE_OWNER!) => {
+    const folder = join(main, ".scratch/reviews", owner, "20261019T100000Z");
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "refs.txt"), `${git("rev-parse", "HEAD")}\n${git("merge-base", "origin/dev", "HEAD")}\n`);
+    const path = join(folder, "result.md");
+    writeFileSync(path, report);
+    return path;
+  };
+  return { dir, root, main, origin, env, git, gitAt, head, commit, run, calls, ghCalls, apiCalls, body, logDir, peer, saveReview };
 }
 
 test("help and argument errors, including the kit front door", t => {
   const f = fixture(t);
   for (const arg of ["--help", "-h"]) {
-    const result = f.run([arg]); assert.equal(result.status, 0); assert.match(result.stdout, /Usage: kit pr/); assert.doesNotMatch(result.stdout, /RESULT:/);
+    const result = f.run([arg]); assert.equal(result.status, 0); assert.match(result.stdout, /Usage: kit pr/); assert.match(result.stdout, /--waive/); assert.doesNotMatch(result.stdout, /RESULT:/);
   }
-  for (const args of [["--wat"], ["--base"], ["--title"], ["--ticket", "--no-merge"], ["--base", "dev", "--base", "main"]]) {
+  for (const args of [["--wat"], ["--base"], ["--title"], ["--ticket", "--no-merge"], ["--base", "dev", "--base", "main"],
+    ["--waive"], ["--waive", " "], ["--waive", "reason", "--waive", "again"]]) {
     const result = f.run(args, {}, true); assert.equal(result.status, 2); assert.match(result.stderr, /Usage:/); assert.match(result.stdout, /RESULT: fail invalid arguments: /);
   }
   assert.deepEqual(f.calls(), []);
@@ -218,7 +236,7 @@ test("release into main opens but never waits or merges", t => {
 test("newest complete saved review of the whole PR is posted; incomplete, partial-scope and mismatched ones are skipped", t => {
   const f = fixture(t), parent = join(f.main, ".scratch/reviews/ak-14");
   const base = f.git("merge-base", "origin/dev", "HEAD"), parentCommit = f.git("rev-parse", "HEAD~1");
-  const complete = (text: string) => `REVIEW_STATUS: complete\n${text}`;
+  const complete = (text: string) => `${cleanReview}Optional note: ${text}`;
   for (const [name, head, reviewedBase, report] of [["20261016T100000Z", f.head, base, complete("old")], ["20261016T110000Z", f.head, base, complete("chosen")],
     ["20261016T120000Z", "wrong-head", base, complete("wrong")], ["20261016T130000Z", f.head, base, ""],
     ["20261016T140000Z", f.head, base, "REVIEW_STATUS: incomplete\nhalf a report"], ["20261016T150000Z", f.head, parentCommit, complete("one commit only")]]) {
@@ -249,6 +267,120 @@ test("a saved review for another HEAD triggers kit review --pr", t => {
   const result = f.run(["--no-merge"]); assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(f.calls().find(call => call.tool === "fake-kit" && call.args[0] === "review")?.args, ["review", "--base", "origin/dev", "--pr", "73"]);
   assert.equal(f.ghCalls("comment").length, 0);
+});
+
+test("saved and fresh reviews stop on findings before CI or merge, capped at 15 and 160 characters", t => {
+  const long = "A".repeat(170);
+  const report = `REVIEW_STATUS: complete\nDefects:\nSpec:\n- ${long}\n  More evidence on another line.\n${Array.from({ length: 15 }, (_, i) => `- Defect ${i + 2}.`).join("\n")}\nStandards: none.\nValidation gaps:\n- Missing coverage.\nOptional nits:\n- Rename a variable.\n`;
+  for (const source of ["saved", "fresh"]) {
+    const f = fixture(t);
+    const path = source === "saved" ? f.saveReview(report) : join(f.main, ".scratch/reviews/ak-14/fresh/result.md");
+    const result = f.run([], { FAKE_REVIEW: report });
+    assert.equal(result.status, 1, result.stderr);
+    assert.equal(result.stdout.trimEnd().split("\n").at(-1), `RESULT: fail pr #73 review has 17 open findings (${path})`);
+    assert.ok(result.stdout.includes(`Spec: ${"A".repeat(160)}\n`), result.stdout);
+    assert.doesNotMatch(result.stdout, /A{161}/);
+    for (let i = 2; i <= 15; i++) assert.ok(result.stdout.includes(`Spec: Defect ${i}.\n`));
+    assert.doesNotMatch(result.stdout, /Spec: Defect 16\.|Validation gaps: Missing coverage|Rename a variable|review: ok/);
+    assert.match(result.stdout, /^… and 2 more$/m);
+    assert.equal(f.ghCalls("merge").length, 0);
+    assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "wait"), false);
+    assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "review"), source === "fresh");
+    if (source === "saved") assert.ok(f.ghCalls("comment")[0].body?.includes(report));
+  }
+});
+
+test("saved and fresh clean reviews still wait for CI and merge", t => {
+  for (const source of ["saved", "fresh"]) {
+    const f = fixture(t);
+    if (source === "saved") f.saveReview(cleanReview);
+    const result = f.run();
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /review: ok\n/);
+    assert.match(result.stdout, /RESULT: ok merged #73/);
+    assert.equal(f.ghCalls("merge").length, 1);
+    assert.ok(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "wait"));
+    assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "review"), source === "fresh");
+  }
+});
+
+test("a rerun after fixing findings in a new commit reviews the new HEAD and merges", t => {
+  const f = fixture(t);
+  const path = f.saveReview("REVIEW_STATUS: complete\nDefects:\nSpec:\n- Fix the defect.\nValidation gaps: none.\nOptional nits: none.\n");
+  const stopped = f.run();
+  assert.equal(stopped.status, 1, stopped.stderr);
+  assert.ok(stopped.stdout.includes(`RESULT: fail pr #73 review has 1 open findings (${path})`));
+  const head = f.commit("Fix the defect");
+  const result = f.run([], { FAKE_EXISTING: "1" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /RESULT: ok merged #73/);
+  assert.equal(f.calls().filter(call => call.tool === "fake-kit" && call.args[0] === "review").length, 1);
+  assert.equal(f.ghCalls("merge").length, 1);
+  assert.ok(f.ghCalls("merge")[0].args.includes(head));
+  assert.equal(f.gitAt(f.origin, "rev-parse", "refs/heads/feature/kit-pr"), head);
+});
+
+test("unreadable or missing review evidence stops with one finding", t => {
+  for (const source of ["saved", "fresh", "missing"]) {
+    const f = fixture(t), report = "REVIEW_STATUS: complete\nNo structured report.\n";
+    const path = source === "saved" ? f.saveReview(report) : join(f.main, ".scratch/reviews/ak-14/fresh/result.md");
+    const result = f.run([], { FAKE_REVIEW: report, FAKE_REVIEW_MISSING: source === "missing" ? "1" : "" });
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stdout, /^Review: review format unreadable$/m);
+    assert.ok(result.stdout.includes(`RESULT: fail pr #73 review has 1 open findings (${path})`));
+    assert.equal(f.ghCalls("merge").length, 0);
+    assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "wait"), false);
+  }
+});
+
+test("lead waiver merges saved or fresh findings, comments and patches the body with the reason", t => {
+  const report = "REVIEW_STATUS: complete\nDefects:\n- Spec: A defect.\n- Standards: none.\nValidation gaps: Add coverage.\nOptional nits: Rename a variable.\n";
+  for (const source of ["saved", "fresh"]) {
+    const f = fixture(t);
+    if (source === "saved") f.saveReview(report, "ke-lead");
+    const reason = 'Accepted for follow-up: "ticket 02".';
+    const result = f.run(["--waive", reason], { ASE_OWNER: "ke-lead", FAKE_REVIEW: report, FAKE_EXISTING: "1" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /RESULT: ok merged #73/);
+    assert.equal(f.ghCalls("merge").length, 1);
+    assert.ok(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "wait"));
+    assert.equal(f.ghCalls("comment").at(-1)?.body, `Merged with 2 waived findings: ${reason}`);
+    const patches = f.apiCalls().filter(call => call.args[1] === "--method");
+    assert.equal(patches.length, 2);
+    assert.deepEqual(patches[1].args.slice(0, 5), ["api", "--method", "PATCH", "repos/{owner}/{repo}/pulls/73", "-F"]);
+    assert.match(patches[1].args[5], /^body=@/);
+    assert.equal(patches[1].body, `${patches[0].body}\nmerged with 2 waived findings: ${reason}\n`);
+  }
+});
+
+test("waiver is refused for non-leads before any child call, including docs tier", t => {
+  for (const changes of [undefined, { "docs/guide.md": "# Guide\n" }]) {
+    const f = fixture(t, changes);
+    const result = f.run(["--waive", "Accept the findings"], {}, true);
+    assert.equal(result.status, 2);
+    assert.match(result.stdout, /RESULT: fail invalid arguments: --waive requires a \*-lead owner/);
+    assert.deepEqual(f.calls(), []);
+  }
+});
+
+test("waiver uses kitOwner's worktree fallback", t => {
+  const f = fixture(t);
+  mkdirSync(join(f.root, ".scratch"), { recursive: true });
+  writeFileSync(join(f.root, ".scratch/owner"), "2026-10-19T10:00:00Z ke-lead feature/kit-pr origin/dev\n");
+  const result = f.run(["--waive", "Follow up later"], { ASE_OWNER: "", FAKE_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: A defect.\n" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(f.ghCalls("comment").at(-1)?.body, "Merged with 1 waived findings: Follow up later");
+});
+
+test("waiver does not claim a merge for no-merge, release, clean reviews or failed CI", t => {
+  for (const mode of ["no-merge", "release", "clean", "ci-failure"]) {
+    const f = fixture(t);
+    const args = ["--waive", "Follow up later", ...(mode === "no-merge" ? ["--no-merge"] : mode === "release" ? ["--release", "--base", "main"] : [])];
+    const result = f.run(args, { ASE_OWNER: "ke-lead", FAKE_REVIEW: mode === "clean" ? cleanReview : "REVIEW_STATUS: complete\nDefects:\n- Spec: A defect.\n", FAKE_FAIL: mode === "ci-failure" ? "wait" : "" });
+    assert.equal(result.status, mode === "ci-failure" ? 1 : 0, result.stderr);
+    assert.equal(f.ghCalls("comment").length, 0);
+    assert.equal(f.apiCalls().some(call => call.body?.includes("waived findings")), false);
+  }
 });
 
 test("no queue waits for CI then merges with --repo, preserving the local branch", t => {
