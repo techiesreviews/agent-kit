@@ -8,9 +8,9 @@ for arg in "$@"; do
   if [[ $arg == --help || $arg == -h ]]; then
     "$KIT_NODE" --import tsx "$(kit_root)/scripts/agents/shots/cli.ts" --help
     cat <<'HELP'
-Compare: kit shots <screen...>|--steps file --compare <ref> [--width] [--theme] [--out]
+Compare: kit shots <screen...>|--steps file --compare <ref> [--width] [--theme] [--out] [--files]
 Captures the ref (origin/<ref> when available) before the current checkout,
-then pairs before/after shots in the contact sheet.
+then pairs before/after shots in bounded contact sheets, printed first.
 Base worktrees: <kitMainRoot>/.scratch/shots-base/<sha>/ (newest 3 retained).
 Base cache: <baseDir>/.scratch/kit-shots-cache/<key>/, reused per screen/steps/width/theme.
 Compare names shots before/after and overrides a steps file's name.
