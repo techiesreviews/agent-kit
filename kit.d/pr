@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // kit: open a PR into dev, attach the review, merge when checks pass
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterFixRounds, blockingFindings, completedFixRounds, FIX_ROUNDS, openFindings, reviewCoversHead, sameReviewPatch } from "../review-findings.mjs";
 
-const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv } = await import(
+const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv, commitBuilderWork } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const { checkSteps, classify, focusedUnitFiles, parseChanges } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
@@ -242,9 +242,11 @@ async function main(args) {
         await gh("follow-ups", ["pr", "comment", number, "--body-file", comment]);
       }
       if (!flags.ticket) return;
-      if (await git("follow-ups", ["branch", "--show-current"]) !== branch ||
-          await git("follow-ups", ["rev-parse", "HEAD"]) !== reviewedHead ||
-          await git("follow-ups", ["status", "--porcelain"])) throw new Error("worktree changed before recording follow-ups");
+      const current = args => execFileSync("git", ["-C", root, ...args],
+        { cwd: root, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+      // Recheck the captured proof after network awaits, immediately before writing.
+      if (current(["branch", "--show-current"]) !== branch || current(["rev-parse", "HEAD"]) !== reviewedHead ||
+          current(["status", "--porcelain"])) throw new Error("worktree changed before recording follow-ups");
       const file = resolve(root, flags.ticket), original = readFileSync(file, "utf8");
       const sections = [...original.matchAll(/^## Done\b[^\n]*\n/gm)];
       const start = sections.at(-1)?.index;
@@ -264,9 +266,9 @@ async function main(args) {
       const updated = prefix + done + rest.slice(doneEnd);
       if (updated === original) return;
       writeFileSync(file, updated);
-      await git("follow-ups", ["add", "--", flags.ticket]);
-      await git("follow-ups", ["commit", "--only", "-m", `docs: ${basename(flags.ticket, ".md")} follow-ups from review`, "--", flags.ticket]);
-      head = await git("follow-ups", ["rev-parse", "HEAD"]);
+      // Hooks run on a detached HEAD; publication targets only this branch and old SHA.
+      head = commitBuilderWork({ root, branch, head: reviewedHead,
+        message: `docs: ${basename(flags.ticket, ".md")} follow-ups from review`, author: "Agent Kit <noreply@openai.com>", env });
       if (!reviewCoversHead(reviewedHead, head, flags.ticket, root)) throw new Error("follow-ups commit changed review coverage");
       await push();
     }

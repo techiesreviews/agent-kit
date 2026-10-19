@@ -566,3 +566,21 @@ test("no-pr after three rounds reports its non-blocking follow-ups", t => {
   assert.match(result.stdout, /RESULT: ok slice .* reviewed with follow-ups/);
   assert.equal(f.calls().some(call => call.phase === "pr"), false);
 });
+
+test("ticket-only work after landing reuses review but lands the new HEAD", t => {
+  const f = fixture(t);
+  const options = { CLEAN_AT: "99", MINOR_REVIEW: "1", ADD_FOLLOWUPS: "1" };
+  const landed = f.run([], options);
+  assert.equal(landed.status, 0, landed.stdout + landed.stderr);
+  assert.ok(f.state().finished.includes("pr"));
+  const calls = f.calls(), reviewed = f.state().review;
+  writeFileSync(join(f.root, f.ticket), readFileSync(join(f.root, f.ticket), "utf8") + "\nAdditional ticket evidence.\n");
+  f.git("add", "--", f.ticket); f.git("commit", "-m", "Document additional evidence");
+  const head = f.git("rev-parse", "HEAD");
+  const resumed = f.run([], options);
+  assert.equal(resumed.status, 0, resumed.stdout + resumed.stderr);
+  assert.equal(f.state().review, reviewed);
+  for (const phase of ["build", "review", "fix"]) assert.equal(f.calls().filter(call => call.phase === phase).length, calls.filter(call => call.phase === phase).length);
+  assert.equal(f.calls().filter(call => call.phase === "pr").length, 2);
+  assert.ok(resumed.stdout.endsWith(`RESULT: ok slice ${f.ticket} PR #42 ${head}\n`));
+});

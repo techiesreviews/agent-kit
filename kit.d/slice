@@ -148,8 +148,10 @@ async function slice(args) {
     const kit = env.ASE_SLICE_KIT || resolve(import.meta.dirname, "../kit");
     const agent = env.ASE_SLICE_AGENT || resolve(import.meta.dirname, "../agent.sh");
     const pendingFix = () => state.pendingFix && existsSync(join(root, ".scratch/kit-fix", encodeURIComponent(branch), "pending.json"));
-    // Only ticket changes preserve review and landing when HEAD moves.
+    // Ticket-only changes preserve review and fixes; landing must cover the new HEAD.
     if (!state.queued && !pendingFix() && state.finished.includes("commit") && state.head !== git("rev-parse", "HEAD")) {
+      state.finished = state.finished.filter(name => name !== "pr");
+      delete state.sha;
       let covering = false;
       try { covering = reviewEvidence(state.review) === state.review; } catch { /* Re-review other changes. */ }
       if (!covering) {

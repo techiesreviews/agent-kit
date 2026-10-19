@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { checkSteps, classify, focusedUnitFiles, parseChanges } from "../scripts/agents/pr-tier.mjs";
 import { sameReviewPatch } from "../scripts/agents/review-findings.mjs";
+import { forEachAwait } from "./support/await-race.ts";
 
 const pr = resolve("scripts/agents/kit.d/pr");
 const kit = resolve("scripts/agents/kit");
@@ -79,7 +80,16 @@ else if (tool === "gh") {
 // Default branch: two commits to feature.txt (full tier). `changes` replaces them with one commit of these files.
 function fixture(t: TestContext, changes?: Record<string, string>) {
   const dir = mkdtempSync(join(tmpdir(), "kit-pr-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const children: ChildProcess[] = [], releases: string[] = [];
+  t.after(async () => {
+    for (const release of releases) writeFileSync(release, "cleanup");
+    await Promise.all(children.map(child => {
+      if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+      child.kill("SIGTERM");
+      return new Promise<void>(accept => child.once("close", () => accept()));
+    }));
+    rmSync(dir, { recursive: true, force: true });
+  });
   const origin = join(dir, "origin.git"), root = join(dir, "work"), main = join(dir, "main"), bin = join(dir, "bin");
   mkdirSync(bin); mkdirSync(main);
   for (const name of ["npm", "gh", "fake-kit", "fake.cjs"]) { writeFileSync(join(bin, name), fake); chmodSync(join(bin, name), 0o755); }
@@ -131,6 +141,17 @@ function fixture(t: TestContext, changes?: Record<string, string>) {
     }
     return result;
   };
+  const start = (overrides: NodeJS.ProcessEnv) => {
+    if (overrides.FAKE_HOLD_RELEASE) releases.push(overrides.FAKE_HOLD_RELEASE);
+    const child = spawn(pr, ["--ticket", "ticket.md"], { cwd: root, env: { ...env, ...overrides }, stdio: ["ignore", "pipe", "pipe"], timeout: 20_000 });
+    children.push(child);
+    let stdout = "", stderr = "";
+    child.stdout.setEncoding("utf8").on("data", chunk => { stdout += chunk; });
+    child.stderr.setEncoding("utf8").on("data", chunk => { stderr += chunk; });
+    return new Promise<{ status: number | null; stdout: string; stderr: string }>((accept, reject) => {
+      child.once("error", reject); child.once("close", status => accept({ status, stdout, stderr }));
+    });
+  };
   const calls = (): Call[] => existsSync(env.FAKE_CALLS!) ? readFileSync(env.FAKE_CALLS!, "utf8").trim().split("\n").map(line => JSON.parse(line)) : [];
   const ghCalls = (verb: string) => calls().filter(call => call.tool === "gh" && call.args[0] === "pr" && call.args[1] === verb);
   const apiCalls = () => calls().filter(call => call.tool === "gh" && call.args[0] === "api");
@@ -155,7 +176,7 @@ function fixture(t: TestContext, changes?: Record<string, string>) {
     for (let i = 1; i <= count; i++) writeFileSync(join(folder, `round-${i}.md`), "fix brief");
     if (pending) writeFileSync(join(folder, "pending.json"), JSON.stringify({ round: pending }));
   };
-  return { dir, root, main, origin, env, git, gitAt, head, commit, run, calls, ghCalls, apiCalls, body, logDir, peer, saveReview, rounds };
+  return { dir, root, main, origin, bin, env, git, gitAt, head, commit, run, start, calls, ghCalls, apiCalls, body, logDir, peer, saveReview, rounds };
 }
 
 test("help and argument errors, including the kit front door", t => {
@@ -765,3 +786,74 @@ test("follow-ups extend an existing subsection without duplicating existing line
   assert.equal(ticket.split("- Spec (P2): P2: Minor defect.").length, 2);
   assert.match(ticket, /- Validation gaps \(gap\): Add coverage.\n\n### Evidence/);
 });
+
+async function waitForFile(path: string) {
+  const deadline = Date.now() + 10_000;
+  while (!existsSync(path)) {
+    assert.ok(Date.now() < deadline, `deadline waiting for ${path}`);
+    await new Promise(accept => setTimeout(accept, 10));
+  }
+}
+
+for (const phase of ["stage-before", "stage-after", "pre-commit"]) for (const change of ["branch", "HEAD"])
+  test(`follow-up publication refuses ${change} changes during ${phase}`, async t => {
+    const count = await forEachAwait(race => {
+      const f = fixture(t);
+      f.rounds(3); f.saveReview(minorReview);
+      f.git("branch", "other-branch");
+      const ready = join(f.dir, "ready"), release = join(f.dir, "release");
+      const realGit = spawnSync("bash", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+      const hold = `
+const { existsSync, writeFileSync } = require("node:fs");
+async function hold() {
+  writeFileSync(process.env.FAKE_HOLD_READY, "ready");
+  await new Promise(accept => {
+    const timer = setInterval(() => { if (existsSync(process.env.FAKE_HOLD_RELEASE)) { clearInterval(timer); accept(); } }, 10);
+  });
+}
+`;
+      if (phase === "pre-commit") {
+        const hooks = join(f.root, ".git/test-hooks"); mkdirSync(hooks);
+        f.git("config", "core.hooksPath", hooks);
+        const hook = join(hooks, "pre-commit");
+        writeFileSync(hook, `#!/usr/bin/env node\n${hold}\nhold();\n`); chmodSync(hook, 0o755);
+      } else {
+        const wrapper = join(f.bin, "git");
+        writeFileSync(wrapper, `#!/usr/bin/env node
+${hold}
+const { spawnSync } = require("node:child_process");
+const args = process.argv.slice(2);
+const staging = args.includes("add");
+(async () => {
+  if (staging && process.env.FAKE_HOLD_PHASE === "stage-before") await hold();
+  const result = spawnSync(${JSON.stringify(realGit)}, args, { stdio: "inherit" });
+  if (staging && process.env.FAKE_HOLD_PHASE === "stage-after") await hold();
+  process.exitCode = result.status ?? 1;
+})();
+`); chmodSync(wrapper, 0o755);
+      }
+      const result = f.start({ FAKE_HOLD_PHASE: phase, FAKE_HOLD_READY: ready, FAKE_HOLD_RELEASE: release });
+      return { f, ready, realGit, done: (async () => {
+        await race.port(phase, () => waitForFile(ready))();
+        writeFileSync(release, "go");
+        return result;
+      })() };
+    }, async ({ f, ready, realGit }) => {
+      await waitForFile(ready);
+      // These concurrent user actions must bypass the deliberately held Git wrapper/hook.
+      const args = change === "branch" ? ["switch", "other-branch"] : ["-c", "core.hooksPath=/dev/null", "commit", "--allow-empty", "-m", "Concurrent HEAD"];
+      const result = spawnSync(realGit, ["-C", f.root, ...args], { env: f.env, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+    }, async ({ f, done }) => {
+      const result = await done;
+      assert.equal(result.status, 1, result.stdout + result.stderr);
+      assert.match(result.stdout, /RESULT: fail follow-ups: worktree branch or HEAD changed during commit/);
+      assert.equal(f.git("rev-parse", "refs/heads/other-branch"), f.head);
+      assert.equal(f.git("log", "-1", "--format=%s"), change === "HEAD" ? "Concurrent HEAD" : "Second change");
+      assert.equal(f.git("rev-parse", "refs/heads/feature/kit-pr"), change === "HEAD" ? f.git("rev-parse", "HEAD") : f.head);
+      assert.equal(f.gitAt(f.origin, "rev-parse", "refs/heads/feature/kit-pr"), f.head, "never push after a stale follow-up commit");
+      assert.equal(f.ghCalls("merge").length, 0);
+      assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "wait"), false);
+    });
+    assert.equal(count, 1);
+  });
