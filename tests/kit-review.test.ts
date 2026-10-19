@@ -7,7 +7,7 @@ import test from "node:test";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
 import { codexReviewConfig, makeCodexReviewHome } from "../scripts/agents/agent-run.mjs";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
-import { reviewBrief, reviewFormat } from "../scripts/agents/review-brief.mjs";
+import { reviewBrief, reviewFormat, ticketReviewBrief } from "../scripts/agents/review-brief.mjs";
 
 const kit = resolve("scripts/agents/kit");
 const review = resolve("scripts/agents/kit.d/review");
@@ -150,6 +150,21 @@ test("kit review defaults to origin/dev and omits ticket sources when no ticket 
   assert.ok(f.calls()[0].input.includes(`Scope: git diff ${f.commits[0]}...HEAD`));
   assert.match(f.calls()[0].input, /Spec axis: no ticket supplied/);
   assert.equal(readFileSync(join(f.evidence(result.stdout), "refs.txt"), "utf8"), `${f.commits[2]}\n${f.commits[0]}\n`);
+});
+
+test("review briefs carry declined findings and reasons into kit review", t => {
+  const f = fixture(t);
+  const declined = ["file.txt:1 — reject deletion: the spec requires this line."];
+  const ticket = "ticket.md"; writeFileSync(join(f.root, ticket), "Review this ticket.\n");
+  for (const brief of [reviewBrief(ticket, "", "HEAD^", f.root, declined), ticketReviewBrief(ticket, "HEAD^", f.root, declined)]) {
+    assert.ok(brief.includes(`Declined by the author (with reasons):\n- ${declined[0]}`));
+    assert.match(brief, /Report a declined finding again only if the reason is wrong, and say why\./);
+  }
+  assert.doesNotMatch(reviewBrief(ticket, "", "HEAD^", f.root), /Declined by the author/);
+  const result = f.run(["--ticket", ticket], { ASE_REVIEW_DECLINED: JSON.stringify(declined) });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(f.calls()[0].input.includes(declined[0]));
+  assert.throws(() => reviewBrief(ticket, "", "HEAD^", f.root, "bad list"), /declined findings/);
 });
 
 test("single-commit scope reviews that commit even when it is not HEAD; brief scope parses without flags", (t) => {

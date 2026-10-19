@@ -27,10 +27,13 @@ export function reviewBase(brief, explicit, worktree = process.cwd()) {
 }
 
 export function parseAgentArgs(args, env = {}) {
-  if (args[0] === "--resume" && args.length === 2 && args[1] && !args[1].startsWith("--")) return { resume: resolve(args[1]) };
+  if (args[0] === "--resume" && args[1] && !args[1].startsWith("--") &&
+      (args.length === 2 || (args.length === 4 && args[2] === "--brief" && args[3] && !args[3].startsWith("--")))) {
+    return { resume: resolve(args[1]), ...(args.length === 4 ? { resumeBrief: resolve(args[3]) } : {}) };
+  }
   const [kind, worktree, brief, ...flags] = args;
   if (!["build", "review"].includes(kind) || !worktree || !brief) {
-    throw new Error("Usage: agent.sh build|review <worktree> <brief> [--model M] [--cli codex|claude] [--effort E] [--base REF | --commit SHA] [--out DIR]; agent.sh --resume <out-dir>");
+    throw new Error("Usage: agent.sh build|review <worktree> <brief> [--model M] [--cli codex|claude] [--effort E] [--base REF | --commit SHA] [--out DIR]; agent.sh --resume <out-dir> [--brief FILE]");
   }
   const options = { kind, worktree, brief, model: env[kind === "build" ? "ASE_BUILD_MODEL" : "ASE_REVIEW_MODEL"] || "gpt-6.1-sol", effort: "medium" };
   let cli = env.ASE_AGENT_CLI || "";
@@ -264,7 +267,9 @@ async function followGeneration(out, path, generation, holder, interval) {
   }
 }
 
-async function resumeRun(out) {
+async function resumeRun(out, brief) {
+  // Validate before claiming a generation or changing the saved run's status.
+  const resumePrompt = brief === undefined ? undefined : readFileSync(brief, "utf8");
   const path = join(out, "status.json");
   const interval = Number(process.env.ASE_RESUME_POLL_MS || 2000);
   if (!Number.isSafeInteger(interval) || interval <= 0) throw new Error("ASE_RESUME_POLL_MS must be a positive integer");
@@ -276,12 +281,12 @@ async function resumeRun(out) {
       while (liveRunner(pid)) await pause(interval);
       previous = readStatus(path);
       if (previous.pid !== pid) continue;
-      if (previous.state !== "running") {
+      if (previous.state !== "running" && brief === undefined) {
         printReport(out);
         return previous.exitCode ?? 1;
       }
     }
-    if (previous.state === "done") { printReport(out); return 0; }
+    if (previous.state === "done" && brief === undefined) { printReport(out); return 0; }
     if (!previous.session) {
       print(process.stderr, `problem: no session id recorded in ${path}; rerun instead\n`);
       return 1;
@@ -301,6 +306,10 @@ async function resumeRun(out) {
       "--model", previous.model, "--cli", previous.cli, "--effort", previous.effort,
       ...(previous.base === undefined ? [] : ["--base", previous.base]),
       ...(previous.commit === undefined ? [] : ["--commit", previous.commit]), "--out", out]);
+    if (brief !== undefined) {
+      options.brief = brief;
+      options.resumePrompt = resumePrompt;
+    }
     return startRun(options, previous);
   }
 }
@@ -386,7 +395,7 @@ async function executeRun(options, out, previous, update) {
   const limit = process.env.ASE_AGENT_TIMEOUT || process.env.SOL_TIMEOUT || "90m";
   durationMilliseconds(limit);
   const common = execFileSync("git", ["-C", options.worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim();
-  const prepared = previous ? { prompt: "Continue where you stopped; the brief is unchanged." }
+  const prepared = previous ? { prompt: options.resumePrompt ?? "Continue where you stopped; the brief is unchanged." }
     : preparePrompt(options, readFileSync(options.brief, "utf8"), out);
   if (prepared.problem) return { status: 1, messages: [prepared.problem] };
   const reportPath = join(out, "out.md"), logPath = join(out, "run.log"), inputPath = join(out, `brief-${process.pid}.md`);
@@ -481,7 +490,7 @@ async function startRun(options, previous) {
 
 async function run(args) {
   const options = parseAgentArgs(args, process.env);
-  return options.resume ? resumeRun(options.resume) : startRun(options);
+  return options.resume ? resumeRun(options.resume, options.resumeBrief) : startRun(options);
 }
 
 if (import.meta.main) {

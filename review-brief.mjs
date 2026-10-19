@@ -46,7 +46,10 @@ export function reviewComplete(result) {
   return lines[0] === "REVIEW_STATUS: complete";
 }
 
-export function reviewBrief(ticketPath, ticket, scope = "origin/dev", worktree = process.cwd()) {
+export function reviewBrief(ticketPath, ticket, scope = "origin/dev", worktree = process.cwd(), declined = []) {
+  if (!Array.isArray(declined) || declined.some(item => typeof item !== "string" || !item.trim())) {
+    throw new Error("declined findings must be a list of non-empty strings");
+  }
   const { label } = reviewScope("", typeof scope === "string" ? { base: scope } : scope, worktree);
   // Markdown links are relative to the ticket; repo paths in backticks are
   // rooted at the worktree. The parent map's spec is included when present.
@@ -61,10 +64,12 @@ ${sources.length ? `Spec axis: read ${sources.join(", ")}, including the linked 
 Standards axis: apply CODING_STANDARDS.md; cite the applicable rule with each defect.
 The author already ran check/test/lint and the touched specs; do not report inability to run tests.
 Report validation gaps only for missing coverage or evidence in the change, with a concrete test to add.
-`;
+${declined.length ? `\nDeclined by the author (with reasons):\n${declined.map(item => `- ${item}`).join("\n")}\nReport a declined finding again only if the reason is wrong, and say why.\n` : ""}`;
 }
 
-export function ticketReviewBrief(path, scope = "origin/dev", worktree = process.cwd()) {
+// kit fix passes the list through the child environment so kit review needs no
+// additional flags and its ordinary evidence/permission handling stays shared.
+export function ticketReviewBrief(path, scope = "origin/dev", worktree = process.cwd(), declined = JSON.parse(process.env.ASE_REVIEW_DECLINED || "[]")) {
   const absolute = resolve(worktree, path);
   let ticket = readFileSync(absolute, "utf8");
   // Build-map tickets often omit a link to their sibling ../spec.md.
@@ -72,7 +77,7 @@ export function ticketReviewBrief(path, scope = "origin/dev", worktree = process
   try { readFileSync(spec); ticket += "\n[Map spec](../spec.md)\n"; } catch (error) {
     if (error.code !== "ENOENT") throw error;
   }
-  return reviewBrief(path, ticket, scope, worktree);
+  return reviewBrief(path, ticket, scope, worktree, declined);
 }
 
 if (import.meta.main) {

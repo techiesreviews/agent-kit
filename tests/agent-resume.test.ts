@@ -216,6 +216,58 @@ for (const cli of ["codex", "claude"]) test(`dead ${cli} build resumes with save
   assert.ok(result.stdout.includes(report));
 });
 
+for (const cli of ["codex", "claude"]) for (const state of ["done", "failed"]) {
+  test(`${cli} ${state} run resumes with a new brief and recorded options`, async t => {
+    const f = fixture(t);
+    const model = cli === "codex" ? "gpt-6.1-sol" : "claude-opus-5-5";
+    f.seed({ cli, model, state, exitCode: state === "done" ? 0 : 7 });
+    const brief = join(f.dir, "fix brief.md"), input = "Fix the review defect.\nDecline false findings with reasons.\n";
+    writeFileSync(brief, input);
+    const result = await f.start(["--resume", f.out, "--brief", brief], {
+      ASE_BUILD_MODEL: "ignored-model", ASE_AGENT_CLI: "ignored-cli",
+    }, true).done;
+    assert.equal(result.code, 0, result.stderr);
+    const [call] = f.calls();
+    assert.equal(f.calls().length, 1); assert.equal(call.input, input); assert.equal(call.cli, cli);
+    assert.equal(call.cwd, f.root);
+    assert.ok(call.args.includes(session));
+    assert.equal(call.args[call.args.indexOf(cli === "codex" ? "-m" : "--model") + 1], model);
+    assert.ok(cli === "codex" ? call.args.includes("model_reasoning_effort=high") : call.args[call.args.indexOf("--effort") + 1] === "high");
+    assert.equal(readFileSync(join(f.out, "out.md"), "utf8"), "old report\n" + report);
+    assert.match(readFileSync(join(f.out, "run.log"), "utf8"), /^old log\n\n--- resume /);
+    assert.equal(f.status().resumes, 1); assert.equal(f.status().state, "done");
+    assert.equal(f.status().model, model); assert.equal(f.status().effort, "high"); assert.equal(f.status().brief, brief);
+  });
+}
+
+test("resume with a brief waits for the live run before starting its continuation", async t => {
+  const f = fixture(t);
+  const original = f.fresh("codex", { FAKE_HOLD: f.hold });
+  const running = await f.running();
+  const brief = join(f.dir, "fix.md"); writeFileSync(brief, "Fix after the live build.\n");
+  const resumed = f.start(["--resume", f.out, "--brief", brief]);
+  await until(() => resumed.stdout().includes(`waiting: pid ${running.pid}`), "brief resume waiting");
+  assert.equal(f.calls().length, 1);
+  writeFileSync(f.hold, "go");
+  assert.equal((await original.done).code, 0);
+  const result = await resumed.done;
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(f.calls().length, 2); assert.equal(f.calls()[1].input, "Fix after the live build.\n");
+  assert.equal(f.status().resumes, 1);
+  assert.equal(readFileSync(join(f.out, "out.md"), "utf8"), report + report);
+});
+
+test("resume accepts exactly the two documented argument forms", async t => {
+  const f = fixture(t); f.seed();
+  for (const args of [["extra"], ["--brief"], ["--brief", "--model"], ["--brief", f.brief, "extra"],
+    ["--brief", f.brief, "--brief", f.brief], ["--model", "other"]]) {
+    const result = await f.start(["--resume", f.out, ...args]).done;
+    assert.equal(result.code, 2, result.stderr);
+  }
+  const missing = await f.start(["--resume", f.out, "--brief", join(f.dir, "missing.md")]).done;
+  assert.equal(missing.code, 2); assert.equal(f.status().resumes, 0); assert.equal(f.calls().length, 0);
+});
+
 test("resume checks the model using only new log output", async t => {
   const f = fixture(t);
   f.seed();

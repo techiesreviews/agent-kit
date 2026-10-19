@@ -1,0 +1,156 @@
+#!/usr/bin/env node
+// kit: send open review findings back to the original builder
+import { execFileSync, spawn } from "node:child_process";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { openFindings } from "../review-findings.mjs";
+
+const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv } = await import(
+  pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
+);
+const usage = "Usage: kit fix [--review DIR] [--run DIR] [--ticket FILE]\nResume the builder with open findings, commit its fixes, and review again.\n";
+const kit = resolve(import.meta.dirname, "../kit");
+const agent = resolve(import.meta.dirname, "../agent.sh");
+
+function options(args) {
+  const flags = {};
+  for (let i = 0; i < args.length; i += 2) {
+    const flag = args[i], value = args[i + 1];
+    if (!["--review", "--run", "--ticket"].includes(flag) || !value?.trim() || value.startsWith("-") || Object.hasOwn(flags, flag)) {
+      throw new Error(`invalid option: ${flag}`);
+    }
+    flags[flag] = value;
+  }
+  return flags;
+}
+
+function newestDirectories(parent) {
+  if (!existsSync(parent)) return [];
+  return readdirSync(parent, { withFileTypes: true }).filter(entry => entry.isDirectory())
+    .map(entry => entry.name).sort((a, b) => b.localeCompare(a, "en", { numeric: true }))
+    .map(name => join(parent, name));
+}
+
+function coveringReview(head) {
+  for (const folder of newestDirectories(join(kitMainRoot(), ".scratch/reviews", kitOwner()))) {
+    try {
+      if (readFileSync(join(folder, "refs.txt"), "utf8").split(/\r?\n/)[0] === head) return folder;
+    } catch { /* A partial folder without refs cannot cover HEAD. */ }
+  }
+}
+
+function builderRun(root, explicit) {
+  for (const folder of explicit ? [resolve(root, explicit)] : newestDirectories(join(root, ".scratch/agent"))) {
+    if (!explicit && !folder.split("/").at(-1).startsWith("build-")) continue;
+    try {
+      const status = JSON.parse(readFileSync(join(folder, "status.json"), "utf8"));
+      if (status.kind === "build" && realpathSync(status.worktree) === realpathSync(root)) return { folder, status };
+    } catch { /* Ignore incomplete or foreign builder records. */ }
+  }
+  throw new Error(explicit ? "invalid builder run for this worktree" : "no builder run found for this worktree; pass --run DIR");
+}
+
+function declinedFindings(report) {
+  const lines = report.split(/\r?\n/), declined = [];
+  let collecting = false;
+  for (const line of lines) {
+    const heading = /^\s*(?:#{1,6}\s*)?(?:\*\*)?Declined:(?:\*\*)?\s*(.*)$/i.exec(line);
+    if (heading) {
+      collecting = true;
+      if (heading[1].trim() && !/^none\b/i.test(heading[1])) declined.push(heading[1].trim());
+      continue;
+    }
+    if (!collecting) continue;
+    if (/^\s*(?:#{1,6}\s+|(?:\*\*)?[A-Z][\w ]+:)/.test(line)) break;
+    const text = line.replace(/^\s*(?:[-+*]|\d+[.)])\s+/, "").trim();
+    if (text && !/^none\b/i.test(text)) declined.push(text);
+  }
+  return declined;
+}
+
+async function fix(args) {
+  let flags;
+  try { flags = options(args); }
+  catch (error) { process.stderr.write(usage); kitResult("fail", `fix ${error.message}`); return 2; }
+  try {
+    const root = resolve(kitRoot()), env = nodeEnv();
+    const git = (...argv) => execFileSync("git", ["-C", root, ...argv], { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    const head = git("rev-parse", "HEAD");
+    const review = flags["--review"] ? resolve(root, flags["--review"]) : coveringReview(head);
+    if (!review) throw new Error("no review covers HEAD");
+    const resultPath = join(review, "result.md");
+    let original = "";
+    try { original = readFileSync(resultPath, "utf8"); } catch { /* Fail closed below. */ }
+    const { findings, readable } = openFindings(original);
+    if (!readable) throw new Error(`${findings.length} open findings (${resultPath}): review format unreadable`);
+    if (!findings.length) { kitResult("ok", "fix clean"); return 0; }
+    const builder = builderRun(root, flags["--run"]);
+    let ticket = flags["--ticket"];
+    if (!ticket) {
+      const brief = readFileSync(resolve(root, builder.status.brief), "utf8");
+      ticket = [...brief.matchAll(/(?:`|\s|^)(docs\/[^\s`]+\.md)/g)].map(match => match[1])
+        .find(path => existsSync(resolve(root, path)) && /(?:^|\/)tickets\//.test(path));
+    }
+    if (!ticket) throw new Error("no ticket found in builder brief; pass --ticket FILE");
+    readFileSync(resolve(root, ticket));
+    // A branch owns its rounds even if the worktree later switches branches.
+    const branch = git("symbolic-ref", "--short", "HEAD");
+    if (git("status", "--porcelain", "--untracked-files=normal")) throw new Error("uncommitted changes before builder resume");
+    const directory = join(root, ".scratch/kit-fix", encodeURIComponent(branch));
+    mkdirSync(directory, { recursive: true });
+    const rounds = readdirSync(directory).map(name => /^round-(\d+)\.md$/.exec(name)).filter(Boolean).map(match => Number(match[1]));
+    const round = Math.max(0, ...rounds) + 1;
+    const brief = join(directory, `round-${round}.md`);
+    writeFileSync(brief, `Ticket: ${ticket}\n\nFix real defects within the ticket's Files. For a finding you reject, list it under\n\`Declined:\` with a one-line reason.\n\nOpen findings:\n${findings.map(item => `- ${item.group}: ${item.text}`).join("\n")}\n\nReview evidence (verbatim; Optional nits are not open findings):\n${original}`, { flag: "wx" });
+
+    // Keep child reports and RESULT lines in logs; this command emits one RESULT.
+    async function execute(name, command, argv, overrides = {}) {
+      const log = join(directory, `round-${round}-${name}.log`), fd = openSync(log, "a");
+      let code;
+      try {
+        code = await new Promise((accept, reject) => {
+          const child = spawn(command, argv, { cwd: root, env: { ...env, ...overrides }, stdio: ["ignore", fd, fd] });
+          const interrupt = () => child.kill("SIGINT"), terminate = () => child.kill("SIGTERM");
+          process.once("SIGINT", interrupt); process.once("SIGTERM", terminate);
+          const clear = () => { process.removeListener("SIGINT", interrupt); process.removeListener("SIGTERM", terminate); };
+          child.once("error", error => { clear(); reject(error); });
+          child.once("close", status => { clear(); accept(status ?? 1); });
+        });
+      } finally { closeSync(fd); }
+      if (code !== 0) throw new Error(`${name} failed (${code}); see ${log}`);
+      return readFileSync(log, "utf8");
+    }
+
+    const reportPath = join(builder.folder, "out.md");
+    const previousReport = existsSync(reportPath) ? readFileSync(reportPath, "utf8") : "";
+    await execute("builder", agent, ["--resume", builder.folder, "--brief", brief]);
+    const report = readFileSync(reportPath, "utf8");
+    if (!report.startsWith(previousReport)) throw new Error("builder replaced its saved report");
+    const declined = declinedFindings(report.slice(previousReport.length));
+    const changes = git("status", "--porcelain", "--untracked-files=normal");
+    if (!changes && !declined.length) throw new Error("builder made no changes");
+    if (changes) {
+      const model = builder.status.model;
+      const author = /^gpt-6\.1-sol$/i.test(model) ? "GPT-6.1-Sol <noreply@openai.com>"
+        : /^(claude-|opus|sonnet|haiku|fable)/i.test(model) ? `${model} <noreply@anthropic.com>` : `${model} <noreply@openai.com>`;
+      await execute("stage", "git", ["add", "-A", "--", "."]);
+      await execute("commit", "git", ["commit", "-m", `Review fixes round ${round}`, "-m", `Co-Authored-By: ${author}`]);
+    }
+    const output = await execute("review", kit, ["review", "--ticket", ticket], { ASE_REVIEW_DECLINED: JSON.stringify(declined) });
+    const evidence = /^RESULT: ok review .+ evidence (.+)$/m.exec(output)?.[1];
+    if (!evidence) throw new Error("review did not name its evidence folder");
+    const reviewed = resolve(root, evidence), nextResult = join(reviewed, "result.md");
+    if (readFileSync(join(reviewed, "refs.txt"), "utf8").split(/\r?\n/)[0] !== git("rev-parse", "HEAD")) {
+      throw new Error("new review does not cover HEAD");
+    }
+    let result = "";
+    try { result = readFileSync(nextResult, "utf8"); } catch { /* Missing evidence is an open finding. */ }
+    const remaining = openFindings(result).findings.length;
+    kitResult(remaining ? "fail" : "ok", remaining ? `fix ${remaining} open findings (${nextResult})` : "fix clean");
+    return remaining ? 1 : 0;
+  } catch (error) { kitResult("fail", `fix ${error.message}`); return 1; }
+}
+
+if (process.argv.length === 3 && ["--help", "-h"].includes(process.argv[2])) process.stdout.write(usage);
+else process.exitCode = await fix(process.argv.slice(2));
