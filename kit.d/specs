@@ -5,6 +5,7 @@ import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync }
 import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { combineOutcomes, graphFile, namedSpecs, routeSpecs, selectAffected, selectionLine, SHARD_MIN_SPECS, shardCount, specGroups, summarizeRun } from "../specs-affected.mjs";
+import { specsDigest } from "../specs-digest.mjs";
 
 const { kitRoot, kitOwner, kitResult, nodeEnv } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
@@ -105,7 +106,7 @@ async function execute(root, env, run, directory, index, children) {
   let json;
   try { json = JSON.parse(readFileSync(report, "utf8")); }
   catch { /* A missing or invalid report is summarized as a failed run. */ }
-  return { report: json, log: readFileSync(log, "utf8"), exitCode };
+  return { report: json, log: readFileSync(log, "utf8"), logPath: log, exitCode };
 }
 
 async function main(args) {
@@ -146,6 +147,7 @@ async function main(args) {
     const registry = env.ASE_KNOWN_FAILURES || join(root, "tests/known-failures.json");
     const entries = JSON.parse(readFileSync(registry, "utf8"));
     const outcomes = [];
+    const digestRuns = [];
     const children = new Set();
     let signal;
     const forward = value => {
@@ -171,6 +173,7 @@ async function main(args) {
         if (sharding && run.group === "default") run = { ...run, command: [...run.command, `--output=${join(directory, `artifacts-${index}`)}`] };
         try {
           const result = await execute(root, env, run, directory, index, children);
+          digestRuns[index] = { report: result.report, logPath: result.logPath };
           return summarizeRun(run, result.report, { ...result, entries });
         } catch (error) {
           // A shard's I/O failure must not abandon its still-running siblings.
@@ -190,6 +193,10 @@ async function main(args) {
     const results = combineOutcomes(selected, outcomes);
     for (const result of results) console.log(result.line);
     const failed = results.filter(result => result.failed);
+    if (failed.length) {
+      const digest = specsDigest(digestRuns.filter(Boolean), { entries, directory });
+      if (digest) console.log(digest);
+    }
     kitResult(failed.length ? "fail" : "ok", failed.length
       ? `specs ${failed.length} of ${selected.length} failed: ${failed.map(result => basename(result.file) + (result.known ? "(known)" : "")).join(", ")}`
       : `specs ${selected.length}/${selected.length} passed`);
