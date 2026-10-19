@@ -186,11 +186,9 @@ async function wait(config) {
       } else if (kind === "job") {
         const current = kitJob(job.directory);
         if (current.pid !== job.pid || current.started !== job.started) throw new Error(`job ${target} was replaced`);
-        let code = kitJobExit(job);
-        if (code !== null) return finishJob(code, `exit ${code}`, true);
         if (!kitJobRunning(job)) {
           // Re-read after checking liveness: the wrapper may have just published exit.
-          code = kitJobExit(job);
+          const code = kitJobExit(job);
           return code !== null ? finishJob(code, `exit ${code}`, true) : finishJob(1, "died without exit status", true);
         }
         if (Date.now() >= deadline) return finishJob(124, `still running, timed out after ${options.timeout ?? "30m"}`);

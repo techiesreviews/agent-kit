@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 import test, { type TestContext } from "node:test";
 
 const kit = resolve("scripts/agents/kit");
@@ -141,6 +143,90 @@ test("bg survives its launching shell exiting and a simulated restart", async t 
   writeFileSync(join(f.root, "release"), "");
   const waited = spawnSync(kit, ["wait", "job", "survivor", "--timeout", "5s"], { env: f.env, encoding: "utf8" });
   assert.equal(waited.status, 0, waited.stdout + waited.stderr);
+});
+
+test("bg retains surviving descendants after only the wrapper is killed", async t => {
+  const f = fixture(t);
+  const sibling = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  t.after(() => sibling.kill("SIGKILL"));
+  const ready = join(f.root, "descendant");
+  const leaf = 'process.on("SIGTERM", () => {}); require("fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000);';
+  // Let the command itself exit too: only its orphaned descendant remains as useful work.
+  const parent = `const fs = require('fs'); fs.writeFileSync(process.argv[1] + '.parent', String(process.pid)); const child = require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(leaf)}, process.argv[1]], {stdio:'ignore'}); child.unref(); const timer = setInterval(() => { if (fs.existsSync(process.argv[1] + '.release')) clearInterval(timer); }, 10);`;
+  ok(f.run("orphan", "--", process.execPath, "-e", parent, ready));
+  await until(() => existsSync(ready));
+  const descendant = Number(readFileSync(ready, "utf8"));
+  const command = Number(readFileSync(`${ready}.parent`, "utf8"));
+  t.after(() => { if (live(command)) process.kill(command, "SIGKILL"); });
+  t.after(() => { if (live(descendant)) process.kill(descendant, "SIGKILL"); });
+  const directory = f.directory("orphan");
+  const pid = Number(readFileSync(join(directory, "pid"), "utf8"));
+  process.kill(pid, "SIGKILL");
+  await until(() => !live(pid));
+  assert.ok(live(descendant));
+  writeFileSync(`${ready}.release`, "");
+  await until(() => !live(command));
+  const duplicate = f.run("orphan", "--", "false");
+  assert.equal(duplicate.status, 1, duplicate.stdout);
+  assert.match(duplicate.stdout, /already running/);
+  assert.equal(Number(readFileSync(join(directory, "pid"), "utf8")), pid);
+  assert.match(f.run("--list").stdout, /orphan\trunning\t/);
+  const waiting = spawnSync(kit, ["wait", "job", "orphan", "--timeout", "0.1s"], { env: f.env, encoding: "utf8" });
+  assert.equal(waiting.status, 124, waiting.stderr + waiting.stdout);
+  assert.match(waiting.stdout, /still running/);
+  const stopped = f.run("--stop", "orphan");
+  ok(stopped);
+  assert.match(stopped.stdout, /SIGTERM, SIGKILL/);
+  await until(() => !live(descendant));
+  assert.ok(live(sibling.pid!));
+  const ended = spawnSync(kit, ["wait", "job", "orphan", "--timeout", "1s"], { env: f.env, encoding: "utf8" });
+  assert.equal(ended.status, 1, ended.stderr + ended.stdout);
+  assert.match(ended.stdout, /died without exit status/);
+  ok(f.run("orphan", "--", "true"));
+});
+
+for (const phase of ["reservation", "spawn"]) test(`bg recovers an interrupted ${phase} before pid publication under its lock`, async t => {
+  const f = fixture(t);
+  const ready = join(f.root, "reserved");
+  const preload = join(f.root, "interrupt.mjs");
+  writeFileSync(preload, `import fs from 'node:fs';
+import cp from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+const open = fs.openSync;
+fs.openSync = function(path, ...args) {
+  const fd = open.call(this, path, ...args);
+  if (process.env.KIT_TEST_PHASE === 'reservation' && String(path).endsWith('/reserved/log')) {
+    fs.writeFileSync(process.env.KIT_TEST_READY, 'ready');
+    process.kill(process.pid, 'SIGSTOP');
+  }
+  return fd;
+};
+const spawn = cp.spawn;
+cp.spawn = function(command, ...args) {
+  const child = spawn.call(this, command, ...args);
+  if (process.env.KIT_TEST_PHASE === 'spawn' && command === 'setsid') {
+    fs.writeFileSync(process.env.KIT_TEST_READY, String(child.pid));
+    process.kill(process.pid, 'SIGSTOP');
+  }
+  return child;
+};
+syncBuiltinESMExports();
+`);
+  const ran = join(f.root, "must-not-run");
+  const launcher = spawn(process.execPath, ["--import", pathToFileURL(preload).href, script, "reserved", "--", process.execPath, "-e", "require('fs').writeFileSync(process.argv[1], 'ran');", ran], {
+    env: { ...f.env, KIT_TEST_READY: ready, KIT_TEST_PHASE: phase }, stdio: "ignore",
+  });
+  t.after(() => launcher.kill("SIGKILL"));
+  const exited = once(launcher, "exit");
+  await until(() => existsSync(ready));
+  assert.equal(existsSync(join(f.directory("reserved"), "pid")), false);
+  launcher.kill("SIGKILL");
+  await exited;
+  const lock = join(f.root, ".scratch/kit-jobs/.reserved.lock");
+  await until(() => spawnSync("flock", ["--nonblock", lock, "true"]).status === 0);
+  if (phase === "spawn") await until(() => !live(Number(readFileSync(ready, "utf8"))));
+  assert.equal(existsSync(ran), false, "an unrecorded child must not run after its launcher dies");
+  ok(f.run("reserved", "--", "true"));
 });
 
 test("bg concurrent starts reserve a name once", async t => {

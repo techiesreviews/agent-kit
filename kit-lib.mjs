@@ -136,8 +136,30 @@ export function kitJob(directory) {
 }
 
 export function kitJobRunning(job) {
-  const current = kitJobProcess(job.pid);
-  return !!current && current.pgid === job.pgid && current.session === job.pgid && current.started === job.started;
+  return kitJobMembers(job).length > 0;
+}
+
+/** Read a session's live group members without ps or command-line matching. */
+export function kitJobGroup(pgid) {
+  return readdirSync("/proc").filter(pid => /^\d+$/.test(pid)).map(pid => ({ pid: Number(pid), ...kitJobProcess(pid) }))
+    .filter(member => member.pgid === pgid && member.session === pgid);
+}
+
+/** Require an original, start-time-pinned member before trusting the group's current membership. */
+export function kitJobMembers(job) {
+  const leader = kitJobProcess(job.pid);
+  if (leader && leader.started !== job.started) return [];
+  let pins = [{ pid: job.pid, started: job.started }];
+  const record = kitJobRecord(job.directory, "members");
+  if (record !== null) {
+    const saved = JSON.parse(record);
+    if (saved.started === job.started) pins = pins.concat(saved.members);
+  }
+  const verified = pins.some(({ pid, started }) => {
+    const current = kitJobProcess(pid);
+    return current?.pgid === job.pgid && current.session === job.pgid && current.started === started;
+  });
+  return verified ? kitJobGroup(job.pgid) : [];
 }
 
 export function kitJobExit(job) {

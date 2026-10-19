@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 // kit: start, list or stop detached jobs by name
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { constants } from "node:os";
+import { Socket } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { kitJob, kitJobDirectory, kitJobExit, kitJobProcess, kitJobRecord, kitJobRunning, kitResult } from "../kit-lib.mjs";
+import { kitJob, kitJobDirectory, kitJobExit, kitJobGroup, kitJobMembers, kitJobProcess, kitJobRecord, kitJobRunning, kitResult } from "../kit-lib.mjs";
 
 const usage = `Usage: kit bg <name> [--cwd DIR] -- <command…>
        kit bg --list
@@ -15,29 +17,59 @@ Stop sends SIGTERM to that group, then SIGKILL after a 2s grace period.`;
 const args = process.argv.slice(2);
 const quote = value => `'${value.replace(/'/g, "'\\''")}'`;
 
-// The wrapper outlives the launcher. Publish pid last, exit last, and trap TERM so
-// a foreground command that ignores it keeps the leader alive until escalation.
-const wrapper = `directory=$1
-cwd=$2
-shift 2
-finish() {
-  status=$?
-  trap - EXIT
-  date -u +%Y-%m-%dT%H:%M:%SZ > "$directory/ended"
-  printf '%s\\n' "$status" > "$directory/exit.tmp"
-  mv -- "$directory/exit.tmp" "$directory/exit"
+// Do not let a detached child start work until its parent has durably pinned it.
+// Pipe EOF without the handoff also cancels a child whose parent died mid-launch.
+function gatedSpawn(command, argv, stdio, record) {
+  const child = spawn(command, argv, { stdio: [...stdio, "pipe"] });
+  const gate = child.stdio[3];
+  gate.on("error", () => {});
+  child.on("error", () => {});
+  try {
+    const identity = kitJobProcess(child.pid);
+    if (!identity) throw new Error("bg child failed before launch handoff");
+    record({ pid: child.pid, started: identity.started });
+    gate.end("launch\n");
+  } catch (error) { gate.destroy(); child.kill("SIGKILL"); throw error; }
+  return child;
 }
-trap finish EXIT
-trap 'exit 143' TERM
-IFS= read -r identity < /proc/$$/stat
-printf '%s\\n' "$identity" > "$directory/identity"
-printf '%s\\n' "$$" > "$directory/pgid"
-printf '%s\\n' "$$" > "$directory/pid.tmp"
-mv -- "$directory/pid.tmp" "$directory/pid"
-cd -- "$cwd" || exit 1
-"$@"
-exit $?
-`;
+
+function childStatus(child) {
+  return new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code, signal) => resolve(code ?? 128 + constants.signals[signal]));
+  });
+}
+
+async function wrapper(kind, directory, cwd, command) {
+  const gate = new Socket({ fd: 3, readable: true, writable: false });
+  let handoff = "";
+  for await (const chunk of gate) handoff += chunk;
+  if (handoff !== "launch\n") return;
+  if (kind === "--command") {
+    // This pinned supervisor survives the session leader. Keep it alive until
+    // all descendants in the group finish, even if the command daemonizes.
+    const pgid = kitJobProcess(process.pid).pgid;
+    const child = spawn(command[0], command.slice(1), { cwd, stdio: "inherit" });
+    const status = await childStatus(child);
+    while (kitJobGroup(pgid).some(member => member.pid !== pgid && member.pid !== process.pid)) await delay(25);
+    process.exitCode = status;
+    return;
+  }
+  let terminated = false;
+  process.on("SIGTERM", () => { terminated = true; });
+  writeFileSync(join(directory, "identity"), readFileSync(`/proc/${process.pid}/stat`, "utf8"));
+  writeFileSync(join(directory, "pgid"), `${process.pid}\n`);
+  const started = kitJobProcess(process.pid).started;
+  const child = gatedSpawn(process.execPath, [process.argv[1], "--command", directory, cwd, ...command], ["ignore", "inherit", "inherit"], member => {
+    writeFileSync(join(directory, "members"), JSON.stringify({ started, members: [member] }));
+    writeFileSync(join(directory, "pid.tmp"), `${process.pid}\n`);
+    renameSync(join(directory, "pid.tmp"), join(directory, "pid"));
+  });
+  const status = await childStatus(child);
+  writeFileSync(join(directory, "ended"), `${new Date().toISOString()}\n`);
+  writeFileSync(join(directory, "exit.tmp"), `${terminated ? 143 : status}\n`);
+  renameSync(join(directory, "exit.tmp"), join(directory, "exit"));
+}
 
 function parse() {
   if (args[0] === "--list" && args.length === 1) return { kind: "list" };
@@ -73,7 +105,7 @@ function list() {
     try {
       const job = kitJob(directory);
       const status = kitJobExit(job);
-      state = status !== null ? `exit ${status}` : kitJobRunning(job) ? "running" : "died";
+      state = kitJobRunning(job) ? "running" : status !== null ? `exit ${status}` : "died";
     } catch { /* An incomplete record is a died job. */ }
     const started = Date.parse(kitJobRecord(directory, "started"));
     const age = Number.isFinite(started) ? `${Math.max(0, Math.floor((Date.now() - started) / 1000))}s` : "unknown";
@@ -84,8 +116,17 @@ function list() {
 
 async function start(config, directory) {
   if (existsSync(directory)) {
-    const job = kitJob(directory);
-    if (kitJobRunning(job)) throw new Error(`bg ${config.name} already running (pid ${job.pid})`);
+    if (existsSync(join(directory, "pid"))) {
+      const job = kitJob(directory);
+      if (kitJobRunning(job)) throw new Error(`bg ${config.name} already running (pid ${job.pid})`);
+    } else {
+      // With the name lock held, a missing pid is an abandoned reservation
+      // unless its recorded, gated launcher is still publishing the job.
+      const record = kitJobRecord(directory, "launch");
+      const launch = record === null ? null : JSON.parse(record);
+      if (launch && kitJobProcess(launch.pid)?.started === launch.started)
+        throw new Error(`bg ${config.name} already running (pid ${launch.pid}, starting)`);
+    }
     rmSync(directory, { recursive: true });
   }
   mkdirSync(directory);
@@ -96,8 +137,9 @@ async function start(config, directory) {
   const fd = openSync(log, "w");
   let child;
   try {
-    child = spawn("setsid", ["nohup", "/bin/bash", "-c", wrapper, "kit-bg", directory, config.cwd, ...config.command], {
-      stdio: ["ignore", fd, fd],
+    child = gatedSpawn("setsid", ["nohup", process.execPath, process.argv[1], "--wrapper", directory, config.cwd, ...config.command], ["ignore", fd, fd], launch => {
+      writeFileSync(join(directory, "launch.tmp"), JSON.stringify(launch));
+      renameSync(join(directory, "launch.tmp"), join(directory, "launch"));
     });
   } finally { closeSync(fd); }
   let failure;
@@ -124,11 +166,10 @@ async function stop(name, directory) {
   }
   // Pin existing group members too: a command may leave a descendant ignoring
   // TERM after the wrapper exits. Never escalate against a reused process group.
-  const members = readdirSync("/proc").filter(pid => /^\d+$/.test(pid)).map(pid => ({ pid, identity: kitJobProcess(pid) }))
-    .filter(({ identity }) => identity?.pgid === job.pgid && identity.session === job.pgid);
-  const alive = () => members.some(({ pid, identity }) => {
+  const members = kitJobMembers(job);
+  const alive = () => members.some(({ pid, started }) => {
     const current = kitJobProcess(pid);
-    return current?.pgid === job.pgid && current.session === job.pgid && current.started === identity.started;
+    return current?.pgid === job.pgid && current.session === job.pgid && current.started === started;
   });
   const signal = value => {
     if (!alive()) return false;
@@ -143,7 +184,10 @@ async function stop(name, directory) {
   kitResult("ok", `bg stop ${name} pgid ${job.pgid}`);
 }
 
-if (args[0] === "--help" || args[0] === "-h") console.log(usage);
+if (args[0] === "--wrapper" || args[0] === "--command") {
+  try { await wrapper(args[0], args[1], args[2], args.slice(3)); }
+  catch (error) { console.error(error.message); process.exitCode = 1; }
+} else if (args[0] === "--help" || args[0] === "-h") console.log(usage);
 else {
   let unlock;
   try {
