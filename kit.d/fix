@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // kit: send open review findings back to the original builder
 import { execFileSync, spawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { openFindings } from "../review-findings.mjs";
@@ -9,7 +9,7 @@ import { openFindings } from "../review-findings.mjs";
 const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv, commitBuilderWork, builderAuthor } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const usage = "Usage: kit fix [--review DIR] [--run DIR] [--ticket FILE]\nResume the builder with open findings, commit its fixes, and review again.\nFailed rounds resume their saved builder/commit/review phase without discarding edits.\n";
+const usage = "Usage: kit fix [--review DIR | --note FILE] [--run DIR] [--ticket FILE] [--builder MODEL]\nResume the builder with open findings or a failure note, commit its fixes, and review again.\nWithout a resumable run, start a fresh builder (latest slice model, else gpt-6.1-sol).\nFailed rounds resume their saved builder/commit/review phase without discarding edits.\n";
 const kit = resolve(import.meta.dirname, "../kit");
 const agent = resolve(import.meta.dirname, "../agent.sh");
 
@@ -17,11 +17,12 @@ function options(args) {
   const flags = {};
   for (let i = 0; i < args.length; i += 2) {
     const flag = args[i], value = args[i + 1];
-    if (!["--review", "--run", "--ticket"].includes(flag) || !value?.trim() || value.startsWith("-") || Object.hasOwn(flags, flag)) {
+    if (!["--review", "--note", "--run", "--ticket", "--builder"].includes(flag) || !value?.trim() || value.startsWith("-") || Object.hasOwn(flags, flag)) {
       throw new Error(`invalid option: ${flag}`);
     }
     flags[flag] = value;
   }
+  if (flags["--review"] && flags["--note"]) throw new Error("--review and --note are mutually exclusive");
   return flags;
 }
 
@@ -40,15 +41,30 @@ function coveringReview(head) {
   }
 }
 
-function builderRun(root, explicit) {
-  for (const folder of explicit ? [resolve(root, explicit)] : newestDirectories(join(root, ".scratch/agent"))) {
-    if (!explicit && !folder.split("/").at(-1).startsWith("build-")) continue;
+function latestSlice(root, branch) {
+  const states = [];
+  for (const folder of newestDirectories(join(root, ".scratch/kit-slice"))) {
+    try {
+      const path = join(folder, "state.json"), state = JSON.parse(readFileSync(path, "utf8"));
+      if (state.branch === branch && typeof state.model === "string" && state.model.trim() &&
+          typeof state.ticket === "string" && existsSync(resolve(root, state.ticket))) {
+        states.push({ state, modified: statSync(path).mtimeMs });
+      }
+    } catch { /* Ignore incomplete or foreign slice states. */ }
+  }
+  return states.sort((a, b) => b.modified - a.modified)[0]?.state;
+}
+
+function builderRun(root, explicit, slice) {
+  const folders = newestDirectories(join(root, ".scratch/agent")).filter(folder => folder.split("/").at(-1).startsWith("build-"));
+  if (slice?.build) folders.unshift(resolve(root, slice.build));
+  for (const folder of explicit ? [resolve(root, explicit)] : folders) {
     try {
       const status = JSON.parse(readFileSync(join(folder, "status.json"), "utf8"));
-      if (status.kind === "build" && realpathSync(status.worktree) === realpathSync(root)) return { folder, status };
+      if (status.kind === "build" && status.session && realpathSync(status.worktree) === realpathSync(root)) return { folder, status };
     } catch { /* Ignore incomplete or foreign builder records. */ }
   }
-  throw new Error(explicit ? "invalid builder run for this worktree" : "no builder run found for this worktree; pass --run DIR");
+  if (explicit) throw new Error("invalid builder run for this worktree");
 }
 
 function declinedFindings(report) {
@@ -83,24 +99,34 @@ async function fix(args) {
     if (pending && (pending.root !== root || pending.branch !== branch ||
         (flags["--review"] && resolve(root, flags["--review"]) !== pending.review) ||
         (flags["--run"] && resolve(root, flags["--run"]) !== pending.run) ||
+        (flags["--note"] && resolve(root, flags["--note"]) !== pending.note) ||
+        (flags["--builder"] && (flags["--builder"] === "sol" ? "gpt-6.1-sol" : flags["--builder"]) !== pending.model) ||
         (flags["--ticket"] && resolve(root, flags["--ticket"]) !== resolve(root, pending.ticket))))
       throw new Error("pending fix belongs to a different worktree, branch, review, builder or ticket");
     const head = pending?.head || git("rev-parse", "HEAD");
-    const review = pending?.review || (flags["--review"] ? resolve(root, flags["--review"]) : coveringReview(head));
-    if (!review) throw new Error("no review covers HEAD");
-    const resultPath = join(review, "result.md");
+    const note = pending?.note || (flags["--note"] ? resolve(root, flags["--note"]) : undefined);
+    const review = pending?.review || (!note && (flags["--review"] ? resolve(root, flags["--review"]) : coveringReview(head)));
+    if (!review && !note) throw new Error("no review covers HEAD");
+    const resultPath = note || join(review, "result.md");
     let original = pending?.original || "";
-    if (!pending) try { original = readFileSync(resultPath, "utf8"); } catch { /* Fail closed below. */ }
-    const { findings, readable } = openFindings(original);
+    if (!pending) {
+      if (note) {
+        original = readFileSync(note, "utf8");
+        if (!original.trim()) throw new Error("failure note is empty");
+      } else try { original = readFileSync(resultPath, "utf8"); } catch { /* Fail closed below. */ }
+    }
+    const { findings, readable } = note ? { findings: [], readable: true } : openFindings(original);
     if (!readable) throw new Error(`${findings.length} open findings (${resultPath}): review format unreadable`);
-    if (!findings.length) { kitResult("ok", "fix clean"); return 0; }
-    const builder = builderRun(root, pending?.run || flags["--run"]);
+    if (!note && !findings.length) { kitResult("ok", "fix clean"); return 0; }
+    const slice = latestSlice(root, branch);
+    const builder = pending ? undefined : builderRun(root, flags["--run"], slice);
     let ticket = pending?.ticket || flags["--ticket"];
-    if (!ticket) {
+    if (!ticket && builder) {
       const brief = readFileSync(resolve(root, builder.status.brief), "utf8");
       ticket = [...brief.matchAll(/(?:`|\s|^)(docs\/[^\s`]+\.md)/g)].map(match => match[1])
         .find(path => existsSync(resolve(root, path)) && /(?:^|\/)tickets\//.test(path));
     }
+    ticket ||= slice?.ticket;
     if (!ticket) throw new Error("no ticket found in builder brief; pass --ticket FILE");
     readFileSync(resolve(root, ticket));
     // A branch owns its rounds even if the worktree later switches branches.
@@ -115,15 +141,16 @@ async function fix(args) {
     const rounds = readdirSync(directory).map(name => /^round-(\d+)\.md$/.exec(name)).filter(Boolean).map(match => Number(match[1]));
     const round = pending?.round || Math.max(0, ...rounds) + 1;
     const brief = join(directory, `round-${round}.md`);
-    if (!pending) writeFileSync(brief, `Ticket: ${ticket}\n\nFix real defects within the ticket's Files. For a finding you reject, list it under\n\`Declined:\` with a one-line reason.\n\nOpen findings:\n${findings.map(item => `- ${item.group}: ${item.text}`).join("\n")}\n\nReview evidence (verbatim; Optional nits are not open findings):\n${original}`, { flag: "wx" });
+    if (!pending) writeFileSync(brief, `Ticket: ${ticket}\n\nUse Agent Kit at scripts/agents/kit: run doctor first, focused unit --affected, npm run lint and touched specs. Report RESULT lines.\nFix real defects within the ticket's Files. For a finding you reject, list it under\n\`Declined:\` with a one-line reason.\n\n${note ? `Failure note (verbatim):\n${original}` : `Open findings:\n${findings.map(item => `- ${item.group}: ${item.text}`).join("\n")}\n\nReview evidence (verbatim; Optional nits are not open findings):\n${original}`}`, { flag: "wx" });
 
     const save = () => {
       writeFileSync(`${pendingPath}.tmp`, JSON.stringify(pending, null, 2) + "\n");
       renameSync(`${pendingPath}.tmp`, pendingPath);
     };
     if (!pending) {
-      pending = { root, branch, head, review, run: builder.folder, ticket, round,
-        original, model: builder.status.model, phase: "builder", declined: [], reviewHead: head };
+      const model = builder?.status.model || flags["--builder"] || slice?.model || "gpt-6.1-sol";
+      pending = { root, branch, head, review, note, run: builder?.folder || join(directory, `round-${round}-builder`), ticket, round,
+        original, model: model === "sol" ? "gpt-6.1-sol" : model, fresh: !builder, phase: "builder", declined: [], reviewHead: head };
       save();
     }
 
@@ -149,9 +176,16 @@ async function fix(args) {
 
     if (pending.phase === "builder") {
       assertScope();
-      const reportPath = join(builder.folder, "out.md");
-      const previousReport = existsSync(reportPath) ? readFileSync(reportPath, "utf8") : "";
-      await execute("builder", agent, ["--resume", builder.folder, "--brief", brief]);
+      const reportPath = join(pending.run, "out.md");
+      let resume = !pending.fresh;
+      if (pending.fresh) {
+        try { resume = Boolean(JSON.parse(readFileSync(join(pending.run, "status.json"), "utf8")).session); }
+        catch { /* A fresh round has no session until agent.sh records one. */ }
+      }
+      const previousReport = resume && existsSync(reportPath) ? readFileSync(reportPath, "utf8") : "";
+      if (!resume) console.log(`builder: no resumable builder run; starting fresh agent.sh build (${pending.model})`);
+      await execute("builder", agent, resume ? ["--resume", pending.run, "--brief", brief] :
+        ["build", root, brief, "--model", pending.model, "--effort", "high", "--out", pending.run]);
       assertScope();
       const report = readFileSync(reportPath, "utf8");
       if (!report.startsWith(previousReport)) throw new Error("builder replaced its saved report");

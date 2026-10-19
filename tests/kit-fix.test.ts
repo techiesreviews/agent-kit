@@ -223,14 +223,109 @@ test("kit fix ignores reviews for other HEADs, picks the newest covering review,
   assert.equal(existsSync(join(f.root, ".scratch/kit-fix")), false);
 });
 
-test("kit fix reports missing reviews and builder runs clearly and fails closed on unreadable evidence", t => {
+test("kit fix reports missing reviews and tickets clearly and fails closed on unreadable evidence", t => {
   const f = fixture(t);
   f.review("20261018T000000Z", clean, f.base);
   assert.equal(f.run().stdout.trim(), "RESULT: fail fix no review covers HEAD");
   const path = f.review();
-  const missing = f.run(); assert.equal(missing.status, 1); assert.match(missing.stdout, /no builder run found/);
+  const missing = f.run(); assert.equal(missing.status, 1); assert.match(missing.stdout, /no ticket found/);
   rmSync(join(path, "result.md"));
   assert.match(f.run().stdout, /1 open findings .*review format unreadable/);
+  assert.equal(f.calls().length, 0);
+});
+
+test("kit fix starts a fresh builder without a slice state, with default or explicit model", t => {
+  for (const model of [undefined, "gpt-6.1-sol", "sol"]) {
+    const f = fixture(t); f.review();
+    // An incomplete builder record cannot be resumed.
+    f.builder("build-100", { session: null });
+    const result = f.run(["--ticket", f.ticket, ...(model ? ["--builder", model] : [])]);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /no resumable builder run; starting fresh agent.sh build \(gpt-6.1-sol\)/);
+    const [call] = f.calls(); assert.equal(f.calls().length, 1);
+    assert.equal(call.args.includes("resume"), false);
+    assert.equal(call.args[call.args.indexOf("-m") + 1], "gpt-6.1-sol");
+    assert.ok(call.input.includes(findings)); assert.ok(call.input.includes("scripts/agents/kit"));
+    assert.equal(f.git("status", "--porcelain"), "");
+    assert.match(f.git("log", "-1", "--format=%B"), /Co-Authored-By: GPT-6.1-Sol/);
+    assert.deepEqual(f.reviewInput().args, ["--ticket", f.ticket]);
+  }
+});
+
+test("fresh fallback uses the latest matching slice model and ticket, unless --builder overrides it", t => {
+  for (const override of [false, true]) {
+    const f = fixture(t); f.review();
+    const parent = join(f.root, ".scratch/kit-slice");
+    for (const [name, model, branch] of [["01-old", "unused-old-model", "build/ke-03"],
+      ["02-latest", "slice-model", "build/ke-03"], ["03-foreign", "foreign-model", "other-branch"]]) {
+      const folder = join(parent, name); mkdirSync(folder, { recursive: true });
+      writeFileSync(join(folder, "state.json"), JSON.stringify({ model, branch, ticket: f.ticket }));
+    }
+    const result = f.run(override ? ["--builder", "gpt-6.1-sol"] : []);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    const [call] = f.calls();
+    assert.equal(call.args[call.args.indexOf("-m") + 1], override ? "gpt-6.1-sol" : "slice-model");
+    assert.equal(call.args.includes("resume"), false);
+    assert.deepEqual(f.reviewInput().args, ["--ticket", f.ticket]);
+  }
+});
+
+test("kit fix resumes a builder stored in slice state", t => {
+  const f = fixture(t); f.review();
+  const folder = join(f.root, ".scratch/kit-slice/current"); mkdirSync(folder, { recursive: true });
+  const builder = f.builder("build-original");
+  // kit slice keeps its builder below kit-slice, outside default .scratch/agent discovery.
+  const nested = join(folder, "builder"); symlinkSync(builder, nested);
+  writeFileSync(join(folder, "state.json"), JSON.stringify({ model: "gpt-6.1-sol", branch: "build/ke-03", ticket: f.ticket, build: nested }));
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const status: { resumes: number } = JSON.parse(readFileSync(join(builder, "status.json"), "utf8"));
+  assert.equal(status.resumes, 1);
+});
+
+test("--note sends a failure verbatim instead of review findings, then commits and reviews", t => {
+  for (const fresh of [false, true]) {
+    const f = fixture(t);
+    if (!fresh) f.builder();
+    f.review("20261019T000000Z", clean);
+    const note = join(f.dir, "ci digest.md"), text = "CI / checks failed\nfile.txt:1 expected required text\n";
+    writeFileSync(note, text);
+    const result = f.run(["--note", note, "--ticket", f.ticket]);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    const [call] = f.calls(); assert.equal(f.calls().length, 1);
+    assert.ok(call.input.includes(`Failure note (verbatim):\n${text}`));
+    assert.equal(call.input.includes("Review evidence"), false);
+    assert.equal(call.args.includes("resume"), !fresh);
+    assert.equal(f.git("status", "--porcelain"), "");
+    assert.equal(f.git("rev-parse", "HEAD^"), f.head);
+    assert.deepEqual(f.reviewInput().args, ["--ticket", f.ticket]);
+  }
+});
+
+test("a failed fresh note round resumes its saved session and note without discarding edits", t => {
+  const f = fixture(t), note = join(f.dir, "ci.md"); writeFileSync(note, "Original CI failure\n");
+  const first = f.run(["--note", note, "--ticket", f.ticket], { FAKE_EXIT: "7" });
+  assert.equal(first.status, 1); assert.match(first.stdout, /builder failed \(7\)/);
+  assert.equal(f.git("rev-parse", "HEAD"), f.head);
+  const mismatched = f.run(["--builder", "other-model"]);
+  assert.equal(mismatched.status, 1); assert.match(mismatched.stdout, /pending fix belongs/);
+  rmSync(note);
+  const retry = f.run();
+  assert.equal(retry.status, 0, retry.stdout + retry.stderr);
+  assert.equal(f.calls().length, 2);
+  assert.equal(f.calls()[1].args.includes("resume"), true);
+  assert.ok(f.calls()[1].input.includes("Original CI failure\n"));
+  assert.equal(f.git("status", "--porcelain"), "");
+  assert.equal(f.git("rev-parse", "HEAD^"), f.head);
+});
+
+test("invalid --note input and explicit non-resumable runs fail before starting a builder", t => {
+  const f = fixture(t); f.review();
+  const note = join(f.dir, "empty.md"); writeFileSync(note, " \n");
+  for (const args of [["--note", note], ["--note", join(f.dir, "missing.md")], ["--run", "missing", "--ticket", f.ticket]]) {
+    const result = f.run(args); assert.equal(result.status, 1, result.stdout + result.stderr);
+  }
+  for (const args of [["--note"], ["--builder"], ["--note", note, "--review", "elsewhere"]]) assert.equal(f.run(args).status, 2);
   assert.equal(f.calls().length, 0);
 });
 

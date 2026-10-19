@@ -1,3 +1,8 @@
+// Empty or failed patch-id output must never count as a matching review.
+export function sameReviewPatch(reviewedId, currentId) {
+  return typeof reviewedId === "string" && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(reviewedId) && reviewedId === currentId;
+}
+
 // Parse the Markdown variants emitted by kit review without reading files or changing state.
 export function openFindings(resultMd) {
   const findings = [];

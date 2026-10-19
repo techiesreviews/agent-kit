@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { openFindings } from "../review-findings.mjs";
+import { openFindings, sameReviewPatch } from "../review-findings.mjs";
 
 const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
@@ -37,19 +37,25 @@ function ticketTitle(file) {
   return title.replace(/^(["'])(.*)\1$/, "$2");
 }
 
-// Reuse only a completed review whose scope is this whole PR: HEAD and the merge base.
-function savedReview(head, base) {
+// A clean whole-PR review also survives a rebase that preserves the stable patch ID.
+async function savedReview(head, base, patchId) {
   const parent = join(kitMainRoot(), ".scratch/reviews", kitOwner());
   if (!existsSync(parent)) return;
   // Review folder names start with UTC timestamps; numeric sorting handles collision suffixes.
   const folders = readdirSync(parent, { withFileTypes: true }).filter(entry => entry.isDirectory())
     .map(entry => entry.name).sort((a, b) => b.localeCompare(a, "en", { numeric: true }));
+  let currentId;
   for (const name of folders) {
     const folder = join(parent, name), refs = join(folder, "refs.txt");
     const result = join(folder, "result.md");
     if (!existsSync(refs) || !existsSync(result)) continue;
     const [reviewedHead, reviewedBase] = readFileSync(refs, "utf8").split(/\r?\n/);
-    if (reviewedHead === head && reviewedBase === base && /^REVIEW_STATUS: complete$/m.test(readFileSync(result, "utf8"))) return folder;
+    const resultMd = readFileSync(result, "utf8");
+    if (!/^REVIEW_STATUS: complete$/m.test(resultMd)) continue;
+    if (reviewedHead === head && reviewedBase === base) return { folder, samePatch: false };
+    if (!reviewedHead || !reviewedBase || openFindings(resultMd).findings.length) continue;
+    currentId ??= await patchId(base, head);
+    if (sameReviewPatch(await patchId(reviewedBase, reviewedHead), currentId)) return { folder, samePatch: true };
   }
 }
 
@@ -71,7 +77,7 @@ async function main(args) {
     console.log(`logs: ${directory}`);
 
     // Keep child RESULT lines in logs, so the command has exactly one final RESULT.
-    async function execute(name, command, argv) {
+    async function execute(name, command, argv, input) {
       step = name;
       const log = join(directory, `${name}.log`);
       const fd = openSync(log, "a");
@@ -79,7 +85,11 @@ async function main(args) {
       let status;
       try {
         status = await new Promise(accept => {
-          const child = spawn(command, argv, { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+          const child = spawn(command, argv, { cwd: root, env, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
+          if (child.stdin) {
+            child.stdin.on("error", () => { /* An early child exit is handled by its status. */ });
+            child.stdin.end(input);
+          }
           const interrupt = () => child.kill("SIGINT"), terminate = () => child.kill("SIGTERM");
           process.once("SIGINT", interrupt);
           process.once("SIGTERM", terminate);
@@ -105,6 +115,12 @@ async function main(args) {
     const ok = name => console.log(`${name}: ok`);
     const git = (name, argv) => run(name, "git", argv);
     const gh = (name, argv) => run(name, "gh", argv);
+    async function patchId(base, head) {
+      const diff = await execute("review", "git", ["diff", "--no-ext-diff", "--no-textconv", "--binary", base, head, "--"]);
+      if (diff.status !== 0) return ""; // Pruned or invalid reviewed refs require a fresh review.
+      const id = await execute("review", "git", ["patch-id", "--stable"], diff.text);
+      return id.status === 0 ? id.text.trim().split(/\s+/)[0] : "";
+    }
     const branchResult = await execute("guards", "git", ["symbolic-ref", "--short", "HEAD"]);
     if (branchResult.status !== 0) throw new Error("detached HEAD");
     const branch = branchResult.text.trim();
@@ -214,12 +230,13 @@ async function main(args) {
     async function reviewHead() {
       if (!review) return true;
       waived = 0;
-      const saved = savedReview(head, await git("review", ["merge-base", `origin/${flags.base}`, "HEAD"]));
+      const saved = await savedReview(head, await git("review", ["merge-base", `origin/${flags.base}`, "HEAD"]), patchId);
       let resultPath;
       if (saved) {
-        resultPath = join(saved, "result.md");
+        if (saved.samePatch) console.log("review: reused (same patch on new base)");
+        resultPath = join(saved.folder, "result.md");
         const comment = join(directory, "review.md");
-        writeFileSync(comment, `Reused review: ${saved}\nHEAD: ${head}\n\n${readFileSync(resultPath, "utf8")}`);
+        writeFileSync(comment, `Reused review: ${saved.folder}\nHEAD: ${head}\n\n${readFileSync(resultPath, "utf8")}`);
         await gh("review", ["pr", "comment", number, "--body-file", comment]);
       } else {
         const output = await run("review", kit, [...reviewArgs, number, ...(flags.ticket ? ["--ticket", flags.ticket] : [])]);

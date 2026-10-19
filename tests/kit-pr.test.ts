@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { checkSteps, classify, focusedUnitFiles, parseChanges } from "../scripts/agents/pr-tier.mjs";
+import { sameReviewPatch } from "../scripts/agents/review-findings.mjs";
 
 const pr = resolve("scripts/agents/kit.d/pr");
 const kit = resolve("scripts/agents/kit");
@@ -53,6 +54,10 @@ else if (tool === "gh") {
         const { execFileSync } = require("node:child_process");
         const git = (...argv) => execFileSync("git", ["-C", env.FAKE_ADVANCE, ...argv], { stdio: "ignore", timeout: 10_000 });
         writeFileSync(env.FAKE_ADVANCE + "/upstream.txt", "upstream " + count + "\\n");
+        if (env.FAKE_ADVANCE_PATCH) {
+          writeFileSync(env.FAKE_ADVANCE + "/feature.txt", "First change\\n");
+          git("add", "feature.txt");
+        }
         git("add", "upstream.txt"); git("commit", "-m", "advance upstream"); git("push", "origin", "dev");
       }
       if (env.FAKE_AFTER_PUSH) require("node:child_process").execFileSync(env.FAKE_AFTER_PUSH, { stdio: "ignore", timeout: 10_000 });
@@ -264,6 +269,66 @@ test("an incomplete or single-commit review for this HEAD is not reused", t => {
   }
 });
 
+function stablePatch(root: string, base: string, head: string) {
+  const diff = spawnSync("git", ["diff", "--binary", base, head], { cwd: root, encoding: "utf8" });
+  assert.equal(diff.status, 0, diff.stderr);
+  const patch = spawnSync("git", ["patch-id", "--stable"], { cwd: root, input: diff.stdout, encoding: "utf8" });
+  assert.equal(patch.status, 0, patch.stderr);
+  return patch.stdout.trim().split(/\s+/)[0];
+}
+
+test("sameReviewPatch rejects empty, missing and malformed patch IDs", () => {
+  for (const id of ["", undefined, "bad-id", "a".repeat(39)]) assert.equal(sameReviewPatch(id, id), false);
+});
+
+test("same patch on a moved base reuses a clean review; a changed patch requires review", t => {
+  for (const changed of [false, true]) {
+    const f = fixture(t), base = f.git("merge-base", "origin/dev", "HEAD");
+    const reviewedId = stablePatch(f.root, base, f.head);
+    f.saveReview(cleanReview);
+    const peer = f.peer();
+    writeFileSync(join(peer, "upstream.txt"), "moved base\n");
+    f.gitAt(peer, "add", "."); f.gitAt(peer, "commit", "-m", "base moved"); f.gitAt(peer, "push", "origin", "dev");
+    f.git("fetch", "origin"); f.git("rebase", "origin/dev");
+    if (changed) f.commit("Changed patch");
+    const currentId = stablePatch(f.root, "origin/dev", "HEAD");
+    assert.equal(sameReviewPatch(reviewedId, currentId), !changed);
+    const result = f.run(["--no-merge"]);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "review"), changed);
+    assert.equal(result.stdout.includes("review: reused (same patch on new base)"), !changed);
+  }
+});
+
+test("conflict resolution that changes the patch requires a fresh review", t => {
+  const f = fixture(t);
+  f.commit("feature conflict", "file.txt", "feature\n");
+  const reviewedId = stablePatch(f.root, "origin/dev", "HEAD");
+  f.saveReview(cleanReview);
+  const peer = f.peer();
+  writeFileSync(join(peer, "file.txt"), "upstream\n");
+  f.gitAt(peer, "add", "."); f.gitAt(peer, "commit", "-m", "upstream conflict"); f.gitAt(peer, "push", "origin", "dev");
+  f.git("fetch", "origin");
+  const conflict = spawnSync("git", ["rebase", "origin/dev"], { cwd: f.root, env: f.env, encoding: "utf8" });
+  assert.equal(conflict.status, 1);
+  writeFileSync(join(f.root, "file.txt"), "resolved feature and upstream\n"); f.git("add", "file.txt");
+  f.git("-c", "core.editor=true", "rebase", "--continue");
+  assert.equal(sameReviewPatch(reviewedId, stablePatch(f.root, "origin/dev", "HEAD")), false);
+  const result = f.run(["--no-merge"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "review"));
+});
+
+test("a changed HEAD cannot reuse an incomplete, unreadable or finding-bearing patch review", t => {
+  for (const report of ["REVIEW_STATUS: incomplete\n", "REVIEW_STATUS: complete\n", cleanReview.replace("Spec: none.", "Spec: a defect.")]) {
+    const f = fixture(t); f.saveReview(report);
+    f.git("commit", "--allow-empty", "-m", "New HEAD, same patch");
+    const result = f.run(["--no-merge"]);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.ok(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "review"));
+  }
+});
+
 test("a saved review for another HEAD triggers kit review --pr", t => {
   const f = fixture(t), folder = join(f.main, ".scratch/reviews/ak-14/20261016T120000Z");
   mkdirSync(folder, { recursive: true }); writeFileSync(join(folder, "refs.txt"), "wrong\nbase\n"); writeFileSync(join(folder, "result.md"), "wrong report\n");
@@ -408,7 +473,7 @@ test("queue uses auto-rebase, skips wait, and passes owner/name/base to graphql"
   for (const value of ["o=test", "n=repo", "b=dev", '.data.repository.mergeQueue.id // ""']) assert.ok(graphql.args.includes(value));
 });
 
-test("behind retry reviews the rebased HEAD before waiting again and merging", t => {
+test("behind retry reuses the same patch review before waiting again and merging", t => {
   const f = fixture(t), peer = f.peer();
   const result = f.run([], { FAKE_BEHIND: "1", FAKE_ADVANCE: peer, FAKE_VIEW_ERROR: "1" });
   assert.equal(result.status, 0, result.stderr); assert.equal(f.ghCalls("merge").length, 2);
@@ -419,15 +484,15 @@ test("behind retry reviews the rebased HEAD before waiting again and merging", t
   assert.equal(result.stdout.split("\n").filter(line => line === "push: ok").length, 2);
   const actions = f.calls().filter(call => (call.tool === "fake-kit" && ["review", "wait"].includes(call.args[0]))
     || (call.tool === "gh" && call.args[1] === "merge"));
-  assert.deepEqual(actions.map(call => call.tool === "gh" ? "merge" : call.args[0]), ["review", "wait", "merge", "review", "wait", "merge"]);
-  const folder = join(f.main, ".scratch/reviews/ak-14/fresh-2");
-  assert.equal(readFileSync(join(folder, "refs.txt"), "utf8"), `${head}\n${f.git("merge-base", "origin/dev", "HEAD")}\n`);
+  assert.deepEqual(actions.map(call => call.tool === "gh" ? "merge" : call.args[0]), ["review", "wait", "merge", "wait", "merge"]);
+  assert.match(result.stdout, /review: reused \(same patch on new base\)/);
+  assert.ok(f.ghCalls("comment")[0].body?.includes(`HEAD: ${head}`));
 });
 
 test("findings in the rebased HEAD review stop before another CI wait or merge", t => {
   const f = fixture(t), peer = f.peer();
   const report = "REVIEW_STATUS: complete\nDefects:\n- Spec: Rebased HEAD has a defect.\n";
-  const result = f.run([], { FAKE_BEHIND: "1", FAKE_ADVANCE: peer, FAKE_REBASED_REVIEW: report });
+  const result = f.run([], { FAKE_BEHIND: "1", FAKE_ADVANCE: peer, FAKE_ADVANCE_PATCH: "1", FAKE_REBASED_REVIEW: report });
   const head = f.git("rev-parse", "HEAD"), folder = join(f.main, ".scratch/reviews/ak-14/fresh-2");
   assert.notEqual(head, f.head);
   assert.equal(f.gitAt(f.origin, "rev-parse", "refs/heads/feature/kit-pr"), head);
