@@ -82,3 +82,51 @@ test("shared builder author mapping supports Sol and Claude models", () => {
   assert.equal(builderAuthor("gpt-6.1-sol"), "GPT-6.1-Sol <noreply@openai.com>");
   assert.equal(builderAuthor("claude-opus-5-5"), "claude-opus-5-5 <noreply@anthropic.com>");
 });
+
+test("shared commit helper cannot redirect a commit when a pre-commit hook switches the real branch", t => {
+  const f = fixture(t);
+  f.git("branch", "other", f.head);
+  writeFileSync(join(f.root, "file.txt"), "built\n");
+  f.hook("pre-commit", 'git --git-dir="$TEST_REAL_GIT_DIR" --work-tree="$GIT_WORK_TREE" switch other');
+  assert.throws(() => commitBuilderWork({ ...f.args, env: { ...process.env, TEST_REAL_GIT_DIR: join(f.root, ".git") } }), /branch or HEAD changed/);
+  assert.equal(f.git("rev-parse", "other"), f.head);
+  assert.equal(f.git("rev-parse", "build/test"), f.head);
+});
+
+test("shared commit helper publishes only its linked worktree branch", t => {
+  const f = fixture(t), linked = join(f.root, "linked");
+  f.git("worktree", "add", "-b", "build/linked", linked, f.head);
+  writeFileSync(join(linked, "file.txt"), "linked build\n");
+  const sha = commitBuilderWork({ ...f.args, root: linked, branch: "build/linked" });
+  assert.equal(f.git("rev-parse", "build/linked"), sha);
+  assert.equal(f.git("rev-parse", "build/linked^"), f.head);
+  assert.equal(f.git("rev-parse", "HEAD"), f.head, "main worktree branch must not move");
+  assert.equal(f.git("-C", linked, "status", "--porcelain"), "");
+  for (const lock of ["index.lock", "HEAD.lock"]) assert.equal(existsSync(join(f.root, ".git/worktrees/linked", lock)), false);
+});
+
+test("shared commit helper never redirects publication after its final scope check", t => {
+  const f = fixture(t);
+  f.git("branch", "other", f.head);
+  writeFileSync(join(f.root, "file.txt"), "built\n");
+  const bin = join(f.root, ".git/bin"); mkdirSync(bin);
+  const shim = join(bin, "git");
+  // Interpose at the final transaction, after the last scope check.
+  const gitPath = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+  writeFileSync(shim, `#!/usr/bin/env node
+const { spawnSync } = require("node:child_process");
+const { readFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+if (args.includes("update-ref")) {
+  const rootEnv = { ...process.env }; delete rootEnv.GIT_DIR; delete rootEnv.GIT_WORK_TREE; delete rootEnv.GIT_INDEX_FILE;
+  const switched = spawnSync(${JSON.stringify(gitPath)}, ["-C", ${JSON.stringify(f.root)}, "switch", "other"], { env: rootEnv });
+  if (switched.status !== 0) process.exit(9);
+}
+const result = spawnSync(${JSON.stringify(gitPath)}, args, { input: args.includes("--stdin") ? readFileSync(0) : undefined, encoding: "utf8" });
+process.stdout.write(result.stdout || ""); process.stderr.write(result.stderr || ""); process.exit(result.status ?? 1);
+`);
+  chmodSync(shim, 0o755);
+  assert.throws(() => commitBuilderWork({ ...f.args, env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } }), /branch or HEAD changed/);
+  assert.equal(f.git("rev-parse", "other"), f.head);
+  assert.equal(f.git("rev-parse", "build/test^"), f.head, "only the captured branch can receive the commit");
+});

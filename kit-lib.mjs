@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { accessSync, constants, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { accessSync, constants, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 
 const nodeError = "kit: no Node >=24 found (system, npx cache or nvm)";
 const oneLine = (text) => String(text).replace(/[\n\r]/g, " ");
@@ -175,33 +176,46 @@ export function builderAuthor(model) {
   return `${model} <noreply@${/^(claude-|opus|sonnet|haiku|fable)/i.test(model) ? "anthropic" : "openai"}.com>`;
 }
 
-/** Commit through normal Git and hooks, then verify the captured branch and parent. */
+/** Run normal commit hooks on a detached HEAD; atomically publish only the captured branch. */
 export function commitBuilderWork({ root, branch, head, message, author, env = process.env }) {
-  const run = (...args) => execFileSync("git", ["-C", root, ...args], {
-    cwd: root, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+  const run = (args, overrides = {}) => execFileSync("git", ["-C", root, ...args], {
+    cwd: root, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], ...overrides,
   }).trim();
-  const currentBranch = () => {
-    const branch = run("branch", "--show-current");
-    return branch ? `refs/heads/${branch}` : "";
-  };
-  const assertScope = () => {
-    if (currentBranch() !== `refs/heads/${branch}` || run("rev-parse", "HEAD") !== head)
-      throw new Error("worktree branch or HEAD changed before commit; refusing stale work");
+  const ref = `refs/heads/${branch}`;
+  const assertScope = (expected = head) => {
+    if (run(["branch", "--show-current"]) !== branch || run(["rev-parse", "HEAD"]) !== expected)
+      throw new Error("worktree branch or HEAD changed during commit; refusing stale work");
   };
   assertScope();
-  run("add", "-A");
+  run(["add", "-A"]);
   assertScope();
-  let failure;
-  try { run("commit", "-m", message, "-m", `Co-Authored-By: ${author}`); }
-  catch (error) { failure = error; }
-  const next = run("rev-parse", "HEAD");
-  const parents = run("rev-list", "--parents", "-n", "1", "HEAD").split(/\s+/).slice(1);
-  if (currentBranch() !== `refs/heads/${branch}` || (next !== head && (parents.length !== 1 || parents[0] !== head)))
-    throw new Error("worktree branch or HEAD changed during commit; expected exactly one commit from the captured HEAD");
-  if (failure) {
-    const details = `${failure.stdout || ""}\n${failure.stderr || ""}`.trim();
-    throw new Error(/nothing to commit|no changes added/i.test(details) ? "nothing to commit" : `git commit failed: ${details || failure.message}`);
-  }
-  if (next === head) throw new Error("commit did not advance HEAD by exactly one commit");
-  return next;
+  // Only HEAD is isolated. Staging and hooks use the worktree's normal index.
+  // Git owns all reference locks; no index.lock or HEAD.lock is hand-created.
+  const common = run(["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  const index = resolve(root, run(["rev-parse", "--git-path", "index"]));
+  const directory = mkdtempSync(join(tmpdir(), "kit-commit-head-"));
+  try {
+    writeFileSync(join(directory, "HEAD"), `${head}\n`);
+    writeFileSync(join(directory, "commondir"), `${common}\n`);
+    const detachedEnv = { ...env, GIT_DIR: directory, GIT_WORK_TREE: root, GIT_INDEX_FILE: index };
+    const detached = args => run(args, { env: detachedEnv });
+    let failure;
+    try { detached(["commit", "-m", message, "-m", `Co-Authored-By: ${author}`]); }
+    catch (error) { failure = error; }
+    assertScope();
+    if (failure) {
+      const details = `${failure.stdout || ""}\n${failure.stderr || ""}`.trim();
+      throw new Error(/nothing to commit|no changes added/i.test(details) ? "nothing to commit" : `git commit failed: ${details || failure.message}`);
+    }
+    const next = detached(["rev-parse", "HEAD"]);
+    const parents = detached(["rev-list", "--parents", "-n", "1", "HEAD"]).split(/\s+/).slice(1);
+    if (detached(["branch", "--show-current"]) || next === head || parents.length !== 1 || parents[0] !== head)
+      throw new Error("worktree branch or HEAD changed during commit; expected exactly one detached commit from the captured HEAD");
+    // The expected old SHA protects this named ref. Even a switch after the
+    // scope check cannot redirect the commit to whichever branch HEAD now names.
+    assertScope();
+    detached(["update-ref", "--no-deref", "-m", `commit: ${message}`, ref, next, head]);
+    assertScope(next);
+    return next;
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 }

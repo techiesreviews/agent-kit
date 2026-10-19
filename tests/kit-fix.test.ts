@@ -298,3 +298,30 @@ test("builder failure, missing review result and dirty input never report succes
   const missing = f.run([], { FAKE_MISSING_RESULT: "1" });
   assert.equal(missing.status, 1); assert.match(missing.stdout, /1 open findings/);
 });
+
+test("kit fix never publishes to another branch switched during a held pre-commit hook", async t => {
+  const f = fixture(t); f.review(); f.builder();
+  f.git("branch", "other-branch", f.head);
+  const hooks = join(f.dir, "hooks"); mkdirSync(hooks);
+  const hook = join(hooks, "pre-commit"), ready = join(f.dir, "ready"), release = join(f.dir, "release");
+  writeFileSync(hook, `#!/usr/bin/env node
+const { existsSync, writeFileSync } = require("node:fs");
+writeFileSync(process.env.FAKE_HOOK_READY, "ready");
+const timer = setInterval(() => { if (existsSync(process.env.FAKE_HOOK_RELEASE)) clearInterval(timer); }, 10);
+`);
+  chmodSync(hook, 0o755); f.git("config", "core.hooksPath", hooks);
+  const done = f.start({ FAKE_HOOK_READY: ready, FAKE_HOOK_RELEASE: release });
+  try {
+    await until(() => existsSync(ready), "held pre-commit hook");
+    f.git("switch", "other-branch");
+  } finally { writeFileSync(release, "go"); }
+  const result = await done;
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /branch or HEAD changed/);
+  assert.equal(f.git("branch", "--show-current"), "other-branch");
+  assert.equal(f.git("rev-parse", "other-branch"), f.head, "foreign branch must remain untouched");
+  assert.equal(f.git("rev-parse", "build/ke-03"), f.head, "captured branch must not publish after a switch");
+  assert.equal(existsSync(f.reviewCall), false, "no review may start after scope changes");
+  assert.equal(existsSync(join(f.root, ".git/index.lock")), false);
+  assert.equal(existsSync(join(f.root, ".git/HEAD.lock")), false);
+});

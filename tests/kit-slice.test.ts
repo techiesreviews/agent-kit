@@ -9,7 +9,7 @@ const kit = resolve("scripts/agents/kit");
 const clean = "REVIEW_STATUS: complete\nDefects:\nSpec: none\nStandards: none\nValidation gaps: none\nOptional nits: none\n";
 const findings = "REVIEW_STATUS: complete\nDefects:\nSpec:\n- file.txt:1 P1 restore required text\nStandards: none\nValidation gaps: none\nOptional nits: none\n";
 interface Call { phase: string; args: string[] }
-interface State { finished: string[]; build: string; review: string; reviewedHead: string; rounds: number; pr?: string }
+interface State { finished: string[]; build: string; review: string; reviewedHead: string; rounds: number; pr?: string; queued?: { head: string } }
 
 function fixture(t: TestContext) {
   const dir = mkdtempSync(join(tmpdir(), "kit-slice-"));
@@ -86,15 +86,27 @@ if (phase === "review") {
     console.log("RESULT: fail pr #42 review has 1 open findings (" + folder + "/result.md)");
     process.exitCode = 1;
   } else if (args.includes("--no-merge")) console.log("RESULT: ok opened #42 " + git("rev-parse", "--short", "HEAD"));
+  else if (process.env.QUEUE_PR) console.log("RESULT: ok queued #42 " + git("rev-parse", "HEAD"));
   else {
     writeFileSync(".scratch/merged", "yes");
     console.log("RESULT: ok merged #42 " + git("rev-parse", "HEAD"));
   }
 }
 `);
-  chmodSync(agent, 0o755); chmodSync(fakeKit, 0o755);
+  const gh = join(bin, "gh.mjs");
+  writeFileSync(gh, `#!/usr/bin/env node\n${shared}
+call("merge");
+if (process.env.MERGE_FAILURE) { console.error("merge lookup failed"); process.exit(7); }
+const queries = join(".scratch", "merge-queries");
+const count = existsSync(queries) ? Number(readFileSync(queries, "utf8")) + 1 : 1;
+writeFileSync(queries, String(count));
+const merged = !process.env.MERGE_PENDING && count >= Number(process.env.MERGE_AFTER || 1);
+console.log(JSON.stringify({ state: merged ? "MERGED" : "OPEN", mergeCommit: merged ? { oid: "a".repeat(40) } : null,
+  headRefOid: process.env.MERGE_CHANGED_HEAD ? "b".repeat(40) : git("rev-parse", "HEAD") }));
+`);
+  chmodSync(gh, 0o755); chmodSync(agent, 0o755); chmodSync(fakeKit, 0o755);
   const env = { ...process.env, KIT_ROOT: root, KIT_MAIN_ROOT: main, ASE_OWNER: "ke-04", ASE_SLICE_AGENT: agent,
-    ASE_SLICE_KIT: fakeKit, FAKE_CALLS: callsFile };
+    ASE_SLICE_KIT: fakeKit, ASE_SLICE_GH: gh, ASE_SLICE_MERGE_POLL_MS: "1", ASE_SLICE_MERGE_TIMEOUT_MS: "5000", FAKE_CALLS: callsFile };
   const args = ["--ticket", ticket, "--builder", "sol"];
   const run = (extra: string[] = [], overrides: NodeJS.ProcessEnv = {}) => {
     const result = spawnSync("bash", [kit, "slice", ...args, ...extra], { cwd: root, env: { ...env, ...overrides }, encoding: "utf8", timeout: 20_000 });
@@ -252,4 +264,50 @@ test("kit slice fails closed when a saved clean review becomes unreadable", t =>
   const result = f.run(["--no-pr", "--rounds", "1"], { UNREADABLE_REVIEW: "1" });
   assert.equal(result.status, 1); assert.match(result.stdout, /fail slice fix: 1 open findings/);
   assert.equal(f.calls().filter(call => call.phase === "build").length, 1);
+});
+
+
+test("exhausted slice surfaces PR creation failure and its bounded PR digest", t => {
+  const f = fixture(t), result = f.run(["--rounds", "1"], { CLEAN_AT: "9", FAIL_PHASE: "pr" });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /slice: pr fail/);
+  assert.match(result.stdout, /RESULT: fail slice pr: command exited 7: pr deliberate failure/);
+  assert.doesNotMatch(result.stdout, /open findings after/);
+  assert.match(result.stderr, /failure-detail-39/);
+  assert.equal(result.stderr.trim().split("\n").length, 15);
+  assert.equal(f.state().pr, undefined);
+  assert.equal(existsSync(join(f.root, ".scratch/merged")), false);
+  assert.match(readFileSync(join(f.root, ".scratch/kit-slice/04-ticket/pr.log"), "utf8"), /failure-detail-0/);
+});
+
+test("queued slice waits for the actual merged SHA without reopening the PR", t => {
+  const f = fixture(t), result = f.run([], { QUEUE_PR: "1", MERGE_AFTER: "2" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(result.stdout.endsWith(`RESULT: ok slice ${f.ticket} PR #42 ${"a".repeat(40)}\n`));
+  assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "pr", "merge", "merge"]);
+  assert.equal(f.state().queued, undefined);
+  assert.ok(f.state().finished.includes("pr"));
+  assert.equal(f.run().status, 0);
+  assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "pr", "merge", "merge"]);
+});
+
+for (const failure of ["lookup", "timeout"]) test(`queued slice resumes its merge wait after ${failure} without reopening the PR`, t => {
+  const f = fixture(t);
+  const failed = f.run([], { QUEUE_PR: "1", ...(failure === "lookup" ? { MERGE_FAILURE: "1" } : { MERGE_PENDING: "1", ASE_SLICE_MERGE_TIMEOUT_MS: "1" }) });
+  assert.equal(failed.status, 1, failed.stdout + failed.stderr);
+  assert.match(failed.stdout, /RESULT: fail slice pr:/);
+  if (failure === "timeout") assert.match(failed.stdout, /merge wait timed out/);
+  assert.equal(f.state().pr, "42");
+  assert.equal(f.state().queued?.head, f.git("rev-parse", "HEAD"));
+  assert.equal(f.state().finished.includes("pr"), false);
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(result.stdout.endsWith(`RESULT: ok slice ${f.ticket} PR #42 ${"a".repeat(40)}\n`));
+  for (const phase of ["build", "review", "pr"]) assert.equal(f.calls().filter(call => call.phase === phase).length, 1);
+});
+
+test("queued slice refuses a replacement PR head instead of reporting it merged", t => {
+  const f = fixture(t), result = f.run([], { QUEUE_PR: "1", MERGE_CHANGED_HEAD: "1" });
+  assert.equal(result.status, 1); assert.match(result.stdout, /queued PR #42 head changed/);
+  assert.equal(f.state().finished.includes("pr"), false);
 });

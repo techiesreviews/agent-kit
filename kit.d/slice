@@ -9,7 +9,7 @@ import { openFindings } from "../review-findings.mjs";
 const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv, commitBuilderWork, builderAuthor } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const usage = "Usage: kit slice --ticket FILE --builder MODEL [--effort high] [--rounds 3] [--no-pr]\nResume saved phases under .scratch/kit-slice/<ticket-slug>/.\nTest overrides: ASE_SLICE_AGENT and ASE_SLICE_KIT name executables.\n";
+const usage = "Usage: kit slice --ticket FILE --builder MODEL [--effort high] [--rounds 3] [--no-pr]\nResume saved phases under .scratch/kit-slice/<ticket-slug>/.\nQueued PRs are awaited for up to 2h; reruns resume the wait.\nOverrides: ASE_SLICE_AGENT, ASE_SLICE_KIT, ASE_SLICE_GH; ASE_SLICE_MERGE_TIMEOUT_MS, ASE_SLICE_MERGE_POLL_MS.\n";
 
 function options(args) {
   const flags = { effort: "high", rounds: 3, noPr: false };
@@ -92,9 +92,34 @@ async function slice(args) {
       return { code, output: readFileSync(log, "utf8").slice(previous.length) };
     }
     const requireSuccess = result => {
-      if (result.code !== 0) throw new Error(`command exited ${result.code}; see ${log}`);
+      if (result.code !== 0) {
+        const reason = /^RESULT: fail (.+)$/m.exec(result.output)?.[1];
+        throw new Error(`command exited ${result.code}${reason ? `: ${reason}` : ""}; see ${log}`);
+      }
       return result.output;
     };
+    async function waitForMerge() {
+      const timeout = Number(env.ASE_SLICE_MERGE_TIMEOUT_MS || 7_200_000);
+      const poll = Number(env.ASE_SLICE_MERGE_POLL_MS || 10_000);
+      if (![timeout, poll].every(value => Number.isSafeInteger(value) && value > 0))
+        throw new Error("merge timeout and poll interval must be positive integer milliseconds");
+      const deadline = Date.now() + timeout;
+      for (;;) {
+        const output = requireSuccess(await execute(env.ASE_SLICE_GH || "gh", ["pr", "view", state.pr, "--json", "state,mergeCommit,headRefOid"]));
+        const pr = JSON.parse(output);
+        if (pr.headRefOid !== state.queued.head) throw new Error(`queued PR #${state.pr} head changed; expected ${state.queued.head}`);
+        if (pr.state === "MERGED") {
+          if (!/^[a-f\d]{40}$/i.test(pr.mergeCommit?.oid || "")) throw new Error("merged PR has no merge SHA");
+          state.sha = pr.mergeCommit.oid; delete state.queued;
+          complete(`#${state.pr}`); return;
+        }
+        if (pr.state !== "OPEN") throw new Error(`queued PR #${state.pr} is ${pr.state}, not merged`);
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) throw new Error(`queued PR #${state.pr} merge wait timed out; rerun slice to resume`);
+        await new Promise(accept => setTimeout(accept, Math.min(poll, remaining)));
+        assertBranch();
+      }
+    }
     function reviewEvidence(explicit) {
       let folders;
       if (explicit) folders = [resolve(root, explicit)];
@@ -117,12 +142,12 @@ async function slice(args) {
     const kit = env.ASE_SLICE_KIT || resolve(import.meta.dirname, "../kit");
     const agent = env.ASE_SLICE_AGENT || resolve(import.meta.dirname, "../agent.sh");
     // A moved HEAD invalidates review and landing, never a finished build.
-    if (state.finished.includes("commit") && state.head !== git("rev-parse", "HEAD")) {
+    if (!state.queued && state.finished.includes("commit") && state.head !== git("rev-parse", "HEAD")) {
       state.finished = state.finished.filter(name => !["review", "fix", "pr"].includes(name));
       state.head = git("rev-parse", "HEAD");
       delete state.review;
     }
-    if (state.finished.includes("review")) {
+    if (!state.queued && !state.finished.includes("pr") && state.finished.includes("review")) {
       let covering = false;
       try { covering = reviewEvidence(state.review) === state.review; } catch { /* Re-review stale evidence. */ }
       if (!covering) state.finished = state.finished.filter(name => !["review", "fix", "pr"].includes(name));
@@ -179,8 +204,17 @@ async function slice(args) {
       if (open.length) {
         if (!flags.noPr) {
           // Open/update the PR, explicitly prohibit merging even if its review changes.
+          begin("pr");
           const result = await execute(kit, ["pr", "--ticket", flags.ticket, "--no-merge"]);
-          state.pr = /#(\d+)/.exec(result.output)?.[1] || state.pr; save();
+          const refused = /^RESULT: fail pr #(\d+) review has [1-9]\d* open findings \(.+\)$/m.exec(result.output);
+          const opened = /^RESULT: ok opened #(\d+) [a-f\d]{7,40}$/m.exec(result.output);
+          if (result.code === 1 && refused) state.pr = refused[1];
+          else {
+            requireSuccess(result);
+            if (!opened) throw new Error("PR did not identify an opened, unmerged PR; see phase log");
+            state.pr = opened[1];
+          }
+          save(); phase = "fix";
         }
         // Preserve command output; print only findings in the failure digest.
         log = join(directory, "findings.log");
@@ -191,13 +225,24 @@ async function slice(args) {
     }
     begin("pr");
     if (!flags.noPr && !state.finished.includes(phase)) {
-      assertHead(state.head);
-      const result = await execute(kit, ["pr", "--ticket", flags.ticket]);
-      state.pr = /#(\d+)/.exec(result.output)?.[1] || state.pr; save();
-      const output = requireSuccess(result);
-      const merged = /^RESULT: ok merged #(\d+) ([a-f\d]{7,40})$/m.exec(output);
-      if (!merged) throw new Error("PR did not report a merged commit; see phase log");
-      state.pr = merged[1]; state.sha = merged[2]; complete(`#${state.pr}`);
+      if (state.queued) await waitForMerge();
+      else {
+        assertHead(state.head);
+        const result = await execute(kit, ["pr", "--ticket", flags.ticket]);
+        state.pr = /#(\d+)/.exec(result.output)?.[1] || state.pr; save();
+        const output = requireSuccess(result);
+        const merged = /^RESULT: ok merged #(\d+) ([a-f\d]{7,40})$/m.exec(output);
+        const queued = /^RESULT: ok queued #(\d+) ([a-f\d]{7,40})$/m.exec(output);
+        if (merged) {
+          state.pr = merged[1]; state.sha = merged[2]; state.head = git("rev-parse", "HEAD");
+          complete(`#${state.pr}`);
+        } else if (queued) {
+          const head = git("rev-parse", "HEAD");
+          if (!head.startsWith(queued[2])) throw new Error("queued PR did not name the current HEAD");
+          state.pr = queued[1]; state.queued = { head }; state.head = head;
+          save(); await waitForMerge();
+        } else throw new Error("PR did not report a merged or queued commit; see phase log");
+      }
     } else if (flags.noPr) console.log("slice: pr ok skipped (--no-pr)");
     kitResult("ok", `slice ${flags.ticket} ${flags.noPr ? `reviewed clean ${state.head}` : `PR #${state.pr} ${state.sha}`}`);
     return 0;
