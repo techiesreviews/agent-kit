@@ -207,6 +207,9 @@ test("runner appends the footer exactly once to generated, handwritten and alrea
   const f = fixture(t);
   const generated = reviewBrief("ticket.md", "", "HEAD^", f.root);
   assert.ok(!generated.includes(reviewFormat));
+  for (const severity of ["P0:", "P1:", "P2:", "P3:"]) assert.ok(reviewFormat.includes(severity));
+  assert.match(reviewFormat, /Spec defect that breaks a "Done when" item/);
+  assert.match(reviewFormat, /Validation gaps:.*no severity/);
   for (const brief of [generated, "Hand-written brief", `${generated}${reviewFormat}`]) {
     writeFileSync(f.brief, brief);
     const result = f.runAgent(["--base", "HEAD^"]);

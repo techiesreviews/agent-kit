@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { openFindings } from "../scripts/agents/review-findings.mjs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterFixRounds, blockingFindings, completedFixRounds, openFindings } from "../scripts/agents/review-findings.mjs";
 
 const review = (body: string) => `REVIEW_STATUS: complete\n\n${body}\n`;
-const finding = (group: string, text: string) => ({ group, text });
+const finding = (group: string, text: string, severity: string | null = null) => ({ group, text, severity });
 
 // Inline fixtures adapted from dor-* reviews: separate groups (dor-01), em-dash groups
 // and commit prefixes (dor-02, dor-14, dor-27), inline values (dor-13 and dor-27),
@@ -25,7 +28,7 @@ const variants = [
     name: "bold em-dash headings with inline values",
     open: "**Defects — Spec:**\n- **8d5ac2b0:scripts/agents/durable-inventory.mjs:257 — P2:** The listing limit is too small.\n**Defects — Standards: none under CODING_STANDARDS.md.**\n**Validation gaps:** Add discovery tests.\n**Optional nits:** none.",
     none: "**Defects — Spec: None.**\n**Defects — Standards:**\n- **none.**\n**Validation gaps: none beyond existing coverage.**\n**Optional nits:** none.",
-    findings: [finding("Spec", "8d5ac2b0:scripts/agents/durable-inventory.mjs:257 — P2: The listing limit is too small."), finding("Validation gaps", "Add discovery tests.")],
+    findings: [finding("Spec", "8d5ac2b0:scripts/agents/durable-inventory.mjs:257 — P2: The listing limit is too small.", "P2"), finding("Validation gaps", "Add discovery tests.")],
   },
   {
     name: "one-line list groups",
@@ -43,7 +46,7 @@ const variants = [
     name: "bold items and multiline commit prefixes",
     open: "Defects:\n**Spec:**\n- **340290b7:src/agent-transport.ts:173 — P1:** Live transport admits receiptless mutations.\n  A delayed mutation can apply after takeover.\n\n  Fix: route mutations through fenced commits.\n- `4d43ef1d:src/components/agent-menu.ts:529` — **P2**: The allowance accepts old grants.\n**Standards:**\n- **none.**\nValidation gaps: none.\nOptional nits: none.",
     none: "Defects:\n**Spec:**\n- **NONE found.**\n  The change satisfies the contract.\n**Standards:**\n- **none.**\nValidation gaps: **None beyond the existing tests.**\nOptional nits: none.",
-    findings: [finding("Spec", "340290b7:src/agent-transport.ts:173 — P1: Live transport admits receiptless mutations. A delayed mutation can apply after takeover. Fix: route mutations through fenced commits."), finding("Spec", "`4d43ef1d:src/components/agent-menu.ts:529` — P2: The allowance accepts old grants.")],
+    findings: [finding("Spec", "340290b7:src/agent-transport.ts:173 — P1: Live transport admits receiptless mutations. A delayed mutation can apply after takeover. Fix: route mutations through fenced commits.", "P1"), finding("Spec", "`4d43ef1d:src/components/agent-menu.ts:529` — P2: The allowance accepts old grants.", "P2")],
   },
 ];
 
@@ -84,4 +87,42 @@ test("missing completion marker or Defects heading fails closed with one finding
     "REVIEW_STATUS: complete\nValidation gaps: none.\nOptional nits: none.", "REVIEW_STATUS: complete\nThe Defects: section is missing."]) {
     assert.deepEqual(openFindings(text), { findings: [finding("Review", "review format unreadable")], readable: false });
   }
+});
+
+for (const severity of ["P0", "P1", "P2", "P3"]) {
+  for (const token of [`${severity}:`, `${severity} —`, `**${severity}**`, `(${severity})`, `[${severity}]`, `Severity: ${severity}`, `severity ${severity.toLowerCase()}`]) {
+    for (const prefix of ["", "abcd123:file.ts:3 — "]) test(`severity parses ${prefix}${token}`, () => {
+      const { findings } = openFindings(review(`Defects: ${prefix}${token} defect\nValidation gaps: none.`));
+      assert.equal(findings[0].severity, severity);
+    });
+  }
+}
+
+test("severity uses the first token within 80 characters; gaps never carry severity", () => {
+  const { findings } = openFindings(review(`Defects:\n- P2: defect mentioning P1\n- ${"x".repeat(80)} P1 late severity\n- P4: unknown severity\nValidation gaps: P1 missing coverage`));
+  assert.deepEqual(findings.map(item => item.severity), ["P2", null, null, null]);
+});
+
+test("blocking findings fail closed for defects and unreadable reviews, excluding minor defects and gaps", () => {
+  for (const group of ["Spec", "Standards", "Defects"]) for (const severity of ["P0", "P1", "P2", "P3", null]) {
+    const item = finding(group, "defect", severity);
+    assert.deepEqual(blockingFindings([item]), ["P2", "P3"].includes(severity!) ? [] : [item]);
+  }
+  assert.deepEqual(blockingFindings(openFindings(review("Defects: none.\nValidation gaps: Add coverage.")).findings), []);
+  assert.deepEqual(blockingFindings(openFindings("").findings), [finding("Review", "review format unreadable")]);
+  assert.equal(afterFixRounds(2), false);
+  assert.equal(afterFixRounds(3), true);
+  assert.equal(afterFixRounds(4), true);
+});
+
+test("completed rounds count only round files and exclude the pending round", t => {
+  const dir = mkdtempSync(join(tmpdir(), "review-rounds-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  assert.equal(completedFixRounds(join(dir, "missing")), 0);
+  for (const name of ["round-1.md", "round-2.md", "round-3.md", "round-4-review.log", "other.md"]) writeFileSync(join(dir, name), "round");
+  mkdirSync(join(dir, "round-4.md"));
+  assert.equal(completedFixRounds(dir), 3);
+  writeFileSync(join(dir, "pending.json"), JSON.stringify({ round: 3 }));
+  assert.equal(completedFixRounds(dir), 2);
+  assert.equal(completedFixRounds(join(dir, "missing"), dir), 2);
 });

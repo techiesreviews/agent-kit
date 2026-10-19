@@ -7,7 +7,13 @@ import { dirname, posix, resolve } from "node:path";
 export const reviewFormat = `Required format:
 REVIEW_STATUS: complete
 Defects: commit:path:line, severity, evidence, and fix; use separate Spec and Standards groups.
-Validation gaps: concrete missing coverage, or none.
+Write each Defect as commit:path:line — P1: evidence and fix.
+Every Defect must carry P0, P1, P2 or P3 right after its location.
+P0: data loss, security hole, broken build/tests, or the change does not work at all.
+P1: wrong behaviour a user or runner would hit, or a Spec defect that breaks a "Done when" item.
+P2: real but minor defect (edge case, misleading message, standards breach with low impact).
+P3: cosmetic or style.
+Validation gaps: concrete missing coverage, or none; no severity.
 Optional nits: separate from defects, or none.
 The very first line must be REVIEW_STATUS: complete. No preamble or markdown fence.
 `;

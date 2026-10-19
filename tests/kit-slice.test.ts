@@ -70,7 +70,8 @@ function evidence() {
   mkdirSync(folder, { recursive: true });
   writeFileSync(join(folder, "refs.txt"), git("rev-parse", "HEAD") + "\\n");
   const open = round() < Number(process.env.CLEAN_AT || 0);
-  writeFileSync(join(folder, "result.md"), process.env.UNREADABLE_REVIEW ? "partial" : open ? ${JSON.stringify(findings)} : ${JSON.stringify(clean)});
+  const report = process.env.MINOR_REVIEW && round() >= 3 ? ${JSON.stringify(findings)}.replace("P1", "P2").replace("Standards: none", "Standards: P3: Cosmetic issue") : ${JSON.stringify(findings)};
+  writeFileSync(join(folder, "result.md"), process.env.UNREADABLE_REVIEW ? "partial" : open ? report : ${JSON.stringify(clean)});
   return { folder, open };
 }
 `;
@@ -108,12 +109,20 @@ if (phase === "review") {
   process.exitCode = open ? 1 : 0;
 } else if (phase === "pr") {
   const { folder, open } = evidence();
-  if (open) {
+  if (open && !(process.env.MINOR_REVIEW && round() >= 3)) {
     console.log("RESULT: fail pr #42 review has 1 open findings (" + folder + "/result.md)");
     process.exitCode = 1;
   } else if (args.includes("--no-merge")) console.log("RESULT: ok opened #42 " + git("rev-parse", "--short", "HEAD"));
   else if (process.env.QUEUE_PR) console.log("RESULT: ok queued #42 " + git("rev-parse", "HEAD"));
   else {
+    if (process.env.ADD_FOLLOWUPS) {
+      const ticket = args[args.indexOf("--ticket") + 1];
+      if (!readFileSync(ticket, "utf8").includes("### Follow-ups")) {
+        appendFileSync(ticket, "\\n## Done (2026-10-19)\\n\\n### Follow-ups\\n\\n- Spec (P2): Minor issue\\n");
+        git("add", "--", ticket); git("commit", "-m", "docs: ticket follow-ups from review");
+      }
+      if (process.env.FAIL_AFTER_FOLLOWUPS) { console.log("RESULT: fail ci: deliberate failure"); process.exit(1); }
+    }
     writeFileSync(".scratch/merged", "yes");
     console.log("RESULT: ok merged #42 " + git("rev-parse", "HEAD"));
   }
@@ -294,7 +303,8 @@ test("kit slice fails clearly when the builder changes nothing", t => {
 test("kit slice re-reviews moved HEAD without rebuilding and rejects switching branches", t => {
   const f = fixture(t);
   assert.equal(f.run(["--no-pr"]).status, 0);
-  f.git("commit", "--allow-empty", "-m", "later work");
+  writeFileSync(join(f.root, "file.txt"), "later implementation work\n");
+  f.git("add", "file.txt"); f.git("commit", "-m", "later work");
   const result = f.run(["--no-pr"]);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "review"]);
@@ -511,4 +521,48 @@ if (readFileSync("file.txt", "utf8").startsWith("preserved real fix")) process.e
   }
   assert.equal(f.state().rounds, 0);
   assert.equal(f.state().pendingFix, true);
+});
+
+
+test("three rounds with P2/P3 findings finish fix and run the PR phase", t => {
+  const f = fixture(t), result = f.run([], { CLEAN_AT: "99", MINOR_REVIEW: "1" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /slice: fix ok 3 rounds, 2 follow-ups/);
+  assert.match(result.stdout, /RESULT: ok slice .* PR #42/);
+  assert.equal(f.state().rounds, 3);
+  assert.equal(f.calls().filter(call => call.phase === "fix").length, 3);
+  const prs = f.calls().filter(call => call.phase === "pr");
+  assert.equal(prs.length, 1);
+  assert.equal(prs[0].args.includes("--no-merge"), false);
+});
+
+test("three rounds with a P1 leave the PR unmerged and fail", t => {
+  const f = fixture(t), result = f.run([], { CLEAN_AT: "99" });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /RESULT: fail slice fix: 1 open findings after 3 rounds/);
+  assert.ok(f.calls().find(call => call.phase === "pr")?.args.includes("--no-merge"));
+  assert.equal(existsSync(join(f.root, ".scratch/merged")), false);
+});
+
+for (const failedCi of [false, true]) test(`resume after ticket follow-ups keeps review coverage (failed CI=${failedCi})`, t => {
+  const f = fixture(t);
+  const options = { CLEAN_AT: "99", MINOR_REVIEW: "1", ADD_FOLLOWUPS: "1" };
+  const result = f.run([], { ...options, ...(failedCi ? { FAIL_AFTER_FOLLOWUPS: "1" } : {}) });
+  assert.equal(result.status, failedCi ? 1 : 0, result.stdout + result.stderr);
+  assert.equal(f.git("log", "-1", "--format=%s"), "docs: ticket follow-ups from review");
+  const calls = f.calls(), head = f.git("rev-parse", "HEAD");
+  assert.notEqual(readFileSync(join(f.state().review, "refs.txt"), "utf8").trim(), head);
+  const resumed = f.run([], options);
+  assert.equal(resumed.status, 0, resumed.stdout + resumed.stderr);
+  for (const phase of ["build", "review", "fix"]) assert.equal(f.calls().filter(call => call.phase === phase).length, calls.filter(call => call.phase === phase).length);
+  assert.equal(f.calls().filter(call => call.phase === "pr").length, failedCi ? 2 : 1);
+  assert.equal(f.git("rev-parse", "HEAD"), head);
+});
+
+
+test("no-pr after three rounds reports its non-blocking follow-ups", t => {
+  const f = fixture(t), result = f.run(["--no-pr"], { CLEAN_AT: "99", MINOR_REVIEW: "1" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /RESULT: ok slice .* reviewed with follow-ups/);
+  assert.equal(f.calls().some(call => call.phase === "pr"), false);
 });

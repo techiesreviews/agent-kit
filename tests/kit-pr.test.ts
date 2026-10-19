@@ -65,6 +65,12 @@ else if (tool === "gh") {
     }
   } else if (action === "pr-view") {
     if (env.FAKE_VIEW_ERROR) process.exit(1);
+    if (args.includes("comments")) {
+      const comments = readFileSync(env.FAKE_CALLS, "utf8").trim().split("\\n").map(line => JSON.parse(line))
+        .filter(call => call.tool === "gh" && call.args[0] === "pr" && call.args[1] === "comment");
+      console.log(JSON.stringify({ comments }));
+      process.exit(0);
+    }
     console.log(env.FAKE_MERGED || "abcdef0123456789abcdef0123456789abcdef01");
   }
 }
@@ -143,7 +149,13 @@ function fixture(t: TestContext, changes?: Record<string, string>) {
     writeFileSync(path, report);
     return path;
   };
-  return { dir, root, main, origin, env, git, gitAt, head, commit, run, calls, ghCalls, apiCalls, body, logDir, peer, saveReview };
+  const rounds = (count: number, pending?: number, local = false) => {
+    const folder = join(local ? root : main, ".scratch/kit-fix", encodeURIComponent("feature/kit-pr"));
+    mkdirSync(folder, { recursive: true });
+    for (let i = 1; i <= count; i++) writeFileSync(join(folder, `round-${i}.md`), "fix brief");
+    if (pending) writeFileSync(join(folder, "pending.json"), JSON.stringify({ round: pending }));
+  };
+  return { dir, root, main, origin, env, git, gitAt, head, commit, run, calls, ghCalls, apiCalls, body, logDir, peer, saveReview, rounds };
 }
 
 test("help and argument errors, including the kit front door", t => {
@@ -653,4 +665,103 @@ test("--full forces today's checks on a docs-only PR; a failing doc guard stops 
     assert.equal(failed.status, 1); assert.ok(failed.stdout.includes(`RESULT: fail ${action}:`), failed.stdout);
     assert.equal(g.calls().some(call => call.tool === "gh"), false);
   }
+});
+
+const minorReview = cleanReview.replace("Spec: none.", "Spec: P2: Minor defect.").replace("Validation gaps: none.", "Validation gaps: Add coverage.");
+
+for (const pending of [false, true]) test(`P3 blocks with only two completed rounds (pending=${pending})`, t => {
+  const f = fixture(t);
+  f.rounds(pending ? 3 : 2, pending ? 3 : undefined);
+  const report = cleanReview.replace("Spec: none.", "Spec: P3: Cosmetic defect.");
+  f.saveReview(report);
+  const result = f.run();
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /RESULT: fail pr #73 review has 1 open findings/);
+  assert.equal(f.ghCalls("merge").length, 0);
+  assert.equal(f.calls().some(call => call.args[0] === "wait"), false);
+});
+
+for (const local of [false, true]) for (const source of ["saved", "fresh"]) test(`three completed rounds merge follow-ups, preserve coverage and avoid duplicates (local=${local}, source=${source})`, t => {
+  const f = fixture(t);
+  const ticket = '---\ntitle: "Ticket title"\n---\n\n## Done (2026-10-19)\n\nImplemented.\n\n## Notes\n\nKeep this section.\n';
+  f.commit("Close ticket", "ticket.md", ticket);
+  f.rounds(3, undefined, local);
+  if (source === "saved") f.saveReview(minorReview);
+  const expectedReviews = source === "saved" ? 0 : 1;
+  const reviewed = f.git("rev-parse", "HEAD");
+  const result = f.run(["--ticket", "ticket.md"], { FAKE_REVIEW: minorReview });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /review: 2 follow-ups after 3 fix rounds \(non-blocking\)/);
+  assert.match(result.stdout, /RESULT: ok merged #73/);
+  const head = f.git("rev-parse", "HEAD");
+  assert.notEqual(head, reviewed);
+  assert.equal(f.git("rev-parse", "HEAD^"), reviewed);
+  assert.equal(f.git("log", "-1", "--format=%s"), "docs: ticket follow-ups from review");
+  assert.equal(f.git("diff", "--name-only", reviewed, head), "ticket.md");
+  assert.equal(f.gitAt(f.origin, "rev-parse", "refs/heads/feature/kit-pr"), head);
+  const updated = readFileSync(join(f.root, "ticket.md"), "utf8");
+  assert.match(updated, /### Follow-ups\n\n- Spec \(P2\): P2: Minor defect.\n- Validation gaps \(gap\): Add coverage.\n\n## Notes/);
+  const summary = "Follow-ups (non-blocking after 3 fix rounds):\n- Spec (P2): P2: Minor defect.\n- Validation gaps (gap): Add coverage.";
+  assert.equal(f.ghCalls("comment").filter(call => call.body === summary).length, 1);
+  assert.ok(f.apiCalls().some(call => call.body?.includes(summary)));
+  assert.ok(f.ghCalls("merge")[0].args.includes(head));
+  const calls = f.calls();
+  assert.ok(calls.findIndex(call => call.body === summary) < calls.findIndex(call => call.args[0] === "wait"));
+  assert.equal(calls.filter(call => call.tool === "fake-kit" && call.args[0] === "review").length, expectedReviews);
+  const rerun = f.run(["--ticket", "ticket.md"], { FAKE_EXISTING: "1" });
+  assert.equal(rerun.status, 0, rerun.stdout + rerun.stderr);
+  assert.equal(f.git("rev-parse", "HEAD"), head);
+  assert.equal(readFileSync(join(f.root, "ticket.md"), "utf8"), updated);
+  assert.equal(f.ghCalls("comment").filter(call => call.body === summary).length, 1);
+  assert.equal(f.calls().filter(call => call.tool === "fake-kit" && call.args[0] === "review").length, expectedReviews);
+});
+
+for (const defect of ["P0: Broken build.", "P1: Serious defect.", "No readable severity."]) test(`three rounds still block ${defect}`, t => {
+  const f = fixture(t); f.rounds(3);
+  const report = minorReview.replace("Standards: none.", `Standards: ${defect}`);
+  f.saveReview(report);
+  const result = f.run();
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /RESULT: fail pr #73 review has 1 open findings/);
+  assert.ok(result.stdout.indexOf(`Standards: ${defect}`) < result.stdout.indexOf("Spec: P2:"));
+  assert.equal(f.ghCalls("merge").length, 0);
+});
+
+test("three rounds still fail closed on unreadable review", t => {
+  const f = fixture(t); f.rounds(3); f.saveReview("REVIEW_STATUS: complete\nNo structured review.");
+  const result = f.run();
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /RESULT: fail pr #73 review has 1 open findings/);
+});
+
+test("ticket-only coverage excludes any other changed path", t => {
+  const f = fixture(t); f.rounds(3); f.saveReview(minorReview);
+  f.commit("New implementation", "file.txt", "changed after review\n");
+  const result = f.run(["--ticket", "ticket.md"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(f.calls().filter(call => call.tool === "fake-kit" && call.args[0] === "review").length, 1);
+});
+
+test("waiver and non-blocking follow-ups are recorded separately after three rounds", t => {
+  const f = fixture(t); f.rounds(3);
+  const report = minorReview.replace("Standards: none.", "Standards: P1: Serious defect.");
+  const result = f.run(["--waive", "Lead accepts risk"], { ASE_OWNER: "ke-lead", FAKE_REVIEW: report });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(f.ghCalls("comment").at(-1)?.body, "Merged with 1 waived findings: Lead accepts risk");
+  const body = f.apiCalls().at(-1)?.body || "";
+  assert.match(body, /Follow-ups \(non-blocking after 3 fix rounds\):/);
+  assert.match(body, /merged with 1 waived findings: Lead accepts risk/);
+});
+
+
+test("follow-ups extend an existing subsection without duplicating existing lines", t => {
+  const f = fixture(t); f.rounds(3);
+  f.commit("Close ticket", "ticket.md", '---\ntitle: "Ticket title"\n---\n\n## Done (2026-10-19)\n\nImplemented.\n\n### Follow-ups\n\n- Spec (P2): P2: Minor defect.\n\n### Evidence\n\nKeep evidence.\n');
+  f.saveReview(minorReview);
+  const result = f.run(["--ticket", "ticket.md"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const ticket = readFileSync(join(f.root, "ticket.md"), "utf8");
+  assert.equal(ticket.split("### Follow-ups").length, 2);
+  assert.equal(ticket.split("- Spec (P2): P2: Minor defect.").length, 2);
+  assert.match(ticket, /- Validation gaps \(gap\): Add coverage.\n\n### Evidence/);
 });

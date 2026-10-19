@@ -4,7 +4,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { openFindings } from "../review-findings.mjs";
+import { afterFixRounds, blockingFindings, FIX_ROUNDS, openFindings, reviewCoversHead } from "../review-findings.mjs";
 
 const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv, commitBuilderWork, builderAuthor } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
@@ -12,7 +12,7 @@ const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv, commitBuilderWork, b
 const usage = "Usage: kit slice --ticket FILE --builder MODEL [--effort high] [--rounds 3] [--no-pr]\nResume saved phases under .scratch/kit-slice/<ticket-slug>/.\nQueued PRs are awaited for up to 2h; reruns resume the wait.\nOverrides: ASE_SLICE_AGENT, ASE_SLICE_KIT, ASE_SLICE_GH; ASE_SLICE_MERGE_TIMEOUT_MS, ASE_SLICE_MERGE_POLL_MS.\n";
 
 function options(args) {
-  const flags = { effort: "high", rounds: 3, noPr: false };
+  const flags = { effort: "high", rounds: FIX_ROUNDS, noPr: false };
   const seen = new Set();
   for (let i = 0; i < args.length; i++) {
     const flag = args[i];
@@ -134,7 +134,7 @@ async function slice(args) {
       }
       for (const folder of folders) {
         try {
-          if (readFileSync(join(folder, "refs.txt"), "utf8").split(/\r?\n/)[0] === git("rev-parse", "HEAD")) return folder;
+          if (reviewCoversHead(readFileSync(join(folder, "refs.txt"), "utf8").split(/\r?\n/)[0], git("rev-parse", "HEAD"), ticket, root)) return folder;
         } catch { /* Incomplete evidence cannot cover HEAD. */ }
       }
       throw new Error("no review evidence covers HEAD");
@@ -144,21 +144,26 @@ async function slice(args) {
       try { text = readFileSync(join(state.review, "result.md"), "utf8"); } catch { /* Fail closed. */ }
       return openFindings(text).findings;
     };
+    const stopping = open => afterFixRounds(state.rounds) ? blockingFindings(open) : open;
     const kit = env.ASE_SLICE_KIT || resolve(import.meta.dirname, "../kit");
     const agent = env.ASE_SLICE_AGENT || resolve(import.meta.dirname, "../agent.sh");
     const pendingFix = () => state.pendingFix && existsSync(join(root, ".scratch/kit-fix", encodeURIComponent(branch), "pending.json"));
-    // A moved HEAD invalidates review and landing, never a finished build.
+    // Only ticket changes preserve review and landing when HEAD moves.
     if (!state.queued && !pendingFix() && state.finished.includes("commit") && state.head !== git("rev-parse", "HEAD")) {
-      state.finished = state.finished.filter(name => !["review", "fix", "pr"].includes(name));
+      let covering = false;
+      try { covering = reviewEvidence(state.review) === state.review; } catch { /* Re-review other changes. */ }
+      if (!covering) {
+        state.finished = state.finished.filter(name => !["review", "fix", "pr"].includes(name));
+        delete state.review;
+      }
       state.head = git("rev-parse", "HEAD");
-      delete state.review;
       delete state.pendingFix;
     }
     if (!state.queued && !pendingFix() && !state.finished.includes("pr") && state.finished.includes("review")) {
       let covering = false;
       try { covering = reviewEvidence(state.review) === state.review; } catch { /* Re-review stale evidence. */ }
       if (!covering) state.finished = state.finished.filter(name => !["review", "fix", "pr"].includes(name));
-      else if (findings().length) state.finished = state.finished.filter(name => !["fix", "pr"].includes(name));
+      else if (stopping(findings()).length) state.finished = state.finished.filter(name => !["fix", "pr"].includes(name));
     }
     save();
     begin("brief");
@@ -211,7 +216,7 @@ async function slice(args) {
         delete state.pendingFix;
         save(); open = findings();
       }
-      if (open.length) {
+      if (stopping(open).length) {
         if (!flags.noPr) {
           // Open/update the PR, explicitly prohibit merging even if its review changes.
           begin("pr");
@@ -231,7 +236,7 @@ async function slice(args) {
         writeFileSync(log, open.slice(0, 15).map(item => `${item.group}: ${item.text}`).join("\n") + "\n");
         throw new Error(`${open.length} open findings after ${state.rounds} rounds (${join(state.review, "result.md")})`);
       }
-      complete(`${state.rounds} rounds`);
+      complete(`${state.rounds} rounds${open.length ? `, ${open.length} follow-ups` : ""}`);
     }
     begin("pr");
     if (!flags.noPr && !state.finished.includes(phase)) {
@@ -254,7 +259,7 @@ async function slice(args) {
         } else throw new Error("PR did not report a merged or queued commit; see phase log");
       }
     } else if (flags.noPr) console.log("slice: pr ok skipped (--no-pr)");
-    kitResult("ok", `slice ${flags.ticket} ${flags.noPr ? `reviewed clean ${state.head}` : `PR #${state.pr} ${state.sha}`}`);
+    kitResult("ok", `slice ${flags.ticket} ${flags.noPr ? `reviewed ${findings().length ? "with follow-ups" : "clean"} ${state.head}` : `PR #${state.pr} ${state.sha}`}`);
     return 0;
   } catch (error) {
     console.log(`slice: ${phase} fail`);
