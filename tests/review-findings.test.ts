@@ -196,3 +196,22 @@ test("a sha-less long ticket-path location reads severity, with or without backt
   const quoted = `\`${ticket}:12\` — P1: The listing limit is too small.`;
   assert.deepEqual(openFindings(review(`Spec defects:\n- ${quoted}`)).findings, [finding("Spec", quoted, "P1")]);
 });
+
+test("severity: the 40-character window after a location", () => {
+  const read = (text: string) => openFindings(review(`Defects: ${text}\nValidation gaps: none.`)).findings[0].severity;
+  assert.equal(read(`abcd123:a.ts:1 — ${"x".repeat(37)} P1`), "P1");
+  assert.equal(read(`abcd123:a.ts:1 — ${"x".repeat(41)} P1`), null);
+});
+
+test("severity: a long-path location followed directly by the severity", () => {
+  const ticket = `${"segment/".repeat(20)}ticket.md`;
+  const read = (text: string) => openFindings(review(`Defects: ${text}\nValidation gaps: none.`)).findings[0].severity;
+  assert.equal(read(`abcd1234:${ticket}:12 (P1) evidence`), "P1");
+  assert.equal(read(`\`${ticket}:12\` **P2** evidence`), "P2");
+});
+
+test("severity: locations the pattern reads only in part still find a nearby severity", () => {
+  const read = (text: string) => openFindings(review(`Defects: ${text}\nValidation gaps: none.`)).findings[0].severity;
+  assert.equal(read("src/a.ts:10:5 — P1: evidence"), "P1");
+  assert.equal(read("[src/a.ts:10](src/a.ts#L10) — P1: evidence"), "P1");
+});

@@ -38,7 +38,7 @@ export function sameReviewPatch(reviewedId, currentId) {
 
 // A leading `<sha>:<path>:<line>` or `<path>:<line>` (line may be a range, optionally
 // backticked) and the separator that follows it. Severity is read after this location.
-const LOCATION = /^`?(?:[0-9a-f]{7,64}:)?[^\s:`]+:\d+(?:[-–]\d+)?`?\s*(?:[—–-]|:)\s*/i;
+const LOCATION = /^`?(?:[0-9a-f]{7,64}:)?[^\s:`]+:\d+(?:[-–]\d+)?`?\s*(?:[—–-]|:)?\s*/i;
 
 const severityOf = text => {
   const body = text.replace(LOCATION, "");
