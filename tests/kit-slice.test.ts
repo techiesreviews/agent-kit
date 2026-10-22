@@ -397,6 +397,25 @@ test("kit slice credits its build to the model that finished the build, then fix
   assert.match(f.git("log", "-1", "--format=%B"), /^Review fixes round 1\n\nCo-Authored-By: GPT-6-Luna <noreply@openai\.com>$/);
 });
 
+test("kit slice credits a build resumed from a state saved before buildModel", t => {
+  const f = fixture(t);
+  const hook = join(f.hooks, "pre-commit");
+  writeFileSync(hook, "#!/bin/sh\nexit 1\n"); chmodSync(hook, 0o755);
+  const original = ["--ticket", f.ticket, "--builder", "gpt-6.1-sol", "--no-pr"];
+  const failed = f.run([], {}, original);
+  assert.equal(failed.status, 1, failed.stdout + failed.stderr);
+  assert.match(failed.stdout, /RESULT: fail slice commit:/);
+  assert.deepEqual(f.state().finished, ["brief", "build"]);
+  const saved = f.state();
+  delete saved.buildModel;
+  writeFileSync(join(f.root, ".scratch/kit-slice/04-ticket/state.json"), JSON.stringify(saved, null, 2) + "\n");
+  rmSync(hook);
+  const result = f.run([], {}, original);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(f.calls().filter(call => call.phase === "build").length, 1);
+  assert.match(f.git("log", "-1", "--format=%B"), /^Test slice title\n\nCo-Authored-By: GPT-6\.1-Sol <noreply@openai\.com>$/);
+});
+
 test("slice switched while real kit fix's builder step failed retargets that round", t => {
   const f = fixture(t), real = f.realFix();
   // The fake codex routes any non-Claude model name, so the real agent.sh never starts a real CLI.

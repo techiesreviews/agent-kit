@@ -176,7 +176,7 @@ const titleWord = word => word.charAt(0).toUpperCase() + word.slice(1);
 export function builderAuthor(model) {
   const alias = /^(opus|sonnet|haiku|fable)$/i.exec(model);
   if (alias) return `Claude ${titleWord(alias[1].toLowerCase())} <noreply@anthropic.com>`;
-  const claude = /^claude-(opus|sonnet|haiku|fable)-(\d+)-(\d+)(?:-\d{6,8})?(?:\[1m\])?$/i.exec(model);
+  const claude = /^claude-(opus|sonnet|haiku|fable)-(\d+)-(\d{1,2})(?:-\d{6,8})?(?:\[1m\])?$/i.exec(model);
   if (claude) return `Claude ${titleWord(claude[1].toLowerCase())} ${claude[2]}.${claude[3]} <noreply@anthropic.com>`;
   const gpt = /^gpt-(.+)$/i.exec(model);
   if (gpt) return `GPT-${gpt[1].split("-").map(titleWord).join("-")} <noreply@openai.com>`;
