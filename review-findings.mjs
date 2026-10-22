@@ -73,8 +73,8 @@ export function openFindings(resultMd) {
     const heading = /^(Defects(?:\s*[—–-]\s*(Spec|Standards))?|Spec defects|Standards defects|Validation gaps|Optional nits|Spec|Standards)(?::\s*(.*)|\s*)$/i.exec(text);
     const bareGroup = /^(Spec|Standards)$/i.test(heading?.[1] ?? "");
     const defectsLabel = /^(Spec|Standards) defects$/i.test(heading?.[1] ?? "");
-    // After Validation gaps or Optional nits, bare Spec:/Standards: lines are text once a
-    // "Spec defects" / "Standards defects" heading has opened.
+    // An unbulleted bare Spec:/Standards: opens a group when no explicit Defects heading exists,
+    // outside Optional nits; after the notes it is text once a defects label has opened.
     const topGroup = !explicitDefects && !labelled && section !== "Optional nits" && !listItem(raw);
     // "Spec defects" / "Standards defects" always open their group before the notes. After them an
     // unbulleted heading still does (fail closed) when it is bare, marked with # or bold, or names a
@@ -82,8 +82,10 @@ export function openFindings(resultMd) {
     const lateLabel = defectsLabel && !listItem(raw) &&
       (!heading[3] || /^\s*(?:#{1,6}\s|\*\*|__)/.test(raw) || severityOf(clean(heading[3])) !== null);
     // Inside a defects-label section a bulleted bare Spec:/Standards: stays in that section's group,
-    // except under "none" notes, where it switches so a real fault after the notes still counts.
-    const groupSwitch = section === "Defects" && !(labelSection && listItem(raw) && !notes) || topGroup;
+    // except under "none" notes, where it switches so a real fault after the notes still counts, or
+    // when it says "none" itself, so it and its notes never join the finding above.
+    const stays = labelSection && listItem(raw) && !notes && !none(clean(heading?.[3] ?? ""));
+    const groupSwitch = section === "Defects" && !stays || topGroup;
     if (heading && (defectsLabel ? ["", "Defects"].includes(section) || lateLabel : !bareGroup || groupSwitch)) {
       flush();
       const label = heading[1].toLowerCase();

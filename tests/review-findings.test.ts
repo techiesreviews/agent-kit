@@ -437,3 +437,17 @@ test("a late inline defects label opens its group when bold or carrying a severi
 test("bullets under a none Validation gaps group are notes, not gaps", () => {
   assert.deepEqual(openFindings(review("Defects: none\nValidation gaps: none.\n- Add a race test.")), { findings: [], readable: true });
 });
+
+test("a bulleted bare none group after a finding in a defects-label section adds nothing", () => {
+  const { findings } = openFindings(review("Spec defects:\n- a.ts:1 — P2: x\n- Standards: none\n  - A note.\nValidation gaps: none."));
+  assert.deepEqual(findings, [finding("Spec", "a.ts:1 — P2: x", "P2")]);
+  assert.deepEqual(blockingFindings(findings), []);
+});
+
+test("an unbulleted None. first line under a bare heading holds notes", () => {
+  assert.deepEqual(openFindings(review("Defects\n\nSpec\nNone. I checked every item.\nPlain note.\n- Bulleted note.\nValidation gaps: none.")), { findings: [], readable: true });
+});
+
+test("a combined Defects group opening with a none line holds notes until the next heading (ticket decision)", () => {
+  assert.deepEqual(openFindings(review("Defects:\n- None in Spec.\n- a.ts:1 — P1: x\nValidation gaps: none.")), { findings: [], readable: true });
+});
