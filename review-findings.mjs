@@ -40,10 +40,12 @@ export function sameReviewPatch(reviewedId, currentId) {
 // backticked) and the separator that follows it. Severity is read after this location.
 const LOCATION = /^`?(?:[0-9a-f]{7,64}:)?[^\s:`]+:\d+(?:[-–]\d+)?`?\s*(?:[—–-]|:)?\s*/i;
 
+// Severity sits within 40 characters after a leading location, or within the first 80
+// characters as before (a finding may name several locations ahead of its severity).
 const severityOf = text => {
+  const token = window => /\bP[0-3]\b/i.exec(window)?.[0].toUpperCase() ?? null;
   const body = text.replace(LOCATION, "");
-  const window = body === text ? text.slice(0, 80) : body.slice(0, 40);
-  return /\bP[0-3]\b/i.exec(window)?.[0].toUpperCase() ?? null;
+  return (body === text ? null : token(body.slice(0, 40))) ?? token(text.slice(0, 80));
 };
 
 // Parse the Markdown variants emitted by kit review without reading files or changing state.
@@ -64,7 +66,10 @@ export function openFindings(resultMd) {
     const heading = /^(Defects(?:\s*[—–-]\s*(Spec|Standards))?|Spec defects|Standards defects|Validation gaps|Optional nits|Spec|Standards)(?::\s*(.*)|\s*)$/i.exec(text);
     const topGroup = !explicitDefects && section !== "Optional nits" && !/^\s*(?:[-+*]|\d+[.)])\s+/.test(raw);
     const bareGroup = /^(Spec|Standards)$/i.test(heading?.[1] ?? "");
-    if (heading && (!bareGroup || section === "Defects" || topGroup)) {
+    // "Spec defects" / "Standards defects" are headings unless written as a bullet outside Defects.
+    const defectsLabel = /^(Spec|Standards) defects$/i.test(heading?.[1] ?? "");
+    const listItem = /^\s*(?:[-+*]|\d+[.)])\s+/.test(raw);
+    if (heading && (defectsLabel ? !listItem || section === "Defects" : !bareGroup || section === "Defects" || topGroup)) {
       flush();
       const label = heading[1].toLowerCase();
       if (label.startsWith("defects")) {

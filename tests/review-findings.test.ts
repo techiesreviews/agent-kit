@@ -200,7 +200,9 @@ test("a sha-less long ticket-path location reads severity, with or without backt
 test("severity: the 40-character window after a location", () => {
   const read = (text: string) => openFindings(review(`Defects: ${text}\nValidation gaps: none.`)).findings[0].severity;
   assert.equal(read(`abcd123:a.ts:1 — ${"x".repeat(37)} P1`), "P1");
-  assert.equal(read(`abcd123:a.ts:1 — ${"x".repeat(41)} P1`), null);
+  // Past the 40-character window the first-80-characters rule still applies; beyond both, no severity.
+  assert.equal(read(`abcd123:a.ts:1 — ${"x".repeat(41)} P1`), "P1");
+  assert.equal(read(`abcd123:a.ts:1 — ${"x".repeat(70)} P1`), null);
 });
 
 test("severity: a long-path location followed directly by the severity", () => {
@@ -214,4 +216,18 @@ test("severity: locations the pattern reads only in part still find a nearby sev
   const read = (text: string) => openFindings(review(`Defects: ${text}\nValidation gaps: none.`)).findings[0].severity;
   assert.equal(read("src/a.ts:10:5 — P1: evidence"), "P1");
   assert.equal(read("[src/a.ts:10](src/a.ts#L10) — P1: evidence"), "P1");
+});
+
+test("severity: a finding naming two locations keeps the 80-character rule", () => {
+  const { findings } = openFindings(review("Defects: abcd123:src/a.ts:3, abcd123:src/controllers/save-controller.ts:88 — P1: evidence\nValidation gaps: none."));
+  assert.equal(findings[0].severity, "P1");
+});
+
+test("Spec defects / Standards defects as bullets in nits or gaps stay plain text", () => {
+  const nits = openFindings(review("Defects: none\nValidation gaps: none.\nOptional nits:\n- Spec defects: wording could be tighter"));
+  assert.deepEqual(nits.findings, []);
+  const gaps = openFindings(review("Defects: none\nValidation gaps:\n- Standards defects: add a race test"));
+  assert.equal(gaps.findings.length, 1);
+  assert.equal(gaps.findings[0].group, "Validation gaps");
+  assert.equal(gaps.findings[0].severity, null);
 });
