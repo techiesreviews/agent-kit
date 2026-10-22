@@ -19,8 +19,11 @@ test("agent options preserve defaults, infer Claude aliases, and respect explici
       kind, worktree: "/work tree", brief: "brief.md", model: "claude-opus-5-5", cli: "claude", effort: "medium",
     });
   }
-  assert.equal(parseAgentArgs(["review", ".", "brief"], { ASE_REVIEW_MODEL: "gpt-6.1-sol" }).model, "gpt-6.1-sol");
-  assert.equal(parseAgentArgs(["review", ".", "brief"], { ASE_REVIEW_MODEL: "gpt-6.1-sol" }).cli, "codex");
+  for (const [kind, variable] of [["review", "ASE_REVIEW_MODEL"], ["build", "ASE_BUILD_MODEL"]]) {
+    const options = parseAgentArgs([kind, ".", "brief"], { [variable]: "gpt-6.1-sol" });
+    assert.equal(options.model, "gpt-6.1-sol");
+    assert.equal(options.cli, "codex");
+  }
   for (const model of ["claude-opus-5-5", "opus", "sonnet", "haiku", "fable"]) assert.equal(inferCli(model), "claude");
   for (const model of ["gpt-5.5", "gpt-6.1-sol", "custom-model"]) assert.equal(inferCli(model), "codex");
   assert.equal(parseAgentArgs(["build", ".", "brief", "--model", "opus"]).cli, "claude");

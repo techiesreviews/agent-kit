@@ -262,6 +262,8 @@ test("kit fix starts a fresh builder without a slice state, with default or expl
     assert.equal(call.args.includes("resume"), false);
     assert.equal(call.model, expected);
     assert.equal(call.cli, cli);
+    if (cli === "claude") assert.equal(call.args[call.args.indexOf("--effort") + 1], "high");
+    else assert.ok(call.args.includes("model_reasoning_effort=high"));
     assert.ok(call.input.includes(findings)); assert.ok(call.input.includes("scripts/agents/kit"));
     assert.equal(f.git("status", "--porcelain"), "");
     assert.match(f.git("log", "-1", "--format=%B"), expected === "claude-opus-5-5" ? /Co-Authored-By: Claude Opus 5\.5/ : /Co-Authored-By: GPT-6.1-Sol/);
