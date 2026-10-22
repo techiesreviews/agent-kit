@@ -419,6 +419,27 @@ test("kit slice credits a build resumed from a state saved before buildModel", t
   assert.match(f.git("log", "-1", "--format=%B"), /^Test slice title\n\nCo-Authored-By: GPT-6\.1-Sol <noreply@openai\.com>$/);
 });
 
+test("kit slice keeps a pre-buildModel build credit across a second resume", t => {
+  const f = fixture(t);
+  const hook = join(f.hooks, "pre-commit");
+  writeFileSync(hook, "#!/bin/sh\nexit 1\n"); chmodSync(hook, 0o755);
+  const failed = f.run([], {}, ["--ticket", f.ticket, "--builder", "gpt-6.1-sol", "--no-pr"]);
+  assert.equal(failed.status, 1, failed.stdout + failed.stderr);
+  assert.deepEqual(f.state().finished, ["brief", "build"]);
+  const saved = f.state();
+  delete saved.buildModel;
+  writeFileSync(join(f.root, ".scratch/kit-slice/04-ticket/state.json"), JSON.stringify(saved, null, 2) + "\n");
+  const luna = ["--ticket", f.ticket, "--builder", "gpt-6-luna", "--no-pr"];
+  const again = f.run([], {}, luna);
+  assert.equal(again.status, 1, again.stdout + again.stderr);
+  assert.match(again.stdout, /RESULT: fail slice commit:/);
+  assert.equal(f.state().buildModel, "gpt-6.1-sol");
+  rmSync(hook);
+  const result = f.run([], {}, luna);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(f.git("log", "-1", "--format=%B"), /^Test slice title\n\nCo-Authored-By: GPT-6\.1-Sol <noreply@openai\.com>$/);
+});
+
 test("kit slice resumed unswitched from a state saved before buildModel credits its saved builder", t => {
   const f = fixture(t);
   const hook = join(f.hooks, "pre-commit");

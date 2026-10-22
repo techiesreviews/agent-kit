@@ -59,8 +59,8 @@ async function slice(args) {
       throw new Error("saved slice belongs to a different ticket or branch");
     state.effort ||= "high"; // States saved before effort was recorded ran at the default.
     // States saved before buildModel credit the model they last recorded: a best guess, since a
-    // finished build may predate earlier switches.
-    const savedModel = state.model;
+    // finished build may predate earlier switches. Saved so a later switch cannot replace it.
+    if (state.finished.includes("build")) state.buildModel ??= state.model;
     if (state.model !== flags.model || state.effort !== flags.effort) {
       const label = (model, effort) => effort === "high" ? model : `${model} (${effort})`;
       if (state.model !== flags.model)
@@ -210,7 +210,7 @@ async function slice(args) {
     begin("commit");
     if (!state.finished.includes(phase)) {
       try {
-        state.head = commitBuilderWork({ root, branch, head: state.head, message: title, author: builderAuthor(state.buildModel ?? savedModel), env });
+        state.head = commitBuilderWork({ root, branch, head: state.head, message: title, author: builderAuthor(state.buildModel), env });
         writeFileSync(log, `${state.head}\n`);
       } catch (error) { writeFileSync(log, `${error.message}\n`); throw error; }
       complete(state.head);
