@@ -490,6 +490,8 @@ test("uppercase GROK-4.7 selects Grok, its budget and the build variant end to e
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^budget: grok 1\/2 in /m);
   assert.equal(f.calls()[0].cli, "grok");
+  const args = f.calls()[0].args;
+  assert.equal(args[args.indexOf("-m") + 1], "grok-4.7");
   const ledger = JSON.parse(readFileSync(join(f.main, ".scratch/review-budget.json"), "utf8"));
   assert.deepEqual(Object.values(ledger)[0], { grok: 1 });
 });

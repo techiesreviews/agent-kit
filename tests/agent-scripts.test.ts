@@ -267,6 +267,9 @@ test("only a usage limit that is all the call printed counts as an outright refu
   assert.equal(refusedOutright("codex", "", `${limit}\n`, prompt), false);
   const grok = "You've hit your usage limit. Try again at 9:00 AM.";
   assert.equal(refusedOutright("grok", `${grok}\n`, "", ""), true);
+  // With nothing on stdout, Grok's refusal on stderr is judged from the log.
+  assert.equal(refusedOutright("grok", "", `${grok}\n`, ""), true);
+  assert.equal(refusedOutright("grok", "", "", ""), false);
   assert.equal(refusedOutright("grok", `{"text":"partial"}\n${grok}\n`, "", ""), false);
 });
 
@@ -336,6 +339,10 @@ process.exitCode = 1;
     assert.match(problems.at(-1)!, last);
     // The incomplete first answer is reported, then the retry's usage limit as the cause.
     if (mode === "retry-limited") assert.ok(problems.slice(0, -1).includes("problem: result lacks REVIEW_STATUS: complete"), failed.stderr);
+    // Only a refused first call records the refund kit review reads.
+    const run = /^artifacts: (.+)$/m.exec(failed.stdout)?.[1];
+    assert.ok(run);
+    assert.equal(JSON.parse(readFileSync(join(run, "status.json"), "utf8")).refused, mode === "limited" ? true : undefined);
     if (mode === "broken") {
       const stopped = /^artifacts: (.+)$/m.exec(failed.stdout)?.[1];
       assert.ok(stopped);
@@ -381,6 +388,11 @@ process.exitCode = 1;
     assert.ok(!call.args.includes("-s"));
   }
   assert.match(calls[1].input, /^Your reply must start with the line REVIEW_STATUS: complete\./);
+  // A refused resume is not the review's first call, so it records no refund.
+  const refusedResume = invoke(["--resume", stopped], { ASE_FAKE_GROK: "limited" });
+  assert.equal(refusedResume.status, 1, refusedResume.stderr);
+  assert.equal(refusedResume.stderr.trimEnd().split("\n").at(-1), "problem: grok usage limit until 9:00 AM");
+  assert.equal(JSON.parse(readFileSync(join(stopped, "status.json"), "utf8")).refused, undefined);
 });
 
 test("both adapters run through the shared shell entry and compatibility wrappers using fake CLIs", (t) => {

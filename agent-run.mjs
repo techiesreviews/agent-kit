@@ -177,10 +177,11 @@ export function usageLimitProblem(text, cli) {
 }
 
 // A refusal spent no review only when it is all the call printed: Codex logs nothing
-// after its echo of the prompt but warnings and the limit line, Grok prints the limit
-// line and no JSON result. Any work before the limit means quota was used.
+// after its echo of the prompt but its own warnings and the limit line, Grok prints the
+// limit line and no JSON result (on stderr when stdout is empty). Any work before the
+// limit means quota was used.
 export function refusedOutright(cli, stdout, log, prompt) {
-  let output = stdout;
+  let output = stdout.trim() ? stdout : log;
   if (cli === "codex") {
     const echo = `\nuser\n${prompt.trimEnd()}`, start = log.indexOf(echo);
     if (start < 0) return false;
@@ -188,7 +189,7 @@ export function refusedOutright(cli, stdout, log, prompt) {
   }
   const lines = output.split(/\r?\n/).filter(line => line.trim());
   return lines.some(line => usageLimitPattern.test(line)) &&
-    lines.every(line => usageLimitPattern.test(line) || /^warning:/i.test(line));
+    lines.every(line => usageLimitPattern.test(line) || /^warning: `/.test(line));
 }
 
 export const reviewBudgetDefaults = { gpt: 12, grok: 8 };
@@ -301,7 +302,7 @@ export function grokAdapter(options) {
   const { kind, worktree, model, effort } = options;
   if (kind !== "review") throw new Error("Grok runs reviews only");
   // The read-only sandbox and a read-only tool list keep the reviewer from editing.
-  const args = ["--prompt-file", "/dev/stdin", "-m", model.toLowerCase(),"--reasoning-effort", effort, "--output-format", "json",
+  const args = ["--prompt-file", "/dev/stdin", "-m", model.toLowerCase(), "--reasoning-effort", effort, "--output-format", "json",
     "--sandbox", "read-only", "--tools", "read_file,grep,list_dir", "--no-subagents", "--disable-web-search", "--cwd", worktree];
   return {
     command: "grok", capture: true,
@@ -566,7 +567,8 @@ async function executeRun(options, out, previous, update, brief) {
       options.codexHome = reviewHome.home;
     }
     const adapter = agentInvocation(options, common, output);
-    const context = { options, limit, logPath, log, output, messages, update, prompt };
+    // A resumed run's first call is not the review's first call, so it never refunds.
+    const context = { options, limit, logPath, log, output, messages, update, prompt, calls: previous ? 1 : 0 };
     const invoke = (args, descriptor) => invokeAgent(adapter, args, descriptor, context);
     const complete = () => existsSync(output) && reviewComplete(readFileSync(output, "utf8"));
     const result = await invoke(previous ? adapter.resume(previous.session) : adapter.args, input);
