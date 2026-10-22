@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { forEachAwait } from "./support/await-race.ts";
 
@@ -298,6 +298,84 @@ test("kit fix --builder starts a fresh builder when only another model is saved"
   assert.match(f.git("log", "-1", "--format=%B"), /Co-Authored-By: wanted-model/);
 });
 
+test("kit fix --builder retargets a pending builder round to the new model and keeps its edits", t => {
+  const f = fixture(t); f.review();
+  const first = f.run(["--ticket", f.ticket, "--builder", "gpt-6.1-sol"], { FAKE_EXIT: "7" });
+  assert.equal(first.status, 1, first.stdout + first.stderr);
+  const pendingPath = join(f.root, ".scratch/kit-fix/build%2Fke-03/pending.json");
+  const pending: { phase: string; model: string; effort: string; run: string } = JSON.parse(readFileSync(pendingPath, "utf8"));
+  assert.equal(pending.phase, "builder"); assert.equal(pending.model, "gpt-6.1-sol");
+  const result = f.run(["--builder", "other-model"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /builder switched: gpt-6\.1-sol -> other-model/);
+  assert.equal(existsSync(pendingPath), false);
+  const [build, retry] = f.calls();
+  assert.equal(build.args.includes("resume"), false);
+  assert.equal(build.args[build.args.indexOf("-m") + 1], "gpt-6.1-sol");
+  assert.equal(retry.args.includes("resume"), false);
+  assert.equal(retry.args[retry.args.indexOf("-m") + 1], "other-model");
+  const run = dirname(retry.args[retry.args.indexOf("-o") + 1]);
+  assert.notEqual(run, pending.run, "the switched round gets a fresh run folder");
+  assert.equal(JSON.parse(readFileSync(join(run, "status.json"), "utf8")).model, "other-model");
+  assert.match(f.git("log", "-1", "--format=%B"), /Co-Authored-By: other-model/);
+  assert.equal(f.git("status", "--porcelain"), "");
+});
+
+test("a pending commit or review round still refuses another model or effort", t => {
+  for (const phase of ["commit", "review"]) {
+    const f = fixture(t);
+    const pendingPath = join(f.root, ".scratch/kit-fix/build%2Fke-03/pending.json");
+    mkdirSync(join(f.root, ".scratch/kit-fix/build%2Fke-03"), { recursive: true });
+    writeFileSync(pendingPath, JSON.stringify({ root: f.root, branch: "build/ke-03", model: "gpt-6.1-sol",
+      effort: "high", phase, review: join(f.main, ".scratch/reviews/ke-03/20261019T000000Z") }));
+    const model = f.run(["--builder", "other-model"]);
+    assert.equal(model.status, 1, model.stdout + model.stderr);
+    assert.match(model.stdout, /pending fix belongs/);
+    const effort = f.run(["--effort", "low"]);
+    assert.equal(effort.status, 1, effort.stdout + effort.stderr);
+    assert.match(effort.stdout, /pending fix belongs/);
+    assert.equal(f.calls().length, 0);
+  }
+});
+
+test("kit fix --builder errors on an unreadable or foreign --run and ignores another model with a line", t => {
+  const missing = fixture(t); missing.review();
+  const unreadable = missing.run(["--run", "missing", "--builder", "wanted-model", "--ticket", missing.ticket]);
+  assert.equal(unreadable.status, 1, unreadable.stdout + unreadable.stderr);
+  assert.match(unreadable.stdout, /RESULT: fail fix invalid builder run for this worktree/);
+  assert.equal(missing.calls().length, 0);
+
+  const foreign = fixture(t); foreign.review();
+  const stranger = foreign.builder("build-10", { worktree: foreign.main });
+  const refused = foreign.run(["--run", stranger, "--builder", "wanted-model", "--ticket", foreign.ticket]);
+  assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+  assert.match(refused.stdout, /RESULT: fail fix invalid builder run for this worktree/);
+  assert.equal(foreign.calls().length, 0);
+
+  const other = fixture(t); other.review();
+  const saved = other.builder("build-10", { model: "other-model" });
+  const result = other.run(["--run", saved, "--builder", "wanted-model", "--ticket", other.ticket]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, new RegExp(`--run ${saved.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} is other-model; starting fresh with wanted-model`));
+  const [call] = other.calls();
+  assert.equal(call.args.includes("resume"), false);
+  assert.equal(call.args[call.args.indexOf("-m") + 1], "wanted-model");
+  assert.equal(JSON.parse(readFileSync(join(saved, "status.json"), "utf8")).resumes, 0);
+});
+
+test("kit fix passes an explicit effort to a fresh builder instead of resuming another effort", t => {
+  const f = fixture(t); f.review();
+  const saved = f.builder("build-10", { model: "gpt-6.1-sol", effort: "high" });
+  const result = f.run(["--ticket", f.ticket, "--builder", "gpt-6.1-sol", "--effort", "low"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const [call] = f.calls(); assert.equal(f.calls().length, 1);
+  assert.equal(call.args.includes("resume"), false);
+  assert.ok(call.args.includes("model_reasoning_effort=low"));
+  assert.equal(JSON.parse(readFileSync(join(saved, "status.json"), "utf8")).resumes, 0);
+  const run = dirname(call.args[call.args.indexOf("-o") + 1]);
+  assert.equal(JSON.parse(readFileSync(join(run, "status.json"), "utf8")).effort, "low");
+});
+
 test("subsequent fix rounds resume the fresh builder with its explicit model, ahead of older slice builders", t => {
   for (const withSlice of [false, true]) {
     const f = fixture(t); f.review();
@@ -376,7 +454,8 @@ test("a failed fresh note round resumes its saved session and note without disca
   const first = f.run(["--note", note, "--ticket", f.ticket], { FAKE_EXIT: "7" });
   assert.equal(first.status, 1); assert.match(first.stdout, /builder failed \(7\)/);
   assert.equal(f.git("rev-parse", "HEAD"), f.head);
-  const mismatched = f.run(["--builder", "other-model"]);
+  const otherNote = join(f.dir, "other.md"); writeFileSync(otherNote, "Other failure\n");
+  const mismatched = f.run(["--note", otherNote]);
   assert.equal(mismatched.status, 1); assert.match(mismatched.stdout, /pending fix belongs/);
   rmSync(note);
   const retry = f.run();

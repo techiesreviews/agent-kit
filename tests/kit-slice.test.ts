@@ -43,7 +43,7 @@ function fixture(t: TestContext) {
   const head = git("rev-parse", "HEAD"), callsFile = join(dir, "calls.jsonl");
   const shared = `
 import { execFileSync, spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 const args = process.argv.slice(2);
 const git = (...args) => execFileSync("git", args, { encoding: "utf8" }).trim();
@@ -101,12 +101,20 @@ if (phase === "review") {
   const { folder } = evidence();
   console.log("RESULT: ok review git diff origin/dev...HEAD evidence " + folder);
 } else if (phase === "fix") {
-  writeFileSync(counter, String(round() + 1));
   const fixes = join(process.cwd(), ".scratch/kit-fix", encodeURIComponent(git("branch", "--show-current")));
+  const pending = join(fixes, "pending.json");
+  if (process.env.FAIL_FIX_BUILDER && !existsSync(pending)) {
+    mkdirSync(fixes, { recursive: true });
+    writeFileSync(pending, JSON.stringify({ phase: "builder", model: process.env.FAIL_FIX_BUILDER, round: 1 }));
+    console.log("RESULT: fail fix builder failed");
+    process.exit(7);
+  }
+  writeFileSync(counter, String(round() + 1));
   mkdirSync(fixes, { recursive: true });
   writeFileSync(join(fixes, "round-" + round() + ".md"), "Completed fix brief");
   writeFileSync("file.txt", "fix round " + round() + "\\n");
   git("add", "-A"); git("commit", "-m", "Review fixes round " + round());
+  rmSync(pending, { force: true });
   const { folder, open } = evidence();
   console.log(open ? "RESULT: fail fix 1 open findings (" + folder + "/result.md)" : "RESULT: ok fix clean");
   process.exitCode = open ? 1 : 0;
@@ -334,6 +342,25 @@ test("kit slice resumes with another builder, keeps finished phases and records 
   assert.equal(fix.args.includes("--run"), false);
 });
 
+test("kit slice switches builder during a half-done fix round and keeps its pending edits", t => {
+  const f = fixture(t), original = ["--ticket", f.ticket, "--builder", "gpt-6.1-sol", "--no-pr"];
+  const failed = f.run([], { CLEAN_AT: "1", FAIL_FIX_BUILDER: "gpt-6.1-sol" }, original);
+  assert.equal(failed.status, 1, failed.stdout + failed.stderr);
+  const pending = join(f.root, ".scratch/kit-fix/build%2Fke-04/pending.json");
+  assert.equal(JSON.parse(readFileSync(pending, "utf8")).phase, "builder");
+  assert.equal(f.state().pendingFix, true);
+  const result = f.run([], { CLEAN_AT: "1" }, ["--ticket", f.ticket, "--builder", "claude-opus-5-5", "--no-pr"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /builder switched: gpt-6\.1-sol -> claude-opus-5-5/);
+  assert.equal(f.state().model, "claude-opus-5-5");
+  assert.equal(f.state().pendingFix, undefined);
+  assert.equal(existsSync(pending), false, "the resumed round clears its pending state");
+  assert.equal(f.calls().filter(call => call.phase === "build").length, 1);
+  const fix = f.calls().filter(call => call.phase === "fix").at(-1)!;
+  assert.equal(fix.args[fix.args.indexOf("--builder") + 1], "claude-opus-5-5");
+  assert.equal(fix.args.includes("--run"), false);
+});
+
 test("kit slice resumes with another effort and keeps refusing a different ticket", t => {
   const f = fixture(t), original = ["--ticket", f.ticket, "--builder", "gpt-6.1-sol", "--effort", "high", "--no-pr"];
   assert.equal(f.run([], { CLEAN_AT: "1", FAIL_PHASE: "fix" }, original).status, 1);
@@ -341,12 +368,14 @@ test("kit slice resumes with another effort and keeps refusing a different ticke
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /builder switched: gpt-6\.1-sol -> gpt-6\.1-sol \(low\)/);
   assert.equal(f.state().effort, "low");
+  const fix = f.calls().filter(call => call.phase === "fix").at(-1)!;
+  assert.equal(fix.args[fix.args.indexOf("--effort") + 1], "low");
   const other = "docs/tickets/05-ticket.md", statePath = join(f.root, ".scratch/kit-slice/04-ticket/state.json");
   writeFileSync(join(f.root, other), '---\ntitle: "Other ticket"\nstatus: ready-for-agent\n---\n\n## Files\n- `file.txt`\n\n## Done when\n- Required content is present.\n');
   writeFileSync(statePath, JSON.stringify({ ...f.state(), ticket: other }, null, 2) + "\n");
   const refused = f.run([], {}, ["--ticket", f.ticket, "--builder", "claude-opus-5-5", "--no-pr"]);
   assert.equal(refused.status, 1);
-  assert.match(refused.stdout, /saved slice belongs to a different ticket, branch, builder or effort/);
+  assert.match(refused.stdout, /saved slice belongs to a different ticket or branch/);
 });
 
 test("kit slice treats unreadable review evidence as open findings", t => {

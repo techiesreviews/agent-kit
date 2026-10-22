@@ -9,7 +9,7 @@ import { openFindings } from "../review-findings.mjs";
 const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv, commitBuilderWork, builderAuthor } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const usage = "Usage: kit fix [--review DIR | --note FILE] [--run DIR] [--ticket FILE] [--builder MODEL]\nResume the builder with open findings or a failure note, commit its fixes, and review again.\nWith --builder, resume only a saved session of that model, else start fresh with it (without --builder: latest slice model, else gpt-6.1-sol).\nFailed rounds resume their saved builder/commit/review phase without discarding edits.\n";
+const usage = "Usage: kit fix [--review DIR | --note FILE] [--run DIR] [--ticket FILE] [--builder MODEL] [--effort E]\nResume the builder with open findings or a failure note, commit its fixes, and review again.\nWith --builder (and --effort when given), resume only a saved session of that model and effort, else start fresh with them (without either: latest slice model and effort, else gpt-6.1-sol and high).\nAn explicit --run DIRECTORY that is missing, unreadable or belongs to another worktree errors; one that belongs to another model is ignored with a line and a fresh builder starts.\nA pending builder round from another model or effort switches to the requested one and keeps its edits; a pending commit or review round still refuses.\nFailed rounds resume their saved builder/commit/review phase without discarding edits.\n";
 const kit = resolve(import.meta.dirname, "../kit");
 const agent = resolve(import.meta.dirname, "../agent.sh");
 const modelName = value => value === "sol" ? "gpt-6.1-sol" : value;
@@ -18,7 +18,7 @@ function options(args) {
   const flags = {};
   for (let i = 0; i < args.length; i += 2) {
     const flag = args[i], value = args[i + 1];
-    if (!["--review", "--note", "--run", "--ticket", "--builder"].includes(flag) || !value?.trim() || value.startsWith("-") || Object.hasOwn(flags, flag)) {
+    if (!["--review", "--note", "--run", "--ticket", "--builder", "--effort"].includes(flag) || !value?.trim() || value.startsWith("-") || Object.hasOwn(flags, flag)) {
       throw new Error(`invalid option: ${flag}`);
     }
     flags[flag] = value;
@@ -56,20 +56,32 @@ function latestSlice(root, branch) {
   return states.sort((a, b) => b.modified - a.modified)[0]?.state;
 }
 
-function builderRun(root, explicit, slice, model) {
-  const folders = newestDirectories(join(root, ".scratch/agent")).filter(folder => folder.split("/").at(-1).startsWith("build-"));
-  if (slice?.build) folders.unshift(resolve(root, slice.build));
+function builderRun(root, explicit, slice, model, effort) {
+  const implicit = newestDirectories(join(root, ".scratch/agent")).filter(folder => folder.split("/").at(-1).startsWith("build-"));
+  if (slice?.build) implicit.unshift(resolve(root, slice.build));
+  const label = (status, wantedEffort) => wantedEffort && status.effort !== wantedEffort
+    ? `${status.model} (${status.effort})` : status.model;
   const builders = [];
-  for (const folder of explicit ? [resolve(root, explicit)] : folders) {
+  for (const folder of explicit ? [resolve(root, explicit)] : implicit) {
+    let status;
     try {
-      const status = JSON.parse(readFileSync(join(folder, "status.json"), "utf8"));
-      if (status.kind === "build" && status.session && realpathSync(status.worktree) === realpathSync(root) &&
-          (!model || status.model === model)) builders.push({ folder, status });
-    } catch { /* Ignore incomplete or foreign builder records. */ }
+      status = JSON.parse(readFileSync(join(folder, "status.json"), "utf8"));
+      if (status.kind !== "build" || !status.session || realpathSync(status.worktree) !== realpathSync(root)) throw new Error("foreign");
+    } catch {
+      if (explicit) throw new Error("invalid builder run for this worktree");
+      continue; // Ignore incomplete or foreign builder records.
+    }
+    if ((model && status.model !== model) || (effort && status.effort !== effort)) {
+      if (explicit) {
+        const wanted = effort && effort !== "high" ? `${model || status.model} (${effort})` : model || status.model;
+        console.log(`--run ${explicit} is ${label(status, effort)}; starting fresh with ${wanted}`);
+      }
+      continue;
+    }
+    builders.push({ folder, status });
   }
   // A slice's original builder must not hide a newer fallback or manual builder.
   if (builders.length) return builders.sort((a, b) => (Date.parse(b.status.started) || 0) - (Date.parse(a.status.started) || 0))[0];
-  if (explicit && !model) throw new Error("invalid builder run for this worktree");
 }
 
 function declinedFindings(report) {
@@ -101,13 +113,19 @@ async function fix(args) {
     const directory = join(root, ".scratch/kit-fix", encodeURIComponent(branch));
     const pendingPath = join(directory, "pending.json");
     let pending = existsSync(pendingPath) ? JSON.parse(readFileSync(pendingPath, "utf8")) : null;
+    const requested = flags["--builder"] ? modelName(flags["--builder"]) : undefined;
+    const requestedEffort = flags["--effort"];
+    const modelChanged = Boolean(pending && requested && requested !== pending.model);
+    const effortChanged = Boolean(pending && requestedEffort && requestedEffort !== pending.effort);
+    // A round that never reached the builder can switch model or effort and keep its edits.
+    const retarget = Boolean(pending && pending.phase === "builder" && (modelChanged || effortChanged));
     if (pending && (pending.root !== root || pending.branch !== branch ||
         (flags["--review"] && resolve(root, flags["--review"]) !== pending.review) ||
         (flags["--run"] && resolve(root, flags["--run"]) !== pending.run) ||
         (flags["--note"] && resolve(root, flags["--note"]) !== pending.note) ||
-        (flags["--builder"] && modelName(flags["--builder"]) !== pending.model) ||
+        ((modelChanged || effortChanged) && !retarget) ||
         (flags["--ticket"] && resolve(root, flags["--ticket"]) !== resolve(root, pending.ticket))))
-      throw new Error("pending fix belongs to a different worktree, branch, review, builder or ticket");
+      throw new Error("pending fix belongs to a different worktree, branch, review, builder, effort or ticket");
     const head = pending?.head || git("rev-parse", "HEAD");
     const note = pending?.note || (flags["--note"] ? resolve(root, flags["--note"]) : undefined);
     const review = pending?.review || (!note && (flags["--review"] ? resolve(root, flags["--review"]) : coveringReview(head)));
@@ -124,8 +142,7 @@ async function fix(args) {
     if (!readable) throw new Error(`${findings.length} open findings (${resultPath}): review format unreadable`);
     if (!note && !findings.length) { kitResult("ok", "fix clean"); return 0; }
     const slice = latestSlice(root, branch);
-    const requested = flags["--builder"] ? modelName(flags["--builder"]) : undefined;
-    const builder = pending ? undefined : builderRun(root, flags["--run"], slice, requested);
+    const builder = pending ? undefined : builderRun(root, flags["--run"], slice, requested, requestedEffort);
     let ticket = pending?.ticket || flags["--ticket"];
     if (!ticket && builder) {
       const brief = readFileSync(resolve(root, builder.status.brief), "utf8");
@@ -153,8 +170,24 @@ async function fix(args) {
       writeFileSync(`${pendingPath}.tmp`, JSON.stringify(pending, null, 2) + "\n");
       renameSync(`${pendingPath}.tmp`, pendingPath);
     };
+    if (retarget) {
+      const label = (model, effort) => effort && effort !== "high" ? `${model} (${effort})` : model;
+      if (modelChanged)
+        pending.previousModels = [...(Array.isArray(pending.previousModels) ? pending.previousModels : []), pending.model];
+      if (effortChanged)
+        pending.previousEfforts = [...(Array.isArray(pending.previousEfforts) ? pending.previousEfforts : []), pending.effort].filter(Boolean);
+      console.log(`builder switched: ${label(pending.model, pending.effort)} -> ${label(requested || pending.model, requestedEffort || pending.effort)}`);
+      const artifacts = join(root, ".scratch/agent");
+      mkdirSync(artifacts, { recursive: true });
+      pending.model = requested || pending.model;
+      pending.effort = requestedEffort || pending.effort;
+      pending.run = mkdtempSync(join(artifacts, `build-${Date.now()}-${process.pid}-`));
+      pending.fresh = true;
+      save();
+    }
     if (!pending) {
       const model = requested || builder?.status.model || slice?.model || "gpt-6.1-sol";
+      const effort = requestedEffort || "high";
       let run = builder?.folder;
       if (!run) {
         const artifacts = join(root, ".scratch/agent");
@@ -162,7 +195,7 @@ async function fix(args) {
         run = mkdtempSync(join(artifacts, `build-${Date.now()}-${process.pid}-`));
       }
       pending = { root, branch, head, review, note, run, ticket, round,
-        original, model: modelName(model), fresh: !builder, phase: "builder", declined: [], reviewHead: head };
+        original, model: modelName(model), effort, fresh: !builder, phase: "builder", declined: [], reviewHead: head };
       save();
     }
 
@@ -197,7 +230,7 @@ async function fix(args) {
       const previousReport = resume && existsSync(reportPath) ? readFileSync(reportPath, "utf8") : "";
       if (!resume) console.log(`builder: no resumable builder run; starting fresh agent.sh build (${pending.model})`);
       await execute("builder", agent, resume ? ["--resume", pending.run, "--brief", brief] :
-        ["build", root, brief, "--model", pending.model, "--effort", "high", "--out", pending.run]);
+        ["build", root, brief, "--model", pending.model, "--effort", pending.effort || "high", "--out", pending.run]);
       assertScope();
       const report = readFileSync(reportPath, "utf8");
       if (!report.startsWith(previousReport)) throw new Error("builder replaced its saved report");

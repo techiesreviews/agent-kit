@@ -56,13 +56,15 @@ async function slice(args) {
       ticket, branch, model: flags.model, effort: flags.effort, head: git("rev-parse", "HEAD"), finished: [], rounds: 0,
     };
     if (state.ticket !== ticket || state.branch !== branch)
-      throw new Error("saved slice belongs to a different ticket, branch, builder or effort");
+      throw new Error("saved slice belongs to a different ticket or branch");
     if (state.model !== flags.model || state.effort !== flags.effort) {
       const label = (model, effort) => effort === "high" ? model : `${model} (${effort})`;
-      if (state.model !== flags.model) {
+      if (state.model !== flags.model)
         state.previousModels = [...(Array.isArray(state.previousModels) ? state.previousModels : []), state.model];
-        delete state.build;
-      }
+      if (state.effort !== flags.effort)
+        state.previousEfforts = [...(Array.isArray(state.previousEfforts) ? state.previousEfforts : []), state.effort];
+      // A saved run replays its own model and effort, so a switched slice must not resume it.
+      delete state.build;
       console.log(`builder switched: ${label(state.model, state.effort)} -> ${label(flags.model, flags.effort)}`);
       state.model = flags.model; state.effort = flags.effort;
     }
@@ -221,7 +223,7 @@ async function slice(args) {
         else assertHead(state.head);
         state.pendingFix = true; save();
         const result = await execute(kit, ["fix", "--ticket", flags.ticket, "--review", state.review, "--builder", flags.model,
-          ...(state.build ? ["--run", state.build] : [])]);
+          "--effort", flags.effort, ...(state.build ? ["--run", state.build] : [])]);
         // kit fix exits 1 both for command failures and completed reviews with findings.
         const remaining = /^RESULT: fail fix \d+ open findings \((.+)\/result\.md\)$/m.exec(result.output);
         if (result.code !== 0 && !remaining) requireSuccess(result);
