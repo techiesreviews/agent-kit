@@ -410,8 +410,10 @@ test("kit slice credits a build resumed from a state saved before buildModel", t
   delete saved.buildModel;
   writeFileSync(join(f.root, ".scratch/kit-slice/04-ticket/state.json"), JSON.stringify(saved, null, 2) + "\n");
   rmSync(hook);
-  const result = f.run([], {}, original);
+  // Resume with another builder: the build commit still credits the model that built it.
+  const result = f.run([], {}, ["--ticket", f.ticket, "--builder", "gpt-6-luna", "--no-pr"]);
   assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /builder switched: gpt-6\.1-sol -> gpt-6-luna/);
   assert.equal(f.calls().filter(call => call.phase === "build").length, 1);
   assert.match(f.git("log", "-1", "--format=%B"), /^Test slice title\n\nCo-Authored-By: GPT-6\.1-Sol <noreply@openai\.com>$/);
 });

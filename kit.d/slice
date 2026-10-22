@@ -207,7 +207,7 @@ async function slice(args) {
     begin("commit");
     if (!state.finished.includes(phase)) {
       try {
-        state.head = commitBuilderWork({ root, branch, head: state.head, message: title, author: builderAuthor(state.buildModel ?? flags.model), env });
+        state.head = commitBuilderWork({ root, branch, head: state.head, message: title, author: builderAuthor(state.buildModel ?? state.previousModels?.at(-1) ?? flags.model), env });
         writeFileSync(log, `${state.head}\n`);
       } catch (error) { writeFileSync(log, `${error.message}\n`); throw error; }
       complete(state.head);
