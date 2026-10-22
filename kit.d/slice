@@ -62,7 +62,7 @@ async function slice(args) {
       if (state.model !== flags.model)
         state.previousModels = [...(Array.isArray(state.previousModels) ? state.previousModels : []), state.model];
       if (state.effort !== flags.effort)
-        state.previousEfforts = [...(Array.isArray(state.previousEfforts) ? state.previousEfforts : []), state.effort];
+        state.previousEfforts = [...(Array.isArray(state.previousEfforts) ? state.previousEfforts : []), state.effort].filter(Boolean);
       // A saved run replays its own model and effort, so a switched slice must not resume it.
       delete state.build;
       console.log(`builder switched: ${label(state.model, state.effort)} -> ${label(flags.model, flags.effort)}`);

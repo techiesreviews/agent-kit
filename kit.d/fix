@@ -9,7 +9,7 @@ import { openFindings } from "../review-findings.mjs";
 const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv, commitBuilderWork, builderAuthor } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const usage = "Usage: kit fix [--review DIR | --note FILE] [--run DIR] [--ticket FILE] [--builder MODEL] [--effort E]\nResume the builder with open findings or a failure note, commit its fixes, and review again.\nWith --builder (and --effort when given), resume only a saved session of that model and effort, else start fresh with them (without either: latest slice model and effort, else gpt-6.1-sol and high).\nAn explicit --run DIRECTORY that is missing, unreadable or belongs to another worktree errors; one that belongs to another model is ignored with a line and a fresh builder starts.\nA pending builder round from another model or effort switches to the requested one and keeps its edits; a pending commit or review round still refuses.\nFailed rounds resume their saved builder/commit/review phase without discarding edits.\n";
+const usage = "Usage: kit fix [--review DIR | --note FILE] [--run DIR] [--ticket FILE] [--builder MODEL] [--effort E]\nResume the builder with open findings or a failure note, commit its fixes, and review again.\nWith --builder (and --effort when given), resume only a saved session of that model and effort, else start fresh with them (without either: latest slice model and effort, else gpt-6.1-sol and high).\nAn explicit --run DIR that is missing, unreadable or belongs to another worktree errors; one that belongs to another model is ignored with a line and a fresh builder starts.\nA pending builder round from another model or effort switches to the requested one and keeps its edits; a pending commit or review round still refuses.\nFailed rounds resume their saved builder/commit/review phase without discarding edits.\n";
 const kit = resolve(import.meta.dirname, "../kit");
 const agent = resolve(import.meta.dirname, "../agent.sh");
 const modelName = value => value === "sol" ? "gpt-6.1-sol" : value;
@@ -116,12 +116,16 @@ async function fix(args) {
     const requested = flags["--builder"] ? modelName(flags["--builder"]) : undefined;
     const requestedEffort = flags["--effort"];
     const modelChanged = Boolean(pending && requested && requested !== pending.model);
-    const effortChanged = Boolean(pending && requestedEffort && requestedEffort !== pending.effort);
+    // Rounds saved before effort was recorded ran at the high default.
+    const pendingEffort = pending?.effort || "high";
+    const effortChanged = Boolean(pending && requestedEffort && requestedEffort !== pendingEffort);
     // A round that never reached the builder can switch model or effort and keep its edits.
     const retarget = Boolean(pending && pending.phase === "builder" && (modelChanged || effortChanged));
+    // A fresh or re-targeted round still answers to the --run its runner first passed.
+    const requestedRun = flags["--run"] && resolve(root, flags["--run"]);
     if (pending && (pending.root !== root || pending.branch !== branch ||
         (flags["--review"] && resolve(root, flags["--review"]) !== pending.review) ||
-        (flags["--run"] && resolve(root, flags["--run"]) !== pending.run) ||
+        (requestedRun && requestedRun !== pending.run && requestedRun !== pending.requestedRun) ||
         (flags["--note"] && resolve(root, flags["--note"]) !== pending.note) ||
         ((modelChanged || effortChanged) && !retarget) ||
         (flags["--ticket"] && resolve(root, flags["--ticket"]) !== resolve(root, pending.ticket))))
@@ -175,26 +179,27 @@ async function fix(args) {
       if (modelChanged)
         pending.previousModels = [...(Array.isArray(pending.previousModels) ? pending.previousModels : []), pending.model];
       if (effortChanged)
-        pending.previousEfforts = [...(Array.isArray(pending.previousEfforts) ? pending.previousEfforts : []), pending.effort].filter(Boolean);
-      console.log(`builder switched: ${label(pending.model, pending.effort)} -> ${label(requested || pending.model, requestedEffort || pending.effort)}`);
+        pending.previousEfforts = [...(Array.isArray(pending.previousEfforts) ? pending.previousEfforts : []), pendingEffort];
+      console.log(`builder switched: ${label(pending.model, pendingEffort)} -> ${label(requested || pending.model, requestedEffort || pendingEffort)}`);
       const artifacts = join(root, ".scratch/agent");
       mkdirSync(artifacts, { recursive: true });
       pending.model = requested || pending.model;
-      pending.effort = requestedEffort || pending.effort;
+      pending.effort = requestedEffort || pendingEffort;
+      pending.requestedRun ||= requestedRun || pending.run;
       pending.run = mkdtempSync(join(artifacts, `build-${Date.now()}-${process.pid}-`));
       pending.fresh = true;
       save();
     }
     if (!pending) {
       const model = requested || builder?.status.model || slice?.model || "gpt-6.1-sol";
-      const effort = requestedEffort || "high";
+      const effort = requestedEffort || builder?.status.effort || slice?.effort || "high";
       let run = builder?.folder;
       if (!run) {
         const artifacts = join(root, ".scratch/agent");
         mkdirSync(artifacts, { recursive: true });
         run = mkdtempSync(join(artifacts, `build-${Date.now()}-${process.pid}-`));
       }
-      pending = { root, branch, head, review, note, run, ticket, round,
+      pending = { root, branch, head, review, note, run, requestedRun, ticket, round,
         original, model: modelName(model), effort, fresh: !builder, phase: "builder", declined: [], reviewHead: head };
       save();
     }

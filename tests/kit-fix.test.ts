@@ -338,6 +338,82 @@ test("a pending commit or review round still refuses another model or effort", t
   }
 });
 
+interface Pending { phase: string; model: string; effort?: string; run: string; previousEfforts?: string[] }
+
+test("a pending round saved without an effort resumes at the high default", t => {
+  for (const phase of ["commit", "builder"]) {
+    const f = fixture(t); f.review();
+    const first = f.run(["--ticket", f.ticket], { FAKE_EXIT: "7" });
+    assert.equal(first.status, 1, first.stdout + first.stderr);
+    const pendingPath = join(f.root, ".scratch/kit-fix/build%2Fke-03/pending.json");
+    const { effort: _, ...legacy }: Pending = JSON.parse(readFileSync(pendingPath, "utf8"));
+    writeFileSync(pendingPath, JSON.stringify({ ...legacy, phase }));
+    const result = f.run(["--builder", "gpt-6.1-sol", "--effort", "high"]);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.doesNotMatch(result.stdout, /pending fix belongs|builder switched/);
+    assert.equal(f.calls().length, phase === "commit" ? 1 : 2);
+    if (phase === "builder") assert.deepEqual(f.calls()[1].args.slice(0, 2), ["exec", "resume"]);
+    assert.equal(f.git("status", "--porcelain"), "");
+  }
+});
+
+test("a fresh fallback without --effort uses the latest slice effort", t => {
+  const f = fixture(t); f.review();
+  const folder = join(f.root, ".scratch/kit-slice/current"); mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "state.json"), JSON.stringify({ model: "gpt-6.1-sol", effort: "low", branch: "build/ke-03", ticket: f.ticket }));
+  const result = f.run(["--ticket", f.ticket]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const [call] = f.calls(); assert.equal(f.calls().length, 1);
+  assert.equal(call.args.includes("resume"), false);
+  assert.ok(call.args.includes("model_reasoning_effort=low"));
+});
+
+test("kit fix --effort alone retargets a pending builder round to the new effort", t => {
+  const f = fixture(t); f.review();
+  const first = f.run(["--ticket", f.ticket], { FAKE_EXIT: "7" });
+  assert.equal(first.status, 1, first.stdout + first.stderr);
+  const result = f.run(["--effort", "low"], { FAKE_EXIT: "7" });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /builder switched: gpt-6\.1-sol -> gpt-6\.1-sol \(low\)/);
+  const pending: Pending = JSON.parse(readFileSync(join(f.root, ".scratch/kit-fix/build%2Fke-03/pending.json"), "utf8"));
+  assert.deepEqual(pending.previousEfforts, ["high"]); assert.equal(pending.effort, "low");
+  const [, retry] = f.calls();
+  assert.equal(retry.args.includes("resume"), false);
+  assert.ok(retry.args.includes("model_reasoning_effort=low"));
+});
+
+test("a failed retargeted round reruns with the same --run and --builder", t => {
+  const f = fixture(t); f.review();
+  const saved = f.builder("build-10");
+  const args = ["--run", saved, "--builder", "other-model", "--ticket", f.ticket];
+  const first = f.run(["--run", saved, "--ticket", f.ticket], { FAKE_EXIT: "7" });
+  assert.equal(first.status, 1, first.stdout + first.stderr);
+  const switched = f.run(args, { FAKE_EXIT: "7" });
+  assert.equal(switched.status, 1, switched.stdout + switched.stderr);
+  assert.match(switched.stdout, /builder switched: gpt-6\.1-sol -> other-model/);
+  const result = f.run(args);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.doesNotMatch(result.stdout, /pending fix belongs|builder switched/);
+  const [, retarget, rerun] = f.calls(); assert.equal(f.calls().length, 3);
+  assert.equal(retarget.args.includes("resume"), false);
+  assert.deepEqual(rerun.args.slice(0, 2), ["exec", "resume"]);
+  assert.equal(rerun.args[rerun.args.indexOf("-m") + 1], "other-model");
+  assert.match(f.git("log", "-1", "--format=%B"), /Co-Authored-By: other-model/);
+});
+
+test("kit fix --builder --effort resumes the matching effort over a newer session of another effort", t => {
+  const f = fixture(t); f.review();
+  const high = f.builder("build-10", { effort: "high", started: "2026-10-18T00:00:00Z" });
+  const medium = f.builder("build-20", { effort: "medium", started: "2026-10-19T00:00:00Z" });
+  const result = f.run(["--builder", "gpt-6.1-sol", "--effort", "high"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const [call] = f.calls(); assert.equal(f.calls().length, 1);
+  assert.deepEqual(call.args.slice(0, 2), ["exec", "resume"]);
+  assert.ok(call.args.includes("model_reasoning_effort=high"));
+  assert.equal(JSON.parse(readFileSync(join(high, "status.json"), "utf8")).resumes, 1);
+  assert.equal(JSON.parse(readFileSync(join(medium, "status.json"), "utf8")).resumes, 0);
+});
+
 test("kit fix --builder errors on an unreadable or foreign --run and ignores another model with a line", t => {
   const missing = fixture(t); missing.review();
   const unreadable = missing.run(["--run", "missing", "--builder", "wanted-model", "--ticket", missing.ticket]);
