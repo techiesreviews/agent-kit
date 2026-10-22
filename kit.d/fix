@@ -147,8 +147,9 @@ async function fix(args) {
     const found = pending ? undefined : builderRun(root, flags["--run"], slice, requested, requestedEffort);
     const builder = found?.rejected ? undefined : found;
     let ticket = pending?.ticket || flags["--ticket"];
-    if (!ticket && builder) {
-      const brief = readFileSync(resolve(root, builder.status.brief), "utf8");
+    // A rejected explicit run still names its ticket.
+    if (!ticket && found) {
+      const brief = readFileSync(resolve(root, found.status.brief), "utf8");
       ticket = [...brief.matchAll(/(?:`|\s|^)(docs\/[^\s`]+\.md)/g)].map(match => match[1])
         .find(path => existsSync(resolve(root, path)) && /(?:^|\/)tickets\//.test(path));
     }

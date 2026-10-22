@@ -439,6 +439,28 @@ test("kit fix --builder errors on an unreadable or foreign --run and ignores ano
   assert.equal(JSON.parse(readFileSync(join(saved, "status.json"), "utf8")).resumes, 0);
 });
 
+test("kit fix --effort alone resumes the matching effort over a newer session of another effort", t => {
+  const f = fixture(t); f.review();
+  const high = f.builder("build-10", { effort: "high", started: "2026-10-18T00:00:00Z" });
+  const medium = f.builder("build-20", { effort: "medium", started: "2026-10-19T00:00:00Z" });
+  const result = f.run(["--effort", "high"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const [call] = f.calls(); assert.equal(f.calls().length, 1);
+  assert.deepEqual(call.args.slice(0, 2), ["exec", "resume"]);
+  assert.equal(JSON.parse(readFileSync(join(high, "status.json"), "utf8")).resumes, 1);
+  assert.equal(JSON.parse(readFileSync(join(medium, "status.json"), "utf8")).resumes, 0);
+});
+
+test("a rejected explicit --run still supplies the ticket from its brief", t => {
+  const f = fixture(t); f.review();
+  const saved = f.builder("build-10", { model: "other-model" });
+  const result = f.run(["--run", saved, "--builder", "wanted-model"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /is other-model; starting fresh with wanted-model/);
+  assert.ok(f.calls()[0].input.includes(`Ticket: ${f.ticket}`));
+  assert.deepEqual(f.reviewInput().args, ["--ticket", f.ticket]);
+});
+
 test("kit fix --run X --effort keeps X's model for the fresh builder it names", t => {
   const f = fixture(t); f.review();
   const folder = join(f.root, ".scratch/kit-slice/current"); mkdirSync(folder, { recursive: true });

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { forEachAwait } from "./support/await-race.ts";
 
@@ -193,7 +193,7 @@ readFileSync(0, "utf8"); call("resume");
 writeFileSync(counter, String(round() + 1));
 writeFileSync("file.txt", "preserved real fix\\n");
 writeFileSync(args[args.indexOf("-o") + 1], "Fixed the defect.\\n");
-console.error("model: gpt-6.1-sol"); console.error("session id: builder-session");
+console.error("model: " + args[args.indexOf("-m") + 1]); console.error("session id: builder-session");
 `);
     chmodSync(codex, 0o755);
     return { REAL_FIX: "1", KIT_COMMANDS_DIR: commands, ASE_SKIP_DOCTOR: "1", ASE_RESUME_POLL_MS: "10", ASE_AGENT_TIMEOUT: "10s" };
@@ -359,6 +359,46 @@ test("kit slice switches builder during a half-done fix round and keeps its pend
   const fix = f.calls().filter(call => call.phase === "fix").at(-1)!;
   assert.equal(fix.args[fix.args.indexOf("--builder") + 1], "claude-opus-5-5");
   assert.equal(fix.args.includes("--run"), false);
+});
+
+test("kit slice switches builder after its initial build fails", t => {
+  const f = fixture(t), original = ["--ticket", f.ticket, "--builder", "gpt-6.1-sol", "--no-pr"];
+  const failed = f.run([], { FAIL_PHASE: "build" }, original);
+  assert.equal(failed.status, 1, failed.stdout + failed.stderr);
+  assert.deepEqual(f.state().finished, ["brief"]);
+  const result = f.run([], {}, ["--ticket", f.ticket, "--builder", "claude-opus-5-5", "--no-pr"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /builder switched: gpt-6\.1-sol -> claude-opus-5-5/);
+  assert.deepEqual(f.state().previousModels, ["gpt-6.1-sol"]);
+  const builds = f.calls().filter(call => call.phase === "build");
+  assert.equal(builds.length, 2);
+  assert.equal(builds[1].args[builds[1].args.indexOf("--model") + 1], "claude-opus-5-5");
+  assert.match(f.git("log", "-1", "--format=%B"), /Co-Authored-By: claude-opus-5-5/i);
+});
+
+test("slice switched while real kit fix's builder step failed retargets that round", t => {
+  const f = fixture(t), real = f.realFix();
+  // The fake codex routes any non-Claude model name, so the real agent.sh never starts a real CLI.
+  const failed = f.run([], { ...real, CLEAN_AT: "1", FAIL_PHASE: "resume" });
+  assert.equal(failed.status, 1, failed.stdout + failed.stderr);
+  const directory = join(f.root, ".scratch/kit-fix/build%2Fke-04");
+  const pending: { phase: string; run: string } = JSON.parse(readFileSync(join(directory, "pending.json"), "utf8"));
+  assert.equal(pending.phase, "builder");
+  const result = f.run([], { ...real, CLEAN_AT: "1" }, ["--ticket", f.ticket, "--builder", "other-model"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /builder switched: gpt-6\.1-sol -> other-model/);
+  assert.match(readFileSync(join(f.root, ".scratch/kit-slice/04-ticket/fix.log"), "utf8"), /builder switched: gpt-6\.1-sol -> other-model/);
+  const [first, retry] = f.calls().filter(call => call.phase === "resume");
+  assert.ok(first.args.includes("resume"));
+  assert.equal(retry.args.includes("resume"), false, "the switched round starts a fresh build");
+  assert.equal(retry.args[retry.args.indexOf("-m") + 1], "other-model");
+  const run = dirname(retry.args[retry.args.indexOf("-o") + 1]);
+  assert.notEqual(run, pending.run);
+  assert.match(run, /\/\.scratch\/agent\/build-[^/]+$/);
+  assert.equal(f.state().rounds, 1);
+  assert.deepEqual(readdirSync(directory).filter(name => /^round-\d+\.md$/.test(name)), ["round-1.md"]);
+  assert.equal(f.git("log", "-1", "--format=%s"), "Review fixes round 1");
+  assert.match(f.git("log", "-1", "--format=%B"), /Co-Authored-By: other-model <noreply@openai\.com>/);
 });
 
 test("kit slice resumes with another effort and keeps refusing a different ticket", t => {
