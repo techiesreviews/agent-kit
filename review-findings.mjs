@@ -51,16 +51,12 @@ const severityOf = text => {
 // Parse the Markdown variants emitted by kit review without reading files or changing state.
 export function openFindings(resultMd) {
   const findings = [];
-  let defects = false, section = "", group = "", pending;
+  let defects = false, labelled = false, section = "", group = "", pending;
   const listItem = raw => /^\s*(?:[-+*]|\d+[.)])\s+/.test(raw);
   const clean = text => text.trim().replace(/^#{1,6}\s+/, "").replace(/\*\*|__/g, "")
     .replace(/^(?:[-+*]|\d+[.)])\s+/, "").trim();
   const lines = resultMd.split(/\r?\n/);
-  // "Spec defects" / "Standards defects" are headings only before Validation gaps or Optional nits;
-  // after them they are text, bulleted or not (for example "- Spec defects: …" as a gap).
-  const notesStart = lines.findIndex(raw => /^(?:Validation gaps|Optional nits)(?::.*|\s*)$/i.test(clean(raw)));
-  const explicitDefects = lines.some((raw, index) => /^Defects(?:\s*[—–-]\s*(?:Spec|Standards))?(?::.*|\s*)$/i.test(clean(raw)) ||
-    (/^(?:Spec|Standards) defects(?::.*|\s*)$/i.test(clean(raw)) && (notesStart < 0 || index < notesStart)));
+  const explicitDefects = lines.some(raw => /^Defects(?:\s*[—–-]\s*(?:Spec|Standards))?(?::.*|\s*)$/i.test(clean(raw)));
   const flush = () => {
     if (pending && !/^none\b/i.test(pending.text)) findings.push({ group: pending.group, text: pending.text,
       severity: pending.group === "Validation gaps" ? null : severityOf(pending.text) });
@@ -69,8 +65,11 @@ export function openFindings(resultMd) {
   for (const raw of lines) {
     const text = clean(raw);
     const heading = /^(Defects(?:\s*[—–-]\s*(Spec|Standards))?|Spec defects|Standards defects|Validation gaps|Optional nits|Spec|Standards)(?::\s*(.*)|\s*)$/i.exec(text);
-    const topGroup = !explicitDefects && section !== "Optional nits" && !listItem(raw);
+    // Once a "Spec defects" / "Standards defects" heading opens, later bare Spec:/Standards: lines are text.
+    const topGroup = !explicitDefects && !labelled && section !== "Optional nits" && !listItem(raw);
     const bareGroup = /^(Spec|Standards)$/i.test(heading?.[1] ?? "");
+    // "Spec defects" / "Standards defects" are headings only before Validation gaps or Optional nits;
+    // after them they are text, bulleted or not (for example "- Spec defects: …" as a gap).
     const defectsLabel = /^(Spec|Standards) defects$/i.test(heading?.[1] ?? "");
     if (heading && (defectsLabel ? ["", "Defects"].includes(section) : !bareGroup || section === "Defects" || topGroup)) {
       flush();
@@ -83,6 +82,7 @@ export function openFindings(resultMd) {
         defects = true;
         section = "Defects";
         group = label.startsWith("spec") ? "Spec" : "Standards";
+        if (defectsLabel) labelled = true;
       } else {
         section = label === "validation gaps" ? "Validation gaps" : "Optional nits";
         group = section;

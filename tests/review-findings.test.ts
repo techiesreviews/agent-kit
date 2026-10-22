@@ -260,6 +260,18 @@ test("unbulleted Spec defects / Standards defects in nits or gaps stay plain tex
   });
 });
 
+test("a top-level Spec group before a Standards defects heading keeps its defect", () => {
+  assert.deepEqual(openFindings(review("Spec:\n- abcd123:a.ts:1 — P1: x\nStandards defects: none\nValidation gaps: none.")), {
+    findings: [finding("Spec", "abcd123:a.ts:1 — P1: x", "P1")], readable: true,
+  });
+});
+
+test("a Spec defects heading only after the notes leaves the review unreadable", () => {
+  assert.deepEqual(openFindings(review("Validation gaps: none.\nSpec defects:\n- abcd123:a.ts:1 — P1: x")), {
+    findings: [finding("Review", "review format unreadable")], readable: false,
+  });
+});
+
 test("a bulleted Defects heading still keeps Validation gaps plain text", () => {
   assert.deepEqual(openFindings(review("- Defects:\n  - abc1234:a.ts:1 — P2: x\nValidation gaps:\nStandards: add a test.")), {
     findings: [finding("Defects", "abc1234:a.ts:1 — P2: x", "P2"), finding("Validation gaps", "Standards: add a test.")], readable: true,
