@@ -172,3 +172,27 @@ test("Spec defects and Standards defects headings open their groups with locatio
     findings: [finding("Standards", "abcd1234:src/thing.ts:10 — P1: Standards defect.", "P1")], readable: true,
   });
 });
+
+test("Spec defects and Standards defects headings keep Validation gaps plain text", () => {
+  assert.deepEqual(openFindings(review("Spec defects:\n- abcd1234:src/a.ts:1 — P2: The defect.\nValidation gaps:\nStandards: add a test.")), {
+    findings: [finding("Spec", "abcd1234:src/a.ts:1 — P2: The defect.", "P2"), finding("Validation gaps", "Standards: add a test.")], readable: true,
+  });
+  assert.deepEqual(openFindings(review("Standards defects:\n- abcd1234:src/a.ts:1 — P1: The defect.\nValidation gaps:\nSpec: add a test.")), {
+    findings: [finding("Standards", "abcd1234:src/a.ts:1 — P1: The defect.", "P1"), finding("Validation gaps", "Spec: add a test.")], readable: true,
+  });
+});
+
+test("a bare Spec defects heading opens the Spec group", () => {
+  assert.deepEqual(openFindings(review("Spec defects\n- abcd1234:src/thing.ts:10 — P1: First defect.\nValidation gaps: none.")), {
+    findings: [finding("Spec", "abcd1234:src/thing.ts:10 — P1: First defect.", "P1")], readable: true,
+  });
+});
+
+test("a sha-less long ticket-path location reads severity, with or without backticks", () => {
+  const ticket = `${"segment/".repeat(20)}ticket.md`;
+  assert.ok(ticket.length > 150);
+  const text = `${ticket}:12 — P1: The listing limit is too small.`;
+  assert.deepEqual(openFindings(review(`Spec defects:\n- ${text}`)).findings, [finding("Spec", text, "P1")]);
+  const quoted = `\`${ticket}:12\` — P1: The listing limit is too small.`;
+  assert.deepEqual(openFindings(review(`Spec defects:\n- ${quoted}`)).findings, [finding("Spec", quoted, "P1")]);
+});
