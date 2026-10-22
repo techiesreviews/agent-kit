@@ -233,9 +233,21 @@ test("Spec defects / Standards defects as bullets in nits or gaps stay plain tex
 });
 
 test("implicit Spec/Standards groups stay readable beside a bulleted Spec defects line", () => {
-  const result = openFindings(review("Spec:\n- abcd123:a.ts:1 — P1: evidence\nStandards: none\nValidation gaps:\n- Spec defects: wording could be tighter"));
-  assert.equal(result.readable, true);
-  assert.equal(result.findings.filter(finding => finding.severity === "P1").length, 1);
+  assert.deepEqual(openFindings(review("Spec:\n- abcd123:a.ts:1 — P1: evidence\nStandards: none\nValidation gaps:\n- Spec defects: wording could be tighter")), {
+    findings: [finding("Spec", "abcd123:a.ts:1 — P1: evidence", "P1"), finding("Validation gaps", "Spec defects: wording could be tighter")], readable: true,
+  });
+});
+
+test("a bulleted Defects heading still keeps Validation gaps plain text", () => {
+  assert.deepEqual(openFindings(review("- Defects:\n  - abc1234:a.ts:1 — P2: x\nValidation gaps:\nStandards: add a test.")), {
+    findings: [finding("Defects", "abc1234:a.ts:1 — P2: x", "P2"), finding("Validation gaps", "Standards: add a test.")], readable: true,
+  });
+});
+
+test("bulleted Spec defects / Standards defects before any notes section open their groups", () => {
+  assert.deepEqual(openFindings(review("- Spec defects:\n  - abcd123:a.ts:1 — P1: evidence\n- Standards defects: none\nValidation gaps:\nStandards: add a test.")), {
+    findings: [finding("Spec", "abcd123:a.ts:1 — P1: evidence", "P1"), finding("Validation gaps", "Standards: add a test.")], readable: true,
+  });
 });
 
 test("a P-token in evidence within 80 characters after a short location counts (lead decision)", () => {

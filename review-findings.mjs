@@ -52,12 +52,15 @@ const severityOf = text => {
 export function openFindings(resultMd) {
   const findings = [];
   let defects = false, section = "", group = "", pending;
+  const listItem = raw => /^\s*(?:[-+*]|\d+[.)])\s+/.test(raw);
   const clean = text => text.trim().replace(/^#{1,6}\s+/, "").replace(/\*\*|__/g, "")
     .replace(/^(?:[-+*]|\d+[.)])\s+/, "").trim();
   const lines = resultMd.split(/\r?\n/);
-  // Defect headings written as list items (for example "- Spec defects: …" under Validation gaps) are text, not headings.
-  const explicitDefects = lines.some(raw => !/^\s*(?:[-+*]|\d+[.)])\s+/.test(raw) &&
-    /^(?:Defects(?:\s*[—–-]\s*(?:Spec|Standards))?|Spec defects|Standards defects)(?::.*|\s*)$/i.test(clean(raw)));
+  // "Spec defects" / "Standards defects" written as a bullet are headings only before Validation gaps
+  // or Optional nits; after them they are text (for example "- Spec defects: …" as a gap).
+  const notesStart = lines.findIndex(raw => /^(?:Validation gaps|Optional nits)(?::.*|\s*)$/i.test(clean(raw)));
+  const explicitDefects = lines.some((raw, index) => /^Defects(?:\s*[—–-]\s*(?:Spec|Standards))?(?::.*|\s*)$/i.test(clean(raw)) ||
+    (/^(?:Spec|Standards) defects(?::.*|\s*)$/i.test(clean(raw)) && (!listItem(raw) || notesStart < 0 || index < notesStart)));
   const flush = () => {
     if (pending && !/^none\b/i.test(pending.text)) findings.push({ group: pending.group, text: pending.text,
       severity: pending.group === "Validation gaps" ? null : severityOf(pending.text) });
@@ -66,12 +69,10 @@ export function openFindings(resultMd) {
   for (const raw of lines) {
     const text = clean(raw);
     const heading = /^(Defects(?:\s*[—–-]\s*(Spec|Standards))?|Spec defects|Standards defects|Validation gaps|Optional nits|Spec|Standards)(?::\s*(.*)|\s*)$/i.exec(text);
-    const topGroup = !explicitDefects && section !== "Optional nits" && !/^\s*(?:[-+*]|\d+[.)])\s+/.test(raw);
+    const topGroup = !explicitDefects && section !== "Optional nits" && !listItem(raw);
     const bareGroup = /^(Spec|Standards)$/i.test(heading?.[1] ?? "");
-    // "Spec defects" / "Standards defects" are headings unless written as a bullet outside Defects.
     const defectsLabel = /^(Spec|Standards) defects$/i.test(heading?.[1] ?? "");
-    const listItem = /^\s*(?:[-+*]|\d+[.)])\s+/.test(raw);
-    if (heading && (defectsLabel ? !listItem || section === "Defects" : !bareGroup || section === "Defects" || topGroup)) {
+    if (heading && (defectsLabel ? !listItem(raw) || ["", "Defects"].includes(section) : !bareGroup || section === "Defects" || topGroup)) {
       flush();
       const label = heading[1].toLowerCase();
       if (label.startsWith("defects")) {
