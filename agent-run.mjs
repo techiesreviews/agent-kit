@@ -151,7 +151,8 @@ export function claudeResult(stdout, requested, allowEmpty = false) {
 // Grok reports the variant it serves (grok-4.7-build for grok-4.7): accept the
 // requested name, alone or followed by any -suffix, never a different version or family.
 export function grokModelMatches(actual, requested) {
-  return actual === requested || actual.startsWith(`${requested}-`);
+  const name = actual.toLowerCase(), wanted = requested.toLowerCase();
+  return name === wanted || name.startsWith(`${wanted}-`);
 }
 
 export function grokResult(stdout, requested) {
@@ -550,7 +551,10 @@ async function executeRun(options, out, previous, update, brief) {
     const result = await invoke(previous ? adapter.resume(previous.session) : adapter.args, input);
     let status = result.status;
     if (!status && options.kind === "review" && !complete()) {
-      const session = adapter.session(result.stdout, readFileSync(logPath, "utf8"));
+      // Grok reports no sessionId in some results; fall back to the id passed with -s.
+      // Claude still retries only when its result names the session it started.
+      const session = recordedSession(adapter, result.stdout, readFileSync(logPath, "utf8")) ??
+        (options.cli === "grok" ? options.sessionId ?? previous?.session : undefined);
       if (session) {
         writeFileSync(inputPath, "Your reply must start with the line REVIEW_STATUS: complete. Send the full review again in the required format.\n");
         const retryInput = openSync(inputPath, "r");

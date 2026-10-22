@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: agent.sh build|review <worktree> <brief> [--model M] [--cli codex|claude] [--effort E] [--base REF] [--out DIR]; agent.sh --resume <out-dir> [--brief FILE]; kit doctor gates kit worktrees.
+# Usage: agent.sh build|review <worktree> <brief> [--model M] [--cli codex|claude|grok] [--effort E] [--base REF] [--out DIR]; agent.sh --resume <out-dir> [--brief FILE]; kit doctor gates kit worktrees.
 set -euo pipefail
 agent_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 # ASE_SKIP_DOCTOR=1 bypasses the gate for tests only.

@@ -48,6 +48,10 @@ if (cli === "codex") {
   if (!(process.env.FAKE_NO_RETRY_MODEL && resumed)) console.error("model: " + model);
   if (mode !== "no-session") console.error("session id: ${session}");
   console.error("call: " + (calls + 1));
+  if (mode === "usage-limit") {
+    console.error("ERROR: You've hit your usage limit. Upgrade to Pro, or try again at Oct 25th, 2026 3:14 PM.");
+    process.exit(1);
+  }
   if (!(mode === "missing-pass" && !resumed)) writeFileSync(args[args.indexOf("-o") + 1], report);
 } else {
   console.log(JSON.stringify({ ...(mode === "missing-pass" && !resumed ? {} : { result: report }), modelUsage: { [model]: {} }, ...(mode === "no-session" ? {} : { session_id: "${session}" }) }));
@@ -403,6 +407,18 @@ test("kit review keeps the budget counted once the CLI has started, even when it
   assert.equal(result.status, 1);
   assert.match(result.stderr, /exceeded timeout=1s/);
   assert.deepEqual(Object.values(JSON.parse(readFileSync(join(f.main, ".scratch/review-budget.json"), "utf8")))[0], { grok: 1 });
+});
+
+test("kit review gives the budget back when the provider refuses on a usage limit", (t) => {
+  const f = fixture(t);
+  const ledger = join(f.main, ".scratch/review-budget.json");
+  const counts = () => Object.values(JSON.parse(readFileSync(ledger, "utf8")))[0];
+  const first = f.run(["--base", "HEAD~1"], { ASE_REVIEW_BUDGET_GPT: "2" });
+  assert.equal(first.status, 0, first.stderr);
+  const refused = f.run(["--base", "HEAD~1"], { ASE_REVIEW_BUDGET_GPT: "2", FAKE_MODE: "usage-limit" });
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /^problem: gpt usage limit until Oct 25th, 2026 3:14 PM$/m);
+  assert.deepEqual(counts(), { gpt: 1 });
 });
 
 test("kit review gives the budget back when the Grok CLI is missing", (t) => {

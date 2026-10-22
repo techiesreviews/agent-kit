@@ -40,7 +40,7 @@ function evidenceDirectory() {
 }
 
 async function review(args) {
-  let evidence = "none", temporary, status = 1, reason = "invalid arguments", label, budget, env;
+  let evidence = "none", temporary, status = 1, reason = "invalid arguments", label, budget, env, stderr = "";
   const ledger = join(kitMainRoot(), ".scratch/review-budget.json");
   try {
     status = 2;
@@ -62,7 +62,6 @@ async function review(args) {
     console.log(`model: ${model}`);
     budget = reserveReviewBudget(ledger, cli, env);
     if (budget) console.log(`budget: ${budget.family} ${budget.used}/${budget.limit} in ${budget.week}`);
-    let stderr = "";
     status = await new Promise((accept, reject) => {
       const child = spawn(env.KIT_NODE, [resolve(import.meta.dirname, "../agent-run.mjs"), ...agentArgs], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
       const interrupt = () => child.kill("SIGINT");
@@ -104,9 +103,12 @@ async function review(args) {
   } finally {
     try {
       // A review whose CLI never started (empty diff) is not counted; the runner
-      // records the process group as soon as the CLI spawns.
+      // records the process group as soon as the CLI spawns. A provider usage-limit
+      // refusal spent no review, so it gives the slot back even after the CLI started.
       const run = temporary && join(temporary, "status.json");
-      if (budget && !(run && existsSync(run) && JSON.parse(readFileSync(run, "utf8")).pgid)) releaseReviewBudget(ledger, budget, env);
+      const started = Boolean(run && existsSync(run) && JSON.parse(readFileSync(run, "utf8")).pgid);
+      const refused = /^[a-z]+ usage limit until /m.test([...stderr.matchAll(/^problem: (.+)$/gm)].at(-1)?.[1] ?? "");
+      if (budget && (!started || refused)) releaseReviewBudget(ledger, budget, env);
     } catch (error) { console.error(`problem: releasing review budget failed: ${error.message}`); }
     try {
       const saved = [["out.md", "result.md"], ["run.log", "run.log"], ["diff.patch", "diff.patch"], ["refs.txt", "refs.txt"]]

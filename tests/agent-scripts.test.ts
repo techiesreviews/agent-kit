@@ -191,6 +191,8 @@ test("Grok results parse to their text and accept only the requested model with 
   assert.equal(grokResult(sample, "grok-4.7"), "REVIEW_STATUS: complete\nDefects: none");
   const json = (models: string[], extra = {}) => JSON.stringify({ text: "report", modelUsage: Object.fromEntries(models.map(model => [model, {}])), ...extra });
   assert.equal(grokResult(json(["grok-4.7"]), "grok-4.7"), "report");
+  assert.equal(grokResult(json(["grok-4.7-build"]), "GROK-4.7"), "report");
+  assert.throws(() => grokResult(json(["grok-4.70"]), "GROK-4.7"), /requested model/);
   assert.equal(grokResult(json(["grok-4.7-build"], { text: "" }), "grok-4.7"), "");
   for (const models of [[], ["grok-4.6"], ["grok-4.70"], ["gpt-6.1-sol"], ["claude-opus-5-5"], ["grok-4.7-build", "grok-4.6-mini"]]) {
     assert.throws(() => grokResult(json(models), "grok-4.7"), /requested model/);
@@ -274,6 +276,12 @@ if (process.env.ASE_FAKE_GROK === "retry-limited") {
   process.exit(0);
 }
 if (process.env.ASE_FAKE_GROK === "limited") { console.log("You've hit your usage limit. Try again at 9:00 AM."); process.exit(1); }
+if (process.env.ASE_FAKE_GROK === "retry-no-session") {
+  if (args.includes("--resume")) { console.log("internal error"); process.exit(1); }
+  writeFileSync(process.env.ASE_FAKE_CAPTURE + ".first", JSON.stringify({ args }));
+  console.log(JSON.stringify({ text: "incomplete reply", modelUsage: { "grok-4.7-build": {} } }));
+  process.exit(0);
+}
 console.log(JSON.stringify({ text: "REVIEW_STATUS: complete\\nDefects: none\\n", stopReason: "end_turn", sessionId: session, modelUsage: { [args[args.indexOf("-m") + 1] + "-build"]: {} } }));
 `);
   writeFileSync(join(bin, "codex"), `#!/usr/bin/env node
@@ -325,6 +333,22 @@ process.exitCode = 1;
   assert.equal(limited.status, 1);
   assert.equal(limited.stderr.trimEnd().split("\n").at(-1), "problem: gpt usage limit until Oct 25th, 2026 3:14 PM");
   assert.doesNotMatch(limited.stderr, /codex failed/);
+  // A result with no sessionId keeps the runner's -s id for the retry and --resume.
+  const noSession = invoke(["review", wt, brief, "--base", "origin/dev"], { ASE_REVIEW_MODEL: "grok-4.7", ASE_FAKE_GROK: "retry-no-session" });
+  assert.equal(noSession.status, 1, noSession.stderr);
+  const stopped = /^artifacts: (.+)$/m.exec(noSession.stdout)?.[1];
+  assert.ok(stopped);
+  const first: { args: string[] } = JSON.parse(readFileSync(`${capture}.first`, "utf8"));
+  const assigned = first.args[first.args.indexOf("-s") + 1];
+  assert.ok(assigned);
+  assert.equal(JSON.parse(readFileSync(join(stopped, "status.json"), "utf8")).session, assigned);
+  const retried: { args: string[] } = JSON.parse(readFileSync(capture, "utf8"));
+  assert.equal(retried.args[retried.args.indexOf("--resume") + 1], assigned);
+  assert.ok(!retried.args.includes("-s"));
+  const resumed = invoke(["--resume", stopped], { ASE_FAKE_GROK: "retry-no-session" });
+  assert.equal(resumed.status, 1, resumed.stderr);
+  const again: { args: string[] } = JSON.parse(readFileSync(capture, "utf8"));
+  assert.equal(again.args[again.args.indexOf("--resume") + 1], assigned);
 });
 
 test("both adapters run through the shared shell entry and compatibility wrappers using fake CLIs", (t) => {
