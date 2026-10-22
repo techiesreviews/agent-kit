@@ -373,6 +373,7 @@ test("kit slice switches builder after its initial build fails", t => {
   const builds = f.calls().filter(call => call.phase === "build");
   assert.equal(builds.length, 2);
   assert.equal(builds[1].args[builds[1].args.indexOf("--model") + 1], "claude-opus-5-5");
+  assert.equal(f.state().buildModel, "claude-opus-5-5");
   assert.match(f.git("log", "-1", "--format=%B"), /Co-Authored-By: Claude Opus 5\.5 <noreply@anthropic\.com>/);
 });
 
@@ -416,6 +417,25 @@ test("kit slice credits a build resumed from a state saved before buildModel", t
   assert.match(result.stdout, /builder switched: gpt-6\.1-sol -> gpt-6-luna/);
   assert.equal(f.calls().filter(call => call.phase === "build").length, 1);
   assert.match(f.git("log", "-1", "--format=%B"), /^Test slice title\n\nCo-Authored-By: GPT-6\.1-Sol <noreply@openai\.com>$/);
+});
+
+test("kit slice resumed unswitched from a state saved before buildModel credits its saved builder", t => {
+  const f = fixture(t);
+  const hook = join(f.hooks, "pre-commit");
+  writeFileSync(hook, "#!/bin/sh\nexit 1\n"); chmodSync(hook, 0o755);
+  const failed = f.run([], {}, ["--ticket", f.ticket, "--builder", "gpt-6-luna", "--no-pr"]);
+  assert.equal(failed.status, 1, failed.stdout + failed.stderr);
+  assert.deepEqual(f.state().finished, ["brief", "build"]);
+  // An old state whose rebuild ran under Luna after an earlier switch away from Sol.
+  const saved = f.state();
+  delete saved.buildModel;
+  saved.previousModels = ["gpt-6.1-sol"];
+  writeFileSync(join(f.root, ".scratch/kit-slice/04-ticket/state.json"), JSON.stringify(saved, null, 2) + "\n");
+  rmSync(hook);
+  const result = f.run([], {}, ["--ticket", f.ticket, "--builder", "gpt-6-luna", "--no-pr"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.doesNotMatch(result.stdout, /builder switched/);
+  assert.match(f.git("log", "-1", "--format=%B"), /^Test slice title\n\nCo-Authored-By: GPT-6-Luna <noreply@openai\.com>$/);
 });
 
 test("slice switched while real kit fix's builder step failed retargets that round", t => {

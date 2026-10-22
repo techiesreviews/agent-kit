@@ -85,6 +85,7 @@ test("shared builder author mapping names Sol, GPT, Claude and unknown models", 
   assert.equal(builderAuthor("claude-sonnet-4-5"), "Claude Sonnet 4.5 <noreply@anthropic.com>");
   assert.equal(builderAuthor("claude-haiku-4-5-20251001"), "Claude Haiku 4.5 <noreply@anthropic.com>");
   assert.equal(builderAuthor("claude-sonnet-4-6[1m]"), "Claude Sonnet 4.6 <noreply@anthropic.com>");
+  assert.equal(builderAuthor("claude-opus-4-1-20250805[1m]"), "Claude Opus 4.1 <noreply@anthropic.com>");
   assert.equal(builderAuthor("claude-opus-4-20250514"), "claude-opus-4-20250514 <noreply@anthropic.com>");
   assert.equal(builderAuthor("claude-sonnet-4-20250514"), "claude-sonnet-4-20250514 <noreply@anthropic.com>");
   assert.equal(builderAuthor("opus[1m]"), "opus[1m] <noreply@anthropic.com>");
