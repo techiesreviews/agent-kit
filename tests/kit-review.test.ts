@@ -392,3 +392,14 @@ test("kit review counts outside reviews per week, refuses at the budget and neve
   assert.deepEqual(counts(), { gpt: 1 });
   assert.equal(f.calls().length, 2);
 });
+
+test("kit review keeps the budget counted once the CLI has started, even when it times out silently", (t) => {
+  const f = fixture(t);
+  const grok = join(f.dir, "bin", "grok");
+  writeFileSync(grok, "#!/usr/bin/env node\nsetTimeout(() => {}, 30_000);\n");
+  chmodSync(grok, 0o755);
+  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "grok-4.7", ASE_AGENT_TIMEOUT: "1s" });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /exceeded timeout=1s/);
+  assert.deepEqual(Object.values(JSON.parse(readFileSync(join(f.main, ".scratch/review-budget.json"), "utf8")))[0], { grok: 1 });
+});

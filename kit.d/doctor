@@ -125,7 +125,7 @@ if [[ $quiet == false ]]; then
   grok=${KIT_GROK:-grok}
   if ! command -v -- "$grok" >/dev/null 2>&1; then
     printf '✗ grok: not installed (optional reviewer); fix: install the grok CLI for Grok reviews\n'
-  elif models=$(timeout 10 "$grok" models 2>/dev/null) && grep -q '^You are logged in' <<< "$models"; then
+  elif models=$(timeout 10 "$grok" models 2>&1) && grep -q '^You are logged in' <<< "$models"; then
     pass grok 'installed and logged in (optional reviewer)'
   else
     printf '✗ grok: not logged in (optional reviewer); fix: grok login\n'

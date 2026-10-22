@@ -165,11 +165,13 @@ export function grokResult(stdout, requested) {
   return result.text;
 }
 
-const usageLimitPattern = /you['’]ve hit your usage limit\b.*?\btry again at ([^\n]+?)\.?[\t ]*$/im;
+const usageLimitPattern = /^(?:ERROR:[\t ]*|■[\t ]*)?you['’]ve hit your usage limit\b.*?\btry again at ([^\n]+?)\.?[\t ]*$/i;
 
-// Providers stop plan users with a usage-limit message; report when it lifts.
+// Providers stop plan users with a usage-limit error line; report when it lifts.
+// Only the CLI's own closing lines count: earlier output may quote the phrase.
 export function usageLimitProblem(text, cli) {
-  const time = text.match(usageLimitPattern)?.[1];
+  const time = text.split(/\r?\n/).filter(line => line.trim()).slice(-5).reverse()
+    .map(line => line.match(usageLimitPattern)?.[1]).find(Boolean);
   return time ? `problem: ${reviewFamily(cli) ?? cli} usage limit until ${time}` : null;
 }
 
@@ -201,7 +203,11 @@ function withLedger(path, change) {
     }
   }
   try {
-    const ledger = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
+    let ledger = {};
+    if (existsSync(path)) {
+      try { ledger = JSON.parse(readFileSync(path, "utf8")); }
+      catch (error) { throw new Error(`review budget ledger ${path} is not valid JSON: ${error.message}; fix or delete it`); }
+    }
     const result = change(ledger);
     const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
     try {
@@ -219,6 +225,8 @@ export function reserveReviewBudget(path, cli, env = process.env, date = new Dat
   if (!family) return null;
   const limit = reviewBudgetLimit(family, env), week = isoWeek(date);
   return withLedger(path, ledger => {
+    // Only the current week matters; drop older weeks so the ledger stays small.
+    for (const old of Object.keys(ledger)) if (old < week) delete ledger[old];
     const used = ledger[week]?.[family] ?? 0;
     if (used >= limit) {
       throw new Error(`${family} review budget used up: ${used}/${limit} in ${week}; raise ASE_REVIEW_BUDGET_${family.toUpperCase()} to override`);
@@ -486,10 +494,11 @@ async function invokeAgent(adapter, args, descriptor, context) {
     const slice = readFileSync(logPath, "utf8").slice(previousLog);
     const session = recordedSession(adapter, result.stdout, slice);
     if (session) update({ session });
-    if (status === 124) messages.push(`problem: agent exceeded timeout=${limit}; process group killed; see ${logPath}`);
+    // The CLI's own failure is the cause; executeRun reports it after its consequences.
+    if (status === 124) context.cause = `problem: agent exceeded timeout=${limit}; process group killed; see ${logPath}`;
     else if (status) {
-      context.usageLimit = usageLimitProblem(`${slice}\n${result.stdout ?? ""}`, options.cli);
-      if (!context.usageLimit) messages.push(`problem: ${adapter.command} failed (${status}); see ${logPath}`);
+      context.cause = usageLimitProblem(slice, options.cli) ?? usageLimitProblem(result.stdout ?? "", options.cli) ??
+        `problem: ${adapter.command} failed (${status}); see ${logPath}`;
     }
     try {
       const report = adapter.finish(result.stdout, slice);
@@ -560,8 +569,8 @@ async function executeRun(options, out, previous, update, brief) {
       status ||= 1;
     }
     const gitStatus = execFileSync("git", ["-C", options.worktree, "status", "--short"], { encoding: "utf8" });
-    // Callers read the last problem line; a usage limit explains the rest.
-    if (context.usageLimit) messages.push(context.usageLimit);
+    // Callers read the last problem line; the CLI's failure explains the rest.
+    if (context.cause) messages.push(context.cause);
     return { status, messages, report, gitStatus };
   } finally {
     if (input !== undefined) closeSync(input);

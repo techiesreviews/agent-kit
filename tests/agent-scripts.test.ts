@@ -218,11 +218,15 @@ test("review budgets count outside families per ISO week, refuse at the limit an
   assert.equal(reserveReviewBudget(ledger, "grok", { ASE_REVIEW_BUDGET_GROK: "3" }, sunday).used, 3);
   assert.equal(reserveReviewBudget(ledger, "grok", env, next).used, 1);
   assert.equal(reserveReviewBudget(ledger, "claude", { ASE_REVIEW_BUDGET_GROK: "0" }, next), null);
-  assert.deepEqual(JSON.parse(readFileSync(ledger, "utf8")), { "2026-W43": { grok: 3, gpt: 1 }, "2026-W44": { grok: 1 } });
+  // A new week starts from zero and drops the old week.
+  assert.deepEqual(JSON.parse(readFileSync(ledger, "utf8")), { "2026-W44": { grok: 1 } });
   releaseReviewBudget(ledger, { family: "grok", week: "2026-W44" });
   assert.deepEqual(JSON.parse(readFileSync(ledger, "utf8"))["2026-W44"], { grok: 0 });
   assert.throws(() => reserveReviewBudget(ledger, "grok", { ASE_REVIEW_BUDGET_GROK: "0" }, next), /0\/0/);
   assert.throws(() => reserveReviewBudget(ledger, "codex", { ASE_REVIEW_BUDGET_GPT: "many" }, next), /ASE_REVIEW_BUDGET_GPT must be a whole number/);
+  assert.ok(!existsSync(`${ledger}.lock`));
+  writeFileSync(ledger, "{ broken");
+  assert.throws(() => reserveReviewBudget(ledger, "grok", env, next), /review budget ledger .* is not valid JSON: .*; fix or delete it/);
   assert.ok(!existsSync(`${ledger}.lock`));
 });
 
@@ -231,6 +235,10 @@ test("provider usage-limit messages become a family usage-limit problem", () => 
   assert.equal(usageLimitProblem(`model: gpt-6.1-sol\n${openai}\n`, "codex"), "problem: gpt usage limit until Oct 25th, 2026 3:14 PM");
   assert.equal(usageLimitProblem("You’ve hit your usage limit. Try again at 9:00 AM", "grok"), "problem: grok usage limit until 9:00 AM");
   for (const text of ["", "model: gpt-6.1-sol\nERROR: stream disconnected", "try again at 9:00 AM"]) assert.equal(usageLimitProblem(text, "codex"), null);
+  // Quoted text the agent read earlier, or a phrase inside a line, is not the CLI's error.
+  const quoted = `exec\n${openai}\n  const openai = "${openai}";\n${"read more\n".repeat(6)}ERROR: stream disconnected before completion\n`;
+  assert.equal(usageLimitProblem(quoted, "codex"), null);
+  assert.equal(usageLimitProblem(`{\n  "text": "${openai}"\n}`, "grok"), null);
 });
 
 test("Grok reviews and Codex usage limits run through the shared shell entry using fake CLIs", (t) => {
@@ -248,6 +256,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
 writeFileSync(process.env.ASE_FAKE_CAPTURE, JSON.stringify({ args, input: readFileSync(args[args.indexOf("--prompt-file") + 1], "utf8") }));
 const session = args[args.indexOf(args.includes("-s") ? "-s" : "--resume") + 1];
+if (process.env.ASE_FAKE_GROK === "broken") { console.log("internal error\\nstack trace"); process.exit(1); }
+if (process.env.ASE_FAKE_GROK === "limited") { console.log("You've hit your usage limit. Try again at 9:00 AM."); process.exit(1); }
 console.log(JSON.stringify({ text: "REVIEW_STATUS: complete\\nDefects: none\\n", stopReason: "end_turn", sessionId: session, modelUsage: { [args[args.indexOf("-m") + 1] + "-build"]: {} } }));
 `);
   writeFileSync(join(bin, "codex"), `#!/usr/bin/env node
@@ -272,6 +282,25 @@ process.exitCode = 1;
   const status = JSON.parse(readFileSync(join(out, "status.json"), "utf8"));
   assert.equal(status.cli, "grok");
   assert.equal(status.session, recorded.args[recorded.args.indexOf("-s") + 1]);
+  // A failed Grok run reports the CLI failure last, not the unparseable stdout.
+  for (const [mode, last] of [["broken", /^problem: grok failed \(1\); see .*run\.log$/], ["limited", /^problem: grok usage limit until 9:00 AM$/]] as const) {
+    const failed = invoke(["review", wt, brief, "--base", "origin/dev"], { ASE_REVIEW_MODEL: "grok-4.7", ASE_FAKE_GROK: mode });
+    assert.equal(failed.status, 1, failed.stderr);
+    assert.match(failed.stderr.trimEnd().split("\n").at(-1)!, last);
+    if (mode === "broken") {
+      const stopped = /^artifacts: (.+)$/m.exec(failed.stdout)?.[1];
+      assert.ok(stopped);
+      const session = JSON.parse(readFileSync(join(stopped, "status.json"), "utf8")).session;
+      // Resuming continues the recorded Grok session instead of naming a new one.
+      const resumed = invoke(["--resume", stopped]);
+      assert.equal(resumed.status, 0, resumed.stderr);
+      const again: { args: string[] } = JSON.parse(readFileSync(capture, "utf8"));
+      assert.equal(again.args[again.args.indexOf("--resume") + 1], session);
+      assert.ok(!again.args.includes("-s"));
+      assert.equal(again.args[again.args.indexOf("--sandbox") + 1], "read-only");
+      assert.match(readFileSync(join(stopped, "out.md"), "utf8"), /REVIEW_STATUS: complete/);
+    }
+  }
   const limited = invoke(["review", wt, brief, "--base", "origin/dev"], { ASE_REVIEW_MODEL: "gpt-6.1-sol" });
   assert.equal(limited.status, 1);
   assert.equal(limited.stderr.trimEnd().split("\n").at(-1), "problem: gpt usage limit until Oct 25th, 2026 3:14 PM");

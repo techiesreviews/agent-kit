@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // kit: review a diff or commit and save the evidence
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseAgentArgs, releaseReviewBudget, reserveReviewBudget } from "../agent-run.mjs";
@@ -103,9 +103,10 @@ async function review(args) {
     if (status === 2) process.stderr.write(usage);
   } finally {
     try {
-      // A review that never reached the model (empty diff, missing CLI output) is not counted.
-      const log = temporary && join(temporary, "run.log");
-      if (budget && !(log && existsSync(log) && statSync(log).size)) releaseReviewBudget(ledger, budget);
+      // A review whose CLI never started (empty diff) is not counted; the runner
+      // records the process group as soon as the CLI spawns.
+      const run = temporary && join(temporary, "status.json");
+      if (budget && !(run && existsSync(run) && JSON.parse(readFileSync(run, "utf8")).pgid)) releaseReviewBudget(ledger, budget);
     } catch (error) { console.error(`problem: releasing review budget failed: ${error.message}`); }
     try {
       const saved = [["out.md", "result.md"], ["run.log", "run.log"], ["diff.patch", "diff.patch"], ["refs.txt", "refs.txt"]]
