@@ -170,9 +170,16 @@ export function kitJobExit(job) {
   return Number(value);
 }
 
+const titleWord = word => word.charAt(0).toUpperCase() + word.slice(1);
+
 /** Credit the builder consistently across slice and fix commits. */
 export function builderAuthor(model) {
-  if (/^gpt-6\.1-sol$/i.test(model)) return "GPT-6.1-Sol <noreply@openai.com>";
+  const alias = /^(opus|sonnet|haiku|fable)$/i.exec(model);
+  if (alias) return `Claude ${titleWord(alias[1].toLowerCase())} <noreply@anthropic.com>`;
+  const claude = /^claude-(opus|sonnet|haiku|fable)-(\d+)-(\d+)(?:-\d{6,8})?(?:\[1m\])?$/i.exec(model);
+  if (claude) return `Claude ${titleWord(claude[1].toLowerCase())} ${claude[2]}.${claude[3]} <noreply@anthropic.com>`;
+  const gpt = /^gpt-(.+)$/i.exec(model);
+  if (gpt) return `GPT-${gpt[1].split("-").map(titleWord).join("-")} <noreply@openai.com>`;
   return `${model} <noreply@${/^(claude-|opus|sonnet|haiku|fable)/i.test(model) ? "anthropic" : "openai"}.com>`;
 }
 

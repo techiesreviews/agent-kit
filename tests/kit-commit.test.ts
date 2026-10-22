@@ -78,9 +78,17 @@ test("shared commit helper reports a rejecting hook without leaving locks", t =>
   assert.equal(f.git("rev-parse", "HEAD"), f.head);
 });
 
-test("shared builder author mapping supports Sol and Claude models", () => {
+test("shared builder author mapping names Sol, GPT, Claude and unknown models", () => {
   assert.equal(builderAuthor("gpt-6.1-sol"), "GPT-6.1-Sol <noreply@openai.com>");
-  assert.equal(builderAuthor("claude-opus-5-5"), "claude-opus-5-5 <noreply@anthropic.com>");
+  assert.equal(builderAuthor("gpt-6-luna"), "GPT-6-Luna <noreply@openai.com>");
+  assert.equal(builderAuthor("claude-opus-5-5"), "Claude Opus 5.5 <noreply@anthropic.com>");
+  assert.equal(builderAuthor("claude-sonnet-4-5"), "Claude Sonnet 4.5 <noreply@anthropic.com>");
+  assert.equal(builderAuthor("claude-haiku-4-5-20251001"), "Claude Haiku 4.5 <noreply@anthropic.com>");
+  assert.equal(builderAuthor("claude-sonnet-4-6[1m]"), "Claude Sonnet 4.6 <noreply@anthropic.com>");
+  for (const alias of ["opus", "sonnet", "haiku", "fable"])
+    assert.equal(builderAuthor(alias), `Claude ${alias[0].toUpperCase()}${alias.slice(1)} <noreply@anthropic.com>`);
+  assert.equal(builderAuthor("other-model"), "other-model <noreply@openai.com>");
+  assert.equal(builderAuthor("grok-4.7"), "grok-4.7 <noreply@openai.com>");
 });
 
 test("shared commit helper cannot redirect a commit when a pre-commit hook switches the real branch", t => {

@@ -10,7 +10,7 @@ const kit = resolve("scripts/agents/kit");
 const clean = "REVIEW_STATUS: complete\nDefects:\nSpec: none\nStandards: none\nValidation gaps: none\nOptional nits: none\n";
 const findings = "REVIEW_STATUS: complete\nDefects:\nSpec:\n- file.txt:1 P1 restore required text\nStandards: none\nValidation gaps: none\nOptional nits: none\n";
 interface Call { phase: string; args: string[] }
-interface State { finished: string[]; build: string; review: string; reviewedHead: string; rounds: number; pendingFix?: boolean; pr?: string; queued?: { head: string }; model: string; effort: string; previousModels?: string[] }
+interface State { finished: string[]; build: string; buildModel?: string; review: string; reviewedHead: string; rounds: number; pendingFix?: boolean; pr?: string; queued?: { head: string }; model: string; effort: string; previousModels?: string[] }
 
 function fixture(t: TestContext) {
   const dir = mkdtempSync(join(tmpdir(), "kit-slice-"));
@@ -373,7 +373,28 @@ test("kit slice switches builder after its initial build fails", t => {
   const builds = f.calls().filter(call => call.phase === "build");
   assert.equal(builds.length, 2);
   assert.equal(builds[1].args[builds[1].args.indexOf("--model") + 1], "claude-opus-5-5");
-  assert.match(f.git("log", "-1", "--format=%B"), /Co-Authored-By: claude-opus-5-5/i);
+  assert.match(f.git("log", "-1", "--format=%B"), /Co-Authored-By: Claude Opus 5\.5 <noreply@anthropic\.com>/);
+});
+
+test("kit slice credits its build to the model that finished the build, then fix rounds to the resumed builder", t => {
+  const f = fixture(t), real = f.realFix();
+  const hook = join(f.hooks, "pre-commit");
+  writeFileSync(hook, "#!/bin/sh\nexit 1\n"); chmodSync(hook, 0o755);
+  const original = ["--ticket", f.ticket, "--builder", "gpt-6.1-sol", "--no-pr"];
+  const failed = f.run([], { ...real, CLEAN_AT: "1" }, original);
+  assert.equal(failed.status, 1, failed.stdout + failed.stderr);
+  assert.match(failed.stdout, /RESULT: fail slice commit:/);
+  assert.deepEqual(f.state().finished, ["brief", "build"]);
+  assert.equal(f.state().buildModel, "gpt-6.1-sol");
+  rmSync(hook);
+  const result = f.run([], { ...real, CLEAN_AT: "1" }, ["--ticket", f.ticket, "--builder", "gpt-6-luna", "--no-pr"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /builder switched: gpt-6\.1-sol -> gpt-6-luna/);
+  assert.equal(f.calls().filter(call => call.phase === "build").length, 1);
+  assert.equal(f.state().buildModel, "gpt-6.1-sol");
+  assert.equal(f.state().model, "gpt-6-luna");
+  assert.match(f.git("log", "-1", "--skip=1", "--format=%B"), /^Test slice title\n\nCo-Authored-By: GPT-6\.1-Sol <noreply@openai\.com>$/);
+  assert.match(f.git("log", "-1", "--format=%B"), /^Review fixes round 1\n\nCo-Authored-By: GPT-6-Luna <noreply@openai\.com>$/);
 });
 
 test("slice switched while real kit fix's builder step failed retargets that round", t => {
