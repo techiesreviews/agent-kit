@@ -163,10 +163,14 @@ test("kit review resolves HEAD~1, HEAD^ and short SHAs and saves four evidence f
 
 test("kit review defaults to origin/dev and omits ticket sources when no ticket is supplied", (t) => {
   const f = fixture(t);
-  const result = f.run();
+  // A spent GPT budget must not stop the default review: it never touches the budget.
+  const result = f.run([], { ASE_REVIEW_BUDGET_GPT: "0" });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /scope: --base origin\/dev/);
   assert.match(result.stdout, /^model: claude-opus-5-5$/m);
+  assert.doesNotMatch(result.stdout, /^budget:/m);
+  const ledger = join(f.main, ".scratch/review-budget.json");
+  assert.ok(!existsSync(ledger) || Object.values(JSON.parse(readFileSync(ledger, "utf8"))).every((week: any) => !week.gpt));
   assert.equal(f.calls()[0].cli, "claude");
   assert.ok(f.calls()[0].input.includes(`Scope: git diff ${f.commits[0]}...HEAD`));
   assert.match(f.calls()[0].input, /Spec axis: no ticket supplied/);
