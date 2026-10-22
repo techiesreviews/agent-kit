@@ -36,6 +36,16 @@ export function sameReviewPatch(reviewedId, currentId) {
   return typeof reviewedId === "string" && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(reviewedId) && reviewedId === currentId;
 }
 
+// A leading `<sha>:<path>:<line>` or `<path>:<line>` (line may be a range, optionally
+// backticked) and the separator that follows it. Severity is read after this location.
+const LOCATION = /^`?(?:[0-9a-f]{7,64}:)?[^\s:`]+:\d+(?:[-–]\d+)?`?\s*(?:[—–-]|:)\s*/i;
+
+const severityOf = text => {
+  const body = text.replace(LOCATION, "");
+  const window = body === text ? text.slice(0, 80) : body.slice(0, 40);
+  return /\bP[0-3]\b/i.exec(window)?.[0].toUpperCase() ?? null;
+};
+
 // Parse the Markdown variants emitted by kit review without reading files or changing state.
 export function openFindings(resultMd) {
   const findings = [];
@@ -46,24 +56,25 @@ export function openFindings(resultMd) {
   const explicitDefects = lines.some(raw => /^Defects(?:\s*[—–-]\s*(?:Spec|Standards))?(?::.*|\s*)$/i.test(clean(raw)));
   const flush = () => {
     if (pending && !/^none\b/i.test(pending.text)) findings.push({ group: pending.group, text: pending.text,
-      severity: pending.group === "Validation gaps" ? null : /\bP[0-3]\b/i.exec(pending.text.slice(0, 80))?.[0].toUpperCase() ?? null });
+      severity: pending.group === "Validation gaps" ? null : severityOf(pending.text) });
     pending = undefined;
   };
   for (const raw of lines) {
     const text = clean(raw);
-    const heading = /^(Defects(?:\s*[—–-]\s*(Spec|Standards))?|Validation gaps|Optional nits|Spec|Standards)(?::\s*(.*)|\s*)$/i.exec(text);
+    const heading = /^(Defects(?:\s*[—–-]\s*(Spec|Standards))?|Spec defects|Standards defects|Validation gaps|Optional nits|Spec|Standards)(?::\s*(.*)|\s*)$/i.exec(text);
     const topGroup = !explicitDefects && section !== "Optional nits" && !/^\s*(?:[-+*]|\d+[.)])\s+/.test(raw);
-    if (heading && (!/^(Spec|Standards)$/i.test(heading[1]) || section === "Defects" || topGroup)) {
+    const bareGroup = /^(Spec|Standards)$/i.test(heading?.[1] ?? "");
+    if (heading && (!bareGroup || section === "Defects" || topGroup)) {
       flush();
       const label = heading[1].toLowerCase();
       if (label.startsWith("defects")) {
         defects = true;
         section = "Defects";
         group = heading[2] ? heading[2][0].toUpperCase() + heading[2].slice(1).toLowerCase() : "Defects";
-      } else if (label === "spec" || label === "standards") {
+      } else if (label === "spec" || label === "standards" || label === "spec defects" || label === "standards defects") {
         defects = true;
         section = "Defects";
-        group = label[0].toUpperCase() + label.slice(1);
+        group = label.startsWith("spec") ? "Spec" : "Standards";
       } else {
         section = label === "validation gaps" ? "Validation gaps" : "Optional nits";
         group = section;

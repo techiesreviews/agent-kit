@@ -142,3 +142,33 @@ test("implicit defect groups keep optional nits separate and accept a lone top-l
   }
   assert.deepEqual(openFindings(review("Spec: none.\nStandards: none.\nValidation gaps: none.\nOptional nits:\n- Spec: Style suggestion.\nStandards: Another nit.")), { findings: [], readable: true });
 });
+
+test("severity is read after a long ticket-path location", () => {
+  const ticket = `${"segment/".repeat(20)}ticket.md`;
+  assert.ok(ticket.length > 150);
+  const { findings } = openFindings(review(`Defects:\nSpec:\n- abcd1234:${ticket}:42-44 — P2: The listing limit is too small.`));
+  assert.deepEqual(findings, [finding("Spec", `abcd1234:${ticket}:42-44 — P2: The listing limit is too small.`, "P2")]);
+});
+
+test("parenthesised and bold severities after a location read", () => {
+  const { findings } = openFindings(review("Defects:\nSpec:\n- abcd1234:src/thing.ts:10 — (P1) Wrapped severity.\n- abcd1234:src/thing.ts:20 — **P3** Bold severity."));
+  assert.deepEqual(findings.map(item => item.severity), ["P1", "P3"]);
+});
+
+test("a severity token only inside far-off evidence is not the finding's severity", () => {
+  const text = `abcd1234:src/thing.ts:10 — ${"evidence ".repeat(8)}mentions P2 late.`;
+  const { findings } = openFindings(review(`Defects:\nSpec:\n- ${text}`));
+  assert.deepEqual(findings, [finding("Spec", text, null)]);
+});
+
+test("Spec defects and Standards defects headings open their groups with location severities", () => {
+  assert.deepEqual(openFindings(review("Spec defects:\n- abcd1234:src/thing.ts:10 — P1: First defect.\n- abcd1234:src/thing.ts:20 — P2: Second defect.\nValidation gaps: none.")), {
+    findings: [finding("Spec", "abcd1234:src/thing.ts:10 — P1: First defect.", "P1"), finding("Spec", "abcd1234:src/thing.ts:20 — P2: Second defect.", "P2")], readable: true,
+  });
+  assert.deepEqual(openFindings(review("## Standards defects\n- abcd1234:src/thing.ts:10 — P3: Minor standards issue.\nValidation gaps: none.")), {
+    findings: [finding("Standards", "abcd1234:src/thing.ts:10 — P3: Minor standards issue.", "P3")], readable: true,
+  });
+  assert.deepEqual(openFindings(review("**Standards defects:**\n- abcd1234:src/thing.ts:10 — P1: Standards defect.\n\n**Spec defects: none.**\n**Validation gaps:** none.")), {
+    findings: [finding("Standards", "abcd1234:src/thing.ts:10 — P1: Standards defect.", "P1")], readable: true,
+  });
+});
