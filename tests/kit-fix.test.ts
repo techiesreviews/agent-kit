@@ -360,19 +360,26 @@ test("a pending commit or review round still refuses another model or effort", t
 interface Pending { phase: string; model: string; effort?: string; run: string; previousEfforts?: string[] }
 
 test("a pending round saved without an effort resumes at the high default", t => {
-  for (const phase of ["commit", "builder"]) {
-    const f = fixture(t); f.review();
-    const first = f.run(["--ticket", f.ticket, "--builder", "gpt-6.1-sol"], { FAKE_EXIT: "7" });
-    assert.equal(first.status, 1, first.stdout + first.stderr);
-    const pendingPath = join(f.root, ".scratch/kit-fix/build%2Fke-03/pending.json");
-    const { effort: _, ...legacy }: Pending = JSON.parse(readFileSync(pendingPath, "utf8"));
-    writeFileSync(pendingPath, JSON.stringify({ ...legacy, phase }));
-    const result = f.run(["--builder", "gpt-6.1-sol", "--effort", "high"]);
-    assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.doesNotMatch(result.stdout, /pending fix belongs|builder switched/);
-    assert.equal(f.calls().length, phase === "commit" ? 1 : 2);
-    if (phase === "builder") assert.deepEqual(f.calls()[1].args.slice(0, 2), ["exec", "resume"]);
-    assert.equal(f.git("status", "--porcelain"), "");
+  // Sol names its builder and effort on the rerun; the Claude default passes neither.
+  for (const [builder, rerun] of [[["--builder", "gpt-6.1-sol"], ["--builder", "gpt-6.1-sol", "--effort", "high"]], [[], []]]) {
+    for (const phase of ["commit", "builder"]) {
+      const f = fixture(t); f.review();
+      const first = f.run(["--ticket", f.ticket, ...builder], { FAKE_EXIT: "7" });
+      assert.equal(first.status, 1, first.stdout + first.stderr);
+      const pendingPath = join(f.root, ".scratch/kit-fix/build%2Fke-03/pending.json");
+      const { effort: _, ...legacy }: Pending = JSON.parse(readFileSync(pendingPath, "utf8"));
+      writeFileSync(pendingPath, JSON.stringify({ ...legacy, phase }));
+      const result = f.run(rerun);
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      assert.doesNotMatch(result.stdout, /pending fix belongs|builder switched/);
+      assert.equal(f.calls().length, phase === "commit" ? 1 : 2);
+      if (phase === "builder") {
+        const retry = f.calls()[1];
+        if (builder.length) assert.deepEqual(retry.args.slice(0, 2), ["exec", "resume"]);
+        else assert.equal(retry.args[retry.args.indexOf("--effort") + 1], "high");
+      }
+      assert.equal(f.git("status", "--porcelain"), "");
+    }
   }
 });
 
@@ -384,6 +391,8 @@ test("a fresh fallback without --effort uses the latest slice effort", t => {
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const [call] = f.calls(); assert.equal(f.calls().length, 1);
   assert.equal(call.args.includes("resume"), false);
+  // The slice's model wins over the claude-opus-5-5 default.
+  assert.equal(call.cli, "codex"); assert.equal(call.args[call.args.indexOf("-m") + 1], "gpt-6.1-sol");
   assert.ok(call.args.includes("model_reasoning_effort=low"));
 });
 
