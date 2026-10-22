@@ -231,3 +231,14 @@ test("Spec defects / Standards defects as bullets in nits or gaps stay plain tex
   assert.equal(gaps.findings[0].group, "Validation gaps");
   assert.equal(gaps.findings[0].severity, null);
 });
+
+test("implicit Spec/Standards groups stay readable beside a bulleted Spec defects line", () => {
+  const result = openFindings(review("Spec:\n- abcd123:a.ts:1 — P1: evidence\nStandards: none\nValidation gaps:\n- Spec defects: wording could be tighter"));
+  assert.equal(result.readable, true);
+  assert.equal(result.findings.filter(finding => finding.severity === "P1").length, 1);
+});
+
+test("a P-token in evidence within 80 characters after a short location counts (lead decision)", () => {
+  const { findings } = openFindings(review("Defects: abcd123:a.ts:1 — evidence mentions P2 here\nValidation gaps: none."));
+  assert.equal(findings[0].severity, "P2");
+});

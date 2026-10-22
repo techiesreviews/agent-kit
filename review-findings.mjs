@@ -55,7 +55,9 @@ export function openFindings(resultMd) {
   const clean = text => text.trim().replace(/^#{1,6}\s+/, "").replace(/\*\*|__/g, "")
     .replace(/^(?:[-+*]|\d+[.)])\s+/, "").trim();
   const lines = resultMd.split(/\r?\n/);
-  const explicitDefects = lines.some(raw => /^(?:Defects(?:\s*[—–-]\s*(?:Spec|Standards))?|Spec defects|Standards defects)(?::.*|\s*)$/i.test(clean(raw)));
+  // Defect headings written as list items (for example "- Spec defects: …" under Validation gaps) are text, not headings.
+  const explicitDefects = lines.some(raw => !/^\s*(?:[-+*]|\d+[.)])\s+/.test(raw) &&
+    /^(?:Defects(?:\s*[—–-]\s*(?:Spec|Standards))?|Spec defects|Standards defects)(?::.*|\s*)$/i.test(clean(raw)));
   const flush = () => {
     if (pending && !/^none\b/i.test(pending.text)) findings.push({ group: pending.group, text: pending.text,
       severity: pending.group === "Validation gaps" ? null : severityOf(pending.text) });
