@@ -86,7 +86,8 @@ export function openFindings(resultMd) {
     // when it says "none" itself, so it and its notes never join the finding above.
     const stays = labelSection && listItem(raw) && !notes && !none(clean(heading?.[3] ?? ""));
     const groupSwitch = section === "Defects" && !stays || topGroup;
-    if (heading && (defectsLabel ? ["", "Defects"].includes(section) || lateLabel : !bareGroup || groupSwitch)) {
+    const opens = defectsLabel ? ["", "Defects"].includes(section) || lateLabel : !bareGroup || groupSwitch;
+    if (heading && opens) {
       flush();
       const label = heading[1].toLowerCase();
       labelSection = false;
@@ -109,7 +110,7 @@ export function openFindings(resultMd) {
       if (value && !notes && section !== "Optional nits") pending = { group, text: value, indent: 0 };
       continue;
     }
-    if (!text || !section || section === "Optional nits" || notes) continue;
+    if (!text || !section || section === "Optional nits") continue;
     if (fresh) {
       fresh = false;
       if ((notes = none(text))) continue;
@@ -117,6 +118,9 @@ export function openFindings(resultMd) {
     const bullet = /^(\s*)(?:[-+*]|\d+[.)])\s+/.exec(raw);
     const indent = bullet?.[1].length ?? 0;
     if (bullet && (!pending || indent <= pending.indent)) flush();
+    // Under "none" notes a line that starts with a location and names a severity is still a finding
+    // (fail closed); its continuation lines and sub-bullets join it, and other notes are skipped.
+    if (notes && !pending && !(LOCATION.test(text) && severityOf(text))) continue;
     if (pending) pending.text += ` ${text}`;
     else pending = { group, text, indent };
   }

@@ -448,6 +448,24 @@ test("an unbulleted None. first line under a bare heading holds notes", () => {
   assert.deepEqual(openFindings(review("Defects\n\nSpec\nNone. I checked every item.\nPlain note.\n- Bulleted note.\nValidation gaps: none.")), { findings: [], readable: true });
 });
 
-test("a combined Defects group opening with a none line holds notes until the next heading (ticket decision)", () => {
-  assert.deepEqual(openFindings(review("Defects:\n- None in Spec.\n- a.ts:1 — P1: x\nValidation gaps: none.")), { findings: [], readable: true });
+test("a combined Defects group opening with a none line holds notes, but a located P1 there still counts", () => {
+  assert.deepEqual(openFindings(review("Defects:\n- None in Spec.\n- A note.\n- a.ts:1 — P1: x\nValidation gaps: none.")), {
+    findings: [finding("Defects", "a.ts:1 — P1: x", "P1")], readable: true,
+  });
+});
+
+test("a located finding with a severity under none notes still counts and blocks", () => {
+  const cases: [string, ReturnType<typeof finding>[]][] = [
+    ["Defects:\nSpec: none\n### Standards (CODING_STANDARDS.md)\n- a.ts:1 — P1: x\n  - Evidence.\n- A note.\nValidation gaps: none.",
+      [finding("Spec", "a.ts:1 — P1: x Evidence.", "P1")]],
+    ["Spec defects:\n- a.ts:1 — P2: x\n- Standards: none\n- b.ts:2 — P1: y\nValidation gaps: none.",
+      [finding("Spec", "a.ts:1 — P2: x", "P2"), finding("Standards", "b.ts:2 — P1: y", "P1")]],
+    ["Spec:\n- None of the fixtures are trimmed copies: a.ts:1 — P1\n- b.ts:2 — P1: y\nValidation gaps: none.",
+      [finding("Spec", "b.ts:2 — P1: y", "P1")]],
+  ];
+  for (const [body, expected] of cases) {
+    const { findings } = openFindings(review(body));
+    assert.deepEqual(findings, expected);
+    assert.deepEqual(blockingFindings(findings), expected.filter(item => item.severity === "P1"));
+  }
 });
