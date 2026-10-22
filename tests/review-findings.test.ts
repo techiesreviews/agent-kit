@@ -203,6 +203,18 @@ test("severity: the 40-character window after a location", () => {
   // Past the 40-character window the first-80-characters rule still applies; beyond both, no severity.
   assert.equal(read(`abcd123:a.ts:1 — ${"x".repeat(41)} P1`), "P1");
   assert.equal(read(`abcd123:a.ts:1 — ${"x".repeat(70)} P1`), null);
+  // A long location puts the 80-character fallback out of reach, so only the window decides.
+  const path = `${"segment/".repeat(7)}ticket.md`;
+  assert.ok(path.length >= 60);
+  assert.equal(read(`abcd123:${path}:1 — ${"x".repeat(35)} P1`), "P1");
+  assert.equal(read(`abcd123:${path}:1 — ${"x".repeat(45)} P1`), null);
+});
+
+test("severity: a P-token far after a long ticket-path location does not count", () => {
+  const ticket = `${"segment/".repeat(20)}ticket.md`;
+  assert.ok(ticket.length > 150);
+  const text = `abcd1234:${ticket}:42 — evidence ${"words ".repeat(8)}mentions P2 late.`;
+  assert.deepEqual(openFindings(review(`Defects:\nSpec:\n- ${text}`)).findings, [finding("Spec", text, null)]);
 });
 
 test("severity: a long-path location followed directly by the severity", () => {
@@ -235,6 +247,16 @@ test("Spec defects / Standards defects as bullets in nits or gaps stay plain tex
 test("implicit Spec/Standards groups stay readable beside a bulleted Spec defects line", () => {
   assert.deepEqual(openFindings(review("Spec:\n- abcd123:a.ts:1 — P1: evidence\nStandards: none\nValidation gaps:\n- Spec defects: wording could be tighter")), {
     findings: [finding("Spec", "abcd123:a.ts:1 — P1: evidence", "P1"), finding("Validation gaps", "Spec defects: wording could be tighter")], readable: true,
+  });
+});
+
+test("unbulleted Spec defects / Standards defects in nits or gaps stay plain text", () => {
+  assert.deepEqual(openFindings(review("Defects: none\nValidation gaps: none.\nOptional nits:\nSpec defects: tighter wording")), { findings: [], readable: true });
+  assert.deepEqual(openFindings(review("Defects: none\nValidation gaps:\nStandards defects: add a race test")), {
+    findings: [finding("Validation gaps", "Standards defects: add a race test")], readable: true,
+  });
+  assert.deepEqual(openFindings(review("Spec:\n- abcd123:a.ts:1 — P1: evidence\nStandards: none\nValidation gaps: none\nOptional nits:\nSpec defects: none")), {
+    findings: [finding("Spec", "abcd123:a.ts:1 — P1: evidence", "P1")], readable: true,
   });
 });
 

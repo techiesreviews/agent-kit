@@ -56,11 +56,11 @@ export function openFindings(resultMd) {
   const clean = text => text.trim().replace(/^#{1,6}\s+/, "").replace(/\*\*|__/g, "")
     .replace(/^(?:[-+*]|\d+[.)])\s+/, "").trim();
   const lines = resultMd.split(/\r?\n/);
-  // "Spec defects" / "Standards defects" written as a bullet are headings only before Validation gaps
-  // or Optional nits; after them they are text (for example "- Spec defects: …" as a gap).
+  // "Spec defects" / "Standards defects" are headings only before Validation gaps or Optional nits;
+  // after them they are text, bulleted or not (for example "- Spec defects: …" as a gap).
   const notesStart = lines.findIndex(raw => /^(?:Validation gaps|Optional nits)(?::.*|\s*)$/i.test(clean(raw)));
   const explicitDefects = lines.some((raw, index) => /^Defects(?:\s*[—–-]\s*(?:Spec|Standards))?(?::.*|\s*)$/i.test(clean(raw)) ||
-    (/^(?:Spec|Standards) defects(?::.*|\s*)$/i.test(clean(raw)) && (!listItem(raw) || notesStart < 0 || index < notesStart)));
+    (/^(?:Spec|Standards) defects(?::.*|\s*)$/i.test(clean(raw)) && (notesStart < 0 || index < notesStart)));
   const flush = () => {
     if (pending && !/^none\b/i.test(pending.text)) findings.push({ group: pending.group, text: pending.text,
       severity: pending.group === "Validation gaps" ? null : severityOf(pending.text) });
@@ -72,7 +72,7 @@ export function openFindings(resultMd) {
     const topGroup = !explicitDefects && section !== "Optional nits" && !listItem(raw);
     const bareGroup = /^(Spec|Standards)$/i.test(heading?.[1] ?? "");
     const defectsLabel = /^(Spec|Standards) defects$/i.test(heading?.[1] ?? "");
-    if (heading && (defectsLabel ? !listItem(raw) || ["", "Defects"].includes(section) : !bareGroup || section === "Defects" || topGroup)) {
+    if (heading && (defectsLabel ? ["", "Defects"].includes(section) : !bareGroup || section === "Defects" || topGroup)) {
       flush();
       const label = heading[1].toLowerCase();
       if (label.startsWith("defects")) {
