@@ -34,7 +34,8 @@ const home = process.env.CODEX_HOME;
 const auth = join(home, "auth.json");
 const calls = existsSync(process.env.FAKE_CALLS) ? readFileSync(process.env.FAKE_CALLS, "utf8").trim().split("\\n").length : 0;
 const symlink = existsSync(auth) && lstatSync(auth).isSymbolicLink();
-appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ cli, args, input: readFileSync(0, "utf8"), cwd: process.cwd(), home,
+const input = readFileSync(0, "utf8");
+appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ cli, args, input, cwd: process.cwd(), home,
   files: readdirSync(home), symlink, target: symlink ? readlinkSync(auth) : null,
   config: existsSync(join(home, "config.toml")) ? readFileSync(join(home, "config.toml"), "utf8") : "" }) + "\\n");
 if (process.env.FAKE_ROTATE && symlink && cli === "codex") {
@@ -48,7 +49,11 @@ if (cli === "codex") {
   if (!(process.env.FAKE_NO_RETRY_MODEL && resumed)) console.error("model: " + model);
   if (mode !== "no-session") console.error("session id: ${session}");
   console.error("call: " + (calls + 1));
-  if (mode === "usage-limit" || (mode === "retry-usage-limit" && resumed)) {
+  // Codex echoes the prompt after its header, then logs any work before the limit.
+  console.error("--------\\nuser\\n" + input);
+  if (mode === "late-usage-limit") console.error("exec\\n/bin/bash -lc 'git diff HEAD~1' in /work\\n succeeded in 12ms:\\ncodex\\nReading the diff.");
+  console.error("warning: \`--dangerously-bypass-hook-trust\` is enabled.");
+  if (["usage-limit", "late-usage-limit"].includes(mode) || (mode === "retry-usage-limit" && resumed)) {
     console.error("ERROR: You've hit your usage limit. Upgrade to Pro, or try again at Oct 25th, 2026 3:14 PM.");
     process.exit(1);
   }
@@ -426,6 +431,25 @@ test("kit review gives the budget back when the provider refuses on a usage limi
   assert.equal(refused.status, 1);
   assert.match(refused.stderr, /^problem: gpt usage limit until Oct 25th, 2026 3:14 PM$/m);
   assert.deepEqual(counts(), { gpt: 1 });
+});
+
+test("kit review keeps the spent review when the first call works before the usage limit", (t) => {
+  const f = fixture(t);
+  const ledger = join(f.main, ".scratch/review-budget.json");
+  const counts = () => Object.values(JSON.parse(readFileSync(ledger, "utf8")))[0];
+  const first = f.run(["--base", "HEAD~1"], { ASE_REVIEW_BUDGET_GPT: "2" });
+  assert.equal(first.status, 0, first.stderr);
+  const late = f.run(["--base", "HEAD~1"], { ASE_REVIEW_BUDGET_GPT: "2", FAKE_MODE: "late-usage-limit" });
+  assert.equal(late.status, 1);
+  assert.match(late.stderr, /^problem: gpt usage limit until Oct 25th, 2026 3:14 PM$/m);
+  assert.deepEqual(counts(), { gpt: 2 });
+});
+
+test("kit review keeps the budget counted when the first call fails for another reason", (t) => {
+  const f = fixture(t);
+  const failed = f.run(["--base", "HEAD~1"], { ASE_REVIEW_BUDGET_GPT: "2", FAKE_MODE: "retry-fail", FAKE_EXIT: "7" });
+  assert.equal(failed.status, 1);
+  assert.deepEqual(Object.values(JSON.parse(readFileSync(join(f.main, ".scratch/review-budget.json"), "utf8")))[0], { gpt: 1 });
 });
 
 test("kit review keeps the spent review when only the completeness retry is refused", (t) => {

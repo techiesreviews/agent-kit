@@ -9,7 +9,7 @@ import { reviewBrief, reviewComplete, reviewFormat } from "../scripts/agents/rev
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { unitSummary } from "../scripts/agents/unit-summary.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
-import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokResult, inferCli, isoWeek, parseAgentArgs, releaseReviewBudget, reserveReviewBudget, reviewBase, usageLimitProblem } from "../scripts/agents/agent-run.mjs";
+import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokResult, inferCli, isoWeek, parseAgentArgs, refusedOutright, releaseReviewBudget, reserveReviewBudget, reviewBase, usageLimitProblem } from "../scripts/agents/agent-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { durationMilliseconds } from "../scripts/agents/sol-run.mjs";
 
@@ -254,6 +254,22 @@ test("provider usage-limit messages become a family usage-limit problem", () => 
   assert.equal(usageLimitProblem(`{\n  "text": "${openai}"\n}`, "grok"), null);
 });
 
+test("only a usage limit that is all the call printed counts as an outright refusal", () => {
+  const limit = "ERROR: You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), or try again at Oct 27th, 2026 8:26 PM.";
+  const prompt = "Review this slice.\nexec\nThe very first line must be REVIEW_STATUS: complete.\n";
+  const header = `OpenAI Codex v0.163.0\n--------\nmodel: gpt-6.1-sol\nsession id: 1\n--------\nuser\n${prompt}\n`;
+  const warning = "warning: `--dangerously-bypass-hook-trust` is enabled.\n";
+  // The prompt echo may hold work-like lines; only what follows it counts.
+  assert.equal(refusedOutright("codex", "", `${header}${warning}${limit}\n${limit}\n`, prompt), true);
+  assert.equal(refusedOutright("codex", "", `${header}${warning}exec\n/bin/bash -lc ls\ncodex\nReading.\n${limit}\ntokens used\n1,024\n`, prompt), false);
+  assert.equal(refusedOutright("codex", "", `${header}${warning}`, prompt), false);
+  // Without the echo there is no telling where work would start.
+  assert.equal(refusedOutright("codex", "", `${limit}\n`, prompt), false);
+  const grok = "You've hit your usage limit. Try again at 9:00 AM.";
+  assert.equal(refusedOutright("grok", `${grok}\n`, "", ""), true);
+  assert.equal(refusedOutright("grok", `{"text":"partial"}\n${grok}\n`, "", ""), false);
+});
+
 test("Grok reviews and Codex usage limits run through the shared shell entry using fake CLIs", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ase-agent-grok-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -265,7 +281,7 @@ test("Grok reviews and Codex usage limits run through the shared shell entry usi
   writeFileSync(brief, "tiny brief\n");
   writeFileSync(join(bin, "package.json"), '{"type":"module"}');
   writeFileSync(join(bin, "grok"), `#!/usr/bin/env node
-import { readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
 writeFileSync(process.env.ASE_FAKE_CAPTURE, JSON.stringify({ args, input: readFileSync(args[args.indexOf("--prompt-file") + 1], "utf8") }));
 const session = args[args.indexOf(args.includes("-s") ? "-s" : "--resume") + 1];
@@ -276,6 +292,11 @@ if (process.env.ASE_FAKE_GROK === "retry-limited") {
   process.exit(0);
 }
 if (process.env.ASE_FAKE_GROK === "limited") { console.log("You've hit your usage limit. Try again at 9:00 AM."); process.exit(1); }
+if (process.env.ASE_FAKE_GROK === "resume-no-session") {
+  appendFileSync(process.env.ASE_FAKE_CAPTURE + ".calls", JSON.stringify({ args, input: readFileSync(args[args.indexOf("--prompt-file") + 1], "utf8") }) + "\\n");
+  console.log(JSON.stringify({ text: "incomplete reply", modelUsage: { "grok-4.7-build": {} } }));
+  process.exit(0);
+}
 if (process.env.ASE_FAKE_GROK === "retry-no-session") {
   if (args.includes("--resume")) { console.log("internal error"); process.exit(1); }
   writeFileSync(process.env.ASE_FAKE_CAPTURE + ".first", JSON.stringify({ args }));
@@ -349,6 +370,17 @@ process.exitCode = 1;
   assert.equal(resumed.status, 1, resumed.stderr);
   const again: { args: string[] } = JSON.parse(readFileSync(capture, "utf8"));
   assert.equal(again.args[again.args.indexOf("--resume") + 1], assigned);
+  // A resumed run whose resume call ends incomplete with no sessionId retries the recorded id.
+  const incomplete = invoke(["--resume", stopped], { ASE_FAKE_GROK: "resume-no-session" });
+  assert.equal(incomplete.status, 1, incomplete.stderr);
+  assert.match(incomplete.stderr, /problem: result lacks REVIEW_STATUS: complete/);
+  const calls: { args: string[]; input: string }[] = readFileSync(`${capture}.calls`, "utf8").trim().split("\n").map(line => JSON.parse(line));
+  assert.equal(calls.length, 2);
+  for (const call of calls) {
+    assert.equal(call.args[call.args.indexOf("--resume") + 1], assigned);
+    assert.ok(!call.args.includes("-s"));
+  }
+  assert.match(calls[1].input, /^Your reply must start with the line REVIEW_STATUS: complete\./);
 });
 
 test("both adapters run through the shared shell entry and compatibility wrappers using fake CLIs", (t) => {

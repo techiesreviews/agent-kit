@@ -176,6 +176,21 @@ export function usageLimitProblem(text, cli) {
   return time ? `problem: ${reviewFamily(cli) ?? cli} usage limit until ${time}` : null;
 }
 
+// A refusal spent no review only when it is all the call printed: Codex logs nothing
+// after its echo of the prompt but warnings and the limit line, Grok prints the limit
+// line and no JSON result. Any work before the limit means quota was used.
+export function refusedOutright(cli, stdout, log, prompt) {
+  let output = stdout;
+  if (cli === "codex") {
+    const echo = `\nuser\n${prompt.trimEnd()}`, start = log.indexOf(echo);
+    if (start < 0) return false;
+    output = log.slice(start + echo.length);
+  }
+  const lines = output.split(/\r?\n/).filter(line => line.trim());
+  return lines.some(line => usageLimitPattern.test(line)) &&
+    lines.every(line => usageLimitPattern.test(line) || /^warning:/i.test(line));
+}
+
 export const reviewBudgetDefaults = { gpt: 12, grok: 8 };
 
 export function isoWeek(date = new Date()) {
@@ -286,7 +301,7 @@ export function grokAdapter(options) {
   const { kind, worktree, model, effort } = options;
   if (kind !== "review") throw new Error("Grok runs reviews only");
   // The read-only sandbox and a read-only tool list keep the reviewer from editing.
-  const args = ["--prompt-file", "/dev/stdin", "-m", model, "--reasoning-effort", effort, "--output-format", "json",
+  const args = ["--prompt-file", "/dev/stdin", "-m", model.toLowerCase(),"--reasoning-effort", effort, "--output-format", "json",
     "--sandbox", "read-only", "--tools", "read_file,grep,list_dir", "--no-subagents", "--disable-web-search", "--cwd", worktree];
   return {
     command: "grok", capture: true,
@@ -507,9 +522,9 @@ async function invokeAgent(adapter, args, descriptor, context) {
     else if (status) {
       const refused = usageLimitProblem(slice, options.cli) ?? usageLimitProblem(result.stdout ?? "", options.cli);
       context.cause = refused ?? `problem: ${adapter.command} failed (${status}); see ${logPath}`;
-      // A refusal only refunds a review whose first call never ran. A completed
-      // first call already spent the review, even when its retry is refused.
-      if (refused && !previousCalls) update({ refused: true });
+      // A refusal of the first call refunds the review; a completed first call, or one
+      // that worked before the limit, already spent it.
+      if (refused && !previousCalls && refusedOutright(options.cli, result.stdout ?? "", slice, context.prompt)) update({ refused: true });
     }
     try {
       const report = adapter.finish(result.stdout, slice);
@@ -538,9 +553,10 @@ async function executeRun(options, out, previous, update, brief) {
   const reportPath = join(out, "out.md"), logPath = join(out, "run.log"), inputPath = join(out, `brief-${process.pid}.md`);
   // A resumed Codex report must not truncate the earlier final report.
   const output = previous ? join(out, `resume-${process.pid}-${randomUUID()}.md`) : reportPath;
+  const prompt = prepared.prompt + (!previous && options.kind === "build" ? buildContract : "");
   let input, log, reviewHome;
   try {
-    writeFileSync(inputPath, prepared.prompt + (!previous && options.kind === "build" ? buildContract : ""));
+    writeFileSync(inputPath, prompt);
     rmSync(output, { force: true });
     input = openSync(inputPath, "r");
     log = openSync(logPath, previous ? "a" : "w");
@@ -550,7 +566,7 @@ async function executeRun(options, out, previous, update, brief) {
       options.codexHome = reviewHome.home;
     }
     const adapter = agentInvocation(options, common, output);
-    const context = { options, limit, logPath, log, output, messages, update };
+    const context = { options, limit, logPath, log, output, messages, update, prompt };
     const invoke = (args, descriptor) => invokeAgent(adapter, args, descriptor, context);
     const complete = () => existsSync(output) && reviewComplete(readFileSync(output, "utf8"));
     const result = await invoke(previous ? adapter.resume(previous.session) : adapter.args, input);

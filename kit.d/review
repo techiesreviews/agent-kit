@@ -40,7 +40,7 @@ function evidenceDirectory() {
 }
 
 async function review(args) {
-  let evidence = "none", temporary, status = 1, reason = "invalid arguments", label, budget, env, stderr = "";
+  let evidence = "none", temporary, status = 1, reason = "invalid arguments", label, budget, env;
   const ledger = join(kitMainRoot(), ".scratch/review-budget.json");
   try {
     status = 2;
@@ -62,6 +62,7 @@ async function review(args) {
     console.log(`model: ${model}`);
     budget = reserveReviewBudget(ledger, cli, env);
     if (budget) console.log(`budget: ${budget.family} ${budget.used}/${budget.limit} in ${budget.week}`);
+    let stderr = "";
     status = await new Promise((accept, reject) => {
       const child = spawn(env.KIT_NODE, [resolve(import.meta.dirname, "../agent-run.mjs"), ...agentArgs], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
       const interrupt = () => child.kill("SIGINT");
@@ -105,7 +106,7 @@ async function review(args) {
       // A review whose CLI never started (empty diff) is not counted; the runner
       // records the process group as soon as the CLI spawns. A provider usage-limit
       // refusal on the first call spent no review, so it gives the slot back; the
-      // runner marks only that call, since a completed first call already spent it.
+      // runner marks it only when the refusal was all that call printed.
       const run = temporary && join(temporary, "status.json");
       const record = run && existsSync(run) ? JSON.parse(readFileSync(run, "utf8")) : {};
       if (budget && (!record.pgid || record.refused === true)) releaseReviewBudget(ledger, budget, env);
