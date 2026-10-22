@@ -53,7 +53,10 @@ const severityOf = text => {
 // an indented sub-bullet belongs to the finding above it.
 export function openFindings(resultMd) {
   const findings = [];
-  let defects = false, labelled = false, section = "", group = "", pending, notes = false, fresh = false, labelSection = false;
+  let defects = false, labelled = false, section = "", group = "", pending;
+  // notes: the group's first line said "none"; fresh: the group's first line is still to come;
+  // labelSection: the section was opened by a "Spec defects" / "Standards defects" heading.
+  let notes = false, fresh = false, labelSection = false;
   const listItem = raw => /^\s*(?:[-+*]|\d+[.)])\s+/.test(raw);
   const clean = text => text.trim().replace(/^#{1,6}\s+/, "").replace(/\*\*|__/g, "")
     .replace(/^(?:[-+*]|\d+[.)])\s+/, "").trim();
@@ -68,16 +71,19 @@ export function openFindings(resultMd) {
   for (const raw of lines) {
     const text = clean(raw);
     const heading = /^(Defects(?:\s*[—–-]\s*(Spec|Standards))?|Spec defects|Standards defects|Validation gaps|Optional nits|Spec|Standards)(?::\s*(.*)|\s*)$/i.exec(text);
+    const bareGroup = /^(Spec|Standards)$/i.test(heading?.[1] ?? "");
+    const defectsLabel = /^(Spec|Standards) defects$/i.test(heading?.[1] ?? "");
     // After Validation gaps or Optional nits, bare Spec:/Standards: lines are text once a
     // "Spec defects" / "Standards defects" heading has opened.
     const topGroup = !explicitDefects && !labelled && section !== "Optional nits" && !listItem(raw);
-    const bareGroup = /^(Spec|Standards)$/i.test(heading?.[1] ?? "");
     // "Spec defects" / "Standards defects" always open their group before the notes. After them an
-    // unbulleted heading still does (fail closed); a bulleted or plain inline one is gap or nit text.
-    const defectsLabel = /^(Spec|Standards) defects$/i.test(heading?.[1] ?? "");
-    const lateLabel = defectsLabel && !listItem(raw) && (!heading[3] || /^\s*(?:#{1,6}\s|\*\*|__)/.test(raw));
-    // Inside a defects-label section a bulleted bare Spec:/Standards: stays in that section's group.
-    const groupSwitch = section === "Defects" && !(labelSection && listItem(raw)) || topGroup;
+    // unbulleted heading still does (fail closed) when it is bare, marked with # or bold, or names a
+    // severity; a bulleted one, or a plain one with severity-less inline text, is gap or nit text.
+    const lateLabel = defectsLabel && !listItem(raw) &&
+      (!heading[3] || /^\s*(?:#{1,6}\s|\*\*|__)/.test(raw) || severityOf(clean(heading[3])) !== null);
+    // Inside a defects-label section a bulleted bare Spec:/Standards: stays in that section's group,
+    // except under "none" notes, where it switches so a real fault after the notes still counts.
+    const groupSwitch = section === "Defects" && !(labelSection && listItem(raw) && !notes) || topGroup;
     if (heading && (defectsLabel ? ["", "Defects"].includes(section) || lateLabel : !bareGroup || groupSwitch)) {
       flush();
       const label = heading[1].toLowerCase();

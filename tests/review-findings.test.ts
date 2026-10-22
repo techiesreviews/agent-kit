@@ -415,3 +415,25 @@ test("a bulleted bare group inside a defects-label section stays in that group (
     findings: [finding("Spec", "a.ts:1 — P1: x", "P1"), finding("Standards", "b.ts:2 — P2: y", "P2")], readable: true,
   });
 });
+
+test("a bulleted bare group after none notes in a defects-label section opens its group", () => {
+  const { findings } = openFindings(review("Spec defects:\n- None.\n- Standards: a.ts:1 — P1: x\nValidation gaps: none."));
+  assert.deepEqual(findings, [finding("Standards", "a.ts:1 — P1: x", "P1")]);
+  assert.deepEqual(blockingFindings(findings), findings);
+});
+
+test("a late inline defects label opens its group when bold or carrying a severity; plain text stays a gap", () => {
+  assert.deepEqual(openFindings(review("Defects: none\nValidation gaps:\n**Standards defects:** add a race test")).findings,
+    [finding("Standards", "add a race test")]);
+  for (const notes of ["Validation gaps: none.", "Validation gaps: none.\nOptional nits:"]) {
+    const { findings } = openFindings(review(`Defects: none\n${notes}\nStandards defects: a.ts:1 — P1: x`));
+    assert.deepEqual(findings, [finding("Standards", "a.ts:1 — P1: x", "P1")]);
+    assert.deepEqual(blockingFindings(findings), findings);
+  }
+  assert.deepEqual(openFindings(review("Defects: none\nValidation gaps:\nStandards defects: add a race test")).findings,
+    [finding("Validation gaps", "Standards defects: add a race test")]);
+});
+
+test("bullets under a none Validation gaps group are notes, not gaps", () => {
+  assert.deepEqual(openFindings(review("Defects: none\nValidation gaps: none.\n- Add a race test.")), { findings: [], readable: true });
+});
