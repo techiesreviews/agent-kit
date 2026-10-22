@@ -9,7 +9,7 @@ import { openFindings } from "../review-findings.mjs";
 const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv, commitBuilderWork, builderAuthor } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const usage = "Usage: kit fix [--review DIR | --note FILE] [--run DIR] [--ticket FILE] [--builder MODEL] [--effort E]\nResume the builder with open findings or a failure note, commit its fixes, and review again.\nWith --builder (and --effort when given), resume only a saved session of that model and effort, else start fresh with them (without either: latest slice model and effort, else gpt-6.1-sol and high).\nAn explicit --run DIR that is missing, unreadable or belongs to another worktree errors; one that belongs to another model is ignored with a line and a fresh builder starts.\nA pending builder round from another model or effort switches to the requested one and keeps its edits; a pending commit or review round still refuses.\nFailed rounds resume their saved builder/commit/review phase without discarding edits.\n";
+const usage = "Usage: kit fix [--review DIR | --note FILE] [--run DIR] [--ticket FILE] [--builder MODEL] [--effort E]\nResume the builder with open findings or a failure note, commit its fixes, and review again.\nWith --builder (and --effort when given), resume only a saved session of that model and effort, else start fresh with them (without either: latest slice model and effort, else gpt-6.1-sol and high).\nAn explicit --run DIR that is missing, unreadable or belongs to another worktree errors; one of another model or effort is named on a line and a fresh builder starts with the requested setting and the run's other one.\nA pending builder round from another model or effort switches to the requested one and keeps its edits; a pending commit or review round still refuses.\nFailed rounds resume their saved builder/commit/review phase without discarding edits.\n";
 const kit = resolve(import.meta.dirname, "../kit");
 const agent = resolve(import.meta.dirname, "../agent.sh");
 const modelName = value => value === "sol" ? "gpt-6.1-sol" : value;
@@ -56,11 +56,12 @@ function latestSlice(root, branch) {
   return states.sort((a, b) => b.modified - a.modified)[0]?.state;
 }
 
+const label = (model, effort) => effort && effort !== "high" ? `${model} (${effort})` : model;
+
+// Returns a resumable builder, or for an explicit run of another model or effort `{ status, rejected: true }`.
 function builderRun(root, explicit, slice, model, effort) {
   const implicit = newestDirectories(join(root, ".scratch/agent")).filter(folder => folder.split("/").at(-1).startsWith("build-"));
   if (slice?.build) implicit.unshift(resolve(root, slice.build));
-  const label = (status, wantedEffort) => wantedEffort && status.effort !== wantedEffort
-    ? `${status.model} (${status.effort})` : status.model;
   const builders = [];
   for (const folder of explicit ? [resolve(root, explicit)] : implicit) {
     let status;
@@ -72,10 +73,7 @@ function builderRun(root, explicit, slice, model, effort) {
       continue; // Ignore incomplete or foreign builder records.
     }
     if ((model && status.model !== model) || (effort && status.effort !== effort)) {
-      if (explicit) {
-        const wanted = effort && effort !== "high" ? `${model || status.model} (${effort})` : model || status.model;
-        console.log(`--run ${explicit} is ${label(status, effort)}; starting fresh with ${wanted}`);
-      }
+      if (explicit) return { status, rejected: true };
       continue;
     }
     builders.push({ folder, status });
@@ -146,7 +144,8 @@ async function fix(args) {
     if (!readable) throw new Error(`${findings.length} open findings (${resultPath}): review format unreadable`);
     if (!note && !findings.length) { kitResult("ok", "fix clean"); return 0; }
     const slice = latestSlice(root, branch);
-    const builder = pending ? undefined : builderRun(root, flags["--run"], slice, requested, requestedEffort);
+    const found = pending ? undefined : builderRun(root, flags["--run"], slice, requested, requestedEffort);
+    const builder = found?.rejected ? undefined : found;
     let ticket = pending?.ticket || flags["--ticket"];
     if (!ticket && builder) {
       const brief = readFileSync(resolve(root, builder.status.brief), "utf8");
@@ -175,7 +174,6 @@ async function fix(args) {
       renameSync(`${pendingPath}.tmp`, pendingPath);
     };
     if (retarget) {
-      const label = (model, effort) => effort && effort !== "high" ? `${model} (${effort})` : model;
       if (modelChanged)
         pending.previousModels = [...(Array.isArray(pending.previousModels) ? pending.previousModels : []), pending.model];
       if (effortChanged)
@@ -191,8 +189,11 @@ async function fix(args) {
       save();
     }
     if (!pending) {
-      const model = requested || builder?.status.model || slice?.model || "gpt-6.1-sol";
-      const effort = requestedEffort || builder?.status.effort || slice?.effort || "high";
+      // A rejected explicit run still lends the model or effort that was not overridden.
+      const model = modelName(requested || found?.status.model || slice?.model || "gpt-6.1-sol");
+      const effort = requestedEffort || found?.status.effort || slice?.effort || "high";
+      if (found?.rejected)
+        console.log(`--run ${flags["--run"]} is ${label(found.status.model, found.status.effort)}; starting fresh with ${label(model, effort)}`);
       let run = builder?.folder;
       if (!run) {
         const artifacts = join(root, ".scratch/agent");
@@ -200,7 +201,7 @@ async function fix(args) {
         run = mkdtempSync(join(artifacts, `build-${Date.now()}-${process.pid}-`));
       }
       pending = { root, branch, head, review, note, run, requestedRun, ticket, round,
-        original, model: modelName(model), effort, fresh: !builder, phase: "builder", declined: [], reviewHead: head };
+        original, model, effort, fresh: !builder, phase: "builder", declined: [], reviewHead: head };
       save();
     }
 

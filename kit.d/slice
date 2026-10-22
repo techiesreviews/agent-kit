@@ -57,6 +57,7 @@ async function slice(args) {
     };
     if (state.ticket !== ticket || state.branch !== branch)
       throw new Error("saved slice belongs to a different ticket or branch");
+    state.effort ||= "high"; // States saved before effort was recorded ran at the default.
     if (state.model !== flags.model || state.effort !== flags.effort) {
       const label = (model, effort) => effort === "high" ? model : `${model} (${effort})`;
       if (state.model !== flags.model)
@@ -160,7 +161,13 @@ async function slice(args) {
     const stopping = open => afterFixRounds(branchRounds()) ? blockingFindings(open) : open;
     const kit = env.ASE_SLICE_KIT || resolve(import.meta.dirname, "../kit");
     const agent = env.ASE_SLICE_AGENT || resolve(import.meta.dirname, "../agent.sh");
-    const pendingFix = () => state.pendingFix && existsSync(join(root, ".scratch/kit-fix", encodeURIComponent(branch), "pending.json"));
+    const pendingPath = join(root, ".scratch/kit-fix", encodeURIComponent(branch), "pending.json");
+    const pendingFix = () => state.pendingFix && existsSync(pendingPath);
+    // A fix round past its builder step finishes under its saved model; a switch applies from the next round.
+    const pastBuilder = () => {
+      try { return pendingFix() && ["commit", "review"].includes(JSON.parse(readFileSync(pendingPath, "utf8")).phase); }
+      catch { return false; }
+    };
     // Ticket-only changes preserve review and fixes; landing must cover the new HEAD.
     if (!state.queued && !pendingFix() && state.finished.includes("commit") && state.head !== git("rev-parse", "HEAD")) {
       state.finished = state.finished.filter(name => name !== "pr");
@@ -222,8 +229,9 @@ async function slice(args) {
         if (pendingFix()) assertBranch(); // kit fix checks its saved commit/review HEAD.
         else assertHead(state.head);
         state.pendingFix = true; save();
-        const result = await execute(kit, ["fix", "--ticket", flags.ticket, "--review", state.review, "--builder", flags.model,
-          "--effort", flags.effort, ...(state.build ? ["--run", state.build] : [])]);
+        const builder = pastBuilder() ? [] : ["--builder", flags.model, "--effort", flags.effort];
+        const result = await execute(kit, ["fix", "--ticket", flags.ticket, "--review", state.review, ...builder,
+          ...(state.build ? ["--run", state.build] : [])]);
         // kit fix exits 1 both for command failures and completed reviews with findings.
         const remaining = /^RESULT: fail fix \d+ open findings \((.+)\/result\.md\)$/m.exec(result.output);
         if (result.code !== 0 && !remaining) requireSuccess(result);

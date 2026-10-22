@@ -565,6 +565,51 @@ if (existsSync(".scratch/reject-fix") && readFileSync("file.txt", "utf8").starts
   assert.equal(f.git("show", "HEAD:file.txt"), "preserved real fix");
 });
 
+for (const phase of ["commit", "review"]) test(`slice switched during real kit fix's paused ${phase} finishes that round under its saved model`, t => {
+  const f = fixture(t), real = f.realFix();
+  mkdirSync(join(f.root, ".scratch"), { recursive: true });
+  const reject = join(f.root, ".scratch/reject-fix"), hook = join(f.hooks, "pre-commit");
+  writeFileSync(hook, `#!/usr/bin/env node
+const { existsSync, readFileSync } = require("node:fs");
+if (existsSync(".scratch/reject-fix") && readFileSync("file.txt", "utf8").startsWith("preserved real fix")) process.exit(1);
+`); chmodSync(hook, 0o755);
+  if (phase === "commit") writeFileSync(reject, "reject");
+  const failed = f.run([], { ...real, CLEAN_AT: "1", ...(phase === "review" ? { FAIL_FIX_REVIEW: "1" } : {}) });
+  assert.equal(failed.status, 1, failed.stdout + failed.stderr);
+  const pendingPath = join(f.root, ".scratch/kit-fix/build%2Fke-04/pending.json");
+  const pending: { phase: string } = JSON.parse(readFileSync(pendingPath, "utf8"));
+  assert.equal(pending.phase, phase);
+  if (phase === "commit") rmSync(reject);
+  const result = f.run([], { ...real, CLEAN_AT: "1" }, ["--ticket", f.ticket, "--builder", "claude-opus-5-5"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /builder switched: gpt-6\.1-sol -> claude-opus-5-5/);
+  assert.deepEqual(f.state().previousModels, ["gpt-6.1-sol"]);
+  assert.equal(f.state().model, "claude-opus-5-5");
+  const fix = f.calls().filter(call => call.phase === "fix").at(-1)!;
+  assert.equal(fix.args.includes("--builder"), false, "the paused round keeps its saved model");
+  assert.equal(fix.args.includes("--effort"), false);
+  for (const name of ["build", "resume", "pr"]) assert.equal(f.calls().filter(call => call.phase === name).length, 1);
+  assert.equal(f.state().rounds, 1);
+  assert.equal(existsSync(pendingPath), false);
+  assert.match(f.git("log", "-1", "--format=%B"), /^Review fixes round 1\n\nCo-Authored-By: GPT-6\.1-Sol/);
+  assert.equal(f.git("status", "--porcelain"), "");
+});
+
+test("kit slice resumes unswitched with its saved run, builder and effort", t => {
+  const f = fixture(t);
+  assert.equal(f.run(["--effort", "high", "--no-pr"], { CLEAN_AT: "1", FAIL_PHASE: "fix" }).status, 1);
+  const build = f.state().build;
+  assert.ok(build);
+  const result = f.run(["--effort", "high", "--no-pr"], { CLEAN_AT: "1" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.doesNotMatch(result.stdout, /builder switched/);
+  assert.equal(f.state().previousModels, undefined);
+  assert.equal(f.state().build, build);
+  const fix = f.calls().filter(call => call.phase === "fix").at(-1)!;
+  for (const [flag, value] of [["--run", build], ["--builder", "gpt-6.1-sol"], ["--effort", "high"]])
+    assert.equal(fix.args[fix.args.indexOf(flag) + 1], value, flag);
+});
+
 test("slice refuses a changed HEAD when resuming a pending real fix commit", t => {
   const f = fixture(t), real = f.realFix();
   const hook = join(f.hooks, "pre-commit");

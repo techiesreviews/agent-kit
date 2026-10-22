@@ -439,6 +439,22 @@ test("kit fix --builder errors on an unreadable or foreign --run and ignores ano
   assert.equal(JSON.parse(readFileSync(join(saved, "status.json"), "utf8")).resumes, 0);
 });
 
+test("kit fix --run X --effort keeps X's model for the fresh builder it names", t => {
+  const f = fixture(t); f.review();
+  const folder = join(f.root, ".scratch/kit-slice/current"); mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "state.json"), JSON.stringify({ model: "gpt-6.1-sol", effort: "high", branch: "build/ke-03", ticket: f.ticket }));
+  const saved = f.builder("build-10", { model: "other-model", effort: "high" });
+  const result = f.run(["--run", saved, "--effort", "low", "--ticket", f.ticket]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const line = /^--run .+ is (.+); starting fresh with (.+)$/m.exec(result.stdout);
+  assert.deepEqual(line?.slice(1), ["other-model", "other-model (low)"], result.stdout);
+  const [call] = f.calls(); assert.equal(f.calls().length, 1);
+  assert.equal(call.args.includes("resume"), false);
+  assert.equal(call.args[call.args.indexOf("-m") + 1], "other-model");
+  assert.ok(call.args.includes("model_reasoning_effort=low"));
+  assert.equal(JSON.parse(readFileSync(join(saved, "status.json"), "utf8")).resumes, 0);
+});
+
 test("kit fix passes an explicit effort to a fresh builder instead of resuming another effort", t => {
   const f = fixture(t); f.review();
   const saved = f.builder("build-10", { model: "gpt-6.1-sol", effort: "high" });
