@@ -9,9 +9,10 @@ import { openFindings } from "../review-findings.mjs";
 const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv, commitBuilderWork, builderAuthor } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const usage = "Usage: kit fix [--review DIR | --note FILE] [--run DIR] [--ticket FILE] [--builder MODEL]\nResume the builder with open findings or a failure note, commit its fixes, and review again.\nWithout a resumable run, start a fresh builder (latest slice model, else gpt-6.1-sol).\nFailed rounds resume their saved builder/commit/review phase without discarding edits.\n";
+const usage = "Usage: kit fix [--review DIR | --note FILE] [--run DIR] [--ticket FILE] [--builder MODEL]\nResume the builder with open findings or a failure note, commit its fixes, and review again.\nWith --builder, resume only a saved session of that model, else start fresh with it (without --builder: latest slice model, else gpt-6.1-sol).\nFailed rounds resume their saved builder/commit/review phase without discarding edits.\n";
 const kit = resolve(import.meta.dirname, "../kit");
 const agent = resolve(import.meta.dirname, "../agent.sh");
+const modelName = value => value === "sol" ? "gpt-6.1-sol" : value;
 
 function options(args) {
   const flags = {};
@@ -55,19 +56,20 @@ function latestSlice(root, branch) {
   return states.sort((a, b) => b.modified - a.modified)[0]?.state;
 }
 
-function builderRun(root, explicit, slice) {
+function builderRun(root, explicit, slice, model) {
   const folders = newestDirectories(join(root, ".scratch/agent")).filter(folder => folder.split("/").at(-1).startsWith("build-"));
   if (slice?.build) folders.unshift(resolve(root, slice.build));
   const builders = [];
   for (const folder of explicit ? [resolve(root, explicit)] : folders) {
     try {
       const status = JSON.parse(readFileSync(join(folder, "status.json"), "utf8"));
-      if (status.kind === "build" && status.session && realpathSync(status.worktree) === realpathSync(root)) builders.push({ folder, status });
+      if (status.kind === "build" && status.session && realpathSync(status.worktree) === realpathSync(root) &&
+          (!model || status.model === model)) builders.push({ folder, status });
     } catch { /* Ignore incomplete or foreign builder records. */ }
   }
   // A slice's original builder must not hide a newer fallback or manual builder.
   if (builders.length) return builders.sort((a, b) => (Date.parse(b.status.started) || 0) - (Date.parse(a.status.started) || 0))[0];
-  if (explicit) throw new Error("invalid builder run for this worktree");
+  if (explicit && !model) throw new Error("invalid builder run for this worktree");
 }
 
 function declinedFindings(report) {
@@ -103,7 +105,7 @@ async function fix(args) {
         (flags["--review"] && resolve(root, flags["--review"]) !== pending.review) ||
         (flags["--run"] && resolve(root, flags["--run"]) !== pending.run) ||
         (flags["--note"] && resolve(root, flags["--note"]) !== pending.note) ||
-        (flags["--builder"] && (flags["--builder"] === "sol" ? "gpt-6.1-sol" : flags["--builder"]) !== pending.model) ||
+        (flags["--builder"] && modelName(flags["--builder"]) !== pending.model) ||
         (flags["--ticket"] && resolve(root, flags["--ticket"]) !== resolve(root, pending.ticket))))
       throw new Error("pending fix belongs to a different worktree, branch, review, builder or ticket");
     const head = pending?.head || git("rev-parse", "HEAD");
@@ -122,7 +124,8 @@ async function fix(args) {
     if (!readable) throw new Error(`${findings.length} open findings (${resultPath}): review format unreadable`);
     if (!note && !findings.length) { kitResult("ok", "fix clean"); return 0; }
     const slice = latestSlice(root, branch);
-    const builder = pending ? undefined : builderRun(root, flags["--run"], slice);
+    const requested = flags["--builder"] ? modelName(flags["--builder"]) : undefined;
+    const builder = pending ? undefined : builderRun(root, flags["--run"], slice, requested);
     let ticket = pending?.ticket || flags["--ticket"];
     if (!ticket && builder) {
       const brief = readFileSync(resolve(root, builder.status.brief), "utf8");
@@ -151,7 +154,7 @@ async function fix(args) {
       renameSync(`${pendingPath}.tmp`, pendingPath);
     };
     if (!pending) {
-      const model = builder?.status.model || flags["--builder"] || slice?.model || "gpt-6.1-sol";
+      const model = requested || builder?.status.model || slice?.model || "gpt-6.1-sol";
       let run = builder?.folder;
       if (!run) {
         const artifacts = join(root, ".scratch/agent");
@@ -159,7 +162,7 @@ async function fix(args) {
         run = mkdtempSync(join(artifacts, `build-${Date.now()}-${process.pid}-`));
       }
       pending = { root, branch, head, review, note, run, ticket, round,
-        original, model: model === "sol" ? "gpt-6.1-sol" : model, fresh: !builder, phase: "builder", declined: [], reviewHead: head };
+        original, model: modelName(model), fresh: !builder, phase: "builder", declined: [], reviewHead: head };
       save();
     }
 

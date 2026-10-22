@@ -55,8 +55,17 @@ async function slice(args) {
     state = resuming ? JSON.parse(readFileSync(statePath, "utf8")) : {
       ticket, branch, model: flags.model, effort: flags.effort, head: git("rev-parse", "HEAD"), finished: [], rounds: 0,
     };
-    if (state.ticket !== ticket || state.branch !== branch || state.model !== flags.model || state.effort !== flags.effort)
+    if (state.ticket !== ticket || state.branch !== branch)
       throw new Error("saved slice belongs to a different ticket, branch, builder or effort");
+    if (state.model !== flags.model || state.effort !== flags.effort) {
+      const label = (model, effort) => effort === "high" ? model : `${model} (${effort})`;
+      if (state.model !== flags.model) {
+        state.previousModels = [...(Array.isArray(state.previousModels) ? state.previousModels : []), state.model];
+        delete state.build;
+      }
+      console.log(`builder switched: ${label(state.model, state.effort)} -> ${label(flags.model, flags.effort)}`);
+      state.model = flags.model; state.effort = flags.effort;
+    }
     if (flags.noPr && state.queued && git("rev-parse", "HEAD") !== state.queued.head)
       throw new Error("queued slice HEAD changed; --no-pr cannot reuse the review of the queued HEAD");
     const save = () => {
@@ -211,7 +220,8 @@ async function slice(args) {
         if (pendingFix()) assertBranch(); // kit fix checks its saved commit/review HEAD.
         else assertHead(state.head);
         state.pendingFix = true; save();
-        const result = await execute(kit, ["fix", "--ticket", flags.ticket, "--review", state.review, "--run", state.build]);
+        const result = await execute(kit, ["fix", "--ticket", flags.ticket, "--review", state.review, "--builder", flags.model,
+          ...(state.build ? ["--run", state.build] : [])]);
         // kit fix exits 1 both for command failures and completed reviews with findings.
         const remaining = /^RESULT: fail fix \d+ open findings \((.+)\/result\.md\)$/m.exec(result.output);
         if (result.code !== 0 && !remaining) requireSuccess(result);

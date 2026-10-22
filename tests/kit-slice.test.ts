@@ -10,7 +10,7 @@ const kit = resolve("scripts/agents/kit");
 const clean = "REVIEW_STATUS: complete\nDefects:\nSpec: none\nStandards: none\nValidation gaps: none\nOptional nits: none\n";
 const findings = "REVIEW_STATUS: complete\nDefects:\nSpec:\n- file.txt:1 P1 restore required text\nStandards: none\nValidation gaps: none\nOptional nits: none\n";
 interface Call { phase: string; args: string[] }
-interface State { finished: string[]; build: string; review: string; reviewedHead: string; rounds: number; pendingFix?: boolean; pr?: string; queued?: { head: string } }
+interface State { finished: string[]; build: string; review: string; reviewedHead: string; rounds: number; pendingFix?: boolean; pr?: string; queued?: { head: string }; model: string; effort: string; previousModels?: string[] }
 
 function fixture(t: TestContext) {
   const dir = mkdtempSync(join(tmpdir(), "kit-slice-"));
@@ -146,8 +146,8 @@ console.log(JSON.stringify({ state: merged ? "MERGED" : "OPEN", mergeCommit: mer
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, KIT_ROOT: root, KIT_MAIN_ROOT: main, ASE_OWNER: "ke-04", ASE_SLICE_AGENT: agent,
     ASE_SLICE_KIT: fakeKit, ASE_SLICE_GH: gh, ASE_SLICE_MERGE_POLL_MS: "1", ASE_SLICE_MERGE_TIMEOUT_MS: "5000", FAKE_CALLS: callsFile };
   const args = ["--ticket", ticket, "--builder", "sol"];
-  const run = (extra: string[] = [], overrides: NodeJS.ProcessEnv = {}) => {
-    const result = spawnSync("bash", [kit, "slice", ...args, ...extra], { cwd: root, env: { ...env, ...overrides }, encoding: "utf8", timeout: 20_000 });
+  const run = (extra: string[] = [], overrides: NodeJS.ProcessEnv = {}, commandArgs: string[] = args) => {
+    const result = spawnSync("bash", [kit, "slice", ...commandArgs, ...extra], { cwd: root, env: { ...env, ...overrides }, encoding: "utf8", timeout: 20_000 });
     const lines = result.stdout.trim().split("\n"), results = lines.filter(line => line.startsWith("RESULT:"));
     assert.equal(results.length, 1, result.stdout + result.stderr);
     assert.equal(lines.at(-1), results[0]);
@@ -314,6 +314,39 @@ test("kit slice re-reviews moved HEAD without rebuilding and rejects switching b
   assert.equal(f.state().reviewedHead, f.git("rev-parse", "HEAD"));
   f.git("switch", "-c", "other");
   assert.match(f.run().stdout, /saved slice belongs to a different/);
+});
+
+test("kit slice resumes with another builder, keeps finished phases and records the switch", t => {
+  const f = fixture(t), original = ["--ticket", f.ticket, "--builder", "gpt-6.1-sol", "--no-pr"];
+  const failed = f.run([], { CLEAN_AT: "1", FAIL_PHASE: "fix" }, original);
+  assert.equal(failed.status, 1, failed.stdout + failed.stderr);
+  const finished = f.state().finished.slice();
+  assert.deepEqual(finished, ["brief", "build", "commit", "review"]);
+  const result = f.run([], {}, ["--ticket", f.ticket, "--builder", "claude-opus-5-5", "--no-pr"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /builder switched: gpt-6\.1-sol -> claude-opus-5-5/);
+  assert.deepEqual(f.state().finished, [...finished, "fix"]);
+  assert.equal(f.state().model, "claude-opus-5-5");
+  assert.deepEqual(f.state().previousModels, ["gpt-6.1-sol"]);
+  assert.equal(f.calls().filter(call => call.phase === "build").length, 1);
+  const fix = f.calls().filter(call => call.phase === "fix").at(-1)!;
+  assert.equal(fix.args[fix.args.indexOf("--builder") + 1], "claude-opus-5-5");
+  assert.equal(fix.args.includes("--run"), false);
+});
+
+test("kit slice resumes with another effort and keeps refusing a different ticket", t => {
+  const f = fixture(t), original = ["--ticket", f.ticket, "--builder", "gpt-6.1-sol", "--effort", "high", "--no-pr"];
+  assert.equal(f.run([], { CLEAN_AT: "1", FAIL_PHASE: "fix" }, original).status, 1);
+  const result = f.run([], {}, ["--ticket", f.ticket, "--builder", "gpt-6.1-sol", "--effort", "low", "--no-pr"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /builder switched: gpt-6\.1-sol -> gpt-6\.1-sol \(low\)/);
+  assert.equal(f.state().effort, "low");
+  const other = "docs/tickets/05-ticket.md", statePath = join(f.root, ".scratch/kit-slice/04-ticket/state.json");
+  writeFileSync(join(f.root, other), '---\ntitle: "Other ticket"\nstatus: ready-for-agent\n---\n\n## Files\n- `file.txt`\n\n## Done when\n- Required content is present.\n');
+  writeFileSync(statePath, JSON.stringify({ ...f.state(), ticket: other }, null, 2) + "\n");
+  const refused = f.run([], {}, ["--ticket", f.ticket, "--builder", "claude-opus-5-5", "--no-pr"]);
+  assert.equal(refused.status, 1);
+  assert.match(refused.stdout, /saved slice belongs to a different ticket, branch, builder or effort/);
 });
 
 test("kit slice treats unreadable review evidence as open findings", t => {

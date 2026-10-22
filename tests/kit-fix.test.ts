@@ -270,6 +270,34 @@ test("fresh fallback uses the latest matching slice model and ticket, unless --b
   }
 });
 
+test("kit fix --builder resumes only a saved session of that model", t => {
+  const f = fixture(t); f.review();
+  const wanted = f.builder("build-10", { model: "wanted-model", started: "2026-10-18T00:00:00Z" });
+  const newer = f.builder("build-20", { model: "other-model", started: "2026-10-19T00:00:00Z" });
+  const result = f.run(["--builder", "wanted-model"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const [call] = f.calls(); assert.equal(f.calls().length, 1);
+  assert.deepEqual(call.args.slice(0, 2), ["exec", "resume"]);
+  assert.ok(call.args.includes("builder-session"));
+  assert.equal(call.args[call.args.indexOf("-m") + 1], "wanted-model");
+  assert.equal(JSON.parse(readFileSync(join(wanted, "status.json"), "utf8")).resumes, 1);
+  assert.equal(JSON.parse(readFileSync(join(newer, "status.json"), "utf8")).resumes, 0);
+  assert.match(f.git("log", "-1", "--format=%B"), /Co-Authored-By: wanted-model/);
+});
+
+test("kit fix --builder starts a fresh builder when only another model is saved", t => {
+  const f = fixture(t); f.review();
+  const other = f.builder("build-10", { model: "other-model" });
+  const result = f.run(["--builder", "wanted-model", "--ticket", f.ticket]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /no resumable builder run; starting fresh agent\.sh build \(wanted-model\)/);
+  const [call] = f.calls(); assert.equal(f.calls().length, 1);
+  assert.equal(call.args.includes("resume"), false);
+  assert.equal(call.args[call.args.indexOf("-m") + 1], "wanted-model");
+  assert.equal(JSON.parse(readFileSync(join(other, "status.json"), "utf8")).resumes, 0);
+  assert.match(f.git("log", "-1", "--format=%B"), /Co-Authored-By: wanted-model/);
+});
+
 test("subsequent fix rounds resume the fresh builder with its explicit model, ahead of older slice builders", t => {
   for (const withSlice of [false, true]) {
     const f = fixture(t); f.review();
