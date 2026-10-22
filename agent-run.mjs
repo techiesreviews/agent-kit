@@ -209,6 +209,9 @@ function withLedger(path, change, env = process.env) {
     if (existsSync(path)) {
       try { ledger = JSON.parse(readFileSync(path, "utf8")); }
       catch (error) { throw new Error(`review budget ledger ${path} is not valid JSON: ${error.message}; fix or delete it`); }
+      if (typeof ledger !== "object" || ledger === null || Array.isArray(ledger)) {
+        throw new Error(`review budget ledger ${path} is not a JSON object; fix or delete it`);
+      }
     }
     const result = change(ledger);
     const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
@@ -239,10 +242,10 @@ export function reserveReviewBudget(path, cli, env = process.env, date = new Dat
 }
 
 // Returns a reservation whose review never reached the model.
-export function releaseReviewBudget(path, { family, week }) {
+export function releaseReviewBudget(path, { family, week }, env = process.env) {
   withLedger(path, ledger => {
     if (ledger[week]?.[family] > 0) ledger[week][family] -= 1;
-  });
+  }, env);
 }
 
 export function codexAdapter(options, common, output) {

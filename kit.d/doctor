@@ -132,8 +132,10 @@ if [[ $quiet == false ]]; then
       pass grok 'installed and logged in (optional reviewer)'
     elif (( code == 124 )); then
       printf "✗ grok: 'grok models' timed out (optional reviewer); fix: check the network or the grok CLI\n"
-    elif grep -qiE 'not logged in|log ?in' <<< "$models" || (( code == 0 )); then
+    elif grep -qi 'not logged in' <<< "$models"; then
       printf '✗ grok: not logged in (optional reviewer); fix: grok login\n'
+    elif (( code == 0 )); then
+      printf "✗ grok: unrecognised 'grok models' output (optional reviewer); fix: run grok models and check its login line\n"
     else
       printf "✗ grok: 'grok models' failed with status %s (optional reviewer); fix: check the network or the grok CLI\n" "$code"
     fi

@@ -40,14 +40,14 @@ function evidenceDirectory() {
 }
 
 async function review(args) {
-  let evidence = "none", temporary, status = 1, reason = "invalid arguments", label, budget;
+  let evidence = "none", temporary, status = 1, reason = "invalid arguments", label, budget, env;
   const ledger = join(kitMainRoot(), ".scratch/review-budget.json");
   try {
     status = 2;
     const flags = options(args);
     status = 1;
     const root = kitRoot();
-    const env = nodeEnv();
+    env = nodeEnv();
     const scope = reviewScope("", flags, root);
     label = scope.label;
     console.log(`scope: ${flags.commit ? `--commit ${flags.commit}` : `--base ${flags.base}`} (${label})`);
@@ -106,7 +106,7 @@ async function review(args) {
       // A review whose CLI never started (empty diff) is not counted; the runner
       // records the process group as soon as the CLI spawns.
       const run = temporary && join(temporary, "status.json");
-      if (budget && !(run && existsSync(run) && JSON.parse(readFileSync(run, "utf8")).pgid)) releaseReviewBudget(ledger, budget);
+      if (budget && !(run && existsSync(run) && JSON.parse(readFileSync(run, "utf8")).pgid)) releaseReviewBudget(ledger, budget, env);
     } catch (error) { console.error(`problem: releasing review budget failed: ${error.message}`); }
     try {
       const saved = [["out.md", "result.md"], ["run.log", "run.log"], ["diff.patch", "diff.patch"], ["refs.txt", "refs.txt"]]

@@ -111,7 +111,11 @@ test("doctor reports a logged-in or logged-out Grok CLI without failing", (t) =>
   assert.equal(signedOut.status, 0, signedOut.stdout + signedOut.stderr);
   assert.ok(signedOut.stdout.includes("✗ grok: not logged in (optional reviewer); fix: grok login\n"), signedOut.stdout);
   assert.equal(f.run(["--quiet"], f.build, { KIT_GROK: grok }).stdout, "RESULT: ok doctor 7/7 checks passed\n");
-  // A hung or failing CLI is not mistaken for a logged-out one.
+  // A hung, failing or reworded CLI is not mistaken for a logged-out one.
+  executable(grok, 'printf "Logged in as lex\\n"');
+  const reworded = f.run([], f.build, { KIT_GROK: grok });
+  assert.equal(reworded.status, 0, reworded.stdout + reworded.stderr);
+  assert.ok(reworded.stdout.includes("✗ grok: unrecognised 'grok models' output (optional reviewer); fix: run grok models and check its login line\n"), reworded.stdout);
   executable(grok, "sleep 5");
   const hung = f.run([], f.build, { KIT_GROK: grok, KIT_GROK_TIMEOUT: "0.2" });
   assert.equal(hung.status, 0, hung.stdout + hung.stderr);

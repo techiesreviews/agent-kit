@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
 import { codexReviewConfig, makeCodexReviewHome } from "../scripts/agents/agent-run.mjs";
@@ -82,7 +82,8 @@ function fixture(t: { after: (fn: () => void) => void }) {
   const brief = join(dir, "brief.md"), out = join(dir, "out"), callsFile = join(dir, "calls.jsonl"), ghFile = join(dir, "gh.json");
   writeFileSync(brief, "Hand-written review brief\nScope: git diff HEAD~1...HEAD\n");
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, CODEX_HOME: home, KIT_ROOT: root, KIT_MAIN_ROOT: main,
-    ASE_OWNER: "review-owner", ASE_AGENT_CLI: "", ASE_REVIEW_MODEL: "", ASE_BUILD_MODEL: "", ASE_AGENT_TIMEOUT: "10s", FAKE_CALLS: callsFile, FAKE_GH: ghFile };
+    ASE_OWNER: "review-owner", ASE_AGENT_CLI: "", ASE_REVIEW_MODEL: "", ASE_BUILD_MODEL: "",
+    ASE_REVIEW_BUDGET_GPT: "", ASE_REVIEW_BUDGET_GROK: "", ASE_REVIEW_BUDGET_LOCK_MS: "", ASE_AGENT_TIMEOUT: "10s", FAKE_CALLS: callsFile, FAKE_GH: ghFile };
   const invoke = (file: string, args: string[], overrides: NodeJS.ProcessEnv = {}, bash = false) => spawnSync(bash ? "bash" : file, bash ? [file, ...args] : args, {
     cwd: root, env: { ...env, ...overrides }, encoding: "utf8", timeout: 15_000,
   });
@@ -406,7 +407,11 @@ test("kit review keeps the budget counted once the CLI has started, even when it
 
 test("kit review gives the budget back when the Grok CLI is missing", (t) => {
   const f = fixture(t);
-  const path = `${join(f.dir, "bin")}:${dirname(process.execPath)}:/usr/bin:/bin`;
+  // Only node joins the fake bin: a grok installed beside node must not be found.
+  const nodeBin = join(f.dir, "node-bin");
+  mkdirSync(nodeBin);
+  symlinkSync(process.execPath, join(nodeBin, "node"));
+  const path = `${join(f.dir, "bin")}:${nodeBin}:/usr/bin:/bin`;
   const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "grok-4.7", PATH: path });
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stdout, /^budget: grok 1\/8 in /m);

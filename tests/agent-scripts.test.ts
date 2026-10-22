@@ -231,6 +231,11 @@ test("review budgets count outside families per ISO week, refuse at the limit an
   assert.throws(() => reserveReviewBudget(ledger, "grok", { ...env, ASE_REVIEW_BUDGET_LOCK_MS: "100" }, next), /review budget lock .* is held; remove it/);
   assert.equal(readFileSync(ledger, "utf8"), before);
   rmSync(`${ledger}.lock`, { recursive: true });
+  for (const shape of ["[]", "null", "3"]) {
+    writeFileSync(ledger, shape);
+    assert.throws(() => reserveReviewBudget(ledger, "grok", env, next), /review budget ledger .* is not a JSON object; fix or delete it/);
+    assert.equal(readFileSync(ledger, "utf8"), shape);
+  }
   writeFileSync(ledger, "{ broken");
   assert.throws(() => reserveReviewBudget(ledger, "grok", env, next), /review budget ledger .* is not valid JSON: .*; fix or delete it/);
   assert.ok(!existsSync(`${ledger}.lock`));
@@ -263,6 +268,11 @@ const args = process.argv.slice(2);
 writeFileSync(process.env.ASE_FAKE_CAPTURE, JSON.stringify({ args, input: readFileSync(args[args.indexOf("--prompt-file") + 1], "utf8") }));
 const session = args[args.indexOf(args.includes("-s") ? "-s" : "--resume") + 1];
 if (process.env.ASE_FAKE_GROK === "broken") { console.log("internal error\\nstack trace"); process.exit(1); }
+if (process.env.ASE_FAKE_GROK === "retry-limited") {
+  if (args.includes("--resume")) { console.log("You've hit your usage limit. Try again at 9:00 AM."); process.exit(1); }
+  console.log(JSON.stringify({ text: "incomplete reply", sessionId: session, modelUsage: { "grok-4.7-build": {} } }));
+  process.exit(0);
+}
 if (process.env.ASE_FAKE_GROK === "limited") { console.log("You've hit your usage limit. Try again at 9:00 AM."); process.exit(1); }
 console.log(JSON.stringify({ text: "REVIEW_STATUS: complete\\nDefects: none\\n", stopReason: "end_turn", sessionId: session, modelUsage: { [args[args.indexOf("-m") + 1] + "-build"]: {} } }));
 `);
@@ -289,10 +299,14 @@ process.exitCode = 1;
   assert.equal(status.cli, "grok");
   assert.equal(status.session, recorded.args[recorded.args.indexOf("-s") + 1]);
   // A failed Grok run reports the CLI failure last, not the unparseable stdout.
-  for (const [mode, last] of [["broken", /^problem: grok failed \(1\); see .*run\.log$/], ["limited", /^problem: grok usage limit until 9:00 AM$/]] as const) {
+  for (const [mode, last] of [["broken", /^problem: grok failed \(1\); see .*run\.log$/], ["limited", /^problem: grok usage limit until 9:00 AM$/],
+    ["retry-limited", /^problem: grok usage limit until 9:00 AM$/]] as const) {
     const failed = invoke(["review", wt, brief, "--base", "origin/dev"], { ASE_REVIEW_MODEL: "grok-4.7", ASE_FAKE_GROK: mode });
     assert.equal(failed.status, 1, failed.stderr);
-    assert.match(failed.stderr.trimEnd().split("\n").at(-1)!, last);
+    const problems = failed.stderr.trimEnd().split("\n");
+    assert.match(problems.at(-1)!, last);
+    // The incomplete first answer is reported, then the retry's usage limit as the cause.
+    if (mode === "retry-limited") assert.ok(problems.slice(0, -1).includes("problem: result lacks REVIEW_STATUS: complete"), failed.stderr);
     if (mode === "broken") {
       const stopped = /^artifacts: (.+)$/m.exec(failed.stdout)?.[1];
       assert.ok(stopped);
