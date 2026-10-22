@@ -11,7 +11,7 @@ const briefHelper = resolve("scripts/agents/review-brief.mjs");
 const defect = "abc:file.txt:1, P1, preserve the required text; restore it.";
 const clean = "REVIEW_STATUS: complete\nDefects:\nSpec: none\nStandards: none\nValidation gaps: none\nOptional nits: none\n";
 const findings = `REVIEW_STATUS: complete\nDefects:\nSpec:\n- ${defect}\n  Evidence: the ticket requires this exact text.\nStandards: none\nValidation gaps: none\nOptional nits: none\n`;
-interface Call { args: string[]; input: string; cwd: string }
+interface Call { args: string[]; input: string; cwd: string; model?: string; cli?: string }
 
 function fixture(t: TestContext) {
   const dir = mkdtempSync(join(tmpdir(), "ase-kit-fix-"));
@@ -52,7 +52,7 @@ function fixture(t: TestContext) {
   writeFileSync(join(bin, "codex"), `#!/usr/bin/env node
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2), input = readFileSync(0, "utf8");
-appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ args, input, cwd: process.cwd() }) + "\\n");
+appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ args, input, cwd: process.cwd(), model: args[args.indexOf("-m") + 1], cli: "codex" }) + "\\n");
 console.error("model: " + args[args.indexOf("-m") + 1]);
 console.error("session id: builder-session");
 if (process.env.FAKE_HOLD) await new Promise(resolve => {
@@ -65,6 +65,22 @@ writeFileSync(args[args.indexOf("-o") + 1], process.env.FAKE_REPORT || "Fixed th
 process.exitCode = Number(process.env.FAKE_EXIT || 0);
 `);
   chmodSync(join(bin, "codex"), 0o755);
+  writeFileSync(join(bin, "claude"), `#!/usr/bin/env node
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+const args = process.argv.slice(2), input = readFileSync(0, "utf8");
+appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ args, input, cwd: process.cwd(), model: args[args.indexOf("--model") + 1], cli: "claude" }) + "\\n");
+const model = args[args.indexOf("--model") + 1];
+console.error("model: " + model);
+if (process.env.FAKE_HOLD) await new Promise(resolve => {
+  const timer = setInterval(() => {
+    if (existsSync(process.env.FAKE_HOLD)) { clearInterval(timer); resolve(); }
+  }, 10);
+});
+if (args[args.indexOf("--permission-mode") + 1] === "acceptEdits" && process.env.FAKE_MODE !== "no-change" && process.env.FAKE_MODE !== "decline-only") writeFileSync("file.txt", process.env.FAKE_TEXT || "fixed\\n");
+console.log(JSON.stringify({ result: process.env.FAKE_REPORT || "Fixed the real defect.\\n", modelUsage: { [model]: {} }, session_id: "builder-session", subtype: "success" }));
+process.exitCode = Number(process.env.FAKE_EXIT || 0);
+`);
+  chmodSync(join(bin, "claude"), 0o755);
   symlinkSync(fix, join(commands, "fix"));
   writeFileSync(join(commands, "review"), `#!/usr/bin/env node
 // kit: fake review confined to the temporary repository
@@ -235,19 +251,20 @@ test("kit fix reports missing reviews and tickets clearly and fails closed on un
 });
 
 test("kit fix starts a fresh builder without a slice state, with default or explicit model", t => {
-  for (const model of [undefined, "gpt-6.1-sol", "sol"]) {
+  for (const [model, expected, cli] of [[undefined, "claude-opus-5-5", "claude"], ["gpt-6.1-sol", "gpt-6.1-sol", "codex"], ["sol", "gpt-6.1-sol", "codex"]]) {
     const f = fixture(t); f.review();
     // An incomplete builder record cannot be resumed.
-    f.builder("build-100", { session: null });
+    f.builder("build-100", { session: null, model: "gpt-6.1-sol" });
     const result = f.run(["--ticket", f.ticket, ...(model ? ["--builder", model] : [])]);
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stdout, /no resumable builder run; starting fresh agent.sh build \(gpt-6.1-sol\)/);
+    assert.match(result.stdout, new RegExp(`no resumable builder run; starting fresh agent.sh build \\(${expected}\\)`));
     const [call] = f.calls(); assert.equal(f.calls().length, 1);
     assert.equal(call.args.includes("resume"), false);
-    assert.equal(call.args[call.args.indexOf("-m") + 1], "gpt-6.1-sol");
+    assert.equal(call.model, expected);
+    assert.equal(call.cli, cli);
     assert.ok(call.input.includes(findings)); assert.ok(call.input.includes("scripts/agents/kit"));
     assert.equal(f.git("status", "--porcelain"), "");
-    assert.match(f.git("log", "-1", "--format=%B"), /Co-Authored-By: GPT-6.1-Sol/);
+    assert.match(f.git("log", "-1", "--format=%B"), expected === "claude-opus-5-5" ? /Co-Authored-By: Claude Opus 5\.5/ : /Co-Authored-By: GPT-6.1-Sol/);
     assert.deepEqual(f.reviewInput().args, ["--ticket", f.ticket]);
   }
 });
@@ -343,7 +360,7 @@ interface Pending { phase: string; model: string; effort?: string; run: string; 
 test("a pending round saved without an effort resumes at the high default", t => {
   for (const phase of ["commit", "builder"]) {
     const f = fixture(t); f.review();
-    const first = f.run(["--ticket", f.ticket], { FAKE_EXIT: "7" });
+    const first = f.run(["--ticket", f.ticket, "--builder", "gpt-6.1-sol"], { FAKE_EXIT: "7" });
     assert.equal(first.status, 1, first.stdout + first.stderr);
     const pendingPath = join(f.root, ".scratch/kit-fix/build%2Fke-03/pending.json");
     const { effort: _, ...legacy }: Pending = JSON.parse(readFileSync(pendingPath, "utf8"));
@@ -374,12 +391,12 @@ test("kit fix --effort alone retargets a pending builder round to the new effort
   assert.equal(first.status, 1, first.stdout + first.stderr);
   const result = f.run(["--effort", "low"], { FAKE_EXIT: "7" });
   assert.equal(result.status, 1, result.stdout + result.stderr);
-  assert.match(result.stdout, /builder switched: gpt-6\.1-sol -> gpt-6\.1-sol \(low\)/);
+  assert.match(result.stdout, /builder switched: claude-opus-5-5 -> claude-opus-5-5 \(low\)/);
   const pending: Pending = JSON.parse(readFileSync(join(f.root, ".scratch/kit-fix/build%2Fke-03/pending.json"), "utf8"));
   assert.deepEqual(pending.previousEfforts, ["high"]); assert.equal(pending.effort, "low");
   const [, retry] = f.calls();
   assert.equal(retry.args.includes("resume"), false);
-  assert.ok(retry.args.includes("model_reasoning_effort=low"));
+  assert.equal(retry.args[retry.args.indexOf("--effort") + 1], "low");
 });
 
 test("a failed retargeted round reruns with the same --run and --builder", t => {
@@ -575,7 +592,7 @@ test("a failed fresh note round resumes its saved session and note without disca
   const retry = f.run();
   assert.equal(retry.status, 0, retry.stdout + retry.stderr);
   assert.equal(f.calls().length, 2);
-  assert.equal(f.calls()[1].args.includes("resume"), true);
+  assert.ok(f.calls()[1].args.includes("resume") || f.calls()[1].args.includes("--resume"));
   assert.ok(f.calls()[1].input.includes("Original CI failure\n"));
   assert.equal(f.git("status", "--porcelain"), "");
   assert.equal(f.git("rev-parse", "HEAD^"), f.head);

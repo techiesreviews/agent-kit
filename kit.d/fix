@@ -9,7 +9,7 @@ import { openFindings } from "../review-findings.mjs";
 const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv, commitBuilderWork, builderAuthor } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const usage = "Usage: kit fix [--review DIR | --note FILE] [--run DIR] [--ticket FILE] [--builder MODEL] [--effort E]\nResume the builder with open findings or a failure note, commit its fixes, and review again.\nWith --builder (and --effort when given), resume only a saved session of that model and effort, else start fresh with them (without either: latest slice model and effort, else gpt-6.1-sol and high).\nAn explicit --run DIR that is missing, unreadable or belongs to another worktree errors; one of another model or effort is named on a line and a fresh builder starts with the requested setting and the run's other one.\nA pending builder round from another model or effort switches to the requested one and keeps its edits; a pending commit or review round still refuses.\nFailed rounds resume their saved builder/commit/review phase without discarding edits.\n";
+const usage = "Usage: kit fix [--review DIR | --note FILE] [--run DIR] [--ticket FILE] [--builder MODEL] [--effort E]\nResume the builder with open findings or a failure note, commit its fixes, and review again.\nWith --builder (and --effort when given), resume only a saved session of that model and effort, else start fresh with them (without either: latest slice model and effort, else claude-opus-5-5 and high).\nAn explicit --run DIR that is missing, unreadable or belongs to another worktree errors; one of another model or effort is named on a line and a fresh builder starts with the requested setting and the run's other one.\nA pending builder round from another model or effort switches to the requested one and keeps its edits; a pending commit or review round still refuses.\nFailed rounds resume their saved builder/commit/review phase without discarding edits.\n";
 const kit = resolve(import.meta.dirname, "../kit");
 const agent = resolve(import.meta.dirname, "../agent.sh");
 const modelName = value => value === "sol" ? "gpt-6.1-sol" : value;
@@ -191,7 +191,7 @@ async function fix(args) {
     }
     if (!pending) {
       // A rejected explicit run still lends the model or effort that was not overridden.
-      const model = modelName(requested || found?.status.model || slice?.model || "gpt-6.1-sol");
+      const model = modelName(requested || found?.status.model || slice?.model || "claude-opus-5-5");
       const effort = requestedEffort || found?.status.effort || slice?.effort || "high";
       if (found?.rejected)
         console.log(`--run ${flags["--run"]} is ${label(found.status.model, found.status.effort)}; starting fresh with ${label(model, effort)}`);

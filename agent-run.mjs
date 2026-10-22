@@ -43,7 +43,7 @@ export function parseAgentArgs(args, env = {}) {
   if (!["build", "review"].includes(kind) || !worktree || !brief) {
     throw new Error("Usage: agent.sh build|review <worktree> <brief> [--model M] [--cli codex|claude|grok] [--effort E] [--base REF | --commit SHA] [--out DIR]; agent.sh --resume <out-dir> [--brief FILE]");
   }
-  const options = { kind, worktree, brief, model: env[kind === "build" ? "ASE_BUILD_MODEL" : "ASE_REVIEW_MODEL"] || "gpt-6.1-sol", effort: "medium" };
+  const options = { kind, worktree, brief, model: env[kind === "build" ? "ASE_BUILD_MODEL" : "ASE_REVIEW_MODEL"] || "claude-opus-5-5", effort: "medium" };
   let cli = env.ASE_AGENT_CLI || "";
   const seen = new Set();
   for (let i = 0; i < flags.length; i += 2) {

@@ -16,9 +16,11 @@ import { durationMilliseconds } from "../scripts/agents/sol-run.mjs";
 test("agent options preserve defaults, infer Claude aliases, and respect explicit overrides", () => {
   for (const kind of ["build", "review"]) {
     assert.deepEqual(parseAgentArgs([kind, "/work tree", "brief.md"]), {
-      kind, worktree: "/work tree", brief: "brief.md", model: "gpt-6.1-sol", cli: "codex", effort: "medium",
+      kind, worktree: "/work tree", brief: "brief.md", model: "claude-opus-5-5", cli: "claude", effort: "medium",
     });
   }
+  assert.equal(parseAgentArgs(["review", ".", "brief"], { ASE_REVIEW_MODEL: "gpt-6.1-sol" }).model, "gpt-6.1-sol");
+  assert.equal(parseAgentArgs(["review", ".", "brief"], { ASE_REVIEW_MODEL: "gpt-6.1-sol" }).cli, "codex");
   for (const model of ["claude-opus-5-5", "opus", "sonnet", "haiku", "fable"]) assert.equal(inferCli(model), "claude");
   for (const model of ["gpt-5.5", "gpt-6.1-sol", "custom-model"]) assert.equal(inferCli(model), "codex");
   assert.equal(parseAgentArgs(["build", ".", "brief", "--model", "opus"]).cli, "claude");
@@ -451,6 +453,11 @@ process.exitCode = Number(process.env.ASE_FAKE_EXIT || 0);
     assert.match(readFileSync(join(out, "run.log"), "utf8"), new RegExp(model));
     assert.deepEqual(readFileSync(brief, "utf8"), "tiny brief\n");
   }
+  const defaultBuild = invoke("agent.sh", ["build", wt, brief]);
+  assert.equal(defaultBuild.status, 0, defaultBuild.stderr);
+  const defaultOut = /^artifacts: (.+)$/m.exec(defaultBuild.stdout)?.[1];
+  assert.ok(defaultOut);
+  assert.match(readFileSync(join(defaultOut, "run.log"), "utf8"), /claude-opus-5-5/);
   assert.equal(invoke("sol.sh", [wt, brief, "high"], { ASE_BUILD_MODEL: "claude-opus-5-5" }).status, 0);
   const reviewDir = join(dir, "review");
   assert.equal(invoke("review.sh", [wt, brief, reviewDir, "--base", "origin/dev"], { ASE_REVIEW_MODEL: "claude-haiku-5-5" }).status, 0);

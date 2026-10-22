@@ -132,6 +132,7 @@ test("kit review help states default scope; invalid flags exit 2 with one RESULT
     const help = f.run(["--help"], {}, front);
     assert.equal(help.status, 0, help.stderr);
     assert.match(help.stdout, /Default scope: --base origin\/dev/);
+    assert.match(help.stdout, /ASE_REVIEW_MODEL or claude-opus-5-5/);
     assert.doesNotMatch(help.stdout, /RESULT:/);
   }
   for (const args of [["--wat"], ["--base"], ["--base", "HEAD", "--commit", "HEAD"], ["--pr", "0"], ["--pr", "1.2"], ["--pr", "-1"], ["--base", "HEAD", "--base", "HEAD^"]]) {
@@ -154,8 +155,8 @@ test("kit review resolves HEAD~1, HEAD^ and short SHAs and saves four evidence f
     assert.deepEqual(readdirSync(evidence).sort(), ["diff.patch", "refs.txt", "result.md", "run.log"]);
     assert.equal(readFileSync(join(evidence, "diff.patch"), "utf8"), f.git("diff", `${f.commits[1]}...${f.commits[2]}`));
     assert.equal(readFileSync(join(evidence, "refs.txt"), "utf8"), `${f.commits[2]}\n${f.commits[1]}\n`);
-    assert.equal(readFileSync(join(evidence, "result.md"), "utf8"), complete);
-    assert.match(readFileSync(join(evidence, "run.log"), "utf8"), /model: gpt-6.1-sol/);
+    assert.equal(readFileSync(join(evidence, "result.md"), "utf8").trimEnd(), complete.trimEnd());
+    assert.match(readFileSync(join(evidence, "run.log"), "utf8"), /claude-opus-5-5/);
     assert.equal(f.calls().at(-1)?.cwd, f.root);
   }
 });
@@ -165,6 +166,8 @@ test("kit review defaults to origin/dev and omits ticket sources when no ticket 
   const result = f.run();
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /scope: --base origin\/dev/);
+  assert.match(result.stdout, /^model: claude-opus-5-5$/m);
+  assert.equal(f.calls()[0].cli, "claude");
   assert.ok(f.calls()[0].input.includes(`Scope: git diff ${f.commits[0]}...HEAD`));
   assert.match(f.calls()[0].input, /Spec axis: no ticket supplied/);
   assert.equal(readFileSync(join(f.evidence(result.stdout), "refs.txt"), "utf8"), `${f.commits[2]}\n${f.commits[0]}\n`);
@@ -288,7 +291,7 @@ test("empty or absent reports retry once after a successful exit for either CLI"
 test("resume must still report the requested model", (t) => {
   for (const overrides of [{ FAKE_MODE: "retry-model" }, { FAKE_MODE: "retry-pass", FAKE_NO_RETRY_MODEL: "1" }]) {
     const f = fixture(t);
-    const result = f.run([], overrides);
+    const result = f.run([], { ASE_REVIEW_MODEL: "gpt-6.1-sol", ...overrides });
     assert.equal(result.status, 1, result.stderr);
     assert.equal(f.calls().length, 2);
     assert.match(result.stderr, /requested model/);
@@ -297,7 +300,7 @@ test("resume must still report the requested model", (t) => {
 
 test("Codex reviews start with only a symlinked auth and isolated config, then remove the home", (t) => {
   const f = fixture(t);
-  const result = f.run();
+  const result = f.run([], { ASE_REVIEW_MODEL: "gpt-6.1-sol" });
   assert.equal(result.status, 0, result.stderr);
   const call = f.calls()[0];
   assert.notEqual(call.home, f.home);
@@ -318,12 +321,12 @@ test("Codex reviews start with only a symlinked auth and isolated config, then r
 
 test("missing Codex auth names its source; builds keep normal CODEX_HOME", (t) => {
   const f = fixture(t);
-  const build = f.invoke(agent, ["build", f.root, f.brief, "--out", f.out], {}, true);
+  const build = f.invoke(agent, ["build", f.root, f.brief, "--out", f.out], { ASE_BUILD_MODEL: "gpt-6.1-sol" }, true);
   assert.equal(build.status, 0, build.stderr);
   assert.equal(f.calls()[0].home, f.home);
   assert.equal(existsSync(f.home), true);
   rmSync(join(f.home, "auth.json"));
-  const result = f.run();
+  const result = f.run([], { ASE_REVIEW_MODEL: "gpt-6.1-sol" });
   assert.equal(result.status, 1);
   assert.ok(result.stderr.includes(`problem: no Codex auth at ${join(f.home, "auth.json")}`));
   assert.equal(f.calls().length, 1);
@@ -331,7 +334,7 @@ test("missing Codex auth names its source; builds keep normal CODEX_HOME", (t) =
 
 test("replaced auth is copied back with mode 0600 even when review fails; home is removed", (t) => {
   const f = fixture(t);
-  const result = f.run([], { FAKE_ROTATE: "1", FAKE_MODE: "retry-fail" });
+  const result = f.run([], { ASE_REVIEW_MODEL: "gpt-6.1-sol", FAKE_ROTATE: "1", FAKE_MODE: "retry-fail" });
   assert.equal(result.status, 1, result.stderr);
   assert.equal(readFileSync(join(f.home, "auth.json"), "utf8"), '{"refresh_token":"rotated"}');
   assert.equal(statSync(join(f.home, "auth.json")).mode & 0o777, 0o600);
@@ -367,8 +370,8 @@ test("--pr posts the review with model, scope and recorded SHAs; gh failure reta
     const posted: { args: string[]; body: string; cwd: string } = JSON.parse(readFileSync(f.ghFile, "utf8"));
     assert.deepEqual(posted.args.slice(0, 4), ["pr", "comment", "123", "--body-file"]);
     assert.equal(posted.cwd, f.root);
-    assert.equal(posted.body, `Model: gpt-6.1-sol\nScope: git diff ${f.commits[1]}...HEAD\nHEAD: ${f.commits[2]}\nBase: ${f.commits[1]}\n\n${complete}`);
-    assert.equal(readFileSync(join(evidence, "result.md"), "utf8"), complete);
+    assert.equal(posted.body, `Model: claude-opus-5-5\nScope: git diff ${f.commits[1]}...HEAD\nHEAD: ${f.commits[2]}\nBase: ${f.commits[1]}\n\n${complete}\n`);
+    assert.equal(readFileSync(join(evidence, "result.md"), "utf8").trimEnd(), complete.trimEnd());
   }
 });
 
@@ -388,14 +391,24 @@ test("evidence timestamp collisions add a suffix and leave existing evidence int
   for (const path of occupied) assert.equal(readFileSync(join(path, "keep"), "utf8"), "old evidence");
 });
 
+test("an explicit ASE_REVIEW_MODEL=gpt-6.1-sol still selects Sol", (t) => {
+  const f = fixture(t);
+  const result = f.run([], { ASE_REVIEW_MODEL: "gpt-6.1-sol", ASE_REVIEW_BUDGET_GPT: "1" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(f.calls()[0].cli, "codex");
+  assert.equal(f.calls()[0].args[f.calls()[0].args.indexOf("-m") + 1], "gpt-6.1-sol");
+  assert.match(result.stdout, /^model: gpt-6.1-sol$/m);
+  assert.match(result.stdout, /^budget: gpt 1\/1 in /m);
+});
+
 test("kit review counts outside reviews per week, refuses at the budget and never counts Claude", (t) => {
   const f = fixture(t);
   const ledger = join(f.main, ".scratch/review-budget.json");
   const counts = () => Object.values(JSON.parse(readFileSync(ledger, "utf8")))[0];
-  const first = f.run(["--base", "HEAD~1"], { ASE_REVIEW_BUDGET_GPT: "1" });
+  const first = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "gpt-6.1-sol", ASE_REVIEW_BUDGET_GPT: "1" });
   assert.equal(first.status, 0, first.stderr);
   assert.match(first.stdout, /^budget: gpt 1\/1 in \d{4}-W\d{2}$/m);
-  const refused = f.run(["--base", "HEAD~1"], { ASE_REVIEW_BUDGET_GPT: "1" });
+  const refused = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "gpt-6.1-sol", ASE_REVIEW_BUDGET_GPT: "1" });
   assert.equal(refused.status, 1);
   assert.match(refused.stderr, /^problem: gpt review budget used up: 1\/1 in \d{4}-W\d{2}; raise ASE_REVIEW_BUDGET_GPT to override$/m);
   assert.match(refused.stdout.trim().split("\n").at(-1)!, /^RESULT: fail gpt review budget used up: .* evidence none$/);
@@ -404,7 +417,7 @@ test("kit review counts outside reviews per week, refuses at the budget and neve
   assert.equal(claude.status, 0, claude.stderr);
   assert.doesNotMatch(claude.stdout, /^budget:/m);
   // An empty diff never reaches the model, so its reservation is returned.
-  const empty = f.run(["--base", "HEAD"], { ASE_REVIEW_BUDGET_GPT: "2" });
+  const empty = f.run(["--base", "HEAD"], { ASE_REVIEW_MODEL: "gpt-6.1-sol", ASE_REVIEW_BUDGET_GPT: "2" });
   assert.equal(empty.status, 1);
   assert.match(empty.stderr, /empty diff/);
   assert.deepEqual(counts(), { gpt: 1 });
@@ -426,9 +439,9 @@ test("kit review gives the budget back when the provider refuses on a usage limi
   const f = fixture(t);
   const ledger = join(f.main, ".scratch/review-budget.json");
   const counts = () => Object.values(JSON.parse(readFileSync(ledger, "utf8")))[0];
-  const first = f.run(["--base", "HEAD~1"], { ASE_REVIEW_BUDGET_GPT: "2" });
+  const first = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "gpt-6.1-sol", ASE_REVIEW_BUDGET_GPT: "2" });
   assert.equal(first.status, 0, first.stderr);
-  const refused = f.run(["--base", "HEAD~1"], { ASE_REVIEW_BUDGET_GPT: "2", FAKE_MODE: "usage-limit" });
+  const refused = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "gpt-6.1-sol", ASE_REVIEW_BUDGET_GPT: "2", FAKE_MODE: "usage-limit" });
   assert.equal(refused.status, 1);
   assert.match(refused.stderr, /^problem: gpt usage limit until Oct 25th, 2026 3:14 PM$/m);
   assert.deepEqual(counts(), { gpt: 1 });
@@ -438,9 +451,9 @@ test("kit review keeps the spent review when the first call works before the usa
   const f = fixture(t);
   const ledger = join(f.main, ".scratch/review-budget.json");
   const counts = () => Object.values(JSON.parse(readFileSync(ledger, "utf8")))[0];
-  const first = f.run(["--base", "HEAD~1"], { ASE_REVIEW_BUDGET_GPT: "2" });
+  const first = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "gpt-6.1-sol", ASE_REVIEW_BUDGET_GPT: "2" });
   assert.equal(first.status, 0, first.stderr);
-  const late = f.run(["--base", "HEAD~1"], { ASE_REVIEW_BUDGET_GPT: "2", FAKE_MODE: "late-usage-limit" });
+  const late = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "gpt-6.1-sol", ASE_REVIEW_BUDGET_GPT: "2", FAKE_MODE: "late-usage-limit" });
   assert.equal(late.status, 1);
   assert.match(late.stderr, /^problem: gpt usage limit until Oct 25th, 2026 3:14 PM$/m);
   assert.deepEqual(counts(), { gpt: 2 });
@@ -448,7 +461,7 @@ test("kit review keeps the spent review when the first call works before the usa
 
 test("kit review keeps the budget counted when the first call fails for another reason", (t) => {
   const f = fixture(t);
-  const failed = f.run(["--base", "HEAD~1"], { ASE_REVIEW_BUDGET_GPT: "2", FAKE_MODE: "retry-fail", FAKE_EXIT: "7" });
+  const failed = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "gpt-6.1-sol", ASE_REVIEW_BUDGET_GPT: "2", FAKE_MODE: "retry-fail", FAKE_EXIT: "7" });
   assert.equal(failed.status, 1);
   assert.deepEqual(Object.values(JSON.parse(readFileSync(join(f.main, ".scratch/review-budget.json"), "utf8")))[0], { gpt: 1 });
 });
@@ -457,10 +470,10 @@ test("kit review keeps the spent review when only the completeness retry is refu
   const f = fixture(t);
   const ledger = join(f.main, ".scratch/review-budget.json");
   const counts = () => Object.values(JSON.parse(readFileSync(ledger, "utf8")))[0];
-  const first = f.run(["--base", "HEAD~1"], { ASE_REVIEW_BUDGET_GPT: "2" });
+  const first = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "gpt-6.1-sol", ASE_REVIEW_BUDGET_GPT: "2" });
   assert.equal(first.status, 0, first.stderr);
   assert.deepEqual(counts(), { gpt: 1 });
-  const refused = f.run(["--base", "HEAD~1"], { ASE_REVIEW_BUDGET_GPT: "2", FAKE_MODE: "retry-usage-limit" });
+  const refused = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "gpt-6.1-sol", ASE_REVIEW_BUDGET_GPT: "2", FAKE_MODE: "retry-usage-limit" });
   assert.equal(refused.status, 1);
   assert.match(refused.stderr, /^problem: gpt usage limit until Oct 25th, 2026 3:14 PM$/m);
   assert.match(refused.stderr, /result lacks REVIEW_STATUS: complete/);

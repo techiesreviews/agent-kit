@@ -10,7 +10,7 @@ import { reviewBrief, reviewScope, ticketReviewBrief } from "../review-brief.mjs
 const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const usage = "Usage: kit review [--base REF | --commit SHA] [--ticket FILE] [--pr N]\nDefault scope: --base origin/dev. Model: ASE_REVIEW_MODEL or gpt-6.1-sol (claude-*, grok-* or Codex).\n" +
+const usage = "Usage: kit review [--base REF | --commit SHA] [--ticket FILE] [--pr N]\nDefault scope: --base origin/dev. Model: ASE_REVIEW_MODEL or claude-opus-5-5 (claude-*, grok-* or Codex).\n" +
   "Weekly budgets: ASE_REVIEW_BUDGET_GPT (12), ASE_REVIEW_BUDGET_GROK (8); Claude is not counted.\n";
 
 function options(args) {
