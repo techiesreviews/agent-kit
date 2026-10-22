@@ -179,7 +179,7 @@ export function builderAuthor(model) {
   const claude = /^claude-(opus|sonnet|haiku|fable)-(\d+)-(\d{1,2})(?:-\d{6,8})?(?:\[1m\])?$/i.exec(model);
   if (claude) return `Claude ${titleWord(claude[1].toLowerCase())} ${claude[2]}.${claude[3]} <noreply@anthropic.com>`;
   const gpt = /^gpt-(.+)$/i.exec(model);
-  if (gpt) return `GPT-${gpt[1].split("-").map(titleWord).join("-")} <noreply@openai.com>`;
+  if (gpt) return `GPT-${gpt[1].split("-").map(word => titleWord(word.toLowerCase())).join("-")} <noreply@openai.com>`;
   return `${model} <noreply@${/^(claude-|opus|sonnet|haiku|fable)/i.test(model) ? "anthropic" : "openai"}.com>`;
 }
 
