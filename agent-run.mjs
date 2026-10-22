@@ -130,7 +130,8 @@ export function claudeResult(stdout, requested, allowEmpty = false) {
   const result = JSON.parse(stdout);
   if (result.is_error || (result.subtype && result.subtype !== "success")) throw new Error("Claude reported an unsuccessful result");
   const models = [...Object.keys(result.modelUsage ?? {}), ...(typeof result.model === "string" ? [result.model] : [])];
-  if (!models.length || !models.every(model => claudeModelMatches(model, requested))) {
+  if (!models.some(model => claudeModelMatches(model, requested)) ||
+      !models.every(model => claudeModelMatches(model, requested) || model.startsWith("claude-haiku-"))) {
     throw new Error(`Claude result does not name requested model ${requested} (actual: ${models.join(", ") || "missing"})`);
   }
   if (allowEmpty && result.result == null) return "";
@@ -162,7 +163,7 @@ export function claudeAdapter(options, common) {
   return {
     command: "claude", capture: true,
     args: ["-p", "--model", model, "--effort", effort, "--permission-mode", kind === "build" ? "acceptEdits" : "plan",
-      ...(kind === "build" ? ["--add-dir", common] : ["--tools", "Read,Grep,Glob", "--setting-sources", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}']),
+      ...(kind === "build" ? ["--allowedTools", "Bash", "--disallowedTools", "Task,Agent", "--add-dir", common] : ["--tools", "Read,Grep,Glob", "--setting-sources", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}']),
       "--output-format", "json", ...(options.sessionId ? ["--session-id", options.sessionId] : [])],
     // A resumed session keeps its id; --session-id would demand --fork-session.
     resume: session => [...claudeAdapter({ ...options, sessionId: undefined }, common).args, "--resume", session],

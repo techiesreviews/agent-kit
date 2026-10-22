@@ -53,16 +53,34 @@ test("Codex adapter grants build workspace and Git access, keeps review read-onl
   }
 });
 
-test("Claude adapter uses edit permissions for build, restricted review tools, JSON and requested effort", () => {
+test("Claude adapter allows build edits and Bash, denies spawning, and keeps review tools read-only", () => {
   for (const kind of ["build", "review"]) {
     const options = parseAgentArgs([kind, "/work tree", "brief", "--model", "claude-opus-5-5", "--effort", "low"]);
     const call = agentInvocation(options, "/shared git", "/out file.md");
     assert.equal(call.command, "claude");
     assert.equal(call.capture, true);
     assert.deepEqual(call.args, ["-p", "--model", "claude-opus-5-5", "--effort", "low", "--permission-mode", kind === "build" ? "acceptEdits" : "plan",
-      ...(kind === "build" ? ["--add-dir", "/shared git"] : ["--tools", "Read,Grep,Glob", "--setting-sources", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}']),
+      ...(kind === "build" ? ["--allowedTools", "Bash", "--disallowedTools", "Task,Agent", "--add-dir", "/shared git"] : ["--tools", "Read,Grep,Glob", "--setting-sources", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}']),
       "--output-format", "json"]);
+    assert.deepEqual(call.resume("session"), [...call.args, "--resume", "session"]);
     assert.equal(call.finish(JSON.stringify({ modelUsage: { "claude-opus-5-5": {} }, result: "report" })), "report");
+  }
+});
+
+test("Claude results require the requested model and permit only Haiku helpers alongside it", () => {
+  const json = (models: string[], extra = {}) => JSON.stringify({
+    result: "report", modelUsage: Object.fromEntries(models.map(model => [model, {}])), ...extra,
+  });
+  for (const requested of ["claude-opus-5-5", "opus", "claude-opus-5-5[1m]", "opus[1m]"]) {
+    for (const opus of ["claude-opus-5-5", "claude-opus-5-5-20261001"]) {
+      assert.equal(claudeResult(json([opus, "claude-haiku-4-5-20251001"]), requested), "report");
+      assert.equal(claudeResult(json(["claude-haiku-4-5-20251001"], { model: opus }), requested), "report");
+    }
+    for (const models of [[], ["claude-haiku-4-5-20251001"], ["claude-sonnet-5-5"],
+      ["claude-opus-5-5", "claude-sonnet-5-5"], ["claude-opus-5-5", "claude-haiku-4-5-20251001", "claude-sonnet-5-5"]]) {
+      assert.throws(() => claudeResult(json(models), requested), /requested model/);
+    }
+    assert.throws(() => claudeResult(json(["claude-opus-5-5"], { model: "claude-sonnet-5-5" }), requested), /requested model/);
   }
 });
 
