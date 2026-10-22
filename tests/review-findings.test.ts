@@ -266,10 +266,10 @@ test("a top-level Spec group before a Standards defects heading keeps its defect
   });
 });
 
-test("a Spec defects heading only after the notes leaves the review unreadable", () => {
-  assert.deepEqual(openFindings(review("Validation gaps: none.\nSpec defects:\n- abcd123:a.ts:1 — P1: x")), {
-    findings: [finding("Review", "review format unreadable")], readable: false,
-  });
+test("a Spec defects heading only after the notes opens its group and blocks", () => {
+  const { findings } = openFindings(review("Validation gaps: none.\nSpec defects:\n- abcd123:a.ts:1 — P1: x"));
+  assert.deepEqual(findings, [finding("Spec", "abcd123:a.ts:1 — P1: x", "P1")]);
+  assert.deepEqual(blockingFindings(findings), findings);
 });
 
 test("a bulleted Defects heading still keeps Validation gaps plain text", () => {
@@ -287,4 +287,131 @@ test("bulleted Spec defects / Standards defects before any notes section open th
 test("a P-token in evidence within 80 characters after a short location counts (lead decision)", () => {
   const { findings } = openFindings(review("Defects: abcd123:a.ts:1 — evidence mentions P2 here\nValidation gaps: none."));
   assert.equal(findings[0].severity, "P2");
+});
+
+// Trimmed from the four real reviews of 2026-10-22 that blocked kit pr (PRs #125, #127, #128, #126).
+const sf11 = review([
+  "Defects:", "Spec: none", "Standards: none", "",
+  "How each \"Done when\" item and decided behaviour holds:",
+  "- **`builderAuthor` mapping** (`scripts/agents/kit-lib.mjs:176-184`) matches the decided behaviour:",
+  "  - `gpt-6.1-sol` becomes `GPT-6.1-Sol`.",
+  "  - Any other id falls through unchanged to its old vendor rule.",
+  "- **Build credit after a switch** (`scripts/agents/kit.d/slice:204,213`): `buildModel` is saved before the build agent runs.",
+  "- **CODING_STANDARDS.md:** only \"Test fixtures\" applies.", "",
+  "Validation gaps:",
+  "- **Mixed-case aliases are untested.** Add `assert.equal(builderAuthor(\"OPUS\"), \"Claude Opus <noreply@anthropic.com>\")`.", "",
+  "Optional nits:",
+  "- **`opus[1m]` keeps its raw id.** The ticket only names bare aliases, so this is within spec.",
+].join("\n"));
+
+const sf12Defect = "9f63b8f0:scripts/agents/kit.d/review:112 — P2: `kit review` now gives the budget slot back when the first call is refused outright. The operator docs say the opposite.";
+const sf12Stale = "e907d9ed:docs/wayfinder/software-factory/build/tickets/12-grok-and-agent-small-fixes.md:46 — P3: The Done section is stale after review rounds 1-3:";
+const sf12 = review([
+  "Defects", "", "Spec",
+  `- ${sf12Defect}`,
+  `- ${sf12Stale}`,
+  "  - \"Commits\" names only 9f63b8f0, 5c84d8a9 and \"this branch's correction commit\", but there are four correction commits.",
+  "  - The `50/50 (2 files)` count comes before tests added in later rounds.",
+  "  ",
+  "  Fix: list all six commits.", "",
+  "Standards",
+  "- none. The diff touches only agent runner scripts, node:test files and a ticket.", "",
+  "Validation gaps",
+  "- The `refusedOutright` Codex cases use a made-up header.",
+  "- No test covers a refusal recorded in `status.json` and then resumed.", "",
+  "Optional nits",
+  "- `scripts/agents/agent-run.mjs:579`: the non-Grok branch could be a short guard.",
+].join("\n"));
+
+const lead92 = review([
+  "Defects", "", "Spec",
+  "- None. I checked the change against every \"Done when\" item in ticket 92:",
+  "  - The Done section records the 1,000-tile measurement.",
+  "  - There is no `main.ts` change.",
+  "- Every way the byte cache lets go of a file is covered, so a kept tile never keeps an old picture:",
+  "  - Replace (`media-library-replace.ts:129`) clears through the view's wrapper.", "",
+  "Standards",
+  "- None.",
+  "  - Async writers (\"Proofs survive awaits\"): the new `cache.drop` loop re-checks the proof.",
+  "  - Test fixtures: the new fakes use `satisfies`.", "",
+  "Validation gaps",
+  "- An online video tile in the picker repainting its choice in place is not tested.",
+  "- Focus coming back to a rebuilt tile is not tested on the new keyed path.", "",
+  "Optional nits",
+  "- `src/page-builder/media-library-grid.ts:35`: the `stamp` comment overstates what changes it.",
+].join("\n"));
+
+const sf10Defect = "d8da9353:scripts/agents/review-findings.mjs:74 — P2: A defects label that comes after the notes now fails open where it used to fail closed.";
+const sf10 = review([
+  "Defects", "", "Spec:",
+  `- ${sf10Defect}`, "",
+  "Standards:",
+  "- none. CODING_STANDARDS.md has rules for controllers, async writers, racing reads, test fixtures and browser specs.", "",
+  "Validation gaps",
+  "- Add a test that pins what happens to a defects heading after the notes.",
+  "- Add a test for a bulleted bare group inside a defects-label section.", "",
+  "Optional nits",
+  "- scripts/agents/review-findings.mjs:81: the label check repeats `defectsLabel`.",
+].join("\n"));
+
+test("real reviews: notes under a none group never count as findings", () => {
+  assert.deepEqual(openFindings(sf11), {
+    findings: [finding("Validation gaps", "Mixed-case aliases are untested. Add `assert.equal(builderAuthor(\"OPUS\"), \"Claude Opus <noreply@anthropic.com>\")`.")], readable: true,
+  });
+  assert.deepEqual(openFindings(lead92), {
+    findings: [finding("Validation gaps", "An online video tile in the picker repainting its choice in place is not tested."),
+      finding("Validation gaps", "Focus coming back to a rebuilt tile is not tested on the new keyed path.")], readable: true,
+  });
+  for (const text of [sf11, lead92]) assert.deepEqual(blockingFindings(openFindings(text).findings), []);
+});
+
+test("real reviews: indented sub-bullets belong to the finding above them", () => {
+  assert.deepEqual(openFindings(sf12), {
+    findings: [
+      finding("Spec", sf12Defect, "P2"),
+      finding("Spec", `${sf12Stale} "Commits" names only 9f63b8f0, 5c84d8a9 and "this branch's correction commit", but there are four correction commits. The \`50/50 (2 files)\` count comes before tests added in later rounds. Fix: list all six commits.`, "P3"),
+      finding("Validation gaps", "The `refusedOutright` Codex cases use a made-up header."),
+      finding("Validation gaps", "No test covers a refusal recorded in `status.json` and then resumed."),
+    ], readable: true,
+  });
+  assert.deepEqual(openFindings(sf10), {
+    findings: [finding("Spec", sf10Defect, "P2"),
+      finding("Validation gaps", "Add a test that pins what happens to a defects heading after the notes."),
+      finding("Validation gaps", "Add a test for a bulleted bare group inside a defects-label section.")], readable: true,
+  });
+  for (const text of [sf12, sf10]) assert.deepEqual(blockingFindings(openFindings(text).findings), []);
+});
+
+test("a none group with a sentence holds notes in any case, plain or bulleted", () => {
+  for (const body of ["Spec: None. I checked every item.\n- First note.\n  - Detail.\nStandards: NONE\nPlain note line.\n- Another note.",
+    "Defects:\n- **Spec:**\n  - none found.\n    - A note.\n  - A second note.\n- **Standards:** None — the rules do not apply.\n  - A note."]) {
+    assert.deepEqual(openFindings(review(`${body}\nValidation gaps: none.\nOptional nits: none.`)), { findings: [], readable: true });
+  }
+});
+
+test("a real P1 after none notes in a later group still blocks", () => {
+  for (const body of ["Spec: None. I checked every item.\n- A note.\n  - Detail.\nStandards:\n- abcd123:a.ts:1 — P1: Real fault.",
+    "Defects\n\nSpec\n- None. I checked every item:\n  - A note.\n- Another note.\n\nStandards\n- abcd123:a.ts:1 — P1: Real fault."]) {
+    const { findings } = openFindings(review(`${body}\nValidation gaps: none.`));
+    assert.deepEqual(findings, [finding("Standards", "abcd123:a.ts:1 — P1: Real fault.", "P1")]);
+    assert.deepEqual(blockingFindings(findings), findings);
+  }
+});
+
+test("a defects heading after an earlier one and the notes reopens its group (slice 10 follow-up)", () => {
+  for (const heading of ["Standards defects:", "Standards defects", "## Standards defects", "**Standards defects:**"]) {
+    const { findings } = openFindings(review(`Spec defects: none\nValidation gaps: none\n${heading}\n- a.ts:1 — P1: real fault`));
+    assert.deepEqual(findings, [finding("Standards", "a.ts:1 — P1: real fault", "P1")]);
+    assert.deepEqual(blockingFindings(findings), findings);
+  }
+});
+
+test("a bulleted bare group inside a defects-label section stays in that group (slice 10 follow-up)", () => {
+  assert.deepEqual(openFindings(review("Spec defects:\n- Standards: a.ts:1 — P1: x\nValidation gaps: none.")), {
+    findings: [finding("Spec", "Standards: a.ts:1 — P1: x", "P1")], readable: true,
+  });
+  // An unbulleted bare group still switches, as before.
+  assert.deepEqual(openFindings(review("Spec defects:\n- a.ts:1 — P1: x\nStandards:\n- b.ts:2 — P2: y\nValidation gaps: none.")), {
+    findings: [finding("Spec", "a.ts:1 — P1: x", "P1"), finding("Standards", "b.ts:2 — P2: y", "P2")], readable: true,
+  });
 });

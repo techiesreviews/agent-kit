@@ -49,48 +49,63 @@ const severityOf = text => {
 };
 
 // Parse the Markdown variants emitted by kit review without reading files or changing state.
+// A group whose first line says "none" holds notes, not findings, until the next heading;
+// an indented sub-bullet belongs to the finding above it.
 export function openFindings(resultMd) {
   const findings = [];
-  let defects = false, labelled = false, section = "", group = "", pending;
+  let defects = false, labelled = false, section = "", group = "", pending, notes = false, fresh = false, labelSection = false;
   const listItem = raw => /^\s*(?:[-+*]|\d+[.)])\s+/.test(raw);
   const clean = text => text.trim().replace(/^#{1,6}\s+/, "").replace(/\*\*|__/g, "")
     .replace(/^(?:[-+*]|\d+[.)])\s+/, "").trim();
+  const none = text => /^none\b/i.test(text);
   const lines = resultMd.split(/\r?\n/);
   const explicitDefects = lines.some(raw => /^Defects(?:\s*[—–-]\s*(?:Spec|Standards))?(?::.*|\s*)$/i.test(clean(raw)));
   const flush = () => {
-    if (pending && !/^none\b/i.test(pending.text)) findings.push({ group: pending.group, text: pending.text,
+    if (pending && !none(pending.text)) findings.push({ group: pending.group, text: pending.text,
       severity: pending.group === "Validation gaps" ? null : severityOf(pending.text) });
     pending = undefined;
   };
   for (const raw of lines) {
     const text = clean(raw);
     const heading = /^(Defects(?:\s*[—–-]\s*(Spec|Standards))?|Spec defects|Standards defects|Validation gaps|Optional nits|Spec|Standards)(?::\s*(.*)|\s*)$/i.exec(text);
-    // Once a "Spec defects" / "Standards defects" heading opens, later bare Spec:/Standards: lines are text.
+    // After Validation gaps or Optional nits, bare Spec:/Standards: lines are text once a
+    // "Spec defects" / "Standards defects" heading has opened.
     const topGroup = !explicitDefects && !labelled && section !== "Optional nits" && !listItem(raw);
     const bareGroup = /^(Spec|Standards)$/i.test(heading?.[1] ?? "");
-    // "Spec defects" / "Standards defects" are headings only before Validation gaps or Optional nits;
-    // after them they are text, bulleted or not (for example "- Spec defects: …" as a gap).
+    // "Spec defects" / "Standards defects" always open their group before the notes. After them an
+    // unbulleted heading still does (fail closed); a bulleted or plain inline one is gap or nit text.
     const defectsLabel = /^(Spec|Standards) defects$/i.test(heading?.[1] ?? "");
-    if (heading && (defectsLabel ? ["", "Defects"].includes(section) : !bareGroup || section === "Defects" || topGroup)) {
+    const lateLabel = defectsLabel && !listItem(raw) && (!heading[3] || /^\s*(?:#{1,6}\s|\*\*|__)/.test(raw));
+    // Inside a defects-label section a bulleted bare Spec:/Standards: stays in that section's group.
+    const groupSwitch = section === "Defects" && !(labelSection && listItem(raw)) || topGroup;
+    if (heading && (defectsLabel ? ["", "Defects"].includes(section) || lateLabel : !bareGroup || groupSwitch)) {
       flush();
       const label = heading[1].toLowerCase();
+      labelSection = false;
       if (label.startsWith("defects")) {
         defects = true;
         section = "Defects";
         group = heading[2] ? heading[2][0].toUpperCase() + heading[2].slice(1).toLowerCase() : "Defects";
-      } else if (label === "spec" || label === "standards" || label === "spec defects" || label === "standards defects") {
+      } else if (bareGroup || defectsLabel) {
         defects = true;
         section = "Defects";
         group = label.startsWith("spec") ? "Spec" : "Standards";
-        if (defectsLabel) labelled = true;
+        if (defectsLabel) labelled = labelSection = true;
       } else {
         section = label === "validation gaps" ? "Validation gaps" : "Optional nits";
         group = section;
       }
-      if (heading[3] && section !== "Optional nits") pending = { group, text: clean(heading[3]), indent: 0 };
+      const value = clean(heading[3] ?? "");
+      notes = none(value);
+      fresh = !value;
+      if (value && !notes && section !== "Optional nits") pending = { group, text: value, indent: 0 };
       continue;
     }
-    if (!text || !section || section === "Optional nits") continue;
+    if (!text || !section || section === "Optional nits" || notes) continue;
+    if (fresh) {
+      fresh = false;
+      if ((notes = none(text))) continue;
+    }
     const bullet = /^(\s*)(?:[-+*]|\d+[.)])\s+/.exec(raw);
     const indent = bullet?.[1].length ?? 0;
     if (bullet && (!pending || indent <= pending.indent)) flush();
