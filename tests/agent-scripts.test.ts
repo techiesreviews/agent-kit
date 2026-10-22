@@ -225,6 +225,12 @@ test("review budgets count outside families per ISO week, refuse at the limit an
   assert.throws(() => reserveReviewBudget(ledger, "grok", { ASE_REVIEW_BUDGET_GROK: "0" }, next), /0\/0/);
   assert.throws(() => reserveReviewBudget(ledger, "codex", { ASE_REVIEW_BUDGET_GPT: "many" }, next), /ASE_REVIEW_BUDGET_GPT must be a whole number/);
   assert.ok(!existsSync(`${ledger}.lock`));
+  // A held lock times out without touching the ledger.
+  const before = readFileSync(ledger, "utf8");
+  mkdirSync(`${ledger}.lock`);
+  assert.throws(() => reserveReviewBudget(ledger, "grok", { ...env, ASE_REVIEW_BUDGET_LOCK_MS: "100" }, next), /review budget lock .* is held; remove it/);
+  assert.equal(readFileSync(ledger, "utf8"), before);
+  rmSync(`${ledger}.lock`, { recursive: true });
   writeFileSync(ledger, "{ broken");
   assert.throws(() => reserveReviewBudget(ledger, "grok", env, next), /review budget ledger .* is not valid JSON: .*; fix or delete it/);
   assert.ok(!existsSync(`${ledger}.lock`));

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
 import { codexReviewConfig, makeCodexReviewHome } from "../scripts/agents/agent-run.mjs";
@@ -402,4 +402,13 @@ test("kit review keeps the budget counted once the CLI has started, even when it
   assert.equal(result.status, 1);
   assert.match(result.stderr, /exceeded timeout=1s/);
   assert.deepEqual(Object.values(JSON.parse(readFileSync(join(f.main, ".scratch/review-budget.json"), "utf8")))[0], { grok: 1 });
+});
+
+test("kit review gives the budget back when the Grok CLI is missing", (t) => {
+  const f = fixture(t);
+  const path = `${join(f.dir, "bin")}:${dirname(process.execPath)}:/usr/bin:/bin`;
+  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "grok-4.7", PATH: path });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /^budget: grok 1\/8 in /m);
+  assert.deepEqual(Object.values(JSON.parse(readFileSync(join(f.main, ".scratch/review-budget.json"), "utf8")))[0], { grok: 0 });
 });

@@ -125,10 +125,18 @@ if [[ $quiet == false ]]; then
   grok=${KIT_GROK:-grok}
   if ! command -v -- "$grok" >/dev/null 2>&1; then
     printf '✗ grok: not installed (optional reviewer); fix: install the grok CLI for Grok reviews\n'
-  elif models=$(timeout 10 "$grok" models 2>&1) && grep -q '^You are logged in' <<< "$models"; then
-    pass grok 'installed and logged in (optional reviewer)'
   else
-    printf '✗ grok: not logged in (optional reviewer); fix: grok login\n'
+    code=0
+    models=$(timeout "${KIT_GROK_TIMEOUT:-10}" "$grok" models 2>&1) || code=$?
+    if grep -q '^You are logged in' <<< "$models"; then
+      pass grok 'installed and logged in (optional reviewer)'
+    elif (( code == 124 )); then
+      printf "✗ grok: 'grok models' timed out (optional reviewer); fix: check the network or the grok CLI\n"
+    elif grep -qiE 'not logged in|log ?in' <<< "$models" || (( code == 0 )); then
+      printf '✗ grok: not logged in (optional reviewer); fix: grok login\n'
+    else
+      printf "✗ grok: 'grok models' failed with status %s (optional reviewer); fix: check the network or the grok CLI\n" "$code"
+    fi
   fi
 fi
 

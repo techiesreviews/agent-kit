@@ -148,8 +148,8 @@ export function claudeResult(stdout, requested, allowEmpty = false) {
   return result.result;
 }
 
-// Grok names the build variant it serves (grok-4.7-build for grok-4.7): accept the
-// requested name followed by a suffix, never a different version or family.
+// Grok reports the variant it serves (grok-4.7-build for grok-4.7): accept the
+// requested name, alone or followed by any -suffix, never a different version or family.
 export function grokModelMatches(actual, requested) {
   return actual === requested || actual.startsWith(`${requested}-`);
 }
@@ -192,9 +192,11 @@ export function reviewBudgetLimit(family, env = process.env) {
   return Number(value);
 }
 
-function withLedger(path, change) {
+function withLedger(path, change, env = process.env) {
   mkdirSync(dirname(path), { recursive: true });
-  const lock = `${path}.lock`, deadline = Date.now() + 10_000;
+  const wait = Number(env.ASE_REVIEW_BUDGET_LOCK_MS || 10_000);
+  if (!Number.isSafeInteger(wait) || wait <= 0) throw new Error("ASE_REVIEW_BUDGET_LOCK_MS must be a positive integer");
+  const lock = `${path}.lock`, deadline = Date.now() + wait;
   for (;;) {
     try { mkdirSync(lock); break; } catch (error) {
       if (error.code !== "EEXIST") throw error;
@@ -233,7 +235,7 @@ export function reserveReviewBudget(path, cli, env = process.env, date = new Dat
     }
     ledger[week] = { ...ledger[week], [family]: used + 1 };
     return { family, week, used: used + 1, limit };
-  });
+  }, env);
 }
 
 // Returns a reservation whose review never reached the model.

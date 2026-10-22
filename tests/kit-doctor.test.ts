@@ -111,6 +111,15 @@ test("doctor reports a logged-in or logged-out Grok CLI without failing", (t) =>
   assert.equal(signedOut.status, 0, signedOut.stdout + signedOut.stderr);
   assert.ok(signedOut.stdout.includes("✗ grok: not logged in (optional reviewer); fix: grok login\n"), signedOut.stdout);
   assert.equal(f.run(["--quiet"], f.build, { KIT_GROK: grok }).stdout, "RESULT: ok doctor 7/7 checks passed\n");
+  // A hung or failing CLI is not mistaken for a logged-out one.
+  executable(grok, "sleep 5");
+  const hung = f.run([], f.build, { KIT_GROK: grok, KIT_GROK_TIMEOUT: "0.2" });
+  assert.equal(hung.status, 0, hung.stdout + hung.stderr);
+  assert.ok(hung.stdout.includes("✗ grok: 'grok models' timed out (optional reviewer); fix: check the network or the grok CLI\n"), hung.stdout);
+  executable(grok, 'printf "error: connection refused\\n" >&2; exit 3');
+  const offline = f.run([], f.build, { KIT_GROK: grok });
+  assert.equal(offline.status, 0, offline.stdout + offline.stderr);
+  assert.ok(offline.stdout.includes("✗ grok: 'grok models' failed with status 3 (optional reviewer); fix: check the network or the grok CLI\n"), offline.stdout);
 });
 
 test("doctor rejects the main checkout even through an alias", (t) => {
