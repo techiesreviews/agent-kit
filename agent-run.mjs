@@ -2,20 +2,28 @@
 // Adapters accept {kind, worktree, model, effort}, git common dir and output path.
 // Return {command, args, env, capture, finish(stdout, runLog)}. Commands read the brief
 // on stdin with cwd=worktree; finish verifies the actual model and returns final
-// text (Claude), or null when the CLI already wrote out.md (Codex). The shared
+// text (Claude, Grok), or null when the CLI already wrote out.md (Codex). The shared
 // runner owns logs, the build contract, deadlines, process groups and Git status.
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { durationMilliseconds, supervise } from "./sol-run.mjs";
 import { reviewComplete, reviewFormat, reviewScope } from "./review-brief.mjs";
 
-const adapters = { codex: codexAdapter, claude: claudeAdapter };
+const adapters = { codex: codexAdapter, claude: claudeAdapter, grok: grokAdapter };
 
 export function inferCli(model) {
+  if (/^grok-/i.test(model)) return "grok";
   return /^(claude-|(?:opus|sonnet|haiku|fable)$)/i.test(claudeModelName(model)) ? "claude" : "codex";
+}
+
+// Model families on outside plans. Claude has no family here: it is never budgeted.
+const families = { codex: "gpt", grok: "grok" };
+
+export function reviewFamily(cli) {
+  return families[cli] ?? null;
 }
 
 function claudeModelName(model) {
@@ -33,7 +41,7 @@ export function parseAgentArgs(args, env = {}) {
   }
   const [kind, worktree, brief, ...flags] = args;
   if (!["build", "review"].includes(kind) || !worktree || !brief) {
-    throw new Error("Usage: agent.sh build|review <worktree> <brief> [--model M] [--cli codex|claude] [--effort E] [--base REF | --commit SHA] [--out DIR]; agent.sh --resume <out-dir> [--brief FILE]");
+    throw new Error("Usage: agent.sh build|review <worktree> <brief> [--model M] [--cli codex|claude|grok] [--effort E] [--base REF | --commit SHA] [--out DIR]; agent.sh --resume <out-dir> [--brief FILE]");
   }
   const options = { kind, worktree, brief, model: env[kind === "build" ? "ASE_BUILD_MODEL" : "ASE_REVIEW_MODEL"] || "gpt-6.1-sol", effort: "medium" };
   let cli = env.ASE_AGENT_CLI || "";
@@ -49,6 +57,7 @@ export function parseAgentArgs(args, env = {}) {
   }
   options.cli = cli || inferCli(options.model);
   if (!Object.hasOwn(adapters, options.cli)) throw new Error(`Unknown CLI: ${options.cli}; add an adapter first`);
+  if (options.cli === "grok" && kind !== "review") throw new Error("Grok runs reviews only; pick a Codex or Claude builder");
   if (!options.model.trim() || options.model.startsWith("-") || /[\r\n]/.test(options.model)) throw new Error("Invalid model");
   // Effort levels belong to each CLI/model; pass new levels through unchanged.
   if (!/^[a-z][a-z0-9_-]*$/.test(options.effort)) throw new Error(`Invalid effort: ${options.effort}`);
@@ -139,6 +148,93 @@ export function claudeResult(stdout, requested, allowEmpty = false) {
   return result.result;
 }
 
+// Grok names the build variant it serves (grok-4.7-build for grok-4.7): accept the
+// requested name followed by a suffix, never a different version or family.
+export function grokModelMatches(actual, requested) {
+  return actual === requested || actual.startsWith(`${requested}-`);
+}
+
+export function grokResult(stdout, requested) {
+  const result = JSON.parse(stdout);
+  const models = Object.keys(result.modelUsage ?? {});
+  if (!models.length || !models.every(model => grokModelMatches(model, requested))) {
+    throw new Error(`Grok result does not name requested model ${requested} (actual: ${models.join(", ") || "missing"})`);
+  }
+  // An empty review falls through to the runner's one completeness retry.
+  if (typeof result.text !== "string") throw new Error("Grok returned no final report");
+  return result.text;
+}
+
+const usageLimitPattern = /you['’]ve hit your usage limit\b.*?\btry again at ([^\n]+?)\.?[\t ]*$/im;
+
+// Providers stop plan users with a usage-limit message; report when it lifts.
+export function usageLimitProblem(text, cli) {
+  const time = text.match(usageLimitPattern)?.[1];
+  return time ? `problem: ${reviewFamily(cli) ?? cli} usage limit until ${time}` : null;
+}
+
+export const reviewBudgetDefaults = { gpt: 12, grok: 8 };
+
+export function isoWeek(date = new Date()) {
+  const day = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  day.setUTCDate(day.getUTCDate() + 4 - (day.getUTCDay() || 7));
+  const year = day.getUTCFullYear();
+  const week = Math.ceil(((day - Date.UTC(year, 0, 1)) / 86_400_000 + 1) / 7);
+  return `${year}-W${String(week).padStart(2, "0")}`;
+}
+
+export function reviewBudgetLimit(family, env = process.env) {
+  const name = `ASE_REVIEW_BUDGET_${family.toUpperCase()}`, value = env[name];
+  if (value === undefined || value === "") return reviewBudgetDefaults[family];
+  if (!/^\d+$/.test(value)) throw new Error(`${name} must be a whole number of reviews per week`);
+  return Number(value);
+}
+
+function withLedger(path, change) {
+  mkdirSync(dirname(path), { recursive: true });
+  const lock = `${path}.lock`, deadline = Date.now() + 10_000;
+  for (;;) {
+    try { mkdirSync(lock); break; } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      if (Date.now() > deadline) throw new Error(`review budget lock ${lock} is held; remove it if no review is starting`);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    }
+  }
+  try {
+    const ledger = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
+    const result = change(ledger);
+    const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      writeFileSync(temporary, JSON.stringify(ledger, null, 2) + "\n", { flag: "wx" });
+      renameSync(temporary, path);
+    } finally { rmSync(temporary, { force: true }); }
+    return result;
+  } finally { rmSync(lock, { recursive: true, force: true }); }
+}
+
+// Counts one review for an outside family in this ISO week, refusing at the limit.
+// Returns null for Claude, which is never counted.
+export function reserveReviewBudget(path, cli, env = process.env, date = new Date()) {
+  const family = reviewFamily(cli);
+  if (!family) return null;
+  const limit = reviewBudgetLimit(family, env), week = isoWeek(date);
+  return withLedger(path, ledger => {
+    const used = ledger[week]?.[family] ?? 0;
+    if (used >= limit) {
+      throw new Error(`${family} review budget used up: ${used}/${limit} in ${week}; raise ASE_REVIEW_BUDGET_${family.toUpperCase()} to override`);
+    }
+    ledger[week] = { ...ledger[week], [family]: used + 1 };
+    return { family, week, used: used + 1, limit };
+  });
+}
+
+// Returns a reservation whose review never reached the model.
+export function releaseReviewBudget(path, { family, week }) {
+  withLedger(path, ledger => {
+    if (ledger[week]?.[family] > 0) ledger[week][family] -= 1;
+  });
+}
+
 export function codexAdapter(options, common, output) {
   const { kind, worktree, model, effort } = options;
   return {
@@ -169,6 +265,21 @@ export function claudeAdapter(options, common) {
     resume: session => [...claudeAdapter({ ...options, sessionId: undefined }, common).args, "--resume", session],
     session: stdout => JSON.parse(stdout).session_id,
     finish: stdout => claudeResult(stdout, model, kind === "review"),
+  };
+}
+
+export function grokAdapter(options) {
+  const { kind, worktree, model, effort } = options;
+  if (kind !== "review") throw new Error("Grok runs reviews only");
+  // The read-only sandbox and a read-only tool list keep the reviewer from editing.
+  const args = ["--prompt-file", "/dev/stdin", "-m", model, "--reasoning-effort", effort, "--output-format", "json",
+    "--sandbox", "read-only", "--tools", "read_file,grep,list_dir", "--no-subagents", "--disable-web-search", "--cwd", worktree];
+  return {
+    command: "grok", capture: true,
+    args: [...args, ...(options.sessionId ? ["-s", options.sessionId] : [])],
+    resume: session => [...args, "--resume", session],
+    session: stdout => JSON.parse(stdout).sessionId,
+    finish: stdout => grokResult(stdout, model),
   };
 }
 
@@ -376,7 +487,10 @@ async function invokeAgent(adapter, args, descriptor, context) {
     const session = recordedSession(adapter, result.stdout, slice);
     if (session) update({ session });
     if (status === 124) messages.push(`problem: agent exceeded timeout=${limit}; process group killed; see ${logPath}`);
-    else if (status) messages.push(`problem: ${adapter.command} failed (${status}); see ${logPath}`);
+    else if (status) {
+      context.usageLimit = usageLimitProblem(`${slice}\n${result.stdout ?? ""}`, options.cli);
+      if (!context.usageLimit) messages.push(`problem: ${adapter.command} failed (${status}); see ${logPath}`);
+    }
     try {
       const report = adapter.finish(result.stdout, slice);
       if (report !== null) writeFileSync(output, report + "\n");
@@ -446,6 +560,8 @@ async function executeRun(options, out, previous, update, brief) {
       status ||= 1;
     }
     const gitStatus = execFileSync("git", ["-C", options.worktree, "status", "--short"], { encoding: "utf8" });
+    // Callers read the last problem line; a usage limit explains the rest.
+    if (context.usageLimit) messages.push(context.usageLimit);
     return { status, messages, report, gitStatus };
   } finally {
     if (input !== undefined) closeSync(input);
@@ -470,9 +586,9 @@ async function startRun(options, previous) {
     out = mkdtempSync(join(artifacts, `${options.kind}-${Date.now()}-${process.pid}-`));
   }
   mkdirSync(out, { recursive: true });
-  // Claude reports its session id only in the final JSON; assign it up front so
+  // Claude and Grok report their session id only in the final JSON; assign it up front so
   // a run killed mid-way can still be resumed.
-  if (!previous && options.cli === "claude") options.sessionId = randomUUID();
+  if (!previous && ["claude", "grok"].includes(options.cli)) options.sessionId = randomUUID();
   const status = {
     pid: process.pid, pgid: null, kind: options.kind, model: options.model, cli: options.cli, effort: options.effort,
     worktree: options.worktree, brief: options.brief, out,

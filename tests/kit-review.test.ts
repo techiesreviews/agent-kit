@@ -369,3 +369,26 @@ test("evidence timestamp collisions add a suffix and leave existing evidence int
   assert.match(f.evidence(result.stdout), /Z-1$/);
   for (const path of occupied) assert.equal(readFileSync(join(path, "keep"), "utf8"), "old evidence");
 });
+
+test("kit review counts outside reviews per week, refuses at the budget and never counts Claude", (t) => {
+  const f = fixture(t);
+  const ledger = join(f.main, ".scratch/review-budget.json");
+  const counts = () => Object.values(JSON.parse(readFileSync(ledger, "utf8")))[0];
+  const first = f.run(["--base", "HEAD~1"], { ASE_REVIEW_BUDGET_GPT: "1" });
+  assert.equal(first.status, 0, first.stderr);
+  assert.match(first.stdout, /^budget: gpt 1\/1 in \d{4}-W\d{2}$/m);
+  const refused = f.run(["--base", "HEAD~1"], { ASE_REVIEW_BUDGET_GPT: "1" });
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /^problem: gpt review budget used up: 1\/1 in \d{4}-W\d{2}; raise ASE_REVIEW_BUDGET_GPT to override$/m);
+  assert.match(refused.stdout.trim().split("\n").at(-1)!, /^RESULT: fail gpt review budget used up: .* evidence none$/);
+  assert.equal(f.calls().length, 1);
+  const claude = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "claude-haiku-5-5", ASE_REVIEW_BUDGET_GPT: "0" });
+  assert.equal(claude.status, 0, claude.stderr);
+  assert.doesNotMatch(claude.stdout, /^budget:/m);
+  // An empty diff never reaches the model, so its reservation is returned.
+  const empty = f.run(["--base", "HEAD"], { ASE_REVIEW_BUDGET_GPT: "2" });
+  assert.equal(empty.status, 1);
+  assert.match(empty.stderr, /empty diff/);
+  assert.deepEqual(counts(), { gpt: 1 });
+  assert.equal(f.calls().length, 2);
+});

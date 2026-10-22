@@ -9,7 +9,7 @@ import { reviewBrief, reviewComplete, reviewFormat } from "../scripts/agents/rev
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { unitSummary } from "../scripts/agents/unit-summary.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
-import { agentInvocation, buildContract, claudeResult, codexModelMatches, inferCli, parseAgentArgs, reviewBase } from "../scripts/agents/agent-run.mjs";
+import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokResult, inferCli, isoWeek, parseAgentArgs, releaseReviewBudget, reserveReviewBudget, reviewBase, usageLimitProblem } from "../scripts/agents/agent-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { durationMilliseconds } from "../scripts/agents/sol-run.mjs";
 
@@ -162,6 +162,120 @@ test("model verification rejects missing metadata, fallback models and unsuccess
     json(["claude-haiku-5-5"], { is_error: true }), json(["claude-haiku-5-5"], { subtype: "error_max_turns" }), json(["claude-haiku-5-5"], { result: "" })]) {
     assert.throws(() => claudeResult(stdout, "claude-haiku-5-5"));
   }
+});
+
+test("Grok adapter runs reviews only, read-only and headless, and resumes its own session", () => {
+  for (const model of ["grok-4.7", "grok-4.6"]) assert.equal(inferCli(model), "grok");
+  const options = parseAgentArgs(["review", "/work tree", "brief"], { ASE_REVIEW_MODEL: "grok-4.7" });
+  assert.equal(options.cli, "grok");
+  const call = agentInvocation({ ...options, sessionId: "id-1" }, "/shared git", "/out file.md");
+  assert.equal(call.command, "grok");
+  assert.equal(call.capture, true);
+  const shared = ["--prompt-file", "/dev/stdin", "-m", "grok-4.7", "--reasoning-effort", "medium", "--output-format", "json",
+    "--sandbox", "read-only", "--tools", "read_file,grep,list_dir", "--no-subagents", "--disable-web-search", "--cwd", "/work tree"];
+  assert.deepEqual(call.args, [...shared, "-s", "id-1"]);
+  assert.deepEqual(call.resume("id-1"), [...shared, "--resume", "id-1"]);
+  assert.ok(!call.args.some((arg: string) => /always-approve|bypass|workspace|search_replace|run_terminal_cmd/.test(arg)));
+  assert.equal(call.session(JSON.stringify({ sessionId: "id-1" })), "id-1");
+  assert.throws(() => parseAgentArgs(["build", ".", "brief", "--model", "grok-4.7"]), /reviews only/);
+  assert.throws(() => parseAgentArgs(["build", ".", "brief", "--cli", "grok"]), /reviews only/);
+  assert.throws(() => agentInvocation({ ...options, kind: "build" }, "/git", "/out"), /reviews only/);
+});
+
+test("Grok results parse to their text and accept only the requested model with a variant suffix", () => {
+  const sample = JSON.stringify({
+    text: "REVIEW_STATUS: complete\nDefects: none", stopReason: "end_turn", sessionId: "01a16308-4fe2-7c13-9e28-c176565b915b",
+    usage: { input_tokens: 8053, output_tokens: 69 }, num_turns: 1,
+    modelUsage: { "grok-4.7-build": { inputTokens: 8053, outputTokens: 69, modelCalls: 1 } },
+  });
+  assert.equal(grokResult(sample, "grok-4.7"), "REVIEW_STATUS: complete\nDefects: none");
+  const json = (models: string[], extra = {}) => JSON.stringify({ text: "report", modelUsage: Object.fromEntries(models.map(model => [model, {}])), ...extra });
+  assert.equal(grokResult(json(["grok-4.7"]), "grok-4.7"), "report");
+  assert.equal(grokResult(json(["grok-4.7-build"], { text: "" }), "grok-4.7"), "");
+  for (const models of [[], ["grok-4.6"], ["grok-4.70"], ["gpt-6.1-sol"], ["claude-opus-5-5"], ["grok-4.7-build", "grok-4.6-mini"]]) {
+    assert.throws(() => grokResult(json(models), "grok-4.7"), /requested model/);
+  }
+  assert.throws(() => grokResult(JSON.stringify({ modelUsage: { "grok-4.7-build": {} } }), "grok-4.7"), /no final report/);
+  assert.throws(() => grokResult("not JSON", "grok-4.7"));
+});
+
+test("review budgets count outside families per ISO week, refuse at the limit and never count Claude", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ase-review-budget-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const ledger = join(dir, ".scratch/review-budget.json");
+  const monday = new Date("2026-10-19T08:00:00Z"), sunday = new Date("2026-10-25T20:00:00Z"), next = new Date("2026-10-26T01:00:00Z");
+  assert.equal(isoWeek(monday), "2026-W43");
+  assert.equal(isoWeek(sunday), "2026-W43");
+  assert.equal(isoWeek(next), "2026-W44");
+  assert.equal(isoWeek(new Date("2027-01-01T12:00:00Z")), "2026-W53");
+  const env = { ASE_REVIEW_BUDGET_GROK: "2" };
+  assert.equal(reserveReviewBudget(ledger, "claude", env, monday), null);
+  assert.ok(!existsSync(ledger));
+  assert.deepEqual(reserveReviewBudget(ledger, "grok", env, monday), { family: "grok", week: "2026-W43", used: 1, limit: 2 });
+  assert.deepEqual(reserveReviewBudget(ledger, "codex", env, monday), { family: "gpt", week: "2026-W43", used: 1, limit: 12 });
+  assert.equal(reserveReviewBudget(ledger, "grok", env, sunday).used, 2);
+  assert.throws(() => reserveReviewBudget(ledger, "grok", env, sunday), /grok review budget used up: 2\/2 in 2026-W43; raise ASE_REVIEW_BUDGET_GROK to override/);
+  assert.equal(reserveReviewBudget(ledger, "grok", { ASE_REVIEW_BUDGET_GROK: "3" }, sunday).used, 3);
+  assert.equal(reserveReviewBudget(ledger, "grok", env, next).used, 1);
+  assert.equal(reserveReviewBudget(ledger, "claude", { ASE_REVIEW_BUDGET_GROK: "0" }, next), null);
+  assert.deepEqual(JSON.parse(readFileSync(ledger, "utf8")), { "2026-W43": { grok: 3, gpt: 1 }, "2026-W44": { grok: 1 } });
+  releaseReviewBudget(ledger, { family: "grok", week: "2026-W44" });
+  assert.deepEqual(JSON.parse(readFileSync(ledger, "utf8"))["2026-W44"], { grok: 0 });
+  assert.throws(() => reserveReviewBudget(ledger, "grok", { ASE_REVIEW_BUDGET_GROK: "0" }, next), /0\/0/);
+  assert.throws(() => reserveReviewBudget(ledger, "codex", { ASE_REVIEW_BUDGET_GPT: "many" }, next), /ASE_REVIEW_BUDGET_GPT must be a whole number/);
+  assert.ok(!existsSync(`${ledger}.lock`));
+});
+
+test("provider usage-limit messages become a family usage-limit problem", () => {
+  const openai = "ERROR: You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), or try again at Oct 25th, 2026 3:14 PM.";
+  assert.equal(usageLimitProblem(`model: gpt-6.1-sol\n${openai}\n`, "codex"), "problem: gpt usage limit until Oct 25th, 2026 3:14 PM");
+  assert.equal(usageLimitProblem("You’ve hit your usage limit. Try again at 9:00 AM", "grok"), "problem: grok usage limit until 9:00 AM");
+  for (const text of ["", "model: gpt-6.1-sol\nERROR: stream disconnected", "try again at 9:00 AM"]) assert.equal(usageLimitProblem(text, "codex"), null);
+});
+
+test("Grok reviews and Codex usage limits run through the shared shell entry using fake CLIs", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ase-agent-grok-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const wt = join(dir, "work tree"), bin = join(dir, "bin"), brief = join(dir, "brief.md");
+  mkdirSync(wt); mkdirSync(bin);
+  reviewRepository(wt);
+  const sourceHome = join(dir, "codex-home");
+  mkdirSync(sourceHome); writeFileSync(join(sourceHome, "auth.json"), "{}");
+  writeFileSync(brief, "tiny brief\n");
+  writeFileSync(join(bin, "package.json"), '{"type":"module"}');
+  writeFileSync(join(bin, "grok"), `#!/usr/bin/env node
+import { readFileSync, writeFileSync } from "node:fs";
+const args = process.argv.slice(2);
+writeFileSync(process.env.ASE_FAKE_CAPTURE, JSON.stringify({ args, input: readFileSync(args[args.indexOf("--prompt-file") + 1], "utf8") }));
+const session = args[args.indexOf(args.includes("-s") ? "-s" : "--resume") + 1];
+console.log(JSON.stringify({ text: "REVIEW_STATUS: complete\\nDefects: none\\n", stopReason: "end_turn", sessionId: session, modelUsage: { [args[args.indexOf("-m") + 1] + "-build"]: {} } }));
+`);
+  writeFileSync(join(bin, "codex"), `#!/usr/bin/env node
+console.error("OpenAI Codex v0.163.0\\n--------\\nmodel: gpt-6.1-sol\\n--------");
+console.error("ERROR: You've hit your usage limit. Upgrade to Pro, or try again at Oct 25th, 2026 3:14 PM.");
+process.exitCode = 1;
+`);
+  for (const cli of ["grok", "codex"]) chmodSync(join(bin, cli), 0o755);
+  const capture = join(dir, "capture.json");
+  const invoke = (args: string[], overrides: NodeJS.ProcessEnv = {}) => spawnSync("bash", [resolve("scripts/agents/agent.sh"), ...args], {
+    encoding: "utf8", timeout: 15_000,
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CODEX_HOME: sourceHome, ASE_FAKE_CAPTURE: capture, ASE_AGENT_CLI: "", ASE_REVIEW_MODEL: "", ASE_AGENT_TIMEOUT: "10s", ...overrides },
+  });
+  const result = invoke(["review", wt, brief, "--base", "origin/dev"], { ASE_REVIEW_MODEL: "grok-4.7" });
+  assert.equal(result.status, 0, result.stderr);
+  const out = /^artifacts: (.+)$/m.exec(result.stdout)?.[1];
+  assert.ok(out);
+  assert.match(readFileSync(join(out, "out.md"), "utf8"), /^REVIEW_STATUS: complete\nDefects: none/);
+  const recorded: { args: string[]; input: string } = JSON.parse(readFileSync(capture, "utf8"));
+  assert.ok(recorded.input.startsWith("tiny brief\n") && recorded.input.includes("Review scope: git diff"));
+  assert.equal(recorded.args[recorded.args.indexOf("--sandbox") + 1], "read-only");
+  const status = JSON.parse(readFileSync(join(out, "status.json"), "utf8"));
+  assert.equal(status.cli, "grok");
+  assert.equal(status.session, recorded.args[recorded.args.indexOf("-s") + 1]);
+  const limited = invoke(["review", wt, brief, "--base", "origin/dev"], { ASE_REVIEW_MODEL: "gpt-6.1-sol" });
+  assert.equal(limited.status, 1);
+  assert.equal(limited.stderr.trimEnd().split("\n").at(-1), "problem: gpt usage limit until Oct 25th, 2026 3:14 PM");
+  assert.doesNotMatch(limited.stderr, /codex failed/);
 });
 
 test("both adapters run through the shared shell entry and compatibility wrappers using fake CLIs", (t) => {

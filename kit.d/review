@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 // kit: review a diff or commit and save the evidence
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { parseAgentArgs } from "../agent-run.mjs";
+import { parseAgentArgs, releaseReviewBudget, reserveReviewBudget } from "../agent-run.mjs";
 import { reviewBrief, reviewScope, ticketReviewBrief } from "../review-brief.mjs";
 
 const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const usage = "Usage: kit review [--base REF | --commit SHA] [--ticket FILE] [--pr N]\nDefault scope: --base origin/dev. Model: ASE_REVIEW_MODEL or gpt-6.1-sol.\n";
+const usage = "Usage: kit review [--base REF | --commit SHA] [--ticket FILE] [--pr N]\nDefault scope: --base origin/dev. Model: ASE_REVIEW_MODEL or gpt-6.1-sol (claude-*, grok-* or Codex).\n" +
+  "Weekly budgets: ASE_REVIEW_BUDGET_GPT (12), ASE_REVIEW_BUDGET_GROK (8); Claude is not counted.\n";
 
 function options(args) {
   const values = {};
@@ -39,7 +40,8 @@ function evidenceDirectory() {
 }
 
 async function review(args) {
-  let evidence = "none", temporary, status = 1, reason = "invalid arguments", label;
+  let evidence = "none", temporary, status = 1, reason = "invalid arguments", label, budget;
+  const ledger = join(kitMainRoot(), ".scratch/review-budget.json");
   try {
     status = 2;
     const flags = options(args);
@@ -56,8 +58,10 @@ async function review(args) {
     const resolved = scope.commit ? { commit: scope.commit } : { base: scope.base };
     writeFileSync(briefPath, flags.ticket ? ticketReviewBrief(flags.ticket, resolved, root) : reviewBrief("", "", resolved, root));
     const agentArgs = ["review", root, briefPath, ...(scope.commit ? ["--commit", scope.commit] : ["--base", scope.base]), "--out", temporary];
-    const { model } = parseAgentArgs(agentArgs, env);
+    const { model, cli } = parseAgentArgs(agentArgs, env);
     console.log(`model: ${model}`);
+    budget = reserveReviewBudget(ledger, cli, env);
+    if (budget) console.log(`budget: ${budget.family} ${budget.used}/${budget.limit} in ${budget.week}`);
     let stderr = "";
     status = await new Promise((accept, reject) => {
       const child = spawn(env.KIT_NODE, [resolve(import.meta.dirname, "../agent-run.mjs"), ...agentArgs], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -98,6 +102,11 @@ async function review(args) {
     console.error(`problem: ${reason}`);
     if (status === 2) process.stderr.write(usage);
   } finally {
+    try {
+      // A review that never reached the model (empty diff, missing CLI output) is not counted.
+      const log = temporary && join(temporary, "run.log");
+      if (budget && !(log && existsSync(log) && statSync(log).size)) releaseReviewBudget(ledger, budget);
+    } catch (error) { console.error(`problem: releasing review budget failed: ${error.message}`); }
     try {
       const saved = [["out.md", "result.md"], ["run.log", "run.log"], ["diff.patch", "diff.patch"], ["refs.txt", "refs.txt"]]
         .filter(([source]) => temporary && existsSync(join(temporary, source)));
