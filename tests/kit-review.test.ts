@@ -60,7 +60,8 @@ if (cli === "codex") {
   if (!(mode === "missing-pass" && !resumed)) writeFileSync(args[args.indexOf("-o") + 1], report);
 } else {
   // Grok prints its refusal on stdout, not stderr.
-  if (mode === "usage-limit") {
+  if (mode === "late-usage-limit") console.error("read_file file.txt");
+  if (["usage-limit", "late-usage-limit"].includes(mode)) {
     console.log("You've hit your usage limit. Try again at 9:00 AM.");
     process.exit(1);
   }
@@ -480,6 +481,20 @@ test("kit review gives the budget back when Grok prints its refusal on stdout", 
   assert.equal(refused.status, 1);
   assert.match(refused.stderr, /^problem: grok usage limit until 9:00 AM$/m);
   assert.deepEqual(counts(), { grok: 1 });
+});
+
+test("kit review keeps the spent review when Grok works on stderr before its stdout refusal", (t) => {
+  const f = fixture(t);
+  const grok = join(f.dir, "bin", "grok");
+  writeFileSync(grok, fake); chmodSync(grok, 0o755);
+  const ledger = join(f.main, ".scratch/review-budget.json");
+  const counts = () => Object.values(JSON.parse(readFileSync(ledger, "utf8")))[0];
+  const first = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "grok-4.7", ASE_REVIEW_BUDGET_GROK: "2" });
+  assert.equal(first.status, 0, first.stderr);
+  const late = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "grok-4.7", ASE_REVIEW_BUDGET_GROK: "2", FAKE_MODE: "late-usage-limit" });
+  assert.equal(late.status, 1);
+  assert.match(late.stderr, /^problem: grok usage limit until 9:00 AM$/m);
+  assert.deepEqual(counts(), { grok: 2 });
 });
 
 test("uppercase GROK-4.7 selects Grok, its budget and the build variant end to end", (t) => {

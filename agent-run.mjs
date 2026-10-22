@@ -176,12 +176,11 @@ export function usageLimitProblem(text, cli) {
   return time ? `problem: ${reviewFamily(cli) ?? cli} usage limit until ${time}` : null;
 }
 
-// A refusal spent no review only when it is all the call printed: Codex logs nothing
-// after its echo of the prompt but its own warnings and the limit line, Grok prints the
-// limit line and no JSON result (on stderr when stdout is empty). Any work before the
-// limit means quota was used.
-export function refusedOutright(cli, stdout, log, prompt) {
-  let output = stdout.trim() ? stdout : log;
+// A refusal spent no review only when it is all the call printed. The log holds both
+// streams: Codex logs nothing after its echo of the prompt but its own warnings and the
+// limit line, Grok logs the limit line alone. Any work before the limit means quota was used.
+export function refusedOutright(cli, log, prompt) {
+  let output = log;
   if (cli === "codex") {
     const echo = `\nuser\n${prompt.trimEnd()}`, start = log.indexOf(echo);
     if (start < 0) return false;
@@ -503,7 +502,7 @@ function sessionObserver(adapter, update) {
 
 async function invokeAgent(adapter, args, descriptor, context) {
   const { options, limit, logPath, log, output, messages, update } = context;
-  const previousCalls = context.calls ?? 0;
+  const previousCalls = context.calls;
   context.calls = previousCalls + 1;
   const previous = Object.fromEntries(Object.keys(adapter.env ?? {}).map(key => [key, process.env[key]]));
   try {
@@ -521,11 +520,11 @@ async function invokeAgent(adapter, args, descriptor, context) {
     // The CLI's own failure is the cause; executeRun reports it after its consequences.
     if (status === 124) context.cause = `problem: agent exceeded timeout=${limit}; process group killed; see ${logPath}`;
     else if (status) {
-      const refused = usageLimitProblem(slice, options.cli) ?? usageLimitProblem(result.stdout ?? "", options.cli);
-      context.cause = refused ?? `problem: ${adapter.command} failed (${status}); see ${logPath}`;
+      const limitProblem = usageLimitProblem(slice, options.cli) ?? usageLimitProblem(result.stdout ?? "", options.cli);
+      context.cause = limitProblem ?? `problem: ${adapter.command} failed (${status}); see ${logPath}`;
       // A refusal of the first call refunds the review; a completed first call, or one
       // that worked before the limit, already spent it.
-      if (refused && !previousCalls && refusedOutright(options.cli, result.stdout ?? "", slice, context.prompt)) update({ refused: true });
+      if (limitProblem && !previousCalls && refusedOutright(options.cli, slice, context.prompt)) update({ refused: true });
     }
     try {
       const report = adapter.finish(result.stdout, slice);

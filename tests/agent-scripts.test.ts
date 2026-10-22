@@ -260,17 +260,18 @@ test("only a usage limit that is all the call printed counts as an outright refu
   const header = `OpenAI Codex v0.163.0\n--------\nmodel: gpt-6.1-sol\nsession id: 1\n--------\nuser\n${prompt}\n`;
   const warning = "warning: `--dangerously-bypass-hook-trust` is enabled.\n";
   // The prompt echo may hold work-like lines; only what follows it counts.
-  assert.equal(refusedOutright("codex", "", `${header}${warning}${limit}\n${limit}\n`, prompt), true);
-  assert.equal(refusedOutright("codex", "", `${header}${warning}exec\n/bin/bash -lc ls\ncodex\nReading.\n${limit}\ntokens used\n1,024\n`, prompt), false);
-  assert.equal(refusedOutright("codex", "", `${header}${warning}`, prompt), false);
+  assert.equal(refusedOutright("codex", `${header}${warning}${limit}\n${limit}\n`, prompt), true);
+  assert.equal(refusedOutright("codex", `${header}${warning}exec\n/bin/bash -lc ls\ncodex\nReading.\n${limit}\ntokens used\n1,024\n`, prompt), false);
+  assert.equal(refusedOutright("codex", `${header}${warning}`, prompt), false);
   // Without the echo there is no telling where work would start.
-  assert.equal(refusedOutright("codex", "", `${limit}\n`, prompt), false);
+  assert.equal(refusedOutright("codex", `${limit}\n`, prompt), false);
   const grok = "You've hit your usage limit. Try again at 9:00 AM.";
-  assert.equal(refusedOutright("grok", `${grok}\n`, "", ""), true);
-  // With nothing on stdout, Grok's refusal on stderr is judged from the log.
-  assert.equal(refusedOutright("grok", "", `${grok}\n`, ""), true);
-  assert.equal(refusedOutright("grok", "", "", ""), false);
-  assert.equal(refusedOutright("grok", `{"text":"partial"}\n${grok}\n`, "", ""), false);
+  // The log holds Grok's stdout and stderr alike; either may carry the refusal.
+  assert.equal(refusedOutright("grok", `${grok}\n`, ""), true);
+  assert.equal(refusedOutright("grok", "", ""), false);
+  // Work on stderr before a stdout refusal means quota was used.
+  assert.equal(refusedOutright("grok", `read_file src/a.ts\n${grok}\n`, ""), false);
+  assert.equal(refusedOutright("grok", `{"text":"partial"}\n${grok}\n`, ""), false);
 });
 
 test("Grok reviews and Codex usage limits run through the shared shell entry using fake CLIs", (t) => {
