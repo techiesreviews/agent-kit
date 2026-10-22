@@ -487,6 +487,8 @@ function sessionObserver(adapter, update) {
 
 async function invokeAgent(adapter, args, descriptor, context) {
   const { options, limit, logPath, log, output, messages, update } = context;
+  const previousCalls = context.calls ?? 0;
+  context.calls = previousCalls + 1;
   const previous = Object.fromEntries(Object.keys(adapter.env ?? {}).map(key => [key, process.env[key]]));
   try {
     Object.assign(process.env, adapter.env);
@@ -503,8 +505,11 @@ async function invokeAgent(adapter, args, descriptor, context) {
     // The CLI's own failure is the cause; executeRun reports it after its consequences.
     if (status === 124) context.cause = `problem: agent exceeded timeout=${limit}; process group killed; see ${logPath}`;
     else if (status) {
-      context.cause = usageLimitProblem(slice, options.cli) ?? usageLimitProblem(result.stdout ?? "", options.cli) ??
-        `problem: ${adapter.command} failed (${status}); see ${logPath}`;
+      const refused = usageLimitProblem(slice, options.cli) ?? usageLimitProblem(result.stdout ?? "", options.cli);
+      context.cause = refused ?? `problem: ${adapter.command} failed (${status}); see ${logPath}`;
+      // A refusal only refunds a review whose first call never ran. A completed
+      // first call already spent the review, even when its retry is refused.
+      if (refused && !previousCalls) update({ refused: true });
     }
     try {
       const report = adapter.finish(result.stdout, slice);
@@ -554,7 +559,7 @@ async function executeRun(options, out, previous, update, brief) {
       // Grok reports no sessionId in some results; fall back to the id passed with -s.
       // Claude still retries only when its result names the session it started.
       const session = recordedSession(adapter, result.stdout, readFileSync(logPath, "utf8")) ??
-        (options.cli === "grok" ? options.sessionId ?? previous?.session : undefined);
+        (options.cli === "grok" ? previous?.session ?? options.sessionId : undefined);
       if (session) {
         writeFileSync(inputPath, "Your reply must start with the line REVIEW_STATUS: complete. Send the full review again in the required format.\n");
         const retryInput = openSync(inputPath, "r");

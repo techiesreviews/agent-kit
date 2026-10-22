@@ -104,11 +104,11 @@ async function review(args) {
     try {
       // A review whose CLI never started (empty diff) is not counted; the runner
       // records the process group as soon as the CLI spawns. A provider usage-limit
-      // refusal spent no review, so it gives the slot back even after the CLI started.
+      // refusal on the first call spent no review, so it gives the slot back; the
+      // runner marks only that call, since a completed first call already spent it.
       const run = temporary && join(temporary, "status.json");
-      const started = Boolean(run && existsSync(run) && JSON.parse(readFileSync(run, "utf8")).pgid);
-      const refused = /^[a-z]+ usage limit until /m.test([...stderr.matchAll(/^problem: (.+)$/gm)].at(-1)?.[1] ?? "");
-      if (budget && (!started || refused)) releaseReviewBudget(ledger, budget, env);
+      const record = run && existsSync(run) ? JSON.parse(readFileSync(run, "utf8")) : {};
+      if (budget && (!record.pgid || record.refused === true)) releaseReviewBudget(ledger, budget, env);
     } catch (error) { console.error(`problem: releasing review budget failed: ${error.message}`); }
     try {
       const saved = [["out.md", "result.md"], ["run.log", "run.log"], ["diff.patch", "diff.patch"], ["refs.txt", "refs.txt"]]

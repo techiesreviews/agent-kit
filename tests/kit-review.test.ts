@@ -42,19 +42,26 @@ if (process.env.FAKE_ROTATE && symlink && cli === "codex") {
 }
 const resumed = args.includes("resume") || args.includes("--resume");
 const mode = process.env.FAKE_MODE || "pass";
-const report = mode === "empty-pass" && !resumed ? "" : mode === "retry-fail" || mode === "no-session" || (mode === "retry-pass" && !resumed) || mode === "retry-model" ? "incomplete reply\\n" : ${JSON.stringify(complete)};
-const model = mode === "retry-model" && resumed ? "wrong-model" : args[args.indexOf(cli === "codex" ? "-m" : "--model") + 1];
+const report = mode === "empty-pass" && !resumed ? "" : mode === "retry-fail" || mode === "no-session" || (mode === "retry-pass" && !resumed) || mode === "retry-model" || (mode === "retry-usage-limit" && !resumed) ? "incomplete reply\\n" : ${JSON.stringify(complete)};
+const model = mode === "retry-model" && resumed ? "wrong-model" : args[args.indexOf(cli === "claude" ? "--model" : "-m") + 1];
 if (cli === "codex") {
   if (!(process.env.FAKE_NO_RETRY_MODEL && resumed)) console.error("model: " + model);
   if (mode !== "no-session") console.error("session id: ${session}");
   console.error("call: " + (calls + 1));
-  if (mode === "usage-limit") {
+  if (mode === "usage-limit" || (mode === "retry-usage-limit" && resumed)) {
     console.error("ERROR: You've hit your usage limit. Upgrade to Pro, or try again at Oct 25th, 2026 3:14 PM.");
     process.exit(1);
   }
   if (!(mode === "missing-pass" && !resumed)) writeFileSync(args[args.indexOf("-o") + 1], report);
 } else {
-  console.log(JSON.stringify({ ...(mode === "missing-pass" && !resumed ? {} : { result: report }), modelUsage: { [model]: {} }, ...(mode === "no-session" ? {} : { session_id: "${session}" }) }));
+  // Grok prints its refusal on stdout, not stderr.
+  if (mode === "usage-limit") {
+    console.log("You've hit your usage limit. Try again at 9:00 AM.");
+    process.exit(1);
+  }
+  const answer = cli === "grok" ? { text: report } : { result: report };
+  const named = cli === "grok" ? { sessionId: "${session}" } : { session_id: "${session}" };
+  console.log(JSON.stringify({ ...(mode === "missing-pass" && !resumed ? {} : answer), modelUsage: { [process.env.FAKE_RESULT_MODEL || model]: {} }, ...(mode === "no-session" ? {} : named) }));
 }
 process.exitCode = Number(process.env.FAKE_EXIT || 0);
 `;
@@ -419,6 +426,48 @@ test("kit review gives the budget back when the provider refuses on a usage limi
   assert.equal(refused.status, 1);
   assert.match(refused.stderr, /^problem: gpt usage limit until Oct 25th, 2026 3:14 PM$/m);
   assert.deepEqual(counts(), { gpt: 1 });
+});
+
+test("kit review keeps the spent review when only the completeness retry is refused", (t) => {
+  const f = fixture(t);
+  const ledger = join(f.main, ".scratch/review-budget.json");
+  const counts = () => Object.values(JSON.parse(readFileSync(ledger, "utf8")))[0];
+  const first = f.run(["--base", "HEAD~1"], { ASE_REVIEW_BUDGET_GPT: "2" });
+  assert.equal(first.status, 0, first.stderr);
+  assert.deepEqual(counts(), { gpt: 1 });
+  const refused = f.run(["--base", "HEAD~1"], { ASE_REVIEW_BUDGET_GPT: "2", FAKE_MODE: "retry-usage-limit" });
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /^problem: gpt usage limit until Oct 25th, 2026 3:14 PM$/m);
+  assert.match(refused.stderr, /result lacks REVIEW_STATUS: complete/);
+  assert.equal(f.calls().length, 3);
+  assert.deepEqual(counts(), { gpt: 2 });
+});
+
+test("kit review gives the budget back when Grok prints its refusal on stdout", (t) => {
+  const f = fixture(t);
+  const grok = join(f.dir, "bin", "grok");
+  writeFileSync(grok, fake); chmodSync(grok, 0o755);
+  const ledger = join(f.main, ".scratch/review-budget.json");
+  const counts = () => Object.values(JSON.parse(readFileSync(ledger, "utf8")))[0];
+  const first = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "grok-4.7", ASE_REVIEW_BUDGET_GROK: "2" });
+  assert.equal(first.status, 0, first.stderr);
+  assert.deepEqual(counts(), { grok: 1 });
+  const refused = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "grok-4.7", ASE_REVIEW_BUDGET_GROK: "2", FAKE_MODE: "usage-limit" });
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /^problem: grok usage limit until 9:00 AM$/m);
+  assert.deepEqual(counts(), { grok: 1 });
+});
+
+test("uppercase GROK-4.7 selects Grok, its budget and the build variant end to end", (t) => {
+  const f = fixture(t);
+  const grok = join(f.dir, "bin", "grok");
+  writeFileSync(grok, fake); chmodSync(grok, 0o755);
+  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "GROK-4.7", FAKE_RESULT_MODEL: "grok-4.7-build", ASE_REVIEW_BUDGET_GROK: "2" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^budget: grok 1\/2 in /m);
+  assert.equal(f.calls()[0].cli, "grok");
+  const ledger = JSON.parse(readFileSync(join(f.main, ".scratch/review-budget.json"), "utf8"));
+  assert.deepEqual(Object.values(ledger)[0], { grok: 1 });
 });
 
 test("kit review gives the budget back when the Grok CLI is missing", (t) => {
