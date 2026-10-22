@@ -214,6 +214,7 @@ for (const cli of ["codex", "claude"]) test(`dead ${cli} build resumes with save
     assert.equal(existsSync(temporary), false);
   } else {
     assert.deepEqual(call.args, ["-p", "--model", "claude-opus-5-5", "--effort", "high", "--permission-mode", "acceptEdits",
+      "--allowedTools", "Bash", "--disallowedTools", "Task,Agent",
       "--add-dir", f.git("rev-parse", "--path-format=absolute", "--git-common-dir"), "--output-format", "json", "--resume", session]);
   }
   assert.equal(readFileSync(join(f.out, "out.md"), "utf8"), "old report\n" + report);
