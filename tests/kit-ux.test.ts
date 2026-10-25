@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
+import { screens } from "../scripts/agents/shots/core";
 
 const script = resolve("scripts/agents/kit.d/ux"), kit = resolve("scripts/agents/kit");
 // Node loads this extensionless executable as ESM; a URL keeps tsx from resolving it as TS.
@@ -20,6 +21,7 @@ type LayoutTry = { dir: string; index: { screens: { screen: string; width: numbe
 type Layout = { tap: boolean; rule: string; screen: string; kind: string; selector: string; detail: string; sizes: string[]; shot: string };
 type Ux = {
   bundleLimit: number;
+  screenFiles: Record<string, string[]>;
   parseArgs(args: string[]): { base: string; features: string[]; all: boolean; noReview: boolean; ticket?: string };
   parseFeatures(markdown: string): Feature[];
   touchedFeatures(features: Feature[], changed: string[]): Feature[];
@@ -45,7 +47,7 @@ const featuresMarkdown = [
   "# Feature list", "", "```", "### F-bar-99 Inside a fence", "- Files: `src/a.ts`", "```", "", "## Media and the image popup", "",
   entry("F-media-01", ["src/page-builder/media-library-view.ts", "src/page-builder/media-picker.css"], { steps: "scripts/agents/shots/features/F-media-01.json", good: "Plain (S2, L2)." }),
   entry("F-media-02", ["src/page-builder/media-library-filter.ts"]),
-  entry("F-media-03", ["src/page-builder/media-adding-*.ts"], { phone: "no" }),
+  entry("F-media-03", ["src/page-builder/media-adding-*.ts"], { phone: "no", steps: "scripts/agents/shots/features/F-media-03.json" }),
 ].join("\n");
 
 test("features parse outside fences, and a diff touches the features whose Files globs match", () => {
@@ -67,13 +69,17 @@ test("features parse outside fences, and a diff touches the features whose Files
   assert.throws(() => ux.selectFeatures(features, [], { features: ["F-media-09"] }), /unknown feature: F-media-09/);
   assert.deepEqual(ux.screensFor(features[0]), ["media-gallery"]);
   assert.deepEqual(ux.screensFor(features[2]), []);
+  assert.deepEqual(Object.keys(ux.screenFiles).sort(), [...screens].sort(), "every kit shots screen maps to its files");
 });
 
 test("flags: --all and --features exclude each other, ids are checked and values required", () => {
   assert.deepEqual(ux.parseArgs([]), { base: "origin/dev", features: [], all: false, noReview: false, ticket: undefined });
   assert.deepEqual(ux.parseArgs(["--features", "F-media-01,F-pages-08,F-media-01", "--base", "dev", "--no-review"]).features, ["F-media-01", "F-pages-08"]);
   assert.equal(ux.parseArgs(["--all"]).all, true);
-  for (const args of [["--all", "--features", "F-media-01"], ["--features", "media"], ["--features"], ["--base"], ["--all", "--all"], ["--nope"]]) assert.throws(() => ux.parseArgs(args), args.join(" "));
+  for (const [args, message] of [
+    [["--all", "--features", "F-media-01"], /--all and --features exclude each other/], [["--features", "media"], /--features takes F-<area>-<nn> ids/],
+    [["--features"], /missing value for --features/], [["--base"], /missing value for --base/], [["--all", "--all"], /repeated flag: --all/], [["--nope"], /unknown argument: --nope/],
+  ] satisfies [string[], RegExp][]) assert.throws(() => ux.parseArgs(args), message, args.join(" "));
 });
 
 const fixtureDiff = `diff --git a/src/components/panel.ts b/src/components/panel.ts
@@ -113,6 +119,11 @@ test("text added and badge or hint classes are found on a fixture diff, with fil
   // A lookup of an existing class, or a CSS selector the base already had, is not a new class.
   const lookups: Added[] = [{ file: "src/components/panel.ts", line: 3, text: 'const count = el.querySelector(".media-count");' }, { file: "src/a.css", line: 2, text: ".media-count, .new-badge { gap: 0; }" }];
   assert.deepEqual(ux.textFindings(lookups, new Map([["src/a.css", ".media-count { gap: 1px; }"]])), [{ rule: "S2", file: "src/a.css", line: 2, text: 'new count or badge class "new-badge"' }]);
+  // A re-edited script line keeps its class and prose from the base: neither is new.
+  const prose = "Drag a file here, or press the plus button to choose files from your computer.";
+  const edited: Added[] = [{ file: "src/b.ts", line: 4, text: `pill.className = "panel__count"; pill.title = "${prose}";` }];
+  assert.deepEqual(ux.textFindings(edited, new Map([["src/b.ts", `badge.className = "panel__count";\nbadge.title = "${prose}";`]])), []);
+  assert.equal(ux.textFindings(edited).length, 2, "without the base both count as new");
 });
 
 test("layout findings merge across themes, keep tap targets at 390 apart and link the PNG", () => {
@@ -202,7 +213,7 @@ function fixture(t: TestContext, gitConfig: [string, string][] = []) {
   git("add", "."); git("commit", "--quiet", "-m", "base");
   git("update-ref", "refs/remotes/origin/dev", "HEAD");
   // The fake kit shots writes one shot per width and theme, a contact sheet and a strip; FAIL_STEP fails every shot,
-  // FAIL_EXIT_ONLY exits 1 from a screens run whose shots all passed, and SLEEP keeps it running.
+  // BIG_STRIP makes the strip 300,001 bytes, FAIL_EXIT_ONLY exits 1 from a screens run whose shots all passed, and SLEEP keeps it running.
   put(".scratch/shots.mjs", `#!${process.execPath}
 import { appendFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -215,7 +226,7 @@ const fail = process.env.FAIL_STEP;
 const shots = screens.flatMap(screen => widths.flatMap(width => ["light", "dark"].map(theme => ({ screen, width, theme, ok: !fail, attempts: 1,
   failures: fail ? [{ attempt: 1, step: fail, error: fail + " failed: nothing visible says \\"Nowhere\\"\\nCall log" }] : [],
   files: fail ? [] : [{ path: screen + "-" + width + "-" + theme + ".png", bytes: 9 }], layout: [] }))));
-const files = [...shots.flatMap(shot => shot.files), { path: "contact.webp", bytes: 4 }, ...args[0] === "--steps" ? [{ path: "media-gallery-1280-light-search-strip.webp", bytes: 4 }] : []];
+const files = [...shots.flatMap(shot => shot.files), { path: "contact.webp", bytes: 4 }, ...args[0] === "--steps" ? [{ path: "media-gallery-1280-light-search-strip.webp", bytes: process.env.BIG_STRIP ? 300_001 : 4 }] : []];
 for (const file of files) writeFileSync(join(out, file.path), "webp");
 const layoutFindings = fail ? [] : [{ screen: screens[0], width: widths[0], theme: "light", finding: { kind: "tap-target", selector: "button.tiny", text: "", detail: "20x20 px" } }];
 writeFileSync(join(out, "index.json"), JSON.stringify({ version: 1, screens: shots, files, failures: [], outputFailures: [], layoutFindings }));
@@ -245,10 +256,12 @@ test("kit ux tries touched features, runs scripted checks and writes a bounded b
   const { root, put, run, calls } = fixture(t);
   put("src/page-builder/media-picker.css", ".a { gap: var(--space); }\n.media__badge { gap: 6px; color: #fff; }\n");
   put("src/page-builder/media-library-filter.ts", 'export const note = "Choose a filter to see only the pictures, videos or documents you need today.";\n');
+  // Untracked: never added to git, still part of the diff.
+  put("src/page-builder/media-library-view.ts", 'export const empty = "Your media library is empty until you add a picture, a video or a document.";\n');
   const output = run();
   assert.equal(output.status, 0, output.stderr + output.stdout);
   const bundle = /bundle (\S+)$/.exec(output.result)![1];
-  assert.match(output.result, /^RESULT: ok ux 1 features tried, 5 scripted findings, bundle /);
+  assert.match(output.result, /^RESULT: ok ux 1 features tried, 6 scripted findings, bundle /);
   assert.ok(bundle.startsWith(join(root, ".scratch/ux/ux-test/")));
   assert.deepEqual(calls().map((args: string[]) => args.join(" ").replace(root, "<root>").replace(/--out \S+/, "--out <dir>")), [
     "--steps <root>/scripts/agents/shots/features/F-media-01.json --width 390,1280 --out <dir>",
@@ -259,6 +272,8 @@ test("kit ux tries touched features, runs scripted checks and writes a bounded b
   for (const line of [
     "- F-media-01 Feature F-media-01: passed (scripts/agents/shots/features/F-media-01.json)",
     "- F-media-02 Feature F-media-02: untried (screens media-gallery)",
+    "- **F-media-01 Feature F-media-01** (src/page-builder/media-picker.css, src/page-builder/media-library-view.ts)",
+    "- S1 src/page-builder/media-library-view.ts:1: new visible text",
     "  - Good: Plain (S2, L2).",
     "- **S2** No counts or badges.",
     "- mock-up: docs/w/build/mockups/panel.html",
@@ -281,8 +296,9 @@ test("kit ux with --features tries only those, and a failed try names the featur
   assert.match(output.stdout, /try F-media-01: failed: media-gallery 390 light: step expect visible "Nowhere" failed: expect visible "Nowhere" failed: nothing visible says "Nowhere"/);
   assert.equal(calls().length, 1);
   const all = run(["--all"]);
-  assert.match(all.result, /^RESULT: ok ux 1 features tried, 1 scripted findings, /);
-  assert.deepEqual(calls().slice(1).map((args: string[]) => args[0]), ["--steps", "media-gallery"], "F-media-03 maps to no screen");
+  assert.match(all.result, /^RESULT: ok ux 2 features tried, 2 scripted findings, /);
+  assert.deepEqual(calls().slice(1).map((args: string[]) => args.slice(0, 2).join(" ").replace(/\S+features\//, "")), ["--steps F-media-01.json", "--steps F-media-03.json", "media-gallery --width"]);
+  assert.deepEqual(calls()[2].slice(2, 4), ["--width", "1280"], "Phone: no tries 1280 only");
   const bad = run(["--features", "F-media-09"]);
   assert.equal(bad.status, 1);
   assert.equal(bad.result, "RESULT: fail ux unknown feature: F-media-09");
@@ -324,4 +340,14 @@ test("kit ux reads added lines whatever the diff prefix settings", async t => {
       assert.match(readFileSync(join(bundle, "bundle.md"), "utf8"), /- S1 src\/page-builder\/media-library-filter\.ts:1: new visible text, 77 characters/);
     });
   }
+});
+
+test("kit ux names an image it trimmed and leaves it out of the bundle", t => {
+  const { run } = fixture(t);
+  const output = run(["--features", "F-media-01"], { BIG_STRIP: "1" });
+  assert.equal(output.status, 0, output.stderr);
+  assert.match(output.stdout, /^trimmed images: 1 \(over 300 KB\)$/m);
+  const bundle = /bundle (\S+)$/.exec(output.result)![1];
+  assert.match(readFileSync(join(bundle, "bundle.md"), "utf8"), /^- trimmed F-media-01-media-gallery-1280-light-search-strip\.webp \(over 300 KB\): \S+$/m);
+  assert.deepEqual(readdirSync(bundle).filter(name => name.endsWith(".webp")), ["F-media-01-contact.webp"]);
 });

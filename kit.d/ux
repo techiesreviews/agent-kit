@@ -22,9 +22,9 @@ to, marked untried.
 Scripted checks: layout findings, tap targets under 44 px at 390, raw colours in changed
 CSS, new visible text over 60 characters, new hint/tip/count/badge class names, and raw px
 spacing and timings in changed CSS counted against the base (reported, never blocking).
-Bundle: <main root>/.scratch/ux/<owner>/<time>/bundle.md (under 60 KB) and at most 12
+Bundle: <main root>/.scratch/ux/<owner>/<time>-XXXXXX/bundle.md (under 60 KB) and at most 12
 images of at most 300 KB (contact sheets and record strips); the lowest-value items are
-trimmed first and named. Raw tries: <main root>/.scratch/ux-tries/<owner>/<time>/.
+trimmed first and named. Raw tries: <main root>/.scratch/ux-tries/<owner>/<time>-XXXXXX/ (same name).
 The ticket (for its mock-up link) is --ticket, else the ticket the branch name ends with.
 The model review is not part of this command yet; --no-review is accepted and changes nothing.
 KIT_UX_SHOTS: executable replacing kit shots, called with the same arguments (tests).
@@ -165,11 +165,11 @@ function visibleText(text) {
 
 /**
  * "Say less" checks on added source lines: long visible text (S1) and hint, tip, count or badge classes (S1, S2).
- * `bases` maps a CSS file to its base text; a selector the base already had is not new.
+ * `bases` maps a file to its base text; a class name or prose string the base already had is not new.
  */
 export function textFindings(added, bases = new Map()) {
   const findings = [];
-  const known = new Map([...bases].map(([file, text]) => [file, new Set(cssClasses(text))]));
+  const known = new Map([...bases].map(([file, text]) => [file, new Set(text.split("\n").flatMap(line => classNames(file, line)))]));
   for (const { file, line, text } of added) {
     if (!/^(src|shared)\//.test(file) || /\.test\.|\.spec\./.test(file)) continue;
     if (/\.(ts|js|mjs|html|css)$/.test(file)) {
@@ -182,7 +182,7 @@ export function textFindings(added, bases = new Map()) {
     if (!/\.(ts|js|mjs|html)$/.test(file) || /^\s*(\/\/|\/?\*)/.test(text)) continue;
     const candidates = [...text.matchAll(/(["'`])((?:\\.|(?!\1)[^\\])*)\1/g)].map(match => match[2]);
     if (file.endsWith(".html") || /<[a-z][^>]*>/i.test(text)) candidates.push(text);
-    for (const prose of new Set(candidates.flatMap(visibleText))) findings.push({ rule: "S1", file, line, text: `new visible text, ${prose.length} characters: "${shorten(prose)}"` });
+    for (const prose of new Set(candidates.flatMap(visibleText))) if (!bases.get(file)?.includes(prose)) findings.push({ rule: "S1", file, line, text: `new visible text, ${prose.length} characters: "${shorten(prose)}"` });
   }
   return findings;
 }
@@ -346,7 +346,7 @@ async function main() {
     let mergeBase;
     try { mergeBase = git("merge-base", "HEAD", flags.base).trim(); }
     catch { throw new Error(`no merge-base with ${flags.base}`); }
-    const untracked = git("ls-files", "--others", "--exclude-standard").split("\n").filter(Boolean);
+    const untracked = git("-c", "core.quotePath=false", "ls-files", "--others", "--exclude-standard").split("\n").filter(Boolean);
     const changed = [...new Set([...git("-c", "core.quotePath=false", "diff", "--name-only", mergeBase).split("\n").filter(Boolean), ...untracked])];
     const features = parseFeatures(readFileSync(join(root, "docs/agents/features.md"), "utf8"));
     const selected = selectFeatures(features, changed, flags);
@@ -407,7 +407,11 @@ async function main() {
     const colours = checkColours(coloured.map(({ file, text }) => ({ file, text })), allow.filter(entry => coloured.some(({ file }) => file === entry.file)))
       .map(failure => ({ rule: "L2", file: failure.file, line: failure.line, text: `raw colour ${failure.match}` }));
     const layout = layoutFindings(tries);
-    const sourceFindings = [...colours, ...textFindings(added, new Map(css.map(({ file, base }) => [file, base]))), ...cssFindings(css, added)];
+    // Base text of each changed source file, so moved or re-edited lines are not counted as new.
+    const bases = new Map([...new Set(added.map(entry => entry.file))].map(file => {
+      try { return [file, git("show", `${mergeBase}:${file}`)]; } catch { return [file, ""]; }
+    }));
+    const sourceFindings = [...colours, ...textFindings(added, bases), ...cssFindings(css, added)];
     const findingLines = [
       ...layout.filter(entry => entry.tap).map(entry => `- U6 tap target under 44 px at 390: ${entry.selector} — ${entry.detail} (${entry.screen}; ${entry.sizes.join(", ")}) ${entry.shot}`),
       ...layout.filter(entry => !entry.tap).map(entry => `- ${entry.rule} layout ${entry.kind}: ${entry.selector} — ${entry.detail} (${entry.screen}; ${entry.sizes.join(", ")}) ${entry.shot}`),
@@ -428,7 +432,7 @@ async function main() {
     // Bundle.
     const branch = git("branch", "--show-current").trim() || "detached";
     const head = git("rev-parse", "--short", "HEAD").trim();
-    const tracked = git("ls-files").split("\n");
+    const tracked = git("-c", "core.quotePath=false", "ls-files").split("\n");
     const ticket = flags.ticket ?? guessTicket(branch, tracked);
     let mockups = [];
     if (ticket) {
@@ -458,18 +462,24 @@ async function main() {
       { title: "Touched features", priority: 7, lines: selected.flatMap(feature => [`- **${feature.id} ${feature.name}**${feature.matched ? ` (${feature.matched.join(", ")})` : ""}`, `  - Try: ${feature.try}`, `  - Good: ${feature.good}`]) },
       { title: "Scripted findings", priority: 6, lines: findingLines },
       { title: "Rules cited", priority: 5, lines: rules.filter(rule => rulebook.has(rule)).map(rule => `- **${rule}** ${rulebook.get(rule)}`) },
-      { title: "Diff summary", priority: 1, lines: [...git("diff", "--stat=120", mergeBase).split("\n").filter(Boolean), ...untracked.map(file => `${file} | new, untracked`)].map(line => `    ${line.trim()}`) },
+      { title: "Diff summary", priority: 1, lines: [...git("diff", "--no-color", "--no-ext-diff", "--stat=120", mergeBase).split("\n").filter(Boolean), ...untracked.map(file => `${file} | new, untracked`)].map(line => `    ${line.trim()}`) },
     ]);
     writeFileSync(join(out, "bundle.md"), markdown);
     console.log(`bundle: ${join(out, "bundle.md")} (${Buffer.byteLength(markdown)} bytes, ${kept.length} images)`);
     if (trimmed.length) console.log(`trimmed: ${trimmed.join(", ")}`);
     if (trimmedImages.length) console.log(`trimmed images: ${trimmedImages.length} (${[...new Set(trimmedImages.map(image => image.reason))].join(", ")})`);
+    // Let a signal that arrived during the synchronous work above reach its handler first.
+    await new Promise(resolve => setImmediate(resolve));
+    stopIfInterrupted();
     const failed = [...broken.length ? [`broken: ${broken.map(feature => feature.id).join(", ")}`] : [], ...screensFailed.length ? [`screens failed: ${screensFailed.join(", ")}`] : []];
     kitResult(failed.length ? "fail" : "ok", [`ux ${tried.length} features tried, ${findingLines.length} scripted findings, bundle ${out}`, ...failed].join(", "));
     return failed.length ? 1 : 0;
   } catch (error) {
-    console.error(`problem: ${error.message}`);
-    kitResult("fail", `ux ${error.message}`);
+    // A terminal signal also kills a running git child; report the signal, not the git error.
+    await new Promise(resolve => setImmediate(resolve));
+    const message = running.signal ? `interrupted by ${running.signal}` : error.message;
+    console.error(`problem: ${message}`);
+    kitResult("fail", `ux ${message}`);
     return running.signal ? signalStatus[running.signal] : 1;
   } finally { for (const [signal, handler] of handlers) process.off(signal, handler); }
 }
