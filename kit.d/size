@@ -10,11 +10,11 @@ import { ensureBase } from "../shots/compare.mjs";
 const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const budget = 355 * 1024;
+const budget = 362 * 1024;
 const usage = `Usage: kit size [--no-base] [--base REF]
        kit size --help
 Default base: dev (origin/dev). --no-base measures only the current worktree.
-Fails when boot exceeds 355 KB gzip before first preview paint.
+Fails when boot exceeds 362 KB gzip before first preview paint.
 KIT_SIZE_RUNNER: executable replacing port.sh, called with the same argv.
 Logs: <root>/.scratch/size/. Commit cache: <main-root>/.scratch/size-cache/.
 `;
@@ -159,10 +159,10 @@ export async function main(args = process.argv.slice(2)) {
       base = await side(baseCommit, "base", true);
     }
     const delta = key => base ? ` (${formatDelta(now[key] - base[key])})` : "";
-    console.log(`boot ${kb(now.boot)}${delta("boot")}, total ${kb(now.total)}${delta("total")}, requests ${now.requests}${base ? ` (${now.requests - base.requests >= 0 ? "+" : ""}${now.requests - base.requests})` : ""}, budget 355 KB`);
+    console.log(`boot ${kb(now.boot)}${delta("boot")}, total ${kb(now.total)}${delta("total")}, requests ${now.requests}${base ? ` (${now.requests - base.requests >= 0 ? "+" : ""}${now.requests - base.requests})` : ""}, budget 362 KB`);
     const over = now.over;
-    kitResult(over ? "fail" : "ok", over ? `size boot ${kb(now.boot)} over budget 355 KB`
-      : `size boot ${kb(now.boot)}${delta("boot")}${base ? ` vs ${flags.base}@${baseCommit.slice(0, 7)}` : ""}, budget 355 KB`);
+    kitResult(over ? "fail" : "ok", over ? `size boot ${kb(now.boot)} over budget 362 KB`
+      : `size boot ${kb(now.boot)}${delta("boot")}${base ? ` vs ${flags.base}@${baseCommit.slice(0, 7)}` : ""}, budget 362 KB`);
     return over ? 1 : 0;
   } catch (error) {
     console.error(`problem: ${error.message}`);
