@@ -209,8 +209,8 @@ async function main(args) {
     if (plan.tier === "css") console.log("reminder: visible CSS changes need kit shots evidence");
     step = "features";
     // Releases carry slices that each passed the guard on their way into dev.
-    const ticketText = flags.ticket ? readFileSync(resolve(root, flags.ticket), "utf8") : "";
-    const features = flags.release ? { ok: true } : featureListGuard(changes, { ticketText, waive: flags.waive });
+    const features = flags.release ? { ok: true }
+      : featureListGuard(changes, { ticketText: flags.ticket ? readFileSync(resolve(root, flags.ticket), "utf8") : "", waive: flags.waive });
     if (features.line) console.log(features.line);
     if (!features.ok) {
       console.error(`problem: ${featureListProblem}`);
@@ -374,13 +374,17 @@ async function main(args) {
       kitResult("ok", `opened #${number} ${head.slice(0, 7)}`);
       return 0;
     }
+    // A lead's waiver of the feature-list guard is recorded like waived review findings.
+    const featuresWaived = features.line?.startsWith("Feature list: waived");
+    const waivedAny = () => waived || featuresWaived ? flags.waive : null;
     async function recordWaiver() {
-      if (!waived) return;
+      if (!waivedAny()) return;
       const reason = flags.waive.replace(/[\r\n]+/g, " ");
-      appendFileSync(body, `\nmerged with ${waived} waived findings: ${reason}\n`);
+      const what = [waived && `with ${waived} waived findings`, featuresWaived && "without a feature-list update"].filter(Boolean).join(" and ");
+      appendFileSync(body, `\nmerged ${what}: ${reason}\n`);
       await gh("waiver", ["api", "--method", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "-F", `body=@${body}`]);
       const comment = join(directory, "waiver.md");
-      writeFileSync(comment, `Merged with ${waived} waived findings: ${reason}`);
+      writeFileSync(comment, `Merged ${what}: ${reason}`);
       await gh("waiver", ["pr", "comment", number, "--body-file", comment]);
     }
     const repo = await gh("merge", ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]);
@@ -391,7 +395,7 @@ async function main(args) {
     if (queue.status === 0 && queue.text.trim()) {
       await gh("merge", ["pr", "merge", number, "--auto", "--rebase", "--match-head-commit", head, "--repo", repo]); ok("merge");
       await recordWaiver();
-      land({ queued: true, waived: waived ? flags.waive : null });
+      land({ queued: true, waived: waivedAny() });
       kitResult("ok", `queued #${number} ${head.slice(0, 7)}`);
       return 0;
     }
@@ -405,7 +409,7 @@ async function main(args) {
         const sha = commit.status === 0 && /^[a-f0-9]{40}$/i.test(commit.text.trim()) ? commit.text.trim() : head;
         ok("merge");
         await recordWaiver();
-        land({ sha, at: new Date().toISOString(), waived: waived ? flags.waive : null });
+        land({ sha, at: new Date().toISOString(), waived: waivedAny() });
         kitResult("ok", `merged #${number} ${sha.slice(0, 7)}`);
         return 0;
       }

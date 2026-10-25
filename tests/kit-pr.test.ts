@@ -763,6 +763,27 @@ test("a missing --ticket file fails at the features step before push", t => {
   assert.equal(f.calls().some(call => call.tool === "gh"), false);
 });
 
+test("a feature-list waiver at merge goes in a PR comment, the body and the scoreboard, beside waived findings", t => {
+  const css = { "src/styles/app.css": "a { color: var(--ink); }\n" };
+  const f = fixture(t, css), result = f.run(["--waive", "Lead accepts"], { ASE_OWNER: "ke-lead" });
+  assert.equal(result.status, 0, result.stdout + result.stderr); assert.match(result.stdout, /RESULT: ok merged #73/);
+  assert.equal(f.ghCalls("comment").at(-1)?.body, "Merged without a feature-list update: Lead accepts");
+  assert.match(f.apiCalls().at(-1)?.body ?? "", /\nmerged without a feature-list update: Lead accepts\n$/);
+  const record = join(f.main, ".scratch/scoreboard/_untracked/feature%2Fkit-pr.json");
+  assert.equal(JSON.parse(readFileSync(record, "utf8")).landed.waived, "Lead accepts");
+  const both = fixture(t, css), report = "REVIEW_STATUS: complete\nDefects:\n- Spec: A defect.\n";
+  const merged = both.run(["--waive", "Lead accepts"], { ASE_OWNER: "ke-lead", FAKE_REVIEW: report, FAKE_QUEUE: "1" });
+  assert.equal(merged.status, 0, merged.stdout + merged.stderr); assert.match(merged.stdout, /RESULT: ok queued #73/);
+  assert.equal(both.ghCalls("comment").at(-1)?.body, "Merged with 1 waived findings and without a feature-list update: Lead accepts");
+  assert.equal(JSON.parse(readFileSync(join(both.main, ".scratch/scoreboard/_untracked/feature%2Fkit-pr.json"), "utf8")).landed.waived, "Lead accepts");
+});
+
+test("a release with a missing --ticket skips the guard's read and fails at the body step", t => {
+  const f = fixture(t, { "src/styles/app.css": "a { color: var(--ink); }\n" });
+  const result = f.run(["--release", "--base", "main", "--dry-run", "--ticket", "missing.md"]);
+  assert.equal(result.status, 1); assert.match(result.stdout, /RESULT: fail body: .*ENOENT/);
+});
+
 test("a release skips the feature-list guard: its slices passed it on the way into dev", t => {
   const f = fixture(t, { "src/styles/app.css": "a { color: var(--ink); }\n" }), result = f.run(["--release", "--base", "main", "--dry-run"]);
   assert.equal(result.status, 0, result.stdout + result.stderr); assert.match(result.stdout, /RESULT: ok dry-run [a-f0-9]{7} feature\/kit-pr -> main/);
