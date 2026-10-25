@@ -7,7 +7,8 @@ import { kitMainRoot, kitResult } from "../kit-lib.mjs";
 
 const usage = `Usage: kit heartbeat <map> [--start]
 One check-in while a build runs, for the lead's 30-minute T3 schedule (docs/agents/kitchen.md station 5).
-Reads the <map> slice jobs (kit bg slice-* jobs whose --ticket is in docs/wayfinder/<map>/) of every worktree
+Reads the <map> slice jobs (kit bg slice-* jobs with a --ticket in docs/wayfinder/<map>/; a group job
+(kit next --run-group) has one per ticket and its lines add tickets=<a>,<b>) of every worktree
 and prints, in order: finished: jobs not reported before (exit and last RESULT:; merged: and preview:
 lines for the lead's kit preview step), running: jobs (age, log growth since the last heartbeat),
 stuck: jobs (no log written for 45 minutes), then kit next <map> (--start passed through; killed
@@ -87,8 +88,9 @@ function jobs(map) {
       if (!log || !name.startsWith("slice-")) continue;
       const directory = join(worktree, ".scratch/kit-jobs", name);
       const words = unquote(read(join(directory, "command")));
-      const ticket = words.includes("--ticket") ? words[words.indexOf("--ticket") + 1] ?? "" : "";
-      if (!ticket.startsWith(`docs/wayfinder/${map}/`) && !ticket.includes(`/docs/wayfinder/${map}/`)) continue;
+      // A group job (kit next --run-group) names each of its tickets with its own --ticket.
+      const tickets = words.flatMap((word, i) => word === "--ticket" && words[i + 1] ? [words[i + 1]] : []);
+      if (!tickets.some(ticket => ticket.startsWith(`docs/wayfinder/${map}/`) || ticket.includes(`/docs/wayfinder/${map}/`))) continue;
       const seconds = Number(/^(\d+)s$/.exec(age)?.[1] ?? NaN);
       // kit bg writes command, then started, then pid, so a job caught mid-launch lists as died (age
       // unknown before started exists): count it as running for its first minute rather than report
@@ -96,14 +98,16 @@ function jobs(map) {
       const launching = state === "died" && !existsSync(join(directory, "pid")) && (!Number.isFinite(seconds) || seconds < launchGraceSeconds);
       // kit slice keeps its phase logs under its worktree's .scratch/kit-slice/<ticket-slug>/.
       const cwd = read(join(directory, "cwd")) || worktree;
-      const slice = join(resolve(cwd, ".scratch/kit-slice"), basename(ticket, ".md"));
-      found.push({ name, state: launching ? "running" : state, age: seconds, log, slice, key: `${worktree}\t${name}\t${read(join(directory, "started"))}` });
+      const slices = tickets.map(ticket => join(resolve(cwd, ".scratch/kit-slice"), basename(ticket, ".md")));
+      // A group job's lines name its tickets as kit next does: tickets=<slug>,<slug>.
+      const label = tickets.length > 1 ? `${name} tickets=${tickets.map(ticket => basename(ticket, ".md")).join(",")}` : name;
+      found.push({ name, label, state: launching ? "running" : state, age: seconds, log, slices, key: `${worktree}\t${name}\t${read(join(directory, "started"))}` });
     }
   }
   return found;
 }
 
-// Total size and newest write of the job log and the slice's files, two folder levels deep
+// Total size and newest write of the job log and each of its slices' files, two folder levels deep
 // (phase logs, then builder/run.log).
 function activity(job) {
   let bytes = 0, written = null;
@@ -124,7 +128,7 @@ function activity(job) {
       else if (entry.isDirectory() && depth > 1) walk(join(directory, entry.name), depth - 1);
     }
   };
-  walk(job.slice, 2);
+  for (const slice of job.slices) walk(slice, 2);
   return { bytes, written };
 }
 
@@ -192,12 +196,16 @@ function main(args) {
 
   const done = [], merged = [];
   for (const job of finished) {
-    const result = tail(job.log).split(/\r?\n/).filter(line => line.startsWith("RESULT: ")).at(-1) ?? "";
+    const results = tail(job.log).split(/\r?\n/).filter(line => line.startsWith("RESULT: "));
+    const result = results.at(-1) ?? "";
     const exit = job.state.startsWith("exit ") ? job.state : `${job.state} (no exit record)`;
-    console.log(`finished: ${job.name} ${exit} ${result || "(no RESULT line)"}`);
-    const pr = /^RESULT: ok slice \S+ PR #(\d+) ([a-f\d]{7,40})$/.exec(result);
-    if (pr) merged.push({ job: job.name, pr: pr[1], sha: pr[2].slice(0, 7) });
-    done.push(pr ? `${job.name} merged (PR #${pr[1]})` : job.state === "exit 0" ? `${job.name} finished` : `${job.name} failed (${job.state})`);
+    console.log(`finished: ${job.label} ${exit} ${result || "(no RESULT line)"}`);
+    // A group job's log holds one slice RESULT per merged ticket, also when a later one failed.
+    const prs = results.map(line => /^RESULT: ok slice \S+ PR #(\d+) ([a-f\d]{7,40})$/.exec(line)).filter(Boolean);
+    for (const pr of prs) merged.push({ job: job.name, pr: pr[1], sha: pr[2].slice(0, 7) });
+    const numbers = prs.map(pr => `#${pr[1]}`).join(", ");
+    done.push(job.state === "exit 0" ? (prs.length ? `${job.name} merged (PR ${numbers})` : `${job.name} finished`)
+      : `${job.name} failed (${job.state})${prs.length ? ` after merging PR ${numbers}` : ""}`);
   }
   for (const item of merged) console.log(`merged: ${item.job} PR #${item.pr} ${item.sha}`);
   if (merged.length) console.log("preview: scripts/agents/kit preview (lead step; the heartbeat never deploys)");
@@ -209,11 +217,11 @@ function main(args) {
     const before = state.logs[job.key];
     const growth = typeof before === "number" ? `log +${size(Math.max(0, bytes - before))}` : `log ${size(bytes)} (first check)`;
     logs[job.key] = bytes;
-    console.log(`running: ${job.name} age ${Number.isFinite(job.age) ? duration(job.age * 1000) : "unknown"} ${growth}`);
+    console.log(`running: ${job.label} age ${Number.isFinite(job.age) ? duration(job.age * 1000) : "unknown"} ${growth}`);
     const quiet = now - (written ?? now - (Number.isFinite(job.age) ? job.age * 1000 : 0));
-    if (quiet >= stuckAfter) stuck.push({ job: job.name, quiet });
+    if (quiet >= stuckAfter) stuck.push({ job: job.name, label: job.label, quiet });
   }
-  for (const item of stuck) console.log(`stuck: ${item.job} log quiet ${duration(item.quiet)}`);
+  for (const item of stuck) console.log(`stuck: ${item.label} log quiet ${duration(item.quiet)}`);
 
   // Remember every finished job still on disk, so a later run never lists it again.
   const onDisk = new Set(all.map(job => job.key));
@@ -232,12 +240,16 @@ function main(args) {
   const ready = output.filter(line => line.startsWith("next: ")).length;
   const started = output.filter(line => line.startsWith("started: ")).length;
   const delegated = output.filter(line => line.startsWith("delegate: ")).length;
+  // A ticket waits as `waits: <file> <reason>`, a group as one item: `waits: group <slug> tickets=<a>,<b> <reason>`.
   const waits = output.filter(line => line.startsWith("waits: ")).map(line => {
+    const group = /^waits: group (\S+) tickets=(\S+)\s*(.*)$/.exec(line);
+    if (group) return { label: `group ${group[1]}: ${group[2].split(",").join(", ")}`, reason: group[3] };
     const [, file, reason] = /^waits: (\S*)\s*(.*)$/.exec(line);
-    return { file, reason };
+    return { label: slug(file), reason };
   });
-  const lex = waits.filter(wait => lexWait(wait.reason)).length;
-  const orphans = waits.filter(wait => orphan(wait.reason)).map(wait => slug(wait.file));
+  const lexes = waits.filter(wait => lexWait(wait.reason)).map(wait => wait.label);
+  const lex = lexes.length;
+  const orphans = waits.filter(wait => orphan(wait.reason)).map(wait => wait.label);
   const other = waits.length - lex - orphans.length;
   const meanwhile = waits.filter(wait => wait.reason.startsWith("claimed meanwhile")).length;
   const failed = handed.status !== 0 || !nextResult.startsWith("RESULT: ok ");
@@ -247,13 +259,13 @@ function main(args) {
   const stop = !failed && !running.length && !ready && !started && !delegated && !orphans.length && !other
     ? (waits.length ? "only Lex-waits left" : "frontier empty") : null;
   const waitParts = [
-    ...(lex ? [`${plural(lex, "ticket")} waiting on you`] : []),
-    ...(orphans.length ? [`${orphans.length} claimed with no job (${orphans.join(", ")}); the lead looks at it`] : []),
+    ...(lex ? [`${lex} waiting on you (${lexes.join("; ")})`] : []),
+    ...(orphans.length ? [`${orphans.length} claimed with no job (${orphans.join("; ")}); the lead looks at it`] : []),
   ];
   let status;
   if (failed) status = `the hand-out failed (${nextResult.replace(/^RESULT: /, "") || `exit ${handed.status}`}); the lead looks at it`;
   else if (stop === "frontier empty") status = "nothing left to build; the build is finished";
-  else if (stop) status = `nothing running; ${plural(lex, "ticket")} waiting on you`;
+  else if (stop) status = `nothing running; ${waitParts[0]}`;
   else {
     const parts = [];
     if (running.length) parts.push(`${running.length} building (${running.map(job => job.name).join(", ")})`);

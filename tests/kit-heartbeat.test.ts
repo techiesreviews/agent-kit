@@ -39,7 +39,7 @@ exit "\${FAKE_NEXT_STATUS:-0}"
   chmodSync(join(root, "fake-kit"), 0o755);
   writeFileSync(env.FAKE_NEXT_OUT!, "RESULT: ok next 0 ready, 0 waiting\n");
   // A slice job record as kit bg writes it, in its own worktree; state is "running", "exit N" or "died".
-  const job = (name: string, { map = "alpha", state = "running", log = "", quietMinutes = 0, ageSeconds = 600, started = "2026-10-25T10:00:00.000Z" as string | null, subcommand = "slice", ticketRoot = "", pid = true } = {}) => {
+  const job = (name: string, { map = "alpha", state = "running", log = "", quietMinutes = 0, ageSeconds = 600, started = "2026-10-25T10:00:00.000Z" as string | null, subcommand = "slice", ticketRoot = "", pid = true, command = "" } = {}) => {
     const worktree = join(root, `wt-${name}`);
     if (!existsSync(worktree)) git("worktree", "add", "-q", "--detach", worktree);
     const directory = join(worktree, ".scratch/kit-jobs", name);
@@ -47,7 +47,7 @@ exit "\${FAKE_NEXT_STATUS:-0}"
     writeFileSync(join(directory, "state"), `${state}\n`);
     writeFileSync(join(directory, "age"), `${ageSeconds}\n`);
     if (started !== null) writeFileSync(join(directory, "started"), `${started}\n`);
-    writeFileSync(join(directory, "command"), `'scripts/agents/kit' '${subcommand}' '--ticket' '${ticketRoot}docs/wayfinder/${map}/build/tickets/01-x.md' '--builder' 'claude-opus-5-5'\n`);
+    writeFileSync(join(directory, "command"), command || `'scripts/agents/kit' '${subcommand}' '--ticket' '${ticketRoot}docs/wayfinder/${map}/build/tickets/01-x.md' '--builder' 'claude-opus-5-5'\n`);
     writeFileSync(join(directory, "log"), log);
     if (pid) writeFileSync(join(directory, "pid"), "1\n");
     const at = new Date(Date.now() - quietMinutes * 60_000);
@@ -123,15 +123,15 @@ test("stops when only Lex-waits are left, continues while other waits or ready t
     "waits: docs/wayfinder/alpha/tickets/03-r.md needs Lex (type: research (AFK))", "RESULT: ok next 0 ready, 2 waiting");
   const lex = run("alpha");
   assert.equal(lex.status, 0, lex.stdout + lex.stderr);
-  assert.deepEqual(lex.lines.slice(-2), ["running/next: nothing running; 2 tickets waiting on you", "RESULT: ok heartbeat stop (only Lex-waits left)"]);
+  assert.deepEqual(lex.lines.slice(-2), ["running/next: nothing running; 2 waiting on you (02-grill; 03-r)", "RESULT: ok heartbeat stop (only Lex-waits left)"]);
   nextSays("waits: docs/wayfinder/alpha/build/tickets/02-grill.md needs Lex (type: grilling (HITL))",
     "waits: docs/wayfinder/alpha/build/tickets/04-x.md shares a/x.ts with slice-be1", "RESULT: ok next 0 ready, 2 waiting");
-  assert.deepEqual(run("alpha").lines.slice(-2), ["running/next: 1 ticket waiting on you, 1 waiting on other work", "RESULT: ok heartbeat continue"]);
+  assert.deepEqual(run("alpha").lines.slice(-2), ["running/next: 1 waiting on you (02-grill), 1 waiting on other work", "RESULT: ok heartbeat continue"]);
   // A ticket left claimed by a failed slice (the lead reruns it) or a delegated one (the free worker
   // builds it) waits on the lead, not Lex: it is named and the heartbeat keeps going.
   nextSays("waits: docs/wayfinder/alpha/build/tickets/02-grill.md needs Lex (type: grilling (HITL))",
     "waits: docs/wayfinder/alpha/build/tickets/21-records.md claimed by al-21, no running job found", "RESULT: ok next 0 ready, 2 waiting");
-  assert.deepEqual(run("alpha").lines.slice(-2), ["running/next: 1 ticket waiting on you, 1 claimed with no job (21-records); the lead looks at it", "RESULT: ok heartbeat continue"]);
+  assert.deepEqual(run("alpha").lines.slice(-2), ["running/next: 1 waiting on you (02-grill), 1 claimed with no job (21-records); the lead looks at it", "RESULT: ok heartbeat continue"]);
   nextSays("waits: docs/wayfinder/alpha/build/tickets/21-r.md claimed by al-21 (this session), no running job found", "RESULT: ok next 0 ready, 1 waiting");
   assert.deepEqual(run("alpha").lines.slice(-2), ["running/next: 1 claimed with no job (21-r); the lead looks at it", "RESULT: ok heartbeat continue"]);
   nextSays("waits: docs/wayfinder/alpha/build/tickets/21-records.md claimed by al-21, no running job found", "RESULT: ok next 0 ready, 1 waiting");
@@ -143,7 +143,7 @@ test("stops when only Lex-waits are left, continues while other waits or ready t
     "waits: docs/wayfinder/alpha/build/tickets/04-x.md shares a/x.ts with slice-be1", "RESULT: ok next 0 ready, 2 waiting");
   assert.deepEqual(run("alpha").lines.slice(-2), ["running/next: 1 claimed with no job (21-records); the lead looks at it, 1 waiting on other work", "RESULT: ok heartbeat continue"]);
   nextSays("waits: docs/wayfinder/alpha/build/tickets/01-x.md build not started (README **Not started:**)", "RESULT: ok next 0 ready, 1 waiting");
-  assert.deepEqual(run("alpha").lines.slice(-2), ["running/next: nothing running; 1 ticket waiting on you", "RESULT: ok heartbeat stop (only Lex-waits left)"]);
+  assert.deepEqual(run("alpha").lines.slice(-2), ["running/next: nothing running; 1 waiting on you (01-x)", "RESULT: ok heartbeat stop (only Lex-waits left)"]);
   nextSays("next: docs/wayfinder/alpha/build/tickets/05-y.md builder=claude-opus-5-5 owner=al-05 why=slot 1/5", "RESULT: ok next 1 ready, 0 waiting");
   assert.deepEqual(run("alpha").lines.slice(-2), ["running/next: 1 ready to start", "RESULT: ok heartbeat continue"]);
 });
@@ -233,6 +233,45 @@ test("a slice's phase logs count: a quiet job log with a fresh phase log is not 
   utimesSync(join(slice, "build.log"), old, old);
   utimesSync(join(slice, "builder/run.log"), old, old);
   assert.ok(run("alpha").lines.includes("stuck: slice-al1 log quiet 46m"));
+});
+
+test("a group job maps to all its tickets: running, stuck across their phase logs, finished with each merge", t => {
+  const { job, run, root } = fixture(t);
+  const command = "'scripts/agents/kit' 'next' '--run-group' '--branch' 'build/al-g-fonts' '--builder' 'claude-opus-5-5' " +
+    "'--ticket' 'docs/wayfinder/alpha/build/tickets/01-a.md' '--ticket' 'docs/wayfinder/alpha/build/tickets/02-b.md'\n";
+  job("slice-alg-fonts", { command, log: "slice 1/2\n", ageSeconds: 3600, quietMinutes: 50 });
+  const second = join(root, "wt-slice-alg-fonts/.scratch/kit-slice/02-b");
+  mkdirSync(second, { recursive: true });
+  writeFileSync(join(second, "build.log"), "b".repeat(100));
+  const first = run("alpha");
+  assert.equal(first.status, 0, first.stdout + first.stderr);
+  assert.deepEqual(first.lines.filter(line => /^(running|stuck): /.test(line)), ["running: slice-alg-fonts tickets=01-a,02-b age 1h00m log 110 B (first check)"]);
+  assert.equal(first.lines.at(-2), "running/next: 1 building (slice-alg-fonts)");
+  const old = new Date(Date.now() - 46 * 60_000);
+  utimesSync(join(second, "build.log"), old, old);
+  assert.ok(run("alpha").lines.includes("stuck: slice-alg-fonts tickets=01-a,02-b log quiet 46m"));
+  job("slice-alg-fonts", { command, state: "exit 1", log: "RESULT: ok slice docs/wayfinder/alpha/build/tickets/01-a.md PR #7 abc1234\n" +
+    "RESULT: fail next group stopped at docs/wayfinder/alpha/build/tickets/02-b.md (slice 2/2)\n" });
+  const ended = run("alpha");
+  assert.deepEqual(ended.lines.filter(line => /^(finished|merged|preview|done): /.test(line)), [
+    "finished: slice-alg-fonts tickets=01-a,02-b exit 1 RESULT: fail next group stopped at docs/wayfinder/alpha/build/tickets/02-b.md (slice 2/2)",
+    "merged: slice-alg-fonts PR #7 abc1234",
+    "preview: scripts/agents/kit preview (lead step; the heartbeat never deploys)",
+    "done: 1 slice since the last check: slice-alg-fonts failed (exit 1) after merging PR #7",
+  ]);
+  // A job in another map with no ticket here is not this map's.
+  job("slice-beg-x", { command: command.replaceAll("/alpha/", "/beta/") });
+  assert.ok(!run("alpha").lines.some(line => line.startsWith("running: slice-beg-x")));
+});
+
+test("a group waits as one item with its reason", t => {
+  const { nextSays, run } = fixture(t);
+  nextSays("waits: group fonts tickets=01-a,02-b claimed by al-g-fonts, no running job found", "RESULT: ok next 0 ready, 1 waiting");
+  assert.deepEqual(run("alpha").lines.slice(-2), ["running/next: 1 claimed with no job (group fonts: 01-a, 02-b); the lead looks at it", "RESULT: ok heartbeat continue"]);
+  nextSays("waits: group fonts tickets=01-a,02-b needs Lex (01-a type: grilling (HITL))", "RESULT: ok next 0 ready, 1 waiting");
+  assert.deepEqual(run("alpha").lines.slice(-2), ["running/next: nothing running; 1 waiting on you (group fonts: 01-a, 02-b)", "RESULT: ok heartbeat stop (only Lex-waits left)"]);
+  nextSays("waits: group fonts tickets=01-a,02-b shares a/x.ts with slice-be1", "RESULT: ok next 0 ready, 1 waiting");
+  assert.deepEqual(run("alpha").lines.slice(-2), ["running/next: 1 waiting on other work", "RESULT: ok heartbeat continue"]);
 });
 
 test("a running job without a log file is empty and quiet since it started", t => {
