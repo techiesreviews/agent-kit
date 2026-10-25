@@ -142,12 +142,16 @@ export function specOutcomes(report) {
   return outcomes;
 }
 
-/** Node spec reporter log: ✔/✖ lines above the failing-tests recap. */
+/** Node test log: spec reporter ✔/✖ lines above the failing-tests recap, or TAP ok / not ok lines. */
 export function unitOutcomes(log) {
   const lines = log.replace(/\x1b\[[0-9;]*m/g, "").split(/\r?\n/), recap = lines.indexOf("✖ failing tests:");
   return lines.slice(0, recap < 0 ? undefined : recap).flatMap(line => {
-    const match = /^\s*([✔✖]) (.+?)(?: \([\d.]+m?s\))?$/.exec(line);
-    return match ? [[`unit › ${match[2]}`, [match[1] === "✔" ? "pass" : "fail"]]] : [];
+    const spec = /^\s*([✔✖]) (.+?)(?: \([\d.]+m?s\))?$/.exec(line);
+    if (spec) return [[`unit › ${spec[2]}`, [spec[1] === "✔" ? "pass" : "fail"]]];
+    // TAP, what npm test writes to a pipe: skipped and todo tests neither pass nor fail.
+    const tap = /^\s*(not )?ok \d+ - (.+?)(?: # (.*))?$/.exec(line);
+    if (!tap || /^(skip|todo)\b/i.test(tap[3] ?? "")) return [];
+    return [[`unit › ${tap[2].replace(/\\#/g, "#")}`, [tap[1] ? "fail" : "pass"]]];
   });
 }
 
@@ -170,8 +174,9 @@ export function flippedTests(runs) {
   return [...flipped.values()].sort((a, b) => b.times - a.times || a.name.localeCompare(b.name));
 }
 
+// Live worktrees only: a folder deleted without git worktree remove is still listed (prunable).
 function worktrees(main) {
-  try { return gitText(main, ["worktree", "list", "--porcelain"]).split("\n").filter(line => line.startsWith("worktree ")).map(line => line.slice(9)); }
+  try { return gitText(main, ["worktree", "list", "--porcelain"]).split("\n").filter(line => line.startsWith("worktree ")).map(line => line.slice(9)).filter(path => existsSync(path)); }
   catch { return [main]; }
 }
 

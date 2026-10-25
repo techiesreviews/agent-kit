@@ -117,6 +117,9 @@ test("each number in the bundle comes from the fixture repo, logs, records and f
     ["run-a", [["saves", "unexpected"], ["loads", "flaky"]]]);
   write(join(repo, ".scratch/unit/b.log"), "✔ adds one (1ms)\n✔ keeps two (1ms)\n✔ old (1ms)\n");
   prRun(repo, "b", now - day, "pass 3, fail 0\nlog: .scratch/unit/b.log\n", ["run-b", [["saves", "expected"]]]);
+  // TAP, as npm test writes to a pipe on older Node: a skipped test neither passes nor fails.
+  prRun(repo, "t1", now - 2 * day, "TAP version 13\n# Subtest: tap one\nnot ok 1 - tap one\nok 2 - tap skipped # SKIP\n");
+  prRun(repo, "t2", now - day, "TAP version 13\nok 1 - tap one\nnot ok 2 - tap skipped # SKIP\n");
   prRun(w2, "e", now - 3 * day, "✖ keeps two (1ms)\n");
   prRun(w2, "f", now - 2 * day, "✖ shared (1ms)\n");
   prRun(w2, "g", now - day, "  ✔ shared (1ms)\n");
@@ -147,8 +150,8 @@ test("each number in the bundle comes from the fixture repo, logs, records and f
   assert.deepEqual(section(text, "Biggest growth"), ["- scripts/agents/kit.d/foo: +7 to 7 lines", "- src/a.css: +6 to 12 lines", "- src/new.ts: +4 to 4 lines", "- src/main.ts: +2 to 5 lines"]);
   assert.deepEqual(section(text, "Hand-typed values in src/**/*.css"), ["- raw px spacing: 3 (+1)", "- raw radii: 2 (+1)", "- bespoke shadows: 1 (0)",
     "- hand-timed transitions: 1 (0)", "", "Files with the most (px, radii, shadows, timings; change):", "- src/a.css: 3, 2, 1, 1; +2"]);
-  assert.deepEqual(section(text, "Tests that failed then passed in kit pr runs"), ["- 5 kit pr runs read from 2 live worktrees, 4 tests flipped", flipNote,
-    "- native-save/x.spec.ts › loads: 1× in repo", "- native-save/x.spec.ts › saves: 1× in repo", "- unit › adds one: 1× in repo", "- unit › shared: 1× in w2"]);
+  assert.deepEqual(section(text, "Tests that failed then passed in kit pr runs"), ["- 7 kit pr runs read from 2 live worktrees, 5 tests flipped", flipNote,
+    "- native-save/x.spec.ts › loads: 1× in repo", "- native-save/x.spec.ts › saves: 1× in repo", "- unit › adds one: 1× in repo", "- unit › shared: 1× in w2", "- unit › tap one: 1× in repo"]);
   assert.deepEqual(section(text, "Known failures (tests/known-failures.json)"), ["- native-save/x.spec.ts › loads · flaky · slow CI"]);
   assert.deepEqual(section(text, "Review findings by kind"), ["- 2 reviews of 2 pieces, 1 findings declined", "- by kind: fault 2, ticket 1, style 1",
     "- by severity: P2 2, P3 2", "- demo/01-a: fault 2, ticket 1 (1 review)", "- demo/03-c: style 1 (1 review)"]);
@@ -159,10 +162,12 @@ test("each number in the bundle comes from the fixture repo, logs, records and f
   assert.equal(execFileSync("git", ["-C", repo, "status", "--porcelain", "--untracked-files=no"], { encoding: "utf8" }), " M docs/wayfinder/demo/build/feedback.md\n",
     "the sweep changes nothing tracked beyond the fixture's own uncommitted line");
 
-  // A removed worktree's runs are gone, and the section says so.
-  execFileSync("git", ["-C", repo, "worktree", "remove", "--force", w2]);
-  assert.deepEqual(section(bundleOf(run(repo).stdout).text, "Tests that failed then passed in kit pr runs"), ["- 2 kit pr runs read from 1 live worktree, 3 tests flipped",
-    flipNote, "- native-save/x.spec.ts › loads: 1× in repo", "- native-save/x.spec.ts › saves: 1× in repo", "- unit › adds one: 1× in repo"]);
+  // A worktree folder deleted without git worktree remove is still listed by git, but it is not live; its runs are gone.
+  rmSync(w2, { recursive: true, force: true });
+  assert.match(execFileSync("git", ["-C", repo, "worktree", "list", "--porcelain"], { encoding: "utf8" }), /^prunable/m);
+  assert.deepEqual(section(bundleOf(run(repo).stdout).text, "Tests that failed then passed in kit pr runs"), ["- 4 kit pr runs read from 1 live worktree, 4 tests flipped",
+    flipNote, "- native-save/x.spec.ts › loads: 1× in repo", "- native-save/x.spec.ts › saves: 1× in repo", "- unit › adds one: 1× in repo", "- unit › tap one: 1× in repo"]);
+  execFileSync("git", ["-C", repo, "worktree", "prune"]);
 
   // Last week's sweep, run on last week's checkout, counted last week's line and not the late one: each counts once.
   const lastCheckout = join(dir, "last-week");
@@ -207,6 +212,8 @@ test("hand-typed values: raw px and timings as kit ux counts them, radii and sha
   assert.deepEqual(sweep.handTyped(".b { border-radius: var(--radius, 4px); box-shadow: var(--a), var(--b); border-radius: 0; box-shadow: none; }"),
     { px: 0, radii: 0, shadows: 0, timings: 0 });
   assert.deepEqual(sweep.unitOutcomes("✔ a (1ms)\n  ✖ b\n✖ failing tests:\n✖ b\n"), [["unit › a", ["pass"]], ["unit › b", ["fail"]]]);
+  assert.deepEqual(sweep.unitOutcomes("TAP version 13\n# Subtest: c\n    not ok 1 - c \\# 2\nok 2 - d # TODO later\nok 3 - e # 12ms\n1..3\n"),
+    [["unit › c # 2", ["fail"]], ["unit › e", ["pass"]]]);
 });
 
 test("nested describe groups name a spec by file and group; a flaky test failed then passed", () => {
