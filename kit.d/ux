@@ -1,0 +1,443 @@
+#!/usr/bin/env node
+// kit: try the features a diff touches, run scripted UX checks and pack a small review bundle
+import { execFileSync, spawn } from "node:child_process";
+import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, matchesGlob, normalize, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { checkColours } from "../../check-colours.mjs";
+
+const { kitRoot, kitMainRoot, kitOwner, kitResult } = await import(
+  pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
+);
+
+export const bundleLimit = 60_000, imageLimit = 12, imageBytes = 300_000;
+const usage = `Usage: kit ux [--base REF] [--features F-…,…] [--all] [--no-review] [--ticket FILE]
+       kit ux --help
+Touched features: the diff against the merge-base with --base (default origin/dev), plus
+uncommitted and untracked files, matched against each feature's Files globs in
+docs/agents/features.md. --features names them instead; --all takes every feature.
+Tries: each feature's Steps file through kit shots --steps at 1280 px (and 390 px when
+Phone: yes), light and dark. A feature without Steps gets the named screens its Files map
+to, marked untried.
+Scripted checks: layout findings, tap targets under 44 px at 390, raw colours in changed
+CSS, new visible text over 60 characters, new hint/tip/count/badge class names, and raw px
+spacing and timings in changed CSS counted against the base (reported, never blocking).
+Bundle: <main root>/.scratch/ux/<owner>/<time>/bundle.md (under 60 KB) and at most 12
+images of at most 300 KB (contact sheets and record strips); the lowest-value items are
+trimmed first and named. Raw tries: <main root>/.scratch/ux-tries/<owner>/<time>/.
+The ticket (for its mock-up link) is --ticket, else the ticket the branch name ends with.
+The model review is not part of this command yet; --no-review is accepted and changes nothing.
+KIT_UX_SHOTS: executable replacing kit shots, called with the same arguments (tests).
+A failed try fails: RESULT: fail ux … broken: <feature,…>.
+`;
+
+/** Named kit shots screens and the source files each one shows. */
+export const screenFiles = {
+  "editor": ["src/components/publish-menu.*", "src/components/agent-menu.*", "src/components/repository-menu.ts", "src/components/site-actions.ts", "src/components/canvas-bar.ts"],
+  "media-gallery": ["src/page-builder/media-library-view.ts", "src/page-builder/media-library-grid.ts", "src/page-builder/media-library-filter.ts", "src/page-builder/media-library-input.ts", "src/page-builder/media-picker.css"],
+  "media-select": ["src/page-builder/media-library-shell.ts", "src/page-builder/media-collection-choices.ts"],
+  "file-details": ["src/page-builder/media-library-details.ts", "src/page-builder/media-file-details.ts", "src/page-builder/media-detail.css", "src/page-builder/media-descriptions.ts", "src/page-builder/media-metadata.ts"],
+  "image-popup": ["src/page-builder/image-popup*.ts", "src/page-builder/shape-menu.ts"],
+  "picker": ["src/page-builder/media-picker.ts", "src/page-builder/media-place.ts", "src/page-builder/media-picker-close.ts"],
+  "files": ["src/controllers/files-tree-controller.ts", "src/components/files-tree.css", "src/components/file-type-icons.ts", "src/components/file-row-actions.ts"],
+  "pages": ["src/components/pages-tree.ts", "src/components/pages-tree.css", "src/controllers/pages-controller.ts", "src/controllers/pages-state.ts"],
+  "site-settings": ["src/components/site-settings.ts", "src/page-builder/site-identity.ts", "src/page-builder/site-address-rewrite.ts"],
+  "cleanup": ["src/page-builder/media-library-clean-up.ts", "src/page-builder/media-clean-up*.ts"],
+  "improve-images": ["src/page-builder/media-library-improve.ts", "src/page-builder/improve-*.ts"],
+  "add-panel": ["src/page-builder/add-panel.ts", "src/page-builder/add-catalog.ts", "src/page-builder/thumbnail.ts"],
+  "structure": ["src/components/page-structure.*", "src/components/structure-editing.ts", "src/components/row-menu.ts", "src/components/row-actions.ts", "src/native-structure.ts"],
+};
+
+/** Layout kinds and the rulebook rule each one checks. */
+const layoutRules = { "clipped": "L5", "overlap": "L5", "contrast": "L12", "overflow": "U4", "tap-target": "U6" };
+
+export function parseArgs(args) {
+  const flags = { base: "origin/dev", features: [], all: false, noReview: false, ticket: undefined };
+  const seen = new Set();
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (!["--base", "--features", "--all", "--no-review", "--ticket"].includes(arg)) throw new Error(`unknown argument: ${arg}`);
+    if (seen.has(arg)) throw new Error(`repeated flag: ${arg}`);
+    seen.add(arg);
+    if (arg === "--all") { flags.all = true; continue; }
+    if (arg === "--no-review") { flags.noReview = true; continue; }
+    const value = args[++i];
+    if (!value || value.startsWith("--")) throw new Error(`missing value for ${arg}`);
+    if (arg === "--base") flags.base = value;
+    else if (arg === "--ticket") flags.ticket = value;
+    else {
+      flags.features = [...new Set(value.split(",").map(id => id.trim()).filter(Boolean))];
+      if (!flags.features.length || flags.features.some(id => !/^F-[a-z]+-\d{2}$/.test(id))) throw new Error("--features takes F-<area>-<nn> ids, comma-separated");
+    }
+  }
+  if (flags.all && flags.features.length) throw new Error("--all and --features exclude each other");
+  return flags;
+}
+
+const backticked = value => [...(value ?? "").matchAll(/`([^`]+)`/g)].map(match => match[1]);
+
+/** Feature entries of docs/agents/features.md, outside code fences. */
+export function parseFeatures(markdown) {
+  const features = [];
+  let current, fenced = false;
+  for (const line of markdown.split("\n")) {
+    if (line.startsWith("```")) { fenced = !fenced; current = undefined; continue; }
+    if (fenced) continue;
+    const heading = /^### (F-[a-z]+-\d{2}) (\S.*)$/.exec(line);
+    if (heading) { current = { id: heading[1], name: heading[2], fields: {} }; features.push(current); continue; }
+    if (line.startsWith("#")) { current = undefined; continue; }
+    const field = current && /^- ([A-Za-z]+): (\S.*)$/.exec(line);
+    if (field) current.fields[field[1]] = field[2];
+  }
+  return features.map(({ id, name, fields }) => ({
+    id, name, try: fields.Try ?? "", good: fields.Good ?? "", files: backticked(fields.Files),
+    phone: fields.Phone === "yes", steps: backticked(fields.Steps)[0] ?? null,
+  }));
+}
+
+/** First line of each rule in docs/agents/ux-rulebook.md, by id. */
+export function parseRules(markdown) {
+  return new Map([...markdown.matchAll(/^- \*\*([SLBU]\d+)\*\* (.+)$/gm)].map(match => [match[1], match[2]]));
+}
+
+export const citedRules = text => [...new Set([...text.matchAll(/\b[SLBU]\d+\b/g)].map(match => match[0]))];
+
+/** Features whose Files globs match a changed path, each with the paths that matched. */
+export function touchedFeatures(features, changed) {
+  return features.flatMap(feature => {
+    const matched = changed.filter(path => feature.files.some(glob => matchesGlob(path, glob)));
+    return matched.length ? [{ ...feature, matched }] : [];
+  });
+}
+
+export function selectFeatures(features, changed, { all = false, features: ids = [] } = {}) {
+  if (all) return features;
+  if (ids.length) {
+    const unknown = ids.filter(id => !features.some(feature => feature.id === id));
+    if (unknown.length) throw new Error(`unknown feature: ${unknown.join(", ")}`);
+    return features.filter(feature => ids.includes(feature.id));
+  }
+  return touchedFeatures(features, changed);
+}
+
+/** Named screens showing any of the feature's files. */
+export function screensFor(feature) {
+  return Object.entries(screenFiles).filter(([, globs]) => feature.files.some(file => globs.some(glob => file === glob || matchesGlob(file, glob)))).map(([screen]) => screen);
+}
+
+/** Added lines of a unified diff, with their new line numbers. */
+export function addedLines(diff) {
+  const lines = [];
+  let file, line = 0;
+  for (const text of diff.split("\n")) {
+    const target = /^\+\+\+ (?:b\/(.+)|\/dev\/null)$/.exec(text);
+    if (target) { file = target[1]; continue; }
+    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(text);
+    if (hunk) { line = Number(hunk[1]); continue; }
+    if (!file || text.startsWith("---")) continue;
+    if (text.startsWith("+")) lines.push({ file, line: line++, text: text.slice(1) });
+    else if (text.startsWith(" ")) line++;
+  }
+  return lines;
+}
+
+const hintWords = { hint: "S1", hints: "S1", tip: "S1", tips: "S1", tooltip: "S1", count: "S2", counts: "S2", counter: "S2", badge: "S2", badges: "S2", dot: "S2" };
+const shorten = (text, length = 60) => text.length > length ? `${text.slice(0, length)}…` : text;
+
+function classNames(file, text) {
+  if (file.endsWith(".css")) return [...text.replace(/\/\*.*?\*\//g, "").matchAll(/\.(-?[_a-zA-Z][\w-]*)/g)].map(match => match[1]);
+  const lists = [
+    ...[...text.matchAll(/\bclass(?:Name)?\s*[=:]\s*(["'`])(.*?)\1/g)].map(match => match[2]),
+    ...[...text.matchAll(/\bclassList\.(?:add|toggle|replace)\(([^)]*)\)/g)].flatMap(match => [...match[1].matchAll(/(["'`])(.*?)\1/g)].map(inner => inner[2])),
+    ...[...text.matchAll(/(["'`])\.([_a-zA-Z][\w-]*)/g)].map(match => match[2]),
+  ];
+  return lists.flatMap(list => list.replace(/\$\{[^}]*\}/g, " ").split(/[\s.,]+/)).filter(name => /^[_a-zA-Z][\w-]*$/.test(name));
+}
+
+/** Prose a user would read: five or more words, no code punctuation. */
+function visibleText(text) {
+  return text.replace(/\$\{[^}]*\}/g, " ").split(/<[^>]*>/).map(part => part.trim())
+    .filter(part => part.length > 60 && !/[{};=]|=>|\(\)/.test(part) && /^[\p{L}"'“‘(]/u.test(part) && part.split(/\s+/).filter(word => /\p{L}{2}/u.test(word)).length >= 5);
+}
+
+/** "Say less" checks on added source lines: long visible text (S1) and hint, tip, count or badge classes (S1, S2). */
+export function textFindings(added) {
+  const findings = [];
+  for (const { file, line, text } of added) {
+    if (!/^(src|shared)\//.test(file) || /\.test\.|\.spec\./.test(file)) continue;
+    if (/\.(ts|js|mjs|html|css)$/.test(file)) {
+      for (const name of new Set(classNames(file, text))) {
+        const rule = name.toLowerCase().split(/[-_]+/).map(part => hintWords[part]).find(Boolean);
+        if (rule) findings.push({ rule, file, line, text: `new ${rule === "S1" ? "hint or tip" : "count or badge"} class "${name}"` });
+      }
+    }
+    if (!/\.(ts|js|mjs|html)$/.test(file) || /^\s*(\/\/|\/?\*)/.test(text)) continue;
+    const candidates = [...text.matchAll(/(["'`])((?:\\.|(?!\1)[^\\])*)\1/g)].map(match => match[2]);
+    if (file.endsWith(".html") || /<[a-z][^>]*>/i.test(text)) candidates.push(text);
+    for (const prose of new Set(candidates.flatMap(visibleText))) findings.push({ rule: "S1", file, line, text: `new visible text, ${prose.length} characters: "${shorten(prose)}"` });
+  }
+  return findings;
+}
+
+const spacing = /^(margin|padding|gap|row-gap|column-gap|inset|top|right|bottom|left)(-[a-z-]+)?$/;
+const timing = /^(transition|animation)(-duration|-delay)?$/;
+
+/** Raw px in spacing properties and raw times in transitions and animations. */
+export function cssCounts(text) {
+  const counts = { px: 0, timings: 0 };
+  for (const [, property, value] of text.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([a-z-]+)\s*:\s*([^;{}]+)/g)) {
+    if (spacing.test(property)) counts.px += (value.match(/(?<![\w.-])\d*\.?\d+px\b/g) ?? []).length;
+    if (timing.test(property)) counts.timings += (value.match(/(?<![\w.-])\d*\.?\d+m?s\b/g) ?? []).length;
+  }
+  return counts;
+}
+
+/** Reported only when a changed CSS file has more raw px spacing or timings than its base. */
+export function cssFindings(files, added) {
+  return files.flatMap(({ file, text, base }) => {
+    const now = cssCounts(text), before = cssCounts(base);
+    const parts = [
+      ...now.px > before.px ? [`raw px spacing ${before.px} → ${now.px}`] : [],
+      ...now.timings > before.timings ? [`raw timings ${before.timings} → ${now.timings}`] : [],
+    ];
+    if (!parts.length) return [];
+    const first = added.find(entry => entry.file === file && (cssCounts(entry.text).px || cssCounts(entry.text).timings));
+    return [{ rule: "L2", file, line: first?.line, text: `${parts.join(", ")} (not blocking until tokens exist)` }];
+  });
+}
+
+/** Merge layout findings across widths and themes; tap targets at 390 are their own group. */
+export function layoutFindings(tries) {
+  const merged = new Map();
+  for (const tried of tries) for (const { screen, width, theme, finding } of tried.index?.layoutFindings ?? []) {
+    const tap = finding.kind === "tap-target" && width === 390;
+    const key = [tap, screen, finding.kind, finding.selector, finding.detail].join("|");
+    const shot = tried.index.screens.find(entry => entry.screen === screen && entry.width === width && entry.theme === theme);
+    const entry = merged.get(key) ?? { tap, rule: layoutRules[finding.kind] ?? "L5", screen, kind: finding.kind, selector: finding.selector, detail: finding.detail, sizes: [], shot: shot?.files[0] ? join(tried.dir, shot.files[0].path) : tried.dir };
+    if (!entry.sizes.includes(`${width} ${theme}`)) entry.sizes.push(`${width} ${theme}`);
+    merged.set(key, entry);
+  }
+  return [...merged.values()];
+}
+
+/** Keep the most useful images first; never more than the limit, never one over 300 KB. */
+export function pickImages(images, limit = imageLimit) {
+  const kept = [], trimmed = [];
+  for (const image of [...images].sort((a, b) => a.priority - b.priority)) {
+    if (image.bytes > imageBytes) trimmed.push({ ...image, reason: "over 300 KB" });
+    else if (kept.length >= limit) trimmed.push({ ...image, reason: `over ${limit} images` });
+    else kept.push(image);
+  }
+  return { kept, trimmed };
+}
+
+/** Render the bundle under the byte limit, cutting the lowest-priority sections from their ends first. */
+export function composeBundle(head, sections, limit = bundleLimit) {
+  const parts = sections.map(section => ({ ...section, lines: section.lines.map(line => shorten(line, 400)), cut: 0 }));
+  const render = () => {
+    const trims = parts.filter(part => part.cut).map(part => `${part.title} ${part.cut} lines`);
+    return `${[...head, ...trims.length ? [`Trimmed to stay under ${limit} bytes: ${trims.join(", ")}.`] : [],
+      ...parts.flatMap(part => part.lines.length || part.cut ? ["", `## ${part.title}`, "", ...part.lines, ...part.cut ? [`- … ${part.cut} more lines trimmed`] : []] : [])].join("\n")}\n`;
+  };
+  let markdown = render();
+  for (const part of [...parts].sort((a, b) => a.priority - b.priority)) {
+    let size = Buffer.byteLength(markdown);
+    while (size >= limit && part.lines.length) {
+      // Drop enough lines in one pass, then re-render to count the trim notes exactly.
+      while (size >= limit - 400 && part.lines.length) { size -= Buffer.byteLength(part.lines.pop()) + 1; part.cut++; }
+      markdown = render();
+      size = Buffer.byteLength(markdown);
+    }
+    if (size < limit) break;
+  }
+  return { markdown, trimmed: parts.filter(part => part.cut).map(part => `${part.title} ${part.cut} lines`) };
+}
+
+/** The ticket whose file name the branch ends with, when exactly one matches. */
+export function guessTicket(branch, files) {
+  const tail = branch.split("/").pop() ?? "";
+  const matches = files.filter(file => file.endsWith(".md") && /(^|\/)(tickets|issues)\//.test(file))
+    .filter(file => { const name = basename(file, ".md"); return tail === name || tail.endsWith(`-${name}`); });
+  const longest = Math.max(0, ...matches.map(file => basename(file).length));
+  const best = matches.filter(file => basename(file).length === longest);
+  return best.length === 1 ? best[0] : undefined;
+}
+
+/** Links on lines that mention a mock-up, relative ones resolved against the ticket. */
+export function mockupLinks(text, ticket) {
+  return text.split("\n").filter(line => /mock-?ups?\b/i.test(line)).flatMap(line => [
+    ...[...line.matchAll(/\[([^\]]+)\]\(([^)\s]+)\)/g)].map(([, label, url]) => `- ${label}: ${/^[a-z]+:/i.test(url) || url.startsWith("#") ? url : normalize(join(dirname(ticket), url))}`),
+    ...[...line.replace(/\[[^\]]*\]\([^)]*\)/g, "").matchAll(/https?:\/\/[^\s)>]+/g)].map(([url]) => `- ${url}`),
+  ]);
+}
+
+const firstLine = text => String(text).replace(/\x1b\[[0-9;]*m/g, "").split("\n").find(line => line.trim())?.trim().slice(0, 240) ?? "";
+
+/** One kit shots run; its output goes to a log beside the shots. */
+function shots(root, args, log) {
+  const runner = process.env.KIT_UX_SHOTS || join(root, "scripts/agents/kit.d/shots");
+  const fd = openSync(log, "w");
+  const child = spawn(runner, args, { cwd: root, stdio: ["ignore", fd, fd] });
+  const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
+  const handlers = signals.map(signal => () => { child.kill(signal); });
+  signals.forEach((signal, index) => process.on(signal, handlers[index]));
+  return new Promise(resolve => {
+    child.once("error", error => { writeFileSync(log, `${error.message}\n`, { flag: "a" }); resolve(127); });
+    child.once("close", (code, signal) => resolve(code ?? (signal ? 128 : 1)));
+  }).finally(() => { closeSync(fd); signals.forEach((signal, index) => process.off(signal, handlers[index])); });
+}
+
+function readIndex(dir) {
+  try { return JSON.parse(readFileSync(join(dir, "index.json"), "utf8")); } catch { return undefined; }
+}
+
+/** Failure lines of shots that never passed, or why the run left no index. */
+export function tryFailures(index, status, log) {
+  if (!index) return [`kit shots exited ${status} without index.json; log ${log}`];
+  const lines = index.screens.filter(shot => !shot.ok).map(shot => {
+    const failure = shot.failures.at(-1);
+    return `${shot.screen} ${shot.width} ${shot.theme}: ${failure ? `step ${failure.step} failed: ${firstLine(failure.error)}` : "no screenshot"}`;
+  });
+  return lines.length || !status ? lines : [`kit shots exited ${status}; log ${log}`];
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+  if (args.includes("--help") || args.includes("-h")) { process.stdout.write(usage); return 0; }
+  let flags;
+  try { flags = parseArgs(args); }
+  catch (error) {
+    console.error(`problem: ${error.message}`);
+    process.stderr.write(usage);
+    kitResult("fail", `ux ${error.message}`);
+    return 2;
+  }
+  const root = kitRoot();
+  const git = (...gitArgs) => execFileSync("git", ["-C", root, ...gitArgs], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+  try {
+    let mergeBase;
+    try { mergeBase = git("merge-base", "HEAD", flags.base).trim(); }
+    catch { throw new Error(`no merge-base with ${flags.base}`); }
+    const untracked = git("ls-files", "--others", "--exclude-standard").split("\n").filter(Boolean);
+    const changed = [...new Set([...git("diff", "--name-only", mergeBase).split("\n").filter(Boolean), ...untracked])];
+    const features = parseFeatures(readFileSync(join(root, "docs/agents/features.md"), "utf8"));
+    const selected = selectFeatures(features, changed, flags);
+    if (!selected.length) { kitResult("ok", "ux nothing visible touched"); return 0; }
+
+    const owner = kitOwner().replace(/[^a-zA-Z0-9_.-]/g, "-").replace(/^\.+$/, "unknown");
+    const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
+    const out = join(kitMainRoot(), ".scratch/ux", owner, stamp), triesDir = join(kitMainRoot(), ".scratch/ux-tries", owner, stamp);
+    mkdirSync(out, { recursive: true });
+    mkdirSync(triesDir, { recursive: true });
+    console.log(`features: ${selected.map(feature => feature.id).join(", ")}`);
+
+    // Tries: a steps file per feature; the rest share one run of their named screens.
+    const tries = [];
+    for (const feature of selected.filter(feature => feature.steps)) {
+      const dir = join(triesDir, feature.id), log = join(triesDir, `${feature.id}.log`);
+      mkdirSync(dir, { recursive: true });
+      const status = await shots(root, ["--steps", join(root, feature.steps), "--width", feature.phone ? "390,1280" : "1280", "--out", dir], log);
+      const index = readIndex(dir);
+      const failures = tryFailures(index, status, log);
+      tries.push({ kind: "steps", features: [feature], dir, index, failures, ok: !failures.length });
+      console.log(`try ${feature.id}: ${failures.length ? `failed: ${failures[0]}` : "passed"}`);
+    }
+    const untried = selected.filter(feature => !feature.steps).map(feature => ({ feature, screens: screensFor(feature) }));
+    const screenList = [...new Set(untried.flatMap(entry => entry.screens))];
+    if (screenList.length) {
+      const dir = join(triesDir, "untried"), log = join(triesDir, "untried.log");
+      mkdirSync(dir, { recursive: true });
+      const phone = untried.some(entry => entry.screens.length && entry.feature.phone);
+      const status = await shots(root, [...screenList, "--width", phone ? "390,1280" : "1280", "--out", dir], log);
+      const index = readIndex(dir);
+      const failures = tryFailures(index, status, log);
+      tries.push({ kind: "screens", features: untried.filter(entry => entry.screens.length).map(entry => entry.feature), dir, index, failures, ok: !failures.length });
+      console.log(`screens ${screenList.join(", ")}: ${failures.length ? `failed: ${failures[0]}` : "shot"}`);
+    }
+    const broken = tries.filter(tried => !tried.ok).flatMap(tried => tried.kind === "steps" ? tried.features
+      : tried.features.filter(feature => screensFor(feature).some(screen => tried.failures.some(line => line.startsWith(`${screen} `)) || !tried.index)));
+
+    // Scripted checks.
+    const diff = git("diff", "--unified=0", "--no-color", "--no-ext-diff", mergeBase, "--", "src", "shared");
+    const added = [...addedLines(diff), ...untracked.filter(file => /^(src|shared)\//.test(file)).flatMap(file => {
+      try { return readFileSync(join(root, file), "utf8").split("\n").map((text, index) => ({ file, line: index + 1, text })); } catch { return []; }
+    })];
+    const css = changed.filter(file => file.endsWith(".css") && existsSync(join(root, file))).map(file => {
+      let base = "";
+      try { base = git("show", `${mergeBase}:${file}`); } catch { /* A new file has no base. */ }
+      return { file, text: readFileSync(join(root, file), "utf8"), base };
+    });
+    let allow = [];
+    try { allow = JSON.parse(readFileSync(join(root, "scripts/check-colours.allow.json"), "utf8")); } catch { /* No allow list. */ }
+    const coloured = css.filter(({ file }) => file.startsWith("src/") && file !== "src/theme.css");
+    const colours = checkColours(coloured.map(({ file, text }) => ({ file, text })), allow.filter(entry => coloured.some(({ file }) => file === entry.file)))
+      .map(failure => ({ rule: "L2", file: failure.file, line: failure.line, text: `raw colour ${failure.match}` }));
+    const layout = layoutFindings(tries);
+    const sourceFindings = [...colours, ...textFindings(added), ...cssFindings(css, added)];
+    const findingLines = [
+      ...layout.filter(entry => entry.tap).map(entry => `- U6 tap target under 44 px at 390: ${entry.selector} — ${entry.detail} (${entry.screen}; ${entry.sizes.join(", ")}) ${entry.shot}`),
+      ...layout.filter(entry => !entry.tap).map(entry => `- ${entry.rule} layout ${entry.kind}: ${entry.selector} — ${entry.detail} (${entry.screen}; ${entry.sizes.join(", ")}) ${entry.shot}`),
+      ...sourceFindings.map(finding => `- ${finding.rule} ${finding.file}${finding.line ? `:${finding.line}` : ""}: ${finding.text}`),
+    ];
+
+    // Images: failed tries first, then record strips, then contact sheets.
+    const images = tries.flatMap(tried => (tried.index?.files ?? []).flatMap(file => {
+      const contact = /^contact(?:-(\d+))?\.webp$/.exec(file.path), strip = file.path.endsWith("-strip.webp");
+      if (!contact && !strip) return [];
+      const label = tried.kind === "steps" ? tried.features[0].id : "screens";
+      const priority = !tried.ok ? 0 : strip ? 1 : tried.kind === "screens" ? 4 : Number(contact[1] ?? 1) > 1 ? 3 : 2;
+      return [{ source: join(tried.dir, file.path), name: file.path.includes(label) ? file.path : `${label}-${file.path}`, bytes: file.bytes, priority }];
+    }));
+    const { kept, trimmed: trimmedImages } = pickImages(images);
+    for (const image of kept) copyFileSync(image.source, join(out, image.name));
+
+    // Bundle.
+    const branch = git("branch", "--show-current").trim() || "detached";
+    const head = git("rev-parse", "--short", "HEAD").trim();
+    const tracked = git("ls-files").split("\n");
+    const ticket = flags.ticket ?? guessTicket(branch, tracked);
+    let mockups = [];
+    if (ticket) {
+      try { mockups = mockupLinks(readFileSync(resolve(root, ticket), "utf8"), ticket); }
+      catch { console.error(`problem: ticket ${ticket} unreadable; no mock-up link`); }
+    }
+    const rulebook = parseRules(readFileSync(join(root, "docs/agents/ux-rulebook.md"), "utf8"));
+    const rules = citedRules([...selected.map(feature => feature.good), ...layout.map(entry => entry.rule), ...sourceFindings.map(finding => finding.rule)].join(" "));
+    const tried = tries.filter(entry => entry.kind === "steps");
+    const passed = tried.filter(entry => entry.ok).length;
+    const tryLines = selected.map(feature => {
+      const steps = tries.find(entry => entry.kind === "steps" && entry.features[0] === feature);
+      if (steps) return [`- ${feature.id} ${feature.name}: ${steps.ok ? "passed" : "failed"} (${feature.steps})`, ...steps.failures.map(line => `  - ${line}`)];
+      const screens = screensFor(feature);
+      return [`- ${feature.id} ${feature.name}: untried${screens.length ? ` (screens ${screens.join(", ")}${broken.includes(feature) ? "; a screen failed" : ""})` : " (no named screen)"}`];
+    }).flat();
+    const { markdown, trimmed } = composeBundle([
+      `# UX bundle: ${branch}`,
+      "",
+      `Head ${head}; base ${flags.base} (merge-base ${mergeBase.slice(0, 8)}). Model review: not run in this version.`,
+      `Tries: ${tried.length} tried (${passed} passed, ${tried.length - passed} failed), ${selected.length - tried.length} untried. Scripted findings: ${findingLines.length}.`,
+      `Raw tries: ${triesDir}`,
+    ], [
+      { title: "Tries", priority: 9, lines: tryLines },
+      { title: "Images", priority: 8, lines: [...kept.map(image => `- ${image.name}`), ...trimmedImages.map(image => `- trimmed ${image.name} (${image.reason}): ${image.source}`)] },
+      { title: "Mock-up", priority: 8, lines: mockups.length ? mockups : ticket ? [`- none named in ${ticket}`] : [] },
+      { title: "Touched features", priority: 7, lines: selected.flatMap(feature => [`- **${feature.id} ${feature.name}**${feature.matched ? ` (${feature.matched.join(", ")})` : ""}`, `  - Try: ${feature.try}`, `  - Good: ${feature.good}`]) },
+      { title: "Scripted findings", priority: 6, lines: findingLines },
+      { title: "Rules cited", priority: 5, lines: rules.filter(rule => rulebook.has(rule)).map(rule => `- **${rule}** ${rulebook.get(rule)}`) },
+      { title: "Diff summary", priority: 1, lines: [...git("diff", "--stat=120", mergeBase).split("\n").filter(Boolean), ...untracked.map(file => `${file} | new, untracked`)].map(line => `    ${line.trim()}`) },
+    ]);
+    writeFileSync(join(out, "bundle.md"), markdown);
+    console.log(`bundle: ${join(out, "bundle.md")} (${Buffer.byteLength(markdown)} bytes, ${kept.length} images)`);
+    if (trimmed.length) console.log(`trimmed: ${trimmed.join(", ")}`);
+    if (trimmedImages.length) console.log(`trimmed images: ${trimmedImages.length} (${[...new Set(trimmedImages.map(image => image.reason))].join(", ")})`);
+    const summary = `ux ${tried.length} features tried, ${findingLines.length} scripted findings, bundle ${out}`;
+    kitResult(broken.length ? "fail" : "ok", broken.length ? `${summary}, broken: ${broken.map(feature => feature.id).join(", ")}` : summary);
+    return broken.length ? 1 : 0;
+  } catch (error) {
+    console.error(`problem: ${error.message}`);
+    kitResult("fail", `ux ${error.message}`);
+    return 1;
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) process.exitCode = await main();
