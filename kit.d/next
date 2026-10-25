@@ -7,13 +7,18 @@ import { kitResult } from "../kit-lib.mjs";
 import { loadTickets, parseTicket, resolveTickets } from "../tickets.mjs";
 
 const usage = `Usage: kit next [map…] [--start] [--max N]
+       kit next --run-group --builder MODEL --ticket FILE [--ticket FILE…]
 Lists the running slices (running:), the open frontier tickets that may start now (next:)
 and why the rest wait (waits:),
 read from origin/dev in the dev worktree and the running slice-* jobs of every worktree.
 Maps go in the order given, else alphabetical; tickets by number within a map.
---start claims each next: ticket on dev (assignee, commit, push), makes its worktree and starts
-its kit slice under kit bg; delegated (opencode/…) tickets are only claimed.
---max N lowers the cap of 5 running slices; it never raises it.`;
+Tickets sharing a group: slug are one hand-out (next: group <slug> tickets=…) once every open one
+may start; a blocker inside the group counts as met, as its slices run in blocked_by order.
+--start claims each next: ticket or group on dev (assignee, commit, push), makes its worktree and
+starts its kit slice under kit bg (a group: one job running its slices in order through
+--run-group); delegated (opencode/…) tickets are only claimed.
+--max N lowers the cap of 5 running slices; it never raises it.
+--run-group runs kit slice for each ticket in order here, stopping at the first failure.`;
 
 // Pins quoted from docs/agents/kitchen.md#who-cooks-pins-from-2026-10-22:
 //   | Builder, every slice | `claude-opus-5-5`, high | `kit slice --builder claude-opus-5-5`; `builder: sol` lines in tickets are superseded |
@@ -32,17 +37,26 @@ const worktreeScript = process.env.KIT_NEXT_WORKTREE || resolve(import.meta.dirn
 class UsageError extends Error {}
 
 function options(args) {
-  const flags = { maps: [], start: false, max: cap };
+  const flags = { maps: [], start: false, max: cap, runGroup: false, builder: "", tickets: [] };
+  const value = (i, flag) => {
+    if (!args[i + 1] || args[i + 1].startsWith("-")) throw new UsageError(`${flag} needs a value`);
+    return args[i + 1];
+  };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--help" || arg === "-h") flags.help = true;
     else if (arg === "--start") flags.start = true;
+    else if (arg === "--run-group") flags.runGroup = true;
+    else if (arg === "--builder") flags.builder = value(i++, arg);
+    else if (arg === "--ticket") flags.tickets.push(value(i++, arg));
     else if (arg === "--max") {
       if (!/^\d+$/.test(args[i + 1] ?? "")) throw new UsageError("--max needs a whole number");
       flags.max = Math.min(cap, Number(args[++i]));
     } else if (/^[\w-]+$/.test(arg) && !arg.startsWith("-")) { if (!flags.maps.includes(arg)) flags.maps.push(arg); }
     else throw new UsageError(`invalid argument: ${arg}`);
   }
+  if (flags.runGroup !== Boolean(flags.builder || flags.tickets.length)) throw new UsageError("--builder and --ticket go with --run-group");
+  if (flags.runGroup && (!flags.builder || !flags.tickets.length || flags.start || flags.maps.length)) throw new UsageError("--run-group needs --builder and --ticket, and no maps or --start");
   return flags;
 }
 
@@ -84,12 +98,56 @@ function naming(ticket, prefix) {
   return { owner, job: `slice-${prefix}${nn}`, branch: `build/${owner}-${ticket.slug.replace(/^\d+-/, "")}` };
 }
 
+// A group gets "g-" and its slug in place of a number: owner sf-g-fonts, job slice-sfg-fonts.
+function groupNaming(group, prefix) {
+  const owner = `${prefix}-g-${group}`;
+  return { owner, job: `slice-${prefix}g-${group}`, branch: `build/${owner}` };
+}
+
+const byNumber = (a, b) => a.map.localeCompare(b.map) || a.slug.localeCompare(b.slug, "en", { numeric: true });
+
+// One hand-out: its tickets in slice order, and the union of their Files for the fixed rules.
+function unitOf(tickets, group = "") {
+  return {
+    group, tickets, map: tickets[0]?.map ?? "", files: [...new Set(tickets.flatMap(ticket => ticket.files))],
+    runs_alone: tickets.some(ticket => ticket.runs_alone),
+    label: group ? `group ${group} tickets=${tickets.map(ticket => ticket.slug).join(",")}` : tickets.map(ticket => ticket.file).join(","),
+  };
+}
+
+// Hand-outs in frontier order: an ungrouped frontier ticket alone; a group once, at its first
+// member that may start, holding every member not closed or wontfix in blocked_by order. A
+// group waits while any member is blocked from outside it or not open.
+function handOuts(tickets, frontier) {
+  const index = new Map(tickets.map(ticket => [`${ticket.map}/${ticket.slug}`, ticket]));
+  const groups = new Map();
+  for (const ticket of tickets) {
+    if (!ticket.group || !ticket.valid || ["closed", "wontfix"].includes(ticket.status)) continue;
+    const key = `${ticket.map}/${ticket.group}`;
+    groups.set(key, [...(groups.get(key) ?? []), ticket]);
+  }
+  const units = frontier.filter(ticket => !ticket.group).map(ticket => ({ first: ticket, ...unitOf([ticket]) }));
+  for (const members of groups.values()) {
+    members.sort(byNumber);
+    const blockers = ticket => ticket.blocked_by.map(blocker => index.get(`${ticket.map}/${blocker.slug}`));
+    const free = members.filter(ticket => ticket.status === "open" && blockers(ticket).every(blocker => members.includes(blocker) || blocker?.status === "closed"));
+    if (!free.length) continue;
+    const ordered = [], left = [...members];
+    const ready = ticket => blockers(ticket).every(blocker => !members.includes(blocker) || ordered.includes(blocker));
+    while (left.some(ready)) ordered.push(...left.splice(left.findIndex(ready), 1));
+    const held = members.filter(ticket => !free.includes(ticket)).map(ticket => `${ticket.slug} (${ticket.status === "open" ? "blocked" : ticket.status})`);
+    const wait = held.length ? `waits for ${held.join(", ")}` : left.length ? `blocked_by cycle in ${left.map(ticket => ticket.slug).join(", ")}` : "";
+    units.push({ first: free[0], ...unitOf([...ordered, ...left], members[0].group), wait });
+  }
+  return units.sort((a, b) => byNumber(a.first, b.first));
+}
+
 function unquote(command) {
   return [...command.matchAll(/'((?:[^']|'\\'')*)'/g)].map(match => match[1].replaceAll("'\\''", "'"));
 }
 
 // Running slices: every worktree's `kit bg --list` rows named slice-* and running. Each job's
-// recorded command names its ticket, read from that worktree for its Files and map.
+// recorded command names its tickets (a group job several), read from that worktree for Files and map.
 function runningSlices() {
   const worktrees = git(["worktree", "list", "--porcelain"]).split("\n").filter(line => line.startsWith("worktree ")).map(line => line.slice(9));
   const kit = fakeKit || resolve(import.meta.dirname, "../kit");
@@ -102,17 +160,16 @@ function runningSlices() {
       const [name, state] = row.split("\t");
       if (!name?.startsWith("slice-") || state !== "running") continue;
       const directory = join(worktree, ".scratch/kit-jobs", name);
-      let ticket = { file: "", map: "", files: [], runs_alone: false };
+      let tickets = [];
       try {
         const words = unquote(readFileSync(join(directory, "command"), "utf8"));
-        const file = words[words.indexOf("--ticket") + 1];
         const cwd = existsSync(join(directory, "cwd")) ? readFileSync(join(directory, "cwd"), "utf8").trim() : worktree;
-        if (words.includes("--ticket") && file) {
+        tickets = words.flatMap((word, i) => word === "--ticket" && words[i + 1] ? [words[i + 1]] : []).map(file => {
           const map = /(?:^|\/)docs\/wayfinder\/([^/]+)\//.exec(file)?.[1] ?? "";
-          ticket = parseTicket(readFileSync(resolve(cwd, file), "utf8"), file, map).ticket;
-        }
-      } catch { /* A slice whose ticket cannot be read still takes a slot. */ }
-      slices.push({ name, worktree, ticket });
+          return parseTicket(readFileSync(resolve(cwd, file), "utf8"), file, map).ticket;
+        });
+      } catch { tickets = []; /* A slice whose tickets cannot be read still takes a slot. */ }
+      slices.push({ name, worktree, unit: unitOf(tickets) });
     }
   }
   return slices;
@@ -122,42 +179,51 @@ const inside = (directory, path) => directory.endsWith("/") && (directory === ".
 const overlaps = (a, b) => a === b || inside(a, b) || inside(b, a);
 // src/main.ts is rule 3's alone: two slices may share it, never any other file.
 const shared = (files, others) => files.find(file => file !== mainTs && others.some(other => other !== mainTs && overlaps(file, other)));
-const inMain = ticket => ticket.files.some(file => overlaps(file, mainTs));
+const inMain = unit => unit.files.some(file => overlaps(file, mainTs));
 const ticketKey = file => file.slice(Math.max(0, file.indexOf("docs/wayfinder/")));
 
-// Apply the fixed rules in order to each frontier ticket; picked tickets count as running.
-// A delegated pick has no kit bg job, so it takes no slot toward the cap in any run.
+// Apply the fixed rules in order to each hand-out (a ticket or a whole group, with the union of
+// its Files); picked hand-outs count as running. A delegated pick has no kit bg job, so it takes
+// no slot toward the cap in any run.
 function plan(candidates, running, max) {
-  const active = running.map(slice => ({ name: slice.name, ticket: slice.ticket, slot: true }));
-  const runningTickets = new Set(running.map(slice => ticketKey(slice.ticket.file)).filter(Boolean));
+  const active = running.map(slice => ({ name: slice.name, unit: slice.unit, slot: true }));
+  const runningTickets = new Set(running.flatMap(slice => slice.unit.tickets.map(ticket => ticketKey(ticket.file))));
   const next = [], waits = [];
-  for (const { ticket, readme } of candidates) {
-    const wait = reason => waits.push({ ticket, reason });
-    if (ticket.assignee) {
+  for (const candidate of candidates) {
+    const { tickets, readme } = candidate;
+    const wait = reason => waits.push({ unit: candidate, reason });
+    const claimed = tickets.filter(ticket => ticket.assignee);
+    if (claimed.length) {
       // A claimed AFK ticket with no running slice is stuck (a failed start) or delegated.
-      if (ticket.type === "task (AFK)" && !runningTickets.has(ticketKey(ticket.file))) wait(`claimed by ${ticket.assignee}, no running job found`);
+      const owners = [...new Set(claimed.map(ticket => ticket.assignee))].join(", ");
+      if (claimed.length < tickets.length) wait(`partly claimed by ${owners}`);
+      else if (claimed.every(ticket => ticket.type === "task (AFK)") && !claimed.every(ticket => runningTickets.has(ticketKey(ticket.file)))) wait(`claimed by ${owners}, no running job found`);
       continue;
     }
-    if (ticket.type !== "task (AFK)") { wait(`needs Lex (type: ${ticket.type || "missing"})`); continue; }
+    if (candidate.wait) { wait(candidate.wait); continue; }
+    const human = tickets.find(ticket => ticket.type !== "task (AFK)");
+    if (human) { wait(`needs Lex (${candidate.group ? `${human.slug} ` : ""}type: ${human.type || "missing"})`); continue; }
     if (readme.notStarted) { wait("build not started (README **Not started:**)"); continue; }
-    const builder = builderFor(ticket.builder);
+    const builders = [...new Set(tickets.map(ticket => builderFor(ticket.builder).label))];
+    if (builders.length > 1) { wait(`builders differ: ${builders.join(", ")}`); continue; }
+    const builder = builderFor(tickets[0].builder);
     const slots = active.filter(slice => slice.slot).length;
     if (!builder.delegate && slots >= max) { wait(`cap ${max} slices running`); continue; }
-    const main = active.filter(slice => inMain(slice.ticket));
-    if (inMain(ticket) && main.length >= 2) { wait(`2 slices in ${mainTs}: ${main.map(slice => slice.name).join(", ")}`); continue; }
-    const holder = active.find(slice => shared(ticket.files, slice.ticket.files));
-    if (holder) { wait(`shares ${shared(ticket.files, holder.ticket.files)} with ${holder.name}`); continue; }
-    const sameMap = active.filter(slice => slice.ticket.map === ticket.map);
-    if (ticket.runs_alone && sameMap.length) { wait(`runs alone; waits for ${sameMap.map(slice => slice.name).join(", ")}`); continue; }
-    const alone = sameMap.find(slice => slice.ticket.runs_alone);
+    const main = active.filter(slice => inMain(slice.unit));
+    if (inMain(candidate) && main.length >= 2) { wait(`2 slices in ${mainTs}: ${main.map(slice => slice.name).join(", ")}`); continue; }
+    const holder = active.find(slice => shared(candidate.files, slice.unit.files));
+    if (holder) { wait(`shares ${shared(candidate.files, holder.unit.files)} with ${holder.name}`); continue; }
+    const sameMap = active.filter(slice => slice.unit.map === candidate.map);
+    if (candidate.runs_alone && sameMap.length) { wait(`runs alone; waits for ${sameMap.map(slice => slice.name).join(", ")}`); continue; }
+    const alone = sameMap.find(slice => slice.unit.runs_alone);
     if (alone) { wait(`${alone.name} runs alone`); continue; }
-    const names = naming(ticket, readme.prefix);
+    const names = candidate.group ? groupNaming(candidate.group, readme.prefix) : naming(tickets[0], readme.prefix);
     if (!/^[a-z0-9][a-z0-9._-]*$/.test(names.job)) { wait(`job name ${names.job} is not a kit bg name; add a prefix: line to the build README`); continue; }
     const same = active.find(slice => slice.name === names.job);
-    if (same) { wait(`job name ${names.job} already used by ${same.ticket.file || same.name}`); continue; }
+    if (same) { wait(`job name ${names.job} already used by ${same.unit.label || same.name}`); continue; }
     const why = builder.delegate ? "delegated, no slot" : `slot ${slots + 1}/${max}`;
-    next.push({ ticket, ...names, builder, why: `${why}${inMain(ticket) ? `, ${mainTs} ${main.length + 1}/2` : ""}` });
-    active.push({ name: names.job, ticket, slot: !builder.delegate });
+    next.push({ unit: candidate, ...names, builder, why: `${why}${inMain(candidate) ? `, ${mainTs} ${main.length + 1}/2` : ""}` });
+    active.push({ name: names.job, unit: candidate, slot: !builder.delegate });
   }
   return { next, waits };
 }
@@ -185,25 +251,29 @@ function push() {
   return "pushed after rebase";
 }
 
-// Claim on dev: fast-forward, recheck the ticket, fill assignee, commit, push (rebase and retry once).
+// Claim on dev: fast-forward, recheck the tickets, fill assignee, commit, push (rebase and retry once).
+// A group's tickets are claimed together in one commit, or not at all.
 function claim(item) {
   git(["fetch", "-q", "origin"]);
   if (git(["branch", "--show-current"]).trim() !== "dev") throw new Error(`${devRoot} is not on dev`);
   if (git(["status", "--porcelain", "--untracked-files=no"]).trim()) throw new Error(`${devRoot} has uncommitted changes`);
   if (git(["rev-list", "origin/dev..HEAD"]).trim()) throw new Error(`${devRoot} has commits not on origin/dev`);
   git(["merge", "-q", "--ff-only", "origin/dev"]);
-  const path = join(devRoot, item.ticket.file);
-  const source = readFileSync(path, "utf8");
-  const current = parseTicket(source, item.ticket.file, item.ticket.map).ticket;
-  if (current.assignee || current.status !== "open") return { taken: current.assignee || current.status };
-  writeFileSync(path, setAssignee(source, item.owner));
+  const { tickets, map, group } = item.unit;
+  const files = tickets.map(ticket => ticket.file);
+  const sources = files.map(file => readFileSync(join(devRoot, file), "utf8"));
+  for (const [i, ticket] of tickets.entries()) {
+    const current = parseTicket(sources[i], ticket.file, map).ticket;
+    if (current.assignee || current.status !== "open") return { taken: current.assignee || current.status };
+  }
+  files.forEach((file, i) => writeFileSync(join(devRoot, file), setAssignee(sources[i], item.owner)));
   try {
-    git(["commit", "-q", "-m", `docs: claim ${item.ticket.map} ${number(item.ticket.slug)}`, "--", item.ticket.file]);
+    git(["commit", "-q", "-m", `docs: claim ${map} ${group ? `group ${group}` : number(tickets[0].slug)}`, "--", ...files]);
     const how = push();
     return { sha: git(["rev-parse", "--short", "HEAD"]).trim(), how };
   } catch (error) {
     // Leave dev as origin/dev, so an unpushed claim never blocks the next run.
-    tryGit(["checkout", "-q", "--", item.ticket.file]);
+    tryGit(["checkout", "-q", "--", ...files]);
     tryGit(["reset", "-q", "--keep", "origin/dev"]);
     throw error;
   }
@@ -217,10 +287,29 @@ function start(item) {
   const env = { ...process.env, ASE_REVIEW_MODEL: reviewModel, ASE_OWNER: item.owner };
   delete env.KIT_ROOT;
   const kit = fakeKit || join(worktree, "scripts/agents/kit");
-  const started = run(kit, ["bg", item.job, "--", "scripts/agents/kit", "slice", "--ticket", item.ticket.file, "--builder", item.builder.model], { cwd: worktree, env });
+  const { tickets, group } = item.unit;
+  const command = group
+    ? ["next", "--run-group", "--builder", item.builder.model, ...tickets.flatMap(ticket => ["--ticket", ticket.file])]
+    : ["slice", "--ticket", tickets[0].file, "--builder", item.builder.model];
+  const started = run(kit, ["bg", item.job, "--", "scripts/agents/kit", ...command], { cwd: worktree, env });
   if (started.status !== 0) throw new Error(`kit bg ${item.job} failed: ${(started.stdout + started.stderr).trim().split("\n").at(-1)}`);
   console.log(`started: ${item.job}`);
   console.log(`wait: KIT_ROOT=${worktree} scripts/agents/kit wait job ${item.job} --timeout 2h`);
+}
+
+// A group's one kit bg job: its slices one after the other in this worktree.
+function runGroup({ builder, tickets }) {
+  const kit = fakeKit || resolve(import.meta.dirname, "../kit");
+  for (const [i, file] of tickets.entries()) {
+    console.log(`slice ${i + 1}/${tickets.length}: ${file}`);
+    const result = spawnSync(kit, ["slice", "--ticket", file, "--builder", builder], { stdio: "inherit" });
+    if (result.error || result.status !== 0) {
+      kitResult("fail", `next group stopped at ${file} (slice ${i + 1}/${tickets.length})${result.error ? `: ${result.error.message}` : ""}`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+  kitResult("ok", `next group ${tickets.length} slices done`);
 }
 
 function main(args) {
@@ -234,6 +323,7 @@ function main(args) {
     return;
   }
   if (flags.help) { console.log(usage); return; }
+  if (flags.runGroup) { runGroup(flags); return; }
   if (!tryGit(["fetch", "-q", "origin"])) console.log("problem: fetch failed; using the local origin/dev");
   const candidates = [], problems = [];
   for (const map of flags.maps.length ? flags.maps : [undefined]) {
@@ -241,18 +331,18 @@ function main(args) {
     const resolved = resolveTickets(loaded.tickets);
     problems.push(...loaded.problems, ...resolved.problems);
     const readmes = new Map();
-    for (const ticket of resolved.frontier) {
-      if (!readmes.has(ticket.map)) readmes.set(ticket.map, buildReadme(ticket.map));
-      candidates.push({ ticket, readme: readmes.get(ticket.map) });
+    for (const candidate of handOuts(loaded.tickets, resolved.frontier)) {
+      if (!readmes.has(candidate.map)) readmes.set(candidate.map, buildReadme(candidate.map));
+      candidates.push({ ...candidate, readme: readmes.get(candidate.map) });
     }
   }
   for (const problem of problems) console.error(`${problem.file}:${problem.line}: ${problem.message}`);
   if (problems.length) { kitResult("fail", `next ${problems.length} ticket problems`); process.exitCode = 1; return; }
   const running = runningSlices();
-  for (const slice of running) console.log(`running: ${slice.name} ${slice.ticket.file || "(ticket unknown)"}`);
+  for (const slice of running) console.log(`running: ${slice.name} ${slice.unit.label || "(ticket unknown)"}`);
   const { next, waits } = plan(candidates, running, flags.max);
-  for (const item of next) console.log(`next: ${item.ticket.file} builder=${item.builder.label} owner=${item.owner} why=${item.why}`);
-  for (const { ticket, reason } of waits) console.log(`waits: ${ticket.file} ${reason}`);
+  for (const item of next) console.log(`next: ${item.unit.label} builder=${item.builder.label} owner=${item.owner} why=${item.why}`);
+  for (const { unit, reason } of waits) console.log(`waits: ${unit.label} ${reason}`);
   const summary = `next ${next.length} ready, ${waits.length} waiting`;
   if (!flags.start) { kitResult("ok", summary); return; }
   let started = 0, taken = 0;
@@ -260,19 +350,19 @@ function main(args) {
     let claimed;
     try {
       claimed = claim(item);
-      if (claimed.taken) { console.log(`waits: ${item.ticket.file} claimed meanwhile (${claimed.taken})`); taken++; continue; }
-      console.log(`claimed: ${item.ticket.file} owner=${item.owner} ${claimed.sha} (${claimed.how})`);
-      if (item.builder.delegate) { console.log(`delegate: ${item.ticket.file} ${item.builder.model} owner=${item.owner}`); continue; }
+      if (claimed.taken) { console.log(`waits: ${item.unit.label} claimed meanwhile (${claimed.taken})`); taken++; continue; }
+      console.log(`claimed: ${item.unit.label} owner=${item.owner} ${claimed.sha} (${claimed.how})`);
+      if (item.builder.delegate) { console.log(`delegate: ${item.unit.label} ${item.builder.model} owner=${item.owner}`); continue; }
       start(item);
       started++;
     } catch (error) {
       const landed = claimed?.sha ? `claimed ${claimed.sha} but not started: ` : "";
-      kitResult("fail", `next start ${item.ticket.file}: ${landed}${error.message}`);
+      kitResult("fail", `next start ${item.unit.label}: ${landed}${error.message}`);
       process.exitCode = 1;
       return;
     }
   }
-  // A ticket claimed meanwhile moves from ready to waiting, as its waits: line says.
+  // A ticket or group claimed meanwhile moves from ready to waiting, as its waits: line says.
   kitResult("ok", `next ${next.length - taken} ready, ${waits.length + taken} waiting, ${started} started`);
 }
 

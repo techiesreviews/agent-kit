@@ -110,6 +110,17 @@ test("type and runs_alone are read; runs_alone must be true or false", () => {
   assert.deepEqual(parseTicket("---\nstatus: open\nruns_alone: yes\n---", "01-bad.md", "alpha").problems, [{ file: "01-bad.md", line: 3, message: "runs_alone must be true or false: yes" }]);
 });
 
+test("group is an optional slug; check fails on a malformed one", () => {
+  const parsed = parseTicket("---\nstatus: open\ngroup: font-loading # shared cause\n---", "01-ready.md", "alpha");
+  assert.deepEqual(parsed.problems, []);
+  assert.equal(parsed.ticket.group, "font-loading");
+  assert.equal(parseTicket("---\nstatus: open\n---", "01-ready.md", "alpha").ticket.group, "");
+  assert.equal(parseTicket("---\nstatus: open\ngroup:\n---", "01-ready.md", "alpha").ticket.group, "");
+  for (const bad of ["Fonts", "font loading", "-fonts", "fonts/x", "fonts--x"])
+    assert.deepEqual(parseTicket(`---\nstatus: open\ngroup: "${bad}"\n---`, "01-bad.md", "alpha").problems, [{ file: "01-bad.md", line: 3, message: `group must be a slug (a-z, 0-9, -): ${bad}` }]);
+  assert.deepEqual(parseTicket("---\nstatus: open\ngroup: a\ngroup: b\n---", "01-bad.md", "alpha").problems, [{ file: "01-bad.md", line: 4, message: "Duplicate group" }]);
+});
+
 test("Files lists exact paths; globs, placeholders and find-it-with lines name their directory", () => {
   const source = [
     "---", "status: open", "---", "", "## Goal", "", "- `src/not-a-file.ts` outside Files", "", "## Files", "",

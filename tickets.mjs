@@ -57,7 +57,7 @@ function dependencySlug(value) {
 export function parseTicket(source, file, map) {
   const lines = source.replace(/^\uFEFF/, "").split(/\r?\n/);
   const problems = [];
-  const ticket = { file, map, slug: basename(file, ".md"), title: "", type: "", builder: "", assignee: "", status: "", runs_alone: false, blocked_by: [], files: parseFiles(source), lines: {}, valid: true };
+  const ticket = { file, map, slug: basename(file, ".md"), title: "", type: "", builder: "", assignee: "", status: "", group: "", runs_alone: false, blocked_by: [], files: parseFiles(source), lines: {}, valid: true };
   const problem = (line, message) => { ticket.valid = false; problems.push({ file, line, message }); };
   const end = lines.findIndex((line, i) => i > 0 && line === "---");
   if (lines[0] !== "---" || end < 0) {
@@ -65,7 +65,7 @@ export function parseTicket(source, file, map) {
     return { ticket, problems };
   }
   for (let i = 1; i < end; i++) {
-    const field = /^(title|type|builder|assignee|status|runs_alone|blocked_by):\s*(.*)$/.exec(lines[i]);
+    const field = /^(title|type|builder|assignee|status|group|runs_alone|blocked_by):\s*(.*)$/.exec(lines[i]);
     if (!field) continue;
     const [, key, raw] = field;
     if (ticket.lines[key]) { problem(i + 1, `Duplicate ${key}`); continue; }
@@ -76,6 +76,13 @@ export function parseTicket(source, file, map) {
         const value = scalar(raw);
         if (value !== "true" && value !== "false") throw new Error(`runs_alone must be true or false: ${value}`);
         ticket.runs_alone = value === "true";
+        continue;
+      }
+      if (key === "group") {
+        // Tickets sharing a cause share a group slug; empty means no group.
+        const value = scalar(raw);
+        if (value && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value)) throw new Error(`group must be a slug (a-z, 0-9, -): ${value}`);
+        ticket.group = value;
         continue;
       }
       if (key !== "blocked_by") { ticket[key] = scalar(raw); continue; }

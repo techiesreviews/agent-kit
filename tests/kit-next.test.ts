@@ -8,11 +8,11 @@ import test, { type TestContext } from "node:test";
 const next = resolve("scripts/agents/kit.d/next");
 const identity = { GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.com", GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.com" };
 
-type Ticket = { type?: string; assignee?: string; builder?: string; files?: string[]; runsAlone?: boolean; blockedBy?: string[]; status?: string };
+type Ticket = { type?: string; assignee?: string; builder?: string; files?: string[]; runsAlone?: boolean; blockedBy?: string[]; status?: string; group?: string };
 
-function ticket({ type = "task (AFK)", assignee = "", builder = "claude", files = [], runsAlone, blockedBy = [], status = "open" }: Ticket) {
+function ticket({ type = "task (AFK)", assignee = "", builder = "claude", files = [], runsAlone, blockedBy = [], status = "open", group }: Ticket) {
   return ["---", "title: T", `type: ${type}`, `status: ${status}`, `assignee: ${assignee}`, `builder: ${builder}`, `blocked_by: [${blockedBy.join(", ")}]`,
-    ...(runsAlone === undefined ? [] : [`runs_alone: ${runsAlone}`]), "---", "", "## Goal", "", "Do it.", "", "## Files", "", ...files.map(file => `- \`${file}\``), "", "## Done when", "", "- done", ""].join("\n");
+    ...(runsAlone === undefined ? [] : [`runs_alone: ${runsAlone}`]), ...(group ? [`group: ${group}`] : []), "---", "", "## Goal", "", "Do it.", "", "## Files", "", ...files.map(file => `- \`${file}\``), "", "## Done when", "", "- done", ""].join("\n");
 }
 
 // A bare origin and a dev clone holding the given files, a fake kit (bg --list reads
@@ -420,4 +420,119 @@ test("the real kit bg --list rows and command quoting reach kit next", t => {
   finally { assert.equal(bg("--stop", "slice-alpha01").status, 0); }
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(result.stdout.trim().split("\n"), [`running: slice-alpha01 ${quoted}`, `waits: ${build("alpha", "02-next")} shares a/shared.ts with slice-alpha01`, "RESULT: ok next 0 ready, 1 waiting"]);
+});
+
+test("a group waits while one ticket is still blocked from outside it, then is one hand-out in blocked_by order", t => {
+  const { dev, git, write, lines } = fixture(t, {
+    "docs/wayfinder/alpha/build/README.md": "# Build\n\nprefix: al\n",
+    [build("alpha", "01-ext")]: ticket({ files: ["x/ext.ts"] }),
+    [build("alpha", "02-a")]: ticket({ group: "fonts", blockedBy: ["04-b"], files: ["a/a.ts"] }),
+    [build("alpha", "03-c")]: ticket({ group: "fonts", blockedBy: ["01-ext"], files: ["a/c.ts"] }),
+    [build("alpha", "04-b")]: ticket({ group: "fonts", files: ["a/b.ts"] }),
+    [build("alpha", "05-done")]: ticket({ group: "fonts", status: "closed", files: ["a/done.ts"] }),
+    [build("alpha", "06-z")]: ticket({ group: "later", blockedBy: ["01-ext"], files: ["z/z.ts"] }),
+  });
+  // 06-z's group has no member that may start, so it is not listed; 05-done is closed and left out.
+  assert.deepEqual(lines("alpha"), [
+    `next: ${build("alpha", "01-ext")} builder=claude-opus-5-5 owner=al-01 why=slot 1/5`,
+    "waits: group fonts tickets=03-c,04-b,02-a waits for 03-c (blocked)",
+    "RESULT: ok next 1 ready, 1 waiting",
+  ]);
+  write(dev, { [build("alpha", "01-ext")]: ticket({ status: "closed", files: ["x/ext.ts"] }) });
+  git(dev, "commit", "-qam", "close 01");
+  git(dev, "push", "-q");
+  assert.deepEqual(lines("alpha"), [
+    "next: group fonts tickets=03-c,04-b,02-a builder=claude-opus-5-5 owner=al-g-fonts why=slot 1/5",
+    "next: group later tickets=06-z builder=claude-opus-5-5 owner=al-g-later why=slot 2/5",
+    "RESULT: ok next 2 ready, 0 waiting",
+  ]);
+});
+
+test("a group with a human ticket, mixed builders, a partial claim or a blocked_by cycle waits", t => {
+  const { lines } = fixture(t, {
+    [build("alpha", "01-a")]: ticket({ group: "human", files: ["a/1.ts"] }),
+    [build("alpha", "02-b")]: ticket({ group: "human", type: "grilling (HITL)", files: ["a/2.ts"] }),
+    [build("alpha", "03-c")]: ticket({ group: "mixed", files: ["a/3.ts"] }),
+    [build("alpha", "04-d")]: ticket({ group: "mixed", builder: "gpt-6-luna", files: ["a/4.ts"] }),
+    [build("alpha", "05-e")]: ticket({ group: "part", assignee: "alpha-05", files: ["a/5.ts"] }),
+    [build("alpha", "06-f")]: ticket({ group: "part", files: ["a/6.ts"] }),
+    [build("alpha", "07-g")]: ticket({ group: "loop", blockedBy: ["08-h"], files: ["a/7.ts"] }),
+    [build("alpha", "08-h")]: ticket({ group: "loop", blockedBy: ["07-g"], files: ["a/8.ts"] }),
+  });
+  assert.deepEqual(lines("alpha"), [
+    "waits: group human tickets=01-a,02-b needs Lex (02-b type: grilling (HITL))",
+    "waits: group mixed tickets=03-c,04-d builders differ: claude-opus-5-5, gpt-6-luna",
+    "waits: group part tickets=05-e,06-f partly claimed by alpha-05",
+    "waits: group loop tickets=07-g,08-h blocked_by cycle in 07-g, 08-h",
+    "RESULT: ok next 0 ready, 4 waiting",
+  ]);
+});
+
+const groupCommand = (...files: string[]) => `'scripts/agents/kit' 'next' '--run-group' '--builder' 'claude-opus-5-5'${files.map(file => ` '--ticket' '${file}'`).join("")}\n`;
+
+test("a running group takes one slot, and cap and shared-file rules use the union of a group's Files", t => {
+  const { running, run, lines } = fixture(t, {
+    "docs/wayfinder/alpha/build/README.md": "# Build\n\nprefix: al\n",
+    [build("alpha", "01-a")]: ticket({ group: "fonts", assignee: "al-g-fonts", files: ["a/one.ts"] }),
+    [build("alpha", "02-b")]: ticket({ group: "fonts", assignee: "al-g-fonts", files: ["a/two.ts"] }),
+    [build("alpha", "03-shares")]: ticket({ files: ["a/two.ts"] }),
+    [build("alpha", "04-free")]: ticket({ files: ["a/four.ts"] }),
+    [build("alpha", "07-p")]: ticket({ group: "pair", files: ["b/p.ts"] }),
+    [build("alpha", "08-q")]: ticket({ group: "pair", files: ["b/q.ts"] }),
+    [build("alpha", "09-after")]: ticket({ files: ["b/q.ts"] }),
+    [build("alpha", "10-r")]: ticket({ group: "clash", files: ["c/r.ts"] }),
+    [build("alpha", "11-s")]: ticket({ group: "clash", files: ["a/one.ts"] }),
+  });
+  running("slice-alg-fonts", "", "running", groupCommand(build("alpha", "01-a"), build("alpha", "02-b")));
+  assert.match(run("alpha").stdout, new RegExp(`^running: slice-alg-fonts ${build("alpha", "01-a")},${build("alpha", "02-b")}$`, "m"));
+  assert.deepEqual(lines("alpha"), [
+    `next: ${build("alpha", "04-free")} builder=claude-opus-5-5 owner=al-04 why=slot 2/5`,
+    "next: group pair tickets=07-p,08-q builder=claude-opus-5-5 owner=al-g-pair why=slot 3/5",
+    `waits: ${build("alpha", "03-shares")} shares a/two.ts with slice-alg-fonts`,
+    `waits: ${build("alpha", "09-after")} shares b/q.ts with slice-alg-pair`,
+    "waits: group clash tickets=10-r,11-s shares a/one.ts with slice-alg-fonts",
+    "RESULT: ok next 2 ready, 3 waiting",
+  ]);
+  assert.deepEqual(lines("alpha", "--max", "2").slice(0, 3), [
+    `next: ${build("alpha", "04-free")} builder=claude-opus-5-5 owner=al-04 why=slot 2/2`,
+    `waits: ${build("alpha", "03-shares")} shares a/two.ts with slice-alg-fonts`,
+    "waits: group pair tickets=07-p,08-q cap 2 slices running",
+  ]);
+});
+
+test("--start claims a ready group in one commit and starts one job that runs its slices in order", t => {
+  const files = [build("alpha", "01-a"), build("alpha", "02-b")];
+  const { root, env, git, run } = fixture(t, {
+    "docs/wayfinder/alpha/build/README.md": "# Build\n\nprefix: al\n",
+    [files[1]]: ticket({ group: "fonts", files: ["a/two.ts"] }),
+    [files[0]]: ticket({ group: "fonts", blockedBy: ["02-b"], files: ["a/one.ts"] }),
+  });
+  const result = run("alpha", "--start");
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const worktree = join(root, "wt-build-al-g-fonts");
+  assert.deepEqual(git(join(root, "origin.git"), "log", "--format=%s", "dev").trim().split("\n"), ["docs: claim alpha group fonts", "fixture"]);
+  for (const file of files) assert.match(git(join(root, "origin.git"), "show", `dev:${file}`), /^assignee: al-g-fonts$/m);
+  assert.equal(git(worktree, "branch", "--show-current").trim(), "build/al-g-fonts");
+  assert.equal(readFileSync(env.FAKE_KIT_LOG!, "utf8"),
+    `${worktree}|claude-opus-5-5|al-g-fonts|bg slice-alg-fonts -- scripts/agents/kit next --run-group --builder claude-opus-5-5 --ticket ${files[1]} --ticket ${files[0]}\n`);
+  assert.match(result.stdout, /^claimed: group fonts tickets=02-b,01-a owner=al-g-fonts [0-9a-f]+ \(pushed\)$/m);
+  assert.match(result.stdout, /^started: slice-alg-fonts$/m);
+  assert.match(result.stdout, /RESULT: ok next 1 ready, 0 waiting, 1 started\n$/);
+
+  // The job's command runs kit slice for each ticket in order, and stops at the first failure.
+  writeFileSync(env.FAKE_KIT_LOG!, "");
+  const group = run("--run-group", "--builder", "claude-opus-5-5", "--ticket", files[1], "--ticket", files[0]);
+  assert.equal(group.status, 0, group.stdout + group.stderr);
+  assert.deepEqual(readFileSync(env.FAKE_KIT_LOG!, "utf8").trim().split("\n").map(line => line.split("|").at(-1)),
+    files.toReversed().map(file => `slice --ticket ${file} --builder claude-opus-5-5`));
+  assert.match(group.stdout, /^slice 2\/2: \S+01-a\.md$/m);
+  assert.match(group.stdout, /RESULT: ok next group 2 slices done\n$/);
+  writeFileSync(env.FAKE_KIT_LOG!, "");
+  env.FAKE_BG_FAIL = "1";
+  const failed = run("--run-group", "--builder", "claude-opus-5-5", "--ticket", files[1], "--ticket", files[0]);
+  assert.equal(failed.status, 1, failed.stdout + failed.stderr);
+  assert.equal(readFileSync(env.FAKE_KIT_LOG!, "utf8").trim().split("\n").length, 1);
+  assert.match(failed.stdout, /^RESULT: fail next group stopped at \S+02-b\.md \(slice 1\/2\)$/m);
+  assert.equal(run("--run-group", "--ticket", files[0]).status, 2);
+  assert.equal(run("alpha", "--ticket", files[0]).status, 2);
 });
