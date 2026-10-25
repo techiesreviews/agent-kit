@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# kit: print Lex's context card for this project
+set -euo pipefail
+# shellcheck source=scripts/agents/kit-lib.sh
+source "${KIT_LIB:-$(dirname -- "${BASH_SOURCE[0]}")/../kit-lib.sh}"
+case ${1-} in
+  --help|-h)
+    printf 'Usage: kit card\nPrint Lex'"'"'s context card for this project from ~/Projects/chat/memory/ (CHAT_MEMORY_DIR overrides).\n'
+    exit 0
+    ;;
+  '') ;;
+  *) printf 'Usage: kit card\n' >&2; kit_result fail "card unknown argument $1"; exit 2 ;;
+esac
+root=$(kit_root)
+output=$(node "$root/scripts/agents/context-card.mjs" --cwd "$root")
+printf '%s\n' "$output"
+if [[ $output == 'context card: no notes for this project yet' ]]; then
+  kit_result ok 'card no notes'
+else
+  kit_result ok "card $(wc -l <<< "$output") lines"
+fi
