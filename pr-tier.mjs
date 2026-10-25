@@ -18,16 +18,18 @@ export function pathTier({ status, path }) {
 export const visiblePaths = [/^src\/.+\.css$/i, /^src\/components\//, /^src\/ui\//, /^src\/page-builder\/(?!rules\/)/, /^src\/icons\.ts$/, /^index\.html$/];
 export const featureList = "docs/agents/features.md";
 export const visiblePath = path => visiblePaths.some(pattern => pattern.test(path));
+/** A ticket's Done heading: `## Done` or `## Done (YYYY-MM-DD)`, never `## Done when`. */
+export const doneHeading = () => /^## Done(?:[ \t]+\(\d{4}-\d{2}-\d{2}\))?[ \t]*\r?$/gm;
 export const featureListProblem = `visible change without a feature-list update; edit ${featureList} or add "Feature list: no change (<reason>)" to the ticket's Done`;
 
 /** Feature-list guard for a PR: { ok, line } where `line` is the PR body note, or undefined when nothing visible changed. */
 export function featureListGuard(changes, { ticketText = "", waive } = {}) {
   const visible = changes.filter(({ path }) => visiblePath(path));
   if (!visible.length) return { ok: true };
-  if (changes.some(({ path }) => path === featureList)) return { ok: true, line: `Feature list: updated (${featureList})` };
-  const done = [...ticketText.matchAll(/^## Done\b.*$/gm)].at(-1);
+  if (changes.some(({ status, path }) => path === featureList && status !== "D")) return { ok: true, line: `Feature list: updated (${featureList})` };
+  const done = [...ticketText.matchAll(doneHeading())].at(-1);
   const rest = done ? ticketText.slice(done.index + done[0].length) : "";
-  const reason = /^\s*(?:[-*]\s+)?Feature list: no change \(([^)\r\n]+)\)/m.exec(rest.split(/^## /m)[0])?.[1].trim();
+  const reason = /^\s*(?:[-*]\s+)?Feature list: no change \((.*\S.*)\)[ \t]*\r?$/m.exec(rest.split(/^## /m)[0])?.[1].trim();
   if (reason) return { ok: true, line: `Feature list: no change (${reason})` };
   if (waive) return { ok: true, line: `Feature list: waived (${waive.replace(/[\r\n]+/g, " ")}); ${visible[0].path} is visible` };
   return { ok: false, line: `Feature list: missing; ${visible[0].path} is visible` };
