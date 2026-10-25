@@ -118,10 +118,12 @@ const asDirectory = path => path.endsWith("/") ? path : path.includes("/") ? pat
 
 function filePath(word, named) {
   // Repo-relative paths only (dot folders such as .github/ included); a bare NAME.ext or
-  // .dotfile counts inside backticks, never in plain words.
+  // .dotfile counts inside backticks, never in plain words. A plain word needs a path shape
+  // (a file extension, a trailing "/", a glob or two "/"), so "and/or" or "N/A" is prose.
   const path = word.replace(/^\.\//, "");
   if (!path || /\s/.test(path) || /^(?:\/|~|-|\.\.(?:\/|$))/.test(path) || path.includes("://")) return "";
   if (!path.includes("/") && !(named && (/^[\w*?{}<>.,-]+\.[A-Za-z]\w*$/.test(path) || /^\.[\w-][\w.-]*$/.test(path)))) return "";
+  if (!named && !(/\.[A-Za-z]\w*$/.test(path) || path.endsWith("/") || globChars.test(path) || path.split("/").length > 2)) return "";
   const glob = path.split("/").findIndex(segment => globChars.test(segment));
   return glob < 0 ? path : glob ? `${path.split("/").slice(0, glob).join("/")}/` : "./";
 }

@@ -46,6 +46,7 @@ echo "RESULT: ok bg $2 pid 1"
 `);
   writeFileSync(join(root, "fake-worktree.sh"), `#!/usr/bin/env bash
 set -euo pipefail
+[[ -z \${FAKE_WORKTREE_FAIL:-} ]] || { echo "fatal: a branch named '$1' already exists" >&2; exit 1; }
 path="$(dirname "$(git rev-parse --show-toplevel)")/wt-\${1//\\//-}"
 git worktree add -q -b "$1" "$path" "$2" >&2
 printf '%s\\n' "$ASE_OWNER" > "$path/owner"
@@ -86,6 +87,7 @@ test("rule 1 skips non-AFK and claimed tickets and unstarted builds; order and b
     [build("alpha", "12-luna")]: ticket({ builder: "gpt-6-luna", files: ["a/twelve.ts"] }),
     [build("alpha", "13-blocked")]: ticket({ blockedBy: ["01-grill"] }),
     [build("alpha", "14-more")]: ticket({ files: ["a/fourteen.ts"] }),
+    [build("alpha", "15-over")]: ticket({ files: ["a/fifteen.ts"] }),
     [build("beta", "01-b")]: ticket({ builder: "", files: ["b/one.ts"] }),
     "docs/wayfinder/gamma/build/README.md": "# Build\n\n**Not started:** after alpha lands.\n\nprefix: ga\n",
     "docs/wayfinder/delta/build/README.md": "# Build\n\n## Notes\n\n**Not started:** quoted below the first heading, so it does not count.\n",
@@ -104,9 +106,10 @@ test("rule 1 skips non-AFK and claimed tickets and unstarted builds; order and b
     `waits: ${build("alpha", "01-grill")} needs Lex (type: grilling (HITL))`,
     `waits: ${build("alpha", "03-claimed")} claimed by al-03, no running job found`,
     "waits: docs/wayfinder/alpha/tickets/05-research.md needs Lex (type: research (AFK))",
+    `waits: ${build("alpha", "15-over")} cap 5 slices running`,
     `waits: ${build("gamma", "01-g")} build not started (README **Not started:**)`,
-    "waits: docs/wayfinder/gamma/tickets/02-map-task.md cap 5 slices running",
-    "RESULT: ok next 6 ready, 5 waiting",
+    "waits: docs/wayfinder/gamma/tickets/02-map-task.md build not started (README **Not started:**)",
+    "RESULT: ok next 6 ready, 6 waiting",
   ]);
   assert.match(lines("delta").join("\n"), /^next: docs\/wayfinder\/delta\/build\/tickets\/01-d\.md /);
   assert.equal(lines("Upper").at(-1), "RESULT: ok next 0 ready, 1 waiting");
@@ -245,17 +248,18 @@ test("--start claims on dev, pushes, makes the worktree and starts the slice; de
   assert.equal(git(dev, "status", "--porcelain").trim(), "");
 });
 
-// A pre-push hook in the dev clone lands another commit on origin the first time it runs.
-function racePush(root: string, git: (cwd: string, ...args: string[]) => string, change: string, content: string) {
+// A pre-push hook in the dev clone lands another commit on origin the first `times` times it runs.
+function racePush(root: string, git: (cwd: string, ...args: string[]) => string, change: string, content: string, times = 1) {
   git(root, "clone", "-q", "-b", "dev", join(root, "origin.git"), "other");
   const hooks = join(root, "hooks");
   mkdirSync(hooks);
   writeFileSync(join(hooks, "pre-push"), `#!/usr/bin/env bash
-[[ -e ${root}/raced ]] && exit 0
-touch ${root}/raced
+n=$(cat ${root}/raced 2>/dev/null || echo 0)
+(( n >= ${times} )) && exit 0
+echo $((n + 1)) > ${root}/raced
 cd ${join(root, "other")} || exit 1
 mkdir -p "$(dirname '${change}')" && printf '%s' '${content}' > '${change}'
-git add -A && git commit -q -m 'other lead' && git push -q origin HEAD:dev
+git add -A && git commit -q --allow-empty -m 'other lead' && git push -q origin HEAD:dev
 `);
   chmodSync(join(hooks, "pre-push"), 0o755);
   git(join(root, "dev"), "config", "core.hooksPath", hooks);
@@ -286,6 +290,40 @@ test("--start stops when the claim conflicts with a claim another lead pushed me
 });
 
 type Git = (cwd: string, ...args: string[]) => string;
+
+test("--start fails when the push is rejected again after the rebase and leaves dev on origin/dev", t => {
+  const { root, dev, git, run } = fixture(t, { [build("alpha", "01-one")]: ticket({ files: ["a/one.ts"] }) });
+  racePush(root, git, "notes.md", "other\n", 2);
+  const result = run("alpha", "--start");
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /^RESULT: fail next start \S+01-one\.md: git push failed: /m);
+  assert.equal(git(dev, "rev-parse", "HEAD"), git(dev, "rev-parse", "origin/dev"));
+  assert.equal(git(dev, "status", "--porcelain").trim(), "");
+  assert.deepEqual(git(join(root, "origin.git"), "log", "--format=%s", "dev").trim().split("\n"), ["other lead", "other lead", "fixture"]);
+});
+
+test("--start adds a missing assignee: line right after status:", t => {
+  const { root, run } = fixture(t, { [build("alpha", "01-one")]: ticket({ files: ["a/one.ts"] }).replace("assignee: \n", "") });
+  const result = run("alpha", "--start");
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const claimed = execFileSync("git", ["-C", join(root, "origin.git"), "show", `dev:${build("alpha", "01-one")}`], { encoding: "utf8" });
+  assert.deepEqual(claimed.split("\n").slice(2, 5), ["type: task (AFK)", "status: open", "assignee: alpha-01"]);
+});
+
+test("map and build tickets with one number get different owners and jobs", t => {
+  const { run } = fixture(t, {
+    "docs/wayfinder/alpha/build/README.md": "# Build\n\nprefix: al\n",
+    [build("alpha", "01-build")]: ticket({ files: ["a/build.ts"] }),
+    "docs/wayfinder/alpha/tickets/01-map.md": ticket({ files: ["a/map.ts"] }),
+  });
+  const result = run("alpha", "--start");
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^next: \S+build\/tickets\/01-build\.md builder=claude-opus-5-5 owner=al-01 /m);
+  assert.match(result.stdout, /^next: docs\/wayfinder\/alpha\/tickets\/01-map\.md builder=claude-opus-5-5 owner=al-m01 /m);
+  assert.match(result.stdout, /^started: slice-al01$/m);
+  assert.match(result.stdout, /^started: slice-alm01$/m);
+  assert.match(result.stdout, /RESULT: ok next 2 ready, 0 waiting, 2 started\n$/);
+});
 
 test("--start refuses a dev worktree off dev, with tracked changes, or ahead (and behind) of origin, and pushes nothing", t => {
   const behind = (git: Git, root: string) => {
@@ -336,6 +374,16 @@ test("a start that fails after the claim landed says so, and later runs report t
   delete env.FAKE_BG_FAIL;
   const after = run("alpha");
   assert.match(after.stdout, /^waits: \S+01-first-slice\.md claimed by al-01, no running job found$/m);
+});
+
+test("a worktree.sh failure after the claim landed says so, and a rerun reports the stuck claim", t => {
+  const { env, run } = fixture(t, startFiles);
+  env.FAKE_WORKTREE_FAIL = "1";
+  const result = run("alpha", "--start");
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /^RESULT: fail next start \S+01-first-slice\.md: claimed [0-9a-f]+ but not started: worktree\.sh build\/al-01-first-slice failed: fatal: a branch named 'build\/al-01-first-slice' already exists$/m);
+  delete env.FAKE_WORKTREE_FAIL;
+  assert.match(run("alpha").stdout, /^waits: \S+01-first-slice\.md claimed by al-01, no running job found$/m);
 });
 
 test("a running slice whose ticket is unknown or unreadable is listed and still takes a slot", t => {

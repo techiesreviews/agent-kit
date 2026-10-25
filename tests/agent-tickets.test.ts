@@ -119,7 +119,8 @@ test("Files lists exact paths; globs, placeholders and find-it-with lines name t
     "- `tests/kit-fix.test.ts` (or the file covering it; find it with `grep -ln \"kit.d/fix\" tests/`)",
     "- src/**, worker/** files with findings, e.g. dead exports",
     "- `.github/workflows/ci.yml`, `.gitignore` and `...`",
-    "- .github/workflows/deploy-preview.yml (new), ../plain-outside.md",
+    "- .github/workflows/deploy-preview.yml (new), ../plain-outside.md, and/or read/write N/A",
+    "- scripts/agents/kit.d/wait (three segments), tests/support/",
     "- `/home/lex/elsewhere.md`, `../outside.md`, `..`, `https://example.com/x`",
     "  1. `docs/nested.md` (sub-item)",
     "", "### Notes", "- `docs/notes.md`", "", "## Done when", "", "- `tests/later.test.ts`",
@@ -127,7 +128,7 @@ test("Files lists exact paths; globs, placeholders and find-it-with lines name t
   assert.deepEqual(parseFiles(source), [
     "scripts/agents/kit.d/next", "tests/kit-next.test.ts", "docs/agents/kitchen.md", "AGENTS.md",
     "src/", "scripts/agents/kit.d/", "scripts/agents/shots/features/", "./", "tests/", "worker/",
-    ".github/workflows/ci.yml", ".gitignore", ".github/workflows/deploy-preview.yml", "docs/nested.md", "docs/notes.md",
+    ".github/workflows/ci.yml", ".gitignore", ".github/workflows/deploy-preview.yml", "scripts/agents/kit.d/wait", "tests/support/", "docs/nested.md", "docs/notes.md",
   ]);
   assert.deepEqual(parseFiles("---\nstatus: open\n---\nNo files section"), []);
   assert.deepEqual(parseTicket(source, "01-ready.md", "alpha").ticket.files, parseFiles(source));

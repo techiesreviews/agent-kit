@@ -77,8 +77,9 @@ function buildReadme(map) {
 
 function number(slug) { return /^(\d+)-/.exec(slug)?.[1] ?? slug; }
 
+// A map numbers tickets/ and build/tickets/ separately, so map tickets get an "m" before the number.
 function naming(ticket, prefix) {
-  const nn = number(ticket.slug);
+  const nn = `${ticket.file.includes("/build/tickets/") ? "" : "m"}${number(ticket.slug)}`;
   const owner = `${prefix}-${nn}`;
   return { owner, job: `slice-${prefix}${nn}`, branch: `build/${owner}-${ticket.slug.replace(/^\d+-/, "")}` };
 }
@@ -138,7 +139,7 @@ function plan(candidates, running, max) {
       continue;
     }
     if (ticket.type !== "task (AFK)") { wait(`needs Lex (type: ${ticket.type || "missing"})`); continue; }
-    if (readme.notStarted && ticket.file.includes("/build/tickets/")) { wait("build not started (README **Not started:**)"); continue; }
+    if (readme.notStarted) { wait("build not started (README **Not started:**)"); continue; }
     const builder = builderFor(ticket.builder);
     const slots = active.filter(slice => slice.slot).length;
     if (!builder.delegate && slots >= max) { wait(`cap ${max} slices running`); continue; }
@@ -152,6 +153,8 @@ function plan(candidates, running, max) {
     if (alone) { wait(`${alone.name} runs alone`); continue; }
     const names = naming(ticket, readme.prefix);
     if (!/^[a-z0-9][a-z0-9._-]*$/.test(names.job)) { wait(`job name ${names.job} is not a kit bg name; add a prefix: line to the build README`); continue; }
+    const same = active.find(slice => slice.name === names.job);
+    if (same) { wait(`job name ${names.job} already used by ${same.ticket.file || same.name}`); continue; }
     const why = builder.delegate ? "delegated, no slot" : `slot ${slots + 1}/${max}`;
     next.push({ ticket, ...names, builder, why: `${why}${inMain(ticket) ? `, ${mainTs} ${main.length + 1}/2` : ""}` });
     active.push({ name: names.job, ticket, slot: !builder.delegate });
