@@ -1,0 +1,24 @@
+{
+  "ticket": "docs/wayfinder/demo/build/tickets/10-dropped.md",
+  "title": "Dropped after a slice",
+  "kind": "task (AFK) S",
+  "builder": {
+    "model": "claude-opus-5-5",
+    "effort": "high",
+    "previousModels": [],
+    "built": null
+  },
+  "phases": [
+    {
+      "name": "brief",
+      "start": "2026-10-25T15:00:00.000Z",
+      "end": "2026-10-25T15:00:00.000Z",
+      "exit": 0
+    }
+  ],
+  "rounds": 0,
+  "reviews": [],
+  "cost": null,
+  "costs": {},
+  "landed": null
+}

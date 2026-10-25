@@ -57,12 +57,13 @@ function severity(piece) {
 const found = piece => sum(Object.keys(findingKinds).map(kind => piece.findings?.[kind] ?? 0));
 
 // Done is merged or a closed ticket (a queued merge may never record its SHA); waiting on Lex is a ticket
-// marked for him; running has a record; the rest wait to start. Only the build's own tickets are pieces.
+// marked for him; running has a record; the rest wait to start. Only the build's own tickets are pieces, and a
+// dropped (wontfix) ticket is none, with or without a record.
 function pieceStates(pieces, allTickets = []) {
   const tickets = allTickets.filter(ticket => ticket.file.includes("/build/tickets/"));
   const bySlug = new Map(tickets.map(ticket => [ticket.slug, ticket]));
   const lex = ticket => ["ready-for-human", "needs-info"].includes(ticket?.status);
-  const rows = pieces.map(piece => {
+  const rows = pieces.filter(piece => bySlug.get(piece.piece)?.status !== "wontfix").map(piece => {
     const ticket = bySlug.get(piece.piece);
     return { piece, state: piece.landed?.sha || ticket?.status === "closed" ? "done" : lex(ticket) ? "lex" : "running" };
   });
@@ -74,20 +75,27 @@ function pieceStates(pieces, allTickets = []) {
   return rows;
 }
 
-// Builds oldest first, each { map, entries }: up a rung after five in a row without a UX correction,
-// down one when Lex finds a UX problem after release.
+// Builds oldest first, each { map, entries, unreadable }: up a rung after five in a row without a UX correction,
+// down one when Lex finds a UX problem after release. A build whose log could not be read is left out, never
+// counted as clean.
 export function ladder(builds) {
-  let rung = 1, streak = 0;
+  let rung = 1, streak = 0, unreadable = 0;
   for (const build of builds) {
+    if (build.unreadable) { unreadable++; continue; }
     const ux = build.entries.filter(entry => uxKinds.has(entry.kind));
     if (ux.some(entry => entry.afterRelease === "yes")) rung = Math.max(1, rung - 1);
     streak = ux.length ? 0 : streak + 1;
     if (streak === streakGoal) { rung = Math.min(rungs.length, rung + 1); streak = 0; }
   }
-  return { rung, streak, builds: builds.length };
+  return { rung, streak, builds: builds.length - unreadable, unreadable };
 }
 
-const feedbackEntries = (text, file) => text ? parseFeedback(text, file, () => true).entries : [];
+// Entries of a known kind, and whether any line (or the heading) could not be read; tickets.mjs check names them.
+function feedbackLog(text, file) {
+  if (!text) return { entries: [], unreadable: false };
+  const { entries, problems } = parseFeedback(text, file, () => true);
+  return { entries: entries.filter(entry => Object.hasOwn(feedbackKinds, entry.kind)), unreadable: problems.length > 0 };
+}
 
 // Per kind of job, per builder: pieces, median minutes, rounds and findings per piece, build cost per piece where known.
 // Dollars are a floor (partial) when any piece is unpriced or its own dollars leave out runs.
@@ -127,8 +135,8 @@ function advice(kind, rows) {
   return `${lead}; ${priced[0].who} builds it cheapest (${dollars(priced[0])} a piece).`;
 }
 
-// A fix link is relative to the build folder: tickets/… is the build's, ../tickets/… the map's. The page shows it
-// as text, not a link, so it stays one self-contained file.
+// A fix link is relative to the build folder: tickets/… is the build's, ../tickets/… the map's. The page shows it as
+// text: a PR link would be an external URL, and a ticket link would not resolve from the page's .scratch folder.
 function fixText(fix, tickets, map) {
   if (fix === "open") return "No fix yet";
   const link = /^\[([^\]]+)\]\(([^()\s]+)\)$/.exec(fix);
@@ -143,7 +151,7 @@ const table = (head, rows) => `<details><summary>Show the numbers as a table</su
   rows.map(([name, ...cells]) => `<tbody><tr><th scope="rowgroup" colspan="${head.length}">${esc(name)}</th></tr><tr>${cells.map(cell => `<td>${esc(cell)}</td>`).join("")}</tr></tbody>`).join("") + "</table></details>";
 const section = (id, title, caption, body) => `<section aria-labelledby="${id}"><h2 id="${id}">${title}</h2><p class="caption">${esc(caption)}</p>${body}</section>`;
 const name = piece => piece.title || piece.piece;
-// A bar whose segments grow by value, 2px apart, its length a share of the longest bar.
+// A bar whose segments grow by value, 2px apart, its length a share of the whole.
 const bar = (share, segments) => `<div class="track"><div class="bar" style="inline-size:${round(Math.max(share, 0.01) * 100)}%">` +
   segments.filter(segment => segment.value > 0).map(segment => `<span data-key="${segment.key}"${segment.light ? " data-light" : ""} style="flex-grow:${round(segment.value * 100)}" title="${esc(segment.title)}"></span>`).join("") + "</div></div>";
 
@@ -202,12 +210,13 @@ function reviewSection(pieces) {
       [name(piece), ...Object.keys(findingKinds).map(key => piece.findings?.[key] ?? 0), sum(Object.values(declined))])));
 }
 
-function correctionSection(entries, tickets, map) {
+function correctionSection({ entries, unreadable }, tickets, map) {
   const open = entries.filter(entry => entry.fix === "open").length;
-  const caption = entries.length ? `Lex corrected ${plural(entries.length, "thing")} in this build${open ? `; ${open} still ${open === 1 ? "has" : "have"} no fix` : "; every one has its fix"}.`
-    : "Lex has not corrected anything in this build yet.";
+  const left = unreadable ? " (lines of the log that could not be read are left out)" : "";
+  const caption = entries.length ? `Lex corrected ${plural(entries.length, "thing")} in this build${open ? `; ${open} still ${open === 1 ? "has" : "have"} no fix` : "; every one has its fix"}${left}.`
+    : `Lex has not corrected anything in this build yet${left}.`;
   const counts = Object.keys(feedbackKinds).map(kind => [kind, entries.filter(entry => entry.kind === kind).length]);
-  const chart = `<ol class="bars single">${counts.map(([kind, count]) => `<li><span class="name">${esc(sentence(feedbackKinds[kind]))}</span>` +
+  const chart = `<ol class="bars">${counts.map(([kind, count]) => `<li><span class="name">${esc(sentence(feedbackKinds[kind]))}</span>` +
     `<span class="value">${count}</span>${count ? bar(count / entries.length, [{ key: "single", value: count, title: `${count}` }]) : '<div class="track"></div>'}</li>`).join("")}</ol>`;
   const list = entries.length ? `<ul class="entries">${entries.map(entry => `<li><span class="when">${esc(entry.date)} · ${esc(sentence(feedbackKinds[entry.kind] ?? entry.kind))}` +
     `${entry.afterRelease === "yes" ? " · after release" : ""}</span><span class="what">${esc(entry.text)}</span><span class="fix">${esc(fixText(entry.fix, tickets, map))}</span></li>`).join("")}</ul>` : "";
@@ -217,7 +226,8 @@ function correctionSection(entries, tickets, map) {
 function ladderSection(state, current) {
   const ux = current.filter(entry => uxKinds.has(entry.kind)).length;
   const caption = `${state.streak} of ${streakGoal} builds in a row without a UX correction` +
-    `${state.builds ? "" : " (no finished build counted yet)"}; this build has ${plural(ux, "UX correction")} so far.`;
+    `${state.builds ? "" : " (no finished build counted yet)"}; this build has ${plural(ux, "UX correction")} so far` +
+    `${state.unreadable ? `; ${plural(state.unreadable, "finished build")} with a feedback log that could not be read ${state.unreadable === 1 ? "is" : "are"} not counted` : ""}.`;
   const dots = Array.from({ length: streakGoal }, (_, index) => `<circle cx="${12 + index * 28}" cy="12" r="9"${index < state.streak ? ' class="on"' : ""}/>`).join("");
   const steps = rungs.map((text, index) => `<li${index + 1 === state.rung ? ' aria-current="step"' : ""}><span class="rung">Rung ${index + 1}</span>${esc(text)}</li>`).reverse().join("");
   return section("ladder", "Ladder", caption,
@@ -280,8 +290,7 @@ h3 span { color: var(--muted); font-weight: 400; }
 details { margin-block-start: 0.75rem; color: var(--ink-2); font-size: 0.875rem; }
 summary { cursor: pointer; padding-block: 0.5rem; min-block-size: 2.75rem; display: flex; align-items: center; }
 summary:focus-visible { outline: 2px solid var(--on); outline-offset: 2px; }
-table { inline-size: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-table { table-layout: fixed; }
+table { inline-size: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; table-layout: fixed; }
 th, td { padding: 0.25rem; text-align: end; vertical-align: bottom; }
 thead th { font-weight: 600; font-size: 0.8125rem; line-height: 1.3; padding-inline-start: 0.5rem; border-block-end: 1px solid var(--line); }
 th[scope="rowgroup"] { text-align: start; font-weight: 400; color: var(--ink); overflow-wrap: anywhere; padding-block-start: 0.5rem; }
@@ -310,8 +319,8 @@ dd span { color: var(--ink); font-variant-numeric: tabular-nums; font-weight: 60
  * each { map, feedback } with its feedback log text.
  */
 export function scorePage({ data, tickets = [], builds = [], generated = new Date() }) {
-  const current = feedbackEntries(data.feedback, `docs/wayfinder/${data.map}/build/feedback.md`);
-  const state = ladder(builds.map(build => ({ map: build.map, entries: feedbackEntries(build.feedback, `docs/wayfinder/${build.map}/build/feedback.md`) })));
+  const current = feedbackLog(data.feedback, `docs/wayfinder/${data.map}/build/feedback.md`);
+  const state = ladder(builds.map(build => ({ map: build.map, ...feedbackLog(build.feedback, `docs/wayfinder/${build.map}/build/feedback.md`) })));
   const when = generated.toISOString().slice(0, 16).replace("T", " ");
   return `<!doctype html>
 <html lang="en">
@@ -327,7 +336,7 @@ export function scorePage({ data, tickets = [], builds = [], generated = new Dat
 ${whereSection(data.pieces, tickets)}
 ${reviewSection(data.pieces)}
 ${correctionSection(current, tickets, data.map)}
-${ladderSection(state, current)}
+${ladderSection(state, current.entries)}
 ${builderSection(data.pieces)}
 </main>
 </body>
