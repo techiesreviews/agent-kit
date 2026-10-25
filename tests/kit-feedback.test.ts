@@ -8,6 +8,7 @@ import test, { type TestContext } from "node:test";
 import { feedbackLegend, parseFeedback } from "../scripts/agents/tickets.mjs";
 
 const feedback = resolve("scripts/agents/kit.d/feedback");
+const kit = resolve("scripts/agents/kit");
 const log = "docs/wayfinder/alpha/build/feedback.md";
 
 function today() {
@@ -26,7 +27,7 @@ function fixture(t: TestContext) {
   delete env.KIT_LIB_MJS;
   const run = (...args: string[]) => spawnSync(process.execPath, [feedback, ...args], { env, encoding: "utf8", timeout: 5_000 });
   const read = () => readFileSync(join(root, log), "utf8");
-  return { root, run, read };
+  return { root, env, run, read };
 }
 
 test("the first call creates the log with heading and legend; later lines go newest first", t => {
@@ -72,7 +73,8 @@ test("bad input exits 2 with usage and leaves the log alone", t => {
   assert.equal(existsSync(join(root, log)), false);
   for (const args of [[], ["alpha", "text"], ["missing", "--kind", "fault", "x"], ["alpha", "--kind", "fault"],
     ["alpha", "--kind", "fault", "a · b"], ["alpha", "--kind", "fault", "two\nlines"], ["alpha", "--kind", "fault", "--fix", "99", "x"],
-    ["alpha", "--kind", "fault", "--fix", "PR x", "x"], ["alpha", "--kind", "fault", "--bogus", "x"], ["alpha", "--fix-for", "7", "24"]]) {
+    ["alpha", "--kind", "fault", "--fix", "PR x", "x"], ["alpha", "--kind", "fault", "--bogus", "x"], ["alpha", "--fix-for", "7", "24"],
+    ["alpha", "--kind", "fault", "--kind", "fault", "x"], ["alpha", "--after-release", "--after-release", "--kind", "fault", "x"]]) {
     const output = run(...args);
     assert.equal(output.status, 2, JSON.stringify(args));
     assert.match(output.stdout, /^RESULT: fail feedback /);
@@ -146,4 +148,33 @@ test("edits keep a log's BOM and CRLF line endings", t => {
   lines.splice(6, 0, `- ${today()} · workflow · asked twice · after release: no · fix: open`);
   assert.equal(read(), lines.join("\r\n"));
   assert.deepEqual(parseFeedback(read(), join(root, log)).problems, []);
+});
+
+test("a log starting with a BOM on its heading line accepts both edits and keeps the BOM", t => {
+  const { root, run, read } = fixture(t);
+  writeFileSync(join(root, log), "\uFEFF## Feedback\n\n- 2026-10-23 · fault · x · after release: no · fix: open\n");
+  assert.equal(run("alpha", "--fix-for", "3", "PR #3").status, 0);
+  assert.equal(read(), "\uFEFF## Feedback\n\n- 2026-10-23 · fault · x · after release: no · fix: PR #3\n");
+  const added = run("alpha", "--kind", "fault", "y");
+  assert.equal(added.status, 0, added.stderr);
+  assert.equal(read(), `\uFEFF## Feedback\n\n- ${today()} · fault · y · after release: no · fix: open\n- 2026-10-23 · fault · x · after release: no · fix: PR #3\n`);
+});
+
+test("a new line keeps a blank line before a following heading", t => {
+  const { root, run, read } = fixture(t);
+  writeFileSync(join(root, log), "## Feedback\n\n## Notes\n");
+  assert.equal(run("alpha", "--kind", "fault", "y").status, 0);
+  assert.equal(read(), `## Feedback\n\n- ${today()} · fault · y · after release: no · fix: open\n\n## Notes\n`);
+  assert.deepEqual(parseFeedback(read(), join(root, log)).problems, []);
+});
+
+test("the kit dispatcher lists feedback and passes its single RESULT line through", t => {
+  const { env } = fixture(t);
+  const output = spawnSync(kit, ["feedback", "alpha", "--kind", "fault", "x"], { env, encoding: "utf8", timeout: 10_000 });
+  assert.equal(output.status, 0, output.stderr);
+  const results = output.stdout.split("\n").filter(line => line.startsWith("RESULT: "));
+  assert.deepEqual(results, ["RESULT: ok feedback alpha line 7 fault"]);
+  assert.ok(output.stdout.endsWith("RESULT: ok feedback alpha line 7 fault\n"));
+  const help = spawnSync(kit, ["help"], { env, encoding: "utf8", timeout: 10_000 });
+  assert.match(help.stdout, /^ {2}feedback +add one line to a build's feedback log/m);
 });

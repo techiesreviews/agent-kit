@@ -204,13 +204,13 @@ test("check validates build feedback logs and names file:line for a bad date, ki
     "- 2026-10-22 · workflow · asked twice · after release: no · fix: open",
     "- 2026-10-21 · below-bar · grey on grey · after release: no · fix: [01](../tickets/01-x.md)",
   ];
-  writeFileSync(join(cwd, file), `${head}${good.join("\n")}\n\n## Notes\n\nfree text\n`);
+  writeFileSync(join(cwd, file), `${head}### October\n\n${good.join("\n")}\n\n## Notes\n\nfree text\n`);
   git("init", "-q");
   git("add", ".");
   git("-c", "user.name=Kit test", "-c", "user.email=kit@example.com", "commit", "-qm", "feedback");
   const parsed = loadFeedback("docs/wayfinder", { cwd, ref: "HEAD" });
   assert.deepEqual(parsed.problems, []);
-  assert.deepEqual(parsed.entries.map((entry: { line: number; kind: string }) => [entry.line, entry.kind]), [[7, "felt-wrong"], [8, "fault"], [9, "workflow"], [10, "below-bar"]]);
+  assert.deepEqual(parsed.entries.map((entry: { line: number; kind: string }) => [entry.line, entry.kind]), [[9, "felt-wrong"], [10, "fault"], [11, "workflow"], [12, "below-bar"]]);
 
   const script = resolve("scripts/agents/tickets.mjs");
   const run = (...args: string[]) => spawnSync(process.execPath, [script, ...args], { cwd, env, encoding: "utf8", timeout: 5_000 });

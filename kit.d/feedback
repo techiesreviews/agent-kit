@@ -73,22 +73,25 @@ function today() {
 function add(path, map, line) {
   const source = existsSync(path) ? readFileSync(path, "utf8") : undefined;
   const eol = source?.includes("\r\n") ? "\r\n" : "\n";
+  const bom = source?.startsWith("\uFEFF") ? "\uFEFF" : "";
   const lines = source !== undefined
-    ? source.replace(/\r?\n$/, "").split(/\r?\n/)
+    ? source.slice(bom.length).replace(/\r?\n$/, "").split(/\r?\n/)
     : [`# Feedback: ${map}`, "", feedbackLegend, "", feedbackHeading];
   const heading = lines.indexOf(feedbackHeading);
   if (heading < 0) throw new Error(`${path}: missing ${feedbackHeading} heading`);
-  if (lines[heading + 1] === "") lines.splice(heading + 2, 0, line);
-  else lines.splice(heading + 1, 0, "", line);
+  const at = lines[heading + 1] === "" ? heading + 2 : heading + 1;
+  lines.splice(at, 0, ...(at === heading + 1 ? ["", line] : [line]));
+  const number = lines.indexOf(line, heading);
+  if (/^#/.test(lines[number + 1] ?? "")) lines.splice(number + 1, 0, "");
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${lines.join(eol)}${eol}`);
-  return lines.indexOf(line, heading) + 1;
+  writeFileSync(path, `${bom}${lines.join(eol)}${eol}`);
+  return number + 1;
 }
 
 function fixFor(path, number, fix) {
   if (!existsSync(path)) throw new UsageError(`no feedback log yet: ${path}`);
   const source = readFileSync(path, "utf8");
-  if (!source.split(/\r?\n/).includes(feedbackHeading)) throw new Error(`${path}: missing ${feedbackHeading} heading`);
+  if (!source.replace(/^\uFEFF/, "").split(/\r?\n/).includes(feedbackHeading)) throw new Error(`${path}: missing ${feedbackHeading} heading`);
   const entry = parseFeedback(source, path, () => true).entries.find(entry => entry.line === number);
   if (!entry) throw new UsageError(`${path}:${number} is not a feedback line`);
   const lines = source.split("\n");

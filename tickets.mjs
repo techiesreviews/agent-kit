@@ -207,7 +207,8 @@ export function parseFeedback(source, file, exists = isFile) {
   const start = lines.indexOf(feedbackHeading);
   if (start < 0) { problem(1, `Missing ${feedbackHeading} heading`); return { entries, problems }; }
   for (let i = start + 1; i < lines.length && !/^#{1,2} /.test(lines[i]); i++) {
-    if (!lines[i].trim()) continue;
+    // Blank lines and ### subheadings (for example a month) may group entries.
+    if (!lines[i].trim() || /^#{3,6} /.test(lines[i])) continue;
     const entry = parseFeedbackLine(lines[i]);
     if (!entry) { problem(i + 1, "Malformed feedback line"); continue; }
     entries.push({ ...entry, line: i + 1 });
