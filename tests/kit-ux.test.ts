@@ -9,7 +9,33 @@ import { pathToFileURL } from "node:url";
 
 const script = resolve("scripts/agents/kit.d/ux"), kit = resolve("scripts/agents/kit");
 // Node loads this extensionless executable as ESM; a URL keeps tsx from resolving it as TS.
-const ux = await import(pathToFileURL(script).href);
+// The plain-JavaScript module has no declarations; this shape types every fake handed to it.
+type Feature = { id: string; name: string; try: string; good: string; files: string[]; phone: boolean; steps: string | null; matched?: string[] };
+type Added = { file: string; line: number; text: string };
+type Finding = { rule: string; file: string; line?: number; text: string };
+type CssFile = { file: string; text: string; base: string };
+type Section = { title: string; priority: number; lines: string[] };
+type Image = { name: string; source: string; bytes: number; priority: number };
+type LayoutTry = { dir: string; index: { screens: { screen: string; width: number; theme: string; files: { path: string; bytes: number }[] }[]; layoutFindings: { screen: string; width: number; theme: string; finding: { kind: string; selector: string; text: string; detail: string } }[] } };
+type Layout = { tap: boolean; rule: string; screen: string; kind: string; selector: string; detail: string; sizes: string[]; shot: string };
+type Ux = {
+  bundleLimit: number;
+  parseArgs(args: string[]): { base: string; features: string[]; all: boolean; noReview: boolean; ticket?: string };
+  parseFeatures(markdown: string): Feature[];
+  touchedFeatures(features: Feature[], changed: string[]): Feature[];
+  selectFeatures(features: Feature[], changed: string[], flags: { all?: boolean; features?: string[] }): Feature[];
+  screensFor(feature: Feature): string[];
+  addedLines(diff: string): Added[];
+  textFindings(added: Added[], bases?: Map<string, string>): Finding[];
+  cssCounts(text: string): { px: number; timings: number };
+  cssFindings(files: CssFile[], added: Added[]): Finding[];
+  layoutFindings(tries: LayoutTry[]): Layout[];
+  composeBundle(head: string[], sections: Section[], limit?: number): { markdown: string; trimmed: string[] };
+  pickImages(images: Image[], limit?: number): { kept: Image[]; trimmed: (Image & { reason: string })[] };
+  guessTicket(branch: string, files: string[]): string | undefined;
+  mockupLinks(text: string, ticket: string): string[];
+};
+const ux: Ux = await import(pathToFileURL(script).href);
 
 const entry = (id: string, files: string[], { phone = "yes", steps = "none yet", good = "Calm (S1)." } = {}) => [
   `### ${id} Feature ${id}`, "- Try: Open it.", `- Good: ${good}`, `- Files: ${files.map(file => `\`${file}\``).join(", ")}`,
@@ -24,7 +50,7 @@ const featuresMarkdown = [
 
 test("features parse outside fences, and a diff touches the features whose Files globs match", () => {
   const features = ux.parseFeatures(featuresMarkdown);
-  assert.deepEqual(features.map((feature: { id: string }) => feature.id), ["F-media-01", "F-media-02", "F-media-03"]);
+  assert.deepEqual(features.map(feature => feature.id), ["F-media-01", "F-media-02", "F-media-03"]);
   assert.deepEqual(features[0], {
     id: "F-media-01", name: "Feature F-media-01", try: "Open it.", good: "Plain (S2, L2).",
     files: ["src/page-builder/media-library-view.ts", "src/page-builder/media-picker.css"], phone: true, steps: "scripts/agents/shots/features/F-media-01.json",
@@ -32,12 +58,12 @@ test("features parse outside fences, and a diff touches the features whose Files
   assert.equal(features[1].steps, null);
   assert.equal(features[2].phone, false);
   const touched = ux.touchedFeatures(features, ["src/page-builder/media-picker.css", "src/page-builder/media-adding-rules.ts", "docs/x.md"]);
-  assert.deepEqual(touched.map((feature: { id: string; matched: string[] }) => [feature.id, feature.matched]), [
+  assert.deepEqual(touched.map(feature => [feature.id, feature.matched]), [
     ["F-media-01", ["src/page-builder/media-picker.css"]], ["F-media-03", ["src/page-builder/media-adding-rules.ts"]],
   ]);
   assert.deepEqual(ux.touchedFeatures(features, ["scripts/agents/kit.d/ux"]), []);
   assert.deepEqual(ux.selectFeatures(features, [], { all: true }).length, 3);
-  assert.deepEqual(ux.selectFeatures(features, ["src/page-builder/media-picker.css"], { features: ["F-media-02"] }).map((feature: { id: string }) => feature.id), ["F-media-02"]);
+  assert.deepEqual(ux.selectFeatures(features, ["src/page-builder/media-picker.css"], { features: ["F-media-02"] }).map(feature => feature.id), ["F-media-02"]);
   assert.throws(() => ux.selectFeatures(features, [], { features: ["F-media-09"] }), /unknown feature: F-media-09/);
   assert.deepEqual(ux.screensFor(features[0]), ["media-gallery"]);
   assert.deepEqual(ux.screensFor(features[2]), []);
@@ -76,7 +102,7 @@ diff --git a/src/components/panel.test.ts b/src/components/panel.test.ts
 test("text added and badge or hint classes are found on a fixture diff, with file and line", () => {
   const added = ux.addedLines(fixtureDiff);
   assert.deepEqual(added[0], { file: "src/components/panel.ts", line: 11, text: '  note.textContent = "Drag a file here, or press the plus button to choose files from your computer.";' });
-  assert.deepEqual(ux.textFindings(added).map((finding: { rule: string; file: string; line: number; text: string }) => `${finding.rule} ${finding.file}:${finding.line} ${finding.text}`), [
+  assert.deepEqual(ux.textFindings(added).map(finding => `${finding.rule} ${finding.file}:${finding.line} ${finding.text}`), [
     'S1 src/components/panel.ts:11 new visible text, 78 characters: "Drag a file here, or press the plus button to choose files f…"',
     'S2 src/components/panel.ts:12 new count or badge class "panel__count"',
     'S1 src/components/panel.ts:13 new hint or tip class "media-tip"',
@@ -84,15 +110,32 @@ test("text added and badge or hint classes are found on a fixture diff, with fil
     'S2 src/components/panel.css:4 new count or badge class "panel__badge"',
     'S1 src/components/panel.css:4 new hint or tip class "panel__hint"',
   ]);
+  // A lookup of an existing class, or a CSS selector the base already had, is not a new class.
+  const lookups: Added[] = [{ file: "src/components/panel.ts", line: 3, text: 'const count = el.querySelector(".media-count");' }, { file: "src/a.css", line: 2, text: ".media-count, .new-badge { gap: 0; }" }];
+  assert.deepEqual(ux.textFindings(lookups, new Map([["src/a.css", ".media-count { gap: 1px; }"]])), [{ rule: "S2", file: "src/a.css", line: 2, text: 'new count or badge class "new-badge"' }]);
+});
+
+test("layout findings merge across themes, keep tap targets at 390 apart and link the PNG", () => {
+  const tap = { kind: "tap-target", selector: "button.tiny", text: "", detail: "20x20 px" };
+  const screens = ["light", "dark"].flatMap(theme => [390, 768].map(width => ({ screen: "pages", width, theme,
+    files: [{ path: `pages-${width}-${theme}-drop-strip.webp`, bytes: 1 }, { path: `pages-${width}-${theme}.png`, bytes: 1 }] })));
+  const tries = [{ dir: "/t", index: { screens, layoutFindings: [
+    { screen: "pages", width: 390, theme: "light", finding: tap }, { screen: "pages", width: 390, theme: "dark", finding: tap },
+    { screen: "pages", width: 768, theme: "light", finding: tap },
+  ] } }] satisfies LayoutTry[];
+  assert.deepEqual(ux.layoutFindings(tries), [
+    { tap: true, rule: "U6", screen: "pages", kind: "tap-target", selector: "button.tiny", detail: "20x20 px", sizes: ["390 light", "390 dark"], shot: "/t/pages-390-light.png" },
+    { tap: false, rule: "U6", screen: "pages", kind: "tap-target", selector: "button.tiny", detail: "20x20 px", sizes: ["768 light"], shot: "/t/pages-768-light.png" },
+  ]);
 });
 
 test("raw px spacing and timings count against the base and report only increases", () => {
   assert.deepEqual(ux.cssCounts(".a { gap: 6px; margin: 0 4px; width: 20px; transition: opacity 120ms, transform .2s; } /* padding: 9px */"), { px: 2, timings: 2 });
   const added = ux.addedLines(fixtureDiff);
-  const findings = ux.cssFindings([
+  const findings = ux.cssFindings(([
     { file: "src/components/panel.css", text: ".a { gap: var(--space); }\n.b {}\n.c {}\n.panel__badge { gap: 6px; }\n.panel__row { transition: opacity 120ms; }", base: ".a { gap: var(--space); }" },
     { file: "src/components/same.css", text: ".a { gap: 4px; }", base: ".a { gap: 2px; }" },
-  ], added);
+  ] satisfies CssFile[]), added);
   assert.deepEqual(findings, [{ rule: "L2", file: "src/components/panel.css", line: 4, text: "raw px spacing 0 → 1, raw timings 0 → 1 (not blocking until tokens exist)" }]);
   // A value on a continuation line, in a file the added lines do not cover, still names its line.
   assert.deepEqual(ux.cssFindings([{ file: "fixtures/site.css", text: ".a {\n  /* gap: 1px */\n  padding:\n    4px 8px;\n}", base: "" }], added), [
@@ -102,11 +145,11 @@ test("raw px spacing and timings count against the base and report only increase
 
 test("the bundle stays under 60 KB and 12 images, trims the lowest-value items first and names the trims", () => {
   const many = (prefix: string, count: number) => Array.from({ length: count }, (_, i) => `- ${prefix} ${i} ${"x".repeat(200)}`);
-  const { markdown, trimmed } = ux.composeBundle(["# UX bundle", "head"], [
+  const { markdown, trimmed } = ux.composeBundle(["# UX bundle", "head"], ([
     { title: "Tries", priority: 9, lines: ["- F-media-01 passed"] },
     { title: "Scripted findings", priority: 6, lines: many("finding", 400) },
     { title: "Diff summary", priority: 1, lines: many("diff", 400) },
-  ]);
+  ] satisfies Section[]));
   assert.ok(Buffer.byteLength(markdown) < ux.bundleLimit, String(Buffer.byteLength(markdown)));
   assert.equal(trimmed.length, 2);
   assert.match(trimmed[0], /^Scripted findings \d+ lines$/);
@@ -116,13 +159,13 @@ test("the bundle stays under 60 KB and 12 images, trims the lowest-value items f
   assert.match(markdown, /- finding 0 /, "the first findings stay");
   const small = ux.composeBundle(["# UX bundle"], [{ title: "Tries", priority: 9, lines: ["- ok"] }, { title: "Empty", priority: 1, lines: [] }]);
   assert.deepEqual(small, { markdown: "# UX bundle\n\n## Tries\n\n- ok\n", trimmed: [] });
-  const images = Array.from({ length: 20 }, (_, i) => ({ name: `image-${i}`, source: `/x/${i}`, bytes: i === 0 ? 300_001 : 1000, priority: i % 3 }));
+  const images = Array.from({ length: 20 }, (_, i) => ({ name: `image-${i}`, source: `/x/${i}`, bytes: i === 0 ? 300_001 : 1000, priority: i % 3 }) satisfies Image);
   const { kept, trimmed: dropped } = ux.pickImages(images);
   assert.equal(kept.length, 12);
-  assert.ok(kept.every((image: { bytes: number }) => image.bytes <= 300_000));
-  assert.deepEqual(kept.slice(0, 6).map((image: { priority: number }) => image.priority), [0, 0, 0, 0, 0, 0]);
+  assert.ok(kept.every(image => image.bytes <= 300_000));
+  assert.deepEqual(kept.slice(0, 6).map(image => image.priority), [0, 0, 0, 0, 0, 0]);
   assert.equal(dropped.length, 8);
-  assert.deepEqual(dropped.find((image: { name: string }) => image.name === "image-0").reason, "over 300 KB");
+  assert.deepEqual(dropped.find(image => image.name === "image-0")?.reason, "over 300 KB");
 });
 
 test("the ticket comes from the branch name, and its mock-up links resolve against it", () => {
@@ -134,7 +177,7 @@ test("the ticket comes from the branch name, and its mock-up links resolve again
   ]);
 });
 
-function fixture(t: TestContext) {
+function fixture(t: TestContext, gitConfig: [string, string][] = []) {
   const root = mkdtempSync(join(tmpdir(), "kit-ux-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const env = { ...process.env, KIT_ROOT: root, KIT_MAIN_ROOT: root, ASE_OWNER: "ux-test", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
@@ -149,6 +192,7 @@ function fixture(t: TestContext) {
   git("init", "--quiet", "--initial-branch=build/sf-1-panel");
   git("config", "user.name", "Kit ux test");
   git("config", "user.email", "kit-ux@example.test");
+  for (const [key, value] of gitConfig) git("config", key, value);
   put(".gitignore", ".scratch/\n");
   put("docs/agents/features.md", featuresMarkdown);
   put("docs/agents/ux-rulebook.md", "# UX rulebook\n- **S1** No explainer lines.\n- **S2** No counts or badges.\n- **L2** Only theme tokens.\n- **U6** Touch never sticks.\n");
@@ -248,7 +292,7 @@ test("kit ux fails a screens run that exits non-zero even when every shot passed
   const { run } = fixture(t);
   const output = run(["--features", "F-media-02"], { FAIL_EXIT_ONLY: "1" });
   assert.equal(output.status, 1);
-  assert.match(output.result, /^RESULT: fail ux 0 features tried, 1 scripted findings, bundle \S+, broken: F-media-02$/);
+  assert.match(output.result, /^RESULT: fail ux 0 features tried, 1 scripted findings, bundle \S+, screens failed: media-gallery$/);
   const bundle = /bundle (\S+),/.exec(output.result)![1];
   assert.match(readFileSync(join(bundle, "bundle.md"), "utf8"), /- F-media-02 Feature F-media-02: untried \(screens media-gallery; a screen failed\)/);
 });
@@ -268,4 +312,16 @@ test("kit ux stops at a signal: no further try starts and one fail RESULT is pri
   const results = stdout.trimEnd().split("\n").filter(line => line.startsWith("RESULT: "));
   assert.deepEqual(results, ["RESULT: fail ux interrupted by SIGTERM"]);
   assert.equal(status, 143);
+});
+
+test("kit ux reads added lines whatever the diff prefix settings", async t => {
+  for (const setting of [["diff.mnemonicPrefix", "true"], ["diff.noprefix", "true"]] satisfies [string, string][]) {
+    await t.test(setting[0], t => {
+      const { put, run } = fixture(t, [setting]);
+      put("src/page-builder/media-library-filter.ts", 'export const note = "Choose a filter to see only the pictures, videos or documents you need today.";\n');
+      const output = run(["--features", "F-media-02"]);
+      const bundle = /bundle (\S+)$/.exec(output.result)![1];
+      assert.match(readFileSync(join(bundle, "bundle.md"), "utf8"), /- S1 src\/page-builder\/media-library-filter\.ts:1: new visible text, 77 characters/);
+    });
+  }
 });

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // kit: try the features a diff touches, run scripted UX checks and pack a small review bundle
 import { execFileSync, spawn } from "node:child_process";
-import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, matchesGlob, normalize, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { checkColours } from "../../check-colours.mjs";
@@ -28,7 +28,8 @@ trimmed first and named. Raw tries: <main root>/.scratch/ux-tries/<owner>/<time>
 The ticket (for its mock-up link) is --ticket, else the ticket the branch name ends with.
 The model review is not part of this command yet; --no-review is accepted and changes nothing.
 KIT_UX_SHOTS: executable replacing kit shots, called with the same arguments (tests).
-A failed try fails: RESULT: fail ux … broken: <feature,…>.
+A failed try fails: RESULT: fail ux … broken: <feature,…>; a failed screens run adds
+screens failed: <screen,…> (its features stay untried).
 `;
 
 /** Named kit shots screens and the source files each one shows. */
@@ -144,12 +145,14 @@ export function addedLines(diff) {
 const hintWords = { hint: "S1", hints: "S1", tip: "S1", tips: "S1", tooltip: "S1", count: "S2", counts: "S2", counter: "S2", badge: "S2", badges: "S2", dot: "S2" };
 const shorten = (text, length = 60) => text.length > length ? `${text.slice(0, length)}…` : text;
 
+const cssClasses = text => [...text.replace(/\/\*.*?\*\//g, "").matchAll(/\.(-?[_a-zA-Z][\w-]*)/g)].map(match => match[1]);
+
+/** Class names an added line gives: CSS selectors, or class, className and classList assignments (never a lookup like querySelector). */
 function classNames(file, text) {
-  if (file.endsWith(".css")) return [...text.replace(/\/\*.*?\*\//g, "").matchAll(/\.(-?[_a-zA-Z][\w-]*)/g)].map(match => match[1]);
+  if (file.endsWith(".css")) return cssClasses(text);
   const lists = [
     ...[...text.matchAll(/\bclass(?:Name)?\s*[=:]\s*(["'`])(.*?)\1/g)].map(match => match[2]),
     ...[...text.matchAll(/\bclassList\.(?:add|toggle|replace)\(([^)]*)\)/g)].flatMap(match => [...match[1].matchAll(/(["'`])(.*?)\1/g)].map(inner => inner[2])),
-    ...[...text.matchAll(/(["'`])\.([_a-zA-Z][\w-]*)/g)].map(match => match[2]),
   ];
   return lists.flatMap(list => list.replace(/\$\{[^}]*\}/g, " ").split(/[\s.,]+/)).filter(name => /^[_a-zA-Z][\w-]*$/.test(name));
 }
@@ -160,13 +163,18 @@ function visibleText(text) {
     .filter(part => part.length > 60 && !/[{};=]|=>|\(\)/.test(part) && /^[\p{L}"'“‘(]/u.test(part) && part.split(/\s+/).filter(word => /\p{L}{2}/u.test(word)).length >= 5);
 }
 
-/** "Say less" checks on added source lines: long visible text (S1) and hint, tip, count or badge classes (S1, S2). */
-export function textFindings(added) {
+/**
+ * "Say less" checks on added source lines: long visible text (S1) and hint, tip, count or badge classes (S1, S2).
+ * `bases` maps a CSS file to its base text; a selector the base already had is not new.
+ */
+export function textFindings(added, bases = new Map()) {
   const findings = [];
+  const known = new Map([...bases].map(([file, text]) => [file, new Set(cssClasses(text))]));
   for (const { file, line, text } of added) {
     if (!/^(src|shared)\//.test(file) || /\.test\.|\.spec\./.test(file)) continue;
     if (/\.(ts|js|mjs|html|css)$/.test(file)) {
       for (const name of new Set(classNames(file, text))) {
+        if (known.get(file)?.has(name)) continue;
         const rule = name.toLowerCase().split(/[-_]+/).map(part => hintWords[part]).find(Boolean);
         if (rule) findings.push({ rule, file, line, text: `new ${rule === "S1" ? "hint or tip" : "count or badge"} class "${name}"` });
       }
@@ -225,7 +233,8 @@ export function layoutFindings(tries) {
     const tap = finding.kind === "tap-target" && width === 390;
     const key = [tap, screen, finding.kind, finding.selector, finding.detail].join("|");
     const shot = tried.index.screens.find(entry => entry.screen === screen && entry.width === width && entry.theme === theme);
-    const entry = merged.get(key) ?? { tap, rule: layoutRules[finding.kind] ?? "L5", screen, kind: finding.kind, selector: finding.selector, detail: finding.detail, sizes: [], shot: shot?.files[0] ? join(tried.dir, shot.files[0].path) : tried.dir };
+    const png = shot?.files.find(file => file.path.endsWith(".png"));
+    const entry = merged.get(key) ?? { tap, rule: layoutRules[finding.kind] ?? "L5", screen, kind: finding.kind, selector: finding.selector, detail: finding.detail, sizes: [], shot: png ? join(tried.dir, png.path) : tried.dir };
     if (!entry.sizes.includes(`${width} ${theme}`)) entry.sizes.push(`${width} ${theme}`);
     merged.set(key, entry);
   }
@@ -338,15 +347,16 @@ async function main() {
     try { mergeBase = git("merge-base", "HEAD", flags.base).trim(); }
     catch { throw new Error(`no merge-base with ${flags.base}`); }
     const untracked = git("ls-files", "--others", "--exclude-standard").split("\n").filter(Boolean);
-    const changed = [...new Set([...git("diff", "--name-only", mergeBase).split("\n").filter(Boolean), ...untracked])];
+    const changed = [...new Set([...git("-c", "core.quotePath=false", "diff", "--name-only", mergeBase).split("\n").filter(Boolean), ...untracked])];
     const features = parseFeatures(readFileSync(join(root, "docs/agents/features.md"), "utf8"));
     const selected = selectFeatures(features, changed, flags);
     if (!selected.length) { kitResult("ok", "ux nothing visible touched"); return 0; }
 
     const owner = kitOwner().replace(/[^a-zA-Z0-9_.-]/g, "-").replace(/^\.+$/, "unknown");
     const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
-    const out = join(kitMainRoot(), ".scratch/ux", owner, stamp), triesDir = join(kitMainRoot(), ".scratch/ux-tries", owner, stamp);
-    mkdirSync(out, { recursive: true });
+    // A random suffix keeps two runs started in the same second apart.
+    mkdirSync(join(kitMainRoot(), ".scratch/ux", owner), { recursive: true });
+    const out = mkdtempSync(join(kitMainRoot(), ".scratch/ux", owner, `${stamp}-`)), triesDir = join(kitMainRoot(), ".scratch/ux-tries", owner, basename(out));
     mkdirSync(triesDir, { recursive: true });
     console.log(`features: ${selected.map(feature => feature.id).join(", ")}`);
 
@@ -373,15 +383,16 @@ async function main() {
       tries.push({ kind: "screens", features: untried.filter(entry => entry.screens.length).map(entry => entry.feature), dir, index, failures, ok: !failures.length });
       console.log(`screens ${screenList.join(", ")}: ${failures.length ? `failed: ${failures[0]}` : "shot"}`);
     }
-    const broken = tries.filter(tried => !tried.ok).flatMap(tried => {
-      if (tried.kind === "steps") return tried.features;
-      // A failure that names no screen (no index, a contact sheet error) breaks every feature of the run.
-      const named = tried.features.filter(feature => screensFor(feature).some(screen => tried.failures.some(line => line.startsWith(`${screen} `))));
-      return named.length ? named : tried.features;
+    // Only tried features break; a failed screens run names its screens, all of them when no failure line names one.
+    const broken = tries.filter(tried => !tried.ok && tried.kind === "steps").flatMap(tried => tried.features);
+    const screensFailed = tries.filter(tried => !tried.ok && tried.kind === "screens").flatMap(tried => {
+      const named = screenList.filter(screen => tried.failures.some(line => line.startsWith(`${screen} `)));
+      return named.length ? named : screenList;
     });
 
     // Scripted checks.
-    const diff = git("diff", "--unified=0", "--no-color", "--no-ext-diff", mergeBase, "--", "src", "shared");
+    // Pinned prefixes and unquoted paths, whatever the user's diff settings.
+    const diff = git("-c", "core.quotePath=false", "diff", "--src-prefix=a/", "--dst-prefix=b/", "--unified=0", "--no-color", "--no-ext-diff", mergeBase, "--", "src", "shared");
     const added = [...addedLines(diff), ...untracked.filter(file => /^(src|shared)\//.test(file)).flatMap(file => {
       try { return readFileSync(join(root, file), "utf8").split("\n").map((text, index) => ({ file, line: index + 1, text })); } catch { return []; }
     })];
@@ -396,7 +407,7 @@ async function main() {
     const colours = checkColours(coloured.map(({ file, text }) => ({ file, text })), allow.filter(entry => coloured.some(({ file }) => file === entry.file)))
       .map(failure => ({ rule: "L2", file: failure.file, line: failure.line, text: `raw colour ${failure.match}` }));
     const layout = layoutFindings(tries);
-    const sourceFindings = [...colours, ...textFindings(added), ...cssFindings(css, added)];
+    const sourceFindings = [...colours, ...textFindings(added, new Map(css.map(({ file, base }) => [file, base]))), ...cssFindings(css, added)];
     const findingLines = [
       ...layout.filter(entry => entry.tap).map(entry => `- U6 tap target under 44 px at 390: ${entry.selector} — ${entry.detail} (${entry.screen}; ${entry.sizes.join(", ")}) ${entry.shot}`),
       ...layout.filter(entry => !entry.tap).map(entry => `- ${entry.rule} layout ${entry.kind}: ${entry.selector} — ${entry.detail} (${entry.screen}; ${entry.sizes.join(", ")}) ${entry.shot}`),
@@ -432,7 +443,7 @@ async function main() {
       const steps = tries.find(entry => entry.kind === "steps" && entry.features[0] === feature);
       if (steps) return [`- ${feature.id} ${feature.name}: ${steps.ok ? "passed" : "failed"} (${feature.steps})`, ...steps.failures.map(line => `  - ${line}`)];
       const screens = screensFor(feature);
-      return [`- ${feature.id} ${feature.name}: untried${screens.length ? ` (screens ${screens.join(", ")}${broken.includes(feature) ? "; a screen failed" : ""})` : " (no named screen)"}`];
+      return [`- ${feature.id} ${feature.name}: untried${screens.length ? ` (screens ${screens.join(", ")}${screens.some(screen => screensFailed.includes(screen)) ? "; a screen failed" : ""})` : " (no named screen)"}`];
     }).flat();
     const { markdown, trimmed } = composeBundle([
       `# UX bundle: ${branch}`,
@@ -453,9 +464,9 @@ async function main() {
     console.log(`bundle: ${join(out, "bundle.md")} (${Buffer.byteLength(markdown)} bytes, ${kept.length} images)`);
     if (trimmed.length) console.log(`trimmed: ${trimmed.join(", ")}`);
     if (trimmedImages.length) console.log(`trimmed images: ${trimmedImages.length} (${[...new Set(trimmedImages.map(image => image.reason))].join(", ")})`);
-    const summary = `ux ${tried.length} features tried, ${findingLines.length} scripted findings, bundle ${out}`;
-    kitResult(broken.length ? "fail" : "ok", broken.length ? `${summary}, broken: ${broken.map(feature => feature.id).join(", ")}` : summary);
-    return broken.length ? 1 : 0;
+    const failed = [...broken.length ? [`broken: ${broken.map(feature => feature.id).join(", ")}`] : [], ...screensFailed.length ? [`screens failed: ${screensFailed.join(", ")}`] : []];
+    kitResult(failed.length ? "fail" : "ok", [`ux ${tried.length} features tried, ${findingLines.length} scripted findings, bundle ${out}`, ...failed].join(", "));
+    return failed.length ? 1 : 0;
   } catch (error) {
     console.error(`problem: ${error.message}`);
     kitResult("fail", `ux ${error.message}`);
