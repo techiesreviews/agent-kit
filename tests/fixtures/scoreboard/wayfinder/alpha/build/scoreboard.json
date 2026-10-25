@@ -1,0 +1,14 @@
+{
+  "map": "alpha",
+  "pieces": [
+    {
+      "piece": "01-x",
+      "phases": [],
+      "landed": {
+        "pr": 1,
+        "sha": "ffffffffffffffffffffffffffffffffffffffff",
+        "at": "2026-10-01T10:00:00.000Z"
+      }
+    }
+  ]
+}

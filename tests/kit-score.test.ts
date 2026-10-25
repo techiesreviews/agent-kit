@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import test, { type TestContext } from "node:test";
 import { costTotal, kitScore, runCost, scoreMap, scoreReview } from "../scripts/agents/kit-lib.mjs";
+import { ladder, scorePage } from "../scripts/agents/score-page.mjs";
 
 const kit = resolve("scripts/agents/kit");
 type Counts = Record<string, number>;
@@ -307,4 +308,82 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: ${JSON.
   assert.deepEqual(record.reviews[0].counts, findings.counts);
   assert.equal(record.reviews[0].counts?.kind.fault, 1);
   assert.deepEqual(record.cost, { build: null, review: { usd: 0.42, tokens: 15 } });
+});
+
+// The fixture build: five records, seven build tickets, three corrections, and four finished builds
+// whose time order (bravo, charlie, delta, alpha) is not their names' order.
+function pageFixture(t: TestContext) {
+  const dir = mkdtempSync(join(tmpdir(), "kit-score-page-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const root = join(dir, "work"), main = join(dir, "main"), source = resolve("tests/fixtures/scoreboard");
+  cpSync(join(source, "wayfinder"), join(root, "docs/wayfinder"), { recursive: true });
+  cpSync(join(source, "records"), join(main, ".scratch/scoreboard/demo"), { recursive: true });
+  const run = (...args: string[]) => spawnSync("bash", [kit, "score", ...args], { cwd: root, encoding: "utf8", timeout: 10_000,
+    env: { ...process.env, KIT_ROOT: root, KIT_MAIN_ROOT: main, ASE_SKIP_DOCTOR: "1" } });
+  return { dir, root, main, run };
+}
+
+const sections = (html: string) => [...html.matchAll(/<section aria-labelledby="[^"]+"><h2 id="[^"]+">([^<]+)<\/h2><p class="caption">([^<]*)<\/p>/g)]
+  .map(match => ({ title: match[1], caption: match[2] }));
+
+test("kit score --html writes one self-contained page from the records, tickets and feedback logs", t => {
+  const f = pageFixture(t), result = f.run("demo", "--html"), path = join(f.main, ".scratch/scoreboard/demo/page.html");
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(result.stdout, `page: ${path}\nRESULT: ok score demo 5 pieces\n`);
+  const html = readFileSync(path, "utf8");
+  // Every section in order, each with a one-sentence caption.
+  assert.deepEqual(sections(html).map(item => item.title), ["Where the build is", "What reviews caught", "What Lex had to correct", "Ladder", "Builders"]);
+  for (const { title, caption } of sections(html)) assert.match(caption, /^[A-Z0-9].{20,}\.$/, title);
+  // Self-contained: no network, nothing loaded or linked.
+  assert.doesNotMatch(html, /https?:|\/\/[\w.-]+\.|\b(src|href)=|@import|url\(/i);
+  assert.match(html, /<style>/); assert.match(html, /prefers-color-scheme: dark/); assert.match(html, /<svg /);
+  // Plain words: no severity codes.
+  assert.doesNotMatch(html, /\bP[0-3]\b/);
+  // Where: merged 01, 02, 05 and closed 07 are done; 03 runs; 04 waits on Lex; 06 has not started.
+  const tiles = Object.fromEntries([...html.matchAll(/data-state="(\w+)"(?: data-some)?><span class="value">(\d+)/g)].map(match => [match[1], Number(match[2])]));
+  assert.deepEqual(tiles, { done: 4, running: 1, lex: 1, waiting: 1 });
+  assert.equal(sections(html)[0].caption, "4 of 7 pieces done, 1 waiting on Lex; the longest, Trim the toolbar, took 55 minutes, most of it building.");
+  // Reviews: 1 + 2 + 4 found in three pieces (gaps are not problems), the declined style finding lighter.
+  assert.match(sections(html)[1].caption, /^Over every review round, reviews caught 9 problems across 3 pieces, 2 of them serious; .+ declined 1 with a reason \(lighter\)\.$/);
+  assert.match(html, /data-key="style" data-light style="flex-grow:100" title="Style: 1 declined"/);
+  assert.match(html, /1 serious · 2 minor · 1 style · 1 fix round/);
+  // Corrections: each linked to its fix, with the fix ticket's title and state.
+  assert.equal(sections(html)[2].caption, "Lex corrected 3 things in this build; 1 still has no fix.");
+  assert.match(html, /hover jumps on the tiles.*Fix: ticket 06, Calmer hover on tiles \(open\)/);
+  // Each kind's bar is its share of all corrections: one of three.
+  assert.equal([...html.matchAll(/inline-size:33.3%"><span data-key="single"/g)].length, 3);
+  assert.match(html, /No fix yet/); assert.match(html, /Fixed in PR #12/);
+  // Ladder: in time order bravo had a UX correction, then charlie (workflow), delta and alpha (fault) count: 3 of 5.
+  assert.match(html, /Builds in a row without a UX correction: <strong>3 of 5<\/strong>/);
+  assert.match(sections(html)[3].caption, /^3 of 5 builds in a row without a UX correction; this build has 2 UX corrections so far\.$/);
+  assert.match(html, /<li aria-current="step"><span class="rung">Rung 1<\/span>/);
+  // Builders: per kind and builder; under ten pieces of a kind, no advice.
+  assert.match(html, /<h3>task \(AFK\) M <span>3 pieces<\/span><\/h3>/);
+  assert.match(html, /<dt>gpt-6.1-sol<\/dt><dd><span>1<\/span> piece<\/dd><dd><span>39<\/span> min \(median\)<\/dd><dd><span>0<\/span> fix rounds a piece<\/dd><dd><span>1<\/span> findings a piece<\/dd><dd><span>120k tokens<\/span> a piece/);
+  assert.doesNotMatch(html, /To bring to Lex/);
+  // --out writes elsewhere; --json keeps stdout to the data and prints the page line on stderr.
+  const out = join(f.dir, "elsewhere/page.html"), both = f.run("demo", "--html", "--out", out, "--json");
+  assert.equal(both.status, 0, both.stderr);
+  assert.ok(both.stdout.startsWith("{")); assert.equal(both.stderr, `page: ${out}\n`);
+  assert.equal(sections(readFileSync(out, "utf8")).length, 5);
+  for (const args of [["--html"], ["demo", "--out", out], ["demo", "--html", "--out"]]) assert.equal(f.run(...args).status, 2, args.join(" "));
+});
+
+test("the builder advice appears only once a kind has ten pieces, and the ladder moves by its rules", () => {
+  const piece = (index: number, who: string, findings: Counts, usd: number | null) => ({ piece: `${index}-p`, title: `Piece ${index}`, kind: "task S", who,
+    builder: null, phases: [], rounds: 0, reviews: [], cost: { build: { usd, tokens: 1000 }, review: null }, landed: null, minutes: 10, findings });
+  const pieces = (count: number) => Array.from({ length: count }, (_, index) =>
+    index % 2 ? piece(index, "cheap-model", { fault: 2 }, 0.1) : piece(index, "careful-model", {}, 1));
+  const html = (count: number) => scorePage({ data: { map: "demo", pieces: pieces(count), feedback: null } });
+  assert.doesNotMatch(html(9), /To bring to Lex/);
+  assert.match(html(10), /<strong>To bring to Lex:<\/strong> careful-model builds task S best \(0 findings a piece\); cheap-model builds it cheapest \(\$0\.10 a piece\)\./);
+  assert.match(scorePage({ data: { map: "demo", pieces: pieces(10).map(item => ({ ...item, who: "careful-model" })), feedback: null } }),
+    /careful-model builds task S best and cheapest \(1 finding, \$0\.55 a piece\)\./);
+  const build = (...kinds: [string, "yes" | "no"][]) => ({ map: "m", entries: kinds.map(([kind, afterRelease]) => ({ kind, afterRelease })) });
+  const clean = Array.from({ length: 5 }, () => build());
+  assert.deepEqual(ladder([]), { rung: 1, streak: 0, builds: 0 });
+  assert.deepEqual(ladder(clean), { rung: 2, streak: 0, builds: 5 });
+  assert.deepEqual(ladder([...clean, build(["fault", "no"], ["workflow", "no"])]), { rung: 2, streak: 1, builds: 6 });
+  assert.deepEqual(ladder([...clean, build(["felt-wrong", "yes"])]), { rung: 1, streak: 0, builds: 6 });
+  assert.deepEqual(ladder([build(["too-much", "yes"]), build()]), { rung: 1, streak: 1, builds: 2 });
 });

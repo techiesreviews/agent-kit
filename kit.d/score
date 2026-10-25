@@ -1,23 +1,30 @@
 #!/usr/bin/env node
 // kit: print the scoreboard the kit recorded per piece: builder, time, rounds, findings, cost, PR
-import { existsSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { scorePage } from "../score-page.mjs";
+import { loadTickets } from "../tickets.mjs";
 
 const { kitRoot, kitMainRoot, kitResult, costTotal } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const usage = "Usage: kit score [map] [--json] [--snapshot]\nRecords: main root .scratch/scoreboard/<map>/<ticket-slug>.json (no map: every map with records).\n" +
-  "--json prints the merged data; --snapshot writes docs/wayfinder/<map>/build/scoreboard.json for the lead to commit.\n";
+const usage = "Usage: kit score [map] [--json] [--snapshot] [--html [--out FILE]]\nRecords: main root .scratch/scoreboard/<map>/<ticket-slug>.json (no map: every map with records).\n" +
+  "--json prints the merged data; --snapshot writes docs/wayfinder/<map>/build/scoreboard.json for the lead to commit.\n" +
+  "--html writes the build's page (one self-contained HTML file) to main root .scratch/scoreboard/<map>/page.html or FILE and prints its path.\n";
 
 function options(args) {
-  const flags = { json: false, snapshot: false };
-  for (const arg of args) {
-    if (["--json", "--snapshot"].includes(arg) && !flags[arg.slice(2)]) flags[arg.slice(2)] = true;
+  const flags = { json: false, snapshot: false, html: false };
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (["--json", "--snapshot", "--html"].includes(arg) && !flags[arg.slice(2)]) flags[arg.slice(2)] = true;
+    else if (arg === "--out" && flags.out === undefined && args[i + 1] && !args[i + 1].startsWith("-")) flags.out = args[++i];
     else if (flags.map === undefined && /^[\w][\w.-]*$/.test(arg)) flags.map = arg;
     else throw new Error(`invalid option: ${arg}`);
   }
   if (flags.snapshot && !flags.map) throw new Error("--snapshot needs a map");
+  if (flags.html && !flags.map) throw new Error("--html needs a map");
+  if (flags.out !== undefined && !flags.html) throw new Error("--out needs --html");
   return flags;
 }
 
@@ -74,6 +81,37 @@ function mapData(map, main, root) {
   return { map, pieces, totals: { builders: totals(pieces, item => label(item.builder)), kinds: totals(pieces, item => item.kind || "unknown") }, feedback };
 }
 
+function writeAtomic(path, text) {
+  const temporary = `${path}.${process.pid}.tmp`;
+  try {
+    writeFileSync(temporary, text);
+    renameSync(temporary, path);
+  } finally { rmSync(temporary, { force: true }); }
+}
+
+// Finished builds are maps with a committed scoreboard snapshot, oldest first by their last merge.
+function finishedBuilds(root) {
+  const folder = join(root, "docs/wayfinder"), builds = [];
+  for (const map of existsSync(folder) ? readdirSync(folder).sort() : []) {
+    let snapshot;
+    try { snapshot = JSON.parse(readFileSync(join(folder, map, "build/scoreboard.json"), "utf8")); } catch { continue; }
+    const times = (snapshot.pieces ?? []).flatMap(item => [item.landed?.at, ...(item.phases ?? []).map(phase => phase.end)]).filter(Boolean).sort();
+    let feedback = null;
+    try { feedback = readFileSync(join(folder, map, "build/feedback.md"), "utf8"); } catch { /* No corrections recorded. */ }
+    builds.push({ map, at: times.at(-1) ?? "", feedback });
+  }
+  return builds.sort((a, b) => a.at.localeCompare(b.at) || a.map.localeCompare(b.map));
+}
+
+function page(data, root, out) {
+  let tickets = [];
+  try { tickets = loadTickets(join(root, "docs/wayfinder"), data.map).tickets.filter(ticket => ticket.file.includes("/build/tickets/")); }
+  catch { /* A map without tickets shows its records only. */ }
+  const pieces = data.pieces.map(item => ({ ...item, who: label(item.builder) }));
+  mkdirSync(dirname(out), { recursive: true });
+  writeAtomic(out, scorePage({ data: { ...data, pieces }, tickets, builds: finishedBuilds(root) }));
+}
+
 const findingsText = findings => Object.entries(findings).map(([kind, count]) => `${kind} ${count}`).join(", ") || "none";
 // Dollars and tokens side by side; ">=" marks dollars that leave out runs which reported tokens only.
 const costText = cost => [Number.isFinite(cost?.usd) ? `${cost.partial ? ">=" : ""}$${cost.usd.toFixed(2)}` : "",
@@ -110,17 +148,19 @@ function score(args) {
     if (flags.snapshot) {
       const map = join(root, "docs/wayfinder", flags.map);
       if (!existsSync(join(map, "build"))) throw new Error(`no build folder for map ${flags.map} (docs/wayfinder/${flags.map}/build)`);
-      const path = join(map, "build/scoreboard.json"), temporary = `${path}.${process.pid}.tmp`;
-      try {
-        writeFileSync(temporary, JSON.stringify(data[0], null, 2) + "\n");
-        renameSync(temporary, path);
-      } finally { rmSync(temporary, { force: true }); }
+      const path = join(map, "build/scoreboard.json");
+      writeAtomic(path, JSON.stringify(data[0], null, 2) + "\n");
       // --json keeps stdout to the data alone.
       (flags.json ? console.error : console.log)(`snapshot: ${relative(root, path)}`);
     }
+    if (flags.html) {
+      const out = flags.out ? resolve(flags.out) : join(main, ".scratch/scoreboard", flags.map, "page.html");
+      page(data[0], root, out);
+      (flags.json ? console.error : console.log)(`page: ${out}`);
+    }
     const count = data.reduce((sum, item) => sum + item.pieces.length, 0);
     if (flags.json) console.log(JSON.stringify(flags.map ? data[0] : { maps: data }, null, 2));
-    else if (!flags.snapshot) {
+    else if (!flags.snapshot && !flags.html) {
       if (!data.length) console.log("score: no records");
       data.forEach(print);
     }

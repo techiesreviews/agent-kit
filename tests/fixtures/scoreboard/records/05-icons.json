@@ -1,0 +1,77 @@
+{
+  "ticket": "docs/wayfinder/demo/build/tickets/05-icons.md",
+  "costs": {},
+  "title": "Icons for file types",
+  "kind": "task (AFK) M",
+  "builder": {
+    "model": "claude-opus-5-5",
+    "effort": "high",
+    "previousModels": [],
+    "built": "claude-opus-5-5"
+  },
+  "phases": [
+    {
+      "name": "build",
+      "start": "2026-10-25T14:00:00.000Z",
+      "end": "2026-10-25T14:20:00.000Z",
+      "exit": 0
+    },
+    {
+      "name": "review",
+      "start": "2026-10-25T14:20:00.000Z",
+      "end": "2026-10-25T14:27:00.000Z",
+      "exit": 0
+    },
+    {
+      "name": "pr",
+      "start": "2026-10-25T14:27:00.000Z",
+      "end": "2026-10-25T14:30:00.000Z",
+      "exit": 0
+    }
+  ],
+  "rounds": 0,
+  "reviews": [
+    {
+      "dir": ".scratch/reviews/demo/r",
+      "model": "claude-opus-5-5",
+      "effort": "medium",
+      "counts": {
+        "kind": {
+          "fault": 0,
+          "ticket": 0,
+          "race": 0,
+          "style": 0,
+          "unsorted": 0,
+          "gap": 0
+        },
+        "severity": {
+          "P0": 0,
+          "P1": 0,
+          "P2": 0,
+          "P3": 0,
+          "none": 0,
+          "gap": 0
+        }
+      },
+      "declined": []
+    }
+  ],
+  "cost": {
+    "build": {
+      "usd": 0.9,
+      "tokens": 180000
+    },
+    "review": {
+      "usd": 0.2,
+      "tokens": 50000
+    }
+  },
+  "landed": {
+    "pr": 15,
+    "sha": "5555555555555555555555555555555555555555",
+    "at": "2026-10-25T14:30:00.000Z",
+    "tier": "full",
+    "ci": "pass",
+    "waived": null
+  }
+}

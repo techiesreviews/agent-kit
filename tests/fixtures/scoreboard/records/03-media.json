@@ -1,0 +1,70 @@
+{
+  "ticket": "docs/wayfinder/demo/build/tickets/03-media.md",
+  "costs": {},
+  "title": "Media grid on the phone",
+  "kind": "task (AFK) S",
+  "builder": {
+    "model": "claude-opus-5-5",
+    "effort": "high",
+    "previousModels": [],
+    "built": "claude-opus-5-5"
+  },
+  "phases": [
+    {
+      "name": "build",
+      "start": "2026-10-25T12:00:00.000Z",
+      "end": "2026-10-25T12:15:00.000Z",
+      "exit": 0
+    },
+    {
+      "name": "review",
+      "start": "2026-10-25T12:15:00.000Z",
+      "end": "2026-10-25T12:21:00.000Z",
+      "exit": 0
+    },
+    {
+      "name": "fix",
+      "start": "2026-10-25T12:21:00.000Z",
+      "end": "2026-10-25T12:26:00.000Z",
+      "exit": 0
+    }
+  ],
+  "rounds": 2,
+  "reviews": [
+    {
+      "dir": ".scratch/reviews/demo/r",
+      "model": "claude-opus-5-5",
+      "effort": "medium",
+      "counts": {
+        "kind": {
+          "fault": 0,
+          "ticket": 2,
+          "race": 1,
+          "style": 0,
+          "unsorted": 1,
+          "gap": 0
+        },
+        "severity": {
+          "P0": 0,
+          "P1": 1,
+          "P2": 2,
+          "P3": 0,
+          "none": 1,
+          "gap": 0
+        }
+      },
+      "declined": []
+    }
+  ],
+  "cost": {
+    "build": {
+      "usd": 0.6,
+      "tokens": 90000
+    },
+    "review": null
+  },
+  "landed": {
+    "pr": 13,
+    "tier": "full"
+  }
+}
