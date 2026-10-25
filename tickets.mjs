@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// Usage: tickets.mjs frontier [map] [--ref <ref>] | check [--ref <ref>]; inspect ticket dependencies.
+// Usage: tickets.mjs frontier [map] [--ref <ref>] | check [--ref <ref>]; inspect ticket dependencies and build feedback logs.
 import { execFileSync } from "node:child_process";
-import { readFileSync, readdirSync } from "node:fs";
-import { basename, join, relative, resolve } from "node:path";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { basename, dirname, join, relative, resolve } from "node:path";
 
 const statuses = new Set(["open", "closed", "needs-triage", "needs-info", "ready-for-agent", "ready-for-human", "wontfix"]);
 
@@ -158,6 +158,90 @@ export function loadTickets(root = "docs/wayfinder", map, { ref, cwd = process.c
   return { tickets, problems };
 }
 
+// One feedback log per build: docs/wayfinder/<map>/build/feedback.md, newest first under
+// "## Feedback", in the same line shape as the chat project's corrections list.
+export const feedbackKinds = {
+  "too-much": "too much text or decoration",
+  "below-bar": "looks below the bar",
+  "felt-wrong": "felt wrong once used",
+  fault: "a real fault",
+  workflow: "how agents worked",
+};
+export const feedbackHeading = "## Feedback";
+export const feedbackLegend = `Kinds: ${Object.entries(feedbackKinds).map(([kind, meaning]) => `\`${kind}\` ${meaning}`).join(" · ")}. \`after release: yes\` marks a UX problem found on production.`;
+const feedbackEntry = /^- (\S+) · (\S+) · (.+) · after release: (\S+) · fix: (.+)$/;
+
+export function feedbackFile(map) { return `docs/wayfinder/${map}/build/feedback.md`; }
+
+export function feedbackLine({ date, kind, afterRelease = false, text, fix = "open" }) {
+  return `- ${date} · ${kind} · ${text} · after release: ${afterRelease ? "yes" : "no"} · fix: ${fix}`;
+}
+
+export function parseFeedbackLine(line) {
+  const match = feedbackEntry.exec(line);
+  return match && { date: match[1], kind: match[2], text: match[3], afterRelease: match[4], fix: match[5] };
+}
+
+function realDate(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const date = new Date(Date.UTC(+match[1], match[2] - 1, +match[3]));
+  return date.toISOString().slice(0, 10) === value;
+}
+
+// A fix is "open", "PR #n" or a markdown link whose target exists beside the log.
+function fixProblem(fix, file, exists) {
+  if (fix === "open" || /^PR #[1-9]\d*$/.test(fix)) return "";
+  const link = /^\[[^\]]+\]\(([^()\s]+)\)$/.exec(fix);
+  if (!link) return `Invalid fix: ${fix} (use open, PR #n or [NN](tickets/NN-slug.md))`;
+  const target = join(dirname(file), link[1]);
+  return exists(target) ? "" : `Fix link not found: ${link[1]}`;
+}
+
+export function parseFeedback(source, file, exists = existsSync) {
+  const lines = source.replace(/^﻿/, "").split(/\r?\n/);
+  const problems = [], entries = [];
+  const problem = (line, message) => problems.push({ file, line, message });
+  const start = lines.indexOf(feedbackHeading);
+  if (start < 0) { problem(1, `Missing ${feedbackHeading} heading`); return { entries, problems }; }
+  for (let i = start + 1; i < lines.length && !/^#{1,2} /.test(lines[i]); i++) {
+    if (!lines[i].trim()) continue;
+    const entry = parseFeedbackLine(lines[i]);
+    if (!entry) { problem(i + 1, "Malformed feedback line"); continue; }
+    entries.push({ ...entry, line: i + 1 });
+    if (!realDate(entry.date)) problem(i + 1, `Invalid date: ${entry.date}`);
+    if (!Object.hasOwn(feedbackKinds, entry.kind)) problem(i + 1, `Invalid kind: ${entry.kind}`);
+    if (!["yes", "no"].includes(entry.afterRelease)) problem(i + 1, `Invalid after release: ${entry.afterRelease}`);
+    const fix = fixProblem(entry.fix, file, exists);
+    if (fix) problem(i + 1, fix);
+  }
+  return { entries, problems };
+}
+
+export function loadFeedback(root = "docs/wayfinder", { ref, cwd = process.cwd() } = {}) {
+  const entries = [], problems = [];
+  const git = (args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+  let files, read, exists;
+  if (ref !== undefined) {
+    root = relative(resolve(cwd), resolve(cwd, root));
+    const tracked = new Set(git(["ls-tree", "-r", "--name-only", ref, "--", root]).split("\n").filter(Boolean));
+    files = [...tracked].filter(file => /^[^/]+\/build\/feedback\.md$/.test(file.slice(root.length + 1))).sort();
+    read = file => git(["show", `${ref}:${file}`]);
+    exists = file => tracked.has(file);
+  } else {
+    files = readdirSync(root, { withFileTypes: true }).filter(entry => entry.isDirectory())
+      .map(entry => join(root, entry.name, "build/feedback.md")).filter(file => existsSync(file)).sort();
+    read = file => readFileSync(file, "utf8");
+    exists = existsSync;
+  }
+  for (const file of files) {
+    const parsed = parseFeedback(read(file), file, exists);
+    entries.push(...parsed.entries.map(entry => ({ ...entry, file })));
+    problems.push(...parsed.problems);
+  }
+  return { files, entries, problems };
+}
+
 function main(args) {
   const [command, ...rest] = args;
   let map, ref, invalid = false;
@@ -175,10 +259,14 @@ function main(args) {
   try {
     const loaded = loadTickets("docs/wayfinder", map, { ref });
     const resolved = resolveTickets(loaded.tickets);
-    const problems = [...loaded.problems, ...resolved.problems];
+    const feedback = command === "check" ? loadFeedback("docs/wayfinder", { ref }) : { files: [], entries: [], problems: [] };
+    const problems = [...loaded.problems, ...resolved.problems, ...feedback.problems];
     for (const problem of problems) console.error(`${problem.file}:${problem.line}: ${problem.message}`);
     if (problems.length) { process.exitCode = 1; return; }
-    if (command === "check") console.log(`Tickets checked: ${loaded.tickets.length}`);
+    if (command === "check") {
+      console.log(`Tickets checked: ${loaded.tickets.length}`);
+      if (feedback.files.length) console.log(`Feedback lines checked: ${feedback.entries.length}`);
+    }
     else for (const ticket of resolved.frontier) console.log(`${ticket.file}\t${ticket.builder || "unassigned"}\t${ticket.title || ticket.slug}`);
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }

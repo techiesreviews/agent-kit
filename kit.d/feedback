@@ -1,0 +1,129 @@
+#!/usr/bin/env node
+// kit: add one line to a build's feedback log, or fill in its fix later
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { feedbackFile, feedbackHeading, feedbackKinds, feedbackLegend, feedbackLine, parseFeedback } from "../tickets.mjs";
+
+const { kitRoot, kitResult } = await import(
+  pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
+);
+const usage = `Usage: kit feedback <map> --kind K [--after-release] [--fix <ticket|PR>] "<text>"
+       kit feedback <map> --fix-for <line-number> <ticket|PR>
+Adds one line, newest first, to docs/wayfinder/<map>/build/feedback.md (created with its
+heading and legend) or fills the fix of the entry on <line-number>; never commits.
+Kinds: ${Object.keys(feedbackKinds).join(", ")}. A fix is a ticket number (24 or
+24-slug) in the map's build/tickets/ or tickets/, or a PR (#12, PR 12).
+`;
+
+class UsageError extends Error {}
+
+function options(args) {
+  const flags = { afterRelease: false, help: false, rest: [] };
+  const value = (i, name) => {
+    if (flags[name] !== undefined || args[i + 1] === undefined) throw new UsageError(`invalid argument: ${args[i]}`);
+    return args[i + 1];
+  };
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (["--help", "-h"].includes(arg)) flags.help = true;
+    else if (arg === "--after-release" && !flags.afterRelease) flags.afterRelease = true;
+    else if (arg === "--kind") flags.kind = value(i++, "kind");
+    else if (arg === "--fix") flags.fix = value(i++, "fix");
+    else if (arg === "--fix-for") flags.fixFor = value(i++, "fixFor");
+    else if (arg.startsWith("-")) throw new UsageError(`invalid argument: ${arg}`);
+    else flags.rest.push(arg);
+  }
+  return flags;
+}
+
+// Ticket numbers become links relative to build/feedback.md; PRs become "PR #n".
+function resolveFix(mapDir, value) {
+  const pr = /^(?:PR ?#?|#)([1-9]\d*)$/i.exec(value.trim());
+  if (pr) return `PR #${pr[1]}`;
+  const ticket = /^(?:.*\/)?(\d+)(-[\w.-]*?)?(?:\.md)?$/.exec(value.trim());
+  if (!ticket) throw new UsageError(`invalid fix: ${value} (use a ticket number or a PR)`);
+  for (const [folder, link] of [["build/tickets", "tickets"], ["tickets", "../tickets"]]) {
+    let names;
+    try { names = readdirSync(join(mapDir, folder)); } catch { continue; }
+    const matches = names.filter(name => name.endsWith(".md") &&
+      (ticket[2] ? name === `${ticket[1]}${ticket[2]}.md` : name.startsWith(`${ticket[1]}-`)));
+    if (matches.length > 1) throw new UsageError(`ambiguous ticket ${value} in ${folder}: ${matches.join(", ")}`);
+    if (matches.length) return `[${ticket[1]}](${link}/${matches[0]})`;
+  }
+  throw new UsageError(`no ticket ${value} in the map's build/tickets/ or tickets/`);
+}
+
+function today() {
+  const now = new Date(), pad = number => String(number).padStart(2, "0");
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+function add(path, map, line) {
+  const lines = existsSync(path)
+    ? readFileSync(path, "utf8").replace(/\r?\n$/, "").split(/\r?\n/)
+    : [`# Feedback: ${map}`, "", feedbackLegend, "", feedbackHeading];
+  const heading = lines.indexOf(feedbackHeading);
+  if (heading < 0) throw new Error(`${path}: missing ${feedbackHeading} heading`);
+  if (lines[heading + 1] === "") lines.splice(heading + 2, 0, line);
+  else lines.splice(heading + 1, 0, "", line);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${lines.join("\n")}\n`);
+  return lines.indexOf(line, heading) + 1;
+}
+
+function fixFor(path, number, fix) {
+  if (!existsSync(path)) throw new UsageError(`no feedback log yet: ${path}`);
+  const source = readFileSync(path, "utf8");
+  const entry = parseFeedback(source, path, () => true).entries.find(entry => entry.line === number);
+  if (!entry) throw new UsageError(`${path}:${number} is not a feedback line`);
+  const lines = source.split("\n");
+  const old = lines[number - 1].replace(/\r$/, "");
+  lines[number - 1] = `${old.slice(0, old.lastIndexOf(" · fix: "))} · fix: ${fix}${lines[number - 1].endsWith("\r") ? "\r" : ""}`;
+  writeFileSync(path, lines.join("\n"));
+  return lines[number - 1].replace(/\r$/, "");
+}
+
+function feedback(args) {
+  let flags;
+  try {
+    flags = options(args);
+    if (flags.help) { process.stdout.write(usage); return 0; }
+    const [map, ...rest] = flags.rest;
+    if (!map || !/^[\w-]+$/.test(map)) throw new UsageError("missing or invalid map");
+    const root = kitRoot(), mapDir = join(root, "docs/wayfinder", map);
+    if (!existsSync(mapDir) || !statSync(mapDir).isDirectory()) throw new UsageError(`unknown map: ${map}`);
+    const file = feedbackFile(map), path = join(root, file);
+    if (flags.fixFor !== undefined) {
+      if (flags.kind !== undefined || flags.fix !== undefined || flags.afterRelease || rest.length !== 1)
+        throw new UsageError("--fix-for takes only <line-number> <ticket|PR>");
+      if (!/^[1-9]\d*$/.test(flags.fixFor)) throw new UsageError(`invalid line number: ${flags.fixFor}`);
+      const line = fixFor(path, Number(flags.fixFor), resolveFix(mapDir, rest[0]));
+      console.log(`${file}:${flags.fixFor}: ${line}`);
+      kitResult("ok", `feedback ${map} fix filled on line ${flags.fixFor}`);
+      return 0;
+    }
+    if (!Object.hasOwn(feedbackKinds, flags.kind ?? "")) throw new UsageError(`invalid kind: ${flags.kind ?? "(missing)"}`);
+    if (rest.length !== 1) throw new UsageError("give the feedback as one quoted text");
+    const text = rest[0].trim();
+    if (!text || /[\x00-\x1f\x7f]/.test(text) || text.includes(" · "))
+      throw new UsageError("text must be one non-empty line without \" · \"");
+    const fix = flags.fix === undefined ? "open" : resolveFix(mapDir, flags.fix);
+    const line = feedbackLine({ date: today(), kind: flags.kind, afterRelease: flags.afterRelease, text, fix });
+    const number = add(path, map, line);
+    console.log(`${file}:${number}: ${line}`);
+    kitResult("ok", `feedback ${map} line ${number} ${flags.kind}`);
+    return 0;
+  } catch (error) {
+    if (!(error instanceof UsageError)) {
+      console.error(error.message);
+      kitResult("fail", `feedback ${error.message}`);
+      return 1;
+    }
+    process.stderr.write(usage);
+    kitResult("fail", `feedback ${error.message}`);
+    return 2;
+  }
+}
+
+process.exitCode = feedback(process.argv.slice(2));
