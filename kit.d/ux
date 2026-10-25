@@ -182,14 +182,24 @@ export function textFindings(added) {
 const spacing = /^(margin|padding|gap|row-gap|column-gap|inset|top|right|bottom|left)(-[a-z-]+)?$/;
 const timing = /^(transition|animation)(-duration|-delay)?$/;
 
+/** Line numbers of each raw px in spacing properties and raw time in transitions and animations; a value may span lines. */
+function rawValues(text) {
+  const code = text.replace(/\/\*[\s\S]*?\*\//g, comment => comment.replace(/[^\n]/g, " "));
+  const found = { px: [], timings: [] };
+  const lineAt = offset => code.slice(0, offset).split("\n").length;
+  for (const declaration of code.matchAll(/([a-z-]+)\s*:\s*([^;{}]+)/g)) {
+    const [, property, value] = declaration, start = declaration.index + declaration[0].length - value.length;
+    const kind = spacing.test(property) ? "px" : timing.test(property) ? "timings" : undefined;
+    if (!kind) continue;
+    for (const raw of value.matchAll(kind === "px" ? /(?<![\w.-])\d*\.?\d+px\b/g : /(?<![\w.-])\d*\.?\d+m?s\b/g)) found[kind].push(lineAt(start + raw.index));
+  }
+  return found;
+}
+
 /** Raw px in spacing properties and raw times in transitions and animations. */
 export function cssCounts(text) {
-  const counts = { px: 0, timings: 0 };
-  for (const [, property, value] of text.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([a-z-]+)\s*:\s*([^;{}]+)/g)) {
-    if (spacing.test(property)) counts.px += (value.match(/(?<![\w.-])\d*\.?\d+px\b/g) ?? []).length;
-    if (timing.test(property)) counts.timings += (value.match(/(?<![\w.-])\d*\.?\d+m?s\b/g) ?? []).length;
-  }
-  return counts;
+  const { px, timings } = rawValues(text);
+  return { px: px.length, timings: timings.length };
 }
 
 /** Reported only when a changed CSS file has more raw px spacing or timings than its base. */
@@ -201,8 +211,10 @@ export function cssFindings(files, added) {
       ...now.timings > before.timings ? [`raw timings ${before.timings} → ${now.timings}`] : [],
     ];
     if (!parts.length) return [];
-    const first = added.find(entry => entry.file === file && (cssCounts(entry.text).px || cssCounts(entry.text).timings));
-    return [{ rule: "L2", file, line: first?.line, text: `${parts.join(", ")} (not blocking until tokens exist)` }];
+    // Prefer a raw value on an added line; a file the diff lines miss still names its first raw value.
+    const raw = rawValues(text), lines = [...raw.px, ...raw.timings].sort((a, b) => a - b);
+    const fresh = new Set(added.filter(entry => entry.file === file).map(entry => entry.line));
+    return [{ rule: "L2", file, line: lines.find(line => fresh.has(line)) ?? lines[0], text: `${parts.join(", ")} (not blocking until tokens exist)` }];
   });
 }
 
@@ -273,18 +285,23 @@ export function mockupLinks(text, ticket) {
 
 const firstLine = text => String(text).replace(/\x1b\[[0-9;]*m/g, "").split("\n").find(line => line.trim())?.trim().slice(0, 240) ?? "";
 
+const signalStatus = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 };
+// main's handlers record the first signal and stop the running kit shots; no further try starts.
+const running = { child: undefined, signal: undefined };
+const stopIfInterrupted = () => { if (running.signal) throw new Error(`interrupted by ${running.signal}`); };
+
 /** One kit shots run; its output goes to a log beside the shots. */
-function shots(root, args, log) {
+async function shots(root, args, log) {
+  stopIfInterrupted();
   const runner = process.env.KIT_UX_SHOTS || join(root, "scripts/agents/kit.d/shots");
   const fd = openSync(log, "w");
-  const child = spawn(runner, args, { cwd: root, stdio: ["ignore", fd, fd] });
-  const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
-  const handlers = signals.map(signal => () => { child.kill(signal); });
-  signals.forEach((signal, index) => process.on(signal, handlers[index]));
-  return new Promise(resolve => {
+  const child = running.child = spawn(runner, args, { cwd: root, stdio: ["ignore", fd, fd] });
+  const status = await new Promise(resolve => {
     child.once("error", error => { writeFileSync(log, `${error.message}\n`, { flag: "a" }); resolve(127); });
     child.once("close", (code, signal) => resolve(code ?? (signal ? 128 : 1)));
-  }).finally(() => { closeSync(fd); signals.forEach((signal, index) => process.off(signal, handlers[index])); });
+  }).finally(() => { closeSync(fd); running.child = undefined; });
+  stopIfInterrupted();
+  return status;
 }
 
 function readIndex(dir) {
@@ -313,6 +330,8 @@ async function main() {
     return 2;
   }
   const root = kitRoot();
+  const handlers = Object.keys(signalStatus).map(signal => [signal, () => { running.signal ??= signal; running.child?.kill(signal); }]);
+  for (const [signal, handler] of handlers) process.on(signal, handler);
   const git = (...gitArgs) => execFileSync("git", ["-C", root, ...gitArgs], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
   try {
     let mergeBase;
@@ -354,8 +373,12 @@ async function main() {
       tries.push({ kind: "screens", features: untried.filter(entry => entry.screens.length).map(entry => entry.feature), dir, index, failures, ok: !failures.length });
       console.log(`screens ${screenList.join(", ")}: ${failures.length ? `failed: ${failures[0]}` : "shot"}`);
     }
-    const broken = tries.filter(tried => !tried.ok).flatMap(tried => tried.kind === "steps" ? tried.features
-      : tried.features.filter(feature => screensFor(feature).some(screen => tried.failures.some(line => line.startsWith(`${screen} `)) || !tried.index)));
+    const broken = tries.filter(tried => !tried.ok).flatMap(tried => {
+      if (tried.kind === "steps") return tried.features;
+      // A failure that names no screen (no index, a contact sheet error) breaks every feature of the run.
+      const named = tried.features.filter(feature => screensFor(feature).some(screen => tried.failures.some(line => line.startsWith(`${screen} `))));
+      return named.length ? named : tried.features;
+    });
 
     // Scripted checks.
     const diff = git("diff", "--unified=0", "--no-color", "--no-ext-diff", mergeBase, "--", "src", "shared");
@@ -436,8 +459,8 @@ async function main() {
   } catch (error) {
     console.error(`problem: ${error.message}`);
     kitResult("fail", `ux ${error.message}`);
-    return 1;
-  }
+    return running.signal ? signalStatus[running.signal] : 1;
+  } finally { for (const [signal, handler] of handlers) process.off(signal, handler); }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) process.exitCode = await main();

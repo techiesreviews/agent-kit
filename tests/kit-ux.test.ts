@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -89,10 +90,14 @@ test("raw px spacing and timings count against the base and report only increase
   assert.deepEqual(ux.cssCounts(".a { gap: 6px; margin: 0 4px; width: 20px; transition: opacity 120ms, transform .2s; } /* padding: 9px */"), { px: 2, timings: 2 });
   const added = ux.addedLines(fixtureDiff);
   const findings = ux.cssFindings([
-    { file: "src/components/panel.css", text: ".a { gap: var(--space); }\n.panel__badge { gap: 6px; }\n.panel__row { transition: opacity 120ms; }", base: ".a { gap: var(--space); }" },
+    { file: "src/components/panel.css", text: ".a { gap: var(--space); }\n.b {}\n.c {}\n.panel__badge { gap: 6px; }\n.panel__row { transition: opacity 120ms; }", base: ".a { gap: var(--space); }" },
     { file: "src/components/same.css", text: ".a { gap: 4px; }", base: ".a { gap: 2px; }" },
   ], added);
   assert.deepEqual(findings, [{ rule: "L2", file: "src/components/panel.css", line: 4, text: "raw px spacing 0 → 1, raw timings 0 → 1 (not blocking until tokens exist)" }]);
+  // A value on a continuation line, in a file the added lines do not cover, still names its line.
+  assert.deepEqual(ux.cssFindings([{ file: "fixtures/site.css", text: ".a {\n  /* gap: 1px */\n  padding:\n    4px 8px;\n}", base: "" }], added), [
+    { rule: "L2", file: "fixtures/site.css", line: 4, text: "raw px spacing 0 → 2 (not blocking until tokens exist)" },
+  ]);
 });
 
 test("the bundle stays under 60 KB and 12 images, trims the lowest-value items first and names the trims", () => {
@@ -152,12 +157,14 @@ function fixture(t: TestContext) {
   put("src/page-builder/media-library-filter.ts", "export {};\n");
   git("add", "."); git("commit", "--quiet", "-m", "base");
   git("update-ref", "refs/remotes/origin/dev", "HEAD");
-  // The fake kit shots writes one shot per width and theme, a contact sheet and a strip; FAIL_STEP fails every shot.
+  // The fake kit shots writes one shot per width and theme, a contact sheet and a strip; FAIL_STEP fails every shot,
+  // FAIL_EXIT_ONLY exits 1 from a screens run whose shots all passed, and SLEEP keeps it running.
   put(".scratch/shots.mjs", `#!${process.execPath}
 import { appendFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(join(root, ".scratch/calls.jsonl"))}, JSON.stringify(args) + "\\n");
+if (process.env.SLEEP) await new Promise(resolve => setTimeout(resolve, 20_000));
 const out = args[args.indexOf("--out") + 1], widths = args[args.indexOf("--width") + 1].split(",").map(Number);
 const screens = args[0] === "--steps" ? ["media-gallery"] : args.slice(0, args.indexOf("--width"));
 const fail = process.env.FAIL_STEP;
@@ -168,7 +175,7 @@ const files = [...shots.flatMap(shot => shot.files), { path: "contact.webp", byt
 for (const file of files) writeFileSync(join(out, file.path), "webp");
 const layoutFindings = fail ? [] : [{ screen: screens[0], width: widths[0], theme: "light", finding: { kind: "tap-target", selector: "button.tiny", text: "", detail: "20x20 px" } }];
 writeFileSync(join(out, "index.json"), JSON.stringify({ version: 1, screens: shots, files, failures: [], outputFailures: [], layoutFindings }));
-process.exit(fail ? 1 : 0);
+process.exit(fail || (process.env.FAIL_EXIT_ONLY && args[0] !== "--steps") ? 1 : 0);
 `);
   chmodSync(join(root, ".scratch/shots.mjs"), 0o755);
   const run = (args: string[] = [], extra: NodeJS.ProcessEnv = {}) => {
@@ -235,4 +242,30 @@ test("kit ux with --features tries only those, and a failed try names the featur
   const bad = run(["--features", "F-media-09"]);
   assert.equal(bad.status, 1);
   assert.equal(bad.result, "RESULT: fail ux unknown feature: F-media-09");
+});
+
+test("kit ux fails a screens run that exits non-zero even when every shot passed", t => {
+  const { run } = fixture(t);
+  const output = run(["--features", "F-media-02"], { FAIL_EXIT_ONLY: "1" });
+  assert.equal(output.status, 1);
+  assert.match(output.result, /^RESULT: fail ux 0 features tried, 1 scripted findings, bundle \S+, broken: F-media-02$/);
+  const bundle = /bundle (\S+),/.exec(output.result)![1];
+  assert.match(readFileSync(join(bundle, "bundle.md"), "utf8"), /- F-media-02 Feature F-media-02: untried \(screens media-gallery; a screen failed\)/);
+});
+
+test("kit ux stops at a signal: no further try starts and one fail RESULT is printed", async t => {
+  const { root, calls } = fixture(t);
+  const child = spawn(kit, ["ux", "--all"], { cwd: root, env: { ...process.env, KIT_ROOT: root, KIT_MAIN_ROOT: root, ASE_OWNER: "ux-test", KIT_UX_SHOTS: join(root, ".scratch/shots.mjs"), SLEEP: "1" } });
+  let stdout = "";
+  child.stdout.on("data", chunk => { stdout += chunk; });
+  const closed = once(child, "close");
+  const deadline = Date.now() + 15_000;
+  while (!calls().length && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(calls().length, 1);
+  child.kill("SIGTERM");
+  const [status] = await closed;
+  assert.equal(calls().length, 1, "the next try never starts");
+  const results = stdout.trimEnd().split("\n").filter(line => line.startsWith("RESULT: "));
+  assert.deepEqual(results, ["RESULT: fail ux interrupted by SIGTERM"]);
+  assert.equal(status, 143);
 });
