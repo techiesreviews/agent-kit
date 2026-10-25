@@ -15,7 +15,7 @@ function fixture(t: { after: (fn: () => void) => void }) {
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const memory = join(home, "memory");
   const projects = join(home, "Projects");
-  for (const folder of ["site", "site-build-x/src", "site-starter", "other", "unmapped"]) mkdirSync(join(projects, folder), { recursive: true });
+  for (const folder of ["site", "site-build-x/src", "site-starter", "site-starter-wt", "other", "unmapped"]) mkdirSync(join(projects, folder), { recursive: true });
   mkdirSync(join(memory, "project-notes"), { recursive: true });
   mkdirSync(join(memory, "corrections"));
   writeFileSync(join(memory, "project-notes/README.md"), [
@@ -73,8 +73,11 @@ test("card counts corrections from the last 14 days and the repeated ones", (t) 
     "## Corrections",
     `- ${ago(1)} · fault · new · repeats: ${ago(20)} · [t](t3-thread://v1/x)`,
     `- ${ago(5)} · workflow · new · repeats: first · [t](t3-thread://v1/x)`,
-    `- ${ago(13)} · fault · inside the window · repeats: first · [t](t3-thread://v1/x)`,
+    `- ${ago(13)} · fault · first day of the window · repeats: first · [t](t3-thread://v1/x)`,
+    `- ${ago(14)} · fault · day before the window · repeats: ${ago(30)} · [t](t3-thread://v1/x)`,
     `- ${ago(20)} · fault · outside the window · repeats: 2026-09-01 · [t](t3-thread://v1/x)`,
+    "## Notes",
+    `- ${ago(1)} · not a correction · repeats: ${ago(2)}`,
   ].join("\n"));
   const lines = f.card(join(f.projects, "site")).trimEnd().split("\n");
   assert.equal(lines.at(-2), "corrections (14 days): 3, repeated: 1 — ~/memory/corrections/site.md");
@@ -87,6 +90,8 @@ test("card treats sibling worktrees and their folders as the project, but a mapp
   assert.match(f.card(join(f.projects, "site-build-x")), /^Context card: Site \(updated 2026-10-24\)\n/);
   assert.match(f.card(join(f.projects, "site-build-x/src")), /^Context card: Site /);
   assert.match(f.card(join(f.projects, "site-starter")), /^Context card: Site starter\nCurrent thinking:\nStarter thinking\.\nMore: ask for the full note\.\n$/);
+  // A worktree of the mapped sibling is a sibling of both rows; the longer workspace wins.
+  assert.match(f.card(join(f.projects, "site-starter-wt")), /^Context card: Site starter\n/);
 });
 
 test("card keeps to 30 lines with the footer last", (t) => {
@@ -111,18 +116,26 @@ test("missing note, missing slug and missing folder each print one line and exit
 
 test("hook mode reads the payload cwd and prints SessionStart context through run.sh", (t) => {
   const f = fixture(t);
-  const hook = (payload: unknown) => {
-    const result = spawnSync("/bin/bash", [join(hooks, "run.sh"), "context-card"], {
-      cwd: f.home, env: { ...f.env, CLAUDE_PROJECT_DIR: resolve(".") }, input: JSON.stringify(payload), encoding: "utf8",
-    });
+  const hook = (input: string, cwd = f.home, root = resolve(".")) => spawnSync("/bin/bash", [join(hooks, "run.sh"), "context-card"], {
+    cwd, env: { ...f.env, CLAUDE_PROJECT_DIR: root }, input, encoding: "utf8",
+  });
+  const context = (input: string, cwd = f.home) => {
+    const result = hook(input, cwd);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stderr, "");
-    return JSON.parse(result.stdout) as { hookSpecificOutput: { hookEventName: string; additionalContext: string } };
+    return (JSON.parse(result.stdout) as { hookSpecificOutput: { hookEventName: string; additionalContext: string } }).hookSpecificOutput;
   };
-  const output = hook({ hook_event_name: "SessionStart", source: "startup", cwd: join(f.projects, "site-build-x") });
-  assert.equal(output.hookSpecificOutput.hookEventName, "SessionStart");
-  assert.match(output.hookSpecificOutput.additionalContext, /^Context card: Site \(updated 2026-10-24\)\n[\s\S]*More: ask for the full note\.$/);
-  assert.equal(hook({ hook_event_name: "SessionStart", cwd: f.home }).hookSpecificOutput.additionalContext, noNotes.trimEnd());
+  const output = context(JSON.stringify({ hook_event_name: "SessionStart", source: "startup", cwd: join(f.projects, "site-build-x") }));
+  assert.equal(output.hookEventName, "SessionStart");
+  assert.match(output.additionalContext, /^Context card: Site \(updated 2026-10-24\)\n[\s\S]*More: ask for the full note\.$/);
+  assert.equal(context(JSON.stringify({ hook_event_name: "SessionStart", cwd: f.home })).additionalContext, noNotes.trimEnd());
+  // An empty or broken payload falls back to the process working directory.
+  for (const input of ["", "not json"]) {
+    assert.match(context(input, join(f.projects, "site")).additionalContext, /^Context card: Site \(updated 2026-10-24\)\n/);
+  }
+  // Branches without the script stay silent.
+  const missing = hook("{}", f.home, join(f.projects, "unmapped"));
+  assert.deepEqual([missing.status, missing.stdout, missing.stderr], [0, "", ""]);
 });
 
 test("kit card prints the card for the kit root with a RESULT line", (t) => {
@@ -134,4 +147,7 @@ test("kit card prints the card for the kit root with a RESULT line", (t) => {
   rmSync(join(f.memory, "project-notes/site.md"));
   const empty = spawnSync("/bin/bash", [kit, "card"], { cwd: f.home, env: { ...f.env, KIT_ROOT: resolve(".") }, encoding: "utf8" });
   assert.equal(empty.stdout, `${noNotes}RESULT: ok card no notes\n`);
+  const broken = spawnSync("/bin/bash", [kit, "card"], { cwd: f.home, env: { ...f.env, KIT_ROOT: f.home }, encoding: "utf8" });
+  assert.equal(broken.status, 1);
+  assert.equal(broken.stdout, "RESULT: fail card script failed\n");
 });

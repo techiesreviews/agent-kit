@@ -12,7 +12,7 @@ case ${1-} in
   *) printf 'Usage: kit card\n' >&2; kit_result fail "card unknown argument $1"; exit 2 ;;
 esac
 root=$(kit_root)
-output=$(node "$root/scripts/agents/context-card.mjs" --cwd "$root")
+output=$(node "$root/scripts/agents/context-card.mjs" --cwd "$root") || { kit_result fail 'card script failed'; exit 1; }
 printf '%s\n' "$output"
 if [[ $output == 'context card: no notes for this project yet' ]]; then
   kit_result ok 'card no notes'

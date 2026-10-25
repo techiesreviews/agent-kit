@@ -56,7 +56,8 @@ function workspaces(readme) {
 
 // The most specific match wins: the workspace itself or a folder inside it, or a sibling worktree
 // named `<workspace>-*` (or a folder inside one). On a tie the workspace beats the worktree, so
-// `native-site-editor-starter` keeps its own row instead of counting as a native-site-editor worktree.
+// `native-site-editor-starter` keeps its own row instead of counting as a native-site-editor worktree,
+// and then the longer workspace wins, so `native-site-editor-starter-x` is a starter worktree.
 function findSlug(readme, cwd) {
   const here = real(cwd);
   let best = null;
@@ -72,7 +73,9 @@ function findSlug(readme, cwd) {
       }
     }
     if (length < 0) continue;
-    if (!best || length > best.length || (length === best.length && direct && !best.direct)) best = { slug, length, direct };
+    const better = !best || length > best.length || (length === best.length &&
+      (direct !== best.direct ? direct : root.length > best.rootLength));
+    if (better) best = { slug, length, direct, rootLength: root.length };
   }
   return best?.slug ?? null;
 }
@@ -96,11 +99,13 @@ function dated(line) {
   return /^-\s+(\d{4}-\d{2}-\d{2})\b/.exec(line)?.[1] ?? "";
 }
 
+// Today and the 13 days before it, in local dates like the sync writes.
 function corrections(text, now) {
-  const since = new Date(now.getTime() - CORRECTION_DAYS * 86_400_000).toISOString().slice(0, 10);
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (CORRECTION_DAYS - 1));
+  const since = [start.getFullYear(), start.getMonth() + 1, start.getDate()].map((part) => String(part).padStart(2, "0")).join("-");
   let count = 0;
   let repeated = 0;
-  for (const line of text.split("\n")) {
+  for (const line of sections(text).corrections ?? []) {
     const date = dated(line);
     if (!date || date < since) continue;
     count += 1;
@@ -111,7 +116,8 @@ function corrections(text, now) {
 }
 
 function cut(line) {
-  return line.length > MAX_WIDTH ? `${line.slice(0, MAX_WIDTH - 1)}…` : line;
+  const characters = Array.from(line);
+  return characters.length > MAX_WIDTH ? `${characters.slice(0, MAX_WIDTH - 1).join("")}…` : line;
 }
 
 function card(cwd, now = new Date()) {
@@ -123,7 +129,7 @@ function card(cwd, now = new Date()) {
   const note = readFileSync(notePath, "utf8");
   const parts = sections(note);
   const title = /^#\s+(.+?)\s*$/m.exec(note)?.[1] ?? slug;
-  const updated = /updated (\d{4}-\d{2}-\d{2})/.exec(note)?.[1];
+  const updated = /^Project ID .*\bupdated (\d{4}-\d{2}-\d{2})/m.exec(note)?.[1];
   const body = [`Context card: ${title}${updated ? ` (updated ${updated})` : ""}`];
   const add = (heading, lines) => {
     if (lines?.length) body.push(`${heading}:`, ...lines);
