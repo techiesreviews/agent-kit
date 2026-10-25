@@ -695,13 +695,14 @@ test("a tests-only PR runs check, the affected unit files, lint, specs and the r
 });
 
 test("a CSS-only PR runs the colour check and specs, keeps the review and reminds about shots", t => {
-  const f = fixture(t, { "src/styles/app.css": "a { color: var(--ink); }\n", "docs/agents/features.md": "# Feature list\n" });
-  const result = f.run(["--no-merge"]);
-  assert.equal(result.status, 0, result.stderr); assert.match(result.stdout, /^tier: css \(2 files, docs \+ css, highest css\)$/m);
+  // A lead's waiver passes the feature-list guard without adding a docs file; the clean review waives nothing else.
+  const f = fixture(t, { "src/styles/app.css": "a { color: var(--ink); }\n" });
+  const result = f.run(["--no-merge", "--waive", "Lead accepts"], { ASE_OWNER: "ke-lead" });
+  assert.equal(result.status, 0, result.stderr); assert.match(result.stdout, /^tier: css \(1 file, all css\)$/m);
   assert.match(result.stdout, /reminder: visible CSS changes need kit shots evidence/);
   const calls = f.calls();
   assert.equal(calls.filter(call => call.tool === "check-colours.mjs").length, 1);
-  assert.equal(calls.some(call => call.tool === "npm"), false);
+  assert.equal(calls.some(call => call.tool === "npm" || call.tool === "unit.sh"), false);
   for (const name of ["specs", "review"]) assert.ok(calls.some(call => call.tool === "fake-kit" && call.args[0] === name), name);
 });
 
@@ -753,6 +754,13 @@ test("a visible change proceeds with a features.md change, a Done line or a lead
     assert.ok(result.stdout.includes(`${line}\n`), result.stdout);
     assert.match(f.body(), new RegExp(`## Tests\\n\\nTier: css \\([^)]*\\)\\n${line.replace(/[()]/g, "\\$&")}\\n`));
   }
+});
+
+test("a missing --ticket file fails at the features step before push", t => {
+  const f = fixture(t, { "src/styles/app.css": "a { color: var(--ink); }\n" }), result = f.run(["--ticket", "missing.md"]);
+  assert.equal(result.status, 1); assert.match(result.stdout, /RESULT: fail features: .*ENOENT/);
+  assert.equal(f.gitAt(f.origin, "branch", "--list", "feature/kit-pr"), "");
+  assert.equal(f.calls().some(call => call.tool === "gh"), false);
 });
 
 test("a release skips the feature-list guard: its slices passed it on the way into dev", t => {
