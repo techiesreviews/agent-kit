@@ -97,6 +97,22 @@ test("a log without the Feedback heading fails without writing", t => {
   assert.equal(output.status, 1);
   assert.match(output.stderr, /missing ## Feedback heading/);
   assert.equal(readFileSync(join(root, log), "utf8"), "# Feedback\n");
+  const entry = "# Feedback\n- 2026-10-23 · fault · x · after release: no · fix: open\n";
+  writeFileSync(join(root, log), entry);
+  const fix = run("alpha", "--fix-for", "2", "PR #3");
+  assert.equal(fix.status, 1);
+  assert.match(fix.stderr, /missing ## Feedback heading/);
+  assert.equal(readFileSync(join(root, log), "utf8"), entry);
+});
+
+test("--fix-for refuses an entry-shaped line under a later heading", t => {
+  const { root, run, read } = fixture(t);
+  const source = `# Feedback: alpha\n\n## Feedback\n\n- 2026-10-24 · fault · real · after release: no · fix: open\n\n## Notes\n\n- 2026-10-23 · fault · a note · after release: no · fix: open\n`;
+  writeFileSync(join(root, log), source);
+  const output = run("alpha", "--fix-for", "9", "PR #3");
+  assert.equal(output.status, 2);
+  assert.match(output.stdout, /^RESULT: fail feedback .*:9 is not a feedback line\n$/);
+  assert.equal(read(), source);
 });
 
 test("a ticket number in both folders is refused; the slug or a folder prefix picks one", t => {

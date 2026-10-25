@@ -249,4 +249,14 @@ test("check validates build feedback logs and names file:line for a bad date, ki
   assert.deepEqual(badRef.stderr.trim().split("\n"), expected);
   assert.equal(run("frontier").status, 0, "frontier ignores feedback logs");
   assert.deepEqual(parseFeedback("# Feedback\n", file).problems, [{ file, line: 1, message: "Missing ## Feedback heading" }]);
+  writeFileSync(join(cwd, file), "# Feedback\n");
+  git("add", ".");
+  git("-c", "user.name=Kit test", "-c", "user.email=kit@example.com", "commit", "-qm", "no heading");
+  for (const args of [["check"], ["check", "--ref", "HEAD"]]) {
+    const output = run(...args);
+    assert.equal(output.status, 1);
+    assert.equal(output.stderr, `${file}:1: Missing ## Feedback heading\n`);
+  }
+  writeFileSync(join(cwd, file), `${head}- 2026-10-23 · fault · folder link · after release: no · fix: [t](tickets)\n`);
+  assert.equal(run("check").stderr, `${file}:7: Fix link not found: tickets\n`, "a folder is not a fix");
 });

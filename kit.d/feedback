@@ -69,6 +69,7 @@ function today() {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
+// Read, edit, rewrite without a lock: only the lead writes a build's log.
 function add(path, map, line) {
   const source = existsSync(path) ? readFileSync(path, "utf8") : undefined;
   const eol = source?.includes("\r\n") ? "\r\n" : "\n";
@@ -87,6 +88,7 @@ function add(path, map, line) {
 function fixFor(path, number, fix) {
   if (!existsSync(path)) throw new UsageError(`no feedback log yet: ${path}`);
   const source = readFileSync(path, "utf8");
+  if (!source.split(/\r?\n/).includes(feedbackHeading)) throw new Error(`${path}: missing ${feedbackHeading} heading`);
   const entry = parseFeedback(source, path, () => true).entries.find(entry => entry.line === number);
   if (!entry) throw new UsageError(`${path}:${number} is not a feedback line`);
   const lines = source.split("\n");

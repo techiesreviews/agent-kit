@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Usage: tickets.mjs frontier [map] [--ref <ref>] | check [--ref <ref>]; inspect ticket dependencies and build feedback logs.
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 
 const statuses = new Set(["open", "closed", "needs-triage", "needs-info", "ready-for-agent", "ready-for-human", "wontfix"]);
@@ -198,7 +198,9 @@ function fixProblem(fix, file, exists) {
   return exists(target) ? "" : `Fix link not found: ${link[1]}`;
 }
 
-export function parseFeedback(source, file, exists = existsSync) {
+const isFile = file => { try { return statSync(file).isFile(); } catch { return false; } };
+
+export function parseFeedback(source, file, exists = isFile) {
   const lines = source.replace(/^﻿/, "").split(/\r?\n/);
   const problems = [], entries = [];
   const problem = (line, message) => problems.push({ file, line, message });
@@ -232,7 +234,7 @@ export function loadFeedback(root = "docs/wayfinder", { ref, cwd = process.cwd()
     files = readdirSync(root, { withFileTypes: true }).filter(entry => entry.isDirectory())
       .map(entry => join(root, entry.name, "build/feedback.md")).filter(file => existsSync(file)).sort();
     read = file => readFileSync(file, "utf8");
-    exists = existsSync;
+    exists = isFile;
   }
   for (const file of files) {
     const parsed = parseFeedback(read(file), file, exists);
