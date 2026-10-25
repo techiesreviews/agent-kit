@@ -98,7 +98,7 @@ const correctionLine = /^- (\S+) · (\S+) · (.+?) · repeats: (.+?) · (\[[^\]]
  * and blank lines may group them. A line that does not fit the format is a problem, not a stop.
  */
 export function parseCorrections(text, file) {
-  const lines = text.replace(/^﻿/, "").split(/\r?\n/), entries = [], problems = [];
+  const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/), entries = [], problems = [];
   const start = lines.indexOf(correctionsHeading);
   if (start < 0) {
     if (text.trim()) problems.push({ file, line: 1, message: `missing ${correctionsHeading} heading` });
@@ -144,7 +144,7 @@ const stopWords = new Set(("the and for with that this then when what from into 
 /** A rough stem, so "replacing" meets "replace" and "explainers" meets "explainer". */
 export const stem = word => word.replace(/'s$/, "").replace(/ing$/, (suffix, offset) => offset > 3 ? "" : suffix)
   .replace(/(?:ed|es|ly)$/, (suffix, offset) => offset > 2 ? "" : suffix)
-  .replace(/s$/, (suffix, offset) => offset > 2 && !word.endsWith("ss") ? "" : suffix).replace(/e$/, (suffix, offset) => offset > 2 ? "" : suffix);
+  .replace(/s$/, (suffix, offset, current) => offset > 2 && !current.endsWith("ss") ? "" : suffix).replace(/e$/, (suffix, offset) => offset > 2 ? "" : suffix);
 
 /**
  * Key words of a correction or rule: lower case, stop words and the sync's own "Borderline: …" note
@@ -177,7 +177,8 @@ export function repeatDates(repeats, otherSlugs = []) {
 
 /**
  * Groups of corrections that repeat. A `repeats:` date links a line to the closest line of that date in
- * either list (same kind first, then wording; another kind needs two shared key words), so a day recorded
+ * either list that shares wording (one key word of the same kind, two of another; same kind first, then
+ * wording), so a day recorded
  * in both lists counts once; a date in neither still counts as one earlier time. Any two lines of one
  * kind whose wording is close are linked too.
  */
@@ -189,9 +190,10 @@ export function groupCorrections(entries, otherSlugs = []) {
   for (const item of items) {
     if (item.repeats === undefined || /^first\b/.test(item.repeats)) continue;
     for (const { date, other } of repeatDates(item.repeats, otherSlugs)) {
-      // A line of another kind must share some wording, or the earlier time is one the list never recorded.
+      // A line must share wording (one key word of the same kind, two of another), or the earlier time is
+      // one the list never recorded.
       const candidates = other ? [] : items.filter(candidate => candidate !== item && candidate.date === date
-        && (candidate.kind === item.kind || sharedWords(item.words, candidate.words) >= linkWords));
+        && sharedWords(item.words, candidate.words) >= (candidate.kind === item.kind ? 1 : linkWords));
       const best = candidates.sort((a, b) => Number(b.kind === item.kind) - Number(a.kind === item.kind)
         || similarity(item.words, b.words) - similarity(item.words, a.words) || Number(b.file === item.file) - Number(a.file === item.file))[0];
       if (best) join(item.index, best.index);

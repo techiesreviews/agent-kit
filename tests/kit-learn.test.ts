@@ -97,6 +97,12 @@ test("repeats group by a repeats: date and by the same kind with close wording",
     { date: "2026-10-01", kind: "felt-wrong", text: "Dragging a card snaps it back", source: "a", file: "f", line: 2 },
   ]);
   assert.equal(kinds.length, 2);
+  // A repeats: date whose only line that day shares no wording is an earlier time not in the list.
+  const noWords = learn.groupCorrections([
+    { date: "2026-10-02", kind: "fault", text: "Save lost the title", repeats: "2026-10-01", source: "a", file: "f", line: 1 },
+    { date: "2026-10-01", kind: "fault", text: "Undo dropped a block", repeats: "first", source: "a", file: "f", line: 2 },
+  ]);
+  assert.deepEqual(noWords.map(group => [texts(group), group.outside]), [[["Save lost the title"], ["2026-10-01"]], [["Undo dropped a block"], []]]);
   // A repeats: date links a line of another kind that shares two key words.
   const crossKind = learn.groupCorrections([
     { date: "2026-10-02", kind: "too-much", text: "Toolbar hint text crowds the heading", repeats: "2026-10-01", source: "a", file: "f", line: 1 },
@@ -114,6 +120,7 @@ test("repeats group by a repeats: date and by the same kind with close wording",
 test("key words are stemmed, so word forms meet", () => {
   assert.deepEqual(learn.keyWords("replacing images"), learn.keyWords("replace image"));
   assert.ok(learn.keyWords("quickly").has("quick"));
+  assert.deepEqual(learn.keyWords("missed classes"), learn.keyWords("miss class"));
   assert.deepEqual(learn.keyWords("saved in the notes"), learn.keyWords("save the note"));
   assert.deepEqual([...learn.keyWords("The agent should show the explainers. Borderline: phrased as a wish")], ["show", "explainer"]);
 });
@@ -121,7 +128,7 @@ test("key words are stemmed, so word forms meet", () => {
 test("a slug inside repeats: prose does not make a date another project's", () => {
   const groups = learn.groupCorrections([
     { date: "2026-10-02", kind: "fault", text: "Save lost the title", repeats: "2026-10-01 (noted across projects)", source: "a", file: "f", line: 1 },
-    { date: "2026-10-01", kind: "fault", text: "Undo dropped a block", repeats: "first", source: "a", file: "f", line: 2 },
+    { date: "2026-10-01", kind: "fault", text: "Save button hidden on narrow screens", repeats: "first", source: "a", file: "f", line: 2 },
   ], ["projects"]);
   assert.deepEqual(groups.map(group => [group.members.length, group.outside]), [[2, []]]);
   const elsewhere = learn.groupCorrections([
@@ -132,7 +139,7 @@ test("a slug inside repeats: prose does not make a date another project's", () =
   // Bare slug forms and the README's | separator.
   const forms = (repeats: string) => learn.groupCorrections([
     { date: "2026-10-02", kind: "fault", text: "Save lost the title", repeats, source: "a", file: "f", line: 1 },
-    { date: "2026-10-01", kind: "fault", text: "Undo dropped a block", repeats: "first", source: "a", file: "f", line: 2 },
+    { date: "2026-10-01", kind: "fault", text: "Save button hidden on narrow screens", repeats: "first", source: "a", file: "f", line: 2 },
   ], ["other-project"]).map(group => [group.members.length, group.outside]);
   assert.deepEqual(forms("2026-10-01 other-project"), [[1, ["2026-10-01 in other-project"]], [1, []]]);
   assert.deepEqual(forms("2026-10-01 in other-project, 2026-09-20"), [[1, ["2026-09-20", "2026-10-01 in other-project"]], [1, []]]);
@@ -204,6 +211,17 @@ test("a missing or empty corrections file gives nothing recorded yet", (t) => {
   assert.match(missing.stdout, /^RESULT: ok learn nothing recorded yet$/m);
   writeFileSync(join(empty, "corrections/native-site-editor.md"), "");
   assert.match(run(env).stdout, /^RESULT: ok learn nothing recorded yet$/m);
+  assert.equal(existsSync(join(dir, ".scratch")), false);
+});
+
+test("malformed lines with nothing in the window say how many", (t) => {
+  const dir = temp(t), copy = join(dir, "memory");
+  mkdirSync(join(copy, "corrections"), { recursive: true });
+  writeFileSync(join(copy, "corrections/demo.md"), correctionsFile(["- not a correction",
+    "- 2026-09-01 · fault · Older than the window · repeats: first · [T](t3-thread://v1/x) item i pos 1"]));
+  const result = run({ KIT_CHAT_MEMORY: copy, KIT_ROOT: dir, KIT_MAIN_ROOT: dir, HOME: dir }, ["--since", "2026-10-01", "--project", "demo"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^RESULT: ok learn nothing recorded yet \(1 malformed\)$/m);
   assert.equal(existsSync(join(dir, ".scratch")), false);
 });
 
