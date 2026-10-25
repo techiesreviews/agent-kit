@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 // @ts-expect-error The script is plain JavaScript without declarations.
-import { loadFeedback, loadTickets, parseFeedback, parseTicket, resolveTickets } from "../scripts/agents/tickets.mjs";
+import { loadFeedback, loadTickets, parseFeedback, parseFiles, parseTicket, resolveTickets } from "../scripts/agents/tickets.mjs";
 
 const fixtures = "tests/fixtures/agent-tickets";
 
@@ -99,6 +99,35 @@ test("assignee is a scalar, supports quotes and comments, and defaults to empty"
     assert.deepEqual(parsed.problems, []);
     assert.equal(parsed.ticket.assignee, expected);
   }
+});
+
+test("type and runs_alone are read; runs_alone must be true or false", () => {
+  const parsed = parseTicket("---\ntype: task (AFK) # slice\nstatus: open\nruns_alone: true\n---", "01-ready.md", "alpha");
+  assert.deepEqual(parsed.problems, []);
+  assert.equal(parsed.ticket.type, "task (AFK)");
+  assert.equal(parsed.ticket.runs_alone, true);
+  assert.equal(parseTicket("---\nstatus: open\n---", "01-ready.md", "alpha").ticket.runs_alone, false);
+  assert.deepEqual(parseTicket("---\nstatus: open\nruns_alone: yes\n---", "01-bad.md", "alpha").problems, [{ file: "01-bad.md", line: 3, message: "runs_alone must be true or false: yes" }]);
+});
+
+test("Files lists exact paths; globs, placeholders and find-it-with lines name their directory", () => {
+  const source = [
+    "---", "status: open", "---", "", "## Goal", "", "- `src/not-a-file.ts` outside Files", "", "## Files", "",
+    "- `scripts/agents/kit.d/next` (new), `tests/kit-next.test.ts` (new)",
+    "- `docs/agents/kitchen.md` (station 5), `AGENTS.md`, `runs_alone:` and the `**Not started:**` line",
+    "- `src/**/*.css` files, `scripts/agents/kit.d/<command>`, `scripts/agents/shots/features/`, `*.md`",
+    "- `tests/kit-fix.test.ts` (or the file covering it; find it with `grep -ln \"kit.d/fix\" tests/`)",
+    "- src/**, worker/** files with findings, e.g. dead exports",
+    "- `/home/lex/elsewhere.md`, `../outside.md`, `https://example.com/x`",
+    "  1. `docs/nested.md` (sub-item)",
+    "", "### Notes", "- `docs/notes.md`", "", "## Done when", "", "- `tests/later.test.ts`",
+  ].join("\n");
+  assert.deepEqual(parseFiles(source), [
+    "scripts/agents/kit.d/next", "tests/kit-next.test.ts", "docs/agents/kitchen.md", "AGENTS.md",
+    "src/", "scripts/agents/kit.d/", "scripts/agents/shots/features/", "./", "tests/", "worker/", "docs/nested.md", "docs/notes.md",
+  ]);
+  assert.deepEqual(parseFiles("---\nstatus: open\n---\nNo files section"), []);
+  assert.deepEqual(parseTicket(source, "01-ready.md", "alpha").ticket.files, parseFiles(source));
 });
 
 test("ref loading and CLI use committed tickets, including maps absent from the working tree", t => {

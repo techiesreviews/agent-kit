@@ -1,0 +1,255 @@
+#!/usr/bin/env node
+// kit: pick the tickets that may start now and their builders; --start claims and starts them
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { kitResult } from "../kit-lib.mjs";
+import { loadTickets, parseTicket, resolveTickets } from "../tickets.mjs";
+
+const usage = `Usage: kit next [map…] [--start] [--max N]
+Lists the running slices (running:), the open frontier tickets that may start now (next:)
+and why the rest wait (waits:),
+read from origin/dev in the dev worktree and the running slice-* jobs of every worktree.
+Maps go in the order given, else alphabetical; tickets by number within a map.
+--start claims each next: ticket on dev (assignee, commit, push), makes its worktree and starts
+its kit slice under kit bg; delegated (opencode/…) tickets are only claimed.
+--max N lowers the cap of 5 running slices; it never raises it.`;
+
+// Pins quoted from docs/agents/kitchen.md#who-cooks-pins-from-2026-10-22:
+//   | Builder, every slice | `claude-opus-5-5`, high | `kit slice --builder claude-opus-5-5`; `builder: sol` lines in tickets are superseded |
+//   | Builder, tiny fully specified fix | free OpenCode model | T3 `delegate_task`, only once T3 lists a verified zero-cost model |
+//   "Sol never builds."
+const pins = { "": "claude-opus-5-5", claude: "claude-opus-5-5", sol: "claude-opus-5-5" };
+const reviewModel = "claude-opus-5-5";
+const cap = 5;
+const mainTs = "src/main.ts";
+
+const devRoot = process.env.KIT_DEV_ROOT || "/home/ubulex/Projects/native-site-editor-dev";
+// Test seams: a fake kit (bg --list and bg <name>) and a fake worktree.sh.
+const fakeKit = process.env.KIT_NEXT_KIT;
+const worktreeScript = process.env.KIT_NEXT_WORKTREE || resolve(import.meta.dirname, "../worktree.sh");
+
+class UsageError extends Error {}
+
+function options(args) {
+  const flags = { maps: [], start: false, max: cap };
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--help" || arg === "-h") flags.help = true;
+    else if (arg === "--start") flags.start = true;
+    else if (arg === "--max") {
+      if (!/^\d+$/.test(args[i + 1] ?? "")) throw new UsageError("--max needs a whole number");
+      flags.max = Math.min(cap, Number(args[++i]));
+    } else if (/^[\w-]+$/.test(arg) && !arg.startsWith("-")) { if (!flags.maps.includes(arg)) flags.maps.push(arg); }
+    else throw new UsageError(`invalid argument: ${arg}`);
+  }
+  return flags;
+}
+
+function run(command, args, { cwd = devRoot, env = process.env } = {}) {
+  const result = spawnSync(command, args, { cwd, env, encoding: "utf8", maxBuffer: 32 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+  if (result.error) throw result.error;
+  return result;
+}
+
+function git(args, cwd = devRoot) {
+  const result = run("git", ["-C", cwd, ...args]);
+  if (result.status !== 0) throw new Error(`git ${args[0]} failed: ${(result.stderr || result.stdout).trim().split("\n").at(-1)}`);
+  return result.stdout;
+}
+
+const tryGit = (args, cwd = devRoot) => run("git", ["-C", cwd, ...args]).status === 0;
+
+function builderFor(builder) {
+  if (builder.startsWith("opencode/")) return { model: builder, delegate: true, label: `delegate ${builder}` };
+  const model = pins[builder] ?? builder;
+  return { model, delegate: false, label: model };
+}
+
+// The build README names the owner prefix (`prefix: sf`) and holds `**Not started:**` until the lead starts the build.
+function buildReadme(map) {
+  const show = run("git", ["-C", devRoot, "show", `origin/dev:docs/wayfinder/${map}/build/README.md`]);
+  const source = show.status === 0 ? show.stdout : "";
+  const prefix = /^prefix:\s*`?([a-z][a-z0-9-]*)`?\s*$/m.exec(source)?.[1] ?? map;
+  return { prefix, notStarted: /^\*\*Not started:\*\*/m.test(source) };
+}
+
+function number(slug) { return /^(\d+)-/.exec(slug)?.[1] ?? slug; }
+
+function naming(ticket, prefix) {
+  const nn = number(ticket.slug);
+  const owner = `${prefix}-${nn}`;
+  return { owner, job: `slice-${prefix}${nn}`, branch: `build/${owner}-${ticket.slug.replace(/^\d+-/, "")}` };
+}
+
+function unquote(command) {
+  return [...command.matchAll(/'((?:[^']|'\\'')*)'/g)].map(match => match[1].replaceAll("'\\''", "'"));
+}
+
+// Running slices: every worktree's `kit bg --list` rows named slice-* and running. Each job's
+// recorded command names its ticket, read from that worktree for its Files and map.
+function runningSlices() {
+  const worktrees = git(["worktree", "list", "--porcelain"]).split("\n").filter(line => line.startsWith("worktree ")).map(line => line.slice(9));
+  const kit = fakeKit || resolve(import.meta.dirname, "../kit");
+  const slices = [];
+  for (const worktree of worktrees) {
+    if (!existsSync(join(worktree, ".scratch/kit-jobs"))) continue;
+    const listed = run(kit, ["bg", "--list"], { cwd: worktree, env: { ...process.env, KIT_ROOT: worktree } });
+    if (listed.status !== 0) throw new Error(`kit bg --list failed in ${worktree}`);
+    for (const row of listed.stdout.split("\n")) {
+      const [name, state] = row.split("\t");
+      if (!name?.startsWith("slice-") || state !== "running") continue;
+      const directory = join(worktree, ".scratch/kit-jobs", name);
+      let ticket = { file: "", map: "", files: [], runs_alone: false };
+      try {
+        const words = unquote(readFileSync(join(directory, "command"), "utf8"));
+        const file = words[words.indexOf("--ticket") + 1];
+        const cwd = existsSync(join(directory, "cwd")) ? readFileSync(join(directory, "cwd"), "utf8").trim() : worktree;
+        if (words.includes("--ticket") && file) {
+          const map = /(?:^|\/)docs\/wayfinder\/([^/]+)\//.exec(file)?.[1] ?? "";
+          ticket = parseTicket(readFileSync(resolve(cwd, file), "utf8"), file, map).ticket;
+        }
+      } catch { /* A slice whose ticket cannot be read still takes a slot. */ }
+      slices.push({ name, worktree, ticket });
+    }
+  }
+  return slices;
+}
+
+const inside = (directory, path) => directory.endsWith("/") && (directory === "./" || path.startsWith(directory));
+const overlaps = (a, b) => a === b || inside(a, b) || inside(b, a);
+// src/main.ts is rule 3's alone: two slices may share it, never any other file.
+const shared = (files, others) => files.find(file => file !== mainTs && others.some(other => other !== mainTs && overlaps(file, other)));
+const inMain = ticket => ticket.files.some(file => overlaps(file, mainTs));
+
+// Apply the fixed rules in order to each frontier ticket; picked tickets count as running.
+function plan(candidates, running, max) {
+  const active = running.map(slice => ({ name: slice.name, ticket: slice.ticket }));
+  const next = [], waits = [];
+  for (const { ticket, readme } of candidates) {
+    if (ticket.assignee) continue;
+    const wait = reason => waits.push({ ticket, reason });
+    if (ticket.type !== "task (AFK)") { wait(`needs Lex (type: ${ticket.type || "missing"})`); continue; }
+    if (readme.notStarted && ticket.file.includes("/build/tickets/")) { wait("build not started (README **Not started:**)"); continue; }
+    if (active.length >= max) { wait(`cap ${max} slices running`); continue; }
+    const main = active.filter(slice => inMain(slice.ticket));
+    if (inMain(ticket) && main.length >= 2) { wait(`2 slices in ${mainTs}: ${main.map(slice => slice.name).join(", ")}`); continue; }
+    const holder = active.find(slice => shared(ticket.files, slice.ticket.files));
+    if (holder) { wait(`shares ${shared(ticket.files, holder.ticket.files)} with ${holder.name}`); continue; }
+    const sameMap = active.filter(slice => slice.ticket.map === ticket.map);
+    if (ticket.runs_alone && sameMap.length) { wait(`runs alone; waits for ${sameMap.map(slice => slice.name).join(", ")}`); continue; }
+    const alone = sameMap.find(slice => slice.ticket.runs_alone);
+    if (alone) { wait(`${alone.name} runs alone`); continue; }
+    const names = naming(ticket, readme.prefix);
+    next.push({ ticket, ...names, builder: builderFor(ticket.builder), why: `slot ${active.length + 1}/${max}${inMain(ticket) ? `, ${mainTs} ${main.length + 1}/2` : ""}` });
+    active.push({ name: names.job, ticket });
+  }
+  return { next, waits };
+}
+
+function setAssignee(source, owner) {
+  const lines = source.split("\n");
+  const end = lines.findIndex((line, i) => i > 0 && line === "---");
+  const at = lines.slice(0, end).findIndex(line => /^assignee:/.test(line));
+  if (at > 0) lines[at] = `assignee: ${owner}`;
+  else {
+    const status = lines.slice(0, end).findIndex(line => /^status:/.test(line));
+    lines.splice(status > 0 ? status + 1 : end, 0, `assignee: ${owner}`);
+  }
+  return lines.join("\n");
+}
+
+function push() {
+  if (tryGit(["push", "-q", "origin", "HEAD:dev"])) return "pushed";
+  git(["fetch", "-q", "origin"]);
+  if (!tryGit(["rebase", "-q", "origin/dev"])) {
+    tryGit(["rebase", "--abort"]);
+    throw new Error("claim conflicts with origin/dev; rebase aborted");
+  }
+  git(["push", "-q", "origin", "HEAD:dev"]);
+  return "pushed after rebase";
+}
+
+// Claim on dev: fast-forward, recheck the ticket, fill assignee, commit, push (rebase and retry once).
+function claim(item) {
+  git(["fetch", "-q", "origin"]);
+  if (git(["branch", "--show-current"]).trim() !== "dev") throw new Error(`${devRoot} is not on dev`);
+  if (git(["status", "--porcelain", "--untracked-files=no"]).trim()) throw new Error(`${devRoot} has uncommitted changes`);
+  git(["merge", "-q", "--ff-only", "origin/dev"]);
+  if (git(["rev-list", "origin/dev..HEAD"]).trim()) throw new Error(`${devRoot} has commits not on origin/dev`);
+  const path = join(devRoot, item.ticket.file);
+  const source = readFileSync(path, "utf8");
+  const current = parseTicket(source, item.ticket.file, item.ticket.map).ticket;
+  if (current.assignee || current.status !== "open") return { taken: current.assignee || current.status };
+  writeFileSync(path, setAssignee(source, item.owner));
+  git(["commit", "-q", "-m", `docs: claim ${item.ticket.map} ${number(item.ticket.slug)}`, "--", item.ticket.file]);
+  const how = push();
+  return { sha: git(["rev-parse", "--short", "HEAD"]).trim(), how };
+}
+
+function start(item) {
+  const made = run(worktreeScript, [item.branch, "origin/dev"], { env: { ...process.env, ASE_OWNER: item.owner } });
+  if (made.status !== 0) throw new Error(`worktree.sh ${item.branch} failed: ${made.stderr.trim().split("\n").at(-1)}`);
+  const worktree = made.stdout.trim().split("\n").at(-1);
+  console.log(`worktree: ${worktree}`);
+  const env = { ...process.env, ASE_REVIEW_MODEL: reviewModel, ASE_OWNER: item.owner };
+  delete env.KIT_ROOT;
+  const kit = fakeKit || join(worktree, "scripts/agents/kit");
+  const started = run(kit, ["bg", item.job, "--", "scripts/agents/kit", "slice", "--ticket", item.ticket.file, "--builder", item.builder.model], { cwd: worktree, env });
+  if (started.status !== 0) throw new Error(`kit bg ${item.job} failed: ${(started.stdout + started.stderr).trim().split("\n").at(-1)}`);
+  console.log(`started: ${item.job}`);
+  console.log(`wait: KIT_ROOT=${worktree} scripts/agents/kit wait job ${item.job} --timeout 2h`);
+}
+
+function main(args) {
+  let flags;
+  try { flags = options(args); }
+  catch (error) {
+    if (!(error instanceof UsageError)) throw error;
+    console.error(`${error.message}\n${usage}`);
+    kitResult("fail", `next ${error.message}`);
+    process.exitCode = 2;
+    return;
+  }
+  if (flags.help) { console.log(usage); return; }
+  if (!tryGit(["fetch", "-q", "origin"])) console.log("problem: fetch failed; using the local origin/dev");
+  const candidates = [], problems = [];
+  for (const map of flags.maps.length ? flags.maps : [undefined]) {
+    const loaded = loadTickets("docs/wayfinder", map, { ref: "origin/dev", cwd: devRoot });
+    const resolved = resolveTickets(loaded.tickets);
+    problems.push(...loaded.problems, ...resolved.problems);
+    const readmes = new Map();
+    for (const ticket of resolved.frontier) {
+      if (!readmes.has(ticket.map)) readmes.set(ticket.map, buildReadme(ticket.map));
+      candidates.push({ ticket, readme: readmes.get(ticket.map) });
+    }
+  }
+  for (const problem of problems) console.error(`${problem.file}:${problem.line}: ${problem.message}`);
+  if (problems.length) { kitResult("fail", `next ${problems.length} ticket problems`); process.exitCode = 1; return; }
+  const running = runningSlices();
+  for (const slice of running) console.log(`running: ${slice.name} ${slice.ticket.file || "(ticket unknown)"}`);
+  const { next, waits } = plan(candidates, running, flags.max);
+  for (const item of next) console.log(`next: ${item.ticket.file} builder=${item.builder.label} owner=${item.owner} why=${item.why}`);
+  for (const { ticket, reason } of waits) console.log(`waits: ${ticket.file} ${reason}`);
+  const summary = `next ${next.length} ready, ${waits.length} waiting`;
+  if (!flags.start) { kitResult("ok", summary); return; }
+  let started = 0;
+  for (const item of next) {
+    try {
+      const claimed = claim(item);
+      if (claimed.taken) { console.log(`waits: ${item.ticket.file} claimed meanwhile (${claimed.taken})`); continue; }
+      console.log(`claimed: ${item.ticket.file} owner=${item.owner} ${claimed.sha} (${claimed.how})`);
+      if (item.builder.delegate) { console.log(`delegate: ${item.ticket.file} ${item.builder.model} owner=${item.owner}`); continue; }
+      start(item);
+      started++;
+    } catch (error) {
+      kitResult("fail", `next start ${item.ticket.file}: ${error.message}`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+  kitResult("ok", `${summary}, ${started} started`);
+}
+
+try { main(process.argv.slice(2)); }
+catch (error) { kitResult("fail", `next ${error.message}`); process.exitCode = 1; }

@@ -57,7 +57,7 @@ function dependencySlug(value) {
 export function parseTicket(source, file, map) {
   const lines = source.replace(/^\uFEFF/, "").split(/\r?\n/);
   const problems = [];
-  const ticket = { file, map, slug: basename(file, ".md"), title: "", builder: "", assignee: "", status: "", blocked_by: [], lines: {}, valid: true };
+  const ticket = { file, map, slug: basename(file, ".md"), title: "", type: "", builder: "", assignee: "", status: "", runs_alone: false, blocked_by: [], files: parseFiles(source), lines: {}, valid: true };
   const problem = (line, message) => { ticket.valid = false; problems.push({ file, line, message }); };
   const end = lines.findIndex((line, i) => i > 0 && line === "---");
   if (lines[0] !== "---" || end < 0) {
@@ -65,13 +65,19 @@ export function parseTicket(source, file, map) {
     return { ticket, problems };
   }
   for (let i = 1; i < end; i++) {
-    const field = /^(title|builder|assignee|status|blocked_by):\s*(.*)$/.exec(lines[i]);
+    const field = /^(title|type|builder|assignee|status|runs_alone|blocked_by):\s*(.*)$/.exec(lines[i]);
     if (!field) continue;
     const [, key, raw] = field;
     if (ticket.lines[key]) { problem(i + 1, `Duplicate ${key}`); continue; }
     ticket.lines[key] = i + 1;
     let errorLine = i + 1;
     try {
+      if (key === "runs_alone") {
+        const value = scalar(raw);
+        if (value !== "true" && value !== "false") throw new Error(`runs_alone must be true or false: ${value}`);
+        ticket.runs_alone = value === "true";
+        continue;
+      }
       if (key !== "blocked_by") { ticket[key] = scalar(raw); continue; }
       // Consume the entire value through the next top-level field. Comments and
       // blank lines do not end a list; unconsumed nested content is an error.
@@ -105,6 +111,38 @@ export function parseTicket(source, file, map) {
   }
   if (!statuses.has(ticket.status)) problem(ticket.lines.status ?? 1, `Invalid status: ${ticket.status || "(missing)"}`);
   return { ticket, problems };
+}
+
+const globChars = /[*?[\]{}<>]/;
+const asDirectory = path => path.endsWith("/") ? path : path.includes("/") ? path.slice(0, path.lastIndexOf("/") + 1) : "./";
+
+function filePath(word, named) {
+  // Repo-relative paths only; a bare NAME.ext counts inside backticks, never in plain words.
+  const path = word.replace(/^\.\//, "");
+  if (!path || /\s/.test(path) || /^[/~.-]/.test(path) || path.includes("://")) return "";
+  if (!path.includes("/") && !(named && /^[\w*?{}<>.,-]+\.[A-Za-z]\w*$/.test(path))) return "";
+  const glob = path.split("/").findIndex(segment => globChars.test(segment));
+  return glob < 0 ? path : glob ? `${path.split("/").slice(0, glob).join("/")}/` : "./";
+}
+
+// The paths a ticket's `## Files` section names. Directories end in "/" ("./" is the whole
+// repo): a glob or placeholder stands for the directory above it, and every path on a
+// "find it with" line for its directory. Prose words without a "/" are not paths.
+export function parseFiles(source) {
+  const lines = source.replace(/^\uFEFF/, "").split(/\r?\n/);
+  const files = new Set();
+  const start = lines.findIndex(line => /^## Files\s*$/.test(line));
+  if (start < 0) return [];
+  for (let i = start + 1; i < lines.length && !/^#{1,2} /.test(lines[i]); i++) {
+    const spans = [...lines[i].matchAll(/`([^`]+)`/g)].map(match => match[1]);
+    const words = spans.length ? spans : lines[i].replace(/^\s*(?:[-*+]|\d+\.)\s+/, "").split(/[\s,;()]+/).map(word => word.replace(/[.:]+$/, ""));
+    const search = /find it with/i.test(lines[i]);
+    for (const word of words) {
+      const path = filePath(word, spans.length > 0);
+      if (path) files.add(search ? asDirectory(path) : path);
+    }
+  }
+  return [...files];
 }
 
 export function resolveTickets(tickets) {
