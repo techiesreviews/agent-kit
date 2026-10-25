@@ -20,6 +20,9 @@ const learn: {
   coveredBy(group: Group, blocks: Block[]): (Block & { shared: string[] }) | undefined;
   projectMap(readme: string): { slug: string; workspace: string }[];
   findSlug(rows: { slug: string; workspace: string }[], roots: string[]): string | undefined;
+  keyWords(text: string): Set<string>;
+  sinceDate(since: string, now?: number): string;
+  bundleLimit: number;
 } = await import(pathToFileURL(script).href);
 
 const corrections = join(memory, "corrections/demo.md");
@@ -33,9 +36,22 @@ function temp(t: TestContext) {
 }
 
 function run(env: Record<string, string>, args: string[] = []) {
-  return spawnSync("bash", [kit, "learn", ...args], { encoding: "utf8", timeout: 20_000,
-    env: { ...process.env, ASE_SKIP_DOCTOR: "1", KIT_ROOT: repo, ...env } });
+  const base: Record<string, string | undefined> = { ...process.env, ASE_SKIP_DOCTOR: "1", KIT_ROOT: repo };
+  // A test names the memory folder itself, or none to read the default under HOME.
+  delete base.KIT_CHAT_MEMORY;
+  delete base.CHAT_MEMORY_DIR;
+  return spawnSync("bash", [kit, "learn", ...args], { encoding: "utf8", timeout: 20_000, env: { ...base, ...env } });
 }
+
+const pad = (number: number) => String(number).padStart(2, "0");
+const localDate = (date: Date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+const daysAgo = (days: number) => { const today = new Date(); return localDate(new Date(today.getFullYear(), today.getMonth(), today.getDate() - days)); };
+const correctionsFile = (lines: string[]) => `# demo\n\n## Corrections\n\n${lines.join("\n")}\n`;
+const bundleOf = (output: string) => {
+  const path = /^RESULT: ok learn .*, bundle (.+)$/m.exec(output)?.[1];
+  assert.ok(path, output);
+  return readFileSync(path, "utf8");
+};
 
 /** Every file under a folder with its bytes and modification time. */
 function snapshot(dir: string): Record<string, string> {
@@ -86,6 +102,25 @@ test("repeats group by a repeats: date and by the same kind with close wording",
   assert.deepEqual(unrelated.map(group => [group.times, group.outside]), [[2, ["2026-10-01"]], [1, []]]);
 });
 
+test("key words are stemmed, so word forms meet", () => {
+  assert.deepEqual(learn.keyWords("replacing images"), learn.keyWords("replace image"));
+  assert.ok(learn.keyWords("quickly").has("quick"));
+  assert.deepEqual([...learn.keyWords("The agent should show the explainers. Borderline: phrased as a wish")], ["show", "explainer"]);
+});
+
+test("a slug inside repeats: prose does not make a date another project's", () => {
+  const groups = learn.groupCorrections([
+    { date: "2026-10-02", kind: "fault", text: "Save lost the title", repeats: "2026-10-01 (noted across projects)", source: "a", file: "f", line: 1 },
+    { date: "2026-10-01", kind: "fault", text: "Undo dropped a block", repeats: "first", source: "a", file: "f", line: 2 },
+  ], ["projects"]);
+  assert.deepEqual(groups.map(group => [group.members.length, group.outside]), [[2, []]]);
+  const elsewhere = learn.groupCorrections([
+    { date: "2026-10-02", kind: "fault", text: "Save lost the title", repeats: "2026-10-01 (projects)", source: "a", file: "f", line: 1 },
+    { date: "2026-10-01", kind: "fault", text: "Undo dropped a block", repeats: "first", source: "a", file: "f", line: 2 },
+  ], ["projects"]);
+  assert.deepEqual(elsewhere.map(group => [group.members.length, group.outside]), [[1, ["2026-10-01 in projects"]], [1, []]]);
+});
+
 test("covered? names the rule block whose key words the correction shares", () => {
   const rulebook = join(repo, "docs/agents/ux-rulebook.md"), guardrails = join(repo, "docs/agents/guardrails.md");
   const blocks = [...learn.ruleBlocks(readFileSync(rulebook, "utf8"), rulebook), ...learn.ruleBlocks(readFileSync(guardrails, "utf8"), guardrails)];
@@ -108,6 +143,10 @@ test("the slug comes from the project map by workspace, a sibling worktree inclu
 
 test("arguments: --since Nd or a real date, --project a slug", () => {
   assert.deepEqual(learn.parseArgs([]), { since: "14d", project: undefined });
+  // N days back, inclusive: runs 14 days apart share their boundary day.
+  assert.equal(learn.sinceDate("14d", new Date(2026, 9, 26, 9).getTime()), "2026-10-12");
+  assert.equal(learn.sinceDate("1d", new Date(2026, 2, 1, 0, 30).getTime()), "2026-02-28");
+  assert.equal(learn.sinceDate("2026-10-01"), "2026-10-01");
   assert.deepEqual(learn.parseArgs(["--since", "2026-10-01", "--project", "demo"]), { since: "2026-10-01", project: "demo" });
   for (const args of [["--since", "2026-02-30"], ["--since", "0d"], ["--project", "../x"], ["--bogus"]]) assert.throws(() => learn.parseArgs(args));
   const result = run({ KIT_MAIN_ROOT: "/nonexistent" }, ["--since", "soon"]);
@@ -136,10 +175,15 @@ test("KIT_CHAT_MEMORY is read, never written; the bundle lands in the main root"
   assert.deepEqual(snapshot(memory), before);
   assert.deepEqual(readdirSync(home), []);
   assert.match(result.stdout, /demo\.md:10: malformed correction line/);
-  const path = /^RESULT: ok learn 4 repeated of 5 groups, 2 malformed, bundle (.+)$/m.exec(result.stdout)?.[1];
+  const path = /^RESULT: ok learn 4 repeated of 6 groups, 3 malformed, bundle (.+)$/m.exec(result.stdout)?.[1];
   assert.ok(path?.startsWith(join(main, ".scratch/learn/")), result.stdout);
   const bundle = readFileSync(path, "utf8");
-  assert.match(bundle, /- \*\*×2 · fault\*\* · 2026-10-19, 2026-10-18 · feedback: demo; chat: Publish\n {2}- covered\?: docs\/agents\/guardrails\.md:3,/);
+  assert.match(bundle, /- \*\*×2 · fault\*\* · 2026-10-19, 2026-10-18 · feedback: demo; chat: Publish\n {2}- covered\?: docs\/agents\/guardrails\.md:3,.*\n {2}- within a day in both lists/);
+  // An unknown feedback kind is listed, not grouped; a missing fix link does not matter here.
+  assert.match(bundle, /## Malformed lines\n\n.+\n.+\n- .+feedback\.md:6: Invalid kind: sideways\n/);
+  assert.doesNotMatch(bundle, /A feedback kind the log does not have/);
+  assert.match(bundle, /## Given once\n[^#]*Settings panel spacing looks cramped/);
+  assert.doesNotMatch(bundle, /99-missing/);
   assert.match(bundle, /covered\?: docs\/agents\/ux-rulebook\.md:5 \(S1\)/);
   assert.match(bundle, /earlier time not in the list: 2026-10-01 in other-project/);
   assert.doesNotMatch(bundle, /An old line before the window/);
@@ -153,4 +197,35 @@ test("without --project the slug comes from the map by this checkout's workspace
   mkdirSync(checkout);
   const result = run({ KIT_CHAT_MEMORY: copy, KIT_ROOT: checkout, KIT_MAIN_ROOT: join(dir, "site"), HOME: dir }, ["--since", "2026-10-01"]);
   assert.match(result.stdout, /^RESULT: ok learn 3 repeated of 5 groups, 2 malformed, bundle /m);
+});
+
+test("without KIT_CHAT_MEMORY it reads ~/Projects/chat/memory, and 14d keeps a line 14 days old", (t) => {
+  const home = temp(t), main = join(home, "main");
+  const dir = join(home, "Projects/chat/memory/corrections");
+  mkdirSync(dir, { recursive: true });
+  const line = (days: number, text: string) => `- ${daysAgo(days)} · fault · ${text} · repeats: first · [T](t3-thread://v1/x) item i pos 1`;
+  writeFileSync(join(dir, "native-site-editor.md"), correctionsFile([line(0, "Toolbar covers the heading"), line(14, "Undo forgets moved blocks"), line(15, "Fonts load twice on open")]));
+  const result = run({ HOME: home, KIT_ROOT: home, KIT_MAIN_ROOT: main });
+  const bundle = bundleOf(result.stdout);
+  assert.match(bundle, new RegExp(`Since ${daysAgo(14)} \\(--since 14d\\)`));
+  assert.match(bundle, /Toolbar covers the heading/);
+  assert.match(bundle, /Undo forgets moved blocks/);
+  assert.doesNotMatch(bundle, /Fonts load twice/);
+});
+
+test("a corrections list over the bundle limit trims lines given once before repeated ones", (t) => {
+  const dir = temp(t), copy = join(dir, "memory");
+  mkdirSync(join(copy, "corrections"), { recursive: true });
+  // Made-up words per line, so no two lines share wording.
+  const words = (index: number) => Array.from({ length: 12 }, (_, word) => `w${index}x${word}`).join(" ");
+  const lines = Array.from({ length: 300 }, (_, index) => `- 2026-10-${pad(10 + (index % 10))} · fault · ${words(index)} · repeats: first · [T](t3-thread://v1/x) item i pos ${index}`);
+  lines.unshift("- 2026-10-20 · too-much · Removed the hint text beside the save button again · repeats: 2026-10-10 · [H](t3-thread://v1/h) item i pos 1",
+    "- 2026-10-10 · too-much · Hint text beside the save button is noise · repeats: first · [H](t3-thread://v1/h) item i pos 0");
+  writeFileSync(join(copy, "corrections/demo.md"), correctionsFile(lines));
+  assert.ok(Buffer.byteLength(readFileSync(join(copy, "corrections/demo.md"))) > learn.bundleLimit);
+  const result = run({ KIT_CHAT_MEMORY: copy, KIT_ROOT: dir, KIT_MAIN_ROOT: dir, HOME: dir }, ["--since", "2026-10-01", "--project", "demo"]);
+  const bundle = bundleOf(result.stdout);
+  assert.ok(Buffer.byteLength(bundle) < learn.bundleLimit, String(Buffer.byteLength(bundle)));
+  assert.match(bundle, /Trimmed to stay under 40000 bytes: Given once \d+ lines\./);
+  assert.match(bundle, /## Given more than once\n\n- \*\*×2 · too-much\*\*.*\n(.*\n){3}\n## Given once/);
 });
