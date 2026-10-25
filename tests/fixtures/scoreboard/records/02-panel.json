@@ -53,7 +53,13 @@
           "gap": 0
         }
       },
-      "declined": []
+      "declined": [
+        {
+          "text": "Spec: `b.ts:9` P2 \u2014 nit",
+          "reason": "out of scope",
+          "round": 1
+        }
+      ]
     }
   ],
   "cost": {

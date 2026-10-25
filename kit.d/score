@@ -104,9 +104,8 @@ function finishedBuilds(root) {
 }
 
 function page(data, root, out) {
-  let tickets = [];
-  try { tickets = loadTickets(join(root, "docs/wayfinder"), data.map).tickets.filter(ticket => ticket.file.includes("/build/tickets/")); }
-  catch { /* A map without tickets shows its records only. */ }
+  // Every ticket of the map: build tickets are the pieces, and a fix may name a map ticket.
+  const { tickets } = loadTickets(join(root, "docs/wayfinder"), data.map);
   const pieces = data.pieces.map(item => ({ ...item, who: label(item.builder) }));
   mkdirSync(dirname(out), { recursive: true });
   writeAtomic(out, scorePage({ data: { ...data, pieces }, tickets, builds: finishedBuilds(root) }));
@@ -154,6 +153,7 @@ function score(args) {
       (flags.json ? console.error : console.log)(`snapshot: ${relative(root, path)}`);
     }
     if (flags.html) {
+      if (!existsSync(join(root, "docs/wayfinder", flags.map))) throw new Error(`no map ${flags.map} (docs/wayfinder/${flags.map})`);
       const out = flags.out ? resolve(flags.out) : join(main, ".scratch/scoreboard", flags.map, "page.html");
       page(data[0], root, out);
       (flags.json ? console.error : console.log)(`page: ${out}`);

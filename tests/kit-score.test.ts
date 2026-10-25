@@ -23,6 +23,8 @@ export interface ScoreRecord {
   rounds: number; reviews: Review[]; cost: PieceCost | null; costs: Record<string, Cost & { role: "build" | "review" }>; landed: Landed | null;
 }
 type ScorePiece = Omit<ScoreRecord, "costs"> & { piece: string; minutes: number | null; findings: Counts };
+// What kit score hands the page builder: a piece with its builder label.
+type PagePiece = ScorePiece & { who: string };
 interface Total { pieces: number; minutes: number; rounds: number; findings: Counts; cost: PieceCost }
 interface ScoreData { map: string; pieces: ScorePiece[]; totals: { builders: Record<string, Total>; kinds: Record<string, Total> }; feedback: string | null }
 const claudeResult = JSON.stringify({ type: "result", result: "Done.", total_cost_usd: 0.57,
@@ -339,23 +341,30 @@ test("kit score --html writes one self-contained page from the records, tickets 
   assert.match(html, /<style>/); assert.match(html, /prefers-color-scheme: dark/); assert.match(html, /<svg /);
   // Plain words: no severity codes.
   assert.doesNotMatch(html, /\bP[0-3]\b/);
-  // Where: merged 01, 02, 05 and closed 07 are done; 03 runs; 04 waits on Lex; 06 has not started.
+  // Where: merged 01 and 02, closed 05 (a queued merge with no SHA) and closed 07 are done; 03 runs; 04 waits on Lex;
+  // 06 has not started; the map-level ticket 09 is not a piece.
   const tiles = Object.fromEntries([...html.matchAll(/data-state="(\w+)"(?: data-some)?><span class="value">(\d+)/g)].map(match => [match[1], Number(match[2])]));
   assert.deepEqual(tiles, { done: 4, running: 1, lex: 1, waiting: 1 });
   assert.equal(sections(html)[0].caption, "4 of 7 pieces done, 1 waiting on Lex; the longest, Trim the toolbar, took 55 minutes, most of it building.");
-  // Reviews: 1 + 2 + 4 found in three pieces (gaps are not problems), the declined style finding lighter.
-  assert.match(sections(html)[1].caption, /^Over every review round, reviews caught 9 problems across 3 pieces, 2 of them serious; .+ declined 1 with a reason \(lighter\)\.$/);
+  // Reviews: 1 + 2 + 4 found in three pieces (gaps are not problems), the declined style finding lighter; a tie names both
+  // kinds. 02's declined finding has no kind and no unsorted finding to sit in, so neither the bars nor the totals count it.
+  assert.equal(sections(html)[1].caption, "Over every review round, reviews caught 9 problems across 3 pieces, 2 of them serious; " +
+    "real faults and mismatches with the ticket were the most common, and the builder declined 1 with a reason (lighter).");
   assert.match(html, /data-key="style" data-light style="flex-grow:100" title="Style: 1 declined"/);
+  assert.equal([...html.matchAll(/data-light style=/g)].length, 1);
+  assert.match(html, /<th scope="rowgroup" colspan="6">Settings panel spacing<\/th><\/tr><tr><td>1<\/td><td>0<\/td><td>0<\/td><td>0<\/td><td>0<\/td><td>0<\/td>/);
   assert.match(html, /1 serious · 2 minor · 1 style · 1 fix round/);
-  // Corrections: each linked to its fix, with the fix ticket's title and state.
-  assert.equal(sections(html)[2].caption, "Lex corrected 3 things in this build; 1 still has no fix.");
+  // Corrections: each with its fix as text (no links, so the page stays one file), naming the fix ticket's title and
+  // state, whether it is a build ticket or a map ticket (../tickets/).
+  assert.equal(sections(html)[2].caption, "Lex corrected 4 things in this build; 1 still has no fix.");
   assert.match(html, /hover jumps on the tiles.*Fix: ticket 06, Calmer hover on tiles \(open\)/);
-  // Each kind's bar is its share of all corrections: one of three.
-  assert.equal([...html.matchAll(/inline-size:33.3%"><span data-key="single"/g)].length, 3);
+  assert.match(html, /labels wrap in the panel.*Fix: ticket 09, Shorter panel labels \(open\)/);
+  // Each kind's bar is its share of all corrections: one of four.
+  assert.equal([...html.matchAll(/inline-size:25%"><span data-key="single"/g)].length, 4);
   assert.match(html, /No fix yet/); assert.match(html, /Fixed in PR #12/);
   // Ladder: in time order bravo had a UX correction, then charlie (workflow), delta and alpha (fault) count: 3 of 5.
   assert.match(html, /Builds in a row without a UX correction: <strong>3 of 5<\/strong>/);
-  assert.match(sections(html)[3].caption, /^3 of 5 builds in a row without a UX correction; this build has 2 UX corrections so far\.$/);
+  assert.match(sections(html)[3].caption, /^3 of 5 builds in a row without a UX correction; this build has 3 UX corrections so far\.$/);
   assert.match(html, /<li aria-current="step"><span class="rung">Rung 1<\/span>/);
   // Builders: per kind and builder; under ten pieces of a kind, no advice.
   assert.match(html, /<h3>task \(AFK\) M <span>3 pieces<\/span><\/h3>/);
@@ -367,11 +376,16 @@ test("kit score --html writes one self-contained page from the records, tickets 
   assert.ok(both.stdout.startsWith("{")); assert.equal(both.stderr, `page: ${out}\n`);
   assert.equal(sections(readFileSync(out, "utf8")).length, 5);
   for (const args of [["--html"], ["demo", "--out", out], ["demo", "--html", "--out"]]) assert.equal(f.run(...args).status, 2, args.join(" "));
+  // A mistyped map fails like --snapshot and writes no page.
+  const typo = f.run("demp", "--html");
+  assert.equal(typo.status, 1); assert.match(typo.stdout, /^RESULT: fail score no map demp \(docs\/wayfinder\/demp\)$/m);
+  assert.equal(existsSync(join(f.main, ".scratch/scoreboard/demp")), false);
 });
 
 test("the builder advice appears only once a kind has ten pieces, and the ladder moves by its rules", () => {
-  const piece = (index: number, who: string, findings: Counts, usd: number | null) => ({ piece: `${index}-p`, title: `Piece ${index}`, kind: "task S", who,
-    builder: null, phases: [], rounds: 0, reviews: [], cost: { build: { usd, tokens: 1000 }, review: null }, landed: null, minutes: 10, findings });
+  const piece = (index: number, who: string, findings: Counts, usd: number | null, partial = false) => ({ piece: `${index}-p`, ticket: null, title: `Piece ${index}`,
+    kind: "task S", who, builder: null, phases: [], rounds: 0, reviews: [], cost: { build: { usd, tokens: 1000, ...partial ? { partial: true as const } : {} }, review: null },
+    landed: null, minutes: 10, findings }) satisfies PagePiece;
   const pieces = (count: number) => Array.from({ length: count }, (_, index) =>
     index % 2 ? piece(index, "cheap-model", { fault: 2 }, 0.1) : piece(index, "careful-model", {}, 1));
   const html = (count: number) => scorePage({ data: { map: "demo", pieces: pieces(count), feedback: null } });
@@ -379,6 +393,11 @@ test("the builder advice appears only once a kind has ten pieces, and the ladder
   assert.match(html(10), /<strong>To bring to Lex:<\/strong> careful-model builds task S best \(0 findings a piece\); cheap-model builds it cheapest \(\$0\.10 a piece\)\./);
   assert.match(scorePage({ data: { map: "demo", pieces: pieces(10).map(item => ({ ...item, who: "careful-model" })), feedback: null } }),
     /careful-model builds task S best and cheapest \(1 finding, \$0\.55 a piece\)\./);
+  // Dollars that leave out runs show as a floor, and a floor is never the cheapest.
+  const floors = pieces(10).map((item, index) => index % 2 ? piece(index, "floor-model", { fault: 2 }, 0.5, true) : item);
+  const floored = scorePage({ data: { map: "demo", pieces: floors, feedback: null } });
+  assert.match(floored, /<dt>floor-model<\/dt>.*?<dd><span>&#62;=\$0\.50<\/span> a piece<\/dd>/);
+  assert.match(floored, /careful-model builds task S best and cheapest \(0 findings, \$1\.00 a piece\)\./);
   const build = (...kinds: [string, "yes" | "no"][]) => ({ map: "m", entries: kinds.map(([kind, afterRelease]) => ({ kind, afterRelease })) });
   const clean = Array.from({ length: 5 }, () => build());
   assert.deepEqual(ladder([]), { rung: 1, streak: 0, builds: 0 });

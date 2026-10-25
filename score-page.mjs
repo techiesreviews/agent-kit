@@ -1,8 +1,10 @@
 // The one page per build that kit score --html writes: self-contained HTML (inline CSS and SVG, no network,
 // light and dark) that teaches Lex where the build is, what reviews caught, what he corrected, the ladder and builders.
+import { posix } from "node:path";
 import { feedbackKinds, parseFeedback } from "./tickets.mjs";
 
 const findingKinds = { fault: "Real fault", ticket: "Not what the ticket asked", race: "Timing", style: "Style", unsorted: "Unsorted" };
+const findingNouns = { fault: "real faults", ticket: "mismatches with the ticket", race: "timing problems", style: "style points", unsorted: "unsorted findings" };
 const phaseKinds = { build: "Building", review: "Review", fix: "Fixing", land: "Landing" };
 const rungs = ["Lex checks everything before release", "Lex checks a sample; the UX reviewer checks everything",
   "Changes with nothing visible release on their own; visible ones wait for Lex", "Small visible changes release on their own; bigger ones wait"];
@@ -20,6 +22,7 @@ const median = values => {
   return sorted.length ? sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2 : null;
 };
 
+// Brief and commit are short steps around the build, so they count as building.
 const phaseKind = name => ({ review: "review", fix: "fix", pr: "land" })[name] ?? "build";
 function phaseMinutes(piece) {
   const totals = Object.fromEntries(Object.keys(phaseKinds).map(kind => [kind, 0]));
@@ -31,6 +34,7 @@ function phaseMinutes(piece) {
 }
 
 // A declined finding keeps its review text; its kind is the word after the severity, else unsorted.
+// The page counts a declined finding only where its kind was recorded, so the lighter segments and the totals agree.
 function declinedKinds(piece) {
   const counts = {};
   for (const review of piece.reviews ?? []) for (const item of review.declined ?? []) {
@@ -52,11 +56,16 @@ function severity(piece) {
 
 const found = piece => sum(Object.keys(findingKinds).map(kind => piece.findings?.[kind] ?? 0));
 
-// Done is merged; waiting on Lex is a ticket marked for him; running has a record; the rest wait to start.
-function pieceStates(pieces, tickets = []) {
+// Done is merged or a closed ticket (a queued merge may never record its SHA); waiting on Lex is a ticket
+// marked for him; running has a record; the rest wait to start. Only the build's own tickets are pieces.
+function pieceStates(pieces, allTickets = []) {
+  const tickets = allTickets.filter(ticket => ticket.file.includes("/build/tickets/"));
   const bySlug = new Map(tickets.map(ticket => [ticket.slug, ticket]));
   const lex = ticket => ["ready-for-human", "needs-info"].includes(ticket?.status);
-  const rows = pieces.map(piece => ({ piece, state: piece.landed?.sha ? "done" : lex(bySlug.get(piece.piece)) ? "lex" : "running" }));
+  const rows = pieces.map(piece => {
+    const ticket = bySlug.get(piece.piece);
+    return { piece, state: piece.landed?.sha || ticket?.status === "closed" ? "done" : lex(ticket) ? "lex" : "running" };
+  });
   const recorded = new Set(pieces.map(piece => piece.piece));
   for (const ticket of tickets) {
     if (recorded.has(ticket.slug) || ticket.status === "wontfix") continue;
@@ -81,6 +90,7 @@ export function ladder(builds) {
 const feedbackEntries = (text, file) => text ? parseFeedback(text, file, () => true).entries : [];
 
 // Per kind of job, per builder: pieces, median minutes, rounds and findings per piece, build cost per piece where known.
+// Dollars are a floor (partial) when any piece is unpriced or its own dollars leave out runs.
 function builderGroups(pieces) {
   const kinds = new Map();
   for (const piece of pieces) {
@@ -94,29 +104,36 @@ function builderGroups(pieces) {
     const rows = [...builders].sort(([a], [b]) => a.localeCompare(b)).map(([who, items]) => {
       const usd = items.map(item => item.cost?.build?.usd).filter(Number.isFinite);
       const tokens = items.map(item => item.cost?.build?.tokens).filter(Number.isFinite);
+      const partial = usd.length < items.length || items.some(item => item.cost?.build?.partial);
       return { who, pieces: items.length, minutes: median(items.map(item => item.minutes)), rounds: round(sum(items.map(item => item.rounds ?? 0)) / items.length),
-        findings: round(sum(items.map(found)) / items.length), usd: usd.length ? sum(usd) / usd.length : null, tokens: tokens.length ? sum(tokens) / tokens.length : null };
+        findings: round(sum(items.map(found)) / items.length), usd: usd.length ? sum(usd) / items.length : null, partial: usd.length > 0 && partial,
+        tokens: tokens.length ? sum(tokens) / tokens.length : null };
     });
     const pieces = sum(rows.map(row => row.pieces));
     return { kind, pieces, rows, advice: pieces >= compareAt ? advice(kind, rows) : null };
   });
 }
 
-// Best is fewest findings per piece, then fewest rounds, then fewest minutes; cheapest is the lowest known dollars per piece.
+const dollars = row => `${row.partial ? ">=" : ""}$${row.usd.toFixed(2)}`;
+
+// Best is fewest findings per piece, then fewest rounds, then fewest minutes; cheapest is the lowest dollars per piece
+// among builders whose every piece has its full price, so a floor never wins.
 function advice(kind, rows) {
   const best = [...rows].sort((a, b) => a.findings - b.findings || a.rounds - b.rounds || (a.minutes ?? Infinity) - (b.minutes ?? Infinity))[0];
-  const priced = rows.filter(row => row.usd !== null).sort((a, b) => a.usd - b.usd);
+  const priced = rows.filter(row => row.usd !== null && !row.partial).sort((a, b) => a.usd - b.usd);
   const lead = `${best.who} builds ${kind} best (${plural(best.findings, "finding")} a piece)`;
   if (!priced.length) return `${lead}; which is cheapest is not known yet.`;
-  if (priced[0] === best) return `${best.who} builds ${kind} best and cheapest (${plural(best.findings, "finding")}, $${priced[0].usd.toFixed(2)} a piece).`;
-  return `${lead}; ${priced[0].who} builds it cheapest ($${priced[0].usd.toFixed(2)} a piece).`;
+  if (priced[0] === best) return `${best.who} builds ${kind} best and cheapest (${plural(best.findings, "finding")}, ${dollars(priced[0])} a piece).`;
+  return `${lead}; ${priced[0].who} builds it cheapest (${dollars(priced[0])} a piece).`;
 }
 
-function fixText(fix, tickets) {
+// A fix link is relative to the build folder: tickets/… is the build's, ../tickets/… the map's. The page shows it
+// as text, not a link, so it stays one self-contained file.
+function fixText(fix, tickets, map) {
   if (fix === "open") return "No fix yet";
   const link = /^\[([^\]]+)\]\(([^()\s]+)\)$/.exec(fix);
   if (!link) return `Fixed in ${fix}`;
-  const slug = link[2].split("/").pop().replace(/\.md$/, ""), ticket = tickets.find(item => item.slug === slug);
+  const path = `/${map}/${posix.normalize(posix.join("build", link[2]))}`, ticket = tickets.find(item => item.file.endsWith(path));
   return `Fix: ticket ${link[1]}${ticket?.title ? `, ${ticket.title}` : ""}${ticket ? ticket.status === "closed" ? " (done)" : " (open)" : ""}`;
 }
 
@@ -155,17 +172,23 @@ function whereSection(pieces, tickets) {
 }
 
 function reviewSection(pieces) {
-  const rows = pieces.map(piece => ({ piece, declined: declinedKinds(piece), severity: severity(piece), total: found(piece) })).filter(row => row.total);
+  const capped = piece => {
+    const declined = declinedKinds(piece);
+    return Object.fromEntries(Object.keys(findingKinds).map(kind => [kind, Math.min(piece.findings?.[kind] ?? 0, declined[kind] ?? 0)]));
+  };
+  const rows = pieces.map(piece => ({ piece, declined: capped(piece), severity: severity(piece), total: found(piece) })).filter(row => row.total);
   const most = Math.max(...rows.map(row => row.total), 0), all = sum(rows.map(row => row.total));
-  const byKind = Object.keys(findingKinds).map(kind => [kind, sum(rows.map(row => row.piece.findings?.[kind] ?? 0))]).sort((a, b) => b[1] - a[1]);
+  const byKind = Object.keys(findingKinds).map(kind => [kind, sum(rows.map(row => row.piece.findings?.[kind] ?? 0))]);
+  const top = Math.max(...byKind.map(([, count]) => count)), common = byKind.filter(([, count]) => count === top).map(([kind]) => findingNouns[kind]);
   const serious = sum(rows.map(row => row.severity.serious)), declined = sum(rows.map(row => sum(Object.values(row.declined))));
   const caption = all ? `Over every review round, reviews caught ${plural(all, "problem")} across ${plural(rows.length, "piece")}, ${serious} of them serious; ` +
-    `${findingKinds[byKind[0][0]].toLowerCase()} was the most common kind${declined ? `, and the builder declined ${declined} with a reason (lighter)` : ""}.`
+    `${common.length > 1 ? `${common.slice(0, -1).join(", ")} and ${common.at(-1)} were` : `${common[0]} were`} the most common` +
+    `${declined ? `, and the builder declined ${declined} with a reason (lighter)` : ""}.`
     : "Reviews have caught nothing yet.";
   if (!rows.length) return section("reviews", "What reviews caught", caption, "");
   const chart = `<ol class="bars">${rows.map(({ piece, declined, severity, total }) => {
     const parts = Object.entries(findingKinds).flatMap(([key, label]) => {
-      const count = piece.findings?.[key] ?? 0, light = Math.min(count, declined[key] ?? 0);
+      const count = piece.findings?.[key] ?? 0, light = declined[key];
       return [{ key, value: count - light, title: `${label}: ${count - light} fixed` }, { key, value: light, light: true, title: `${label}: ${light} declined` }];
     });
     const detail = Object.entries(severity).filter(([, count]) => count).map(([word, count]) => `${count} ${word}`).join(" · ");
@@ -179,7 +202,7 @@ function reviewSection(pieces) {
       [name(piece), ...Object.keys(findingKinds).map(key => piece.findings?.[key] ?? 0), sum(Object.values(declined))])));
 }
 
-function correctionSection(entries, tickets) {
+function correctionSection(entries, tickets, map) {
   const open = entries.filter(entry => entry.fix === "open").length;
   const caption = entries.length ? `Lex corrected ${plural(entries.length, "thing")} in this build${open ? `; ${open} still ${open === 1 ? "has" : "have"} no fix` : "; every one has its fix"}.`
     : "Lex has not corrected anything in this build yet.";
@@ -187,7 +210,7 @@ function correctionSection(entries, tickets) {
   const chart = `<ol class="bars single">${counts.map(([kind, count]) => `<li><span class="name">${esc(sentence(feedbackKinds[kind]))}</span>` +
     `<span class="value">${count}</span>${count ? bar(count / entries.length, [{ key: "single", value: count, title: `${count}` }]) : '<div class="track"></div>'}</li>`).join("")}</ol>`;
   const list = entries.length ? `<ul class="entries">${entries.map(entry => `<li><span class="when">${esc(entry.date)} · ${esc(sentence(feedbackKinds[entry.kind] ?? entry.kind))}` +
-    `${entry.afterRelease === "yes" ? " · after release" : ""}</span><span class="what">${esc(entry.text)}</span><span class="fix">${esc(fixText(entry.fix, tickets))}</span></li>`).join("")}</ul>` : "";
+    `${entry.afterRelease === "yes" ? " · after release" : ""}</span><span class="what">${esc(entry.text)}</span><span class="fix">${esc(fixText(entry.fix, tickets, map))}</span></li>`).join("")}</ul>` : "";
   return section("corrections", "What Lex had to correct", caption, chart + list);
 }
 
@@ -200,14 +223,14 @@ function ladderSection(state, current) {
   return section("ladder", "Ladder", caption,
     `<p class="streak"><svg viewBox="0 0 136 24" width="136" height="24" role="img" aria-label="${state.streak} of ${streakGoal}">${dots}</svg>` +
     `<span>Builds in a row without a UX correction: <strong>${state.streak} of ${streakGoal}</strong></span></p>` +
-    `<ol class="rungs">${steps}</ol><p class="note">Five builds in a row without a UX correction move up one rung; a UX problem Lex finds after release moves down one.</p>`);
+    `<ol class="rungs">${steps}</ol><p class="note">Five builds in a row without a UX correction move up one rung; a build in which Lex finds UX problems after release moves down one, however many he finds.</p>`);
 }
 
 function builderSection(pieces) {
   const groups = builderGroups(pieces);
   const caption = groups.length ? `${plural(groups.length, "kind")} of job so far; comparing builders means more once a kind has about ${compareAt} pieces.`
     : "No piece has a builder recorded yet.";
-  const money = row => row.usd !== null ? `$${row.usd.toFixed(2)}` : row.tokens !== null ? `${Math.round(row.tokens / 1000)}k tokens` : "not known";
+  const money = row => row.usd !== null ? dollars(row) : row.tokens !== null ? `${Math.round(row.tokens / 1000)}k tokens` : "not known";
   const body = groups.map(group => `<article><h3>${esc(group.kind)} <span>${plural(group.pieces, "piece")}</span></h3>` +
     (group.advice ? `<p class="advice"><strong>To bring to Lex:</strong> ${esc(group.advice)}</p>` : "") +
     group.rows.map(row => `<dl><dt>${esc(row.who)}</dt><dd><span>${row.pieces}</span> ${row.pieces === 1 ? "piece" : "pieces"}</dd><dd><span>${row.minutes === null ? "-" : Math.round(row.minutes)}</span> min (median)</dd>` +
@@ -283,7 +306,7 @@ dd span { color: var(--ink); font-variant-numeric: tabular-nums; font-weight: 60
 
 /**
  * The page for one build. data is kit score's merged map data with each piece's builder label as `who`;
- * tickets are the map's build tickets (slug, title, status); builds are finished builds oldest first,
+ * tickets are the map's tickets (file, slug, title, status) from both ticket folders; builds are finished builds oldest first,
  * each { map, feedback } with its feedback log text.
  */
 export function scorePage({ data, tickets = [], builds = [], generated = new Date() }) {
@@ -303,7 +326,7 @@ export function scorePage({ data, tickets = [], builds = [], generated = new Dat
 <header><h1>Build: ${esc(data.map)}</h1><p>${plural(data.pieces.length, "piece")} recorded · made ${when} UTC</p></header>
 ${whereSection(data.pieces, tickets)}
 ${reviewSection(data.pieces)}
-${correctionSection(current, tickets)}
+${correctionSection(current, tickets, data.map)}
 ${ladderSection(state, current)}
 ${builderSection(data.pieces)}
 </main>
