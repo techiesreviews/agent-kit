@@ -677,18 +677,22 @@ test("declined findings land in the round file and the review's findings.json wi
   const f = fixture(t); const review = f.review(); f.builder();
   const record = { model: "claude-opus-5-5", findings: [{ group: "Spec", severity: "P1", kind: "ticket", text: "file.txt:1 — P1 ticket: x" }] };
   writeFileSync(join(review, "findings.json"), JSON.stringify(record));
-  const report = "Declined:\n- file.txt:1 — P1 ticket: x — reason: the ticket asks for this line.\n- file.txt:2 — P2 fault: write is lost\n- Bare finding with no reason.\n";
+  const report = "Declined:\n- file.txt:1 — P1 ticket: x — reason: the ticket asks for this line.\n- file.txt:2 — P2 fault: write is lost\n- Bare finding with no reason.\n" +
+    "- a.ts:1 — P2 fault: the error reason: field is dropped\n- a.ts:2 — P3 style: y — reason: the old reason: still applies.\n";
   const result = f.run([], { FAKE_MODE: "decline-only", FAKE_REPORT: report });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const declined = [
     { text: "file.txt:1 — P1 ticket: x", reason: "the ticket asks for this line." },
     { text: "file.txt:2 — P2 fault: write is lost", reason: "" },
     { text: "Bare finding with no reason.", reason: "" },
+    { text: "a.ts:1 — P2 fault: the error reason: field is dropped", reason: "" },
+    { text: "a.ts:2 — P3 style: y", reason: "the old reason: still applies." },
   ];
   assert.deepEqual(JSON.parse(readFileSync(join(review, "findings.json"), "utf8")), { ...record, declined });
   const round = readFileSync(join(f.root, ".scratch/kit-fix/build%2Fke-03/round-1.md"), "utf8");
   assert.ok(round.endsWith("\n\nDeclined by the builder (with reasons):\n- file.txt:1 — P1 ticket: x — reason: the ticket asks for this line.\n" +
-    "- file.txt:2 — P2 fault: write is lost — reason: none given\n- Bare finding with no reason. — reason: none given\n"), round);
+    "- file.txt:2 — P2 fault: write is lost — reason: none given\n- Bare finding with no reason. — reason: none given\n" +
+    "- a.ts:1 — P2 fault: the error reason: field is dropped — reason: none given\n- a.ts:2 — P3 style: y — reason: the old reason: still applies.\n"), round);
   assert.ok(round.startsWith(`Ticket: ${f.ticket}`));
   assert.ok(f.reviewInput().brief.includes("file.txt:1 — P1 ticket: x — reason: the ticket asks for this line."));
 });
@@ -710,6 +714,22 @@ test("a retried builder phase leaves one declined list in the round file and fin
   assert.equal(round.split("Declined by the builder (with reasons):").length - 1, 1, round);
   assert.deepEqual(JSON.parse(readFileSync(join(review, "findings.json"), "utf8")).declined,
     [{ text: "file.txt:1 — P1 ticket: x", reason: "the ticket asks for this line." }]);
+});
+
+test("a damaged findings.json keeps the declined list in the round file and lets the round finish", t => {
+  for (const damaged of ["{ not json", "null", "[]"]) {
+    const f = fixture(t); const review = f.review(); f.builder();
+    writeFileSync(join(review, "findings.json"), damaged);
+    const result = f.run([], { FAKE_MODE: "decline-only", FAKE_REPORT: "Declined:\n- file.txt:1 — P1 ticket: x — reason: the ticket asks for this line.\n", FAKE_REVIEW_RESULT: findings });
+    // The round passes its builder and commit phases and reaches the new review, which still has findings.
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, /1 open findings/);
+    assert.match(result.stderr, /^problem: .*findings\.json is not a findings record; declined findings kept in the round file only$/m);
+    assert.equal(existsSync(join(f.root, ".scratch/kit-fix/build%2Fke-03/pending.json")), false);
+    assert.equal(readFileSync(join(review, "findings.json"), "utf8"), damaged);
+    assert.ok(readFileSync(join(f.root, ".scratch/kit-fix/build%2Fke-03/round-1.md"), "utf8")
+      .endsWith("\n\nDeclined by the builder (with reasons):\n- file.txt:1 — P1 ticket: x — reason: the ticket asks for this line.\n"));
+  }
 });
 
 test("declines still reach the round file for reviews without findings.json and for --note rounds", t => {

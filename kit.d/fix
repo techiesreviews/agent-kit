@@ -103,7 +103,9 @@ function declinedFindings(report) {
 // "<finding> — reason: <why>". Without the marker the whole item is the finding: findings
 // themselves contain dashes, so no other separator can tell evidence from a reason.
 function declinedEntry(item) {
-  const marker = [...item.matchAll(/\s*(?:[—–]|--?)?\s*\breason:\s*/gi)].at(-1);
+  // The dash is required so a finding that merely mentions "reason:" stays whole; the first
+  // marker wins so a reason may itself contain one.
+  const marker = /\s+(?:[—–]|--?)\s*reason:\s*/i.exec(item);
   return marker ? { text: item.slice(0, marker.index).trim(), reason: item.slice(marker.index + marker[0].length).trim() }
     : { text: item.trim(), reason: "" };
 }
@@ -117,7 +119,13 @@ function recordDeclined(brief, review, declined) {
   writeFileSync(brief, entries.length ? `${round}${DECLINED_HEADING}${entries.map(({ text, reason }) => `- ${text} — reason: ${reason || "none given"}`).join("\n")}\n` : round);
   const path = review && join(review, "findings.json");
   if (!entries.length || !path || !existsSync(path)) return; // Reviews saved before findings.json have none.
-  const record = JSON.parse(readFileSync(path, "utf8"));
+  // A damaged record must not stall the round in its builder phase; the round file keeps the list.
+  let record;
+  try { record = JSON.parse(readFileSync(path, "utf8")); } catch { /* Checked below. */ }
+  if (!record || typeof record !== "object" || Array.isArray(record)) {
+    console.error(`problem: ${path} is not a findings record; declined findings kept in the round file only`);
+    return;
+  }
   const known = new Set((record.declined ?? []).map(entry => JSON.stringify(entry)));
   record.declined = [...(record.declined ?? []), ...entries.filter(entry => !known.has(JSON.stringify(entry)))];
   writeFileSync(`${path}.tmp`, JSON.stringify(record, null, 2) + "\n");

@@ -570,4 +570,12 @@ test("kit review gives the budget back when the Grok CLI is missing", (t) => {
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stdout, /^budget: grok 1\/8 in /m);
   assert.deepEqual(Object.values(JSON.parse(readFileSync(join(f.main, ".scratch/review-budget.json"), "utf8")))[0], { grok: 0 });
+  // No report at all: no result.md, so no findings record and no findings line.
+  assert.doesNotMatch(result.stdout, /^findings /m);
+  const evidence = / evidence (.+)$/m.exec(result.stdout)?.[1];
+  assert.ok(evidence, result.stdout);
+  if (evidence !== "none") {
+    assert.equal(existsSync(join(evidence, "result.md")), false);
+    assert.equal(existsSync(join(evidence, "findings.json")), false);
+  }
 });
