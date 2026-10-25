@@ -71,7 +71,8 @@ function buildReadme(map) {
   const show = run("git", ["-C", devRoot, "show", `origin/dev:docs/wayfinder/${map}/build/README.md`]);
   const source = show.status === 0 ? show.stdout : "";
   const prefix = /^prefix:\s*`?([a-z][a-z0-9-]*)`?\s*$/m.exec(source)?.[1] ?? map;
-  return { prefix, notStarted: /^\*\*Not started:\*\*/m.test(source) };
+  const top = source.split(/^## /m)[0];
+  return { prefix, notStarted: /^\*\*Not started:\*\*/m.test(top) };
 }
 
 function number(slug) { return /^(\d+)-/.exec(slug)?.[1] ?? slug; }
@@ -121,17 +122,26 @@ const overlaps = (a, b) => a === b || inside(a, b) || inside(b, a);
 // src/main.ts is rule 3's alone: two slices may share it, never any other file.
 const shared = (files, others) => files.find(file => file !== mainTs && others.some(other => other !== mainTs && overlaps(file, other)));
 const inMain = ticket => ticket.files.some(file => overlaps(file, mainTs));
+const ticketKey = file => file.slice(Math.max(0, file.indexOf("docs/wayfinder/")));
 
 // Apply the fixed rules in order to each frontier ticket; picked tickets count as running.
+// A delegated pick has no kit bg job, so it takes no slot toward the cap in any run.
 function plan(candidates, running, max) {
-  const active = running.map(slice => ({ name: slice.name, ticket: slice.ticket }));
+  const active = running.map(slice => ({ name: slice.name, ticket: slice.ticket, slot: true }));
+  const runningTickets = new Set(running.map(slice => ticketKey(slice.ticket.file)).filter(Boolean));
   const next = [], waits = [];
   for (const { ticket, readme } of candidates) {
-    if (ticket.assignee) continue;
     const wait = reason => waits.push({ ticket, reason });
+    if (ticket.assignee) {
+      // A claimed AFK ticket with no running slice is stuck (a failed start) or delegated.
+      if (ticket.type === "task (AFK)" && !runningTickets.has(ticketKey(ticket.file))) wait(`claimed by ${ticket.assignee}, no running job`);
+      continue;
+    }
     if (ticket.type !== "task (AFK)") { wait(`needs Lex (type: ${ticket.type || "missing"})`); continue; }
     if (readme.notStarted && ticket.file.includes("/build/tickets/")) { wait("build not started (README **Not started:**)"); continue; }
-    if (active.length >= max) { wait(`cap ${max} slices running`); continue; }
+    const builder = builderFor(ticket.builder);
+    const slots = active.filter(slice => slice.slot).length;
+    if (!builder.delegate && slots >= max) { wait(`cap ${max} slices running`); continue; }
     const main = active.filter(slice => inMain(slice.ticket));
     if (inMain(ticket) && main.length >= 2) { wait(`2 slices in ${mainTs}: ${main.map(slice => slice.name).join(", ")}`); continue; }
     const holder = active.find(slice => shared(ticket.files, slice.ticket.files));
@@ -141,8 +151,10 @@ function plan(candidates, running, max) {
     const alone = sameMap.find(slice => slice.ticket.runs_alone);
     if (alone) { wait(`${alone.name} runs alone`); continue; }
     const names = naming(ticket, readme.prefix);
-    next.push({ ticket, ...names, builder: builderFor(ticket.builder), why: `slot ${active.length + 1}/${max}${inMain(ticket) ? `, ${mainTs} ${main.length + 1}/2` : ""}` });
-    active.push({ name: names.job, ticket });
+    if (!/^[a-z0-9][a-z0-9._-]*$/.test(names.job)) { wait(`job name ${names.job} is not a kit bg name; add a prefix: line to the build README`); continue; }
+    const why = builder.delegate ? "delegated, no slot" : `slot ${slots + 1}/${max}`;
+    next.push({ ticket, ...names, builder, why: `${why}${inMain(ticket) ? `, ${mainTs} ${main.length + 1}/2` : ""}` });
+    active.push({ name: names.job, ticket, slot: !builder.delegate });
   }
   return { next, waits };
 }
@@ -182,9 +194,16 @@ function claim(item) {
   const current = parseTicket(source, item.ticket.file, item.ticket.map).ticket;
   if (current.assignee || current.status !== "open") return { taken: current.assignee || current.status };
   writeFileSync(path, setAssignee(source, item.owner));
-  git(["commit", "-q", "-m", `docs: claim ${item.ticket.map} ${number(item.ticket.slug)}`, "--", item.ticket.file]);
-  const how = push();
-  return { sha: git(["rev-parse", "--short", "HEAD"]).trim(), how };
+  try {
+    git(["commit", "-q", "-m", `docs: claim ${item.ticket.map} ${number(item.ticket.slug)}`, "--", item.ticket.file]);
+    const how = push();
+    return { sha: git(["rev-parse", "--short", "HEAD"]).trim(), how };
+  } catch (error) {
+    // Leave dev as origin/dev, so an unpushed claim never blocks the next run.
+    tryGit(["checkout", "-q", "--", item.ticket.file]);
+    tryGit(["reset", "-q", "--keep", "origin/dev"]);
+    throw error;
+  }
 }
 
 function start(item) {
@@ -235,15 +254,17 @@ function main(args) {
   if (!flags.start) { kitResult("ok", summary); return; }
   let started = 0;
   for (const item of next) {
+    let claimed;
     try {
-      const claimed = claim(item);
+      claimed = claim(item);
       if (claimed.taken) { console.log(`waits: ${item.ticket.file} claimed meanwhile (${claimed.taken})`); continue; }
       console.log(`claimed: ${item.ticket.file} owner=${item.owner} ${claimed.sha} (${claimed.how})`);
       if (item.builder.delegate) { console.log(`delegate: ${item.ticket.file} ${item.builder.model} owner=${item.owner}`); continue; }
       start(item);
       started++;
     } catch (error) {
-      kitResult("fail", `next start ${item.ticket.file}: ${error.message}`);
+      const landed = claimed?.sha ? `claimed ${claimed.sha} but not started: ` : "";
+      kitResult("fail", `next start ${item.ticket.file}: ${landed}${error.message}`);
       process.exitCode = 1;
       return;
     }

@@ -40,6 +40,7 @@ if [[ $1 == bg && $2 == --list ]]; then
   echo 'RESULT: ok bg list'; exit 0
 fi
 printf '%s|%s|%s|%s\\n' "$PWD" "$ASE_REVIEW_MODEL" "$ASE_OWNER" "$*" >> "$FAKE_KIT_LOG"
+[[ -z \${FAKE_BG_FAIL:-} ]] || { echo "RESULT: fail bg $2 broken"; exit 1; }
 echo "RESULT: ok bg $2 pid 1"
 `);
   writeFileSync(join(root, "fake-worktree.sh"), `#!/usr/bin/env bash
@@ -52,13 +53,14 @@ printf '%s\\n' "$path"
   chmodSync(join(root, "fake-kit"), 0o755);
   chmodSync(join(root, "fake-worktree.sh"), 0o755);
   // A slice job in its own worktree: the recorded command names its ticket, as kit bg writes it.
-  const running = (name: string, ticketFile: string, state = "running") => {
+  const running = (name: string, ticketFile: string, state = "running", command = `'scripts/agents/kit' 'slice' '--ticket' '${ticketFile}' '--builder' 'claude-opus-5-5'\n`) => {
     const worktree = join(root, `job-${name}`);
     git(dev, "worktree", "add", "-q", "--detach", worktree, "origin/dev");
     const directory = join(worktree, ".scratch/kit-jobs", name);
     mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, "state"), `${state}\n`);
-    writeFileSync(join(directory, "command"), `'scripts/agents/kit' 'slice' '--ticket' '${ticketFile}' '--builder' 'claude-opus-5-5'\n`);
+    writeFileSync(join(directory, "command"), command);
+    return worktree;
   };
   const run = (...args: string[]) => spawnSync(process.execPath, [next, ...args], { env, encoding: "utf8", timeout: 30_000 });
   const lines = (...args: string[]) => {
@@ -82,8 +84,12 @@ test("rule 1 skips non-AFK and claimed tickets and unstarted builds; order and b
     [build("alpha", "11-free")]: ticket({ builder: "opencode/deepseek-v4.1-flash-free", files: ["a/eleven.ts"] }),
     [build("alpha", "12-luna")]: ticket({ builder: "gpt-6-luna", files: ["a/twelve.ts"] }),
     [build("alpha", "13-blocked")]: ticket({ blockedBy: ["01-grill"] }),
+    [build("alpha", "14-more")]: ticket({ files: ["a/fourteen.ts"] }),
     [build("beta", "01-b")]: ticket({ builder: "", files: ["b/one.ts"] }),
     "docs/wayfinder/gamma/build/README.md": "# Build\n\n**Not started:** after alpha lands.\n\nprefix: ga\n",
+    "docs/wayfinder/delta/build/README.md": "# Build\n\n## Notes\n\n**Not started:** quoted below the first heading, so it does not count.\n",
+    [build("delta", "01-d")]: ticket({ files: ["d/one.ts"] }),
+    [build("Upper", "01-u")]: ticket({ files: ["u/one.ts"] }),
     [build("gamma", "01-g")]: ticket({}),
     "docs/wayfinder/gamma/tickets/02-map-task.md": ticket({ files: ["g/map.ts"] }),
   });
@@ -91,14 +97,18 @@ test("rule 1 skips non-AFK and claimed tickets and unstarted builds; order and b
     `next: ${build("beta", "01-b")} builder=claude-opus-5-5 owner=beta-01 why=slot 1/5`,
     `next: ${build("alpha", "9-nine")} builder=claude-opus-5-5 owner=al-9 why=slot 2/5`,
     `next: ${build("alpha", "10-ten")} builder=claude-opus-5-5 owner=al-10 why=slot 3/5`,
-    `next: ${build("alpha", "11-free")} builder=delegate opencode/deepseek-v4.1-flash-free owner=al-11 why=slot 4/5`,
-    `next: ${build("alpha", "12-luna")} builder=gpt-6-luna owner=al-12 why=slot 5/5`,
+    `next: ${build("alpha", "11-free")} builder=delegate opencode/deepseek-v4.1-flash-free owner=al-11 why=delegated, no slot`,
+    `next: ${build("alpha", "12-luna")} builder=gpt-6-luna owner=al-12 why=slot 4/5`,
+    `next: ${build("alpha", "14-more")} builder=claude-opus-5-5 owner=al-14 why=slot 5/5`,
     `waits: ${build("alpha", "01-grill")} needs Lex (type: grilling (HITL))`,
+    `waits: ${build("alpha", "03-claimed")} claimed by al-03, no running job`,
     "waits: docs/wayfinder/alpha/tickets/05-research.md needs Lex (type: research (AFK))",
     `waits: ${build("gamma", "01-g")} build not started (README **Not started:**)`,
     "waits: docs/wayfinder/gamma/tickets/02-map-task.md cap 5 slices running",
-    "RESULT: ok next 5 ready, 4 waiting",
+    "RESULT: ok next 6 ready, 5 waiting",
   ]);
+  assert.match(lines("delta").join("\n"), /^next: docs\/wayfinder\/delta\/build\/tickets\/01-d\.md /);
+  assert.equal(lines("Upper").at(-1), "RESULT: ok next 0 ready, 1 waiting");
   // Without maps, alphabetical: alpha's tickets come first.
   assert.match(lines()[0], /^next: docs\/wayfinder\/alpha\/build\/tickets\/9-nine\.md /);
 });
@@ -250,5 +260,72 @@ test("--start stops when the claim conflicts with a claim another lead pushed me
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stdout, /^RESULT: fail next start \S+01-one\.md: claim conflicts with origin\/dev; rebase aborted$/m);
   assert.equal(git(dev, "status", "--porcelain").trim(), "");
+  assert.equal(git(dev, "rev-list", "origin/dev..HEAD").trim(), "");
   assert.ok(!existsSync(join(root, "wt-build-alpha-01-one")));
+  const again = run("alpha", "--start");
+  assert.equal(again.status, 0, again.stdout + again.stderr);
+  assert.match(again.stdout, /^waits: \S+01-one\.md claimed by someone-else, no running job$/m);
+  assert.match(again.stdout, /RESULT: ok next 0 ready, 1 waiting, 0 started\n$/);
+});
+
+test("--start refuses a dev worktree off dev, with tracked changes or ahead of origin, and pushes nothing", t => {
+  for (const [setup, message] of [
+    [(git: (cwd: string, ...args: string[]) => string, dev: string) => git(dev, "checkout", "-q", "-b", "elsewhere"), "is not on dev"],
+    [(_git: unknown, dev: string) => writeFileSync(join(dev, "README.md"), "changed\n"), "has uncommitted changes"],
+    [(git: (cwd: string, ...args: string[]) => string, dev: string) => git(dev, "commit", "-q", "--allow-empty", "-m", "local"), "has commits not on origin/dev"],
+  ] as const) {
+    const { root, dev, git, run } = fixture(t, { [build("alpha", "01-one")]: ticket({ files: ["a/one.ts"] }) });
+    setup(git, dev);
+    const result = run("alpha", "--start");
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, new RegExp(`^RESULT: fail next start \\S+01-one\\.md: \\S+ ${message}$`, "m"));
+    assert.deepEqual(git(join(root, "origin.git"), "log", "--format=%s", "dev").trim().split("\n"), ["fixture"]);
+  }
+});
+
+test("a start that fails after the claim landed says so, and later runs report the stuck claim", t => {
+  const { env, run } = fixture(t, startFiles);
+  env.FAKE_BG_FAIL = "1";
+  const result = run("alpha", "--start");
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /^RESULT: fail next start \S+01-first-slice\.md: claimed [0-9a-f]+ but not started: kit bg slice-al01 failed: RESULT: fail bg slice-al01 broken$/m);
+  delete env.FAKE_BG_FAIL;
+  const after = run("alpha");
+  assert.match(after.stdout, /^waits: \S+01-first-slice\.md claimed by al-01, no running job$/m);
+});
+
+test("a running slice whose ticket is unknown or unreadable is listed and still takes a slot", t => {
+  const files: Record<string, string> = {};
+  for (let i = 1; i <= 4; i++) files[build("alpha", `0${i}-t`)] = ticket({ files: [`a/${i}.ts`] });
+  const { running, run } = fixture(t, files);
+  running("slice-a", "", "running", "'sleep' '600'\n");
+  running("slice-b", build("alpha", "09-gone"));
+  running("slice-c", "", "running", "");
+  const result = run("alpha", "--max", "4");
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(result.stdout.trim().split("\n").slice(0, 4), ["running: slice-a (ticket unknown)", "running: slice-b (ticket unknown)", "running: slice-c (ticket unknown)",
+    `next: ${build("alpha", "01-t")} builder=claude-opus-5-5 owner=alpha-01 why=slot 4/4`]);
+  assert.match(result.stdout, /RESULT: ok next 1 ready, 3 waiting\n$/);
+});
+
+test("the real kit bg --list rows and command quoting reach kit next", t => {
+  const quoted = build("alpha", "01-o'neil");
+  const { root, dev, env, git, run } = fixture(t, {
+    [quoted]: ticket({ assignee: "alpha-01", files: ["a/shared.ts"] }),
+    [build("alpha", "02-next")]: ticket({ files: ["a/shared.ts"] }),
+  });
+  const worktree = join(root, "job-real");
+  git(dev, "worktree", "add", "-q", "--detach", worktree, "origin/dev");
+  const real = { ...env, KIT_ROOT: worktree };
+  delete real.KIT_NEXT_KIT;
+  const bg = (...args: string[]) => spawnSync(process.execPath, [resolve("scripts/agents/kit.d/bg"), ...args], { env: real, cwd: worktree, encoding: "utf8", timeout: 15_000 });
+  const started = bg("slice-alpha01", "--", process.execPath, "-e", "setTimeout(() => {}, 60000)", "--", "--ticket", quoted);
+  assert.equal(started.status, 0, started.stdout + started.stderr);
+  delete env.KIT_NEXT_KIT;
+  // Stop the job before the fixture's cleanup removes its records.
+  let result;
+  try { result = run("alpha"); }
+  finally { assert.equal(bg("--stop", "slice-alpha01").status, 0); }
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(result.stdout.trim().split("\n"), [`running: slice-alpha01 ${quoted}`, `waits: ${build("alpha", "02-next")} shares a/shared.ts with slice-alpha01`, "RESULT: ok next 0 ready, 1 waiting"]);
 });
