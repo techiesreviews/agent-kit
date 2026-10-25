@@ -100,10 +100,10 @@ function declinedFindings(report) {
   return declined;
 }
 
-// "<finding> — reason: <why>"; without the marker the last dash separates them.
+// "<finding> — reason: <why>". Without the marker the whole item is the finding: findings
+// themselves contain dashes, so no other separator can tell evidence from a reason.
 function declinedEntry(item) {
-  const marker = [...item.matchAll(/\s*(?:[—–]|--?)?\s*\breason:\s*/gi)].at(-1)
-    ?? [...item.matchAll(/\s+(?:[—–]|--?)\s+/g)].at(-1);
+  const marker = [...item.matchAll(/\s*(?:[—–]|--?)?\s*\breason:\s*/gi)].at(-1);
   return marker ? { text: item.slice(0, marker.index).trim(), reason: item.slice(marker.index + marker[0].length).trim() }
     : { text: item.trim(), reason: "" };
 }

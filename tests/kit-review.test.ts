@@ -166,7 +166,7 @@ test("kit review writes findings.json with kinds and counts, or unreadable for a
   const report = "REVIEW_STATUS: complete\nSpec defects:\n- file.txt:1 — P1 ticket: the ticket asks for counts.\nStandards defects:\n- file.txt:1 — **P3 style:** rename it.\n- file.txt:1 — P2: no kind.\nValidation gaps: add a test.\nOptional nits: none.\n";
   const result = f.run(["--commit", "HEAD^"], { FAKE_REPORT: report, ASE_REVIEW_MODEL: "claude-opus-5-5" });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /^findings 4: ticket 1, style 1, unsorted 1, none 1; P1 1, P2 1, P3 1, none 1$/m);
+  assert.match(result.stdout, /^findings 4: ticket 1, style 1, unsorted 1, gap 1; P1 1, P2 1, P3 1, gap 1$/m);
   const evidence = f.evidence(result.stdout);
   assert.deepEqual(JSON.parse(readFileSync(join(evidence, "findings.json"), "utf8")), {
     model: "claude-opus-5-5", effort: "medium", scope: `git diff ${f.commits[1]}^..${f.commits[1]}`, head: f.commits[1],
@@ -176,7 +176,7 @@ test("kit review writes findings.json with kinds and counts, or unreadable for a
       { group: "Standards", severity: "P2", kind: "unsorted", text: "file.txt:1 — P2: no kind." },
       { group: "Validation gaps", severity: null, kind: null, text: "add a test." },
     ],
-    counts: { kind: { fault: 0, ticket: 1, race: 0, style: 1, unsorted: 1, none: 1 }, severity: { P0: 0, P1: 1, P2: 1, P3: 1, none: 1 } },
+    counts: { kind: { fault: 0, ticket: 1, race: 0, style: 1, unsorted: 1, gap: 1 }, severity: { P0: 0, P1: 1, P2: 1, P3: 1, none: 0, gap: 1 } },
   });
   const unreadable = f.run([], { FAKE_REPORT: "REVIEW_STATUS: complete\nLooks fine to me.\n" });
   assert.equal(unreadable.status, 0, unreadable.stderr);

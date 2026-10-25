@@ -677,20 +677,53 @@ test("declined findings land in the round file and the review's findings.json wi
   const f = fixture(t); const review = f.review(); f.builder();
   const record = { model: "claude-opus-5-5", findings: [{ group: "Spec", severity: "P1", kind: "ticket", text: "file.txt:1 — P1 ticket: x" }] };
   writeFileSync(join(review, "findings.json"), JSON.stringify(record));
-  const report = "Declined:\n- file.txt:1 — P1 ticket: x — reason: the ticket asks for this line.\n- file.txt:2 — already follows the ticket.\n- Bare finding with no reason.\n";
+  const report = "Declined:\n- file.txt:1 — P1 ticket: x — reason: the ticket asks for this line.\n- file.txt:2 — P2 fault: write is lost\n- Bare finding with no reason.\n";
   const result = f.run([], { FAKE_MODE: "decline-only", FAKE_REPORT: report });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const declined = [
     { text: "file.txt:1 — P1 ticket: x", reason: "the ticket asks for this line." },
-    { text: "file.txt:2", reason: "already follows the ticket." },
+    { text: "file.txt:2 — P2 fault: write is lost", reason: "" },
     { text: "Bare finding with no reason.", reason: "" },
   ];
   assert.deepEqual(JSON.parse(readFileSync(join(review, "findings.json"), "utf8")), { ...record, declined });
   const round = readFileSync(join(f.root, ".scratch/kit-fix/build%2Fke-03/round-1.md"), "utf8");
   assert.ok(round.endsWith("\n\nDeclined by the builder (with reasons):\n- file.txt:1 — P1 ticket: x — reason: the ticket asks for this line.\n" +
-    "- file.txt:2 — reason: already follows the ticket.\n- Bare finding with no reason. — reason: none given\n"), round);
+    "- file.txt:2 — P2 fault: write is lost — reason: none given\n- Bare finding with no reason. — reason: none given\n"), round);
   assert.ok(round.startsWith(`Ticket: ${f.ticket}`));
   assert.ok(f.reviewInput().brief.includes("file.txt:1 — P1 ticket: x — reason: the ticket asks for this line."));
+});
+
+test("a retried builder phase leaves one declined list in the round file and findings.json", t => {
+  const f = fixture(t); const review = f.review(); const builder = f.builder();
+  writeFileSync(join(review, "findings.json"), JSON.stringify({ findings: [] }));
+  const report = "Declined:\n- file.txt:1 — P1 ticket: x — reason: the ticket asks for this line.\n";
+  assert.equal(f.run([], { FAKE_MODE: "decline-only", FAKE_REPORT: report }).status, 0);
+  // The state a builder phase leaves when it recorded its declines but stopped before saving the commit phase.
+  const directory = join(f.root, ".scratch/kit-fix/build%2Fke-03");
+  writeFileSync(join(directory, "pending.json"), JSON.stringify({ root: f.root, branch: "build/ke-03", head: f.head, review,
+    run: builder, ticket: f.ticket, round: 1, original: findings, model: "gpt-6.1-sol", effort: "high", fresh: false,
+    phase: "builder", declined: [], reviewHead: f.head }));
+  const retry = f.run([], { FAKE_MODE: "decline-only", FAKE_REPORT: report });
+  assert.equal(retry.status, 0, retry.stdout + retry.stderr);
+  assert.equal(f.calls().length, 2);
+  const round = readFileSync(join(directory, "round-1.md"), "utf8");
+  assert.equal(round.split("Declined by the builder (with reasons):").length - 1, 1, round);
+  assert.deepEqual(JSON.parse(readFileSync(join(review, "findings.json"), "utf8")).declined,
+    [{ text: "file.txt:1 — P1 ticket: x", reason: "the ticket asks for this line." }]);
+});
+
+test("declines still reach the round file for reviews without findings.json and for --note rounds", t => {
+  const report = "Declined:\n- file.txt:1 — P1 ticket: x — reason: the ticket asks for this line.\n";
+  const listed = "\n\nDeclined by the builder (with reasons):\n- file.txt:1 — P1 ticket: x — reason: the ticket asks for this line.\n";
+  for (const withNote of [false, true]) {
+    const f = fixture(t); f.builder();
+    const review = withNote ? f.review("20261019T000000Z", clean) : f.review();
+    const note = join(f.dir, "ci.md"); writeFileSync(note, "CI / checks failed\n");
+    const result = f.run(withNote ? ["--note", note, "--ticket", f.ticket] : [], { FAKE_MODE: "decline-only", FAKE_REPORT: report });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.ok(readFileSync(join(f.root, ".scratch/kit-fix/build%2Fke-03/round-1.md"), "utf8").endsWith(listed));
+    assert.equal(existsSync(join(review, "findings.json")), false);
+  }
 });
 
 test("builder failure, missing review result and dirty input never report success", t => {

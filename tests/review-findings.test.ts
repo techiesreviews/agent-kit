@@ -113,12 +113,15 @@ test("each kind parses after its severity in the bold, backtick and plain varian
       `\`abcd1234:src/a.ts:1\` — \`${severity} ${kind}\`: evidence.`,
       `abcd1234:src/a.ts:1 — \`${severity}\` \`${kind}\`: evidence.`,
       `abcd1234:src/a.ts:1 — ${severity} ${kind.toUpperCase()}: evidence.`,
+      `abcd1234:src/a.ts:1 — ${severity} ${kind}. Evidence.`,
     ];
     for (const text of variants) {
       const [item] = openFindings(review(`Spec defects:\n- ${text}\nValidation gaps: none.`)).findings;
       assert.deepEqual([item.severity, item.kind], [severity, kind], text);
     }
   }
+  // Only a whole label counts: hyphenated prose after the severity is not a kind.
+  assert.equal(openFindings(review("Defects:\n- a.ts:1 — P2 fault-tolerance is missing.")).findings[0].kind, "unsorted");
 });
 
 test("a finding without a known kind is unsorted and blocks by severity exactly as before", () => {
@@ -141,9 +144,14 @@ test("the findings record carries metadata, findings and counts by kind and seve
       { group: "Standards", severity: "P2", kind: "unsorted", text: "d.ts:4 — P2: w." },
       { group: "Validation gaps", severity: null, kind: null, text: "add a test." },
     ],
-    counts: { kind: { fault: 0, ticket: 1, race: 1, style: 1, unsorted: 1, none: 1 }, severity: { P0: 0, P1: 1, P2: 2, P3: 1, none: 1 } },
+    counts: { kind: { fault: 0, ticket: 1, race: 1, style: 1, unsorted: 1, gap: 1 }, severity: { P0: 0, P1: 1, P2: 2, P3: 1, none: 0, gap: 1 } },
   });
-  assert.equal(countsLine(record), "findings 5: ticket 1, race 1, style 1, unsorted 1, none 1; P1 1, P2 2, P3 1, none 1");
+  assert.equal(countsLine(record), "findings 5: ticket 1, race 1, style 1, unsorted 1, gap 1; P1 1, P2 2, P3 1, gap 1");
+  // A defect without readable severity blocks; a gap never does, so the counts keep them apart.
+  const unrated = findingsRecord(review("Defects:\n- a.ts:1 no severity.\nValidation gaps: add a test."), meta);
+  assert.deepEqual(unrated.counts, { kind: { fault: 0, ticket: 0, race: 0, style: 0, unsorted: 1, gap: 1 }, severity: { P0: 0, P1: 0, P2: 0, P3: 0, none: 1, gap: 1 } });
+  assert.equal(countsLine(unrated), "findings 2: unsorted 1, gap 1; none 1, gap 1");
+  assert.deepEqual(blockingFindings(unrated.findings).map(item => item.text), ["a.ts:1 no severity."]);
   const clean = findingsRecord(review("Defects: none.\nValidation gaps: none."), meta);
   assert.deepEqual(clean.findings, []);
   assert.equal(countsLine(clean), "findings 0");

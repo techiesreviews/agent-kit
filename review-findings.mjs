@@ -41,7 +41,7 @@ export function sameReviewPatch(reviewedId, currentId) {
 const LOCATION = /^`?(?:[0-9a-f]{7,64}:)?[^\s:`]+:\d+(?:[-–]\d+)?`?\s*(?:[—–-]|:)?\s*/i;
 
 const KINDS = ["fault", "ticket", "race", "style"];
-const KIND = new RegExp(`^\`?\\s*\`?(${KINDS.join("|")})\\b`, "i");
+const KIND = new RegExp(`^\`?\\s*\`?(${KINDS.join("|")})(?![\\w-])`, "i");
 
 // Severity sits within 40 characters after a leading location, or within the first 80
 // characters as before (a finding may name several locations ahead of its severity).
@@ -141,16 +141,18 @@ export function openFindings(resultMd) {
   };
 }
 
-// The structured record kit review saves beside result.md, with counts by kind and severity
-// (validation gaps carry neither and count as "none").
+// The structured record kit review saves beside result.md, with counts by kind and severity.
+// Validation gaps carry neither and count as "gap" in both, so a severity "none" is always a
+// defect whose severity could not be read (one that blocks).
 export function findingsRecord(resultMd, meta) {
   const { findings, readable } = openFindings(resultMd);
   if (!readable) return { ...meta, unreadable: true };
-  const counts = { kind: Object.fromEntries([...KINDS, "unsorted", "none"].map(kind => [kind, 0])),
-    severity: Object.fromEntries(["P0", "P1", "P2", "P3", "none"].map(severity => [severity, 0])) };
-  for (const { kind, severity } of findings) {
-    counts.kind[kind ?? "none"]++;
-    counts.severity[severity ?? "none"]++;
+  const counts = { kind: Object.fromEntries([...KINDS, "unsorted", "gap"].map(kind => [kind, 0])),
+    severity: Object.fromEntries(["P0", "P1", "P2", "P3", "none", "gap"].map(severity => [severity, 0])) };
+  for (const { group, kind, severity } of findings) {
+    const gap = group === "Validation gaps";
+    counts.kind[gap ? "gap" : kind]++;
+    counts.severity[gap ? "gap" : severity ?? "none"]++;
   }
   return { ...meta, findings: findings.map(({ group, severity, kind, text }) => ({ group, severity, kind, text })), counts };
 }
