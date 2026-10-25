@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseAgentArgs, releaseReviewBudget, reserveReviewBudget } from "../agent-run.mjs";
 import { reviewBrief, reviewScope, ticketReviewBrief } from "../review-brief.mjs";
+import { countsLine, findingsRecord } from "../review-findings.mjs";
 
 const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
@@ -40,7 +41,7 @@ function evidenceDirectory() {
 }
 
 async function review(args) {
-  let evidence = "none", temporary, status = 1, reason = "invalid arguments", label, budget, env;
+  let evidence = "none", temporary, status = 1, reason = "invalid arguments", label, budget, env, model, effort, reviewedHead;
   const ledger = join(kitMainRoot(), ".scratch/review-budget.json");
   try {
     status = 2;
@@ -50,6 +51,7 @@ async function review(args) {
     env = nodeEnv();
     const scope = reviewScope("", flags, root);
     label = scope.label;
+    reviewedHead = scope.head;
     console.log(`scope: ${flags.commit ? `--commit ${flags.commit}` : `--base ${flags.base}`} (${label})`);
     const artifacts = join(root, ".scratch/agent");
     mkdirSync(artifacts, { recursive: true });
@@ -58,7 +60,8 @@ async function review(args) {
     const resolved = scope.commit ? { commit: scope.commit } : { base: scope.base };
     writeFileSync(briefPath, flags.ticket ? ticketReviewBrief(flags.ticket, resolved, root) : reviewBrief("", "", resolved, root));
     const agentArgs = ["review", root, briefPath, ...(scope.commit ? ["--commit", scope.commit] : ["--base", scope.base]), "--out", temporary];
-    const { model, cli } = parseAgentArgs(agentArgs, env);
+    let cli;
+    ({ model, effort, cli } = parseAgentArgs(agentArgs, env));
     console.log(`model: ${model}`);
     budget = reserveReviewBudget(ledger, cli, env);
     if (budget) console.log(`budget: ${budget.family} ${budget.used}/${budget.limit} in ${budget.week}`);
@@ -117,6 +120,12 @@ async function review(args) {
       // Usage errors and unresolvable refs leave nothing to keep: no empty folder.
       if (saved.length) evidence = evidenceDirectory();
       for (const [source, target] of saved) copyFileSync(join(temporary, source), join(evidence, target));
+      // The structured findings sit beside result.md; a report that does not parse is marked unreadable.
+      if (saved.some(([, target]) => target === "result.md")) {
+        const record = findingsRecord(readFileSync(join(evidence, "result.md"), "utf8"), { model, effort, scope: label, head: reviewedHead });
+        writeFileSync(join(evidence, "findings.json"), JSON.stringify(record, null, 2) + "\n");
+        console.log(countsLine(record));
+      }
     } catch (error) {
       status = 1;
       reason = `saving evidence failed: ${error.message}`;

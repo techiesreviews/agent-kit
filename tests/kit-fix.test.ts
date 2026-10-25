@@ -673,6 +673,26 @@ test("declined-only rounds review without an empty commit, and round numbers adv
   assert.deepEqual(readdirSync(join(f.root, ".scratch/kit-fix/another-branch")).filter(name => name.endsWith(".md")), ["round-1.md"]);
 });
 
+test("declined findings land in the round file and the review's findings.json with their reasons", t => {
+  const f = fixture(t); const review = f.review(); f.builder();
+  const record = { model: "claude-opus-5-5", findings: [{ group: "Spec", severity: "P1", kind: "ticket", text: "file.txt:1 — P1 ticket: x" }] };
+  writeFileSync(join(review, "findings.json"), JSON.stringify(record));
+  const report = "Declined:\n- file.txt:1 — P1 ticket: x — reason: the ticket asks for this line.\n- file.txt:2 — already follows the ticket.\n- Bare finding with no reason.\n";
+  const result = f.run([], { FAKE_MODE: "decline-only", FAKE_REPORT: report });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const declined = [
+    { text: "file.txt:1 — P1 ticket: x", reason: "the ticket asks for this line." },
+    { text: "file.txt:2", reason: "already follows the ticket." },
+    { text: "Bare finding with no reason.", reason: "" },
+  ];
+  assert.deepEqual(JSON.parse(readFileSync(join(review, "findings.json"), "utf8")), { ...record, declined });
+  const round = readFileSync(join(f.root, ".scratch/kit-fix/build%2Fke-03/round-1.md"), "utf8");
+  assert.ok(round.endsWith("\n\nDeclined by the builder (with reasons):\n- file.txt:1 — P1 ticket: x — reason: the ticket asks for this line.\n" +
+    "- file.txt:2 — reason: already follows the ticket.\n- Bare finding with no reason. — reason: none given\n"), round);
+  assert.ok(round.startsWith(`Ticket: ${f.ticket}`));
+  assert.ok(f.reviewInput().brief.includes("file.txt:1 — P1 ticket: x — reason: the ticket asks for this line."));
+});
+
 test("builder failure, missing review result and dirty input never report success", t => {
   const f = fixture(t); f.review(); f.builder();
   writeFileSync(join(f.root, "file.txt"), "uncommitted\n");

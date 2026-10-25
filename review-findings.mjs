@@ -40,13 +40,23 @@ export function sameReviewPatch(reviewedId, currentId) {
 // backticked) and the separator that follows it. Severity is read after this location.
 const LOCATION = /^`?(?:[0-9a-f]{7,64}:)?[^\s:`]+:\d+(?:[-–]\d+)?`?\s*(?:[—–-]|:)?\s*/i;
 
+const KINDS = ["fault", "ticket", "race", "style"];
+const KIND = new RegExp(`^\`?\\s*\`?(${KINDS.join("|")})\\b`, "i");
+
 // Severity sits within 40 characters after a leading location, or within the first 80
 // characters as before (a finding may name several locations ahead of its severity).
-const severityOf = text => {
-  const token = window => /\bP[0-3]\b/i.exec(window)?.[0].toUpperCase() ?? null;
+// The kind is the word right after it (`P2 fault:`, `` `P2` `fault` ``); bold is cleaned earlier.
+const classify = text => {
+  const token = (source, limit) => {
+    const match = /\bP[0-3]\b/i.exec(source.slice(0, limit));
+    if (!match) return null;
+    const kind = KIND.exec(source.slice(match.index + 2))?.[1];
+    return { severity: match[0].toUpperCase(), kind: kind?.toLowerCase() ?? "unsorted" };
+  };
   const body = text.replace(LOCATION, "");
-  return (body === text ? null : token(body.slice(0, 40))) ?? token(text.slice(0, 80));
+  return (body === text ? null : token(body, 40)) ?? token(text, 80) ?? { severity: null, kind: "unsorted" };
 };
+const severityOf = text => classify(text).severity;
 
 // Parse the Markdown variants emitted by kit review without reading files or changing state.
 // A group whose first line says "none" holds notes, not findings, until the next heading;
@@ -65,7 +75,7 @@ export function openFindings(resultMd) {
   const explicitDefects = lines.some(raw => /^Defects(?:\s*[—–-]\s*(?:Spec|Standards))?(?::.*|\s*)$/i.test(clean(raw)));
   const flush = () => {
     if (pending && !none(pending.text)) findings.push({ group: pending.group, text: pending.text,
-      severity: pending.group === "Validation gaps" ? null : severityOf(pending.text) });
+      ...(pending.group === "Validation gaps" ? { severity: null, kind: null } : classify(pending.text)) });
     pending = undefined;
   };
   for (const raw of lines) {
@@ -127,6 +137,27 @@ export function openFindings(resultMd) {
   flush();
   const readable = /^REVIEW_STATUS: complete\s*$/m.test(resultMd.replace(/^\uFEFF/, "")) && defects;
   return readable ? { findings, readable } : {
-    findings: [{ group: "Review", text: "review format unreadable", severity: null }], readable: false,
+    findings: [{ group: "Review", text: "review format unreadable", severity: null, kind: "unsorted" }], readable: false,
   };
+}
+
+// The structured record kit review saves beside result.md, with counts by kind and severity
+// (validation gaps carry neither and count as "none").
+export function findingsRecord(resultMd, meta) {
+  const { findings, readable } = openFindings(resultMd);
+  if (!readable) return { ...meta, unreadable: true };
+  const counts = { kind: Object.fromEntries([...KINDS, "unsorted", "none"].map(kind => [kind, 0])),
+    severity: Object.fromEntries(["P0", "P1", "P2", "P3", "none"].map(severity => [severity, 0])) };
+  for (const { kind, severity } of findings) {
+    counts.kind[kind ?? "none"]++;
+    counts.severity[severity ?? "none"]++;
+  }
+  return { ...meta, findings: findings.map(({ group, severity, kind, text }) => ({ group, severity, kind, text })), counts };
+}
+
+// One line for logs: "findings 3: fault 1, ticket 2; P1 2, P2 1".
+export function countsLine({ findings, counts, unreadable }) {
+  if (unreadable) return "findings unreadable";
+  const nonzero = values => Object.entries(values).filter(([, count]) => count).map(([name, count]) => `${name} ${count}`).join(", ");
+  return `findings ${findings.length}${findings.length ? `: ${nonzero(counts.kind)}; ${nonzero(counts.severity)}` : ""}`;
 }

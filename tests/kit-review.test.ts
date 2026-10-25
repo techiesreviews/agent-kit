@@ -43,7 +43,7 @@ if (process.env.FAKE_ROTATE && symlink && cli === "codex") {
 }
 const resumed = args.includes("resume") || args.includes("--resume");
 const mode = process.env.FAKE_MODE || "pass";
-const report = mode === "empty-pass" && !resumed ? "" : mode === "retry-fail" || mode === "no-session" || (mode === "retry-pass" && !resumed) || mode === "retry-model" || (mode === "retry-usage-limit" && !resumed) ? "incomplete reply\\n" : ${JSON.stringify(complete)};
+const report = mode === "empty-pass" && !resumed ? "" : mode === "retry-fail" || mode === "no-session" || (mode === "retry-pass" && !resumed) || mode === "retry-model" || (mode === "retry-usage-limit" && !resumed) ? "incomplete reply\\n" : process.env.FAKE_REPORT || ${JSON.stringify(complete)};
 const model = mode === "retry-model" && resumed ? "wrong-model" : args[args.indexOf(cli === "claude" ? "--model" : "-m") + 1];
 if (cli === "codex") {
   if (!(process.env.FAKE_NO_RETRY_MODEL && resumed)) console.error("model: " + model);
@@ -143,7 +143,7 @@ test("kit review help states default scope; invalid flags exit 2 with one RESULT
   assert.equal(f.calls().length, 0);
 });
 
-test("kit review resolves HEAD~1, HEAD^ and short SHAs and saves four evidence files", (t) => {
+test("kit review resolves HEAD~1, HEAD^ and short SHAs and saves five evidence files", (t) => {
   const f = fixture(t);
   for (const ref of ["HEAD~1", "HEAD^", f.commits[1].slice(0, 8)]) {
     const result = f.run(["--base", ref], {}, ref === "HEAD~1");
@@ -152,13 +152,43 @@ test("kit review resolves HEAD~1, HEAD^ and short SHAs and saves four evidence f
     assert.ok(result.stdout.includes(complete), "the review text is shown");
     assert.doesNotMatch(result.stdout, /^artifacts: /m);
     const evidence = f.evidence(result.stdout);
-    assert.deepEqual(readdirSync(evidence).sort(), ["diff.patch", "refs.txt", "result.md", "run.log"]);
+    assert.deepEqual(readdirSync(evidence).sort(), ["diff.patch", "findings.json", "refs.txt", "result.md", "run.log"]);
     assert.equal(readFileSync(join(evidence, "diff.patch"), "utf8"), f.git("diff", `${f.commits[1]}...${f.commits[2]}`));
     assert.equal(readFileSync(join(evidence, "refs.txt"), "utf8"), `${f.commits[2]}\n${f.commits[1]}\n`);
     assert.equal(readFileSync(join(evidence, "result.md"), "utf8").trimEnd(), complete.trimEnd());
     assert.match(readFileSync(join(evidence, "run.log"), "utf8"), /claude-opus-5-5/);
     assert.equal(f.calls().at(-1)?.cwd, f.root);
   }
+});
+
+test("kit review writes findings.json with kinds and counts, or unreadable for a report that does not parse", (t) => {
+  const f = fixture(t);
+  const report = "REVIEW_STATUS: complete\nSpec defects:\n- file.txt:1 — P1 ticket: the ticket asks for counts.\nStandards defects:\n- file.txt:1 — **P3 style:** rename it.\n- file.txt:1 — P2: no kind.\nValidation gaps: add a test.\nOptional nits: none.\n";
+  const result = f.run(["--commit", "HEAD^"], { FAKE_REPORT: report, ASE_REVIEW_MODEL: "claude-opus-5-5" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^findings 4: ticket 1, style 1, unsorted 1, none 1; P1 1, P2 1, P3 1, none 1$/m);
+  const evidence = f.evidence(result.stdout);
+  assert.deepEqual(JSON.parse(readFileSync(join(evidence, "findings.json"), "utf8")), {
+    model: "claude-opus-5-5", effort: "medium", scope: `git diff ${f.commits[1]}^..${f.commits[1]}`, head: f.commits[1],
+    findings: [
+      { group: "Spec", severity: "P1", kind: "ticket", text: "file.txt:1 — P1 ticket: the ticket asks for counts." },
+      { group: "Standards", severity: "P3", kind: "style", text: "file.txt:1 — P3 style: rename it." },
+      { group: "Standards", severity: "P2", kind: "unsorted", text: "file.txt:1 — P2: no kind." },
+      { group: "Validation gaps", severity: null, kind: null, text: "add a test." },
+    ],
+    counts: { kind: { fault: 0, ticket: 1, race: 0, style: 1, unsorted: 1, none: 1 }, severity: { P0: 0, P1: 1, P2: 1, P3: 1, none: 1 } },
+  });
+  const unreadable = f.run([], { FAKE_REPORT: "REVIEW_STATUS: complete\nLooks fine to me.\n" });
+  assert.equal(unreadable.status, 0, unreadable.stderr);
+  assert.match(unreadable.stdout, /^findings unreadable$/m);
+  assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(unreadable.stdout), "findings.json"), "utf8")), {
+    model: "claude-opus-5-5", effort: "medium", scope: `git diff ${f.commits[0]}...HEAD`, head: f.commits[2], unreadable: true,
+  });
+});
+
+test("the review brief names the four kinds with an example each", () => {
+  assert.match(reviewFormat, /P1 fault: evidence and fix/);
+  for (const kind of ["fault", "ticket", "race", "style"]) assert.match(reviewFormat, new RegExp(`^${kind}: .+\\(.*P[0-3] ${kind}: .+\\)\\.?$`, "m"));
 });
 
 test("kit review defaults to origin/dev and omits ticket sources when no ticket is supplied", (t) => {
@@ -263,11 +293,12 @@ for (const model of ["gpt-6.1-sol", "claude-opus-5-5"]) for (const mode of ["ret
       for (const flag of ["-C", "-s", "--ephemeral"]) assert.ok(!calls[1].args.includes(flag));
     }
     const evidence = f.evidence(result.stdout);
-    assert.equal(readdirSync(evidence).length, 4);
+    assert.equal(readdirSync(evidence).length, 5);
     const log = readFileSync(join(evidence, "run.log"), "utf8");
     assert.ok(model.startsWith("claude") ? log.split("modelUsage").length === 3 : log.includes("call: 1") && log.includes("call: 2"));
     if (mode === "retry-fail") assert.match(result.stderr, /problem: result lacks REVIEW_STATUS: complete/);
     else assert.equal(readFileSync(join(evidence, "result.md"), "utf8").trimEnd(), complete.trimEnd());
+    assert.equal(JSON.parse(readFileSync(join(evidence, "findings.json"), "utf8")).unreadable, mode === "retry-fail" ? true : undefined);
   });
 }
 

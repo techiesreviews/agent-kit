@@ -100,6 +100,30 @@ function declinedFindings(report) {
   return declined;
 }
 
+// "<finding> — reason: <why>"; without the marker the last dash separates them.
+function declinedEntry(item) {
+  const marker = [...item.matchAll(/\s*(?:[—–]|--?)?\s*\breason:\s*/gi)].at(-1)
+    ?? [...item.matchAll(/\s+(?:[—–]|--?)\s+/g)].at(-1);
+  return marker ? { text: item.slice(0, marker.index).trim(), reason: item.slice(marker.index + marker[0].length).trim() }
+    : { text: item.trim(), reason: "" };
+}
+
+const DECLINED_HEADING = "\n\nDeclined by the builder (with reasons):\n";
+
+// Rewrites rather than appends, so a retried builder phase leaves one list.
+function recordDeclined(brief, review, declined) {
+  const entries = declined.map(declinedEntry);
+  const round = readFileSync(brief, "utf8").split(DECLINED_HEADING)[0];
+  writeFileSync(brief, entries.length ? `${round}${DECLINED_HEADING}${entries.map(({ text, reason }) => `- ${text} — reason: ${reason || "none given"}`).join("\n")}\n` : round);
+  const path = review && join(review, "findings.json");
+  if (!entries.length || !path || !existsSync(path)) return; // Reviews saved before findings.json have none.
+  const record = JSON.parse(readFileSync(path, "utf8"));
+  const known = new Set((record.declined ?? []).map(entry => JSON.stringify(entry)));
+  record.declined = [...(record.declined ?? []), ...entries.filter(entry => !known.has(JSON.stringify(entry)))];
+  writeFileSync(`${path}.tmp`, JSON.stringify(record, null, 2) + "\n");
+  renameSync(`${path}.tmp`, path);
+}
+
 async function fix(args) {
   let flags;
   try { flags = options(args); }
@@ -168,7 +192,7 @@ async function fix(args) {
     const rounds = readdirSync(directory).map(name => /^round-(\d+)\.md$/.exec(name)).filter(Boolean).map(match => Number(match[1]));
     const round = pending?.round || Math.max(0, ...rounds) + 1;
     const brief = join(directory, `round-${round}.md`);
-    if (!pending) writeFileSync(brief, `Ticket: ${ticket}\n\nUse Agent Kit at scripts/agents/kit: run doctor first, focused unit --affected, npm run lint and touched specs. Report RESULT lines.\nFix real defects within the ticket's Files. For a finding you reject, list it under\n\`Declined:\` with a one-line reason.\n\n${note ? `Failure note (verbatim):\n${original}` : `Open findings:\n${findings.map(item => `- ${item.group}: ${item.text}`).join("\n")}\n\nReview evidence (verbatim; Optional nits are not open findings):\n${original}`}`, { flag: "wx" });
+    if (!pending) writeFileSync(brief, `Ticket: ${ticket}\n\nUse Agent Kit at scripts/agents/kit: run doctor first, focused unit --affected, npm run lint and touched specs. Report RESULT lines.\nFix real defects within the ticket's Files. For a finding you reject, list it under\n\`Declined:\` as \`- <finding> — reason: <one-line reason>\`.\n\n${note ? `Failure note (verbatim):\n${original}` : `Open findings:\n${findings.map(item => `- ${item.group}: ${item.text}`).join("\n")}\n\nReview evidence (verbatim; Optional nits are not open findings):\n${original}`}`, { flag: "wx" });
 
     const save = () => {
       writeFileSync(`${pendingPath}.tmp`, JSON.stringify(pending, null, 2) + "\n");
@@ -244,6 +268,7 @@ async function fix(args) {
       const declined = declinedFindings(report.slice(previousReport.length));
       if (!git("status", "--porcelain", "--untracked-files=normal") && !declined.length)
         throw new Error("builder made no changes");
+      recordDeclined(brief, pending.review, declined);
       pending.declined = declined; pending.phase = "commit"; save();
     }
     if (pending.phase === "commit") {

@@ -3,10 +3,11 @@ import test from "node:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterFixRounds, blockingFindings, completedFixRounds, openFindings } from "../scripts/agents/review-findings.mjs";
+import { afterFixRounds, blockingFindings, completedFixRounds, countsLine, findingsRecord, openFindings } from "../scripts/agents/review-findings.mjs";
 
 const review = (body: string) => `REVIEW_STATUS: complete\n\n${body}\n`;
-const finding = (group: string, text: string, severity: string | null = null) => ({ group, text, severity });
+const finding = (group: string, text: string, severity: string | null = null, kind: string | null = group === "Validation gaps" ? null : "unsorted") =>
+  ({ group, text, severity, kind });
 
 // Inline fixtures adapted from dor-* reviews: separate groups (dor-01), em-dash groups
 // and commit prefixes (dor-02, dor-14, dor-27), inline values (dor-13 and dor-27),
@@ -101,6 +102,55 @@ for (const severity of ["P0", "P1", "P2", "P3"]) {
 test("severity uses the first token within 80 characters; gaps never carry severity", () => {
   const { findings } = openFindings(review(`Defects:\n- P2: defect mentioning P1\n- ${"x".repeat(80)} P1 late severity\n- P4: unknown severity\nValidation gaps: P1 missing coverage`));
   assert.deepEqual(findings.map(item => item.severity), ["P2", null, null, null]);
+});
+
+test("each kind parses after its severity in the bold, backtick and plain variants", () => {
+  for (const kind of ["fault", "ticket", "race", "style"]) for (const severity of ["P1", "P3"]) {
+    const variants = [
+      `abcd1234:src/a.ts:1 — ${severity} ${kind}: evidence.`,
+      `**abcd1234:src/a.ts:1 — ${severity} ${kind}:** evidence.`,
+      `abcd1234:src/a.ts:1 — **${severity} ${kind}**: evidence.`,
+      `\`abcd1234:src/a.ts:1\` — \`${severity} ${kind}\`: evidence.`,
+      `abcd1234:src/a.ts:1 — \`${severity}\` \`${kind}\`: evidence.`,
+      `abcd1234:src/a.ts:1 — ${severity} ${kind.toUpperCase()}: evidence.`,
+    ];
+    for (const text of variants) {
+      const [item] = openFindings(review(`Spec defects:\n- ${text}\nValidation gaps: none.`)).findings;
+      assert.deepEqual([item.severity, item.kind], [severity, kind], text);
+    }
+  }
+});
+
+test("a finding without a known kind is unsorted and blocks by severity exactly as before", () => {
+  const body = "Defects:\n- a.ts:1 — P1: no kind.\n- b.ts:2 — P2 bogus: unknown kind.\n- c.ts:3 — P1 faulty wording.\n- d.ts:4 no severity fault.\n- e.ts:5 — P1 fault: kind.\nValidation gaps: add a test.";
+  const { findings } = openFindings(review(body));
+  assert.deepEqual(findings.map(item => item.kind), ["unsorted", "unsorted", "unsorted", "unsorted", "fault", null]);
+  assert.deepEqual(blockingFindings(findings).map(item => item.text), ["a.ts:1 — P1: no kind.", "c.ts:3 — P1 faulty wording.", "d.ts:4 no severity fault.", "e.ts:5 — P1 fault: kind."]);
+  const kindless = findings.map(item => ({ ...item, kind: "unsorted" }));
+  assert.deepEqual(blockingFindings(kindless).map(item => item.text), blockingFindings(findings).map(item => item.text));
+});
+
+test("the findings record carries metadata, findings and counts by kind and severity", () => {
+  const meta = { model: "claude-opus-5-5", effort: "medium", scope: "git diff a^..a", head: "a".repeat(40) };
+  const record = findingsRecord(review("Spec defects:\n- a.ts:1 — P1 ticket: x.\n- b.ts:2 — P2 race: y.\nStandards defects:\n- c.ts:3 — P3 style: z.\n- d.ts:4 — P2: w.\nValidation gaps: add a test.\nOptional nits: none."), meta);
+  assert.deepEqual(record, { ...meta,
+    findings: [
+      { group: "Spec", severity: "P1", kind: "ticket", text: "a.ts:1 — P1 ticket: x." },
+      { group: "Spec", severity: "P2", kind: "race", text: "b.ts:2 — P2 race: y." },
+      { group: "Standards", severity: "P3", kind: "style", text: "c.ts:3 — P3 style: z." },
+      { group: "Standards", severity: "P2", kind: "unsorted", text: "d.ts:4 — P2: w." },
+      { group: "Validation gaps", severity: null, kind: null, text: "add a test." },
+    ],
+    counts: { kind: { fault: 0, ticket: 1, race: 1, style: 1, unsorted: 1, none: 1 }, severity: { P0: 0, P1: 1, P2: 2, P3: 1, none: 1 } },
+  });
+  assert.equal(countsLine(record), "findings 5: ticket 1, race 1, style 1, unsorted 1, none 1; P1 1, P2 2, P3 1, none 1");
+  const clean = findingsRecord(review("Defects: none.\nValidation gaps: none."), meta);
+  assert.deepEqual(clean.findings, []);
+  assert.equal(countsLine(clean), "findings 0");
+  for (const text of ["", "incomplete reply\n", "REVIEW_STATUS: complete\nNo groups."]) {
+    assert.deepEqual(findingsRecord(text, meta), { ...meta, unreadable: true });
+    assert.equal(countsLine(findingsRecord(text, meta)), "findings unreadable");
+  }
 });
 
 test("blocking findings fail closed for defects and unreadable reviews, excluding minor defects and gaps", () => {

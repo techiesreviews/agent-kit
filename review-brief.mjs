@@ -7,8 +7,12 @@ import { dirname, posix, resolve } from "node:path";
 export const reviewFormat = `Required format:
 REVIEW_STATUS: complete
 Defects: commit:path:line, severity, evidence, and fix; use separate Spec and Standards groups.
-Write each Defect as commit:path:line — P1: evidence and fix.
-Every Defect must carry P0, P1, P2 or P3 right after its location.
+Write each Defect as commit:path:line — P1 fault: evidence and fix.
+Every Defect must carry P0, P1, P2 or P3 right after its location, then one kind:
+fault: the code is wrong (abc1234:src/save.ts:40 — P1 fault: a failed write is reported as saved).
+ticket: the change does not match the ticket or spec (P1 ticket: "Done when" asks for counts; none are written).
+race: timing, ordering or stale state (P2 race: two saves can interleave and drop the first).
+style: a standards or readability breach with no behaviour change (P3 style: name the helper after what it returns).
 P0: data loss, security hole, broken build/tests, or the change does not work at all.
 P1: wrong behaviour a user or runner would hit, or a Spec defect that breaks a "Done when" item.
 P2: real but minor defect (edge case, misleading message, standards breach with low impact).
