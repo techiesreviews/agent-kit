@@ -42,6 +42,7 @@ fi
 printf '%s|%s|%s|%s\\n' "$PWD" "$ASE_REVIEW_MODEL" "$ASE_OWNER" "$*" >> "$FAKE_KIT_LOG"
 [[ -z \${FAKE_BG_FAIL:-} ]] || { echo "RESULT: fail bg $2 broken"; exit 1; }
 [[ -z \${FAKE_BG_HOOK:-} ]] || bash -c "$FAKE_BG_HOOK" hook "$@" >&2
+[[ -z \${FAKE_FAIL_ON:-} || $* != *"$FAKE_FAIL_ON"* ]] || { echo "RESULT: fail $1 broken"; exit 1; }
 echo "RESULT: ok bg $2 pid 1"
 `);
   writeFileSync(join(root, "fake-worktree.sh"), `#!/usr/bin/env bash
@@ -469,7 +470,7 @@ test("a group with a human ticket, mixed builders, a partial claim or a blocked_
   ]);
 });
 
-const groupCommand = (...files: string[]) => `'scripts/agents/kit' 'next' '--run-group' '--builder' 'claude-opus-5-5'${files.map(file => ` '--ticket' '${file}'`).join("")}\n`;
+const groupCommand = (...files: string[]) => `'scripts/agents/kit' 'next' '--run-group' '--branch' 'build/al-g-fonts' '--builder' 'claude-opus-5-5'${files.map(file => ` '--ticket' '${file}'`).join("")}\n`;
 
 test("a running group takes one slot, and cap and shared-file rules use the union of a group's Files", t => {
   const { running, run, lines } = fixture(t, {
@@ -517,7 +518,7 @@ test("--start claims a ready group in one commit and starts one job that runs it
   for (const file of files) assert.match(git(join(root, "origin.git"), "show", `dev:${file}`), /^assignee: al-g-fonts$/m);
   assert.equal(git(worktree, "branch", "--show-current").trim(), "build/al-g-fonts");
   assert.equal(readFileSync(env.FAKE_KIT_LOG!, "utf8"),
-    `${worktree}|claude-opus-5-5|al-g-fonts|bg slice-alg-fonts -- scripts/agents/kit next --run-group --builder claude-opus-5-5 --ticket ${files[1]} --ticket ${files[0]}\n`);
+    `${worktree}|claude-opus-5-5|al-g-fonts|bg slice-alg-fonts -- scripts/agents/kit next --run-group --branch build/al-g-fonts --builder claude-opus-5-5 --ticket ${files[1]} --ticket ${files[0]}\n`);
   assert.match(result.stdout, /^claimed: group fonts tickets=02-b,01-a owner=al-g-fonts [0-9a-f]+ \(pushed\)$/m);
   assert.match(result.stdout, /^started: slice-alg-fonts$/m);
   assert.match(result.stdout, /RESULT: ok next 1 ready, 0 waiting, 1 started\n$/);
@@ -535,7 +536,7 @@ git checkout -q --detach
 `);
   env.FAKE_BG_HOOK = `bash ${join(root, "land.sh")} "$@"`;
   writeFileSync(env.FAKE_KIT_LOG!, "");
-  const group = runIn(worktree, "--run-group", "--builder", "claude-opus-5-5", "--ticket", files[1], "--ticket", files[0]);
+  const group = runIn(worktree, "--run-group", "--branch", "build/al-g-fonts", "--builder", "claude-opus-5-5", "--ticket", files[1], "--ticket", files[0]);
   assert.equal(group.status, 0, group.stdout + group.stderr);
   assert.deepEqual(readFileSync(env.FAKE_KIT_LOG!, "utf8").trim().split("\n").map(line => line.split("|").at(-1)),
     files.toReversed().map(file => `slice --ticket ${file} --builder claude-opus-5-5`));
@@ -550,12 +551,13 @@ git checkout -q --detach
   git(worktree, "switch", "-q", "build/al-g-fonts");
   writeFileSync(env.FAKE_KIT_LOG!, "");
   env.FAKE_BG_FAIL = "1";
-  const failed = runIn(worktree, "--run-group", "--builder", "claude-opus-5-5", "--ticket", files[1], "--ticket", files[0]);
+  const failed = runIn(worktree, "--run-group", "--branch", "build/al-g-fonts", "--builder", "claude-opus-5-5", "--ticket", files[1], "--ticket", files[0]);
   assert.equal(failed.status, 1, failed.stdout + failed.stderr);
   assert.equal(readFileSync(env.FAKE_KIT_LOG!, "utf8").trim().split("\n").length, 1);
   assert.match(failed.stdout, /^RESULT: fail next group stopped at \S+02-b\.md \(slice 1\/2\)$/m);
-  assert.equal(run("--run-group", "--ticket", files[0]).status, 2);
-  assert.equal(run("--run-group", "--builder", "m", "--ticket", files[0], "--max", "2").status, 2);
+  assert.equal(run("--run-group", "--branch", "b", "--ticket", files[0]).status, 2);
+  assert.equal(run("--run-group", "--builder", "m", "--ticket", files[0]).status, 2);
+  assert.equal(run("--run-group", "--branch", "b", "--builder", "m", "--ticket", files[0], "--max", "2").status, 2);
   assert.equal(run("alpha", "--ticket", files[0]).status, 2);
 });
 
@@ -580,17 +582,20 @@ const raceFiles = {
   [build("alpha", "03-b")]: ticket({ group: "fonts", files: ["a/b.ts"] }),
 };
 
-test("a group member claimed, or newly blocked, during --start leaves the whole group unclaimed", t => {
-  for (const [change, taken] of [
-    ["s/^assignee: $/assignee: someone-else/", "someone-else"],
-    ["s/^blocked_by: \\[\\]$/blocked_by: [01-solo]/", "group changed"],
+test("a group member claimed, newly blocked, joining, leaving or changing builder during --start leaves the whole group unclaimed", t => {
+  for (const [change, file, taken] of [
+    ["s/^assignee: $/assignee: someone-else/", "03-b", "someone-else"],
+    ["s/^blocked_by: \\[\\]$/blocked_by: [01-solo]/", "03-b", "group changed"],
+    ["/^status: open$/a group: fonts", "01-solo", "group changed"],
+    ["/^group: fonts$/d", "03-b", "group changed"],
+    ["s/^builder: claude$/builder: gpt-6-luna/", "03-b", "group changed"],
   ]) {
     const { root, dev, env, git, run } = fixture(t, raceFiles);
     git(root, "clone", "-q", "-b", "dev", join(root, "origin.git"), "other");
     writeFileSync(join(root, "race.sh"), `[[ $1 == bg ]] || exit 0
 cd ${join(root, "other")} || exit 1
 git pull -q --rebase origin dev
-sed -i '${change}' ${build("alpha", "03-b")}
+sed -i '${change}' ${build("alpha", file)}
 git commit -qam 'other lead' && git push -q origin HEAD:dev
 `);
     env.FAKE_BG_HOOK = `bash ${join(root, "race.sh")} "$@"`;
@@ -616,4 +621,98 @@ test("a group claim whose push fails again after the rebase restores every membe
   assert.equal(git(dev, "rev-parse", "HEAD"), git(dev, "rev-parse", "origin/dev"));
   assert.equal(git(dev, "status", "--porcelain").trim(), "");
   for (const slug of ["01-a", "02-b"]) assert.match(readFileSync(join(dev, build("alpha", slug)), "utf8"), /^assignee: $/m);
+});
+
+// A group worktree on build/al-g-fonts, and a fake kit slice that lands like kit pr: it logs its
+// branch and HEAD, commits, puts a rebased copy on origin dev with its ticket closed, and leaves
+// the branch. FAKE_PARTIAL=<file> makes that slice commit partial work and save its state (as
+// kit slice does under the git-ignored .scratch/kit-slice/<slug>/); FAKE_STRAY leaves an untracked file.
+function groupWorktree(t: TestContext) {
+  const files = [build("alpha", "01-a"), build("alpha", "02-b")];
+  const fx = fixture(t, {
+    [files[0]]: ticket({ group: "fonts", files: ["a/one.ts"], assignee: "al-g-fonts" }),
+    [files[1]]: ticket({ group: "fonts", files: ["a/two.ts"], assignee: "al-g-fonts" }),
+  });
+  const { root, dev, env, git } = fx;
+  const worktree = join(root, "wt-group");
+  git(dev, "worktree", "add", "-q", "-b", "build/al-g-fonts", worktree, "origin/dev");
+  writeFileSync(join(dev, ".git/info/exclude"), ".scratch/\n");
+  git(root, "clone", "-q", "-b", "dev", join(root, "origin.git"), "other");
+  const other = join(root, "other");
+  writeFileSync(join(root, "land.sh"), `[[ $1 == slice ]] || exit 0
+printf '%s|%s|%s\\n' "$3" "$(git branch --show-current)" "$(git log -1 --format=%s)" >> ${join(root, "slices.log")}
+if [[ $3 == "\${FAKE_PARTIAL:-}" ]]; then
+  git commit -q --allow-empty -m "partial $3"
+  mkdir -p .scratch/kit-slice/02-b && echo '{}' > .scratch/kit-slice/02-b/state.json && exit 0
+fi
+[[ -z \${FAKE_STRAY:-} ]] || touch stray.txt
+git commit -q --allow-empty -m "work $3"
+git -C ${other} pull -q --rebase origin dev
+sed -i 's/^status: open$/status: closed/' ${other}/$3
+git -C ${other} commit -qam "landed $3" && git -C ${other} push -q origin HEAD:dev
+git checkout -q --detach
+`);
+  env.FAKE_BG_HOOK = `bash ${join(root, "land.sh")} "$@"`;
+  const group = () => fx.runIn(worktree, "--run-group", "--branch", "build/al-g-fonts", "--builder", "claude-opus-5-5", "--ticket", files[0], "--ticket", files[1]);
+  const slices = () => readFileSync(join(root, "slices.log"), "utf8").trim().split("\n");
+  return { ...fx, files, worktree, group, slices };
+}
+
+test("--run-group stops when a slice leaves the worktree dirty", t => {
+  const { env, files, group, slices } = groupWorktree(t);
+  env.FAKE_STRAY = "1";
+  const result = group();
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /^RESULT: fail next group stopped at \S+02-b\.md \(slice 2\/2\): worktree not clean after the previous slice$/m);
+  assert.deepEqual(slices(), [`${files[0]}|build/al-g-fonts|fixture`]);
+});
+
+test("a --run-group rerun skips slices closed on origin/dev and resumes a stopped slice on its branch", t => {
+  const { env, files, worktree, git, group, slices } = groupWorktree(t);
+  env.FAKE_PARTIAL = files[1];
+  env.FAKE_FAIL_ON = files[1];
+  const first = group();
+  assert.equal(first.status, 1, first.stdout + first.stderr);
+  assert.match(first.stdout, /^RESULT: fail next group stopped at \S+02-b\.md \(slice 2\/2\)$/m);
+  delete env.FAKE_FAIL_ON;
+  delete env.FAKE_PARTIAL;
+  git(worktree, "checkout", "-q", "--detach");
+  const again = group();
+  assert.equal(again.status, 0, again.stdout + again.stderr);
+  assert.match(again.stdout, /^slice 1\/2: \S+01-a\.md closed on origin\/dev, skipped$/m);
+  assert.match(again.stdout, /RESULT: ok next group 1 slices done, 1 already closed\n$/);
+  // The rerun keeps 02-b's branch and its partial work rather than restarting it from origin/dev.
+  assert.deepEqual(slices(), [
+    `${files[0]}|build/al-g-fonts|fixture`,
+    `${files[1]}|build/al-g-fonts-02|landed ${files[0]}`,
+    `${files[1]}|build/al-g-fonts-02|partial ${files[1]}`,
+  ]);
+});
+
+test("a delegated group is claimed once and handed to its delegate with no job or slot", t => {
+  const { env, run } = fixture(t, {
+    "docs/wayfinder/alpha/build/README.md": "# Build\n\nprefix: al\n",
+    [build("alpha", "01-a")]: ticket({ group: "free", builder: "opencode/deepseek-v4.1-flash-free", files: ["a/one.ts"] }),
+    [build("alpha", "02-b")]: ticket({ group: "free", builder: "opencode/deepseek-v4.1-flash-free", files: ["a/two.ts"] }),
+  });
+  const result = run("alpha", "--start");
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^next: group free tickets=01-a,02-b builder=delegate opencode\/deepseek-v4\.1-flash-free owner=al-g-free why=delegated, no slot$/m);
+  assert.equal(result.stdout.match(/^claimed: /gm)?.length, 1);
+  assert.match(result.stdout, /^delegate: group free tickets=01-a,02-b opencode\/deepseek-v4\.1-flash-free owner=al-g-free$/m);
+  assert.ok(!existsSync(env.FAKE_KIT_LOG!));
+  assert.match(result.stdout, /RESULT: ok next 1 ready, 0 waiting, 0 started\n$/);
+});
+
+test("runs_alone on one member applies to the whole group", t => {
+  const { running, lines } = fixture(t, {
+    [build("alpha", "01-run")]: ticket({ assignee: "alpha-01", files: ["a/run.ts"] }),
+    [build("alpha", "02-x")]: ticket({ group: "pair", files: ["a/x.ts"] }),
+    [build("alpha", "03-y")]: ticket({ group: "pair", runsAlone: true, files: ["a/y.ts"] }),
+  });
+  running("slice-alpha01", build("alpha", "01-run"));
+  assert.deepEqual(lines("alpha"), [
+    "waits: group pair tickets=02-x,03-y runs alone; waits for slice-alpha01",
+    "RESULT: ok next 0 ready, 1 waiting",
+  ]);
 });
