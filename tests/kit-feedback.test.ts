@@ -80,7 +80,8 @@ test("bad input exits 2 with usage and leaves the log alone", t => {
   assert.equal(existsSync(join(root, log)), false);
   assert.equal(run("alpha", "--kind", "fault", "real").status, 0);
   const before = read();
-  for (const args of [["alpha", "--fix-for", "1", "24"], ["alpha", "--fix-for", "x", "24"], ["alpha", "--fix-for", "7"], ["alpha", "--fix-for", "7", "24", "--kind", "fault"]]) {
+  for (const args of [["alpha", "--fix-for", "1", "24"], ["alpha", "--fix-for", "x", "24"], ["alpha", "--fix-for", "7"], ["alpha", "--fix-for", "7", "24", "--kind", "fault"],
+    ["alpha", "--fix-for", "7", "99"], ["alpha", "--fix-for", "7", "build/tickets/24-fix-buttons"]]) {
     assert.equal(run(...args).status, 2, JSON.stringify(args));
   }
   assert.equal(read(), before);
@@ -96,4 +97,37 @@ test("a log without the Feedback heading fails without writing", t => {
   assert.equal(output.status, 1);
   assert.match(output.stderr, /missing ## Feedback heading/);
   assert.equal(readFileSync(join(root, log), "utf8"), "# Feedback\n");
+});
+
+test("a ticket number in both folders is refused; the slug or a folder prefix picks one", t => {
+  const { root, run, read } = fixture(t);
+  writeFileSync(join(root, "docs/wayfinder/alpha/tickets/24-other.md"), "---\nstatus: closed\n---\n");
+  const ambiguous = run("alpha", "--kind", "fault", "--fix", "24", "x");
+  assert.equal(ambiguous.status, 2);
+  assert.match(ambiguous.stdout, /ambiguous ticket 24: tickets\/24-fix-buttons.md, \.\.\/tickets\/24-other.md/);
+  assert.equal(existsSync(join(root, log)), false);
+  for (const [fix, expected] of [["24-other", "[24](../tickets/24-other.md)"], ["../tickets/24", "[24](../tickets/24-other.md)"],
+    ["tickets/24-fix-buttons.md", "[24](tickets/24-fix-buttons.md)"], ["3", "[03](../tickets/03-grill.md)"]]) {
+    const output = run("alpha", "--kind", "fault", "--fix", fix, "x");
+    assert.equal(output.status, 0, output.stderr);
+    assert.ok(read().split("\n")[6].endsWith(`fix: ${expected}`), fix);
+  }
+  assert.equal(run("alpha", "--kind", "fault", "--fix", "tickets/03", "x").status, 2, "tickets/ is the build folder only");
+  const dashed = run("alpha", "--kind", "too-much", "--", "-- too much chrome");
+  assert.equal(dashed.status, 0, dashed.stderr);
+  assert.match(read().split("\n")[6], / · too-much · -- too much chrome · /);
+});
+
+test("edits keep a log's BOM and CRLF line endings", t => {
+  const { root, run, read } = fixture(t);
+  const lines = ["\uFEFF# Feedback: alpha", "", feedbackLegend, "", "## Feedback", "",
+    "- 2026-10-23 · fault · save broke · after release: no · fix: open", ""];
+  writeFileSync(join(root, log), lines.join("\r\n"));
+  assert.equal(run("alpha", "--fix-for", "7", "PR #3").status, 0);
+  lines[6] = lines[6].replace("fix: open", "fix: PR #3");
+  assert.equal(read(), lines.join("\r\n"));
+  assert.equal(run("alpha", "--kind", "workflow", "asked twice").status, 0);
+  lines.splice(6, 0, `- ${today()} · workflow · asked twice · after release: no · fix: open`);
+  assert.equal(read(), lines.join("\r\n"));
+  assert.deepEqual(parseFeedback(read(), join(root, log)).problems, []);
 });

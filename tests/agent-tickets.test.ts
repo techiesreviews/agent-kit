@@ -192,14 +192,17 @@ test("check validates build feedback logs and names file:line for a bad date, ki
   };
   const file = "docs/wayfinder/alpha/build/feedback.md";
   mkdirSync(join(cwd, "docs/wayfinder/alpha/build/tickets"), { recursive: true });
+  mkdirSync(join(cwd, "docs/wayfinder/alpha/tickets"), { recursive: true });
   mkdirSync(join(cwd, "docs/wayfinder/beta/tickets"), { recursive: true });
   writeFileSync(join(cwd, "docs/wayfinder/alpha/build/tickets/24-fix.md"), "---\nstatus: open\n---");
+  writeFileSync(join(cwd, "docs/wayfinder/alpha/tickets/01-x.md"), "---\nstatus: closed\n---");
   writeFileSync(join(cwd, "docs/wayfinder/beta/tickets/01-ready.md"), "---\nstatus: open\n---");
   const head = "# Feedback: alpha\n\nKinds: …\n\n## Feedback\n\n";
   const good = [
     "- 2026-10-24 · felt-wrong · \"too many buttons\" · after release: no · fix: [24](tickets/24-fix.md)",
     "- 2026-10-23 · fault · save lost text · after release: yes · fix: PR #12",
     "- 2026-10-22 · workflow · asked twice · after release: no · fix: open",
+    "- 2026-10-21 · below-bar · grey on grey · after release: no · fix: [01](../tickets/01-x.md)",
   ];
   writeFileSync(join(cwd, file), `${head}${good.join("\n")}\n\n## Notes\n\nfree text\n`);
   git("init", "-q");
@@ -207,14 +210,14 @@ test("check validates build feedback logs and names file:line for a bad date, ki
   git("-c", "user.name=Kit test", "-c", "user.email=kit@example.com", "commit", "-qm", "feedback");
   const parsed = loadFeedback("docs/wayfinder", { cwd, ref: "HEAD" });
   assert.deepEqual(parsed.problems, []);
-  assert.deepEqual(parsed.entries.map((entry: { line: number; kind: string }) => [entry.line, entry.kind]), [[7, "felt-wrong"], [8, "fault"], [9, "workflow"]]);
+  assert.deepEqual(parsed.entries.map((entry: { line: number; kind: string }) => [entry.line, entry.kind]), [[7, "felt-wrong"], [8, "fault"], [9, "workflow"], [10, "below-bar"]]);
 
   const script = resolve("scripts/agents/tickets.mjs");
   const run = (...args: string[]) => spawnSync(process.execPath, [script, ...args], { cwd, env, encoding: "utf8", timeout: 5_000 });
   for (const args of [["check"], ["check", "--ref", "HEAD"]]) {
     const output = run(...args);
     assert.equal(output.status, 0, output.stderr);
-    assert.equal(output.stdout, "Tickets checked: 2\nFeedback lines checked: 3\n");
+    assert.equal(output.stdout, "Tickets checked: 3\nFeedback lines checked: 4\n");
   }
 
   writeFileSync(join(cwd, file), `${head}${[
@@ -224,18 +227,26 @@ test("check validates build feedback logs and names file:line for a bad date, ki
     "- 2026-10-23 · fault · bad fix · after release: no · fix: soon",
     "- 2026-10-23 · fault · missing link · after release: no · fix: [25](tickets/25-gone.md)",
     "- 2026-10-23 · fault · no fields",
+    "- 2026-10-23 · fault · missing map ticket · after release: no · fix: [02](../tickets/02-gone.md)",
   ].join("\n")}\n`);
   const bad = run("check");
   assert.equal(bad.status, 1);
   assert.equal(bad.stdout, "");
-  assert.deepEqual(bad.stderr.trim().split("\n"), [
+  const expected = [
     `${file}:7: Invalid date: 2026-02-30`,
     `${file}:8: Invalid kind: ugly`,
     `${file}:9: Invalid after release: maybe`,
     `${file}:10: Invalid fix: soon (use open, PR #n or [NN](tickets/NN-slug.md))`,
     `${file}:11: Fix link not found: tickets/25-gone.md`,
     `${file}:12: Malformed feedback line`,
-  ]);
+    `${file}:13: Fix link not found: ../tickets/02-gone.md`,
+  ];
+  assert.deepEqual(bad.stderr.trim().split("\n"), expected);
+  git("add", ".");
+  git("-c", "user.name=Kit test", "-c", "user.email=kit@example.com", "commit", "-qm", "bad feedback");
+  const badRef = run("check", "--ref", "HEAD");
+  assert.equal(badRef.status, 1);
+  assert.deepEqual(badRef.stderr.trim().split("\n"), expected);
   assert.equal(run("frontier").status, 0, "frontier ignores feedback logs");
   assert.deepEqual(parseFeedback("# Feedback\n", file).problems, [{ file, line: 1, message: "Missing ## Feedback heading" }]);
 });

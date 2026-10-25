@@ -13,7 +13,9 @@ const usage = `Usage: kit feedback <map> --kind K [--after-release] [--fix <tick
 Adds one line, newest first, to docs/wayfinder/<map>/build/feedback.md (created with its
 heading and legend) or fills the fix of the entry on <line-number>; never commits.
 Kinds: ${Object.keys(feedbackKinds).join(", ")}. A fix is a ticket number (24 or
-24-slug) in the map's build/tickets/ or tickets/, or a PR (#12, PR 12).
+24-slug) in the map's build/tickets/ or tickets/, or a PR (#12, PR 12). A number found in
+both folders is refused: name one with its slug, tickets/24-slug (build) or ../tickets/24-slug
+(map). Put -- before text that starts with "-".
 `;
 
 class UsageError extends Error {}
@@ -26,6 +28,7 @@ function options(args) {
   };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
+    if (arg === "--") { flags.rest.push(...args.slice(i + 1)); break; }
     if (["--help", "-h"].includes(arg)) flags.help = true;
     else if (arg === "--after-release" && !flags.afterRelease) flags.afterRelease = true;
     else if (arg === "--kind") flags.kind = value(i++, "kind");
@@ -41,17 +44,24 @@ function options(args) {
 function resolveFix(mapDir, value) {
   const pr = /^(?:PR ?#?|#)([1-9]\d*)$/i.exec(value.trim());
   if (pr) return `PR #${pr[1]}`;
-  const ticket = /^(?:.*\/)?(\d+)(-[\w.-]*?)?(?:\.md)?$/.exec(value.trim());
-  if (!ticket) throw new UsageError(`invalid fix: ${value} (use a ticket number or a PR)`);
-  for (const [folder, link] of [["build/tickets", "tickets"], ["tickets", "../tickets"]]) {
+  // A written tickets/ (build) or ../tickets/ (map) prefix picks the folder; a bare number searches both.
+  const ticket = /^((?:\.\.\/)?tickets\/)?(\d+)(-[\w.-]*?)?(?:\.md)?$/.exec(value.trim());
+  if (!ticket) throw new UsageError(`invalid fix: ${value} (use a ticket number, tickets/… or ../tickets/…, or a PR)`);
+  const [, prefix, number, slug] = ticket;
+  const matches = [];
+  for (const [folder, link] of [["build/tickets", "tickets/"], ["tickets", "../tickets/"]]) {
+    if (prefix && prefix !== link) continue;
     let names;
     try { names = readdirSync(join(mapDir, folder)); } catch { continue; }
-    const matches = names.filter(name => name.endsWith(".md") &&
-      (ticket[2] ? name === `${ticket[1]}${ticket[2]}.md` : name.startsWith(`${ticket[1]}-`)));
-    if (matches.length > 1) throw new UsageError(`ambiguous ticket ${value} in ${folder}: ${matches.join(", ")}`);
-    if (matches.length) return `[${ticket[1]}](${link}/${matches[0]})`;
+    for (const name of names) {
+      const [, own, rest] = /^(\d+)(-.*)\.md$/.exec(name) ?? [];
+      if (own !== undefined && Number(own) === Number(number) && (!slug || rest === slug)) matches.push({ own, path: `${link}${name}` });
+    }
   }
-  throw new UsageError(`no ticket ${value} in the map's build/tickets/ or tickets/`);
+  if (matches.length > 1)
+    throw new UsageError(`ambiguous ticket ${value}: ${matches.map(match => match.path).join(", ")} (name one, e.g. ${matches[0].path})`);
+  if (matches.length) return `[${matches[0].own}](${matches[0].path})`;
+  throw new UsageError(`no ticket ${value} in the map's ${prefix === "tickets/" ? "build/tickets/" : prefix ? "tickets/" : "build/tickets/ or tickets/"}`);
 }
 
 function today() {
@@ -60,15 +70,17 @@ function today() {
 }
 
 function add(path, map, line) {
-  const lines = existsSync(path)
-    ? readFileSync(path, "utf8").replace(/\r?\n$/, "").split(/\r?\n/)
+  const source = existsSync(path) ? readFileSync(path, "utf8") : undefined;
+  const eol = source?.includes("\r\n") ? "\r\n" : "\n";
+  const lines = source !== undefined
+    ? source.replace(/\r?\n$/, "").split(/\r?\n/)
     : [`# Feedback: ${map}`, "", feedbackLegend, "", feedbackHeading];
   const heading = lines.indexOf(feedbackHeading);
   if (heading < 0) throw new Error(`${path}: missing ${feedbackHeading} heading`);
   if (lines[heading + 1] === "") lines.splice(heading + 2, 0, line);
   else lines.splice(heading + 1, 0, "", line);
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${lines.join("\n")}\n`);
+  writeFileSync(path, `${lines.join(eol)}${eol}`);
   return lines.indexOf(line, heading) + 1;
 }
 
