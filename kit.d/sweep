@@ -16,12 +16,14 @@ const usage = `Usage: kit sweep [--since 7d|Nd|YYYY-MM-DD]
 Changes nothing: reads the checkout's HEAD and the week's records, then writes main root
 .scratch/sweep/<date>/bundle.md (under ${bundleLimit} bytes): biggest source files and their growth,
 src/main.ts lines, hand-typed CSS values (raw px spacing, raw radii, bespoke shadows, hand-timed
-transitions) and their change, tests that failed then passed in kit pr runs (every worktree's
-.scratch/pr/ logs) and tests/known-failures.json, review findings by kind (scoreboard records),
-Lex's corrections (build feedback logs) and open tech-debt issues untouched for 30 days.
+transitions) and their change, tests that failed then passed in kit pr runs (the .scratch/pr/
+logs of worktrees that still exist) and tests/known-failures.json, review findings by kind
+(scoreboard records), Lex's corrections dated from the window's first day up to yesterday (the
+checkout's build feedback logs) and open tech-debt issues untouched for 30 days.
 `;
 const day = 86_400_000;
-const codeFile = /^(src|worker|shared|scripts)\/.*\.(ts|tsx|js|mjs|css|html)$/;
+// Code files by extension, plus extensionless scripts such as the kit commands.
+const codeFile = /^(src|worker|shared|scripts)\/(.*\/)?([^/.]+|[^/]+\.(ts|tsx|js|mjs|css|html|sh))$/;
 const cssFile = /^src\/.*\.css$/;
 
 export function parseArgs(args) {
@@ -65,7 +67,8 @@ function readTree(root, ref) {
   for (const file of files) {
     const end = output.indexOf(10, offset), header = output.subarray(offset, end).toString("utf8").split(" ");
     const size = Number(header[2]);
-    texts.set(file, output.subarray(end + 1, end + 1 + size).toString("utf8"));
+    const blob = output.subarray(end + 1, end + 1 + size);
+    if (!blob.includes(0)) texts.set(file, blob.toString("utf8"));
     offset = end + 1 + size + 1;
   }
   return texts;
@@ -167,14 +170,14 @@ function worktrees(main) {
 const readText = path => { try { return readFileSync(path, "utf8"); } catch { return undefined; } };
 
 /**
- * One run per kit pr in the window, in every worktree: .scratch/pr/<run>/unit.log holds the npm test
+ * One run per kit pr in the window, in each live worktree: .scratch/pr/<run>/unit.log holds the npm test
  * output, or unit.sh's summary whose "log:" line names the full .scratch/unit/ log; specs.log names
  * each .scratch/kit-specs/run-*\/N-group.log, whose Playwright report is the .json beside it.
  */
-function prRuns(main, start) {
+function prRuns(trees, start) {
   const runs = [];
   const list = dir => { try { return readdirSync(dir).sort(); } catch { return []; } };
-  for (const worktree of worktrees(main)) for (const name of list(join(worktree, ".scratch/pr"))) {
+  for (const worktree of trees) for (const name of list(join(worktree, ".scratch/pr"))) {
     const path = join(worktree, ".scratch/pr", name), outcomes = [];
     let time = -Infinity;
     for (const step of ["unit.log", "specs.log"]) {
@@ -195,10 +198,11 @@ function prRuns(main, start) {
   return runs;
 }
 
-export function testSections(runs, known) {
+export function testSections(runs, known, trees) {
   const flipped = flippedTests(runs);
   return [
-    { title: "Tests that failed then passed in kit pr runs", priority: 4, lines: [`- ${runs.length} kit pr runs read, ${flipped.length} tests flipped`,
+    { title: "Tests that failed then passed in kit pr runs", priority: 4, lines: [`- ${runs.length} kit pr runs read from ${trees} live worktree${trees === 1 ? "" : "s"}, ${flipped.length} tests flipped`,
+      "- A removed worktree takes its runs with it, so a low count does not prove steady tests; unit tests are matched by name only.",
       ...flipped.map(item => `- ${item.name}: ${item.times}× in ${[...item.worktrees].sort().join(", ")}`)] },
     { title: "Known failures (tests/known-failures.json)", priority: 7, lines: known.length
       ? known.map(entry => `- ${[entry.spec, entry.title, entry.line].filter(value => value !== undefined).join(" › ")} · ${entry.status ?? "failing"}${entry.reason ? ` · ${entry.reason}` : ""}`)
@@ -234,11 +238,14 @@ export function reviewSection(main, start) {
     `- by kind: ${countText(kinds)}`, `- by severity: ${countText(severities)}`, ...pieces] };
 }
 
-/** Lex's corrections dated in the window, from every build's feedback log. */
-export function correctionsSection(root, start) {
+/**
+ * Lex's corrections in the checkout's build feedback logs, by whole days: from the window's first day
+ * up to yesterday, so weekly windows neither repeat nor skip the sweep's own day.
+ */
+export function correctionsSection(root, start, now = Date.now()) {
   const folder = join(root, "docs/wayfinder");
   const { entries } = existsSync(folder) ? loadFeedback(folder, { cwd: root }) : { entries: [] };
-  const recent = entries.filter(entry => entry.date >= localDate(start)).sort((a, b) => b.date.localeCompare(a.date) || a.file.localeCompare(b.file));
+  const recent = entries.filter(entry => entry.date >= localDate(start) && entry.date < localDate(new Date(now))).sort((a, b) => b.date.localeCompare(a.date) || a.file.localeCompare(b.file));
   const kinds = {};
   for (const entry of recent) kinds[entry.kind] = (kinds[entry.kind] ?? 0) + 1;
   return { title: "Lex's corrections", priority: 8, lines: [`- ${recent.length} corrections; by kind: ${countText(kinds)}`,
@@ -264,17 +271,17 @@ function sweep(args) {
   try { flags = parseArgs(args); }
   catch (error) { process.stderr.write(usage); kitResult("fail", `sweep ${error.message}`); return 2; }
   try {
-    const root = resolve(kitRoot()), main = resolve(kitMainRoot()), now = Date.now(), start = windowStart(flags.since, now);
+    const root = resolve(kitRoot()), main = resolve(kitMainRoot()), now = Date.now(), start = windowStart(flags.since, now), trees = worktrees(main);
     const head = gitText(root, ["rev-parse", "HEAD"]);
     const then = gitText(root, ["rev-list", "-1", "--first-parent", `--before=${start.toISOString()}`, "HEAD"]);
     let known = [];
     try { known = JSON.parse(readFileSync(join(root, "tests/known-failures.json"), "utf8")); } catch { /* No registry: none known. */ }
-    const thenLabel = then ? `${then.slice(0, 9)} (${localDate(start)})` : "the first commit";
+    const thenLabel = then ? `${then.slice(0, 9)}, the last commit before the window` : "an empty tree (no commit before the window)";
     const sections = [
       ...codeSections(readTree(root, head), readTree(root, then)),
-      ...testSections(prRuns(main, start),Array.isArray(known) ? known : []),
+      ...testSections(prRuns(trees, start), Array.isArray(known) ? known : [], trees.length),
       reviewSection(main, start),
-      correctionsSection(root, start),
+      correctionsSection(root, start, now),
       staleDebtSection(root, now),
     ];
     const date = localDate(new Date(now));

@@ -14,6 +14,7 @@ type Sweep = {
   parseArgs(args: string[]): { since: string };
   handTyped(text: string): Counts;
   unitOutcomes(log: string): [string, string[]][];
+  flippedTests(runs: { worktree: string; path: string; time: number; outcomes: [string, string[]][] }[]): { name: string; times: number; worktrees: Set<string> }[];
 };
 const sweep: Sweep = await import(pathToFileURL(script).href);
 
@@ -63,6 +64,7 @@ const section = (bundle: string, title: string) => {
   return bundle.slice(start + title.length + 5).split("\n## ")[0].trim().split("\n");
 };
 
+const flipNote = "- A removed worktree takes its runs with it, so a low count does not prove steady tests; unit tests are matched by name only.";
 const firstCss = ".a {\n  padding: 4px 8px;\n  border-radius: 6px;\n  box-shadow: 0 1px 2px #000;\n  transition: opacity 120ms;\n}\n";
 const secondCss = firstCss.replace("}\n", "  margin: 2px;\n  border-radius: var(--r);\n  box-shadow: var(--s);\n  border-top-left-radius: 50%;\n  text-shadow: none;\n  /* padding: 9px; */\n}\n");
 const lines = (count: number) => Array.from({ length: count }, (_, index) => `export const line${index} = ${index};`).join("\n") + "\n";
@@ -78,10 +80,15 @@ test("each number in the bundle comes from the fixture repo, logs, records and f
   write(join(repo, "src/main.ts"), lines(3));
   write(join(repo, "src/big.ts"), lines(10));
   write(join(repo, "src/a.css"), firstCss);
+  // Shell scripts count; data files and binary blobs do not.
+  write(join(repo, "scripts/x.sh"), "#!/usr/bin/env bash\n".repeat(6));
+  write(join(repo, "scripts/data.json"), "{}\n".repeat(50));
+  write(join(repo, "scripts/blob"), "a\0b\n".repeat(50));
   commit(repo, now - 10 * day, "code");
   write(join(repo, "src/main.ts"), lines(5));
   write(join(repo, "src/new.ts"), lines(4));
   write(join(repo, "src/a.css"), secondCss);
+  write(join(repo, "scripts/agents/kit.d/foo"), "#!/usr/bin/env node\n".repeat(7));
   write(join(repo, "docs/work/tech-debt/issues/03-fresh.md"), "---\ntitle: Fresh debt\nstatus: ready-for-agent\nassignee:\nblocked_by: []\n---\n");
   commit(repo, now - day, "grow");
 
@@ -115,9 +122,12 @@ test("each number in the bundle comes from the fixture repo, logs, records and f
   write(join(records, "03-c.json"), JSON.stringify({ phases: [{ name: "review", start: new Date(now - day - 60_000).toISOString(), end: new Date(now - day).toISOString() }],
     reviews: [{ dir: join(repo, "reviews/plain"), counts: counts({ style: 1 }, { P3: 1 }) }] }));
 
-  const [d1, d3, d30] = [1, 3, 30].map(days => localDate(new Date(now - days * day)));
+  // Whole days: the window's first day counts, today waits for next week's sweep.
+  const [d0, d1, d3, d7, d30] = [0, 1, 3, 7, 30].map(days => localDate(new Date(now - days * day)));
   write(join(repo, "docs/wayfinder/demo/build/feedback.md"), ["# Feedback: demo", "", "## Feedback", "",
+    `- ${d0} · workflow · Said today · after release: no · fix: open`,
     `- ${d1} · fault · Save lost a page · after release: yes · fix: open`,
+    `- ${d7} · felt-wrong · Edge day · after release: no · fix: open`,
     `- ${d3} · too-much · Too many hints · after release: no · fix: PR #4`,
     `- ${d30} · workflow · Old note · after release: no · fix: open`, ""].join("\n"));
 
@@ -127,19 +137,26 @@ test("each number in the bundle comes from the fixture repo, logs, records and f
   assert.equal(path, join(repo, ".scratch/sweep", localDate(new Date()), "bundle.md"));
   assert.match(result.stdout, /^## Lex's corrections \(\d+ bytes\)$/m);
   assert.deepEqual(section(text, "src/main.ts"), ["- 5 lines (+2)"]);
-  assert.deepEqual(section(text, "Biggest source files"), ["- src/a.css: 12 lines (+6)", "- src/big.ts: 10 lines (0)", "- src/main.ts: 5 lines (+2)", "- src/new.ts: 4 lines (+4)"]);
-  assert.deepEqual(section(text, "Biggest growth"), ["- src/a.css: +6 to 12 lines", "- src/new.ts: +4 to 4 lines", "- src/main.ts: +2 to 5 lines"]);
+  assert.deepEqual(section(text, "Biggest source files"), ["- src/a.css: 12 lines (+6)", "- src/big.ts: 10 lines (0)",
+    "- scripts/agents/kit.d/foo: 7 lines (+7)", "- scripts/x.sh: 6 lines (0)", "- src/main.ts: 5 lines (+2)", "- src/new.ts: 4 lines (+4)"]);
+  assert.deepEqual(section(text, "Biggest growth"), ["- scripts/agents/kit.d/foo: +7 to 7 lines", "- src/a.css: +6 to 12 lines", "- src/new.ts: +4 to 4 lines", "- src/main.ts: +2 to 5 lines"]);
   assert.deepEqual(section(text, "Hand-typed values in src/**/*.css"), ["- raw px spacing: 3 (+1)", "- raw radii: 2 (+1)", "- bespoke shadows: 1 (0)",
     "- hand-timed transitions: 1 (0)", "", "Files with the most (px, radii, shadows, timings; change):", "- src/a.css: 3, 2, 1, 1; +2"]);
-  assert.deepEqual(section(text, "Tests that failed then passed in kit pr runs"), ["- 5 kit pr runs read, 4 tests flipped",
+  assert.deepEqual(section(text, "Tests that failed then passed in kit pr runs"), ["- 5 kit pr runs read from 2 live worktrees, 4 tests flipped", flipNote,
     "- native-save/x.spec.ts › loads: 1× in repo", "- native-save/x.spec.ts › saves: 1× in repo", "- unit › adds one: 1× in repo", "- unit › shared: 1× in w2"]);
   assert.deepEqual(section(text, "Known failures (tests/known-failures.json)"), ["- native-save/x.spec.ts › loads · flaky · slow CI"]);
   assert.deepEqual(section(text, "Review findings by kind"), ["- 2 reviews of 2 pieces, 1 findings declined", "- by kind: fault 2, ticket 1, style 1",
     "- by severity: P2 2, P3 2", "- demo/01-a: fault 2, ticket 1 (1 review)", "- demo/03-c: style 1 (1 review)"]);
-  assert.deepEqual(section(text, "Lex's corrections"), ["- 2 corrections; by kind: fault 1, too-much 1",
-    `- ${d1} · fault · Save lost a page · demo · after release: yes · fix: open`, `- ${d3} · too-much · Too many hints · demo · after release: no · fix: PR #4`]);
+  assert.deepEqual(section(text, "Lex's corrections"), ["- 3 corrections; by kind: fault 1, too-much 1, felt-wrong 1",
+    `- ${d1} · fault · Save lost a page · demo · after release: yes · fix: open`, `- ${d3} · too-much · Too many hints · demo · after release: no · fix: PR #4`,
+    `- ${d7} · felt-wrong · Edge day · demo · after release: no · fix: open`]);
   assert.deepEqual(section(text, "Tech-debt issues untouched 30+ days"), ["- 01-old.md: Old debt · needs-triage · untouched 40 days"]);
   assert.equal(execFileSync("git", ["-C", repo, "status", "--porcelain", "--untracked-files=no"], { encoding: "utf8" }), "", "the sweep changes nothing tracked");
+
+  // A removed worktree's runs are gone, and the section says so.
+  execFileSync("git", ["-C", repo, "worktree", "remove", "--force", w2]);
+  assert.deepEqual(section(bundleOf(run(repo).stdout).text, "Tests that failed then passed in kit pr runs"), ["- 2 kit pr runs read from 1 live worktree, 3 tests flipped",
+    flipNote, "- native-save/x.spec.ts › loads: 1× in repo", "- native-save/x.spec.ts › saves: 1× in repo", "- unit › adds one: 1× in repo"]);
 
   // A wider window reaches the older run, review and correction; before the first commit nothing grew.
   const wide = section(bundleOf(run(repo, ["--since", "30d"]).stdout).text, "Review findings by kind");
@@ -160,7 +177,7 @@ test("a huge week is trimmed under the size limit and keeps the top sections", (
   assert.ok(Buffer.byteLength(text) < sweep.bundleLimit, `${Buffer.byteLength(text)} bytes`);
   assert.equal(sweep.bundleLimit, 40_000);
   assert.match(text, /^Trimmed to stay under 40000 bytes: Tests that failed then passed in kit pr runs \d+ lines\.$/m);
-  assert.equal(section(text, "Tests that failed then passed in kit pr runs")[0], "- 2 kit pr runs read, 4000 tests flipped");
+  assert.equal(section(text, "Tests that failed then passed in kit pr runs")[0], "- 2 kit pr runs read from 1 live worktree, 4000 tests flipped");
   assert.deepEqual(section(text, "src/main.ts"), ["- 2 lines (+2)"]);
   assert.match(text, /\n## Tech-debt issues untouched 30\+ days\n\n- none\n/);
 });
@@ -171,6 +188,13 @@ test("hand-typed values: raw px and timings as kit ux counts them, radii and sha
   assert.deepEqual(sweep.handTyped(".b { border-radius: var(--radius, 4px); box-shadow: var(--a), var(--b); border-radius: 0; box-shadow: none; }"),
     { px: 0, radii: 0, shadows: 0, timings: 0 });
   assert.deepEqual(sweep.unitOutcomes("✔ a (1ms)\n  ✖ b\n✖ failing tests:\n✖ b\n"), [["unit › a", ["pass"]], ["unit › b", ["fail"]]]);
+});
+
+test("unit tests are matched by name: one name failing in one file and passing in another counts as one flip", () => {
+  // The spec reporter prints no file per test, so two files' "parses" are one test to the sweep (the bundle says so).
+  const runs = [{ worktree: "/w", path: "/w/.scratch/pr/1", time: 1, outcomes: sweep.unitOutcomes("✖ parses (1ms)\n") },
+    { worktree: "/w", path: "/w/.scratch/pr/2", time: 2, outcomes: sweep.unitOutcomes("✔ parses (1ms)\n") }];
+  assert.deepEqual(sweep.flippedTests(runs).map(item => [item.name, item.times, [...item.worktrees]]), [["unit › parses", 1, ["w"]]]);
 });
 
 test("--since takes days or a date; anything else is a usage error", (t) => {
