@@ -17,5 +17,6 @@ printf '%s\n' "$output"
 if [[ $output == 'context card: no notes for this project yet' ]]; then
   kit_result ok 'card no notes'
 else
-  kit_result ok "card $(wc -l <<< "$output") lines"
+  mapfile -t lines <<< "$output"
+  kit_result ok "card ${#lines[@]} lines"
 fi

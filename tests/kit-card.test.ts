@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -89,6 +89,8 @@ test("card treats sibling worktrees and their folders as the project, but a mapp
   const f = fixture(t);
   assert.match(f.card(join(f.projects, "site-build-x")), /^Context card: Site \(updated 2026-10-24\)\n/);
   assert.match(f.card(join(f.projects, "site-build-x/src")), /^Context card: Site /);
+  symlinkSync(join(f.projects, "site-build-x"), join(f.home, "link"));
+  assert.match(f.card(join(f.home, "link")), /^Context card: Site /);
   assert.match(f.card(join(f.projects, "site-starter")), /^Context card: Site starter\nCurrent thinking:\nStarter thinking\.\nMore: ask for the full note\.\n$/);
   // A worktree of the mapped sibling is a sibling of both rows; the longer workspace wins.
   assert.match(f.card(join(f.projects, "site-starter-wt")), /^Context card: Site starter\n/);
@@ -101,6 +103,10 @@ test("card keeps to 30 lines with the footer last", (t) => {
   const lines = f.card(join(f.projects, "site")).trimEnd().split("\n");
   assert.equal(lines.length, 30);
   assert.equal(lines[27], "- 2026-10-23 · question 23");
+  writeFileSync(join(f.memory, "project-notes/site.md"), ["# Site", "## Current thinking", ...Array.from({ length: 25 }, (_, index) => `Thought ${index}.`), "## Open questions", "- 2026-10-21 · cut"].join("\n"));
+  const cut = f.card(join(f.projects, "site")).trimEnd().split("\n");
+  assert.equal(cut.length, 29);
+  assert.equal(cut[26], "Thought 24.");
   assert.match(lines[28], /^corrections \(14 days\): /);
   assert.equal(lines[29], "More: ask for the full note.");
 });
@@ -112,6 +118,19 @@ test("missing note, missing slug and missing folder each print one line and exit
   assert.equal(f.card(join(f.projects, "site"), { CHAT_MEMORY_DIR: join(f.home, "missing") }), noNotes);
   writeFileSync(join(f.memory, "project-notes/README.md"), "# Project notes\n");
   assert.equal(f.card(join(f.projects, "site")), noNotes);
+});
+
+test("an error reading the note gives the no-notes line, plain and through the hook", (t) => {
+  const f = fixture(t);
+  rmSync(join(f.memory, "project-notes/site.md"));
+  mkdirSync(join(f.memory, "project-notes/site.md"));
+  assert.equal(f.card(join(f.projects, "site")), noNotes);
+  const result = spawnSync("/bin/bash", [join(hooks, "run.sh"), "context-card"], {
+    cwd: f.home, env: { ...f.env, CLAUDE_PROJECT_DIR: resolve(".") }, input: JSON.stringify({ cwd: join(f.projects, "site") }), encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stderr, "");
+  assert.equal((JSON.parse(result.stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext, noNotes.trimEnd());
 });
 
 test("hook mode reads the payload cwd and prints SessionStart context through run.sh", (t) => {
@@ -136,6 +155,14 @@ test("hook mode reads the payload cwd and prints SessionStart context through ru
   // Branches without the script stay silent.
   const missing = hook("{}", f.home, join(f.projects, "unmapped"));
   assert.deepEqual([missing.status, missing.stdout, missing.stderr], [0, "", ""]);
+  // A slow card is stopped after 1 second and prints nothing.
+  const slow = join(f.home, "slow");
+  mkdirSync(join(slow, "scripts/agents"), { recursive: true });
+  writeFileSync(join(slow, "scripts/agents/context-card.mjs"), "setTimeout(() => console.log('late'), 3000);\n");
+  const started = Date.now();
+  const late = hook("{}", f.home, slow);
+  assert.ok(Date.now() - started < 2000, `took ${Date.now() - started} ms`);
+  assert.deepEqual([late.status, late.stdout, late.stderr], [0, "", ""]);
 });
 
 test("kit card prints the card for the kit root with a RESULT line", (t) => {

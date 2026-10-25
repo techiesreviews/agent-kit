@@ -147,7 +147,10 @@ function card(cwd, now = new Date()) {
     footer.push(`corrections (${CORRECTION_DAYS} days): ${count}, repeated: ${repeated} — ${tilde(correctionsPath)}`);
   }
   footer.push("More: ask for the full note.");
-  return [...body.slice(0, MAX_LINES - footer.length), ...footer].map(cut);
+  const kept = body.slice(0, MAX_LINES - footer.length);
+  // A heading whose items were all cut goes too.
+  if (kept.length > 1 && kept.at(-1).endsWith(":") && body[kept.length] !== undefined) kept.pop();
+  return [...kept, ...footer].map(cut);
 }
 
 function main(argv) {
