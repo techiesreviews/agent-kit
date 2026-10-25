@@ -20,7 +20,8 @@ starts its kit slice under kit bg (a group: one job running its slices in order 
 --max N lowers the cap of 5 running slices; it never raises it.
 --run-group runs kit slice for each ticket in order here, stopping at the first failure: the first
 on BRANCH, each later one on its own BRANCH-<NN> from the fetched origin/dev. A rerun skips
-tickets closed on origin/dev and resumes a slice with saved state on its branch.`;
+tickets closed on origin/dev or merged by their saved slice and resumes a slice with saved state
+on its branch.`;
 
 // Pins quoted from docs/agents/kitchen.md#who-cooks-pins-from-2026-10-22:
 //   | Builder, every slice | `claude-opus-5-5`, high | `kit slice --builder claude-opus-5-5`; `builder: sol` lines in tickets are superseded |
@@ -164,11 +165,13 @@ function runningSlices() {
       const [name, state] = row.split("\t");
       if (!name?.startsWith("slice-") || state !== "running") continue;
       const directory = join(worktree, ".scratch/kit-jobs", name);
-      let words = [];
-      try { words = unquote(readFileSync(join(directory, "command"), "utf8")); }
-      catch { /* A slice whose command cannot be read still takes a slot. */ }
-      const cwd = existsSync(join(directory, "cwd")) ? readFileSync(join(directory, "cwd"), "utf8").trim() : worktree;
+      let words = [], cwd = worktree;
+      try {
+        words = unquote(readFileSync(join(directory, "command"), "utf8"));
+        if (existsSync(join(directory, "cwd"))) cwd = readFileSync(join(directory, "cwd"), "utf8").trim();
+      } catch { words = []; /* A slice whose command cannot be read still takes a slot. */ }
       // Each ticket is read on its own, so one unreadable ticket leaves the others' Files counting.
+      // A group job keeps the Files of members that already landed until it ends: safe, if broad.
       const tickets = words.flatMap((word, i) => word === "--ticket" && words[i + 1] ? [words[i + 1]] : []).flatMap(file => {
         const map = /(?:^|\/)docs\/wayfinder\/([^/]+)\//.exec(file)?.[1] ?? "";
         try { return [parseTicket(readFileSync(resolve(cwd, file), "utf8"), file, map).ticket]; }
@@ -270,6 +273,8 @@ function claim(item) {
   for (const [i, ticket] of tickets.entries()) {
     const current = parseTicket(sources[i], ticket.file, map).ticket;
     if (current.assignee || current.status !== "open") return { taken: current.assignee || current.status };
+    // A lone ticket that joined a group meanwhile goes out with its group, never alone.
+    if (!group && current.group) return { taken: "group changed" };
   }
   if (group) {
     // A ticket that joined or left the group, or a new outside blocker, makes the plan stale.
@@ -326,9 +331,15 @@ function runGroup({ branch, builder, tickets }) {
   for (const [i, file] of tickets.entries()) {
     try {
       git(["fetch", "-q", "origin"], here);
-      const landed = run("git", ["-C", here, "show", `origin/dev:${file}`]);
-      if (landed.status === 0 && parseTicket(landed.stdout, file, "").ticket.status === "closed") {
-        console.log(`slice ${i + 1}/${tickets.length}: ${file} closed on origin/dev, skipped`);
+      // Landed: closed on origin/dev, or merged by its slice (kit pr deleted the branch) though
+      // the builder left the ticket open.
+      const shown = run("git", ["-C", here, "show", `origin/dev:${file}`]);
+      const closed = shown.status === 0 && parseTicket(shown.stdout, file, "").ticket.status === "closed";
+      let merged = false;
+      try { merged = JSON.parse(readFileSync(join(here, ".scratch/kit-slice", basename(file, ".md"), "state.json"), "utf8")).finished?.includes("pr") === true; }
+      catch { /* No saved slice, or an unreadable one: not landed. */ }
+      if (closed || merged) {
+        console.log(`slice ${i + 1}/${tickets.length}: ${file} ${closed ? "closed on origin/dev" : "merged by its saved slice"}, skipped`);
         continue;
       }
       const target = i === 0 ? branch : `${branch}-${file.includes("/build/tickets/") ? "" : "m"}${number(basename(file, ".md"))}`;
@@ -343,7 +354,7 @@ function runGroup({ branch, builder, tickets }) {
     const result = spawnSync(kit, ["slice", "--ticket", file, "--builder", builder], { stdio: "inherit" });
     if (result.error || result.status !== 0) return stop(file, i, result.error?.message);
   }
-  kitResult("ok", `next group ${ran} slices done${ran < tickets.length ? `, ${tickets.length - ran} already closed` : ""}`);
+  kitResult("ok", `next group ${ran} slices done${ran < tickets.length ? `, ${tickets.length - ran} landed before` : ""}`);
 }
 
 function main(args) {

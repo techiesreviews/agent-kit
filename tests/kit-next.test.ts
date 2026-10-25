@@ -624,11 +624,12 @@ test("a group claim whose push fails again after the rebase restores every membe
 });
 
 // A group worktree on build/al-g-fonts, and a fake kit slice that lands like kit pr: it logs its
-// branch and HEAD, commits, puts a rebased copy on origin dev with its ticket closed, and leaves
-// the branch. FAKE_PARTIAL=<file> makes that slice commit partial work and save its state (as
-// kit slice does under the git-ignored .scratch/kit-slice/<slug>/); FAKE_STRAY leaves an untracked file.
-function groupWorktree(t: TestContext) {
-  const files = [build("alpha", "01-a"), build("alpha", "02-b")];
+// branch and HEAD, commits, puts a rebased copy on origin dev with its ticket closed, saves its
+// state with "pr" finished (as kit slice does under the git-ignored .scratch/kit-slice/<slug>/)
+// and leaves the branch. FAKE_PARTIAL=<file> makes that slice commit partial work and save its
+// state unfinished; FAKE_KEEP_OPEN lands without closing the ticket; FAKE_STRAY leaves an untracked file.
+function groupWorktree(t: TestContext, second = build("alpha", "02-b")) {
+  const files = [build("alpha", "01-a"), second];
   const fx = fixture(t, {
     [files[0]]: ticket({ group: "fonts", files: ["a/one.ts"], assignee: "al-g-fonts" }),
     [files[1]]: ticket({ group: "fonts", files: ["a/two.ts"], assignee: "al-g-fonts" }),
@@ -641,15 +642,17 @@ function groupWorktree(t: TestContext) {
   const other = join(root, "other");
   writeFileSync(join(root, "land.sh"), `[[ $1 == slice ]] || exit 0
 printf '%s|%s|%s\\n' "$3" "$(git branch --show-current)" "$(git log -1 --format=%s)" >> ${join(root, "slices.log")}
+state=".scratch/kit-slice/$(basename "$3" .md)"
 if [[ $3 == "\${FAKE_PARTIAL:-}" ]]; then
   git commit -q --allow-empty -m "partial $3"
-  mkdir -p .scratch/kit-slice/02-b && echo '{}' > .scratch/kit-slice/02-b/state.json && exit 0
+  mkdir -p "$state" && echo '{"finished":["build"]}' > "$state/state.json" && exit 0
 fi
 [[ -z \${FAKE_STRAY:-} ]] || touch stray.txt
 git commit -q --allow-empty -m "work $3"
 git -C ${other} pull -q --rebase origin dev
-sed -i 's/^status: open$/status: closed/' ${other}/$3
-git -C ${other} commit -qam "landed $3" && git -C ${other} push -q origin HEAD:dev
+[[ -n \${FAKE_KEEP_OPEN:-} ]] || sed -i 's/^status: open$/status: closed/' ${other}/$3
+git -C ${other} commit -q --allow-empty -am "landed $3" && git -C ${other} push -q origin HEAD:dev
+mkdir -p "$state" && echo '{"finished":["build","pr"]}' > "$state/state.json"
 git checkout -q --detach
 `);
   env.FAKE_BG_HOOK = `bash ${join(root, "land.sh")} "$@"`;
@@ -667,26 +670,60 @@ test("--run-group stops when a slice leaves the worktree dirty", t => {
   assert.deepEqual(slices(), [`${files[0]}|build/al-g-fonts|fixture`]);
 });
 
-test("a --run-group rerun skips slices closed on origin/dev and resumes a stopped slice on its branch", t => {
-  const { env, files, worktree, git, group, slices } = groupWorktree(t);
-  env.FAKE_PARTIAL = files[1];
-  env.FAKE_FAIL_ON = files[1];
-  const first = group();
-  assert.equal(first.status, 1, first.stdout + first.stderr);
-  assert.match(first.stdout, /^RESULT: fail next group stopped at \S+02-b\.md \(slice 2\/2\)$/m);
-  delete env.FAKE_FAIL_ON;
-  delete env.FAKE_PARTIAL;
-  git(worktree, "checkout", "-q", "--detach");
-  const again = group();
-  assert.equal(again.status, 0, again.stdout + again.stderr);
-  assert.match(again.stdout, /^slice 1\/2: \S+01-a\.md closed on origin\/dev, skipped$/m);
-  assert.match(again.stdout, /RESULT: ok next group 1 slices done, 1 already closed\n$/);
-  // The rerun keeps 02-b's branch and its partial work rather than restarting it from origin/dev.
-  assert.deepEqual(slices(), [
-    `${files[0]}|build/al-g-fonts|fixture`,
-    `${files[1]}|build/al-g-fonts-02|landed ${files[0]}`,
-    `${files[1]}|build/al-g-fonts-02|partial ${files[1]}`,
-  ]);
+test("a --run-group rerun skips landed slices, closed or merged by their saved slice, and resumes a stopped slice on its branch", t => {
+  for (const [keepOpen, skipped] of [[false, "closed on origin/dev"], [true, "merged by its saved slice"]] as const) {
+    const { env, files, worktree, git, group, slices } = groupWorktree(t);
+    if (keepOpen) env.FAKE_KEEP_OPEN = "1";
+    env.FAKE_PARTIAL = files[1];
+    env.FAKE_FAIL_ON = files[1];
+    const first = group();
+    assert.equal(first.status, 1, first.stdout + first.stderr);
+    assert.match(first.stdout, /^RESULT: fail next group stopped at \S+02-b\.md \(slice 2\/2\)$/m);
+    delete env.FAKE_FAIL_ON;
+    delete env.FAKE_PARTIAL;
+    git(worktree, "checkout", "-q", "--detach");
+    // kit pr deleted slice 1's branch when it merged.
+    git(worktree, "branch", "-q", "-D", "build/al-g-fonts");
+    const again = group();
+    assert.equal(again.status, 0, again.stdout + again.stderr);
+    assert.match(again.stdout, new RegExp(`^slice 1/2: \\S+01-a\\.md ${skipped}, skipped$`, "m"));
+    assert.match(again.stdout, /RESULT: ok next group 1 slices done, 1 landed before\n$/);
+    // The rerun keeps 02-b's branch and its partial work rather than restarting it from origin/dev.
+    assert.deepEqual(slices(), [
+      `${files[0]}|build/al-g-fonts|fixture`,
+      `${files[1]}|build/al-g-fonts-02|landed ${files[0]}`,
+      `${files[1]}|build/al-g-fonts-02|partial ${files[1]}`,
+    ]);
+  }
+});
+
+test("a map ticket later in a group gets an m-numbered branch", t => {
+  const map = "docs/wayfinder/alpha/tickets/02-m.md";
+  const { files, group, slices } = groupWorktree(t, map);
+  const result = group();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(slices(), [`${files[0]}|build/al-g-fonts|fixture`, `${map}|build/al-g-fonts-m02|landed ${files[0]}`]);
+});
+
+test("a lone ticket that joins a group before its own claim is not claimed alone", t => {
+  const { root, dev, env, git, run } = fixture(t, {
+    [build("alpha", "01-first")]: ticket({ files: ["a/first.ts"] }),
+    [build("alpha", "02-solo")]: ticket({ files: ["a/solo.ts"] }),
+  });
+  git(root, "clone", "-q", "-b", "dev", join(root, "origin.git"), "other");
+  writeFileSync(join(root, "join.sh"), `[[ $1 == bg ]] || exit 0
+cd ${join(root, "other")} || exit 1
+git pull -q --rebase origin dev
+sed -i '/^status: open$/a group: fonts' ${build("alpha", "02-solo")}
+git commit -qam 'other lead' && git push -q origin HEAD:dev
+`);
+  env.FAKE_BG_HOOK = `bash ${join(root, "join.sh")} "$@"`;
+  const result = run("alpha", "--start");
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, new RegExp(`^waits: ${build("alpha", "02-solo")} claimed meanwhile \\(group changed\\)$`, "m"));
+  assert.match(result.stdout, /RESULT: ok next 1 ready, 1 waiting, 1 started\n$/);
+  assert.match(git(join(root, "origin.git"), "show", `dev:${build("alpha", "02-solo")}`), /^assignee: $/m);
+  assert.equal(git(dev, "rev-parse", "HEAD"), git(dev, "rev-parse", "origin/dev"));
 });
 
 test("a delegated group is claimed once and handed to its delegate with no job or slot", t => {
