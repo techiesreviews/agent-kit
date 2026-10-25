@@ -112,24 +112,31 @@ function declinedEntry(item) {
 
 const DECLINED_HEADING = "\n\nDeclined by the builder (with reasons):\n";
 
-// Rewrites rather than appends, so a retried builder phase leaves one list.
-function recordDeclined(brief, review, declined) {
-  const entries = declined.map(declinedEntry);
-  const round = readFileSync(brief, "utf8").split(DECLINED_HEADING)[0];
-  writeFileSync(brief, entries.length ? `${round}${DECLINED_HEADING}${entries.map(({ text, reason }) => `- ${text} — reason: ${reason || "none given"}`).join("\n")}\n` : round);
+const withoutDeclined = brief => readFileSync(brief, "utf8").split(DECLINED_HEADING)[0];
+
+// A retried builder phase replaces its round's list in both records, so they always agree:
+// the round file holds the latest attempt, and findings.json entries carry their round.
+function recordDeclined(brief, review, declined, round) {
+  const entries = declined.map(item => ({ ...declinedEntry(item), round }));
+  writeFileSync(brief, entries.length ? `${withoutDeclined(brief)}${DECLINED_HEADING}${entries.map(({ text, reason }) => `- ${text} — reason: ${reason || "none given"}`).join("\n")}\n` : withoutDeclined(brief));
   const path = review && join(review, "findings.json");
-  if (!entries.length || !path || !existsSync(path)) return; // Reviews saved before findings.json have none.
-  // A damaged record must not stall the round in its builder phase; the round file keeps the list.
+  if (!path || !existsSync(path)) return; // Reviews saved before findings.json have none.
+  // A damaged or unwritable record must not stall the round in its builder phase; the round file keeps the list.
+  const skip = why => console.error(`problem: ${path} ${why}; declined findings kept in the round file only`);
   let record;
   try { record = JSON.parse(readFileSync(path, "utf8")); } catch { /* Checked below. */ }
-  if (!record || typeof record !== "object" || Array.isArray(record)) {
-    console.error(`problem: ${path} is not a findings record; declined findings kept in the round file only`);
-    return;
+  if (!record || typeof record !== "object" || Array.isArray(record)) return skip("is not a findings record");
+  const previous = Array.isArray(record.declined) ? record.declined : [];
+  const others = previous.filter(entry => entry?.round !== round);
+  if (!entries.length && others.length === previous.length) return;
+  record.declined = [...others, ...entries];
+  try {
+    writeFileSync(`${path}.tmp`, JSON.stringify(record, null, 2) + "\n");
+    renameSync(`${path}.tmp`, path);
+  } catch (error) {
+    rmSync(`${path}.tmp`, { force: true });
+    skip(`could not be updated (${error.code || error.message})`);
   }
-  const known = new Set((record.declined ?? []).map(entry => JSON.stringify(entry)));
-  record.declined = [...(record.declined ?? []), ...entries.filter(entry => !known.has(JSON.stringify(entry)))];
-  writeFileSync(`${path}.tmp`, JSON.stringify(record, null, 2) + "\n");
-  renameSync(`${path}.tmp`, path);
 }
 
 async function fix(args) {
@@ -268,6 +275,8 @@ async function fix(args) {
       }
       const previousReport = resume && existsSync(reportPath) ? readFileSync(reportPath, "utf8") : "";
       if (!resume) console.log(`builder: no resumable builder run; starting fresh agent.sh build (${pending.model})`);
+      // A retry resends the brief as first written, without the previous attempt's declined list.
+      writeFileSync(brief, withoutDeclined(brief));
       await execute("builder", agent, resume ? ["--resume", pending.run, "--brief", brief] :
         ["build", root, brief, "--model", pending.model, "--effort", pending.effort || "high", "--out", pending.run]);
       assertScope();
@@ -276,7 +285,7 @@ async function fix(args) {
       const declined = declinedFindings(report.slice(previousReport.length));
       if (!git("status", "--porcelain", "--untracked-files=normal") && !declined.length)
         throw new Error("builder made no changes");
-      recordDeclined(brief, pending.review, declined);
+      recordDeclined(brief, pending.review, declined, round);
       pending.declined = declined; pending.phase = "commit"; save();
     }
     if (pending.phase === "commit") {

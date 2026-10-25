@@ -41,6 +41,8 @@ export function sameReviewPatch(reviewedId, currentId) {
 const LOCATION = /^`?(?:[0-9a-f]{7,64}:)?[^\s:`]+:\d+(?:[-–]\d+)?`?\s*(?:[—–-]|:)?\s*/i;
 
 const KINDS = ["fault", "ticket", "race", "style"];
+// Backticks around the severity and kind are optional and unpaired on purpose: `` `P2` `race` ``
+// and `` `P2 race` `` both pass, so do not tighten this to balanced pairs.
 const KIND = new RegExp(`^\`?\\s*\`?(${KINDS.join("|")})(?![\\w-])`, "i");
 
 // Severity sits within 40 characters after a leading location, or within the first 80
