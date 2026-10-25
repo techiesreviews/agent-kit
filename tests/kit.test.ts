@@ -328,7 +328,7 @@ test("the real kit exposes an executable version stub and emits its final RESULT
   assert.equal(statSync(library).mode & 0o111, 0);
   const list = run();
   assert.equal(list.status, 0, list.stderr);
-  assert.match(list.stdout, /  version  show the kit's commit, owner and Node version/);
+  assert.match(list.stdout, /  version +show the kit's commit, owner and Node version/);
   const help = run(["version", "--help"]);
   assert.equal(help.status, 0, help.stderr);
   assert.match(help.stdout, /^Usage: kit version\n/);
