@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { openFindings } from "../review-findings.mjs";
 
-const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv, commitBuilderWork, builderAuthor } = await import(
+const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv, commitBuilderWork, builderAuthor, kitScore, scoreCost, scoreReview } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const usage = "Usage: kit fix [--review DIR | --note FILE] [--run DIR] [--ticket FILE] [--builder MODEL] [--effort E]\nResume the builder with open findings or a failure note, commit its fixes, and review again.\nWith --builder (and --effort when given), resume only a saved session of that model and effort, else start fresh with them (without either: latest slice model and effort, else claude-opus-5-5 and high).\nAn explicit --run DIR that is missing, unreadable or belongs to another worktree errors; one of another model or effort is named on a line and a fresh builder starts with the requested setting and the run's other one.\nA pending builder round from another model or effort switches to the requested one and keeps its edits; a pending commit or review round still refuses.\nFailed rounds resume their saved builder/commit/review phase without discarding edits.\n";
@@ -310,6 +310,18 @@ async function fix(args) {
     try { result = readFileSync(nextResult, "utf8"); } catch { /* Missing evidence is an open finding. */ }
     const remaining = openFindings(result).findings.length;
     rmSync(pendingPath);
+    // The round, its builder's reported cost and the declined list on the review it answered.
+    kitScore({ ticket, branch, root }, record => {
+      record.rounds = Math.max(record.rounds, round);
+      const effort = pending.effort || "high", builder = record.builder;
+      if (!builder) record.builder = { model: pending.model, effort, previousModels: pending.previousModels ?? [], built: null };
+      else if (builder.model !== pending.model || builder.effort !== effort) {
+        record.builder = { ...builder, model: pending.model, effort,
+          previousModels: builder.model === pending.model ? builder.previousModels ?? [] : [...(builder.previousModels ?? []), builder.model] };
+      }
+      scoreCost(record, pending.run);
+      if (pending.review) scoreReview(record, pending.review);
+    });
     kitResult(remaining ? "fail" : "ok", remaining ? `fix ${remaining} open findings (${nextResult})` : "fix clean");
     return remaining ? 1 : 0;
   } catch (error) { kitResult("fail", `fix ${error.message}`); return 1; }

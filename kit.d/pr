@@ -7,7 +7,7 @@ import { basename, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterFixRounds, blockingFindings, completedFixRounds, FIX_ROUNDS, openFindings, reviewCoversHead, sameReviewPatch } from "../review-findings.mjs";
 
-const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv } = await import(
+const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv, kitScore } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const { checkSteps, classify, focusedUnitFiles, parseChanges } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
@@ -116,7 +116,7 @@ async function main(args) {
     kitResult("fail", `invalid arguments: ${error.message}`);
     return 2;
   }
-  let step = "guards", directory;
+  let step = "guards", directory, land;
   try {
     const root = resolve(kitRoot()), env = nodeEnv();
     directory = join(root, ".scratch/pr", `${new Date().toISOString().replace(/[-:]/g, "")}-${process.pid}`);
@@ -172,6 +172,11 @@ async function main(args) {
     if (branchResult.status !== 0) throw new Error("detached HEAD");
     const branch = branchResult.text.trim();
     if (["dev", "main", flags.base].includes(branch)) throw new Error(`refusing branch ${branch}`);
+    // The scoreboard's landing record for this piece.
+    // A new PR number starts a fresh landing, so an earlier PR's merge never carries over.
+    land = changes => kitScore({ ticket: flags.ticket, branch, root }, record => {
+      record.landed = { ...(changes.pr === undefined || record.landed?.pr === changes.pr ? record.landed : {}), ...changes };
+    });
     if (flags.base === "main" && !flags.release) throw new Error("--base main requires --release");
     if (flags.release && flags.base !== "main") throw new Error("--release requires --base main");
     await git("guards", ["check-ref-format", `refs/heads/${flags.base}`]);
@@ -270,6 +275,7 @@ async function main(args) {
     if (!/^[1-9]\d*$/.test(String(number))) throw new Error("could not determine PR number");
     number = String(number);
     ok("open");
+    land({ pr: Number(number), tier: plan.tier });
     step = "review";
     console.log(`PR #${number}; ${review ? "review running" : `review: skipped (${plan.tier} tier)`}`);
     // The docs tier has no model review; CI still gates the merge.
@@ -376,18 +382,21 @@ async function main(args) {
     if (queue.status === 0 && queue.text.trim()) {
       await gh("merge", ["pr", "merge", number, "--auto", "--rebase", "--match-head-commit", head, "--repo", repo]); ok("merge");
       await recordWaiver();
+      land({ queued: true, waived: waived ? flags.waive : null });
       kitResult("ok", `queued #${number} ${head.slice(0, 7)}`);
       return 0;
     }
     for (let attempt = 1; attempt <= 3; attempt++) {
       console.log(`ci: waiting for PR #${number} checks`);
       await run("ci", kit, ["wait", "ci", "--pr", number]); ok("ci");
+      land({ ci: "pass" });
       const merged = await execute("merge", "gh", ["pr", "merge", number, "--rebase", "--delete-branch", "--match-head-commit", head, "--repo", repo]);
       if (merged.status === 0) {
         const commit = await execute("merge", "gh", ["pr", "view", number, "--json", "mergeCommit", "--jq", ".mergeCommit.oid"]);
         const sha = commit.status === 0 && /^[a-f0-9]{40}$/i.test(commit.text.trim()) ? commit.text.trim() : head;
         ok("merge");
         await recordWaiver();
+        land({ sha, at: new Date().toISOString(), waived: waived ? flags.waive : null });
         kitResult("ok", `merged #${number} ${sha.slice(0, 7)}`);
         return 0;
       }
@@ -403,6 +412,7 @@ async function main(args) {
       if (head !== reviewedHead && !await reviewHead()) return 1;
     }
   } catch (error) {
+    if (land && step === "ci") land({ ci: "fail" });
     if (directory && existsSync(join(directory, `${step}.log`))) {
       const lines = readFileSync(join(directory, `${step}.log`), "utf8").trimEnd().split(/\r?\n/).slice(-30);
       for (const line of lines) console.error(`  ${line}`);

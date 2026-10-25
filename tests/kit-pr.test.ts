@@ -7,6 +7,7 @@ import test, { type TestContext } from "node:test";
 import { checkSteps, classify, focusedUnitFiles, parseChanges } from "../scripts/agents/pr-tier.mjs";
 import { sameReviewPatch } from "../scripts/agents/review-findings.mjs";
 import { forEachAwait } from "./support/await-race.ts";
+import type { ScoreRecord } from "./kit-score.test.ts";
 
 const pr = resolve("scripts/agents/kit.d/pr");
 const kit = resolve("scripts/agents/kit");
@@ -495,6 +496,33 @@ test("no queue waits for CI then merges with --repo, preserving the local branch
     assert.equal(f.git("branch", "--show-current"), "feature/kit-pr");
     assert.equal(f.gitAt(f.origin, "rev-parse", "refs/heads/feature/kit-pr"), f.head);
   }
+});
+
+test("the scoreboard record gets the PR, tier, CI result, merge SHA and time, and the waiver reason", t => {
+  const f = fixture(t), result = f.run(["--ticket", "ticket.md"]);
+  assert.equal(result.status, 0, result.stderr);
+  const record = JSON.parse(readFileSync(join(f.main, ".scratch/scoreboard/_untracked/ticket.json"), "utf8"));
+  assert.equal(record.ticket, "ticket.md"); assert.equal(record.title, "Ticket title");
+  const { at, ...landed } = record.landed;
+  assert.deepEqual(landed, { pr: 73, tier: "full", ci: "pass", sha: "abcdef0123456789abcdef0123456789abcdef01", waived: null });
+  assert.ok(Date.parse(at));
+  const report = "REVIEW_STATUS: complete\nDefects:\n- Spec: A defect.\n- Standards: none.\nValidation gaps: none.\nOptional nits: none.\n";
+  const lead = fixture(t), waived = lead.run(["--waive", "Accepted for ticket 02."], { ASE_OWNER: "ke-lead", FAKE_REVIEW: report });
+  assert.equal(waived.status, 0, waived.stderr);
+  assert.equal(JSON.parse(readFileSync(join(lead.main, ".scratch/scoreboard/_untracked/feature%2Fkit-pr.json"), "utf8")).landed.waived, "Accepted for ticket 02.");
+  const failed = fixture(t), ci = failed.run([], { FAKE_FAIL: "wait" });
+  assert.equal(ci.status, 1);
+  const { landed: failedLanding } = JSON.parse(readFileSync(join(failed.main, ".scratch/scoreboard/_untracked/feature%2Fkit-pr.json"), "utf8"));
+  assert.deepEqual(failedLanding, { pr: 73, tier: "full", ci: "fail" });
+});
+
+test("a queued PR records queued without a merge; a new PR number starts a fresh landing", t => {
+  const f = fixture(t), path = join(f.main, ".scratch/scoreboard/_untracked/feature%2Fkit-pr.json");
+  mkdirSync(join(path, ".."), { recursive: true });
+  writeFileSync(path, JSON.stringify({ landed: { pr: 70, sha: "b".repeat(40), at: "2026-10-01T00:00:00.000Z", ci: "pass", tier: "docs" } } satisfies Partial<ScoreRecord>));
+  const result = f.run([], { FAKE_QUEUE: "1" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(path, "utf8")).landed, { pr: 73, tier: "full", queued: true, waived: null });
 });
 
 test("queue uses auto-rebase, skips wait, and passes owner/name/base to graphql", t => {

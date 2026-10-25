@@ -72,6 +72,8 @@ function evidence() {
   const open = round() < Number(process.env.CLEAN_AT || 0);
   const report = process.env.MINOR_REVIEW && round() >= 3 ? ${JSON.stringify(findings)}.replace("P1", "P2").replace("Standards: none", "Standards: P3: Cosmetic issue") : ${JSON.stringify(findings)};
   writeFileSync(join(folder, "result.md"), process.env.UNREADABLE_REVIEW ? "partial" : open ? report : ${JSON.stringify(clean)});
+  if (process.env.FINDINGS_JSON) writeFileSync(join(folder, "findings.json"), JSON.stringify({ model: "fake-reviewer", effort: "high",
+    findings: [], counts: { kind: { fault: 0, ticket: 0, race: 0, style: 0, unsorted: open ? 1 : 0, gap: 0 }, severity: {} } }));
   return { folder, open };
 }
 `;
@@ -135,7 +137,15 @@ if (phase === "review") {
       if (process.env.FAIL_AFTER_FOLLOWUPS) { console.log("RESULT: fail ci: deliberate failure"); process.exit(1); }
     }
     writeFileSync(".scratch/merged", "yes");
-    console.log("RESULT: ok merged #42 " + git("rev-parse", "HEAD"));
+    const sha = git("rev-parse", "HEAD");
+    // Like the real kit pr: record the full merge SHA, then print a short one.
+    if (process.env.SHORT_MERGE) {
+      const path = join(process.env.KIT_MAIN_ROOT, ".scratch/scoreboard/_untracked/04-ticket.json");
+      const record = JSON.parse(readFileSync(path, "utf8"));
+      record.landed = { pr: 42, tier: "full", ci: "pass", sha, at: "2026-10-01T00:00:00.000Z", waived: null };
+      writeFileSync(path, JSON.stringify(record));
+    }
+    console.log("RESULT: ok merged #42 " + (process.env.SHORT_MERGE ? sha.slice(0, 7) : sha));
   }
 }
 `);
@@ -191,9 +201,10 @@ process.exit(result.status ?? 1);
     writeFileSync(codex, `#!/usr/bin/env node\n${shared}
 readFileSync(0, "utf8"); call("resume");
 writeFileSync(counter, String(round() + 1));
-writeFileSync("file.txt", "preserved real fix\\n");
-writeFileSync(args[args.indexOf("-o") + 1], "Fixed the defect.\\n");
+writeFileSync("file.txt", process.env.FAKE_ROUND_TEXT ? "preserved real fix " + round() + "\\n" : "preserved real fix\\n");
+writeFileSync(args[args.indexOf("-o") + 1], process.env.FAKE_DECLINE ? "Fixed the defect.\\nDeclined:\\n- Spec: rename it — reason: out of scope\\n" : "Fixed the defect.\\n");
 console.error("model: " + args[args.indexOf("-m") + 1]); console.error("session id: builder-session");
+if (process.env.FAKE_TOKENS) console.error("tokens used\\n1,234");
 `);
     chmodSync(codex, 0o755);
     return { REAL_FIX: "1", KIT_COMMANDS_DIR: commands, ASE_SKIP_DOCTOR: "1", ASE_RESUME_POLL_MS: "10", ASE_AGENT_TIMEOUT: "10s" };
@@ -243,6 +254,59 @@ test("kit slice fixes findings in round two and never passes waive", t => {
   assert.equal(f.state().rounds, 2);
   assert.equal(f.git("rev-list", "--count", `${f.head}..HEAD`), "3");
   for (const call of f.calls()) assert.equal(call.args.includes("--waive"), false);
+});
+
+test("kit slice records the piece: phases with exit codes, rounds, review counts by kind and the merge", t => {
+  const f = fixture(t);
+  assert.equal(f.run([], { FAIL_PHASE: "review" }).status, 1);
+  const result = f.run([], { CLEAN_AT: "2" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.doesNotMatch(result.stderr, /problem: scoreboard/);
+  const folder = join(f.main, ".scratch/scoreboard/_untracked");
+  assert.deepEqual(readdirSync(folder), ["04-ticket.json"]);
+  const record = JSON.parse(readFileSync(join(folder, "04-ticket.json"), "utf8"));
+  assert.equal(record.ticket, f.ticket); assert.equal(record.title, "Test slice title");
+  assert.deepEqual(record.builder, { model: "gpt-6.1-sol", effort: "high", previousModels: [], built: "gpt-6.1-sol" });
+  assert.deepEqual(record.phases.map((phase: { name: string; exit: number }) => [phase.name, phase.exit]),
+    [["brief", 0], ["build", 0], ["commit", 0], ["review", 7], ["review", 0], ["fix", 0], ["pr", 0]]);
+  for (const phase of record.phases) assert.ok(Date.parse(phase.end) >= Date.parse(phase.start), JSON.stringify(phase));
+  assert.equal(record.rounds, 2);
+  const reviews = join(f.main, ".scratch/reviews/ke-04");
+  assert.deepEqual(record.reviews.map((review: { dir: string }) => review.dir), ["000", "001", "002"].map(name => join(reviews, name)));
+  assert.equal(record.reviews[0].counts.kind.unsorted, 1);
+  assert.equal(record.reviews[2].counts.kind.unsorted, 0);
+  assert.equal(record.cost, null); // The fake builder's log reports no cost.
+  assert.equal(record.landed.pr, 42); assert.equal(record.landed.sha, f.git("rev-parse", "HEAD"));
+  assert.ok(Date.parse(record.landed.at));
+});
+
+test("kit slice keeps the full merge SHA and time kit pr recorded when it prints a short SHA", t => {
+  const f = fixture(t), result = f.run([], { SHORT_MERGE: "1" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const { landed } = JSON.parse(readFileSync(join(f.main, ".scratch/scoreboard/_untracked/04-ticket.json"), "utf8"));
+  assert.deepEqual(landed, { pr: 42, tier: "full", ci: "pass", sha: f.git("rev-parse", "HEAD"), at: "2026-10-01T00:00:00.000Z", waived: null });
+});
+
+test("real kit fix records its round, its builder's reported tokens and the declined list on the review it answered", t => {
+  const f = fixture(t), real = f.realFix();
+  const result = f.run([], { ...real, CLEAN_AT: "1", FAKE_TOKENS: "1", FAKE_DECLINE: "1", FINDINGS_JSON: "1" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const record = JSON.parse(readFileSync(join(f.main, ".scratch/scoreboard/_untracked/04-ticket.json"), "utf8"));
+  assert.equal(record.rounds, 1);
+  assert.deepEqual(record.cost, { build: { usd: null, tokens: 1234 }, review: null });
+  const answered = record.reviews.find((review: { dir: string }) => review.dir === join(f.main, ".scratch/reviews/ke-04/000"));
+  assert.equal(answered.model, "fake-reviewer");
+  assert.deepEqual(answered.declined, [{ text: "Spec: rename it", reason: "out of scope", round: 1 }]);
+});
+
+test("kit slice keeps going when the scoreboard cannot be written, with one problem line", t => {
+  const f = fixture(t);
+  mkdirSync(join(f.main, ".scratch"), { recursive: true });
+  writeFileSync(join(f.main, ".scratch/scoreboard"), "a file where the scoreboard folder should be");
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(result.stderr.match(/^problem: scoreboard /gm)?.length, 1, result.stderr);
+  assert.match(result.stdout, /RESULT: ok slice .+ PR #42/);
 });
 
 test("kit slice leaves exhausted findings unmerged, lists them, saves the PR and resumes fix when rounds increase", t => {
@@ -483,6 +547,22 @@ test("slice switched while real kit fix's builder step failed retargets that rou
   assert.deepEqual(readdirSync(directory).filter(name => /^round-\d+\.md$/.test(name)), ["round-1.md"]);
   assert.equal(f.git("log", "-1", "--format=%s"), "Review fixes round 1");
   assert.match(f.git("log", "-1", "--format=%B"), /Co-Authored-By: other-model <noreply@openai\.com>/);
+  // Real kit fix and the slice write the same record: one round, the switched builder.
+  const record = JSON.parse(readFileSync(join(f.main, ".scratch/scoreboard/_untracked/04-ticket.json"), "utf8"));
+  assert.equal(record.rounds, 1);
+  assert.deepEqual(record.builder, { model: "other-model", effort: "high", previousModels: ["gpt-6.1-sol"], built: "gpt-6.1-sol" });
+});
+
+test("a standalone kit fix with another builder updates the record's builder and keeps who built it", t => {
+  const f = fixture(t), real = f.realFix();
+  const sliced = f.run([], { ...real, CLEAN_AT: "3", FAKE_ROUND_TEXT: "1" }, ["--ticket", f.ticket, "--builder", "sol", "--rounds", "1", "--no-pr"]);
+  assert.equal(sliced.status, 1, sliced.stdout + sliced.stderr);
+  const fixed = spawnSync("bash", [kit, "fix", "--builder", "gpt-6-luna", "--ticket", f.ticket], {
+    cwd: f.root, env: { ...f.env, ...real, CLEAN_AT: "3", FAKE_ROUND_TEXT: "1" }, encoding: "utf8", timeout: 20_000 });
+  assert.match(fixed.stdout, /RESULT: fail fix 1 open findings/, fixed.stdout + fixed.stderr);
+  const record = JSON.parse(readFileSync(join(f.main, ".scratch/scoreboard/_untracked/04-ticket.json"), "utf8"));
+  assert.equal(record.rounds, 2);
+  assert.deepEqual(record.builder, { model: "gpt-6-luna", effort: "high", previousModels: ["gpt-6.1-sol"], built: "gpt-6.1-sol" });
 });
 
 test("kit slice resumes with another effort and keeps refusing a different ticket", t => {
@@ -553,6 +633,8 @@ test("queued slice waits for the actual merged SHA without reopening the PR", t 
   assert.ok(f.state().finished.includes("pr"));
   assert.equal(f.run().status, 0);
   assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "pr", "merge", "merge"]);
+  const { landed } = JSON.parse(readFileSync(join(f.main, ".scratch/scoreboard/_untracked/04-ticket.json"), "utf8"));
+  assert.equal(landed.pr, 42); assert.equal(landed.sha, "a".repeat(40)); assert.ok(Date.parse(landed.at));
 });
 
 for (const failure of ["lookup", "timeout"]) test(`queued slice resumes its merge wait after ${failure} without reopening the PR`, t => {

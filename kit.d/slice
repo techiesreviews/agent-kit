@@ -6,7 +6,7 @@ import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterFixRounds, blockingFindings, completedFixRounds, FIX_ROUNDS, openFindings, reviewCoversHead } from "../review-findings.mjs";
 
-const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv, commitBuilderWork, builderAuthor } = await import(
+const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv, commitBuilderWork, builderAuthor, kitScore, scoreCost, scoreReview } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const usage = "Usage: kit slice --ticket FILE --builder MODEL [--effort high] [--rounds 3] [--no-pr]\nResume saved phases under .scratch/kit-slice/<ticket-slug>/.\nQueued PRs are awaited for up to 2h; reruns resume the wait.\nOverrides: ASE_SLICE_AGENT, ASE_SLICE_KIT, ASE_SLICE_GH; ASE_SLICE_MERGE_TIMEOUT_MS, ASE_SLICE_MERGE_POLL_MS.\n";
@@ -32,7 +32,7 @@ function options(args) {
 }
 
 async function slice(args) {
-  let phase = "brief", log, state, directory;
+  let phase = "brief", log, state, directory, started, exit, ended;
   try {
     let flags;
     try { flags = options(args); } catch (error) { process.stderr.write(usage); throw error; }
@@ -78,13 +78,33 @@ async function slice(args) {
       writeFileSync(`${statePath}.tmp`, JSON.stringify(state, null, 2) + "\n");
       renameSync(`${statePath}.tmp`, statePath);
     };
+    // The scoreboard record: builder and rounds on every write, plus what this phase adds.
+    const score = change => kitScore({ ticket, branch, root }, record => {
+      // built is the model that did the build; model is the current builder, which fix rounds use.
+      record.builder = { model: state.model, effort: state.effort, previousModels: state.previousModels ?? [], built: state.buildModel ?? null };
+      record.rounds = Math.max(record.rounds, state.rounds);
+      change(record);
+    });
+    ended = code => score(record => {
+      record.phases.push({ name: phase, start: started, end: new Date().toISOString(), exit: code });
+      if (code) return;
+      if (phase === "build" && state.build) scoreCost(record, state.build);
+      if (["review", "fix"].includes(phase) && state.review) scoreReview(record, state.review);
+      if (phase === "pr" && state.sha) {
+        // kit pr prints a short SHA after recording the full one; keep its SHA and time.
+        const same = typeof record.landed?.sha === "string" && record.landed.sha.startsWith(state.sha);
+        record.landed = { ...record.landed, pr: Number(state.pr), sha: same ? record.landed.sha : state.sha,
+          at: same && record.landed.at || new Date().toISOString() };
+      }
+    });
     const complete = detail => {
       if (!state.finished.includes(phase)) state.finished.push(phase);
       save();
+      ended(0);
       console.log(`slice: ${phase} ok${detail ? ` ${detail}` : ""}`);
     };
     const begin = name => {
-      phase = name; log = join(directory, `${name}.log`);
+      phase = name; log = join(directory, `${name}.log`); started = new Date().toISOString(); exit = 0;
       if (!existsSync(log)) writeFileSync(log, "");
     };
     const assertBranch = () => {
@@ -108,6 +128,7 @@ async function slice(args) {
           child.once("close", status => { clear(); accept(status ?? 1); });
         });
       } finally { closeSync(fd); }
+      exit = code;
       assertBranch();
       return { code, output: readFileSync(log, "utf8").slice(previous.length) };
     }
@@ -242,10 +263,12 @@ async function slice(args) {
         state.head = git("rev-parse", "HEAD"); state.reviewedHead = state.head; state.rounds++;
         delete state.pendingFix;
         save(); open = findings();
+        score(record => scoreReview(record, state.review));
       }
       if (stopping(open).length) {
         if (!flags.noPr) {
           // Open/update the PR, explicitly prohibit merging even if its review changes.
+          const fixStarted = started;
           begin("pr");
           const result = await execute(kit, ["pr", "--ticket", flags.ticket, "--no-merge"]);
           const refused = /^RESULT: fail pr #(\d+) review has [1-9]\d* open findings \(.+\)$/m.exec(result.output);
@@ -256,7 +279,7 @@ async function slice(args) {
             if (!opened) throw new Error("PR did not identify an opened, unmerged PR; see phase log");
             state.pr = opened[1];
           }
-          save(); phase = "fix";
+          save(); phase = "fix"; started = fixStarted;
         }
         // Preserve command output; print only findings in the failure digest.
         log = join(directory, "findings.log");
@@ -289,6 +312,7 @@ async function slice(args) {
     kitResult("ok", `slice ${flags.ticket} ${flags.noPr ? `reviewed ${findings().length ? "with follow-ups" : "clean"} ${state.head}` : `PR #${state.pr} ${state.sha}`}`);
     return 0;
   } catch (error) {
+    if (ended && started) ended(exit || 1);
     console.log(`slice: ${phase} fail`);
     if (log && existsSync(log)) {
       for (const line of readFileSync(log, "utf8").trimEnd().split(/\r?\n/).filter(line => !line.startsWith("RESULT:")).slice(-15)) console.error(`  ${line}`);

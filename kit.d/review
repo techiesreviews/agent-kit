@@ -8,7 +8,7 @@ import { parseAgentArgs, releaseReviewBudget, reserveReviewBudget } from "../age
 import { reviewBrief, reviewScope, ticketReviewBrief } from "../review-brief.mjs";
 import { countsLine, findingsRecord } from "../review-findings.mjs";
 
-const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv } = await import(
+const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv, kitScore, scoreReview } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const usage = "Usage: kit review [--base REF | --commit SHA] [--ticket FILE] [--pr N]\nDefault scope: --base origin/dev. Model: ASE_REVIEW_MODEL or claude-opus-5-5 (claude-*, grok-* or Codex).\n" +
@@ -41,11 +41,12 @@ function evidenceDirectory() {
 }
 
 async function review(args) {
-  let evidence = "none", temporary, status = 1, reason = "invalid arguments", label, budget, env, model, effort, reviewedHead;
+  let evidence = "none", temporary, status = 1, reason = "invalid arguments", label, budget, env, model, effort, reviewedHead, ticket;
   const ledger = join(kitMainRoot(), ".scratch/review-budget.json");
   try {
     status = 2;
     const flags = options(args);
+    ticket = flags.ticket;
     status = 1;
     const root = kitRoot();
     env = nodeEnv();
@@ -126,6 +127,7 @@ async function review(args) {
         writeFileSync(join(evidence, "findings.json.tmp"), JSON.stringify(record, null, 2) + "\n");
         renameSync(join(evidence, "findings.json.tmp"), join(evidence, "findings.json"));
         console.log(countsLine(record));
+        kitScore({ ticket }, score => scoreReview(score, evidence));
       }
     } catch (error) {
       status = 1;

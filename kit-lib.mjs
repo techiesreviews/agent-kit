@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { accessSync, constants, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { findingsRecord } from "./review-findings.mjs";
 
 const nodeError = "kit: no Node >=24 found (system, npx cache or nvm)";
 const oneLine = (text) => String(text).replace(/[\n\r]/g, " ");
@@ -225,4 +226,167 @@ export function commitBuilderWork({ root, branch, head, message, author, env = p
     assertScope(next);
     return next;
   } finally { rmSync(directory, { recursive: true, force: true }); }
+}
+
+const TOKEN_FIELDS = ["input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens",
+  "inputTokens", "outputTokens", "cacheCreationInputTokens", "cacheReadInputTokens"];
+const tokenSum = usage => TOKEN_FIELDS.reduce((total, field) => total + (Number.isFinite(usage?.[field]) ? usage[field] : 0), 0);
+
+/** Read what a CLI run log reports it cost: Claude/Grok JSON results and Codex "tokens used" lines, summed; else null. */
+export function runCost(log) {
+  let usd = null, tokens = null;
+  const add = (total, value) => (total ?? 0) + value;
+  for (const line of String(log).split(/\r?\n/)) {
+    if (!line.startsWith("{")) continue;
+    let result;
+    try { result = JSON.parse(line); } catch { continue; }
+    if (!result || typeof result !== "object") continue;
+    if (Number.isFinite(result.total_cost_usd)) usd = add(usd, result.total_cost_usd);
+    // modelUsage also counts helper models; usage covers the main model only.
+    const models = result.modelUsage && typeof result.modelUsage === "object" ? Object.values(result.modelUsage) : [];
+    if (models.length) tokens = add(tokens, models.reduce((total, usage) => total + tokenSum(usage), 0));
+    else if (result.usage && typeof result.usage === "object") tokens = add(tokens, tokenSum(result.usage));
+  }
+  for (const match of String(log).matchAll(/^tokens used\b[:\s]*([\d,]+)[ \t]*$/gim)) tokens = add(tokens, Number(match[1].replaceAll(",", "")));
+  return usd === null && tokens === null ? null : { usd, tokens };
+}
+
+/** The scoreboard map of a ticket: its docs/wayfinder/<map>/ folder, else _untracked. */
+export function scoreMap(ticket) {
+  return (ticket && /(?:^|\/)docs\/wayfinder\/([^/]+)\//.exec(ticket)?.[1]) || "_untracked";
+}
+
+function ticketFacts(file, root) {
+  const text = readFileSync(file, "utf8"), front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1] ?? "";
+  const field = name => new RegExp(`^${name}:\\s*(.+)$`, "m").exec(front)?.[1].trim().replace(/^(["'])(.*)\1$/, "$2") ?? null;
+  // The build README's table row for this ticket names its size in the column headed Size.
+  // A table's header is the row just above its separator row; it holds until the next table.
+  let size = null, header = [], previous = [];
+  try {
+    for (const line of readFileSync(join(dirname(dirname(file)), "README.md"), "utf8").split(/\r?\n/)) {
+      if (!line.startsWith("|")) { previous = []; continue; }
+      if (/^\|[\s|:-]+\|$/.test(line)) { header = previous; continue; }
+      const cells = line.split("|").slice(1, -1).map(cell => cell.trim());
+      if (!line.includes(`tickets/${basename(file)})`)) { previous = cells; continue; }
+      size = cells[header.indexOf("Size")] || null;
+      break;
+    }
+  } catch { /* No build README: no size. */ }
+  return { ticket: relative(root, file), title: field("title"), kind: [field("type"), size].filter(Boolean).join(" ") || null };
+}
+
+let scoreFailed = false; // One problem line per command, however many writes fail.
+
+/**
+ * Sum reported costs: usd over the runs that priced themselves, with partial: true when some runs
+ * reported tokens only (their dollars are unknown, so usd is a floor); null for no runs.
+ */
+export function costTotal(costs) {
+  const known = costs.filter(Boolean);
+  if (!known.length) return null;
+  const sum = key => known.some(cost => Number.isFinite(cost[key])) ? known.reduce((total, cost) => total + (Number.isFinite(cost[key]) ? cost[key] : 0), 0) : null;
+  const usd = sum("usd"), partial = usd !== null && known.some(cost => !Number.isFinite(cost.usd) || cost.partial);
+  return { usd, tokens: sum("tokens"), ...(partial ? { partial: true } : {}) };
+}
+
+const alive = pid => {
+  try { process.kill(pid, 0); return true; } catch (error) { return error.code === "EPERM"; }
+};
+
+// The lock folder names its owner; one whose owner died, or older than ten waits, is taken over.
+function takeLock(lock) {
+  const wait = Number(process.env.ASE_SCORE_LOCK_MS || 5_000), bound = Number.isFinite(wait) && wait >= 0 ? wait : 5_000;
+  const deadline = Date.now() + bound;
+  for (;;) {
+    let made = false;
+    try {
+      mkdirSync(lock); made = true;
+      writeFileSync(join(lock, "owner"), `${process.pid} ${Date.now()}\n`);
+      return;
+    } catch (error) {
+      // An owner that cannot be written must not leave an ownerless lock behind.
+      if (made) { rmSync(lock, { recursive: true, force: true }); throw error; }
+      if (error.code !== "EEXIST") throw error;
+    }
+    let owner = null, seen;
+    try { owner = readFileSync(join(lock, "owner"), "utf8"); } catch { /* Not written yet, or just released. */ }
+    try { seen = statSync(lock); } catch { continue; }
+    const pid = Number(owner?.split(" ")[0]);
+    if ((owner !== null && Number.isSafeInteger(pid) && pid > 0 && !alive(pid)) || Date.now() - seen.mtimeMs > 10 * Math.max(bound, 1_000)) {
+      // Move the stale lock aside, then remove it only if it is the folder judged stale (same inode);
+      // a fresh lock taken meanwhile is put back when its place is still free.
+      const aside = `${lock}.stale.${process.pid}.${Date.now()}`;
+      try { renameSync(lock, aside); } catch { continue; }
+      let moved;
+      try { moved = statSync(aside); } catch { continue; }
+      if (moved.ino !== seen.ino) {
+        try { if (!existsSync(lock)) { renameSync(aside, lock); continue; } } catch { /* Its place was taken. */ }
+      }
+      rmSync(aside, { recursive: true, force: true });
+      continue;
+    }
+    if (Date.now() > deadline) throw new Error(`lock ${lock} is held; remove it if no kit command is running`);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+  }
+}
+
+/**
+ * Update one piece's scoreboard record in the main root .scratch/scoreboard/<map>/<ticket-slug>.json
+ * (no ticket: _untracked/<branch>.json) with change(record), written atomically. Never throws: a
+ * failure prints one `problem: scoreboard …` line per command, so recording cannot fail the command it rides on.
+ */
+export function kitScore({ ticket, branch, root = kitRoot() }, change) {
+  try {
+    const file = ticket && resolve(root, ticket);
+    const name = file ? basename(file, ".md") : encodeURIComponent(branch || git(["-C", root, "branch", "--show-current"]) || "unknown");
+    const path = join(kitMainRoot(), ".scratch/scoreboard", scoreMap(file && relative(root, file)), `${name}.json`);
+    mkdirSync(dirname(path), { recursive: true });
+    // Another worktree (a lead's second-opinion review) may write the same record: lock read to rename.
+    const lock = `${path}.lock`;
+    takeLock(lock);
+    try {
+      let saved = {};
+      try { saved = JSON.parse(readFileSync(path, "utf8")); } catch (error) { if (error.code !== "ENOENT") throw error; }
+      const record = { ticket: null, title: null, kind: null, builder: null, phases: [], rounds: 0, reviews: [], cost: null, costs: {}, landed: null,
+        ...saved, ...(file ? ticketFacts(file, root) : {}) };
+      change(record);
+      // cost totals what each run reported (costs, keyed by run folder), builder and review apart; never guessed.
+      const runs = Object.values(record.costs).filter(Boolean);
+      const part = role => costTotal(runs.filter(cost => (cost.role ?? "build") === role));
+      record.cost = runs.length ? { build: part("build"), review: part("review") } : null;
+      const temporary = `${path}.${process.pid}.tmp`;
+      try {
+        writeFileSync(temporary, JSON.stringify(record, null, 2) + "\n");
+        renameSync(temporary, path);
+      } finally { rmSync(temporary, { force: true }); }
+    } finally { rmSync(lock, { recursive: true, force: true }); }
+  } catch (error) {
+    if (!scoreFailed) console.error(`problem: scoreboard ${oneLine(error.message)}`);
+    scoreFailed = true;
+  }
+}
+
+/** Record the cost a run folder's run.log reports, as role build or review, replacing that folder's earlier reading. */
+export function scoreCost(record, folder, role = "build") {
+  let log;
+  try { log = readFileSync(join(folder, "run.log"), "utf8"); } catch { return; }
+  const cost = runCost(log);
+  if (cost) record.costs[folder] = { role, ...cost };
+}
+
+/** Record or refresh one review from its evidence folder: findings.json, else counts read from result.md. */
+export function scoreReview(record, folder) {
+  let found;
+  try { found = JSON.parse(readFileSync(join(folder, "findings.json"), "utf8")); }
+  catch {
+    let report = "";
+    try { report = readFileSync(join(folder, "result.md"), "utf8"); } catch { /* Missing evidence reads as unreadable. */ }
+    found = findingsRecord(report, {});
+  }
+  const entry = { dir: folder, model: found.model ?? null, effort: found.effort ?? null,
+    counts: found.unreadable ? null : found.counts, ...(found.unreadable ? { unreadable: true } : {}),
+    declined: Array.isArray(found.declined) ? found.declined : [] };
+  const index = record.reviews.findIndex(review => review.dir === folder);
+  if (index < 0) record.reviews.push(entry); else record.reviews[index] = entry;
+  scoreCost(record, folder, "review");
 }
