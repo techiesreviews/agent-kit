@@ -14,6 +14,7 @@ type Sweep = {
   parseArgs(args: string[]): { since: string };
   handTyped(text: string): Counts;
   unitOutcomes(log: string): [string, string[]][];
+  specOutcomes(report: unknown): [string, string[]][];
   flippedTests(runs: { worktree: string; path: string; time: number; outcomes: [string, string[]][] }[]): { name: string; times: number; worktrees: Set<string> }[];
 };
 const sweep: Sweep = await import(pathToFileURL(script).href);
@@ -48,9 +49,9 @@ function repository(t: TestContext) {
   return { dir, repo };
 }
 
-function run(repo: string, args: string[] = []) {
-  return spawnSync("bash", [kit, "sweep", ...args], { cwd: repo, encoding: "utf8", timeout: 20_000,
-    env: { ...process.env, KIT_ROOT: repo, KIT_MAIN_ROOT: repo, ASE_SKIP_DOCTOR: "1" } });
+function run(repo: string, args: string[] = [], root = repo) {
+  return spawnSync("bash", [kit, "sweep", ...args], { cwd: root, encoding: "utf8", timeout: 20_000,
+    env: { ...process.env, KIT_ROOT: root, KIT_MAIN_ROOT: repo, ASE_SKIP_DOCTOR: "1" } });
 }
 
 const bundleOf = (output: string) => {
@@ -85,6 +86,16 @@ test("each number in the bundle comes from the fixture repo, logs, records and f
   write(join(repo, "scripts/data.json"), "{}\n".repeat(50));
   write(join(repo, "scripts/blob"), "a\0b\n".repeat(50));
   commit(repo, now - 10 * day, "code");
+  // Corrections count by the commit that adds them, not the date they carry.
+  const [d0, d1, d3, d8, d9] = [0, 1, 3, 8, 9].map(days => localDate(new Date(now - days * day)));
+  const feedback = join(repo, "docs/wayfinder/demo/build/feedback.md");
+  const log = (...entries: string[]) => write(feedback, ["# Feedback: demo", "", "## Feedback", "", ...entries, ""].join("\n"));
+  const lastWeek = (fix: string) => `- ${d8} · workflow · Last week · after release: no · fix: ${fix}`;
+  log(lastWeek("open"));
+  commit(repo, now - 8 * day, "last week's feedback");
+  // Added this week: a line dated last week that landed late, and last week's line with its fix filled in.
+  log(`- ${d1} · fault · Save lost a page · after release: yes · fix: open`, `- ${d3} · too-much · Too many hints · after release: no · fix: PR #4`,
+    `- ${d9} · felt-wrong · Landed late · after release: no · fix: open`, lastWeek("PR #5"));
   write(join(repo, "src/main.ts"), lines(5));
   write(join(repo, "src/new.ts"), lines(4));
   write(join(repo, "src/a.css"), secondCss);
@@ -122,14 +133,8 @@ test("each number in the bundle comes from the fixture repo, logs, records and f
   write(join(records, "03-c.json"), JSON.stringify({ phases: [{ name: "review", start: new Date(now - day - 60_000).toISOString(), end: new Date(now - day).toISOString() }],
     reviews: [{ dir: join(repo, "reviews/plain"), counts: counts({ style: 1 }, { P3: 1 }) }] }));
 
-  // Whole days: the window's first day counts, today waits for next week's sweep.
-  const [d0, d1, d3, d7, d30] = [0, 1, 3, 7, 30].map(days => localDate(new Date(now - days * day)));
-  write(join(repo, "docs/wayfinder/demo/build/feedback.md"), ["# Feedback: demo", "", "## Feedback", "",
-    `- ${d0} · workflow · Said today · after release: no · fix: open`,
-    `- ${d1} · fault · Save lost a page · after release: yes · fix: open`,
-    `- ${d7} · felt-wrong · Edge day · after release: no · fix: open`,
-    `- ${d3} · too-much · Too many hints · after release: no · fix: PR #4`,
-    `- ${d30} · workflow · Old note · after release: no · fix: open`, ""].join("\n"));
+  // Not committed yet: next week's sweep counts it once it lands.
+  writeFileSync(feedback, readFileSync(feedback, "utf8").replace("## Feedback\n\n", `## Feedback\n\n- ${d0} · workflow · Not committed · after release: no · fix: open\n`));
 
   const result = run(repo);
   assert.equal(result.status, 0, result.stdout + result.stderr);
@@ -147,16 +152,30 @@ test("each number in the bundle comes from the fixture repo, logs, records and f
   assert.deepEqual(section(text, "Known failures (tests/known-failures.json)"), ["- native-save/x.spec.ts › loads · flaky · slow CI"]);
   assert.deepEqual(section(text, "Review findings by kind"), ["- 2 reviews of 2 pieces, 1 findings declined", "- by kind: fault 2, ticket 1, style 1",
     "- by severity: P2 2, P3 2", "- demo/01-a: fault 2, ticket 1 (1 review)", "- demo/03-c: style 1 (1 review)"]);
-  assert.deepEqual(section(text, "Lex's corrections"), ["- 3 corrections; by kind: fault 1, too-much 1, felt-wrong 1",
-    `- ${d1} · fault · Save lost a page · demo · after release: yes · fix: open`, `- ${d3} · too-much · Too many hints · demo · after release: no · fix: PR #4`,
-    `- ${d7} · felt-wrong · Edge day · demo · after release: no · fix: open`]);
+  const corrections = (...extra: string[]) => [`- ${d1} · fault · Save lost a page · demo · after release: yes · fix: open`,
+    `- ${d3} · too-much · Too many hints · demo · after release: no · fix: PR #4`, ...extra, `- ${d9} · felt-wrong · Landed late · demo · after release: no · fix: open`];
+  assert.deepEqual(section(text, "Lex's corrections"), ["- 3 corrections committed in the window; by kind: fault 1, too-much 1, felt-wrong 1", ...corrections()]);
   assert.deepEqual(section(text, "Tech-debt issues untouched 30+ days"), ["- 01-old.md: Old debt · needs-triage · untouched 40 days"]);
-  assert.equal(execFileSync("git", ["-C", repo, "status", "--porcelain", "--untracked-files=no"], { encoding: "utf8" }), "", "the sweep changes nothing tracked");
+  assert.equal(execFileSync("git", ["-C", repo, "status", "--porcelain", "--untracked-files=no"], { encoding: "utf8" }), " M docs/wayfinder/demo/build/feedback.md\n",
+    "the sweep changes nothing tracked beyond the fixture's own uncommitted line");
 
   // A removed worktree's runs are gone, and the section says so.
   execFileSync("git", ["-C", repo, "worktree", "remove", "--force", w2]);
   assert.deepEqual(section(bundleOf(run(repo).stdout).text, "Tests that failed then passed in kit pr runs"), ["- 2 kit pr runs read from 1 live worktree, 3 tests flipped",
     flipNote, "- native-save/x.spec.ts › loads: 1× in repo", "- native-save/x.spec.ts › saves: 1× in repo", "- unit › adds one: 1× in repo"]);
+
+  // Last week's sweep, run on last week's checkout, counted last week's line and not the late one: each counts once.
+  const lastCheckout = join(dir, "last-week");
+  execFileSync("git", ["-C", repo, "worktree", "add", "-q", "--detach", lastCheckout, "HEAD~1"]);
+  assert.deepEqual(section(bundleOf(run(repo, ["--since", "14d"], lastCheckout).stdout).text, "Lex's corrections"),
+    ["- 1 corrections committed in the window; by kind: workflow 1", `- ${d8} · workflow · Last week · demo · after release: no · fix: open`]);
+
+  // A date starts at its local midnight; the code commit is the last one before it, and last week's line now counts.
+  const dated = bundleOf(run(repo, ["--since", d8]).stdout).text;
+  const code = execFileSync("git", ["-C", repo, "rev-parse", "HEAD~2"], { encoding: "utf8" }).slice(0, 9);
+  assert.match(dated, new RegExp(`^Since ${new Date(`${d8}T00:00:00`).toISOString().replace(/\./g, "\\.")} \\(--since ${d8}\\); code at \\w{9} against ${code}, the last commit before the window\\.`, "m"));
+  assert.deepEqual(section(dated, "Lex's corrections"), ["- 4 corrections committed in the window; by kind: fault 1, too-much 1, workflow 1, felt-wrong 1",
+    ...corrections(`- ${d8} · workflow · Last week · demo · after release: no · fix: PR #5`)]);
 
   // A wider window reaches the older run, review and correction; before the first commit nothing grew.
   const wide = section(bundleOf(run(repo, ["--since", "30d"]).stdout).text, "Review findings by kind");
@@ -190,6 +209,12 @@ test("hand-typed values: raw px and timings as kit ux counts them, radii and sha
   assert.deepEqual(sweep.unitOutcomes("✔ a (1ms)\n  ✖ b\n✖ failing tests:\n✖ b\n"), [["unit › a", ["pass"]], ["unit › b", ["fail"]]]);
 });
 
+test("nested describe groups name a spec by file and group; a flaky test failed then passed", () => {
+  const report = { suites: [{ title: "native-save/x.spec.ts", file: "native-save/x.spec.ts", suites: [{ title: "group",
+    specs: [{ title: "t", tests: [{ status: "flaky" }] }, { title: "skipped", tests: [{ status: "skipped" }] }] }] }] };
+  assert.deepEqual(sweep.specOutcomes(report), [["native-save/x.spec.ts › group > t", ["fail", "pass"]]]);
+});
+
 test("unit tests are matched by name: one name failing in one file and passing in another counts as one flip", () => {
   // The spec reporter prints no file per test, so two files' "parses" are one test to the sweep (the bundle says so).
   const runs = [{ worktree: "/w", path: "/w/.scratch/pr/1", time: 1, outcomes: sweep.unitOutcomes("✖ parses (1ms)\n") },
@@ -201,7 +226,7 @@ test("--since takes days or a date; anything else is a usage error", (t) => {
   assert.deepEqual(sweep.parseArgs([]), { since: "7d" });
   assert.deepEqual(sweep.parseArgs(["--since", "14d"]), { since: "14d" });
   assert.deepEqual(sweep.parseArgs(["--since", "2026-10-01"]), { since: "2026-10-01" });
-  for (const args of [["--since", "0d"], ["--since", "2026-13-01"], ["--since"], ["--since", "7d", "--since", "8d"], ["extra"]])
+  for (const args of [["--since", "0d"], ["--since", "2026-13-01"], ["--since", "2026-02-31"], ["--since"], ["--since", "7d", "--since", "8d"], ["extra"]])
     assert.throws(() => sweep.parseArgs(args), /invalid/, args.join(" "));
   const { repo } = repository(t);
   const result = run(repo, ["--since", "week"]);

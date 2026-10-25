@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { loadFeedback } from "../tickets.mjs";
+import { parseFeedbackLine } from "../tickets.mjs";
 import { composeBundle, cssCounts } from "./ux";
 
 const { kitRoot, kitMainRoot, kitResult } = await import(
@@ -18,13 +18,20 @@ Changes nothing: reads the checkout's HEAD and the week's records, then writes m
 src/main.ts lines, hand-typed CSS values (raw px spacing, raw radii, bespoke shadows, hand-timed
 transitions) and their change, tests that failed then passed in kit pr runs (the .scratch/pr/
 logs of worktrees that still exist) and tests/known-failures.json, review findings by kind
-(scoreboard records), Lex's corrections dated from the window's first day up to yesterday (the
-checkout's build feedback logs) and open tech-debt issues untouched for 30 days.
+(scoreboard records), Lex's corrections added to build feedback logs by the commits since the
+window started and open tech-debt issues untouched for 30 days.
 `;
 const day = 86_400_000;
 // Code files by extension, plus extensionless scripts such as the kit commands.
 const codeFile = /^(src|worker|shared|scripts)\/(.*\/)?([^/.]+|[^/]+\.(ts|tsx|js|mjs|css|html|sh))$/;
 const cssFile = /^src\/.*\.css$/;
+const emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+// A date must survive a round trip, so a day past its month's end is refused, not rolled over.
+function realDate(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  return Boolean(match) && new Date(Date.UTC(+match[1], match[2] - 1, +match[3])).toISOString().slice(0, 10) === value;
+}
 
 export function parseArgs(args) {
   let since;
@@ -33,7 +40,7 @@ export function parseArgs(args) {
     else throw new Error(`invalid argument: ${args[i]}`);
   }
   since ??= "7d";
-  const days = /^[1-9]\d{0,2}d$/.test(since), date = /^\d{4}-\d{2}-\d{2}$/.test(since) && Number.isFinite(Date.parse(`${since}T00:00:00`));
+  const days = /^[1-9]\d{0,2}d$/.test(since), date = realDate(since);
   if (!days && !date) throw new Error(`invalid --since: ${since} (use Nd or YYYY-MM-DD)`);
   return { since };
 }
@@ -60,8 +67,9 @@ export function lineCount(text) {
 /** Every code file at a ref as text, read in one git call; an empty ref is a tree with no files. */
 function readTree(root, ref) {
   if (!ref) return new Map();
-  const files = git(root, ["ls-tree", "-r", "-z", "--name-only", ref, "--", "src", "worker", "shared", "scripts"])
-    .toString("utf8").split("\0").filter(file => codeFile.test(file));
+  // Blobs only: a gitlink (submodule) has no content to read.
+  const files = git(root, ["ls-tree", "-r", "-z", ref, "--", "src", "worker", "shared", "scripts"]).toString("utf8").split("\0")
+    .map(entry => /^\d+ blob \w+\t(.+)$/s.exec(entry)?.[1]).filter(file => file && codeFile.test(file));
   const output = git(root, ["cat-file", "--batch"], files.map(file => `${ref}:${file}\n`).join("")), texts = new Map();
   let offset = 0;
   for (const file of files) {
@@ -239,17 +247,29 @@ export function reviewSection(main, start) {
 }
 
 /**
- * Lex's corrections in the checkout's build feedback logs, by whole days: from the window's first day
- * up to yesterday, so weekly windows neither repeat nor skip the sweep's own day.
+ * Lex's corrections added to any build/feedback.md between the last commit before the window and HEAD.
+ * Commit boundaries keep weekly bundles apart however late a line lands; a line whose fix was filled in
+ * later (removed and added again with the same date, kind and text) is not new.
  */
-export function correctionsSection(root, start, now = Date.now()) {
-  const folder = join(root, "docs/wayfinder");
-  const { entries } = existsSync(folder) ? loadFeedback(folder, { cwd: root }) : { entries: [] };
-  const recent = entries.filter(entry => entry.date >= localDate(start) && entry.date < localDate(new Date(now))).sort((a, b) => b.date.localeCompare(a.date) || a.file.localeCompare(b.file));
+export function correctionsSection(root, then, head) {
+  const diff = git(root, ["diff", "--no-renames", "--no-ext-diff", "-U0", then || emptyTree, head, "--", ":(glob)docs/wayfinder/*/build/feedback.md"]).toString("utf8");
+  const added = [], removed = new Set();
+  let file = "";
+  for (const line of diff.split("\n").map(text => text.replace(/\r$/, ""))) {
+    const header = /^diff --git a\/.+ b\/(.+)$/.exec(line);
+    if (header) { file = header[1]; continue; }
+    if (!/^[+-](?![+-]{2} )/.test(line)) continue;
+    const entry = parseFeedbackLine(line.slice(1));
+    if (!entry) continue;
+    const key = [file, entry.date, entry.kind, entry.text].join("\0");
+    if (line[0] === "-") removed.add(key);
+    else added.push({ ...entry, file, key });
+  }
+  const recent = added.filter(entry => !removed.has(entry.key)).sort((a, b) => b.date.localeCompare(a.date) || a.file.localeCompare(b.file));
   const kinds = {};
   for (const entry of recent) kinds[entry.kind] = (kinds[entry.kind] ?? 0) + 1;
-  return { title: "Lex's corrections", priority: 8, lines: [`- ${recent.length} corrections; by kind: ${countText(kinds)}`,
-    ...recent.map(entry => `- ${entry.date} · ${entry.kind} · ${entry.text} · ${basename(entry.file.slice(0, -"/build/feedback.md".length))} · after release: ${entry.afterRelease} · fix: ${entry.fix}`)] };
+  return { title: "Lex's corrections", priority: 8, lines: [`- ${recent.length} corrections committed in the window; by kind: ${countText(kinds)}`,
+    ...recent.map(entry => `- ${entry.date} · ${entry.kind} · ${entry.text} · ${entry.file.split("/")[2]} · after release: ${entry.afterRelease} · fix: ${entry.fix}`)] };
 }
 
 /** Tech-debt issues not closed or wontfix whose file no commit touched for 30 days. */
@@ -257,7 +277,7 @@ export function staleDebtSection(root, now = Date.now()) {
   const folder = join(root, "docs/work/tech-debt/issues"), stale = [];
   for (const name of existsSync(folder) ? readdirSync(folder).filter(name => name.endsWith(".md")).sort() : []) {
     const text = readFileSync(join(folder, name), "utf8");
-    const status = /^status:\s*(\S+)/m.exec(text)?.[1] ?? "open", title = /^title:\s*(.+)$/m.exec(text)?.[1]?.trim() ?? name;
+    const status = /^status:\s*(\S+)/m.exec(text)?.[1] ?? "open", title = /^title:\s*(.+)$/m.exec(text)?.[1]?.trim().replace(/^(["'])(.*)\1$/, "$2") ?? name;
     if (["closed", "wontfix"].includes(status)) continue;
     const touched = Date.parse(gitText(root, ["log", "-1", "--format=%cI", "--", join("docs/work/tech-debt/issues", name)])) || now;
     const days = Math.floor((now - touched) / day);
@@ -281,7 +301,7 @@ function sweep(args) {
       ...codeSections(readTree(root, head), readTree(root, then)),
       ...testSections(prRuns(trees, start), Array.isArray(known) ? known : [], trees.length),
       reviewSection(main, start),
-      correctionsSection(root, start, now),
+      correctionsSection(root, then, head),
       staleDebtSection(root, now),
     ];
     const date = localDate(new Date(now));
