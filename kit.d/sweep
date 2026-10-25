@@ -1,0 +1,301 @@
+#!/usr/bin/env node
+// kit: gather the week's numbers for the weekly sweep into one small bundle; changes nothing
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { loadFeedback } from "../tickets.mjs";
+import { composeBundle, cssCounts } from "./ux";
+
+const { kitRoot, kitMainRoot, kitResult } = await import(
+  pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
+);
+
+export const bundleLimit = 40_000;
+const usage = `Usage: kit sweep [--since 7d|Nd|YYYY-MM-DD]
+Changes nothing: reads the checkout's HEAD and the week's records, then writes main root
+.scratch/sweep/<date>/bundle.md (under ${bundleLimit} bytes): biggest source files and their growth,
+src/main.ts lines, hand-typed CSS values (raw px spacing, raw radii, bespoke shadows, hand-timed
+transitions) and their change, tests that failed then passed in kit pr runs (every worktree's
+.scratch/pr/ logs) and tests/known-failures.json, review findings by kind (scoreboard records),
+Lex's corrections (build feedback logs) and open tech-debt issues untouched for 30 days.
+`;
+const day = 86_400_000;
+const codeFile = /^(src|worker|shared|scripts)\/.*\.(ts|tsx|js|mjs|css|html)$/;
+const cssFile = /^src\/.*\.css$/;
+
+export function parseArgs(args) {
+  let since;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--since" && args[i + 1] !== undefined && since === undefined) since = args[++i];
+    else throw new Error(`invalid argument: ${args[i]}`);
+  }
+  since ??= "7d";
+  const days = /^[1-9]\d{0,2}d$/.test(since), date = /^\d{4}-\d{2}-\d{2}$/.test(since) && Number.isFinite(Date.parse(`${since}T00:00:00`));
+  if (!days && !date) throw new Error(`invalid --since: ${since} (use Nd or YYYY-MM-DD)`);
+  return { since };
+}
+
+/** The start of the window: N days before now, or local midnight of a date. */
+export function windowStart(since, now = Date.now()) {
+  const days = /^(\d+)d$/.exec(since);
+  return new Date(days ? now - Number(days[1]) * day : Date.parse(`${since}T00:00:00`));
+}
+
+const localDate = date => {
+  const pad = number => String(number).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+};
+const signed = number => number > 0 ? `+${number}` : String(number);
+const git = (root, args, input) =>
+  execFileSync("git", ["-C", root, ...args], { input, maxBuffer: 512 * 1024 * 1024, stdio: ["pipe", "pipe", "pipe"] });
+const gitText = (root, args) => git(root, args).toString("utf8").trim();
+
+export function lineCount(text) {
+  return text === "" ? 0 : text.split("\n").length - (text.endsWith("\n") ? 1 : 0);
+}
+
+/** Every code file at a ref as text, read in one git call; an empty ref is a tree with no files. */
+function readTree(root, ref) {
+  if (!ref) return new Map();
+  const files = git(root, ["ls-tree", "-r", "-z", "--name-only", ref, "--", "src", "worker", "shared", "scripts"])
+    .toString("utf8").split("\0").filter(file => codeFile.test(file));
+  const output = git(root, ["cat-file", "--batch"], files.map(file => `${ref}:${file}\n`).join("")), texts = new Map();
+  let offset = 0;
+  for (const file of files) {
+    const end = output.indexOf(10, offset), header = output.subarray(offset, end).toString("utf8").split(" ");
+    const size = Number(header[2]);
+    texts.set(file, output.subarray(end + 1, end + 1 + size).toString("utf8"));
+    offset = end + 1 + size + 1;
+  }
+  return texts;
+}
+
+/**
+ * Hand-typed values in one stylesheet: raw px spacing and raw timings count values (the same rule as
+ * kit ux), raw radii and bespoke shadows count declarations whose value has a raw length or colour
+ * once var() references are set aside.
+ */
+export function handTyped(text) {
+  const { px, timings } = cssCounts(text);
+  const code = text.replace(/\/\*[\s\S]*?\*\//g, "");
+  let radii = 0, shadows = 0;
+  for (const [, property, value] of code.matchAll(/([a-z-]+)\s*:\s*([^;{}]+)/g)) {
+    const bare = value.replace(/var\([^()]*(?:\([^()]*\)[^()]*)*\)/g, "");
+    if (/^border(-[a-z]+)*-radius$/.test(property) && /(?<![\w.-])\d*\.?\d+(px|rem|em|%)/.test(bare)) radii++;
+    if (/^(box|text)-shadow$/.test(property) && /\d|#[0-9a-f]{3}/i.test(bare)) shadows++;
+  }
+  return { px, radii, shadows, timings };
+}
+
+const valueKinds = [["px", "raw px spacing"], ["radii", "raw radii"], ["shadows", "bespoke shadows"], ["timings", "hand-timed transitions"]];
+const total = counts => valueKinds.reduce((sum, [key]) => sum + counts[key], 0);
+
+export function codeSections(now, then) {
+  const lines = (texts, file) => texts.has(file) ? lineCount(texts.get(file)) : 0;
+  const files = [...now.keys()].map(file => ({ file, lines: lines(now, file), growth: lines(now, file) - lines(then, file) }));
+  const main = files.find(item => item.file === "src/main.ts");
+  const biggest = [...files].sort((a, b) => b.lines - a.lines || a.file.localeCompare(b.file)).slice(0, 20);
+  const growing = files.filter(item => item.growth > 0).sort((a, b) => b.growth - a.growth || a.file.localeCompare(b.file)).slice(0, 10);
+  const counted = texts => new Map([...texts].filter(([file]) => cssFile.test(file)).map(([file, text]) => [file, handTyped(text)]));
+  const cssNow = counted(now), cssThen = counted(then), zero = { px: 0, radii: 0, shadows: 0, timings: 0 };
+  const sum = map => [...map.values()].reduce((all, counts) => Object.fromEntries(valueKinds.map(([key]) => [key, all[key] + counts[key]])), zero);
+  const totalNow = sum(cssNow), totalThen = sum(cssThen);
+  const perFile = [...new Set([...cssNow.keys(), ...cssThen.keys()])]
+    .map(file => ({ file, now: cssNow.get(file) ?? zero, then: cssThen.get(file) ?? zero }))
+    .filter(item => total(item.now) || total(item.then))
+    .sort((a, b) => total(b.now) - total(a.now) || a.file.localeCompare(b.file)).slice(0, 15);
+  return [
+    { title: "src/main.ts", priority: 9, lines: [main ? `- ${main.lines} lines (${signed(main.growth)})` : "- missing"] },
+    { title: "Biggest source files", priority: 6, lines: biggest.map(item => `- ${item.file}: ${item.lines} lines (${signed(item.growth)})`) },
+    { title: "Biggest growth", priority: 5, lines: growing.length ? growing.map(item => `- ${item.file}: ${signed(item.growth)} to ${item.lines} lines`) : ["- none"] },
+    { title: "Hand-typed values in src/**/*.css", priority: 8, lines: [
+      ...valueKinds.map(([key, name]) => `- ${name}: ${totalNow[key]} (${signed(totalNow[key] - totalThen[key])})`),
+      ...perFile.length ? ["", "Files with the most (px, radii, shadows, timings; change):"] : [],
+      ...perFile.map(item => `- ${item.file}: ${valueKinds.map(([key]) => item.now[key]).join(", ")}; ${signed(total(item.now) - total(item.then))}`),
+    ] },
+  ];
+}
+
+/** Playwright JSON report: each test as pass/fail events; a flaky test failed then passed in one run. */
+export function specOutcomes(report) {
+  const outcomes = [];
+  const visit = (suite, titles, file) => {
+    for (const spec of suite.specs ?? []) for (const test of spec.tests ?? []) {
+      const events = { expected: ["pass"], unexpected: ["fail"], flaky: ["fail", "pass"] }[test.status];
+      if (events) outcomes.push([`${spec.file ?? file} › ${[...titles, spec.title].join(" > ")}`, events]);
+    }
+    for (const child of suite.suites ?? []) visit(child, [...titles, child.title], child.file ?? file);
+  };
+  for (const suite of report.suites ?? []) visit(suite, [], suite.file);
+  return outcomes;
+}
+
+/** Node spec reporter log: ✔/✖ lines above the failing-tests recap. */
+export function unitOutcomes(log) {
+  const lines = log.replace(/\x1b\[[0-9;]*m/g, "").split(/\r?\n/), recap = lines.indexOf("✖ failing tests:");
+  return lines.slice(0, recap < 0 ? undefined : recap).flatMap(line => {
+    const match = /^\s*([✔✖]) (.+?)(?: \([\d.]+m?s\))?$/.exec(line);
+    return match ? [[`unit › ${match[2]}`, [match[1] === "✔" ? "pass" : "fail"]]] : [];
+  });
+}
+
+/** Tests that failed and later passed in the same worktree, by run time. */
+export function flippedTests(runs) {
+  const flipped = new Map(), state = new Map();
+  for (const run of [...runs].sort((a, b) => a.time - b.time || a.path.localeCompare(b.path))) {
+    for (const [name, events] of run.outcomes) for (const event of events) {
+      const key = `${run.worktree}\0${name}`;
+      if (event === "fail") state.set(key, true);
+      else if (state.get(key)) {
+        state.delete(key);
+        const item = flipped.get(name) ?? { name, times: 0, worktrees: new Set() };
+        item.times++;
+        item.worktrees.add(basename(run.worktree));
+        flipped.set(name, item);
+      }
+    }
+  }
+  return [...flipped.values()].sort((a, b) => b.times - a.times || a.name.localeCompare(b.name));
+}
+
+function worktrees(main) {
+  try { return gitText(main, ["worktree", "list", "--porcelain"]).split("\n").filter(line => line.startsWith("worktree ")).map(line => line.slice(9)); }
+  catch { return [main]; }
+}
+
+const readText = path => { try { return readFileSync(path, "utf8"); } catch { return undefined; } };
+
+/**
+ * One run per kit pr in the window, in every worktree: .scratch/pr/<run>/unit.log holds the npm test
+ * output, or unit.sh's summary whose "log:" line names the full .scratch/unit/ log; specs.log names
+ * each .scratch/kit-specs/run-*\/N-group.log, whose Playwright report is the .json beside it.
+ */
+function prRuns(main, start) {
+  const runs = [];
+  const list = dir => { try { return readdirSync(dir).sort(); } catch { return []; } };
+  for (const worktree of worktrees(main)) for (const name of list(join(worktree, ".scratch/pr"))) {
+    const path = join(worktree, ".scratch/pr", name), outcomes = [];
+    let time = -Infinity;
+    for (const step of ["unit.log", "specs.log"]) {
+      try { time = Math.max(time, statSync(join(path, step)).mtimeMs); } catch { /* Step not run. */ }
+    }
+    if (time < start.getTime()) continue;
+    const unit = readText(join(path, "unit.log"));
+    if (unit !== undefined) {
+      const full = /^log: (.+\.log)$/m.exec(unit)?.[1];
+      outcomes.push(...unitOutcomes((full && readText(resolve(worktree, full))) ?? unit));
+    }
+    for (const [, log] of (readText(join(path, "specs.log")) ?? "").matchAll(/^log: (.+)\.log$/gm)) {
+      try { outcomes.push(...specOutcomes(JSON.parse(readFileSync(resolve(worktree, `${log}.json`), "utf8")))); }
+      catch { /* An unfinished or broken report has no outcomes. */ }
+    }
+    runs.push({ worktree, path, time, outcomes });
+  }
+  return runs;
+}
+
+export function testSections(runs, known) {
+  const flipped = flippedTests(runs);
+  return [
+    { title: "Tests that failed then passed in kit pr runs", priority: 4, lines: [`- ${runs.length} kit pr runs read, ${flipped.length} tests flipped`,
+      ...flipped.map(item => `- ${item.name}: ${item.times}× in ${[...item.worktrees].sort().join(", ")}`)] },
+    { title: "Known failures (tests/known-failures.json)", priority: 7, lines: known.length
+      ? known.map(entry => `- ${[entry.spec, entry.title, entry.line].filter(value => value !== undefined).join(" › ")} · ${entry.status ?? "failing"}${entry.reason ? ` · ${entry.reason}` : ""}`)
+      : ["- none"] },
+  ];
+}
+
+const reviewTime = (review, record) => {
+  const stamp = /(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/.exec(basename(review.dir ?? ""));
+  if (stamp) return Date.UTC(stamp[1], stamp[2] - 1, stamp[3], stamp[4], stamp[5], stamp[6]);
+  return Math.max(0, ...(record.phases ?? []).map(phase => Date.parse(phase.end) || 0));
+};
+const countText = counts => Object.entries(counts).filter(([, count]) => count).map(([kind, count]) => `${kind} ${count}`).join(", ") || "none";
+
+/** Review findings by kind for reviews in the window, from main root .scratch/scoreboard/<map>/<piece>.json. */
+export function reviewSection(main, start) {
+  const folder = join(main, ".scratch/scoreboard"), kinds = {}, severities = {}, pieces = [];
+  let reviews = 0, declined = 0;
+  const add = (into, counts) => { for (const [key, count] of Object.entries(counts ?? {})) into[key] = (into[key] ?? 0) + (count || 0); };
+  const list = dir => { try { return readdirSync(dir).sort(); } catch { return []; } };
+  for (const map of list(folder)) for (const name of list(join(folder, map)).filter(name => name.endsWith(".json"))) {
+    let record;
+    try { record = JSON.parse(readFileSync(join(folder, map, name), "utf8")); } catch { continue; }
+    const recent = (record.reviews ?? []).filter(review => reviewTime(review, record) >= start.getTime());
+    if (!recent.length) continue;
+    const own = {};
+    for (const review of recent) { add(kinds, review.counts?.kind); add(severities, review.counts?.severity); add(own, review.counts?.kind); }
+    reviews += recent.length;
+    declined += recent.reduce((sum, review) => sum + (review.declined?.length ?? 0), 0);
+    pieces.push(`- ${map}/${name.slice(0, -5)}: ${countText(own)} (${recent.length} review${recent.length === 1 ? "" : "s"})`);
+  }
+  return { title: "Review findings by kind", priority: 7, lines: [`- ${reviews} reviews of ${pieces.length} pieces, ${declined} findings declined`,
+    `- by kind: ${countText(kinds)}`, `- by severity: ${countText(severities)}`, ...pieces] };
+}
+
+/** Lex's corrections dated in the window, from every build's feedback log. */
+export function correctionsSection(root, start) {
+  const folder = join(root, "docs/wayfinder");
+  const { entries } = existsSync(folder) ? loadFeedback(folder, { cwd: root }) : { entries: [] };
+  const recent = entries.filter(entry => entry.date >= localDate(start)).sort((a, b) => b.date.localeCompare(a.date) || a.file.localeCompare(b.file));
+  const kinds = {};
+  for (const entry of recent) kinds[entry.kind] = (kinds[entry.kind] ?? 0) + 1;
+  return { title: "Lex's corrections", priority: 8, lines: [`- ${recent.length} corrections; by kind: ${countText(kinds)}`,
+    ...recent.map(entry => `- ${entry.date} · ${entry.kind} · ${entry.text} · ${basename(entry.file.slice(0, -"/build/feedback.md".length))} · after release: ${entry.afterRelease} · fix: ${entry.fix}`)] };
+}
+
+/** Tech-debt issues not closed or wontfix whose file no commit touched for 30 days. */
+export function staleDebtSection(root, now = Date.now()) {
+  const folder = join(root, "docs/work/tech-debt/issues"), stale = [];
+  for (const name of existsSync(folder) ? readdirSync(folder).filter(name => name.endsWith(".md")).sort() : []) {
+    const text = readFileSync(join(folder, name), "utf8");
+    const status = /^status:\s*(\S+)/m.exec(text)?.[1] ?? "open", title = /^title:\s*(.+)$/m.exec(text)?.[1]?.trim() ?? name;
+    if (["closed", "wontfix"].includes(status)) continue;
+    const touched = Date.parse(gitText(root, ["log", "-1", "--format=%cI", "--", join("docs/work/tech-debt/issues", name)])) || now;
+    const days = Math.floor((now - touched) / day);
+    if (days >= 30) stale.push(`- ${name}: ${title} · ${status} · untouched ${days} days`);
+  }
+  return { title: "Tech-debt issues untouched 30+ days", priority: 6, lines: stale.length ? stale : ["- none"] };
+}
+
+function sweep(args) {
+  let flags;
+  try { flags = parseArgs(args); }
+  catch (error) { process.stderr.write(usage); kitResult("fail", `sweep ${error.message}`); return 2; }
+  try {
+    const root = resolve(kitRoot()), main = resolve(kitMainRoot()), now = Date.now(), start = windowStart(flags.since, now);
+    const head = gitText(root, ["rev-parse", "HEAD"]);
+    const then = gitText(root, ["rev-list", "-1", "--first-parent", `--before=${start.toISOString()}`, "HEAD"]);
+    let known = [];
+    try { known = JSON.parse(readFileSync(join(root, "tests/known-failures.json"), "utf8")); } catch { /* No registry: none known. */ }
+    const thenLabel = then ? `${then.slice(0, 9)} (${localDate(start)})` : "the first commit";
+    const sections = [
+      ...codeSections(readTree(root, head), readTree(root, then)),
+      ...testSections(prRuns(main, start),Array.isArray(known) ? known : []),
+      reviewSection(main, start),
+      correctionsSection(root, start),
+      staleDebtSection(root, now),
+    ];
+    const date = localDate(new Date(now));
+    const { markdown } = composeBundle([`# Sweep bundle ${date}`, "",
+      `Since ${start.toISOString()} (--since ${flags.since}); code at ${head.slice(0, 9)} against ${thenLabel}. Numbers only; the routine judges.`], sections, bundleLimit);
+    const dir = join(main, ".scratch/sweep", date), path = join(dir, "bundle.md");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path, markdown);
+    // Each heading with its size, so a report can show the bundle's shape without opening it.
+    for (const part of markdown.split(/\n(?=## )/).slice(1)) console.log(`${part.split("\n", 1)[0]} (${Buffer.byteLength(part)} bytes)`);
+    console.log(`bundle: ${Buffer.byteLength(markdown)} bytes`);
+    kitResult("ok", `sweep bundle ${path}`);
+    return 0;
+  } catch (error) {
+    console.error(`problem: ${error.message}`);
+    kitResult("fail", `sweep ${error.message.split("\n", 1)[0]}`);
+    return 1;
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  if (process.argv.length === 3 && ["--help", "-h"].includes(process.argv[2])) process.stdout.write(usage);
+  else process.exitCode = sweep(process.argv.slice(2));
+}
