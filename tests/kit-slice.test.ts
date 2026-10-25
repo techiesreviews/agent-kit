@@ -69,8 +69,11 @@ function evidence() {
   const folder = join(process.env.KIT_MAIN_ROOT, ".scratch/reviews/ke-04", String(round()).padStart(3, "0"));
   mkdirSync(folder, { recursive: true });
   writeFileSync(join(folder, "refs.txt"), git("rev-parse", "HEAD") + "\\n");
-  const open = round() < Number(process.env.CLEAN_AT || 0);
-  const report = process.env.MINOR_REVIEW && round() >= 3 ? ${JSON.stringify(findings)}.replace("P1", "P2").replace("Standards: none", "Standards: P3: Cosmetic issue") : ${JSON.stringify(findings)};
+  // NOTE_FINDINGS: the review after a --note (UX) fix round has one P3 finding; "stay" keeps a P1 on every later fix review.
+  const stay = process.env.NOTE_FINDINGS === "stay";
+  const noteFinding = Boolean(process.env.NOTE_FINDINGS && phase === "fix" && (args.includes("--note") || stay));
+  const open = round() < Number(process.env.CLEAN_AT || 0) || noteFinding;
+  const report = noteFinding && !stay ? ${JSON.stringify(findings)}.replace("P1", "P3") : process.env.MINOR_REVIEW && round() >= 3 ? ${JSON.stringify(findings)}.replace("P1", "P2").replace("Standards: none", "Standards: P3: Cosmetic issue") : ${JSON.stringify(findings)};
   writeFileSync(join(folder, "result.md"), process.env.UNREADABLE_REVIEW ? "partial" : open ? report : ${JSON.stringify(clean)});
   if (process.env.FINDINGS_JSON) writeFileSync(join(folder, "findings.json"), JSON.stringify({ model: "fake-reviewer", effort: "high",
     findings: [], counts: { kind: { fault: 0, ticket: 0, race: 0, style: 0, unsorted: open ? 1 : 0, gap: 0 }, severity: {} } }));
@@ -92,8 +95,34 @@ console.log("artifacts: " + out);
 `);
   const fakeKit = join(bin, "kit.mjs");
   writeFileSync(fakeKit, `#!/usr/bin/env node\n${shared}
-call(phase);
+// kit ux is logged only when FAKE_UX drives it; unset, it finds nothing visible touched.
+if (phase !== "ux" || process.env.FAKE_UX) call(phase);
 await hold(phase);
+if (phase === "ux") {
+  if (!process.env.FAKE_UX || process.env.FAKE_UX === "none") { console.log("RESULT: ok ux nothing visible touched"); process.exit(0); }
+  if (process.env.FAKE_UX === "screens") {
+    const bundle = join(process.env.KIT_MAIN_ROOT, ".scratch/ux/ke-04/screens");
+    mkdirSync(bundle, { recursive: true });
+    writeFileSync(join(bundle, "ux.json"), JSON.stringify({ features: [{ id: "F-media-01", verdict: "off", note: "S1", image: "" }], rules: ["S1"], counts: { fine: 0, off: 1, broken: 0, rules: ["S1"] }, broken: [], off: ["F-media-01"] }));
+    console.log("report: " + join(bundle, "ux.json"));
+    console.log("RESULT: fail ux 0 features tried, 0 scripted findings, 0 fine, 1 looks off, 0 broken, bundle " + bundle + ", screens failed: media-gallery");
+    process.exit(1);
+  }
+  if (process.env.FAKE_UX === "fail") { console.log("RESULT: fail ux 1 features tried, 0 scripted findings, bundle /b, broken: F-media-01, review failed: claude failed (1)"); process.exit(1); }
+  // broken stays broken, off stays looks off, broken-once is fine after the fix round.
+  const mode = process.env.FAKE_UX, verdict = mode === "off" ? "off" : mode === "broken-once" && round() > 0 ? "fine" : "broken";
+  const bundle = join(process.env.KIT_MAIN_ROOT, ".scratch/ux/ke-04", "bundle-" + round());
+  mkdirSync(bundle, { recursive: true });
+  // FAKE_UX_TWO: F-media-02 looks off as well.
+  const features = [{ id: "F-media-01", verdict, note: process.env.FAKE_UX_NOTE || "S1: a hint line under the search field", image: "F-media-01-contact.webp" },
+    { id: "F-media-02", verdict: process.env.FAKE_UX_TWO ? "off" : "fine", note: "L5: the filter label is clipped", image: "" }];
+  const pick = word => features.filter(feature => feature.verdict === word).map(feature => feature.id);
+  writeFileSync(join(bundle, "ux.md"), "- F-media-01: " + verdict + " — S1: a hint line under the search field\\n");
+  writeFileSync(join(bundle, "ux.json"), JSON.stringify({ features, rules: ["S1"], counts: { fine: pick("fine").length, off: pick("off").length, broken: pick("broken").length, rules: ["S1"] }, broken: pick("broken"), off: pick("off") }));
+  console.log("report: " + join(bundle, "ux.json"));
+  console.log("RESULT: " + (verdict === "broken" ? "fail" : "ok") + " ux 1 features tried, 0 scripted findings, bundle " + bundle + (verdict === "broken" ? ", broken: F-media-01" : ""));
+  process.exit(verdict === "broken" ? 1 : 0);
+}
 if (phase === "fix" && process.env.REAL_FIX) {
   const result = spawnSync("bash", [${JSON.stringify(kit)}, ...args], { stdio: "inherit" });
   process.exit(result.status ?? 1);
@@ -105,6 +134,13 @@ if (phase === "review") {
 } else if (phase === "fix") {
   const fixes = join(process.cwd(), ".scratch/kit-fix", encodeURIComponent(git("branch", "--show-current")));
   const pending = join(fixes, "pending.json");
+  // FAIL_REVIEW_FIX fails a --review round after it saved pending.json, as kit fix does before its builder.
+  if (process.env.FAIL_REVIEW_FIX && args.includes("--review") && !existsSync(pending)) {
+    mkdirSync(fixes, { recursive: true });
+    writeFileSync(pending, JSON.stringify({ phase: "builder", model: "gpt-6.1-sol", round: round() + 1 }));
+    console.log("RESULT: fail fix builder failed");
+    process.exit(7);
+  }
   if (process.env.FAIL_FIX_BUILDER && !existsSync(pending)) {
     mkdirSync(fixes, { recursive: true });
     writeFileSync(pending, JSON.stringify({ phase: "builder", model: process.env.FAIL_FIX_BUILDER, round: 1 }));
@@ -234,7 +270,7 @@ test("kit slice writes the ticket brief, runs phases in order, credits and commi
   assert.match(brief, /the slice records review decisions and landing/);
   assert.match(brief, /Leave changes unstaged; the runner commits/);
   assert.ok(brief.includes("Do not mention staging, committing or unstaged changes in the ticket."), brief);
-  assert.deepEqual(result.stdout.split("\n").filter(line => line.startsWith("slice:")).map(line => line.split(" ").slice(0, 3).join(" ")), ["slice: brief ok", "slice: build ok", "slice: commit ok", "slice: review ok", "slice: fix ok", "slice: pr ok"]);
+  assert.deepEqual(result.stdout.split("\n").filter(line => line.startsWith("slice:")).map(line => line.split(" ").slice(0, 3).join(" ")), ["slice: brief ok", "slice: build ok", "slice: commit ok", "slice: review ok", "slice: fix ok", "slice: ux ok", "slice: pr ok"]);
   assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "pr"]);
   const build = f.calls()[0].args;
   assert.deepEqual(build.slice(0, 7), ["build", f.root, ".scratch/agent-brief.md", "--model", "gpt-6.1-sol", "--effort", "high"]);
@@ -268,7 +304,7 @@ test("kit slice records the piece: phases with exit codes, rounds, review counts
   assert.equal(record.ticket, f.ticket); assert.equal(record.title, "Test slice title");
   assert.deepEqual(record.builder, { model: "gpt-6.1-sol", effort: "high", previousModels: [], built: "gpt-6.1-sol" });
   assert.deepEqual(record.phases.map((phase: { name: string; exit: number }) => [phase.name, phase.exit]),
-    [["brief", 0], ["build", 0], ["commit", 0], ["review", 7], ["review", 0], ["fix", 0], ["pr", 0]]);
+    [["brief", 0], ["build", 0], ["commit", 0], ["review", 7], ["review", 0], ["fix", 0], ["ux", 0], ["pr", 0]]);
   for (const phase of record.phases) assert.ok(Date.parse(phase.end) >= Date.parse(phase.start), JSON.stringify(phase));
   assert.equal(record.rounds, 2);
   const reviews = join(f.main, ".scratch/reviews/ke-04");
@@ -398,7 +434,7 @@ test("kit slice resumes with another builder, keeps finished phases and records 
   const result = f.run([], {}, ["--ticket", f.ticket, "--builder", "claude-opus-5-5", "--no-pr"]);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /builder switched: gpt-6\.1-sol -> claude-opus-5-5/);
-  assert.deepEqual(f.state().finished, [...finished, "fix"]);
+  assert.deepEqual(f.state().finished, [...finished, "fix", "ux"]);
   assert.equal(f.state().model, "claude-opus-5-5");
   assert.deepEqual(f.state().previousModels, ["gpt-6.1-sol"]);
   assert.equal(f.calls().filter(call => call.phase === "build").length, 1);
@@ -924,4 +960,132 @@ for (const mainRoot of [false, true]) for (const pending of [false, true]) test(
   for (const phase of ["build", "review", "fix"]) assert.equal(f.calls().filter(call => call.phase === phase).length, calls.filter(call => call.phase === phase).length);
   assert.equal(f.calls().at(-1)?.args.includes("--no-merge"), pending);
   assert.equal(existsSync(join(f.root, ".scratch/merged")), !pending);
+});
+
+test("kit slice skips the UX check with one line when nothing visible is touched", t => {
+  const f = fixture(t), result = f.run([], { FAKE_UX: "none" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "ux", "pr"]);
+  assert.deepEqual(f.calls()[2].args, ["ux", "--ticket", f.ticket]);
+  assert.match(result.stdout, /^slice: ux ok skipped: nothing visible touched$/m);
+});
+
+test("kit slice stops a feature still broken after one UX fix round, and lands one the round fixed", t => {
+  const f = fixture(t), result = f.run([], { FAKE_UX: "broken" });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /RESULT: fail slice ux: decide: ux broken F-media-01 \(\S+bundle-1\/ux\.md\)\n$/);
+  assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "ux", "fix", "ux"]);
+  const fix = f.calls()[3].args;
+  assert.equal(fix[fix.indexOf("--note") + 1], join(f.main, ".scratch/ux/ke-04/bundle-0/ux.md"), "the fix round gets the UX report");
+  assert.equal(existsSync(join(f.root, ".scratch/merged")), false);
+  // A rerun checks again without a second fix round.
+  const rerun = f.run([], { FAKE_UX: "broken" });
+  assert.equal(rerun.status, 1);
+  assert.deepEqual(f.calls().map(call => call.phase).slice(5), ["ux"]);
+
+  const g = fixture(t), fixed = g.run([], { FAKE_UX: "broken-once" });
+  assert.equal(fixed.status, 0, fixed.stdout + fixed.stderr);
+  assert.deepEqual(g.calls().map(call => call.phase), ["build", "review", "ux", "fix", "ux", "pr"]);
+  assert.doesNotMatch(readFileSync(join(g.root, g.ticket), "utf8"), /UX follow-ups/);
+});
+
+test("kit slice lands looks off after one UX fix round, with the rest as ticket follow-ups", t => {
+  const f = fixture(t), result = f.run([], { FAKE_UX: "off" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "ux", "fix", "ux", "pr"]);
+  assert.match(result.stdout, /^slice: ux ok 1 fine, 0 broken, 1 looks off as follow-ups$/m);
+  const ticket = readFileSync(join(f.root, f.ticket), "utf8");
+  assert.match(ticket, /\n\n## Done \(\d{4}-\d{2}-\d{2}\)\n\n### UX follow-ups\n\n- UX \(looks off\): F-media-01 S1: a hint line under the search field \(\.scratch\/ux\/ke-04\/bundle-1\/F-media-01-contact\.webp\)\n$/,
+    "a missing Done section is made, and the image is named from the main root");
+  assert.equal(f.git("log", "-1", "--format=%s"), "docs: 04-ticket UX follow-ups");
+  assert.equal(f.git("status", "--porcelain"), "");
+  assert.ok(result.stdout.endsWith(`RESULT: ok slice ${f.ticket} PR #42 ${f.git("rev-parse", "HEAD")}\n`));
+  const record = JSON.parse(readFileSync(join(f.main, ".scratch/scoreboard/_untracked/04-ticket.json"), "utf8"));
+  assert.equal(record.rounds, 1, "the UX fix round counts as a round");
+});
+
+test("findings on the UX fix round's review go through the fix loop, then back to kit ux without a second note round", t => {
+  const f = fixture(t), result = f.run([], { FAKE_UX: "broken-once", NOTE_FINDINGS: "1" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const calls = f.calls();
+  assert.deepEqual(calls.map(call => call.phase), ["build", "review", "ux", "fix", "fix", "ux", "pr"]);
+  assert.ok(calls[3].args.includes("--note"));
+  assert.ok(calls[4].args.includes("--review") && !calls[4].args.includes("--note"), "the second round answers the review");
+  assert.equal(f.state().rounds, 2);
+});
+
+test("a UX fix round that failed resumes straight into the same note, without checking again first", t => {
+  const f = fixture(t);
+  const failed = f.run([], { FAKE_UX: "off", FAIL_PHASE: "fix" });
+  assert.equal(failed.status, 1);
+  const note = join(f.main, ".scratch/ux/ke-04/bundle-0/ux.md");
+  assert.deepEqual((f.state() as State & { uxFix?: object }).uxFix, { note, done: false });
+  const before = f.calls().length, retry = f.run([], { FAKE_UX: "off" });
+  assert.equal(retry.status, 0, retry.stdout + retry.stderr);
+  const after = f.calls().slice(before);
+  assert.deepEqual(after.map(call => call.phase), ["fix", "ux", "pr"]);
+  assert.equal(after[0].args[after[0].args.indexOf("--note") + 1], note);
+});
+
+test("UX follow-ups join the list in the ticket's last Done, keep the section after it and skip a feature already listed", t => {
+  const f = fixture(t);
+  // Listed by an earlier UX round with another bundle: the same feature and note is not added again.
+  const old = "- UX (looks off): F-media-01 S1: a hint line under the search field (.scratch/ux/ke-04/older/F-media-01-contact.webp)";
+  writeFileSync(join(f.root, f.ticket), `${readFileSync(join(f.root, f.ticket), "utf8")}\n## Done (2026-10-01)\n\nFirst.\n\n## Done (2026-10-25)\n\nBuilt.\n\n### UX follow-ups\n\n${old}\n\n## Later\n\nKept text.\n`);
+  f.git("commit", "-am", "ticket with follow-ups");
+  const result = f.run([], { FAKE_UX: "off", FAKE_UX_TWO: "1" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const ticket = readFileSync(join(f.root, f.ticket), "utf8");
+  assert.ok(ticket.endsWith(`## Done (2026-10-01)\n\nFirst.\n\n## Done (2026-10-25)\n\nBuilt.\n\n### UX follow-ups\n\n${old}\n- UX (looks off): F-media-02 L5: the filter label is clipped\n\n## Later\n\nKept text.\n`), ticket);
+  assert.equal(ticket.split("F-media-01 S1").length, 2, "F-media-01 is listed once");
+});
+
+test("a review round after the UX round that failed half-way resumes before kit ux runs again", t => {
+  const f = fixture(t);
+  const failed = f.run([], { FAKE_UX: "broken-once", NOTE_FINDINGS: "1", FAIL_REVIEW_FIX: "1" });
+  assert.equal(failed.status, 1);
+  assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "ux", "fix", "fix"]);
+  const before = f.calls().length, retry = f.run([], { FAKE_UX: "broken-once", NOTE_FINDINGS: "1" });
+  assert.equal(retry.status, 0, retry.stdout + retry.stderr);
+  const after = f.calls().slice(before);
+  assert.deepEqual(after.map(call => call.phase), ["fix", "ux", "pr"]);
+  assert.equal(after[0].args[after[0].args.indexOf("--review") + 1], join(f.main, ".scratch/reviews/ke-04/001"));
+});
+
+test("blocking findings left after the UX round's fix rounds stop the slice before kit pr", t => {
+  const f = fixture(t), result = f.run(["--rounds", "2"], { FAKE_UX: "broken-once", NOTE_FINDINGS: "stay" });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /RESULT: fail slice ux: 1 open review findings after the UX fix round \(\S+\/reviews\/ke-04\/002\/result\.md\)\n$/);
+  assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "ux", "fix", "fix"]);
+});
+
+test("a kit ux failure without a report stops the slice with its RESULT and no fix round", t => {
+  const f = fixture(t), result = f.run([], { FAKE_UX: "fail" });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /RESULT: fail slice ux: command exited 1: ux .*review failed: claude failed \(1\); see .+\/ux\.log\n$/);
+  assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "ux"]);
+});
+
+test("a kit ux failure with a report but no broken feature stops the slice without a fix round", t => {
+  const f = fixture(t), result = f.run([], { FAKE_UX: "screens" });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /RESULT: fail slice ux: command exited 1: ux .*screens failed: media-gallery; see .+\/ux\.log\n$/);
+  assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "ux"]);
+  assert.equal((f.state() as State & { uxFix?: object }).uxFix, undefined);
+});
+
+test("a rerun after the UX follow-ups commit reuses the saved report: no second review, one line per feature", t => {
+  const f = fixture(t);
+  const failed = f.run([], { FAKE_UX: "off", FAIL_PHASE: "pr" });
+  assert.equal(failed.status, 1);
+  assert.equal(f.git("log", "-1", "--format=%s"), "docs: 04-ticket UX follow-ups");
+  // As if the slice died between the follow-ups commit and saving it: ux unfinished, HEAD one ticket commit ahead.
+  const statePath = join(f.root, ".scratch/kit-slice/04-ticket/state.json"), saved = JSON.parse(readFileSync(statePath, "utf8"));
+  writeFileSync(statePath, JSON.stringify({ ...saved, head: f.git("rev-parse", "HEAD^"), finished: saved.finished.filter((name: string) => name !== "ux") }));
+  const before = f.calls().length, retry = f.run([], { FAKE_UX: "off", FAKE_UX_NOTE: "S1: worded another way" });
+  assert.equal(retry.status, 0, retry.stdout + retry.stderr);
+  assert.deepEqual(f.calls().slice(before).map(call => call.phase), ["pr"]);
+  const ticket = readFileSync(join(f.root, f.ticket), "utf8");
+  assert.equal(ticket.split("- UX (looks off): F-media-01 ").length, 2, ticket);
+  assert.doesNotMatch(ticket, /worded another way/);
 });

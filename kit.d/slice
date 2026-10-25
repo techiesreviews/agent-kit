@@ -1,15 +1,15 @@
 #!/usr/bin/env node
-// kit: build, commit, review, fix and land one ticket with resumable phases
+// kit: build, commit, review, fix, check the UX of and land one ticket with resumable phases
 import { execFileSync, spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterFixRounds, blockingFindings, completedFixRounds, FIX_ROUNDS, openFindings, reviewCoversHead } from "../review-findings.mjs";
 
 const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv, commitBuilderWork, builderAuthor, kitScore, scoreCost, scoreReview } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const usage = "Usage: kit slice --ticket FILE --builder MODEL [--effort high] [--rounds 3] [--no-pr]\nResume saved phases under .scratch/kit-slice/<ticket-slug>/.\nQueued PRs are awaited for up to 2h; reruns resume the wait.\nOverrides: ASE_SLICE_AGENT, ASE_SLICE_KIT, ASE_SLICE_GH; ASE_SLICE_MERGE_TIMEOUT_MS, ASE_SLICE_MERGE_POLL_MS.\n";
+const usage = "Usage: kit slice --ticket FILE --builder MODEL [--effort high] [--rounds 3] [--no-pr]\nResume saved phases under .scratch/kit-slice/<ticket-slug>/.\nAfter the code review, kit ux checks touched features: broken or looks off gets one kit fix --note round;\nstill broken stops (decide: ux broken <feature>), looks off lands with UX follow-ups in the ticket.\nQueued PRs are awaited for up to 2h; reruns resume the wait.\nOverrides: ASE_SLICE_AGENT, ASE_SLICE_KIT, ASE_SLICE_GH; ASE_SLICE_MERGE_TIMEOUT_MS, ASE_SLICE_MERGE_POLL_MS.\n";
 
 function options(args) {
   const flags = { effort: "high", rounds: FIX_ROUNDS, noPr: false };
@@ -175,6 +175,33 @@ async function slice(args) {
       }
       throw new Error("no review evidence covers HEAD");
     }
+    // Looks off left after the fix round: a `### UX follow-ups` list in the ticket's last `## Done` section (made when
+    // missing, as kit pr does), one line per feature (a feature already listed keeps its line), committed alone (a ticket-only commit keeps the review).
+    // Images are named from the main root, so the ticket holds no machine path. Returns the new HEAD, or null.
+    function uxFollowups(ux, head) {
+      const original = readFileSync(ticket, "utf8");
+      const start = [...original.matchAll(/^## Done(?:[ \t]+\(\d{4}-\d{2}-\d{2}\))?[ \t]*\r?$/gm)].at(-1)?.index;
+      const prefix = start === undefined ? `${original.trimEnd()}\n\n## Done (${new Date().toISOString().slice(0, 10)})` : original.slice(0, start);
+      const rest = start === undefined ? "" : original.slice(start);
+      const end = rest.slice(1).search(/^## /m), doneEnd = end < 0 ? rest.length : end + 1;
+      let done = rest.slice(0, doneEnd);
+      const list = /^### UX follow-ups\s*\n([\s\S]*?)(?=^#{1,3} |$(?![\s\S]))/m.exec(done);
+      const listed = list?.[1].split(/\r?\n/) ?? [];
+      const key = feature => `- UX (looks off): ${feature.id} ${feature.note}`;
+      const missing = ux.features.filter(feature => feature.verdict === "off")
+        .filter(feature => !listed.some(line => line.startsWith(`- UX (looks off): ${feature.id} `)))
+        .map(feature => `${key(feature)}${feature.image ? ` (${relative(kitMainRoot(), resolve(dirname(ux.path), feature.image))})` : ""}`);
+      if (!missing.length) return null;
+      if (list) {
+        const position = list.index + list[0].trimEnd().length;
+        done = `${done.slice(0, position)}\n${missing.join("\n")}${done.slice(position)}`;
+      } else done = `${done.trimEnd()}\n\n### UX follow-ups\n\n${missing.join("\n")}\n\n`;
+      const after = rest.slice(doneEnd);
+      writeFileSync(ticket, after ? prefix + done + after : `${(prefix + done).trimEnd()}\n`);
+      git("commit", "--quiet", "-m", `docs: ${basename(ticket, ".md")} UX follow-ups`, "--", ticket);
+      if (git("rev-parse", "HEAD^") !== head) throw new Error("UX follow-ups commit is not one commit on the checked HEAD");
+      return git("rev-parse", "HEAD");
+    }
     const findings = () => {
       let text = "";
       try { text = readFileSync(join(state.review, "result.md"), "utf8"); } catch { /* Fail closed. */ }
@@ -199,8 +226,8 @@ async function slice(args) {
       let covering = false;
       try { covering = reviewEvidence(state.review) === state.review; } catch { /* Re-review other changes. */ }
       if (!covering) {
-        state.finished = state.finished.filter(name => !["review", "fix", "pr"].includes(name));
-        delete state.review;
+        state.finished = state.finished.filter(name => !["review", "fix", "ux", "pr"].includes(name));
+        delete state.review; delete state.uxFix; delete state.uxReport;
       }
       state.head = git("rev-parse", "HEAD");
       delete state.pendingFix;
@@ -208,8 +235,8 @@ async function slice(args) {
     if (!state.queued && !pendingFix() && !state.finished.includes("pr") && state.finished.includes("review")) {
       let covering = false;
       try { covering = reviewEvidence(state.review) === state.review; } catch { /* Re-review stale evidence. */ }
-      if (!covering) state.finished = state.finished.filter(name => !["review", "fix", "pr"].includes(name));
-      else if (stopping(findings()).length) state.finished = state.finished.filter(name => !["fix", "pr"].includes(name));
+      if (!covering) { state.finished = state.finished.filter(name => !["review", "fix", "ux", "pr"].includes(name)); delete state.uxFix; delete state.uxReport; }
+      else if (stopping(findings()).length) { state.finished = state.finished.filter(name => !["fix", "ux", "pr"].includes(name)); delete state.uxReport; }
     }
     save();
     begin("brief");
@@ -246,24 +273,29 @@ async function slice(args) {
       state.review = reviewEvidence(evidence); state.reviewedHead = head;
       complete(state.review);
     }
+    // One kit fix round answering the review (--review DIR) or a note (--note FILE); it commits and reviews again.
+    async function fixRound(source) {
+      if (pendingFix()) assertBranch(); // kit fix checks its saved commit/review HEAD.
+      else assertHead(state.head);
+      state.pendingFix = true; save();
+      const builder = pastBuilder() ? [] : ["--builder", flags.model, "--effort", flags.effort];
+      const result = await execute(kit, ["fix", "--ticket", flags.ticket, ...source, ...builder,
+        ...(state.build ? ["--run", state.build] : [])]);
+      // kit fix exits 1 both for command failures and completed reviews with findings.
+      const remaining = /^RESULT: fail fix \d+ open findings \((.+)\/result\.md\)$/m.exec(result.output);
+      if (result.code !== 0 && !remaining) requireSuccess(result);
+      state.review = reviewEvidence(remaining?.[1]);
+      state.head = git("rev-parse", "HEAD"); state.reviewedHead = state.head; state.rounds++;
+      delete state.pendingFix;
+      save();
+      score(record => scoreReview(record, state.review));
+    }
     begin("fix");
     if (!state.finished.includes(phase)) {
       let open = findings();
       while (stopping(open).length && state.rounds < flags.rounds) {
-        if (pendingFix()) assertBranch(); // kit fix checks its saved commit/review HEAD.
-        else assertHead(state.head);
-        state.pendingFix = true; save();
-        const builder = pastBuilder() ? [] : ["--builder", flags.model, "--effort", flags.effort];
-        const result = await execute(kit, ["fix", "--ticket", flags.ticket, "--review", state.review, ...builder,
-          ...(state.build ? ["--run", state.build] : [])]);
-        // kit fix exits 1 both for command failures and completed reviews with findings.
-        const remaining = /^RESULT: fail fix \d+ open findings \((.+)\/result\.md\)$/m.exec(result.output);
-        if (result.code !== 0 && !remaining) requireSuccess(result);
-        state.review = reviewEvidence(remaining?.[1]);
-        state.head = git("rev-parse", "HEAD"); state.reviewedHead = state.head; state.rounds++;
-        delete state.pendingFix;
-        save(); open = findings();
-        score(record => scoreReview(record, state.review));
+        await fixRound(["--review", state.review]);
+        open = findings();
       }
       if (stopping(open).length) {
         if (!flags.noPr) {
@@ -287,6 +319,52 @@ async function slice(args) {
         throw new Error(`${open.length} open findings after ${state.rounds} rounds (${join(state.review, "result.md")})`);
       }
       complete(`${state.rounds} rounds${open.length ? `, ${open.length} follow-ups` : ""}`);
+    }
+    begin("ux");
+    if (!state.finished.includes(phase)) {
+      // null: nothing visible touched; else the ux.json report of the bundle kit ux names.
+      const check = async () => {
+        const head = state.head;
+        assertHead(head);
+        const result = await execute(kit, ["ux", "--ticket", flags.ticket]);
+        assertHead(head);
+        if (/^RESULT: ok ux nothing visible touched$/m.test(result.output)) return null;
+        const path = /^report: (.+)$/m.exec(result.output)?.[1];
+        let report;
+        try { report = path && JSON.parse(readFileSync(path, "utf8")); } catch { /* A missing report fails below. */ }
+        if (!report) { requireSuccess(result); throw new Error(`ux wrote no report; see ${log}`); }
+        // A failure that broke no feature (a screens run, the reviewer) is not something a fix round answers.
+        if (result.code && !report.broken.length) requireSuccess(result);
+        return { ...report, path };
+      };
+      // A report saved before the follow-ups commit is reused, so a rerun after that commit pays no second review.
+      const savedReport = () => { try { return { ...JSON.parse(readFileSync(state.uxReport, "utf8")), path: state.uxReport }; } catch { return undefined; } };
+      let ux = state.uxReport ? savedReport() : undefined;
+      if (ux === undefined) ux = state.uxFix ? undefined : await check();
+      if (ux && !state.uxFix && (ux.broken.length || ux.off.length)) {
+        state.uxFix = { note: join(dirname(ux.path), "ux.md"), done: false }; save();
+      }
+      if (state.uxFix && !state.uxReport) {
+        if (!state.uxFix.done) {
+          await fixRound(["--note", state.uxFix.note]);
+          state.uxFix.done = true; save();
+        }
+        // The round's own review gets the usual fix rounds, a half-done one resumed first; only what still blocks stops the slice.
+        while (pendingFix() || (stopping(findings()).length && state.rounds < flags.rounds)) await fixRound(["--review", state.review]);
+        const open = stopping(findings());
+        if (open.length) throw new Error(`${open.length} open review findings after the UX fix round (${join(state.review, "result.md")})`);
+        ux = await check();
+      }
+      if (ux?.broken.length) throw new Error(`decide: ux broken ${ux.broken.join(", ")} (${join(dirname(ux.path), "ux.md")})`);
+      if (ux?.off.length) {
+        state.uxReport = ux.path; save();
+        // Same proof as the check: the reviewed HEAD, nothing uncommitted, right before the ticket is written.
+        assertHead(state.head);
+        if (git("status", "--porcelain", "--untracked-files=normal")) throw new Error("worktree changed before recording UX follow-ups");
+        const head = uxFollowups(ux, state.head);
+        if (head) { state.head = head; save(); }
+      }
+      complete(!ux ? "skipped: nothing visible touched" : `${ux.counts.fine} fine, ${ux.counts.broken} broken${ux.off.length ? `, ${ux.off.length} looks off as follow-ups` : ""}`);
     }
     begin("pr");
     if (!flags.noPr && !state.finished.includes(phase)) {

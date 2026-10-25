@@ -1,12 +1,13 @@
 #!/usr/bin/env node
-// kit: try the features a diff touches, run scripted UX checks and pack a small review bundle
+// kit: try the features a diff touches, run scripted UX checks, pack a small bundle and have one reviewer judge it
 import { execFileSync, spawn } from "node:child_process";
-import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, matchesGlob, normalize, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { checkColours } from "../../check-colours.mjs";
+import { citedRules, parseUxResult, uxBrief, uxCounts, uxReport } from "../ux-brief.mjs";
 
-const { kitRoot, kitMainRoot, kitOwner, kitResult } = await import(
+const { kitRoot, kitMainRoot, kitOwner, kitResult, kitScore, scoreCost } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 
@@ -26,10 +27,14 @@ Bundle: <main root>/.scratch/ux/<owner>/<time>-XXXXXX/bundle.md (under 60 KB) an
 images of at most 300 KB (contact sheets and record strips); the lowest-value items are
 trimmed first and named. Raw tries: <main root>/.scratch/ux-tries/<owner>/<time>-XXXXXX/ (same name).
 The ticket (for its mock-up link) is --ticket, else the ticket the branch name ends with.
-The model review is not part of this command yet; --no-review is accepted and changes nothing.
-KIT_UX_SHOTS: executable replacing kit shots, called with the same arguments (tests).
-A failed try fails: RESULT: fail ux … broken: <feature,…>; a failed screens run adds
-screens failed: <screen,…> (its features stay untried).
+Review: one read-only reviewer (ASE_UX_MODEL, default claude-opus-5-5, effort medium, through
+agent.sh review) judges each feature in the bundle fine, looks off or broken against the rulebook
+and the mock-up. Saved beside bundle.md: ux.md (one line per feature, the rules broken), ux.json
+and the reviewer's run.log; counts go to the piece's scoreboard record as ux. --no-review skips it.
+KIT_UX_SHOTS and KIT_UX_AGENT: executables replacing kit shots and agent.sh, same arguments (tests).
+RESULT: ok ux <n> features tried, <m> scripted findings, <f> fine, <o> looks off, <b> broken, bundle <dir>.
+A failed try or a broken verdict fails with broken: <feature,…>; a failed screens run adds
+screens failed: <screen,…> (its features stay untried); an unreadable answer fails naming what is missing.
 `;
 
 /** Named kit shots screens and the source files each one shows. */
@@ -101,7 +106,6 @@ export function parseRules(markdown) {
   return new Map([...markdown.matchAll(/^- \*\*([SLBU]\d+)\*\* (.+)$/gm)].map(match => [match[1], match[2]]));
 }
 
-export const citedRules = text => [...new Set([...text.matchAll(/\b[SLBU]\d+\b/g)].map(match => match[0]))];
 
 /** Features whose Files globs match a changed path, each with the paths that matched. */
 export function touchedFeatures(features, changed) {
@@ -299,18 +303,85 @@ const signalStatus = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 };
 const running = { child: undefined, signal: undefined };
 const stopIfInterrupted = () => { if (running.signal) throw new Error(`interrupted by ${running.signal}`); };
 
-/** One kit shots run; its output goes to a log beside the shots. */
-async function shots(root, args, log) {
+/** One child run (kit shots or the reviewer); its output goes to a log. */
+async function runLogged(root, command, args, log) {
   stopIfInterrupted();
-  const runner = process.env.KIT_UX_SHOTS || join(root, "scripts/agents/kit.d/shots");
   const fd = openSync(log, "w");
-  const child = running.child = spawn(runner, args, { cwd: root, stdio: ["ignore", fd, fd] });
+  const child = running.child = spawn(command, args, { cwd: root, stdio: ["ignore", fd, fd] });
   const status = await new Promise(resolve => {
     child.once("error", error => { writeFileSync(log, `${error.message}\n`, { flag: "a" }); resolve(127); });
     child.once("close", (code, signal) => resolve(code ?? (signal ? 128 : 1)));
   }).finally(() => { closeSync(fd); running.child = undefined; });
   stopIfInterrupted();
   return status;
+}
+
+const shots = (root, args, log) => runLogged(root, process.env.KIT_UX_SHOTS || join(root, "scripts/agents/kit.d/shots"), args, log);
+
+/**
+ * The model review. The reviewer reads a copy of the bundle under this worktree, so a read-only reviewer
+ * started there can open it; its answer becomes ux.md and ux.json, and its run.log is kept beside them.
+ */
+async function reviewBundle({ root, out, git, mergeBase, features, images, rules, mockups, branch, head, startHead, startBranch, ticket, tryBroken }) {
+  const model = process.env.ASE_UX_MODEL || "claude-opus-5-5", effort = "medium";
+  console.log(`model: ${model} (${effort})`);
+  mkdirSync(join(root, ".scratch/agent"), { recursive: true });
+  const temporary = mkdtempSync(join(root, ".scratch/agent", "ux-review-"));
+  const ids = features.map(feature => feature.id);
+  // The proof taken before the tries: counts for a HEAD that moved since would sit on the record as current.
+  const score = change => {
+    if (git("rev-parse", "HEAD").trim() !== startHead || (git("branch", "--show-current").trim() || "detached") !== startBranch) {
+      console.error("problem: HEAD moved during kit ux; scoreboard not updated");
+      return;
+    }
+    kitScore({ ticket, branch, root }, record => { scoreCost(record, out, "review"); change(record); });
+  };
+  try {
+    const copy = join(temporary, "bundle"), run = join(temporary, "run"), log = join(temporary, "agent.log");
+    mkdirSync(copy);
+    for (const name of ["bundle.md", ...images]) copyFileSync(join(out, name), join(copy, name));
+    const brief = join(temporary, "brief.md");
+    writeFileSync(brief, uxBrief({ bundle: copy, features, images, rules, mockups }));
+    // agent.sh review needs a non-empty diff; on a branch with nothing committed (dev) the head commit stands in.
+    // The brief tells the reviewer to judge the bundle alone either way.
+    const scope = git("diff", "--name-only", mergeBase, "HEAD").trim() ? ["--base", mergeBase] : ["--commit", "HEAD"];
+    const agent = process.env.KIT_UX_AGENT || resolve(import.meta.dirname, "../agent.sh");
+    const status = await runLogged(root, agent, ["review", root, brief, ...scope, "--model", model, "--effort", effort, "--out", run], log);
+    if (existsSync(join(run, "run.log"))) copyFileSync(join(run, "run.log"), join(out, "run.log"));
+    let answer = "";
+    try { answer = readFileSync(join(run, "out.md"), "utf8"); } catch { /* No answer: the status explains. */ }
+    if (status) {
+      // The temporary folder goes; the reviewer's own output stays beside the bundle.
+      copyFileSync(log, join(out, "agent.log"));
+      // Its problem line names the run folder, which goes too: point it at the copies beside the bundle.
+      const problem = [...readFileSync(log, "utf8").matchAll(/^problem: (.+)$/gm)].at(-1)?.[1].replaceAll(`${run}/`, `${out}/`) ?? `agent exited ${status}`;
+      score(() => {});
+      return { problem: `review failed: ${problem}${problem.includes(out) ? "" : `; log ${join(out, "agent.log")}`}` };
+    }
+    const parsed = parseUxResult(answer, ids);
+    // Only rulebook ids count as broken rules; a made-up id stays in its note.
+    if (parsed.readable) parsed.rules = parsed.rules.filter(id => rules.has(id));
+    if (!parsed.readable) {
+      writeFileSync(join(out, "ux.md"), `# UX review: unreadable\n\nProblem: ${parsed.problem}\n\nReviewer answer (verbatim):\n\n${answer}`);
+      score(() => {});
+      return { problem: `review unreadable: ${parsed.problem} (${join(out, "ux.md")})` };
+    }
+    for (const feature of parsed.features) {
+      if (feature.image.startsWith(`${copy}/`)) feature.image = feature.image.slice(copy.length + 1);
+      // A failed try is broken whatever its images show.
+      if (tryBroken.includes(feature.id) && feature.verdict !== "broken") Object.assign(feature, { verdict: "broken", note: `try failed; reviewer: ${feature.note}` });
+    }
+    const counts = uxCounts(parsed);
+    const pick = verdict => parsed.features.filter(feature => feature.verdict === verdict).map(feature => feature.id);
+    const record = { model, effort, branch, head, bundle: out, features: parsed.features, rules: parsed.rules, counts, broken: pick("broken"), off: pick("off") };
+    const report = uxReport({ branch, model, effort, bundle: out, features: parsed.features, rules: parsed.rules, ruleText: rules });
+    writeFileSync(join(out, "ux.md"), report);
+    writeFileSync(join(out, "ux.json"), JSON.stringify(record, null, 2) + "\n");
+    score(entry => { entry.ux = counts; });
+    for (const line of report.split("\n").filter(line => line.startsWith("- F-"))) console.log(line.slice(2));
+    console.log(`report: ${join(out, "ux.json")}`);
+    return record;
+  } finally { rmSync(temporary, { recursive: true, force: true }); }
 }
 
 function readIndex(dir) {
@@ -346,6 +417,7 @@ async function main() {
     let mergeBase;
     try { mergeBase = git("merge-base", "HEAD", flags.base).trim(); }
     catch { throw new Error(`no merge-base with ${flags.base}`); }
+    const startHead = git("rev-parse", "HEAD").trim(), startBranch = git("branch", "--show-current").trim() || "detached";
     const untracked = git("-c", "core.quotePath=false", "ls-files", "--others", "--exclude-standard").split("\n").filter(Boolean);
     const changed = [...new Set([...git("-c", "core.quotePath=false", "diff", "--name-only", mergeBase).split("\n").filter(Boolean), ...untracked])];
     const features = parseFeatures(readFileSync(join(root, "docs/agents/features.md"), "utf8"));
@@ -452,7 +524,7 @@ async function main() {
     const { markdown, trimmed } = composeBundle([
       `# UX bundle: ${branch}`,
       "",
-      `Head ${head}; base ${flags.base} (merge-base ${mergeBase.slice(0, 8)}). Model review: not run in this version.`,
+      `Head ${head}; base ${flags.base} (merge-base ${mergeBase.slice(0, 8)}). Model review: ${flags.noReview ? "skipped (--no-review)" : `${process.env.ASE_UX_MODEL || "claude-opus-5-5"}, one verdict per touched feature`}.`,
       `Tries: ${tried.length} tried (${passed} passed, ${tried.length - passed} failed), ${selected.length - tried.length} untried. Scripted findings: ${findingLines.length}.`,
       `Raw tries: ${triesDir}`,
     ], [
@@ -471,8 +543,18 @@ async function main() {
     // Let a signal that arrived during the synchronous work above reach its handler first.
     await new Promise(resolve => setImmediate(resolve));
     stopIfInterrupted();
-    const failed = [...broken.length ? [`broken: ${broken.map(feature => feature.id).join(", ")}`] : [], ...screensFailed.length ? [`screens failed: ${screensFailed.join(", ")}`] : []];
-    kitResult(failed.length ? "fail" : "ok", [`ux ${tried.length} features tried, ${findingLines.length} scripted findings, bundle ${out}`, ...failed].join(", "));
+    // A failed screens run with no broken try leaves nothing a fix round answers: the slice stops on it anyway.
+    const skipReview = screensFailed.length > 0 && !broken.length;
+    if (!flags.noReview && skipReview) console.log("review: skipped, a screens run failed");
+    const review = flags.noReview || skipReview ? undefined : await reviewBundle({ root, out, git, mergeBase, features: selected, images: kept.map(image => image.name),
+      rules: rulebook, mockups, branch, head, startHead, startBranch, ticket, tryBroken: broken.map(feature => feature.id) });
+    await new Promise(resolve => setImmediate(resolve));
+    stopIfInterrupted();
+    if (review?.problem) console.error(`problem: ${review.problem}`);
+    const brokenIds = [...new Set([...broken.map(feature => feature.id), ...review?.broken ?? []])];
+    const failed = [...brokenIds.length ? [`broken: ${brokenIds.join(", ")}`] : [], ...screensFailed.length ? [`screens failed: ${screensFailed.join(", ")}`] : [], ...review?.problem ? [review.problem] : []];
+    const counts = review?.counts ? [`${review.counts.fine} fine, ${review.counts.off} looks off, ${review.counts.broken} broken`] : [];
+    kitResult(failed.length ? "fail" : "ok", [`ux ${tried.length} features tried, ${findingLines.length} scripted findings`, ...counts, `bundle ${out}`, ...failed].join(", "));
     return failed.length ? 1 : 0;
   } catch (error) {
     // A terminal signal also kills a running git child; report the signal, not the git error.

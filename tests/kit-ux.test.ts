@@ -195,6 +195,7 @@ function fixture(t: TestContext, gitConfig: [string, string][] = []) {
   const git = (...args: string[]) => {
     const output = spawnSync("git", args, { cwd: root, env, encoding: "utf8" });
     assert.equal(output.status, 0, output.stderr);
+    return output.stdout.trim();
   };
   const put = (file: string, text: string) => {
     mkdirSync(dirname(join(root, file)), { recursive: true });
@@ -233,14 +234,40 @@ writeFileSync(join(out, "index.json"), JSON.stringify({ version: 1, screens: sho
 process.exit(fail || (process.env.FAIL_EXIT_ONLY && args[0] !== "--steps") ? 1 : 0);
 `);
   chmodSync(join(root, ".scratch/shots.mjs"), 0o755);
+  // The fake reviewer answers fine for every feature the brief lists; FAKE_VERDICTS maps an id to another verdict,
+  // FAKE_ANSWER replaces the whole answer and FAKE_AGENT_FAIL fails like agent.sh. It keeps its brief and the bundle it read.
+  put(".scratch/agent.mjs", `#!${process.execPath}
+import { execFileSync } from "node:child_process";
+import { appendFileSync, copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(join(root, ".scratch/agent-calls.jsonl"))}, JSON.stringify(args) + "\\n");
+const brief = readFileSync(args[2], "utf8"), out = args[args.indexOf("--out") + 1];
+writeFileSync(${JSON.stringify(join(root, ".scratch/last-brief.md"))}, brief);
+const bundle = /^Judge only what is in the bundle: (\\S+)\\/bundle\\.md/m.exec(brief)[1];
+copyFileSync(join(bundle, "bundle.md"), ${JSON.stringify(join(root, ".scratch/last-bundle.md"))});
+mkdirSync(out, { recursive: true });
+writeFileSync(join(out, "run.log"), JSON.stringify({ type: "result", modelUsage: { [args[args.indexOf("--model") + 1]]: { inputTokens: 1000, outputTokens: 200 } } }) + "\\n");
+if (process.env.FAKE_COMMIT) execFileSync("git", ["commit", "--quiet", "--allow-empty", "-m", "moved"], { cwd: ${JSON.stringify(root)} });
+if (process.env.FAKE_AGENT_FAIL) { console.error("problem: claude failed (1); see " + join(out, "run.log")); process.exit(1); }
+const ids = /^Features to judge: (.+)$/m.exec(brief)[1].split(", "), verdicts = JSON.parse(process.env.FAKE_VERDICTS || "{}");
+const note = verdict => verdict === "fine" ? "matches its Good line" : verdict === "broken" ? "the search field is covered by the bar" : "S1: a hint line sits under the search field";
+const answer = process.env.FAKE_ANSWER ?? ["REVIEW_STATUS: complete", ...ids.map(id => id + ": " + (verdicts[id] ?? "fine") + " — " + note(verdicts[id] ?? "fine") + " — screens-contact.webp"),
+  "Rules broken: " + (Object.values(verdicts).includes("looks off") ? "S1" : "none")].join("\\n");
+writeFileSync(join(out, "out.md"), answer + "\\n");
+console.log(answer);
+`);
+  chmodSync(join(root, ".scratch/agent.mjs"), 0o755);
+  const tools = { KIT_UX_SHOTS: join(root, ".scratch/shots.mjs"), KIT_UX_AGENT: join(root, ".scratch/agent.mjs") };
   const run = (args: string[] = [], extra: NodeJS.ProcessEnv = {}) => {
-    const output = spawnSync(kit, ["ux", ...args], { cwd: root, env: { ...env, KIT_UX_SHOTS: join(root, ".scratch/shots.mjs"), ...extra }, encoding: "utf8", timeout: 30_000 });
+    const output = spawnSync(kit, ["ux", ...args], { cwd: root, env: { ...env, ...tools, ...extra }, encoding: "utf8", timeout: 30_000 });
     const lines = output.stdout.trimEnd().split("\n");
     assert.equal(lines.filter(line => line.startsWith("RESULT: ")).length, 1, output.stdout + output.stderr);
     return { ...output, result: lines.at(-1) ?? "" };
   };
-  const calls = () => existsSync(join(root, ".scratch/calls.jsonl")) ? readFileSync(join(root, ".scratch/calls.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line)) : [];
-  return { root, put, run, calls };
+  const lines = (file: string) => existsSync(join(root, file)) ? readFileSync(join(root, file), "utf8").trim().split("\n").map(line => JSON.parse(line)) : [];
+  const calls = () => lines(".scratch/calls.jsonl"), agentCalls = (): string[][] => lines(".scratch/agent-calls.jsonl");
+  return { root, env, git, put, run, calls, agentCalls, tools };
 }
 
 test("kit ux reports nothing visible touched without starting kit shots", t => {
@@ -261,7 +288,7 @@ test("kit ux tries touched features, runs scripted checks and writes a bounded b
   const output = run();
   assert.equal(output.status, 0, output.stderr + output.stdout);
   const bundle = /bundle (\S+)$/.exec(output.result)![1];
-  assert.match(output.result, /^RESULT: ok ux 1 features tried, 6 scripted findings, bundle /);
+  assert.match(output.result, /^RESULT: ok ux 1 features tried, 6 scripted findings, 2 fine, 0 looks off, 0 broken, bundle /);
   assert.ok(bundle.startsWith(join(root, ".scratch/ux/ux-test/")));
   assert.deepEqual(calls().map((args: string[]) => args.join(" ").replace(root, "<root>").replace(/--out \S+/, "--out <dir>")), [
     "--steps <root>/scripts/agents/shots/features/F-media-01.json --width 390,1280 --out <dir>",
@@ -292,11 +319,11 @@ test("kit ux with --features tries only those, and a failed try names the featur
   const { run, calls } = fixture(t);
   const output = run(["--features", "F-media-01"], { FAIL_STEP: 'expect visible "Nowhere"' });
   assert.equal(output.status, 1);
-  assert.match(output.result, /^RESULT: fail ux 1 features tried, 0 scripted findings, bundle \S+, broken: F-media-01$/);
+  assert.match(output.result, /^RESULT: fail ux 1 features tried, 0 scripted findings, 0 fine, 0 looks off, 1 broken, bundle \S+, broken: F-media-01$/);
   assert.match(output.stdout, /try F-media-01: failed: media-gallery 390 light: step expect visible "Nowhere" failed: expect visible "Nowhere" failed: nothing visible says "Nowhere"/);
   assert.equal(calls().length, 1);
   const all = run(["--all"]);
-  assert.match(all.result, /^RESULT: ok ux 2 features tried, 2 scripted findings, /);
+  assert.match(all.result, /^RESULT: ok ux 2 features tried, 2 scripted findings, 3 fine, /);
   assert.deepEqual(calls().slice(1).map((args: string[]) => args.slice(0, 2).join(" ").replace(/\S+features\//, "")), ["--steps F-media-01.json", "--steps F-media-03.json", "media-gallery --width"]);
   assert.deepEqual(calls()[2].slice(2, 4), ["--width", "1280"], "Phone: no tries 1280 only");
   const bad = run(["--features", "F-media-09"]);
@@ -305,17 +332,19 @@ test("kit ux with --features tries only those, and a failed try names the featur
 });
 
 test("kit ux fails a screens run that exits non-zero even when every shot passed", t => {
-  const { run } = fixture(t);
+  const { run, agentCalls } = fixture(t);
   const output = run(["--features", "F-media-02"], { FAIL_EXIT_ONLY: "1" });
   assert.equal(output.status, 1);
   assert.match(output.result, /^RESULT: fail ux 0 features tried, 1 scripted findings, bundle \S+, screens failed: media-gallery$/);
+  assert.match(output.stdout, /^review: skipped, a screens run failed$/m);
+  assert.deepEqual(agentCalls(), [], "no paid review when nothing a fix round answers broke");
   const bundle = /bundle (\S+),/.exec(output.result)![1];
   assert.match(readFileSync(join(bundle, "bundle.md"), "utf8"), /- F-media-02 Feature F-media-02: untried \(screens media-gallery; a screen failed\)/);
 });
 
 test("kit ux stops at a signal: no further try starts and one fail RESULT is printed", async t => {
-  const { root, calls } = fixture(t);
-  const child = spawn(kit, ["ux", "--all"], { cwd: root, env: { ...process.env, KIT_ROOT: root, KIT_MAIN_ROOT: root, ASE_OWNER: "ux-test", KIT_UX_SHOTS: join(root, ".scratch/shots.mjs"), SLEEP: "1" } });
+  const { root, calls, tools } = fixture(t);
+  const child = spawn(kit, ["ux", "--all"], { cwd: root, env: { ...process.env, KIT_ROOT: root, KIT_MAIN_ROOT: root, ASE_OWNER: "ux-test", ...tools, SLEEP: "1" } });
   let stdout = "";
   child.stdout.on("data", chunk => { stdout += chunk; });
   const closed = once(child, "close");
@@ -350,4 +379,181 @@ test("kit ux names an image it trimmed and leaves it out of the bundle", t => {
   const bundle = /bundle (\S+)$/.exec(output.result)![1];
   assert.match(readFileSync(join(bundle, "bundle.md"), "utf8"), /^- trimmed F-media-01-media-gallery-1280-light-search-strip\.webp \(over 300 KB\): \S+$/m);
   assert.deepEqual(readdirSync(bundle).filter(name => name.endsWith(".webp")), ["F-media-01-contact.webp"]);
+});
+
+type Verdict = { id: string; verdict: "fine" | "off" | "broken"; note: string; image: string };
+type Parsed = { readable: true; features: Verdict[]; rules: string[] } | { readable: false; problem: string };
+const brief: {
+  uxBrief(input: { bundle: string; features: { id: string }[]; images?: string[]; rules?: Map<string, string>; mockups?: string[] }): string;
+  parseUxResult(text: string, ids: string[]): Parsed;
+  uxCounts(input: { features: Verdict[]; rules: string[] }): { fine: number; off: number; broken: number; rules: string[] };
+} = await import(pathToFileURL(resolve("scripts/agents/ux-brief.mjs")).href);
+
+test("the reviewer's fine, looks off and broken lines parse, with their rules, notes and images", () => {
+  const answer = [
+    "REVIEW_STATUS: complete",
+    "F-media-01: fine — the grid matches its Good line — F-media-01-contact.webp",
+    "- **F-media-02**: looks off – L5: the filter label is clipped at 390 – screens-contact.webp",
+    "F-media-03: broken — the add button is covered by the bar, so nothing can be added — none",
+    "F-media-09: broken — not asked for — x.webp",
+    "Rules broken:",
+    "- S1 a hint line",
+  ].join("\n");
+  const parsed = brief.parseUxResult(answer, ["F-media-01", "F-media-02", "F-media-03"]);
+  assert.ok(parsed.readable);
+  assert.deepEqual(parsed.features, [
+    { id: "F-media-01", verdict: "fine", note: "the grid matches its Good line", image: "F-media-01-contact.webp" },
+    { id: "F-media-02", verdict: "off", note: "L5: the filter label is clipped at 390", image: "screens-contact.webp" },
+    { id: "F-media-03", verdict: "broken", note: "the add button is covered by the bar, so nothing can be added", image: "" },
+  ]);
+  assert.deepEqual(parsed.rules, ["L5", "S1"], "rules from the closing list and from a looks off line");
+  assert.deepEqual(brief.uxCounts(parsed), { fine: 1, off: 1, broken: 1, rules: ["L5", "S1"] });
+  const dashed = brief.parseUxResult("F-media-01: looks off — L5 — gap too tight at 390\nF-media-02: fine - ok - a.webp", ["F-media-01", "F-media-02"]);
+  assert.ok(dashed.readable);
+  assert.deepEqual(dashed.features.map(feature => [feature.note, feature.image]), [["L5 — gap too tight at 390", ""], ["ok", "a.webp"]],
+    "a dash inside the note is no image; plain hyphens still separate one");
+  const late = brief.parseUxResult("Rules broken: L5\n- F-media-01: broken — covered — none", ["F-media-01"]);
+  assert.ok(late.readable, "a verdict after the rules list is still read");
+  assert.deepEqual([late.features[0].verdict, late.rules], ["broken", ["L5"]]);
+  const none = brief.parseUxResult("REVIEW_STATUS: complete\nF-media-01: fine — ok\nRules broken: none", ["F-media-01"]);
+  assert.ok(none.readable);
+  assert.deepEqual(none.rules, []);
+  assert.equal(none.features[0].image, "");
+});
+
+test("an answer missing a feature or giving one two verdicts is unreadable, naming which", () => {
+  assert.deepEqual(brief.parseUxResult("REVIEW_STATUS: complete\nAll good.\n", ["F-media-01"]), { readable: false, problem: "no verdict for F-media-01" });
+  assert.deepEqual(brief.parseUxResult("F-media-01: fine — a\nF-media-01: broken — b\n", ["F-media-01"]), { readable: false, problem: "two verdicts for F-media-01" });
+  assert.deepEqual(brief.parseUxResult("F-media-01: great — a\n", ["F-media-01"]), { readable: false, problem: "no verdict for F-media-01" });
+});
+
+test("the brief keeps the reviewer on the bundle, the rulebook and the mock-up", () => {
+  const text = brief.uxBrief({ bundle: "/b", features: [{ id: "F-media-01" }, { id: "F-pages-02" }], images: ["a.webp"],
+    rules: new Map([["S1", "No explainer lines."]]), mockups: ["- mock-up: docs/m.html"] });
+  for (const line of ["Judge only what is in the bundle: /b/bundle.md and its images (/b/a.webp).", "The approved mock-up: mock-up: docs/m.html.",
+    "Features to judge: F-media-01, F-pages-02", "- S1 No explainer lines.", "never against taste of your own",
+    "Without a rule id or a mock-up difference, it is fine.", "Never suggest new text, hints, tips, counts or badges.", "REVIEW_STATUS: complete"]) assert.ok(text.includes(line), line);
+  assert.match(brief.uxBrief({ bundle: "/b", features: [{ id: "F-media-01" }] }), /No mock-up is named/);
+});
+
+const scoreboard = (root: string) => JSON.parse(readFileSync(join(root, ".scratch/scoreboard/_untracked/1-panel.json"), "utf8"));
+
+test("kit ux sends the bundle to one read-only reviewer and saves ux.md, ux.json and the counts", t => {
+  const { root, put, run, agentCalls } = fixture(t);
+  put("src/page-builder/media-picker.css", ".a { gap: var(--space); }\n.b { gap: 0; }\n");
+  put("src/page-builder/media-library-filter.ts", "export const filter = 1;\n");
+  const output = run([], { FAKE_VERDICTS: JSON.stringify({ "F-media-02": "looks off" }) });
+  assert.equal(output.status, 0, output.stderr + output.stdout);
+  assert.match(output.result, /^RESULT: ok ux 1 features tried, \d+ scripted findings, 1 fine, 1 looks off, 0 broken, bundle /);
+  const bundle = /bundle (\S+)$/.exec(output.result)![1];
+  const [args] = agentCalls();
+  // Nothing is committed past the base, so the head commit stands in as the diff scope.
+  assert.deepEqual([args[0], args[1], ...args.slice(3, 9)], ["review", root, "--commit", "HEAD", "--model", "claude-opus-5-5", "--effort", "medium"]);
+  const briefText = readFileSync(join(root, ".scratch/last-brief.md"), "utf8");
+  const copy = /^Judge only what is in the bundle: (\S+)\/bundle\.md/m.exec(briefText)![1];
+  assert.ok(copy.startsWith(join(root, ".scratch/agent/ux-review-")), "the reviewer reads a copy inside the worktree");
+  assert.equal(existsSync(copy), false, "the copy is removed afterwards");
+  assert.equal(readFileSync(join(root, ".scratch/last-bundle.md"), "utf8"), readFileSync(join(bundle, "bundle.md"), "utf8"));
+  assert.match(briefText, /^Features to judge: F-media-01, F-media-02$/m);
+  assert.match(output.stdout, /^model: claude-opus-5-5 \(medium\)$/m);
+  assert.match(output.stdout, /^F-media-02: looks off — S1: a hint line sits under the search field — \S+\/screens-contact\.webp$/m);
+  const report = readFileSync(join(bundle, "ux.md"), "utf8");
+  assert.ok(report.includes(`- F-media-01: fine — matches its Good line — ${bundle}/screens-contact.webp`), report);
+  assert.ok(report.includes("Rules broken: S1 (No explainer lines.)"), report);
+  const json = JSON.parse(readFileSync(join(bundle, "ux.json"), "utf8"));
+  assert.deepEqual([json.model, json.effort, json.off, json.broken], ["claude-opus-5-5", "medium", ["F-media-02"], []]);
+  assert.ok(existsSync(join(bundle, "run.log")));
+  const record = scoreboard(root);
+  assert.deepEqual(record.ux, { fine: 1, off: 1, broken: 0, rules: ["S1"] });
+  assert.deepEqual(record.cost.review, { usd: null, tokens: 1200 });
+});
+
+test("kit ux fails a broken verdict, an unreadable answer and a failed reviewer with one clear line", t => {
+  const { root, run, agentCalls } = fixture(t);
+  const broken = run(["--features", "F-media-02"], { FAKE_VERDICTS: JSON.stringify({ "F-media-02": "broken" }), ASE_UX_MODEL: "claude-sonnet-5-5" });
+  assert.equal(broken.status, 1);
+  assert.match(broken.result, /^RESULT: fail ux 0 features tried, \d+ scripted findings, 0 fine, 0 looks off, 1 broken, bundle \S+, broken: F-media-02$/);
+  assert.equal(agentCalls()[0][agentCalls()[0].indexOf("--model") + 1], "claude-sonnet-5-5");
+  assert.deepEqual(scoreboard(root).ux, { fine: 0, off: 0, broken: 1, rules: [] });
+  const unreadable = run(["--features", "F-media-02"], { FAKE_ANSWER: "REVIEW_STATUS: complete\nLooks nice overall." });
+  assert.equal(unreadable.status, 1);
+  assert.match(unreadable.result, /, bundle (\S+), review unreadable: no verdict for F-media-02 \(\1\/ux\.md\)$/);
+  const bundle = /bundle (\S+),/.exec(unreadable.result)![1];
+  assert.match(readFileSync(join(bundle, "ux.md"), "utf8"), /Problem: no verdict for F-media-02[\s\S]*Looks nice overall\./);
+  assert.equal(existsSync(join(bundle, "ux.json")), false);
+  const failed = run(["--features", "F-media-02"], { FAKE_AGENT_FAIL: "1" });
+  assert.equal(failed.status, 1);
+  const named = /, review failed: claude failed \(1\); see (\S+run\.log)$/.exec(failed.result);
+  assert.ok(named, failed.result);
+  assert.ok(named[1].startsWith(`${/bundle (\S+),/.exec(failed.result)![1]}/`) && existsSync(named[1]), "the log the RESULT names sits beside the bundle");
+});
+
+test("kit ux --no-review packs the bundle without a reviewer", t => {
+  const { run, agentCalls } = fixture(t);
+  const output = run(["--features", "F-media-02", "--no-review"]);
+  assert.equal(output.status, 0, output.stderr);
+  assert.match(output.result, /^RESULT: ok ux 0 features tried, \d+ scripted findings, bundle \S+$/);
+  assert.deepEqual(agentCalls(), []);
+  const bundle = /bundle (\S+)$/.exec(output.result)![1];
+  assert.equal(existsSync(join(bundle, "ux.json")), false);
+  assert.match(readFileSync(join(bundle, "bundle.md"), "utf8"), /Model review: skipped \(--no-review\)\./);
+});
+
+test("kit ux scopes the reviewer to the merge-base once work is committed past it", t => {
+  const { git, put, run, agentCalls } = fixture(t);
+  put("src/page-builder/media-library-filter.ts", "export const filter = 2;\n");
+  git("commit", "--quiet", "-am", "work");
+  const base = git("rev-parse", "origin/dev");
+  const output = run(["--features", "F-media-02"]);
+  assert.equal(output.status, 0, output.stderr + output.stdout);
+  const [args] = agentCalls();
+  assert.deepEqual(args.slice(3, 5), ["--base", base]);
+});
+
+test("the real agent.sh review path hands a read-only Claude the bundle copy and its answer parses", t => {
+  const { root, env, git, put, run } = fixture(t);
+  put("src/page-builder/media-library-filter.ts", "export const filter = 2;\n");
+  git("commit", "--quiet", "-am", "work");
+  // The fake claude answers only when it can read the bundle the brief names, and records its arguments and prompt.
+  const bin = join(root, ".scratch/bin");
+  put(".scratch/bin/claude", `#!${process.execPath}
+const { existsSync, readFileSync, writeFileSync } = require("node:fs");
+const prompt = readFileSync(0, "utf8"), args = process.argv.slice(2);
+writeFileSync(${JSON.stringify(join(root, ".scratch/claude-call.json"))}, JSON.stringify({ args, prompt }));
+const bundle = /^Judge only what is in the bundle: (\\S+)\\/bundle\\.md/m.exec(prompt)?.[1];
+const seen = bundle && existsSync(bundle + "/bundle.md") && readFileSync(bundle + "/bundle.md", "utf8").includes("# UX bundle");
+const result = seen ? "REVIEW_STATUS: complete\\nF-media-02: looks off — S1: a hint line under the filter — screens-contact.webp\\nRules broken: S1" : "REVIEW_STATUS: complete\\nno bundle";
+console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result, session_id: "ux-session",
+  modelUsage: { "claude-opus-5-5": { inputTokens: 300, outputTokens: 40 } } }));
+`);
+  chmodSync(join(bin, "claude"), 0o755);
+  const output = run(["--features", "F-media-02"], { KIT_UX_AGENT: "", PATH: `${bin}:${env.PATH}`, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "20s" });
+  assert.equal(output.status, 0, output.stderr + output.stdout);
+  assert.match(output.result, /, 0 fine, 1 looks off, 0 broken, bundle /);
+  const call = JSON.parse(readFileSync(join(root, ".scratch/claude-call.json"), "utf8"));
+  assert.deepEqual(call.args.slice(0, 7), ["-p", "--model", "claude-opus-5-5", "--effort", "medium", "--permission-mode", "plan"]);
+  assert.equal(call.args[call.args.indexOf("--tools") + 1], "Read,Grep,Glob");
+  assert.match(call.prompt, /do not open the diff, commit log or refs files/);
+  assert.match(call.prompt, /^Review scope: git diff \S+\.\.\.\S+\./m, "agent.sh still appends its scope after the brief");
+  const bundle = /bundle (\S+)$/.exec(output.result)![1];
+  assert.match(readFileSync(join(bundle, "run.log"), "utf8"), /"claude-opus-5-5"/);
+  assert.equal(JSON.parse(readFileSync(join(bundle, "ux.json"), "utf8")).off[0], "F-media-02");
+  assert.deepEqual(readdirSync(join(root, ".scratch/agent")), [], "the reviewer's copy and run folder are removed");
+});
+
+test("kit ux counts only rulebook ids as broken rules", t => {
+  const { root, run } = fixture(t);
+  const output = run(["--features", "F-media-02"], { FAKE_ANSWER: "REVIEW_STATUS: complete\nF-media-02: looks off — S9 and S1: a hint line — none\nRules broken: S9, S1" });
+  assert.equal(output.status, 0, output.stderr + output.stdout);
+  const bundle = /bundle (\S+)$/.exec(output.result)![1];
+  assert.deepEqual(JSON.parse(readFileSync(join(bundle, "ux.json"), "utf8")).rules, ["S1"]);
+  assert.deepEqual(scoreboard(root).ux.rules, ["S1"]);
+});
+
+test("kit ux leaves the scoreboard alone when HEAD moved during its run", t => {
+  const { root, run } = fixture(t);
+  const output = run(["--features", "F-media-02"], { FAKE_COMMIT: "1" });
+  assert.equal(output.status, 0, output.stderr + output.stdout);
+  assert.match(output.stderr, /^problem: HEAD moved during kit ux; scoreboard not updated$/m);
+  assert.equal(existsSync(join(root, ".scratch/scoreboard/_untracked/1-panel.json")), false);
 });
