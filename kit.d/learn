@@ -1,0 +1,277 @@
+#!/usr/bin/env node
+// kit: group Lex's repeated corrections for the chat-learning routine; reads only, writes one bundle
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, dirname, join, relative, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { feedbackKinds, loadFeedback } from "../tickets.mjs";
+import { composeBundle } from "./ux";
+
+const { kitRoot, kitMainRoot, kitResult } = await import(
+  pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
+);
+
+export const bundleLimit = 40_000;
+export const defaultSlug = "native-site-editor";
+const usage = `Usage: kit learn [--since 14d|Nd|YYYY-MM-DD] [--project <slug>]
+Reads, never writes, the chat project's corrections list <memory>/corrections/<slug>.md (memory is
+KIT_CHAT_MEMORY, else ~/Projects/chat/memory; the slug comes from project-notes/README.md's project
+map by this repo's workspace, default ${defaultSlug}) and this checkout's docs/wayfinder/*/build/feedback.md.
+Groups corrections that repeat (a repeats: date, or the same kind and close wording), marks each
+group covered? when its key words appear in docs/agents/ux-rulebook.md or docs/agents/guardrails.md,
+and writes main root .scratch/learn/<date>/bundle.md (under ${bundleLimit} bytes). A group counts when
+one of its lines falls in the window (default 14d). A malformed line is reported, not fatal.
+Nothing in the window: RESULT: ok learn nothing recorded yet.
+`;
+const day = 86_400_000;
+const nothing = "learn nothing recorded yet";
+const correctionsHeading = "## Corrections";
+const slugPattern = /^[a-z0-9][a-z0-9._-]*$/;
+
+function realDate(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  return Boolean(match) && new Date(Date.UTC(+match[1], match[2] - 1, +match[3])).toISOString().slice(0, 10) === value;
+}
+
+export function parseArgs(args) {
+  let since, project;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--since" && args[i + 1] !== undefined && since === undefined) since = args[++i];
+    else if (args[i] === "--project" && args[i + 1] !== undefined && project === undefined) project = args[++i];
+    else throw new Error(`invalid argument: ${args[i]}`);
+  }
+  since ??= "14d";
+  if (!/^[1-9]\d{0,2}d$/.test(since) && !realDate(since)) throw new Error(`invalid --since: ${since} (use Nd or YYYY-MM-DD)`);
+  if (project !== undefined && !slugPattern.test(project)) throw new Error(`invalid --project: ${project}`);
+  return { since, project };
+}
+
+const localDate = date => {
+  const pad = number => String(number).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+};
+
+/** The first day in the window as a local date, the form both lists use. */
+export function sinceDate(since, now = Date.now()) {
+  const days = /^(\d+)d$/.exec(since);
+  return days ? localDate(new Date(now - (Number(days[1]) - 1) * day)) : since;
+}
+
+export const memoryRoot = () => process.env.KIT_CHAT_MEMORY || join(homedir(), "Projects/chat/memory");
+
+const real = path => { try { return realpathSync(path); } catch { return resolve(path); } };
+
+/** Slug and workspace of each project-map row: the slug cell and the first path in the Workspace cell. */
+export function projectMap(readme) {
+  const rows = [];
+  let header;
+  for (const line of readme.split("\n")) {
+    if (!line.startsWith("|")) { header = undefined; continue; }
+    const cells = line.trim().replace(/^\||\|$/g, "").split("|").map(cell => cell.trim());
+    if (!header) { header = cells.map(cell => cell.toLowerCase()); continue; }
+    const slug = cells[header.indexOf("slug")], path = /`([~/][^`]*)`/.exec(cells[header.indexOf("workspace")] ?? "")?.[1];
+    if (slug && path && slugPattern.test(slug)) rows.push({ slug, workspace: path === "~" || path.startsWith("~/") ? join(homedir(), path.slice(1)) : path });
+  }
+  return rows;
+}
+
+/** The row whose workspace is this checkout or its main root, or whose sibling `<workspace>-*` this checkout is. */
+export function findSlug(rows, roots) {
+  const here = roots.map(real);
+  const match = rows.filter(row => here.some(path => path === real(row.workspace)
+    || (dirname(path) === dirname(real(row.workspace)) && basename(path).startsWith(`${basename(row.workspace)}-`))));
+  // The longest workspace wins, so native-site-editor-starter is not a native-site-editor worktree.
+  return match.sort((a, b) => b.workspace.length - a.workspace.length)[0]?.slug;
+}
+
+const correctionLine = /^- (\S+) · (\S+) · (.+?) · repeats: (.+?) · (\[[^\]]*\]\([^)\s]*\).*)$/;
+
+/**
+ * Lines under the file's `## Corrections` heading, up to the next `#` or `##` heading; `###` subheadings
+ * and blank lines may group them. A line that does not fit the format is a problem, not a stop.
+ */
+export function parseCorrections(text, file) {
+  const lines = text.replace(/^﻿/, "").split(/\r?\n/), entries = [], problems = [];
+  const start = lines.indexOf(correctionsHeading);
+  if (start < 0) {
+    if (text.trim()) problems.push({ file, line: 1, message: `missing ${correctionsHeading} heading` });
+    return { entries, problems };
+  }
+  for (let i = start + 1; i < lines.length && !/^#{1,2} /.test(lines[i]); i++) {
+    if (!lines[i].trim() || lines[i].startsWith("### ")) continue;
+    const match = correctionLine.exec(lines[i]);
+    const problem = message => problems.push({ file, line: i + 1, message });
+    if (!match) { problem("malformed correction line (want date · kind · text · repeats: … · [thread](…))"); continue; }
+    const [, date, kind, text, repeats, source] = match;
+    if (!realDate(date)) { problem(`invalid date: ${date}`); continue; }
+    if (!Object.hasOwn(feedbackKinds, kind)) { problem(`invalid kind: ${kind}`); continue; }
+    entries.push({ date, kind, text, repeats: repeats.trim(), source: source.replace(/\]\([^)]*\).*$/, "]").slice(1, -1), file, line: i + 1 });
+  }
+  return { entries, problems };
+}
+
+const stopWords = new Set(("the and for with that this then when what from into his her their they them its was were are but not all any " +
+  "one too also more should would could can want wants wanted need needs there here have has had just only very like about after before " +
+  "does did out own each other same than been being our you your lex agent agents said asked says say make made get got use used it's " +
+  "today now instead which who how why where while because so again still back").split(" "));
+
+/** A rough stem, so "replacing" meets "replace" and "explainers" meets "explainer". */
+const stem = word => word.replace(/'s$/, "").replace(/(ing|ed|es|ly)$/, (suffix, offset) => offset > 3 ? "" : suffix)
+  .replace(/s$/, (suffix, offset) => offset > 2 && !word.endsWith("ss") ? "" : suffix).replace(/e$/, (suffix, offset) => offset > 3 ? "" : suffix);
+
+/**
+ * Key words of a correction or rule: lower case, stop words and the sync's own "Borderline: …" note
+ * set aside, each stemmed.
+ */
+export function keyWords(text) {
+  const own = text.replace(/\bBorderline:.*$/s, "");
+  return new Set((own.toLowerCase().match(/[a-z0-9][a-z0-9']*/g) ?? []).filter(word => word.length >= 3 && !stopWords.has(word))
+    .map(stem).filter(word => !stopWords.has(word)));
+}
+
+const sharedWords = (a, b) => [...a].filter(word => b.has(word)).length;
+
+/** Shared key words over all key words of the two: 1 is the same wording, 0 nothing in common. */
+export function similarity(a, b) {
+  const shared = sharedWords(a, b);
+  return shared / (a.size + b.size - shared || 1);
+}
+
+export const closeWording = 0.5, linkWords = 2;
+
+/**
+ * Groups of corrections that repeat. A `repeats:` date links a line to the closest same-file line of that
+ * date (same kind first, then wording; another kind needs two shared key words); a date not in the list still counts as one earlier time. Any two
+ * lines of one kind whose wording is close are linked too.
+ */
+export function groupCorrections(entries, otherSlugs = []) {
+  const items = entries.map((entry, index) => ({ ...entry, index, words: keyWords(entry.text), outside: [] }));
+  const parent = items.map((_, index) => index);
+  const find = index => parent[index] === index ? index : (parent[index] = find(parent[index]));
+  const join = (a, b) => { parent[find(a)] = find(b); };
+  for (const item of items) {
+    if (item.repeats === undefined || /^first\b/.test(item.repeats)) continue;
+    const other = otherSlugs.find(slug => new RegExp(`(^|[^a-z0-9-])${slug.replace(/[.]/g, "\\.")}([^a-z0-9-]|$)`).test(item.repeats));
+    for (const date of item.repeats.match(/\d{4}-\d{2}-\d{2}/g) ?? []) {
+      // A line of another kind must share some wording, or the earlier time is one the list never recorded.
+      const candidates = other ? [] : items.filter(candidate => candidate !== item && candidate.file === item.file && candidate.date === date
+        && (candidate.kind === item.kind || sharedWords(item.words, candidate.words) >= linkWords));
+      const best = candidates.sort((a, b) => Number(b.kind === item.kind) - Number(a.kind === item.kind)
+        || similarity(item.words, b.words) - similarity(item.words, a.words))[0];
+      if (best) join(item.index, best.index);
+      else item.outside.push(other ? `${date} in ${other}` : date);
+    }
+  }
+  for (const a of items) for (const b of items) {
+    if (a.index < b.index && a.kind === b.kind && similarity(a.words, b.words) >= closeWording) join(a.index, b.index);
+  }
+  const groups = new Map();
+  for (const item of items) {
+    const root = find(item.index);
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root).push(item);
+  }
+  return [...groups.values()].map(members => {
+    members.sort((a, b) => b.date.localeCompare(a.date) || a.index - b.index);
+    const outside = [...new Set(members.flatMap(member => member.outside))].sort();
+    return { members, outside, times: members.length + outside.length, kinds: [...new Set(members.map(member => member.kind))] };
+  });
+}
+
+/** Rule blocks of a markdown file: a list item or heading with its indented continuation lines. */
+export function ruleBlocks(text, file) {
+  const blocks = [];
+  text.split(/\r?\n/).forEach((line, index) => {
+    if (/^(\s{0,3}[-*] |#{1,6} |\d+\. )/.test(line) || !blocks.length) blocks.push({ file, line: index + 1, text: line });
+    else if (line.trim()) blocks[blocks.length - 1].text += ` ${line.trim()}`;
+  });
+  return blocks.map(block => ({ ...block, id: /\*\*([A-Z]{1,3}\d+)\*\*/.exec(block.text)?.[1], words: keyWords(block.text) }));
+}
+
+export const coverWords = 3;
+
+/** The rule block sharing the most key words with the group, when it shares at least three. */
+export function coveredBy(group, blocks) {
+  const words = new Set(group.members.flatMap(member => [...member.words]));
+  let best;
+  for (const block of blocks) {
+    const shared = [...words].filter(word => block.words.has(word));
+    if (shared.length >= coverWords && (!best || shared.length > best.shared.length)) best = { ...block, shared };
+  }
+  return best;
+}
+
+const clip = (text, length) => text.length > length ? `${text.slice(0, length - 1)}…` : text;
+
+export function groupLines(group, root, blocks) {
+  const cover = coveredBy(group, blocks);
+  const sources = [...new Set(group.members.map(member => member.source))];
+  const dates = [...new Set([...group.members.map(member => member.date), ...group.outside])].sort().reverse();
+  const crossDay = group.members.some(a => group.members.some(b => a.origin !== b.origin && a.date === b.date && a.kind === b.kind));
+  return [
+    `- **×${group.times} · ${group.kinds.join(", ")}** · ${dates.join(", ")} · ${sources.join("; ")}`,
+    `  - covered?: ${cover ? `${relative(root, cover.file)}:${cover.line}${cover.id ? ` (${cover.id})` : ""}, shared key words: ${cover.shared.join(", ")}` : "no rule or guardrail shares 3 key words"}`,
+    ...group.outside.length ? [`  - earlier time not in the list: ${group.outside.join(", ")}`] : [],
+    ...crossDay ? ["  - one day in both lists: may be one correction recorded twice"] : [],
+    ...group.members.map(member => `  - ${member.date} · ${member.kind} · ${clip(member.text, 300)} (${member.where})`),
+  ];
+}
+
+function learn(args) {
+  let flags;
+  try { flags = parseArgs(args); }
+  catch (error) { process.stderr.write(usage); kitResult("fail", `learn ${error.message}`); return 2; }
+  try {
+    const root = resolve(kitRoot()), main = resolve(kitMainRoot()), memory = memoryRoot(), now = Date.now(), since = sinceDate(flags.since, now);
+    const readme = join(memory, "project-notes/README.md");
+    const rows = existsSync(readme) ? projectMap(readFileSync(readme, "utf8")) : [];
+    const slug = flags.project ?? findSlug(rows, [root, main]) ?? defaultSlug;
+    const file = join(memory, "corrections", `${slug}.md`);
+    const chat = existsSync(file) ? parseCorrections(readFileSync(file, "utf8"), file) : { entries: [], problems: [] };
+    const wayfinder = join(root, "docs/wayfinder");
+    const feedback = existsSync(wayfinder) ? loadFeedback(wayfinder) : { entries: [], problems: [] };
+    const problems = [...chat.problems, ...feedback.problems];
+    const entries = [
+      ...chat.entries.map(entry => ({ ...entry, origin: "chat", where: `${basename(file)}:${entry.line}`, source: `chat: ${entry.source}` })),
+      ...feedback.entries.map(entry => ({ ...entry, origin: "feedback", where: `${relative(root, entry.file)}:${entry.line}`,
+        source: `feedback: ${relative(wayfinder, entry.file).split("/")[0]}` })),
+    ];
+    for (const problem of problems) console.log(`${problem.file}:${problem.line}: ${problem.message}`);
+    const groups = groupCorrections(entries, rows.map(row => row.slug).filter(other => other !== slug))
+      .filter(group => group.members.some(member => member.date >= since));
+    if (!groups.length) {
+      console.log(`corrections: ${existsSync(file) ? file : `${file} (missing)`}`);
+      kitResult("ok", problems.length ? `${nothing} (${problems.length} malformed)` : nothing);
+      return 0;
+    }
+    groups.sort((a, b) => b.times - a.times || b.members[0].date.localeCompare(a.members[0].date));
+    const blocks = ["docs/agents/ux-rulebook.md", "docs/agents/guardrails.md"].map(path => join(root, path))
+      .filter(path => existsSync(path)).flatMap(path => ruleBlocks(readFileSync(path, "utf8"), path));
+    const repeated = groups.filter(group => group.times > 1), once = groups.filter(group => group.times === 1);
+    const inWindow = entries.filter(entry => entry.date >= since).length;
+    const date = localDate(new Date(now));
+    const { markdown } = composeBundle([`# Learning bundle ${date}`, "",
+      `Since ${since} (--since ${flags.since}); project ${slug}. Corrections list ${existsSync(file) ? file : `${file} (missing: nothing recorded yet)`},`,
+      `read only; build feedback logs from ${relative(root, wayfinder)}/*/build/feedback.md. ${inWindow} lines in the window, ${repeated.length} groups given more than once.`,
+      "Grouping by close wording and covered? are key-word guesses; the routine confirms each one."], [
+      { title: "Given more than once", priority: 9, lines: repeated.length ? repeated.flatMap(group => groupLines(group, root, blocks)) : ["- none"] },
+      { title: "Given once", priority: 5, lines: once.length ? once.flatMap(group => groupLines(group, root, blocks)) : ["- none"] },
+      { title: "Malformed lines", priority: 7, lines: problems.length ? problems.map(problem => `- ${problem.file}:${problem.line}: ${problem.message}`) : ["- none"] },
+    ], bundleLimit);
+    const dir = join(main, ".scratch/learn", date), path = join(dir, "bundle.md");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path, markdown);
+    for (const group of repeated) console.log(`×${group.times} ${group.kinds.join(", ")}: ${clip(group.members[0].text, 100)}`);
+    kitResult("ok", `learn ${repeated.length} repeated of ${groups.length} groups${problems.length ? `, ${problems.length} malformed` : ""}, bundle ${path}`);
+    return 0;
+  } catch (error) {
+    console.error(`problem: ${error.message}`);
+    kitResult("fail", `learn ${error.message.split("\n", 1)[0]}`);
+    return 1;
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  if (process.argv.length === 3 && ["--help", "-h"].includes(process.argv[2])) process.stdout.write(usage);
+  else process.exitCode = learn(process.argv.slice(2));
+}
