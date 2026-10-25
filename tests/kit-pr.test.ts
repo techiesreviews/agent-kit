@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
-import { checkSteps, classify, focusedUnitFiles, parseChanges } from "../scripts/agents/pr-tier.mjs";
+import { checkSteps, classify, featureListGuard, focusedUnitFiles, parseChanges, visiblePath } from "../scripts/agents/pr-tier.mjs";
 import { sameReviewPatch } from "../scripts/agents/review-findings.mjs";
 import { forEachAwait } from "./support/await-race.ts";
 import type { ScoreRecord } from "./kit-score.test.ts";
@@ -695,13 +695,68 @@ test("a tests-only PR runs check, the affected unit files, lint, specs and the r
 });
 
 test("a CSS-only PR runs the colour check and specs, keeps the review and reminds about shots", t => {
-  const f = fixture(t, { "src/styles/app.css": "a { color: var(--ink); }\n" }), result = f.run(["--no-merge"]);
+  const f = fixture(t, { "src/styles/app.css": "a { color: var(--ink); }\n" });
+  const result = f.run(["--no-merge", "--waive", "Colour token rename"], { ASE_OWNER: "ke-lead" });
   assert.equal(result.status, 0, result.stderr); assert.match(result.stdout, /^tier: css \(1 file, all css\)$/m);
   assert.match(result.stdout, /reminder: visible CSS changes need kit shots evidence/);
   const calls = f.calls();
   assert.equal(calls.filter(call => call.tool === "check-colours.mjs").length, 1);
   assert.equal(calls.some(call => call.tool === "npm" || call.tool === "unit.sh"), false);
   for (const name of ["specs", "review"]) assert.ok(calls.some(call => call.tool === "fake-kit" && call.args[0] === name), name);
+});
+
+test("visible paths: CSS, components, ui, page builder except rules, icons and index.html", () => {
+  for (const path of ["src/styles/app.css", "src/page-builder/panel.css", "src/components/button.ts", "src/ui/menu.ts",
+    "src/page-builder/edit-bar.ts", "src/icons.ts", "index.html"]) assert.equal(visiblePath(path), true, path);
+  for (const path of ["src/page-builder/rules/sections.ts", "src/main.ts", "worker/a.css", "docs/agents/features.md",
+    "tests/a.test.ts", "fixtures/native-starter/index.html", "src/icons.test.ts"]) assert.equal(visiblePath(path), false, path);
+  const css = rows("src/styles/app.css");
+  assert.deepEqual(featureListGuard(css), { ok: false, line: "Feature list: missing; src/styles/app.css is visible" });
+  assert.deepEqual(featureListGuard([...css, ...rows("docs/agents/features.md")]), { ok: true, line: "Feature list: updated (docs/agents/features.md)" });
+  const ticket = "---\ntitle: T\n---\n\nFeature list: no change (not in Done)\n\n## Done (2026-10-25)\n\nBehaviour.\nFeature list: no change (token rename only)\n";
+  assert.deepEqual(featureListGuard(css, { ticketText: ticket }), { ok: true, line: "Feature list: no change (token rename only)" });
+  // The line only counts inside the last Done section, and needs a reason.
+  assert.equal(featureListGuard(css, { ticketText: "Feature list: no change (outside)\n\n## Done\n\nBehaviour.\n" }).ok, false);
+  assert.equal(featureListGuard(css, { ticketText: "## Done\n\nX.\n\n## Notes\n\nFeature list: no change (later section)\n" }).ok, false);
+  assert.equal(featureListGuard(css, { ticketText: "## Done\n\nFeature list: no change ()\n" }).ok, false);
+  assert.deepEqual(featureListGuard(css, { waive: "Lead\naccepts" }), { ok: true, line: "Feature list: waived (Lead accepts); src/styles/app.css is visible" });
+  for (const changes of [rows("src/page-builder/rules/sections.ts"), rows("docs/a.md", "tests/a.test.ts"), rows("src/main.ts")])
+    assert.deepEqual(featureListGuard(changes), { ok: true });
+});
+
+test("a visible change without the feature list or a Done line stops before checks, push or CI", t => {
+  for (const ticket of [false, true]) {
+    const f = fixture(t, { "src/styles/app.css": "a { color: var(--ink); }\n" }), result = f.run(ticket ? ["--ticket", "ticket.md"] : []);
+    assert.equal(result.status, 1);
+    assert.ok(result.stdout.includes('RESULT: fail features: visible change without a feature-list update; edit docs/agents/features.md or add "Feature list: no change (<reason>)" to the ticket\'s Done'), result.stdout);
+    assert.ok(result.stderr.includes('problem: visible change without a feature-list update; edit docs/agents/features.md or add "Feature list: no change (<reason>)" to the ticket\'s Done\n'), result.stderr);
+    assert.match(result.stdout, /^Feature list: missing; src\/styles\/app\.css is visible$/m);
+    assert.equal(f.calls().some(call => call.tool !== "fake-kit" || call.args[0] !== "deps"), false);
+    assert.equal(f.gitAt(f.origin, "branch", "--list", "feature/kit-pr"), "");
+  }
+});
+
+test("a visible change proceeds with a features.md change, a Done line or a lead's waiver, and the PR body says which", t => {
+  const css = { "src/styles/app.css": "a { color: var(--ink); }\n" };
+  const done = '---\ntitle: "Ticket title"\n---\n\nTask\n\n## Done (2026-10-25)\n\nRenamed a token.\nFeature list: no change (token rename only)\n';
+  for (const [changes, args, overrides, line] of [
+    [{ ...css, "docs/agents/features.md": "# Feature list\n" }, [], {}, "Feature list: updated (docs/agents/features.md)"],
+    [{ ...css, "ticket.md": done }, ["--ticket", "ticket.md"], {}, "Feature list: no change (token rename only)"],
+    [css, ["--waive", "Lead accepts"], { ASE_OWNER: "ke-lead" }, "Feature list: waived (Lead accepts); src/styles/app.css is visible"],
+  ] as const) {
+    const f = fixture(t, changes), result = f.run(["--no-merge", ...args], overrides);
+    assert.equal(result.status, 0, result.stdout + result.stderr); assert.match(result.stdout, /RESULT: ok opened #73/);
+    assert.ok(result.stdout.includes(`${line}\n`), result.stdout);
+    assert.match(f.body(), new RegExp(`## Tests\\n\\nTier: css \\([^)]*\\)\\n${line.replace(/[()]/g, "\\$&")}\\n`));
+  }
+});
+
+test("page-builder rules, docs-only and tests-only PRs are untouched by the feature-list guard", t => {
+  for (const changes of [{ "src/page-builder/rules/sections.ts": "export {};\n" }, { "docs/guide.md": "# Guide\n" }, { "tests/a.test.ts": "// changed\n" }]) {
+    const f = fixture(t, changes), result = f.run(["--no-merge"]);
+    assert.equal(result.status, 0, result.stdout + result.stderr); assert.match(result.stdout, /RESULT: ok opened #73/);
+    assert.doesNotMatch(result.stdout, /Feature list/); assert.doesNotMatch(f.body(), /Feature list/);
+  }
 });
 
 test("--full forces today's checks on a docs-only PR; a failing doc guard stops before push", t => {

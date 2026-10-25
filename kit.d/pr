@@ -10,8 +10,8 @@ import { afterFixRounds, blockingFindings, completedFixRounds, FIX_ROUNDS, openF
 const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv, kitScore } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const { checkSteps, classify, focusedUnitFiles, parseChanges } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
-const usage = 'Usage: kit pr [--base dev] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release] [--full] [--waive "<reason>"]\n--waive requires a *-lead owner; records the reason for merging with open findings.\n';
+const { checkSteps, classify, featureListGuard, featureListProblem, focusedUnitFiles, parseChanges } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
+const usage = 'Usage: kit pr [--base dev] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release] [--full] [--waive "<reason>"]\n--waive requires a *-lead owner; records the reason for merging with open findings or without a feature-list update.\n';
 const kit = process.env.KIT_PR_KIT || resolve(import.meta.dirname, "../kit");
 
 function options(args) {
@@ -207,7 +207,14 @@ async function main(args) {
     const { steps, review } = checkSteps(plan);
     console.log(`tier: ${plan.tier} (${plan.reason})`);
     if (plan.tier === "css") console.log("reminder: visible CSS changes need kit shots evidence");
-    const tests = [`Tier: ${plan.tier} (${plan.reason})`, ""];
+    step = "features";
+    const features = featureListGuard(changes, { ticketText: flags.ticket ? readFileSync(resolve(root, flags.ticket), "utf8") : "", waive: flags.waive });
+    if (features.line) console.log(features.line);
+    if (!features.ok) {
+      console.error(`problem: ${featureListProblem}`);
+      throw new Error(featureListProblem);
+    }
+    const tests = [`Tier: ${plan.tier} (${plan.reason})`, ...(features.line ? [features.line] : []), ""];
     const sources = () => Object.fromEntries(readdirSync(join(root, "tests")).filter(name => name.endsWith(".test.ts"))
       .map(name => [`tests/${name}`, readFileSync(join(root, "tests", name), "utf8")]));
     const commands = {

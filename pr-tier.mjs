@@ -14,6 +14,25 @@ export function pathTier({ status, path }) {
   return "full";
 }
 
+/** Paths a user can see; `kit pr` requires a feature-list update for them and `kit ux` reads the same list. */
+export const visiblePaths = [/^src\/.+\.css$/i, /^src\/components\//, /^src\/ui\//, /^src\/page-builder\/(?!rules\/)/, /^src\/icons\.ts$/, /^index\.html$/];
+export const featureList = "docs/agents/features.md";
+export const visiblePath = path => visiblePaths.some(pattern => pattern.test(path));
+export const featureListProblem = `visible change without a feature-list update; edit ${featureList} or add "Feature list: no change (<reason>)" to the ticket's Done`;
+
+/** Feature-list guard for a PR: { ok, line } where `line` is the PR body note, or undefined when nothing visible changed. */
+export function featureListGuard(changes, { ticketText = "", waive } = {}) {
+  const visible = changes.filter(({ path }) => visiblePath(path));
+  if (!visible.length) return { ok: true };
+  if (changes.some(({ path }) => path === featureList)) return { ok: true, line: `Feature list: updated (${featureList})` };
+  const done = [...ticketText.matchAll(/^## Done\b.*$/gm)].at(-1);
+  const rest = done ? ticketText.slice(done.index + done[0].length) : "";
+  const reason = /^\s*(?:[-*]\s+)?Feature list: no change \(([^)\r\n]+)\)/m.exec(rest.split(/^## /m)[0])?.[1].trim();
+  if (reason) return { ok: true, line: `Feature list: no change (${reason})` };
+  if (waive) return { ok: true, line: `Feature list: waived (${waive.replace(/[\r\n]+/g, " ")}); ${visible[0].path} is visible` };
+  return { ok: false, line: `Feature list: missing; ${visible[0].path} is visible` };
+}
+
 /** Parse `git diff --name-status --no-renames` output into { status, path } rows. */
 export function parseChanges(text) {
   return text.split(/\r?\n/).filter(Boolean).map(line => {
