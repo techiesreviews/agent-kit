@@ -41,7 +41,7 @@ if [[ $1 == bg && $2 == --list ]]; then
 fi
 printf '%s|%s|%s|%s\\n' "$PWD" "$ASE_REVIEW_MODEL" "$ASE_OWNER" "$*" >> "$FAKE_KIT_LOG"
 [[ -z \${FAKE_BG_FAIL:-} ]] || { echo "RESULT: fail bg $2 broken"; exit 1; }
-[[ -z \${FAKE_BG_HOOK:-} ]] || bash -c "$FAKE_BG_HOOK" >&2
+[[ -z \${FAKE_BG_HOOK:-} ]] || bash -c "$FAKE_BG_HOOK" hook "$@" >&2
 echo "RESULT: ok bg $2 pid 1"
 `);
   writeFileSync(join(root, "fake-worktree.sh"), `#!/usr/bin/env bash
@@ -64,13 +64,14 @@ printf '%s\\n' "$path"
     writeFileSync(join(directory, "command"), command);
     return worktree;
   };
-  const run = (...args: string[]) => spawnSync(process.execPath, [next, ...args], { env, encoding: "utf8", timeout: 30_000 });
+  const runIn = (cwd: string, ...args: string[]) => spawnSync(process.execPath, [next, ...args], { cwd, env, encoding: "utf8", timeout: 30_000 });
+  const run = (...args: string[]) => runIn(dev, ...args);
   const lines = (...args: string[]) => {
     const result = run(...args);
     assert.equal(result.status, 0, result.stdout + result.stderr);
     return result.stdout.trim().split("\n").filter(line => !line.startsWith("running: "));
   };
-  return { root, dev, env, git, write, running, run, lines };
+  return { root, dev, env, git, write, running, run, runIn, lines };
 }
 
 const build = (map: string, slug: string) => `docs/wayfinder/${map}/build/tickets/${slug}.md`;
@@ -483,8 +484,9 @@ test("a running group takes one slot, and cap and shared-file rules use the unio
     [build("alpha", "10-r")]: ticket({ group: "clash", files: ["c/r.ts"] }),
     [build("alpha", "11-s")]: ticket({ group: "clash", files: ["a/one.ts"] }),
   });
-  running("slice-alg-fonts", "", "running", groupCommand(build("alpha", "01-a"), build("alpha", "02-b")));
-  assert.match(run("alpha").stdout, new RegExp(`^running: slice-alg-fonts ${build("alpha", "01-a")},${build("alpha", "02-b")}$`, "m"));
+  // One unreadable ticket in the job leaves the others' Files counting.
+  running("slice-alg-fonts", "", "running", groupCommand(build("alpha", "01-a"), build("alpha", "05-gone"), build("alpha", "02-b")));
+  assert.match(run("alpha").stdout, /^running: slice-alg-fonts group fonts tickets=01-a,02-b$/m);
   assert.deepEqual(lines("alpha"), [
     `next: ${build("alpha", "04-free")} builder=claude-opus-5-5 owner=al-04 why=slot 2/5`,
     "next: group pair tickets=07-p,08-q builder=claude-opus-5-5 owner=al-g-pair why=slot 3/5",
@@ -502,7 +504,8 @@ test("a running group takes one slot, and cap and shared-file rules use the unio
 
 test("--start claims a ready group in one commit and starts one job that runs its slices in order", t => {
   const files = [build("alpha", "01-a"), build("alpha", "02-b")];
-  const { root, env, git, run } = fixture(t, {
+  const { root, env, git, run, runIn } = fixture(t, {
+    ".gitignore": "owner\n",
     "docs/wayfinder/alpha/build/README.md": "# Build\n\nprefix: al\n",
     [files[1]]: ticket({ group: "fonts", files: ["a/two.ts"] }),
     [files[0]]: ticket({ group: "fonts", blockedBy: ["02-b"], files: ["a/one.ts"] }),
@@ -519,20 +522,98 @@ test("--start claims a ready group in one commit and starts one job that runs it
   assert.match(result.stdout, /^started: slice-alg-fonts$/m);
   assert.match(result.stdout, /RESULT: ok next 1 ready, 0 waiting, 1 started\n$/);
 
-  // The job's command runs kit slice for each ticket in order, and stops at the first failure.
+  // The job's command runs kit slice for each ticket in order. Each fake slice lands like kit pr:
+  // a work commit on the branch, a rebased copy on origin dev, and the worktree switched off it.
+  git(root, "clone", "-q", "-b", "dev", join(root, "origin.git"), "other");
+  writeFileSync(join(root, "land.sh"), `[[ $1 == slice ]] || exit 0
+printf '%s|%s|%s\\n' "$3" "$(git branch --show-current)" "$(git log -1 --format=%s)" >> ${join(root, "slices.log")}
+git commit -q --allow-empty -m "work $3"
+git -C ${join(root, "other")} pull -q --rebase origin dev
+git -C ${join(root, "other")} commit -q --allow-empty -m "landed $3"
+git -C ${join(root, "other")} push -q origin HEAD:dev
+git checkout -q --detach
+`);
+  env.FAKE_BG_HOOK = `bash ${join(root, "land.sh")} "$@"`;
   writeFileSync(env.FAKE_KIT_LOG!, "");
-  const group = run("--run-group", "--builder", "claude-opus-5-5", "--ticket", files[1], "--ticket", files[0]);
+  const group = runIn(worktree, "--run-group", "--builder", "claude-opus-5-5", "--ticket", files[1], "--ticket", files[0]);
   assert.equal(group.status, 0, group.stdout + group.stderr);
   assert.deepEqual(readFileSync(env.FAKE_KIT_LOG!, "utf8").trim().split("\n").map(line => line.split("|").at(-1)),
     files.toReversed().map(file => `slice --ticket ${file} --builder claude-opus-5-5`));
+  // Slice 2 starts on its own branch from the new origin/dev, so its fix rounds start afresh.
+  assert.deepEqual(readFileSync(join(root, "slices.log"), "utf8").trim().split("\n"), [
+    `${files[1]}|build/al-g-fonts|docs: claim alpha group fonts`,
+    `${files[0]}|build/al-g-fonts-01|landed ${files[1]}`,
+  ]);
   assert.match(group.stdout, /^slice 2\/2: \S+01-a\.md$/m);
   assert.match(group.stdout, /RESULT: ok next group 2 slices done\n$/);
+  delete env.FAKE_BG_HOOK;
+  git(worktree, "switch", "-q", "build/al-g-fonts");
   writeFileSync(env.FAKE_KIT_LOG!, "");
   env.FAKE_BG_FAIL = "1";
-  const failed = run("--run-group", "--builder", "claude-opus-5-5", "--ticket", files[1], "--ticket", files[0]);
+  const failed = runIn(worktree, "--run-group", "--builder", "claude-opus-5-5", "--ticket", files[1], "--ticket", files[0]);
   assert.equal(failed.status, 1, failed.stdout + failed.stderr);
   assert.equal(readFileSync(env.FAKE_KIT_LOG!, "utf8").trim().split("\n").length, 1);
   assert.match(failed.stdout, /^RESULT: fail next group stopped at \S+02-b\.md \(slice 1\/2\)$/m);
   assert.equal(run("--run-group", "--ticket", files[0]).status, 2);
+  assert.equal(run("--run-group", "--builder", "m", "--ticket", files[0], "--max", "2").status, 2);
   assert.equal(run("alpha", "--ticket", files[0]).status, 2);
+});
+
+test("a group whose later member names src/main.ts waits when two slices are in it", t => {
+  const { running, lines } = fixture(t, {
+    [build("alpha", "01-run")]: ticket({ assignee: "alpha-01", files: ["src/main.ts"] }),
+    [build("alpha", "02-run")]: ticket({ assignee: "alpha-02", files: ["src/main.ts", "src/two.ts"] }),
+    [build("alpha", "03-x")]: ticket({ group: "pair", files: ["a/x.ts"] }),
+    [build("alpha", "04-y")]: ticket({ group: "pair", files: ["src/main.ts"] }),
+  });
+  running("slice-alpha01", build("alpha", "01-run"));
+  running("slice-alpha02", build("alpha", "02-run"));
+  assert.deepEqual(lines("alpha"), [
+    "waits: group pair tickets=03-x,04-y 2 slices in src/main.ts: slice-alpha01, slice-alpha02",
+    "RESULT: ok next 0 ready, 1 waiting",
+  ]);
+});
+
+const raceFiles = {
+  [build("alpha", "01-solo")]: ticket({ files: ["a/solo.ts"] }),
+  [build("alpha", "02-a")]: ticket({ group: "fonts", files: ["a/a.ts"] }),
+  [build("alpha", "03-b")]: ticket({ group: "fonts", files: ["a/b.ts"] }),
+};
+
+test("a group member claimed, or newly blocked, during --start leaves the whole group unclaimed", t => {
+  for (const [change, taken] of [
+    ["s/^assignee: $/assignee: someone-else/", "someone-else"],
+    ["s/^blocked_by: \\[\\]$/blocked_by: [01-solo]/", "group changed"],
+  ]) {
+    const { root, dev, env, git, run } = fixture(t, raceFiles);
+    git(root, "clone", "-q", "-b", "dev", join(root, "origin.git"), "other");
+    writeFileSync(join(root, "race.sh"), `[[ $1 == bg ]] || exit 0
+cd ${join(root, "other")} || exit 1
+git pull -q --rebase origin dev
+sed -i '${change}' ${build("alpha", "03-b")}
+git commit -qam 'other lead' && git push -q origin HEAD:dev
+`);
+    env.FAKE_BG_HOOK = `bash ${join(root, "race.sh")} "$@"`;
+    const result = run("alpha", "--start");
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, new RegExp(`^waits: group fonts tickets=02-a,03-b claimed meanwhile \\(${taken}\\)$`, "m"));
+    assert.match(result.stdout, /RESULT: ok next 1 ready, 1 waiting, 1 started\n$/);
+    assert.match(git(join(root, "origin.git"), "show", `dev:${build("alpha", "02-a")}`), /^assignee: $/m);
+    assert.equal(git(dev, "rev-parse", "HEAD"), git(dev, "rev-parse", "origin/dev"));
+    assert.equal(git(dev, "status", "--porcelain").trim(), "");
+  }
+});
+
+test("a group claim whose push fails again after the rebase restores every member and leaves dev on origin/dev", t => {
+  const { root, dev, git, run } = fixture(t, {
+    [build("alpha", "01-a")]: ticket({ group: "fonts", files: ["a/a.ts"] }),
+    [build("alpha", "02-b")]: ticket({ group: "fonts", files: ["a/b.ts"] }),
+  });
+  racePush(root, git, "notes.md", "other\n", 2);
+  const result = run("alpha", "--start");
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /^RESULT: fail next start group fonts tickets=01-a,02-b: git push failed: /m);
+  assert.equal(git(dev, "rev-parse", "HEAD"), git(dev, "rev-parse", "origin/dev"));
+  assert.equal(git(dev, "status", "--porcelain").trim(), "");
+  for (const slug of ["01-a", "02-b"]) assert.match(readFileSync(join(dev, build("alpha", slug)), "utf8"), /^assignee: $/m);
 });

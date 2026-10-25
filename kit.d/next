@@ -2,7 +2,7 @@
 // kit: pick the tickets that may start now and their builders; --start claims and starts them
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { kitResult } from "../kit-lib.mjs";
 import { loadTickets, parseTicket, resolveTickets } from "../tickets.mjs";
 
@@ -18,7 +18,8 @@ may start; a blocker inside the group counts as met, as its slices run in blocke
 starts its kit slice under kit bg (a group: one job running its slices in order through
 --run-group); delegated (opencode/…) tickets are only claimed.
 --max N lowers the cap of 5 running slices; it never raises it.
---run-group runs kit slice for each ticket in order here, stopping at the first failure.`;
+--run-group runs kit slice for each ticket in order here, stopping at the first failure; each
+slice after the first gets its own branch (<branch>-<NN>) from the fetched origin/dev.`;
 
 // Pins quoted from docs/agents/kitchen.md#who-cooks-pins-from-2026-10-22:
 //   | Builder, every slice | `claude-opus-5-5`, high | `kit slice --builder claude-opus-5-5`; `builder: sol` lines in tickets are superseded |
@@ -37,7 +38,7 @@ const worktreeScript = process.env.KIT_NEXT_WORKTREE || resolve(import.meta.dirn
 class UsageError extends Error {}
 
 function options(args) {
-  const flags = { maps: [], start: false, max: cap, runGroup: false, builder: "", tickets: [] };
+  const flags = { maps: [], start: false, max: cap, maxGiven: false, runGroup: false, builder: "", tickets: [] };
   const value = (i, flag) => {
     if (!args[i + 1] || args[i + 1].startsWith("-")) throw new UsageError(`${flag} needs a value`);
     return args[i + 1];
@@ -52,11 +53,12 @@ function options(args) {
     else if (arg === "--max") {
       if (!/^\d+$/.test(args[i + 1] ?? "")) throw new UsageError("--max needs a whole number");
       flags.max = Math.min(cap, Number(args[++i]));
+      flags.maxGiven = true;
     } else if (/^[\w-]+$/.test(arg) && !arg.startsWith("-")) { if (!flags.maps.includes(arg)) flags.maps.push(arg); }
     else throw new UsageError(`invalid argument: ${arg}`);
   }
   if (flags.runGroup !== Boolean(flags.builder || flags.tickets.length)) throw new UsageError("--builder and --ticket go with --run-group");
-  if (flags.runGroup && (!flags.builder || !flags.tickets.length || flags.start || flags.maps.length)) throw new UsageError("--run-group needs --builder and --ticket, and no maps or --start");
+  if (flags.runGroup && (!flags.builder || !flags.tickets.length || flags.start || flags.maxGiven || flags.maps.length)) throw new UsageError("--run-group needs --builder and --ticket, and no maps, --start or --max");
   return flags;
 }
 
@@ -160,16 +162,17 @@ function runningSlices() {
       const [name, state] = row.split("\t");
       if (!name?.startsWith("slice-") || state !== "running") continue;
       const directory = join(worktree, ".scratch/kit-jobs", name);
-      let tickets = [];
-      try {
-        const words = unquote(readFileSync(join(directory, "command"), "utf8"));
-        const cwd = existsSync(join(directory, "cwd")) ? readFileSync(join(directory, "cwd"), "utf8").trim() : worktree;
-        tickets = words.flatMap((word, i) => word === "--ticket" && words[i + 1] ? [words[i + 1]] : []).map(file => {
-          const map = /(?:^|\/)docs\/wayfinder\/([^/]+)\//.exec(file)?.[1] ?? "";
-          return parseTicket(readFileSync(resolve(cwd, file), "utf8"), file, map).ticket;
-        });
-      } catch { tickets = []; /* A slice whose tickets cannot be read still takes a slot. */ }
-      slices.push({ name, worktree, unit: unitOf(tickets) });
+      let words = [];
+      try { words = unquote(readFileSync(join(directory, "command"), "utf8")); }
+      catch { /* A slice whose command cannot be read still takes a slot. */ }
+      const cwd = existsSync(join(directory, "cwd")) ? readFileSync(join(directory, "cwd"), "utf8").trim() : worktree;
+      // Each ticket is read on its own, so one unreadable ticket leaves the others' Files counting.
+      const tickets = words.flatMap((word, i) => word === "--ticket" && words[i + 1] ? [words[i + 1]] : []).flatMap(file => {
+        const map = /(?:^|\/)docs\/wayfinder\/([^/]+)\//.exec(file)?.[1] ?? "";
+        try { return [parseTicket(readFileSync(resolve(cwd, file), "utf8"), file, map).ticket]; }
+        catch { return []; }
+      });
+      slices.push({ name, worktree, unit: unitOf(tickets, words.includes("--run-group") ? tickets[0]?.group ?? "" : "") });
     }
   }
   return slices;
@@ -266,6 +269,12 @@ function claim(item) {
     const current = parseTicket(sources[i], ticket.file, map).ticket;
     if (current.assignee || current.status !== "open") return { taken: current.assignee || current.status };
   }
+  if (group) {
+    // A ticket that joined or left the group, or a new outside blocker, makes the plan stale.
+    const loaded = loadTickets("docs/wayfinder", map, { ref: "HEAD", cwd: devRoot });
+    const now = handOuts(loaded.tickets, resolveTickets(loaded.tickets).frontier).find(candidate => candidate.group === group);
+    if (!now || now.wait || now.tickets.map(ticket => ticket.file).join() !== files.join()) return { taken: "group changed" };
+  }
   files.forEach((file, i) => writeFileSync(join(devRoot, file), setAssignee(sources[i], item.owner)));
   try {
     git(["commit", "-q", "-m", `docs: claim ${map} ${group ? `group ${group}` : number(tickets[0].slug)}`, "--", ...files]);
@@ -297,17 +306,31 @@ function start(item) {
   console.log(`wait: KIT_ROOT=${worktree} scripts/agents/kit wait job ${item.job} --timeout 2h`);
 }
 
-// A group's one kit bg job: its slices one after the other in this worktree.
+// A group's one kit bg job: its slices one after the other in this worktree. kit pr lands each
+// slice by rebase and deletes its branch, so every later slice starts on its own branch from the
+// new origin/dev (<branch>-<NN>): landed work is not reviewed again and fix rounds, counted per
+// branch, start afresh.
 function runGroup({ builder, tickets }) {
   const kit = fakeKit || resolve(import.meta.dirname, "../kit");
+  const here = process.cwd();
+  const stop = (file, i, why) => {
+    kitResult("fail", `next group stopped at ${file} (slice ${i + 1}/${tickets.length})${why ? `: ${why}` : ""}`);
+    process.exitCode = 1;
+  };
+  let base;
+  try { base = git(["branch", "--show-current"], here).trim(); } catch (error) { return stop(tickets[0], 0, error.message); }
+  if (!base) return stop(tickets[0], 0, "not on the group's build branch");
   for (const [i, file] of tickets.entries()) {
+    if (i > 0) {
+      try {
+        if (git(["status", "--porcelain", "--untracked-files=all"], here).trim()) throw new Error("worktree not clean after the previous slice");
+        git(["fetch", "-q", "origin"], here);
+        git(["switch", "-q", "-C", `${base}-${number(basename(file, ".md"))}`, "origin/dev"], here);
+      } catch (error) { return stop(file, i, error.message); }
+    }
     console.log(`slice ${i + 1}/${tickets.length}: ${file}`);
     const result = spawnSync(kit, ["slice", "--ticket", file, "--builder", builder], { stdio: "inherit" });
-    if (result.error || result.status !== 0) {
-      kitResult("fail", `next group stopped at ${file} (slice ${i + 1}/${tickets.length})${result.error ? `: ${result.error.message}` : ""}`);
-      process.exitCode = 1;
-      return;
-    }
+    if (result.error || result.status !== 0) return stop(file, i, result.error?.message);
   }
   kitResult("ok", `next group ${tickets.length} slices done`);
 }
