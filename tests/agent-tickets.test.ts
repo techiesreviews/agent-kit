@@ -118,13 +118,16 @@ test("Files lists exact paths; globs, placeholders and find-it-with lines name t
     "- `src/**/*.css` files, `scripts/agents/kit.d/<command>`, `scripts/agents/shots/features/`, `*.md`",
     "- `tests/kit-fix.test.ts` (or the file covering it; find it with `grep -ln \"kit.d/fix\" tests/`)",
     "- src/**, worker/** files with findings, e.g. dead exports",
-    "- `/home/lex/elsewhere.md`, `../outside.md`, `https://example.com/x`",
+    "- `.github/workflows/ci.yml`, `.gitignore` and `...`",
+    "- .github/workflows/deploy-preview.yml (new), ../plain-outside.md",
+    "- `/home/lex/elsewhere.md`, `../outside.md`, `..`, `https://example.com/x`",
     "  1. `docs/nested.md` (sub-item)",
     "", "### Notes", "- `docs/notes.md`", "", "## Done when", "", "- `tests/later.test.ts`",
   ].join("\n");
   assert.deepEqual(parseFiles(source), [
     "scripts/agents/kit.d/next", "tests/kit-next.test.ts", "docs/agents/kitchen.md", "AGENTS.md",
-    "src/", "scripts/agents/kit.d/", "scripts/agents/shots/features/", "./", "tests/", "worker/", "docs/nested.md", "docs/notes.md",
+    "src/", "scripts/agents/kit.d/", "scripts/agents/shots/features/", "./", "tests/", "worker/",
+    ".github/workflows/ci.yml", ".gitignore", ".github/workflows/deploy-preview.yml", "docs/nested.md", "docs/notes.md",
   ]);
   assert.deepEqual(parseFiles("---\nstatus: open\n---\nNo files section"), []);
   assert.deepEqual(parseTicket(source, "01-ready.md", "alpha").ticket.files, parseFiles(source));

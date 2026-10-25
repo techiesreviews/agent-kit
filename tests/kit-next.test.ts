@@ -41,6 +41,7 @@ if [[ $1 == bg && $2 == --list ]]; then
 fi
 printf '%s|%s|%s|%s\\n' "$PWD" "$ASE_REVIEW_MODEL" "$ASE_OWNER" "$*" >> "$FAKE_KIT_LOG"
 [[ -z \${FAKE_BG_FAIL:-} ]] || { echo "RESULT: fail bg $2 broken"; exit 1; }
+[[ -z \${FAKE_BG_HOOK:-} ]] || bash -c "$FAKE_BG_HOOK" >&2
 echo "RESULT: ok bg $2 pid 1"
 `);
   writeFileSync(join(root, "fake-worktree.sh"), `#!/usr/bin/env bash
@@ -101,7 +102,7 @@ test("rule 1 skips non-AFK and claimed tickets and unstarted builds; order and b
     `next: ${build("alpha", "12-luna")} builder=gpt-6-luna owner=al-12 why=slot 4/5`,
     `next: ${build("alpha", "14-more")} builder=claude-opus-5-5 owner=al-14 why=slot 5/5`,
     `waits: ${build("alpha", "01-grill")} needs Lex (type: grilling (HITL))`,
-    `waits: ${build("alpha", "03-claimed")} claimed by al-03, no running job`,
+    `waits: ${build("alpha", "03-claimed")} claimed by al-03, no running job found`,
     "waits: docs/wayfinder/alpha/tickets/05-research.md needs Lex (type: research (AFK))",
     `waits: ${build("gamma", "01-g")} build not started (README **Not started:**)`,
     "waits: docs/wayfinder/gamma/tickets/02-map-task.md cap 5 slices running",
@@ -149,11 +150,12 @@ test("rule 3 allows at most two slices in src/main.ts, counting the ones it hand
 
 test("rule 4 waits on any shared file, a glob or a find-it-with line counting as its directory", t => {
   const { running, write, git, dev, lines } = fixture(t, {
-    [build("alpha", "01-run")]: ticket({ assignee: "alpha-01", files: ["scripts/a.mjs", "tests/foo/*.test.ts"] }),
+    [build("alpha", "01-run")]: ticket({ assignee: "alpha-01", files: ["scripts/a.mjs", "tests/foo/*.test.ts", ".github/workflows/ci.yml"] }),
     [build("alpha", "02-same")]: ticket({ files: ["scripts/a.mjs"] }),
     [build("alpha", "03-under-glob")]: ticket({ files: ["tests/foo/bar.test.ts"] }),
     [build("alpha", "05-free")]: ticket({ files: ["docs/five.md"] }),
     [build("alpha", "06-after-free")]: ticket({ files: ["docs/five.md", "docs/six.md"] }),
+    [build("alpha", "07-ci")]: ticket({ files: [".github/workflows/ci.yml"] }),
   });
   write(dev, { [build("alpha", "04-find")]: `${ticket({})}`.replace("## Done when", "- `tests/kit-x.test.ts` (or the file covering it; find it with `grep -ln x tests/`)\n\n## Done when") });
   git(dev, "add", "-A");
@@ -166,7 +168,8 @@ test("rule 4 waits on any shared file, a glob or a find-it-with line counting as
     `waits: ${build("alpha", "03-under-glob")} shares tests/foo/bar.test.ts with slice-alpha01`,
     `waits: ${build("alpha", "04-find")} shares tests/ with slice-alpha01`,
     `waits: ${build("alpha", "06-after-free")} shares docs/five.md with slice-alpha05`,
-    "RESULT: ok next 1 ready, 4 waiting",
+    `waits: ${build("alpha", "07-ci")} shares .github/workflows/ci.yml with slice-alpha01`,
+    "RESULT: ok next 1 ready, 5 waiting",
   ]);
 });
 
@@ -187,6 +190,20 @@ test("rule 5: runs_alone waits for every other slice of its map and blocks new o
     `waits: ${build("beta", "02-after")} slice-beta01 runs alone`,
     `waits: ${build("gamma", "02-after")} slice-gamma01 runs alone`,
     "RESULT: ok next 1 ready, 3 waiting",
+  ]);
+});
+
+test("a running job's absolute --ticket path still gives its map and Files and covers its claim", t => {
+  const { dev, running, lines } = fixture(t, {
+    [build("alpha", "01-run")]: ticket({ assignee: "alpha-01", runsAlone: true, files: ["a/one.ts"] }),
+    [build("alpha", "02-shared")]: ticket({ files: ["a/one.ts"] }),
+    [build("alpha", "03-other")]: ticket({ files: ["a/three.ts"] }),
+  });
+  running("slice-alpha01", "", "running", `'scripts/agents/kit' 'slice' '--ticket' '${join(dev, build("alpha", "01-run"))}' '--builder' 'claude-opus-5-5'\n`);
+  assert.deepEqual(lines("alpha"), [
+    `waits: ${build("alpha", "02-shared")} shares a/one.ts with slice-alpha01`,
+    `waits: ${build("alpha", "03-other")} slice-alpha01 runs alone`,
+    "RESULT: ok next 0 ready, 2 waiting",
   ]);
 });
 
@@ -264,23 +281,50 @@ test("--start stops when the claim conflicts with a claim another lead pushed me
   assert.ok(!existsSync(join(root, "wt-build-alpha-01-one")));
   const again = run("alpha", "--start");
   assert.equal(again.status, 0, again.stdout + again.stderr);
-  assert.match(again.stdout, /^waits: \S+01-one\.md claimed by someone-else, no running job$/m);
+  assert.match(again.stdout, /^waits: \S+01-one\.md claimed by someone-else, no running job found$/m);
   assert.match(again.stdout, /RESULT: ok next 0 ready, 1 waiting, 0 started\n$/);
 });
 
-test("--start refuses a dev worktree off dev, with tracked changes or ahead of origin, and pushes nothing", t => {
-  for (const [setup, message] of [
-    [(git: (cwd: string, ...args: string[]) => string, dev: string) => git(dev, "checkout", "-q", "-b", "elsewhere"), "is not on dev"],
-    [(_git: unknown, dev: string) => writeFileSync(join(dev, "README.md"), "changed\n"), "has uncommitted changes"],
-    [(git: (cwd: string, ...args: string[]) => string, dev: string) => git(dev, "commit", "-q", "--allow-empty", "-m", "local"), "has commits not on origin/dev"],
+type Git = (cwd: string, ...args: string[]) => string;
+
+test("--start refuses a dev worktree off dev, with tracked changes, or ahead (and behind) of origin, and pushes nothing", t => {
+  const behind = (git: Git, root: string) => {
+    git(root, "clone", "-q", "-b", "dev", join(root, "origin.git"), "other");
+    git(join(root, "other"), "commit", "-q", "--allow-empty", "-m", "other lead");
+    git(join(root, "other"), "push", "-q", "origin", "HEAD:dev");
+  };
+  for (const [setup, message, origin] of [
+    [(git: Git, dev: string) => git(dev, "checkout", "-q", "-b", "elsewhere"), "is not on dev", ["fixture"]],
+    [(_git: Git, dev: string) => writeFileSync(join(dev, "README.md"), "changed\n"), "has uncommitted changes", ["fixture"]],
+    [(git: Git, dev: string) => git(dev, "commit", "-q", "--allow-empty", "-m", "local"), "has commits not on origin/dev", ["fixture"]],
+    [(git: Git, dev: string, root: string) => { git(dev, "commit", "-q", "--allow-empty", "-m", "local"); behind(git, root); }, "has commits not on origin/dev", ["other lead", "fixture"]],
   ] as const) {
     const { root, dev, git, run } = fixture(t, { [build("alpha", "01-one")]: ticket({ files: ["a/one.ts"] }) });
-    setup(git, dev);
+    setup(git, dev, root);
     const result = run("alpha", "--start");
     assert.equal(result.status, 1, result.stdout + result.stderr);
     assert.match(result.stdout, new RegExp(`^RESULT: fail next start \\S+01-one\\.md: \\S+ ${message}$`, "m"));
-    assert.deepEqual(git(join(root, "origin.git"), "log", "--format=%s", "dev").trim().split("\n"), ["fixture"]);
+    assert.deepEqual(git(join(root, "origin.git"), "log", "--format=%s", "dev").trim().split("\n"), origin);
   }
+});
+
+test("a ticket claimed by another lead during --start moves from ready to waiting in the summary", t => {
+  const { root, env, git, run } = fixture(t, {
+    [build("alpha", "01-one")]: ticket({ files: ["a/one.ts"] }),
+    [build("alpha", "02-two")]: ticket({ files: ["a/two.ts"] }),
+  });
+  git(root, "clone", "-q", "-b", "dev", join(root, "origin.git"), "other");
+  const other = join(root, "other");
+  writeFileSync(join(root, "claim-two.sh"), `cd ${other} || exit 1
+git pull -q --rebase origin dev
+sed -i 's/^assignee: $/assignee: someone-else/' ${build("alpha", "02-two")}
+git commit -qam 'other claim' && git push -q origin HEAD:dev
+`);
+  env.FAKE_BG_HOOK = `bash ${join(root, "claim-two.sh")}`;
+  const result = run("alpha", "--start");
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^waits: \S+02-two\.md claimed meanwhile \(someone-else\)$/m);
+  assert.match(result.stdout, /RESULT: ok next 1 ready, 1 waiting, 1 started\n$/);
 });
 
 test("a start that fails after the claim landed says so, and later runs report the stuck claim", t => {
@@ -291,7 +335,7 @@ test("a start that fails after the claim landed says so, and later runs report t
   assert.match(result.stdout, /^RESULT: fail next start \S+01-first-slice\.md: claimed [0-9a-f]+ but not started: kit bg slice-al01 failed: RESULT: fail bg slice-al01 broken$/m);
   delete env.FAKE_BG_FAIL;
   const after = run("alpha");
-  assert.match(after.stdout, /^waits: \S+01-first-slice\.md claimed by al-01, no running job$/m);
+  assert.match(after.stdout, /^waits: \S+01-first-slice\.md claimed by al-01, no running job found$/m);
 });
 
 test("a running slice whose ticket is unknown or unreadable is listed and still takes a slot", t => {

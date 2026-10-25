@@ -134,7 +134,7 @@ function plan(candidates, running, max) {
     const wait = reason => waits.push({ ticket, reason });
     if (ticket.assignee) {
       // A claimed AFK ticket with no running slice is stuck (a failed start) or delegated.
-      if (ticket.type === "task (AFK)" && !runningTickets.has(ticketKey(ticket.file))) wait(`claimed by ${ticket.assignee}, no running job`);
+      if (ticket.type === "task (AFK)" && !runningTickets.has(ticketKey(ticket.file))) wait(`claimed by ${ticket.assignee}, no running job found`);
       continue;
     }
     if (ticket.type !== "task (AFK)") { wait(`needs Lex (type: ${ticket.type || "missing"})`); continue; }
@@ -187,8 +187,8 @@ function claim(item) {
   git(["fetch", "-q", "origin"]);
   if (git(["branch", "--show-current"]).trim() !== "dev") throw new Error(`${devRoot} is not on dev`);
   if (git(["status", "--porcelain", "--untracked-files=no"]).trim()) throw new Error(`${devRoot} has uncommitted changes`);
-  git(["merge", "-q", "--ff-only", "origin/dev"]);
   if (git(["rev-list", "origin/dev..HEAD"]).trim()) throw new Error(`${devRoot} has commits not on origin/dev`);
+  git(["merge", "-q", "--ff-only", "origin/dev"]);
   const path = join(devRoot, item.ticket.file);
   const source = readFileSync(path, "utf8");
   const current = parseTicket(source, item.ticket.file, item.ticket.map).ticket;
@@ -252,12 +252,12 @@ function main(args) {
   for (const { ticket, reason } of waits) console.log(`waits: ${ticket.file} ${reason}`);
   const summary = `next ${next.length} ready, ${waits.length} waiting`;
   if (!flags.start) { kitResult("ok", summary); return; }
-  let started = 0;
+  let started = 0, taken = 0;
   for (const item of next) {
     let claimed;
     try {
       claimed = claim(item);
-      if (claimed.taken) { console.log(`waits: ${item.ticket.file} claimed meanwhile (${claimed.taken})`); continue; }
+      if (claimed.taken) { console.log(`waits: ${item.ticket.file} claimed meanwhile (${claimed.taken})`); taken++; continue; }
       console.log(`claimed: ${item.ticket.file} owner=${item.owner} ${claimed.sha} (${claimed.how})`);
       if (item.builder.delegate) { console.log(`delegate: ${item.ticket.file} ${item.builder.model} owner=${item.owner}`); continue; }
       start(item);
@@ -269,7 +269,8 @@ function main(args) {
       return;
     }
   }
-  kitResult("ok", `${summary}, ${started} started`);
+  // A ticket claimed meanwhile moves from ready to waiting, as its waits: line says.
+  kitResult("ok", `next ${next.length - taken} ready, ${waits.length + taken} waiting, ${started} started`);
 }
 
 try { main(process.argv.slice(2)); }
