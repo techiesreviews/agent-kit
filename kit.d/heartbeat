@@ -1,0 +1,281 @@
+#!/usr/bin/env node
+// kit: one build check-in: finished, running and stuck slices, kit next, two lines for Lex
+import { spawnSync } from "node:child_process";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
+import { kitMainRoot, kitResult } from "../kit-lib.mjs";
+
+const usage = `Usage: kit heartbeat <map> [--start]
+One check-in while a build runs, for the lead's 30-minute T3 schedule (docs/agents/kitchen.md station 5).
+Reads the <map> slice jobs (kit bg slice-* jobs whose --ticket is in docs/wayfinder/<map>/) of every worktree
+and prints, in order: finished: jobs not reported before (exit and last RESULT:; merged: and preview:
+lines for the lead's kit preview step), running: jobs (age, log growth since the last heartbeat),
+stuck: jobs (no log written for 45 minutes), then kit next <map> (--start passed through; killed
+after KIT_HEARTBEAT_NEXT_TIMEOUT seconds, default 1200), then two plain lines for Lex (done: and
+running/next:). Logs are the job log plus the slice's .scratch/kit-slice/<ticket-slug>/ files
+(phase logs, builder run log): the job log gets one line per finished phase.
+Reported jobs and log sizes: <main root>/.scratch/heartbeat/<map>.json; one heartbeat per map at a
+time (a second waits for the first, up to KIT_HEARTBEAT_LOCK_WAIT seconds, default 600).
+Last line: RESULT: ok heartbeat continue, or RESULT: ok heartbeat stop (frontier empty | only Lex-waits left).
+It never deploys.`;
+
+const stuckAfter = 45 * 60 * 1000;
+const lockedFlag = "KIT_HEARTBEAT_LOCKED";
+const launchGraceSeconds = 60;
+const devRoot = process.env.KIT_DEV_ROOT || "/home/ubulex/Projects/native-site-editor-dev";
+// Test seam: a fake kit (bg --list and next).
+const kit = process.env.KIT_HEARTBEAT_KIT || resolve(import.meta.dirname, "../kit");
+
+class UsageError extends Error {}
+
+function options(args) {
+  const flags = { map: "", start: false };
+  for (const arg of args) {
+    if (arg === "--help" || arg === "-h") flags.help = true;
+    else if (arg === "--start") flags.start = true;
+    else if (/^[\w-]+$/.test(arg) && !flags.map) flags.map = arg;
+    else throw new UsageError(`invalid argument: ${arg}`);
+  }
+  if (!flags.map && !flags.help) throw new UsageError("needs a map");
+  return flags;
+}
+
+function run(command, args, { cwd = devRoot, env = process.env, timeout } = {}) {
+  const result = spawnSync(command, args, { cwd, env, timeout, encoding: "utf8", maxBuffer: 32 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+  if (result.error) throw result.error;
+  return result;
+}
+
+function unquote(command) {
+  return [...command.matchAll(/'((?:[^']|'\\'')*)'/g)].map(match => match[1].replaceAll("'\\''", "'"));
+}
+
+const read = path => { try { return readFileSync(path, "utf8").trim(); } catch { return ""; } };
+
+function tail(path, bytes = 65536) {
+  let fd;
+  try {
+    fd = openSync(path, "r");
+    const size = statSync(path).size;
+    const buffer = Buffer.alloc(Math.min(bytes, size));
+    readSync(fd, buffer, 0, buffer.length, size - buffer.length);
+    return buffer.toString("utf8");
+  } catch { return ""; } finally { if (fd !== undefined) closeSync(fd); }
+}
+
+function duration(ms) {
+  const minutes = Math.max(0, Math.floor(ms / 60000));
+  return minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}m`;
+}
+
+function size(bytes) {
+  return bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+// The map's slice jobs of every worktree, from `kit bg --list` rows and each job's recorded command.
+function jobs(map) {
+  const listed = run("git", ["-C", devRoot, "worktree", "list", "--porcelain"]);
+  if (listed.status !== 0) throw new Error(`git worktree list failed in ${devRoot}`);
+  const worktrees = listed.stdout.split("\n").filter(line => line.startsWith("worktree ")).map(line => line.slice(9));
+  const found = [];
+  for (const worktree of worktrees) {
+    if (!existsSync(join(worktree, ".scratch/kit-jobs"))) continue;
+    const rows = run(kit, ["bg", "--list"], { cwd: worktree, env: { ...process.env, KIT_ROOT: worktree } });
+    if (rows.status !== 0) throw new Error(`kit bg --list failed in ${worktree}`);
+    for (const row of rows.stdout.split("\n")) {
+      const [name, state, age, log] = row.split("\t");
+      if (!log || !name.startsWith("slice-")) continue;
+      const directory = join(worktree, ".scratch/kit-jobs", name);
+      const words = unquote(read(join(directory, "command")));
+      const ticket = words.includes("--ticket") ? words[words.indexOf("--ticket") + 1] ?? "" : "";
+      if (!ticket.startsWith(`docs/wayfinder/${map}/`) && !ticket.includes(`/docs/wayfinder/${map}/`)) continue;
+      const seconds = Number(/^(\d+)s$/.exec(age)?.[1] ?? NaN);
+      // kit bg writes command, then started, then pid, so a job caught mid-launch lists as died (age
+      // unknown before started exists): count it as running for its first minute rather than report
+      // (and remember) a finish that has not happened.
+      const launching = state === "died" && !existsSync(join(directory, "pid")) && (!Number.isFinite(seconds) || seconds < launchGraceSeconds);
+      // kit slice keeps its phase logs under its worktree's .scratch/kit-slice/<ticket-slug>/.
+      const cwd = read(join(directory, "cwd")) || worktree;
+      const slice = join(resolve(cwd, ".scratch/kit-slice"), basename(ticket, ".md"));
+      found.push({ name, state: launching ? "running" : state, age: seconds, log, slice, key: `${worktree}\t${name}\t${read(join(directory, "started"))}` });
+    }
+  }
+  return found;
+}
+
+// Total size and newest write of the job log and the slice's files, two folder levels deep
+// (phase logs, then builder/run.log).
+function activity(job) {
+  let bytes = 0, written = null;
+  const add = path => {
+    try {
+      const stat = statSync(path);
+      if (!stat.isFile()) return;
+      bytes += stat.size;
+      written = Math.max(written ?? 0, stat.mtimeMs);
+    } catch { /* A missing file adds nothing. */ }
+  };
+  add(job.log);
+  const walk = (directory, depth) => {
+    let entries = [];
+    try { entries = readdirSync(directory, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (entry.isFile()) add(join(directory, entry.name));
+      else if (entry.isDirectory() && depth > 1) walk(join(directory, entry.name), depth - 1);
+    }
+  };
+  walk(job.slice, 2);
+  return { bytes, written };
+}
+
+function loadState(path) {
+  try {
+    const state = JSON.parse(readFileSync(path, "utf8"));
+    return { reported: Array.isArray(state.reported) ? state.reported : [], logs: state.logs && typeof state.logs === "object" ? state.logs : {} };
+  } catch { return { reported: [], logs: {} }; }
+}
+
+function saveState(path, state) {
+  mkdirSync(dirname(path), { recursive: true });
+  const temporary = `${path}.${process.pid}.tmp`;
+  try {
+    writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`);
+    renameSync(temporary, path);
+  } finally { rmSync(temporary, { force: true }); }
+}
+
+// Rerun this command under flock(1), so a scheduled and a hand-run heartbeat never report the same
+// jobs twice. -o keeps the lock in flock itself: slices started by kit next --start never hold it.
+function underLock(path, args) {
+  const wait = process.env.KIT_HEARTBEAT_LOCK_WAIT || "600";
+  if (!/^\d+$/.test(wait)) throw new Error("KIT_HEARTBEAT_LOCK_WAIT must be whole seconds");
+  mkdirSync(dirname(path), { recursive: true });
+  const locked = spawnSync("flock", ["-o", "-w", wait, "-E", "75", path, process.execPath, process.argv[1], ...args],
+    { stdio: "inherit", env: { ...process.env, [lockedFlag]: "1" } });
+  if (locked.error) throw locked.error;
+  if (locked.status === 75) throw new Error(`another heartbeat holds ${path} after ${wait}s`);
+  // flock reports a child killed by a signal as 128 + the signal; that child printed no Lex lines.
+  if (locked.signal || locked.status > 128) throw new Error(`the locked run was killed (${locked.signal || `signal ${locked.status - 128}`})`);
+  process.exitCode = locked.status ?? 1;
+}
+
+const lexWait = reason => /^needs Lex\b/.test(reason) || /^build not started\b/.test(reason);
+// A claimed ticket with no running slice: a failed start or slice the lead reruns, or a delegated
+// ticket the free worker is building. It waits on the lead, so the heartbeat keeps going.
+const orphan = reason => /^claimed by .+, no running job found$/.test(reason);
+const slug = file => file.split("/").at(-1).replace(/\.md$/, "");
+const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
+
+function main(args) {
+  let flags;
+  try { flags = options(args); }
+  catch (error) {
+    if (!(error instanceof UsageError)) throw error;
+    console.error(`${error.message}\n${usage}`);
+    kitResult("fail", `heartbeat ${error.message}`);
+    process.exitCode = 2;
+    return;
+  }
+  if (flags.help) { console.log(usage); return; }
+
+  const statePath = join(kitMainRoot(), ".scratch/heartbeat", `${flags.map}.json`);
+  if (process.env[lockedFlag] !== "1") { underLock(`${statePath}.lock`, args); return; }
+  // Before any run(): kit next and the jobs it starts must not inherit the flag.
+  delete process.env[lockedFlag];
+  const tracked = existsSync(statePath);
+  const state = loadState(statePath);
+  const reported = new Set(state.reported);
+  const now = Date.now();
+  const all = jobs(flags.map);
+  const running = all.filter(job => job.state === "running");
+  const finished = all.filter(job => job.state !== "running" && !reported.has(job.key));
+
+  const done = [], merged = [];
+  for (const job of finished) {
+    const result = tail(job.log).split(/\r?\n/).filter(line => line.startsWith("RESULT: ")).at(-1) ?? "";
+    const exit = job.state.startsWith("exit ") ? job.state : `${job.state} (no exit record)`;
+    console.log(`finished: ${job.name} ${exit} ${result || "(no RESULT line)"}`);
+    const pr = /^RESULT: ok slice \S+ PR #(\d+) ([a-f\d]{7,40})$/.exec(result);
+    if (pr) merged.push({ job: job.name, pr: pr[1], sha: pr[2].slice(0, 7) });
+    done.push(pr ? `${job.name} merged (PR #${pr[1]})` : job.state === "exit 0" ? `${job.name} finished` : `${job.name} failed (${job.state})`);
+  }
+  for (const item of merged) console.log(`merged: ${item.job} PR #${item.pr} ${item.sha}`);
+  if (merged.length) console.log("preview: scripts/agents/kit preview (lead step; the heartbeat never deploys)");
+
+  const logs = {}, stuck = [];
+  for (const job of running) {
+    // No log at all counts as empty and quiet since the job started.
+    const { bytes, written } = activity(job);
+    const before = state.logs[job.key];
+    const growth = typeof before === "number" ? `log +${size(Math.max(0, bytes - before))}` : `log ${size(bytes)} (first check)`;
+    logs[job.key] = bytes;
+    console.log(`running: ${job.name} age ${Number.isFinite(job.age) ? duration(job.age * 1000) : "unknown"} ${growth}`);
+    const quiet = now - (written ?? now - (Number.isFinite(job.age) ? job.age * 1000 : 0));
+    if (quiet >= stuckAfter) stuck.push({ job: job.name, quiet });
+  }
+  for (const item of stuck) console.log(`stuck: ${item.job} log quiet ${duration(item.quiet)}`);
+
+  // Remember every finished job still on disk, so a later run never lists it again.
+  const onDisk = new Set(all.map(job => job.key));
+  saveState(statePath, { reported: [...new Set([...state.reported.filter(key => onDisk.has(key)), ...finished.map(job => job.key)])], logs });
+
+  // One stream, so problem lines from stderr stay before the RESULT line they explain.
+  const limit = process.env.KIT_HEARTBEAT_NEXT_TIMEOUT || "1200";
+  if (!/^[1-9]\d*$/.test(limit)) throw new Error("KIT_HEARTBEAT_NEXT_TIMEOUT must be whole seconds");
+  let handed;
+  try { handed = run("sh", ["-c", 'exec "$0" "$@" 2>&1', kit, "next", flags.map, ...(flags.start ? ["--start"] : [])], { timeout: Number(limit) * 1000 }); }
+  catch (error) { throw error.code === "ETIMEDOUT" ? new Error(`next timed out after ${limit}s`) : error; }
+  const output = handed.stdout.trimEnd().split("\n").filter(line => line && !line.startsWith("running: "));
+  const nextResult = output.filter(line => line.startsWith("RESULT: ")).at(-1) ?? "";
+  for (const line of output) console.log(line.startsWith("RESULT: ") ? `next ${line}` : line);
+
+  const ready = output.filter(line => line.startsWith("next: ")).length;
+  const started = output.filter(line => line.startsWith("started: ")).length;
+  const delegated = output.filter(line => line.startsWith("delegate: ")).length;
+  const waits = output.filter(line => line.startsWith("waits: ")).map(line => {
+    const [, file, reason] = /^waits: (\S*)\s*(.*)$/.exec(line);
+    return { file, reason };
+  });
+  const lex = waits.filter(wait => lexWait(wait.reason)).length;
+  const orphans = waits.filter(wait => orphan(wait.reason)).map(wait => slug(wait.file));
+  const other = waits.length - lex - orphans.length;
+  const meanwhile = waits.filter(wait => wait.reason.startsWith("claimed meanwhile")).length;
+  const failed = handed.status !== 0 || !nextResult.startsWith("RESULT: ok ");
+
+  const since = tracked ? "since the last check" : "since tracking started";
+  console.log(`done: ${done.length ? `${plural(done.length, "slice")} ${since}: ${done.join(", ")}` : `nothing new ${since}`}`);
+  const stop = !failed && !running.length && !ready && !started && !delegated && !orphans.length && !other
+    ? (waits.length ? "only Lex-waits left" : "frontier empty") : null;
+  const waitParts = [
+    ...(lex ? [`${plural(lex, "ticket")} waiting on you`] : []),
+    ...(orphans.length ? [`${orphans.length} claimed with no job (${orphans.join(", ")}); the lead looks at it`] : []),
+  ];
+  let status;
+  if (failed) status = `the hand-out failed (${nextResult.replace(/^RESULT: /, "") || `exit ${handed.status}`}); the lead looks at it`;
+  else if (stop === "frontier empty") status = "nothing left to build; the build is finished";
+  else if (stop) status = `nothing running; ${plural(lex, "ticket")} waiting on you`;
+  else {
+    const parts = [];
+    if (running.length) parts.push(`${running.length} building (${running.map(job => job.name).join(", ")})`);
+    if (stuck.length) parts.push(`${stuck.length} stuck (${stuck.map(item => item.job).join(", ")})`);
+    if (started) parts.push(`${started} started now`);
+    const waiting = flags.start ? Math.max(0, ready - started - delegated - meanwhile) : ready;
+    if (waiting) parts.push(`${waiting} ready to start`);
+    if (delegated) parts.push(`${delegated} to send to the free worker`);
+    parts.push(...waitParts);
+    if (other) parts.push(`${other} waiting on other work`);
+    status = parts.join(", ") || "nothing running";
+  }
+  console.log(`running/next: ${status}`);
+  if (failed) { kitResult("fail", `heartbeat next ${nextResult.replace(/^RESULT: /, "") || `exit ${handed.status}`}`); process.exitCode = 1; }
+  else kitResult("ok", stop ? `heartbeat stop (${stop})` : "heartbeat continue");
+}
+
+try { main(process.argv.slice(2)); }
+catch (error) {
+  // The schedule still has two lines to post to Lex.
+  console.log("done: unknown (heartbeat failed)");
+  console.log(`running/next: the heartbeat failed (${error.message}); the lead looks at it`);
+  kitResult("fail", `heartbeat ${error.message}`);
+  process.exitCode = 1;
+}
