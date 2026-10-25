@@ -152,7 +152,7 @@ export const stem = word => word.replace(/'s$/, "").replace(/ing$/, (suffix, off
  */
 export function keyWords(text) {
   const own = text.replace(/\bBorderline:.*$/s, "");
-  // Stop words go before stemming, so "notes" stays a key word instead of stemming to "not".
+  // Stop words go before stemming, so "notes" (stem "not") is not dropped as the stop word "not".
   return new Set((own.toLowerCase().match(/[a-z0-9][a-z0-9']*/g) ?? []).filter(word => word.length >= 3 && !stopWords.has(word)).map(stem));
 }
 

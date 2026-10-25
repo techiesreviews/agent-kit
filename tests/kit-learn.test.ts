@@ -77,6 +77,8 @@ test("each line parses into date, kind, text, repeats and thread; a malformed li
   assert.deepEqual(learn.parseCorrections("# x\n\n- 2026-10-01 · fault · x · repeats: first · [t](u)\n", "f").problems,
     [{ file: "f", line: 1, message: "missing ## Corrections heading" }]);
   assert.deepEqual(learn.parseCorrections("", "f"), { entries: [], problems: [] });
+  assert.deepEqual(learn.parseCorrections("## Corrections\n- 2026-02-30 · fault · x · repeats: first · [t](u)\n", "f"),
+    { entries: [], problems: [{ file: "f", line: 2, message: "invalid date: 2026-02-30" }] });
 });
 
 test("repeats group by a repeats: date and by the same kind with close wording", () => {
@@ -95,6 +97,12 @@ test("repeats group by a repeats: date and by the same kind with close wording",
     { date: "2026-10-01", kind: "felt-wrong", text: "Dragging a card snaps it back", source: "a", file: "f", line: 2 },
   ]);
   assert.equal(kinds.length, 2);
+  // A repeats: date links a line of another kind that shares two key words.
+  const crossKind = learn.groupCorrections([
+    { date: "2026-10-02", kind: "too-much", text: "Toolbar hint text crowds the heading", repeats: "2026-10-01", source: "a", file: "f", line: 1 },
+    { date: "2026-10-01", kind: "felt-wrong", text: "The toolbar hint covers my typing", repeats: "first", source: "a", file: "f", line: 2 },
+  ]);
+  assert.deepEqual(crossKind.map(group => [group.times, group.outside, group.kinds]), [[2, [], ["too-much", "felt-wrong"]]]);
   // A repeats: date with only an unrelated line of another kind that day is an earlier time not in the list.
   const unrelated = learn.groupCorrections([
     { date: "2026-10-02", kind: "too-much", text: "Menu has too many words", repeats: "2026-10-01", source: "a", file: "f", line: 1 },
@@ -121,6 +129,14 @@ test("a slug inside repeats: prose does not make a date another project's", () =
     { date: "2026-10-01", kind: "fault", text: "Undo dropped a block", repeats: "first", source: "a", file: "f", line: 2 },
   ], ["projects"]);
   assert.deepEqual(elsewhere.map(group => [group.members.length, group.outside]), [[1, ["2026-10-01 in projects"]], [1, []]]);
+  // Bare slug forms and the README's | separator.
+  const forms = (repeats: string) => learn.groupCorrections([
+    { date: "2026-10-02", kind: "fault", text: "Save lost the title", repeats, source: "a", file: "f", line: 1 },
+    { date: "2026-10-01", kind: "fault", text: "Undo dropped a block", repeats: "first", source: "a", file: "f", line: 2 },
+  ], ["other-project"]).map(group => [group.members.length, group.outside]);
+  assert.deepEqual(forms("2026-10-01 other-project"), [[1, ["2026-10-01 in other-project"]], [1, []]]);
+  assert.deepEqual(forms("2026-10-01 in other-project, 2026-09-20"), [[1, ["2026-09-20", "2026-10-01 in other-project"]], [1, []]]);
+  assert.deepEqual(forms("2026-10-01 | first"), [[2, []]]);
 });
 
 test("a repeats: date recorded in the feedback log links there and counts once", () => {
@@ -161,6 +177,8 @@ test("the slug comes from the project map by workspace, a sibling worktree inclu
   assert.deepEqual(rows.map(row => row.slug), ["site", "site-starter"]);
   assert.equal(learn.findSlug(rows, ["/w/site-build-x"]), "site");
   assert.equal(learn.findSlug(rows, ["/w/site-starter"]), "site-starter");
+  // Both site-* and site-starter-* match; the longer workspace wins.
+  assert.equal(learn.findSlug(rows, ["/w/site-starter-x"]), "site-starter");
   assert.equal(learn.findSlug(rows, ["/w/elsewhere"]), undefined);
 });
 
