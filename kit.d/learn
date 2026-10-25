@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // kit: group Lex's repeated corrections for the chat-learning routine; reads only, writes one bundle
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { feedbackKinds, loadFeedback } from "../tickets.mjs";
+import { feedbackHeading, feedbackKinds, parseFeedbackLine } from "../tickets.mjs";
 import { composeBundle } from "./ux";
 
 const { kitRoot, kitMainRoot, kitResult } = await import(
@@ -88,7 +88,7 @@ export function findSlug(rows, roots) {
   const match = rows.filter(row => here.some(path => path === real(row.workspace)
     || (dirname(path) === dirname(real(row.workspace)) && basename(path).startsWith(`${basename(row.workspace)}-`))));
   // The longest workspace wins, so native-site-editor-starter is not a native-site-editor worktree.
-  return match.sort((a, b) => b.workspace.length - a.workspace.length)[0]?.slug;
+  return match.sort((a, b) => real(b.workspace).length - real(a.workspace).length)[0]?.slug;
 }
 
 const correctionLine = /^- (\S+) · (\S+) · (.+?) · repeats: (.+?) · (\[[^\]]*\]\([^)\s]*\).*)$/;
@@ -117,14 +117,34 @@ export function parseCorrections(text, file) {
   return { entries, problems };
 }
 
+/**
+ * Lines of a build feedback log under its `## Feedback` heading, as kit feedback writes them. Only the
+ * date and kind must hold for learning; a bad `after release:` or fix link is the ticket checker's business.
+ */
+export function parseFeedbackLog(text, file) {
+  const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/), entries = [], problems = [];
+  const start = lines.indexOf(feedbackHeading);
+  for (let i = start + 1; start >= 0 && i < lines.length && !/^#{1,2} /.test(lines[i]); i++) {
+    if (!lines[i].trim() || lines[i].startsWith("### ")) continue;
+    const entry = parseFeedbackLine(lines[i]);
+    const problem = message => problems.push({ file, line: i + 1, message });
+    if (!entry) problem("malformed feedback line");
+    else if (!realDate(entry.date)) problem(`invalid date: ${entry.date}`);
+    else if (!Object.hasOwn(feedbackKinds, entry.kind)) problem(`invalid kind: ${entry.kind}`);
+    else entries.push({ date: entry.date, kind: entry.kind, text: entry.text, file, line: i + 1 });
+  }
+  return { entries, problems };
+}
+
 const stopWords = new Set(("the and for with that this then when what from into his her their they them its was were are but not all any " +
   "one too also more should would could can want wants wanted need needs there here have has had just only very like about after before " +
   "does did out own each other same than been being our you your lex agent agents said asked says say make made get got use used it's " +
   "today now instead which who how why where while because so again still back").split(" "));
 
 /** A rough stem, so "replacing" meets "replace" and "explainers" meets "explainer". */
-export const stem = word => word.replace(/'s$/, "").replace(/(?:ing|ed|es|ly)$/, (suffix, offset) => offset > 3 ? "" : suffix)
-  .replace(/s$/, (suffix, offset) => offset > 2 && !word.endsWith("ss") ? "" : suffix).replace(/e$/, (suffix, offset) => offset > 3 ? "" : suffix);
+export const stem = word => word.replace(/'s$/, "").replace(/ing$/, (suffix, offset) => offset > 3 ? "" : suffix)
+  .replace(/(?:ed|es|ly)$/, (suffix, offset) => offset > 2 ? "" : suffix)
+  .replace(/s$/, (suffix, offset) => offset > 2 && !word.endsWith("ss") ? "" : suffix).replace(/e$/, (suffix, offset) => offset > 2 ? "" : suffix);
 
 /**
  * Key words of a correction or rule: lower case, stop words and the sync's own "Borderline: …" note
@@ -132,8 +152,8 @@ export const stem = word => word.replace(/'s$/, "").replace(/(?:ing|ed|es|ly)$/,
  */
 export function keyWords(text) {
   const own = text.replace(/\bBorderline:.*$/s, "");
-  return new Set((own.toLowerCase().match(/[a-z0-9][a-z0-9']*/g) ?? []).filter(word => word.length >= 3 && !stopWords.has(word))
-    .map(stem).filter(word => !stopWords.has(word)));
+  // Stop words go before stemming, so "notes" stays a key word instead of stemming to "not".
+  return new Set((own.toLowerCase().match(/[a-z0-9][a-z0-9']*/g) ?? []).filter(word => word.length >= 3 && !stopWords.has(word)).map(stem));
 }
 
 const sharedWords = (a, b) => [...a].filter(word => b.has(word)).length;
@@ -156,9 +176,10 @@ export function repeatDates(repeats, otherSlugs = []) {
 }
 
 /**
- * Groups of corrections that repeat. A `repeats:` date links a line to the closest same-file line of that
- * date (same kind first, then wording; another kind needs two shared key words); a date not in the list still counts as one earlier time. Any two
- * lines of one kind whose wording is close are linked too.
+ * Groups of corrections that repeat. A `repeats:` date links a line to the closest line of that date in
+ * either list (same kind first, then wording; another kind needs two shared key words), so a day recorded
+ * in both lists counts once; a date in neither still counts as one earlier time. Any two lines of one
+ * kind whose wording is close are linked too.
  */
 export function groupCorrections(entries, otherSlugs = []) {
   const items = entries.map((entry, index) => ({ ...entry, index, words: keyWords(entry.text), outside: [] }));
@@ -169,10 +190,10 @@ export function groupCorrections(entries, otherSlugs = []) {
     if (item.repeats === undefined || /^first\b/.test(item.repeats)) continue;
     for (const { date, other } of repeatDates(item.repeats, otherSlugs)) {
       // A line of another kind must share some wording, or the earlier time is one the list never recorded.
-      const candidates = other ? [] : items.filter(candidate => candidate !== item && candidate.file === item.file && candidate.date === date
+      const candidates = other ? [] : items.filter(candidate => candidate !== item && candidate.date === date
         && (candidate.kind === item.kind || sharedWords(item.words, candidate.words) >= linkWords));
       const best = candidates.sort((a, b) => Number(b.kind === item.kind) - Number(a.kind === item.kind)
-        || similarity(item.words, b.words) - similarity(item.words, a.words))[0];
+        || similarity(item.words, b.words) - similarity(item.words, a.words) || Number(b.file === item.file) - Number(a.file === item.file))[0];
       if (best) join(item.index, best.index);
       else item.outside.push(other ? `${date} in ${other}` : date);
     }
@@ -246,12 +267,11 @@ function learn(args) {
     const file = join(memory, "corrections", `${slug}.md`);
     const chat = existsSync(file) ? parseCorrections(readFileSync(file, "utf8"), file) : { entries: [], problems: [] };
     const wayfinder = join(root, "docs/wayfinder");
-    const feedback = existsSync(wayfinder) ? loadFeedback(wayfinder) : { entries: [], problems: [] };
-    // Only lines that do not parse into a date and a kind; a missing fix link does not matter here.
-    const unreadable = feedback.problems.filter(problem => /^(Malformed|Invalid date|Invalid kind)/.test(problem.message));
-    const skip = new Set(unreadable.map(problem => `${problem.file}\0${problem.line}`));
-    feedback.entries = feedback.entries.filter(entry => !skip.has(`${entry.file}\0${entry.line}`));
-    const problems = [...chat.problems, ...unreadable];
+    const logs = existsSync(wayfinder) ? readdirSync(wayfinder, { withFileTypes: true }).filter(entry => entry.isDirectory())
+      .map(entry => join(wayfinder, entry.name, "build/feedback.md")).filter(path => existsSync(path)).sort() : [];
+    const parsedLogs = logs.map(path => parseFeedbackLog(readFileSync(path, "utf8"), path));
+    const feedback = { entries: parsedLogs.flatMap(log => log.entries), problems: parsedLogs.flatMap(log => log.problems) };
+    const problems = [...chat.problems, ...feedback.problems];
     const entries = [
       ...chat.entries.map(entry => ({ ...entry, origin: "chat", where: `${basename(file)}:${entry.line}`, source: `chat: ${entry.source}` })),
       ...feedback.entries.map(entry => ({ ...entry, origin: "feedback", where: `${relative(root, entry.file)}:${entry.line}`,

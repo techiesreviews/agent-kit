@@ -23,6 +23,7 @@ const learn: {
   keyWords(text: string): Set<string>;
   sinceDate(since: string, now?: number): string;
   bundleLimit: number;
+  groupLines(group: Group, root: string, blocks: Block[]): string[];
 } = await import(pathToFileURL(script).href);
 
 const corrections = join(memory, "corrections/demo.md");
@@ -105,6 +106,7 @@ test("repeats group by a repeats: date and by the same kind with close wording",
 test("key words are stemmed, so word forms meet", () => {
   assert.deepEqual(learn.keyWords("replacing images"), learn.keyWords("replace image"));
   assert.ok(learn.keyWords("quickly").has("quick"));
+  assert.deepEqual(learn.keyWords("saved in the notes"), learn.keyWords("save the note"));
   assert.deepEqual([...learn.keyWords("The agent should show the explainers. Borderline: phrased as a wish")], ["show", "explainer"]);
 });
 
@@ -119,6 +121,27 @@ test("a slug inside repeats: prose does not make a date another project's", () =
     { date: "2026-10-01", kind: "fault", text: "Undo dropped a block", repeats: "first", source: "a", file: "f", line: 2 },
   ], ["projects"]);
   assert.deepEqual(elsewhere.map(group => [group.members.length, group.outside]), [[1, ["2026-10-01 in projects"]], [1, []]]);
+});
+
+test("a repeats: date recorded in the feedback log links there and counts once", () => {
+  const [group, ...rest] = learn.groupCorrections([
+    { date: "2026-10-20", kind: "too-much", text: "Removed the hint text beside the save button again", repeats: "2026-10-19", source: "a", file: "chat.md", line: 1 },
+    { date: "2026-10-19", kind: "too-much", text: "Removed the hint text beside the save button", source: "b", file: "feedback.md", line: 5 },
+  ]);
+  assert.deepEqual([group.times, group.outside, rest.length], [2, [], 0]);
+});
+
+test("the recorded-twice note needs a chat and a feedback line within a day", () => {
+  const line = (date: string, origin: string, text = "Toolbar covers the heading on scroll") =>
+    ({ date, kind: "fault", text, source: origin, file: `${origin}.md`, line: 1, origin, where: `${origin}.md:1` });
+  const note = (...entries: ReturnType<typeof line>[]) => {
+    const groups = learn.groupCorrections(entries);
+    assert.equal(groups.length, 1);
+    return learn.groupLines(groups[0], "/", []).some(text => text.includes("within a day in both lists"));
+  };
+  assert.equal(note(line("2026-10-02", "chat"), line("2026-10-01", "feedback")), true);
+  assert.equal(note(line("2026-10-02", "chat"), line("2026-10-01", "chat", "Toolbar covers the heading on scroll again")), false);
+  assert.equal(note(line("2026-10-03", "chat"), line("2026-10-01", "feedback")), false);
 });
 
 test("covered? names the rule block whose key words the correction shares", () => {
@@ -175,14 +198,15 @@ test("KIT_CHAT_MEMORY is read, never written; the bundle lands in the main root"
   assert.deepEqual(snapshot(memory), before);
   assert.deepEqual(readdirSync(home), []);
   assert.match(result.stdout, /demo\.md:10: malformed correction line/);
-  const path = /^RESULT: ok learn 4 repeated of 6 groups, 3 malformed, bundle (.+)$/m.exec(result.stdout)?.[1];
+  const path = /^RESULT: ok learn 5 repeated of 6 groups, 3 malformed, bundle (.+)$/m.exec(result.stdout)?.[1];
   assert.ok(path?.startsWith(join(main, ".scratch/learn/")), result.stdout);
   const bundle = readFileSync(path, "utf8");
   assert.match(bundle, /- \*\*×2 · fault\*\* · 2026-10-19, 2026-10-18 · feedback: demo; chat: Publish\n {2}- covered\?: docs\/agents\/guardrails\.md:3,.*\n {2}- within a day in both lists/);
   // An unknown feedback kind is listed, not grouped; a missing fix link does not matter here.
-  assert.match(bundle, /## Malformed lines\n\n.+\n.+\n- .+feedback\.md:6: Invalid kind: sideways\n/);
+  assert.match(bundle, /## Malformed lines\n\n.+\n.+\n- .+feedback\.md:6: invalid kind: sideways\n/);
   assert.doesNotMatch(bundle, /A feedback kind the log does not have/);
-  assert.match(bundle, /## Given once\n[^#]*Settings panel spacing looks cramped/);
+  // A bad after release: value does not stop a line from grouping.
+  assert.match(bundle, /- \*\*×2 · below-bar\*\* · 2026-10-08, 2026-10-07 · feedback: demo\n/);
   assert.doesNotMatch(bundle, /99-missing/);
   assert.match(bundle, /covered\?: docs\/agents\/ux-rulebook\.md:5 \(S1\)/);
   assert.match(bundle, /earlier time not in the list: 2026-10-01 in other-project/);
