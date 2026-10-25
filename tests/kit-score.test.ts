@@ -351,8 +351,11 @@ test("kit score --html writes one self-contained page from the records, tickets 
   // Where: merged 01 and 02, closed 05 (a queued merge with no SHA) and closed 07 are done; 03 runs; 04 waits on Lex;
   // 12 needs info, so it waits on Lex too; 06 and 08 have not started; the map-level ticket 09 is not a piece, nor are
   // the dropped (wontfix) 10, which has a record, and 11, which has none.
+  // The dropped record (an hour of building and a fault) is left out of every section and the header.
   const tiles = Object.fromEntries([...html.matchAll(/data-state="(\w+)"(?: data-some)?><span class="value">(\d+)/g)].map(match => [match[1], Number(match[2])]));
   assert.deepEqual(tiles, { done: 4, running: 1, lex: 2, waiting: 2 });
+  assert.doesNotMatch(html, /Dropped after a slice/);
+  assert.match(html, /<p>5 pieces recorded · made /);
   assert.equal(sections(html)[0].caption, "4 of 9 pieces done, 2 waiting on Lex; the longest, Trim the toolbar, took 55 minutes, most of it building.");
   // Reviews: 1 + 2 + 4 found in three pieces (gaps are not problems), the declined style finding lighter; a tie names both
   // kinds. 02's declined finding has no kind and no unsorted finding to sit in, so neither the bars nor the totals count it.
@@ -379,6 +382,7 @@ test("kit score --html writes one self-contained page from the records, tickets 
   assert.match(html, /<li aria-current="step"><span class="rung">Rung 1<\/span>/);
   // Builders: per kind and builder; under ten pieces of a kind, no advice.
   assert.match(html, /<h3>task \(AFK\) M <span>3 pieces<\/span><\/h3>/);
+  assert.match(html, /<h3>task \(AFK\) S <span>2 pieces<\/span><\/h3>/);
   assert.match(html, /<dt>gpt-6.1-sol<\/dt><dd><span>1<\/span> piece<\/dd><dd><span>39<\/span> min \(median\)<\/dd><dd><span>0<\/span> fix rounds a piece<\/dd><dd><span>1<\/span> findings a piece<\/dd><dd><span>120k tokens<\/span> a piece/);
   assert.doesNotMatch(html, /To bring to Lex/);
   // --out writes elsewhere; --json keeps stdout to the data and prints the page line on stderr.
@@ -387,6 +391,10 @@ test("kit score --html writes one self-contained page from the records, tickets 
   assert.ok(both.stdout.startsWith("{")); assert.equal(both.stderr, `page: ${out}\n`);
   assert.equal(sections(readFileSync(out, "utf8")).length, 5);
   for (const args of [["--html"], ["demo", "--out", out], ["demo", "--html", "--out"]]) assert.equal(f.run(...args).status, 2, args.join(" "));
+  // A current log that lost its heading: nothing counted, and the caption says lines were left out.
+  writeFileSync(join(f.root, "docs/wayfinder/demo/build/feedback.md"), "# Feedback: demo\n\n- 2026-10-25 · fault · \"x\" · after release: no · fix: open\n");
+  assert.equal(f.run("demo", "--html").status, 0);
+  assert.equal(sections(readFileSync(path, "utf8"))[2].caption, "Lex has not corrected anything in this build yet (lines of the log that could not be read are left out).");
   // A mistyped map fails like --snapshot and writes no page.
   const typo = f.run("demp", "--html");
   assert.equal(typo.status, 1); assert.match(typo.stdout, /^RESULT: fail score no map demp \(docs\/wayfinder\/demp\)$/m);

@@ -10,14 +10,39 @@
   },
   "phases": [
     {
-      "name": "brief",
+      "name": "build",
       "start": "2026-10-25T15:00:00.000Z",
-      "end": "2026-10-25T15:00:00.000Z",
+      "end": "2026-10-25T16:00:00.000Z",
       "exit": 0
     }
   ],
   "rounds": 0,
-  "reviews": [],
+  "reviews": [
+    {
+      "dir": ".scratch/reviews/demo/r",
+      "model": "claude-opus-5-5",
+      "effort": "medium",
+      "counts": {
+        "kind": {
+          "fault": 1,
+          "ticket": 0,
+          "race": 0,
+          "style": 0,
+          "unsorted": 0,
+          "gap": 0
+        },
+        "severity": {
+          "P0": 0,
+          "P1": 0,
+          "P2": 1,
+          "P3": 0,
+          "none": 0,
+          "gap": 0
+        }
+      },
+      "declined": []
+    }
+  ],
   "cost": null,
   "costs": {},
   "landed": null

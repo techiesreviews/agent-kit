@@ -58,12 +58,13 @@ const found = piece => sum(Object.keys(findingKinds).map(kind => piece.findings?
 
 // Done is merged or a closed ticket (a queued merge may never record its SHA); waiting on Lex is a ticket
 // marked for him; running has a record; the rest wait to start. Only the build's own tickets are pieces, and a
-// dropped (wontfix) ticket is none, with or without a record.
+// dropped (wontfix) ticket is none: scorePage drops its record before any section sees it.
+const buildTickets = tickets => tickets.filter(ticket => ticket.file.includes("/build/tickets/"));
 function pieceStates(pieces, allTickets = []) {
-  const tickets = allTickets.filter(ticket => ticket.file.includes("/build/tickets/"));
+  const tickets = buildTickets(allTickets);
   const bySlug = new Map(tickets.map(ticket => [ticket.slug, ticket]));
   const lex = ticket => ["ready-for-human", "needs-info"].includes(ticket?.status);
-  const rows = pieces.filter(piece => bySlug.get(piece.piece)?.status !== "wontfix").map(piece => {
+  const rows = pieces.map(piece => {
     const ticket = bySlug.get(piece.piece);
     return { piece, state: piece.landed?.sha || ticket?.status === "closed" ? "done" : lex(ticket) ? "lex" : "running" };
   });
@@ -167,7 +168,7 @@ function whereSection(pieces, tickets) {
     const phases = phaseMinutes(slow), most = Object.keys(phases).sort((a, b) => phases[b] - phases[a])[0];
     caption += `; the longest, ${name(slow)}, took ${Math.round(longest)} minutes, most of it ${phaseKinds[most].toLowerCase()}.`;
   } else caption += "; no piece has recorded time yet.";
-  const timeline = timed.length ? `<ol class="bars">${timed.map(piece => {
+  const timeline = timed.length ? `<h3>Time per piece</h3><ol class="bars">${timed.map(piece => {
     const phases = phaseMinutes(piece);
     return `<li><span class="name">${esc(name(piece))}</span><span class="value">${Math.round(piece.minutes)} min</span>` +
       bar(piece.minutes / longest, Object.entries(phaseKinds).map(([key, label]) => ({ key, value: phases[key], title: `${label}: ${Math.round(phases[key])} min` }))) + "</li>";
@@ -319,6 +320,8 @@ dd span { color: var(--ink); font-variant-numeric: tabular-nums; font-weight: 60
  * each { map, feedback } with its feedback log text.
  */
 export function scorePage({ data, tickets = [], builds = [], generated = new Date() }) {
+  const dropped = new Set(buildTickets(tickets).filter(ticket => ticket.status === "wontfix").map(ticket => ticket.slug));
+  const pieces = data.pieces.filter(piece => !dropped.has(piece.piece));
   const current = feedbackLog(data.feedback, `docs/wayfinder/${data.map}/build/feedback.md`);
   const state = ladder(builds.map(build => ({ map: build.map, ...feedbackLog(build.feedback, `docs/wayfinder/${build.map}/build/feedback.md`) })));
   const when = generated.toISOString().slice(0, 16).replace("T", " ");
@@ -332,12 +335,12 @@ export function scorePage({ data, tickets = [], builds = [], generated = new Dat
 </head>
 <body>
 <main>
-<header><h1>Build: ${esc(data.map)}</h1><p>${plural(data.pieces.length, "piece")} recorded · made ${when} UTC</p></header>
-${whereSection(data.pieces, tickets)}
-${reviewSection(data.pieces)}
+<header><h1>Build: ${esc(data.map)}</h1><p>${plural(pieces.length, "piece")} recorded · made ${when} UTC</p></header>
+${whereSection(pieces, tickets)}
+${reviewSection(pieces)}
 ${correctionSection(current, tickets, data.map)}
 ${ladderSection(state, current.entries)}
-${builderSection(data.pieces)}
+${builderSection(pieces)}
 </main>
 </body>
 </html>
