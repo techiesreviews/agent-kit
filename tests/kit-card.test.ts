@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -104,11 +104,59 @@ test("card keeps to 30 lines with the footer last", (t) => {
   assert.equal(lines.length, 30);
   assert.equal(lines[27], "- 2026-10-23 · question 23");
   writeFileSync(join(f.memory, "project-notes/site.md"), ["# Site", "## Current thinking", ...Array.from({ length: 25 }, (_, index) => `Thought ${index}.`), "## Open questions", "- 2026-10-21 · cut"].join("\n"));
-  const cut = f.card(join(f.projects, "site")).trimEnd().split("\n");
-  assert.equal(cut.length, 29);
-  assert.equal(cut[26], "Thought 24.");
   assert.match(lines[28], /^corrections \(14 days\): /);
   assert.equal(lines[29], "More: ask for the full note.");
+  // A heading left empty by the cut goes; a content line ending in a colon at the cut stays.
+  const note = (count: number) => writeFileSync(join(f.memory, "project-notes/site.md"), [
+    "# Site", "## Current thinking", ...Array.from({ length: count - 1 }, (_, index) => `Thought ${index}.`), "Two options:",
+    "## Open questions", "- 2026-10-21 · cut",
+  ].join("\n"));
+  note(25);
+  const empty = f.card(join(f.projects, "site")).trimEnd().split("\n");
+  assert.equal(empty.length, 29);
+  assert.equal(empty[26], "Two options:");
+  assert.ok(!empty.includes("Open questions:"));
+  note(26);
+  const colon = f.card(join(f.projects, "site")).trimEnd().split("\n");
+  assert.equal(colon.length, 30);
+  assert.equal(colon[27], "Two options:");
+});
+
+test("a folder inside a workspace counts up to its own repository, so unmapped repos under a catch-all row get no card", (t) => {
+  const f = fixture(t);
+  writeFileSync(join(f.memory, "project-notes/projects.md"), "# Projects\n\n## Current thinking\nEverything.\n");
+  mkdirSync(join(f.projects, "unmapped/.git"));
+  mkdirSync(join(f.projects, "unmapped/src"));
+  assert.equal(f.card(join(f.projects, "unmapped/src")), noNotes);
+  mkdirSync(join(f.projects, "site/.git"));
+  mkdirSync(join(f.projects, "site/src"));
+  assert.match(f.card(join(f.projects, "site/src")), /^Context card: Site /);
+  assert.match(f.card(f.projects), /^Context card: Projects\n/);
+  const usage = spawnSync(process.execPath, [script, "--cwd"], { env: f.env, encoding: "utf8" });
+  assert.deepEqual([usage.status, usage.stdout, usage.stderr], [2, "", "Usage: context-card.mjs [--cwd DIR] [--hook]\n"]);
+});
+
+test("the documented user-level hook skips repos with their own copy and prints the card elsewhere", (t) => {
+  const f = fixture(t);
+  const block = /```json\n(.+)\n```/.exec(readFileSync("docs/agents/context-card.md", "utf8"))![1];
+  const settings = JSON.parse(block) as { hooks: { SessionStart: { hooks: { command: string }[] }[] } };
+  const command = settings.hooks.SessionStart[0].hooks[0].command
+    .replace("/home/ubulex/Projects/native-site-editor-dev/scripts/agents/context-card.mjs", script);
+  assert.ok(command.includes(script), command);
+  const run = (cwd: string) => spawnSync("/bin/bash", ["-c", command], {
+    cwd, env: f.env, input: JSON.stringify({ hook_event_name: "SessionStart", cwd: join(f.projects, "site") }), encoding: "utf8",
+  });
+  const own = join(f.home, "own");
+  mkdirSync(join(own, "scripts/agents"), { recursive: true });
+  writeFileSync(join(own, "scripts/agents/context-card.mjs"), "");
+  spawnSync("git", ["init", "-q", own]);
+  const skipped = run(own);
+  assert.deepEqual([skipped.status, skipped.stdout, skipped.stderr], [0, "", ""]);
+  spawnSync("git", ["init", "-q", join(f.projects, "other")]);
+  const shown = run(join(f.projects, "other"));
+  assert.equal(shown.status, 0, shown.stderr);
+  const context = (JSON.parse(shown.stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
+  assert.match(context, /^Context card: Site \(updated 2026-10-24\)\n/);
 });
 
 test("missing note, missing slug and missing folder each print one line and exit 0", (t) => {

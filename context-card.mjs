@@ -54,15 +54,25 @@ function workspaces(readme) {
   return rows;
 }
 
+// The nearest folder holding `.git`, or null outside a repository.
+function repository(path) {
+  for (let folder = path; ; folder = dirname(folder)) {
+    if (existsSync(join(folder, ".git"))) return folder;
+    if (dirname(folder) === folder) return null;
+  }
+}
+
 // The most specific match wins: the workspace itself or a folder inside it, or a sibling worktree
-// named `<workspace>-*` (or a folder inside one). On a tie the workspace beats the worktree, so
+// named `<workspace>-*` (or a folder inside one). A folder inside a workspace stops at its own
+// repository, so an unmapped repo under a catch-all row such as `~/Projects` has no slug. On a tie the workspace beats the worktree, so
 // `native-site-editor-starter` keeps its own row instead of counting as a native-site-editor worktree,
 // and then the longer workspace wins, so `native-site-editor-starter-x` is a starter worktree.
 function findSlug(readme, cwd) {
   const here = real(cwd);
+  const repo = repository(here);
   let best = null;
   for (const { slug, root } of workspaces(readme)) {
-    let length = within(here, root) ? root.length : -1;
+    let length = within(here, root) && (!repo || within(root, repo)) ? root.length : -1;
     let direct = length >= 0;
     if (!direct) {
       for (let folder = here; dirname(folder) !== folder; folder = dirname(folder)) {
@@ -131,8 +141,11 @@ function card(cwd, now = new Date()) {
   const title = /^#\s+(.+?)\s*$/m.exec(note)?.[1] ?? slug;
   const updated = /^Project ID .*\bupdated (\d{4}-\d{2}-\d{2})/m.exec(note)?.[1];
   const body = [`Context card: ${title}${updated ? ` (updated ${updated})` : ""}`];
+  const headings = new Set();
   const add = (heading, lines) => {
-    if (lines?.length) body.push(`${heading}:`, ...lines);
+    if (!lines?.length) return;
+    headings.add(body.length);
+    body.push(`${heading}:`, ...lines);
   };
   add("Current thinking", parts["current thinking"]);
   const decisions = (parts["recent decisions"] ?? []).filter(dated);
@@ -149,7 +162,7 @@ function card(cwd, now = new Date()) {
   footer.push("More: ask for the full note.");
   const kept = body.slice(0, MAX_LINES - footer.length);
   // A heading whose items were all cut goes too.
-  if (kept.length > 1 && kept.at(-1).endsWith(":") && body[kept.length] !== undefined) kept.pop();
+  if (headings.has(kept.length - 1)) kept.pop();
   return [...kept, ...footer].map(cut);
 }
 
@@ -159,6 +172,10 @@ function main(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     if (argv[index] === "--hook") hook = true;
     else if (argv[index] === "--cwd" && argv[index + 1]) cwd = argv[++index];
+    else {
+      process.stderr.write("Usage: context-card.mjs [--cwd DIR] [--hook]\n");
+      process.exit(2);
+    }
   }
   if (hook) {
     try {
