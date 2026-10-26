@@ -135,7 +135,8 @@ for file in "$commands_dir"/*; do
     code=0
     cd -- "$root" && timeout -k 2 "${KIT_HELP_TIMEOUT:-10}" "$file" --help > "$help_dir/$index.out" 2>&1 < /dev/null || code=$?
     printf '%s\n' "$code" > "$help_dir/$index.code"
-  ) &
+    # The help's own output is in its file; this hides bash's "Killed" line when timeout -k has to SIGKILL.
+  ) 2>/dev/null &
 done
 wait
 broken=()
