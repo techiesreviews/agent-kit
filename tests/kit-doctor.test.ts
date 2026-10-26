@@ -285,11 +285,23 @@ test("doctor --quiet, the mode agent.sh gates on, still fails and names a broken
   assert.equal(result.stderr, "");
 });
 
+test("doctor fails the help check when the command folder has no commands", (t) => {
+  const f = fixture(t);
+  const empty = join(f.directory, "no-commands");
+  mkdirSync(empty);
+  writeFileSync(join(empty, "readme"), "not a command\n");
+  // Run doctor directly: the kit front door reads the same empty folder.
+  const result = f.run([], f.build, { KIT_COMMANDS_DIR: empty }, true);
+  failure(result, "help");
+  assert.ok(result.stdout.includes(`✗ help: no commands in ${empty}; fix: restore scripts/agents/kit.d\n`), result.stdout);
+});
+
 test("doctor passes the help check when every real kit command answers --help", (t) => {
   const f = fixture(t);
   const commands = join(repo, "scripts/agents/kit.d");
   // Some helps read this checkout's files (shots runs its CLI), so check from the repository itself.
-  const result = f.run([], repo, { KIT_COMMANDS_DIR: commands });
+  // Under the fixture's 10 s spawn limit, a slow help is named rather than cut off.
+  const result = f.run([], repo, { KIT_COMMANDS_DIR: commands, KIT_HELP_TIMEOUT: "5" });
   const count = readdirSync(commands).filter(name => !/^[._]/.test(name) && statSync(join(commands, name)).mode & 0o111).length;
   assert.ok(result.stdout.includes(`✓ help: ${count} commands answer --help\n`), result.stdout);
 });

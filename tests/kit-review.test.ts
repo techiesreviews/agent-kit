@@ -25,7 +25,7 @@ interface Call {
 
 const fake = `#!/usr/bin/env node
 import { appendFileSync, chmodSync, existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, unlinkSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 const cli = basename(process.argv[1]);
 const args = process.argv.slice(2);
 if (cli === "gh") {
@@ -39,6 +39,8 @@ const symlink = existsSync(auth) && lstatSync(auth).isSymbolicLink();
 const input = readFileSync(0, "utf8");
 // An unreadable diff makes kit review's evidence copy fail after the review itself worked.
 if (process.env.FAKE_LOCK_DIFF) chmodSync(/Read "([^"]+diff\\.patch)"/.exec(input)[1], 0);
+// A read-only .scratch/agent lets the review folder empty out but not go away.
+if (process.env.FAKE_LOCK_ARTIFACTS) chmodSync(dirname(dirname(/Read "([^"]+diff\\.patch)"/.exec(input)[1])), 0o555);
 appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ cli, args, input, cwd: process.cwd(), home,
   files: readdirSync(home), symlink, target: symlink ? readlinkSync(auth) : null,
   config: existsSync(join(home, "config.toml")) ? readFileSync(join(home, "config.toml"), "utf8") : "" }) + "\\n");
@@ -468,6 +470,22 @@ test("review evidence stays saved when only removing the temporary folder fails"
   assert.match(saved.cleanup, /EACCES/);
   assert.deepEqual(readdirSync(evidence).sort(), ["diff.patch", "findings.json", "refs.txt", "result.md", "run.log"]);
   assert.equal(readFileSync(join(evidence, "result.md"), "utf8"), "out.md\n");
+});
+
+test("kit review keeps its result when only removing the temporary folder fails", (t) => {
+  if (process.getuid?.() === 0) return t.skip("root removes from read-only folders");
+  const f = fixture(t);
+  const artifacts = join(f.root, ".scratch/agent");
+  let result;
+  try { result = f.run([], { FAKE_LOCK_ARTIFACTS: "1" }); }
+  finally { chmodSync(artifacts, 0o755); }
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const [kept] = readdirSync(artifacts).filter(name => name.startsWith("kit-review-"));
+  assert.ok(kept, "the empty review folder is left behind");
+  assert.ok(result.stderr.includes(`problem: removing ${join(artifacts, kept)} failed: EACCES`), result.stderr);
+  assert.match(result.stdout.trim().split("\n").at(-1)!, /^RESULT: ok review /);
+  const evidence = f.evidence(result.stdout);
+  assert.deepEqual(readdirSync(evidence).sort(), ["diff.patch", "findings.json", "refs.txt", "result.md", "run.log"]);
 });
 
 test("evidence timestamp collisions add a suffix and leave existing evidence intact", (t) => {
