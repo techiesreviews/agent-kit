@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -56,27 +56,32 @@ function fixture(t: { after: (fn: () => void) => void }) {
   mkdirSync(join(dev, "node_modules"));
   symlinkSync(join(dev, "node_modules"), join(build, "node_modules"));
   symlinkSync(join(dev, "node_modules"), join(main, "node_modules"));
+  // A small command set keeps doctor's help check quick; one test covers the real commands.
+  const commands = join(directory, "commands");
+  mkdirSync(commands);
+  symlinkSync(doctor, join(commands, "doctor"));
+  executable(join(commands, "ok"), 'printf "Usage: kit ok\\n"');
   const run = (args: string[] = [], root = build, env: NodeJS.ProcessEnv = {}, direct = false) => spawnSync(
     "/bin/bash", direct ? [doctor, ...args] : [kit, "doctor", ...args], {
       cwd: root, encoding: "utf8", timeout: 10_000,
       env: { ...process.env, KIT_ROOT: root, KIT_MAIN_ROOT: main, KIT_LIB: library,
-        KIT_COMMANDS_DIR: join(repo, "scripts/agents/kit.d"), KIT_GROK: join(directory, "no-grok"), ...env },
+        KIT_COMMANDS_DIR: commands, KIT_GROK: join(directory, "no-grok"), ...env },
     },
   );
-  return { directory, main, dev, build, run };
+  return { directory, main, dev, build, commands, run };
 }
 
 function failure(result: ReturnType<typeof spawnSync<string>>, name: string) {
   assert.equal(result.status, 1, result.stdout + result.stderr);
   const lines = result.stdout.trimEnd().split("\n");
   assert.equal(lines.filter(line => line.startsWith("RESULT: ")).length, 1);
-  assert.equal(lines.length, 9, result.stdout);
+  assert.equal(lines.length, 10, result.stdout);
   assert.ok(lines.some(line => line.startsWith(`✗ ${name}: `) && line.includes("; fix: ")), result.stdout);
   assert.equal(lines.at(-1), `RESULT: fail doctor 1 failed: ${name}`);
   assert.equal(result.stderr, "");
 }
 
-test("doctor checks all seven conditions quickly, notes Grok, and quiet success prints only RESULT", (t) => {
+test("doctor checks all eight conditions quickly, notes Grok, and quiet success prints only RESULT", (t) => {
   const f = fixture(t);
   // Git tracks only the executable bit; the rest of the mode follows the umask.
   assert.equal(statSync(doctor).mode & 0o111, 0o111);
@@ -86,16 +91,17 @@ test("doctor checks all seven conditions quickly, notes Grok, and quiet success 
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.ok(elapsed < 2000, `doctor took ${elapsed}ms`);
   const lines = result.stdout.trimEnd().split("\n");
-  assert.deepEqual(lines.slice(0, 8).map(line => line.split(":")[0]), [
-    "✓ place", "✓ base", "✓ hook config", "✓ hooks live", "✓ node", "✓ node_modules", "✓ conflicts", "✗ grok",
+  assert.deepEqual(lines.slice(0, 9).map(line => line.split(":")[0]), [
+    "✓ place", "✓ base", "✓ hook config", "✓ hooks live", "✓ node", "✓ node_modules", "✓ conflicts", "✓ help", "✗ grok",
   ]);
-  assert.equal(lines[7], "✗ grok: not installed (optional reviewer); fix: install the grok CLI for Grok reviews");
-  assert.equal(lines.length, 9);
-  assert.equal(lines[8], "RESULT: ok doctor 7/7 checks passed");
+  assert.equal(lines[7], "✓ help: 2 commands answer --help");
+  assert.equal(lines[8], "✗ grok: not installed (optional reviewer); fix: install the grok CLI for Grok reviews");
+  assert.equal(lines.length, 10);
+  assert.equal(lines[9], "RESULT: ok doctor 8/8 checks passed");
   assert.equal(result.stderr, "");
   const quiet = f.run(["--quiet"]);
   assert.equal(quiet.status, 0, quiet.stderr);
-  assert.equal(quiet.stdout, "RESULT: ok doctor 7/7 checks passed\n");
+  assert.equal(quiet.stdout, "RESULT: ok doctor 8/8 checks passed\n");
   assert.equal(quiet.stderr, "");
 });
 
@@ -110,7 +116,7 @@ test("doctor reports a logged-in or logged-out Grok CLI without failing", (t) =>
   const signedOut = f.run([], f.build, { KIT_GROK: grok });
   assert.equal(signedOut.status, 0, signedOut.stdout + signedOut.stderr);
   assert.ok(signedOut.stdout.includes("✗ grok: not logged in (optional reviewer); fix: grok login\n"), signedOut.stdout);
-  assert.equal(f.run(["--quiet"], f.build, { KIT_GROK: grok }).stdout, "RESULT: ok doctor 7/7 checks passed\n");
+  assert.equal(f.run(["--quiet"], f.build, { KIT_GROK: grok }).stdout, "RESULT: ok doctor 8/8 checks passed\n");
   // A hung, failing or reworded CLI is not mistaken for a logged-out one.
   executable(grok, 'printf "Logged in as lex\\n"');
   const reworded = f.run([], f.build, { KIT_GROK: grok });
@@ -248,6 +254,25 @@ for (const kind of ["missing", "real directory", "dangling link", "different sha
     failure(f.run(), "node_modules");
   });
 }
+
+test("doctor names each command whose --help fails, prints no usage or hangs", (t) => {
+  const f = fixture(t);
+  executable(join(f.commands, "broken"), 'printf "SyntaxError: missing import\\n" >&2; exit 1');
+  executable(join(f.commands, "silent"), "exit 0");
+  executable(join(f.commands, "stuck"), "sleep 5");
+  const result = f.run([], f.build, { KIT_HELP_TIMEOUT: "0.3" });
+  failure(result, "help");
+  assert.ok(result.stdout.includes("✗ help: broken (exit 1), silent (no usage), stuck (timed out); fix: run scripts/agents/kit <command> --help and repair it\n"), result.stdout);
+});
+
+test("doctor passes the help check when every real kit command answers --help", (t) => {
+  const f = fixture(t);
+  const commands = join(repo, "scripts/agents/kit.d");
+  // Some helps read this checkout's files (shots runs its CLI), so check from the repository itself.
+  const result = f.run([], repo, { KIT_COMMANDS_DIR: commands });
+  const count = readdirSync(commands).filter(name => !/^[._]/.test(name) && statSync(join(commands, name)).mode & 0o111).length;
+  assert.ok(result.stdout.includes(`✓ help: ${count} commands answer --help\n`), result.stdout);
+});
 
 test("doctor reports only the first three conflict locations", (t) => {
   const f = fixture(t);

@@ -581,6 +581,15 @@ test("ci cancellation follows the fresh branch head without failing the cancelle
   assert.doesNotMatch(fixture.calls(), /run view/);
 });
 
+test("ci SHA wait stays on its cancelled commit while the branch has a newer head", async (t) => {
+  const fixture = fakeGh(t, "superseded");
+  const output = await run(t, ["ci", "--sha", head, "--timeout", "2"], fixture.env);
+  result(output, 1, new RegExp(`ci ${head} abcdef0 failed: Checks`));
+  assert.match(output.stdout, /Checks: cancelled abcdef0/);
+  assert.doesNotMatch(output.stdout, /superseded|green/);
+  assert.doesNotMatch(fixture.calls(), new RegExp(`commits/dev|${newer}`));
+});
+
 test("ci keeps its starting head when the branch moves without a cancelled run", async (t) => {
   const fixture = fakeGh(t, "moved");
   const output = await run(t, ["ci", "--timeout", "2"], fixture.env);

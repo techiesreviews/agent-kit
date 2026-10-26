@@ -120,6 +120,41 @@ else
   fail conflicts "git grep returned status $status" 'check tracked files with git grep'
 fi
 
+# Every command answers --help, so a broken pull or a missing import shows here.
+# The helps run side by side to keep doctor quick.
+commands_dir=${KIT_COMMANDS_DIR:-$(dirname -- "${BASH_SOURCE[0]}")}
+help_dir=$(mktemp -d)
+trap 'rm -rf -- "$help_dir"' EXIT
+commands=()
+for file in "$commands_dir"/*; do
+  base=${file##*/}
+  [[ -f $file && -x $file && $base != [._]* ]] || continue
+  index=${#commands[@]}
+  commands+=("${base%.*}")
+  (
+    code=0
+    cd -- "$root" && timeout "${KIT_HELP_TIMEOUT:-10}" "$file" --help > "$help_dir/$index.out" 2>&1 < /dev/null || code=$?
+    printf '%s\n' "$code" > "$help_dir/$index.code"
+  ) &
+done
+wait
+broken=()
+for index in "${!commands[@]}"; do
+  code=$(< "$help_dir/$index.code")
+  if (( code == 124 )); then broken+=("${commands[index]} (timed out)")
+  elif (( code != 0 )); then broken+=("${commands[index]} (exit $code)")
+  elif ! grep -q 'Usage:' "$help_dir/$index.out"; then broken+=("${commands[index]} (no usage)")
+  fi
+done
+if (( ${#commands[@]} == 0 )); then
+  fail help "no commands in $commands_dir" 'restore scripts/agents/kit.d'
+elif (( ${#broken[@]} == 0 )); then
+  pass help "${#commands[@]} commands answer --help"
+else
+  list=$(IFS=,; printf '%s' "${broken[*]}")
+  fail help "${list//,/, }" 'run scripts/agents/kit <command> --help and repair it'
+fi
+
 # Grok is an optional second reviewer: report it, never fail on it.
 if [[ $quiet == false ]]; then
   grok=${KIT_GROK:-grok}
@@ -147,4 +182,4 @@ if (( ${#failed[@]} )); then
   kit_result fail "doctor ${#failed[@]} failed: $names"
   exit 1
 fi
-kit_result ok 'doctor 7/7 checks passed'
+kit_result ok 'doctor 8/8 checks passed'

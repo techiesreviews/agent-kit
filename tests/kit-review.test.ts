@@ -22,7 +22,7 @@ interface Call {
 }
 
 const fake = `#!/usr/bin/env node
-import { appendFileSync, existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 const cli = basename(process.argv[1]);
 const args = process.argv.slice(2);
@@ -35,6 +35,8 @@ const auth = join(home, "auth.json");
 const calls = existsSync(process.env.FAKE_CALLS) ? readFileSync(process.env.FAKE_CALLS, "utf8").trim().split("\\n").length : 0;
 const symlink = existsSync(auth) && lstatSync(auth).isSymbolicLink();
 const input = readFileSync(0, "utf8");
+// An unreadable diff makes kit review's evidence copy fail after the review itself worked.
+if (process.env.FAKE_LOCK_DIFF) chmodSync(/Read "([^"]+diff\\.patch)"/.exec(input)[1], 0);
 appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ cli, args, input, cwd: process.cwd(), home,
   files: readdirSync(home), symlink, target: symlink ? readlinkSync(auth) : null,
   config: existsSync(join(home, "config.toml")) ? readFileSync(join(home, "config.toml"), "utf8") : "" }) + "\\n");
@@ -408,6 +410,25 @@ test("--pr posts the review with model, scope and recorded SHAs; gh failure reta
     assert.equal(posted.body, `Model: claude-opus-5-5\nScope: git diff ${f.commits[1]}...HEAD\nHEAD: ${f.commits[2]}\nBase: ${f.commits[1]}\n\n${complete}\n`);
     assert.equal(readFileSync(join(evidence, "result.md"), "utf8").trimEnd(), complete.trimEnd());
   }
+});
+
+test("kit review removes its temporary files after a good save and keeps them, named, when a copy fails", (t) => {
+  const f = fixture(t);
+  const artifacts = join(f.root, ".scratch/agent");
+  const temporaries = () => readdirSync(artifacts).filter(name => name.startsWith("kit-review-"));
+  const saved = f.run();
+  assert.equal(saved.status, 0, saved.stderr);
+  f.evidence(saved.stdout);
+  assert.deepEqual(temporaries(), []);
+  if (process.getuid?.() === 0) return t.skip("root reads unreadable files");
+  const failed = f.run([], { FAKE_LOCK_DIFF: "1" });
+  assert.equal(failed.status, 1, failed.stdout + failed.stderr);
+  const kept = temporaries();
+  assert.equal(kept.length, 1);
+  const path = join(artifacts, kept[0]);
+  assert.ok(failed.stderr.includes(`problem: review files kept in ${path}\n`), failed.stderr);
+  assert.equal(readFileSync(join(path, "out.md"), "utf8").trimEnd(), complete.trimEnd());
+  assert.match(failed.stdout.trim().split("\n").at(-1)!, /^RESULT: fail saving evidence failed: EACCES.* evidence \//);
 });
 
 test("evidence timestamp collisions add a suffix and leave existing evidence intact", (t) => {

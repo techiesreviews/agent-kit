@@ -129,12 +129,13 @@ async function review(args) {
         console.log(countsLine(record));
         kitScore({ ticket }, score => scoreReview(score, evidence));
       }
+      // Remove the originals only once every copy and findings.json are saved.
+      if (temporary) rmSync(temporary, { recursive: true, force: true });
     } catch (error) {
       status = 1;
       reason = `saving evidence failed: ${error.message}`;
       console.error(`problem: ${reason}`);
-    } finally {
-      if (temporary) rmSync(temporary, { recursive: true, force: true });
+      if (temporary) console.error(`problem: review files kept in ${temporary}`);
     }
   }
   kitResult(status === 0 ? "ok" : "fail", status === 0 ? `review ${label} evidence ${evidence}` : `${reason} evidence ${evidence}`);
