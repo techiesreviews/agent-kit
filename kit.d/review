@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 // kit: review a diff or commit and save the evidence
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseAgentArgs, releaseReviewBudget, reserveReviewBudget } from "../agent-run.mjs";
 import { reviewBrief, reviewScope, ticketReviewBrief } from "../review-brief.mjs";
+import { saveReviewEvidence } from "../review-evidence.mjs";
 import { countsLine, findingsRecord } from "../review-findings.mjs";
 
 const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv, kitScore, scoreReview } = await import(
@@ -77,7 +78,7 @@ async function review(args) {
         process.removeListener("SIGINT", interrupt);
         process.removeListener("SIGTERM", terminate);
       };
-      // Show the report; hide the temporary artifacts path, which is removed below.
+      // Show the report; hide the temporary artifacts path, which is removed below once saved, or named if saving fails.
       let pending = "";
       child.stdout.setEncoding("utf8");
       child.stdout.on("data", chunk => {
@@ -116,21 +117,12 @@ async function review(args) {
       if (budget && (!record.pgid || record.refused === true)) releaseReviewBudget(ledger, budget, env);
     } catch (error) { console.error(`problem: releasing review budget failed: ${error.message}`); }
     try {
-      const saved = [["out.md", "result.md"], ["run.log", "run.log"], ["diff.patch", "diff.patch"], ["refs.txt", "refs.txt"]]
-        .filter(([source]) => temporary && existsSync(join(temporary, source)));
-      // Usage errors and unresolvable refs leave nothing to keep: no empty folder.
-      if (saved.length) evidence = evidenceDirectory();
-      for (const [source, target] of saved) copyFileSync(join(temporary, source), join(evidence, target));
-      // The structured findings sit beside result.md; a report that does not parse is marked unreadable.
-      if (saved.some(([, target]) => target === "result.md")) {
-        const record = findingsRecord(readFileSync(join(evidence, "result.md"), "utf8"), { model, effort, scope: label, head: reviewedHead });
-        writeFileSync(join(evidence, "findings.json.tmp"), JSON.stringify(record, null, 2) + "\n");
-        renameSync(join(evidence, "findings.json.tmp"), join(evidence, "findings.json"));
+      const { record } = saveReviewEvidence(temporary, () => (evidence = evidenceDirectory()),
+        text => findingsRecord(text, { model, effort, scope: label, head: reviewedHead }));
+      if (record) {
         console.log(countsLine(record));
         kitScore({ ticket }, score => scoreReview(score, evidence));
       }
-      // Remove the originals only once every copy and findings.json are saved.
-      if (temporary) rmSync(temporary, { recursive: true, force: true });
     } catch (error) {
       status = 1;
       reason = `saving evidence failed: ${error.message}`;

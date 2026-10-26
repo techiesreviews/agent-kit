@@ -8,6 +8,8 @@ import test from "node:test";
 import { codexReviewConfig, makeCodexReviewHome } from "../scripts/agents/agent-run.mjs";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
 import { reviewBrief, reviewFormat, ticketReviewBrief } from "../scripts/agents/review-brief.mjs";
+// @ts-expect-error The agent helpers are plain JavaScript without declarations.
+import { saveReviewEvidence } from "../scripts/agents/review-evidence.mjs";
 
 const kit = resolve("scripts/agents/kit");
 const review = resolve("scripts/agents/kit.d/review");
@@ -429,6 +431,26 @@ test("kit review removes its temporary files after a good save and keeps them, n
   assert.ok(failed.stderr.includes(`problem: review files kept in ${path}\n`), failed.stderr);
   assert.equal(readFileSync(join(path, "out.md"), "utf8").trimEnd(), complete.trimEnd());
   assert.match(failed.stdout.trim().split("\n").at(-1)!, /^RESULT: fail saving evidence failed: EACCES.* evidence \//);
+});
+
+test("review evidence keeps the temporary folder when findings.json fails after every copy, and removes it after a good save", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ase-review-evidence-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const temporary = join(dir, "kit-review-x"), evidence = join(dir, "evidence");
+  const sources = ["diff.patch", "out.md", "refs.txt", "run.log"];
+  mkdirSync(temporary);
+  for (const name of sources) writeFileSync(join(temporary, name), `${name}\n`);
+  // A directory in the way of findings.json.tmp fails the write once all four copies are in.
+  const blocked = () => { mkdirSync(join(evidence, "findings.json.tmp"), { recursive: true }); return evidence; };
+  assert.throws(() => saveReviewEvidence(temporary, blocked, (text: string) => ({ text })), { code: "EISDIR" });
+  assert.deepEqual(readdirSync(temporary).sort(), sources);
+  assert.deepEqual(readdirSync(evidence).sort(), ["diff.patch", "findings.json.tmp", "refs.txt", "result.md", "run.log"]);
+  rmSync(evidence, { recursive: true });
+  const saved = saveReviewEvidence(temporary, () => { mkdirSync(evidence); return evidence; }, (text: string) => ({ text }));
+  assert.deepEqual(saved, { evidence, record: { text: "out.md\n" } });
+  assert.equal(existsSync(temporary), false);
+  assert.deepEqual(readdirSync(evidence).sort(), ["diff.patch", "findings.json", "refs.txt", "result.md", "run.log"]);
+  assert.deepEqual(JSON.parse(readFileSync(join(evidence, "findings.json"), "utf8")), { text: "out.md\n" });
 });
 
 test("evidence timestamp collisions add a suffix and leave existing evidence intact", (t) => {

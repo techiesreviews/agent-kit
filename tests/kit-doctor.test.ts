@@ -265,6 +265,15 @@ test("doctor names each command whose --help fails, prints no usage or hangs", (
   assert.ok(result.stdout.includes("✗ help: broken (exit 1), silent (no usage), stuck (timed out); fix: run scripts/agents/kit <command> --help and repair it\n"), result.stdout);
 });
 
+test("doctor --quiet, the mode agent.sh gates on, still fails and names a broken --help", (t) => {
+  const f = fixture(t);
+  executable(join(f.commands, "broken"), 'printf "SyntaxError: missing import\\n" >&2; exit 1');
+  const result = f.run(["--quiet"], f.build, { KIT_HELP_TIMEOUT: "0.3" });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.equal(result.stdout, "✗ help: broken (exit 1); fix: run scripts/agents/kit <command> --help and repair it\nRESULT: fail doctor 1 failed: help\n");
+  assert.equal(result.stderr, "");
+});
+
 test("doctor passes the help check when every real kit command answers --help", (t) => {
   const f = fixture(t);
   const commands = join(repo, "scripts/agents/kit.d");

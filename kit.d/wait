@@ -240,7 +240,7 @@ async function wait(config) {
           const summary = summarizeRuns(runs, head);
           // Summary owns run selection; pair its failure IDs with cancellation metadata.
           const cancelled = runs.some((run) => summary.failedRunIds.includes(run.databaseId) && run.conclusion === "cancelled");
-          const fresh = cancelled && options.sha === undefined ? await resolveHead() : head;
+          const fresh = cancelled && !options.sha ? await resolveHead() : head;
           if (fresh !== head) {
             console.log(`superseded by ${fresh.slice(0, 7)}`);
             head = fresh; previous = []; continue;

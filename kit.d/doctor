@@ -133,7 +133,7 @@ for file in "$commands_dir"/*; do
   commands+=("${base%.*}")
   (
     code=0
-    cd -- "$root" && timeout "${KIT_HELP_TIMEOUT:-10}" "$file" --help > "$help_dir/$index.out" 2>&1 < /dev/null || code=$?
+    cd -- "$root" && timeout -k 2 "${KIT_HELP_TIMEOUT:-10}" "$file" --help > "$help_dir/$index.out" 2>&1 < /dev/null || code=$?
     printf '%s\n' "$code" > "$help_dir/$index.code"
   ) &
 done
