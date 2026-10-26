@@ -447,10 +447,27 @@ test("review evidence keeps the temporary folder when findings.json fails after 
   assert.deepEqual(readdirSync(evidence).sort(), ["diff.patch", "findings.json.tmp", "refs.txt", "result.md", "run.log"]);
   rmSync(evidence, { recursive: true });
   const saved = saveReviewEvidence(temporary, () => { mkdirSync(evidence); return evidence; }, (text: string) => ({ text }));
-  assert.deepEqual(saved, { evidence, record: { text: "out.md\n" } });
+  assert.deepEqual(saved, { evidence, record: { text: "out.md\n" }, cleanup: null });
   assert.equal(existsSync(temporary), false);
   assert.deepEqual(readdirSync(evidence).sort(), ["diff.patch", "findings.json", "refs.txt", "result.md", "run.log"]);
   assert.deepEqual(JSON.parse(readFileSync(join(evidence, "findings.json"), "utf8")), { text: "out.md\n" });
+});
+
+test("review evidence stays saved when only removing the temporary folder fails", (t) => {
+  if (process.getuid?.() === 0) return t.skip("root removes from read-only folders");
+  const dir = mkdtempSync(join(tmpdir(), "ase-review-evidence-test-"));
+  const parent = join(dir, "agent"), temporary = join(parent, "kit-review-x"), evidence = join(dir, "evidence");
+  const sources = ["diff.patch", "out.md", "refs.txt", "run.log"];
+  mkdirSync(temporary, { recursive: true });
+  for (const name of sources) writeFileSync(join(temporary, name), `${name}\n`);
+  // A read-only parent lets the files go but not the folder itself.
+  chmodSync(parent, 0o555);
+  t.after(() => { chmodSync(parent, 0o755); rmSync(dir, { recursive: true, force: true }); });
+  const saved = saveReviewEvidence(temporary, () => { mkdirSync(evidence); return evidence; }, (text: string) => ({ text }));
+  assert.equal(saved.evidence, evidence);
+  assert.match(saved.cleanup, /EACCES/);
+  assert.deepEqual(readdirSync(evidence).sort(), ["diff.patch", "findings.json", "refs.txt", "result.md", "run.log"]);
+  assert.equal(readFileSync(join(evidence, "result.md"), "utf8"), "out.md\n");
 });
 
 test("evidence timestamp collisions add a suffix and leave existing evidence intact", (t) => {

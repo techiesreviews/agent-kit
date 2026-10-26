@@ -6,9 +6,10 @@ const reviewFiles = [["out.md", "result.md"], ["run.log", "run.log"], ["diff.pat
 
 // Copies the temporary review folder's files into createDirectory()'s folder, writes
 // findings.json from result.md with findings(text), and only then removes the temporary
-// folder; any failure throws and leaves it in place for recovery.
+// folder; any failure throws and leaves it in place for recovery. A failed removal after
+// a full save does not undo the save: it comes back as cleanup, the error message.
 export function saveReviewEvidence(temporary, createDirectory, findings) {
-  if (!temporary) return { evidence: "none", record: null };
+  if (!temporary) return { evidence: "none", record: null, cleanup: null };
   const saved = reviewFiles.filter(([source]) => existsSync(join(temporary, source)));
   // Usage errors and unresolvable refs leave nothing to keep: no empty folder.
   const evidence = saved.length ? createDirectory() : "none";
@@ -20,6 +21,8 @@ export function saveReviewEvidence(temporary, createDirectory, findings) {
     writeFileSync(join(evidence, "findings.json.tmp"), JSON.stringify(record, null, 2) + "\n");
     renameSync(join(evidence, "findings.json.tmp"), join(evidence, "findings.json"));
   }
-  rmSync(temporary, { recursive: true, force: true });
-  return { evidence, record };
+  let cleanup = null;
+  try { rmSync(temporary, { recursive: true, force: true }); }
+  catch (error) { cleanup = error.message; }
+  return { evidence, record, cleanup };
 }

@@ -265,6 +265,17 @@ test("doctor names each command whose --help fails, prints no usage or hangs", (
   assert.ok(result.stdout.includes("✗ help: broken (exit 1), silent (no usage), stuck (timed out); fix: run scripts/agents/kit <command> --help and repair it\n"), result.stdout);
 });
 
+test("doctor kills a help that ignores SIGTERM and names it as timed out", (t) => {
+  const f = fixture(t);
+  executable(join(f.commands, "deaf"), 'trap "" TERM; while :; do sleep 0.1; done');
+  const start = performance.now();
+  const result = f.run([], f.build, { KIT_HELP_TIMEOUT: "0.3" });
+  const elapsed = performance.now() - start;
+  failure(result, "help");
+  assert.ok(elapsed < 4000, `doctor took ${elapsed}ms`);
+  assert.ok(result.stdout.includes("✗ help: deaf (timed out); fix:"), result.stdout);
+});
+
 test("doctor --quiet, the mode agent.sh gates on, still fails and names a broken --help", (t) => {
   const f = fixture(t);
   executable(join(f.commands, "broken"), 'printf "SyntaxError: missing import\\n" >&2; exit 1');

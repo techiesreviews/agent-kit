@@ -141,7 +141,8 @@ wait
 broken=()
 for index in "${!commands[@]}"; do
   code=$(< "$help_dir/$index.code")
-  if (( code == 124 )); then broken+=("${commands[index]} (timed out)")
+  # 137: timeout -k had to kill a help that ignored SIGTERM.
+  if (( code == 124 || code == 137 )); then broken+=("${commands[index]} (timed out)")
   elif (( code != 0 )); then broken+=("${commands[index]} (exit $code)")
   elif ! grep -q 'Usage:' "$help_dir/$index.out"; then broken+=("${commands[index]} (no usage)")
   fi

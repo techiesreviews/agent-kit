@@ -117,8 +117,10 @@ async function review(args) {
       if (budget && (!record.pgid || record.refused === true)) releaseReviewBudget(ledger, budget, env);
     } catch (error) { console.error(`problem: releasing review budget failed: ${error.message}`); }
     try {
-      const { record } = saveReviewEvidence(temporary, () => (evidence = evidenceDirectory()),
+      const { record, cleanup } = saveReviewEvidence(temporary, () => (evidence = evidenceDirectory()),
         text => findingsRecord(text, { model, effort, scope: label, head: reviewedHead }));
+      // The evidence is saved; a leftover temporary folder is reported but fails nothing.
+      if (cleanup) console.error(`problem: removing ${temporary} failed: ${cleanup}`);
       if (record) {
         console.log(countsLine(record));
         kitScore({ ticket }, score => scoreReview(score, evidence));
