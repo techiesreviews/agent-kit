@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Adapters accept {kind, worktree, model, effort}, git common dir and output path.
-// Return {command, args, env, capture, finish(stdout, runLog)}. Commands read the brief
+// Return {command, args, env, capture, finish(stdout, runLog, status)}. Commands read the brief
 // on stdin with cwd=worktree; finish verifies the actual model and returns final
-// text (Claude, Grok, OpenCode), or null when the CLI already wrote out.md (Codex). An
+// text (Claude, Grok, OpenCode), or null when the CLI already wrote out.md (Codex) or
+// left no report to verify (a failed OpenCode call). An
 // adapter may add usageLimit(stdout) for a refusal its CLI prints as JSON. The shared
 // runner owns logs, the build contract, deadlines, process groups and Git status.
 import { execFileSync } from "node:child_process";
@@ -197,11 +198,13 @@ export function opencodeUsageLimit(stdout) {
 // The events never name the model; the session export does, per assistant message, as
 // provider and model ID. Every answer in the session, retries included, must be the
 // requested provider/model. The report is the text of the last message that has text.
-// exportSession(id) returns the export's output; it is not called when the run already failed.
-export function opencodeResult(stdout, requested, exportSession) {
+// exportSession(id) returns the export's output. A run that printed an error event, or whose
+// call failed (non-zero exit or timeout), is not exported and gives no report (null).
+export function opencodeResult(stdout, requested, exportSession, failed = false) {
   const events = opencodeEvents(stdout);
   const error = events.find(event => event.type === "error");
   if (error) throw new Error(`OpenCode reported an error: ${opencodeError(error.error)}`);
+  if (failed) return null;
   const id = opencodeSession(stdout);
   if (!id) throw new Error("OpenCode printed no session");
   const exported = exportSession(id), start = exported.indexOf("{");
@@ -474,6 +477,7 @@ export const opencodeReviewConfig = JSON.stringify({ agent: { [opencodeReviewAge
 export function opencodeAdapter(options) {
   const { kind, worktree, model } = options;
   if (kind !== "review") throw new Error("OpenCode runs reviews only");
+  const timeout = opencodeExportTimeout();
   // --pure drops plugins; the project's own OpenCode config and Claude Code files are not read.
   // Effort is not passed: OpenCode's --variant names differ by provider.
   const args = ["run", "--pure", "--agent", opencodeReviewAgent, "--format", "json", "-m", model, "--dir", worktree];
@@ -485,14 +489,19 @@ export function opencodeAdapter(options) {
     resume: session => [...args, "--session", session],
     session: stdout => opencodeSession(stdout),
     usageLimit: stdout => opencodeUsageLimit(stdout),
-    finish: stdout => opencodeResult(stdout, model, session => opencodeExport(session, worktree)),
+    finish: (stdout, _log, status) => opencodeResult(stdout, model, session => opencodeExport(session, worktree, timeout), Boolean(status)),
   };
 }
 
-// The export runs after the supervised call, so it has its own limit: ASE_OPENCODE_EXPORT_TIMEOUT_MS (60000).
-function opencodeExport(session, worktree) {
-  const timeout = Number(process.env.ASE_OPENCODE_EXPORT_TIMEOUT_MS || 60_000);
+// The export runs after the supervised call, so it has its own limit: ASE_OPENCODE_EXPORT_TIMEOUT_MS (60000),
+// checked when the adapter is made, before the review starts.
+export function opencodeExportTimeout(env = process.env) {
+  const timeout = Number(env.ASE_OPENCODE_EXPORT_TIMEOUT_MS || 60_000);
   if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new Error("ASE_OPENCODE_EXPORT_TIMEOUT_MS must be a positive integer");
+  return timeout;
+}
+
+function opencodeExport(session, worktree, timeout) {
   try {
     return execFileSync("opencode", ["export", "--pure", session], { cwd: worktree, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
       maxBuffer: 256 * 1024 * 1024, timeout, killSignal: "SIGKILL" });
@@ -724,7 +733,7 @@ async function invokeAgent(adapter, args, descriptor, context) {
       if (limitProblem && !previousCalls && refusedOutright(options.cli, slice, context.prompt)) update({ refused: true });
     }
     try {
-      const report = adapter.finish(result.stdout, slice);
+      const report = adapter.finish(result.stdout, slice, status);
       if (report !== null) writeFileSync(output, report + "\n");
     } catch (error) {
       messages.push(`problem: ${error.message}; see ${logPath}`);

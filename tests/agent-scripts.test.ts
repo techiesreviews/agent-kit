@@ -10,7 +10,7 @@ import { reviewBrief, reviewComplete, reviewFormat } from "../scripts/agents/rev
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { unitSummary } from "../scripts/agents/unit-summary.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
-import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokResult, inferCli, isoWeek, opencodeResult, opencodeReviewAgent, opencodeReviewConfig, opencodeUsageLimit, parseAgentArgs, refusedOutright, releaseReviewBudget, reserveReviewBudget, reviewBase, usageLimitProblem } from "../scripts/agents/agent-run.mjs";
+import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokResult, inferCli, isoWeek, opencodeExportTimeout, opencodeResult, opencodeReviewAgent, opencodeReviewConfig, opencodeUsageLimit, parseAgentArgs, refusedOutright, releaseReviewBudget, reserveReviewBudget, reviewBase, usageLimitProblem } from "../scripts/agents/agent-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { durationMilliseconds } from "../scripts/agents/sol-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
@@ -239,6 +239,23 @@ test("OpenCode adapter runs reviews only, as a read-only agent, and resumes its 
   assert.throws(() => agentInvocation({ ...options, kind: "build" }, "/git", "/out"), /reviews only/);
 });
 
+test("a bad OpenCode export limit is refused when the adapter is made, before opencode run starts", () => {
+  assert.equal(opencodeExportTimeout({}), 60_000);
+  assert.equal(opencodeExportTimeout({ ASE_OPENCODE_EXPORT_TIMEOUT_MS: "500" }), 500);
+  for (const value of ["0", "abc", "-5", "1.5"]) {
+    assert.throws(() => opencodeExportTimeout({ ASE_OPENCODE_EXPORT_TIMEOUT_MS: value }), /ASE_OPENCODE_EXPORT_TIMEOUT_MS must be a positive integer/);
+  }
+  const options = parseAgentArgs(["review", ".", "brief"], { ASE_REVIEW_MODEL: "opencode/deepseek-v4.1-flash-free" });
+  const saved = process.env.ASE_OPENCODE_EXPORT_TIMEOUT_MS;
+  try {
+    process.env.ASE_OPENCODE_EXPORT_TIMEOUT_MS = "abc";
+    assert.throws(() => agentInvocation(options, "/git", "/out"), /ASE_OPENCODE_EXPORT_TIMEOUT_MS must be a positive integer/);
+  } finally {
+    if (saved === undefined) delete process.env.ASE_OPENCODE_EXPORT_TIMEOUT_MS;
+    else process.env.ASE_OPENCODE_EXPORT_TIMEOUT_MS = saved;
+  }
+});
+
 test("OpenCode results take the last message's text and accept only the requested provider and model", () => {
   const model = "opencode/deepseek-v4.1-flash-free";
   const event = (type: string, extra = {}) => JSON.stringify({ type, timestamp: 1, sessionID: "ses_1", ...extra });
@@ -256,6 +273,8 @@ test("OpenCode results take the last message's text and accept only the requeste
   const unreachable = () => { throw new Error("exported"); };
   assert.throws(() => opencodeResult(`${stdout}\n${limit}`, model, unreachable), /OpenCode reported an error: Rate limit exceeded/);
   assert.throws(() => opencodeResult("not JSON", model, unreachable), /OpenCode printed no session/);
+  // A call that failed (non-zero exit or timeout) leaves no report to verify, so it is not exported either.
+  assert.equal(opencodeResult(stdout, model, unreachable, true), null);
   assert.throws(() => opencodeResult(stdout, model, () => "Exporting session: ses_1\n"), /OpenCode export for ses_1 printed no JSON/);
   assert.throws(() => opencodeResult(stdout, model, () => "{ broken"), /OpenCode export for ses_1 is not JSON/);
   assert.equal(opencodeUsageLimit(limit), "problem: opencode usage limit: Rate limit exceeded. Please try again later.");

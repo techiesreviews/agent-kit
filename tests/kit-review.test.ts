@@ -757,6 +757,7 @@ import { appendFileSync, existsSync, readFileSync } from "node:fs";
 const args = process.argv.slice(2);
 const answers = process.env.FAKE_CALLS + ".answers";
 if (args[0] === "export") {
+  appendFileSync(process.env.FAKE_CALLS + ".exports", args.at(-1) + "\\n");
   if (process.env.FAKE_EXPORT === "fail") { console.error("Exporting session: " + args.at(-1) + "\\nError: session not found"); process.exit(1); }
   if (process.env.FAKE_EXPORT === "hang") await new Promise(done => setTimeout(done, 30_000));
   const models = existsSync(answers) ? readFileSync(answers, "utf8").trim().split("\\n") : [];
@@ -776,8 +777,9 @@ if (mode === "usage-limit" || mode === "usage-limit-exit0") {
   emit("error", { error: { name: "APIError", data: { message: "Rate limit exceeded. Please try again later.", statusCode: 429 } } });
   process.exit(mode === "usage-limit" ? 1 : 0);
 }
-// Stops after naming its session, as a crash or a killed run would.
+// Stops after naming its session, as a crash would, or hangs there until the runner's limit kills it.
 if (mode === "stopped") process.exit(1);
+if (mode === "hang") await new Promise(done => setTimeout(done, 30_000));
 appendFileSync(answers, args[args.indexOf("-m") + 1] + "\\n");
 emit("text", { part: { type: "text", messageID: "m1", text: "Reading the diff first." } });
 emit("tool_use", { part: { type: "tool", tool: "read", state: { status: "completed" } } });
@@ -876,6 +878,20 @@ test("a failed or hung OpenCode export fails the review with a named problem", (
     assert.equal(result.status, 1, result.stderr);
     assert.ok(Date.now() - started < 10_000, "the export limit stops a hung export");
     assert.match(result.stderr, problem);
+  }
+});
+
+test("a failed or timed-out OpenCode call is not exported and reports only its own cause", (t) => {
+  for (const mode of ["stopped", "hang"]) {
+    const f = fixture(t);
+    withOpencode(f);
+    const started = Date.now();
+    const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_MODE: mode, ASE_AGENT_TIMEOUT: "1s" });
+    assert.equal(result.status, 1, result.stderr);
+    assert.ok(Date.now() - started < 10_000, "no export wait after the call failed");
+    assert.equal(existsSync(join(f.dir, "calls.jsonl.exports")), false, "no export call");
+    assert.doesNotMatch(result.stderr, /does not name requested model/);
+    assert.match(result.stderr.trimEnd().split("\n").at(-1)!, mode === "hang" ? /^problem: agent exceeded timeout=1s; process group killed; see / : /^problem: opencode failed \(1\); see /);
   }
 });
 
