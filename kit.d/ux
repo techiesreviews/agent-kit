@@ -448,12 +448,13 @@ export function tryFailures(index, status, log) {
 /**
  * L2 findings from the project's checks.css run: none when it passed, else one per `file:line: text` line it printed
  * (the path runs to the first `:<line>:`, spaces, parentheses and colons kept, and is a `known` file or one on disk, so prose
- * or a stack frame before a location is no such line; ./ and absolute paths are read against root) whose subject is in
+ * or a stack frame before a location is no such line and is dropped uncounted; ./ and absolute paths are read against root) whose subject is in
  * the diff (`changed`), so a checker that looks past the given files reports nothing the diff did not touch; `outside`
  * counts the rest, a line whose path is outside root among them.
  * A CSS line's subject is its own file. Another line's (an allow list's stale entry) is the first `: `-separated part
  * of its text (trailing colons dropped) that is a `known` file, else the longest `known` file one part names whole
- * between punctuation, else the longest after a space with no `/` before it in the part, else its own file; one subject.
+ * between punctuation, else the longest after a space with no `/` before it in the part (one with an extension may also
+ * end at a space), else its own file; one subject.
  * A failed run that names no line is one finding pointing at its log.
  */
 export function colourFindings(status, output, command, log, { root, changed, known = changed }) {
@@ -491,14 +492,16 @@ export function colourFindings(status, output, command, log, { root, changed, kn
 /**
  * Whether a part of a line's text names path whole: it starts the part or follows a quote, bracket, `=`, `,` or `;`
  * (with afterSpace, also a space when no `/` comes before it in the part), and ends the part or comes before a closing
- * quote or bracket, `,`, `;` or a full stop. A space never ends a path and starts one only past any other path, since a
- * path may hold one: `file.css` is not named by `src/my (old) file.css`, nor `src/my` by `src/my file.css`.
+ * quote or bracket, `,`, `;` or a full stop (with afterSpace, also a space when path ends in an extension). A space starts
+ * a path only past any other path and ends one only after an extension, since a path may hold one: `file.css` is not
+ * named by `src/my (old) file.css`, nor `src/my` by `src/my file.css`.
  */
 function namesWhole(part, path, { afterSpace = false } = {}) {
   for (let at = path ? part.indexOf(path) : -1; at >= 0; at = part.indexOf(path, at + 1)) {
     const before = part.slice(0, at);
     const left = /(^|["'`([{<=,;]|[,;] )$/.test(before) || (afterSpace && before.endsWith(" ") && !before.includes("/"));
-    if (left && /^($|["'`)\]}>,;]|\.($|\s))/.test(part.slice(at + path.length))) return true;
+    const after = part.slice(at + path.length);
+    if (left && (/^($|["'`)\]}>,;]|\.($|\s))/.test(after) || (afterSpace && /^\s/.test(after) && /\.[\w-]+$/.test(path)))) return true;
   }
   return false;
 }
