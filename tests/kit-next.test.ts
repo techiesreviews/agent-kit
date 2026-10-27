@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -262,6 +262,24 @@ test("--start claims on dev, pushes, makes the worktree and starts the slice; de
   assert.match(out, /^delegate: docs\/wayfinder\/alpha\/build\/tickets\/02-free\.md opencode\/deepseek-v4\.1-flash-free owner=al-02$/m);
   assert.match(out, /RESULT: ok next 2 ready, 0 waiting, 1 started\n$/);
   assert.equal(git(dev, "status", "--porcelain").trim(), "");
+});
+
+test("--start without a fake kit starts the job through $KIT_HOME/kit in the new worktree", t => {
+  const { root, env, run } = fixture(t, startFiles);
+  delete env.KIT_NEXT_KIT;
+  // A kit home with the real commands and library, whose front door records its call.
+  const home = join(root, "kit-home"), log = join(root, "home-kit.log");
+  mkdirSync(home);
+  for (const name of ["kit.d", "kit-lib.sh", "kit-lib.mjs"]) symlinkSync(resolve("scripts/agents", name), join(home, name));
+  writeFileSync(join(home, "kit"), `#!/usr/bin/env bash\nprintf '%s|%s\\n' "$PWD" "$*" >> ${JSON.stringify(log)}\necho "RESULT: ok bg $2 pid 1"\n`);
+  chmodSync(join(home, "kit"), 0o755);
+  env.KIT_HOME = home;
+  const result = run("alpha", "--start");
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const worktree = join(root, "wt-build-al-01-first-slice");
+  assert.equal(readFileSync(log, "utf8"),
+    `${worktree}|bg slice-al01 -- scripts/agents/kit slice --ticket ${build("alpha", "01-first-slice")} --builder claude-opus-5-5\n`);
+  assert.match(result.stdout, /RESULT: ok next 2 ready, 0 waiting, 1 started\n$/);
 });
 
 test("--start on a project that lands on main claims, pushes and branches from origin/main", t => {

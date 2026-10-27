@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -179,11 +179,22 @@ test("the shared kit runs from a copy named by KIT_HOME for a project with only 
   const status = front("status");
   assert.equal(status.status, 0, status.stdout + status.stderr);
   assert.match(status.stdout, /\nRESULT: ok status /);
-  for (const name of ["unit", "review", "next"]) {
+  // Every shared command loads from the copy: a helper reached by its place in this repo would fail here.
+  const shared = readdirSync(join(home, "kit.d")).filter((name) => !/^[._]/.test(name) && statSync(join(home, "kit.d", name)).mode & 0o111);
+  for (const name of ["unit", "review", "next"]) assert.ok(shared.includes(name), name);
+  for (const name of shared) {
     const help = front(name, "--help");
     assert.equal(help.status, 0, `${name}: ${help.stdout}${help.stderr}`);
-    assert.match(help.stdout, new RegExp(`^Usage: kit ${name} `));
+    assert.match(help.stdout, new RegExp(`^Usage: kit ${name}\\b`));
   }
+  // A kit home in its own git checkout shows its own commit, not the project's.
+  const at = (directory: string, ...args: string[]) => spawnSync("git", ["-C", directory, ...args], { env, encoding: "utf8" }).stdout.trim();
+  at(home, "init", "-q");
+  at(home, "add", "-A");
+  at(home, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "kit");
+  const homeSha = at(home, "rev-parse", "--short", "HEAD");
+  assert.notEqual(homeSha, at(root, "rev-parse", "--short", "HEAD"));
+  assert.match(front("version").stdout, new RegExp(`^commit ${homeSha}\n`));
   const where = front("where");
   assert.equal(where.status, 0, where.stderr);
   assert.equal(where.stdout, `${realpathSync(home)}\n${realpathSync(home)}/kit-lib.sh\nRESULT: ok where finished\n`);

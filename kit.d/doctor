@@ -220,7 +220,7 @@ if ! cp -R -- "$home" "$copy" 2>/dev/null; then
   code=1 output="cannot copy $home"
 else
   if [[ -n ${own:-} && $own == "$home"/* ]]; then rm -rf -- "${copy:?}/${own#"$home"/}"; fi
-  output=$(cd -- "$root" && env -u KIT_COMMANDS_DIR KIT_HOME="$copy" KIT_ROOT="$root" timeout 10 "$copy/kit" version 2>&1 < /dev/null) || code=$?
+  output=$(cd -- "$root" && env -u KIT_COMMANDS_DIR KIT_HOME="$copy" KIT_ROOT="$root" timeout -k 2 10 "$copy/kit" version 2>&1 < /dev/null) || code=$?
 fi
 if (( code == 0 )) && [[ ${output##*$'\n'} == 'RESULT: ok version '* ]]; then
   pass 'kit home' "a copy of $home runs kit version"

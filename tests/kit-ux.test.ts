@@ -211,6 +211,8 @@ function fixture(t: TestContext, gitConfig: [string, string][] = []) {
   put("docs/w/build/tickets/1-panel.md", "Approved [mock-up](../mockups/panel.html).\n");
   put("src/page-builder/media-picker.css", ".a { gap: var(--space); }\n");
   put("src/page-builder/media-library-filter.ts", "export {};\n");
+  // The colour check is the project's own helper.
+  put("scripts/check-colours.mjs", readFileSync(resolve("scripts/check-colours.mjs"), "utf8"));
   git("add", "."); git("commit", "--quiet", "-m", "base");
   git("update-ref", "refs/remotes/origin/dev", "HEAD");
   // The fake kit shots writes one shot per width and theme, a contact sheet and a strip; FAIL_STEP fails every shot,

@@ -4,7 +4,6 @@ import { execFileSync, spawn } from "node:child_process";
 import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, matchesGlob, normalize, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { checkColours } from "../../check-colours.mjs";
 import { citedRules, parseUxResult, uxBrief, uxCounts, uxReport } from "../ux-brief.mjs";
 
 const { kitRoot, kitMainRoot, kitOwner, kitResult, kitScore, kitSettingsFile, scoreCost } = await import(
@@ -506,6 +505,9 @@ async function main() {
     let allow = [];
     try { allow = JSON.parse(readFileSync(join(root, "scripts/check-colours.allow.json"), "utf8")); } catch { /* No allow list. */ }
     const coloured = css.filter(({ file }) => file.startsWith("src/") && file !== "src/theme.css");
+    // The colour check is a project helper, read from the project's top folder; a project without one has no colour findings.
+    const checker = join(root, "scripts/check-colours.mjs");
+    const { checkColours } = coloured.length && existsSync(checker) ? await import(pathToFileURL(checker).href) : { checkColours: () => [] };
     const colours = checkColours(coloured.map(({ file, text }) => ({ file, text })), allow.filter(entry => coloured.some(({ file }) => file === entry.file)))
       .map(failure => ({ rule: "L2", file: failure.file, line: failure.line, text: `raw colour ${failure.match}` }));
     const layout = layoutFindings(tries);
