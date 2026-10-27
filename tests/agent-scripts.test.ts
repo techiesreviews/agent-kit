@@ -10,7 +10,7 @@ import { reviewBrief, reviewComplete, reviewFormat } from "../scripts/agents/rev
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { unitSummary } from "../scripts/agents/unit-summary.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
-import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokOutOfCredit, grokResult, inferCli, isoWeek, opencodeErrorProblem, opencodeExport, opencodeExportTimeout, opencodeOutOfCredit, opencodeResult, opencodeReviewAgent, opencodeReviewConfig, opencodeUsageLimit, outOfCreditProblem, parseAgentArgs, refusedOutright, sessionObserver, releaseReviewBudget, reserveReviewBudget, reviewBase, usageLimitProblem } from "../scripts/agents/agent-run.mjs";
+import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokOutOfCredit, grokResult, inferCli, isoWeek, opencodeErrorProblem, opencodeExport, opencodeExportTimeout, opencodeOutOfCredit, opencodeResult, opencodeReviewAgent, opencodeStartTimeout, opencodeReviewConfig, opencodeUsageLimit, outOfCreditProblem, parseAgentArgs, refusedOutright, sessionObserver, releaseReviewBudget, reserveReviewBudget, reviewBase, usageLimitProblem } from "../scripts/agents/agent-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { durationMilliseconds } from "../scripts/agents/sol-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
@@ -242,6 +242,14 @@ test("OpenCode adapter runs reviews only, as a read-only agent, and resumes its 
   assert.equal(parseAgentArgs(["review", ".", "brief", "--model", model, "--effort", "medium"]).effort, null);
   assert.throws(() => parseAgentArgs(["build", ".", "brief", "--cli", "opencode"]), /reviews only/);
   assert.throws(() => agentInvocation({ ...options, kind: "build" }, "/git", "/out"), /reviews only/);
+});
+
+test("OpenCode's start limit defaults to five minutes and refuses a value that is not a positive integer", () => {
+  assert.equal(opencodeStartTimeout({}), 300_000);
+  assert.equal(opencodeStartTimeout({ ASE_OPENCODE_START_TIMEOUT_MS: "500" }), 500);
+  for (const value of ["0", "abc", "-5", "1.5"]) {
+    assert.throws(() => opencodeStartTimeout({ ASE_OPENCODE_START_TIMEOUT_MS: value }), /ASE_OPENCODE_START_TIMEOUT_MS must be a positive integer/);
+  }
 });
 
 test("a bad OpenCode export limit is refused when the adapter is made, before opencode run starts", () => {

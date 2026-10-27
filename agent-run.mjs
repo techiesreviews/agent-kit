@@ -540,7 +540,7 @@ export const opencodeReviewConfig = JSON.stringify({ agent: { [opencodeReviewAge
 export function opencodeAdapter(options) {
   const { kind, worktree, model } = options;
   if (kind !== "review") throw new Error("OpenCode runs reviews only");
-  const timeout = opencodeExportTimeout();
+  const timeout = opencodeExportTimeout(), startTimeout = opencodeStartTimeout();
   // --pure drops plugins; the project's own OpenCode config and Claude Code files are not read.
   // Effort is not passed: OpenCode's --variant names differ by provider.
   const args = ["run", "--pure", "--agent", opencodeReviewAgent, "--format", "json", "-m", model, "--dir", worktree];
@@ -551,6 +551,7 @@ export function opencodeAdapter(options) {
     args,
     resume: session => [...args, "--session", session],
     session: stdout => opencodeSession(stdout),
+    startTimeout,
     usageLimit: stdout => opencodeUsageLimit(stdout),
     outOfCredit: (stdout, log, status) => opencodeOutOfCredit(stdout) ?? (status ? outOfCreditProblem(log, "opencode") : null),
     errorProblem: stdout => opencodeErrorProblem(stdout),
@@ -564,6 +565,15 @@ export function opencodeAdapter(options) {
 export function opencodeExportTimeout(env = process.env) {
   const timeout = Number(env.ASE_OPENCODE_EXPORT_TIMEOUT_MS || 60_000);
   if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new Error("ASE_OPENCODE_EXPORT_TIMEOUT_MS must be a positive integer");
+  return timeout;
+}
+
+// OpenCode names its session in its first event, within seconds when it is up. A call that names none within
+// ASE_OPENCODE_START_TIMEOUT_MS (300000) is down, as on 2026-10-27 when even a one-word prompt got no event:
+// the runner stops it then rather than at the review's whole timeout.
+export function opencodeStartTimeout(env = process.env) {
+  const timeout = Number(env.ASE_OPENCODE_START_TIMEOUT_MS || 300_000);
+  if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new Error("ASE_OPENCODE_START_TIMEOUT_MS must be a positive integer");
   return timeout;
 }
 
@@ -787,17 +797,26 @@ async function invokeAgent(adapter, args, descriptor, context) {
   try {
     Object.assign(process.env, adapter.env);
     const previousLog = readFileSync(logPath, "utf8").length;
+    // A CLI with a start limit that names no session within it is stopped as unavailable.
+    let silent = false, startTimer;
     const result = await supervise(limit, adapter.command, args, {
       cwd: options.worktree, input: descriptor, log, capture: adapter.capture,
-      onSpawn: pgid => update({ pgid }),
-      onOutput: sessionObserver(adapter, session => update({ session })),
-    });
+      onSpawn: pgid => {
+        update({ pgid });
+        if (adapter.startTimeout) startTimer = setTimeout(() => {
+          silent = true;
+          try { process.kill(-pgid, "SIGKILL"); } catch { /* It ended on its own. */ }
+        }, adapter.startTimeout);
+      },
+      onOutput: sessionObserver(adapter, session => { clearTimeout(startTimer); update({ session }); }),
+    }).finally(() => clearTimeout(startTimer));
     let status = result.status;
     const slice = readFileSync(logPath, "utf8").slice(previousLog);
     const session = recordedSession(adapter, result.stdout, slice);
     if (session) update({ session });
     // The CLI's own failure is the cause; executeRun reports it after its consequences.
-    if (status === 124) context.cause = `problem: agent exceeded timeout=${limit}; process group killed; see ${logPath}`;
+    if (silent) context.cause = `problem: ${adapter.command} unavailable: no session within ${adapter.startTimeout / 1000}s`;
+    else if (status === 124) context.cause = `problem: agent exceeded timeout=${limit}; process group killed; see ${logPath}`;
     else {
       // A refusal OpenCode prints as an error event counts even when the CLI exits 0.
       // Out of credit outranks a usage limit, which outranks the CLI's own error.

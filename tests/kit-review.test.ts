@@ -882,6 +882,8 @@ appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ cli: "opencode", args, i
   noProject: process.env.OPENCODE_DISABLE_PROJECT_CONFIG, noClaude: process.env.OPENCODE_DISABLE_CLAUDE_CODE }) + "\\n");
 const emit = (type, extra = {}) => console.log(JSON.stringify({ type, timestamp: Date.now(), sessionID: "ses_fake", ...extra }));
 const mode = process.env.FAKE_MODE || "pass";
+// A provider that is down: no event at all, as on 2026-10-27.
+if (process.env.FAKE_OPENCODE_SILENT) await new Promise(done => setTimeout(done, 30_000));
 emit("step_start", { part: { type: "step-start", messageID: "m0" } });
 if (mode === "error-502" || mode === "error-502-exit1") {
   emit("error", { error: { name: "APIError", data: { message: "Bad gateway", statusCode: 502 } } });
@@ -1285,6 +1287,21 @@ test("Grok's own out-of-credit error event skips its review, and hands the secon
   assert.equal(handed.status, 0, handed.stdout + handed.stderr);
   assert.match(handed.stdout, /^second look: opencode\/deepseek-v4\.1-flash-free takes it \(grok-4\.7 out of credit\)$/m);
   assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(handed.stdout), "second-look.json"), "utf8")), { kind: "code", model: opencodeModel, ok: true });
+});
+
+test("an OpenCode call that names no session within its start limit is down: with Grok out of credit the second look is skipped", (t) => {
+  const f = fixture(t); withOpencode(f);
+  const silent = { ASE_SECOND_LOOK: lookTable(f), FAKE_MODE: "out-of-credit-event", FAKE_OPENCODE_SILENT: "1", ASE_OPENCODE_START_TIMEOUT_MS: "500" };
+  const started = Date.now(), skipped = f.run(["--base", "HEAD~1", "--second-look"], silent);
+  assert.equal(skipped.status, 3, skipped.stdout + skipped.stderr);
+  assert.ok(Date.now() - started < 20_000, "stopped at the start limit, not the review timeout");
+  const reason = "grok-4\\.7 out of credit; opencode/deepseek-v4\\.1-flash-free opencode unavailable: no session within 0\\.5s";
+  assert.match(skipped.stdout, new RegExp(`^second look: skipped \\(${reason}\\)$`, "m"));
+  assert.match(skipped.stdout.trim().split("\n").at(-1)!, new RegExp(`^RESULT: skip second look \\(${reason}\\)$`));
+  // Alone, the silent call is a failed review that names why, not a skip.
+  const alone = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_OPENCODE_SILENT: "1", ASE_OPENCODE_START_TIMEOUT_MS: "500" });
+  assert.equal(alone.status, 1, alone.stdout + alone.stderr);
+  assert.match(alone.stdout.trim().split("\n").at(-1)!, /^RESULT: fail opencode unavailable: no session within 0\.5s /);
 });
 
 test("a missing Grok CLI or a Grok outage hands the second look to OpenCode", (t) => {

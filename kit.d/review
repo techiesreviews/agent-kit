@@ -135,13 +135,13 @@ async function reviewOnce(flags, look) {
       const run = temporary && join(temporary, "status.json");
       const record = run && existsSync(run) ? JSON.parse(readFileSync(run, "utf8")) : {};
       // The model could not run: its CLI is missing (a spawn ENOENT), refused or hit a usage limit, the account
-      // is empty, or the provider is down (OpenCode's error event, or a Grok run whose closing lines are an HTTP 5xx
-      // or a connection error). Any other failure, including one before the CLI started, is a broken run.
+      // is empty, or the provider is down (OpenCode's error event or no session within its start limit, or a Grok
+      // run whose closing lines are an HTTP 5xx or a connection error). Any other failure, including one before the CLI started, is a broken run.
       const missing = status !== 0 && !record.pgid && /^problem: (spawn \S+ ENOENT)$/m.exec(stderr)?.[1];
       const down = !missing && status !== 0 && /^grok failed \(\d+\)/.test(reason) && grokDown(temporary);
       if (missing || down) { reason = missing ? `CLI missing: ${missing}` : `grok unavailable: ${down}`; console.error(`problem: ${reason}`); }
       if (status !== 0 && spawned && (record.refused === true || outOfCredit || missing || down ||
-        /^\S+ usage limit\b|^OpenCode reported an error: /.test(reason))) unavailable = true;
+        /^\S+ usage limit\b|^OpenCode reported an error: |^opencode unavailable: no session within /.test(reason))) unavailable = true;
       // An outage, like an empty account, returned no review, so its count is given back too.
       if (budget && (!record.pgid || record.refused === true || outOfCredit || down)) releaseReviewBudget(ledger.path, budget, env);
     } catch (error) {
