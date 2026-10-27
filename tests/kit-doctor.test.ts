@@ -571,21 +571,37 @@ test("doctor fails a project command that takes a shared name, naming both files
 
 test("doctor says it did not check the project folder when the settings file is unreadable", (t) => {
   const f = fixture(t);
-  const direct = () => spawnSync("/bin/bash", [join(f.commands, "doctor")], {
+  const settings = join(f.build, "scripts/agents/kit.json");
+  const direct = (env: NodeJS.ProcessEnv = {}) => spawnSync("/bin/bash", [join(f.commands, "doctor")], {
     cwd: f.build, encoding: "utf8", timeout: 10_000,
-    env: { ...process.env, KIT_ROOT: f.build, KIT_MAIN_ROOT: f.main, KIT_LIB: library, KIT_COMMANDS_DIR: undefined, KIT_GROK: join(f.directory, "no-grok") },
+    env: { ...process.env, KIT_ROOT: f.build, KIT_MAIN_ROOT: f.main, KIT_LIB: library, KIT_COMMANDS_DIR: undefined, KIT_GROK: join(f.directory, "no-grok"), ...env },
   });
   // A readable file without "commands" keeps the plain pass line.
   const readable = direct();
   assert.match(readable.stdout, /^✓ commands: 2 shared, no project folder \(no "commands" in scripts\/agents\/kit\.json\)$/m);
-  writeFileSync(join(f.build, "scripts/agents/kit.json"), '{ "commands": ');
+  // A readable file that only lacks required keys fails the settings line but still has its project folder checked.
+  const own = join(f.build, "own");
+  mkdirSync(own);
+  executable(join(own, "mine"), 'printf "Usage: kit mine\\n"');
+  writeFileSync(settings, JSON.stringify({ commands: "own" }));
+  const incomplete = direct();
+  assert.match(incomplete.stdout, /^✗ settings: /m);
+  assert.match(incomplete.stdout, /^✓ commands: 2 shared, 1 in own$/m);
+  // A file that is not one JSON object is unreadable too.
+  writeFileSync(settings, "[]");
+  assert.ok(direct().stdout.includes("✗ commands: project folder not checked (scripts/agents/kit.json unreadable), 2 shared; fix: run kit doctor after fixing scripts/agents/kit.json\n"));
+  writeFileSync(settings, '{ "commands": ');
+  // KIT_COMMANDS_DIR never reads the settings file for "commands", broken or not.
+  const override = direct({ KIT_COMMANDS_DIR: f.commands });
+  assert.ok(override.stdout.includes(`✓ commands: 2 in ${f.commands} (KIT_COMMANDS_DIR)\n`), override.stdout);
+  assert.doesNotMatch(override.stdout, /project folder not checked/);
   const broken = direct();
   assert.equal(broken.status, 1, broken.stdout + broken.stderr);
   assert.ok(broken.stdout.includes("✗ commands: project folder not checked (scripts/agents/kit.json unreadable), 2 shared; fix: run kit doctor after fixing scripts/agents/kit.json\n"), broken.stdout);
   assert.doesNotMatch(broken.stdout, /no "commands" in scripts\/agents\/kit\.json/);
   // The shared folder is still checked.
   assert.match(broken.stdout, /^✓ help: 2 commands answer --help$/m);
-  rmSync(join(f.build, "scripts/agents/kit.json"));
+  rmSync(settings);
   assert.match(direct().stdout, /^✗ commands: project folder not checked \(scripts\/agents\/kit\.json missing\), 2 shared; /m);
 });
 
