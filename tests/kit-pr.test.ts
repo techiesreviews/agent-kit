@@ -281,6 +281,30 @@ test("with a PR workflow but no checks or specs command set, the body says CI st
   assert.match(readFileSync(join(f.logDir(), "body.md"), "utf8"), /^- skipped for the docs tier \(CI still runs its workflows\): kit review$/m);
 });
 
+test("a project's own checks.css command runs in the css tier instead of check-colours.mjs", t => {
+  const f = fixture(t, { "worker/a.css": "a { color: red; }\n" }, { checks: { css: "node tools/colours.mjs" } });
+  // The checker reaches the base, so the PR's diff stays css-only; it records its call like the other fakes.
+  const peer = f.peer();
+  mkdirSync(join(peer, "tools"));
+  writeFileSync(join(peer, "tools/colours.mjs"), `import { createRequire } from "node:module";\ncreateRequire(import.meta.url)(${JSON.stringify(join(f.bin, "fake.cjs"))});\n`);
+  f.gitAt(peer, "add", "."); f.gitAt(peer, "commit", "-m", "Add checker"); f.gitAt(peer, "push", "origin", "dev");
+  const result = f.run(["--dry-run"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^tier: css \(1 file, all css\)$/m);
+  assert.match(result.stdout, /^colours: ok$/m);
+  assert.deepEqual(f.calls().filter(call => ["colours.mjs", "check-colours.mjs"].includes(call.tool)).map(call => call.tool), ["colours.mjs"]);
+  assert.match(readFileSync(join(f.logDir(), "body.md"), "utf8"), /^- node tools\/colours\.mjs: ok$/m);
+});
+
+test("docs guards need paths.unitTests: without it the docs tier skips its unit step with a line", t => {
+  const settings = { project: "kit-guards", branches: { land: "dev" }, paths: { docs: ["^docs/"] }, unit: { docsGuards: ["tests/code-map.test.ts"] } };
+  const f = fixture(t, { "docs/guide.md": "# Guide\n" }, {}, { settings });
+  const result = f.run(["--dry-run"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^unit: skipped \(no paths\.unitTests in scripts\/agents\/kit\.json\)$/m);
+  assert.equal(f.calls().some(call => call.tool === "unit.sh"), false);
+});
+
 // A project whose kit plumbing and unit tests live in other folders than this editor's.
 const elsewhere = { project: "kit-other", branches: { land: "dev" }, checks: { check: "npm run check", test: "npm test", extra: "npm run extra-a" },
   paths: { tests: ["^spec/"], kit: ["^tools/kit/"], unitTests: ["^spec/[^/]+\\.test\\.js$"] } };

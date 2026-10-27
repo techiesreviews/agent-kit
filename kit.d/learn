@@ -16,7 +16,8 @@ const usage = `Usage: kit learn [--since 14d|Nd|YYYY-MM-DD] [--project <slug>]
 Reads, never writes, the chat project's corrections list <memory>/corrections/<slug>.md (memory is
 KIT_CHAT_MEMORY or CHAT_MEMORY_DIR, else ~/Projects/chat/memory; the slug comes from project-notes/README.md's project
 map by this repo's workspace, else "project" in scripts/agents/kit.json) and this checkout's <maps>/*/build/feedback.md
-(maps in scripts/agents/kit.json; with none, no feedback logs are read).
+(maps in scripts/agents/kit.json; with none, no feedback logs are read). It needs a readable
+scripts/agents/kit.json, even with --project.
 Groups corrections that repeat (a repeats: date, or the same kind and close wording), marks each
 group covered? when its key words appear in docs/agents/ux-rulebook.md or docs/agents/guardrails.md,
 and writes main root .scratch/learn/<date>/bundle.md (under ${bundleLimit} bytes). A group counts when
