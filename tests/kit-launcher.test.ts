@@ -96,7 +96,7 @@ test("a cache clone over a day old is kept (one kit per command) but warns until
   const stale = f.kit(["version"]);
   assert.equal(stale.status, 0, stale.stdout + stale.stderr);
   assert.match(stale.stdout, new RegExp(`^commit ${one.slice(0, 7)}\nkit cache clone ${join(f.cache, "agent-kit")}, cloned 2 days ago\nproject [0-9a-f]{7,}\n` +
-    "warning kit clone not updated for 2 days; run scripts/agents/kit update\nowner "));
+    "warning kit not updated for 2 days; run scripts/agents/kit update\nowner "));
   // The fix the warning names: the machine copy takes over and the warning goes.
   assert.equal(f.kit(["update"]).status, 0);
   assert.deepEqual(lines(f.kit(["where"])), [`${join(f.data, two)} two`]);
@@ -147,6 +147,62 @@ test("a KIT_HOME a person set wins over the machine copy; one a front door fille
   writeFileSync(join(branch, "marker"), "branch");
   assert.deepEqual(lines(f.kit(["where"], { KIT_HOME: branch })), [`${branch} branch`]);
   assert.deepEqual(lines(f.kit(["where"], { KIT_HOME: branch, KIT_HOME_DEFAULT: branch })), [`${join(f.data, one)} one`]);
+});
+
+test("two launchers at once with no cache clone leave one clone and no temporary folders", async (t) => {
+  const f = fixture(t);
+  f.publish("one");
+  const start = () => new Promise<{ status: number | null; stdout: string }>((done) => {
+    const child = spawn(join(f.agents, "kit"), ["where"], { cwd: f.project, env: f.env });
+    let stdout = "";
+    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk; });
+    child.on("close", (status) => done({ status, stdout }));
+  });
+  const results = await Promise.all([start(), start()]);
+  assert.deepEqual(results.map((result) => result.status), [0, 0], results.map((result) => result.stdout).join(""));
+  for (const result of results) assert.deepEqual(lines(result), [`${join(f.cache, "agent-kit")} one`]);
+  assert.deepEqual(readdirSync(f.cache), ["agent-kit"]);
+});
+
+test("an interrupted clone leaves no temporary folder, and a cache folder without a kit is named", async (t) => {
+  const f = fixture(t);
+  f.publish("one");
+  // A git whose clone hangs until the launcher is stopped.
+  const bin = join(f.directory, "bin"), started = join(f.directory, "clone-started");
+  mkdirSync(bin);
+  const real = spawnSync("bash", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+  writeFileSync(join(bin, "git"), `#!/bin/bash\nif [[ $1 == clone ]]; then touch ${JSON.stringify(started)}; exec sleep 30; fi\nexec ${JSON.stringify(real)} "$@"\n`);
+  chmodSync(join(bin, "git"), 0o755);
+  const child = spawn(join(f.agents, "kit"), ["where"], { cwd: f.project, env: { ...f.env, PATH: `${bin}:${f.env.PATH}` }, detached: true });
+  const closed = new Promise<void>((done) => child.on("close", () => done()));
+  while (!existsSync(started)) await new Promise((wait) => setTimeout(wait, 20));
+  assert.equal(readdirSync(f.cache).filter((name) => name.startsWith("agent-kit.")).length, 1);
+  process.kill(-child.pid!, "SIGTERM");
+  await closed;
+  assert.deepEqual(readdirSync(f.cache), []);
+  mkdirSync(join(f.cache, "agent-kit"));
+  writeFileSync(join(f.cache, "agent-kit/notes"), "mine\n");
+  const blocked = f.kit(["where"]);
+  assert.equal(blocked.status, 2);
+  assert.equal(blocked.stdout, `RESULT: fail no Agent Kit at ${join(f.cache, "agent-kit")} (${join(f.cache, "agent-kit")} exists but holds no kit; remove it)\n`);
+  assert.deepEqual(readdirSync(f.cache), ["agent-kit"]);
+});
+
+test("the hook launcher falls back to the cache clone, or warns, when current points at a removed folder", (t) => {
+  const f = fixture(t);
+  const one = f.publish("one");
+  assert.equal(f.kit(["update"]).status, 0);
+  rmSync(join(f.cache, "agent-kit"), { recursive: true, force: true });
+  spawnSync("chmod", ["-R", "u+w", join(f.data, one)]);
+  rmSync(join(f.data, one), { recursive: true, force: true });
+  assert.equal(readlinkSync(join(f.data, "current")), one);
+  const warned = f.hook("bash-guard", stashPop);
+  assert.deepEqual([warned.status, warned.stdout], [0, `{"systemMessage":"${warning}"}\n`]);
+  // The kit launcher, finding no machine copy, clones into the cache; the hooks then use that clone.
+  assert.deepEqual(lines(f.kit(["where"])), [`${join(f.cache, "agent-kit")} one`]);
+  const cached = f.hook("bash-guard", stashPop);
+  assert.equal(cached.status, 2, cached.stdout + cached.stderr);
+  assert.equal(cached.stderr, "commit work in progress on your own branch\n");
 });
 
 test("the hook launcher runs the kit's guards, and without a kit warns on every hook and never blocks", (t) => {

@@ -1,27 +1,23 @@
 #!/usr/bin/env bash
-# Usage: kit [<command> [args]]; the Agent Kit launcher kit init writes into each project.
-# Runs the machine's newest kit (${XDG_DATA_HOME:-~/.local/share}/agent-kit/current); a KIT_HOME a person set wins.
+# Usage: kit [<command> [args]]; the Agent Kit launcher kit init writes into each project. Runs the machine's
+# newest kit (${XDG_DATA_HOME:-~/.local/share}/agent-kit/current) for the whole command; a person's KIT_HOME wins.
 set -euo pipefail
-why='KIT_HOME'
 export KIT_REPO=${KIT_REPO:-https://github.com/techiesreviews/agent-kit.git}
-data=${XDG_DATA_HOME:-} cache=${XDG_CACHE_HOME:-}
+data=${XDG_DATA_HOME:-} cache=${XDG_CACHE_HOME:-} why=KIT_HOME clone=''
 [[ $data == /* ]] || data=${HOME:-$(cd ~ && pwd -P)}/.local/share
 [[ $cache == /* ]] || cache=${HOME:-$(cd ~ && pwd -P)}/.cache
 if [[ -z ${KIT_HOME:-} || $KIT_HOME == "${KIT_HOME_DEFAULT:-}" ]]; then
-  # current is read once: the whole command keeps this folder while kit update swaps the link.
+  # current is read once: the command keeps this folder while kit update swaps the link.
   KIT_HOME=$(readlink -- "$data/agent-kit/current" 2>/dev/null) || KIT_HOME=''
   [[ -z $KIT_HOME || $KIT_HOME == /* ]] || KIT_HOME=$data/agent-kit/$KIT_HOME
-  # No machine copy (CI, a cloud session, a new laptop): one shallow clone in the cache, outside every project;
-  # kit version warns once it is a day old (kit update then fills the machine copy).
-  if [[ ! -x $KIT_HOME/kit ]]; then
-    KIT_HOME=$cache/agent-kit
-    if [[ ! -x $KIT_HOME/kit ]]; then
-      clone='' why="no machine copy; cannot clone $KIT_REPO"
-      mkdir -p -- "$cache" && clone=$(mktemp -d "$cache/agent-kit.XXXXXX") &&
-        git clone -q --depth 1 -- "$KIT_REPO" "$clone" >&2 && [[ -x $clone/kit ]] &&
-        date +%s > "$clone/.git/kit-cloned" && mv -T -- "$clone" "$KIT_HOME" 2>/dev/null ||
-        [[ -z $clone ]] || rm -rf -- "$clone"
-    fi
+  # No machine copy (CI, a cloud session, a new laptop): one shallow clone in the cache, stamped for kit version.
+  [[ -x $KIT_HOME/kit ]] || KIT_HOME=$cache/agent-kit why="$cache/agent-kit exists but holds no kit; remove it"
+  if [[ ! -e $KIT_HOME ]]; then
+    why="no machine copy; cannot clone $KIT_REPO"
+    trap '[[ -z $clone ]] || rm -rf -- "$clone"' EXIT
+    mkdir -p -- "$cache" && clone=$(mktemp -d "$cache/agent-kit.XXXXXX") && git clone -q --depth 1 -- "$KIT_REPO" "$clone" >&2 &&
+      [[ -x $clone/kit ]] && date +%s > "$clone/.git/kit-cloned" && mv -T -- "$clone" "$KIT_HOME" 2>/dev/null && clone='' || :
+    [[ -z $clone ]] || rm -rf -- "$clone"
   fi
 fi
 [[ -x $KIT_HOME/kit ]] || { printf 'RESULT: fail no Agent Kit at %s (%s)\n' "$KIT_HOME" "$why"; exit 2; }

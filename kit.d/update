@@ -30,7 +30,9 @@ data=$data/agent-kit
 mkdir -p -- "$data"
 # One update at a time (a timer and a person can overlap).
 exec {lock}> "$data/.lock"
-if command -v flock > /dev/null && ! flock -w 120 "$lock"; then
+if ! command -v flock > /dev/null; then
+  printf 'kit update: no flock; updates are not serialised\n' >&2
+elif ! flock -w 120 "$lock"; then
   kit_result fail "update another kit update holds $data/.lock"
   exit 1
 fi

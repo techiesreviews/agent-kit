@@ -563,6 +563,29 @@ test("doctor warns, without failing, on a machine copy two days after its last k
   assert.equal(fresh.status, 0, fresh.stdout + fresh.stderr);
   assert.ok(fresh.stdout.includes(`✓ kit: commit 0123456 (machine copy, updated 3 hours ago); project ${project}\n`), fresh.stdout);
   assert.equal(f.run(["--quiet"], f.build, env).stdout, "RESULT: ok doctor 11/11 checks passed\n");
+  // A machine copy with no update time warns straight away.
+  rmSync(join(data, "agent-kit/updated"));
+  assert.equal(f.run(["--quiet"], f.build, env).stdout, `✗ kit: commit 0123456 (machine copy, update time unknown); project ${project}; ` +
+    "kit update time unknown; fix: run scripts/agents/kit update\nRESULT: ok doctor 11/11 checks passed; warning: kit update time unknown\n");
+});
+
+test("doctor warns, with the same wording, on a launcher cache clone two days old", (t) => {
+  const f = fixture(t);
+  const home = join(f.directory, "cache", "agent-kit");
+  cpSync(join(repo, "scripts/agents"), home, { recursive: true, filter: (source) => source !== join(repo, "scripts/agents/project.d") });
+  git(f.directory, "init", "-q", home);
+  git(home, "add", "-A");
+  git(home, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "kit");
+  writeFileSync(join(home, ".git/kit-cloned"), `${Math.floor(Date.now() / 1000) - 2 * 86400 - 60}\n`);
+  const sha = git(home, "rev-parse", "--short", "HEAD"), project = git(f.build, "rev-parse", "--short", "HEAD");
+  const env = { XDG_CACHE_HOME: join(f.directory, "cache"), KIT_HOME: home };
+  const note = `✗ kit: commit ${sha} (cache clone ${home}, cloned 2 days ago); project ${project}; ` +
+    "kit not updated for 2 days; fix: run scripts/agents/kit update\n";
+  const result = f.run([], f.build, env);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(result.stdout.includes(note), result.stdout);
+  assert.ok(result.stdout.endsWith("RESULT: ok doctor 11/11 checks passed; warning: kit not updated for 2 days\n"), result.stdout);
+  assert.equal(f.run(["--quiet"], f.build, env).stdout, `${note}RESULT: ok doctor 11/11 checks passed; warning: kit not updated for 2 days\n`);
 });
 
 test("doctor runs every check after failures and quiet prints only failures and RESULT", (t) => {
