@@ -150,13 +150,17 @@ trap 'interrupted HUP 1' HUP
 kit_node || :
 KIT_MAIN_ROOT=$(kit_main_root)
 export KIT_ROOT KIT_MAIN_ROOT
-# The playwright setting reaches commands as KIT_PLAYWRIGHT_MODULE, relative to the top folder as kit doctor reads it;
-# a set KIT_PLAYWRIGHT_MODULE wins.
-if [[ -z ${KIT_PLAYWRIGHT_MODULE:-} ]]; then
+# The playwright setting reaches commands as KIT_PLAYWRIGHT_MODULE, made absolute against KIT_ROOT as kit doctor does;
+# a person's KIT_PLAYWRIGHT_MODULE wins. As with KIT_HOME, the front door marks the value it fills in
+# (KIT_PLAYWRIGHT_MODULE_DEFAULT), so a nested kit for another worktree or project reads its own setting.
+if [[ -n ${KIT_PLAYWRIGHT_MODULE:-} && $KIT_PLAYWRIGHT_MODULE != "${KIT_PLAYWRIGHT_MODULE_DEFAULT:-}" ]]; then
+  unset KIT_PLAYWRIGHT_MODULE_DEFAULT
+else
+  unset KIT_PLAYWRIGHT_MODULE KIT_PLAYWRIGHT_MODULE_DEFAULT
   playwright=$(kit_setting .playwright 2>/dev/null) || playwright=''
   if [[ -n $playwright ]]; then
     [[ $playwright == /* ]] || playwright=$KIT_ROOT/$playwright
-    export KIT_PLAYWRIGHT_MODULE=$playwright
+    export KIT_PLAYWRIGHT_MODULE=$playwright KIT_PLAYWRIGHT_MODULE_DEFAULT=$playwright
   fi
 fi
 export KIT_LIB="$KIT_HOME/kit-lib.sh" KIT_LIB_MJS="$KIT_HOME/kit-lib.mjs"

@@ -23,7 +23,7 @@ const noFile = 'no scripts/agents/kit.json; add one with "project" and "branches
 
 // Kit runs export these into the test process; each test sets its own.
 const clean: NodeJS.ProcessEnv = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
-for (const key of ["KIT_ROOT", "KIT_MAIN_ROOT", "KIT_DEV_ROOT", "KIT_PREVIEW_URL", "KIT_PLAYWRIGHT_MODULE", "KIT_LIB", "KIT_LIB_MJS", "KIT_HOME", "KIT_HOME_DEFAULT", "KIT_COMMANDS_DIR", "NODE_TEST_CONTEXT"]) delete clean[key];
+for (const key of ["KIT_ROOT", "KIT_MAIN_ROOT", "KIT_DEV_ROOT", "KIT_PREVIEW_URL", "KIT_PLAYWRIGHT_MODULE", "KIT_PLAYWRIGHT_MODULE_DEFAULT", "KIT_LIB", "KIT_LIB_MJS", "KIT_HOME", "KIT_HOME_DEFAULT", "KIT_COMMANDS_DIR", "NODE_TEST_CONTEXT"]) delete clean[key];
 
 function temp(t: TestContext) {
   const directory = mkdtempSync(join(tmpdir(), "kit-settings-"));
@@ -209,19 +209,32 @@ test("environment overrides still win over the settings file", async t => {
 });
 
 test("the playwright setting reaches project commands as KIT_PLAYWRIGHT_MODULE, unless the variable is set", t => {
-  const root = temp(t);
-  const show = (settings: object, extra: NodeJS.ProcessEnv = {}) => {
+  // Each project has `show`, which prints the variable, and `nest`, which runs `show` in another project
+  // through the front door as kit next does for a worktree (KIT_ROOT names the other project).
+  const project = (settings: object) => {
+    const root = temp(t);
     settingsFile(root, { project: "x", branches: { land: "main" }, commands: "commands", ...settings });
-    const result = spawnSync(kit, ["show"], { cwd: root, env: { ...clean, KIT_ROOT: root, ...extra }, encoding: "utf8", timeout: 30_000 });
+    mkdirSync(join(root, "commands"));
+    executable(join(root, "commands/show"), '#!/bin/bash\n# kit: print KIT_PLAYWRIGHT_MODULE\necho "module=${KIT_PLAYWRIGHT_MODULE-unset}"\n');
+    executable(join(root, "commands/nest"), '#!/bin/bash\n# kit: show in NESTED_ROOT\nKIT_ROOT=$NESTED_ROOT exec "$NESTED_KIT" show\n');
+    return root;
+  };
+  const run = (root: string, command: string, extra: NodeJS.ProcessEnv = {}) => {
+    const result = spawnSync(kit, [command], { cwd: root, env: { ...clean, KIT_ROOT: root, NESTED_KIT: kit, ...extra }, encoding: "utf8", timeout: 30_000 });
     assert.equal(result.status, 0, result.stdout + result.stderr);
     return result.stdout.split("\n")[0];
   };
-  mkdirSync(join(root, "commands"));
-  executable(join(root, "commands/show"), '#!/bin/bash\n# kit: print KIT_PLAYWRIGHT_MODULE\necho "module=${KIT_PLAYWRIGHT_MODULE-unset}"\n');
-  assert.equal(show({ playwright: "vendor/playwright" }), `module=${root}/vendor/playwright`);
-  assert.equal(show({ playwright: "/opt/playwright" }), "module=/opt/playwright");
-  assert.equal(show({ playwright: "vendor/playwright" }, { KIT_PLAYWRIGHT_MODULE: "/caller/playwright" }), "module=/caller/playwright");
-  assert.equal(show({}), "module=unset");
+  const relative = project({ playwright: "vendor/playwright" });
+  assert.equal(run(relative, "show"), `module=${relative}/vendor/playwright`);
+  assert.equal(run(relative, "show", { KIT_PLAYWRIGHT_MODULE: "" }), `module=${relative}/vendor/playwright`);
+  assert.equal(run(project({ playwright: "/opt/playwright" }), "show"), "module=/opt/playwright");
+  assert.equal(run(relative, "show", { KIT_PLAYWRIGHT_MODULE: "/caller/playwright" }), "module=/caller/playwright");
+  assert.equal(run(project({}), "show"), "module=unset");
+  // A nested front door reads its own project's setting, unless a person set the variable.
+  const a = project({ playwright: "vendor/a" }), b = project({ playwright: "vendor/b" });
+  assert.equal(run(a, "nest", { NESTED_ROOT: b }), `module=${b}/vendor/b`);
+  assert.equal(run(a, "nest", { NESTED_ROOT: project({}) }), "module=unset");
+  assert.equal(run(a, "nest", { NESTED_ROOT: b, KIT_PLAYWRIGHT_MODULE: "/caller/playwright" }), "module=/caller/playwright");
 });
 
 test("land: main reaches review, unit --affected, pr --dry-run, status and wait ci", t => {
