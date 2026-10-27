@@ -646,15 +646,17 @@ test("a broken --help stops agent.sh review and kit doctor but not agent.sh buil
     cwd: f.directory, encoding: "utf8", timeout: 10_000, env: { ...env, KIT_DOCTOR_SKIP: "help" },
   });
   assert.equal(forced.status, 3, forced.stdout + forced.stderr);
-  // A resumed run gates as the kind it recorded.
-  for (const kind of ["build", "review"]) {
-    const out = join(f.directory, `resume-${kind}`);
+  // A resumed run gates as the kind it recorded; a status.json without a kind (an older runner) gets the full gate.
+  for (const kind of ["build", "review", undefined]) {
+    const out = join(f.directory, `resume-${kind ?? "no-kind"}`);
     mkdirSync(out);
     writeFileSync(join(out, "status.json"), JSON.stringify({ worktree: f.build, kind }));
     const resumed = agent("--resume", out);
     if (kind === "build") {
-      assert.notEqual(resumed.status, 3, resumed.stderr);
+      // Past the gate the runner refuses a status.json with no session (exit 1).
+      assert.equal(resumed.status, 1, resumed.stderr);
       assert.ok(resumed.stderr.startsWith(`${problem}agent.sh: building in ${f.build} despite the problem above; the builder should repair it\n`), resumed.stderr);
+      assert.match(resumed.stderr, /no session id recorded/);
     } else {
       assert.equal(resumed.status, 3, resumed.stderr);
       assert.match(resumed.stderr, /^✗ help: broken/);
@@ -676,4 +678,56 @@ test("a broken --help stops agent.sh review and kit doctor but not agent.sh buil
   assert.equal(refused.status, 3, refused.stdout + refused.stderr);
   assert.match(refused.stderr, /RESULT: fail doctor 1 failed: hook config\n/);
   assert.doesNotMatch(refused.stderr, /building in/);
+});
+
+test("agent.sh hands the builder no KIT_DOCTOR_SKIP, so its own kit doctor sees a broken help", (t) => {
+  const f = fixture(t);
+  executable(join(f.commands, "broken"), "exit 1");
+  executable(join(f.build, "scripts/agents/kit"), "exit 0");
+  const bin = join(f.directory, "bin");
+  const seen = join(f.directory, "seen");
+  mkdirSync(bin);
+  executable(join(bin, "claude"), `printf '%s\\n' "\${KIT_DOCTOR_SKIP-unset}" > ${JSON.stringify(seen)}; exit 1`);
+  const brief = join(f.directory, "brief.md");
+  writeFileSync(brief, "test brief\n");
+  const result = spawnSync("/bin/bash", [join(repo, "scripts/agents/agent.sh"), "build", f.build, brief, "--cli", "claude", "--out", join(f.directory, "out")], {
+    cwd: f.directory, encoding: "utf8", timeout: 10_000,
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, KIT_MAIN_ROOT: f.main, KIT_LIB: library, KIT_COMMANDS_DIR: f.commands,
+      KIT_GROK: join(f.directory, "no-grok"), KIT_HELP_TIMEOUT: "0.3", ASE_SKIP_DOCTOR: "", KIT_DOCTOR_SKIP: "help" },
+  });
+  assert.match(result.stderr, /agent.sh: building in /);
+  assert.equal(readFileSync(seen, "utf8"), "unset\n", result.stdout + result.stderr);
+});
+
+test("a broken version command, which the kit home check runs, does not stop agent.sh build either", (t) => {
+  const f = fixture(t);
+  executable(join(f.commands, "version"), 'printf "SyntaxError: missing import\\n" >&2; exit 1');
+  executable(join(f.build, "scripts/agents/kit"), "exit 0");
+  // The kit home check copies KIT_HOME and runs its version; this home's version fails as the broken one would.
+  const home = join(f.directory, "kit-home");
+  mkdirSync(home);
+  copyFileSync(library, join(home, "kit-lib.sh"));
+  executable(join(home, "kit"), 'printf "RESULT: fail version broken\\n"; exit 1');
+  const env = { ...process.env, KIT_MAIN_ROOT: f.main, KIT_LIB: library, KIT_COMMANDS_DIR: f.commands, KIT_HOME: home,
+    KIT_GROK: join(f.directory, "no-grok"), KIT_HELP_TIMEOUT: "0.3", ASE_SKIP_DOCTOR: "", KIT_DOCTOR_SKIP: "" };
+  const agent = (kind: string) => spawnSync("/bin/bash", [join(repo, "scripts/agents/agent.sh"), kind, f.build, join(f.directory, "missing.md")], {
+    cwd: f.directory, encoding: "utf8", timeout: 10_000, env,
+  });
+  const build = agent("build");
+  assert.equal(build.status, 2, build.stdout + build.stderr);
+  assert.ok(build.stderr.startsWith("problem: help: version (exit 1); fix: run scripts/agents/kit <command> --help and repair it\n" +
+    `problem: kit home: a copy of ${home} fails kit version: RESULT: fail version broken; fix: repair kit version (its --help is broken too)\n` +
+    `agent.sh: building in ${f.build} despite the problem above; the builder should repair it\n`), build.stderr);
+  const review = agent("review");
+  assert.equal(review.status, 3, review.stdout + review.stderr);
+  assert.match(review.stderr, /RESULT: fail doctor 2 failed: help,kit home\n/);
+  const skipped = f.run(["--quiet"], f.build, { KIT_HOME: home, KIT_HELP_TIMEOUT: "0.3", KIT_DOCTOR_SKIP: "help" });
+  assert.equal(skipped.status, 0, skipped.stdout + skipped.stderr);
+  assert.ok(skipped.stdout.endsWith("RESULT: ok doctor 9/9 checks passed; skipped help, kit home (KIT_DOCTOR_SKIP)\n"), skipped.stdout);
+  // Another command's broken help leaves a failing kit home check failing.
+  rmSync(join(f.commands, "version"));
+  executable(join(f.commands, "other"), "exit 1");
+  const other = agent("build");
+  assert.equal(other.status, 3, other.stdout + other.stderr);
+  assert.match(other.stderr, /RESULT: fail doctor 1 failed: kit home\n/);
 });

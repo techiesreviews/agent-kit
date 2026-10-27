@@ -7,7 +7,7 @@ gate=false
 kind=${1-}
 gate_dir=${2-}
 if [[ $kind == --resume && ${ASE_SKIP_DOCTOR:-} != 1 && -f $gate_dir/status.json ]]; then
-  { read -r gate_dir; read -r kind; } < <(node -e 'const s = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); console.log(`${s.worktree}\n${s.kind}`)' "$gate_dir/status.json")
+  { IFS= read -r gate_dir; IFS= read -r kind; } < <(node -e 'const s = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); console.log(`${s.worktree}\n${s.kind}`)' "$gate_dir/status.json")
 fi
 if [[ ${ASE_SKIP_DOCTOR:-} != 1 && -d $gate_dir ]] && root=$(git -C "$gate_dir" rev-parse --show-toplevel 2>/dev/null); then
   common=$(git -C "$root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=''
@@ -28,7 +28,7 @@ if [[ $gate == true ]]; then
     printf 'agent.sh: kit doctor failed in %s; run scripts/agents/kit doctor there for details (ASE_SKIP_DOCTOR=1 is for tests only)\n' "$root" >&2
     exit 3
   fi
-  if problems=$(grep '^problem: ' <<< "$output"); then
+  if [[ $kind == build ]] && problems=$(grep '^problem: ' <<< "$output"); then
     printf '%s\n' "$problems" >&2
     printf 'agent.sh: building in %s despite the problem above; the builder should repair it\n' "$root" >&2
   fi
