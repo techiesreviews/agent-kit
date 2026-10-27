@@ -23,7 +23,7 @@ function fixture(t: { after: (fn: () => void) => void }) {
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: directory, XDG_DATA_HOME: join(directory, "data"), XDG_CACHE_HOME: cache,
     XDG_STATE_HOME: join(directory, "state"), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
     KIT_REPO: `file://${join(directory, "kit.git")}`, CLAUDE_PROJECT_DIR: "" };
-  for (const name of ["KIT_ROOT", "KIT_MAIN_ROOT", "KIT_LIB", "KIT_LIB_MJS", "KIT_HOME", "KIT_HOME_DEFAULT", "KIT_COMMANDS_DIR", "NODE_TEST_CONTEXT"]) delete env[name];
+  for (const name of ["KIT_ROOT", "KIT_MAIN_ROOT", "KIT_LIB", "KIT_LIB_MJS", "KIT_HOME", "KIT_HOME_DEFAULT", "KIT_HOME_PINNED", "KIT_COMMANDS_DIR", "NODE_TEST_CONTEXT"]) delete env[name];
   const git = (root: string, ...args: string[]) => {
     const result = spawnSync("git", ["-C", root, ...args], { env, encoding: "utf8", timeout: 10_000 });
     assert.equal(result.status, 0, result.stderr);
@@ -251,7 +251,7 @@ test("the hook launcher runs the kit's guards, and without a kit warns on every 
   assert.deepEqual([wrong.status, wrong.stdout], [0, `{"systemMessage":"${warning}"}\n`]);
 });
 
-test("a child of a launcher whose kit folder was retired and removed falls back to current; a person's missing KIT_HOME still fails", (t) => {
+test("a launcher's child whose pinned kit folder was removed picks again; a person's missing KIT_HOME still fails", (t) => {
   const f = fixture(t);
   const one = f.publish("one");
   assert.equal(f.kit(["update"]).status, 0);
@@ -260,15 +260,18 @@ test("a child of a launcher whose kit folder was retired and removed falls back 
   const two = f.publish("two");
   assert.equal(f.kit(["update"]).status, 0);
   spawnSync("chmod", ["-R", "u+w", join(f.data, one)]);
-  rmSync(join(f.data, one), { recursive: true, force: true });
   const inherited = { KIT_HOME: join(f.data, one), KIT_HOME_PINNED: join(f.data, one) };
+  // A pinned folder that still holds a kit is kept over current (one kit per command, children included).
+  assert.deepEqual(lines(f.kit(["where"], inherited)), [`${join(f.data, one)} one`]);
+  assert.deepEqual(lines(f.kit(["pinned"], inherited)), [join(f.data, one)]);
+  writeFileSync(join(f.data, one, "hooks/bash-guard.sh"), 'printf "one guard\\n" >&2; exit 2\n');
+  const kept = f.hook("bash-guard", stashPop, inherited);
+  assert.deepEqual([kept.status, kept.stderr], [2, "one guard\n"]);
+  rmSync(join(f.data, one), { recursive: true, force: true });
   const guarded = f.hook("bash-guard", stashPop, inherited);
   assert.deepEqual([guarded.status, guarded.stdout, guarded.stderr], [2, "", "commit work in progress on your own branch\n"]);
   assert.deepEqual(lines(f.kit(["where"], inherited)), [`${join(f.data, two)} two`]);
   assert.deepEqual(lines(f.kit(["pinned"], inherited)), [join(f.data, two)]);
-  // A pinned folder that still holds a kit is kept (one kit per command, children included).
-  const kept = f.kit(["where"], { KIT_HOME: join(f.data, two), KIT_HOME_PINNED: join(f.data, two) });
-  assert.deepEqual(lines(kept), [`${join(f.data, two)} two`]);
   const chosen = { KIT_HOME: join(f.data, one) };
   const warned = f.hook("bash-guard", stashPop, chosen);
   assert.deepEqual([warned.status, warned.stdout], [0, `{"systemMessage":"${warning}"}\n`]);
@@ -290,4 +293,27 @@ test("a cache folder with kit but no kit-lib.sh is rejected by both launchers, n
   const hooked = f.hook("bash-guard", stashPop);
   assert.deepEqual([hooked.status, hooked.stdout], [0, `{"systemMessage":"${warning}"}\n`]);
   assert.deepEqual(readdirSync(f.cache), ["agent-kit"]);
+});
+
+test("a current folder without kit-lib.sh is passed over for a cache clone by both launchers", (t) => {
+  const f = fixture(t);
+  const one = f.publish("one");
+  assert.equal(f.kit(["update"]).status, 0);
+  spawnSync("chmod", ["-R", "u+w", join(f.data, one)]);
+  rmSync(join(f.data, one, "kit-lib.sh"));
+  writeFileSync(join(f.data, one, "hooks/bash-guard.sh"), 'printf "half guard\\n" >&2; exit 2\n');
+  assert.deepEqual(lines(f.kit(["where"])), [`${join(f.cache, "agent-kit")} one`]);
+  const cached = f.hook("bash-guard", stashPop);
+  assert.deepEqual([cached.status, cached.stderr], [2, "commit work in progress on your own branch\n"]);
+});
+
+test("a pinned folder that was removed, with no machine copy and no clone, fails for the cache, not as KIT_HOME", (t) => {
+  const f = fixture(t);
+  const gone = join(f.directory, "gone");
+  const inherited = { KIT_HOME: gone, KIT_HOME_PINNED: gone };
+  const result = f.kit(["where"], inherited);
+  assert.equal(result.status, 2);
+  assert.equal(result.stdout, `RESULT: fail no Agent Kit at ${join(f.cache, "agent-kit")} (no machine copy; cannot clone ${f.env.KIT_REPO})\n`);
+  const warned = f.hook("bash-guard", stashPop, inherited);
+  assert.deepEqual([warned.status, warned.stdout], [0, `{"systemMessage":"${warning}"}\n`]);
 });

@@ -27,7 +27,10 @@ if [[ -z ${KIT_HOME:-} || $KIT_HOME == "${KIT_HOME_DEFAULT:-}" ]] || { [[ $KIT_H
 fi
 whole "$KIT_HOME" || { printf 'RESULT: fail no Agent Kit at %s (%s)\n' "$KIT_HOME" "$why"; exit 2; }
 # The front door resolves KIT_HOME the same way, so the marker still matches it in every child.
-[[ $picked == false ]] || { KIT_HOME=$(cd -- "$KIT_HOME" && pwd -P) && export KIT_HOME_PINNED=$KIT_HOME; }
+if [[ $picked == true ]]; then
+  KIT_HOME=$(cd -- "$KIT_HOME" 2>/dev/null && pwd -P) || { printf 'RESULT: fail no Agent Kit at %s (%s)\n' "$KIT_HOME" "$why"; exit 2; }
+  export KIT_HOME_PINNED=$KIT_HOME
+fi
 # Outside git the project is the one around this launcher, not around the kit.
 if [[ -z ${KIT_ROOT:-} ]] && ! git rev-parse --show-toplevel > /dev/null 2>&1; then
   KIT_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P) && export KIT_ROOT
