@@ -36,7 +36,7 @@ type Ux = {
   pickImages(images: Image[], limit?: number): { kept: Image[]; trimmed: (Image & { reason: string })[] };
   guessTicket(branch: string, files: string[]): string | undefined;
   mockupLinks(text: string, ticket: string): string[];
-  colourFindings(status: number, output: string, command: string, log: string): Finding[];
+  colourFindings(status: number, output: string, command: string, log: string, files: string[]): Finding[];
 };
 const ux: Ux = await import(pathToFileURL(script).href);
 const editorColours: string = JSON.parse(readFileSync(resolve("scripts/agents/kit.json"), "utf8")).checks.css;
@@ -407,7 +407,7 @@ process.exitCode = failures.length ? 1 : 0;
   const own = report();
   assert.deepEqual(readFileSync(join(root, ".scratch/colour-calls.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line)), [["src/plain.css", "styles/own.css"]]);
   assert.deepEqual(own.bundle.split("\n").filter(line => line.startsWith("- L2")), ["- L2 styles/own.css:1: raw colour red is not a token"]);
-  assert.match(own.stdout, /^colours: node tools\/colours\.mjs: 1 findings$/m);
+  assert.match(own.stdout, /^colours: node tools\/colours\.mjs: 1 finding$/m);
   // No checks.css: the skipped line, in the output and the bundle, and no L2 findings.
   put("scripts/agents/kit.json", JSON.stringify({ project: "x", branches: { land: "dev" } }));
   const none = report();
@@ -417,9 +417,13 @@ process.exitCode = failures.length ? 1 : 0;
   assert.equal(readFileSync(join(root, ".scratch/colour-calls.jsonl"), "utf8").trim().split("\n").length, 1);
 });
 
-test("kit ux with this editor's checks.css finds a raw colour and leaves an allowed one alone", t => {
-  const { put, run } = fixture(t);
+test("kit ux with this editor's checks.css finds a raw colour in the diff and leaves an allowed one and untouched files alone", t => {
+  const { git, put, run } = fixture(t);
   put("docs/agents/features.md", ["# Feature list", "", entry("F-plain-01", ["src/plain.css"])].join("\n"));
+  // An unchanged file with a raw colour: the editor's checker reads all of src/, but the diff never touched it.
+  put("src/other.css", ".a { color: #000; }\n");
+  git("add", "."); git("commit", "--quiet", "-m", "other");
+  git("update-ref", "refs/remotes/origin/dev", "HEAD");
   put("scripts/check-colours.allow.json", JSON.stringify([{ file: "src/plain.css", match: "mask: linear-gradient(#000", reason: "Alpha only." }]));
   put("src/plain.css", ".a { color: #fff; }\n.b { mask: linear-gradient(#000, transparent); }\n");
   const output = run(["--no-review"], { KIT_UX_SHOTS: undefined, KIT_COMMANDS_DIR: undefined });
@@ -429,13 +433,21 @@ test("kit ux with this editor's checks.css finds a raw colour and leaves an allo
 });
 
 test("a failed colour check names each file and line it printed, else its first line and log", () => {
-  assert.deepEqual(ux.colourFindings(0, "src/a.css:1: #fff\n", "check", "/log"), []);
-  assert.deepEqual(ux.colourFindings(1, "header\n\x1b[31msrc/a.css:3:7: #fff\x1b[0m\nsrc/b.css:9: red\n", "check", "/log"), [
+  const changed = ["src/a.css", "src/b.css"];
+  assert.deepEqual(ux.colourFindings(0, "src/a.css:1: #fff\n", "check", "/log", changed), []);
+  assert.deepEqual(ux.colourFindings(1, "header\n\x1b[31msrc/a.css:3:7: #fff\x1b[0m\nsrc/b.css:9: red\n", "check", "/log", changed), [
     { rule: "L2", file: "src/a.css", line: 3, text: "raw colour #fff" },
     { rule: "L2", file: "src/b.css", line: 9, text: "raw colour red" },
   ]);
-  assert.deepEqual(ux.colourFindings(2, "\nError: no allow list\n    at x\n", "check", "/log"), [{ rule: "L2", file: "colours", line: 0, text: "check exited 2: Error: no allow list; log /log" }]);
-  assert.deepEqual(ux.colourFindings(127, "", "check", "/log"), [{ rule: "L2", file: "colours", line: 0, text: "check exited 127; log /log" }]);
+  // A CSS file outside the diff is dropped; a non-CSS file (an allow list) stays, without the raw colour prefix.
+  assert.deepEqual(ux.colourFindings(1, "src/other.css:1: #000\nallow.json:2: stale allow entry: src/a.css: #000\n", "check", "/log", changed), [
+    { rule: "L2", file: "allow.json", line: 2, text: "stale allow entry: src/a.css: #000" },
+  ]);
+  assert.deepEqual(ux.colourFindings(1, "src/other.css:1: #000\n", "check", "/log", changed), []);
+  assert.deepEqual(ux.colourFindings(2, "\nError: no allow list\n    at x\n", "check", "/log", changed), [{ rule: "L2", file: "colours", line: 0, text: "check exited 2: Error: no allow list; log /log" }]);
+  // A stack frame with a plain path is no file:line finding.
+  assert.deepEqual(ux.colourFindings(1, "TypeError: x\n    at checkColours (/abs/check.js:12:5)\n", "check", "/log", changed), [{ rule: "L2", file: "colours", line: 0, text: "check exited 1: TypeError: x; log /log" }]);
+  assert.deepEqual(ux.colourFindings(127, "", "check", "/log", changed), [{ rule: "L2", file: "colours", line: 0, text: "check exited 127; log /log" }]);
 });
 
 test("kit ux tries touched features, runs scripted checks and writes a bounded bundle", t => {

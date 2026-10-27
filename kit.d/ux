@@ -6,24 +6,26 @@ import { basename, dirname, join, matchesGlob, normalize, resolve } from "node:p
 import { pathToFileURL } from "node:url";
 import { citedRules, parseUxResult, uxBrief, uxCounts, uxReport } from "../ux-brief.mjs";
 
-const { kitRoot, kitMainRoot, kitOwner, kitResult, kitScore, kitSettingsFile, scoreCost } = await import(
+const { kitBranch, kitRoot, kitMainRoot, kitOwner, kitResult, kitScore, kitSettingsFile, scoreCost } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 
 export const bundleLimit = 60_000, imageLimit = 12, imageBytes = 300_000;
 const usage = `Usage: kit ux [--base REF] [--features F-…,…] [--all] [--no-review] [--ticket FILE]
        kit ux --help
-Touched features: the diff against the merge-base with --base (default origin/<land>, branches.land
-in scripts/agents/kit.json), plus
-uncommitted and untracked files, matched against each feature's Files globs in
-docs/agents/features.md. --features names them instead; --all takes every feature.
+Touched features: the diff against the merge-base with --base (default origin/<land>,
+branches.land in scripts/agents/kit.json), plus uncommitted and untracked files, matched
+against each feature's Files globs in docs/agents/features.md. --features names them
+instead; --all takes every feature.
 Tries: each feature's Steps file through the project's own kit shots (in the folder "commands"
 names in scripts/agents/kit.json) --steps at 1280 px (and 390 px when Phone: yes), light and
 dark. A feature without Steps gets the named screens its Files map to, marked untried.
 Scripted checks: layout findings, tap targets under 44 px at 390, raw colours in changed
-CSS (the project's checks.css command, given the changed CSS files; each file:line it prints
-when it fails is one L2 finding; none is "colours: skipped"), new visible text over 60 characters, new hint/tip/count/badge class names, and raw px
-spacing and timings in changed CSS counted against the base (reported, never blocking).
+CSS (the project's checks.css command, given the changed CSS files; when it fails, each
+file:line it prints in a changed CSS file or a non-CSS file is one L2 finding; none is
+"colours: skipped"), new visible text over 60 characters, new hint/tip/count/badge class
+names, and raw px spacing and timings in changed CSS counted against the base (reported,
+never blocking).
 Bundle: <main root>/.scratch/ux/<owner>/<time>-XXXXXX/bundle.md (under 60 KB) and at most 12
 images of at most 300 KB (contact sheets and record strips); the lowest-value items are
 trimmed first and named. Raw tries: <main root>/.scratch/ux-tries/<owner>/<time>-XXXXXX/ (same name).
@@ -339,7 +341,8 @@ const textSetting = value => typeof value === "string" && value.trim() ? value.t
 
 /** The default base: origin/<branches.land>, as kit pr and kit review take it. */
 function landBase(settings) {
-  const land = textSetting(settings.branches?.land);
+  const branches = settings.branches && typeof settings.branches === "object" ? settings.branches : {};
+  const land = kitBranch("land", { branches });
   if (!land) throw new Error(`needs --base (no branches.land in ${kitSettingsFile})`);
   return `origin/${land}`;
 }
@@ -443,17 +446,22 @@ export function tryFailures(index, status, log) {
 }
 
 /**
- * L2 findings from the project's checks.css run: none when it passed, else one per `file:line: text` line it printed;
- * a failed run that names no line is one finding pointing at its log.
+ * L2 findings from the project's checks.css run: none when it passed, else one per `file:line: text` line it printed
+ * (a stack frame is no such line), kept when it names a changed CSS file in `files` or a file that is not CSS (an
+ * allow list): a checker that looks past the given files reports nothing the diff did not touch.
+ * A failed run that names no line is one finding pointing at its log.
  */
-export function colourFindings(status, output, command, log) {
+export function colourFindings(status, output, command, log, files) {
   if (!status) return [];
   const lines = output.replace(/\x1b\[[0-9;]*m/g, "").split("\n").map(line => line.trim()).filter(Boolean);
   const located = lines.flatMap(text => {
-    const match = /^(\S[^:]*):(\d+)(?::\d+)?:\s*(\S.*)$/.exec(text);
-    return match ? [{ rule: "L2", file: match[1], line: Number(match[2]), text: `raw colour ${match[3]}` }] : [];
+    const match = /^([^\s:()]+):(\d+)(?::\d+)?:\s*(\S.*)$/.exec(text);
+    if (!match) return [];
+    const css = /\.css$/i.test(match[1]);
+    return [{ rule: "L2", file: match[1], line: Number(match[2]), text: css ? `raw colour ${match[3]}` : match[3], css }];
   });
-  return located.length ? located : [{ rule: "L2", file: "colours", line: 0, text: `${command} exited ${status}${lines.length ? `: ${lines[0].slice(0, 240)}` : ""}; log ${log}` }];
+  if (located.length) return located.filter(finding => !finding.css || files.includes(finding.file)).map(({ css, ...finding }) => finding);
+  return [{ rule: "L2", file: "colours", line: 0, text: `${command} exited ${status}${lines.length ? `: ${lines[0].slice(0, 240)}` : ""}; log ${log}` }];
 }
 
 async function main() {
@@ -542,8 +550,8 @@ async function main() {
     else if (css.length) {
       const [name, ...argv] = coloursCommand.split(/\s+/), log = join(triesDir, "colours.log");
       const status = await runLogged(root, name, [...argv, ...css.map(({ file }) => file)], log);
-      colours = colourFindings(status, readFileSync(log, "utf8"), coloursCommand, log);
-      coloursLine = `colours: ${coloursCommand}: ${colours.length ? `${colours.length} findings` : "ok"}`;
+      colours = colourFindings(status, readFileSync(log, "utf8"), coloursCommand, log, css.map(({ file }) => file));
+      coloursLine = `colours: ${coloursCommand}: ${colours.length ? `${colours.length} finding${colours.length === 1 ? "" : "s"}` : "ok"}`;
     }
     if (coloursLine) console.log(coloursLine);
     const layout = layoutFindings(tries);
