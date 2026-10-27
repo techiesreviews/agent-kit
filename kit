@@ -151,19 +151,23 @@ kit_node || :
 KIT_MAIN_ROOT=$(kit_main_root)
 export KIT_ROOT KIT_MAIN_ROOT
 # The playwright setting reaches commands as KIT_PLAYWRIGHT_MODULE, against the real top folder as kit doctor reads it;
-# a person's value wins, and KIT_PLAYWRIGHT_MODULE_DEFAULT marks the front door's own as KIT_HOME_DEFAULT does.
+# a person's value wins (a relative one read the same way), and KIT_PLAYWRIGHT_MODULE_DEFAULT marks the front door's
+# own as KIT_HOME_DEFAULT does.
 if [[ -n ${KIT_PLAYWRIGHT_MODULE:-} && $KIT_PLAYWRIGHT_MODULE != "${KIT_PLAYWRIGHT_MODULE_DEFAULT:-}" ]]; then
-  unset KIT_PLAYWRIGHT_MODULE_DEFAULT
+  playwright=$KIT_PLAYWRIGHT_MODULE own=false
 else
-  unset KIT_PLAYWRIGHT_MODULE KIT_PLAYWRIGHT_MODULE_DEFAULT
   playwright=$(kit_setting .playwright 2>/dev/null) || playwright=''
-  if [[ -n $playwright ]]; then
-    if [[ $playwright != /* ]]; then
-      top=$(cd -- "$KIT_ROOT" 2>/dev/null && pwd -P) || top=$KIT_ROOT
-      playwright=$top/$playwright
-    fi
-    export KIT_PLAYWRIGHT_MODULE=$playwright KIT_PLAYWRIGHT_MODULE_DEFAULT=$playwright
+  own=true
+fi
+unset KIT_PLAYWRIGHT_MODULE KIT_PLAYWRIGHT_MODULE_DEFAULT
+if [[ -n $playwright ]]; then
+  if [[ $playwright != /* ]]; then
+    # A KIT_ROOT that cannot be entered stays as given; kit doctor fails on it anyway.
+    top=$(cd -- "$KIT_ROOT" 2>/dev/null && pwd -P) || top=$KIT_ROOT
+    playwright=$top/$playwright
   fi
+  export KIT_PLAYWRIGHT_MODULE=$playwright
+  [[ $own == false ]] || export KIT_PLAYWRIGHT_MODULE_DEFAULT=$playwright
 fi
 export KIT_LIB="$KIT_HOME/kit-lib.sh" KIT_LIB_MJS="$KIT_HOME/kit-lib.mjs"
 

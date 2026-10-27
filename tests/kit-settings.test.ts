@@ -237,6 +237,13 @@ test("the playwright setting reaches project commands as KIT_PLAYWRIGHT_MODULE, 
   assert.equal(run(project({ playwright: "/opt/playwright" }), "show"), "module=/opt/playwright");
   assert.equal(run(relative, "show", { KIT_PLAYWRIGHT_MODULE: "/caller/playwright" }), "module=/caller/playwright");
   assert.equal(run(project({}), "show"), "module=unset");
+  // Without jq the setting cannot be read, so the variable stays unset and the command still runs.
+  assert.equal(run(relative, "show", { PATH: withoutJq(t), KIT_COMMANDS_DIR: join(relative, "commands") }), "module=unset");
+  // A person's relative value is read against the top folder too, by commands and doctor alike.
+  mkdirSync(join(relative, "vendor/mine"), { recursive: true });
+  assert.equal(run(relative, "show", { KIT_PLAYWRIGHT_MODULE: "vendor/mine" }), `module=${relative}/vendor/mine`);
+  const mine = spawn(relative, ["doctor"], { KIT_PLAYWRIGHT_MODULE: "vendor/mine" });
+  assert.ok(mine.stdout.split("\n").includes(`✓ playwright: ${relative}/vendor/mine`), mine.stdout + mine.stderr);
   // A nested front door reads its own project's setting, unless a person set the variable.
   const a = project({ playwright: "vendor/a" }), b = project({ playwright: "vendor/b" });
   assert.equal(run(a, "nest", { NESTED_ROOT: b }), `module=${b}/vendor/b`);
@@ -245,7 +252,7 @@ test("the playwright setting reaches project commands as KIT_PLAYWRIGHT_MODULE, 
   // From a nested front door, kit doctor checks the same path the project's commands see.
   mkdirSync(join(b, "vendor/b"), { recursive: true });
   const checked = spawn(a, ["nest", "doctor"], { NESTED_ROOT: b });
-  assert.match(checked.stdout, new RegExp(`^✓ playwright: ${`${b}/vendor/b`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"), checked.stdout + checked.stderr);
+  assert.ok(checked.stdout.split("\n").includes(`✓ playwright: ${b}/vendor/b`), checked.stdout + checked.stderr);
 });
 
 test("land: main reaches review, unit --affected, pr --dry-run, status and wait ci", t => {
