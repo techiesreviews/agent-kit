@@ -209,24 +209,31 @@ test("environment overrides still win over the settings file", async t => {
 });
 
 test("the playwright setting reaches project commands as KIT_PLAYWRIGHT_MODULE, unless the variable is set", t => {
-  // Each project has `show`, which prints the variable, and `nest`, which runs `show` in another project
-  // through the front door as kit next does for a worktree (KIT_ROOT names the other project).
+  // Each project has `show`, which prints the variable, and `nest`, which runs a command (`show` by default) in
+  // another project through the front door as kit next does for a worktree (KIT_ROOT names the other project).
   const project = (settings: object) => {
-    const root = temp(t);
+    const root = realpathSync(temp(t));
     settingsFile(root, { project: "x", branches: { land: "main" }, commands: "commands", ...settings });
     mkdirSync(join(root, "commands"));
     executable(join(root, "commands/show"), '#!/bin/bash\n# kit: print KIT_PLAYWRIGHT_MODULE\necho "module=${KIT_PLAYWRIGHT_MODULE-unset}"\n');
-    executable(join(root, "commands/nest"), '#!/bin/bash\n# kit: show in NESTED_ROOT\nKIT_ROOT=$NESTED_ROOT exec "$NESTED_KIT" show\n');
+    executable(join(root, "commands/nest"), '#!/bin/bash\n# kit: a command in NESTED_ROOT\nKIT_ROOT=$NESTED_ROOT exec "$NESTED_KIT" "${@:-show}"\n');
     return root;
   };
+  const spawn = (root: string, args: string[], extra: NodeJS.ProcessEnv = {}) =>
+    spawnSync(kit, args, { cwd: root, env: { ...clean, KIT_ROOT: root, NESTED_KIT: kit, KIT_GROK: join(root, "no-grok"), ...extra }, encoding: "utf8", timeout: 60_000 });
   const run = (root: string, command: string, extra: NodeJS.ProcessEnv = {}) => {
-    const result = spawnSync(kit, [command], { cwd: root, env: { ...clean, KIT_ROOT: root, NESTED_KIT: kit, ...extra }, encoding: "utf8", timeout: 30_000 });
+    const result = spawn(root, [command], extra);
     assert.equal(result.status, 0, result.stdout + result.stderr);
     return result.stdout.split("\n")[0];
   };
   const relative = project({ playwright: "vendor/playwright" });
   assert.equal(run(relative, "show"), `module=${relative}/vendor/playwright`);
   assert.equal(run(relative, "show", { KIT_PLAYWRIGHT_MODULE: "" }), `module=${relative}/vendor/playwright`);
+  // A relative or symlinked KIT_ROOT still gives the real absolute path.
+  assert.equal(run(relative, "show", { KIT_ROOT: "." }), `module=${relative}/vendor/playwright`);
+  const link = join(temp(t), "link");
+  symlinkSync(relative, link);
+  assert.equal(run(link, "show"), `module=${relative}/vendor/playwright`);
   assert.equal(run(project({ playwright: "/opt/playwright" }), "show"), "module=/opt/playwright");
   assert.equal(run(relative, "show", { KIT_PLAYWRIGHT_MODULE: "/caller/playwright" }), "module=/caller/playwright");
   assert.equal(run(project({}), "show"), "module=unset");
@@ -235,6 +242,10 @@ test("the playwright setting reaches project commands as KIT_PLAYWRIGHT_MODULE, 
   assert.equal(run(a, "nest", { NESTED_ROOT: b }), `module=${b}/vendor/b`);
   assert.equal(run(a, "nest", { NESTED_ROOT: project({}) }), "module=unset");
   assert.equal(run(a, "nest", { NESTED_ROOT: b, KIT_PLAYWRIGHT_MODULE: "/caller/playwright" }), "module=/caller/playwright");
+  // From a nested front door, kit doctor checks the same path the project's commands see.
+  mkdirSync(join(b, "vendor/b"), { recursive: true });
+  const checked = spawn(a, ["nest", "doctor"], { NESTED_ROOT: b });
+  assert.match(checked.stdout, new RegExp(`^✓ playwright: ${`${b}/vendor/b`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"), checked.stdout + checked.stderr);
 });
 
 test("land: main reaches review, unit --affected, pr --dry-run, status and wait ci", t => {
