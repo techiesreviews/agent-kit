@@ -316,7 +316,7 @@ else
   if [[ -n ${own:-} && -d $own && $own_setting != /* ]]; then
     mkdir -p -- "$project/$(dirname -- "$own_setting")" && cp -R -- "$own" "$project/$own_setting"
   fi
-  # Its own limit (KIT_HOME_TIMEOUT, default 10): the copy starts the front door and runs version, far more than a help.
+  # Its own limit, apart from the helps' (KIT_HOME_TIMEOUT, default 10): a test can shorten one without the other.
   output=$(cd -- "$project" && env -u KIT_COMMANDS_DIR KIT_HOME="$copy" KIT_ROOT="$project" timeout -k 2 "${KIT_HOME_TIMEOUT:-10}" "$project/scripts/agents/kit" version 2>&1 < /dev/null) || code=$?
 fi
 # The copy fails because of version itself when version's help failed the same way: both timed out (each within
@@ -334,9 +334,9 @@ version_failed_alike() {
   if [[ $seen == "$front" ]]; then seen=''; else seen=${seen%$'\n'"$front"}; fi
   [[ $seen == "$(< "$help_dir/$version_index.out")" ]]
 }
-# A copy killed by timeout -k may have printed nothing.
+# A copy stopped by timeout may have printed nothing, or only part of a line.
 last=${output##*$'\n'}
-if [[ -z $last ]] && (( code == 124 || code == 137 )); then last='timed out'; fi
+if (( code == 124 || code == 137 )); then last="${last:+$last }(timed out)"; fi
 if (( code == 0 )) && [[ $last == 'RESULT: ok version '* ]]; then
   pass 'kit home' "a copy of $home runs kit version for a project with only its settings and front door"
 elif [[ $skip_help == true ]] && version_failed_alike; then

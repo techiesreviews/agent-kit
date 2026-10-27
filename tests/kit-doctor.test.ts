@@ -959,7 +959,7 @@ test("a version whose help and copy both hang skips the kit home check; a copy t
   assert.equal(hung.status, 0, hung.stdout + hung.stderr);
   assert.ok(hung.stdout.startsWith("problem: help: version (timed out); fix:"), hung.stdout);
   // The copy printed nothing before it was stopped, so the line says it timed out.
-  assert.ok(hung.stdout.includes(`problem: kit home: a copy of ${home} fails kit version: timed out; fix:`), hung.stdout);
+  assert.ok(hung.stdout.includes(`problem: kit home: a copy of ${home} fails kit version: (timed out); fix:`), hung.stdout);
   assert.ok(hung.stdout.endsWith("RESULT: ok doctor 9/9 checks passed; skipped help, kit home (KIT_DOCTOR_SKIP)\n"), hung.stdout);
   // A help that ignores SIGTERM is killed (137) while the copy stops at SIGTERM (124): still both timed out.
   executable(join(f.commands, "version"), "trap '' TERM; sleep 5");
@@ -1003,12 +1003,26 @@ test("through the real front door, a copy's version failing as its help did is s
   assert.equal(silent.status, 0, silent.stdout + silent.stderr);
   assert.ok(silent.stdout.includes(`problem: kit home: a copy of ${home} fails kit version: RESULT: fail version exited 1 without a RESULT line; fix:`), silent.stdout);
   assert.ok(silent.stdout.endsWith("RESULT: ok doctor 9/9 checks passed; skipped help, kit home (KIT_DOCTOR_SKIP)\n"), silent.stdout);
+  // A version with its own RESULT line gets none from the front door, so the whole output matches; one stream
+  // keeps the order (the front door relays stdout only).
+  executable(join(home, "kit.d/version"), 'printf "%s: broken\\n" "$0"; printf "RESULT: fail version broken\\n"; exit 1');
+  const own = run({ KIT_DOCTOR_SKIP: "help" });
+  assert.equal(own.status, 0, own.stdout + own.stderr);
+  assert.ok(own.stdout.includes(`problem: kit home: a copy of ${home} fails kit version: RESULT: fail version broken; fix:`), own.stdout);
+  assert.ok(own.stdout.endsWith("RESULT: ok doctor 9/9 checks passed; skipped help, kit home (KIT_DOCTOR_SKIP)\n"), own.stdout);
+  // A last line without a newline: the front door ends it before its own RESULT line, which is left out.
+  executable(join(home, "kit.d/version"), 'printf "partial"; exit 1');
+  const partial = run({ KIT_DOCTOR_SKIP: "help" });
+  assert.equal(partial.status, 0, partial.stdout + partial.stderr);
+  assert.ok(partial.stdout.includes(`problem: kit home: a copy of ${home} fails kit version: RESULT: fail version exited 1 without a RESULT line; fix:`), partial.stdout);
+  assert.ok(partial.stdout.endsWith("RESULT: ok doctor 9/9 checks passed; skipped help, kit home (KIT_DOCTOR_SKIP)\n"), partial.stdout);
   // A version that hangs: timeout stops the copy's front door, which says so, and the status still reads as timed out.
-  executable(join(home, "kit.d/version"), "sleep 5");
+  // Longer than the old fixed limit's margin, so a run that waits it out shows in the time.
+  executable(join(home, "kit.d/version"), "sleep 8");
   const hangs = { KIT_HELP_TIMEOUT: "0.3", KIT_HOME_TIMEOUT: "0.5" };
   const hung = run({ ...hangs, KIT_DOCTOR_SKIP: "help" });
   assert.equal(hung.status, 0, hung.stdout + hung.stderr);
-  assert.ok(hung.stdout.includes(`problem: kit home: a copy of ${home} fails kit version: RESULT: fail version interrupted; fix:`), hung.stdout);
+  assert.ok(hung.stdout.includes(`problem: kit home: a copy of ${home} fails kit version: RESULT: fail version interrupted (timed out); fix:`), hung.stdout);
   assert.ok(hung.stdout.endsWith("RESULT: ok doctor 9/9 checks passed; skipped help, kit home (KIT_DOCTOR_SKIP)\n"), hung.stdout);
   const unskipped = run(hangs);
   assert.equal(unskipped.status, 1, unskipped.stdout + unskipped.stderr);
