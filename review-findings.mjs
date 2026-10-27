@@ -62,22 +62,28 @@ const severityOf = text => classify(text).severity;
 
 // Parse the Markdown variants emitted by kit review without reading files or changing state.
 // A group whose first line says "none" holds notes, not findings, until the next heading;
-// an indented sub-bullet belongs to the finding above it.
+// an indented sub-bullet belongs to the finding above it. A defects line that names no severity
+// and starts with no location is reviewer prose: it is returned under notes and never blocks.
 export function openFindings(resultMd) {
-  const findings = [];
+  const findings = [], prose = [];
   let defects = false, labelled = false, section = "", group = "", pending;
   // notes: the group's first line said "none"; fresh: the group's first line is still to come;
   // labelSection: the section was opened by a "Spec defects" / "Standards defects" heading.
   let notes = false, fresh = false, labelSection = false;
   const listItem = raw => /^\s*(?:[-+*]|\d+[.)])\s+/.test(raw);
+  // A leading single `*` or `_` emphasis (`*Spec*`, `_Standards:_ none`) is cleaned like bold.
   const clean = text => text.trim().replace(/^#{1,6}\s+/, "").replace(/\*\*|__/g, "")
-    .replace(/^(?:[-+*]|\d+[.)])\s+/, "").trim();
+    .replace(/^(?:[-+*]|\d+[.)])\s+/, "").replace(/^([*_])([^*_\s][^*_]*?)\1(?![*_\w])/, "$2").trim();
   const none = text => /^none\b/i.test(text);
   const lines = resultMd.split(/\r?\n/);
   const explicitDefects = lines.some(raw => /^Defects(?:\s*[—–-]\s*(?:Spec|Standards))?(?::.*|\s*)$/i.test(clean(raw)));
   const flush = () => {
-    if (pending && !none(pending.text)) findings.push({ group: pending.group, text: pending.text,
-      ...(pending.group === "Validation gaps" ? { severity: null, kind: null } : classify(pending.text)) });
+    if (pending && !none(pending.text)) {
+      const gap = pending.group === "Validation gaps", found = gap ? { severity: null, kind: null } : classify(pending.text);
+      // A located line with no severity still blocks (fail closed).
+      if (gap || found.severity || LOCATION.test(pending.text)) findings.push({ group: pending.group, text: pending.text, ...found });
+      else prose.push({ group: pending.group, text: pending.text });
+    }
     pending = undefined;
   };
   for (const raw of lines) {
@@ -138,8 +144,8 @@ export function openFindings(resultMd) {
   }
   flush();
   const readable = /^REVIEW_STATUS: complete\s*$/m.test(resultMd.replace(/^\uFEFF/, "")) && defects;
-  return readable ? { findings, readable } : {
-    findings: [{ group: "Review", text: "review format unreadable", severity: null, kind: "unsorted" }], readable: false,
+  return readable ? { findings, notes: prose, readable } : {
+    findings: [{ group: "Review", text: "review format unreadable", severity: null, kind: "unsorted" }], notes: [], readable: false,
   };
 }
 
@@ -147,7 +153,7 @@ export function openFindings(resultMd) {
 // Validation gaps carry neither and count as "gap" in both, so a severity "none" is always a
 // defect whose severity could not be read (one that blocks).
 export function findingsRecord(resultMd, meta) {
-  const { findings, readable } = openFindings(resultMd);
+  const { findings, notes, readable } = openFindings(resultMd);
   if (!readable) return { ...meta, unreadable: true };
   const counts = { kind: Object.fromEntries([...KINDS, "unsorted", "gap"].map(kind => [kind, 0])),
     severity: Object.fromEntries(["P0", "P1", "P2", "P3", "none", "gap"].map(severity => [severity, 0])) };
@@ -156,7 +162,7 @@ export function findingsRecord(resultMd, meta) {
     counts.kind[gap ? "gap" : kind]++;
     counts.severity[gap ? "gap" : severity ?? "none"]++;
   }
-  return { ...meta, findings: findings.map(({ group, severity, kind, text }) => ({ group, severity, kind, text })), counts };
+  return { ...meta, findings: findings.map(({ group, severity, kind, text }) => ({ group, severity, kind, text })), counts, notes: notes.length };
 }
 
 // One line for logs: "findings 3: fault 1, ticket 2; P1 2, P2 1".

@@ -216,6 +216,7 @@ test("kit review writes findings.json with kinds and counts, or unreadable for a
       { group: "Validation gaps", severity: null, kind: null, text: "add a test." },
     ],
     counts: { kind: { fault: 0, ticket: 1, race: 0, style: 1, unsorted: 1, gap: 1 }, severity: { P0: 0, P1: 1, P2: 1, P3: 1, none: 0, gap: 1 } },
+    notes: 0,
   });
   const unreadable = f.run([], { FAKE_REPORT: "REVIEW_STATUS: complete\nLooks fine to me.\n" });
   assert.equal(unreadable.status, 0, unreadable.stderr);

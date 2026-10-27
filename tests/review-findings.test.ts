@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterFixRounds, blockingFindings, completedFixRounds, countsLine, findingsRecord, openFindings } from "../scripts/agents/review-findings.mjs";
@@ -15,15 +15,15 @@ const finding = (group: string, text: string, severity: string | null = null, ki
 const variants = [
   {
     name: "Defects with separate Spec and Standards headings",
-    open: "Defects:\nSpec:\n- Turn off can be undone.\nStandards:\n- Recheck the captured proof.\nValidation gaps:\n- Hold two consent responses.\nOptional nits: none.",
+    open: "Defects:\nSpec:\n- a.ts:1 Turn off can be undone.\nStandards:\n- b.ts:2 Recheck the captured proof.\nValidation gaps:\n- Hold two consent responses.\nOptional nits: none.",
     none: "Defects:\nSpec:\n- none.\nStandards:\n- None found.\nValidation gaps:\n- none beyond existing coverage.\nOptional nits: none.",
-    findings: [finding("Spec", "Turn off can be undone."), finding("Standards", "Recheck the captured proof."), finding("Validation gaps", "Hold two consent responses.")],
+    findings: [finding("Spec", "a.ts:1 Turn off can be undone."), finding("Standards", "b.ts:2 Recheck the captured proof."), finding("Validation gaps", "Hold two consent responses.")],
   },
   {
     name: "em-dash headings without colons",
-    open: "Defects — Spec\n- Turn off can be undone.\nDefects — Standards\n- Recheck the captured proof.\nValidation gaps\n- Hold two consent responses.\nOptional nits\n- Rename a variable.",
+    open: "Defects — Spec\n- a.ts:1 Turn off can be undone.\nDefects — Standards\n- b.ts:2 Recheck the captured proof.\nValidation gaps\n- Hold two consent responses.\nOptional nits\n- Rename a variable.",
     none: "Defects — Spec\nnone.\nDefects — Standards\nNone.\nValidation gaps\nnone.\nOptional nits\nnone.",
-    findings: [finding("Spec", "Turn off can be undone."), finding("Standards", "Recheck the captured proof."), finding("Validation gaps", "Hold two consent responses.")],
+    findings: [finding("Spec", "a.ts:1 Turn off can be undone."), finding("Standards", "b.ts:2 Recheck the captured proof."), finding("Validation gaps", "Hold two consent responses.")],
   },
   {
     name: "bold em-dash headings with inline values",
@@ -33,15 +33,15 @@ const variants = [
   },
   {
     name: "one-line list groups",
-    open: "Defects:\n- Spec: Turn off can be undone.\n- Standards: Recheck the captured proof.\nValidation gaps: Hold two consent responses.\nOptional nits: none.",
+    open: "Defects:\n- Spec: a.ts:1 Turn off can be undone.\n- Standards: b.ts:2 Recheck the captured proof.\nValidation gaps: Hold two consent responses.\nOptional nits: none.",
     none: "Defects:\n- Spec: none.\n- Standards: none. No applicable violations found.\nValidation gaps: none.\nOptional nits: none.",
-    findings: [finding("Spec", "Turn off can be undone."), finding("Standards", "Recheck the captured proof."), finding("Validation gaps", "Hold two consent responses.")],
+    findings: [finding("Spec", "a.ts:1 Turn off can be undone."), finding("Standards", "b.ts:2 Recheck the captured proof."), finding("Validation gaps", "Hold two consent responses.")],
   },
   {
     name: "one-line plain groups",
-    open: "Defects:\nSpec: Turn off can be undone.\nStandards: Recheck the captured proof.\nValidation gaps: Hold two consent responses.\nOptional nits: none.",
+    open: "Defects:\nSpec: a.ts:1 Turn off can be undone.\nStandards: b.ts:2 Recheck the captured proof.\nValidation gaps: Hold two consent responses.\nOptional nits: none.",
     none: "Defects:\nSpec: none.\nStandards: None.\nValidation gaps: none beyond existing coverage.\nOptional nits: None.",
-    findings: [finding("Spec", "Turn off can be undone."), finding("Standards", "Recheck the captured proof."), finding("Validation gaps", "Hold two consent responses.")],
+    findings: [finding("Spec", "a.ts:1 Turn off can be undone."), finding("Standards", "b.ts:2 Recheck the captured proof."), finding("Validation gaps", "Hold two consent responses.")],
   },
   {
     name: "bold items and multiline commit prefixes",
@@ -53,40 +53,40 @@ const variants = [
 
 for (const variant of variants) {
   test(`${variant.name}: open`, () => {
-    assert.deepEqual(openFindings(review(variant.open)), { findings: variant.findings, readable: true });
+    assert.deepEqual(openFindings(review(variant.open)), { findings: variant.findings, notes: [], readable: true });
   });
   test(`${variant.name}: none`, () => {
-    assert.deepEqual(openFindings(review(variant.none)), { findings: [], readable: true });
+    assert.deepEqual(openFindings(review(variant.none)), { findings: [], notes: [], readable: true });
   });
 }
 
 test("nits alone never count, including group-like labels inside the nits", () => {
-  assert.deepEqual(openFindings(review("Defects:\n- Spec: none.\n- Standards: none.\nValidation gaps: none.\nOptional nits:\n- Rename a variable.\n- Spec: improve the wording.\n- Standards: prefer another name.")), { findings: [], readable: true });
+  assert.deepEqual(openFindings(review("Defects:\n- Spec: none.\n- Standards: none.\nValidation gaps: none.\nOptional nits:\n- Rename a variable.\n- Spec: improve the wording.\n- Standards: prefer another name.")), { findings: [], notes: [], readable: true });
 });
 
 test("validation-gap-only review counts as one finding (ticket 06)", () => {
   const text = "Add an intake test where the stream exceeds its declared Content-Length. Assert cancellation and immediate reservation reuse.";
   assert.deepEqual(openFindings(review(`Defects:\n- Spec: none found.\n- Standards: none.\nValidation gaps: ${text}\nOptional nits: none.`)), {
-    findings: [finding("Validation gaps", text)], readable: true,
+    findings: [finding("Validation gaps", text)], notes: [], readable: true,
   });
 });
 
 test("Markdown headings and nested group lists keep multiline findings together", () => {
-  assert.deepEqual(openFindings(review("## Defects:\n- **Spec:**\n  - First defect.\n    - Supporting evidence.\n  - Second defect.\n- **Standards:** none.\n## Validation gaps: none.\n## Optional nits: none.")), {
-    findings: [finding("Spec", "First defect. Supporting evidence."), finding("Spec", "Second defect.")], readable: true,
+  assert.deepEqual(openFindings(review("## Defects:\n- **Spec:**\n  - a.ts:1 First defect.\n    - Supporting evidence.\n  - a.ts:2 Second defect.\n- **Standards:** none.\n## Validation gaps: none.\n## Optional nits: none.")), {
+    findings: [finding("Spec", "a.ts:1 First defect. Supporting evidence."), finding("Spec", "a.ts:2 Second defect.")], notes: [], readable: true,
   });
 });
 
 test("ungrouped defects still count", () => {
-  assert.deepEqual(openFindings(review("Defects:\n- A defect.\nValidation gaps: none.\nOptional nits: none.")), {
-    findings: [finding("Defects", "A defect.")], readable: true,
+  assert.deepEqual(openFindings(review("Defects:\n- a.ts:1 A defect.\nValidation gaps: none.\nOptional nits: none.")), {
+    findings: [finding("Defects", "a.ts:1 A defect.")], notes: [], readable: true,
   });
 });
 
 test("missing completion marker or Defects heading fails closed with one finding", () => {
   for (const text of ["", "Defects:\nSpec: none.", "REVIEW_STATUS: incomplete\nDefects:\n- A defect.",
     "REVIEW_STATUS: complete\nValidation gaps: none.\nOptional nits: none.", "REVIEW_STATUS: complete\nThe Defects: section is missing."]) {
-    assert.deepEqual(openFindings(text), { findings: [finding("Review", "review format unreadable")], readable: false });
+    assert.deepEqual(openFindings(text), { findings: [finding("Review", "review format unreadable")], notes: [], readable: false });
   }
 });
 
@@ -100,7 +100,7 @@ for (const severity of ["P0", "P1", "P2", "P3"]) {
 }
 
 test("severity uses the first token within 80 characters; gaps never carry severity", () => {
-  const { findings } = openFindings(review(`Defects:\n- P2: defect mentioning P1\n- ${"x".repeat(80)} P1 late severity\n- P4: unknown severity\nValidation gaps: P1 missing coverage`));
+  const { findings } = openFindings(review(`Defects:\n- P2: defect mentioning P1\n- a.ts:1 ${"x".repeat(80)} P1 late severity\n- a.ts:2 — P4: unknown severity\nValidation gaps: P1 missing coverage`));
   assert.deepEqual(findings.map(item => item.severity), ["P2", null, null, null]);
 });
 
@@ -135,7 +135,7 @@ test("a finding without a known kind is unsorted and blocks by severity exactly 
 
 test("the findings record carries metadata, findings and counts by kind and severity", () => {
   const meta = { model: "claude-opus-5-5", effort: "medium", scope: "git diff a^..a", head: "a".repeat(40) };
-  const record = findingsRecord(review("Spec defects:\n- a.ts:1 — P1 ticket: x.\n- b.ts:2 — P2 race: y.\nStandards defects:\n- c.ts:3 — P3 style: z.\n- d.ts:4 — P2: w.\nValidation gaps: add a test.\nOptional nits: none."), meta);
+  const record = findingsRecord(review("Spec defects:\n- a.ts:1 — P1 ticket: x.\n- b.ts:2 — P2 race: y.\nStandards defects:\n- c.ts:3 — P3 style: z.\n- d.ts:4 — P2: w.\n- A reviewer remark.\nValidation gaps: add a test.\nOptional nits: none."), meta);
   assert.deepEqual(record, { ...meta,
     findings: [
       { group: "Spec", severity: "P1", kind: "ticket", text: "a.ts:1 — P1 ticket: x." },
@@ -145,6 +145,7 @@ test("the findings record carries metadata, findings and counts by kind and seve
       { group: "Validation gaps", severity: null, kind: null, text: "add a test." },
     ],
     counts: { kind: { fault: 0, ticket: 1, race: 1, style: 1, unsorted: 1, gap: 1 }, severity: { P0: 0, P1: 1, P2: 2, P3: 1, none: 0, gap: 1 } },
+    notes: 1,
   });
   assert.equal(countsLine(record), "findings 5: ticket 1, race 1, style 1, unsorted 1, gap 1; P1 1, P2 2, P3 1, gap 1");
   // A defect without readable severity blocks; a gap never does, so the counts keep them apart.
@@ -190,15 +191,15 @@ test("round-2 top-level Spec/Standards review parses the P1 defect and validatio
   const defect = 'cd95c9e0:scripts/agents/kit.d/pr:270 — P1: `commitBuilderWork` stages everything with `git add -A`. If another process edits a non-ticket file while staging is held, branch/HEAD checks still pass and that edit is committed. The coverage check at line 272 rejects it only after the branch advances. This violates CODING_STANDARDS.md, “Async writers”: preserve expected sources/files and recheck before writes. Use a ticket-only index and validate the commit’s paths before publishing the branch update.';
   const gap = 'Add a regression that holds staging, edits a non-ticket file without moving HEAD, then releases staging. Assert that the unrelated edit remains uncommitted and no commit containing it is published locally or remotely.';
   const body = `Spec: none.\n\nStandards:\n\n- ${defect}\n\nValidation gaps: ${gap}\n\nOptional nits: none.`;
-  assert.deepEqual(openFindings(review(body)), { findings: [finding("Standards", defect, "P1"), finding("Validation gaps", gap)], readable: true });
-  assert.deepEqual(openFindings(body), { findings: [finding("Review", "review format unreadable")], readable: false });
+  assert.deepEqual(openFindings(review(body)), { findings: [finding("Standards", defect, "P1"), finding("Validation gaps", gap)], notes: [], readable: true });
+  assert.deepEqual(openFindings(body), { findings: [finding("Review", "review format unreadable")], notes: [], readable: false });
 });
 
 test("implicit defect groups keep optional nits separate and accept a lone top-level group", () => {
   for (const group of ["Spec", "Standards"]) {
-    assert.deepEqual(openFindings(review(`${group}: P2: Minor defect.\nValidation gaps: none.`)), { findings: [finding(group, "P2: Minor defect.", "P2")], readable: true });
+    assert.deepEqual(openFindings(review(`${group}: P2: Minor defect.\nValidation gaps: none.`)), { findings: [finding(group, "P2: Minor defect.", "P2")], notes: [], readable: true });
   }
-  assert.deepEqual(openFindings(review("Spec: none.\nStandards: none.\nValidation gaps: none.\nOptional nits:\n- Spec: Style suggestion.\nStandards: Another nit.")), { findings: [], readable: true });
+  assert.deepEqual(openFindings(review("Spec: none.\nStandards: none.\nValidation gaps: none.\nOptional nits:\n- Spec: Style suggestion.\nStandards: Another nit.")), { findings: [], notes: [], readable: true });
 });
 
 test("severity is read after a long ticket-path location", () => {
@@ -221,28 +222,28 @@ test("a severity token only inside far-off evidence is not the finding's severit
 
 test("Spec defects and Standards defects headings open their groups with location severities", () => {
   assert.deepEqual(openFindings(review("Spec defects:\n- abcd1234:src/thing.ts:10 — P1: First defect.\n- abcd1234:src/thing.ts:20 — P2: Second defect.\nValidation gaps: none.")), {
-    findings: [finding("Spec", "abcd1234:src/thing.ts:10 — P1: First defect.", "P1"), finding("Spec", "abcd1234:src/thing.ts:20 — P2: Second defect.", "P2")], readable: true,
+    findings: [finding("Spec", "abcd1234:src/thing.ts:10 — P1: First defect.", "P1"), finding("Spec", "abcd1234:src/thing.ts:20 — P2: Second defect.", "P2")], notes: [], readable: true,
   });
   assert.deepEqual(openFindings(review("## Standards defects\n- abcd1234:src/thing.ts:10 — P3: Minor standards issue.\nValidation gaps: none.")), {
-    findings: [finding("Standards", "abcd1234:src/thing.ts:10 — P3: Minor standards issue.", "P3")], readable: true,
+    findings: [finding("Standards", "abcd1234:src/thing.ts:10 — P3: Minor standards issue.", "P3")], notes: [], readable: true,
   });
   assert.deepEqual(openFindings(review("**Standards defects:**\n- abcd1234:src/thing.ts:10 — P1: Standards defect.\n\n**Spec defects: none.**\n**Validation gaps:** none.")), {
-    findings: [finding("Standards", "abcd1234:src/thing.ts:10 — P1: Standards defect.", "P1")], readable: true,
+    findings: [finding("Standards", "abcd1234:src/thing.ts:10 — P1: Standards defect.", "P1")], notes: [], readable: true,
   });
 });
 
 test("Spec defects and Standards defects headings keep Validation gaps plain text", () => {
   assert.deepEqual(openFindings(review("Spec defects:\n- abcd1234:src/a.ts:1 — P2: The defect.\nValidation gaps:\nStandards: add a test.")), {
-    findings: [finding("Spec", "abcd1234:src/a.ts:1 — P2: The defect.", "P2"), finding("Validation gaps", "Standards: add a test.")], readable: true,
+    findings: [finding("Spec", "abcd1234:src/a.ts:1 — P2: The defect.", "P2"), finding("Validation gaps", "Standards: add a test.")], notes: [], readable: true,
   });
   assert.deepEqual(openFindings(review("Standards defects:\n- abcd1234:src/a.ts:1 — P1: The defect.\nValidation gaps:\nSpec: add a test.")), {
-    findings: [finding("Standards", "abcd1234:src/a.ts:1 — P1: The defect.", "P1"), finding("Validation gaps", "Spec: add a test.")], readable: true,
+    findings: [finding("Standards", "abcd1234:src/a.ts:1 — P1: The defect.", "P1"), finding("Validation gaps", "Spec: add a test.")], notes: [], readable: true,
   });
 });
 
 test("a bare Spec defects heading opens the Spec group", () => {
   assert.deepEqual(openFindings(review("Spec defects\n- abcd1234:src/thing.ts:10 — P1: First defect.\nValidation gaps: none.")), {
-    findings: [finding("Spec", "abcd1234:src/thing.ts:10 — P1: First defect.", "P1")], readable: true,
+    findings: [finding("Spec", "abcd1234:src/thing.ts:10 — P1: First defect.", "P1")], notes: [], readable: true,
   });
 });
 
@@ -304,23 +305,23 @@ test("Spec defects / Standards defects as bullets in nits or gaps stay plain tex
 
 test("implicit Spec/Standards groups stay readable beside a bulleted Spec defects line", () => {
   assert.deepEqual(openFindings(review("Spec:\n- abcd123:a.ts:1 — P1: evidence\nStandards: none\nValidation gaps:\n- Spec defects: wording could be tighter")), {
-    findings: [finding("Spec", "abcd123:a.ts:1 — P1: evidence", "P1"), finding("Validation gaps", "Spec defects: wording could be tighter")], readable: true,
+    findings: [finding("Spec", "abcd123:a.ts:1 — P1: evidence", "P1"), finding("Validation gaps", "Spec defects: wording could be tighter")], notes: [], readable: true,
   });
 });
 
 test("unbulleted Spec defects / Standards defects in nits or gaps stay plain text", () => {
-  assert.deepEqual(openFindings(review("Defects: none\nValidation gaps: none.\nOptional nits:\nSpec defects: tighter wording")), { findings: [], readable: true });
+  assert.deepEqual(openFindings(review("Defects: none\nValidation gaps: none.\nOptional nits:\nSpec defects: tighter wording")), { findings: [], notes: [], readable: true });
   assert.deepEqual(openFindings(review("Defects: none\nValidation gaps:\nStandards defects: add a race test")), {
-    findings: [finding("Validation gaps", "Standards defects: add a race test")], readable: true,
+    findings: [finding("Validation gaps", "Standards defects: add a race test")], notes: [], readable: true,
   });
   assert.deepEqual(openFindings(review("Spec:\n- abcd123:a.ts:1 — P1: evidence\nStandards: none\nValidation gaps: none\nOptional nits:\nSpec defects: none")), {
-    findings: [finding("Spec", "abcd123:a.ts:1 — P1: evidence", "P1")], readable: true,
+    findings: [finding("Spec", "abcd123:a.ts:1 — P1: evidence", "P1")], notes: [], readable: true,
   });
 });
 
 test("a top-level Spec group before a Standards defects heading keeps its defect", () => {
   assert.deepEqual(openFindings(review("Spec:\n- abcd123:a.ts:1 — P1: x\nStandards defects: none\nValidation gaps: none.")), {
-    findings: [finding("Spec", "abcd123:a.ts:1 — P1: x", "P1")], readable: true,
+    findings: [finding("Spec", "abcd123:a.ts:1 — P1: x", "P1")], notes: [], readable: true,
   });
 });
 
@@ -332,13 +333,13 @@ test("a Spec defects heading only after the notes opens its group and blocks", (
 
 test("a bulleted Defects heading still keeps Validation gaps plain text", () => {
   assert.deepEqual(openFindings(review("- Defects:\n  - abc1234:a.ts:1 — P2: x\nValidation gaps:\nStandards: add a test.")), {
-    findings: [finding("Defects", "abc1234:a.ts:1 — P2: x", "P2"), finding("Validation gaps", "Standards: add a test.")], readable: true,
+    findings: [finding("Defects", "abc1234:a.ts:1 — P2: x", "P2"), finding("Validation gaps", "Standards: add a test.")], notes: [], readable: true,
   });
 });
 
 test("bulleted Spec defects / Standards defects before any notes section open their groups", () => {
   assert.deepEqual(openFindings(review("- Spec defects:\n  - abcd123:a.ts:1 — P1: evidence\n- Standards defects: none\nValidation gaps:\nStandards: add a test.")), {
-    findings: [finding("Spec", "abcd123:a.ts:1 — P1: evidence", "P1"), finding("Validation gaps", "Standards: add a test.")], readable: true,
+    findings: [finding("Spec", "abcd123:a.ts:1 — P1: evidence", "P1"), finding("Validation gaps", "Standards: add a test.")], notes: [], readable: true,
   });
 });
 
@@ -414,11 +415,11 @@ const sf10 = review([
 
 test("real reviews: notes under a none group never count as findings", () => {
   assert.deepEqual(openFindings(sf11), {
-    findings: [finding("Validation gaps", "Mixed-case aliases are untested. Add `assert.equal(builderAuthor(\"OPUS\"), \"Claude Opus <noreply@anthropic.com>\")`.")], readable: true,
+    findings: [finding("Validation gaps", "Mixed-case aliases are untested. Add `assert.equal(builderAuthor(\"OPUS\"), \"Claude Opus <noreply@anthropic.com>\")`.")], notes: [], readable: true,
   });
   assert.deepEqual(openFindings(lead92), {
     findings: [finding("Validation gaps", "An online video tile in the picker repainting its choice in place is not tested."),
-      finding("Validation gaps", "Focus coming back to a rebuilt tile is not tested on the new keyed path.")], readable: true,
+      finding("Validation gaps", "Focus coming back to a rebuilt tile is not tested on the new keyed path.")], notes: [], readable: true,
   });
   for (const text of [sf11, lead92]) assert.deepEqual(blockingFindings(openFindings(text).findings), []);
 });
@@ -430,12 +431,12 @@ test("real reviews: indented sub-bullets belong to the finding above them", () =
       finding("Spec", `${sf12Stale} "Commits" names only 9f63b8f0, 5c84d8a9 and "this branch's correction commit", but there are four correction commits. The \`50/50 (2 files)\` count comes before tests added in later rounds. Fix: list all six commits.`, "P3"),
       finding("Validation gaps", "The `refusedOutright` Codex cases use a made-up header."),
       finding("Validation gaps", "No test covers a refusal recorded in `status.json` and then resumed."),
-    ], readable: true,
+    ], notes: [], readable: true,
   });
   assert.deepEqual(openFindings(sf10), {
     findings: [finding("Spec", sf10Defect, "P2"),
       finding("Validation gaps", "Add a test that pins what happens to a defects heading after the notes."),
-      finding("Validation gaps", "Add a test for a bulleted bare group inside a defects-label section.")], readable: true,
+      finding("Validation gaps", "Add a test for a bulleted bare group inside a defects-label section.")], notes: [], readable: true,
   });
   for (const text of [sf12, sf10]) assert.deepEqual(blockingFindings(openFindings(text).findings), []);
 });
@@ -443,7 +444,7 @@ test("real reviews: indented sub-bullets belong to the finding above them", () =
 test("a none group with a sentence holds notes in any case, plain or bulleted", () => {
   for (const body of ["Spec: None. I checked every item.\n- First note.\n  - Detail.\nStandards: NONE\nPlain note line.\n- Another note.",
     "Defects:\n- **Spec:**\n  - none found.\n    - A note.\n  - A second note.\n- **Standards:** None — the rules do not apply.\n  - A note."]) {
-    assert.deepEqual(openFindings(review(`${body}\nValidation gaps: none.\nOptional nits: none.`)), { findings: [], readable: true });
+    assert.deepEqual(openFindings(review(`${body}\nValidation gaps: none.\nOptional nits: none.`)), { findings: [], notes: [], readable: true });
   }
 });
 
@@ -466,11 +467,11 @@ test("a defects heading after an earlier one and the notes reopens its group (sl
 
 test("a bulleted bare group inside a defects-label section stays in that group (slice 10 follow-up)", () => {
   assert.deepEqual(openFindings(review("Spec defects:\n- Standards: a.ts:1 — P1: x\nValidation gaps: none.")), {
-    findings: [finding("Spec", "Standards: a.ts:1 — P1: x", "P1")], readable: true,
+    findings: [finding("Spec", "Standards: a.ts:1 — P1: x", "P1")], notes: [], readable: true,
   });
   // An unbulleted bare group still switches, as before.
   assert.deepEqual(openFindings(review("Spec defects:\n- a.ts:1 — P1: x\nStandards:\n- b.ts:2 — P2: y\nValidation gaps: none.")), {
-    findings: [finding("Spec", "a.ts:1 — P1: x", "P1"), finding("Standards", "b.ts:2 — P2: y", "P2")], readable: true,
+    findings: [finding("Spec", "a.ts:1 — P1: x", "P1"), finding("Standards", "b.ts:2 — P2: y", "P2")], notes: [], readable: true,
   });
 });
 
@@ -481,8 +482,8 @@ test("a bulleted bare group after none notes in a defects-label section opens it
 });
 
 test("a late inline defects label opens its group when bold or carrying a severity; plain text stays a gap", () => {
-  assert.deepEqual(openFindings(review("Defects: none\nValidation gaps:\n**Standards defects:** add a race test")).findings,
-    [finding("Standards", "add a race test")]);
+  assert.deepEqual(openFindings(review("Defects: none\nValidation gaps:\n**Standards defects:** a.ts:1 add a race test")).findings,
+    [finding("Standards", "a.ts:1 add a race test")]);
   for (const notes of ["Validation gaps: none.", "Validation gaps: none.\nOptional nits:"]) {
     const { findings } = openFindings(review(`Defects: none\n${notes}\nStandards defects: a.ts:1 — P1: x`));
     assert.deepEqual(findings, [finding("Standards", "a.ts:1 — P1: x", "P1")]);
@@ -493,7 +494,7 @@ test("a late inline defects label opens its group when bold or carrying a severi
 });
 
 test("bullets under a none Validation gaps group are notes, not gaps", () => {
-  assert.deepEqual(openFindings(review("Defects: none\nValidation gaps: none.\n- Add a race test.")), { findings: [], readable: true });
+  assert.deepEqual(openFindings(review("Defects: none\nValidation gaps: none.\n- Add a race test.")), { findings: [], notes: [], readable: true });
 });
 
 test("a bulleted bare none group after a finding in a defects-label section adds nothing", () => {
@@ -503,12 +504,12 @@ test("a bulleted bare none group after a finding in a defects-label section adds
 });
 
 test("an unbulleted None. first line under a bare heading holds notes", () => {
-  assert.deepEqual(openFindings(review("Defects\n\nSpec\nNone. I checked every item.\nPlain note.\n- Bulleted note.\nValidation gaps: none.")), { findings: [], readable: true });
+  assert.deepEqual(openFindings(review("Defects\n\nSpec\nNone. I checked every item.\nPlain note.\n- Bulleted note.\nValidation gaps: none.")), { findings: [], notes: [], readable: true });
 });
 
 test("a combined Defects group opening with a none line holds notes, but a located P1 there still counts", () => {
   assert.deepEqual(openFindings(review("Defects:\n- None in Spec.\n- A note.\n- a.ts:1 — P1: x\nValidation gaps: none.")), {
-    findings: [finding("Defects", "a.ts:1 — P1: x", "P1")], readable: true,
+    findings: [finding("Defects", "a.ts:1 — P1: x", "P1")], notes: [], readable: true,
   });
 });
 
@@ -526,4 +527,44 @@ test("a located finding with a severity under none notes still counts and blocks
     assert.deepEqual(findings, expected);
     assert.deepEqual(blockingFindings(findings), expected.filter(item => item.severity === "P1"));
   }
+});
+
+test("slice 48's review gives its P2 and P3, and the italic *Spec* heading and Standards prose are notes", () => {
+  const { findings, notes, readable } = openFindings(readFileSync(join(import.meta.dirname, "fixtures/review-findings/ke-48-result.md"), "utf8"));
+  assert.equal(readable, true);
+  const defects = findings.filter(item => item.group !== "Validation gaps");
+  assert.deepEqual(defects.map(item => [item.group, item.severity, item.kind, item.text.slice(0, 37)]), [
+    ["Standards", "P2", "fault", "0297da793:scripts/agents/kit.d/ux:464"], ["Standards", "P3", "fault", "0297da793:scripts/agents/kit.d/ux:344"]]);
+  assert.equal(findings.filter(item => item.group === "Validation gaps").length, 4);
+  assert.ok(!findings.some(item => item.text.includes("*Spec*")));
+  assert.deepEqual(notes.map(item => [item.group, item.text.slice(0, 51)]), [["Standards", "CODING_STANDARDS.md has no section for kit plumbing"]]);
+  assert.deepEqual(blockingFindings(findings), []);
+});
+
+test("a Standards group holding only a no-section-applies sentence gives no finding", () => {
+  const note = "No section of CODING_STANDARDS.md applies to this change.";
+  for (const body of [`Defects:\nSpec: none.\nStandards:\n${note}`, `Defects:\nSpec: none.\nStandards:\n- ${note}`, `Defects:\nSpec: none.\nStandards: ${note}`]) {
+    assert.deepEqual(openFindings(review(`${body}\nValidation gaps: none.`)), { findings: [], notes: [{ group: "Standards", text: note }], readable: true }, body);
+  }
+  const record = findingsRecord(review(`Defects:\nStandards:\n${note}\nValidation gaps: none.`), {});
+  assert.deepEqual([record.findings, record.notes, countsLine(record)], [[], 1, "findings 0"]);
+});
+
+test("single * and _ emphasis headings open their group like bold and # forms", () => {
+  for (const [spec, standards] of [["*Spec*", "*Standards*"], ["_Spec_", "_Standards_"], ["*Spec:*", "_Standards:_"]]) {
+    const { findings } = openFindings(review(`**Defects**\n\n${spec}\n- None.\n\n${standards}\n- a.ts:1 — P1: x\nValidation gaps: none.`));
+    assert.deepEqual(findings, [finding("Standards", "a.ts:1 — P1: x", "P1")], `${spec} ${standards}`);
+  }
+  assert.deepEqual(openFindings(review("Defects:\n_Standards_: none.\nValidation gaps: none.")), { findings: [], notes: [], readable: true });
+});
+
+test("a located line with no severity still blocks; a missing REVIEW_STATUS is still unreadable", () => {
+  for (const text of ["a.ts:1 the guard is missing.", "`abcd123:src/a.ts:4-9` — the guard is missing."]) {
+    const { findings, notes } = openFindings(review(`Defects:\nStandards:\n- ${text}\nValidation gaps: none.`));
+    assert.deepEqual([findings, notes], [[finding("Standards", text)], []]);
+    assert.deepEqual(blockingFindings(findings), findings);
+  }
+  const { findings } = openFindings("**Defects**\n\n*Standards*\n\nNo section of CODING_STANDARDS.md applies to this change.\n");
+  assert.deepEqual(findings, [finding("Review", "review format unreadable")]);
+  assert.deepEqual(blockingFindings(findings), findings);
 });

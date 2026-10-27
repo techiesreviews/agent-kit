@@ -594,7 +594,7 @@ test("conflict resolution that changes the patch requires a fresh review", t => 
 });
 
 test("a changed HEAD cannot reuse an incomplete, unreadable or finding-bearing patch review", t => {
-  for (const report of ["REVIEW_STATUS: incomplete\n", "REVIEW_STATUS: complete\n", cleanReview.replace("Spec: none.", "Spec: a defect.")]) {
+  for (const report of ["REVIEW_STATUS: incomplete\n", "REVIEW_STATUS: complete\n", cleanReview.replace("Spec: none.", "Spec: a.ts:1 a defect.")]) {
     const f = fixture(t); f.saveReview(report);
     f.git("commit", "--allow-empty", "-m", "New HEAD, same patch");
     const result = f.run(["--no-merge"]);
@@ -612,18 +612,18 @@ test("a saved review for another HEAD triggers kit review --pr", t => {
 });
 
 test("saved and fresh reviews stop on findings before CI or merge, capped at 15 and 160 characters", t => {
-  const long = "A".repeat(170);
-  const report = `REVIEW_STATUS: complete\nDefects:\nSpec:\n- ${long}\n  More evidence on another line.\n${Array.from({ length: 15 }, (_, i) => `- Defect ${i + 2}.`).join("\n")}\nStandards: none.\nValidation gaps:\n- Missing coverage.\nOptional nits:\n- Rename a variable.\n`;
+  const long = `a.ts:1 ${"A".repeat(163)}`;
+  const report = `REVIEW_STATUS: complete\nDefects:\nSpec:\n- ${long}\n  More evidence on another line.\n${Array.from({ length: 15 }, (_, i) => `- a.ts:${i + 2} Defect ${i + 2}.`).join("\n")}\nStandards: none.\nValidation gaps:\n- Missing coverage.\nOptional nits:\n- Rename a variable.\n`;
   for (const source of ["saved", "fresh"]) {
     const f = fixture(t);
     const path = source === "saved" ? f.saveReview(report) : join(f.main, ".scratch/reviews/ak-14/fresh/result.md");
     const result = f.run([], { FAKE_REVIEW: report });
     assert.equal(result.status, 1, result.stderr);
     assert.equal(result.stdout.trimEnd().split("\n").at(-1), `RESULT: fail pr #73 review has 17 open findings (${path})`);
-    assert.ok(result.stdout.includes(`Spec: ${"A".repeat(160)}…\n`), result.stdout);
-    assert.doesNotMatch(result.stdout, /A{161}/);
-    for (let i = 2; i <= 15; i++) assert.ok(result.stdout.includes(`Spec: Defect ${i}.\n`));
-    assert.doesNotMatch(result.stdout, /Spec: Defect 16\.|Validation gaps: Missing coverage|Rename a variable|review: ok/);
+    assert.ok(result.stdout.includes(`Spec: ${long.slice(0, 160)}…\n`), result.stdout);
+    assert.doesNotMatch(result.stdout, /A{154}/);
+    for (let i = 2; i <= 15; i++) assert.ok(result.stdout.includes(`Spec: a.ts:${i} Defect ${i}.\n`));
+    assert.doesNotMatch(result.stdout, /Spec: a\.ts:16 Defect 16\.|Validation gaps: Missing coverage|Rename a variable|review: ok/);
     assert.match(result.stdout, /^… and 2 more$/m);
     assert.equal(f.ghCalls("merge").length, 0);
     assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "wait"), false);
@@ -648,7 +648,7 @@ test("saved and fresh clean reviews still wait for CI and merge", t => {
 
 test("a rerun after fixing findings in a new commit reviews the new HEAD and merges", t => {
   const f = fixture(t);
-  const path = f.saveReview("REVIEW_STATUS: complete\nDefects:\nSpec:\n- Fix the defect.\nValidation gaps: none.\nOptional nits: none.\n");
+  const path = f.saveReview("REVIEW_STATUS: complete\nDefects:\nSpec:\n- a.ts:1 Fix the defect.\nValidation gaps: none.\nOptional nits: none.\n");
   const stopped = f.run();
   assert.equal(stopped.status, 1, stopped.stderr);
   assert.ok(stopped.stdout.includes(`RESULT: fail pr #73 review has 1 open findings (${path})`));
@@ -676,7 +676,7 @@ test("unreadable or missing review evidence stops with one finding", t => {
 });
 
 test("lead waiver merges saved or fresh findings, comments and patches the body with the reason", t => {
-  const report = "REVIEW_STATUS: complete\nDefects:\n- Spec: A defect.\n- Standards: none.\nValidation gaps: Add coverage.\nOptional nits: Rename a variable.\n";
+  const report = "REVIEW_STATUS: complete\nDefects:\n- Spec: a.ts:1 A defect.\n- Standards: none.\nValidation gaps: Add coverage.\nOptional nits: Rename a variable.\n";
   for (const source of ["saved", "fresh"]) {
     const f = fixture(t);
     if (source === "saved") f.saveReview(report, "ke-lead");
@@ -709,7 +709,7 @@ test("waiver uses kitOwner's worktree fallback", t => {
   const f = fixture(t);
   mkdirSync(join(f.root, ".scratch"), { recursive: true });
   writeFileSync(join(f.root, ".scratch/owner"), "2026-10-19T10:00:00Z ke-lead feature/kit-pr origin/dev\n");
-  const result = f.run(["--waive", "Follow up later"], { ASE_OWNER: "", FAKE_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: A defect.\n" });
+  const result = f.run(["--waive", "Follow up later"], { ASE_OWNER: "", FAKE_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: a.ts:1 A defect.\n" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(f.ghCalls("comment").at(-1)?.body, "Merged with 1 waived findings: Follow up later");
 });
@@ -718,7 +718,7 @@ test("waiver does not claim a merge for no-merge, release, clean reviews or fail
   for (const mode of ["no-merge", "release", "clean", "ci-failure"]) {
     const f = fixture(t);
     const args = ["--waive", "Follow up later", ...(mode === "no-merge" ? ["--no-merge"] : mode === "release" ? ["--release", "--base", "main"] : [])];
-    const result = f.run(args, { ASE_OWNER: "ke-lead", FAKE_REVIEW: mode === "clean" ? cleanReview : "REVIEW_STATUS: complete\nDefects:\n- Spec: A defect.\n", FAKE_FAIL: mode === "ci-failure" ? "wait" : "" });
+    const result = f.run(args, { ASE_OWNER: "ke-lead", FAKE_REVIEW: mode === "clean" ? cleanReview : "REVIEW_STATUS: complete\nDefects:\n- Spec: a.ts:1 A defect.\n", FAKE_FAIL: mode === "ci-failure" ? "wait" : "" });
     assert.equal(result.status, mode === "ci-failure" ? 1 : 0, result.stderr);
     assert.equal(f.ghCalls("comment").length, 0);
     assert.equal(f.apiCalls().some(call => call.body?.includes("waived findings")), false);
@@ -746,7 +746,7 @@ test("the scoreboard record gets the PR, tier, CI result, merge SHA and time, an
   const { at, ...landed } = record.landed;
   assert.deepEqual(landed, { pr: 73, tier: "full", ci: "pass", sha: "abcdef0123456789abcdef0123456789abcdef01", waived: null });
   assert.ok(Date.parse(at));
-  const report = "REVIEW_STATUS: complete\nDefects:\n- Spec: A defect.\n- Standards: none.\nValidation gaps: none.\nOptional nits: none.\n";
+  const report = "REVIEW_STATUS: complete\nDefects:\n- Spec: a.ts:1 A defect.\n- Standards: none.\nValidation gaps: none.\nOptional nits: none.\n";
   const lead = fixture(t), waived = lead.run(["--waive", "Accepted for ticket 02."], { ASE_OWNER: "ke-lead", FAKE_REVIEW: report });
   assert.equal(waived.status, 0, waived.stderr);
   assert.equal(JSON.parse(readFileSync(join(lead.main, ".scratch/scoreboard/_untracked/feature%2Fkit-pr.json"), "utf8")).landed.waived, "Accepted for ticket 02.");
@@ -793,14 +793,14 @@ test("behind retry reuses the same patch review before waiting again and merging
 
 test("findings in the rebased HEAD review stop before another CI wait or merge", t => {
   const f = fixture(t), peer = f.peer();
-  const report = "REVIEW_STATUS: complete\nDefects:\n- Spec: Rebased HEAD has a defect.\n";
+  const report = "REVIEW_STATUS: complete\nDefects:\n- Spec: a.ts:1 Rebased HEAD has a defect.\n";
   const result = f.run([], { FAKE_BEHIND: "1", FAKE_ADVANCE: peer, FAKE_ADVANCE_PATCH: "1", FAKE_REBASED_REVIEW: report });
   const head = f.git("rev-parse", "HEAD"), folder = join(f.main, ".scratch/reviews/ak-14/fresh-2");
   assert.notEqual(head, f.head);
   assert.equal(f.gitAt(f.origin, "rev-parse", "refs/heads/feature/kit-pr"), head);
   assert.equal(result.status, 1, result.stderr);
   assert.equal(result.stdout.trimEnd().split("\n").at(-1), `RESULT: fail pr #73 review has 1 open findings (${join(folder, "result.md")})`);
-  assert.match(result.stdout, /^Spec: Rebased HEAD has a defect\.$/m);
+  assert.match(result.stdout, /^Spec: a\.ts:1 Rebased HEAD has a defect\.$/m);
   assert.equal(readFileSync(join(f.main, ".scratch/reviews/ak-14/fresh/result.md"), "utf8"), cleanReview);
   assert.equal(readFileSync(join(folder, "refs.txt"), "utf8"), `${head}\n${f.git("merge-base", "origin/dev", "HEAD")}\n`);
   const actions = f.calls().filter(call => (call.tool === "fake-kit" && ["review", "wait"].includes(call.args[0]))
@@ -1026,7 +1026,7 @@ test("a feature-list waiver at merge goes in a PR comment, the body and the scor
   assert.match(f.apiCalls().at(-1)?.body ?? "", /\nmerged without a feature-list update: Lead accepts\n$/);
   const record = join(f.main, ".scratch/scoreboard/_untracked/feature%2Fkit-pr.json");
   assert.equal(JSON.parse(readFileSync(record, "utf8")).landed.waived, "Lead accepts");
-  const both = fixture(t, css), report = "REVIEW_STATUS: complete\nDefects:\n- Spec: A defect.\n";
+  const both = fixture(t, css), report = "REVIEW_STATUS: complete\nDefects:\n- Spec: a.ts:1 A defect.\n";
   const merged = both.run(["--waive", "Lead accepts"], { ASE_OWNER: "ke-lead", FAKE_REVIEW: report, FAKE_QUEUE: "1" });
   assert.equal(merged.status, 0, merged.stdout + merged.stderr); assert.match(merged.stdout, /RESULT: ok queued #73/);
   assert.equal(both.ghCalls("comment").at(-1)?.body, "Merged with 1 waived findings and without a feature-list update: Lead accepts");
@@ -1115,7 +1115,7 @@ for (const local of [false, true]) for (const source of ["saved", "fresh"]) test
   assert.equal(f.calls().filter(claudeReview).length, expectedReviews);
 });
 
-for (const defect of ["P0: Broken build.", "P1: Serious defect.", "No readable severity."]) test(`three rounds still block ${defect}`, t => {
+for (const defect of ["P0: Broken build.", "P1: Serious defect.", "a.ts:1 No readable severity."]) test(`three rounds still block ${defect}`, t => {
   const f = fixture(t); f.rounds(3);
   const report = minorReview.replace("Standards: none.", `Standards: ${defect}`);
   f.saveReview(report);
