@@ -28,7 +28,7 @@ dev=$(kit_dev_root 2>/dev/null || :)
 failed=() skipped=() checks=0
 # KIT_DOCTOR_SKIP=help (agent.sh sets it for builds): a broken --help prints a problem: line and does not fail,
 # so the builder that should repair it can start; so does a failing kit home check (it runs kit version)
-# when version's help fails or hangs.
+# when the copy's version fails as version's help did: both hang, or both exit alike and print the same.
 # Doctor honours no other name.
 skip_help=false
 if [[ ,${KIT_DOCTOR_SKIP:-}, == *,help,* ]]; then skip_help=true; fi
@@ -263,6 +263,8 @@ fi
 # The helps run side by side to keep doctor quick.
 help_dir=$(mktemp -d)
 trap 'rm -rf -- "$help_dir"' EXIT
+# The kit home check reads the copy's path in its output as the kit's; the front door runs the copy by its real path.
+help_dir=$(cd -- "$help_dir" && pwd -P)
 for index in "${!files[@]}"; do
   file=${files[index]}
   (
@@ -273,17 +275,17 @@ for index in "${!files[@]}"; do
   ) 2>/dev/null &
 done
 wait
-broken=() version_broken=false
+broken=() version_index=''
 for index in "${!commands[@]}"; do
   code=$(< "$help_dir/$index.code")
+  # The shared version comes first; it is the one the kit home check runs.
+  if [[ ${commands[index]} == version && -z $version_index ]]; then version_index=$index; fi
   # 137: timeout -k had to kill a help that ignored SIGTERM.
   if (( code == 124 || code == 137 )); then broken+=("${commands[index]} (timed out)")
   elif (( code != 0 )); then broken+=("${commands[index]} (exit $code)")
   elif ! grep -q 'Usage:' "$help_dir/$index.out"; then broken+=("${commands[index]} (no usage)")
   fi
 done
-# Only a version that fails or hangs breaks kit home; a help without a Usage: line still runs.
-for entry in "${broken[@]}"; do [[ $entry != 'version (exit '* && $entry != 'version (timed out)' ]] || version_broken=true; done
 if (( ${#commands[@]} == 0 )); then
   fail help "no commands in ${folders[*]}" 'restore scripts/agents/kit.d or the "commands" folder'
 elif (( ${#broken[@]} == 0 )); then
@@ -313,12 +315,26 @@ else
   if [[ -n ${own:-} && -d $own && $own_setting != /* ]]; then
     mkdir -p -- "$project/$(dirname -- "$own_setting")" && cp -R -- "$own" "$project/$own_setting"
   fi
-  output=$(cd -- "$project" && env -u KIT_COMMANDS_DIR KIT_HOME="$copy" KIT_ROOT="$project" timeout -k 2 10 "$project/scripts/agents/kit" version 2>&1 < /dev/null) || code=$?
+  # The help's time limit, so a version that hangs hangs in both.
+  output=$(cd -- "$project" && env -u KIT_COMMANDS_DIR KIT_HOME="$copy" KIT_ROOT="$project" timeout -k 2 "${KIT_HELP_TIMEOUT:-10}" "$project/scripts/agents/kit" version 2>&1 < /dev/null) || code=$?
 fi
+# The copy fails because of version itself when version's help failed the same way: both timed out, or both
+# exited with the same status and printed the same, reading the copy's path as the kit's and leaving out the
+# RESULT line the front door adds. Any other failure, such as a missing helper, still fails kit home.
+version_failed_alike() {
+  local help_code seen front="RESULT: fail version exited $code without a RESULT line"
+  [[ -n $version_index && $output != 'cannot copy '* ]] || return 1
+  help_code=$(< "$help_dir/$version_index.code")
+  if (( help_code == 124 || help_code == 137 )); then (( code == 124 || code == 137 )); return; fi
+  (( help_code != 0 && code == help_code )) || return 1
+  seen=${output//"$copy"/"$home"}
+  if [[ $seen == "$front" ]]; then seen=''; else seen=${seen%$'\n'"$front"}; fi
+  [[ $seen == "$(< "$help_dir/$version_index.out")" ]]
+}
 if (( code == 0 )) && [[ ${output##*$'\n'} == 'RESULT: ok version '* ]]; then
   pass 'kit home' "a copy of $home runs kit version for a project with only its settings and front door"
-elif [[ $skip_help == true && $version_broken == true && $output != 'cannot copy '* ]]; then
-  # The copy runs the broken version command, so this follows the help skip: the builder repairs both.
+elif [[ $skip_help == true ]] && version_failed_alike; then
+  # The copy fails only through the broken version command, so this follows the help skip: the builder repairs both.
   skipped+=('kit home')
   printf 'problem: kit home: a copy of %s fails kit version: %s; fix: repair kit version (its --help is broken too)\n' "$home" "${output##*$'\n'}"
 else
