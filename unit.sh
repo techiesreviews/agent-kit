@@ -6,14 +6,21 @@ timeout=${ASE_UNIT_TIMEOUT_MS:-120000}
 for file in "$@"; do
   [[ $file != -* && -f $file ]] || { echo "Usage: unit.sh [files...] (existing test files)" >&2; exit 2; }
 done
+# shellcheck source=scripts/agents/kit-lib.sh
+source "${KIT_LIB:-$(dirname -- "${BASH_SOURCE[0]}")/kit-lib.sh}"
+# The test runner and the full suite's files come from unit.run and unit.files in scripts/agents/kit.json.
+read -ra runner <<< "$(kit_setting .unit.run)"
+(( ${#runner[@]} )) || { echo "unit.sh needs unit.run in scripts/agents/kit.json" >&2; exit 2; }
+if (( ! $# )); then
+  pattern=$(kit_setting .unit.files)
+  [[ -n $pattern ]] || { echo "unit.sh needs unit.files in scripts/agents/kit.json to run the full suite" >&2; exit 2; }
+  # shellcheck disable=SC2086 # The pattern is a glob such as tests/*.test.ts.
+  set -- $pattern
+fi
 mkdir -p .scratch/unit
 log=.scratch/unit/$(date -u +%Y%m%dT%H%M%S)-$$.log
 status=0
-if (( $# )); then
-  ./node_modules/.bin/tsx --test --test-reporter=spec --test-timeout="$timeout" "$@" > "$log" 2>&1 || status=$?
-else
-  ./node_modules/.bin/tsx --test --test-reporter=spec --test-timeout="$timeout" tests/*.test.ts > "$log" 2>&1 || status=$?
-fi
+"${runner[@]}" --test-timeout="$timeout" "$@" > "$log" 2>&1 || status=$?
 node "$(dirname "${BASH_SOURCE[0]}")/unit-summary.mjs" "$log" || { (( status )) || status=1; }
 echo "log: $log"
 exit "$status"

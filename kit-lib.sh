@@ -9,8 +9,50 @@ kit_root() {
   fi
 }
 
+kit_settings_file() {
+  printf '%s/scripts/agents/kit.json\n' "$(kit_root)"
+}
+
+# Print one settings value by jq path (strings raw, others as JSON); nothing when it or the file is missing.
+kit_setting() {
+  jq -r "($1) // empty | if type == \"string\" then . else tojson end" "$(kit_settings_file)" 2>/dev/null || :
+}
+
+# Print what the settings file lacks, one problem per line; return 1 when it is missing, broken or lacks a required key.
+kit_settings_problems() {
+  local file problems
+  file=$(kit_settings_file)
+  if [[ ! -f $file ]]; then
+    printf 'no scripts/agents/kit.json; add one with "project" and "branches": { "land": "<branch>" }\n'
+    return 1
+  fi
+  if ! problems=$(jq -r '
+    if type != "object" then "scripts/agents/kit.json must hold one JSON object" else
+      (if (.project | type) == "string" and (.project | test("\\S")) then empty
+        else "add \"project\": \"<name>\" to scripts/agents/kit.json" end),
+      (if (.branches | type) == "object" and (.branches.land | type) == "string" and (.branches.land | test("\\S")) then empty
+        else "add \"branches\": { \"land\": \"<branch>\" } to scripts/agents/kit.json" end)
+    end' "$file" 2>&1); then
+    printf 'scripts/agents/kit.json is unreadable: %s\n' "${problems//$'\n'/ }"
+    return 1
+  fi
+  [[ -z $problems ]] || { printf '%s\n' "$problems"; return 1; }
+}
+
+# The persistent dev worktree: KIT_DEV_ROOT, else the settings' devRoot; empty when neither is set.
+kit_dev_root() {
+  if [[ -n ${KIT_DEV_ROOT:-} ]]; then printf '%s\n' "$KIT_DEV_ROOT"; else kit_setting .devRoot; fi
+}
+
+# The persistent main checkout: KIT_MAIN_ROOT, else the settings' mainRoot, else the main worktree.
 kit_main_root() {
-  printf '%s\n' "${KIT_MAIN_ROOT:-/home/ubulex/Projects/native-site-editor}"
+  local main=${KIT_MAIN_ROOT:-} root common
+  [[ -n $main ]] || main=$(kit_setting .mainRoot)
+  if [[ -z $main ]]; then
+    root=$(kit_root)
+    if common=$(git -C "$root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then main=${common%/*}; else main=$root; fi
+  fi
+  printf '%s\n' "$main"
 }
 
 kit_owner() {

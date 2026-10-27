@@ -42,6 +42,8 @@ function fixture(t: TestContext) {
   const ticket = "docs/tickets/03.md";
   mkdirSync(join(root, "docs/tickets"), { recursive: true });
   writeFileSync(join(root, ticket), "## Files\n- `file.txt`\n");
+  mkdirSync(join(root, "scripts/agents"), { recursive: true });
+  writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify({ project: "kit-fix", branches: { land: "dev" }, standards: "CODING_STANDARDS.md" }));
   git("add", "."); git("commit", "-m", "base");
   const base = git("rev-parse", "HEAD");
   writeFileSync(join(root, "file.txt"), "broken\n");

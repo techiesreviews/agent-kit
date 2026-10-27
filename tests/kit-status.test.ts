@@ -63,6 +63,8 @@ async function fixture(t: TestContext) {
     return output.stdout.trim();
   };
   git("init", "-q", "--initial-branch=dev");
+  mkdirSync(join(root, "scripts/agents"), { recursive: true });
+  writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify({ project: "kit-status", branches: { land: "dev" }, maps: "docs/wayfinder" }));
   function ticket(map: string, slug: string, state = "open", assignee = "", builder = "sol") {
     const directory = join(root, "docs/wayfinder", map, "build/tickets");
     mkdirSync(directory, { recursive: true });

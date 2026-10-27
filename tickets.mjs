@@ -3,6 +3,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
+import { kitSettings, kitSettingsFile } from "./kit-lib.mjs";
 
 const statuses = new Set(["open", "closed", "needs-triage", "needs-info", "ready-for-agent", "ready-for-human", "wontfix"]);
 
@@ -219,7 +220,7 @@ export const feedbackHeading = "## Feedback";
 export const feedbackLegend = `Kinds: ${Object.entries(feedbackKinds).map(([kind, meaning]) => `\`${kind}\` ${meaning}`).join(" · ")}. \`after release: yes\` marks a UX problem found on production.`;
 const feedbackEntry = /^- (\S+) · (\S+) · (.+) · after release: (\S+) · fix: (.+)$/;
 
-export function feedbackFile(map) { return `docs/wayfinder/${map}/build/feedback.md`; }
+export function feedbackFile(map, maps = "docs/wayfinder") { return `${maps}/${map}/build/feedback.md`; }
 
 export function feedbackLine({ date, kind, afterRelease = false, text, fix = "open" }) {
   return `- ${date} · ${kind} · ${text} · after release: ${afterRelease ? "yes" : "no"} · fix: ${fix}`;
@@ -308,9 +309,11 @@ function main(args) {
     return;
   }
   try {
-    const loaded = loadTickets("docs/wayfinder", map, { ref });
+    const { maps } = kitSettings();
+    if (!maps) { console.log(`No maps folder in ${kitSettingsFile}; no tickets to read.`); return; }
+    const loaded = loadTickets(maps, map, { ref });
     const resolved = resolveTickets(loaded.tickets);
-    const feedback = command === "check" ? loadFeedback("docs/wayfinder", { ref }) : { files: [], entries: [], problems: [] };
+    const feedback = command === "check" ? loadFeedback(maps, { ref }) : { files: [], entries: [], problems: [] };
     const problems = [...loaded.problems, ...resolved.problems, ...feedback.problems];
     for (const problem of problems) console.error(`${problem.file}:${problem.line}: ${problem.message}`);
     if (problems.length) { process.exitCode = 1; return; }

@@ -3,11 +3,11 @@
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import { kitMainRoot, kitResult } from "../kit-lib.mjs";
+import { kitDevRoot, kitMainRoot, kitResult, kitSettings } from "../kit-lib.mjs";
 
 const usage = `Usage: kit heartbeat <map> [--start]
 One check-in while a build runs, for the lead's 30-minute T3 schedule (docs/agents/kitchen.md station 5).
-Reads the <map> slice jobs (kit bg slice-* jobs with a --ticket in docs/wayfinder/<map>/; a group job
+Reads the <map> slice jobs (kit bg slice-* jobs with a --ticket in <maps>/<map>/; a group job
 (kit next --run-group) has one per ticket and its lines add tickets=<a>,<b>) of every worktree
 and prints, in order: finished: jobs not reported before (exit and last RESULT:; merged: and preview:
 lines for the lead's kit preview step), running: jobs (age, log growth since the last heartbeat),
@@ -23,7 +23,11 @@ It never deploys.`;
 const stuckAfter = 45 * 60 * 1000;
 const lockedFlag = "KIT_HEARTBEAT_LOCKED";
 const launchGraceSeconds = 60;
-const devRoot = process.env.KIT_DEV_ROOT || "/home/ubulex/Projects/native-site-editor-dev";
+// Settings from scripts/agents/kit.json; main says what is missing, so --help still prints.
+let settings = null, settingsProblem = "";
+try { settings = kitSettings(); } catch (error) { settingsProblem = error.message; }
+const devRoot = settings ? kitDevRoot(settings) : process.env.KIT_DEV_ROOT || null;
+const mapsDir = settings?.maps || "";
 // Test seam: a fake kit (bg --list and next).
 const kit = process.env.KIT_HEARTBEAT_KIT || resolve(import.meta.dirname, "../kit");
 
@@ -90,7 +94,7 @@ function jobs(map) {
       const words = unquote(read(join(directory, "command")));
       // A group job (kit next --run-group) names each of its tickets with its own --ticket.
       const tickets = words.flatMap((word, i) => word === "--ticket" && words[i + 1] ? [words[i + 1]] : []);
-      if (!tickets.some(ticket => ticket.startsWith(`docs/wayfinder/${map}/`) || ticket.includes(`/docs/wayfinder/${map}/`))) continue;
+      if (!tickets.some(ticket => ticket.startsWith(`${mapsDir}/${map}/`) || ticket.includes(`/${mapsDir}/${map}/`))) continue;
       const seconds = Number(/^(\d+)s$/.exec(age)?.[1] ?? NaN);
       // kit bg writes command, then started, then pid, so a job caught mid-launch lists as died (age
       // unknown before started exists): count it as running for its first minute rather than report
@@ -181,6 +185,9 @@ function main(args) {
     return;
   }
   if (flags.help) { console.log(usage); return; }
+  if (!settings) throw new Error(settingsProblem);
+  if (!devRoot) throw new Error("needs a dev worktree; add devRoot to scripts/agents/kit.json");
+  if (!mapsDir) throw new Error("needs a maps folder; add maps to scripts/agents/kit.json");
 
   const statePath = join(kitMainRoot(), ".scratch/heartbeat", `${flags.map}.json`);
   if (process.env[lockedFlag] !== "1") { underLock(`${statePath}.lock`, args); return; }

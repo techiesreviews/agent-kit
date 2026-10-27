@@ -5,12 +5,12 @@ import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { feedbackFile, feedbackHeading, feedbackKinds, feedbackLegend, feedbackLine, parseFeedback } from "../tickets.mjs";
 
-const { kitRoot, kitResult } = await import(
+const { kitMaps, kitRoot, kitResult } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const usage = `Usage: kit feedback <map> --kind K [--after-release] [--fix <ticket|PR>] "<text>"
        kit feedback <map> --fix-for <line-number> <ticket|PR>
-Adds one line, newest first, to docs/wayfinder/<map>/build/feedback.md (created with its
+Adds one line, newest first, to <maps>/<map>/build/feedback.md (created with its
 heading and legend) or fills the fix of the entry on <line-number>; never commits.
 Kinds: ${Object.keys(feedbackKinds).join(", ")}. A fix is a ticket number (24 or
 24-slug) in the map's build/tickets/ or tickets/, or a PR (#12, PR 12). A number found in
@@ -108,9 +108,9 @@ function feedback(args) {
     if (flags.help) { process.stdout.write(usage); return 0; }
     const [map, ...rest] = flags.rest;
     if (!map || !/^[\w-]+$/.test(map)) throw new UsageError("missing or invalid map");
-    const root = kitRoot(), mapDir = join(root, "docs/wayfinder", map);
+    const root = kitRoot(), maps = kitMaps(), mapDir = join(root, maps, map);
     if (!existsSync(mapDir) || !statSync(mapDir).isDirectory()) throw new UsageError(`unknown map: ${map}`);
-    const file = feedbackFile(map), path = join(root, file);
+    const file = feedbackFile(map, maps), path = join(root, file);
     if (flags.fixFor !== undefined) {
       if (flags.kind !== undefined || flags.fix !== undefined || flags.afterRelease || rest.length !== 1)
         throw new UsageError("--fix-for takes only <line-number> <ticket|PR>");

@@ -18,7 +18,8 @@ done
 
 root=$(cd -- "$(kit_root)" && pwd -P)
 main=$(realpath -m -- "$(kit_main_root)")
-dev=$(realpath -m -- "$(kit_main_root)-dev")
+dev=$(kit_dev_root)
+[[ -z $dev ]] || dev=$(realpath -m -- "$dev")
 failed=()
 pass() {
   if [[ $quiet == false ]]; then printf '✓ %s: %s\n' "$1" "$2"; fi
@@ -28,40 +29,50 @@ fail() {
   printf '✗ %s: %s; fix: %s\n' "$1" "$2" "$3"
 }
 
+land=''
+if problems=$(kit_settings_problems); then
+  land=$(kit_setting .branches.land)
+  pass settings "scripts/agents/kit.json ($(kit_setting .project), lands on $land)"
+else
+  fail settings "${problems//$'\n'/; }" 'add scripts/agents/kit.json with "project" and "branches": { "land": "<branch>" }'
+fi
+
 if [[ $root != "$main" && $root != "$dev" ]]; then
   pass place "$root"
 else
-  fail place "main or dev worktree ($root)" 'create a worktree with scripts/agents/worktree.sh <branch> origin/dev'
+  fail place "main or dev worktree ($root)" "create a worktree with scripts/agents/worktree.sh <branch> origin/${land:-<land>}"
 fi
 
-if ! tip=$(git -C "$root" rev-parse --verify refs/remotes/origin/dev 2>/dev/null); then
-  fail base 'missing origin/dev' 'git fetch origin'
-elif [[ $root == "$dev" ]] && [[ $(git -C "$root" branch --show-current) == dev ]]; then
-  pass base 'dev in the dev worktree'
-elif git -C "$root" merge-base --is-ancestor origin/dev HEAD; then
-  pass base "contains origin/dev ${tip:0:7}"
+if [[ -z $land ]]; then
+  fail base 'no land branch' 'fix scripts/agents/kit.json first'
+elif ! tip=$(git -C "$root" rev-parse --verify "refs/remotes/origin/$land" 2>/dev/null); then
+  fail base "missing origin/$land" 'git fetch origin'
+elif [[ $root == "$dev" ]] && [[ $(git -C "$root" branch --show-current) == "$land" ]]; then
+  pass base "$land in the dev worktree"
+elif git -C "$root" merge-base --is-ancestor "origin/$land" HEAD; then
+  pass base "contains origin/$land ${tip:0:7}"
 else
-  base=$(git -C "$root" merge-base HEAD origin/dev 2>/dev/null) || base=''
-  # origin/dev is shared by every worktree, so another runner's fetch moves it under us.
-  # Accept a base that was the fetched dev tip until less than a day ago.
+  base=$(git -C "$root" merge-base HEAD "origin/$land" 2>/dev/null) || base=''
+  # origin/<land> is shared by every worktree, so another runner's fetch moves it under us.
+  # Accept a base that was the fetched land tip until less than a day ago.
   replaced='' newer=''
   if [[ -n $base ]]; then
     while read -r hash selector; do
       if [[ $hash == "$base" ]]; then replaced=$newer; break; fi
       newer=${selector##*@\{}
       newer=${newer%\}}
-    done < <(git -C "$root" reflog show --date=unix --format='%H %gd' refs/remotes/origin/dev 2>/dev/null)
+    done < <(git -C "$root" reflog show --date=unix --format='%H %gd' "refs/remotes/origin/$land" 2>/dev/null)
   fi
   age=-1
   if [[ $replaced =~ ^[0-9]+$ ]]; then age=$(( $(date +%s) - replaced )); fi
   if (( age >= 0 && age < 86400 )); then
-    behind=$(git -C "$root" rev-list --count HEAD..origin/dev)
-    pass base "$behind commits behind origin/dev; rebase before landing"
+    behind=$(git -C "$root" rev-list --count "HEAD..origin/$land")
+    pass base "$behind commits behind origin/$land; rebase before landing"
   elif (( age >= 86400 )); then
-    fail base "stale: origin/dev moved on from merge-base ${base:0:7} over a day ago" 'rebase onto origin/dev'
+    fail base "stale: origin/$land moved on from merge-base ${base:0:7} over a day ago" "rebase onto origin/$land"
   else
     base=${base:-none}
-    fail base "not based on origin/dev (merge-base ${base:0:7})" 'rebase onto origin/dev or recreate with scripts/agents/worktree.sh'
+    fail base "not based on origin/$land (merge-base ${base:0:7})" "rebase onto origin/$land or recreate with scripts/agents/worktree.sh"
   fi
 fi
 
@@ -91,16 +102,20 @@ else
 fi
 
 modules='' shared=''
+shared_path=$(kit_setting .sharedNodeModules)
 if [[ -d $root/node_modules ]]; then modules=$(cd -- "$root/node_modules" && pwd -P); fi
-if [[ -d $dev/node_modules ]]; then shared=$(cd -- "$dev/node_modules" && pwd -P); fi
-if [[ $root == "$dev" && -n $modules ]]; then
+if [[ -n $shared_path && -d $shared_path ]]; then shared=$(cd -- "$shared_path" && pwd -P); fi
+if [[ -n $dev && $root == "$dev" && -n $modules ]]; then
   pass node_modules "$modules (dev worktree)"
+elif [[ -z $shared_path ]]; then
+  if [[ -n $modules ]]; then pass node_modules "$modules (not shared: no sharedNodeModules in scripts/agents/kit.json)"
+  else fail node_modules 'missing or dangling node_modules' 'install the dependencies'; fi
 elif [[ -z $shared ]]; then
-  fail node_modules "shared $dev/node_modules is missing or dangling" 'restore node_modules in the dev worktree'
+  fail node_modules "shared $shared_path is missing or dangling" 'restore node_modules in the dev worktree'
 elif [[ ! -L $root/node_modules || -z $modules ]]; then
-  fail node_modules 'missing, dangling or non-symlink node_modules' "ln -s \"\$(realpath $dev/node_modules)\" node_modules"
+  fail node_modules 'missing, dangling or non-symlink node_modules' "ln -s \"\$(realpath $shared_path)\" node_modules"
 elif [[ $modules != "$shared" ]]; then
-  fail node_modules 'node_modules differs from the dev worktree' "ln -s \"\$(realpath $dev/node_modules)\" node_modules"
+  fail node_modules 'node_modules differs from the dev worktree' "ln -s \"\$(realpath $shared_path)\" node_modules"
 else
   pass node_modules "$modules"
 fi
@@ -184,4 +199,4 @@ if (( ${#failed[@]} )); then
   kit_result fail "doctor ${#failed[@]} failed: $names"
   exit 1
 fi
-kit_result ok 'doctor 8/8 checks passed'
+kit_result ok 'doctor 9/9 checks passed'

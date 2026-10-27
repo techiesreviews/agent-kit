@@ -3,6 +3,9 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, posix, resolve } from "node:path";
+import { kitBranch, kitSettings } from "./kit-lib.mjs";
+
+const landRef = () => `origin/${kitBranch()}`;
 
 export const reviewFormat = `Required format:
 REVIEW_STATUS: complete
@@ -56,7 +59,7 @@ export function reviewComplete(result) {
   return lines[0] === "REVIEW_STATUS: complete";
 }
 
-export function reviewBrief(ticketPath, ticket, scope = "origin/dev", worktree = process.cwd(), declined = []) {
+export function reviewBrief(ticketPath, ticket, scope = landRef(), worktree = process.cwd(), declined = []) {
   if (!Array.isArray(declined) || declined.some(item => typeof item !== "string" || !item.trim())) {
     throw new Error("declined findings must be a list of non-empty strings");
   }
@@ -68,10 +71,11 @@ export function reviewBrief(ticketPath, ticket, scope = "origin/dev", worktree =
     .map(path => path.startsWith("docs/") ? path : posix.normalize(posix.join(posix.dirname(ticketPath), path)));
   const refs = [...ticket.matchAll(/`([^`\n]*\bspec\.md)(?:#[^`\n]*)?`/g)].map(match => match[1]);
   const sources = [...new Set([ticketPath, ...links, ...refs].filter(Boolean))];
+  const { standards } = kitSettings();
   return `Review this build slice in read-only mode. Make no changes.
 Scope: ${label}.
 ${sources.length ? `Spec axis: read ${sources.join(", ")}, including the linked spec and deciding tickets.` : "Spec axis: no ticket supplied; assess the change against the stated intent and repo documentation."}
-Standards axis: apply CODING_STANDARDS.md; cite the applicable rule with each defect.
+${standards ? `Standards axis: apply ${standards}; cite the applicable rule with each defect.` : "Standards axis: no standards file in scripts/agents/kit.json; judge against the repository's own conventions."}
 The author already ran check/test/lint and the touched specs; do not report inability to run tests.
 Report validation gaps only for missing coverage or evidence in the change, with a concrete test to add.
 ${declined.length ? `\nDeclined by the author (with reasons):\n${declined.map(item => `- ${item}`).join("\n")}\nReport a declined finding again only if the reason is wrong, and say why.\n` : ""}`;
@@ -79,7 +83,7 @@ ${declined.length ? `\nDeclined by the author (with reasons):\n${declined.map(it
 
 // kit fix passes the list through the child environment so kit review needs no
 // additional flags and its ordinary evidence/permission handling stays shared.
-export function ticketReviewBrief(path, scope = "origin/dev", worktree = process.cwd(), declined = JSON.parse(process.env.ASE_REVIEW_DECLINED || "[]")) {
+export function ticketReviewBrief(path, scope = landRef(), worktree = process.cwd(), declined = JSON.parse(process.env.ASE_REVIEW_DECLINED || "[]")) {
   const absolute = resolve(worktree, path);
   let ticket = readFileSync(absolute, "utf8");
   // Build-map tickets often omit a link to their sibling ../spec.md.
@@ -93,7 +97,7 @@ export function ticketReviewBrief(path, scope = "origin/dev", worktree = process
 if (import.meta.main) {
   const args = process.argv.slice(2);
   if (!(args.length === 1 || (args.length === 2 && !args[1].startsWith("--")) || (args.length === 3 && args[1] === "--commit"))) {
-    console.error("Usage: review-brief.mjs <ticket-file> [base=origin/dev | --commit SHA]");
+    console.error("Usage: review-brief.mjs <ticket-file> [base=origin/<land> | --commit SHA]");
     process.exit(2);
   }
   try {

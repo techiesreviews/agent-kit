@@ -23,6 +23,8 @@ function fixture(t: TestContext) {
   mkdirSync(join(root, "docs/wayfinder/alpha/tickets"), { recursive: true });
   writeFileSync(join(root, "docs/wayfinder/alpha/build/tickets/24-fix-buttons.md"), "---\nstatus: open\n---\n");
   writeFileSync(join(root, "docs/wayfinder/alpha/tickets/03-grill.md"), "---\nstatus: closed\n---\n");
+  mkdirSync(join(root, "scripts/agents"), { recursive: true });
+  writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify({ project: "kit-feedback", branches: { land: "dev" }, maps: "docs/wayfinder" }));
   const env: NodeJS.ProcessEnv = { ...process.env, KIT_ROOT: root };
   delete env.KIT_LIB_MJS;
   const run = (...args: string[]) => spawnSync(process.execPath, [feedback, ...args], { env, encoding: "utf8", timeout: 5_000 });

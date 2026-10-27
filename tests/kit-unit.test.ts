@@ -32,6 +32,8 @@ test("selected test runs", () => { mkdirSync(".scratch", { recursive: true }); a
   put("tests/hops.test.ts", 'import "./support/bridge.js";\n' + body);
   put("tests/helper.test.ts", 'import "../scripts/helper.mjs";\n' + body);
   put("tests/direct.test.ts", body);
+  put("scripts/agents/kit.json", JSON.stringify({ project: "kit-unit", branches: { land: "dev" },
+    unit: { run: "./node_modules/.bin/tsx --test --test-reporter=spec", files: "tests/*.test.ts" } }));
   symlinkSync(resolve("node_modules"), join(root, "node_modules"), "dir");
   git("init", "--quiet", "--initial-branch=feature");
   git("config", "user.name", "Kit unit test");

@@ -4,7 +4,7 @@ import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rea
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { kitRoot, kitResult } from "./kit-lib.mjs";
+import { kitDevRoot, kitRoot, kitResult, kitSettings } from "./kit-lib.mjs";
 
 class UsageError extends Error {}
 const object = value => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -294,7 +294,7 @@ function optionsFor(args, root) {
   const [command, ...rest] = args;
   if (command !== "check" && command !== "add") throw new UsageError("expected check or add (see kit deps --help)");
   const options = { command, lock: join(root, "package-lock.json"), modules: join(root, "node_modules"),
-    prefix: "/home/ubulex/Projects/native-site-editor-dev", spec: "", dev: false };
+    prefix: "", spec: "", dev: false };
   const allowed = command === "check" ? { "--lock": "lock", "--modules": "modules" } : { "--prefix": "prefix", "--lock-file": "lockFile" };
   for (let index = 0; index < rest.length; index++) {
     const argument = rest[index];
@@ -307,6 +307,9 @@ function optionsFor(args, root) {
     else throw new UsageError(`unexpected argument ${argument}`);
   }
   if (command === "add" && !options.spec) throw new UsageError("add needs a package spec");
+  // The shared parent defaults to the dev worktree (KIT_DEV_ROOT, else devRoot in scripts/agents/kit.json).
+  if (command === "add" && !options.prefix) options.prefix = kitDevRoot(kitSettings(root)) ?? "";
+  if (command === "add" && !options.prefix) throw new UsageError("add needs --prefix or devRoot in scripts/agents/kit.json");
   return options;
 }
 

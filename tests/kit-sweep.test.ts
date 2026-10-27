@@ -46,6 +46,8 @@ function repository(t: TestContext) {
   execFileSync("git", ["-C", repo, "config", "user.email", "sweep@example.test"]);
   execFileSync("git", ["-C", repo, "config", "user.name", "Sweep"]);
   write(join(repo, ".gitignore"), ".scratch/\n");
+  write(join(repo, "scripts/agents/kit.json"), JSON.stringify({ project: "kit-sweep", branches: { land: "dev" },
+    maps: "docs/wayfinder", sharedFile: "src/main.ts", techDebt: "docs/work/tech-debt/issues" }));
   return { dir, repo };
 }
 

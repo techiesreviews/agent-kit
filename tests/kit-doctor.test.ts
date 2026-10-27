@@ -48,6 +48,8 @@ function fixture(t: { after: (fn: () => void) => void }) {
   mkdirSync(join(main, ".codex"));
   writeFileSync(join(main, ".claude/settings.json"), "{}\n");
   writeFileSync(join(main, ".codex/hooks.json"), "{}\n");
+  writeFileSync(join(main, "scripts/agents/kit.json"), JSON.stringify({ project: "native-site-editor", branches: { land: "dev" },
+    devRoot: dev, sharedNodeModules: join(dev, "node_modules") }));
   commit(main, "scripts", ".claude", ".codex");
   git(main, "push", "origin", "HEAD:dev");
   git(main, "fetch", "origin");
@@ -75,13 +77,13 @@ function failure(result: ReturnType<typeof spawnSync<string>>, name: string) {
   assert.equal(result.status, 1, result.stdout + result.stderr);
   const lines = result.stdout.trimEnd().split("\n");
   assert.equal(lines.filter(line => line.startsWith("RESULT: ")).length, 1);
-  assert.equal(lines.length, 10, result.stdout);
+  assert.equal(lines.length, 11, result.stdout);
   assert.ok(lines.some(line => line.startsWith(`✗ ${name}: `) && line.includes("; fix: ")), result.stdout);
   assert.equal(lines.at(-1), `RESULT: fail doctor 1 failed: ${name}`);
   assert.equal(result.stderr, "");
 }
 
-test("doctor checks all eight conditions quickly, notes Grok, and quiet success prints only RESULT", (t) => {
+test("doctor checks all nine conditions quickly, notes Grok, and quiet success prints only RESULT", (t) => {
   const f = fixture(t);
   // Git tracks only the executable bit; the rest of the mode follows the umask.
   assert.equal(statSync(doctor).mode & 0o111, 0o111);
@@ -91,17 +93,18 @@ test("doctor checks all eight conditions quickly, notes Grok, and quiet success 
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.ok(elapsed < 2000, `doctor took ${elapsed}ms`);
   const lines = result.stdout.trimEnd().split("\n");
-  assert.deepEqual(lines.slice(0, 9).map(line => line.split(":")[0]), [
-    "✓ place", "✓ base", "✓ hook config", "✓ hooks live", "✓ node", "✓ node_modules", "✓ conflicts", "✓ help", "✗ grok",
+  assert.deepEqual(lines.slice(0, 10).map(line => line.split(":")[0]), [
+    "✓ settings", "✓ place", "✓ base", "✓ hook config", "✓ hooks live", "✓ node", "✓ node_modules", "✓ conflicts", "✓ help", "✗ grok",
   ]);
-  assert.equal(lines[7], "✓ help: 2 commands answer --help");
-  assert.equal(lines[8], "✗ grok: not installed (optional reviewer); fix: install the grok CLI for Grok reviews");
-  assert.equal(lines.length, 10);
-  assert.equal(lines[9], "RESULT: ok doctor 8/8 checks passed");
+  assert.equal(lines[0], "✓ settings: scripts/agents/kit.json (native-site-editor, lands on dev)");
+  assert.equal(lines[8], "✓ help: 2 commands answer --help");
+  assert.equal(lines[9], "✗ grok: not installed (optional reviewer); fix: install the grok CLI for Grok reviews");
+  assert.equal(lines.length, 11);
+  assert.equal(lines[10], "RESULT: ok doctor 9/9 checks passed");
   assert.equal(result.stderr, "");
   const quiet = f.run(["--quiet"]);
   assert.equal(quiet.status, 0, quiet.stderr);
-  assert.equal(quiet.stdout, "RESULT: ok doctor 8/8 checks passed\n");
+  assert.equal(quiet.stdout, "RESULT: ok doctor 9/9 checks passed\n");
   assert.equal(quiet.stderr, "");
 });
 
@@ -116,7 +119,7 @@ test("doctor reports a logged-in or logged-out Grok CLI without failing", (t) =>
   const signedOut = f.run([], f.build, { KIT_GROK: grok });
   assert.equal(signedOut.status, 0, signedOut.stdout + signedOut.stderr);
   assert.ok(signedOut.stdout.includes("✗ grok: not logged in (optional reviewer); fix: grok login\n"), signedOut.stdout);
-  assert.equal(f.run(["--quiet"], f.build, { KIT_GROK: grok }).stdout, "RESULT: ok doctor 8/8 checks passed\n");
+  assert.equal(f.run(["--quiet"], f.build, { KIT_GROK: grok }).stdout, "RESULT: ok doctor 9/9 checks passed\n");
   // A hung, failing or reworded CLI is not mistaken for a logged-out one.
   executable(grok, 'printf "Logged in as lex\\n"');
   const reworded = f.run([], f.build, { KIT_GROK: grok });

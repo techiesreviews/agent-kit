@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// kit: open a PR into dev, attach the review, merge when checks pass
+// kit: open a PR into the land branch, attach the review, merge when checks pass
 import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,11 +7,11 @@ import { basename, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterFixRounds, blockingFindings, completedFixRounds, FIX_ROUNDS, openFindings, reviewCoversHead, sameReviewPatch } from "../review-findings.mjs";
 
-const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv, kitScore } = await import(
+const { kitBranch, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, nodeEnv, kitScore } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const { checkSteps, classify, doneHeading, featureListGuard, featureListProblem, focusedUnitFiles, parseChanges } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
-const usage = 'Usage: kit pr [--base dev] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release] [--full] [--waive "<reason>"]\n--waive requires a *-lead owner; records the reason for merging with open findings or without a feature-list update.\n';
+const usage = 'Usage: kit pr [--base <land>] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release] [--full] [--waive "<reason>"]\nBranches come from scripts/agents/kit.json: --base defaults to branches.land; --release needs --base branches.release.\n--waive requires a *-lead owner; records the reason for merging with open findings or without a feature-list update.\n';
 const kit = process.env.KIT_PR_KIT || resolve(import.meta.dirname, "../kit");
 
 function options(args) {
@@ -27,7 +27,7 @@ function options(args) {
     } else flags[flag] = true;
   }
   if (flags["--waive"] && !kitOwner().endsWith("-lead")) throw new Error("--waive requires a *-lead owner");
-  return { base: flags["--base"] ?? "dev", title: flags["--title"], ticket: flags["--ticket"], waive: flags["--waive"],
+  return { base: flags["--base"] ?? kitBranch(), title: flags["--title"], ticket: flags["--ticket"], waive: flags["--waive"],
     noMerge: flags["--no-merge"], dryRun: flags["--dry-run"], release: flags["--release"], full: flags["--full"] };
 }
 
@@ -171,14 +171,16 @@ async function main(args) {
     const branchResult = await execute("guards", "git", ["symbolic-ref", "--short", "HEAD"]);
     if (branchResult.status !== 0) throw new Error("detached HEAD");
     const branch = branchResult.text.trim();
-    if (["dev", "main", flags.base].includes(branch)) throw new Error(`refusing branch ${branch}`);
+    const settings = kitSettings(), release = kitBranch("release", settings);
+    if ([kitBranch("land", settings), release, flags.base].includes(branch)) throw new Error(`refusing branch ${branch}`);
     // The scoreboard's landing record for this piece.
     // A new PR number starts a fresh landing, so an earlier PR's merge never carries over.
     land = changes => kitScore({ ticket: flags.ticket, branch, root }, record => {
       record.landed = { ...(changes.pr === undefined || record.landed?.pr === changes.pr ? record.landed : {}), ...changes };
     });
-    if (flags.base === "main" && !flags.release) throw new Error("--base main requires --release");
-    if (flags.release && flags.base !== "main") throw new Error("--release requires --base main");
+    if (flags.release && !release) throw new Error("--release needs branches.release in scripts/agents/kit.json");
+    if (release && flags.base === release && !flags.release) throw new Error(`--base ${release} requires --release`);
+    if (flags.release && flags.base !== release) throw new Error(`--release requires --base ${release}`);
     await git("guards", ["check-ref-format", `refs/heads/${flags.base}`]);
     if (await git("guards", ["status", "--porcelain"])) throw new Error("uncommitted changes");
     ok("guards");
@@ -203,44 +205,58 @@ async function main(args) {
     // Scale the local checks to the PR's own diff (merge base to HEAD, after the rebase).
     step = "tier";
     const changes = parseChanges(await git("tier", ["-c", "core.quotepath=false", "diff", "--name-status", "--no-renames", `origin/${flags.base}...HEAD`]));
-    const plan = classify(changes, { full: flags.full });
+    const plan = classify(changes, { full: flags.full, settings });
     const { steps, review } = checkSteps(plan);
     console.log(`tier: ${plan.tier} (${plan.reason})`);
     if (plan.tier === "css") console.log("reminder: visible CSS changes need kit shots evidence");
     step = "features";
     // Releases carry slices that each passed the guard on their way into dev.
     const features = flags.release ? { ok: true }
-      : featureListGuard(changes, { ticketText: flags.ticket ? readFileSync(resolve(root, flags.ticket), "utf8") : "", waive: flags.waive });
+      : featureListGuard(changes, { ticketText: flags.ticket ? readFileSync(resolve(root, flags.ticket), "utf8") : "", waive: flags.waive, settings });
     if (features.line) console.log(features.line);
     if (!features.ok) {
-      console.error(`problem: ${featureListProblem}`);
-      throw new Error(featureListProblem);
+      console.error(`problem: ${featureListProblem(settings)}`);
+      throw new Error(featureListProblem(settings));
     }
     const tests = [`Tier: ${plan.tier} (${plan.reason})`, ...(features.line ? [features.line] : []), ""];
     const sources = () => Object.fromEntries(readdirSync(join(root, "tests")).filter(name => name.endsWith(".test.ts"))
       .map(name => [`tests/${name}`, readFileSync(join(root, "tests", name), "utf8")]));
+    // The project's own check commands (checks in scripts/agents/kit.json): a missing one is skipped with a line.
+    const checks = settings.checks ?? {};
+    const parse = text => {
+      const [name, ...argv] = typeof text === "string" ? text.trim().split(/\s+/) : [];
+      return name ? [[name, argv]] : [];
+    };
     const commands = {
-      check: () => ["npm", ["run", "check"]], unit: () => ["npm", ["test"]], lint: () => ["npm", ["run", "lint"]],
-      "kit-clean": () => ["npm", ["run", "test:kit-clean"]],
-      colours: () => ["node", ["scripts/check-colours.mjs"]], tickets: () => ["node", ["scripts/agents/tickets.mjs", "check"]],
+      check: () => parse(checks.check), unit: () => parse(checks.test), lint: () => parse(checks.lint),
+      "kit-clean": () => (Array.isArray(checks.extra) ? checks.extra : []).flatMap(parse),
+      colours: () => [["node", ["scripts/check-colours.mjs"]]], tickets: () => [["node", ["scripts/agents/tickets.mjs", "check"]]],
       "unit-files": () => {
-        const files = focusedUnitFiles(changes, plan, sources());
-        return files.length ? ["scripts/agents/unit.sh", files] : undefined;
+        const files = focusedUnitFiles(changes, plan, sources(), settings);
+        return files.length ? [["scripts/agents/unit.sh", files]] : [];
       },
     };
+    const setting = { check: "checks.check", unit: "checks.test", lint: "checks.lint", "kit-clean": "checks.extra" };
     for (const id of steps) {
       if (id === "specs") {
         const specs = await run("specs", kit, ["specs", "--affected", "--base", `origin/${flags.base}`]); ok("specs");
         tests.push(`- kit specs --affected --base origin/${flags.base}: ${specs.split(/\r?\n/).findLast(line => line.startsWith("RESULT: ")) || "ok"}`);
         continue;
       }
-      const name = id === "unit-files" ? "unit" : id, command = commands[id]();
-      if (!command) { console.log("unit: no affected unit tests"); tests.push("- unit: no affected unit tests"); continue; }
-      await run(name, ...command); ok(name);
-      tests.push(`- ${[command[0], ...command[1]].join(" ")}: ok`);
+      const name = id === "unit-files" ? "unit" : id, list = commands[id]();
+      if (!list.length && id === "unit-files") { console.log("unit: no affected unit tests"); tests.push("- unit: no affected unit tests"); continue; }
+      if (!list.length) {
+        console.log(`${name}: skipped (no ${setting[id]} in scripts/agents/kit.json)`);
+        tests.push(`- ${name}: skipped (no ${setting[id]} in scripts/agents/kit.json)`);
+        continue;
+      }
+      for (const command of list) {
+        await run(name, ...command); ok(name);
+        tests.push(`- ${[command[0], ...command[1]].join(" ")}: ok`);
+      }
     }
-    const skipped = Object.entries({ check: "npm run check", unit: "npm test (all unit tests)", lint: "npm run lint", specs: "kit specs --affected" })
-      .filter(([id]) => !steps.includes(id)).map(([, label]) => label).concat(review ? [] : ["kit review"]);
+    const skipped = Object.entries({ check: checks.check, unit: checks.test && `${checks.test} (all unit tests)`, lint: checks.lint, specs: "kit specs --affected" })
+      .filter(([id, label]) => label && !steps.includes(id)).map(([, label]) => label).concat(review ? [] : ["kit review"]);
     if (skipped.length) tests.push(`- skipped for the ${plan.tier} tier (CI still runs check, unit tests, lint and smoke browser tests; no Sol review): ${skipped.join(", ")}`);
 
     step = "body";

@@ -5,7 +5,7 @@ import { closeSync, createReadStream, existsSync, openSync, readdirSync, readFil
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
-import { kitResult, kitOwner, kitJob, kitJobDirectory, kitJobExit, kitJobRunning } from "../kit-lib.mjs";
+import { kitBranch, kitResult, kitOwner, kitJob, kitJobDirectory, kitJobExit, kitJobRunning } from "../kit-lib.mjs";
 import { summarizeRuns, failingSteps, failingTests, latestWorkflowRuns } from "../ci-summary.mjs";
 
 const usage = `Usage: kit wait pid <pid> [--timeout D]
@@ -15,7 +15,7 @@ const usage = `Usage: kit wait pid <pid> [--timeout D]
 Durations: seconds (bare number or s), minutes (m), hours (h). Default timeout: 30m.
 Output without --until finishes when every process seen writing the file has exited and its size
 stayed unchanged for the quiet period (default 5s); a writer never seen holding the file is covered
-only by the quiet period. CI branch: dev.`;
+only by the quiet period. CI branch: branches.ci in scripts/agents/kit.json, else branches.land.`;
 const args = process.argv.slice(2);
 const execute = promisify(execFile);
 const controller = new AbortController();
@@ -130,7 +130,7 @@ function writers(file) {
 
 async function wait(config) {
   const { kind, target, options, timeout, quiet, regex } = config;
-  const label = kind === "ci" ? options.pr !== undefined ? `pr ${options.pr}` : options.sha ?? options.branch ?? "dev" : target;
+  const label = kind === "ci" ? options.pr !== undefined ? `pr ${options.pr}` : options.sha ?? options.branch ?? kitBranch("ci") : target;
   console.log(`kit wait ${kind} ${label} (owner ${kitOwner()})`);
   const started = Date.now();
   const deadline = started + timeout;
@@ -138,7 +138,7 @@ async function wait(config) {
   const status = interval("KIT_WAIT_STATUS_MS", 60000);
   let lastStatus = started;
   let head = options.sha ?? "";
-  let branch = options.branch ?? "dev";
+  let branch = options.branch ?? (kind === "ci" ? kitBranch("ci") : "");
   let branchResolved = false;
   let previous = [];
   let size = null;

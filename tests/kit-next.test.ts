@@ -30,7 +30,8 @@ function fixture(t: TestContext, files: Record<string, string>) {
   const write = (base: string, entries: Record<string, string>) => {
     for (const [path, content] of Object.entries(entries)) { mkdirSync(dirname(join(base, path)), { recursive: true }); writeFileSync(join(base, path), content); }
   };
-  write(dev, { "README.md": "repo\n", ...files });
+  const settings = { project: "kit-next", branches: { land: "dev" }, maps: "docs/wayfinder", sharedFile: "src/main.ts" };
+  write(dev, { "README.md": "repo\n", "scripts/agents/kit.json": JSON.stringify(settings), ...files });
   git(dev, "add", "-A");
   git(dev, "commit", "-q", "-m", "fixture");
   git(dev, "push", "-q", "-u", "origin", "dev");

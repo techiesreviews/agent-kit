@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -277,8 +277,13 @@ test("bash and mjs roots and owner follow overrides, owner file and branch fallb
   assert.equal(kitOwner(), "feature/x");
   assert.equal(bash("kit_owner", env).stdout, "feature/x\n");
   delete process.env.KIT_MAIN_ROOT;
-  assert.equal(kitMainRoot(), "/home/ubulex/Projects/native-site-editor");
+  // No settings file: the main worktree; then the settings file's mainRoot.
+  assert.equal(kitMainRoot(), realpathSync(directory));
   assert.equal(bash("unset KIT_MAIN_ROOT; kit_main_root").stdout, `${kitMainRoot()}\n`);
+  mkdirSync(join(directory, "scripts/agents"), { recursive: true });
+  writeFileSync(join(directory, "scripts/agents/kit.json"), JSON.stringify({ project: "x", mainRoot: "/settings/main", branches: { land: "main" } }));
+  assert.equal(kitMainRoot(), "/settings/main");
+  assert.equal(bash("unset KIT_MAIN_ROOT; kit_main_root").stdout, "/settings/main\n");
   process.env.KIT_MAIN_ROOT = "/persistent/main";
   assert.equal(kitMainRoot(), "/persistent/main");
   assert.equal(bash("kit_main_root", { KIT_MAIN_ROOT: "/persistent/main" }).stdout, "/persistent/main\n");

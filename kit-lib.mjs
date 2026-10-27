@@ -17,9 +17,61 @@ export function kitRoot() {
   return process.env.KIT_ROOT || (git(["rev-parse", "--show-toplevel"]) || resolve(import.meta.dirname, "../.."));
 }
 
-/** Return the persistent main checkout root. */
+/** The project settings file, relative to the project's top folder. */
+export const kitSettingsFile = "scripts/agents/kit.json";
+const settingsCache = new Map();
+
+/** Problems with parsed settings: only `project` and `branches.land` are required. */
+export function kitSettingsProblems(settings) {
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) return [`${kitSettingsFile} must hold one JSON object`];
+  const text = value => typeof value === "string" && value.trim() !== "";
+  return [
+    ...(text(settings.project) ? [] : [`add "project": "<name>" to ${kitSettingsFile}`]),
+    ...(text(settings.branches?.land) ? [] : [`add "branches": { "land": "<branch>" } to ${kitSettingsFile}`]),
+  ];
+}
+
+/** Read the project's settings file once per root; throws one plain line when it is missing, broken or lacks a required key. */
+export function kitSettings(root = kitRoot()) {
+  if (settingsCache.has(root)) return settingsCache.get(root);
+  let settings;
+  try { settings = JSON.parse(readFileSync(join(root, kitSettingsFile), "utf8")); }
+  catch (error) {
+    if (error.code === "ENOENT") throw new Error(`no ${kitSettingsFile}; add one with "project" and "branches": { "land": "<branch>" }`);
+    throw new Error(`${kitSettingsFile} is unreadable: ${oneLine(error.message)}`);
+  }
+  const problems = kitSettingsProblems(settings);
+  if (problems.length) throw new Error(problems.join("; "));
+  settingsCache.set(root, settings);
+  return settings;
+}
+
+/** A settings branch: `land`, `release`, or `ci` (which falls back to land); undefined when unset. */
+export function kitBranch(name = "land", settings = kitSettings()) {
+  const branches = settings.branches;
+  return (typeof branches[name] === "string" && branches[name]) || (name === "ci" ? branches.land : undefined);
+}
+
+/** The persistent dev worktree: KIT_DEV_ROOT, else the settings' devRoot, else null. */
+export function kitDevRoot(settings = kitSettings()) {
+  return process.env.KIT_DEV_ROOT || settings.devRoot || null;
+}
+
+/** The maps folder (settings `maps`) for features that need one; throws a plain line when it is unset. */
+export function kitMaps(settings = kitSettings()) {
+  if (typeof settings.maps === "string" && settings.maps) return settings.maps.replace(/\/+$/, "");
+  throw new Error(`no "maps" folder in ${kitSettingsFile}; this command needs one`);
+}
+
+/** Return the persistent main checkout root: KIT_MAIN_ROOT, the settings' mainRoot, else the main worktree. */
 export function kitMainRoot() {
-  return process.env.KIT_MAIN_ROOT || "/home/ubulex/Projects/native-site-editor";
+  if (process.env.KIT_MAIN_ROOT) return process.env.KIT_MAIN_ROOT;
+  const root = kitRoot();
+  let settings = {};
+  try { settings = kitSettings(root); } catch { /* No usable settings: use the main worktree. */ }
+  if (settings.mainRoot) return settings.mainRoot;
+  const common = git(["-C", root, "rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  return common ? dirname(common) : root;
 }
 
 /** Return the explicit owner, worktree owner, branch, or unknown. */
@@ -251,9 +303,13 @@ export function runCost(log) {
   return usd === null && tokens === null ? null : { usd, tokens };
 }
 
-/** The scoreboard map of a ticket: its docs/wayfinder/<map>/ folder, else _untracked. */
-export function scoreMap(ticket) {
-  return (ticket && /(?:^|\/)docs\/wayfinder\/([^/]+)\//.exec(ticket)?.[1]) || "_untracked";
+const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** The scoreboard map of a ticket: its <maps>/<map>/ folder, else _untracked (also when the project keeps no maps). */
+export function scoreMap(ticket, maps) {
+  if (maps === undefined) try { maps = kitMaps(); } catch { maps = null; }
+  if (!ticket || !maps) return "_untracked";
+  return new RegExp(`(?:^|/)${escape(maps)}/([^/]+)/`).exec(ticket)?.[1] || "_untracked";
 }
 
 function ticketFacts(file, root) {
@@ -339,7 +395,9 @@ export function kitScore({ ticket, branch, root = kitRoot() }, change) {
   try {
     const file = ticket && resolve(root, ticket);
     const name = file ? basename(file, ".md") : encodeURIComponent(branch || git(["-C", root, "branch", "--show-current"]) || "unknown");
-    const path = join(kitMainRoot(), ".scratch/scoreboard", scoreMap(file && relative(root, file)), `${name}.json`);
+    let maps = null;
+    try { maps = kitMaps(kitSettings(root)); } catch { /* No maps: the record is _untracked. */ }
+    const path = join(kitMainRoot(), ".scratch/scoreboard", scoreMap(file && relative(root, file), maps), `${name}.json`);
     mkdirSync(dirname(path), { recursive: true });
     // Another worktree (a lead's second-opinion review) may write the same record: lock read to rename.
     const lock = `${path}.lock`;

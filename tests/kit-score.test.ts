@@ -35,11 +35,17 @@ const claudeResult = JSON.stringify({ type: "result", result: "Done.", total_cos
   modelUsage: { "claude-opus-5-5": { inputTokens: 14, outputTokens: 5786, cacheReadInputTokens: 245282, cacheCreationInputTokens: 50640, costUSD: 0.5697 },
     "claude-haiku-5-5": { inputTokens: 2341, outputTokens: 16, costUSD: 0.0003 } } });
 
+function settings(root: string) {
+  mkdirSync(join(root, "scripts/agents"), { recursive: true });
+  writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify({ project: "kit-score", branches: { land: "dev" }, maps: "docs/wayfinder" }));
+}
+
 function fixture(t: TestContext) {
   const dir = mkdtempSync(join(tmpdir(), "kit-score-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const root = join(dir, "work"), main = join(dir, "main");
   mkdirSync(join(root, "docs/wayfinder/demo/build/tickets"), { recursive: true }); mkdirSync(main);
+  settings(root);
   const records = join(main, ".scratch/scoreboard/demo");
   mkdirSync(records, { recursive: true });
   const review = (name: string, kind: Counts): Review => ({ dir: join(main, ".scratch/reviews/demo-01", name), model: "claude-opus-5-5", effort: "medium",
@@ -324,6 +330,7 @@ function pageFixture(t: TestContext) {
   const root = join(dir, "work"), main = join(dir, "main"), source = resolve("tests/fixtures/scoreboard");
   cpSync(join(source, "wayfinder"), join(root, "docs/wayfinder"), { recursive: true });
   cpSync(join(source, "records"), join(main, ".scratch/scoreboard/demo"), { recursive: true });
+  settings(root);
   const run = (...args: string[]) => spawnSync("bash", [kit, "score", ...args], { cwd: root, encoding: "utf8", timeout: 10_000,
     env: { ...process.env, KIT_ROOT: root, KIT_MAIN_ROOT: main, ASE_SKIP_DOCTOR: "1" } });
   return { dir, root, main, run };

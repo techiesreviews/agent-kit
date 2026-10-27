@@ -120,6 +120,9 @@ function fixture(t: TestContext, changes?: Record<string, string>) {
   writeFileSync(join(root, "scripts/agents/unit.sh"), fake); chmodSync(join(root, "scripts/agents/unit.sh"), 0o755);
   for (const name of ["a", "code-map"]) writeFileSync(join(root, `tests/${name}.test.ts`), `// ${name}\n`);
   writeFileSync(join(root, "tests/b.test.ts"), 'import "./fakes/thing.ts";\n');
+  // This editor's settings, without its machine folders.
+  const { mainRoot: _main, devRoot: _dev, sharedNodeModules: _modules, ...settings } = JSON.parse(readFileSync("scripts/agents/kit.json", "utf8"));
+  writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify(settings));
   git("add", "."); git("commit", "-m", "base");
   git("branch", "main"); git("push", "origin", "dev", "main");
   git("checkout", "-b", "feature/kit-pr");

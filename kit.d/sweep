@@ -7,19 +7,21 @@ import { pathToFileURL } from "node:url";
 import { parseFeedbackLine } from "../tickets.mjs";
 import { composeBundle, cssCounts } from "./ux";
 
-const { kitRoot, kitMainRoot, kitResult } = await import(
+const { kitRoot, kitMainRoot, kitResult, kitSettings } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 
 export const bundleLimit = 40_000;
+// sharedFile, maps and techDebt come from scripts/agents/kit.json; a missing one leaves its section out or says so.
+const setting = name => { try { return kitSettings()[name] || null; } catch { return null; } };
 const usage = `Usage: kit sweep [--since 7d|Nd|YYYY-MM-DD]
 Changes nothing: reads the checkout's HEAD and the week's records, then writes main root
 .scratch/sweep/<date>/bundle.md (under ${bundleLimit} bytes): biggest source files and their growth,
-src/main.ts lines, hand-typed CSS values (raw px spacing, raw radii, bespoke shadows, hand-timed
+the shared file's lines (sharedFile), hand-typed CSS values (raw px spacing, raw radii, bespoke shadows, hand-timed
 transitions) and their change, tests that failed then passed in kit pr runs (the .scratch/pr/
 logs of worktrees that still exist) and tests/known-failures.json, review findings by kind
 (scoreboard records), Lex's corrections added to build feedback logs by the commits since the
-window started and open tech-debt issues untouched for 30 days.
+window started and open tech-debt issues (techDebt) untouched for 30 days.
 `;
 const day = 86_400_000;
 // Code files by extension, plus extensionless scripts such as the kit commands.
@@ -102,10 +104,10 @@ export function handTyped(text) {
 const valueKinds = [["px", "raw px spacing"], ["radii", "raw radii"], ["shadows", "bespoke shadows"], ["timings", "hand-timed transitions"]];
 const total = counts => valueKinds.reduce((sum, [key]) => sum + counts[key], 0);
 
-export function codeSections(now, then) {
+export function codeSections(now, then, sharedFile = setting("sharedFile")) {
   const lines = (texts, file) => texts.has(file) ? lineCount(texts.get(file)) : 0;
   const files = [...now.keys()].map(file => ({ file, lines: lines(now, file), growth: lines(now, file) - lines(then, file) }));
-  const main = files.find(item => item.file === "src/main.ts");
+  const main = sharedFile && files.find(item => item.file === sharedFile);
   const biggest = [...files].sort((a, b) => b.lines - a.lines || a.file.localeCompare(b.file)).slice(0, 20);
   const growing = files.filter(item => item.growth > 0).sort((a, b) => b.growth - a.growth || a.file.localeCompare(b.file)).slice(0, 10);
   const counted = texts => new Map([...texts].filter(([file]) => cssFile.test(file)).map(([file, text]) => [file, handTyped(text)]));
@@ -117,7 +119,7 @@ export function codeSections(now, then) {
     .filter(item => total(item.now) || total(item.then))
     .sort((a, b) => total(b.now) - total(a.now) || a.file.localeCompare(b.file)).slice(0, 15);
   return [
-    { title: "src/main.ts", priority: 9, lines: [main ? `- ${main.lines} lines (${signed(main.growth)})` : "- missing"] },
+    ...sharedFile ? [{ title: sharedFile, priority: 9, lines: [main ? `- ${main.lines} lines (${signed(main.growth)})` : "- missing"] }] : [],
     { title: "Biggest source files", priority: 6, lines: biggest.map(item => `- ${item.file}: ${item.lines} lines (${signed(item.growth)})`) },
     { title: "Biggest growth", priority: 5, lines: growing.length ? growing.map(item => `- ${item.file}: ${signed(item.growth)} to ${item.lines} lines`) : ["- none"] },
     { title: "Hand-typed values in src/**/*.css", priority: 8, lines: [
@@ -256,8 +258,9 @@ export function reviewSection(main, start) {
  * Commit boundaries keep weekly bundles apart however late a line lands; a line whose fix was filled in
  * later (removed and added again with the same date, kind and text) is not new.
  */
-export function correctionsSection(root, then, head) {
-  const diff = git(root, ["diff", "--no-renames", "--no-ext-diff", "-U0", then || emptyTree, head, "--", ":(glob)docs/wayfinder/*/build/feedback.md"]).toString("utf8");
+export function correctionsSection(root, then, head, maps = setting("maps")) {
+  if (!maps) return { title: "Lex's corrections", priority: 8, lines: ["- no maps folder in scripts/agents/kit.json"] };
+  const diff = git(root, ["diff", "--no-renames", "--no-ext-diff", "-U0", then || emptyTree, head, "--", `:(glob)${maps}/*/build/feedback.md`]).toString("utf8");
   const added = [], removed = new Set();
   let file = "";
   for (const line of diff.split("\n").map(text => text.replace(/\r$/, ""))) {
@@ -274,17 +277,18 @@ export function correctionsSection(root, then, head) {
   const kinds = {};
   for (const entry of recent) kinds[entry.kind] = (kinds[entry.kind] ?? 0) + 1;
   return { title: "Lex's corrections", priority: 8, lines: [`- ${recent.length} corrections committed in the window; by kind: ${countText(kinds)}`,
-    ...recent.map(entry => `- ${entry.date} · ${entry.kind} · ${entry.text} · ${entry.file.split("/")[2]} · after release: ${entry.afterRelease} · fix: ${entry.fix}`)] };
+    ...recent.map(entry => `- ${entry.date} · ${entry.kind} · ${entry.text} · ${entry.file.slice(maps.length + 1).split("/")[0]} · after release: ${entry.afterRelease} · fix: ${entry.fix}`)] };
 }
 
 /** Tech-debt issues not closed or wontfix whose file no commit touched for 30 days. */
-export function staleDebtSection(root, now = Date.now()) {
-  const folder = join(root, "docs/work/tech-debt/issues"), stale = [];
+export function staleDebtSection(root, now = Date.now(), techDebt = setting("techDebt")) {
+  if (!techDebt) return { title: "Tech-debt issues untouched 30+ days", priority: 6, lines: ["- no techDebt folder in scripts/agents/kit.json"] };
+  const folder = join(root, techDebt), stale = [];
   for (const name of existsSync(folder) ? readdirSync(folder).filter(name => name.endsWith(".md")).sort() : []) {
     const text = readFileSync(join(folder, name), "utf8");
     const status = /^status:\s*(\S+)/m.exec(text)?.[1] ?? "open", title = /^title:\s*(.+)$/m.exec(text)?.[1]?.trim().replace(/^(["'])(.*)\1$/, "$2") ?? name;
     if (["closed", "wontfix"].includes(status)) continue;
-    const touched = Date.parse(gitText(root, ["log", "-1", "--format=%cI", "--", join("docs/work/tech-debt/issues", name)])) || now;
+    const touched = Date.parse(gitText(root, ["log", "-1", "--format=%cI", "--", join(techDebt, name)])) || now;
     const days = Math.floor((now - touched) / day);
     if (days >= 30) stale.push(`- ${name}: ${title} · ${status} · untouched ${days} days`);
   }
@@ -297,17 +301,18 @@ function sweep(args) {
   catch (error) { process.stderr.write(usage); kitResult("fail", `sweep ${error.message}`); return 2; }
   try {
     const root = resolve(kitRoot()), main = resolve(kitMainRoot()), now = Date.now(), start = windowStart(flags.since, now), trees = worktrees(main);
+    const settings = kitSettings(root), pick = name => settings[name] || null;
     const head = gitText(root, ["rev-parse", "HEAD"]);
     const then = gitText(root, ["rev-list", "-1", "--first-parent", `--before=${start.toISOString()}`, "HEAD"]);
     let known = [];
     try { known = JSON.parse(readFileSync(join(root, "tests/known-failures.json"), "utf8")); } catch { /* No registry: none known. */ }
     const thenLabel = then ? `${then.slice(0, 9)}, the last commit before the window` : "an empty tree (no commit before the window)";
     const sections = [
-      ...codeSections(readTree(root, head), readTree(root, then)),
+      ...codeSections(readTree(root, head), readTree(root, then), pick("sharedFile")),
       ...testSections(prRuns(trees, start), Array.isArray(known) ? known : [], trees.length),
       reviewSection(main, start),
-      correctionsSection(root, then, head),
-      staleDebtSection(root, now),
+      correctionsSection(root, then, head, pick("maps")),
+      staleDebtSection(root, now, pick("techDebt")),
     ];
     const date = localDate(new Date(now));
     const { markdown } = composeBundle([`# Sweep bundle ${date}`, "",

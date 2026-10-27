@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { loadTickets } from "../tickets.mjs";
 
-const { kitRoot, kitResult } = await import(
+const { kitBranch, kitRoot, kitResult, kitSettings } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const usage = "Usage: kit status [map] [--ref <ref>] [--no-fetch] [--help]\n";
@@ -29,7 +29,7 @@ function options(args) {
     else if (!arg.startsWith("-") && /^[\w-]+$/.test(arg) && map === undefined) map = arg;
     else throw new Error(`invalid argument: ${arg}`);
   }
-  return { map, ref: ref ?? "origin/dev", noFetch, help };
+  return { map, ref, noFetch, help };
 }
 
 function reason(error) {
@@ -72,9 +72,9 @@ function ticketPR(ticket, prs) {
     .sort((a, b) => rank(a.state) - rank(b.state) || b.number - a.number)[0];
 }
 
-async function preview() {
+async function preview(address) {
   try {
-    const url = new URL(process.env.KIT_PREVIEW_URL || "https://preview-editor.techies.tools");
+    const url = new URL(address);
     url.searchParams.set("kit", String(Date.now()));
     const response = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(10_000) });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -97,8 +97,18 @@ async function status(args) {
     return 2;
   }
   if (flags.help) { process.stdout.write(usage); return 0; }
-  const { map, ref, noFetch } = flags;
+  const { map, noFetch } = flags;
   const root = kitRoot(), notes = [];
+  let settings;
+  try { settings = kitSettings(root); }
+  catch (error) {
+    console.error(cut(error.message, 100));
+    result("fail", error.message);
+    return 1;
+  }
+  const ref = flags.ref ?? `origin/${kitBranch("land", settings)}`;
+  // No preview address: the preview row is left out.
+  const address = process.env.KIT_PREVIEW_URL || settings.preview;
   const git = args => command("git", ["-C", root, ...args], root);
   const onRef = async oid => {
     if (!/^[0-9a-f]{40}$/.test(oid || "")) return "";
@@ -112,7 +122,8 @@ async function status(args) {
       try { await git(["fetch", "-q", "origin"]); }
       catch { notes.push(`fetch failed; using cached ${ref}`); }
     }
-    const { tickets } = loadTickets("docs/wayfinder", map, { ref, cwd: root });
+    // No maps folder: no ticket rows, with a line saying why.
+    const { tickets } = settings.maps ? loadTickets(settings.maps, map, { ref, cwd: root }) : { tickets: [] };
     const sha = await git(["rev-parse", "--verify", `${ref}^{commit}`]);
     const branch = ref.replace(/^(?:refs\/remotes\/)?origin\//, "").replace(/^refs\/heads\//, "");
     const gh = process.env.KIT_STATUS_GH || "gh";
@@ -128,7 +139,7 @@ async function status(args) {
         if (!Array.isArray(data.prs) || !Array.isArray(data.runs)) throw new Error("invalid gh response");
         return data;
       }).catch(error => ({ prs: [], runs: [], unavailable: reason(error) })),
-      preview(),
+      address ? preview(address) : {},
     ]);
     if (github.unavailable) notes.push(`gh unavailable (${github.unavailable}); PR and CI unknown`);
     if (live.note) notes.push(live.note);
@@ -136,7 +147,8 @@ async function status(args) {
     const older = !currentRuns.length && github.runs.length > 0;
     const branchCI = github.unavailable ? "?" : ci(latest(currentRuns.length ? currentRuns : github.runs.slice(0, 1)));
     print(`ref ${ref} ${sha.slice(0, 7)}  ${branch} CI: ${branchCI}${older ? " (older sha)" : ""}`);
-    print(live.line);
+    if (live.line) print(live.line);
+    if (!settings.maps) print("tickets: none (no maps folder in scripts/agents/kit.json)");
     for (const note of notes) print(`note: ${note}`);
     const widths = [32, 15, 10, 21, 4];
     const row = cells => print(cells.map((cell, i) => cut(cell, widths[i]).padEnd(widths[i])).join("  ").trimEnd());

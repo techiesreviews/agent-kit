@@ -3,24 +3,31 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { kitResult } from "../kit-lib.mjs";
+import { kitBranch, kitDevRoot, kitResult, kitSettings } from "../kit-lib.mjs";
 import { loadTickets, parseTicket, resolveTickets } from "../tickets.mjs";
+
+// Settings from scripts/agents/kit.json; an unreadable file still lets --help print, with placeholders.
+let settings = null, settingsProblem = "";
+try { settings = kitSettings(); } catch (error) { settingsProblem = error.message; }
+const land = settings ? kitBranch("land", settings) : "<land>";
+const mapsDir = settings?.maps || "";
+const devRoot = settings ? kitDevRoot(settings) : process.env.KIT_DEV_ROOT || null;
 
 const usage = `Usage: kit next [map…] [--start] [--max N]
        kit next --run-group --branch BRANCH --builder MODEL --ticket FILE [--ticket FILE…]
 Lists the running slices (running:), the open frontier tickets that may start now (next:)
 and why the rest wait (waits:),
-read from origin/dev in the dev worktree and the running slice-* jobs of every worktree.
+read from origin/${land} in the dev worktree and the running slice-* jobs of every worktree.
 Maps go in the order given, else alphabetical; tickets by number within a map.
 Tickets sharing a group: slug are one hand-out (next: group <slug> tickets=…) once every open one
 may start; a blocker inside the group counts as met, as its slices run in blocked_by order.
---start claims each next: ticket or group on dev (assignee, commit, push), makes its worktree and
+--start claims each next: ticket or group on ${land} (assignee, commit, push), makes its worktree and
 starts its kit slice under kit bg (a group: one job running its slices in order through
 --run-group); delegated (opencode/…) tickets are only claimed.
 --max N lowers the cap of 5 running slices; it never raises it.
 --run-group runs kit slice for each ticket in order here, stopping at the first failure: the first
-on BRANCH, each later one on its own BRANCH-<NN> from the fetched origin/dev. A rerun skips
-tickets closed on origin/dev or merged by their saved slice and resumes a slice with saved state
+on BRANCH, each later one on its own BRANCH-<NN> from the fetched origin/${land}. A rerun skips
+tickets closed on origin/${land} or merged by their saved slice and resumes a slice with saved state
 on its branch.`;
 
 // Pins quoted from docs/agents/kitchen.md#who-cooks-pins-from-2026-10-22:
@@ -30,9 +37,9 @@ on its branch.`;
 const pins = { "": "claude-opus-5-5", claude: "claude-opus-5-5", sol: "claude-opus-5-5" };
 const reviewModel = "claude-opus-5-5";
 const cap = 5;
-const mainTs = "src/main.ts";
+// sharedFile: the one file two slices may share (rule 3); none when unset.
+const mainTs = settings?.sharedFile || null;
 
-const devRoot = process.env.KIT_DEV_ROOT || "/home/ubulex/Projects/native-site-editor-dev";
 // Test seams: a fake kit (bg --list and bg <name>) and a fake worktree.sh.
 const fakeKit = process.env.KIT_NEXT_KIT;
 const worktreeScript = process.env.KIT_NEXT_WORKTREE || resolve(import.meta.dirname, "../worktree.sh");
@@ -87,7 +94,7 @@ function builderFor(builder) {
 
 // The build README names the owner prefix (`prefix: sf`) and holds `**Not started:**` until the lead starts the build.
 function buildReadme(map) {
-  const show = run("git", ["-C", devRoot, "show", `origin/dev:docs/wayfinder/${map}/build/README.md`]);
+  const show = run("git", ["-C", devRoot, "show", `origin/${land}:${mapsDir}/${map}/build/README.md`]);
   const source = show.status === 0 ? show.stdout : "";
   const prefix = /^prefix:\s*`?([a-z][a-z0-9-]*)`?\s*$/m.exec(source)?.[1] ?? map;
   const top = source.split(/^## /m)[0];
@@ -185,10 +192,10 @@ function runningSlices() {
 
 const inside = (directory, path) => directory.endsWith("/") && (directory === "./" || path.startsWith(directory));
 const overlaps = (a, b) => a === b || inside(a, b) || inside(b, a);
-// src/main.ts is rule 3's alone: two slices may share it, never any other file.
+// The shared file (src/main.ts here) is rule 3's alone: two slices may share it, never any other file.
 const shared = (files, others) => files.find(file => file !== mainTs && others.some(other => other !== mainTs && overlaps(file, other)));
-const inMain = unit => unit.files.some(file => overlaps(file, mainTs));
-const ticketKey = file => file.slice(Math.max(0, file.indexOf("docs/wayfinder/")));
+const inMain = unit => Boolean(mainTs) && unit.files.some(file => overlaps(file, mainTs));
+const ticketKey = file => file.slice(Math.max(0, file.indexOf(`${mapsDir}/`)));
 
 // Apply the fixed rules in order to each hand-out (a ticket or a whole group, with the union of
 // its Files); picked hand-outs count as running. A delegated pick has no kit bg job, so it takes
@@ -249,24 +256,24 @@ function setAssignee(source, owner) {
 }
 
 function push() {
-  if (tryGit(["push", "-q", "origin", "HEAD:dev"])) return "pushed";
+  if (tryGit(["push", "-q", "origin", `HEAD:${land}`])) return "pushed";
   git(["fetch", "-q", "origin"]);
-  if (!tryGit(["rebase", "-q", "origin/dev"])) {
+  if (!tryGit(["rebase", "-q", `origin/${land}`])) {
     tryGit(["rebase", "--abort"]);
-    throw new Error("claim conflicts with origin/dev; rebase aborted");
+    throw new Error(`claim conflicts with origin/${land}; rebase aborted`);
   }
-  git(["push", "-q", "origin", "HEAD:dev"]);
+  git(["push", "-q", "origin", `HEAD:${land}`]);
   return "pushed after rebase";
 }
 
-// Claim on dev: fast-forward, recheck the tickets, fill assignee, commit, push (rebase and retry once).
+// Claim on the land branch: fast-forward, recheck the tickets, fill assignee, commit, push (rebase and retry once).
 // A group's tickets are claimed together in one commit, or not at all.
 function claim(item) {
   git(["fetch", "-q", "origin"]);
-  if (git(["branch", "--show-current"]).trim() !== "dev") throw new Error(`${devRoot} is not on dev`);
+  if (git(["branch", "--show-current"]).trim() !== land) throw new Error(`${devRoot} is not on ${land}`);
   if (git(["status", "--porcelain", "--untracked-files=no"]).trim()) throw new Error(`${devRoot} has uncommitted changes`);
-  if (git(["rev-list", "origin/dev..HEAD"]).trim()) throw new Error(`${devRoot} has commits not on origin/dev`);
-  git(["merge", "-q", "--ff-only", "origin/dev"]);
+  if (git(["rev-list", `origin/${land}..HEAD`]).trim()) throw new Error(`${devRoot} has commits not on origin/${land}`);
+  git(["merge", "-q", "--ff-only", `origin/${land}`]);
   const { tickets, map, group } = item.unit;
   const files = tickets.map(ticket => ticket.file);
   const sources = files.map(file => readFileSync(join(devRoot, file), "utf8"));
@@ -278,7 +285,7 @@ function claim(item) {
   }
   if (group) {
     // A ticket that joined or left the group, or a new outside blocker, makes the plan stale.
-    const loaded = loadTickets("docs/wayfinder", map, { ref: "HEAD", cwd: devRoot });
+    const loaded = loadTickets(mapsDir, map, { ref: "HEAD", cwd: devRoot });
     const now = handOuts(loaded.tickets, resolveTickets(loaded.tickets).frontier).find(candidate => candidate.group === group);
     // A member's builder or type changing meanwhile makes the plan stale too.
     const shape = list => list.map(ticket => `${ticket.file}|${ticket.type}|${builderFor(ticket.builder).label}`).join("\n");
@@ -290,15 +297,15 @@ function claim(item) {
     const how = push();
     return { sha: git(["rev-parse", "--short", "HEAD"]).trim(), how };
   } catch (error) {
-    // Leave dev as origin/dev, so an unpushed claim never blocks the next run.
+    // Leave the land branch as its origin, so an unpushed claim never blocks the next run.
     tryGit(["checkout", "-q", "--", ...files]);
-    tryGit(["reset", "-q", "--keep", "origin/dev"]);
+    tryGit(["reset", "-q", "--keep", `origin/${land}`]);
     throw error;
   }
 }
 
 function start(item) {
-  const made = run(worktreeScript, [item.branch, "origin/dev"], { env: { ...process.env, ASE_OWNER: item.owner } });
+  const made = run(worktreeScript, [item.branch, `origin/${land}`], { env: { ...process.env, ASE_OWNER: item.owner } });
   if (made.status !== 0) throw new Error(`worktree.sh ${item.branch} failed: ${made.stderr.trim().split("\n").at(-1)}`);
   const worktree = made.stdout.trim().split("\n").at(-1);
   console.log(`worktree: ${worktree}`);
@@ -317,9 +324,9 @@ function start(item) {
 
 // A group's one kit bg job: its slices one after the other in this worktree, with one model and a
 // fresh builder session each. kit pr lands each slice by rebase and deletes its branch, so every
-// later slice starts on its own branch from the new origin/dev (<branch>-<NN>, "m<NN>" for a map
+// later slice starts on its own branch from the new origin/<land> (<branch>-<NN>, "m<NN>" for a map
 // ticket): landed work is not reviewed again and fix rounds, counted per branch, start afresh.
-// A rerun skips tickets closed on origin/dev and returns a slice with saved state to its branch.
+// A rerun skips tickets closed on origin/<land> and returns a slice with saved state to its branch.
 function runGroup({ branch, builder, tickets }) {
   const kit = fakeKit || resolve(import.meta.dirname, "../kit");
   const here = process.cwd();
@@ -331,22 +338,22 @@ function runGroup({ branch, builder, tickets }) {
   for (const [i, file] of tickets.entries()) {
     try {
       git(["fetch", "-q", "origin"], here);
-      // Landed: closed on origin/dev, or merged by its slice (kit pr deleted the branch) though
+      // Landed: closed on origin/<land>, or merged by its slice (kit pr deleted the branch) though
       // the builder left the ticket open.
-      const shown = run("git", ["-C", here, "show", `origin/dev:${file}`]);
+      const shown = run("git", ["-C", here, "show", `origin/${land}:${file}`]);
       const closed = shown.status === 0 && parseTicket(shown.stdout, file, "").ticket.status === "closed";
       let merged = false;
       try { merged = JSON.parse(readFileSync(join(here, ".scratch/kit-slice", basename(file, ".md"), "state.json"), "utf8")).finished?.includes("pr") === true; }
       catch { /* No saved slice, or an unreadable one: not landed. */ }
       if (closed || merged) {
-        console.log(`slice ${i + 1}/${tickets.length}: ${file} ${closed ? "closed on origin/dev" : "merged by its saved slice"}, skipped`);
+        console.log(`slice ${i + 1}/${tickets.length}: ${file} ${closed ? `closed on origin/${land}` : "merged by its saved slice"}, skipped`);
         continue;
       }
       const target = i === 0 ? branch : `${branch}-${file.includes("/build/tickets/") ? "" : "m"}${number(basename(file, ".md"))}`;
       if (git(["branch", "--show-current"], here).trim() !== target) {
         if (git(["status", "--porcelain", "--untracked-files=all"], here).trim()) throw new Error("worktree not clean after the previous slice");
         const saved = existsSync(join(here, ".scratch/kit-slice", basename(file, ".md"), "state.json"));
-        git(i === 0 || saved ? ["switch", "-q", target] : ["switch", "-q", "-C", target, "origin/dev"], here);
+        git(i === 0 || saved ? ["switch", "-q", target] : ["switch", "-q", "-C", target, `origin/${land}`], here);
       }
     } catch (error) { return stop(file, i, error.message); }
     console.log(`slice ${i + 1}/${tickets.length}: ${file}`);
@@ -368,11 +375,14 @@ function main(args) {
     return;
   }
   if (flags.help) { console.log(usage); return; }
+  if (!settings) throw new Error(settingsProblem);
   if (flags.runGroup) { runGroup(flags); return; }
-  if (!tryGit(["fetch", "-q", "origin"])) console.log("problem: fetch failed; using the local origin/dev");
+  if (!devRoot) throw new Error("needs a dev worktree; add devRoot to scripts/agents/kit.json");
+  if (!mapsDir) throw new Error("needs a maps folder; add maps to scripts/agents/kit.json");
+  if (!tryGit(["fetch", "-q", "origin"])) console.log(`problem: fetch failed; using the local origin/${land}`);
   const candidates = [], problems = [];
   for (const map of flags.maps.length ? flags.maps : [undefined]) {
-    const loaded = loadTickets("docs/wayfinder", map, { ref: "origin/dev", cwd: devRoot });
+    const loaded = loadTickets(mapsDir, map, { ref: `origin/${land}`, cwd: devRoot });
     const resolved = resolveTickets(loaded.tickets);
     problems.push(...loaded.problems, ...resolved.problems);
     const readmes = new Map();

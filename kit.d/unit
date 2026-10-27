@@ -5,11 +5,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, posix, resolve } from "node:path";
 import { graphFile, importsOf } from "../specs-affected.mjs";
 import { unitCounts } from "../unit-summary.mjs";
-import { kitRoot, kitResult, nodeEnv } from "../kit-lib.mjs";
+import { kitBranch, kitRoot, kitResult, nodeEnv } from "../kit-lib.mjs";
 
 const usage = `Usage: kit unit [files…] [--list]
        kit unit --affected [--base REF] [--list]
-Default base: origin/dev. No files runs the full unit suite through unit.sh.
+Default base: origin/<land> (branches.land in scripts/agents/kit.json). No files runs the full unit suite through unit.sh.
 --affected follows relative imports transitively; prints each file and its reason.
 --list prints selection reasons and runs nothing.
 `;
@@ -44,7 +44,7 @@ function dependency(file, specifier, known) {
     .find(path => moduleFile(path) && known.has(path));
 }
 function affected(root, files, base) {
-  const ancestor = git(root, ["merge-base", base ?? "origin/dev", "HEAD"]).trim();
+  const ancestor = git(root, ["merge-base", base ?? `origin/${kitBranch()}`, "HEAD"]).trim();
   const changed = new Set([
     ...paths(root, ["diff", "--name-only", "-z", ancestor, "HEAD"]),
     ...paths(root, ["diff", "--name-only", "-z"]),

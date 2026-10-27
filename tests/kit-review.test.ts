@@ -96,6 +96,9 @@ function fixture(t: { after: (fn: () => void) => void }) {
   git("init", "-b", "feature/review");
   git("config", "user.name", "Test"); git("config", "user.email", "test@example.com");
   const commits: string[] = [];
+  mkdirSync(join(root, "scripts/agents"), { recursive: true });
+  writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify({ project: "kit-review", branches: { land: "dev" }, standards: "CODING_STANDARDS.md" }));
+  git("add", "scripts/agents/kit.json");
   for (const text of ["base", "first", "second"]) {
     writeFileSync(join(root, "file.txt"), `${text}\n`);
     git("add", "file.txt"); git("commit", "-m", text);
@@ -137,7 +140,7 @@ test("kit review help states default scope; invalid flags exit 2 with one RESULT
   for (const front of [false, true]) {
     const help = f.run(["--help"], {}, front);
     assert.equal(help.status, 0, help.stderr);
-    assert.match(help.stdout, /Default scope: --base origin\/dev/);
+    assert.match(help.stdout, /Default scope: --base origin\/<land> \(branches\.land in scripts\/agents\/kit\.json\)/);
     assert.match(help.stdout, /ASE_REVIEW_MODEL or claude-opus-5-5/);
     assert.doesNotMatch(help.stdout, /RESULT:/);
   }

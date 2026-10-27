@@ -6,11 +6,11 @@ import { pathToFileURL } from "node:url";
 import { scorePage } from "../score-page.mjs";
 import { loadTickets } from "../tickets.mjs";
 
-const { kitRoot, kitMainRoot, kitResult, costTotal } = await import(
+const { kitRoot, kitMainRoot, kitMaps, kitResult, costTotal } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const usage = "Usage: kit score [map] [--json] [--snapshot] [--html [--out FILE]]\nRecords: main root .scratch/scoreboard/<map>/<ticket-slug>.json (no map: every map with records).\n" +
-  "--json prints the merged data; --snapshot writes docs/wayfinder/<map>/build/scoreboard.json for the lead to commit.\n" +
+  "--json prints the merged data; --snapshot writes <maps>/<map>/build/scoreboard.json for the lead to commit.\n" +
   "--html writes the build's page (one self-contained HTML file) to main root .scratch/scoreboard/<map>/page.html or FILE and prints its path.\n";
 
 function options(args) {
@@ -69,7 +69,7 @@ function totals(pieces, key) {
   return Object.fromEntries(Object.entries(groups).sort(([a], [b]) => a.localeCompare(b)));
 }
 
-function mapData(map, main, root) {
+function mapData(map, main, root, maps) {
   const folder = join(main, ".scratch/scoreboard", map), pieces = [];
   const names = existsSync(folder) ? readdirSync(folder).filter(name => name.endsWith(".json")).sort() : [];
   for (const name of names) {
@@ -77,7 +77,7 @@ function mapData(map, main, root) {
     catch (error) { console.error(`problem: scoreboard ${join(folder, name)} unreadable (${error.message})`); }
   }
   let feedback = null;
-  try { feedback = readFileSync(join(root, "docs/wayfinder", map, "build/feedback.md"), "utf8"); } catch { /* No feedback log yet. */ }
+  try { feedback = readFileSync(join(root, maps, map, "build/feedback.md"), "utf8"); } catch { /* No feedback log yet. */ }
   return { map, pieces, totals: { builders: totals(pieces, item => label(item.builder)), kinds: totals(pieces, item => item.kind || "unknown") }, feedback };
 }
 
@@ -90,8 +90,8 @@ function writeAtomic(path, text) {
 }
 
 // Finished builds are maps with a committed scoreboard snapshot, oldest first by their last merge.
-function finishedBuilds(root) {
-  const folder = join(root, "docs/wayfinder"), builds = [];
+function finishedBuilds(root, maps) {
+  const folder = join(root, maps), builds = [];
   for (const map of existsSync(folder) ? readdirSync(folder).sort() : []) {
     let snapshot;
     try { snapshot = JSON.parse(readFileSync(join(folder, map, "build/scoreboard.json"), "utf8")); } catch { continue; }
@@ -103,12 +103,12 @@ function finishedBuilds(root) {
   return builds.sort((a, b) => a.at.localeCompare(b.at) || a.map.localeCompare(b.map));
 }
 
-function page(data, root, out) {
+function page(data, root, maps, out) {
   // Every ticket of the map: build tickets are the pieces, and a fix may name a map ticket.
-  const { tickets } = loadTickets(join(root, "docs/wayfinder"), data.map);
+  const { tickets } = loadTickets(join(root, maps), data.map);
   const pieces = data.pieces.map(item => ({ ...item, who: label(item.builder) }));
   mkdirSync(dirname(out), { recursive: true });
-  writeAtomic(out, scorePage({ data: { ...data, pieces }, tickets, builds: finishedBuilds(root) }));
+  writeAtomic(out, scorePage({ data: { ...data, pieces }, tickets, builds: finishedBuilds(root, maps) }));
 }
 
 const findingsText = findings => Object.entries(findings).map(([kind, count]) => `${kind} ${count}`).join(", ") || "none";
@@ -141,21 +141,21 @@ function score(args) {
   try { flags = options(args); }
   catch (error) { process.stderr.write(usage); kitResult("fail", `score ${error.message}`); return 2; }
   try {
-    const main = resolve(kitMainRoot()), root = resolve(kitRoot()), parent = join(main, ".scratch/scoreboard");
+    const main = resolve(kitMainRoot()), root = resolve(kitRoot()), parent = join(main, ".scratch/scoreboard"), mapsDir = kitMaps();
     const maps = flags.map ? [flags.map] : existsSync(parent) ? readdirSync(parent).filter(name => statSync(join(parent, name)).isDirectory()).sort() : [];
-    const data = maps.map(map => mapData(map, main, root)).filter(item => flags.map || item.pieces.length);
+    const data = maps.map(map => mapData(map, main, root, mapsDir)).filter(item => flags.map || item.pieces.length);
     if (flags.snapshot) {
-      const map = join(root, "docs/wayfinder", flags.map);
-      if (!existsSync(join(map, "build"))) throw new Error(`no build folder for map ${flags.map} (docs/wayfinder/${flags.map}/build)`);
+      const map = join(root, mapsDir, flags.map);
+      if (!existsSync(join(map, "build"))) throw new Error(`no build folder for map ${flags.map} (${mapsDir}/${flags.map}/build)`);
       const path = join(map, "build/scoreboard.json");
       writeAtomic(path, JSON.stringify(data[0], null, 2) + "\n");
       // --json keeps stdout to the data alone.
       (flags.json ? console.error : console.log)(`snapshot: ${relative(root, path)}`);
     }
     if (flags.html) {
-      if (!existsSync(join(root, "docs/wayfinder", flags.map))) throw new Error(`no map ${flags.map} (docs/wayfinder/${flags.map})`);
+      if (!existsSync(join(root, mapsDir, flags.map))) throw new Error(`no map ${flags.map} (${mapsDir}/${flags.map})`);
       const out = flags.out ? resolve(flags.out) : join(main, ".scratch/scoreboard", flags.map, "page.html");
-      page(data[0], root, out);
+      page(data[0], root, mapsDir, out);
       (flags.json ? console.error : console.log)(`page: ${out}`);
     }
     const count = data.reduce((sum, item) => sum + item.pieces.length, 0);
