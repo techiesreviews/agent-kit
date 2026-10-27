@@ -632,11 +632,15 @@ test("saved and fresh reviews stop on findings before CI or merge, capped at 15 
   }
 });
 
-test("saved and fresh clean reviews still wait for CI and merge", t => {
+// Slice 12: a Standards group holding only a no-section-applies sentence is a note, so the review is clean.
+const notesReview = "REVIEW_STATUS: complete\nDefects:\nSpec: none.\nStandards:\nNo section of CODING_STANDARDS.md applies to this change.\nValidation gaps: none.\nOptional nits: none.\n";
+
+for (const report of [cleanReview, notesReview]) test(`saved and fresh clean reviews still wait for CI and merge (notes=${report === notesReview})`, t => {
   for (const source of ["saved", "fresh"]) {
     const f = fixture(t);
-    if (source === "saved") f.saveReview(cleanReview);
-    const result = f.run();
+    if (source === "saved") f.saveReview(report);
+    const result = f.run([], { FAKE_REVIEW: report });
+    assert.doesNotMatch(result.stdout, /open findings/);
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /review: ok\n/);
     assert.match(result.stdout, /RESULT: ok merged #73/);

@@ -71,7 +71,8 @@ export function openFindings(resultMd) {
   // labelSection: the section was opened by a "Spec defects" / "Standards defects" heading.
   let notes = false, fresh = false, labelSection = false;
   const listItem = raw => /^\s*(?:[-+*]|\d+[.)])\s+/.test(raw);
-  // A leading single `*` or `_` emphasis (`*Spec*`, `_Standards:_ none`) is cleaned like bold.
+  // A leading single `*` or `_` emphasis (`*Spec*`, `_Standards:_ none`) is removed, so such a heading
+  // opens its group; the late-label check below still looks for `#` or bold only.
   const clean = text => text.trim().replace(/^#{1,6}\s+/, "").replace(/\*\*|__/g, "")
     .replace(/^(?:[-+*]|\d+[.)])\s+/, "").replace(/^([*_])([^*_\s][^*_]*?)\1(?![*_\w])/, "$2").trim();
   const none = text => /^none\b/i.test(text);
@@ -80,8 +81,9 @@ export function openFindings(resultMd) {
   const flush = () => {
     if (pending && !none(pending.text)) {
       const gap = pending.group === "Validation gaps", found = gap ? { severity: null, kind: null } : classify(pending.text);
-      // A located line with no severity still blocks (fail closed).
-      if (gap || found.severity || LOCATION.test(pending.text)) findings.push({ group: pending.group, text: pending.text, ...found });
+      // Gaps, located lines and lines naming a P0–P3 anywhere are findings (an unread severity still
+      // blocks, fail closed); other defects lines are notes.
+      if (gap || /\bP[0-3]\b/i.test(pending.text) || LOCATION.test(pending.text)) findings.push({ group: pending.group, text: pending.text, ...found });
       else prose.push({ group: pending.group, text: pending.text });
     }
     pending = undefined;

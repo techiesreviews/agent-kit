@@ -558,6 +558,13 @@ test("single * and _ emphasis headings open their group like bold and # forms", 
   assert.deepEqual(openFindings(review("Defects:\n_Standards_: none.\nValidation gaps: none.")), { findings: [], notes: [], readable: true });
 });
 
+test("an unlocated line naming its severity past 80 characters still blocks with severity none", () => {
+  const text = `${"x".repeat(80)} P1 late severity`;
+  const { findings, notes } = openFindings(review(`Defects:\nSpec:\n- ${text}\nValidation gaps: none.`));
+  assert.deepEqual([findings, notes], [[finding("Spec", text)], []]);
+  assert.deepEqual(blockingFindings(findings), findings);
+});
+
 test("a located line with no severity still blocks; a missing REVIEW_STATUS is still unreadable", () => {
   for (const text of ["a.ts:1 the guard is missing.", "`abcd123:src/a.ts:4-9` — the guard is missing."]) {
     const { findings, notes } = openFindings(review(`Defects:\nStandards:\n- ${text}\nValidation gaps: none.`));

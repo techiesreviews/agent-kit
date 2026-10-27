@@ -218,6 +218,11 @@ test("kit review writes findings.json with kinds and counts, or unreadable for a
     counts: { kind: { fault: 0, ticket: 1, race: 0, style: 1, unsorted: 1, gap: 1 }, severity: { P0: 0, P1: 1, P2: 1, P3: 1, none: 0, gap: 1 } },
     notes: 0,
   });
+  const noted = f.run([], { FAKE_REPORT: "REVIEW_STATUS: complete\nDefects:\nStandards:\nNo section of CODING_STANDARDS.md applies to this change.\nValidation gaps: none.\n" });
+  assert.equal(noted.status, 0, noted.stderr);
+  assert.match(noted.stdout, /^findings 0$/m);
+  const notedRecord = JSON.parse(readFileSync(join(f.evidence(noted.stdout), "findings.json"), "utf8"));
+  assert.deepEqual([notedRecord.findings, notedRecord.notes], [[], 1]);
   const unreadable = f.run([], { FAKE_REPORT: "REVIEW_STATUS: complete\nLooks fine to me.\n" });
   assert.equal(unreadable.status, 0, unreadable.stderr);
   assert.match(unreadable.stdout, /^findings unreadable$/m);
