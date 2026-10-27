@@ -1,6 +1,7 @@
 // Which local checks `kit pr` runs: the highest tier any changed path reaches. CI on GitHub is the backstop.
 // The path patterns, the feature list and the docs-guard tests come from scripts/agents/kit.json
 // (`paths`, `featureList`, `unit.docsGuards`); a missing key means no path reaches that tier or guard.
+// `paths.kit` marks kit plumbing (it runs `checks.extra`); `paths.unitTests` marks the unit test files.
 import { kitSettings } from "./kit-lib.mjs";
 
 const order = ["docs", "css", "tests", "full"];
@@ -14,13 +15,14 @@ function rules(settings = kitSettings()) {
       catch (error) { throw new Error(`paths.${name} in scripts/agents/kit.json: ${error.message}`); }
     });
     compiled.set(settings, { docs: patterns("docs"), tests: patterns("tests"), css: patterns("css"), visible: patterns("visible"),
-      featureList: settings.featureList || null, docsGuards: settings.unit?.docsGuards ?? [] });
+      kit: patterns("kit"), unitTests: patterns("unitTests"), featureList: settings.featureList || null, docsGuards: settings.unit?.docsGuards ?? [] });
   }
   return compiled.get(settings);
 }
 const matches = (patterns, path) => patterns.some(pattern => pattern.test(path));
 
-const unitTest = path => /^tests\/[^/]+\.test\.ts$/.test(path);
+/** A unit test file (`paths.unitTests`); with no patterns, no file is one. */
+export const unitTestFile = (path, settings) => matches(rules(settings).unitTests, path);
 
 /** Tier of one changed path; a deleted stylesheet may still be imported, so it counts as code. */
 export function pathTier({ status, path }, settings) {
@@ -63,8 +65,8 @@ export function parseChanges(text) {
 /** Pick the tier and a one-line reason, e.g. `docs (12 files, all docs)`. */
 export function classify(changes, { full = false, settings } = {}) {
   const count = `${changes.length} file${changes.length === 1 ? "" : "s"}`;
-  const cleanGuard = changes.some(({ path }) => /^scripts\/agents\//.test(path) || /^tests\/kit-.*\.test\.ts$/.test(path))
-    ? { cleanGuard: true } : {};
+  const { kit } = rules(settings);
+  const cleanGuard = changes.some(({ path }) => matches(kit, path)) ? { cleanGuard: true } : {};
   if (full) return { tier: "full", reason: `${count}, --full`, docs: false, ...cleanGuard };
   if (!changes.length) return { tier: "full", reason: "no changed files", docs: false };
   const tiers = changes.map(change => pathTier(change, settings));
@@ -88,7 +90,7 @@ export function focusedUnitFiles(changes, plan, sources, settings) {
   const tests = Object.keys(sources);
   if (plan.tier === "tests") for (const change of changes) {
     if (pathTier(change, settings) !== "tests") continue;
-    if (unitTest(change.path)) { if (change.status !== "D" && tests.includes(change.path)) files.add(change.path); continue; }
+    if (unitTestFile(change.path, settings)) { if (change.status !== "D" && tests.includes(change.path)) files.add(change.path); continue; }
     const name = key(change.path);
     if (name.length >= 3) for (const test of tests) if (sources[test].includes(name)) files.add(test);
   }

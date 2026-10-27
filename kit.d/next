@@ -180,7 +180,7 @@ function runningSlices() {
       // Each ticket is read on its own, so one unreadable ticket leaves the others' Files counting.
       // A group job keeps the Files of members that already landed until it ends: safe, if broad.
       const tickets = words.flatMap((word, i) => word === "--ticket" && words[i + 1] ? [words[i + 1]] : []).flatMap(file => {
-        const map = /(?:^|\/)docs\/wayfinder\/([^/]+)\//.exec(file)?.[1] ?? "";
+        const map = mapOf(file);
         try { return [parseTicket(readFileSync(resolve(cwd, file), "utf8"), file, map).ticket]; }
         catch { return []; }
       });
@@ -196,6 +196,11 @@ const overlaps = (a, b) => a === b || inside(a, b) || inside(b, a);
 const shared = (files, others) => files.find(file => file !== mainTs && others.some(other => other !== mainTs && overlaps(file, other)));
 const inMain = unit => Boolean(mainTs) && unit.files.some(file => overlaps(file, mainTs));
 const ticketKey = file => file.slice(Math.max(0, file.indexOf(`${mapsDir}/`)));
+// The map a ticket path names: the folder right after the maps folder, as ticketKey cuts it; else "".
+const mapOf = file => {
+  const key = ticketKey(file);
+  return key.startsWith(`${mapsDir}/`) ? /^([^/]+)\//.exec(key.slice(mapsDir.length + 1))?.[1] ?? "" : "";
+};
 
 // Apply the fixed rules in order to each hand-out (a ticket or a whole group, with the union of
 // its Files); picked hand-outs count as running. A delegated pick has no kit bg job, so it takes

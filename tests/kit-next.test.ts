@@ -812,3 +812,16 @@ test("runs_alone on one member applies to the whole group", t => {
     "RESULT: ok next 0 ready, 1 waiting",
   ]);
 });
+
+test("a maps folder other than docs/wayfinder still gives a running slice its map, so runs_alone waits", t => {
+  const plan = (slug: string) => `plans/alpha/build/tickets/${slug}.md`;
+  const { running, lines } = fixture(t, {
+    [plan("01-run")]: ticket({ assignee: "alpha-01", files: ["a/one.ts"] }),
+    [plan("02-alone")]: ticket({ runsAlone: true, files: ["a/two.ts"] }),
+  }, "dev", { maps: "plans" });
+  running("slice-alpha01", plan("01-run"));
+  assert.deepEqual(lines("alpha"), [
+    `waits: ${plan("02-alone")} runs alone; waits for slice-alpha01`,
+    "RESULT: ok next 0 ready, 1 waiting",
+  ]);
+});

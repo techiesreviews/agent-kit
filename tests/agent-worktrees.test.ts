@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import test from "node:test";
 // @ts-expect-error The script is plain JavaScript without declarations.
 import { options, parseWorktrees, pathInside, pruneDecision, pruneWorktree } from "../scripts/agents/worktrees.mjs";
@@ -104,4 +108,29 @@ test("pruning preserves a changed HEAD and never removes after a failed dirty ch
     status: async () => { throw new Error("status unavailable"); },
   }), /status unavailable/);
   assert.equal(removed, false);
+});
+
+test("worktrees.sh protects the devRoot worktree and the land branch from the settings file", t => {
+  const dir = mkdtempSync(join(tmpdir(), "agent-worktrees-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const env: NodeJS.ProcessEnv = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.com", GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.com" };
+  for (const key of ["KIT_ROOT", "KIT_DEV_ROOT", "KIT_MAIN_ROOT"]) delete env[key];
+  const root = join(dir, "site"), devRoot = join(dir, "site-checkout");
+  const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  mkdirSync(join(root, "scripts/agents"), { recursive: true });
+  writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify({ project: "site", branches: { land: "main" }, devRoot }));
+  git("init", "-q", "-b", "main"); git("add", "-A"); git("commit", "-q", "-m", "base");
+  // The main checkout moves off main, so main lives in a linked worktree; dev is an ordinary branch here.
+  git("switch", "-q", "-c", "home");
+  git("worktree", "add", "-q", join(dir, "on-main"), "main");
+  git("worktree", "add", "-q", "-b", "feature/dev", devRoot);
+  git("worktree", "add", "-q", "-b", "dev", join(dir, "on-dev"));
+  const result = spawnSync("bash", [resolve("scripts/agents/worktrees.sh")], { cwd: root, env, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  const decision = (branch: string) => result.stdout.split("\n").find(line => line.includes(`\tbranch=${JSON.stringify(branch)}\t`))?.split("\t").at(-1);
+  assert.equal(decision("main"), "protected");
+  assert.equal(decision("feature/dev"), "protected");
+  assert.notEqual(decision("dev"), "protected");
+  assert.equal(result.stdout.trimEnd().split("\n").at(-1), "Branches kept. Review git branch --merged origin/main, then git branch -d <branch>.");
 });

@@ -6,12 +6,12 @@ import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterFixRounds, blockingFindings, completedFixRounds, FIX_ROUNDS, openFindings, reviewCoversHead, sameReviewPatch } from "../review-findings.mjs";
-import { projectCommand } from "../review-brief.mjs";
+import { projectCommand, spoken } from "../review-brief.mjs";
 
 const { kitBranch, kitHome, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, nodeEnv, kitScore } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const { checkSteps, classify, doneHeading, featureListGuard, featureListProblem, focusedUnitFiles, parseChanges } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
+const { checkSteps, classify, doneHeading, featureListGuard, featureListProblem, focusedUnitFiles, parseChanges, unitTestFile } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
 const usage = 'Usage: kit pr [--base <land>] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release] [--full] [--waive "<reason>"]\nBranches come from scripts/agents/kit.json: --base defaults to branches.land; --release needs --base branches.release.\n--waive requires a *-lead owner; records the reason for merging with open findings or without a feature-list update.\n';
 const kit = process.env.KIT_PR_KIT || resolve(import.meta.dirname, "../kit");
 
@@ -59,6 +59,14 @@ async function savedReview(head, base, patchId, ticket, root) {
     currentId ??= await patchId(base, head);
     if (sameReviewPatch(await patchId(reviewedBase, reviewedHead), currentId)) return { folder, samePatch: true };
   }
+}
+
+/** `checks.extra` as a list of commands: a string is a one-item list, anything else but a list of strings fails. */
+function extraChecks(extra) {
+  if (extra === undefined) return [];
+  if (typeof extra === "string") return [extra];
+  if (Array.isArray(extra) && extra.every(item => typeof item === "string")) return extra;
+  throw new Error("checks.extra must be a list of commands");
 }
 
 const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
@@ -225,6 +233,7 @@ async function main(args) {
     // A project that lands on its release branch (land and release both main) opens ordinary PRs into it.
     if (release && release !== kitBranch("land", settings) && flags.base === release && !flags.release) throw new Error(`--base ${release} requires --release`);
     if (flags.release && flags.base !== release) throw new Error(`--release requires --base ${release}`);
+    const checks = settings.checks ?? {}, extra = extraChecks(checks.extra);
     await git("guards", ["check-ref-format", `refs/heads/${flags.base}`]);
     if (await git("guards", ["status", "--porcelain"])) throw new Error("uncommitted changes");
     // A project with no remote (research 02: astro-live-builder, tidy) has nowhere to open a PR.
@@ -271,10 +280,10 @@ async function main(args) {
       throw new Error(featureListProblem(settings));
     }
     const tests = [`Tier: ${plan.tier} (${plan.reason})`, ...(features.line ? [features.line] : []), ""];
-    const sources = () => Object.fromEntries(readdirSync(join(root, "tests")).filter(name => name.endsWith(".test.ts"))
-      .map(name => [`tests/${name}`, readFileSync(join(root, "tests", name), "utf8")]));
+    // The unit test files (paths.unitTests) the focused run picks from, wherever they live.
+    const unitFiles = (await git("tier", ["-c", "core.quotepath=false", "ls-files", "-z"])).split("\0").filter(path => path && unitTestFile(path, settings));
+    const sources = () => Object.fromEntries(unitFiles.map(path => [path, readFileSync(join(root, path), "utf8")]));
     // The project's own check commands (checks in scripts/agents/kit.json): a missing one is skipped with a line.
-    const checks = settings.checks ?? {};
     const parse = text => {
       const [name, ...argv] = typeof text === "string" ? text.trim().split(/\s+/) : [];
       return name ? [[name, argv]] : [];
@@ -286,14 +295,20 @@ async function main(args) {
     };
     const commands = {
       check: () => parse(checks.check), unit: () => parse(checks.test), lint: () => parse(checks.lint),
-      "kit-clean": () => (Array.isArray(checks.extra) ? checks.extra : []).flatMap(parse),
-      colours: () => [["node", ["scripts/check-colours.mjs"]]], tickets: () => [["node", [shared("tickets.mjs"), "check"]]],
+      "kit-clean": () => extra.flatMap(parse),
+      colours: () => parse(checks.css), tickets: () => [["node", [shared("tickets.mjs"), "check"]]],
       "unit-files": () => {
         const files = focusedUnitFiles(changes, plan, sources(), settings);
         return files.length ? [[shared("unit.sh"), files]] : [];
       },
     };
-    const setting = { check: "checks.check", unit: "checks.test", lint: "checks.lint", "kit-clean": "checks.extra" };
+    const setting = { check: "checks.check", unit: "checks.test", lint: "checks.lint", "kit-clean": "checks.extra", colours: "checks.css", "unit-files": "paths.unitTests" };
+    // checks.extra runs only for kit plumbing (paths.kit); without that key it never runs, and says so.
+    if (plan.tier === "full" && extra.length && !settings.paths?.kit?.length) {
+      const line = "kit-clean: skipped (no paths.kit in scripts/agents/kit.json)";
+      console.log(line); tests.push(`- ${line}`);
+    }
+    const hasUnitTests = Boolean(settings.paths?.unitTests?.length);
     // Browser specs are a project command (kit specs); a project without one skips the step.
     const hasSpecs = projectCommand("specs", root, settings);
     for (const id of steps) {
@@ -308,7 +323,7 @@ async function main(args) {
         continue;
       }
       const name = id === "unit-files" ? "unit" : id, list = commands[id]();
-      if (!list.length && id === "unit-files") { console.log("unit: no affected unit tests"); tests.push("- unit: no affected unit tests"); continue; }
+      if (!list.length && id === "unit-files" && hasUnitTests) { console.log("unit: no affected unit tests"); tests.push("- unit: no affected unit tests"); continue; }
       if (!list.length) {
         console.log(`${name}: skipped (no ${setting[id]} in scripts/agents/kit.json)`);
         tests.push(`- ${name}: skipped (no ${setting[id]} in scripts/agents/kit.json)`);
@@ -328,7 +343,9 @@ async function main(args) {
       for (const file of files) if (runsOnPullRequests(await git("ci", ["show", `HEAD:${file}`]))) return true;
       return false;
     };
-    const backstop = await ciWorkflows() ? "CI still runs check, unit tests, lint and smoke browser tests; no Sol review" : "no CI workflow runs them";
+    // Name only the checks this project sets; CI is expected to run the same ones.
+    const ciChecks = [checks.check && "check", checks.test && "unit tests", checks.lint && "lint", hasSpecs && "browser tests"].filter(Boolean);
+    const backstop = !await ciWorkflows() ? "no CI workflow runs them" : ciChecks.length ? `CI still runs ${spoken(ciChecks)}` : "CI still runs its workflows";
     if (skipped.length) tests.push(`- skipped for the ${plan.tier} tier (${backstop}): ${skipped.join(", ")}`);
 
     step = "body";

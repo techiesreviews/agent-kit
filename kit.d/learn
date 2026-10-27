@@ -7,16 +7,16 @@ import { pathToFileURL } from "node:url";
 import { feedbackHeading, feedbackKinds, parseFeedbackLine } from "../tickets.mjs";
 import { composeBundle } from "./ux";
 
-const { kitRoot, kitMainRoot, kitResult } = await import(
+const { kitRoot, kitMainRoot, kitResult, kitSettings } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 
 export const bundleLimit = 40_000;
-export const defaultSlug = "native-site-editor";
 const usage = `Usage: kit learn [--since 14d|Nd|YYYY-MM-DD] [--project <slug>]
 Reads, never writes, the chat project's corrections list <memory>/corrections/<slug>.md (memory is
 KIT_CHAT_MEMORY or CHAT_MEMORY_DIR, else ~/Projects/chat/memory; the slug comes from project-notes/README.md's project
-map by this repo's workspace, default ${defaultSlug}) and this checkout's docs/wayfinder/*/build/feedback.md.
+map by this repo's workspace, else "project" in scripts/agents/kit.json) and this checkout's <maps>/*/build/feedback.md
+(maps in scripts/agents/kit.json; with none, no feedback logs are read).
 Groups corrections that repeat (a repeats: date, or the same kind and close wording), marks each
 group covered? when its key words appear in docs/agents/ux-rulebook.md or docs/agents/guardrails.md,
 and writes main root .scratch/learn/<date>/bundle.md (under ${bundleLimit} bytes). A group counts when
@@ -265,19 +265,22 @@ function learn(args) {
     const root = resolve(kitRoot()), main = resolve(kitMainRoot()), memory = memoryRoot(), now = Date.now(), since = sinceDate(flags.since, now);
     const readme = join(memory, "project-notes/README.md");
     const rows = existsSync(readme) ? projectMap(readFileSync(readme, "utf8")) : [];
-    const slug = flags.project ?? findSlug(rows, [root, main]) ?? defaultSlug;
+    const settings = kitSettings(root);
+    const slug = flags.project ?? findSlug(rows, [root, main]) ?? settings.project;
     const file = join(memory, "corrections", `${slug}.md`);
     const chat = existsSync(file) ? parseCorrections(readFileSync(file, "utf8"), file) : { entries: [], problems: [] };
-    const wayfinder = join(root, "docs/wayfinder");
-    const logs = existsSync(wayfinder) ? readdirSync(wayfinder, { withFileTypes: true }).filter(entry => entry.isDirectory())
-      .map(entry => join(wayfinder, entry.name, "build/feedback.md")).filter(path => existsSync(path)).sort() : [];
+    // The build feedback logs live in the maps folder; a project without one has none.
+    const mapsDir = settings.maps ? join(root, settings.maps) : null;
+    if (!mapsDir) console.log("feedback: skipped (no maps in scripts/agents/kit.json)");
+    const logs = mapsDir && existsSync(mapsDir) ? readdirSync(mapsDir, { withFileTypes: true }).filter(entry => entry.isDirectory())
+      .map(entry => join(mapsDir, entry.name, "build/feedback.md")).filter(path => existsSync(path)).sort() : [];
     const parsedLogs = logs.map(path => parseFeedbackLog(readFileSync(path, "utf8"), path));
     const feedback = { entries: parsedLogs.flatMap(log => log.entries), problems: parsedLogs.flatMap(log => log.problems) };
     const problems = [...chat.problems, ...feedback.problems];
     const entries = [
       ...chat.entries.map(entry => ({ ...entry, origin: "chat", where: `${basename(file)}:${entry.line}`, source: `chat: ${entry.source}` })),
       ...feedback.entries.map(entry => ({ ...entry, origin: "feedback", where: `${relative(root, entry.file)}:${entry.line}`,
-        source: `feedback: ${relative(wayfinder, entry.file).split("/")[0]}` })),
+        source: `feedback: ${relative(mapsDir, entry.file).split("/")[0]}` })),
     ];
     for (const problem of problems) console.log(`${problem.file}:${problem.line}: ${problem.message}`);
     const groups = groupCorrections(entries, rows.map(row => row.slug).filter(other => other !== slug))
@@ -295,7 +298,7 @@ function learn(args) {
     const date = localDate(new Date(now));
     const { markdown } = composeBundle([`# Learning bundle ${date}`, "",
       `Since ${since} (--since ${flags.since}); project ${slug}. Corrections list ${existsSync(file) ? file : `${file} (missing: nothing recorded yet)`},`,
-      `read only; build feedback logs from ${relative(root, wayfinder)}/*/build/feedback.md. ${inWindow} lines in the window, ${repeated.length} groups given more than once.`,
+      `read only; build feedback logs from ${mapsDir ? `${relative(root, mapsDir)}/*/build/feedback.md` : "nowhere (no maps folder)"}. ${inWindow} lines in the window, ${repeated.length} groups given more than once.`,
       "Grouping by close wording and covered? are key-word guesses; the routine confirms each one."], [
       { title: "Given more than once", priority: 9, lines: repeated.length ? repeated.flatMap(group => groupLines(group, root, blocks)) : ["- none"] },
       { title: "Given once", priority: 5, lines: once.length ? once.flatMap(group => groupLines(group, root, blocks)) : ["- none"] },

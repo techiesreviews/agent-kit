@@ -1,8 +1,9 @@
 // Worktree inventory and conservative pruning; invoked by worktrees.sh.
 import { execFile } from "node:child_process";
 import { readFileSync, readdirSync, readlinkSync, realpathSync, statSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
+import { kitBranch, kitDevRoot, kitSettings } from "./kit-lib.mjs";
 
 const exec = promisify(execFile);
 const day = 86400000;
@@ -66,9 +67,9 @@ function processes() {
   return { paths, complete };
 }
 
-async function inspect(worktree, protectedPaths, targets, scan) {
+async function inspect(worktree, protectedPaths, protectedBranches, targets, scan) {
   const path = canonical(worktree.path);
-  const info = { ...worktree, protected: protectedPaths.has(path) || basename(path) === "native-site-editor-dev" || worktree.branch === "dev", owner: "", live: scan.paths.some((cwd) => pathInside(cwd, path)) ? true : scan.complete ? false : null };
+  const info = { ...worktree, protected: protectedPaths.has(path) || protectedBranches.includes(worktree.branch), owner: "", live: scan.paths.some((cwd) => pathInside(cwd, path)) ? true : scan.complete ? false : null };
   try { info.owner = readFileSync(join(path, ".scratch/owner"), "utf8").split(/\r?\n/)[0]; }
   catch (error) { if (error.code !== "ENOENT") info.error = `owner: ${error.message}`; }
   try {
@@ -118,10 +119,13 @@ async function main(args) {
   try {
     const worktrees = parseWorktrees(await git(["worktree", "list", "--porcelain", "-z"]));
     const common = (await git(["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
-    const protectedPaths = new Set([canonical(worktrees[0].path), canonical(dirname(common)), canonical("/home/ubulex/Projects/native-site-editor-dev")]);
+    // The dev worktree (devRoot) and the land and release branches from scripts/agents/kit.json are never pruned.
+    const kit = kitSettings(), devRoot = kitDevRoot(kit);
+    const branches = [...new Set([kitBranch("land", kit), kitBranch("release", kit)].filter(Boolean))];
+    const protectedPaths = new Set([canonical(worktrees[0].path), canonical(dirname(common)), ...(devRoot ? [canonical(devRoot)] : [])]);
     // Pin the local remote-tracking refs for this inventory. No fetch or branch deletion.
     const targets = [];
-    for (const ref of ["refs/remotes/origin/dev", "refs/remotes/origin/main"]) {
+    for (const ref of branches.map(branch => `refs/remotes/origin/${branch}`)) {
       try { targets.push((await git(["rev-parse", "--verify", `${ref}^{commit}`])).trim()); } catch { /* No target means no removal. */ }
     }
     const scan = processes();
@@ -131,7 +135,7 @@ async function main(args) {
     await Promise.all(Array.from({ length: Math.min(8, worktrees.length) }, async () => {
       while (next < worktrees.length) {
         const index = next++;
-        inventories[index] = await inspect(worktrees[index], protectedPaths, targets, scan);
+        inventories[index] = await inspect(worktrees[index], protectedPaths, branches, targets, scan);
       }
     }));
     const yesNo = (value) => value === true ? "yes" : value === false ? "no" : "unknown";
@@ -143,7 +147,7 @@ async function main(args) {
       // Recheck cleanliness, HEAD, age and live cwd immediately before removal.
       try {
         const reason = await pruneWorktree(info, settings.olderThan, {
-          inspect: () => inspect(worktrees[i], protectedPaths, targets, processes()),
+          inspect: () => inspect(worktrees[i], protectedPaths, branches, targets, processes()),
           status: () => git(["-C", info.path, "status", "--porcelain=v1", "--untracked-files=all"]),
           scan: () => processes(),
           remove: () => git(["worktree", "remove", "--", info.path]),
@@ -152,7 +156,8 @@ async function main(args) {
       } catch (error) { console.error(error.message.trim()); process.exitCode = 1; }
     }
     if (settings.prune) await git(["worktree", "prune"]);
-    console.log("Branches kept. Review git branch --merged origin/dev (or origin/main), then git branch -d <branch>.");
+    const merged = branches.map(branch => `origin/${branch}`);
+    console.log(`Branches kept. Review git branch --merged ${merged[0]}${merged.length > 1 ? ` (or ${merged.slice(1).join(", ")})` : ""}, then git branch -d <branch>.`);
   } catch (error) { console.error(error.message.trim()); process.exitCode = 1; }
 }
 

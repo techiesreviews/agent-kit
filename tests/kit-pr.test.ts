@@ -264,6 +264,65 @@ test("checks.extra holds kit-plumbing checks: a diff outside kit files never run
   assert.doesNotMatch(result.stdout, /kit-clean/);
 });
 
+test("a project without checks.css skips the colour step with its line", t => {
+  const f = fixture(t, { "worker/a.css": "a { color: red; }\n" }, { checks: { check: "npm run check", test: "npm test", lint: "npm run lint" } });
+  const result = f.run(["--dry-run"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^tier: css \(1 file, all css\)$/m);
+  assert.match(result.stdout, /^colours: skipped \(no checks\.css in scripts\/agents\/kit\.json\)$/m);
+  assert.equal(f.calls().some(call => call.tool === "check-colours.mjs"), false);
+  assert.match(readFileSync(join(f.logDir(), "body.md"), "utf8"), /^- colours: skipped \(no checks\.css in scripts\/agents\/kit\.json\)$/m);
+});
+
+// A project whose kit plumbing and unit tests live in other folders than this editor's.
+const elsewhere = { project: "kit-other", branches: { land: "dev" }, checks: { check: "npm run check", test: "npm test", extra: "npm run extra-a" },
+  paths: { tests: ["^spec/"], kit: ["^tools/kit/"], unitTests: ["^spec/[^/]+\\.test\\.js$"] } };
+
+test("paths.kit drives the clean guard, and a string checks.extra runs as one command", t => {
+  assert.equal(classify(parseChanges("M\tscripts/agents/x.mjs\nM\ttests/kit-a.test.ts\n"), { settings: elsewhere }).cleanGuard, undefined);
+  assert.equal(classify(parseChanges("M\ttools/kit/x.mjs\n"), { settings: elsewhere }).cleanGuard, true);
+  const f = fixture(t, { "tools/kit/x.mjs": "x\n" }, {}, { settings: elsewhere });
+  const result = f.run(["--dry-run"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(f.calls().filter(call => call.tool === "npm").map(call => call.args.join(" ")), ["run check", "test", "run extra-a"]);
+  assert.match(result.stdout, /^kit-clean: ok$/m);
+});
+
+test("paths.unitTests picks the focused unit files from their own folder", t => {
+  const f = fixture(t, { "spec/a.test.js": "// changed\n", "spec/fakes/thing.js": "export {};\n" }, {}, { settings: elsewhere });
+  // The base gains a unit test naming the changed helper; tests/b.test.ts names it too but is no unit test here.
+  const peer = f.peer();
+  mkdirSync(join(peer, "spec"));
+  writeFileSync(join(peer, "spec/b.test.js"), 'import "./fakes/thing.js";\n');
+  f.gitAt(peer, "add", "."); f.gitAt(peer, "commit", "-m", "Add b"); f.gitAt(peer, "push", "origin", "dev");
+  const result = f.run(["--dry-run"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^tier: tests \(2 files, all tests\)$/m);
+  assert.deepEqual(f.calls().filter(call => call.tool === "unit.sh").map(call => call.args), [["spec/a.test.js", "spec/b.test.js"]]);
+});
+
+test("without paths.unitTests or paths.kit their steps are skipped with a line, and a bad checks.extra fails", t => {
+  const { kit: _kit, unitTests: _unit, ...paths } = elsewhere.paths;
+  const settings = { ...elsewhere, paths };
+  const f = fixture(t, { "spec/a.test.js": "// changed\n" }, {}, { settings });
+  let result = f.run(["--dry-run"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^unit: skipped \(no paths\.unitTests in scripts\/agents\/kit\.json\)$/m);
+  assert.equal(f.calls().some(call => call.tool === "unit.sh"), false);
+  mkdirSync(join(f.root, "tools/kit"), { recursive: true });
+  f.commit("Kit plumbing", "tools/kit/x.mjs");
+  result = f.run(["--dry-run"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^kit-clean: skipped \(no paths\.kit in scripts\/agents\/kit\.json\)$/m);
+  assert.equal(f.calls().some(call => call.tool === "npm" && call.args[1] === "extra-a"), false);
+  for (const extra of [{ run: "npm run extra-a" }, ["npm run extra-a", 1], 7]) {
+    f.commit("Bad extra", "scripts/agents/kit.json", JSON.stringify({ ...settings, checks: { ...settings.checks, extra } }));
+    result = f.run(["--dry-run"]);
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.equal(result.stdout.trimEnd().split("\n").at(-1), "RESULT: fail guards: checks.extra must be a list of commands");
+  }
+});
+
 // techies-playground's minimal settings (research 04): lands on main, checks.test only, node --test, no CI workflow here.
 const playground = { project: "techies-playground", branches: { land: "main", release: "main", ci: "main" }, checks: { test: "npm test" },
   unit: { run: "node --test", files: ["src/**/*.test.js"] } };
@@ -809,7 +868,7 @@ test("a docs-only PR runs only doc guards, skips review, and still waits for CI 
   assert.equal(calls.some(call => call.tool === "fake-kit" && ["review", "specs"].includes(call.args[0])), false);
   assert.ok(calls.some(call => call.tool === "fake-kit" && call.args[0] === "wait"));
   assert.match(f.body(), /Tier: docs \(2 files, all docs\)/);
-  assert.match(f.body(), /skipped for the docs tier \(CI still runs check, unit tests, lint and smoke browser tests; no Sol review\): npm run check, npm test \(all unit tests\), npm run lint, kit specs --affected, kit review/);
+  assert.match(f.body(), /skipped for the docs tier \(CI still runs check, unit tests, lint and browser tests\): npm run check, npm test \(all unit tests\), npm run lint, kit specs --affected, kit review/);
 });
 
 test("a tests-only PR runs check, the affected unit files, lint, specs and the review", t => {

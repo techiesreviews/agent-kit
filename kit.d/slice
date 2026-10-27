@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { afterFixRounds, blockingFindings, completedFixRounds, FIX_ROUNDS, openFindings, reviewCoversHead } from "../review-findings.mjs";
 import { builderChecks, spoken } from "../review-brief.mjs";
 
-const { kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, nodeEnv, commitBuilderWork, builderAuthor, kitScore, scoreCost, scoreReview } = await import(
+const { kitBranch, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, nodeEnv, commitBuilderWork, builderAuthor, kitScore, scoreCost, scoreReview } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const usage = "Usage: kit slice --ticket FILE --builder MODEL [--effort high] [--rounds 3] [--no-pr]\nResume saved phases under .scratch/kit-slice/<ticket-slug>/.\nAfter the code review, kit ux checks touched features: broken or looks off gets one kit fix --note round;\nstill broken stops (decide: ux broken <feature>), looks off lands with UX follow-ups in the ticket.\nQueued PRs are awaited for up to 2h; reruns resume the wait.\nOverrides: ASE_SLICE_AGENT, ASE_SLICE_KIT, ASE_SLICE_GH; ASE_SLICE_MERGE_TIMEOUT_MS, ASE_SLICE_MERGE_POLL_MS.\n";
@@ -40,7 +40,12 @@ async function slice(args) {
     const root = resolve(kitRoot()), env = nodeEnv();
     const git = (...argv) => execFileSync("git", ["-C", root, ...argv], { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
     const branch = git("branch", "--show-current");
-    if (!branch || ["dev", "main"].includes(branch)) throw new Error("use a build branch, not dev, main or detached HEAD");
+    // The land and release branches (scripts/agents/kit.json) are never a slice's branch.
+    let settings = null;
+    try { settings = kitSettings(root); } catch { /* No usable settings: nothing to refuse; the builder's doctor run names the problem. */ }
+    const refused = settings ? [...new Set([kitBranch("land", settings), kitBranch("release", settings)].filter(Boolean))] : [];
+    const not = [...refused, "detached HEAD"];
+    if (!branch || refused.includes(branch)) throw new Error(`use a build branch, not ${not.length > 1 ? `${not.slice(0, -1).join(", ")} or ${not.at(-1)}` : not[0]}`);
     const ticket = resolve(root, flags.ticket);
     const source = readFileSync(ticket, "utf8");
     const section = name => new RegExp(`^## ${name}\\s*\\n([\\s\\S]*?)(?=^## |$(?![\\s\\S]))`, "m").exec(source)?.[1]?.trim();
@@ -244,9 +249,7 @@ async function slice(args) {
     if (!state.finished.includes(phase)) {
       const brief = join(root, ".scratch/agent-brief.md");
       // The contract names only the checks the project sets (builderChecks).
-      let settings = {};
-      try { settings = kitSettings(root); } catch { /* No usable settings: the builder's doctor run names the problem. */ }
-      const { unit, check } = builderChecks(root, settings);
+      const { unit, check } = builderChecks(root, settings ?? {});
       // In a TypeScript project (a tsconfig.json) checks.check is the type check; any other command runs every time.
       const when = existsSync(join(root, "tsconfig.json")) ? "when types moved" : "before handing back";
       const validate = `Validate with ${spoken([unit && "scripts/agents/kit unit --affected", "the ticket's focused checks"].filter(Boolean))}${check ? `; run ${check} ${when}` : ""}.`;

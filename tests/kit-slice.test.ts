@@ -1108,3 +1108,12 @@ test("a rerun after the UX follow-ups commit reuses the saved report: no second 
   assert.equal(ticket.split("- UX (looks off): F-media-01 ").length, 2, ticket);
   assert.doesNotMatch(ticket, /worded another way/);
 });
+
+test("kit slice refuses the land branch of a project that lands on main", t => {
+  const f = fixture(t, { project: "kit-slice", branches: { land: "main" } });
+  f.git("switch", "-q", "-c", "main");
+  const result = f.run();
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /^RESULT: fail .*use a build branch, not main or detached HEAD$/m);
+  assert.deepEqual(f.calls(), []);
+});

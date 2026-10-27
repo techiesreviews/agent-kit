@@ -3,11 +3,22 @@ import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import test, { type TestContext } from "node:test";
+import test, { after, type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
 
 const script = resolve("scripts/agents/kit.d/learn"), kit = resolve("scripts/agents/kit");
-const fixtures = resolve("tests/fixtures/kit-learn"), memory = join(fixtures, "memory"), repo = join(fixtures, "repo");
+const fixtures = resolve("tests/fixtures/kit-learn"), memory = join(fixtures, "memory");
+// The project's settings name its corrections slug and maps folder; each checkout here gets them.
+const settingsIn = (root: string, settings: object = {}) => {
+  mkdirSync(join(root, "scripts/agents"), { recursive: true });
+  writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify({ project: "native-site-editor", branches: { land: "main" }, maps: "docs/wayfinder", ...settings }));
+  return root;
+};
+// A copy of the fixture checkout with its settings, so the fixture itself holds none.
+const repo = mkdtempSync(join(tmpdir(), "kit-learn-repo-"));
+after(() => rmSync(repo, { recursive: true, force: true }));
+cpSync(join(fixtures, "repo"), repo, { recursive: true });
+settingsIn(repo);
 type Entry = { date: string; kind: string; text: string; repeats?: string; source: string; file: string; line: number };
 type Group = { members: (Entry & { words: Set<string> })[]; outside: string[]; times: number; kinds: string[] };
 type Block = { file: string; line: number; id?: string; words: Set<string> };
@@ -205,7 +216,7 @@ test("arguments: --since Nd or a real date, --project a slug", () => {
 test("a missing or empty corrections file gives nothing recorded yet", (t) => {
   const dir = temp(t), empty = join(dir, "memory");
   mkdirSync(join(empty, "corrections"), { recursive: true });
-  const env = { KIT_CHAT_MEMORY: empty, KIT_ROOT: dir, KIT_MAIN_ROOT: dir, HOME: dir };
+  const env = { KIT_CHAT_MEMORY: empty, KIT_ROOT: settingsIn(dir), KIT_MAIN_ROOT: dir, HOME: dir };
   const missing = run(env);
   assert.equal(missing.status, 0, missing.stderr);
   assert.match(missing.stdout, /^RESULT: ok learn nothing recorded yet$/m);
@@ -219,7 +230,7 @@ test("malformed lines with nothing in the window say how many", (t) => {
   mkdirSync(join(copy, "corrections"), { recursive: true });
   writeFileSync(join(copy, "corrections/demo.md"), correctionsFile(["- not a correction",
     "- 2026-09-01 · fault · Older than the window · repeats: first · [T](t3-thread://v1/x) item i pos 1"]));
-  const result = run({ KIT_CHAT_MEMORY: copy, KIT_ROOT: dir, KIT_MAIN_ROOT: dir, HOME: dir }, ["--since", "2026-10-01", "--project", "demo"]);
+  const result = run({ KIT_CHAT_MEMORY: copy, KIT_ROOT: settingsIn(dir), KIT_MAIN_ROOT: dir, HOME: dir }, ["--since", "2026-10-01", "--project", "demo"]);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^RESULT: ok learn nothing recorded yet \(1 malformed\)$/m);
   assert.equal(existsSync(join(dir, ".scratch")), false);
@@ -255,6 +266,8 @@ test("without --project the slug comes from the map by this checkout's workspace
   cpSync(memory, copy, { recursive: true });
   writeFileSync(join(copy, "project-notes/README.md"), `| Slug | Workspace |\n| --- | --- |\n| demo | \`${join(dir, "site")}\` |\n`);
   mkdirSync(checkout);
+  // Its maps folder holds no build logs: only the chat list counts.
+  settingsIn(checkout);
   const result = run({ KIT_CHAT_MEMORY: copy, KIT_ROOT: checkout, KIT_MAIN_ROOT: join(dir, "site"), HOME: dir }, ["--since", "2026-10-01"]);
   assert.match(result.stdout, /^RESULT: ok learn 3 repeated of 5 groups, 2 malformed, bundle /m);
 });
@@ -265,7 +278,7 @@ test("without KIT_CHAT_MEMORY it reads ~/Projects/chat/memory, and 14d keeps a l
   mkdirSync(dir, { recursive: true });
   const line = (days: number, text: string) => `- ${daysAgo(days)} · fault · ${text} · repeats: first · [T](t3-thread://v1/x) item i pos 1`;
   writeFileSync(join(dir, "native-site-editor.md"), correctionsFile([line(0, "Toolbar covers the heading"), line(14, "Undo forgets moved blocks"), line(15, "Fonts load twice on open")]));
-  const result = run({ HOME: home, KIT_ROOT: home, KIT_MAIN_ROOT: main });
+  const result = run({ HOME: home, KIT_ROOT: settingsIn(home), KIT_MAIN_ROOT: main });
   const bundle = bundleOf(result.stdout);
   assert.match(bundle, new RegExp(`Since ${daysAgo(14)} \\(--since 14d\\)`));
   assert.match(bundle, /Toolbar covers the heading/);
@@ -283,9 +296,27 @@ test("a corrections list over the bundle limit trims lines given once before rep
     "- 2026-10-10 · too-much · Hint text beside the save button is noise · repeats: first · [H](t3-thread://v1/h) item i pos 0");
   writeFileSync(join(copy, "corrections/demo.md"), correctionsFile(lines));
   assert.ok(Buffer.byteLength(readFileSync(join(copy, "corrections/demo.md"))) > learn.bundleLimit);
-  const result = run({ KIT_CHAT_MEMORY: copy, KIT_ROOT: dir, KIT_MAIN_ROOT: dir, HOME: dir }, ["--since", "2026-10-01", "--project", "demo"]);
+  const result = run({ KIT_CHAT_MEMORY: copy, KIT_ROOT: settingsIn(dir), KIT_MAIN_ROOT: dir, HOME: dir }, ["--since", "2026-10-01", "--project", "demo"]);
   const bundle = bundleOf(result.stdout);
   assert.ok(Buffer.byteLength(bundle) < learn.bundleLimit, String(Buffer.byteLength(bundle)));
   assert.match(bundle, /Trimmed to stay under 40000 bytes: Given once \d+ lines\./);
   assert.match(bundle, /## Given more than once\n\n- \*\*×2 · too-much\*\*.*\n(.*\n){3}\n## Given once/);
+});
+
+test("the slug defaults to project and the build logs come from the maps folder, or are skipped without one", (t) => {
+  const dir = temp(t), checkout = join(dir, "site"), main = join(dir, "main");
+  cpSync(join(fixtures, "repo/docs/agents"), join(checkout, "docs/agents"), { recursive: true });
+  cpSync(join(fixtures, "repo/docs/wayfinder"), join(checkout, "plans"), { recursive: true });
+  settingsIn(checkout, { project: "demo", maps: "plans" });
+  const env = { KIT_CHAT_MEMORY: memory, KIT_ROOT: checkout, KIT_MAIN_ROOT: main, HOME: dir };
+  const bundle = bundleOf(run(env, ["--since", "2026-10-01"]).stdout);
+  assert.match(bundle, /; project demo\. /);
+  assert.match(bundle, /build feedback logs from plans\/\*\/build\/feedback\.md\./);
+  assert.match(bundle, /feedback: demo/);
+  settingsIn(checkout, { project: "demo", maps: undefined });
+  const result = run(env, ["--since", "2026-10-01"]);
+  assert.match(result.stdout, /^feedback: skipped \(no maps in scripts\/agents\/kit\.json\)$/m);
+  const chatOnly = bundleOf(result.stdout);
+  assert.match(chatOnly, /build feedback logs from nowhere \(no maps folder\)\./);
+  assert.doesNotMatch(chatOnly, /feedback: demo/);
 });

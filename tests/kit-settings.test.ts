@@ -334,6 +334,11 @@ test("kit pr pairs --release with branches.release, whatever its name", t => {
     assert.equal(output.status, 1, output.stdout + output.stderr);
     assert.equal(lastLine(output), `RESULT: fail guards: ${message}`);
   }
+  // The release branch itself is never a PR branch.
+  prod.git("switch", "-q", "-c", "prod");
+  const onProd = prod.run(["pr", "--dry-run"]);
+  assert.equal(onProd.status, 1, onProd.stdout + onProd.stderr);
+  assert.equal(lastLine(onProd), "RESULT: fail guards: refusing branch prod");
   const none = repo(t, { project: "kit-land", branches: { land: "main" } });
   const output = none.run(["pr", "--dry-run", "--release"]);
   assert.equal(lastLine(output), "RESULT: fail guards: --release needs branches.release in scripts/agents/kit.json");
