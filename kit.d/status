@@ -106,10 +106,12 @@ async function status(args) {
     result("fail", error.message);
     return 1;
   }
-  const ref = flags.ref ?? `origin/${kitBranch("land", settings)}`;
   // No preview address: the preview row is left out.
   const address = process.env.KIT_PREVIEW_URL || settings.preview;
   const git = args => command("git", ["-C", root, ...args], root);
+  // With no origin remote there is no GitHub repo: the land branch is read locally and PR and CI are left out.
+  const remote = await git(["remote", "get-url", "origin"]).then(() => true, () => false);
+  const ref = flags.ref ?? `${remote ? "origin/" : ""}${kitBranch("land", settings)}`;
   const onRef = async oid => {
     if (!/^[0-9a-f]{40}$/.test(oid || "")) return "";
     try {
@@ -128,7 +130,7 @@ async function status(args) {
     const branch = ref.replace(/^(?:refs\/remotes\/)?origin\//, "").replace(/^refs\/heads\//, "");
     const gh = process.env.KIT_STATUS_GH || "gh";
     const [github, live] = await Promise.all([
-      Promise.allSettled([
+      !remote ? { prs: [], runs: [], none: true } : Promise.allSettled([
         command(gh, ["pr", "list", "--state", "all", "--base", branch, "--limit", "200", "--json", "number,state,title,body,headRefName,mergeCommit,statusCheckRollup"], root),
         command(gh, ["run", "list", "--branch", branch, "--limit", "100", "--json", "headSha,status,conclusion,workflowName,event"], root),
       ]).then(responses => {
@@ -141,11 +143,12 @@ async function status(args) {
       }).catch(error => ({ prs: [], runs: [], unavailable: reason(error) })),
       address ? preview(address) : {},
     ]);
+    if (github.none) notes.push("no GitHub repo (no origin remote); no PRs or CI");
     if (github.unavailable) notes.push(`gh unavailable (${github.unavailable}); PR and CI unknown`);
     if (live.note) notes.push(live.note);
     const currentRuns = github.runs.filter(run => run.headSha === sha);
     const older = !currentRuns.length && github.runs.length > 0;
-    const branchCI = github.unavailable ? "?" : ci(latest(currentRuns.length ? currentRuns : github.runs.slice(0, 1)));
+    const branchCI = github.unavailable ? "?" : github.none ? "-" : ci(latest(currentRuns.length ? currentRuns : github.runs.slice(0, 1)));
     print(`ref ${ref} ${sha.slice(0, 7)}  ${branch} CI: ${branchCI}${older ? " (older sha)" : ""}`);
     if (live.line) print(live.line);
     if (!settings.maps) print("tickets: none (no maps folder in scripts/agents/kit.json)");
@@ -174,7 +177,7 @@ async function status(args) {
       const who = clean(ticket.assignee || ticket.builder || "-").split(/\s+/)[0];
       row([ticket.slug, ticket.status, who, location, ticketCI]);
     }
-    result("ok", `${map || "all"} ${tickets.length} tickets, ${tickets.filter(ticket => ticket.status === "closed").length} closed, ${open} open PRs${notes.length ? ", offline" : ""}`);
+    result("ok", `${map || "all"} ${tickets.length} tickets, ${tickets.filter(ticket => ticket.status === "closed").length} closed, ${open} open PRs${github.none ? ", no GitHub repo" : notes.length ? ", offline" : ""}`);
     return 0;
   } catch (error) {
     console.error(cut(error.message, 100));

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Usage: review-brief.mjs <ticket-file> [base | --commit SHA]; print a slice review brief.
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, posix, resolve } from "node:path";
 import { kitBranch, kitSettings } from "./kit-lib.mjs";
 
@@ -12,6 +12,32 @@ const topFolder = worktree => {
 };
 // Scope and standards both come from the reviewed checkout's settings.
 const landRef = worktree => `origin/${kitBranch("land", kitSettings(topFolder(worktree)))}`;
+
+/** "a", "a and b", "a, b and c". */
+export const spoken = items => items.length > 1 ? `${items.slice(0, -1).join(", ")} and ${items.at(-1)}` : items.join("");
+
+/** Whether the project's own commands folder (settings `commands`) holds an executable `name`, as the kit front door finds it. */
+export function projectCommand(name, root, settings = kitSettings(root)) {
+  if (typeof settings.commands !== "string" || !settings.commands) return false;
+  const folder = resolve(root, settings.commands);
+  try {
+    return readdirSync(folder).some(file => {
+      if (/^[._]/.test(file) || file.replace(/\.[^.]*$/, "") !== name) return false;
+      const stat = statSync(resolve(folder, file));
+      return stat.isFile() && (stat.mode & 0o111) !== 0;
+    });
+  } catch { return false; }
+}
+
+/**
+ * The checks an author runs before review, from the settings: the `checks.check`, `checks.test` and `checks.lint`
+ * commands that are set, then "the touched specs" when the project has a `specs` command.
+ */
+export function projectChecks(root, settings = kitSettings(root)) {
+  const checks = settings.checks ?? {};
+  return [checks.check, checks.test, checks.lint].filter(command => typeof command === "string" && command.trim())
+    .map(command => command.trim()).concat(projectCommand("specs", root, settings) ? ["the touched specs"] : []);
+}
 
 export const reviewFormat = `Required format:
 REVIEW_STATUS: complete
@@ -78,12 +104,15 @@ export function reviewBrief(ticketPath, ticket, scope, worktree = process.cwd(),
     .map(path => path.startsWith("docs/") ? path : posix.normalize(posix.join(posix.dirname(ticketPath), path)));
   const refs = [...ticket.matchAll(/`([^`\n]*\bspec\.md)(?:#[^`\n]*)?`/g)].map(match => match[1]);
   const sources = [...new Set([ticketPath, ...links, ...refs].filter(Boolean))];
-  const { standards } = kitSettings(topFolder(worktree));
+  const top = topFolder(worktree), settings = kitSettings(top);
+  // standards: one file or a list (AGENTS.md where a project has no standards file).
+  const standards = spoken([settings.standards].flat().filter(file => typeof file === "string" && file.trim()));
+  const checks = projectChecks(top, settings);
   return `Review this build slice in read-only mode. Make no changes.
 Scope: ${label}.
 ${sources.length ? `Spec axis: read ${sources.join(", ")}, including the linked spec and deciding tickets.` : "Spec axis: no ticket supplied; assess the change against the stated intent and repo documentation."}
 ${standards ? `Standards axis: apply ${standards}; cite the applicable rule with each defect.` : "Standards axis: no standards file in scripts/agents/kit.json; judge against the repository's own conventions."}
-The author already ran check/test/lint and the touched specs; do not report inability to run tests.
+${checks.length ? `The author already ran ${spoken(checks)}; do not report inability to run tests.` : "The project sets no checks in scripts/agents/kit.json; do not assume any ran, and do not report inability to run tests."}
 Report validation gaps only for missing coverage or evidence in the change, with a concrete test to add.
 ${declined.length ? `\nDeclined by the author (with reasons):\n${declined.map(item => `- ${item}`).join("\n")}\nReport a declined finding again only if the reason is wrong, and say why.\n` : ""}`;
 }

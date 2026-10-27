@@ -4,7 +4,16 @@ set -euo pipefail
 # Only deliberate policy rejections exit 2; infrastructure errors allow the call.
 trap 'exit 0' ERR
 command=$(jq -er 'select(.hook_event_name == "PreToolUse" and .tool_name == "Bash") | .tool_input.command | select(type == "string")' 2>/dev/null)
-reason=$(printf '%s\n' "$command" | awk '
+# The server hint names the project's own server helper: "servers" in scripts/agents/kit.json, else
+# scripts/agents/port.sh where the project has one, else kit bg. Read only when a command could need it.
+servers=''
+if [[ $command == *setsid* ]]; then
+  root=${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null)} || root=''
+  servers=$(jq -r '.servers | strings' "$root/scripts/agents/kit.json" 2>/dev/null) || servers=''
+  if [[ -z $servers && -f $root/scripts/agents/port.sh ]]; then servers=scripts/agents/port.sh; fi
+fi
+servers=${servers:-scripts/agents/kit bg <name> -- <command>}
+reason=$(printf '%s\n' "$command" | awk -v servers="$servers" '
 function base(s) { sub(/^.*\//, "", s); return s }
 function reject(s) { if (!reason) reason = s }
 function inspect(a, n, timed, depth, floor,    i,j,k,name,text) {
@@ -30,7 +39,7 @@ function inspect(a, n, timed, depth, floor,    i,j,k,name,text) {
     if (name == "setsid") {
       for (j = i + 1; j <= n; j++)
         if (a[j] ~ /server|vite|http\.server|playwright/)
-          reject("start servers through scripts/agents/port.sh")
+          reject("start servers through " servers)
       i++; while (i <= n && a[i] ~ /^-/) i++
       continue
     }

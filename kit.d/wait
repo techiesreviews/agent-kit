@@ -132,6 +132,14 @@ async function wait(config) {
   const { kind, target, options, timeout, quiet, regex } = config;
   const label = kind === "ci" ? options.pr !== undefined ? `pr ${options.pr}` : options.sha ?? options.branch ?? kitBranch("ci") : target;
   console.log(`kit wait ${kind} ${label} (owner ${kitOwner()})`);
+  // A project with no remote has no GitHub checks: say so rather than fail on gh.
+  if (kind === "ci") {
+    try { await execute("git", ["remote", "get-url", "origin"]); }
+    catch {
+      kitResult("ok", `ci ${label}: no GitHub repo (no origin remote), no checks to wait for`);
+      return;
+    }
+  }
   const started = Date.now();
   const deadline = started + timeout;
   const poll = interval("KIT_WAIT_POLL_MS", kind === "ci" ? 30000 : 1000);

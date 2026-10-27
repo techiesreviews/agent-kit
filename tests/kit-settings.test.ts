@@ -145,8 +145,8 @@ test("a missing, broken or incomplete settings file fails doctor with what to ad
   const output = f.run(["doctor"], { KIT_COMMANDS_DIR: commands });
   assert.match(output.stdout, /^✓ settings: scripts\/agents\/kit\.json \(kit-land, lands on main\)$/m);
   assert.match(output.stdout, /^✓ base: contains origin\/main [0-9a-f]{7}$/m);
-  // No sharedNodeModules: the dependency check only asks for installed dependencies.
-  assert.match(output.stdout, /^✗ node_modules: missing or dangling node_modules; fix: install the dependencies$/m);
+  // No sharedNodeModules: the project keeps its own dependencies, or none, so doctor skips the check.
+  assert.match(output.stdout, /^✓ node_modules: skipped \(no sharedNodeModules in scripts\/agents\/kit\.json\)$/m);
 });
 
 test("a missing optional key turns its feature off with a plain line", t => {
@@ -203,6 +203,11 @@ test("land: main reaches review, unit --affected, pr --dry-run, status and wait 
   const review = f.run(["review"], { ASE_REVIEW_MODEL: "-invalid" });
   assert.match(review.stdout, /^scope: --base origin\/main \(git diff [0-9a-f]{40}\.\.\.HEAD\)$/m);
   assert.match(lastLine(review)!, /^RESULT: fail /);
+  // A specs command in the project's own folder makes kit pr run kit specs against main; unit.files names the unit tests.
+  settingsFile(f.root, { project: "kit-land", branches: { land: "main" }, commands: "scripts/agents/project.d", unit: { files: "tests/*.test.ts" } });
+  mkdirSync(join(f.root, "scripts/agents/project.d"));
+  executable(join(f.root, "scripts/agents/project.d/specs"), "#!/bin/sh\necho 'Usage: kit specs'\n");
+  f.git("add", "-A"); f.git("commit", "-qm", "Add a specs command");
   // The repo has no origin/dev, so the selection can only come from origin/main; --affected reads the project's import scan.
   symlinkSync(resolve("scripts/agents/specs-affected.mjs"), join(f.root, "scripts/agents/specs-affected.mjs"));
   const unit = f.run(["unit", "--affected", "--list"]);
@@ -243,6 +248,32 @@ test("wait ci follows branches.ci over land, and a --pr wait needs no settings",
   assert.equal(pr.status, 0, pr.stdout + pr.stderr);
   assert.match(lastLine(pr)!, /^RESULT: ok ci pr 7 abcdef0 green /);
   assert.match(broken.called(), /^gh run list --workflow 1 --branch feature\/x /m);
+});
+
+test("with no remote, wait ci says no GitHub repo instead of failing on gh", t => {
+  const f = repo(t, { project: "techies-playground", branches: { land: "main", release: "main", ci: "main" }, checks: { test: "npm test" } });
+  f.git("remote", "remove", "origin");
+  const ci = f.run(["wait", "ci", "--timeout", "10s"], { KIT_WAIT_POLL_MS: "50" });
+  assert.equal(ci.status, 0, ci.stdout + ci.stderr);
+  assert.equal(lastLine(ci), "RESULT: ok ci main: no GitHub repo (no origin remote), no checks to wait for");
+  assert.equal(f.called(), "");
+});
+
+test("bash-guard's server hint names the servers setting, else port.sh where the project has one, else kit bg", t => {
+  const root = temp(t);
+  spawnSync("git", ["init", "-q", root], { env: clean });
+  const hint = () => {
+    const result = spawnSync("bash", [resolve("scripts/agents/hooks/bash-guard.sh")], { cwd: root, env: { ...clean, CLAUDE_PROJECT_DIR: root }, encoding: "utf8",
+      input: JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "setsid npx vite" } }) });
+    assert.equal(result.status, 2, result.stderr);
+    return result.stderr.trim();
+  };
+  settingsFile(root, { project: "techies-playground", branches: { land: "main" } });
+  assert.equal(hint(), "start servers through scripts/agents/kit bg <name> -- <command>");
+  executable(join(root, "scripts/agents/port.sh"), "#!/bin/sh\n");
+  assert.equal(hint(), "start servers through scripts/agents/port.sh");
+  settingsFile(root, { project: "techies-playground", branches: { land: "main" }, servers: "npm run serve:slot" });
+  assert.equal(hint(), "start servers through npm run serve:slot");
 });
 
 test("bash and node agree on mainRoot, which only a valid file supplies", t => {

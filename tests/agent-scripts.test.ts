@@ -128,9 +128,11 @@ function reviewRepository(wt: string) {
   git("init");
   git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "base");
   git("update-ref", "refs/remotes/origin/dev", "HEAD");
-  // The brief cites the standards file named in the reviewed checkout's settings.
-  mkdirSync(join(wt, "scripts/agents"), { recursive: true });
-  writeFileSync(join(wt, "scripts/agents/kit.json"), JSON.stringify({ project: "brief", branches: { land: "dev" }, standards: "CODING_STANDARDS.md" }));
+  // The brief cites the standards file and the checks named in the reviewed checkout's settings, and its specs command.
+  mkdirSync(join(wt, "scripts/agents/project.d"), { recursive: true });
+  writeFileSync(join(wt, "scripts/agents/kit.json"), JSON.stringify({ project: "brief", branches: { land: "dev" }, standards: "CODING_STANDARDS.md",
+    commands: "scripts/agents/project.d", checks: { check: "npm run check", test: "npm test", lint: "npm run lint" } }));
+  writeFileSync(join(wt, "scripts/agents/project.d/specs"), "#!/bin/sh\n", { mode: 0o755 });
   writeFileSync(join(wt, "change.txt"), "reviewed change\n");
   git("add", "change.txt");
   git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "reviewed change");
@@ -604,7 +606,7 @@ test("slice brief resolves fixture ticket links and states both axes and validat
   assert.match(brief, /docs\/work\/shared\/spec\.md/);
   assert.doesNotMatch(brief, /https:\/\/example.com/);
   assert.match(brief, /Standards axis: apply CODING_STANDARDS\.md/);
-  assert.match(brief, /author already ran check\/test\/lint and the touched specs; do not report inability to run tests/);
+  assert.match(brief, /author already ran npm run check, npm test, npm run lint and the touched specs; do not report inability to run tests/);
   assert.match(reviewFormat, /commit:path:line, severity, evidence, and fix/);
   assert.match(reviewFormat, /very first line must be REVIEW_STATUS: complete/);
   assert.doesNotMatch(brief, /Required format:/);

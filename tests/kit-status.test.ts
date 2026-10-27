@@ -80,6 +80,8 @@ async function fixture(t: TestContext) {
   writeFileSync(join(root, "other.txt"), "unrelated work\n");
   git("add", "."); git("commit", "-qm", "unrelated follow-up");
   const sha = git("rev-parse", "HEAD");
+  // An origin remote (never fetched: the runs pass --no-fetch) makes this a GitHub repo; origin/dev is its cached tip.
+  git("remote", "add", "origin", join(dir, "origin.git"));
   git("update-ref", "refs/remotes/origin/dev", sha);
   // The working tree must not supply the status, owner, or ticket inventory.
   ticket("alpha", "2-foo", "open", "Local Person");
@@ -132,7 +134,7 @@ async function fixture(t: TestContext) {
     assert.ok(line, output);
     return line.trim().split(/\s{2,}/);
   };
-  return { root, dir, gh, git, sha, landed, landedFull, pr, prs, runs, runCheck, run, row, calls, requests,
+  return { root, dir, env, gh, git, sha, landed, landedFull, pr, prs, runs, runCheck, run, row, calls, requests,
     setPreview: (body: string, code = 200) => { html = body; httpStatus = code; } };
 }
 
@@ -258,7 +260,7 @@ test("missing gh, partial failure, malformed response and preview failures becom
   }
 });
 
-test("cached default ref and local ref work without a remote", async t => {
+test("cached default ref and local ref work without fetching", async t => {
   const f = await fixture(t);
   const output = await f.run(["alpha", "--no-fetch"]);
   assert.equal(output.code, 0);
@@ -266,6 +268,23 @@ test("cached default ref and local ref work without a remote", async t => {
   const local = await f.run(["alpha", "--ref", "dev", "--no-fetch"]);
   assert.equal(local.code, 0);
   assert.doesNotMatch(local.stdout, /fetch failed|offline/);
+});
+
+test("a repo with no remote gets no GitHub repo, its local land branch and no gh calls", async t => {
+  const f = await fixture(t);
+  // techies-playground's minimal settings (research 04), in a repo that never had a remote.
+  const root = join(f.dir, "playground");
+  mkdirSync(join(root, "scripts/agents"), { recursive: true });
+  writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify({ project: "techies-playground", mainRoot: root,
+    branches: { land: "main", release: "main", ci: "main" }, checks: { test: "npm test" } }));
+  const git = (...args: string[]) => spawnSync("git", ["-C", root, ...args], { env: f.env, encoding: "utf8" }).stdout.trim();
+  git("init", "-q", "--initial-branch=main"); git("add", "."); git("commit", "-qm", "base");
+  const output = await f.run([], { env: { KIT_ROOT: root, KIT_PREVIEW_URL: "" } });
+  assert.equal(output.code, 0, output.stderr);
+  assert.ok(output.stdout.startsWith(`ref main ${git("rev-parse", "--short", "HEAD")}  main CI: -\n`), output.stdout);
+  assert.match(output.stdout, /^note: no GitHub repo \(no origin remote\); no PRs or CI$/m);
+  assert.deepEqual(output.results, ["RESULT: ok status all 0 tickets, 0 closed, 0 open PRs, no GitHub repo"]);
+  assert.deepEqual(f.calls(), []);
 });
 
 test("help, usage errors, unknown maps and bad refs exit clearly without network calls", async t => {

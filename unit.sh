@@ -13,10 +13,23 @@ problems=$(kit_settings_problems) || { printf 'unit.sh: %s\n' "${problems//$'\n'
 read -ra runner <<< "$(kit_setting .unit.run)"
 (( ${#runner[@]} )) || { echo "unit.sh needs unit.run in scripts/agents/kit.json" >&2; exit 2; }
 if (( ! $# )); then
-  pattern=$(kit_setting .unit.files)
-  [[ -n $pattern ]] || { echo "unit.sh needs unit.files in scripts/agents/kit.json to run the full suite" >&2; exit 2; }
-  # shellcheck disable=SC2086 # The pattern is a glob such as tests/*.test.ts.
-  set -- $pattern
+  # unit.files is one pattern or a list: globs (** spans folders) or a folder ending in / for every
+  # JavaScript or TypeScript file under it, the same files kit unit picks.
+  mapfile -t patterns < <(kit_setting '.unit.files | if type == "array" then .[] else . end')
+  (( ${#patterns[@]} )) || { echo "unit.sh needs unit.files in scripts/agents/kit.json to run the full suite" >&2; exit 2; }
+  shopt -s globstar nullglob
+  files=()
+  for pattern in "${patterns[@]}"; do
+    if [[ $pattern == */ ]]; then
+      [[ ! -d $pattern ]] || mapfile -t -O "${#files[@]}" files < <(find "$pattern" -type f -regex '.*\.\(js\|mjs\|cjs\|ts\|mts\|cts\|tsx\)' | sort)
+    else
+      # shellcheck disable=SC2206 # The pattern is a glob such as tests/*.test.ts.
+      files+=($pattern)
+    fi
+  done
+  shopt -u globstar nullglob
+  (( ${#files[@]} )) || { echo "unit.sh: no files match unit.files in scripts/agents/kit.json" >&2; exit 2; }
+  set -- "${files[@]}"
 fi
 mkdir -p .scratch/unit
 log=.scratch/unit/$(date -u +%Y%m%dT%H%M%S)-$$.log

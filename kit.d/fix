@@ -5,8 +5,9 @@ import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, 
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { openFindings } from "../review-findings.mjs";
+import { projectCommand, spoken } from "../review-brief.mjs";
 
-const { kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv, commitBuilderWork, builderAuthor, kitScore, scoreCost, scoreReview } = await import(
+const { kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, nodeEnv, commitBuilderWork, builderAuthor, kitScore, scoreCost, scoreReview } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const usage = "Usage: kit fix [--review DIR | --note FILE] [--run DIR] [--ticket FILE] [--builder MODEL] [--effort E]\nResume the builder with open findings or a failure note, commit its fixes, and review again.\nWith --builder (and --effort when given), resume only a saved session of that model and effort, else start fresh with them (without either: latest slice model and effort, else claude-opus-5-5 and high).\nAn explicit --run DIR that is missing, unreadable or belongs to another worktree errors; one of another model or effort is named on a line and a fresh builder starts with the requested setting and the run's other one.\nA pending builder round from another model or effort switches to the requested one and keeps its edits; a pending commit or review round still refuses.\nFailed rounds resume their saved builder/commit/review phase without discarding edits.\n";
@@ -207,7 +208,12 @@ async function fix(args) {
     const rounds = readdirSync(directory).map(name => /^round-(\d+)\.md$/.exec(name)).filter(Boolean).map(match => Number(match[1]));
     const round = pending?.round || Math.max(0, ...rounds) + 1;
     const brief = join(directory, `round-${round}.md`);
-    if (!pending) writeFileSync(brief, `Ticket: ${ticket}\n\nUse Agent Kit at scripts/agents/kit: run doctor first, focused unit --affected, npm run lint and touched specs. Report RESULT lines.\nFix real defects within the ticket's Files. For a finding you reject, list it under\n\`Declined:\` as \`- <finding> — reason: <one-line reason>\`.\n\n${note ? `Failure note (verbatim):\n${original}` : `Open findings:\n${findings.map(item => `- ${item.group}: ${item.text}`).join("\n")}\n\nReview evidence (verbatim; Optional nits are not open findings):\n${original}`}`, { flag: "wx" });
+    // The builder's checks are the ones the project sets: its lint command and, with a specs command, the touched specs.
+    let settings = {};
+    try { settings = kitSettings(root); } catch { /* No usable settings: the builder's doctor run names the problem. */ }
+    const lint = settings.checks?.lint;
+    const checks = ["focused unit --affected", typeof lint === "string" && lint.trim(), projectCommand("specs", root, settings) && "touched specs"];
+    if (!pending) writeFileSync(brief, `Ticket: ${ticket}\n\nUse Agent Kit at scripts/agents/kit: run doctor first, ${spoken(checks.filter(Boolean))}. Report RESULT lines.\nFix real defects within the ticket's Files. For a finding you reject, list it under\n\`Declined:\` as \`- <finding> — reason: <one-line reason>\`.\n\n${note ? `Failure note (verbatim):\n${original}` : `Open findings:\n${findings.map(item => `- ${item.group}: ${item.text}`).join("\n")}\n\nReview evidence (verbatim; Optional nits are not open findings):\n${original}`}`, { flag: "wx" });
 
     const save = () => {
       writeFileSync(`${pendingPath}.tmp`, JSON.stringify(pending, null, 2) + "\n");

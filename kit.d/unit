@@ -5,17 +5,36 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, posix, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { unitCounts } from "../unit-summary.mjs";
-import { kitBranch, kitRoot, kitResult, nodeEnv } from "../kit-lib.mjs";
+import { kitBranch, kitRoot, kitResult, kitSettings, nodeEnv } from "../kit-lib.mjs";
 
 const usage = `Usage: kit unit [files…] [--list]
        kit unit --affected [--base REF] [--list]
 Default base: origin/<land> (branches.land in scripts/agents/kit.json). No files runs the full unit suite through unit.sh.
+The unit tests are the files matching unit.files (one pattern or a list: globs with * and **, or a folder ending in /).
 --affected follows relative imports transitively; prints each file and its reason.
 --list prints selection reasons and runs nothing.
 `;
-const unitFile = /^tests\/.*\.test\.ts$/;
-// The import scan is a project helper (it loads the project's TypeScript parser), read only for --affected.
-let graphFile, importsOf;
+// A folder pattern ("test/") holds every JavaScript or TypeScript file under it, as node --test reads a test folder.
+const sourceFile = /\.(?:js|mjs|cjs|ts|mts|cts|tsx)$/;
+// One unit.files pattern as a test for a repo path: "*" stays within a folder, "**" spans folders.
+function unitPattern(pattern) {
+  if (pattern.endsWith("/")) return file => file.startsWith(pattern) && sourceFile.test(file);
+  const source = pattern.split(/(\*\*\/|\*\*|\*|\?)/).map(part => ({ "**/": "(?:.*/)?", "**": ".*", "*": "[^/]*", "?": "[^/]" })[part]
+    ?? part.replace(/[.+^${}()|[\]\\]/g, "\\$&")).join("");
+  const expression = new RegExp(`^${source}$`);
+  return file => expression.test(file);
+}
+function unitFiles(root) {
+  const files = kitSettings(root).unit?.files;
+  const patterns = (Array.isArray(files) ? files : [files]).filter(pattern => typeof pattern === "string" && pattern);
+  if (!patterns.length) throw new Error("kit unit needs unit.files in scripts/agents/kit.json");
+  const tests = patterns.map(unitPattern);
+  return file => tests.some(test => test(file));
+}
+// The import scan: the project's own scripts/agents/specs-affected.mjs when it has one, else plain import,
+// export-from and require lines in any file; read only for --affected.
+let graphFile = /^/, importsOf = text => [...text.matchAll(/\b(?:import|export)\s+(?:[^;"'`]*?\s+from\s*)?["']([^"']+)["']|\b(?:import|require)\s*\(\s*["']([^"']+)["']\s*\)/g)]
+  .map(match => match[1] ?? match[2]);
 const moduleFile = file => graphFile.test(file) && /\.(?:ts|tsx|js|mjs)$/.test(file);
 function git(root, args) {
   return execFileSync("git", ["-C", root, ...args], { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
@@ -45,7 +64,7 @@ function dependency(file, specifier, known) {
   return stems.flatMap(stem => [stem, ...extensions.map(ext => stem + ext), ...extensions.map(ext => `${stem}/index${ext}`)])
     .find(path => moduleFile(path) && known.has(path));
 }
-function affected(root, files, base) {
+function affected(root, files, base, unitFile) {
   const ancestor = git(root, ["merge-base", base ?? `origin/${kitBranch()}`, "HEAD"]).trim();
   const changed = new Set([
     ...paths(root, ["diff", "--name-only", "-z", ancestor, "HEAD"]),
@@ -70,7 +89,7 @@ function affected(root, files, base) {
     reasons.set(importer, changed.has(file) ? `imports ${file}` : `via ${file} (${reasons.get(file)})`);
     queue.push(importer);
   }
-  return files.filter(file => unitFile.test(file) && reasons.has(file)).sort().map(file => ({ file, reason: reasons.get(file) }));
+  return files.filter(file => unitFile(file) && reasons.has(file)).sort().map(file => ({ file, reason: reasons.get(file) }));
 }
 
 async function main(args) {
@@ -79,8 +98,7 @@ async function main(args) {
     const flags = options(args), root = resolve(kitRoot());
     if (flags.affected) {
       const scan = join(root, "scripts/agents/specs-affected.mjs");
-      if (!existsSync(scan)) throw new Error("--affected needs the project's scripts/agents/specs-affected.mjs");
-      ({ graphFile, importsOf } = await import(pathToFileURL(scan).href));
+      if (existsSync(scan)) ({ graphFile, importsOf } = await import(pathToFileURL(scan).href));
     }
     let selected;
     if (flags.files.length) {
@@ -91,8 +109,9 @@ async function main(args) {
     } else {
       const files = paths(root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"])
         .filter(file => existsSync(join(root, file)));
-      selected = flags.affected ? affected(root, files, flags.base)
-        : files.filter(file => /^tests\/[^/]+\.test\.ts$/.test(file)).sort().map(file => ({ file, reason: "all" }));
+      const unitFile = unitFiles(root);
+      selected = flags.affected ? affected(root, files, flags.base, unitFile)
+        : files.filter(unitFile).sort().map(file => ({ file, reason: "all" }));
     }
     for (const { file, reason } of selected) console.log(`${file} — ${reason}`);
     if (!selected.length) { kitResult("ok", "unit none affected"); return 0; }

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterFixRounds, blockingFindings, completedFixRounds, FIX_ROUNDS, openFindings, reviewCoversHead, sameReviewPatch } from "../review-findings.mjs";
+import { projectCommand } from "../review-brief.mjs";
 
 const { kitBranch, kitHome, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, nodeEnv, kitScore } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
@@ -181,12 +182,20 @@ async function main(args) {
       record.landed = { ...(changes.pr === undefined || record.landed?.pr === changes.pr ? record.landed : {}), ...changes };
     });
     if (flags.release && !release) throw new Error("--release needs branches.release in scripts/agents/kit.json");
-    if (release && flags.base === release && !flags.release) throw new Error(`--base ${release} requires --release`);
+    // A project that lands on its release branch (land and release both main) opens ordinary PRs into it.
+    if (release && release !== kitBranch("land", settings) && flags.base === release && !flags.release) throw new Error(`--base ${release} requires --release`);
     if (flags.release && flags.base !== release) throw new Error(`--release requires --base ${release}`);
     await git("guards", ["check-ref-format", `refs/heads/${flags.base}`]);
     if (await git("guards", ["status", "--porcelain"])) throw new Error("uncommitted changes");
+    // A project with no remote (research 02: astro-live-builder, tidy) has nowhere to open a PR.
+    if ((await execute("guards", "git", ["remote", "get-url", "origin"])).status !== 0) {
+      kitResult("fail", "no GitHub repo (no origin remote); kit pr needs one to open a PR");
+      return 1;
+    }
     ok("guards");
-    await run("deps", kit, ["deps", "check"]); ok("deps");
+    // The deps check guards a node_modules shared between worktrees; a project with its own has none to guard.
+    if (settings.sharedNodeModules) { await run("deps", kit, ["deps", "check"]); ok("deps"); }
+    else console.log("deps: skipped (no sharedNodeModules in scripts/agents/kit.json)");
 
     async function rebase() {
       await git("fetch", ["fetch", "-q", "origin"]); ok("fetch");
@@ -244,7 +253,14 @@ async function main(args) {
       },
     };
     const setting = { check: "checks.check", unit: "checks.test", lint: "checks.lint", "kit-clean": "checks.extra" };
+    // Browser specs are a project command (kit specs); a project without one skips the step.
+    const hasSpecs = projectCommand("specs", root, settings);
     for (const id of steps) {
+      if (id === "specs" && !hasSpecs) {
+        const line = `specs: skipped (no specs command in ${settings.commands || "the project's commands folder"})`;
+        console.log(line); tests.push(`- ${line}`);
+        continue;
+      }
       if (id === "specs") {
         const specs = await run("specs", kit, ["specs", "--affected", "--base", `origin/${flags.base}`]); ok("specs");
         tests.push(`- kit specs --affected --base origin/${flags.base}: ${specs.split(/\r?\n/).findLast(line => line.startsWith("RESULT: ")) || "ok"}`);
@@ -262,7 +278,7 @@ async function main(args) {
         tests.push(`- ${[command[0], ...command[1]].join(" ")}: ok`);
       }
     }
-    const skipped = Object.entries({ check: checks.check, unit: checks.test && `${checks.test} (all unit tests)`, lint: checks.lint, specs: "kit specs --affected" })
+    const skipped = Object.entries({ check: checks.check, unit: checks.test && `${checks.test} (all unit tests)`, lint: checks.lint, specs: hasSpecs && "kit specs --affected" })
       .filter(([id, label]) => label && !steps.includes(id)).map(([, label]) => label).concat(review ? [] : ["kit review"]);
     if (skipped.length) tests.push(`- skipped for the ${plan.tier} tier (CI still runs check, unit tests, lint and smoke browser tests; no Sol review): ${skipped.join(", ")}`);
 
@@ -422,10 +438,17 @@ async function main(args) {
       kitResult("ok", `queued #${number} ${head.slice(0, 7)}`);
       return 0;
     }
+    // A repo without GitHub workflows has no checks to wait for: it lands once the review passes.
+    const workflows = (await git("ci", ["ls-tree", "--name-only", "HEAD", ".github/workflows/"])).split(/\r?\n/).some(path => /\.ya?ml$/.test(path));
     for (let attempt = 1; attempt <= 3; attempt++) {
-      console.log(`ci: waiting for PR #${number} checks`);
-      await run("ci", kit, ["wait", "ci", "--pr", number]); ok("ci");
-      land({ ci: "pass" });
+      if (workflows) {
+        console.log(`ci: waiting for PR #${number} checks`);
+        await run("ci", kit, ["wait", "ci", "--pr", number]); ok("ci");
+        land({ ci: "pass" });
+      } else {
+        console.log("ci: none (no .github/workflows); landing after review");
+        land({ ci: "none" });
+      }
       const merged = await execute("merge", "gh", ["pr", "merge", number, "--rebase", "--delete-branch", "--match-head-commit", head, "--repo", repo]);
       if (merged.status === 0) {
         const commit = await execute("merge", "gh", ["pr", "view", number, "--json", "mergeCommit", "--jq", ".mergeCommit.oid"]);

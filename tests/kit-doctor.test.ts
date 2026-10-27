@@ -164,10 +164,26 @@ test("doctor rejects an unrelated branch", (t) => {
 
 test("doctor reports missing origin/dev", (t) => {
   const f = fixture(t);
+  // GitHub no longer has dev either, so doctor's own fetch cannot bring it back.
+  git(join(f.directory, "origin.git"), "branch", "-m", "dev", "old-dev");
   git(f.build, "update-ref", "-d", "refs/remotes/origin/dev");
   const result = f.run();
   failure(result, "base");
-  assert.match(result.stdout, /missing origin\/dev; fix: git fetch origin/);
+  assert.match(result.stdout, /missing origin\/dev \(fetch failed; judged the last fetched origin\/dev\); fix: git fetch origin/);
+});
+
+test("doctor fetches the land branch before judging the base", (t) => {
+  const f = fixture(t);
+  // Another clone lands a commit on GitHub; this clone has not fetched it.
+  const other = join(f.directory, "other");
+  git(f.directory, "clone", "-q", "--branch", "dev", join(f.directory, "origin.git"), other);
+  writeFileSync(join(other, "landed.txt"), "landed elsewhere\n");
+  commit(other, "landed.txt");
+  git(other, "push", "-q", "origin", "dev");
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout);
+  assert.match(result.stdout, /✓ base: 1 commits behind origin\/dev; rebase before landing\n/);
+  assert.equal(git(f.build, "rev-parse", "origin/dev"), git(other, "rev-parse", "HEAD"));
 });
 
 test("doctor accepts a branch cut from an earlier fetched dev tip", (t) => {
@@ -213,6 +229,74 @@ test("doctor rejects a common ancestor that was never a fetched dev tip", (t) =>
   const result = f.run();
   failure(result, "base");
   assert.ok(result.stdout.includes(`merge-base ${old.slice(0, 7)}`));
+});
+
+// techies-playground's settings (research 04): lands on main, its own node_modules or none, work in the main checkout.
+function playground(t: { after: (fn: () => void) => void }, extra: Record<string, unknown> = {}, remote = true) {
+  const directory = temp(t), root = join(directory, "techies-playground");
+  if (remote) {
+    git(directory, "init", "-q", "--bare", "--initial-branch=main", "origin.git");
+    git(directory, "clone", "-q", join(directory, "origin.git"), root);
+  } else git(directory, "init", "-q", "--initial-branch=main", root);
+  mkdirSync(join(root, "scripts/agents/hooks"), { recursive: true });
+  for (const name of ["run.sh", "bash-guard.sh"]) copyFileSync(join(repo, "scripts/agents/hooks", name), join(root, "scripts/agents/hooks", name));
+  mkdirSync(join(root, ".claude")); mkdirSync(join(root, ".codex"));
+  writeFileSync(join(root, ".claude/settings.json"), "{}\n");
+  writeFileSync(join(root, ".codex/hooks.json"), "{}\n");
+  writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify({ project: "techies-playground", mainRoot: root,
+    branches: { land: "main", release: "main", ci: "main" }, checks: { test: "npm test" }, ...extra }));
+  commit(root, "scripts", ".claude", ".codex");
+  if (remote) git(root, "push", "-q", "origin", "main");
+  const commands = join(directory, "commands");
+  mkdirSync(commands);
+  symlinkSync(doctor, join(commands, "doctor"));
+  const run = (env: NodeJS.ProcessEnv = {}) => spawnSync("/bin/bash", [kit, "doctor"], {
+    cwd: root, encoding: "utf8", timeout: 10_000,
+    env: { ...process.env, KIT_ROOT: root, KIT_MAIN_ROOT: "", KIT_LIB: library, KIT_COMMANDS_DIR: commands, KIT_GROK: join(directory, "no-grok"), ...env },
+  });
+  return { directory, root, run };
+}
+
+test("doctor passes in the main checkout with allowMainCheckout and skips node_modules without sharedNodeModules", (t) => {
+  const refused = playground(t).run();
+  assert.equal(refused.status, 1, refused.stdout);
+  assert.match(refused.stdout, /✗ place: main or dev worktree/);
+  const f = playground(t, { allowMainCheckout: true });
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(result.stdout.includes(`✓ settings: scripts/agents/kit.json (techies-playground, lands on main)\n`), result.stdout);
+  assert.ok(result.stdout.includes(`✓ place: ${f.root} (main checkout; allowMainCheckout)\n`), result.stdout);
+  assert.match(result.stdout, /✓ base: main in the main checkout, 0 commits behind origin\/main\n/);
+  assert.match(result.stdout, /✓ node_modules: skipped \(no sharedNodeModules in scripts\/agents\/kit\.json\)\n/);
+  assert.match(result.stdout, /RESULT: ok doctor 11\/11 checks passed\n$/);
+});
+
+test("doctor adds the project's checks.doctor lines and the playwright module, each counted", (t) => {
+  const f = playground(t, { allowMainCheckout: true, playwright: "vendor/playwright/index.mjs",
+    checks: { test: "npm test", doctor: ["printf 'Python 3.12.3\\n'", "printf 'no browser\\n' >&2; exit 3"] } });
+  const result = f.run();
+  assert.equal(result.status, 1, result.stdout);
+  assert.ok(result.stdout.includes(`✗ playwright: ${f.root}/vendor/playwright/index.mjs is missing; fix: install Playwright there`), result.stdout);
+  assert.ok(result.stdout.includes("✓ printf 'Python 3.12.3\\n': Python 3.12.3\n"), result.stdout);
+  assert.ok(result.stdout.includes(`✗ printf 'no browser\\n' >&2; exit 3: exit 3: no browser; fix: see "checks.doctor" in scripts/agents/kit.json\n`), result.stdout);
+  assert.match(result.stdout, /RESULT: fail doctor 2 failed: playwright,printf 'no browser\\n' >&2; exit 3\n$/);
+  mkdirSync(join(f.root, "vendor/playwright"), { recursive: true });
+  writeFileSync(join(f.root, "vendor/playwright/index.mjs"), "export {};\n");
+  const found = f.run();
+  assert.ok(found.stdout.includes(`✓ playwright: ${f.root}/vendor/playwright/index.mjs\n`), found.stdout);
+  // The module env override wins over the setting.
+  const moved = f.run({ KIT_PLAYWRIGHT_MODULE: join(f.directory, "missing.mjs") });
+  assert.ok(moved.stdout.includes(`✗ playwright: ${join(f.directory, "missing.mjs")} is missing`), moved.stdout);
+  const passing = playground(t, { allowMainCheckout: true, checks: { test: "npm test", doctor: "node --version" } }).run();
+  assert.equal(passing.status, 0, passing.stdout);
+  assert.match(passing.stdout, /✓ node --version: v\d+/);
+  assert.match(passing.stdout, /RESULT: ok doctor 12\/12 checks passed\n$/);
+});
+
+test("doctor says no GitHub repo for a repo without a remote and still passes", (t) => {
+  const result = playground(t, { allowMainCheckout: true }, false).run();
+  assert.equal(result.status, 0, result.stdout);
+  assert.match(result.stdout, /✓ base: no GitHub repo \(no origin remote\); nothing to fetch\n/);
 });
 
 test("doctor names missing hook configuration", (t) => {

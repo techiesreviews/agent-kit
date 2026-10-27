@@ -137,7 +137,51 @@ test("unit help, listing and invalid options use the kit front door", t => {
   for (const args of [["--wat"], ["--base"], ["--base", "HEAD"], ["--affected", "tests/direct.test.ts"], ["--affected", "--affected"], ["--list", "--list"], ["--affected", "--base", "missing"], ["missing.test.ts"]]) {
     result(f.run(...args), 2, /fail unit /);
   }
-  rmSync(join(f.root, "scripts/agents/specs-affected.mjs"));
-  result(f.run("--affected"), 2, /^RESULT: fail unit --affected needs the project's scripts\/agents\/specs-affected\.mjs$/);
   assert.equal(f.executed(), 0);
+});
+
+test("without the project's import scan --affected follows plain imports itself; no unit.files is said plainly", t => {
+  const f = fixture(t);
+  rmSync(join(f.root, "scripts/agents/specs-affected.mjs"));
+  f.put("src/leaf.ts", "export const value = 2;\n");
+  const output = f.run("--affected", "--list");
+  result(output, 0, /ok unit 1 selected \(list only\)/);
+  assert.match(output.stdout, /tests\/hops.test.ts — via tests\/support\/bridge.ts \(via src\/middle.ts \(imports src\/leaf.ts\)\)/);
+  f.put("scripts/agents/kit.json", JSON.stringify({ project: "kit-unit", branches: { land: "dev" }, unit: { run: "node --test" } }));
+  for (const args of [["--affected"], []]) result(f.run(...args), 2, /^RESULT: fail unit kit unit needs unit\.files in scripts\/agents\/kit\.json$/);
+  assert.equal(f.executed(), 0);
+});
+
+// techies-playground (research 04): lands on main, node --test, unit tests in several places and no import scan of its own.
+test("unit.files patterns pick src/**/*.test.js for --affected and every pattern for the full suite under node --test", t => {
+  const f = fixture(t);
+  rmSync(join(f.root, "scripts/agents/specs-affected.mjs"));
+  for (const file of ["tests/hops.test.ts", "tests/helper.test.ts", "tests/direct.test.ts"]) rmSync(join(f.root, file));
+  const body = f.body.replace("selected test runs", "js test runs");
+  f.put("scripts/agents/kit.json", JSON.stringify({ project: "techies-playground", branches: { land: "main", release: "main", ci: "main" },
+    checks: { test: "npm test" }, unit: { run: "node --test", files: ["src/**/*.test.js", "scripts/*.test.mjs", "test/"] } }));
+  f.put("src/blocks/math.js", "export const add = (a, b) => a + b;\n");
+  f.put("src/blocks/math.test.js", 'import "./math.js";\n' + body);
+  f.put("src/top.test.js", body);
+  f.put("scripts/build.test.mjs", body);
+  f.put("scripts/deep/skip.test.mjs", body);
+  f.put("test/helpers/setup.js", body);
+  f.put("test/notes.md", "not a test\n");
+  f.git("add", "."); f.git("commit", "--quiet", "-m", "playground");
+  f.git("update-ref", "refs/remotes/origin/main", f.git("rev-parse", "HEAD"));
+  f.put("src/blocks/math.js", "export const add = (a, b) => b + a;\n");
+  const output = f.run("--affected");
+  result(output, 0, /ok unit 1\/1 \(1 files\) log /);
+  assert.match(output.stdout, /^src\/blocks\/math.test.js — imports src\/blocks\/math.js$/m);
+  assert.equal(f.executed(), 1);
+  const all = f.run("--list");
+  result(all, 0, /ok unit 4 selected \(list only\)/);
+  assert.deepEqual(all.stdout.split("\n").filter(line => line.endsWith(" — all")),
+    ["scripts/build.test.mjs — all", "src/blocks/math.test.js — all", "src/top.test.js — all", "test/helpers/setup.js — all"]);
+  // unit.sh alone expands the same patterns.
+  const env = { ...process.env, KIT_ROOT: f.root };
+  delete env.NODE_TEST_CONTEXT;
+  const suite = spawnSync("bash", [resolve("scripts/agents/unit.sh")], { cwd: f.root, env, encoding: "utf8", timeout: 60_000 });
+  assert.equal(suite.status, 0, suite.stderr + suite.stdout);
+  assert.match(suite.stdout, /pass 4, fail 0/);
 });

@@ -216,6 +216,22 @@ test("kit review defaults to origin/dev and omits ticket sources when no ticket 
   assert.equal(readFileSync(join(f.evidence(result.stdout), "refs.txt"), "utf8"), `${f.commits[2]}\n${f.commits[0]}\n`);
 });
 
+test("the brief names only the checks and standards files the settings set", t => {
+  const f = fixture(t);
+  // techies-playground's minimal settings (research 04), with AGENTS.md standing in for a standards file.
+  writeFileSync(join(f.root, "scripts/agents/kit.json"), JSON.stringify({ project: "techies-playground", branches: { land: "dev" },
+    checks: { test: "npm test" }, standards: ["AGENTS.md", "docs/agents/agent-scripts.md"] }));
+  const result = f.run();
+  assert.equal(result.status, 0, result.stderr);
+  const brief = f.calls()[0].input;
+  assert.match(brief, /^Standards axis: apply AGENTS\.md and docs\/agents\/agent-scripts\.md; cite the applicable rule with each defect\.$/m);
+  assert.match(brief, /^The author already ran npm test; do not report inability to run tests\.$/m);
+  assert.doesNotMatch(brief, /check\/test\/lint|npm run|touched specs/);
+  writeFileSync(join(f.root, "scripts/agents/kit.json"), JSON.stringify({ project: "techies-playground", branches: { land: "dev" } }));
+  assert.equal(f.run().status, 0);
+  assert.match(f.calls()[1].input, /^The project sets no checks in scripts\/agents\/kit\.json; do not assume any ran, and do not report inability to run tests\.$/m);
+});
+
 test("review briefs carry declined findings and reasons into kit review", t => {
   const f = fixture(t);
   const declined = ["file.txt:1 — reject deletion: the spec requires this line."];

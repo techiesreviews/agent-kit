@@ -20,11 +20,13 @@ root=$(cd -- "$(kit_root)" && pwd -P)
 main=$(realpath -m -- "$(kit_main_root)")
 dev=$(kit_dev_root)
 [[ -z $dev ]] || dev=$(realpath -m -- "$dev")
-failed=()
+failed=() checks=0
 pass() {
+  checks=$((checks + 1))
   if [[ $quiet == false ]]; then printf '✓ %s: %s\n' "$1" "$2"; fi
 }
 fail() {
+  checks=$((checks + 1))
   failed+=("$1")
   printf '✗ %s: %s; fix: %s\n' "$1" "$2" "$3"
 }
@@ -39,20 +41,37 @@ else
   fail settings "${problems//$'\n'/; }" "$fix"
 fi
 
+# allowMainCheckout: a project worked on in its main checkout (chat) builds there.
+allow_main=$(kit_setting '.allowMainCheckout == true')
 if [[ $root != "$main" && $root != "$dev" ]]; then
   pass place "$root"
+elif [[ $root == "$main" && $allow_main == true ]]; then
+  pass place "$root (main checkout; allowMainCheckout)"
 else
   fail place "main or dev worktree ($root)" "create a worktree with scripts/agents/worktree.sh <branch> origin/${land:-<land>}"
 fi
 
+# Local clones are often behind GitHub (research 02): fetch the land branch before judging the base.
+fetched='' remote=false
+if git -C "$root" remote get-url origin > /dev/null 2>&1; then remote=true; fi
+if [[ -n $land && $remote == true ]] &&
+  ! GIT_TERMINAL_PROMPT=0 timeout "${KIT_DOCTOR_FETCH_TIMEOUT:-20}" git -C "$root" fetch -q origin "$land" > /dev/null 2>&1; then
+  fetched=" (fetch failed; judged the last fetched origin/$land)"
+fi
+current=$(git -C "$root" branch --show-current 2>/dev/null) || current=''
 if [[ -z $land ]]; then
   fail base 'no land branch' 'fix scripts/agents/kit.json first'
+elif [[ $remote == false ]]; then
+  pass base "no GitHub repo (no origin remote); nothing to fetch"
 elif ! tip=$(git -C "$root" rev-parse --verify "refs/remotes/origin/$land" 2>/dev/null); then
-  fail base "missing origin/$land" 'git fetch origin'
-elif [[ $root == "$dev" ]] && [[ $(git -C "$root" branch --show-current) == "$land" ]]; then
-  pass base "$land in the dev worktree"
+  fail base "missing origin/$land$fetched" 'git fetch origin'
+elif [[ $root == "$dev" && $current == "$land" ]]; then
+  pass base "$land in the dev worktree$fetched"
+elif [[ $root == "$main" && $allow_main == true && $current == "$land" ]]; then
+  behind=$(git -C "$root" rev-list --count "HEAD..origin/$land")
+  pass base "$land in the main checkout, $behind commits behind origin/$land$fetched"
 elif git -C "$root" merge-base --is-ancestor "origin/$land" HEAD; then
-  pass base "contains origin/$land ${tip:0:7}"
+  pass base "contains origin/$land ${tip:0:7}$fetched"
 else
   base=$(git -C "$root" merge-base HEAD "origin/$land" 2>/dev/null) || base=''
   # origin/<land> is shared by every worktree, so another runner's fetch moves it under us.
@@ -69,7 +88,7 @@ else
   if [[ $replaced =~ ^[0-9]+$ ]]; then age=$(( $(date +%s) - replaced )); fi
   if (( age >= 0 && age < 86400 )); then
     behind=$(git -C "$root" rev-list --count "HEAD..origin/$land")
-    pass base "$behind commits behind origin/$land; rebase before landing"
+    pass base "$behind commits behind origin/$land; rebase before landing$fetched"
   elif (( age >= 86400 )); then
     fail base "stale: origin/$land moved on from merge-base ${base:0:7} over a day ago" "rebase onto origin/$land"
   else
@@ -110,8 +129,9 @@ if [[ -n $shared_path && -d $shared_path ]]; then shared=$(cd -- "$shared_path" 
 if [[ -n $dev && $root == "$dev" && -n $modules ]]; then
   pass node_modules "$modules (dev worktree)"
 elif [[ -z $shared_path ]]; then
+  # No sharedNodeModules: the project keeps its own dependencies, or none, so there is nothing shared to check.
   if [[ -n $modules ]]; then pass node_modules "$modules (not shared: no sharedNodeModules in scripts/agents/kit.json)"
-  else fail node_modules 'missing or dangling node_modules' 'install the dependencies'; fi
+  else pass node_modules 'skipped (no sharedNodeModules in scripts/agents/kit.json)'; fi
 elif [[ -z $shared ]]; then
   fail node_modules "shared $shared_path is missing or dangling" 'restore node_modules in the dev worktree'
 elif [[ ! -L $root/node_modules || -z $modules ]]; then
@@ -121,6 +141,26 @@ elif [[ $modules != "$shared" ]]; then
 else
   pass node_modules "$modules"
 fi
+
+# playwright: where Playwright comes from for a project without its own (a module file or folder,
+# relative to the project's top folder or absolute); KIT_PLAYWRIGHT_MODULE overrides it.
+playwright=${KIT_PLAYWRIGHT_MODULE:-$(kit_setting .playwright)}
+if [[ -n $playwright ]]; then
+  [[ $playwright == /* ]] || playwright=$root/$playwright
+  if [[ -e $playwright ]]; then pass playwright "$playwright"
+  else fail playwright "$playwright is missing" 'install Playwright there or fix "playwright" in scripts/agents/kit.json'; fi
+fi
+
+# checks.doctor: the project's own doctor lines, each a shell command run in the top folder (one or a list).
+while IFS= read -r line; do
+  [[ -n $line ]] || continue
+  code=0
+  output=$(cd -- "$root" && timeout -k 2 "${KIT_DOCTOR_CHECK_TIMEOUT:-20}" bash -c "$line" 2>&1 < /dev/null) || code=$?
+  last=${output##*$'\n'}
+  if (( code == 0 )); then pass "$line" "${last:-ok}"
+  elif (( code == 124 || code == 137 )); then fail "$line" 'timed out' 'see "checks.doctor" in scripts/agents/kit.json'
+  else fail "$line" "exit $code${last:+: $last}" 'see "checks.doctor" in scripts/agents/kit.json'; fi
+done < <(kit_setting '.checks.doctor | if type == "array" then .[] else . end')
 
 status=0
 matches=$(git -C "$root" grep -nE '^(<<<<<<<|>>>>>>>)( |$)' 2>/dev/null) || status=$?
@@ -243,7 +283,7 @@ if [[ $quiet == false ]]; then
     code=0
     models=$(timeout "${KIT_GROK_TIMEOUT:-10}" "$grok" models 2>&1) || code=$?
     if grep -q '^You are logged in' <<< "$models"; then
-      pass grok 'installed and logged in (optional reviewer)'
+      printf '✓ grok: installed and logged in (optional reviewer)\n'
     elif (( code == 124 )); then
       printf "✗ grok: 'grok models' timed out (optional reviewer); fix: check the network or the grok CLI\n"
     elif grep -qi 'not logged in' <<< "$models"; then
@@ -261,4 +301,4 @@ if (( ${#failed[@]} )); then
   kit_result fail "doctor ${#failed[@]} failed: $names"
   exit 1
 fi
-kit_result ok 'doctor 11/11 checks passed'
+kit_result ok "doctor $checks/$checks checks passed"

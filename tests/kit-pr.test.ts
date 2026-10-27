@@ -37,7 +37,7 @@ if (tool === "fake-kit" && action === "review") {
   if (!env.FAKE_REVIEW_MISSING) writeFileSync(join(folder, "result.md"), report);
   const { execFileSync } = require("node:child_process");
   const git = (...argv) => execFileSync("git", argv, { encoding: "utf8" }).trim();
-  writeFileSync(join(folder, "refs.txt"), git("rev-parse", "HEAD") + "\\n" + git("merge-base", "origin/dev", "HEAD") + "\\n");
+  writeFileSync(join(folder, "refs.txt"), git("rev-parse", "HEAD") + "\\n" + git("merge-base", "origin/" + (env.FAKE_BASE || "dev"), "HEAD") + "\\n");
   console.log("RESULT: ok review git diff base...HEAD evidence " + folder);
 } else if (tool === "fake-kit") console.log("RESULT: ok " + args[0] + " done");
 else if (tool === "gh") {
@@ -79,7 +79,9 @@ else if (tool === "gh") {
 `;
 
 // Default branch: two commits to feature.txt (full tier). `changes` replaces them with one commit of these files.
-function fixture(t: TestContext, changes?: Record<string, string>, override: Record<string, unknown> = {}) {
+// `settings` replaces this editor's settings; `workflows: false` leaves out the CI workflow.
+function fixture(t: TestContext, changes?: Record<string, string>, override: Record<string, unknown> = {},
+  { settings: own, workflows = true }: { settings?: Record<string, unknown>; workflows?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "kit-pr-"));
   const children: ChildProcess[] = [], releases: string[] = [];
   t.after(async () => {
@@ -123,9 +125,12 @@ function fixture(t: TestContext, changes?: Record<string, string>, override: Rec
   env.KIT_HOME = join(root, "scripts/agents");
   for (const name of ["a", "code-map"]) writeFileSync(join(root, `tests/${name}.test.ts`), `// ${name}\n`);
   writeFileSync(join(root, "tests/b.test.ts"), 'import "./fakes/thing.ts";\n');
-  // This editor's settings, without its machine folders.
-  const { mainRoot: _main, devRoot: _dev, sharedNodeModules: _modules, ...settings } = JSON.parse(readFileSync("scripts/agents/kit.json", "utf8"));
-  writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify({ ...settings, ...override }));
+  // This editor's settings, without its machine folders, and its specs command and CI workflow.
+  const { mainRoot: _main, devRoot: _dev, ...settings } = JSON.parse(readFileSync("scripts/agents/kit.json", "utf8"));
+  writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify(own ?? { ...settings, ...override }));
+  mkdirSync(join(root, "scripts/agents/project.d"));
+  writeFileSync(join(root, "scripts/agents/project.d/specs"), "#!/bin/sh\n", { mode: 0o755 });
+  if (workflows) { mkdirSync(join(root, ".github/workflows"), { recursive: true }); writeFileSync(join(root, ".github/workflows/ci.yml"), "on: pull_request\n"); }
   git("add", "."); git("commit", "-m", "base");
   git("branch", "main"); git("push", "origin", "dev", "main");
   git("checkout", "-b", "feature/kit-pr");
@@ -257,6 +262,49 @@ test("checks.extra holds kit-plumbing checks: a diff outside kit files never run
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(f.calls().filter(call => call.tool === "npm").map(call => call.args.join(" ")), ["run check", "test", "run lint"]);
   assert.doesNotMatch(result.stdout, /kit-clean/);
+});
+
+// techies-playground's minimal settings (research 04): lands on main, checks.test only, node --test, no CI workflow here.
+const playground = { project: "techies-playground", branches: { land: "main", release: "main", ci: "main" }, checks: { test: "npm test" },
+  unit: { run: "node --test", files: ["src/**/*.test.js"] } };
+
+test("a project with only checks.test: pr --dry-run runs only npm test and skips the rest with a line each", t => {
+  const f = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: playground, workflows: false });
+  const result = f.run(["--dry-run"], { FAKE_BASE: "main" }, true);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(f.calls().map(call => [call.tool, ...call.args]), [["npm", "test"]]);
+  for (const line of ["deps: skipped (no sharedNodeModules in scripts/agents/kit.json)", "check: skipped (no checks.check in scripts/agents/kit.json)",
+    "unit: ok", "lint: skipped (no checks.lint in scripts/agents/kit.json)", "specs: skipped (no specs command in the project's commands folder)"])
+    assert.ok(result.stdout.split("\n").includes(line), line);
+  assert.match(result.stdout, /RESULT: ok dry-run [a-f0-9]{7} feature\/kit-pr -> main/);
+  assert.match(readFileSync(join(f.logDir(), "body.md"), "utf8"), /## Tests\n\nTier: full \(1 file, src\/app.js is code\)\n\n- check: skipped \(no checks.check in scripts\/agents\/kit.json\)\n- npm test: ok\n- lint: skipped \(no checks.lint in scripts\/agents\/kit.json\)\n- specs: skipped \(no specs command in the project's commands folder\)\n$/);
+});
+
+test("a repo with no remote gets no GitHub repo from pr before any check runs", t => {
+  const f = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: playground, workflows: false });
+  f.git("remote", "remove", "origin");
+  const result = f.run(["--dry-run"], {}, true);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /^RESULT: fail no GitHub repo \(no origin remote\); kit pr needs one to open a PR$/m);
+  assert.deepEqual(f.calls(), []);
+});
+
+test("a land branch that gained commits after the branch started lands without a flag, and no workflows means no CI wait", t => {
+  const f = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: playground, workflows: false });
+  // An editor save lands straight on main meanwhile (ticket 05 point 3).
+  const peer = f.peer();
+  f.gitAt(peer, "checkout", "main");
+  writeFileSync(join(peer, "index.html"), "<h1>saved by the editor</h1>\n");
+  f.gitAt(peer, "add", "."); f.gitAt(peer, "commit", "-m", "Edit index.html"); f.gitAt(peer, "push", "origin", "main");
+  const saved = f.gitAt(peer, "rev-parse", "HEAD");
+  const result = f.run([], { FAKE_BASE: "main" }, true);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^ci: none \(no \.github\/workflows\); landing after review$/m);
+  assert.match(result.stdout, /RESULT: ok merged #73 abcdef0/);
+  assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "wait"), false);
+  assert.equal(f.ghCalls("merge").length, 1);
+  assert.equal(f.git("merge-base", "--is-ancestor", saved, "HEAD"), "");
+  assert.equal(f.gitAt(f.origin, "rev-parse", "feature/kit-pr"), f.git("rev-parse", "HEAD"));
 });
 
 test("PR body includes ordered commits, checks, ticket and conditional Claude credit", t => {
