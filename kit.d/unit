@@ -159,8 +159,13 @@ async function main(args) {
       });
     } finally { for (const [signal, handler] of handlers) process.removeListener(signal, handler); }
     const log = /^log: (.+)$/m.exec(output)?.[1];
-    // Without a log unit.sh stopped before the tests; its last stderr line names why (a settings problem, no jq).
-    if (!log) throw new Error(errors.trimEnd().split("\n").at(-1).replace(/^unit\.sh: /, "") || "unit.sh returned no log path");
+    // Without a log unit.sh stopped before the tests; its last stderr line names why. kit unit has checked its own
+    // arguments, so unit.sh's usage status (a bad ASE_UNIT_TIMEOUT_MS) is a failure and its usage prefix is dropped.
+    if (!log) {
+      if (status === 2) status = 1;
+      throw new Error(errors.trimEnd().split("\n").at(-1).replace(/^unit\.sh: /, "").replace(/^Usage: unit\.sh [^;]*; /, "")
+        || "unit.sh returned no log path");
+    }
     const counts = unitCounts(readFileSync(resolve(root, log), "utf8"));
     if (counts.fail || counts.cancelled) status ||= 1;
     kitResult(status ? "fail" : "ok", `unit ${counts.pass}/${counts.total} (${selected.length} files) log ${log}`);

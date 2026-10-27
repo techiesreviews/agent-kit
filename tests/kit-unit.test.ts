@@ -158,6 +158,9 @@ test("a --base check git fails for another reason than a missing ref is a repo p
   const output = f.runWith({ GIT_CEILING_DIRECTORIES: dirname(f.root) }, "--affected", "--base", "HEAD");
   result(output, 1, /^RESULT: fail unit git rev-parse failed: fatal: not a git repository/);
   assert.match(output.stderr, /^problem: git rev-parse failed: fatal: not a git repository[^\n]*$/m);
+  assert.equal(output.stderr.split("\n").filter(line => line.startsWith("problem: ")).length, 1, output.stderr);
+  // git's complaint stays on the one problem line rather than following a "Command failed" line.
+  assert.doesNotMatch(output.stderr, /Command failed/);
   assert.doesNotMatch(output.stderr, /Usage:/);
   assert.equal(f.executed(), 0);
 });
@@ -194,6 +197,25 @@ test("without the project's import scan --affected follows plain imports itself;
     assert.match(output.stderr, /^problem: unit\.sh needs unit\.run in scripts\/agents\/kit\.json$/m);
     assert.doesNotMatch(output.stderr, /Usage:/);
   }
+  assert.equal(f.executed(), 0);
+});
+
+test("a land branch missing from origin fails --affected on one problem line naming git's complaint", t => {
+  const f = fixture(t);
+  f.git("update-ref", "-d", "refs/remotes/origin/dev");
+  const output = f.run("--affected");
+  result(output, 1, /^RESULT: fail unit git merge-base failed: fatal: \S/);
+  assert.equal(output.stderr.split("\n").filter(line => line.startsWith("problem: ")).length, 1, output.stderr);
+  assert.doesNotMatch(output.stderr, /Usage:|Command failed/);
+  assert.equal(f.executed(), 0);
+});
+
+test("a bad ASE_UNIT_TIMEOUT_MS is a failure naming the variable, without either usage text", t => {
+  const f = fixture(t);
+  const output = f.runWith({ ASE_UNIT_TIMEOUT_MS: "abc" }, "tests/direct.test.ts");
+  result(output, 1, /^RESULT: fail unit ASE_UNIT_TIMEOUT_MS must be a positive integer \(ms\)$/);
+  assert.match(output.stderr, /^problem: ASE_UNIT_TIMEOUT_MS must be a positive integer \(ms\)$/m);
+  assert.doesNotMatch(output.stderr, /Usage: kit unit/);
   assert.equal(f.executed(), 0);
 });
 
