@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 
 const repo = resolve(".");
@@ -415,18 +415,22 @@ test("doctor passes an installed node_modules without sharedNodeModules and says
 
 test("doctor names a missing jq instead of calling a good settings file unreadable", (t) => {
   const f = fixture(t);
-  // Every command the system folders hold except jq, plus the Node running this test.
+  // Every command /usr/bin holds except jq, and the Node running this test as node; nothing else on PATH,
+  // so a Node installed in /usr/bin cannot bring jq back.
   const bin = join(f.directory, "bin");
   mkdirSync(bin);
-  for (const name of readdirSync("/usr/bin")) if (name !== "jq") symlinkSync(join("/usr/bin", name), join(bin, name));
-  const path = `${bin}:${dirname(process.execPath)}`;
-  assert.notEqual(spawnSync("bash", ["-c", "command -v jq"], { env: { PATH: path } }).status, 0, "jq is still on the test PATH");
+  for (const name of readdirSync("/usr/bin")) if (!["jq", "node"].includes(name)) symlinkSync(join("/usr/bin", name), join(bin, name));
+  symlinkSync(process.execPath, join(bin, "node"));
+  assert.notEqual(spawnSync("/bin/bash", ["-c", "command -v jq"], { env: { PATH: bin } }).status, 0, "jq is still on the test PATH");
   for (const direct of [true, false]) {
-    const result = f.run([], f.build, { PATH: path }, direct);
+    const result = f.run([], f.build, { PATH: bin }, direct);
     assert.equal(result.status, 1, result.stdout + result.stderr);
-    assert.match(result.stdout, /^✗ settings: jq is not installed, so scripts\/agents\/kit\.json cannot be read; fix: install jq$/m);
-    assert.doesNotMatch(result.stdout, /unreadable/);
-    assert.match(result.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: fail doctor \d+ failed: settings/);
+    const lines = result.stdout.trimEnd().split("\n");
+    assert.ok(lines.includes("✗ settings: jq is not installed, so scripts/agents/kit.json cannot be read; fix: install jq"), result.stdout);
+    // The checks that need a setting say jq skipped them; no other line blames the settings file.
+    for (const name of ["place", "base", "node_modules"]) assert.ok(lines.includes(`✓ ${name}: skipped (jq is not installed)`), result.stdout);
+    assert.deepEqual(lines.filter(line => line.includes("scripts/agents/kit.json")), [lines.find(line => line.startsWith("✗ settings: "))]);
+    assert.match(lines.at(-1)!, /^RESULT: fail doctor \d+ failed: settings/);
   }
 });
 

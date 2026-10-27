@@ -16,8 +16,11 @@ for argument in "$@"; do
   esac
 done
 
-# Without jq every setting reads as unset; the settings line names jq, so the other checks run on.
+# Without jq every setting reads as unset: the settings line names jq, and the checks that need a setting say
+# they were skipped rather than blame scripts/agents/kit.json; the rest run on.
 setting() { kit_setting "$1" 2>/dev/null || :; }
+jq_missing=false
+command -v jq > /dev/null || jq_missing=true
 root=$(cd -- "$(kit_root)" && pwd -P)
 main=$(realpath -m -- "$(kit_main_root)")
 dev=$(kit_dev_root 2>/dev/null || :)
@@ -43,7 +46,7 @@ land=''
 if problems=$(kit_settings_problems); then
   land=$(setting .branches.land)
   pass settings "scripts/agents/kit.json ($(setting .project), lands on $land)"
-elif ! command -v jq > /dev/null; then
+elif [[ $jq_missing == true ]]; then
   fail settings 'jq is not installed, so scripts/agents/kit.json cannot be read' 'install jq'
 else
   if [[ -f $(kit_settings_file) ]]; then fix='edit scripts/agents/kit.json as the problem says'
@@ -53,7 +56,9 @@ fi
 
 # allowMainCheckout: a project worked on in its main checkout (chat) builds there.
 allow_main=$(setting '.allowMainCheckout == true')
-if [[ $root != "$main" && $root != "$dev" ]]; then
+if [[ $jq_missing == true ]]; then
+  pass place 'skipped (jq is not installed)'
+elif [[ $root != "$main" && $root != "$dev" ]]; then
   pass place "$root"
 elif [[ $root == "$main" && $allow_main == true ]]; then
   pass place "$root (main checkout; allowMainCheckout)"
@@ -71,7 +76,9 @@ if [[ -n $land && $remote == true ]] &&
   fetched=" (fetch failed; judged the last fetched origin/$land)"
 fi
 current=$(git -C "$root" branch --show-current 2>/dev/null) || current=''
-if [[ -z $land ]]; then
+if [[ $jq_missing == true ]]; then
+  pass base 'skipped (jq is not installed)'
+elif [[ -z $land ]]; then
   fail base 'no land branch' 'fix scripts/agents/kit.json first'
 elif [[ $remote == false ]]; then
   pass base "no GitHub repo (no origin remote); nothing to fetch"
@@ -141,7 +148,9 @@ modules='' shared=''
 shared_path=$(setting .sharedNodeModules)
 if [[ -d $root/node_modules ]]; then modules=$(cd -- "$root/node_modules" && pwd -P); fi
 if [[ -n $shared_path && -d $shared_path ]]; then shared=$(cd -- "$shared_path" && pwd -P); fi
-if [[ -n $dev && $root == "$dev" && -n $modules ]]; then
+if [[ $jq_missing == true ]]; then
+  pass node_modules 'skipped (jq is not installed)'
+elif [[ -n $dev && $root == "$dev" && -n $modules ]]; then
   pass node_modules "$modules (dev worktree)"
 elif [[ -z $shared_path ]]; then
   # No sharedNodeModules: the project keeps its own dependencies, or none, so there is nothing shared to check.
@@ -230,6 +239,8 @@ elif (( ${#clashes[@]} )); then
   fail commands "${list%; }" 'rename the project command'
 elif [[ -n ${KIT_COMMANDS_DIR:-} ]]; then
   pass commands "${counts[0]} in $KIT_COMMANDS_DIR (KIT_COMMANDS_DIR)"
+elif [[ $jq_missing == true ]]; then
+  pass commands "${counts[0]} shared, project folder skipped (jq is not installed)"
 elif [[ -n $own_setting ]]; then
   pass commands "${counts[0]} shared, ${counts[1]} in $own_setting"
 else

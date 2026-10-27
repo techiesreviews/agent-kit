@@ -99,7 +99,10 @@ function affected(root, files, base, unitFile) {
 async function main(args) {
   let status = 2;
   try {
-    const flags = options(args), root = resolve(kitRoot());
+    const flags = options(args);
+    // Past the arguments a problem is in the settings or the repo: a failure without the usage text.
+    status = 1;
+    const root = resolve(kitRoot());
     if (flags.affected) {
       const scan = join(root, "scripts/agents/specs-affected.mjs");
       if (existsSync(scan)) ({ graphFile, importsOf } = await import(pathToFileURL(scan).href));
@@ -107,12 +110,11 @@ async function main(args) {
     let selected;
     if (flags.files.length) {
       selected = [...new Set(flags.files)].map(file => {
-        if (!existsSync(resolve(root, file))) throw new Error(`test file not found: ${file}`);
+        // A named file that does not exist is an argument mistake, so it keeps the usage text.
+        if (!existsSync(resolve(root, file))) { status = 2; throw new Error(`test file not found: ${file}`); }
         return { file, reason: "explicit" };
       });
     } else {
-      // From here a problem is in the settings or the repo, not the arguments: a failure without the usage text.
-      status = 1;
       const files = paths(root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"])
         .filter(file => existsSync(join(root, file)));
       const unitFile = unitFiles(root);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -91,6 +91,17 @@ esac
     spawnSync(kit, args, { cwd: root, env: { ...env, ...extra }, encoding: "utf8", timeout: 30_000 });
   const called = () => { try { return readFileSync(calls, "utf8"); } catch { return ""; } };
   return { dir, root, main, bin, env, git, run, called };
+}
+
+// A PATH with every command /usr/bin holds except jq, plus the Node running this test as node,
+// so a Node installed in /usr/bin cannot bring jq back.
+function withoutJq(t: TestContext) {
+  const bin = join(temp(t), "bin");
+  mkdirSync(bin);
+  for (const name of readdirSync("/usr/bin")) if (!["jq", "node"].includes(name)) symlinkSync(join("/usr/bin", name), join(bin, name));
+  symlinkSync(process.execPath, join(bin, "node"));
+  assert.notEqual(spawnSync("/bin/bash", ["-c", "command -v jq"], { env: { PATH: bin } }).status, 0, "jq is still on the test PATH");
+  return bin;
 }
 
 function lastLine(output: { stdout: string }) {
@@ -377,6 +388,19 @@ test("worktree.sh links the real folder behind a symlinked sharedNodeModules, an
   assert.equal(missing.stderr, `Missing node_modules: ${join(f.dir, "gone")}\n`);
   assert.equal(existsSync(join(dirname(realpathSync(f.root)), "kit-land-feature-missing")), false);
   assert.doesNotMatch(f.git("branch", "--list", "feature/missing"), /missing/);
+});
+
+test("without jq, unit.sh and worktree.sh name it and stop, making no worktree", t => {
+  const f = repo(t, { project: "kit-land", branches: { land: "main" }, unit: { run: "node --test", files: "tests/*.test.ts" } });
+  const env = { ...f.env, PATH: withoutJq(t), KIT_MAIN_ROOT: "" };
+  const unit = spawnSync("/bin/bash", [resolve("scripts/agents/unit.sh"), "tests/a.test.ts"], { cwd: f.root, env, encoding: "utf8" });
+  assert.equal(unit.status, 1, unit.stdout + unit.stderr);
+  assert.equal(unit.stderr, "unit.sh: jq is not installed; install jq\n");
+  const made = spawnSync("/bin/bash", [resolve("scripts/agents/worktree.sh"), "feature/nojq"], { cwd: f.root, env, encoding: "utf8" });
+  assert.equal(made.status, 1, made.stdout + made.stderr);
+  assert.equal(made.stderr, "worktree.sh: jq is not installed; install jq\n");
+  assert.equal(existsSync(join(dirname(realpathSync(f.root)), "kit-land-feature-nojq")), false);
+  assert.equal(f.git("branch", "--list", "feature/nojq"), "");
 });
 
 test("without a maps folder, next and heartbeat say so, tickets.mjs reads nothing and score still lists records", t => {

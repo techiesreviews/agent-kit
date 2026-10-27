@@ -173,6 +173,24 @@ test("without the project's import scan --affected follows plain imports itself;
   assert.equal(f.executed(), 0);
 });
 
+test("a unit.files pattern matching nothing and a broken import scan fail without usage", t => {
+  const f = fixture(t);
+  const env = { ...process.env, KIT_ROOT: f.root };
+  delete env.NODE_TEST_CONTEXT;
+  f.put("scripts/agents/kit.json", JSON.stringify({ project: "kit-unit", branches: { land: "dev" }, unit: { run: "node --test", files: "nomatch/*.test.ts" } }));
+  const none = spawnSync("bash", [resolve("scripts/agents/unit.sh")], { cwd: f.root, env, encoding: "utf8", timeout: 60_000 });
+  assert.equal(none.status, 1, none.stdout + none.stderr);
+  assert.equal(none.stderr, "unit.sh: no files match unit.files in scripts/agents/kit.json\n");
+  // The project's own scan is the repo's code, not an argument: a syntax error in it is a failure.
+  rmSync(join(f.root, "scripts/agents/specs-affected.mjs"));
+  f.put("scripts/agents/specs-affected.mjs", "export const graphFile = ;\n");
+  const scan = f.run("--affected", "--list");
+  result(scan, 1, /^RESULT: fail unit /);
+  assert.match(scan.stderr, /^problem: /m);
+  assert.doesNotMatch(scan.stderr, /Usage:/);
+  assert.equal(f.executed(), 0);
+});
+
 test("unit.sh with no files runs only the tests its unit.files pattern matches", t => {
   const f = fixture(t);
   f.put("scripts/agents/kit.json", JSON.stringify({ project: "kit-unit", branches: { land: "dev" },

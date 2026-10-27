@@ -28,7 +28,7 @@ if [[ -n ${KIT_COMMANDS_DIR:-} ]]; then
   folders=("$KIT_COMMANDS_DIR") headings=('Commands')
 else
   folders=("$KIT_HOME/kit.d") headings=('Shared commands')
-  # Without jq, kit_setting names it once and the shared commands still run, so kit doctor can report it.
+  # Without jq, kit_setting names it on stderr and the shared commands still run, so kit doctor can report it.
   own=$(kit_setting .commands) || own=''
   if [[ -n $own ]]; then
     [[ $own == /* ]] || own=$KIT_ROOT/$own
