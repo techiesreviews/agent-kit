@@ -447,27 +447,41 @@ export function tryFailures(index, status, log) {
 
 /**
  * L2 findings from the project's checks.css run: none when it passed, else one per `file:line: text` line it printed
- * (a stack frame is no such line; ./ and absolute paths are read against root) whose subject is in the diff (`changed`),
- * so a checker that looks past the given files reports nothing the diff did not touch; `outside` counts the rest.
- * A CSS line's subject is its own file; another line's (an allow list's stale entry) is the first project file (`known`)
- * its text names, else its own file. A failed run that names no line is one finding pointing at its log.
+ * (the path runs to the first `:<line>:`, spaces and parentheses kept; a stack frame or a path outside root is no such
+ * line; ./ and absolute paths are read against root) whose subject is in the diff (`changed`), so a checker that looks
+ * past the given files reports nothing the diff did not touch; `outside` counts the rest.
+ * A CSS line's subject is its own file; another line's (an allow list's stale entry) is the longest project file
+ * (`known`) its text names whole, else its own file. A failed run that names no line is one finding pointing at its log.
  */
 export function colourFindings(status, output, command, log, { root, changed, known = changed }) {
   if (!status) return { findings: [], outside: 0 };
   const lines = output.replace(/\x1b\[[0-9;]*m/g, "").split("\n").map(line => line.trim()).filter(Boolean);
   const located = lines.flatMap(text => {
-    const match = /^([^\s:()]+):(\d+)(?::\d+)?:\s*(\S.*)$/.exec(text);
+    const match = /^(?!at\s|node:)([^:]+):(\d+)(?::\d+)?:\s*(\S.*)$/.exec(text);
     if (!match) return [];
     const file = relative(root, resolve(root, match[1]));
+    if (/^\.\.(\/|$)/.test(file)) return [];
     return [{ rule: "L2", file, line: Number(match[2]), text: /\.css$/i.test(file) ? `raw colour ${match[3]}` : match[3] }];
   });
-  const subject = finding => /\.css$/i.test(finding.file) ? finding.file : finding.text.split(/[\s,;()"'`]+/).map(token => token.replace(/:+$/, "")).filter(Boolean)
-    .map(token => relative(root, resolve(root, token))).find(path => known.includes(path)) ?? finding.file;
+  const paths = [...known].sort((a, b) => b.length - a.length);
+  const subject = finding => {
+    if (/\.css$/i.test(finding.file)) return finding.file;
+    const text = finding.text.replaceAll(`${root}/`, "").replace(/(^|[^\p{L}\p{N}_./-])\.\//gu, "$1");
+    return paths.find(path => namesWhole(text, path)) ?? finding.file;
+  };
   if (located.length) {
     const findings = located.filter(finding => changed.includes(subject(finding)));
     return { findings, outside: located.length - findings.length };
   }
   return { outside: 0, findings: [{ rule: "L2", file: "colours", line: 0, text: `${command} exited ${status}${lines.length ? `: ${lines[0].slice(0, 240)}` : ""}; log ${log}` }] };
+}
+
+/** Whether text names path as a whole path: no path character just before it, and none (nor `.x`) just after. */
+function namesWhole(text, path) {
+  for (let at = path ? text.indexOf(path) : -1; at >= 0; at = text.indexOf(path, at + 1)) {
+    if (!/[\p{L}\p{N}_./-]/u.test(text[at - 1] ?? "") && !/^([\p{L}\p{N}_/-]|\.[\p{L}\p{N}_])/u.test(text.slice(at + path.length))) return true;
+  }
+  return false;
 }
 
 async function main() {

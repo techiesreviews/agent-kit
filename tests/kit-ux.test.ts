@@ -522,6 +522,90 @@ test("a failed colour check names each file and line it printed in the diff, els
   assert.deepEqual(found(127, "").findings, [{ rule: "L2", file: "colours", line: 0, text: "check exited 127; log /log" }]);
 });
 
+const colourRoot = "/abs/root";
+const foundIn = (changed: string[], output: string, known = changed) => ux.colourFindings(1, output, "check", "/log", { root: colourRoot, changed, known });
+
+test("a colour line keeps a path with spaces or parentheses as its file", () => {
+  const root = colourRoot, found = foundIn;
+  // Alone or beside another line, the spaced path is the line's file.
+  const spaced = { rule: "L2", file: "src/my file.css", line: 1, text: "raw colour #fff" };
+  assert.deepEqual(found(["src/my file.css"], "src/my file.css:1: #fff\n"), { findings: [spaced], outside: 0 });
+  assert.deepEqual(found(["src/my file.css"], "src/a.css:2: red\nsrc/my file.css:1:4: #fff\n"), { findings: [spaced], outside: 1 });
+  assert.deepEqual(found(["src/my (old) file.css"], `${root}/src/my (old) file.css:2: red\n`).findings, [{ rule: "L2", file: "src/my (old) file.css", line: 2, text: "raw colour red" }]);
+  // A path outside the project, a stack frame and a node: frame are no file:line lines.
+  for (const line of ["/elsewhere/a css.css:1: #fff", "at check (/abs/root/x.js:12:5): boom", "node:internal/main:12:3: boom"]) {
+    assert.deepEqual(found(["src/a.css"], `${line}\n`).findings, [{ rule: "L2", file: "colours", line: 0, text: `check exited 1: ${line}; log /log` }]);
+  }
+});
+
+test("a colour line naming a file with spaces or parentheses counts for that file, longest and whole", () => {
+  const root = colourRoot, found = foundIn;
+  // An allow list's stale entry naming a file with spaces and parentheses counts for that file.
+  const known = ["allow.json", "file.css", "src/my (old) file.css", "src/a.css"];
+  const stale = "allow.json:3: stale allow entry: src/my (old) file.css: #000\n";
+  assert.deepEqual(found(["src/my (old) file.css"], stale, known), {
+    findings: [{ rule: "L2", file: "allow.json", line: 3, text: "stale allow entry: src/my (old) file.css: #000" }], outside: 0,
+  });
+  // The longest named file wins: the entry is not about file.css, which its text also holds.
+  assert.deepEqual(found(["file.css"], stale, known), { findings: [], outside: 1 });
+  // A file is named only whole: src/a.css.map is not src/a.css; ./ and absolute paths still name it.
+  assert.deepEqual(found(["src/a.css"], "allow.json:1: stale allow entry: src/a.css.map: x\n", known), { findings: [], outside: 1 });
+  assert.equal(found(["src/a.css"], "allow.json:1: stale allow entry: ./src/a.css: x\n", known).findings.length, 1);
+  assert.equal(found(["src/a.css"], `allow.json:1: stale allow entry: ${root}/src/a.css: x\n`, known).findings.length, 1);
+});
+
+test("kit ux with this editor's checks.css finds a raw colour in a changed file whose path has a space", t => {
+  const { put, run } = fixture(t);
+  put("docs/agents/features.md", ["# Feature list", "", entry("F-plain-01", ["src/*.css"])].join("\n"));
+  put("src/my file.css", ".a { color: #fff; }\n");
+  const output = run(["--no-review"], { KIT_UX_SHOTS: undefined, KIT_COMMANDS_DIR: undefined });
+  assert.equal(output.status, 0, output.stdout + output.stderr);
+  const markdown = readFileSync(join(/bundle (\S+)$/.exec(output.result)![1], "bundle.md"), "utf8");
+  assert.deepEqual(markdown.split("\n").filter(line => line.startsWith("- L2")), ["- L2 src/my file.css:1: raw colour #fff"]);
+  assert.match(output.stdout, /: exited 1, 1 finding; log \S+\/colours\.log$/m);
+});
+
+test("kit ux without a settings file needs --base and runs with one; a broken settings file fails even with --base", t => {
+  const { root, put, run } = fixture(t);
+  put("docs/agents/features.md", ["# Feature list", "", entry("F-plain-01", ["src/plain.css"])].join("\n"));
+  put("src/plain.css", ".a { color: var(--ink); }\n");
+  rmSync(join(root, "scripts/agents/kit.json"));
+  const missing = run(["--no-review"], { KIT_UX_SHOTS: undefined, KIT_COMMANDS_DIR: undefined });
+  assert.equal(missing.status, 1, missing.stdout + missing.stderr);
+  assert.equal(missing.result, "RESULT: fail ux needs --base (no branches.land in scripts/agents/kit.json)");
+  const given = run(["--no-review", "--base", "origin/dev"], { KIT_UX_SHOTS: undefined, KIT_COMMANDS_DIR: undefined });
+  assert.equal(given.status, 0, given.stdout + given.stderr);
+  assert.match(given.result, /^RESULT: ok ux 0 features tried, /);
+  assert.match(given.stdout, /^colours: skipped \(no checks\.css in scripts\/agents\/kit\.json\)$/m);
+  put("scripts/agents/kit.json", "{ broken");
+  const broken = run(["--no-review", "--base", "origin/dev"], { KIT_UX_SHOTS: undefined, KIT_COMMANDS_DIR: undefined });
+  assert.equal(broken.status, 1, broken.stdout + broken.stderr);
+  assert.match(broken.result, /^RESULT: fail ux scripts\/agents\/kit\.json is unreadable: /);
+});
+
+test("kit ux with this editor's checks.css counts a stale allow entry for an untracked CSS file, and says ok when the check passes", t => {
+  const { git, put, run } = fixture(t);
+  put("docs/agents/features.md", ["# Feature list", "", entry("F-plain-01", ["src/*.css"])].join("\n"));
+  put("scripts/check-colours.allow.json", JSON.stringify([{ file: "src/new.css", match: "mask: linear-gradient(#000", reason: "Alpha only." }]));
+  git("add", "."); git("commit", "--quiet", "-m", "allowed");
+  git("update-ref", "refs/remotes/origin/dev", "HEAD");
+  const report = () => {
+    const output = run(["--no-review"], { KIT_UX_SHOTS: undefined, KIT_COMMANDS_DIR: undefined });
+    assert.equal(output.status, 0, output.stdout + output.stderr);
+    return { stdout: output.stdout, bundle: readFileSync(join(/bundle (\S+)$/.exec(output.result)![1], "bundle.md"), "utf8") };
+  };
+  // src/new.css is untracked and lacks the allowed line: the entry naming it counts for it, not for the unchanged allow list.
+  put("src/new.css", ".a { color: var(--ink); }\n");
+  const stale = report();
+  assert.deepEqual(stale.bundle.split("\n").filter(line => line.startsWith("- L2")), ["- L2 scripts/check-colours.allow.json:1: stale allow entry: src/new.css: mask: linear-gradient(#000"]);
+  // With the allowed line in place the check passes: stdout and the bundle say ok.
+  put("src/new.css", ".a { mask: linear-gradient(#000, transparent); }\n");
+  const passed = report();
+  const ok = new RegExp(`^colours: ${editorColours.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}: ok$`, "m");
+  for (const text of [passed.stdout, passed.bundle]) assert.match(text, ok);
+  assert.doesNotMatch(passed.bundle, /^- L2 /m);
+});
+
 test("kit ux tries touched features, runs scripted checks and writes a bounded bundle", t => {
   const { root, put, run, calls } = fixture(t);
   put("src/page-builder/media-picker.css", ".a { gap: var(--space); }\n.media__badge { gap: 6px; color: #fff; }\n");
