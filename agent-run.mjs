@@ -267,9 +267,19 @@ function projectCounts(ledger, week, family) {
 function moveLegacyLedger(ledger, legacy, project, env) {
   if (!legacy || !existsSync(legacy)) return;
   withReviewLock(legacy, () => {
-    for (const [week, families] of Object.entries(readReviewLedger(legacy))) {
-      for (const [family, count] of Object.entries(families ?? {})) {
-        if (!Number.isSafeInteger(count) || count <= 0) continue;
+    const old = readReviewLedger(legacy);
+    // Every count is checked before anything merges, so a broken file is named and kept.
+    for (const [week, families] of Object.entries(old)) {
+      if (typeof families !== "object" || families === null || Array.isArray(families)) {
+        throw new Error(`review budget ledger ${legacy} ${week} is not { "<family>": <count> }; fix or delete it`);
+      }
+      for (const [family, count] of Object.entries(families)) {
+        if (!Number.isSafeInteger(count) || count < 0) throw new Error(`review budget ledger ${legacy} ${week} ${family} is not a count; fix or delete it`);
+      }
+    }
+    for (const [week, families] of Object.entries(old)) {
+      for (const [family, count] of Object.entries(families)) {
+        if (!count) continue;
         const counts = projectCounts(ledger, week, family);
         counts[project] = (counts[project] ?? 0) + count;
       }

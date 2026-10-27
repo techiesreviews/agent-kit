@@ -225,6 +225,8 @@ test("the bundle shows the computer's Grok reviews this week and last, by projec
   assert.match(empty.stdout, /^## Grok reviews this week \(\d+ bytes\)$/m);
   const week = isoWeek(new Date()), last = isoWeek(new Date(Date.now() - 7 * day));
   assert.deepEqual(section(bundleOf(empty.stdout).text, "Grok reviews this week"), [`- 0 of 8 in ${week}, whole computer`, "- kit-sweep: 0", `- last week, ${last}: 0`]);
+  // A fresh state home stays empty: the sweep changes nothing.
+  assert.ok(!existsSync(join(dir, "state")), "no state folder or lock created");
   // Two projects' reviews in one machine ledger; a listed project with none shows 0.
   const state = join(dir, "state/agent-kit");
   write(join(state, "review-budget.json"), JSON.stringify({ [last]: { grok: { "native-site-editor": 6 } },
@@ -245,6 +247,21 @@ test("the bundle shows the computer's Grok reviews this week and last, by projec
   const aliased = run(repo);
   assert.equal(aliased.status, 0, aliased.stdout + aliased.stderr);
   assert.deepEqual(section(bundleOf(aliased.stdout).text, "Grok reviews this week").slice(0, 3), [`- 2 of 8 in ${week}, whole computer`, "- alias: 0", "- kit-sweep: 2"]);
+  // A broken old file is named on its own line; the ledger's counts and the other files still count.
+  write(join(dir, "chat/.scratch/review-budget.json"), "{ broken");
+  write(join(state, "projects.json"), JSON.stringify({ chat: { root: join(dir, "chat") } }));
+  write(join(state, "review-budget.json"), JSON.stringify({ [week]: { grok: { "techies-playground": 1 } } }));
+  const oldBroken = run(repo);
+  assert.equal(oldBroken.status, 0, oldBroken.stdout + oldBroken.stderr);
+  assert.deepEqual(section(bundleOf(oldBroken.stdout).text, "Grok reviews this week"), [`- 3 of 8 in ${week}, whole computer`, "- chat: 0", "- kit-sweep: 2",
+    "- techies-playground: 1", `- last week, ${last}: 0`, `- chat: old ledger unreadable (${join(dir, "chat/.scratch/review-budget.json")})`]);
+  assert.ok(!existsSync(join(state, "review-budget.json.lock")));
+  // A broken project list is named; the bundle still comes out.
+  write(join(state, "projects.json"), "{ broken");
+  const listBroken = run(repo);
+  assert.equal(listBroken.status, 0, listBroken.stdout + listBroken.stderr);
+  assert.match(section(bundleOf(listBroken.stdout).text, "Grok reviews this week")[0], /^- unreadable: .*projects\.json is unreadable: /);
+  write(join(state, "projects.json"), "{}");
   // A broken ledger is named; the rest of the bundle still comes out.
   write(join(state, "review-budget.json"), "{ broken");
   const broken = run(repo);

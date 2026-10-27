@@ -296,6 +296,14 @@ test("two projects share one count, and a project's old ledger moves in once", (
     (error: Error) => error.message.includes(`review budget ledger ${legacy} is not valid JSON`));
   assert.equal(readFileSync(path, "utf8"), before);
   assert.equal(readFileSync(legacy, "utf8"), "{ broken");
+  // So does a week or a count of the wrong shape: nothing merges and nothing is deleted.
+  for (const [shape, problem] of [[{ "2026-W44": 5 }, `${legacy} 2026-W44 is not { "<family>": <count> }`], [{ "2026-W44": null }, `${legacy} 2026-W44 is not`],
+    [{ "2026-W43": { grok: 1 }, "2026-W44": { grok: "3" } }, `${legacy} 2026-W44 grok is not a count`], [{ "2026-W44": { gpt: -1 } }, `${legacy} 2026-W44 gpt is not a count`]] as const) {
+    writeFileSync(legacy, JSON.stringify(shape));
+    assert.throws(() => reserveReviewBudget(editor, "grok", env, monday), (error: Error) => error.message.includes(`review budget ledger ${problem}`));
+    assert.equal(readFileSync(path, "utf8"), before);
+    assert.equal(readFileSync(legacy, "utf8"), JSON.stringify(shape));
+  }
   assert.ok(!existsSync(`${legacy}.lock`) && !existsSync(`${path}.lock`));
 });
 
