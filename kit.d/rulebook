@@ -16,9 +16,12 @@ case ${1-} in
   '') ;;
   *) printf '%s\n' "$usage" >&2; kit_result fail "rulebook unknown argument $1"; exit 2 ;;
 esac
+# A file without a final newline still leaves the next line, and the RESULT line, on a line of its own.
+end_line() { [[ ! -s $1 || -z $(tail -c1 -- "$1") ]] || printf '\n'; }
 shared=$(kit_home)/docs/kitchen.md
 [[ -r $shared ]] || { kit_result fail "rulebook no shared rulebook at $shared"; exit 1; }
 cat -- "$shared"
+end_line "$shared"
 # Settings that cannot be read (no jq, or a broken file) are not the same as no extras.
 extras=$(kit_setting .rulebookExtras) || { kit_result fail 'rulebook cannot read scripts/agents/kit.json without jq; install jq'; exit 1; }
 settings=$(kit_settings_file)
@@ -39,4 +42,5 @@ if [[ ! -f $file || ! -r $file ]]; then
 fi
 printf '\n'
 cat -- "$file"
+end_line "$file"
 kit_result ok "rulebook shared and $extras"

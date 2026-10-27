@@ -28,6 +28,7 @@ starts its kit slice under kit bg (a group: one job running its slices in order 
 --max N lowers the cap of 5 running slices; it never raises it.
 Builders and the reviewer come from the "Builder, every slice" and "Review, every change" rows of the
 kit's docs/kitchen.md; the same row in the rulebookExtras file wins; a missing file or row fails.
+Both are read from the running kit and checkout, not from origin/${land}: update this checkout after a pin change.
 --run-group runs kit slice for each ticket in order here, stopping at the first failure: the first
 on BRANCH, each later one on its own BRANCH-<NN> from the fetched origin/${land}. A rerun skips
 tickets closed on origin/${land} or merged by their saved slice and resumes a slice with saved state
@@ -103,9 +104,10 @@ function git(args, cwd = devRoot) {
 
 const tryGit = (args, cwd = devRoot) => run("git", ["-C", cwd, ...args]).status === 0;
 
+// The pin applies first, so a project whose builder pin is an opencode/ model delegates those tickets too.
 function builderFor(builder) {
-  if (builder.startsWith("opencode/")) return { model: builder, delegate: true, label: `delegate ${builder}` };
   const model = pins[builder] ?? builder;
+  if (model.startsWith("opencode/")) return { model, delegate: true, label: `delegate ${model}` };
   return { model, delegate: false, label: model };
 }
 

@@ -489,12 +489,29 @@ test("an extras row replaces only its own role: the shared reviewer stays when o
     `${join(root, "wt-build-al-01-first-slice")}|claude-shared-review|al-01|bg slice-al01 -- scripts/agents/kit slice --ticket ${build("alpha", "01-first-slice")} --builder claude-own\n`);
 });
 
+test("an opencode/ builder pin delegates the tickets it builds: claimed, never started", t => {
+  const { env, lines } = fixture(t, {
+    ...startFiles,
+    "docs/agents/kitchen-extras.md": "# Kitchen extras\n\n| Builder, every slice | `opencode/free-x`, high | here |\n",
+  }, "dev", { rulebookExtras: "docs/agents/kitchen-extras.md" });
+  const out = lines("alpha", "--start");
+  assert.ok(out.includes(`next: ${build("alpha", "01-first-slice")} builder=delegate opencode/free-x owner=al-01 why=delegated, no slot`), out.join("\n"));
+  assert.ok(out.includes(`delegate: ${build("alpha", "01-first-slice")} opencode/free-x owner=al-01`), out.join("\n"));
+  assert.equal(out.at(-1), "RESULT: ok next 2 ready, 0 waiting, 0 started");
+  assert.ok(!existsSync(env.FAKE_KIT_LOG!));
+});
+
+test("next --help says where the pins come from", t => {
+  const { run } = fixture(t, startFiles);
+  assert.match(run("--help").stdout, /"Builder, every slice" and "Review, every change" rows.*rulebookExtras file wins.*running kit and checkout/s);
+});
+
 test("a missing shared rulebook, extras file or pin fails before any hand-out", t => {
   const { root, dev, env, run } = fixture(t, startFiles, "dev", { rulebookExtras: "docs/agents/missing.md" });
   const missing = run("alpha");
   assert.equal(missing.status, 1);
   assert.match(missing.stdout, /^RESULT: fail next cannot read the rulebook extras \S+\/docs\/agents\/missing\.md: ENOENT$/m);
-  // Extras without pin rows leave the shared pins.
+  // Extras without pin rows add nothing: a shared rulebook missing a pin still fails.
   mkdirSync(join(dev, "docs/agents"), { recursive: true });
   writeFileSync(join(dev, "docs/agents/missing.md"), "# Kitchen extras\n");
   const home = join(root, "empty-kit");

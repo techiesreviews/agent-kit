@@ -58,6 +58,20 @@ test("an extras path may be absolute; without rulebookExtras only the shared par
   }
 });
 
+test("files without a final newline still leave the RESULT line on its own line", t => {
+  const own = rulebook(t, { ...project, rulebookExtras: "x.md" }, { "x.md": "# X" });
+  assert.equal(own.status, 0, own.stderr);
+  assert.equal(own.stdout, `${read(shared)}\n# X\nRESULT: ok rulebook shared and x.md\n`);
+  const home = mkdtempSync(join(tmpdir(), "kit-rulebook-home-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  for (const name of ["kit.d", "kit-lib.sh", "kit-lib.mjs"]) symlinkSync(resolve("scripts/agents", name), join(home, name));
+  mkdirSync(join(home, "docs"));
+  writeFileSync(join(home, "docs/kitchen.md"), "# Shared");
+  const bare = rulebookWith(t, { KIT_HOME: home }, project);
+  assert.equal(bare.status, 0, bare.stderr);
+  assert.equal(bare.stdout, `# Shared\n\nNo project extras: add "rulebookExtras" to scripts/agents/kit.json.\nRESULT: ok rulebook shared only\n`);
+});
+
 test("a named extras file that is missing, or a folder, fails after the shared part", t => {
   for (const [path, files] of [["docs/gone.md", {}], ["docs", { "docs/x.md": "x\n" }]] as const) {
     const result = rulebook(t, { ...project, rulebookExtras: path }, files);
