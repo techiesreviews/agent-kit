@@ -279,6 +279,27 @@ test("kit ux reports nothing visible touched without starting kit shots", t => {
   assert.deepEqual(calls(), []);
 });
 
+test("kit ux takes screenshots through the project's own shots and says when there is none", t => {
+  const { root, put, run, calls } = fixture(t);
+  put("src/page-builder/media-picker.css", ".a { gap: var(--space); }\n.b { gap: var(--space); }\n");
+  const real = { KIT_UX_SHOTS: undefined, KIT_COMMANDS_DIR: undefined };
+  const noFolder = run(["--no-review"], real);
+  assert.equal(noFolder.status, 1, noFolder.stdout + noFolder.stderr);
+  assert.equal(noFolder.result, 'RESULT: fail ux needs a project shots command (no "commands" folder in scripts/agents/kit.json)');
+  put("scripts/agents/kit.json", JSON.stringify({ project: "x", branches: { land: "dev" }, commands: "own" }));
+  put("own/specs", "#!/bin/sh\n");
+  const noShots = run(["--no-review"], real);
+  assert.equal(noShots.status, 1, noShots.stdout + noShots.stderr);
+  assert.equal(noShots.result, "RESULT: fail ux needs a project shots command (none in own)");
+  assert.deepEqual(calls(), []);
+  put("own/shots.mjs", readFileSync(join(root, ".scratch/shots.mjs"), "utf8"));
+  chmodSync(join(root, "own/shots.mjs"), 0o755);
+  const shot = run(["--no-review"], real);
+  assert.equal(shot.status, 0, shot.stdout + shot.stderr);
+  assert.match(shot.result, /^RESULT: ok ux 1 features tried, /);
+  assert.equal(calls().length, 1);
+});
+
 test("kit ux tries touched features, runs scripted checks and writes a bounded bundle", t => {
   const { root, put, run, calls } = fixture(t);
   put("src/page-builder/media-picker.css", ".a { gap: var(--space); }\n.media__badge { gap: 6px; color: #fff; }\n");

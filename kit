@@ -1,44 +1,65 @@
 #!/usr/bin/env bash
-# Usage: kit [<command> [args]]; run an agent-kit command from scripts/agents/kit.d/.
+# Usage: kit [<command> [args]]; run a shared command from scripts/agents/kit.d/ or one of the
+# project's own from the folder named by "commands" in scripts/agents/kit.json.
 set -euo pipefail
 kit_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 # shellcheck source=scripts/agents/kit-lib.sh
 source "$kit_dir/kit-lib.sh"
-commands_dir=${KIT_COMMANDS_DIR:-"$kit_dir/kit.d"}
+KIT_ROOT=$(kit_root)
 
-names=() files=() summaries=()
+# KIT_COMMANDS_DIR (tests) replaces both folders.
+if [[ -n ${KIT_COMMANDS_DIR:-} ]]; then
+  folders=("$KIT_COMMANDS_DIR") headings=('Commands')
+else
+  folders=("$kit_dir/kit.d") headings=('Shared commands')
+  own=$(kit_setting .commands)
+  if [[ -n $own ]]; then
+    [[ $own == /* ]] || own=$KIT_ROOT/$own
+    folders+=("$own") headings+=('Project commands')
+  fi
+fi
+
+names=() files=() summaries=() groups=()
 width=0
-for file in "$commands_dir"/*; do
-  base=${file##*/}
-  [[ -f $file && -x $file && $base != [._]* ]] || continue
-  name=${base%.*}
-  summary=''
-  count=0
-  while IFS= read -r line || [[ -n $line ]]; do
-    count=$((count + 1))
-    if [[ $line == *'# kit: '* || $line == *'// kit: '* ]]; then
-      [[ $line =~ (#\ kit:\ |//\ kit:\ ) ]]
-      summary=${line#*"${BASH_REMATCH[0]}"}
-      break
-    fi
-    (( count < 15 )) || break
-  done < "$file"
-  # Sort by the command name, which can differ from the filename's order.
-  position=${#names[@]}
-  while (( position > 0 )) && [[ ${names[position-1]} > "$name" ]]; do
-    names[position]=${names[position-1]}
-    files[position]=${files[position-1]}
-    summaries[position]=${summaries[position-1]}
-    position=$((position - 1))
+for group in "${!folders[@]}"; do
+  start=${#names[@]}
+  for file in "${folders[group]}"/*; do
+    base=${file##*/}
+    [[ -f $file && -x $file && $base != [._]* ]] || continue
+    name=${base%.*}
+    summary=''
+    count=0
+    while IFS= read -r line || [[ -n $line ]]; do
+      count=$((count + 1))
+      if [[ $line == *'# kit: '* || $line == *'// kit: '* ]]; then
+        [[ $line =~ (#\ kit:\ |//\ kit:\ ) ]]
+        summary=${line#*"${BASH_REMATCH[0]}"}
+        break
+      fi
+      (( count < 15 )) || break
+    done < "$file"
+    # Sort by the command name within its folder, which can differ from the filename's order.
+    position=${#names[@]}
+    while (( position > start )) && [[ ${names[position-1]} > "$name" ]]; do
+      names[position]=${names[position-1]}
+      files[position]=${files[position-1]}
+      summaries[position]=${summaries[position-1]}
+      groups[position]=${groups[position-1]}
+      position=$((position - 1))
+    done
+    names[position]=$name files[position]=$file summaries[position]=$summary groups[position]=$group
+    (( ${#name} <= width )) || width=${#name}
   done
-  names[position]=$name files[position]=$file summaries[position]=$summary
-  (( ${#name} <= width )) || width=${#name}
 done
 
 list_commands() {
-  local index
-  printf 'Usage: kit <command> [args]\n\nCommands:\n'
+  local index group=-1
+  printf 'Usage: kit <command> [args]\n'
   for index in "${!names[@]}"; do
+    if (( groups[index] != group )); then
+      group=${groups[index]}
+      printf '\n%s:\n' "${headings[group]}"
+    fi
     printf '  %-*s  %s\n' "$width" "${names[index]}" "${summaries[index]}"
   done
   printf "Run 'kit <command> --help' for a command's usage.\n"
@@ -47,6 +68,7 @@ list_commands() {
 command=${1-}
 case $command in ''|help|--help|-h) list_commands; exit 0 ;; esac
 shift
+# The first match is the shared command: a project command never hides a shared one (kit doctor names the clash).
 command_file=''
 for index in "${!names[@]}"; do
   if [[ ${names[index]} == "$command" ]]; then command_file=${files[index]}; break; fi
@@ -98,7 +120,6 @@ trap 'interrupted TERM 15' TERM
 trap 'interrupted HUP 1' HUP
 
 kit_node || :
-KIT_ROOT=$(kit_root)
 KIT_MAIN_ROOT=$(kit_main_root)
 export KIT_ROOT KIT_MAIN_ROOT
 export KIT_LIB="$kit_dir/kit-lib.sh" KIT_LIB_MJS="$kit_dir/kit-lib.mjs"

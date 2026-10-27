@@ -77,13 +77,13 @@ function failure(result: ReturnType<typeof spawnSync<string>>, name: string) {
   assert.equal(result.status, 1, result.stdout + result.stderr);
   const lines = result.stdout.trimEnd().split("\n");
   assert.equal(lines.filter(line => line.startsWith("RESULT: ")).length, 1);
-  assert.equal(lines.length, 11, result.stdout);
+  assert.equal(lines.length, 12, result.stdout);
   assert.ok(lines.some(line => line.startsWith(`✗ ${name}: `) && line.includes("; fix: ")), result.stdout);
   assert.equal(lines.at(-1), `RESULT: fail doctor 1 failed: ${name}`);
   assert.equal(result.stderr, "");
 }
 
-test("doctor checks all nine conditions quickly, notes Grok, and quiet success prints only RESULT", (t) => {
+test("doctor checks all ten conditions quickly, notes Grok, and quiet success prints only RESULT", (t) => {
   const f = fixture(t);
   // Git tracks only the executable bit; the rest of the mode follows the umask.
   assert.equal(statSync(doctor).mode & 0o111, 0o111);
@@ -93,18 +93,19 @@ test("doctor checks all nine conditions quickly, notes Grok, and quiet success p
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.ok(elapsed < 2000, `doctor took ${elapsed}ms`);
   const lines = result.stdout.trimEnd().split("\n");
-  assert.deepEqual(lines.slice(0, 10).map(line => line.split(":")[0]), [
-    "✓ settings", "✓ place", "✓ base", "✓ hook config", "✓ hooks live", "✓ node", "✓ node_modules", "✓ conflicts", "✓ help", "✗ grok",
+  assert.deepEqual(lines.slice(0, 11).map(line => line.split(":")[0]), [
+    "✓ settings", "✓ place", "✓ base", "✓ hook config", "✓ hooks live", "✓ node", "✓ node_modules", "✓ conflicts", "✓ commands", "✓ help", "✗ grok",
   ]);
   assert.equal(lines[0], "✓ settings: scripts/agents/kit.json (native-site-editor, lands on dev)");
-  assert.equal(lines[8], "✓ help: 2 commands answer --help");
-  assert.equal(lines[9], "✗ grok: not installed (optional reviewer); fix: install the grok CLI for Grok reviews");
-  assert.equal(lines.length, 11);
-  assert.equal(lines[10], "RESULT: ok doctor 9/9 checks passed");
+  assert.equal(lines[8], `✓ commands: 2 in ${f.commands} (KIT_COMMANDS_DIR)`);
+  assert.equal(lines[9], "✓ help: 2 commands answer --help");
+  assert.equal(lines[10], "✗ grok: not installed (optional reviewer); fix: install the grok CLI for Grok reviews");
+  assert.equal(lines.length, 12);
+  assert.equal(lines[11], "RESULT: ok doctor 10/10 checks passed");
   assert.equal(result.stderr, "");
   const quiet = f.run(["--quiet"]);
   assert.equal(quiet.status, 0, quiet.stderr);
-  assert.equal(quiet.stdout, "RESULT: ok doctor 9/9 checks passed\n");
+  assert.equal(quiet.stdout, "RESULT: ok doctor 10/10 checks passed\n");
   assert.equal(quiet.stderr, "");
 });
 
@@ -119,7 +120,7 @@ test("doctor reports a logged-in or logged-out Grok CLI without failing", (t) =>
   const signedOut = f.run([], f.build, { KIT_GROK: grok });
   assert.equal(signedOut.status, 0, signedOut.stdout + signedOut.stderr);
   assert.ok(signedOut.stdout.includes("✗ grok: not logged in (optional reviewer); fix: grok login\n"), signedOut.stdout);
-  assert.equal(f.run(["--quiet"], f.build, { KIT_GROK: grok }).stdout, "RESULT: ok doctor 9/9 checks passed\n");
+  assert.equal(f.run(["--quiet"], f.build, { KIT_GROK: grok }).stdout, "RESULT: ok doctor 10/10 checks passed\n");
   // A hung, failing or reworded CLI is not mistaken for a logged-out one.
   executable(grok, 'printf "Logged in as lex\\n"');
   const reworded = f.run([], f.build, { KIT_GROK: grok });
@@ -299,14 +300,42 @@ test("doctor fails the help check when the command folder has no commands", (t) 
   assert.ok(result.stdout.includes(`✗ help: no commands in ${empty}; fix: restore scripts/agents/kit.d\n`), result.stdout);
 });
 
-test("doctor passes the help check when every real kit command answers --help", (t) => {
+test("doctor passes the help check when every real shared and project command answers --help", (t) => {
   const f = fixture(t);
-  const commands = join(repo, "scripts/agents/kit.d");
+  const count = (folder: string) => readdirSync(join(repo, folder)).filter(name => !/^[._]/.test(name) && statSync(join(repo, folder, name)).mode & 0o111).length;
+  const shared = count("scripts/agents/kit.d"), own = count("scripts/agents/project.d");
   // Some helps read this checkout's files (shots runs its CLI), so check from the repository itself.
   // Under the fixture's 10 s spawn limit, a slow help is named rather than cut off.
-  const result = f.run([], repo, { KIT_COMMANDS_DIR: commands, KIT_HELP_TIMEOUT: "5" });
-  const count = readdirSync(commands).filter(name => !/^[._]/.test(name) && statSync(join(commands, name)).mode & 0o111).length;
-  assert.ok(result.stdout.includes(`✓ help: ${count} commands answer --help\n`), result.stdout);
+  const result = f.run([], repo, { KIT_COMMANDS_DIR: undefined, KIT_HELP_TIMEOUT: "5" }, true);
+  assert.ok(result.stdout.includes(`✓ commands: ${shared} shared, ${own} in scripts/agents/project.d\n`), result.stdout);
+  assert.ok(result.stdout.includes(`✓ help: ${shared + own} commands answer --help\n`), result.stdout);
+});
+
+test("doctor fails a project command that takes a shared name, naming both files", (t) => {
+  const f = fixture(t);
+  // Without KIT_COMMANDS_DIR the shared folder is the one doctor sits in, here the fixture's command folder.
+  const own = join(f.build, "own");
+  mkdirSync(own);
+  executable(join(own, "ok.sh"), 'printf "Usage: kit ok (project)\\n"');
+  executable(join(own, "mine"), 'printf "Usage: kit mine\\n"');
+  writeFileSync(join(f.build, "scripts/agents/kit.json"), JSON.stringify({ project: "native-site-editor", branches: { land: "dev" },
+    devRoot: f.dev, sharedNodeModules: join(f.dev, "node_modules"), commands: "own" }));
+  const direct = (root = f.build) => spawnSync("/bin/bash", [join(f.commands, "doctor")], {
+    cwd: root, encoding: "utf8", timeout: 10_000,
+    env: { ...process.env, KIT_ROOT: root, KIT_MAIN_ROOT: f.main, KIT_LIB: library, KIT_COMMANDS_DIR: undefined, KIT_GROK: join(f.directory, "no-grok") },
+  });
+  const clash = direct();
+  failure(clash, "commands");
+  assert.ok(clash.stdout.includes(`✗ commands: ok in both ${join(f.commands, "ok")} and ${join(own, "ok.sh")}; fix: rename the project command\n`), clash.stdout);
+  rmSync(join(own, "ok.sh"));
+  const clean = direct();
+  assert.equal(clean.status, 0, clean.stdout + clean.stderr);
+  assert.match(clean.stdout, /^✓ commands: 2 shared, 1 in own$/m);
+  assert.match(clean.stdout, /^✓ help: 3 commands answer --help$/m);
+  rmSync(own, { recursive: true });
+  const missing = direct();
+  failure(missing, "commands");
+  assert.ok(missing.stdout.includes(`✗ commands: no folder ${own}; fix: create it or fix "commands" in scripts/agents/kit.json\n`), missing.stdout);
 });
 
 test("doctor reports only the first three conflict locations", (t) => {

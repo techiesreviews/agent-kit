@@ -137,17 +137,54 @@ else
   fail conflicts "git grep returned status $status" 'check tracked files with git grep'
 fi
 
+# Shared commands sit beside doctor, the project's own in the folder "commands" names; KIT_COMMANDS_DIR (tests) replaces both.
+# A project command may not take a shared name: it would hide a fix to the shared one.
+own_setting=''
+if [[ -n ${KIT_COMMANDS_DIR:-} ]]; then
+  folders=("$KIT_COMMANDS_DIR")
+else
+  folders=("$(dirname -- "${BASH_SOURCE[0]}")")
+  own_setting=$(kit_setting .commands)
+  if [[ -n $own_setting ]]; then
+    own=$own_setting
+    [[ $own == /* ]] || own=$root/$own
+    folders+=("$own")
+  fi
+fi
+commands=() files=() counts=() clashes=()
+declare -A shared_files=()
+for group in "${!folders[@]}"; do
+  counts[group]=0
+  for file in "${folders[group]}"/*; do
+    base=${file##*/}
+    [[ -f $file && -x $file && $base != [._]* ]] || continue
+    name=${base%.*}
+    if (( group == 0 )); then shared_files[$name]=$file
+    elif [[ -n ${shared_files[$name]-} ]]; then clashes+=("$name in both ${shared_files[$name]} and $file")
+    fi
+    commands+=("$name") files+=("$file")
+    counts[group]=$((counts[group] + 1))
+  done
+done
+if [[ -n $own_setting && ! -d $own ]]; then
+  fail commands "no folder $own" 'create it or fix "commands" in scripts/agents/kit.json'
+elif (( ${#clashes[@]} )); then
+  list=$(printf '%s; ' "${clashes[@]}")
+  fail commands "${list%; }" 'rename the project command'
+elif [[ -n ${KIT_COMMANDS_DIR:-} ]]; then
+  pass commands "${counts[0]} in $KIT_COMMANDS_DIR (KIT_COMMANDS_DIR)"
+elif [[ -n $own_setting ]]; then
+  pass commands "${counts[0]} shared, ${counts[1]} in $own_setting"
+else
+  pass commands "${counts[0]} shared, no project folder (no \"commands\" in scripts/agents/kit.json)"
+fi
+
 # Every command answers --help, so a broken pull or a missing import shows here.
 # The helps run side by side to keep doctor quick.
-commands_dir=${KIT_COMMANDS_DIR:-$(dirname -- "${BASH_SOURCE[0]}")}
 help_dir=$(mktemp -d)
 trap 'rm -rf -- "$help_dir"' EXIT
-commands=()
-for file in "$commands_dir"/*; do
-  base=${file##*/}
-  [[ -f $file && -x $file && $base != [._]* ]] || continue
-  index=${#commands[@]}
-  commands+=("${base%.*}")
+for index in "${!files[@]}"; do
+  file=${files[index]}
   (
     code=0
     cd -- "$root" && timeout -k 2 "${KIT_HELP_TIMEOUT:-10}" "$file" --help > "$help_dir/$index.out" 2>&1 < /dev/null || code=$?
@@ -166,7 +203,7 @@ for index in "${!commands[@]}"; do
   fi
 done
 if (( ${#commands[@]} == 0 )); then
-  fail help "no commands in $commands_dir" 'restore scripts/agents/kit.d'
+  fail help "no commands in ${folders[*]}" 'restore scripts/agents/kit.d'
 elif (( ${#broken[@]} == 0 )); then
   pass help "${#commands[@]} commands answer --help"
 else
@@ -201,4 +238,4 @@ if (( ${#failed[@]} )); then
   kit_result fail "doctor ${#failed[@]} failed: $names"
   exit 1
 fi
-kit_result ok 'doctor 9/9 checks passed'
+kit_result ok 'doctor 10/10 checks passed'

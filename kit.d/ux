@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 // kit: try the features a diff touches, run scripted UX checks, pack a small bundle and have one reviewer judge it
 import { execFileSync, spawn } from "node:child_process";
-import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, matchesGlob, normalize, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { checkColours } from "../../check-colours.mjs";
 import { citedRules, parseUxResult, uxBrief, uxCounts, uxReport } from "../ux-brief.mjs";
 
-const { kitRoot, kitMainRoot, kitOwner, kitResult, kitScore, scoreCost } = await import(
+const { kitRoot, kitMainRoot, kitOwner, kitResult, kitScore, kitSettings, scoreCost } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 
@@ -17,9 +17,9 @@ const usage = `Usage: kit ux [--base REF] [--features F-…,…] [--all] [--no-r
 Touched features: the diff against the merge-base with --base (default origin/dev), plus
 uncommitted and untracked files, matched against each feature's Files globs in
 docs/agents/features.md. --features names them instead; --all takes every feature.
-Tries: each feature's Steps file through kit shots --steps at 1280 px (and 390 px when
-Phone: yes), light and dark. A feature without Steps gets the named screens its Files map
-to, marked untried.
+Tries: each feature's Steps file through the project's own kit shots (in the folder "commands"
+names in scripts/agents/kit.json) --steps at 1280 px (and 390 px when Phone: yes), light and
+dark. A feature without Steps gets the named screens its Files map to, marked untried.
 Scripted checks: layout findings, tap targets under 44 px at 390, raw colours in changed
 CSS, new visible text over 60 characters, new hint/tip/count/badge class names, and raw px
 spacing and timings in changed CSS counted against the base (reported, never blocking).
@@ -31,7 +31,7 @@ Review: one read-only reviewer (ASE_UX_MODEL, default claude-opus-5-5, effort me
 agent.sh review) judges each feature in the bundle fine, looks off or broken against the rulebook
 and the mock-up. Saved beside bundle.md: ux.md (one line per feature, the rules broken), ux.json
 and the reviewer's run.log; counts go to the piece's scoreboard record as ux. --no-review skips it.
-KIT_UX_SHOTS and KIT_UX_AGENT: executables replacing kit shots and agent.sh, same arguments (tests).
+KIT_UX_SHOTS and KIT_UX_AGENT: executables replacing the project's kit shots and agent.sh, same arguments (tests).
 RESULT: ok ux <n> features tried, <m> scripted findings, <f> fine, <o> looks off, <b> broken, bundle <dir>.
 A failed try or a broken verdict fails with broken: <feature,…>; a failed screens run adds
 screens failed: <screen,…> (its features stay untried); an unreadable answer fails naming what is missing.
@@ -316,7 +316,20 @@ async function runLogged(root, command, args, log) {
   return status;
 }
 
-const shots = (root, args, log) => runLogged(root, process.env.KIT_UX_SHOTS || join(root, "scripts/agents/kit.d/shots"), args, log);
+/** The project's own kit shots: KIT_UX_SHOTS (tests), else shots in KIT_COMMANDS_DIR or the folder "commands" names. */
+function projectShots(root, env = process.env) {
+  if (env.KIT_UX_SHOTS) return env.KIT_UX_SHOTS;
+  let folder = env.KIT_COMMANDS_DIR;
+  if (!folder) { try { folder = kitSettings(root).commands; } catch { /* No settings: no project folder. */ } }
+  if (!folder) throw new Error('needs a project shots command (no "commands" folder in scripts/agents/kit.json)');
+  const directory = resolve(root, folder);
+  let names = [];
+  try { names = readdirSync(directory); } catch { /* A missing folder holds no shots. */ }
+  // The kit front door drops a command file's extension, so shots.mjs is kit shots too.
+  const name = names.find(entry => entry.replace(/\.[^.]*$/, "") === "shots");
+  if (!name) throw new Error(`needs a project shots command (none in ${folder})`);
+  return join(directory, name);
+}
 
 /**
  * The model review. The reviewer reads a copy of the bundle under this worktree, so a read-only reviewer
@@ -423,6 +436,7 @@ async function main() {
     const features = parseFeatures(readFileSync(join(root, "docs/agents/features.md"), "utf8"));
     const selected = selectFeatures(features, changed, flags);
     if (!selected.length) { kitResult("ok", "ux nothing visible touched"); return 0; }
+    const shots = projectShots(root);
 
     const owner = kitOwner().replace(/[^a-zA-Z0-9_.-]/g, "-").replace(/^\.+$/, "unknown");
     const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
@@ -437,7 +451,7 @@ async function main() {
     for (const feature of selected.filter(feature => feature.steps)) {
       const dir = join(triesDir, feature.id), log = join(triesDir, `${feature.id}.log`);
       mkdirSync(dir, { recursive: true });
-      const status = await shots(root, ["--steps", join(root, feature.steps), "--width", feature.phone ? "390,1280" : "1280", "--out", dir], log);
+      const status = await runLogged(root, shots, ["--steps", join(root, feature.steps), "--width", feature.phone ? "390,1280" : "1280", "--out", dir], log);
       const index = readIndex(dir);
       const failures = tryFailures(index, status, log);
       tries.push({ kind: "steps", features: [feature], dir, index, failures, ok: !failures.length });
@@ -449,7 +463,7 @@ async function main() {
       const dir = join(triesDir, "untried"), log = join(triesDir, "untried.log");
       mkdirSync(dir, { recursive: true });
       const phone = untried.some(entry => entry.screens.length && entry.feature.phone);
-      const status = await shots(root, [...screenList, "--width", phone ? "390,1280" : "1280", "--out", dir], log);
+      const status = await runLogged(root, shots, [...screenList, "--width", phone ? "390,1280" : "1280", "--out", dir], log);
       const index = readIndex(dir);
       const failures = tryFailures(index, status, log);
       tries.push({ kind: "screens", features: untried.filter(entry => entry.screens.length).map(entry => entry.feature), dir, index, failures, ok: !failures.length });

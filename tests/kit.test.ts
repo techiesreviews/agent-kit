@@ -91,6 +91,35 @@ test("kit lists executable commands by name and reads only the first 15 summary 
   }
 });
 
+test("kit reads the shared folder and the project's own, lists them in two groups and keeps shared names", (t) => {
+  const root = temp(t);
+  const own = join(root, "own");
+  mkdirSync(join(root, "scripts/agents"), { recursive: true });
+  mkdirSync(own);
+  writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify({ project: "x", branches: { land: "dev" }, commands: "own" }));
+  command(own, "hello", '# kit: a project command\nprintf "hello from the project %s\\n" "$1"');
+  command(own, "version", "# kit: a project version\nprintf 'project version\\n'");
+  const env = { KIT_ROOT: root, KIT_COMMANDS_DIR: undefined };
+  const list = run([], env);
+  assert.equal(list.status, 0, list.stderr);
+  const shared = list.stdout.indexOf("\nShared commands:\n"), project = list.stdout.indexOf("\nProject commands:\n");
+  assert.ok(shared > 0 && project > shared, list.stdout);
+  assert.match(list.stdout.slice(shared, project), /\n  doctor +check this worktree is safe to build in\n/);
+  assert.match(list.stdout.slice(project), /^\nProject commands:\n  hello +a project command\n  version +a project version\nRun 'kit/);
+  const hello = run(["hello", "there"], env);
+  assert.equal(hello.status, 0, hello.stderr);
+  assert.equal(hello.stdout, "hello from the project there\nRESULT: ok hello finished\n");
+  // A project command never hides the shared one of the same name.
+  const version = run(["version", "--help"], env);
+  assert.match(version.stdout, /^Usage: kit version\n/);
+  // KIT_COMMANDS_DIR replaces both folders: one plain group, neither real folder.
+  const override = temp(t);
+  command(override, "only", "# kit: the only command");
+  const replaced = run([], { ...env, KIT_COMMANDS_DIR: override });
+  assert.equal(replaced.stdout, "Usage: kit <command> [args]\n\nCommands:\n  only  the only command\nRun 'kit <command> --help' for a command's usage.\n");
+  assert.equal(run(["hello"], { ...env, KIT_COMMANDS_DIR: override }).status, 2);
+});
+
 test("kit forwards command help and its exit status without RESULT enforcement", (t) => {
   const directory = temp(t);
   command(directory, "usage", 'printf "Usage: kit usage [%s]\\n" "$1"; exit "${HELP_STATUS:-0}"');
