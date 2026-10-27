@@ -10,7 +10,7 @@ import { reviewBrief, reviewComplete, reviewFormat } from "../scripts/agents/rev
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { unitSummary } from "../scripts/agents/unit-summary.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
-import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokResult, inferCli, isoWeek, opencodeExportTimeout, opencodeResult, opencodeReviewAgent, opencodeReviewConfig, opencodeUsageLimit, parseAgentArgs, refusedOutright, releaseReviewBudget, reserveReviewBudget, reviewBase, usageLimitProblem } from "../scripts/agents/agent-run.mjs";
+import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokResult, inferCli, isoWeek, opencodeExportTimeout, opencodeResult, opencodeReviewAgent, opencodeReviewConfig, opencodeUsageLimit, parseAgentArgs, refusedOutright, sessionObserver, releaseReviewBudget, reserveReviewBudget, reviewBase, usageLimitProblem } from "../scripts/agents/agent-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { durationMilliseconds } from "../scripts/agents/sol-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
@@ -235,6 +235,11 @@ test("OpenCode adapter runs reviews only, as a read-only agent, and resumes its 
   assert.equal(call.session('partial\n{"type":"step_start","sessionID":"ses_1"}\n'), "ses_1");
   assert.equal(call.session(""), undefined);
   assert.throws(() => parseAgentArgs(["build", ".", "brief", "--model", model]), /OpenCode runs reviews only/);
+  // OpenCode is checked by provider/model, so a bare model is refused before any call; no effort is recorded or accepted.
+  assert.throws(() => parseAgentArgs(["review", ".", "brief", "--cli", "opencode"]), /provider\/model/);
+  assert.throws(() => parseAgentArgs(["review", ".", "brief"], { ASE_AGENT_CLI: "opencode", ASE_REVIEW_MODEL: "deepseek-v4.1-flash-free" }), /provider\/model/);
+  assert.equal(options.effort, null);
+  assert.throws(() => parseAgentArgs(["review", ".", "brief", "--model", model, "--effort", "high"]), /OpenCode takes no --effort/);
   assert.throws(() => parseAgentArgs(["build", ".", "brief", "--cli", "opencode"]), /reviews only/);
   assert.throws(() => agentInvocation({ ...options, kind: "build" }, "/git", "/out"), /reviews only/);
 });
@@ -254,6 +259,25 @@ test("a bad OpenCode export limit is refused when the adapter is made, before op
     if (saved === undefined) delete process.env.ASE_OPENCODE_EXPORT_TIMEOUT_MS;
     else process.env.ASE_OPENCODE_EXPORT_TIMEOUT_MS = saved;
   }
+});
+
+test("the session observer records a session only when its id changes", () => {
+  const watch = (adapter: { capture: boolean; lines?: boolean; session: (stdout: string, log?: string) => string | undefined }, chunks: [string, boolean][]) => {
+    const updates: string[] = [];
+    const observe = sessionObserver(adapter, (session: string) => updates.push(session));
+    for (const [chunk, isStdout] of chunks) observe(chunk, isStdout);
+    return updates;
+  };
+  const codex = agentInvocation(parseAgentArgs(["review", ".", "brief", "--model", "gpt-6.1-sol"]), "/git", "/out");
+  // Codex repeats its session line on stderr; the same id in later chunks writes nothing new.
+  assert.deepEqual(watch(codex, [["session id: s1\nwork", false], ["\nsession id: s1\n", false], ["session id: s2\n", false]]), ["s1", "s2"]);
+  const claude = agentInvocation(parseAgentArgs(["review", ".", "brief"]), "/git", "/out");
+  // Claude's one JSON result may span chunks.
+  assert.deepEqual(watch(claude, [['{"session_id":', true], ['"c1"}', true], ["ignored", false]]), ["c1"]);
+  const opencode = agentInvocation(parseAgentArgs(["review", ".", "brief", "--model", "opencode/deepseek-v4.1-flash-free"]), "/git", "/out");
+  // OpenCode's first event names the session, split across chunks; later lines are not read for it.
+  const first = JSON.stringify({ type: "step_start", sessionID: "ses_1" }), later = JSON.stringify({ type: "text", sessionID: "ses_2" });
+  assert.deepEqual(watch(opencode, [[first.slice(0, 10), true], [`${first.slice(10)}\n`, true], [`${later}\n`, true]]), ["ses_1"]);
 });
 
 test("OpenCode results take the last message's text and accept only the requested provider and model", () => {

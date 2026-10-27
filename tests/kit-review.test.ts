@@ -773,7 +773,11 @@ appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ cli: "opencode", args, i
 const emit = (type, extra = {}) => console.log(JSON.stringify({ type, timestamp: Date.now(), sessionID: "ses_fake", ...extra }));
 const mode = process.env.FAKE_MODE || "pass";
 emit("step_start", { part: { type: "step-start", messageID: "m0" } });
-if (mode === "usage-limit" || mode === "usage-limit-exit0") {
+if (mode === "error-502") {
+  emit("error", { error: { name: "APIError", data: { message: "Bad gateway", statusCode: 502 } } });
+  process.exit(0);
+}
+if (mode === "usage-limit" || mode === "usage-limit-exit0" || (mode === "retry-limit" && resumed)) {
   emit("error", { error: { name: "APIError", data: { message: "Rate limit exceeded. Please try again later.", statusCode: 429 } } });
   process.exit(mode === "usage-limit" ? 1 : 0);
 }
@@ -783,10 +787,18 @@ if (mode === "hang") await new Promise(done => setTimeout(done, 30_000));
 appendFileSync(answers, args[args.indexOf("-m") + 1] + "\\n");
 emit("text", { part: { type: "text", messageID: "m1", text: "Reading the diff first." } });
 emit("tool_use", { part: { type: "tool", tool: "read", state: { status: "completed" } } });
-const report = (mode === "retry-pass" || mode === "retry-fail") && !resumed || mode === "retry-fail" ? "incomplete reply" : process.env.FAKE_REPORT || ${JSON.stringify(complete)};
+const report = (mode === "retry-pass" || mode === "retry-fail" || mode === "retry-limit") && !resumed || mode === "retry-fail" ? "incomplete reply" : process.env.FAKE_REPORT || ${JSON.stringify(complete)};
 emit("text", { part: { type: "text", messageID: "m2", text: report } });
 emit("step_finish", { part: { type: "step-finish", reason: "stop", cost: 0 } });
 `;
+
+// What the fake opencode records for each run call.
+interface OpencodeCall { cli: string; args: string[]; input: string; cwd: string; config: string; noProject: string }
+
+function opencodeCalls(f: ReturnType<typeof fixture>): OpencodeCall[] {
+  const file = join(f.dir, "calls.jsonl");
+  return existsSync(file) ? readFileSync(file, "utf8").trim().split("\n").map(line => JSON.parse(line)) : [];
+}
 
 function withOpencode(f: ReturnType<typeof fixture>) {
   writeFileSync(join(f.dir, "bin", "opencode"), fakeOpencode); chmodSync(join(f.dir, "bin", "opencode"), 0o755);
@@ -810,7 +822,7 @@ test("kit review runs opencode/<model> read-only, saves findings with severities
   assert.doesNotMatch(result.stdout, /^budget:/m);
   assert.match(result.stdout, /^findings 2: ticket 1, style 1; P1 1, P3 1$/m);
   assert.deepEqual(f.counts(), { grok: { "kit-review": 1 } });
-  const call = f.calls().at(-1)! as Call & { noProject: string };
+  const call = opencodeCalls(f).at(-1)!;
   assert.equal(call.cli, "opencode");
   assert.equal(call.cwd, f.root);
   assert.deepEqual(call.args.slice(0, 5), ["run", "--pure", "--agent", "ase-review", "--format"]);
@@ -824,6 +836,8 @@ test("kit review runs opencode/<model> read-only, saves findings with severities
   assert.equal(readFileSync(join(evidence, "result.md"), "utf8").trimEnd(), report.trimEnd());
   const findings = JSON.parse(readFileSync(join(evidence, "findings.json"), "utf8"));
   assert.equal(findings.model, opencodeModel);
+  // No effort reaches OpenCode, so none is recorded.
+  assert.equal(findings.effort, null);
   assert.deepEqual(findings.findings.map((finding: { severity: string }) => finding.severity), ["P1", "P3"]);
 });
 
@@ -833,7 +847,7 @@ test("an incomplete OpenCode answer is re-asked once in the same session", (t) =
     withOpencode(f);
     const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_MODE: mode });
     assert.equal(result.status, mode === "retry-pass" ? 0 : 1, result.stderr);
-    const calls = f.calls();
+    const calls = opencodeCalls(f);
     assert.equal(calls.length, 2);
     assert.ok(!calls[0].args.includes("--session"));
     assert.equal(calls[1].args[calls[1].args.indexOf("--session") + 1], "ses_fake");
@@ -863,9 +877,33 @@ test("an OpenCode rate-limit refusal prints the opencode usage-limit problem and
     assert.equal(result.stderr.trimEnd().split("\n").at(-1), "problem: opencode usage limit: Rate limit exceeded. Please try again later.");
     assert.match(result.stdout.trim().split("\n").at(-1)!, /^RESULT: fail opencode usage limit: Rate limit exceeded\. Please try again later\. evidence /);
     // The failed run is never exported or retried.
-    assert.equal(f.calls().length, 1);
+    assert.equal(opencodeCalls(f).length, 1);
     assert.equal(existsSync(f.ledger), false);
   }
+});
+
+test("an OpenCode error that is not a limit fails once, unexported and unretried", (t) => {
+  const f = fixture(t);
+  withOpencode(f);
+  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_MODE: "error-502" });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /^problem: OpenCode reported an error: Bad gateway; see .*run\.log$/m);
+  assert.doesNotMatch(result.stderr, /opencode usage limit/);
+  assert.equal(existsSync(join(f.dir, "calls.jsonl.exports")), false);
+  assert.equal(opencodeCalls(f).length, 1);
+});
+
+test("a usage limit on the completeness retry is the last problem line", (t) => {
+  const f = fixture(t);
+  withOpencode(f);
+  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_MODE: "retry-limit" });
+  assert.equal(result.status, 1, result.stderr);
+  const calls = opencodeCalls(f);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].args[calls[1].args.indexOf("--session") + 1], "ses_fake");
+  const problems = result.stderr.trimEnd().split("\n").filter(line => line.startsWith("problem: "));
+  assert.equal(problems.at(-1), "problem: opencode usage limit: Rate limit exceeded. Please try again later.");
+  assert.ok(problems.includes("problem: result lacks REVIEW_STATUS: complete"), result.stderr);
 });
 
 test("a failed or hung OpenCode export fails the review with a named problem", (t) => {
@@ -906,7 +944,7 @@ test("agent.sh --resume continues the OpenCode session recorded from its first e
   assert.equal(status.session, "ses_fake");
   const resumed = f.invoke(agent, ["--resume", f.out], {}, true);
   assert.equal(resumed.status, 0, resumed.stderr);
-  const call = f.calls().at(-1)!;
+  const call = opencodeCalls(f).at(-1)!;
   assert.equal(call.args[call.args.indexOf("--session") + 1], "ses_fake");
   assert.equal(call.args[call.args.indexOf("--agent") + 1], "ase-review");
   assert.match(readFileSync(join(f.out, "out.md"), "utf8"), /^REVIEW_STATUS: complete/);

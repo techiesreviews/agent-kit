@@ -3,8 +3,9 @@
 // Return {command, args, env, capture, finish(stdout, runLog, status)}. Commands read the brief
 // on stdin with cwd=worktree; finish verifies the actual model and returns final
 // text (Claude, Grok, OpenCode), or null when the CLI already wrote out.md (Codex) or
-// left no report to verify (a failed OpenCode call). An
-// adapter may add usageLimit(stdout) for a refusal its CLI prints as JSON. The shared
+// left no report to verify (a failed OpenCode call). An adapter may add usageLimit(stdout)
+// for a refusal its CLI prints as JSON, and lines: true when a captured CLI prints one JSON
+// event per line, so the runner reads its session from new lines only. The shared
 // runner owns logs, the build contract, deadlines, process groups and Git status.
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -64,8 +65,15 @@ export function parseAgentArgs(args, env = {}) {
   if (!Object.hasOwn(adapters, options.cli)) throw new Error(`Unknown CLI: ${options.cli}; add an adapter first`);
   if (reviewOnly[options.cli] && kind !== "review") throw new Error(`${reviewOnly[options.cli]} runs reviews only; pick a Codex or Claude builder`);
   if (!options.model.trim() || options.model.startsWith("-") || /[\r\n]/.test(options.model)) throw new Error("Invalid model");
+  if (options.cli === "opencode") {
+    // The model check compares OpenCode's provider/model, so a bare name could never pass.
+    if (!/^[^/\s]+\/\S+$/.test(options.model)) throw new Error(`OpenCode needs a provider/model such as opencode/deepseek-v4.1-flash-free, not ${options.model}`);
+    // OpenCode's --variant names differ by provider, so no effort is applied or recorded.
+    if (seen.has("--effort")) throw new Error("OpenCode takes no --effort");
+    options.effort = null;
+  }
   // Effort levels belong to each CLI/model; pass new levels through unchanged.
-  if (!/^[a-z][a-z0-9_-]*$/.test(options.effort)) throw new Error(`Invalid effort: ${options.effort}`);
+  if (options.effort !== null && !/^[a-z][a-z0-9_-]*$/.test(options.effort)) throw new Error(`Invalid effort: ${options.effort}`);
   if (options.base !== undefined && options.commit !== undefined) throw new Error("--base and --commit are mutually exclusive");
   return options;
 }
@@ -186,7 +194,7 @@ function opencodeError(error) {
   return String(error?.data?.message ?? error?.message ?? error?.name ?? "unknown error");
 }
 
-const opencodeLimitPattern = /usage limit|rate.?limit|too many requests|FreeUsageLimit/i;
+const opencodeLimitPattern = /usage limit|rate.?limit|too many requests|quota|insufficient (?:credit|balance)|FreeUsageLimit/i;
 
 // OpenCode reports a refused request as an error event (HTTP 429 or a limit message), not a closing line.
 export function opencodeUsageLimit(stdout) {
@@ -494,7 +502,8 @@ export function opencodeAdapter(options) {
 }
 
 // The export runs after the supervised call, so it has its own limit: ASE_OPENCODE_EXPORT_TIMEOUT_MS (60000),
-// checked when the adapter is made, before the review starts.
+// checked when the adapter is made, before the review starts. It runs synchronously: the
+// supervised call has ended, so the runner has nothing else to do while it waits.
 export function opencodeExportTimeout(env = process.env) {
   const timeout = Number(env.ASE_OPENCODE_EXPORT_TIMEOUT_MS || 60_000);
   if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new Error("ASE_OPENCODE_EXPORT_TIMEOUT_MS must be a positive integer");
@@ -647,7 +656,7 @@ async function resumeRun(out, brief) {
       continue;
     }
     const options = parseAgentArgs([previous.kind, previous.worktree, previous.brief,
-      "--model", previous.model, "--cli", previous.cli, "--effort", previous.effort,
+      "--model", previous.model, "--cli", previous.cli, ...(previous.effort == null ? [] : ["--effort", previous.effort]),
       ...(previous.base === undefined ? [] : ["--base", previous.base]),
       ...(previous.commit === undefined ? [] : ["--commit", previous.commit]), "--out", out]);
     if (brief !== undefined) {
@@ -679,7 +688,7 @@ function recordedSession(adapter, stdout, log) {
   try { return adapter.session(stdout, log); } catch { return null; }
 }
 
-function sessionObserver(adapter, update) {
+export function sessionObserver(adapter, update) {
   const pending = ["", ""];
   let stdout = "", known = null;
   // Only a new session id rewrites status.json.
