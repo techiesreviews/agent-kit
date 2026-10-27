@@ -1427,6 +1427,7 @@ test("a saved second look is reused only as a second look that ran; it is never 
     assert.ok(f.calls().some(claudeReview), String(ok));
     assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args.includes("--second-look")), !ok, String(ok));
     assert.equal(f.ghCalls("comment").some(call => call.body?.startsWith(`Reused second look: ${folder}`)), ok, String(ok));
+    assert.equal(result.stdout.includes(`second look: reused (${folder})`), ok, result.stdout);
   }
 });
 

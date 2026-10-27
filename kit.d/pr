@@ -483,6 +483,8 @@ async function main(args) {
       let resultPath;
       if (saved) {
         if (saved.samePatch) console.log(`${name}: reused (same patch on new base)`);
+        // A second look reused on this HEAD says so, so a reused look is told apart from a fresh one.
+        else if (second) console.log(`second look: reused (${saved.folder})`);
         resultPath = join(saved.folder, "result.md");
         const comment = join(directory, second ? "second-look.md" : "review.md");
         writeFileSync(comment, `Reused ${name}: ${saved.folder}\nHEAD: ${head}\n\n${readFileSync(resultPath, "utf8")}`);

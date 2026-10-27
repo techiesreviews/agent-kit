@@ -109,10 +109,10 @@ const second = phase === "review" && args.includes("--second-look");
 if (second ? process.env.FAKE_SECOND : phase !== "ux" || process.env.FAKE_UX) call(second ? "second" : phase);
 await hold(second ? "second" : phase);
 if (second) {
-  // FAKE_SECOND: skip (no model can take it, exit 3), findings (one P1 before any fix round), stay (one P1 every time);
-  // anything else is clean. FAIL_SECOND_AFTER_FIX fails a second look taken after a fix round.
+  // FAKE_SECOND: skip (no model can take it, exit 3), findings (one P1 before any fix round), stay (one P1 every time),
+  // findings-then-skip (one P1, then no model can take the fresh look); anything else is clean. FAIL_SECOND_AFTER_FIX fails a second look taken after a fix round.
   if (process.env.FAIL_SECOND_AFTER_FIX && round() > 0) { console.log("RESULT: fail second look deliberate failure"); process.exit(7); }
-  if (process.env.FAKE_SECOND === "skip") {
+  if (process.env.FAKE_SECOND === "skip" || (process.env.FAKE_SECOND === "findings-then-skip" && round() > 0)) {
     console.log("second look: skipped (grok-4.7 out of credit; opencode/deepseek-v4.1-flash-free out of credit)");
     console.log("RESULT: skip second look (grok-4.7 out of credit; opencode/deepseek-v4.1-flash-free out of credit)");
     process.exit(3);
@@ -120,7 +120,7 @@ if (second) {
   const folder = join(process.env.KIT_MAIN_ROOT, ".scratch/reviews/ke-04", "second-" + String(round()).padStart(3, "0"));
   mkdirSync(folder, { recursive: true });
   writeFileSync(join(folder, "refs.txt"), git("rev-parse", "HEAD") + "\\n");
-  writeFileSync(join(folder, "result.md"), process.env.FAKE_SECOND === "stay" || (process.env.FAKE_SECOND === "findings" && round() === 0) ? ${JSON.stringify(findings)}.replace("restore required text", "the second look found this") : ${JSON.stringify(clean)});
+  writeFileSync(join(folder, "result.md"), process.env.FAKE_SECOND === "stay" || (["findings", "findings-then-skip"].includes(process.env.FAKE_SECOND) && round() === 0) ? ${JSON.stringify(findings)}.replace("restore required text", "the second look found this") : ${JSON.stringify(clean)});
   writeFileSync(join(folder, "second-look.json"), JSON.stringify({ kind: "code", model: "grok-4.7", ok: true }));
   console.log("second look: code (file.txt) grok-4.7");
   console.log("RESULT: ok review git diff origin/dev...HEAD evidence " + folder);
@@ -1212,10 +1212,12 @@ test("a slice stopped after the second look's fix round finished resumes without
   assert.equal(f.state().rounds, 1);
 });
 
-test("a second-look P1 with no fix rounds left stops the slice before kit pr", t => {
+test("a second-look P1 with no fix rounds left stops the slice with an unmerged PR, as Claude's does", t => {
   const f = fixture(t), result = f.run(["--rounds", "1"], { CLEAN_AT: "1", FAKE_SECOND: "stay" });
   assert.equal(result.status, 1, result.stdout + result.stderr);
-  assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "fix", "second"]);
+  assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "fix", "second", "pr"]);
+  assert.ok(f.calls().at(-1)?.args.includes("--no-merge"));
+  assert.equal(f.state().pr, "42");
   assert.match(result.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: fail slice second: 1 open second-look findings after 1 rounds \(.+\/second-001\/result\.md\)$/);
 });
 
@@ -1233,6 +1235,27 @@ test("a second-look fix that reaches a visible path gets the UX gate again befor
     assert.deepEqual(f.calls().map(call => call.phase),
       ["build", "review", "ux", "second", "fix", "second", ...(visible ? ["ux"] : []), "pr"], String(visible));
   }
+});
+
+test("a visible second-look fix gets the UX gate again even when the fresh look is skipped", t => {
+  const f = fixture(t, { project: "kit-slice", branches: { land: "dev" }, paths: { visible: ["^file\\.txt$"] } });
+  const result = f.run([], { FAKE_SECOND: "findings-then-skip", FAKE_UX: "none" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "ux", "second", "fix", "second", "ux", "pr"]);
+  assert.match(result.stdout, /^slice: second ok skipped \(/m);
+});
+
+test("a resume that resets the phases after HEAD moved drops a pending UX re-run", t => {
+  const f = fixture(t);
+  assert.equal(f.run([], { FAKE_SECOND: "findings", FAIL_SECOND_AFTER_FIX: "1" }).status, 1);
+  // As if the second look's fixes had reached a visible path, then HEAD moved past what Claude reviewed.
+  const statePath = join(f.root, ".scratch/kit-slice/04-ticket/state.json"), saved = JSON.parse(readFileSync(statePath, "utf8"));
+  writeFileSync(statePath, JSON.stringify({ ...saved, uxAgain: true }));
+  writeFileSync(join(f.root, "file.txt"), "moved\n"); f.git("commit", "-qam", "move HEAD");
+  const result = f.run([], { FAKE_SECOND: "clean", FAKE_UX: "none" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(f.calls().slice(5).filter(call => call.phase === "ux").length, 1, JSON.stringify(f.calls().map(call => call.phase)));
+  assert.equal(f.state().uxAgain, undefined);
 });
 
 test("a slice stopped while its second-look fix round is pending resumes that round with the second look's review", t => {
