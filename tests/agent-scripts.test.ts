@@ -288,6 +288,15 @@ test("two projects share one count, and a project's old ledger moves in once", (
   assert.throws(() => reserveReviewBudget(editor, "codex", { ASE_REVIEW_BUDGET_LOCK_MS: "100" }, monday), /review budget lock .*\.scratch\/review-budget\.json\.lock is held/);
   assert.ok(existsSync(legacy));
   assert.deepEqual(JSON.parse(readFileSync(path, "utf8"))["2026-W44"].gpt, { editor: 1 });
+  rmSync(`${legacy}.lock`, { recursive: true });
+  // A broken old file stops the review, names the file and is kept; the machine ledger is untouched.
+  writeFileSync(legacy, "{ broken");
+  const before = readFileSync(path, "utf8");
+  assert.throws(() => reserveReviewBudget(editor, "grok", env, monday),
+    (error: Error) => error.message.includes(`review budget ledger ${legacy} is not valid JSON`));
+  assert.equal(readFileSync(path, "utf8"), before);
+  assert.equal(readFileSync(legacy, "utf8"), "{ broken");
+  assert.ok(!existsSync(`${legacy}.lock`) && !existsSync(`${path}.lock`));
 });
 
 test("the kit's state folder is XDG_STATE_HOME/agent-kit when absolute, else ~/.local/state/agent-kit, in Node and bash", () => {

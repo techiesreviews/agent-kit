@@ -209,7 +209,7 @@ export function reviewBudgetLimit(family, env = process.env) {
 }
 
 // One writer at a time: a lock folder beside the file, waited for up to ASE_REVIEW_BUDGET_LOCK_MS.
-function withLock(path, action, env = process.env) {
+export function withReviewLock(path, action, env = process.env) {
   mkdirSync(dirname(path), { recursive: true });
   const wait = Number(env.ASE_REVIEW_BUDGET_LOCK_MS || 10_000);
   if (!Number.isSafeInteger(wait) || wait <= 0) throw new Error("ASE_REVIEW_BUDGET_LOCK_MS must be a positive integer");
@@ -236,7 +236,7 @@ export function readReviewLedger(path) {
 }
 
 function withLedger(path, change, env = process.env) {
-  return withLock(path, () => {
+  return withReviewLock(path, () => {
     const ledger = readReviewLedger(path);
     const result = change(ledger);
     const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
@@ -266,7 +266,7 @@ function projectCounts(ledger, week, family) {
 // those counts rather than counting them twice.
 function moveLegacyLedger(ledger, legacy, project, env) {
   if (!legacy || !existsSync(legacy)) return;
-  withLock(legacy, () => {
+  withReviewLock(legacy, () => {
     for (const [week, families] of Object.entries(readReviewLedger(legacy))) {
       for (const [family, count] of Object.entries(families ?? {})) {
         if (!Number.isSafeInteger(count) || count <= 0) continue;
@@ -292,7 +292,12 @@ export function reserveReviewBudget({ path, project, legacy }, cli, env = proces
     // A broken count stops here, before the old file moves in.
     projectCounts(ledger, week, family);
     moveLegacyLedger(ledger, legacy, project, env);
-    for (const old of Object.keys(ledger)) if (old < lastWeek) delete ledger[old];
+    // Weeks in date order: a moved-in old week may have landed after this one.
+    for (const old of Object.keys(ledger).sort()) {
+      const counts = ledger[old];
+      delete ledger[old];
+      if (old >= lastWeek) ledger[old] = counts;
+    }
     const used = familyUse(ledger, week, family);
     // A refusal still saves the ledger, so counts just moved in are kept.
     if (used >= limit) return { refused: `${family} review budget used up: ${used}/${limit} in ${week}; raise ASE_REVIEW_BUDGET_${family.toUpperCase()} to override` };

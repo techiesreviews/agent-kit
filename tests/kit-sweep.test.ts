@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -238,6 +238,13 @@ test("the bundle shows the computer's Grok reviews this week and last, by projec
   assert.deepEqual(section(bundleOf(result.stdout).text, "Grok reviews this week"), [`- 5 of 10 in ${week}, whole computer`,
     "- chat: 0", "- kit-sweep: 2", "- native-site-editor: 2", "- techies-playground: 1", `- last week, ${last}: 7 (chat 1, native-site-editor 6)`]);
   assert.ok(existsSync(join(repo, ".scratch/review-budget.json")), "the sweep changes nothing");
+  // A listed root that reaches this repository through a symlink is the same folder: its old file counts once.
+  symlinkSync(repo, join(dir, "alias"));
+  write(join(state, "projects.json"), JSON.stringify({ alias: { root: join(dir, "alias") } }));
+  write(join(state, "review-budget.json"), "{}");
+  const aliased = run(repo);
+  assert.equal(aliased.status, 0, aliased.stdout + aliased.stderr);
+  assert.deepEqual(section(bundleOf(aliased.stdout).text, "Grok reviews this week").slice(0, 3), [`- 2 of 8 in ${week}, whole computer`, "- alias: 0", "- kit-sweep: 2"]);
   // A broken ledger is named; the rest of the bundle still comes out.
   write(join(state, "review-budget.json"), "{ broken");
   const broken = run(repo);

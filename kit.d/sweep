@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // kit: gather the week's numbers for the weekly sweep into one small bundle; changes nothing
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { familyUse, isoWeek, readReviewLedger, reviewBudgetLimit } from "../agent-run.mjs";
+import { familyUse, isoWeek, readReviewLedger, reviewBudgetLimit, withReviewLock } from "../agent-run.mjs";
 import { parseFeedbackLine } from "../tickets.mjs";
 import { composeBundle, cssCounts } from "./ux";
 
@@ -305,16 +305,22 @@ export function staleDebtSection(root, now = Date.now(), techDebt = setting("tec
 export function grokSection(env = process.env, now = Date.now(), main = null, project = null) {
   const title = "Grok reviews this week";
   try {
-    const ledger = readReviewLedger(join(kitStateDir(env), "review-budget.json")), listed = kitProjects(env);
-    // Each main folder's old file once, under this project's name for its own folder.
-    const folders = new Map(Object.entries(listed).filter(([, entry]) => typeof entry?.root === "string").map(([name, entry]) => [resolve(entry.root), name]));
-    if (project && main) folders.set(resolve(main), project);
-    for (const [root, name] of folders) {
-      for (const [week, families] of Object.entries(readReviewLedger(join(root, ".scratch/review-budget.json")))) {
-        const count = families?.grok, counts = ((ledger[week] ??= {}).grok ??= {});
-        if (Number.isSafeInteger(count) && count > 0) counts[name] = (counts[name] ?? 0) + count;
+    const path = join(kitStateDir(env), "review-budget.json"), listed = kitProjects(env);
+    // Each main folder's old file once (symlinks followed), under this project's name for its own folder.
+    const real = folder => { try { return realpathSync(folder); } catch { return resolve(folder); } };
+    const folders = new Map(Object.entries(listed).filter(([, entry]) => typeof entry?.root === "string").map(([name, entry]) => [real(entry.root), name]));
+    if (project && main) folders.set(real(main), project);
+    // Under the ledger's lock no review can move an old file in while both are read.
+    const ledger = withReviewLock(path, () => {
+      const ledger = readReviewLedger(path);
+      for (const [root, name] of folders) {
+        for (const [week, families] of Object.entries(readReviewLedger(join(root, ".scratch/review-budget.json")))) {
+          const count = families?.grok, counts = ((ledger[week] ??= {}).grok ??= {});
+          if (Number.isSafeInteger(count) && count > 0) counts[name] = (counts[name] ?? 0) + count;
+        }
       }
-    }
+      return ledger;
+    }, env);
     const week = isoWeek(new Date(now)), last = isoWeek(new Date(now - 7 * day));
     const byProject = of => {
       const counts = ledger[of]?.grok ?? {};

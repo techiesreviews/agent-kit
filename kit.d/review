@@ -67,7 +67,7 @@ async function review(args) {
     ({ model, effort, cli } = parseAgentArgs(agentArgs, env));
     console.log(`model: ${model}`);
     // One count for the computer; this project's old per-project count moves in on first use.
-    ledger = { path: join(kitStateDir(), "review-budget.json"), project: kitSettings(root).project, legacy: join(kitMainRoot(), ".scratch/review-budget.json") };
+    ledger = { path: join(kitStateDir(env), "review-budget.json"), project: kitSettings(root).project, legacy: join(kitMainRoot(), ".scratch/review-budget.json") };
     budget = reserveReviewBudget(ledger, cli, env);
     if (budget) console.log(`budget: ${budget.family} ${budget.used}/${budget.limit} in ${budget.week}`);
     let stderr = "";

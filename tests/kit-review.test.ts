@@ -677,6 +677,19 @@ test("the first counted review moves the project's old count into the machine le
   assert.deepEqual(JSON.parse(readFileSync(f.ledger, "utf8")), { [week]: { grok: { "kit-review": 7 }, gpt: { "kit-review": 1 } } });
 });
 
+test("a refusal right after the old count moves in keeps the moved count", (t) => {
+  const f = fixture(t);
+  writeFileSync(join(f.dir, "bin", "grok"), fake); chmodSync(join(f.dir, "bin", "grok"), 0o755);
+  mkdirSync(join(f.main, ".scratch"), { recursive: true });
+  writeFileSync(f.legacy, JSON.stringify({ [isoWeek()]: { grok: 8 } }));
+  const refused = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "grok-4.7", ASE_REVIEW_BUDGET_GROK: "8" });
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /^problem: grok review budget used up: 8\/8 in /m);
+  assert.equal(f.calls().length, 0);
+  assert.ok(!existsSync(f.legacy), "the old ledger is moved even when the review is refused");
+  assert.deepEqual(f.counts(), { grok: { "kit-review": 8 } });
+});
+
 test("kit review keeps the spent review when Grok works on stderr before its stdout refusal", (t) => {
   const f = fixture(t);
   const grok = join(f.dir, "bin", "grok");
