@@ -4,6 +4,7 @@ import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, readdirSync, r
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 // @ts-expect-error The script is plain JavaScript without declarations.
 import { findNode, kitMainRoot, kitOwner, kitResult, kitRoot, nodeEnv } from "../scripts/agents/kit-lib.mjs";
 
@@ -229,6 +230,26 @@ test("a nested kit in another checkout keeps its own kit unless a person set KIT
   assert.deepEqual(where(), [line(a.root, a.agents), line(b.root, b.agents)]);
   // A person's KIT_HOME reaches every nested kit, while each project stays the folder around its front door.
   assert.deepEqual(where({ KIT_HOME: chosen.agents }), [line(a.root, chosen.agents), line(b.root, chosen.agents)]);
+});
+
+test("kit_home and kitHome() skip a KIT_HOME a front door filled in, and keep one a person set", (t) => {
+  const other = temp(t), own = dirname(library);
+  const env: NodeJS.ProcessEnv = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+  for (const name of ["KIT_ROOT", "KIT_LIB", "KIT_LIB_MJS", "KIT_HOME", "KIT_HOME_DEFAULT"]) delete env[name];
+  const sha = (directory: string) => spawnSync("git", ["-C", directory, "rev-parse", "--short", "HEAD"], { env, encoding: "utf8" }).stdout.trim();
+  spawnSync("git", ["-C", other, "init", "-q"], { env });
+  spawnSync("git", ["-C", other, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "other"], { env });
+  assert.notEqual(sha(other), sha(own));
+  // kit version run directly (no front door) reports the commit of the kit home kit_home picks.
+  const version = (extra: NodeJS.ProcessEnv) => spawnSync(join(own, "kit.d/version"), [], { env: { ...env, ...extra }, encoding: "utf8" }).stdout;
+  assert.match(version({ KIT_HOME: other, KIT_HOME_DEFAULT: other }), new RegExp(`^commit ${sha(own)}\n`));
+  assert.match(version({ KIT_HOME: other }), new RegExp(`^commit ${sha(other)}\n`));
+  const kitHome = (extra: NodeJS.ProcessEnv) => spawnSync(process.execPath, ["--input-type=module", "-e",
+    `const { kitHome } = await import(${JSON.stringify(pathToFileURL(join(own, "kit-lib.mjs")).href)}); console.log(kitHome());`],
+  { env: { ...env, ...extra }, encoding: "utf8" }).stdout;
+  assert.equal(kitHome({ KIT_HOME: other, KIT_HOME_DEFAULT: other }), `${own}\n`);
+  assert.equal(kitHome({ KIT_HOME: other }), `${other}\n`);
+  assert.equal(kitHome({}), `${own}\n`);
 });
 
 test("kit still lists shared commands with a broken settings file and names it on an unknown command", (t) => {

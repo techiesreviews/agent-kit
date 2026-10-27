@@ -362,6 +362,20 @@ test("kit ux runs its checks without a project shots command when no touched fea
   assert.deepEqual(calls(), []);
 });
 
+test("kit ux reads the colour check from the project, and a project without one gets no colour findings", t => {
+  const { root, put, run } = fixture(t);
+  put("docs/agents/features.md", ["# Feature list", "", entry("F-plain-01", ["src/plain.css"])].join("\n"));
+  put("src/plain.css", ".a { color: #fff; }\n");
+  const bundle = () => {
+    const output = run(["--no-review"], { KIT_UX_SHOTS: undefined, KIT_COMMANDS_DIR: undefined });
+    assert.equal(output.status, 0, output.stdout + output.stderr);
+    return readFileSync(join(/bundle (\S+)$/.exec(output.result)![1], "bundle.md"), "utf8");
+  };
+  assert.match(bundle(), /- L2 src\/plain\.css:1: raw colour #fff/);
+  rmSync(join(root, "scripts/check-colours.mjs"));
+  assert.doesNotMatch(bundle(), /raw colour/);
+});
+
 test("kit ux tries touched features, runs scripted checks and writes a bounded bundle", t => {
   const { root, put, run, calls } = fixture(t);
   put("src/page-builder/media-picker.css", ".a { gap: var(--space); }\n.media__badge { gap: 6px; color: #fff; }\n");

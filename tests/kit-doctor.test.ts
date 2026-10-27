@@ -99,7 +99,7 @@ test("doctor checks all eleven conditions quickly, notes Grok, and quiet success
   assert.equal(lines[0], "✓ settings: scripts/agents/kit.json (native-site-editor, lands on dev)");
   assert.equal(lines[8], `✓ commands: 2 in ${f.commands} (KIT_COMMANDS_DIR)`);
   assert.equal(lines[9], "✓ help: 2 commands answer --help");
-  assert.equal(lines[10], `✓ kit home: a copy of ${join(repo, "scripts/agents")} runs kit version`);
+  assert.equal(lines[10], `✓ kit home: a copy of ${join(repo, "scripts/agents")} runs kit version for a project with only its settings and front door`);
   assert.equal(lines[11], "✗ grok: not installed (optional reviewer); fix: install the grok CLI for Grok reviews");
   assert.equal(lines.length, 13);
   assert.equal(lines[12], "RESULT: ok doctor 11/11 checks passed");
@@ -295,7 +295,8 @@ test("doctor fails when a copy of the kit named by KIT_HOME cannot run kit versi
   // A kit whose front door still needs something only the project has fails from its copy.
   const home = join(f.directory, "kit-home");
   mkdirSync(home);
-  executable(join(home, "kit"), '[[ $KIT_HOME == "$(dirname "$0")" ]] || exit 3; printf "RESULT: fail helper missing\\n"; exit 1');
+  // The temporary project's front door is the copy's: it gets the copy as KIT_HOME and the project as KIT_ROOT.
+  executable(join(home, "kit"), '[[ -f $KIT_HOME/kit && -f $KIT_ROOT/scripts/agents/kit.json && $KIT_ROOT != "$KIT_HOME" ]] || exit 3; printf "RESULT: fail helper missing\\n"; exit 1');
   // Run doctor directly: the front door would refuse this KIT_HOME itself.
   const result = f.run([], f.build, { KIT_HOME: home }, true);
   failure(result, "kit home");

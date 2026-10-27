@@ -213,17 +213,23 @@ else
   fail help "${list//,/, }" 'run scripts/agents/kit <command> --help and repair it'
 fi
 
-# The shared kit runs from anywhere: a copy outside the project, named by KIT_HOME, still runs a shared command.
+# The shared kit runs from anywhere: a copy outside the project, named by KIT_HOME, runs a shared command
+# for a temporary project holding only the settings, the front door and the project's own commands, so a
+# command that still reached a helper through this project's scripts/agents/ fails here.
 # The copy leaves out the project's own commands folder when it sits inside the kit's.
-home=$(kit_home) copy=$help_dir/kit-home output='' code=0
-if ! cp -R -- "$home" "$copy" 2>/dev/null; then
+home=$(kit_home) copy=$help_dir/kit-home project=$help_dir/project output='' code=0
+if ! cp -R -- "$home" "$copy" 2>/dev/null || ! mkdir -p -- "$project/scripts/agents" || ! cp -- "$copy/kit" "$project/scripts/agents/kit" 2>/dev/null; then
   code=1 output="cannot copy $home"
 else
   if [[ -n ${own:-} && $own == "$home"/* ]]; then rm -rf -- "${copy:?}/${own#"$home"/}"; fi
-  output=$(cd -- "$root" && env -u KIT_COMMANDS_DIR KIT_HOME="$copy" KIT_ROOT="$root" timeout -k 2 10 "$copy/kit" version 2>&1 < /dev/null) || code=$?
+  [[ ! -f $(kit_settings_file) ]] || cp -- "$(kit_settings_file)" "$project/scripts/agents/kit.json"
+  if [[ -n ${own:-} && -d $own && $own_setting != /* ]]; then
+    mkdir -p -- "$project/$(dirname -- "$own_setting")" && cp -R -- "$own" "$project/$own_setting"
+  fi
+  output=$(cd -- "$project" && env -u KIT_COMMANDS_DIR KIT_HOME="$copy" KIT_ROOT="$project" timeout -k 2 10 "$project/scripts/agents/kit" version 2>&1 < /dev/null) || code=$?
 fi
 if (( code == 0 )) && [[ ${output##*$'\n'} == 'RESULT: ok version '* ]]; then
-  pass 'kit home' "a copy of $home runs kit version"
+  pass 'kit home' "a copy of $home runs kit version for a project with only its settings and front door"
 else
   fail 'kit home' "a copy of $home fails kit version: ${output##*$'\n'}" 'reach shared helpers through KIT_HOME, not scripts/agents/'
 fi
