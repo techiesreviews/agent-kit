@@ -62,6 +62,8 @@ async function savedReview(head, base, patchId, ticket, root) {
 }
 
 const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
+// Short form of a finding for the console, PR body and PR comment; the ticket keeps the full text.
+const shortText = text => text.length > 160 ? `${text.slice(0, 160).trimEnd()}…` : text;
 
 /**
  * Whether a workflow file runs for a PR branch, read from its top-level `on:` triggers: `pull_request` or
@@ -374,8 +376,9 @@ async function main(args) {
       if (!findings.length) return;
       const reviewedHead = head;
       console.log(`review: ${findings.length} follow-ups after ${FIX_ROUNDS} fix rounds (non-blocking)`);
-      const lines = findings.map(item => `- ${item.group} (${item.severity || "gap"}): ${item.text.slice(0, 160)}`);
-      const summary = `Follow-ups (non-blocking after ${FIX_ROUNDS} fix rounds):\n${lines.join("\n")}`;
+      const line = text => item => `- ${item.group} (${item.severity || "gap"}): ${text(item.text)}`;
+      const lines = findings.map(line(text => text));
+      const summary = `Follow-ups (non-blocking after ${FIX_ROUNDS} fix rounds):\n${findings.map(line(shortText)).join("\n")}`;
       if (!readFileSync(body, "utf8").includes(summary)) appendFileSync(body, `\n${summary}\n`);
       await gh("follow-ups", ["api", "--method", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "-F", `body=@${body}`]);
       const comments = JSON.parse(await gh("follow-ups", ["pr", "view", number, "--json", "comments"]));
@@ -438,7 +441,7 @@ async function main(args) {
       const blocking = relaxed ? blockingFindings(findings) : findings;
       if (findings.length) {
         const ordered = [...blocking, ...findings.filter(item => !blocking.includes(item))];
-        for (const finding of ordered.slice(0, 15)) console.log(`${finding.group}: ${finding.text.slice(0, 160)}`);
+        for (const finding of ordered.slice(0, 15)) console.log(`${finding.group}: ${shortText(finding.text)}`);
         if (findings.length > 15) console.log(`… and ${findings.length - 15} more`);
         if (blocking.length && !flags.waive) {
           kitResult("fail", `pr #${number} review has ${blocking.length} open findings (${resultPath})`);

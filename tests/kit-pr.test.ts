@@ -508,7 +508,7 @@ test("saved and fresh reviews stop on findings before CI or merge, capped at 15 
     const result = f.run([], { FAKE_REVIEW: report });
     assert.equal(result.status, 1, result.stderr);
     assert.equal(result.stdout.trimEnd().split("\n").at(-1), `RESULT: fail pr #73 review has 17 open findings (${path})`);
-    assert.ok(result.stdout.includes(`Spec: ${"A".repeat(160)}\n`), result.stdout);
+    assert.ok(result.stdout.includes(`Spec: ${"A".repeat(160)}…\n`), result.stdout);
     assert.doesNotMatch(result.stdout, /A{161}/);
     for (let i = 2; i <= 15; i++) assert.ok(result.stdout.includes(`Spec: Defect ${i}.\n`));
     assert.doesNotMatch(result.stdout, /Spec: Defect 16\.|Validation gaps: Missing coverage|Rename a variable|review: ok/);
@@ -1048,6 +1048,28 @@ test("follow-ups extend an existing subsection without duplicating existing line
   assert.equal(ticket.split("### Follow-ups").length, 2);
   assert.equal(ticket.split("- Spec (P2): P2: Minor defect.").length, 2);
   assert.match(ticket, /- Validation gaps \(gap\): Add coverage.\n\n### Evidence/);
+});
+
+test("a follow-up longer than 160 characters reaches the ticket in full and the PR summary marks the cut", t => {
+  const f = fixture(t); f.rounds(3);
+  f.commit("Close ticket", "ticket.md", '---\ntitle: "Ticket title"\n---\n\n## Done (2026-10-19)\n\nImplemented.\n');
+  const long = `P2: ${"Evidence names the file and line. ".repeat(6)}Fix: keep the whole sentence in the ticket.`;
+  assert.ok(long.length > 160);
+  f.saveReview(minorReview.replace("P2: Minor defect.", long));
+  const result = f.run(["--ticket", "ticket.md"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const ticket = readFileSync(join(f.root, "ticket.md"), "utf8");
+  assert.ok(ticket.includes(`\n- Spec (P2): ${long}\n`), ticket);
+  const cut = `- Spec (P2): ${long.slice(0, 160).trimEnd()}…`;
+  const summary = `Follow-ups (non-blocking after 3 fix rounds):\n${cut}\n- Validation gaps (gap): Add coverage.`;
+  assert.equal(f.ghCalls("comment").filter(call => call.body === summary).length, 1);
+  assert.ok(f.apiCalls().some(call => call.body?.includes(summary)));
+  const head = f.git("rev-parse", "HEAD");
+  const rerun = f.run(["--ticket", "ticket.md"], { FAKE_EXISTING: "1" });
+  assert.equal(rerun.status, 0, rerun.stdout + rerun.stderr);
+  assert.equal(f.git("rev-parse", "HEAD"), head);
+  assert.equal(readFileSync(join(f.root, "ticket.md"), "utf8"), ticket);
+  assert.equal(f.ghCalls("comment").filter(call => call.body === summary).length, 1);
 });
 
 async function waitForFile(path: string) {
