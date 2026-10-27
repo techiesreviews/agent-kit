@@ -303,6 +303,25 @@ test("kit ux takes screenshots through the project's own shots and says when the
   assert.equal(calls().length, 1);
 });
 
+test("kit ux reads the commands folder from an incomplete settings file and names a broken one", t => {
+  const { root, put, run, calls } = fixture(t);
+  put("src/page-builder/media-picker.css", ".a { gap: var(--space); }\n.b { gap: var(--space); }\n");
+  const real = { KIT_UX_SHOTS: undefined, KIT_COMMANDS_DIR: undefined };
+  // No "project": the front door still finds the folder, so ux does too.
+  put("scripts/agents/kit.json", JSON.stringify({ commands: "own" }));
+  put("own/shots.mjs", readFileSync(join(root, ".scratch/shots.mjs"), "utf8"));
+  chmodSync(join(root, "own/shots.mjs"), 0o755);
+  const incomplete = run(["--no-review"], real);
+  assert.equal(incomplete.status, 0, incomplete.stdout + incomplete.stderr);
+  assert.match(incomplete.result, /^RESULT: ok ux 1 features tried, /);
+  assert.equal(calls().length, 1);
+  put("scripts/agents/kit.json", '{ "commands": ');
+  const broken = run(["--no-review"], real);
+  assert.equal(broken.status, 1, broken.stdout + broken.stderr);
+  assert.match(broken.result, /^RESULT: fail ux scripts\/agents\/kit\.json is unreadable: /);
+  assert.equal(calls().length, 1);
+});
+
 test("kit ux tries touched features, runs scripted checks and writes a bounded bundle", t => {
   const { root, put, run, calls } = fixture(t);
   put("src/page-builder/media-picker.css", ".a { gap: var(--space); }\n.media__badge { gap: 6px; color: #fff; }\n");

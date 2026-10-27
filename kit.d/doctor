@@ -205,7 +205,7 @@ for index in "${!commands[@]}"; do
   fi
 done
 if (( ${#commands[@]} == 0 )); then
-  fail help "no commands in ${folders[*]}" 'restore scripts/agents/kit.d'
+  fail help "no commands in ${folders[*]}" 'restore scripts/agents/kit.d or the "commands" folder'
 elif (( ${#broken[@]} == 0 )); then
   pass help "${#commands[@]} commands answer --help"
 else

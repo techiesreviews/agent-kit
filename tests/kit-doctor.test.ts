@@ -297,7 +297,7 @@ test("doctor fails the help check when the command folder has no commands", (t) 
   // Run doctor directly: the kit front door reads the same empty folder.
   const result = f.run([], f.build, { KIT_COMMANDS_DIR: empty }, true);
   failure(result, "help");
-  assert.ok(result.stdout.includes(`✗ help: no commands in ${empty}; fix: restore scripts/agents/kit.d\n`), result.stdout);
+  assert.ok(result.stdout.includes(`✗ help: no commands in ${empty}; fix: restore scripts/agents/kit.d or the "commands" folder\n`), result.stdout);
 });
 
 test("doctor passes the help check when every real shared and project command answers --help", (t) => {

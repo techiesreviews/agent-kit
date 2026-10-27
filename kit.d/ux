@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { checkColours } from "../../check-colours.mjs";
 import { citedRules, parseUxResult, uxBrief, uxCounts, uxReport } from "../ux-brief.mjs";
 
-const { kitRoot, kitMainRoot, kitOwner, kitResult, kitScore, kitSettings, scoreCost } = await import(
+const { kitRoot, kitMainRoot, kitOwner, kitResult, kitScore, kitSettingsFile, scoreCost } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 
@@ -320,7 +320,18 @@ async function runLogged(root, command, args, log) {
 function projectShots(root, env = process.env) {
   if (env.KIT_UX_SHOTS) return env.KIT_UX_SHOTS;
   let folder = env.KIT_COMMANDS_DIR;
-  if (!folder) { try { folder = kitSettings(root).commands; } catch { /* No settings: no project folder. */ } }
+  // Read "commands" alone, as the front door's kit_setting does: other missing keys do not hide the folder.
+  if (!folder) {
+    let text;
+    try { text = readFileSync(join(root, kitSettingsFile), "utf8"); }
+    catch (error) { if (error.code !== "ENOENT") throw new Error(`${kitSettingsFile} is unreadable: ${error.message}`); }
+    if (text !== undefined) {
+      let settings;
+      try { settings = JSON.parse(text); }
+      catch (error) { throw new Error(`${kitSettingsFile} is unreadable: ${error.message}`); }
+      if (typeof settings?.commands === "string" && settings.commands.trim()) folder = settings.commands;
+    }
+  }
   if (!folder) throw new Error('needs a project shots command (no "commands" folder in scripts/agents/kit.json)');
   const directory = resolve(root, folder);
   let names = [];

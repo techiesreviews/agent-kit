@@ -140,6 +140,15 @@ test("kit takes an absolute commands folder, and without one lists only shared c
   const missing = run(["far"], env);
   assert.equal(missing.status, 2);
   assert.equal(missing.stdout, "RESULT: fail unknown command far\n");
+  // A "commands" folder that does not exist adds no group; kit doctor names it.
+  settings({ commands: "missing" });
+  const absent = run([], env);
+  assert.equal(absent.status, 0, absent.stderr);
+  assert.match(absent.stdout, /\nShared commands:\n/);
+  assert.doesNotMatch(absent.stdout, /Project commands/);
+  const doctorHelp = run(["doctor", "--help"], env);
+  assert.equal(doctorHelp.status, 0, doctorHelp.stderr);
+  assert.match(doctorHelp.stdout, /^Usage: kit doctor/);
 });
 
 test("kit forwards command help and its exit status without RESULT enforcement", (t) => {
