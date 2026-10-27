@@ -32,7 +32,7 @@ if [[ -n $modules ]]; then
 else
   echo "No sharedNodeModules in scripts/agents/kit.json; install dependencies in $path" >&2
 fi
-# The main checkout's built static preview, when it has one, is shared too.
-preview="$(kit_main_root)/.scratch/native-static-preview"
-[[ ! -d $preview ]] || ln -s "$preview" "$path/.scratch/native-static-preview"
+# The main checkout's static preview is shared too, even before main builds it.
+main=$(kit_main_root)
+[[ $main == "$path" ]] || ln -s "$main/.scratch/native-static-preview" "$path/.scratch/native-static-preview"
 printf '%s\n' "$path"

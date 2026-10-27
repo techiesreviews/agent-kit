@@ -44,10 +44,11 @@ kit_dev_root() {
   if [[ -n ${KIT_DEV_ROOT:-} ]]; then printf '%s\n' "$KIT_DEV_ROOT"; else kit_setting .devRoot; fi
 }
 
-# The persistent main checkout: KIT_MAIN_ROOT, else the settings' mainRoot, else the main worktree.
+# The persistent main checkout: KIT_MAIN_ROOT, else the settings' mainRoot (only from a valid file,
+# as kitMainRoot reads it), else the main worktree.
 kit_main_root() {
   local main=${KIT_MAIN_ROOT:-} root common
-  [[ -n $main ]] || main=$(kit_setting .mainRoot)
+  if [[ -z $main ]] && kit_settings_problems > /dev/null; then main=$(kit_setting .mainRoot); fi
   if [[ -z $main ]]; then
     root=$(kit_root)
     if common=$(git -C "$root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then main=${common%/*}; else main=$root; fi

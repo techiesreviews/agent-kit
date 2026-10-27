@@ -290,7 +290,7 @@ function add(root, options) {
   } finally { rmSync(staging, { recursive: true, force: true }); }
 }
 
-function optionsFor(args, root) {
+export function optionsFor(args, root) {
   const [command, ...rest] = args;
   if (command !== "check" && command !== "add") throw new UsageError("expected check or add (see kit deps --help)");
   const options = { command, lock: join(root, "package-lock.json"), modules: join(root, "node_modules"),
@@ -308,7 +308,10 @@ function optionsFor(args, root) {
   }
   if (command === "add" && !options.spec) throw new UsageError("add needs a package spec");
   // The shared parent defaults to the dev worktree (KIT_DEV_ROOT, else devRoot in scripts/agents/kit.json).
-  if (command === "add" && !options.prefix) options.prefix = kitDevRoot(kitSettings(root)) ?? "";
+  if (command === "add" && !options.prefix) {
+    options.prefix = process.env.KIT_DEV_ROOT || "";
+    if (!options.prefix) try { options.prefix = kitDevRoot(kitSettings(root)) ?? ""; } catch { /* No usable settings: the line below asks for --prefix. */ }
+  }
   if (command === "add" && !options.prefix) throw new UsageError("add needs --prefix or devRoot in scripts/agents/kit.json");
   return options;
 }

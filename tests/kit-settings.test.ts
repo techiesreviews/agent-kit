@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
-import { kitDevRoot, kitMainRoot, kitSettings, kitSettingsProblems } from "../scripts/agents/kit-lib.mjs";
+import { kitDevRoot, kitMainRoot, kitMaps, kitSettings, kitSettingsProblems, scoreMap } from "../scripts/agents/kit-lib.mjs";
+// @ts-expect-error The agent helpers are plain JavaScript without declarations.
+import { optionsFor } from "../scripts/agents/deps-check.mjs";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
 import { classify, featureListGuard } from "../scripts/agents/pr-tier.mjs";
 
@@ -219,4 +221,72 @@ test("land: main reaches review, unit --affected, pr --dry-run, status and wait 
   assert.match(lastLine(ci)!, /^RESULT: ok ci main abcdef0 green /);
   assert.match(f.called(), /^gh api repos\/\{owner\}\/\{repo\}\/commits\/main --jq \.sha$/m);
   assert.match(f.called(), /^gh run list --workflow 1 --branch main /m);
+});
+
+test("bash and node agree on mainRoot, which only a valid file supplies", t => {
+  const root = temp(t);
+  spawnSync("git", ["init", "-q", root], { env: clean });
+  const saved = process.env.KIT_ROOT, savedMain = process.env.KIT_MAIN_ROOT;
+  t.after(() => {
+    if (saved === undefined) delete process.env.KIT_ROOT; else process.env.KIT_ROOT = saved;
+    if (savedMain === undefined) delete process.env.KIT_MAIN_ROOT; else process.env.KIT_MAIN_ROOT = savedMain;
+  });
+  process.env.KIT_ROOT = root;
+  delete process.env.KIT_MAIN_ROOT;
+  settingsFile(root, { project: "x", mainRoot: "/a" });
+  // Incomplete: both use the main worktree, never the file's mainRoot.
+  assert.equal(kitMainRoot(), realpathSync(root));
+  assert.equal(bash("kit_main_root", { KIT_ROOT: root }).stdout, `${kitMainRoot()}\n`);
+});
+
+test("a maps folder with a trailing slash is read as one spelling", t => {
+  const root = temp(t);
+  settingsFile(root, { project: "x", branches: { land: "main" }, maps: "docs/wayfinder/" });
+  assert.equal(kitSettings(root).maps, "docs/wayfinder");
+  assert.equal(scoreMap("docs/wayfinder/alpha/build/tickets/01-x.md", kitMaps(kitSettings(root))), "alpha");
+});
+
+test("deps add takes its prefix from KIT_DEV_ROOT, then devRoot, else asks for --prefix", t => {
+  const root = temp(t);
+  settingsFile(root, { project: "x", branches: { land: "main" }, devRoot: "/settings/dev" });
+  const saved = process.env.KIT_DEV_ROOT;
+  t.after(() => { if (saved === undefined) delete process.env.KIT_DEV_ROOT; else process.env.KIT_DEV_ROOT = saved; });
+  delete process.env.KIT_DEV_ROOT;
+  assert.equal(optionsFor(["add", "left-pad"], root).prefix, "/settings/dev");
+  assert.equal(optionsFor(["add", "left-pad", "--prefix", "/given"], root).prefix, "/given");
+  process.env.KIT_DEV_ROOT = "/env/dev";
+  assert.equal(optionsFor(["add", "left-pad"], root).prefix, "/env/dev");
+  // The override wins even without a usable settings file.
+  const bare = temp(t);
+  assert.equal(optionsFor(["add", "left-pad"], bare).prefix, "/env/dev");
+  delete process.env.KIT_DEV_ROOT;
+  assert.throws(() => optionsFor(["add", "left-pad"], bare),
+    (error: Error) => error.constructor.name === "UsageError" && error.message === "add needs --prefix or devRoot in scripts/agents/kit.json");
+});
+
+test("kit pr pairs --release with branches.release, whatever its name", t => {
+  const prod = repo(t, { project: "kit-land", branches: { land: "main", release: "prod" } });
+  for (const [args, message] of [[["--base", "prod"], "--base prod requires --release"], [["--release"], "--release requires --base prod"]] as const) {
+    const output = prod.run(["pr", "--dry-run", ...args]);
+    assert.equal(output.status, 1, output.stdout + output.stderr);
+    assert.equal(lastLine(output), `RESULT: fail guards: ${message}`);
+  }
+  const none = repo(t, { project: "kit-land", branches: { land: "main" } });
+  const output = none.run(["pr", "--dry-run", "--release"]);
+  assert.equal(lastLine(output), "RESULT: fail guards: --release needs branches.release in scripts/agents/kit.json");
+});
+
+test("worktree.sh names, bases and links a worktree from the settings file", t => {
+  const f = repo(t, { project: "kit-land", branches: { land: "main" } });
+  const made = spawnSync("bash", [resolve("scripts/agents/worktree.sh"), "feature/y"], { cwd: f.root, env: { ...f.env, KIT_MAIN_ROOT: "" }, encoding: "utf8" });
+  assert.equal(made.status, 0, made.stderr);
+  const path = join(dirname(realpathSync(f.root)), "kit-land-feature-y");
+  assert.equal(made.stdout, `${path}\n`);
+  assert.match(readFileSync(join(path, ".scratch/owner"), "utf8"), / feature\/y origin\/main\n$/);
+  assert.match(made.stderr, /No sharedNodeModules in scripts\/agents\/kit\.json/);
+  assert.equal(existsSync(join(path, "node_modules")), false);
+  // The preview link is made even before the main checkout builds its fixture.
+  const link = join(path, ".scratch/native-static-preview");
+  assert.ok(lstatSync(link).isSymbolicLink());
+  assert.equal(readlinkSync(link), join(realpathSync(f.root), ".scratch/native-static-preview"));
 });

@@ -9,6 +9,7 @@ done
 # shellcheck source=scripts/agents/kit-lib.sh
 source "${KIT_LIB:-$(dirname -- "${BASH_SOURCE[0]}")/kit-lib.sh}"
 # The test runner and the full suite's files come from unit.run and unit.files in scripts/agents/kit.json.
+problems=$(kit_settings_problems) || { printf 'unit.sh: %s\n' "${problems//$'\n'/; }" >&2; exit 2; }
 read -ra runner <<< "$(kit_setting .unit.run)"
 (( ${#runner[@]} )) || { echo "unit.sh needs unit.run in scripts/agents/kit.json" >&2; exit 2; }
 if (( ! $# )); then

@@ -6,6 +6,11 @@ import { dirname, posix, resolve } from "node:path";
 import { kitBranch, kitSettings } from "./kit-lib.mjs";
 
 const landRef = () => `origin/${kitBranch()}`;
+// The settings file sits at the top of the reviewed checkout, which may be given as any folder in it.
+const topFolder = worktree => {
+  try { return execFileSync("git", ["-C", worktree, "rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); }
+  catch { return worktree; }
+};
 
 export const reviewFormat = `Required format:
 REVIEW_STATUS: complete
@@ -71,7 +76,7 @@ export function reviewBrief(ticketPath, ticket, scope = landRef(), worktree = pr
     .map(path => path.startsWith("docs/") ? path : posix.normalize(posix.join(posix.dirname(ticketPath), path)));
   const refs = [...ticket.matchAll(/`([^`\n]*\bspec\.md)(?:#[^`\n]*)?`/g)].map(match => match[1]);
   const sources = [...new Set([ticketPath, ...links, ...refs].filter(Boolean))];
-  const { standards } = kitSettings();
+  const { standards } = kitSettings(topFolder(worktree));
   return `Review this build slice in read-only mode. Make no changes.
 Scope: ${label}.
 ${sources.length ? `Spec axis: read ${sources.join(", ")}, including the linked spec and deciding tickets.` : "Spec axis: no ticket supplied; assess the change against the stated intent and repo documentation."}

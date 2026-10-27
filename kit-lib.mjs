@@ -42,6 +42,8 @@ export function kitSettings(root = kitRoot()) {
   }
   const problems = kitSettingsProblems(settings);
   if (problems.length) throw new Error(problems.join("; "));
+  // One spelling for every reader: "docs/wayfinder/" is "docs/wayfinder".
+  if (typeof settings.maps === "string") settings.maps = settings.maps.replace(/\/+$/, "");
   settingsCache.set(root, settings);
   return settings;
 }
@@ -59,7 +61,7 @@ export function kitDevRoot(settings = kitSettings()) {
 
 /** The maps folder (settings `maps`) for features that need one; throws a plain line when it is unset. */
 export function kitMaps(settings = kitSettings()) {
-  if (typeof settings.maps === "string" && settings.maps) return settings.maps.replace(/\/+$/, "");
+  if (typeof settings.maps === "string" && settings.maps) return settings.maps;
   throw new Error(`no "maps" folder in ${kitSettingsFile}; this command needs one`);
 }
 

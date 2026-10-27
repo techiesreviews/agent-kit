@@ -373,3 +373,15 @@ test("a failed hand-out fails the heartbeat; usage errors exit 2", t => {
   assert.match(none.stdout, /^RESULT: fail heartbeat needs a map$/m);
   assert.equal(run("alpha", "beta").status, 2);
 });
+
+test("a maps folder written with a trailing slash still matches its slice jobs", t => {
+  const { root, env, job, run } = fixture(t);
+  const settings = join(root, "settings");
+  mkdirSync(join(settings, "scripts/agents"), { recursive: true });
+  writeFileSync(join(settings, "scripts/agents/kit.json"), JSON.stringify({ project: "x", branches: { land: "dev" }, maps: "docs/wayfinder/" }));
+  env.KIT_ROOT = settings;
+  job("slice-al1", { state: "exit 0", log: "RESULT: ok slice x PR #12 abcdef1\n" });
+  const result = run("alpha");
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(result.lines.some(line => line.startsWith("finished: slice-al1 ")), result.stdout);
+});

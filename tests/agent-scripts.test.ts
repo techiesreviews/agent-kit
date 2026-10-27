@@ -128,6 +128,9 @@ function reviewRepository(wt: string) {
   git("init");
   git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "base");
   git("update-ref", "refs/remotes/origin/dev", "HEAD");
+  // The brief cites the standards file named in the reviewed checkout's settings.
+  mkdirSync(join(wt, "scripts/agents"), { recursive: true });
+  writeFileSync(join(wt, "scripts/agents/kit.json"), JSON.stringify({ project: "brief", branches: { land: "dev" }, standards: "CODING_STANDARDS.md" }));
   writeFileSync(join(wt, "change.txt"), "reviewed change\n");
   git("add", "change.txt");
   git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "reviewed change");

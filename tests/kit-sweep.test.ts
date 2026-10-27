@@ -16,7 +16,11 @@ type Sweep = {
   unitOutcomes(log: string): [string, string[]][];
   specOutcomes(report: unknown): [string, string[]][];
   flippedTests(runs: { worktree: string; path: string; time: number; outcomes: [string, string[]][] }[]): { name: string; times: number; worktrees: Set<string> }[];
+  codeSections(now: Map<string, string>, then: Map<string, string>, sharedFile: string | null): Section[];
+  correctionsSection(root: string, then: string, head: string, maps: string | null): Section;
+  staleDebtSection(root: string, now: number, techDebt: string | null): Section;
 };
+type Section = { title: string; priority: number; lines: string[] };
 const sweep: Sweep = await import(pathToFileURL(script).href);
 
 const day = 86_400_000;
@@ -241,4 +245,14 @@ test("--since takes days or a date; anything else is a usage error", (t) => {
   const result = run(repo, ["--since", "week"]);
   assert.equal(result.status, 2);
   assert.match(result.stdout, /^RESULT: fail sweep invalid --since: week/m);
+});
+
+test("a missing sharedFile, maps or techDebt setting drops its section or says so", t => {
+  const { repo } = repository(t);
+  const files = new Map([["src/main.ts", "a\nb\n"], ["src/other.ts", "c\n"]]);
+  const titles = (sections: Section[]) => sections.map(section => section.title);
+  assert.ok(titles(sweep.codeSections(files, new Map(), "src/main.ts")).includes("src/main.ts"));
+  assert.deepEqual(titles(sweep.codeSections(files, new Map(), null)), ["Biggest source files", "Biggest growth", "Hand-typed values in src/**/*.css"]);
+  assert.deepEqual(sweep.correctionsSection(repo, "", "HEAD", null).lines, ["- no maps folder in scripts/agents/kit.json"]);
+  assert.deepEqual(sweep.staleDebtSection(repo, Date.now(), null).lines, ["- no techDebt folder in scripts/agents/kit.json"]);
 });
