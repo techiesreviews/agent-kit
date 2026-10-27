@@ -36,7 +36,7 @@ type Ux = {
   pickImages(images: Image[], limit?: number): { kept: Image[]; trimmed: (Image & { reason: string })[] };
   guessTicket(branch: string, files: string[]): string | undefined;
   mockupLinks(text: string, ticket: string): string[];
-  colourFindings(status: number, output: string, command: string, log: string, scope: { root: string; changed: string[] }): { findings: Finding[]; outside: number };
+  colourFindings(status: number, output: string, command: string, log: string, scope: { root: string; changed: string[]; known?: string[] }): { findings: Finding[]; outside: number };
 };
 const ux: Ux = await import(pathToFileURL(script).href);
 const editorColours: string = JSON.parse(readFileSync(resolve("scripts/agents/kit.json"), "utf8")).checks.css;
@@ -383,6 +383,11 @@ test("kit ux diffs against origin/<land> from the settings when the project land
   const unset = run(["--no-review"]);
   assert.equal(unset.status, 1, unset.stdout + unset.stderr);
   assert.equal(unset.result, "RESULT: fail ux needs --base (no branches.land in scripts/agents/kit.json)");
+  // A blank land branch is none.
+  put("scripts/agents/kit.json", JSON.stringify({ project: "x", branches: { land: " " }, checks: { css: editorColours } }));
+  const blank = run(["--no-review"]);
+  assert.equal(blank.status, 1, blank.stdout + blank.stderr);
+  assert.equal(blank.result, "RESULT: fail ux needs --base (no branches.land in scripts/agents/kit.json)");
   // A given --base needs no land branch.
   const given = run(["--no-review", "--base", "origin/main"]);
   assert.equal(given.status, 0, given.stdout + given.stderr);
@@ -411,11 +416,11 @@ process.exitCode = failures.length ? 1 : 0;
   const own = report();
   assert.deepEqual(readFileSync(join(root, ".scratch/colour-calls.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line)), [["src/plain.css", "styles/own.css"]]);
   assert.deepEqual(own.bundle.split("\n").filter(line => line.startsWith("- L2")), ["- L2 styles/own.css:1: raw colour red is not a token"]);
-  assert.match(own.stdout, /^colours: node tools\/colours\.mjs: exited 1, 1 finding; log \S+\/colours\.log$/m);
+  for (const text of [own.stdout, own.bundle]) assert.match(text, /^colours: node tools\/colours\.mjs: exited 1, 1 finding; log \S+\/colours\.log$/m);
   // A failed run whose every line is outside the diff never reads ok: it names its status, the dropped lines and its log.
   put("tools/colours.mjs", 'console.error("styles/untouched.css:4: red is not a token"); process.exitCode = 1;\n');
   const outside = report();
-  assert.match(outside.stdout, /^colours: node tools\/colours\.mjs: exited 1, 0 findings \(1 outside the diff\); log \S+\/colours\.log$/m);
+  for (const text of [outside.stdout, outside.bundle]) assert.match(text, /^colours: node tools\/colours\.mjs: exited 1, 0 findings \(1 outside the diff\); log \S+\/colours\.log$/m);
   assert.doesNotMatch(outside.stdout, /^colours: .*: ok$/m);
   assert.doesNotMatch(outside.bundle, /^- L2 /m);
   // A command that does not exist is one finding naming the spawn error and the log.
@@ -447,6 +452,36 @@ test("kit ux with this editor's checks.css finds a raw colour in the diff and le
   assert.deepEqual(markdown.split("\n").filter(line => line.startsWith("- L2")), ["- L2 src/plain.css:1: raw colour #fff"]);
 });
 
+test("kit ux with this editor's checks.css reports a stale allow entry for a changed file, not one for an untouched file", t => {
+  const { git, put, run } = fixture(t);
+  put("docs/agents/features.md", ["# Feature list", "", entry("F-plain-01", ["src/plain.css"])].join("\n"));
+  const allowed = { file: "src/plain.css", match: "mask: linear-gradient(#000", reason: "Alpha only." };
+  put("scripts/check-colours.allow.json", JSON.stringify([allowed]));
+  put("src/plain.css", ".b { mask: linear-gradient(#000, transparent); }\n");
+  put("src/other.css", ".a { color: var(--ink); }\n");
+  git("add", "."); git("commit", "--quiet", "-m", "allowed");
+  git("update-ref", "refs/remotes/origin/dev", "HEAD");
+  const report = () => {
+    const output = run(["--no-review"], { KIT_UX_SHOTS: undefined, KIT_COMMANDS_DIR: undefined });
+    assert.equal(output.status, 0, output.stdout + output.stderr);
+    const bundle = readFileSync(join(/bundle (\S+)$/.exec(output.result)![1], "bundle.md"), "utf8");
+    return { stdout: output.stdout, l2: bundle.split("\n").filter(line => line.startsWith("- L2")) };
+  };
+  // The change drops the allowed line, so its entry goes stale; the allow list itself is not in the diff.
+  put("src/plain.css", ".b { color: #fff; }\n");
+  const stale = report();
+  assert.deepEqual(stale.l2, [
+    "- L2 src/plain.css:1: raw colour #fff",
+    "- L2 scripts/check-colours.allow.json:1: stale allow entry: src/plain.css: mask: linear-gradient(#000",
+  ]);
+  assert.match(stale.stdout, new RegExp(`^colours: ${editorColours.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}: exited 1, 2 findings; log \\S+/colours\\.log$`, "m"));
+  // The allow list in the diff, holding a stale entry for the untouched src/other.css: that entry is no finding of this diff.
+  put("scripts/check-colours.allow.json", JSON.stringify([{ ...allowed, match: ".b { color: #fff" }, { file: "src/other.css", match: "#000", reason: "Gone." }]));
+  const untouched = report();
+  assert.deepEqual(untouched.l2, []);
+  assert.match(untouched.stdout, /: exited 1, 0 findings \(1 outside the diff\); log \S+\/colours\.log$/m);
+});
+
 test("a failed colour check names each file and line it printed in the diff, else its first line and log", () => {
   const root = "/abs/root", scope = { root, changed: ["src/a.css", "src/b.css", "allow.json"] };
   const found = (status: number, output: string) => ux.colourFindings(status, output, "check", "/log", scope);
@@ -466,6 +501,13 @@ test("a failed colour check names each file and line it printed in the diff, els
   });
   assert.deepEqual(found(1, "src/other.css:1: #000\n"), { findings: [], outside: 1 });
   assert.deepEqual(found(2, "\nError: no allow list\n    at x\n").findings, [{ rule: "L2", file: "colours", line: 0, text: "check exited 2: Error: no allow list; log /log" }]);
+  // A line about another file counts for that file: a stale entry naming a changed file stays though the allow list is
+  // unchanged, and one naming an untouched file goes though the allow list is in the diff.
+  const named = (changed: string[], output: string) => ux.colourFindings(1, output, "check", "/log", { root, changed, known: ["src/a.css", "src/other.css", "allow.json"] });
+  assert.deepEqual(named(["src/a.css"], "allow.json:1: stale allow entry: src/a.css: #000\n"), {
+    findings: [{ rule: "L2", file: "allow.json", line: 1, text: "stale allow entry: src/a.css: #000" }], outside: 0,
+  });
+  assert.deepEqual(named(["src/a.css", "allow.json"], "allow.json:2: stale allow entry: src/other.css: #000\n"), { findings: [], outside: 1 });
   // A stack frame with a plain path is no file:line finding.
   assert.deepEqual(found(1, "TypeError: x\n    at checkColours (/abs/check.js:12:5)\n").findings, [{ rule: "L2", file: "colours", line: 0, text: "check exited 1: TypeError: x; log /log" }]);
   assert.deepEqual(found(127, "").findings, [{ rule: "L2", file: "colours", line: 0, text: "check exited 127; log /log" }]);
