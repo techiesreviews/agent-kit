@@ -254,6 +254,42 @@ test("a held kit update that cannot unpack leaves the broken current folder and 
   assert.deepEqual(readdirSync(k.data).filter((name) => name.startsWith(".unpack.")), []);
 });
 
+test("a held kit update whose unpack has no kit-lib.sh fails and leaves the broken folder and every link alone", (t) => {
+  const { k, one, two } = steppedBack(t);
+  spawnSync("chmod", ["-R", "u+w", join(k.data, one)]);
+  rmSync(join(k.data, one, "kit-lib.sh"));
+  // A tar that unpacks and then drops kit-lib.sh (the update calls tar -x -C <folder>).
+  const bin = join(k.directory, "bin");
+  mkdirSync(bin);
+  const tar = spawnSync("sh", ["-c", "command -v tar"], { encoding: "utf8" }).stdout.trim();
+  writeFileSync(join(bin, "tar"), `#!/bin/sh\n${tar} "$@" && rm -f -- "$3/kit-lib.sh"\n`, { mode: 0o755 });
+  const updated = readFileSync(join(k.data, "updated"), "utf8");
+  const refill = k.run([], { PATH: `${bin}:${k.env.PATH}` });
+  assert.equal(refill.status, 1, refill.stdout + refill.stderr);
+  assert.equal(refill.stdout, `RESULT: fail update held ${short(one)} has no kit front door and kit-lib.sh at its top\n`);
+  assert.equal(readFileSync(join(k.data, one, "marker"), "utf8"), "one");
+  assert.equal(existsSync(join(k.data, one, "kit-lib.sh")), false);
+  assert.equal(k.link("current"), one);
+  assert.equal(k.link("previous"), two);
+  assert.equal(readFileSync(join(k.data, "held"), "utf8"), `${two}\n`);
+  assert.equal(readFileSync(join(k.data, "updated"), "utf8"), updated);
+  assert.deepEqual(readdirSync(k.data).filter((name) => name.startsWith(".unpack.")), []);
+});
+
+test("kit update --previous treats a previous link that names no folder as no previous kit", (t) => {
+  const k = kitRepo(t);
+  const two = ["one", "two"].map((marker) => { const sha = k.publish(marker); k.run(); return sha; })[1];
+  writeFileSync(join(k.data, "plain"), "not a kit\n");
+  for (const target of ["0".repeat(40), "plain"]) {
+    rmSync(join(k.data, "previous"));
+    symlinkSync(target, join(k.data, "previous"));
+    const back = k.run(["--previous"]);
+    assert.equal(back.status, 1, back.stdout + back.stderr);
+    assert.equal(back.stdout, "RESULT: fail update no previous kit to go back to\n");
+    assert.equal(k.link("current"), two);
+  }
+});
+
 test("kit update --previous refuses a previous folder that is not a whole kit", (t) => {
   const k = kitRepo(t);
   const [one, two] = ["one", "two"].map((marker) => { const sha = k.publish(marker); k.run(); return sha; });
