@@ -453,8 +453,8 @@ export function tryFailures(index, status, log) {
  * counts the rest, a line whose path is outside root among them.
  * A CSS line's subject is its own file. Another line's (an allow list's stale entry) is the first `: `-separated part
  * of its text (trailing colons dropped) that is a `known` file, else the longest `known` file one part names whole
- * between punctuation, else the longest after a space with no `/` before it in the part (one with an extension may also
- * end at a space), else its own file; one subject.
+ * between punctuation, else the longest one starting the part, after punctuation or after a space with no `/` before
+ * it, ending as above or, with an extension, at a space; else its own file; one subject.
  * A failed run that names no line is one finding pointing at its log.
  */
 export function colourFindings(status, output, command, log, { root, changed, known = changed }) {
@@ -501,7 +501,8 @@ function namesWhole(part, path, { afterSpace = false } = {}) {
     const before = part.slice(0, at);
     const left = /(^|["'`([{<=,;]|[,;] )$/.test(before) || (afterSpace && before.endsWith(" ") && !before.includes("/"));
     const after = part.slice(at + path.length);
-    if (left && (/^($|["'`)\]}>,;]|\.($|\s))/.test(after) || (afterSpace && /^\s/.test(after) && /\.[\w-]+$/.test(path)))) return true;
+    const right = /^($|["'`)\]}>,;]|\.($|\s))/.test(after) || (afterSpace && after.startsWith(" ") && /\.[\w-]+$/.test(path));
+    if (left && right) return true;
   }
   return false;
 }
