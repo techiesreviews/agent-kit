@@ -579,6 +579,10 @@ test("a colour line naming a file with spaces or parentheses counts for that fil
   assert.deepEqual(foundIn(["src/a.css"], "allow.json:1: stale entry src/a.css backup.css\n", ["allow.json", "src/a.css"]), {
     findings: [{ rule: "L2", file: "allow.json", line: 1, text: "stale entry src/a.css backup.css" }], outside: 0,
   });
+  // So is a deleted root-level `my file.css` to a known file.css: with no `/` before it, a space may start the path.
+  assert.deepEqual(foundIn(["file.css"], "allow.json:1: stale entry my file.css (no match)\n", ["allow.json", "file.css"]), {
+    findings: [{ rule: "L2", file: "allow.json", line: 1, text: "stale entry my file.css (no match)" }], outside: 0,
+  });
   assert.deepEqual(foundIn(["src/my"], "allow.json:3: stale entry src/my file.css (no match)\n", ["allow.json", "src/my"]), { findings: [], outside: 1 });
   assert.deepEqual(foundIn(["file.css"], "allow.json:1: stale entry src/my (old) file.css (no match)\n", ["allow.json", "file.css"]), { findings: [], outside: 1 });
   // One subject per line: the longest file it names, so the shorter file.css is not charged.
