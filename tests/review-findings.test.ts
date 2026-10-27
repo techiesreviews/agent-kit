@@ -571,13 +571,27 @@ test("an unlocated bullet whose sub-bullet names a severity is one blocking find
   assert.deepEqual(blockingFindings(findings), findings);
 });
 
+test("a plain located line after a prose paragraph is its own blocking finding", () => {
+  const prose = "No section of CODING_STANDARDS.md applies to this change.";
+  for (const gap of ["\n", ""]) {
+    const { findings, notes } = openFindings(review(`Defects:\nStandards:\n${prose}\n${gap}a.ts:1 the guard is missing.\nValidation gaps: none.`));
+    assert.deepEqual([findings, notes], [[finding("Standards", "a.ts:1 the guard is missing.")], [{ group: "Standards", text: prose }]]);
+    assert.deepEqual(blockingFindings(findings), findings);
+  }
+});
+
+test("a path starting with _ keeps its location through the emphasis cleaning", () => {
+  const text = "_site/a.ts:1 — P2 fault: uses `_`";
+  assert.deepEqual(openFindings(review(`Defects:\nSpec:\n- ${text}\nValidation gaps: none.`)).findings, [finding("Spec", text, "P2", "fault")]);
+});
+
 test("a located line with no severity still blocks; a missing REVIEW_STATUS is still unreadable", () => {
   for (const text of ["a.ts:1 the guard is missing.", "`abcd123:src/a.ts:4-9` — the guard is missing."]) {
     const { findings, notes } = openFindings(review(`Defects:\nStandards:\n- ${text}\nValidation gaps: none.`));
     assert.deepEqual([findings, notes], [[finding("Standards", text)], []]);
     assert.deepEqual(blockingFindings(findings), findings);
   }
-  const { findings } = openFindings("**Defects**\n\n*Standards*\n\nNo section of CODING_STANDARDS.md applies to this change.\n");
-  assert.deepEqual(findings, [finding("Review", "review format unreadable")]);
+  const { findings, notes } = openFindings("**Defects**\n\n*Standards*\n\nNo section of CODING_STANDARDS.md applies to this change.\n");
+  assert.deepEqual([findings, notes], [[finding("Review", "review format unreadable")], []]);
   assert.deepEqual(blockingFindings(findings), findings);
 });
