@@ -8,7 +8,7 @@ for file in "$@"; do
 done
 # This script's folder, absolute because a relative one (from ./unit.sh) breaks after the full suite's cd below.
 # CDPATH= keeps cd from printing the folder when the caller exports CDPATH.
-here=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+here=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 # shellcheck source=scripts/agents/kit-lib.sh
 source "${KIT_LIB:-$here/kit-lib.sh}"
 # The test runner and the full suite's files come from unit.run and unit.files in scripts/agents/kit.json.

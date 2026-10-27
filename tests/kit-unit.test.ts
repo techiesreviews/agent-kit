@@ -141,9 +141,9 @@ test("unit help, listing and invalid options use the kit front door", t => {
   const base = f.run("--affected", "--base", "missing");
   result(base, 2, /^RESULT: fail unit base not found: missing$/);
   assert.match(base.stderr, /^problem: base not found: missing$/m);
+  assert.match(base.stderr, /Usage: kit unit/);
   // A real commit still passes the check.
   result(f.run("--affected", "--base", f.base, "--list"), 0, /^RESULT: ok unit /);
-  assert.match(base.stderr, /Usage: kit unit/);
   assert.equal(f.executed(), 0);
 });
 
