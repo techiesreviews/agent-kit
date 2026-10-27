@@ -83,6 +83,8 @@ if (cli === "codex") {
   }
   // A provider outage: a 503 closing line after a turn of work.
   if (mode === "outage") { console.error("read_file file.txt"); console.log("503 Service Unavailable"); process.exit(1); }
+  // A tool trace and prose that name a 503 and ECONNRESET, then a failure that is not an outage.
+  if (mode === "trace-503") { console.error("grep 503 file.txt"); console.error("The handler retries on ECONNRESET."); process.exit(1); }
   // A tool trace that names 402, then a failure that is not about credit.
   if (mode === "trace-402") { console.error("grep 402 file.txt"); process.exit(1); }
   const answer = cli === "grok" ? { text: report } : { result: report };
@@ -1208,13 +1210,19 @@ test("the second look never reaches Codex: ASE_AGENT_CLI and ASE_REVIEW_MODEL ca
   const result = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: table, ASE_AGENT_CLI: "codex", ASE_REVIEW_MODEL: "gpt-6.1-sol" });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(f.calls().map(call => call.cli), ["grok"]);
+  // The agent kind's row is OpenCode: it runs OpenCode, never Codex.
+  commitFiles(f, ["scripts/agents/x.mjs"]);
+  const agent = f.run(["--commit", "HEAD", "--second-look"], { ASE_SECOND_LOOK: table, ASE_AGENT_CLI: "codex", ASE_REVIEW_MODEL: "gpt-6.1-sol" });
+  assert.equal(agent.status, 0, agent.stdout + agent.stderr);
+  assert.match(agent.stdout, /^second look: agent \(scripts\/agents\/x\.mjs\) opencode\/deepseek-v4\.1-flash-free$/m);
+  assert.deepEqual(f.calls().map(call => call.cli), ["grok", "opencode"]);
   for (const kinds of [{ model: "gpt-6.1-sol", fallback: opencodeModel }, { model: "grok-4.7", fallback: "grok-4.6" }, { model: "opencode/x", fallback: "claude-opus-5-5" }]) {
     const bad = lookTable(f, { code: kinds, ux: kinds, dx: kinds, agent: kinds });
     const refused = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: bad });
     assert.equal(refused.status, 1, refused.stdout + refused.stderr);
     assert.match(refused.stdout.trim().split("\n").at(-1)!, /^RESULT: fail second-look table .+ agent: (model and fallback must be grok-<model> or opencode\/<model>|the fallback must be the other family) evidence none$/);
   }
-  assert.deepEqual(f.calls().map(call => call.cli), ["grok"]);
+  assert.deepEqual(f.calls().map(call => call.cli), ["grok", "opencode"]);
 });
 
 test("the kit's own second-look table has every kind, a Grok or OpenCode model with the other family as fallback, and a checked date", async () => {
@@ -1276,6 +1284,22 @@ test("a missing Grok CLI or a Grok outage hands the second look to OpenCode", (t
   assert.match(down.stderr, /^problem: grok unavailable: 503 Service Unavailable$/m);
   assert.match(down.stdout, /^second look: opencode\/deepseek-v4\.1-flash-free takes it \(grok-4\.7 grok unavailable: 503 Service Unavailable\)$/m);
   assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(down.stdout), "second-look.json"), "utf8")), { kind: "code", model: opencodeModel, ok: true });
+  // Neither Grok run came back with a review, so neither keeps its count.
+  assert.deepEqual(f.counts(), { grok: { "kit-review": 0 } });
+  const traced = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: table, FAKE_MODE: "trace-503" });
+  assert.equal(traced.status, 1, traced.stdout + traced.stderr);
+  assert.doesNotMatch(traced.stdout, / takes it /);
+  assert.doesNotMatch(traced.stderr, /grok unavailable/);
+  assert.match(traced.stdout.trim().split("\n").at(-1)!, /^RESULT: fail grok failed \(1\)/);
+});
+
+test("kit review --second-look --pr posts a comment that names the second look's kind and model", (t) => {
+  const f = fixture(t); withOpencode(f);
+  const result = f.run(["--base", "HEAD~1", "--second-look", "--pr", "7"], { ASE_SECOND_LOOK: lookTable(f) });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const posted = JSON.parse(readFileSync(f.ghFile, "utf8"));
+  assert.deepEqual(posted.args.slice(0, 3), ["pr", "comment", "7"]);
+  assert.ok(posted.body.startsWith("Second look: code\nModel: grok-4.7\n"), posted.body);
 });
 
 test("a second look that fails before its CLI starts is a failed review, not a handover or a skip", (t) => {

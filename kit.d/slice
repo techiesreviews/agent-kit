@@ -6,6 +6,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterFixRounds, blockingFindings, completedFixRounds, FIX_ROUNDS, openFindings, reviewCoversHead } from "../review-findings.mjs";
 import { builderChecks, spoken } from "../review-brief.mjs";
+import { visiblePath } from "../pr-tier.mjs";
 
 const { kitBranch, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, nodeEnv, commitBuilderWork, builderAuthor, kitScore, scoreCost, scoreReview } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
@@ -347,27 +348,27 @@ async function slice(args) {
       }
       complete(`${state.rounds} rounds${open.length ? `, ${open.length} follow-ups` : ""}`);
     }
+    // The UX gate's check: null when nothing visible was touched, else the ux.json report of the bundle kit ux names.
+    const uxCheck = async () => {
+      const head = state.head;
+      assertHead(head);
+      const result = await execute(kit, ["ux", "--ticket", flags.ticket]);
+      assertHead(head);
+      if (/^RESULT: ok ux nothing visible touched$/m.test(result.output)) return null;
+      const path = /^report: (.+)$/m.exec(result.output)?.[1];
+      let report;
+      try { report = path && JSON.parse(readFileSync(path, "utf8")); } catch { /* A missing report fails below. */ }
+      if (!report) { requireSuccess(result); throw new Error(`ux wrote no report; see ${log}`); }
+      // A failure that broke no feature (a screens run, the reviewer) is not something a fix round answers.
+      if (result.code && !report.broken.length) requireSuccess(result);
+      return { ...report, path };
+    };
     begin("ux");
     if (!state.finished.includes(phase)) {
-      // null: nothing visible touched; else the ux.json report of the bundle kit ux names.
-      const check = async () => {
-        const head = state.head;
-        assertHead(head);
-        const result = await execute(kit, ["ux", "--ticket", flags.ticket]);
-        assertHead(head);
-        if (/^RESULT: ok ux nothing visible touched$/m.test(result.output)) return null;
-        const path = /^report: (.+)$/m.exec(result.output)?.[1];
-        let report;
-        try { report = path && JSON.parse(readFileSync(path, "utf8")); } catch { /* A missing report fails below. */ }
-        if (!report) { requireSuccess(result); throw new Error(`ux wrote no report; see ${log}`); }
-        // A failure that broke no feature (a screens run, the reviewer) is not something a fix round answers.
-        if (result.code && !report.broken.length) requireSuccess(result);
-        return { ...report, path };
-      };
       // A report saved before the follow-ups commit is reused, so a rerun after that commit pays no second review.
       const savedReport = () => { try { return { ...JSON.parse(readFileSync(state.uxReport, "utf8")), path: state.uxReport }; } catch { return undefined; } };
       let ux = state.uxReport ? savedReport() : undefined;
-      if (ux === undefined) ux = state.uxFix ? undefined : await check();
+      if (ux === undefined) ux = state.uxFix ? undefined : await uxCheck();
       if (ux && !state.uxFix && (ux.broken.length || ux.off.length)) {
         state.uxFix = { note: join(dirname(ux.path), "ux.md"), done: false }; save();
       }
@@ -380,7 +381,7 @@ async function slice(args) {
         while (pendingFix() || (stopping(findings()).length && state.rounds < flags.rounds)) await fixRound(["--review", state.review]);
         const open = stopping(findings());
         if (open.length) throw new Error(`${open.length} open review findings after the UX fix round (${join(state.review, "result.md")})`);
-        ux = await check();
+        ux = await uxCheck();
       }
       if (ux?.broken.length) throw new Error(`decide: ux broken ${ux.broken.join(", ")} (${join(dirname(ux.path), "ux.md")})`);
       if (ux?.off.length) {
@@ -405,6 +406,14 @@ async function slice(args) {
           while (pendingFix() || (stopping(findings()).length && state.rounds < flags.rounds)) await fixRound(pendingSource() ?? ["--review", state.review]);
           const open = stopping(findings());
           if (open.length) throw new Error(`${open.length} open review findings after the second look's fix rounds (${join(state.review, "result.md")})`);
+          // Fixes since the HEAD the second look saw that reached a visible path get the UX gate again before
+          // landing; when that HEAD cannot be read, the gate runs again to be safe.
+          let touched;
+          try {
+            const seen = readFileSync(join(state.secondLook.evidence, "refs.txt"), "utf8").split(/\r?\n/)[0];
+            touched = git("diff", "--name-only", seen, "HEAD").split("\n").filter(Boolean);
+          } catch { touched = null; }
+          if (!touched || touched.some(path => visiblePath(path, settings))) state.uxAgain = true;
           delete state.secondLook; save();
         }
         if (!state.secondLook) {
@@ -431,7 +440,21 @@ async function slice(args) {
         let text = "";
         try { text = readFileSync(result, "utf8"); } catch { /* Fail closed. */ }
         const open = stopping(openFindings(text).findings);
-        if (!open.length) { complete(result); break; }
+        if (!open.length) {
+          if (state.uxAgain) {
+            // Once more, without another fix round: still broken stops for a decision, looks off goes to UX follow-ups.
+            const ux = await uxCheck();
+            if (ux?.broken.length) throw new Error(`decide: ux broken ${ux.broken.join(", ")} after the second look's fixes (${join(dirname(ux.path), "ux.md")})`);
+            if (ux?.off.length) {
+              assertHead(state.head);
+              if (git("status", "--porcelain", "--untracked-files=normal")) throw new Error("worktree changed before recording UX follow-ups");
+              const head = uxFollowups(ux, state.head);
+              if (head) state.head = head;
+            }
+            delete state.uxAgain; save();
+          }
+          complete(result); break;
+        }
         if (state.rounds >= flags.rounds) throw new Error(`${open.length} open second-look findings after ${state.rounds} rounds (${result})`);
         Object.assign(state.secondLook, { answering: true, round: state.rounds }); save();
       }

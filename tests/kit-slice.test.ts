@@ -165,7 +165,7 @@ if (phase === "review") {
   // FAIL_REVIEW_FIX fails a --review round after it saved pending.json, as kit fix does before its builder.
   if (process.env.FAIL_REVIEW_FIX && args.includes("--review") && !existsSync(pending)) {
     mkdirSync(fixes, { recursive: true });
-    writeFileSync(pending, JSON.stringify({ phase: "builder", model: "gpt-6.1-sol", round: round() + 1 }));
+    writeFileSync(pending, JSON.stringify({ phase: "builder", model: "gpt-6.1-sol", round: round() + 1, review: args[args.indexOf("--review") + 1] }));
     console.log("RESULT: fail fix builder failed");
     process.exit(7);
   }
@@ -1223,4 +1223,26 @@ test("a command that skips (exit 3) names its skip reason, not only its exit cod
   const f = fixture(t), result = f.run([], { SKIP_PHASE: "review" });
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: fail slice review: command exited 3: skip review out of credit \(grok-4\.7\); see .+review\.log$/);
+});
+
+test("a second-look fix that reaches a visible path gets the UX gate again before kit pr; other fixes do not", t => {
+  for (const visible of [true, false]) {
+    const f = fixture(t, { project: "kit-slice", branches: { land: "dev" }, ...(visible ? { paths: { visible: ["^file\\.txt$"] } } : {}) });
+    const result = f.run([], { FAKE_SECOND: "findings", FAKE_UX: "none" });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.deepEqual(f.calls().map(call => call.phase),
+      ["build", "review", "ux", "second", "fix", "second", ...(visible ? ["ux"] : []), "pr"], String(visible));
+  }
+});
+
+test("a slice stopped while its second-look fix round is pending resumes that round with the second look's review", t => {
+  const f = fixture(t);
+  assert.equal(f.run([], { FAKE_SECOND: "findings", FAIL_REVIEW_FIX: "1" }).status, 1);
+  assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "second", "fix"]);
+  const result = f.run([], { FAKE_SECOND: "findings" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(f.calls().map(call => call.phase).slice(4), ["fix", "second", "pr"]);
+  const fix = f.calls()[4].args;
+  assert.equal(fix[fix.indexOf("--review") + 1], join(f.main, ".scratch/reviews/ke-04/second-000"));
+  assert.equal(f.state().rounds, 1);
 });

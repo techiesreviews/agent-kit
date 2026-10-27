@@ -405,17 +405,18 @@ async function main(args) {
     console.log(`PR #${number}; ${review ? "review running" : `review: skipped (${plan.tier} tier)`}`);
     // The docs tier has no model review; CI still gates the merge.
     let waived = 0;
-    async function recordFollowups(findings) {
+    // `name` is "review" (Claude's) or "second look", whose lines and summary say so.
+    async function recordFollowups(findings, name = "review") {
       if (!findings.length) return;
-      const reviewedHead = head;
-      console.log(`review: ${findings.length} follow-ups after ${FIX_ROUNDS} fix rounds (non-blocking)`);
-      const label = item => `- ${item.group} (${item.severity || "gap"}): `;
+      const reviewedHead = head, second = name !== "review";
+      console.log(`${name}: ${findings.length} follow-ups after ${FIX_ROUNDS} fix rounds (non-blocking)`);
+      const label = item => `- ${item.group} (${item.severity || "gap"}${second ? ", second look" : ""}): `;
       const fullLines = findings.map(item => label(item) + item.text);
       const shortLines = findings.map(item => label(item) + shortText(item.text));
       // Before 2026-10-27 kit pr cut each finding to 160 UTF-16 units with no mark. A rerun counts such a
       // PR comment as posted and swaps such a ticket bullet for the full text.
       const oldLines = findings.map(item => label(item) + item.text.slice(0, 160));
-      const heading = `Follow-ups (non-blocking after ${FIX_ROUNDS} fix rounds):\n`;
+      const heading = `${second ? "Second-look follow-ups" : "Follow-ups"} (non-blocking after ${FIX_ROUNDS} fix rounds):\n`;
       const summary = heading + shortLines.join("\n");
       const oldSummary = heading + oldLines.join("\n");
       if (!readFileSync(body, "utf8").includes(summary)) appendFileSync(body, `\n${summary}\n`);
@@ -514,7 +515,7 @@ async function main(args) {
         }
         waived += blocking.length;
       }
-      if (relaxed) await recordFollowups(findings.filter(item => !blocking.includes(item)));
+      if (relaxed) await recordFollowups(findings.filter(item => !blocking.includes(item)), name);
       ok(name);
       return true;
     }

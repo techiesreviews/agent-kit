@@ -142,7 +142,8 @@ async function reviewOnce(flags, look) {
       if (missing || down) { reason = missing ? `CLI missing: ${missing}` : `grok unavailable: ${down}`; console.error(`problem: ${reason}`); }
       if (status !== 0 && spawned && (record.refused === true || outOfCredit || missing || down ||
         /^\S+ usage limit\b|^OpenCode reported an error: /.test(reason))) unavailable = true;
-      if (budget && (!record.pgid || record.refused === true || outOfCredit)) releaseReviewBudget(ledger.path, budget, env);
+      // An outage, like an empty account, returned no review, so its count is given back too.
+      if (budget && (!record.pgid || record.refused === true || outOfCredit || down)) releaseReviewBudget(ledger.path, budget, env);
     } catch (error) {
       kept = true;
       console.error(`problem: releasing review budget failed: ${error.message}`);
@@ -156,13 +157,13 @@ async function reviewOnce(flags, look) {
         if (look) mark(false);
         return evidence;
       }, text => findingsRecord(text, { model, effort, scope: label, head: reviewedHead }));
-      if (look && status === 0 && !outOfCredit) mark(true);
       // The evidence is saved; a leftover temporary folder is reported but fails nothing.
       if (cleanup) console.error(`problem: removing ${temporary} failed: ${cleanup}`);
       if (record) {
         console.log(countsLine(record));
         kitScore({ ticket }, score => scoreReview(score, evidence));
       }
+      if (look && status === 0 && !outOfCredit) mark(true);
     } catch (error) {
       status = 1;
       outOfCredit = false;

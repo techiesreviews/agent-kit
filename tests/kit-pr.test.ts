@@ -1444,3 +1444,38 @@ test("dry-run leaves the ticket file out of the second look's kind when code cha
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /^second look: code \(src\/x\.ts\) /m);
 });
+
+test("after three rounds a second look's P2 and gap become follow-ups that say they came from the second look, and the PR merges", t => {
+  const f = fixture(t);
+  f.commit("Close ticket", "ticket.md", '---\ntitle: "Ticket title"\n---\n\n## Done (2026-10-19)\n\nImplemented.\n');
+  f.rounds(3);
+  const result = f.run(["--ticket", "ticket.md"], { FAKE_SECOND_REVIEW: minorReview });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^second look: 2 follow-ups after 3 fix rounds \(non-blocking\)$/m);
+  assert.doesNotMatch(result.stdout, /^review: \d+ follow-ups/m);
+  assert.match(result.stdout, /RESULT: ok merged #73/);
+  const summary = "Second-look follow-ups (non-blocking after 3 fix rounds):\n- Spec (P2, second look): P2: Minor defect.\n- Validation gaps (gap, second look): Add coverage.";
+  assert.equal(f.ghCalls("comment").filter(call => call.body === summary).length, 1);
+  assert.ok(f.apiCalls().some(call => call.body?.includes(summary)));
+  assert.match(readFileSync(join(f.root, "ticket.md"), "utf8"), /### Follow-ups\n\n- Spec \(P2, second look\): P2: Minor defect\.\n- Validation gaps \(gap, second look\): Add coverage\.\n/);
+  assert.ok(f.ghCalls("merge")[0].args.includes(f.git("rev-parse", "HEAD")));
+});
+
+test("a saved second look of the HEAD before Claude's follow-ups commit is reused after that ticket-only commit", t => {
+  const f = fixture(t);
+  f.commit("Close ticket", "ticket.md", '---\ntitle: "Ticket title"\n---\n\n## Done (2026-10-19)\n\nImplemented.\n');
+  f.rounds(3);
+  f.saveReview(minorReview);
+  const reviewed = f.git("rev-parse", "HEAD"), folder = join(f.main, ".scratch/reviews/ak-14/20261019T110000Z");
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "refs.txt"), `${reviewed}\n${f.git("merge-base", "origin/dev", "HEAD")}\n`);
+  writeFileSync(join(folder, "result.md"), cleanReview);
+  writeFileSync(join(folder, "second-look.json"), JSON.stringify({ kind: "code", model: "grok-4.7", ok: true }));
+  const result = f.run(["--ticket", "ticket.md"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(f.git("rev-parse", "HEAD^"), reviewed);
+  assert.equal(f.git("log", "-1", "--format=%s"), "docs: ticket follow-ups from review");
+  assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "review"), false);
+  assert.ok(f.ghCalls("comment").some(call => call.body?.startsWith(`Reused second look: ${folder}\nHEAD: ${f.git("rev-parse", "HEAD")}`)));
+  assert.match(result.stdout, /RESULT: ok merged #73/);
+});
