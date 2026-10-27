@@ -235,11 +235,11 @@ test("OpenCode adapter runs reviews only, as a read-only agent, and resumes its 
   assert.equal(call.session('partial\n{"type":"step_start","sessionID":"ses_1"}\n'), "ses_1");
   assert.equal(call.session(""), undefined);
   assert.throws(() => parseAgentArgs(["build", ".", "brief", "--model", model]), /OpenCode runs reviews only/);
-  // OpenCode is checked by provider/model, so a bare model is refused before any call; no effort is recorded or accepted.
+  // OpenCode is checked by provider/model, so a bare model is refused before any call; a given effort is ignored, none recorded.
   assert.throws(() => parseAgentArgs(["review", ".", "brief", "--cli", "opencode"]), /provider\/model/);
   assert.throws(() => parseAgentArgs(["review", ".", "brief"], { ASE_AGENT_CLI: "opencode", ASE_REVIEW_MODEL: "deepseek-v4.1-flash-free" }), /provider\/model/);
   assert.equal(options.effort, null);
-  assert.throws(() => parseAgentArgs(["review", ".", "brief", "--model", model, "--effort", "high"]), /OpenCode takes no --effort/);
+  assert.equal(parseAgentArgs(["review", ".", "brief", "--model", model, "--effort", "medium"]).effort, null);
   assert.throws(() => parseAgentArgs(["build", ".", "brief", "--cli", "opencode"]), /reviews only/);
   assert.throws(() => agentInvocation({ ...options, kind: "build" }, "/git", "/out"), /reviews only/);
 });

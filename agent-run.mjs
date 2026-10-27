@@ -68,8 +68,8 @@ export function parseAgentArgs(args, env = {}) {
   if (options.cli === "opencode") {
     // The model check compares OpenCode's provider/model, so a bare name could never pass.
     if (!/^[^/\s]+\/\S+$/.test(options.model)) throw new Error(`OpenCode needs a provider/model such as opencode/deepseek-v4.1-flash-free, not ${options.model}`);
-    // OpenCode's --variant names differ by provider, so no effort is applied or recorded.
-    if (seen.has("--effort")) throw new Error("OpenCode takes no --effort");
+    // OpenCode's --variant names differ by provider, so a given effort (kit ux always
+    // passes one) is ignored and none is recorded.
     options.effort = null;
   }
   // Effort levels belong to each CLI/model; pass new levels through unchanged.

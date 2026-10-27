@@ -769,7 +769,7 @@ if (args[0] === "export") {
 const input = readFileSync(0, "utf8");
 const resumed = args.includes("--session");
 appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ cli: "opencode", args, input, cwd: process.cwd(), config: process.env.OPENCODE_CONFIG_CONTENT,
-  noProject: process.env.OPENCODE_DISABLE_PROJECT_CONFIG }) + "\\n");
+  noProject: process.env.OPENCODE_DISABLE_PROJECT_CONFIG, noClaude: process.env.OPENCODE_DISABLE_CLAUDE_CODE }) + "\\n");
 const emit = (type, extra = {}) => console.log(JSON.stringify({ type, timestamp: Date.now(), sessionID: "ses_fake", ...extra }));
 const mode = process.env.FAKE_MODE || "pass";
 emit("step_start", { part: { type: "step-start", messageID: "m0" } });
@@ -781,6 +781,8 @@ if (mode === "usage-limit" || mode === "usage-limit-exit0" || (mode === "retry-l
   emit("error", { error: { name: "APIError", data: { message: "Rate limit exceeded. Please try again later.", statusCode: 429 } } });
   process.exit(mode === "usage-limit" ? 1 : 0);
 }
+// A limit said only as plain text on stderr, with no error event.
+if (mode === "stderr-limit") { console.error("You've hit your usage limit for this model; try again at 5pm."); process.exit(1); }
 // Stops after naming its session, as a crash would, or hangs there until the runner's limit kills it.
 if (mode === "stopped") process.exit(1);
 if (mode === "hang") await new Promise(done => setTimeout(done, 30_000));
@@ -793,7 +795,7 @@ emit("step_finish", { part: { type: "step-finish", reason: "stop", cost: 0 } });
 `;
 
 // What the fake opencode records for each run call.
-interface OpencodeCall { cli: string; args: string[]; input: string; cwd: string; config: string; noProject: string }
+interface OpencodeCall { cli: string; args: string[]; input: string; cwd: string; config: string; noProject: string; noClaude: string }
 
 function opencodeCalls(f: ReturnType<typeof fixture>): OpencodeCall[] {
   const file = join(f.dir, "calls.jsonl");
@@ -829,6 +831,7 @@ test("kit review runs opencode/<model> read-only, saves findings with severities
   assert.equal(call.args[call.args.indexOf("-m") + 1], opencodeModel);
   assert.deepEqual(JSON.parse(call.config).agent["ase-review"].permission, { "*": "deny", read: "allow", grep: "allow", glob: "allow", list: "allow" });
   assert.equal(call.noProject, "1");
+  assert.equal(call.noClaude, "1");
   assert.ok(call.input.includes("Review scope: git diff"));
   const evidence = f.evidence(result.stdout);
   assert.deepEqual(readdirSync(evidence).sort(), ["diff.patch", "findings.json", "refs.txt", "result.md", "run.log"]);
@@ -880,6 +883,17 @@ test("an OpenCode rate-limit refusal prints the opencode usage-limit problem and
     assert.equal(opencodeCalls(f).length, 1);
     assert.equal(existsSync(f.ledger), false);
   }
+});
+
+test("an OpenCode limit said only on stderr, with no error event, prints the opencode usage-limit problem", (t) => {
+  const f = fixture(t);
+  withOpencode(f);
+  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_MODE: "stderr-limit" });
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr.trimEnd().split("\n").at(-1), "problem: opencode usage limit until 5pm");
+  assert.equal(existsSync(join(f.dir, "calls.jsonl.exports")), false);
+  assert.equal(opencodeCalls(f).length, 1);
+  assert.equal(existsSync(f.ledger), false);
 });
 
 test("an OpenCode error that is not a limit fails once, unexported and unretried", (t) => {
