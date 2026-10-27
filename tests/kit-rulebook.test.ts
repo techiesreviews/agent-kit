@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -14,17 +14,22 @@ const template = "scripts/agents/docs/kitchen-extras-template.md";
 const pointer = "docs/agents/kitchen.md";
 const read = (path: string) => readFileSync(resolve(path), "utf8");
 
-function rulebook(t: TestContext, settings: Record<string, unknown> | null, files: Record<string, string> = {}, ...args: string[]) {
+function rulebook(t: TestContext, settings: Record<string, unknown> | string | null, files: Record<string, string> = {}, ...args: string[]) {
+  return rulebookWith(t, {}, settings, files, ...args);
+}
+
+function rulebookWith(t: TestContext, extra: NodeJS.ProcessEnv, settings: Record<string, unknown> | string | null, files: Record<string, string> = {}, ...args: string[]) {
   const root = mkdtempSync(join(tmpdir(), "kit-rulebook-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  for (const [path, content] of Object.entries({ ...(settings ? { "scripts/agents/kit.json": JSON.stringify(settings) } : {}), ...files })) {
+  const json = typeof settings === "string" ? settings : JSON.stringify(settings);
+  for (const [path, content] of Object.entries({ ...(settings ? { "scripts/agents/kit.json": json } : {}), ...files })) {
     mkdirSync(dirname(join(root, path)), { recursive: true });
     writeFileSync(join(root, path), content);
   }
   const env: NodeJS.ProcessEnv = { ...process.env, KIT_ROOT: root };
   delete env.KIT_HOME;
   delete env.KIT_HOME_DEFAULT;
-  return { root, ...spawnSync(kit, ["rulebook", ...args], { cwd: root, env, encoding: "utf8", timeout: 30_000 }) };
+  return { root, ...spawnSync(kit, ["rulebook", ...args], { cwd: root, env: { ...env, ...extra }, encoding: "utf8", timeout: 30_000 }) };
 }
 
 const project = { project: "p", branches: { land: "main" } };
@@ -59,6 +64,33 @@ test("a named extras file that is missing, or a folder, fails after the shared p
   }
 });
 
+test("a kit with no shared rulebook fails before printing anything", t => {
+  const home = mkdtempSync(join(tmpdir(), "kit-rulebook-home-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  for (const name of ["kit.d", "kit-lib.sh", "kit-lib.mjs"]) symlinkSync(resolve("scripts/agents", name), join(home, name));
+  const result = rulebookWith(t, { KIT_HOME: home }, project);
+  assert.equal(result.status, 1, result.stderr);
+  assert.equal(result.stdout, `RESULT: fail rulebook no shared rulebook at ${home}/docs/kitchen.md\n`);
+});
+
+test("settings it cannot read, broken or without jq, fail after the shared part instead of reading as no extras", t => {
+  const broken = rulebook(t, "{ broken");
+  assert.equal(broken.status, 1, broken.stderr);
+  assert.ok(broken.stdout.startsWith(read(shared)));
+  assert.match(broken.stdout, /\nRESULT: fail rulebook cannot read scripts\/agents\/kit\.json: jq: .+\n$/);
+  // A PATH holding every command but jq.
+  const bin = mkdtempSync(join(tmpdir(), "kit-rulebook-bin-"));
+  t.after(() => rmSync(bin, { recursive: true, force: true }));
+  for (const folder of (process.env.PATH ?? "").split(":").filter(Boolean)) {
+    let names: string[];
+    try { names = readdirSync(folder); } catch { continue; }
+    for (const name of names) if (name !== "jq" && !existsSync(join(bin, name))) symlinkSync(join(folder, name), join(bin, name));
+  }
+  const noJq = rulebookWith(t, { PATH: bin }, { ...project, rulebookExtras: "x.md" }, { "x.md": "# X\n" });
+  assert.equal(noJq.status, 1, noJq.stderr);
+  assert.equal(noJq.stdout, `${read(shared)}RESULT: fail rulebook cannot read scripts/agents/kit.json without jq; install jq\n`);
+});
+
 test("kit rulebook takes no arguments and answers --help", t => {
   const extra = rulebook(t, project, {}, "more");
   assert.equal(extra.status, 2);
@@ -80,8 +112,9 @@ function anchors(markdown: string): string[] {
   });
 }
 
-test("every relative link and anchor in the rulebook's files resolves", () => {
-  for (const path of [shared, extras, template, pointer]) {
+test("every relative link and anchor in the rulebook's files and the docs linking into it resolves", () => {
+  // runner.md and agent-scripts.md link into the shared rulebook too.
+  for (const path of [shared, extras, template, pointer, "docs/agents/runner.md", "docs/agents/agent-scripts.md"]) {
     for (const [, target] of read(path).matchAll(/\]\(([^)\s]+)\)/g)) {
       if (/^https?:/.test(target)) continue;
       const [file, anchor] = target.split("#");

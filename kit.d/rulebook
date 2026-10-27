@@ -10,7 +10,7 @@ case ${1-} in
     printf "Print the kit's shared kitchen rulebook (docs/kitchen.md in the kit), then the project's extras:\n"
     printf 'the file rulebookExtras names in scripts/agents/kit.json, relative to the top folder or absolute.\n'
     printf 'Where they differ, the extras win. Without rulebookExtras only the shared part prints, with a line saying so;\n'
-    printf 'a named extras file that cannot be read, or settings that cannot be read without jq, fail after the shared part.\n'
+    printf 'A named extras file that cannot be read, or a settings file that cannot be read (broken, or no jq), fails after the shared part.\n'
     exit 0
     ;;
   '') ;;
@@ -19,8 +19,13 @@ esac
 shared=$(kit_home)/docs/kitchen.md
 [[ -r $shared ]] || { kit_result fail "rulebook no shared rulebook at $shared"; exit 1; }
 cat -- "$shared"
-# Without jq the settings cannot be read, which is not the same as no extras.
+# Settings that cannot be read (no jq, or a broken file) are not the same as no extras.
 extras=$(kit_setting .rulebookExtras) || { kit_result fail 'rulebook cannot read scripts/agents/kit.json without jq; install jq'; exit 1; }
+settings=$(kit_settings_file)
+if [[ -f $settings ]] && ! problem=$(jq empty -- "$settings" 2>&1); then
+  kit_result fail "rulebook cannot read scripts/agents/kit.json: ${problem//$'\n'/ }"
+  exit 1
+fi
 if [[ -z $extras ]]; then
   printf '\nNo project extras: add "rulebookExtras" to scripts/agents/kit.json.\n'
   kit_result ok 'rulebook shared only'

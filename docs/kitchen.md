@@ -111,7 +111,7 @@ on a usage-limit `problem:` line, tell Lex the reset time and carry on with Clau
   `mode: "async"`, the ticket's builder as `target`, and this brief:
 
   > Build slice `<ticket path>` in `<project>`, owner `<owner>`. Follow docs/agents/runner.md from Setup to
-  > Report with Agent Kit (`scripts/agents/kit`); builder `<model>`, `ASE_REVIEW_MODEL=claude-opus-5-5`. Last line: PR <full URL>, head <SHA>, checks and reviews <state>.
+  > Report with Agent Kit (`scripts/agents/kit`); builder `<model>`, `ASE_REVIEW_MODEL=<review pin>`. Last line: PR <full URL>, head <SHA>, checks and reviews <state>.
 
   The child thread runs the slice from setup to `kit pr`, links only its own PR and settles when T3 sees it merged.
   Delegated (`opencode/…`) tickets go the same way with their free model.

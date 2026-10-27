@@ -26,6 +26,8 @@ may start; a blocker inside the group counts as met, as its slices run in blocke
 starts its kit slice under kit bg (a group: one job running its slices in order through
 --run-group); delegated (opencode/…) tickets are only claimed.
 --max N lowers the cap of 5 running slices; it never raises it.
+Builders and the reviewer come from the "Builder, every slice" and "Review, every change" rows of the
+kit's docs/kitchen.md; the same row in the rulebookExtras file wins; a missing file or row fails.
 --run-group runs kit slice for each ticket in order here, stopping at the first failure: the first
 on BRANCH, each later one on its own BRANCH-<NN> from the fetched origin/${land}. A rerun skips
 tickets closed on origin/${land} or merged by their saved slice and resumes a slice with saved state
