@@ -10,7 +10,7 @@ import { reviewBrief, reviewComplete, reviewFormat } from "../scripts/agents/rev
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { unitSummary } from "../scripts/agents/unit-summary.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
-import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokResult, inferCli, isoWeek, opencodeExportTimeout, opencodeResult, opencodeReviewAgent, opencodeReviewConfig, opencodeUsageLimit, parseAgentArgs, refusedOutright, sessionObserver, releaseReviewBudget, reserveReviewBudget, reviewBase, usageLimitProblem } from "../scripts/agents/agent-run.mjs";
+import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokResult, inferCli, isoWeek, opencodeErrorProblem, opencodeExportTimeout, opencodeOutOfCredit, opencodeResult, opencodeReviewAgent, opencodeReviewConfig, opencodeUsageLimit, outOfCreditProblem, parseAgentArgs, refusedOutright, sessionObserver, releaseReviewBudget, reserveReviewBudget, reviewBase, usageLimitProblem } from "../scripts/agents/agent-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { durationMilliseconds } from "../scripts/agents/sol-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
@@ -289,6 +289,9 @@ test("OpenCode results take the last message's text and accept only the requeste
     ...models.map(name => ({ info: { role: "assistant", providerID: name.split("/")[0], modelID: name.split("/").slice(1).join("/") } }))] });
   assert.equal(opencodeResult(stdout, model, exported(model, model)), "REVIEW_STATUS: complete\nDefects: none");
   assert.equal(opencodeResult(event("step_finish"), model, exported(model)), "");
+  // Parts without a message id: the last part alone is the report.
+  const bare = (value: string) => event("text", { part: { type: "text", text: value } });
+  assert.equal(opencodeResult([bare("Reading the diff."), bare("REVIEW_STATUS: complete")].join("\n"), model, exported(model)), "REVIEW_STATUS: complete");
   for (const models of [[], ["opencode/deepseek-v4.1-flash"], ["openrouter/deepseek-v4.1-flash-free"], [model, "opencode/other-free"]]) {
     assert.throws(() => opencodeResult(stdout, model, exported(...models)), /requested model/);
   }
@@ -306,6 +309,13 @@ test("OpenCode results take the last message's text and accept only the requeste
   // Other errors, and limit phrases the model merely wrote, are not refusals.
   assert.equal(opencodeUsageLimit(event("error", { error: { name: "APIError", data: { message: "Bad gateway", statusCode: 502 } } })), null);
   assert.equal(opencodeUsageLimit(text("m1", "You've hit your usage limit")), null);
+  const bad = event("error", { error: { name: "APIError", data: { message: "Bad gateway", statusCode: 502 } } });
+  assert.equal(opencodeErrorProblem(`${stdout}\n${bad}`), "problem: OpenCode reported an error: Bad gateway");
+  assert.equal(opencodeErrorProblem(stdout), null);
+  // An empty account is HTTP 402 or its message; a 402 the model wrote is not one.
+  assert.equal(opencodeOutOfCredit(event("error", { error: { name: "APIError", data: { message: "balance exhausted", statusCode: 402 } } })), "problem: opencode out of credit: balance exhausted");
+  assert.equal(opencodeOutOfCredit(event("error", { error: { name: "APIError", data: { message: "Payment Required" } } })), "problem: opencode out of credit: Payment Required");
+  for (const other of [limit, bad, text("m1", "402 Payment Required")]) assert.equal(opencodeOutOfCredit(other), null);
 });
 
 test("review budgets count outside families per ISO week, refuse at the limit and never count Claude", (t) => {
@@ -475,6 +485,15 @@ test("provider usage-limit messages become a family usage-limit problem", () => 
   const quoted = `exec\n${openai}\n  const openai = "${openai}";\n${"read more\n".repeat(6)}ERROR: stream disconnected before completion\n`;
   assert.equal(usageLimitProblem(quoted, "codex"), null);
   assert.equal(usageLimitProblem(`{\n  "text": "${openai}"\n}`, "grok"), null);
+});
+
+test("an HTTP 402 closing line becomes an out-of-credit problem; quoted, indented, JSON or path 402s do not", () => {
+  const grok = "402 Payment Required: Grok Build usage balance exhausted";
+  assert.equal(outOfCreditProblem(`read_file file.txt\n${grok}\n`, "grok"), `problem: grok out of credit: ${grok}`);
+  assert.equal(outOfCreditProblem("ERROR: 402\n", "opencode"), "problem: opencode out of credit: 402");
+  assert.equal(outOfCreditProblem("Error: usage balance exhausted", "opencode"), "problem: opencode out of credit: usage balance exhausted");
+  for (const text of ["", "read_file src/a.ts:402", "tests 402.5 passed", `  const message = "${grok}";`, `{"text": "${grok}"}`,
+    `${grok}\n${"read more\n".repeat(5)}`]) assert.equal(outOfCreditProblem(text, "grok"), null, text);
 });
 
 test("only a usage limit that is all the call printed counts as an outright refusal", () => {

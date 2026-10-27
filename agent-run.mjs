@@ -198,21 +198,41 @@ const opencodeLimitPattern = /usage limit|rate.?limit|too many requests|quota|in
 
 // OpenCode reports a refused request as an error event (HTTP 429 or a limit message), not a closing line.
 export function opencodeUsageLimit(stdout) {
-  const error = opencodeEvents(stdout).filter(event => event.type === "error").map(event => event.error)
-    .find(error => error?.data?.statusCode === 429 || opencodeLimitPattern.test(`${error?.name ?? ""} ${opencodeError(error)}`));
+  const error = opencodeErrors(stdout).find(error => error?.data?.statusCode === 429 || opencodeLimitPattern.test(`${error?.name ?? ""} ${opencodeError(error)}`));
   return error ? `problem: opencode usage limit: ${opencodeError(error)}` : null;
+}
+
+function opencodeErrors(stdout) {
+  return opencodeEvents(stdout).filter(event => event.type === "error").map(event => event.error);
+}
+
+// An empty account is HTTP 402 or a "payment required" / "balance exhausted" message. In a closing
+// line, a 402 that is part of a path, line number or version is not one.
+const outOfCreditPattern = /(?<![\w.:/-])402(?![\w.-])|payment required|balance exhausted/i;
+
+// OpenCode reports an empty account as an error event, whatever its exit status.
+export function opencodeOutOfCredit(stdout) {
+  const error = opencodeErrors(stdout).find(error => error?.data?.statusCode === 402 || outOfCreditPattern.test(opencodeError(error)));
+  return error ? `problem: opencode out of credit: ${opencodeError(error)}` : null;
+}
+
+// OpenCode's own error event names why a call failed better than its exit status.
+export function opencodeErrorProblem(stdout) {
+  const error = opencodeErrors(stdout)[0];
+  return error ? `problem: OpenCode reported an error: ${opencodeError(error)}` : null;
 }
 
 // The events never name the model; the session export does, per assistant message, as
 // provider and model ID. Every answer in the session, retries included, must be the
 // requested provider/model. The report is the text of the last message that has text.
-// exportSession(id) returns the export's output. A run that printed an error event, or whose
-// call failed (non-zero exit or timeout), is not exported and gives no report (null).
+// exportSession(id) returns the export's output. A call that failed (non-zero exit or timeout)
+// is not exported and gives no report (null); the runner names its cause. A run that printed
+// an error event but exited 0 is not exported either: the error is thrown.
 export function opencodeResult(stdout, requested, exportSession, failed = false) {
+  if (failed) return null;
   const events = opencodeEvents(stdout);
   const error = events.find(event => event.type === "error");
   if (error) throw new Error(`OpenCode reported an error: ${opencodeError(error.error)}`);
-  if (failed) return null;
   const id = opencodeSession(stdout);
   if (!id) throw new Error("OpenCode printed no session");
   const exported = exportSession(id), start = exported.indexOf("{");
@@ -227,8 +247,9 @@ export function opencodeResult(stdout, requested, exportSession, failed = false)
   }
   const texts = events.filter(event => event.type === "text" && typeof event.part?.text === "string").map(event => event.part);
   const last = texts.at(-1)?.messageID;
-  // An empty review falls through to the runner's one completeness retry.
-  return texts.filter(part => part.messageID === last).map(part => part.text).join("\n");
+  // A last part without a message id is the report alone. An empty review falls through to the runner's one completeness retry.
+  const report = last === undefined ? texts.slice(-1) : texts.filter(part => part.messageID === last);
+  return report.map(part => part.text).join("\n");
 }
 
 const usageLimitPattern = /^(?:ERROR:[\t ]*|■[\t ]*)?you['’]ve hit your usage limit\b.*?\btry again at ([^\n]+?)\.?[\t ]*$/i;
@@ -239,6 +260,14 @@ export function usageLimitProblem(text, cli) {
   const time = text.split(/\r?\n/).filter(line => line.trim()).slice(-5).reverse()
     .map(line => line.match(usageLimitPattern)?.[1]).find(Boolean);
   return time ? `problem: ${reviewFamily(cli) ?? cli} usage limit until ${time}` : null;
+}
+
+// A provider stops an empty account with an HTTP 402 line. Only the CLI's own closing lines count,
+// and only unindented plain text: an indented, quoted or JSON line repeats what the model read.
+export function outOfCreditProblem(text, cli) {
+  const line = text.split(/\r?\n/).filter(line => line.trim()).slice(-5).reverse()
+    .find(line => /^[^\s{["'`]/.test(line) && outOfCreditPattern.test(line));
+  return line ? `problem: ${reviewFamily(cli) ?? cli} out of credit: ${line.replace(/^(?:ERROR:|■)[\t ]*/i, "").trim()}` : null;
 }
 
 // A refusal spent no review only when it is all the call printed. The log holds both
@@ -472,6 +501,7 @@ export function grokAdapter(options) {
     args: [...args, ...(options.sessionId ? ["-s", options.sessionId] : [])],
     resume: session => [...args, "--resume", session],
     session: stdout => JSON.parse(stdout).sessionId,
+    outOfCredit: (_stdout, log, status) => status ? outOfCreditProblem(log, "grok") : null,
     finish: stdout => grokResult(stdout, model),
   };
 }
@@ -497,6 +527,8 @@ export function opencodeAdapter(options) {
     resume: session => [...args, "--session", session],
     session: stdout => opencodeSession(stdout),
     usageLimit: stdout => opencodeUsageLimit(stdout),
+    outOfCredit: (stdout, log, status) => opencodeOutOfCredit(stdout) ?? (status ? outOfCreditProblem(log, "opencode") : null),
+    errorProblem: stdout => opencodeErrorProblem(stdout),
     finish: (stdout, _log, status) => opencodeResult(stdout, model, session => opencodeExport(session, worktree, timeout), Boolean(status)),
   };
 }
@@ -513,8 +545,9 @@ export function opencodeExportTimeout(env = process.env) {
 // OpenCode exits before a pipe drains, cutting a large export at 192 KiB, so it writes to a file.
 function opencodeExport(session, worktree, timeout) {
   const dir = mkdtempSync(join(tmpdir(), "ase-opencode-export-")), file = join(dir, "export.json");
-  const out = openSync(file, "w");
+  let out;
   try {
+    out = openSync(file, "w");
     execFileSync("opencode", ["export", "--pure", session], { cwd: worktree, encoding: "utf8", stdio: ["ignore", out, "pipe"],
       timeout, killSignal: "SIGKILL" });
     return readFileSync(file, "utf8");
@@ -524,7 +557,7 @@ function opencodeExport(session, worktree, timeout) {
       : error.status ? `exit ${error.status}${last ? `: ${last}` : ""}` : error.message;
     throw new Error(`OpenCode export for ${session} failed: ${why}`);
   } finally {
-    closeSync(out);
+    if (out !== undefined) closeSync(out);
     rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -741,12 +774,15 @@ async function invokeAgent(adapter, args, descriptor, context) {
     if (status === 124) context.cause = `problem: agent exceeded timeout=${limit}; process group killed; see ${logPath}`;
     else {
       // A refusal OpenCode prints as an error event counts even when the CLI exits 0.
-      const limitProblem = adapter.usageLimit?.(result.stdout ?? "") ??
+      const creditProblem = adapter.outOfCredit?.(result.stdout ?? "", slice, status) ?? null;
+      const limitProblem = creditProblem ?? adapter.usageLimit?.(result.stdout ?? "") ??
         (status ? usageLimitProblem(slice, options.cli) ?? usageLimitProblem(result.stdout ?? "", options.cli) : null);
-      if (status || limitProblem) context.cause = limitProblem ?? `problem: ${adapter.command} failed (${status}); see ${logPath}`;
+      if (status || limitProblem) {
+        context.cause = limitProblem ?? adapter.errorProblem?.(result.stdout ?? "") ?? `problem: ${adapter.command} failed (${status}); see ${logPath}`;
+      }
       // A refusal of the first call refunds the review; a completed first call, or one
-      // that worked before the limit, already spent it.
-      if (limitProblem && !previousCalls && refusedOutright(options.cli, slice, context.prompt)) update({ refused: true });
+      // that worked before the limit, already spent it. kit review gives an out-of-credit run back itself.
+      if (limitProblem && !creditProblem && !previousCalls && refusedOutright(options.cli, slice, context.prompt)) update({ refused: true });
     }
     try {
       const report = adapter.finish(result.stdout, slice, status);

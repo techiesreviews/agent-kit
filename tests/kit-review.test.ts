@@ -71,6 +71,12 @@ if (cli === "codex") {
     console.log("You've hit your usage limit. Try again at 9:00 AM.");
     process.exit(1);
   }
+  // An empty account stops Grok after a turn of work.
+  if (mode === "out-of-credit") {
+    console.error("read_file file.txt");
+    console.log("402 Payment Required: Grok Build usage balance exhausted");
+    process.exit(1);
+  }
   const answer = cli === "grok" ? { text: report } : { result: report };
   const named = cli === "grok" ? { sessionId: "${session}" } : { session_id: "${session}" };
   console.log(JSON.stringify({ ...(mode === "missing-pass" && !resumed ? {} : answer), modelUsage: { [process.env.FAKE_RESULT_MODEL || model]: {} }, ...(mode === "no-session" ? {} : named) }));
@@ -702,6 +708,22 @@ test("kit review keeps the spent review when Grok works on stderr before its std
   assert.deepEqual(f.counts(), { grok: { "kit-review": 2 } });
 });
 
+test("an empty Grok account after a turn skips the review with exit 3 and gives the count back", (t) => {
+  const f = fixture(t);
+  const grok = join(f.dir, "bin", "grok");
+  writeFileSync(grok, fake); chmodSync(grok, 0o755);
+  const first = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "grok-4.7", ASE_REVIEW_BUDGET_GROK: "2" });
+  assert.equal(first.status, 0, first.stderr);
+  assert.deepEqual(f.counts(), { grok: { "kit-review": 1 } });
+  const empty = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "grok-4.7", ASE_REVIEW_BUDGET_GROK: "2", FAKE_MODE: "out-of-credit" }, true);
+  assert.equal(empty.status, 3, empty.stdout + empty.stderr);
+  assert.match(empty.stdout, /^budget: grok 2\/2 in /m);
+  const problems = empty.stderr.trimEnd().split("\n").filter(line => line.startsWith("problem: "));
+  assert.equal(problems.at(-1), "problem: grok out of credit: 402 Payment Required: Grok Build usage balance exhausted");
+  assert.equal(empty.stdout.trim().split("\n").at(-1), "RESULT: skip review out of credit (grok-4.7)");
+  assert.deepEqual(f.counts(), { grok: { "kit-review": 1 } });
+});
+
 test("uppercase GROK-4.7 selects Grok, its budget and the build variant end to end", (t) => {
   const f = fixture(t);
   const grok = join(f.dir, "bin", "grok");
@@ -776,10 +798,16 @@ appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ cli: "opencode", args, i
 const emit = (type, extra = {}) => console.log(JSON.stringify({ type, timestamp: Date.now(), sessionID: "ses_fake", ...extra }));
 const mode = process.env.FAKE_MODE || "pass";
 emit("step_start", { part: { type: "step-start", messageID: "m0" } });
-if (mode === "error-502") {
+if (mode === "error-502" || mode === "error-502-exit1") {
   emit("error", { error: { name: "APIError", data: { message: "Bad gateway", statusCode: 502 } } });
-  process.exit(0);
+  process.exit(mode === "error-502" ? 0 : 1);
 }
+// An empty account, said as an error event or as a bare 402 line on stderr.
+if (mode === "out-of-credit") {
+  emit("error", { error: { name: "APIError", data: { message: "balance exhausted", statusCode: 402 } } });
+  process.exit(1);
+}
+if (mode === "stderr-402") { console.error("402"); process.exit(1); }
 if (mode === "usage-limit" || mode === "usage-limit-exit0" || (mode === "retry-limit" && resumed)) {
   emit("error", { error: { name: "APIError", data: { message: "Rate limit exceeded. Please try again later.", statusCode: 429 } } });
   process.exit(mode === "usage-limit" ? 1 : 0);
@@ -908,6 +936,56 @@ test("an OpenCode error that is not a limit fails once, unexported and unretried
   assert.doesNotMatch(result.stderr, /opencode usage limit/);
   assert.equal(existsSync(join(f.dir, "calls.jsonl.exports")), false);
   assert.equal(opencodeCalls(f).length, 1);
+});
+
+test("an OpenCode error that is not a limit, with a non-zero exit, is the last problem line", (t) => {
+  const f = fixture(t);
+  withOpencode(f);
+  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_MODE: "error-502-exit1" });
+  assert.equal(result.status, 1, result.stderr);
+  const problems = result.stderr.trimEnd().split("\n").filter(line => line.startsWith("problem: "));
+  assert.equal(problems.at(-1), "problem: OpenCode reported an error: Bad gateway");
+  assert.doesNotMatch(result.stderr, /opencode failed/);
+  assert.match(result.stdout.trim().split("\n").at(-1)!, /^RESULT: fail OpenCode reported an error: Bad gateway evidence /);
+});
+
+test("an empty OpenCode account, as an error event or a bare 402 line, skips the review with exit 3", (t) => {
+  for (const [mode, problem] of [["out-of-credit", "problem: opencode out of credit: balance exhausted"], ["stderr-402", "problem: opencode out of credit: 402"]]) {
+    const f = fixture(t);
+    withOpencode(f);
+    const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_MODE: mode }, true);
+    assert.equal(result.status, 3, result.stdout + result.stderr);
+    const problems = result.stderr.trimEnd().split("\n").filter(line => line.startsWith("problem: "));
+    assert.equal(problems.at(-1), problem);
+    assert.equal(result.stdout.trim().split("\n").at(-1), `RESULT: skip review out of credit (${opencodeModel})`);
+    assert.equal(existsSync(join(f.dir, "calls.jsonl.exports")), false);
+    assert.equal(existsSync(f.ledger), false);
+  }
+});
+
+test("a bad ASE_OPENCODE_EXPORT_TIMEOUT_MS fails kit review before opencode runs", (t) => {
+  const f = fixture(t);
+  withOpencode(f);
+  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, ASE_OPENCODE_EXPORT_TIMEOUT_MS: "abc" }, true);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /^problem: ASE_OPENCODE_EXPORT_TIMEOUT_MS must be a positive integer$/m);
+  assert.match(result.stdout.trim().split("\n").at(-1)!, /^RESULT: fail ASE_OPENCODE_EXPORT_TIMEOUT_MS must be a positive integer evidence /);
+  assert.equal(opencodeCalls(f).length, 0);
+});
+
+test("a complete review that quotes 402 Payment Required from its diff stays a passing review", (t) => {
+  const quote = "402 Payment Required: Grok Build usage balance exhausted";
+  for (const model of ["grok-4.7", opencodeModel]) {
+    const f = fixture(t);
+    withOpencode(f);
+    writeFileSync(join(f.root, "file.txt"), `${quote}\n`);
+    f.git("commit", "-am", "quote the error");
+    const report = `REVIEW_STATUS: complete\nDefects: none; file.txt quotes "${quote}".\n`;
+    const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: model, FAKE_REPORT: report });
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(result.stderr, /out of credit/);
+    assert.match(readFileSync(join(f.evidence(result.stdout), "result.md"), "utf8"), /402 Payment Required/);
+  }
 });
 
 test("a usage limit on the completeness retry is the last problem line", (t) => {

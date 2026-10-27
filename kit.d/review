@@ -42,7 +42,7 @@ function evidenceDirectory() {
 
 async function review(args) {
   let evidence = "none", temporary, status = 1, reason = "invalid arguments", label, budget, env, model, effort, reviewedHead, ticket;
-  let ledger;
+  let ledger, outOfCredit = false;
   try {
     status = 2;
     const flags = options(args);
@@ -96,6 +96,8 @@ async function review(args) {
       child.once("close", code => { clear(); accept(code === 0 ? 0 : 1); });
     });
     reason = [...stderr.matchAll(/^problem: (.+)$/gm)].at(-1)?.[1] || "review failed";
+    // An empty account is a review that could not run, not one that failed.
+    outOfCredit = status !== 0 && /^\S+ out of credit: /.test(reason);
     if (!status && flags.pr) {
       const [head, base] = readFileSync(join(temporary, "refs.txt"), "utf8").trim().split("\n");
       const body = join(temporary, "pr-comment.md");
@@ -114,10 +116,11 @@ async function review(args) {
       // A review whose CLI never started (empty diff) is not counted; the runner
       // records the process group as soon as the CLI spawns. A provider usage-limit
       // refusal on the first call spent no review, so it gives the slot back; the
-      // runner marks it only when the refusal was all that call printed.
+      // runner marks it only when the refusal was all that call printed. An out-of-credit
+      // run that failed returned no complete review, so it is given back even after earlier turns.
       const run = temporary && join(temporary, "status.json");
       const record = run && existsSync(run) ? JSON.parse(readFileSync(run, "utf8")) : {};
-      if (budget && (!record.pgid || record.refused === true)) releaseReviewBudget(ledger.path, budget, env);
+      if (budget && (!record.pgid || record.refused === true || outOfCredit)) releaseReviewBudget(ledger.path, budget, env);
     } catch (error) { console.error(`problem: releasing review budget failed: ${error.message}`); }
     try {
       const { record, cleanup } = saveReviewEvidence(temporary, () => (evidence = evidenceDirectory()),
@@ -130,10 +133,15 @@ async function review(args) {
       }
     } catch (error) {
       status = 1;
+      outOfCredit = false;
       reason = `saving evidence failed: ${error.message}`;
       console.error(`problem: ${reason}`);
       if (temporary) console.error(`problem: review files kept in ${temporary}`);
     }
+  }
+  if (outOfCredit) {
+    console.log(`RESULT: skip review out of credit (${model})`);
+    return 3;
   }
   kitResult(status === 0 ? "ok" : "fail", status === 0 ? `review ${label} evidence ${evidence}` : `${reason} evidence ${evidence}`);
   return status;
