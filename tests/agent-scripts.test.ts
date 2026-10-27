@@ -487,12 +487,12 @@ test("provider usage-limit messages become a family usage-limit problem", () => 
   assert.equal(usageLimitProblem(`{\n  "text": "${openai}"\n}`, "grok"), null);
 });
 
-test("an HTTP 402 closing line becomes an out-of-credit problem; quoted, indented, JSON or path 402s do not", () => {
+test("an HTTP 402 closing line becomes an out-of-credit problem; tool traces, quoted, indented or JSON 402s do not", () => {
   const grok = "402 Payment Required: Grok Build usage balance exhausted";
   assert.equal(outOfCreditProblem(`read_file file.txt\n${grok}\n`, "grok"), `problem: grok out of credit: ${grok}`);
   assert.equal(outOfCreditProblem("ERROR: 402\n", "opencode"), "problem: opencode out of credit: 402");
   assert.equal(outOfCreditProblem("Error: usage balance exhausted", "opencode"), "problem: opencode out of credit: usage balance exhausted");
-  for (const text of ["", "read_file src/a.ts:402", "tests 402.5 passed", `  const message = "${grok}";`, `{"text": "${grok}"}`,
+  for (const text of ["", "read_file src/a.ts:402", "tests 402.5 passed", "grep 402 file.txt", "grep -n 'Payment Required' a.mjs", `  const message = "${grok}";`, `{"text": "${grok}"}`,
     `${grok}\n${"read more\n".repeat(5)}`]) assert.equal(outOfCreditProblem(text, "grok"), null, text);
 });
 

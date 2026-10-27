@@ -49,7 +49,7 @@ if (process.env.FAKE_ROTATE && symlink && cli === "codex") {
 }
 const resumed = args.includes("resume") || args.includes("--resume");
 const mode = process.env.FAKE_MODE || "pass";
-const report = mode === "empty-pass" && !resumed ? "" : mode === "retry-fail" || mode === "no-session" || (mode === "retry-pass" && !resumed) || mode === "retry-model" || (mode === "retry-usage-limit" && !resumed) ? "incomplete reply\\n" : process.env.FAKE_REPORT || ${JSON.stringify(complete)};
+const report = mode === "empty-pass" && !resumed ? "" : mode === "retry-fail" || mode === "no-session" || (mode === "retry-pass" && !resumed) || mode === "retry-model" || (mode === "retry-usage-limit" && !resumed) || (mode === "retry-out-of-credit" && !resumed) ? "incomplete reply\\n" : process.env.FAKE_REPORT || ${JSON.stringify(complete)};
 const model = mode === "retry-model" && resumed ? "wrong-model" : args[args.indexOf(cli === "claude" ? "--model" : "-m") + 1];
 if (cli === "codex") {
   if (!(process.env.FAKE_NO_RETRY_MODEL && resumed)) console.error("model: " + model);
@@ -72,11 +72,13 @@ if (cli === "codex") {
     process.exit(1);
   }
   // An empty account stops Grok after a turn of work.
-  if (mode === "out-of-credit") {
+  if (mode === "out-of-credit" || (mode === "retry-out-of-credit" && resumed)) {
     console.error("read_file file.txt");
     console.log("402 Payment Required: Grok Build usage balance exhausted");
     process.exit(1);
   }
+  // A tool trace that names 402, then a failure that is not about credit.
+  if (mode === "trace-402") { console.error("grep 402 file.txt"); process.exit(1); }
   const answer = cli === "grok" ? { text: report } : { result: report };
   const named = cli === "grok" ? { sessionId: "${session}" } : { session_id: "${session}" };
   console.log(JSON.stringify({ ...(mode === "missing-pass" && !resumed ? {} : answer), modelUsage: { [process.env.FAKE_RESULT_MODEL || model]: {} }, ...(mode === "no-session" ? {} : named) }));
@@ -721,7 +723,47 @@ test("an empty Grok account after a turn skips the review with exit 3 and gives 
   const problems = empty.stderr.trimEnd().split("\n").filter(line => line.startsWith("problem: "));
   assert.equal(problems.at(-1), "problem: grok out of credit: 402 Payment Required: Grok Build usage balance exhausted");
   assert.equal(empty.stdout.trim().split("\n").at(-1), "RESULT: skip review out of credit (grok-4.7)");
+  const evidence = /^evidence: (.+)$/m.exec(empty.stdout)?.[1];
+  assert.ok(evidence && existsSync(join(evidence, "run.log")), empty.stdout);
+  assert.match(readFileSync(join(evidence, "run.log"), "utf8"), /402 Payment Required/);
   assert.deepEqual(f.counts(), { grok: { "kit-review": 1 } });
+});
+
+test("an empty Grok account on the completeness retry still skips the review and gives the count back", (t) => {
+  const f = fixture(t);
+  const grok = join(f.dir, "bin", "grok");
+  writeFileSync(grok, fake); chmodSync(grok, 0o755);
+  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "grok-4.7", ASE_REVIEW_BUDGET_GROK: "2", FAKE_MODE: "retry-out-of-credit" });
+  assert.equal(result.status, 3, result.stdout + result.stderr);
+  assert.equal(f.calls().length, 2);
+  assert.ok(f.calls()[1].args.includes("--resume"));
+  const problems = result.stderr.trimEnd().split("\n").filter(line => line.startsWith("problem: "));
+  assert.equal(problems.at(-1), "problem: grok out of credit: 402 Payment Required: Grok Build usage balance exhausted");
+  assert.equal(result.stdout.trim().split("\n").at(-1), "RESULT: skip review out of credit (grok-4.7)");
+  assert.deepEqual(f.counts(), { grok: { "kit-review": 0 } });
+});
+
+test("a failed Grok run whose tool trace names 402 is a failed review, not out of credit", (t) => {
+  const f = fixture(t);
+  const grok = join(f.dir, "bin", "grok");
+  writeFileSync(grok, fake); chmodSync(grok, 0o755);
+  const first = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "grok-4.7", ASE_REVIEW_BUDGET_GROK: "2" });
+  assert.equal(first.status, 0, first.stderr);
+  const failed = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "grok-4.7", ASE_REVIEW_BUDGET_GROK: "2", FAKE_MODE: "trace-402" });
+  assert.equal(failed.status, 1, failed.stdout + failed.stderr);
+  assert.doesNotMatch(failed.stderr, /out of credit/);
+  assert.match(failed.stdout.trim().split("\n").at(-1)!, /^RESULT: fail /);
+  assert.deepEqual(f.counts(), { grok: { "kit-review": 2 } });
+});
+
+test("an out-of-credit run whose evidence cannot be saved fails with exit 1", (t) => {
+  const f = fixture(t);
+  const grok = join(f.dir, "bin", "grok");
+  writeFileSync(grok, fake); chmodSync(grok, 0o755);
+  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "grok-4.7", FAKE_MODE: "out-of-credit", FAKE_LOCK_DIFF: "1" });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout.trim().split("\n").at(-1)!, /^RESULT: fail saving evidence failed: /);
+  assert.doesNotMatch(result.stdout, /RESULT: skip/);
 });
 
 test("uppercase GROK-4.7 selects Grok, its budget and the build variant end to end", (t) => {
@@ -803,9 +845,9 @@ if (mode === "error-502" || mode === "error-502-exit1") {
   process.exit(mode === "error-502" ? 0 : 1);
 }
 // An empty account, said as an error event or as a bare 402 line on stderr.
-if (mode === "out-of-credit") {
+if (mode === "out-of-credit" || mode === "out-of-credit-exit0") {
   emit("error", { error: { name: "APIError", data: { message: "balance exhausted", statusCode: 402 } } });
-  process.exit(1);
+  process.exit(mode === "out-of-credit" ? 1 : 0);
 }
 if (mode === "stderr-402") { console.error("402"); process.exit(1); }
 if (mode === "usage-limit" || mode === "usage-limit-exit0" || (mode === "retry-limit" && resumed)) {
@@ -950,7 +992,8 @@ test("an OpenCode error that is not a limit, with a non-zero exit, is the last p
 });
 
 test("an empty OpenCode account, as an error event or a bare 402 line, skips the review with exit 3", (t) => {
-  for (const [mode, problem] of [["out-of-credit", "problem: opencode out of credit: balance exhausted"], ["stderr-402", "problem: opencode out of credit: 402"]]) {
+  for (const [mode, problem] of [["out-of-credit", "problem: opencode out of credit: balance exhausted"], ["out-of-credit-exit0", "problem: opencode out of credit: balance exhausted"],
+    ["stderr-402", "problem: opencode out of credit: 402"]]) {
     const f = fixture(t);
     withOpencode(f);
     const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_MODE: mode }, true);

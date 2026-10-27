@@ -206,9 +206,8 @@ function opencodeErrors(stdout) {
   return opencodeEvents(stdout).filter(event => event.type === "error").map(event => event.error);
 }
 
-// An empty account is HTTP 402 or a "payment required" / "balance exhausted" message. In a closing
-// line, a 402 that is part of a path, line number or version is not one.
-const outOfCreditPattern = /(?<![\w.:/-])402(?![\w.-])|payment required|balance exhausted/i;
+// An empty account is HTTP 402 or a "payment required" / "balance exhausted" message.
+const outOfCreditPattern = /\b402\b|payment required|balance exhausted/i;
 
 // OpenCode reports an empty account as an error event, whatever its exit status.
 export function opencodeOutOfCredit(stdout) {
@@ -262,12 +261,14 @@ export function usageLimitProblem(text, cli) {
   return time ? `problem: ${reviewFamily(cli) ?? cli} usage limit until ${time}` : null;
 }
 
-// A provider stops an empty account with an HTTP 402 line. Only the CLI's own closing lines count,
-// and only unindented plain text: an indented, quoted or JSON line repeats what the model read.
+// A provider stops an empty account with an error line that starts with the 402 or its message.
+// Only the CLI's own closing lines count: a tool trace or quoted line that merely names 402 is not one.
+const outOfCreditLinePattern = /^(?:(?:ERROR|Error|error):|■)?[\t ]*((?:(?:HTTP|status)[\t ]*)?402\b.*|(?:payment required|(?:usage )?balance exhausted)\b.*)$/i;
+
 export function outOfCreditProblem(text, cli) {
-  const line = text.split(/\r?\n/).filter(line => line.trim()).slice(-5).reverse()
-    .find(line => /^[^\s{["'`]/.test(line) && outOfCreditPattern.test(line));
-  return line ? `problem: ${reviewFamily(cli) ?? cli} out of credit: ${line.replace(/^(?:ERROR:|■)[\t ]*/i, "").trim()}` : null;
+  const message = text.split(/\r?\n/).filter(line => line.trim()).slice(-5).reverse()
+    .map(line => line.trimEnd().match(outOfCreditLinePattern)?.[1]).find(Boolean);
+  return message ? `problem: ${reviewFamily(cli) ?? cli} out of credit: ${message}` : null;
 }
 
 // A refusal spent no review only when it is all the call printed. The log holds both
@@ -774,6 +775,7 @@ async function invokeAgent(adapter, args, descriptor, context) {
     if (status === 124) context.cause = `problem: agent exceeded timeout=${limit}; process group killed; see ${logPath}`;
     else {
       // A refusal OpenCode prints as an error event counts even when the CLI exits 0.
+      // Out of credit outranks a usage limit, which outranks the CLI's own error.
       const creditProblem = adapter.outOfCredit?.(result.stdout ?? "", slice, status) ?? null;
       const limitProblem = creditProblem ?? adapter.usageLimit?.(result.stdout ?? "") ??
         (status ? usageLimitProblem(slice, options.cli) ?? usageLimitProblem(result.stdout ?? "", options.cli) : null);

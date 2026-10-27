@@ -140,6 +140,7 @@ async function review(args) {
     }
   }
   if (outOfCredit) {
+    console.log(`evidence: ${evidence}`);
     console.log(`RESULT: skip review out of credit (${model})`);
     return 3;
   }
