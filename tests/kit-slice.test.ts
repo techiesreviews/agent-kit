@@ -80,7 +80,8 @@ function evidence() {
   // NOTE_FINDINGS: the review after a --note (UX) fix round has one P3 finding; "stay" keeps a P1 on every later fix review.
   const stay = process.env.NOTE_FINDINGS === "stay";
   const noteFinding = Boolean(process.env.NOTE_FINDINGS && phase === "fix" && (args.includes("--note") || stay));
-  const open = round() < Number(process.env.CLEAN_AT || 0) || noteFinding;
+  // DIRTY_FROM: every review from that round on keeps a P1.
+  const open = round() < Number(process.env.CLEAN_AT || 0) || round() >= Number(process.env.DIRTY_FROM || Infinity) || noteFinding;
   const report = noteFinding && !stay ? ${JSON.stringify(findings)}.replace("P1", "P3") : process.env.MINOR_REVIEW && round() >= 3 ? ${JSON.stringify(findings)}.replace("P1", "P2").replace("Standards: none", "Standards: P3: Cosmetic issue") : ${JSON.stringify(findings)};
   writeFileSync(join(folder, "result.md"), process.env.UNREADABLE_REVIEW ? "partial" : open ? report : ${JSON.stringify(clean)});
   if (process.env.FINDINGS_JSON) writeFileSync(join(folder, "findings.json"), JSON.stringify({ model: "fake-reviewer", effort: "high",
@@ -1219,6 +1220,15 @@ test("a second-look P1 with no fix rounds left stops the slice with an unmerged 
   assert.ok(f.calls().at(-1)?.args.includes("--no-merge"));
   assert.equal(f.state().pr, "42");
   assert.match(result.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: fail slice second: 1 open second-look findings after 1 rounds \(.+\/second-001\/result\.md\)$/);
+});
+
+test("Claude's review still blocking after the second look's fix rounds stops the slice with an unmerged PR too", t => {
+  const f = fixture(t), result = f.run(["--rounds", "1"], { FAKE_SECOND: "findings", DIRTY_FROM: "1" });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "second", "fix", "pr"]);
+  assert.ok(f.calls().at(-1)?.args.includes("--no-merge"));
+  assert.equal(f.state().pr, "42");
+  assert.match(result.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: fail slice second: 1 open review findings after the second look's fix rounds /);
 });
 
 test("a command that skips (exit 3) names its skip reason, not only its exit code", t => {

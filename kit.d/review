@@ -135,12 +135,17 @@ async function reviewOnce(flags, look) {
       const run = temporary && join(temporary, "status.json");
       const record = run && existsSync(run) ? JSON.parse(readFileSync(run, "utf8")) : {};
       // The model could not run: its CLI is missing (a spawn ENOENT), refused or hit a usage limit, the account
-      // is empty, or the provider is down (OpenCode's error event or no session within its start limit, or a Grok
-      // run whose closing lines are an HTTP 5xx or a connection error). Any other failure, including one before the CLI started, is a broken run.
+      // is empty, or the provider is down (OpenCode's error event or no session within its start limit, a Grok
+      // run whose closing lines are an HTTP 5xx or a connection error, or one that gave no answer before the
+      // timeout: Grok prints its JSON only at the end). Any other failure, including one before the CLI started, is a broken run.
       const missing = status !== 0 && !record.pgid && /^problem: (spawn \S+ ENOENT)$/m.exec(stderr)?.[1];
       const down = !missing && status !== 0 && /^grok failed \(\d+\)/.test(reason) && grokDown(temporary);
-      if (missing || down) { reason = missing ? `CLI missing: ${missing}` : `grok unavailable: ${down}`; console.error(`problem: ${reason}`); }
-      if (status !== 0 && spawned && (record.refused === true || outOfCredit || missing || down ||
+      const hung = !missing && status !== 0 && /^grok-/i.test(model) && /^agent exceeded timeout=([^;]+);/.exec(reason)?.[1];
+      if (missing || down || hung) {
+        reason = missing ? `CLI missing: ${missing}` : down ? `grok unavailable: ${down}` : `grok unavailable: no answer within ${hung}`;
+        console.error(`problem: ${reason}`);
+      }
+      if (status !== 0 && spawned && (record.refused === true || outOfCredit || missing || down || hung ||
         /^\S+ usage limit\b|^OpenCode reported an error: |^opencode unavailable: no session within /.test(reason))) unavailable = true;
       // An outage, like an empty account, returned no review, so its count is given back too.
       if (budget && (!record.pgid || record.refused === true || outOfCredit || down)) releaseReviewBudget(ledger.path, budget, env);

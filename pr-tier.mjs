@@ -92,10 +92,11 @@ const ticketFile = /(?:^|\/)tickets\/[^/]+\.md$/;
 
 /** The second look's kind and the path that decided it: agent setup (`paths.agent`, `paths.kit`) first, then what a user
  * sees (`paths.visible`), then developer files (`paths.dx`, `paths.docs`); a change that reaches none is code. Ticket
- * files (`ticket` is the repo path of the `--ticket` one) count only when nothing else changed. */
+ * files (`ticket` is the repo path of the `--ticket` one) and the feature list, which every visible change updates,
+ * count only when nothing else changed. */
 export function reviewKind(changes, settings, { ticket } = {}) {
-  const { agent, visible, dx } = rules(settings);
-  const work = changes.filter(({ path }) => path !== ticket && !ticketFile.test(path));
+  const { agent, visible, dx, featureList } = rules(settings);
+  const work = changes.filter(({ path }) => path !== ticket && path !== featureList && !ticketFile.test(path));
   const looked = work.length ? work : changes;
   for (const [kind, patterns] of [["agent", agent], ["ux", visible], ["dx", dx]]) {
     const hit = looked.find(({ path }) => matches(patterns, path));

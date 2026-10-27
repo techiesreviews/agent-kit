@@ -421,7 +421,10 @@ async function slice(args) {
           if (!pendingFix() && state.rounds === state.secondLook.round) await fixRound(["--review", state.secondLook.evidence]);
           while (pendingFix() || (stopping(findings()).length && state.rounds < flags.rounds)) await fixRound(pendingSource() ?? ["--review", state.review]);
           const open = stopping(findings());
-          if (open.length) throw new Error(`${open.length} open review findings after the second look's fix rounds (${join(state.review, "result.md")})`);
+          if (open.length) {
+            await unmergedPr();
+            throw new Error(`${open.length} open review findings after the second look's fix rounds (${join(state.review, "result.md")})`);
+          }
           // Fixes since the HEAD the second look saw that reached a visible path get the UX gate again before
           // landing; when that HEAD cannot be read, the gate runs again to be safe.
           let touched;

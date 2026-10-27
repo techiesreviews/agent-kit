@@ -88,6 +88,8 @@ if (cli === "codex") {
     console.error("Error: Internal error: " + api);
     process.exit(1);
   }
+  // A hung call: Grok prints its JSON only at the end, so nothing comes before the timeout.
+  if (mode === "grok-hang") await new Promise(done => setTimeout(done, 30_000));
   // A provider outage: a 503 closing line after a turn of work.
   if (mode === "outage") { console.error("read_file file.txt"); console.log("503 Service Unavailable"); process.exit(1); }
   // A tool trace and prose that name a 503 and ECONNRESET, then a failure that is not an outage.
@@ -1234,6 +1236,15 @@ test("the second look never reaches Codex: ASE_AGENT_CLI and ASE_REVIEW_MODEL ca
   assert.deepEqual(f.calls().map(call => call.cli), ["grok", "opencode"]);
 });
 
+test("the feature list a visible change updates leaves the kind to the change; alone it is agent setup", async () => {
+  // @ts-expect-error The agent helpers are plain JavaScript without declarations.
+  const { reviewKind } = await import("../scripts/agents/pr-tier.mjs");
+  const settings = { featureList: "docs/agents/features.md", paths: { visible: ["^src/ui/"] } };
+  const change = (...paths: string[]) => paths.map(path => ({ status: "M", path }));
+  assert.deepEqual(reviewKind(change("docs/agents/features.md", "src/ui/panel.ts"), settings), { kind: "ux", path: "src/ui/panel.ts" });
+  assert.deepEqual(reviewKind(change("docs/agents/features.md"), settings), { kind: "agent", path: "docs/agents/features.md" });
+});
+
 test("the kit's own second-look table has every kind, a Grok or OpenCode model with the other family as fallback, and a checked date", async () => {
   // @ts-expect-error The agent helpers are plain JavaScript without declarations.
   const { reviewKinds, secondLookTable } = await import("../scripts/agents/pr-tier.mjs");
@@ -1302,6 +1313,14 @@ test("an OpenCode call that names no session within its start limit is down: wit
   const alone = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_OPENCODE_SILENT: "1", ASE_OPENCODE_START_TIMEOUT_MS: "500" });
   assert.equal(alone.status, 1, alone.stdout + alone.stderr);
   assert.match(alone.stdout.trim().split("\n").at(-1)!, /^RESULT: fail opencode unavailable: no session within 0\.5s /);
+});
+
+test("a Grok call that gives no answer before the timeout hands the second look to OpenCode", (t) => {
+  const f = fixture(t); withOpencode(f);
+  const hung = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: lookTable(f), FAKE_MODE: "grok-hang", ASE_AGENT_TIMEOUT: "3s" });
+  assert.equal(hung.status, 0, hung.stdout + hung.stderr);
+  assert.match(hung.stdout, /^second look: opencode\/deepseek-v4\.1-flash-free takes it \(grok-4\.7 grok unavailable: no answer within 3s\)$/m);
+  assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(hung.stdout), "second-look.json"), "utf8")), { kind: "code", model: opencodeModel, ok: true });
 });
 
 test("a missing Grok CLI or a Grok outage hands the second look to OpenCode", (t) => {
