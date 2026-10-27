@@ -336,6 +336,13 @@ test("doctor fails a project command that takes a shared name, naming both files
   const missing = direct();
   failure(missing, "commands");
   assert.ok(missing.stdout.includes(`✗ commands: no folder ${own}; fix: create it or fix "commands" in scripts/agents/kit.json\n`), missing.stdout);
+  // An old "commands" naming the shared folder is said plainly, not as a clash of every command with itself.
+  writeFileSync(join(f.build, "scripts/agents/kit.json"), JSON.stringify({ project: "native-site-editor", branches: { land: "dev" },
+    devRoot: f.dev, sharedNodeModules: join(f.dev, "node_modules"), commands: f.commands }));
+  const shared = direct();
+  failure(shared, "commands");
+  assert.ok(shared.stdout.includes(`✗ commands: "commands" names the shared folder ${f.commands}; fix: point "commands" in scripts/agents/kit.json at the project's own folder\n`), shared.stdout);
+  assert.match(shared.stdout, /^✓ help: 2 commands answer --help$/m);
 });
 
 test("doctor reports only the first three conflict locations", (t) => {

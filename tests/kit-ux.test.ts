@@ -288,6 +288,9 @@ test("kit ux takes screenshots through the project's own shots and says when the
   assert.equal(noFolder.result, 'RESULT: fail ux needs a project shots command (no "commands" folder in scripts/agents/kit.json)');
   put("scripts/agents/kit.json", JSON.stringify({ project: "x", branches: { land: "dev" }, commands: "own" }));
   put("own/specs", "#!/bin/sh\n");
+  // A shots file that is not executable is no command, as at the kit front door.
+  put("own/shots", "#!/bin/sh\n");
+  chmodSync(join(root, "own/shots"), 0o644);
   const noShots = run(["--no-review"], real);
   assert.equal(noShots.status, 1, noShots.stdout + noShots.stderr);
   assert.equal(noShots.result, "RESULT: fail ux needs a project shots command (none in own)");

@@ -105,7 +105,7 @@ test("kit reads the shared folder and the project's own, lists them in two group
   const shared = list.stdout.indexOf("\nShared commands:\n"), project = list.stdout.indexOf("\nProject commands:\n");
   assert.ok(shared > 0 && project > shared, list.stdout);
   assert.match(list.stdout.slice(shared, project), /\n  doctor +check this worktree is safe to build in\n/);
-  assert.match(list.stdout.slice(project), /^\nProject commands:\n  hello +a project command\n  version +a project version\nRun 'kit/);
+  assert.match(list.stdout.slice(project), /^\nProject commands:\n  hello +a project command\n  version +\(hidden by the shared version; kit doctor names the clash\) a project version\nRun 'kit/);
   const hello = run(["hello", "there"], env);
   assert.equal(hello.status, 0, hello.stderr);
   assert.equal(hello.stdout, "hello from the project there\nRESULT: ok hello finished\n");
@@ -118,6 +118,28 @@ test("kit reads the shared folder and the project's own, lists them in two group
   const replaced = run([], { ...env, KIT_COMMANDS_DIR: override });
   assert.equal(replaced.stdout, "Usage: kit <command> [args]\n\nCommands:\n  only  the only command\nRun 'kit <command> --help' for a command's usage.\n");
   assert.equal(run(["hello"], { ...env, KIT_COMMANDS_DIR: override }).status, 2);
+});
+
+test("kit takes an absolute commands folder, and without one lists only shared commands", (t) => {
+  const root = temp(t), own = temp(t);
+  mkdirSync(join(root, "scripts/agents"), { recursive: true });
+  const settings = (extra: object) => writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify({ project: "x", branches: { land: "dev" }, ...extra }));
+  command(own, "far", '# kit: from an absolute folder\nprintf "far away\\n"');
+  const env = { KIT_ROOT: root, KIT_COMMANDS_DIR: undefined };
+  settings({ commands: own });
+  const list = run([], env);
+  assert.match(list.stdout, /\nProject commands:\n  far +from an absolute folder\n/);
+  const far = run(["far"], env);
+  assert.equal(far.status, 0, far.stderr);
+  assert.equal(far.stdout, "far away\nRESULT: ok far finished\n");
+  settings({});
+  const shared = run([], env);
+  assert.equal(shared.status, 0, shared.stderr);
+  assert.match(shared.stdout, /^Usage: kit <command> \[args\]\n\nShared commands:\n/);
+  assert.doesNotMatch(shared.stdout, /Project commands|far/);
+  const missing = run(["far"], env);
+  assert.equal(missing.status, 2);
+  assert.equal(missing.stdout, "RESULT: fail unknown command far\n");
 });
 
 test("kit forwards command help and its exit status without RESULT enforcement", (t) => {

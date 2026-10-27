@@ -15,11 +15,13 @@ else
   own=$(kit_setting .commands)
   if [[ -n $own ]]; then
     [[ $own == /* ]] || own=$KIT_ROOT/$own
-    folders+=("$own") headings+=('Project commands')
+    # A "commands" naming the shared folder adds nothing; kit doctor says so.
+    [[ $own -ef ${folders[0]} ]] || { folders+=("$own"); headings+=('Project commands'); }
   fi
 fi
 
 names=() files=() summaries=() groups=()
+declare -A shared=()
 width=0
 for group in "${!folders[@]}"; do
   start=${#names[@]}
@@ -38,6 +40,9 @@ for group in "${!folders[@]}"; do
       fi
       (( count < 15 )) || break
     done < "$file"
+    if (( group == 0 )); then shared[$name]=1
+    elif [[ -n ${shared[$name]-} ]]; then summary="(hidden by the shared $name; kit doctor names the clash)${summary:+ $summary}"
+    fi
     # Sort by the command name within its folder, which can differ from the filename's order.
     position=${#names[@]}
     while (( position > start )) && [[ ${names[position-1]} > "$name" ]]; do

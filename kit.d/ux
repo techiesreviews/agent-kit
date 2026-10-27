@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // kit: try the features a diff touches, run scripted UX checks, pack a small bundle and have one reviewer judge it
 import { execFileSync, spawn } from "node:child_process";
-import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, matchesGlob, normalize, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { checkColours } from "../../check-colours.mjs";
@@ -325,8 +325,11 @@ function projectShots(root, env = process.env) {
   const directory = resolve(root, folder);
   let names = [];
   try { names = readdirSync(directory); } catch { /* A missing folder holds no shots. */ }
-  // The kit front door drops a command file's extension, so shots.mjs is kit shots too.
-  const name = names.find(entry => entry.replace(/\.[^.]*$/, "") === "shots");
+  // Like the kit front door: an executable file, its extension dropped, so shots.mjs is kit shots too.
+  const name = names.find(entry => {
+    if (entry.replace(/\.[^.]*$/, "") !== "shots") return false;
+    try { const stats = statSync(join(directory, entry)); return stats.isFile() && (stats.mode & 0o111) !== 0; } catch { return false; }
+  });
   if (!name) throw new Error(`needs a project shots command (none in ${folder})`);
   return join(directory, name);
 }

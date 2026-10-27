@@ -139,7 +139,7 @@ fi
 
 # Shared commands sit beside doctor, the project's own in the folder "commands" names; KIT_COMMANDS_DIR (tests) replaces both.
 # A project command may not take a shared name: it would hide a fix to the shared one.
-own_setting=''
+own_setting='' own_shared=false
 if [[ -n ${KIT_COMMANDS_DIR:-} ]]; then
   folders=("$KIT_COMMANDS_DIR")
 else
@@ -148,7 +148,7 @@ else
   if [[ -n $own_setting ]]; then
     own=$own_setting
     [[ $own == /* ]] || own=$root/$own
-    folders+=("$own")
+    if [[ $own -ef ${folders[0]} ]]; then own_shared=true; else folders+=("$own"); fi
   fi
 fi
 commands=() files=() counts=() clashes=()
@@ -168,6 +168,8 @@ for group in "${!folders[@]}"; do
 done
 if [[ -n $own_setting && ! -d $own ]]; then
   fail commands "no folder $own" 'create it or fix "commands" in scripts/agents/kit.json'
+elif [[ $own_shared == true ]]; then
+  fail commands "\"commands\" names the shared folder $own_setting" 'point "commands" in scripts/agents/kit.json at the project'"'"'s own folder'
 elif (( ${#clashes[@]} )); then
   list=$(printf '%s; ' "${clashes[@]}")
   fail commands "${list%; }" 'rename the project command'
