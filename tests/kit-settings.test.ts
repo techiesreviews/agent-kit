@@ -134,7 +134,9 @@ test("a missing, broken or incomplete settings file fails doctor with what to ad
     assert.equal(output.status, 1, output.stdout + output.stderr);
     const line = output.stdout.split("\n").find(text => text.startsWith("✗ settings: "));
     assert.ok(line?.startsWith(`✗ settings: ${problem}`), output.stdout);
-    assert.ok(line.endsWith('; fix: add scripts/agents/kit.json with "project" and "branches": { "land": "<branch>" }'), line);
+    // Only a missing file is to be added; an existing one is to be edited.
+    assert.ok(line.endsWith(settings === undefined ? '; fix: add scripts/agents/kit.json with "project" and "branches": { "land": "<branch>" }'
+      : "; fix: edit scripts/agents/kit.json as the problem says"), line);
     assert.match(output.stdout, /^✗ base: no land branch; fix: fix scripts\/agents\/kit\.json first$/m);
     assert.match(lastLine(output)!, /^RESULT: fail doctor \d+ failed: settings,base/);
   }
@@ -289,4 +291,26 @@ test("worktree.sh names, bases and links a worktree from the settings file", t =
   const link = join(path, ".scratch/native-static-preview");
   assert.ok(lstatSync(link).isSymbolicLink());
   assert.equal(readlinkSync(link), join(realpathSync(f.root), ".scratch/native-static-preview"));
+});
+
+test("without a maps folder, next and heartbeat say so, tickets.mjs reads nothing and score still lists records", t => {
+  const f = repo(t, { project: "kit-land", branches: { land: "main" }, devRoot: "/settings/dev" });
+  for (const args of [["next"], ["heartbeat", "alpha"]]) {
+    const output = f.run(args);
+    assert.equal(output.status, 1, output.stdout + output.stderr);
+    assert.equal(lastLine(output), `RESULT: fail ${args[0]} needs a maps folder; add maps to scripts/agents/kit.json`);
+  }
+  const tickets = spawnSync(process.execPath, [resolve("scripts/agents/tickets.mjs"), "check"], { cwd: f.root, env: f.env, encoding: "utf8" });
+  assert.equal(tickets.status, 0, tickets.stderr);
+  assert.equal(tickets.stdout, "No maps folder in scripts/agents/kit.json; no tickets to read.\n");
+  // kitScore files records under _untracked without maps; kit score lists them, and only a page or snapshot needs maps.
+  const records = join(f.main, ".scratch/scoreboard/_untracked");
+  mkdirSync(records, { recursive: true });
+  writeFileSync(join(records, "feature%2Fx.json"), JSON.stringify({ ticket: null, title: null, kind: null, builder: null, phases: [], rounds: 1, reviews: [], cost: null, costs: {}, landed: null }));
+  const listed = f.run(["score"]);
+  assert.equal(listed.status, 0, listed.stdout + listed.stderr);
+  assert.match(listed.stdout, /^score: _untracked \(1 pieces\)$/m);
+  const page = f.run(["score", "_untracked", "--html"]);
+  assert.equal(page.status, 1, page.stdout + page.stderr);
+  assert.equal(lastLine(page), 'RESULT: fail score no "maps" folder in scripts/agents/kit.json; this command needs one');
 });

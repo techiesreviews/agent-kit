@@ -27,7 +27,7 @@ function options(args) {
     } else flags[flag] = true;
   }
   if (flags["--waive"] && !kitOwner().endsWith("-lead")) throw new Error("--waive requires a *-lead owner");
-  return { base: flags["--base"] ?? kitBranch(), title: flags["--title"], ticket: flags["--ticket"], waive: flags["--waive"],
+  return { base: flags["--base"], title: flags["--title"], ticket: flags["--ticket"], waive: flags["--waive"],
     noMerge: flags["--no-merge"], dryRun: flags["--dry-run"], release: flags["--release"], full: flags["--full"] };
 }
 
@@ -171,7 +171,9 @@ async function main(args) {
     const branchResult = await execute("guards", "git", ["symbolic-ref", "--short", "HEAD"]);
     if (branchResult.status !== 0) throw new Error("detached HEAD");
     const branch = branchResult.text.trim();
+    // Settings problems fail here (exit 1), not as usage errors; --base defaults to the land branch.
     const settings = kitSettings(), release = kitBranch("release", settings);
+    flags.base ??= kitBranch("land", settings);
     if ([kitBranch("land", settings), release, flags.base].includes(branch)) throw new Error(`refusing branch ${branch}`);
     // The scoreboard's landing record for this piece.
     // A new PR number starts a fresh landing, so an earlier PR's merge never carries over.

@@ -9,7 +9,10 @@ const compiled = new WeakMap();
 /** The settings' path rules as regular expressions, compiled once per settings object. */
 function rules(settings = kitSettings()) {
   if (!compiled.has(settings)) {
-    const patterns = name => (settings.paths?.[name] ?? []).map(source => new RegExp(source));
+    const patterns = name => (settings.paths?.[name] ?? []).map(source => {
+      try { return new RegExp(source); }
+      catch (error) { throw new Error(`paths.${name} in scripts/agents/kit.json: ${error.message}`); }
+    });
     compiled.set(settings, { docs: patterns("docs"), tests: patterns("tests"), css: patterns("css"), visible: patterns("visible"),
       featureList: settings.featureList || null, docsGuards: settings.unit?.docsGuards ?? [] });
   }

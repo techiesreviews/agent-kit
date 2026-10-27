@@ -79,7 +79,7 @@ else if (tool === "gh") {
 `;
 
 // Default branch: two commits to feature.txt (full tier). `changes` replaces them with one commit of these files.
-function fixture(t: TestContext, changes?: Record<string, string>) {
+function fixture(t: TestContext, changes?: Record<string, string>, override: Record<string, unknown> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "kit-pr-"));
   const children: ChildProcess[] = [], releases: string[] = [];
   t.after(async () => {
@@ -122,7 +122,7 @@ function fixture(t: TestContext, changes?: Record<string, string>) {
   writeFileSync(join(root, "tests/b.test.ts"), 'import "./fakes/thing.ts";\n');
   // This editor's settings, without its machine folders.
   const { mainRoot: _main, devRoot: _dev, sharedNodeModules: _modules, ...settings } = JSON.parse(readFileSync("scripts/agents/kit.json", "utf8"));
-  writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify(settings));
+  writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify({ ...settings, ...override }));
   git("add", "."); git("commit", "-m", "base");
   git("branch", "main"); git("push", "origin", "dev", "main");
   git("checkout", "-b", "feature/kit-pr");
@@ -236,6 +236,16 @@ test("dry-run builds the body, shows next commands and neither pushes nor calls 
     assert.ok(result.stdout.includes(text), text);
   assert.equal(f.gitAt(f.origin, "show-ref"), refs); assert.equal(f.calls().some(call => call.tool === "gh"), false);
   assert.match(readFileSync(join(f.logDir(), "body.md"), "utf8"), /Ticket: Ticket title \(ticket.md\)/);
+});
+
+test("checks come from the settings file: every extra runs in order, a missing one is skipped with a line", t => {
+  const f = fixture(t, { "scripts/agents/x.mjs": "x\n" }, { checks: { check: "npm run check", test: "npm test", extra: ["npm run extra-a", "npm run extra-b"] } });
+  const result = f.run(["--dry-run", "--full"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const npm = f.calls().filter(call => call.tool === "npm").map(call => call.args.join(" "));
+  assert.deepEqual(npm, ["run check", "test", "run extra-a", "run extra-b"]);
+  assert.match(result.stdout, /^lint: skipped \(no checks\.lint in scripts\/agents\/kit\.json\)$/m);
+  assert.match(result.stdout, /^kit-clean: ok\nkit-clean: ok$/m);
 });
 
 test("PR body includes ordered commits, checks, ticket and conditional Claude credit", t => {

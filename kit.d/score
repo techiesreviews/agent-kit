@@ -77,7 +77,8 @@ function mapData(map, main, root, maps) {
     catch (error) { console.error(`problem: scoreboard ${join(folder, name)} unreadable (${error.message})`); }
   }
   let feedback = null;
-  try { feedback = readFileSync(join(root, maps, map, "build/feedback.md"), "utf8"); } catch { /* No feedback log yet. */ }
+  // No maps folder: no feedback logs to read.
+  if (maps) try { feedback = readFileSync(join(root, maps, map, "build/feedback.md"), "utf8"); } catch { /* No feedback log yet. */ }
   return { map, pieces, totals: { builders: totals(pieces, item => label(item.builder)), kinds: totals(pieces, item => item.kind || "unknown") }, feedback };
 }
 
@@ -141,7 +142,10 @@ function score(args) {
   try { flags = options(args); }
   catch (error) { process.stderr.write(usage); kitResult("fail", `score ${error.message}`); return 2; }
   try {
-    const main = resolve(kitMainRoot()), root = resolve(kitRoot()), parent = join(main, ".scratch/scoreboard"), mapsDir = kitMaps();
+    const main = resolve(kitMainRoot()), root = resolve(kitRoot()), parent = join(main, ".scratch/scoreboard");
+    // Only --snapshot and --html need a maps folder; listing records works without one.
+    let mapsDir = null;
+    try { mapsDir = kitMaps(); } catch (error) { if (flags.snapshot || flags.html) throw error; }
     const maps = flags.map ? [flags.map] : existsSync(parent) ? readdirSync(parent).filter(name => statSync(join(parent, name)).isDirectory()).sort() : [];
     const data = maps.map(map => mapData(map, main, root, mapsDir)).filter(item => flags.map || item.pieces.length);
     if (flags.snapshot) {

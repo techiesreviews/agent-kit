@@ -5,12 +5,13 @@ import { readFileSync } from "node:fs";
 import { dirname, posix, resolve } from "node:path";
 import { kitBranch, kitSettings } from "./kit-lib.mjs";
 
-const landRef = () => `origin/${kitBranch()}`;
 // The settings file sits at the top of the reviewed checkout, which may be given as any folder in it.
 const topFolder = worktree => {
   try { return execFileSync("git", ["-C", worktree, "rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); }
   catch { return worktree; }
 };
+// Scope and standards both come from the reviewed checkout's settings.
+const landRef = worktree => `origin/${kitBranch("land", kitSettings(topFolder(worktree)))}`;
 
 export const reviewFormat = `Required format:
 REVIEW_STATUS: complete
@@ -64,7 +65,8 @@ export function reviewComplete(result) {
   return lines[0] === "REVIEW_STATUS: complete";
 }
 
-export function reviewBrief(ticketPath, ticket, scope = landRef(), worktree = process.cwd(), declined = []) {
+export function reviewBrief(ticketPath, ticket, scope, worktree = process.cwd(), declined = []) {
+  scope ??= landRef(worktree);
   if (!Array.isArray(declined) || declined.some(item => typeof item !== "string" || !item.trim())) {
     throw new Error("declined findings must be a list of non-empty strings");
   }
@@ -88,7 +90,7 @@ ${declined.length ? `\nDeclined by the author (with reasons):\n${declined.map(it
 
 // kit fix passes the list through the child environment so kit review needs no
 // additional flags and its ordinary evidence/permission handling stays shared.
-export function ticketReviewBrief(path, scope = landRef(), worktree = process.cwd(), declined = JSON.parse(process.env.ASE_REVIEW_DECLINED || "[]")) {
+export function ticketReviewBrief(path, scope, worktree = process.cwd(), declined = JSON.parse(process.env.ASE_REVIEW_DECLINED || "[]")) {
   const absolute = resolve(worktree, path);
   let ticket = readFileSync(absolute, "utf8");
   // Build-map tickets often omit a link to their sibling ../spec.md.

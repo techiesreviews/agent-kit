@@ -34,7 +34,9 @@ if problems=$(kit_settings_problems); then
   land=$(kit_setting .branches.land)
   pass settings "scripts/agents/kit.json ($(kit_setting .project), lands on $land)"
 else
-  fail settings "${problems//$'\n'/; }" 'add scripts/agents/kit.json with "project" and "branches": { "land": "<branch>" }'
+  if [[ -f $(kit_settings_file) ]]; then fix='edit scripts/agents/kit.json as the problem says'
+  else fix='add scripts/agents/kit.json with "project" and "branches": { "land": "<branch>" }'; fi
+  fail settings "${problems//$'\n'/; }" "$fix"
 fi
 
 if [[ $root != "$main" && $root != "$dev" ]]; then

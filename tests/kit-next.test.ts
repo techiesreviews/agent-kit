@@ -17,24 +17,24 @@ function ticket({ type = "task (AFK)", assignee = "", builder = "claude", files 
 
 // A bare origin and a dev clone holding the given files, a fake kit (bg --list reads
 // each worktree's job records; bg <name> logs its call) and a fake worktree.sh.
-function fixture(t: TestContext, files: Record<string, string>) {
+function fixture(t: TestContext, files: Record<string, string>, land = "dev") {
   const root = mkdtempSync(join(tmpdir(), "kit-next-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const env: NodeJS.ProcessEnv = { ...process.env, ...identity, GIT_CONFIG_NOSYSTEM: "1", KIT_DEV_ROOT: join(root, "dev"), KIT_NEXT_KIT: join(root, "fake-kit"), KIT_NEXT_WORKTREE: join(root, "fake-worktree.sh"), FAKE_KIT_LOG: join(root, "kit.log") };
   delete env.KIT_ROOT;
   const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   const dev = join(root, "dev");
-  git(root, "init", "-q", "--bare", "-b", "dev", "origin.git");
+  git(root, "init", "-q", "--bare", "-b", land, "origin.git");
   git(root, "clone", "-q", join(root, "origin.git"), "dev");
-  git(dev, "checkout", "-q", "-b", "dev");
+  git(dev, "checkout", "-q", "-b", land);
   const write = (base: string, entries: Record<string, string>) => {
     for (const [path, content] of Object.entries(entries)) { mkdirSync(dirname(join(base, path)), { recursive: true }); writeFileSync(join(base, path), content); }
   };
-  const settings = { project: "kit-next", branches: { land: "dev" }, maps: "docs/wayfinder", sharedFile: "src/main.ts" };
+  const settings = { project: "kit-next", branches: { land }, maps: "docs/wayfinder", sharedFile: "src/main.ts" };
   write(dev, { "README.md": "repo\n", "scripts/agents/kit.json": JSON.stringify(settings), ...files });
   git(dev, "add", "-A");
   git(dev, "commit", "-q", "-m", "fixture");
-  git(dev, "push", "-q", "-u", "origin", "dev");
+  git(dev, "push", "-q", "-u", "origin", land);
   writeFileSync(join(root, "fake-kit"), `#!/usr/bin/env bash
 if [[ $1 == bg && $2 == --list ]]; then
   for d in "$KIT_ROOT"/.scratch/kit-jobs/*/; do [[ -d $d ]] && printf '%s\\t%s\\t1s\\t%slog\\n' "$(basename "$d")" "$(cat "$d/state")" "$d"; done
@@ -52,6 +52,7 @@ set -euo pipefail
 path="$(dirname "$(git rev-parse --show-toplevel)")/wt-\${1//\\//-}"
 git worktree add -q -b "$1" "$path" "$2" >&2
 printf '%s\\n' "$ASE_OWNER" > "$path/owner"
+printf '%s %s\\n' "$1" "$2" >> "$(dirname "$path")/bases"
 printf '%s\\n' "$path"
 `);
   chmodSync(join(root, "fake-kit"), 0o755);
@@ -59,7 +60,7 @@ printf '%s\\n' "$path"
   // A slice job in its own worktree: the recorded command names its ticket, as kit bg writes it.
   const running = (name: string, ticketFile: string, state = "running", command = `'scripts/agents/kit' 'slice' '--ticket' '${ticketFile}' '--builder' 'claude-opus-5-5'\n`) => {
     const worktree = join(root, `job-${name}`);
-    git(dev, "worktree", "add", "-q", "--detach", worktree, "origin/dev");
+    git(dev, "worktree", "add", "-q", "--detach", worktree, `origin/${land}`);
     const directory = join(worktree, ".scratch/kit-jobs", name);
     mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, "state"), `${state}\n`);
@@ -249,6 +250,33 @@ test("--start claims on dev, pushes, makes the worktree and starts the slice; de
   assert.match(out, /^delegate: docs\/wayfinder\/alpha\/build\/tickets\/02-free\.md opencode\/deepseek-v4\.1-flash-free owner=al-02$/m);
   assert.match(out, /RESULT: ok next 2 ready, 0 waiting, 1 started\n$/);
   assert.equal(git(dev, "status", "--porcelain").trim(), "");
+});
+
+test("--start on a project that lands on main claims, pushes and branches from origin/main", t => {
+  const { root, dev, git, run } = fixture(t, startFiles, "main");
+  const result = run("alpha", "--start");
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(git(join(root, "origin.git"), "log", "--format=%s", "main").trim().split("\n"), ["docs: claim alpha 02", "docs: claim alpha 01", "fixture"]);
+  assert.equal(git(join(root, "origin.git"), "branch", "--list", "dev").trim(), "");
+  const worktree = join(root, "wt-build-al-01-first-slice");
+  assert.ok(existsSync(worktree));
+  assert.equal(readFileSync(join(root, "bases"), "utf8"), "build/al-01-first-slice origin/main\n");
+  assert.equal(git(dev, "branch", "--show-current").trim(), "main");
+  assert.match(result.stdout, /RESULT: ok next 2 ready, 0 waiting, 1 started\n$/);
+});
+
+test("next --help names this editor's land branch, and placeholders when the settings file is unreadable", t => {
+  const own = spawnSync(process.execPath, [next, "--help"], { encoding: "utf8" });
+  assert.equal(own.status, 0, own.stderr);
+  assert.ok(own.stdout.includes("read from origin/dev in the dev worktree"), own.stdout);
+  assert.ok(own.stdout.includes("--start claims each next: ticket or group on dev"), own.stdout);
+  const broken = mkdtempSync(join(tmpdir(), "kit-next-"));
+  t.after(() => rmSync(broken, { recursive: true, force: true }));
+  mkdirSync(join(broken, "scripts/agents"), { recursive: true });
+  writeFileSync(join(broken, "scripts/agents/kit.json"), "{ broken");
+  const placeholder = spawnSync(process.execPath, [next, "--help"], { env: { ...process.env, KIT_ROOT: broken }, encoding: "utf8" });
+  assert.equal(placeholder.status, 0, placeholder.stderr);
+  assert.ok(placeholder.stdout.includes("read from origin/<land> in the dev worktree"), placeholder.stdout);
 });
 
 // A pre-push hook in the dev clone lands another commit on origin the first `times` times it runs.
