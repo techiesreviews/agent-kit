@@ -532,6 +532,8 @@ test("a colour line keeps a path with spaces or parentheses as its file", () => 
   assert.deepEqual(foundIn(["src/my file.css"], "src/my file.css:1: #fff\n"), { findings: [spaced], outside: 0 });
   assert.deepEqual(foundIn(["src/my file.css"], "src/a.css:2: red\nsrc/my file.css:1:4: #fff\n", ["src/a.css", "src/my file.css"]), { findings: [spaced], outside: 1 });
   assert.deepEqual(foundIn(["src/my (old) file.css"], `${colourRoot}/src/my (old) file.css:2: red\n`).findings, [{ rule: "L2", file: "src/my (old) file.css", line: 2, text: "raw colour red" }]);
+  // The path runs to the first `:<line>:`, so a colon inside it is kept.
+  assert.deepEqual(foundIn(["src/a:b.css"], "src/a:b.css:3:1: red\n").findings, [{ rule: "L2", file: "src/a:b.css", line: 3, text: "raw colour red" }]);
   // Prose or a stack frame before a location names no project file, so it is no file:line line.
   for (const line of ["Found 1 problem in src/a.css:3: #fff", "at check (/abs/root/x.js:12:5): boom", "node:internal/main:12:3: boom"]) {
     assert.deepEqual(foundIn(["src/a.css"], `${line}\n`), { findings: [{ rule: "L2", file: "colours", line: 0, text: `check exited 1: ${line}; log /log` }], outside: 0 });
@@ -559,6 +561,14 @@ test("a colour line naming a file with spaces or parentheses counts for that fil
   // Past the exact parts, the longest file a part names whole between quotes, brackets or commas counts.
   assert.equal(foundIn(["src/a.css"], 'allow.json:1: entry for "src/a.css" is stale\n', known).findings.length, 1);
   assert.equal(foundIn(["src/a.css"], "allow.json:1: unused entries (file.css, src/a.css)\n", known).findings.length, 1);
+  for (const text of ["file=src/a.css", "unused; src/a.css; x", 'stale entry "x" for (src/a.css.', "stale allow entry: src/a.css:"]) {
+    assert.equal(foundIn(["src/a.css"], `allow.json:1: ${text}\n`, known).findings.length, 1, text);
+  }
+  // Only when no punctuation bounds it, a file after a space counts, if no other path comes before it in the part.
+  assert.equal(foundIn(["src/a.css"], "allow.json:1: stale allow entry for src/a.css\n", known).findings.length, 1);
+  assert.deepEqual(foundIn(["file.css"], "allow.json:1: stale allow entry for src/my (old) file.css\n", ["allow.json", "file.css"]), { findings: [], outside: 1 });
+  // One subject per line: the longest file it names, so the shorter file.css is not charged.
+  assert.deepEqual(foundIn(["file.css"], "allow.json:1: unused entries (file.css, src/a.css)\n", known), { findings: [], outside: 1 });
   // A file is named only whole, at both ends: src/a.css.map and lib/src/a.css are not src/a.css, known or not.
   assert.deepEqual(foundIn(["src/a.css"], "allow.json:1: stale allow entry: src/a.css.map: x\n", known), { findings: [], outside: 1 });
   const nested = "allow.json:1: stale allow entry: lib/src/a.css: x\n";

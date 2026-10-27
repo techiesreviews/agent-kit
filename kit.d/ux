@@ -447,12 +447,13 @@ export function tryFailures(index, status, log) {
 
 /**
  * L2 findings from the project's checks.css run: none when it passed, else one per `file:line: text` line it printed
- * (the path runs to the first `:<line>:`, spaces and parentheses kept, and is a `known` file or one on disk, so prose
+ * (the path runs to the first `:<line>:`, spaces, parentheses and colons kept, and is a `known` file or one on disk, so prose
  * or a stack frame before a location is no such line; ./ and absolute paths are read against root) whose subject is in
  * the diff (`changed`), so a checker that looks past the given files reports nothing the diff did not touch; `outside`
  * counts the rest, a line whose path is outside root among them.
  * A CSS line's subject is its own file. Another line's (an allow list's stale entry) is the first `: `-separated part
- * of its text that is a `known` file, else the longest `known` file one part names whole, else its own file.
+ * of its text (trailing colons dropped) that is a `known` file, else the longest `known` file one part names whole
+ * between punctuation, else the longest after a space with no `/` before it in the part, else its own file; one subject.
  * A failed run that names no line is one finding pointing at its log.
  */
 export function colourFindings(status, output, command, log, { root, changed, known = changed }) {
@@ -462,7 +463,7 @@ export function colourFindings(status, output, command, log, { root, changed, kn
   const isFile = path => { try { return statSync(path).isFile(); } catch { return false; } };
   const located = lines.flatMap(text => {
     // A stack frame's path (`at f (/x.js`) is never a known file or one on disk, so it is no such line.
-    const match = /^([^:]+):(\d+)(?::\d+)?:\s*(\S.*)$/.exec(text);
+    const match = /^(.+?):(\d+)(?::\d+)?:\s*(\S.*)$/.exec(text);
     if (!match) return [];
     const file = relative(root, resolve(root, match[1]));
     if (/^\.\.(\/|$)/.test(file)) return [{ outsideProject: true }];
@@ -473,11 +474,12 @@ export function colourFindings(status, output, command, log, { root, changed, kn
   const subject = finding => {
     if (finding.outsideProject) return undefined;
     if (/\.css$/i.test(finding.file)) return finding.file;
-    const parts = finding.text.replaceAll(`${root}/`, "").replace(/(^|[^\p{L}\p{N}_./-])\.\//gu, "$1").split(": ").map(part => part.trim());
+    const parts = finding.text.replaceAll(`${root}/`, "").replace(/(^|[^\p{L}\p{N}_./-])\.\//gu, "$1").split(": ").map(part => part.trim().replace(/:+$/, ""));
     const exact = parts.find(part => knownFiles.has(part));
     if (exact) return exact;
     paths ??= [...known].sort((a, b) => b.length - a.length);
-    return paths.find(path => parts.some(part => namesWhole(part, path))) ?? finding.file;
+    return paths.find(path => parts.some(part => namesWhole(part, path)))
+      ?? paths.find(path => parts.some(part => namesWhole(part, path, { afterSpace: true }))) ?? finding.file;
   };
   if (located.length) {
     const findings = located.filter(finding => changed.includes(subject(finding)));
@@ -487,13 +489,16 @@ export function colourFindings(status, output, command, log, { root, changed, kn
 }
 
 /**
- * Whether a part of a line's text names path whole: it starts the part or follows a quote, bracket, `=`, `,` or `;`,
- * and ends the part or comes before a closing quote or bracket, `,`, `;` or a full stop. A space never bounds a path,
- * since a path may hold one: `file.css` is not named by `src/my (old) file.css`, nor `src/my` by `src/my file.css`.
+ * Whether a part of a line's text names path whole: it starts the part or follows a quote, bracket, `=`, `,` or `;`
+ * (with afterSpace, also a space when no `/` comes before it in the part), and ends the part or comes before a closing
+ * quote or bracket, `,`, `;` or a full stop. A space never ends a path and starts one only past any other path, since a
+ * path may hold one: `file.css` is not named by `src/my (old) file.css`, nor `src/my` by `src/my file.css`.
  */
-function namesWhole(part, path) {
+function namesWhole(part, path, { afterSpace = false } = {}) {
   for (let at = path ? part.indexOf(path) : -1; at >= 0; at = part.indexOf(path, at + 1)) {
-    if (/(^|["'`([{<=,;]|[,;] )$/.test(part.slice(0, at)) && /^($|["'`)\]}>,;]|\.($|\s))/.test(part.slice(at + path.length))) return true;
+    const before = part.slice(0, at);
+    const left = /(^|["'`([{<=,;]|[,;] )$/.test(before) || (afterSpace && before.endsWith(" ") && !before.includes("/"));
+    if (left && /^($|["'`)\]}>,;]|\.($|\s))/.test(part.slice(at + path.length))) return true;
   }
   return false;
 }
