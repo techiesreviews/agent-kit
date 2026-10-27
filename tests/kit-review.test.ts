@@ -81,6 +81,13 @@ if (cli === "codex") {
     console.log("402 Payment Required: Grok Build usage balance exhausted");
     process.exit(1);
   }
+  // Grok's own empty-account failure, as it printed on 2026-10-27: one JSON error event on stdout, the same error on stderr.
+  if (mode === "out-of-credit-event") {
+    const api = '{\\n  "message": "API error (status 402 Payment Required): Grok Build usage balance exhausted",\\n  "http_status": 402\\n}';
+    console.log(JSON.stringify({ type: "error", message: "Internal error: " + api, cwd: process.cwd() }));
+    console.error("Error: Internal error: " + api);
+    process.exit(1);
+  }
   // A provider outage: a 503 closing line after a turn of work.
   if (mode === "outage") { console.error("read_file file.txt"); console.log("503 Service Unavailable"); process.exit(1); }
   // A tool trace and prose that name a 503 and ECONNRESET, then a failure that is not an outage.
@@ -1264,6 +1271,20 @@ test("a second look's evidence folder is marked before its files land, so a fail
   // The answer was copied before the diff failed: the folder holds a complete report, marked as a second look that did not come back.
   assert.ok(existsSync(join(evidence, "result.md")));
   assert.deepEqual(JSON.parse(readFileSync(join(evidence, "second-look.json"), "utf8")), { kind: "code", model: "grok-4.7", ok: false });
+});
+
+test("Grok's own out-of-credit error event skips its review, and hands the second look to OpenCode", (t) => {
+  const f = fixture(t); withOpencode(f);
+  const empty = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "grok-4.7", ASE_REVIEW_BUDGET_GROK: "2", FAKE_MODE: "out-of-credit-event" });
+  assert.equal(empty.status, 3, empty.stdout + empty.stderr);
+  const problems = empty.stderr.trimEnd().split("\n").filter(line => line.startsWith("problem: "));
+  assert.equal(problems.at(-1), "problem: grok out of credit: API error (status 402 Payment Required): Grok Build usage balance exhausted");
+  assert.equal(empty.stdout.trim().split("\n").at(-1), "RESULT: skip review out of credit (grok-4.7)");
+  assert.deepEqual(f.counts(), { grok: { "kit-review": 0 } });
+  const handed = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: lookTable(f), FAKE_MODE: "out-of-credit-event" });
+  assert.equal(handed.status, 0, handed.stdout + handed.stderr);
+  assert.match(handed.stdout, /^second look: opencode\/deepseek-v4\.1-flash-free takes it \(grok-4\.7 out of credit\)$/m);
+  assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(handed.stdout), "second-look.json"), "utf8")), { kind: "code", model: opencodeModel, ok: true });
 });
 
 test("a missing Grok CLI or a Grok outage hands the second look to OpenCode", (t) => {

@@ -278,6 +278,23 @@ export function outOfCreditProblem(text, cli) {
   return message ? `problem: ${reviewFamily(cli) ?? cli} out of credit: ${message}` : null;
 }
 
+// A failed Grok call ends with one JSON error event on stdout whose message wraps the API's own error:
+// {"type":"error","message":"Internal error: {\"message\": \"API error (status 402 Payment Required): …\", \"http_status\": 402}"}.
+// It is out of credit when that error's HTTP status is 402, or, with no status, its message names payment or balance.
+export function grokOutOfCredit(stdout) {
+  for (const event of opencodeEvents(stdout).filter(event => event.type === "error" && typeof event.message === "string").reverse()) {
+    const start = event.message.indexOf("{");
+    let inner = null;
+    try { inner = start < 0 ? null : JSON.parse(event.message.slice(start)); } catch { /* A plain message is read as text. */ }
+    const status = isRecord(inner) ? inner.http_status : undefined;
+    const message = isRecord(inner) && typeof inner.message === "string" ? inner.message : event.message;
+    if (typeof status === "number" ? status === 402 : /payment required|balance exhausted/i.test(message)) {
+      return `problem: grok out of credit: ${message.trim()}`;
+    }
+  }
+  return null;
+}
+
 // A refusal spent no review only when it is all the call printed. The log holds both
 // streams: Codex logs nothing after its echo of the prompt but its own warnings and the
 // limit line, Grok logs the limit line alone. Any work before the limit means quota was used.
@@ -509,7 +526,7 @@ export function grokAdapter(options) {
     args: [...args, ...(options.sessionId ? ["-s", options.sessionId] : [])],
     resume: session => [...args, "--resume", session],
     session: stdout => JSON.parse(stdout).sessionId,
-    outOfCredit: (_stdout, log, status) => status ? outOfCreditProblem(log, "grok") : null,
+    outOfCredit: (stdout, log, status) => status ? grokOutOfCredit(stdout) ?? outOfCreditProblem(log, "grok") : null,
     finish: stdout => grokResult(stdout, model),
   };
 }

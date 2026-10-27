@@ -10,7 +10,7 @@ import { reviewBrief, reviewComplete, reviewFormat } from "../scripts/agents/rev
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { unitSummary } from "../scripts/agents/unit-summary.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
-import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokResult, inferCli, isoWeek, opencodeErrorProblem, opencodeExport, opencodeExportTimeout, opencodeOutOfCredit, opencodeResult, opencodeReviewAgent, opencodeReviewConfig, opencodeUsageLimit, outOfCreditProblem, parseAgentArgs, refusedOutright, sessionObserver, releaseReviewBudget, reserveReviewBudget, reviewBase, usageLimitProblem } from "../scripts/agents/agent-run.mjs";
+import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokOutOfCredit, grokResult, inferCli, isoWeek, opencodeErrorProblem, opencodeExport, opencodeExportTimeout, opencodeOutOfCredit, opencodeResult, opencodeReviewAgent, opencodeReviewConfig, opencodeUsageLimit, outOfCreditProblem, parseAgentArgs, refusedOutright, sessionObserver, releaseReviewBudget, reserveReviewBudget, reviewBase, usageLimitProblem } from "../scripts/agents/agent-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { durationMilliseconds } from "../scripts/agents/sol-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
@@ -493,6 +493,16 @@ test("provider usage-limit messages become a family usage-limit problem", () => 
   const quoted = `exec\n${openai}\n  const openai = "${openai}";\n${"read more\n".repeat(6)}ERROR: stream disconnected before completion\n`;
   assert.equal(usageLimitProblem(quoted, "codex"), null);
   assert.equal(usageLimitProblem(`{\n  "text": "${openai}"\n}`, "grok"), null);
+});
+
+test("Grok's JSON error event is out of credit only for HTTP 402 or, without a status, a payment or balance message", () => {
+  const event = (message: string) => JSON.stringify({ type: "error", message });
+  const api = (status: number, message: string) => `Internal error: {\n  "message": "${message}",\n  "http_status": ${status}\n}`;
+  const empty = "API error (status 402 Payment Required): Grok Build usage balance exhausted";
+  assert.equal(grokOutOfCredit(`${event(api(402, empty))}\n`), `problem: grok out of credit: ${empty}`);
+  assert.equal(grokOutOfCredit(event("Payment Required")), "problem: grok out of credit: Payment Required");
+  for (const stdout of ["", event(api(502, "Bad gateway (balance exhausted upstream)")), event("Bad gateway (request 402)"),
+    JSON.stringify({ text: empty, modelUsage: {} }), `Error: Internal error: ${api(402, empty)}`]) assert.equal(grokOutOfCredit(stdout), null, stdout);
 });
 
 test("an HTTP 402 closing line becomes an out-of-credit problem; tool traces, quoted, indented or JSON 402s do not", () => {
