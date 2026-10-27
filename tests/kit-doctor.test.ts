@@ -422,13 +422,16 @@ test("doctor names a missing jq instead of calling a good settings file unreadab
   for (const name of readdirSync("/usr/bin")) if (!["jq", "node"].includes(name)) symlinkSync(join("/usr/bin", name), join(bin, name));
   symlinkSync(process.execPath, join(bin, "node"));
   assert.notEqual(spawnSync("/bin/bash", ["-c", "command -v jq"], { env: { PATH: bin } }).status, 0, "jq is still on the test PATH");
+  // The project's own checks and Playwright module cannot be read either; doctor says it skipped them.
+  writeFileSync(join(f.build, "scripts/agents/kit.json"), JSON.stringify({ project: "native-site-editor", branches: { land: "dev" },
+    devRoot: f.dev, sharedNodeModules: join(f.dev, "node_modules"), checks: { doctor: "true" } }));
   for (const direct of [true, false]) {
     const result = f.run([], f.build, { PATH: bin }, direct);
     assert.equal(result.status, 1, result.stdout + result.stderr);
     const lines = result.stdout.trimEnd().split("\n");
     assert.ok(lines.includes("✗ settings: jq is not installed, so scripts/agents/kit.json cannot be read; fix: install jq"), result.stdout);
     // The checks that need a setting say jq skipped them; no other line blames the settings file.
-    for (const name of ["place", "base", "node_modules"]) assert.ok(lines.includes(`✓ ${name}: skipped (jq is not installed)`), result.stdout);
+    for (const name of ["place", "base", "node_modules", "playwright", "checks.doctor"]) assert.ok(lines.includes(`✓ ${name}: skipped (jq is not installed)`), result.stdout);
     assert.deepEqual(lines.filter(line => line.includes("scripts/agents/kit.json")), [lines.find(line => line.startsWith("✗ settings: "))]);
     assert.match(lines.at(-1)!, /^RESULT: fail doctor \d+ failed: settings/);
   }

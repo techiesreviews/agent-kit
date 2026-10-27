@@ -124,7 +124,6 @@ async function main(args) {
     for (const { file, reason } of selected) console.log(`${file} — ${reason}`);
     if (!selected.length) { kitResult("ok", "unit none affected"); return 0; }
     if (flags.list) { kitResult("ok", `unit ${selected.length} selected (list only)`); return 0; }
-    status = 1;
     const env = nodeEnv();
     // Nested kit invocations must start a real test runner, not inherit node:test's child context.
     delete env.NODE_TEST_CONTEXT;

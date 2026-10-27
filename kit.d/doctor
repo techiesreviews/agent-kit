@@ -169,13 +169,16 @@ fi
 # playwright: where Playwright comes from for a project without its own (a module file or folder,
 # relative to the project's top folder or absolute); KIT_PLAYWRIGHT_MODULE overrides it.
 playwright=${KIT_PLAYWRIGHT_MODULE:-$(setting .playwright)}
-if [[ -n $playwright ]]; then
+if [[ -z $playwright && $jq_missing == true ]]; then
+  pass playwright 'skipped (jq is not installed)'
+elif [[ -n $playwright ]]; then
   [[ $playwright == /* ]] || playwright=$root/$playwright
   if [[ -e $playwright ]]; then pass playwright "$playwright"
   else fail playwright "$playwright is missing" 'install Playwright there or fix "playwright" in scripts/agents/kit.json'; fi
 fi
 
 # checks.doctor: the project's own doctor lines, each a shell command run in the top folder (one or a list).
+if [[ $jq_missing == true ]]; then pass checks.doctor 'skipped (jq is not installed)'; fi
 while IFS= read -r line; do
   [[ -n $line ]] || continue
   code=0

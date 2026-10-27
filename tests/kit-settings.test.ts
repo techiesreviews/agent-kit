@@ -401,6 +401,17 @@ test("without jq, unit.sh and worktree.sh name it and stop, making no worktree",
   assert.equal(made.stderr, "worktree.sh: jq is not installed; install jq\n");
   assert.equal(existsSync(join(dirname(realpathSync(f.root)), "kit-land-feature-nojq")), false);
   assert.equal(f.git("branch", "--list", "feature/nojq"), "");
+  // kit_setting itself fails, naming jq, rather than reading every key as unset.
+  const setting = bash("kit_setting .project", { KIT_ROOT: f.root, PATH: env.PATH });
+  assert.equal(setting.status, 1, setting.stdout + setting.stderr);
+  assert.equal(setting.stdout, "");
+  assert.equal(setting.stderr, "jq is not installed; install jq\n");
+  // An unknown command names jq too, not a good settings file as unreadable.
+  const unknown = f.run(["nosuch"], { PATH: env.PATH });
+  assert.equal(unknown.status, 2, unknown.stdout + unknown.stderr);
+  assert.match(unknown.stderr, /^kit: unknown command 'nosuch' \(jq is not installed; install jq\)$/m);
+  assert.doesNotMatch(unknown.stderr, /unreadable/);
+  assert.equal(lastLine(unknown), "RESULT: fail unknown command nosuch (jq is not installed; install jq)");
 });
 
 test("without a maps folder, next and heartbeat say so, tickets.mjs reads nothing and score still lists records", t => {
