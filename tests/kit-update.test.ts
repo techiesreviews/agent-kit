@@ -194,6 +194,46 @@ function steppedBack(t: { after: (fn: () => void) => void }) {
   return { k, one, two };
 }
 
+// A PATH whose tar unpacks and then drops kit-lib.sh (the update calls tar -x -C <folder>).
+function tarWithoutKitLib(k: { directory: string; env: NodeJS.ProcessEnv }) {
+  const bin = join(k.directory, "tar-bin");
+  mkdirSync(bin);
+  const tar = spawnSync("sh", ["-c", "command -v tar"], { encoding: "utf8" }).stdout.trim();
+  writeFileSync(join(bin, "tar"), `#!/bin/sh\n${tar} "$@" && rm -f -- "$3/kit-lib.sh"\n`, { mode: 0o755 });
+  return `${bin}:${k.env.PATH}`;
+}
+
+test("kit update keeps a broken current folder when its fresh unpack is not a whole kit", (t) => {
+  const k = kitRepo(t);
+  const one = k.publish("one");
+  k.run();
+  spawnSync("chmod", ["-R", "u+w", join(k.data, one)]);
+  rmSync(join(k.data, one, "kit-lib.sh"));
+  const updated = readFileSync(join(k.data, "updated"), "utf8");
+  const refill = k.run([], { PATH: tarWithoutKitLib(k) });
+  assert.equal(refill.status, 1, refill.stdout + refill.stderr);
+  assert.equal(refill.stdout, `RESULT: fail update main ${short(one)} has no kit front door and kit-lib.sh at its top\n`);
+  assert.equal(readFileSync(join(k.data, one, "marker"), "utf8"), "one");
+  assert.equal(k.link("current"), one);
+  assert.equal(readFileSync(join(k.data, "updated"), "utf8"), updated);
+  assert.deepEqual(readdirSync(k.data).filter((name) => name.startsWith(".unpack.")), []);
+});
+
+test("a second kit update --previous with the current folder gone changes nothing; kit update refills it", (t) => {
+  const { k, one, two } = steppedBack(t);
+  spawnSync("chmod", ["-R", "u+w", join(k.data, one)]);
+  rmSync(join(k.data, one), { recursive: true, force: true });
+  const again = k.run(["--previous"]);
+  assert.equal(again.status, 0, again.stdout + again.stderr);
+  assert.equal(again.stdout, `RESULT: ok update already back on ${short(one)}\n`);
+  assert.equal(k.link("current"), one);
+  assert.equal(k.link("previous"), two);
+  assert.equal(readFileSync(join(k.data, "held"), "utf8"), `${two}\n`);
+  assert.equal(k.run().stdout.trimEnd().split("\n").at(-1), `RESULT: ok update refilled ${short(one)}`);
+  assert.ok(existsSync(join(k.data, one, "kit-lib.sh")));
+  assert.equal(readFileSync(join(k.data, "held"), "utf8"), `${two}\n`);
+});
+
 test("a held kit update fills a removed current folder again instead of going back to main", (t) => {
   const { k, one, two } = steppedBack(t);
   spawnSync("chmod", ["-R", "u+w", join(k.data, one)]);
@@ -258,13 +298,8 @@ test("a held kit update whose unpack has no kit-lib.sh fails and leaves the brok
   const { k, one, two } = steppedBack(t);
   spawnSync("chmod", ["-R", "u+w", join(k.data, one)]);
   rmSync(join(k.data, one, "kit-lib.sh"));
-  // A tar that unpacks and then drops kit-lib.sh (the update calls tar -x -C <folder>).
-  const bin = join(k.directory, "bin");
-  mkdirSync(bin);
-  const tar = spawnSync("sh", ["-c", "command -v tar"], { encoding: "utf8" }).stdout.trim();
-  writeFileSync(join(bin, "tar"), `#!/bin/sh\n${tar} "$@" && rm -f -- "$3/kit-lib.sh"\n`, { mode: 0o755 });
   const updated = readFileSync(join(k.data, "updated"), "utf8");
-  const refill = k.run([], { PATH: `${bin}:${k.env.PATH}` });
+  const refill = k.run([], { PATH: tarWithoutKitLib(k) });
   assert.equal(refill.status, 1, refill.stdout + refill.stderr);
   assert.equal(refill.stdout, `RESULT: fail update held ${short(one)} has no kit front door and kit-lib.sh at its top\n`);
   assert.equal(readFileSync(join(k.data, one, "marker"), "utf8"), "one");
