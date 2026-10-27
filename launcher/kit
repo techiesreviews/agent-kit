@@ -23,8 +23,8 @@ if [[ -z ${KIT_HOME:-} || $KIT_HOME == "${KIT_HOME_DEFAULT:-}" ]] || { [[ $KIT_H
     why="no machine copy; cannot clone $KIT_REPO"
     trap '[[ -z $clone ]] || rm -rf -- "$clone"' EXIT
     mkdir -p -- "$cache" && clone=$(mktemp -d "$cache/agent-kit.XXXXXX") && git clone -q --depth 1 -- "$KIT_REPO" "$clone" >&2 &&
-      why="the clone of $KIT_REPO holds no whole kit" && whole "$clone" &&
-      date +%s > "$clone/.git/kit-cloned" && mv -T -- "$clone" "$KIT_HOME" 2>/dev/null && clone='' || :
+      { whole "$clone" || { why="the clone of $KIT_REPO holds no whole kit"; false; }; } &&
+      why="cannot place the clone at $KIT_HOME" && date +%s > "$clone/.git/kit-cloned" && mv -T -- "$clone" "$KIT_HOME" 2>/dev/null && clone='' || :
     [[ -z $clone ]] || rm -rf -- "$clone"
   fi
 fi

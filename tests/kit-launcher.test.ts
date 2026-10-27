@@ -380,7 +380,7 @@ test("a picked folder removed just before the launcher resolves it is named in t
   const one = f.publish("one");
   assert.equal(f.kit(["update"]).status, 0);
   const folder = join(f.data, one);
-  spawnSync("chmod", ["-R", "u+w", folder]);
+  assert.equal(spawnSync("chmod", ["-R", "u+w", folder]).status, 0);
   // A cd that removes the folder first, as kit update can between the whole-kit check and the resolve step.
   const cd = `() { if [[ \${2-} == ${JSON.stringify(folder)} ]]; then rm -rf -- "$2"; fi; builtin cd "$@"; }`;
   const result = f.kit(["where"], { "BASH_FUNC_cd%%": cd });
@@ -395,7 +395,7 @@ test("a pinned whole kit without hooks/run.sh is kept by the kit launcher, while
   assert.equal(f.kit(["update"]).status, 0);
   const two = f.publish("two");
   assert.equal(f.kit(["update"]).status, 0);
-  spawnSync("chmod", ["-R", "u+w", join(f.data, one), join(f.data, two)]);
+  assert.equal(spawnSync("chmod", ["-R", "u+w", join(f.data, one), join(f.data, two)]).status, 0);
   rmSync(join(f.data, one, "hooks/run.sh"));
   writeFileSync(join(f.data, two, "hooks/bash-guard.sh"), 'printf "two guard\\n" >&2; exit 2\n');
   const inherited = { KIT_HOME: join(f.data, one), KIT_HOME_PINNED: join(f.data, one) };
@@ -431,4 +431,16 @@ test("a person's whole KIT_HOME beside a different marker wins for both launcher
   assert.deepEqual(lines(f.kit(["where"], chosen)), [`${branch} branch`]);
   const tried = f.hook("bash-guard", stashPop, chosen);
   assert.deepEqual([tried.status, tried.stderr], [2, "branch guard\n"]);
+});
+
+test("a whole clone that cannot be put in place is not blamed as a half kit", (t) => {
+  const f = fixture(t);
+  f.publish("one");
+  const cache = join(f.cache, "agent-kit");
+  // An mv racing another process that leaves a folder that is not a kit where the clone was to go.
+  const mv = `() { mkdir -p -- "\${@: -1}" && touch -- "\${@: -1}/notes"; command mv "$@"; }`;
+  const result = f.kit(["where"], { "BASH_FUNC_mv%%": mv });
+  assert.equal(result.status, 2, result.stderr);
+  assert.equal(result.stdout, `RESULT: fail no Agent Kit at ${cache} (cannot place the clone at ${cache})\n`);
+  assert.deepEqual(readdirSync(f.cache), ["agent-kit"]);
 });
