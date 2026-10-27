@@ -22,7 +22,7 @@ type Layout = { tap: boolean; rule: string; screen: string; kind: string; select
 type Ux = {
   bundleLimit: number;
   screenFiles: Record<string, string[]>;
-  parseArgs(args: string[]): { base: string; features: string[]; all: boolean; noReview: boolean; ticket?: string };
+  parseArgs(args: string[]): { base?: string; features: string[]; all: boolean; noReview: boolean; ticket?: string };
   parseFeatures(markdown: string): Feature[];
   touchedFeatures(features: Feature[], changed: string[]): Feature[];
   selectFeatures(features: Feature[], changed: string[], flags: { all?: boolean; features?: string[] }): Feature[];
@@ -36,8 +36,10 @@ type Ux = {
   pickImages(images: Image[], limit?: number): { kept: Image[]; trimmed: (Image & { reason: string })[] };
   guessTicket(branch: string, files: string[]): string | undefined;
   mockupLinks(text: string, ticket: string): string[];
+  colourFindings(status: number, output: string, command: string, log: string): Finding[];
 };
 const ux: Ux = await import(pathToFileURL(script).href);
+const editorColours: string = JSON.parse(readFileSync(resolve("scripts/agents/kit.json"), "utf8")).checks.css;
 
 const entry = (id: string, files: string[], { phone = "yes", steps = "none yet", good = "Calm (S1)." } = {}) => [
   `### ${id} Feature ${id}`, "- Try: Open it.", `- Good: ${good}`, `- Files: ${files.map(file => `\`${file}\``).join(", ")}`,
@@ -73,7 +75,7 @@ test("features parse outside fences, and a diff touches the features whose Files
 });
 
 test("flags: --all and --features exclude each other, ids are checked and values required", () => {
-  assert.deepEqual(ux.parseArgs([]), { base: "origin/dev", features: [], all: false, noReview: false, ticket: undefined });
+  assert.deepEqual(ux.parseArgs([]), { base: undefined, features: [], all: false, noReview: false, ticket: undefined });
   assert.deepEqual(ux.parseArgs(["--features", "F-media-01,F-pages-08,F-media-01", "--base", "dev", "--no-review"]).features, ["F-media-01", "F-pages-08"]);
   assert.equal(ux.parseArgs(["--all"]).all, true);
   for (const [args, message] of [
@@ -211,8 +213,10 @@ function fixture(t: TestContext, gitConfig: [string, string][] = []) {
   put("docs/w/build/tickets/1-panel.md", "Approved [mock-up](../mockups/panel.html).\n");
   put("src/page-builder/media-picker.css", ".a { gap: var(--space); }\n");
   put("src/page-builder/media-library-filter.ts", "export {};\n");
-  // The colour check is the project's own helper.
+  // This editor's settings: it lands on dev and its colour check is its own helper (checks.css).
+  put("scripts/agents/kit.json", JSON.stringify({ project: "x", branches: { land: "dev" }, checks: { css: editorColours } }));
   put("scripts/check-colours.mjs", readFileSync(resolve("scripts/check-colours.mjs"), "utf8"));
+  put("scripts/check-colours.allow.json", "[]\n");
   git("add", "."); git("commit", "--quiet", "-m", "base");
   git("update-ref", "refs/remotes/origin/dev", "HEAD");
   // The fake kit shots writes one shot per width and theme, a contact sheet and a strip; FAIL_STEP fails every shot,
@@ -313,7 +317,7 @@ test("kit ux reads the commands folder from an incomplete settings file and name
   put("src/page-builder/media-picker.css", ".a { gap: var(--space); }\n.b { gap: var(--space); }\n");
   const real = { KIT_UX_SHOTS: undefined, KIT_COMMANDS_DIR: undefined };
   // No "project": the front door still finds the folder, so ux does too.
-  put("scripts/agents/kit.json", JSON.stringify({ commands: "own" }));
+  put("scripts/agents/kit.json", JSON.stringify({ commands: "own", branches: { land: "dev" } }));
   put("own/shots.mjs", readFileSync(join(root, ".scratch/shots.mjs"), "utf8"));
   chmodSync(join(root, "own/shots.mjs"), 0o755);
   const incomplete = run(["--no-review"], real);
@@ -362,18 +366,76 @@ test("kit ux runs its checks without a project shots command when no touched fea
   assert.deepEqual(calls(), []);
 });
 
-test("kit ux reads the colour check from the project, and a project without one gets no colour findings", t => {
+test("kit ux diffs against origin/<land> from the settings when the project lands on main", t => {
+  const { git, put, run } = fixture(t);
+  put("scripts/agents/kit.json", JSON.stringify({ project: "x", branches: { land: "main" }, checks: { css: editorColours } }));
+  git("commit", "--quiet", "-am", "lands on main");
+  git("update-ref", "refs/remotes/origin/main", "HEAD");
+  git("update-ref", "-d", "refs/remotes/origin/dev");
+  put("src/page-builder/media-picker.css", ".a { gap: var(--space); }\n.b { gap: var(--space); }\n");
+  const output = run(["--no-review"]);
+  assert.equal(output.status, 0, output.stdout + output.stderr);
+  assert.match(output.result, /^RESULT: ok ux 1 features tried, /);
+  const markdown = readFileSync(join(/bundle (\S+)$/.exec(output.result)![1], "bundle.md"), "utf8");
+  assert.match(markdown, new RegExp(`base origin/main \\(merge-base ${git("rev-parse", "--short=8", "HEAD")}\\)`));
+  // No land branch and no --base is one plain line.
+  put("scripts/agents/kit.json", JSON.stringify({ project: "x", branches: {}, checks: { css: editorColours } }));
+  const unset = run(["--no-review"]);
+  assert.equal(unset.status, 1, unset.stdout + unset.stderr);
+  assert.equal(unset.result, "RESULT: fail ux needs --base (no branches.land in scripts/agents/kit.json)");
+});
+
+test("kit ux takes raw colours from the project's checks.css command, and says when there is none", t => {
   const { root, put, run } = fixture(t);
-  put("docs/agents/features.md", ["# Feature list", "", entry("F-plain-01", ["src/plain.css"])].join("\n"));
-  put("src/plain.css", ".a { color: #fff; }\n");
-  const bundle = () => {
+  put("docs/agents/features.md", ["# Feature list", "", entry("F-plain-01", ["src/plain.css", "styles/own.css"])].join("\n"));
+  put("src/plain.css", ".a { color: var(--ink); }\n");
+  put("styles/own.css", ".a { color: red; }\n");
+  const report = () => {
     const output = run(["--no-review"], { KIT_UX_SHOTS: undefined, KIT_COMMANDS_DIR: undefined });
     assert.equal(output.status, 0, output.stdout + output.stderr);
-    return readFileSync(join(/bundle (\S+)$/.exec(output.result)![1], "bundle.md"), "utf8");
+    return { stdout: output.stdout, bundle: readFileSync(join(/bundle (\S+)$/.exec(output.result)![1], "bundle.md"), "utf8") };
   };
-  assert.match(bundle(), /- L2 src\/plain\.css:1: raw colour #fff/);
-  rmSync(join(root, "scripts/check-colours.mjs"));
-  assert.doesNotMatch(bundle(), /raw colour/);
+  // Another project's own checker: it is given the changed CSS files and prints file:line for each failure.
+  put("tools/colours.mjs", `import { appendFileSync, readFileSync } from "node:fs";
+appendFileSync(".scratch/colour-calls.jsonl", JSON.stringify(process.argv.slice(2)) + "\\n");
+const failures = process.argv.slice(2).filter(file => /red/.test(readFileSync(file, "utf8")));
+console.log("checking " + process.argv.length + " files");
+for (const file of failures) console.error(file + ":1:12: red is not a token");
+process.exitCode = failures.length ? 1 : 0;
+`);
+  put("scripts/agents/kit.json", JSON.stringify({ project: "x", branches: { land: "dev" }, checks: { css: "node tools/colours.mjs" } }));
+  const own = report();
+  assert.deepEqual(readFileSync(join(root, ".scratch/colour-calls.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line)), [["src/plain.css", "styles/own.css"]]);
+  assert.deepEqual(own.bundle.split("\n").filter(line => line.startsWith("- L2")), ["- L2 styles/own.css:1: raw colour red is not a token"]);
+  assert.match(own.stdout, /^colours: node tools\/colours\.mjs: 1 findings$/m);
+  // No checks.css: the skipped line, in the output and the bundle, and no L2 findings.
+  put("scripts/agents/kit.json", JSON.stringify({ project: "x", branches: { land: "dev" } }));
+  const none = report();
+  assert.match(none.stdout, /^colours: skipped \(no checks\.css in scripts\/agents\/kit\.json\)$/m);
+  assert.match(none.bundle, /^colours: skipped \(no checks\.css in scripts\/agents\/kit\.json\)$/m);
+  assert.doesNotMatch(none.bundle, /^- L2 /m);
+  assert.equal(readFileSync(join(root, ".scratch/colour-calls.jsonl"), "utf8").trim().split("\n").length, 1);
+});
+
+test("kit ux with this editor's checks.css finds a raw colour and leaves an allowed one alone", t => {
+  const { put, run } = fixture(t);
+  put("docs/agents/features.md", ["# Feature list", "", entry("F-plain-01", ["src/plain.css"])].join("\n"));
+  put("scripts/check-colours.allow.json", JSON.stringify([{ file: "src/plain.css", match: "mask: linear-gradient(#000", reason: "Alpha only." }]));
+  put("src/plain.css", ".a { color: #fff; }\n.b { mask: linear-gradient(#000, transparent); }\n");
+  const output = run(["--no-review"], { KIT_UX_SHOTS: undefined, KIT_COMMANDS_DIR: undefined });
+  assert.equal(output.status, 0, output.stdout + output.stderr);
+  const markdown = readFileSync(join(/bundle (\S+)$/.exec(output.result)![1], "bundle.md"), "utf8");
+  assert.deepEqual(markdown.split("\n").filter(line => line.startsWith("- L2")), ["- L2 src/plain.css:1: raw colour #fff"]);
+});
+
+test("a failed colour check names each file and line it printed, else its first line and log", () => {
+  assert.deepEqual(ux.colourFindings(0, "src/a.css:1: #fff\n", "check", "/log"), []);
+  assert.deepEqual(ux.colourFindings(1, "header\n\x1b[31msrc/a.css:3:7: #fff\x1b[0m\nsrc/b.css:9: red\n", "check", "/log"), [
+    { rule: "L2", file: "src/a.css", line: 3, text: "raw colour #fff" },
+    { rule: "L2", file: "src/b.css", line: 9, text: "raw colour red" },
+  ]);
+  assert.deepEqual(ux.colourFindings(2, "\nError: no allow list\n    at x\n", "check", "/log"), [{ rule: "L2", file: "colours", line: 0, text: "check exited 2: Error: no allow list; log /log" }]);
+  assert.deepEqual(ux.colourFindings(127, "", "check", "/log"), [{ rule: "L2", file: "colours", line: 0, text: "check exited 127; log /log" }]);
 });
 
 test("kit ux tries touched features, runs scripted checks and writes a bounded bundle", t => {

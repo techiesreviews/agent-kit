@@ -13,14 +13,16 @@ const { kitRoot, kitMainRoot, kitOwner, kitResult, kitScore, kitSettingsFile, sc
 export const bundleLimit = 60_000, imageLimit = 12, imageBytes = 300_000;
 const usage = `Usage: kit ux [--base REF] [--features F-…,…] [--all] [--no-review] [--ticket FILE]
        kit ux --help
-Touched features: the diff against the merge-base with --base (default origin/dev), plus
+Touched features: the diff against the merge-base with --base (default origin/<land>, branches.land
+in scripts/agents/kit.json), plus
 uncommitted and untracked files, matched against each feature's Files globs in
 docs/agents/features.md. --features names them instead; --all takes every feature.
 Tries: each feature's Steps file through the project's own kit shots (in the folder "commands"
 names in scripts/agents/kit.json) --steps at 1280 px (and 390 px when Phone: yes), light and
 dark. A feature without Steps gets the named screens its Files map to, marked untried.
 Scripted checks: layout findings, tap targets under 44 px at 390, raw colours in changed
-CSS, new visible text over 60 characters, new hint/tip/count/badge class names, and raw px
+CSS (the project's checks.css command, given the changed CSS files; each file:line it prints
+when it fails is one L2 finding; none is "colours: skipped"), new visible text over 60 characters, new hint/tip/count/badge class names, and raw px
 spacing and timings in changed CSS counted against the base (reported, never blocking).
 Bundle: <main root>/.scratch/ux/<owner>/<time>-XXXXXX/bundle.md (under 60 KB) and at most 12
 images of at most 300 KB (contact sheets and record strips); the lowest-value items are
@@ -57,7 +59,7 @@ export const screenFiles = {
 const layoutRules = { "clipped": "L5", "overlap": "L5", "contrast": "L12", "overflow": "U4", "tap-target": "U6" };
 
 export function parseArgs(args) {
-  const flags = { base: "origin/dev", features: [], all: false, noReview: false, ticket: undefined };
+  const flags = { base: undefined, features: [], all: false, noReview: false, ticket: undefined };
   const seen = new Set();
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -315,23 +317,38 @@ async function runLogged(root, command, args, log) {
   return status;
 }
 
+/**
+ * The project's settings, each key read alone as the front door's kit_setting does, so a missing key hides no other;
+ * no file is no settings, a broken one is named.
+ */
+function projectSettings(root) {
+  let text;
+  try { text = readFileSync(join(root, kitSettingsFile), "utf8"); }
+  catch (error) {
+    if (error.code === "ENOENT") return {};
+    throw new Error(`${kitSettingsFile} is unreadable: ${error.message}`);
+  }
+  let settings;
+  try { settings = JSON.parse(text); }
+  catch (error) { throw new Error(`${kitSettingsFile} is unreadable: ${error.message}`); }
+  return settings && typeof settings === "object" && !Array.isArray(settings) ? settings : {};
+}
+
+/** A non-empty string setting, else undefined. */
+const textSetting = value => typeof value === "string" && value.trim() ? value.trim() : undefined;
+
+/** The default base: origin/<branches.land>, as kit pr and kit review take it. */
+function landBase(settings) {
+  const land = textSetting(settings.branches?.land);
+  if (!land) throw new Error(`needs --base (no branches.land in ${kitSettingsFile})`);
+  return `origin/${land}`;
+}
+
 /** The project's own kit shots: KIT_UX_SHOTS (tests), else shots in KIT_COMMANDS_DIR or the folder "commands" names. */
-function projectShots(root) {
+function projectShots(root, settings) {
   const env = process.env;
   if (env.KIT_UX_SHOTS) return env.KIT_UX_SHOTS;
-  let folder = env.KIT_COMMANDS_DIR;
-  // Read "commands" alone, as the front door's kit_setting does, so other missing keys do not hide the folder; a broken file is named.
-  if (!folder) {
-    let text;
-    try { text = readFileSync(join(root, kitSettingsFile), "utf8"); }
-    catch (error) { if (error.code !== "ENOENT") throw new Error(`${kitSettingsFile} is unreadable: ${error.message}`); }
-    if (text !== undefined) {
-      let settings;
-      try { settings = JSON.parse(text); }
-      catch (error) { throw new Error(`${kitSettingsFile} is unreadable: ${error.message}`); }
-      if (typeof settings?.commands === "string" && settings.commands.trim()) folder = settings.commands;
-    }
-  }
+  const folder = env.KIT_COMMANDS_DIR || textSetting(settings.commands);
   if (!folder) throw new Error('needs a project shots command (no "commands" folder in scripts/agents/kit.json)');
   const directory = resolve(root, folder);
   let names = [];
@@ -425,6 +442,20 @@ export function tryFailures(index, status, log) {
   return lines.length || !status ? lines : [`kit shots exited ${status}; log ${log}`];
 }
 
+/**
+ * L2 findings from the project's checks.css run: none when it passed, else one per `file:line: text` line it printed;
+ * a failed run that names no line is one finding pointing at its log.
+ */
+export function colourFindings(status, output, command, log) {
+  if (!status) return [];
+  const lines = output.replace(/\x1b\[[0-9;]*m/g, "").split("\n").map(line => line.trim()).filter(Boolean);
+  const located = lines.flatMap(text => {
+    const match = /^(\S[^:]*):(\d+)(?::\d+)?:\s*(\S.*)$/.exec(text);
+    return match ? [{ rule: "L2", file: match[1], line: Number(match[2]), text: `raw colour ${match[3]}` }] : [];
+  });
+  return located.length ? located : [{ rule: "L2", file: "colours", line: 0, text: `${command} exited ${status}${lines.length ? `: ${lines[0].slice(0, 240)}` : ""}; log ${log}` }];
+}
+
 async function main() {
   const args = process.argv.slice(2);
   if (args.includes("--help") || args.includes("-h")) { process.stdout.write(usage); return 0; }
@@ -441,6 +472,8 @@ async function main() {
   for (const [signal, handler] of handlers) process.on(signal, handler);
   const git = (...gitArgs) => execFileSync("git", ["-C", root, ...gitArgs], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
   try {
+    const settings = projectSettings(root);
+    flags.base ??= landBase(settings);
     let mergeBase;
     try { mergeBase = git("merge-base", "HEAD", flags.base).trim(); }
     catch { throw new Error(`no merge-base with ${flags.base}`); }
@@ -451,7 +484,7 @@ async function main() {
     const selected = selectFeatures(features, changed, flags);
     if (!selected.length) { kitResult("ok", "ux nothing visible touched"); return 0; }
     // Only a try takes screenshots, so a project without its own shots is asked for one only then, before any folder is made.
-    const shots = selected.some(feature => feature.steps || screensFor(feature).length) ? projectShots(root) : undefined;
+    const shots = selected.some(feature => feature.steps || screensFor(feature).length) ? projectShots(root, settings) : undefined;
 
     const owner = kitOwner().replace(/[^a-zA-Z0-9_.-]/g, "-").replace(/^\.+$/, "unknown");
     const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
@@ -502,14 +535,17 @@ async function main() {
       try { base = git("show", `${mergeBase}:${file}`); } catch { /* A new file has no base. */ }
       return { file, text: readFileSync(join(root, file), "utf8"), base };
     });
-    let allow = [];
-    try { allow = JSON.parse(readFileSync(join(root, "scripts/check-colours.allow.json"), "utf8")); } catch { /* No allow list. */ }
-    const coloured = css.filter(({ file }) => file.startsWith("src/") && file !== "src/theme.css");
-    // The colour check is a project helper, read from the project's top folder; a project without one has no colour findings.
-    const checker = join(root, "scripts/check-colours.mjs");
-    const { checkColours } = coloured.length && existsSync(checker) ? await import(pathToFileURL(checker).href) : { checkColours: () => [] };
-    const colours = checkColours(coloured.map(({ file, text }) => ({ file, text })), allow.filter(entry => coloured.some(({ file }) => file === entry.file)))
-      .map(failure => ({ rule: "L2", file: failure.file, line: failure.line, text: `raw colour ${failure.match}` }));
+    // Raw colours: the project's checks.css command, as kit pr's colours step runs it, given the changed CSS files.
+    const coloursCommand = textSetting(settings.checks?.css);
+    let colours = [], coloursLine;
+    if (css.length && !coloursCommand) coloursLine = `colours: skipped (no checks.css in ${kitSettingsFile})`;
+    else if (css.length) {
+      const [name, ...argv] = coloursCommand.split(/\s+/), log = join(triesDir, "colours.log");
+      const status = await runLogged(root, name, [...argv, ...css.map(({ file }) => file)], log);
+      colours = colourFindings(status, readFileSync(log, "utf8"), coloursCommand, log);
+      coloursLine = `colours: ${coloursCommand}: ${colours.length ? `${colours.length} findings` : "ok"}`;
+    }
+    if (coloursLine) console.log(coloursLine);
     const layout = layoutFindings(tries);
     // Base text of each changed source file, so moved or re-edited lines are not counted as new.
     const bases = new Map([...new Set(added.map(entry => entry.file))].map(file => {
@@ -558,6 +594,7 @@ async function main() {
       "",
       `Head ${head}; base ${flags.base} (merge-base ${mergeBase.slice(0, 8)}). Model review: ${flags.noReview ? "skipped (--no-review)" : `${process.env.ASE_UX_MODEL || "claude-opus-5-5"}, one verdict per touched feature`}.`,
       `Tries: ${tried.length} tried (${passed} passed, ${tried.length - passed} failed), ${selected.length - tried.length} untried. Scripted findings: ${findingLines.length}.`,
+      ...coloursLine ? [coloursLine] : [],
       `Raw tries: ${triesDir}`,
     ], [
       { title: "Tries", priority: 9, lines: tryLines },
