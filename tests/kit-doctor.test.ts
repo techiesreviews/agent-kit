@@ -973,6 +973,14 @@ test("a version whose help and copy both hang skips the kit home check; a copy t
   assert.equal(fast.status, 1, fast.stdout + fast.stderr);
   assert.ok(fast.stdout.includes(`✗ kit home: a copy of ${home} fails kit version: RESULT: fail helper missing; fix:`), fast.stdout);
   assert.ok(fast.stdout.endsWith("RESULT: fail doctor 1 failed: kit home\n"), fast.stdout);
+  // A help that fails fast while the copy hangs is not the same failure either.
+  executable(join(f.commands, "version"), "exit 1");
+  executable(join(home, "kit"), "sleep 5");
+  const crossed = run();
+  assert.equal(crossed.status, 1, crossed.stdout + crossed.stderr);
+  assert.ok(crossed.stdout.startsWith("problem: help: version (exit 1); fix:"), crossed.stdout);
+  assert.ok(crossed.stdout.includes(`✗ kit home: a copy of ${home} fails kit version: (timed out); fix:`), crossed.stdout);
+  assert.ok(crossed.stdout.endsWith("RESULT: fail doctor 1 failed: kit home\n"), crossed.stdout);
 });
 
 test("through the real front door, a copy's version failing as its help did is skipped, reading the copy's path as the kit's", (t) => {
@@ -1016,6 +1024,11 @@ test("through the real front door, a copy's version failing as its help did is s
   assert.equal(partial.status, 0, partial.stdout + partial.stderr);
   assert.ok(partial.stdout.includes(`problem: kit home: a copy of ${home} fails kit version: RESULT: fail version exited 1 without a RESULT line; fix:`), partial.stdout);
   assert.ok(partial.stdout.endsWith("RESULT: ok doctor 9/9 checks passed; skipped help, kit home (KIT_DOCTOR_SKIP)\n"), partial.stdout);
+  // Trailing blank lines, dropped from the help's output, are dropped from the copy's too.
+  executable(join(home, "kit.d/version"), 'printf "%s: broken\\n\\n\\n" "$0" >&2; exit 1');
+  const blank = run({ KIT_DOCTOR_SKIP: "help" });
+  assert.equal(blank.status, 0, blank.stdout + blank.stderr);
+  assert.ok(blank.stdout.endsWith("RESULT: ok doctor 9/9 checks passed; skipped help, kit home (KIT_DOCTOR_SKIP)\n"), blank.stdout);
   // A version that hangs: timeout stops the copy's front door, which says so, and the status still reads as timed out.
   // Longer than the old fixed limit's margin, so a run that waits it out shows in the time.
   executable(join(home, "kit.d/version"), "sleep 8");

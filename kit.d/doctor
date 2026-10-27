@@ -332,6 +332,8 @@ version_failed_alike() {
   (( help_code != 0 && code == help_code )) || return 1
   seen=${output//"$copy"/"$home"}
   if [[ $seen == "$front" ]]; then seen=''; else seen=${seen%$'\n'"$front"}; fi
+  # Trailing blank lines go, as $(< …) drops them from the help's output.
+  seen=${seen%"${seen##*[!$'\n']}"}
   [[ $seen == "$(< "$help_dir/$version_index.out")" ]]
 }
 # A copy stopped by timeout may have printed nothing, or only part of a line.
