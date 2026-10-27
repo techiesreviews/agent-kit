@@ -13,7 +13,8 @@ const clean = "REVIEW_STATUS: complete\nDefects:\nSpec: none\nStandards: none\nV
 const findings = `REVIEW_STATUS: complete\nDefects:\nSpec:\n- ${defect}\n  Evidence: the ticket requires this exact text.\nStandards: none\nValidation gaps: none\nOptional nits: none\n`;
 interface Call { args: string[]; input: string; cwd: string; model?: string; cli?: string }
 
-function fixture(t: TestContext) {
+// `settings` adds keys to the project's settings file.
+function fixture(t: TestContext, settings: Record<string, unknown> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ase-kit-fix-"));
   const children: ChildProcess[] = [];
   const releases: string[] = [];
@@ -43,7 +44,7 @@ function fixture(t: TestContext) {
   mkdirSync(join(root, "docs/tickets"), { recursive: true });
   writeFileSync(join(root, ticket), "## Files\n- `file.txt`\n");
   mkdirSync(join(root, "scripts/agents"), { recursive: true });
-  writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify({ project: "kit-fix", branches: { land: "dev" }, standards: "CODING_STANDARDS.md" }));
+  writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify({ project: "kit-fix", branches: { land: "dev" }, standards: "CODING_STANDARDS.md", ...settings }));
   git("add", "."); git("commit", "-m", "base");
   const base = git("rev-parse", "HEAD");
   writeFileSync(join(root, "file.txt"), "broken\n");
@@ -218,6 +219,20 @@ test("kit fix fails clearly and skips review when the validation hook moves HEAD
   assert.equal(existsSync(f.reviewCall), false);
   assert.equal(existsSync(join(f.root, ".git/index.lock")), false);
   assert.equal(existsSync(join(f.root, ".git/HEAD.lock")), false);
+});
+
+test("the fix brief names only the checks the settings set", t => {
+  for (const [settings, line] of [
+    [{ checks: { test: "npm test" } }, "Use Agent Kit at scripts/agents/kit: run doctor first. Report RESULT lines."],
+    [{ unit: { files: ["src/**/*.test.js"] }, checks: { test: "npm test", lint: "npm run lint" } },
+      "Use Agent Kit at scripts/agents/kit: run doctor first, focused unit --affected and npm run lint. Report RESULT lines."],
+  ] as const) {
+    const f = fixture(t, settings); f.review(); f.builder();
+    const result = f.run();
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    const round = readFileSync(join(f.root, ".scratch/kit-fix/build%2Fke-03/round-1.md"), "utf8");
+    assert.ok(round.split("\n").includes(line), round);
+  }
 });
 
 test("kit fix help and argument errors do not start a builder", t => {

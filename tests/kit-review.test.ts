@@ -7,7 +7,7 @@ import test from "node:test";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
 import { codexReviewConfig, makeCodexReviewHome } from "../scripts/agents/agent-run.mjs";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
-import { reviewBrief, reviewFormat, ticketReviewBrief } from "../scripts/agents/review-brief.mjs";
+import { builderChecks, reviewBrief, reviewFormat, ticketReviewBrief } from "../scripts/agents/review-brief.mjs";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
 import { saveReviewEvidence } from "../scripts/agents/review-evidence.mjs";
 
@@ -230,6 +230,18 @@ test("the brief names only the checks and standards files the settings set", t =
   writeFileSync(join(f.root, "scripts/agents/kit.json"), JSON.stringify({ project: "techies-playground", branches: { land: "dev" } }));
   assert.equal(f.run().status, 0);
   assert.match(f.calls()[1].input, /^The project sets no checks in scripts\/agents\/kit\.json; do not assume any ran, and do not report inability to run tests\.$/m);
+});
+
+test("builder briefs name kit unit, the type check, lint and specs only when the settings set them", t => {
+  const root = mkdtempSync(join(tmpdir(), "kit-builder-checks-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  assert.deepEqual(builderChecks(root, { checks: { test: "npm test" } }), { unit: false, check: null, lint: null, specs: false });
+  mkdirSync(join(root, "project.d"));
+  writeFileSync(join(root, "project.d/specs.sh"), "#!/bin/sh\n", { mode: 0o755 });
+  writeFileSync(join(root, "project.d/notes"), "not a command\n");
+  assert.deepEqual(builderChecks(root, { commands: "project.d", unit: { files: ["", "src/**/*.test.js"] }, checks: { check: " npm run check ", lint: "npm run lint" } }),
+    { unit: true, check: "npm run check", lint: "npm run lint", specs: true });
+  assert.equal(builderChecks(root, { commands: "project.d", unit: { files: "" } }).unit, false);
 });
 
 test("review briefs carry declined findings and reasons into kit review", t => {

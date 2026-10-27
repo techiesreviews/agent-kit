@@ -293,6 +293,20 @@ test("doctor adds the project's checks.doctor lines and the playwright module, e
   assert.match(passing.stdout, /RESULT: ok doctor 12\/12 checks passed\n$/);
 });
 
+test("a checks.doctor command that hangs fails as timed out", (t) => {
+  const result = playground(t, { allowMainCheckout: true, checks: { doctor: "sleep 5" } }).run({ KIT_DOCTOR_CHECK_TIMEOUT: "0.3" });
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stdout, /^✗ sleep 5: timed out; fix: see "checks\.doctor" in scripts\/agents\/kit\.json$/m);
+});
+
+test("doctor notes a failed fetch on a passing base and judges the last fetched tip", (t) => {
+  const f = fixture(t);
+  git(f.build, "remote", "set-url", "origin", join(f.directory, "unreachable.git"));
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout);
+  assert.match(result.stdout, /^✓ base: contains origin\/dev [0-9a-f]{7} \(fetch failed; judged the last fetched origin\/dev\)$/m);
+});
+
 test("doctor says no GitHub repo for a repo without a remote and still passes", (t) => {
   const result = playground(t, { allowMainCheckout: true }, false).run();
   assert.equal(result.status, 0, result.stdout);

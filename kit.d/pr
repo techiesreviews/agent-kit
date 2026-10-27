@@ -188,7 +188,8 @@ async function main(args) {
     await git("guards", ["check-ref-format", `refs/heads/${flags.base}`]);
     if (await git("guards", ["status", "--porcelain"])) throw new Error("uncommitted changes");
     // A project with no remote (research 02: astro-live-builder, tidy) has nowhere to open a PR.
-    if ((await execute("guards", "git", ["remote", "get-url", "origin"])).status !== 0) {
+    // Only git's "No such remote" (exit 2) means that; other failures surface at the fetch.
+    if ((await execute("guards", "git", ["remote", "get-url", "origin"])).status === 2) {
       kitResult("fail", "no GitHub repo (no origin remote); kit pr needs one to open a PR");
       return 1;
     }

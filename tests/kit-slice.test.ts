@@ -12,7 +12,8 @@ const findings = "REVIEW_STATUS: complete\nDefects:\nSpec:\n- file.txt:1 P1 rest
 interface Call { phase: string; args: string[] }
 interface State { finished: string[]; build: string; buildModel?: string; review: string; reviewedHead: string; rounds: number; pendingFix?: boolean; pr?: string; queued?: { head: string }; model: string; effort: string; previousModels?: string[] }
 
-function fixture(t: TestContext) {
+// `settings`, when given, is committed as the project's settings file.
+function fixture(t: TestContext, settings?: Record<string, unknown>) {
   const dir = mkdtempSync(join(tmpdir(), "kit-slice-"));
   const children: ChildProcess[] = [], releases: string[] = [];
   t.after(async () => {
@@ -39,6 +40,10 @@ function fixture(t: TestContext) {
   writeFileSync(join(root, ticket), '---\ntitle: "Test slice title"\nstatus: ready-for-agent\n---\n\n## Files\n- `file.txt`\n\n## Done when\n- Required content is present.\n');
   writeFileSync(join(root, ".gitignore"), ".scratch/\n");
   writeFileSync(join(root, "file.txt"), "base\n");
+  if (settings) {
+    mkdirSync(join(root, "scripts/agents"), { recursive: true });
+    writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify(settings));
+  }
   git("add", "-A"); git("commit", "-m", "base");
   const head = git("rev-parse", "HEAD"), callsFile = join(dir, "calls.jsonl");
   const shared = `
@@ -259,14 +264,13 @@ test("kit slice help and invalid options never launch commands", t => {
 });
 
 test("kit slice writes the ticket brief, runs phases in order, credits and commits the builder, and lands", t => {
-  const f = fixture(t), result = f.run();
+  const f = fixture(t, { project: "kit-slice", branches: { land: "dev" }, checks: { check: "npm run check" }, unit: { files: "tests/*.test.ts" } }), result = f.run();
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const brief = readFileSync(join(f.root, ".scratch/agent-brief.md"), "utf8");
   for (const text of [f.ticket, "## Files", "`file.txt`", "## Done when", "Required content", "## Done (YYYY-MM-DD)", "describing only behaviour, tests and commits", "status: closed", "assignee: ke-04", "scripts/agents/kit"]) assert.ok(brief.includes(text), text);
   assert.match(brief, /Do not run kit review, kit fix, kit slice, kit pr, kit bg or agent\.sh/);
   assert.match(brief, /the slice runs those commands/);
-  assert.match(brief, /Validate with scripts\/agents\/kit unit --affected/);
-  assert.match(brief, /run npm run check when types moved/);
+  assert.match(brief, /Validate with scripts\/agents\/kit unit --affected and the ticket's focused checks; run npm run check when types moved\. Report/);
   assert.match(brief, /the slice records review decisions and landing/);
   assert.match(brief, /Leave changes unstaged; the runner commits/);
   assert.ok(brief.includes("Do not mention staging, committing or unstaged changes in the ticket."), brief);
@@ -960,6 +964,15 @@ for (const mainRoot of [false, true]) for (const pending of [false, true]) test(
   for (const phase of ["build", "review", "fix"]) assert.equal(f.calls().filter(call => call.phase === phase).length, calls.filter(call => call.phase === phase).length);
   assert.equal(f.calls().at(-1)?.args.includes("--no-merge"), pending);
   assert.equal(existsSync(join(f.root, ".scratch/merged")), !pending);
+});
+
+test("the slice brief names kit unit and a type check only when the settings set them", t => {
+  // techies-playground's minimal settings (research 04): no unit.files and no checks.check.
+  const f = fixture(t, { project: "techies-playground", branches: { land: "main" }, checks: { test: "npm test" } });
+  assert.equal(f.run().status, 0);
+  const brief = readFileSync(join(f.root, ".scratch/agent-brief.md"), "utf8");
+  assert.ok(brief.includes("Validate with the ticket's focused checks. Report their RESULT lines."), brief);
+  assert.doesNotMatch(brief, /unit --affected|npm run check|types moved/);
 });
 
 test("kit slice skips the UX check with one line when nothing visible is touched", t => {

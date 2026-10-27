@@ -52,8 +52,10 @@ else
 fi
 
 # Local clones are often behind GitHub (research 02): fetch the land branch before judging the base.
-fetched='' remote=false
-if git -C "$root" remote get-url origin > /dev/null 2>&1; then remote=true; fi
+# Only git's "No such remote" (exit 2) means there is no GitHub repo; other git failures surface below.
+fetched='' remote=true code=0
+git -C "$root" remote get-url origin > /dev/null 2>&1 || code=$?
+if (( code == 2 )); then remote=false; fi
 if [[ -n $land && $remote == true ]] &&
   ! GIT_TERMINAL_PROMPT=0 timeout "${KIT_DOCTOR_FETCH_TIMEOUT:-20}" git -C "$root" fetch -q origin "$land" > /dev/null 2>&1; then
   fetched=" (fetch failed; judged the last fetched origin/$land)"

@@ -13,21 +13,17 @@ problems=$(kit_settings_problems) || { printf 'unit.sh: %s\n' "${problems//$'\n'
 read -ra runner <<< "$(kit_setting .unit.run)"
 (( ${#runner[@]} )) || { echo "unit.sh needs unit.run in scripts/agents/kit.json" >&2; exit 2; }
 if (( ! $# )); then
-  # unit.files is one pattern or a list: globs (** spans folders) or a folder ending in / for every
-  # JavaScript or TypeScript file under it, the same files kit unit picks.
-  mapfile -t patterns < <(kit_setting '.unit.files | if type == "array" then .[] else . end')
-  (( ${#patterns[@]} )) || { echo "unit.sh needs unit.files in scripts/agents/kit.json to run the full suite" >&2; exit 2; }
-  shopt -s globstar nullglob
+  # The full suite is what kit unit lists: unit.files matched against git's tracked and untracked,
+  # not-ignored files, so both run the same files.
+  if ! listing=$(node "$(dirname -- "${BASH_SOURCE[0]}")/kit.d/unit" --list 2>&1); then
+    problem=$(sed -n 's/^problem: //p' <<< "$listing" | head -n 1)
+    printf 'unit.sh: %s\n' "${problem:-kit unit --list failed}" >&2
+    exit 2
+  fi
   files=()
-  for pattern in "${patterns[@]}"; do
-    if [[ $pattern == */ ]]; then
-      [[ ! -d $pattern ]] || mapfile -t -O "${#files[@]}" files < <(find "$pattern" -type f -regex '.*\.\(js\|mjs\|cjs\|ts\|mts\|cts\|tsx\)' | sort)
-    else
-      # shellcheck disable=SC2206 # The pattern is a glob such as tests/*.test.ts.
-      files+=($pattern)
-    fi
-  done
-  shopt -u globstar nullglob
+  while IFS= read -r line; do
+    if [[ $line == *' — all' ]]; then files+=("${line% — all}"); fi
+  done <<< "$listing"
   (( ${#files[@]} )) || { echo "unit.sh: no files match unit.files in scripts/agents/kit.json" >&2; exit 2; }
   set -- "${files[@]}"
 fi

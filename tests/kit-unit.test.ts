@@ -184,4 +184,11 @@ test("unit.files patterns pick src/**/*.test.js for --affected and every pattern
   const suite = spawnSync("bash", [resolve("scripts/agents/unit.sh")], { cwd: f.root, env, encoding: "utf8", timeout: 60_000 });
   assert.equal(suite.status, 0, suite.stderr + suite.stdout);
   assert.match(suite.stdout, /pass 4, fail 0/);
+  // Ignored build output matching a pattern is left out by both: unit.sh runs what kit unit lists.
+  f.put(".gitignore", ".scratch/\nnode_modules/\nsrc/dist/\n");
+  f.put("src/dist/x.test.js", 'import test from "node:test"; test("ignored output", () => { throw new Error("ran an ignored file"); });\n');
+  result(f.run("--list"), 0, /ok unit 4 selected \(list only\)/);
+  const again = spawnSync("bash", [resolve("scripts/agents/unit.sh")], { cwd: f.root, env, encoding: "utf8", timeout: 60_000 });
+  assert.equal(again.status, 0, again.stderr + again.stdout);
+  assert.match(again.stdout, /pass 4, fail 0/);
 });

@@ -5,7 +5,7 @@ import { closeSync, createReadStream, existsSync, openSync, readdirSync, readFil
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
-import { kitBranch, kitResult, kitOwner, kitJob, kitJobDirectory, kitJobExit, kitJobRunning } from "../kit-lib.mjs";
+import { kitBranch, kitResult, kitOwner, kitRoot, kitJob, kitJobDirectory, kitJobExit, kitJobRunning } from "../kit-lib.mjs";
 import { summarizeRuns, failingSteps, failingTests, latestWorkflowRuns } from "../ci-summary.mjs";
 
 const usage = `Usage: kit wait pid <pid> [--timeout D]
@@ -132,10 +132,11 @@ async function wait(config) {
   const { kind, target, options, timeout, quiet, regex } = config;
   const label = kind === "ci" ? options.pr !== undefined ? `pr ${options.pr}` : options.sha ?? options.branch ?? kitBranch("ci") : target;
   console.log(`kit wait ${kind} ${label} (owner ${kitOwner()})`);
-  // A project with no remote has no GitHub checks: say so rather than fail on gh.
+  // A project with no remote has no GitHub checks: say so rather than fail on gh. Only git's
+  // "No such remote" (exit 2) means that; any other git failure falls through to gh.
   if (kind === "ci") {
-    try { await execute("git", ["remote", "get-url", "origin"]); }
-    catch {
+    const noRemote = await execute("git", ["-C", kitRoot(), "remote", "get-url", "origin"]).then(() => false, error => error.code === 2);
+    if (noRemote) {
       kitResult("ok", `ci ${label}: no GitHub repo (no origin remote), no checks to wait for`);
       return;
     }

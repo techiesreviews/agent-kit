@@ -13,7 +13,8 @@ if [[ $command == *setsid* ]]; then
   if [[ -z $servers && -f $root/scripts/agents/port.sh ]]; then servers=scripts/agents/port.sh; fi
 fi
 servers=${servers:-scripts/agents/kit bg <name> -- <command>}
-reason=$(printf '%s\n' "$command" | awk -v servers="$servers" '
+# ENVIRON, unlike awk -v, keeps backslashes in the hint as written.
+reason=$(printf '%s\n' "$command" | KIT_SERVERS=$servers awk '
 function base(s) { sub(/^.*\//, "", s); return s }
 function reject(s) { if (!reason) reason = s }
 function inspect(a, n, timed, depth, floor,    i,j,k,name,text) {
@@ -39,7 +40,7 @@ function inspect(a, n, timed, depth, floor,    i,j,k,name,text) {
     if (name == "setsid") {
       for (j = i + 1; j <= n; j++)
         if (a[j] ~ /server|vite|http\.server|playwright/)
-          reject("start servers through " servers)
+          reject("start servers through " ENVIRON["KIT_SERVERS"])
       i++; while (i <= n && a[i] ~ /^-/) i++
       continue
     }

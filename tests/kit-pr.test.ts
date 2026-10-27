@@ -280,6 +280,17 @@ test("a project with only checks.test: pr --dry-run runs only npm test and skips
   assert.match(readFileSync(join(f.logDir(), "body.md"), "utf8"), /## Tests\n\nTier: full \(1 file, src\/app.js is code\)\n\n- check: skipped \(no checks.check in scripts\/agents\/kit.json\)\n- npm test: ok\n- lint: skipped \(no checks.lint in scripts\/agents\/kit.json\)\n- specs: skipped \(no specs command in the project's commands folder\)\n$/);
 });
 
+test("--base main is an ordinary PR when main is both land and release, and still needs --release when land is dev", t => {
+  const f = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: playground, workflows: false });
+  const same = f.run(["--dry-run", "--base", "main"], { FAKE_BASE: "main" }, true);
+  assert.equal(same.status, 0, same.stdout + same.stderr);
+  assert.match(same.stdout, /RESULT: ok dry-run [a-f0-9]{7} feature\/kit-pr -> main/);
+  const split = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: { ...playground, branches: { land: "dev", release: "main" } } });
+  const refused = split.run(["--dry-run", "--base", "main"], {}, true);
+  assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+  assert.match(refused.stdout, /RESULT: fail guards: --base main requires --release/);
+});
+
 test("a repo with no remote gets no GitHub repo from pr before any check runs", t => {
   const f = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: playground, workflows: false });
   f.git("remote", "remove", "origin");

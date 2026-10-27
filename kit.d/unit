@@ -14,11 +14,13 @@ The unit tests are the files matching unit.files (one pattern or a list: globs w
 --affected follows relative imports transitively; prints each file and its reason.
 --list prints selection reasons and runs nothing.
 `;
-// A folder pattern ("test/") holds every JavaScript or TypeScript file under it, as node --test reads a test folder.
-const sourceFile = /\.(?:js|mjs|cjs|ts|mts|cts|tsx)$/;
+// The module extensions the import scan follows; a folder pattern ("test/") holds every file with one of
+// them under it, as node --test reads a test folder.
+const extensions = [".ts", ".tsx", ".js", ".mjs", ".cjs", ".mts", ".cts"];
+const sourceFile = file => extensions.some(extension => file.endsWith(extension));
 // One unit.files pattern as a test for a repo path: "*" stays within a folder, "**" spans folders.
 function unitPattern(pattern) {
-  if (pattern.endsWith("/")) return file => file.startsWith(pattern) && sourceFile.test(file);
+  if (pattern.endsWith("/")) return file => file.startsWith(pattern) && sourceFile(file);
   const source = pattern.split(/(\*\*\/|\*\*|\*|\?)/).map(part => ({ "**/": "(?:.*/)?", "**": ".*", "*": "[^/]*", "?": "[^/]" })[part]
     ?? part.replace(/[.+^${}()|[\]\\]/g, "\\$&")).join("");
   const expression = new RegExp(`^${source}$`);
@@ -35,7 +37,7 @@ function unitFiles(root) {
 // export-from and require lines in any file; read only for --affected.
 let graphFile = /^/, importsOf = text => [...text.matchAll(/\b(?:import|export)\s+(?:[^;"'`]*?\s+from\s*)?["']([^"']+)["']|\b(?:import|require)\s*\(\s*["']([^"']+)["']\s*\)/g)]
   .map(match => match[1] ?? match[2]);
-const moduleFile = file => graphFile.test(file) && /\.(?:ts|tsx|js|mjs)$/.test(file);
+const moduleFile = file => graphFile.test(file) && sourceFile(file);
 function git(root, args) {
   return execFileSync("git", ["-C", root, ...args], { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
 }
@@ -59,7 +61,6 @@ function options(args) {
 function dependency(file, specifier, known) {
   if (!specifier.startsWith(".") && !specifier.startsWith("/")) return;
   const target = posix.normalize(specifier.startsWith("/") ? specifier.slice(1) : posix.join(posix.dirname(file), specifier));
-  const extensions = [".ts", ".tsx", ".js", ".mjs"];
   const stems = [target, ...(target.endsWith(".js") ? [target.slice(0, -3)] : [])];
   return stems.flatMap(stem => [stem, ...extensions.map(ext => stem + ext), ...extensions.map(ext => `${stem}/index${ext}`)])
     .find(path => moduleFile(path) && known.has(path));

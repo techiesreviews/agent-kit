@@ -259,6 +259,14 @@ test("with no remote, wait ci says no GitHub repo instead of failing on gh", t =
   assert.equal(f.called(), "");
 });
 
+test("wait ci reads the remote of KIT_ROOT, not of the folder it runs in", t => {
+  const f = repo(t, { project: "kit-land", branches: { land: "main" } });
+  const elsewhere = temp(t);
+  const ci = spawnSync(kit, ["wait", "ci", "--timeout", "10s"], { cwd: elsewhere, env: { ...f.env, KIT_WAIT_POLL_MS: "50" }, encoding: "utf8", timeout: 30_000 });
+  assert.match(lastLine(ci)!, /^RESULT: ok ci main abcdef0 green /, ci.stdout + ci.stderr);
+  assert.match(f.called(), /^gh run list /m);
+});
+
 test("bash-guard's server hint names the servers setting, else port.sh where the project has one, else kit bg", t => {
   const root = temp(t);
   spawnSync("git", ["init", "-q", root], { env: clean });
@@ -274,6 +282,8 @@ test("bash-guard's server hint names the servers setting, else port.sh where the
   assert.equal(hint(), "start servers through scripts/agents/port.sh");
   settingsFile(root, { project: "techies-playground", branches: { land: "main" }, servers: "npm run serve:slot" });
   assert.equal(hint(), "start servers through npm run serve:slot");
+  settingsFile(root, { project: "techies-playground", branches: { land: "main" }, servers: "tools\\serve.cmd \\n" });
+  assert.equal(hint(), "start servers through tools\\serve.cmd \\n");
 });
 
 test("bash and node agree on mainRoot, which only a valid file supplies", t => {

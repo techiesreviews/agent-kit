@@ -109,8 +109,9 @@ async function status(args) {
   // No preview address: the preview row is left out.
   const address = process.env.KIT_PREVIEW_URL || settings.preview;
   const git = args => command("git", ["-C", root, ...args], root);
-  // With no origin remote there is no GitHub repo: the land branch is read locally and PR and CI are left out.
-  const remote = await git(["remote", "get-url", "origin"]).then(() => true, () => false);
+  // With no origin remote (git's "No such remote", exit 2) there is no GitHub repo: the land branch is read
+  // locally and PR and CI are left out. Any other git failure keeps the remote view and fails where it used to.
+  const remote = await git(["remote", "get-url", "origin"]).then(() => true, error => error.code !== 2);
   const ref = flags.ref ?? `${remote ? "origin/" : ""}${kitBranch("land", settings)}`;
   const onRef = async oid => {
     if (!/^[0-9a-f]{40}$/.test(oid || "")) return "";

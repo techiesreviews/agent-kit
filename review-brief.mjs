@@ -29,14 +29,25 @@ export function projectCommand(name, root, settings = kitSettings(root)) {
   } catch { return false; }
 }
 
+const command = value => typeof value === "string" && value.trim() ? value.trim() : null;
+
 /**
  * The checks an author runs before review, from the settings: the `checks.check`, `checks.test` and `checks.lint`
  * commands that are set, then "the touched specs" when the project has a `specs` command.
  */
 export function projectChecks(root, settings = kitSettings(root)) {
   const checks = settings.checks ?? {};
-  return [checks.check, checks.test, checks.lint].filter(command => typeof command === "string" && command.trim())
-    .map(command => command.trim()).concat(projectCommand("specs", root, settings) ? ["the touched specs"] : []);
+  return [checks.check, checks.test, checks.lint].map(command).filter(Boolean)
+    .concat(projectCommand("specs", root, settings) ? ["the touched specs"] : []);
+}
+
+/**
+ * What the slice and fix briefs tell a builder to run, from the settings: `kit unit --affected` only with
+ * `unit.files`, the `checks.check` and `checks.lint` commands when set, and the specs with a `specs` command.
+ */
+export function builderChecks(root, settings) {
+  return { unit: [settings.unit?.files].flat().some(command), check: command(settings.checks?.check),
+    lint: command(settings.checks?.lint), specs: projectCommand("specs", root, settings) };
 }
 
 export const reviewFormat = `Required format:
