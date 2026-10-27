@@ -36,7 +36,7 @@ type Ux = {
   pickImages(images: Image[], limit?: number): { kept: Image[]; trimmed: (Image & { reason: string })[] };
   guessTicket(branch: string, files: string[]): string | undefined;
   mockupLinks(text: string, ticket: string): string[];
-  colourFindings(status: number, output: string, command: string, log: string, files: string[]): Finding[];
+  colourFindings(status: number, output: string, command: string, log: string, scope: { root: string; changed: string[] }): { findings: Finding[]; outside: number };
 };
 const ux: Ux = await import(pathToFileURL(script).href);
 const editorColours: string = JSON.parse(readFileSync(resolve("scripts/agents/kit.json"), "utf8")).checks.css;
@@ -383,6 +383,10 @@ test("kit ux diffs against origin/<land> from the settings when the project land
   const unset = run(["--no-review"]);
   assert.equal(unset.status, 1, unset.stdout + unset.stderr);
   assert.equal(unset.result, "RESULT: fail ux needs --base (no branches.land in scripts/agents/kit.json)");
+  // A given --base needs no land branch.
+  const given = run(["--no-review", "--base", "origin/main"]);
+  assert.equal(given.status, 0, given.stdout + given.stderr);
+  assert.match(given.result, /^RESULT: ok ux 1 features tried, /);
 });
 
 test("kit ux takes raw colours from the project's checks.css command, and says when there is none", t => {
@@ -407,7 +411,18 @@ process.exitCode = failures.length ? 1 : 0;
   const own = report();
   assert.deepEqual(readFileSync(join(root, ".scratch/colour-calls.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line)), [["src/plain.css", "styles/own.css"]]);
   assert.deepEqual(own.bundle.split("\n").filter(line => line.startsWith("- L2")), ["- L2 styles/own.css:1: raw colour red is not a token"]);
-  assert.match(own.stdout, /^colours: node tools\/colours\.mjs: 1 finding$/m);
+  assert.match(own.stdout, /^colours: node tools\/colours\.mjs: exited 1, 1 finding; log \S+\/colours\.log$/m);
+  // A failed run whose every line is outside the diff never reads ok: it names its status, the dropped lines and its log.
+  put("tools/colours.mjs", 'console.error("styles/untouched.css:4: red is not a token"); process.exitCode = 1;\n');
+  const outside = report();
+  assert.match(outside.stdout, /^colours: node tools\/colours\.mjs: exited 1, 0 findings \(1 outside the diff\); log \S+\/colours\.log$/m);
+  assert.doesNotMatch(outside.stdout, /^colours: .*: ok$/m);
+  assert.doesNotMatch(outside.bundle, /^- L2 /m);
+  // A command that does not exist is one finding naming the spawn error and the log.
+  put("scripts/agents/kit.json", JSON.stringify({ project: "x", branches: { land: "dev" }, checks: { css: "no-such-checker --all" } }));
+  const missing = report();
+  assert.deepEqual(missing.bundle.split("\n").filter(line => line.startsWith("- L2")).map(line => line.replace(/log \S+\/colours\.log$/, "log <log>")),
+    ["- L2 colours: no-such-checker --all exited 127: spawn no-such-checker ENOENT; log <log>"]);
   // No checks.css: the skipped line, in the output and the bundle, and no L2 findings.
   put("scripts/agents/kit.json", JSON.stringify({ project: "x", branches: { land: "dev" } }));
   const none = report();
@@ -432,22 +447,28 @@ test("kit ux with this editor's checks.css finds a raw colour in the diff and le
   assert.deepEqual(markdown.split("\n").filter(line => line.startsWith("- L2")), ["- L2 src/plain.css:1: raw colour #fff"]);
 });
 
-test("a failed colour check names each file and line it printed, else its first line and log", () => {
-  const changed = ["src/a.css", "src/b.css"];
-  assert.deepEqual(ux.colourFindings(0, "src/a.css:1: #fff\n", "check", "/log", changed), []);
-  assert.deepEqual(ux.colourFindings(1, "header\n\x1b[31msrc/a.css:3:7: #fff\x1b[0m\nsrc/b.css:9: red\n", "check", "/log", changed), [
+test("a failed colour check names each file and line it printed in the diff, else its first line and log", () => {
+  const root = "/abs/root", scope = { root, changed: ["src/a.css", "src/b.css", "allow.json"] };
+  const found = (status: number, output: string) => ux.colourFindings(status, output, "check", "/log", scope);
+  assert.deepEqual(found(0, "src/a.css:1: #fff\n"), { findings: [], outside: 0 });
+  assert.deepEqual(found(1, "header\n\x1b[31msrc/a.css:3:7: #fff\x1b[0m\nsrc/b.css:9: red\n").findings, [
     { rule: "L2", file: "src/a.css", line: 3, text: "raw colour #fff" },
     { rule: "L2", file: "src/b.css", line: 9, text: "raw colour red" },
   ]);
-  // A CSS file outside the diff is dropped; a non-CSS file (an allow list) stays, without the raw colour prefix.
-  assert.deepEqual(ux.colourFindings(1, "src/other.css:1: #000\nallow.json:2: stale allow entry: src/a.css: #000\n", "check", "/log", changed), [
-    { rule: "L2", file: "allow.json", line: 2, text: "stale allow entry: src/a.css: #000" },
+  // ./ and absolute paths are read against the root.
+  assert.deepEqual(found(1, `./src/a.css:3: #fff\n${root}/src/a.css:3: #fff\n`).findings, [
+    { rule: "L2", file: "src/a.css", line: 3, text: "raw colour #fff" },
+    { rule: "L2", file: "src/a.css", line: 3, text: "raw colour #fff" },
   ]);
-  assert.deepEqual(ux.colourFindings(1, "src/other.css:1: #000\n", "check", "/log", changed), []);
-  assert.deepEqual(ux.colourFindings(2, "\nError: no allow list\n    at x\n", "check", "/log", changed), [{ rule: "L2", file: "colours", line: 0, text: "check exited 2: Error: no allow list; log /log" }]);
+  // Any file outside the diff is dropped and counted; a changed non-CSS file (an allow list) stays, without the raw colour prefix.
+  assert.deepEqual(found(1, "src/other.css:1: #000\nsrc/page.vue:2: red\nallow.json:2: stale allow entry: src/a.css: #000\n"), {
+    findings: [{ rule: "L2", file: "allow.json", line: 2, text: "stale allow entry: src/a.css: #000" }], outside: 2,
+  });
+  assert.deepEqual(found(1, "src/other.css:1: #000\n"), { findings: [], outside: 1 });
+  assert.deepEqual(found(2, "\nError: no allow list\n    at x\n").findings, [{ rule: "L2", file: "colours", line: 0, text: "check exited 2: Error: no allow list; log /log" }]);
   // A stack frame with a plain path is no file:line finding.
-  assert.deepEqual(ux.colourFindings(1, "TypeError: x\n    at checkColours (/abs/check.js:12:5)\n", "check", "/log", changed), [{ rule: "L2", file: "colours", line: 0, text: "check exited 1: TypeError: x; log /log" }]);
-  assert.deepEqual(ux.colourFindings(127, "", "check", "/log", changed), [{ rule: "L2", file: "colours", line: 0, text: "check exited 127; log /log" }]);
+  assert.deepEqual(found(1, "TypeError: x\n    at checkColours (/abs/check.js:12:5)\n").findings, [{ rule: "L2", file: "colours", line: 0, text: "check exited 1: TypeError: x; log /log" }]);
+  assert.deepEqual(found(127, "").findings, [{ rule: "L2", file: "colours", line: 0, text: "check exited 127; log /log" }]);
 });
 
 test("kit ux tries touched features, runs scripted checks and writes a bounded bundle", t => {

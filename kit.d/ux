@@ -2,7 +2,7 @@
 // kit: try the features a diff touches, run scripted UX checks, pack a small bundle and have one reviewer judge it
 import { execFileSync, spawn } from "node:child_process";
 import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, matchesGlob, normalize, resolve } from "node:path";
+import { basename, dirname, join, matchesGlob, normalize, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { citedRules, parseUxResult, uxBrief, uxCounts, uxReport } from "../ux-brief.mjs";
 
@@ -22,10 +22,9 @@ names in scripts/agents/kit.json) --steps at 1280 px (and 390 px when Phone: yes
 dark. A feature without Steps gets the named screens its Files map to, marked untried.
 Scripted checks: layout findings, tap targets under 44 px at 390, raw colours in changed
 CSS (the project's checks.css command, given the changed CSS files; when it fails, each
-file:line it prints in a changed CSS file or a non-CSS file is one L2 finding; none is
-"colours: skipped"), new visible text over 60 characters, new hint/tip/count/badge class
-names, and raw px spacing and timings in changed CSS counted against the base (reported,
-never blocking).
+file:line it prints for a file in the diff is one L2 finding; none is "colours: skipped"),
+new visible text over 60 characters, new hint/tip/count/badge class names, and raw px
+spacing and timings in changed CSS counted against the base (reported, never blocking).
 Bundle: <main root>/.scratch/ux/<owner>/<time>-XXXXXX/bundle.md (under 60 KB) and at most 12
 images of at most 300 KB (contact sheets and record strips); the lowest-value items are
 trimmed first and named. Raw tries: <main root>/.scratch/ux-tries/<owner>/<time>-XXXXXX/ (same name).
@@ -328,13 +327,15 @@ function projectSettings(root) {
   try { text = readFileSync(join(root, kitSettingsFile), "utf8"); }
   catch (error) {
     if (error.code === "ENOENT") return {};
-    throw new Error(`${kitSettingsFile} is unreadable: ${error.message}`);
+    throw new Error(`${kitSettingsFile} is unreadable: ${oneLine(error.message)}`);
   }
   let settings;
   try { settings = JSON.parse(text); }
-  catch (error) { throw new Error(`${kitSettingsFile} is unreadable: ${error.message}`); }
+  catch (error) { throw new Error(`${kitSettingsFile} is unreadable: ${oneLine(error.message)}`); }
   return settings && typeof settings === "object" && !Array.isArray(settings) ? settings : {};
 }
+
+const oneLine = text => String(text).replace(/[\n\r]/g, " ");
 
 /** A non-empty string setting, else undefined. */
 const textSetting = value => typeof value === "string" && value.trim() ? value.trim() : undefined;
@@ -447,21 +448,24 @@ export function tryFailures(index, status, log) {
 
 /**
  * L2 findings from the project's checks.css run: none when it passed, else one per `file:line: text` line it printed
- * (a stack frame is no such line), kept when it names a changed CSS file in `files` or a file that is not CSS (an
- * allow list): a checker that looks past the given files reports nothing the diff did not touch.
+ * (a stack frame is no such line; ./ and absolute paths are read against root) for a file in the diff (`changed`),
+ * so a checker that looks past the given files reports nothing the diff did not touch; `outside` counts the rest.
  * A failed run that names no line is one finding pointing at its log.
  */
-export function colourFindings(status, output, command, log, files) {
-  if (!status) return [];
+export function colourFindings(status, output, command, log, { root, changed }) {
+  if (!status) return { findings: [], outside: 0 };
   const lines = output.replace(/\x1b\[[0-9;]*m/g, "").split("\n").map(line => line.trim()).filter(Boolean);
   const located = lines.flatMap(text => {
     const match = /^([^\s:()]+):(\d+)(?::\d+)?:\s*(\S.*)$/.exec(text);
     if (!match) return [];
-    const css = /\.css$/i.test(match[1]);
-    return [{ rule: "L2", file: match[1], line: Number(match[2]), text: css ? `raw colour ${match[3]}` : match[3], css }];
+    const file = relative(root, resolve(root, match[1]));
+    return [{ rule: "L2", file, line: Number(match[2]), text: /\.css$/i.test(file) ? `raw colour ${match[3]}` : match[3] }];
   });
-  if (located.length) return located.filter(finding => !finding.css || files.includes(finding.file)).map(({ css, ...finding }) => finding);
-  return [{ rule: "L2", file: "colours", line: 0, text: `${command} exited ${status}${lines.length ? `: ${lines[0].slice(0, 240)}` : ""}; log ${log}` }];
+  if (located.length) {
+    const findings = located.filter(finding => changed.includes(finding.file));
+    return { findings, outside: located.length - findings.length };
+  }
+  return { outside: 0, findings: [{ rule: "L2", file: "colours", line: 0, text: `${command} exited ${status}${lines.length ? `: ${lines[0].slice(0, 240)}` : ""}; log ${log}` }] };
 }
 
 async function main() {
@@ -550,8 +554,11 @@ async function main() {
     else if (css.length) {
       const [name, ...argv] = coloursCommand.split(/\s+/), log = join(triesDir, "colours.log");
       const status = await runLogged(root, name, [...argv, ...css.map(({ file }) => file)], log);
-      colours = colourFindings(status, readFileSync(log, "utf8"), coloursCommand, log, css.map(({ file }) => file));
-      coloursLine = `colours: ${coloursCommand}: ${colours.length ? `${colours.length} finding${colours.length === 1 ? "" : "s"}` : "ok"}`;
+      const found = colourFindings(status, readFileSync(log, "utf8"), coloursCommand, log, { root, changed });
+      colours = found.findings;
+      const count = `${colours.length} finding${colours.length === 1 ? "" : "s"}`;
+      // A failed run never reads ok, even when every line it printed was outside the diff.
+      coloursLine = `colours: ${coloursCommand}: ${!status ? "ok" : `exited ${status}, ${count}${found.outside ? ` (${found.outside} outside the diff)` : ""}; log ${log}`}`;
     }
     if (coloursLine) console.log(coloursLine);
     const layout = layoutFindings(tries);
