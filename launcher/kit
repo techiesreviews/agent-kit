@@ -6,7 +6,8 @@ export KIT_REPO=${KIT_REPO:-https://github.com/techiesreviews/agent-kit.git}
 data=${XDG_DATA_HOME:-} cache=${XDG_CACHE_HOME:-} why=KIT_HOME clone='' picked=false
 [[ $data == /* ]] || data=${HOME:-$(cd ~ && pwd -P)}/.local/share
 [[ $cache == /* ]] || cache=${HOME:-$(cd ~ && pwd -P)}/.cache
-# A whole kit, as kit update checks it: the front door needs kit-lib.sh beside kit.
+# A whole kit, as kit update checks it: the front door needs kit-lib.sh beside kit. The hook launcher also needs
+# hooks/run.sh, so a pinned folder missing only that is kept here but looked up again there.
 whole() { [[ -x $1/kit && -f $1/kit-lib.sh ]]; }
 # KIT_HOME_PINNED marks a KIT_HOME a launcher picked, so a child whose folder kit update has since removed
 # picks again instead of treating it as a person's choice.

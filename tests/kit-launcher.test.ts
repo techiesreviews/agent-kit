@@ -63,7 +63,7 @@ function fixture(t: { after: (fn: () => void) => void }) {
     spawnSync(join(agents, "kit"), args, { cwd: project, env: { ...env, ...extra }, encoding: "utf8", timeout: 30_000 });
   const hook = (name: string, payload: object, extra: NodeJS.ProcessEnv = {}) =>
     spawnSync("/bin/bash", [join(agents, "hooks/run.sh"), name], { cwd: project, env: { ...env, ...extra }, input: JSON.stringify(payload), encoding: "utf8", timeout: 10_000 });
-  return { directory, env, cache, data, project, agents, git, publish, kit, hook };
+  return { directory, env, cache, data, project, agents, work, git, publish, kit, hook };
 }
 
 const lines = (result: { stdout: string }) => result.stdout.split("\n").filter((line) => line && !line.startsWith("RESULT: "));
@@ -356,4 +356,19 @@ test("the marker is the resolved folder the front door uses, so a child behind a
   rmSync(real, { recursive: true, force: true });
   const inherited = { ...linked, KIT_HOME: pinned[0], KIT_HOME_PINNED: pinned[0] };
   assert.deepEqual(lines(f.kit(["where"], inherited)), [`${realpathSync(join(f.data, two))} two`]);
+});
+
+test("a fresh clone that is not a whole kit is thrown away, and the hook launcher needs a whole kit from a person too", (t) => {
+  const f = fixture(t);
+  rmSync(join(f.work, "kit-lib.sh"));
+  f.publish("half");
+  const result = f.kit(["where"]);
+  assert.equal(result.status, 2);
+  assert.equal(result.stdout, `RESULT: fail no Agent Kit at ${join(f.cache, "agent-kit")} (no machine copy; cannot clone ${f.env.KIT_REPO})\n`);
+  assert.deepEqual(readdirSync(f.cache), []);
+  const hooksOnly = join(f.directory, "hooks-only");
+  mkdirSync(join(hooksOnly, "hooks"), { recursive: true });
+  writeFileSync(join(hooksOnly, "hooks/run.sh"), 'printf "hooks only\\n" >&2; exit 2\n');
+  const warned = f.hook("bash-guard", stashPop, { KIT_HOME: hooksOnly });
+  assert.deepEqual([warned.status, warned.stdout, warned.stderr], [0, `{"systemMessage":"${warning}"}\n`, ""]);
 });
