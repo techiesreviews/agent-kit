@@ -109,7 +109,9 @@ const second = phase === "review" && args.includes("--second-look");
 if (second ? process.env.FAKE_SECOND : phase !== "ux" || process.env.FAKE_UX) call(second ? "second" : phase);
 await hold(second ? "second" : phase);
 if (second) {
-  // FAKE_SECOND: skip (no model can take it, exit 3) or findings (one P1); anything else is clean.
+  // FAKE_SECOND: skip (no model can take it, exit 3), findings (one P1 before any fix round), stay (one P1 every time);
+  // anything else is clean. FAIL_SECOND_AFTER_FIX fails a second look taken after a fix round.
+  if (process.env.FAIL_SECOND_AFTER_FIX && round() > 0) { console.log("RESULT: fail second look deliberate failure"); process.exit(7); }
   if (process.env.FAKE_SECOND === "skip") {
     console.log("second look: skipped (grok-4.7 out of credit; opencode/deepseek-v4.1-flash-free out of credit)");
     console.log("RESULT: skip second look (grok-4.7 out of credit; opencode/deepseek-v4.1-flash-free out of credit)");
@@ -118,7 +120,7 @@ if (second) {
   const folder = join(process.env.KIT_MAIN_ROOT, ".scratch/reviews/ke-04", "second-" + String(round()).padStart(3, "0"));
   mkdirSync(folder, { recursive: true });
   writeFileSync(join(folder, "refs.txt"), git("rev-parse", "HEAD") + "\\n");
-  writeFileSync(join(folder, "result.md"), process.env.FAKE_SECOND === "findings" ? ${JSON.stringify(findings)}.replace("restore required text", "the second look found this") : ${JSON.stringify(clean)});
+  writeFileSync(join(folder, "result.md"), process.env.FAKE_SECOND === "stay" || (process.env.FAKE_SECOND === "findings" && round() === 0) ? ${JSON.stringify(findings)}.replace("restore required text", "the second look found this") : ${JSON.stringify(clean)});
   writeFileSync(join(folder, "second-look.json"), JSON.stringify({ kind: "code", model: "grok-4.7", ok: true }));
   console.log("second look: code (file.txt) grok-4.7");
   console.log("RESULT: ok review git diff origin/dev...HEAD evidence " + folder);
@@ -183,6 +185,12 @@ if (phase === "review") {
   console.log(open ? "RESULT: fail fix 1 open findings (" + folder + "/result.md)" : "RESULT: ok fix clean");
   process.exitCode = open ? 1 : 0;
 } else if (phase === "pr") {
+  // PR_NEEDS_SECOND: like the real kit pr, a second look must cover HEAD (else it takes a new one, here with a finding).
+  const look = join(process.env.KIT_MAIN_ROOT, ".scratch/reviews/ke-04", "second-" + String(round()).padStart(3, "0"));
+  if (process.env.PR_NEEDS_SECOND && !(existsSync(join(look, "refs.txt")) && readFileSync(join(look, "refs.txt"), "utf8").trim() === git("rev-parse", "HEAD"))) {
+    console.log("RESULT: fail pr #42 second look has 1 open findings (" + look + "/result.md)");
+    process.exit(1);
+  }
   const { folder, open } = evidence();
   if (open && !(process.env.MINOR_REVIEW && round() >= 3)) {
     console.log("RESULT: fail pr #42 review has 1 open findings (" + folder + "/result.md)");
@@ -296,7 +304,7 @@ test("kit slice writes the ticket brief, runs phases in order, credits and commi
   assert.match(brief, /the slice records review decisions and landing/);
   assert.match(brief, /Leave changes unstaged; the runner commits/);
   assert.ok(brief.includes("Do not mention staging, committing or unstaged changes in the ticket."), brief);
-  assert.deepEqual(result.stdout.split("\n").filter(line => line.startsWith("slice:")).map(line => line.split(" ").slice(0, 3).join(" ")), ["slice: brief ok", "slice: build ok", "slice: commit ok", "slice: review ok", "slice: fix ok", "slice: second ok", "slice: ux ok", "slice: pr ok"]);
+  assert.deepEqual(result.stdout.split("\n").filter(line => line.startsWith("slice:")).map(line => line.split(" ").slice(0, 3).join(" ")), ["slice: brief ok", "slice: build ok", "slice: commit ok", "slice: review ok", "slice: fix ok", "slice: ux ok", "slice: second ok", "slice: pr ok"]);
   assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "pr"]);
   const build = f.calls()[0].args;
   assert.deepEqual(build.slice(0, 7), ["build", f.root, ".scratch/agent-brief.md", "--model", "gpt-6.1-sol", "--effort", "high"]);
@@ -330,7 +338,7 @@ test("kit slice records the piece: phases with exit codes, rounds, review counts
   assert.equal(record.ticket, f.ticket); assert.equal(record.title, "Test slice title");
   assert.deepEqual(record.builder, { model: "gpt-6.1-sol", effort: "high", previousModels: [], built: "gpt-6.1-sol" });
   assert.deepEqual(record.phases.map((phase: { name: string; exit: number }) => [phase.name, phase.exit]),
-    [["brief", 0], ["build", 0], ["commit", 0], ["review", 7], ["review", 0], ["fix", 0], ["second", 0], ["ux", 0], ["pr", 0]]);
+    [["brief", 0], ["build", 0], ["commit", 0], ["review", 7], ["review", 0], ["fix", 0], ["ux", 0], ["second", 0], ["pr", 0]]);
   for (const phase of record.phases) assert.ok(Date.parse(phase.end) >= Date.parse(phase.start), JSON.stringify(phase));
   assert.equal(record.rounds, 2);
   const reviews = join(f.main, ".scratch/reviews/ke-04");
@@ -460,7 +468,7 @@ test("kit slice resumes with another builder, keeps finished phases and records 
   const result = f.run([], {}, ["--ticket", f.ticket, "--builder", "claude-opus-5-5", "--no-pr"]);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /builder switched: gpt-6\.1-sol -> claude-opus-5-5/);
-  assert.deepEqual(f.state().finished, [...finished, "fix", "second", "ux"]);
+  assert.deepEqual(f.state().finished, [...finished, "fix", "ux", "second"]);
   assert.equal(f.state().model, "claude-opus-5-5");
   assert.deepEqual(f.state().previousModels, ["gpt-6.1-sol"]);
   assert.equal(f.calls().filter(call => call.phase === "build").length, 1);
@@ -1174,14 +1182,34 @@ test("kit slice runs the second look after Claude's review and lands; a skipped 
 test("a second-look P1 gets a fix round like Claude's, answered by Claude's review, then lands", t => {
   const f = fixture(t), result = f.run([], { FAKE_SECOND: "findings" });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "second", "fix", "pr"]);
+  assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "second", "fix", "second", "pr"]);
   const fix = f.calls()[3].args;
   assert.equal(fix[fix.indexOf("--review") + 1], join(f.main, ".scratch/reviews/ke-04/second-000"));
   assert.equal(f.state().rounds, 1);
 });
 
+test("after a second-look fix round the slice looks again, so kit pr finds a second look covering the HEAD it lands", t => {
+  const f = fixture(t), result = f.run([], { FAKE_SECOND: "findings", PR_NEEDS_SECOND: "1" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "second", "fix", "second", "pr"]);
+  assert.equal(readFileSync(join(f.main, ".scratch/reviews/ke-04/second-001/refs.txt"), "utf8").trim(), f.git("rev-parse", "HEAD"));
+});
+
+test("a slice stopped after the second look's fix round finished resumes without another fix round", t => {
+  const f = fixture(t);
+  assert.equal(f.run([], { FAKE_SECOND: "findings", FAIL_SECOND_AFTER_FIX: "1" }).status, 1);
+  assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "second", "fix", "second"]);
+  // As if the slice died right after the fix round saved its round and HEAD, while it was still answering.
+  const statePath = join(f.root, ".scratch/kit-slice/04-ticket/state.json"), saved = JSON.parse(readFileSync(statePath, "utf8"));
+  writeFileSync(statePath, JSON.stringify({ ...saved, secondLook: { evidence: join(f.main, ".scratch/reviews/ke-04/second-000"), answering: true, round: 0 } }));
+  const result = f.run([], { FAKE_SECOND: "findings" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(f.calls().map(call => call.phase).slice(5), ["second", "pr"]);
+  assert.equal(f.state().rounds, 1);
+});
+
 test("a second-look P1 with no fix rounds left stops the slice before kit pr", t => {
-  const f = fixture(t), result = f.run(["--rounds", "1"], { CLEAN_AT: "1", FAKE_SECOND: "findings" });
+  const f = fixture(t), result = f.run(["--rounds", "1"], { CLEAN_AT: "1", FAKE_SECOND: "stay" });
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "fix", "second"]);
   assert.match(result.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: fail slice second: 1 open second-look findings after 1 rounds \(.+\/second-001\/result\.md\)$/);

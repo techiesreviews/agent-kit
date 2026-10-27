@@ -48,7 +48,7 @@ function evidenceDirectory() {
 // model and its CLI, so no ASE_AGENT_CLI can send it to Codex, and marks its evidence folder.
 async function reviewOnce(flags, look) {
   let evidence = "none", temporary, status = 1, reason = "review failed", label, budget, env, model, effort, reviewedHead;
-  let ledger, outOfCredit = false, kept = false;
+  let ledger, outOfCredit = false, kept = false, spawned = false, unavailable = false;
   const ticket = flags.ticket;
   try {
     // The default base comes from the settings file; a settings problem is a failure, not a usage error.
@@ -72,9 +72,11 @@ async function reviewOnce(flags, look) {
     console.log(`model: ${model}`);
     // One count for the computer; this project's old per-project count moves in on first use.
     ledger = { path: join(kitStateDir(env), "review-budget.json"), project: kitSettings(root).project, legacy: join(kitMainRoot(), ".scratch/review-budget.json") };
-    budget = reserveReviewBudget(ledger, cli, env);
+    try { budget = reserveReviewBudget(ledger, cli, env); }
+    catch (error) { unavailable = / review budget used up: /.test(error.message); throw error; }
     if (budget) console.log(`budget: ${budget.family} ${budget.used}/${budget.limit} in ${budget.week}`);
     let stderr = "";
+    spawned = true;
     status = await new Promise((accept, reject) => {
       const child = spawn(env.KIT_NODE, [resolve(import.meta.dirname, "../agent-run.mjs"), ...agentArgs], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
       const interrupt = () => child.kill("SIGINT");
@@ -124,14 +126,25 @@ async function reviewOnce(flags, look) {
       // and even when saving its evidence fails below: no review came back either way.
       const run = temporary && join(temporary, "status.json");
       const record = run && existsSync(run) ? JSON.parse(readFileSync(run, "utf8")) : {};
+      // The model could not run: a CLI that never started (missing), a usage-limit refusal, a usage limit
+      // or a provider error said by the CLI itself, or an empty account. A finished or broken run is not one.
+      if (status !== 0 && spawned && (!record.pgid || record.refused === true || outOfCredit ||
+        /^\S+ usage limit\b|^(?:OpenCode|Grok) reported an error: /.test(reason))) unavailable = true;
       if (budget && (!record.pgid || record.refused === true || outOfCredit)) releaseReviewBudget(ledger.path, budget, env);
     } catch (error) {
       kept = true;
       console.error(`problem: releasing review budget failed: ${error.message}`);
     }
     try {
-      const { record, cleanup } = saveReviewEvidence(temporary, () => (evidence = evidenceDirectory()),
-        text => findingsRecord(text, { model, effort, scope: label, head: reviewedHead }));
+      // A second look's folder is marked as soon as it exists, before any review file is copied in, so no
+      // lookup ever takes it for Claude's review; `ok` turns true below only for a run that came back.
+      const mark = ok => writeFileSync(join(evidence, "second-look.json"), `${JSON.stringify({ kind: look.kind, model, ok })}\n`);
+      const { record, cleanup } = saveReviewEvidence(temporary, () => {
+        evidence = evidenceDirectory();
+        if (look) mark(false);
+        return evidence;
+      }, text => findingsRecord(text, { model, effort, scope: label, head: reviewedHead }));
+      if (look && status === 0 && !outOfCredit) mark(true);
       // The evidence is saved; a leftover temporary folder is reported but fails nothing.
       if (cleanup) console.error(`problem: removing ${temporary} failed: ${cleanup}`);
       if (record) {
@@ -141,21 +154,13 @@ async function reviewOnce(flags, look) {
     } catch (error) {
       status = 1;
       outOfCredit = false;
+      unavailable = false;
       reason = `saving evidence failed: ${error.message}`;
       console.error(`problem: ${reason}`);
       if (temporary) console.error(`problem: review files kept in ${temporary}`);
     }
-    // Every second-look folder is marked, a failed one too, so no other review lookup takes it for Claude's.
-    if (look && evidence !== "none") {
-      try { writeFileSync(join(evidence, "second-look.json"), `${JSON.stringify({ kind: look.kind, model, ok: status === 0 && !outOfCredit })}\n`); }
-      catch (error) {
-        status = 1; outOfCredit = false;
-        reason = `marking the second look failed: ${error.message}`;
-        console.error(`problem: ${reason}`);
-      }
-    }
   }
-  return { status, outOfCredit, kept, budget, model, evidence, label, reason };
+  return { status, outOfCredit, unavailable: status !== 0 && unavailable, kept, budget, model, evidence, label, reason };
 }
 
 /** The RESULT line and exit code of one review run. */
@@ -170,7 +175,8 @@ function report({ status, outOfCredit, kept, budget, model, evidence, label, rea
 }
 
 // The second look after Claude's review: the change's kind picks its model in the table, the other family takes
-// over when that one cannot run (a used-up count, no credit, a CLI that is down), and when neither can, it is skipped.
+// over when that one cannot run (a used-up count, no credit, a usage limit, a CLI that is missing or down), and when
+// neither can, it is skipped. Any other failure, such as an incomplete answer or a failed save or PR comment, fails.
 async function secondLook(flags) {
   let pick;
   try {
@@ -192,6 +198,7 @@ async function secondLook(flags) {
     if (missed.length) console.log(`second look: ${model} takes it (${missed.at(-1)})`);
     const result = await reviewOnce(flags, { kind: pick.kind, model });
     if (result.status === 0 && !result.outOfCredit) return report(result);
+    if (!result.unavailable) return report(result);
     if (result.evidence !== "none") console.log(`evidence: ${result.evidence}`);
     missed.push(`${model} ${result.outOfCredit ? "out of credit" : result.reason}`.replace(/\s+/g, " "));
   }

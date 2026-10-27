@@ -30,8 +30,9 @@ if (env.FAKE_FAIL === action) {
   if (tool === "fake-kit") console.log("RESULT: fail child failure");
   process.exit(1);
 }
-// The second look: FAKE_SECOND=skip has no model to take it; FAKE_SECOND_REVIEW is its report (clean by default).
+// The second look: FAKE_SECOND=skip has no model to take it, =fail fails; FAKE_SECOND_REVIEW is its report (clean by default).
 if (tool === "fake-kit" && action === "review" && args.includes("--second-look")) {
+  if (env.FAKE_SECOND === "fail") { console.log("RESULT: fail second-look table broken evidence none"); process.exit(1); }
   if (env.FAKE_SECOND === "skip") {
     console.log("second look: skipped (grok-4.7 out of credit; opencode/deepseek-v4.1-flash-free out of credit)");
     console.log("RESULT: skip second look (grok-4.7 out of credit; opencode/deepseek-v4.1-flash-free out of credit)");
@@ -1400,7 +1401,7 @@ test("a second-look P1 blocks the merge like Claude's, after Claude's clean revi
   const result = f.run(["--ticket", "ticket.md"], { FAKE_SECOND_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P1 the second look found this.\n" });
   assert.equal(result.status, 1, result.stderr);
   const folder = join(f.main, ".scratch/reviews/ak-14/second-1");
-  assert.equal(result.stdout.trimEnd().split("\n").at(-1), `RESULT: fail pr #73 review has 1 open findings (${join(folder, "result.md")})`);
+  assert.equal(result.stdout.trimEnd().split("\n").at(-1), `RESULT: fail pr #73 second look has 1 open findings (${join(folder, "result.md")})`);
   assert.match(result.stdout, /^review: ok$/m);
   assert.match(result.stdout, /^second look: code \(feature\.txt\) grok-4\.7$/m);
   assert.equal(f.ghCalls("merge").length, 0);
@@ -1427,4 +1428,12 @@ test("a saved second look is reused only as a second look that ran; it is never 
     assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args.includes("--second-look")), !ok, String(ok));
     assert.equal(f.ghCalls("comment").some(call => call.body?.startsWith(`Reused second look: ${folder}`)), ok, String(ok));
   }
+});
+
+test("a second look that fails (exit 1) stops kit pr before CI and merge", t => {
+  const f = fixture(t), result = f.run([], { FAKE_SECOND: "fail" });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: fail review: /);
+  assert.equal(f.ghCalls("merge").length, 0);
+  assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "wait"), false);
 });

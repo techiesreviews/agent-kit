@@ -10,7 +10,7 @@ import { builderChecks, spoken } from "../review-brief.mjs";
 const { kitBranch, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, nodeEnv, commitBuilderWork, builderAuthor, kitScore, scoreCost, scoreReview } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const usage = "Usage: kit slice --ticket FILE --builder MODEL [--effort high] [--rounds 3] [--no-pr]\nResume saved phases under .scratch/kit-slice/<ticket-slug>/.\nAfter the code review and its fix rounds, a second look (kit review --second-look) gets the same fix rounds; when no model can take it, the slice goes on and says why.\nThen kit ux checks touched features: broken or looks off gets one kit fix --note round;\nstill broken stops (decide: ux broken <feature>), looks off lands with UX follow-ups in the ticket.\nQueued PRs are awaited for up to 2h; reruns resume the wait.\nOverrides: ASE_SLICE_AGENT, ASE_SLICE_KIT, ASE_SLICE_GH; ASE_SLICE_MERGE_TIMEOUT_MS, ASE_SLICE_MERGE_POLL_MS.\n";
+const usage = "Usage: kit slice --ticket FILE --builder MODEL [--effort high] [--rounds 3] [--no-pr]\nResume saved phases under .scratch/kit-slice/<ticket-slug>/.\nAfter the code review and its fix rounds, kit ux checks touched features: broken or looks off gets one kit fix --note round;\nstill broken stops (decide: ux broken <feature>), looks off lands with UX follow-ups in the ticket.\nLast, a second look (kit review --second-look) gets the same fix rounds, then looks again at the new HEAD;\nwhen no model can take it, the slice goes on and says why.\nQueued PRs are awaited for up to 2h; reruns resume the wait.\nOverrides: ASE_SLICE_AGENT, ASE_SLICE_KIT, ASE_SLICE_GH; ASE_SLICE_MERGE_TIMEOUT_MS, ASE_SLICE_MERGE_POLL_MS.\n";
 
 function options(args) {
   const flags = { effort: "high", rounds: FIX_ROUNDS, noPr: false };
@@ -225,6 +225,13 @@ async function slice(args) {
     const agent = env.ASE_SLICE_AGENT || resolve(import.meta.dirname, "../agent.sh");
     const pendingPath = join(root, ".scratch/kit-fix", encodeURIComponent(branch), "pending.json");
     const pendingFix = () => state.pendingFix && existsSync(pendingPath);
+    // What a pending kit fix round answers, so a resumed round passes the same review or note.
+    const pendingSource = () => {
+      try {
+        const pending = JSON.parse(readFileSync(pendingPath, "utf8"));
+        return typeof pending.note === "string" ? ["--note", pending.note] : typeof pending.review === "string" ? ["--review", pending.review] : null;
+      } catch { return null; }
+    };
     // A fix round past its builder step finishes under its saved model; a switch applies from the next round.
     const pastBuilder = () => {
       try { return pendingFix() && ["commit", "review"].includes(JSON.parse(readFileSync(pendingPath, "utf8")).phase); }
@@ -324,7 +331,7 @@ async function slice(args) {
           const fixStarted = started;
           begin("pr");
           const result = await execute(kit, ["pr", "--ticket", flags.ticket, "--no-merge"]);
-          const refused = /^RESULT: fail pr #(\d+) review has [1-9]\d* open findings \(.+\)$/m.exec(result.output);
+          const refused = /^RESULT: fail pr #(\d+) (?:review|second look) has [1-9]\d* open findings \(.+\)$/m.exec(result.output);
           const opened = /^RESULT: ok opened #(\d+) [a-f\d]{7,40}$/m.exec(result.output);
           if (result.code === 1 && refused) state.pr = refused[1];
           else {
@@ -340,44 +347,6 @@ async function slice(args) {
         throw new Error(`${open.length} open findings after ${state.rounds} rounds (${join(state.review, "result.md")})`);
       }
       complete(`${state.rounds} rounds${open.length ? `, ${open.length} follow-ups` : ""}`);
-    }
-    // The second look after Claude's review: its findings get the same fix rounds, each answered by Claude's
-    // review again. When no model can take it, the slice goes on and says why.
-    begin("second");
-    if (!state.finished.includes(phase)) {
-      if (!state.secondLook) {
-        const head = state.head;
-        assertHead(head);
-        const result = await execute(kit, ["review", "--ticket", flags.ticket, "--second-look"]);
-        assertHead(head);
-        if (result.code === 3) state.secondLook = { skipped: /^second look: skipped \((.+)\)$/m.exec(result.output)?.[1] || "no reason given" };
-        else {
-          const evidence = /^RESULT: ok review .+ evidence (.+)$/m.exec(requireSuccess(result))?.[1];
-          if (!evidence) throw new Error("second look did not name its evidence folder");
-          state.secondLook = { evidence: reviewEvidence(evidence) };
-        }
-        save();
-      }
-      if (state.secondLook.skipped) {
-        console.log(`second look: skipped (${state.secondLook.skipped})`);
-        complete(`skipped (${state.secondLook.skipped})`);
-      } else {
-        const result = join(state.secondLook.evidence, "result.md");
-        if (!state.secondLook.answered) {
-          let text = "";
-          try { text = readFileSync(result, "utf8"); } catch { /* Fail closed. */ }
-          const open = stopping(openFindings(text).findings);
-          if (open.length) {
-            if (state.rounds >= flags.rounds) throw new Error(`${open.length} open second-look findings after ${state.rounds} rounds (${result})`);
-            await fixRound(["--review", state.secondLook.evidence]);
-          }
-          state.secondLook.answered = true; save();
-        }
-        while (pendingFix() || (stopping(findings()).length && state.rounds < flags.rounds)) await fixRound(["--review", state.review]);
-        const open = stopping(findings());
-        if (open.length) throw new Error(`${open.length} open review findings after the second look's fix rounds (${join(state.review, "result.md")})`);
-        complete(result);
-      }
     }
     begin("ux");
     if (!state.finished.includes(phase)) {
@@ -424,6 +393,47 @@ async function slice(args) {
         if (head) { state.head = head; save(); }
       }
       complete(!ux ? "skipped: nothing visible touched" : `${ux.counts.fine} fine, ${ux.counts.broken} broken${ux.off.length ? `, ${ux.off.length} looks off as follow-ups` : ""}`);
+    }
+    // The second look, last before landing (after the UX gate, so it sees the final code): its findings get the
+    // same fix rounds as Claude's, each answered by Claude's review, then a fresh second look of the new HEAD, so
+    // kit pr finds one covering what it lands. When no model can take it, the slice goes on and says why.
+    begin("second");
+    if (!state.finished.includes(phase)) {
+      for (;;) {
+        if (state.secondLook?.answering) {
+          // A round answering the second look, resumed where it stopped (saved before it started), then Claude's rounds.
+          if (!pendingFix() && state.rounds === state.secondLook.round) await fixRound(["--review", state.secondLook.evidence]);
+          while (pendingFix() || (stopping(findings()).length && state.rounds < flags.rounds)) await fixRound(pendingSource() ?? ["--review", state.review]);
+          const open = stopping(findings());
+          if (open.length) throw new Error(`${open.length} open review findings after the second look's fix rounds (${join(state.review, "result.md")})`);
+          delete state.secondLook; save();
+        }
+        if (!state.secondLook) {
+          const head = state.head;
+          assertHead(head);
+          const result = await execute(kit, ["review", "--ticket", flags.ticket, "--second-look"]);
+          assertHead(head);
+          if (result.code === 3) state.secondLook = { skipped: /^second look: skipped \((.+)\)$/m.exec(result.output)?.[1] || "no reason given" };
+          else {
+            const evidence = /^RESULT: ok review .+ evidence (.+)$/m.exec(requireSuccess(result))?.[1];
+            if (!evidence) throw new Error("second look did not name its evidence folder");
+            state.secondLook = { evidence: reviewEvidence(evidence) };
+          }
+          save();
+        }
+        if (state.secondLook.skipped) {
+          console.log(`second look: skipped (${state.secondLook.skipped})`);
+          complete(`skipped (${state.secondLook.skipped})`);
+          break;
+        }
+        const result = join(state.secondLook.evidence, "result.md");
+        let text = "";
+        try { text = readFileSync(result, "utf8"); } catch { /* Fail closed. */ }
+        const open = stopping(openFindings(text).findings);
+        if (!open.length) { complete(result); break; }
+        if (state.rounds >= flags.rounds) throw new Error(`${open.length} open second-look findings after ${state.rounds} rounds (${result})`);
+        Object.assign(state.secondLook, { answering: true, round: state.rounds }); save();
+      }
     }
     begin("pr");
     if (!flags.noPr && !state.finished.includes(phase)) {

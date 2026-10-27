@@ -1227,3 +1227,31 @@ test("the kit's own second-look table has every kind, a Grok or OpenCode model w
     assert.match(checked, /^\d{4}-\d{2}-\d{2}$/);
   }
 });
+
+test("a second look whose model runs but fails is a failed review, with no handover and no skip; a usage limit hands over", (t) => {
+  const f = fixture(t); withOpencode(f);
+  const table = lookTable(f);
+  const failed = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: table, FAKE_MODE: "retry-fail" });
+  assert.equal(failed.status, 1, failed.stdout + failed.stderr);
+  assert.doesNotMatch(failed.stdout, / takes it |^RESULT: skip /m);
+  assert.match(failed.stdout.trim().split("\n").at(-1)!, /^RESULT: fail .* evidence \//);
+  assert.deepEqual([...new Set(f.calls().map(call => call.cli))], ["grok"]);
+  // Both models at a usage limit: each could not run, so the second look is skipped.
+  const limited = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: table, FAKE_MODE: "usage-limit" });
+  assert.equal(limited.status, 3, limited.stdout + limited.stderr);
+  assert.match(limited.stdout, /^second look: opencode\/deepseek-v4\.1-flash-free takes it \(grok-4\.7 grok usage limit/m);
+  assert.match(limited.stdout.trim().split("\n").at(-1)!, /^RESULT: skip second look \(grok-4\.7 grok usage limit.*; opencode\/deepseek-v4\.1-flash-free opencode usage limit: /);
+});
+
+test("a second look's evidence folder is marked before its files land, so a failed save never leaves an unmarked review", (t) => {
+  if (process.getuid?.() === 0) return t.skip("root reads unreadable files");
+  const f = fixture(t); withOpencode(f);
+  const result = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: lookTable(f), FAKE_LOCK_DIFF: "1" });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.doesNotMatch(result.stdout, / takes it /);
+  const evidence = / evidence (\/.+)$/.exec(result.stdout.trim().split("\n").at(-1)!)?.[1];
+  assert.ok(evidence, result.stdout);
+  // The answer was copied before the diff failed: the folder holds a complete report, marked as a second look that did not come back.
+  assert.ok(existsSync(join(evidence, "result.md")));
+  assert.deepEqual(JSON.parse(readFileSync(join(evidence, "second-look.json"), "utf8")), { kind: "code", model: "grok-4.7", ok: false });
+});

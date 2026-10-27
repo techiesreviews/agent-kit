@@ -509,7 +509,7 @@ async function main(args) {
         for (const finding of ordered.slice(0, 15)) console.log(`${finding.group}: ${shortText(finding.text)}`);
         if (findings.length > 15) console.log(`… and ${findings.length - 15} more`);
         if (blocking.length && !flags.waive) {
-          kitResult("fail", `pr #${number} review has ${blocking.length} open findings (${resultPath})`);
+          kitResult("fail", `pr #${number} ${name} has ${blocking.length} open findings (${resultPath})`);
           return false;
         }
         waived += blocking.length;
