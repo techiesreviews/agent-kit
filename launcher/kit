@@ -15,7 +15,8 @@ if [[ -z ${KIT_HOME:-} || $KIT_HOME == "${KIT_HOME_DEFAULT:-}" ]] || { [[ $KIT_H
   # current is read once: the command keeps this folder while kit update swaps the link.
   KIT_HOME=$(readlink -- "$data/agent-kit/current" 2>/dev/null) || KIT_HOME=''
   [[ -z $KIT_HOME || $KIT_HOME == /* ]] || KIT_HOME=$data/agent-kit/$KIT_HOME
-  # No machine copy (CI, a cloud session, a new laptop): one shallow clone in the cache, stamped for kit version.
+  # No machine copy (CI, a cloud session, a new laptop): one shallow clone in the cache, stamped for kit version;
+  # a clone that is not a whole kit is thrown away.
   whole "$KIT_HOME" || KIT_HOME=$cache/agent-kit why="$cache/agent-kit exists but holds no kit; remove it"
   if [[ ! -e $KIT_HOME ]]; then
     why="no machine copy; cannot clone $KIT_REPO"
@@ -28,7 +29,7 @@ fi
 whole "$KIT_HOME" || { printf 'RESULT: fail no Agent Kit at %s (%s)\n' "$KIT_HOME" "$why"; exit 2; }
 # The front door resolves KIT_HOME the same way, so the marker still matches it in every child.
 if [[ $picked == true ]]; then
-  KIT_HOME=$(cd -- "$KIT_HOME" 2>/dev/null && pwd -P) || { printf 'RESULT: fail no Agent Kit at %s (%s)\n' "$KIT_HOME" "$why"; exit 2; }
+  KIT_HOME=$(cd -- "$KIT_HOME" 2>/dev/null && pwd -P) || { printf 'RESULT: fail no Agent Kit at %s (removed while starting)\n' "$KIT_HOME"; exit 2; }
   export KIT_HOME_PINNED=$KIT_HOME
 fi
 # Outside git the project is the one around this launcher, not around the kit.

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -316,4 +316,44 @@ test("a pinned folder that was removed, with no machine copy and no clone, fails
   assert.equal(result.stdout, `RESULT: fail no Agent Kit at ${join(f.cache, "agent-kit")} (no machine copy; cannot clone ${f.env.KIT_REPO})\n`);
   const warned = f.hook("bash-guard", stashPop, inherited);
   assert.deepEqual([warned.status, warned.stdout], [0, `{"systemMessage":"${warning}"}\n`]);
+});
+
+test("a person's KIT_HOME beside a different marker still fails plainly; a pinned folder missing kit-lib.sh is picked again", (t) => {
+  const f = fixture(t);
+  const one = f.publish("one");
+  assert.equal(f.kit(["update"]).status, 0);
+  const two = f.publish("two");
+  assert.equal(f.kit(["update"]).status, 0);
+  const chosen = { KIT_HOME: join(f.directory, "nowhere"), KIT_HOME_PINNED: join(f.data, two) };
+  const failed = f.kit(["where"], chosen);
+  assert.equal(failed.status, 2);
+  assert.equal(failed.stdout, `RESULT: fail no Agent Kit at ${join(f.directory, "nowhere")} (KIT_HOME)\n`);
+  const warned = f.hook("bash-guard", stashPop, chosen);
+  assert.deepEqual([warned.status, warned.stdout, warned.stderr], [0, `{"systemMessage":"${warning}"}\n`, ""]);
+  spawnSync("chmod", ["-R", "u+w", join(f.data, one)]);
+  rmSync(join(f.data, one, "kit-lib.sh"));
+  writeFileSync(join(f.data, one, "hooks/bash-guard.sh"), 'printf "one guard\\n" >&2; exit 2\n');
+  const inherited = { KIT_HOME: join(f.data, one), KIT_HOME_PINNED: join(f.data, one) };
+  assert.deepEqual(lines(f.kit(["where"], inherited)), [`${join(f.data, two)} two`]);
+  const guarded = f.hook("bash-guard", stashPop, inherited);
+  assert.deepEqual([guarded.status, guarded.stderr], [2, "commit work in progress on your own branch\n"]);
+});
+
+test("the marker is the resolved folder the front door uses, so a child behind a linked data folder still picks again", (t) => {
+  const f = fixture(t);
+  const one = f.publish("one");
+  mkdirSync(join(f.directory, "data"));
+  const linked = { XDG_DATA_HOME: join(f.directory, "data-link") };
+  symlinkSync(join(f.directory, "data"), linked.XDG_DATA_HOME);
+  assert.equal(f.kit(["update"], linked).status, 0);
+  const real = realpathSync(join(f.data, one));
+  const pinned = lines(f.kit(["pinned"], linked));
+  assert.deepEqual(pinned, [real]);
+  assert.deepEqual(lines(f.kit(["where"], linked)), [`${real} one`]);
+  const two = f.publish("two");
+  assert.equal(f.kit(["update"], linked).status, 0);
+  spawnSync("chmod", ["-R", "u+w", real]);
+  rmSync(real, { recursive: true, force: true });
+  const inherited = { ...linked, KIT_HOME: pinned[0], KIT_HOME_PINNED: pinned[0] };
+  assert.deepEqual(lines(f.kit(["where"], inherited)), [`${realpathSync(join(f.data, two))} two`]);
 });
