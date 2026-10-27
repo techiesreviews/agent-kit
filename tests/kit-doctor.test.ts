@@ -654,13 +654,26 @@ test("a broken --help stops agent.sh review and kit doctor but not agent.sh buil
     const resumed = agent("--resume", out);
     if (kind === "build") {
       assert.notEqual(resumed.status, 3, resumed.stderr);
-      assert.ok(resumed.stderr.startsWith(problem), resumed.stderr);
+      assert.ok(resumed.stderr.startsWith(`${problem}agent.sh: building in ${f.build} despite the problem above; the builder should repair it\n`), resumed.stderr);
     } else {
       assert.equal(resumed.status, 3, resumed.stderr);
       assert.match(resumed.stderr, /^✗ help: broken/);
     }
   }
+  // An unreadable status.json stops the resume before any gate.
+  const broken = join(f.directory, "resume-broken");
+  mkdirSync(broken);
+  writeFileSync(join(broken, "status.json"), "{");
+  const unreadable = agent("--resume", broken);
+  assert.notEqual(unreadable.status, 0, unreadable.stderr);
+  assert.doesNotMatch(unreadable.stderr, /building in/);
   const doctor = f.run(["--quiet"], f.build, { KIT_HELP_TIMEOUT: "0.3" });
   assert.equal(doctor.status, 1, doctor.stdout + doctor.stderr);
   assert.ok(doctor.stdout.endsWith("RESULT: fail doctor 1 failed: help\n"), doctor.stdout);
+  // The skip covers only the help: a build with another failing check is still refused.
+  rmSync(join(f.build, ".codex/hooks.json"));
+  const refused = agent("build", f.build, missing, "--out", join(f.directory, "out-refused"));
+  assert.equal(refused.status, 3, refused.stdout + refused.stderr);
+  assert.match(refused.stderr, /RESULT: fail doctor 1 failed: hook config\n/);
+  assert.doesNotMatch(refused.stderr, /building in/);
 });

@@ -33,4 +33,6 @@ if [[ $gate == true ]]; then
     printf 'agent.sh: building in %s despite the problem above; the builder should repair it\n' "$root" >&2
   fi
 fi
+# The skip is the gate's alone: the builder's or reviewer's own kit doctor sees every broken help.
+unset KIT_DOCTOR_SKIP
 exec node "$(dirname "${BASH_SOURCE[0]}")/agent-run.mjs" "$@"
