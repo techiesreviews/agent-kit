@@ -11,8 +11,8 @@ import { projectCommand, spoken } from "../review-brief.mjs";
 const { kitBranch, kitHome, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, nodeEnv, kitScore } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const { checkSteps, classify, doneHeading, featureListGuard, featureListProblem, focusedUnitFiles, parseChanges, unitTestFile } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
-const usage = 'Usage: kit pr [--base <land>] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release] [--full] [--waive "<reason>"]\nBranches come from scripts/agents/kit.json: --base defaults to branches.land; --release needs --base branches.release.\n--waive requires a *-lead owner; records the reason for merging with open findings or without a feature-list update.\n';
+const { checkSteps, classify, doneHeading, featureListGuard, featureListProblem, focusedUnitFiles, parseChanges, secondLookPick, unitTestFile } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
+const usage = 'Usage: kit pr [--base <land>] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release] [--full] [--waive "<reason>"]\nBranches come from scripts/agents/kit.json: --base defaults to branches.land; --release needs --base branches.release.\n--waive requires a *-lead owner; records the reason for merging with open findings or without a feature-list update.\nAfter the Claude review (none in the docs tier), every change gets a second look (kit review --second-look), whose findings block the same way;\nwhen no model can take it, the PR lands and says "second look: skipped (<reason>)".\n';
 const kit = process.env.KIT_PR_KIT || resolve(import.meta.dirname, "../kit");
 
 function options(args) {
@@ -39,8 +39,15 @@ function ticketTitle(file) {
   return title.replace(/^(["'])(.*)\1$/, "$2");
 }
 
-// A clean whole-PR review also survives a rebase that preserves the stable patch ID.
-async function savedReview(head, base, patchId, ticket, root) {
+/** A second look's mark ({ kind, model, ok }), null for any other review; an unreadable mark is still a second look. */
+function secondLookMark(folder) {
+  try { return JSON.parse(readFileSync(join(folder, "second-look.json"), "utf8")) ?? {}; }
+  catch (error) { return error.code === "ENOENT" ? null : {}; }
+}
+
+// A clean whole-PR review also survives a rebase that preserves the stable patch ID. A second look's folder
+// (marked second-look.json) is only ever a second look, and only one that ran counts.
+async function savedReview(head, base, patchId, ticket, root, second = false) {
   const parent = join(kitMainRoot(), ".scratch/reviews", kitOwner());
   if (!existsSync(parent)) return;
   // Review folder names start with UTC timestamps; numeric sorting handles collision suffixes.
@@ -49,8 +56,8 @@ async function savedReview(head, base, patchId, ticket, root) {
   let currentId;
   for (const name of folders) {
     const folder = join(parent, name), refs = join(folder, "refs.txt");
-    const result = join(folder, "result.md");
-    if (!existsSync(refs) || !existsSync(result)) continue;
+    const result = join(folder, "result.md"), mark = secondLookMark(folder);
+    if (!existsSync(refs) || !existsSync(result) || (second ? mark?.ok !== true : mark)) continue;
     const [reviewedHead, reviewedBase] = readFileSync(refs, "utf8").split(/\r?\n/);
     const resultMd = readFileSync(result, "utf8");
     if (!/^REVIEW_STATUS: complete$/m.test(resultMd)) continue;
@@ -365,8 +372,11 @@ async function main(args) {
     const createArgs = ["pr", "create", "--base", flags.base, "--head", branch, "--title", prTitle, "--body-file", body];
     const reviewArgs = ["review", "--base", `origin/${flags.base}`, "--pr"];
     if (flags.dryRun) {
+      const look = secondLookPick(changes, settings);
       console.log(`branch: ${branch}\nbase: ${flags.base}\nHEAD: ${head}\ntitle: ${prTitle}\nbody: ${body}`);
-      for (const command of [["git", ...pushArgs()], ["gh", ...createArgs], ...(review ? [[kit, ...reviewArgs, "N", ...(flags.ticket ? ["--ticket", flags.ticket] : [])]] : [])])
+      console.log(`second look: ${look.kind} (${look.path}) ${look.model}, else ${look.fallback}`);
+      const reviewCommand = extra => [kit, ...reviewArgs, "N", ...(flags.ticket ? ["--ticket", flags.ticket] : []), ...extra];
+      for (const command of [["git", ...pushArgs()], ["gh", ...createArgs], ...(review ? [reviewCommand([])] : []), reviewCommand(["--second-look"])])
         console.log(command.map(quote).join(" "));
       if (!flags.noMerge && !flags.release) console.log("gh pr merge N --rebase --delete-branch --repo <owner/name> (or --auto --rebase with a merge queue)");
       kitResult("ok", `dry-run ${head.slice(0, 7)} ${branch} -> ${flags.base}`);
@@ -459,21 +469,32 @@ async function main(args) {
       head = commitFollowups({ root, branch, head: reviewedHead, ticket: flags.ticket, content: updated, env });
       await push();
     }
+    // Claude's review (none in the docs tier), then the second look on every change; both weigh findings the same way.
     async function reviewHead() {
-      if (!review) return true;
       waived = 0;
-      const saved = await savedReview(head, await git("review", ["merge-base", `origin/${flags.base}`, "HEAD"]), patchId, flags.ticket, root);
+      const base = await git("review", ["merge-base", `origin/${flags.base}`, "HEAD"]);
+      if (review && !await lookAt(base, false)) return false;
+      return lookAt(base, true);
+    }
+    async function lookAt(base, second) {
+      const name = second ? "second look" : "review";
+      const saved = await savedReview(head, base, patchId, flags.ticket, root, second);
       let resultPath;
       if (saved) {
-        if (saved.samePatch) console.log("review: reused (same patch on new base)");
+        if (saved.samePatch) console.log(`${name}: reused (same patch on new base)`);
         resultPath = join(saved.folder, "result.md");
-        const comment = join(directory, "review.md");
-        writeFileSync(comment, `Reused review: ${saved.folder}\nHEAD: ${head}\n\n${readFileSync(resultPath, "utf8")}`);
+        const comment = join(directory, second ? "second-look.md" : "review.md");
+        writeFileSync(comment, `Reused ${name}: ${saved.folder}\nHEAD: ${head}\n\n${readFileSync(resultPath, "utf8")}`);
         await gh("review", ["pr", "comment", number, "--body-file", comment]);
       } else {
-        const output = await run("review", kit, [...reviewArgs, number, ...(flags.ticket ? ["--ticket", flags.ticket] : [])]);
-        const evidence = /^RESULT: ok review .+ evidence (.+)$/m.exec(output)?.[1];
-        if (!evidence) throw new Error("review did not name its evidence folder");
+        const result = await execute("review", kit, [...reviewArgs, number, ...(flags.ticket ? ["--ticket", flags.ticket] : []), ...(second ? ["--second-look"] : [])]);
+        // The second look's kind, model and any fallback, as kit review said them.
+        if (second) for (const line of result.text.match(/^second look: .+$/gm) ?? []) console.log(line);
+        // No model could take the second look: it never blocks on availability.
+        if (second && result.status === 3) return true;
+        if (result.status !== 0) throw new Error(result.failure || result.stderr.trim().split(/\r?\n/).at(-1) || `${kit} exited ${result.status}`);
+        const evidence = /^RESULT: ok review .+ evidence (.+)$/m.exec(result.text)?.[1];
+        if (!evidence) throw new Error(`${name} did not name its evidence folder`);
         resultPath = join(resolve(root, evidence), "result.md");
       }
       let resultMd = "";
@@ -491,10 +512,10 @@ async function main(args) {
           kitResult("fail", `pr #${number} review has ${blocking.length} open findings (${resultPath})`);
           return false;
         }
-        waived = blocking.length;
+        waived += blocking.length;
       }
       if (relaxed) await recordFollowups(findings.filter(item => !blocking.includes(item)));
-      ok("review");
+      ok(name);
       return true;
     }
     if (!await reviewHead()) return 1;

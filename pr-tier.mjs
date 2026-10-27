@@ -2,20 +2,28 @@
 // The path patterns, the feature list and the docs-guard tests come from scripts/agents/kit.json
 // (`paths`, `featureList`, `unit.docsGuards`); a missing key means no path reaches that tier or guard.
 // `paths.kit` marks kit plumbing (it runs `checks.extra`); `paths.unitTests` marks the unit test files.
+// It also names the second look's review kind and its model from second-look.json beside it.
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { kitSettings } from "./kit-lib.mjs";
 
 const order = ["docs", "css", "tests", "full"];
 const compiled = new WeakMap();
+// Second-look kinds when the settings set no `paths.agent` or `paths.dx`: agent setup, and build files and scripts.
+const agentPaths = ["^scripts/agents/", "^\\.claude/", "^\\.codex/", "(?:^|/)(?:AGENTS|CLAUDE)\\.md$", "^docs/agents/"];
+const developerPaths = ["^scripts/", "^\\.github/", "^package(?:-lock)?\\.json$", "^tsconfig[^/]*\\.json$", "(?:^|/)[^/]+\\.config\\.[cm]?[jt]s$", "^wrangler\\.jsonc?$"];
 
 /** The settings' path rules as regular expressions, compiled once per settings object. */
 function rules(settings = kitSettings()) {
   if (!compiled.has(settings)) {
-    const patterns = name => (settings.paths?.[name] ?? []).map(source => {
+    const patterns = (name, fallback = []) => (settings.paths?.[name] ?? fallback).map(source => {
       try { return new RegExp(source); }
       catch (error) { throw new Error(`paths.${name} in scripts/agents/kit.json: ${error.message}`); }
     });
-    compiled.set(settings, { docs: patterns("docs"), tests: patterns("tests"), css: patterns("css"), visible: patterns("visible"),
-      kit: patterns("kit"), unitTests: patterns("unitTests"), featureList: settings.featureList || null, docsGuards: settings.unit?.docsGuards ?? [] });
+    const docs = patterns("docs"), kit = patterns("kit");
+    compiled.set(settings, { docs, tests: patterns("tests"), css: patterns("css"), visible: patterns("visible"), kit,
+      agent: [...patterns("agent", agentPaths), ...kit], dx: [...patterns("dx", developerPaths), ...docs],
+      unitTests: patterns("unitTests"), featureList: settings.featureList || null, docsGuards: settings.unit?.docsGuards ?? [] });
   }
   return compiled.get(settings);
 }
@@ -75,6 +83,45 @@ export function classify(changes, { full = false, settings } = {}) {
   const why = tier === "full" ? `${changes[tiers.indexOf("full")].path} is code`
     : present.length === 1 ? `all ${tier}` : `${present.join(" + ")}, highest ${tier}`;
   return { tier, reason: `${count}, ${why}`, docs: tiers.includes("docs"), ...cleanGuard };
+}
+
+export const reviewKinds = ["agent", "ux", "dx", "code"];
+
+/** The second look's kind and the path that decided it: agent setup (`paths.agent`, `paths.kit`) first, then what a user
+ * sees (`paths.visible`), then developer files (`paths.dx`, `paths.docs`); a change that reaches none is code. */
+export function reviewKind(changes, settings) {
+  const { agent, visible, dx } = rules(settings);
+  for (const [kind, patterns] of [["agent", agent], ["ux", visible], ["dx", dx]]) {
+    const hit = changes.find(({ path }) => matches(patterns, path));
+    if (hit) return { kind, path: hit.path };
+  }
+  return { kind: "code", path: changes[0]?.path ?? null };
+}
+
+// A second look is Grok or a free OpenCode model, never Codex or another OpenAI model.
+const lookFamily = model => typeof model !== "string" ? null : /^grok-\S+$/i.test(model) ? "grok" : /^opencode\/\S+$/.test(model) ? "opencode" : null;
+
+/** The second-look table (ASE_SECOND_LOOK, else second-look.json beside this file): per kind { model, fallback, checked }. */
+export function secondLookTable(path = process.env.ASE_SECOND_LOOK || join(import.meta.dirname, "second-look.json")) {
+  let table;
+  try { table = JSON.parse(readFileSync(path, "utf8")); }
+  catch (error) { throw new Error(`second-look table ${path}: ${error.message}`); }
+  for (const kind of reviewKinds) {
+    const row = table?.kinds?.[kind], problem = text => new Error(`second-look table ${path} ${kind}: ${text}`);
+    if (!row || typeof row !== "object") throw problem("missing");
+    const [first, second] = [lookFamily(row.model), lookFamily(row.fallback)];
+    if (!first || !second) throw problem("model and fallback must be grok-<model> or opencode/<model>");
+    if (first === second) throw problem("the fallback must be the other family");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(row.checked ?? "")) throw problem("checked must be a YYYY-MM-DD date");
+  }
+  return table.kinds;
+}
+
+/** The second look for a change: its kind, the deciding path, and the table's model and fallback for that kind. */
+export function secondLookPick(changes, settings, path) {
+  const { kind, path: decided } = reviewKind(changes, settings);
+  const { model, fallback } = secondLookTable(path)[kind];
+  return { kind, path: decided, model, fallback };
 }
 
 // A helper, fake or fixture is matched to unit tests by name: the fixture folder, else the file's stem.

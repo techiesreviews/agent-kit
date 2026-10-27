@@ -267,8 +267,13 @@ async function fix(args) {
           child.once("close", status => { clear(); accept(status ?? 1); });
         });
       } finally { closeSync(fd); }
-      if (code !== 0) throw new Error(`${name} failed (${code}); see ${log}`);
-      return readFileSync(log, "utf8").slice(previous);
+      const output = readFileSync(log, "utf8").slice(previous);
+      if (code !== 0) {
+        // The child's own RESULT, its last, names why; a skip (exit 3, such as a review out of credit) keeps its word.
+        const [, verb, text] = [...output.matchAll(/^RESULT: (fail|skip) (.+)$/gm)].at(-1) ?? [];
+        throw new Error(`${name} failed (${code})${text ? `: ${verb === "skip" ? `skip ${text}` : text}` : ""}; see ${log}`);
+      }
+      return output;
     }
 
     if (pending.phase === "builder") {

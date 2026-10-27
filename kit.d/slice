@@ -10,7 +10,7 @@ import { builderChecks, spoken } from "../review-brief.mjs";
 const { kitBranch, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, nodeEnv, commitBuilderWork, builderAuthor, kitScore, scoreCost, scoreReview } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const usage = "Usage: kit slice --ticket FILE --builder MODEL [--effort high] [--rounds 3] [--no-pr]\nResume saved phases under .scratch/kit-slice/<ticket-slug>/.\nAfter the code review, kit ux checks touched features: broken or looks off gets one kit fix --note round;\nstill broken stops (decide: ux broken <feature>), looks off lands with UX follow-ups in the ticket.\nQueued PRs are awaited for up to 2h; reruns resume the wait.\nOverrides: ASE_SLICE_AGENT, ASE_SLICE_KIT, ASE_SLICE_GH; ASE_SLICE_MERGE_TIMEOUT_MS, ASE_SLICE_MERGE_POLL_MS.\n";
+const usage = "Usage: kit slice --ticket FILE --builder MODEL [--effort high] [--rounds 3] [--no-pr]\nResume saved phases under .scratch/kit-slice/<ticket-slug>/.\nAfter the code review and its fix rounds, a second look (kit review --second-look) gets the same fix rounds; when no model can take it, the slice goes on and says why.\nThen kit ux checks touched features: broken or looks off gets one kit fix --note round;\nstill broken stops (decide: ux broken <feature>), looks off lands with UX follow-ups in the ticket.\nQueued PRs are awaited for up to 2h; reruns resume the wait.\nOverrides: ASE_SLICE_AGENT, ASE_SLICE_KIT, ASE_SLICE_GH; ASE_SLICE_MERGE_TIMEOUT_MS, ASE_SLICE_MERGE_POLL_MS.\n";
 
 function options(args) {
   const flags = { effort: "high", rounds: FIX_ROUNDS, noPr: false };
@@ -95,7 +95,8 @@ async function slice(args) {
       record.phases.push({ name: phase, start: started, end: new Date().toISOString(), exit: code });
       if (code) return;
       if (phase === "build" && state.build) scoreCost(record, state.build);
-      if (["review", "fix"].includes(phase) && state.review) scoreReview(record, state.review);
+      if (["review", "fix", "second"].includes(phase) && state.review) scoreReview(record, state.review);
+      if (phase === "second" && state.secondLook?.evidence) scoreReview(record, state.secondLook.evidence);
       if (phase === "pr" && state.sha) {
         // kit pr prints a short SHA after recording the full one; keep its SHA and time.
         const same = typeof record.landed?.sha === "string" && record.landed.sha.startsWith(state.sha);
@@ -140,7 +141,9 @@ async function slice(args) {
     }
     const requireSuccess = result => {
       if (result.code !== 0) {
-        const reason = /^RESULT: fail (.+)$/m.exec(result.output)?.[1];
+        // The child's last RESULT names why; a skip (exit 3, such as a review out of credit) keeps its word.
+        const [, verb, text] = [...result.output.matchAll(/^RESULT: (fail|skip) (.+)$/gm)].at(-1) ?? [];
+        const reason = verb === "skip" ? `skip ${text}` : text;
         throw new Error(`command exited ${result.code}${reason ? `: ${reason}` : ""}; see ${log}`);
       }
       return result.output;
@@ -171,8 +174,10 @@ async function slice(args) {
       let folders;
       if (explicit) folders = [resolve(root, explicit)];
       else {
+        // A second look's folder (marked second-look.json) is never Claude's review.
         const parent = join(kitMainRoot(), ".scratch/reviews", kitOwner());
-        folders = existsSync(parent) ? readdirSync(parent).sort((a, b) => b.localeCompare(a, "en", { numeric: true })).map(name => join(parent, name)) : [];
+        folders = existsSync(parent) ? readdirSync(parent).sort((a, b) => b.localeCompare(a, "en", { numeric: true })).map(name => join(parent, name))
+          .filter(folder => !existsSync(join(folder, "second-look.json"))) : [];
       }
       for (const folder of folders) {
         try {
@@ -232,8 +237,8 @@ async function slice(args) {
       let covering = false;
       try { covering = reviewEvidence(state.review) === state.review; } catch { /* Re-review other changes. */ }
       if (!covering) {
-        state.finished = state.finished.filter(name => !["review", "fix", "ux", "pr"].includes(name));
-        delete state.review; delete state.uxFix; delete state.uxReport;
+        state.finished = state.finished.filter(name => !["review", "fix", "second", "ux", "pr"].includes(name));
+        delete state.review; delete state.secondLook; delete state.uxFix; delete state.uxReport;
       }
       state.head = git("rev-parse", "HEAD");
       delete state.pendingFix;
@@ -241,8 +246,13 @@ async function slice(args) {
     if (!state.queued && !pendingFix() && !state.finished.includes("pr") && state.finished.includes("review")) {
       let covering = false;
       try { covering = reviewEvidence(state.review) === state.review; } catch { /* Re-review stale evidence. */ }
-      if (!covering) { state.finished = state.finished.filter(name => !["review", "fix", "ux", "pr"].includes(name)); delete state.uxFix; delete state.uxReport; }
-      else if (stopping(findings()).length) { state.finished = state.finished.filter(name => !["fix", "ux", "pr"].includes(name)); delete state.uxReport; }
+      if (!covering) {
+        state.finished = state.finished.filter(name => !["review", "fix", "second", "ux", "pr"].includes(name));
+        delete state.secondLook; delete state.uxFix; delete state.uxReport;
+      } else if (stopping(findings()).length) {
+        state.finished = state.finished.filter(name => !["fix", "second", "ux", "pr"].includes(name));
+        delete state.secondLook; delete state.uxReport;
+      }
     }
     save();
     begin("brief");
@@ -330,6 +340,44 @@ async function slice(args) {
         throw new Error(`${open.length} open findings after ${state.rounds} rounds (${join(state.review, "result.md")})`);
       }
       complete(`${state.rounds} rounds${open.length ? `, ${open.length} follow-ups` : ""}`);
+    }
+    // The second look after Claude's review: its findings get the same fix rounds, each answered by Claude's
+    // review again. When no model can take it, the slice goes on and says why.
+    begin("second");
+    if (!state.finished.includes(phase)) {
+      if (!state.secondLook) {
+        const head = state.head;
+        assertHead(head);
+        const result = await execute(kit, ["review", "--ticket", flags.ticket, "--second-look"]);
+        assertHead(head);
+        if (result.code === 3) state.secondLook = { skipped: /^second look: skipped \((.+)\)$/m.exec(result.output)?.[1] || "no reason given" };
+        else {
+          const evidence = /^RESULT: ok review .+ evidence (.+)$/m.exec(requireSuccess(result))?.[1];
+          if (!evidence) throw new Error("second look did not name its evidence folder");
+          state.secondLook = { evidence: reviewEvidence(evidence) };
+        }
+        save();
+      }
+      if (state.secondLook.skipped) {
+        console.log(`second look: skipped (${state.secondLook.skipped})`);
+        complete(`skipped (${state.secondLook.skipped})`);
+      } else {
+        const result = join(state.secondLook.evidence, "result.md");
+        if (!state.secondLook.answered) {
+          let text = "";
+          try { text = readFileSync(result, "utf8"); } catch { /* Fail closed. */ }
+          const open = stopping(openFindings(text).findings);
+          if (open.length) {
+            if (state.rounds >= flags.rounds) throw new Error(`${open.length} open second-look findings after ${state.rounds} rounds (${result})`);
+            await fixRound(["--review", state.secondLook.evidence]);
+          }
+          state.secondLook.answered = true; save();
+        }
+        while (pendingFix() || (stopping(findings()).length && state.rounds < flags.rounds)) await fixRound(["--review", state.review]);
+        const open = stopping(findings());
+        if (open.length) throw new Error(`${open.length} open review findings after the second look's fix rounds (${join(state.review, "result.md")})`);
+        complete(result);
+      }
     }
     begin("ux");
     if (!state.finished.includes(phase)) {

@@ -1,24 +1,28 @@
 #!/usr/bin/env node
 // kit: review a diff or commit and save the evidence
-import { spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { parseAgentArgs, releaseReviewBudget, reserveReviewBudget } from "../agent-run.mjs";
+import { inferCli, parseAgentArgs, releaseReviewBudget, reserveReviewBudget } from "../agent-run.mjs";
 import { reviewBrief, reviewScope, ticketReviewBrief } from "../review-brief.mjs";
 import { saveReviewEvidence } from "../review-evidence.mjs";
 import { countsLine, findingsRecord } from "../review-findings.mjs";
+import { parseChanges, secondLookPick } from "../pr-tier.mjs";
 
 const { kitBranch, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, kitStateDir, nodeEnv, kitScore, scoreReview } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const usage = "Usage: kit review [--base REF | --commit SHA] [--ticket FILE] [--pr N]\nDefault scope: --base origin/<land> (branches.land in scripts/agents/kit.json). Model: ASE_REVIEW_MODEL or claude-opus-5-5 (claude-*, grok-*, opencode/<model> or Codex).\n" +
+const usage = "Usage: kit review [--base REF | --commit SHA] [--ticket FILE] [--pr N] [--second-look]\nDefault scope: --base origin/<land> (branches.land in scripts/agents/kit.json). Model: ASE_REVIEW_MODEL or claude-opus-5-5 (claude-*, grok-*, opencode/<model> or Codex).\n" +
+  "--second-look: the review kind from the changed paths (agent, ux, dx, code) picks its model in scripts/agents/second-look.json (ASE_SECOND_LOOK overrides);\n" +
+  "the other family takes it when that model cannot run; when neither can, it skips with exit 3 and says \"second look: skipped (<reason>)\".\n" +
   "Weekly budgets for the whole computer: ASE_REVIEW_BUDGET_GPT (12), ASE_REVIEW_BUDGET_GROK (8); Claude and OpenCode are not counted.\n";
 
 function options(args) {
   const values = {};
   for (let i = 0; i < args.length; i += 2) {
     const flag = args[i], value = args[i + 1];
+    if (flag === "--second-look" && !values.secondLook) { values.secondLook = true; i--; continue; }
     if (!["--base", "--commit", "--ticket", "--pr"].includes(flag) || !value || (value.startsWith("--") && !["--base", "--commit"].includes(flag)) || Object.hasOwn(values, flag.slice(2))) {
       throw new Error(`Invalid option: ${flag}`);
     }
@@ -40,18 +44,18 @@ function evidenceDirectory() {
   }
 }
 
-async function review(args) {
-  let evidence = "none", temporary, status = 1, reason = "invalid arguments", label, budget, env, model, effort, reviewedHead, ticket;
+// One review run, printing all but its RESULT line. A second look (`look`: { kind, model }) sets the
+// model and its CLI, so no ASE_AGENT_CLI can send it to Codex, and marks its evidence folder.
+async function reviewOnce(flags, look) {
+  let evidence = "none", temporary, status = 1, reason = "review failed", label, budget, env, model, effort, reviewedHead;
   let ledger, outOfCredit = false, kept = false;
+  const ticket = flags.ticket;
   try {
-    status = 2;
-    const flags = options(args);
-    ticket = flags.ticket;
-    status = 1;
     // The default base comes from the settings file; a settings problem is a failure, not a usage error.
     if (flags.base === undefined && flags.commit === undefined) flags.base = `origin/${kitBranch()}`;
     const root = kitRoot();
     env = nodeEnv();
+    if (look) Object.assign(env, { ASE_REVIEW_MODEL: look.model, ASE_AGENT_CLI: inferCli(look.model) });
     const scope = reviewScope("", flags, root);
     label = scope.label;
     reviewedHead = scope.head;
@@ -102,15 +106,14 @@ async function review(args) {
       const [head, base] = readFileSync(join(temporary, "refs.txt"), "utf8").trim().split("\n");
       const body = join(temporary, "pr-comment.md");
       const [headName, baseName] = scope.commit ? ["Commit", "Parent"] : ["HEAD", "Base"];
-      writeFileSync(body, `Model: ${model}\nScope: ${label}\n${headName}: ${head}\n${baseName}: ${base}\n\n${readFileSync(join(temporary, "out.md"), "utf8")}`);
+      writeFileSync(body, `${look ? `Second look: ${look.kind}\n` : ""}Model: ${model}\nScope: ${label}\n${headName}: ${head}\n${baseName}: ${base}\n\n${readFileSync(join(temporary, "out.md"), "utf8")}`);
       const posted = spawnSync("gh", ["pr", "comment", flags.pr, "--body-file", body], { cwd: root, env, encoding: "utf8" });
       if (posted.error || posted.status !== 0) throw new Error(`gh pr comment failed: ${posted.error?.message || posted.stderr.trim() || posted.status}`);
     }
   } catch (error) {
     reason = error.message;
-    status = status === 2 ? 2 : 1;
+    status = 1;
     console.error(`problem: ${reason}`);
-    if (status === 2) process.stderr.write(usage);
   } finally {
     try {
       // A review whose CLI never started (empty diff) is not counted; the runner
@@ -142,7 +145,21 @@ async function review(args) {
       console.error(`problem: ${reason}`);
       if (temporary) console.error(`problem: review files kept in ${temporary}`);
     }
+    // Every second-look folder is marked, a failed one too, so no other review lookup takes it for Claude's.
+    if (look && evidence !== "none") {
+      try { writeFileSync(join(evidence, "second-look.json"), `${JSON.stringify({ kind: look.kind, model, ok: status === 0 && !outOfCredit })}\n`); }
+      catch (error) {
+        status = 1; outOfCredit = false;
+        reason = `marking the second look failed: ${error.message}`;
+        console.error(`problem: ${reason}`);
+      }
+    }
   }
+  return { status, outOfCredit, kept, budget, model, evidence, label, reason };
+}
+
+/** The RESULT line and exit code of one review run. */
+function report({ status, outOfCredit, kept, budget, model, evidence, label, reason }) {
   if (outOfCredit) {
     console.log(`evidence: ${evidence}`);
     console.log(`RESULT: skip review out of credit (${model})${kept && budget ? "; count not given back" : ""}`);
@@ -150,6 +167,49 @@ async function review(args) {
   }
   kitResult(status === 0 ? "ok" : "fail", status === 0 ? `review ${label} evidence ${evidence}` : `${reason} evidence ${evidence}`);
   return status;
+}
+
+// The second look after Claude's review: the change's kind picks its model in the table, the other family takes
+// over when that one cannot run (a used-up count, no credit, a CLI that is down), and when neither can, it is skipped.
+async function secondLook(flags) {
+  let pick;
+  try {
+    if (flags.base === undefined && flags.commit === undefined) flags.base = `origin/${kitBranch()}`;
+    const root = kitRoot(), scope = reviewScope("", flags, root);
+    const range = scope.commit ? [`${scope.commit}^`, scope.commit] : [`${scope.base}...${scope.head}`];
+    const changes = parseChanges(execFileSync("git", ["-C", root, "-c", "core.quotepath=false", "diff", "--name-status", "--no-renames", ...range],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
+    if (!changes.length) throw new Error(`nothing to review: ${scope.label} is empty`);
+    pick = secondLookPick(changes, kitSettings(root));
+  } catch (error) {
+    console.error(`problem: ${error.message}`);
+    kitResult("fail", `${error.message} evidence none`);
+    return 1;
+  }
+  console.log(`second look: ${pick.kind} (${pick.path}) ${pick.model}`);
+  const missed = [];
+  for (const model of [pick.model, pick.fallback]) {
+    if (missed.length) console.log(`second look: ${model} takes it (${missed.at(-1)})`);
+    const result = await reviewOnce(flags, { kind: pick.kind, model });
+    if (result.status === 0 && !result.outOfCredit) return report(result);
+    if (result.evidence !== "none") console.log(`evidence: ${result.evidence}`);
+    missed.push(`${model} ${result.outOfCredit ? "out of credit" : result.reason}`.replace(/\s+/g, " "));
+  }
+  console.log(`second look: skipped (${missed.join("; ")})`);
+  console.log(`RESULT: skip second look (${missed.join("; ")})`);
+  return 3;
+}
+
+async function review(args) {
+  let flags;
+  try { flags = options(args); }
+  catch (error) {
+    console.error(`problem: ${error.message}`);
+    process.stderr.write(usage);
+    kitResult("fail", `${error.message} evidence none`);
+    return 2;
+  }
+  return flags.secondLook ? secondLook(flags) : report(await reviewOnce(flags));
 }
 
 if (process.argv.length === 3 && ["--help", "-h"].includes(process.argv[2])) process.stdout.write(usage);

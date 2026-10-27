@@ -13,6 +13,8 @@ const pr = resolve("scripts/agents/kit.d/pr");
 const kit = resolve("scripts/agents/kit");
 const cleanReview = "REVIEW_STATUS: complete\nDefects:\n- Spec: none.\n- Standards: none.\nValidation gaps: none.\nOptional nits: none.\n";
 interface Call { tool: string; args: string[]; body?: string }
+// Claude's review, not the second look that kit pr runs after it.
+const claudeReview = (call: Call) => call.tool === "fake-kit" && call.args[0] === "review" && !call.args.includes("--second-look");
 const fake = `#!/usr/bin/env node
 const { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } = require("node:fs");
 const { basename, join } = require("node:path");
@@ -28,9 +30,27 @@ if (env.FAKE_FAIL === action) {
   if (tool === "fake-kit") console.log("RESULT: fail child failure");
   process.exit(1);
 }
-if (tool === "fake-kit" && action === "review") {
+// The second look: FAKE_SECOND=skip has no model to take it; FAKE_SECOND_REVIEW is its report (clean by default).
+if (tool === "fake-kit" && action === "review" && args.includes("--second-look")) {
+  if (env.FAKE_SECOND === "skip") {
+    console.log("second look: skipped (grok-4.7 out of credit; opencode/deepseek-v4.1-flash-free out of credit)");
+    console.log("RESULT: skip second look (grok-4.7 out of credit; opencode/deepseek-v4.1-flash-free out of credit)");
+    process.exit(3);
+  }
   const count = readFileSync(env.FAKE_CALLS, "utf8").trim().split("\\n").map(line => JSON.parse(line))
-    .filter(call => call.tool === "fake-kit" && call.args[0] === "review").length;
+    .filter(call => call.tool === "fake-kit" && call.args[0] === "review" && call.args.includes("--second-look")).length;
+  const folder = join(env.KIT_MAIN_ROOT, ".scratch/reviews", env.ASE_OWNER, "second-" + count);
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "result.md"), env.FAKE_SECOND_REVIEW || ${JSON.stringify(cleanReview)});
+  writeFileSync(join(folder, "second-look.json"), JSON.stringify({ kind: "code", model: "grok-4.7", ok: true }));
+  const { execFileSync } = require("node:child_process");
+  const git = (...argv) => execFileSync("git", argv, { encoding: "utf8" }).trim();
+  writeFileSync(join(folder, "refs.txt"), git("rev-parse", "HEAD") + "\\n" + git("merge-base", "origin/" + (env.FAKE_BASE || "dev"), "HEAD") + "\\n");
+  console.log("second look: code (feature.txt) grok-4.7");
+  console.log("RESULT: ok review git diff base...HEAD evidence " + folder);
+} else if (tool === "fake-kit" && action === "review") {
+  const count = readFileSync(env.FAKE_CALLS, "utf8").trim().split("\\n").map(line => JSON.parse(line))
+    .filter(call => call.tool === "fake-kit" && call.args[0] === "review" && !call.args.includes("--second-look")).length;
   const folder = join(env.KIT_MAIN_ROOT, ".scratch/reviews", env.ASE_OWNER, count === 1 ? "fresh" : "fresh-" + count);
   mkdirSync(folder, { recursive: true });
   const report = (count > 1 && env.FAKE_REBASED_REVIEW) || env.FAKE_REVIEW || ${JSON.stringify(cleanReview)};
@@ -467,7 +487,8 @@ test("PR body includes ordered commits, checks, ticket and conditional Claude cr
     if (mode !== "none") assert.match(body.trimEnd(), /🤖 Generated with \[Claude Code\]\(https:\/\/claude.com\/claude-code\)$/);
     const create = f.ghCalls("create")[0]; assert.equal(create.args[create.args.indexOf("--title") + 1], "Ticket title");
     assert.equal(f.ghCalls("merge").length, 0);
-    assert.deepEqual(f.calls().filter(call => call.tool === "fake-kit").at(-1)?.args, ["review", "--base", "origin/dev", "--pr", "73", "--ticket", "ticket.md"]);
+    assert.deepEqual(f.calls().filter(call => call.tool === "fake-kit").slice(-2).map(call => call.args), [["review", "--base", "origin/dev", "--pr", "73", "--ticket", "ticket.md"],
+      ["review", "--base", "origin/dev", "--pr", "73", "--ticket", "ticket.md", "--second-look"]]);
   }
 });
 
@@ -505,7 +526,7 @@ test("newest complete saved review of the whole PR is posted; incomplete, partia
     if (report) writeFileSync(join(folder, "result.md"), `${report}\n`);
   }
   const result = f.run(["--no-merge"]);
-  assert.equal(result.status, 0, result.stderr); assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "review"), false);
+  assert.equal(result.status, 0, result.stderr); assert.equal(f.calls().some(claudeReview), false);
   assert.equal(f.ghCalls("comment")[0].body, `Reused review: ${join(parent, "20261016T110000Z")}\nHEAD: ${f.head}\n\n${complete("chosen")}\n`);
 });
 
@@ -516,7 +537,7 @@ test("an incomplete or single-commit review for this HEAD is not reused", t => {
     mkdirSync(folder, { recursive: true }); writeFileSync(join(folder, "refs.txt"), `${f.head}\n${base}\n`);
     writeFileSync(join(folder, "result.md"), kind === "incomplete" ? "REVIEW_STATUS: incomplete\n" : "REVIEW_STATUS: complete\n");
     const result = f.run(["--no-merge"]); assert.equal(result.status, 0, result.stderr);
-    assert.ok(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "review"), kind);
+    assert.ok(f.calls().some(claudeReview), kind);
     assert.equal(f.ghCalls("comment").length, 0, kind);
   }
 });
@@ -547,7 +568,7 @@ test("same patch on a moved base reuses a clean review; a changed patch requires
     assert.equal(sameReviewPatch(reviewedId, currentId), !changed);
     const result = f.run(["--no-merge"]);
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "review"), changed);
+    assert.equal(f.calls().some(claudeReview), changed);
     assert.equal(result.stdout.includes("review: reused (same patch on new base)"), !changed);
   }
 });
@@ -568,7 +589,7 @@ test("conflict resolution that changes the patch requires a fresh review", t => 
   assert.equal(sameReviewPatch(reviewedId, stablePatch(f.root, "origin/dev", "HEAD")), false);
   const result = f.run(["--no-merge"]);
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.ok(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "review"));
+  assert.ok(f.calls().some(claudeReview));
 });
 
 test("a changed HEAD cannot reuse an incomplete, unreadable or finding-bearing patch review", t => {
@@ -577,7 +598,7 @@ test("a changed HEAD cannot reuse an incomplete, unreadable or finding-bearing p
     f.git("commit", "--allow-empty", "-m", "New HEAD, same patch");
     const result = f.run(["--no-merge"]);
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.ok(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "review"));
+    assert.ok(f.calls().some(claudeReview));
   }
 });
 
@@ -585,7 +606,7 @@ test("a saved review for another HEAD triggers kit review --pr", t => {
   const f = fixture(t), folder = join(f.main, ".scratch/reviews/ak-14/20261016T120000Z");
   mkdirSync(folder, { recursive: true }); writeFileSync(join(folder, "refs.txt"), "wrong\nbase\n"); writeFileSync(join(folder, "result.md"), "wrong report\n");
   const result = f.run(["--no-merge"]); assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(f.calls().find(call => call.tool === "fake-kit" && call.args[0] === "review")?.args, ["review", "--base", "origin/dev", "--pr", "73"]);
+  assert.deepEqual(f.calls().find(claudeReview)?.args, ["review", "--base", "origin/dev", "--pr", "73"]);
   assert.equal(f.ghCalls("comment").length, 0);
 });
 
@@ -605,7 +626,7 @@ test("saved and fresh reviews stop on findings before CI or merge, capped at 15 
     assert.match(result.stdout, /^… and 2 more$/m);
     assert.equal(f.ghCalls("merge").length, 0);
     assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "wait"), false);
-    assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "review"), source === "fresh");
+    assert.equal(f.calls().some(claudeReview), source === "fresh");
     if (source === "saved") assert.ok(f.ghCalls("comment")[0].body?.includes(report));
   }
 });
@@ -620,7 +641,7 @@ test("saved and fresh clean reviews still wait for CI and merge", t => {
     assert.match(result.stdout, /RESULT: ok merged #73/);
     assert.equal(f.ghCalls("merge").length, 1);
     assert.ok(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "wait"));
-    assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "review"), source === "fresh");
+    assert.equal(f.calls().some(claudeReview), source === "fresh");
   }
 });
 
@@ -634,7 +655,7 @@ test("a rerun after fixing findings in a new commit reviews the new HEAD and mer
   const result = f.run([], { FAKE_EXISTING: "1" });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /RESULT: ok merged #73/);
-  assert.equal(f.calls().filter(call => call.tool === "fake-kit" && call.args[0] === "review").length, 1);
+  assert.equal(f.calls().filter(claudeReview).length, 1);
   assert.equal(f.ghCalls("merge").length, 1);
   assert.ok(f.ghCalls("merge")[0].args.includes(head));
   assert.equal(f.gitAt(f.origin, "rev-parse", "refs/heads/feature/kit-pr"), head);
@@ -763,7 +784,8 @@ test("behind retry reuses the same patch review before waiting again and merging
   assert.equal(result.stdout.split("\n").filter(line => line === "push: ok").length, 2);
   const actions = f.calls().filter(call => (call.tool === "fake-kit" && ["review", "wait"].includes(call.args[0]))
     || (call.tool === "gh" && call.args[1] === "merge"));
-  assert.deepEqual(actions.map(call => call.tool === "gh" ? "merge" : call.args[0]), ["review", "wait", "merge", "wait", "merge"]);
+  assert.deepEqual(actions.map(call => call.tool === "gh" ? "merge" : call.args.includes("--second-look") ? "second" : call.args[0]), ["review", "second", "wait", "merge", "wait", "merge"]);
+  assert.match(result.stdout, /second look: reused \(same patch on new base\)/);
   assert.match(result.stdout, /review: reused \(same patch on new base\)/);
   assert.ok(f.ghCalls("comment")[0].body?.includes(`HEAD: ${head}`));
 });
@@ -782,7 +804,7 @@ test("findings in the rebased HEAD review stop before another CI wait or merge",
   assert.equal(readFileSync(join(folder, "refs.txt"), "utf8"), `${head}\n${f.git("merge-base", "origin/dev", "HEAD")}\n`);
   const actions = f.calls().filter(call => (call.tool === "fake-kit" && ["review", "wait"].includes(call.args[0]))
     || (call.tool === "gh" && call.args[1] === "merge"));
-  assert.deepEqual(actions.map(call => call.tool === "gh" ? "merge" : call.args[0]), ["review", "wait", "merge", "review"]);
+  assert.deepEqual(actions.map(call => call.tool === "gh" ? "merge" : call.args.includes("--second-look") ? "second" : call.args[0]), ["review", "second", "wait", "merge", "review"]);
 });
 
 test("a PR head changed by someone else is never merged or overwritten", t => {
@@ -888,7 +910,7 @@ test("focused unit files: changed tests, tests naming a changed helper or fixtur
     ["tests/code-map.test.ts", "tests/owner-setup.test.ts"]);
 });
 
-test("a docs-only PR runs only doc guards, skips review, and still waits for CI and merges", t => {
+test("a docs-only PR runs only doc guards, skips Claude's review but not the second look, and still waits for CI and merges", t => {
   const f = fixture(t, { "docs/guide.md": "# Guide\n", "AGENTS.md": "# Agents\n" }), result = f.run();
   assert.equal(result.status, 0, result.stderr); assert.match(result.stdout, /RESULT: ok merged #73/);
   assert.match(result.stdout, /^tier: docs \(2 files, all docs\)$/m); assert.match(result.stdout, /review: skipped \(docs tier\)/);
@@ -896,7 +918,9 @@ test("a docs-only PR runs only doc guards, skips review, and still waits for CI 
   assert.deepEqual(calls.filter(call => call.tool === "tickets.mjs").map(call => call.args), [["check"]]);
   assert.deepEqual(calls.filter(call => call.tool === "unit.sh").map(call => call.args), [["tests/code-map.test.ts"]]);
   assert.equal(calls.some(call => call.tool === "npm"), false);
-  assert.equal(calls.some(call => call.tool === "fake-kit" && ["review", "specs"].includes(call.args[0])), false);
+  assert.equal(calls.some(call => claudeReview(call) || (call.tool === "fake-kit" && call.args[0] === "specs")), false);
+  assert.deepEqual(calls.filter(call => call.tool === "fake-kit" && call.args[0] === "review").map(call => call.args), [["review", "--base", "origin/dev", "--pr", "73", "--second-look"]]);
+  assert.match(result.stdout, /^second look: code \(feature\.txt\) grok-4\.7$/m);
   assert.ok(calls.some(call => call.tool === "fake-kit" && call.args[0] === "wait"));
   assert.match(f.body(), /Tier: docs \(2 files, all docs\)/);
   assert.match(f.body(), /skipped for the docs tier \(CI still runs check, unit tests, lint and browser tests\): npm run check, npm test \(all unit tests\), npm run lint, kit specs --affected, kit review/);
@@ -1033,7 +1057,7 @@ test("--full forces today's checks on a docs-only PR; a failing doc guard stops 
   const f = fixture(t, { "docs/guide.md": "# Guide\n" }), result = f.run(["--full", "--no-merge"]);
   assert.equal(result.status, 0, result.stderr); assert.match(result.stdout, /^tier: full \(1 file, --full\)$/m);
   assert.deepEqual(f.calls().filter(call => call.tool === "npm").map(call => call.args), [["run", "check"], ["test"], ["run", "lint"]]);
-  assert.ok(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "review"));
+  assert.ok(f.calls().some(claudeReview));
   for (const action of ["tickets", "unit"]) {
     const g = fixture(t, { "docs/guide.md": "# Guide\n" }), failed = g.run([], { FAKE_FAIL: action });
     assert.equal(failed.status, 1); assert.ok(failed.stdout.includes(`RESULT: fail ${action}:`), failed.stdout);
@@ -1081,13 +1105,13 @@ for (const local of [false, true]) for (const source of ["saved", "fresh"]) test
   assert.ok(f.ghCalls("merge")[0].args.includes(head));
   const calls = f.calls();
   assert.ok(calls.findIndex(call => call.body === summary) < calls.findIndex(call => call.args[0] === "wait"));
-  assert.equal(calls.filter(call => call.tool === "fake-kit" && call.args[0] === "review").length, expectedReviews);
+  assert.equal(calls.filter(claudeReview).length, expectedReviews);
   const rerun = f.run(["--ticket", "ticket.md"], { FAKE_EXISTING: "1" });
   assert.equal(rerun.status, 0, rerun.stdout + rerun.stderr);
   assert.equal(f.git("rev-parse", "HEAD"), head);
   assert.equal(readFileSync(join(f.root, "ticket.md"), "utf8"), updated);
   assert.equal(f.ghCalls("comment").filter(call => call.body === summary).length, 1);
-  assert.equal(f.calls().filter(call => call.tool === "fake-kit" && call.args[0] === "review").length, expectedReviews);
+  assert.equal(f.calls().filter(claudeReview).length, expectedReviews);
 });
 
 for (const defect of ["P0: Broken build.", "P1: Serious defect.", "No readable severity."]) test(`three rounds still block ${defect}`, t => {
@@ -1113,7 +1137,7 @@ test("ticket-only coverage excludes any other changed path", t => {
   f.commit("New implementation", "file.txt", "changed after review\n");
   const result = f.run(["--ticket", "ticket.md"]);
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.equal(f.calls().filter(call => call.tool === "fake-kit" && call.args[0] === "review").length, 1);
+  assert.equal(f.calls().filter(claudeReview).length, 1);
 });
 
 test("waiver and non-blocking follow-ups are recorded separately after three rounds", t => {
@@ -1356,4 +1380,51 @@ execFileSync("git", ["add", "--", "file.txt"]);
   assert.equal(f.git("show", ":file.txt"), "base");
   assert.equal(readFileSync(join(f.root, "file.txt"), "utf8"), "hook's unrelated edit\n");
   assert.equal(f.ghCalls("merge").length, 0);
+});
+
+const table = JSON.parse(readFileSync("scripts/agents/second-look.json", "utf8")).kinds;
+
+test("dry-run names the second look's kind, its deciding path, its model and fallback, and its command", t => {
+  // A visible change carries its feature-list line in a changed ticket: UX still comes before that DX path.
+  const done = '---\ntitle: "Ticket title"\n---\n\n## Done\n\nFeature list: no change (test)\n';
+  for (const [file, kind, extra] of [["docs/guide.md", "dx"], ["docs/agents/runner.md", "agent"], ["src/ui/panel.ts", "ux", { "ticket.md": done }], ["src/x.ts", "code"]] as const) {
+    const f = fixture(t, { [file]: "x\n", ...extra }), result = f.run(["--dry-run", "--ticket", "ticket.md"]);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, new RegExp(`^second look: ${kind} \\(${file.replaceAll(".", "\\.")}\\) ${table[kind].model.replaceAll(".", "\\.")}, else ${table[kind].fallback.replaceAll(".", "\\.")}$`, "m"), file);
+    assert.match(result.stdout, /^\S+ 'review' '--base' 'origin\/dev' '--pr' 'N' '--ticket' 'ticket\.md' '--second-look'$/m, file);
+  }
+});
+
+test("a second-look P1 blocks the merge like Claude's, after Claude's clean review", t => {
+  const f = fixture(t);
+  const result = f.run(["--ticket", "ticket.md"], { FAKE_SECOND_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P1 the second look found this.\n" });
+  assert.equal(result.status, 1, result.stderr);
+  const folder = join(f.main, ".scratch/reviews/ak-14/second-1");
+  assert.equal(result.stdout.trimEnd().split("\n").at(-1), `RESULT: fail pr #73 review has 1 open findings (${join(folder, "result.md")})`);
+  assert.match(result.stdout, /^review: ok$/m);
+  assert.match(result.stdout, /^second look: code \(feature\.txt\) grok-4\.7$/m);
+  assert.equal(f.ghCalls("merge").length, 0);
+  assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "wait"), false);
+});
+
+test("when no model can take the second look the PR still lands and says why", t => {
+  const f = fixture(t), result = f.run([], { FAKE_SECOND: "skip" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^second look: skipped \(grok-4\.7 out of credit; opencode\/deepseek-v4\.1-flash-free out of credit\)$/m);
+  assert.match(result.stdout, /RESULT: ok merged #73/);
+});
+
+test("a saved second look is reused only as a second look that ran; it is never taken for Claude's review", t => {
+  for (const ok of [true, false]) {
+    const f = fixture(t), folder = join(f.main, ".scratch/reviews/ak-14/20261019T100000Z");
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "refs.txt"), `${f.head}\n${f.git("merge-base", "origin/dev", "HEAD")}\n`);
+    writeFileSync(join(folder, "result.md"), cleanReview);
+    writeFileSync(join(folder, "second-look.json"), JSON.stringify({ kind: "code", model: "grok-4.7", ok }));
+    const result = f.run(["--no-merge"]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(f.calls().some(claudeReview), String(ok));
+    assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args.includes("--second-look")), !ok, String(ok));
+    assert.equal(f.ghCalls("comment").some(call => call.body?.startsWith(`Reused second look: ${folder}`)), ok, String(ok));
+  }
 });

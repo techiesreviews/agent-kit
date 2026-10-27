@@ -94,6 +94,8 @@ import { join } from "node:path";
 import { ticketReviewBrief } from ${JSON.stringify(briefHelper)};
 const args = process.argv.slice(2), ticket = args[args.indexOf("--ticket") + 1];
 writeFileSync(process.env.FAKE_REVIEW_CALL, JSON.stringify({ args, brief: ticketReviewBrief(ticket, "origin/dev", process.cwd()) }));
+// FAKE_REVIEW_SKIP ends the review the way an empty account does (exit 3).
+if (process.env.FAKE_REVIEW_SKIP) { console.log("RESULT: skip review out of credit (grok-4.7)"); process.exit(3); }
 const directory = join(process.env.KIT_MAIN_ROOT, ".scratch/reviews/ke-03/20990101T000000Z");
 mkdirSync(directory, { recursive: true });
 const head = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
@@ -828,4 +830,12 @@ const timer = setInterval(() => { if (existsSync(process.env.FAKE_HOOK_RELEASE))
   assert.equal(existsSync(f.reviewCall), false, "no review may start after scope changes");
   assert.equal(existsSync(join(f.root, ".git/index.lock")), false);
   assert.equal(existsSync(join(f.root, ".git/HEAD.lock")), false);
+});
+
+test("a review that skips (exit 3) names its skip reason in the fix result, and the round stays pending", t => {
+  const f = fixture(t); f.review(); f.builder();
+  const result = f.run([], { FAKE_REVIEW_SKIP: "1" });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout.trim().split("\n").at(-1)!, /^RESULT: fail fix review failed \(3\): skip review out of credit \(grok-4\.7\); see .+round-1-review\.log$/);
+  assert.equal(JSON.parse(readFileSync(join(f.root, ".scratch/kit-fix/build%2Fke-03/pending.json"), "utf8")).phase, "review");
 });
