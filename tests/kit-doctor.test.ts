@@ -271,6 +271,26 @@ test("doctor passes in the main checkout with allowMainCheckout and skips node_m
   assert.match(result.stdout, /RESULT: ok doctor 11\/11 checks passed\n$/);
 });
 
+test("in an allowMainCheckout main checkout doctor counts commits behind on the land branch and judges other branches by merge-base", (t) => {
+  const f = playground(t, { allowMainCheckout: true });
+  const other = join(f.directory, "other");
+  git(f.directory, "clone", "-q", join(f.directory, "origin.git"), other);
+  for (const name of ["a.txt", "b.txt"]) { writeFileSync(join(other, name), `${name}\n`); commit(other, name); }
+  git(other, "push", "-q", "origin", "main");
+  const behind = f.run();
+  assert.equal(behind.status, 0, behind.stdout);
+  assert.match(behind.stdout, /^✓ base: main in the main checkout, 2 commits behind origin\/main$/m);
+  git(f.root, "merge", "-q", "--ff-only", "origin/main");
+  git(f.root, "checkout", "-q", "-b", "feature");
+  const feature = f.run();
+  assert.equal(feature.status, 0, feature.stdout);
+  assert.match(feature.stdout, /^✓ base: contains origin\/main [0-9a-f]{7}$/m);
+  git(f.root, "checkout", "-q", "--orphan", "unrelated");
+  commit(f.root, "scripts");
+  const unrelated = f.run();
+  assert.match(unrelated.stdout, /^✗ base: not based on origin\/main \(merge-base none\)/m);
+});
+
 test("doctor adds the project's checks.doctor lines and the playwright module, each counted", (t) => {
   const f = playground(t, { allowMainCheckout: true, playwright: "vendor/playwright/index.mjs",
     checks: { test: "npm test", doctor: ["printf 'Python 3.12.3\\n'", "printf 'no browser\\n' >&2; exit 3"] } });

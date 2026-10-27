@@ -149,6 +149,11 @@ test("without the project's import scan --affected follows plain imports itself;
   assert.match(output.stdout, /tests\/hops.test.ts — via tests\/support\/bridge.ts \(via src\/middle.ts \(imports src\/leaf.ts\)\)/);
   f.put("scripts/agents/kit.json", JSON.stringify({ project: "kit-unit", branches: { land: "dev" }, unit: { run: "node --test" } }));
   for (const args of [["--affected"], []]) result(f.run(...args), 2, /^RESULT: fail unit kit unit needs unit\.files in scripts\/agents\/kit\.json$/);
+  const env = { ...process.env, KIT_ROOT: f.root };
+  delete env.NODE_TEST_CONTEXT;
+  const bare = spawnSync("bash", [resolve("scripts/agents/unit.sh")], { cwd: f.root, env, encoding: "utf8", timeout: 60_000 });
+  assert.equal(bare.status, 2, bare.stdout + bare.stderr);
+  assert.equal(bare.stderr, "unit.sh: kit unit needs unit.files in scripts/agents/kit.json\n");
   assert.equal(f.executed(), 0);
 });
 

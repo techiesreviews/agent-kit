@@ -291,6 +291,32 @@ test("--base main is an ordinary PR when main is both land and release, and stil
   assert.match(refused.stdout, /RESULT: fail guards: --base main requires --release/);
 });
 
+test("with the playground settings and a CI workflow, pr still waits for CI and records ci: pass", t => {
+  const f = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: playground });
+  const result = f.run([], { FAKE_BASE: "main" }, true);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^ci: waiting for PR #73 checks$/m);
+  assert.ok(f.calls().some(call => call.tool === "fake-kit" && call.args.join(" ") === "wait ci --pr 73"));
+  assert.equal(JSON.parse(readFileSync(join(f.main, ".scratch/scoreboard/_untracked/feature%2Fkit-pr.json"), "utf8")).landed.ci, "pass");
+});
+
+test("a workflow the base gains during a behind retry is waited for after the rebase", t => {
+  const f = fixture(t, undefined, {}, { workflows: false }), peer = f.peer();
+  const script = join(f.dir, "add-ci.sh");
+  writeFileSync(script, `#!/bin/sh\nset -e\ncd '${peer}'\nmkdir -p .github/workflows\necho 'on: pull_request' > .github/workflows/ci.yml\ngit add .\ngit commit -qm 'Add CI'\ngit push -q origin dev\n`, { mode: 0o755 });
+  const result = f.run([], { FAKE_BEHIND: "1", FAKE_AFTER_PUSH: script });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const lines = result.stdout.split("\n");
+  assert.ok(lines.indexOf("ci: none (no .github/workflows); landing after review") < lines.indexOf("ci: waiting for PR #73 checks"), result.stdout);
+  assert.ok(f.calls().some(call => call.tool === "fake-kit" && call.args.join(" ") === "wait ci --pr 73"));
+});
+
+test("with no CI workflow the PR body does not claim CI runs the skipped checks", t => {
+  const f = fixture(t, { "docs/note.md": "note\n" }, {}, { workflows: false });
+  assert.equal(f.run(["--dry-run"]).status, 0);
+  assert.match(readFileSync(join(f.logDir(), "body.md"), "utf8"), /^- skipped for the docs tier \(no CI workflow runs them\): /m);
+});
+
 test("a repo with no remote gets no GitHub repo from pr before any check runs", t => {
   const f = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: playground, workflows: false });
   f.git("remote", "remove", "origin");

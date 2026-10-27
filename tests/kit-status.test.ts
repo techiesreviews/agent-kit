@@ -276,14 +276,18 @@ test("a repo with no remote gets no GitHub repo, its local land branch and no gh
   const root = join(f.dir, "playground");
   mkdirSync(join(root, "scripts/agents"), { recursive: true });
   writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify({ project: "techies-playground", mainRoot: root,
-    branches: { land: "main", release: "main", ci: "main" }, checks: { test: "npm test" } }));
+    branches: { land: "main", release: "main", ci: "main" }, checks: { test: "npm test" }, maps: "docs/wayfinder" }));
+  mkdirSync(join(root, "docs/wayfinder/site/build/tickets"), { recursive: true });
+  writeFileSync(join(root, "docs/wayfinder/site/build/tickets/01-hero.md"), "---\ntitle: Hero\nstatus: closed\nassignee: lex\n---\n");
   const git = (...args: string[]) => spawnSync("git", ["-C", root, ...args], { env: f.env, encoding: "utf8" }).stdout.trim();
   git("init", "-q", "--initial-branch=main"); git("add", "."); git("commit", "-qm", "base");
   const output = await f.run([], { env: { KIT_ROOT: root, KIT_PREVIEW_URL: "" } });
   assert.equal(output.code, 0, output.stderr);
   assert.ok(output.stdout.startsWith(`ref main ${git("rev-parse", "--short", "HEAD")}  main CI: -\n`), output.stdout);
   assert.match(output.stdout, /^note: no GitHub repo \(no origin remote\); no PRs or CI$/m);
-  assert.deepEqual(output.results, ["RESULT: ok status all 0 tickets, 0 closed, 0 open PRs, no GitHub repo"]);
+  // The closed ticket landed on local main: its commit shows, with no PR and no CI.
+  assert.deepEqual(f.row(output.stdout, "01-hero"), ["01-hero", "closed", "lex", git("rev-parse", "--short", "HEAD"), "-"]);
+  assert.deepEqual(output.results, ["RESULT: ok status all 1 tickets, 1 closed, 0 open PRs, no GitHub repo"]);
   assert.deepEqual(f.calls(), []);
 });
 

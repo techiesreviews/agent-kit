@@ -281,7 +281,10 @@ async function main(args) {
     }
     const skipped = Object.entries({ check: checks.check, unit: checks.test && `${checks.test} (all unit tests)`, lint: checks.lint, specs: hasSpecs && "kit specs --affected" })
       .filter(([id, label]) => label && !steps.includes(id)).map(([, label]) => label).concat(review ? [] : ["kit review"]);
-    if (skipped.length) tests.push(`- skipped for the ${plan.tier} tier (CI still runs check, unit tests, lint and smoke browser tests; no Sol review): ${skipped.join(", ")}`);
+    // A repo without GitHub workflows has no CI to fall back on; it is read again after every rebase.
+    const ciWorkflows = async () => (await git("ci", ["ls-tree", "--name-only", "HEAD", ".github/workflows/"])).split(/\r?\n/).some(path => /\.ya?ml$/.test(path));
+    const backstop = await ciWorkflows() ? "CI still runs check, unit tests, lint and smoke browser tests; no Sol review" : "no CI workflow runs them";
+    if (skipped.length) tests.push(`- skipped for the ${plan.tier} tier (${backstop}): ${skipped.join(", ")}`);
 
     step = "body";
     let head = await git("body", ["rev-parse", "HEAD"]);
@@ -440,9 +443,9 @@ async function main(args) {
       return 0;
     }
     // A repo without GitHub workflows has no checks to wait for: it lands once the review passes.
-    const workflows = (await git("ci", ["ls-tree", "--name-only", "HEAD", ".github/workflows/"])).split(/\r?\n/).some(path => /\.ya?ml$/.test(path));
+    // Each attempt reads the rebased HEAD, so workflows the base gained meanwhile are waited for.
     for (let attempt = 1; attempt <= 3; attempt++) {
-      if (workflows) {
+      if (await ciWorkflows()) {
         console.log(`ci: waiting for PR #${number} checks`);
         await run("ci", kit, ["wait", "ci", "--pr", number]); ok("ci");
         land({ ci: "pass" });
