@@ -1128,3 +1128,12 @@ test("kit slice stops on unreadable settings before any phase, whatever the bran
     assert.deepEqual(f.calls(), []);
   }
 });
+
+test("kit slice refuses the release branch as well as the land branch", t => {
+  const f = fixture(t, { project: "kit-slice", branches: { land: "dev", release: "main" } });
+  f.git("switch", "-q", "-c", "main");
+  const result = f.run();
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /use a build branch, not dev, main or detached HEAD$/m);
+  assert.deepEqual(f.calls(), []);
+});

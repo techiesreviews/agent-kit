@@ -2,7 +2,7 @@
 // kit: pick the tickets that may start now and their builders; --start claims and starts them
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, join, normalize, relative, resolve } from "node:path";
 import { kitBranch, kitDevRoot, kitHome, kitResult, kitSettings } from "../kit-lib.mjs";
 import { loadTickets, parseTicket, resolveTickets } from "../tickets.mjs";
 
@@ -179,9 +179,12 @@ function runningSlices() {
       } catch { words = []; /* A slice whose command cannot be read still takes a slot. */ }
       // Each ticket is read on its own, so one unreadable ticket leaves the others' Files counting.
       // A group job keeps the Files of members that already landed until it ends: safe, if broad.
+      // A ticket keys by its path inside the worktree holding it (the longest match), so an absolute path
+      // whose parent folders share the maps folder's name still names the right map.
       const tickets = words.flatMap((word, i) => word === "--ticket" && words[i + 1] ? [words[i + 1]] : []).flatMap(file => {
-        const map = mapOf(file);
-        try { return [parseTicket(readFileSync(resolve(cwd, file), "utf8"), file, map).ticket]; }
+        const path = resolve(cwd, file), home = worktrees.filter(tree => path.startsWith(`${tree}/`)).sort((a, b) => b.length - a.length)[0];
+        const key = home ? relative(home, path) : normalize(file);
+        try { return [parseTicket(readFileSync(path, "utf8"), key, mapOf(key)).ticket]; }
         catch { return []; }
       });
       slices.push({ name, worktree, unit: unitOf(tickets, words.includes("--run-group") ? tickets.find(ticket => ticket.group)?.group ?? "" : "") });
@@ -195,18 +198,16 @@ const overlaps = (a, b) => a === b || inside(a, b) || inside(b, a);
 // The shared file (src/main.ts here) is rule 3's alone: two slices may share it, never any other file.
 const shared = (files, others) => files.find(file => file !== mainTs && others.some(other => other !== mainTs && overlaps(file, other)));
 const inMain = unit => Boolean(mainTs) && unit.files.some(file => overlaps(file, mainTs));
-// A ticket path from the maps folder on (the folder must start a path segment, so `myplans/` is not `plans/`),
-// and the map it names; a path outside the maps folder keys as itself, with no map.
-const mapsPath = new RegExp(`(?:^|/)(${mapsDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/(?:([^/]+)/)?.*)$`);
-const ticketKey = file => mapsPath.exec(file)?.[1] ?? file;
-const mapOf = file => mapsPath.exec(file)?.[2] ?? "";
+// The map a project-relative ticket path names: the folder right after the maps folder, which must
+// start the path (`myplans/` is not `plans/`); else "".
+const mapOf = file => file.startsWith(`${mapsDir}/`) ? /^([^/]+)\//.exec(file.slice(mapsDir.length + 1))?.[1] ?? "" : "";
 
 // Apply the fixed rules in order to each hand-out (a ticket or a whole group, with the union of
 // its Files); picked hand-outs count as running. A delegated pick has no kit bg job, so it takes
 // no slot toward the cap in any run.
 function plan(candidates, running, max) {
   const active = running.map(slice => ({ name: slice.name, unit: slice.unit, slot: true }));
-  const runningTickets = new Set(running.flatMap(slice => slice.unit.tickets.map(ticket => ticketKey(ticket.file))));
+  const runningTickets = new Set(running.flatMap(slice => slice.unit.tickets.map(ticket => ticket.file)));
   const next = [], waits = [];
   for (const candidate of candidates) {
     const { tickets, readme } = candidate;
@@ -216,7 +217,7 @@ function plan(candidates, running, max) {
       // A claimed AFK ticket with no running slice is stuck (a failed start) or delegated.
       const owners = [...new Set(claimed.map(ticket => ticket.assignee))].join(", ");
       if (claimed.length < tickets.length) wait(`partly claimed by ${owners}`);
-      else if (claimed.every(ticket => ticket.type === "task (AFK)") && !claimed.every(ticket => runningTickets.has(ticketKey(ticket.file)))) wait(`claimed by ${owners}, no running job found`);
+      else if (claimed.every(ticket => ticket.type === "task (AFK)") && !claimed.every(ticket => runningTickets.has(ticket.file))) wait(`claimed by ${owners}, no running job found`);
       continue;
     }
     if (candidate.wait) { wait(candidate.wait); continue; }

@@ -320,3 +320,11 @@ test("the slug defaults to project and the build logs come from the maps folder,
   assert.match(chatOnly, /build feedback logs from nowhere \(no maps folder\)\./);
   assert.doesNotMatch(chatOnly, /feedback: demo/);
 });
+
+test("kit learn needs a readable settings file, even with --project", (t) => {
+  const dir = temp(t);
+  const result = run({ KIT_CHAT_MEMORY: memory, KIT_ROOT: dir, KIT_MAIN_ROOT: dir, HOME: dir }, ["--project", "demo"]);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /^RESULT: fail learn no scripts\/agents\/kit\.json; /m);
+  assert.equal(existsSync(join(dir, ".scratch")), false);
+});

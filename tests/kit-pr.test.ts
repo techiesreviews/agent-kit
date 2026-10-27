@@ -346,7 +346,7 @@ test("without paths.unitTests or paths.kit their steps are skipped with a line, 
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /^kit-clean: skipped \(no paths\.kit in scripts\/agents\/kit\.json\)$/m);
   assert.equal(f.calls().some(call => call.tool === "npm" && call.args[1] === "extra-a"), false);
-  for (const extra of [{ run: "npm run extra-a" }, ["npm run extra-a", 1], 7]) {
+  for (const extra of [{ run: "npm run extra-a" }, ["npm run extra-a", 1], 7, "", [" "]]) {
     f.commit("Bad extra", "scripts/agents/kit.json", JSON.stringify({ ...settings, checks: { ...settings.checks, extra } }));
     result = f.run(["--dry-run"]);
     assert.equal(result.status, 1, result.stdout + result.stderr);

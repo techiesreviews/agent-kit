@@ -61,11 +61,12 @@ async function savedReview(head, base, patchId, ticket, root) {
   }
 }
 
-/** `checks.extra` as a list of commands: a string is a one-item list, anything else but a list of strings fails. */
+/** `checks.extra` as a list of commands: a string is a one-item list, anything else but a list of non-blank strings fails. */
 function extraChecks(extra) {
+  const command = item => typeof item === "string" && item.trim() !== "";
   if (extra === undefined) return [];
-  if (typeof extra === "string") return [extra];
-  if (Array.isArray(extra) && extra.every(item => typeof item === "string")) return extra;
+  if (command(extra)) return [extra];
+  if (Array.isArray(extra) && extra.every(command)) return extra;
   throw new Error("checks.extra must be a list of commands");
 }
 

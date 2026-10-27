@@ -16,16 +16,16 @@ function ticket({ type = "task (AFK)", assignee = "", builder = "claude", files 
 }
 
 // A bare origin and a dev clone holding the given files, a fake kit (bg --list reads
-// each worktree's job records; bg <name> logs its call) and a fake worktree.sh.
-function fixture(t: TestContext, files: Record<string, string>, land = "dev", overrides: Record<string, unknown> = {}) {
+// each worktree's job records; bg <name> logs its call) and a fake worktree.sh. The dev clone sits at `devPath`.
+function fixture(t: TestContext, files: Record<string, string>, land = "dev", overrides: Record<string, unknown> = {}, devPath = "dev") {
   const root = mkdtempSync(join(tmpdir(), "kit-next-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const env: NodeJS.ProcessEnv = { ...process.env, ...identity, GIT_CONFIG_NOSYSTEM: "1", KIT_DEV_ROOT: join(root, "dev"), KIT_NEXT_KIT: join(root, "fake-kit"), KIT_NEXT_WORKTREE: join(root, "fake-worktree.sh"), FAKE_KIT_LOG: join(root, "kit.log") };
+  const dev = join(root, devPath);
+  const env: NodeJS.ProcessEnv = { ...process.env, ...identity, GIT_CONFIG_NOSYSTEM: "1", KIT_DEV_ROOT: dev, KIT_NEXT_KIT: join(root, "fake-kit"), KIT_NEXT_WORKTREE: join(root, "fake-worktree.sh"), FAKE_KIT_LOG: join(root, "kit.log") };
   delete env.KIT_ROOT;
   const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-  const dev = join(root, "dev");
   git(root, "init", "-q", "--bare", "-b", land, "origin.git");
-  git(root, "clone", "-q", join(root, "origin.git"), "dev");
+  git(root, "clone", "-q", join(root, "origin.git"), devPath);
   git(dev, "checkout", "-q", "-b", land);
   const write = (base: string, entries: Record<string, string>) => {
     for (const [path, content] of Object.entries(entries)) { mkdirSync(dirname(join(base, path)), { recursive: true }); writeFileSync(join(base, path), content); }
@@ -844,6 +844,19 @@ test("an absolute --ticket path under a maps folder other than docs/wayfinder st
     [plan("01-run")]: ticket({ assignee: "alpha-01", files: ["a/one.ts"] }),
     [plan("02-alone")]: ticket({ runsAlone: true, files: ["a/two.ts"] }),
   }, "dev", { maps: "plans" });
+  running("slice-alpha01", "", "running", `'scripts/agents/kit' 'slice' '--ticket' '${join(dev, plan("01-run"))}' '--builder' 'claude-opus-5-5'\n`);
+  assert.deepEqual(lines("alpha"), [
+    `waits: ${plan("02-alone")} runs alone; waits for slice-alpha01`,
+    "RESULT: ok next 0 ready, 1 waiting",
+  ]);
+});
+
+test("an absolute --ticket under a dev root whose parent folder is named like maps still names its own map", t => {
+  const plan = (slug: string) => `plans/alpha/build/tickets/${slug}.md`;
+  const { dev, running, lines } = fixture(t, {
+    [plan("01-run")]: ticket({ assignee: "alpha-01", files: ["a/one.ts"] }),
+    [plan("02-alone")]: ticket({ runsAlone: true, files: ["a/two.ts"] }),
+  }, "dev", { maps: "plans" }, "plans/site");
   running("slice-alpha01", "", "running", `'scripts/agents/kit' 'slice' '--ticket' '${join(dev, plan("01-run"))}' '--builder' 'claude-opus-5-5'\n`);
   assert.deepEqual(lines("alpha"), [
     `waits: ${plan("02-alone")} runs alone; waits for slice-alpha01`,

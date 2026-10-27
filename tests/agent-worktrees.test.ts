@@ -156,7 +156,7 @@ test("without readable settings worktrees.sh still lists, says why, and refuses 
   const repo = worktreeRepo(t, null, ["dev"]);
   const listed = repo.run();
   assert.equal(listed.status, 0, listed.stderr);
-  assert.match(listed.stderr, /^problem: no scripts\/agents\/kit\.json; .*; listing without protected branches or merge state$/m);
+  assert.match(listed.stderr, /^problem: no scripts\/agents\/kit\.json; .*; listing without protected land or release branches or merge state$/m);
   assert.equal(listed.decision("dev"), "not merged or merge unknown");
   assert.equal(listed.last, "Branches kept.");
   const pruned = repo.run("--prune");

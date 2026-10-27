@@ -45,7 +45,7 @@ async function slice(args) {
     const settings = kitSettings(root);
     const refused = [...new Set([kitBranch("land", settings), kitBranch("release", settings)].filter(Boolean))];
     const not = [...refused, "detached HEAD"];
-    if (!branch || refused.includes(branch)) throw new Error(`use a build branch, not ${not.length > 1 ? `${not.slice(0, -1).join(", ")} or ${not.at(-1)}` : not[0]}`);
+    if (!branch || refused.includes(branch)) throw new Error(`use a build branch, not ${not.slice(0, -1).join(", ")} or ${not.at(-1)}`);
     const ticket = resolve(root, flags.ticket);
     const source = readFileSync(ticket, "utf8");
     const section = name => new RegExp(`^## ${name}\\s*\\n([\\s\\S]*?)(?=^## |$(?![\\s\\S]))`, "m").exec(source)?.[1]?.trim();

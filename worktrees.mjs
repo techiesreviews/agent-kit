@@ -124,7 +124,7 @@ async function main(args) {
     let kit = null;
     try { kit = kitSettings(); } catch (error) {
       if (settings.prune) { console.error(`worktrees.sh --prune needs readable settings: ${error.message}`); process.exitCode = 1; return; }
-      console.error(`problem: ${error.message}; listing without protected branches or merge state`);
+      console.error(`problem: ${error.message}; listing without protected land or release branches or merge state`);
     }
     const devRoot = kitDevRoot(kit ?? {});
     const branches = kit ? [...new Set([kitBranch("land", kit), kitBranch("release", kit)].filter(Boolean))] : [];
