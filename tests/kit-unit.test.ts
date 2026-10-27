@@ -139,6 +139,12 @@ test("unit help, listing and invalid options use the kit front door", t => {
   for (const args of [["--wat"], ["--base"], ["--base", "HEAD"], ["--affected", "tests/direct.test.ts"], ["--affected", "--affected"], ["--list", "--list"], ["missing.test.ts"]]) {
     result(f.run(...args), 2, /fail unit /);
   }
+  // A folder is no test file: the same usage error, before unit.sh starts.
+  const folder = f.run("tests");
+  result(folder, 2, /^RESULT: fail unit not a test file: tests$/);
+  assert.match(folder.stderr, /^problem: not a test file: tests$/m);
+  assert.match(folder.stderr, /Usage: kit unit/);
+  assert.doesNotMatch(folder.stderr, /Usage: unit\.sh/);
   // A base git cannot find is a mistyped argument, like a missing named file: usage status, and the problem line names it.
   const base = f.run("--affected", "--base", "missing");
   result(base, 2, /^RESULT: fail unit base not found: missing$/);

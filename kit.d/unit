@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // kit: run focused unit tests or the tests a change affects
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, posix, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { unitCounts } from "../unit-summary.mjs";
@@ -116,7 +116,10 @@ async function main(args) {
     if (flags.files.length) {
       selected = [...new Set(flags.files)].map(file => {
         // A named file that does not exist is an argument mistake, so it keeps the usage text.
-        if (!existsSync(resolve(root, file))) { status = 2; throw new Error(`test file not found: ${file}`); }
+        // So is a folder or other path unit.sh would refuse as no regular file.
+        const path = resolve(root, file);
+        if (!existsSync(path)) { status = 2; throw new Error(`test file not found: ${file}`); }
+        if (!statSync(path).isFile()) { status = 2; throw new Error(`not a test file: ${file}`); }
         return { file, reason: "explicit" };
       });
     } else {
@@ -159,8 +162,8 @@ async function main(args) {
       });
     } finally { for (const [signal, handler] of handlers) process.removeListener(signal, handler); }
     const log = /^log: (.+)$/m.exec(output)?.[1];
-    // Without a log unit.sh stopped before the tests; its last stderr line names why. kit unit has checked its own
-    // arguments, so unit.sh's usage status (a bad ASE_UNIT_TIMEOUT_MS) is a failure and its usage prefix is dropped.
+    // Without a log unit.sh stopped before the tests; its last stderr line names why. kit unit has checked every named
+    // path is a regular file, so unit.sh's usage status (a bad ASE_UNIT_TIMEOUT_MS) is a failure and its usage prefix is dropped.
     if (!log) {
       if (status === 2) status = 1;
       throw new Error(errors.trimEnd().split("\n").at(-1).replace(/^unit\.sh: /, "").replace(/^Usage: unit\.sh [^;]*; /, "")
