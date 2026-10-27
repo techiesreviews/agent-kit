@@ -94,6 +94,16 @@ test("bad input exits 2 with usage and leaves the log alone", t => {
   assert.match(help.stdout, /--fix-for <line-number>/);
 });
 
+test("without a maps folder in the settings feedback fails, naming the missing key, and writes nothing", t => {
+  const { root, run } = fixture(t);
+  writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify({ project: "kit-feedback", branches: { land: "dev" } }));
+  const output = run("alpha", "--kind", "fault", "text");
+  assert.equal(output.status, 1, output.stdout + output.stderr);
+  assert.equal(output.stderr, 'no "maps" folder in scripts/agents/kit.json; this command needs one\n');
+  assert.equal(output.stdout, 'RESULT: fail feedback no "maps" folder in scripts/agents/kit.json; this command needs one\n');
+  assert.equal(existsSync(join(root, log)), false);
+});
+
 test("a log without the Feedback heading fails without writing", t => {
   const { root, run } = fixture(t);
   writeFileSync(join(root, log), "# Feedback\n");

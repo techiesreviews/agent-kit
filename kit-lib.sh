@@ -21,14 +21,21 @@ kit_settings_file() {
 }
 
 # Print one settings value by jq path (strings raw, others as JSON); nothing when it or the file is missing.
+# Without jq it says so on stderr and returns 1, rather than reading as an unset value.
 kit_setting() {
+  command -v jq > /dev/null || { echo 'jq is not installed; install jq' >&2; return 1; }
   jq -r "($1) // empty | if type == \"string\" then . else tojson end" "$(kit_settings_file)" 2>/dev/null || :
 }
 
-# Print what the settings file lacks, one problem per line; return 1 when it is missing, broken or lacks a required key.
+# Print what the settings file lacks, one problem per line; return 1 when it is missing, broken or lacks a required key,
+# or when jq, which reads it, is not installed.
 kit_settings_problems() {
   local file problems
   file=$(kit_settings_file)
+  if ! command -v jq > /dev/null; then
+    echo 'jq is not installed; install jq'
+    return 1
+  fi
   if [[ ! -f $file ]]; then
     printf 'no scripts/agents/kit.json; add one with "project" and "branches": { "land": "<branch>" }\n'
     return 1

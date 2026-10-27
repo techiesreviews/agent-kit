@@ -11,7 +11,7 @@ source "${KIT_LIB:-$(dirname -- "${BASH_SOURCE[0]}")/kit-lib.sh}"
 # The test runner and the full suite's files come from unit.run and unit.files in scripts/agents/kit.json.
 problems=$(kit_settings_problems) || { printf 'unit.sh: %s\n' "${problems//$'\n'/; }" >&2; exit 1; }
 read -ra runner <<< "$(kit_setting .unit.run)"
-(( ${#runner[@]} )) || { echo "unit.sh needs unit.run in scripts/agents/kit.json" >&2; exit 2; }
+(( ${#runner[@]} )) || { echo "unit.sh needs unit.run in scripts/agents/kit.json" >&2; exit 1; }
 if (( ! $# )); then
   # The full suite is what kit unit lists: unit.files matched against git's tracked and untracked,
   # not-ignored files, so both run the same files. Its paths are relative to the project's top folder.
@@ -19,13 +19,13 @@ if (( ! $# )); then
   if ! listing=$(node "$(dirname -- "${BASH_SOURCE[0]}")/kit.d/unit" --list 2>&1); then
     problem=$(sed -n 's/^problem: //p' <<< "$listing" | head -n 1)
     printf 'unit.sh: %s\n' "${problem:-kit unit --list failed}" >&2
-    exit 2
+    exit 1
   fi
   files=()
   while IFS= read -r line; do
     if [[ $line == *' — all' ]]; then files+=("${line% — all}"); fi
   done <<< "$listing"
-  (( ${#files[@]} )) || { echo "unit.sh: no files match unit.files in scripts/agents/kit.json" >&2; exit 2; }
+  (( ${#files[@]} )) || { echo "unit.sh: no files match unit.files in scripts/agents/kit.json" >&2; exit 1; }
   set -- "${files[@]}"
 fi
 mkdir -p .scratch/unit

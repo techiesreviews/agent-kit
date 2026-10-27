@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 
 const repo = resolve(".");
@@ -391,9 +391,44 @@ for (const kind of ["missing", "real directory", "dangling link", "different sha
       mkdirSync(other);
       symlinkSync(other, modules);
     }
-    failure(f.run(), "node_modules");
+    const result = f.run();
+    failure(result, "node_modules");
+    // A shared-folder problem names the setting and its path, not "the dev worktree".
+    const shared = join(f.dev, "node_modules");
+    const line = result.stdout.split("\n").find(text => text.startsWith("✗ node_modules: "));
+    if (kind.startsWith("shared ")) {
+      assert.equal(line, `✗ node_modules: shared ${shared} is missing or dangling; fix: restore it or fix sharedNodeModules in scripts/agents/kit.json`);
+    }
+    if (kind === "different shared directory") {
+      assert.equal(line, `✗ node_modules: node_modules differs from sharedNodeModules (${shared}); fix: ln -s "$(realpath ${shared})" node_modules`);
+    }
   });
 }
+
+test("doctor passes an installed node_modules without sharedNodeModules and says it is not shared", (t) => {
+  const f = fixture(t);
+  writeFileSync(join(f.build, "scripts/agents/kit.json"), JSON.stringify({ project: "native-site-editor", branches: { land: "dev" }, devRoot: f.dev }));
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(result.stdout.includes(`✓ node_modules: ${realpathSync(join(f.dev, "node_modules"))} (not shared: no sharedNodeModules in scripts/agents/kit.json)\n`), result.stdout);
+});
+
+test("doctor names a missing jq instead of calling a good settings file unreadable", (t) => {
+  const f = fixture(t);
+  // Every command the system folders hold except jq, plus the Node running this test.
+  const bin = join(f.directory, "bin");
+  mkdirSync(bin);
+  for (const name of readdirSync("/usr/bin")) if (name !== "jq") symlinkSync(join("/usr/bin", name), join(bin, name));
+  const path = `${bin}:${dirname(process.execPath)}`;
+  assert.notEqual(spawnSync("bash", ["-c", "command -v jq"], { env: { PATH: path } }).status, 0, "jq is still on the test PATH");
+  for (const direct of [true, false]) {
+    const result = f.run([], f.build, { PATH: path }, direct);
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, /^✗ settings: jq is not installed, so scripts\/agents\/kit\.json cannot be read; fix: install jq$/m);
+    assert.doesNotMatch(result.stdout, /unreadable/);
+    assert.match(result.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: fail doctor \d+ failed: settings/);
+  }
+});
 
 test("doctor names each command whose --help fails, prints no usage or hangs", (t) => {
   const f = fixture(t);

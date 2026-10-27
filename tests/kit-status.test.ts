@@ -311,3 +311,13 @@ test("help, usage errors, unknown maps and bad refs exit clearly without network
   }
   assert.deepEqual(f.calls(), []); assert.deepEqual(f.requests, []);
 });
+
+test("a broken settings file fails status with the problem and no network calls", async t => {
+  const f = await fixture(t);
+  writeFileSync(join(f.root, "scripts/agents/kit.json"), '{ "project": ');
+  const output = await f.run(["--no-fetch"]);
+  assert.equal(output.code, 1, output.stdout + output.stderr);
+  assert.match(output.stderr, /^scripts\/agents\/kit\.json is unreadable: /);
+  assert.match(output.results[0], /^RESULT: fail status scripts\/agents\/kit\.json is unreadable: /);
+  assert.deepEqual(f.calls(), []); assert.deepEqual(f.requests, []);
+});

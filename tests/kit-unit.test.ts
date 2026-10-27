@@ -134,9 +134,14 @@ test("unit help, listing and invalid options use the kit front door", t => {
   assert.equal(help.status, 0, help.stderr);
   assert.match(help.stdout, /Usage: kit unit/);
   assert.doesNotMatch(help.stdout, /RESULT:/);
-  for (const args of [["--wat"], ["--base"], ["--base", "HEAD"], ["--affected", "tests/direct.test.ts"], ["--affected", "--affected"], ["--list", "--list"], ["--affected", "--base", "missing"], ["missing.test.ts"]]) {
+  for (const args of [["--wat"], ["--base"], ["--base", "HEAD"], ["--affected", "tests/direct.test.ts"], ["--affected", "--affected"], ["--list", "--list"], ["missing.test.ts"]]) {
     result(f.run(...args), 2, /fail unit /);
   }
+  // A base git cannot find is no usage error: the arguments parsed, and the problem line says which ref.
+  const base = f.run("--affected", "--base", "missing");
+  result(base, 1, /^RESULT: fail unit /);
+  assert.match(base.stderr, /^problem: .*missing/m);
+  assert.doesNotMatch(base.stderr, /Usage:/);
   assert.equal(f.executed(), 0);
 });
 
@@ -148,13 +153,40 @@ test("without the project's import scan --affected follows plain imports itself;
   result(output, 0, /ok unit 1 selected \(list only\)/);
   assert.match(output.stdout, /tests\/hops.test.ts — via tests\/support\/bridge.ts \(via src\/middle.ts \(imports src\/leaf.ts\)\)/);
   f.put("scripts/agents/kit.json", JSON.stringify({ project: "kit-unit", branches: { land: "dev" }, unit: { run: "node --test" } }));
-  for (const args of [["--affected"], []]) result(f.run(...args), 2, /^RESULT: fail unit kit unit needs unit\.files in scripts\/agents\/kit\.json$/);
+  for (const args of [["--affected"], []]) {
+    const output = f.run(...args);
+    result(output, 1, /^RESULT: fail unit kit unit needs unit\.files in scripts\/agents\/kit\.json$/);
+    assert.doesNotMatch(output.stderr, /Usage:/);
+  }
   const env = { ...process.env, KIT_ROOT: f.root };
   delete env.NODE_TEST_CONTEXT;
   const bare = spawnSync("bash", [resolve("scripts/agents/unit.sh")], { cwd: f.root, env, encoding: "utf8", timeout: 60_000 });
-  assert.equal(bare.status, 2, bare.stdout + bare.stderr);
+  assert.equal(bare.status, 1, bare.stdout + bare.stderr);
   assert.equal(bare.stderr, "unit.sh: kit unit needs unit.files in scripts/agents/kit.json\n");
+  // No unit.run: a settings problem too, so status 1, for named files as for none.
+  f.put("scripts/agents/kit.json", JSON.stringify({ project: "kit-unit", branches: { land: "dev" }, unit: { files: "tests/*.test.ts" } }));
+  for (const args of [["tests/direct.test.ts"], []]) {
+    const output = spawnSync("bash", [resolve("scripts/agents/unit.sh"), ...args], { cwd: f.root, env, encoding: "utf8", timeout: 60_000 });
+    assert.equal(output.status, 1, output.stdout + output.stderr);
+    assert.equal(output.stderr, "unit.sh needs unit.run in scripts/agents/kit.json\n");
+  }
   assert.equal(f.executed(), 0);
+});
+
+test("unit.sh with no files runs only the tests its unit.files pattern matches", t => {
+  const f = fixture(t);
+  f.put("scripts/agents/kit.json", JSON.stringify({ project: "kit-unit", branches: { land: "dev" },
+    unit: { run: "./node_modules/.bin/tsx --test --test-reporter=spec", files: "tests/d*.test.ts" } }));
+  f.put("tests/direct.test.ts", f.body.replace("selected test runs", "direct test runs"));
+  const env = { ...process.env, KIT_ROOT: f.root };
+  delete env.NODE_TEST_CONTEXT;
+  const output = spawnSync("bash", [resolve("scripts/agents/unit.sh")], { cwd: f.root, env, encoding: "utf8", timeout: 60_000 });
+  assert.equal(output.status, 0, output.stdout + output.stderr);
+  assert.match(output.stdout, /^pass 1, fail 0$/m);
+  assert.equal(f.executed(), 1);
+  // The one test that ran is tests/direct.test.ts's, the only file the pattern matches.
+  const log = /^log: (.+)$/m.exec(output.stdout)![1];
+  assert.match(readFileSync(join(f.root, log), "utf8"), /direct test runs/);
 });
 
 // techies-playground (research 04): lands on main, node --test, unit tests in several places and no import scan of its own.

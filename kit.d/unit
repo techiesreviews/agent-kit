@@ -111,6 +111,8 @@ async function main(args) {
         return { file, reason: "explicit" };
       });
     } else {
+      // From here a problem is in the settings or the repo, not the arguments: a failure without the usage text.
+      status = 1;
       const files = paths(root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"])
         .filter(file => existsSync(join(root, file)));
       const unitFile = unitFiles(root);

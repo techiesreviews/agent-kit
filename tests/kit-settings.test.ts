@@ -161,7 +161,7 @@ test("a missing optional key turns its feature off with a plain line", t => {
     assert.equal(lastLine(output), `RESULT: fail ${args[0]} needs a dev worktree; add devRoot to scripts/agents/kit.json`);
   }
   const unit = f.run(["unit", "tests/a.test.ts"]);
-  assert.notEqual(unit.status, 0);
+  assert.equal(unit.status, 1, unit.stdout + unit.stderr);
   assert.match(unit.stderr, /^unit\.sh needs unit\.run in scripts\/agents\/kit\.json$/m);
   // No paths and no feature list: every change is code, and nothing needs a feature-list update.
   const settings = { project: "kit-land", branches: { land: "main" } }, rows = [{ status: "M", path: "src/ui/a.css" }];
@@ -359,6 +359,26 @@ test("worktree.sh names, bases and links a worktree from the settings file", t =
   assert.equal(readlinkSync(link), join(realpathSync(f.root), ".scratch/native-static-preview"));
 });
 
+test("worktree.sh links the real folder behind a symlinked sharedNodeModules, and refuses a missing one", t => {
+  const f = repo(t);
+  const modules = join(f.dir, "modules"), link = join(f.dir, "modules-link");
+  mkdirSync(modules);
+  symlinkSync(modules, link);
+  settingsFile(f.root, { project: "kit-land", branches: { land: "main" }, sharedNodeModules: link });
+  const worktree = (branch: string) =>
+    spawnSync("bash", [resolve("scripts/agents/worktree.sh"), branch], { cwd: f.root, env: { ...f.env, KIT_MAIN_ROOT: "" }, encoding: "utf8" });
+  const made = worktree("feature/linked");
+  assert.equal(made.status, 0, made.stderr);
+  const path = join(dirname(realpathSync(f.root)), "kit-land-feature-linked");
+  assert.equal(readlinkSync(join(path, "node_modules")), realpathSync(modules));
+  settingsFile(f.root, { project: "kit-land", branches: { land: "main" }, sharedNodeModules: join(f.dir, "gone") });
+  const missing = worktree("feature/missing");
+  assert.equal(missing.status, 1, missing.stderr);
+  assert.equal(missing.stderr, `Missing node_modules: ${join(f.dir, "gone")}\n`);
+  assert.equal(existsSync(join(dirname(realpathSync(f.root)), "kit-land-feature-missing")), false);
+  assert.doesNotMatch(f.git("branch", "--list", "feature/missing"), /missing/);
+});
+
 test("without a maps folder, next and heartbeat say so, tickets.mjs reads nothing and score still lists records", t => {
   const f = repo(t, { project: "kit-land", branches: { land: "main" }, devRoot: "/settings/dev" });
   for (const args of [["next"], ["heartbeat", "alpha"]]) {
@@ -381,7 +401,7 @@ test("without a maps folder, next and heartbeat say so, tickets.mjs reads nothin
   assert.equal(lastLine(page), 'RESULT: fail score no "maps" folder in scripts/agents/kit.json; this command needs one');
 });
 
-test("a settings problem fails kit review and unit.sh as a failure, not a usage error", t => {
+test("a settings problem fails kit review, kit unit --affected and unit.sh as a failure, not a usage error", t => {
   const f = repo(t, { project: "kit-land" });
   const review = f.run(["review"]);
   assert.equal(review.status, 1, review.stdout + review.stderr);
@@ -391,4 +411,9 @@ test("a settings problem fails kit review and unit.sh as a failure, not a usage 
   const unit = spawnSync("bash", [resolve("scripts/agents/unit.sh"), "tests/a.test.ts"], { cwd: broken.root, env: broken.env, encoding: "utf8" });
   assert.equal(unit.status, 1, unit.stdout + unit.stderr);
   assert.match(unit.stderr, /^unit\.sh: scripts\/agents\/kit\.json is unreadable: /m);
+  const affected = broken.run(["unit", "--affected"]);
+  assert.equal(affected.status, 1, affected.stdout + affected.stderr);
+  assert.match(affected.stderr, /^problem: scripts\/agents\/kit\.json is unreadable: /m);
+  assert.doesNotMatch(affected.stderr, /Usage:/);
+  assert.match(lastLine(affected)!, /^RESULT: fail unit scripts\/agents\/kit\.json is unreadable: /);
 });

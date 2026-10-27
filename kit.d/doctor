@@ -16,9 +16,11 @@ for argument in "$@"; do
   esac
 done
 
+# Without jq every setting reads as unset; the settings line names jq, so the other checks run on.
+setting() { kit_setting "$1" 2>/dev/null || :; }
 root=$(cd -- "$(kit_root)" && pwd -P)
 main=$(realpath -m -- "$(kit_main_root)")
-dev=$(kit_dev_root)
+dev=$(kit_dev_root 2>/dev/null || :)
 [[ -z $dev ]] || dev=$(realpath -m -- "$dev")
 failed=() skipped=() checks=0
 # KIT_DOCTOR_SKIP=help (agent.sh sets it for builds): a broken --help prints a problem: line and does not fail,
@@ -39,8 +41,10 @@ fail() {
 
 land=''
 if problems=$(kit_settings_problems); then
-  land=$(kit_setting .branches.land)
-  pass settings "scripts/agents/kit.json ($(kit_setting .project), lands on $land)"
+  land=$(setting .branches.land)
+  pass settings "scripts/agents/kit.json ($(setting .project), lands on $land)"
+elif ! command -v jq > /dev/null; then
+  fail settings 'jq is not installed, so scripts/agents/kit.json cannot be read' 'install jq'
 else
   if [[ -f $(kit_settings_file) ]]; then fix='edit scripts/agents/kit.json as the problem says'
   else fix='add scripts/agents/kit.json with "project" and "branches": { "land": "<branch>" }'; fi
@@ -48,7 +52,7 @@ else
 fi
 
 # allowMainCheckout: a project worked on in its main checkout (chat) builds there.
-allow_main=$(kit_setting '.allowMainCheckout == true')
+allow_main=$(setting '.allowMainCheckout == true')
 if [[ $root != "$main" && $root != "$dev" ]]; then
   pass place "$root"
 elif [[ $root == "$main" && $allow_main == true ]]; then
@@ -134,7 +138,7 @@ else
 fi
 
 modules='' shared=''
-shared_path=$(kit_setting .sharedNodeModules)
+shared_path=$(setting .sharedNodeModules)
 if [[ -d $root/node_modules ]]; then modules=$(cd -- "$root/node_modules" && pwd -P); fi
 if [[ -n $shared_path && -d $shared_path ]]; then shared=$(cd -- "$shared_path" && pwd -P); fi
 if [[ -n $dev && $root == "$dev" && -n $modules ]]; then
@@ -144,18 +148,18 @@ elif [[ -z $shared_path ]]; then
   if [[ -n $modules ]]; then pass node_modules "$modules (not shared: no sharedNodeModules in scripts/agents/kit.json)"
   else pass node_modules 'skipped (no sharedNodeModules in scripts/agents/kit.json)'; fi
 elif [[ -z $shared ]]; then
-  fail node_modules "shared $shared_path is missing or dangling" 'restore node_modules in the dev worktree'
+  fail node_modules "shared $shared_path is missing or dangling" 'restore it or fix sharedNodeModules in scripts/agents/kit.json'
 elif [[ ! -L $root/node_modules || -z $modules ]]; then
   fail node_modules 'missing, dangling or non-symlink node_modules' "ln -s \"\$(realpath $shared_path)\" node_modules"
 elif [[ $modules != "$shared" ]]; then
-  fail node_modules 'node_modules differs from the dev worktree' "ln -s \"\$(realpath $shared_path)\" node_modules"
+  fail node_modules "node_modules differs from sharedNodeModules ($shared_path)" "ln -s \"\$(realpath $shared_path)\" node_modules"
 else
   pass node_modules "$modules"
 fi
 
 # playwright: where Playwright comes from for a project without its own (a module file or folder,
 # relative to the project's top folder or absolute); KIT_PLAYWRIGHT_MODULE overrides it.
-playwright=${KIT_PLAYWRIGHT_MODULE:-$(kit_setting .playwright)}
+playwright=${KIT_PLAYWRIGHT_MODULE:-$(setting .playwright)}
 if [[ -n $playwright ]]; then
   [[ $playwright == /* ]] || playwright=$root/$playwright
   if [[ -e $playwright ]]; then pass playwright "$playwright"
@@ -171,7 +175,7 @@ while IFS= read -r line; do
   if (( code == 0 )); then pass "$line" "${last:-ok}"
   elif (( code == 124 || code == 137 )); then fail "$line" 'timed out' 'see "checks.doctor" in scripts/agents/kit.json'
   else fail "$line" "exit $code${last:+: $last}" 'see "checks.doctor" in scripts/agents/kit.json'; fi
-done < <(kit_setting '.checks.doctor | if type == "array" then .[] else . end')
+done < <(setting '.checks.doctor | if type == "array" then .[] else . end')
 
 status=0
 matches=$(git -C "$root" grep -nE '^(<<<<<<<|>>>>>>>)( |$)' 2>/dev/null) || status=$?
@@ -195,7 +199,7 @@ if [[ -n ${KIT_COMMANDS_DIR:-} ]]; then
   folders=("$KIT_COMMANDS_DIR")
 else
   folders=("$(dirname -- "${BASH_SOURCE[0]}")")
-  own_setting=$(kit_setting .commands)
+  own_setting=$(setting .commands)
   if [[ -n $own_setting ]]; then
     own=$own_setting
     [[ $own == /* ]] || own=$root/$own
