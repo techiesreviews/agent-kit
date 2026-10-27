@@ -47,7 +47,7 @@ remove() { chmod -R u+w -- "$1" 2>/dev/null || :; rm -rf -- "$1"; }
 
 current=$(target current) before=$(target previous)
 if [[ $previous == true ]]; then
-  if [[ -z $before || ! -d $data/$before ]]; then
+  if [[ -z $before || ! -x $data/$before/kit ]]; then
     printf 'kit update: no previous kit in %s\n' "$data" >&2
     kit_result fail "update no previous kit to go back to"
     exit 1
@@ -58,10 +58,10 @@ if [[ $previous == true ]]; then
     # Its age counts from now, as on a normal update: a command started on it has a day to finish.
     touch -- "$data/$current" 2>/dev/null || :
   fi
-  # The commit stepped back from: kit update keeps off it until main moves on.
-  printf '%s\n' "$current" > "$data/held"
-  printf 'current %s (was %s)\n' "$(short "$before")" "$(short "$current")"
-  kit_result ok "update --previous $(short "$before") (was $(short "$current"))"
+  # The commit stepped back from: kit update keeps off it until main moves on (nothing to hold without one).
+  if [[ -n $current ]]; then printf '%s\n' "$current" > "$data/held"; else rm -f -- "$data/held"; fi
+  printf 'current %s (was %s)\n' "$(short "$before")" "$(short "${current:-none}")"
+  kit_result ok "update --previous $(short "$before") (was $(short "${current:-none}"))"
   exit 0
 fi
 
@@ -75,13 +75,17 @@ newest=$(git -C "$bare" rev-parse FETCH_HEAD)
 
 held=''
 [[ ! -f $data/held ]] || held=$(< "$data/held")
-if [[ $newest == "$current" ]]; then
+# Staying put needs a whole current folder: a removed or broken one is unpacked again.
+whole=false
+[[ -z $current || ! -x $data/$current/kit || ! -f $data/$current/kit-lib.sh ]] || whole=true
+if [[ $whole == true && $newest == "$current" ]]; then
   rm -f -- "$data/held"
   result="update already on $(short "$newest")"
-elif [[ $newest == "$held" ]]; then
+elif [[ $whole == true && $newest == "$held" ]]; then
   result="update held on $(short "$current"): main is still $(short "$newest"), which kit update --previous stepped back from"
 else
-  if [[ ! -d $data/$newest ]]; then
+  if [[ ! -x $data/$newest/kit || ! -f $data/$newest/kit-lib.sh ]]; then
+    [[ ! -e $data/$newest ]] || remove "$data/$newest"
     unpack=$(mktemp -d "$data/.unpack.XXXXXX")
     if ! git -C "$bare" archive "$newest" | tar -x -C "$unpack"; then
       remove "$unpack"
@@ -101,13 +105,17 @@ else
   fi
   link current "$newest"
   rm -f -- "$data/held"
-  if [[ -n $current ]]; then
+  if [[ -n $current && $current != "$newest" ]]; then
     link previous "$current"
     # A folder's age counts from when it stopped being current: a command started on it has a day to finish.
     touch -- "$data/$current" 2>/dev/null || :
   fi
-  printf 'current %s (was %s)\n' "$(short "$newest")" "$(short "${current:-none}")"
-  result="update $(short "$newest") (was $(short "${current:-none}"))"
+  if [[ $current == "$newest" ]]; then
+    result="update refilled $(short "$newest")"
+  else
+    printf 'current %s (was %s)\n' "$(short "$newest")" "$(short "${current:-none}")"
+    result="update $(short "$newest") (was $(short "${current:-none}"))"
+  fi
 fi
 
 # kit doctor and kit version read the time of the last update that left current on main (or on the held kit);

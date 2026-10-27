@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -165,6 +165,67 @@ test("a failed update leaves the update time alone, so a stale copy keeps warnin
   assert.equal(k.link("current"), one);
   const version = spawnSync(join(k.data, one, "kit.d/version"), [], { env: { ...k.env, KIT_HOME: join(k.data, one) }, encoding: "utf8" });
   assert.match(version.stdout, /^warning kit not updated for 2 days; run scripts\/agents\/kit update$/m);
+});
+
+test("kit update fills a removed or broken current folder again, even when main has not moved", (t) => {
+  const k = kitRepo(t);
+  const one = k.publish("one");
+  k.run();
+  spawnSync("chmod", ["-R", "u+w", join(k.data, one)]);
+  rmSync(join(k.data, one), { recursive: true, force: true });
+  const removed = k.run();
+  assert.equal(removed.status, 0, removed.stdout + removed.stderr);
+  assert.equal(removed.stdout, `unpacked ${short(one)} into ${k.data}/${one}\nRESULT: ok update refilled ${short(one)}\n`);
+  assert.equal(statSync(join(k.data, one, "kit")).mode & 0o111, 0o111);
+  assert.equal(k.link("current"), one);
+  assert.equal(existsSync(join(k.data, "previous")), false);
+  // A folder that lost its front door counts as broken too.
+  spawnSync("chmod", ["-R", "u+w", join(k.data, one)]);
+  rmSync(join(k.data, one, "kit"));
+  assert.equal(k.run().stdout.trimEnd().split("\n").at(-1), `RESULT: ok update refilled ${short(one)}`);
+  assert.ok(existsSync(join(k.data, one, "kit")));
+});
+
+test("kit update says when flock is missing and still updates", (t) => {
+  const k = kitRepo(t);
+  const one = k.publish("one");
+  // Every command on PATH except flock.
+  const bin = join(k.directory, "bin");
+  mkdirSync(bin);
+  const linked = new Set<string>();
+  for (const directory of (k.env.PATH ?? "").split(":")) {
+    if (!directory || !existsSync(directory)) continue;
+    for (const name of readdirSync(directory)) {
+      // The first folder on PATH wins, as in a shell.
+      if (name !== "flock" && !linked.has(name)) { linked.add(name); symlinkSync(join(directory, name), join(bin, name)); }
+    }
+  }
+  const result = k.run([], { PATH: bin });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stderr, /^kit update: no flock; updates are not serialised$/m);
+  assert.equal(k.link("current"), one);
+});
+
+test("kit update --previous with only a previous kit goes back without holding an empty commit", (t) => {
+  const k = kitRepo(t);
+  const [one, two] = ["one", "two"].map((marker) => { const sha = k.publish(marker); k.run(); return sha; });
+  rmSync(join(k.data, "current"));
+  const back = k.run(["--previous"]);
+  assert.equal(back.status, 0, back.stdout + back.stderr);
+  assert.equal(back.stdout, `current ${short(one)} (was none)\nRESULT: ok update --previous ${short(one)} (was none)\n`);
+  assert.equal(k.link("current"), one);
+  assert.equal(existsSync(join(k.data, "held")), false);
+  // Nothing is held, so the next update moves straight to main.
+  assert.ok(k.run().stdout.endsWith(`RESULT: ok update ${short(two)} (was ${short(one)})\n`));
+});
+
+test("kit version dates only the current machine copy; an older folder says it is not current", (t) => {
+  const k = kitRepo(t);
+  const [one, two] = ["one", "two"].map((marker) => { const sha = k.publish(marker); k.run(); return sha; });
+  const version = (sha: string) => spawnSync(join(k.data, sha, "kit.d/version"), [], { env: { ...k.env, KIT_HOME: join(k.data, sha) }, encoding: "utf8" }).stdout;
+  assert.match(version(two), new RegExp(`^commit ${short(two)}\nkit machine copy, updated 0 minutes ago\n`));
+  assert.match(version(one), new RegExp(`^commit ${short(one)}\nkit machine copy, not current \\(current is ${short(two)}\\)\n`));
+  assert.doesNotMatch(version(one), /^warning /m);
 });
 
 test("kit update fails plainly on an unreachable repo, a main without a kit, and an unknown argument", (t) => {

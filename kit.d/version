@@ -26,7 +26,12 @@ data=${XDG_DATA_HOME:-}
 if [[ $(dirname -- "$home") -ef $data/agent-kit && ${home##*/} =~ ^[0-9a-f]{40}$ ]]; then
   sha=${home##*/} sha=${sha:0:7}
   updated=$(cat -- "$data/agent-kit/updated" 2>/dev/null) || updated=''
-  if [[ $updated =~ ^[0-9]+$ ]]; then
+  current=$(readlink -- "$data/agent-kit/current" 2>/dev/null) || current=''
+  current=${current##*/} current=${current:0:7}
+  # The update time is the machine's: it dates only the folder current names, not a retired or chosen older one.
+  if [[ ! $home -ef $data/agent-kit/current ]]; then
+    kit="machine copy, not current (current is ${current:-none})"
+  elif [[ $updated =~ ^[0-9]+$ ]]; then
     kit="machine copy, updated $(ago $((now - updated))) ago"
     if (( now - updated > 86400 )); then warning="kit not updated for $(ago $((now - updated))); run scripts/agents/kit update"; fi
   else

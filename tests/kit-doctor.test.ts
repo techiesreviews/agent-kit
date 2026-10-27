@@ -528,6 +528,18 @@ test("doctor reports only the first three conflict locations", (t) => {
   assert.doesNotMatch(result.stdout, /conflict.txt:4/);
 });
 
+test("doctor's live hook probe passes through the hook launcher when current names a machine copy", (t) => {
+  const f = fixture(t);
+  copyFileSync(join(repo, "scripts/agents/launcher/hooks-run.sh"), join(f.build, "scripts/agents/hooks/run.sh"));
+  const data = join(f.directory, "data"), sha = "0123456789abcdef0123456789abcdef01234567";
+  cpSync(join(repo, "scripts/agents"), join(data, "agent-kit", sha), { recursive: true, filter: (source) => source !== join(repo, "scripts/agents/project.d") });
+  symlinkSync(sha, join(data, "agent-kit/current"));
+  // KIT_HOME names another kit: the probe drops it and the hook launcher finds current itself.
+  const result = f.run([], f.build, { XDG_DATA_HOME: data, XDG_CACHE_HOME: join(f.directory, "cache"), KIT_HOME: join(repo, "scripts/agents") });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(result.stdout.includes("✓ hooks live: bash-guard rejects the probe (status 2)\n"), result.stdout);
+});
+
 test("doctor fails when the hooks cannot reach a kit: the hook launcher's warning, not silence", (t) => {
   const f = fixture(t);
   copyFileSync(join(repo, "scripts/agents/launcher/hooks-run.sh"), join(f.build, "scripts/agents/hooks/run.sh"));
@@ -544,6 +556,7 @@ test("doctor warns, without failing, on a machine copy two days after its last k
   const home = join(data, "agent-kit", sha);
   cpSync(join(repo, "scripts/agents"), home, { recursive: true, filter: (source) => source !== join(repo, "scripts/agents/project.d") });
   writeFileSync(join(data, "agent-kit/updated"), `${Math.floor(Date.now() / 1000) - 2 * 86400 - 60}\n`);
+  symlinkSync(sha, join(data, "agent-kit/current"));
   // A machine copy is read-only; doctor's own copy of it must still clean up.
   spawnSync("chmod", ["-R", "a-w", home]);
   const env = { XDG_DATA_HOME: data, KIT_HOME: home };
