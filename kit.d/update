@@ -110,7 +110,8 @@ else
     fi
     if ! has_kit "$unpack"; then
       remove "$unpack"
-      kit_result fail "update main $(short "$newest") has no kit front door and kit-lib.sh at its top"
+      if [[ $want != "$newest" ]]; then kit_result fail "update held $(short "$want") has no kit front door and kit-lib.sh at its top"
+      else kit_result fail "update main $(short "$newest") has no kit front door and kit-lib.sh at its top"; fi
       exit 1
     fi
     touch -- "$unpack"

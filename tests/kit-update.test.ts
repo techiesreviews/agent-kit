@@ -224,6 +224,36 @@ test("a held kit update whose kit is gone from repo.git fails and moves nothing"
   assert.deepEqual(readdirSync(k.data).filter((name) => name.startsWith(".unpack.")), []);
 });
 
+test("a held kit update replaces a broken current folder with a whole read-only copy of the held kit", (t) => {
+  const { k, one, two } = steppedBack(t);
+  spawnSync("chmod", ["-R", "u+w", join(k.data, one)]);
+  rmSync(join(k.data, one, "kit-lib.sh"));
+  const refill = k.run();
+  assert.equal(refill.status, 0, refill.stdout + refill.stderr);
+  assert.equal(refill.stdout, `unpacked ${short(one)} into ${k.data}/${one}\nRESULT: ok update refilled ${short(one)}\n`);
+  assert.equal(statSync(join(k.data, one, "kit-lib.sh")).mode & 0o222, 0);
+  assert.equal(k.link("current"), one);
+  assert.equal(readFileSync(join(k.data, "held"), "utf8"), `${two}\n`);
+});
+
+test("a held kit update that cannot unpack leaves the broken current folder and every link alone", (t) => {
+  const { k, one, two } = steppedBack(t);
+  spawnSync("chmod", ["-R", "u+w", join(k.data, one)]);
+  rmSync(join(k.data, one, "kit-lib.sh"));
+  rmSync(join(k.data, "repo.git"), { recursive: true, force: true });
+  const updated = readFileSync(join(k.data, "updated"), "utf8");
+  const refill = k.run();
+  assert.equal(refill.status, 1, refill.stdout + refill.stderr);
+  assert.equal(refill.stdout, `RESULT: fail update cannot refill held ${short(one)}\n`);
+  assert.equal(readFileSync(join(k.data, one, "marker"), "utf8"), "one");
+  assert.ok(existsSync(join(k.data, one, "kit")));
+  assert.equal(k.link("current"), one);
+  assert.equal(k.link("previous"), two);
+  assert.equal(readFileSync(join(k.data, "held"), "utf8"), `${two}\n`);
+  assert.equal(readFileSync(join(k.data, "updated"), "utf8"), updated);
+  assert.deepEqual(readdirSync(k.data).filter((name) => name.startsWith(".unpack.")), []);
+});
+
 test("kit update --previous refuses a previous folder that is not a whole kit", (t) => {
   const k = kitRepo(t);
   const [one, two] = ["one", "two"].map((marker) => { const sha = k.publish(marker); k.run(); return sha; });
