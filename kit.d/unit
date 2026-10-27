@@ -115,9 +115,7 @@ async function main(args) {
         return { file, reason: "explicit" };
       });
     } else {
-      const files = paths(root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"])
-        .filter(file => existsSync(join(root, file)));
-      // A --base git cannot find is a mistyped argument, like a missing named file.
+      // A --base git cannot find as a commit is a mistyped argument, like a missing named file.
       if (flags.base !== undefined) {
         try { git(root, ["rev-parse", "--verify", "--quiet", `${flags.base}^{commit}`]); }
         catch (error) {
@@ -126,6 +124,8 @@ async function main(args) {
           status = 2; throw new Error(`base not found: ${flags.base}`);
         }
       }
+      const files = paths(root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"])
+        .filter(file => existsSync(join(root, file)));
       const unitFile = unitFiles(root);
       selected = flags.affected ? affected(root, files, flags.base, unitFile)
         : files.filter(unitFile).sort().map(file => ({ file, reason: "all" }));

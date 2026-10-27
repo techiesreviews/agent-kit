@@ -142,6 +142,8 @@ test("unit help, listing and invalid options use the kit front door", t => {
   result(base, 2, /^RESULT: fail unit base not found: missing$/);
   assert.match(base.stderr, /^problem: base not found: missing$/m);
   assert.match(base.stderr, /Usage: kit unit/);
+  // A ref git finds that is not a commit is no base either.
+  result(f.run("--affected", "--base", "HEAD^{tree}"), 2, /^RESULT: fail unit base not found: HEAD\^\{tree\}$/);
   // A real commit still passes the check.
   result(f.run("--affected", "--base", f.base, "--list"), 0, /^RESULT: ok unit /);
   assert.equal(f.executed(), 0);
@@ -214,6 +216,7 @@ test("unit.sh with no files run from its own folder lists and sums the same suit
   const f = fixture(t);
   const agents = join(f.root, "scripts/agents");
   // The fixture's own copy of unit.sh and what it calls, so ./unit.sh resolves beside the fixture's kit.json.
+  // The list follows the local imports of kit-lib.mjs and kit.d/unit; a new one there belongs here too.
   for (const file of ["unit.sh", "kit-lib.sh", "kit-lib.mjs", "review-findings.mjs", "unit-summary.mjs", "kit.d"]) {
     cpSync(resolve("scripts/agents", file), join(agents, file), { recursive: true });
   }
