@@ -667,8 +667,14 @@ test("a broken --help stops agent.sh review and kit doctor but not agent.sh buil
   mkdirSync(broken);
   writeFileSync(join(broken, "status.json"), "{");
   const unreadable = agent("--resume", broken);
-  assert.notEqual(unreadable.status, 0, unreadable.stderr);
+  assert.equal(unreadable.status, 1, unreadable.stderr);
+  assert.match(unreadable.stderr, /SyntaxError/);
   assert.doesNotMatch(unreadable.stderr, /building in/);
+  // A status.json without a worktree gates nothing and the runner refuses it.
+  writeFileSync(join(broken, "status.json"), JSON.stringify({ kind: "build" }));
+  const nowhere = agent("--resume", broken);
+  assert.notEqual(nowhere.status, 0, nowhere.stderr);
+  assert.doesNotMatch(nowhere.stderr, /building in|kit doctor/);
   const doctor = f.run(["--quiet"], f.build, { KIT_HELP_TIMEOUT: "0.3" });
   assert.equal(doctor.status, 1, doctor.stdout + doctor.stderr);
   assert.ok(doctor.stdout.endsWith("RESULT: fail doctor 1 failed: help\n"), doctor.stdout);
@@ -730,4 +736,22 @@ test("a broken version command, which the kit home check runs, does not stop age
   const other = agent("build");
   assert.equal(other.status, 3, other.stdout + other.stderr);
   assert.match(other.stderr, /RESULT: fail doctor 1 failed: kit home\n/);
+});
+
+test("the kit home check follows the help skip only for a version that fails, not one without usage or a home that cannot be copied", (t) => {
+  const f = fixture(t);
+  const missingHome = join(f.directory, "no-kit-home");
+  // Run doctor directly: the front door refuses a missing KIT_HOME itself.
+  const run = () => f.run(["--quiet"], f.build, { KIT_HOME: missingHome, KIT_HELP_TIMEOUT: "0.3", KIT_DOCTOR_SKIP: "help" }, true);
+  executable(join(f.commands, "version"), 'printf "version help\\n"');
+  const unused = run();
+  assert.equal(unused.status, 1, unused.stdout + unused.stderr);
+  assert.ok(unused.stdout.startsWith("problem: help: version (no usage); fix:"), unused.stdout);
+  assert.ok(unused.stdout.includes(`✗ kit home: a copy of ${missingHome} fails kit version: cannot copy ${missingHome}; fix:`), unused.stdout);
+  assert.ok(unused.stdout.endsWith("RESULT: fail doctor 1 failed: kit home\n"), unused.stdout);
+  executable(join(f.commands, "version"), "exit 1");
+  const uncopied = run();
+  assert.equal(uncopied.status, 1, uncopied.stdout + uncopied.stderr);
+  assert.ok(uncopied.stdout.startsWith("problem: help: version (exit 1); fix:"), uncopied.stdout);
+  assert.ok(uncopied.stdout.endsWith("RESULT: fail doctor 1 failed: kit home\n"), uncopied.stdout);
 });

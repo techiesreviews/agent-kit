@@ -22,7 +22,8 @@ dev=$(kit_dev_root)
 [[ -z $dev ]] || dev=$(realpath -m -- "$dev")
 failed=() skipped=() checks=0
 # KIT_DOCTOR_SKIP=help (agent.sh sets it for builds): a broken --help prints a problem: line and does not fail,
-# so the builder that should repair it can start; so does the kit home check when the broken help is version's.
+# so the builder that should repair it can start; so does a failing kit home check (it runs kit version)
+# when version's help fails or hangs.
 # Doctor honours no other name.
 skip_help=false
 if [[ ,${KIT_DOCTOR_SKIP:-}, == *,help,* ]]; then skip_help=true; fi
@@ -251,7 +252,8 @@ for index in "${!commands[@]}"; do
   elif ! grep -q 'Usage:' "$help_dir/$index.out"; then broken+=("${commands[index]} (no usage)")
   fi
 done
-for entry in "${broken[@]}"; do [[ $entry != 'version ('* ]] || version_broken=true; done
+# Only a version that fails or hangs breaks kit home; a help without a Usage: line still runs.
+for entry in "${broken[@]}"; do [[ $entry != 'version (exit '* && $entry != 'version (timed out)' ]] || version_broken=true; done
 if (( ${#commands[@]} == 0 )); then
   fail help "no commands in ${folders[*]}" 'restore scripts/agents/kit.d or the "commands" folder'
 elif (( ${#broken[@]} == 0 )); then
@@ -283,7 +285,7 @@ else
 fi
 if (( code == 0 )) && [[ ${output##*$'\n'} == 'RESULT: ok version '* ]]; then
   pass 'kit home' "a copy of $home runs kit version for a project with only its settings and front door"
-elif [[ $skip_help == true && $version_broken == true ]]; then
+elif [[ $skip_help == true && $version_broken == true && $output != 'cannot copy '* ]]; then
   # The copy runs the broken version command, so this follows the help skip: the builder repairs both.
   skipped+=('kit home')
   printf 'problem: kit home: a copy of %s fails kit version: %s; fix: repair kit version (its --help is broken too)\n' "$home" "${output##*$'\n'}"
@@ -318,5 +320,5 @@ if (( ${#failed[@]} )); then
   kit_result fail "doctor ${#failed[@]} failed: $names"
   exit 1
 fi
-list=$(IFS=,; printf '%s' "${skipped[*]}")
-kit_result ok "doctor $checks/$checks checks passed${list:+; skipped ${list//,/, } (KIT_DOCTOR_SKIP)}"
+skipped_list=$(IFS=,; printf '%s' "${skipped[*]}")
+kit_result ok "doctor $checks/$checks checks passed${skipped_list:+; skipped ${skipped_list//,/, } (KIT_DOCTOR_SKIP)}"

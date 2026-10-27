@@ -7,7 +7,9 @@ gate=false
 kind=${1-}
 gate_dir=${2-}
 if [[ $kind == --resume && ${ASE_SKIP_DOCTOR:-} != 1 && -f $gate_dir/status.json ]]; then
-  { IFS= read -r gate_dir; IFS= read -r kind; } < <(node -e 'const s = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); console.log(`${s.worktree}\n${s.kind}`)' "$gate_dir/status.json")
+  # The kind comes first, so the rest is the worktree path as written; a bad status.json stops with node's status.
+  resumed=$(node -e 'const s = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); console.log(`${s.kind}\n${s.worktree}`)' "$gate_dir/status.json")
+  kind=${resumed%%$'\n'*} gate_dir=${resumed#*$'\n'}
 fi
 if [[ ${ASE_SKIP_DOCTOR:-} != 1 && -d $gate_dir ]] && root=$(git -C "$gate_dir" rev-parse --show-toplevel 2>/dev/null); then
   common=$(git -C "$root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=''
