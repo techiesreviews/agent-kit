@@ -295,6 +295,9 @@ test("kit ux takes screenshots through the project's own shots and says when the
   assert.equal(noShots.status, 1, noShots.stdout + noShots.stderr);
   assert.equal(noShots.result, "RESULT: fail ux needs a project shots command (none in own)");
   assert.deepEqual(calls(), []);
+  // It fails before making the bundle or tries folder.
+  assert.equal(existsSync(join(root, ".scratch/ux/ux-test")), false);
+  assert.equal(existsSync(join(root, ".scratch/ux-tries/ux-test")), false);
   put("own/shots.mjs", readFileSync(join(root, ".scratch/shots.mjs"), "utf8"));
   chmodSync(join(root, "own/shots.mjs"), 0o755);
   const shot = run(["--no-review"], real);

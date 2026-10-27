@@ -149,6 +149,27 @@ test("kit takes an absolute commands folder, and without one lists only shared c
   const doctorHelp = run(["doctor", "--help"], env);
   assert.equal(doctorHelp.status, 0, doctorHelp.stderr);
   assert.match(doctorHelp.stdout, /^Usage: kit doctor/);
+  // A "commands" naming the shared folder adds no group and hides nothing.
+  settings({ commands: resolve("scripts/agents/kit.d") });
+  const same = run([], env);
+  assert.equal(same.status, 0, same.stderr);
+  assert.doesNotMatch(same.stdout, /Project commands:|\(hidden by the shared/);
+});
+
+test("kit still lists shared commands with a broken settings file and names it on an unknown command", (t) => {
+  const root = temp(t);
+  mkdirSync(join(root, "scripts/agents"), { recursive: true });
+  writeFileSync(join(root, "scripts/agents/kit.json"), '{ "commands": ');
+  const env = { KIT_ROOT: root, KIT_COMMANDS_DIR: undefined };
+  const list = run([], env);
+  assert.equal(list.status, 0, list.stderr);
+  assert.match(list.stdout, /^Usage: kit <command> \[args\]\n\nShared commands:\n/);
+  const doctorHelp = run(["doctor", "--help"], env);
+  assert.equal(doctorHelp.status, 0, doctorHelp.stderr);
+  const unknown = run(["specs"], env);
+  assert.equal(unknown.status, 2);
+  assert.match(unknown.stderr, /^kit: unknown command 'specs' \(scripts\/agents\/kit\.json unreadable; run kit doctor\)\n/);
+  assert.equal(unknown.stdout, "RESULT: fail unknown command specs (scripts/agents/kit.json unreadable; run kit doctor)\n");
 });
 
 test("kit forwards command help and its exit status without RESULT enforcement", (t) => {

@@ -79,9 +79,14 @@ for index in "${!names[@]}"; do
   if [[ ${names[index]} == "$command" ]]; then command_file=${files[index]}; break; fi
 done
 if [[ -z $command_file ]]; then
-  printf "kit: unknown command '%s'\n" "$command" >&2
+  # A broken settings file hides the project folder; say so instead of only "unknown".
+  unreadable='' settings_file=$(kit_settings_file)
+  if [[ -z ${KIT_COMMANDS_DIR:-} && -f $settings_file ]] && ! jq empty "$settings_file" > /dev/null 2>&1; then
+    unreadable=' (scripts/agents/kit.json unreadable; run kit doctor)'
+  fi
+  printf "kit: unknown command '%s'%s\n" "$command" "$unreadable" >&2
   list_commands >&2
-  kit_result fail "unknown command $command"
+  kit_result fail "unknown command $command$unreadable"
   exit 2
 fi
 
