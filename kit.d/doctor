@@ -305,7 +305,7 @@ if [[ $version =~ (^|$'\n')commit\ ([^$'\n']*)$'\n'kit\ ([^$'\n']*)$'\n'project\
   kit_line="commit ${BASH_REMATCH[2]} (${BASH_REMATCH[3]}); project ${BASH_REMATCH[4]}"
   if [[ $version =~ (^|$'\n')warning\ ([^;$'\n']*)\;\ ([^$'\n']*) ]]; then
     kit_warning=${BASH_REMATCH[2]}
-    printf '✗ kit: %s, %s; fix: %s\n' "$kit_line" "$kit_warning" "${BASH_REMATCH[3]}"
+    printf '✗ kit: %s; %s; fix: %s\n' "$kit_line" "$kit_warning" "${BASH_REMATCH[3]}"
   elif [[ $quiet == false ]]; then
     printf '✓ kit: %s\n' "$kit_line"
   fi

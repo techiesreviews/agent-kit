@@ -51,7 +51,11 @@ if [[ $previous == true ]]; then
     exit 1
   fi
   link current "$before"
-  [[ -z $current ]] || link previous "$current"
+  if [[ -n $current ]]; then
+    link previous "$current"
+    # Its age counts from now, as on a normal update: a command started on it has a day to finish.
+    touch -- "$data/$current" 2>/dev/null || :
+  fi
   # The commit stepped back from: kit update keeps off it until main moves on.
   printf '%s\n' "$current" > "$data/held"
   printf 'current %s (was %s)\n' "$(short "$before")" "$(short "$current")"
@@ -66,8 +70,6 @@ if ! GIT_TERMINAL_PROMPT=0 timeout 120 git -C "$bare" fetch -q --depth 1 -- "$re
   exit 1
 fi
 newest=$(git -C "$bare" rev-parse FETCH_HEAD)
-# kit doctor and kit version read the time of the last fetch.
-date +%s > "$data/updated"
 
 held=''
 [[ ! -f $data/held ]] || held=$(< "$data/held")
@@ -79,7 +81,11 @@ elif [[ $newest == "$held" ]]; then
 else
   if [[ ! -d $data/$newest ]]; then
     unpack=$(mktemp -d "$data/.unpack.XXXXXX")
-    git -C "$bare" archive "$newest" | tar -x -C "$unpack"
+    if ! git -C "$bare" archive "$newest" | tar -x -C "$unpack"; then
+      remove "$unpack"
+      kit_result fail "update cannot unpack $(short "$newest")"
+      exit 1
+    fi
     if [[ ! -x $unpack/kit || ! -f $unpack/kit-lib.sh ]]; then
       remove "$unpack"
       kit_result fail "update main $(short "$newest") has no kit front door and kit-lib.sh at its top"
@@ -101,6 +107,10 @@ else
   printf 'current %s (was %s)\n' "$(short "$newest")" "$(short "${current:-none}")"
   result="update $(short "$newest") (was $(short "${current:-none}"))"
 fi
+
+# kit doctor and kit version read the time of the last update that left current on main (or on the held kit);
+# a failed fetch or unpack leaves it, so a stale copy keeps warning.
+date +%s > "$data/updated"
 
 # Folders (and unfinished unpacks) older than a day go, except the current and previous kits.
 current=$(target current) before=$(target previous)

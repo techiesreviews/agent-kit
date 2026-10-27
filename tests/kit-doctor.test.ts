@@ -551,11 +551,11 @@ test("doctor warns, without failing, on a machine copy two days after its last k
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const project = git(f.build, "rev-parse", "--short", "HEAD");
   assert.ok(result.stdout.includes(`✓ kit home: a copy of ${home} runs kit version`), result.stdout);
-  assert.ok(result.stdout.includes(`✗ kit: commit 0123456 (machine copy, updated 2 days ago); project ${project}, ` +
+  assert.ok(result.stdout.includes(`✗ kit: commit 0123456 (machine copy, updated 2 days ago); project ${project}; ` +
     "kit not updated for 2 days; fix: run scripts/agents/kit update\n"), result.stdout);
   assert.ok(result.stdout.endsWith("RESULT: ok doctor 11/11 checks passed; warning: kit not updated for 2 days\n"), result.stdout);
   // Quiet still shows the warning; a fresh copy shows nothing extra.
-  assert.equal(f.run(["--quiet"], f.build, env).stdout, `✗ kit: commit 0123456 (machine copy, updated 2 days ago); project ${project}, ` +
+  assert.equal(f.run(["--quiet"], f.build, env).stdout, `✗ kit: commit 0123456 (machine copy, updated 2 days ago); project ${project}; ` +
     "kit not updated for 2 days; fix: run scripts/agents/kit update\nRESULT: ok doctor 11/11 checks passed; warning: kit not updated for 2 days\n");
   spawnSync("chmod", ["u+w", join(data, "agent-kit")]);
   writeFileSync(join(data, "agent-kit/updated"), `${Math.floor(Date.now() / 1000) - 3 * 3600}\n`);

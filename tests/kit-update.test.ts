@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -111,6 +111,60 @@ test("kit update removes folders retired over a day ago, never the current or pr
   assert.equal(existsSync(join(k.data, ".unpack.stale")), false);
   assert.ok(existsSync(join(k.data, shas[1], "kit")));
   assert.ok(existsSync(join(k.data, shas[2], "kit")));
+});
+
+test("a kit stepped back from by --previous gets a day before it goes, like any retired kit", (t) => {
+  const k = kitRepo(t);
+  const [one, two] = ["one", "two"].map((marker) => { const sha = k.publish(marker); k.run(); return sha; });
+  const old = new Date(Date.now() - 2 * 86400_000);
+  for (const sha of [one, two]) utimesSync(join(k.data, sha), old, old);
+  assert.equal(k.run(["--previous"]).status, 0);
+  const three = k.publish("three");
+  const forward = k.run();
+  assert.equal(forward.status, 0, forward.stdout + forward.stderr);
+  assert.equal(k.link("current"), three);
+  assert.equal(k.link("previous"), one);
+  // Two was current minutes ago: a long command may still run on it.
+  assert.ok(existsSync(join(k.data, two, "kit")));
+});
+
+test("overlapping kit updates take turns: one new folder and consistent links", async (t) => {
+  const k = kitRepo(t);
+  const one = k.publish("one");
+  const start = () => new Promise<{ status: number | null; stdout: string }>((done) => {
+    const child = spawn(update, [], { env: k.env });
+    let stdout = "";
+    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk; });
+    child.on("close", (status) => done({ status, stdout }));
+  });
+  const results = await Promise.all([start(), start()]);
+  assert.deepEqual(results.map((result) => result.status), [0, 0], results.map((result) => result.stdout).join(""));
+  const last = results.map((result) => result.stdout.trimEnd().split("\n").at(-1)).sort();
+  assert.deepEqual(last, [`RESULT: ok update ${short(one)} (was none)`, `RESULT: ok update already on ${short(one)}`].sort());
+  assert.deepEqual(readdirSync(k.data).filter((name) => /^[0-9a-f]{40}$|^\.unpack\.|^\.(current|previous)\./.test(name)), [one]);
+  assert.equal(k.link("current"), one);
+  assert.equal(existsSync(join(k.data, "previous")), false);
+});
+
+test("a failed update leaves the update time alone, so a stale copy keeps warning", (t) => {
+  const k = kitRepo(t);
+  const one = k.publish("one");
+  k.run();
+  const old = `${Math.floor(Date.now() / 1000) - 2 * 86400}\n`;
+  writeFileSync(join(k.data, "updated"), old);
+  const empty = join(k.directory, "empty");
+  mkdirSync(empty);
+  k.git(empty, "init", "-q", "--initial-branch=main");
+  writeFileSync(join(empty, "README.md"), "not a kit\n");
+  k.git(empty, "add", "-A");
+  k.git(empty, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "x");
+  for (const repo of [`file://${empty}`, `file://${join(k.directory, "nowhere.git")}`]) {
+    assert.equal(k.run([], { KIT_REPO: repo }).status, 1);
+    assert.equal(readFileSync(join(k.data, "updated"), "utf8"), old);
+  }
+  assert.equal(k.link("current"), one);
+  const version = spawnSync(join(k.data, one, "kit.d/version"), [], { env: { ...k.env, KIT_HOME: join(k.data, one) }, encoding: "utf8" });
+  assert.match(version.stdout, /^warning kit not updated for 2 days; run scripts\/agents\/kit update$/m);
 });
 
 test("kit update fails plainly on an unreachable repo, a main without a kit, and an unknown argument", (t) => {

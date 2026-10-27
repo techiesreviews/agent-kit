@@ -6,7 +6,7 @@ source "${KIT_LIB:-$(dirname -- "${BASH_SOURCE[0]}")/../kit-lib.sh}"
 case ${1-} in
   --help|-h)
     printf "Usage: kit version\nShow the kit's commit, owner and Node version, with the kit's age and the project's commit.\n"
-    printf 'A machine copy without an update for over a day adds a warning line (kit doctor shows it).\n'
+    printf 'A machine copy without an update, or a launcher cache clone, over a day old adds a warning line (kit doctor shows it).\n'
     exit 0
     ;;
 esac
@@ -31,6 +31,11 @@ if [[ $(dirname -- "$home") -ef $data/agent-kit && ${home##*/} =~ ^[0-9a-f]{40}$
   else
     kit='machine copy, never updated'
   fi
+elif cloned=$(cat -- "$home/.git/kit-cloned" 2>/dev/null) && [[ $cloned =~ ^[0-9]+$ ]] &&
+  sha=$(git -C "$home" rev-parse --short HEAD 2>/dev/null); then
+  # The launcher's cache clone (no machine copy) is never refreshed in place, so a command keeps one kit.
+  kit="cache clone $home, cloned $(ago $((now - cloned))) ago"
+  if (( now - cloned > 86400 )); then warning="kit clone not updated for $(ago $((now - cloned))); run scripts/agents/kit update"; fi
 elif sha=$(git -C "$home" rev-parse --short HEAD 2>/dev/null); then
   top=$(git -C "$home" rev-parse --show-toplevel)
   if [[ $top -ef $root ]]; then kit='in this project'; else kit="checkout $top"; fi

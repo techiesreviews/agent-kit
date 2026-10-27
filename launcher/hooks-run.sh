@@ -4,8 +4,8 @@
 # the front door (its RESULT: line would become session context). It never blocks a session and never goes
 # quiet: without a kit it says the guards are off.
 data=${XDG_DATA_HOME:-} cache=${XDG_CACHE_HOME:-}
-[[ $data == /* ]] || data=$HOME/.local/share
-[[ $cache == /* ]] || cache=$HOME/.cache
+[[ $data == /* ]] || data=${HOME:-$(cd ~ && pwd -P)}/.local/share
+[[ $cache == /* ]] || cache=${HOME:-$(cd ~ && pwd -P)}/.cache
 home=${KIT_HOME:-}
 if [[ -z $home || $home == "${KIT_HOME_DEFAULT:-}" ]]; then
   home=$(readlink -- "$data/agent-kit/current" 2>/dev/null) || home=''

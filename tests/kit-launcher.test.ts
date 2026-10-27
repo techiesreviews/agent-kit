@@ -82,7 +82,25 @@ test("with no machine copy the launcher clones the newest kit once, shallow, int
   assert.deepEqual(lines(again), [`${join(f.cache, "agent-kit")} one`]);
   assert.deepEqual(readdirSync(f.cache), ["agent-kit"]);
   const version = f.kit(["version"]);
-  assert.match(version.stdout, new RegExp(`^commit ${one.slice(0, 7)}\nkit checkout ${join(f.cache, "agent-kit")}, commit \\d+ \\w+ old\nproject [0-9a-f]{7,}\n`));
+  assert.match(version.stdout, new RegExp(`^commit ${one.slice(0, 7)}\nkit cache clone ${join(f.cache, "agent-kit")}, cloned 0 minutes ago\nproject [0-9a-f]{7,}\nowner `));
+});
+
+test("a cache clone over a day old is kept (one kit per command) but warns until kit update fills the machine copy", (t) => {
+  const f = fixture(t);
+  const one = f.publish("one");
+  f.kit(["where"]);
+  const stamp = join(f.cache, "agent-kit/.git/kit-cloned");
+  writeFileSync(stamp, `${Math.floor(Date.now() / 1000) - 2 * 86400 - 60}\n`);
+  const two = f.publish("two");
+  assert.deepEqual(lines(f.kit(["where"])), [`${join(f.cache, "agent-kit")} one`]);
+  const stale = f.kit(["version"]);
+  assert.equal(stale.status, 0, stale.stdout + stale.stderr);
+  assert.match(stale.stdout, new RegExp(`^commit ${one.slice(0, 7)}\nkit cache clone ${join(f.cache, "agent-kit")}, cloned 2 days ago\nproject [0-9a-f]{7,}\n` +
+    "warning kit clone not updated for 2 days; run scripts/agents/kit update\nowner "));
+  // The fix the warning names: the machine copy takes over and the warning goes.
+  assert.equal(f.kit(["update"]).status, 0);
+  assert.deepEqual(lines(f.kit(["where"])), [`${join(f.data, two)} two`]);
+  assert.doesNotMatch(f.kit(["version"]).stdout, /^warning /m);
 });
 
 test("the launcher fails with a RESULT line when there is no kit and none can be cloned", (t) => {
@@ -161,4 +179,15 @@ test("the hook launcher runs the kit's guards, and without a kit warns on every 
   assert.equal(guarded.stdout, "");
   assert.equal(f.hook("bash-guard", { ...stashPop, tool_input: { command: "git status" } }).status, 0);
   assert.doesNotMatch(f.hook("session-env", { hook_event_name: "SessionStart" }).stdout, /RESULT:|Agent Kit not found/);
+  // A person's KIT_HOME (a kit branch) reaches the hooks too, over the machine copy; one a front door filled in does not.
+  const branch = join(f.directory, "agent-kit-branch");
+  cpSync(resolve("scripts/agents"), branch, { recursive: true, filter: (source) => source !== resolve("scripts/agents/project.d") });
+  writeFileSync(join(branch, "hooks/bash-guard.sh"), 'printf "branch guard\\n" >&2; exit 2\n');
+  const tried = f.hook("bash-guard", { ...stashPop, tool_input: { command: "git status" } }, { KIT_HOME: branch });
+  assert.deepEqual([tried.status, tried.stderr], [2, "branch guard\n"]);
+  const filled = f.hook("bash-guard", { ...stashPop, tool_input: { command: "git status" } }, { KIT_HOME: branch, KIT_HOME_DEFAULT: branch });
+  assert.deepEqual([filled.status, filled.stderr], [0, ""]);
+  // A person's KIT_HOME that is not a kit warns rather than falling back quietly.
+  const wrong = f.hook("bash-guard", stashPop, { KIT_HOME: join(f.directory, "nowhere") });
+  assert.deepEqual([wrong.status, wrong.stdout], [0, `{"systemMessage":"${warning}"}\n`]);
 });
