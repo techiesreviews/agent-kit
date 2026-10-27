@@ -24,7 +24,8 @@ if [[ -z ${KIT_HOME:-} || $KIT_HOME == "${KIT_HOME_DEFAULT:-}" ]] || { [[ $KIT_H
     trap '[[ -z $clone ]] || rm -rf -- "$clone"' EXIT
     mkdir -p -- "$cache" && clone=$(mktemp -d "$cache/agent-kit.XXXXXX") && git clone -q --depth 1 -- "$KIT_REPO" "$clone" >&2 &&
       { whole "$clone" || { why="the clone of $KIT_REPO holds no whole kit"; false; }; } &&
-      date +%s > "$clone/.git/kit-cloned" && why="cannot place the clone at $KIT_HOME" && mv -T -- "$clone" "$KIT_HOME" 2>/dev/null && clone='' || :
+      { date +%s > "$clone/.git/kit-cloned" || { why="cannot stamp the clone in $cache"; false; }; } &&
+      why="cannot place the clone at $KIT_HOME" && mv -T -- "$clone" "$KIT_HOME" 2>/dev/null && clone='' || :
     [[ -z $clone ]] || rm -rf -- "$clone"
   fi
 fi

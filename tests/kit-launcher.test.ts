@@ -477,3 +477,12 @@ test("a launcher whose mv loses the race to another launcher's whole clone uses 
   assert.doesNotMatch(result.stdout, /cannot place the clone/);
   assert.deepEqual(readdirSync(f.cache), ["agent-kit"]);
 });
+
+test("a whole clone whose stamp cannot be written is named as such, not as a failed clone, and is thrown away", (t) => {
+  const f = fixture(t);
+  f.publish("one");
+  const result = f.kit(["where"], { "BASH_FUNC_date%%": "() { return 1; }" });
+  assert.equal(result.status, 2, result.stderr);
+  assert.equal(result.stdout, `RESULT: fail no Agent Kit at ${join(f.cache, "agent-kit")} (cannot stamp the clone in ${f.cache})\n`);
+  assert.deepEqual(readdirSync(f.cache), []);
+});
