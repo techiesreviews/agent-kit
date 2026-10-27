@@ -958,8 +958,16 @@ test("a version whose help and copy both hang skips the kit home check; a copy t
   const hung = run();
   assert.equal(hung.status, 0, hung.stdout + hung.stderr);
   assert.ok(hung.stdout.startsWith("problem: help: version (timed out); fix:"), hung.stdout);
-  assert.ok(hung.stdout.includes(`problem: kit home: a copy of ${home} fails kit version: `), hung.stdout);
+  // The copy printed nothing before it was stopped, so the line says it timed out.
+  assert.ok(hung.stdout.includes(`problem: kit home: a copy of ${home} fails kit version: timed out; fix:`), hung.stdout);
   assert.ok(hung.stdout.endsWith("RESULT: ok doctor 9/9 checks passed; skipped help, kit home (KIT_DOCTOR_SKIP)\n"), hung.stdout);
+  // A help that ignores SIGTERM is killed (137) while the copy stops at SIGTERM (124): still both timed out.
+  executable(join(f.commands, "version"), "trap '' TERM; sleep 5");
+  const killed = run();
+  assert.equal(killed.status, 0, killed.stdout + killed.stderr);
+  assert.ok(killed.stdout.startsWith("problem: help: version (timed out); fix:"), killed.stdout);
+  assert.ok(killed.stdout.endsWith("RESULT: ok doctor 9/9 checks passed; skipped help, kit home (KIT_DOCTOR_SKIP)\n"), killed.stdout);
+  executable(join(f.commands, "version"), "sleep 5");
   executable(join(home, "kit"), 'printf "RESULT: fail helper missing\\n"; exit 1');
   const fast = run();
   assert.equal(fast.status, 1, fast.stdout + fast.stderr);
@@ -976,7 +984,7 @@ test("through the real front door, a copy's version failing as its help did is s
   chmodSync(join(home, "kit"), 0o755);
   symlinkSync(doctor, join(home, "kit.d/doctor"));
   executable(join(home, "kit.d/version"), 'printf "%s: Cannot find module kit-lib.mjs\\n" "$0" >&2; exit 1');
-  const run = (env: NodeJS.ProcessEnv = {}) => spawnSync("/bin/bash", [join(home, "kit"), "doctor", "--quiet"], {
+  const run = (env: NodeJS.ProcessEnv = {}, args = ["--quiet"]) => spawnSync("/bin/bash", [join(home, "kit"), "doctor", ...args], {
     cwd: f.build, encoding: "utf8", timeout: 10_000,
     env: { ...process.env, KIT_ROOT: f.build, KIT_MAIN_ROOT: f.main, KIT_GROK: join(f.directory, "no-grok"),
       KIT_HOME: "", KIT_HOME_DEFAULT: "", KIT_LIB: "", KIT_COMMANDS_DIR: "", KIT_HELP_TIMEOUT: "2", ...env },
@@ -1005,6 +1013,20 @@ test("through the real front door, a copy's version failing as its help did is s
   const unskipped = run(hangs);
   assert.equal(unskipped.status, 1, unskipped.stdout + unskipped.stderr);
   assert.ok(unskipped.stdout.endsWith("RESULT: fail doctor 2 failed: help,kit home\n"), unskipped.stdout);
+  // The kit note's own version run stops at KIT_HOME_TIMEOUT too, and leaves the note out.
+  const start = performance.now();
+  const loud = run({ KIT_HELP_TIMEOUT: "0.3", KIT_HOME_TIMEOUT: "0.3", KIT_DOCTOR_SKIP: "help" }, []);
+  const elapsed = performance.now() - start;
+  assert.equal(loud.status, 0, loud.stdout + loud.stderr);
+  assert.ok(!loud.stdout.split("\n").some(line => line.startsWith("✓ kit: ")), loud.stdout);
+  assert.ok(elapsed < 5000, `doctor took ${elapsed}ms`);
+  // An extra line, in a copy only (the copy's project has a front door, the worktree none), is not the same failure.
+  executable(join(home, "kit.d/version"), "printf 'a\\n' >&2; [[ ! -f scripts/agents/kit ]] || printf 'b\\n' >&2; exit 1");
+  const extra = run({ KIT_DOCTOR_SKIP: "help" });
+  assert.equal(extra.status, 1, extra.stdout + extra.stderr);
+  assert.ok(extra.stdout.startsWith("problem: help: version (exit 1); fix:"), extra.stdout);
+  assert.ok(extra.stdout.includes(`✗ kit home: a copy of ${home} fails kit version: RESULT: fail version exited 1 without a RESULT line; fix:`), extra.stdout);
+  assert.ok(extra.stdout.endsWith("RESULT: fail doctor 1 failed: kit home\n"), extra.stdout);
   // Output naming the copy's project rather than its kit is not read back, so the check refuses when unsure.
   executable(join(home, "kit.d/version"), 'printf "%s: broken\\n" "$KIT_ROOT" >&2; exit 1');
   const elsewhere = run({ KIT_DOCTOR_SKIP: "help" });

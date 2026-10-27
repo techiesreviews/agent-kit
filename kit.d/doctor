@@ -320,9 +320,10 @@ else
   output=$(cd -- "$project" && env -u KIT_COMMANDS_DIR KIT_HOME="$copy" KIT_ROOT="$project" timeout -k 2 "${KIT_HOME_TIMEOUT:-10}" "$project/scripts/agents/kit" version 2>&1 < /dev/null) || code=$?
 fi
 # The copy fails because of version itself when version's help failed the same way: both timed out (each within
-# its own limit), or both
-# exited with the same status and printed the same, reading the copy's path as the kit's and leaving out the
-# RESULT line the front door adds. Any other failure, such as a missing helper, still fails kit home.
+# its own limit), or both exited with the same status and printed the same lines in the same order, reading the
+# copy's path as the kit's and leaving out the RESULT line the front door adds. Any other failure, such as a
+# missing helper, still fails kit home. The front door relays only stdout, so a version writing to both streams
+# can come out reordered and keep the gate: the check refuses when unsure.
 version_failed_alike() {
   local help_code seen front="RESULT: fail version exited $code without a RESULT line"
   [[ -n $version_index && $output != 'cannot copy '* ]] || return 1
@@ -333,14 +334,17 @@ version_failed_alike() {
   if [[ $seen == "$front" ]]; then seen=''; else seen=${seen%$'\n'"$front"}; fi
   [[ $seen == "$(< "$help_dir/$version_index.out")" ]]
 }
-if (( code == 0 )) && [[ ${output##*$'\n'} == 'RESULT: ok version '* ]]; then
+# A copy killed by timeout -k may have printed nothing.
+last=${output##*$'\n'}
+if [[ -z $last ]] && (( code == 124 || code == 137 )); then last='timed out'; fi
+if (( code == 0 )) && [[ $last == 'RESULT: ok version '* ]]; then
   pass 'kit home' "a copy of $home runs kit version for a project with only its settings and front door"
 elif [[ $skip_help == true ]] && version_failed_alike; then
   # The copy fails only through the broken version command, so this follows the help skip: the builder repairs both.
   skipped+=('kit home')
-  printf 'problem: kit home: a copy of %s fails kit version: %s; fix: repair kit version (its --help is broken too)\n' "$home" "${output##*$'\n'}"
+  printf 'problem: kit home: a copy of %s fails kit version: %s; fix: repair kit version (its --help is broken too)\n' "$home" "$last"
 else
-  fail 'kit home' "a copy of $home fails kit version: ${output##*$'\n'}" 'reach shared helpers through KIT_HOME, not scripts/agents/'
+  fail 'kit home' "a copy of $home fails kit version: $last" 'reach shared helpers through KIT_HOME, not scripts/agents/'
 fi
 
 # The kit's commit and age beside the project's, from kit version: a note, never a failure. A machine copy
