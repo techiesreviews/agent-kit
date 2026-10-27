@@ -6,14 +6,17 @@
 data=${XDG_DATA_HOME:-} cache=${XDG_CACHE_HOME:-}
 [[ $data == /* ]] || data=${HOME:-$(cd ~ && pwd -P)}/.local/share
 [[ $cache == /* ]] || cache=${HOME:-$(cd ~ && pwd -P)}/.cache
+# A whole kit, as kit update and the kit launcher check it, with its hooks.
+whole() { [[ -x $1/kit && -f $1/kit-lib.sh && -f $1/hooks/run.sh ]]; }
 home=${KIT_HOME:-}
-if [[ -z $home || $home == "${KIT_HOME_DEFAULT:-}" ]]; then
+# A KIT_HOME the kit launcher picked (KIT_HOME_PINNED) and kit update has since removed is looked up again.
+if [[ -z $home || $home == "${KIT_HOME_DEFAULT:-}" ]] || { [[ $home == "${KIT_HOME_PINNED:-}" ]] && ! whole "$home"; }; then
   home=$(readlink -- "$data/agent-kit/current" 2>/dev/null) || home=''
   [[ -z $home || $home == /* ]] || home=$data/agent-kit/$home
   # The cache clone is the kit launcher's; a hook does not clone (the warning's kit doctor does).
-  [[ -f $home/hooks/run.sh ]] || home=$cache/agent-kit
+  whole "$home" || home=$cache/agent-kit
 fi
-[[ ! -f $home/hooks/run.sh ]] || exec bash "$home/hooks/run.sh" "$@"
+! whole "$home" || exec bash "$home/hooks/run.sh" "$@"
 warning='Agent Kit not found: guards are off; run `scripts/agents/kit doctor`'
 case ${1-} in
   # SessionStart context, once per session (the context card stays silent).

@@ -53,6 +53,9 @@ function fixture(t: { after: (fn: () => void) => void }) {
     'printf "%s %s\\n" "$KIT_HOME" "$(cat "$KIT_HOME/marker")"\n' +
     'if [[ -n ${WAIT_FILE:-} ]]; then while [[ ! -e $WAIT_FILE ]]; do sleep 0.05; done; printf "%s %s\\n" "$KIT_HOME" "$(cat "$KIT_HOME/marker")"; fi\n');
   chmodSync(join(project, "own/where"), 0o755);
+  // pinned prints the kit marker the launcher hands to every child.
+  writeFileSync(join(project, "own/pinned"), '#!/usr/bin/env bash\n# kit: print the pinned kit\nprintf "%s\\n" "${KIT_HOME_PINNED-unset}"\n');
+  chmodSync(join(project, "own/pinned"), 0o755);
   git(project, "init", "-q", "--initial-branch=main");
   git(project, "add", "-A");
   git(project, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "project");
@@ -246,4 +249,45 @@ test("the hook launcher runs the kit's guards, and without a kit warns on every 
   // A person's KIT_HOME that is not a kit warns rather than falling back quietly.
   const wrong = f.hook("bash-guard", stashPop, { KIT_HOME: join(f.directory, "nowhere") });
   assert.deepEqual([wrong.status, wrong.stdout], [0, `{"systemMessage":"${warning}"}\n`]);
+});
+
+test("a child of a launcher whose kit folder was retired and removed falls back to current; a person's missing KIT_HOME still fails", (t) => {
+  const f = fixture(t);
+  const one = f.publish("one");
+  assert.equal(f.kit(["update"]).status, 0);
+  // What a builder session or kit bg job inherits from a launcher: KIT_HOME and its marker.
+  assert.deepEqual(lines(f.kit(["pinned"])), [join(f.data, one)]);
+  const two = f.publish("two");
+  assert.equal(f.kit(["update"]).status, 0);
+  spawnSync("chmod", ["-R", "u+w", join(f.data, one)]);
+  rmSync(join(f.data, one), { recursive: true, force: true });
+  const inherited = { KIT_HOME: join(f.data, one), KIT_HOME_PINNED: join(f.data, one) };
+  const guarded = f.hook("bash-guard", stashPop, inherited);
+  assert.deepEqual([guarded.status, guarded.stdout, guarded.stderr], [2, "", "commit work in progress on your own branch\n"]);
+  assert.deepEqual(lines(f.kit(["where"], inherited)), [`${join(f.data, two)} two`]);
+  assert.deepEqual(lines(f.kit(["pinned"], inherited)), [join(f.data, two)]);
+  // A pinned folder that still holds a kit is kept (one kit per command, children included).
+  const kept = f.kit(["where"], { KIT_HOME: join(f.data, two), KIT_HOME_PINNED: join(f.data, two) });
+  assert.deepEqual(lines(kept), [`${join(f.data, two)} two`]);
+  const chosen = { KIT_HOME: join(f.data, one) };
+  const warned = f.hook("bash-guard", stashPop, chosen);
+  assert.deepEqual([warned.status, warned.stdout], [0, `{"systemMessage":"${warning}"}\n`]);
+  const failed = f.kit(["where"], chosen);
+  assert.equal(failed.status, 2);
+  assert.equal(failed.stdout, `RESULT: fail no Agent Kit at ${join(f.data, one)} (KIT_HOME)\n`);
+});
+
+test("a cache folder with kit but no kit-lib.sh is rejected by both launchers, not used", (t) => {
+  const f = fixture(t);
+  const half = join(f.cache, "agent-kit");
+  mkdirSync(join(half, "hooks"), { recursive: true });
+  writeFileSync(join(half, "kit"), "#!/bin/bash\necho used\n");
+  chmodSync(join(half, "kit"), 0o755);
+  writeFileSync(join(half, "hooks/run.sh"), "echo used; exit 2\n");
+  const result = f.kit(["where"]);
+  assert.equal(result.status, 2);
+  assert.equal(result.stdout, `RESULT: fail no Agent Kit at ${half} (${half} exists but holds no kit; remove it)\n`);
+  const hooked = f.hook("bash-guard", stashPop);
+  assert.deepEqual([hooked.status, hooked.stdout], [0, `{"systemMessage":"${warning}"}\n`]);
+  assert.deepEqual(readdirSync(f.cache), ["agent-kit"]);
 });
