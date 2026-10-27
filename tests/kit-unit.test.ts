@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -137,12 +137,11 @@ test("unit help, listing and invalid options use the kit front door", t => {
   for (const args of [["--wat"], ["--base"], ["--base", "HEAD"], ["--affected", "tests/direct.test.ts"], ["--affected", "--affected"], ["--list", "--list"], ["missing.test.ts"]]) {
     result(f.run(...args), 2, /fail unit /);
   }
-  // A base git cannot find is no usage error: the arguments parsed, and the problem line says which ref.
+  // A base git cannot find is a mistyped argument, like a missing named file: usage status, and the problem line names it.
   const base = f.run("--affected", "--base", "missing");
-  result(base, 1, /^RESULT: fail unit /);
-  assert.match(base.stderr, /^problem: /m);
-  assert.match(base.stderr, /Not a valid object name missing|unknown revision/);
-  assert.doesNotMatch(base.stderr, /Usage:/);
+  result(base, 2, /^RESULT: fail unit base not found: missing$/);
+  assert.match(base.stderr, /^problem: base not found: missing$/m);
+  assert.match(base.stderr, /Usage: kit unit/);
   assert.equal(f.executed(), 0);
 });
 
@@ -207,6 +206,33 @@ test("unit.sh with no files runs only the tests its unit.files pattern matches",
   // The one test that ran is tests/direct.test.ts's, the only file the pattern matches.
   const log = /^log: (.+)$/m.exec(output.stdout)![1];
   assert.match(readFileSync(join(f.root, log), "utf8"), /direct test runs/);
+});
+
+test("unit.sh with no files run from its own folder lists and sums the same suite as the absolute-path run", t => {
+  const f = fixture(t);
+  const agents = join(f.root, "scripts/agents");
+  // The fixture's own copy of unit.sh and what it calls, so ./unit.sh resolves beside the fixture's kit.json.
+  for (const file of ["unit.sh", "kit-lib.sh", "kit-lib.mjs", "review-findings.mjs", "unit-summary.mjs", "kit.d"]) {
+    cpSync(resolve("scripts/agents", file), join(agents, file), { recursive: true });
+  }
+  for (const file of ["tests/hops.test.ts", "tests/helper.test.ts", "tests/direct.test.ts"]) f.put(file, f.body.replace("selected test runs", `${file} runs`));
+  // No KIT_ROOT or KIT_LIB from the caller's kit: the copy finds its project from its own folder.
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+  for (const name of ["NODE_TEST_CONTEXT", "KIT_ROOT", "KIT_LIB"]) delete env[name];
+  const suite = (command: string, args: string[], cwd: string) => {
+    const output = spawnSync(command, args, { cwd, env, encoding: "utf8", timeout: 60_000 });
+    assert.equal(output.status, 0, `${command} ${args.join(" ")}: ${output.stderr}${output.stdout}`);
+    // The full suite runs from the project's top folder, so the log path is relative to it.
+    const log = /^log: (.+)$/m.exec(output.stdout)![1];
+    const ran = [...readFileSync(join(f.root, log), "utf8").matchAll(/(tests\/\w+\.test\.ts) runs/g)].map(match => match[1]);
+    return { files: [...new Set(ran)].sort(), summary: output.stdout.replace(/^log: .+\n/m, "") };
+  };
+  const absolute = suite("bash", [join(agents, "unit.sh")], f.root);
+  assert.deepEqual(absolute.files, ["tests/direct.test.ts", "tests/helper.test.ts", "tests/hops.test.ts"]);
+  assert.match(absolute.summary, /^pass 3, fail 0$/m);
+  assert.deepEqual(suite("./unit.sh", [], agents), absolute);
+  assert.deepEqual(suite("bash", ["unit.sh"], agents), absolute);
+  assert.equal(f.executed(), 9);
 });
 
 // techies-playground (research 04): lands on main, node --test, unit tests in several places and no import scan of its own.

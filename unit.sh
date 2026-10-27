@@ -6,8 +6,10 @@ timeout=${ASE_UNIT_TIMEOUT_MS:-120000}
 for file in "$@"; do
   [[ $file != -* && -f $file ]] || { echo "Usage: unit.sh [files...] (existing test files)" >&2; exit 2; }
 done
+# This script's folder as an absolute path, taken before the full suite's cd: run as ./unit.sh a relative one breaks.
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=scripts/agents/kit-lib.sh
-source "${KIT_LIB:-$(dirname -- "${BASH_SOURCE[0]}")/kit-lib.sh}"
+source "${KIT_LIB:-$here/kit-lib.sh}"
 # The test runner and the full suite's files come from unit.run and unit.files in scripts/agents/kit.json.
 problems=$(kit_settings_problems) || { printf 'unit.sh: %s\n' "${problems//$'\n'/; }" >&2; exit 1; }
 read -ra runner <<< "$(kit_setting .unit.run)"
@@ -16,7 +18,7 @@ if (( ! $# )); then
   # The full suite is what kit unit lists: unit.files matched against git's tracked and untracked,
   # not-ignored files, so both run the same files. Its paths are relative to the project's top folder.
   cd -- "$(kit_root)"
-  if ! listing=$(node "$(dirname -- "${BASH_SOURCE[0]}")/kit.d/unit" --list 2>&1); then
+  if ! listing=$(node "$here/kit.d/unit" --list 2>&1); then
     problem=$(sed -n 's/^problem: //p' <<< "$listing" | head -n 1)
     printf 'unit.sh: %s\n' "${problem:-kit unit --list failed}" >&2
     exit 1
@@ -32,6 +34,6 @@ mkdir -p .scratch/unit
 log=.scratch/unit/$(date -u +%Y%m%dT%H%M%S)-$$.log
 status=0
 "${runner[@]}" --test-timeout="$timeout" "$@" > "$log" 2>&1 || status=$?
-node "$(dirname "${BASH_SOURCE[0]}")/unit-summary.mjs" "$log" || { (( status )) || status=1; }
+node "$here/unit-summary.mjs" "$log" || { (( status )) || status=1; }
 echo "log: $log"
 exit "$status"
