@@ -315,7 +315,15 @@ test("OpenCode results take the last message's text and accept only the requeste
   // An empty account is HTTP 402 or its message; a 402 the model wrote is not one.
   assert.equal(opencodeOutOfCredit(event("error", { error: { name: "APIError", data: { message: "balance exhausted", statusCode: 402 } } })), "problem: opencode out of credit: balance exhausted");
   assert.equal(opencodeOutOfCredit(event("error", { error: { name: "APIError", data: { message: "Payment Required" } } })), "problem: opencode out of credit: Payment Required");
-  for (const other of [limit, bad, text("m1", "402 Payment Required")]) assert.equal(opencodeOutOfCredit(other), null);
+  assert.equal(opencodeOutOfCredit(event("error", { error: { name: "UnknownError", data: { message: "402" } } })), "problem: opencode out of credit: 402");
+  // A status other than 402 is never credit, even when the message names 402.
+  const gateway = event("error", { error: { name: "APIError", data: { message: "Bad gateway (request 402)", statusCode: 502 } } });
+  for (const other of [limit, bad, gateway, text("m1", "402 Payment Required"),
+    event("error", { error: { name: "UnknownError", data: { message: "upstream request 402 failed" } } })]) assert.equal(opencodeOutOfCredit(other), null);
+  // The last error event, the one that ended the call, is named.
+  assert.equal(opencodeErrorProblem(`${limit}\n${bad}`), "problem: OpenCode reported an error: Bad gateway");
+  assert.throws(() => opencodeResult(`${stdout}\n${limit}\n${bad}`, model, unreachable), /OpenCode reported an error: Bad gateway/);
+  assert.equal(opencodeErrorProblem(event("error")), "problem: OpenCode reported an error: unknown error");
 });
 
 test("review budgets count outside families per ISO week, refuse at the limit and never count Claude", (t) => {

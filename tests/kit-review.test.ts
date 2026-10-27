@@ -74,6 +74,8 @@ if (cli === "codex") {
     process.exit(1);
   }
   // An empty account stops Grok after a turn of work.
+  // The 402 line alone, as an outright refusal of the first call would be.
+  if (mode === "out-of-credit-only") { console.log("402 Payment Required: Grok Build usage balance exhausted"); process.exit(1); }
   if (mode === "out-of-credit" || (mode === "retry-out-of-credit" && resumed)) {
     console.error("read_file file.txt");
     console.log("402 Payment Required: Grok Build usage balance exhausted");
@@ -731,6 +733,18 @@ test("an empty Grok account after a turn skips the review with exit 3 and gives 
   assert.deepEqual(f.counts(), { grok: { "kit-review": 1 } });
 });
 
+test("a Grok first call that prints only the 402 line gives the count back once", (t) => {
+  const f = fixture(t);
+  const grok = join(f.dir, "bin", "grok");
+  writeFileSync(grok, fake); chmodSync(grok, 0o755);
+  const first = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "grok-4.7", ASE_REVIEW_BUDGET_GROK: "2" });
+  assert.equal(first.status, 0, first.stderr);
+  const empty = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "grok-4.7", ASE_REVIEW_BUDGET_GROK: "2", FAKE_MODE: "out-of-credit-only" });
+  assert.equal(empty.status, 3, empty.stdout + empty.stderr);
+  assert.equal(empty.stdout.trim().split("\n").at(-1), "RESULT: skip review out of credit (grok-4.7)");
+  assert.deepEqual(f.counts(), { grok: { "kit-review": 1 } });
+});
+
 test("an empty Grok account on the completeness retry still skips the review and gives the count back", (t) => {
   const f = fixture(t);
   const grok = join(f.dir, "bin", "grok");
@@ -868,6 +882,11 @@ if (mode === "out-of-credit" || mode === "out-of-credit-exit0") {
   process.exit(mode === "out-of-credit" ? 1 : 0);
 }
 if (mode === "stderr-402") { console.error("402"); process.exit(1); }
+// A limit then an empty account; a gateway error that names 402; a passing error then the fatal one.
+const fail = (...errors) => { for (const [message, statusCode] of errors) emit("error", { error: { name: "APIError", data: { message, statusCode } } }); process.exit(1); };
+if (mode === "limit-then-402") fail(["Rate limit exceeded. Please try again later.", 429], ["balance exhausted", 402]);
+if (mode === "error-502-names-402") fail(["Bad gateway (request 402)", 502]);
+if (mode === "two-errors") fail(["Overloaded", 529], ["Bad gateway", 502]);
 if (mode === "usage-limit" || mode === "usage-limit-exit0" || (mode === "retry-limit" && resumed)) {
   emit("error", { error: { name: "APIError", data: { message: "Rate limit exceeded. Please try again later.", statusCode: 429 } } });
   process.exit(mode === "usage-limit" ? 1 : 0);
@@ -999,19 +1018,21 @@ test("an OpenCode error that is not a limit fails once, unexported and unretried
 });
 
 test("an OpenCode error that is not a limit, with a non-zero exit, is the last problem line", (t) => {
-  const f = fixture(t);
-  withOpencode(f);
-  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_MODE: "error-502-exit1" });
-  assert.equal(result.status, 1, result.stderr);
-  const problems = result.stderr.trimEnd().split("\n").filter(line => line.startsWith("problem: "));
-  assert.equal(problems.at(-1), "problem: OpenCode reported an error: Bad gateway");
-  assert.doesNotMatch(result.stderr, /opencode failed/);
-  assert.match(result.stdout.trim().split("\n").at(-1)!, /^RESULT: fail OpenCode reported an error: Bad gateway evidence /);
+  for (const [mode, message] of [["error-502-exit1", "Bad gateway"], ["two-errors", "Bad gateway"], ["error-502-names-402", "Bad gateway (request 402)"]]) {
+    const f = fixture(t);
+    withOpencode(f);
+    const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_MODE: mode });
+    assert.equal(result.status, 1, result.stderr);
+    const problems = result.stderr.trimEnd().split("\n").filter(line => line.startsWith("problem: "));
+    assert.equal(problems.at(-1), `problem: OpenCode reported an error: ${message}`);
+    assert.doesNotMatch(result.stderr, /opencode failed|out of credit/);
+    assert.ok(result.stdout.trim().split("\n").at(-1)!.startsWith(`RESULT: fail OpenCode reported an error: ${message} evidence `), result.stdout);
+  }
 });
 
-test("an empty OpenCode account, as an error event or a bare 402 line, skips the review with exit 3", (t) => {
+test("an empty OpenCode account, as an error event or a bare 402 line, skips the review with exit 3, even after a usage limit", (t) => {
   for (const [mode, problem] of [["out-of-credit", "problem: opencode out of credit: balance exhausted"], ["out-of-credit-exit0", "problem: opencode out of credit: balance exhausted"],
-    ["stderr-402", "problem: opencode out of credit: 402"]]) {
+    ["stderr-402", "problem: opencode out of credit: 402"], ["limit-then-402", "problem: opencode out of credit: balance exhausted"]]) {
     const f = fixture(t);
     withOpencode(f);
     const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_MODE: mode }, true);

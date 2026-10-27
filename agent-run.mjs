@@ -206,19 +206,24 @@ function opencodeErrors(stdout) {
   return opencodeEvents(stdout).filter(event => event.type === "error").map(event => event.error);
 }
 
-// An empty account is HTTP 402 or a "payment required" / "balance exhausted" message.
-const outOfCreditPattern = /\b402\b|payment required|balance exhausted/i;
+// OpenCode reports an empty account as an error event, whatever its exit status: HTTP 402 when the
+// event has a status, else a credit message ("payment required", "balance exhausted", a bare 402).
+// Another status is never credit, even when its message happens to name 402.
+function creditError(error) {
+  const status = error?.data?.statusCode, message = opencodeError(error);
+  if (typeof status === "number") return status === 402;
+  return /payment required|balance exhausted/i.test(message) || outOfCreditLinePattern.test(message.trim());
+}
 
-// OpenCode reports an empty account as an error event, whatever its exit status.
 export function opencodeOutOfCredit(stdout) {
-  const error = opencodeErrors(stdout).find(error => error?.data?.statusCode === 402 || outOfCreditPattern.test(opencodeError(error)));
+  const error = opencodeErrors(stdout).find(creditError);
   return error ? `problem: opencode out of credit: ${opencodeError(error)}` : null;
 }
 
-// OpenCode's own error event names why a call failed better than its exit status.
+// OpenCode's own last error event, the one that ended the call, names why it failed better than its exit status.
 export function opencodeErrorProblem(stdout) {
-  const error = opencodeErrors(stdout)[0];
-  return error ? `problem: OpenCode reported an error: ${opencodeError(error)}` : null;
+  const errors = opencodeErrors(stdout);
+  return errors.length ? `problem: OpenCode reported an error: ${opencodeError(errors.at(-1))}` : null;
 }
 
 // The events never name the model; the session export does, per assistant message, as
@@ -230,8 +235,8 @@ export function opencodeErrorProblem(stdout) {
 export function opencodeResult(stdout, requested, exportSession, failed = false) {
   if (failed) return null;
   const events = opencodeEvents(stdout);
-  const error = events.find(event => event.type === "error");
-  if (error) throw new Error(`OpenCode reported an error: ${opencodeError(error.error)}`);
+  const errors = opencodeErrors(stdout);
+  if (errors.length) throw new Error(`OpenCode reported an error: ${opencodeError(errors.at(-1))}`);
   const id = opencodeSession(stdout);
   if (!id) throw new Error("OpenCode printed no session");
   const exported = exportSession(id), start = exported.indexOf("{");
