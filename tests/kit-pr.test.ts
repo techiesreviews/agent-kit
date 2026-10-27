@@ -1100,7 +1100,9 @@ test("a rerun swaps follow-ups cut before full follow-ups for the full text and 
   const oldSpec = `- Spec (P2): ${long.slice(0, 160)}`, oldGap = `- Validation gaps (gap): ${longGap.slice(0, 160)}`;
   f.commit("Close ticket", "ticket.md", followupTicket([oldSpec, oldGap]));
   const oldSummary = `Follow-ups (non-blocking after 3 fix rounds):\n${oldSpec}\n${oldGap}`;
-  appendFileSync(f.env.FAKE_CALLS!, JSON.stringify({ tool: "gh", args: ["pr", "comment", "73", "--body-file", "old.md"], body: oldSummary }) + "\n");
+  const posted = { tool: "gh", args: ["pr", "comment", "73", "--body-file", "old.md"], body: oldSummary } satisfies Call;
+  appendFileSync(f.env.FAKE_CALLS!, JSON.stringify(posted) + "\n");
+  assert.deepEqual(f.ghCalls("comment"), [posted]);
   f.saveReview(minorReview.replace("P2: Minor defect.", long).replace("Add coverage.", longGap));
   const before = f.git("rev-parse", "HEAD");
   const result = f.run(["--ticket", "ticket.md"], { FAKE_EXISTING: "1" });
@@ -1115,18 +1117,29 @@ test("a rerun swaps follow-ups cut before full follow-ups for the full text and 
   assert.ok(!patched.includes(oldSummary), patched);
 });
 
-test("a rerun upgrades an old cut follow-up in place and adds a new one in full in one commit", t => {
+for (const eol of ["\n", "\r\n"]) test(`a rerun upgrades an old cut follow-up in place and adds a new one in full in one commit (${JSON.stringify(eol)})`, t => {
   const f = fixture(t); f.rounds(3);
   const oldSpec = `- Spec (P2): ${long.slice(0, 160)}`;
-  f.commit("Close ticket", "ticket.md", followupTicket([oldSpec, "", "Kept note."]));
+  f.commit("Close ticket", "ticket.md", followupTicket([oldSpec, "", "Kept note."]).replaceAll("\n", eol));
   f.saveReview(minorReview.replace("P2: Minor defect.", long).replace("Add coverage.", longGap));
   const before = f.git("rev-parse", "HEAD");
   const result = f.run(["--ticket", "ticket.md"], { FAKE_EXISTING: "1" });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.equal(readFileSync(join(f.root, "ticket.md"), "utf8"),
-    followupTicket([`- Spec (P2): ${long}`, "", "Kept note.", `- Validation gaps (gap): ${longGap}`]));
+    followupTicket([`- Spec (P2): ${long}`, "", "Kept note.", `- Validation gaps (gap): ${longGap}`]).replaceAll("\n", eol));
   assert.equal(f.git("rev-parse", "HEAD^"), before);
   assert.equal(f.git("log", "-1", "--format=%s"), "docs: ticket follow-ups from review");
+});
+
+test("findings that share their first 160 characters each upgrade one old cut bullet", t => {
+  const f = fixture(t); f.rounds(3);
+  const first = `${longGap} First.`, second = `${longGap} Second.`, old = `- Validation gaps (gap): ${longGap.slice(0, 160)}`;
+  f.commit("Close ticket", "ticket.md", followupTicket([old, old]));
+  f.saveReview(minorReview.replace("Validation gaps: Add coverage.", `Validation gaps:\n- ${first}\n- ${second}`));
+  const result = f.run(["--ticket", "ticket.md"], { FAKE_EXISTING: "1" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(readFileSync(join(f.root, "ticket.md"), "utf8"),
+    followupTicket([`- Validation gaps (gap): ${first}`, `- Validation gaps (gap): ${second}`, "- Spec (P2): P2: Minor defect."]));
 });
 
 async function waitForFile(path: string) {

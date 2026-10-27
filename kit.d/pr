@@ -414,16 +414,25 @@ async function main(args) {
       let done = rest.slice(0, doneEnd);
       const followups = /^### Follow-ups\s*\n([\s\S]*?)(?=^#{1,3} |$(?![\s\S]))/m.exec(done);
       const raw = followups?.[1].split("\n") ?? [];
-      const existing = raw.map(line => line.replace(/\r$/, ""));
-      const upgrade = new Map(oldLines.map((line, index) => [line, fullLines[index]])
-        .filter(([line, full]) => line !== full && !existing.includes(full)));
-      const kept = existing.map(line => upgrade.get(line) ?? line);
+      const existing = raw.map(line => line.trimEnd());
+      // Each old cut bullet is upgraded by one finding at most, so findings that share their first
+      // 160 characters each keep their own full line.
+      const used = new Set();
+      const kept = existing.map(line => {
+        const index = oldLines.findIndex((old, at) => !used.has(at) && old !== fullLines[at] && old.trimEnd() === line &&
+          !existing.includes(fullLines[at]));
+        if (index < 0) return line;
+        used.add(index);
+        return fullLines[index];
+      });
       const missing = fullLines.filter(line => !kept.includes(line));
       if (followups) {
+        const eol = raw.some(line => line.endsWith("\r")) ? "\r\n" : "\n";
         const header = followups[0].slice(0, followups[0].length - followups[1].length);
-        let section = header + raw.map((line, index) => kept[index] + line.slice(existing[index].length)).join("\n");
+        let section = header + raw.map((line, index) => kept[index] === existing[index] ? line
+          : kept[index] + (line.endsWith("\r") ? "\r" : "")).join("\n");
         const position = section.trimEnd().length;
-        if (missing.length) section = `${section.slice(0, position)}\n${missing.join("\n")}${section.slice(position)}`;
+        if (missing.length) section = `${section.slice(0, position)}${eol}${missing.join(eol)}${section.slice(position)}`;
         done = done.slice(0, followups.index) + section + done.slice(followups.index + followups[0].length);
       } else if (missing.length) done = `${done.trimEnd()}\n\n### Follow-ups\n\n${missing.join("\n")}\n\n`;
       const updated = prefix + done + rest.slice(doneEnd);
