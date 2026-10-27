@@ -107,6 +107,10 @@ test("kit reads the shared folder and the project's own, lists them in two group
   assert.ok(shared > 0 && project > shared, list.stdout);
   assert.match(list.stdout.slice(shared, project), /\n  doctor +check this worktree is safe to build in\n/);
   assert.match(list.stdout.slice(project), /^\nProject commands:\n  hello +a project command\n  version +\(hidden by the shared version; kit doctor names the clash\) a project version\nRun 'kit/);
+  const help = run(["--help"], env);
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /\nShared commands:\n/);
+  assert.match(help.stdout, /\nProject commands:\n/);
   const hello = run(["hello", "there"], env);
   assert.equal(hello.status, 0, hello.stderr);
   assert.equal(hello.stdout, "hello from the project there\nRESULT: ok hello finished\n");
@@ -119,6 +123,12 @@ test("kit reads the shared folder and the project's own, lists them in two group
   const replaced = run([], { ...env, KIT_COMMANDS_DIR: override });
   assert.equal(replaced.stdout, "Usage: kit <command> [args]\n\nCommands:\n  only  the only command\nRun 'kit <command> --help' for a command's usage.\n");
   assert.equal(run(["hello"], { ...env, KIT_COMMANDS_DIR: override }).status, 2);
+});
+
+test("kit runs a project command through this repository's own settings file", () => {
+  const specs = run(["specs", "--help"], { KIT_ROOT: resolve("."), KIT_COMMANDS_DIR: undefined });
+  assert.equal(specs.status, 0, specs.stderr);
+  assert.match(specs.stdout, /^Usage: kit specs/);
 });
 
 test("kit takes an absolute commands folder, and without one lists only shared commands", (t) => {

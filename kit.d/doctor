@@ -42,15 +42,22 @@ fail() {
   printf '✗ %s: %s; fix: %s\n' "$1" "$2" "$3"
 }
 
-land=''
+# settings_unread: why the settings file could not be read (missing or unreadable), so checks that read a key
+# say they did not look rather than report the key as unset.
+land='' settings_unread=''
 if problems=$(kit_settings_problems); then
   land=$(setting .branches.land)
   pass settings "scripts/agents/kit.json ($(setting .project), lands on $land)"
 elif [[ $jq_missing == true ]]; then
   fail settings 'jq is not installed, so scripts/agents/kit.json cannot be read' 'install jq'
 else
-  if [[ -f $(kit_settings_file) ]]; then fix='edit scripts/agents/kit.json as the problem says'
-  else fix='add scripts/agents/kit.json with "project" and "branches": { "land": "<branch>" }'; fi
+  if [[ -f $(kit_settings_file) ]]; then
+    fix='edit scripts/agents/kit.json as the problem says'
+    if [[ $problems == *'is unreadable'* || $problems == *'must hold one JSON object'* ]]; then settings_unread=unreadable; fi
+  else
+    fix='add scripts/agents/kit.json with "project" and "branches": { "land": "<branch>" }'
+    settings_unread=missing
+  fi
   fail settings "${problems//$'\n'/; }" "$fix"
 fi
 
@@ -244,6 +251,8 @@ elif [[ -n ${KIT_COMMANDS_DIR:-} ]]; then
   pass commands "${counts[0]} in $KIT_COMMANDS_DIR (KIT_COMMANDS_DIR)"
 elif [[ $jq_missing == true ]]; then
   pass commands "${counts[0]} shared, project folder skipped (jq is not installed)"
+elif [[ -n $settings_unread ]]; then
+  fail commands "project folder not checked (scripts/agents/kit.json $settings_unread), ${counts[0]} shared" 'run kit doctor after fixing scripts/agents/kit.json'
 elif [[ -n $own_setting ]]; then
   pass commands "${counts[0]} shared, ${counts[1]} in $own_setting"
 else

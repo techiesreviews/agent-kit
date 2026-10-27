@@ -569,6 +569,26 @@ test("doctor fails a project command that takes a shared name, naming both files
   assert.match(shared.stdout, /^✓ help: 2 commands answer --help$/m);
 });
 
+test("doctor says it did not check the project folder when the settings file is unreadable", (t) => {
+  const f = fixture(t);
+  const direct = () => spawnSync("/bin/bash", [join(f.commands, "doctor")], {
+    cwd: f.build, encoding: "utf8", timeout: 10_000,
+    env: { ...process.env, KIT_ROOT: f.build, KIT_MAIN_ROOT: f.main, KIT_LIB: library, KIT_COMMANDS_DIR: undefined, KIT_GROK: join(f.directory, "no-grok") },
+  });
+  // A readable file without "commands" keeps the plain pass line.
+  const readable = direct();
+  assert.match(readable.stdout, /^✓ commands: 2 shared, no project folder \(no "commands" in scripts\/agents\/kit\.json\)$/m);
+  writeFileSync(join(f.build, "scripts/agents/kit.json"), '{ "commands": ');
+  const broken = direct();
+  assert.equal(broken.status, 1, broken.stdout + broken.stderr);
+  assert.ok(broken.stdout.includes("✗ commands: project folder not checked (scripts/agents/kit.json unreadable), 2 shared; fix: run kit doctor after fixing scripts/agents/kit.json\n"), broken.stdout);
+  assert.doesNotMatch(broken.stdout, /no "commands" in scripts\/agents\/kit\.json/);
+  // The shared folder is still checked.
+  assert.match(broken.stdout, /^✓ help: 2 commands answer --help$/m);
+  rmSync(join(f.build, "scripts/agents/kit.json"));
+  assert.match(direct().stdout, /^✗ commands: project folder not checked \(scripts\/agents\/kit\.json missing\), 2 shared; /m);
+});
+
 test("doctor reports only the first three conflict locations", (t) => {
   const f = fixture(t);
   writeFileSync(join(f.build, "conflict.txt"), `${"<".repeat(7)} ours\n${">".repeat(7)} theirs\n`.repeat(2));
