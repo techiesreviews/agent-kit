@@ -416,7 +416,7 @@ test("doctor passes an installed node_modules without sharedNodeModules and says
 test("doctor names a missing jq instead of calling a good settings file unreadable", (t) => {
   const f = fixture(t);
   // Every command /usr/bin holds except jq, and the Node running this test as node; nothing else on PATH,
-  // so a Node installed in /usr/bin cannot bring jq back.
+  // so a Node installed in /usr/bin cannot bring jq back. It assumes a merged /usr (bash, git and coreutils in /usr/bin).
   const bin = join(f.directory, "bin");
   mkdirSync(bin);
   for (const name of readdirSync("/usr/bin")) if (!["jq", "node"].includes(name)) symlinkSync(join("/usr/bin", name), join(bin, name));
@@ -435,6 +435,15 @@ test("doctor names a missing jq instead of calling a good settings file unreadab
     assert.deepEqual(lines.filter(line => line.includes("scripts/agents/kit.json")), [lines.find(line => line.startsWith("✗ settings: "))]);
     assert.match(lines.at(-1)!, /^RESULT: fail doctor \d+ failed: settings/);
   }
+  // KIT_PLAYWRIGHT_MODULE needs no jq, so doctor still checks the module it names.
+  const module = join(f.directory, "playwright.js");
+  writeFileSync(module, "");
+  const named = f.run([], f.build, { PATH: bin, KIT_PLAYWRIGHT_MODULE: module }, true);
+  assert.ok(named.stdout.split("\n").includes(`✓ playwright: ${module}`), named.stdout);
+  assert.doesNotMatch(named.stdout, /playwright: skipped/);
+  const gone = join(f.directory, "no-playwright.js");
+  const missing = f.run([], f.build, { PATH: bin, KIT_PLAYWRIGHT_MODULE: gone }, true);
+  assert.ok(missing.stdout.split("\n").includes(`✗ playwright: ${gone} is missing; fix: install Playwright there or fix "playwright" in scripts/agents/kit.json`), missing.stdout);
 });
 
 test("doctor names each command whose --help fails, prints no usage or hangs", (t) => {

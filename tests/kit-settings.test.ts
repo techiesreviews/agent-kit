@@ -94,7 +94,7 @@ esac
 }
 
 // A PATH with every command /usr/bin holds except jq, plus the Node running this test as node,
-// so a Node installed in /usr/bin cannot bring jq back.
+// so a Node installed in /usr/bin cannot bring jq back. It assumes a merged /usr (bash, git and coreutils in /usr/bin).
 function withoutJq(t: TestContext) {
   const bin = join(temp(t), "bin");
   mkdirSync(bin);
@@ -387,11 +387,14 @@ test("worktree.sh links the real folder behind a symlinked sharedNodeModules, an
   assert.equal(missing.status, 1, missing.stderr);
   assert.equal(missing.stderr, `Missing node_modules: ${join(f.dir, "gone")}\n`);
   assert.equal(existsSync(join(dirname(realpathSync(f.root)), "kit-land-feature-missing")), false);
-  assert.doesNotMatch(f.git("branch", "--list", "feature/missing"), /missing/);
+  assert.equal(f.git("branch", "--list", "feature/missing"), "");
 });
 
 test("without jq, unit.sh and worktree.sh name it and stop, making no worktree", t => {
-  const f = repo(t, { project: "kit-land", branches: { land: "main" }, unit: { run: "node --test", files: "tests/*.test.ts" } });
+  const f = repo(t, { project: "kit-land", branches: { land: "main" }, unit: { run: "node --test", files: "tests/*.test.ts" },
+    commands: "scripts/agents/project.d" });
+  mkdirSync(join(f.root, "scripts/agents/project.d"));
+  executable(join(f.root, "scripts/agents/project.d/own"), "#!/bin/sh\necho 'RESULT: ok own ran'\n");
   const env = { ...f.env, PATH: withoutJq(t), KIT_MAIN_ROOT: "" };
   const unit = spawnSync("/bin/bash", [resolve("scripts/agents/unit.sh"), "tests/a.test.ts"], { cwd: f.root, env, encoding: "utf8" });
   assert.equal(unit.status, 1, unit.stdout + unit.stderr);
@@ -412,6 +415,16 @@ test("without jq, unit.sh and worktree.sh name it and stop, making no worktree",
   assert.match(unknown.stderr, /^kit: unknown command 'nosuch' \(jq is not installed; install jq\)$/m);
   assert.doesNotMatch(unknown.stderr, /unreadable/);
   assert.equal(lastLine(unknown), "RESULT: fail unknown command nosuch (jq is not installed; install jq)");
+  // With jq the project's own command runs; without it the hint explains why kit cannot find it.
+  assert.equal(lastLine(f.run(["own"])), "RESULT: ok own ran");
+  const own = f.run(["own"], { PATH: env.PATH });
+  assert.equal(own.status, 2, own.stdout + own.stderr);
+  assert.match(own.stderr, /^kit: unknown command 'own' \(jq is not installed; install jq\)$/m);
+  // The main checkout falls back to git's common folder, quietly, as with a settings file that has no mainRoot.
+  const main = bash("kit_main_root", { KIT_ROOT: f.root, PATH: env.PATH });
+  assert.equal(main.status, 0, main.stderr);
+  assert.equal(main.stdout, `${f.git("rev-parse", "--path-format=absolute", "--git-common-dir").replace(/\/\.git$/, "")}\n`);
+  assert.equal(main.stderr, "");
 });
 
 test("without a maps folder, next and heartbeat say so, tickets.mjs reads nothing and score still lists records", t => {
@@ -451,4 +464,10 @@ test("a settings problem fails kit review, kit unit --affected and unit.sh as a 
   assert.match(affected.stderr, /^problem: scripts\/agents\/kit\.json is unreadable: /m);
   assert.doesNotMatch(affected.stderr, /Usage:/);
   assert.match(lastLine(affected)!, /^RESULT: fail unit scripts\/agents\/kit\.json is unreadable: /);
+  const missing = repo(t);
+  const none = missing.run(["unit", "--affected"]);
+  assert.equal(none.status, 1, none.stdout + none.stderr);
+  assert.match(none.stderr, new RegExp(`^problem: ${noFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"));
+  assert.doesNotMatch(none.stderr, /Usage:/);
+  assert.equal(lastLine(none), `RESULT: fail unit ${noFile}`);
 });

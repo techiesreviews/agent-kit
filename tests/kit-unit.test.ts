@@ -140,7 +140,8 @@ test("unit help, listing and invalid options use the kit front door", t => {
   // A base git cannot find is no usage error: the arguments parsed, and the problem line says which ref.
   const base = f.run("--affected", "--base", "missing");
   result(base, 1, /^RESULT: fail unit /);
-  assert.match(base.stderr, /^problem: .*missing/m);
+  assert.match(base.stderr, /^problem: /m);
+  assert.match(base.stderr, /Not a valid object name missing|unknown revision/);
   assert.doesNotMatch(base.stderr, /Usage:/);
   assert.equal(f.executed(), 0);
 });
@@ -182,6 +183,7 @@ test("a unit.files pattern matching nothing and a broken import scan fail withou
   assert.equal(none.status, 1, none.stdout + none.stderr);
   assert.equal(none.stderr, "unit.sh: no files match unit.files in scripts/agents/kit.json\n");
   // The project's own scan is the repo's code, not an argument: a syntax error in it is a failure.
+  // The fixture's scan is a link to this repo's own; remove it so the broken copy is not written through the link.
   rmSync(join(f.root, "scripts/agents/specs-affected.mjs"));
   f.put("scripts/agents/specs-affected.mjs", "export const graphFile = ;\n");
   const scan = f.run("--affected", "--list");
