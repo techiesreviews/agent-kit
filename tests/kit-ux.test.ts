@@ -541,6 +541,8 @@ test("a colour line keeps a path with spaces or parentheses as its file", () => 
   assert.deepEqual(foundIn(["src/a.css"], "src/a.css:1: #fff\n/elsewhere/b.css:1: #fff\n"), {
     findings: [{ rule: "L2", file: "src/a.css", line: 1, text: "raw colour #fff" }], outside: 1,
   });
+  // A non-CSS line whose own path is outside the project is counted too, not charged to the file its text names.
+  assert.deepEqual(foundIn(["src/a.css"], "/elsewhere/allow.json:1: stale allow entry: src/a.css: x\n", ["src/a.css"]), { findings: [], outside: 1 });
 });
 
 test("a colour line naming a file with spaces or parentheses counts for that file, longest and whole", () => {
@@ -550,8 +552,13 @@ test("a colour line naming a file with spaces or parentheses counts for that fil
   assert.deepEqual(foundIn(["src/my (old) file.css"], stale, known), {
     findings: [{ rule: "L2", file: "allow.json", line: 3, text: "stale allow entry: src/my (old) file.css: #000" }], outside: 0,
   });
-  // The longest named file wins: the entry is not about file.css, which its text also holds.
+  // The entry is about the whole path, not file.css which its text also holds, whether that path is known or deleted.
   assert.deepEqual(foundIn(["file.css"], stale, known), { findings: [], outside: 1 });
+  assert.deepEqual(foundIn(["file.css"], stale, ["allow.json", "file.css"]), { findings: [], outside: 1 });
+  assert.deepEqual(foundIn(["src/my"], "allow.json:3: stale allow entry: src/my file.css: #000\n", ["allow.json", "src/my"]), { findings: [], outside: 1 });
+  // Past the exact parts, the longest file a part names whole between quotes, brackets or commas counts.
+  assert.equal(foundIn(["src/a.css"], 'allow.json:1: entry for "src/a.css" is stale\n', known).findings.length, 1);
+  assert.equal(foundIn(["src/a.css"], "allow.json:1: unused entries (file.css, src/a.css)\n", known).findings.length, 1);
   // A file is named only whole, at both ends: src/a.css.map and lib/src/a.css are not src/a.css, known or not.
   assert.deepEqual(foundIn(["src/a.css"], "allow.json:1: stale allow entry: src/a.css.map: x\n", known), { findings: [], outside: 1 });
   const nested = "allow.json:1: stale allow entry: lib/src/a.css: x\n";
@@ -560,6 +567,22 @@ test("a colour line naming a file with spaces or parentheses counts for that fil
   // ./ and absolute paths still name it.
   assert.equal(foundIn(["src/a.css"], "allow.json:1: stale allow entry: ./src/a.css: x\n", known).findings.length, 1);
   assert.equal(foundIn(["src/a.css"], `allow.json:1: stale allow entry: ${colourRoot}/src/a.css: x\n`, known).findings.length, 1);
+});
+
+test("kit ux reads a colour line about an ignored file on disk as a file line outside the diff", t => {
+  const { put, run } = fixture(t);
+  put("docs/agents/features.md", ["# Feature list", "", entry("F-plain-01", ["src/plain.css"])].join("\n"));
+  put("src/plain.css", ".a { color: #fff; }\n");
+  // dist/ is ignored, so it is neither tracked nor untracked; only its presence on disk makes its line a file line.
+  put(".git/info/exclude", "dist/\n");
+  put("dist/x.css", ".a { color: #fff; }\n");
+  put("tools/colours.mjs", 'console.error("src/plain.css:1: #fff"); console.error("dist/x.css:1: #fff"); process.exitCode = 1;\n');
+  put("scripts/agents/kit.json", JSON.stringify({ project: "x", branches: { land: "dev" }, checks: { css: "node tools/colours.mjs" } }));
+  const output = run(["--no-review"], { KIT_UX_SHOTS: undefined, KIT_COMMANDS_DIR: undefined });
+  assert.equal(output.status, 0, output.stdout + output.stderr);
+  const markdown = readFileSync(join(/bundle (\S+)$/.exec(output.result)![1], "bundle.md"), "utf8");
+  assert.deepEqual(markdown.split("\n").filter(line => line.startsWith("- L2")), ["- L2 src/plain.css:1: raw colour #fff"]);
+  assert.match(output.stdout, /^colours: node tools\/colours\.mjs: exited 1, 1 finding \(1 outside the diff\); log \S+\/colours\.log$/m);
 });
 
 test("kit ux with this editor's checks.css finds a raw colour in a changed file whose path has a space", t => {
