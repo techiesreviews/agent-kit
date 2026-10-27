@@ -9,11 +9,11 @@ import { reviewBrief, reviewScope, ticketReviewBrief } from "../review-brief.mjs
 import { saveReviewEvidence } from "../review-evidence.mjs";
 import { countsLine, findingsRecord } from "../review-findings.mjs";
 
-const { kitBranch, kitRoot, kitMainRoot, kitOwner, kitResult, nodeEnv, kitScore, scoreReview } = await import(
+const { kitBranch, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, kitStateDir, nodeEnv, kitScore, scoreReview } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const usage = "Usage: kit review [--base REF | --commit SHA] [--ticket FILE] [--pr N]\nDefault scope: --base origin/<land> (branches.land in scripts/agents/kit.json). Model: ASE_REVIEW_MODEL or claude-opus-5-5 (claude-*, grok-* or Codex).\n" +
-  "Weekly budgets: ASE_REVIEW_BUDGET_GPT (12), ASE_REVIEW_BUDGET_GROK (8); Claude is not counted.\n";
+  "Weekly budgets for the whole computer: ASE_REVIEW_BUDGET_GPT (12), ASE_REVIEW_BUDGET_GROK (8); Claude is not counted.\n";
 
 function options(args) {
   const values = {};
@@ -42,7 +42,7 @@ function evidenceDirectory() {
 
 async function review(args) {
   let evidence = "none", temporary, status = 1, reason = "invalid arguments", label, budget, env, model, effort, reviewedHead, ticket;
-  const ledger = join(kitMainRoot(), ".scratch/review-budget.json");
+  let ledger;
   try {
     status = 2;
     const flags = options(args);
@@ -66,6 +66,8 @@ async function review(args) {
     let cli;
     ({ model, effort, cli } = parseAgentArgs(agentArgs, env));
     console.log(`model: ${model}`);
+    // One count for the computer; this project's old per-project count moves in on first use.
+    ledger = { path: join(kitStateDir(), "review-budget.json"), project: kitSettings(root).project, legacy: join(kitMainRoot(), ".scratch/review-budget.json") };
     budget = reserveReviewBudget(ledger, cli, env);
     if (budget) console.log(`budget: ${budget.family} ${budget.used}/${budget.limit} in ${budget.week}`);
     let stderr = "";
@@ -115,7 +117,7 @@ async function review(args) {
       // runner marks it only when the refusal was all that call printed.
       const run = temporary && join(temporary, "status.json");
       const record = run && existsSync(run) ? JSON.parse(readFileSync(run, "utf8")) : {};
-      if (budget && (!record.pgid || record.refused === true)) releaseReviewBudget(ledger, budget, env);
+      if (budget && (!record.pgid || record.refused === true)) releaseReviewBudget(ledger.path, budget, env);
     } catch (error) { console.error(`problem: releasing review budget failed: ${error.message}`); }
     try {
       const { record, cleanup } = saveReviewEvidence(temporary, () => (evidence = evidenceDirectory()),

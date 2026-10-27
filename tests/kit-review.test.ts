@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
-import { codexReviewConfig, makeCodexReviewHome } from "../scripts/agents/agent-run.mjs";
+import { codexReviewConfig, isoWeek, makeCodexReviewHome } from "../scripts/agents/agent-run.mjs";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
 import { builderChecks, reviewBrief, reviewFormat, ticketReviewBrief } from "../scripts/agents/review-brief.mjs";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
@@ -78,9 +78,11 @@ if (cli === "codex") {
 process.exitCode = Number(process.env.FAKE_EXIT || 0);
 `;
 
-function fixture(t: { after: (fn: () => void) => void }) {
+function fixture(t: { after: (fn: () => void) => void }, { project = "kit-review", state }: { project?: string; state?: string } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ase-kit-review-test-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // The machine-wide review budget lives under XDG_STATE_HOME; a temp one keeps tests off the real count.
+  state ??= join(dir, "state");
   const root = join(dir, "work tree"), bin = join(dir, "bin"), main = join(dir, "main"), home = join(dir, "source-home");
   for (const path of [root, bin, main, home]) mkdirSync(path);
   writeFileSync(join(home, "auth.json"), '{"refresh_token":"original"}');
@@ -97,7 +99,7 @@ function fixture(t: { after: (fn: () => void) => void }) {
   git("config", "user.name", "Test"); git("config", "user.email", "test@example.com");
   const commits: string[] = [];
   mkdirSync(join(root, "scripts/agents"), { recursive: true });
-  writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify({ project: "kit-review", branches: { land: "dev" }, standards: "CODING_STANDARDS.md" }));
+  writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify({ project, branches: { land: "dev" }, standards: "CODING_STANDARDS.md" }));
   git("add", "scripts/agents/kit.json");
   for (const text of ["base", "first", "second"]) {
     writeFileSync(join(root, "file.txt"), `${text}\n`);
@@ -107,7 +109,7 @@ function fixture(t: { after: (fn: () => void) => void }) {
   git("update-ref", "refs/remotes/origin/dev", commits[0]);
   const brief = join(dir, "brief.md"), out = join(dir, "out"), callsFile = join(dir, "calls.jsonl"), ghFile = join(dir, "gh.json");
   writeFileSync(brief, "Hand-written review brief\nScope: git diff HEAD~1...HEAD\n");
-  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, CODEX_HOME: home, KIT_ROOT: root, KIT_MAIN_ROOT: main,
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, CODEX_HOME: home, KIT_ROOT: root, KIT_MAIN_ROOT: main, XDG_STATE_HOME: state,
     ASE_OWNER: "review-owner", ASE_AGENT_CLI: "", ASE_REVIEW_MODEL: "", ASE_BUILD_MODEL: "",
     ASE_REVIEW_BUDGET_GPT: "", ASE_REVIEW_BUDGET_GROK: "", ASE_REVIEW_BUDGET_LOCK_MS: "", ASE_AGENT_TIMEOUT: "10s", FAKE_CALLS: callsFile, FAKE_GH: ghFile };
   const invoke = (file: string, args: string[], overrides: NodeJS.ProcessEnv = {}, bash = false) => spawnSync(bash ? "bash" : file, bash ? [file, ...args] : args, {
@@ -132,7 +134,10 @@ function fixture(t: { after: (fn: () => void) => void }) {
     assert.match(lines.at(-1)!, /^RESULT: fail .* evidence none$/);
     assert.equal(existsSync(join(main, ".scratch/reviews")), false);
   };
-  return { dir, root, main, home, brief, out, git, commits, invoke, run, runAgent, calls, evidence, noEvidence, ghFile };
+  const ledger = join(state, "agent-kit/review-budget.json"), legacy = join(main, ".scratch/review-budget.json");
+  // This week's counts by family, each { project: count }.
+  const counts = () => Object.values(JSON.parse(readFileSync(ledger, "utf8")) as Record<string, Record<string, Record<string, number>>>).at(-1);
+  return { dir, root, main, home, brief, out, git, commits, invoke, run, runAgent, calls, evidence, noEvidence, ghFile, state, ledger, legacy, counts };
 }
 
 test("kit review help states default scope; invalid flags exit 2 with one RESULT", (t) => {
@@ -208,8 +213,7 @@ test("kit review defaults to origin/dev and omits ticket sources when no ticket 
   assert.match(result.stdout, /scope: --base origin\/dev/);
   assert.match(result.stdout, /^model: claude-opus-5-5$/m);
   assert.doesNotMatch(result.stdout, /^budget:/m);
-  const ledger = join(f.main, ".scratch/review-budget.json");
-  assert.ok(!existsSync(ledger) || Object.values(JSON.parse(readFileSync(ledger, "utf8")) as Record<string, { gpt?: number; grok?: number }>).every(week => !week.gpt));
+  assert.ok(!existsSync(f.ledger) || !f.counts()?.gpt);
   assert.equal(f.calls()[0].cli, "claude");
   assert.ok(f.calls()[0].input.includes(`Scope: git diff ${f.commits[0]}...HEAD`));
   assert.match(f.calls()[0].input, /Spec axis: no ticket supplied/);
@@ -547,8 +551,6 @@ test("an explicit ASE_REVIEW_MODEL=gpt-6.1-sol still selects Sol", (t) => {
 
 test("kit review counts outside reviews per week, refuses at the budget and never counts Claude", (t) => {
   const f = fixture(t);
-  const ledger = join(f.main, ".scratch/review-budget.json");
-  const counts = () => Object.values(JSON.parse(readFileSync(ledger, "utf8")))[0];
   const first = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "gpt-6.1-sol", ASE_REVIEW_BUDGET_GPT: "1" });
   assert.equal(first.status, 0, first.stderr);
   assert.match(first.stdout, /^budget: gpt 1\/1 in \d{4}-W\d{2}$/m);
@@ -564,7 +566,7 @@ test("kit review counts outside reviews per week, refuses at the budget and neve
   const empty = f.run(["--base", "HEAD"], { ASE_REVIEW_MODEL: "gpt-6.1-sol", ASE_REVIEW_BUDGET_GPT: "2" });
   assert.equal(empty.status, 1);
   assert.match(empty.stderr, /empty diff/);
-  assert.deepEqual(counts(), { gpt: 1 });
+  assert.deepEqual(f.counts(), { gpt: { "kit-review": 1 } });
   assert.equal(f.calls().length, 2);
 });
 
@@ -576,82 +578,115 @@ test("kit review keeps the budget counted once the CLI has started, even when it
   const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "grok-4.7", ASE_AGENT_TIMEOUT: "1s" });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /exceeded timeout=1s/);
-  assert.deepEqual(Object.values(JSON.parse(readFileSync(join(f.main, ".scratch/review-budget.json"), "utf8")))[0], { grok: 1 });
+  assert.deepEqual(f.counts(), { grok: { "kit-review": 1 } });
 });
 
 test("kit review gives the budget back when the provider refuses on a usage limit", (t) => {
   const f = fixture(t);
-  const ledger = join(f.main, ".scratch/review-budget.json");
-  const counts = () => Object.values(JSON.parse(readFileSync(ledger, "utf8")))[0];
   const first = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "gpt-6.1-sol", ASE_REVIEW_BUDGET_GPT: "2" });
   assert.equal(first.status, 0, first.stderr);
   const refused = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "gpt-6.1-sol", ASE_REVIEW_BUDGET_GPT: "2", FAKE_MODE: "usage-limit" });
   assert.equal(refused.status, 1);
   assert.match(refused.stderr, /^problem: gpt usage limit until Oct 25th, 2026 3:14 PM$/m);
-  assert.deepEqual(counts(), { gpt: 1 });
+  assert.deepEqual(f.counts(), { gpt: { "kit-review": 1 } });
 });
 
 test("kit review keeps the spent review when the first call works before the usage limit", (t) => {
   const f = fixture(t);
-  const ledger = join(f.main, ".scratch/review-budget.json");
-  const counts = () => Object.values(JSON.parse(readFileSync(ledger, "utf8")))[0];
   const first = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "gpt-6.1-sol", ASE_REVIEW_BUDGET_GPT: "2" });
   assert.equal(first.status, 0, first.stderr);
   const late = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "gpt-6.1-sol", ASE_REVIEW_BUDGET_GPT: "2", FAKE_MODE: "late-usage-limit" });
   assert.equal(late.status, 1);
   assert.match(late.stderr, /^problem: gpt usage limit until Oct 25th, 2026 3:14 PM$/m);
-  assert.deepEqual(counts(), { gpt: 2 });
+  assert.deepEqual(f.counts(), { gpt: { "kit-review": 2 } });
 });
 
 test("kit review keeps the budget counted when the first call fails for another reason", (t) => {
   const f = fixture(t);
   const failed = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "gpt-6.1-sol", ASE_REVIEW_BUDGET_GPT: "2", FAKE_MODE: "retry-fail", FAKE_EXIT: "7" });
   assert.equal(failed.status, 1);
-  assert.deepEqual(Object.values(JSON.parse(readFileSync(join(f.main, ".scratch/review-budget.json"), "utf8")))[0], { gpt: 1 });
+  assert.deepEqual(f.counts(), { gpt: { "kit-review": 1 } });
 });
 
 test("kit review keeps the spent review when only the completeness retry is refused", (t) => {
   const f = fixture(t);
-  const ledger = join(f.main, ".scratch/review-budget.json");
-  const counts = () => Object.values(JSON.parse(readFileSync(ledger, "utf8")))[0];
   const first = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "gpt-6.1-sol", ASE_REVIEW_BUDGET_GPT: "2" });
   assert.equal(first.status, 0, first.stderr);
-  assert.deepEqual(counts(), { gpt: 1 });
+  assert.deepEqual(f.counts(), { gpt: { "kit-review": 1 } });
   const refused = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "gpt-6.1-sol", ASE_REVIEW_BUDGET_GPT: "2", FAKE_MODE: "retry-usage-limit" });
   assert.equal(refused.status, 1);
   assert.match(refused.stderr, /^problem: gpt usage limit until Oct 25th, 2026 3:14 PM$/m);
   assert.match(refused.stderr, /result lacks REVIEW_STATUS: complete/);
   assert.equal(f.calls().length, 3);
-  assert.deepEqual(counts(), { gpt: 2 });
+  assert.deepEqual(f.counts(), { gpt: { "kit-review": 2 } });
 });
 
 test("kit review gives the budget back when Grok prints its refusal on stdout", (t) => {
   const f = fixture(t);
   const grok = join(f.dir, "bin", "grok");
   writeFileSync(grok, fake); chmodSync(grok, 0o755);
-  const ledger = join(f.main, ".scratch/review-budget.json");
-  const counts = () => Object.values(JSON.parse(readFileSync(ledger, "utf8")))[0];
   const first = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "grok-4.7", ASE_REVIEW_BUDGET_GROK: "2" });
   assert.equal(first.status, 0, first.stderr);
-  assert.deepEqual(counts(), { grok: 1 });
+  assert.deepEqual(f.counts(), { grok: { "kit-review": 1 } });
   const refused = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "grok-4.7", ASE_REVIEW_BUDGET_GROK: "2", FAKE_MODE: "usage-limit" });
   assert.equal(refused.status, 1);
   assert.match(refused.stderr, /^problem: grok usage limit until 9:00 AM$/m);
-  assert.deepEqual(counts(), { grok: 1 });
+  assert.deepEqual(f.counts(), { grok: { "kit-review": 1 } });
+});
+
+test("two projects share one Grok count for the computer", (t) => {
+  const state = mkdtempSync(join(tmpdir(), "ase-kit-state-"));
+  t.after(() => rmSync(state, { recursive: true, force: true }));
+  const a = fixture(t, { project: "project-a", state }), b = fixture(t, { project: "project-b", state });
+  for (const f of [a, b]) { writeFileSync(join(f.dir, "bin", "grok"), fake); chmodSync(join(f.dir, "bin", "grok"), 0o755); }
+  const env = { ASE_REVIEW_MODEL: "grok-4.7", ASE_REVIEW_BUDGET_GROK: "2" };
+  const first = a.run(["--base", "HEAD~1"], env);
+  assert.equal(first.status, 0, first.stderr);
+  assert.match(first.stdout, /^budget: grok 1\/2 in /m);
+  const second = b.run(["--base", "HEAD~1"], env);
+  assert.equal(second.status, 0, second.stderr);
+  assert.match(second.stdout, /^budget: grok 2\/2 in /m);
+  const refused = a.run(["--base", "HEAD~1"], env);
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /^problem: grok review budget used up: 2\/2 in \d{4}-W\d{2}; raise ASE_REVIEW_BUDGET_GROK to override$/m);
+  assert.deepEqual(b.counts(), { grok: { "project-a": 1, "project-b": 1 } });
+  // A usage-limit refusal in one project gives the slot back to the shared count.
+  const limit = b.run(["--base", "HEAD~1"], { ...env, ASE_REVIEW_BUDGET_GROK: "3", FAKE_MODE: "usage-limit" });
+  assert.equal(limit.status, 1);
+  assert.match(limit.stderr, /^problem: grok usage limit until 9:00 AM$/m);
+  assert.deepEqual(a.counts(), { grok: { "project-a": 1, "project-b": 1 } });
+  for (const f of [a, b]) assert.ok(!existsSync(join(f.main, ".scratch/review-budget.json")), "no per-project ledger");
+});
+
+test("the first counted review moves the project's old count into the machine ledger once", (t) => {
+  const f = fixture(t);
+  writeFileSync(join(f.dir, "bin", "grok"), fake); chmodSync(join(f.dir, "bin", "grok"), 0o755);
+  const week = isoWeek(), env = { ASE_REVIEW_MODEL: "grok-4.7", ASE_REVIEW_BUDGET_GROK: "8" };
+  mkdirSync(join(f.main, ".scratch"), { recursive: true });
+  writeFileSync(f.legacy, JSON.stringify({ [week]: { grok: 5, gpt: 1 } }));
+  // Claude is never counted, so it leaves the old file alone.
+  assert.equal(f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "claude-opus-5-5" }).status, 0);
+  assert.ok(existsSync(f.legacy));
+  const first = f.run(["--base", "HEAD~1"], env);
+  assert.equal(first.status, 0, first.stderr);
+  assert.match(first.stdout, /^budget: grok 6\/8 in /m);
+  assert.ok(!existsSync(f.legacy), "the old ledger is moved, not copied");
+  const second = f.run(["--base", "HEAD~1"], env);
+  assert.equal(second.status, 0, second.stderr);
+  assert.match(second.stdout, /^budget: grok 7\/8 in /m);
+  assert.deepEqual(JSON.parse(readFileSync(f.ledger, "utf8")), { [week]: { grok: { "kit-review": 7 }, gpt: { "kit-review": 1 } } });
 });
 
 test("kit review keeps the spent review when Grok works on stderr before its stdout refusal", (t) => {
   const f = fixture(t);
   const grok = join(f.dir, "bin", "grok");
   writeFileSync(grok, fake); chmodSync(grok, 0o755);
-  const ledger = join(f.main, ".scratch/review-budget.json");
-  const counts = () => Object.values(JSON.parse(readFileSync(ledger, "utf8")))[0];
   const first = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "grok-4.7", ASE_REVIEW_BUDGET_GROK: "2" });
   assert.equal(first.status, 0, first.stderr);
   const late = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "grok-4.7", ASE_REVIEW_BUDGET_GROK: "2", FAKE_MODE: "late-usage-limit" });
   assert.equal(late.status, 1);
   assert.match(late.stderr, /^problem: grok usage limit until 9:00 AM$/m);
-  assert.deepEqual(counts(), { grok: 2 });
+  assert.deepEqual(f.counts(), { grok: { "kit-review": 2 } });
 });
 
 test("uppercase GROK-4.7 selects Grok, its budget and the build variant end to end", (t) => {
@@ -664,8 +699,7 @@ test("uppercase GROK-4.7 selects Grok, its budget and the build variant end to e
   assert.equal(f.calls()[0].cli, "grok");
   const args = f.calls()[0].args;
   assert.equal(args[args.indexOf("-m") + 1], "grok-4.7");
-  const ledger = JSON.parse(readFileSync(join(f.main, ".scratch/review-budget.json"), "utf8"));
-  assert.deepEqual(Object.values(ledger)[0], { grok: 1 });
+  assert.deepEqual(f.counts(), { grok: { "kit-review": 1 } });
 });
 
 test("kit review gives the budget back when the Grok CLI is missing", (t) => {
@@ -678,7 +712,7 @@ test("kit review gives the budget back when the Grok CLI is missing", (t) => {
   const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "grok-4.7", PATH: path });
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stdout, /^budget: grok 1\/8 in /m);
-  assert.deepEqual(Object.values(JSON.parse(readFileSync(join(f.main, ".scratch/review-budget.json"), "utf8")))[0], { grok: 0 });
+  assert.deepEqual(f.counts(), { grok: { "kit-review": 0 } });
   // No report at all: no result.md, so no findings record and no findings line.
   assert.doesNotMatch(result.stdout, /^findings /m);
   const evidence = / evidence (.+)$/m.exec(result.stdout)?.[1];

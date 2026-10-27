@@ -208,7 +208,8 @@ export function reviewBudgetLimit(family, env = process.env) {
   return Number(value);
 }
 
-function withLedger(path, change, env = process.env) {
+// One writer at a time: a lock folder beside the file, waited for up to ASE_REVIEW_BUDGET_LOCK_MS.
+function withLock(path, action, env = process.env) {
   mkdirSync(dirname(path), { recursive: true });
   const wait = Number(env.ASE_REVIEW_BUDGET_LOCK_MS || 10_000);
   if (!Number.isSafeInteger(wait) || wait <= 0) throw new Error("ASE_REVIEW_BUDGET_LOCK_MS must be a positive integer");
@@ -220,15 +221,23 @@ function withLedger(path, change, env = process.env) {
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
     }
   }
-  try {
-    let ledger = {};
-    if (existsSync(path)) {
-      try { ledger = JSON.parse(readFileSync(path, "utf8")); }
-      catch (error) { throw new Error(`review budget ledger ${path} is not valid JSON: ${error.message}; fix or delete it`); }
-      if (typeof ledger !== "object" || ledger === null || Array.isArray(ledger)) {
-        throw new Error(`review budget ledger ${path} is not a JSON object; fix or delete it`);
-      }
-    }
+  try { return action(); } finally { rmSync(lock, { recursive: true, force: true }); }
+}
+
+export function readReviewLedger(path) {
+  if (!existsSync(path)) return {};
+  let ledger;
+  try { ledger = JSON.parse(readFileSync(path, "utf8")); }
+  catch (error) { throw new Error(`review budget ledger ${path} is not valid JSON: ${error.message}; fix or delete it`); }
+  if (typeof ledger !== "object" || ledger === null || Array.isArray(ledger)) {
+    throw new Error(`review budget ledger ${path} is not a JSON object; fix or delete it`);
+  }
+  return ledger;
+}
+
+function withLedger(path, change, env = process.env) {
+  return withLock(path, () => {
+    const ledger = readReviewLedger(path);
     const result = change(ledger);
     const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
     try {
@@ -236,31 +245,70 @@ function withLedger(path, change, env = process.env) {
       renameSync(temporary, path);
     } finally { rmSync(temporary, { force: true }); }
     return result;
-  } finally { rmSync(lock, { recursive: true, force: true }); }
-}
-
-// Counts one review for an outside family in this ISO week, refusing at the limit.
-// Returns null for Claude, which is never counted.
-export function reserveReviewBudget(path, cli, env = process.env, date = new Date()) {
-  const family = reviewFamily(cli);
-  if (!family) return null;
-  const limit = reviewBudgetLimit(family, env), week = isoWeek(date);
-  return withLedger(path, ledger => {
-    // Only the current week matters; drop older weeks so the ledger stays small.
-    for (const old of Object.keys(ledger)) if (old < week) delete ledger[old];
-    const used = ledger[week]?.[family] ?? 0;
-    if (used >= limit) {
-      throw new Error(`${family} review budget used up: ${used}/${limit} in ${week}; raise ASE_REVIEW_BUDGET_${family.toUpperCase()} to override`);
-    }
-    ledger[week] = { ...ledger[week], [family]: used + 1 };
-    return { family, week, used: used + 1, limit };
   }, env);
 }
 
+// The machine ledger keeps { week: { family: { project: count } } }; a family's use is the sum over projects.
+export function familyUse(ledger, week, family) {
+  return Object.values(ledger[week]?.[family] ?? {}).reduce((sum, count) => sum + (Number.isSafeInteger(count) ? count : 0), 0);
+}
+
+function projectCounts(ledger, week, family) {
+  const counts = ((ledger[week] ??= {})[family] ??= {});
+  if (typeof counts !== "object" || counts === null || Array.isArray(counts)) {
+    throw new Error(`review budget ledger ${week} ${family} is not { "<project>": <count> }; fix or delete it`);
+  }
+  return counts;
+}
+
+// Moves a project's old per-project ledger ({ week: { family: count } }) into the machine ledger once:
+// the old file is removed before the machine ledger is written, so a crash between the two loses
+// those counts rather than counting them twice.
+function moveLegacyLedger(ledger, legacy, project, env) {
+  if (!legacy || !existsSync(legacy)) return;
+  withLock(legacy, () => {
+    for (const [week, families] of Object.entries(readReviewLedger(legacy))) {
+      for (const [family, count] of Object.entries(families ?? {})) {
+        if (!Number.isSafeInteger(count) || count <= 0) continue;
+        const counts = projectCounts(ledger, week, family);
+        counts[project] = (counts[project] ?? 0) + count;
+      }
+    }
+    rmSync(legacy, { force: true });
+  }, env);
+}
+
+// Counts one review for an outside family in this ISO week, refusing at the limit. The ledger
+// ({ path, project, legacy }) is the machine's; legacy names the project's old ledger to move in.
+// Returns null for Claude, which is never counted.
+export function reserveReviewBudget({ path, project, legacy }, cli, env = process.env, date = new Date()) {
+  const family = reviewFamily(cli);
+  if (!family) return null;
+  if (typeof project !== "string" || !project) throw new Error("review budget needs the project name");
+  const limit = reviewBudgetLimit(family, env), week = isoWeek(date);
+  // Last week stays for the Tuesday sweep; older weeks go so the ledger stays small.
+  const lastWeek = isoWeek(new Date(date.getTime() - 7 * 86_400_000));
+  const result = withLedger(path, ledger => {
+    // A broken count stops here, before the old file moves in.
+    projectCounts(ledger, week, family);
+    moveLegacyLedger(ledger, legacy, project, env);
+    for (const old of Object.keys(ledger)) if (old < lastWeek) delete ledger[old];
+    const used = familyUse(ledger, week, family);
+    // A refusal still saves the ledger, so counts just moved in are kept.
+    if (used >= limit) return { refused: `${family} review budget used up: ${used}/${limit} in ${week}; raise ASE_REVIEW_BUDGET_${family.toUpperCase()} to override` };
+    const counts = projectCounts(ledger, week, family);
+    counts[project] = (counts[project] ?? 0) + 1;
+    return { family, week, used: used + 1, limit, project };
+  }, env);
+  if (result.refused) throw new Error(result.refused);
+  return result;
+}
+
 // Returns a reservation whose review never reached the model.
-export function releaseReviewBudget(path, { family, week }, env = process.env) {
+export function releaseReviewBudget(path, { family, week, project }, env = process.env) {
   withLedger(path, ledger => {
-    if (ledger[week]?.[family] > 0) ledger[week][family] -= 1;
+    const counts = ledger[week]?.[family];
+    if (counts?.[project] > 0) counts[project] -= 1;
   }, env);
 }
 

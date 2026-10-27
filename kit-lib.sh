@@ -63,6 +63,14 @@ kit_main_root() {
   printf '%s\n' "$main"
 }
 
+# Machine-wide kit state, shared by every project: $XDG_STATE_HOME/agent-kit (absolute only, as the
+# XDG spec says), else ~/.local/state/agent-kit. Same rule as kitStateDir in kit-lib.mjs.
+kit_state_dir() {
+  local state=${XDG_STATE_HOME:-}
+  [[ $state == /* ]] || state=${HOME:-$(cd ~ && pwd -P)}/.local/state
+  printf '%s/agent-kit\n' "$state"
+}
+
 kit_owner() {
   local root owner='' _timestamp _rest
   local IFS=$' \t\n'

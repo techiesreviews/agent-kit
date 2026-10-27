@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
+// @ts-expect-error The agent helpers are plain JavaScript without declarations.
+import { isoWeek } from "../scripts/agents/agent-run.mjs";
 
 const script = resolve("scripts/agents/kit.d/sweep"), kit = resolve("scripts/agents/kit");
 // Node loads this extensionless executable as ESM; a URL keeps tsx from resolving it as TS.
@@ -55,9 +57,10 @@ function repository(t: TestContext) {
   return { dir, repo };
 }
 
-function run(repo: string, args: string[] = [], root = repo) {
+// The machine ledger lives under XDG_STATE_HOME; by default each repository's own temp folder holds it.
+function run(repo: string, args: string[] = [], root = repo, env: NodeJS.ProcessEnv = {}) {
   return spawnSync("bash", [kit, "sweep", ...args], { cwd: root, encoding: "utf8", timeout: 20_000,
-    env: { ...process.env, KIT_ROOT: root, KIT_MAIN_ROOT: repo, ASE_SKIP_DOCTOR: "1" } });
+    env: { ...process.env, KIT_ROOT: root, KIT_MAIN_ROOT: repo, ASE_SKIP_DOCTOR: "1", XDG_STATE_HOME: join(dirname(repo), "state"), ASE_REVIEW_BUDGET_GROK: "", ...env } });
 }
 
 const bundleOf = (output: string) => {
@@ -210,6 +213,36 @@ test("a huge week is trimmed under the size limit and keeps the top sections", (
   assert.equal(section(text, "Tests that failed then passed in kit pr runs")[0], "- 2 kit pr runs read from 1 live worktree, 4000 tests flipped");
   assert.deepEqual(section(text, "src/main.ts"), ["- 2 lines (+2)"]);
   assert.match(text, /\n## Tech-debt issues untouched 30\+ days\n\n- none\n/);
+});
+
+test("the bundle shows the computer's Grok reviews this week and last, by project", (t) => {
+  const { dir, repo } = repository(t);
+  write(join(repo, "src/main.ts"), lines(2));
+  commit(repo, Date.now() - day, "start");
+  // Nothing counted yet: no ledger, no project list.
+  const empty = run(repo);
+  assert.equal(empty.status, 0, empty.stdout + empty.stderr);
+  assert.match(empty.stdout, /^## Grok reviews this week \(\d+ bytes\)$/m);
+  const week = isoWeek(new Date()), last = isoWeek(new Date(Date.now() - 7 * day));
+  assert.deepEqual(section(bundleOf(empty.stdout).text, "Grok reviews this week"), [`- 0 of 8 in ${week}, whole computer`, "- kit-sweep: 0", `- last week, ${last}: 0`]);
+  // Two projects' reviews in one machine ledger; a listed project with none shows 0.
+  const state = join(dir, "state/agent-kit");
+  write(join(state, "review-budget.json"), JSON.stringify({ [last]: { grok: { "native-site-editor": 6 } },
+    [week]: { grok: { "native-site-editor": 2, "techies-playground": 1 }, gpt: { "native-site-editor": 4 } } }));
+  write(join(state, "projects.json"), JSON.stringify({ "native-site-editor": { root: repo }, chat: { root: join(dir, "chat") } }));
+  // This project's old ledger, not moved in yet by a counted review, still counts once (here a listed name shares its folder); so does a listed project's.
+  write(join(repo, ".scratch/review-budget.json"), JSON.stringify({ [week]: { grok: 2, gpt: 3 } }));
+  write(join(dir, "chat/.scratch/review-budget.json"), JSON.stringify({ [last]: { grok: 1 } }));
+  const result = run(repo, [], repo, { ASE_REVIEW_BUDGET_GROK: "10" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(section(bundleOf(result.stdout).text, "Grok reviews this week"), [`- 5 of 10 in ${week}, whole computer`,
+    "- chat: 0", "- kit-sweep: 2", "- native-site-editor: 2", "- techies-playground: 1", `- last week, ${last}: 7 (chat 1, native-site-editor 6)`]);
+  assert.ok(existsSync(join(repo, ".scratch/review-budget.json")), "the sweep changes nothing");
+  // A broken ledger is named; the rest of the bundle still comes out.
+  write(join(state, "review-budget.json"), "{ broken");
+  const broken = run(repo);
+  assert.equal(broken.status, 0, broken.stdout + broken.stderr);
+  assert.match(section(bundleOf(broken.stdout).text, "Grok reviews this week")[0], /^- unreadable: review budget ledger .* is not valid JSON/);
 });
 
 test("hand-typed values: raw px and timings as kit ux counts them, radii and shadows by declaration", () => {

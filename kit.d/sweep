@@ -4,10 +4,11 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { familyUse, isoWeek, readReviewLedger, reviewBudgetLimit } from "../agent-run.mjs";
 import { parseFeedbackLine } from "../tickets.mjs";
 import { composeBundle, cssCounts } from "./ux";
 
-const { kitRoot, kitMainRoot, kitResult, kitSettings } = await import(
+const { kitRoot, kitMainRoot, kitProjects, kitResult, kitSettings, kitStateDir } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 
@@ -21,7 +22,8 @@ the shared file's lines (sharedFile), hand-typed CSS values (raw px spacing, raw
 transitions) and their change, tests that failed then passed in kit pr runs (the .scratch/pr/
 logs of worktrees that still exist) and tests/known-failures.json, review findings by kind
 (scoreboard records), Lex's corrections added to build feedback logs by the commits since the
-window started and open tech-debt issues (techDebt) untouched for 30 days.
+window started, open tech-debt issues (techDebt) untouched for 30 days, and Grok reviews this
+ISO week and last for the whole computer, by project (the machine ledger in the kit's state folder).
 `;
 const day = 86_400_000;
 // Code files by extension, plus extensionless scripts such as the kit commands.
@@ -295,6 +297,38 @@ export function staleDebtSection(root, now = Date.now(), techDebt = setting("tec
   return { title: "Tech-debt issues untouched 30+ days", priority: 6, lines: stale.length ? stale : ["- none"] };
 }
 
+/**
+ * Grok reviews for the whole computer this ISO week and last, by project, from the machine ledger
+ * (kit review writes it); a project in projects.json with none shows 0. An old per-project ledger
+ * that no counted review has moved in yet (main root .scratch/review-budget.json) still counts.
+ */
+export function grokSection(env = process.env, now = Date.now(), main = null, project = null) {
+  const title = "Grok reviews this week";
+  try {
+    const ledger = readReviewLedger(join(kitStateDir(env), "review-budget.json")), listed = kitProjects(env);
+    // Each main folder's old file once, under this project's name for its own folder.
+    const folders = new Map(Object.entries(listed).filter(([, entry]) => typeof entry?.root === "string").map(([name, entry]) => [resolve(entry.root), name]));
+    if (project && main) folders.set(resolve(main), project);
+    for (const [root, name] of folders) {
+      for (const [week, families] of Object.entries(readReviewLedger(join(root, ".scratch/review-budget.json")))) {
+        const count = families?.grok, counts = ((ledger[week] ??= {}).grok ??= {});
+        if (Number.isSafeInteger(count) && count > 0) counts[name] = (counts[name] ?? 0) + count;
+      }
+    }
+    const week = isoWeek(new Date(now)), last = isoWeek(new Date(now - 7 * day));
+    const byProject = of => {
+      const counts = ledger[of]?.grok ?? {};
+      return [...new Set([...Object.keys(listed), ...project ? [project] : [], ...Object.keys(counts)])].sort().map(item => [item, Number.isSafeInteger(counts[item]) ? counts[item] : 0]);
+    };
+    const lastWeek = byProject(last).filter(([, count]) => count).map(([item, count]) => `${item} ${count}`).join(", ");
+    return { title, priority: 8, lines: [`- ${familyUse(ledger, week, "grok")} of ${reviewBudgetLimit("grok", env)} in ${week}, whole computer`,
+      ...byProject(week).map(([item, count]) => `- ${item}: ${count}`),
+      `- last week, ${last}: ${familyUse(ledger, last, "grok")}${lastWeek ? ` (${lastWeek})` : ""}`] };
+  } catch (error) {
+    return { title, priority: 8, lines: [`- unreadable: ${error.message}`] };
+  }
+}
+
 function sweep(args) {
   let flags;
   try { flags = parseArgs(args); }
@@ -311,6 +345,7 @@ function sweep(args) {
       ...codeSections(readTree(root, head), readTree(root, then), pick("sharedFile")),
       ...testSections(prRuns(trees, start), Array.isArray(known) ? known : [], trees.length),
       reviewSection(main, start),
+      grokSection(process.env, now, main, settings.project),
       correctionsSection(root, then, head, pick("maps")),
       staleDebtSection(root, now, pick("techDebt")),
     ];

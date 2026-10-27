@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, relative, resolve } from "node:path";
-import { tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { homedir, tmpdir } from "node:os";
 import { findingsRecord } from "./review-findings.mjs";
 
 const nodeError = "kit: no Node >=24 found (system, npx cache or nvm)";
@@ -93,6 +93,31 @@ export function kitOwner() {
   try { owner = readFileSync(join(root, ".scratch/owner"), "utf8").split(/\r?\n/, 1)[0].trim().split(/\s+/)[1] ?? ""; }
   catch { /* No owner file: use the branch. */ }
   return oneLine((owner && owner !== "unknown" ? owner : git(["-C", root, "branch", "--show-current"])) || "unknown");
+}
+
+/**
+ * Machine-wide kit state, shared by every project on this computer: $XDG_STATE_HOME/agent-kit
+ * (an absolute XDG_STATE_HOME only, as the XDG spec says), else ~/.local/state/agent-kit.
+ */
+export function kitStateDir(env = process.env) {
+  const state = env.XDG_STATE_HOME;
+  return join(state && isAbsolute(state) ? state : join(env.HOME || homedir(), ".local/state"), "agent-kit");
+}
+
+/**
+ * The machine's project list, projects.json in the state folder: { "<project>": { "root": "<main folder>" } }.
+ * Empty when there is none yet; throws one plain line when it is broken.
+ */
+export function kitProjects(env = process.env) {
+  const path = join(kitStateDir(env), "projects.json");
+  let projects;
+  try { projects = JSON.parse(readFileSync(path, "utf8")); }
+  catch (error) {
+    if (error.code === "ENOENT") return {};
+    throw new Error(`${path} is unreadable: ${oneLine(error.message)}`);
+  }
+  if (!projects || typeof projects !== "object" || Array.isArray(projects)) throw new Error(`${path} must hold one JSON object`);
+  return projects;
 }
 
 function version(candidate) {
