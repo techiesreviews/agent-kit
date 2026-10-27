@@ -42,8 +42,8 @@ fail() {
   printf '✗ %s: %s; fix: %s\n' "$1" "$2" "$3"
 }
 
-# settings_unread: why the settings file could not be read (missing or unreadable), so checks that read a key
-# say they did not look rather than report the key as unset.
+# settings_unread: why the settings file could not be read (missing or unreadable), so the commands check
+# says it did not look for the project folder rather than report "commands" as unset.
 land='' settings_unread=''
 if problems=$(kit_settings_problems); then
   land=$(setting .branches.land)
