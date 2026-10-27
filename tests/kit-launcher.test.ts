@@ -444,3 +444,16 @@ test("a whole clone that cannot be put in place is not blamed as a half kit", (t
   assert.equal(result.stdout, `RESULT: fail no Agent Kit at ${cache} (cannot place the clone at ${cache})\n`);
   assert.deepEqual(readdirSync(f.cache), ["agent-kit"]);
 });
+
+test("a launcher whose mv loses the race to another launcher's whole clone uses that clone and leaves no temporary folder", (t) => {
+  const f = fixture(t);
+  f.publish("one");
+  const cache = join(f.cache, "agent-kit");
+  // Another launcher puts its clone in place first, so this mv -T meets a folder that is not empty.
+  const mv = `() { command cp -r -- "$3" "\${@: -1}"; command mv "$@"; }`;
+  const result = f.kit(["where"], { "BASH_FUNC_mv%%": mv });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), [`${cache} one`]);
+  assert.doesNotMatch(result.stdout, /cannot place the clone/);
+  assert.deepEqual(readdirSync(f.cache), ["agent-kit"]);
+});
