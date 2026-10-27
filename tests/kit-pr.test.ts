@@ -1050,10 +1050,13 @@ test("follow-ups extend an existing subsection without duplicating existing line
   assert.match(ticket, /- Validation gaps \(gap\): Add coverage.\n\n### Evidence/);
 });
 
+const long = `P2: ${"Evidence names the file and line. ".repeat(6)}Fix: keep the whole sentence in the ticket.`;
+const longGap = `${"Test to add: a case that names its fixture. ".repeat(4)}Assert the whole sentence.`;
+const followupTicket = (lines: string[]) => `---\ntitle: "Ticket title"\n---\n\n## Done (2026-10-19)\n\nImplemented.\n${lines.length ? `\n### Follow-ups\n\n${lines.join("\n")}\n` : ""}`;
+
 test("a follow-up longer than 160 characters reaches the ticket in full and the PR summary marks the cut", t => {
   const f = fixture(t); f.rounds(3);
-  f.commit("Close ticket", "ticket.md", '---\ntitle: "Ticket title"\n---\n\n## Done (2026-10-19)\n\nImplemented.\n');
-  const long = `P2: ${"Evidence names the file and line. ".repeat(6)}Fix: keep the whole sentence in the ticket.`;
+  f.commit("Close ticket", "ticket.md", followupTicket([]));
   assert.ok(long.length > 160);
   f.saveReview(minorReview.replace("P2: Minor defect.", long));
   const result = f.run(["--ticket", "ticket.md"]);
@@ -1082,32 +1085,48 @@ for (const [length, cut] of [[160, false], [161, true]] as const) test(`a ${leng
   assert.ok(f.ghCalls("comment").at(-1)?.body?.includes(expected), f.ghCalls("comment").at(-1)?.body);
 });
 
-test("the PR summary cut never splits an emoji", t => {
+for (const emoji of ["😀", "👨‍👩‍👧", "🇳🇱", "👍🏽"]) test(`the PR summary cut keeps ${emoji} whole`, t => {
   const f = fixture(t); f.rounds(3);
-  const text = `P2: ${"x".repeat(155)}😀😀 tail`;
+  const text = `P2: ${"x".repeat(155)}${emoji}${emoji} tail`;
   f.saveReview(minorReview.replace("P2: Minor defect.", text));
   const result = f.run();
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const body = f.ghCalls("comment").at(-1)?.body || "";
-  assert.ok(body.includes(`- Spec (P2): P2: ${"x".repeat(155)}😀…\n`), body);
-  assert.doesNotMatch(body, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+  assert.ok(body.includes(`- Spec (P2): P2: ${"x".repeat(155)}${emoji}…\n`), body);
 });
 
-test("a rerun counts follow-ups cut before full follow-ups as present", t => {
+test("a rerun swaps follow-ups cut before full follow-ups for the full text and posts no second comment", t => {
   const f = fixture(t); f.rounds(3);
-  const long = `P2: ${"Evidence names the file and line. ".repeat(6)}Fix: keep the whole sentence in the ticket.`;
-  const old = `- Spec (P2): ${long.slice(0, 160)}`;
-  const ticket = `---\ntitle: "Ticket title"\n---\n\n## Done (2026-10-19)\n\nImplemented.\n\n### Follow-ups\n\n${old}\n- Validation gaps (gap): Add coverage.\n`;
-  f.commit("Close ticket", "ticket.md", ticket);
-  const oldSummary = `Follow-ups (non-blocking after 3 fix rounds):\n${old}\n- Validation gaps (gap): Add coverage.`;
+  const oldSpec = `- Spec (P2): ${long.slice(0, 160)}`, oldGap = `- Validation gaps (gap): ${longGap.slice(0, 160)}`;
+  f.commit("Close ticket", "ticket.md", followupTicket([oldSpec, oldGap]));
+  const oldSummary = `Follow-ups (non-blocking after 3 fix rounds):\n${oldSpec}\n${oldGap}`;
   appendFileSync(f.env.FAKE_CALLS!, JSON.stringify({ tool: "gh", args: ["pr", "comment", "73", "--body-file", "old.md"], body: oldSummary }) + "\n");
-  f.saveReview(minorReview.replace("P2: Minor defect.", long));
-  const head = f.git("rev-parse", "HEAD");
+  f.saveReview(minorReview.replace("P2: Minor defect.", long).replace("Add coverage.", longGap));
+  const before = f.git("rev-parse", "HEAD");
   const result = f.run(["--ticket", "ticket.md"], { FAKE_EXISTING: "1" });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.equal(readFileSync(join(f.root, "ticket.md"), "utf8"), ticket);
-  assert.equal(f.git("rev-parse", "HEAD"), head);
+  assert.equal(readFileSync(join(f.root, "ticket.md"), "utf8"), followupTicket([`- Spec (P2): ${long}`, `- Validation gaps (gap): ${longGap}`]));
+  assert.equal(f.git("rev-parse", "HEAD^"), before);
+  assert.equal(f.git("log", "-1", "--format=%s"), "docs: ticket follow-ups from review");
   assert.deepEqual(f.ghCalls("comment").filter(call => call.body?.startsWith("Follow-ups")).map(call => call.body), [oldSummary]);
+  const summary = `Follow-ups (non-blocking after 3 fix rounds):\n- Spec (P2): ${long.slice(0, 160).trimEnd()}…\n- Validation gaps (gap): ${longGap.slice(0, 160).trimEnd()}…`;
+  const patched = f.apiCalls().findLast(call => call.body?.includes("Follow-ups"))?.body || "";
+  assert.equal(patched.split(summary).length, 2, patched);
+  assert.ok(!patched.includes(oldSummary), patched);
+});
+
+test("a rerun upgrades an old cut follow-up in place and adds a new one in full in one commit", t => {
+  const f = fixture(t); f.rounds(3);
+  const oldSpec = `- Spec (P2): ${long.slice(0, 160)}`;
+  f.commit("Close ticket", "ticket.md", followupTicket([oldSpec, "", "Kept note."]));
+  f.saveReview(minorReview.replace("P2: Minor defect.", long).replace("Add coverage.", longGap));
+  const before = f.git("rev-parse", "HEAD");
+  const result = f.run(["--ticket", "ticket.md"], { FAKE_EXISTING: "1" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(readFileSync(join(f.root, "ticket.md"), "utf8"),
+    followupTicket([`- Spec (P2): ${long}`, "", "Kept note.", `- Validation gaps (gap): ${longGap}`]));
+  assert.equal(f.git("rev-parse", "HEAD^"), before);
+  assert.equal(f.git("log", "-1", "--format=%s"), "docs: ticket follow-ups from review");
 });
 
 async function waitForFile(path: string) {

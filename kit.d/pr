@@ -63,9 +63,10 @@ async function savedReview(head, base, patchId, ticket, root) {
 
 const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
 // Short form of a finding for the console, PR body and PR comment; the ticket keeps the full text.
-// The cut counts code points, so it never splits an emoji's surrogate pair.
+// The cut counts graphemes, so it never splits an emoji, flag or accented letter.
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 const shortText = text => {
-  const characters = Array.from(text);
+  const characters = Array.from(graphemes.segment(text), part => part.segment);
   return characters.length > 160 ? `${characters.slice(0, 160).join("").trimEnd()}…` : text;
 };
 
@@ -383,10 +384,12 @@ async function main(args) {
       const label = item => `- ${item.group} (${item.severity || "gap"}): `;
       const fullLines = findings.map(item => label(item) + item.text);
       const shortLines = findings.map(item => label(item) + shortText(item.text));
-      // Before 2026-10-27 kit pr cut each finding to 160 UTF-16 units with no mark; a rerun counts those as present.
+      // Before 2026-10-27 kit pr cut each finding to 160 UTF-16 units with no mark. A rerun counts such a
+      // PR comment as posted and swaps such a ticket bullet for the full text.
       const oldLines = findings.map(item => label(item) + item.text.slice(0, 160));
       const heading = `Follow-ups (non-blocking after ${FIX_ROUNDS} fix rounds):\n`;
-      const summary = heading + shortLines.join("\n"), oldSummary = heading + oldLines.join("\n");
+      const summary = heading + shortLines.join("\n");
+      const oldSummary = heading + oldLines.join("\n");
       if (!readFileSync(body, "utf8").includes(summary)) appendFileSync(body, `\n${summary}\n`);
       await gh("follow-ups", ["api", "--method", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "-F", `body=@${body}`]);
       const comments = JSON.parse(await gh("follow-ups", ["pr", "view", number, "--json", "comments"]));
@@ -410,14 +413,19 @@ async function main(args) {
       const doneEnd = end < 0 ? rest.length : end + 1;
       let done = rest.slice(0, doneEnd);
       const followups = /^### Follow-ups\s*\n([\s\S]*?)(?=^#{1,3} |$(?![\s\S]))/m.exec(done);
-      const existing = followups?.[1].split(/\r?\n/) ?? [];
-      const missing = fullLines.filter((line, index) => !existing.includes(line) && !existing.includes(oldLines[index]));
-      if (missing.length) {
-        if (followups) {
-          const position = followups.index + followups[0].trimEnd().length;
-          done = `${done.slice(0, position)}\n${missing.join("\n")}${done.slice(position)}`;
-        } else done = `${done.trimEnd()}\n\n### Follow-ups\n\n${missing.join("\n")}\n\n`;
-      }
+      const raw = followups?.[1].split("\n") ?? [];
+      const existing = raw.map(line => line.replace(/\r$/, ""));
+      const upgrade = new Map(oldLines.map((line, index) => [line, fullLines[index]])
+        .filter(([line, full]) => line !== full && !existing.includes(full)));
+      const kept = existing.map(line => upgrade.get(line) ?? line);
+      const missing = fullLines.filter(line => !kept.includes(line));
+      if (followups) {
+        const header = followups[0].slice(0, followups[0].length - followups[1].length);
+        let section = header + raw.map((line, index) => kept[index] + line.slice(existing[index].length)).join("\n");
+        const position = section.trimEnd().length;
+        if (missing.length) section = `${section.slice(0, position)}\n${missing.join("\n")}${section.slice(position)}`;
+        done = done.slice(0, followups.index) + section + done.slice(followups.index + followups[0].length);
+      } else if (missing.length) done = `${done.trimEnd()}\n\n### Follow-ups\n\n${missing.join("\n")}\n\n`;
       const updated = prefix + done + rest.slice(doneEnd);
       if (updated === original) return;
       writeFileSync(file, updated);
