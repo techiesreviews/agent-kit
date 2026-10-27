@@ -753,7 +753,7 @@ test("kit review gives the budget back when the Grok CLI is missing", (t) => {
 
 // A fake opencode: `run` reads the brief on stdin and prints JSON events; `export` names the model of each answer so far.
 const fakeOpencode = `#!/usr/bin/env node
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, fstatSync, readFileSync, writeSync } from "node:fs";
 const args = process.argv.slice(2);
 const answers = process.env.FAKE_CALLS + ".answers";
 if (args[0] === "export") {
@@ -762,8 +762,11 @@ if (args[0] === "export") {
   if (process.env.FAKE_EXPORT === "hang") await new Promise(done => setTimeout(done, 30_000));
   const models = existsSync(answers) ? readFileSync(answers, "utf8").trim().split("\\n") : [];
   console.error("Exporting session: " + args.at(-1));
-  console.log(JSON.stringify({ info: { id: args.at(-1) }, messages: models.flatMap(model => [{ info: { role: "user" } },
-    { info: { role: "assistant", providerID: model.split("/")[0], modelID: model.split("/").slice(1).join("/") } }]) }));
+  const exported = JSON.stringify({ info: { id: args.at(-1) }, messages: models.flatMap(model => [{ info: { role: "user" } },
+    { info: { role: "assistant", providerID: model.split("/")[0], modelID: model.split("/").slice(1).join("/") } }]),
+    ...(process.env.FAKE_EXPORT === "big" ? { padding: "x".repeat(400_000) } : {}) }) + "\\n";
+  // Like the real CLI, which exits before a pipe drains: anything but a file gets only the first 192 KiB.
+  writeSync(1, !fstatSync(1).isFile() ? exported.slice(0, 196_608) : exported);
   process.exit(0);
 }
 const input = readFileSync(0, "utf8");
@@ -931,6 +934,14 @@ test("a failed or hung OpenCode export fails the review with a named problem", (
     assert.ok(Date.now() - started < 10_000, "the export limit stops a hung export");
     assert.match(result.stderr, problem);
   }
+});
+
+test("a large OpenCode export is read whole, not cut where a pipe would stop", (t) => {
+  const f = fixture(t);
+  withOpencode(f);
+  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_EXPORT: "big" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^RESULT: ok /m);
 });
 
 test("a failed or timed-out OpenCode call is not exported and reports only its own cause", (t) => {

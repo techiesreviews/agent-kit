@@ -510,15 +510,22 @@ export function opencodeExportTimeout(env = process.env) {
   return timeout;
 }
 
+// OpenCode exits before a pipe drains, cutting a large export at 192 KiB, so it writes to a file.
 function opencodeExport(session, worktree, timeout) {
+  const dir = mkdtempSync(join(tmpdir(), "ase-opencode-export-")), file = join(dir, "export.json");
+  const out = openSync(file, "w");
   try {
-    return execFileSync("opencode", ["export", "--pure", session], { cwd: worktree, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-      maxBuffer: 256 * 1024 * 1024, timeout, killSignal: "SIGKILL" });
+    execFileSync("opencode", ["export", "--pure", session], { cwd: worktree, encoding: "utf8", stdio: ["ignore", out, "pipe"],
+      timeout, killSignal: "SIGKILL" });
+    return readFileSync(file, "utf8");
   } catch (error) {
     const last = String(error.stderr || "").trim().split("\n").at(-1);
     const why = error.code === "ETIMEDOUT" || error.signal === "SIGKILL" ? `timed out after ${timeout} ms`
       : error.status ? `exit ${error.status}${last ? `: ${last}` : ""}` : error.message;
     throw new Error(`OpenCode export for ${session} failed: ${why}`);
+  } finally {
+    closeSync(out);
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 
