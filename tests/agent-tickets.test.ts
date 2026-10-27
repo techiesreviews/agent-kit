@@ -9,6 +9,19 @@ import { loadFeedback, loadTickets, parseFeedback, parseFiles, parseTicket, reso
 
 const fixtures = "tests/fixtures/agent-tickets";
 
+/** Env for a temp repo run the way CI runs it: no kit wrapper roots leaking in from the outer worktree. */
+function repoEnv(extra: Record<string, string> = {}) {
+  const env: Record<string, string | undefined> = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", ...extra };
+  for (const name of ["KIT_ROOT", "KIT_MAIN_ROOT", "KIT_DEV_ROOT"]) delete env[name];
+  return env;
+}
+
+/** Give a temp repo the settings file `tickets.mjs` reads its maps folder from. */
+function writeSettings(cwd: string) {
+  mkdirSync(join(cwd, "scripts/agents"), { recursive: true });
+  writeFileSync(join(cwd, "scripts/agents/kit.json"), JSON.stringify({ project: "temp", branches: { land: "dev" }, maps: "docs/wayfinder" }));
+}
+
 test("ticket fixtures parse quotes and comments, resolve both directories and sort the frontier", () => {
   const loaded = loadTickets(`${fixtures}/valid`);
   assert.deepEqual(loaded.problems, []);
@@ -148,14 +161,14 @@ test("Files lists exact paths; globs, placeholders and find-it-with lines name t
 test("ref loading and CLI use committed tickets, including maps absent from the working tree", t => {
   const cwd = mkdtempSync(join(tmpdir(), "agent-tickets-ref-"));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
-  const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
-    GIT_AUTHOR_NAME: "Kit test", GIT_AUTHOR_EMAIL: "kit@example.com", GIT_COMMITTER_NAME: "Kit test", GIT_COMMITTER_EMAIL: "kit@example.com" };
+  const env = repoEnv({ GIT_AUTHOR_NAME: "Kit test", GIT_AUTHOR_EMAIL: "kit@example.com", GIT_COMMITTER_NAME: "Kit test", GIT_COMMITTER_EMAIL: "kit@example.com" });
   const git = (...args: string[]) => {
     const run = spawnSync("git", args, { cwd, env, encoding: "utf8", timeout: 5_000 });
     assert.equal(run.status, 0, run.stderr);
     return run.stdout.trim();
   };
   git("init", "-q", "--initial-branch=dev");
+  writeSettings(cwd);
   const root = "docs/wayfinder";
   const file = `${root}/alpha/build/tickets/02-ready.md`;
   const regular = `${root}/alpha/tickets/01-closed.md`;
@@ -207,6 +220,16 @@ test("ref loading and CLI use committed tickets, including maps absent from the 
   }
 });
 
+test("the CLI in a repo without a settings file says what to add and exits 1", t => {
+  const cwd = mkdtempSync(join(tmpdir(), "agent-tickets-nosettings-"));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const env = repoEnv();
+  assert.equal(spawnSync("git", ["init", "-q"], { cwd, env }).status, 0);
+  const output = spawnSync(process.execPath, [resolve("scripts/agents/tickets.mjs"), "check"], { cwd, env, encoding: "utf8", timeout: 5_000 });
+  assert.equal(output.status, 1);
+  assert.match(output.stderr, /no scripts\/agents\/kit\.json/);
+});
+
 test("ref loading preserves frontmatter and dependency diagnostics", t => {
   const cwd = mkdtempSync(join(tmpdir(), "agent-tickets-errors-"));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
@@ -229,7 +252,8 @@ test("ref loading preserves frontmatter and dependency diagnostics", t => {
 test("check validates build feedback logs and names file:line for a bad date, kind, flag or fix", t => {
   const cwd = mkdtempSync(join(tmpdir(), "agent-tickets-feedback-"));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
-  const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+  const env = repoEnv();
+  writeSettings(cwd);
   const git = (...args: string[]) => {
     const output = spawnSync("git", args, { cwd, env, encoding: "utf8", timeout: 5_000 });
     assert.equal(output.status, 0, output.stderr);

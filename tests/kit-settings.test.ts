@@ -54,7 +54,8 @@ function repo(t: TestContext, settings?: object | string) {
   executable(join(bin, "gh"), `#!/bin/bash
 printf 'gh %s\\n' "$*" >> ${JSON.stringify(calls)}
 case "$1 $2" in
-  'api repos/{owner}/{repo}/commits/main') echo ${sha} ;;
+  'api repos/{owner}/{repo}/commits/'*) echo ${sha} ;;
+  'pr view') echo '{"headRefName":"feature/x","headRefOid":"${sha}"}' ;;
   'workflow list') echo '[{"id":1,"name":"Checks","state":"active"}]' ;;
   'run list')
     if [[ $* == *--commit* ]]; then echo '[{"databaseId":10,"workflowName":"Checks","status":"completed","conclusion":"success","headSha":"${sha}","createdAt":"2026-10-27","url":"https://example.test/run/10"}]'
@@ -223,6 +224,23 @@ test("land: main reaches review, unit --affected, pr --dry-run, status and wait 
   assert.match(lastLine(ci)!, /^RESULT: ok ci main abcdef0 green /);
   assert.match(f.called(), /^gh api repos\/\{owner\}\/\{repo\}\/commits\/main --jq \.sha$/m);
   assert.match(f.called(), /^gh run list --workflow 1 --branch main /m);
+});
+
+test("wait ci follows branches.ci over land, and a --pr wait needs no settings", t => {
+  const f = repo(t, { project: "kit-land", branches: { land: "main", ci: "ci-branch" } });
+  const ci = f.run(["wait", "ci", "--timeout", "10s"], { KIT_WAIT_POLL_MS: "50" });
+  assert.equal(ci.status, 0, ci.stdout + ci.stderr);
+  assert.match(lastLine(ci)!, /^RESULT: ok ci ci-branch abcdef0 green /);
+  assert.match(f.called(), /^gh api repos\/\{owner\}\/\{repo\}\/commits\/ci-branch --jq \.sha$/m);
+  assert.match(f.called(), /^gh run list --workflow 1 --branch ci-branch /m);
+  // A broken file stops a plain wait but not one that names its PR.
+  const broken = repo(t, '{ "project": ');
+  const plain = broken.run(["wait", "ci", "--timeout", "10s"], { KIT_WAIT_POLL_MS: "50" });
+  assert.notEqual(plain.status, 0, plain.stdout + plain.stderr);
+  const pr = broken.run(["wait", "ci", "--pr", "7", "--timeout", "10s"], { KIT_WAIT_POLL_MS: "50" });
+  assert.equal(pr.status, 0, pr.stdout + pr.stderr);
+  assert.match(lastLine(pr)!, /^RESULT: ok ci pr 7 abcdef0 green /);
+  assert.match(broken.called(), /^gh run list --workflow 1 --branch feature\/x /m);
 });
 
 test("bash and node agree on mainRoot, which only a valid file supplies", t => {

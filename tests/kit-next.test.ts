@@ -17,7 +17,7 @@ function ticket({ type = "task (AFK)", assignee = "", builder = "claude", files 
 
 // A bare origin and a dev clone holding the given files, a fake kit (bg --list reads
 // each worktree's job records; bg <name> logs its call) and a fake worktree.sh.
-function fixture(t: TestContext, files: Record<string, string>, land = "dev") {
+function fixture(t: TestContext, files: Record<string, string>, land = "dev", overrides: Record<string, unknown> = {}) {
   const root = mkdtempSync(join(tmpdir(), "kit-next-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const env: NodeJS.ProcessEnv = { ...process.env, ...identity, GIT_CONFIG_NOSYSTEM: "1", KIT_DEV_ROOT: join(root, "dev"), KIT_NEXT_KIT: join(root, "fake-kit"), KIT_NEXT_WORKTREE: join(root, "fake-worktree.sh"), FAKE_KIT_LOG: join(root, "kit.log") };
@@ -30,7 +30,7 @@ function fixture(t: TestContext, files: Record<string, string>, land = "dev") {
   const write = (base: string, entries: Record<string, string>) => {
     for (const [path, content] of Object.entries(entries)) { mkdirSync(dirname(join(base, path)), { recursive: true }); writeFileSync(join(base, path), content); }
   };
-  const settings = { project: "kit-next", branches: { land }, maps: "docs/wayfinder", sharedFile: "src/main.ts" };
+  const settings = { project: "kit-next", branches: { land }, maps: "docs/wayfinder", sharedFile: "src/main.ts", ...overrides };
   write(dev, { "README.md": "repo\n", "scripts/agents/kit.json": JSON.stringify(settings), ...files });
   git(dev, "add", "-A");
   git(dev, "commit", "-q", "-m", "fixture");
@@ -152,6 +152,18 @@ test("rule 3 allows at most two slices in src/main.ts, counting the ones it hand
     `waits: ${build("alpha", "03-main")} 2 slices in src/main.ts: slice-alpha01, slice-alpha02`,
     `waits: ${build("alpha", "04-glob")} 2 slices in src/main.ts: slice-alpha01, slice-alpha02`,
     "RESULT: ok next 2 ready, 2 waiting",
+  ]);
+});
+
+test("without sharedFile in the settings, src/main.ts is shared like any other file", t => {
+  const { running, lines } = fixture(t, {
+    [build("alpha", "01-run")]: ticket({ assignee: "alpha-01", files: ["src/main.ts"] }),
+    [build("alpha", "02-main")]: ticket({ files: ["src/main.ts", "src/two.ts"] }),
+  }, "dev", { sharedFile: undefined });
+  running("slice-alpha01", build("alpha", "01-run"));
+  assert.deepEqual(lines("alpha"), [
+    `waits: ${build("alpha", "02-main")} shares src/main.ts with slice-alpha01`,
+    "RESULT: ok next 0 ready, 1 waiting",
   ]);
 });
 

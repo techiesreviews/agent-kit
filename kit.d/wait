@@ -138,7 +138,8 @@ async function wait(config) {
   const status = interval("KIT_WAIT_STATUS_MS", 60000);
   let lastStatus = started;
   let head = options.sha ?? "";
-  let branch = options.branch ?? (kind === "ci" ? kitBranch("ci") : "");
+  // Only a plain branch wait reads the settings; --pr and --sha find their branch from GitHub.
+  let branch = options.branch ?? (kind === "ci" && options.pr === undefined && options.sha === undefined ? kitBranch("ci") : "");
   let branchResolved = false;
   let previous = [];
   let size = null;
