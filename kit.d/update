@@ -44,12 +44,26 @@ link() { # link <name> <commit>: replace the link in one rename, so a reader see
 target() { readlink -- "$data/$1" 2>/dev/null || :; }
 short() { printf '%s' "${1:0:7}"; }
 remove() { chmod -R u+w -- "$1" 2>/dev/null || :; rm -rf -- "$1"; }
+# A folder holds a kit when it has what the front door needs: kit to run and kit-lib.sh to source.
+has_kit() { [[ -x $1/kit && -f $1/kit-lib.sh ]]; }
 
 current=$(target current) before=$(target previous)
+held=''
+[[ ! -f $data/held ]] || held=$(< "$data/held")
 if [[ $previous == true ]]; then
-  if [[ -z $before || ! -x $data/$before/kit ]]; then
+  # Already stepped back: previous is the kit stepped back from, so swapping again would undo the step.
+  if [[ -n $held && $before == "$held" ]]; then
+    kit_result ok "update already back on $(short "${current:-none}")"
+    exit 0
+  fi
+  if [[ -z $before || ! -d $data/$before ]]; then
     printf 'kit update: no previous kit in %s\n' "$data" >&2
     kit_result fail "update no previous kit to go back to"
+    exit 1
+  fi
+  if ! has_kit "$data/$before"; then
+    printf 'kit update: %s has no kit front door and kit-lib.sh at its top\n' "$data/$before" >&2
+    kit_result fail "update previous kit $(short "$before") is incomplete"
     exit 1
   fi
   link current "$before"
@@ -73,26 +87,28 @@ if ! GIT_TERMINAL_PROMPT=0 timeout 120 git -C "$bare" fetch -q --depth 1 -- "$re
 fi
 newest=$(git -C "$bare" rev-parse FETCH_HEAD)
 
-held=''
-[[ ! -f $data/held ]] || held=$(< "$data/held")
+# While main is still the commit --previous stepped back from, current stays on the kit it went back to.
+want=$newest
+[[ -z $current || -z $held || $newest != "$held" ]] || want=$current
 # Staying put needs a whole current folder: a removed or broken one is unpacked again.
-whole=false
-[[ -z $current || ! -x $data/$current/kit || ! -f $data/$current/kit-lib.sh ]] || whole=true
-if [[ $whole == true && $newest == "$current" ]]; then
-  rm -f -- "$data/held"
-  result="update already on $(short "$newest")"
-elif [[ $whole == true && $newest == "$held" ]]; then
-  result="update held on $(short "$current"): main is still $(short "$newest"), which kit update --previous stepped back from"
+if [[ $want == "$current" ]] && has_kit "$data/$current"; then
+  if [[ $want == "$newest" ]]; then
+    rm -f -- "$data/held"
+    result="update already on $(short "$newest")"
+  else
+    result="update held on $(short "$current"): main is still $(short "$newest"), which kit update --previous stepped back from"
+  fi
 else
-  if [[ ! -x $data/$newest/kit || ! -f $data/$newest/kit-lib.sh ]]; then
-    [[ ! -e $data/$newest ]] || remove "$data/$newest"
+  if ! has_kit "$data/$want"; then
     unpack=$(mktemp -d "$data/.unpack.XXXXXX")
-    if ! git -C "$bare" archive "$newest" | tar -x -C "$unpack"; then
+    if ! git -C "$bare" archive "$want" | tar -x -C "$unpack"; then
       remove "$unpack"
-      kit_result fail "update cannot unpack $(short "$newest")"
+      # The shallow fetch keeps an older commit only until its objects go (a fresh repo.git has main alone).
+      if [[ $want != "$newest" ]]; then kit_result fail "update cannot refill held $(short "$want")"
+      else kit_result fail "update cannot unpack $(short "$newest")"; fi
       exit 1
     fi
-    if [[ ! -x $unpack/kit || ! -f $unpack/kit-lib.sh ]]; then
+    if ! has_kit "$unpack"; then
       remove "$unpack"
       kit_result fail "update main $(short "$newest") has no kit front door and kit-lib.sh at its top"
       exit 1
@@ -100,18 +116,19 @@ else
     touch -- "$unpack"
     # A machine copy is never edited in place: kit work happens in a checkout of the kit repo.
     chmod -R a-w -- "$unpack"
-    mv -T -- "$unpack" "$data/$newest"
-    printf 'unpacked %s into %s\n' "$(short "$newest")" "$data/$newest"
+    [[ ! -e $data/$want ]] || remove "$data/$want"
+    mv -T -- "$unpack" "$data/$want"
+    printf 'unpacked %s into %s\n' "$(short "$want")" "$data/$want"
   fi
-  link current "$newest"
-  rm -f -- "$data/held"
-  if [[ -n $current && $current != "$newest" ]]; then
+  link current "$want"
+  [[ $want != "$newest" ]] || rm -f -- "$data/held"
+  if [[ -n $current && $current != "$want" ]]; then
     link previous "$current"
     # A folder's age counts from when it stopped being current: a command started on it has a day to finish.
     touch -- "$data/$current" 2>/dev/null || :
   fi
-  if [[ $current == "$newest" ]]; then
-    result="update refilled $(short "$newest")"
+  if [[ $current == "$want" ]]; then
+    result="update refilled $(short "$want")"
   else
     printf 'current %s (was %s)\n' "$(short "$newest")" "$(short "${current:-none}")"
     result="update $(short "$newest") (was $(short "${current:-none}"))"
