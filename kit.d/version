@@ -9,7 +9,8 @@ case ${1-} in
     exit 0
     ;;
 esac
-sha=$(git -C "$(kit_root)" rev-parse --short HEAD)
+# A kit copy outside git has no commit.
+sha=$(git -C "$(kit_home)" rev-parse --short HEAD 2>/dev/null) || sha=none
 ver=$(node --version 2>/dev/null) || ver=none
 printf 'commit %s\nowner %s\nnode %s\n' "$sha" "$(kit_owner)" "$ver"
 kit_result ok "version $sha node $ver"

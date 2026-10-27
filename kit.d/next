@@ -3,7 +3,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { kitBranch, kitDevRoot, kitResult, kitSettings } from "../kit-lib.mjs";
+import { kitBranch, kitDevRoot, kitHome, kitResult, kitSettings } from "../kit-lib.mjs";
 import { loadTickets, parseTicket, resolveTickets } from "../tickets.mjs";
 
 // Settings from scripts/agents/kit.json; an unreadable file still lets --help print, with placeholders.
@@ -311,7 +311,8 @@ function start(item) {
   console.log(`worktree: ${worktree}`);
   const env = { ...process.env, ASE_REVIEW_MODEL: reviewModel, ASE_OWNER: item.owner };
   delete env.KIT_ROOT;
-  const kit = fakeKit || join(worktree, "scripts/agents/kit");
+  // The shared kit starts the job; the job runs the worktree's front door, which keeps this KIT_HOME.
+  const kit = fakeKit || join(kitHome(), "kit");
   const { tickets, group } = item.unit;
   const command = group
     ? ["next", "--run-group", "--branch", item.branch, "--builder", item.builder.model, ...tickets.flatMap(ticket => ["--ticket", ticket.file])]

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -154,6 +154,43 @@ test("kit takes an absolute commands folder, and without one lists only shared c
   const same = run([], env);
   assert.equal(same.status, 0, same.stderr);
   assert.doesNotMatch(same.stdout, /Project commands:|\(hidden by the shared/);
+});
+
+test("the shared kit runs from a copy named by KIT_HOME for a project with only settings, front door and own commands", (t) => {
+  const home = join(temp(t), "kit"), root = temp(t);
+  cpSync(resolve("scripts/agents"), home, { recursive: true, filter: (source) => source !== resolve("scripts/agents/project.d") });
+  const agents = join(root, "scripts/agents");
+  mkdirSync(join(agents, "project.d"), { recursive: true });
+  copyFileSync(kit, join(agents, "kit"));
+  chmodSync(join(agents, "kit"), 0o755);
+  writeFileSync(join(agents, "kit.json"), JSON.stringify({ project: "x", branches: { land: "dev" }, commands: "scripts/agents/project.d" }));
+  command(join(agents, "project.d"), "where", '# kit: print the shared kit\nprintf "%s\\n" "$KIT_HOME" "$KIT_LIB"');
+  const env: NodeJS.ProcessEnv = { ...process.env, KIT_HOME: home, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+  for (const name of ["KIT_ROOT", "KIT_MAIN_ROOT", "KIT_LIB", "KIT_LIB_MJS", "KIT_COMMANDS_DIR", "NODE_TEST_CONTEXT"]) delete env[name];
+  const git = (...args: string[]) => assert.equal(spawnSync("git", ["-C", root, ...args], { env, encoding: "utf8" }).status, 0);
+  git("init", "-q", "--initial-branch=dev");
+  git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base");
+  git("update-ref", "refs/remotes/origin/dev", "HEAD");
+  const front = (...args: string[]) => spawnSync(join(agents, "kit"), args, { cwd: root, env, encoding: "utf8", timeout: 15_000 });
+  // The copy is outside git, so it has no commit of its own.
+  const version = front("version");
+  assert.equal(version.status, 0, version.stdout + version.stderr);
+  assert.match(version.stdout, /^commit none\nowner .+\nnode v\d+\.\d+\.\d+\nRESULT: ok version none node v\d+/);
+  const status = front("status");
+  assert.equal(status.status, 0, status.stdout + status.stderr);
+  assert.match(status.stdout, /\nRESULT: ok status /);
+  for (const name of ["unit", "review", "next"]) {
+    const help = front(name, "--help");
+    assert.equal(help.status, 0, `${name}: ${help.stdout}${help.stderr}`);
+    assert.match(help.stdout, new RegExp(`^Usage: kit ${name} `));
+  }
+  const where = front("where");
+  assert.equal(where.status, 0, where.stderr);
+  assert.equal(where.stdout, `${realpathSync(home)}\n${realpathSync(home)}/kit-lib.sh\nRESULT: ok where finished\n`);
+  const wrong = spawnSync(join(agents, "kit"), ["version"], { cwd: root, env: { ...env, KIT_HOME: join(root, "nowhere") }, encoding: "utf8" });
+  assert.equal(wrong.status, 2);
+  assert.equal(wrong.stdout, `RESULT: fail no kit at KIT_HOME ${join(root, "nowhere")}\n`);
+  assert.equal(wrong.stderr, `kit: KIT_HOME ${join(root, "nowhere")} holds no kit-lib.sh\n`);
 });
 
 test("kit still lists shared commands with a broken settings file and names it on an unknown command", (t) => {

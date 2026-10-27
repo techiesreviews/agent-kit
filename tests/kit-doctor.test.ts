@@ -77,13 +77,13 @@ function failure(result: ReturnType<typeof spawnSync<string>>, name: string) {
   assert.equal(result.status, 1, result.stdout + result.stderr);
   const lines = result.stdout.trimEnd().split("\n");
   assert.equal(lines.filter(line => line.startsWith("RESULT: ")).length, 1);
-  assert.equal(lines.length, 12, result.stdout);
+  assert.equal(lines.length, 13, result.stdout);
   assert.ok(lines.some(line => line.startsWith(`✗ ${name}: `) && line.includes("; fix: ")), result.stdout);
   assert.equal(lines.at(-1), `RESULT: fail doctor 1 failed: ${name}`);
   assert.equal(result.stderr, "");
 }
 
-test("doctor checks all ten conditions quickly, notes Grok, and quiet success prints only RESULT", (t) => {
+test("doctor checks all eleven conditions quickly, notes Grok, and quiet success prints only RESULT", (t) => {
   const f = fixture(t);
   // Git tracks only the executable bit; the rest of the mode follows the umask.
   assert.equal(statSync(doctor).mode & 0o111, 0o111);
@@ -93,19 +93,20 @@ test("doctor checks all ten conditions quickly, notes Grok, and quiet success pr
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.ok(elapsed < 2000, `doctor took ${elapsed}ms`);
   const lines = result.stdout.trimEnd().split("\n");
-  assert.deepEqual(lines.slice(0, 11).map(line => line.split(":")[0]), [
-    "✓ settings", "✓ place", "✓ base", "✓ hook config", "✓ hooks live", "✓ node", "✓ node_modules", "✓ conflicts", "✓ commands", "✓ help", "✗ grok",
+  assert.deepEqual(lines.slice(0, 12).map(line => line.split(":")[0]), [
+    "✓ settings", "✓ place", "✓ base", "✓ hook config", "✓ hooks live", "✓ node", "✓ node_modules", "✓ conflicts", "✓ commands", "✓ help", "✓ kit home", "✗ grok",
   ]);
   assert.equal(lines[0], "✓ settings: scripts/agents/kit.json (native-site-editor, lands on dev)");
   assert.equal(lines[8], `✓ commands: 2 in ${f.commands} (KIT_COMMANDS_DIR)`);
   assert.equal(lines[9], "✓ help: 2 commands answer --help");
-  assert.equal(lines[10], "✗ grok: not installed (optional reviewer); fix: install the grok CLI for Grok reviews");
-  assert.equal(lines.length, 12);
-  assert.equal(lines[11], "RESULT: ok doctor 10/10 checks passed");
+  assert.equal(lines[10], `✓ kit home: a copy of ${join(repo, "scripts/agents")} runs kit version`);
+  assert.equal(lines[11], "✗ grok: not installed (optional reviewer); fix: install the grok CLI for Grok reviews");
+  assert.equal(lines.length, 13);
+  assert.equal(lines[12], "RESULT: ok doctor 11/11 checks passed");
   assert.equal(result.stderr, "");
   const quiet = f.run(["--quiet"]);
   assert.equal(quiet.status, 0, quiet.stderr);
-  assert.equal(quiet.stdout, "RESULT: ok doctor 10/10 checks passed\n");
+  assert.equal(quiet.stdout, "RESULT: ok doctor 11/11 checks passed\n");
   assert.equal(quiet.stderr, "");
 });
 
@@ -120,7 +121,7 @@ test("doctor reports a logged-in or logged-out Grok CLI without failing", (t) =>
   const signedOut = f.run([], f.build, { KIT_GROK: grok });
   assert.equal(signedOut.status, 0, signedOut.stdout + signedOut.stderr);
   assert.ok(signedOut.stdout.includes("✗ grok: not logged in (optional reviewer); fix: grok login\n"), signedOut.stdout);
-  assert.equal(f.run(["--quiet"], f.build, { KIT_GROK: grok }).stdout, "RESULT: ok doctor 10/10 checks passed\n");
+  assert.equal(f.run(["--quiet"], f.build, { KIT_GROK: grok }).stdout, "RESULT: ok doctor 11/11 checks passed\n");
   // A hung, failing or reworded CLI is not mistaken for a logged-out one.
   executable(grok, 'printf "Logged in as lex\\n"');
   const reworded = f.run([], f.build, { KIT_GROK: grok });
@@ -287,6 +288,18 @@ test("doctor --quiet, the mode agent.sh gates on, still fails and names a broken
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.equal(result.stdout, "✗ help: broken (exit 1); fix: run scripts/agents/kit <command> --help and repair it\nRESULT: fail doctor 1 failed: help\n");
   assert.equal(result.stderr, "");
+});
+
+test("doctor fails when a copy of the kit named by KIT_HOME cannot run kit version", (t) => {
+  const f = fixture(t);
+  // A kit whose front door still needs something only the project has fails from its copy.
+  const home = join(f.directory, "kit-home");
+  mkdirSync(home);
+  executable(join(home, "kit"), '[[ $KIT_HOME == "$(dirname "$0")" ]] || exit 3; printf "RESULT: fail helper missing\\n"; exit 1');
+  // Run doctor directly: the front door would refuse this KIT_HOME itself.
+  const result = f.run([], f.build, { KIT_HOME: home }, true);
+  failure(result, "kit home");
+  assert.ok(result.stdout.includes(`✗ kit home: a copy of ${home} fails kit version: RESULT: fail helper missing; fix: reach shared helpers through KIT_HOME, not scripts/agents/\n`), result.stdout);
 });
 
 test("doctor fails the help check when the command folder has no commands", (t) => {

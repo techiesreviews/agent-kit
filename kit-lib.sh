@@ -9,6 +9,11 @@ kit_root() {
   fi
 }
 
+# The shared kit's folder: KIT_HOME (the front door sets it), else the folder holding this file.
+kit_home() {
+  if [[ -n ${KIT_HOME:-} ]]; then printf '%s\n' "$KIT_HOME"; else (cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P); fi
+}
+
 kit_settings_file() {
   printf '%s/scripts/agents/kit.json\n' "$(kit_root)"
 }

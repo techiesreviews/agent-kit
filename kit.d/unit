@@ -3,7 +3,6 @@
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join, posix, resolve } from "node:path";
-import { graphFile, importsOf } from "../specs-affected.mjs";
 import { unitCounts } from "../unit-summary.mjs";
 import { kitBranch, kitRoot, kitResult, nodeEnv } from "../kit-lib.mjs";
 
@@ -14,6 +13,8 @@ Default base: origin/<land> (branches.land in scripts/agents/kit.json). No files
 --list prints selection reasons and runs nothing.
 `;
 const unitFile = /^tests\/.*\.test\.ts$/;
+// The import scan loads the TypeScript parser, so it is read only when --affected needs it.
+let graphFile, importsOf;
 const moduleFile = file => graphFile.test(file) && /\.(?:ts|tsx|js|mjs)$/.test(file);
 function git(root, args) {
   return execFileSync("git", ["-C", root, ...args], { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
@@ -75,6 +76,7 @@ async function main(args) {
   let status = 2;
   try {
     const flags = options(args), root = resolve(kitRoot());
+    if (flags.affected) ({ graphFile, importsOf } = await import("../specs-affected.mjs"));
     let selected;
     if (flags.files.length) {
       selected = [...new Set(flags.files)].map(file => {

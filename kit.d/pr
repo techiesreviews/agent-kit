@@ -7,7 +7,7 @@ import { basename, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterFixRounds, blockingFindings, completedFixRounds, FIX_ROUNDS, openFindings, reviewCoversHead, sameReviewPatch } from "../review-findings.mjs";
 
-const { kitBranch, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, nodeEnv, kitScore } = await import(
+const { kitBranch, kitHome, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, nodeEnv, kitScore } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const { checkSteps, classify, doneHeading, featureListGuard, featureListProblem, focusedUnitFiles, parseChanges } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
@@ -229,13 +229,18 @@ async function main(args) {
       const [name, ...argv] = typeof text === "string" ? text.trim().split(/\s+/) : [];
       return name ? [[name, argv]] : [];
     };
+    // Shared helpers come from KIT_HOME; one inside this project keeps its short path in the PR body.
+    const shared = name => {
+      const path = join(kitHome(), name), local = relative(root, path);
+      return local.startsWith("..") ? path : local;
+    };
     const commands = {
       check: () => parse(checks.check), unit: () => parse(checks.test), lint: () => parse(checks.lint),
       "kit-clean": () => (Array.isArray(checks.extra) ? checks.extra : []).flatMap(parse),
-      colours: () => [["node", ["scripts/check-colours.mjs"]]], tickets: () => [["node", ["scripts/agents/tickets.mjs", "check"]]],
+      colours: () => [["node", ["scripts/check-colours.mjs"]]], tickets: () => [["node", [shared("tickets.mjs"), "check"]]],
       "unit-files": () => {
         const files = focusedUnitFiles(changes, plan, sources(), settings);
-        return files.length ? [["scripts/agents/unit.sh", files]] : [];
+        return files.length ? [[shared("unit.sh"), files]] : [];
       },
     };
     const setting = { check: "checks.check", unit: "checks.test", lint: "checks.lint", "kit-clean": "checks.extra" };

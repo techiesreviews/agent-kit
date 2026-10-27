@@ -17,6 +17,11 @@ export function kitRoot() {
   return process.env.KIT_ROOT || (git(["rev-parse", "--show-toplevel"]) || resolve(import.meta.dirname, "../.."));
 }
 
+/** The shared kit's folder: KIT_HOME (the front door sets it), else the folder holding this file. */
+export function kitHome() {
+  return process.env.KIT_HOME || import.meta.dirname;
+}
+
 /** The project settings file, relative to the project's top folder. */
 export const kitSettingsFile = "scripts/agents/kit.json";
 const settingsCache = new Map();

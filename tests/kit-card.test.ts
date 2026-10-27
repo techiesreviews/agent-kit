@@ -222,7 +222,8 @@ test("kit card prints the card for the kit root with a RESULT line", (t) => {
   rmSync(join(f.memory, "project-notes/site.md"));
   const empty = spawnSync("/bin/bash", [kit, "card"], { cwd: f.home, env: { ...f.env, KIT_ROOT: resolve(".") }, encoding: "utf8" });
   assert.equal(empty.stdout, `${noNotes}RESULT: ok card no notes\n`);
-  const broken = spawnSync("/bin/bash", [kit, "card"], { cwd: f.home, env: { ...f.env, KIT_ROOT: f.home }, encoding: "utf8" });
+  // The card script comes from the shared kit; a KIT_HOME without it fails with one line.
+  const broken = spawnSync("/bin/bash", [resolve("scripts/agents/kit.d/card")], { cwd: f.home, env: { ...f.env, KIT_ROOT: resolve("."), KIT_HOME: f.home }, encoding: "utf8" });
   assert.equal(broken.status, 1);
   assert.equal(broken.stdout, "RESULT: fail card script failed\n");
 });

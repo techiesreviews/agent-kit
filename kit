@@ -1,17 +1,29 @@
 #!/usr/bin/env bash
-# Usage: kit [<command> [args]]; run a shared command from scripts/agents/kit.d/ or one of the
+# Usage: kit [<command> [args]]; run a shared command from $KIT_HOME/kit.d/ or one of the
 # project's own from the folder named by "commands" in scripts/agents/kit.json.
 set -euo pipefail
 kit_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+# KIT_HOME is the shared kit: this folder unless already set (a kit checkout tried against this project).
+home=${KIT_HOME:-$kit_dir}
+if ! KIT_HOME=$(cd -- "$home" 2>/dev/null && pwd -P) || [[ ! -f $KIT_HOME/kit-lib.sh ]]; then
+  printf 'kit: KIT_HOME %s holds no kit-lib.sh\n' "$home" >&2
+  printf 'RESULT: fail no kit at KIT_HOME %s\n' "$home"
+  exit 2
+fi
+export KIT_HOME
 # shellcheck source=scripts/agents/kit-lib.sh
-source "$kit_dir/kit-lib.sh"
+source "$KIT_HOME/kit-lib.sh"
+# Outside git the project is the one around this front door, not around KIT_HOME.
+if [[ -z ${KIT_ROOT:-} ]] && ! git rev-parse --show-toplevel > /dev/null 2>&1; then
+  KIT_ROOT=$(cd -- "$kit_dir/../.." && pwd -P)
+fi
 KIT_ROOT=$(kit_root)
 
 # KIT_COMMANDS_DIR (tests) replaces both folders.
 if [[ -n ${KIT_COMMANDS_DIR:-} ]]; then
   folders=("$KIT_COMMANDS_DIR") headings=('Commands')
 else
-  folders=("$kit_dir/kit.d") headings=('Shared commands')
+  folders=("$KIT_HOME/kit.d") headings=('Shared commands')
   own=$(kit_setting .commands)
   if [[ -n $own ]]; then
     [[ $own == /* ]] || own=$KIT_ROOT/$own
@@ -132,7 +144,7 @@ trap 'interrupted HUP 1' HUP
 kit_node || :
 KIT_MAIN_ROOT=$(kit_main_root)
 export KIT_ROOT KIT_MAIN_ROOT
-export KIT_LIB="$kit_dir/kit-lib.sh" KIT_LIB_MJS="$kit_dir/kit-lib.mjs"
+export KIT_LIB="$KIT_HOME/kit-lib.sh" KIT_LIB_MJS="$KIT_HOME/kit-lib.mjs"
 
 # A coprocess lets the parent remember the last line without buffering stdout.
 # Preserve stdin explicitly: a coprocess otherwise replaces it with a pipe.

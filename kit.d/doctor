@@ -213,6 +213,19 @@ else
   fail help "${list//,/, }" 'run scripts/agents/kit <command> --help and repair it'
 fi
 
+# The shared kit runs from anywhere: a copy outside the project, named by KIT_HOME, still runs a shared command.
+home=$(kit_home) copy=$help_dir/kit-home output='' code=0
+if ! cp -R -- "$home" "$copy" 2>/dev/null; then
+  code=1 output="cannot copy $home"
+else
+  output=$(cd -- "$root" && env -u KIT_COMMANDS_DIR KIT_HOME="$copy" KIT_ROOT="$root" timeout 10 "$copy/kit" version 2>&1 < /dev/null) || code=$?
+fi
+if (( code == 0 )) && [[ ${output##*$'\n'} == 'RESULT: ok version '* ]]; then
+  pass 'kit home' "a copy of $home runs kit version"
+else
+  fail 'kit home' "a copy of $home fails kit version: ${output##*$'\n'}" 'reach shared helpers through KIT_HOME, not scripts/agents/'
+fi
+
 # Grok is an optional second reviewer: report it, never fail on it.
 if [[ $quiet == false ]]; then
   grok=${KIT_GROK:-grok}
@@ -240,4 +253,4 @@ if (( ${#failed[@]} )); then
   kit_result fail "doctor ${#failed[@]} failed: $names"
   exit 1
 fi
-kit_result ok 'doctor 10/10 checks passed'
+kit_result ok 'doctor 11/11 checks passed'

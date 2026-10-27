@@ -118,6 +118,9 @@ function fixture(t: TestContext, changes?: Record<string, string>, override: Rec
   const wrapper = `import { createRequire } from "node:module";\ncreateRequire(import.meta.url)(${JSON.stringify(join(bin, "fake.cjs"))});\n`;
   for (const path of ["scripts/agents/tickets.mjs", "scripts/check-colours.mjs"]) writeFileSync(join(root, path), wrapper);
   writeFileSync(join(root, "scripts/agents/unit.sh"), fake); chmodSync(join(root, "scripts/agents/unit.sh"), 0o755);
+  // KIT_HOME is this project's scripts/agents, holding the fakes, with the real commands and library beside them.
+  for (const name of ["kit.d", "kit-lib.sh", "kit-lib.mjs"]) symlinkSync(resolve("scripts/agents", name), join(root, "scripts/agents", name));
+  env.KIT_HOME = join(root, "scripts/agents");
   for (const name of ["a", "code-map"]) writeFileSync(join(root, `tests/${name}.test.ts`), `// ${name}\n`);
   writeFileSync(join(root, "tests/b.test.ts"), 'import "./fakes/thing.ts";\n');
   // This editor's settings, without its machine folders.
