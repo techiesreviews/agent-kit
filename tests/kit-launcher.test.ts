@@ -389,6 +389,26 @@ test("a picked folder removed just before the launcher resolves it is named in t
   assert.equal(existsSync(folder), false);
 });
 
+test("a picked cache clone removed just before the launcher resolves it is named in the failure", (t) => {
+  const f = fixture(t);
+  f.publish("one");
+  const cache = join(f.cache, "agent-kit");
+  assert.deepEqual(lines(f.kit(["pinned"])), [cache]);
+  const cd = `() { if [[ \${2-} == ${JSON.stringify(cache)} ]]; then rm -rf -- "$2"; fi; builtin cd "$@"; }`;
+  const result = f.kit(["where"], { "BASH_FUNC_cd%%": cd });
+  assert.equal(result.status, 2, result.stderr);
+  assert.equal(result.stdout, `RESULT: fail no Agent Kit at ${cache} (removed while starting)\n`);
+  assert.equal(existsSync(cache), false);
+});
+
+test("a clone of an empty kit repo says the clone holds no whole kit and leaves the cache empty", (t) => {
+  const f = fixture(t);
+  const result = f.kit(["where"]);
+  assert.equal(result.status, 2);
+  assert.equal(result.stdout, `RESULT: fail no Agent Kit at ${join(f.cache, "agent-kit")} (the clone of ${f.env.KIT_REPO} holds no whole kit)\n`);
+  assert.deepEqual(readdirSync(f.cache), []);
+});
+
 test("a pinned whole kit without hooks/run.sh is kept by the kit launcher, while the hook launcher runs current's guard", (t) => {
   const f = fixture(t);
   const one = f.publish("one");
