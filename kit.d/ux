@@ -320,7 +320,7 @@ async function runLogged(root, command, args, log) {
 function projectShots(root, env = process.env) {
   if (env.KIT_UX_SHOTS) return env.KIT_UX_SHOTS;
   let folder = env.KIT_COMMANDS_DIR;
-  // Read "commands" alone, as the front door's kit_setting does: other missing keys do not hide the folder.
+  // Read "commands" alone, as the front door's kit_setting does, so other missing keys do not hide the folder; a broken file is named.
   if (!folder) {
     let text;
     try { text = readFileSync(join(root, kitSettingsFile), "utf8"); }
@@ -450,7 +450,9 @@ async function main() {
     const features = parseFeatures(readFileSync(join(root, "docs/agents/features.md"), "utf8"));
     const selected = selectFeatures(features, changed, flags);
     if (!selected.length) { kitResult("ok", "ux nothing visible touched"); return 0; }
-    const shots = projectShots(root);
+    // Only a try takes screenshots, so a project without its own shots is asked for one only then.
+    let shots;
+    const shotsCommand = () => shots ??= projectShots(root);
 
     const owner = kitOwner().replace(/[^a-zA-Z0-9_.-]/g, "-").replace(/^\.+$/, "unknown");
     const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
@@ -465,7 +467,7 @@ async function main() {
     for (const feature of selected.filter(feature => feature.steps)) {
       const dir = join(triesDir, feature.id), log = join(triesDir, `${feature.id}.log`);
       mkdirSync(dir, { recursive: true });
-      const status = await runLogged(root, shots, ["--steps", join(root, feature.steps), "--width", feature.phone ? "390,1280" : "1280", "--out", dir], log);
+      const status = await runLogged(root, shotsCommand(), ["--steps", join(root, feature.steps), "--width", feature.phone ? "390,1280" : "1280", "--out", dir], log);
       const index = readIndex(dir);
       const failures = tryFailures(index, status, log);
       tries.push({ kind: "steps", features: [feature], dir, index, failures, ok: !failures.length });
@@ -477,7 +479,7 @@ async function main() {
       const dir = join(triesDir, "untried"), log = join(triesDir, "untried.log");
       mkdirSync(dir, { recursive: true });
       const phone = untried.some(entry => entry.screens.length && entry.feature.phone);
-      const status = await runLogged(root, shots, [...screenList, "--width", phone ? "390,1280" : "1280", "--out", dir], log);
+      const status = await runLogged(root, shotsCommand(), [...screenList, "--width", phone ? "390,1280" : "1280", "--out", dir], log);
       const index = readIndex(dir);
       const failures = tryFailures(index, status, log);
       tries.push({ kind: "screens", features: untried.filter(entry => entry.screens.length).map(entry => entry.feature), dir, index, failures, ok: !failures.length });

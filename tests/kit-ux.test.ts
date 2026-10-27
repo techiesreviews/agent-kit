@@ -322,6 +322,41 @@ test("kit ux reads the commands folder from an incomplete settings file and name
   assert.equal(calls().length, 1);
 });
 
+test("kit ux takes shots from KIT_COMMANDS_DIR over the settings folder, and from an absolute commands folder", t => {
+  const { root, put, run, calls } = fixture(t);
+  put("src/page-builder/media-picker.css", ".a { gap: var(--space); }\n.b { gap: var(--space); }\n");
+  const fake = readFileSync(join(root, ".scratch/shots.mjs"), "utf8");
+  const executable = (file: string, text: string) => { put(file, text); chmodSync(join(root, file), 0o755); };
+  // The settings folder's shots fails, so a run that used it could not pass.
+  put("scripts/agents/kit.json", JSON.stringify({ project: "x", branches: { land: "dev" }, commands: "own" }));
+  executable("own/shots", "#!/bin/sh\nexit 7\n");
+  executable(".scratch/override/shots.mjs", fake);
+  // KIT_COMMANDS_DIR replaces the front door's folders too, so it holds ux as well (a wrapper: ux runs only as its own main).
+  executable(".scratch/override/ux", `#!/bin/sh\nexec ${JSON.stringify(script)} "$@"\n`);
+  const replaced = run(["--no-review"], { KIT_UX_SHOTS: undefined, KIT_COMMANDS_DIR: join(root, ".scratch/override") });
+  assert.equal(replaced.status, 0, replaced.stdout + replaced.stderr);
+  assert.match(replaced.result, /^RESULT: ok ux 1 features tried, /);
+  assert.equal(calls().length, 1);
+  executable(".scratch/far/shots", fake);
+  put("scripts/agents/kit.json", JSON.stringify({ project: "x", branches: { land: "dev" }, commands: join(root, ".scratch/far") }));
+  const absolute = run(["--no-review"], { KIT_UX_SHOTS: undefined, KIT_COMMANDS_DIR: undefined });
+  assert.equal(absolute.status, 0, absolute.stdout + absolute.stderr);
+  assert.match(absolute.result, /^RESULT: ok ux 1 features tried, /);
+  assert.equal(calls().length, 2);
+});
+
+test("kit ux runs its checks without a project shots command when no touched feature needs a screenshot", t => {
+  const { put, run, calls } = fixture(t);
+  put("docs/agents/features.md", ["# Feature list", "", entry("F-plain-01", ["src/plain.ts"])].join("\n"));
+  put("src/plain.ts", "export {};\n");
+  const output = run(["--no-review"], { KIT_UX_SHOTS: undefined, KIT_COMMANDS_DIR: undefined });
+  assert.equal(output.status, 0, output.stdout + output.stderr);
+  assert.match(output.result, /^RESULT: ok ux 0 features tried, \d+ scripted findings, bundle /);
+  assert.doesNotMatch(output.stdout + output.stderr, /needs a project shots command/);
+  assert.match(output.stdout, /^features: F-plain-01$/m);
+  assert.deepEqual(calls(), []);
+});
+
 test("kit ux tries touched features, runs scripted checks and writes a bounded bundle", t => {
   const { root, put, run, calls } = fixture(t);
   put("src/page-builder/media-picker.css", ".a { gap: var(--space); }\n.media__badge { gap: 6px; color: #fff; }\n");
