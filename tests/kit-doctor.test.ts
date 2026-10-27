@@ -953,7 +953,8 @@ test("a version whose help and copy both hang skips the kit home check; a copy t
   mkdirSync(home);
   executable(join(home, "kit"), "sleep 5");
   // Run doctor directly: the front door refuses a KIT_HOME without kit-lib.sh itself.
-  const run = () => f.run(["--quiet"], f.build, { KIT_HOME: home, KIT_HELP_TIMEOUT: "0.3", KIT_DOCTOR_SKIP: "help" }, true);
+  // Each limit is its own: the help's and the copy's both run out.
+  const run = () => f.run(["--quiet"], f.build, { KIT_HOME: home, KIT_HELP_TIMEOUT: "0.3", KIT_HOME_TIMEOUT: "0.5", KIT_DOCTOR_SKIP: "help" }, true);
   const hung = run();
   assert.equal(hung.status, 0, hung.stdout + hung.stderr);
   assert.ok(hung.stdout.startsWith("problem: help: version (timed out); fix:"), hung.stdout);
@@ -988,6 +989,28 @@ test("through the real front door, a copy's version failing as its help did is s
   const plain = run();
   assert.equal(plain.status, 1, plain.stdout + plain.stderr);
   assert.ok(plain.stdout.endsWith("RESULT: fail doctor 2 failed: help,kit home\n"), plain.stdout);
+  // A version that prints nothing leaves only the front door's line, which is left out of the match.
+  executable(join(home, "kit.d/version"), "exit 1");
+  const silent = run({ KIT_DOCTOR_SKIP: "help" });
+  assert.equal(silent.status, 0, silent.stdout + silent.stderr);
+  assert.ok(silent.stdout.includes(`problem: kit home: a copy of ${home} fails kit version: RESULT: fail version exited 1 without a RESULT line; fix:`), silent.stdout);
+  assert.ok(silent.stdout.endsWith("RESULT: ok doctor 9/9 checks passed; skipped help, kit home (KIT_DOCTOR_SKIP)\n"), silent.stdout);
+  // A version that hangs: timeout stops the copy's front door, which says so, and the status still reads as timed out.
+  executable(join(home, "kit.d/version"), "sleep 5");
+  const hangs = { KIT_HELP_TIMEOUT: "0.3", KIT_HOME_TIMEOUT: "0.5" };
+  const hung = run({ ...hangs, KIT_DOCTOR_SKIP: "help" });
+  assert.equal(hung.status, 0, hung.stdout + hung.stderr);
+  assert.ok(hung.stdout.includes(`problem: kit home: a copy of ${home} fails kit version: RESULT: fail version interrupted; fix:`), hung.stdout);
+  assert.ok(hung.stdout.endsWith("RESULT: ok doctor 9/9 checks passed; skipped help, kit home (KIT_DOCTOR_SKIP)\n"), hung.stdout);
+  const unskipped = run(hangs);
+  assert.equal(unskipped.status, 1, unskipped.stdout + unskipped.stderr);
+  assert.ok(unskipped.stdout.endsWith("RESULT: fail doctor 2 failed: help,kit home\n"), unskipped.stdout);
+  // Output naming the copy's project rather than its kit is not read back, so the check refuses when unsure.
+  executable(join(home, "kit.d/version"), 'printf "%s: broken\\n" "$KIT_ROOT" >&2; exit 1');
+  const elsewhere = run({ KIT_DOCTOR_SKIP: "help" });
+  assert.equal(elsewhere.status, 1, elsewhere.stdout + elsewhere.stderr);
+  assert.ok(elsewhere.stdout.includes(`✗ kit home: a copy of ${home} fails kit version: RESULT: fail version exited 1 without a RESULT line; fix:`), elsewhere.stdout);
+  assert.ok(elsewhere.stdout.endsWith("RESULT: fail doctor 1 failed: kit home\n"), elsewhere.stdout);
 });
 
 test("a resumed build with a full status.json passes the build gate and really starts its builder, without KIT_DOCTOR_SKIP", (t) => {

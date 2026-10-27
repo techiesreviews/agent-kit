@@ -278,7 +278,8 @@ wait
 broken=() version_index=''
 for index in "${!commands[@]}"; do
   code=$(< "$help_dir/$index.code")
-  # The shared version comes first; it is the one the kit home check runs.
+  # The shared version comes first; it is the one the kit home check runs. Under KIT_COMMANDS_DIR (tests) the help
+  # is that folder's version while the copy runs its own kit, so a test gives both the same failure.
   if [[ ${commands[index]} == version && -z $version_index ]]; then version_index=$index; fi
   # 137: timeout -k had to kill a help that ignored SIGTERM.
   if (( code == 124 || code == 137 )); then broken+=("${commands[index]} (timed out)")
@@ -315,10 +316,11 @@ else
   if [[ -n ${own:-} && -d $own && $own_setting != /* ]]; then
     mkdir -p -- "$project/$(dirname -- "$own_setting")" && cp -R -- "$own" "$project/$own_setting"
   fi
-  # The help's time limit, so a version that hangs hangs in both.
-  output=$(cd -- "$project" && env -u KIT_COMMANDS_DIR KIT_HOME="$copy" KIT_ROOT="$project" timeout -k 2 "${KIT_HELP_TIMEOUT:-10}" "$project/scripts/agents/kit" version 2>&1 < /dev/null) || code=$?
+  # Its own limit (KIT_HOME_TIMEOUT, default 10): the copy starts the front door and runs version, far more than a help.
+  output=$(cd -- "$project" && env -u KIT_COMMANDS_DIR KIT_HOME="$copy" KIT_ROOT="$project" timeout -k 2 "${KIT_HOME_TIMEOUT:-10}" "$project/scripts/agents/kit" version 2>&1 < /dev/null) || code=$?
 fi
-# The copy fails because of version itself when version's help failed the same way: both timed out, or both
+# The copy fails because of version itself when version's help failed the same way: both timed out (each within
+# its own limit), or both
 # exited with the same status and printed the same, reading the copy's path as the kit's and leaving out the
 # RESULT line the front door adds. Any other failure, such as a missing helper, still fails kit home.
 version_failed_alike() {
@@ -343,7 +345,7 @@ fi
 
 # The kit's commit and age beside the project's, from kit version: a note, never a failure. A machine copy
 # without an update for over a day warns, also when quiet, and the RESULT says so.
-kit_warning='' version=$(timeout -k 2 10 "$home/kit.d/version" 2>/dev/null < /dev/null) || version=''
+kit_warning='' version=$(timeout -k 2 "${KIT_HOME_TIMEOUT:-10}" "$home/kit.d/version" 2>/dev/null < /dev/null) || version=''
 if [[ $version =~ (^|$'\n')commit\ ([^$'\n']*)$'\n'kit\ ([^$'\n']*)$'\n'project\ ([^$'\n']*) ]]; then
   kit_line="commit ${BASH_REMATCH[2]} (${BASH_REMATCH[3]}); project ${BASH_REMATCH[4]}"
   if [[ $version =~ (^|$'\n')warning\ ([^;$'\n']*)\;\ ([^$'\n']*) ]]; then
