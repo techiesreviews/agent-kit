@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -1070,6 +1070,44 @@ test("a follow-up longer than 160 characters reaches the ticket in full and the 
   assert.equal(f.git("rev-parse", "HEAD"), head);
   assert.equal(readFileSync(join(f.root, "ticket.md"), "utf8"), ticket);
   assert.equal(f.ghCalls("comment").filter(call => call.body === summary).length, 1);
+});
+
+for (const [length, cut] of [[160, false], [161, true]] as const) test(`a ${length}-character follow-up ${cut ? "is" : "is not"} marked … in the PR summary`, t => {
+  const f = fixture(t); f.rounds(3);
+  const text = `P2: ${"x".repeat(length - 4)}`;
+  f.saveReview(minorReview.replace("P2: Minor defect.", text));
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const expected = cut ? `- Spec (P2): ${text.slice(0, 160)}…\n` : `- Spec (P2): ${text}\n`;
+  assert.ok(f.ghCalls("comment").at(-1)?.body?.includes(expected), f.ghCalls("comment").at(-1)?.body);
+});
+
+test("the PR summary cut never splits an emoji", t => {
+  const f = fixture(t); f.rounds(3);
+  const text = `P2: ${"x".repeat(155)}😀😀 tail`;
+  f.saveReview(minorReview.replace("P2: Minor defect.", text));
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const body = f.ghCalls("comment").at(-1)?.body || "";
+  assert.ok(body.includes(`- Spec (P2): P2: ${"x".repeat(155)}😀…\n`), body);
+  assert.doesNotMatch(body, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+});
+
+test("a rerun counts follow-ups cut before full follow-ups as present", t => {
+  const f = fixture(t); f.rounds(3);
+  const long = `P2: ${"Evidence names the file and line. ".repeat(6)}Fix: keep the whole sentence in the ticket.`;
+  const old = `- Spec (P2): ${long.slice(0, 160)}`;
+  const ticket = `---\ntitle: "Ticket title"\n---\n\n## Done (2026-10-19)\n\nImplemented.\n\n### Follow-ups\n\n${old}\n- Validation gaps (gap): Add coverage.\n`;
+  f.commit("Close ticket", "ticket.md", ticket);
+  const oldSummary = `Follow-ups (non-blocking after 3 fix rounds):\n${old}\n- Validation gaps (gap): Add coverage.`;
+  appendFileSync(f.env.FAKE_CALLS!, JSON.stringify({ tool: "gh", args: ["pr", "comment", "73", "--body-file", "old.md"], body: oldSummary }) + "\n");
+  f.saveReview(minorReview.replace("P2: Minor defect.", long));
+  const head = f.git("rev-parse", "HEAD");
+  const result = f.run(["--ticket", "ticket.md"], { FAKE_EXISTING: "1" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(readFileSync(join(f.root, "ticket.md"), "utf8"), ticket);
+  assert.equal(f.git("rev-parse", "HEAD"), head);
+  assert.deepEqual(f.ghCalls("comment").filter(call => call.body?.startsWith("Follow-ups")).map(call => call.body), [oldSummary]);
 });
 
 async function waitForFile(path: string) {

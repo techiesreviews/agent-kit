@@ -63,7 +63,11 @@ async function savedReview(head, base, patchId, ticket, root) {
 
 const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
 // Short form of a finding for the console, PR body and PR comment; the ticket keeps the full text.
-const shortText = text => text.length > 160 ? `${text.slice(0, 160).trimEnd()}…` : text;
+// The cut counts code points, so it never splits an emoji's surrogate pair.
+const shortText = text => {
+  const characters = Array.from(text);
+  return characters.length > 160 ? `${characters.slice(0, 160).join("").trimEnd()}…` : text;
+};
 
 /**
  * Whether a workflow file runs for a PR branch, read from its top-level `on:` triggers: `pull_request` or
@@ -376,13 +380,17 @@ async function main(args) {
       if (!findings.length) return;
       const reviewedHead = head;
       console.log(`review: ${findings.length} follow-ups after ${FIX_ROUNDS} fix rounds (non-blocking)`);
-      const line = text => item => `- ${item.group} (${item.severity || "gap"}): ${text(item.text)}`;
-      const lines = findings.map(line(text => text));
-      const summary = `Follow-ups (non-blocking after ${FIX_ROUNDS} fix rounds):\n${findings.map(line(shortText)).join("\n")}`;
+      const label = item => `- ${item.group} (${item.severity || "gap"}): `;
+      const fullLines = findings.map(item => label(item) + item.text);
+      const shortLines = findings.map(item => label(item) + shortText(item.text));
+      // Before 2026-10-27 kit pr cut each finding to 160 UTF-16 units with no mark; a rerun counts those as present.
+      const oldLines = findings.map(item => label(item) + item.text.slice(0, 160));
+      const heading = `Follow-ups (non-blocking after ${FIX_ROUNDS} fix rounds):\n`;
+      const summary = heading + shortLines.join("\n"), oldSummary = heading + oldLines.join("\n");
       if (!readFileSync(body, "utf8").includes(summary)) appendFileSync(body, `\n${summary}\n`);
       await gh("follow-ups", ["api", "--method", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "-F", `body=@${body}`]);
       const comments = JSON.parse(await gh("follow-ups", ["pr", "view", number, "--json", "comments"]));
-      if (!comments.comments?.some(comment => comment.body === summary)) {
+      if (!comments.comments?.some(comment => [summary, oldSummary].includes(comment.body))) {
         const comment = join(directory, "follow-ups.md");
         writeFileSync(comment, summary);
         await gh("follow-ups", ["pr", "comment", number, "--body-file", comment]);
@@ -402,7 +410,8 @@ async function main(args) {
       const doneEnd = end < 0 ? rest.length : end + 1;
       let done = rest.slice(0, doneEnd);
       const followups = /^### Follow-ups\s*\n([\s\S]*?)(?=^#{1,3} |$(?![\s\S]))/m.exec(done);
-      const missing = lines.filter(line => !followups?.[1].split(/\r?\n/).includes(line));
+      const existing = followups?.[1].split(/\r?\n/) ?? [];
+      const missing = fullLines.filter((line, index) => !existing.includes(line) && !existing.includes(oldLines[index]));
       if (missing.length) {
         if (followups) {
           const position = followups.index + followups[0].trimEnd().length;
