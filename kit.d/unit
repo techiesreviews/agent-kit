@@ -136,8 +136,8 @@ async function main(args) {
     const env = nodeEnv();
     // Nested kit invocations must start a real test runner, not inherit node:test's child context.
     delete env.NODE_TEST_CONTEXT;
-    let output = "";
-    const child = spawn("bash", [resolve(import.meta.dirname, "../unit.sh"), ...selected.map(item => item.file)], { cwd: root, env, detached: true, stdio: ["ignore", "pipe", "inherit"] });
+    let output = "", errors = "";
+    const child = spawn("bash", [resolve(import.meta.dirname, "../unit.sh"), ...selected.map(item => item.file)], { cwd: root, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
     const forward = signal => {
       if (!child.pid) return;
       try { process.kill(-child.pid, signal); }
@@ -146,6 +146,7 @@ async function main(args) {
     const handlers = ["SIGINT", "SIGTERM", "SIGHUP"].map(signal => [signal, () => forward(signal)]);
     for (const [signal, handler] of handlers) process.on(signal, handler);
     child.stdout.setEncoding("utf8").on("data", text => { output += text; process.stdout.write(text); });
+    child.stderr.setEncoding("utf8").on("data", text => { errors += text; process.stderr.write(text); });
     try {
       status = await new Promise((accept, reject) => {
         child.once("error", reject);
@@ -153,7 +154,8 @@ async function main(args) {
       });
     } finally { for (const [signal, handler] of handlers) process.removeListener(signal, handler); }
     const log = /^log: (.+)$/m.exec(output)?.[1];
-    if (!log) throw new Error("unit.sh returned no log path");
+    // Without a log unit.sh stopped before the tests; its last stderr line names why (a settings problem, no jq).
+    if (!log) throw new Error(errors.trimEnd().split("\n").at(-1).replace(/^unit\.sh: /, "") || "unit.sh returned no log path");
     const counts = unitCounts(readFileSync(resolve(root, log), "utf8"));
     if (counts.fail || counts.cancelled) status ||= 1;
     kitResult(status ? "fail" : "ok", `unit ${counts.pass}/${counts.total} (${selected.length} files) log ${log}`);

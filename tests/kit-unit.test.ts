@@ -149,6 +149,16 @@ test("unit help, listing and invalid options use the kit front door", t => {
   assert.equal(f.executed(), 0);
 });
 
+test("a --base check git fails for another reason than a missing ref is a repo problem, without usage", t => {
+  const f = fixture(t);
+  rmSync(join(f.root, ".git"), { recursive: true, force: true });
+  const output = f.run("--affected", "--base", "HEAD");
+  result(output, 1, /^RESULT: fail unit /);
+  assert.match(output.stderr, /^problem: /m);
+  assert.doesNotMatch(output.stderr, /Usage:/);
+  assert.equal(f.executed(), 0);
+});
+
 test("without the project's import scan --affected follows plain imports itself; no unit.files is said plainly", t => {
   const f = fixture(t);
   rmSync(join(f.root, "scripts/agents/specs-affected.mjs"));
@@ -173,6 +183,12 @@ test("without the project's import scan --affected follows plain imports itself;
     const output = spawnSync("bash", [resolve("scripts/agents/unit.sh"), ...args], { cwd: f.root, env, encoding: "utf8", timeout: 60_000 });
     assert.equal(output.status, 1, output.stdout + output.stderr);
     assert.equal(output.stderr, "unit.sh needs unit.run in scripts/agents/kit.json\n");
+  }
+  // kit unit ends on that problem too, for named files as for none.
+  for (const args of [["tests/direct.test.ts"], []]) {
+    const output = f.run(...args);
+    result(output, 1, /^RESULT: fail unit unit\.sh needs unit\.run in scripts\/agents\/kit\.json$/);
+    assert.doesNotMatch(output.stderr, /Usage:/);
   }
   assert.equal(f.executed(), 0);
 });

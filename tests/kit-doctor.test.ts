@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 
 const repo = resolve(".");
@@ -433,8 +433,20 @@ test("doctor names a missing jq instead of calling a good settings file unreadab
     // The checks that need a setting say jq skipped them; no other line blames the settings file.
     for (const name of ["place", "base", "node_modules", "playwright", "checks.doctor"]) assert.ok(lines.includes(`✓ ${name}: skipped (jq is not installed)`), result.stdout);
     assert.deepEqual(lines.filter(line => line.includes("scripts/agents/kit.json")), [lines.find(line => line.startsWith("✗ settings: "))]);
-    assert.match(lines.at(-1)!, /^RESULT: fail doctor \d+ failed: settings/);
+    // The hooks read their input with jq too, so the probe cannot be rejected; every other check passes or skips.
+    assert.equal(lines.at(-1), "RESULT: fail doctor 2 failed: settings,hooks live");
   }
+  // Without KIT_COMMANDS_DIR doctor reads the shared folder and would read the settings' commands folder;
+  // without jq it skips that folder and says why, without blaming the settings file.
+  mkdirSync(join(f.build, "scripts/agents/project.d"));
+  writeFileSync(join(f.build, "scripts/agents/kit.json"), JSON.stringify({ project: "native-site-editor", branches: { land: "dev" },
+    devRoot: f.dev, commands: "scripts/agents/project.d" }));
+  const shared = readdirSync(dirname(doctor)).filter(name => !/^[._]/.test(name)).length;
+  const own = f.run([], f.build, { PATH: bin, KIT_COMMANDS_DIR: "" }, true);
+  const lines = own.stdout.trimEnd().split("\n");
+  assert.ok(lines.includes(`✓ commands: ${shared} shared, project folder skipped (jq is not installed)`), own.stdout);
+  assert.ok(lines.includes(`✓ kit home: a copy of ${realpathSync(dirname(dirname(doctor)))} runs kit version for a project with only its settings and front door`), own.stdout);
+  assert.equal(lines.at(-1), "RESULT: fail doctor 2 failed: settings,hooks live");
   // KIT_PLAYWRIGHT_MODULE needs no jq, so doctor still checks the module it names.
   const module = join(f.directory, "playwright.js");
   writeFileSync(module, "");

@@ -174,6 +174,7 @@ test("a missing optional key turns its feature off with a plain line", t => {
   const unit = f.run(["unit", "tests/a.test.ts"]);
   assert.equal(unit.status, 1, unit.stdout + unit.stderr);
   assert.match(unit.stderr, /^unit\.sh needs unit\.run in scripts\/agents\/kit\.json$/m);
+  assert.equal(lastLine(unit), "RESULT: fail unit unit.sh needs unit.run in scripts/agents/kit.json");
   // No paths and no feature list: every change is code, and nothing needs a feature-list update.
   const settings = { project: "kit-land", branches: { land: "main" } }, rows = [{ status: "M", path: "src/ui/a.css" }];
   assert.equal(classify(rows, { settings }).tier, "full");
@@ -446,6 +447,14 @@ test("without jq, unit.sh and worktree.sh name it and stop, making no worktree",
   const unit = spawnSync("/bin/bash", [resolve("scripts/agents/unit.sh"), "tests/a.test.ts"], { cwd: f.root, env, encoding: "utf8" });
   assert.equal(unit.status, 1, unit.stdout + unit.stderr);
   assert.equal(unit.stderr, "unit.sh: jq is not installed; install jq\n");
+  const named = f.run(["unit", "tests/a.test.ts"], { PATH: env.PATH });
+  assert.equal(named.status, 1, named.stdout + named.stderr);
+  assert.equal(lastLine(named), "RESULT: fail unit jq is not installed; install jq");
+  // A shared command still runs through the front door, which names jq once on stderr.
+  const version = f.run(["version"], { PATH: env.PATH });
+  assert.equal(version.status, 0, version.stdout + version.stderr);
+  assert.match(lastLine(version)!, /^RESULT: ok version /);
+  assert.equal(version.stderr, "jq is not installed; install jq\n");
   const made = spawnSync("/bin/bash", [resolve("scripts/agents/worktree.sh"), "feature/nojq"], { cwd: f.root, env, encoding: "utf8" });
   assert.equal(made.status, 1, made.stdout + made.stderr);
   assert.equal(made.stderr, "worktree.sh: jq is not installed; install jq\n");
@@ -506,6 +515,11 @@ test("a settings problem fails kit review, kit unit --affected and unit.sh as a 
   const unit = spawnSync("bash", [resolve("scripts/agents/unit.sh"), "tests/a.test.ts"], { cwd: broken.root, env: broken.env, encoding: "utf8" });
   assert.equal(unit.status, 1, unit.stdout + unit.stderr);
   assert.match(unit.stderr, /^unit\.sh: scripts\/agents\/kit\.json is unreadable: /m);
+  // kit unit with a named file ends on the problem unit.sh printed, without its prefix.
+  const named = broken.run(["unit", "tests/a.test.ts"]);
+  assert.equal(named.status, 1, named.stdout + named.stderr);
+  assert.doesNotMatch(named.stderr, /Usage:/);
+  assert.match(lastLine(named)!, /^RESULT: fail unit scripts\/agents\/kit\.json is unreadable: \S/);
   const affected = broken.run(["unit", "--affected"]);
   assert.equal(affected.status, 1, affected.stdout + affected.stderr);
   assert.match(affected.stderr, /^problem: scripts\/agents\/kit\.json is unreadable: /m);
