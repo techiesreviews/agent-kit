@@ -176,7 +176,7 @@ test("the shared kit runs from a copy named by KIT_HOME for a project with only 
   // The copy is outside git, so it has no commit of its own.
   const version = front("version");
   assert.equal(version.status, 0, version.stdout + version.stderr);
-  assert.match(version.stdout, /^commit none\nowner .+\nnode v\d+\.\d+\.\d+\nRESULT: ok version none node v\d+/);
+  assert.match(version.stdout, /^commit none\nkit copy outside git\nproject [0-9a-f]{7,}\nowner .+\nnode v\d+\.\d+\.\d+\nRESULT: ok version none node v\d+/);
   const status = front("status");
   assert.equal(status.status, 0, status.stdout + status.stderr);
   assert.match(status.stdout, /\nRESULT: ok status /);
@@ -517,6 +517,6 @@ test("the real kit exposes an executable version stub and emits its final RESULT
   assert.deepEqual(results(help.stdout), []);
   const version = run(["version"]);
   assert.equal(version.status, 0, version.stderr);
-  assert.match(version.stdout, /^commit [a-f0-9]+\nowner .+\nnode v\d+\.\d+\.\d+\nRESULT: ok version [a-f0-9]+ node v\d+\.\d+\.\d+\n$/);
+  assert.match(version.stdout, /^commit [a-f0-9]+\nkit in this project, commit \d+ \w+ old\nproject [a-f0-9]+\nowner .+\nnode v\d+\.\d+\.\d+\nRESULT: ok version [a-f0-9]+ node v\d+\.\d+\.\d+\n$/);
   assert.equal(results(version.stdout).length, 1);
 });

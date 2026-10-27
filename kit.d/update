@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# kit: unpack the newest kit into this machine's copy, or step back one
+set -euo pipefail
+# shellcheck source=scripts/agents/kit-lib.sh
+source "${KIT_LIB:-$(dirname -- "${BASH_SOURCE[0]}")/../kit-lib.sh}"
+
+usage() {
+  cat <<'EOF'
+Usage: kit update [--previous]
+Fetch the kit repo's main (KIT_REPO, which the launcher sets) and unpack it into
+${XDG_DATA_HOME:-~/.local/share}/agent-kit/<commit>/, then point current at it in one step.
+--previous points current back at the kit it replaced, for every project at once; kit update
+then stays there until main moves on (the normal way back is a revert in the kit repo).
+EOF
+}
+previous=false
+for argument in "$@"; do
+  case $argument in
+    --help|-h) usage; exit 0 ;;
+    --previous) previous=true ;;
+    *) usage >&2; kit_result fail "update unknown argument $argument"; exit 2 ;;
+  esac
+done
+
+# Same default as the launcher's; the launcher passes its own setting down as KIT_REPO.
+repo=${KIT_REPO:-https://github.com/techiesreviews/agent-kit.git}
+data=${XDG_DATA_HOME:-}
+[[ $data == /* ]] || data=${HOME:-$(cd ~ && pwd -P)}/.local/share
+data=$data/agent-kit
+mkdir -p -- "$data"
+# One update at a time (a timer and a person can overlap).
+exec {lock}> "$data/.lock"
+if command -v flock > /dev/null && ! flock -w 120 "$lock"; then
+  kit_result fail "update another kit update holds $data/.lock"
+  exit 1
+fi
+
+link() { # link <name> <commit>: replace the link in one rename, so a reader sees the old or the new target
+  ln -sfn -- "$2" "$data/.$1.$$"
+  mv -fT -- "$data/.$1.$$" "$data/$1"
+}
+target() { readlink -- "$data/$1" 2>/dev/null || :; }
+short() { printf '%s' "${1:0:7}"; }
+remove() { chmod -R u+w -- "$1" 2>/dev/null || :; rm -rf -- "$1"; }
+
+current=$(target current) before=$(target previous)
+if [[ $previous == true ]]; then
+  if [[ -z $before || ! -d $data/$before ]]; then
+    printf 'kit update: no previous kit in %s\n' "$data" >&2
+    kit_result fail "update no previous kit to go back to"
+    exit 1
+  fi
+  link current "$before"
+  [[ -z $current ]] || link previous "$current"
+  # The commit stepped back from: kit update keeps off it until main moves on.
+  printf '%s\n' "$current" > "$data/held"
+  printf 'current %s (was %s)\n' "$(short "$before")" "$(short "$current")"
+  kit_result ok "update --previous $(short "$before") (was $(short "$current"))"
+  exit 0
+fi
+
+bare=$data/repo.git
+[[ -d $bare ]] || git init -q --bare -- "$bare"
+if ! GIT_TERMINAL_PROMPT=0 timeout 120 git -C "$bare" fetch -q --depth 1 -- "$repo" main >&2; then
+  kit_result fail "update cannot fetch main from $repo"
+  exit 1
+fi
+newest=$(git -C "$bare" rev-parse FETCH_HEAD)
+# kit doctor and kit version read the time of the last fetch.
+date +%s > "$data/updated"
+
+held=''
+[[ ! -f $data/held ]] || held=$(< "$data/held")
+if [[ $newest == "$current" ]]; then
+  rm -f -- "$data/held"
+  result="update already on $(short "$newest")"
+elif [[ $newest == "$held" ]]; then
+  result="update held on $(short "$current"): main is still $(short "$newest"), which kit update --previous stepped back from"
+else
+  if [[ ! -d $data/$newest ]]; then
+    unpack=$(mktemp -d "$data/.unpack.XXXXXX")
+    git -C "$bare" archive "$newest" | tar -x -C "$unpack"
+    if [[ ! -x $unpack/kit || ! -f $unpack/kit-lib.sh ]]; then
+      remove "$unpack"
+      kit_result fail "update main $(short "$newest") has no kit front door and kit-lib.sh at its top"
+      exit 1
+    fi
+    touch -- "$unpack"
+    # A machine copy is never edited in place: kit work happens in a checkout of the kit repo.
+    chmod -R a-w -- "$unpack"
+    mv -T -- "$unpack" "$data/$newest"
+    printf 'unpacked %s into %s\n' "$(short "$newest")" "$data/$newest"
+  fi
+  link current "$newest"
+  rm -f -- "$data/held"
+  if [[ -n $current ]]; then
+    link previous "$current"
+    # A folder's age counts from when it stopped being current: a command started on it has a day to finish.
+    touch -- "$data/$current" 2>/dev/null || :
+  fi
+  printf 'current %s (was %s)\n' "$(short "$newest")" "$(short "${current:-none}")"
+  result="update $(short "$newest") (was $(short "${current:-none}"))"
+fi
+
+# Folders (and unfinished unpacks) older than a day go, except the current and previous kits.
+current=$(target current) before=$(target previous)
+for folder in "$data"/* "$data"/.unpack.*; do
+  name=${folder##*/}
+  [[ -d $folder && ($name =~ ^[0-9a-f]{40}$ || $name == .unpack.*) && $name != "$current" && $name != "$before" ]] || continue
+  [[ -z $(find "$folder" -maxdepth 0 -mmin +1440) ]] || remove "$folder"
+done
+kit_result ok "$result"

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -12,7 +12,8 @@ const library = join(repo, "scripts/agents/kit-lib.sh");
 
 function temp(t: { after: (fn: () => void) => void }) {
   const directory = mkdtempSync(join(tmpdir(), "kit-doctor-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  // A machine-copy fixture is read-only, as kit update leaves it.
+  t.after(() => { spawnSync("chmod", ["-R", "u+w", directory]); rmSync(directory, { recursive: true, force: true }); });
   return directory;
 }
 
@@ -77,7 +78,8 @@ function failure(result: ReturnType<typeof spawnSync<string>>, name: string) {
   assert.equal(result.status, 1, result.stdout + result.stderr);
   const lines = result.stdout.trimEnd().split("\n");
   assert.equal(lines.filter(line => line.startsWith("RESULT: ")).length, 1);
-  assert.equal(lines.length, 13, result.stdout);
+  // The kit note shows whenever the kit's own version runs.
+  assert.equal(lines.filter(line => !line.startsWith("✓ kit: ")).length, 13, result.stdout);
   assert.ok(lines.some(line => line.startsWith(`✗ ${name}: `) && line.includes("; fix: ")), result.stdout);
   assert.equal(lines.at(-1), `RESULT: fail doctor 1 failed: ${name}`);
   assert.equal(result.stderr, "");
@@ -93,16 +95,18 @@ test("doctor checks all eleven conditions quickly, notes Grok, and quiet success
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.ok(elapsed < 2000, `doctor took ${elapsed}ms`);
   const lines = result.stdout.trimEnd().split("\n");
-  assert.deepEqual(lines.slice(0, 12).map(line => line.split(":")[0]), [
-    "✓ settings", "✓ place", "✓ base", "✓ hook config", "✓ hooks live", "✓ node", "✓ node_modules", "✓ conflicts", "✓ commands", "✓ help", "✓ kit home", "✗ grok",
+  assert.deepEqual(lines.slice(0, 13).map(line => line.split(":")[0]), [
+    "✓ settings", "✓ place", "✓ base", "✓ hook config", "✓ hooks live", "✓ node", "✓ node_modules", "✓ conflicts", "✓ commands", "✓ help", "✓ kit home", "✓ kit", "✗ grok",
   ]);
   assert.equal(lines[0], "✓ settings: scripts/agents/kit.json (native-site-editor, lands on dev)");
   assert.equal(lines[8], `✓ commands: 2 in ${f.commands} (KIT_COMMANDS_DIR)`);
   assert.equal(lines[9], "✓ help: 2 commands answer --help");
   assert.equal(lines[10], `✓ kit home: a copy of ${join(repo, "scripts/agents")} runs kit version for a project with only its settings and front door`);
-  assert.equal(lines[11], "✗ grok: not installed (optional reviewer); fix: install the grok CLI for Grok reviews");
-  assert.equal(lines.length, 13);
-  assert.equal(lines[12], "RESULT: ok doctor 11/11 checks passed");
+  // The kit's commit and age beside the project's is a note, not a counted check.
+  assert.match(lines[11], new RegExp(`^✓ kit: commit [0-9a-f]{7,} \\(checkout ${repo}, commit \\d+ \\w+ old\\); project [0-9a-f]{7,}$`));
+  assert.equal(lines[12], "✗ grok: not installed (optional reviewer); fix: install the grok CLI for Grok reviews");
+  assert.equal(lines.length, 14);
+  assert.equal(lines[13], "RESULT: ok doctor 11/11 checks passed");
   assert.equal(result.stderr, "");
   const quiet = f.run(["--quiet"]);
   assert.equal(quiet.status, 0, quiet.stderr);
@@ -313,7 +317,7 @@ test("doctor adds the project's checks.doctor lines and the playwright module, e
   assert.match(passing.stdout, /RESULT: ok doctor 12\/12 checks passed\n$/);
 });
 
-test("the doctor RESULT counts every line it checked, but not the optional grok note", (t) => {
+test("the doctor RESULT counts every line it checked, but not the optional grok and kit notes", (t) => {
   const f = playground(t, { allowMainCheckout: true, playwright: "vendor/playwright", checks: { doctor: "true" } });
   mkdirSync(join(f.root, "vendor/playwright"), { recursive: true });
   const grok = join(f.directory, "grok");
@@ -321,7 +325,8 @@ test("the doctor RESULT counts every line it checked, but not the optional grok 
   const result = f.run({ KIT_GROK: grok });
   assert.equal(result.status, 0, result.stdout);
   assert.match(result.stdout, /^✓ grok: installed and logged in \(optional reviewer\)$/m);
-  assert.equal(result.stdout.split("\n").filter(line => line.startsWith("✓ ")).length, 14);
+  assert.match(result.stdout, /^✓ kit: commit /m);
+  assert.equal(result.stdout.split("\n").filter(line => line.startsWith("✓ ")).length, 15);
   assert.match(result.stdout, /RESULT: ok doctor 13\/13 checks passed\n$/);
 });
 
@@ -521,6 +526,43 @@ test("doctor reports only the first three conflict locations", (t) => {
   failure(result, "conflicts");
   assert.match(result.stdout, /✗ conflicts: conflict.txt:1 conflict.txt:2 conflict.txt:3; fix:/);
   assert.doesNotMatch(result.stdout, /conflict.txt:4/);
+});
+
+test("doctor fails when the hooks cannot reach a kit: the hook launcher's warning, not silence", (t) => {
+  const f = fixture(t);
+  copyFileSync(join(repo, "scripts/agents/launcher/hooks-run.sh"), join(f.build, "scripts/agents/hooks/run.sh"));
+  // No machine copy and no cache clone; the KIT_HOME doctor itself runs on does not reach the probe.
+  const result = f.run([], f.build, { XDG_DATA_HOME: join(f.directory, "data"), XDG_CACHE_HOME: join(f.directory, "cache"),
+    KIT_HOME: join(repo, "scripts/agents") });
+  failure(result, "hooks live");
+  assert.ok(result.stdout.includes("✗ hooks live: hooks cannot reach a kit (Agent Kit not found); fix: run scripts/agents/kit update to fill the machine copy\n"), result.stdout);
+});
+
+test("doctor warns, without failing, on a machine copy two days after its last kit update", (t) => {
+  const f = fixture(t);
+  const data = join(f.directory, "data"), sha = "0123456789abcdef0123456789abcdef01234567";
+  const home = join(data, "agent-kit", sha);
+  cpSync(join(repo, "scripts/agents"), home, { recursive: true, filter: (source) => source !== join(repo, "scripts/agents/project.d") });
+  writeFileSync(join(data, "agent-kit/updated"), `${Math.floor(Date.now() / 1000) - 2 * 86400 - 60}\n`);
+  // A machine copy is read-only; doctor's own copy of it must still clean up.
+  spawnSync("chmod", ["-R", "a-w", home]);
+  const env = { XDG_DATA_HOME: data, KIT_HOME: home };
+  const result = f.run([], f.build, env);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const project = git(f.build, "rev-parse", "--short", "HEAD");
+  assert.ok(result.stdout.includes(`✓ kit home: a copy of ${home} runs kit version`), result.stdout);
+  assert.ok(result.stdout.includes(`✗ kit: commit 0123456 (machine copy, updated 2 days ago); project ${project}, ` +
+    "kit not updated for 2 days; fix: run scripts/agents/kit update\n"), result.stdout);
+  assert.ok(result.stdout.endsWith("RESULT: ok doctor 11/11 checks passed; warning: kit not updated for 2 days\n"), result.stdout);
+  // Quiet still shows the warning; a fresh copy shows nothing extra.
+  assert.equal(f.run(["--quiet"], f.build, env).stdout, `✗ kit: commit 0123456 (machine copy, updated 2 days ago); project ${project}, ` +
+    "kit not updated for 2 days; fix: run scripts/agents/kit update\nRESULT: ok doctor 11/11 checks passed; warning: kit not updated for 2 days\n");
+  spawnSync("chmod", ["u+w", join(data, "agent-kit")]);
+  writeFileSync(join(data, "agent-kit/updated"), `${Math.floor(Date.now() / 1000) - 3 * 3600}\n`);
+  const fresh = f.run([], f.build, env);
+  assert.equal(fresh.status, 0, fresh.stdout + fresh.stderr);
+  assert.ok(fresh.stdout.includes(`✓ kit: commit 0123456 (machine copy, updated 3 hours ago); project ${project}\n`), fresh.stdout);
+  assert.equal(f.run(["--quiet"], f.build, env).stdout, "RESULT: ok doctor 11/11 checks passed\n");
 });
 
 test("doctor runs every check after failures and quiet prints only failures and RESULT", (t) => {

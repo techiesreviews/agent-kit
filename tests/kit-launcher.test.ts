@@ -1,0 +1,164 @@
+import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import test from "node:test";
+
+const launchers = resolve("scripts/agents/launcher");
+const warning = "Agent Kit not found: guards are off; run `scripts/agents/kit doctor`";
+
+function temp(t: { after: (fn: () => void) => void }) {
+  const directory = mkdtempSync(join(tmpdir(), "kit-launcher-"));
+  // Machine copies are read-only.
+  t.after(() => { spawnSync("chmod", ["-R", "u+w", directory]); rmSync(directory, { recursive: true, force: true }); });
+  return directory;
+}
+
+// A local bare kit repo holding a copy of this kit, and a project with only the two launchers, its settings
+// and one own command; HOME and the XDG folders are temporary, so nothing reaches the real ~/.local or ~/.cache.
+function fixture(t: { after: (fn: () => void) => void }) {
+  const directory = temp(t);
+  const cache = join(directory, "cache"), data = join(directory, "data/agent-kit");
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: directory, XDG_DATA_HOME: join(directory, "data"), XDG_CACHE_HOME: cache,
+    XDG_STATE_HOME: join(directory, "state"), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
+    KIT_REPO: `file://${join(directory, "kit.git")}`, CLAUDE_PROJECT_DIR: "" };
+  for (const name of ["KIT_ROOT", "KIT_MAIN_ROOT", "KIT_LIB", "KIT_LIB_MJS", "KIT_HOME", "KIT_HOME_DEFAULT", "KIT_COMMANDS_DIR", "NODE_TEST_CONTEXT"]) delete env[name];
+  const git = (root: string, ...args: string[]) => {
+    const result = spawnSync("git", ["-C", root, ...args], { env, encoding: "utf8", timeout: 10_000 });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  const work = join(directory, "kit-work");
+  cpSync(resolve("scripts/agents"), work, { recursive: true, filter: (source) => source !== resolve("scripts/agents/project.d") });
+  git(directory, "init", "-q", "--bare", "--initial-branch=main", "kit.git");
+  git(work, "init", "-q", "--initial-branch=main");
+  git(work, "remote", "add", "origin", join(directory, "kit.git"));
+  const publish = (marker: string) => {
+    writeFileSync(join(work, "marker"), marker);
+    git(work, "add", "-A");
+    git(work, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", marker);
+    git(work, "push", "-q", "origin", "main");
+    return git(work, "rev-parse", "HEAD");
+  };
+  const project = join(directory, "project"), agents = join(project, "scripts/agents");
+  mkdirSync(join(agents, "hooks"), { recursive: true });
+  mkdirSync(join(project, "own"));
+  copyFileSync(join(launchers, "kit"), join(agents, "kit"));
+  copyFileSync(join(launchers, "hooks-run.sh"), join(agents, "hooks/run.sh"));
+  chmodSync(join(agents, "kit"), 0o755);
+  writeFileSync(join(agents, "kit.json"), JSON.stringify({ project: "p", branches: { land: "main" }, commands: "own" }));
+  // where prints the kit in use; with WAIT_FILE it prints once, waits for the file, then prints again.
+  writeFileSync(join(project, "own/where"), '#!/usr/bin/env bash\n# kit: print the kit in use\n' +
+    'printf "%s %s\\n" "$KIT_HOME" "$(cat "$KIT_HOME/marker")"\n' +
+    'if [[ -n ${WAIT_FILE:-} ]]; then while [[ ! -e $WAIT_FILE ]]; do sleep 0.05; done; printf "%s %s\\n" "$KIT_HOME" "$(cat "$KIT_HOME/marker")"; fi\n');
+  chmodSync(join(project, "own/where"), 0o755);
+  git(project, "init", "-q", "--initial-branch=main");
+  git(project, "add", "-A");
+  git(project, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "project");
+  const kit = (args: string[], extra: NodeJS.ProcessEnv = {}) =>
+    spawnSync(join(agents, "kit"), args, { cwd: project, env: { ...env, ...extra }, encoding: "utf8", timeout: 30_000 });
+  const hook = (name: string, payload: object, extra: NodeJS.ProcessEnv = {}) =>
+    spawnSync("/bin/bash", [join(agents, "hooks/run.sh"), name], { cwd: project, env: { ...env, ...extra }, input: JSON.stringify(payload), encoding: "utf8", timeout: 10_000 });
+  return { directory, env, cache, data, project, agents, git, publish, kit, hook };
+}
+
+const lines = (result: { stdout: string }) => result.stdout.split("\n").filter((line) => line && !line.startsWith("RESULT: "));
+const stashPop = { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "git stash pop" } };
+
+test("with no machine copy the launcher clones the newest kit once, shallow, into the cache and none inside the project", (t) => {
+  const f = fixture(t);
+  const one = f.publish("one");
+  const first = f.kit(["where"]);
+  assert.equal(first.status, 0, first.stdout + first.stderr);
+  assert.deepEqual(lines(first), [`${join(f.cache, "agent-kit")} one`]);
+  assert.deepEqual(readdirSync(f.cache), ["agent-kit"]);
+  assert.equal(f.git(join(f.cache, "agent-kit"), "rev-parse", "--is-shallow-repository"), "true");
+  assert.equal(f.git(join(f.cache, "agent-kit"), "rev-parse", "HEAD"), one);
+  assert.equal(f.git(f.project, "status", "--porcelain", "--ignored"), "");
+  // The clone is reused: an unreachable repo no longer matters.
+  const again = f.kit(["where"], { KIT_REPO: `file://${join(f.directory, "nowhere.git")}` });
+  assert.equal(again.status, 0, again.stdout + again.stderr);
+  assert.deepEqual(lines(again), [`${join(f.cache, "agent-kit")} one`]);
+  assert.deepEqual(readdirSync(f.cache), ["agent-kit"]);
+  const version = f.kit(["version"]);
+  assert.match(version.stdout, new RegExp(`^commit ${one.slice(0, 7)}\nkit checkout ${join(f.cache, "agent-kit")}, commit \\d+ \\w+ old\nproject [0-9a-f]{7,}\n`));
+});
+
+test("the launcher fails with a RESULT line when there is no kit and none can be cloned", (t) => {
+  const f = fixture(t);
+  const result = f.kit(["where"]);
+  assert.equal(result.status, 2);
+  assert.equal(result.stdout, `RESULT: fail no Agent Kit at ${join(f.cache, "agent-kit")} (no machine copy; cannot clone ${f.env.KIT_REPO})\n`);
+  const chosen = f.kit(["where"], { KIT_HOME: join(f.directory, "nowhere") });
+  assert.equal(chosen.status, 2);
+  assert.equal(chosen.stdout, `RESULT: fail no Agent Kit at ${join(f.directory, "nowhere")} (KIT_HOME)\n`);
+  assert.deepEqual(readdirSync(f.cache), []);
+});
+
+test("kit update through the launcher fills the machine copy; a command started before an update finishes on its old folder", async (t) => {
+  const f = fixture(t);
+  const one = f.publish("one");
+  const filled = f.kit(["update"]);
+  assert.equal(filled.status, 0, filled.stdout + filled.stderr);
+  assert.equal(readlinkSync(join(f.data, "current")), one);
+  assert.deepEqual(lines(f.kit(["where"])), [`${join(f.data, one)} one`]);
+  const version = f.kit(["version"]);
+  assert.match(version.stdout, new RegExp(`^commit ${one.slice(0, 7)}\nkit machine copy, updated 0 minutes ago\nproject `));
+  const go = join(f.directory, "go");
+  const running = spawn(join(f.agents, "kit"), ["where"], { cwd: f.project, env: { ...f.env, WAIT_FILE: go } });
+  let output = "";
+  const finished = new Promise<number | null>((done) => running.on("close", done));
+  await new Promise<void>((started) => running.stdout.on("data", (chunk: Buffer) => { output += chunk; if (output.includes("\n")) started(); }));
+  const two = f.publish("two");
+  const swapped = f.kit(["update"]);
+  assert.equal(swapped.status, 0, swapped.stdout + swapped.stderr);
+  assert.equal(readlinkSync(join(f.data, "current")), two);
+  writeFileSync(go, "");
+  assert.equal(await finished, 0, output);
+  assert.deepEqual(lines({ stdout: output }), [`${join(f.data, one)} one`, `${join(f.data, one)} one`]);
+  assert.deepEqual(lines(f.kit(["where"])), [`${join(f.data, two)} two`]);
+});
+
+test("a KIT_HOME a person set wins over the machine copy; one a front door filled in does not", (t) => {
+  const f = fixture(t);
+  const one = f.publish("one");
+  f.kit(["update"]);
+  const branch = join(f.directory, "agent-kit-branch");
+  cpSync(resolve("scripts/agents"), branch, { recursive: true, filter: (source) => source !== resolve("scripts/agents/project.d") });
+  writeFileSync(join(branch, "marker"), "branch");
+  assert.deepEqual(lines(f.kit(["where"], { KIT_HOME: branch })), [`${branch} branch`]);
+  assert.deepEqual(lines(f.kit(["where"], { KIT_HOME: branch, KIT_HOME_DEFAULT: branch })), [`${join(f.data, one)} one`]);
+});
+
+test("the hook launcher runs the kit's guards, and without a kit warns on every hook and never blocks", (t) => {
+  const f = fixture(t);
+  for (const name of ["bash-guard", "agent-cap"]) {
+    const result = f.hook(name, stashPop);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, `{"systemMessage":"${warning}"}\n`);
+    assert.equal(JSON.parse(result.stdout).systemMessage, warning);
+    assert.equal(result.stderr, "");
+  }
+  const session = f.hook("session-env", { hook_event_name: "SessionStart" });
+  assert.equal(session.status, 0);
+  assert.equal(session.stdout, `${warning}\n`);
+  assert.equal(f.hook("context-card", { hook_event_name: "SessionStart" }).stdout, "");
+  // The cache clone the kit launcher made is enough; the hook itself never clones.
+  f.publish("one");
+  assert.equal(existsSync(f.cache), false);
+  assert.equal(f.hook("bash-guard", stashPop).status, 0);
+  assert.equal(existsSync(join(f.cache, "agent-kit")), false);
+  f.kit(["where"]);
+  const cached = f.hook("bash-guard", stashPop);
+  assert.equal(cached.status, 2, cached.stdout + cached.stderr);
+  assert.equal(cached.stderr, "commit work in progress on your own branch\n");
+  // With a machine copy it runs that kit's hooks/run.sh, never the front door (no RESULT line in session context).
+  f.kit(["update"]);
+  rmSync(join(f.cache, "agent-kit"), { recursive: true, force: true });
+  const guarded = f.hook("bash-guard", stashPop);
+  assert.equal(guarded.status, 2, guarded.stdout + guarded.stderr);
+  assert.equal(guarded.stdout, "");
+  assert.equal(f.hook("bash-guard", { ...stashPop, tool_input: { command: "git status" } }).status, 0);
+  assert.doesNotMatch(f.hook("session-env", { hook_event_name: "SessionStart" }).stdout, /RESULT:|Agent Kit not found/);
+});

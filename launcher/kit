@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Usage: kit [<command> [args]]; the Agent Kit launcher kit init writes into each project.
+# Runs the machine's newest kit (${XDG_DATA_HOME:-~/.local/share}/agent-kit/current); a KIT_HOME a person set wins.
+set -euo pipefail
+why='KIT_HOME'
+export KIT_REPO=${KIT_REPO:-https://github.com/techiesreviews/agent-kit.git}
+data=${XDG_DATA_HOME:-} cache=${XDG_CACHE_HOME:-}
+[[ $data == /* ]] || data=$HOME/.local/share
+[[ $cache == /* ]] || cache=$HOME/.cache
+if [[ -z ${KIT_HOME:-} || $KIT_HOME == "${KIT_HOME_DEFAULT:-}" ]]; then
+  # current is read once: the whole command keeps this folder while kit update swaps the link.
+  KIT_HOME=$(readlink -- "$data/agent-kit/current" 2>/dev/null) || KIT_HOME=''
+  [[ -z $KIT_HOME || $KIT_HOME == /* ]] || KIT_HOME=$data/agent-kit/$KIT_HOME
+  # No machine copy (CI, a cloud session, a new laptop): one shallow clone in the cache, outside every project.
+  if [[ ! -x $KIT_HOME/kit ]]; then
+    KIT_HOME=$cache/agent-kit
+    if [[ ! -x $KIT_HOME/kit ]]; then
+      clone='' why="no machine copy; cannot clone $KIT_REPO"
+      mkdir -p -- "$cache" && clone=$(mktemp -d "$cache/agent-kit.XXXXXX") &&
+        git clone -q --depth 1 -- "$KIT_REPO" "$clone" >&2 && [[ -x $clone/kit ]] && mv -T -- "$clone" "$KIT_HOME" 2>/dev/null ||
+        [[ -z $clone ]] || rm -rf -- "$clone"
+    fi
+  fi
+fi
+[[ -x $KIT_HOME/kit ]] || { printf 'RESULT: fail no Agent Kit at %s (%s)\n' "$KIT_HOME" "$why"; exit 2; }
+# Outside git the project is the one around this launcher, not around the kit.
+if [[ -z ${KIT_ROOT:-} ]] && ! git rev-parse --show-toplevel > /dev/null 2>&1; then
+  KIT_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P) && export KIT_ROOT
+fi
+export KIT_HOME
+exec "$KIT_HOME/kit" "$@"

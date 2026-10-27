@@ -115,11 +115,14 @@ else
   fail 'hook config' "missing ${missing[*]}" 'restore the missing hook configuration files'
 fi
 
+# The probe runs as a hook starts: without the KIT_HOME this command runs on, so a hook launcher has to find a kit itself.
 status=0
-printf '%s\n' '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git stash push -m probe"}}' |
-  CLAUDE_PROJECT_DIR="$root" timeout 5 bash "$root/scripts/agents/hooks/run.sh" bash-guard >/dev/null 2>&1 || status=$?
+probe=$(printf '%s\n' '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git stash push -m probe"}}' |
+  env -u KIT_HOME -u KIT_HOME_DEFAULT CLAUDE_PROJECT_DIR="$root" timeout 5 bash "$root/scripts/agents/hooks/run.sh" bash-guard 2>/dev/null) || status=$?
 if (( status == 2 )); then
   pass 'hooks live' 'bash-guard rejects the probe (status 2)'
+elif [[ $probe == *'Agent Kit not found'* ]]; then
+  fail 'hooks live' 'hooks cannot reach a kit (Agent Kit not found)' 'run scripts/agents/kit update to fill the machine copy'
 else
   fail 'hooks live' "bash-guard returned status $status (expected 2)" 'check jq and scripts/agents/hooks/bash-guard.sh'
 fi
@@ -276,6 +279,8 @@ home=$(kit_home) copy=$help_dir/kit-home project=$help_dir/project output='' cod
 if ! cp -R -- "$home" "$copy" 2>/dev/null || ! mkdir -p -- "$project/scripts/agents" || ! cp -- "$copy/kit" "$project/scripts/agents/kit" 2>/dev/null; then
   code=1 output="cannot copy $home"
 else
+  # A machine copy is read-only (kit update); the copy is not.
+  chmod -R u+w -- "$copy"
   if [[ -n ${own:-} && $own == "$home"/* ]]; then rm -rf -- "${copy:?}/${own#"$home"/}"; fi
   [[ ! -f $(kit_settings_file) ]] || cp -- "$(kit_settings_file)" "$project/scripts/agents/kit.json"
   if [[ -n ${own:-} && -d $own && $own_setting != /* ]]; then
@@ -291,6 +296,19 @@ elif [[ $skip_help == true && $version_broken == true && $output != 'cannot copy
   printf 'problem: kit home: a copy of %s fails kit version: %s; fix: repair kit version (its --help is broken too)\n' "$home" "${output##*$'\n'}"
 else
   fail 'kit home' "a copy of $home fails kit version: ${output##*$'\n'}" 'reach shared helpers through KIT_HOME, not scripts/agents/'
+fi
+
+# The kit's commit and age beside the project's, from kit version: a note, never a failure. A machine copy
+# without an update for over a day warns, also when quiet, and the RESULT says so.
+kit_warning='' version=$(timeout -k 2 10 "$home/kit.d/version" 2>/dev/null < /dev/null) || version=''
+if [[ $version =~ (^|$'\n')commit\ ([^$'\n']*)$'\n'kit\ ([^$'\n']*)$'\n'project\ ([^$'\n']*) ]]; then
+  kit_line="commit ${BASH_REMATCH[2]} (${BASH_REMATCH[3]}); project ${BASH_REMATCH[4]}"
+  if [[ $version =~ (^|$'\n')warning\ ([^;$'\n']*)\;\ ([^$'\n']*) ]]; then
+    kit_warning=${BASH_REMATCH[2]}
+    printf '✗ kit: %s, %s; fix: %s\n' "$kit_line" "$kit_warning" "${BASH_REMATCH[3]}"
+  elif [[ $quiet == false ]]; then
+    printf '✓ kit: %s\n' "$kit_line"
+  fi
 fi
 
 # Grok is an optional second reviewer: report it, never fail on it.
@@ -321,4 +339,4 @@ if (( ${#failed[@]} )); then
   exit 1
 fi
 skipped_list=$(IFS=,; printf '%s' "${skipped[*]}")
-kit_result ok "doctor $checks/$checks checks passed${skipped_list:+; skipped ${skipped_list//,/, } (KIT_DOCTOR_SKIP)}"
+kit_result ok "doctor $checks/$checks checks passed${skipped_list:+; skipped ${skipped_list//,/, } (KIT_DOCTOR_SKIP)}${kit_warning:+; warning: $kit_warning}"

@@ -1,16 +1,47 @@
 #!/usr/bin/env bash
-# kit: show the kit's commit, owner and Node version
+# kit: show the kit's commit, owner and Node version, with the kit's age and the project's commit
 set -euo pipefail
 # shellcheck source=scripts/agents/kit-lib.sh
 source "${KIT_LIB:-$(dirname -- "${BASH_SOURCE[0]}")/../kit-lib.sh}"
 case ${1-} in
   --help|-h)
-    printf "Usage: kit version\nShow the kit's commit, owner and Node version.\n"
+    printf "Usage: kit version\nShow the kit's commit, owner and Node version, with the kit's age and the project's commit.\n"
+    printf 'A machine copy without an update for over a day adds a warning line (kit doctor shows it).\n'
     exit 0
     ;;
 esac
-# A kit copy outside git has no commit.
-sha=$(git -C "$(kit_home)" rev-parse --short HEAD 2>/dev/null) || sha=none
+ago() {
+  local seconds=$1 count unit
+  if (( seconds < 3600 )); then count=$((seconds / 60)) unit=minute
+  elif (( seconds < 86400 )); then count=$((seconds / 3600)) unit=hour
+  else count=$((seconds / 86400)) unit=day; fi
+  (( count == 1 )) || unit+=s
+  printf '%s %s' "$count" "$unit"
+}
+home=$(kit_home) root=$(kit_root) now=$(date +%s) warning=''
+data=${XDG_DATA_HOME:-}
+[[ $data == /* ]] || data=${HOME:-$(cd ~ && pwd -P)}/.local/share
+# A machine copy (kit update) is a folder named by its commit, outside git; its age is the last update.
+if [[ $(dirname -- "$home") -ef $data/agent-kit && ${home##*/} =~ ^[0-9a-f]{40}$ ]]; then
+  sha=${home##*/} sha=${sha:0:7}
+  updated=$(cat -- "$data/agent-kit/updated" 2>/dev/null) || updated=''
+  if [[ $updated =~ ^[0-9]+$ ]]; then
+    kit="machine copy, updated $(ago $((now - updated))) ago"
+    if (( now - updated > 86400 )); then warning="kit not updated for $(ago $((now - updated))); run scripts/agents/kit update"; fi
+  else
+    kit='machine copy, never updated'
+  fi
+elif sha=$(git -C "$home" rev-parse --short HEAD 2>/dev/null); then
+  top=$(git -C "$home" rev-parse --show-toplevel)
+  if [[ $top -ef $root ]]; then kit='in this project'; else kit="checkout $top"; fi
+  kit+=", commit $(ago $((now - $(git -C "$home" log -1 --format=%ct)))) old"
+else
+  # A kit copy outside git has no commit.
+  sha=none kit='copy outside git'
+fi
+project=$(git -C "$root" rev-parse --short HEAD 2>/dev/null) || project=none
 ver=$(node --version 2>/dev/null) || ver=none
-printf 'commit %s\nowner %s\nnode %s\n' "$sha" "$(kit_owner)" "$ver"
+printf 'commit %s\nkit %s\nproject %s\n' "$sha" "$kit" "$project"
+[[ -z $warning ]] || printf 'warning %s\n' "$warning"
+printf 'owner %s\nnode %s\n' "$(kit_owner)" "$ver"
 kit_result ok "version $sha node $ver"
