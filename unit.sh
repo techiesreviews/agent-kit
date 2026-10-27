@@ -14,7 +14,8 @@ read -ra runner <<< "$(kit_setting .unit.run)"
 (( ${#runner[@]} )) || { echo "unit.sh needs unit.run in scripts/agents/kit.json" >&2; exit 2; }
 if (( ! $# )); then
   # The full suite is what kit unit lists: unit.files matched against git's tracked and untracked,
-  # not-ignored files, so both run the same files.
+  # not-ignored files, so both run the same files. Its paths are relative to the project's top folder.
+  cd -- "$(kit_root)"
   if ! listing=$(node "$(dirname -- "${BASH_SOURCE[0]}")/kit.d/unit" --list 2>&1); then
     problem=$(sed -n 's/^problem: //p' <<< "$listing" | head -n 1)
     printf 'unit.sh: %s\n' "${problem:-kit unit --list failed}" >&2

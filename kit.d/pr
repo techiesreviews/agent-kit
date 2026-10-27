@@ -63,6 +63,39 @@ async function savedReview(head, base, patchId, ticket, root) {
 
 const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
 
+/**
+ * Whether a workflow file runs for a PR branch, read from its top-level `on:` triggers: `pull_request` or
+ * `pull_request_target`, or `push` with no branch or tag filter. Deploy-only (`push: branches: [main]`),
+ * scheduled and manual workflows never report on a PR head, so they are not CI to wait for.
+ */
+function runsOnPullRequests(text) {
+  const lines = text.split(/\r?\n/).map(line => line.replace(/\s+#.*$|^#.*$/, ""));
+  const start = lines.findIndex(line => /^["']?on["']?\s*:/.test(line));
+  if (start < 0) return false;
+  const inline = lines[start].replace(/^["']?on["']?\s*:/, "").trim();
+  let block = [];
+  if (!inline) {
+    for (const line of lines.slice(start + 1)) {
+      if (line.trim() && !/^\s/.test(line)) break;
+      block.push(line);
+    }
+  }
+  const triggers = inline || block.join("\n");
+  if (/\bpull_request(?:_target)?\b/.test(triggers)) return true;
+  if (!/\bpush\b/.test(triggers)) return false;
+  if (inline) return true;
+  // A push trigger in block form: filtered (branches, tags or paths) means it may never run on the PR branch.
+  const push = block.findIndex(line => /^\s+push\s*:/.test(line));
+  if (push < 0) return true; // A list (- push) carries no filter.
+  const indent = block[push].search(/\S/);
+  const children = [];
+  for (const line of block.slice(push + 1)) {
+    if (line.trim() && line.search(/\S/) <= indent) break;
+    children.push(line);
+  }
+  return !children.some(line => /^\s*(?:branches|branches-ignore|tags|tags-ignore|paths|paths-ignore)\s*:/.test(line));
+}
+
 // Isolate both HEAD and the index: concurrent work must never enter a follow-up commit.
 function commitFollowups({ root, branch, head, ticket, content, env }) {
   const run = (args, environment = env) => execFileSync("git", ["-C", root, ...args],
@@ -282,7 +315,12 @@ async function main(args) {
     const skipped = Object.entries({ check: checks.check, unit: checks.test && `${checks.test} (all unit tests)`, lint: checks.lint, specs: hasSpecs && "kit specs --affected" })
       .filter(([id, label]) => label && !steps.includes(id)).map(([, label]) => label).concat(review ? [] : ["kit review"]);
     // A repo without GitHub workflows has no CI to fall back on; it is read again after every rebase.
-    const ciWorkflows = async () => (await git("ci", ["ls-tree", "--name-only", "HEAD", ".github/workflows/"])).split(/\r?\n/).some(path => /\.ya?ml$/.test(path));
+    // Only workflows that run for a PR branch count (runsOnPullRequests); a deploy-only one would never report.
+    const ciWorkflows = async () => {
+      const files = (await git("ci", ["ls-tree", "--name-only", "HEAD", ".github/workflows/"])).split(/\r?\n/).filter(path => /\.ya?ml$/.test(path));
+      for (const file of files) if (runsOnPullRequests(await git("ci", ["show", `HEAD:${file}`]))) return true;
+      return false;
+    };
     const backstop = await ciWorkflows() ? "CI still runs check, unit tests, lint and smoke browser tests; no Sol review" : "no CI workflow runs them";
     if (skipped.length) tests.push(`- skipped for the ${plan.tier} tier (${backstop}): ${skipped.join(", ")}`);
 
@@ -450,7 +488,7 @@ async function main(args) {
         await run("ci", kit, ["wait", "ci", "--pr", number]); ok("ci");
         land({ ci: "pass" });
       } else {
-        console.log("ci: none (no .github/workflows); landing after review");
+        console.log("ci: none (no workflow in .github/workflows runs on pull requests); landing after review");
         land({ ci: "none" });
       }
       const merged = await execute("merge", "gh", ["pr", "merge", number, "--rebase", "--delete-branch", "--match-head-commit", head, "--repo", repo]);

@@ -13,8 +13,8 @@ const clean = "REVIEW_STATUS: complete\nDefects:\nSpec: none\nStandards: none\nV
 const findings = `REVIEW_STATUS: complete\nDefects:\nSpec:\n- ${defect}\n  Evidence: the ticket requires this exact text.\nStandards: none\nValidation gaps: none\nOptional nits: none\n`;
 interface Call { args: string[]; input: string; cwd: string; model?: string; cli?: string }
 
-// `settings` adds keys to the project's settings file.
-function fixture(t: TestContext, settings: Record<string, unknown> = {}) {
+// `settings` adds keys to the project's settings file; a string replaces the whole file.
+function fixture(t: TestContext, settings: Record<string, unknown> | string = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ase-kit-fix-"));
   const children: ChildProcess[] = [];
   const releases: string[] = [];
@@ -44,7 +44,8 @@ function fixture(t: TestContext, settings: Record<string, unknown> = {}) {
   mkdirSync(join(root, "docs/tickets"), { recursive: true });
   writeFileSync(join(root, ticket), "## Files\n- `file.txt`\n");
   mkdirSync(join(root, "scripts/agents"), { recursive: true });
-  writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify({ project: "kit-fix", branches: { land: "dev" }, standards: "CODING_STANDARDS.md", ...settings }));
+  writeFileSync(join(root, "scripts/agents/kit.json"), typeof settings === "string" ? settings
+    : JSON.stringify({ project: "kit-fix", branches: { land: "dev" }, standards: "CODING_STANDARDS.md", ...settings }));
   git("add", "."); git("commit", "-m", "base");
   const base = git("rev-parse", "HEAD");
   writeFileSync(join(root, "file.txt"), "broken\n");
@@ -226,10 +227,14 @@ test("the fix brief names only the checks the settings set", t => {
     [{ checks: { test: "npm test" } }, "Use Agent Kit at scripts/agents/kit: run doctor first. Report RESULT lines."],
     [{ unit: { files: ["src/**/*.test.js"] }, checks: { test: "npm test", lint: "npm run lint" } },
       "Use Agent Kit at scripts/agents/kit: run doctor first, focused unit --affected and npm run lint. Report RESULT lines."],
+    // An unreadable settings file still starts the round; the builder's doctor run names the problem.
+    ['{ "project": ', "Use Agent Kit at scripts/agents/kit: run doctor first. Report RESULT lines."],
   ] as const) {
     const f = fixture(t, settings); f.review(); f.builder();
     const result = f.run();
-    assert.equal(result.status, 0, result.stdout + result.stderr);
+    // The builder always runs; with an unreadable file the review after it fails on the settings, as kit review does.
+    assert.equal(f.calls().length, 1, result.stdout + result.stderr);
+    if (typeof settings !== "string") assert.equal(result.status, 0, result.stdout + result.stderr);
     const round = readFileSync(join(f.root, ".scratch/kit-fix/build%2Fke-03/round-1.md"), "utf8");
     assert.ok(round.split("\n").includes(line), round);
   }

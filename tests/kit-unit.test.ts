@@ -171,6 +171,8 @@ test("unit.files patterns pick src/**/*.test.js for --affected and every pattern
   f.put("scripts/build.test.mjs", body);
   f.put("scripts/deep/skip.test.mjs", body);
   f.put("test/helpers/setup.js", body);
+  // A folder pattern takes only the JavaScript node --test runs there, not a TypeScript helper beside it.
+  f.put("test/helpers/setup.ts", "export const setup = 1;\n");
   f.put("test/notes.md", "not a test\n");
   f.git("add", "."); f.git("commit", "--quiet", "-m", "playground");
   f.git("update-ref", "refs/remotes/origin/main", f.git("rev-parse", "HEAD"));

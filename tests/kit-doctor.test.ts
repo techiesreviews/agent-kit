@@ -313,6 +313,18 @@ test("doctor adds the project's checks.doctor lines and the playwright module, e
   assert.match(passing.stdout, /RESULT: ok doctor 12\/12 checks passed\n$/);
 });
 
+test("the doctor RESULT counts every line it checked, but not the optional grok note", (t) => {
+  const f = playground(t, { allowMainCheckout: true, playwright: "vendor/playwright", checks: { doctor: "true" } });
+  mkdirSync(join(f.root, "vendor/playwright"), { recursive: true });
+  const grok = join(f.directory, "grok");
+  executable(grok, 'printf "You are logged in with grok.com.\\n"');
+  const result = f.run({ KIT_GROK: grok });
+  assert.equal(result.status, 0, result.stdout);
+  assert.match(result.stdout, /^✓ grok: installed and logged in \(optional reviewer\)$/m);
+  assert.equal(result.stdout.split("\n").filter(line => line.startsWith("✓ ")).length, 14);
+  assert.match(result.stdout, /RESULT: ok doctor 13\/13 checks passed\n$/);
+});
+
 test("a checks.doctor command that hangs fails as timed out", (t) => {
   const result = playground(t, { allowMainCheckout: true, checks: { doctor: "sleep 5" } }).run({ KIT_DOCTOR_CHECK_TIMEOUT: "0.3" });
   assert.equal(result.status, 1, result.stdout);

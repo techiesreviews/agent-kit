@@ -12,8 +12,8 @@ const findings = "REVIEW_STATUS: complete\nDefects:\nSpec:\n- file.txt:1 P1 rest
 interface Call { phase: string; args: string[] }
 interface State { finished: string[]; build: string; buildModel?: string; review: string; reviewedHead: string; rounds: number; pendingFix?: boolean; pr?: string; queued?: { head: string }; model: string; effort: string; previousModels?: string[] }
 
-// `settings`, when given, is committed as the project's settings file.
-function fixture(t: TestContext, settings?: Record<string, unknown>) {
+// `settings`, when given, is committed as the project's settings file, with any extra `files`.
+function fixture(t: TestContext, settings?: Record<string, unknown>, files: Record<string, string> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "kit-slice-"));
   const children: ChildProcess[] = [], releases: string[] = [];
   t.after(async () => {
@@ -44,6 +44,7 @@ function fixture(t: TestContext, settings?: Record<string, unknown>) {
     mkdirSync(join(root, "scripts/agents"), { recursive: true });
     writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify(settings));
   }
+  for (const [file, text] of Object.entries(files)) writeFileSync(join(root, file), text);
   git("add", "-A"); git("commit", "-m", "base");
   const head = git("rev-parse", "HEAD"), callsFile = join(dir, "calls.jsonl");
   const shared = `
@@ -264,13 +265,14 @@ test("kit slice help and invalid options never launch commands", t => {
 });
 
 test("kit slice writes the ticket brief, runs phases in order, credits and commits the builder, and lands", t => {
-  const f = fixture(t, { project: "kit-slice", branches: { land: "dev" }, checks: { check: "npm run check" }, unit: { files: "tests/*.test.ts" } }), result = f.run();
+  const f = fixture(t, { project: "kit-slice", branches: { land: "dev" }, checks: { check: "npm run check" }, unit: { files: "tests/*.test.ts" } },
+    { "tsconfig.json": "{}\n" }), result = f.run();
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const brief = readFileSync(join(f.root, ".scratch/agent-brief.md"), "utf8");
   for (const text of [f.ticket, "## Files", "`file.txt`", "## Done when", "Required content", "## Done (YYYY-MM-DD)", "describing only behaviour, tests and commits", "status: closed", "assignee: ke-04", "scripts/agents/kit"]) assert.ok(brief.includes(text), text);
   assert.match(brief, /Do not run kit review, kit fix, kit slice, kit pr, kit bg or agent\.sh/);
   assert.match(brief, /the slice runs those commands/);
-  assert.match(brief, /Validate with scripts\/agents\/kit unit --affected and the ticket's focused checks; run npm run check before handing back\. Report/);
+  assert.match(brief, /Validate with scripts\/agents\/kit unit --affected and the ticket's focused checks; run npm run check when types moved\. Report/);
   assert.match(brief, /the slice records review decisions and landing/);
   assert.match(brief, /Leave changes unstaged; the runner commits/);
   assert.ok(brief.includes("Do not mention staging, committing or unstaged changes in the ticket."), brief);
@@ -973,6 +975,10 @@ test("the slice brief names kit unit and a type check only when the settings set
   const brief = readFileSync(join(f.root, ".scratch/agent-brief.md"), "utf8");
   assert.ok(brief.includes("Validate with the ticket's focused checks. Report their RESULT lines."), brief);
   assert.doesNotMatch(brief, /unit --affected|npm run check|before handing back/);
+  // Without a tsconfig.json the project's check is not a type check: it runs before handing back.
+  const site = fixture(t, { project: "techies-reviews", branches: { land: "main" }, checks: { check: "python3 .checks/site.py" } });
+  assert.equal(site.run().status, 0);
+  assert.ok(readFileSync(join(site.root, ".scratch/agent-brief.md"), "utf8").includes("Validate with the ticket's focused checks; run python3 .checks/site.py before handing back. Report"));
 });
 
 test("kit slice skips the UX check with one line when nothing visible is touched", t => {

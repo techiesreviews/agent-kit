@@ -247,7 +247,9 @@ async function slice(args) {
       let settings = {};
       try { settings = kitSettings(root); } catch { /* No usable settings: the builder's doctor run names the problem. */ }
       const { unit, check } = builderChecks(root, settings);
-      const validate = `Validate with ${spoken([unit && "scripts/agents/kit unit --affected", "the ticket's focused checks"].filter(Boolean))}${check ? `; run ${check} before handing back` : ""}.`;
+      // In a TypeScript project (a tsconfig.json) checks.check is the type check; any other command runs every time.
+      const when = existsSync(join(root, "tsconfig.json")) ? "when types moved" : "before handing back";
+      const validate = `Validate with ${spoken([unit && "scripts/agents/kit unit --affected", "the ticket's focused checks"].filter(Boolean))}${check ? `; run ${check} ${when}` : ""}.`;
       writeFileSync(brief, `Ticket: ${flags.ticket}\n\n## Files\n${files}\n\n## Done when\n${done}\n\n## Builder contract\nDo not run kit review, kit fix, kit slice, kit pr, kit bg or agent.sh (including scripts/agents/kit forms); the slice runs those commands.\nUse Agent Kit at scripts/agents/kit; run doctor first. ${validate} Report their RESULT lines.\nIf you change something a user can see, update \`docs/agents/features.md\` (Try, Good, Files, Steps) or write \`Feature list: no change (<reason>)\` in Done.\nStay within Files. Leave changes unstaged; the runner commits. Do not commit, push, deploy, spawn agents or use git stash.\nDo not mention staging, committing or unstaged changes in the ticket.\nAppend \`## Done (YYYY-MM-DD)\` describing only behaviour, tests and commits; the slice records review decisions and landing. Do not claim a landing result. Set \`status: closed\`, \`assignee: ${kitOwner()}\`.\n`);
       writeFileSync(log, `Brief: ${brief}\n`);
       complete();

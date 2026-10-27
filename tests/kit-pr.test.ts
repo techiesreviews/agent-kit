@@ -79,9 +79,9 @@ else if (tool === "gh") {
 `;
 
 // Default branch: two commits to feature.txt (full tier). `changes` replaces them with one commit of these files.
-// `settings` replaces this editor's settings; `workflows: false` leaves out the CI workflow.
+// `settings` replaces this editor's settings; `workflows: false` leaves out the CI workflow, a string replaces its text.
 function fixture(t: TestContext, changes?: Record<string, string>, override: Record<string, unknown> = {},
-  { settings: own, workflows = true }: { settings?: Record<string, unknown>; workflows?: boolean } = {}) {
+  { settings: own, workflows = true }: { settings?: Record<string, unknown>; workflows?: boolean | string } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "kit-pr-"));
   const children: ChildProcess[] = [], releases: string[] = [];
   t.after(async () => {
@@ -130,7 +130,7 @@ function fixture(t: TestContext, changes?: Record<string, string>, override: Rec
   writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify(own ?? { ...settings, ...override }));
   mkdirSync(join(root, "scripts/agents/project.d"));
   writeFileSync(join(root, "scripts/agents/project.d/specs"), "#!/bin/sh\n", { mode: 0o755 });
-  if (workflows) { mkdirSync(join(root, ".github/workflows"), { recursive: true }); writeFileSync(join(root, ".github/workflows/ci.yml"), "on: pull_request\n"); }
+  if (workflows) { mkdirSync(join(root, ".github/workflows"), { recursive: true }); writeFileSync(join(root, ".github/workflows/ci.yml"), typeof workflows === "string" ? workflows : "on: pull_request\n"); }
   git("add", "."); git("commit", "-m", "base");
   git("branch", "main"); git("push", "origin", "dev", "main");
   git("checkout", "-b", "feature/kit-pr");
@@ -307,8 +307,27 @@ test("a workflow the base gains during a behind retry is waited for after the re
   const result = f.run([], { FAKE_BEHIND: "1", FAKE_AFTER_PUSH: script });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const lines = result.stdout.split("\n");
-  assert.ok(lines.indexOf("ci: none (no .github/workflows); landing after review") < lines.indexOf("ci: waiting for PR #73 checks"), result.stdout);
+  assert.ok(lines.indexOf("ci: none (no workflow in .github/workflows runs on pull requests); landing after review") < lines.indexOf("ci: waiting for PR #73 checks"), result.stdout);
   assert.ok(f.calls().some(call => call.tool === "fake-kit" && call.args.join(" ") === "wait ci --pr 73"));
+});
+
+test("only a workflow that runs for a PR branch is CI to wait for; deploy-only, scheduled and filtered ones land after review", t => {
+  for (const [workflow, waits] of [
+    ["name: Deploy\non:\n  push:\n    branches: [main] # deploy only\n  workflow_dispatch:\njobs: {}\n", false],
+    ["on:\n  schedule:\n    - cron: '0 3 * * 1'\njobs:\n  sync:\n    if: github.event_name == 'pull_request'\n", false],
+    ["# on: pull_request\n'on':\n  push:\n    paths: ['src/**']\n", false],
+    ["on: [push, workflow_dispatch]\n", true],
+    ["on:\n  - push\n", true],
+    ["\"on\":\n  push:\n  pull_request_target:\n    branches: [main]\n", true],
+    ["on:\n  workflow_dispatch:\n  pull_request:\n", true],
+  ] as const) {
+    const f = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: playground, workflows: workflow });
+    const result = f.run([], { FAKE_BASE: "main" }, true);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args.join(" ") === "wait ci --pr 73"), waits, workflow);
+    const { landed } = JSON.parse(readFileSync(join(f.main, ".scratch/scoreboard/_untracked/feature%2Fkit-pr.json"), "utf8"));
+    assert.equal(landed.ci, waits ? "pass" : "none", workflow);
+  }
 });
 
 test("with no CI workflow the PR body does not claim CI runs the skipped checks", t => {
@@ -336,7 +355,7 @@ test("a land branch that gained commits after the branch started lands without a
   const saved = f.gitAt(peer, "rev-parse", "HEAD");
   const result = f.run([], { FAKE_BASE: "main" }, true);
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stdout, /^ci: none \(no \.github\/workflows\); landing after review$/m);
+  assert.match(result.stdout, /^ci: none \(no workflow in \.github\/workflows runs on pull requests\); landing after review$/m);
   assert.match(result.stdout, /RESULT: ok merged #73 abcdef0/);
   assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "wait"), false);
   assert.equal(f.ghCalls("merge").length, 1);

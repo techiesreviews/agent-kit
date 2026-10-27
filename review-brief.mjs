@@ -16,10 +16,14 @@ const landRef = worktree => `origin/${kitBranch("land", kitSettings(topFolder(wo
 /** "a", "a and b", "a, b and c". */
 export const spoken = items => items.length > 1 ? `${items.slice(0, -1).join(", ")} and ${items.at(-1)}` : items.join("");
 
-/** Whether the project's own commands folder (settings `commands`) holds an executable `name`, as the kit front door finds it. */
+/**
+ * Whether the project's own commands folder (settings `commands`) holds an executable `name`, as the kit front
+ * door finds it; KIT_COMMANDS_DIR (tests) replaces that folder there, so it does here.
+ */
 export function projectCommand(name, root, settings = kitSettings(root)) {
-  if (typeof settings.commands !== "string" || !settings.commands) return false;
-  const folder = resolve(root, settings.commands);
+  const own = typeof settings.commands === "string" && settings.commands ? resolve(root, settings.commands) : null;
+  const folder = process.env.KIT_COMMANDS_DIR || own;
+  if (!folder) return false;
   try {
     return readdirSync(folder).some(file => {
       if (/^[._]/.test(file) || file.replace(/\.[^.]*$/, "") !== name) return false;
