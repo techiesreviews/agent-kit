@@ -477,6 +477,18 @@ test("a pin row in the project's rulebook extras wins over the shared rulebook",
     `${join(root, "wt-build-al-01-first-slice")}|claude-own-review|al-01|bg slice-al01 -- scripts/agents/kit slice --ticket ${build("alpha", "01-first-slice")} --builder claude-own\n`);
 });
 
+test("an extras row replaces only its own role: the shared reviewer stays when only the builder is overridden", t => {
+  const { root, env, lines } = fixture(t, {
+    ...startFiles,
+    "docs/agents/kitchen-extras.md": "# Kitchen extras\n\n| Builder, every slice | `claude-own`, high | here |\n",
+  }, "dev", { rulebookExtras: "docs/agents/kitchen-extras.md" });
+  env.KIT_HOME = pinnedHome(root, "claude-shared", "claude-shared-review");
+  delete env.KIT_HOME_DEFAULT;
+  assert.equal(lines("alpha", "--start").at(-1), "RESULT: ok next 2 ready, 0 waiting, 1 started");
+  assert.equal(readFileSync(env.FAKE_KIT_LOG!, "utf8"),
+    `${join(root, "wt-build-al-01-first-slice")}|claude-shared-review|al-01|bg slice-al01 -- scripts/agents/kit slice --ticket ${build("alpha", "01-first-slice")} --builder claude-own\n`);
+});
+
 test("a missing shared rulebook, extras file or pin fails before any hand-out", t => {
   const { root, dev, env, run } = fixture(t, startFiles, "dev", { rulebookExtras: "docs/agents/missing.md" });
   const missing = run("alpha");

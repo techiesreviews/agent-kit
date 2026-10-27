@@ -120,7 +120,7 @@ on a usage-limit `problem:` line, tell Lex the reset time and carry on with Clau
   asks his decisions and keeps the map; jobs started in a lead turn die when that turn ends (each
   turn is its own systemd scope), so building, checks and landing live in the child threads.
 - **Heartbeat** (while a build runs): the lead creates a T3 `schedule_task` every 30 minutes, bound
-  to the lead's thread, with this prompt: "In the dev worktree run
+  to the lead's thread, with this prompt: "In the landing-branch worktree (`devRoot` in the settings) run
   `scripts/agents/kit heartbeat <map> --start` and post its `done:` and `running/next:` lines to
   Lex. On a `stuck:` line read that job's log tail and decide: `kit fix --note`, a helper agent, or
   tell Lex. On `claimed with no job` read that slice's log and rerun it or tell Lex; a delegated
@@ -150,7 +150,7 @@ on a usage-limit `problem:` line, tell Lex the reset time and carry on with Clau
   `preview_*` tools to try a change by hand. A visible change (one matching `paths.visible`) gets
   the project's user-level check and screenshots (extras).
 - **Done when:** every check's `RESULT:` line is ok and quoted in the report; a visible change has
-  its contact sheet.
+  the screenshots the extras name.
 
 ### 8. Review
 

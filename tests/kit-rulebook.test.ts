@@ -50,9 +50,12 @@ test("an extras path may be absolute; without rulebookExtras only the shared par
   const elsewhere = rulebook(t, { ...project, rulebookExtras: absolute });
   assert.equal(elsewhere.status, 0, elsewhere.stdout);
   assert.ok(elsewhere.stdout.endsWith(`\n# Own extras\nRESULT: ok rulebook shared and ${absolute}\n`), elsewhere.stdout);
-  const none = rulebook(t, project);
-  assert.equal(none.status, 0, none.stderr);
-  assert.equal(none.stdout, `${read(shared)}\nNo project extras: add "rulebookExtras" to scripts/agents/kit.json.\nRESULT: ok rulebook shared only\n`);
+  // An empty rulebookExtras reads as unset, as it does for kit next.
+  for (const settings of [project, { ...project, rulebookExtras: "" }]) {
+    const none = rulebook(t, settings);
+    assert.equal(none.status, 0, none.stderr);
+    assert.equal(none.stdout, `${read(shared)}\nNo project extras: add "rulebookExtras" to scripts/agents/kit.json.\nRESULT: ok rulebook shared only\n`);
+  }
 });
 
 test("a named extras file that is missing, or a folder, fails after the shared part", t => {
@@ -138,7 +141,7 @@ test("the pointer keeps every heading the old kitchen.md had, each linking to th
 test("the shared rulebook names no editor-only fact and links only inside the kit", () => {
   const text = read(shared);
   for (const fact of ["src/main.ts", "npm run", "kit preview", "kit shots", "kit specs", "kit size", "features.md", "deploy:techies",
-    "NATIVE-PROJECT", "native-site-editor", "iPhone", "`dev`", "origin/dev", "software-factory"])
+    "NATIVE-PROJECT", "native-site-editor", "iPhone", "`dev`", "dev worktree", "origin/dev", "software-factory", "its contact sheet"])
     assert.ok(!text.includes(fact), `the shared rulebook names ${fact}; move it to the extras`);
   for (const [, target] of text.matchAll(/\]\(([^)\s#]+)[^)]*\)/g)) {
     if (/^https?:/.test(target)) continue;

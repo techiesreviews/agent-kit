@@ -31,3 +31,5 @@ file wins.
 ## Other
 
 - Anything else only this project does: out-of-bounds folders, sibling projects, its history links.
+- **Pins:** a `| Builder, every slice |` or `| Review, every change |` row here (same columns as the
+  shared Who cooks table) replaces that pin for this project; `kit next` reads it.

@@ -9,7 +9,7 @@ case ${1-} in
     printf '%s\n' "$usage"
     printf "Print the kit's shared kitchen rulebook (docs/kitchen.md in the kit), then the project's extras:\n"
     printf 'the file rulebookExtras names in scripts/agents/kit.json, relative to the top folder or absolute.\n'
-    printf 'Where they differ, the extras win. Without rulebookExtras only the shared part prints, with a line saying so;\n'
+    printf 'Where they differ, the extras win. Without rulebookExtras only the shared part prints, with a line saying so.\n'
     printf 'A named extras file that cannot be read, or a settings file that cannot be read (broken, or no jq), fails after the shared part.\n'
     exit 0
     ;;
