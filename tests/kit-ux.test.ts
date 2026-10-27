@@ -423,7 +423,7 @@ process.exitCode = failures.length ? 1 : 0;
   assert.deepEqual(own.bundle.split("\n").filter(line => line.startsWith("- L2")), ["- L2 styles/own.css:1: raw colour red is not a token"]);
   for (const text of [own.stdout, own.bundle]) assert.match(text, /^colours: node tools\/colours\.mjs: exited 1, 1 finding; log \S+\/colours\.log$/m);
   // A failed run whose every line is outside the diff never reads ok: it names its status, the dropped lines and its log.
-  put("tools/colours.mjs", 'console.error("styles/untouched.css:4: red is not a token"); process.exitCode = 1;\n');
+  put("tools/colours.mjs", 'console.error("src/page-builder/media-picker.css:4: red is not a token"); process.exitCode = 1;\n');
   const outside = report();
   for (const text of [outside.stdout, outside.bundle]) assert.match(text, /^colours: node tools\/colours\.mjs: exited 1, 0 findings \(1 outside the diff\); log \S+\/colours\.log$/m);
   assert.doesNotMatch(outside.stdout, /^colours: .*: ok$/m);
@@ -488,7 +488,8 @@ test("kit ux with this editor's checks.css reports a stale allow entry for a cha
 });
 
 test("a failed colour check names each file and line it printed in the diff, else its first line and log", () => {
-  const root = "/abs/root", scope = { root, changed: ["src/a.css", "src/b.css", "allow.json"] };
+  // Only a known file (or one on disk) is a file:line line's file; the checker may name files outside the diff.
+  const root = "/abs/root", scope = { root, changed: ["src/a.css", "src/b.css", "allow.json"], known: ["src/a.css", "src/b.css", "allow.json", "src/other.css", "src/page.vue"] };
   const found = (status: number, output: string) => ux.colourFindings(status, output, "check", "/log", scope);
   assert.deepEqual(found(0, "src/a.css:1: #fff\n"), { findings: [], outside: 0 });
   assert.deepEqual(found(1, "header\n\x1b[31msrc/a.css:3:7: #fff\x1b[0m\nsrc/b.css:9: red\n").findings, [
@@ -526,32 +527,39 @@ const colourRoot = "/abs/root";
 const foundIn = (changed: string[], output: string, known = changed) => ux.colourFindings(1, output, "check", "/log", { root: colourRoot, changed, known });
 
 test("a colour line keeps a path with spaces or parentheses as its file", () => {
-  const root = colourRoot, found = foundIn;
   // Alone or beside another line, the spaced path is the line's file.
   const spaced = { rule: "L2", file: "src/my file.css", line: 1, text: "raw colour #fff" };
-  assert.deepEqual(found(["src/my file.css"], "src/my file.css:1: #fff\n"), { findings: [spaced], outside: 0 });
-  assert.deepEqual(found(["src/my file.css"], "src/a.css:2: red\nsrc/my file.css:1:4: #fff\n"), { findings: [spaced], outside: 1 });
-  assert.deepEqual(found(["src/my (old) file.css"], `${root}/src/my (old) file.css:2: red\n`).findings, [{ rule: "L2", file: "src/my (old) file.css", line: 2, text: "raw colour red" }]);
-  // A path outside the project, a stack frame and a node: frame are no file:line lines.
-  for (const line of ["/elsewhere/a css.css:1: #fff", "at check (/abs/root/x.js:12:5): boom", "node:internal/main:12:3: boom"]) {
-    assert.deepEqual(found(["src/a.css"], `${line}\n`).findings, [{ rule: "L2", file: "colours", line: 0, text: `check exited 1: ${line}; log /log` }]);
+  assert.deepEqual(foundIn(["src/my file.css"], "src/my file.css:1: #fff\n"), { findings: [spaced], outside: 0 });
+  assert.deepEqual(foundIn(["src/my file.css"], "src/a.css:2: red\nsrc/my file.css:1:4: #fff\n", ["src/a.css", "src/my file.css"]), { findings: [spaced], outside: 1 });
+  assert.deepEqual(foundIn(["src/my (old) file.css"], `${colourRoot}/src/my (old) file.css:2: red\n`).findings, [{ rule: "L2", file: "src/my (old) file.css", line: 2, text: "raw colour red" }]);
+  // Prose or a stack frame before a location names no project file, so it is no file:line line.
+  for (const line of ["Found 1 problem in src/a.css:3: #fff", "at check (/abs/root/x.js:12:5): boom", "node:internal/main:12:3: boom"]) {
+    assert.deepEqual(foundIn(["src/a.css"], `${line}\n`), { findings: [{ rule: "L2", file: "colours", line: 0, text: `check exited 1: ${line}; log /log` }], outside: 0 });
   }
+  // A path outside the project is never a finding, but it is counted, alone or beside a located line.
+  assert.deepEqual(foundIn(["src/a.css"], "/elsewhere/b css.css:1: #fff\n"), { findings: [], outside: 1 });
+  assert.deepEqual(foundIn(["src/a.css"], "src/a.css:1: #fff\n/elsewhere/b.css:1: #fff\n"), {
+    findings: [{ rule: "L2", file: "src/a.css", line: 1, text: "raw colour #fff" }], outside: 1,
+  });
 });
 
 test("a colour line naming a file with spaces or parentheses counts for that file, longest and whole", () => {
-  const root = colourRoot, found = foundIn;
   // An allow list's stale entry naming a file with spaces and parentheses counts for that file.
   const known = ["allow.json", "file.css", "src/my (old) file.css", "src/a.css"];
   const stale = "allow.json:3: stale allow entry: src/my (old) file.css: #000\n";
-  assert.deepEqual(found(["src/my (old) file.css"], stale, known), {
+  assert.deepEqual(foundIn(["src/my (old) file.css"], stale, known), {
     findings: [{ rule: "L2", file: "allow.json", line: 3, text: "stale allow entry: src/my (old) file.css: #000" }], outside: 0,
   });
   // The longest named file wins: the entry is not about file.css, which its text also holds.
-  assert.deepEqual(found(["file.css"], stale, known), { findings: [], outside: 1 });
-  // A file is named only whole: src/a.css.map is not src/a.css; ./ and absolute paths still name it.
-  assert.deepEqual(found(["src/a.css"], "allow.json:1: stale allow entry: src/a.css.map: x\n", known), { findings: [], outside: 1 });
-  assert.equal(found(["src/a.css"], "allow.json:1: stale allow entry: ./src/a.css: x\n", known).findings.length, 1);
-  assert.equal(found(["src/a.css"], `allow.json:1: stale allow entry: ${root}/src/a.css: x\n`, known).findings.length, 1);
+  assert.deepEqual(foundIn(["file.css"], stale, known), { findings: [], outside: 1 });
+  // A file is named only whole, at both ends: src/a.css.map and lib/src/a.css are not src/a.css, known or not.
+  assert.deepEqual(foundIn(["src/a.css"], "allow.json:1: stale allow entry: src/a.css.map: x\n", known), { findings: [], outside: 1 });
+  const nested = "allow.json:1: stale allow entry: lib/src/a.css: x\n";
+  assert.deepEqual(foundIn(["src/a.css"], nested, [...known, "lib/src/a.css"]), { findings: [], outside: 1 });
+  assert.deepEqual(foundIn(["src/a.css"], nested, known), { findings: [], outside: 1 });
+  // ./ and absolute paths still name it.
+  assert.equal(foundIn(["src/a.css"], "allow.json:1: stale allow entry: ./src/a.css: x\n", known).findings.length, 1);
+  assert.equal(foundIn(["src/a.css"], `allow.json:1: stale allow entry: ${colourRoot}/src/a.css: x\n`, known).findings.length, 1);
 });
 
 test("kit ux with this editor's checks.css finds a raw colour in a changed file whose path has a space", t => {
