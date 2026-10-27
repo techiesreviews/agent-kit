@@ -23,14 +23,16 @@ if [[ -z ${KIT_HOME:-} || $KIT_HOME == "${KIT_HOME_DEFAULT:-}" ]] || { [[ $KIT_H
     why="no machine copy; cannot clone $KIT_REPO"
     trap '[[ -z $clone ]] || rm -rf -- "$clone"' EXIT
     mkdir -p -- "$cache" && clone=$(mktemp -d "$cache/agent-kit.XXXXXX") && git clone -q --depth 1 -- "$KIT_REPO" "$clone" >&2 &&
-      whole "$clone" && date +%s > "$clone/.git/kit-cloned" && mv -T -- "$clone" "$KIT_HOME" 2>/dev/null && clone='' || :
+      why="the clone of $KIT_REPO holds no whole kit" && whole "$clone" &&
+      date +%s > "$clone/.git/kit-cloned" && mv -T -- "$clone" "$KIT_HOME" 2>/dev/null && clone='' || :
     [[ -z $clone ]] || rm -rf -- "$clone"
   fi
 fi
 whole "$KIT_HOME" || { printf 'RESULT: fail no Agent Kit at %s (%s)\n' "$KIT_HOME" "$why"; exit 2; }
 # The front door resolves KIT_HOME the same way, so the marker still matches it in every child.
 if [[ $picked == true ]]; then
-  KIT_HOME=$(cd -- "$KIT_HOME" 2>/dev/null && pwd -P) || { printf 'RESULT: fail no Agent Kit at %s (removed while starting)\n' "$KIT_HOME"; exit 2; }
+  folder=$KIT_HOME
+  KIT_HOME=$(cd -- "$folder" 2>/dev/null && pwd -P) || { printf 'RESULT: fail no Agent Kit at %s (removed while starting)\n' "$folder"; exit 2; }
   export KIT_HOME_PINNED=$KIT_HOME
 fi
 # Outside git the project is the one around this launcher, not around the kit.
