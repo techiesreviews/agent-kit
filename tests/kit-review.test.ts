@@ -757,9 +757,11 @@ import { appendFileSync, existsSync, readFileSync } from "node:fs";
 const args = process.argv.slice(2);
 const answers = process.env.FAKE_CALLS + ".answers";
 if (args[0] === "export") {
+  if (process.env.FAKE_EXPORT === "fail") { console.error("Exporting session: " + args.at(-1) + "\\nError: session not found"); process.exit(1); }
+  if (process.env.FAKE_EXPORT === "hang") await new Promise(done => setTimeout(done, 30_000));
   const models = existsSync(answers) ? readFileSync(answers, "utf8").trim().split("\\n") : [];
-  console.error("Exporting session: " + args[1]);
-  console.log(JSON.stringify({ info: { id: args[1] }, messages: models.flatMap(model => [{ info: { role: "user" } },
+  console.error("Exporting session: " + args.at(-1));
+  console.log(JSON.stringify({ info: { id: args.at(-1) }, messages: models.flatMap(model => [{ info: { role: "user" } },
     { info: { role: "assistant", providerID: model.split("/")[0], modelID: model.split("/").slice(1).join("/") } }]) }));
   process.exit(0);
 }
@@ -770,10 +772,12 @@ appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ cli: "opencode", args, i
 const emit = (type, extra = {}) => console.log(JSON.stringify({ type, timestamp: Date.now(), sessionID: "ses_fake", ...extra }));
 const mode = process.env.FAKE_MODE || "pass";
 emit("step_start", { part: { type: "step-start", messageID: "m0" } });
-if (mode === "usage-limit") {
+if (mode === "usage-limit" || mode === "usage-limit-exit0") {
   emit("error", { error: { name: "APIError", data: { message: "Rate limit exceeded. Please try again later.", statusCode: 429 } } });
-  process.exit(1);
+  process.exit(mode === "usage-limit" ? 1 : 0);
 }
+// Stops after naming its session, as a crash or a killed run would.
+if (mode === "stopped") process.exit(1);
 appendFileSync(answers, args[args.indexOf("-m") + 1] + "\\n");
 emit("text", { part: { type: "text", messageID: "m1", text: "Reading the diff first." } });
 emit("tool_use", { part: { type: "tool", tool: "read", state: { status: "completed" } } });
@@ -848,13 +852,46 @@ test("an OpenCode answer from another model fails the model check", (t) => {
   assert.match(result.stderr, /OpenCode session does not name requested model opencode\/deepseek-v4\.1-flash-free \(actual: opencode\/other-free, opencode\/deepseek-v4\.1-flash-free\)/);
 });
 
-test("an OpenCode rate-limit refusal prints the opencode usage-limit problem and counts nothing", (t) => {
+test("an OpenCode rate-limit refusal prints the opencode usage-limit problem and counts nothing, whatever its exit", (t) => {
+  for (const mode of ["usage-limit", "usage-limit-exit0"]) {
+    const f = fixture(t);
+    withOpencode(f);
+    const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_MODE: mode });
+    assert.equal(result.status, 1);
+    assert.equal(result.stderr.trimEnd().split("\n").at(-1), "problem: opencode usage limit: Rate limit exceeded. Please try again later.");
+    assert.match(result.stdout.trim().split("\n").at(-1)!, /^RESULT: fail opencode usage limit: Rate limit exceeded\. Please try again later\. evidence /);
+    // The failed run is never exported or retried.
+    assert.equal(f.calls().length, 1);
+    assert.equal(existsSync(f.ledger), false);
+  }
+});
+
+test("a failed or hung OpenCode export fails the review with a named problem", (t) => {
+  for (const [mode, problem] of [["fail", /^problem: OpenCode export for ses_fake failed: exit 1: Error: session not found; see .*run\.log$/m],
+    ["hang", /^problem: OpenCode export for ses_fake failed: timed out after 500 ms; see .*run\.log$/m]] as const) {
+    const f = fixture(t);
+    withOpencode(f);
+    const started = Date.now();
+    const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_EXPORT: mode, ASE_OPENCODE_EXPORT_TIMEOUT_MS: "500" });
+    assert.equal(result.status, 1, result.stderr);
+    assert.ok(Date.now() - started < 10_000, "the export limit stops a hung export");
+    assert.match(result.stderr, problem);
+  }
+});
+
+test("agent.sh --resume continues the OpenCode session recorded from its first event", (t) => {
   const f = fixture(t);
   withOpencode(f);
-  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_MODE: "usage-limit" });
-  assert.equal(result.status, 1);
-  assert.equal(result.stderr.trimEnd().split("\n").at(-1), "problem: opencode usage limit: Rate limit exceeded. Please try again later.");
-  assert.match(result.stdout.trim().split("\n").at(-1)!, /^RESULT: fail opencode usage limit: Rate limit exceeded\. Please try again later\. evidence /);
-  assert.equal(f.calls().length, 1);
-  assert.equal(existsSync(f.ledger), false);
+  const stopped = f.runAgent(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_MODE: "stopped" });
+  assert.equal(stopped.status, 1, stopped.stderr);
+  assert.match(stopped.stderr, /^problem: opencode failed \(1\); see /m);
+  const status = JSON.parse(readFileSync(join(f.out, "status.json"), "utf8"));
+  assert.equal(status.cli, "opencode");
+  assert.equal(status.session, "ses_fake");
+  const resumed = f.invoke(agent, ["--resume", f.out], {}, true);
+  assert.equal(resumed.status, 0, resumed.stderr);
+  const call = f.calls().at(-1)!;
+  assert.equal(call.args[call.args.indexOf("--session") + 1], "ses_fake");
+  assert.equal(call.args[call.args.indexOf("--agent") + 1], "ase-review");
+  assert.match(readFileSync(join(f.out, "out.md"), "utf8"), /^REVIEW_STATUS: complete/);
 });

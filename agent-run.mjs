@@ -18,7 +18,8 @@ const reviewOnly = { grok: "Grok", opencode: "OpenCode" };
 
 export function inferCli(model) {
   if (/^grok-/i.test(model)) return "grok";
-  if (/^opencode\/./i.test(model)) return "opencode";
+  // Case matters: the model check compares OpenCode's provider/model exactly.
+  if (/^opencode\/./.test(model)) return "opencode";
   return /^(claude-|(?:opus|sonnet|haiku|fable)$)/i.test(claudeModelName(model)) ? "claude" : "codex";
 }
 
@@ -196,11 +197,18 @@ export function opencodeUsageLimit(stdout) {
 // The events never name the model; the session export does, per assistant message, as
 // provider and model ID. Every answer in the session, retries included, must be the
 // requested provider/model. The report is the text of the last message that has text.
-export function opencodeResult(stdout, requested, exported) {
+// exportSession(id) returns the export's output; it is not called when the run already failed.
+export function opencodeResult(stdout, requested, exportSession) {
   const events = opencodeEvents(stdout);
   const error = events.find(event => event.type === "error");
   if (error) throw new Error(`OpenCode reported an error: ${opencodeError(error.error)}`);
-  const session = JSON.parse(exported.slice(exported.indexOf("{")));
+  const id = opencodeSession(stdout);
+  if (!id) throw new Error("OpenCode printed no session");
+  const exported = exportSession(id), start = exported.indexOf("{");
+  if (start < 0) throw new Error(`OpenCode export for ${id} printed no JSON`);
+  let session;
+  try { session = JSON.parse(exported.slice(start)); }
+  catch (cause) { throw new Error(`OpenCode export for ${id} is not JSON: ${cause.message}`); }
   const models = (session.messages ?? []).filter(message => message.info?.role === "assistant")
     .map(({ info }) => `${info.providerID}/${info.modelID}`);
   if (!models.length || !models.every(model => model === requested)) {
@@ -470,19 +478,30 @@ export function opencodeAdapter(options) {
   // Effort is not passed: OpenCode's --variant names differ by provider.
   const args = ["run", "--pure", "--agent", opencodeReviewAgent, "--format", "json", "-m", model, "--dir", worktree];
   return {
-    command: "opencode", capture: true,
+    // Each event is one line and the first names the session, so the runner reads it line by line.
+    command: "opencode", capture: true, lines: true,
     env: { OPENCODE_CONFIG_CONTENT: opencodeReviewConfig, OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_DISABLE_CLAUDE_CODE: "1" },
     args,
     resume: session => [...args, "--session", session],
     session: stdout => opencodeSession(stdout),
     usageLimit: stdout => opencodeUsageLimit(stdout),
-    finish: stdout => {
-      const session = opencodeSession(stdout);
-      if (!session) throw new Error("OpenCode printed no session");
-      const exported = execFileSync("opencode", ["export", session], { cwd: worktree, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 256 * 1024 * 1024 });
-      return opencodeResult(stdout, model, exported);
-    },
+    finish: stdout => opencodeResult(stdout, model, session => opencodeExport(session, worktree)),
   };
+}
+
+// The export runs after the supervised call, so it has its own limit: ASE_OPENCODE_EXPORT_TIMEOUT_MS (60000).
+function opencodeExport(session, worktree) {
+  const timeout = Number(process.env.ASE_OPENCODE_EXPORT_TIMEOUT_MS || 60_000);
+  if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new Error("ASE_OPENCODE_EXPORT_TIMEOUT_MS must be a positive integer");
+  try {
+    return execFileSync("opencode", ["export", "--pure", session], { cwd: worktree, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: 256 * 1024 * 1024, timeout, killSignal: "SIGKILL" });
+  } catch (error) {
+    const last = String(error.stderr || "").trim().split("\n").at(-1);
+    const why = error.code === "ETIMEDOUT" || error.signal === "SIGKILL" ? `timed out after ${timeout} ms`
+      : error.status ? `exit ${error.status}${last ? `: ${last}` : ""}` : error.message;
+    throw new Error(`OpenCode export for ${session} failed: ${why}`);
+  }
 }
 
 export function agentInvocation(options, common, output) {
@@ -653,23 +672,26 @@ function recordedSession(adapter, stdout, log) {
 
 function sessionObserver(adapter, update) {
   const pending = ["", ""];
-  let stdout = "";
+  let stdout = "", known = null;
+  // Only a new session id rewrites status.json.
+  const record = session => { if (session && session !== known) update(known = session); };
   return (chunk, isStdout) => {
-    if (adapter.capture) {
-      if (!isStdout) return;
+    if (adapter.capture && !isStdout) return;
+    if (adapter.capture && !adapter.lines) {
       stdout += chunk;
       // Claude emits one JSON result. It may span multiple pipe chunks.
-      const session = recordedSession(adapter, stdout, "");
-      if (session) update(session);
+      record(recordedSession(adapter, stdout, ""));
       return;
     }
+    // A line-by-line capture (OpenCode) names its session once; later lines are not read for it.
+    if (adapter.lines && known) return;
     const index = isStdout ? 0 : 1;
     pending[index] += chunk;
     const end = pending[index].lastIndexOf("\n");
     if (end < 0) return;
-    const session = adapter.session("", pending[index].slice(0, end + 1));
+    const lines = pending[index].slice(0, end + 1);
     pending[index] = pending[index].slice(end + 1);
-    if (session) update(session);
+    record(adapter.capture ? recordedSession(adapter, lines, "") : adapter.session("", lines));
   };
 }
 
@@ -692,9 +714,11 @@ async function invokeAgent(adapter, args, descriptor, context) {
     if (session) update({ session });
     // The CLI's own failure is the cause; executeRun reports it after its consequences.
     if (status === 124) context.cause = `problem: agent exceeded timeout=${limit}; process group killed; see ${logPath}`;
-    else if (status) {
-      const limitProblem = adapter.usageLimit?.(result.stdout ?? "") ?? usageLimitProblem(slice, options.cli) ?? usageLimitProblem(result.stdout ?? "", options.cli);
-      context.cause = limitProblem ?? `problem: ${adapter.command} failed (${status}); see ${logPath}`;
+    else {
+      // A refusal OpenCode prints as an error event counts even when the CLI exits 0.
+      const limitProblem = adapter.usageLimit?.(result.stdout ?? "") ??
+        (status ? usageLimitProblem(slice, options.cli) ?? usageLimitProblem(result.stdout ?? "", options.cli) : null);
+      if (status || limitProblem) context.cause = limitProblem ?? `problem: ${adapter.command} failed (${status}); see ${logPath}`;
       // A refusal of the first call refunds the review; a completed first call, or one
       // that worked before the limit, already spent it.
       if (limitProblem && !previousCalls && refusedOutright(options.cli, slice, context.prompt)) update({ refused: true });

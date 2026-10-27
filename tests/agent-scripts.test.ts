@@ -217,7 +217,7 @@ test("Grok results parse to their text and accept only the requested model with 
 test("OpenCode adapter runs reviews only, as a read-only agent, and resumes its own session", () => {
   const model = "opencode/deepseek-v4.1-flash-free";
   assert.equal(inferCli(model), "opencode");
-  for (const other of ["opencode", "opencode/", "deepseek-v4.1-flash-free"]) assert.notEqual(inferCli(other), "opencode");
+  for (const other of ["opencode", "opencode/", "OpenCode/deepseek-v4.1-flash-free", "deepseek-v4.1-flash-free"]) assert.notEqual(inferCli(other), "opencode");
   const options = parseAgentArgs(["review", "/work tree", "brief"], { ASE_REVIEW_MODEL: model });
   assert.equal(options.cli, "opencode");
   const call = agentInvocation(options, "/shared git", "/out file.md");
@@ -244,7 +244,7 @@ test("OpenCode results take the last message's text and accept only the requeste
   const event = (type: string, extra = {}) => JSON.stringify({ type, timestamp: 1, sessionID: "ses_1", ...extra });
   const text = (messageID: string, value: string) => event("text", { part: { type: "text", messageID, text: value } });
   const stdout = [event("step_start"), text("m1", "Reading the diff."), event("tool_use"), text("m2", "REVIEW_STATUS: complete"), text("m2", "Defects: none"), event("step_finish")].join("\n");
-  const exported = (...models: string[]) => "Exporting session: ses_1\n" + JSON.stringify({ messages: [{ info: { role: "user", model: { providerID: "x", modelID: "y" } } },
+  const exported = (...models: string[]) => () => "Exporting session: ses_1\n" + JSON.stringify({ messages: [{ info: { role: "user", model: { providerID: "x", modelID: "y" } } },
     ...models.map(name => ({ info: { role: "assistant", providerID: name.split("/")[0], modelID: name.split("/").slice(1).join("/") } }))] });
   assert.equal(opencodeResult(stdout, model, exported(model, model)), "REVIEW_STATUS: complete\nDefects: none");
   assert.equal(opencodeResult(event("step_finish"), model, exported(model)), "");
@@ -252,7 +252,12 @@ test("OpenCode results take the last message's text and accept only the requeste
     assert.throws(() => opencodeResult(stdout, model, exported(...models)), /requested model/);
   }
   const limit = event("error", { error: { name: "APIError", data: { message: "Rate limit exceeded. Please try again later.", statusCode: 429 } } });
-  assert.throws(() => opencodeResult(`${stdout}\n${limit}`, model, exported(model)), /OpenCode reported an error: Rate limit exceeded/);
+  // A failed run never reaches the export.
+  const unreachable = () => { throw new Error("exported"); };
+  assert.throws(() => opencodeResult(`${stdout}\n${limit}`, model, unreachable), /OpenCode reported an error: Rate limit exceeded/);
+  assert.throws(() => opencodeResult("not JSON", model, unreachable), /OpenCode printed no session/);
+  assert.throws(() => opencodeResult(stdout, model, () => "Exporting session: ses_1\n"), /OpenCode export for ses_1 printed no JSON/);
+  assert.throws(() => opencodeResult(stdout, model, () => "{ broken"), /OpenCode export for ses_1 is not JSON/);
   assert.equal(opencodeUsageLimit(limit), "problem: opencode usage limit: Rate limit exceeded. Please try again later.");
   assert.equal(opencodeUsageLimit(event("error", { error: { name: "FreeUsageLimitError", data: { message: "Free usage exceeded" } } })), "problem: opencode usage limit: Free usage exceeded");
   // Other errors, and limit phrases the model merely wrote, are not refusals.
