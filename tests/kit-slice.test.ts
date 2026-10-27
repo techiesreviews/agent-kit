@@ -12,8 +12,8 @@ const findings = "REVIEW_STATUS: complete\nDefects:\nSpec:\n- file.txt:1 P1 rest
 interface Call { phase: string; args: string[] }
 interface State { finished: string[]; build: string; buildModel?: string; review: string; reviewedHead: string; rounds: number; pendingFix?: boolean; pr?: string; queued?: { head: string }; model: string; effort: string; previousModels?: string[] }
 
-// `settings`, when given, is committed as the project's settings file, with any extra `files`.
-function fixture(t: TestContext, settings?: Record<string, unknown>, files: Record<string, string> = {}) {
+// `settings` is committed as the project's settings file (by default the least a project needs), with any extra `files`.
+function fixture(t: TestContext, settings: Record<string, unknown> | null = { project: "kit-slice", branches: { land: "dev" } }, files: Record<string, string> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "kit-slice-"));
   const children: ChildProcess[] = [], releases: string[] = [];
   t.after(async () => {
@@ -1116,4 +1116,15 @@ test("kit slice refuses the land branch of a project that lands on main", t => {
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stdout, /^RESULT: fail .*use a build branch, not main or detached HEAD$/m);
   assert.deepEqual(f.calls(), []);
+});
+
+test("kit slice stops on unreadable settings before any phase, whatever the branch", t => {
+  for (const settings of [null, { project: "kit-slice" }]) {
+    const f = fixture(t, settings);
+    f.git("switch", "-q", "-c", "dev");
+    const result = f.run();
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, /^RESULT: fail .*scripts\/agents\/kit\.json/m);
+    assert.deepEqual(f.calls(), []);
+  }
 });

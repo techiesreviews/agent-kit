@@ -281,7 +281,7 @@ async function main(args) {
     }
     const tests = [`Tier: ${plan.tier} (${plan.reason})`, ...(features.line ? [features.line] : []), ""];
     // The unit test files (paths.unitTests) the focused run picks from, wherever they live.
-    const unitFiles = (await git("tier", ["-c", "core.quotepath=false", "ls-files", "-z"])).split("\0").filter(path => path && unitTestFile(path, settings));
+    const unitFiles = (await git("tier", ["ls-files", "-z"])).split("\0").filter(path => path && unitTestFile(path, settings));
     const sources = () => Object.fromEntries(unitFiles.map(path => [path, readFileSync(join(root, path), "utf8")]));
     // The project's own check commands (checks in scripts/agents/kit.json): a missing one is skipped with a line.
     const parse = text => {

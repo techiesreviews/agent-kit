@@ -274,6 +274,13 @@ test("a project without checks.css skips the colour step with its line", t => {
   assert.match(readFileSync(join(f.logDir(), "body.md"), "utf8"), /^- colours: skipped \(no checks\.css in scripts\/agents\/kit\.json\)$/m);
 });
 
+test("with a PR workflow but no checks or specs command set, the body says CI still runs its workflows", t => {
+  const f = fixture(t, { "docs/guide.md": "# Guide\n" }, {}, { settings: { project: "kit-bare", branches: { land: "dev" }, paths: { docs: ["^docs/"] } } });
+  const result = f.run(["--dry-run"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(readFileSync(join(f.logDir(), "body.md"), "utf8"), /^- skipped for the docs tier \(CI still runs its workflows\): kit review$/m);
+});
+
 // A project whose kit plumbing and unit tests live in other folders than this editor's.
 const elsewhere = { project: "kit-other", branches: { land: "dev" }, checks: { check: "npm run check", test: "npm test", extra: "npm run extra-a" },
   paths: { tests: ["^spec/"], kit: ["^tools/kit/"], unitTests: ["^spec/[^/]+\\.test\\.js$"] } };

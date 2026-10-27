@@ -40,10 +40,10 @@ async function slice(args) {
     const root = resolve(kitRoot()), env = nodeEnv();
     const git = (...argv) => execFileSync("git", ["-C", root, ...argv], { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
     const branch = git("branch", "--show-current");
-    // The land and release branches (scripts/agents/kit.json) are never a slice's branch.
-    let settings = null;
-    try { settings = kitSettings(root); } catch { /* No usable settings: nothing to refuse; the builder's doctor run names the problem. */ }
-    const refused = settings ? [...new Set([kitBranch("land", settings), kitBranch("release", settings)].filter(Boolean))] : [];
+    // The land and release branches (scripts/agents/kit.json) are never a slice's branch; without
+    // readable settings they are unknown, so the slice stops with the settings problem.
+    const settings = kitSettings(root);
+    const refused = [...new Set([kitBranch("land", settings), kitBranch("release", settings)].filter(Boolean))];
     const not = [...refused, "detached HEAD"];
     if (!branch || refused.includes(branch)) throw new Error(`use a build branch, not ${not.length > 1 ? `${not.slice(0, -1).join(", ")} or ${not.at(-1)}` : not[0]}`);
     const ticket = resolve(root, flags.ticket);
@@ -249,7 +249,7 @@ async function slice(args) {
     if (!state.finished.includes(phase)) {
       const brief = join(root, ".scratch/agent-brief.md");
       // The contract names only the checks the project sets (builderChecks).
-      const { unit, check } = builderChecks(root, settings ?? {});
+      const { unit, check } = builderChecks(root, settings);
       // In a TypeScript project (a tsconfig.json) checks.check is the type check; any other command runs every time.
       const when = existsSync(join(root, "tsconfig.json")) ? "when types moved" : "before handing back";
       const validate = `Validate with ${spoken([unit && "scripts/agents/kit unit --affected", "the ticket's focused checks"].filter(Boolean))}${check ? `; run ${check} ${when}` : ""}.`;

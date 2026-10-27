@@ -120,8 +120,14 @@ async function main(args) {
     const worktrees = parseWorktrees(await git(["worktree", "list", "--porcelain", "-z"]));
     const common = (await git(["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
     // The dev worktree (devRoot) and the land and release branches from scripts/agents/kit.json are never pruned.
-    const kit = kitSettings(), devRoot = kitDevRoot(kit);
-    const branches = [...new Set([kitBranch("land", kit), kitBranch("release", kit)].filter(Boolean))];
+    // Without readable settings the list still prints, with no merge targets, and --prune is refused.
+    let kit = null;
+    try { kit = kitSettings(); } catch (error) {
+      if (settings.prune) { console.error(`worktrees.sh --prune needs readable settings: ${error.message}`); process.exitCode = 1; return; }
+      console.error(`problem: ${error.message}; listing without protected branches or merge state`);
+    }
+    const devRoot = kitDevRoot(kit ?? {});
+    const branches = kit ? [...new Set([kitBranch("land", kit), kitBranch("release", kit)].filter(Boolean))] : [];
     const protectedPaths = new Set([canonical(worktrees[0].path), canonical(dirname(common)), ...(devRoot ? [canonical(devRoot)] : [])]);
     // Pin the local remote-tracking refs for this inventory. No fetch or branch deletion.
     const targets = [];
@@ -157,7 +163,8 @@ async function main(args) {
     }
     if (settings.prune) await git(["worktree", "prune"]);
     const merged = branches.map(branch => `origin/${branch}`);
-    console.log(`Branches kept. Review git branch --merged ${merged[0]}${merged.length > 1 ? ` (or ${merged.slice(1).join(", ")})` : ""}, then git branch -d <branch>.`);
+    console.log(merged.length ? `Branches kept. Review git branch --merged ${merged[0]}${merged.length > 1 ? ` (or ${merged.slice(1).join(", ")})` : ""}, then git branch -d <branch>.`
+      : "Branches kept.");
   } catch (error) { console.error(error.message.trim()); process.exitCode = 1; }
 }
 

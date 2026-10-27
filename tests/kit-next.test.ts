@@ -825,3 +825,15 @@ test("a maps folder other than docs/wayfinder still gives a running slice its ma
     "RESULT: ok next 0 ready, 1 waiting",
   ]);
 });
+
+test("a running ticket under a folder that only ends in the maps name has no map, so runs_alone does not wait on it", t => {
+  const { running, lines } = fixture(t, {
+    "myplans/alpha/build/tickets/01-run.md": ticket({ files: ["a/one.ts"] }),
+    "plans/alpha/build/tickets/02-alone.md": ticket({ runsAlone: true, files: ["a/two.ts"] }),
+  }, "dev", { maps: "plans" });
+  running("slice-other01", "myplans/alpha/build/tickets/01-run.md");
+  assert.deepEqual(lines("alpha"), [
+    "next: plans/alpha/build/tickets/02-alone.md builder=claude-opus-5-5 owner=alpha-02 why=slot 2/5",
+    "RESULT: ok next 1 ready, 0 waiting",
+  ]);
+});

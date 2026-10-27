@@ -195,12 +195,11 @@ const overlaps = (a, b) => a === b || inside(a, b) || inside(b, a);
 // The shared file (src/main.ts here) is rule 3's alone: two slices may share it, never any other file.
 const shared = (files, others) => files.find(file => file !== mainTs && others.some(other => other !== mainTs && overlaps(file, other)));
 const inMain = unit => Boolean(mainTs) && unit.files.some(file => overlaps(file, mainTs));
-const ticketKey = file => file.slice(Math.max(0, file.indexOf(`${mapsDir}/`)));
-// The map a ticket path names: the folder right after the maps folder, as ticketKey cuts it; else "".
-const mapOf = file => {
-  const key = ticketKey(file);
-  return key.startsWith(`${mapsDir}/`) ? /^([^/]+)\//.exec(key.slice(mapsDir.length + 1))?.[1] ?? "" : "";
-};
+// A ticket path from the maps folder on (the folder must start a path segment, so `myplans/` is not `plans/`),
+// and the map it names; a path outside the maps folder keys as itself, with no map.
+const mapsPath = new RegExp(`(?:^|/)(${mapsDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/(?:([^/]+)/)?.*)$`);
+const ticketKey = file => mapsPath.exec(file)?.[1] ?? file;
+const mapOf = file => mapsPath.exec(file)?.[2] ?? "";
 
 // Apply the fixed rules in order to each hand-out (a ticket or a whole group, with the union of
 // its Files); picked hand-outs count as running. A delegated pick has no kit bg job, so it takes
