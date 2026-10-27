@@ -314,3 +314,15 @@ test("without a maps folder, next and heartbeat say so, tickets.mjs reads nothin
   assert.equal(page.status, 1, page.stdout + page.stderr);
   assert.equal(lastLine(page), 'RESULT: fail score no "maps" folder in scripts/agents/kit.json; this command needs one');
 });
+
+test("a settings problem fails kit review and unit.sh as a failure, not a usage error", t => {
+  const f = repo(t, { project: "kit-land" });
+  const review = f.run(["review"]);
+  assert.equal(review.status, 1, review.stdout + review.stderr);
+  assert.match(review.stderr, /^problem: add "branches": \{ "land": "<branch>" \} to scripts\/agents\/kit\.json$/m);
+  assert.doesNotMatch(review.stderr, /Usage:/);
+  const broken = repo(t, '{ "project": ');
+  const unit = spawnSync("bash", [resolve("scripts/agents/unit.sh"), "tests/a.test.ts"], { cwd: broken.root, env: broken.env, encoding: "utf8" });
+  assert.equal(unit.status, 1, unit.stdout + unit.stderr);
+  assert.match(unit.stderr, /^unit\.sh: scripts\/agents\/kit\.json is unreadable: /m);
+});

@@ -317,13 +317,13 @@ dd span { color: var(--ink); font-variant-numeric: tabular-nums; font-weight: 60
 /**
  * The page for one build. data is kit score's merged map data with each piece's builder label as `who`;
  * tickets are the map's tickets (file, slug, title, status) from both ticket folders; builds are finished builds oldest first,
- * each { map, feedback } with its feedback log text.
+ * each { map, feedback } with its feedback log text. maps is the settings' maps folder, for the feedback logs' paths.
  */
-export function scorePage({ data, tickets = [], builds = [], generated = new Date() }) {
+export function scorePage({ data, tickets = [], builds = [], generated = new Date(), maps }) {
   const dropped = new Set(buildTickets(tickets).filter(ticket => ticket.status === "wontfix").map(ticket => ticket.slug));
   const pieces = data.pieces.filter(piece => !dropped.has(piece.piece));
-  const current = feedbackLog(data.feedback, `docs/wayfinder/${data.map}/build/feedback.md`);
-  const state = ladder(builds.map(build => ({ map: build.map, ...feedbackLog(build.feedback, `docs/wayfinder/${build.map}/build/feedback.md`) })));
+  const current = feedbackLog(data.feedback, `${maps}/${data.map}/build/feedback.md`);
+  const state = ladder(builds.map(build => ({ map: build.map, ...feedbackLog(build.feedback, `${maps}/${build.map}/build/feedback.md`) })));
   const when = generated.toISOString().slice(0, 16).replace("T", " ");
   return `<!doctype html>
 <html lang="en">

@@ -256,3 +256,16 @@ test("a missing sharedFile, maps or techDebt setting drops its section or says s
   assert.deepEqual(sweep.correctionsSection(repo, "", "HEAD", null).lines, ["- no maps folder in scripts/agents/kit.json"]);
   assert.deepEqual(sweep.staleDebtSection(repo, Date.now(), null).lines, ["- no techDebt folder in scripts/agents/kit.json"]);
 });
+
+test("corrections name their map under a maps folder other than docs/wayfinder", t => {
+  const { repo } = repository(t);
+  write(join(repo, "README.md"), "base\n");
+  commit(repo, Date.now() - 2 * day, "base");
+  const then = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  write(join(repo, "notes/maps/alpha/build/feedback.md"), "# Feedback: alpha\n\n## Feedback\n\n- 2026-10-26 · fault · Lost a page · after release: no · fix: open\n");
+  commit(repo, Date.now() - day, "feedback");
+  const head = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const section = sweep.correctionsSection(repo, then, head, "notes/maps");
+  assert.deepEqual(section.lines, ["- 1 corrections committed in the window; by kind: fault 1",
+    "- 2026-10-26 · fault · Lost a page · alpha · after release: no · fix: open"]);
+});

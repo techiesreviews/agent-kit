@@ -248,6 +248,14 @@ test("checks come from the settings file: every extra runs in order, a missing o
   assert.match(result.stdout, /^kit-clean: ok\nkit-clean: ok$/m);
 });
 
+test("checks.extra holds kit-plumbing checks: a diff outside kit files never runs them", t => {
+  const f = fixture(t, { "src/x.ts": "x\n" }, { checks: { check: "npm run check", test: "npm test", lint: "npm run lint", extra: ["npm run extra-a"] } });
+  const result = f.run(["--dry-run"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(f.calls().filter(call => call.tool === "npm").map(call => call.args.join(" ")), ["run check", "test", "run lint"]);
+  assert.doesNotMatch(result.stdout, /kit-clean/);
+});
+
 test("PR body includes ordered commits, checks, ticket and conditional Claude credit", t => {
   for (const mode of ["none", "env", "trailer"]) {
     const f = fixture(t);

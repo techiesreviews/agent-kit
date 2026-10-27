@@ -109,7 +109,7 @@ function page(data, root, maps, out) {
   const { tickets } = loadTickets(join(root, maps), data.map);
   const pieces = data.pieces.map(item => ({ ...item, who: label(item.builder) }));
   mkdirSync(dirname(out), { recursive: true });
-  writeAtomic(out, scorePage({ data: { ...data, pieces }, tickets, builds: finishedBuilds(root, maps) }));
+  writeAtomic(out, scorePage({ data: { ...data, pieces }, tickets, builds: finishedBuilds(root, maps), maps }));
 }
 
 const findingsText = findings => Object.entries(findings).map(([kind, count]) => `${kind} ${count}`).join(", ") || "none";

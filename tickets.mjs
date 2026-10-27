@@ -172,7 +172,7 @@ export function resolveTickets(tickets) {
   return { frontier, problems };
 }
 
-export function loadTickets(root = "docs/wayfinder", map, { ref, cwd = process.cwd() } = {}) {
+export function loadTickets(root, map, { ref, cwd = process.cwd() } = {}) {
   const tickets = [];
   const problems = [];
   let tracked;
@@ -220,7 +220,7 @@ export const feedbackHeading = "## Feedback";
 export const feedbackLegend = `Kinds: ${Object.entries(feedbackKinds).map(([kind, meaning]) => `\`${kind}\` ${meaning}`).join(" · ")}. \`after release: yes\` marks a UX problem found on production.`;
 const feedbackEntry = /^- (\S+) · (\S+) · (.+) · after release: (\S+) · fix: (.+)$/;
 
-export function feedbackFile(map, maps = "docs/wayfinder") { return `${maps}/${map}/build/feedback.md`; }
+export function feedbackFile(map, maps) { return `${maps}/${map}/build/feedback.md`; }
 
 export function feedbackLine({ date, kind, afterRelease = false, text, fix = "open" }) {
   return `- ${date} · ${kind} · ${text} · after release: ${afterRelease ? "yes" : "no"} · fix: ${fix}`;
@@ -270,7 +270,7 @@ export function parseFeedback(source, file, exists = isFile) {
   return { entries, problems };
 }
 
-export function loadFeedback(root = "docs/wayfinder", { ref, cwd = process.cwd() } = {}) {
+export function loadFeedback(root, { ref, cwd = process.cwd() } = {}) {
   const entries = [], problems = [];
   const git = (args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
   let files, read, exists;

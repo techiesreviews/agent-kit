@@ -26,7 +26,6 @@ function options(args) {
   }
   if (values.base !== undefined && values.commit !== undefined) throw new Error("--base and --commit are mutually exclusive");
   if (values.pr !== undefined && (!/^[1-9][0-9]*$/.test(values.pr) || !Number.isSafeInteger(Number(values.pr)))) throw new Error("--pr must be a positive integer");
-  if (values.base === undefined && values.commit === undefined) values.base = `origin/${kitBranch()}`;
   return values;
 }
 
@@ -49,6 +48,8 @@ async function review(args) {
     const flags = options(args);
     ticket = flags.ticket;
     status = 1;
+    // The default base comes from the settings file; a settings problem is a failure, not a usage error.
+    if (flags.base === undefined && flags.commit === undefined) flags.base = `origin/${kitBranch()}`;
     const root = kitRoot();
     env = nodeEnv();
     const scope = reviewScope("", flags, root);
