@@ -3,7 +3,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, normalize, relative, resolve } from "node:path";
-import { kitBranch, kitDevRoot, kitHome, kitResult, kitSettings } from "../kit-lib.mjs";
+import { kitBranch, kitDevRoot, kitHome, kitResult, kitRoot, kitSettings } from "../kit-lib.mjs";
 import { loadTickets, parseTicket, resolveTickets } from "../tickets.mjs";
 
 // Settings from scripts/agents/kit.json; an unreadable file still lets --help print, with placeholders.
@@ -31,13 +31,27 @@ on BRANCH, each later one on its own BRANCH-<NN> from the fetched origin/${land}
 tickets closed on origin/${land} or merged by their saved slice and resumes a slice with saved state
 on its branch.`;
 
-// Pins quoted from docs/agents/kitchen.md#who-cooks-pins-from-2026-10-22:
-//   | Builder, every slice | `claude-opus-5-5`, high | `kit slice --builder claude-opus-5-5`; `builder: sol` lines in tickets are superseded |
-//   | Builder, tiny fully specified fix | free OpenCode model | T3 `delegate_task`, only once T3 lists a verified zero-cost model |
-//   "Sol never builds."
-const pins = { "": "claude-opus-5-5", claude: "claude-opus-5-5", sol: "claude-opus-5-5" };
-const reviewModel = "claude-opus-5-5";
+// Pins from the "Who cooks" table: the shared rulebook (docs/kitchen.md in the kit), where a row with
+// the same role in the project's extras (rulebookExtras) wins. "Builder, every slice" builds every
+// claude, sol ("Sol never builds") and unnamed ticket; "Review, every change" reviews each started slice.
+let pins = {}, reviewModel = "";
 const cap = 5;
+
+function rulebookPins() {
+  const rows = new Map();
+  const read = (file, label) => {
+    let text;
+    try { text = readFileSync(file, "utf8"); }
+    catch (error) { throw new Error(`cannot read the ${label} ${file}: ${error.code ?? error.message}`); }
+    for (const [, role, model] of text.matchAll(/^\| (Builder, every slice|Review, every change) \| `([^`]+)`/gm)) rows.set(role, model);
+  };
+  read(join(kitHome(), "docs/kitchen.md"), "shared rulebook");
+  if (settings?.rulebookExtras) read(resolve(kitRoot(), settings.rulebookExtras), "rulebook extras");
+  const builder = rows.get("Builder, every slice"), reviewer = rows.get("Review, every change");
+  if (!builder || !reviewer) throw new Error(`the rulebook has no ${builder ? "Review, every change" : "Builder, every slice"} pin`);
+  pins = { "": builder, claude: builder, sol: builder };
+  reviewModel = reviewer;
+}
 // sharedFile: the one file two slices may share (rule 3); none when unset.
 const mainTs = settings?.sharedFile || null;
 
@@ -419,6 +433,7 @@ function main(args) {
   if (flags.runGroup) { runGroup(flags); return; }
   if (!devRoot) throw new Error("needs a dev worktree; add devRoot to scripts/agents/kit.json");
   if (!mapsDir) throw new Error("needs a maps folder; add maps to scripts/agents/kit.json");
+  rulebookPins();
   if (!tryGit(["fetch", "-q", "origin"])) console.log(`problem: fetch failed; using the local origin/${land}`);
   const candidates = [], problems = [];
   for (const map of flags.maps.length ? flags.maps : [undefined]) {

@@ -429,7 +429,7 @@ test("--start without a fake kit starts the job through $KIT_HOME/kit in the new
   // A kit home with the real commands and library, whose front door records its call.
   const home = join(root, "kit-home"), log = join(root, "home-kit.log");
   mkdirSync(home);
-  for (const name of ["kit.d", "kit-lib.sh", "kit-lib.mjs"]) symlinkSync(resolve("scripts/agents", name), join(home, name));
+  for (const name of ["kit.d", "kit-lib.sh", "kit-lib.mjs", "docs"]) symlinkSync(resolve("scripts/agents", name), join(home, name));
   writeFileSync(join(home, "kit"), `#!/usr/bin/env bash\nprintf '%s|%s\\n' "$PWD" "$*" >> ${JSON.stringify(log)}\necho "RESULT: ok bg $2 pid 1"\n`);
   chmodSync(join(home, "kit"), 0o755);
   env.KIT_HOME = home;
@@ -439,6 +439,60 @@ test("--start without a fake kit starts the job through $KIT_HOME/kit in the new
   assert.equal(readFileSync(log, "utf8"),
     `${worktree}|bg slice-al01 -- scripts/agents/kit slice --ticket ${build("alpha", "01-first-slice")} --builder claude-opus-5-5\n`);
   assert.match(result.stdout, /RESULT: ok next 2 ready, 0 waiting, 1 started\n$/);
+});
+
+// A kit home whose shared rulebook pins the given builder and reviewer; other rows stay as they are.
+function pinnedHome(root: string, builder: string, reviewer: string) {
+  const home = join(root, "pinned-kit");
+  mkdirSync(join(home, "docs"), { recursive: true });
+  const rulebook = readFileSync("scripts/agents/docs/kitchen.md", "utf8")
+    .replace(/^\| Builder, every slice \| `[^`]+`/m, `| Builder, every slice | \`${builder}\``)
+    .replace(/^\| Review, every change \| `[^`]+`/m, `| Review, every change | \`${reviewer}\``);
+  writeFileSync(join(home, "docs/kitchen.md"), rulebook);
+  return home;
+}
+
+test("the builder and reviewer pins come from the shared rulebook in KIT_HOME", t => {
+  const { root, env, run } = fixture(t, startFiles);
+  env.KIT_HOME = pinnedHome(root, "claude-pinned", "claude-reviewer");
+  delete env.KIT_HOME_DEFAULT;
+  const result = run("alpha", "--start");
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^next: \S+01-first-slice\.md builder=claude-pinned owner=al-01 /m);
+  const worktree = join(root, "wt-build-al-01-first-slice");
+  assert.equal(readFileSync(env.FAKE_KIT_LOG!, "utf8"),
+    `${worktree}|claude-reviewer|al-01|bg slice-al01 -- scripts/agents/kit slice --ticket ${build("alpha", "01-first-slice")} --builder claude-pinned\n`);
+});
+
+test("a pin row in the project's rulebook extras wins over the shared rulebook", t => {
+  const { lines } = fixture(t, {
+    ...startFiles,
+    "docs/agents/kitchen-extras.md": "# Kitchen extras\n\n| Role | Model | How |\n| --- | --- | --- |\n| Builder, every slice | `claude-own`, high | here |\n",
+  }, "dev", { rulebookExtras: "docs/agents/kitchen-extras.md" });
+  assert.match(lines("alpha")[0], /^next: \S+01-first-slice\.md builder=claude-own owner=al-01 /);
+});
+
+test("a missing shared rulebook, extras file or pin fails before any hand-out", t => {
+  const { root, dev, env, run } = fixture(t, startFiles, "dev", { rulebookExtras: "docs/agents/missing.md" });
+  const missing = run("alpha");
+  assert.equal(missing.status, 1);
+  assert.match(missing.stdout, /^RESULT: fail next cannot read the rulebook extras \S+\/docs\/agents\/missing\.md: ENOENT$/m);
+  // Extras without pin rows leave the shared pins.
+  mkdirSync(join(dev, "docs/agents"), { recursive: true });
+  writeFileSync(join(dev, "docs/agents/missing.md"), "# Kitchen extras\n");
+  const home = join(root, "empty-kit");
+  mkdirSync(join(home, "docs"), { recursive: true });
+  writeFileSync(join(home, "docs/kitchen.md"), "# The kitchen\n\n| Builder, every slice | `claude-x`, high | x |\n");
+  env.KIT_HOME = home;
+  delete env.KIT_HOME_DEFAULT;
+  const noReviewer = run("alpha");
+  assert.equal(noReviewer.status, 1);
+  assert.match(noReviewer.stdout, /^RESULT: fail next the rulebook has no Review, every change pin$/m);
+  env.KIT_HOME = join(root, "no-kit");
+  const noRulebook = run("alpha");
+  assert.equal(noRulebook.status, 1);
+  assert.match(noRulebook.stdout, /^RESULT: fail next cannot read the shared rulebook \S+\/no-kit\/docs\/kitchen\.md: ENOENT$/m);
+  assert.ok(!existsSync(env.FAKE_KIT_LOG!));
 });
 
 test("--start on a project that lands on main claims, pushes and branches from origin/main", t => {

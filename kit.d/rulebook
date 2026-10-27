@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# kit: print the kitchen rulebook: the shared one, then the project's extras
+set -euo pipefail
+# shellcheck source=scripts/agents/kit-lib.sh
+source "${KIT_LIB:-$(dirname -- "${BASH_SOURCE[0]}")/../kit-lib.sh}"
+usage='Usage: kit rulebook'
+case ${1-} in
+  --help|-h)
+    printf '%s\n' "$usage"
+    printf "Print the kit's shared kitchen rulebook (docs/kitchen.md in the kit), then the project's extras:\n"
+    printf 'the file rulebookExtras names in scripts/agents/kit.json, relative to the top folder or absolute.\n'
+    printf 'Where they differ, the extras win. Without rulebookExtras only the shared part prints, with a line saying so;\n'
+    printf 'a named extras file that cannot be read, or settings that cannot be read without jq, fail after the shared part.\n'
+    exit 0
+    ;;
+  '') ;;
+  *) printf '%s\n' "$usage" >&2; kit_result fail "rulebook unknown argument $1"; exit 2 ;;
+esac
+shared=$(kit_home)/docs/kitchen.md
+[[ -r $shared ]] || { kit_result fail "rulebook no shared rulebook at $shared"; exit 1; }
+cat -- "$shared"
+# Without jq the settings cannot be read, which is not the same as no extras.
+extras=$(kit_setting .rulebookExtras) || { kit_result fail 'rulebook cannot read scripts/agents/kit.json without jq; install jq'; exit 1; }
+if [[ -z $extras ]]; then
+  printf '\nNo project extras: add "rulebookExtras" to scripts/agents/kit.json.\n'
+  kit_result ok 'rulebook shared only'
+  exit 0
+fi
+file=$extras
+[[ $file == /* ]] || file=$(kit_root)/$file
+if [[ ! -f $file || ! -r $file ]]; then
+  kit_result fail "rulebook extras $extras cannot be read"
+  exit 1
+fi
+printf '\n'
+cat -- "$file"
+kit_result ok "rulebook shared and $extras"
