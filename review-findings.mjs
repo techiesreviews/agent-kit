@@ -67,9 +67,9 @@ const severityOf = text => classify(text).severity;
 export function openFindings(resultMd) {
   const findings = [], prose = [];
   let defects = false, labelled = false, section = "", group = "", pending;
-  // notes: the group's first line said "none"; fresh: the group's first line is still to come;
+  // noneGroup: the group's first line said "none"; fresh: the group's first line is still to come;
   // labelSection: the section was opened by a "Spec defects" / "Standards defects" heading.
-  let notes = false, fresh = false, labelSection = false;
+  let noneGroup = false, fresh = false, labelSection = false;
   const listItem = raw => /^\s*(?:[-+*]|\d+[.)])\s+/.test(raw);
   // A leading single `*` or `_` emphasis (`*Spec*`, `_Standards:_ none`) is removed, so such a heading
   // opens its group; the late-label check below still looks for `#` or bold only.
@@ -104,7 +104,7 @@ export function openFindings(resultMd) {
     // Inside a defects-label section a bulleted bare Spec:/Standards: stays in that section's group,
     // except under "none" notes, where it switches so a real fault after the notes still counts, or
     // when it says "none" itself, so it and its notes never join the finding above.
-    const stays = labelSection && listItem(raw) && !notes && !none(clean(heading?.[3] ?? ""));
+    const stays = labelSection && listItem(raw) && !noneGroup && !none(clean(heading?.[3] ?? ""));
     const groupSwitch = section === "Defects" && !stays || topGroup;
     const opens = defectsLabel ? ["", "Defects"].includes(section) || lateLabel : !bareGroup || groupSwitch;
     if (heading && opens) {
@@ -125,22 +125,22 @@ export function openFindings(resultMd) {
         group = section;
       }
       const value = clean(heading[3] ?? "");
-      notes = none(value);
+      noneGroup = none(value);
       fresh = !value;
-      if (value && !notes && section !== "Optional nits") pending = { group, text: value, indent: 0 };
+      if (value && !noneGroup && section !== "Optional nits") pending = { group, text: value, indent: 0 };
       continue;
     }
     if (!text || !section || section === "Optional nits") continue;
     if (fresh) {
       fresh = false;
-      if ((notes = none(text))) continue;
+      if ((noneGroup = none(text))) continue;
     }
     const bullet = /^(\s*)(?:[-+*]|\d+[.)])\s+/.exec(raw);
     const indent = bullet?.[1].length ?? 0;
     if (bullet && (!pending || indent <= pending.indent)) flush();
     // Under "none" notes a line that starts with a location and names a severity is still a finding
     // (fail closed); its continuation lines and sub-bullets join it, and other notes are skipped.
-    if (notes && !pending && !(LOCATION.test(text) && severityOf(text))) continue;
+    if (noneGroup && !pending && !(LOCATION.test(text) && severityOf(text))) continue;
     if (pending) pending.text += ` ${text}`;
     else pending = { group, text, indent };
   }
@@ -152,6 +152,7 @@ export function openFindings(resultMd) {
 }
 
 // The structured record kit review saves beside result.md, with counts by kind and severity.
+// notes counts the prose lines openFindings set aside; lines under a "none" group are not counted.
 // Validation gaps carry neither and count as "gap" in both, so a severity "none" is always a
 // defect whose severity could not be read (one that blocks).
 export function findingsRecord(resultMd, meta) {

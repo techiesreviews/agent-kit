@@ -251,6 +251,21 @@ test("kit fix help and argument errors do not start a builder", t => {
   assert.equal(f.calls().length, 0);
 });
 
+test("reviewer notes are not open findings: a notes-only review is clean, and a round lists only the located defect", t => {
+  const prose = "No section of CODING_STANDARDS.md applies to this change.";
+  const notesOnly = fixture(t);
+  notesOnly.review("20261019T000000Z", `REVIEW_STATUS: complete\nDefects:\nSpec: none\nStandards:\n${prose}\nValidation gaps: none\n`);
+  const result = notesOnly.run();
+  assert.equal(result.status, 0, result.stderr); assert.equal(result.stdout.trim(), "RESULT: ok fix clean");
+  assert.equal(notesOnly.calls().length, 0);
+  const f = fixture(t); f.builder();
+  f.review("20261019T000000Z", `REVIEW_STATUS: complete\nDefects:\nSpec:\n- a.ts:1 — P1 fault: x\nStandards:\n${prose}\nValidation gaps: none\n`);
+  f.run();
+  const round = readFileSync(join(f.root, ".scratch/kit-fix/build%2Fke-03/round-1.md"), "utf8");
+  assert.ok(round.includes("Open findings:\n- Spec: a.ts:1 — P1 fault: x\n\nReview evidence (verbatim"), round);
+  assert.ok(round.split("Review evidence")[1].includes(prose), round);
+});
+
 test("kit fix ignores reviews for other HEADs, picks the newest covering review, and skips a clean review", t => {
   const f = fixture(t);
   f.review("20261017T000000Z", findings, f.base);

@@ -83,7 +83,7 @@ function evidence() {
   // DIRTY_FROM: every review from that round on keeps a P1.
   const open = round() < Number(process.env.CLEAN_AT || 0) || round() >= Number(process.env.DIRTY_FROM || Infinity) || noteFinding;
   const report = noteFinding && !stay ? ${JSON.stringify(findings)}.replace("P1", "P3") : process.env.MINOR_REVIEW && round() >= 3 ? ${JSON.stringify(findings)}.replace("P1", "P2").replace("Standards: none", "Standards: P3: Cosmetic issue") : ${JSON.stringify(findings)};
-  writeFileSync(join(folder, "result.md"), process.env.UNREADABLE_REVIEW ? "partial" : open ? report : ${JSON.stringify(clean)});
+  writeFileSync(join(folder, "result.md"), process.env.UNREADABLE_REVIEW ? "partial" : open ? report : process.env.CLEAN_REVIEW || ${JSON.stringify(clean)});
   if (process.env.FINDINGS_JSON) writeFileSync(join(folder, "findings.json"), JSON.stringify({ model: "fake-reviewer", effort: "high",
     findings: [], counts: { kind: { fault: 0, ticket: 0, race: 0, style: 0, unsorted: open ? 1 : 0, gap: 0 }, severity: {} } }));
   return { folder, open };
@@ -316,6 +316,14 @@ test("kit slice writes the ticket brief, runs phases in order, credits and commi
   assert.equal(f.git("status", "--porcelain"), "");
   assert.equal(f.state().pr, "42"); assert.ok(existsSync(join(f.state().build, "status.json")));
   for (const phase of ["brief", "build", "commit", "review", "fix", "pr"]) assert.ok(existsSync(join(f.root, ".scratch/kit-slice/04-ticket", phase + ".log")));
+});
+
+test("kit slice takes a review holding only reviewer notes as clean: no fix round, straight to kit pr", t => {
+  const notes = "REVIEW_STATUS: complete\nDefects:\nSpec: none.\nStandards:\nNo section of CODING_STANDARDS.md applies to this change.\nValidation gaps: none.\n";
+  const f = fixture(t), result = f.run([], { CLEAN_REVIEW: notes });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "pr"]);
+  assert.equal(f.state().rounds ?? 0, 0);
 });
 
 test("kit slice fixes findings in round two and never passes waive", t => {

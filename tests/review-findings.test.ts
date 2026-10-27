@@ -565,6 +565,12 @@ test("an unlocated line naming its severity past 80 characters still blocks with
   assert.deepEqual(blockingFindings(findings), findings);
 });
 
+test("an unlocated bullet whose sub-bullet names a severity is one blocking finding, not a note", () => {
+  const { findings, notes } = openFindings(review("Defects:\nSpec:\n- The guard is missing.\n  - see a.ts:1 — P1\nValidation gaps: none."));
+  assert.deepEqual([findings, notes], [[finding("Spec", "The guard is missing. see a.ts:1 — P1", "P1")], []]);
+  assert.deepEqual(blockingFindings(findings), findings);
+});
+
 test("a located line with no severity still blocks; a missing REVIEW_STATUS is still unreadable", () => {
   for (const text of ["a.ts:1 the guard is missing.", "`abcd123:src/a.ts:4-9` — the guard is missing."]) {
     const { findings, notes } = openFindings(review(`Defects:\nStandards:\n- ${text}\nValidation gaps: none.`));
