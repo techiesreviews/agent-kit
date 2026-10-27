@@ -141,6 +141,8 @@ test("unit help, listing and invalid options use the kit front door", t => {
   const base = f.run("--affected", "--base", "missing");
   result(base, 2, /^RESULT: fail unit base not found: missing$/);
   assert.match(base.stderr, /^problem: base not found: missing$/m);
+  // A real commit still passes the check.
+  result(f.run("--affected", "--base", f.base, "--list"), 0, /^RESULT: ok unit /);
   assert.match(base.stderr, /Usage: kit unit/);
   assert.equal(f.executed(), 0);
 });
@@ -216,7 +218,7 @@ test("unit.sh with no files run from its own folder lists and sums the same suit
     cpSync(resolve("scripts/agents", file), join(agents, file), { recursive: true });
   }
   for (const file of ["tests/hops.test.ts", "tests/helper.test.ts", "tests/direct.test.ts"]) f.put(file, f.body.replace("selected test runs", `${file} runs`));
-  // No KIT_ROOT or KIT_LIB from the caller's kit: the copy finds its project from its own folder.
+  // No KIT_ROOT or KIT_LIB from the caller's kit: the copy finds its project from git's top folder.
   const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
   for (const name of ["NODE_TEST_CONTEXT", "KIT_ROOT", "KIT_LIB"]) delete env[name];
   const suite = (command: string, args: string[], cwd: string) => {
@@ -232,7 +234,11 @@ test("unit.sh with no files run from its own folder lists and sums the same suit
   assert.match(absolute.summary, /^pass 3, fail 0$/m);
   assert.deepEqual(suite("./unit.sh", [], agents), absolute);
   assert.deepEqual(suite("bash", ["unit.sh"], agents), absolute);
-  assert.equal(f.executed(), 9);
+  assert.deepEqual(suite("bash", ["../scripts/agents/unit.sh"], join(f.root, "tests")), absolute);
+  // A relative path not starting with . under an exported CDPATH.
+  env.CDPATH = f.root;
+  assert.deepEqual(suite("bash", ["scripts/agents/unit.sh"], f.root), absolute);
+  assert.equal(f.executed(), 15);
 });
 
 // techies-playground (research 04): lands on main, node --test, unit tests in several places and no import scan of its own.
