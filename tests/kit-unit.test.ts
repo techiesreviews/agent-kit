@@ -43,9 +43,11 @@ test("selected test runs", () => { mkdirSync(".scratch", { recursive: true }); a
   git("add", "."); git("commit", "--quiet", "-m", "base");
   const base = git("rev-parse", "HEAD");
   git("update-ref", "refs/remotes/origin/dev", base);
-  const run = (...args: string[]) => spawnSync(kit, ["unit", ...args], { cwd: root, env, encoding: "utf8", timeout: 60_000 });
+  const runWith = (extra: NodeJS.ProcessEnv, ...args: string[]) =>
+    spawnSync(kit, ["unit", ...args], { cwd: root, env: { ...env, ...extra }, encoding: "utf8", timeout: 60_000 });
+  const run = (...args: string[]) => runWith({}, ...args);
   const executed = () => existsSync(join(root, ".scratch/executed")) ? readFileSync(join(root, ".scratch/executed"), "utf8").trim().split("\n").length : 0;
-  return { root, put, git, run, executed, body, base };
+  return { root, put, git, run, runWith, executed, body, base };
 }
 type Output = ReturnType<ReturnType<typeof fixture>["run"]>;
 function result(output: Output, status: number, pattern: RegExp) {
@@ -152,9 +154,10 @@ test("unit help, listing and invalid options use the kit front door", t => {
 test("a --base check git fails for another reason than a missing ref is a repo problem, without usage", t => {
   const f = fixture(t);
   rmSync(join(f.root, ".git"), { recursive: true, force: true });
-  const output = f.run("--affected", "--base", "HEAD");
-  result(output, 1, /^RESULT: fail unit /);
-  assert.match(output.stderr, /^problem: /m);
+  // The ceiling keeps git from finding a repository around the temporary folder.
+  const output = f.runWith({ GIT_CEILING_DIRECTORIES: dirname(f.root) }, "--affected", "--base", "HEAD");
+  result(output, 1, /^RESULT: fail unit git rev-parse failed: fatal: not a git repository/);
+  assert.match(output.stderr, /^problem: git rev-parse failed: fatal: not a git repository[^\n]*$/m);
   assert.doesNotMatch(output.stderr, /Usage:/);
   assert.equal(f.executed(), 0);
 });
@@ -188,8 +191,21 @@ test("without the project's import scan --affected follows plain imports itself;
   for (const args of [["tests/direct.test.ts"], []]) {
     const output = f.run(...args);
     result(output, 1, /^RESULT: fail unit unit\.sh needs unit\.run in scripts\/agents\/kit\.json$/);
+    assert.match(output.stderr, /^problem: unit\.sh needs unit\.run in scripts\/agents\/kit\.json$/m);
     assert.doesNotMatch(output.stderr, /Usage:/);
   }
+  assert.equal(f.executed(), 0);
+});
+
+test("unit.sh stopping with no log and nothing on stderr keeps the plain no-log-path result", t => {
+  const f = fixture(t);
+  // A runner that kills unit.sh outright: no log line and no message.
+  f.put("runner.sh", "kill -9 $PPID\n");
+  f.put("scripts/agents/kit.json", JSON.stringify({ project: "kit-unit", branches: { land: "dev" }, unit: { run: "bash runner.sh", files: "tests/*.test.ts" } }));
+  const output = f.run("tests/direct.test.ts");
+  // A unit.sh killed by a signal kit unit does not name exits as a terminated one, 143.
+  result(output, 143, /^RESULT: fail unit unit\.sh returned no log path$/);
+  assert.match(output.stderr, /^problem: unit\.sh returned no log path$/m);
   assert.equal(f.executed(), 0);
 });
 

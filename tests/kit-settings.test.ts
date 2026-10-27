@@ -174,6 +174,7 @@ test("a missing optional key turns its feature off with a plain line", t => {
   const unit = f.run(["unit", "tests/a.test.ts"]);
   assert.equal(unit.status, 1, unit.stdout + unit.stderr);
   assert.match(unit.stderr, /^unit\.sh needs unit\.run in scripts\/agents\/kit\.json$/m);
+  assert.match(unit.stderr, /^problem: unit\.sh needs unit\.run in scripts\/agents\/kit\.json$/m);
   assert.equal(lastLine(unit), "RESULT: fail unit unit.sh needs unit.run in scripts/agents/kit.json");
   // No paths and no feature list: every change is code, and nothing needs a feature-list update.
   const settings = { project: "kit-land", branches: { land: "main" } }, rows = [{ status: "M", path: "src/ui/a.css" }];
@@ -449,6 +450,7 @@ test("without jq, unit.sh and worktree.sh name it and stop, making no worktree",
   assert.equal(unit.stderr, "unit.sh: jq is not installed; install jq\n");
   const named = f.run(["unit", "tests/a.test.ts"], { PATH: env.PATH });
   assert.equal(named.status, 1, named.stdout + named.stderr);
+  assert.match(named.stderr, /^problem: jq is not installed; install jq$/m);
   assert.equal(lastLine(named), "RESULT: fail unit jq is not installed; install jq");
   // A shared command still runs through the front door, which names jq once on stderr.
   const version = f.run(["version"], { PATH: env.PATH });
@@ -519,7 +521,10 @@ test("a settings problem fails kit review, kit unit --affected and unit.sh as a 
   const named = broken.run(["unit", "tests/a.test.ts"]);
   assert.equal(named.status, 1, named.stdout + named.stderr);
   assert.doesNotMatch(named.stderr, /Usage:/);
-  assert.match(lastLine(named)!, /^RESULT: fail unit scripts\/agents\/kit\.json is unreadable: \S/);
+  const cause = unit.stderr.trimEnd().replace(/^unit\.sh: /, "");
+  assert.match(cause, /^scripts\/agents\/kit\.json is unreadable: \S/);
+  assert.ok(named.stderr.split("\n").includes(`problem: ${cause}`), named.stderr);
+  assert.equal(lastLine(named), `RESULT: fail unit ${cause}`);
   const affected = broken.run(["unit", "--affected"]);
   assert.equal(affected.status, 1, affected.stdout + affected.stderr);
   assert.match(affected.stderr, /^problem: scripts\/agents\/kit\.json is unreadable: /m);

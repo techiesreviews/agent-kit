@@ -42,7 +42,12 @@ let graphFile = /^/, importsOf = text => [...text.matchAll(/\b(?:import|export)\
   .map(match => match[1] ?? match[2]);
 const moduleFile = file => graphFile.test(file) && sourceFile(file);
 function git(root, args) {
-  return execFileSync("git", ["-C", root, ...args], { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+  try { return execFileSync("git", ["-C", root, ...args], { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] }); }
+  catch (error) {
+    // One line naming git's own complaint, so the problem line says why; the status stays for the --base check.
+    const reason = String(error.stderr ?? "").trim().split("\n").filter(Boolean).join("; ") || error.message;
+    throw Object.assign(new Error(`git ${args[0]} failed: ${reason}`), { status: error.status });
+  }
 }
 function paths(root, args) { return git(root, args).split("\0").filter(Boolean); }
 function options(args) {
