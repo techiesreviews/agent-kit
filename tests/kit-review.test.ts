@@ -750,3 +750,111 @@ test("kit review gives the budget back when the Grok CLI is missing", (t) => {
     assert.equal(existsSync(join(evidence, "findings.json")), false);
   }
 });
+
+// A fake opencode: `run` reads the brief on stdin and prints JSON events; `export` names the model of each answer so far.
+const fakeOpencode = `#!/usr/bin/env node
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
+const args = process.argv.slice(2);
+const answers = process.env.FAKE_CALLS + ".answers";
+if (args[0] === "export") {
+  const models = existsSync(answers) ? readFileSync(answers, "utf8").trim().split("\\n") : [];
+  console.error("Exporting session: " + args[1]);
+  console.log(JSON.stringify({ info: { id: args[1] }, messages: models.flatMap(model => [{ info: { role: "user" } },
+    { info: { role: "assistant", providerID: model.split("/")[0], modelID: model.split("/").slice(1).join("/") } }]) }));
+  process.exit(0);
+}
+const input = readFileSync(0, "utf8");
+const resumed = args.includes("--session");
+appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ cli: "opencode", args, input, cwd: process.cwd(), config: process.env.OPENCODE_CONFIG_CONTENT,
+  noProject: process.env.OPENCODE_DISABLE_PROJECT_CONFIG }) + "\\n");
+const emit = (type, extra = {}) => console.log(JSON.stringify({ type, timestamp: Date.now(), sessionID: "ses_fake", ...extra }));
+const mode = process.env.FAKE_MODE || "pass";
+emit("step_start", { part: { type: "step-start", messageID: "m0" } });
+if (mode === "usage-limit") {
+  emit("error", { error: { name: "APIError", data: { message: "Rate limit exceeded. Please try again later.", statusCode: 429 } } });
+  process.exit(1);
+}
+appendFileSync(answers, args[args.indexOf("-m") + 1] + "\\n");
+emit("text", { part: { type: "text", messageID: "m1", text: "Reading the diff first." } });
+emit("tool_use", { part: { type: "tool", tool: "read", state: { status: "completed" } } });
+const report = (mode === "retry-pass" || mode === "retry-fail") && !resumed || mode === "retry-fail" ? "incomplete reply" : process.env.FAKE_REPORT || ${JSON.stringify(complete)};
+emit("text", { part: { type: "text", messageID: "m2", text: report } });
+emit("step_finish", { part: { type: "step-finish", reason: "stop", cost: 0 } });
+`;
+
+function withOpencode(f: ReturnType<typeof fixture>) {
+  writeFileSync(join(f.dir, "bin", "opencode"), fakeOpencode); chmodSync(join(f.dir, "bin", "opencode"), 0o755);
+  // Grok too, to show an OpenCode review leaves its count alone.
+  writeFileSync(join(f.dir, "bin", "grok"), fake); chmodSync(join(f.dir, "bin", "grok"), 0o755);
+}
+
+const opencodeModel = "opencode/deepseek-v4.1-flash-free";
+
+test("kit review runs opencode/<model> read-only, saves findings with severities and leaves the Grok count alone", (t) => {
+  const f = fixture(t);
+  withOpencode(f);
+  const grok = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "grok-4.7", ASE_REVIEW_BUDGET_GROK: "1" });
+  assert.equal(grok.status, 0, grok.stderr);
+  assert.deepEqual(f.counts(), { grok: { "kit-review": 1 } });
+  const report = "REVIEW_STATUS: complete\nSpec defects:\n- file.txt:1 — P1 ticket: the ticket asks for counts.\nStandards defects:\n- file.txt:1 — P3 style: rename it.\nValidation gaps: none.\nOptional nits: none.\n";
+  // The Grok budget is used up; OpenCode is not counted, so it still runs.
+  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, ASE_REVIEW_BUDGET_GROK: "1", FAKE_REPORT: report }, true);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, new RegExp(`^model: ${opencodeModel}$`, "m"));
+  assert.doesNotMatch(result.stdout, /^budget:/m);
+  assert.match(result.stdout, /^findings 2: ticket 1, style 1; P1 1, P3 1$/m);
+  assert.deepEqual(f.counts(), { grok: { "kit-review": 1 } });
+  const call = f.calls().at(-1)! as Call & { noProject: string };
+  assert.equal(call.cli, "opencode");
+  assert.equal(call.cwd, f.root);
+  assert.deepEqual(call.args.slice(0, 5), ["run", "--pure", "--agent", "ase-review", "--format"]);
+  assert.equal(call.args[call.args.indexOf("-m") + 1], opencodeModel);
+  assert.deepEqual(JSON.parse(call.config).agent["ase-review"].permission, { "*": "deny", read: "allow", grep: "allow", glob: "allow", list: "allow" });
+  assert.equal(call.noProject, "1");
+  assert.ok(call.input.includes("Review scope: git diff"));
+  const evidence = f.evidence(result.stdout);
+  assert.deepEqual(readdirSync(evidence).sort(), ["diff.patch", "findings.json", "refs.txt", "result.md", "run.log"]);
+  // Only the last message is the report; earlier narration is dropped.
+  assert.equal(readFileSync(join(evidence, "result.md"), "utf8").trimEnd(), report.trimEnd());
+  const findings = JSON.parse(readFileSync(join(evidence, "findings.json"), "utf8"));
+  assert.equal(findings.model, opencodeModel);
+  assert.deepEqual(findings.findings.map((finding: { severity: string }) => finding.severity), ["P1", "P3"]);
+});
+
+test("an incomplete OpenCode answer is re-asked once in the same session", (t) => {
+  for (const mode of ["retry-pass", "retry-fail"]) {
+    const f = fixture(t);
+    withOpencode(f);
+    const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_MODE: mode });
+    assert.equal(result.status, mode === "retry-pass" ? 0 : 1, result.stderr);
+    const calls = f.calls();
+    assert.equal(calls.length, 2);
+    assert.ok(!calls[0].args.includes("--session"));
+    assert.equal(calls[1].args[calls[1].args.indexOf("--session") + 1], "ses_fake");
+    assert.equal(calls[1].args[calls[1].args.indexOf("--agent") + 1], "ase-review");
+    assert.match(calls[1].input, /^Your reply must start with the line REVIEW_STATUS: complete/);
+    const evidence = f.evidence(result.stdout);
+    if (mode === "retry-pass") assert.equal(readFileSync(join(evidence, "result.md"), "utf8").trimEnd(), complete.trimEnd());
+    else assert.match(result.stderr, /problem: result lacks REVIEW_STATUS: complete/);
+  }
+});
+
+test("an OpenCode answer from another model fails the model check", (t) => {
+  const f = fixture(t);
+  withOpencode(f);
+  writeFileSync(`${join(f.dir, "calls.jsonl")}.answers`, "opencode/other-free\n");
+  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /OpenCode session does not name requested model opencode\/deepseek-v4\.1-flash-free \(actual: opencode\/other-free, opencode\/deepseek-v4\.1-flash-free\)/);
+});
+
+test("an OpenCode rate-limit refusal prints the opencode usage-limit problem and counts nothing", (t) => {
+  const f = fixture(t);
+  withOpencode(f);
+  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_MODE: "usage-limit" });
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr.trimEnd().split("\n").at(-1), "problem: opencode usage limit: Rate limit exceeded. Please try again later.");
+  assert.match(result.stdout.trim().split("\n").at(-1)!, /^RESULT: fail opencode usage limit: Rate limit exceeded\. Please try again later\. evidence /);
+  assert.equal(f.calls().length, 1);
+  assert.equal(existsSync(f.ledger), false);
+});

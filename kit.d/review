@@ -12,8 +12,8 @@ import { countsLine, findingsRecord } from "../review-findings.mjs";
 const { kitBranch, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, kitStateDir, nodeEnv, kitScore, scoreReview } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const usage = "Usage: kit review [--base REF | --commit SHA] [--ticket FILE] [--pr N]\nDefault scope: --base origin/<land> (branches.land in scripts/agents/kit.json). Model: ASE_REVIEW_MODEL or claude-opus-5-5 (claude-*, grok-* or Codex).\n" +
-  "Weekly budgets for the whole computer: ASE_REVIEW_BUDGET_GPT (12), ASE_REVIEW_BUDGET_GROK (8); Claude is not counted.\n";
+const usage = "Usage: kit review [--base REF | --commit SHA] [--ticket FILE] [--pr N]\nDefault scope: --base origin/<land> (branches.land in scripts/agents/kit.json). Model: ASE_REVIEW_MODEL or claude-opus-5-5 (claude-*, grok-*, opencode/<model> or Codex).\n" +
+  "Weekly budgets for the whole computer: ASE_REVIEW_BUDGET_GPT (12), ASE_REVIEW_BUDGET_GROK (8); Claude and OpenCode are not counted.\n";
 
 function options(args) {
   const values = {};

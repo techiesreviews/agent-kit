@@ -10,7 +10,7 @@ import { reviewBrief, reviewComplete, reviewFormat } from "../scripts/agents/rev
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { unitSummary } from "../scripts/agents/unit-summary.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
-import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokResult, inferCli, isoWeek, parseAgentArgs, refusedOutright, releaseReviewBudget, reserveReviewBudget, reviewBase, usageLimitProblem } from "../scripts/agents/agent-run.mjs";
+import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokResult, inferCli, isoWeek, opencodeResult, opencodeReviewAgent, opencodeReviewConfig, opencodeUsageLimit, parseAgentArgs, refusedOutright, releaseReviewBudget, reserveReviewBudget, reviewBase, usageLimitProblem } from "../scripts/agents/agent-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { durationMilliseconds } from "../scripts/agents/sol-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
@@ -212,6 +212,52 @@ test("Grok results parse to their text and accept only the requested model with 
   }
   assert.throws(() => grokResult(JSON.stringify({ modelUsage: { "grok-4.7-build": {} } }), "grok-4.7"), /no final report/);
   assert.throws(() => grokResult("not JSON", "grok-4.7"));
+});
+
+test("OpenCode adapter runs reviews only, as a read-only agent, and resumes its own session", () => {
+  const model = "opencode/deepseek-v4.1-flash-free";
+  assert.equal(inferCli(model), "opencode");
+  for (const other of ["opencode", "opencode/", "deepseek-v4.1-flash-free"]) assert.notEqual(inferCli(other), "opencode");
+  const options = parseAgentArgs(["review", "/work tree", "brief"], { ASE_REVIEW_MODEL: model });
+  assert.equal(options.cli, "opencode");
+  const call = agentInvocation(options, "/shared git", "/out file.md");
+  assert.equal(call.command, "opencode");
+  assert.equal(call.capture, true);
+  const args = ["run", "--pure", "--agent", opencodeReviewAgent, "--format", "json", "-m", model, "--dir", "/work tree"];
+  assert.deepEqual(call.args, args);
+  assert.deepEqual(call.resume("ses_1"), [...args, "--session", "ses_1"]);
+  assert.ok(!call.args.some((arg: string) => /auto|yolo|skip-permissions/.test(arg)));
+  // The agent denies every tool but reading, searching and listing; project config and Claude Code files stay out.
+  assert.equal(call.env.OPENCODE_CONFIG_CONTENT, opencodeReviewConfig);
+  assert.deepEqual(JSON.parse(opencodeReviewConfig).agent[opencodeReviewAgent].permission, { "*": "deny", read: "allow", grep: "allow", glob: "allow", list: "allow" });
+  assert.equal(call.env.OPENCODE_DISABLE_PROJECT_CONFIG, "1");
+  assert.equal(call.env.OPENCODE_DISABLE_CLAUDE_CODE, "1");
+  assert.equal(call.session('partial\n{"type":"step_start","sessionID":"ses_1"}\n'), "ses_1");
+  assert.equal(call.session(""), undefined);
+  assert.throws(() => parseAgentArgs(["build", ".", "brief", "--model", model]), /OpenCode runs reviews only/);
+  assert.throws(() => parseAgentArgs(["build", ".", "brief", "--cli", "opencode"]), /reviews only/);
+  assert.throws(() => agentInvocation({ ...options, kind: "build" }, "/git", "/out"), /reviews only/);
+});
+
+test("OpenCode results take the last message's text and accept only the requested provider and model", () => {
+  const model = "opencode/deepseek-v4.1-flash-free";
+  const event = (type: string, extra = {}) => JSON.stringify({ type, timestamp: 1, sessionID: "ses_1", ...extra });
+  const text = (messageID: string, value: string) => event("text", { part: { type: "text", messageID, text: value } });
+  const stdout = [event("step_start"), text("m1", "Reading the diff."), event("tool_use"), text("m2", "REVIEW_STATUS: complete"), text("m2", "Defects: none"), event("step_finish")].join("\n");
+  const exported = (...models: string[]) => "Exporting session: ses_1\n" + JSON.stringify({ messages: [{ info: { role: "user", model: { providerID: "x", modelID: "y" } } },
+    ...models.map(name => ({ info: { role: "assistant", providerID: name.split("/")[0], modelID: name.split("/").slice(1).join("/") } }))] });
+  assert.equal(opencodeResult(stdout, model, exported(model, model)), "REVIEW_STATUS: complete\nDefects: none");
+  assert.equal(opencodeResult(event("step_finish"), model, exported(model)), "");
+  for (const models of [[], ["opencode/deepseek-v4.1-flash"], ["openrouter/deepseek-v4.1-flash-free"], [model, "opencode/other-free"]]) {
+    assert.throws(() => opencodeResult(stdout, model, exported(...models)), /requested model/);
+  }
+  const limit = event("error", { error: { name: "APIError", data: { message: "Rate limit exceeded. Please try again later.", statusCode: 429 } } });
+  assert.throws(() => opencodeResult(`${stdout}\n${limit}`, model, exported(model)), /OpenCode reported an error: Rate limit exceeded/);
+  assert.equal(opencodeUsageLimit(limit), "problem: opencode usage limit: Rate limit exceeded. Please try again later.");
+  assert.equal(opencodeUsageLimit(event("error", { error: { name: "FreeUsageLimitError", data: { message: "Free usage exceeded" } } })), "problem: opencode usage limit: Free usage exceeded");
+  // Other errors, and limit phrases the model merely wrote, are not refusals.
+  assert.equal(opencodeUsageLimit(event("error", { error: { name: "APIError", data: { message: "Bad gateway", statusCode: 502 } } })), null);
+  assert.equal(opencodeUsageLimit(text("m1", "You've hit your usage limit")), null);
 });
 
 test("review budgets count outside families per ISO week, refuse at the limit and never count Claude", (t) => {

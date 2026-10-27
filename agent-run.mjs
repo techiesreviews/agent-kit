@@ -2,7 +2,8 @@
 // Adapters accept {kind, worktree, model, effort}, git common dir and output path.
 // Return {command, args, env, capture, finish(stdout, runLog)}. Commands read the brief
 // on stdin with cwd=worktree; finish verifies the actual model and returns final
-// text (Claude, Grok), or null when the CLI already wrote out.md (Codex). The shared
+// text (Claude, Grok, OpenCode), or null when the CLI already wrote out.md (Codex). An
+// adapter may add usageLimit(stdout) for a refusal its CLI prints as JSON. The shared
 // runner owns logs, the build contract, deadlines, process groups and Git status.
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -12,14 +13,16 @@ import { dirname, join, resolve } from "node:path";
 import { durationMilliseconds, supervise } from "./sol-run.mjs";
 import { reviewComplete, reviewFormat, reviewScope } from "./review-brief.mjs";
 
-const adapters = { codex: codexAdapter, claude: claudeAdapter, grok: grokAdapter };
+const adapters = { codex: codexAdapter, claude: claudeAdapter, grok: grokAdapter, opencode: opencodeAdapter };
+const reviewOnly = { grok: "Grok", opencode: "OpenCode" };
 
 export function inferCli(model) {
   if (/^grok-/i.test(model)) return "grok";
+  if (/^opencode\/./i.test(model)) return "opencode";
   return /^(claude-|(?:opus|sonnet|haiku|fable)$)/i.test(claudeModelName(model)) ? "claude" : "codex";
 }
 
-// Model families on outside plans. Claude has no family here: it is never budgeted.
+// Model families on outside plans. Claude and OpenCode (free models) have no family here: they are never budgeted.
 const families = { codex: "gpt", grok: "grok" };
 
 export function reviewFamily(cli) {
@@ -41,7 +44,7 @@ export function parseAgentArgs(args, env = {}) {
   }
   const [kind, worktree, brief, ...flags] = args;
   if (!["build", "review"].includes(kind) || !worktree || !brief) {
-    throw new Error("Usage: agent.sh build|review <worktree> <brief> [--model M] [--cli codex|claude|grok] [--effort E] [--base REF | --commit SHA] [--out DIR]; agent.sh --resume <out-dir> [--brief FILE]");
+    throw new Error("Usage: agent.sh build|review <worktree> <brief> [--model M] [--cli codex|claude|grok|opencode] [--effort E] [--base REF | --commit SHA] [--out DIR]; agent.sh --resume <out-dir> [--brief FILE]");
   }
   const options = { kind, worktree, brief, model: env[kind === "build" ? "ASE_BUILD_MODEL" : "ASE_REVIEW_MODEL"] || "claude-opus-5-5", effort: "medium" };
   let cli = env.ASE_AGENT_CLI || "";
@@ -57,7 +60,7 @@ export function parseAgentArgs(args, env = {}) {
   }
   options.cli = cli || inferCli(options.model);
   if (!Object.hasOwn(adapters, options.cli)) throw new Error(`Unknown CLI: ${options.cli}; add an adapter first`);
-  if (options.cli === "grok" && kind !== "review") throw new Error("Grok runs reviews only; pick a Codex or Claude builder");
+  if (reviewOnly[options.cli] && kind !== "review") throw new Error(`${reviewOnly[options.cli]} runs reviews only; pick a Codex or Claude builder`);
   if (!options.model.trim() || options.model.startsWith("-") || /[\r\n]/.test(options.model)) throw new Error("Invalid model");
   // Effort levels belong to each CLI/model; pass new levels through unchanged.
   if (!/^[a-z][a-z0-9_-]*$/.test(options.effort)) throw new Error(`Invalid effort: ${options.effort}`);
@@ -164,6 +167,49 @@ export function grokResult(stdout, requested) {
   // An empty review falls through to the runner's one completeness retry.
   if (typeof result.text !== "string") throw new Error("Grok returned no final report");
   return result.text;
+}
+
+// opencode run --format json prints one event per line, each naming its session; other lines are skipped.
+function opencodeEvents(stdout) {
+  return stdout.split(/\r?\n/).flatMap(line => {
+    try { const event = JSON.parse(line); return isRecord(event) ? [event] : []; } catch { return []; }
+  });
+}
+
+function opencodeSession(stdout) {
+  return opencodeEvents(stdout).find(event => typeof event.sessionID === "string")?.sessionID;
+}
+
+function opencodeError(error) {
+  return String(error?.data?.message ?? error?.message ?? error?.name ?? "unknown error");
+}
+
+const opencodeLimitPattern = /usage limit|rate.?limit|too many requests|FreeUsageLimit/i;
+
+// OpenCode reports a refused request as an error event (HTTP 429 or a limit message), not a closing line.
+export function opencodeUsageLimit(stdout) {
+  const error = opencodeEvents(stdout).filter(event => event.type === "error").map(event => event.error)
+    .find(error => error?.data?.statusCode === 429 || opencodeLimitPattern.test(`${error?.name ?? ""} ${opencodeError(error)}`));
+  return error ? `problem: opencode usage limit: ${opencodeError(error)}` : null;
+}
+
+// The events never name the model; the session export does, per assistant message, as
+// provider and model ID. Every answer in the session, retries included, must be the
+// requested provider/model. The report is the text of the last message that has text.
+export function opencodeResult(stdout, requested, exported) {
+  const events = opencodeEvents(stdout);
+  const error = events.find(event => event.type === "error");
+  if (error) throw new Error(`OpenCode reported an error: ${opencodeError(error.error)}`);
+  const session = JSON.parse(exported.slice(exported.indexOf("{")));
+  const models = (session.messages ?? []).filter(message => message.info?.role === "assistant")
+    .map(({ info }) => `${info.providerID}/${info.modelID}`);
+  if (!models.length || !models.every(model => model === requested)) {
+    throw new Error(`OpenCode session does not name requested model ${requested} (actual: ${[...new Set(models)].join(", ") || "missing"})`);
+  }
+  const texts = events.filter(event => event.type === "text" && typeof event.part?.text === "string").map(event => event.part);
+  const last = texts.at(-1)?.messageID;
+  // An empty review falls through to the runner's one completeness retry.
+  return texts.filter(part => part.messageID === last).map(part => part.text).join("\n");
 }
 
 const usageLimitPattern = /^(?:ERROR:[\t ]*|■[\t ]*)?you['’]ve hit your usage limit\b.*?\btry again at ([^\n]+?)\.?[\t ]*$/i;
@@ -411,6 +457,34 @@ export function grokAdapter(options) {
   };
 }
 
+// OpenCode reviews run as a custom agent allowed only to read, search and list; every
+// other tool (edit, write, bash, web, tasks, skills) is denied and so never offered.
+export const opencodeReviewAgent = "ase-review";
+export const opencodeReviewConfig = JSON.stringify({ agent: { [opencodeReviewAgent]: { mode: "primary", description: "Read-only kit review",
+  permission: { "*": "deny", read: "allow", grep: "allow", glob: "allow", list: "allow" } } } });
+
+export function opencodeAdapter(options) {
+  const { kind, worktree, model } = options;
+  if (kind !== "review") throw new Error("OpenCode runs reviews only");
+  // --pure drops plugins; the project's own OpenCode config and Claude Code files are not read.
+  // Effort is not passed: OpenCode's --variant names differ by provider.
+  const args = ["run", "--pure", "--agent", opencodeReviewAgent, "--format", "json", "-m", model, "--dir", worktree];
+  return {
+    command: "opencode", capture: true,
+    env: { OPENCODE_CONFIG_CONTENT: opencodeReviewConfig, OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_DISABLE_CLAUDE_CODE: "1" },
+    args,
+    resume: session => [...args, "--session", session],
+    session: stdout => opencodeSession(stdout),
+    usageLimit: stdout => opencodeUsageLimit(stdout),
+    finish: stdout => {
+      const session = opencodeSession(stdout);
+      if (!session) throw new Error("OpenCode printed no session");
+      const exported = execFileSync("opencode", ["export", session], { cwd: worktree, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 256 * 1024 * 1024 });
+      return opencodeResult(stdout, model, exported);
+    },
+  };
+}
+
 export function agentInvocation(options, common, output) {
   return adapters[options.cli](options, common, output);
 }
@@ -619,7 +693,7 @@ async function invokeAgent(adapter, args, descriptor, context) {
     // The CLI's own failure is the cause; executeRun reports it after its consequences.
     if (status === 124) context.cause = `problem: agent exceeded timeout=${limit}; process group killed; see ${logPath}`;
     else if (status) {
-      const limitProblem = usageLimitProblem(slice, options.cli) ?? usageLimitProblem(result.stdout ?? "", options.cli);
+      const limitProblem = adapter.usageLimit?.(result.stdout ?? "") ?? usageLimitProblem(slice, options.cli) ?? usageLimitProblem(result.stdout ?? "", options.cli);
       context.cause = limitProblem ?? `problem: ${adapter.command} failed (${status}); see ${logPath}`;
       // A refusal of the first call refunds the review; a completed first call, or one
       // that worked before the limit, already spent it.
