@@ -839,3 +839,14 @@ test("a review that skips (exit 3) names its skip reason in the fix result, and 
   assert.match(result.stdout.trim().split("\n").at(-1)!, /^RESULT: fail fix review failed \(3\): skip review out of credit \(grok-4\.7\); see .+round-1-review\.log$/);
   assert.equal(JSON.parse(readFileSync(join(f.root, ".scratch/kit-fix/build%2Fke-03/pending.json"), "utf8")).phase, "review");
 });
+
+test("kit fix without --review answers Claude's newest review, never a newer second look", t => {
+  const f = fixture(t); f.review("20261019T000000Z"); f.builder();
+  const look = f.review("20261020T000000Z", findings.replace("preserve the required text", "the second look's own finding"));
+  writeFileSync(join(look, "second-look.json"), JSON.stringify({ kind: "code", model: "grok-4.7", ok: true }));
+  const result = f.run([]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const round = readFileSync(join(f.root, ".scratch/kit-fix/build%2Fke-03/round-1.md"), "utf8");
+  assert.ok(round.includes(defect), round);
+  assert.equal(round.includes("the second look's own finding"), false);
+});

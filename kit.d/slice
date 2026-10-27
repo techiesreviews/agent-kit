@@ -96,7 +96,6 @@ async function slice(args) {
       if (code) return;
       if (phase === "build" && state.build) scoreCost(record, state.build);
       if (["review", "fix", "second"].includes(phase) && state.review) scoreReview(record, state.review);
-      if (phase === "second" && state.secondLook?.evidence) scoreReview(record, state.secondLook.evidence);
       if (phase === "pr" && state.sha) {
         // kit pr prints a short SHA after recording the full one; keep its SHA and time.
         const same = typeof record.landed?.sha === "string" && record.landed.sha.startsWith(state.sha);
@@ -420,6 +419,8 @@ async function slice(args) {
             state.secondLook = { evidence: reviewEvidence(evidence) };
           }
           save();
+          // Every second look is scored when saved: one that found something is replaced by a fresh one later.
+          if (state.secondLook.evidence) score(record => scoreReview(record, state.secondLook.evidence));
         }
         if (state.secondLook.skipped) {
           console.log(`second look: skipped (${state.secondLook.skipped})`);

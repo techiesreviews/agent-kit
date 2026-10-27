@@ -2,7 +2,7 @@
 // kit: review a diff or commit and save the evidence
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { inferCli, parseAgentArgs, releaseReviewBudget, reserveReviewBudget } from "../agent-run.mjs";
 import { reviewBrief, reviewScope, ticketReviewBrief } from "../review-brief.mjs";
@@ -33,6 +33,15 @@ function options(args) {
   return values;
 }
 
+// A Grok outage: one of the run log's last five lines starts with an HTTP 5xx status or a connection error
+// (only such closing lines, so a review or tool trace that names one is not matched). Returns that line or null.
+const outagePattern = /^(?:error:|■)?[\t ]*(?:(?:(?:HTTP|status)[\t ]*)?5\d\d\b.*|(?:\w*Error:[\t ]*)?(?:(?:connect|read|write|getaddrinfo)[\t ]+)?(?:ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN)\b.*)$/i;
+function grokDown(temporary) {
+  let log = "";
+  try { log = readFileSync(join(temporary, "run.log"), "utf8"); } catch { return null; }
+  return log.split(/\r?\n/).filter(line => line.trim()).slice(-5).reverse().map(line => line.trim()).find(line => outagePattern.test(line)) ?? null;
+}
+
 function evidenceDirectory() {
   const parent = join(kitMainRoot(), ".scratch/reviews", kitOwner());
   mkdirSync(parent, { recursive: true });
@@ -48,7 +57,7 @@ function evidenceDirectory() {
 // model and its CLI, so no ASE_AGENT_CLI can send it to Codex, and marks its evidence folder.
 async function reviewOnce(flags, look) {
   let evidence = "none", temporary, status = 1, reason = "review failed", label, budget, env, model, effort, reviewedHead;
-  let ledger, outOfCredit = false, kept = false, spawned = false, unavailable = false;
+  let ledger, outOfCredit = false, kept = false, spawned = false, unavailable = false, stderr = "";
   const ticket = flags.ticket;
   try {
     // The default base comes from the settings file; a settings problem is a failure, not a usage error.
@@ -73,9 +82,8 @@ async function reviewOnce(flags, look) {
     // One count for the computer; this project's old per-project count moves in on first use.
     ledger = { path: join(kitStateDir(env), "review-budget.json"), project: kitSettings(root).project, legacy: join(kitMainRoot(), ".scratch/review-budget.json") };
     try { budget = reserveReviewBudget(ledger, cli, env); }
-    catch (error) { unavailable = / review budget used up: /.test(error.message); throw error; }
+    catch (error) { unavailable = /^\S+ review budget used up: /.test(error.message); throw error; }
     if (budget) console.log(`budget: ${budget.family} ${budget.used}/${budget.limit} in ${budget.week}`);
-    let stderr = "";
     spawned = true;
     status = await new Promise((accept, reject) => {
       const child = spawn(env.KIT_NODE, [resolve(import.meta.dirname, "../agent-run.mjs"), ...agentArgs], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -126,10 +134,14 @@ async function reviewOnce(flags, look) {
       // and even when saving its evidence fails below: no review came back either way.
       const run = temporary && join(temporary, "status.json");
       const record = run && existsSync(run) ? JSON.parse(readFileSync(run, "utf8")) : {};
-      // The model could not run: a CLI that never started (missing), a usage-limit refusal, a usage limit
-      // or a provider error said by the CLI itself, or an empty account. A finished or broken run is not one.
-      if (status !== 0 && spawned && (!record.pgid || record.refused === true || outOfCredit ||
-        /^\S+ usage limit\b|^(?:OpenCode|Grok) reported an error: /.test(reason))) unavailable = true;
+      // The model could not run: its CLI is missing (a spawn ENOENT), refused or hit a usage limit, the account
+      // is empty, or the provider is down (OpenCode's error event, or a Grok run whose closing lines are an HTTP 5xx
+      // or a connection error). Any other failure, including one before the CLI started, is a broken run.
+      const missing = status !== 0 && !record.pgid && /^problem: (spawn \S+ ENOENT)$/m.exec(stderr)?.[1];
+      const down = !missing && status !== 0 && /^grok failed \(\d+\)/.test(reason) && grokDown(temporary);
+      if (missing || down) { reason = missing ? `CLI missing: ${missing}` : `grok unavailable: ${down}`; console.error(`problem: ${reason}`); }
+      if (status !== 0 && spawned && (record.refused === true || outOfCredit || missing || down ||
+        /^\S+ usage limit\b|^OpenCode reported an error: /.test(reason))) unavailable = true;
       if (budget && (!record.pgid || record.refused === true || outOfCredit)) releaseReviewBudget(ledger.path, budget, env);
     } catch (error) {
       kept = true;
@@ -186,7 +198,7 @@ async function secondLook(flags) {
     const changes = parseChanges(execFileSync("git", ["-C", root, "-c", "core.quotepath=false", "diff", "--name-status", "--no-renames", ...range],
       { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
     if (!changes.length) throw new Error(`nothing to review: ${scope.label} is empty`);
-    pick = secondLookPick(changes, kitSettings(root));
+    pick = secondLookPick(changes, kitSettings(root), { ticket: flags.ticket && relative(root, resolve(root, flags.ticket)) });
   } catch (error) {
     console.error(`problem: ${error.message}`);
     kitResult("fail", `${error.message} evidence none`);

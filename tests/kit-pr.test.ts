@@ -1433,7 +1433,14 @@ test("a saved second look is reused only as a second look that ran; it is never 
 test("a second look that fails (exit 1) stops kit pr before CI and merge", t => {
   const f = fixture(t), result = f.run([], { FAKE_SECOND: "fail" });
   assert.equal(result.status, 1, result.stderr);
-  assert.match(result.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: fail review: /);
+  assert.match(result.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: fail second-look: /);
   assert.equal(f.ghCalls("merge").length, 0);
   assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "wait"), false);
+});
+
+test("dry-run leaves the ticket file out of the second look's kind when code changed beside it", t => {
+  const ticket = "docs/wayfinder/m/build/tickets/01-x.md";
+  const f = fixture(t, { "src/x.ts": "x\n", [ticket]: '---\ntitle: "Ticket title"\n---\n' }), result = f.run(["--dry-run", "--ticket", ticket]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^second look: code \(src\/x\.ts\) /m);
 });

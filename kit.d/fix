@@ -35,8 +35,10 @@ function newestDirectories(parent) {
     .map(name => join(parent, name));
 }
 
+// Claude's newest review of HEAD; a second look (marked second-look.json) is answered only through --review.
 function coveringReview(head) {
   for (const folder of newestDirectories(join(kitMainRoot(), ".scratch/reviews", kitOwner()))) {
+    if (existsSync(join(folder, "second-look.json"))) continue;
     try {
       if (readFileSync(join(folder, "refs.txt"), "utf8").split(/\r?\n/)[0] === head) return folder;
     } catch { /* A partial folder without refs cannot cover HEAD. */ }

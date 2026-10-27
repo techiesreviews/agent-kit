@@ -87,15 +87,21 @@ export function classify(changes, { full = false, settings } = {}) {
 
 export const reviewKinds = ["agent", "ux", "dx", "code"];
 
+// A ticket file (the `--ticket` one or any `tickets/<name>.md`) rides along with every slice, so it says nothing about the change.
+const ticketFile = /(?:^|\/)tickets\/[^/]+\.md$/;
+
 /** The second look's kind and the path that decided it: agent setup (`paths.agent`, `paths.kit`) first, then what a user
- * sees (`paths.visible`), then developer files (`paths.dx`, `paths.docs`); a change that reaches none is code. */
-export function reviewKind(changes, settings) {
+ * sees (`paths.visible`), then developer files (`paths.dx`, `paths.docs`); a change that reaches none is code. Ticket
+ * files (`ticket` is the repo path of the `--ticket` one) count only when nothing else changed. */
+export function reviewKind(changes, settings, { ticket } = {}) {
   const { agent, visible, dx } = rules(settings);
+  const work = changes.filter(({ path }) => path !== ticket && !ticketFile.test(path));
+  const looked = work.length ? work : changes;
   for (const [kind, patterns] of [["agent", agent], ["ux", visible], ["dx", dx]]) {
-    const hit = changes.find(({ path }) => matches(patterns, path));
+    const hit = looked.find(({ path }) => matches(patterns, path));
     if (hit) return { kind, path: hit.path };
   }
-  return { kind: "code", path: changes[0]?.path ?? null };
+  return { kind: "code", path: looked[0]?.path ?? null };
 }
 
 // A second look is Grok or a free OpenCode model, never Codex or another OpenAI model.
@@ -118,9 +124,9 @@ export function secondLookTable(path = process.env.ASE_SECOND_LOOK || join(impor
 }
 
 /** The second look for a change: its kind, the deciding path, and the table's model and fallback for that kind. */
-export function secondLookPick(changes, settings, path) {
-  const { kind, path: decided } = reviewKind(changes, settings);
-  const { model, fallback } = secondLookTable(path)[kind];
+export function secondLookPick(changes, settings, { ticket, table } = {}) {
+  const { kind, path: decided } = reviewKind(changes, settings, { ticket });
+  const { model, fallback } = secondLookTable(table)[kind];
   return { kind, path: decided, model, fallback };
 }
 

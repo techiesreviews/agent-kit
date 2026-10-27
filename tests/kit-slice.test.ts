@@ -1183,6 +1183,10 @@ test("a second-look P1 gets a fix round like Claude's, answered by Claude's revi
   const f = fixture(t), result = f.run([], { FAKE_SECOND: "findings" });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "second", "fix", "second", "pr"]);
+  // Both looks are scored: the one that found the P1 and the fresh one after the fix.
+  const record = JSON.parse(readFileSync(join(f.main, ".scratch/scoreboard/_untracked/04-ticket.json"), "utf8"));
+  const dirs = record.reviews.map((review: { dir: string }) => review.dir);
+  for (const name of ["second-000", "second-001"]) assert.ok(dirs.includes(join(f.main, ".scratch/reviews/ke-04", name)), name);
   const fix = f.calls()[3].args;
   assert.equal(fix[fix.indexOf("--review") + 1], join(f.main, ".scratch/reviews/ke-04/second-000"));
   assert.equal(f.state().rounds, 1);

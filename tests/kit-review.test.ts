@@ -81,6 +81,8 @@ if (cli === "codex") {
     console.log("402 Payment Required: Grok Build usage balance exhausted");
     process.exit(1);
   }
+  // A provider outage: a 503 closing line after a turn of work.
+  if (mode === "outage") { console.error("read_file file.txt"); console.log("503 Service Unavailable"); process.exit(1); }
   // A tool trace that names 402, then a failure that is not about credit.
   if (mode === "trace-402") { console.error("grep 402 file.txt"); process.exit(1); }
   const answer = cli === "grok" ? { text: report } : { result: report };
@@ -1254,4 +1256,48 @@ test("a second look's evidence folder is marked before its files land, so a fail
   // The answer was copied before the diff failed: the folder holds a complete report, marked as a second look that did not come back.
   assert.ok(existsSync(join(evidence, "result.md")));
   assert.deepEqual(JSON.parse(readFileSync(join(evidence, "second-look.json"), "utf8")), { kind: "code", model: "grok-4.7", ok: false });
+});
+
+test("a missing Grok CLI or a Grok outage hands the second look to OpenCode", (t) => {
+  const f = fixture(t);
+  writeFileSync(join(f.dir, "bin", "opencode"), fakeOpencode); chmodSync(join(f.dir, "bin", "opencode"), 0o755);
+  const table = lookTable(f);
+  // Only node joins the fake bin, so no grok is found.
+  const nodeBin = join(f.dir, "node-bin");
+  mkdirSync(nodeBin);
+  symlinkSync(process.execPath, join(nodeBin, "node"));
+  const missing = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: table, PATH: `${join(f.dir, "bin")}:${nodeBin}:/usr/bin:/bin` });
+  assert.equal(missing.status, 0, missing.stdout + missing.stderr);
+  assert.match(missing.stdout, /^second look: opencode\/deepseek-v4\.1-flash-free takes it \(grok-4\.7 CLI missing: spawn grok ENOENT\)$/m);
+  assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(missing.stdout), "second-look.json"), "utf8")), { kind: "code", model: opencodeModel, ok: true });
+  writeFileSync(join(f.dir, "bin", "grok"), fake); chmodSync(join(f.dir, "bin", "grok"), 0o755);
+  const down = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: table, FAKE_MODE: "outage" });
+  assert.equal(down.status, 0, down.stdout + down.stderr);
+  assert.match(down.stderr, /^problem: grok unavailable: 503 Service Unavailable$/m);
+  assert.match(down.stdout, /^second look: opencode\/deepseek-v4\.1-flash-free takes it \(grok-4\.7 grok unavailable: 503 Service Unavailable\)$/m);
+  assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(down.stdout), "second-look.json"), "utf8")), { kind: "code", model: opencodeModel, ok: true });
+});
+
+test("a second look that fails before its CLI starts is a failed review, not a handover or a skip", (t) => {
+  const f = fixture(t); withOpencode(f);
+  const result = f.run(["--base", "HEAD~1", "--ticket", "docs/missing.md", "--second-look"], { ASE_SECOND_LOOK: lookTable(f) });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.doesNotMatch(result.stdout, / takes it |^RESULT: skip /m);
+  assert.match(result.stdout.trim().split("\n").at(-1)!, /^RESULT: fail .*missing\.md.* evidence none$/);
+  assert.deepEqual(f.calls(), []);
+});
+
+test("ticket files leave the second look's kind alone unless nothing else changed", (t) => {
+  for (const [files, ticket, kind, path] of [
+    [["src/x.ts", "docs/wayfinder/m/build/tickets/01-x.md"], undefined, "code", "src/x.ts"],
+    [["src/x.ts", "docs/notes/01-x.md"], "docs/notes/01-x.md", "code", "src/x.ts"],
+    [["docs/wayfinder/m/build/tickets/01-x.md"], undefined, "dx", "docs/wayfinder/m/build/tickets/01-x.md"],
+  ] as const) {
+    const f = fixture(t); withOpencode(f);
+    const table = lookTable(f);
+    commitFiles(f, [...files]);
+    const result = f.run(["--commit", "HEAD", ...(ticket ? ["--ticket", ticket] : []), "--second-look"], { ASE_SECOND_LOOK: table });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, new RegExp(`^second look: ${kind} \\(${path.replaceAll(".", "\\.")}\\) `, "m"), files.join(" "));
+  }
 });

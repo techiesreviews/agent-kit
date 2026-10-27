@@ -372,7 +372,7 @@ async function main(args) {
     const createArgs = ["pr", "create", "--base", flags.base, "--head", branch, "--title", prTitle, "--body-file", body];
     const reviewArgs = ["review", "--base", `origin/${flags.base}`, "--pr"];
     if (flags.dryRun) {
-      const look = secondLookPick(changes, settings);
+      const look = secondLookPick(changes, settings, { ticket: flags.ticket && relative(root, resolve(root, flags.ticket)) });
       console.log(`branch: ${branch}\nbase: ${flags.base}\nHEAD: ${head}\ntitle: ${prTitle}\nbody: ${body}`);
       console.log(`second look: ${look.kind} (${look.path}) ${look.model}, else ${look.fallback}`);
       const reviewCommand = extra => [kit, ...reviewArgs, "N", ...(flags.ticket ? ["--ticket", flags.ticket] : []), ...extra];
@@ -487,7 +487,7 @@ async function main(args) {
         writeFileSync(comment, `Reused ${name}: ${saved.folder}\nHEAD: ${head}\n\n${readFileSync(resultPath, "utf8")}`);
         await gh("review", ["pr", "comment", number, "--body-file", comment]);
       } else {
-        const result = await execute("review", kit, [...reviewArgs, number, ...(flags.ticket ? ["--ticket", flags.ticket] : []), ...(second ? ["--second-look"] : [])]);
+        const result = await execute(second ? "second-look" : "review", kit, [...reviewArgs, number, ...(flags.ticket ? ["--ticket", flags.ticket] : []), ...(second ? ["--second-look"] : [])]);
         // The second look's kind, model and any fallback, as kit review said them.
         if (second) for (const line of result.text.match(/^second look: .+$/gm) ?? []) console.log(line);
         // No model could take the second look: it never blocks on availability.
