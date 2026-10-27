@@ -23,7 +23,7 @@ const noFile = 'no scripts/agents/kit.json; add one with "project" and "branches
 
 // Kit runs export these into the test process; each test sets its own.
 const clean: NodeJS.ProcessEnv = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
-for (const key of ["KIT_ROOT", "KIT_MAIN_ROOT", "KIT_DEV_ROOT", "KIT_PREVIEW_URL", "KIT_LIB", "KIT_LIB_MJS", "KIT_HOME", "KIT_HOME_DEFAULT", "KIT_COMMANDS_DIR", "NODE_TEST_CONTEXT"]) delete clean[key];
+for (const key of ["KIT_ROOT", "KIT_MAIN_ROOT", "KIT_DEV_ROOT", "KIT_PREVIEW_URL", "KIT_PLAYWRIGHT_MODULE", "KIT_LIB", "KIT_LIB_MJS", "KIT_HOME", "KIT_HOME_DEFAULT", "KIT_COMMANDS_DIR", "NODE_TEST_CONTEXT"]) delete clean[key];
 
 function temp(t: TestContext) {
   const directory = mkdtempSync(join(tmpdir(), "kit-settings-"));
@@ -206,6 +206,22 @@ test("environment overrides still win over the settings file", async t => {
   const { port } = server.address() as { port: number };
   const { stdout } = await promisify(execFile)(kit, ["status", "--no-fetch"], { cwd: f.root, env: { ...f.env, KIT_PREVIEW_URL: `http://127.0.0.1:${port}/` }, encoding: "utf8" });
   assert.match(stdout, /^preview: index-env123\.js$/m);
+});
+
+test("the playwright setting reaches project commands as KIT_PLAYWRIGHT_MODULE, unless the variable is set", t => {
+  const root = temp(t);
+  const show = (settings: object, extra: NodeJS.ProcessEnv = {}) => {
+    settingsFile(root, { project: "x", branches: { land: "main" }, commands: "commands", ...settings });
+    const result = spawnSync(kit, ["show"], { cwd: root, env: { ...clean, KIT_ROOT: root, ...extra }, encoding: "utf8", timeout: 30_000 });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    return result.stdout.split("\n")[0];
+  };
+  mkdirSync(join(root, "commands"));
+  executable(join(root, "commands/show"), '#!/bin/bash\n# kit: print KIT_PLAYWRIGHT_MODULE\necho "module=${KIT_PLAYWRIGHT_MODULE-unset}"\n');
+  assert.equal(show({ playwright: "vendor/playwright" }), `module=${root}/vendor/playwright`);
+  assert.equal(show({ playwright: "/opt/playwright" }), "module=/opt/playwright");
+  assert.equal(show({ playwright: "vendor/playwright" }, { KIT_PLAYWRIGHT_MODULE: "/caller/playwright" }), "module=/caller/playwright");
+  assert.equal(show({}), "module=unset");
 });
 
 test("land: main reaches review, unit --affected, pr --dry-run, status and wait ci", t => {

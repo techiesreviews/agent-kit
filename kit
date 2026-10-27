@@ -150,6 +150,15 @@ trap 'interrupted HUP 1' HUP
 kit_node || :
 KIT_MAIN_ROOT=$(kit_main_root)
 export KIT_ROOT KIT_MAIN_ROOT
+# The playwright setting reaches commands as KIT_PLAYWRIGHT_MODULE, relative to the top folder as kit doctor reads it;
+# a set KIT_PLAYWRIGHT_MODULE wins.
+if [[ -z ${KIT_PLAYWRIGHT_MODULE:-} ]]; then
+  playwright=$(kit_setting .playwright 2>/dev/null) || playwright=''
+  if [[ -n $playwright ]]; then
+    [[ $playwright == /* ]] || playwright=$KIT_ROOT/$playwright
+    export KIT_PLAYWRIGHT_MODULE=$playwright
+  fi
+fi
 export KIT_LIB="$KIT_HOME/kit-lib.sh" KIT_LIB_MJS="$KIT_HOME/kit-lib.mjs"
 
 # A coprocess lets the parent remember the last line without buffering stdout.
