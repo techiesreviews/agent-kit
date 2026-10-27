@@ -262,6 +262,23 @@ test("the bundle shows the computer's Grok reviews this week and last, by projec
   assert.equal(listBroken.status, 0, listBroken.stdout + listBroken.stderr);
   assert.match(section(bundleOf(listBroken.stdout).text, "Grok reviews this week")[0], /^- unreadable: .*projects\.json is unreadable: /);
   write(join(state, "projects.json"), "{}");
+  // A held ledger lock is named after ASE_REVIEW_BUDGET_LOCK_MS and left alone; the rest of the bundle still comes out.
+  mkdirSync(join(state, "review-budget.json.lock"));
+  const held = run(repo, [], repo, { ASE_REVIEW_BUDGET_LOCK_MS: "100" });
+  assert.equal(held.status, 0, held.stdout + held.stderr);
+  const heldText = bundleOf(held.stdout).text;
+  assert.match(section(heldText, "Grok reviews this week")[0], /^- unreadable: review budget lock .* is held/);
+  assert.deepEqual(section(heldText, "src/main.ts"), ["- 2 lines (+2)"]);
+  assert.ok(existsSync(join(state, "review-budget.json.lock")));
+  rmSync(join(state, "review-budget.json.lock"), { recursive: true });
+  // A week in the old shape is named with the ledger's path, with or without an old file to add to it.
+  const ledgerPath = join(state, "review-budget.json");
+  for (const [shape, withOld] of [[{ [week]: { grok: 4 } }, true], [{ [week]: 4 }, true], [{ [week]: { grok: 4 } }, false]] as const) {
+    if (!withOld) rmSync(join(repo, ".scratch/review-budget.json"), { force: true });
+    write(ledgerPath, JSON.stringify(shape));
+    const odd = section(bundleOf(run(repo).stdout).text, "Grok reviews this week")[0];
+    assert.ok(odd.startsWith(`- unreadable: review budget ledger ${ledgerPath} ${week} `), odd);
+  }
   // A broken ledger is named; the rest of the bundle still comes out.
   write(join(state, "review-budget.json"), "{ broken");
   const broken = run(repo);

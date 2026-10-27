@@ -715,6 +715,21 @@ test("uppercase GROK-4.7 selects Grok, its budget and the build variant end to e
   assert.deepEqual(f.counts(), { grok: { "kit-review": 1 } });
 });
 
+test("kit review gives the slot back right after the old count moves in", (t) => {
+  const f = fixture(t);
+  // Only node joins the fake bin: a grok installed beside node must not be found.
+  const nodeBin = join(f.dir, "node-bin");
+  mkdirSync(nodeBin);
+  symlinkSync(process.execPath, join(nodeBin, "node"));
+  mkdirSync(join(f.main, ".scratch"), { recursive: true });
+  writeFileSync(f.legacy, JSON.stringify({ [isoWeek()]: { grok: 3 } }));
+  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "grok-4.7", PATH: `${join(f.dir, "bin")}:${nodeBin}:/usr/bin:/bin` });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /^budget: grok 4\/8 in /m);
+  assert.deepEqual(f.counts(), { grok: { "kit-review": 3 } });
+  assert.ok(!existsSync(f.legacy));
+});
+
 test("kit review gives the budget back when the Grok CLI is missing", (t) => {
   const f = fixture(t);
   // Only node joins the fake bin: a grok installed beside node must not be found.

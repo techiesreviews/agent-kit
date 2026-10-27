@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import fs, { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -258,7 +259,9 @@ test("review budgets count outside families per ISO week, refuse at the limit an
   assert.throws(() => reserveReviewBudget(ledger, "grok", env, next), /review budget ledger .* is not valid JSON: .*; fix or delete it/);
   // An old-shape count in the machine ledger is named, not silently ignored.
   writeFileSync(path, JSON.stringify({ "2026-W44": { grok: 4 } }));
-  assert.throws(() => reserveReviewBudget(ledger, "grok", env, next), /review budget ledger 2026-W44 grok is not \{ "<project>": <count> \}; fix or delete it/);
+  assert.throws(() => reserveReviewBudget(ledger, "grok", env, next), (error: Error) => error.message === `review budget ledger ${path} 2026-W44 grok is not { "<project>": <count> }; fix or delete it`);
+  writeFileSync(path, JSON.stringify({ "2026-W44": 4 }));
+  assert.throws(() => reserveReviewBudget(ledger, "grok", env, next), (error: Error) => error.message.startsWith(`review budget ledger ${path} 2026-W44 is not {`));
   assert.ok(!existsSync(`${path}.lock`));
 });
 
@@ -282,13 +285,19 @@ test("two projects share one count, and a project's old ledger moves in once", (
   assert.throws(() => reserveReviewBudget(editor, "grok", env, monday), /used up: 8\/8/);
   assert.ok(!existsSync(legacy));
   assert.deepEqual(JSON.parse(readFileSync(path, "utf8"))["2026-W44"].grok, { editor: 8, other: 0 });
-  // A held lock on the old file stops the review and moves nothing.
+  // A held lock on the old file (an older kit, or a stale lock) is tried briefly, not for the machine
+  // lock's full wait: the review counts as usual and the old file waits for the next review.
   writeFileSync(legacy, JSON.stringify({ "2026-W44": { gpt: 1 } }));
   mkdirSync(`${legacy}.lock`);
-  assert.throws(() => reserveReviewBudget(editor, "codex", { ASE_REVIEW_BUDGET_LOCK_MS: "100" }, monday), /review budget lock .*\.scratch\/review-budget\.json\.lock is held/);
-  assert.ok(existsSync(legacy));
-  assert.deepEqual(JSON.parse(readFileSync(path, "utf8"))["2026-W44"].gpt, { editor: 1 });
+  const started = Date.now();
+  assert.equal(reserveReviewBudget(editor, "codex", env, monday).used, 2);
+  assert.ok(Date.now() - started < 5_000, "the old file's lock is not waited on for ASE_REVIEW_BUDGET_LOCK_MS");
+  assert.equal(readFileSync(legacy, "utf8"), JSON.stringify({ "2026-W44": { gpt: 1 } }));
+  assert.ok(existsSync(`${legacy}.lock`));
+  assert.deepEqual(JSON.parse(readFileSync(path, "utf8"))["2026-W44"].gpt, { editor: 2 });
   rmSync(`${legacy}.lock`, { recursive: true });
+  assert.equal(reserveReviewBudget(editor, "codex", env, monday).used, 4);
+  assert.ok(!existsSync(legacy));
   // A broken old file stops the review, names the file and is kept; the machine ledger is untouched.
   writeFileSync(legacy, "{ broken");
   const before = readFileSync(path, "utf8");
@@ -304,6 +313,48 @@ test("two projects share one count, and a project's old ledger moves in once", (
     assert.equal(readFileSync(path, "utf8"), before);
     assert.equal(readFileSync(legacy, "utf8"), JSON.stringify(shape));
   }
+  assert.ok(!existsSync(`${legacy}.lock`) && !existsSync(`${path}.lock`));
+});
+
+test("weeks moved in from an old ledger are pruned like any other", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ase-review-budget-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "state/review-budget.json"), legacy = join(dir, "old/review-budget.json");
+  mkdirSync(dirname(legacy), { recursive: true });
+  writeFileSync(legacy, JSON.stringify({ "2026-W40": { grok: 3 }, "2026-W44": { grok: 1 } }));
+  assert.equal(reserveReviewBudget({ path, project: "editor", legacy }, "grok", {}, new Date("2026-10-26T08:00:00Z")).used, 2);
+  assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { "2026-W44": { grok: { editor: 2 } } });
+});
+
+test("a machine ledger write that fails after the move puts the old counts back", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ase-review-budget-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "state/review-budget.json"), legacy = join(dir, "old/review-budget.json"), text = '{"2026-W44":{"grok":3}}';
+  mkdirSync(dirname(legacy), { recursive: true });
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, "{}");
+  writeFileSync(legacy, text);
+  // The ledger is written to a temporary file and renamed over the old one; fail that rename only.
+  const rename = fs.renameSync;
+  fs.renameSync = ((from: string, to: string) => {
+    if (to === path) throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+    rename(from, to);
+  }) as typeof fs.renameSync;
+  syncBuiltinESMExports();
+  t.after(() => { fs.renameSync = rename; syncBuiltinESMExports(); });
+  assert.throws(() => reserveReviewBudget({ path, project: "editor", legacy }, "grok", {}, new Date("2026-10-26T08:00:00Z")), /ENOSPC/);
+  assert.equal(readFileSync(legacy, "utf8"), text);
+  assert.equal(readFileSync(path, "utf8"), "{}");
+  // An older kit that wrote the old file meanwhile keeps its count; the moved one is added back.
+  fs.renameSync = ((from: string, to: string) => {
+    if (to === path) { writeFileSync(legacy, '{"2026-W44":{"grok":1,"gpt":2}}'); throw new Error("EIO: i/o error"); }
+    rename(from, to);
+  }) as typeof fs.renameSync;
+  syncBuiltinESMExports();
+  assert.throws(() => reserveReviewBudget({ path, project: "editor", legacy }, "grok", {}, new Date("2026-10-26T08:00:00Z")), /EIO/);
+  assert.deepEqual(JSON.parse(readFileSync(legacy, "utf8")), { "2026-W44": { grok: 4, gpt: 2 } });
+  fs.renameSync = rename;
+  syncBuiltinESMExports();
   assert.ok(!existsSync(`${legacy}.lock`) && !existsSync(`${path}.lock`));
 });
 

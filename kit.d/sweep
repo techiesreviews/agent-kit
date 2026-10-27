@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { familyUse, isoWeek, readReviewLedger, reviewBudgetLimit, withReviewLock } from "../agent-run.mjs";
+import { familyUse, isoWeek, projectCounts, readReviewLedger, reviewBudgetLimit, withReviewLock } from "../agent-run.mjs";
 import { parseFeedbackLine } from "../tickets.mjs";
 import { composeBundle, cssCounts } from "./ux";
 
@@ -310,23 +310,29 @@ export function grokSection(env = process.env, now = Date.now(), main = null, pr
     const real = folder => { try { return realpathSync(folder); } catch { return resolve(folder); } };
     const folders = new Map(Object.entries(listed).filter(([, entry]) => typeof entry?.root === "string").map(([name, entry]) => [real(entry.root), name]));
     if (project && main) folders.set(real(main), project);
-    const problems = [];
     const read = () => {
-      const ledger = readReviewLedger(path);
+      const ledger = readReviewLedger(path), problems = [];
+      // A wrong-shaped week is named as kit review names it, not read as 0.
+      for (const week of Object.keys(ledger)) projectCounts(ledger, week, "grok", path);
       for (const [root, name] of folders) {
         const old = join(root, ".scratch/review-budget.json");
         let weeks;
         try { weeks = readReviewLedger(old); } catch { problems.push(`- ${name}: old ledger unreadable (${old})`); continue; }
         for (const [week, families] of Object.entries(weeks)) {
-          const count = families?.grok, counts = ((ledger[week] ??= {}).grok ??= {});
-          if (Number.isSafeInteger(count) && count > 0) counts[name] = (counts[name] ?? 0) + count;
+          const count = families?.grok;
+          if (!Number.isSafeInteger(count) || count <= 0) continue;
+          const counts = projectCounts(ledger, week, "grok", path);
+          counts[name] = (counts[name] ?? 0) + count;
         }
       }
-      return ledger;
+      return { ledger, problems };
     };
     // Under the ledger's lock no review can move an old file in while both are read. With no state
-    // folder there is no ledger to lock, and the sweep creates nothing.
-    const ledger = existsSync(dirname(path)) ? withReviewLock(path, read, env) : read();
+    // folder there is no ledger to lock, and the sweep creates nothing; if the first review on the
+    // machine made the folder meanwhile, it may have moved an old file in, so read again under the lock.
+    const locked = existsSync(dirname(path));
+    let { ledger, problems } = locked ? withReviewLock(path, read, env) : read();
+    if (!locked && existsSync(dirname(path))) ({ ledger, problems } = withReviewLock(path, read, env));
     const week = isoWeek(new Date(now)), last = isoWeek(new Date(now - 7 * day));
     const byProject = of => {
       const counts = ledger[of]?.grok ?? {};
