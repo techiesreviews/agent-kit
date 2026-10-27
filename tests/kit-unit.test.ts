@@ -35,6 +35,8 @@ test("selected test runs", () => { mkdirSync(".scratch", { recursive: true }); a
   put("scripts/agents/kit.json", JSON.stringify({ project: "kit-unit", branches: { land: "dev" },
     unit: { run: "./node_modules/.bin/tsx --test --test-reporter=spec", files: "tests/*.test.ts" } }));
   symlinkSync(resolve("node_modules"), join(root, "node_modules"), "dir");
+  // --affected reads the project's own import scan.
+  symlinkSync(resolve("scripts/agents/specs-affected.mjs"), join(root, "scripts/agents/specs-affected.mjs"));
   git("init", "--quiet", "--initial-branch=feature");
   git("config", "user.name", "Kit unit test");
   git("config", "user.email", "kit-unit@example.test");
@@ -135,5 +137,7 @@ test("unit help, listing and invalid options use the kit front door", t => {
   for (const args of [["--wat"], ["--base"], ["--base", "HEAD"], ["--affected", "tests/direct.test.ts"], ["--affected", "--affected"], ["--list", "--list"], ["--affected", "--base", "missing"], ["missing.test.ts"]]) {
     result(f.run(...args), 2, /fail unit /);
   }
+  rmSync(join(f.root, "scripts/agents/specs-affected.mjs"));
+  result(f.run("--affected"), 2, /^RESULT: fail unit --affected needs the project's scripts\/agents\/specs-affected\.mjs$/);
   assert.equal(f.executed(), 0);
 });

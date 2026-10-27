@@ -226,4 +226,11 @@ test("kit card prints the card for the kit root with a RESULT line", (t) => {
   const broken = spawnSync("/bin/bash", [resolve("scripts/agents/kit.d/card")], { cwd: f.home, env: { ...f.env, KIT_ROOT: resolve("."), KIT_HOME: f.home }, encoding: "utf8" });
   assert.equal(broken.status, 1);
   assert.equal(broken.stdout, "RESULT: fail card script failed\n");
+  // Through the front door: a person's KIT_HOME without the card script reaches the card.
+  const home = join(f.home, "kit-home");
+  mkdirSync(home);
+  for (const name of ["kit.d", "kit-lib.sh", "kit-lib.mjs"]) symlinkSync(resolve("scripts/agents", name), join(home, name));
+  const front = spawnSync("/bin/bash", [kit, "card"], { cwd: f.home, env: { ...f.env, KIT_ROOT: resolve("."), KIT_HOME: home }, encoding: "utf8" });
+  assert.equal(front.status, 1);
+  assert.equal(front.stdout, "RESULT: fail card script failed\n");
 });

@@ -17,9 +17,13 @@ export function kitRoot() {
   return process.env.KIT_ROOT || (git(["rev-parse", "--show-toplevel"]) || resolve(import.meta.dirname, "../.."));
 }
 
-/** The shared kit's folder: KIT_HOME (the front door sets it), else the folder holding this file. */
+/**
+ * The shared kit's folder: KIT_HOME, else the folder holding this file. A KIT_HOME some front door
+ * filled in (equal to KIT_HOME_DEFAULT) may belong to another worktree, so it counts as unset.
+ */
 export function kitHome() {
-  return process.env.KIT_HOME || import.meta.dirname;
+  const { KIT_HOME: home, KIT_HOME_DEFAULT: filled } = process.env;
+  return home && home !== filled ? home : import.meta.dirname;
 }
 
 /** The project settings file, relative to the project's top folder. */

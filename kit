@@ -3,13 +3,17 @@
 # project's own from the folder named by "commands" in scripts/agents/kit.json.
 set -euo pipefail
 kit_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-# KIT_HOME is the shared kit: this folder unless already set (a kit checkout tried against this project).
-home=${KIT_HOME:-$kit_dir}
+# KIT_HOME is the shared kit: this folder unless a person set it (a kit checkout tried against this project).
+# A front door marks the KIT_HOME it fills in itself (KIT_HOME_DEFAULT), so a nested kit in another
+# worktree keeps its own folder while a person's choice reaches every nested kit.
+home=$kit_dir chosen=false
+if [[ -n ${KIT_HOME:-} && $KIT_HOME != "${KIT_HOME_DEFAULT:-}" ]]; then home=$KIT_HOME chosen=true; fi
 if ! KIT_HOME=$(cd -- "$home" 2>/dev/null && pwd -P) || [[ ! -f $KIT_HOME/kit-lib.sh ]]; then
-  printf 'kit: KIT_HOME %s holds no kit-lib.sh\n' "$home" >&2
+  printf 'kit: KIT_HOME %s is not a kit folder (no kit-lib.sh)\n' "$home" >&2
   printf 'RESULT: fail no kit at KIT_HOME %s\n' "$home"
   exit 2
 fi
+if [[ $chosen == true ]]; then unset KIT_HOME_DEFAULT; else export KIT_HOME_DEFAULT=$KIT_HOME; fi
 export KIT_HOME
 # shellcheck source=scripts/agents/kit-lib.sh
 source "$KIT_HOME/kit-lib.sh"

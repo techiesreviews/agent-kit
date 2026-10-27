@@ -23,7 +23,7 @@ const noFile = 'no scripts/agents/kit.json; add one with "project" and "branches
 
 // Kit runs export these into the test process; each test sets its own.
 const clean: NodeJS.ProcessEnv = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
-for (const key of ["KIT_ROOT", "KIT_MAIN_ROOT", "KIT_DEV_ROOT", "KIT_PREVIEW_URL", "KIT_LIB", "KIT_LIB_MJS", "KIT_COMMANDS_DIR", "NODE_TEST_CONTEXT"]) delete clean[key];
+for (const key of ["KIT_ROOT", "KIT_MAIN_ROOT", "KIT_DEV_ROOT", "KIT_PREVIEW_URL", "KIT_LIB", "KIT_LIB_MJS", "KIT_HOME", "KIT_HOME_DEFAULT", "KIT_COMMANDS_DIR", "NODE_TEST_CONTEXT"]) delete clean[key];
 
 function temp(t: TestContext) {
   const directory = mkdtempSync(join(tmpdir(), "kit-settings-"));
@@ -203,11 +203,13 @@ test("land: main reaches review, unit --affected, pr --dry-run, status and wait 
   const review = f.run(["review"], { ASE_REVIEW_MODEL: "-invalid" });
   assert.match(review.stdout, /^scope: --base origin\/main \(git diff [0-9a-f]{40}\.\.\.HEAD\)$/m);
   assert.match(lastLine(review)!, /^RESULT: fail /);
-  // The repo has no origin/dev, so the selection can only come from origin/main.
+  // The repo has no origin/dev, so the selection can only come from origin/main; --affected reads the project's import scan.
+  symlinkSync(resolve("scripts/agents/specs-affected.mjs"), join(f.root, "scripts/agents/specs-affected.mjs"));
   const unit = f.run(["unit", "--affected", "--list"]);
   assert.equal(unit.status, 0, unit.stdout + unit.stderr);
   assert.match(unit.stdout, /^tests\/a\.test\.ts — changed$/m);
   assert.equal(lastLine(unit), "RESULT: ok unit 1 selected (list only)");
+  rmSync(join(f.root, "scripts/agents/specs-affected.mjs")); // kit pr needs a clean tree.
   const pr = f.run(["pr", "--dry-run"]);
   assert.equal(pr.status, 0, pr.stdout + pr.stderr);
   assert.match(pr.stdout, /^base: main$/m);

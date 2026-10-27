@@ -190,7 +190,34 @@ test("the shared kit runs from a copy named by KIT_HOME for a project with only 
   const wrong = spawnSync(join(agents, "kit"), ["version"], { cwd: root, env: { ...env, KIT_HOME: join(root, "nowhere") }, encoding: "utf8" });
   assert.equal(wrong.status, 2);
   assert.equal(wrong.stdout, `RESULT: fail no kit at KIT_HOME ${join(root, "nowhere")}\n`);
-  assert.equal(wrong.stderr, `kit: KIT_HOME ${join(root, "nowhere")} holds no kit-lib.sh\n`);
+  assert.equal(wrong.stderr, `kit: KIT_HOME ${join(root, "nowhere")} is not a kit folder (no kit-lib.sh)\n`);
+});
+
+test("a nested kit in another checkout keeps its own kit unless a person set KIT_HOME; outside git the project is around the front door", (t) => {
+  // Three checkouts outside git, each with the shared kit, settings and a project command that prints the kit in use
+  // and, like a kit next --start job, runs another checkout's front door without KIT_ROOT.
+  const checkout = () => {
+    const root = realpathSync(temp(t)), agents = join(root, "scripts/agents");
+    cpSync(resolve("scripts/agents"), agents, { recursive: true, filter: (source) => source !== resolve("scripts/agents/project.d") });
+    writeFileSync(join(agents, "kit.json"), JSON.stringify({ project: "x", branches: { land: "dev" }, commands: "own" }));
+    mkdirSync(join(root, "own"));
+    command(join(root, "own"), "where", '# kit: print the kit in use\nprintf "%s %s %s\\n" "$KIT_ROOT" "$KIT_HOME" "$KIT_LIB"\n' +
+      'if [[ -n ${NEXT_KIT:-} ]]; then next=$NEXT_KIT; NEXT_KIT= env -u KIT_ROOT "$next" where; fi');
+    return { root, agents };
+  };
+  const [a, b, chosen] = [checkout(), checkout(), checkout()];
+  const env: NodeJS.ProcessEnv = { ...process.env, NEXT_KIT: join(b.agents, "kit") };
+  for (const name of ["KIT_ROOT", "KIT_MAIN_ROOT", "KIT_LIB", "KIT_LIB_MJS", "KIT_HOME", "KIT_HOME_DEFAULT", "KIT_COMMANDS_DIR"]) delete env[name];
+  const where = (extra: NodeJS.ProcessEnv = {}) => {
+    const result = spawnSync(join(a.agents, "kit"), ["where"], { cwd: a.root, env: { ...env, ...extra }, encoding: "utf8", timeout: 10_000 });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    return result.stdout.split("\n").filter((line) => !line.startsWith("RESULT: ") && line);
+  };
+  const line = (root: string, agents: string) => `${root} ${agents} ${agents}/kit-lib.sh`;
+  // The KIT_HOME a front door fills in stays with it: the nested checkout runs its own kit.d and library.
+  assert.deepEqual(where(), [line(a.root, a.agents), line(b.root, b.agents)]);
+  // A person's KIT_HOME reaches every nested kit, while each project stays the folder around its front door.
+  assert.deepEqual(where({ KIT_HOME: chosen.agents }), [line(a.root, chosen.agents), line(b.root, chosen.agents)]);
 });
 
 test("kit still lists shared commands with a broken settings file and names it on an unknown command", (t) => {

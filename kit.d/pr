@@ -3,7 +3,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, relative, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterFixRounds, blockingFindings, completedFixRounds, FIX_ROUNDS, openFindings, reviewCoversHead, sameReviewPatch } from "../review-findings.mjs";
 
@@ -232,7 +232,7 @@ async function main(args) {
     // Shared helpers come from KIT_HOME; one inside this project keeps its short path in the PR body.
     const shared = name => {
       const path = join(kitHome(), name), local = relative(root, path);
-      return local.startsWith("..") ? path : local;
+      return local === ".." || local.startsWith(`..${sep}`) || isAbsolute(local) ? path : local;
     };
     const commands = {
       check: () => parse(checks.check), unit: () => parse(checks.test), lint: () => parse(checks.lint),

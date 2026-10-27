@@ -9,9 +9,11 @@ kit_root() {
   fi
 }
 
-# The shared kit's folder: KIT_HOME (the front door sets it), else the folder holding this file.
+# The shared kit's folder: KIT_HOME, else the folder holding this file. A KIT_HOME some front door
+# filled in (equal to KIT_HOME_DEFAULT) may belong to another worktree, so it counts as unset.
 kit_home() {
-  if [[ -n ${KIT_HOME:-} ]]; then printf '%s\n' "$KIT_HOME"; else (cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P); fi
+  if [[ -n ${KIT_HOME:-} && $KIT_HOME != "${KIT_HOME_DEFAULT:-}" ]]; then printf '%s\n' "$KIT_HOME"
+  else (cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P); fi
 }
 
 kit_settings_file() {
