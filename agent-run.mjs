@@ -261,9 +261,11 @@ export function usageLimitProblem(text, cli) {
   return time ? `problem: ${reviewFamily(cli) ?? cli} usage limit until ${time}` : null;
 }
 
-// A provider stops an empty account with an error line that starts with the 402 or its message.
-// Only the CLI's own closing lines count: a tool trace or quoted line that merely names 402 is not one.
-const outOfCreditLinePattern = /^(?:(?:ERROR|Error|error):|■)?[\t ]*((?:(?:HTTP|status)[\t ]*)?402\b.*|(?:payment required|(?:usage )?balance exhausted)\b.*)$/i;
+// A provider stops an empty account with an error line that is a bare 402, a 402 followed by its
+// message, or the message alone. Only the CLI's own closing lines count: a tool trace, grep hit
+// or count that merely starts with or names 402 is not one.
+const creditMessage = "(?:payment required|(?:usage )?balance exhausted)\\b.*";
+const outOfCreditLinePattern = new RegExp(`^(?:error:|■)?[\\t ]*((?:(?:HTTP|status)[\\t ]*)?402(?:[\\t ]*:?[\\t ]*${creditMessage})?|${creditMessage})$`, "i");
 
 export function outOfCreditProblem(text, cli) {
   const message = text.split(/\r?\n/).filter(line => line.trim()).slice(-5).reverse()
@@ -544,11 +546,12 @@ export function opencodeExportTimeout(env = process.env) {
 }
 
 // OpenCode exits before a pipe drains, cutting a large export at 192 KiB, so it writes to a file.
-function opencodeExport(session, worktree, timeout) {
+// open is openSync; tests pass one that fails.
+export function opencodeExport(session, worktree, timeout, open = openSync) {
   const dir = mkdtempSync(join(tmpdir(), "ase-opencode-export-")), file = join(dir, "export.json");
   let out;
   try {
-    out = openSync(file, "w");
+    out = open(file, "w");
     execFileSync("opencode", ["export", "--pure", session], { cwd: worktree, encoding: "utf8", stdio: ["ignore", out, "pipe"],
       timeout, killSignal: "SIGKILL" });
     return readFileSync(file, "utf8");

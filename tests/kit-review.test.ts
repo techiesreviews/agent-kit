@@ -24,7 +24,7 @@ interface Call {
 }
 
 const fake = `#!/usr/bin/env node
-import { appendFileSync, chmodSync, existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 const cli = basename(process.argv[1]);
 const args = process.argv.slice(2);
@@ -40,6 +40,8 @@ const input = readFileSync(0, "utf8");
 // An unreadable diff makes kit review's evidence copy fail after the review itself worked.
 if (process.env.FAKE_LOCK_DIFF) chmodSync(/Read "([^"]+diff\\.patch)"/.exec(input)[1], 0);
 // A read-only .scratch/agent lets the review folder empty out but not go away.
+// A held ledger lock makes kit review's budget release fail after the call.
+if (process.env.FAKE_LOCK_LEDGER) mkdirSync(process.env.FAKE_LOCK_LEDGER, { recursive: true });
 if (process.env.FAKE_LOCK_ARTIFACTS) chmodSync(dirname(dirname(/Read "([^"]+diff\\.patch)"/.exec(input)[1])), 0o555);
 appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ cli, args, input, cwd: process.cwd(), home,
   files: readdirSync(home), symlink, target: symlink ? readlinkSync(auth) : null,
@@ -756,14 +758,30 @@ test("a failed Grok run whose tool trace names 402 is a failed review, not out o
   assert.deepEqual(f.counts(), { grok: { "kit-review": 2 } });
 });
 
-test("an out-of-credit run whose evidence cannot be saved fails with exit 1", (t) => {
+test("an out-of-credit run whose evidence cannot be saved fails with exit 1 and still gives the count back", (t) => {
   const f = fixture(t);
   const grok = join(f.dir, "bin", "grok");
   writeFileSync(grok, fake); chmodSync(grok, 0o755);
-  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "grok-4.7", FAKE_MODE: "out-of-credit", FAKE_LOCK_DIFF: "1" });
+  const first = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "grok-4.7", ASE_REVIEW_BUDGET_GROK: "2" });
+  assert.equal(first.status, 0, first.stderr);
+  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "grok-4.7", ASE_REVIEW_BUDGET_GROK: "2", FAKE_MODE: "out-of-credit", FAKE_LOCK_DIFF: "1" });
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stdout.trim().split("\n").at(-1)!, /^RESULT: fail saving evidence failed: /);
   assert.doesNotMatch(result.stdout, /RESULT: skip/);
+  // No review came back, so the slot is free whatever happened to the evidence.
+  assert.deepEqual(f.counts(), { grok: { "kit-review": 1 } });
+});
+
+test("an out-of-credit run whose count cannot be given back says so on its skip line", (t) => {
+  const f = fixture(t);
+  const grok = join(f.dir, "bin", "grok");
+  writeFileSync(grok, fake); chmodSync(grok, 0o755);
+  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "grok-4.7", FAKE_MODE: "out-of-credit",
+    FAKE_LOCK_LEDGER: `${f.ledger}.lock`, ASE_REVIEW_BUDGET_LOCK_MS: "200" });
+  assert.equal(result.status, 3, result.stdout + result.stderr);
+  assert.match(result.stderr, /^problem: releasing review budget failed: review budget lock .* is held/m);
+  assert.equal(result.stdout.trim().split("\n").at(-1), "RESULT: skip review out of credit (grok-4.7); count not given back");
+  assert.deepEqual(f.counts(), { grok: { "kit-review": 1 } });
 });
 
 test("uppercase GROK-4.7 selects Grok, its budget and the build variant end to end", (t) => {

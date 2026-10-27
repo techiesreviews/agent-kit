@@ -42,7 +42,7 @@ function evidenceDirectory() {
 
 async function review(args) {
   let evidence = "none", temporary, status = 1, reason = "invalid arguments", label, budget, env, model, effort, reviewedHead, ticket;
-  let ledger, outOfCredit = false;
+  let ledger, outOfCredit = false, kept = false;
   try {
     status = 2;
     const flags = options(args);
@@ -117,11 +117,15 @@ async function review(args) {
       // records the process group as soon as the CLI spawns. A provider usage-limit
       // refusal on the first call spent no review, so it gives the slot back; the
       // runner marks it only when the refusal was all that call printed. An out-of-credit
-      // run that failed returned no complete review, so it is given back even after earlier turns.
+      // run that failed returned no complete review, so it is given back even after earlier turns,
+      // and even when saving its evidence fails below: no review came back either way.
       const run = temporary && join(temporary, "status.json");
       const record = run && existsSync(run) ? JSON.parse(readFileSync(run, "utf8")) : {};
       if (budget && (!record.pgid || record.refused === true || outOfCredit)) releaseReviewBudget(ledger.path, budget, env);
-    } catch (error) { console.error(`problem: releasing review budget failed: ${error.message}`); }
+    } catch (error) {
+      kept = true;
+      console.error(`problem: releasing review budget failed: ${error.message}`);
+    }
     try {
       const { record, cleanup } = saveReviewEvidence(temporary, () => (evidence = evidenceDirectory()),
         text => findingsRecord(text, { model, effort, scope: label, head: reviewedHead }));
@@ -141,7 +145,7 @@ async function review(args) {
   }
   if (outOfCredit) {
     console.log(`evidence: ${evidence}`);
-    console.log(`RESULT: skip review out of credit (${model})`);
+    console.log(`RESULT: skip review out of credit (${model})${kept && budget ? "; count not given back" : ""}`);
     return 3;
   }
   kitResult(status === 0 ? "ok" : "fail", status === 0 ? `review ${label} evidence ${evidence}` : `${reason} evidence ${evidence}`);

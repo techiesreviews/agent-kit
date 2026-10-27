@@ -10,7 +10,7 @@ import { reviewBrief, reviewComplete, reviewFormat } from "../scripts/agents/rev
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { unitSummary } from "../scripts/agents/unit-summary.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
-import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokResult, inferCli, isoWeek, opencodeErrorProblem, opencodeExportTimeout, opencodeOutOfCredit, opencodeResult, opencodeReviewAgent, opencodeReviewConfig, opencodeUsageLimit, outOfCreditProblem, parseAgentArgs, refusedOutright, sessionObserver, releaseReviewBudget, reserveReviewBudget, reviewBase, usageLimitProblem } from "../scripts/agents/agent-run.mjs";
+import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokResult, inferCli, isoWeek, opencodeErrorProblem, opencodeExport, opencodeExportTimeout, opencodeOutOfCredit, opencodeResult, opencodeReviewAgent, opencodeReviewConfig, opencodeUsageLimit, outOfCreditProblem, parseAgentArgs, refusedOutright, sessionObserver, releaseReviewBudget, reserveReviewBudget, reviewBase, usageLimitProblem } from "../scripts/agents/agent-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { durationMilliseconds } from "../scripts/agents/sol-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
@@ -492,8 +492,20 @@ test("an HTTP 402 closing line becomes an out-of-credit problem; tool traces, qu
   assert.equal(outOfCreditProblem(`read_file file.txt\n${grok}\n`, "grok"), `problem: grok out of credit: ${grok}`);
   assert.equal(outOfCreditProblem("ERROR: 402\n", "opencode"), "problem: opencode out of credit: 402");
   assert.equal(outOfCreditProblem("Error: usage balance exhausted", "opencode"), "problem: opencode out of credit: usage balance exhausted");
-  for (const text of ["", "read_file src/a.ts:402", "tests 402.5 passed", "grep 402 file.txt", "grep -n 'Payment Required' a.mjs", `  const message = "${grok}";`, `{"text": "${grok}"}`,
+  for (const text of ["", "read_file src/a.ts:402", "tests 402.5 passed", "grep 402 file.txt", "402:const x = 1", "402.5 tests passed", "402 files read", "grep -n 'Payment Required' a.mjs", `  const message = "${grok}";`, `{"text": "${grok}"}`,
     `${grok}\n${"read more\n".repeat(5)}`]) assert.equal(outOfCreditProblem(text, "grok"), null, text);
+});
+
+test("an OpenCode export whose file cannot be opened still removes its temp folder", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ase-export-tmp-")), previous = process.env.TMPDIR;
+  t.after(() => {
+    if (previous === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previous;
+    rmSync(dir, { recursive: true, force: true });
+  });
+  process.env.TMPDIR = dir;
+  const refuse = () => { throw new Error("EMFILE: too many open files"); };
+  assert.throws(() => opencodeExport("ses_1", dir, 1000, refuse), /^Error: OpenCode export for ses_1 failed: EMFILE: too many open files$/);
+  assert.deepEqual(readdirSync(dir), []);
 });
 
 test("only a usage limit that is all the call printed counts as an outright refusal", () => {
