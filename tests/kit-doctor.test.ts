@@ -420,6 +420,29 @@ test("doctor --quiet, the mode agent.sh gates on, still fails and names a broken
   assert.equal(result.stderr, "");
 });
 
+test("KIT_DOCTOR_SKIP=help turns a broken --help into a problem line and skips only that check", (t) => {
+  const f = fixture(t);
+  executable(join(f.commands, "broken"), 'printf "SyntaxError: missing import\\n" >&2; exit 1');
+  const problem = "problem: help: broken (exit 1); fix: run scripts/agents/kit <command> --help and repair it\n";
+  const quiet = f.run(["--quiet"], f.build, { KIT_HELP_TIMEOUT: "0.3", KIT_DOCTOR_SKIP: "help" });
+  assert.equal(quiet.status, 0, quiet.stdout + quiet.stderr);
+  assert.equal(quiet.stdout, `${problem}RESULT: ok doctor 10/10 checks passed; skipped help (KIT_DOCTOR_SKIP)\n`);
+  assert.equal(quiet.stderr, "");
+  // Other checks still run and fail; no other name is honoured.
+  rmSync(join(f.build, ".codex/hooks.json"));
+  const other = f.run(["--quiet"], f.build, { KIT_HELP_TIMEOUT: "0.3", KIT_DOCTOR_SKIP: "hook config,help" });
+  assert.equal(other.status, 1, other.stdout + other.stderr);
+  assert.ok(other.stdout.includes(problem), other.stdout);
+  assert.ok(other.stdout.endsWith("RESULT: fail doctor 1 failed: hook config\n"), other.stdout);
+});
+
+test("KIT_DOCTOR_SKIP=help keeps a working help check counted", (t) => {
+  const f = fixture(t);
+  const result = f.run(["--quiet"], f.build, { KIT_DOCTOR_SKIP: "help" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(result.stdout, "RESULT: ok doctor 11/11 checks passed\n");
+});
+
 test("doctor fails when a copy of the kit named by KIT_HOME cannot run kit version", (t) => {
   const f = fixture(t);
   // A kit whose front door still needs something only the project has fails from its copy.
@@ -450,7 +473,8 @@ test("doctor passes the help check when every real shared and project command an
   const shared = count("scripts/agents/kit.d"), own = count("scripts/agents/project.d");
   // Some helps read this checkout's files (shots runs its CLI), so check from the repository itself.
   // Under the fixture's 10 s spawn limit, a slow help is named rather than cut off.
-  const result = f.run([], repo, { KIT_COMMANDS_DIR: undefined, KIT_HELP_TIMEOUT: "5" }, true);
+  // Through the front door, so both the kit and doctor find the commands by their default folders.
+  const result = f.run([], repo, { KIT_COMMANDS_DIR: undefined, KIT_HELP_TIMEOUT: "5" });
   assert.ok(result.stdout.includes(`✓ commands: ${shared} shared, ${own} in scripts/agents/project.d\n`), result.stdout);
   assert.ok(result.stdout.includes(`✓ help: ${shared + own} commands answer --help\n`), result.stdout);
 });
@@ -595,4 +619,48 @@ test("agent.sh gates a separate checkout of the kit", (t) => {
   const result = f.run(clone, join(f.directory, "missing.md"));
   assert.equal(result.status, 3, result.stdout + result.stderr);
   assert.match(result.stderr, /agent.sh: kit doctor failed in /);
+});
+
+test("a broken --help stops agent.sh review and kit doctor but not agent.sh build, which names it", (t) => {
+  const f = fixture(t);
+  executable(join(f.commands, "broken"), 'printf "SyntaxError: missing import\\n" >&2; exit 1');
+  // A front door marks the fixture worktree as a kit checkout, so agent.sh gates it.
+  executable(join(f.build, "scripts/agents/kit"), "exit 0");
+  const env = { ...process.env, KIT_MAIN_ROOT: f.main, KIT_LIB: library, KIT_COMMANDS_DIR: f.commands,
+    KIT_GROK: join(f.directory, "no-grok"), KIT_HELP_TIMEOUT: "0.3", ASE_SKIP_DOCTOR: "", KIT_DOCTOR_SKIP: "" };
+  const agent = (...args: string[]) => spawnSync("/bin/bash", [join(repo, "scripts/agents/agent.sh"), ...args], {
+    cwd: f.directory, encoding: "utf8", timeout: 10_000, env,
+  });
+  const missing = join(f.directory, "missing.md");
+  const problem = "problem: help: broken (exit 1); fix: run scripts/agents/kit <command> --help and repair it\n";
+  const build = agent("build", f.build, missing, "--out", join(f.directory, "out-build"));
+  // Past the gate the runner rejects the missing brief (exit 2).
+  assert.equal(build.status, 2, build.stdout + build.stderr);
+  assert.ok(build.stderr.startsWith(`${problem}agent.sh: building in ${f.build} despite the problem above; the builder should repair it\n`), build.stderr);
+  assert.doesNotMatch(build.stderr, /kit doctor failed/);
+  const review = agent("review", f.build, missing, "--out", join(f.directory, "out-review"));
+  assert.equal(review.status, 3, review.stdout + review.stderr);
+  assert.match(review.stderr, /^✗ help: broken \(exit 1\); fix: .*\nRESULT: fail doctor 1 failed: help\nagent.sh: kit doctor failed in /);
+  // A KIT_DOCTOR_SKIP from the caller does not reach a review's gate.
+  const forced = spawnSync("/bin/bash", [join(repo, "scripts/agents/agent.sh"), "review", f.build, missing], {
+    cwd: f.directory, encoding: "utf8", timeout: 10_000, env: { ...env, KIT_DOCTOR_SKIP: "help" },
+  });
+  assert.equal(forced.status, 3, forced.stdout + forced.stderr);
+  // A resumed run gates as the kind it recorded.
+  for (const kind of ["build", "review"]) {
+    const out = join(f.directory, `resume-${kind}`);
+    mkdirSync(out);
+    writeFileSync(join(out, "status.json"), JSON.stringify({ worktree: f.build, kind }));
+    const resumed = agent("--resume", out);
+    if (kind === "build") {
+      assert.notEqual(resumed.status, 3, resumed.stderr);
+      assert.ok(resumed.stderr.startsWith(problem), resumed.stderr);
+    } else {
+      assert.equal(resumed.status, 3, resumed.stderr);
+      assert.match(resumed.stderr, /^✗ help: broken/);
+    }
+  }
+  const doctor = f.run(["--quiet"], f.build, { KIT_HELP_TIMEOUT: "0.3" });
+  assert.equal(doctor.status, 1, doctor.stdout + doctor.stderr);
+  assert.ok(doctor.stdout.endsWith("RESULT: fail doctor 1 failed: help\n"), doctor.stdout);
 });

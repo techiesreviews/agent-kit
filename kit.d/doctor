@@ -20,7 +20,11 @@ root=$(cd -- "$(kit_root)" && pwd -P)
 main=$(realpath -m -- "$(kit_main_root)")
 dev=$(kit_dev_root)
 [[ -z $dev ]] || dev=$(realpath -m -- "$dev")
-failed=() checks=0
+failed=() skipped=() checks=0
+# KIT_DOCTOR_SKIP=help (agent.sh sets it for builds): a broken --help prints a problem: line and does not fail,
+# so the builder that should repair it can start. Doctor honours no other name.
+skip_help=false
+if [[ ,${KIT_DOCTOR_SKIP:-}, == *,help,* ]]; then skip_help=true; fi
 pass() {
   checks=$((checks + 1))
   if [[ $quiet == false ]]; then printf '✓ %s: %s\n' "$1" "$2"; fi
@@ -252,7 +256,12 @@ elif (( ${#broken[@]} == 0 )); then
   pass help "${#commands[@]} commands answer --help"
 else
   list=$(IFS=,; printf '%s' "${broken[*]}")
-  fail help "${list//,/, }" 'run scripts/agents/kit <command> --help and repair it'
+  if [[ $skip_help == true ]]; then
+    skipped+=(help)
+    printf 'problem: help: %s; fix: run scripts/agents/kit <command> --help and repair it\n' "${list//,/, }"
+  else
+    fail help "${list//,/, }" 'run scripts/agents/kit <command> --help and repair it'
+  fi
 fi
 
 # The shared kit runs from anywhere: a copy outside the project, named by KIT_HOME, runs a shared command
@@ -303,4 +312,4 @@ if (( ${#failed[@]} )); then
   kit_result fail "doctor ${#failed[@]} failed: $names"
   exit 1
 fi
-kit_result ok "doctor $checks/$checks checks passed"
+kit_result ok "doctor $checks/$checks checks passed${skipped:+; skipped ${skipped[*]} (KIT_DOCTOR_SKIP)}"
