@@ -388,7 +388,12 @@ test("kit ux diffs against origin/<land> from the settings when the project land
   const blank = run(["--no-review"]);
   assert.equal(blank.status, 1, blank.stdout + blank.stderr);
   assert.equal(blank.result, "RESULT: fail ux needs --base (no branches.land in scripts/agents/kit.json)");
+  // A padded land branch is read trimmed.
+  put("scripts/agents/kit.json", JSON.stringify({ project: "x", branches: { land: " main " }, checks: { css: editorColours } }));
+  const padded = run(["--no-review"]);
+  assert.equal(padded.status, 0, padded.stdout + padded.stderr);
   // A given --base needs no land branch.
+  put("scripts/agents/kit.json", JSON.stringify({ project: "x", branches: { land: " " }, checks: { css: editorColours } }));
   const given = run(["--no-review", "--base", "origin/main"]);
   assert.equal(given.status, 0, given.stdout + given.stderr);
   assert.match(given.result, /^RESULT: ok ux 1 features tried, /);
@@ -508,6 +513,10 @@ test("a failed colour check names each file and line it printed in the diff, els
     findings: [{ rule: "L2", file: "allow.json", line: 1, text: "stale allow entry: src/a.css: #000" }], outside: 0,
   });
   assert.deepEqual(named(["src/a.css", "allow.json"], "allow.json:2: stale allow entry: src/other.css: #000\n"), { findings: [], outside: 1 });
+  // A CSS line always counts for its own file, whatever other file its text names.
+  assert.deepEqual(named(["src/a.css"], "src/a.css:3: #fff (see src/other.css)\nsrc/other.css:4: #000 (see src/a.css)\n"), {
+    findings: [{ rule: "L2", file: "src/a.css", line: 3, text: "raw colour #fff (see src/other.css)" }], outside: 1,
+  });
   // A stack frame with a plain path is no file:line finding.
   assert.deepEqual(found(1, "TypeError: x\n    at checkColours (/abs/check.js:12:5)\n").findings, [{ rule: "L2", file: "colours", line: 0, text: "check exited 1: TypeError: x; log /log" }]);
   assert.deepEqual(found(127, "").findings, [{ rule: "L2", file: "colours", line: 0, text: "check exited 127; log /log" }]);

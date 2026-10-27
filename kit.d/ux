@@ -342,7 +342,7 @@ const textSetting = value => typeof value === "string" && value.trim() ? value.t
 
 /** The default base: origin/<branches.land>, as kit pr and kit review take it (a blank one is none, as their settings check says). */
 function landBase(settings) {
-  const value = settings.branches?.land, land = typeof value === "string" && value.trim() ? value : undefined;
+  const land = textSetting(settings.branches?.land);
   if (!land) throw new Error(`needs --base (no branches.land in ${kitSettingsFile})`);
   return `origin/${land}`;
 }
@@ -449,8 +449,8 @@ export function tryFailures(index, status, log) {
  * L2 findings from the project's checks.css run: none when it passed, else one per `file:line: text` line it printed
  * (a stack frame is no such line; ./ and absolute paths are read against root) whose subject is in the diff (`changed`),
  * so a checker that looks past the given files reports nothing the diff did not touch; `outside` counts the rest.
- * The subject is the first project file (`known`) the text names, as an allow list's stale entry names its CSS file,
- * else the line's own file. A failed run that names no line is one finding pointing at its log.
+ * A CSS line's subject is its own file; another line's (an allow list's stale entry) is the first project file (`known`)
+ * its text names, else its own file. A failed run that names no line is one finding pointing at its log.
  */
 export function colourFindings(status, output, command, log, { root, changed, known = changed }) {
   if (!status) return { findings: [], outside: 0 };
@@ -461,7 +461,7 @@ export function colourFindings(status, output, command, log, { root, changed, kn
     const file = relative(root, resolve(root, match[1]));
     return [{ rule: "L2", file, line: Number(match[2]), text: /\.css$/i.test(file) ? `raw colour ${match[3]}` : match[3] }];
   });
-  const subject = finding => finding.text.split(/[\s,;()"'`]+/).map(token => token.replace(/:+$/, "")).filter(Boolean)
+  const subject = finding => /\.css$/i.test(finding.file) ? finding.file : finding.text.split(/[\s,;()"'`]+/).map(token => token.replace(/:+$/, "")).filter(Boolean)
     .map(token => relative(root, resolve(root, token))).find(path => known.includes(path)) ?? finding.file;
   if (located.length) {
     const findings = located.filter(finding => changed.includes(subject(finding)));
