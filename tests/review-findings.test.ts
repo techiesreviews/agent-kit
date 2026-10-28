@@ -580,6 +580,19 @@ test("a plain located line after a prose paragraph is its own blocking finding",
   }
 });
 
+test("a located continuation line joins the P2 or located defect above it and does not block", () => {
+  const { findings, notes } = openFindings(review("Defects:\nSpec:\n- a.ts:1 — P2 fault: x\nb.ts:2 has the same bug.\nValidation gaps: none."));
+  assert.deepEqual([findings, notes], [[finding("Spec", "a.ts:1 — P2 fault: x b.ts:2 has the same bug.", "P2", "fault")], []]);
+  assert.deepEqual(blockingFindings(findings), []);
+  // A located defect with no severity still takes its continuation and still blocks once.
+  const located = openFindings(review("Defects:\nSpec:\n- a.ts:1 the guard is missing.\nb.ts:2 has the same bug.\nValidation gaps: none.")).findings;
+  assert.deepEqual(located, [finding("Spec", "a.ts:1 the guard is missing. b.ts:2 has the same bug.")]);
+  // An unlocated line naming a severity is a finding too, so a located line after it joins it.
+  const named = openFindings(review("Defects:\nSpec:\n- The guard is missing (P3 style).\nb.ts:2 has the same bug.\nValidation gaps: none.")).findings;
+  assert.deepEqual(named, [finding("Spec", "The guard is missing (P3 style). b.ts:2 has the same bug.", "P3", "style")]);
+  assert.deepEqual(blockingFindings(named), []);
+});
+
 test("a path starting with _ keeps its location through the emphasis cleaning", () => {
   const text = "_site/a.ts:1 — P2 fault: uses `_`";
   assert.deepEqual(openFindings(review(`Defects:\nSpec:\n- ${text}\nValidation gaps: none.`)).findings, [finding("Spec", text, "P2", "fault")]);

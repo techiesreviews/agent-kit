@@ -227,6 +227,21 @@ test("kitScore writes one record per ticket atomically with title, kind and size
   assert.equal(existsSync(join(f.main, ".scratch/scoreboard/_untracked")), true);
 });
 
+test("scoreReview reads a notes-only result.md without findings.json as zero counts, not unreadable", t => {
+  const f = fixture(t);
+  const evidence = join(f.dir, "review");
+  mkdirSync(evidence, { recursive: true });
+  writeFileSync(join(evidence, "result.md"), "REVIEW_STATUS: complete\nDefects:\nStandards:\nNo section of CODING_STANDARDS.md applies to this change.\nValidation gaps: none.\nOptional nits: none.\n");
+  const record: Pick<ScoreRecord, "reviews" | "costs"> = { reviews: [], costs: {} };
+  scoreReview(record, evidence);
+  assert.equal(record.reviews.length, 1);
+  assert.equal("unreadable" in record.reviews[0], false);
+  assert.deepEqual(record.reviews[0].counts, {
+    kind: { fault: 0, ticket: 0, race: 0, style: 0, unsorted: 0, gap: 0 },
+    severity: { P0: 0, P1: 0, P2: 0, P3: 0, none: 0, gap: 0 },
+  });
+});
+
 test("a scoreboard write failure prints one problem line and never throws", t => {
   const f = fixture(t), previous = process.env.KIT_MAIN_ROOT;
   process.env.KIT_MAIN_ROOT = join(f.dir, "blocked");
