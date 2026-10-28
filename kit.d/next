@@ -176,9 +176,9 @@ function sliceUnit(words, cwd, worktrees) {
 
 // Slices T3 threads run as systemd user units (`systemd-run --user --unit=kit-slice-<owner> … kit slice --ticket F`,
 // so an app restart does not stop them); kit bg does not list those. No systemctl, or none running: none.
-// User units are shared by every project on the machine, so a unit counts only when its working directory, kit
-// path or an absolute --ticket lies in one of this repo's worktrees; a unit naming none of them is unknown and
-// still takes a slot (ticket unknown), as an unreadable kit bg job does.
+// User units are shared by every project on the machine, so a unit none of whose working directory, kit path or
+// absolute --ticket lies in this repo's worktrees is another project's and is skipped; a unit naming none of
+// them is unknown and still takes a slot (ticket unknown), as an unreadable kit bg job does.
 function systemdSlices(worktrees) {
   const systemctl = process.env.KIT_NEXT_SYSTEMCTL || "systemctl";
   const ask = args => spawnSync(systemctl, ["--user", ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 5000 });
@@ -191,7 +191,9 @@ function systemdSlices(worktrees) {
     const cwd = /^WorkingDirectory=(\/.*)$/m.exec(shown)?.[1] ?? null;
     // ExecStart={ path=… ; argv[]=<words, space-separated> ; ignore_errors=… }
     const words = /^ExecStart=.*?\bargv\[\]=(.*?) ; /m.exec(shown)?.[1].split(/\s+/) ?? [];
-    const places = [cwd, words[0], ...words.flatMap((word, i) => word === "--ticket" ? [words[i + 1]] : [])].filter(path => path && isAbsolute(path));
+    // Only a kit word is a place: an interpreter (`/usr/bin/bash -lc …`) says nothing about the project.
+    const kitPath = words.find(word => basename(word) === "kit");
+    const places = [cwd, kitPath, ...words.flatMap((word, i) => word === "--ticket" ? [words[i + 1]] : [])].filter(path => path && isAbsolute(path));
     if (places.length && !places.some(ours)) return [];
     return [{ name: unit.replace(/\.service$/, ""), worktree: cwd, unit: sliceUnit(words, cwd, worktrees) }];
   });

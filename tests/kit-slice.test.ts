@@ -294,7 +294,8 @@ test("kit slice help and invalid options never launch commands", t => {
 });
 
 test("the brief keeps the ticket's claim owner; only an empty assignee: takes the worktree's owner (here the branch)", t => {
-  for (const [assignee, expected] of [["ke-99", "`assignee: ke-99` (keep the claim owner)."], ["", "`assignee: build/ke-04`."], ["~", "`assignee: build/ke-04`."]]) {
+  for (const [assignee, expected] of [["ke-99", "`assignee: ke-99` (keep the claim owner)."], ["", "`assignee: build/ke-04`."], ["~", "`assignee: build/ke-04`."],
+    ['"ke-99"', "`assignee: ke-99` (keep the claim owner)."], ["null", "`assignee: build/ke-04`."], ["ke-99 # claimed by the lead", "`assignee: ke-99` (keep the claim owner)."]]) {
     const f = fixture(t), path = join(f.root, f.ticket);
     writeFileSync(path, readFileSync(path, "utf8").replace("status: ready-for-agent\n", `status: ready-for-agent\nassignee: ${assignee}\n`));
     f.git("commit", "-qam", "claim");

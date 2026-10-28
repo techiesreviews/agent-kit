@@ -442,6 +442,11 @@ test("only a workflow that runs for a PR branch is CI to wait for; deploy-only, 
     ["on: { push: {} }\n", true],
     ["on:\n  push:\n    branches:\n      - main\n", false],
     ["on:\n  push:\n    tags: [v*]\n", false],
+    ["on:\n  push:\n    paths-ignore: [docs/**]\n", true],
+    ["on:\n  push:\n    branches: []\n", true],
+    ["on:\n  push:\n    branches-ignore: [main]\n    tags: [v*]\n", true],
+    ["on:\n  push:\n    branches: [\n      main ]\n", true], // A flow list over lines is not read: waiting is the safe answer.
+    ["on:\n  push:\n    branches: [ke-+]\n", true],
     // This editor's own workflows: ci.yml (pull_request) is CI, deploy-preview.yml (push to dev) is not.
     [readFileSync(".github/workflows/ci.yml", "utf8"), true],
     [readFileSync(".github/workflows/deploy-preview.yml", "utf8"), false],

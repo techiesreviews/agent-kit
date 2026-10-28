@@ -113,13 +113,13 @@ function flowMapping(text) {
 
 /**
  * Whether a push with these filters (`branches`, `tags`, `paths`, … as lists) can run for a feature branch.
- * Only a `branches` list of plain names (`main`, `release/v1`: no `*`, `?`, `[` or `!`) rules a PR branch out;
+ * Only a `branches` list of plain names (`main`, `release/v1`: no `*`, `?`, `+`, `[` or `!`) rules a PR branch out;
  * `branches-ignore` and `paths` filters may match it. A tag filter with no branch filter runs for tags only,
  * as GitHub skips the branch pushes then.
  */
 function pushRunsOnBranches(filters) {
   // An empty `branches: []` names nothing to rule out, so it may run: waiting is the safe answer.
-  if (filters.branches) return !filters.branches.length || filters.branches.some(name => /[*?[!]/.test(name));
+  if (filters.branches) return !filters.branches.length || filters.branches.some(name => /[*?+[!]/.test(name));
   if (filters["branches-ignore"]) return true;
   return !filters.tags && !filters["tags-ignore"];
 }

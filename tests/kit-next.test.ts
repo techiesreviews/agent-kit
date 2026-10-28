@@ -82,12 +82,13 @@ fi
     return path;
   };
   // A kit-slice-<owner> systemd user unit, as systemctl show prints its working directory and command; an empty
-  // cwd prints an empty WorkingDirectory= and a relative kit path, an empty ticketFile no --ticket.
-  const unit = (name: string, ticketFile: string, cwd = dev) => {
+  // cwd prints an empty WorkingDirectory= and a relative kit path, an empty ticketFile no --ticket; argv replaces the command.
+  const unit = (name: string, ticketFile: string, cwd = dev, argv = "") => {
     mkdirSync(join(root, "units"), { recursive: true });
     const kitPath = `${cwd ? `${cwd}/` : ""}scripts/agents/kit`, ticketWords = ticketFile ? `--ticket ${ticketFile} ` : "";
-    writeFileSync(join(root, "units", `${name}.service`), `WorkingDirectory=${cwd}\nExecStart={ path=${kitPath} ; ` +
-      `argv[]=${kitPath} slice ${ticketWords}--builder claude-opus-5-5 ; ignore_errors=no ; start_time=[n/a] ; pid=1 }\n`);
+    const command = argv || `${kitPath} slice ${ticketWords}--builder claude-opus-5-5`;
+    writeFileSync(join(root, "units", `${name}.service`), `WorkingDirectory=${cwd}\nExecStart={ path=${command.split(" ")[0]} ; ` +
+      `argv[]=${command} ; ignore_errors=no ; start_time=[n/a] ; pid=1 }\n`);
   };
   const runIn = (cwd: string, ...args: string[]) => spawnSync(process.execPath, [next, ...args], { cwd, env, encoding: "utf8", timeout: 30_000 });
   const run = (...args: string[]) => runIn(dev, ...args);
@@ -265,6 +266,12 @@ test("a running kit-slice systemd unit is a running slice: listed, sharing its F
   ]);
   const missing = spawnSync(process.execPath, [next, "alpha"], { cwd: f.dev, env: { ...f.env, KIT_NEXT_SYSTEMCTL: join(f.root, "no-systemctl") }, encoding: "utf8" });
   assert.equal(missing.stdout, before.stdout, missing.stderr);
+  // No user bus: systemctl answers list-units with an error.
+  const busless = join(f.root, "busless-systemctl");
+  writeFileSync(busless, "#!/usr/bin/env bash\necho 'Failed to connect to bus: No medium found' >&2\nexit 1\n");
+  chmodSync(busless, 0o755);
+  const noBus = spawnSync(process.execPath, [next, "alpha"], { cwd: f.dev, env: { ...f.env, KIT_NEXT_SYSTEMCTL: busless }, encoding: "utf8" });
+  assert.equal(noBus.stdout, before.stdout, noBus.stderr);
   f.unit("kit-slice-alpha01", build("alpha", "01-run"));
   const result = f.run("alpha");
   assert.equal(result.status, 0, result.stdout + result.stderr);
@@ -315,6 +322,48 @@ test("a kit-slice unit with no working directory and no --ticket is listed as ti
     "running: kit-slice-x (ticket unknown)",
     `next: ${build("alpha", "01-free")} builder=claude-opus-5-5 owner=alpha-01 why=slot 2/5`,
     "RESULT: ok next 1 ready, 0 waiting",
+  ]);
+});
+
+test("a kit-slice unit with no working directory: an absolute --ticket still names it, an interpreter's path names nothing", t => {
+  const f = fixture(t, {
+    [build("alpha", "01-run")]: ticket({ assignee: "alpha-01", files: ["a/one.ts"] }),
+    [build("alpha", "02-shared")]: ticket({ files: ["a/one.ts"] }),
+    [build("alpha", "03-free")]: ticket({ files: ["a/three.ts"] }),
+  });
+  f.unit("kit-slice-a", "", "", `${f.dev}/scripts/agents/kit slice --ticket ${join(f.dev, build("alpha", "01-run"))} --builder claude-opus-5-5`);
+  // Started through bash with no --working-directory: /usr/bin/bash is no kit path, so the unit is unknown, not another project's.
+  f.unit("kit-slice-b", "", "", `/usr/bin/bash -lc cd ${join(f.root, "elsewhere")} && scripts/agents/kit slice --ticket ${build("alpha", "09-gone")}`);
+  const result = f.run("alpha");
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(result.stdout.trim().split("\n"), [
+    `running: kit-slice-a ${build("alpha", "01-run")}`,
+    "running: kit-slice-b (ticket unknown)",
+    `next: ${build("alpha", "03-free")} builder=claude-opus-5-5 owner=alpha-03 why=slot 3/5`,
+    `waits: ${build("alpha", "02-shared")} shares a/one.ts with kit-slice-a`,
+    "RESULT: ok next 1 ready, 1 waiting",
+  ]);
+});
+
+test("a kit-slice unit running a group (kit next --run-group) blocks every member's Files and covers every claim", t => {
+  const f = fixture(t, {
+    "docs/wayfinder/alpha/build/README.md": "# Build\n\nprefix: al\n",
+    [build("alpha", "01-a")]: ticket({ group: "fonts", assignee: "al-g-fonts", files: ["a/one.ts"] }),
+    [build("alpha", "02-b")]: ticket({ group: "fonts", assignee: "al-g-fonts", files: ["a/two.ts"] }),
+    [build("alpha", "03-one")]: ticket({ files: ["a/one.ts"] }),
+    [build("alpha", "04-two")]: ticket({ files: ["a/two.ts"] }),
+    [build("alpha", "05-free")]: ticket({ files: ["a/five.ts"] }),
+  });
+  f.unit("kit-slice-al-g-fonts", "", f.dev, `${f.dev}/scripts/agents/kit next --run-group --branch build/al-g-fonts --builder claude-opus-5-5 ` +
+    `--ticket ${build("alpha", "01-a")} --ticket ${build("alpha", "02-b")}`);
+  const result = f.run("alpha");
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(result.stdout.trim().split("\n"), [
+    "running: kit-slice-al-g-fonts group fonts tickets=01-a,02-b",
+    `next: ${build("alpha", "05-free")} builder=claude-opus-5-5 owner=al-05 why=slot 2/5`,
+    `waits: ${build("alpha", "03-one")} shares a/one.ts with kit-slice-al-g-fonts`,
+    `waits: ${build("alpha", "04-two")} shares a/two.ts with kit-slice-al-g-fonts`,
+    "RESULT: ok next 1 ready, 2 waiting",
   ]);
 });
 
