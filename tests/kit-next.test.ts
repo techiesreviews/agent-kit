@@ -21,7 +21,8 @@ function fixture(t: TestContext, files: Record<string, string>, land = "dev", ov
   const root = mkdtempSync(join(tmpdir(), "kit-next-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const dev = join(root, devPath);
-  const env: NodeJS.ProcessEnv = { ...process.env, ...identity, GIT_CONFIG_NOSYSTEM: "1", KIT_DEV_ROOT: dev, KIT_NEXT_KIT: join(root, "fake-kit"), KIT_NEXT_WORKTREE: join(root, "fake-worktree.sh"), FAKE_KIT_LOG: join(root, "kit.log") };
+  const env: NodeJS.ProcessEnv = { ...process.env, ...identity, GIT_CONFIG_NOSYSTEM: "1", KIT_DEV_ROOT: dev, KIT_NEXT_KIT: join(root, "fake-kit"), KIT_NEXT_WORKTREE: join(root, "fake-worktree.sh"),
+    KIT_NEXT_SYSTEMCTL: join(root, "fake-systemctl"), FAKE_UNITS: join(root, "units"), FAKE_KIT_LOG: join(root, "kit.log") };
   delete env.KIT_ROOT;
   const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   git(root, "init", "-q", "--bare", "-b", land, "origin.git");
@@ -55,7 +56,16 @@ printf '%s\\n' "$ASE_OWNER" > "$path/owner"
 printf '%s %s\\n' "$1" "$2" >> "$(dirname "$path")/bases"
 printf '%s\\n' "$path"
 `);
+  // systemctl --user list-units lists each file in units/ as a running service; show prints that file.
+  writeFileSync(join(root, "fake-systemctl"), `#!/usr/bin/env bash
+[[ $1 == --user ]] || exit 1
+if [[ $2 == list-units ]]; then
+  for f in "$FAKE_UNITS"/*; do [[ -f $f ]] && printf '%s loaded active running [systemd-run] kit\\n' "$(basename "$f")"; done; exit 0
+fi
+[[ $2 == show ]] && cat "$FAKE_UNITS/\${@: -1}"
+`);
   chmodSync(join(root, "fake-kit"), 0o755);
+  chmodSync(join(root, "fake-systemctl"), 0o755);
   chmodSync(join(root, "fake-worktree.sh"), 0o755);
   // A slice job in its own worktree: the recorded command names its ticket, as kit bg writes it.
   const running = (name: string, ticketFile: string, state = "running", command = `'scripts/agents/kit' 'slice' '--ticket' '${ticketFile}' '--builder' 'claude-opus-5-5'\n`) => {
@@ -67,6 +77,12 @@ printf '%s\\n' "$path"
     writeFileSync(join(directory, "command"), command);
     return worktree;
   };
+  // A kit-slice-<owner> systemd user unit, as systemctl show prints its working directory and command.
+  const unit = (name: string, ticketFile: string, cwd = dev) => {
+    mkdirSync(join(root, "units"), { recursive: true });
+    writeFileSync(join(root, "units", `${name}.service`), `WorkingDirectory=${cwd}\nExecStart={ path=${cwd}/scripts/agents/kit ; ` +
+      `argv[]=${cwd}/scripts/agents/kit slice --ticket ${ticketFile} --builder claude-opus-5-5 ; ignore_errors=no ; start_time=[n/a] ; pid=1 }\n`);
+  };
   const runIn = (cwd: string, ...args: string[]) => spawnSync(process.execPath, [next, ...args], { cwd, env, encoding: "utf8", timeout: 30_000 });
   const run = (...args: string[]) => runIn(dev, ...args);
   const lines = (...args: string[]) => {
@@ -74,7 +90,7 @@ printf '%s\\n' "$path"
     assert.equal(result.status, 0, result.stdout + result.stderr);
     return result.stdout.trim().split("\n").filter(line => !line.startsWith("running: "));
   };
-  return { root, dev, env, git, write, running, run, runIn, lines };
+  return { root, dev, env, git, write, running, unit, run, runIn, lines };
 }
 
 const build = (map: string, slug: string) => `docs/wayfinder/${map}/build/tickets/${slug}.md`;
@@ -223,6 +239,34 @@ test("a running job's absolute --ticket path still gives its map and Files and c
     `waits: ${build("alpha", "02-shared")} shares a/one.ts with slice-alpha01`,
     `waits: ${build("alpha", "03-other")} slice-alpha01 runs alone`,
     "RESULT: ok next 0 ready, 2 waiting",
+  ]);
+});
+
+test("a running kit-slice systemd unit is a running slice: listed, sharing its Files and covering its claim", t => {
+  const f = fixture(t, {
+    [build("alpha", "01-run")]: ticket({ assignee: "alpha-01", files: ["a/one.ts"] }),
+    [build("alpha", "02-shared")]: ticket({ files: ["a/one.ts"] }),
+    [build("alpha", "03-other")]: ticket({ files: ["a/three.ts"] }),
+  });
+  // No unit, or no systemctl at all: the answer of a machine without systemd units.
+  const before = f.run("alpha");
+  assert.equal(before.status, 0, before.stdout + before.stderr);
+  assert.deepEqual(before.stdout.trim().split("\n"), [
+    `next: ${build("alpha", "02-shared")} builder=claude-opus-5-5 owner=alpha-02 why=slot 1/5`,
+    `next: ${build("alpha", "03-other")} builder=claude-opus-5-5 owner=alpha-03 why=slot 2/5`,
+    `waits: ${build("alpha", "01-run")} claimed by alpha-01, no running job found`,
+    "RESULT: ok next 2 ready, 1 waiting",
+  ]);
+  const missing = spawnSync(process.execPath, [next, "alpha"], { cwd: f.dev, env: { ...f.env, KIT_NEXT_SYSTEMCTL: join(f.root, "no-systemctl") }, encoding: "utf8" });
+  assert.equal(missing.stdout, before.stdout, missing.stderr);
+  f.unit("kit-slice-alpha01", build("alpha", "01-run"));
+  const result = f.run("alpha");
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, new RegExp(`^running: kit-slice-alpha01 ${build("alpha", "01-run")}`, "m"));
+  assert.deepEqual(f.lines("alpha"), [
+    `next: ${build("alpha", "03-other")} builder=claude-opus-5-5 owner=alpha-03 why=slot 2/5`,
+    `waits: ${build("alpha", "02-shared")} shares a/one.ts with kit-slice-alpha01`,
+    "RESULT: ok next 1 ready, 1 waiting",
   ]);
 });
 

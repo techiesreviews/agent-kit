@@ -293,6 +293,19 @@ test("kit slice help and invalid options never launch commands", t => {
   assert.deepEqual(f.calls(), []);
 });
 
+test("the brief keeps the ticket's claim owner; only an empty assignee: takes the worktree's owner (here the branch)", t => {
+  for (const [assignee, expected] of [["ke-99", "`assignee: ke-99` (keep the claim owner)."], ["", "`assignee: build/ke-04`."]]) {
+    const f = fixture(t), path = join(f.root, f.ticket);
+    writeFileSync(path, readFileSync(path, "utf8").replace("status: ready-for-agent\n", `status: ready-for-agent\nassignee: ${assignee}\n`));
+    f.git("commit", "-qam", "claim");
+    // A T3 worktree thread: no ASE_OWNER and no .scratch/owner, so kitOwner() falls back to the branch name.
+    assert.equal(existsSync(join(f.root, ".scratch/owner")), false);
+    f.run([], { ASE_OWNER: "", FAIL_PHASE: "build" });
+    const brief = readFileSync(join(f.root, ".scratch/agent-brief.md"), "utf8");
+    assert.ok(brief.includes(`Set \`status: closed\`, ${expected}`), brief);
+  }
+});
+
 test("kit slice writes the ticket brief, runs phases in order, credits and commits the builder, and lands", t => {
   const f = fixture(t, { project: "kit-slice", branches: { land: "dev" }, checks: { check: "npm run check" }, unit: { files: "tests/*.test.ts" } },
     { "tsconfig.json": "{}\n" }), result = f.run();

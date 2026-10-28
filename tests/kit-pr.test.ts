@@ -422,15 +422,22 @@ test("a workflow the base gains during a behind retry is waited for after the re
   assert.ok(f.calls().some(call => call.tool === "fake-kit" && call.args.join(" ") === "wait ci --pr 73"));
 });
 
-test("only a workflow that runs for a PR branch is CI to wait for; deploy-only, scheduled and filtered ones land after review", t => {
+test("only a workflow that runs for a PR branch is CI to wait for; deploy-only, scheduled and main-only ones land after review", t => {
   for (const [workflow, waits] of [
     ["name: Deploy\non:\n  push:\n    branches: [main] # deploy only\n  workflow_dispatch:\njobs: {}\n", false],
     ["on:\n  schedule:\n    - cron: '0 3 * * 1'\njobs:\n  sync:\n    if: github.event_name == 'pull_request'\n", false],
-    ["# on: pull_request\n'on':\n  push:\n    paths: ['src/**']\n", false],
+    // A paths filter alone may match a PR branch (below); beside plain branch names it is still deploy-only.
+    ["# on: pull_request\n'on':\n  push:\n    branches: [main]\n    paths: ['src/**']\n", false],
     ["on: [push, workflow_dispatch]\n", true],
     ["on:\n  - push\n", true],
     ["\"on\":\n  push:\n  pull_request_target:\n    branches: [main]\n", true],
     ["on:\n  workflow_dispatch:\n  pull_request:\n", true],
+    ["on:\n  push:\n    branches-ignore: [main]\n", true],
+    ["on:\n  push:\n    branches: ['**']\n", true],
+    ["on:\n  push:\n    paths: [src/**]\n", true],
+    ["on:\n  push:\n    branches: [main]\n    paths: [src/**]\n", false],
+    ["on: { push: { branches: [main] } }\n", false],
+    ["on: { push: { branches: ['**'] } }\n", true],
   ] as const) {
     const f = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: playground, workflows: workflow });
     const result = f.run([], { FAKE_BASE: "main" }, true);

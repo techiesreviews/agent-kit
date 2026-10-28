@@ -86,10 +86,49 @@ const shortText = text => {
   return characters.length > 160 ? `${characters.slice(0, 160).join("").trimEnd()}…` : text;
 };
 
+/** A YAML list or scalar as plain strings: `[main, 'dev']`, `main`, or nothing. */
+const yamlList = value => {
+  const text = value.trim();
+  const items = text.startsWith("[") ? text.replace(/^\[|\]$/g, "").split(",") : text ? [text] : [];
+  return items.map(item => item.trim().replace(/^(["'])(.*)\1$/, "$2")).filter(Boolean);
+};
+
+/** The top-level `key: value` pairs of a one-line YAML flow mapping (`{ push: { branches: [main] } }`), values as text. */
+function flowMapping(text) {
+  const entries = {};
+  let depth = 0, part = "";
+  for (const char of `${text.trim().replace(/^\{|\}$/g, "")},`) {
+    if (char === "," && depth === 0) {
+      const entry = /^\s*["']?([\w-]+)["']?\s*(?::([\s\S]*))?$/.exec(part);
+      if (entry) entries[entry[1]] = (entry[2] ?? "").trim();
+      part = "";
+      continue;
+    }
+    if ("[{".includes(char)) depth++;
+    if ("]}".includes(char)) depth--;
+    part += char;
+  }
+  return entries;
+}
+
+/**
+ * Whether a push with these filters (`branches`, `tags`, `paths`, … as lists) can run for a feature branch.
+ * Only a `branches` list of plain names (`main`, `release/v1`: no `*`, `?`, `[` or `!`) rules a PR branch out;
+ * `branches-ignore` and `paths` filters may match it. A tag filter with no branch filter runs for tags only,
+ * as GitHub skips the branch pushes then.
+ */
+function pushRunsOnBranches(filters) {
+  if (filters.branches) return !filters.branches.length || filters.branches.some(name => /[*?[!]/.test(name));
+  if (filters["branches-ignore"]) return true;
+  return !filters.tags && !filters["tags-ignore"];
+}
+
+const flowFilters = text => Object.fromEntries(Object.entries(flowMapping(text)).map(([key, value]) => [key, yamlList(value)]));
+
 /**
  * Whether a workflow file runs for a PR branch, read from its top-level `on:` triggers: `pull_request` or
- * `pull_request_target`, or `push` with no branch or tag filter. Deploy-only (`push: branches: [main]`),
- * scheduled and manual workflows never report on a PR head, so they are not CI to wait for.
+ * `pull_request_target`, or a `push` whose filters can match a feature branch (pushRunsOnBranches). Deploy-only
+ * (`push: branches: [main]`), scheduled and manual workflows never report on a PR head, so they are not CI to wait for.
  */
 function runsOnPullRequests(text) {
   const lines = text.split(/\r?\n/).map(line => line.replace(/\s+#.*$|^#.*$/, ""));
@@ -106,17 +145,27 @@ function runsOnPullRequests(text) {
   const triggers = inline || block.join("\n");
   if (/\bpull_request(?:_target)?\b/.test(triggers)) return true;
   if (!/\bpush\b/.test(triggers)) return false;
-  if (inline) return true;
-  // A push trigger in block form: filtered (branches, tags or paths) means it may never run on the PR branch.
+  // A one-line flow mapping (`on: { push: { branches: [main] } }`) carries its filters inline; a list or string none.
+  if (inline) {
+    if (!inline.startsWith("{")) return true;
+    const push = flowMapping(inline).push ?? "";
+    return !push.startsWith("{") || pushRunsOnBranches(flowFilters(push));
+  }
   const push = block.findIndex(line => /^\s+push\s*:/.test(line));
   if (push < 0) return true; // A list (- push) carries no filter.
-  const indent = block[push].search(/\S/);
-  const children = [];
+  const value = block[push].replace(/^\s+push\s*:/, "").trim();
+  if (value.startsWith("{")) return pushRunsOnBranches(flowFilters(value));
+  // Block filters: `branches: [main]` on one line, or `branches:` followed by `- main` items.
+  const indent = block[push].search(/\S/), filters = {};
+  let key;
   for (const line of block.slice(push + 1)) {
-    if (line.trim() && line.search(/\S/) <= indent) break;
-    children.push(line);
+    if (!line.trim()) continue;
+    if (line.search(/\S/) <= indent) break;
+    const item = /^\s*-\s*(.*)$/.exec(line), entry = /^\s*([\w-]+)\s*:(.*)$/.exec(line);
+    if (item) { if (key) filters[key].push(...yamlList(item[1])); }
+    else if (entry) filters[key = entry[1]] = yamlList(entry[2]);
   }
-  return !children.some(line => /^\s*(?:branches|branches-ignore|tags|tags-ignore|paths|paths-ignore)\s*:/.test(line));
+  return pushRunsOnBranches(filters);
 }
 
 // Isolate both HEAD and the index: concurrent work must never enter a follow-up commit.

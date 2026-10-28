@@ -17,7 +17,8 @@ const usage = `Usage: kit next [map…] [--start] [--max N]
        kit next --run-group --branch BRANCH --builder MODEL --ticket FILE [--ticket FILE…]
 Lists the running slices (running:), the open frontier tickets that may start now (next:)
 and why the rest wait (waits:),
-read from origin/${land} in the dev worktree and the running slice-* jobs of every worktree.
+read from origin/${land} in the dev worktree, the running slice-* jobs of every worktree
+and the running kit-slice-* systemd user units.
 Maps go in the order given, else alphabetical; tickets by number within a map.
 Tickets sharing a group: slug are one hand-out (next: group <slug> tickets=…) once every open one
 may start; a blocker inside the group counts as met, as its slices run in blocked_by order.
@@ -40,7 +41,7 @@ const cap = 5;
 // sharedFile: the one file two slices may share (rule 3); none when unset.
 const mainTs = settings?.sharedFile || null;
 
-// Test seams: a fake kit (bg --list and bg <name>) and a fake worktree.sh.
+// Test seams: a fake kit (bg --list and bg <name>), a fake systemctl and a fake worktree.sh.
 const fakeKit = process.env.KIT_NEXT_KIT;
 const worktreeScript = process.env.KIT_NEXT_WORKTREE || resolve(import.meta.dirname, "../worktree.sh");
 
@@ -158,8 +159,38 @@ function unquote(command) {
   return [...command.matchAll(/'((?:[^']|'\\'')*)'/g)].map(match => match[1].replaceAll("'\\''", "'"));
 }
 
-// Running slices: every worktree's `kit bg --list` rows named slice-* and running. Each job's
-// recorded command names its tickets (a group job several), read from that worktree for Files and map.
+// A running slice's unit (its tickets' Files and map) from its command words, run in cwd. Each ticket is read
+// on its own, so one unreadable ticket leaves the others' Files counting. A group job keeps the Files of members
+// that already landed until it ends: safe, if broad. A ticket keys by its path inside the worktree holding it
+// (the longest match), so an absolute path whose parent folders share the maps folder's name still names the right map.
+function sliceUnit(words, cwd, worktrees) {
+  const tickets = words.flatMap((word, i) => word === "--ticket" && words[i + 1] ? [words[i + 1]] : []).flatMap(file => {
+    const path = resolve(cwd, file), home = worktrees.filter(tree => path.startsWith(`${tree}/`)).sort((a, b) => b.length - a.length)[0];
+    const key = home ? relative(home, path) : normalize(file);
+    try { return [parseTicket(readFileSync(path, "utf8"), key, mapOf(key)).ticket]; }
+    catch { return []; }
+  });
+  return unitOf(tickets, words.includes("--run-group") ? tickets.find(ticket => ticket.group)?.group ?? "" : "");
+}
+
+// Slices T3 threads run as systemd user units (`systemd-run --user --unit=kit-slice-<owner> … kit slice --ticket F`,
+// so an app restart does not stop them); kit bg does not list those. No systemctl, or none running: none.
+function systemdSlices(worktrees) {
+  const systemctl = process.env.KIT_NEXT_SYSTEMCTL || "systemctl";
+  const ask = args => spawnSync(systemctl, ["--user", ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const listed = ask(["list-units", "--type=service", "--state=running", "--plain", "--no-legend", "kit-slice-*"]);
+  if (listed.error || listed.status !== 0) return [];
+  return listed.stdout.split("\n").map(row => row.trim().split(/\s+/)[0]).filter(unit => /^kit-slice-.+\.service$/.test(unit)).map(unit => {
+    const shown = ask(["show", "-p", "WorkingDirectory", "-p", "ExecStart", unit]).stdout ?? "";
+    const cwd = /^WorkingDirectory=(.+)$/m.exec(shown)?.[1] || devRoot;
+    // ExecStart={ path=… ; argv[]=<words, space-separated> ; ignore_errors=… }
+    const words = /^ExecStart=.*?\bargv\[\]=(.*?) ; /m.exec(shown)?.[1].split(/\s+/) ?? [];
+    return { name: unit.replace(/\.service$/, ""), worktree: cwd, unit: sliceUnit(words, cwd, worktrees) };
+  });
+}
+
+// Running slices: every worktree's `kit bg --list` rows named slice-* and running, and the running kit-slice-*
+// systemd units. Each job's recorded command names its tickets (a group job several), read from its worktree.
 function runningSlices() {
   const worktrees = git(["worktree", "list", "--porcelain"]).split("\n").filter(line => line.startsWith("worktree ")).map(line => line.slice(9));
   const kit = fakeKit || resolve(import.meta.dirname, "../kit");
@@ -177,20 +208,10 @@ function runningSlices() {
         words = unquote(readFileSync(join(directory, "command"), "utf8"));
         if (existsSync(join(directory, "cwd"))) cwd = readFileSync(join(directory, "cwd"), "utf8").trim();
       } catch { words = []; /* A slice whose command cannot be read still takes a slot. */ }
-      // Each ticket is read on its own, so one unreadable ticket leaves the others' Files counting.
-      // A group job keeps the Files of members that already landed until it ends: safe, if broad.
-      // A ticket keys by its path inside the worktree holding it (the longest match), so an absolute path
-      // whose parent folders share the maps folder's name still names the right map.
-      const tickets = words.flatMap((word, i) => word === "--ticket" && words[i + 1] ? [words[i + 1]] : []).flatMap(file => {
-        const path = resolve(cwd, file), home = worktrees.filter(tree => path.startsWith(`${tree}/`)).sort((a, b) => b.length - a.length)[0];
-        const key = home ? relative(home, path) : normalize(file);
-        try { return [parseTicket(readFileSync(path, "utf8"), key, mapOf(key)).ticket]; }
-        catch { return []; }
-      });
-      slices.push({ name, worktree, unit: unitOf(tickets, words.includes("--run-group") ? tickets.find(ticket => ticket.group)?.group ?? "" : "") });
+      slices.push({ name, worktree, unit: sliceUnit(words, cwd, worktrees) });
     }
   }
-  return slices;
+  return [...slices, ...systemdSlices(worktrees)];
 }
 
 const inside = (directory, path) => directory.endsWith("/") && (directory === "./" || path.startsWith(directory));
