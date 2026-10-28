@@ -143,8 +143,9 @@ async function reviewOnce(flags, look) {
       const missing = status !== 0 && !record.pgid && /^problem: (spawn \S+ ENOENT)$/m.exec(stderr)?.[1];
       const down = !missing && status !== 0 && /^grok failed \(\d+\)/.test(reason) && grokDown(temporary);
       const hung = !missing && status !== 0 && /^grok-/i.test(model) && /^agent exceeded timeout=([^;]+);/.exec(reason)?.[1];
-      // OpenCode that opened no session within its start limit never reached the model.
-      const silent = status !== 0 && /^opencode unavailable: no session within /.test(reason);
+      // OpenCode that opened no session within its start limit on the first call never reached the model;
+      // the runner marks it only then, so a silent retry after a call that worked keeps its count.
+      const silent = status !== 0 && record.silent === true;
       if (missing || down || hung) {
         reason = missing ? `CLI missing: ${missing}` : down ? `grok unavailable: ${down}` : `grok unavailable: no answer within ${hung}`;
         console.error(`problem: ${reason}`);

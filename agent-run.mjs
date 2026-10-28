@@ -877,7 +877,11 @@ async function invokeAgent(adapter, args, descriptor, context) {
     const session = recordedSession(adapter, result.stdout, slice);
     if (session) update({ session });
     // The CLI's own failure is the cause; executeRun reports it after its consequences.
-    if (silent) context.cause = `problem: ${adapter.command} unavailable: no session within ${adapter.startTimeout / 1000}s`;
+    if (silent) {
+      context.cause = `problem: ${adapter.command} unavailable: no session within ${adapter.startTimeout / 1000}s`;
+      // Like a refusal, only a silent first call refunds the review: a retry after a call that opened a session spent it.
+      if (!previousCalls) update({ silent: true });
+    }
     else if (status === 124) context.cause = `problem: agent exceeded timeout=${limit}; process group killed; see ${logPath}`;
     else {
       // A refusal OpenCode prints as an error event counts even when the CLI exits 0.

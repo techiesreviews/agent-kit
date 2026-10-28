@@ -944,7 +944,7 @@ appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ cli: "opencode", args, i
 const emit = (type, extra = {}) => console.log(JSON.stringify({ type, timestamp: Date.now(), sessionID: "ses_fake", ...extra }));
 const mode = process.env.FAKE_MODE || "pass";
 // A provider that is down: no event at all, as on 2026-10-27.
-if (process.env.FAKE_OPENCODE_SILENT) await new Promise(done => setTimeout(done, 30_000));
+if (process.env.FAKE_OPENCODE_SILENT || (mode === "retry-silent" && resumed)) await new Promise(done => setTimeout(done, 30_000));
 emit("step_start", { part: { type: "step-start", messageID: "m0" } });
 if (mode === "error-502" || mode === "error-502-exit1") {
   emit("error", { error: { name: "APIError", data: { message: "Bad gateway", statusCode: 502 } } });
@@ -973,7 +973,7 @@ if (mode === "hang") await new Promise(done => setTimeout(done, 30_000));
 appendFileSync(answers, args[args.indexOf("-m") + 1] + "\\n");
 emit("text", { part: { type: "text", messageID: "m1", text: "Reading the diff first." } });
 emit("tool_use", { part: { type: "tool", tool: "read", state: { status: "completed" } } });
-const report = (mode === "retry-pass" || mode === "retry-fail" || mode === "retry-limit") && !resumed || mode === "retry-fail" ? "incomplete reply" : process.env.FAKE_REPORT || ${JSON.stringify(complete)};
+const report = (mode === "retry-pass" || mode === "retry-fail" || mode === "retry-limit" || mode === "retry-silent") && !resumed || mode === "retry-fail" ? "incomplete reply" : process.env.FAKE_REPORT || ${JSON.stringify(complete)};
 emit("text", { part: { type: "text", messageID: "m2", text: report } });
 emit("step_finish", { part: { type: "step-finish", reason: "stop", cost: 0 } });
 `;
@@ -1092,6 +1092,27 @@ test("a counted OpenCode review gives its count back when the first call is refu
   assert.equal(spent.status, 1, spent.stdout + spent.stderr);
   assert.match(spent.stderr, /^problem: opencode usage limit: /m);
   assert.deepEqual(f.counts(), { gpt: { "kit-review": 1 } });
+});
+
+test("a counted OpenCode review that answered on its first call keeps its count when the retry opens no session", (t) => {
+  for (const model of ["openai/gpt-6.1", "xai/grok-4.7"]) {
+    const family = model.startsWith("openai/") ? "gpt" : "grok";
+    const f = fixture(t);
+    withOpencode(f);
+    const result = f.run(["--base", "HEAD~1"], { ASE_AGENT_CLI: "opencode", ASE_REVIEW_MODEL: model, ASE_REVIEW_BUDGET_GPT: "1", ASE_REVIEW_BUDGET_GROK: "1",
+      FAKE_MODE: "retry-silent", ASE_OPENCODE_START_TIMEOUT_MS: "500" });
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.ok(result.stderr.split("\n").includes("problem: opencode unavailable: no session within 0.5s"), result.stderr);
+    assert.equal(opencodeCalls(f).length, 2);
+    assert.deepEqual(f.counts(), { [family]: { "kit-review": 1 } });
+  }
+  // The free model stays uncounted either way.
+  const f = fixture(t);
+  withOpencode(f);
+  const free = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_MODE: "retry-silent", ASE_OPENCODE_START_TIMEOUT_MS: "500" });
+  assert.equal(free.status, 1, free.stdout + free.stderr);
+  assert.doesNotMatch(free.stdout, /^budget:/m);
+  assert.equal(existsSync(f.ledger), false);
 });
 
 test("an OpenCode limit said only on stderr, with no error event, prints the opencode usage-limit problem", (t) => {
