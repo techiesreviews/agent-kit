@@ -587,7 +587,8 @@ test("a located continuation line joins the P2 or located defect above it and do
   // A located defect with no severity still takes its continuation and still blocks once.
   const located = openFindings(review("Defects:\nSpec:\n- a.ts:1 the guard is missing.\nb.ts:2 has the same bug.\nValidation gaps: none.")).findings;
   assert.deepEqual(located, [finding("Spec", "a.ts:1 the guard is missing. b.ts:2 has the same bug.")]);
-  // An unlocated line naming a severity is a finding too, so a located line after it joins it.
+  // An unlocated line naming a severity is a finding too, so a located line after it joins it. This is
+  // intended (ticket 56): a severity-less located line after a P3 no longer blocks on its own.
   const named = openFindings(review("Defects:\nSpec:\n- The guard is missing (P3 style).\nb.ts:2 has the same bug.\nValidation gaps: none.")).findings;
   assert.deepEqual(named, [finding("Spec", "The guard is missing (P3 style). b.ts:2 has the same bug.", "P3", "style")]);
   assert.deepEqual(blockingFindings(named), []);
@@ -611,6 +612,12 @@ test("a located line naming a severity past the classify window still splits and
 
 test("a located continuation joins a defect given as the group heading's inline text", () => {
   const { findings, notes } = openFindings(review("Defects:\nSpec: a.ts:1 — P2 fault: x\nb.ts:2 has the same bug.\nValidation gaps: none."));
+  assert.deepEqual([findings, notes], [[finding("Spec", "a.ts:1 — P2 fault: x b.ts:2 has the same bug.", "P2", "fault")], []]);
+  assert.deepEqual(blockingFindings(findings), []);
+});
+
+test("a located continuation joins a located finding kept under none notes", () => {
+  const { findings, notes } = openFindings(review("Defects:\nSpec: none\na.ts:1 — P2 fault: x\nb.ts:2 has the same bug.\nValidation gaps: none."));
   assert.deepEqual([findings, notes], [[finding("Spec", "a.ts:1 — P2 fault: x b.ts:2 has the same bug.", "P2", "fault")], []]);
   assert.deepEqual(blockingFindings(findings), []);
 });
