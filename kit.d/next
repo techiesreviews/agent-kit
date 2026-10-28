@@ -2,7 +2,7 @@
 // kit: pick the tickets that may start now and their builders; --start claims and starts them
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, join, normalize, relative, resolve } from "node:path";
+import { basename, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { kitBranch, kitDevRoot, kitHome, kitResult, kitSettings } from "../kit-lib.mjs";
 import { loadTickets, parseTicket, resolveTickets } from "../tickets.mjs";
 
@@ -165,6 +165,7 @@ function unquote(command) {
 // (the longest match), so an absolute path whose parent folders share the maps folder's name still names the right map.
 function sliceUnit(words, cwd, worktrees) {
   const tickets = words.flatMap((word, i) => word === "--ticket" && words[i + 1] ? [words[i + 1]] : []).flatMap(file => {
+    if (!cwd && !isAbsolute(file)) return []; // No known working directory: a relative ticket names nothing.
     const path = resolve(cwd, file), home = worktrees.filter(tree => path.startsWith(`${tree}/`)).sort((a, b) => b.length - a.length)[0];
     const key = home ? relative(home, path) : normalize(file);
     try { return [parseTicket(readFileSync(path, "utf8"), key, mapOf(key)).ticket]; }
@@ -175,17 +176,24 @@ function sliceUnit(words, cwd, worktrees) {
 
 // Slices T3 threads run as systemd user units (`systemd-run --user --unit=kit-slice-<owner> … kit slice --ticket F`,
 // so an app restart does not stop them); kit bg does not list those. No systemctl, or none running: none.
+// User units are shared by every project on the machine, so a unit counts only when its working directory, kit
+// path or an absolute --ticket lies in one of this repo's worktrees; a unit naming none of them is unknown and
+// still takes a slot (ticket unknown), as an unreadable kit bg job does.
 function systemdSlices(worktrees) {
   const systemctl = process.env.KIT_NEXT_SYSTEMCTL || "systemctl";
-  const ask = args => spawnSync(systemctl, ["--user", ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const ask = args => spawnSync(systemctl, ["--user", ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 5000 });
   const listed = ask(["list-units", "--type=service", "--state=running", "--plain", "--no-legend", "kit-slice-*"]);
   if (listed.error || listed.status !== 0) return [];
-  return listed.stdout.split("\n").map(row => row.trim().split(/\s+/)[0]).filter(unit => /^kit-slice-.+\.service$/.test(unit)).map(unit => {
+  const ours = path => worktrees.some(tree => path === tree || path.startsWith(`${tree}/`));
+  return listed.stdout.split("\n").map(row => row.trim().split(/\s+/)[0]).filter(unit => /^kit-slice-.+\.service$/.test(unit)).flatMap(unit => {
     const shown = ask(["show", "-p", "WorkingDirectory", "-p", "ExecStart", unit]).stdout ?? "";
-    const cwd = /^WorkingDirectory=(.+)$/m.exec(shown)?.[1] || devRoot;
+    // An empty or home-relative (`~`) WorkingDirectory is unknown: relative --ticket paths are then unread.
+    const cwd = /^WorkingDirectory=(\/.*)$/m.exec(shown)?.[1] ?? null;
     // ExecStart={ path=… ; argv[]=<words, space-separated> ; ignore_errors=… }
     const words = /^ExecStart=.*?\bargv\[\]=(.*?) ; /m.exec(shown)?.[1].split(/\s+/) ?? [];
-    return { name: unit.replace(/\.service$/, ""), worktree: cwd, unit: sliceUnit(words, cwd, worktrees) };
+    const places = [cwd, words[0], ...words.flatMap((word, i) => word === "--ticket" ? [words[i + 1]] : [])].filter(path => path && isAbsolute(path));
+    if (places.length && !places.some(ours)) return [];
+    return [{ name: unit.replace(/\.service$/, ""), worktree: cwd, unit: sliceUnit(words, cwd, worktrees) }];
   });
 }
 

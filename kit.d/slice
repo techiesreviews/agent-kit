@@ -268,7 +268,8 @@ async function slice(args) {
       // The claim owner kit next --start wrote stays; only an empty assignee: takes this worktree's owner,
       // which outside kit next --start may be the branch name.
       const front = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(source)?.[1] ?? "";
-      const claimed = /^assignee:[ \t]*(.*?)\s*$/m.exec(front)?.[1].replace(/^(["'])(.*)\1$/, "$2");
+      const value = /^assignee:[ \t]*(.*?)\s*$/m.exec(front)?.[1].replace(/^(["'])(.*)\1$/, "$2");
+      const claimed = ["null", "Null", "NULL", "~"].includes(value) ? "" : value; // YAML's null forms are empty.
       const owner = claimed || kitOwner();
       // The contract names only the checks the project sets (builderChecks).
       const { unit, check } = builderChecks(root, settings);

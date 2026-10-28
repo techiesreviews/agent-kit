@@ -438,6 +438,13 @@ test("only a workflow that runs for a PR branch is CI to wait for; deploy-only, 
     ["on:\n  push:\n    branches: [main]\n    paths: [src/**]\n", false],
     ["on: { push: { branches: [main] } }\n", false],
     ["on: { push: { branches: ['**'] } }\n", true],
+    ["on: {push: {branches: [main, dev]}}\n", false],
+    ["on: { push: {} }\n", true],
+    ["on:\n  push:\n    branches:\n      - main\n", false],
+    ["on:\n  push:\n    tags: [v*]\n", false],
+    // This editor's own workflows: ci.yml (pull_request) is CI, deploy-preview.yml (push to dev) is not.
+    [readFileSync(".github/workflows/ci.yml", "utf8"), true],
+    [readFileSync(".github/workflows/deploy-preview.yml", "utf8"), false],
   ] as const) {
     const f = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: playground, workflows: workflow });
     const result = f.run([], { FAKE_BASE: "main" }, true);

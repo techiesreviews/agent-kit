@@ -68,20 +68,26 @@ fi
   chmodSync(join(root, "fake-systemctl"), 0o755);
   chmodSync(join(root, "fake-worktree.sh"), 0o755);
   // A slice job in its own worktree: the recorded command names its ticket, as kit bg writes it.
+  // A detached worktree of this repo at origin's land branch, as a slice's own worktree.
+  const worktree = (name: string) => {
+    const path = join(root, `job-${name}`);
+    git(dev, "worktree", "add", "-q", "--detach", path, `origin/${land}`);
+    return path;
+  };
   const running = (name: string, ticketFile: string, state = "running", command = `'scripts/agents/kit' 'slice' '--ticket' '${ticketFile}' '--builder' 'claude-opus-5-5'\n`) => {
-    const worktree = join(root, `job-${name}`);
-    git(dev, "worktree", "add", "-q", "--detach", worktree, `origin/${land}`);
-    const directory = join(worktree, ".scratch/kit-jobs", name);
+    const path = worktree(name), directory = join(path, ".scratch/kit-jobs", name);
     mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, "state"), `${state}\n`);
     writeFileSync(join(directory, "command"), command);
-    return worktree;
+    return path;
   };
-  // A kit-slice-<owner> systemd user unit, as systemctl show prints its working directory and command.
+  // A kit-slice-<owner> systemd user unit, as systemctl show prints its working directory and command; an empty
+  // cwd prints an empty WorkingDirectory= and a relative kit path, an empty ticketFile no --ticket.
   const unit = (name: string, ticketFile: string, cwd = dev) => {
     mkdirSync(join(root, "units"), { recursive: true });
-    writeFileSync(join(root, "units", `${name}.service`), `WorkingDirectory=${cwd}\nExecStart={ path=${cwd}/scripts/agents/kit ; ` +
-      `argv[]=${cwd}/scripts/agents/kit slice --ticket ${ticketFile} --builder claude-opus-5-5 ; ignore_errors=no ; start_time=[n/a] ; pid=1 }\n`);
+    const kitPath = `${cwd ? `${cwd}/` : ""}scripts/agents/kit`, ticketWords = ticketFile ? `--ticket ${ticketFile} ` : "";
+    writeFileSync(join(root, "units", `${name}.service`), `WorkingDirectory=${cwd}\nExecStart={ path=${kitPath} ; ` +
+      `argv[]=${kitPath} slice ${ticketWords}--builder claude-opus-5-5 ; ignore_errors=no ; start_time=[n/a] ; pid=1 }\n`);
   };
   const runIn = (cwd: string, ...args: string[]) => spawnSync(process.execPath, [next, ...args], { cwd, env, encoding: "utf8", timeout: 30_000 });
   const run = (...args: string[]) => runIn(dev, ...args);
@@ -90,7 +96,7 @@ fi
     assert.equal(result.status, 0, result.stdout + result.stderr);
     return result.stdout.trim().split("\n").filter(line => !line.startsWith("running: "));
   };
-  return { root, dev, env, git, write, running, unit, run, runIn, lines };
+  return { root, dev, env, git, write, worktree, running, unit, run, runIn, lines };
 }
 
 const build = (map: string, slug: string) => `docs/wayfinder/${map}/build/tickets/${slug}.md`;
@@ -267,6 +273,48 @@ test("a running kit-slice systemd unit is a running slice: listed, sharing its F
     `next: ${build("alpha", "03-other")} builder=claude-opus-5-5 owner=alpha-03 why=slot 2/5`,
     `waits: ${build("alpha", "02-shared")} shares a/one.ts with kit-slice-alpha01`,
     "RESULT: ok next 1 ready, 1 waiting",
+  ]);
+});
+
+test("a kit-slice unit in its own slice worktree reads its relative --ticket there; another project's unit is not counted", t => {
+  const f = fixture(t, {
+    [build("alpha", "01-run")]: ticket({ assignee: "alpha-01", files: ["a/one.ts"] }),
+    [build("alpha", "02-shared")]: ticket({ files: ["a/one.ts"] }),
+    [build("alpha", "03-other")]: ticket({ files: ["a/three.ts"] }),
+  });
+  // Another project on the same machine: its own ticket shares a/one.ts, outside every worktree of this repo.
+  const other = join(f.root, "other-project");
+  f.write(other, { [build("alpha", "09-elsewhere")]: ticket({ assignee: "alpha-09", files: ["a/one.ts"] }) });
+  f.unit("kit-slice-alpha09", build("alpha", "09-elsewhere"), other);
+  const result = f.run("alpha");
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(result.stdout.trim().split("\n"), [
+    `next: ${build("alpha", "02-shared")} builder=claude-opus-5-5 owner=alpha-02 why=slot 1/5`,
+    `next: ${build("alpha", "03-other")} builder=claude-opus-5-5 owner=alpha-03 why=slot 2/5`,
+    `waits: ${build("alpha", "01-run")} claimed by alpha-01, no running job found`,
+    "RESULT: ok next 2 ready, 1 waiting",
+  ]);
+  // The T3 case: the unit runs in the slice's own worktree with the ticket path relative to it.
+  f.unit("kit-slice-alpha01", build("alpha", "01-run"), f.worktree("t3-alpha01"));
+  const t3 = f.run("alpha");
+  assert.match(t3.stdout, new RegExp(`^running: kit-slice-alpha01 ${build("alpha", "01-run")}`, "m"));
+  assert.doesNotMatch(t3.stdout, /alpha09/);
+  assert.deepEqual(f.lines("alpha"), [
+    `next: ${build("alpha", "03-other")} builder=claude-opus-5-5 owner=alpha-03 why=slot 2/5`,
+    `waits: ${build("alpha", "02-shared")} shares a/one.ts with kit-slice-alpha01`,
+    "RESULT: ok next 1 ready, 1 waiting",
+  ]);
+});
+
+test("a kit-slice unit with no working directory and no --ticket is listed as ticket unknown and takes a slot", t => {
+  const f = fixture(t, { [build("alpha", "01-free")]: ticket({ files: ["a/one.ts"] }) });
+  f.unit("kit-slice-x", "", "");
+  const result = f.run("alpha");
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(result.stdout.trim().split("\n"), [
+    "running: kit-slice-x (ticket unknown)",
+    `next: ${build("alpha", "01-free")} builder=claude-opus-5-5 owner=alpha-01 why=slot 2/5`,
+    "RESULT: ok next 1 ready, 0 waiting",
   ]);
 });
 

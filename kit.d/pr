@@ -118,6 +118,7 @@ function flowMapping(text) {
  * as GitHub skips the branch pushes then.
  */
 function pushRunsOnBranches(filters) {
+  // An empty `branches: []` names nothing to rule out, so it may run: waiting is the safe answer.
   if (filters.branches) return !filters.branches.length || filters.branches.some(name => /[*?[!]/.test(name));
   if (filters["branches-ignore"]) return true;
   return !filters.tags && !filters["tags-ignore"];
