@@ -27,7 +27,8 @@ ISO week and last for the whole computer, by project (the machine ledger in the 
 "Kit problems": one line per project in the machine's projects.json whose kit doctor fails or warns its kit
 copy is stale, gives no result or times out (each project's own scripts/agents/kit doctor --quiet in its main
 folder, this project's in this checkout, up to 5 minutes, with git allowed no transport so the doctor's fetch
-moves no ref; place and base judge that folder, not the kit, and are left out); no section when all is well.
+moves no ref; checks that judge that folder, not the kit, are left out: place, base, hook config, node_modules,
+conflicts, and a missing settings file with the commands check it leaves undone); no section when all is well.
 `;
 const day = 86_400_000;
 // Code files by extension, plus extensionless scripts such as the kit commands.
@@ -352,11 +353,14 @@ export function grokSection(env = process.env, now = Date.now(), main = null, pr
   }
 }
 
-// Doctor's place and base checks judge the folder it runs in (a main folder on another branch fails them), not the kit.
-const folderChecks = new Set(["place", "base"]);
+// Doctor checks that judge the folder it runs in, not the kit: a main folder on another branch, perhaps one from
+// before the kit, fails them. A missing settings file is such a branch, and so is the commands check it leaves undone.
+const folderChecks = new Set(["place", "base", "hook config", "node_modules", "conflicts"]);
+const folderOnly = (name, text = "") => folderChecks.has(name) || (name === "settings" && text.startsWith("no scripts/agents/kit.json")) ||
+  (name === "commands" && text.startsWith("project folder not checked"));
 // Each project runs its own kit as it would on its own: no KIT_* setting of this command (a KIT_DOCTOR_SKIP
-// would hide real failures) and not its project folder carry over.
-const carriesOver = name => !name.startsWith("KIT_") && name !== "CLAUDE_PROJECT_DIR";
+// would hide real failures), not its project folder and no git setting (GIT_DIR from a hook) carry over.
+const carriesOver = name => !name.startsWith("KIT_") && !name.startsWith("GIT_") && name !== "CLAUDE_PROJECT_DIR";
 
 /**
  * One project's kit doctor --quiet. The sweep changes nothing: git may use no transport, so the doctor's fetch of
@@ -365,9 +369,11 @@ const carriesOver = name => !name.startsWith("KIT_") && name !== "CLAUDE_PROJECT
  */
 export function runDoctor(root, env, seconds = 300) {
   const clean = { ...Object.fromEntries(Object.entries(env).filter(([name]) => carriesOver(name))), GIT_ALLOW_PROTOCOL: "none" };
+  const started = Date.now();
   const result = spawnSync("timeout", ["-k", "10", String(seconds), join(root, "scripts/agents/kit"), "doctor", "--quiet"],
     { cwd: root, env: clean, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-  const timedOut = result.status === 124 || result.status === 137;
+  // 137 is also a doctor killed on its own (out of memory); only past the limit is it timeout's kill.
+  const timedOut = result.status === 124 || (result.status === 137 && Date.now() - started >= seconds * 1000);
   return { status: result.status, output: result.stdout ?? "", error: timedOut ? "timed out" : result.error?.message };
 }
 
@@ -378,7 +384,8 @@ export function doctorProblem({ status, output, error }) {
   if (!result) return `kit doctor gave no result (exit ${status})`;
   // The stale-copy warning: on the RESULT when doctor passes, else on its kit line.
   const warning = /; warning: (.+)$/.exec(result[2])?.[1] ?? /^✗ kit: .*; ([^;\n]+); fix: [^;\n]*$/m.exec(output)?.[1];
-  const failed = result[1] === "fail" ? (/ failed: (.+)$/.exec(result[2])?.[1].split(",") ?? [result[2]]).filter(name => !folderChecks.has(name)) : [];
+  const texts = new Map([...output.matchAll(/^✗ (.+?): (.*); fix: /gm)].map(([, name, text]) => [name, text]));
+  const failed = result[1] === "fail" ? (/ failed: (.+)$/.exec(result[2])?.[1].split(",") ?? [result[2]]).filter(name => !folderOnly(name, texts.get(name))) : [];
   return [...failed.length ? [`kit doctor failed: ${failed.join(", ")}`] : [], ...warning ? [warning] : []].join("; ");
 }
 

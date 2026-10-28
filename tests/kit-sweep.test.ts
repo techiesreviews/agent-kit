@@ -397,8 +397,8 @@ test("the sweep lists a registered project whose kit doctor fails, and stays qui
   // Each project's doctor runs in its own folder with none of this command's kit settings.
   const good = fakeKit(join(dir, "good"), `[[ -z \${KIT_ROOT:-} && -z \${KIT_MAIN_ROOT:-} && -z \${KIT_DOCTOR_SKIP:-} && $PWD == "${join(dir, "good")}" ]] || { echo "RESULT: fail doctor 1 failed: env"; exit 1; }
 echo "RESULT: ok doctor 11/11 checks passed"`);
-  // A main folder on another branch fails place and base: that is the folder, not the kit.
-  const elsewhere = fakeKit(join(dir, "elsewhere"), `printf '✗ place: main or dev worktree (x); fix: y\\n✗ base: stale; fix: z\\nRESULT: fail doctor 2 failed: place,base\\n'; exit 1`);
+  // A main folder on a branch from before the kit fails settings, place and base: that is the folder, not the kit.
+  const elsewhere = fakeKit(join(dir, "elsewhere"), `printf '✗ settings: no scripts/agents/kit.json; add one; fix: add it\\n✗ place: main or dev worktree (x); fix: y\\n✗ base: stale; fix: z\\nRESULT: fail doctor 3 failed: settings,place,base\\n'; exit 1`);
   const broken = fakeKit(join(dir, "broken"), `printf '✗ hooks live: hooks cannot reach a kit; fix: run kit update\\nRESULT: fail doctor 2 failed: place,hooks live\\n'; exit 1`);
   const register = (projects: Record<string, string>) =>
     write(join(dir, "state/agent-kit/projects.json"), JSON.stringify(Object.fromEntries(Object.entries(projects).map(([name, root]) => [name, { root }]))));
@@ -422,6 +422,16 @@ test("a kit problem is a failed kit check, a stale kit copy, a doctor without a 
     "RESULT: fail doctor 2 failed: base,settings\n" }), "kit doctor failed: settings; kit not updated for 3 days");
   assert.equal(sweep.doctorProblem({ status: 1, output: "✗ place: x; fix: y\nRESULT: fail doctor 1 failed: place\n" }), "");
   assert.equal(sweep.doctorProblem({ status: 127, output: "" }), "kit doctor gave no result (exit 127)");
+  // A main folder on a branch from before the kit: its folder fails, its kit does not.
+  const oldBranch = "✗ settings: no scripts/agents/kit.json; add one with \"project\" and \"branches\": { \"land\": \"<branch>\" }; fix: add scripts/agents/kit.json\n" +
+    "✗ place: main or dev worktree (x); fix: y\n✗ base: stale; fix: z\n✗ hook config: missing .claude/settings.json; fix: restore\n" +
+    "✗ commands: project folder not checked (scripts/agents/kit.json missing), 20 shared; fix: run kit doctor after fixing scripts/agents/kit.json\n" +
+    "✗ node_modules: missing, dangling or non-symlink node_modules; fix: ln -s\n✗ conflicts: a.ts:3; fix: resolve the conflict markers\n" +
+    "RESULT: fail doctor 7 failed: settings,place,base,hook config,commands,node_modules,conflicts\n";
+  assert.equal(sweep.doctorProblem({ status: 1, output: oldBranch }), "");
+  // A broken settings file or a clashing command is the project's kit set-up, so it stays.
+  assert.equal(sweep.doctorProblem({ status: 1, output: "✗ settings: scripts/agents/kit.json is unreadable: bad JSON; fix: edit it\n" +
+    "✗ commands: score hides the shared score; fix: rename it\nRESULT: fail doctor 3 failed: settings,place,commands\n" }), "kit doctor failed: settings, commands");
   assert.equal(sweep.doctorProblem({ status: null, output: "", error: "timed out" }), "kit doctor timed out");
 
   write(join(dir, "state/agent-kit/projects.json"), JSON.stringify({ here: { root: join(dir, "old-main") }, bare: { root: join(dir, "bare") }, rootless: {} }));

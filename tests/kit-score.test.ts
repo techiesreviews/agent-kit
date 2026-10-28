@@ -583,6 +583,9 @@ test("kit score --all prints one table across the projects in projects.json, rea
   assert.match(unread.stdout, /^corrections not read: beta \(no scripts\/agents\/kit\.json; /m);
   assert.match(run("--snapshot").stdout, /^RESULT: fail score --snapshot needs a map, not --all$/m);
   assert.match(run("demo").stdout, /^RESULT: fail score --all takes no map$/m);
+  // No project list yet: nothing to read, and no failure.
+  const none = spawnSync("bash", [kit, "score", "--all"], { cwd: here, env: { ...env, XDG_STATE_HOME: join(dir, "empty") }, encoding: "utf8", timeout: 10_000 });
+  assert.deepEqual(none.stdout.trimEnd().split("\n"), [`score: no projects in ${join(dir, "empty/agent-kit/projects.json")}`, "RESULT: ok score all 0 projects 0 pieces"]);
   writeFileSync(join(dir, "state/agent-kit/projects.json"), "{");
   const broken = run();
   assert.equal(broken.status, 1);
