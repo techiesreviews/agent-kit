@@ -318,7 +318,10 @@ export function grokOutOfCredit(stdout) {
 // A refusal spent no review only when it is all the call printed. The log holds both
 // streams: Codex logs nothing after its echo of the prompt but its own warnings and the
 // limit line, Grok logs the limit line alone. Any work before the limit means quota was used.
+// OpenCode's log is its stdout events: a limit error event with nothing but its step_start and
+// error events, so no text, tool call or finished step came back.
 export function refusedOutright(cli, log, prompt) {
+  if (cli === "opencode") return opencodeUsageLimit(log) !== null && opencodeEvents(log).every(event => ["step_start", "error"].includes(event.type));
   let output = log;
   if (cli === "codex") {
     const echo = `\nuser\n${prompt.trimEnd()}`, start = log.indexOf(echo);
@@ -416,7 +419,7 @@ function withLedger(path, change, env = process.env, unsaved = () => {}) {
 
 // The machine ledger keeps { week: { family: { project: count } } }; a family's use is the sum over projects.
 export function familyUse(ledger, week, family) {
-  return Object.values(ledger[week]?.[family] ?? {}).reduce((sum, count) => sum + (Number.isSafeInteger(count) ? count : 0), 0);
+  return Object.values(ledger[week]?.[family] ?? {}).reduce((sum, count) => sum + count, 0);
 }
 
 const isRecord = value => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -887,7 +890,8 @@ async function invokeAgent(adapter, args, descriptor, context) {
       }
       // A refusal of the first call refunds the review; a completed first call, or one
       // that worked before the limit, already spent it. kit review gives an out-of-credit run back itself.
-      if (limitProblem && !creditProblem && !previousCalls && refusedOutright(options.cli, slice, context.prompt)) update({ refused: true });
+      if (limitProblem && !creditProblem && !previousCalls &&
+        refusedOutright(options.cli, options.cli === "opencode" ? result.stdout ?? "" : slice, context.prompt)) update({ refused: true });
     }
     try {
       const report = adapter.finish(result.stdout, slice, status);

@@ -300,15 +300,16 @@ test("a review that moves the old file in while the sweep reads it without a loc
   // No state folder yet, so the first read takes no lock. As it reads the old file, the computer's first counted review
   // makes the folder and moves the 2 in, plus its own 1; the sweep must read again under the lock and count 3.
   const read = fs.readFileSync;
-  // readFileSync is overloaded by encoding; a wrapper passing every call through cannot satisfy each overload, so it is asserted.
-  fs.readFileSync = ((...args: Parameters<typeof read>) => {
+  const fake: (...args: Parameters<typeof read>) => string | Buffer = (...args) => {
     const text = read(...args);
     if (args[0] === old && !existsSync(state)) {
       write(join(state, "review-budget.json"), JSON.stringify({ [week]: { grok: { "kit-sweep": 3 } } }));
       rmSync(old);
     }
     return text;
-  }) as typeof read;
+  };
+  // eslint-disable-next-line no-restricted-syntax -- readFileSync is overloaded by encoding; a pass-through wrapper returns string | Buffer, which no single overload accepts
+  fs.readFileSync = fake as unknown as typeof read;
   syncBuiltinESMExports();
   t.after(() => { fs.readFileSync = read; syncBuiltinESMExports(); });
   const lines = sweep.grokSection(env, now, repo, "kit-sweep").lines;

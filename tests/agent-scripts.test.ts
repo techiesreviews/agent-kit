@@ -642,6 +642,14 @@ test("only a usage limit that is all the call printed counts as an outright refu
   // Work on stderr before a stdout refusal means quota was used.
   assert.equal(refusedOutright("grok", `read_file src/a.ts\n${grok}\n`, ""), false);
   assert.equal(refusedOutright("grok", `{"text":"partial"}\n${grok}\n`, ""), false);
+  // OpenCode's refusal is an error event on stdout: alone with its step_start it spent nothing; any text,
+  // tool call or finished step before it did, and an error that is not a limit is no refusal.
+  const event = (type: string, extra = {}) => JSON.stringify({ type, sessionID: "ses_1", ...extra });
+  const limit429 = event("error", { error: { name: "APIError", data: { message: "Rate limit exceeded", statusCode: 429 } } });
+  assert.equal(refusedOutright("opencode", `${event("step_start")}\n${limit429}\n`, ""), true);
+  for (const work of ["text", "tool_use", "step_finish"]) assert.equal(refusedOutright("opencode", `${event("step_start")}\n${event(work)}\n${limit429}\n`, ""), false, work);
+  assert.equal(refusedOutright("opencode", `${event("step_start")}\n${event("error", { error: { data: { message: "Bad gateway", statusCode: 502 } } })}\n`, ""), false);
+  assert.equal(refusedOutright("opencode", "", ""), false);
 });
 
 test("Grok reviews and Codex usage limits run through the shared shell entry using fake CLIs", (t) => {

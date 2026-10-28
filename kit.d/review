@@ -8,7 +8,7 @@ import { inferCli, opencodeModelRuns, parseAgentArgs, releaseReviewBudget, reser
 import { reviewBrief, reviewScope, ticketReviewBrief } from "../review-brief.mjs";
 import { saveReviewEvidence } from "../review-evidence.mjs";
 import { countsLine, findingsRecord } from "../review-findings.mjs";
-import { parseChanges, secondLookPick } from "../pr-tier.mjs";
+import { parseChanges, reviewKinds, secondLookPick, secondLookTable } from "../pr-tier.mjs";
 
 const { kitBranch, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, kitStateDir, nodeEnv, kitScore, scoreReview } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
@@ -143,6 +143,8 @@ async function reviewOnce(flags, look) {
       const missing = status !== 0 && !record.pgid && /^problem: (spawn \S+ ENOENT)$/m.exec(stderr)?.[1];
       const down = !missing && status !== 0 && /^grok failed \(\d+\)/.test(reason) && grokDown(temporary);
       const hung = !missing && status !== 0 && /^grok-/i.test(model) && /^agent exceeded timeout=([^;]+);/.exec(reason)?.[1];
+      // OpenCode that opened no session within its start limit never reached the model.
+      const silent = status !== 0 && /^opencode unavailable: no session within /.test(reason);
       if (missing || down || hung) {
         reason = missing ? `CLI missing: ${missing}` : down ? `grok unavailable: ${down}` : `grok unavailable: no answer within ${hung}`;
         console.error(`problem: ${reason}`);
@@ -150,7 +152,7 @@ async function reviewOnce(flags, look) {
       if (status !== 0 && spawned && (record.refused === true || outOfCredit || missing || down || hung ||
         /^\S+ usage limit\b|^OpenCode reported an error: |^opencode unavailable: no session within /.test(reason))) unavailable = true;
       // An outage, like an empty account, returned no review, so its count is given back too.
-      if (budget && (!record.pgid || record.refused === true || outOfCredit || down)) releaseReviewBudget(ledger.path, budget, env);
+      if (budget && (!record.pgid || record.refused === true || outOfCredit || down || silent)) releaseReviewBudget(ledger.path, budget, env);
     } catch (error) {
       kept = true;
       console.error(`problem: releasing review budget failed: ${error.message}`);
@@ -206,12 +208,15 @@ async function secondLook(flags) {
     const changes = parseChanges(execFileSync("git", ["-C", root, "-c", "core.quotepath=false", "diff", "--name-status", "--no-renames", ...range],
       { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
     if (!changes.length) throw new Error(`nothing to review: ${scope.label} is empty`);
-    pick = secondLookPick(changes, kitSettings(root), { ticket: flags.ticket && relative(root, resolve(root, flags.ticket)) });
-    // A paid OpenCode row would be refused when its turn came, before any handover: name the table instead.
-    const paid = [pick.model, pick.fallback].find(model => /^opencode\//.test(model) && !opencodeModelRuns(model));
-    if (paid) {
-      const table = process.env.ASE_SECOND_LOOK || resolve(import.meta.dirname, "../second-look.json");
-      throw new Error(`second-look table ${table} ${pick.kind}: ${paid} is a paid OpenCode model; a second look on OpenCode must be a -free model`);
+    // One path for the pick and the check below, so a problem names the file that was read.
+    const table = process.env.ASE_SECOND_LOOK || resolve(import.meta.dirname, "../second-look.json");
+    pick = secondLookPick(changes, kitSettings(root), { ticket: flags.ticket && relative(root, resolve(root, flags.ticket)), table });
+    // A paid OpenCode row would be refused when its turn came, before any handover: every kind's row is checked
+    // now, so the table is named as broken whichever kind this change picks.
+    const rows = secondLookTable(table);
+    for (const kind of reviewKinds) {
+      const paid = [rows[kind].model, rows[kind].fallback].find(model => /^opencode\//.test(model) && !opencodeModelRuns(model));
+      if (paid) throw new Error(`second-look table ${table} ${kind}: ${paid} is a paid OpenCode model; a second look on OpenCode must be a -free model`);
     }
   } catch (error) {
     console.error(`problem: ${error.message}`);

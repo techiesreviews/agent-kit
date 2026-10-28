@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
 import { codexReviewConfig, isoWeek, makeCodexReviewHome, opencodeModelRuns } from "../scripts/agents/agent-run.mjs";
@@ -639,6 +639,21 @@ test("kit review refuses an unknown model or a paid OpenCode one before any call
   assert.equal(call.args[call.args.indexOf("-m") + 1], "openai/gpt-6.1");
 });
 
+test("kit review stops on a machine-ledger count that is not a whole number, before any call, and leaves the ledger as it is", (t) => {
+  const f = fixture(t);
+  writeFileSync(join(f.dir, "bin", "grok"), fake); chmodSync(join(f.dir, "bin", "grok"), 0o755);
+  const week = isoWeek(new Date()), text = JSON.stringify({ [week]: { grok: { a: "3" } } });
+  mkdirSync(dirname(f.ledger), { recursive: true });
+  writeFileSync(f.ledger, text);
+  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "grok-4.7" });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  // Every week is checked, so the line names the bad week whatever week the run reads.
+  assert.ok(result.stderr.split("\n").includes(`problem: review budget ledger ${f.ledger} ${week} grok a is not a count; fix or delete it`), result.stderr);
+  f.noEvidence(result.stdout);
+  assert.equal(f.calls().length, 0);
+  assert.equal(readFileSync(f.ledger, "utf8"), text);
+});
+
 test("kit review keeps the budget counted once the CLI has started, even when it times out silently", (t) => {
   const f = fixture(t);
   const grok = join(f.dir, "bin", "grok");
@@ -1054,6 +1069,31 @@ test("an OpenCode rate-limit refusal prints the opencode usage-limit problem and
   }
 });
 
+test("a counted OpenCode review gives its count back when the first call is refused outright or no session opens, and keeps it after work", (t) => {
+  const gpt = { ASE_AGENT_CLI: "opencode", ASE_REVIEW_MODEL: "openai/gpt-6.1", ASE_REVIEW_BUDGET_GPT: "1" };
+  for (const [overrides, problem] of [
+    [{ FAKE_MODE: "usage-limit" }, "problem: opencode usage limit: Rate limit exceeded. Please try again later."],
+    [{ FAKE_MODE: "usage-limit-exit0" }, "problem: opencode usage limit: Rate limit exceeded. Please try again later."],
+    [{ FAKE_OPENCODE_SILENT: "1", ASE_OPENCODE_START_TIMEOUT_MS: "500" }, "problem: opencode unavailable: no session within 0.5s"],
+  ] as const) {
+    const f = fixture(t);
+    withOpencode(f);
+    const result = f.run(["--base", "HEAD~1"], { ...gpt, ...overrides });
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, /^budget: gpt 1\/1 in /m);
+    assert.ok(result.stderr.split("\n").includes(problem), result.stderr);
+    assert.deepEqual(f.counts(), { gpt: { "kit-review": 0 } });
+    assert.equal(opencodeCalls(f).length, 1);
+  }
+  // A first call that worked before the retry's limit spent the review.
+  const f = fixture(t);
+  withOpencode(f);
+  const spent = f.run(["--base", "HEAD~1"], { ...gpt, FAKE_MODE: "retry-limit" });
+  assert.equal(spent.status, 1, spent.stdout + spent.stderr);
+  assert.match(spent.stderr, /^problem: opencode usage limit: /m);
+  assert.deepEqual(f.counts(), { gpt: { "kit-review": 1 } });
+});
+
 test("an OpenCode limit said only on stderr, with no error event, prints the opencode usage-limit problem", (t) => {
   const f = fixture(t);
   withOpencode(f);
@@ -1285,6 +1325,13 @@ test("the second look never reaches Codex: ASE_AGENT_CLI and ASE_REVIEW_MODEL ca
   assert.equal(refused.stdout.trim().split("\n").at(-1),
     `RESULT: fail second-look table ${paid} agent: opencode/big-pickle is a paid OpenCode model; a second look on OpenCode must be a -free model evidence none`);
   assert.doesNotMatch(refused.stdout, /^second look: agent/m);
+  // So is one in a kind this change does not pick.
+  const unpicked = lookTable(f, { code: { model: "grok-4.7", fallback: opencodeModel }, ux: { model: "grok-4.7", fallback: "opencode/big-pickle" },
+    dx: { model: "grok-4.7", fallback: opencodeModel }, agent: { model: "grok-4.7", fallback: opencodeModel } });
+  const other = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: unpicked });
+  assert.equal(other.status, 1, other.stdout + other.stderr);
+  assert.equal(other.stdout.trim().split("\n").at(-1),
+    `RESULT: fail second-look table ${unpicked} ux: opencode/big-pickle is a paid OpenCode model; a second look on OpenCode must be a -free model evidence none`);
   assert.deepEqual(f.calls().map(call => call.cli), ["grok", "opencode"]);
 });
 
