@@ -1,29 +1,37 @@
 #!/usr/bin/env node
 // kit: print the scoreboard the kit recorded per piece: builder, time, rounds, findings, cost, PR
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { scorePage } from "../score-page.mjs";
-import { loadTickets } from "../tickets.mjs";
+import { allProjectsPage, scorePage } from "../score-page.mjs";
+import { feedbackKinds, loadFeedback, loadTickets } from "../tickets.mjs";
 
-const { kitRoot, kitMainRoot, kitMaps, kitResult, costTotal } = await import(
+const { kitRoot, kitMainRoot, kitMaps, kitProjects, kitResult, kitSettings, kitStateDir, costTotal } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const usage = "Usage: kit score [map] [--json] [--snapshot] [--html [--out FILE]]\nRecords: main root .scratch/scoreboard/<map>/<ticket-slug>.json (no map: every map with records).\n" +
+const usage = "Usage: kit score [map] [--json] [--snapshot] [--html [--out FILE]]\n       kit score --all [--json] [--html [--out FILE]]\n" +
+  "Records: main root .scratch/scoreboard/<map>/<ticket-slug>.json (no map: every map with records).\n" +
   "--json prints the merged data; --snapshot writes <maps>/<map>/build/scoreboard.json for the lead to commit.\n" +
-  "--html writes the build's page (one self-contained HTML file) to main root .scratch/scoreboard/<map>/page.html or FILE and prints its path.\n";
+  "--html writes the build's page (one self-contained HTML file) to main root .scratch/scoreboard/<map>/page.html or FILE and prints its path.\n" +
+  "--all reads every project in the machine's projects.json where its records are (its main folder's .scratch/scoreboard/ and\n" +
+  "<maps>/*/build/feedback.md on its land branch) and prints one table: per project and builder, pieces, rounds, findings by kind, landings, and\n" +
+  "Lex's corrections on the project's line; copies nothing; a project that cannot be read gets one line saying why.\n" +
+  "With --html the table is a page, main root .scratch/scoreboard/all-projects.html or FILE.\n";
 
 function options(args) {
-  const flags = { json: false, snapshot: false, html: false };
+  const flags = { json: false, snapshot: false, html: false, all: false };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (["--json", "--snapshot", "--html"].includes(arg) && !flags[arg.slice(2)]) flags[arg.slice(2)] = true;
+    if (["--json", "--snapshot", "--html", "--all"].includes(arg) && !flags[arg.slice(2)]) flags[arg.slice(2)] = true;
     else if (arg === "--out" && flags.out === undefined && args[i + 1] && !args[i + 1].startsWith("-")) flags.out = args[++i];
     else if (flags.map === undefined && /^[\w][\w.-]*$/.test(arg)) flags.map = arg;
     else throw new Error(`invalid option: ${arg}`);
   }
+  if (flags.all && flags.map) throw new Error("--all takes no map");
+  if (flags.all && flags.snapshot) throw new Error("--snapshot needs a map, not --all");
   if (flags.snapshot && !flags.map) throw new Error("--snapshot needs a map");
-  if (flags.html && !flags.map) throw new Error("--html needs a map");
+  if (flags.html && !flags.map && !flags.all) throw new Error("--html needs a map or --all");
   if (flags.out !== undefined && !flags.html) throw new Error("--out needs --html");
   return flags;
 }
@@ -137,11 +145,93 @@ function print(data) {
   }
 }
 
+const oneLine = text => String(text).replace(/[\n\r]+/g, " ");
+
+// A project's feedback logs, read from its land branch (origin's, else the local one), where they are committed;
+// a folder outside git or without that branch is read as it stands. A main folder on an old branch may lack the
+// settings file; the settings of the project this command runs in still name its maps folder and land branch.
+function feedbackLogs(project, root) {
+  let settings;
+  try { settings = kitSettings(root); }
+  catch (error) {
+    let own = null;
+    try { own = kitSettings(resolve(kitRoot())); } catch { /* No settings here either. */ }
+    if (own?.project !== project) return { problem: oneLine(error.message) };
+    settings = own;
+  }
+  if (!settings.maps) return { problem: "no maps folder in its settings" };
+  const land = settings.branches.land;
+  for (const ref of [`refs/remotes/origin/${land}`, `refs/heads/${land}`]) {
+    try { execFileSync("git", ["-C", root, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { stdio: "ignore" }); }
+    catch { continue; }
+    return { logs: loadFeedback(settings.maps, { ref, cwd: root }) };
+  }
+  const folder = join(root, settings.maps);
+  return existsSync(folder) ? { logs: loadFeedback(folder) } : { problem: `no folder ${folder}` };
+}
+
+// Kinds in one order on every row: the review kinds, then any other.
+const kindOrder = ["fault", "ticket", "race", "style", "unsorted", "gap"];
+const ordered = counts => Object.fromEntries(Object.entries(counts).sort(([a], [b]) =>
+  ((kindOrder.indexOf(a) + 1 || 99) - (kindOrder.indexOf(b) + 1 || 99)) || a.localeCompare(b)));
+
+// --all: one listed project's numbers, read where its records already are; nothing is copied or written.
+// A feedback line names no builder, so Lex's corrections go on the project's own line, not a builder's.
+function projectData(project, entry) {
+  const root = typeof entry?.root === "string" && entry.root ? entry.root : null;
+  if (!root) return { project, root, problem: 'no "root" in projects.json' };
+  try { if (!statSync(root).isDirectory()) return { project, root, problem: `${root} is not a folder` }; }
+  catch { return { project, root, problem: `no folder ${root}` }; }
+  try {
+    const parent = join(root, ".scratch/scoreboard");
+    const names = existsSync(parent) ? readdirSync(parent).filter(name => statSync(join(parent, name)).isDirectory()).sort() : [];
+    const pieces = names.flatMap(map => mapData(map, root, root, null).pieces);
+    const { logs, problem } = feedbackLogs(project, root);
+    const corrections = logs ? logs.entries.filter(entry => Object.hasOwn(feedbackKinds, entry.kind)).length : null;
+    const group = items => ({ pieces: items.length, rounds: items.reduce((sum, item) => sum + (item.rounds ?? 0), 0),
+      findings: ordered(items.reduce((total, item) => addCounts(total, item.findings), {})), landed: items.filter(item => item.landed?.sha).length });
+    const builders = Map.groupBy(pieces, item => label(item.builder));
+    return { project, root, builders: Object.fromEntries([...builders].sort(([a], [b]) => a.localeCompare(b)).map(([who, items]) => [who, group(items)])),
+      total: { ...group(pieces), corrections }, ...problem ? { correctionsProblem: problem } : {} };
+  } catch (error) { return { project, root, problem: oneLine(error.message) }; }
+}
+
+function printAll(projects) {
+  const read = projects.filter(item => !item.problem);
+  console.log(`score: all projects (${projects.length} projects, ${read.reduce((sum, item) => sum + item.total.pieces, 0)} pieces)`);
+  const cells = (project, who, group, corrections) => [project, who, String(group.pieces), String(group.rounds), findingsText(group.findings), String(group.landed), corrections];
+  if (read.length) console.log(table([["project", "builder", "pieces", "rounds", "findings", "landed", "corrections"], ...read.flatMap(item => [
+    ...Object.entries(item.builders).map(([who, group]) => cells(item.project, who, group, "-")),
+    cells(item.project, "all builders", item.total, item.total.corrections === null ? "not read" : String(item.total.corrections))])]));
+  for (const item of read.filter(item => item.correctionsProblem)) console.log(`corrections not read: ${item.project} (${item.correctionsProblem})`);
+  for (const item of projects.filter(item => item.problem)) console.log(`unreadable: ${item.project} (${item.problem})`);
+}
+
+function scoreAll(flags) {
+  const listed = kitProjects();
+  const projects = Object.keys(listed).sort().map(name => projectData(name, listed[name]));
+  const count = projects.reduce((sum, item) => sum + (item.total?.pieces ?? 0), 0), unreadable = projects.filter(item => item.problem).length;
+  if (flags.html) {
+    const out = flags.out ? resolve(flags.out) : join(resolve(kitMainRoot()), ".scratch/scoreboard/all-projects.html");
+    mkdirSync(dirname(out), { recursive: true });
+    writeAtomic(out, allProjectsPage({ projects }));
+    (flags.json ? console.error : console.log)(`page: ${out}`);
+  }
+  if (flags.json) console.log(JSON.stringify({ projects }, null, 2));
+  else if (!flags.html) {
+    if (!projects.length) console.log(`score: no projects in ${join(kitStateDir(), "projects.json")}`);
+    else printAll(projects);
+  }
+  kitResult("ok", `score all ${projects.length} projects ${count} pieces${unreadable ? `, ${unreadable} unreadable` : ""}`);
+  return 0;
+}
+
 function score(args) {
   let flags;
   try { flags = options(args); }
   catch (error) { process.stderr.write(usage); kitResult("fail", `score ${error.message}`); return 2; }
   try {
+    if (flags.all) return scoreAll(flags);
     const main = resolve(kitMainRoot()), root = resolve(kitRoot()), parent = join(main, ".scratch/scoreboard");
     // Only --snapshot and --html need a maps folder; listing records works without one.
     let mapsDir = null;

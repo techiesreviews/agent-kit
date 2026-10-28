@@ -295,6 +295,8 @@ table { inline-size: 100%; border-collapse: collapse; font-variant-numeric: tabu
 th, td { padding: 0.25rem; text-align: end; vertical-align: bottom; }
 thead th { font-weight: 600; font-size: 0.8125rem; line-height: 1.3; padding-inline-start: 0.5rem; border-block-end: 1px solid var(--line); }
 th[scope="rowgroup"] { text-align: start; font-weight: 400; color: var(--ink); overflow-wrap: anywhere; padding-block-start: 0.5rem; }
+th[scope="row"] { text-align: start; font-weight: 400; overflow-wrap: anywhere; }
+td.findings { text-align: start; overflow-wrap: anywhere; }
 tbody tr:last-child td { border-block-end: 1px solid var(--line); }
 .entries { list-style: none; margin: 1rem 0 0; padding: 0; display: grid; gap: 0.75rem; }
 .entries li { display: grid; gap: 0.125rem; padding-block-start: 0.75rem; border-block-start: 1px solid var(--line); }
@@ -341,6 +343,47 @@ ${reviewSection(pieces)}
 ${correctionSection(current, tickets, data.map)}
 ${ladderSection(state, current.entries)}
 ${builderSection(pieces)}
+</main>
+</body>
+</html>
+`;
+}
+
+const findingsCell = findings => Object.entries(findings ?? {}).filter(([, count]) => count)
+  .map(([kind, count]) => `${count} ${findingNouns[kind] ?? kind}`).join(", ") || "none";
+
+/**
+ * kit score --all --html: one table across projects. projects are kit score's project data, each
+ * { project, builders: { <who>: { pieces, rounds, findings, landed } }, total: { ..., corrections }, correctionsProblem? } or { project, problem }.
+ */
+export function allProjectsPage({ projects, generated = new Date() }) {
+  const read = projects.filter(item => !item.problem), unread = projects.filter(item => item.problem);
+  const when = generated.toISOString().slice(0, 16).replace("T", " ");
+  const cells = group => `<td>${group.pieces}</td><td>${group.rounds}</td><td class="findings">${esc(findingsCell(group.findings))}</td><td>${group.landed}</td>`;
+  const corrections = total => total.corrections === null ? "not read" : String(total.corrections);
+  const body = read.map(item => `<tbody><tr><th scope="rowgroup" colspan="6">${esc(item.project)}</th></tr>` +
+    Object.entries(item.builders).map(([who, group]) => `<tr><th scope="row">${esc(who)}</th>${cells(group)}<td>-</td></tr>`).join("") +
+    `<tr><th scope="row">All builders</th>${cells(item.total)}<td>${esc(corrections(item.total))}</td></tr></tbody>`).join("");
+  const caption = read.length ? `Each project's builders, read where the project keeps its records; Lex's corrections name no builder, so they sit on each project's own line.`
+    : "No project could be read.";
+  const table = read.length ? `<table><thead><tr><th scope="col">Builder</th><th scope="col">Pieces</th><th scope="col">Fix rounds</th>` +
+    `<th scope="col">Findings</th><th scope="col">Landed</th><th scope="col">Lex's corrections</th></tr></thead>${body}</table>` +
+    read.filter(item => item.correctionsProblem).map(item => `<p class="note">${esc(item.project)}: corrections not read (${esc(item.correctionsProblem)}).</p>`).join("") : "";
+  const problems = unread.length ? section("unreadable", "Projects that could not be read", `${plural(unread.length, "project")} left out of the table.`,
+    `<ul class="entries">${unread.map(item => `<li><strong>${esc(item.project)}</strong><span class="fix">${esc(item.problem)}</span></li>`).join("")}</ul>`) : "";
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>All projects: scoreboard</title>
+<style>${style}</style>
+</head>
+<body>
+<main>
+<header><h1>All projects</h1><p>${plural(projects.length, "project")} · ${plural(sum(read.map(item => item.total.pieces)), "piece")} recorded · made ${when} UTC</p></header>
+${section("projects", "Builders across projects", caption, table)}
+${problems}
 </main>
 </body>
 </html>

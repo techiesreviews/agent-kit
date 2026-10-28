@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // kit: gather the week's numbers for the weekly sweep into one small bundle; changes nothing
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -23,7 +23,10 @@ transitions) and their change, tests that failed then passed in kit pr runs (the
 logs of worktrees that still exist) and tests/known-failures.json, review findings by kind
 (scoreboard records), Lex's corrections added to build feedback logs by the commits since the
 window started, open tech-debt issues (techDebt) untouched for 30 days, and Grok reviews this
-ISO week and last for the whole computer, by project (the machine ledger in the kit's state folder).
+ISO week and last for the whole computer, by project (the machine ledger in the kit's state folder), and
+"Kit problems": one line per project in the machine's projects.json whose kit doctor fails or warns its kit
+copy is stale (each project's own scripts/agents/kit doctor --quiet in its main folder, this project's in this
+checkout; place and base judge that folder, not the kit, and are left out); no section when all is well.
 `;
 const day = 86_400_000;
 // Code files by extension, plus extensionless scripts such as the kit commands.
@@ -348,6 +351,48 @@ export function grokSection(env = process.env, now = Date.now(), main = null, pr
   }
 }
 
+// Doctor's place and base checks judge the folder it runs in (a main folder on another branch fails them), not the kit.
+const folderChecks = new Set(["place", "base"]);
+// Each project runs its own kit as it would on its own: nothing of this command's kit or project carries over.
+const kitEnv = ["KIT_ROOT", "KIT_MAIN_ROOT", "KIT_DEV_ROOT", "KIT_HOME", "KIT_HOME_DEFAULT", "KIT_COMMANDS_DIR", "KIT_LIB", "KIT_LIB_MJS", "CLAUDE_PROJECT_DIR"];
+
+function runDoctor(root, env) {
+  const clean = Object.fromEntries(Object.entries(env).filter(([name]) => !kitEnv.includes(name)));
+  const result = spawnSync(join(root, "scripts/agents/kit"), ["doctor", "--quiet"],
+    { cwd: root, env: clean, encoding: "utf8", timeout: 300_000, stdio: ["ignore", "pipe", "pipe"] });
+  return { status: result.status, output: result.stdout ?? "", error: result.error?.code === "ETIMEDOUT" ? "timed out" : result.error?.message };
+}
+
+/** What one doctor run says is wrong with a project's kit, or "" when nothing is. */
+export function doctorProblem({ status, output, error }) {
+  if (error) return `kit doctor ${error}`;
+  const result = [...output.matchAll(/^RESULT: (ok|fail) (.*)$/gm)].at(-1);
+  if (!result) return `kit doctor gave no result (exit ${status})`;
+  // The stale-copy warning: on the RESULT when doctor passes, else on its kit line.
+  const warning = /; warning: (.+)$/.exec(result[2])?.[1] ?? /^✗ kit: .*; ([^;\n]+); fix: [^;\n]*$/m.exec(output)?.[1];
+  const failed = result[1] === "fail" ? (/ failed: (.+)$/.exec(result[2])?.[1].split(",") ?? [result[2]]).filter(name => !folderChecks.has(name)) : [];
+  return [...failed.length ? [`kit doctor failed: ${failed.join(", ")}`] : [], ...warning ? [warning] : []].join("; ");
+}
+
+/**
+ * One line per project in projects.json whose kit doctor fails or warns its kit copy is stale; null when all is well.
+ * The project the sweep runs in is checked in this checkout, since its main folder may sit on an old branch.
+ */
+export function kitProblemsSection(env = process.env, own = null, doctor = runDoctor) {
+  const title = "Kit problems";
+  let listed;
+  try { listed = kitProjects(env); } catch (error) { return { title, priority: 9, lines: [`- unreadable: ${error.message}`] }; }
+  const lines = [];
+  for (const name of Object.keys(listed).sort()) {
+    const root = name === own?.project ? own.root : listed[name]?.root;
+    if (typeof root !== "string" || !root) { lines.push(`- ${name}: no "root" in projects.json`); continue; }
+    if (!existsSync(join(root, "scripts/agents/kit"))) { lines.push(`- ${name}: no kit at ${join(root, "scripts/agents/kit")}`); continue; }
+    const problem = doctorProblem(doctor(root, env));
+    if (problem) lines.push(`- ${name}: ${problem}`);
+  }
+  return lines.length ? { title, priority: 9, lines } : null;
+}
+
 function sweep(args) {
   let flags;
   try { flags = parseArgs(args); }
@@ -367,7 +412,8 @@ function sweep(args) {
       grokSection(process.env, now, main, settings.project),
       correctionsSection(root, then, head, pick("maps")),
       staleDebtSection(root, now, pick("techDebt")),
-    ];
+      kitProblemsSection(process.env, { project: settings.project, root }),
+    ].filter(Boolean);
     const date = localDate(new Date(now));
     const { markdown } = composeBundle([`# Sweep bundle ${date}`, "",
       `Since ${start.toISOString()} (--since ${flags.since}); code at ${head.slice(0, 9)} against ${thenLabel}. Numbers only; the routine judges.`], sections, bundleLimit);

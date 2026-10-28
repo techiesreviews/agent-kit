@@ -23,6 +23,9 @@ type Sweep = {
   correctionsSection(root: string, then: string, head: string, maps: string | null): Section;
   staleDebtSection(root: string, now: number, techDebt: string | null): Section;
   grokSection(env: NodeJS.ProcessEnv, now: number, main: string | null, project: string | null): Section;
+  doctorProblem(run: { status: number | null; output: string; error?: string }): string;
+  kitProblemsSection(env: NodeJS.ProcessEnv, own: { project: string; root: string } | null,
+    doctor?: (root: string, env: NodeJS.ProcessEnv) => { status: number | null; output: string; error?: string }): Section | null;
 };
 type Section = { title: string; priority: number; lines: string[] };
 const sweep: Sweep = await import(pathToFileURL(script).href);
@@ -376,4 +379,66 @@ test("corrections name their map under a maps folder other than docs/wayfinder",
   const section = sweep.correctionsSection(repo, then, head, "notes/maps");
   assert.deepEqual(section.lines, ["- 1 corrections committed in the window; by kind: fault 1",
     "- 2026-10-26 · fault · Lost a page · alpha · after release: no · fix: open"]);
+});
+
+// A project whose scripts/agents/kit answers doctor --quiet with the given shell lines.
+function fakeKit(root: string, body: string) {
+  const path = join(root, "scripts/agents/kit");
+  write(path, `#!/usr/bin/env bash\n[[ "$*" == "doctor --quiet" ]] || exit 9\n${body}\n`);
+  fs.chmodSync(path, 0o755);
+  return root;
+}
+
+test("the sweep lists a registered project whose kit doctor fails, and stays quiet otherwise", t => {
+  const { dir, repo } = repository(t);
+  write(join(repo, "README.md"), "base\n");
+  commit(repo, Date.now() - day, "base");
+  // Each project's doctor runs in its own folder with none of this command's kit settings.
+  const good = fakeKit(join(dir, "good"), `[[ -z \${KIT_ROOT:-} && -z \${KIT_MAIN_ROOT:-} && $PWD == "${join(dir, "good")}" ]] || { echo "RESULT: fail doctor 1 failed: env"; exit 1; }
+echo "RESULT: ok doctor 11/11 checks passed"`);
+  // A main folder on another branch fails place and base: that is the folder, not the kit.
+  const elsewhere = fakeKit(join(dir, "elsewhere"), `printf '✗ place: main or dev worktree (x); fix: y\\n✗ base: stale; fix: z\\nRESULT: fail doctor 2 failed: place,base\\n'; exit 1`);
+  const broken = fakeKit(join(dir, "broken"), `printf '✗ hooks live: hooks cannot reach a kit; fix: run kit update\\nRESULT: fail doctor 2 failed: place,hooks live\\n'; exit 1`);
+  const register = (projects: Record<string, string>) =>
+    write(join(dir, "state/agent-kit/projects.json"), JSON.stringify(Object.fromEntries(Object.entries(projects).map(([name, root]) => [name, { root }]))));
+  register({ good, elsewhere });
+  const quiet = bundleOf(run(repo).stdout).text;
+  assert.ok(!quiet.includes("## Kit problems"), quiet);
+  register({ good, elsewhere, broken });
+  const listed = run(repo);
+  assert.deepEqual(section(bundleOf(listed.stdout).text, "Kit problems"), ["- broken: kit doctor failed: hooks live"]);
+  assert.match(listed.stdout, /^## Kit problems \(\d+ bytes\)$/m);
+});
+
+test("a kit problem is a failed kit check, a stale kit copy, a doctor without a result or a project without a kit", t => {
+  const dir = mkdtempSync(join(tmpdir(), "kit-sweep-problems-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const ok = "RESULT: ok doctor 11/11 checks passed\n";
+  assert.equal(sweep.doctorProblem({ status: 0, output: ok }), "");
+  assert.equal(sweep.doctorProblem({ status: 0, output: "RESULT: ok doctor 11/11 checks passed; warning: kit not updated for 3 days\n" }), "kit not updated for 3 days");
+  assert.equal(sweep.doctorProblem({ status: 1, output: "✗ kit: commit abc1234 (machine copy, updated 3 days ago); project def5678; kit not updated for 3 days; fix: run scripts/agents/kit update\n" +
+    "RESULT: fail doctor 2 failed: base,settings\n" }), "kit doctor failed: settings; kit not updated for 3 days");
+  assert.equal(sweep.doctorProblem({ status: 1, output: "✗ place: x; fix: y\nRESULT: fail doctor 1 failed: place\n" }), "");
+  assert.equal(sweep.doctorProblem({ status: 127, output: "" }), "kit doctor gave no result (exit 127)");
+  assert.equal(sweep.doctorProblem({ status: null, output: "", error: "timed out" }), "kit doctor timed out");
+
+  write(join(dir, "state/agent-kit/projects.json"), JSON.stringify({ here: { root: join(dir, "old-main") }, bare: { root: join(dir, "bare") }, rootless: {} }));
+  mkdirSync(join(dir, "bare"));
+  const seen: string[] = [];
+  const section = sweep.kitProblemsSection({ XDG_STATE_HOME: join(dir, "state") }, { project: "here", root: join(dir, "checkout") }, root => {
+    seen.push(root);
+    return { status: 0, output: ok };
+  });
+  // The sweep's own project is checked in its checkout, so a main folder on an old branch without the kit is no problem.
+  assert.deepEqual(seen, []);
+  assert.deepEqual(section?.lines, [`- bare: no kit at ${join(dir, "bare/scripts/agents/kit")}`, `- here: no kit at ${join(dir, "checkout/scripts/agents/kit")}`,
+    '- rootless: no "root" in projects.json']);
+  fakeKit(join(dir, "checkout"), "true");
+  fakeKit(join(dir, "bare"), "true");
+  assert.equal(sweep.kitProblemsSection({ XDG_STATE_HOME: join(dir, "state") }, { project: "here", root: join(dir, "checkout") }, root => {
+    seen.push(root);
+    return { status: 0, output: ok };
+  })?.lines.length, 1);
+  assert.deepEqual(seen, [join(dir, "bare"), join(dir, "checkout")]);
+  assert.equal(sweep.kitProblemsSection({ XDG_STATE_HOME: join(dir, "none") }, null), null);
 });

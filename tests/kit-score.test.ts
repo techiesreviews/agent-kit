@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import test, { type TestContext } from "node:test";
 import { costTotal, kitScore, runCost, scoreMap, scoreReview } from "../scripts/agents/kit-lib.mjs";
-import { ladder, scorePage } from "../scripts/agents/score-page.mjs";
+import { allProjectsPage, ladder, scorePage } from "../scripts/agents/score-page.mjs";
 
 const kit = resolve("scripts/agents/kit");
 type Counts = Record<string, number>;
@@ -461,4 +461,89 @@ test("the builder advice appears only once a kind has ten pieces, and the ladder
   // An unreadable log neither counts as clean nor breaks the streak.
   const broken = { map: "m", entries: [], unreadable: true } satisfies Build;
   assert.deepEqual(ladder([build(), broken, build()]), { rung: 1, streak: 2, builds: 2, unreadable: 1 });
+});
+
+// Every file under a folder with its bytes and modified time, to prove a run left them as they were.
+function snapshot(dir: string): Map<string, string> {
+  const files = new Map<string, string>();
+  for (const entry of readdirSync(dir, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    const path = join(entry.parentPath, entry.name);
+    files.set(path, `${statSync(path).mtimeMs} ${readFileSync(path, "base64")}`);
+  }
+  return files;
+}
+
+test("kit score --all prints one table across the projects in projects.json, reads records in place and names an unreadable project", t => {
+  const dir = mkdtempSync(join(tmpdir(), "kit-score-all-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const alpha = join(dir, "alpha"), beta = join(dir, "beta"), here = join(dir, "here"), out = join(dir, "out/all.html");
+  const record = (builder: string, rounds: number, kind: Counts, sha?: string) => JSON.stringify({ ticket: null, title: null, kind: "task", builder: { model: builder, effort: "high", previousModels: [] },
+    phases: [], rounds, reviews: [{ dir: "x", model: null, effort: null, counts: { kind, severity: {} }, declined: [] }], cost: null, costs: {}, landed: sha ? { pr: 1, sha } : null } satisfies ScoreRecord);
+  const feedback = (count: number) => `# Feedback\n\n## Feedback\n\n${"- 2026-10-26 · fault · Lost a page · after release: no · fix: open\n".repeat(count)}`;
+  // alpha: a git project whose feedback logs are read from its land branch, not the folder's uncommitted lines.
+  mkdirSync(join(alpha, "scripts/agents"), { recursive: true });
+  writeFileSync(join(alpha, "scripts/agents/kit.json"), JSON.stringify({ project: "alpha", branches: { land: "dev" }, maps: "maps" }));
+  mkdirSync(join(alpha, "maps/one/build"), { recursive: true });
+  writeFileSync(join(alpha, "maps/one/build/feedback.md"), feedback(2));
+  const git = (...args: string[]) => spawnSync("git", ["-C", alpha, ...args], { encoding: "utf8" });
+  git("init", "-q", "-b", "dev"); git("add", "-A"); git("-c", "user.name=a", "-c", "user.email=a@example.test", "commit", "-q", "-m", "base");
+  git("checkout", "-q", "-b", "old");
+  writeFileSync(join(alpha, "maps/one/build/feedback.md"), feedback(5));
+  mkdirSync(join(alpha, ".scratch/scoreboard/one"), { recursive: true });
+  writeFileSync(join(alpha, ".scratch/scoreboard/one/01-a.json"), record("claude-opus-5-5", 2, { fault: 1 }, "a".repeat(40)));
+  writeFileSync(join(alpha, ".scratch/scoreboard/one/02-b.json"), record("gpt-6.1-sol", 1, { style: 2 }));
+  // beta: a main folder without the settings file; the project this command runs in names its maps folder.
+  mkdirSync(join(beta, "docs/wayfinder/two/build"), { recursive: true });
+  writeFileSync(join(beta, "docs/wayfinder/two/build/feedback.md"), feedback(1));
+  mkdirSync(join(beta, ".scratch/scoreboard/two"), { recursive: true });
+  writeFileSync(join(beta, ".scratch/scoreboard/two/01-c.json"), record("claude-opus-5-5", 0, { ticket: 1 }, "b".repeat(40)));
+  settings(here);
+  writeFileSync(join(here, "scripts/agents/kit.json"), JSON.stringify({ project: "beta", branches: { land: "dev" }, maps: "docs/wayfinder" }));
+  mkdirSync(join(dir, "state/agent-kit"), { recursive: true });
+  writeFileSync(join(dir, "state/agent-kit/projects.json"), JSON.stringify({ beta: { root: beta }, alpha: { root: alpha }, gone: { root: join(dir, "gone") } }));
+  const before = snapshot(dir);
+  const env = { ...process.env, KIT_ROOT: here, KIT_MAIN_ROOT: here, ASE_SKIP_DOCTOR: "1", XDG_STATE_HOME: join(dir, "state") };
+  const run = (...args: string[]) => spawnSync("bash", [kit, "score", "--all", ...args], { cwd: here, env, encoding: "utf8", timeout: 10_000 });
+
+  const printed = run();
+  assert.equal(printed.status, 0, printed.stdout + printed.stderr);
+  assert.deepEqual(printed.stdout.trimEnd().split("\n").map(line => line.replace(/ +/g, " ")), [
+    "score: all projects (3 projects, 3 pieces)",
+    "project builder pieces rounds findings landed corrections",
+    "alpha claude-opus-5-5 1 2 fault 1 1 -",
+    "alpha gpt-6.1-sol 1 1 style 2 0 -",
+    "alpha all builders 2 3 fault 1, style 2 1 2",
+    "beta claude-opus-5-5 1 0 ticket 1 1 -",
+    "beta all builders 1 0 ticket 1 1 1",
+    `unreadable: gone (no folder ${join(dir, "gone")})`,
+    "RESULT: ok score all 3 projects 3 pieces, 1 unreadable",
+  ]);
+  const data = JSON.parse(run("--json").stdout.split("\nRESULT:")[0]);
+  assert.deepEqual(data.projects.map((item: { project: string }) => item.project), ["alpha", "beta", "gone"]);
+  assert.deepEqual(data.projects[0].total, { pieces: 2, rounds: 3, findings: { fault: 1, style: 2 }, landed: 1, corrections: 2 });
+  assert.equal(data.projects[2].problem, `no folder ${join(dir, "gone")}`);
+  const page = run("--html", "--out", out);
+  assert.match(page.stdout, new RegExp(`^page: ${out}$`, "m"));
+  const html = readFileSync(out, "utf8");
+  for (const text of ["<h1>All projects</h1>", "alpha", "beta", "Projects that could not be read", `no folder ${join(dir, "gone")}`]) assert.ok(html.includes(text), text);
+  assert.doesNotMatch(html, /https?:\/\//);
+  rmSync(join(dir, "out"), { recursive: true });
+  // Nothing in any project, the list or this checkout was copied, moved or changed.
+  assert.deepEqual(snapshot(dir), before);
+
+  // A project whose settings cannot be read keeps its numbers and says its corrections were not read.
+  writeFileSync(join(here, "scripts/agents/kit.json"), JSON.stringify({ project: "here", branches: { land: "dev" } }));
+  const unread = run();
+  assert.match(unread.stdout, /^beta +all builders +1 +0 +ticket 1 +1 +not read$/m);
+  assert.match(unread.stdout, /^corrections not read: beta \(no scripts\/agents\/kit\.json; /m);
+  assert.match(run("--snapshot").stdout, /^RESULT: fail score --snapshot needs a map, not --all$/m);
+  assert.match(run("demo").stdout, /^RESULT: fail score --all takes no map$/m);
+});
+
+test("the all-projects page lists an unreadable project apart and says when none could be read", () => {
+  const html = allProjectsPage({ projects: [{ project: "gone", problem: "no folder /x" }], generated: new Date("2026-10-28T09:00:00Z") });
+  assert.match(html, /No project could be read\./);
+  assert.match(html, /<strong>gone<\/strong><span class="fix">no folder \/x<\/span>/);
+  assert.doesNotMatch(html, /<table>/);
 });
