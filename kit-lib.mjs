@@ -120,6 +120,28 @@ export function kitProjects(env = process.env) {
   return projects;
 }
 
+/**
+ * List a project in projects.json (kit init), under its lock and written atomically: "added", or "listed" when
+ * it is already there with the same root. Throws one plain line when the list is broken or the name is taken
+ * by another root, so two projects never share a name.
+ */
+export function kitRegisterProject(name, root, env = process.env) {
+  const path = join(kitStateDir(env), "projects.json");
+  mkdirSync(dirname(path), { recursive: true });
+  const lock = `${path}.lock`;
+  takeLock(lock);
+  try {
+    const projects = kitProjects(env), listed = projects[name]?.root;
+    if (listed === root) return "listed";
+    if (listed) throw new Error(`${path} already lists ${name} at ${listed}; give this project another "project" name in ${kitSettingsFile}`);
+    projects[name] = { root };
+    const temporary = `${path}.${process.pid}.tmp`;
+    writeFileSync(temporary, `${JSON.stringify(projects, null, 2)}\n`);
+    renameSync(temporary, path);
+    return "added";
+  } finally { rmSync(lock, { recursive: true, force: true }); }
+}
+
 function version(candidate) {
   try {
     if (!statSync(candidate).isFile()) return null;

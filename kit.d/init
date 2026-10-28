@@ -1,0 +1,223 @@
+#!/usr/bin/env node
+// kit: set a project up for the shared kit: settings, launchers, hooks and docs stubs
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+
+const { kitHome, kitProjects, kitRegisterProject, kitResult, kitRoot, kitSettingsFile, kitSettingsProblems, kitStateDir } = await import(
+  pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
+);
+const usage = `Usage: kit init [--light] [--land <branch>]
+Set the project around the working folder up for the shared kit; the kit itself is never copied in.
+Run it in the project's git repo (from the machine copy, ~/.local/share/agent-kit/current/kit init,
+before the project has a launcher). It writes only what is missing and never deletes or overwrites a file:
+  scripts/agents/kit.json   project, mainRoot and branches from git (land: --land, else dev, develop,
+                            main or master), checks guessed from package.json scripts (printed to confirm)
+  scripts/agents/kit, scripts/agents/hooks/run.sh   the kit launcher and the hook launcher
+  .claude/settings.json, .codex/hooks.json   the kit's hook entries, merged in; other settings stay
+  AGENTS.md                 two lines pointing at scripts/agents/kit rulebook and kit --help
+Full (the default) also writes an empty scripts/agents/project.d/ (its own commands), docs/agents/kitchen.md
+(a pointer), docs/agents/kitchen-extras.md (from the kit's template), docs/wayfinder/README.md, and names
+them in a new kit.json; --light leaves those out. It lists the project in the machine's projects.json and
+ends with kit doctor's result. A rerun changes nothing and says so. Old kit files in the project
+(kit-lib.sh, kit-lib.mjs, kit.d/, the guard hooks) stop it with a list, so the move removes them on purpose.
+`;
+
+const fail = (text, code = 1) => { kitResult("fail", `init ${text}`); process.exit(code); };
+const options = { light: false, land: "" };
+const args = process.argv.slice(2);
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (arg === "--help" || arg === "-h") { process.stdout.write(usage); process.exit(0); }
+  else if (arg === "--light") options.light = true;
+  else if (arg === "--land" && args[i + 1] && !args[i + 1].startsWith("-")) options.land = args[++i];
+  else { process.stderr.write(usage); fail(`unknown argument ${arg}`, 2); }
+}
+
+const root = kitRoot();
+const git = (...gitArgs) => {
+  const result = spawnSync("git", ["-C", root, ...gitArgs], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  return result.status === 0 ? result.stdout.trim() : null;
+};
+if (!git("rev-parse", "--show-toplevel")) fail(`${root} is not in a git repo; run kit init in the project's top folder`);
+const at = (path) => join(root, path);
+const home = kitHome();
+
+const old = ["scripts/agents/kit-lib.sh", "scripts/agents/kit-lib.mjs", "scripts/agents/kit.d/",
+  "scripts/agents/hooks/bash-guard.sh", "scripts/agents/hooks/agent-cap.sh", "scripts/agents/hooks/session-env.sh"].filter((path) => existsSync(at(path)));
+if (old.length) {
+  console.log("kit init: this project holds old kit files; remove them on purpose first (the move does):");
+  for (const path of old) console.log(`  ${path}`);
+  fail(`old kit files: ${old.join(", ")}`);
+}
+
+const readJson = (path) => {
+  try { return JSON.parse(readFileSync(at(path), "utf8")); }
+  catch (error) { fail(`${path} is unreadable (${String(error.message).replace(/\n/g, " ")}); fix it first, kit init never overwrites it`); }
+};
+const branchExists = (name) => git("rev-parse", "--verify", "--quiet", `refs/heads/${name}`) !== null ||
+  git("rev-parse", "--verify", "--quiet", `refs/remotes/origin/${name}`) !== null || git("symbolic-ref", "--short", "HEAD") === name;
+const common = git("rev-parse", "--path-format=absolute", "--git-common-dir");
+const gitMain = common ? dirname(common) : root;
+
+const writes = [], kept = [], notes = [];
+const full = !options.light;
+const extrasPath = "docs/agents/kitchen-extras.md", mapsPath = "docs/wayfinder", commandsPath = "scripts/agents/project.d";
+
+// The settings file: kept as it is when there, else filled from git and package.json.
+let settings;
+if (existsSync(at(kitSettingsFile))) {
+  settings = readJson(kitSettingsFile);
+  const problems = kitSettingsProblems(settings);
+  if (problems.length) fail(`${problems.join("; ")}; fix it first, kit init never overwrites it`);
+  kept.push(kitSettingsFile);
+  if (options.land) notes.push(`--land ignored: ${kitSettingsFile} already names "branches"`);
+  const missing = full ? [["commands", commandsPath], ["maps", mapsPath], ["rulebookExtras", extrasPath]].filter(([key]) => !settings[key]) : [];
+  if (missing.length) notes.push(`add to ${kitSettingsFile} (kit init never edits it): ${missing.map(([key, value]) => `"${key}": "${value}"`).join(", ")}`);
+} else {
+  const land = options.land || ["dev", "develop", "main", "master"].find(branchExists);
+  if (!land) fail("no dev, develop, main or master branch; name the landing branch with kit init --land <branch>", 2);
+  if (git("check-ref-format", "--branch", land) === null) fail(`--land ${land} is not a branch name`, 2);
+  const release = ["dev", "develop"].includes(land) ? ["main", "master"].find(branchExists) : undefined;
+  const remote = git("remote", "get-url", "origin");
+  const project = (remote && basename(remote.replace(/\/+$/, "")).replace(/\.git$/, "")) || basename(gitMain);
+  settings = { project, mainRoot: gitMain, branches: { land, ...(release ? { release } : {}) } };
+  const checks = guessChecks();
+  if (checks) settings.checks = checks;
+  if (full) Object.assign(settings, { commands: commandsPath, maps: mapsPath, rulebookExtras: extrasPath });
+  writes.push({ path: kitSettingsFile, text: `${JSON.stringify(settings, null, 2)}\n`, said: `(${project}, lands on ${land})` });
+}
+
+// checks from package.json scripts, run as the lockfile's package manager does; printed for the lead to confirm.
+function guessChecks() {
+  if (!existsSync(at("package.json"))) { notes.push(`checks: none guessed (no package.json); add "checks" to ${kitSettingsFile}`); return null; }
+  const scripts = readJson("package.json")?.scripts ?? {};
+  const manager = existsSync(at("pnpm-lock.yaml")) ? "pnpm" : existsSync(at("yarn.lock")) ? "yarn"
+    : existsSync(at("bun.lock")) || existsSync(at("bun.lockb")) ? "bun" : "npm";
+  const run = (name) => manager === "npm" ? (name === "test" ? "npm test" : `npm run ${name}`) : manager === "yarn" ? `yarn ${name}` : `${manager} run ${name}`;
+  const usable = (name) => typeof scripts[name] === "string" && !/no test specified/.test(scripts[name]);
+  const checks = {};
+  const check = ["check", "typecheck"].find(usable);
+  if (check) checks.check = run(check);
+  if (usable("test")) checks.test = run("test");
+  if (usable("lint")) checks.lint = run("lint");
+  const names = Object.entries(checks).map(([key, command]) => `${key}=${command}`);
+  notes.push(names.length ? `checks guessed from package.json: ${names.join(", ")}; confirm them in ${kitSettingsFile}`
+    : `checks: none guessed (package.json has no check, typecheck, test or lint script); add "checks" to ${kitSettingsFile}`);
+  return names.length ? checks : null;
+}
+
+// A file written only when missing; one already there is kept as it is.
+const template = (path, source, mode) => {
+  if (existsSync(at(path))) { kept.push(path); return; }
+  writes.push({ path, text: readFileSync(join(home, source), "utf8"), mode });
+};
+template("scripts/agents/kit", "launcher/kit", 0o755);
+template("scripts/agents/hooks/run.sh", "launcher/hooks-run.sh", 0o755);
+
+// Hook entries, merged into each file: a missing entry is added beside the others, nothing is replaced.
+const hook = (name) => ({ type: "command", command: `bash "\${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"/scripts/agents/hooks/run.sh ${name}` });
+const agentCap = ["agent-cap"], session = ["session-env", "context-card"];
+const hookFiles = {
+  ".claude/settings.json": [["PreToolUse", "Bash", ["bash-guard"]], ["PreToolUse", "Agent|Task", agentCap], ["PostToolUse", "Agent|Task", agentCap],
+    ["PostToolUseFailure", "Agent|Task", agentCap], ["SubagentStart", undefined, agentCap], ["SubagentStop", undefined, agentCap], ["SessionStart", undefined, session]],
+  ".codex/hooks.json": [["PreToolUse", "Bash", ["bash-guard"]], ["SubagentStart", undefined, agentCap], ["SubagentStop", undefined, agentCap], ["SessionStart", undefined, session]],
+};
+const isObject = (value) => value && typeof value === "object" && !Array.isArray(value);
+for (const [path, entries] of Object.entries(hookFiles)) {
+  const there = existsSync(at(path));
+  const config = there ? readJson(path) : {};
+  if (!isObject(config)) fail(`${path} must hold one JSON object; fix it first, kit init never overwrites it`);
+  if (config.hooks === undefined) config.hooks = {};
+  if (!isObject(config.hooks)) fail(`"hooks" in ${path} must be an object; fix it first, kit init never overwrites it`);
+  let added = 0;
+  for (const [event, matcher, names] of entries) {
+    const groups = config.hooks[event] ??= [];
+    if (!Array.isArray(groups)) fail(`"hooks.${event}" in ${path} must be a list; fix it first, kit init never overwrites it`);
+    const same = groups.filter((group) => isObject(group) && group.matcher === matcher);
+    for (const name of names) {
+      const entry = hook(name);
+      if (same.some((group) => Array.isArray(group.hooks) && group.hooks.some((other) => other?.command === entry.command))) continue;
+      let group = same.find((candidate) => Array.isArray(candidate.hooks));
+      if (!group) { group = { ...(matcher === undefined ? {} : { matcher }), hooks: [] }; groups.push(group); same.push(group); }
+      group.hooks.push(entry);
+      added++;
+    }
+  }
+  if (!added) { kept.push(path); continue; }
+  writes.push({ path, text: `${JSON.stringify(config, null, 2)}\n`, said: there ? `(merged ${added} hook entr${added === 1 ? "y" : "ies"})` : "" });
+}
+
+// Full only: the project's own commands folder (kept in git by .gitkeep) and the docs stubs.
+if (full) {
+  if (existsSync(at(commandsPath))) kept.push(`${commandsPath}/`);
+  else writes.push({ path: `${commandsPath}/.gitkeep`, text: "" });
+  const pointer = `# The kitchen
+
+Run \`scripts/agents/kit rulebook\`: it prints the kitchen rulebook, every station from idea to
+release, who decides, and the builder and reviewer pins. It has two parts:
+
+- **The shared rulebook,** the same for every project, with the kit (\`docs/kitchen.md\` in the Agent Kit).
+- **This project's extras,** which win where they differ: [kitchen-extras.md](kitchen-extras.md)
+  (named by \`rulebookExtras\` in \`scripts/agents/kit.json\`).
+`;
+  if (existsSync(at("docs/agents/kitchen.md"))) kept.push("docs/agents/kitchen.md");
+  else writes.push({ path: "docs/agents/kitchen.md", text: pointer });
+  if (existsSync(at(extrasPath))) kept.push(extrasPath);
+  else {
+    const land = settings.branches.land, release = settings.branches.release || land;
+    const text = readFileSync(join(home, "docs/kitchen-extras-template.md"), "utf8")
+      .replaceAll("<project>", settings.project).replaceAll("<land>", land).replaceAll("<release>", release);
+    writes.push({ path: extrasPath, text });
+  }
+  const readme = `# Wayfinder maps
+
+One folder per map, \`docs/wayfinder/<map>/\`: its tickets in \`tickets/\` and its build's in
+\`build/tickets/\` (\`maps\` in \`scripts/agents/kit.json\`). Run \`scripts/agents/kit rulebook\` for how a
+map goes from idea to tickets, and \`scripts/agents/kit next <map>\` to hand its work out.
+`;
+  if (existsSync(at(`${mapsPath}/README.md`))) kept.push(`${mapsPath}/README.md`);
+  else writes.push({ path: `${mapsPath}/README.md`, text: readme });
+}
+
+// AGENTS.md: the two lines, added to the end when missing.
+const agentLines = [
+  ["scripts/agents/kit rulebook", "Kitchen rulebook: `scripts/agents/kit rulebook` (stations, who decides, builder and reviewer pins)."],
+  ["scripts/agents/kit --help", "Agent commands: `scripts/agents/kit --help`; `scripts/agents/kit <command> --help` for one."],
+];
+const agents = existsSync(at("AGENTS.md")) ? readFileSync(at("AGENTS.md"), "utf8") : null;
+const missingLines = agentLines.filter(([marker]) => !agents?.includes(marker)).map(([, line]) => line);
+if (!missingLines.length) kept.push("AGENTS.md");
+else if (agents === null) writes.push({ path: "AGENTS.md", text: `# Agents\n\n${missingLines.join("\n")}\n` });
+else writes.push({ path: "AGENTS.md", text: `${agents.replace(/\n*$/, "\n\n")}${missingLines.join("\n")}\n`, said: `(added ${missingLines.length} line${missingLines.length === 1 ? "" : "s"})` });
+
+// The machine's project list: a name another root holds stops the run before anything is written.
+const projectRoot = settings.mainRoot || gitMain;
+let listed;
+try { listed = kitProjects()[settings.project]?.root; }
+catch (error) { fail(error.message); }
+if (listed && listed !== projectRoot) fail(`${join(kitStateDir(), "projects.json")} already lists ${settings.project} at ${listed}; give this project another "project" name in ${kitSettingsFile}`);
+
+for (const { path, text, mode, said } of writes) {
+  mkdirSync(dirname(at(path)), { recursive: true });
+  writeFileSync(at(path), text);
+  if (mode) chmodSync(at(path), mode);
+  console.log(`wrote ${path}${said ? ` ${said}` : ""}`);
+}
+if (kept.length) console.log(`kept (already there): ${kept.join(", ")}`);
+let registered;
+try { registered = kitRegisterProject(settings.project, projectRoot); }
+catch (error) { fail(error.message); }
+if (registered === "added") console.log(`listed ${settings.project} at ${projectRoot} in ${join(kitStateDir(), "projects.json")}`);
+for (const note of notes) console.log(`note: ${note}`);
+
+// kit doctor's result for the new setup ends the run.
+const doctor = spawnSync(join(home, "kit.d/doctor"), [], { cwd: root, env: { ...process.env, KIT_ROOT: root }, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
+const doctorLines = (doctor.stdout ?? "").split("\n").filter(Boolean);
+for (const line of doctorLines) if (!line.startsWith("RESULT: ")) console.log(line);
+const doctorResult = doctorLines.findLast((line) => line.startsWith("RESULT: "))?.replace(/^RESULT: (ok|fail) /, "") ?? `exited ${doctor.status} without a RESULT line`;
+const changed = writes.length || registered === "added";
+const done = changed ? `wrote ${writes.length} file${writes.length === 1 ? "" : "s"}${registered === "added" ? ", listed the project" : ""}` : "nothing to write (already set up)";
+if (doctor.status !== 0) fail(`${done}; ${doctorResult}`);
+kitResult("ok", `init ${done}; ${doctorResult}`);
