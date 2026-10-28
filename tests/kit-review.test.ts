@@ -1103,9 +1103,20 @@ test("a counted OpenCode review that answered on its first call keeps its count 
       FAKE_MODE: "retry-silent", ASE_OPENCODE_START_TIMEOUT_MS: "500" });
     assert.equal(result.status, 1, result.stdout + result.stderr);
     assert.ok(result.stderr.split("\n").includes("problem: opencode unavailable: no session within 0.5s"), result.stderr);
+    // It still fails with the outage as its reason.
+    assert.match(result.stdout.trim().split("\n").at(-1)!, /^RESULT: fail opencode unavailable: no session within 0\.5s /);
     assert.equal(opencodeCalls(f).length, 2);
     assert.deepEqual(f.counts(), { [family]: { "kit-review": 1 } });
   }
+  // Each review starts with a clean record: a second such run is counted too.
+  const twice = fixture(t);
+  withOpencode(twice);
+  for (let run = 0; run < 2; run++) {
+    const result = twice.run(["--base", "HEAD~1"], { ASE_AGENT_CLI: "opencode", ASE_REVIEW_MODEL: "openai/gpt-6.1", ASE_REVIEW_BUDGET_GPT: "2",
+      FAKE_MODE: "retry-silent", ASE_OPENCODE_START_TIMEOUT_MS: "500" });
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+  }
+  assert.deepEqual(twice.counts(), { gpt: { "kit-review": 2 } });
   // The free model stays uncounted either way.
   const f = fixture(t);
   withOpencode(f);
