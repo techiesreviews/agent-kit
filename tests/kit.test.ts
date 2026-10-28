@@ -554,6 +554,8 @@ const envAllowed: [string, RegExp][] = [
   ["tests/kit-shots.test.ts", /chromium\.launch\(/],
   ["tests/kit-shots-layout.test.ts", /chromium\.launch\(/],
   ["tests/kit-size.test.ts", /stdio: "inherit", env: \{ \.\.\.process\.env, ASE_TEST_PORT/],
+  // The stand-in suites runScript starts under kitEnv(): their detached children only run sleep or a writer.
+  ["tests/kit-tests-clean.test.ts", /env: \{ \.\.\.process\.env, TMPDIR: (require\(|join\(process\.argv\[1\])/],
 ];
 
 function kitEnvLeaks(file: string, source: string) {

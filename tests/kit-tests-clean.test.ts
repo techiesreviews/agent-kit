@@ -149,7 +149,7 @@ test(guardName, { timeout: limit + 60_000 }, async t => {
 test("a guard run cut off at its limit names the time-out and leaves no temp folder", { timeout: 180_000 }, async t => {
   const outer = mkdtempSync(join(tmpdir(), "kit-tests-cutoff-"));
   t.after(() => rmSync(outer, { recursive: true, force: true }));
-  const env = { ...process.env, TMPDIR: outer, TMP: outer, TEMP: outer,
+  const env = { ...kitEnv(), TMPDIR: outer, TMP: outer, TEMP: outer,
     TSX_DISABLE_CACHE: "1", NODE_DISABLE_COMPILE_CACHE: "1", ASE_KIT_CLEAN_LIMIT_MS: "8000" };
   delete env.NODE_TEST_CONTEXT;
   const artifacts = join(repo, ".scratch/agent");
@@ -173,7 +173,7 @@ test("a guard run cut off at its limit names the time-out and leaves no temp fol
 function runScript(t: TestContext, script: string, ms = 30_000) {
   const temporary = mkdtempSync(join(tmpdir(), "kit-tests-group-"));
   t.after(() => rmSync(temporary, { recursive: true, force: true }));
-  const env = { ...process.env, TMPDIR: temporary, TMP: temporary, TEMP: temporary };
+  const env = { ...kitEnv(), TMPDIR: temporary, TMP: temporary, TEMP: temporary };
   return { temporary, run: runGroup(["-e", script, temporary], { cwd: repo, env }, ms) };
 }
 
