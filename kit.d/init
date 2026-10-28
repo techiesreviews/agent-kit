@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // kit: set a project up for the shared kit: settings, launchers, hooks and docs stubs
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -9,6 +9,7 @@ const { kitHome, kitRegisterProject, kitResult, kitRoot, kitSettingsFile, kitSet
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const usage = `Usage: kit init [--light] [--land <branch>]
+       kit init --issues [--close]
 Set the project around the working folder up for the shared kit; the kit itself is never copied in.
 Run it in the project's git repo (from the machine copy, ~/.local/share/agent-kit/current/kit init,
 before the project has a launcher). It writes only what is missing and never deletes or overwrites a file:
@@ -23,22 +24,32 @@ them in a new kit.json; --light leaves those out. It lists the project in the ma
 ends with kit doctor's result. Run in the main checkout, doctor's failing place check (no builds there) is a
 note naming how to make a worktree. A rerun changes nothing and says so. Old kit files in the project
 (kit-lib.sh, kit-lib.mjs, kit.d/, the guard hooks) stop it with a list, so the move removes them on purpose.
+
+--issues copies the project's open GitHub Issues (gh issue list) into needs-triage tickets, one file each in
+<maps>/backlog/tickets/NN-<slug>.md (maps from kit.json, else docs/wayfinder), with the Issue's text, labels,
+link and comments, plus <maps>/backlog/map.md if missing; it closes nothing and skips an Issue that has a file.
+--issues --close, once those files are on origin's landing branch, closes each open Issue with a comment
+linking its file there; it closes nothing while any open Issue's file is missing on that branch.
 `;
 
 // fail never returns: it prints the RESULT line and exits, so it also ends expressions such as readJson's catch.
 const fail = (text, code = 1) => { kitResult("fail", `init ${text}`); process.exit(code); };
-const options = { light: false, land: "" };
+const options = { light: false, land: "", issues: false, close: false };
 const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
   if (arg === "--help" || arg === "-h") { process.stdout.write(usage); process.exit(0); }
   else if (arg === "--light") options.light = true;
+  else if (arg === "--issues") options.issues = true;
+  else if (arg === "--close") options.close = true;
   else if (arg === "--land") {
     if (!args[i + 1] || args[i + 1].startsWith("-")) { process.stderr.write(usage); fail("--land needs a branch name", 2); }
     options.land = args[++i];
   }
   else { process.stderr.write(usage); fail(`unknown argument ${arg}`, 2); }
 }
+if (options.close && !options.issues) { process.stderr.write(usage); fail("--close goes with --issues", 2); }
+if (options.issues && (options.light || options.land)) { process.stderr.write(usage); fail("--issues takes only --close", 2); }
 
 const root = kitRoot();
 const git = (...gitArgs) => {
@@ -48,6 +59,7 @@ const git = (...gitArgs) => {
 if (!git("rev-parse", "--show-toplevel")) fail(`${root} is not in a git repo; run kit init in the project's top folder`);
 const at = (path) => resolve(root, path);
 const home = kitHome();
+if (options.issues) issues();
 
 const old = ["scripts/agents/kit-lib.sh", "scripts/agents/kit-lib.mjs", "scripts/agents/kit.d/",
   "scripts/agents/hooks/bash-guard.sh", "scripts/agents/hooks/agent-cap.sh", "scripts/agents/hooks/session-env.sh"].filter((path) => existsSync(at(path)));
@@ -283,3 +295,141 @@ const changed = writes.length || registered === "added";
 const summary = changed ? `wrote ${writes.length} file${writes.length === 1 ? "" : "s"}${registered === "added" ? ", listed the project" : ""}` : "nothing to write (already set up)";
 if (!doctorOk) fail(`${summary}; ${doctorResult}`);
 kitResult("ok", `init ${summary}; ${doctorResult}`);
+
+// --issues: the project's open GitHub Issues become needs-triage tickets in the backlog map, once; with --close,
+// each open Issue whose file is on origin's landing branch is closed with a link to it. Never returns.
+function issues() {
+  let settings = null;
+  if (existsSync(at(kitSettingsFile))) {
+    try { settings = JSON.parse(readFileSync(at(kitSettingsFile), "utf8")); }
+    catch (error) { fail(`${kitSettingsFile} is unreadable (${String(error.message).replace(/\n/g, " ")}); fix it first`); }
+  }
+  const maps = typeof settings?.maps === "string" && settings.maps.trim() ? settings.maps.replace(/\/+$/, "") : "docs/wayfinder";
+  const folder = `${maps}/backlog`, ticketsDir = `${folder}/tickets`;
+  const land = settings?.branches?.land;
+
+  const gh = (...ghArgs) => {
+    const run = spawnSync("gh", ghArgs, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    if (run.error || run.status !== 0) fail(`gh ${ghArgs.slice(0, 2).join(" ")} failed: ${(run.error?.message || run.stderr || `exit ${run.status}`).trim().split("\n")[0]}`);
+    return run.stdout;
+  };
+  const limit = 1000;
+  let open;
+  try { open = JSON.parse(gh("issue", "list", "--state", "open", "--limit", String(limit), "--json", "number,title,body,labels,url,author,createdAt,comments")); }
+  catch (error) { fail(`gh issue list gave no JSON list (${String(error.message).replace(/\n/g, " ")})`); }
+  if (!Array.isArray(open)) fail("gh issue list gave no JSON list");
+  if (open.length >= limit) fail(`${limit} or more open Issues; kit init --issues reads at most ${limit - 1}`);
+  open.sort((a, b) => a.number - b.number);
+  // An Issue's file names its link as "[owner/repo#N](url)", which is how a rerun and --close find it.
+  const marker = (issue) => `](${issue.url})`;
+  const repoOf = (issue) => /^https:\/\/([^/]+)\/([^/]+\/[^/]+)\/issues\/\d+$/.exec(issue.url) ?? fail(`#${issue.number} has an unexpected link: ${issue.url}`);
+
+  if (options.close) {
+    if (!land) fail(`--close needs ${kitSettingsFile} with "branches": { "land": "<branch>" }; run kit init first`);
+    if (!open.length) { kitResult("ok", "init issues no open Issues to close"); process.exit(0); }
+    if (git("fetch", "--quiet", "origin", land) === null) fail(`cannot fetch origin/${land}; --close reads the ticket files there`);
+    const ref = `refs/remotes/origin/${land}`;
+    const landed = (git("ls-tree", "--name-only", `${ref}:${ticketsDir}`) ?? "").split("\n").filter((name) => name.endsWith(".md"))
+      .map((name) => ({ path: `${ticketsDir}/${name}`, text: git("show", `${ref}:${ticketsDir}/${name}`) ?? "" }));
+    const plan = open.map((issue) => ({ issue, file: landed.find(({ text }) => text.includes(marker(issue)))?.path }));
+    const missing = plan.filter(({ file }) => !file);
+    if (missing.length) {
+      for (const { issue } of missing) console.log(`not on origin/${land}: #${issue.number} ${issue.title}`);
+      fail(`closed nothing: ${missing.length} open Issue${missing.length === 1 ? " has" : "s have"} no ticket file on origin/${land} (${missing.map(({ issue }) => `#${issue.number}`).join(", ")}); ` +
+        `run kit init --issues and land ${ticketsDir} on ${land} first`);
+    }
+    const failed = [];
+    for (const { issue, file } of plan) {
+      const [, host, repo] = repoOf(issue);
+      const link = `https://${host}/${repo}/blob/${encodeURI(land)}/${encodeURI(file)}`;
+      const run = spawnSync("gh", ["issue", "close", String(issue.number), "--repo", host === "github.com" ? repo : `${host}/${repo}`,
+        "--comment", `Moved to a ticket file: ${link}\nWork on it goes on there.`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+      if (run.error || run.status !== 0) {
+        failed.push(`#${issue.number}`);
+        console.log(`close failed: #${issue.number}: ${(run.error?.message || run.stderr || `exit ${run.status}`).trim().split("\n")[0]}`);
+      } else console.log(`closed #${issue.number} → ${link}`);
+    }
+    const closed = plan.length - failed.length;
+    if (failed.length) fail(`closed ${closed} of ${plan.length} Issues; failed: ${failed.join(", ")}; rerun to retry them`);
+    kitResult("ok", `init issues closed ${closed} Issue${closed === 1 ? "" : "s"} with a link to each file on ${land}`);
+    process.exit(0);
+  }
+
+  const existing = existsSync(at(ticketsDir)) ? readdirSync(at(ticketsDir)).filter((name) => name.endsWith(".md")).sort() : [];
+  const texts = existing.map((name) => ({ path: `${ticketsDir}/${name}`, text: readFileSync(at(`${ticketsDir}/${name}`), "utf8") }));
+  let next = Math.max(0, ...existing.map((name) => Number(/^(\d+)-/.exec(name)?.[1] ?? 0))) + 1;
+  const quote = (text) => JSON.stringify(String(text ?? ""));
+  const day = (iso) => String(iso ?? "").slice(0, 10);
+  const slugOf = (issue) => String(issue.title ?? "").toLowerCase().normalize("NFKD").replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").split("-").slice(0, 6).join("-") || `issue-${issue.number}`;
+  const ticketText = (issue) => {
+    const [, , repo] = repoOf(issue);
+    const labels = (issue.labels ?? []).map((label) => `\`${label.name}\``);
+    const comments = (issue.comments ?? []).map((comment) => `**${comment.author?.login ?? "someone"}, ${day(comment.createdAt)}:**\n\n${String(comment.body ?? "").trim() || "_(no text)_"}`);
+    return `---
+title: ${quote(issue.title)}
+type: task (AFK)
+status: needs-triage
+assignee:
+blocked_by: []
+---
+
+## Issue
+
+From GitHub Issue [${repo}#${issue.number}](${issue.url}), opened by ${issue.author?.login ?? "someone"} on ${day(issue.createdAt)}.
+
+Labels: ${labels.length ? labels.join(", ") : "none"}
+
+${String(issue.body ?? "").trim() || "_(no text)_"}
+
+## Comments
+
+${comments.length ? comments.join("\n\n") : "None."}
+`;
+  };
+  const writes = [], skipped = [];
+  for (const issue of open) {
+    const there = texts.find(({ text }) => text.includes(marker(issue)));
+    if (there) { skipped.push(issue); console.log(`skipped #${issue.number}: already in ${there.path}`); continue; }
+    writes.push({ path: `${ticketsDir}/${String(next++).padStart(2, "0")}-${slugOf(issue)}.md`, text: ticketText(issue), said: `(#${issue.number} ${issue.title})` });
+  }
+  const date = new Date().toISOString().slice(0, 10);
+  if (writes.length && !existsSync(at(`${folder}/map.md`))) writes.push({ path: `${folder}/map.md`, text: `---
+label: wayfinder:map
+title: Backlog
+charted: ${date}
+tracker: local markdown (tickets live in tickets/ with a blocked_by line in each)
+---
+
+## Destination
+
+Work carried over from the project's GitHub Issues, one \`needs-triage\` ticket each, until triage gives each a status.
+
+## Notes
+
+- **Source:** the project's open GitHub Issues, copied by \`kit init --issues\` on ${date}. Once the files landed, \`kit init --issues --close\` closed each Issue with a link to its file.
+- **Triage:** set each ticket's \`status\` (\`ready-for-agent\`, \`ready-for-human\`, \`needs-info\`, \`wontfix\` or \`open\`) and its \`blocked_by\`.
+
+## Decisions so far
+
+<!-- one line per closed ticket: [title](tickets/file.md): gist -->
+` });
+  const done = [];
+  for (const { path, text, said } of writes) {
+    try {
+      mkdirSync(dirname(at(path)), { recursive: true });
+      writeFileSync(at(path), text, { flag: "wx" });
+    } catch (error) { fail(`writing ${path} failed: ${String(error.message).replace(/\n/g, " ")}; wrote ${done.length ? done.join(", ") : "nothing"}`); }
+    done.push(path);
+    console.log(`wrote ${path}${said ? ` ${said}` : ""}`);
+  }
+  if (!settings?.maps) console.log(`note: add "maps": "${maps}" to ${kitSettingsFile} so the kit reads the backlog (kit init never edits it)`);
+  const tickets = writes.filter(({ path }) => path.startsWith(`${ticketsDir}/`)).length;
+  if (!tickets) {
+    kitResult("ok", open.length ? `init issues nothing new (${open.length} open Issue${open.length === 1 ? " has" : "s have"} a file)` : "init issues no open Issues");
+    process.exit(0);
+  }
+  console.log(`next: land ${folder} on ${land ?? "the landing branch"}, then run kit init --issues --close to close ${open.length === 1 ? "the Issue" : `the ${open.length} Issues`} with a link to each file`);
+  kitResult("ok", `init issues wrote ${tickets} ticket${tickets === 1 ? "" : "s"}${writes.length > tickets ? " and the map" : ""}${skipped.length ? `, skipped ${skipped.length} with a file` : ""}; nothing closed`);
+  process.exit(0);
+}

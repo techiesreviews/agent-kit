@@ -383,3 +383,153 @@ test("an AGENTS.md that cannot be read stops kit init with a plain RESULT line a
   assert.doesNotMatch(run.stderr, /at .+\(node:/);
   assert.deepEqual(snapshot(work), before);
 });
+
+// A fake gh on PATH: `issue list` prints the open Issues from issues.json, `issue close` marks one closed;
+// every call is logged as one JSON line in calls.log.
+function fakeGh(f: ReturnType<typeof fixture>, issues: object[]) {
+  const bin = join(f.directory, "fake-gh");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "issues.json"), JSON.stringify(issues));
+  writeFileSync(join(bin, "gh"), `#!/usr/bin/env node
+const { appendFileSync, readFileSync, writeFileSync } = require("node:fs");
+const store = ${JSON.stringify(join(bin, "issues.json"))}, args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(join(bin, "calls.log"))}, JSON.stringify(args) + "\\n");
+const issues = JSON.parse(readFileSync(store, "utf8"));
+if (args[0] === "issue" && args[1] === "list") process.stdout.write(JSON.stringify(issues.filter((issue) => issue.state === "OPEN")));
+else if (args[0] === "issue" && args[1] === "close") {
+  issues.find((issue) => issue.number === Number(args[2])).state = "CLOSED";
+  writeFileSync(store, JSON.stringify(issues));
+} else { process.stderr.write("unexpected gh " + args.join(" ")); process.exit(1); }
+`, { mode: 0o755 });
+  const env = { ...f.env, PATH: `${bin}:${f.env.PATH}` };
+  const init = (cwd: string, args: string[]) => spawnSync(join(f.directory, "data/agent-kit/current/kit"), ["init", ...args], { cwd, env, encoding: "utf8", timeout: 60_000 });
+  const calls = () => existsSync(join(bin, "calls.log"))
+    ? readFileSync(join(bin, "calls.log"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as string[]) : [];
+  return { init, calls };
+}
+const issue = (number: number, title: string, extra: object = {}) => ({ number, title, state: "OPEN", url: `https://github.com/acme/tools/issues/${number}`,
+  author: { login: "lex" }, createdAt: "2026-10-01T10:00:00Z", body: "", labels: [], comments: [], ...extra });
+const issueRepo = (f: ReturnType<typeof fixture>) => {
+  const settings = JSON.stringify({ project: "tools", branches: { land: "dev" }, maps: "docs/wayfinder" });
+  const repo = f.repo("tools", { "scripts/agents/kit.json": settings });
+  const origin = join(f.directory, "origin.git");
+  f.git(f.directory, "init", "-q", "--bare", origin);
+  f.git(repo.main, "remote", "add", "origin", origin);
+  f.git(repo.main, "push", "-q", "origin", "main", "dev");
+  return repo;
+};
+const backlog = "docs/wayfinder/backlog";
+
+test("--issues writes one valid needs-triage ticket per open Issue and the map, closes nothing, and a rerun writes nothing new", (t) => {
+  const f = fixture(t);
+  const { work } = issueRepo(f);
+  const gh = fakeGh(f, [
+    issue(14, "Search: results ignore accents!", { body: "Typing *café* finds nothing.\n\nSteps: search `café`.", labels: [{ name: "bug" }, { name: "search" }],
+      comments: [{ author: { login: "sam" }, createdAt: "2026-10-02T09:00:00Z", body: "Same on mobile." }] }),
+    issue(3, "Add a \"dark mode\" toggle: #2 # not a comment"),
+    issue(9, "Closed already", { state: "CLOSED" }),
+  ]);
+  const run = gh.init(work, ["--issues"]);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.equal(result(run), "RESULT: ok init issues wrote 2 tickets and the map; nothing closed");
+  assert.deepEqual(written(run), [`${backlog}/map.md`, `${backlog}/tickets/01-add-a-dark-mode-toggle-2.md`, `${backlog}/tickets/02-search-results-ignore-accents.md`]);
+  assert.match(run.stdout, /^next: land docs\/wayfinder\/backlog on dev, then run kit init --issues --close to close the 2 Issues with a link to each file$/m);
+  assert.deepEqual(gh.calls().map((args) => args.slice(0, 2)), [["issue", "list"]]);
+  assert.equal(readFileSync(join(work, `${backlog}/tickets/02-search-results-ignore-accents.md`), "utf8"), `---
+title: "Search: results ignore accents!"
+type: task (AFK)
+status: needs-triage
+assignee:
+blocked_by: []
+---
+
+## Issue
+
+From GitHub Issue [acme/tools#14](https://github.com/acme/tools/issues/14), opened by lex on 2026-10-01.
+
+Labels: \`bug\`, \`search\`
+
+Typing *café* finds nothing.
+
+Steps: search \`café\`.
+
+## Comments
+
+**sam, 2026-10-02:**
+
+Same on mobile.
+`);
+  const quiet = readFileSync(join(work, `${backlog}/tickets/01-add-a-dark-mode-toggle-2.md`), "utf8");
+  assert.match(quiet, /^title: "Add a \\"dark mode\\" toggle: #2 # not a comment"$/m);
+  assert.match(quiet, /^Labels: none\n\n_\(no text\)_\n\n## Comments\n\nNone\.\n$/m);
+  assert.match(readFileSync(join(work, `${backlog}/map.md`), "utf8"), /^label: wayfinder:map\ntitle: Backlog\n/m);
+  // The files pass the kit's own ticket check, titles read back as written.
+  const check = spawnSync(process.execPath, [join(f.kit, "tickets.mjs"), "check"], { cwd: work, env: f.env, encoding: "utf8" });
+  assert.equal(check.status, 0, check.stdout + check.stderr);
+  assert.match(check.stdout, /^Tickets checked: 2$/m);
+  const frontier = spawnSync(process.execPath, ["--input-type=module", "-e",
+    `import { loadTickets } from ${JSON.stringify(join(f.kit, "tickets.mjs"))}; console.log(JSON.stringify(loadTickets("docs/wayfinder").tickets.map((t) => [t.title, t.status, t.type])));`],
+    { cwd: work, env: f.env, encoding: "utf8" });
+  assert.deepEqual(JSON.parse(frontier.stdout), [["Add a \"dark mode\" toggle: #2 # not a comment", "needs-triage", "task (AFK)"], ["Search: results ignore accents!", "needs-triage", "task (AFK)"]]);
+
+  const before = snapshot(work);
+  const again = gh.init(work, ["--issues"]);
+  assert.equal(again.status, 0, again.stdout + again.stderr);
+  assert.equal(result(again), "RESULT: ok init issues nothing new (2 open Issues have a file)");
+  assert.deepEqual(written(again), []);
+  assert.deepEqual(snapshot(work), before);
+  // A new Issue later gets the next number; the two with files are skipped.
+  const store = join(f.directory, "fake-gh/issues.json");
+  writeFileSync(store, JSON.stringify([...JSON.parse(readFileSync(store, "utf8")), issue(20, "Ünïcode only ✓")]));
+  const third = gh.init(work, ["--issues"]);
+  assert.equal(result(third), "RESULT: ok init issues wrote 1 ticket, skipped 2 with a file; nothing closed");
+  assert.deepEqual(written(third), [`${backlog}/tickets/03-unicode-only.md`]);
+});
+
+test("--issues --close refuses until the files are on origin's landing branch, then closes each Issue with a link to its file", (t) => {
+  const f = fixture(t);
+  const { work } = issueRepo(f);
+  const gh = fakeGh(f, [issue(5, "First"), issue(7, "Second")]);
+  assert.equal(gh.init(work, ["--issues"]).status, 0);
+
+  // Written here but not landed: nothing closes.
+  const early = gh.init(work, ["--issues", "--close"]);
+  assert.equal(early.status, 1, early.stdout + early.stderr);
+  assert.equal(result(early), "RESULT: fail init closed nothing: 2 open Issues have no ticket file on origin/dev (#5, #7); run kit init --issues and land docs/wayfinder/backlog/tickets on dev first");
+  assert.match(early.stdout, /^not on origin\/dev: #5 First$/m);
+  assert.equal(gh.calls().filter((args) => args[1] === "close").length, 0);
+
+  // Landed on a build branch only, or partly: still nothing closes.
+  f.git(work, "add", "-A");
+  f.git(work, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "backlog");
+  f.git(work, "push", "-q", "origin", "HEAD:build/one");
+  const branchOnly = gh.init(work, ["--issues", "--close"]);
+  assert.equal(branchOnly.status, 1, branchOnly.stdout);
+  assert.equal(gh.calls().filter((args) => args[1] === "close").length, 0);
+
+  f.git(work, "push", "-q", "origin", "HEAD:dev");
+  const close = gh.init(work, ["--issues", "--close"]);
+  assert.equal(close.status, 0, close.stdout + close.stderr);
+  assert.equal(result(close), "RESULT: ok init issues closed 2 Issues with a link to each file on dev");
+  const link = (file: string) => `https://github.com/acme/tools/blob/dev/${backlog}/tickets/${file}`;
+  assert.deepEqual(gh.calls().filter((args) => args[1] === "close"), [
+    ["issue", "close", "5", "--repo", "acme/tools", "--comment", `Moved to a ticket file: ${link("01-first.md")}\nWork on it goes on there.`],
+    ["issue", "close", "7", "--repo", "acme/tools", "--comment", `Moved to a ticket file: ${link("02-second.md")}\nWork on it goes on there.`],
+  ]);
+  assert.match(close.stdout, new RegExp(`^closed #5 → ${link("01-first.md").replaceAll(".", "\\.")}$`, "m"));
+  // A rerun finds no open Issue and closes nothing more.
+  const again = gh.init(work, ["--issues", "--close"]);
+  assert.equal(result(again), "RESULT: ok init issues no open Issues to close");
+  assert.equal(gh.calls().filter((args) => args[1] === "close").length, 2);
+});
+
+test("--close needs --issues, and --issues takes no setup flags", (t) => {
+  const f = fixture(t);
+  const { work } = f.repo("flags", {});
+  for (const [args, text] of [[["--close"], "--close goes with --issues"], [["--issues", "--light"], "--issues takes only --close"]] as const) {
+    const run = f.init(work, [...args]);
+    assert.equal(run.status, 2, run.stdout + run.stderr);
+    assert.equal(result(run), `RESULT: fail init ${text}`);
+  }
+  assert.deepEqual(readdirSync(work).filter((name) => name !== ".git"), []);
+});
