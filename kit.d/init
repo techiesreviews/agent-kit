@@ -28,7 +28,8 @@ note naming how to make a worktree. A rerun changes nothing and says so. Old kit
 --issues copies the project's open GitHub Issues (gh issue list) into needs-triage tickets, one file each in
 <maps>/backlog/tickets/NN-<slug>.md (maps from kit.json, else docs/wayfinder), with the Issue's text, labels,
 link and comments, plus <maps>/backlog/map.md if missing; it closes nothing and skips an Issue that has a file
-(its frontmatter "issue: <url>"). It does no setup and runs no doctor, so old kit files do not stop it.
+(its frontmatter "issue: <url>", matched by host and number). Copied headings go two levels down. It does no
+setup and runs no doctor, so old kit files do not stop it. gh and git fetch stop after 120s.
 --issues --close, once those files are on origin's landing branch, closes each open Issue with a comment
 linking its file there; it closes nothing while any open Issue's file is missing on that branch.
 `;
@@ -305,15 +306,25 @@ function issues() {
     try { settings = JSON.parse(readFileSync(at(kitSettingsFile), "utf8")); }
     catch (error) { fail(`${kitSettingsFile} is unreadable (${String(error.message).replace(/\n/g, " ")}); fix it first`); }
   }
-  const maps = typeof settings?.maps === "string" && settings.maps.trim() ? settings.maps.trim().replace(/\/+$/, "") : "docs/wayfinder";
+  if (settings?.maps !== undefined && (typeof settings.maps !== "string" || !settings.maps.trim())) fail(`"maps" in ${kitSettingsFile} must name a folder`);
+  const maps = typeof settings?.maps === "string" ? settings.maps.trim().replace(/\/+$/, "") : "docs/wayfinder";
   if (/^(?:\/|~)|(?:^|\/)\.\.(?:\/|$)/.test(maps)) fail(`"maps" in ${kitSettingsFile} must be a folder inside the project: ${maps}`);
   const folder = `${maps}/backlog`, ticketsDir = `${folder}/tickets`;
   const land = settings?.branches?.land;
 
+  // gh and git fetch reach the network: bounded, and never left waiting at a login prompt.
+  const timeout = 120_000;
+  const bounded = (command, commandArgs) => {
+    const run = spawnSync(command, commandArgs, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GH_PROMPT_DISABLED: "1" } });
+    const problem = run.error?.code === "ETIMEDOUT" || (run.signal && run.status === null) ? `timed out after ${timeout / 1000}s`
+      : run.error || run.status !== 0 ? (run.error?.message || run.stderr || `exit ${run.status}`).trim().split("\n")[0] : "";
+    return { problem, stdout: run.stdout ?? "" };
+  };
   const gh = (...ghArgs) => {
-    const run = spawnSync("gh", ghArgs, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-    if (run.error || run.status !== 0) fail(`gh ${ghArgs.slice(0, 2).join(" ")} failed: ${(run.error?.message || run.stderr || `exit ${run.status}`).trim().split("\n")[0]}`);
-    return run.stdout;
+    const { problem, stdout } = bounded("gh", ghArgs);
+    if (problem) fail(`gh ${ghArgs.slice(0, 2).join(" ")} failed: ${problem}`);
+    return stdout;
   };
   const limit = 1000;
   let open;
@@ -323,21 +334,32 @@ function issues() {
   if (open.length >= limit) fail(`${limit} or more open Issues; kit init --issues reads at most ${limit - 1}`);
   open.sort((a, b) => a.number - b.number);
   // An Issue's file names it in its frontmatter as "issue: <url>", which is how a rerun and --close find it; the
-  // copied text may link other Issues anywhere below, so only the frontmatter counts.
+  // copied text may link other Issues anywhere below, so only the frontmatter counts. Host and number decide, so a
+  // repo renamed or moved between the runs still finds its files (--close notes the old link).
   const issueOf = (text) => {
     const lines = text.split(/\r?\n/), end = lines.indexOf("---", 1);
     return lines[0] === "---" && end > 0 ? lines.slice(1, end).find((line) => line.startsWith("issue: "))?.slice(7).trim() : undefined;
   };
-  const repoOf = (issue) => /^https:\/\/([^/]+)\/([^/]+\/[^/]+)\/issues\/\d+$/.exec(issue.url) ?? fail(`#${issue.number} has an unexpected link: ${issue.url}`);
+  const issueLink = /^https:\/\/([^/]+)\/([^/]+\/[^/]+)\/issues\/(\d+)$/;
+  const repoOf = (issue) => issueLink.exec(issue.url) ?? fail(`#${issue.number} has an unexpected link: ${issue.url}`);
+  const sameIssue = (url, issue) => {
+    const [, host, , number] = issueLink.exec(url ?? "") ?? [];
+    return host === repoOf(issue)[1] && Number(number) === issue.number;
+  };
 
   if (options.close) {
     if (!land) fail(`--close needs ${kitSettingsFile} with "branches": { "land": "<branch>" }; run kit init first`);
     if (!open.length) { kitResult("ok", "init issues no open Issues to close"); process.exit(0); }
-    if (git("fetch", "--quiet", "origin", `+refs/heads/${land}:refs/remotes/origin/${land}`) === null) fail(`cannot fetch origin/${land}; --close reads the ticket files there`);
+    const fetched = bounded("git", ["-C", root, "fetch", "--quiet", "origin", `+refs/heads/${land}:refs/remotes/origin/${land}`]);
+    if (fetched.problem) fail(`cannot fetch origin/${land} (${fetched.problem}); --close reads the ticket files there`);
     const ref = `refs/remotes/origin/${land}`;
     const landed = (git("ls-tree", "--name-only", `${ref}:${ticketsDir}`) ?? "").split("\n").filter((name) => name.endsWith(".md"))
       .map((name) => ({ path: `${ticketsDir}/${name}`, text: git("show", `${ref}:${ticketsDir}/${name}`) ?? "" }));
-    const plan = open.map((issue) => ({ issue, file: landed.find(({ text }) => issueOf(text) === issue.url)?.path }));
+    const plan = open.map((issue) => {
+      const found = landed.find(({ text }) => sameIssue(issueOf(text), issue));
+      if (found && issueOf(found.text) !== issue.url) console.log(`note: #${issue.number}'s file ${found.path} names ${issueOf(found.text)}; GitHub now gives ${issue.url}`);
+      return { issue, file: found?.path };
+    });
     const missing = plan.filter(({ file }) => !file);
     if (missing.length) {
       for (const { issue } of missing) console.log(`not on origin/${land}: #${issue.number} ${issue.title}`);
@@ -348,11 +370,11 @@ function issues() {
     for (const { issue, file } of plan) {
       const [, host, repo] = repoOf(issue);
       const link = `https://${host}/${repo}/blob/${encodeURI(land)}/${encodeURI(file)}`;
-      const run = spawnSync("gh", ["issue", "close", String(issue.number), "--repo", host === "github.com" ? repo : `${host}/${repo}`,
-        "--comment", `Moved to a ticket file: ${link}\nWork on it goes on there.`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-      if (run.error || run.status !== 0) {
+      const { problem } = bounded("gh", ["issue", "close", String(issue.number), "--repo", host === "github.com" ? repo : `${host}/${repo}`,
+        "--comment", `Moved to a ticket file: ${link}\nWork on it goes on there.`]);
+      if (problem) {
         failed.push(`#${issue.number}`);
-        console.log(`close failed: #${issue.number}: ${(run.error?.message || run.stderr || `exit ${run.status}`).trim().split("\n")[0]}`);
+        console.log(`close failed: #${issue.number}: ${problem}`);
       } else console.log(`closed #${issue.number} → ${link}`);
     }
     const closed = plan.length - failed.length;
@@ -366,13 +388,29 @@ function issues() {
   let next = Math.max(0, ...existing.map((name) => Number(/^(\d+)-/.exec(name)?.[1] ?? 0))) + 1;
   const quote = (text) => JSON.stringify(String(text ?? ""));
   const day = (iso) => String(iso ?? "").slice(0, 10);
-  const slugOf = (issue) => String(issue.title ?? "").toLowerCase().normalize("NFKD").replace(/[̀-ͯ]/g, "")
+  const slugOf = (issue) => String(issue.title ?? "").toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").split("-").slice(0, 6).join("-") || `issue-${issue.number}`;
+  // Copied text gets LF line endings, and its # and ## headings (outside code fences) go two levels down, so an
+  // Issue's "## Files" or "## Comments" never reads as one of the ticket's own sections.
+  const copied = (text) => {
+    let fence = "";
+    const lines = String(text ?? "").replace(/\r\n?/g, "\n").trim().split("\n").map((line) => {
+      const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+      if (marker && (!fence || (marker[0] === fence[0] && marker.length >= fence.length))) fence = fence ? "" : marker;
+      return !fence && !marker && /^ {0,3}#{1,2}(?:\s|$)/.test(line) ? line.replace(/#/, "###") : line;
+    });
+    return lines.join("\n") || "_(no text)_";
+  };
   const ticketText = (issue) => {
     const [, , repo] = repoOf(issue);
     // A name holding a backtick gets a longer fence, so the span stays whole.
     const labels = (issue.labels ?? []).map(({ name }) => String(name).includes("`") ? `\`\` ${name} \`\`` : `\`${name}\``);
-    const comments = (issue.comments ?? []).map((comment) => `**${comment.author?.login ?? "someone"}, ${day(comment.createdAt)}:**\n\n${String(comment.body ?? "").trim() || "_(no text)_"}`);
+    const comments = (issue.comments ?? []).map((comment) => `**${comment.author?.login ?? "someone"}, ${day(comment.createdAt)}:**\n\n${copied(comment.body)}`);
+    // gh lists at most the first 100 comments of an Issue; a thread that long says so.
+    if (comments.length >= 100) {
+      comments.push(`_Only the first ${comments.length} comments were copied; read the rest on the Issue._`);
+      console.log(`note: #${issue.number} has ${comments.length - 1} or more comments; its file says to read the rest on GitHub`);
+    }
     return `---
 title: ${quote(issue.title)}
 type: task (AFK)
@@ -388,7 +426,7 @@ From GitHub Issue [${repo}#${issue.number}](${issue.url}), opened by ${issue.aut
 
 Labels: ${labels.length ? labels.join(", ") : "none"}
 
-${String(issue.body ?? "").trim() || "_(no text)_"}
+${copied(issue.body)}
 
 ## Comments
 
@@ -397,7 +435,7 @@ ${comments.length ? comments.join("\n\n") : "None."}
   };
   const writes = [], skipped = [];
   for (const issue of open) {
-    const there = texts.find(({ text }) => issueOf(text) === issue.url);
+    const there = texts.find(({ text }) => sameIssue(issueOf(text), issue));
     if (there) { skipped.push(issue); console.log(`skipped #${issue.number}: already in ${there.path}`); continue; }
     writes.push({ path: `${ticketsDir}/${String(next++).padStart(2, "0")}-${slugOf(issue)}.md`, text: ticketText(issue), said: `(#${issue.number} ${issue.title})` });
   }
@@ -415,7 +453,7 @@ Work carried over from the project's GitHub Issues, one \`needs-triage\` ticket 
 
 ## Notes
 
-- **Source:** the project's open GitHub Issues, copied by \`kit init --issues\` on ${date}. Once the files landed, \`kit init --issues --close\` closed each Issue with a link to its file.
+- **Source:** the project's open GitHub Issues, copied by \`kit init --issues\` on ${date}. Once the files land on the landing branch, \`kit init --issues --close\` closes each Issue with a link to its file (after Lex's OK).
 - **Triage:** set each ticket's \`status\` (\`ready-for-agent\`, \`ready-for-human\`, \`needs-info\`, \`wontfix\` or \`open\`) and its \`blocked_by\`.
 
 ## Decisions so far

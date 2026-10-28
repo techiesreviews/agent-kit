@@ -389,8 +389,9 @@ type GhIssue = {
   number: number; title: string; state: "OPEN" | "CLOSED"; url: string; author: { login: string }; createdAt: string; body: string;
   labels: { name: string }[]; comments: { author: { login: string }; createdAt: string; body: string }[];
 };
-// A fake gh on PATH: `issue list` prints the open Issues from issues.json, `issue close` marks one closed (a
-// number listed in fail-close.json fails once instead); every call is logged as one JSON line in calls.log.
+// A fake gh on PATH: `issue list` prints the open Issues from issues.json (or list-output.txt as it is, or fails
+// with list-error.txt), `issue close` marks one closed (a number listed in fail-close.json fails once instead);
+// every call is logged as one JSON line in calls.log.
 function fakeGh(f: ReturnType<typeof fixture>, issues: GhIssue[]) {
   const bin = join(f.directory, "fake-gh");
   mkdirSync(bin);
@@ -400,7 +401,10 @@ const { appendFileSync, existsSync, readFileSync, writeFileSync } = require("nod
 const store = ${JSON.stringify(join(bin, "issues.json"))}, args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(join(bin, "calls.log"))}, JSON.stringify(args) + "\\n");
 const issues = JSON.parse(readFileSync(store, "utf8"));
-if (args[0] === "issue" && args[1] === "list") process.stdout.write(JSON.stringify(issues.filter((issue) => issue.state === "OPEN")));
+const listError = ${JSON.stringify(join(f.directory, "fake-gh/list-error.txt"))}, listOutput = ${JSON.stringify(join(f.directory, "fake-gh/list-output.txt"))};
+if (args[0] === "issue" && args[1] === "list" && existsSync(listError)) { process.stderr.write(readFileSync(listError, "utf8")); process.exit(1); }
+else if (args[0] === "issue" && args[1] === "list" && existsSync(listOutput)) process.stdout.write(readFileSync(listOutput, "utf8"));
+else if (args[0] === "issue" && args[1] === "list") process.stdout.write(JSON.stringify(issues.filter((issue) => issue.state === "OPEN")));
 else if (args[0] === "issue" && args[1] === "close") {
   const failing = ${JSON.stringify(join(f.directory, "fake-gh/fail-close.json"))};
   const once = existsSync(failing) ? JSON.parse(readFileSync(failing, "utf8")) : [];
@@ -432,7 +436,7 @@ test("--issues writes one valid needs-triage ticket per open Issue and the map, 
   const f = fixture(t);
   const { work } = issueRepo(f);
   const gh = fakeGh(f, [
-    issue(14, "Search: results ignore accents!", { body: "Typing *café* finds nothing.\n\nSteps: search `café`.", labels: [{ name: "bug" }, { name: "search" }],
+    issue(14, "Search: results ignore accents!", { body: "Typing *café* finds nothing.\n\nSteps: search `café`.", labels: [{ name: "bug" }, { name: "search" }, { name: "a`b" }],
       comments: [{ author: { login: "sam" }, createdAt: "2026-10-02T09:00:00Z", body: "Same on mobile." }] }),
     issue(3, "Add a \"dark mode\" toggle: #2 # not a comment"),
     issue(9, "Closed already", { state: "CLOSED" }),
@@ -457,7 +461,7 @@ issue: https://github.com/acme/tools/issues/14
 
 From GitHub Issue [acme/tools#14](https://github.com/acme/tools/issues/14), opened by lex on 2026-10-01.
 
-Labels: \`bug\`, \`search\`
+Labels: \`bug\`, \`search\`, \`\` a\`b \`\`
 
 Typing *café* finds nothing.
 
@@ -598,4 +602,81 @@ test("without \"maps\" in kit.json the backlog goes under docs/wayfinder with a 
     assert.equal(outside.status, 1, outside.stdout + outside.stderr);
     assert.equal(result(outside), `RESULT: fail init "maps" in scripts/agents/kit.json must be a folder inside the project: ${maps}`);
   }
+});
+
+test("copied text gets LF endings and its top headings moved down, so they never become the ticket's own sections", (t) => {
+  const f = fixture(t);
+  const { work } = issueRepo(f);
+  const body = "Crash on save.\r\n## Files\r\n- `src/save.ts`\r\n# Steps\r\n```sh\r\n# keep this shell comment\r\n## and this\r\n```\r\n### Deeper stays";
+  const comments = Array.from({ length: 100 }, (_, n) => ({ author: { login: "sam" }, createdAt: "2026-10-02T09:00:00Z", body: n ? `+${n}` : "## Comments\r\nme too" }));
+  const gh = fakeGh(f, [issue(8, "Save crash", { body, comments })]);
+  const run = gh.init(work, ["--issues"]);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.match(run.stdout, /^note: #8 has 100 or more comments; its file says to read the rest on GitHub$/m);
+  const text = readFileSync(join(work, `${backlog}/tickets/01-save-crash.md`), "utf8");
+  assert.doesNotMatch(text, /\r/);
+  assert.ok(text.includes("Crash on save.\n#### Files\n- `src/save.ts`\n### Steps\n```sh\n# keep this shell comment\n## and this\n```\n### Deeper stays\n"), text);
+  assert.ok(text.includes("**sam, 2026-10-02:**\n\n#### Comments\nme too"), text);
+  assert.deepEqual(text.match(/^## .*/gm), ["## Issue", "## and this", "## Comments"]);
+  assert.match(text, /\n_Only the first 100 comments were copied; read the rest on the Issue\._\n$/);
+  const files = spawnSync(process.execPath, ["--input-type=module", "-e",
+    `import { loadTickets } from ${JSON.stringify(join(f.kit, "tickets.mjs"))}; console.log(JSON.stringify(loadTickets("docs/wayfinder").tickets.map((t) => t.files)));`],
+    { cwd: work, env: f.env, encoding: "utf8" });
+  assert.deepEqual(JSON.parse(files.stdout), [[]]);
+});
+
+test("--close works on another GitHub host and after the repo was renamed, and needs a landing branch", (t) => {
+  const f = fixture(t);
+  const { work } = issueRepo(f);
+  const ghe = "https://ghe.example/acme/tools/issues/4";
+  const gh = fakeGh(f, [issue(4, "On our own host", { url: ghe }), issue(6, "Before the rename")]);
+  assert.equal(gh.init(work, ["--issues"]).status, 0);
+  f.git(work, "add", "-A");
+  f.git(work, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "backlog");
+  f.git(work, "push", "-q", "origin", "HEAD:dev");
+  // The repo is renamed: gh now gives #6 a new link, and a rerun still finds its file.
+  const store = join(f.directory, "fake-gh/issues.json");
+  writeFileSync(store, readFileSync(store, "utf8").replace("acme/tools/issues/6", "acme/tools-renamed/issues/6"));
+  const rerun = gh.init(work, ["--issues"]);
+  assert.equal(result(rerun), "RESULT: ok init issues nothing new (2 open Issues have a file)", rerun.stdout + rerun.stderr);
+
+  const settings = join(work, "scripts/agents/kit.json");
+  writeFileSync(settings, JSON.stringify({ project: "tools" }));
+  const noLand = gh.init(work, ["--issues", "--close"]);
+  assert.equal(noLand.status, 1, noLand.stdout + noLand.stderr);
+  assert.equal(result(noLand), 'RESULT: fail init --close needs scripts/agents/kit.json with "branches": { "land": "<branch>" }; run kit init first');
+  assert.deepEqual(gh.closes(), []);
+
+  writeFileSync(settings, JSON.stringify({ project: "tools", branches: { land: "dev" }, maps: "docs/wayfinder" }));
+  const close = gh.init(work, ["--issues", "--close"]);
+  assert.equal(close.status, 0, close.stdout + close.stderr);
+  assert.match(close.stdout, /^note: #6's file docs\/wayfinder\/backlog\/tickets\/02-before-the-rename\.md names https:\/\/github\.com\/acme\/tools\/issues\/6; GitHub now gives https:\/\/github\.com\/acme\/tools-renamed\/issues\/6$/m);
+  assert.deepEqual(gh.closes().map((args) => args.slice(0, 5).concat(args[6].split("\n")[0])), [
+    ["issue", "close", "4", "--repo", "ghe.example/acme/tools", `Moved to a ticket file: https://ghe.example/acme/tools/blob/dev/${backlog}/tickets/01-on-our-own-host.md`],
+    ["issue", "close", "6", "--repo", "acme/tools-renamed", `Moved to a ticket file: https://github.com/acme/tools-renamed/blob/dev/${backlog}/tickets/02-before-the-rename.md`],
+  ]);
+});
+
+test("--issues runs beside old kit files, and a failing or odd gh issue list writes nothing", (t) => {
+  const f = fixture(t);
+  const { work } = f.repo("old", { "scripts/agents/kit-lib.sh": "# old\n", "scripts/agents/kit.json": JSON.stringify({ project: "old", branches: { land: "dev" }, maps: "docs/wayfinder" }) });
+  const gh = fakeGh(f, [issue(1, "Kept")]);
+  const bin = join(f.directory, "fake-gh");
+  writeFileSync(join(bin, "list-error.txt"), "HTTP 401: Bad credentials\nmore");
+  const denied = gh.init(work, ["--issues"]);
+  assert.equal(denied.status, 1, denied.stdout + denied.stderr);
+  assert.equal(result(denied), "RESULT: fail init gh issue list failed: HTTP 401: Bad credentials");
+  rmSync(join(bin, "list-error.txt"));
+  for (const [output, text] of [["not json", /^RESULT: fail init gh issue list gave no JSON list \(/], ["{}", /^RESULT: fail init gh issue list gave no JSON list$/],
+    [JSON.stringify(Array.from({ length: 1000 }, (_, n) => issue(n + 1, `Issue ${n + 1}`))), /^RESULT: fail init 1000 or more open Issues; kit init --issues reads at most 999$/]] as const) {
+    writeFileSync(join(bin, "list-output.txt"), output);
+    const odd = gh.init(work, ["--issues"]);
+    assert.equal(odd.status, 1, odd.stdout + odd.stderr);
+    assert.match(result(odd), text);
+  }
+  assert.equal(existsSync(join(work, "docs")), false);
+  rmSync(join(bin, "list-output.txt"));
+  const run = gh.init(work, ["--issues"]);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.deepEqual(written(run), [`${backlog}/map.md`, `${backlog}/tickets/01-kept.md`]);
 });
