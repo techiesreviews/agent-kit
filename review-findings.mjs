@@ -60,6 +60,8 @@ const classify = text => {
   return (body === text ? null : token(body, 40)) ?? token(text, 80) ?? { severity: null, kind: "unsorted" };
 };
 const severityOf = text => classify(text).severity;
+// A defects line with no severity anywhere and no leading location is reviewer prose (a note).
+const prose = text => !SEVERITY.test(text) && !LOCATION.test(text);
 
 // Parse the Markdown variants emitted by kit review without reading files or changing state.
 // A group whose first line says "none" holds notes, not findings, until the next heading;
@@ -85,7 +87,7 @@ export function openFindings(resultMd) {
       const gap = pending.group === "Validation gaps", found = gap ? { severity: null, kind: null } : classify(pending.text);
       // Gaps, located lines and lines naming a P0–P3 anywhere are findings (an unread severity still
       // blocks, fail closed); other defects lines are notes.
-      if (gap || SEVERITY.test(pending.text) || LOCATION.test(pending.text)) findings.push({ group: pending.group, text: pending.text, ...found });
+      if (gap || !prose(pending.text)) findings.push({ group: pending.group, text: pending.text, ...found });
       else notes.push({ group: pending.group, text: pending.text });
     }
     pending = undefined;
@@ -141,9 +143,10 @@ export function openFindings(resultMd) {
     const indent = bullet?.[1].length ?? 0;
     // An unindented, unbulleted line starting with a location also starts a new item when the item
     // above would be a note, so a located defect after a prose paragraph is judged on its own and still
-    // blocks; under a located or severity-naming defect it is a continuation and joins that finding.
-    const note = pending && !SEVERITY.test(pending.text) && !LOCATION.test(pending.text);
-    const located = note && !bullet && section === "Defects" && !/^\s/.test(raw) && LOCATION.test(text);
+    // blocks, or when it names its own severity, so a second defect never hides behind the first.
+    // Otherwise, under a located or severity-naming defect, it is a continuation and joins that finding.
+    const located = !bullet && section === "Defects" && !/^\s/.test(raw) && LOCATION.test(text) &&
+      (pending && prose(pending.text) || severityOf(text) !== null);
     if (bullet && (!pending || indent <= pending.indent) || located) flush();
     // Under "none" notes a line that starts with a location and names a severity is still a finding
     // (fail closed); its continuation lines and sub-bullets join it, and other notes are skipped.

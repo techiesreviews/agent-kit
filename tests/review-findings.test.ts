@@ -593,6 +593,15 @@ test("a located continuation line joins the P2 or located defect above it and do
   assert.deepEqual(blockingFindings(named), []);
 });
 
+test("an unbulleted located line naming its own severity is its own finding, so a P1 below a P3 or P2 still blocks", () => {
+  for (const [first, severity, kind] of [["a.ts:1 — P3 style: x", "P3", "style"], ["- a.ts:1 — P2 fault: x", "P2", "fault"]]) {
+    const { findings, notes } = openFindings(review(`Defects:\nSpec:\n${first}\nb.ts:2 — P1 fault: y\nValidation gaps: none.`));
+    const p1 = finding("Spec", "b.ts:2 — P1 fault: y", "P1", "fault");
+    assert.deepEqual([findings, notes], [[finding("Spec", first.replace(/^- /, ""), severity, kind), p1], []], first);
+    assert.deepEqual(blockingFindings(findings), [p1], first);
+  }
+});
+
 test("a path starting with _ keeps its location through the emphasis cleaning", () => {
   const text = "_site/a.ts:1 — P2 fault: uses `_`";
   assert.deepEqual(openFindings(review(`Defects:\nSpec:\n- ${text}\nValidation gaps: none.`)).findings, [finding("Spec", text, "P2", "fault")]);
