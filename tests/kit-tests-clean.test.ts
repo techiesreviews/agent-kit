@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { chmodSync, existsSync, globSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { checkSteps, classify } from "../scripts/agents/pr-tier.mjs";
 
@@ -19,46 +19,66 @@ function entries(directory: string) {
 const limit = Number(process.env.ASE_KIT_CLEAN_LIMIT_MS) || 480_000;
 const guardName = "kit and agent unit tests leave no run folders or temporary files";
 
-function groupAlive(pid: number) {
-  try { process.kill(-pid, 0); return true; } catch { return false; }
+// Live members of a process group; a zombie is already gone and only waits for its parent.
+function members(pgid: number) {
+  return entries("/proc").filter(name => /^\d+$/.test(name)).map(Number).filter(pid => {
+    try {
+      const [state, , group] = readFileSync(`/proc/${pid}/stat`, "utf8").replace(/^.*\) /s, "").split(" ");
+      return Number(group) === pgid && state !== "Z";
+    } catch { return false; }
+  });
 }
 
-// Processes that left the group (kit bg starts jobs in their own session) still carry the private TMPDIR.
-// `within` also matches processes whose TMPDIR is a folder inside it.
-function strays(temporary: string, within = false) {
+// Processes that left the group (kit bg starts jobs in their own session, Playwright its browser) still carry
+// the private TMPDIR or a folder inside it.
+function strays(temporary: string) {
   const marker = `TMPDIR=${temporary}`;
-  const matches = (line: string) => line === marker || (within && line.startsWith(`${marker}/`));
+  const matches = (line: string) => line === marker || line.startsWith(`${marker}/`);
   return entries("/proc").filter(name => /^\d+$/.test(name)).map(Number).filter(pid => {
     try { return readFileSync(`/proc/${pid}/environ`, "latin1").split("\0").some(matches); } catch { return false; }
   });
 }
 
+function describe(pid: number) {
+  try { return `${pid} ${readFileSync(`/proc/${pid}/cmdline`, "utf8").replaceAll("\0", " ").trim().slice(0, 160)}`; } catch { return `${pid}`; }
+}
+
 // Runs the suite as its own process group, so a run cut off at the limit takes every test process with it.
-// Resolves once the group and any process still using its TMPDIR have exited; only then may the caller
-// remove that temp folder.
+// Resolves once the group and any process using its TMPDIR have exited; only then may the caller remove that
+// temp folder. A run that ends in time but leaves processes behind reports them in `leftRunning`; they are
+// then killed so the folder can still go. `survivors` lists any process that outlived even SIGKILL.
 async function runGroup(args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }, ms: number) {
   const child = spawn(process.execPath, args, { ...options, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  const pgid = child.pid!, temporary = options.env.TMPDIR!;
   let stdout = "", stderr = "";
   child.stdout.setEncoding("utf8").on("data", chunk => { stdout += chunk; });
   child.stderr.setEncoding("utf8").on("data", chunk => { stderr += chunk; });
+  const closed = once(child, "close");
   const started = Date.now();
-  let cutOff = false;
-  const signalGroup = (signal: NodeJS.Signals) => { try { process.kill(-child.pid!, signal); } catch { /* group gone */ } };
+  let cutOff = false, kill: NodeJS.Timeout | undefined;
+  const signalGroup = (signal: NodeJS.Signals) => { try { process.kill(-pgid, signal); } catch { /* group gone */ } };
   const stop = setTimeout(() => {
     cutOff = true;
     signalGroup("SIGTERM");
-    setTimeout(() => signalGroup("SIGKILL"), 5_000).unref();
+    kill = setTimeout(() => signalGroup("SIGKILL"), 5_000);
   }, ms);
   const [status, signal] = await once(child, "exit") as [number | null, NodeJS.Signals | null];
   clearTimeout(stop);
-  if (cutOff) signalGroup("SIGKILL");
-  const temporary = options.env.TMPDIR!;
-  for (const deadline = Date.now() + 10_000; Date.now() < deadline; await delay(100)) {
-    const left = strays(temporary);
-    if (!groupAlive(child.pid!) && left.length === 0) break;
-    for (const pid of left) try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+  clearTimeout(kill);
+  const running = () => [...new Set([...members(pgid), ...strays(temporary)])];
+  // A run that ended in time gets a short grace for its last processes to exit on their own.
+  if (!cutOff) for (const deadline = Date.now() + 2_000; running().length > 0 && Date.now() < deadline;) await delay(100);
+  const leftRunning = cutOff ? [] : running().map(describe);
+  for (const deadline = Date.now() + 10_000; running().length > 0 && Date.now() < deadline; await delay(100)) {
+    for (const pid of running()) try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
   }
-  return { status, signal, stdout, stderr, cutOff, seconds: Math.round((Date.now() - started) / 1000) };
+  const survivors = running().map(describe);
+  // stdio can still hold the last chunk (the TAP summary) when "exit" fires; a holder outside the group and
+  // the TMPDIR can keep the pipes open, so wait for "close" only briefly.
+  let wait: NodeJS.Timeout | undefined;
+  await Promise.race([closed, new Promise(accept => { wait = setTimeout(accept, 5_000); })]);
+  clearTimeout(wait);
+  return { status, signal, stdout, stderr, cutOff, leftRunning, survivors, seconds: Math.round((Date.now() - started) / 1000) };
 }
 
 test(guardName, { timeout: limit + 60_000 }, async t => {
@@ -98,15 +118,17 @@ test(guardName, { timeout: limit + 60_000 }, async t => {
   }
   assert.ok(!result.cutOff, `kit suite run was cut off after ${result.seconds} s (limit ${limit / 1000} s); ` +
     `removing the temp paths it left: ${leftovers.join(", ") || "none"}`);
+  assert.deepEqual(result.survivors, [], `processes still running after SIGKILL: ${result.survivors.join("; ")}`);
+  assert.deepEqual(result.leftRunning, [], `processes left running: ${result.leftRunning.join("; ")}`);
   assert.deepEqual(folders, [], `new folders in ${artifacts}: ${folders.join(", ")}`);
   assert.deepEqual(leftovers, [], `test temp paths left behind: ${leftovers.join(", ")}`);
-  assert.equal(result.status, 0, (result.stdout + result.stderr).slice(-12_000));
+  assert.equal(result.status, 0, `exit ${result.status} signal ${result.signal}\n${(result.stdout + result.stderr).slice(-12_000)}`);
   const count = Number(/^# tests (\d+)$/m.exec(result.stdout)?.[1]);
   assert.ok(count >= files.length, `child suite must execute tests from ${files.length} files: ${result.stdout.slice(-2000)}`);
   t.diagnostic(`guard ran ${count} tests from ${files.length} files`);
 });
 
-test("a guard run cut off at its limit names the time-out and leaves no temp folder", async t => {
+test("a guard run cut off at its limit names the time-out and leaves no temp folder", { timeout: 180_000 }, async t => {
   const outer = mkdtempSync(join(tmpdir(), "kit-tests-cutoff-"));
   t.after(() => rmSync(outer, { recursive: true, force: true }));
   const env = { ...process.env, TMPDIR: outer, TMP: outer, TEMP: outer,
@@ -119,9 +141,61 @@ test("a guard run cut off at its limit names the time-out and leaves no temp fol
   assert.notEqual(result.status, 0, output.slice(-4000));
   assert.match(result.stdout, /kit suite run was cut off after \d+ s \(limit 8 s\)/, output.slice(-4000));
   assert.doesNotMatch(result.stdout, /test temp paths left behind/);
-  assert.deepEqual(strays(outer, true), [], "processes from the cut-off suite still running");
+  assert.deepEqual(strays(outer), [], "processes from the cut-off suite still running");
   const runtime = `tsx-${process.getuid?.() ?? 0}`;
   assert.deepEqual(entries(outer).filter(name => name !== runtime || entries(join(outer, name)).length > 0), []);
+});
+
+// A tiny suite stand-in: `node -e <script>` run through runGroup with its own private TMPDIR.
+function runScript(t: TestContext, script: string, ms = 30_000) {
+  const temporary = mkdtempSync(join(tmpdir(), "kit-tests-group-"));
+  t.after(() => rmSync(temporary, { recursive: true, force: true }));
+  const env = { ...process.env, TMPDIR: temporary, TMP: temporary, TEMP: temporary };
+  return { temporary, run: runGroup(["-e", script, temporary], { cwd: repo, env }, ms) };
+}
+
+const sleeper = (options: string) =>
+  `require("child_process").spawn("sleep", ["60"], { stdio: "ignore", ${options} }).unref();`;
+
+test("the guard reports a process that left the group and kills it before the folder goes", { timeout: 60_000 }, async t => {
+  const { temporary, run } = runScript(t,
+    sleeper(`detached: true, env: { ...process.env, TMPDIR: require("path").join(process.argv[1], "nested") }`));
+  const result = await run;
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.leftRunning.length, 1, result.leftRunning.join("; "));
+  assert.match(result.leftRunning[0], /\bsleep 60\b/);
+  assert.deepEqual(result.survivors, []);
+  assert.deepEqual(strays(temporary), []);
+});
+
+test("a cut-off run kills a process that left the group without reporting it as a leak", { timeout: 60_000 }, async t => {
+  const { temporary, run } = runScript(t,
+    `${sleeper(`detached: true, env: { ...process.env, TMPDIR: require("path").join(process.argv[1], "nested") }`)} setInterval(() => {}, 1000);`,
+    1_000);
+  const result = await run;
+  assert.equal(result.cutOff, true);
+  assert.deepEqual(result.leftRunning, []);
+  assert.deepEqual(result.survivors, []);
+  assert.deepEqual(strays(temporary), []);
+});
+
+test("a run that ends in time reports a group member with another TMPDIR without waiting out the kill", { timeout: 60_000 }, async t => {
+  const started = Date.now();
+  const { run } = runScript(t, sleeper(`env: { ...process.env, TMPDIR: require("os").homedir() }`));
+  const result = await run;
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.leftRunning.length, 1, result.leftRunning.join("; "));
+  assert.match(result.leftRunning[0], /\bsleep 60\b/);
+  assert.deepEqual(result.survivors, []);
+  assert.ok(Date.now() - started < 8_000, `took ${Date.now() - started} ms`);
+});
+
+test("the guard reads all of the suite's output before it returns", { timeout: 60_000 }, async t => {
+  const { run } = runScript(t, `process.stdout.write("x".repeat(256 * 1024) + "\\nEND-MARKER\\n");`);
+  const result = await run;
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.length, 256 * 1024 + "\nEND-MARKER\n".length);
+  assert.ok(result.stdout.endsWith("\nEND-MARKER\n"));
 });
 
 test("npm test excludes the clean guard and CI runs it separately", () => {
