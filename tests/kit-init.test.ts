@@ -4,6 +4,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, 
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import test from "node:test";
+import { kitRegisterProject } from "../scripts/agents/kit-lib.mjs";
 
 const launchers = resolve("scripts/agents/launcher");
 type After = { after: (fn: () => void) => void };
@@ -327,4 +328,58 @@ test("the stubs go where an existing kit.json points, and allowMainCheckout lets
   for (const path of ["scripts/agents/project.d", "docs/wayfinder", "docs/agents/kitchen-extras.md"]) assert.equal(existsSync(join(main, path)), false, path);
   assert.match(readFileSync(join(main, "docs/agents/kitchen.md"), "utf8"), /\[docs\/kitchen\.local\.md\]\(\.\.\/kitchen\.local\.md\)/);
   assert.match(readFileSync(join(main, "plans/README.md"), "utf8"), /`plans\/<map>\/`/);
+});
+
+test("kitRegisterProject lists nothing when during() throws, and a failed write leaves no temporary file or lock", (t) => {
+  const f = fixture(t);
+  const env = { ...f.env, XDG_STATE_HOME: f.state };
+  const list = join(f.state, "agent-kit/projects.json");
+  assert.equal(kitRegisterProject("a", "/a", env), "added");
+  const listed = readFileSync(list, "utf8");
+  assert.throws(() => kitRegisterProject("x", "/r", env, () => { throw new Error("boom"); }), /^Error: boom$/);
+  assert.equal(readFileSync(list, "utf8"), listed);
+  assert.equal(existsSync(`${list}.lock`), false);
+  // projects.json replaced by a folder after it was read: the rename fails, and its temporary file goes.
+  assert.throws(() => kitRegisterProject("y", "/y", env, () => { rmSync(list); mkdirSync(list); }),
+    (error: Error) => error.message.startsWith(`cannot write ${list}: E`));
+  assert.deepEqual(readdirSync(join(f.state, "agent-kit")), ["projects.json"]);
+});
+
+test("a file changed or made while kit init runs is never overwritten", (t) => {
+  const f = fixture(t);
+  // A library that edits one file just before init's writes, as another writer would between its check and write.
+  const wrapper = join(f.directory, "edit-lib.mjs");
+  writeFileSync(wrapper, `export * from ${JSON.stringify(join(f.kit, "kit-lib.mjs"))};
+import { kitRegisterProject as register } from ${JSON.stringify(join(f.kit, "kit-lib.mjs"))};
+import { writeFileSync } from "node:fs";
+export function kitRegisterProject(name, root, env, during) {
+  return register(name, root, env, () => { writeFileSync(process.env.EDIT_FILE, process.env.EDIT_TEXT); during(); });
+}
+`);
+  const cases: [string, Record<string, string>, string, RegExp][] = [
+    ["merged", { ".claude/settings.json": "{}" }, ".claude/settings.json",
+      /^RESULT: fail init writing \.claude\/settings\.json failed: it changed while kit init ran; run kit init again; wrote scripts\/agents\/kit\.json, scripts\/agents\/kit, scripts\/agents\/hooks\/run\.sh$/],
+    ["made", {}, "scripts/agents/kit", /^RESULT: fail init writing scripts\/agents\/kit failed: EEXIST: .+; wrote scripts\/agents\/kit\.json$/],
+  ];
+  for (const [name, files, edited, expected] of cases) {
+    const { work } = f.repo(name, files);
+    mkdirSync(join(work, "scripts/agents"), { recursive: true });
+    const run = spawnSync(join(f.kit, "kit.d/init"), [], { cwd: work, encoding: "utf8", timeout: 60_000,
+      env: { ...f.env, KIT_ROOT: work, KIT_HOME: f.kit, KIT_LIB_MJS: wrapper, EDIT_FILE: join(work, edited), EDIT_TEXT: "edited\n" } });
+    assert.equal(run.status, 1, `${name}: ${run.stdout}${run.stderr}`);
+    assert.match(result(run), expected, name);
+    assert.equal(readFileSync(join(work, edited), "utf8"), "edited\n", name);
+    assert.deepEqual(readdirSync(join(work, edited, "..")).filter((file) => file.endsWith(".tmp")), [], name);
+  }
+});
+
+test("an AGENTS.md that cannot be read stops kit init with a plain RESULT line and nothing written", (t) => {
+  const f = fixture(t);
+  const { work } = f.repo("folder", { "AGENTS.md/notes": "a folder named AGENTS.md\n" });
+  const before = snapshot(work);
+  const run = f.init(work);
+  assert.equal(run.status, 1, run.stdout + run.stderr);
+  assert.match(result(run), /^RESULT: fail init AGENTS\.md is unreadable \(EISDIR: .+\); fix it first, kit init never overwrites it$/);
+  assert.doesNotMatch(run.stderr, /at .+\(node:/);
+  assert.deepEqual(snapshot(work), before);
 });

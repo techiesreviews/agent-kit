@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // kit: set a project up for the shared kit: settings, launchers, hooks and docs stubs
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -76,15 +76,16 @@ const full = !options.light;
 const extrasPath = "docs/agents/kitchen-extras.md", mapsPath = "docs/wayfinder", commandsPath = "scripts/agents/project.d";
 
 // The settings file: kept as it is when there, else filled from git and package.json.
-let settings;
+// unnamed: stub keys an existing settings file lacks, as [key, default, the stub file written there].
+let settings, unnamed = [];
 if (existsSync(at(kitSettingsFile))) {
   settings = readJson(kitSettingsFile);
   const problems = kitSettingsProblems(settings);
   if (problems.length) fail(`${problems.join("; ")}; fix it first, kit init never overwrites it`);
   kept.push(kitSettingsFile);
   if (options.land) notes.push(`--land ignored: ${kitSettingsFile} already names "branches"`);
-  const missing = full ? [["commands", commandsPath], ["maps", mapsPath], ["rulebookExtras", extrasPath]].filter(([key]) => !settings[key]) : [];
-  if (missing.length) notes.push(`add to ${kitSettingsFile} (kit init never edits it): ${missing.map(([key, value]) => `"${key}": "${value}"`).join(", ")}`);
+  unnamed = full ? [["commands", commandsPath, `${commandsPath}/.gitkeep`], ["maps", mapsPath, `${mapsPath}/README.md`], ["rulebookExtras", extrasPath, extrasPath]]
+    .filter(([key]) => !settings[key]) : [];
 } else {
   const land = options.land || ["dev", "develop", "main", "master"].find(branchExists);
   if (!land) fail("no dev, develop, main or master branch; name the landing branch with kit init --land <branch>", 2);
@@ -187,7 +188,7 @@ release, who decides, and the builder and reviewer pins. It has two parts:
   else {
     const land = settings.branches.land, release = settings.branches.release || land;
     const text = readFileSync(join(home, "docs/kitchen-extras-template.md"), "utf8")
-      .replaceAll("<project>", settings.project).replaceAll("<land>", land).replaceAll("<release>", release);
+      .replaceAll("<project>", () => settings.project).replaceAll("<land>", () => land).replaceAll("<release>", () => release);
     writes.push({ path: extrasFile, text });
   }
   const readme = `# Wayfinder maps
@@ -200,12 +201,16 @@ map goes from idea to tickets, and \`scripts/agents/kit next <map>\` to hand its
   else writes.push({ path: `${mapsDir}/README.md`, text: readme });
 }
 
+// The keys an existing settings file lacks are named only when this run writes their stubs, not on every rerun.
+const stubsWritten = unnamed.filter(([, , stub]) => writes.some(({ path }) => path === stub));
+if (stubsWritten.length) notes.push(`add to ${kitSettingsFile} (kit init never edits it): ${stubsWritten.map(([key, value]) => `"${key}": "${value}"`).join(", ")}`);
+
 // AGENTS.md: the two lines, added to the end when missing.
 const agentLines = [
   ["scripts/agents/kit rulebook", "Kitchen rulebook: `scripts/agents/kit rulebook` (stations, who decides, builder and reviewer pins)."],
   ["scripts/agents/kit --help", "Agent commands: `scripts/agents/kit --help`; `scripts/agents/kit <command> --help` for one."],
 ];
-const agents = existsSync(at("AGENTS.md")) ? readFileSync(at("AGENTS.md"), "utf8") : null;
+const agents = existsSync(at("AGENTS.md")) ? readText("AGENTS.md") : null;
 const missingLines = agentLines.filter(([marker]) => !agents?.includes(marker)).map(([, line]) => line);
 if (!missingLines.length) kept.push("AGENTS.md");
 else if (agents === null) writes.push({ path: "AGENTS.md", text: `# Agents\n\n${missingLines.join("\n")}\n` });
@@ -222,9 +227,18 @@ try {
     for (const { path, text, mode, said, before = null } of writes) {
       try {
         mkdirSync(dirname(at(path)), { recursive: true });
-        if (before !== null && readFileSync(at(path), "utf8") !== before) throw new Error("it changed while kit init ran; run kit init again");
-        writeFileSync(at(path), text, before === null ? { flag: "wx" } : {});
-        if (mode) chmodSync(at(path), mode);
+        if (before === null) {
+          writeFileSync(at(path), text, { flag: "wx" });
+          if (mode) chmodSync(at(path), mode);
+        } else {
+          if (readFileSync(at(path), "utf8") !== before) throw new Error("it changed while kit init ran; run kit init again");
+          // A merged file is replaced in one rename, keeping its mode, so a failed write never leaves it cut short.
+          const temporary = `${at(path)}.${process.pid}.tmp`;
+          try {
+            writeFileSync(temporary, text, { flag: "wx", mode: statSync(at(path)).mode & 0o7777 });
+            renameSync(temporary, at(path));
+          } catch (error) { rmSync(temporary, { force: true }); throw error; }
+        }
       } catch (error) {
         throw new Error(`writing ${path} failed: ${error.message}; wrote ${done.length ? done.join(", ") : "nothing"}`);
       }
@@ -241,20 +255,23 @@ for (const note of notes) console.log(`note: ${note}`);
 // place check fails until work moves to a worktree: that is a note here, naming how, since the project has no
 // worktree.sh of its own.
 // Doctor bounds its own steps; this bounds a checks.doctor line that hangs anyway.
-const doctor = spawnSync(join(home, "kit.d/doctor"), [], { cwd: root, env: { ...process.env, KIT_ROOT: root }, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], timeout: 600_000 });
+const doctorTimeout = 600_000;
+const doctor = spawnSync(join(home, "kit.d/doctor"), [], { cwd: root, env: { ...process.env, KIT_ROOT: root }, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], timeout: doctorTimeout });
 const doctorLines = (doctor.stdout ?? "").split("\n").filter(Boolean);
 const real = (path) => { try { return realpathSync(path); } catch { return path; } };
 const inMain = [gitMain, projectRoot].some((main) => real(main) === real(root));
 const land = settings.branches.land;
+// Doctor's own fix names origin/<land>; without that remote branch the local one is the start.
+const originLand = git("rev-parse", "--verify", "--quiet", `refs/remotes/origin/${land}`) !== null;
 const placeNote = `note: place: this is the main checkout, where kit doctor stops builds; build in a worktree ` +
-  `(git worktree add -b <branch> ../${basename(real(root))}-<branch> ${land}), or add "allowMainCheckout": true to ${kitSettingsFile} to build here`;
+  `(git worktree add -b <branch> ../${basename(real(root))}-<branch> ${originLand ? `origin/${land}` : land}), or add "allowMainCheckout": true to ${kitSettingsFile} to build here`;
 let placeFailed = false;
 for (const line of doctorLines) {
   if (line.startsWith("RESULT: ")) continue;
   if (inMain && line.startsWith("✗ place: ")) { placeFailed = true; console.log(placeNote); }
   else console.log(line);
 }
-let doctorResult = doctorLines.findLast((line) => line.startsWith("RESULT: "))?.replace(/^RESULT: (ok|fail) /, "") ?? `exited ${doctor.status} without a RESULT line`;
+let doctorResult = doctorLines.findLast((line) => line.startsWith("RESULT: "))?.replace(/^RESULT: (ok|fail) /, "") ?? (doctor.error?.code === "ETIMEDOUT" || doctor.signal ? `doctor timed out after ${doctorTimeout / 1000}s` : `doctor exited ${doctor.status} without a RESULT line`);
 let doctorOk = doctor.status === 0;
 const failedChecks = /^doctor (\d+) failed: (.*)$/.exec(doctorResult);
 if (placeFailed && failedChecks) {
