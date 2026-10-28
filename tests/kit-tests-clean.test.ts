@@ -48,9 +48,10 @@ test("kit and agent unit tests leave no run folders or temporary files", { timeo
     const failures = result.stdout.match(/^\s*not ok .*(?:\n[ \t]+.*)*/gm)?.join("\n");
     t.diagnostic(failures || (result.stdout + result.stderr).slice(-12_000));
   }
+  // A child killed at the limit leaves its running test's folder; name the timeout, not the leftover.
+  assert.equal(result.error, undefined, result.error?.message);
   assert.deepEqual(folders, [], `new folders in ${artifacts}: ${folders.join(", ")}`);
   assert.deepEqual(leftovers, [], `test temp paths left behind: ${leftovers.join(", ")}`);
-  assert.equal(result.error, undefined, result.error?.message);
   assert.equal(result.status, 0, (result.stdout + result.stderr).slice(-12_000));
   const count = Number(/^# tests (\d+)$/m.exec(result.stdout)?.[1]);
   assert.ok(count >= files.length, `child suite must execute tests from ${files.length} files: ${result.stdout.slice(-2000)}`);
