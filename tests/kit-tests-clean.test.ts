@@ -20,6 +20,7 @@ const limit = Number(process.env.ASE_KIT_CLEAN_LIMIT_MS) || 480_000;
 const guardName = "kit and agent unit tests leave no run folders or temporary files";
 
 // Live members of a process group; a zombie is already gone and only waits for its parent.
+// `members` and `strays` read /proc, so the guard's process checks need Linux (CI and the dev hosts).
 function members(pgid: number) {
   return entries("/proc").filter(name => /^\d+$/.test(name)).map(Number).filter(pid => {
     try {
@@ -75,7 +76,14 @@ async function runGroup(args: string[], options: { cwd: string; env: NodeJS.Proc
     clearTimeout(stop);
     clearTimeout(kill);
   }
-  const running = () => [...new Set([...members(pgid), ...strays(temporary)])];
+  // Linux keeps a PID out of reuse while a group still carries it as its ID; once a scan finds the group
+  // empty, the ID may belong to someone else, so it is never scanned (or killed) again.
+  let groupGone = false;
+  const running = () => {
+    const group = groupGone ? [] : members(pgid);
+    if (group.length === 0) groupGone = true;
+    return [...new Set([...group, ...strays(temporary)])];
+  };
   const killRunning = () => { for (const pid of running()) try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ } };
   // A run that ended in time gets a short grace for its last processes to exit on their own.
   if (!cutOff) await waitUntil(() => running().length === 0, 2_000);
@@ -195,27 +203,40 @@ test("a cut-off run kills a process that left the group without reporting it as 
   assert.deepEqual(strays(temporary), []);
 });
 
-test("a cut-off run returns only after a process writing into the temp folder has stopped", { timeout: 60_000 }, async t => {
-  // The writer leaves the group and keeps recreating nested/file, as a test cut off mid-run might.
+test("a cut-off run returns only after a process writing into a kit-pr temp folder has stopped", { timeout: 60_000 }, async t => {
+  // The writer leaves the group and keeps recreating kit-pr-cutoff/file, as a kit-pr case cut off mid-run might.
   const writer = `const { mkdirSync, writeFileSync } = require("fs"), dir = process.env.TMPDIR;
     setInterval(() => { mkdirSync(dir, { recursive: true }); writeFileSync(dir + "/file", String(Date.now())); }, 50);`;
   const { temporary, run } = runScript(t, `const { spawn } = require("child_process"), { join } = require("path");
     spawn(process.execPath, ["-e", ${JSON.stringify(writer)}], { detached: true, stdio: "ignore",
-      env: { ...process.env, TMPDIR: join(process.argv[1], "nested") } }).unref();
-    const file = join(process.argv[1], "nested", "file");
+      env: { ...process.env, TMPDIR: join(process.argv[1], "kit-pr-cutoff") } }).unref();
+    const file = join(process.argv[1], "kit-pr-cutoff", "file");
     const ready = setInterval(() => { if (require("fs").existsSync(file)) { clearInterval(ready); process.stdout.write("STARTED\\n"); } }, 20);
     setInterval(() => {}, 1000);`, 2_000);
   const result = await run;
   assert.equal(result.cutOff, true);
   assert.ok(result.stdout.includes("STARTED"), "the writer wrote before the cut-off");
-  const file = join(temporary, "nested", "file");
+  const file = join(temporary, "kit-pr-cutoff", "file");
   const written = readFileSync(file, "utf8");
   await delay(500);
   assert.equal(readFileSync(file, "utf8"), written, "nothing writes into the temp folder after the run returns");
+  assert.deepEqual(globSync(join(temporary, "kit-pr-*")), [join(temporary, "kit-pr-cutoff")]);
+  // What the guard's t.after does once runGroup has returned.
   rmSync(temporary, { recursive: true, force: true });
   assert.equal(existsSync(temporary), false);
   await delay(300);
   assert.equal(existsSync(temporary), false, "nothing recreates the temp folder once it is removed");
+  assert.deepEqual(globSync(join(temporary, "kit-pr-*")), []);
+});
+
+test("a cut-off suite that ignores SIGTERM is killed 5 s later", { timeout: 60_000 }, async t => {
+  const { run } = runScript(t, `process.on("SIGTERM", () => {}); process.stdout.write("STARTED\\n"); setInterval(() => {}, 1000);`, 1_000);
+  const result = await run;
+  assert.ok(result.stdout.includes("STARTED"), "the SIGTERM handler was in place before the cut-off");
+  assert.equal(result.cutOff, true);
+  assert.equal(result.signal, "SIGKILL");
+  assert.deepEqual(result.survivors, []);
+  assert.ok(result.seconds <= 8, `took ${result.seconds} s`);
 });
 
 test("a run that ends in time reports a group member with another TMPDIR without waiting out the kill", { timeout: 60_000 }, async t => {
