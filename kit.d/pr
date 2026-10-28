@@ -171,24 +171,30 @@ function runsOnPullRequests(text) {
   return pushRunsOnBranches(filters);
 }
 
-// Kit's own ticket-only commits: the follow-ups and the Done "Commits:" line, which names them "this commit".
+// Kit's own ticket-only commits: the follow-ups and the Done "Commits:" line. Whichever of them last wrote that
+// line is "this commit" in it; every other commit, kit's own included, is named by subject.
 const ownSubjects = ticket => ["follow-ups from review", "commits by subject"].map(what => `docs: ${basename(ticket, ".md")} ${what}`);
 
 /**
- * The ticket with its last Done's "Commits:" line (and the lines continuing it) naming these subjects and then
- * "this commit", as rebases and GitHub's rebase merge rewrite every SHA; a Done without the line is unchanged.
+ * The ticket with its last Done's "Commits:" line naming these subjects and then "this commit", as rebases and
+ * GitHub's rebase merge rewrite every SHA; a Done without the line is unchanged. Lines indented under it that
+ * are not list items continue it and are replaced too; any other line is kept.
  */
 function commitsBySubject(text, subjects) {
   const start = [...text.matchAll(doneHeading())].at(-1)?.index;
   if (start === undefined) return text;
   const rest = text.slice(start), end = rest.slice(1).search(/^## /m), doneEnd = end < 0 ? rest.length : end + 1;
   const done = rest.slice(0, doneEnd);
-  const line = /^([ \t]*(?:[-*+][ \t]+)?)(?:\*\*)?Commits\b[^:\r\n]*:.*(?:\n(?![ \t]*(?:[-*+][ \t]|#|\r?$)).*)*/m.exec(done);
+  const line = /^([ \t]*)((?:[-*+][ \t]+)?)(\*\*)?Commits\b[^:\r\n]*:(\*\*)?.*$/m.exec(done);
   if (!line) return text;
+  let stop = line.index + line[0].length;
+  for (let next; (next = /^\n([ \t]*)([^\n]*)/.exec(done.slice(stop))) &&
+    next[1].length > line[1].length && next[2].trim() && !/^(?:[-*+]|\d+[.)])(?:[ \t]|\r?$)/.test(next[2]);) stop += next[0].length;
   const names = [...subjects.map(subject => `"${subject}"`), "this commit"];
   const list = names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0];
-  const written = `${line[1]}Commits: ${list}.${line[0].endsWith("\r") ? "\r" : ""}`;
-  return text.slice(0, start) + done.slice(0, line.index) + written + done.slice(line.index + line[0].length) + rest.slice(doneEnd);
+  const bold = line[3] ? "**" : "";
+  const written = `${line[1]}${line[2]}${bold}Commits:${bold} ${list}.${done.slice(0, stop).endsWith("\r") ? "\r" : ""}`;
+  return text.slice(0, start) + done.slice(0, line.index) + written + done.slice(stop) + rest.slice(doneEnd);
 }
 
 // Isolate both HEAD and the index: concurrent work must never enter a follow-up commit.
@@ -341,19 +347,24 @@ async function main(args) {
     // then against our own last push, so a colleague's push to the branch is never overwritten.
     let pushed = (await execute("guards", "git", ["rev-parse", "--verify", "-q", `refs/remotes/origin/${branch}`])).text.trim();
     const own = flags.ticket ? ownSubjects(flags.ticket) : [];
+    // The PR's subjects up to `commit`, oldest first; one of kit's own ticket commits on top carries the line as "this commit".
+    const subjectsTo = (commit, carrier) => {
+      const subjects = execFileSync("git", ["-C", root, "log", "--reverse", "--format=%s", `origin/${flags.base}..${commit}`],
+        { cwd: root, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).split(/\r?\n/).filter(Boolean);
+      return carrier && own.includes(subjects.at(-1)) ? subjects.slice(0, -1) : subjects;
+    };
     // After each rebase and before the push, the ticket's Done "Commits:" line names the commits by subject:
     // the SHAs the builder saw change here and again on landing (reportLanded prints those).
     async function nameCommits() {
       if (!flags.ticket || flags.release || flags.dryRun) return;
+      const captured = await git("commits", ["rev-parse", "HEAD"]);
       const file = resolve(root, flags.ticket);
       if (!existsSync(file)) return; // The features step names a missing ticket.
-      const subjects = (await git("commits", ["log", "--reverse", "--format=%s", `origin/${flags.base}..HEAD`]))
-        .split(/\r?\n/).filter(subject => subject && !own.includes(subject));
-      const original = readFileSync(file, "utf8"), updated = commitsBySubject(original, subjects);
-      if (updated === original) return;
+      const original = readFileSync(file, "utf8");
+      if (commitsBySubject(original, subjectsTo(captured, true)) === original) return;
+      const subjects = subjectsTo(captured, false), updated = commitsBySubject(original, subjects);
       writeFileSync(file, updated);
-      const current = await git("commits", ["rev-parse", "HEAD"]);
-      commitFollowups({ root, branch, head: current, ticket: flags.ticket, content: updated, env, message: own[1] });
+      commitFollowups({ root, branch, head: captured, ticket: flags.ticket, content: updated, env, message: own[1] });
       console.log(`commits: ${flags.ticket} names ${subjects.length} commits by subject`);
     }
     await rebase();
@@ -554,8 +565,10 @@ async function main(args) {
         if (missing.length) section = `${section.slice(0, position)}${eol}${missing.join(eol)}${section.slice(position)}`;
         done = done.slice(0, followups.index) + section + done.slice(followups.index + followups[0].length);
       } else if (missing.length) done = `${done.trimEnd()}${eol}${eol}### Follow-ups${eol}${eol}${missing.join(eol)}${eol}${eol}`;
-      const updated = prefix + done + rest.slice(doneEnd);
-      if (updated === original) return;
+      const followed = prefix + done + rest.slice(doneEnd);
+      if (followed === original) return;
+      // The follow-ups commit carries the Done "Commits:" line as "this commit", naming every commit before it.
+      const updated = commitsBySubject(followed, subjectsTo(reviewedHead, false));
       writeFileSync(file, updated);
       head = commitFollowups({ root, branch, head: reviewedHead, ticket: flags.ticket, content: updated, env });
       await push();
@@ -567,7 +580,8 @@ async function main(args) {
       if (review && !await lookAt(base, false)) return false;
       return lookAt(base, true);
     }
-    // HEAD without kit's own trailing ticket-only commits, down to the merge base at most.
+    // HEAD without kit's own trailing ticket-only commits, down to the merge base at most. The subject alone is
+    // trusted only because such a commit may change nothing but the ticket, which a review never covers.
     async function reviewable(base) {
       let commit = head;
       const ticket = flags.ticket && relative(root, resolve(root, flags.ticket));
@@ -640,20 +654,22 @@ async function main(args) {
       writeFileSync(comment, `Merged ${what}: ${reason}`);
       await gh("waiver", ["pr", "comment", number, "--body-file", comment]);
     }
-    // GitHub's rebase merge writes every commit anew: each is found on the land branch by subject, never guessed.
-    async function reportLanded() {
+    // GitHub's rebase merge writes every commit anew, ending at the merge commit: the PR's commits are the last
+    // ones up to it, compared by subject in order, so another PR's commit with the same subject is never named.
+    async function reportLanded(merge) {
+      if (!merge) { console.log("landed: not checked (GitHub named no merge commit)"); return; }
       try {
         const subjects = (await git("landed", ["log", "--reverse", "--format=%s", `origin/${flags.base}..HEAD`])).split(/\r?\n/).filter(Boolean);
         await git("landed", ["fetch", "-q", "origin", flags.base]);
-        const base = await git("landed", ["merge-base", "HEAD", `origin/${flags.base}`]);
-        const landed = (await git("landed", ["log", "--reverse", "--format=%h %s", `${base}..origin/${flags.base}`])).split(/\r?\n/)
-          .filter(Boolean).map(line => ({ sha: line.slice(0, line.indexOf(" ")), subject: line.slice(line.indexOf(" ") + 1) }));
-        const used = new Set();
-        for (const subject of subjects) {
-          const match = landed.find(item => !used.has(item) && item.subject === subject);
-          if (match) used.add(match);
+        const base = await git("landed", ["merge-base", "HEAD", merge]);
+        const landed = (await git("landed", ["log", "--reverse", "--format=%h %s", "-n", String(subjects.length), `${base}..${merge}`]))
+          .split(/\r?\n/).filter(Boolean).map(line => ({ sha: line.slice(0, line.indexOf(" ")), subject: line.slice(line.indexOf(" ") + 1) }));
+        // A shorter list lines up from the merge commit backwards.
+        const offset = subjects.length - landed.length;
+        subjects.forEach((subject, index) => {
+          const match = landed[index - offset]?.subject === subject ? landed[index - offset] : undefined;
           console.log(match ? `landed: ${match.sha} ${subject}` : `not found on ${flags.base}: ${subject}`);
-        }
+        });
       } catch (error) { console.log(`landed: not checked (${error.message})`); }
     }
     const repo = await gh("merge", ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]);
@@ -682,11 +698,12 @@ async function main(args) {
       const merged = await execute("merge", "gh", ["pr", "merge", number, "--rebase", "--delete-branch", "--match-head-commit", head, "--repo", repo]);
       if (merged.status === 0) {
         const commit = await execute("merge", "gh", ["pr", "view", number, "--json", "mergeCommit", "--jq", ".mergeCommit.oid"]);
-        const sha = commit.status === 0 && /^[a-f0-9]{40}$/i.test(commit.text.trim()) ? commit.text.trim() : head;
+        const mergeCommit = commit.status === 0 && /^[a-f0-9]{40}$/i.test(commit.text.trim()) ? commit.text.trim() : undefined;
+        const sha = mergeCommit ?? head;
         ok("merge");
         await recordWaiver();
         land({ sha, at: new Date().toISOString(), waived: waivedAny() });
-        await reportLanded();
+        await reportLanded(mergeCommit);
         kitResult("ok", `merged #${number} ${sha.slice(0, 7)}`);
         return 0;
       }
