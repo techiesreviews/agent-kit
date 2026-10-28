@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -192,7 +192,6 @@ test("the shared kit runs from a copy named by KIT_HOME for a project with only 
   assert.equal(status.status, 0, status.stdout + status.stderr);
   assert.match(status.stdout, /\nRESULT: ok status /);
   // kit card runs the copy's context-card.mjs for this project's notes.
-  assert.ok(existsSync(join(home, "context-card.mjs")));
   const memory = join(temp(t), "memory");
   mkdirSync(join(memory, "project-notes"), { recursive: true });
   writeFileSync(join(memory, "project-notes/README.md"), `| Slug | Workspace |\n| --- | --- |\n| x | \`${realpathSync(root)}\` |\n`);

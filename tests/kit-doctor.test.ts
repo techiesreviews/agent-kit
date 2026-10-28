@@ -545,13 +545,15 @@ test("the kit home check moves a commands folder inside the kit out of the copy 
   writeFileSync(join(home, "project.d/marker"), "");
   writeFileSync(join(home, "kit.json"), JSON.stringify({ project: "native-site-editor", branches: { land: "dev" },
     devRoot: f.dev, sharedNodeModules: join(f.dev, "node_modules"), commands: "scripts/agents/project.d" }));
-  // The copy's front door runs for the temporary project and says where the commands folder went.
-  executable(join(home, "kit"), '[[ ! -e $KIT_HOME/project.d/marker ]] || { printf "RESULT: fail marker in the copy\\n"; exit 1; }\n' +
+  // The copy's front door runs for the temporary project, not the build (which holds the same marker), and says where the commands folder went.
+  executable(join(home, "kit"), '[[ ! $KIT_ROOT -ef $REAL_BUILD ]] || { printf "RESULT: fail real project\\n"; exit 1; }\n' +
+    '[[ ! -e $KIT_HOME/project.d/marker ]] || { printf "RESULT: fail marker in the copy\\n"; exit 1; }\n' +
     '[[ -f $KIT_ROOT/scripts/agents/project.d/marker ]] || { printf "RESULT: fail no commands folder in the project\\n"; exit 1; }\n' +
     'printf "RESULT: ok version fake\\n"');
   const result = spawnSync("/bin/bash", [join(home, "kit.d/doctor")], {
     cwd: f.build, encoding: "utf8", timeout: 10_000,
-    env: { ...kitEnv(), KIT_ROOT: f.build, KIT_MAIN_ROOT: f.main, KIT_LIB: undefined, KIT_COMMANDS_DIR: undefined, KIT_GROK: join(f.directory, "no-grok") },
+    env: { ...kitEnv(), KIT_ROOT: f.build, KIT_MAIN_ROOT: f.main, KIT_LIB: undefined, KIT_COMMANDS_DIR: undefined, KIT_GROK: join(f.directory, "no-grok"),
+      REAL_BUILD: f.build },
   });
   assert.ok(result.stdout.includes("✓ commands: 2 shared, 0 in scripts/agents/project.d\n"), result.stdout);
   assert.ok(result.stdout.includes(`✓ kit home: a copy of ${realpathSync(home)} runs kit version for a project with only its settings and front door\n`), result.stdout);

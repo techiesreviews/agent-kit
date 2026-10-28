@@ -131,7 +131,7 @@ test("explicit files and default full suite execute through unit.sh; failure sta
 
 test("unit help, listing and invalid options use the kit front door", t => {
   const f = fixture(t);
-  const listing = spawnSync(kit, [], { encoding: "utf8" });
+  const listing = spawnSync(kit, [], { env: kitEnv(), encoding: "utf8" });
   assert.match(listing.stdout, /unit\s+run focused unit tests/);
   const help = f.run("--help");
   assert.equal(help.status, 0, help.stderr);

@@ -79,10 +79,10 @@ test("wait help covers each subcommand and kit lists its summary", async (t) => 
     assert.match(output.stdout, /Usage: kit wait pid/);
     assert.doesNotMatch(output.stdout, /RESULT:/);
   }
-  const listing = spawnSync("/bin/bash", [kit], { encoding: "utf8" });
+  const listing = spawnSync("/bin/bash", [kit], { env: kitEnv(), encoding: "utf8" });
   assert.equal(listing.status, 0, listing.stderr);
   assert.match(listing.stdout, /wait\s+wait for a process, an output file or CI checks/);
-  const help = spawnSync("/bin/bash", [kit, "wait", "--help"], { encoding: "utf8" });
+  const help = spawnSync("/bin/bash", [kit, "wait", "--help"], { env: kitEnv(), encoding: "utf8" });
   assert.equal(help.status, 0, help.stderr);
   assert.doesNotMatch(help.stdout, /RESULT:/);
 });

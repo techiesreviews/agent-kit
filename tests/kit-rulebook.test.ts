@@ -34,7 +34,7 @@ function rulebookWith(t: TestContext, extra: NodeJS.ProcessEnv, settings: Record
 const project = { project: "p", branches: { land: "main" } };
 
 test("kit rulebook prints the shared rulebook, then this editor's extras", () => {
-  const result = spawnSync(kit, ["rulebook"], { encoding: "utf8", timeout: 30_000 });
+  const result = spawnSync(kit, ["rulebook"], { env: kitEnv(), encoding: "utf8", timeout: 30_000 });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.equal(result.stdout, `${read(shared)}\n${read(extras)}RESULT: ok rulebook shared and ${extras}\n`);
   assert.equal(JSON.parse(read("scripts/agents/kit.json")).rulebookExtras, extras);

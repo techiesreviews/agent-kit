@@ -48,7 +48,7 @@ test("bg help, discovery, invalid usage and empty list", t => {
   assert.equal(help.status, 0);
   assert.match(help.stdout, /Usage: kit bg/);
   assert.doesNotMatch(help.stdout, /RESULT:/);
-  assert.match(spawnSync(kit, ["--help"], { encoding: "utf8" }).stdout, /bg\s+start, list or stop detached jobs by name/);
+  assert.match(spawnSync(kit, ["--help"], { env: kitEnv(), encoding: "utf8" }).stdout, /bg\s+start, list or stop detached jobs by name/);
   ok(f.run("--list"));
   for (const args of [[], ["../escape", "--", "true"], ["Upper", "--", "true"], ["-bad", "--", "true"], ["ok", "--"], ["ok", "true"], ["--stop"], ["--list", "extra"], ["ok", "--cwd", "/missing/cwd", "--", "true"]]) {
     const output = f.run(...args);
