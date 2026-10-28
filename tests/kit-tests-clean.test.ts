@@ -13,7 +13,7 @@ function entries(directory: string) {
   return existsSync(directory) ? readdirSync(directory).sort() : [];
 }
 
-test("kit and agent unit tests leave no run folders or temporary files", { timeout: 240_000 }, t => {
+test("kit and agent unit tests leave no run folders or temporary files", { timeout: 500_000 }, t => {
   // The standalone test:kit-clean script runs this guard. Select all kit tests,
   // runner callers and compatibility wrappers, including future test files.
   const files = globSync("tests/*.test.ts").filter(file =>
@@ -34,8 +34,9 @@ test("kit and agent unit tests leave no run folders or temporary files", { timeo
     TSX_DISABLE_CACHE: "1", NODE_DISABLE_COMPILE_CACHE: "1" };
   // Node otherwise treats this as an existing test worker and runs no files.
   delete env.NODE_TEST_CONTEXT;
+  // The kit suite grows with every slice; a run cut off at this limit leaves its temp folders behind.
   const result = spawnSync(process.execPath, ["--import", "tsx", "--test", "--test-reporter=tap", "--test-concurrency=4", ...files], {
-    cwd: repo, encoding: "utf8", timeout: 230_000, maxBuffer: 16 * 1024 * 1024,
+    cwd: repo, encoding: "utf8", timeout: 480_000, maxBuffer: 16 * 1024 * 1024,
     env,
   });
   const folders = entries(artifacts).filter(name => !before.has(name));
