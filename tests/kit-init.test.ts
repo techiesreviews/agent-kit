@@ -621,7 +621,8 @@ test("without \"maps\" in kit.json the backlog goes under docs/wayfinder with a 
 test("copied text gets LF endings and its top headings moved down, so they never become the ticket's own sections", (t) => {
   const f = fixture(t);
   const { work } = issueRepo(f);
-  const body = "Crash on save.\r\n## Files\r\n- `src/save.ts`\r\n# Steps\r\n```sh\r\n# keep this shell comment\r\n```js not a close\r\n## and this\r\n```\r\n### Deeper stays";
+  const body = "Crash on save.\r\n## Files\r\n- `src/save.ts`\r\n# Steps\r\n```sh\r\n# keep this shell comment\r\n```js not a close\r\n## and this\r\n```\r\n### Deeper stays\r\n" +
+    "```md\r\n## Files\r\n- `src/x.ts`\r\n```";
   const comments = Array.from({ length: 100 }, (_, n) => ({ author: { login: "sam" }, createdAt: "2026-10-02T09:00:00Z", body: n ? `+${n}` : "## Comments\r\nme too" }));
   const gh = fakeGh(f, [issue(8, "Save crash", { body, comments })]);
   const run = gh.init(work, ["--issues"]);
@@ -629,9 +630,11 @@ test("copied text gets LF endings and its top headings moved down, so they never
   assert.match(run.stdout, /^note: #8 has 100 or more comments; its file says to read the rest on GitHub$/m);
   const text = readFileSync(join(work, `${backlog}/tickets/01-save-crash.md`), "utf8");
   assert.doesNotMatch(text, /\r/);
-  assert.ok(text.includes("Crash on save.\n#### Files\n- `src/save.ts`\n### Steps\n```sh\n# keep this shell comment\n```js not a close\n## and this\n```\n### Deeper stays\n"), text);
+  // Inside a fence a top heading gets one leading space: the block reads the same, and tickets.mjs sees no section.
+  assert.ok(text.includes("Crash on save.\n#### Files\n- `src/save.ts`\n### Steps\n```sh\n # keep this shell comment\n```js not a close\n ## and this\n```\n### Deeper stays\n" +
+    "```md\n ## Files\n- `src/x.ts`\n```\n"), text);
   assert.ok(text.includes("**sam, 2026-10-02:**\n\n#### Comments\nme too"), text);
-  assert.deepEqual(text.match(/^## .*/gm), ["## Issue", "## and this", "## Comments"]);
+  assert.deepEqual(text.match(/^## .*/gm), ["## Issue", "## Comments"]);
   assert.match(text, /\n_Only the first 100 comments were copied; read the rest on the Issue\._\n$/);
   const files = spawnSync(process.execPath, ["--input-type=module", "-e",
     `import { loadTickets } from ${JSON.stringify(join(f.kit, "tickets.mjs"))}; console.log(JSON.stringify(loadTickets("docs/wayfinder").tickets.map((t) => t.files)));`],
@@ -752,16 +755,21 @@ test("a file naming another repo's Issue of the same number never stands for thi
   ]);
 });
 
-test("an Issue list over 1 MiB is read whole, and a gh that hangs stops at KIT_ISSUES_TIMEOUT", (t) => {
+test("an Issue list and a landed ticket over 1 MiB are read whole, and a gh that hangs stops at KIT_ISSUES_TIMEOUT", (t) => {
   const f = fixture(t);
   const { work } = issueRepo(f);
-  const gh = fakeGh(f, []);
+  const gh = fakeGh(f, [issue(1, "Long", { body: "x".repeat(2 * 1024 * 1024) })]);
   const bin = join(f.directory, "fake-gh");
-  writeFileSync(join(bin, "list-output.txt"), JSON.stringify([issue(1, "Long", { body: "x".repeat(2 * 1024 * 1024) })]));
   const big = gh.init(work, ["--issues"]);
   assert.equal(big.status, 0, big.stdout + big.stderr);
   assert.ok(statSync(join(work, `${backlog}/tickets/01-long.md`)).size > 2 * 1024 * 1024);
-  rmSync(join(bin, "list-output.txt"));
+  f.git(work, "add", "-A");
+  f.git(work, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "backlog");
+  f.git(work, "push", "-q", "origin", "HEAD:dev");
+  const close = gh.init(work, ["--issues", "--close"]);
+  assert.equal(close.status, 0, close.stdout + close.stderr);
+  assert.match(close.stdout, /^closed #1 → https:\/\/github\.com\/acme\/tools\/blob\/dev\/docs\/wayfinder\/backlog\/tickets\/01-long\.md$/m);
+  gh.add(issue(2, "Slow"));
   writeFileSync(join(bin, "list-sleep.txt"), "5");
   const slow = gh.init(work, ["--issues"], { KIT_ISSUES_TIMEOUT: "1" });
   assert.equal(slow.status, 1, slow.stdout + slow.stderr);

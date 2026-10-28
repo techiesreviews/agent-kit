@@ -385,8 +385,14 @@ function issues() {
     const fetched = bounded("git", ["-C", root, "fetch", "--quiet", "origin", `+refs/heads/${land}:refs/remotes/origin/${land}`]);
     if (fetched.problem) fail(`cannot fetch origin/${land} (${fetched.problem}); --close reads the ticket files there`);
     const ref = `refs/remotes/origin/${land}`;
+    // A ticket file may run to many MiB (a long Issue), so it is read under the wide output limit; one that
+    // cannot be read stops the run rather than counting as missing.
     const landed = (git("-c", "core.quotePath=false", "ls-tree", "--name-only", `${ref}:${ticketsDir}`) ?? "").split("\n").filter((name) => name.endsWith(".md"))
-      .map((name) => ({ path: `${ticketsDir}/${name}`, text: git("show", `${ref}:${ticketsDir}/${name}`) ?? "" }));
+      .map((name) => {
+        const path = `${ticketsDir}/${name}`, shown = bounded("git", ["-C", root, "show", `${ref}:${path}`]);
+        if (shown.problem) fail(`cannot read ${path} on origin/${land} (${shown.problem}); closed nothing`);
+        return { path, text: shown.stdout };
+      });
     const plan = open.map((issue) => {
       const found = landed.find(({ text }) => sameIssue(issueOf(text), issue));
       if (found && issueOf(found.text) !== issue.url) console.log(`note: #${issue.number}'s file ${found.path} names ${issueOf(found.text)}; GitHub now gives ${issue.url}`);
@@ -423,8 +429,9 @@ function issues() {
   const day = (iso) => String(iso ?? "").slice(0, 10);
   const slugOf = (issue) => String(issue.title ?? "").toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").split("-").slice(0, 6).join("-") || `issue-${issue.number}`;
-  // Copied text gets LF line endings, and its # and ## headings (outside code fences) go two levels down, so an
-  // Issue's "## Files" or "## Comments" never reads as one of the ticket's own sections.
+  // Copied text gets LF line endings, and its # and ## headings go two levels down (inside code fences they get
+  // one leading space instead), so an Issue's "## Files" or "## Comments" never reads as one of the ticket's own
+  // sections: tickets.mjs finds sections by line, fence or not.
   const copied = (text) => {
     let fence = "";
     const lines = String(text ?? "").replace(/\r\n?/g, "\n").trim().split("\n").map((line) => {
@@ -432,7 +439,9 @@ function issues() {
       const [, marker, rest] = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line) ?? [];
       if (marker && !fence) fence = marker;
       else if (marker && marker[0] === fence[0] && marker.length >= fence.length && !rest.trim()) fence = "";
-      return !fence && !marker && /^ {0,3}#{1,2}(?:\s|$)/.test(line) ? line.replace(/#/, "###") : line;
+      if (marker) return line;
+      if (fence) return /^#{1,2}(?:\s|$)/.test(line) ? ` ${line}` : line;
+      return /^ {0,3}#{1,2}(?:\s|$)/.test(line) ? line.replace(/#/, "###") : line;
     });
     return lines.join("\n") || "_(no text)_";
   };
