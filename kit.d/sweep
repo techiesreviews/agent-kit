@@ -25,8 +25,9 @@ logs of worktrees that still exist) and tests/known-failures.json, review findin
 window started, open tech-debt issues (techDebt) untouched for 30 days, and Grok reviews this
 ISO week and last for the whole computer, by project (the machine ledger in the kit's state folder), and
 "Kit problems": one line per project in the machine's projects.json whose kit doctor fails or warns its kit
-copy is stale (each project's own scripts/agents/kit doctor --quiet in its main folder, this project's in this
-checkout; place and base judge that folder, not the kit, and are left out); no section when all is well.
+copy is stale, gives no result or times out (each project's own scripts/agents/kit doctor --quiet in its main
+folder, this project's in this checkout, up to 5 minutes, with git allowed no transport so the doctor's fetch
+moves no ref; place and base judge that folder, not the kit, and are left out); no section when all is well.
 `;
 const day = 86_400_000;
 // Code files by extension, plus extensionless scripts such as the kit commands.
@@ -357,11 +358,17 @@ const folderChecks = new Set(["place", "base"]);
 // would hide real failures) and not its project folder carry over.
 const carriesOver = name => !name.startsWith("KIT_") && name !== "CLAUDE_PROJECT_DIR";
 
-function runDoctor(root, env) {
-  const clean = Object.fromEntries(Object.entries(env).filter(([name]) => carriesOver(name)));
-  const result = spawnSync(join(root, "scripts/agents/kit"), ["doctor", "--quiet"],
-    { cwd: root, env: clean, encoding: "utf8", timeout: 300_000, stdio: ["ignore", "pipe", "pipe"] });
-  return { status: result.status, output: result.stdout ?? "", error: result.error?.code === "ETIMEDOUT" ? "timed out" : result.error?.message };
+/**
+ * One project's kit doctor --quiet. The sweep changes nothing: git may use no transport, so the doctor's fetch of
+ * the land branch fails at once, with no network and no moved origin ref (its base check is left out anyway).
+ * GNU timeout ends the whole process group, so no child the doctor started outlives the limit.
+ */
+export function runDoctor(root, env, seconds = 300) {
+  const clean = { ...Object.fromEntries(Object.entries(env).filter(([name]) => carriesOver(name))), GIT_ALLOW_PROTOCOL: "none" };
+  const result = spawnSync("timeout", ["-k", "10", String(seconds), join(root, "scripts/agents/kit"), "doctor", "--quiet"],
+    { cwd: root, env: clean, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const timedOut = result.status === 124 || result.status === 137;
+  return { status: result.status, output: result.stdout ?? "", error: timedOut ? "timed out" : result.error?.message };
 }
 
 /** What one doctor run says is wrong with a project's kit, or "" when nothing is. */

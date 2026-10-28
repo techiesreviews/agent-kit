@@ -553,6 +553,11 @@ test("kit score --all prints one table across the projects in projects.json, rea
   const html = readFileSync(out, "utf8");
   for (const text of ["<h1>All projects</h1>", "alpha", "beta", "Projects that could not be read", `no folder ${join(dir, "gone")}`]) assert.ok(html.includes(text), text);
   assert.doesNotMatch(html, /https?:\/\//);
+  // With --json the page line goes to stderr, so stdout is the data and the RESULT line.
+  const both = run("--json", "--html", "--out", out);
+  assert.equal(JSON.parse(both.stdout.split("\nRESULT:")[0]).projects.length, 4);
+  assert.match(both.stderr, new RegExp(`^page: ${out}$`, "m"));
+  assert.doesNotMatch(both.stdout, /^page:/m);
   rmSync(join(dir, "out"), { recursive: true });
   // Nothing in any project, the list or this checkout was copied, moved or changed.
   assert.deepEqual(snapshot(dir), before);

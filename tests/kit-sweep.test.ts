@@ -23,6 +23,7 @@ type Sweep = {
   correctionsSection(root: string, then: string, head: string, maps: string | null): Section;
   staleDebtSection(root: string, now: number, techDebt: string | null): Section;
   grokSection(env: NodeJS.ProcessEnv, now: number, main: string | null, project: string | null): Section;
+  runDoctor(root: string, env: NodeJS.ProcessEnv, seconds?: number): { status: number | null; output: string; error?: string };
   doctorProblem(run: { status: number | null; output: string; error?: string }): string;
   kitProblemsSection(env: NodeJS.ProcessEnv, own: { project: string; root: string } | null,
     doctor?: (root: string, env: NodeJS.ProcessEnv) => { status: number | null; output: string; error?: string }): Section | null;
@@ -442,4 +443,40 @@ test("a kit problem is a failed kit check, a stale kit copy, a doctor without a 
   })?.lines.length, 1);
   assert.deepEqual(seen, [join(dir, "bare"), join(dir, "checkout")]);
   assert.equal(sweep.kitProblemsSection({ XDG_STATE_HOME: join(dir, "none") }, null), null);
+});
+
+test("a project's doctor runs under a hard time limit that ends its children too", t => {
+  const dir = mkdtempSync(join(tmpdir(), "kit-sweep-timeout-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // The child holds stdout open: only a process-group kill lets the call return.
+  const root = fakeKit(join(dir, "slow"), "sleep 30 &\nwait");
+  const started = Date.now();
+  const run = sweep.runDoctor(root, process.env, 0.5);
+  assert.ok(Date.now() - started < 3000, `took ${Date.now() - started} ms`);
+  assert.equal(sweep.doctorProblem(run), "kit doctor timed out");
+});
+
+test("the sweep leaves a registered project's origin ref where it was", t => {
+  const { dir, repo } = repository(t);
+  write(join(repo, "README.md"), "base\n");
+  commit(repo, Date.now() - day, "base");
+  const project = join(dir, "project"), origin = join(dir, "origin.git");
+  const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, "-c", "user.name=a", "-c", "user.email=a@example.test", ...args], { encoding: "utf8" }).trim();
+  execFileSync("git", ["init", "-q", "--bare", origin]);
+  execFileSync("git", ["init", "-q", "-b", "dev", project]);
+  write(join(project, "a.txt"), "one\n");
+  git(project, "add", "-A"); git(project, "commit", "-q", "-m", "one");
+  git(project, "remote", "add", "origin", origin); git(project, "push", "-q", "origin", "dev");
+  // origin is one commit ahead of what this project last fetched.
+  const other = join(dir, "other");
+  execFileSync("git", ["clone", "-q", "-b", "dev", origin, other]);
+  write(join(other, "b.txt"), "two\n");
+  git(other, "add", "-A"); git(other, "commit", "-q", "-m", "two"); git(other, "push", "-q", "origin", "dev");
+  // The fake doctor fetches its land branch as kit doctor does, then passes.
+  fakeKit(project, "timeout 20 git fetch -q origin dev 2>/dev/null; echo \"RESULT: ok doctor 11/11 checks passed\"");
+  write(join(dir, "state/agent-kit/projects.json"), JSON.stringify({ project: { root: project } }));
+  const before = git(project, "rev-parse", "refs/remotes/origin/dev");
+  assert.notEqual(before, git(origin, "rev-parse", "dev"));
+  bundleOf(run(repo).stdout);
+  assert.equal(git(project, "rev-parse", "refs/remotes/origin/dev"), before);
 });
