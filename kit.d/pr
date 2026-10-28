@@ -185,7 +185,7 @@ function commitsBySubject(text, subjects) {
   if (start === undefined) return text;
   const rest = text.slice(start), end = rest.slice(1).search(/^## /m), doneEnd = end < 0 ? rest.length : end + 1;
   const done = rest.slice(0, doneEnd);
-  const line = /^([ \t]*)((?:[-*+][ \t]+)?)(\*\*)?Commits\b[^:\r\n]*:(\*\*)?.*$/m.exec(done);
+  const line = /^([ \t]*)((?:[-*+][ \t]+)?)(\*\*)?Commits\b[^:\r\n]*:(\*\*)?[^\n]*/m.exec(done);
   if (!line) return text;
   let stop = line.index + line[0].length;
   for (let next; (next = /^\n([ \t]*)([^\n]*)/.exec(done.slice(stop))) &&
@@ -355,20 +355,31 @@ async function main(args) {
     };
     // After each rebase and before the push, the ticket's Done "Commits:" line names the commits by subject:
     // the SHAs the builder saw change here and again on landing (reportLanded prints those).
-    async function nameCommits() {
+    // Synchronous from the captured HEAD to the commit, so no await sits between the proof and the write.
+    function nameCommits() {
       if (!flags.ticket || flags.release || flags.dryRun) return;
-      const captured = await git("commits", ["rev-parse", "HEAD"]);
+      step = "commits";
+      const current = args => execFileSync("git", ["-C", root, ...args],
+        { cwd: root, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+      const captured = current(["rev-parse", "HEAD"]);
+      // A ticket edited or a branch switched during the fetch and rebase must never enter kit's commit.
+      const assertScope = () => {
+        if (current(["branch", "--show-current"]) !== branch || current(["rev-parse", "HEAD"]) !== captured ||
+            current(["status", "--porcelain"])) throw new Error("worktree changed before naming commits");
+      };
+      assertScope();
       const file = resolve(root, flags.ticket);
       if (!existsSync(file)) return; // The features step names a missing ticket.
       const original = readFileSync(file, "utf8");
       if (commitsBySubject(original, subjectsTo(captured, true)) === original) return;
       const subjects = subjectsTo(captured, false), updated = commitsBySubject(original, subjects);
+      assertScope();
       writeFileSync(file, updated);
       commitFollowups({ root, branch, head: captured, ticket: flags.ticket, content: updated, env, message: own[1] });
       console.log(`commits: ${flags.ticket} names ${subjects.length} commits by subject`);
     }
     await rebase();
-    await nameCommits();
+    nameCommits();
 
     // Scale the local checks to the PR's own diff (merge base to HEAD, after the rebase).
     step = "tier";
@@ -714,7 +725,7 @@ async function main(args) {
       if (attempt === 3) throw new Error("still behind after 3 attempts");
       const reviewedHead = head;
       await rebase();
-      await nameCommits();
+      nameCommits();
       head = await git("rebase", ["rev-parse", "HEAD"]);
       await push();
       if (head !== reviewedHead && !await reviewHead()) return 1;

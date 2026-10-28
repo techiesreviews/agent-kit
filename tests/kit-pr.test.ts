@@ -930,6 +930,43 @@ test("a Done that names branch SHAs is pushed naming the commits by subject, in 
   assert.doesNotMatch(untouched.stdout, /^commits:/m);
 });
 
+test("a CRLF ticket's Commits line and its continuation are replaced whole, keeping CRLF", t => {
+  const f = fixture(t), crlf = (text: string) => text.replaceAll("\n", "\r\n");
+  const ticket = crlf('---\ntitle: "Ticket title"\n---\n\n## Done (2026-10-28)\n\n- Commits: 1111111 (build),\n  2222222\n  (round 1).\n- Tests: unit green.\n');
+  f.commit("Close ticket", "ticket.md", ticket);
+  const result = f.run(["--ticket", "ticket.md", "--no-merge"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const pushed = spawnSync("git", ["-C", f.origin, "show", "refs/heads/feature/kit-pr:ticket.md"], { encoding: "utf8" }).stdout;
+  assert.equal(pushed, crlf('---\ntitle: "Ticket title"\n---\n\n## Done (2026-10-28)\n\n- Commits: "First change", "Second change", "Close ticket" and this commit.\n- Tests: unit green.\n'));
+});
+
+test("a ticket edited during the rebase stops kit pr before it names commits, and the edit enters no commit", t => {
+  const f = fixture(t), peer = f.peer();
+  f.commit("Close ticket", "ticket.md", shaTicket("1111111", "2222222"));
+  writeFileSync(join(peer, "upstream.txt"), "upstream\n");
+  f.gitAt(peer, "add", "upstream.txt"); f.gitAt(peer, "commit", "-qm", "advance upstream"); f.gitAt(peer, "push", "-q", "origin", "dev");
+  const hook = join(f.root, ".git/hooks/post-rewrite");
+  writeFileSync(hook, "#!/bin/sh\necho 'Edited during the rebase.' >> ticket.md\n"); chmodSync(hook, 0o755);
+  const result = f.run(["--ticket", "ticket.md"]);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /^RESULT: fail commits: worktree changed before naming commits$/m);
+  assert.notEqual(f.git("log", "-1", "--format=%s"), "docs: ticket commits by subject");
+  assert.equal(f.git("log", "--all", "--format=%h", "-S", "Edited during the rebase."), "");
+  assert.equal(f.calls().some(call => call.tool === "gh"), false);
+});
+
+test("a rerun after a fix commit names the earlier subjects commit and adds a second one", t => {
+  const f = fixture(t);
+  f.commit("Close ticket", "ticket.md", shaTicket("1111111", "2222222"));
+  assert.equal(f.run(["--ticket", "ticket.md", "--no-merge"]).status, 0);
+  f.commit("Review fixes round 1");
+  const result = f.run(["--ticket", "ticket.md", "--no-merge"], { FAKE_EXISTING: "1" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(readFileSync(join(f.root, "ticket.md"), "utf8"),
+    /^- Commits: "First change", "Second change", "Close ticket", "docs: ticket commits by subject", "Review fixes round 1" and this commit\.$/m);
+  assert.equal(f.git("log", "--format=%s", "origin/dev..HEAD").split("\n").filter(subject => subject === "docs: ticket commits by subject").length, 2);
+});
+
 test("a clean review saved before the subjects commit is still reused after a rebase onto a moved base", t => {
   const f = fixture(t), peer = f.peer();
   f.commit("Close ticket", "ticket.md", shaTicket("1111111", "2222222"));
