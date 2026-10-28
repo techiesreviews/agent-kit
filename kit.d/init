@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // kit: set a project up for the shared kit: settings, launchers, hooks and docs stubs
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const { kitHome, kitProjects, kitRegisterProject, kitResult, kitRoot, kitSettingsFile, kitSettingsProblems, kitStateDir } = await import(
+const { kitHome, kitRegisterProject, kitResult, kitRoot, kitSettingsFile, kitSettingsProblems, kitStateDir } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const usage = `Usage: kit init [--light] [--land <branch>]
@@ -20,10 +20,12 @@ before the project has a launcher). It writes only what is missing and never del
 Full (the default) also writes an empty scripts/agents/project.d/ (its own commands), docs/agents/kitchen.md
 (a pointer), docs/agents/kitchen-extras.md (from the kit's template), docs/wayfinder/README.md, and names
 them in a new kit.json; --light leaves those out. It lists the project in the machine's projects.json and
-ends with kit doctor's result. A rerun changes nothing and says so. Old kit files in the project
+ends with kit doctor's result. Run in the main checkout, doctor's failing place check (no builds there) is a
+note naming how to make a worktree. A rerun changes nothing and says so. Old kit files in the project
 (kit-lib.sh, kit-lib.mjs, kit.d/, the guard hooks) stop it with a list, so the move removes them on purpose.
 `;
 
+// fail never returns: it prints the RESULT line and exits, so it also ends expressions such as readJson's catch.
 const fail = (text, code = 1) => { kitResult("fail", `init ${text}`); process.exit(code); };
 const options = { light: false, land: "" };
 const args = process.argv.slice(2);
@@ -79,9 +81,11 @@ if (existsSync(at(kitSettingsFile))) {
   const land = options.land || ["dev", "develop", "main", "master"].find(branchExists);
   if (!land) fail("no dev, develop, main or master branch; name the landing branch with kit init --land <branch>", 2);
   if (git("check-ref-format", "--branch", land) === null) fail(`--land ${land} is not a branch name`, 2);
+  if (!branchExists(land)) notes.push(`branch ${land} is not here or on origin yet; kit doctor's base check needs origin/${land} once the project has a GitHub repo`);
   const release = ["dev", "develop"].includes(land) ? ["main", "master"].find(branchExists) : undefined;
   const remote = git("remote", "get-url", "origin");
-  const project = (remote && basename(remote.replace(/\/+$/, "")).replace(/\.git$/, "")) || basename(gitMain);
+  // The last part of the remote's path, after "/" or the ":" of host:repo.
+  const project = (remote && remote.replace(/\/+$/, "").split(/[/:]/).at(-1).replace(/\.git$/, "")) || basename(gitMain);
   settings = { project, mainRoot: gitMain, branches: { land, ...(release ? { release } : {}) } };
   const checks = guessChecks();
   if (checks) settings.checks = checks;
@@ -138,7 +142,8 @@ for (const [path, entries] of Object.entries(hookFiles)) {
     const same = groups.filter((group) => isObject(group) && group.matcher === matcher);
     for (const name of names) {
       const entry = hook(name);
-      if (same.some((group) => Array.isArray(group.hooks) && group.hooks.some((other) => other?.command === entry.command))) continue;
+      // Already there under any matcher of the event (say "Bash|Edit"): a second copy would run the hook twice.
+      if (groups.some((group) => isObject(group) && Array.isArray(group.hooks) && group.hooks.some((other) => other?.command === entry.command))) continue;
       let group = same.find((candidate) => Array.isArray(candidate.hooks));
       if (!group) { group = { ...(matcher === undefined ? {} : { matcher }), hooks: [] }; groups.push(group); same.push(group); }
       group.hooks.push(entry);
@@ -192,32 +197,55 @@ if (!missingLines.length) kept.push("AGENTS.md");
 else if (agents === null) writes.push({ path: "AGENTS.md", text: `# Agents\n\n${missingLines.join("\n")}\n` });
 else writes.push({ path: "AGENTS.md", text: `${agents.replace(/\n*$/, "\n\n")}${missingLines.join("\n")}\n`, said: `(added ${missingLines.length} line${missingLines.length === 1 ? "" : "s"})` });
 
-// The machine's project list: a name another root holds stops the run before anything is written.
+// The files are written under the project list's lock, once the name is checked: a name another root holds
+// stops the run before anything is written, and two runs cannot both take one name.
 const projectRoot = settings.mainRoot || gitMain;
-let listed;
-try { listed = kitProjects()[settings.project]?.root; }
-catch (error) { fail(error.message); }
-if (listed && listed !== projectRoot) fail(`${join(kitStateDir(), "projects.json")} already lists ${settings.project} at ${listed}; give this project another "project" name in ${kitSettingsFile}`);
-
-for (const { path, text, mode, said } of writes) {
-  mkdirSync(dirname(at(path)), { recursive: true });
-  writeFileSync(at(path), text);
-  if (mode) chmodSync(at(path), mode);
-  console.log(`wrote ${path}${said ? ` ${said}` : ""}`);
-}
-if (kept.length) console.log(`kept (already there): ${kept.join(", ")}`);
+const done = [];
 let registered;
-try { registered = kitRegisterProject(settings.project, projectRoot); }
-catch (error) { fail(error.message); }
+try {
+  registered = kitRegisterProject(settings.project, projectRoot, process.env, () => {
+    for (const { path, text, mode, said } of writes) {
+      try {
+        mkdirSync(dirname(at(path)), { recursive: true });
+        writeFileSync(at(path), text);
+        if (mode) chmodSync(at(path), mode);
+      } catch (error) {
+        throw new Error(`writing ${path} failed: ${error.message}; wrote ${done.length ? done.join(", ") : "nothing"}`);
+      }
+      done.push(path);
+      console.log(`wrote ${path}${said ? ` ${said}` : ""}`);
+    }
+  });
+} catch (error) { fail(String(error.message).replace(/\n/g, " ")); }
+if (kept.length) console.log(`kept (already there): ${kept.join(", ")}`);
 if (registered === "added") console.log(`listed ${settings.project} at ${projectRoot} in ${join(kitStateDir(), "projects.json")}`);
 for (const note of notes) console.log(`note: ${note}`);
 
-// kit doctor's result for the new setup ends the run.
+// kit doctor's result for the new setup ends the run. In the main checkout, where a new project is set up, its
+// place check fails until work moves to a worktree: that is a note here, naming how, since the project has no
+// worktree.sh of its own.
 const doctor = spawnSync(join(home, "kit.d/doctor"), [], { cwd: root, env: { ...process.env, KIT_ROOT: root }, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
 const doctorLines = (doctor.stdout ?? "").split("\n").filter(Boolean);
-for (const line of doctorLines) if (!line.startsWith("RESULT: ")) console.log(line);
-const doctorResult = doctorLines.findLast((line) => line.startsWith("RESULT: "))?.replace(/^RESULT: (ok|fail) /, "") ?? `exited ${doctor.status} without a RESULT line`;
+const real = (path) => { try { return realpathSync(path); } catch { return path; } };
+const inMain = [gitMain, projectRoot].some((main) => real(main) === real(root));
+const land = settings.branches.land;
+const placeNote = `note: place: this is the main checkout, where kit doctor stops builds; build in a worktree ` +
+  `(git worktree add -b <branch> ../${basename(real(root))}-<branch> ${land}), or add "allowMainCheckout": true to ${kitSettingsFile} to build here`;
+let placeFailed = false;
+for (const line of doctorLines) {
+  if (line.startsWith("RESULT: ")) continue;
+  if (inMain && line.startsWith("✗ place: ")) { placeFailed = true; console.log(placeNote); }
+  else console.log(line);
+}
+let doctorResult = doctorLines.findLast((line) => line.startsWith("RESULT: "))?.replace(/^RESULT: (ok|fail) /, "") ?? `exited ${doctor.status} without a RESULT line`;
+let doctorOk = doctor.status === 0;
+const failedChecks = /^doctor (\d+) failed: (.*)$/.exec(doctorResult);
+if (placeFailed && failedChecks) {
+  const rest = failedChecks[2].split(",").filter((name) => name !== "place");
+  if (!rest.length) { doctorOk = true; doctorResult = "doctor ok but for place (the main checkout; see the note)"; }
+  else doctorResult = `doctor ${rest.length} failed: ${rest.join(",")}; place: the main checkout (see the note)`;
+}
 const changed = writes.length || registered === "added";
-const done = changed ? `wrote ${writes.length} file${writes.length === 1 ? "" : "s"}${registered === "added" ? ", listed the project" : ""}` : "nothing to write (already set up)";
-if (doctor.status !== 0) fail(`${done}; ${doctorResult}`);
-kitResult("ok", `init ${done}; ${doctorResult}`);
+const summary = changed ? `wrote ${writes.length} file${writes.length === 1 ? "" : "s"}${registered === "added" ? ", listed the project" : ""}` : "nothing to write (already set up)";
+if (!doctorOk) fail(`${summary}; ${doctorResult}`);
+kitResult("ok", `init ${summary}; ${doctorResult}`);

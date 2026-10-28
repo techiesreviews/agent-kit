@@ -61,7 +61,12 @@ function snapshot(root: string) {
   walk(root);
   return files;
 }
-const result = (run: { stdout: string }) => run.stdout.trimEnd().split("\n").at(-1);
+// The last output line, which every run ends with; a run with no output fails the test here.
+function result(run: { stdout: string; stderr: string }): string {
+  const last = run.stdout.trimEnd().split("\n").at(-1);
+  if (!last) throw new Error(`no output: ${run.stderr}`);
+  return last;
+}
 const written = (run: { stdout: string }) => run.stdout.split("\n").filter((line) => line.startsWith("wrote ")).map((line) => line.split(" ")[1]).sort();
 const hookCommand = (name: string) => `bash "\${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"/scripts/agents/hooks/run.sh ${name}`;
 
@@ -70,7 +75,7 @@ test("a fresh npm repo gets a full setup that passes doctor, is listed in projec
   const { main, work } = f.repo("site", { "package.json": JSON.stringify({ scripts: { check: "tsc", test: "node --test", lint: "eslint ." } }) });
   const run = f.init(work);
   assert.equal(run.status, 0, run.stdout + run.stderr);
-  assert.match(result(run)!, /^RESULT: ok init wrote 10 files, listed the project; doctor (\d+)\/\1 checks passed$/);
+  assert.match(result(run), /^RESULT: ok init wrote 10 files, listed the project; doctor (\d+)\/\1 checks passed$/);
   assert.deepEqual(written(run), [".claude/settings.json", ".codex/hooks.json", "AGENTS.md", "docs/agents/kitchen-extras.md", "docs/agents/kitchen.md",
     "docs/wayfinder/README.md", "scripts/agents/hooks/run.sh", "scripts/agents/kit", "scripts/agents/kit.json", "scripts/agents/project.d/.gitkeep"]);
   assert.match(run.stdout, /^note: checks guessed from package\.json: check=npm run check, test=npm test, lint=npm run lint; confirm them in scripts\/agents\/kit\.json$/m);
@@ -99,7 +104,7 @@ test("a fresh npm repo gets a full setup that passes doctor, is listed in projec
   const before = snapshot(work), listed = readFileSync(join(f.state, "agent-kit/projects.json"), "utf8");
   const again = f.init(work);
   assert.equal(again.status, 0, again.stdout + again.stderr);
-  assert.match(result(again)!, /^RESULT: ok init nothing to write \(already set up\); doctor (\d+)\/\1 checks passed$/);
+  assert.match(result(again), /^RESULT: ok init nothing to write \(already set up\); doctor (\d+)\/\1 checks passed$/);
   assert.deepEqual(written(again), []);
   assert.deepEqual(snapshot(work), before);
   assert.equal(readFileSync(join(f.state, "agent-kit/projects.json"), "utf8"), listed);
@@ -110,7 +115,7 @@ test("a repo with no package.json gets a light setup that passes doctor and writ
   const light = f.repo("plain", { "index.html": "<p>hi</p>\n" }, ["main"]);
   const run = f.init(light.work, ["--light"]);
   assert.equal(run.status, 0, run.stdout + run.stderr);
-  assert.match(result(run)!, /^RESULT: ok init wrote 6 files, listed the project; doctor (\d+)\/\1 checks passed$/);
+  assert.match(result(run), /^RESULT: ok init wrote 6 files, listed the project; doctor (\d+)\/\1 checks passed$/);
   assert.match(run.stdout, /^note: checks: none guessed \(no package\.json\); add "checks" to scripts\/agents\/kit\.json$/m);
   assert.deepEqual(JSON.parse(readFileSync(join(light.work, "scripts/agents/kit.json"), "utf8")), { project: "plain", mainRoot: light.main, branches: { land: "main" } });
   const full = f.repo("plain-full", { "index.html": "<p>hi</p>\n" }, ["main"]);
@@ -166,6 +171,14 @@ test("with no usual landing branch kit init asks for --land and writes nothing; 
   assert.equal(asked.status, 2, asked.stdout + asked.stderr);
   assert.equal(result(asked), "RESULT: fail init no dev, develop, main or master branch; name the landing branch with kit init --land <branch>");
   assert.equal(existsSync(join(work, "scripts")), false);
+  // --land writes its branch; run in the main checkout, doctor's place check is a note naming how to make a worktree.
+  const main = join(f.directory, "trunk");
+  const landed = f.init(main, ["--light", "--land", "trunk"]);
+  assert.equal(landed.status, 0, landed.stdout + landed.stderr);
+  assert.equal(result(landed), "RESULT: ok init wrote 6 files, listed the project; doctor ok but for place (the main checkout; see the note)");
+  assert.match(landed.stdout, /^note: place: this is the main checkout, where kit doctor stops builds; build in a worktree \(git worktree add -b <branch> \.\.\/trunk-<branch> trunk\), or add "allowMainCheckout": true to scripts\/agents\/kit\.json to build here$/m);
+  assert.doesNotMatch(landed.stdout, /^✗ place/m);
+  assert.deepEqual(JSON.parse(readFileSync(join(main, "scripts/agents/kit.json"), "utf8")).branches, { land: "trunk" });
   const usage = f.init(work, ["--land"]);
   assert.equal(usage.status, 2);
   assert.equal(result(usage), "RESULT: fail init unknown argument --land");
@@ -174,7 +187,7 @@ test("with no usual landing branch kit init asks for --land and writes nothing; 
   const before = snapshot(broken.work);
   const refused = f.init(broken.work);
   assert.equal(refused.status, 1, refused.stdout + refused.stderr);
-  assert.match(result(refused)!, /^RESULT: fail init \.claude\/settings\.json is unreadable \(.+\); fix it first, kit init never overwrites it$/);
+  assert.match(result(refused), /^RESULT: fail init \.claude\/settings\.json is unreadable \(.+\); fix it first, kit init never overwrites it$/);
   assert.deepEqual(snapshot(broken.work), before);
 
   mkdirSync(join(f.state, "agent-kit"), { recursive: true });
@@ -185,4 +198,69 @@ test("with no usual landing branch kit init asks for --land and writes nothing; 
   assert.equal(result(clash), `RESULT: fail init ${join(f.state, "agent-kit/projects.json")} already lists taken at /elsewhere; give this project another "project" name in scripts/agents/kit.json`);
   assert.equal(existsSync(join(taken.work, "scripts")), false);
   assert.deepEqual(f.projects(), { taken: { root: "/elsewhere" } });
+});
+
+test("checks are guessed from package.json as its lockfile's package manager runs them", (t) => {
+  const f = fixture(t);
+  const cases: [string, Record<string, string>, Record<string, string>, string][] = [
+    ["pnpm", { "pnpm-lock.yaml": "" }, { check: "tsc" }, "check=pnpm run check"],
+    ["yarn", { "yarn.lock": "" }, { test: "vitest" }, "test=yarn test"],
+    ["bun", { "bun.lockb": "" }, { lint: "eslint ." }, "lint=bun run lint"],
+    // typecheck stands in for check; npm's placeholder test is no test.
+    ["npm", {}, { typecheck: "tsc", test: "echo \"Error: no test specified\" && exit 1" }, "check=npm run typecheck"],
+  ];
+  for (const [name, lockfile, scripts, guessed] of cases) {
+    const { work } = f.repo(name, { ...lockfile, "package.json": JSON.stringify({ scripts }) });
+    const run = f.init(work, ["--light"]);
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.match(run.stdout, new RegExp(`^note: checks guessed from package\\.json: ${guessed}; confirm`, "m"), name);
+    const [key, command] = guessed.split("=");
+    assert.deepEqual(JSON.parse(readFileSync(join(work, "scripts/agents/kit.json"), "utf8")).checks, { [key]: command }, name);
+  }
+});
+
+test("an existing kit.json is kept byte for byte with notes; a failing doctor fails init, and what it wrote stays", (t) => {
+  const f = fixture(t);
+  const settings = `{"project":"mine","branches":{"land":"dev"},"checks":{"doctor":"exit 3"}}`;
+  const { main, work } = f.repo("mine-folder", { "scripts/agents/kit.json": settings });
+  const run = f.init(work, ["--land", "dev"]);
+  assert.equal(run.status, 1, run.stdout + run.stderr);
+  assert.equal(result(run), "RESULT: fail init wrote 9 files, listed the project; doctor 1 failed: exit 3");
+  assert.equal(readFileSync(join(work, "scripts/agents/kit.json"), "utf8"), settings);
+  assert.match(run.stdout, /^note: --land ignored: scripts\/agents\/kit\.json already names "branches"$/m);
+  assert.match(run.stdout, /^note: add to scripts\/agents\/kit\.json \(kit init never edits it\): "commands": "scripts\/agents\/project\.d", "maps": "docs\/wayfinder", "rulebookExtras": "docs\/agents\/kitchen-extras\.md"$/m);
+  assert.equal(written(run).length, 9);
+  for (const path of written(run)) assert.ok(existsSync(join(work, path)), path);
+  assert.deepEqual(f.projects(), { mine: { root: main } });
+});
+
+test("an existing .codex/hooks.json keeps its own entries, and a kit hook under another matcher is not added twice", (t) => {
+  const f = fixture(t);
+  const own = { type: "command", command: "echo mine" }, guard = { type: "command", command: hookCommand("bash-guard") };
+  const codex = { hooks: { PreToolUse: [{ matcher: "Bash|Edit", hooks: [guard] }], SessionStart: [{ hooks: [own] }] } };
+  const { main, work } = f.repo("hooks", { ".codex/hooks.json": JSON.stringify(codex) });
+  // An origin named host:repo style still names the project after the repo.
+  const origin = join(f.directory, "host:shop.git");
+  f.git(f.directory, "init", "-q", "--bare", origin);
+  f.git(main, "remote", "add", "origin", origin);
+  f.git(main, "push", "-q", "origin", "main", "dev");
+  const run = f.init(work, ["--light"]);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.match(run.stdout, /^wrote \.codex\/hooks\.json \(merged 4 hook entries\)$/m);
+  assert.equal(JSON.parse(readFileSync(join(work, "scripts/agents/kit.json"), "utf8")).project, "shop");
+  const merged = JSON.parse(readFileSync(join(work, ".codex/hooks.json"), "utf8"));
+  assert.deepEqual(merged.hooks.PreToolUse, codex.hooks.PreToolUse);
+  assert.deepEqual(merged.hooks.SessionStart, [{ hooks: [own, { type: "command", command: hookCommand("session-env") }, { type: "command", command: hookCommand("context-card") }] }]);
+  for (const event of ["SubagentStart", "SubagentStop"]) assert.deepEqual(merged.hooks[event], [{ hooks: [{ type: "command", command: hookCommand("agent-cap") }] }], event);
+});
+
+test("a write that fails ends with a RESULT line naming it and what was written, and lists nothing", (t) => {
+  const f = fixture(t);
+  // A file named docs where the docs folder should be.
+  const { work } = f.repo("blocked", { docs: "not a folder\n" });
+  const run = f.init(work);
+  assert.equal(run.status, 1, run.stdout + run.stderr);
+  assert.match(result(run), /^RESULT: fail init writing docs\/agents\/kitchen\.md failed: E[A-Z]+: .+; wrote scripts\/agents\/kit\.json, scripts\/agents\/kit, scripts\/agents\/hooks\/run\.sh, \.claude\/settings\.json, \.codex\/hooks\.json, scripts\/agents\/project\.d\/\.gitkeep$/);
+  assert.doesNotMatch(run.stderr, /at .+\(node:/);
+  assert.equal(existsSync(join(f.state, "agent-kit/projects.json")), false);
 });
