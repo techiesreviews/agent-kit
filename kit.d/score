@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // kit: print the scoreboard the kit recorded per piece: builder, time, rounds, findings, cost, PR
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { allProjectsPage, scorePage } from "../score-page.mjs";
@@ -145,12 +145,19 @@ function print(data) {
   }
 }
 
+const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
 const oneLine = text => String(text).replace(/[\n\r]+/g, " ");
 
 // A project's feedback logs, read from its land branch (origin's, else the local one), where they are committed;
 // a folder outside git or without that branch is read as it stands. A main folder on an old branch may lack the
 // settings file; the settings of the project this command runs in still name its maps folder and land branch.
+// A log that cannot be read leaves the project's other numbers standing.
 function feedbackLogs(project, root) {
+  try { return readFeedbackLogs(project, root); }
+  catch (error) { return { problem: oneLine(error.message) }; }
+}
+
+function readFeedbackLogs(project, root) {
   let settings;
   try { settings = kitSettings(root); }
   catch (error) {
@@ -164,7 +171,9 @@ function feedbackLogs(project, root) {
   for (const ref of [`refs/remotes/origin/${land}`, `refs/heads/${land}`]) {
     try { execFileSync("git", ["-C", root, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { stdio: "ignore" }); }
     catch { continue; }
-    return { logs: loadFeedback(settings.maps, { ref, cwd: root }) };
+    // Paths from the repository's top, so a root inside a bigger repository reads its own logs.
+    const top = execFileSync("git", ["-C", root, "rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return { logs: loadFeedback(relative(realpathSync(top), join(realpathSync(root), settings.maps)), { ref, cwd: top }) };
   }
   const folder = join(root, settings.maps);
   return existsSync(folder) ? { logs: loadFeedback(folder) } : { problem: `no folder ${folder}` };
@@ -198,7 +207,7 @@ function projectData(project, entry) {
 
 function printAll(projects) {
   const read = projects.filter(item => !item.problem);
-  console.log(`score: all projects (${projects.length} projects, ${read.reduce((sum, item) => sum + item.total.pieces, 0)} pieces)`);
+  console.log(`score: all projects (${plural(projects.length, "project")}, ${plural(read.reduce((sum, item) => sum + item.total.pieces, 0), "piece")})`);
   const cells = (project, who, group, corrections) => [project, who, String(group.pieces), String(group.rounds), findingsText(group.findings), String(group.landed), corrections];
   if (read.length) console.log(table([["project", "builder", "pieces", "rounds", "findings", "landed", "corrections"], ...read.flatMap(item => [
     ...Object.entries(item.builders).map(([who, group]) => cells(item.project, who, group, "-")),
@@ -222,7 +231,7 @@ function scoreAll(flags) {
     if (!projects.length) console.log(`score: no projects in ${join(kitStateDir(), "projects.json")}`);
     else printAll(projects);
   }
-  kitResult("ok", `score all ${projects.length} projects ${count} pieces${unreadable ? `, ${unreadable} unreadable` : ""}`);
+  kitResult("ok", `score all ${plural(projects.length, "project")} ${plural(count, "piece")}${unreadable ? `, ${unreadable} unreadable` : ""}`);
   return 0;
 }
 

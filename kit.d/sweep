@@ -353,11 +353,12 @@ export function grokSection(env = process.env, now = Date.now(), main = null, pr
 
 // Doctor's place and base checks judge the folder it runs in (a main folder on another branch fails them), not the kit.
 const folderChecks = new Set(["place", "base"]);
-// Each project runs its own kit as it would on its own: nothing of this command's kit or project carries over.
-const kitEnv = ["KIT_ROOT", "KIT_MAIN_ROOT", "KIT_DEV_ROOT", "KIT_HOME", "KIT_HOME_DEFAULT", "KIT_COMMANDS_DIR", "KIT_LIB", "KIT_LIB_MJS", "CLAUDE_PROJECT_DIR"];
+// Each project runs its own kit as it would on its own: no KIT_* setting of this command (a KIT_DOCTOR_SKIP
+// would hide real failures) and not its project folder carry over.
+const carriesOver = name => !name.startsWith("KIT_") && name !== "CLAUDE_PROJECT_DIR";
 
 function runDoctor(root, env) {
-  const clean = Object.fromEntries(Object.entries(env).filter(([name]) => !kitEnv.includes(name)));
+  const clean = Object.fromEntries(Object.entries(env).filter(([name]) => carriesOver(name)));
   const result = spawnSync(join(root, "scripts/agents/kit"), ["doctor", "--quiet"],
     { cwd: root, env: clean, encoding: "utf8", timeout: 300_000, stdio: ["ignore", "pipe", "pipe"] });
   return { status: result.status, output: result.stdout ?? "", error: result.error?.code === "ETIMEDOUT" ? "timed out" : result.error?.message };

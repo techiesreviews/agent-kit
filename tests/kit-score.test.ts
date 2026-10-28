@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -463,6 +463,11 @@ test("the builder advice appears only once a kind has ten pieces, and the ladder
   assert.deepEqual(ladder([build(), broken, build()]), { rung: 1, streak: 2, builds: 2, unreadable: 1 });
 });
 
+// One project in kit score --all's data: its numbers, or why it could not be read.
+interface ProjectGroup { pieces: number; rounds: number; findings: Counts; landed: number }
+type ProjectScore = { project: string; root: string | null; problem: string }
+  | { project: string; root: string; builders: Record<string, ProjectGroup>; total: ProjectGroup & { corrections: number | null }; correctionsProblem?: string };
+
 // Every file under a folder with its bytes and modified time, to prove a run left them as they were.
 function snapshot(dir: string): Map<string, string> {
   const files = new Map<string, string>();
@@ -486,9 +491,16 @@ test("kit score --all prints one table across the projects in projects.json, rea
   writeFileSync(join(alpha, "scripts/agents/kit.json"), JSON.stringify({ project: "alpha", branches: { land: "dev" }, maps: "maps" }));
   mkdirSync(join(alpha, "maps/one/build"), { recursive: true });
   writeFileSync(join(alpha, "maps/one/build/feedback.md"), feedback(2));
-  const git = (...args: string[]) => spawnSync("git", ["-C", alpha, ...args], { encoding: "utf8" });
-  git("init", "-q", "-b", "dev"); git("add", "-A"); git("-c", "user.name=a", "-c", "user.email=a@example.test", "commit", "-q", "-m", "base");
-  git("checkout", "-q", "-b", "old");
+  const git = (repo: string, ...args: string[]) => {
+    const result = spawnSync("git", ["-C", repo, "-c", "user.name=a", "-c", "user.email=a@example.test", ...args], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+  };
+  git(alpha, "init", "-q", "-b", "dev"); git(alpha, "add", "-A"); git(alpha, "commit", "-q", "-m", "base");
+  // origin/dev wins over the local dev: origin has 3 lines, the local branch 2.
+  git(dir, "init", "-q", "--bare", "origin.git"); git(alpha, "remote", "add", "origin", join(dir, "origin.git"));
+  writeFileSync(join(alpha, "maps/one/build/feedback.md"), feedback(3));
+  git(alpha, "commit", "-q", "-am", "third"); git(alpha, "push", "-q", "origin", "dev"); git(alpha, "reset", "-q", "--hard", "HEAD~1");
+  git(alpha, "checkout", "-q", "-b", "old");
   writeFileSync(join(alpha, "maps/one/build/feedback.md"), feedback(5));
   mkdirSync(join(alpha, ".scratch/scoreboard/one"), { recursive: true });
   writeFileSync(join(alpha, ".scratch/scoreboard/one/01-a.json"), record("claude-opus-5-5", 2, { fault: 1 }, "a".repeat(40)));
@@ -498,10 +510,19 @@ test("kit score --all prints one table across the projects in projects.json, rea
   writeFileSync(join(beta, "docs/wayfinder/two/build/feedback.md"), feedback(1));
   mkdirSync(join(beta, ".scratch/scoreboard/two"), { recursive: true });
   writeFileSync(join(beta, ".scratch/scoreboard/two/01-c.json"), record("claude-opus-5-5", 0, { ticket: 1 }, "b".repeat(40)));
+  // gamma: a root inside a bigger repository reads its logs from the repository's top.
+  const gamma = join(dir, "mono/site");
+  mkdirSync(join(gamma, "scripts/agents"), { recursive: true });
+  writeFileSync(join(gamma, "scripts/agents/kit.json"), JSON.stringify({ project: "gamma", branches: { land: "dev" }, maps: "maps" }));
+  mkdirSync(join(gamma, "maps/three/build"), { recursive: true });
+  writeFileSync(join(gamma, "maps/three/build/feedback.md"), feedback(4));
+  git(join(dir, "mono"), "init", "-q", "-b", "dev"); git(join(dir, "mono"), "add", "-A"); git(join(dir, "mono"), "commit", "-q", "-m", "base");
+  mkdirSync(join(gamma, ".scratch/scoreboard/three"), { recursive: true });
+  writeFileSync(join(gamma, ".scratch/scoreboard/three/01-d.json"), record("claude-opus-5-5", 1, {}));
   settings(here);
   writeFileSync(join(here, "scripts/agents/kit.json"), JSON.stringify({ project: "beta", branches: { land: "dev" }, maps: "docs/wayfinder" }));
   mkdirSync(join(dir, "state/agent-kit"), { recursive: true });
-  writeFileSync(join(dir, "state/agent-kit/projects.json"), JSON.stringify({ beta: { root: beta }, alpha: { root: alpha }, gone: { root: join(dir, "gone") } }));
+  writeFileSync(join(dir, "state/agent-kit/projects.json"), JSON.stringify({ beta: { root: beta }, alpha: { root: alpha }, gone: { root: join(dir, "gone") }, gamma: { root: gamma } }));
   const before = snapshot(dir);
   const env = { ...process.env, KIT_ROOT: here, KIT_MAIN_ROOT: here, ASE_SKIP_DOCTOR: "1", XDG_STATE_HOME: join(dir, "state") };
   const run = (...args: string[]) => spawnSync("bash", [kit, "score", "--all", ...args], { cwd: here, env, encoding: "utf8", timeout: 10_000 });
@@ -509,20 +530,24 @@ test("kit score --all prints one table across the projects in projects.json, rea
   const printed = run();
   assert.equal(printed.status, 0, printed.stdout + printed.stderr);
   assert.deepEqual(printed.stdout.trimEnd().split("\n").map(line => line.replace(/ +/g, " ")), [
-    "score: all projects (3 projects, 3 pieces)",
+    "score: all projects (4 projects, 4 pieces)",
     "project builder pieces rounds findings landed corrections",
     "alpha claude-opus-5-5 1 2 fault 1 1 -",
     "alpha gpt-6.1-sol 1 1 style 2 0 -",
-    "alpha all builders 2 3 fault 1, style 2 1 2",
+    "alpha all builders 2 3 fault 1, style 2 1 3",
     "beta claude-opus-5-5 1 0 ticket 1 1 -",
     "beta all builders 1 0 ticket 1 1 1",
+    "gamma claude-opus-5-5 1 1 none 0 -",
+    "gamma all builders 1 1 none 0 4",
     `unreadable: gone (no folder ${join(dir, "gone")})`,
-    "RESULT: ok score all 3 projects 3 pieces, 1 unreadable",
+    "RESULT: ok score all 4 projects 4 pieces, 1 unreadable",
   ]);
-  const data = JSON.parse(run("--json").stdout.split("\nRESULT:")[0]);
-  assert.deepEqual(data.projects.map((item: { project: string }) => item.project), ["alpha", "beta", "gone"]);
-  assert.deepEqual(data.projects[0].total, { pieces: 2, rounds: 3, findings: { fault: 1, style: 2 }, landed: 1, corrections: 2 });
-  assert.equal(data.projects[2].problem, `no folder ${join(dir, "gone")}`);
+  const data: { projects: ProjectScore[] } = JSON.parse(run("--json").stdout.split("\nRESULT:")[0]);
+  assert.deepEqual(data.projects.map(item => item.project), ["alpha", "beta", "gamma", "gone"]);
+  const [first, , , gone] = data.projects;
+  assert.ok("total" in first && "problem" in gone);
+  assert.deepEqual(first.total, { pieces: 2, rounds: 3, findings: { fault: 1, style: 2 }, landed: 1, corrections: 3 });
+  assert.equal(gone.problem, `no folder ${join(dir, "gone")}`);
   const page = run("--html", "--out", out);
   assert.match(page.stdout, new RegExp(`^page: ${out}$`, "m"));
   const html = readFileSync(out, "utf8");
@@ -532,6 +557,20 @@ test("kit score --all prints one table across the projects in projects.json, rea
   // Nothing in any project, the list or this checkout was copied, moved or changed.
   assert.deepEqual(snapshot(dir), before);
 
+  // With no --out the page goes to the main root.
+  assert.match(run("--html").stdout, new RegExp(`^page: ${join(here, ".scratch/scoreboard/all-projects.html")}$`, "m"));
+  assert.ok(existsSync(join(here, ".scratch/scoreboard/all-projects.html")));
+
+  // A feedback log that cannot be read leaves the project's numbers standing.
+  if (process.getuid?.() !== 0) {
+    chmodSync(join(beta, "docs/wayfinder"), 0o000);
+    const blocked = run();
+    chmodSync(join(beta, "docs/wayfinder"), 0o755);
+    assert.match(blocked.stdout, /^beta +claude-opus-5-5 +1 +0 +ticket 1 +1 +-$/m);
+    assert.match(blocked.stdout, /^beta +all builders +1 +0 +ticket 1 +1 +not read$/m);
+    assert.match(blocked.stdout, /^corrections not read: beta \(.*EACCES/m);
+  }
+
   // A project whose settings cannot be read keeps its numbers and says its corrections were not read.
   writeFileSync(join(here, "scripts/agents/kit.json"), JSON.stringify({ project: "here", branches: { land: "dev" } }));
   const unread = run();
@@ -539,10 +578,14 @@ test("kit score --all prints one table across the projects in projects.json, rea
   assert.match(unread.stdout, /^corrections not read: beta \(no scripts\/agents\/kit\.json; /m);
   assert.match(run("--snapshot").stdout, /^RESULT: fail score --snapshot needs a map, not --all$/m);
   assert.match(run("demo").stdout, /^RESULT: fail score --all takes no map$/m);
+  writeFileSync(join(dir, "state/agent-kit/projects.json"), "{");
+  const broken = run();
+  assert.equal(broken.status, 1);
+  assert.match(broken.stdout, /^RESULT: fail score .*projects\.json is unreadable: /m);
 });
 
 test("the all-projects page lists an unreadable project apart and says when none could be read", () => {
-  const html = allProjectsPage({ projects: [{ project: "gone", problem: "no folder /x" }], generated: new Date("2026-10-28T09:00:00Z") });
+  const html = allProjectsPage({ projects: [{ project: "gone", root: "/x", problem: "no folder /x" }] satisfies ProjectScore[], generated: new Date("2026-10-28T09:00:00Z") });
   assert.match(html, /No project could be read\./);
   assert.match(html, /<strong>gone<\/strong><span class="fix">no folder \/x<\/span>/);
   assert.doesNotMatch(html, /<table>/);

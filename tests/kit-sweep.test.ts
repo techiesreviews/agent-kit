@@ -394,7 +394,7 @@ test("the sweep lists a registered project whose kit doctor fails, and stays qui
   write(join(repo, "README.md"), "base\n");
   commit(repo, Date.now() - day, "base");
   // Each project's doctor runs in its own folder with none of this command's kit settings.
-  const good = fakeKit(join(dir, "good"), `[[ -z \${KIT_ROOT:-} && -z \${KIT_MAIN_ROOT:-} && $PWD == "${join(dir, "good")}" ]] || { echo "RESULT: fail doctor 1 failed: env"; exit 1; }
+  const good = fakeKit(join(dir, "good"), `[[ -z \${KIT_ROOT:-} && -z \${KIT_MAIN_ROOT:-} && -z \${KIT_DOCTOR_SKIP:-} && $PWD == "${join(dir, "good")}" ]] || { echo "RESULT: fail doctor 1 failed: env"; exit 1; }
 echo "RESULT: ok doctor 11/11 checks passed"`);
   // A main folder on another branch fails place and base: that is the folder, not the kit.
   const elsewhere = fakeKit(join(dir, "elsewhere"), `printf '✗ place: main or dev worktree (x); fix: y\\n✗ base: stale; fix: z\\nRESULT: fail doctor 2 failed: place,base\\n'; exit 1`);
@@ -402,7 +402,8 @@ echo "RESULT: ok doctor 11/11 checks passed"`);
   const register = (projects: Record<string, string>) =>
     write(join(dir, "state/agent-kit/projects.json"), JSON.stringify(Object.fromEntries(Object.entries(projects).map(([name, root]) => [name, { root }]))));
   register({ good, elsewhere });
-  const quiet = bundleOf(run(repo).stdout).text;
+  // A KIT_DOCTOR_SKIP of this sweep never reaches a project's doctor.
+  const quiet = bundleOf(run(repo, [], repo, { KIT_DOCTOR_SKIP: "hooks" }).stdout).text;
   assert.ok(!quiet.includes("## Kit problems"), quiet);
   register({ good, elsewhere, broken });
   const listed = run(repo);
