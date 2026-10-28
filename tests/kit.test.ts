@@ -542,41 +542,77 @@ test("the real kit exposes an executable version stub and emits its final RESULT
   assert.equal(results(version.stdout).length, 1);
 });
 
-test("kit test fixtures start without the kit's home names, so a person's KIT_HOME never reaches them", () => {
-  // A spread of process.env, or a spawn with no env, hands a fixture the KIT_HOME and KIT_HOME_DEFAULT of the kit
-  // run that started these tests; kitEnv() drops both. Allowed: an env the next lines strip of those names,
-  // and spreads that only reach git, Chromium or a generated child script, which inherits an env already cleaned.
-  const allowed: [string, RegExp][] = [
-    ["tests/kit-commit.test.ts", /commitBuilderWork\(|const rootEnv = /],
-    ["tests/kit-doctor.test.ts", /spawnSync\("git"/],
-    ["tests/kit-specs.test.ts", /spawnSync\("git"|spawnSync\(process\.argv\[2\]/],
-    ["tests/kit-sweep.test.ts", /GIT_AUTHOR_DATE/],
-    ["tests/kit-shots.test.ts", /chromium\.launch\(/],
-    ["tests/kit-shots-layout.test.ts", /chromium\.launch\(/],
-    ["tests/kit-size.test.ts", /stdio: "inherit", env: \{ \.\.\.process\.env, ASE_TEST_PORT/],
-  ];
+// Fixture lines that hand a front door the KIT_HOME and KIT_HOME_DEFAULT of the kit run that started the tests:
+// a spread of process.env, or a spawn of a front door, kit.d or project.d command with no env option.
+// kitEnv() drops both. Allowed: an env whose next lines delete both names (or every KIT_ name), and spreads
+// that only reach git, Chromium or a generated child script, which inherits an env already cleaned.
+const envAllowed: [string, RegExp][] = [
+  ["tests/kit-commit.test.ts", /commitBuilderWork\(|const rootEnv = /],
+  ["tests/kit-doctor.test.ts", /spawnSync\("git"/],
+  ["tests/kit-specs.test.ts", /spawnSync\("git"|spawnSync\(process\.argv\[2\]/],
+  ["tests/kit-sweep.test.ts", /GIT_AUTHOR_DATE/],
+  ["tests/kit-shots.test.ts", /chromium\.launch\(/],
+  ["tests/kit-shots-layout.test.ts", /chromium\.launch\(/],
+  ["tests/kit-size.test.ts", /stdio: "inherit", env: \{ \.\.\.process\.env, ASE_TEST_PORT/],
+];
+
+function kitEnvLeaks(file: string, source: string) {
+  const lines = source.split("\n"), found: string[] = [];
+  const left = (text: string) => !envAllowed.some(([name, pattern]) => name === file && pattern.test(text));
+  // Both names go in delete statements, by name or with every KIT_ name.
+  const strips = (text: string) => {
+    const deletes = text.split(";").filter(statement => /\bdelete\b/.test(statement));
+    if (deletes.some(statement => /startsWith\("KIT_"\)|\/\^\(KIT_/.test(statement))) return true;
+    return ["KIT_HOME", "KIT_HOME_DEFAULT"].every(name => deletes.some(statement => new RegExp(`"${name}"|\\.${name}\\b`).test(statement)));
+  };
   // Split, so this line is not a spread itself.
   const spread = "..." + "process.env";
-  const strips = (text: string) => /delete /.test(text) && /"KIT_HOME_DEFAULT"|startsWith\("KIT_"\)|\^\(KIT_/.test(text);
-  const found: string[] = [];
-  for (const file of globSync("tests/kit*.test.ts").sort()) {
-    const source = readFileSync(file, "utf8"), lines = source.split("\n");
-    const left = (text: string) => !allowed.some(([name, pattern]) => name === file && pattern.test(text));
-    lines.forEach((line, index) => {
-      if (line.includes(spread) && left(line) && !strips(lines.slice(index, index + 4).join("\n"))) found.push(`${file}:${index + 1}`);
-    });
-    // A front door or command started with no env option inherits process.env whole.
-    for (const call of source.matchAll(/\b(?:spawnSync|spawn|execFileSync)\(/g)) {
-      let depth = 0, end = call.index + call[0].length - 1;
-      for (; end < source.length && end < call.index + 1000; end++) {
-        if (source[end] === "(") depth++;
-        else if (source[end] === ")" && --depth === 0) break;
-      }
-      const text = source.slice(call.index, end + 1), head = text.split("{")[0];
-      if (!/(^|[^\w-])kit([^\w.-]|$)|kit\.d\/|project\.d\//.test(head) || /\benv\b/.test(text)) continue;
-      const index = source.slice(0, call.index).split("\n").length - 1;
-      if (left(lines[index])) found.push(`${file}:${index + 1}`);
+  lines.forEach((line, index) => {
+    if (line.includes(spread) && left(line) && !strips(lines.slice(index, index + 4).join("\n"))) found.push(`${file}:${index + 1}`);
+  });
+  // Names bound to a front door or command path, such as const next = resolve("scripts/agents/kit.d/next").
+  const names = [...source.matchAll(/\b(?:const|let)\s+(\w+)\s*=\s*(?:resolve|join)\([^;\n]*(?:scripts\/agents\/kit"|kit\.d\/|project\.d\/)/g)].map(match => match[1]);
+  // A name counts as code, not inside a string ("doctor" is an argument); the literal "kit" is a front door's file name.
+  const command = new RegExp(`(^|[^\\w.$"'\`-])(${["kit", ...names].join("|")})([^\\w"'\`-]|$)|"kit"|kit\\.d\\/|project\\.d\\/`);
+  // Only child_process's own functions: a file's local spawn helper sets its env itself.
+  const imported = source.match(/import \{([^}]*)\} from "node:child_process"/)?.[1].split(",").map(name => name.trim()) ?? [];
+  const spawners = imported.filter(name => ["spawnSync", "spawn", "execFileSync"].includes(name));
+  for (const call of spawners.length ? source.matchAll(new RegExp(`\\b(?:${spawners.join("|")})\\(`, "g")) : []) {
+    let depth = 0, end = call.index + call[0].length - 1;
+    for (; end < source.length && end < call.index + 1000; end++) {
+      if (source[end] === "(") depth++;
+      else if (source[end] === ")" && --depth === 0) break;
     }
+    // The head is the command and its arguments; the env option is a key of the options object after it.
+    const text = source.slice(call.index, end + 1), head = text.split("{")[0];
+    if (!command.test(head) || /\benv\s*[:,}]/.test(text.slice(head.length))) continue;
+    const index = source.slice(0, call.index).split("\n").length - 1;
+    if (left(lines[index])) found.push(`${file}:${index + 1}`);
   }
+  return found;
+}
+
+test("kit test fixtures start without the kit's home names, so a person's KIT_HOME never reaches them", () => {
+  const found = globSync("tests/kit*.test.ts").sort().flatMap(file => kitEnvLeaks(file, readFileSync(file, "utf8")));
   assert.deepEqual(found, [], "use kitEnv() for these fixtures");
+});
+
+test("the KIT_HOME guard finds commands under any name, a half-cleaned env and an env word that is not the option", () => {
+  // Split, so these samples are not spreads or spawns in this file.
+  const call = "spawn" + "Sync", spread = "..." + "process.env";
+  const leaks = (source: string) => kitEnvLeaks("tests/kit-x.test.ts", `import { ${call} } from "node:child_process";\n${source}`);
+  const next = 'const next = resolve("scripts/agents/kit.d/next");\n';
+  assert.deepEqual(leaks(`${next}${call}(process.execPath, [next, "--help"], { encoding: "utf8" });\n`), ["tests/kit-x.test.ts:3"]);
+  assert.deepEqual(leaks(`${next}${call}(process.execPath, [next, "--help"], { env: kitEnv(), encoding: "utf8" });\n`), []);
+  assert.deepEqual(leaks(`${next}${call}(process.execPath, [next], { cwd, env });\n`), []);
+  assert.deepEqual(leaks(`${call}(kit, [], { input: process.env.X });\n`), ["tests/kit-x.test.ts:2"]);
+  assert.deepEqual(leaks(`${call}(join(agents, "kit"), ["card"], { cwd: root });\n`), ["tests/kit-x.test.ts:2"]);
+  // Not commands: a git call beside a kit folder name, and a subcommand that shares a command's name.
+  assert.deepEqual(leaks(`const home = join(root, "kit");\n${call}("git", ["-C", home, "init"]);\n`), []);
+  assert.deepEqual(leaks(`const doctor = resolve("scripts/agents/kit.d/doctor");\n${call}("npm", ["doctor"]);\n`), []);
+  assert.deepEqual(leaks(`const env = { ${spread} }; delete env.KIT_HOME_DEFAULT;\n`), ["tests/kit-x.test.ts:2"]);
+  assert.deepEqual(leaks(`const env = { ${spread} };\nconst names = ["KIT_HOME_DEFAULT"]; delete env.OTHER;\n`), ["tests/kit-x.test.ts:2"]);
+  assert.deepEqual(leaks(`const env = { ${spread} }; delete env.KIT_HOME; delete env.KIT_HOME_DEFAULT;\n`), []);
+  assert.deepEqual(leaks(`const env = { ${spread} };\nfor (const name of ["KIT_ROOT", "KIT_HOME",\n  "KIT_HOME_DEFAULT"]) delete env[name];\n`), []);
+  assert.deepEqual(leaks(`const env = { ${spread} };\nfor (const key of Object.keys(env)) if (key.startsWith("KIT_")) delete env[key];\n`), []);
 });

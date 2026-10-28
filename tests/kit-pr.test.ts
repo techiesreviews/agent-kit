@@ -7,8 +7,8 @@ import test, { type TestContext } from "node:test";
 import { checkSteps, classify, featureListGuard, focusedUnitFiles, parseChanges, visiblePath } from "../scripts/agents/pr-tier.mjs";
 import { sameReviewPatch } from "../scripts/agents/review-findings.mjs";
 import { forEachAwait } from "./support/await-race.ts";
-import type { ScoreRecord } from "./kit-score.test.ts";
 import { kitEnv } from "./support/kit-env.ts";
+import type { ScoreRecord } from "./kit-score.test.ts";
 
 const pr = resolve("scripts/agents/kit.d/pr");
 const kit = resolve("scripts/agents/kit");
