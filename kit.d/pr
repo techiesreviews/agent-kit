@@ -464,8 +464,9 @@ async function main(args) {
       const fullLines = findings.map(item => label(item) + item.text);
       const shortLines = findings.map(item => label(item) + shortText(item.text));
       // Before 2026-10-27 kit pr cut each finding to 160 UTF-16 units with no mark. A rerun counts such a
-      // PR comment as posted and swaps such a ticket bullet for the full text.
-      const oldLines = findings.map(item => label(item) + item.text.slice(0, 160));
+      // PR comment as posted and swaps such a ticket bullet for the full text. A cut through a surrogate
+      // pair was written as U+FFFD, so the old cut is compared after the same trip through UTF-8.
+      const oldLines = findings.map(item => label(item) + Buffer.from(item.text.slice(0, 160)).toString());
       const heading = `${second ? "Second-look follow-ups" : "Follow-ups"} (non-blocking after ${FIX_ROUNDS} fix rounds):\n`;
       const summary = heading + shortLines.join("\n");
       const oldSummary = heading + oldLines.join("\n");
@@ -484,9 +485,11 @@ async function main(args) {
       if (current(["branch", "--show-current"]) !== branch || current(["rev-parse", "HEAD"]) !== reviewedHead ||
           current(["status", "--porcelain"])) throw new Error("worktree changed before recording follow-ups");
       const file = resolve(root, flags.ticket), original = readFileSync(file, "utf8");
+      // The ticket's own line endings, whether or not it has a Follow-ups section yet.
+      const eol = original.includes("\r\n") ? "\r\n" : "\n";
       const sections = [...original.matchAll(doneHeading())];
       const start = sections.at(-1)?.index;
-      const prefix = start === undefined ? `${original.trimEnd()}\n\n## Done (${new Date().toISOString().slice(0, 10)})` : original.slice(0, start);
+      const prefix = start === undefined ? `${original.trimEnd()}${eol}${eol}## Done (${new Date().toISOString().slice(0, 10)})` : original.slice(0, start);
       const rest = start === undefined ? "" : original.slice(start);
       const end = rest.slice(1).search(/^## /m);
       const doneEnd = end < 0 ? rest.length : end + 1;
@@ -506,14 +509,13 @@ async function main(args) {
       });
       const missing = fullLines.filter(line => !kept.includes(line));
       if (followups) {
-        const eol = raw.some(line => line.endsWith("\r")) ? "\r\n" : "\n";
         const header = followups[0].slice(0, followups[0].length - followups[1].length);
         let section = header + raw.map((line, index) => kept[index] === existing[index] ? line
           : kept[index] + (line.endsWith("\r") ? "\r" : "")).join("\n");
         const position = section.trimEnd().length;
         if (missing.length) section = `${section.slice(0, position)}${eol}${missing.join(eol)}${section.slice(position)}`;
         done = done.slice(0, followups.index) + section + done.slice(followups.index + followups[0].length);
-      } else if (missing.length) done = `${done.trimEnd()}\n\n### Follow-ups\n\n${missing.join("\n")}\n\n`;
+      } else if (missing.length) done = `${done.trimEnd()}${eol}${eol}### Follow-ups${eol}${eol}${missing.join(eol)}${eol}${eol}`;
       const updated = prefix + done + rest.slice(doneEnd);
       if (updated === original) return;
       writeFileSync(file, updated);

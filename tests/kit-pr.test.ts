@@ -1281,6 +1281,58 @@ test("findings that share their first 160 characters each upgrade one old cut bu
     followupTicket([`- Validation gaps (gap): ${first}`, `- Validation gaps (gap): ${second}`, "- Spec (P2): P2: Minor defect."]));
 });
 
+const minorLines = ["- Spec (P2): P2: Minor defect.", "- Validation gaps (gap): Add coverage."];
+
+test("a CRLF ticket without a Follow-ups section gets the new section in CRLF", t => {
+  const f = fixture(t); f.rounds(3);
+  f.commit("Close ticket", "ticket.md", followupTicket([]).replaceAll("\n", "\r\n"));
+  f.saveReview(minorReview);
+  const result = f.run(["--ticket", "ticket.md"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const ticket = readFileSync(join(f.root, "ticket.md"), "utf8");
+  assert.ok(ticket.startsWith(followupTicket(minorLines).replaceAll("\n", "\r\n")), JSON.stringify(ticket));
+  assert.doesNotMatch(ticket, /(?<!\r)\n/);
+});
+
+test("a CRLF Follow-ups section whose last bullet has no final newline gets new bullets in CRLF", t => {
+  const f = fixture(t); f.rounds(3);
+  const original = followupTicket([minorLines[0]]).replaceAll("\n", "\r\n").replace(/\r\n$/, "");
+  f.commit("Close ticket", "ticket.md", original);
+  f.saveReview(minorReview);
+  const result = f.run(["--ticket", "ticket.md"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(readFileSync(join(f.root, "ticket.md"), "utf8"), `${original}\r\n${minorLines[1]}`);
+});
+
+test("an old cut bullet beside its full line is left alone: file and HEAD unchanged, no third line", t => {
+  const f = fixture(t); f.rounds(3);
+  const original = followupTicket([`- Spec (P2): ${long.slice(0, 160)}`, `- Spec (P2): ${long}`, minorLines[1]]);
+  f.commit("Close ticket", "ticket.md", original);
+  f.saveReview(minorReview.replace("P2: Minor defect.", long));
+  const before = f.git("rev-parse", "HEAD");
+  const result = f.run(["--ticket", "ticket.md"], { FAKE_EXISTING: "1" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(readFileSync(join(f.root, "ticket.md"), "utf8"), original);
+  assert.equal(f.git("rev-parse", "HEAD"), before);
+});
+
+test("an old cut that split an emoji, written as U+FFFD, is upgraded to one full bullet with no second comment", t => {
+  const f = fixture(t); f.rounds(3);
+  const text = `P2: ${"x".repeat(155)}🙂🙂 tail`;
+  // The old run cut 🙂 at unit 160 and wrote its lone surrogate as U+FFFD.
+  assert.equal(text.slice(0, 160).at(-1), "\uD83D");
+  const oldSpec = `- Spec (P2): ${text.slice(0, 159)}�`;
+  f.commit("Close ticket", "ticket.md", followupTicket([oldSpec, minorLines[1]]));
+  const oldSummary = `Follow-ups (non-blocking after 3 fix rounds):\n${oldSpec}\n${minorLines[1]}`;
+  const posted = { tool: "gh", args: ["pr", "comment", "73", "--body-file", "old.md"], body: oldSummary } satisfies Call;
+  appendFileSync(f.env.FAKE_CALLS!, JSON.stringify(posted) + "\n");
+  f.saveReview(minorReview.replace("P2: Minor defect.", text));
+  const result = f.run(["--ticket", "ticket.md"], { FAKE_EXISTING: "1" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(readFileSync(join(f.root, "ticket.md"), "utf8"), followupTicket([`- Spec (P2): ${text}`, minorLines[1]]));
+  assert.deepEqual(f.ghCalls("comment").filter(call => call.body?.startsWith("Follow-ups")).map(call => call.body), [oldSummary]);
+});
+
 async function waitForFile(path: string) {
   const deadline = Date.now() + 10_000;
   while (!existsSync(path)) {
