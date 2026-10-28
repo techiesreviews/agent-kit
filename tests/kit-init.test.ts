@@ -389,22 +389,30 @@ type GhIssue = {
   number: number; title: string; state: "OPEN" | "CLOSED"; url: string; author: { login: string }; createdAt: string; body: string;
   labels: { name: string }[]; comments: { author: { login: string }; createdAt: string; body: string }[];
 };
-// A fake gh on PATH: `issue list` prints the open Issues from issues.json (or list-output.txt as it is, or fails
-// with list-error.txt), `issue close` marks one closed (a number listed in fail-close.json fails once instead);
-// every call is logged as one JSON line in calls.log.
-function fakeGh(f: ReturnType<typeof fixture>, issues: GhIssue[]) {
+// A repo as `gh repo view <repo> --json nameWithOwner,url` names it now.
+type GhRepo = { nameWithOwner: string; url: string };
+// A fake gh on PATH: `repo view` answers from repos.json (keyed by the --repo form; a missing one is not found),
+// `issue list --repo R` prints the open Issues of R as repos.json names it now (or list-output.txt as it is, or
+// fails with list-error.txt, or first sleeps list-sleep.txt seconds), `issue close` marks one closed (a number
+// listed in fail-close.json fails once instead); every call is logged as one JSON line in calls.log.
+function fakeGh(f: ReturnType<typeof fixture>, issues: GhIssue[], repos: Record<string, GhRepo> = { "acme/tools": { nameWithOwner: "acme/tools", url: "https://github.com/acme/tools" } }) {
   const bin = join(f.directory, "fake-gh");
   mkdirSync(bin);
   writeFileSync(join(bin, "issues.json"), JSON.stringify(issues));
+  writeFileSync(join(bin, "repos.json"), JSON.stringify(repos));
   writeFileSync(join(bin, "gh"), `#!/usr/bin/env node
 const { appendFileSync, existsSync, readFileSync, writeFileSync } = require("node:fs");
 const store = ${JSON.stringify(join(bin, "issues.json"))}, args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(join(bin, "calls.log"))}, JSON.stringify(args) + "\\n");
-const issues = JSON.parse(readFileSync(store, "utf8"));
+const issues = JSON.parse(readFileSync(store, "utf8")), repos = JSON.parse(readFileSync(${JSON.stringify(join(bin, "repos.json"))}, "utf8"));
+const repoArg = args[args.indexOf("--repo") + 1], listSleep = ${JSON.stringify(join(bin, "list-sleep.txt"))};
+if (args[0] === "issue" && args[1] === "list" && existsSync(listSleep)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(readFileSync(listSleep, "utf8")) * 1000);
 const listError = ${JSON.stringify(join(f.directory, "fake-gh/list-error.txt"))}, listOutput = ${JSON.stringify(join(f.directory, "fake-gh/list-output.txt"))};
 if (args[0] === "issue" && args[1] === "list" && existsSync(listError)) { process.stderr.write(readFileSync(listError, "utf8")); process.exit(1); }
 else if (args[0] === "issue" && args[1] === "list" && existsSync(listOutput)) process.stdout.write(readFileSync(listOutput, "utf8"));
-else if (args[0] === "issue" && args[1] === "list") process.stdout.write(JSON.stringify(issues.filter((issue) => issue.state === "OPEN")));
+else if (args[0] === "issue" && args[1] === "list" && repos[repoArg]) process.stdout.write(JSON.stringify(issues.filter((issue) => issue.state === "OPEN" && issue.url.startsWith(repos[repoArg].url + "/issues/"))));
+else if (args[0] === "repo" && args[1] === "view" && repos[args[2]]) process.stdout.write(JSON.stringify(repos[args[2]]));
+else if (args[0] === "repo" && args[1] === "view") { process.stderr.write("GraphQL: Could not resolve to a Repository"); process.exit(1); }
 else if (args[0] === "issue" && args[1] === "close") {
   const failing = ${JSON.stringify(join(f.directory, "fake-gh/fail-close.json"))};
   const once = existsSync(failing) ? JSON.parse(readFileSync(failing, "utf8")) : [];
@@ -414,19 +422,24 @@ else if (args[0] === "issue" && args[1] === "close") {
 } else { process.stderr.write("unexpected gh " + args.join(" ")); process.exit(1); }
 `, { mode: 0o755 });
   const env = { ...f.env, PATH: `${bin}:${f.env.PATH}` };
-  const init = (cwd: string, args: string[]) => spawnSync(join(f.directory, "data/agent-kit/current/kit"), ["init", ...args], { cwd, env, encoding: "utf8", timeout: 60_000 });
+  const init = (cwd: string, args: string[], extra: NodeJS.ProcessEnv = {}) =>
+    spawnSync(join(f.directory, "data/agent-kit/current/kit"), ["init", ...args], { cwd, env: { ...env, ...extra }, encoding: "utf8", timeout: 60_000 });
   const calls = () => existsSync(join(bin, "calls.log"))
     ? readFileSync(join(bin, "calls.log"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as string[]) : [];
   const add = (...more: GhIssue[]) => writeFileSync(join(bin, "issues.json"), JSON.stringify([...JSON.parse(readFileSync(join(bin, "issues.json"), "utf8")), ...more]));
-  return { init, calls, add, closes: () => calls().filter((args) => args[1] === "close") };
+  const setRepos = (more: Record<string, GhRepo>) => writeFileSync(join(bin, "repos.json"), JSON.stringify(more));
+  return { init, calls, add, setRepos, closes: () => calls().filter((args) => args[1] === "close") };
 }
 const issue = (number: number, title: string, extra: Partial<GhIssue> = {}): GhIssue => ({ number, title, state: "OPEN", url: `https://github.com/acme/tools/issues/${number}`,
   author: { login: "lex" }, createdAt: "2026-10-01T10:00:00Z", body: "", labels: [], comments: [], ...extra });
-const issueRepo = (f: ReturnType<typeof fixture>, settings = JSON.stringify({ project: "tools", branches: { land: "dev" }, maps: "docs/wayfinder" })) => {
+// A repo whose origin names a GitHub URL that git rewrites to a local bare repo, so pushes and fetches stay here.
+const issueRepo = (f: ReturnType<typeof fixture>, settings = JSON.stringify({ project: "tools", branches: { land: "dev" }, maps: "docs/wayfinder" }),
+  originUrl = "https://github.com/acme/tools.git") => {
   const repo = f.repo("tools", { "scripts/agents/kit.json": settings });
   const origin = join(f.directory, "origin.git");
   f.git(f.directory, "init", "-q", "--bare", origin);
-  f.git(repo.main, "remote", "add", "origin", origin);
+  f.git(repo.main, "remote", "add", "origin", originUrl);
+  f.git(repo.main, "config", `url.${origin}.insteadOf`, originUrl);
   f.git(repo.main, "push", "-q", "origin", "main", "dev");
   return repo;
 };
@@ -446,7 +459,8 @@ test("--issues writes one valid needs-triage ticket per open Issue and the map, 
   assert.equal(result(run), "RESULT: ok init issues wrote 2 tickets and the map; nothing closed");
   assert.deepEqual(written(run), [`${backlog}/map.md`, `${backlog}/tickets/01-add-a-dark-mode-toggle-2.md`, `${backlog}/tickets/02-search-results-ignore-accents.md`]);
   assert.match(run.stdout, /^next: land docs\/wayfinder\/backlog on dev, then run kit init --issues --close to close the 2 Issues with a link to each file$/m);
-  assert.deepEqual(gh.calls(), [["issue", "list", "--state", "open", "--limit", "1000", "--json", "number,title,body,labels,url,author,createdAt,comments"]]);
+  assert.deepEqual(gh.calls(), [["repo", "view", "acme/tools", "--json", "nameWithOwner,url"],
+    ["issue", "list", "--repo", "acme/tools", "--state", "open", "--limit", "1000", "--json", "number,title,body,labels,url,author,createdAt,comments"]]);
   assert.doesNotMatch(run.stdout, /^note: add "maps"/m);
   assert.equal(readFileSync(join(work, `${backlog}/tickets/02-search-results-ignore-accents.md`), "utf8"), `---
 title: "Search: results ignore accents!"
@@ -607,7 +621,7 @@ test("without \"maps\" in kit.json the backlog goes under docs/wayfinder with a 
 test("copied text gets LF endings and its top headings moved down, so they never become the ticket's own sections", (t) => {
   const f = fixture(t);
   const { work } = issueRepo(f);
-  const body = "Crash on save.\r\n## Files\r\n- `src/save.ts`\r\n# Steps\r\n```sh\r\n# keep this shell comment\r\n## and this\r\n```\r\n### Deeper stays";
+  const body = "Crash on save.\r\n## Files\r\n- `src/save.ts`\r\n# Steps\r\n```sh\r\n# keep this shell comment\r\n```js not a close\r\n## and this\r\n```\r\n### Deeper stays";
   const comments = Array.from({ length: 100 }, (_, n) => ({ author: { login: "sam" }, createdAt: "2026-10-02T09:00:00Z", body: n ? `+${n}` : "## Comments\r\nme too" }));
   const gh = fakeGh(f, [issue(8, "Save crash", { body, comments })]);
   const run = gh.init(work, ["--issues"]);
@@ -615,7 +629,7 @@ test("copied text gets LF endings and its top headings moved down, so they never
   assert.match(run.stdout, /^note: #8 has 100 or more comments; its file says to read the rest on GitHub$/m);
   const text = readFileSync(join(work, `${backlog}/tickets/01-save-crash.md`), "utf8");
   assert.doesNotMatch(text, /\r/);
-  assert.ok(text.includes("Crash on save.\n#### Files\n- `src/save.ts`\n### Steps\n```sh\n# keep this shell comment\n## and this\n```\n### Deeper stays\n"), text);
+  assert.ok(text.includes("Crash on save.\n#### Files\n- `src/save.ts`\n### Steps\n```sh\n# keep this shell comment\n```js not a close\n## and this\n```\n### Deeper stays\n"), text);
   assert.ok(text.includes("**sam, 2026-10-02:**\n\n#### Comments\nme too"), text);
   assert.deepEqual(text.match(/^## .*/gm), ["## Issue", "## and this", "## Comments"]);
   assert.match(text, /\n_Only the first 100 comments were copied; read the rest on the Issue\._\n$/);
@@ -627,16 +641,22 @@ test("copied text gets LF endings and its top headings moved down, so they never
 
 test("--close works on another GitHub host and after the repo was renamed, and needs a landing branch", (t) => {
   const f = fixture(t);
-  const { work } = issueRepo(f);
-  const ghe = "https://ghe.example/acme/tools/issues/4";
-  const gh = fakeGh(f, [issue(4, "On our own host", { url: ghe }), issue(6, "Before the rename")]);
-  assert.equal(gh.init(work, ["--issues"]).status, 0);
+  const { work } = issueRepo(f, undefined, "git@ghe.example:acme/tools.git");
+  const ghe = (name: string, number: number) => `https://ghe.example/acme/${name}/issues/${number}`;
+  const gh = fakeGh(f, [issue(4, "On our own host", { url: ghe("tools", 4) }), issue(6, "Before the rename", { url: ghe("tools", 6) })],
+    { "ghe.example/acme/tools": { nameWithOwner: "acme/tools", url: "https://ghe.example/acme/tools" } });
+  const first = gh.init(work, ["--issues"]);
+  assert.equal(first.status, 0, first.stdout + first.stderr);
+  assert.deepEqual(gh.calls()[1].slice(0, 4), ["issue", "list", "--repo", "ghe.example/acme/tools"]);
   f.git(work, "add", "-A");
   f.git(work, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "backlog");
   f.git(work, "push", "-q", "origin", "HEAD:dev");
-  // The repo is renamed: gh now gives #6 a new link, and a rerun still finds its file.
+  // The repo is renamed (origin still names the old one, which GitHub redirects): gh gives new links, and a
+  // rerun still finds both files.
+  const renamed = { nameWithOwner: "acme/tools-renamed", url: "https://ghe.example/acme/tools-renamed" };
+  gh.setRepos({ "ghe.example/acme/tools": renamed, "ghe.example/acme/tools-renamed": renamed });
   const store = join(f.directory, "fake-gh/issues.json");
-  writeFileSync(store, readFileSync(store, "utf8").replace("acme/tools/issues/6", "acme/tools-renamed/issues/6"));
+  writeFileSync(store, readFileSync(store, "utf8").replaceAll("acme/tools/issues/", "acme/tools-renamed/issues/"));
   const rerun = gh.init(work, ["--issues"]);
   assert.equal(result(rerun), "RESULT: ok init issues nothing new (2 open Issues have a file)", rerun.stdout + rerun.stderr);
 
@@ -650,17 +670,20 @@ test("--close works on another GitHub host and after the repo was renamed, and n
   writeFileSync(settings, JSON.stringify({ project: "tools", branches: { land: "dev" }, maps: "docs/wayfinder" }));
   const close = gh.init(work, ["--issues", "--close"]);
   assert.equal(close.status, 0, close.stdout + close.stderr);
-  assert.match(close.stdout, /^note: #6's file docs\/wayfinder\/backlog\/tickets\/02-before-the-rename\.md names https:\/\/github\.com\/acme\/tools\/issues\/6; GitHub now gives https:\/\/github\.com\/acme\/tools-renamed\/issues\/6$/m);
+  assert.match(close.stdout, /^note: #6's file docs\/wayfinder\/backlog\/tickets\/02-before-the-rename\.md names https:\/\/ghe\.example\/acme\/tools\/issues\/6; GitHub now gives https:\/\/ghe\.example\/acme\/tools-renamed\/issues\/6$/m);
   assert.deepEqual(gh.closes().map((args) => args.slice(0, 5).concat(args[6].split("\n")[0])), [
-    ["issue", "close", "4", "--repo", "ghe.example/acme/tools", `Moved to a ticket file: https://ghe.example/acme/tools/blob/dev/${backlog}/tickets/01-on-our-own-host.md`],
-    ["issue", "close", "6", "--repo", "acme/tools-renamed", `Moved to a ticket file: https://github.com/acme/tools-renamed/blob/dev/${backlog}/tickets/02-before-the-rename.md`],
+    ["issue", "close", "4", "--repo", "ghe.example/acme/tools-renamed", `Moved to a ticket file: https://ghe.example/acme/tools-renamed/blob/dev/${backlog}/tickets/01-on-our-own-host.md`],
+    ["issue", "close", "6", "--repo", "ghe.example/acme/tools-renamed", `Moved to a ticket file: https://ghe.example/acme/tools-renamed/blob/dev/${backlog}/tickets/02-before-the-rename.md`],
   ]);
 });
 
 test("--issues runs beside old kit files, and a failing or odd gh issue list writes nothing", (t) => {
   const f = fixture(t);
-  const { work } = f.repo("old", { "scripts/agents/kit-lib.sh": "# old\n", "scripts/agents/kit.json": JSON.stringify({ project: "old", branches: { land: "dev" }, maps: "docs/wayfinder" }) });
+  const { main, work } = f.repo("old", { "scripts/agents/kit-lib.sh": "# old\n", "scripts/agents/kit.json": JSON.stringify({ project: "old", branches: { land: "dev" }, maps: "docs/wayfinder" }) });
   const gh = fakeGh(f, [issue(1, "Kept")]);
+  const noOrigin = gh.init(work, ["--issues"]);
+  assert.equal(result(noOrigin), "RESULT: fail init origin (none) is not a GitHub repo; --issues reads the Issues of origin's repo");
+  f.git(main, "remote", "add", "origin", "https://github.com/acme/tools");
   const bin = join(f.directory, "fake-gh");
   writeFileSync(join(bin, "list-error.txt"), "HTTP 401: Bad credentials\nmore");
   const denied = gh.init(work, ["--issues"]);
@@ -679,4 +702,68 @@ test("--issues runs beside old kit files, and a failing or odd gh issue list wri
   const run = gh.init(work, ["--issues"]);
   assert.equal(run.status, 0, run.stdout + run.stderr);
   assert.deepEqual(written(run), [`${backlog}/map.md`, `${backlog}/tickets/01-kept.md`]);
+});
+
+test("a fork lists and closes origin's Issues, never upstream's, and links only origin's files", (t) => {
+  const f = fixture(t);
+  const { main, work } = issueRepo(f, undefined, "https://github.com/me/tools.git");
+  f.git(main, "remote", "add", "upstream", "https://github.com/acme/tools.git");
+  const gh = fakeGh(f, [issue(3, "Upstream's own"), issue(4, "Ours", { url: "https://github.com/me/tools/issues/4" })], {
+    "me/tools": { nameWithOwner: "me/tools", url: "https://github.com/me/tools" },
+    "acme/tools": { nameWithOwner: "acme/tools", url: "https://github.com/acme/tools" } });
+  const run = gh.init(work, ["--issues"]);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.deepEqual(written(run), [`${backlog}/map.md`, `${backlog}/tickets/01-ours.md`]);
+  f.git(work, "add", "-A");
+  f.git(work, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "backlog");
+  f.git(work, "push", "-q", "origin", "HEAD:dev");
+  const close = gh.init(work, ["--issues", "--close"]);
+  assert.equal(close.status, 0, close.stdout + close.stderr);
+  assert.deepEqual(gh.closes().map((args) => [args[2], args[4], args[6].split("\n")[0]]),
+    [["4", "me/tools", `Moved to a ticket file: https://github.com/me/tools/blob/dev/${backlog}/tickets/01-ours.md`]]);
+  assert.ok(gh.calls().filter((args) => args[0] === "issue").every((args) => args[args.indexOf("--repo") + 1] === "me/tools"), JSON.stringify(gh.calls()));
+  // Issues gh gives for another repo stop the run before anything is written or closed.
+  gh.setRepos({ "me/tools": { nameWithOwner: "me/tools", url: "https://github.com/acme/tools" } });
+  const odd = gh.init(work, ["--issues", "--close"]);
+  assert.equal(odd.status, 1, odd.stdout + odd.stderr);
+  assert.equal(result(odd), "RESULT: fail init gh gave #3 as https://github.com/acme/tools/issues/3, not an Issue of github.com/me/tools; closed nothing, wrote nothing");
+  assert.equal(gh.closes().length, 1);
+});
+
+test("a file naming another repo's Issue of the same number never stands for this repo's, and a non-ASCII file name is found", (t) => {
+  const f = fixture(t);
+  const { work } = issueRepo(f);
+  const ticket = (url: string) => `---\ntitle: x\ntype: task (AFK)\nstatus: needs-triage\nassignee:\nblocked_by: []\nissue: ${url}\n---\n`;
+  mkdirSync(join(work, `${backlog}/tickets`), { recursive: true });
+  writeFileSync(join(work, `${backlog}/tickets/01-x.md`), ticket("https://github.com/other/repo/issues/5"));
+  writeFileSync(join(work, `${backlog}/tickets/02-café.md`), ticket("https://github.com/acme/tools/issues/7"));
+  const gh = fakeGh(f, [issue(5, "Five"), issue(7, "Seven")]);
+  const run = gh.init(work, ["--issues"]);
+  assert.equal(result(run), "RESULT: ok init issues wrote 1 ticket and the map, skipped 1 with a file; nothing closed", run.stdout + run.stderr);
+  assert.deepEqual(written(run), [`${backlog}/map.md`, `${backlog}/tickets/03-five.md`]);
+  f.git(work, "add", "-A");
+  f.git(work, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "backlog");
+  f.git(work, "push", "-q", "origin", "HEAD:dev");
+  const close = gh.init(work, ["--issues", "--close"]);
+  assert.equal(close.status, 0, close.stdout + close.stderr);
+  assert.deepEqual(gh.closes().map((args) => [args[2], args[6].split("\n")[0]]), [
+    ["5", `Moved to a ticket file: https://github.com/acme/tools/blob/dev/${backlog}/tickets/03-five.md`],
+    ["7", `Moved to a ticket file: https://github.com/acme/tools/blob/dev/${backlog}/tickets/02-caf%C3%A9.md`],
+  ]);
+});
+
+test("an Issue list over 1 MiB is read whole, and a gh that hangs stops at KIT_ISSUES_TIMEOUT", (t) => {
+  const f = fixture(t);
+  const { work } = issueRepo(f);
+  const gh = fakeGh(f, []);
+  const bin = join(f.directory, "fake-gh");
+  writeFileSync(join(bin, "list-output.txt"), JSON.stringify([issue(1, "Long", { body: "x".repeat(2 * 1024 * 1024) })]));
+  const big = gh.init(work, ["--issues"]);
+  assert.equal(big.status, 0, big.stdout + big.stderr);
+  assert.ok(statSync(join(work, `${backlog}/tickets/01-long.md`)).size > 2 * 1024 * 1024);
+  rmSync(join(bin, "list-output.txt"));
+  writeFileSync(join(bin, "list-sleep.txt"), "5");
+  const slow = gh.init(work, ["--issues"], { KIT_ISSUES_TIMEOUT: "1" });
+  assert.equal(slow.status, 1, slow.stdout + slow.stderr);
+  assert.equal(result(slow), "RESULT: fail init gh issue list failed: timed out after 1s");
 });

@@ -28,8 +28,9 @@ note naming how to make a worktree. A rerun changes nothing and says so. Old kit
 --issues copies the project's open GitHub Issues (gh issue list) into needs-triage tickets, one file each in
 <maps>/backlog/tickets/NN-<slug>.md (maps from kit.json, else docs/wayfinder), with the Issue's text, labels,
 link and comments, plus <maps>/backlog/map.md if missing; it closes nothing and skips an Issue that has a file
-(its frontmatter "issue: <url>", matched by host and number). Copied headings go two levels down. It does no
-setup and runs no doctor, so old kit files do not stop it. gh and git fetch stop after 120s.
+(its frontmatter "issue: <url>": this repo's, or an older name of it). The Issues are origin's repo's, never a
+fork's upstream. Copied headings go two levels down. It does no setup and runs no doctor, so old kit files do not
+stop it. gh and git fetch stop after KIT_ISSUES_TIMEOUT seconds (default 120).
 --issues --close, once those files are on origin's landing branch, closes each open Issue with a comment
 linking its file there; it closes nothing while any open Issue's file is missing on that branch.
 `;
@@ -312,13 +313,18 @@ function issues() {
   const folder = `${maps}/backlog`, ticketsDir = `${folder}/tickets`;
   const land = settings?.branches?.land;
 
-  // gh and git fetch reach the network: bounded, and never left waiting at a login prompt.
-  const timeout = 120_000;
+  // gh and git fetch reach the network: bounded (KIT_ISSUES_TIMEOUT seconds, 120 by default), and never left
+  // waiting at a login prompt. An Issue list with long threads runs to many MiB, so the output limit is wide.
+  const seconds = Number(process.env.KIT_ISSUES_TIMEOUT) > 0 ? Number(process.env.KIT_ISSUES_TIMEOUT) : 120;
+  const outputMiB = 256;
   const bounded = (command, commandArgs) => {
-    const run = spawnSync(command, commandArgs, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GH_PROMPT_DISABLED: "1" } });
-    const problem = run.error?.code === "ETIMEDOUT" || (run.signal && run.status === null) ? `timed out after ${timeout / 1000}s`
-      : run.error || run.status !== 0 ? (run.error?.message || run.stderr || `exit ${run.status}`).trim().split("\n")[0] : "";
+    const run = spawnSync(command, commandArgs, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: seconds * 1000,
+      maxBuffer: outputMiB * 1024 * 1024, env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GH_PROMPT_DISABLED: "1" } });
+    const problem = run.error?.code === "ETIMEDOUT" ? `timed out after ${seconds}s`
+      : run.error?.code === "ENOBUFS" ? `output over ${outputMiB} MiB`
+      : run.error ? String(run.error.message).split("\n")[0]
+      : run.signal ? `killed by ${run.signal}`
+      : run.status !== 0 ? (run.stderr || `exit ${run.status}`).trim().split("\n")[0] : "";
     return { problem, stdout: run.stdout ?? "" };
   };
   const gh = (...ghArgs) => {
@@ -326,25 +332,51 @@ function issues() {
     if (problem) fail(`gh ${ghArgs.slice(0, 2).join(" ")} failed: ${problem}`);
     return stdout;
   };
+  // The Issues are origin's: in a fork gh's own default may be upstream, whose links would not reach the files.
+  // gh repo view names the repo as GitHub has it now, so a rename since origin was set is followed.
+  const originUrl = git("config", "--get", "remote.origin.url") ?? "";
+  const [, originHost, originName] = /^(?:https?|ssh|git):\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(originUrl)
+    ?? /^(?:[^@/]+@)?([^/:]+):(?!\/)([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(originUrl)
+    ?? fail(`origin (${originUrl || "none"}) is not a GitHub repo; --issues reads the Issues of origin's repo`);
+  const ghRepo = (host, name) => host === "github.com" ? name : `${host}/${name}`;
+  const repoKey = (host, name) => `${host}/${name}`.toLowerCase();
+  const current = new Map();
+  // The repo's current host/owner/name, or "" when gh cannot find it; asked once per repo.
+  const currentRepo = (host, name) => {
+    const key = repoKey(host, name);
+    if (!current.has(key)) {
+      const { problem, stdout } = bounded("gh", ["repo", "view", ghRepo(host, name), "--json", "nameWithOwner,url"]);
+      let found = "";
+      try { const view = JSON.parse(stdout); found = repoKey(new URL(view.url).host, view.nameWithOwner); } catch {}
+      current.set(key, problem ? "" : found);
+    }
+    return current.get(key);
+  };
+  const ours = currentRepo(originHost, originName) || fail(`gh repo view ${ghRepo(originHost, originName)} found no repo; check gh auth status and origin`);
+  const [oursHost, ...oursName] = ours.split("/");
   const limit = 1000;
   let open;
-  try { open = JSON.parse(gh("issue", "list", "--state", "open", "--limit", String(limit), "--json", "number,title,body,labels,url,author,createdAt,comments")); }
+  try { open = JSON.parse(gh("issue", "list", "--repo", ghRepo(oursHost, oursName.join("/")), "--state", "open", "--limit", String(limit), "--json", "number,title,body,labels,url,author,createdAt,comments")); }
   catch (error) { fail(`gh issue list gave no JSON list (${String(error.message).replace(/\n/g, " ")})`); }
   if (!Array.isArray(open)) fail("gh issue list gave no JSON list");
   if (open.length >= limit) fail(`${limit} or more open Issues; kit init --issues reads at most ${limit - 1}`);
   open.sort((a, b) => a.number - b.number);
   // An Issue's file names it in its frontmatter as "issue: <url>", which is how a rerun and --close find it; the
-  // copied text may link other Issues anywhere below, so only the frontmatter counts. Host and number decide, so a
-  // repo renamed or moved between the runs still finds its files (--close notes the old link).
+  // copied text may link other Issues anywhere below, so only the frontmatter counts. The number and the repo
+  // decide: a file naming an older name of this repo counts (--close notes the old link), another repo's never.
   const issueOf = (text) => {
     const lines = text.split(/\r?\n/), end = lines.indexOf("---", 1);
     return lines[0] === "---" && end > 0 ? lines.slice(1, end).find((line) => line.startsWith("issue: "))?.slice(7).trim() : undefined;
   };
   const issueLink = /^https:\/\/([^/]+)\/([^/]+\/[^/]+)\/issues\/(\d+)$/;
   const repoOf = (issue) => issueLink.exec(issue.url) ?? fail(`#${issue.number} has an unexpected link: ${issue.url}`);
+  for (const issue of open) {
+    const [, host, name] = repoOf(issue);
+    if (repoKey(host, name) !== ours) fail(`gh gave #${issue.number} as ${issue.url}, not an Issue of ${ours}; closed nothing, wrote nothing`);
+  }
   const sameIssue = (url, issue) => {
-    const [, host, , number] = issueLink.exec(url ?? "") ?? [];
-    return host === repoOf(issue)[1] && Number(number) === issue.number;
+    const [, host, name, number] = issueLink.exec(url ?? "") ?? [];
+    return Number(number) === issue.number && (repoKey(host, name) === ours || currentRepo(host, name) === ours);
   };
 
   if (options.close) {
@@ -353,7 +385,7 @@ function issues() {
     const fetched = bounded("git", ["-C", root, "fetch", "--quiet", "origin", `+refs/heads/${land}:refs/remotes/origin/${land}`]);
     if (fetched.problem) fail(`cannot fetch origin/${land} (${fetched.problem}); --close reads the ticket files there`);
     const ref = `refs/remotes/origin/${land}`;
-    const landed = (git("ls-tree", "--name-only", `${ref}:${ticketsDir}`) ?? "").split("\n").filter((name) => name.endsWith(".md"))
+    const landed = (git("-c", "core.quotePath=false", "ls-tree", "--name-only", `${ref}:${ticketsDir}`) ?? "").split("\n").filter((name) => name.endsWith(".md"))
       .map((name) => ({ path: `${ticketsDir}/${name}`, text: git("show", `${ref}:${ticketsDir}/${name}`) ?? "" }));
     const plan = open.map((issue) => {
       const found = landed.find(({ text }) => sameIssue(issueOf(text), issue));
@@ -369,8 +401,9 @@ function issues() {
     const failed = [];
     for (const { issue, file } of plan) {
       const [, host, repo] = repoOf(issue);
-      const link = `https://${host}/${repo}/blob/${encodeURI(land)}/${encodeURI(file)}`;
-      const { problem } = bounded("gh", ["issue", "close", String(issue.number), "--repo", host === "github.com" ? repo : `${host}/${repo}`,
+      const segments = (path) => path.split("/").map(encodeURIComponent).join("/");
+      const link = `https://${host}/${repo}/blob/${segments(land)}/${segments(file)}`;
+      const { problem } = bounded("gh", ["issue", "close", String(issue.number), "--repo", ghRepo(host, repo),
         "--comment", `Moved to a ticket file: ${link}\nWork on it goes on there.`]);
       if (problem) {
         failed.push(`#${issue.number}`);
@@ -395,8 +428,10 @@ function issues() {
   const copied = (text) => {
     let fence = "";
     const lines = String(text ?? "").replace(/\r\n?/g, "\n").trim().split("\n").map((line) => {
-      const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
-      if (marker && (!fence || (marker[0] === fence[0] && marker.length >= fence.length))) fence = fence ? "" : marker;
+      // A fence opens on any marker line and closes only on a bare one of its kind, at least as long.
+      const [, marker, rest] = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line) ?? [];
+      if (marker && !fence) fence = marker;
+      else if (marker && marker[0] === fence[0] && marker.length >= fence.length && !rest.trim()) fence = "";
       return !fence && !marker && /^ {0,3}#{1,2}(?:\s|$)/.test(line) ? line.replace(/#/, "###") : line;
     });
     return lines.join("\n") || "_(no text)_";
@@ -453,7 +488,7 @@ Work carried over from the project's GitHub Issues, one \`needs-triage\` ticket 
 
 ## Notes
 
-- **Source:** the project's open GitHub Issues, copied by \`kit init --issues\` on ${date}. Once the files land on the landing branch, \`kit init --issues --close\` closes each Issue with a link to its file (after Lex's OK).
+- **Source:** the project's open GitHub Issues, copied by \`kit init --issues\` on ${date}. Once the files land on the landing branch, \`kit init --issues --close\` closes each Issue with a link to its file (after the owner's OK).
 - **Triage:** set each ticket's \`status\` (\`ready-for-agent\`, \`ready-for-human\`, \`needs-info\`, \`wontfix\` or \`open\`) and its \`blocked_by\`.
 
 ## Decisions so far
