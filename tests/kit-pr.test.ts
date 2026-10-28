@@ -1304,6 +1304,16 @@ test("a CRLF Follow-ups section whose last bullet has no final newline gets new 
   assert.equal(readFileSync(join(f.root, "ticket.md"), "utf8"), `${original}\r\n${minorLines[1]}`);
 });
 
+test("a ticket with any CRLF joins a new bullet with CRLF, even inside an LF Follow-ups section", t => {
+  const f = fixture(t); f.rounds(3);
+  const original = followupTicket([minorLines[0]]).replace('---\ntitle: "Ticket title"\n---\n', '---\r\ntitle: "Ticket title"\r\n---\r\n');
+  f.commit("Close ticket", "ticket.md", original);
+  f.saveReview(minorReview);
+  const result = f.run(["--ticket", "ticket.md"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(readFileSync(join(f.root, "ticket.md"), "utf8"), original.replace(`${minorLines[0]}\n`, `${minorLines[0]}\r\n${minorLines[1]}\n`));
+});
+
 test("an old cut bullet beside its full line is left alone: file and HEAD unchanged, no third line", t => {
   const f = fixture(t); f.rounds(3);
   const original = followupTicket([`- Spec (P2): ${long.slice(0, 160)}`, `- Spec (P2): ${long}`, minorLines[1]]);
@@ -1316,13 +1326,13 @@ test("an old cut bullet beside its full line is left alone: file and HEAD unchan
   assert.equal(f.git("rev-parse", "HEAD"), before);
 });
 
-for (const commented of [true, false]) test(`an old cut that split an emoji, written as U+FFFD, is upgraded to one full bullet with ${commented ? "no second comment" : "one new comment"}`, t => {
+for (const eol of ["\n", "\r\n"]) for (const commented of [true, false]) test(`an old cut that split an emoji, written as U+FFFD, is upgraded to one full bullet with ${commented ? "no second comment" : "one new comment"} (${JSON.stringify(eol)})`, t => {
   const f = fixture(t); f.rounds(3);
   const text = `P2: ${"x".repeat(155)}🙂🙂 tail`;
   // The old run cut 🙂 at unit 160 and wrote its lone surrogate as U+FFFD.
   assert.equal(text.slice(0, 160).at(-1), "\uD83D");
   const oldSpec = `- Spec (P2): ${text.slice(0, 159)}\uFFFD`;
-  f.commit("Close ticket", "ticket.md", followupTicket([oldSpec, minorLines[1]]));
+  f.commit("Close ticket", "ticket.md", followupTicket([oldSpec, minorLines[1]]).replaceAll("\n", eol));
   const heading = "Follow-ups (non-blocking after 3 fix rounds):\n";
   const oldSummary = `${heading}${oldSpec}\n${minorLines[1]}`;
   // Without an old comment only the ticket side can match, so each side is pinned on its own.
@@ -1330,7 +1340,9 @@ for (const commented of [true, false]) test(`an old cut that split an emoji, wri
   f.saveReview(minorReview.replace("P2: Minor defect.", text));
   const result = f.run(["--ticket", "ticket.md"], { FAKE_EXISTING: "1" });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.equal(readFileSync(join(f.root, "ticket.md"), "utf8"), followupTicket([`- Spec (P2): ${text}`, minorLines[1]]));
+  const ticket = readFileSync(join(f.root, "ticket.md"), "utf8");
+  assert.equal(ticket, followupTicket([`- Spec (P2): ${text}`, minorLines[1]]).replaceAll("\n", eol));
+  if (eol === "\r\n") assert.doesNotMatch(ticket, /(?<!\r)\n/);
   const summary = `${heading}- Spec (P2): P2: ${"x".repeat(155)}🙂…\n${minorLines[1]}`;
   assert.deepEqual(f.ghCalls("comment").filter(call => call.body?.startsWith("Follow-ups")).map(call => call.body), [commented ? oldSummary : summary]);
 });
@@ -1433,7 +1445,8 @@ for (const eol of ["\n", "\r\n"]) test(`follow-ups create a dated Done section w
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const ticket = readFileSync(join(f.root, "ticket.md"), "utf8");
   assert.ok(ticket.startsWith(`${original.trimEnd()}${eol}${eol}## Done (`), ticket);
-  assert.match(ticket.slice(original.trimEnd().length), new RegExp(`^${eol}${eol}## Done \\(\\d{4}-\\d{2}-\\d{2}\\)${eol}${eol}### Follow-ups${eol}`));
+  const nl = eol === "\r\n" ? "\\r\\n" : "\\n";
+  assert.match(ticket.slice(original.trimEnd().length), new RegExp(`^${nl}${nl}## Done \\(\\d{4}-\\d{2}-\\d{2}\\)${nl}${nl}### Follow-ups${nl}`));
   assert.equal(ticket.split("### Follow-ups").length, 2);
   assert.match(ticket, /- Spec \(P2\): P2: Minor defect./);
   assert.match(ticket, /- Validation gaps \(gap\): Add coverage./);
