@@ -4,7 +4,7 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { inferCli, parseAgentArgs, releaseReviewBudget, reserveReviewBudget } from "../agent-run.mjs";
+import { inferCli, opencodeModelRuns, parseAgentArgs, releaseReviewBudget, reserveReviewBudget } from "../agent-run.mjs";
 import { reviewBrief, reviewScope, ticketReviewBrief } from "../review-brief.mjs";
 import { saveReviewEvidence } from "../review-evidence.mjs";
 import { countsLine, findingsRecord } from "../review-findings.mjs";
@@ -207,6 +207,12 @@ async function secondLook(flags) {
       { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
     if (!changes.length) throw new Error(`nothing to review: ${scope.label} is empty`);
     pick = secondLookPick(changes, kitSettings(root), { ticket: flags.ticket && relative(root, resolve(root, flags.ticket)) });
+    // A paid OpenCode row would be refused when its turn came, before any handover: name the table instead.
+    const paid = [pick.model, pick.fallback].find(model => /^opencode\//.test(model) && !opencodeModelRuns(model));
+    if (paid) {
+      const table = process.env.ASE_SECOND_LOOK || resolve(import.meta.dirname, "../second-look.json");
+      throw new Error(`second-look table ${table} ${pick.kind}: ${paid} is a paid OpenCode model; a second look on OpenCode must be a -free model`);
+    }
   } catch (error) {
     console.error(`problem: ${error.message}`);
     kitResult("fail", `${error.message} evidence none`);

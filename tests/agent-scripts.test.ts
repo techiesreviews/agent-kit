@@ -518,6 +518,14 @@ test("a machine ledger write that fails after the move puts the old counts back"
   failRename(() => { writeFileSync(legacy, '{"2026-W44":{"grok":1,"gpt":2}}'); throw new Error("EIO: i/o error"); });
   assert.throws(() => reserveReviewBudget(editor, { cli: "grok" }, {}, monday), /EIO/);
   assert.deepEqual(JSON.parse(readFileSync(legacy, "utf8")), { "2026-W44": { grok: 4, gpt: 2 } });
+  // An old file an older kit left with a count that is not a whole number is named and kept, never read as 0.
+  const before = readFileSync(legacy, "utf8");
+  failRename(() => { writeFileSync(legacy, '{"2026-W44":{"grok":"3"}}'); throw new Error("EIO: i/o error"); });
+  assert.throws(() => reserveReviewBudget(editor, { cli: "grok" }, {}, monday),
+    (error: Error) => error.message.includes(`the moved counts could not be put back in ${legacy}: review budget ledger ${legacy} 2026-W44 grok is not a count; fix or delete it`));
+  assert.equal(readFileSync(legacy, "utf8"), '{"2026-W44":{"grok":"3"}}');
+  assert.equal(readFileSync(path, "utf8"), "{}");
+  writeFileSync(legacy, before);
   // A restore that fails itself says the moved counts were not put back; the machine ledger is unchanged.
   failRename(() => { mkdirSync(`${legacy}.lock`); throw new Error("EIO: i/o error"); });
   assert.throws(() => reserveReviewBudget(editor, { cli: "grok" }, { ASE_REVIEW_BUDGET_LOCK_MS: "100" }, monday),

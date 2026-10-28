@@ -40,7 +40,11 @@ export function reviewFamily(cli, model = "") {
   return null;
 }
 
-const freeOpencodeModel = model => /-free$/.test(model);
+// An OpenCode model runs only when it is free (its name ends in -free) or counted under a family; any other
+// paid model would go uncounted, so parseAgentArgs and kit review's second-look check both refuse it.
+export function opencodeModelRuns(model) {
+  return Boolean(reviewFamily("opencode", model)) || /-free$/.test(model);
+}
 
 function claudeModelName(model) {
   return model.replace(/\[1m\]$/i, "");
@@ -80,7 +84,7 @@ export function parseAgentArgs(args, env = {}) {
   if (options.cli === "opencode") {
     // The model check compares OpenCode's provider/model, so a bare name could never pass.
     if (!/^[^/\s]+\/\S+$/.test(options.model)) throw new Error(`OpenCode needs a provider/model such as opencode/deepseek-v4.1-flash-free, not ${options.model}`);
-    if (!reviewFamily("opencode", options.model) && !freeOpencodeModel(options.model)) {
+    if (!opencodeModelRuns(options.model)) {
       throw new Error(`OpenCode model ${options.model} is paid and has no weekly count; use a -free model, openai/… (counted as gpt) or xai/… (counted as grok)`);
     }
     // OpenCode's --variant names differ by provider, so a given effort (kit ux always
@@ -444,7 +448,7 @@ export function projectCounts(ledger, week, family) {
 }
 
 // Moves a project's old per-project ledger ({ week: { family: count } }) into the machine ledger once,
-// returning what moved ({ old, text }) or null. The machine lock is held, so the old file's lock is
+// returning what moved ({ week: { family: count } }) or null. The machine lock is held, so the old file's lock is
 // only tried briefly: when it is held (an older kit writing, or a stale lock) this review skips the
 // move and the next one tries again. The old file is removed before the machine ledger is written,
 // so a crash between the two loses those counts rather than counting them twice; a write that fails
@@ -474,13 +478,15 @@ function moveLegacyLedger(ledger, legacy, project, env) {
 
 // Puts moved counts back in the old file when the machine ledger could not be written, added to what an
 // older kit wrote there since (if anything); called with the machine lock held, so no review moves it meanwhile.
+// An old file an older kit left broken meanwhile is named and kept as it is, never read as 0.
 function restoreLegacyLedger(legacy, old, env) {
   withReviewLock(legacy, () => {
     const current = readReviewLedger(legacy);
+    checkOldReviewLedger(current, legacy);
     for (const [week, families] of Object.entries(old)) {
       for (const [family, count] of Object.entries(families)) {
-        const now = current[week]?.[family];
-        (current[week] = isRecord(current[week]) ? current[week] : {})[family] = (isCount(now) ? now : 0) + count;
+        const counts = (current[week] ??= {});
+        counts[family] = (counts[family] ?? 0) + count;
       }
     }
     writeLedgerFile(legacy, current);

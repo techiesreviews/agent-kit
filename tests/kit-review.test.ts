@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
-import { codexReviewConfig, isoWeek, makeCodexReviewHome } from "../scripts/agents/agent-run.mjs";
+import { codexReviewConfig, isoWeek, makeCodexReviewHome, opencodeModelRuns } from "../scripts/agents/agent-run.mjs";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
 import { builderChecks, reviewBrief, reviewFormat, ticketReviewBrief } from "../scripts/agents/review-brief.mjs";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
@@ -1271,6 +1271,14 @@ test("the second look never reaches Codex: ASE_AGENT_CLI and ASE_REVIEW_MODEL ca
     assert.equal(refused.status, 1, refused.stdout + refused.stderr);
     assert.match(refused.stdout.trim().split("\n").at(-1)!, /^RESULT: fail second-look table .+ agent: (model and fallback must be grok-<model> or opencode\/<model>|the fallback must be the other family) evidence none$/);
   }
+  // A paid OpenCode row is a broken table, named before any review runs, not a failed review with no handover.
+  const paid = lookTable(f, { code: { model: "grok-4.7", fallback: opencodeModel }, ux: { model: "grok-4.7", fallback: opencodeModel },
+    dx: { model: "grok-4.7", fallback: opencodeModel }, agent: { model: "grok-4.7", fallback: "opencode/big-pickle" } });
+  const refused = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: paid });
+  assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+  assert.equal(refused.stdout.trim().split("\n").at(-1),
+    `RESULT: fail second-look table ${paid} agent: opencode/big-pickle is a paid OpenCode model; a second look on OpenCode must be a -free model evidence none`);
+  assert.doesNotMatch(refused.stdout, /^second look: agent/m);
   assert.deepEqual(f.calls().map(call => call.cli), ["grok", "opencode"]);
 });
 
@@ -1291,6 +1299,8 @@ test("the kit's own second-look table has every kind, a Grok or OpenCode model w
   for (const kind of reviewKinds) {
     const { model, fallback, checked } = table[kind];
     assert.ok([model, fallback].every(name => /^grok-|^opencode\//.test(name)), kind);
+    // An OpenCode row is a free model: a paid one is refused before it runs.
+    assert.ok([model, fallback].every(name => !name.startsWith("opencode/") || opencodeModelRuns(name)), kind);
     assert.notEqual(model.split(/[-/]/)[0], fallback.split(/[-/]/)[0], kind);
     assert.match(checked, /^\d{4}-\d{2}-\d{2}$/);
   }
