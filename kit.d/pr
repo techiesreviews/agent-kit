@@ -45,15 +45,16 @@ function secondLookMark(folder) {
   catch (error) { return error.code === "ENOENT" ? null : {}; }
 }
 
-// A clean whole-PR review also survives a rebase that preserves the stable patch ID. A second look's folder
-// (marked second-look.json) is only ever a second look, and only one that ran counts.
-async function savedReview(head, base, patchId, ticket, root, second = false) {
+// A clean whole-PR review also survives a rebase that preserves the stable patch ID, of HEAD or of `reviewable`
+// (HEAD without kit's own ticket-only commits). A second look's folder (marked second-look.json) is only ever
+// a second look, and only one that ran counts.
+async function savedReview(head, base, patchId, ticket, root, second = false, reviewable = head) {
   const parent = join(kitMainRoot(), ".scratch/reviews", kitOwner());
   if (!existsSync(parent)) return;
   // Review folder names start with UTC timestamps; numeric sorting handles collision suffixes.
   const folders = readdirSync(parent, { withFileTypes: true }).filter(entry => entry.isDirectory())
     .map(entry => entry.name).sort((a, b) => b.localeCompare(a, "en", { numeric: true }));
-  let currentId;
+  let currentIds;
   for (const name of folders) {
     const folder = join(parent, name), refs = join(folder, "refs.txt");
     const result = join(folder, "result.md"), mark = secondLookMark(folder);
@@ -63,8 +64,9 @@ async function savedReview(head, base, patchId, ticket, root, second = false) {
     if (!/^REVIEW_STATUS: complete$/m.test(resultMd)) continue;
     if (reviewedBase === base && reviewCoversHead(reviewedHead, head, ticket, root)) return { folder, samePatch: false };
     if (!reviewedHead || !reviewedBase || openFindings(resultMd).findings.length) continue;
-    currentId ??= await patchId(base, head);
-    if (sameReviewPatch(await patchId(reviewedBase, reviewedHead), currentId)) return { folder, samePatch: true };
+    currentIds ??= [await patchId(base, head), ...(reviewable === head ? [] : [await patchId(base, reviewable)])];
+    const reviewedId = await patchId(reviewedBase, reviewedHead);
+    if (currentIds.some(id => sameReviewPatch(reviewedId, id))) return { folder, samePatch: true };
   }
 }
 
@@ -169,8 +171,28 @@ function runsOnPullRequests(text) {
   return pushRunsOnBranches(filters);
 }
 
+// Kit's own ticket-only commits: the follow-ups and the Done "Commits:" line, which names them "this commit".
+const ownSubjects = ticket => ["follow-ups from review", "commits by subject"].map(what => `docs: ${basename(ticket, ".md")} ${what}`);
+
+/**
+ * The ticket with its last Done's "Commits:" line (and the lines continuing it) naming these subjects and then
+ * "this commit", as rebases and GitHub's rebase merge rewrite every SHA; a Done without the line is unchanged.
+ */
+function commitsBySubject(text, subjects) {
+  const start = [...text.matchAll(doneHeading())].at(-1)?.index;
+  if (start === undefined) return text;
+  const rest = text.slice(start), end = rest.slice(1).search(/^## /m), doneEnd = end < 0 ? rest.length : end + 1;
+  const done = rest.slice(0, doneEnd);
+  const line = /^([ \t]*(?:[-*+][ \t]+)?)(?:\*\*)?Commits\b[^:\r\n]*:.*(?:\n(?![ \t]*(?:[-*+][ \t]|#|\r?$)).*)*/m.exec(done);
+  if (!line) return text;
+  const names = [...subjects.map(subject => `"${subject}"`), "this commit"];
+  const list = names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0];
+  const written = `${line[1]}Commits: ${list}.${line[0].endsWith("\r") ? "\r" : ""}`;
+  return text.slice(0, start) + done.slice(0, line.index) + written + done.slice(line.index + line[0].length) + rest.slice(doneEnd);
+}
+
 // Isolate both HEAD and the index: concurrent work must never enter a follow-up commit.
-function commitFollowups({ root, branch, head, ticket, content, env }) {
+function commitFollowups({ root, branch, head, ticket, content, env, message = ownSubjects(ticket)[0] }) {
   const run = (args, environment = env) => execFileSync("git", ["-C", root, ...args],
     { cwd: root, env: environment, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
   const file = resolve(root, ticket), path = relative(root, file);
@@ -192,7 +214,6 @@ function commitFollowups({ root, branch, head, ticket, content, env }) {
     assertScope();
     const blob = run(["rev-parse", `:${path}`], indexEnv);
     const detachedEnv = { ...indexEnv, GIT_DIR: gitDir, GIT_WORK_TREE: root };
-    const message = `docs: ${basename(ticket, ".md")} follow-ups from review`;
     let failure;
     try { run(["commit", "-m", message, "-m", "Co-Authored-By: Agent Kit <noreply@openai.com>"], detachedEnv); }
     catch (error) { failure = error; }
@@ -319,7 +340,24 @@ async function main(args) {
     // Lease every push against what we knew of the PR branch before our own fetch (empty: must not exist),
     // then against our own last push, so a colleague's push to the branch is never overwritten.
     let pushed = (await execute("guards", "git", ["rev-parse", "--verify", "-q", `refs/remotes/origin/${branch}`])).text.trim();
+    const own = flags.ticket ? ownSubjects(flags.ticket) : [];
+    // After each rebase and before the push, the ticket's Done "Commits:" line names the commits by subject:
+    // the SHAs the builder saw change here and again on landing (reportLanded prints those).
+    async function nameCommits() {
+      if (!flags.ticket || flags.release || flags.dryRun) return;
+      const file = resolve(root, flags.ticket);
+      if (!existsSync(file)) return; // The features step names a missing ticket.
+      const subjects = (await git("commits", ["log", "--reverse", "--format=%s", `origin/${flags.base}..HEAD`]))
+        .split(/\r?\n/).filter(subject => subject && !own.includes(subject));
+      const original = readFileSync(file, "utf8"), updated = commitsBySubject(original, subjects);
+      if (updated === original) return;
+      writeFileSync(file, updated);
+      const current = await git("commits", ["rev-parse", "HEAD"]);
+      commitFollowups({ root, branch, head: current, ticket: flags.ticket, content: updated, env, message: own[1] });
+      console.log(`commits: ${flags.ticket} names ${subjects.length} commits by subject`);
+    }
     await rebase();
+    await nameCommits();
 
     // Scale the local checks to the PR's own diff (merge base to HEAD, after the rebase).
     step = "tier";
@@ -529,9 +567,20 @@ async function main(args) {
       if (review && !await lookAt(base, false)) return false;
       return lookAt(base, true);
     }
+    // HEAD without kit's own trailing ticket-only commits, down to the merge base at most.
+    async function reviewable(base) {
+      let commit = head;
+      const ticket = flags.ticket && relative(root, resolve(root, flags.ticket));
+      while (commit !== base && own.includes(await git("review", ["log", "-1", "--format=%s", commit]))) {
+        const paths = (await git("review", ["diff-tree", "--no-commit-id", "--name-only", "--no-renames", "-r", "-z", commit])).split("\0").filter(Boolean);
+        if (paths.length !== 1 || paths[0] !== ticket) break;
+        commit = await git("review", ["rev-parse", `${commit}^`]);
+      }
+      return commit;
+    }
     async function lookAt(base, second) {
       const name = second ? "second look" : "review";
-      const saved = await savedReview(head, base, patchId, flags.ticket, root, second);
+      const saved = await savedReview(head, base, patchId, flags.ticket, root, second, await reviewable(base));
       let resultPath;
       if (saved) {
         if (saved.samePatch) console.log(`${name}: reused (same patch on new base)`);
@@ -591,6 +640,22 @@ async function main(args) {
       writeFileSync(comment, `Merged ${what}: ${reason}`);
       await gh("waiver", ["pr", "comment", number, "--body-file", comment]);
     }
+    // GitHub's rebase merge writes every commit anew: each is found on the land branch by subject, never guessed.
+    async function reportLanded() {
+      try {
+        const subjects = (await git("landed", ["log", "--reverse", "--format=%s", `origin/${flags.base}..HEAD`])).split(/\r?\n/).filter(Boolean);
+        await git("landed", ["fetch", "-q", "origin", flags.base]);
+        const base = await git("landed", ["merge-base", "HEAD", `origin/${flags.base}`]);
+        const landed = (await git("landed", ["log", "--reverse", "--format=%h %s", `${base}..origin/${flags.base}`])).split(/\r?\n/)
+          .filter(Boolean).map(line => ({ sha: line.slice(0, line.indexOf(" ")), subject: line.slice(line.indexOf(" ") + 1) }));
+        const used = new Set();
+        for (const subject of subjects) {
+          const match = landed.find(item => !used.has(item) && item.subject === subject);
+          if (match) used.add(match);
+          console.log(match ? `landed: ${match.sha} ${subject}` : `not found on ${flags.base}: ${subject}`);
+        }
+      } catch (error) { console.log(`landed: not checked (${error.message})`); }
+    }
     const repo = await gh("merge", ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]);
     const [owner, name] = repo.split("/");
     if (!owner || !name) throw new Error("could not determine owner/name");
@@ -621,6 +686,7 @@ async function main(args) {
         ok("merge");
         await recordWaiver();
         land({ sha, at: new Date().toISOString(), waived: waivedAny() });
+        await reportLanded();
         kitResult("ok", `merged #${number} ${sha.slice(0, 7)}`);
         return 0;
       }
@@ -631,6 +697,7 @@ async function main(args) {
       if (attempt === 3) throw new Error("still behind after 3 attempts");
       const reviewedHead = head;
       await rebase();
+      await nameCommits();
       head = await git("rebase", ["rev-parse", "HEAD"]);
       await push();
       if (head !== reviewedHead && !await reviewHead()) return 1;

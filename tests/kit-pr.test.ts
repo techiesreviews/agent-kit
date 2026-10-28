@@ -86,6 +86,18 @@ else if (tool === "gh") {
       if (env.FAKE_AFTER_PUSH) require("node:child_process").execFileSync(env.FAKE_AFTER_PUSH, { stdio: "ignore", timeout: 10_000 });
       console.error(env.FAKE_BEHIND_TEXT || "head branch is behind"); process.exit(1);
     }
+    // FAKE_LAND is a clone that lands the PR as GitHub's rebase merge does: every commit written anew.
+    // FAKE_LAND_RENAME lands the commit with that subject under another one.
+    if (env.FAKE_LAND) {
+      const { execFileSync } = require("node:child_process");
+      const git = (...argv) => execFileSync("git", ["-C", env.FAKE_LAND, ...argv], { encoding: "utf8", timeout: 10_000 }).trim();
+      git("fetch", "-q", "origin"); git("checkout", "-q", "-B", "dev", "origin/dev");
+      for (const sha of git("rev-list", "--reverse", "origin/dev..origin/feature/kit-pr").split("\\n").filter(Boolean)) {
+        git("cherry-pick", "--allow-empty", sha);
+        if (git("log", "-1", "--format=%s") === env.FAKE_LAND_RENAME) git("commit", "-q", "--amend", "-m", "Renamed on landing");
+      }
+      git("push", "-q", "origin", "dev");
+    }
   } else if (action === "pr-view") {
     if (env.FAKE_VIEW_ERROR) process.exit(1);
     if (args.includes("comments")) {
@@ -883,6 +895,65 @@ test("a rerun after our own earlier push updates the branch", t => {
   const head = f.commit("Third change");
   const result = f.run(["--no-merge"]); assert.equal(result.status, 0, result.stderr);
   assert.equal(f.gitAt(f.origin, "rev-parse", "refs/heads/feature/kit-pr"), head);
+});
+
+// A closed ticket whose Done names the branch's SHAs, as builders wrote them before rebase and landing rewrote them.
+const shaTicket = (first: string, second: string) => `---\ntitle: "Ticket title"\n---\n\n## Done (2026-10-28)\n\n- Behaviour.\n- Commits: ${first} (build), ${second}\n  (round 1).\n- Tests: unit green.\n`;
+
+test("a Done that names branch SHAs is pushed naming the commits by subject, in a ticket-only commit", t => {
+  const f = fixture(t), first = f.git("rev-parse", "--short", "HEAD^"), second = f.git("rev-parse", "--short", "HEAD");
+  const closed = f.commit("Close ticket", "ticket.md", shaTicket(first, second));
+  const result = f.run(["--ticket", "ticket.md", "--no-merge"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^commits: ticket\.md names 3 commits by subject$/m);
+  const pushed = f.gitAt(f.origin, "show", "refs/heads/feature/kit-pr:ticket.md");
+  assert.equal(pushed, shaTicket(first, second).replace(/- Commits: [^]*\(round 1\)\./,
+    '- Commits: "First change", "Second change", "Close ticket" and this commit.').trimEnd());
+  assert.equal(f.git("log", "-1", "--format=%s"), "docs: ticket commits by subject");
+  assert.equal(f.git("rev-parse", "HEAD^"), closed);
+  assert.equal(f.git("diff", "--name-only", closed, "HEAD"), "ticket.md");
+  assert.equal(f.git("status", "--porcelain"), "");
+  // A rerun finds the line already named and adds no commit; a Done without the line gets none.
+  const head = f.git("rev-parse", "HEAD");
+  assert.equal(f.run(["--ticket", "ticket.md", "--no-merge"], { FAKE_EXISTING: "1" }).status, 0);
+  assert.equal(f.git("rev-parse", "HEAD"), head);
+  const plain = fixture(t);
+  plain.commit("Close ticket", "ticket.md", '---\ntitle: "Ticket title"\n---\n\n## Done (2026-10-28)\n\nImplemented.\n');
+  const before = plain.git("rev-parse", "HEAD"), untouched = plain.run(["--ticket", "ticket.md", "--no-merge"]);
+  assert.equal(untouched.status, 0, untouched.stdout + untouched.stderr);
+  assert.equal(plain.git("rev-parse", "HEAD"), before);
+  assert.doesNotMatch(untouched.stdout, /^commits:/m);
+});
+
+test("a clean review saved before the subjects commit is still reused after a rebase onto a moved base", t => {
+  const f = fixture(t), peer = f.peer();
+  f.commit("Close ticket", "ticket.md", shaTicket("1111111", "2222222"));
+  f.saveReview(cleanReview);
+  writeFileSync(join(peer, "upstream.txt"), "upstream\n");
+  f.gitAt(peer, "add", "upstream.txt"); f.gitAt(peer, "commit", "-qm", "advance upstream"); f.gitAt(peer, "push", "-q", "origin", "dev");
+  const result = f.run(["--ticket", "ticket.md", "--no-merge"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^commits: ticket\.md names 3 commits by subject$/m);
+  assert.match(result.stdout, /^review: reused \(same patch on new base\)$/m);
+  assert.equal(f.calls().filter(claudeReview).length, 0);
+});
+
+test("after a rebase merge rewrites every commit, kit pr prints each landed SHA and names a subject it cannot find", t => {
+  for (const rename of ["", "Second change"]) {
+    const f = fixture(t), peer = f.peer();
+    f.commit("Close ticket", "ticket.md", shaTicket("1111111", "2222222"));
+    const result = f.run(["--ticket", "ticket.md"], { FAKE_LAND: peer, FAKE_LAND_RENAME: rename });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    f.git("fetch", "-q", "origin");
+    const branch = f.git("log", "--format=%h", "origin/dev..HEAD").split("\n");
+    const landed = f.git("log", "--reverse", "--format=%h %s", "origin/main..origin/dev").split("\n");
+    assert.equal(landed.length, 4);
+    const expected = landed.map(line => line.endsWith(" Renamed on landing") ? "not found on dev: Second change" : `landed: ${line}`);
+    assert.deepEqual(result.stdout.split("\n").filter(line => /^(landed|not found on)/.test(line)), expected);
+    assert.deepEqual(expected.map(line => line.split(" ")[0]), ["landed:", rename ? "not" : "landed:", "landed:", "landed:"]);
+    for (const line of landed) assert.ok(!branch.includes(line.split(" ")[0]), `${line} kept a branch SHA`);
+    assert.match(result.stdout, /RESULT: ok merged #73 abcdef0$/m);
+  }
 });
 
 test("push rejection and an unparseable create URL fail at their steps", t => {
