@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { checkSteps, classify } from "../scripts/agents/pr-tier.mjs";
+import { kitEnv } from "./support/kit-env.ts";
 
 const repo = resolve(".");
 const shell = join(repo, "scripts/agents/agent.sh");
@@ -115,7 +116,7 @@ test(guardName, { timeout: limit + 60_000 }, async t => {
   const before = new Set(entries(artifacts));
   // A private OS temp directory attributes every leftover to this child suite,
   // without racing unrelated tests or builders using the system temp directory.
-  const env = { ...process.env, TMPDIR: temporary, TMP: temporary, TEMP: temporary,
+  const env = { ...kitEnv(), TMPDIR: temporary, TMP: temporary, TEMP: temporary,
     TSX_DISABLE_CACHE: "1", NODE_DISABLE_COMPILE_CACHE: "1" };
   // Node otherwise treats this as an existing test worker and runs no files.
   delete env.NODE_TEST_CONTEXT;
@@ -297,7 +298,7 @@ for (const kind of ["missing", "directory", "dangling link", "unreadable"]) {
     for (const flags of [[], ["--out", join(directory, "explicit-output")]]) {
       const result = spawnSync("bash", [shell, "build", worktree, brief, ...flags], {
         cwd: repo, encoding: "utf8", timeout: 10_000,
-        env: { ...process.env, ASE_SKIP_DOCTOR: "1" },
+        env: { ...kitEnv(), ASE_SKIP_DOCTOR: "1" },
       });
       assert.equal(result.status, 2, result.stdout + result.stderr);
       assert.match(result.stderr, /problem:.*(?:ENOENT|EISDIR|EACCES)/);
@@ -327,7 +328,7 @@ writeFileSync(args[args.indexOf("-o") + 1], "test report\\n");
   chmodSync(cli, 0o755);
   const result = spawnSync("bash", [shell, "build", worktree, brief, "--out", out, "--cli", "codex", "--model", "gpt-6.1-sol"], {
     cwd: repo, encoding: "utf8", timeout: 10_000,
-    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "5s" },
+    env: { ...kitEnv(), PATH: `${bin}:${process.env.PATH}`, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "5s" },
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.equal(readFileSync(join(out, "out.md"), "utf8"), "test report\n");

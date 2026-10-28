@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
+import { kitEnv } from "./support/kit-env.ts";
 
 // kit rulebook (kitchen-everywhere 20): the shared rulebook with the kit, then the project's extras;
 // docs/agents/kitchen.md is the pointer that keeps every old heading's link working.
@@ -26,9 +27,7 @@ function rulebookWith(t: TestContext, extra: NodeJS.ProcessEnv, settings: Record
     mkdirSync(dirname(join(root, path)), { recursive: true });
     writeFileSync(join(root, path), content);
   }
-  const env: NodeJS.ProcessEnv = { ...process.env, KIT_ROOT: root };
-  delete env.KIT_HOME;
-  delete env.KIT_HOME_DEFAULT;
+  const env: NodeJS.ProcessEnv = { ...kitEnv(), KIT_ROOT: root };
   return { root, ...spawnSync(kit, ["rulebook", ...args], { cwd: root, env: { ...env, ...extra }, encoding: "utf8", timeout: 30_000 }) };
 }
 

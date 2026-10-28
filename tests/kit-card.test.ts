@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { kitEnv } from "./support/kit-env.ts";
 
 const script = resolve("scripts/agents/context-card.mjs");
 const kit = resolve("scripts/agents/kit");
@@ -41,7 +42,7 @@ function fixture(t: { after: (fn: () => void) => void }) {
     "- 2026-10-12 · fault · old · repeats: first · [t](t3-thread://v1/x)",
     "- 2026-10-01 · fault · older · repeats: first · [t](t3-thread://v1/x)", "",
   ].join("\n"));
-  const env = { ...process.env, HOME: home, CHAT_MEMORY_DIR: memory, TZ: "UTC" };
+  const env = { ...kitEnv(), HOME: home, CHAT_MEMORY_DIR: memory, TZ: "UTC" };
   const card = (cwd: string, extra: NodeJS.ProcessEnv = {}) => {
     const result = spawnSync(process.execPath, [script], { cwd, env: { ...env, ...extra }, encoding: "utf8" });
     assert.equal(result.status, 0, result.stderr);

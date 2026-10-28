@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, un
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
+import { kitEnv } from "./support/kit-env.ts";
 
 const heartbeat = resolve("scripts/agents/kit.d/heartbeat");
 const identity = { GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.com", GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.com" };
@@ -15,7 +16,7 @@ const identity = { GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.com"
 function fixture(t: TestContext) {
   const root = mkdtempSync(join(tmpdir(), "kit-heartbeat-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const env: NodeJS.ProcessEnv = { ...process.env, ...identity, GIT_CONFIG_NOSYSTEM: "1", KIT_DEV_ROOT: join(root, "dev"), KIT_MAIN_ROOT: join(root, "main"), KIT_HEARTBEAT_KIT: join(root, "fake-kit"), FAKE_KIT_LOG: join(root, "kit.log"), FAKE_NEXT_OUT: join(root, "next.out") };
+  const env: NodeJS.ProcessEnv = { ...kitEnv(), ...identity, GIT_CONFIG_NOSYSTEM: "1", KIT_DEV_ROOT: join(root, "dev"), KIT_MAIN_ROOT: join(root, "main"), KIT_HEARTBEAT_KIT: join(root, "fake-kit"), FAKE_KIT_LOG: join(root, "kit.log"), FAKE_NEXT_OUT: join(root, "next.out") };
   delete env.KIT_ROOT;
   delete env.KIT_HEARTBEAT_LOCKED;
   const dev = join(root, "dev");

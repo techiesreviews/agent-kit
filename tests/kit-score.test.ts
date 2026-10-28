@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import test, { type TestContext } from "node:test";
 import { costTotal, kitScore, runCost, scoreMap, scoreReview } from "../scripts/agents/kit-lib.mjs";
 import { allProjectsPage, ladder, scorePage } from "../scripts/agents/score-page.mjs";
+import { kitEnv } from "./support/kit-env.ts";
 
 const kit = resolve("scripts/agents/kit");
 type Counts = Record<string, number>;
@@ -66,7 +67,7 @@ function fixture(t: TestContext) {
     phases: [{ name: "build", start: "2026-10-25T12:00:00.000Z", end: "2026-10-25T12:20:00.000Z", exit: 0 }],
     rounds: 0, reviews: [review("c", {})], cost: { build: { usd: null, tokens: 80000 }, review: { usd: 0.57, tokens: 300000 } }, costs: {}, landed: { pr: 102, tier: "full" },
   } satisfies ScoreRecord));
-  const env = { ...process.env, KIT_ROOT: root, KIT_MAIN_ROOT: main, ASE_SKIP_DOCTOR: "1" };
+  const env = { ...kitEnv(), KIT_ROOT: root, KIT_MAIN_ROOT: main, ASE_SKIP_DOCTOR: "1" };
   const run = (...args: string[]) => {
     const result = spawnSync("bash", [kit, "score", ...args], { cwd: root, env, encoding: "utf8", timeout: 10_000 });
     const lines = result.stdout.trimEnd().split("\n");
@@ -262,7 +263,7 @@ test("parallel writers to one record lose no update; a lock held past the wait i
     const child = spawn(process.execPath, ["--input-type=module", "-e",
       `${umask ? `process.umask(${umask});` : ""}const { kitScore } = await import(${JSON.stringify(library)});
 kitScore({ branch: "build/x-01", root: ${JSON.stringify(f.root)} }, record => { record.phases.push({ name: ${JSON.stringify(name)}, start: "", end: "", exit: 0 }); });`],
-    { env: { ...process.env, KIT_MAIN_ROOT: f.main, ASE_SCORE_LOCK_MS: wait }, stdio: ["ignore", "ignore", "pipe"] });
+    { env: { ...kitEnv(), KIT_MAIN_ROOT: f.main, ASE_SCORE_LOCK_MS: wait }, stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
     child.stderr.setEncoding("utf8").on("data", chunk => { stderr += chunk; });
     child.once("error", reject); child.once("close", status => accept({ status, stderr }));
@@ -320,7 +321,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: ${JSON.
   writeFileSync(join(f.root, "file.txt"), "changed\n"); git("add", "-A"); git("commit", "-m", "change");
   const result = spawnSync(process.execPath, [resolve("scripts/agents/kit.d/review"), "--commit", "HEAD", "--ticket", ticket], {
     cwd: f.root, encoding: "utf8", timeout: 20_000,
-    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, KIT_ROOT: f.root, KIT_MAIN_ROOT: f.main, ASE_OWNER: "demo-01",
+    env: { ...kitEnv(), PATH: `${bin}:${process.env.PATH}`, KIT_ROOT: f.root, KIT_MAIN_ROOT: f.main, ASE_OWNER: "demo-01",
       ASE_REVIEW_MODEL: "claude-opus-5-5", ASE_AGENT_CLI: "", ASE_AGENT_TIMEOUT: "10s" },
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
@@ -347,7 +348,7 @@ function pageFixture(t: TestContext) {
   cpSync(join(source, "records"), join(main, ".scratch/scoreboard/demo"), { recursive: true });
   settings(root);
   const run = (...args: string[]) => spawnSync("bash", [kit, "score", ...args], { cwd: root, encoding: "utf8", timeout: 10_000,
-    env: { ...process.env, KIT_ROOT: root, KIT_MAIN_ROOT: main, ASE_SKIP_DOCTOR: "1" } });
+    env: { ...kitEnv(), KIT_ROOT: root, KIT_MAIN_ROOT: main, ASE_SKIP_DOCTOR: "1" } });
   return { dir, root, main, run };
 }
 
@@ -524,7 +525,7 @@ test("kit score --all prints one table across the projects in projects.json, rea
   mkdirSync(join(dir, "state/agent-kit"), { recursive: true });
   writeFileSync(join(dir, "state/agent-kit/projects.json"), JSON.stringify({ beta: { root: beta }, alpha: { root: alpha }, gone: { root: join(dir, "gone") }, gamma: { root: gamma } }));
   const before = snapshot(dir);
-  const env = { ...process.env, KIT_ROOT: here, KIT_MAIN_ROOT: here, ASE_SKIP_DOCTOR: "1", XDG_STATE_HOME: join(dir, "state") };
+  const env = { ...kitEnv(), KIT_ROOT: here, KIT_MAIN_ROOT: here, ASE_SKIP_DOCTOR: "1", XDG_STATE_HOME: join(dir, "state") };
   const run = (...args: string[]) => spawnSync("bash", [kit, "score", "--all", ...args], { cwd: here, env, encoding: "utf8", timeout: 10_000 });
 
   const printed = run();

@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 // @ts-expect-error The script is plain JavaScript without declarations.
 import { findNode, kitMainRoot, kitOwner, kitResult, kitRoot, nodeEnv } from "../scripts/agents/kit-lib.mjs";
+import { kitEnv } from "./support/kit-env.ts";
 
 const kit = resolve("scripts/agents/kit");
 const library = resolve("scripts/agents/kit-lib.sh");
@@ -41,13 +42,13 @@ function command(directory: string, name: string, body: string, executable = tru
 
 function run(args: string[] = [], env: NodeJS.ProcessEnv = {}, input = "") {
   return spawnSync("/bin/bash", ["scripts/agents/kit", ...args], {
-    encoding: "utf8", env: { ...process.env, ...env }, input, timeout: 5000,
+    encoding: "utf8", env: { ...kitEnv(), ...env }, input, timeout: 5000,
   });
 }
 
 function bash(body: string, env: NodeJS.ProcessEnv = {}, cwd?: string) {
   return spawnSync("/bin/bash", ["-c", `set -euo pipefail; source "$KIT_TEST_LIB"; ${body}`], {
-    encoding: "utf8", env: { ...process.env, ...env, KIT_TEST_LIB: library }, cwd, timeout: 5000,
+    encoding: "utf8", env: { ...kitEnv(), ...env, KIT_TEST_LIB: library }, cwd, timeout: 5000,
   });
 }
 
@@ -176,7 +177,7 @@ test("the shared kit runs from a copy named by KIT_HOME for a project with only 
   chmodSync(join(agents, "kit"), 0o755);
   writeFileSync(join(agents, "kit.json"), JSON.stringify({ project: "x", branches: { land: "dev" }, commands: "scripts/agents/project.d" }));
   command(join(agents, "project.d"), "where", '# kit: print the shared kit\nprintf "%s\\n" "$KIT_HOME" "$KIT_LIB"');
-  const env: NodeJS.ProcessEnv = { ...process.env, KIT_HOME: home, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+  const env: NodeJS.ProcessEnv = { ...kitEnv(), KIT_HOME: home, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
   for (const name of ["KIT_ROOT", "KIT_MAIN_ROOT", "KIT_LIB", "KIT_LIB_MJS", "KIT_COMMANDS_DIR", "NODE_TEST_CONTEXT"]) delete env[name];
   const git = (...args: string[]) => assert.equal(spawnSync("git", ["-C", root, ...args], { env, encoding: "utf8" }).status, 0);
   git("init", "-q", "--initial-branch=dev");
@@ -190,6 +191,16 @@ test("the shared kit runs from a copy named by KIT_HOME for a project with only 
   const status = front("status");
   assert.equal(status.status, 0, status.stdout + status.stderr);
   assert.match(status.stdout, /\nRESULT: ok status /);
+  // kit card runs the copy's context-card.mjs for this project's notes.
+  assert.ok(existsSync(join(home, "context-card.mjs")));
+  const memory = join(temp(t), "memory");
+  mkdirSync(join(memory, "project-notes"), { recursive: true });
+  writeFileSync(join(memory, "project-notes/README.md"), `| Slug | Workspace |\n| --- | --- |\n| x | \`${realpathSync(root)}\` |\n`);
+  writeFileSync(join(memory, "project-notes/x.md"), "# X\n\n## Current thinking\nKit home thinking.\n");
+  const card = spawnSync(join(agents, "kit"), ["card"], { cwd: root, env: { ...env, CHAT_MEMORY_DIR: memory }, encoding: "utf8", timeout: 15_000 });
+  assert.equal(card.status, 0, card.stdout + card.stderr);
+  assert.match(card.stdout, /\nKit home thinking\.\n/);
+  assert.deepEqual(results(card.stdout), [`RESULT: ok card ${card.stdout.trimEnd().split("\n").length - 1} lines`]);
   // Every shared command loads from the copy: a helper reached by its place in this repo would fail here.
   const shared = readdirSync(join(home, "kit.d")).filter((name) => !/^[._]/.test(name) && statSync(join(home, "kit.d", name)).mode & 0o111);
   for (const name of ["unit", "review", "next"]) assert.ok(shared.includes(name), name);
@@ -228,8 +239,8 @@ test("a nested kit in another checkout keeps its own kit unless a person set KIT
     return { root, agents };
   };
   const [a, b, chosen] = [checkout(), checkout(), checkout()];
-  const env: NodeJS.ProcessEnv = { ...process.env, NEXT_KIT: join(b.agents, "kit") };
-  for (const name of ["KIT_ROOT", "KIT_MAIN_ROOT", "KIT_LIB", "KIT_LIB_MJS", "KIT_HOME", "KIT_HOME_DEFAULT", "KIT_COMMANDS_DIR"]) delete env[name];
+  const env: NodeJS.ProcessEnv = { ...kitEnv(), NEXT_KIT: join(b.agents, "kit") };
+  for (const name of ["KIT_ROOT", "KIT_MAIN_ROOT", "KIT_LIB", "KIT_LIB_MJS", "KIT_COMMANDS_DIR"]) delete env[name];
   const where = (extra: NodeJS.ProcessEnv = {}) => {
     const result = spawnSync(join(a.agents, "kit"), ["where"], { cwd: a.root, env: { ...env, ...extra }, encoding: "utf8", timeout: 10_000 });
     assert.equal(result.status, 0, result.stdout + result.stderr);
@@ -244,8 +255,8 @@ test("a nested kit in another checkout keeps its own kit unless a person set KIT
 
 test("kit_home and kitHome() skip a KIT_HOME a front door filled in, and keep one a person set", (t) => {
   const other = temp(t), own = dirname(library);
-  const env: NodeJS.ProcessEnv = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
-  for (const name of ["KIT_ROOT", "KIT_LIB", "KIT_LIB_MJS", "KIT_HOME", "KIT_HOME_DEFAULT"]) delete env[name];
+  const env: NodeJS.ProcessEnv = { ...kitEnv(), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+  for (const name of ["KIT_ROOT", "KIT_LIB", "KIT_LIB_MJS"]) delete env[name];
   const sha = (directory: string) => spawnSync("git", ["-C", directory, "rev-parse", "--short", "HEAD"], { env, encoding: "utf8" }).stdout.trim();
   spawnSync("git", ["-C", other, "init", "-q"], { env });
   spawnSync("git", ["-C", other, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "other"], { env });
@@ -343,7 +354,7 @@ test("kit preserves stdin and exports resolved roots and library paths from any 
   command(directory, "inspect", 'read -r input; printf "%s\\n" "$input" "$KIT_ROOT" "$KIT_MAIN_ROOT" "$KIT_LIB" "$KIT_LIB_MJS"');
   const result = spawnSync("/bin/bash", [kit, "inspect"], {
     cwd: directory, input: "hello\n", encoding: "utf8", timeout: 5000,
-    env: { ...process.env, KIT_COMMANDS_DIR: directory, KIT_ROOT: directory, KIT_MAIN_ROOT: "/persistent" },
+    env: { ...kitEnv(), KIT_COMMANDS_DIR: directory, KIT_ROOT: directory, KIT_MAIN_ROOT: "/persistent" },
   });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, `hello\n${directory}\n/persistent\n${library}\n${resolve("scripts/agents/kit-lib.mjs")}\nRESULT: ok inspect finished\n`);
@@ -354,7 +365,7 @@ for (const [signal, expectedStatus] of signals) for (const ownResult of [false, 
   const directory = temp(t);
   const ready = ownResult ? "ready\nRESULT: ok child done\n" : "ready\n";
   command(directory, "waiting", `trap 'kill "$sleeper" 2>/dev/null || :; wait "$sleeper" 2>/dev/null || :; exit 0' TERM INT HUP\nsleep 4 &\nsleeper=$!\nprintf '${ready}'\nwait "$sleeper"`);
-  const child = spawn("/bin/bash", [kit, "waiting"], { env: { ...process.env, KIT_COMMANDS_DIR: directory } });
+  const child = spawn("/bin/bash", [kit, "waiting"], { env: { ...kitEnv(), KIT_COMMANDS_DIR: directory } });
   t.after(() => { if (child.exitCode === null) child.kill("SIGKILL"); });
   let stdout = "";
   let stderr = "";

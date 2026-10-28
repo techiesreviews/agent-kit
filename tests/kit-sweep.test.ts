@@ -8,6 +8,7 @@ import test, { type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
 import { isoWeek } from "../scripts/agents/agent-run.mjs";
+import { kitEnv } from "./support/kit-env.ts";
 
 const script = resolve("scripts/agents/kit.d/sweep"), kit = resolve("scripts/agents/kit");
 // Node loads this extensionless executable as ESM; a URL keeps tsx from resolving it as TS.
@@ -66,7 +67,7 @@ function repository(t: TestContext) {
 // The machine ledger lives under XDG_STATE_HOME; by default each repository's own temp folder holds it.
 function run(repo: string, args: string[] = [], root = repo, env: NodeJS.ProcessEnv = {}) {
   return spawnSync("bash", [kit, "sweep", ...args], { cwd: root, encoding: "utf8", timeout: 20_000,
-    env: { ...process.env, KIT_ROOT: root, KIT_MAIN_ROOT: repo, ASE_SKIP_DOCTOR: "1", XDG_STATE_HOME: join(dirname(repo), "state"), ASE_REVIEW_BUDGET_GROK: "", ...env } });
+    env: { ...kitEnv(), KIT_ROOT: root, KIT_MAIN_ROOT: repo, ASE_SKIP_DOCTOR: "1", XDG_STATE_HOME: join(dirname(repo), "state"), ASE_REVIEW_BUDGET_GROK: "", ...env } });
 }
 
 const bundleOf = (output: string) => {

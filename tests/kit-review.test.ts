@@ -10,6 +10,7 @@ import { codexReviewConfig, isoWeek, makeCodexReviewHome, opencodeModelRuns } fr
 import { builderChecks, reviewBrief, reviewFormat, ticketReviewBrief } from "../scripts/agents/review-brief.mjs";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
 import { saveReviewEvidence } from "../scripts/agents/review-evidence.mjs";
+import { kitEnv } from "./support/kit-env.ts";
 
 const kit = resolve("scripts/agents/kit");
 const review = resolve("scripts/agents/kit.d/review");
@@ -134,7 +135,7 @@ function fixture(t: { after: (fn: () => void) => void }, { project = "kit-review
   git("update-ref", "refs/remotes/origin/dev", commits[0]);
   const brief = join(dir, "brief.md"), out = join(dir, "out"), callsFile = join(dir, "calls.jsonl"), ghFile = join(dir, "gh.json");
   writeFileSync(brief, "Hand-written review brief\nScope: git diff HEAD~1...HEAD\n");
-  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, CODEX_HOME: home, KIT_ROOT: root, KIT_MAIN_ROOT: main, XDG_STATE_HOME: state,
+  const env = { ...kitEnv(), PATH: `${bin}:${process.env.PATH}`, CODEX_HOME: home, KIT_ROOT: root, KIT_MAIN_ROOT: main, XDG_STATE_HOME: state,
     ASE_OWNER: "review-owner", ASE_AGENT_CLI: "", ASE_REVIEW_MODEL: "", ASE_BUILD_MODEL: "",
     ASE_REVIEW_BUDGET_GPT: "", ASE_REVIEW_BUDGET_GROK: "", ASE_REVIEW_BUDGET_LOCK_MS: "", ASE_AGENT_TIMEOUT: "10s", FAKE_CALLS: callsFile, FAKE_GH: ghFile };
   const invoke = (file: string, args: string[], overrides: NodeJS.ProcessEnv = {}, bash = false) => spawnSync(bash ? "bash" : file, bash ? [file, ...args] : args, {

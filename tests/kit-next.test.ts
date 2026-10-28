@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, sy
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
+import { kitEnv } from "./support/kit-env.ts";
 
 const next = resolve("scripts/agents/kit.d/next");
 const identity = { GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.com", GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.com" };
@@ -21,7 +22,7 @@ function fixture(t: TestContext, files: Record<string, string>, land = "dev", ov
   const root = mkdtempSync(join(tmpdir(), "kit-next-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const dev = join(root, devPath);
-  const env: NodeJS.ProcessEnv = { ...process.env, ...identity, GIT_CONFIG_NOSYSTEM: "1", KIT_DEV_ROOT: dev, KIT_NEXT_KIT: join(root, "fake-kit"), KIT_NEXT_WORKTREE: join(root, "fake-worktree.sh"),
+  const env: NodeJS.ProcessEnv = { ...kitEnv(), ...identity, GIT_CONFIG_NOSYSTEM: "1", KIT_DEV_ROOT: dev, KIT_NEXT_KIT: join(root, "fake-kit"), KIT_NEXT_WORKTREE: join(root, "fake-worktree.sh"),
     KIT_NEXT_SYSTEMCTL: join(root, "fake-systemctl"), FAKE_UNITS: join(root, "units"), FAKE_KIT_LOG: join(root, "kit.log") };
   delete env.KIT_ROOT;
   const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -455,7 +456,6 @@ function pinnedHome(root: string, builder: string, reviewer: string) {
 test("the builder and reviewer pins come from the shared rulebook in KIT_HOME", t => {
   const { root, env, run } = fixture(t, startFiles);
   env.KIT_HOME = pinnedHome(root, "claude-pinned", "claude-reviewer");
-  delete env.KIT_HOME_DEFAULT;
   const result = run("alpha", "--start");
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /^next: \S+01-first-slice\.md builder=claude-pinned owner=al-01 /m);
@@ -483,7 +483,6 @@ test("an extras row replaces only its own role: the shared reviewer stays when o
     "docs/agents/kitchen-extras.md": "# Kitchen extras\n\n| Builder, every slice | `claude-own`, high | here |\n",
   }, "dev", { rulebookExtras: "docs/agents/kitchen-extras.md" });
   env.KIT_HOME = pinnedHome(root, "claude-shared", "claude-shared-review");
-  delete env.KIT_HOME_DEFAULT;
   assert.equal(lines("alpha", "--start").at(-1), "RESULT: ok next 2 ready, 0 waiting, 1 started");
   assert.equal(readFileSync(env.FAKE_KIT_LOG!, "utf8"),
     `${join(root, "wt-build-al-01-first-slice")}|claude-shared-review|al-01|bg slice-al01 -- scripts/agents/kit slice --ticket ${build("alpha", "01-first-slice")} --builder claude-own\n`);
@@ -518,7 +517,6 @@ test("a missing shared rulebook, extras file or pin fails before any hand-out", 
   mkdirSync(join(home, "docs"), { recursive: true });
   writeFileSync(join(home, "docs/kitchen.md"), "# The kitchen\n\n| Builder, every slice | `claude-x`, high | x |\n");
   env.KIT_HOME = home;
-  delete env.KIT_HOME_DEFAULT;
   const noReviewer = run("alpha");
   assert.equal(noReviewer.status, 1);
   assert.match(noReviewer.stdout, /^RESULT: fail next the rulebook has no Review, every change pin$/m);
@@ -551,7 +549,7 @@ test("next --help names this editor's land branch, and placeholders when the set
   t.after(() => rmSync(broken, { recursive: true, force: true }));
   mkdirSync(join(broken, "scripts/agents"), { recursive: true });
   writeFileSync(join(broken, "scripts/agents/kit.json"), "{ broken");
-  const placeholder = spawnSync(process.execPath, [next, "--help"], { env: { ...process.env, KIT_ROOT: broken }, encoding: "utf8" });
+  const placeholder = spawnSync(process.execPath, [next, "--help"], { env: { ...kitEnv(), KIT_ROOT: broken }, encoding: "utf8" });
   assert.equal(placeholder.status, 0, placeholder.stderr);
   assert.ok(placeholder.stdout.includes("read from origin/<land> in the dev worktree"), placeholder.stdout);
 });
@@ -844,7 +842,6 @@ git checkout -q --detach
   writeFileSync(env.FAKE_KIT_LOG!, "");
   // A group run has its builder already, so it never reads the rulebook: a kit without docs/ still runs it.
   env.KIT_HOME = join(root, "kit-without-docs");
-  delete env.KIT_HOME_DEFAULT;
   const group = runIn(worktree, "--run-group", "--branch", "build/al-g-fonts", "--builder", "claude-opus-5-5", "--ticket", files[1], "--ticket", files[0]);
   assert.equal(group.status, 0, group.stdout + group.stderr);
   assert.deepEqual(readFileSync(env.FAKE_KIT_LOG!, "utf8").trim().split("\n").map(line => line.split("|").at(-1)),

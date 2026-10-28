@@ -7,12 +7,13 @@ import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import test, { type TestContext } from "node:test";
+import { kitEnv } from "./support/kit-env.ts";
 
 const kit = resolve("scripts/agents/kit");
 const script = resolve("scripts/agents/kit.d/bg");
 function fixture(t: TestContext) {
   const root = mkdtempSync(join(tmpdir(), "kit-bg-"));
-  const env = { ...process.env, KIT_ROOT: root, KIT_WAIT_POLL_MS: "10" };
+  const env = { ...kitEnv(), KIT_ROOT: root, KIT_WAIT_POLL_MS: "10" };
   const run = (...args: string[]) => spawnSync(kit, ["bg", ...args], { env, encoding: "utf8" });
   t.after(() => {
     const jobs = join(root, ".scratch/kit-jobs");

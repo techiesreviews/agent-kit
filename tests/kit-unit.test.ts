@@ -4,12 +4,13 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symli
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
+import { kitEnv } from "./support/kit-env.ts";
 
 const kit = resolve("scripts/agents/kit");
 function fixture(t: TestContext) {
   const root = mkdtempSync(join(tmpdir(), "kit-unit-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const env = { ...process.env, KIT_ROOT: root, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+  const env = { ...kitEnv(), KIT_ROOT: root, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
   delete env.NODE_TEST_CONTEXT;
   const put = (file: string, text: string) => {
     mkdirSync(dirname(join(root, file)), { recursive: true });
@@ -184,7 +185,7 @@ test("without the project's import scan --affected follows plain imports itself;
     result(output, 1, /^RESULT: fail unit kit unit needs unit\.files in scripts\/agents\/kit\.json$/);
     assert.doesNotMatch(output.stderr, /Usage:/);
   }
-  const env = { ...process.env, KIT_ROOT: f.root };
+  const env = { ...kitEnv(), KIT_ROOT: f.root };
   delete env.NODE_TEST_CONTEXT;
   const bare = spawnSync("bash", [resolve("scripts/agents/unit.sh")], { cwd: f.root, env, encoding: "utf8", timeout: 60_000 });
   assert.equal(bare.status, 1, bare.stdout + bare.stderr);
@@ -239,7 +240,7 @@ test("unit.sh stopping with no log and nothing on stderr keeps the plain no-log-
 
 test("a unit.files pattern matching nothing and a broken import scan fail without usage", t => {
   const f = fixture(t);
-  const env = { ...process.env, KIT_ROOT: f.root };
+  const env = { ...kitEnv(), KIT_ROOT: f.root };
   delete env.NODE_TEST_CONTEXT;
   f.put("scripts/agents/kit.json", JSON.stringify({ project: "kit-unit", branches: { land: "dev" }, unit: { run: "node --test", files: "nomatch/*.test.ts" } }));
   const none = spawnSync("bash", [resolve("scripts/agents/unit.sh")], { cwd: f.root, env, encoding: "utf8", timeout: 60_000 });
@@ -261,7 +262,7 @@ test("unit.sh with no files runs only the tests its unit.files pattern matches",
   f.put("scripts/agents/kit.json", JSON.stringify({ project: "kit-unit", branches: { land: "dev" },
     unit: { run: "./node_modules/.bin/tsx --test --test-reporter=spec", files: "tests/d*.test.ts" } }));
   f.put("tests/direct.test.ts", f.body.replace("selected test runs", "direct test runs"));
-  const env = { ...process.env, KIT_ROOT: f.root };
+  const env = { ...kitEnv(), KIT_ROOT: f.root };
   delete env.NODE_TEST_CONTEXT;
   const output = spawnSync("bash", [resolve("scripts/agents/unit.sh")], { cwd: f.root, env, encoding: "utf8", timeout: 60_000 });
   assert.equal(output.status, 0, output.stdout + output.stderr);
@@ -282,7 +283,7 @@ test("unit.sh with no files run from its own folder lists and sums the same suit
   }
   for (const file of ["tests/hops.test.ts", "tests/helper.test.ts", "tests/direct.test.ts"]) f.put(file, f.body.replace("selected test runs", `${file} runs`));
   // No KIT_ROOT or KIT_LIB from the caller's kit: the copy finds its project from git's top folder.
-  const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+  const env = { ...kitEnv(), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
   for (const name of ["NODE_TEST_CONTEXT", "KIT_ROOT", "KIT_LIB"]) delete env[name];
   const suite = (command: string, args: string[], cwd: string) => {
     const output = spawnSync(command, args, { cwd, env, encoding: "utf8", timeout: 60_000 });
@@ -333,7 +334,7 @@ test("unit.files patterns pick src/**/*.test.js for --affected and every pattern
   assert.deepEqual(all.stdout.split("\n").filter(line => line.endsWith(" — all")),
     ["scripts/build.test.mjs — all", "src/blocks/math.test.js — all", "src/top.test.js — all", "test/helpers/setup.js — all"]);
   // unit.sh alone expands the same patterns.
-  const env = { ...process.env, KIT_ROOT: f.root };
+  const env = { ...kitEnv(), KIT_ROOT: f.root };
   delete env.NODE_TEST_CONTEXT;
   const suite = spawnSync("bash", [resolve("scripts/agents/unit.sh")], { cwd: f.root, env, encoding: "utf8", timeout: 60_000 });
   assert.equal(suite.status, 0, suite.stderr + suite.stdout);

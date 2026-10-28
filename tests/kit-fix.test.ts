@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { forEachAwait } from "./support/await-race.ts";
+import { kitEnv } from "./support/kit-env.ts";
 
 const kit = resolve("scripts/agents/kit"), fix = resolve("scripts/agents/kit.d/fix");
 const briefHelper = resolve("scripts/agents/review-brief.mjs");
@@ -104,7 +105,7 @@ if (!process.env.FAKE_MISSING_RESULT) writeFileSync(join(directory, "result.md")
 console.log("RESULT: ok review git diff origin/dev...HEAD evidence " + directory);
 `);
   chmodSync(join(commands, "review"), 0o755);
-  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, KIT_ROOT: root, KIT_MAIN_ROOT: main,
+  const env = { ...kitEnv(), PATH: `${bin}:${process.env.PATH}`, KIT_ROOT: root, KIT_MAIN_ROOT: main,
     KIT_COMMANDS_DIR: commands, ASE_OWNER: "ke-03", ASE_SKIP_DOCTOR: "1", ASE_RESUME_POLL_MS: "10", ASE_AGENT_TIMEOUT: "10s",
     FAKE_CALLS: callsFile, FAKE_REVIEW_CALL: reviewCall, ASE_REVIEW_DECLINED: "" };
   const review = (name = "20261019T000000Z", result = findings, reviewedHead = head) => {

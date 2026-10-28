@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { after, type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
+import { kitEnv } from "./support/kit-env.ts";
 
 const script = resolve("scripts/agents/kit.d/learn"), kit = resolve("scripts/agents/kit");
 const fixtures = resolve("tests/fixtures/kit-learn"), memory = join(fixtures, "memory");
@@ -48,7 +49,7 @@ function temp(t: TestContext) {
 }
 
 function run(env: Record<string, string>, args: string[] = []) {
-  const base: Record<string, string | undefined> = { ...process.env, ASE_SKIP_DOCTOR: "1", KIT_ROOT: repo };
+  const base: Record<string, string | undefined> = { ...kitEnv(), ASE_SKIP_DOCTOR: "1", KIT_ROOT: repo };
   // A test names the memory folder itself, or none to read the default under HOME.
   delete base.KIT_CHAT_MEMORY;
   delete base.CHAT_MEMORY_DIR;

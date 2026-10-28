@@ -8,10 +8,11 @@ import { pathToFileURL } from "node:url";
 import test, { type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { failingTests } from "../scripts/agents/ci-summary.mjs";
+import { kitEnv } from "./support/kit-env.ts";
 
 const script = resolve("scripts/agents/kit.d/wait");
 const kit = resolve("scripts/agents/kit");
-const baseEnv = { ...process.env, ASE_OWNER: "wait-test", KIT_WAIT_POLL_MS: "50", KIT_WAIT_STATUS_MS: "60000" };
+const baseEnv = { ...kitEnv(), ASE_OWNER: "wait-test", KIT_WAIT_POLL_MS: "50", KIT_WAIT_STATUS_MS: "60000" };
 function temp(t: TestContext) {
   const directory = mkdtempSync(join(tmpdir(), "kit-wait-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));

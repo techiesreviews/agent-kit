@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { forEachAwait } from "./support/await-race.ts";
+import { kitEnv } from "./support/kit-env.ts";
 
 const kit = resolve("scripts/agents/kit");
 const clean = "REVIEW_STATUS: complete\nDefects:\nSpec: none\nStandards: none\nValidation gaps: none\nOptional nits: none\n";
@@ -232,7 +233,7 @@ console.log(JSON.stringify({ state: merged ? "MERGED" : "OPEN", mergeCommit: mer
   headRefOid: process.env.MERGE_CHANGED_HEAD ? "b".repeat(40) : git("rev-parse", "HEAD") }));
 `);
   chmodSync(gh, 0o755); chmodSync(agent, 0o755); chmodSync(fakeKit, 0o755);
-  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, KIT_ROOT: root, KIT_MAIN_ROOT: main, ASE_OWNER: "ke-04", ASE_SLICE_AGENT: agent,
+  const env = { ...kitEnv(), PATH: `${bin}:${process.env.PATH}`, KIT_ROOT: root, KIT_MAIN_ROOT: main, ASE_OWNER: "ke-04", ASE_SLICE_AGENT: agent,
     ASE_SLICE_KIT: fakeKit, ASE_SLICE_GH: gh, ASE_SLICE_MERGE_POLL_MS: "1", ASE_SLICE_MERGE_TIMEOUT_MS: "5000", FAKE_CALLS: callsFile };
   const args = ["--ticket", ticket, "--builder", "sol"];
   const run = (extra: string[] = [], overrides: NodeJS.ProcessEnv = {}, commandArgs: string[] = args) => {

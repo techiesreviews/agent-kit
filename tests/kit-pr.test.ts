@@ -8,11 +8,12 @@ import { checkSteps, classify, featureListGuard, focusedUnitFiles, parseChanges,
 import { sameReviewPatch } from "../scripts/agents/review-findings.mjs";
 import { forEachAwait } from "./support/await-race.ts";
 import type { ScoreRecord } from "./kit-score.test.ts";
+import { kitEnv } from "./support/kit-env.ts";
 
 const pr = resolve("scripts/agents/kit.d/pr");
 const kit = resolve("scripts/agents/kit");
 const cleanReview = "REVIEW_STATUS: complete\nDefects:\n- Spec: none.\n- Standards: none.\nValidation gaps: none.\nOptional nits: none.\n";
-interface Call { tool: string; args: string[]; body?: string }
+interface Call { tool: string; script?: string; args: string[]; body?: string }
 // Claude's review, not the second look that kit pr runs after it.
 const claudeReview = (call: Call) => call.tool === "fake-kit" && call.args[0] === "review" && !call.args.includes("--second-look");
 const fake = `#!/usr/bin/env node
@@ -22,7 +23,7 @@ const tool = basename(process.argv[1]), args = process.argv.slice(2), env = proc
 const bodyIndex = args.indexOf("--body-file");
 const bodyField = args.find(arg => arg.startsWith("body=@"));
 const bodyPath = bodyIndex >= 0 ? args[bodyIndex + 1] : bodyField?.slice("body=@".length);
-appendFileSync(env.FAKE_CALLS, JSON.stringify({ tool, args, ...(bodyPath ? { body: readFileSync(bodyPath, "utf8") } : {}) }) + "\\n");
+appendFileSync(env.FAKE_CALLS, JSON.stringify({ tool, script: process.argv[1], args, ...(bodyPath ? { body: readFileSync(bodyPath, "utf8") } : {}) }) + "\\n");
 const scripts = { "unit.sh": "unit", "tickets.mjs": "tickets", "check-colours.mjs": "colours" };
 const action = tool === "npm" ? (args[0] === "test" ? "unit" : args[1]) : scripts[tool] || (tool === "fake-kit" ? args[0] : args.slice(0, 2).join("-"));
 if (env.FAKE_FAIL === action) {
@@ -137,7 +138,7 @@ function fixture(t: TestContext, changes?: Record<string, string>, override: Rec
   // kit-lib's nodeEnv puts the Node directory first on PATH; where npm sits beside node (CI), that would
   // shadow the fake npm. A node link here makes bin the Node directory itself (same fix as kit-deps).
   symlinkSync(process.execPath, join(bin, "node"));
-  const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}:${process.env.PATH}`, KIT_ROOT: root, KIT_MAIN_ROOT: main,
+  const env: NodeJS.ProcessEnv = { ...kitEnv(), PATH: `${bin}:${process.env.PATH}`, KIT_ROOT: root, KIT_MAIN_ROOT: main,
     ASE_OWNER: "ak-14", KIT_PR_KIT: join(bin, "fake-kit"), FAKE_CALLS: join(dir, "calls.jsonl"), CLAUDECODE: "",
     GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
   for (const key of Object.keys(env)) if (key.startsWith("FAKE_") && key !== "FAKE_CALLS") delete env[key];
@@ -1178,6 +1179,19 @@ test("a KIT_HOME outside the project runs its own unit.sh by absolute path, as t
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(f.calls().filter(call => call.tool === "unit.sh").map(call => call.args), [["tests/a.test.ts"]]);
   assert.ok(f.body().includes(`- ${join(home, "unit.sh")} tests/a.test.ts: ok`), f.body());
+});
+
+test("a docs-tier PR with a KIT_HOME outside the project runs that home's tickets.mjs, as the PR body says", t => {
+  const f = fixture(t, { "docs/work/01-x.md": "---\ntitle: X\n---\n" });
+  const home = join(f.dir, "kit-home");
+  mkdirSync(home);
+  for (const name of ["unit.sh", "tickets.mjs"]) copyFileSync(join(f.root, "scripts/agents", name), join(home, name));
+  chmodSync(join(home, "unit.sh"), 0o755);
+  const result = f.run(["--no-merge"], { KIT_HOME: home });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^tier: docs /m);
+  assert.deepEqual(f.calls().filter(call => call.tool === "tickets.mjs").map(call => [call.script, call.args]), [[join(home, "tickets.mjs"), ["check"]]]);
+  assert.ok(f.body().includes(`- node ${join(home, "tickets.mjs")} check: ok`), f.body());
 });
 
 test("a CSS-only PR runs the colour check and specs, keeps the review and reminds about shots", t => {

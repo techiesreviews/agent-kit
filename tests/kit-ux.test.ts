@@ -7,6 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
 import { screens } from "../scripts/agents/shots/core";
+import { kitEnv } from "./support/kit-env.ts";
 
 const script = resolve("scripts/agents/kit.d/ux"), kit = resolve("scripts/agents/kit");
 // Node loads this extensionless executable as ESM; a URL keeps tsx from resolving it as TS.
@@ -193,7 +194,7 @@ test("the ticket comes from the branch name, and its mock-up links resolve again
 function fixture(t: TestContext, gitConfig: [string, string][] = []) {
   const root = mkdtempSync(join(tmpdir(), "kit-ux-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const env = { ...process.env, KIT_ROOT: root, KIT_MAIN_ROOT: root, ASE_OWNER: "ux-test", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+  const env = { ...kitEnv(), KIT_ROOT: root, KIT_MAIN_ROOT: root, ASE_OWNER: "ux-test", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
   const git = (...args: string[]) => {
     const output = spawnSync("git", args, { cwd: root, env, encoding: "utf8" });
     assert.equal(output.status, 0, output.stderr);
@@ -730,7 +731,7 @@ test("kit ux fails a screens run that exits non-zero even when every shot passed
 
 test("kit ux stops at a signal: no further try starts and one fail RESULT is printed", async t => {
   const { root, calls, tools } = fixture(t);
-  const child = spawn(kit, ["ux", "--all"], { cwd: root, env: { ...process.env, KIT_ROOT: root, KIT_MAIN_ROOT: root, ASE_OWNER: "ux-test", ...tools, SLEEP: "1" } });
+  const child = spawn(kit, ["ux", "--all"], { cwd: root, env: { ...kitEnv(), KIT_ROOT: root, KIT_MAIN_ROOT: root, ASE_OWNER: "ux-test", ...tools, SLEEP: "1" } });
   let stdout = "";
   child.stdout.on("data", chunk => { stdout += chunk; });
   const closed = once(child, "close");

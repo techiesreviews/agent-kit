@@ -4,6 +4,7 @@ import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, readdirSync, r
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
+import { kitEnv } from "./support/kit-env.ts";
 
 const repo = resolve(".");
 const kit = join(repo, "scripts/agents/kit");
@@ -67,7 +68,7 @@ function fixture(t: { after: (fn: () => void) => void }) {
   const run = (args: string[] = [], root = build, env: NodeJS.ProcessEnv = {}, direct = false) => spawnSync(
     "/bin/bash", direct ? [doctor, ...args] : [kit, "doctor", ...args], {
       cwd: root, encoding: "utf8", timeout: 10_000,
-      env: { ...process.env, KIT_ROOT: root, KIT_MAIN_ROOT: main, KIT_LIB: library,
+      env: { ...kitEnv(), KIT_ROOT: root, KIT_MAIN_ROOT: main, KIT_LIB: library,
         KIT_COMMANDS_DIR: commands, KIT_GROK: join(directory, "no-grok"), ...env },
     },
   );
@@ -101,7 +102,7 @@ test("doctor checks all eleven conditions quickly, notes Grok, and quiet success
   assert.equal(lines[0], "✓ settings: scripts/agents/kit.json (native-site-editor, lands on dev)");
   assert.equal(lines[8], `✓ commands: 2 in ${f.commands} (KIT_COMMANDS_DIR)`);
   assert.equal(lines[9], "✓ help: 2 commands answer --help");
-  assert.equal(lines[10], `✓ kit home: a copy of ${join(repo, "scripts/agents")} runs kit version for a project with only its settings and front door`);
+  assert.equal(lines[10], `✓ kit home: a copy of ${realpathSync(dirname(library))} runs kit version for a project with only its settings and front door`);
   // The kit's commit and age beside the project's is a note, not a counted check.
   assert.match(lines[11], new RegExp(`^✓ kit: commit [0-9a-f]{7,} \\(checkout ${repo}, commit \\d+ \\w+ old\\); project [0-9a-f]{7,}$`));
   assert.equal(lines[12], "✗ grok: not installed (optional reviewer); fix: install the grok CLI for Grok reviews");
@@ -256,7 +257,7 @@ function playground(t: { after: (fn: () => void) => void }, extra: Record<string
   symlinkSync(doctor, join(commands, "doctor"));
   const run = (env: NodeJS.ProcessEnv = {}) => spawnSync("/bin/bash", [kit, "doctor"], {
     cwd: root, encoding: "utf8", timeout: 10_000,
-    env: { ...process.env, KIT_ROOT: root, KIT_MAIN_ROOT: "", KIT_LIB: library, KIT_COMMANDS_DIR: commands, KIT_GROK: join(directory, "no-grok"), ...env },
+    env: { ...kitEnv(), KIT_ROOT: root, KIT_MAIN_ROOT: "", KIT_LIB: library, KIT_COMMANDS_DIR: commands, KIT_GROK: join(directory, "no-grok"), ...env },
   });
   return { directory, root, run };
 }
@@ -532,6 +533,30 @@ test("doctor fails when a copy of the kit named by KIT_HOME cannot run kit versi
   assert.ok(result.stdout.includes(`✗ kit home: a copy of ${home} fails kit version: RESULT: fail helper missing; fix: reach shared helpers through KIT_HOME, not scripts/agents/\n`), result.stdout);
 });
 
+test("the kit home check moves a commands folder inside the kit out of the copy and into the project", (t) => {
+  const f = fixture(t);
+  // The kit's own project: its scripts/agents is the kit, holding the project's commands folder as this editor's does.
+  const home = join(f.build, "scripts/agents");
+  mkdirSync(join(home, "kit.d"));
+  mkdirSync(join(home, "project.d"));
+  copyFileSync(library, join(home, "kit-lib.sh"));
+  executable(join(home, "kit.d/doctor"), readFileSync(doctor, "utf8"));
+  executable(join(home, "kit.d/version"), 'printf "Usage: kit version\\n"');
+  writeFileSync(join(home, "project.d/marker"), "");
+  writeFileSync(join(home, "kit.json"), JSON.stringify({ project: "native-site-editor", branches: { land: "dev" },
+    devRoot: f.dev, sharedNodeModules: join(f.dev, "node_modules"), commands: "scripts/agents/project.d" }));
+  // The copy's front door runs for the temporary project and says where the commands folder went.
+  executable(join(home, "kit"), '[[ ! -e $KIT_HOME/project.d/marker ]] || { printf "RESULT: fail marker in the copy\\n"; exit 1; }\n' +
+    '[[ -f $KIT_ROOT/scripts/agents/project.d/marker ]] || { printf "RESULT: fail no commands folder in the project\\n"; exit 1; }\n' +
+    'printf "RESULT: ok version fake\\n"');
+  const result = spawnSync("/bin/bash", [join(home, "kit.d/doctor")], {
+    cwd: f.build, encoding: "utf8", timeout: 10_000,
+    env: { ...kitEnv(), KIT_ROOT: f.build, KIT_MAIN_ROOT: f.main, KIT_LIB: undefined, KIT_COMMANDS_DIR: undefined, KIT_GROK: join(f.directory, "no-grok") },
+  });
+  assert.ok(result.stdout.includes("✓ commands: 2 shared, 0 in scripts/agents/project.d\n"), result.stdout);
+  assert.ok(result.stdout.includes(`✓ kit home: a copy of ${realpathSync(home)} runs kit version for a project with only its settings and front door\n`), result.stdout);
+});
+
 test("doctor fails the help check when the command folder has no commands", (t) => {
   const f = fixture(t);
   const empty = join(f.directory, "no-commands");
@@ -566,7 +591,7 @@ test("doctor fails a project command that takes a shared name, naming both files
     devRoot: f.dev, sharedNodeModules: join(f.dev, "node_modules"), commands: "own" }));
   const direct = (root = f.build) => spawnSync("/bin/bash", [join(f.commands, "doctor")], {
     cwd: root, encoding: "utf8", timeout: 10_000,
-    env: { ...process.env, KIT_ROOT: root, KIT_MAIN_ROOT: f.main, KIT_LIB: library, KIT_COMMANDS_DIR: undefined, KIT_GROK: join(f.directory, "no-grok") },
+    env: { ...kitEnv(), KIT_ROOT: root, KIT_MAIN_ROOT: f.main, KIT_LIB: library, KIT_COMMANDS_DIR: undefined, KIT_GROK: join(f.directory, "no-grok") },
   });
   const clash = direct();
   failure(clash, "commands");
@@ -594,7 +619,7 @@ test("doctor says it did not check the project folder when the settings file is 
   const settings = join(f.build, "scripts/agents/kit.json");
   const direct = (env: NodeJS.ProcessEnv = {}) => spawnSync("/bin/bash", [join(f.commands, "doctor")], {
     cwd: f.build, encoding: "utf8", timeout: 10_000,
-    env: { ...process.env, KIT_ROOT: f.build, KIT_MAIN_ROOT: f.main, KIT_LIB: library, KIT_COMMANDS_DIR: undefined, KIT_GROK: join(f.directory, "no-grok"), ...env },
+    env: { ...kitEnv(), KIT_ROOT: f.build, KIT_MAIN_ROOT: f.main, KIT_LIB: library, KIT_COMMANDS_DIR: undefined, KIT_GROK: join(f.directory, "no-grok"), ...env },
   });
   // A readable file without "commands" keeps the plain pass line.
   const readable = direct();
@@ -750,7 +775,7 @@ function gateFixture(t: { after: (fn: () => void) => void }) {
   const run = (root: string, input = brief, env: NodeJS.ProcessEnv = {}) => spawnSync(
     "/bin/bash", [join(repo, "scripts/agents/agent.sh"), "build", root, input, "--out", join(directory, "out")], {
       cwd: directory, encoding: "utf8", timeout: 10_000,
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, KIT_COMMANDS_DIR: commands,
+      env: { ...kitEnv(), PATH: `${bin}:${process.env.PATH}`, KIT_COMMANDS_DIR: commands,
         DOCTOR_CAPTURE: capture, ASE_SKIP_DOCTOR: "", ...env },
     },
   );
@@ -811,7 +836,7 @@ test("a broken --help stops agent.sh review and kit doctor but not agent.sh buil
   executable(join(f.commands, "broken"), 'printf "SyntaxError: missing import\\n" >&2; exit 1');
   // A front door marks the fixture worktree as a kit checkout, so agent.sh gates it.
   executable(join(f.build, "scripts/agents/kit"), "exit 0");
-  const env = { ...process.env, KIT_MAIN_ROOT: f.main, KIT_LIB: library, KIT_COMMANDS_DIR: f.commands,
+  const env = { ...kitEnv(), KIT_MAIN_ROOT: f.main, KIT_LIB: library, KIT_COMMANDS_DIR: f.commands,
     KIT_GROK: join(f.directory, "no-grok"), KIT_HELP_TIMEOUT: "0.3", ASE_SKIP_DOCTOR: "", KIT_DOCTOR_SKIP: "" };
   const agent = (...args: string[]) => spawnSync("/bin/bash", [join(repo, "scripts/agents/agent.sh"), ...args], {
     cwd: f.directory, encoding: "utf8", timeout: 10_000, env,
@@ -883,7 +908,7 @@ test("agent.sh hands the builder no KIT_DOCTOR_SKIP, so its own kit doctor sees 
   writeFileSync(brief, "test brief\n");
   const result = spawnSync("/bin/bash", [join(repo, "scripts/agents/agent.sh"), "build", f.build, brief, "--cli", "claude", "--out", join(f.directory, "out")], {
     cwd: f.directory, encoding: "utf8", timeout: 10_000,
-    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, KIT_MAIN_ROOT: f.main, KIT_LIB: library, KIT_COMMANDS_DIR: f.commands,
+    env: { ...kitEnv(), PATH: `${bin}:${process.env.PATH}`, KIT_MAIN_ROOT: f.main, KIT_LIB: library, KIT_COMMANDS_DIR: f.commands,
       KIT_GROK: join(f.directory, "no-grok"), KIT_HELP_TIMEOUT: "0.3", ASE_SKIP_DOCTOR: "", KIT_DOCTOR_SKIP: "help" },
   });
   assert.match(result.stderr, /agent.sh: building in /);
@@ -899,7 +924,7 @@ test("a broken version command, which the kit home check runs, does not stop age
   mkdirSync(home);
   copyFileSync(library, join(home, "kit-lib.sh"));
   executable(join(home, "kit"), 'printf "SyntaxError: missing import\\n" >&2; exit 1');
-  const env = { ...process.env, KIT_MAIN_ROOT: f.main, KIT_LIB: library, KIT_COMMANDS_DIR: f.commands, KIT_HOME: home,
+  const env = { ...kitEnv(), KIT_MAIN_ROOT: f.main, KIT_LIB: library, KIT_COMMANDS_DIR: f.commands, KIT_HOME: home,
     KIT_GROK: join(f.directory, "no-grok"), KIT_HELP_TIMEOUT: "0.3", ASE_SKIP_DOCTOR: "", KIT_DOCTOR_SKIP: "" };
   const agent = (kind: string) => spawnSync("/bin/bash", [join(repo, "scripts/agents/agent.sh"), kind, f.build, join(f.directory, "missing.md")], {
     cwd: f.directory, encoding: "utf8", timeout: 10_000, env,
@@ -1006,7 +1031,7 @@ test("through the real front door, a copy's version failing as its help did is s
   executable(join(home, "kit.d/version"), 'printf "%s: Cannot find module kit-lib.mjs\\n" "$0" >&2; exit 1');
   const run = (env: NodeJS.ProcessEnv = {}, args = ["--quiet"]) => spawnSync("/bin/bash", [join(home, "kit"), "doctor", ...args], {
     cwd: f.build, encoding: "utf8", timeout: 10_000,
-    env: { ...process.env, KIT_ROOT: f.build, KIT_MAIN_ROOT: f.main, KIT_GROK: join(f.directory, "no-grok"),
+    env: { ...kitEnv(), KIT_ROOT: f.build, KIT_MAIN_ROOT: f.main, KIT_GROK: join(f.directory, "no-grok"),
       KIT_HOME: "", KIT_HOME_DEFAULT: "", KIT_LIB: "", KIT_COMMANDS_DIR: "", KIT_HELP_TIMEOUT: "2", ...env },
   });
   const skipped = run({ KIT_DOCTOR_SKIP: "help" });
@@ -1091,7 +1116,7 @@ test("a resumed build with a full status.json passes the build gate and really s
     state: "interrupted", exitCode: 129, session: "resume-session-1", resumes: 0 }));
   const result = spawnSync("/bin/bash", [join(repo, "scripts/agents/agent.sh"), "--resume", out], {
     cwd: f.directory, encoding: "utf8", timeout: 10_000,
-    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, KIT_MAIN_ROOT: f.main, KIT_LIB: library, KIT_COMMANDS_DIR: f.commands,
+    env: { ...kitEnv(), PATH: `${bin}:${process.env.PATH}`, KIT_MAIN_ROOT: f.main, KIT_LIB: library, KIT_COMMANDS_DIR: f.commands,
       KIT_GROK: join(f.directory, "no-grok"), KIT_HELP_TIMEOUT: "0.3", ASE_SKIP_DOCTOR: "", KIT_DOCTOR_SKIP: "help" },
   });
   assert.ok(result.stderr.startsWith("problem: help: broken (exit 1); fix: run scripts/agents/kit <command> --help and repair it\n" +

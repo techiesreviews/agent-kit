@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The script is plain JavaScript without declarations.
 import { feedbackLegend, parseFeedback } from "../scripts/agents/tickets.mjs";
+import { kitEnv } from "./support/kit-env.ts";
 
 const feedback = resolve("scripts/agents/kit.d/feedback");
 const kit = resolve("scripts/agents/kit");
@@ -25,7 +26,7 @@ function fixture(t: TestContext) {
   writeFileSync(join(root, "docs/wayfinder/alpha/tickets/03-grill.md"), "---\nstatus: closed\n---\n");
   mkdirSync(join(root, "scripts/agents"), { recursive: true });
   writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify({ project: "kit-feedback", branches: { land: "dev" }, maps: "docs/wayfinder" }));
-  const env: NodeJS.ProcessEnv = { ...process.env, KIT_ROOT: root };
+  const env: NodeJS.ProcessEnv = { ...kitEnv(), KIT_ROOT: root };
   delete env.KIT_LIB_MJS;
   const run = (...args: string[]) => spawnSync(process.execPath, [feedback, ...args], { env, encoding: "utf8", timeout: 5_000 });
   const read = () => readFileSync(join(root, log), "utf8");
