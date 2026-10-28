@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { chmodSync, existsSync, globSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { checkSteps, classify } from "../scripts/agents/pr-tier.mjs";
 
 const repo = resolve(".");
@@ -13,7 +15,53 @@ function entries(directory: string) {
   return existsSync(directory) ? readdirSync(directory).sort() : [];
 }
 
-test("kit and agent unit tests leave no run folders or temporary files", { timeout: 500_000 }, t => {
+// ASE_KIT_CLEAN_LIMIT_MS is a test-only seam: the cut-off test below forces a small limit.
+const limit = Number(process.env.ASE_KIT_CLEAN_LIMIT_MS) || 480_000;
+const guardName = "kit and agent unit tests leave no run folders or temporary files";
+
+function groupAlive(pid: number) {
+  try { process.kill(-pid, 0); return true; } catch { return false; }
+}
+
+// Processes that left the group (kit bg starts jobs in their own session) still carry the private TMPDIR.
+// `within` also matches processes whose TMPDIR is a folder inside it.
+function strays(temporary: string, within = false) {
+  const marker = `TMPDIR=${temporary}`;
+  const matches = (line: string) => line === marker || (within && line.startsWith(`${marker}/`));
+  return entries("/proc").filter(name => /^\d+$/.test(name)).map(Number).filter(pid => {
+    try { return readFileSync(`/proc/${pid}/environ`, "latin1").split("\0").some(matches); } catch { return false; }
+  });
+}
+
+// Runs the suite as its own process group, so a run cut off at the limit takes every test process with it.
+// Resolves once the group and any process still using its TMPDIR have exited; only then may the caller
+// remove that temp folder.
+async function runGroup(args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }, ms: number) {
+  const child = spawn(process.execPath, args, { ...options, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = "", stderr = "";
+  child.stdout.setEncoding("utf8").on("data", chunk => { stdout += chunk; });
+  child.stderr.setEncoding("utf8").on("data", chunk => { stderr += chunk; });
+  const started = Date.now();
+  let cutOff = false;
+  const signalGroup = (signal: NodeJS.Signals) => { try { process.kill(-child.pid!, signal); } catch { /* group gone */ } };
+  const stop = setTimeout(() => {
+    cutOff = true;
+    signalGroup("SIGTERM");
+    setTimeout(() => signalGroup("SIGKILL"), 5_000).unref();
+  }, ms);
+  const [status, signal] = await once(child, "exit") as [number | null, NodeJS.Signals | null];
+  clearTimeout(stop);
+  if (cutOff) signalGroup("SIGKILL");
+  const temporary = options.env.TMPDIR!;
+  for (const deadline = Date.now() + 10_000; Date.now() < deadline; await delay(100)) {
+    const left = strays(temporary);
+    if (!groupAlive(child.pid!) && left.length === 0) break;
+    for (const pid of left) try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+  }
+  return { status, signal, stdout, stderr, cutOff, seconds: Math.round((Date.now() - started) / 1000) };
+}
+
+test(guardName, { timeout: limit + 60_000 }, async t => {
   // The standalone test:kit-clean script runs this guard. Select all kit tests,
   // runner callers and compatibility wrappers, including future test files.
   const files = globSync("tests/*.test.ts").filter(file =>
@@ -34,11 +82,11 @@ test("kit and agent unit tests leave no run folders or temporary files", { timeo
     TSX_DISABLE_CACHE: "1", NODE_DISABLE_COMPILE_CACHE: "1" };
   // Node otherwise treats this as an existing test worker and runs no files.
   delete env.NODE_TEST_CONTEXT;
-  // The kit suite grows with every slice; a run cut off at this limit leaves its temp folders behind.
-  const result = spawnSync(process.execPath, ["--import", "tsx", "--test", "--test-reporter=tap", "--test-concurrency=4", ...files], {
-    cwd: repo, encoding: "utf8", timeout: 480_000, maxBuffer: 16 * 1024 * 1024,
-    env,
-  });
+  delete env.ASE_KIT_CLEAN_LIMIT_MS;
+  // The kit suite grows with every slice; a run cut off at this limit fails as a time-out, and t.after
+  // removes its temp folder (kit-pr-* included) once the whole process group has exited.
+  const result = await runGroup(["--import", "tsx", "--test", "--test-reporter=tap", "--test-concurrency=4", ...files],
+    { cwd: repo, env }, limit);
   const folders = entries(artifacts).filter(name => !before.has(name));
   // The tsx CLI creates an empty IPC directory even with its cache disabled.
   // Permit only that empty runtime directory; all test-created paths must go.
@@ -48,14 +96,32 @@ test("kit and agent unit tests leave no run folders or temporary files", { timeo
     const failures = result.stdout.match(/^\s*not ok .*(?:\n[ \t]+.*)*/gm)?.join("\n");
     t.diagnostic(failures || (result.stdout + result.stderr).slice(-12_000));
   }
-  // A child killed at the limit leaves its running test's folder; name the timeout, not the leftover.
-  assert.equal(result.error, undefined, result.error?.message);
+  assert.ok(!result.cutOff, `kit suite run was cut off after ${result.seconds} s (limit ${limit / 1000} s); ` +
+    `removing the temp paths it left: ${leftovers.join(", ") || "none"}`);
   assert.deepEqual(folders, [], `new folders in ${artifacts}: ${folders.join(", ")}`);
   assert.deepEqual(leftovers, [], `test temp paths left behind: ${leftovers.join(", ")}`);
   assert.equal(result.status, 0, (result.stdout + result.stderr).slice(-12_000));
   const count = Number(/^# tests (\d+)$/m.exec(result.stdout)?.[1]);
   assert.ok(count >= files.length, `child suite must execute tests from ${files.length} files: ${result.stdout.slice(-2000)}`);
   t.diagnostic(`guard ran ${count} tests from ${files.length} files`);
+});
+
+test("a guard run cut off at its limit names the time-out and leaves no temp folder", async t => {
+  const outer = mkdtempSync(join(tmpdir(), "kit-tests-cutoff-"));
+  t.after(() => rmSync(outer, { recursive: true, force: true }));
+  const env = { ...process.env, TMPDIR: outer, TMP: outer, TEMP: outer,
+    TSX_DISABLE_CACHE: "1", NODE_DISABLE_COMPILE_CACHE: "1", ASE_KIT_CLEAN_LIMIT_MS: "8000" };
+  delete env.NODE_TEST_CONTEXT;
+  const result = await runGroup(["--import", "tsx", "--test", "--test-reporter=tap",
+    `--test-name-pattern=^${guardName}$`, import.meta.filename], { cwd: repo, env }, 120_000);
+  const output = result.stdout + result.stderr;
+  assert.equal(result.cutOff, false, output.slice(-4000));
+  assert.notEqual(result.status, 0, output.slice(-4000));
+  assert.match(result.stdout, /kit suite run was cut off after \d+ s \(limit 8 s\)/, output.slice(-4000));
+  assert.doesNotMatch(result.stdout, /test temp paths left behind/);
+  assert.deepEqual(strays(outer, true), [], "processes from the cut-off suite still running");
+  const runtime = `tsx-${process.getuid?.() ?? 0}`;
+  assert.deepEqual(entries(outer).filter(name => name !== runtime || entries(join(outer, name)).length > 0), []);
 });
 
 test("npm test excludes the clean guard and CI runs it separately", () => {
