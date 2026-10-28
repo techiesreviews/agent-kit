@@ -244,6 +244,11 @@ function main(args) {
   const nextResult = output.filter(line => line.startsWith("RESULT: ")).at(-1) ?? "";
   for (const line of output) console.log(line.startsWith("RESULT: ") ? `next ${line}` : line);
 
+  // kit next also lists the kit-slice-* systemd units T3 threads run, which kit bg does not track. One of this map,
+  // or one whose map it cannot name (a group or an unknown ticket), is still building, so the heartbeat goes on.
+  const units = handed.stdout.split("\n").map(line => /^running: (kit-slice-\S+) (.*)$/.exec(line)).filter(Boolean)
+    .filter(([, , label]) => !label.startsWith(`${mapsDir}/`) || label.split(",").some(file => file.startsWith(`${mapsDir}/${flags.map}/`)))
+    .map(([, name]) => name);
   const ready = output.filter(line => line.startsWith("next: ")).length;
   const started = output.filter(line => line.startsWith("started: ")).length;
   const delegated = output.filter(line => line.startsWith("delegate: ")).length;
@@ -263,7 +268,7 @@ function main(args) {
 
   const since = tracked ? "since the last check" : "since tracking started";
   console.log(`done: ${done.length ? `${plural(done.length, "slice")} ${since}: ${done.join(", ")}` : `nothing new ${since}`}`);
-  const stop = !failed && !running.length && !ready && !started && !delegated && !orphans.length && !other
+  const stop = !failed && !running.length && !units.length && !ready && !started && !delegated && !orphans.length && !other
     ? (waits.length ? "only Lex-waits left" : "frontier empty") : null;
   const waitParts = [
     ...(lex ? [`${lex} waiting on you (${lexes.join("; ")})`] : []),
@@ -275,7 +280,8 @@ function main(args) {
   else if (stop) status = `nothing running; ${waitParts[0]}`;
   else {
     const parts = [];
-    if (running.length) parts.push(`${running.length} building (${running.map(job => job.name).join(", ")})`);
+    const building = [...running.map(job => job.name), ...units];
+    if (building.length) parts.push(`${building.length} building (${building.join(", ")})`);
     if (stuck.length) parts.push(`${stuck.length} stuck (${stuck.map(item => item.job).join(", ")})`);
     if (started) parts.push(`${started} started now`);
     const waiting = flags.start ? Math.max(0, ready - started - delegated - meanwhile) : ready;

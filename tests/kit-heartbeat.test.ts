@@ -148,6 +148,19 @@ test("stops when only Lex-waits are left, continues while other waits or ready t
   assert.deepEqual(run("alpha").lines.slice(-2), ["running/next: 1 ready to start", "RESULT: ok heartbeat continue"]);
 });
 
+test("a kit-slice systemd unit kit next lists as running keeps the heartbeat going; another map's does not", t => {
+  const { nextSays, run } = fixture(t);
+  nextSays("running: kit-slice-be01 docs/wayfinder/beta/build/tickets/01-x.md", "RESULT: ok next 0 ready, 0 waiting");
+  assert.deepEqual(run("alpha").lines.slice(-2), ["running/next: nothing left to build; the build is finished", "RESULT: ok heartbeat stop (frontier empty)"]);
+  for (const label of ["docs/wayfinder/alpha/build/tickets/01-x.md", "group fonts tickets=01-a,02-b", "(ticket unknown)"]) {
+    nextSays(`running: kit-slice-al01 ${label}`, "RESULT: ok next 0 ready, 0 waiting");
+    const result = run("alpha");
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.ok(!result.lines.some(line => line.startsWith("running: ")), result.stdout);
+    assert.deepEqual(result.lines.slice(-2), ["running/next: 1 building (kit-slice-al01)", "RESULT: ok heartbeat continue"], label);
+  }
+});
+
 test("only slice-* jobs count: a hand-started kit bg job with a --ticket in the map is ignored", t => {
   const { job, run } = fixture(t);
   job("pr-al1", { subcommand: "pr" });

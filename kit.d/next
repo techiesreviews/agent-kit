@@ -166,7 +166,7 @@ function unquote(command) {
 function sliceUnit(words, cwd, worktrees) {
   const tickets = words.flatMap((word, i) => word === "--ticket" && words[i + 1] ? [words[i + 1]] : []).flatMap(file => {
     if (!cwd && !isAbsolute(file)) return []; // No known working directory: a relative ticket names nothing.
-    const path = resolve(cwd, file), home = worktrees.filter(tree => path.startsWith(`${tree}/`)).sort((a, b) => b.length - a.length)[0];
+    const path = cwd ? resolve(cwd, file) : file, home = worktrees.filter(tree => path.startsWith(`${tree}/`)).sort((a, b) => b.length - a.length)[0];
     const key = home ? relative(home, path) : normalize(file);
     try { return [parseTicket(readFileSync(path, "utf8"), key, mapOf(key)).ticket]; }
     catch { return []; }
@@ -195,7 +195,10 @@ function systemdSlices(worktrees) {
     const kitPath = words.find(word => basename(word) === "kit");
     const places = [cwd, kitPath, ...words.flatMap((word, i) => word === "--ticket" ? [words[i + 1]] : [])].filter(path => path && isAbsolute(path));
     if (places.length && !places.some(ours)) return [];
-    return [{ name: unit.replace(/\.service$/, ""), worktree: cwd, unit: sliceUnit(words, cwd, worktrees) }];
+    // systemd-run without --working-directory leaves it empty but makes the kit path absolute: relative
+    // --ticket paths then start at the worktree holding that kit (the longest match).
+    const base = cwd ?? worktrees.filter(tree => kitPath && isAbsolute(kitPath) && kitPath.startsWith(`${tree}/`)).sort((a, b) => b.length - a.length)[0] ?? null;
+    return [{ name: unit.replace(/\.service$/, ""), unit: sliceUnit(words, base, worktrees) }];
   });
 }
 

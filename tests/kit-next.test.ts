@@ -345,6 +345,24 @@ test("a kit-slice unit with no working directory: an absolute --ticket still nam
   ]);
 });
 
+test("a kit-slice unit started without --working-directory reads its relative --ticket from the worktree holding its kit", t => {
+  const f = fixture(t, {
+    [build("alpha", "01-run")]: ticket({ assignee: "alpha-01", files: ["a/one.ts"] }),
+    [build("alpha", "02-shared")]: ticket({ files: ["a/one.ts"] }),
+  });
+  // systemd-run --user --unit=kit-slice-alpha01 scripts/agents/kit slice --ticket <relative>: an empty
+  // WorkingDirectory= and an absolute kit path in the slice's worktree.
+  const tree = f.worktree("t3-x");
+  f.unit("kit-slice-alpha01", "", "", `${tree}/scripts/agents/kit slice --ticket ${build("alpha", "01-run")} --builder claude-opus-5-5`);
+  const result = f.run("alpha");
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(result.stdout.trim().split("\n"), [
+    `running: kit-slice-alpha01 ${build("alpha", "01-run")}`,
+    `waits: ${build("alpha", "02-shared")} shares a/one.ts with kit-slice-alpha01`,
+    "RESULT: ok next 0 ready, 1 waiting",
+  ]);
+});
+
 test("a kit-slice unit running a group (kit next --run-group) blocks every member's Files and covers every claim", t => {
   const f = fixture(t, {
     "docs/wayfinder/alpha/build/README.md": "# Build\n\nprefix: al\n",
