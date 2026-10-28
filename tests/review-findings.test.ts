@@ -602,6 +602,19 @@ test("an unbulleted located line naming its own severity is its own finding, so 
   }
 });
 
+test("a located line naming a severity past the classify window still splits and blocks with severity none", () => {
+  const late = "b.ts:2 the same handler also drops the save on a second click when offline, which is a P1 fault.";
+  const { findings, notes } = openFindings(review(`Defects:\nSpec:\n- a.ts:1 — P2 fault: x\n${late}\nValidation gaps: none.`));
+  assert.deepEqual([findings, notes], [[finding("Spec", "a.ts:1 — P2 fault: x", "P2", "fault"), finding("Spec", late)], []]);
+  assert.deepEqual(blockingFindings(findings), [finding("Spec", late)]);
+});
+
+test("a located continuation joins a defect given as the group heading's inline text", () => {
+  const { findings, notes } = openFindings(review("Defects:\nSpec: a.ts:1 — P2 fault: x\nb.ts:2 has the same bug.\nValidation gaps: none."));
+  assert.deepEqual([findings, notes], [[finding("Spec", "a.ts:1 — P2 fault: x b.ts:2 has the same bug.", "P2", "fault")], []]);
+  assert.deepEqual(blockingFindings(findings), []);
+});
+
 test("a path starting with _ keeps its location through the emphasis cleaning", () => {
   const text = "_site/a.ts:1 — P2 fault: uses `_`";
   assert.deepEqual(openFindings(review(`Defects:\nSpec:\n- ${text}\nValidation gaps: none.`)).findings, [finding("Spec", text, "P2", "fault")]);

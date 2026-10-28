@@ -143,10 +143,10 @@ export function openFindings(resultMd) {
     const indent = bullet?.[1].length ?? 0;
     // An unindented, unbulleted line starting with a location also starts a new item when the item
     // above would be a note, so a located defect after a prose paragraph is judged on its own and still
-    // blocks, or when it names its own severity, so a second defect never hides behind the first.
+    // blocks, or when it names a P0–P3 anywhere, so a second defect never hides behind the first.
     // Otherwise, under a located or severity-naming defect, it is a continuation and joins that finding.
     const located = !bullet && section === "Defects" && !/^\s/.test(raw) && LOCATION.test(text) &&
-      (pending && prose(pending.text) || severityOf(text) !== null);
+      ((pending && prose(pending.text)) || SEVERITY.test(text));
     if (bullet && (!pending || indent <= pending.indent) || located) flush();
     // Under "none" notes a line that starts with a location and names a severity is still a finding
     // (fail closed); its continuation lines and sub-bullets join it, and other notes are skipped.
