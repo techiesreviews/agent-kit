@@ -183,6 +183,13 @@ test("a review model name no rule knows is refused, not sent to Codex, unless th
     assert.throws(() => parseAgentArgs(["review", ".", "brief"], { ASE_REVIEW_MODEL: model }),
       (error: Error) => error.message === `unknown review model ${model}; use claude-*, grok-*, gpt-* or opencode/<model>`);
   }
+  // A blank model, one that looks like a flag, or one with a line break is invalid before it is named anywhere.
+  // (An empty --model value is refused earlier, as an invalid option; an empty ASE_REVIEW_MODEL means the default.)
+  assert.throws(() => parseAgentArgs(["review", ".", "brief", "--model", ""]), (error: Error) => error.message === "Invalid option: --model");
+  for (const model of [" ", "-x", "foo\nbar", "foo\rbar"]) {
+    assert.throws(() => parseAgentArgs(["review", ".", "brief"], { ASE_REVIEW_MODEL: model }), (error: Error) => error.message === "Invalid model", JSON.stringify(model));
+  }
+  assert.throws(() => parseAgentArgs(["review", ".", "brief", "--model", "-x"]), (error: Error) => error.message === "Invalid model");
   // Codex builds are allowed, so a build model no rule knows still runs there.
   assert.equal(parseAgentArgs(["build", ".", "brief", "--model", "custom-model"]).cli, "codex");
   assert.equal(parseAgentArgs(["review", ".", "brief"], { ASE_AGENT_CLI: "codex", ASE_REVIEW_MODEL: "custom-model" }).cli, "codex");

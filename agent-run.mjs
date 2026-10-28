@@ -75,12 +75,13 @@ export function parseAgentArgs(args, env = {}) {
     if (flag === "--cli") cli = value;
     else options[flag.slice(2)] = value;
   }
+  // Checked before any message names the model, so a line break never reaches a problem line.
+  if (!options.model.trim() || options.model.startsWith("-") || /[\r\n]/.test(options.model)) throw new Error("Invalid model");
   // A build model no rule knows still runs on Codex (Codex builds are allowed); a review never does.
   options.cli = cli || inferCli(options.model) || (kind === "build" ? "codex" : "");
   if (!options.cli) throw new Error(`unknown review model ${options.model}; use claude-*, grok-*, gpt-* or opencode/<model>`);
   if (!Object.hasOwn(adapters, options.cli)) throw new Error(`Unknown CLI: ${options.cli}; add an adapter first`);
   if (reviewOnly[options.cli] && kind !== "review") throw new Error(`${reviewOnly[options.cli]} runs reviews only; pick a Codex or Claude builder`);
-  if (!options.model.trim() || options.model.startsWith("-") || /[\r\n]/.test(options.model)) throw new Error("Invalid model");
   if (options.cli === "opencode") {
     // The model check compares OpenCode's provider/model, so a bare name could never pass.
     if (!/^[^/\s]+\/\S+$/.test(options.model)) throw new Error(`OpenCode needs a provider/model such as opencode/deepseek-v4.1-flash-free, not ${options.model}`);
@@ -388,7 +389,10 @@ function writeLedgerFile(path, value) {
     writeFileSync(temporary, JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
     renameSync(temporary, path);
     written = true;
-  } finally { if (!written) rmSync(temporary, { force: true }); }
+  } finally {
+    // A leftover temporary file is harmless; the write's own error is the one to report.
+    if (!written) try { rmSync(temporary, { force: true }); } catch { /* keep the write's error */ }
+  }
 }
 
 // Reads, changes and saves the ledger under its lock. When anything fails before the save, unsaved(error)

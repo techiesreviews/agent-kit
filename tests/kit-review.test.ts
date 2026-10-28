@@ -624,6 +624,12 @@ test("kit review refuses an unknown model or a paid OpenCode one before any call
   f.noEvidence(refused.stdout);
   assert.equal(opencodeCalls(f).length, 0, "no CLI was called");
   assert.deepEqual(JSON.parse(readFileSync(f.ledger, "utf8")), {});
+  // xai/… on OpenCode is a Grok review: refused at the Grok limit, before any call.
+  const grokRefused = f.run(["--base", "HEAD~1"], { ASE_AGENT_CLI: "opencode", ASE_REVIEW_MODEL: "xai/grok-4.7", ASE_REVIEW_BUDGET_GROK: "0" });
+  assert.equal(grokRefused.status, 1, grokRefused.stdout + grokRefused.stderr);
+  assert.match(grokRefused.stderr, /^problem: grok review budget used up: 0\/0 in \d{4}-W\d{2}; raise ASE_REVIEW_BUDGET_GROK to override$/m);
+  f.noEvidence(grokRefused.stdout);
+  assert.equal(opencodeCalls(f).length, 0, "no CLI was called");
   // With room, openai/… on OpenCode runs and is counted as a GPT review.
   const counted = f.run(["--base", "HEAD~1"], { ...gpt, ASE_REVIEW_BUDGET_GPT: "1" });
   assert.equal(counted.status, 0, counted.stdout + counted.stderr);
