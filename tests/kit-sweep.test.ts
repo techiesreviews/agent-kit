@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -21,6 +22,7 @@ type Sweep = {
   codeSections(now: Map<string, string>, then: Map<string, string>, sharedFile: string | null): Section[];
   correctionsSection(root: string, then: string, head: string, maps: string | null): Section;
   staleDebtSection(root: string, now: number, techDebt: string | null): Section;
+  grokSection(env: NodeJS.ProcessEnv, now: number, main: string | null, project: string | null): Section;
 };
 type Section = { title: string; priority: number; lines: string[] };
 const sweep: Sweep = await import(pathToFileURL(script).href);
@@ -101,7 +103,8 @@ test("each number in the bundle comes from the fixture repo, logs, records and f
   const log = (...entries: string[]) => write(feedback, ["# Feedback: demo", "", "## Feedback", "", ...entries, ""].join("\n"));
   const lastWeek = (fix: string) => `- ${d8} · workflow · Last week · after release: no · fix: ${fix}`;
   log(lastWeek("open"));
-  commit(repo, now - 8 * day, "last week's feedback");
+  // At noon of its day, so a run just after midnight still has it inside a window that starts at d8's midnight.
+  commit(repo, Date.parse(`${d8}T12:00:00`), "last week's feedback");
   // Added this week: a line dated last week that landed late, and last week's line with its fix filled in.
   log(`- ${d1} · fault · Save lost a page · after release: yes · fix: open`, `- ${d3} · too-much · Too many hints · after release: no · fix: PR #4`,
     `- ${d9} · felt-wrong · Landed late · after release: no · fix: open`, lastWeek("PR #5"));
@@ -148,10 +151,11 @@ test("each number in the bundle comes from the fixture repo, logs, records and f
   // Not committed yet: next week's sweep counts it once it lands.
   writeFileSync(feedback, readFileSync(feedback, "utf8").replace("## Feedback\n\n", `## Feedback\n\n- ${d0} · workflow · Not committed · after release: no · fix: open\n`));
 
-  const result = run(repo);
+  const before = Date.now(), result = run(repo), after = Date.now();
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const { path, text } = bundleOf(result.stdout);
-  assert.equal(path, join(repo, ".scratch/sweep", localDate(new Date()), "bundle.md"));
+  // The sweep dates its bundle by its own clock, read during the run.
+  assert.ok([before, after].some(time => path === join(repo, ".scratch/sweep", localDate(new Date(time)), "bundle.md")), path);
   assert.match(result.stdout, /^## Lex's corrections \(\d+ bytes\)$/m);
   assert.deepEqual(section(text, "src/main.ts"), ["- 5 lines (+2)"]);
   assert.deepEqual(section(text, "Biggest source files"), ["- src/a.css: 12 lines (+6)", "- src/big.ts: 10 lines (0)",
@@ -219,14 +223,18 @@ test("the bundle shows the computer's Grok reviews this week and last, by projec
   const { dir, repo } = repository(t);
   write(join(repo, "src/main.ts"), lines(2));
   commit(repo, Date.now() - day, "start");
-  // Nothing counted yet: no ledger, no project list.
-  const empty = run(repo);
+  // Nothing counted yet: no ledger, no project list. The sweep reads its own clock, so the week is the one of an instant during the run.
+  const before = Date.now(), empty = run(repo), after = Date.now();
   assert.equal(empty.status, 0, empty.stdout + empty.stderr);
   assert.match(empty.stdout, /^## Grok reviews this week \(\d+ bytes\)$/m);
-  const week = isoWeek(new Date()), last = isoWeek(new Date(Date.now() - 7 * day));
-  assert.deepEqual(section(bundleOf(empty.stdout).text, "Grok reviews this week"), [`- 0 of 8 in ${week}, whole computer`, "- kit-sweep: 0", `- last week, ${last}: 0`]);
+  const emptyLines = section(bundleOf(empty.stdout).text, "Grok reviews this week");
+  assert.ok([before, after].some(time => JSON.stringify(emptyLines) === JSON.stringify([`- 0 of 8 in ${isoWeek(new Date(time))}, whole computer`, "- kit-sweep: 0",
+    `- last week, ${isoWeek(new Date(time - 7 * day))}: 0`])), emptyLines.join("\n"));
   // A fresh state home stays empty: the sweep changes nothing.
   assert.ok(!existsSync(join(dir, "state")), "no state folder or lock created");
+  // From here the section runs in this process at a fixed instant, so no week turns over mid-test.
+  const now = Date.parse("2026-10-28T12:00:00Z"), week = "2026-W44", last = "2026-W43";
+  const grok = (env: NodeJS.ProcessEnv = {}) => sweep.grokSection({ HOME: dir, XDG_STATE_HOME: join(dir, "state"), ...env }, now, repo, "kit-sweep").lines;
   // Two projects' reviews in one machine ledger; a listed project with none shows 0.
   const state = join(dir, "state/agent-kit");
   write(join(state, "review-budget.json"), JSON.stringify({ [last]: { grok: { "native-site-editor": 6 } },
@@ -235,32 +243,28 @@ test("the bundle shows the computer's Grok reviews this week and last, by projec
   // This project's old ledger, not moved in yet by a counted review, still counts once (here a listed name shares its folder); so does a listed project's.
   write(join(repo, ".scratch/review-budget.json"), JSON.stringify({ [week]: { grok: 2, gpt: 3 } }));
   write(join(dir, "chat/.scratch/review-budget.json"), JSON.stringify({ [last]: { grok: 1 } }));
-  const result = run(repo, [], repo, { ASE_REVIEW_BUDGET_GROK: "10" });
-  assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.deepEqual(section(bundleOf(result.stdout).text, "Grok reviews this week"), [`- 5 of 10 in ${week}, whole computer`,
+  assert.deepEqual(grok({ ASE_REVIEW_BUDGET_GROK: "10" }), [`- 5 of 10 in ${week}, whole computer`,
     "- chat: 0", "- kit-sweep: 2", "- native-site-editor: 2", "- techies-playground: 1", `- last week, ${last}: 7 (chat 1, native-site-editor 6)`]);
   assert.ok(existsSync(join(repo, ".scratch/review-budget.json")), "the sweep changes nothing");
   // A listed root that reaches this repository through a symlink is the same folder: its old file counts once.
   symlinkSync(repo, join(dir, "alias"));
   write(join(state, "projects.json"), JSON.stringify({ alias: { root: join(dir, "alias") } }));
   write(join(state, "review-budget.json"), "{}");
-  const aliased = run(repo);
-  assert.equal(aliased.status, 0, aliased.stdout + aliased.stderr);
-  assert.deepEqual(section(bundleOf(aliased.stdout).text, "Grok reviews this week").slice(0, 3), [`- 2 of 8 in ${week}, whole computer`, "- alias: 0", "- kit-sweep: 2"]);
+  assert.deepEqual(grok().slice(0, 3), [`- 2 of 8 in ${week}, whole computer`, "- alias: 0", "- kit-sweep: 2"]);
   // A broken old file is named on its own line; the ledger's counts and the other files still count.
-  write(join(dir, "chat/.scratch/review-budget.json"), "{ broken");
+  const chatOld = join(dir, "chat/.scratch/review-budget.json");
   write(join(state, "projects.json"), JSON.stringify({ chat: { root: join(dir, "chat") } }));
   write(join(state, "review-budget.json"), JSON.stringify({ [week]: { grok: { "techies-playground": 1 } } }));
-  const oldBroken = run(repo);
-  assert.equal(oldBroken.status, 0, oldBroken.stdout + oldBroken.stderr);
-  assert.deepEqual(section(bundleOf(oldBroken.stdout).text, "Grok reviews this week"), [`- 3 of 8 in ${week}, whole computer`, "- chat: 0", "- kit-sweep: 2",
-    "- techies-playground: 1", `- last week, ${last}: 0`, `- chat: old ledger unreadable (${join(dir, "chat/.scratch/review-budget.json")})`]);
+  // So is one kit review would refuse for a count that is not a whole number, or a week that is not an object; none of its counts add.
+  for (const text of ["{ broken", JSON.stringify({ [last]: { grok: 1 }, [week]: { grok: "3" } }), JSON.stringify({ [week]: { grok: -1 } }), JSON.stringify({ [week]: 4 })]) {
+    write(chatOld, text);
+    assert.deepEqual(grok(), [`- 3 of 8 in ${week}, whole computer`, "- chat: 0", "- kit-sweep: 2",
+      "- techies-playground: 1", `- last week, ${last}: 0`, `- chat: old ledger unreadable (${chatOld})`], text);
+  }
   assert.ok(!existsSync(join(state, "review-budget.json.lock")));
-  // A broken project list is named; the bundle still comes out.
+  // A broken project list is named.
   write(join(state, "projects.json"), "{ broken");
-  const listBroken = run(repo);
-  assert.equal(listBroken.status, 0, listBroken.stdout + listBroken.stderr);
-  assert.match(section(bundleOf(listBroken.stdout).text, "Grok reviews this week")[0], /^- unreadable: .*projects\.json is unreadable: /);
+  assert.match(grok()[0], /^- unreadable: .*projects\.json is unreadable: /);
   write(join(state, "projects.json"), "{}");
   // A held ledger lock is named after ASE_REVIEW_BUDGET_LOCK_MS and left alone; the rest of the bundle still comes out.
   mkdirSync(join(state, "review-budget.json.lock"));
@@ -271,19 +275,48 @@ test("the bundle shows the computer's Grok reviews this week and last, by projec
   assert.deepEqual(section(heldText, "src/main.ts"), ["- 2 lines (+2)"]);
   assert.ok(existsSync(join(state, "review-budget.json.lock")));
   rmSync(join(state, "review-budget.json.lock"), { recursive: true });
-  // A week in the old shape is named with the ledger's path, with or without an old file to add to it.
+  // A week in the old shape, or a count that is not a whole number, is named with the ledger's path, with or without an old file to add to it.
   const ledgerPath = join(state, "review-budget.json");
-  for (const [shape, withOld] of [[{ [week]: { grok: 4 } }, true], [{ [week]: 4 }, true], [{ [week]: { grok: 4 } }, false]] as const) {
+  for (const [shape, withOld, problem] of [[{ [week]: { grok: 4 } }, true, `${week} grok is not {`], [{ [week]: 4 }, true, `${week} is not {`],
+    [{ [week]: { grok: { a: "3" } } }, true, `${week} grok a is not a count`], [{ [last]: { gpt: { a: -1 } } }, true, `${last} gpt a is not a count`],
+    [{ [week]: { grok: 4 } }, false, `${week} grok is not {`]] as const) {
     if (!withOld) rmSync(join(repo, ".scratch/review-budget.json"), { force: true });
-    write(ledgerPath, JSON.stringify(shape));
-    const odd = section(bundleOf(run(repo).stdout).text, "Grok reviews this week")[0];
-    assert.ok(odd.startsWith(`- unreadable: review budget ledger ${ledgerPath} ${week} `), odd);
+    const text = JSON.stringify(shape);
+    write(ledgerPath, text);
+    const odd = grok()[0];
+    assert.ok(odd.startsWith(`- unreadable: review budget ledger ${ledgerPath} ${problem}`) && odd.endsWith("; fix or delete it"), odd);
+    assert.equal(readFileSync(ledgerPath, "utf8"), text, "the sweep changes nothing");
   }
-  // A broken ledger is named; the rest of the bundle still comes out.
-  write(join(state, "review-budget.json"), "{ broken");
-  const broken = run(repo);
-  assert.equal(broken.status, 0, broken.stdout + broken.stderr);
-  assert.match(section(bundleOf(broken.stdout).text, "Grok reviews this week")[0], /^- unreadable: review budget ledger .* is not valid JSON/);
+  // A broken ledger is named.
+  write(ledgerPath, "{ broken");
+  assert.match(grok()[0], /^- unreadable: review budget ledger .* is not valid JSON/);
+});
+
+test("a review that moves the old file in while the sweep reads it without a lock is counted once", (t) => {
+  const { dir, repo } = repository(t);
+  const now = Date.parse("2026-10-28T12:00:00Z"), week = "2026-W44", state = join(dir, "state/agent-kit");
+  const old = join(repo, ".scratch/review-budget.json"), env = { HOME: dir, XDG_STATE_HOME: join(dir, "state") };
+  write(old, JSON.stringify({ [week]: { grok: 2 } }));
+  // No state folder yet, so the first read takes no lock. As it reads the old file, the computer's first counted review
+  // makes the folder and moves the 2 in, plus its own 1; the sweep must read again under the lock and count 3.
+  const read = fs.readFileSync;
+  // readFileSync is overloaded by encoding; a wrapper passing every call through cannot satisfy each overload, so it is asserted.
+  fs.readFileSync = ((...args: Parameters<typeof read>) => {
+    const text = read(...args);
+    if (args[0] === old && !existsSync(state)) {
+      write(join(state, "review-budget.json"), JSON.stringify({ [week]: { grok: { "kit-sweep": 3 } } }));
+      rmSync(old);
+    }
+    return text;
+  }) as typeof read;
+  syncBuiltinESMExports();
+  t.after(() => { fs.readFileSync = read; syncBuiltinESMExports(); });
+  const lines = sweep.grokSection(env, now, repo, "kit-sweep").lines;
+  fs.readFileSync = read;
+  syncBuiltinESMExports();
+  assert.ok(!existsSync(old), "the review moved the old file in during the first read");
+  assert.deepEqual(lines, [`- 3 of 8 in ${week}, whole computer`, "- kit-sweep: 3", "- last week, 2026-W43: 0"]);
+  assert.ok(!existsSync(join(state, "review-budget.json.lock")));
 });
 
 test("hand-typed values: raw px and timings as kit ux counts them, radii and shadows by declaration", () => {

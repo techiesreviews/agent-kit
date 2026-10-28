@@ -13,10 +13,12 @@ import { parseChanges, secondLookPick } from "../pr-tier.mjs";
 const { kitBranch, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, kitStateDir, nodeEnv, kitScore, scoreReview } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const usage = "Usage: kit review [--base REF | --commit SHA] [--ticket FILE] [--pr N] [--second-look]\nDefault scope: --base origin/<land> (branches.land in scripts/agents/kit.json). Model: ASE_REVIEW_MODEL or claude-opus-5-5 (claude-*, grok-*, opencode/<model> or Codex).\n" +
+const usage = "Usage: kit review [--base REF | --commit SHA] [--ticket FILE] [--pr N] [--second-look]\nDefault scope: --base origin/<land> (branches.land in scripts/agents/kit.json). Model: ASE_REVIEW_MODEL or claude-opus-5-5: claude-*, grok-*, gpt-* (also o<digit>…, codex…) or opencode/<model>;\n" +
+  "any other name is refused before any call (ASE_AGENT_CLI=codex|opencode picks the CLI for it).\n" +
   "--second-look: the review kind from the changed paths (agent, ux, dx, code) picks its model in scripts/agents/second-look.json (ASE_SECOND_LOOK overrides);\n" +
   "the other family takes it when that model cannot run; when neither can, it skips with exit 3 and says \"second look: skipped (<reason>)\".\n" +
-  "Weekly budgets for the whole computer: ASE_REVIEW_BUDGET_GPT (12), ASE_REVIEW_BUDGET_GROK (8); Claude and OpenCode are not counted.\n";
+  "Weekly budgets for the whole computer: ASE_REVIEW_BUDGET_GPT (12), ASE_REVIEW_BUDGET_GROK (8); not counted: Claude and OpenCode's -free models.\n" +
+  "On OpenCode, openai/… counts as GPT and xai/… as Grok; any other paid OpenCode model is refused.\n";
 
 function options(args) {
   const values = {};
@@ -64,7 +66,7 @@ async function reviewOnce(flags, look) {
     if (flags.base === undefined && flags.commit === undefined) flags.base = `origin/${kitBranch()}`;
     const root = kitRoot();
     env = nodeEnv();
-    if (look) Object.assign(env, { ASE_REVIEW_MODEL: look.model, ASE_AGENT_CLI: inferCli(look.model) });
+    if (look) Object.assign(env, { ASE_REVIEW_MODEL: look.model, ASE_AGENT_CLI: inferCli(look.model) ?? "" });
     const scope = reviewScope("", flags, root);
     label = scope.label;
     reviewedHead = scope.head;
@@ -81,7 +83,7 @@ async function reviewOnce(flags, look) {
     console.log(`model: ${model}`);
     // One count for the computer; this project's old per-project count moves in on first use.
     ledger = { path: join(kitStateDir(env), "review-budget.json"), project: kitSettings(root).project, legacy: join(kitMainRoot(), ".scratch/review-budget.json") };
-    try { budget = reserveReviewBudget(ledger, cli, env); }
+    try { budget = reserveReviewBudget(ledger, { cli, model }, env); }
     catch (error) { unavailable = /^\S+ review budget used up: /.test(error.message); throw error; }
     if (budget) console.log(`budget: ${budget.family} ${budget.used}/${budget.limit} in ${budget.week}`);
     spawned = true;

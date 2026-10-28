@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { familyUse, isoWeek, projectCounts, readReviewLedger, reviewBudgetLimit, withReviewLock } from "../agent-run.mjs";
+import { checkOldReviewLedger, checkReviewLedger, familyUse, isoWeek, projectCounts, readReviewLedger, reviewBudgetLimit, withReviewLock } from "../agent-run.mjs";
 import { parseFeedbackLine } from "../tickets.mjs";
 import { composeBundle, cssCounts } from "./ux";
 
@@ -312,17 +312,18 @@ export function grokSection(env = process.env, now = Date.now(), main = null, pr
     if (project && main) folders.set(real(main), project);
     const read = () => {
       const ledger = readReviewLedger(path), problems = [];
-      // A wrong-shaped week is named as kit review names it, not read as 0.
-      for (const week of Object.keys(ledger)) projectCounts(ledger, week, "grok", path);
+      // A wrong-shaped week or count is named as kit review names it, not read as 0.
+      checkReviewLedger(ledger, path);
       for (const [root, name] of folders) {
         const old = join(root, ".scratch/review-budget.json");
         let weeks;
-        try { weeks = readReviewLedger(old); } catch { problems.push(`- ${name}: old ledger unreadable (${old})`); continue; }
+        // An old file kit review would refuse is named on its own line and adds nothing.
+        try { weeks = readReviewLedger(old); checkOldReviewLedger(weeks, old); }
+        catch { problems.push(`- ${name}: old ledger unreadable (${old})`); continue; }
         for (const [week, families] of Object.entries(weeks)) {
-          const count = families?.grok;
-          if (!Number.isSafeInteger(count) || count <= 0) continue;
-          const counts = projectCounts(ledger, week, "grok", path);
-          counts[name] = (counts[name] ?? 0) + count;
+          if (!families.grok) continue;
+          const counts = projectCounts(ledger, week, "grok");
+          counts[name] = (counts[name] ?? 0) + families.grok;
         }
       }
       return { ledger, problems };
@@ -336,7 +337,7 @@ export function grokSection(env = process.env, now = Date.now(), main = null, pr
     const week = isoWeek(new Date(now)), last = isoWeek(new Date(now - 7 * day));
     const byProject = of => {
       const counts = ledger[of]?.grok ?? {};
-      return [...new Set([...Object.keys(listed), ...project ? [project] : [], ...Object.keys(counts)])].sort().map(item => [item, Number.isSafeInteger(counts[item]) ? counts[item] : 0]);
+      return [...new Set([...Object.keys(listed), ...project ? [project] : [], ...Object.keys(counts)])].sort().map(item => [item, counts[item] ?? 0]);
     };
     const lastWeek = byProject(last).filter(([, count]) => count).map(([item, count]) => `${item} ${count}`).join(", ");
     return { title, priority: 8, lines: [`- ${familyUse(ledger, week, "grok")} of ${reviewBudgetLimit("grok", env)} in ${week}, whole computer`,

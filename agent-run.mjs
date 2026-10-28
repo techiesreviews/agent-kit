@@ -18,19 +18,29 @@ import { reviewComplete, reviewFormat, reviewScope } from "./review-brief.mjs";
 const adapters = { codex: codexAdapter, claude: claudeAdapter, grok: grokAdapter, opencode: opencodeAdapter };
 const reviewOnly = { grok: "Grok", opencode: "OpenCode" };
 
+// The CLI a model name runs on, or null for a name no rule knows: such a review is refused rather than
+// sent to Codex, so a typo never reaches OpenAI.
 export function inferCli(model) {
   if (/^grok-/i.test(model)) return "grok";
   // Case matters: the model check compares OpenCode's provider/model exactly.
   if (/^opencode\/./.test(model)) return "opencode";
-  return /^(claude-|(?:opus|sonnet|haiku|fable)$)/i.test(claudeModelName(model)) ? "claude" : "codex";
+  if (/^(claude-|(?:opus|sonnet|haiku|fable)$)/i.test(claudeModelName(model))) return "claude";
+  return /^(gpt-|o\d|codex)/i.test(model) ? "codex" : null;
 }
 
-// Model families on outside plans. Claude and OpenCode (free models) have no family here: they are never budgeted.
-const families = { codex: "gpt", grok: "grok" };
-
-export function reviewFamily(cli) {
-  return families[cli] ?? null;
+// The weekly count a review on an outside plan falls under, or null when it is never counted: Claude, and
+// OpenCode's free models. On OpenCode, openai/… counts as GPT and xai/… as Grok; any other paid model is
+// refused by parseAgentArgs before it runs, so a model is never uncounted by accident.
+export function reviewFamily(cli, model = "") {
+  if (cli === "codex") return "gpt";
+  if (cli === "grok") return "grok";
+  if (cli !== "opencode") return null;
+  if (/^openai\//.test(model)) return "gpt";
+  if (/^xai\//.test(model)) return "grok";
+  return null;
 }
+
+const freeOpencodeModel = model => /-free$/.test(model);
 
 function claudeModelName(model) {
   return model.replace(/\[1m\]$/i, "");
@@ -61,13 +71,18 @@ export function parseAgentArgs(args, env = {}) {
     if (flag === "--cli") cli = value;
     else options[flag.slice(2)] = value;
   }
-  options.cli = cli || inferCli(options.model);
+  // A build model no rule knows still runs on Codex (Codex builds are allowed); a review never does.
+  options.cli = cli || inferCli(options.model) || (kind === "build" ? "codex" : "");
+  if (!options.cli) throw new Error(`unknown review model ${options.model}; use claude-*, grok-*, gpt-* or opencode/<model>`);
   if (!Object.hasOwn(adapters, options.cli)) throw new Error(`Unknown CLI: ${options.cli}; add an adapter first`);
   if (reviewOnly[options.cli] && kind !== "review") throw new Error(`${reviewOnly[options.cli]} runs reviews only; pick a Codex or Claude builder`);
   if (!options.model.trim() || options.model.startsWith("-") || /[\r\n]/.test(options.model)) throw new Error("Invalid model");
   if (options.cli === "opencode") {
     // The model check compares OpenCode's provider/model, so a bare name could never pass.
     if (!/^[^/\s]+\/\S+$/.test(options.model)) throw new Error(`OpenCode needs a provider/model such as opencode/deepseek-v4.1-flash-free, not ${options.model}`);
+    if (!reviewFamily("opencode", options.model) && !freeOpencodeModel(options.model)) {
+      throw new Error(`OpenCode model ${options.model} is paid and has no weekly count; use a -free model, openai/… (counted as gpt) or xai/… (counted as grok)`);
+    }
     // OpenCode's --variant names differ by provider, so a given effort (kit ux always
     // passes one) is ignored and none is recorded.
     options.effort = null;
@@ -328,7 +343,9 @@ export function reviewBudgetLimit(family, env = process.env) {
 }
 
 // One writer at a time: a lock folder beside the file, waited for up to ASE_REVIEW_BUDGET_LOCK_MS
-// (or waitMs). A lock still held at the deadline throws an error with code ELOCKED.
+// (or waitMs). A lock still held at the deadline throws an error with code ELOCKED. A lock that
+// cannot be removed afterwards is a warning: the action's own result or error stands, since a
+// write it made is already saved, and the next writer names the leftover lock.
 export function withReviewLock(path, action, env = process.env, waitMs = undefined) {
   mkdirSync(dirname(path), { recursive: true });
   const wait = waitMs ?? Number(env.ASE_REVIEW_BUDGET_LOCK_MS || 10_000);
@@ -341,7 +358,10 @@ export function withReviewLock(path, action, env = process.env, waitMs = undefin
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
     }
   }
-  try { return action(); } finally { rmSync(lock, { recursive: true, force: true }); }
+  try { return action(); } finally {
+    try { rmSync(lock, { recursive: true, force: true }); }
+    catch (error) { console.error(`warning: review budget lock ${lock} could not be removed: ${error.message}; remove it if no review is starting`); }
+  }
 }
 
 export function readReviewLedger(path) {
@@ -355,16 +375,34 @@ export function readReviewLedger(path) {
   return ledger;
 }
 
-function withLedger(path, change, env = process.env) {
+// Writes a ledger file whole: a temporary file renamed over it, so a crash never leaves it cut off.
+// Returns only once the rename has saved it.
+function writeLedgerFile(path, value) {
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  let written = false;
+  try {
+    writeFileSync(temporary, JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
+    renameSync(temporary, path);
+    written = true;
+  } finally { if (!written) rmSync(temporary, { force: true }); }
+}
+
+// Reads, changes and saves the ledger under its lock. When anything fails before the save, unsaved(error)
+// runs while the lock is still held; once the rename has saved the ledger it never runs.
+function withLedger(path, change, env = process.env, unsaved = () => {}) {
   return withReviewLock(path, () => {
-    const ledger = readReviewLedger(path);
-    const result = change(ledger);
-    const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+    let written = false;
     try {
-      writeFileSync(temporary, JSON.stringify(ledger, null, 2) + "\n", { flag: "wx" });
-      renameSync(temporary, path);
-    } finally { rmSync(temporary, { force: true }); }
-    return result;
+      const ledger = readReviewLedger(path);
+      checkReviewLedger(ledger, path);
+      const result = change(ledger);
+      writeLedgerFile(path, ledger);
+      written = true;
+      return result;
+    } catch (error) {
+      if (!written) unsaved(error);
+      throw error;
+    }
   }, env);
 }
 
@@ -374,14 +412,35 @@ export function familyUse(ledger, week, family) {
 }
 
 const isRecord = value => typeof value === "object" && value !== null && !Array.isArray(value);
+const isCount = value => Number.isSafeInteger(value) && value >= 0;
 
-// One week's counts for a family in the machine ledger at path, made empty when missing; a wrong shape is named.
-export function projectCounts(ledger, week, family, path) {
-  const families = (ledger[week] ??= {});
-  if (!isRecord(families)) throw new Error(`review budget ledger ${path} ${week} is not { "<family>": { "<project>": <count> } }; fix or delete it`);
-  const counts = (families[family] ??= {});
-  if (!isRecord(counts)) throw new Error(`review budget ledger ${path} ${week} ${family} is not { "<project>": <count> }; fix or delete it`);
-  return counts;
+// Every week, family and count in the machine ledger at path has the right shape, or the first wrong one is
+// named and the review stops; nothing is changed, so a broken count is never read as 0 or written back joined.
+export function checkReviewLedger(ledger, path) {
+  for (const [week, families] of Object.entries(ledger)) {
+    if (!isRecord(families)) throw new Error(`review budget ledger ${path} ${week} is not { "<family>": { "<project>": <count> } }; fix or delete it`);
+    for (const [family, counts] of Object.entries(families)) {
+      if (!isRecord(counts)) throw new Error(`review budget ledger ${path} ${week} ${family} is not { "<project>": <count> }; fix or delete it`);
+      for (const [project, count] of Object.entries(counts)) {
+        if (!isCount(count)) throw new Error(`review budget ledger ${path} ${week} ${family} ${project} is not a count; fix or delete it`);
+      }
+    }
+  }
+}
+
+// The same for a project's old per-project ledger ({ week: { family: count } }).
+export function checkOldReviewLedger(old, path) {
+  for (const [week, families] of Object.entries(old)) {
+    if (!isRecord(families)) throw new Error(`review budget ledger ${path} ${week} is not { "<family>": <count> }; fix or delete it`);
+    for (const [family, count] of Object.entries(families)) {
+      if (!isCount(count)) throw new Error(`review budget ledger ${path} ${week} ${family} is not a count; fix or delete it`);
+    }
+  }
+}
+
+// One week's counts for a family in a checked machine ledger, made empty when missing.
+export function projectCounts(ledger, week, family) {
+  return ((ledger[week] ??= {})[family] ??= {});
 }
 
 // Moves a project's old per-project ledger ({ week: { family: count } }) into the machine ledger once,
@@ -389,28 +448,23 @@ export function projectCounts(ledger, week, family, path) {
 // only tried briefly: when it is held (an older kit writing, or a stale lock) this review skips the
 // move and the next one tries again. The old file is removed before the machine ledger is written,
 // so a crash between the two loses those counts rather than counting them twice; a write that fails
-// puts them back (restoreLegacyLedger).
-function moveLegacyLedger(ledger, path, legacy, project, env) {
+// puts them back (restoreLegacyLedger) before the machine lock is released.
+function moveLegacyLedger(ledger, legacy, project, env) {
   if (!legacy || !existsSync(legacy)) return null;
   try {
     return withReviewLock(legacy, () => {
-      const text = readFileSync(legacy, "utf8"), old = readReviewLedger(legacy);
+      const old = readReviewLedger(legacy);
       // Every count is checked before anything merges, so a broken file is named and kept.
-      for (const [week, families] of Object.entries(old)) {
-        if (!isRecord(families)) throw new Error(`review budget ledger ${legacy} ${week} is not { "<family>": <count> }; fix or delete it`);
-        for (const [family, count] of Object.entries(families)) {
-          if (!Number.isSafeInteger(count) || count < 0) throw new Error(`review budget ledger ${legacy} ${week} ${family} is not a count; fix or delete it`);
-        }
-      }
+      checkOldReviewLedger(old, legacy);
       for (const [week, families] of Object.entries(old)) {
         for (const [family, count] of Object.entries(families)) {
           if (!count) continue;
-          const counts = projectCounts(ledger, week, family, path);
+          const counts = projectCounts(ledger, week, family);
           counts[project] = (counts[project] ?? 0) + count;
         }
       }
       rmSync(legacy, { force: true });
-      return { old, text };
+      return old;
     }, env, 200);
   } catch (error) {
     if (error.code === "ELOCKED") return null;
@@ -418,58 +472,53 @@ function moveLegacyLedger(ledger, path, legacy, project, env) {
   }
 }
 
-// Puts moved counts back in the old file when the machine ledger could not be written: as they were
-// when the file is still gone, else added to what an older kit wrote there since.
-function restoreLegacyLedger(legacy, { old, text }, env) {
+// Puts moved counts back in the old file when the machine ledger could not be written, added to what an
+// older kit wrote there since (if anything); called with the machine lock held, so no review moves it meanwhile.
+function restoreLegacyLedger(legacy, old, env) {
   withReviewLock(legacy, () => {
-    if (!existsSync(legacy)) return writeFileSync(legacy, text);
     const current = readReviewLedger(legacy);
     for (const [week, families] of Object.entries(old)) {
       for (const [family, count] of Object.entries(families)) {
         const now = current[week]?.[family];
-        (current[week] = isRecord(current[week]) ? current[week] : {})[family] = (Number.isSafeInteger(now) ? now : 0) + count;
+        (current[week] = isRecord(current[week]) ? current[week] : {})[family] = (isCount(now) ? now : 0) + count;
       }
     }
-    writeFileSync(legacy, JSON.stringify(current, null, 2) + "\n");
+    writeLedgerFile(legacy, current);
   }, env);
 }
 
 // Counts one review for an outside family in this ISO week, refusing at the limit. The ledger
 // ({ path, project, legacy }) is the machine's; legacy names the project's old ledger to move in.
-// Returns null for Claude, which is never counted.
-export function reserveReviewBudget({ path, project, legacy }, cli, env = process.env, date = new Date()) {
-  const family = reviewFamily(cli);
+// The run is { cli, model }; returns null for Claude and OpenCode's free models, which are never counted.
+export function reserveReviewBudget({ path, project, legacy }, { cli, model = "" }, env = process.env, date = new Date()) {
+  const family = reviewFamily(cli, model);
   if (!family) return null;
   if (typeof project !== "string" || !project) throw new Error("review budget needs the project name");
   const limit = reviewBudgetLimit(family, env), week = isoWeek(date);
   // Last week stays for the Tuesday sweep; older weeks go so the ledger stays small.
   const lastWeek = isoWeek(new Date(date.getTime() - 7 * 86_400_000));
-  let moved = null, result;
-  try {
-    result = withLedger(path, ledger => {
-      // A broken count stops here, before the old file moves in.
-      projectCounts(ledger, week, family, path);
-      moved = moveLegacyLedger(ledger, path, legacy, project, env);
-      // Weeks in date order: a moved-in old week may have landed after this one.
-      for (const old of Object.keys(ledger).sort()) {
-        const counts = ledger[old];
-        delete ledger[old];
-        if (old >= lastWeek) ledger[old] = counts;
-      }
-      const used = familyUse(ledger, week, family);
-      // A refusal still saves the ledger, so counts just moved in are kept.
-      if (used >= limit) return { refused: `${family} review budget used up: ${used}/${limit} in ${week}; raise ASE_REVIEW_BUDGET_${family.toUpperCase()} to override` };
-      const counts = projectCounts(ledger, week, family, path);
-      counts[project] = (counts[project] ?? 0) + 1;
-      return { family, week, used: used + 1, limit, project };
-    }, env);
-  } catch (error) {
-    if (moved) {
-      try { restoreLegacyLedger(legacy, moved, env); }
-      catch (restore) { error.message += `; the moved counts could not be put back in ${legacy}: ${restore.message}`; }
+  let moved = null;
+  const result = withLedger(path, ledger => {
+    // withLedger has checked every count, so a broken one stops before the old file moves in.
+    moved = moveLegacyLedger(ledger, legacy, project, env);
+    // Weeks in date order: a moved-in old week may have landed after this one.
+    for (const old of Object.keys(ledger).sort()) {
+      const counts = ledger[old];
+      delete ledger[old];
+      if (old >= lastWeek) ledger[old] = counts;
     }
-    throw error;
-  }
+    const used = familyUse(ledger, week, family);
+    // A refusal still saves the ledger, so counts just moved in are kept.
+    if (used >= limit) return { refused: `${family} review budget used up: ${used}/${limit} in ${week}; raise ASE_REVIEW_BUDGET_${family.toUpperCase()} to override` };
+    const counts = projectCounts(ledger, week, family);
+    counts[project] = (counts[project] ?? 0) + 1;
+    return { family, week, used: used + 1, limit, project };
+  }, env, error => {
+    // The ledger was not saved: the moved counts go back before another review can take the lock.
+    if (!moved) return;
+    try { restoreLegacyLedger(legacy, moved, env); }
+    catch (restore) { error.message += `; the moved counts could not be put back in ${legacy}: ${restore.message}`; }
+  });
   if (result.refused) throw new Error(result.refused);
   return result;
 }

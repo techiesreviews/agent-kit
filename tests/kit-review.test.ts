@@ -601,6 +601,38 @@ test("kit review counts outside reviews per week, refuses at the budget and neve
   assert.equal(f.calls().length, 2);
 });
 
+test("kit review refuses an unknown model or a paid OpenCode one before any call or count, and counts openai/… on OpenCode as GPT", (t) => {
+  const f = fixture(t);
+  withOpencode(f);
+  const unknown = (model: string) => `problem: unknown review model ${model}; use claude-*, grok-*, gpt-* or opencode/<model>`;
+  for (const [overrides, problem] of [
+    [{ ASE_REVIEW_MODEL: "deepseek-v4.1" }, unknown("deepseek-v4.1")],
+    [{ ASE_REVIEW_MODEL: "opencod/x" }, unknown("opencod/x")],
+    [{ ASE_REVIEW_MODEL: "opencode/big-pickle" }, "problem: OpenCode model opencode/big-pickle is paid and has no weekly count; use a -free model, openai/… (counted as gpt) or xai/… (counted as grok)"],
+  ] as const) {
+    const result = f.run(["--base", "HEAD~1"], overrides);
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.ok(result.stderr.split("\n").includes(problem), result.stderr);
+    assert.doesNotMatch(result.stdout, /^budget:/m);
+    f.noEvidence(result.stdout);
+  }
+  assert.ok(!existsSync(f.ledger), "nothing counted");
+  const gpt = { ASE_AGENT_CLI: "opencode", ASE_REVIEW_MODEL: "openai/gpt-6.1" };
+  const refused = f.run(["--base", "HEAD~1"], { ...gpt, ASE_REVIEW_BUDGET_GPT: "0" });
+  assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+  assert.match(refused.stderr, /^problem: gpt review budget used up: 0\/0 in \d{4}-W\d{2}; raise ASE_REVIEW_BUDGET_GPT to override$/m);
+  f.noEvidence(refused.stdout);
+  assert.equal(opencodeCalls(f).length, 0, "no CLI was called");
+  assert.deepEqual(JSON.parse(readFileSync(f.ledger, "utf8")), {});
+  // With room, openai/… on OpenCode runs and is counted as a GPT review.
+  const counted = f.run(["--base", "HEAD~1"], { ...gpt, ASE_REVIEW_BUDGET_GPT: "1" });
+  assert.equal(counted.status, 0, counted.stdout + counted.stderr);
+  assert.match(counted.stdout, /^budget: gpt 1\/1 in \d{4}-W\d{2}$/m);
+  assert.deepEqual(f.counts(), { gpt: { "kit-review": 1 } });
+  const call = opencodeCalls(f).at(-1)!;
+  assert.equal(call.args[call.args.indexOf("-m") + 1], "openai/gpt-6.1");
+});
+
 test("kit review keeps the budget counted once the CLI has started, even when it times out silently", (t) => {
   const f = fixture(t);
   const grok = join(f.dir, "bin", "grok");

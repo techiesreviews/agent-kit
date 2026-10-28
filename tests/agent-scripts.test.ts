@@ -10,7 +10,7 @@ import { reviewBrief, reviewComplete, reviewFormat } from "../scripts/agents/rev
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { unitSummary } from "../scripts/agents/unit-summary.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
-import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokOutOfCredit, grokResult, inferCli, isoWeek, opencodeErrorProblem, opencodeExport, opencodeExportTimeout, opencodeOutOfCredit, opencodeResult, opencodeReviewAgent, opencodeStartTimeout, opencodeReviewConfig, opencodeUsageLimit, outOfCreditProblem, parseAgentArgs, refusedOutright, sessionObserver, releaseReviewBudget, reserveReviewBudget, reviewBase, usageLimitProblem } from "../scripts/agents/agent-run.mjs";
+import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokOutOfCredit, grokResult, inferCli, isoWeek, opencodeErrorProblem, opencodeExport, opencodeExportTimeout, opencodeOutOfCredit, opencodeResult, opencodeReviewAgent, opencodeStartTimeout, opencodeReviewConfig, opencodeUsageLimit, outOfCreditProblem, parseAgentArgs, refusedOutright, sessionObserver, releaseReviewBudget, reserveReviewBudget, reviewBase, reviewFamily, usageLimitProblem } from "../scripts/agents/agent-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { durationMilliseconds } from "../scripts/agents/sol-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
@@ -28,7 +28,7 @@ test("agent options preserve defaults, infer Claude aliases, and respect explici
     assert.equal(options.cli, "codex");
   }
   for (const model of ["claude-opus-5-5", "opus", "sonnet", "haiku", "fable"]) assert.equal(inferCli(model), "claude");
-  for (const model of ["gpt-5.5", "gpt-6.1-sol", "custom-model"]) assert.equal(inferCli(model), "codex");
+  for (const model of ["gpt-5.5", "gpt-6.1-sol", "o3", "o4-mini", "codex-mini"]) assert.equal(inferCli(model), "codex");
   assert.equal(parseAgentArgs(["build", ".", "brief", "--model", "opus"]).cli, "claude");
   assert.equal(parseAgentArgs(["build", ".", "brief"], { ASE_BUILD_MODEL: "haiku", ASE_REVIEW_MODEL: "gpt-5.5" }).cli, "claude");
   assert.equal(parseAgentArgs(["review", ".", "brief"], { ASE_BUILD_MODEL: "haiku", ASE_REVIEW_MODEL: "gpt-5.5" }).model, "gpt-5.5");
@@ -175,6 +175,34 @@ test("model verification rejects missing metadata, fallback models and unsuccess
     json(["claude-haiku-5-5"], { is_error: true }), json(["claude-haiku-5-5"], { subtype: "error_max_turns" }), json(["claude-haiku-5-5"], { result: "" })]) {
     assert.throws(() => claudeResult(stdout, "claude-haiku-5-5"));
   }
+});
+
+test("a review model name no rule knows is refused, not sent to Codex, unless the CLI is named", () => {
+  for (const model of ["deepseek-v4.1", "opencod/x", "custom-model", "omni"]) {
+    assert.equal(inferCli(model), null);
+    assert.throws(() => parseAgentArgs(["review", ".", "brief"], { ASE_REVIEW_MODEL: model }),
+      (error: Error) => error.message === `unknown review model ${model}; use claude-*, grok-*, gpt-* or opencode/<model>`);
+  }
+  // Codex builds are allowed, so a build model no rule knows still runs there.
+  assert.equal(parseAgentArgs(["build", ".", "brief", "--model", "custom-model"]).cli, "codex");
+  assert.equal(parseAgentArgs(["review", ".", "brief"], { ASE_AGENT_CLI: "codex", ASE_REVIEW_MODEL: "custom-model" }).cli, "codex");
+  assert.equal(parseAgentArgs(["review", ".", "brief", "--cli", "codex", "--model", "custom-model"]).cli, "codex");
+});
+
+test("OpenCode runs free models uncounted, counts openai/… as GPT and xai/… as Grok, and refuses other paid models", () => {
+  const opencode = (model: string) => parseAgentArgs(["review", ".", "brief"], { ASE_AGENT_CLI: "opencode", ASE_REVIEW_MODEL: model });
+  for (const [model, family] of [["opencode/deepseek-v4.1-flash-free", null], ["openrouter/qwen-coder-free", null],
+    ["openai/gpt-6.1", "gpt"], ["xai/grok-4.7", "grok"]] as const) {
+    assert.equal(opencode(model).cli, "opencode");
+    assert.equal(reviewFamily("opencode", model), family);
+  }
+  for (const model of ["opencode/deepseek-v4.1-flash", "anthropic/claude-opus-5-5", "openrouter/free-tier"]) {
+    assert.throws(() => opencode(model), (error: Error) => error.message === `OpenCode model ${model} is paid and has no weekly count; use a -free model, openai/… (counted as gpt) or xai/… (counted as grok)`);
+  }
+  assert.throws(() => parseAgentArgs(["review", ".", "brief", "--model", "opencode/big-pickle"]), /OpenCode model opencode\/big-pickle is paid/);
+  assert.equal(reviewFamily("codex"), "gpt");
+  assert.equal(reviewFamily("grok"), "grok");
+  assert.equal(reviewFamily("claude"), null);
 });
 
 test("Grok adapter runs reviews only, read-only and headless, and resumes its own session", () => {
@@ -344,44 +372,55 @@ test("review budgets count outside families per ISO week, refuse at the limit an
   assert.equal(isoWeek(next), "2026-W44");
   assert.equal(isoWeek(new Date("2027-01-01T12:00:00Z")), "2026-W53");
   const env = { ASE_REVIEW_BUDGET_GROK: "2" };
-  assert.equal(reserveReviewBudget(ledger, "claude", env, monday), null);
+  assert.equal(reserveReviewBudget(ledger, { cli: "claude" }, env, monday), null);
   assert.ok(!existsSync(path));
-  assert.deepEqual(reserveReviewBudget(ledger, "grok", env, monday), { family: "grok", week: "2026-W43", used: 1, limit: 2, project: "a" });
-  assert.deepEqual(reserveReviewBudget(ledger, "codex", env, monday), { family: "gpt", week: "2026-W43", used: 1, limit: 12, project: "a" });
-  assert.equal(reserveReviewBudget(ledger, "grok", env, sunday).used, 2);
-  assert.throws(() => reserveReviewBudget(ledger, "grok", env, sunday), /grok review budget used up: 2\/2 in 2026-W43; raise ASE_REVIEW_BUDGET_GROK to override/);
-  assert.equal(reserveReviewBudget(ledger, "grok", { ASE_REVIEW_BUDGET_GROK: "3" }, sunday).used, 3);
-  assert.equal(reserveReviewBudget(ledger, "grok", env, next).used, 1);
-  assert.equal(reserveReviewBudget(ledger, "claude", { ASE_REVIEW_BUDGET_GROK: "0" }, next), null);
+  assert.deepEqual(reserveReviewBudget(ledger, { cli: "grok" }, env, monday), { family: "grok", week: "2026-W43", used: 1, limit: 2, project: "a" });
+  assert.deepEqual(reserveReviewBudget(ledger, { cli: "codex" }, env, monday), { family: "gpt", week: "2026-W43", used: 1, limit: 12, project: "a" });
+  assert.equal(reserveReviewBudget(ledger, { cli: "grok" }, env, sunday).used, 2);
+  assert.throws(() => reserveReviewBudget(ledger, { cli: "grok" }, env, sunday), /grok review budget used up: 2\/2 in 2026-W43; raise ASE_REVIEW_BUDGET_GROK to override/);
+  assert.equal(reserveReviewBudget(ledger, { cli: "grok" }, { ASE_REVIEW_BUDGET_GROK: "3" }, sunday).used, 3);
+  assert.equal(reserveReviewBudget(ledger, { cli: "grok" }, env, next).used, 1);
+  assert.equal(reserveReviewBudget(ledger, { cli: "claude" }, { ASE_REVIEW_BUDGET_GROK: "0" }, next), null);
   // A new week starts from zero; last week stays for the sweep.
   assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { "2026-W43": { grok: { a: 3 }, gpt: { a: 1 } }, "2026-W44": { grok: { a: 1 } } });
   releaseReviewBudget(path, { family: "grok", week: "2026-W44", project: "a" });
   assert.deepEqual(JSON.parse(readFileSync(path, "utf8"))["2026-W44"], { grok: { a: 0 } });
   // Two weeks on, the week before last goes.
-  assert.equal(reserveReviewBudget(ledger, "grok", env, new Date("2026-11-02T09:00:00Z")).used, 1);
+  assert.equal(reserveReviewBudget(ledger, { cli: "grok" }, env, new Date("2026-11-02T09:00:00Z")).used, 1);
   assert.deepEqual(Object.keys(JSON.parse(readFileSync(path, "utf8"))), ["2026-W44", "2026-W45"]);
-  assert.throws(() => reserveReviewBudget(ledger, "grok", { ASE_REVIEW_BUDGET_GROK: "0" }, next), /0\/0/);
-  assert.throws(() => reserveReviewBudget(ledger, "codex", { ASE_REVIEW_BUDGET_GPT: "many" }, next), /ASE_REVIEW_BUDGET_GPT must be a whole number/);
-  assert.throws(() => reserveReviewBudget({ path }, "grok", env, next), /review budget needs the project name/);
+  assert.throws(() => reserveReviewBudget(ledger, { cli: "grok" }, { ASE_REVIEW_BUDGET_GROK: "0" }, next), /0\/0/);
+  assert.throws(() => reserveReviewBudget(ledger, { cli: "codex" }, { ASE_REVIEW_BUDGET_GPT: "many" }, next), /ASE_REVIEW_BUDGET_GPT must be a whole number/);
+  assert.throws(() => reserveReviewBudget({ path }, { cli: "grok" }, env, next), /review budget needs the project name/);
   assert.ok(!existsSync(`${path}.lock`));
   // A held lock times out without touching the ledger.
   const before = readFileSync(path, "utf8");
   mkdirSync(`${path}.lock`);
-  assert.throws(() => reserveReviewBudget(ledger, "grok", { ...env, ASE_REVIEW_BUDGET_LOCK_MS: "100" }, next), /review budget lock .* is held; remove it/);
+  assert.throws(() => reserveReviewBudget(ledger, { cli: "grok" }, { ...env, ASE_REVIEW_BUDGET_LOCK_MS: "100" }, next), /review budget lock .* is held; remove it/);
   assert.equal(readFileSync(path, "utf8"), before);
   rmSync(`${path}.lock`, { recursive: true });
   for (const shape of ["[]", "null", "3"]) {
     writeFileSync(path, shape);
-    assert.throws(() => reserveReviewBudget(ledger, "grok", env, next), /review budget ledger .* is not a JSON object; fix or delete it/);
+    assert.throws(() => reserveReviewBudget(ledger, { cli: "grok" }, env, next), /review budget ledger .* is not a JSON object; fix or delete it/);
     assert.equal(readFileSync(path, "utf8"), shape);
   }
   writeFileSync(path, "{ broken");
-  assert.throws(() => reserveReviewBudget(ledger, "grok", env, next), /review budget ledger .* is not valid JSON: .*; fix or delete it/);
+  assert.throws(() => reserveReviewBudget(ledger, { cli: "grok" }, env, next), /review budget ledger .* is not valid JSON: .*; fix or delete it/);
   // An old-shape count in the machine ledger is named, not silently ignored.
   writeFileSync(path, JSON.stringify({ "2026-W44": { grok: 4 } }));
-  assert.throws(() => reserveReviewBudget(ledger, "grok", env, next), (error: Error) => error.message === `review budget ledger ${path} 2026-W44 grok is not { "<project>": <count> }; fix or delete it`);
+  assert.throws(() => reserveReviewBudget(ledger, { cli: "grok" }, env, next), (error: Error) => error.message === `review budget ledger ${path} 2026-W44 grok is not { "<project>": <count> }; fix or delete it`);
   writeFileSync(path, JSON.stringify({ "2026-W44": 4 }));
-  assert.throws(() => reserveReviewBudget(ledger, "grok", env, next), (error: Error) => error.message.startsWith(`review budget ledger ${path} 2026-W44 is not {`));
+  assert.throws(() => reserveReviewBudget(ledger, { cli: "grok" }, env, next), (error: Error) => error.message.startsWith(`review budget ledger ${path} 2026-W44 is not {`));
+  // A count that is not a whole number, and a null week or family, stop the review, named; the file is left as it was.
+  for (const [shape, problem] of [[{ "2026-W44": { grok: { a: "3" } } }, "2026-W44 grok a is not a count"], [{ "2026-W44": { grok: { a: -1 } } }, "2026-W44 grok a is not a count"],
+    [{ "2026-W44": { grok: { a: 1.5 } } }, "2026-W44 grok a is not a count"], [{ "2026-W43": { gpt: { b: null } }, "2026-W44": {} }, "2026-W43 gpt b is not a count"],
+    [{ "2026-W44": null }, "2026-W44 is not {"], [{ "2026-W44": { grok: null } }, "2026-W44 grok is not {"]] as const) {
+    const text = JSON.stringify(shape);
+    writeFileSync(path, text);
+    for (const reserve of [() => reserveReviewBudget(ledger, { cli: "grok" }, env, next), () => releaseReviewBudget(path, { family: "grok", week: "2026-W44", project: "a" }, env)]) {
+      assert.throws(reserve, (error: Error) => error.message.startsWith(`review budget ledger ${path} ${problem}`) && error.message.endsWith("; fix or delete it"));
+      assert.equal(readFileSync(path, "utf8"), text);
+    }
+  }
   assert.ok(!existsSync(`${path}.lock`));
 });
 
@@ -393,16 +432,16 @@ test("two projects share one count, and a project's old ledger moves in once", (
   mkdirSync(dirname(legacy), { recursive: true });
   writeFileSync(legacy, JSON.stringify({ "2026-W43": { grok: 2 }, "2026-W44": { grok: 5, gpt: 1 } }));
   const editor = { path, project: "editor", legacy }, other = { path, project: "other", legacy: join(dir, "other/.scratch/review-budget.json") };
-  assert.equal(reserveReviewBudget(editor, "grok", env, monday).used, 6);
+  assert.equal(reserveReviewBudget(editor, { cli: "grok" }, env, monday).used, 6);
   assert.ok(!existsSync(legacy), "moved, not copied");
-  assert.equal(reserveReviewBudget(other, "grok", env, monday).used, 7);
-  assert.equal(reserveReviewBudget(editor, "grok", env, monday).used, 8);
-  assert.throws(() => reserveReviewBudget(other, "grok", env, monday), /grok review budget used up: 8\/8 in 2026-W44/);
+  assert.equal(reserveReviewBudget(other, { cli: "grok" }, env, monday).used, 7);
+  assert.equal(reserveReviewBudget(editor, { cli: "grok" }, env, monday).used, 8);
+  assert.throws(() => reserveReviewBudget(other, { cli: "grok" }, env, monday), /grok review budget used up: 8\/8 in 2026-W44/);
   assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { "2026-W43": { grok: { editor: 2 } }, "2026-W44": { grok: { editor: 7, other: 1 }, gpt: { editor: 1 } } });
   // An older kit that wrote the old file again after the move: only its new counts move in.
   writeFileSync(legacy, JSON.stringify({ "2026-W44": { grok: 1 } }));
   releaseReviewBudget(path, { family: "grok", week: "2026-W44", project: "other" });
-  assert.throws(() => reserveReviewBudget(editor, "grok", env, monday), /used up: 8\/8/);
+  assert.throws(() => reserveReviewBudget(editor, { cli: "grok" }, env, monday), /used up: 8\/8/);
   assert.ok(!existsSync(legacy));
   assert.deepEqual(JSON.parse(readFileSync(path, "utf8"))["2026-W44"].grok, { editor: 8, other: 0 });
   // A held lock on the old file (an older kit, or a stale lock) is tried briefly, not for the machine
@@ -410,18 +449,18 @@ test("two projects share one count, and a project's old ledger moves in once", (
   writeFileSync(legacy, JSON.stringify({ "2026-W44": { gpt: 1 } }));
   mkdirSync(`${legacy}.lock`);
   const started = Date.now();
-  assert.equal(reserveReviewBudget(editor, "codex", env, monday).used, 2);
+  assert.equal(reserveReviewBudget(editor, { cli: "codex" }, env, monday).used, 2);
   assert.ok(Date.now() - started < 5_000, "the old file's lock is not waited on for ASE_REVIEW_BUDGET_LOCK_MS");
   assert.equal(readFileSync(legacy, "utf8"), JSON.stringify({ "2026-W44": { gpt: 1 } }));
   assert.ok(existsSync(`${legacy}.lock`));
   assert.deepEqual(JSON.parse(readFileSync(path, "utf8"))["2026-W44"].gpt, { editor: 2 });
   rmSync(`${legacy}.lock`, { recursive: true });
-  assert.equal(reserveReviewBudget(editor, "codex", env, monday).used, 4);
+  assert.equal(reserveReviewBudget(editor, { cli: "codex" }, env, monday).used, 4);
   assert.ok(!existsSync(legacy));
   // A broken old file stops the review, names the file and is kept; the machine ledger is untouched.
   writeFileSync(legacy, "{ broken");
   const before = readFileSync(path, "utf8");
-  assert.throws(() => reserveReviewBudget(editor, "grok", env, monday),
+  assert.throws(() => reserveReviewBudget(editor, { cli: "grok" }, env, monday),
     (error: Error) => error.message.includes(`review budget ledger ${legacy} is not valid JSON`));
   assert.equal(readFileSync(path, "utf8"), before);
   assert.equal(readFileSync(legacy, "utf8"), "{ broken");
@@ -429,7 +468,7 @@ test("two projects share one count, and a project's old ledger moves in once", (
   for (const [shape, problem] of [[{ "2026-W44": 5 }, `${legacy} 2026-W44 is not { "<family>": <count> }`], [{ "2026-W44": null }, `${legacy} 2026-W44 is not`],
     [{ "2026-W43": { grok: 1 }, "2026-W44": { grok: "3" } }, `${legacy} 2026-W44 grok is not a count`], [{ "2026-W44": { gpt: -1 } }, `${legacy} 2026-W44 gpt is not a count`]] as const) {
     writeFileSync(legacy, JSON.stringify(shape));
-    assert.throws(() => reserveReviewBudget(editor, "grok", env, monday), (error: Error) => error.message.includes(`review budget ledger ${problem}`));
+    assert.throws(() => reserveReviewBudget(editor, { cli: "grok" }, env, monday), (error: Error) => error.message.includes(`review budget ledger ${problem}`));
     assert.equal(readFileSync(path, "utf8"), before);
     assert.equal(readFileSync(legacy, "utf8"), JSON.stringify(shape));
   }
@@ -442,7 +481,7 @@ test("weeks moved in from an old ledger are pruned like any other", (t) => {
   const path = join(dir, "state/review-budget.json"), legacy = join(dir, "old/review-budget.json");
   mkdirSync(dirname(legacy), { recursive: true });
   writeFileSync(legacy, JSON.stringify({ "2026-W40": { grok: 3 }, "2026-W44": { grok: 1 } }));
-  assert.equal(reserveReviewBudget({ path, project: "editor", legacy }, "grok", {}, new Date("2026-10-26T08:00:00Z")).used, 2);
+  assert.equal(reserveReviewBudget({ path, project: "editor", legacy }, { cli: "grok" }, {}, new Date("2026-10-26T08:00:00Z")).used, 2);
   assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { "2026-W44": { grok: { editor: 2 } } });
 });
 
@@ -454,28 +493,64 @@ test("a machine ledger write that fails after the move puts the old counts back"
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, "{}");
   writeFileSync(legacy, text);
+  const monday = new Date("2026-10-26T08:00:00Z"), editor = { path, project: "editor", legacy };
   // The ledger is written to a temporary file and renamed over the old one; fail that rename only.
   const rename = fs.renameSync;
-  fs.renameSync = ((from: string, to: string) => {
-    if (to === path) throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
-    rename(from, to);
-  }) as typeof fs.renameSync;
-  syncBuiltinESMExports();
+  const failRename = (fail: () => void) => {
+    fs.renameSync = ((from: fs.PathLike, to: fs.PathLike) => {
+      if (to === path) fail();
+      rename(from, to);
+    }) satisfies typeof fs.renameSync;
+    syncBuiltinESMExports();
+  };
   t.after(() => { fs.renameSync = rename; syncBuiltinESMExports(); });
-  assert.throws(() => reserveReviewBudget({ path, project: "editor", legacy }, "grok", {}, new Date("2026-10-26T08:00:00Z")), /ENOSPC/);
-  assert.equal(readFileSync(legacy, "utf8"), text);
+  // A second review in the gap before the restore cannot start: the machine lock is held until the counts are back.
+  let inner: unknown;
+  failRename(() => {
+    try { reserveReviewBudget(editor, { cli: "grok" }, { ASE_REVIEW_BUDGET_LOCK_MS: "100" }, monday); } catch (error) { inner = error; }
+    throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+  });
+  assert.throws(() => reserveReviewBudget(editor, { cli: "grok" }, {}, monday), /ENOSPC/);
+  assert.match(String(inner), /review budget lock .* is held/);
+  assert.deepEqual(JSON.parse(readFileSync(legacy, "utf8")), JSON.parse(text));
   assert.equal(readFileSync(path, "utf8"), "{}");
   // An older kit that wrote the old file meanwhile keeps its count; the moved one is added back.
-  fs.renameSync = ((from: string, to: string) => {
-    if (to === path) { writeFileSync(legacy, '{"2026-W44":{"grok":1,"gpt":2}}'); throw new Error("EIO: i/o error"); }
-    rename(from, to);
-  }) as typeof fs.renameSync;
-  syncBuiltinESMExports();
-  assert.throws(() => reserveReviewBudget({ path, project: "editor", legacy }, "grok", {}, new Date("2026-10-26T08:00:00Z")), /EIO/);
+  failRename(() => { writeFileSync(legacy, '{"2026-W44":{"grok":1,"gpt":2}}'); throw new Error("EIO: i/o error"); });
+  assert.throws(() => reserveReviewBudget(editor, { cli: "grok" }, {}, monday), /EIO/);
   assert.deepEqual(JSON.parse(readFileSync(legacy, "utf8")), { "2026-W44": { grok: 4, gpt: 2 } });
+  // A restore that fails itself says the moved counts were not put back; the machine ledger is unchanged.
+  failRename(() => { mkdirSync(`${legacy}.lock`); throw new Error("EIO: i/o error"); });
+  assert.throws(() => reserveReviewBudget(editor, { cli: "grok" }, { ASE_REVIEW_BUDGET_LOCK_MS: "100" }, monday),
+    (error: Error) => error.message.startsWith("EIO: i/o error; ") && error.message.includes(`the moved counts could not be put back in ${legacy}: review budget lock ${legacy}.lock is held`));
+  assert.equal(readFileSync(path, "utf8"), "{}");
+  rmSync(`${legacy}.lock`, { recursive: true });
   fs.renameSync = rename;
   syncBuiltinESMExports();
   assert.ok(!existsSync(`${legacy}.lock`) && !existsSync(`${path}.lock`));
+});
+
+test("a lock that cannot be removed after the ledger is saved is a warning, and the moved counts stay only in the machine ledger", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ase-review-budget-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "state/review-budget.json"), legacy = join(dir, "old/review-budget.json");
+  mkdirSync(dirname(legacy), { recursive: true });
+  writeFileSync(legacy, '{"2026-W44":{"grok":3}}');
+  const remove = fs.rmSync;
+  fs.rmSync = ((target: fs.PathLike, options?: fs.RmOptions) => {
+    if (target === `${path}.lock`) throw Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" });
+    remove(target, options);
+  }) satisfies typeof fs.rmSync;
+  syncBuiltinESMExports();
+  t.after(() => { fs.rmSync = remove; syncBuiltinESMExports(); });
+  const warnings = t.mock.method(console, "error", () => {});
+  assert.equal(reserveReviewBudget({ path, project: "editor", legacy }, { cli: "grok" }, {}, new Date("2026-10-26T08:00:00Z")).used, 4);
+  fs.rmSync = remove;
+  syncBuiltinESMExports();
+  assert.ok(!existsSync(legacy), "the old file is not put back");
+  assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { "2026-W44": { grok: { editor: 4 } } });
+  assert.deepEqual(warnings.mock.calls.map(call => call.arguments[0]),
+    [`warning: review budget lock ${path}.lock could not be removed: EBUSY: resource busy or locked; remove it if no review is starting`]);
+  assert.ok(existsSync(`${path}.lock`));
 });
 
 test("the kit's state folder is XDG_STATE_HOME/agent-kit when absolute, else ~/.local/state/agent-kit, in Node and bash", () => {
