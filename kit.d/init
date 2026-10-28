@@ -2,7 +2,7 @@
 // kit: set a project up for the shared kit: settings, launchers, hooks and docs stubs
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const { kitHome, kitRegisterProject, kitResult, kitRoot, kitSettingsFile, kitSettingsProblems, kitStateDir } = await import(
@@ -33,7 +33,10 @@ for (let i = 0; i < args.length; i++) {
   const arg = args[i];
   if (arg === "--help" || arg === "-h") { process.stdout.write(usage); process.exit(0); }
   else if (arg === "--light") options.light = true;
-  else if (arg === "--land" && args[i + 1] && !args[i + 1].startsWith("-")) options.land = args[++i];
+  else if (arg === "--land") {
+    if (!args[i + 1] || args[i + 1].startsWith("-")) { process.stderr.write(usage); fail("--land needs a branch name", 2); }
+    options.land = args[++i];
+  }
   else { process.stderr.write(usage); fail(`unknown argument ${arg}`, 2); }
 }
 
@@ -43,7 +46,7 @@ const git = (...gitArgs) => {
   return result.status === 0 ? result.stdout.trim() : null;
 };
 if (!git("rev-parse", "--show-toplevel")) fail(`${root} is not in a git repo; run kit init in the project's top folder`);
-const at = (path) => join(root, path);
+const at = (path) => resolve(root, path);
 const home = kitHome();
 
 const old = ["scripts/agents/kit-lib.sh", "scripts/agents/kit-lib.mjs", "scripts/agents/kit.d/",
@@ -54,8 +57,13 @@ if (old.length) {
   fail(`old kit files: ${old.join(", ")}`);
 }
 
-const readJson = (path) => {
-  try { return JSON.parse(readFileSync(at(path), "utf8")); }
+// The file's text is kept beside its value, so a merge can check under the lock that nobody changed it meanwhile.
+const readText = (path) => {
+  try { return readFileSync(at(path), "utf8"); }
+  catch (error) { fail(`${path} is unreadable (${String(error.message).replace(/\n/g, " ")}); fix it first, kit init never overwrites it`); }
+};
+const readJson = (path, text = readText(path)) => {
+  try { return JSON.parse(text); }
   catch (error) { fail(`${path} is unreadable (${String(error.message).replace(/\n/g, " ")}); fix it first, kit init never overwrites it`); }
 };
 const branchExists = (name) => git("rev-parse", "--verify", "--quiet", `refs/heads/${name}`) !== null ||
@@ -92,6 +100,10 @@ if (existsSync(at(kitSettingsFile))) {
   if (full) Object.assign(settings, { commands: commandsPath, maps: mapsPath, rulebookExtras: extrasPath });
   writes.push({ path: kitSettingsFile, text: `${JSON.stringify(settings, null, 2)}\n`, said: `(${project}, lands on ${land})` });
 }
+
+// Where the stubs go: the folders and file the settings name, else the defaults a new settings file names.
+const named = (key, fallback) => typeof settings[key] === "string" && settings[key].trim() ? settings[key].replace(/\/+$/, "") : fallback;
+const commandsDir = named("commands", commandsPath), mapsDir = named("maps", mapsPath), extrasFile = named("rulebookExtras", extrasPath);
 
 // checks from package.json scripts, run as the lockfile's package manager does; printed for the lead to confirm.
 function guessChecks() {
@@ -131,7 +143,8 @@ const hookFiles = {
 const isObject = (value) => value && typeof value === "object" && !Array.isArray(value);
 for (const [path, entries] of Object.entries(hookFiles)) {
   const there = existsSync(at(path));
-  const config = there ? readJson(path) : {};
+  const before = there ? readText(path) : null;
+  const config = there ? readJson(path, before) : {};
   if (!isObject(config)) fail(`${path} must hold one JSON object; fix it first, kit init never overwrites it`);
   if (config.hooks === undefined) config.hooks = {};
   if (!isObject(config.hooks)) fail(`"hooks" in ${path} must be an object; fix it first, kit init never overwrites it`);
@@ -151,39 +164,40 @@ for (const [path, entries] of Object.entries(hookFiles)) {
     }
   }
   if (!added) { kept.push(path); continue; }
-  writes.push({ path, text: `${JSON.stringify(config, null, 2)}\n`, said: there ? `(merged ${added} hook entr${added === 1 ? "y" : "ies"})` : "" });
+  writes.push({ path, text: `${JSON.stringify(config, null, 2)}\n`, before, said: there ? `(merged ${added} hook entr${added === 1 ? "y" : "ies"})` : "" });
 }
 
 // Full only: the project's own commands folder (kept in git by .gitkeep) and the docs stubs.
 if (full) {
-  if (existsSync(at(commandsPath))) kept.push(`${commandsPath}/`);
-  else writes.push({ path: `${commandsPath}/.gitkeep`, text: "" });
+  if (existsSync(at(commandsDir))) kept.push(`${commandsDir}/`);
+  else writes.push({ path: `${commandsDir}/.gitkeep`, text: "" });
+  const extrasLink = relative(at("docs/agents"), at(extrasFile));
   const pointer = `# The kitchen
 
 Run \`scripts/agents/kit rulebook\`: it prints the kitchen rulebook, every station from idea to
 release, who decides, and the builder and reviewer pins. It has two parts:
 
 - **The shared rulebook,** the same for every project, with the kit (\`docs/kitchen.md\` in the Agent Kit).
-- **This project's extras,** which win where they differ: [kitchen-extras.md](kitchen-extras.md)
+- **This project's extras,** which win where they differ: [${extrasFile}](${extrasLink})
   (named by \`rulebookExtras\` in \`scripts/agents/kit.json\`).
 `;
   if (existsSync(at("docs/agents/kitchen.md"))) kept.push("docs/agents/kitchen.md");
   else writes.push({ path: "docs/agents/kitchen.md", text: pointer });
-  if (existsSync(at(extrasPath))) kept.push(extrasPath);
+  if (existsSync(at(extrasFile))) kept.push(extrasFile);
   else {
     const land = settings.branches.land, release = settings.branches.release || land;
     const text = readFileSync(join(home, "docs/kitchen-extras-template.md"), "utf8")
       .replaceAll("<project>", settings.project).replaceAll("<land>", land).replaceAll("<release>", release);
-    writes.push({ path: extrasPath, text });
+    writes.push({ path: extrasFile, text });
   }
   const readme = `# Wayfinder maps
 
-One folder per map, \`docs/wayfinder/<map>/\`: its tickets in \`tickets/\` and its build's in
+One folder per map, \`${mapsDir}/<map>/\`: its tickets in \`tickets/\` and its build's in
 \`build/tickets/\` (\`maps\` in \`scripts/agents/kit.json\`). Run \`scripts/agents/kit rulebook\` for how a
 map goes from idea to tickets, and \`scripts/agents/kit next <map>\` to hand its work out.
 `;
-  if (existsSync(at(`${mapsPath}/README.md`))) kept.push(`${mapsPath}/README.md`);
-  else writes.push({ path: `${mapsPath}/README.md`, text: readme });
+  if (existsSync(at(`${mapsDir}/README.md`))) kept.push(`${mapsDir}/README.md`);
+  else writes.push({ path: `${mapsDir}/README.md`, text: readme });
 }
 
 // AGENTS.md: the two lines, added to the end when missing.
@@ -195,19 +209,21 @@ const agents = existsSync(at("AGENTS.md")) ? readFileSync(at("AGENTS.md"), "utf8
 const missingLines = agentLines.filter(([marker]) => !agents?.includes(marker)).map(([, line]) => line);
 if (!missingLines.length) kept.push("AGENTS.md");
 else if (agents === null) writes.push({ path: "AGENTS.md", text: `# Agents\n\n${missingLines.join("\n")}\n` });
-else writes.push({ path: "AGENTS.md", text: `${agents.replace(/\n*$/, "\n\n")}${missingLines.join("\n")}\n`, said: `(added ${missingLines.length} line${missingLines.length === 1 ? "" : "s"})` });
+else writes.push({ path: "AGENTS.md", text: `${agents.replace(/\n*$/, "\n\n")}${missingLines.join("\n")}\n`, before: agents, said: `(added ${missingLines.length} line${missingLines.length === 1 ? "" : "s"})` });
 
 // The files are written under the project list's lock, once the name is checked: a name another root holds
-// stops the run before anything is written, and two runs cannot both take one name.
+// stops the run before anything is written, and two runs cannot both take one name. A new file is created only
+// if it is still missing, and a merged one written only if it still holds what was read, so nothing is overwritten.
 const projectRoot = settings.mainRoot || gitMain;
 const done = [];
 let registered;
 try {
   registered = kitRegisterProject(settings.project, projectRoot, process.env, () => {
-    for (const { path, text, mode, said } of writes) {
+    for (const { path, text, mode, said, before = null } of writes) {
       try {
         mkdirSync(dirname(at(path)), { recursive: true });
-        writeFileSync(at(path), text);
+        if (before !== null && readFileSync(at(path), "utf8") !== before) throw new Error("it changed while kit init ran; run kit init again");
+        writeFileSync(at(path), text, before === null ? { flag: "wx" } : {});
         if (mode) chmodSync(at(path), mode);
       } catch (error) {
         throw new Error(`writing ${path} failed: ${error.message}; wrote ${done.length ? done.join(", ") : "nothing"}`);
@@ -224,7 +240,8 @@ for (const note of notes) console.log(`note: ${note}`);
 // kit doctor's result for the new setup ends the run. In the main checkout, where a new project is set up, its
 // place check fails until work moves to a worktree: that is a note here, naming how, since the project has no
 // worktree.sh of its own.
-const doctor = spawnSync(join(home, "kit.d/doctor"), [], { cwd: root, env: { ...process.env, KIT_ROOT: root }, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
+// Doctor bounds its own steps; this bounds a checks.doctor line that hangs anyway.
+const doctor = spawnSync(join(home, "kit.d/doctor"), [], { cwd: root, env: { ...process.env, KIT_ROOT: root }, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], timeout: 600_000 });
 const doctorLines = (doctor.stdout ?? "").split("\n").filter(Boolean);
 const real = (path) => { try { return realpathSync(path); } catch { return path; } };
 const inMain = [gitMain, projectRoot].some((main) => real(main) === real(root));

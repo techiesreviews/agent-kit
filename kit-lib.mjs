@@ -138,8 +138,13 @@ export function kitRegisterProject(name, root, env = process.env, during = () =>
     if (listed === root) return "listed";
     projects[name] = { root };
     const temporary = `${path}.${process.pid}.tmp`;
-    writeFileSync(temporary, `${JSON.stringify(projects, null, 2)}\n`);
-    renameSync(temporary, path);
+    try {
+      writeFileSync(temporary, `${JSON.stringify(projects, null, 2)}\n`);
+      renameSync(temporary, path);
+    } catch (error) {
+      rmSync(temporary, { force: true });
+      throw new Error(`cannot write ${path}: ${oneLine(error.message)}`);
+    }
     return "added";
   } finally { rmSync(lock, { recursive: true, force: true }); }
 }

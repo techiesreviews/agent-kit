@@ -97,6 +97,10 @@ test("a fresh npm repo gets a full setup that passes doctor, is listed in projec
   assert.match(extras, /Landing branch `dev`, release branch `main`/);
   assert.match(readFileSync(join(work, "AGENTS.md"), "utf8"), /`scripts\/agents\/kit rulebook`[\s\S]*`scripts\/agents\/kit --help`/);
   assert.deepEqual(f.projects(), { site: { root: main } });
+  // The kit's hook set is this repo's own, so the two cannot drift apart.
+  for (const path of [".claude/settings.json", ".codex/hooks.json"]) {
+    assert.deepEqual(JSON.parse(readFileSync(join(work, path), "utf8")).hooks, JSON.parse(readFileSync(path, "utf8")).hooks, path);
+  }
   // Through the project's own launcher the setup runs the machine kit, and the rulebook prints its extras.
   const rulebook = spawnSync(join(work, "scripts/agents/kit"), ["rulebook"], { cwd: work, env: f.env, encoding: "utf8", timeout: 30_000 });
   assert.equal(result(rulebook), "RESULT: ok rulebook shared and docs/agents/kitchen-extras.md", rulebook.stdout + rulebook.stderr);
@@ -181,7 +185,11 @@ test("with no usual landing branch kit init asks for --land and writes nothing; 
   assert.deepEqual(JSON.parse(readFileSync(join(main, "scripts/agents/kit.json"), "utf8")).branches, { land: "trunk" });
   const usage = f.init(work, ["--land"]);
   assert.equal(usage.status, 2);
-  assert.equal(result(usage), "RESULT: fail init unknown argument --land");
+  assert.equal(result(usage), "RESULT: fail init --land needs a branch name");
+  const badName = f.init(work, ["--land", "a..b"]);
+  assert.equal(badName.status, 2);
+  assert.equal(result(badName), "RESULT: fail init --land a..b is not a branch name");
+  assert.equal(existsSync(join(work, "scripts")), false);
 
   const broken = f.repo("broken", { ".claude/settings.json": "{ not json" });
   const before = snapshot(broken.work);
@@ -263,4 +271,60 @@ test("a write that fails ends with a RESULT line naming it and what was written,
   assert.match(result(run), /^RESULT: fail init writing docs\/agents\/kitchen\.md failed: E[A-Z]+: .+; wrote scripts\/agents\/kit\.json, scripts\/agents\/kit, scripts\/agents\/hooks\/run\.sh, \.claude\/settings\.json, \.codex\/hooks\.json, scripts\/agents\/project\.d\/\.gitkeep$/);
   assert.doesNotMatch(run.stderr, /at .+\(node:/);
   assert.equal(existsSync(join(f.state, "agent-kit/projects.json")), false);
+});
+
+test("a broken package.json, hook file or project list stops kit init with nothing written", (t) => {
+  const f = fixture(t);
+  const cases: [string, Record<string, string>, RegExp][] = [
+    ["package", { "package.json": "{" }, /^RESULT: fail init package\.json is unreadable \(.+\); fix it first, kit init never overwrites it$/],
+    ["codex-list", { ".codex/hooks.json": "[]" }, /^RESULT: fail init \.codex\/hooks\.json must hold one JSON object; fix it first, kit init never overwrites it$/],
+    ["hooks-list", { ".claude/settings.json": JSON.stringify({ hooks: [] }) }, /^RESULT: fail init "hooks" in \.claude\/settings\.json must be an object; fix it first, kit init never overwrites it$/],
+    ["event-object", { ".claude/settings.json": JSON.stringify({ hooks: { PreToolUse: {} } }) }, /^RESULT: fail init "hooks\.PreToolUse" in \.claude\/settings\.json must be a list; fix it first, kit init never overwrites it$/],
+  ];
+  for (const [name, files, expected] of cases) {
+    const { work } = f.repo(name, files);
+    const before = snapshot(work);
+    const run = f.init(work);
+    assert.equal(run.status, 1, `${name}: ${run.stdout}${run.stderr}`);
+    assert.match(result(run), expected, name);
+    assert.deepEqual(snapshot(work), before, name);
+  }
+  assert.equal(existsSync(join(f.state, "agent-kit/projects.json")), false);
+
+  const list = join(f.state, "agent-kit/projects.json");
+  mkdirSync(join(f.state, "agent-kit"), { recursive: true });
+  writeFileSync(list, "{");
+  const { work } = f.repo("listed", {});
+  const before = snapshot(work);
+  const run = f.init(work);
+  assert.equal(run.status, 1, run.stdout + run.stderr);
+  assert.match(result(run), new RegExp(`^RESULT: fail init ${list.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} is unreadable: `));
+  assert.deepEqual(snapshot(work), before);
+  assert.equal(existsSync(`${list}.lock`), false);
+  assert.equal(readFileSync(list, "utf8"), "{");
+});
+
+test("--land names a branch not made yet with a note", (t) => {
+  const f = fixture(t);
+  const { work } = f.repo("later", {});
+  const run = f.init(work, ["--light", "--land", "release"]);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.match(run.stdout, /^note: branch release is not here or on origin yet; kit doctor's base check needs origin\/release once the project has a GitHub repo$/m);
+  assert.deepEqual(JSON.parse(readFileSync(join(work, "scripts/agents/kit.json"), "utf8")).branches, { land: "release" });
+});
+
+test("the stubs go where an existing kit.json points, and allowMainCheckout lets doctor pass in the main checkout", (t) => {
+  const f = fixture(t);
+  const settings = { project: "own-paths", branches: { land: "dev" }, allowMainCheckout: true,
+    commands: "tools/kit", maps: "plans/", rulebookExtras: "docs/kitchen.local.md" };
+  const { main } = f.repo("own-paths", { "scripts/agents/kit.json": JSON.stringify(settings) });
+  const run = f.init(main);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.match(result(run), /^RESULT: ok init wrote 9 files, listed the project; doctor (\d+)\/\1 checks passed$/);
+  assert.doesNotMatch(run.stdout, /^note: (place|add to)/m);
+  assert.match(run.stdout, /^✓ place: .+ \(main checkout; allowMainCheckout\)$/m);
+  for (const path of ["tools/kit/.gitkeep", "plans/README.md", "docs/kitchen.local.md", "docs/agents/kitchen.md"]) assert.ok(written(run).includes(path), path);
+  for (const path of ["scripts/agents/project.d", "docs/wayfinder", "docs/agents/kitchen-extras.md"]) assert.equal(existsSync(join(main, path)), false, path);
+  assert.match(readFileSync(join(main, "docs/agents/kitchen.md"), "utf8"), /\[docs\/kitchen\.local\.md\]\(\.\.\/kitchen\.local\.md\)/);
+  assert.match(readFileSync(join(main, "plans/README.md"), "utf8"), /`plans\/<map>\/`/);
 });
