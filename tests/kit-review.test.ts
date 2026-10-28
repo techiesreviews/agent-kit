@@ -1437,6 +1437,18 @@ test("an OpenCode call that names no session within its start limit is down: wit
   assert.match(alone.stdout.trim().split("\n").at(-1)!, /^RESULT: fail opencode unavailable: no session within 0\.5s /);
 });
 
+test("an OpenCode second look whose retry opens no session still hands over, though it gives no count back", (t) => {
+  const f = fixture(t); withOpencode(f);
+  const free = { model: opencodeModel, fallback: "grok-4.7" };
+  const table = lookTable(f, { code: free, ux: free, dx: free, agent: free });
+  const handed = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: table, FAKE_MODE: "retry-silent", ASE_OPENCODE_START_TIMEOUT_MS: "500" });
+  assert.equal(handed.status, 0, handed.stdout + handed.stderr);
+  assert.match(handed.stdout, /^second look: grok-4\.7 takes it \(opencode\/deepseek-v4\.1-flash-free opencode unavailable: no session within 0\.5s\)$/m);
+  assert.equal(opencodeCalls(f).filter(call => call.cli === "opencode").length, 2);
+  // Only Grok's own review is counted: the free model adds nothing to the ledger.
+  assert.deepEqual(f.counts(), { grok: { "kit-review": 1 } });
+});
+
 test("a Grok call that gives no answer before the timeout hands the second look to OpenCode", (t) => {
   const f = fixture(t); withOpencode(f);
   const hung = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: lookTable(f), FAKE_MODE: "grok-hang", ASE_AGENT_TIMEOUT: "3s" });

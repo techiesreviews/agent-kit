@@ -774,6 +774,45 @@ process.exitCode = 1;
   assert.equal(JSON.parse(readFileSync(join(stopped, "status.json"), "utf8")).refused, undefined);
 });
 
+test("only a review's first OpenCode call that opens no session is marked silent, not a resumed one", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ase-agent-opencode-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const wt = join(dir, "work tree"), bin = join(dir, "bin"), brief = join(dir, "brief.md");
+  mkdirSync(wt); mkdirSync(bin);
+  reviewRepository(wt);
+  writeFileSync(brief, "tiny brief\n");
+  // Silent: no event at all. Otherwise it names its session and stops, as a crash would.
+  writeFileSync(join(bin, "opencode"), `#!/usr/bin/env node
+if (process.env.FAKE_OPENCODE_SILENT) await new Promise(done => setTimeout(done, 30_000));
+console.log(JSON.stringify({ type: "step_start", timestamp: Date.now(), sessionID: "ses_fake", part: { type: "step-start", messageID: "m0" } }));
+process.exit(1);
+`);
+  chmodSync(join(bin, "opencode"), 0o755);
+  const invoke = (args: string[], overrides: NodeJS.ProcessEnv = {}) => spawnSync("bash", [resolve("scripts/agents/agent.sh"), ...args], {
+    encoding: "utf8", timeout: 15_000,
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ASE_AGENT_CLI: "", ASE_REVIEW_MODEL: "", ASE_AGENT_TIMEOUT: "10s", ASE_OPENCODE_START_TIMEOUT_MS: "500", ...overrides },
+  });
+  const review = (overrides: NodeJS.ProcessEnv = {}) => {
+    const result = invoke(["review", wt, brief, "--base", "origin/dev", "--model", "opencode/deepseek-v4.1-flash-free"], overrides);
+    assert.equal(result.status, 1, result.stderr);
+    const out = /^artifacts: (.+)$/m.exec(result.stdout)?.[1];
+    assert.ok(out);
+    return { result, out };
+  };
+  const status = (out: string) => JSON.parse(readFileSync(join(out, "status.json"), "utf8"));
+  const problem = "problem: opencode unavailable: no session within 0.5s";
+  const fresh = review({ FAKE_OPENCODE_SILENT: "1" });
+  assert.ok(fresh.result.stderr.split("\n").includes(problem), fresh.result.stderr);
+  assert.equal(status(fresh.out).silent, true);
+  // A resumed run's call follows one that opened a session, so it is not marked, though the problem is still printed.
+  const opened = review();
+  assert.equal(status(opened.out).session, "ses_fake");
+  const resumed = invoke(["--resume", opened.out], { FAKE_OPENCODE_SILENT: "1" });
+  assert.equal(resumed.status, 1, resumed.stderr);
+  assert.ok(resumed.stderr.split("\n").includes(problem), resumed.stderr);
+  assert.equal("silent" in status(opened.out), false);
+});
+
 test("both adapters run through the shared shell entry and compatibility wrappers using fake CLIs", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ase-agent-adapters-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
