@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, globSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -192,14 +192,15 @@ test("the shared kit runs from a copy named by KIT_HOME for a project with only 
   assert.equal(status.status, 0, status.stdout + status.stderr);
   assert.match(status.stdout, /\nRESULT: ok status /);
   // kit card runs the copy's context-card.mjs for this project's notes.
+  assert.ok(existsSync(join(home, "context-card.mjs")), "the copy has context-card.mjs");
   const memory = join(temp(t), "memory");
   mkdirSync(join(memory, "project-notes"), { recursive: true });
   writeFileSync(join(memory, "project-notes/README.md"), `| Slug | Workspace |\n| --- | --- |\n| x | \`${realpathSync(root)}\` |\n`);
   writeFileSync(join(memory, "project-notes/x.md"), "# X\n\n## Current thinking\nKit home thinking.\n");
-  const card = spawnSync(join(agents, "kit"), ["card"], { cwd: root, env: { ...env, CHAT_MEMORY_DIR: memory }, encoding: "utf8", timeout: 15_000 });
+  env.CHAT_MEMORY_DIR = memory;
+  const card = front("card");
   assert.equal(card.status, 0, card.stdout + card.stderr);
-  assert.match(card.stdout, /\nKit home thinking\.\n/);
-  assert.deepEqual(results(card.stdout), [`RESULT: ok card ${card.stdout.trimEnd().split("\n").length - 1} lines`]);
+  assert.equal(card.stdout, "Context card: X\nCurrent thinking:\nKit home thinking.\nMore: ask for the full note.\nRESULT: ok card 4 lines\n");
   // Every shared command loads from the copy: a helper reached by its place in this repo would fail here.
   const shared = readdirSync(join(home, "kit.d")).filter((name) => !/^[._]/.test(name) && statSync(join(home, "kit.d", name)).mode & 0o111);
   for (const name of ["unit", "review", "next"]) assert.ok(shared.includes(name), name);
@@ -539,4 +540,43 @@ test("the real kit exposes an executable version stub and emits its final RESULT
   assert.equal(version.status, 0, version.stderr);
   assert.match(version.stdout, /^commit [a-f0-9]+\nkit in this project, commit \d+ \w+ old\nproject [a-f0-9]+\nowner .+\nnode v\d+\.\d+\.\d+\nRESULT: ok version [a-f0-9]+ node v\d+\.\d+\.\d+\n$/);
   assert.equal(results(version.stdout).length, 1);
+});
+
+test("kit test fixtures start without the kit's home names, so a person's KIT_HOME never reaches them", () => {
+  // A spread of process.env, or a spawn with no env, hands a fixture the KIT_HOME and KIT_HOME_DEFAULT of the kit
+  // run that started these tests; kitEnv() drops both. Allowed: an env the next lines strip of those names,
+  // and spreads that only reach git, Chromium or a generated child script, which inherits an env already cleaned.
+  const allowed: [string, RegExp][] = [
+    ["tests/kit-commit.test.ts", /commitBuilderWork\(|const rootEnv = /],
+    ["tests/kit-doctor.test.ts", /spawnSync\("git"/],
+    ["tests/kit-specs.test.ts", /spawnSync\("git"|spawnSync\(process\.argv\[2\]/],
+    ["tests/kit-sweep.test.ts", /GIT_AUTHOR_DATE/],
+    ["tests/kit-shots.test.ts", /chromium\.launch\(/],
+    ["tests/kit-shots-layout.test.ts", /chromium\.launch\(/],
+    ["tests/kit-size.test.ts", /stdio: "inherit", env: \{ \.\.\.process\.env, ASE_TEST_PORT/],
+  ];
+  // Split, so this line is not a spread itself.
+  const spread = "..." + "process.env";
+  const strips = (text: string) => /delete /.test(text) && /"KIT_HOME_DEFAULT"|startsWith\("KIT_"\)|\^\(KIT_/.test(text);
+  const found: string[] = [];
+  for (const file of globSync("tests/kit*.test.ts").sort()) {
+    const source = readFileSync(file, "utf8"), lines = source.split("\n");
+    const left = (text: string) => !allowed.some(([name, pattern]) => name === file && pattern.test(text));
+    lines.forEach((line, index) => {
+      if (line.includes(spread) && left(line) && !strips(lines.slice(index, index + 4).join("\n"))) found.push(`${file}:${index + 1}`);
+    });
+    // A front door or command started with no env option inherits process.env whole.
+    for (const call of source.matchAll(/\b(?:spawnSync|spawn|execFileSync)\(/g)) {
+      let depth = 0, end = call.index + call[0].length - 1;
+      for (; end < source.length && end < call.index + 1000; end++) {
+        if (source[end] === "(") depth++;
+        else if (source[end] === ")" && --depth === 0) break;
+      }
+      const text = source.slice(call.index, end + 1), head = text.split("{")[0];
+      if (!/(^|[^\w-])kit([^\w.-]|$)|kit\.d\/|project\.d\//.test(head) || /\benv\b/.test(text)) continue;
+      const index = source.slice(0, call.index).split("\n").length - 1;
+      if (left(lines[index])) found.push(`${file}:${index + 1}`);
+    }
+  }
+  assert.deepEqual(found, [], "use kitEnv() for these fixtures");
 });
