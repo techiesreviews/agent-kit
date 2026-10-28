@@ -175,26 +175,42 @@ function runsOnPullRequests(text) {
 // line is "this commit" in it; every other commit, kit's own included, is named by subject.
 const ownSubjects = ticket => ["follow-ups from review", "commits by subject"].map(what => `docs: ${basename(ticket, ".md")} ${what}`);
 
+/** Where a commit list ends: its first `.` or `;` before a space or the end, outside brackets, quotes and code; -1 for none. */
+function listEnd(body) {
+  let depth = 0, quote = "";
+  for (let i = 0; i < body.length; i++) {
+    const char = body[i];
+    if (quote) { if (char === quote) quote = ""; continue; }
+    if (char === '"' || char === "`") quote = char;
+    else if ("([{".includes(char)) depth++;
+    else if (")]}".includes(char)) depth = Math.max(0, depth - 1);
+    else if (!depth && ".;".includes(char) && (i + 1 === body.length || /\s/.test(body[i + 1]))) return i;
+  }
+  return -1;
+}
+
 /**
- * The ticket with its last Done's "Commits:" line naming these subjects and then "this commit", as rebases and
- * GitHub's rebase merge rewrite every SHA; a Done without the line is unchanged. Lines indented under it that
- * are not list items continue it and are replaced too; any other line is kept.
+ * The ticket with its last Done's "Commits:" list naming these subjects and then "this commit", as rebases and
+ * GitHub's rebase merge rewrite every SHA; a Done without the line is unchanged. The list runs from the label
+ * (kept as written) over the lines indented under it, sub-items included, to its first sentence end (listEnd);
+ * what follows, such as evidence, and every other line stay as they are.
  */
 function commitsBySubject(text, subjects) {
   const start = [...text.matchAll(doneHeading())].at(-1)?.index;
   if (start === undefined) return text;
   const rest = text.slice(start), end = rest.slice(1).search(/^## /m), doneEnd = end < 0 ? rest.length : end + 1;
   const done = rest.slice(0, doneEnd);
-  const line = /^([ \t]*)((?:[-*+][ \t]+)?)(\*\*)?Commits\b[^:\r\n]*:(\*\*)?[^\n]*/m.exec(done);
+  const line = /^([ \t]*)((?:[-*+][ \t]+)?(?:\*\*)?Commits\b[^:\r\n]*:(?:\*\*)?)[^\n]*/m.exec(done);
   if (!line) return text;
   let stop = line.index + line[0].length;
-  for (let next; (next = /^\n([ \t]*)([^\n]*)/.exec(done.slice(stop))) &&
-    next[1].length > line[1].length && next[2].trim() && !/^(?:[-*+]|\d+[.)])(?:[ \t]|\r?$)/.test(next[2]);) stop += next[0].length;
+  for (let next; (next = /^\n([ \t]*)([^\n]*)/.exec(done.slice(stop))) && next[1].length > line[1].length && next[2].trim();)
+    stop += next[0].length;
+  const label = line.index + line[1].length + line[2].length, body = done.slice(label, stop), cut = listEnd(body);
+  // Without a sentence end the whole span is the list; its line ending stays.
+  const after = cut < 0 ? `.${/\s*$/.exec(body)[0]}` : body.slice(cut);
   const names = [...subjects.map(subject => `"${subject}"`), "this commit"];
   const list = names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0];
-  const bold = line[3] ? "**" : "";
-  const written = `${line[1]}${line[2]}${bold}Commits:${bold} ${list}.${done.slice(0, stop).endsWith("\r") ? "\r" : ""}`;
-  return text.slice(0, start) + done.slice(0, line.index) + written + done.slice(stop) + rest.slice(doneEnd);
+  return text.slice(0, start) + done.slice(0, label) + ` ${list}${after}` + done.slice(stop) + rest.slice(doneEnd);
 }
 
 // Isolate both HEAD and the index: concurrent work must never enter a follow-up commit.
@@ -375,7 +391,12 @@ async function main(args) {
       const subjects = subjectsTo(captured, false), updated = commitsBySubject(original, subjects);
       assertScope();
       writeFileSync(file, updated);
-      commitFollowups({ root, branch, head: captured, ticket: flags.ticket, content: updated, env, message: own[1] });
+      // A refused commit leaves the ticket as it was, so a rerun is not stopped by kit's own change.
+      try { commitFollowups({ root, branch, head: captured, ticket: flags.ticket, content: updated, env, message: own[1] }); }
+      catch (error) {
+        if (current(["rev-parse", "HEAD"]) === captured && readFileSync(file, "utf8") === updated) writeFileSync(file, original);
+        throw error;
+      }
       console.log(`commits: ${flags.ticket} names ${subjects.length} commits by subject`);
     }
     await rebase();

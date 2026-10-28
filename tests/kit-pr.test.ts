@@ -1019,6 +1019,65 @@ test("lines after a Commits line that are not indented under it, or are list ite
     '**Commits:** "First change", "Second change", "Close ticket" and this commit.'));
 });
 
+test("only the commit list is rewritten: text after its sentence end, the label and the lines after it stay", t => {
+  const named = '"First change", "Second change", "Close ticket" and this commit';
+  for (const [before, after] of [
+    ["- Commits: abc1234 (build). Evidence: RESULT: ok unit 1/1.", `- Commits: ${named}. Evidence: RESULT: ok unit 1/1.`],
+    ["- Commits: e0983020c (a path, a space), 71caafa25 (review round 1); the round-2 fixes follow them. Evidence: `RESULT: ok unit 41/41 (1 files)`.",
+      `- Commits: ${named}; the round-2 fixes follow them. Evidence: \`RESULT: ok unit 41/41 (1 files)\`.`],
+    ["- Commits:\n  - abc1234 build\n  - def5678 round 1", `- Commits: ${named}.`],
+    ["**Commits on dev**: abc1234 \"v1.2 fix\".", `**Commits on dev**: ${named}.`],
+  ]) {
+    const f = fixture(t), frame = (line: string) => `---\ntitle: "Ticket title"\n---\n\n## Done (2026-10-28)\n\n${line}\n- Tests: green.\n`;
+    f.commit("Close ticket", "ticket.md", frame(before));
+    const result = f.run(["--ticket", "ticket.md", "--no-merge"]);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.equal(readFileSync(join(f.root, "ticket.md"), "utf8"), frame(after));
+    const head = f.git("rev-parse", "HEAD");
+    assert.equal(f.run(["--ticket", "ticket.md", "--no-merge"], { FAKE_EXISTING: "1" }).status, 0);
+    assert.equal(f.git("rev-parse", "HEAD"), head);
+  }
+});
+
+test("a --dry-run and a --release leave the Commits line and HEAD alone", t => {
+  for (const args of [["--dry-run"], ["--base", "main", "--release"]]) {
+    const f = fixture(t);
+    const head = f.commit("Close ticket", "ticket.md", shaTicket("1111111", "2222222"));
+    const result = f.run(["--ticket", "ticket.md", ...args]);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.doesNotMatch(result.stdout, /^commits:/m);
+    assert.equal(f.git("rev-parse", "HEAD"), head);
+    assert.equal(readFileSync(join(f.root, "ticket.md"), "utf8"), shaTicket("1111111", "2222222"));
+  }
+});
+
+test("a commit with kit's subject that changes more than the ticket is not left out of the patch, so a fresh review runs", t => {
+  const f = fixture(t), peer = f.peer();
+  f.saveReview(cleanReview);
+  writeFileSync(join(f.root, "file.txt"), "changed\n");
+  writeFileSync(join(f.root, "ticket.md"), '---\ntitle: "Ticket title"\n---\n\n## Done (2026-10-28)\n\nImplemented.\n');
+  f.git("add", "file.txt", "ticket.md"); f.git("commit", "-qm", "docs: ticket commits by subject");
+  writeFileSync(join(peer, "upstream.txt"), "upstream\n");
+  f.gitAt(peer, "add", "upstream.txt"); f.gitAt(peer, "commit", "-qm", "advance upstream"); f.gitAt(peer, "push", "-q", "origin", "dev");
+  const result = f.run(["--ticket", "ticket.md", "--no-merge"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.doesNotMatch(result.stdout, /^review: reused/m);
+  assert.equal(f.calls().filter(claudeReview).length, 1);
+});
+
+test("a refused subjects commit fails at its step and leaves the ticket as it was", t => {
+  const f = fixture(t);
+  const head = f.commit("Close ticket", "ticket.md", shaTicket("1111111", "2222222"));
+  const hook = join(f.root, ".git/hooks/commit-msg");
+  writeFileSync(hook, "#!/bin/sh\necho 'message refused' >&2\nexit 1\n"); chmodSync(hook, 0o755);
+  const result = f.run(["--ticket", "ticket.md"]);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /^RESULT: fail commits: git commit failed: .*message refused/m);
+  assert.equal(f.git("status", "--porcelain"), "");
+  assert.equal(f.git("rev-parse", "HEAD"), head);
+  assert.equal(f.calls().some(call => call.tool === "gh"), false);
+});
+
 test("a behind retry rebases the subjects commit without adding another, and reuses the review", t => {
   const f = fixture(t), peer = f.peer();
   f.commit("Close ticket", "ticket.md", shaTicket("1111111", "2222222"));
