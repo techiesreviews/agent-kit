@@ -32,9 +32,10 @@ says for today; never claim a planned item ran.
   (the project's issue tracker guide, `docs/agents/issue-tracker.md`). A change Lex asks for always
   has a ticket that opens with "Lex (YYYY-MM-DD): …", including lead fixes.
 - **One house style for every tool:** anything a person sees follows the kit's
-  [house style](house-style.md) (`docs/house-style.md` in the kit, `kit --home` prints the folder):
-  quiet screens, instant changes with Undo, the same agent connection everywhere, and the Techies
-  brand colours. The project's UX rulebook adds detail and wins where it differs.
+  [house style](house-style.md) (`docs/house-style.md` in the kit; `scripts/agents/kit --home`
+  prints the folder): quiet screens, instant changes with Undo, the same agent connection
+  everywhere, and the Techies brand colours. The project's UX rulebook adds detail and wins where
+  it differs.
 
 ## Who cooks (pins from 2026-10-22)
 
