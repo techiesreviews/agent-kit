@@ -109,13 +109,14 @@ test("kit rulebook takes no arguments and answers --help", t => {
 
 /** GitHub's heading anchors: punctuation dropped, spaces to dashes, a repeat numbered. */
 function anchors(markdown: string): string[] {
+  // Heading anchors, plus explicit `<a id="…">` ones the rulebook keeps for renamed headings (AGENTS.md).
   const seen = new Map<string, number>();
-  return markdown.split("\n").filter(line => /^#+ /.test(line)).map(line => {
+  return [...markdown.split("\n").filter(line => /^#+ /.test(line)).map(line => {
     const base = line.replace(/^#+ /, "").toLowerCase().replace(/[^\w\- ]/g, "").replace(/ /g, "-");
     const count = seen.get(base) ?? 0;
     seen.set(base, count + 1);
     return count ? `${base}-${count}` : base;
-  });
+  }), ...[...markdown.matchAll(/<a (?:id|name)="([^"]+)"/g)].map(match => match[1])];
 }
 
 test("every relative link and anchor in the rulebook and its extras template resolves inside the kit", () => {
