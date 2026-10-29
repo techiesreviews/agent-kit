@@ -110,7 +110,10 @@ export function parseRules(markdown) {
   return new Map([...markdown.matchAll(/^- \*\*((?:HS|[SLBU])\d+)\*\* (.+)$/gm)].map(match => [match[1], match[2]]));
 }
 
-/** The kit's house style, then the project's own UX rulebook; a project entry with an HS id replaces that house rule. Either file may be missing. */
+/**
+ * The kit's house style, then the project's own UX rulebook; a project entry with an HS id replaces that
+ * house rule. Either file may be missing.
+ */
 export function loadRules(root, home = kitHome()) {
   const rules = new Map();
   for (const file of [join(home, "docs/house-style.md"), join(root, "docs/agents/ux-rulebook.md")])

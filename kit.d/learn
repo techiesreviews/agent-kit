@@ -228,6 +228,14 @@ export function ruleBlocks(text, file) {
   return blocks.map(block => ({ ...block, id: /\*\*([A-Z]{1,3}\d+)\*\*/.exec(block.text)?.[1], words: keyWords(block.text) }));
 }
 
+/**
+ * The house style's rule blocks, each starting at its own `- **HSn**` line, marked house; never its intro (which may
+ * quote a rule as an example) or its undecided questions.
+ */
+export function houseBlocks(text, file) {
+  return ruleBlocks(text, file).filter(block => /^- \*\*HS\d+\*\* /.test(block.text)).map(block => ({ ...block, house: true }));
+}
+
 export const coverWords = 3;
 
 /** The rule block sharing the most key words with the group, when it shares at least three. */
@@ -296,10 +304,8 @@ function learn(args) {
     groups.sort((a, b) => b.times - a.times || b.members[0].date.localeCompare(a.members[0].date));
     const own = ["docs/agents/ux-rulebook.md", "docs/agents/guardrails.md"].map(path => join(root, path))
       .filter(path => existsSync(path)).flatMap(path => ruleBlocks(readFileSync(path, "utf8"), path));
-    // Only the house style's numbered rules can cover a correction, never its intro or its undecided questions.
     const house = join(kitHome(), "docs/house-style.md");
-    const shared = existsSync(house) ? ruleBlocks(readFileSync(house, "utf8"), house)
-      .filter(block => /^HS\d+$/.test(block.id ?? "")).map(block => ({ ...block, house: true })) : [];
+    const shared = existsSync(house) ? houseBlocks(readFileSync(house, "utf8"), house) : [];
     const blocks = [...own, ...shared];
     const repeated = groups.filter(group => group.times > 1), once = groups.filter(group => group.times === 1);
     const inWindow = entries.filter(entry => entry.date >= since).length;

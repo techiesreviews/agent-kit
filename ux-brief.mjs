@@ -22,8 +22,8 @@ Judge each feature against its Good line, the rulebook below and the mock-up, ne
 
 Features to judge: ${features.map(feature => feature.id).join(", ")}
 
-Rulebook (first line of each rule). HS rules are the kit's house style for every tool; S, L, B and U rules
-are this project's own and win where the two disagree.
+Rulebook (first line of each rule). HS rules are the kit's house style for every tool (an HS rule the project
+restates is the project's); S, L, B and U rules are this project's own and win where the two disagree.
 ${[...rules].map(([id, text]) => `- ${id} ${text}`).join("\n")}
 
 Answer format. The runner appends a code-review scope and format after this brief; neither applies here,

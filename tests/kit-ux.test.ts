@@ -217,7 +217,7 @@ test("a project rulebook entry with an HS id replaces that house rule, and the b
   const text = brief.uxBrief({ bundle: "bundle.md", features: [{ id: "F-x-01" }], rules });
   assert.match(text, /- HS19 Not here: the editor's chrome keeps its blue\./);
   assert.doesNotMatch(text, /Orange is the one accent/);
-  assert.match(text, /S, L, B and U rules\s+are this project's own and win where the two disagree/);
+  assert.match(text, /S, L, B and U rules are this project's own and win where the two disagree/);
 });
 
 test("the ticket comes from the branch name, and its mock-up links resolve against it", () => {
@@ -739,6 +739,21 @@ test("kit ux tries touched features, runs scripted checks and writes a bounded b
   const images = readdirSync(bundle).filter(name => name.endsWith(".webp"));
   assert.deepEqual(images.sort(), ["F-media-01-contact.webp", "F-media-01-media-gallery-1280-light-search-strip.webp", "screens-contact.webp"]);
   assert.ok(images.every(name => statSync(join(bundle, name)).size <= 300_000));
+});
+
+test("kit ux hands the reviewer the kit's house rules, a project HS entry replacing the kit's", t => {
+  const { root, put, run } = fixture(t);
+  put("docs/agents/features.md", featuresMarkdown.replace("Plain (S2, L2).", "Plain (HS1, HS19, L2)."));
+  put("docs/agents/ux-rulebook.md", "# UX rulebook\n- **HS19** Not here: the editor's chrome keeps its blue.\n- **L2** Only theme tokens.\n");
+  put("src/page-builder/media-picker.css", ".a { gap: var(--space); }\n.b { gap: var(--space); }\n");
+  const output = run();
+  assert.equal(output.status, 0, output.stderr + output.stdout);
+  const house = ux.parseRules(readFileSync(resolve("docs/house-style.md"), "utf8"));
+  const bundle = readFileSync(join(root, ".scratch/last-bundle.md"), "utf8"), brief = readFileSync(join(root, ".scratch/last-brief.md"), "utf8");
+  for (const text of [bundle, brief]) assert.ok(text.includes("Not here: the editor's chrome keeps its blue."), text);
+  assert.ok(bundle.includes(`- **HS1** ${house.get("HS1")}`), bundle);
+  assert.ok(brief.includes(`- HS1 ${house.get("HS1")}`) && brief.includes(`- HS22 ${house.get("HS22")}`), brief);
+  assert.ok(!brief.includes(house.get("HS19")!), brief);
 });
 
 test("kit ux with --features tries only those, and a failed try names the feature and its line", t => {
