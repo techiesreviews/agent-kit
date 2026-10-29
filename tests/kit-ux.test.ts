@@ -39,7 +39,7 @@ type Ux = {
   colourFindings(status: number, output: string, command: string, log: string, scope: { root: string; changed: string[]; known?: string[] }): { findings: Finding[]; outside: number };
   parseRules(markdown: string): Map<string, string>;
   loadRules(root: string, home?: string): Map<string, string>;
-  ruleFor(id: string, rulebook: Map<string, string>): string;
+  ruleFor(id: string, rulebook: Map<string, string>, replaced?: Set<string>): string;
 };
 const ux: Ux = await import(pathToFileURL(script).href);
 const editorColours: string = JSON.parse(readFileSync(resolve("tests/fixtures/editor-kit.json"), "utf8")).checks.css;
@@ -753,6 +753,9 @@ test("a scripted check's project id falls back to the matching house rule only w
   assert.equal(ux.ruleFor("L12", rules(["HS17"])), "HS17");
   assert.equal(ux.ruleFor("U6", rules([])), "U6");
   assert.equal(ux.ruleFor("S2", rules(["HS2"])), "S2");
+  // A house rule the project replaced is never cited for it; L5 (clipped, overlap at any width) stays the project's.
+  assert.equal(ux.ruleFor("U6", new Map([["HS18", "Not here: desktop only."]]), new Set(["HS18"])), "U6");
+  assert.equal(ux.ruleFor("L5", rules(["HS18"])), "L5");
 });
 
 test("kit ux hands the reviewer the kit's house rules, a project HS entry replacing the kit's", t => {
@@ -775,7 +778,7 @@ test("kit ux runs on the kit's house style alone when the project has no UX rule
   git("rm", "--quiet", "docs/agents/ux-rulebook.md");
   git("commit", "--quiet", "-m", "no rulebook");
   git("update-ref", "refs/remotes/origin/dev", "HEAD");
-  put("src/page-builder/media-picker.css", ".a { gap: var(--space); }\n.b { gap: var(--space); }\n");
+  put("src/page-builder/media-picker.css", ".a { gap: var(--space); }\n.b { color: #ff0000; }\n");
   const output = run();
   assert.equal(output.status, 0, output.stderr + output.stdout);
   const house = ux.parseRules(readFileSync(resolve("docs/house-style.md"), "utf8"));
@@ -787,6 +790,10 @@ test("kit ux runs on the kit's house style alone when the project has no UX rule
   assert.match(bundle, /^- HS18 tap target under 44 px at 390/m);
   assert.ok(bundle.includes(`- **HS18** ${house.get("HS18")}`), bundle);
   assert.doesNotMatch(bundle, /^- U6 /m);
+  // A source finding (a raw colour, the editor's L2) cites HS15 the same way.
+  assert.match(bundle, /^- HS15 src\/page-builder\/media-picker\.css:2: raw colour #ff0000/m);
+  assert.doesNotMatch(bundle, /^- L2 /m);
+  assert.ok(bundle.includes(`- **HS15** ${house.get("HS15")}`), bundle);
 });
 
 test("kit ux with --features tries only those, and a failed try names the feature and its line", t => {

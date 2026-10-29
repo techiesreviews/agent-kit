@@ -44,6 +44,11 @@ export function parseRules(markdown) {
   return new Map([...markdown.matchAll(/^- \*\*((?:HS|[SLBU])\d+)\*\* (.+)$/gm)].map(match => [match[1], match[2]]));
 }
 
+/** HS ids a project's UX rulebook restates, which replace those house rules; kit ux and kit learn share it. */
+export function replacedIds(rulebook) {
+  return new Set([...parseRules(rulebook).keys()].filter(id => id.startsWith("HS")));
+}
+
 /** Rulebook ids (HS3, S1, L5, B10, U4…) a text names, once each; kit ux uses it for the rules a bundle cites. */
 export const citedRules = text => [...new Set([...text.matchAll(/\b(?:HS|[SLBU])\d+\b/g)].map(match => match[0]))];
 const ruleIds = citedRules;

@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { feedbackHeading, feedbackKinds, parseFeedbackLine } from "../tickets.mjs";
-import { parseRules } from "../ux-brief.mjs";
+import { replacedIds } from "../ux-brief.mjs";
 import { composeBundle } from "./ux";
 
 const { kitHome, kitRoot, kitMainRoot, kitResult, kitSettings } = await import(
@@ -239,10 +239,7 @@ export function houseBlocks(text, file, { replaced = new Set() } = {}) {
     .map(block => ({ ...block, words: keyWords(block.text.split(/\sWhy:/)[0]), house: true }));
 }
 
-/** HS ids the project's UX rulebook restates, read by kit ux's own parseRules, so both commands agree on what is replaced. */
-export function replacedIds(rulebook) {
-  return new Set([...parseRules(rulebook).keys()].filter(id => id.startsWith("HS")));
-}
+export { replacedIds };
 
 export const coverWords = 3;
 
