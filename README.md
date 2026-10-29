@@ -8,6 +8,8 @@ only a small launcher and its own settings; the kit itself lives here, once.
 
 - On a machine without the kit yet, fetch it once and fill the machine copy:
   `git clone --depth 1 https://github.com/techiesreviews/agent-kit ~/.cache/agent-kit && ~/.cache/agent-kit/kit update`.
+- Then turn on the update timer, so every later kit merge reaches the machine within 15 minutes:
+  `~/.local/share/agent-kit/current/kit update --install-timer`.
 - `kit init` (run once, from the machine copy: `~/.local/share/agent-kit/current/kit init`) writes the project's
   `scripts/agents/kit.json` settings, the launcher `scripts/agents/kit`, the hook launcher
   `scripts/agents/hooks/run.sh` and the hook entries in `.claude/settings.json` and `.codex/hooks.json`.
@@ -27,7 +29,8 @@ only a small launcher and its own settings; the kit itself lives here, once.
   branch against the changed kit. A kit change lands only when both pass, because every project runs the newest
   kit.
 - After a merge, `kit update` brings it to every project on the machine. `kit update --install-timer` (once per
-  machine, and again after a change to `systemd/`) runs it every 15 minutes through a `systemd --user` timer; `kit update --remove-timer` takes it out.
+  machine, and again after a change to `systemd/` or to `KIT_REPO` or `XDG_DATA_HOME`, which the timer keeps) runs
+  it every 15 minutes through a `systemd --user` timer; `kit update --remove-timer` takes it out.
 
 ## Layout
 
