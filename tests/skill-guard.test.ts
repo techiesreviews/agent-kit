@@ -27,8 +27,13 @@ function fixture(t: TestContext) {
   put(join(home, ".claude/skills/crane/.git/config"), '[remote "origin"]\n\turl = https://example.com/someone/a-skill-repository-name-long-enough.git\n');
   put(join(home, ".claude/skills/crane/yarn.lock"), '  resolved "https://registry.yarnpkg.com/some-package/-/some-package-1.2.3.tgz#0123456789abcdef"\n');
   put(join(home, ".claude/skills/crane/dist/app.min.js"), "!function(){var minifiedBundleLineThatIsLongEnoughToCount=1;window.x=minifiedBundleLineThatIsLongEnoughToCount}();\n");
+  for (const [index, path] of ["pnpm-lock.yaml", "npm-shrinkwrap.json", "bun.lockb", "poetry.lock", "uv.lock", "Cargo.lock", "Gemfile.lock",
+    "composer.lock", "dist/app.min.css", ".venv/lib/python3.12/site-packages/x/core.py", "vendor/pkg/lib.php"].entries())
+    put(join(home, ".claude/skills/crane", path), `generated line ${index} that every project which installs the same package shares\n`);
   // Licence texts are word for word in many repos; page set-up tags in a template are in every web page.
   put(join(home, ".claude/skills/crane/LICENSE"), "Licence: anyone may fold this paper crane freely, with no promise it will ever fly\n");
+  for (const [index, path] of ["license", "License.md", "LICENSE-MIT", "LICENSE.APACHE-2.0.txt", "COPYING", "NOTICE.txt", "vendor/pkg/LICENSE"].entries())
+    put(join(home, ".claude/skills/crane", path), `licence line ${index}: THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND\n`);
   put(join(home, ".claude/skills/crane/templates/page.html"), [
     '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">',
     '  <meta name="viewport" content="width=device-width, initial-scale=1" />',
@@ -36,6 +41,10 @@ function fixture(t: TestContext) {
     '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>',
     '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap">',
     "<p>The paper crane template greets the reader with a folded welcome banner here</p>",
+    '<link rel="icon" href="https://cdn.example.com/a-long-icon-path/favicon-32x32.png" sizes="32x32">',
+    '<link rel="dns-prefetch" href="https://cdn.example.com/a-long-path-for-the-prefetch-hint">',
+    '<link rel="preload" href="https://cdn.example.com/fonts/a-long-font-name-regular.woff2" as="font">',
+    '<meta name="description" content="The paper crane template greets every reader with a fold">',
   ].join("\n") + "\n");
   // An extensionless file that is not a licence still counts.
   put(join(home, ".claude/skills/crane/Makefile"), "fold:\n\t@echo crease the wing twice and let the crane rest beside the teapot\n");
@@ -78,7 +87,8 @@ test("every file of a skill counts, but only lines of 60 or more characters that
       "/.claude/skills/crane/references/notice-and-consent.md", "/.claude/skills/crane/scripts/license-check.py",
       "/.claude/skills/crane/scripts/tool.mjs", "/.claude/skills/crane/templates/page.html", "/.codex/plugins/cache/kit/skills/jar/SKILL.md"]);
   const index = skillIndex(files);
-  assert.equal(index.count, 8);
+  assert.equal(index.count, 9);
+  assert.equal(skillMatch('<meta name="description" content="The paper crane template greets every reader with a fold">', index), "crane");
   assert.equal(skillMatch("Ask the paper crane politely before folding its wings back along the crease", index), "crane");
   assert.equal(skillMatch("print('A crane may only be folded by someone who has thanked the paper first')", index), "crane");
   assert.equal(skillMatch("\t@echo crease the wing twice and let the crane rest beside the teapot", index), "crane");
@@ -88,6 +98,11 @@ test("every file of a skill counts, but only lines of 60 or more characters that
     '<meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1, some-longer-value-here">',
     '    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>',
     '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap">',
+    '<link rel="icon" href="https://cdn.example.com/a-long-icon-path/favicon-32x32.png" sizes="32x32">',
+    '<link rel="dns-prefetch" href="https://cdn.example.com/a-long-path-for-the-prefetch-hint">',
+    '<link rel="preload" href="https://cdn.example.com/fonts/a-long-font-name-regular.woff2" as="font">',
+    "generated line 0 that every project which installs the same package shares",
+    'licence line 0: THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND',
     "Licence: anyone may fold this paper crane freely, with no promise it will ever fly"])
     assert.equal(skillMatch(line, index), "", line);
   assert.equal(skillMatch(`  const fold = "Unfold the crane's left wing slowly and press the crease flat with a spoon"; // copied`, index), "crane");
@@ -136,7 +151,7 @@ test("without local skill folders the line check is skipped and says so; a clean
   f.git("add", "b.md"); f.git("commit", "-q", "-m", "b");
   const clean = f.run(["--base", "HEAD~1"]);
   assert.equal(clean.status, 0, clean.stderr);
-  assert.match(clean.stdout, /^skill-guard: line check: \d+ lines against 8 skill lines from 8 skill files\nRESULT: ok skill-guard\n$/);
+  assert.match(clean.stdout, /^skill-guard: line check: \d+ lines against 9 skill lines from 8 skill files\nRESULT: ok skill-guard\n$/);
 });
 
 test("--history checks every path, blob and commit message any ref ever held", (t) => {

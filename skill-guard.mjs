@@ -12,9 +12,13 @@ import { fileURLToPath } from "node:url";
 const usage = "Usage: skill-guard.mjs [--base REF | --history] [--paths-only]";
 const minimum = 60, window = 32, largest = 1 << 20;
 // Files inside a skill that hold lines every project shares, not skill text: generated or installed files
-// (registry lines) and licence texts (MIT, Apache and the like, word for word in many repos), named exactly so;
-// a file merely named like one (notice-and-consent.md, license-check.py) is skill text and is read.
-const shared = /(^|\/)(node_modules|\.git)\/|(^|\/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?)$|\.min\.(js|css)$|(^|\/)(LICEN[CS]E|COPYING|NOTICE)(\.(md|txt|rst))?$/;
+// (lockfiles and installed packages of any package manager, minified bundles) and licence texts (MIT, Apache and
+// the like, word for word in many repos). A licence is named so in any case, with at most a licence family,
+// version and text extension after it (License.md, LICENSE-MIT, LICENSE.APACHE-2.0.txt); a file merely named
+// like one (notice-and-consent.md, license-check.py) is skill text and is read.
+const generated = /(^|\/)(node_modules|\.git|\.venv|venv|site-packages|vendor)\/|(^|\/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|poetry\.lock|uv\.lock|Pipfile\.lock|Cargo\.lock|Gemfile\.lock|composer\.lock)$|\.min\.(js|css)$/;
+const licence = /(^|\/)(licen[cs]e|copying|notice)([-.](mit|apache|bsd|isc|mpl|gpl|lgpl|agpl|unlicense|ofl|zlib)([-.]?v?\d[\d.]*)?(-\d-clause)?)?(\.(md|txt|rst))?$/i;
+const shared = (path) => generated.test(path) || licence.test(path);
 // Whole lines every web page shares with some skill's code, never skill text: a page's set-up tags (viewport,
 // charset or http-equiv meta; a link to an outside font, stylesheet or icon), in any attribute spelling.
 export const boilerplate = [
@@ -69,7 +73,7 @@ export function skillFiles(roots) {
     for (const skillFile of all.filter(path => basename(path) === "SKILL.md")) {
       const folder = dirname(skillFile), inside = [];
       walk(folder, inside, new Set([folder]));
-      for (const path of inside) if (!shared.test(relative(folder, path)) && !files.has(path)) files.set(path, basename(folder));
+      for (const path of inside) if (!shared(relative(folder, path)) && !files.has(path)) files.set(path, basename(folder));
     }
   }
   return { files: [...files].map(([path, skill]) => ({ path, skill })), roots: present };

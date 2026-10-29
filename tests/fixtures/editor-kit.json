@@ -3,6 +3,7 @@
   "mainRoot": "/home/ubulex/Projects/native-site-editor",
   "devRoot": "/home/ubulex/Projects/native-site-editor-dev",
   "worktreePrefix": "native-site-editor-",
+  "worktreeLinks": [".scratch/native-static-preview"],
   "sharedNodeModules": "/home/ubulex/Projects/native-site-editor-dev/node_modules",
   "branches": { "land": "dev", "release": "main", "ci": "dev" },
   "commands": "scripts/agents/project.d",
