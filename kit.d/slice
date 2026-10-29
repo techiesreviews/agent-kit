@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // kit: build, commit, review, fix, check the UX of and land one ticket with resumable phases
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterFixRounds, blockingFindings, completedFixRounds, FIX_ROUNDS, openFindings, reviewCoversHead } from "../review-findings.mjs";
@@ -120,6 +120,13 @@ async function slice(args) {
     const assertHead = expected => {
       assertBranch();
       if (git("rev-parse", "HEAD") !== expected) throw new Error("worktree HEAD changed during slice");
+    };
+    // A builder run kit fix can resume (as kit fix checks an explicit --run): a build record with a session for this worktree.
+    const resumableBuild = folder => {
+      try {
+        const status = JSON.parse(readFileSync(join(resolve(root, folder), "status.json"), "utf8"));
+        return status.kind === "build" && Boolean(status.session) && realpathSync(status.worktree) === realpathSync(root);
+      } catch { return false; }
     };
     // A builder's kit specs --affected keeps to the specs closest to the change (project.d/specs); kit pr runs the full set.
     const builderEnv = { KIT_BUILDER_TICKET: ticket };
@@ -289,13 +296,23 @@ async function slice(args) {
       // A build that stopped (such as at its time limit) after its work was committed on top of the saved start:
       // those commits are the build. buildModel is saved as a build starts, so commits on a slice that never
       // started one (a merge of dev, a ticket edit) are not taken. A HEAD on any other history still stops.
-      if (now !== state.head && state.buildModel && spawnSync("git", ["-C", root, "merge-base", "--is-ancestor", state.head, now], { env }).status === 0) {
+      // Commits that came from the land branch (a fast-forward or merge of origin/<land>) are not the builder's.
+      const forward = now !== state.head && state.buildModel && spawnSync("git", ["-C", root, "merge-base", "--is-ancestor", state.head, now], { env }).status === 0;
+      const land = kitBranch("land", settings);
+      const landRef = land && spawnSync("git", ["-C", root, "rev-parse", "--verify", "-q", `refs/remotes/origin/${land}`], { env }).status === 0 ? `origin/${land}` : undefined;
+      const fromLand = forward && landRef
+        && git("rev-list", "--count", `${state.head}..${now}`, "--not", landRef) !== git("rev-list", "--count", `${state.head}..${now}`);
+      if (forward && !fromLand) {
         state.taken = git("log", "--reverse", "--format=%h %s", `${state.head}..${now}`).split("\n");
         console.log(`resume: build taken from ${state.taken.length} commit${state.taken.length === 1 ? "" : "s"} on ${state.head.slice(0, 9)}: ${state.taken.join("; ")}`);
+        // A build that stopped before it recorded a session leaves nothing for kit fix to resume; its rounds start fresh.
+        if (state.build && !resumableBuild(state.build)) delete state.build;
         state.head = now;
         complete("from commits");
       } else {
-        if (now !== state.head) throw new Error(state.buildModel
+        if (now !== state.head) throw new Error(fromLand
+          ? `HEAD ${now.slice(0, 9)} holds commits from ${landRef} on top of the slice's start ${state.head.slice(0, 9)}; a build resumes only from the builder's own commits`
+          : state.buildModel
           ? `HEAD ${now.slice(0, 9)} is not on top of the slice's start ${state.head.slice(0, 9)}; a build resumes only from commits on top of it`
           : `HEAD moved from the slice's start ${state.head.slice(0, 9)} before any build started; only a started build resumes from commits`);
         state.build = join(directory, "builder"); state.buildModel = flags.model; save();

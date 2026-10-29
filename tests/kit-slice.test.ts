@@ -540,6 +540,9 @@ test("kit slice switches builder after its initial build fails", t => {
 test("a build that timed out after its work was committed on top of the start resumes at review", t => {
   const f = fixture(t), failed = f.run([], { FAIL_PHASE: "build" });
   assert.equal(failed.status, 1, failed.stdout + failed.stderr);
+  // The build stopped before it recorded a session, so there is no builder run for kit fix to resume.
+  mkdirSync(f.state().build, { recursive: true });
+  writeFileSync(join(f.state().build, "status.json"), JSON.stringify({ kind: "build", worktree: f.root, state: "failed" }));
   const saved = readFileSync(join(f.root, ".scratch/kit-slice/04-ticket/state.json"), "utf8");
   writeFileSync(join(f.root, "file.txt"), "built by hand\n");
   f.git("commit", "-qam", "builder work, checked by hand");
@@ -554,6 +557,7 @@ test("a build that timed out after its work was committed on top of the start re
   assert.deepEqual(calls.map(call => call.phase), ["build", "review", "fix", "pr"]);
   // Builders (the build and its fix rounds) get the ticket so kit specs keeps their run small; kit pr does not.
   assert.deepEqual(calls.map(call => call.builderTicket), [join(f.root, f.ticket), undefined, join(f.root, f.ticket), undefined]);
+  assert.equal(calls[2].args.includes("--run"), false, "the fix round starts a fresh builder");
   assert.equal(f.git("rev-parse", "HEAD~1"), taken, "only the fix round's commit is on top of the taken work");
   assert.equal(f.git("log", "--format=%s", `${f.head}..${taken}`), "builder work, checked by hand");
 });
@@ -587,6 +591,34 @@ test("a taken build commits only the work left uncommitted, credited to its buil
   assert.equal(f.git("log", "-1", "--format=%B"), "Test slice title\n\nCo-Authored-By: GPT-6.1-Sol <noreply@openai.com>");
   assert.equal(f.git("show", "--format=", "--name-only", "HEAD"), "rest.txt");
   assert.equal(f.git("status", "--porcelain"), "");
+});
+
+test("a taken build keeps a builder run with a session for its fix rounds to resume", t => {
+  const f = fixture(t);
+  assert.equal(f.run([], { FAIL_PHASE: "build" }).status, 1);
+  const build = f.state().build;
+  mkdirSync(build, { recursive: true });
+  writeFileSync(join(build, "status.json"), JSON.stringify({ kind: "build", worktree: f.root, session: "builder-session", state: "failed" }));
+  writeFileSync(join(f.root, "file.txt"), "built by hand\n");
+  f.git("commit", "-qam", "builder work");
+  const result = f.run([], { CLEAN_AT: "1" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const fix = f.calls().find(call => call.phase === "fix")!;
+  assert.equal(fix.args[fix.args.indexOf("--run") + 1], build);
+});
+
+test("commits from the land branch on top of the start are not taken as the build", t => {
+  const f = fixture(t);
+  assert.equal(f.run([], { FAIL_PHASE: "build" }).status, 1);
+  writeFileSync(join(f.root, "file.txt"), "dev moved on\n");
+  f.git("commit", "-qam", "a dev commit");
+  f.git("update-ref", "refs/remotes/origin/dev", "HEAD");
+  const result = f.run();
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.doesNotMatch(result.stdout, /resume: build taken/);
+  assert.match(result.stdout, /RESULT: fail slice build: HEAD \w+ holds commits from origin\/dev on top of the slice's start \w+; a build resumes only from the builder's own commits/);
+  assert.deepEqual(f.calls().map(call => call.phase), ["build"]);
+  assert.deepEqual(f.state().finished, ["brief"]);
 });
 
 test("commits on a slice that never started a build are not taken as one", t => {
