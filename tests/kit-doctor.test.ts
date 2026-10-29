@@ -4,6 +4,7 @@ import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, readdirSync, r
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
+import { kitFiles } from "./support/kit-files.ts";
 import { kitEnv } from "./support/kit-env.ts";
 
 const repo = resolve(".");
@@ -664,7 +665,7 @@ test("doctor's live hook probe passes through the hook launcher when current nam
   const f = fixture(t);
   copyFileSync(join(repo, "launcher/hooks-run.sh"), join(f.build, "scripts/agents/hooks/run.sh"));
   const data = join(f.directory, "data"), sha = "0123456789abcdef0123456789abcdef01234567";
-  cpSync(repo, join(data, "agent-kit", sha), { recursive: true, filter: (source) => source !== join(repo, "scripts/agents/project.d") });
+  cpSync(repo, join(data, "agent-kit", sha), { recursive: true, filter: kitFiles });
   symlinkSync(sha, join(data, "agent-kit/current"));
   // KIT_HOME names another kit: the probe drops it and the hook launcher finds current itself.
   const result = f.run([], f.build, { XDG_DATA_HOME: data, XDG_CACHE_HOME: join(f.directory, "cache"), KIT_HOME: repo });
@@ -686,7 +687,7 @@ test("doctor warns, without failing, on a machine copy two days after its last k
   const f = fixture(t);
   const data = join(f.directory, "data"), sha = "0123456789abcdef0123456789abcdef01234567";
   const home = join(data, "agent-kit", sha);
-  cpSync(repo, home, { recursive: true, filter: (source) => source !== join(repo, "scripts/agents/project.d") });
+  cpSync(repo, home, { recursive: true, filter: kitFiles });
   writeFileSync(join(data, "agent-kit/updated"), `${Math.floor(Date.now() / 1000) - 2 * 86400 - 60}\n`);
   symlinkSync(sha, join(data, "agent-kit/current"));
   // A machine copy is read-only; doctor's own copy of it must still clean up.
@@ -717,7 +718,7 @@ test("doctor warns, without failing, on a machine copy two days after its last k
 test("doctor warns, with the same wording, on a launcher cache clone two days old", (t) => {
   const f = fixture(t);
   const home = join(f.directory, "cache", "agent-kit");
-  cpSync(repo, home, { recursive: true, filter: (source) => source !== join(repo, "scripts/agents/project.d") });
+  cpSync(repo, home, { recursive: true, filter: kitFiles });
   git(f.directory, "init", "-q", home);
   git(home, "add", "-A");
   git(home, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "kit");

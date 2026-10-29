@@ -424,7 +424,7 @@ async function main(args) {
       throw new Error(featureListProblem(settings));
     }
     const tests = [`Tier: ${plan.tier} (${plan.reason})`, ...(features.line ? [features.line] : []), "",
-      `- skill guard: ok${guardNote ? ` (${guardNote.slice("skill-guard: ".length)})` : ""}`];
+      `- skill guard: ok${guardNote ? ` — ${guardNote.slice("skill-guard: ".length)}` : ""}`];
     // The unit test files (paths.unitTests) the focused run picks from, wherever they live.
     const unitFiles = (await git("tier", ["ls-files", "-z"])).split("\0").filter(path => path && unitTestFile(path, settings));
     const sources = () => Object.fromEntries(unitFiles.map(path => [path, readFileSync(join(root, path), "utf8")]));
