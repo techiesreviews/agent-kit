@@ -27,7 +27,7 @@ only a small launcher and its own settings; the kit itself lives here, once.
   branch against the changed kit. A kit change lands only when both pass, because every project runs the newest
   kit.
 - After a merge, `kit update` brings it to every project on the machine. `kit update --install-timer` (once per
-  machine) runs it every 15 minutes through a `systemd --user` timer; `kit update --remove-timer` takes it out.
+  machine, and again after a change to `systemd/`) runs it every 15 minutes through a `systemd --user` timer; `kit update --remove-timer` takes it out.
 
 ## Layout
 

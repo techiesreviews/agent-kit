@@ -44,7 +44,8 @@ escape() { printf '%s' "${1//%/%%}"; }
 
 # The timer modes fetch nothing, so they neither create the data folder nor take the update lock.
 timer=agent-kit-update
-# The user manager reads ~/.config/systemd/user; a shell's own XDG_CONFIG_HOME is not its setting.
+# The user manager reads ~/.config/systemd/user; a shell's own XDG_CONFIG_HOME is not its setting (one set for the
+# manager itself through environment.d is not followed).
 units=${HOME:-$(cd ~ && pwd -P)}/.config/systemd/user
 wants=$units/timers.target.wants/$timer.timer
 if [[ $mode == install-timer || $mode == remove-timer ]] && ! command -v systemctl > /dev/null; then
@@ -58,11 +59,11 @@ if [[ $mode == install-timer ]]; then
     exit 1
   fi
   source_units=$(dirname -- "${BASH_SOURCE[0]}")/../systemd
-  # Quoted unit values cannot hold a quote, a backslash or a new line, and a placeholder's name would be filled
-  # in again by the next one.
+  # Quoted unit values cannot hold a quote, a backslash or a control character, and a placeholder's name would
+  # be filled in again by the next one.
   for value in "$data" "$repo"; do
-    if [[ $value == *[\\\"$'\n']* || $value == *@KIT@* || $value == *@DATA_HOME@* || $value == *@KIT_REPO@* ]]; then
-      kit_result fail "update cannot write the timer's service, because $value holds a quote, backslash, new line or @KIT@-style name"
+    if [[ $value == *[\\\"[:cntrl:]]* || $value == *@KIT@* || $value == *@DATA_HOME@* || $value == *@KIT_REPO@* ]]; then
+      kit_result fail "update cannot write the timer's service, because $value holds a quote, backslash, control character or the text @KIT@, @DATA_HOME@ or @KIT_REPO@"
       exit 1
     fi
   done
