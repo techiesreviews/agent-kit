@@ -38,8 +38,8 @@ Nothing else: no preamble, no headings, no markdown fence.
 
 const verdictLine = /^[-*\s]*\**(F-[a-z]+-\d{2})\**\s*:\s*\**(fine|looks off|broken)\**\s*(?:[—–:]|--?)?\s*(.*)$/i;
 const imageName = /\.(?:webp|png|jpe?g)$/i;
-/** Rulebook ids (S1, L5, B10, U4…) a text names, once each; kit ux uses it for the rules a bundle cites. */
-export const citedRules = text => [...new Set([...text.matchAll(/\b[SLBU]\d+\b/g)].map(match => match[0]))];
+/** Rulebook ids (HS3, S1, L5, B10, U4…) a text names, once each; kit ux uses it for the rules a bundle cites. */
+export const citedRules = text => [...new Set([...text.matchAll(/\b(?:HS|[SLBU])\d+\b/g)].map(match => match[0]))];
 const ruleIds = citedRules;
 
 /**

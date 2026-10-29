@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { feedbackHeading, feedbackKinds, parseFeedbackLine } from "../tickets.mjs";
 import { composeBundle } from "./ux";
 
-const { kitRoot, kitMainRoot, kitResult, kitSettings } = await import(
+const { kitHome, kitRoot, kitMainRoot, kitResult, kitSettings } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 
@@ -19,8 +19,8 @@ map by this repo's workspace, else "project" in scripts/agents/kit.json) and thi
 (maps in scripts/agents/kit.json; with none, no feedback logs are read). It needs a readable
 scripts/agents/kit.json, even with --project.
 Groups corrections that repeat (a repeats: date, or the same kind and close wording), marks each
-group covered? when its key words appear in docs/agents/ux-rulebook.md or docs/agents/guardrails.md,
-and writes main root .scratch/learn/<date>/bundle.md (under ${bundleLimit} bytes). A group counts when
+group covered? when its key words appear in the kit's docs/house-style.md, docs/agents/ux-rulebook.md
+or docs/agents/guardrails.md, and writes main root .scratch/learn/<date>/bundle.md (under ${bundleLimit} bytes). A group counts when
 one of its lines falls in the window: from the date given, or N days before today, both inclusive
 (default 14d). A malformed line or unknown kind or date is reported, not fatal, and not grouped.
 Nothing in the window: RESULT: ok learn nothing recorded yet [(n malformed)].
@@ -243,7 +243,8 @@ export function coveredBy(group, blocks) {
 const clip = (text, length) => text.length > length ? `${text.slice(0, length - 1)}…` : text;
 
 export function groupLines(group, root, blocks) {
-  const cover = coveredBy(group, blocks);
+  // The project's own rules and guardrails win; the kit's house style (blocks marked house) counts when none of them covers it.
+  const cover = coveredBy(group, blocks.filter(block => !block.house)) ?? coveredBy(group, blocks.filter(block => block.house));
   const sources = [...new Set(group.members.map(member => member.source))];
   const dates = [...new Set([...group.members.map(member => member.date), ...group.outside])].sort().reverse();
   // kit feedback often records a chat correction the day after, so a day apart counts too.
@@ -251,7 +252,7 @@ export function groupLines(group, root, blocks) {
   const crossDay = group.members.some(a => group.members.some(b => a.origin !== b.origin && dayApart(a.date, b.date) && a.kind === b.kind));
   return [
     `- **×${group.times} · ${group.kinds.join(", ")}** · ${dates.join(", ")} · ${sources.join("; ")}`,
-    `  - covered?: ${cover ? `${relative(root, cover.file)}:${cover.line}${cover.id ? ` (${cover.id})` : ""}, shared key words: ${cover.shared.join(", ")}` : "no rule or guardrail shares 3 key words"}`,
+    `  - covered?: ${cover ? `${cover.house ? "kit docs/house-style.md" : relative(root, cover.file)}:${cover.line}${cover.id ? ` (${cover.id})` : ""}, shared key words: ${cover.shared.join(", ")}` : "no rule or guardrail shares 3 key words"}`,
     ...group.outside.length ? [`  - earlier time not in the list: ${group.outside.join(", ")}`] : [],
     ...crossDay ? ["  - within a day in both lists: may be one correction recorded twice"] : [],
     ...group.members.map(member => `  - ${member.date} · ${member.kind} · ${clip(member.text, 300)} (${member.where})`),
@@ -292,8 +293,9 @@ function learn(args) {
       return 0;
     }
     groups.sort((a, b) => b.times - a.times || b.members[0].date.localeCompare(a.members[0].date));
-    const blocks = ["docs/agents/ux-rulebook.md", "docs/agents/guardrails.md"].map(path => join(root, path))
-      .filter(path => existsSync(path)).flatMap(path => ruleBlocks(readFileSync(path, "utf8"), path));
+    const house = join(kitHome(), "docs/house-style.md");
+    const blocks = [house, ...["docs/agents/ux-rulebook.md", "docs/agents/guardrails.md"].map(path => join(root, path))]
+      .filter(path => existsSync(path)).flatMap(path => ruleBlocks(readFileSync(path, "utf8"), path).map(block => path === house ? { ...block, house: true } : block));
     const repeated = groups.filter(group => group.times > 1), once = groups.filter(group => group.times === 1);
     const inWindow = entries.filter(entry => entry.date >= since).length;
     const date = localDate(new Date(now));

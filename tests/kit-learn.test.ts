@@ -22,7 +22,7 @@ cpSync(join(fixtures, "repo"), repo, { recursive: true });
 settingsIn(repo);
 type Entry = { date: string; kind: string; text: string; repeats?: string; source: string; file: string; line: number };
 type Group = { members: (Entry & { words: Set<string> })[]; outside: string[]; times: number; kinds: string[] };
-type Block = { file: string; line: number; id?: string; words: Set<string> };
+type Block = { file: string; line: number; id?: string; words: Set<string>; house?: boolean };
 // Node loads this extensionless executable as ESM; a URL keeps tsx from resolving it as TS.
 const learn: {
   parseArgs(args: string[]): { since: string; project?: string };
@@ -189,6 +189,18 @@ test("covered? names the rule block whose key words the correction shares", () =
   assert.ok(["hint", "text", "besid"].every(word => hint.shared.includes(word)), hint.shared.join());
   assert.equal(learn.coveredBy(of("Publishing"), blocks)?.file, guardrails);
   assert.equal(learn.coveredBy(of("Dragging"), blocks), undefined);
+});
+
+test("covered? takes the project's own rule first and the kit's house style only when none covers it", () => {
+  const rulebook = join(repo, "docs/agents/ux-rulebook.md"), house = resolve("docs/house-style.md");
+  const own = learn.ruleBlocks(readFileSync(rulebook, "utf8"), rulebook);
+  const shared = learn.ruleBlocks("# House style\n- **HS2** No hint text, explainer or tip beside the save button or any control; remove them.\n- **HS8** Dragging works on the whole thing.\n", house)
+    .map(block => ({ ...block, house: true }));
+  const groups = learn.groupCorrections(parsed().entries);
+  const of = (text: string) => groups.find(group => texts(group).some(item => item.includes(text)))!;
+  const covered = (text: string, blocks: Block[]) => learn.groupLines(of(text), repo, blocks).find(line => line.includes("covered?"));
+  assert.match(covered("hint text", [...shared, ...own])!, /covered\?: docs\/agents\/ux-rulebook\.md:5 \(S1\)/);
+  assert.match(covered("hint text", shared)!, /covered\?: kit docs\/house-style\.md:2 \(HS2\)/);
 });
 
 test("the slug comes from the project map by workspace, a sibling worktree included", () => {
