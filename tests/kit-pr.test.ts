@@ -406,11 +406,11 @@ test("a project with only checks.test: pr --dry-run runs only npm test and skips
     "unit: ok", "lint: skipped (no checks.lint in scripts/agents/kit.json)", "specs: skipped (no specs command in the project's commands folder)"])
     assert.ok(result.stdout.split("\n").includes(line), line);
   assert.match(result.stdout, /RESULT: ok dry-run [a-f0-9]{7} feature\/kit-pr -> main/);
-  assert.match(readFileSync(join(f.logDir(), "body.md"), "utf8"), /## Tests\n\nTier: full \(1 file, src\/app.js is code\)\n\n- skill guard: ok(?: — line check: [^\n]+)?\n- check: skipped \(no checks.check in scripts\/agents\/kit.json\)\n- npm test: ok\n- lint: skipped \(no checks.lint in scripts\/agents\/kit.json\)\n- specs: skipped \(no specs command in the project's commands folder\)\n$/);
+  assert.match(readFileSync(join(f.logDir(), "body.md"), "utf8"), /## Tests\n\nTier: full \(1 file, src\/app.js is code\)\n\n- skill guard: ok — line check: skipped \(no local skill folders\)\n- check: skipped \(no checks.check in scripts\/agents\/kit.json\)\n- npm test: ok\n- lint: skipped \(no checks.lint in scripts\/agents\/kit.json\)\n- specs: skipped \(no specs command in the project's commands folder\)\n$/);
 });
 
 test("kit pr stops before any check when the branch tracks a skill file, naming the path and never the text", t => {
-  // Made-up skill text in a fake HOME's skill folder: the line check reads only skill folders under HOME.
+  // Made-up skill text in a fake skill folder, named by KIT_SKILL_DIRS.
   const home = mkdtempSync(join(tmpdir(), "kit-pr-skills-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const secret = "Fold the paper crane twice along the moonlit diagonal before the kettle sings";
@@ -421,7 +421,7 @@ test("kit pr stops before any check when the branch tracks a skill file, naming 
     [{ "src/app.js": `// ${secret}\n` }, /src\/app\.js:1: holds a line from the local skill crane/],
   ] as const) {
     const f = fixture(t, { ...files }, {}, { settings: playground, workflows: false });
-    const result = f.run(["--dry-run"], { FAKE_BASE: "main", HOME: home }, true);
+    const result = f.run(["--dry-run"], { FAKE_BASE: "main", KIT_SKILL_DIRS: join(home, ".claude/skills") }, true);
     assert.equal(result.status, 1, result.stdout + result.stderr);
     assert.match(result.stdout + result.stderr, problem);
     assert.doesNotMatch(result.stdout + result.stderr, /moonlit/);

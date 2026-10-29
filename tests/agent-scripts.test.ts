@@ -829,7 +829,7 @@ process.exitCode = Number(process.env.ASE_FAKE_EXIT || 0);
   writeFileSync(join(bin, "package.json"), '{"type":"module"}');
   for (const cli of ["codex", "claude"]) { writeFileSync(join(bin, cli), fake); chmodSync(join(bin, cli), 0o755); }
   const capture = join(dir, "capture.json");
-  const invoke = (script: string, args: string[], overrides: NodeJS.ProcessEnv = {}) => spawnSync("bash", [resolve(`${script}`), ...args], {
+  const invoke = (script: string, args: string[], overrides: NodeJS.ProcessEnv = {}) => spawnSync("bash", [resolve(script), ...args], {
     encoding: "utf8", timeout: 15_000,
     env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CODEX_HOME: sourceHome, ASE_FAKE_CAPTURE: capture, ASE_AGENT_CLI: "", ASE_BUILD_MODEL: "", ASE_REVIEW_MODEL: "", ASE_AGENT_TIMEOUT: "10s", ...overrides },
   });

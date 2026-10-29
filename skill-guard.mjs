@@ -175,11 +175,12 @@ function main(argv) {
     else if (arg === "--history") flags.history = true;
     else if (arg === "--paths-only") flags.pathsOnly = true;
     else if (arg === "--help" || arg === "-h") { console.log(usage); return 0; }
-    else { console.error(usage); return 2; }
+    else { console.error(usage); console.log("RESULT: fail skill-guard usage"); return 2; }
   }
-  if (flags.base && flags.history) { console.error(usage); return 2; }
+  if (flags.base && flags.history) { console.error(usage); console.log("RESULT: fail skill-guard usage"); return 2; }
   if (!flags.base && !flags.history && !flags.pathsOnly) {
     console.error(`${usage}\nskill-guard: the line check needs --base REF or --history (or --paths-only)`);
+    console.log("RESULT: fail skill-guard usage");
     return 2;
   }
   let root;

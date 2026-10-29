@@ -130,6 +130,7 @@ test("KIT_SKILL_DIRS names the skill folders instead of HOME's; bad arguments ar
     const result = f.run(args);
     assert.equal(result.status, 2, args.join(" "));
     assert.match(result.stderr, /^Usage: skill-guard\.mjs/);
+    assert.equal(result.stdout, "RESULT: fail skill-guard usage\n");
   }
   const missing = f.run([]);
   assert.equal(missing.status, 2);

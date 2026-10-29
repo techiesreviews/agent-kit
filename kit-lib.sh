@@ -5,7 +5,10 @@ kit_root() {
   if [[ -n ${KIT_ROOT:-} ]]; then
     printf '%s\n' "$KIT_ROOT"
   elif ! git rev-parse --show-toplevel 2>/dev/null; then
-    (cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
+    # Outside git: the project around a kit kept in its scripts/agents/, else the kit's own folder.
+    local here
+    here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+    if [[ $here == */scripts/agents ]]; then (cd -- "$here/../.." && pwd -P); else printf '%s\n' "$here"; fi
   fi
 }
 

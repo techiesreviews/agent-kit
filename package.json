@@ -7,7 +7,7 @@
   "scripts": {
     "test": "tsx --test 'tests/!(kit-tests-clean).test.ts'",
     "test:kit-clean": "tsx --test tests/kit-tests-clean.test.ts",
-    "lint": "node tickets.mjs check && node skill-guard.mjs --paths-only"
+    "lint": "node tickets.mjs check"
   },
   "devDependencies": {
     "tsx": "^4.23.15"
