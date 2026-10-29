@@ -34,7 +34,8 @@ agent.sh review) judges each feature in the bundle fine, looks off or broken aga
 the mock-up. The rules are the kit's docs/house-style.md (HS ids) and the project's
 docs/agents/ux-rulebook.md, either of which may be missing; the brief says project rules win where
 they disagree, and a project entry with an HS id replaces that house rule. Saved beside bundle.md:
-ux.md (one line per feature, the rules broken), ux.json and the reviewer's run.log; counts go to the piece's scoreboard record as ux. --no-review skips it.
+ux.md (one line per feature, the rules broken), ux.json and the reviewer's run.log; counts go to the
+piece's scoreboard record as ux. --no-review skips it.
 KIT_UX_SHOTS and KIT_UX_AGENT: executables replacing the project's kit shots and agent.sh, same arguments (tests).
 RESULT: ok ux <n> features tried, <m> scripted findings, <f> fine, <o> looks off, <b> broken, bundle <dir>.
 A failed try or a broken verdict fails with broken: <feature,…>; a failed screens run adds

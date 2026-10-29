@@ -9,7 +9,7 @@ Read it when making a mock-up, writing a visible ticket, building one and review
 stations 3, 4, 6 and 8). `kit ux` gives these rules to the UX reviewer together with the project's own
 UX rulebook (`docs/agents/ux-rulebook.md`). **The project's rulebook adds detail and wins where it
 differs**: the reviewer is told so, and a project replaces a house rule by writing the same id in its
-own rulebook (`- **HS19** Not here: the editor's chrome keeps its blue.`). A ticket may break a rule
+own rulebook (`- **HS9** Not here: the tool reopens the last script.`). A ticket may break a rule
 only when Lex asked for it there.
 
 Each rule opens with one plain line that holds what is checked (the UX reviewer is given only that

@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { feedbackHeading, feedbackKinds, parseFeedbackLine } from "../tickets.mjs";
-import { composeBundle } from "./ux";
+import { composeBundle, parseRules } from "./ux";
 
 const { kitHome, kitRoot, kitMainRoot, kitResult, kitSettings } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
@@ -238,9 +238,9 @@ export function houseBlocks(text, file, { replaced = new Set() } = {}) {
     .map(block => ({ ...block, words: keyWords(block.text.split(/\sWhy:/)[0]), house: true }));
 }
 
-/** HS ids a project's own rule lines restate, the shape kit ux reads; a heading or prose quoting one does not count. */
-export function replacedIds(blocks) {
-  return new Set(blocks.flatMap(block => /^\s{0,3}[-*] \*\*(HS\d+)\*\* /.exec(block.text)?.[1] ?? []));
+/** HS ids the project's UX rulebook restates, read by kit ux's own parseRules, so both commands agree on what is replaced. */
+export function replacedIds(rulebook) {
+  return new Set([...parseRules(rulebook).keys()].filter(id => id.startsWith("HS")));
 }
 
 export const coverWords = 3;
@@ -312,7 +312,9 @@ function learn(args) {
     const own = ["docs/agents/ux-rulebook.md", "docs/agents/guardrails.md"].map(path => join(root, path))
       .filter(path => existsSync(path)).flatMap(path => ruleBlocks(readFileSync(path, "utf8"), path));
     const house = join(kitHome(), "docs/house-style.md");
-    const shared = existsSync(house) ? houseBlocks(readFileSync(house, "utf8"), house, { replaced: replacedIds(own) }) : [];
+    const rulebook = join(root, "docs/agents/ux-rulebook.md");
+    const replaced = replacedIds(existsSync(rulebook) ? readFileSync(rulebook, "utf8") : "");
+    const shared = existsSync(house) ? houseBlocks(readFileSync(house, "utf8"), house, { replaced }) : [];
     const blocks = [...own, ...shared];
     const repeated = groups.filter(group => group.times > 1), once = groups.filter(group => group.times === 1);
     const inWindow = entries.filter(entry => entry.date >= since).length;

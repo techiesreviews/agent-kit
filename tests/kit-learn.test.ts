@@ -30,7 +30,7 @@ const learn: {
   groupCorrections(entries: Entry[], otherSlugs?: string[]): Group[];
   ruleBlocks(text: string, file: string): Block[];
   houseBlocks(text: string, file: string, options?: { replaced?: Set<string> }): Block[];
-  replacedIds(blocks: Block[]): Set<string>;
+  replacedIds(rulebook: string): Set<string>;
   coveredBy(group: Group, blocks: Block[]): (Block & { shared: string[] }) | undefined;
   projectMap(readme: string): { slug: string; workspace: string }[];
   findSlug(rows: { slug: string; workspace: string }[], roots: string[]): string | undefined;
@@ -208,12 +208,14 @@ test("covered? takes the project's own rule first and the kit's house style only
   assert.equal(learn.houseBlocks(text, house).length, 1);
   assert.deepEqual(learn.houseBlocks(text, house, { replaced: new Set(["HS2"]) }), []);
   // Only a project rule line restating HS2 replaces it; a heading that quotes HS2 does not.
-  const quoting = learn.ruleBlocks("# UX rulebook\n\n## Hints (see **HS2**)\n\n- **S1** No hint text beside controls.\n", rulebook);
-  const restating = learn.ruleBlocks("# UX rulebook\n\n- **HS2** Not here.\n", rulebook);
-  const hintCover = (ownBlocks: Block[]) => learn.groupLines(of("hint text"), repo, [...ownBlocks.filter(block => block.id !== "S1"),
-    ...learn.houseBlocks(text, house, { replaced: learn.replacedIds(ownBlocks) })]).find(line => line.includes("covered?"));
+  const quoting = "# UX rulebook\n\n## Hints (see **HS2**)\n\n- **S1** No hint text beside controls.\n";
+  const restating = "# UX rulebook\n\n- **HS2** Not here.\n";
+  const hintCover = (markdown: string) => learn.groupLines(of("hint text"), repo,
+    learn.houseBlocks(text, house, { replaced: learn.replacedIds(markdown) })).find(line => line.includes("covered?"));
   assert.match(hintCover(quoting)!, /kit docs\/house-style\.md:2 \(HS2\)/);
   assert.doesNotMatch(hintCover(restating)!, /house-style/);
+  // The same lines kit ux reads: a * bullet or a nested item restates nothing.
+  assert.deepEqual([...learn.replacedIds("* **HS2** Not here.\n  - **HS3** nested\n")], []);
   // Why and Check lines do not lend their words to a rule.
   const [rule] = learn.houseBlocks("- **HS1** Dragging works on the whole thing.\n  Why: hint text beside the save button.\n  Check: eye.\n", house);
   assert.ok(!rule.words.has("hint") && !rule.words.has("check"), [...rule.words].join());
@@ -227,8 +229,8 @@ test("the real house style gives one block per HS rule, each at its own rule lin
     assert.match(lines[block.line - 1], new RegExp(`^- \\*\\*${block.id}\\*\\* `), `${block.id} at line ${block.line}`);
     assert.equal(block.house, true);
   }
-  // The intro quotes "- **HS19** …" as an example; it must not become a rule.
-  assert.ok(lines.slice(0, 20).some(line => line.includes("**HS19**")));
+  // The intro quotes "- **HS9** …" as an example; it must not become a rule.
+  assert.ok(lines.slice(0, 20).some(line => line.includes("**HS9**")));
   assert.ok(blocks.every(block => block.line > 20));
 });
 
@@ -249,6 +251,11 @@ test("kit learn reads the house style from KIT_HOME and counts only its numbered
   assert.match(bundle, /chat: Status\n {2}- covered\?: no rule or guardrail shares 3 key words/);
   // The project's own S1 still covers the hint corrections.
   assert.match(bundle, /covered\?: docs\/agents\/ux-rulebook\.md:5 \(S1\)/);
+  // A machine copy runs without KIT_HOME: the kit's own folder is its home.
+  const { KIT_HOME: _unset, ...noHome } = { ...kitEnv(), ASE_SKIP_DOCTOR: "1", KIT_ROOT: repo, KIT_CHAT_MEMORY: memory, KIT_MAIN_ROOT: main, HOME: dir };
+  const copy = spawnSync("bash", [join(home, "kit"), "learn", "--since", "2026-10-01", "--project", "demo"], { encoding: "utf8", timeout: 20_000, env: noHome });
+  assert.equal(copy.status, 0, copy.stderr);
+  assert.match(bundleOf(copy.stdout), /chat: Drag\n {2}- covered\?: kit docs\/house-style\.md:5 \(HS1\)/);
   // A kit without a house style still runs, on the project's rules alone.
   rmSync(join(home, "docs"), { recursive: true });
   const bare = run({ KIT_CHAT_MEMORY: memory, KIT_MAIN_ROOT: main, HOME: dir, KIT_HOME: home }, ["--since", "2026-10-01", "--project", "demo"]);
