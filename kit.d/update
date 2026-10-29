@@ -6,18 +6,26 @@ source "${KIT_LIB:-$(dirname -- "${BASH_SOURCE[0]}")/../kit-lib.sh}"
 
 usage() {
   cat <<'EOF'
-Usage: kit update [--previous]
+Usage: kit update [--previous | --install-timer | --remove-timer]
 Fetch the kit repo's main (KIT_REPO, which the launcher sets) and unpack it into
 ${XDG_DATA_HOME:-~/.local/share}/agent-kit/<commit>/, then point current at it in one step.
 --previous points current back at the kit it replaced, for every project at once; kit update
 then stays there until main moves on (the normal way back is a revert in the kit repo).
+--install-timer writes the kit's systemd/agent-kit-update.timer and .service into
+${XDG_CONFIG_HOME:-~/.config}/systemd/user/ and starts the timer: the machine copy's kit update
+then runs every 15 minutes while you are logged in. --remove-timer stops it and takes both files
+out. Both are safe to run again; neither fetches anything.
 EOF
 }
-previous=false
+mode=update
 for argument in "$@"; do
   case $argument in
     --help|-h) usage; exit 0 ;;
-    --previous) previous=true ;;
+    --previous|--install-timer|--remove-timer)
+      if [[ $mode != update && $mode != "${argument#--}" ]]; then
+        usage >&2; kit_result fail "update takes one of --previous, --install-timer and --remove-timer"; exit 2
+      fi
+      mode=${argument#--} ;;
     *) usage >&2; kit_result fail "update unknown argument $argument"; exit 2 ;;
   esac
 done
@@ -47,10 +55,73 @@ remove() { chmod -R u+w -- "$1" 2>/dev/null || :; rm -rf -- "$1"; }
 # A folder holds a kit when it has what the front door needs: kit to run and kit-lib.sh to source.
 has_kit() { [[ -x $1/kit && -f $1/kit-lib.sh ]]; }
 
+timer=agent-kit-update
+units=${XDG_CONFIG_HOME:-}
+[[ $units == /* ]] || units=${HOME:-$(cd ~ && pwd -P)}/.config
+units=$units/systemd/user
+if [[ $mode == install-timer || $mode == remove-timer ]] && ! command -v systemctl > /dev/null; then
+  kit_result fail "update no systemctl: the update timer needs systemd"
+  exit 1
+fi
+if [[ $mode == install-timer ]]; then
+  # The service runs the machine copy's front door through current, so it always runs the newest kit.
+  if ! has_kit "$data/current"; then
+    kit_result fail "update no machine copy at $data/current to run; run kit update first"
+    exit 1
+  fi
+  source_units=$(dirname -- "${BASH_SOURCE[0]}")/../systemd
+  data_home=${data%/agent-kit}
+  # Quoted unit values cannot hold a quote, a backslash or a new line; % (and $ in ExecStart) are doubled.
+  for value in "$data" "$repo"; do
+    if [[ $value == *[\\\"$'\n']* ]]; then
+      kit_result fail "update cannot write a unit for $value (a quote, backslash or new line)"
+      exit 1
+    fi
+  done
+  escape() { local text=${1//%/%%}; [[ ${2-} != exec ]] || text=${text//\$/\$\$}; printf '%s' "$text"; }
+  mkdir -p -- "$units"
+  changed=false
+  for kind in timer service; do
+    content=$(< "$source_units/$timer.$kind")
+    content=${content//@KIT@/"$(escape "$data/current/kit" exec)"}
+    content=${content//@DATA_HOME@/"$(escape "$data_home")"}
+    content=${content//@KIT_REPO@/"$(escape "$repo")"}
+    file=$units/$timer.$kind
+    if [[ -f $file && $(< "$file") == "$content" ]]; then continue; fi
+    printf '%s\n' "$content" > "$file.$$"
+    mv -fT -- "$file.$$" "$file"
+    printf 'wrote %s\n' "$file"
+    changed=true
+  done
+  if ! systemctl --user daemon-reload || ! systemctl --user enable --now "$timer.timer"; then
+    kit_result fail "update cannot start $timer.timer (systemctl --user status $timer.timer says why)"
+    exit 1
+  fi
+  if [[ $changed == true ]]; then kit_result ok "update timer installed: kit update runs every 15 minutes"
+  else kit_result ok "update timer already installed: kit update runs every 15 minutes"; fi
+  exit 0
+fi
+if [[ $mode == remove-timer ]]; then
+  if [[ ! -e $units/$timer.timer && ! -e $units/$timer.service ]]; then
+    kit_result ok "update timer already removed"
+    exit 0
+  fi
+  # disable needs the timer file; a lone service file has nothing enabled to take back.
+  if [[ -e $units/$timer.timer ]] && ! systemctl --user disable --now "$timer.timer"; then
+    kit_result fail "update cannot stop $timer.timer; nothing removed"
+    exit 1
+  fi
+  rm -f -- "$units/$timer.timer" "$units/$timer.service"
+  printf 'removed %s and %s\n' "$units/$timer.timer" "$units/$timer.service"
+  systemctl --user daemon-reload || :
+  kit_result ok "update timer removed"
+  exit 0
+fi
+
 current=$(target current) before=$(target previous)
 held=''
 [[ ! -f $data/held ]] || held=$(< "$data/held")
-if [[ $previous == true ]]; then
+if [[ $mode == previous ]]; then
   # Already stepped back: previous is the kit stepped back from, so swapping again would undo the step.
   if [[ -n $held && $before == "$held" ]]; then
     kit_result ok "update already back on $(short "${current:-none}")"

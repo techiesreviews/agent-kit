@@ -1,0 +1,13 @@
+# kit update --install-timer copies this into ~/.config/systemd/user/, filling in the machine copy's
+# current/kit, its data folder and the kit repo from the machine it runs on.
+[Unit]
+Description=Agent Kit: unpack the newest kit into this machine's copy
+Documentation=https://github.com/techiesreviews/agent-kit
+
+[Service]
+Type=oneshot
+Environment="XDG_DATA_HOME=@DATA_HOME@" "KIT_REPO=@KIT_REPO@"
+ExecStart="@KIT@" update
+# kit update gives its fetch and its lock two minutes each.
+TimeoutStartSec=10min
+Nice=10

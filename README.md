@@ -26,7 +26,8 @@ only a small launcher and its own settings; the kit itself lives here, once.
 - CI runs the kit's tests and lint, then the Native Site Editor's `npm test` and `npm run lint` from its `dev`
   branch against the changed kit. A kit change lands only when both pass, because every project runs the newest
   kit.
-- After a merge, `kit update` (soon a timer) brings it to every project on the machine.
+- After a merge, `kit update` brings it to every project on the machine. `kit update --install-timer` (once per
+  machine) runs it every 15 minutes through a `systemd --user` timer; `kit update --remove-timer` takes it out.
 
 ## Layout
 
@@ -37,6 +38,7 @@ only a small launcher and its own settings; the kit itself lives here, once.
 | `hooks/` | the guard hooks (`bash-guard`, `agent-cap`, `session-env`) and their `run.sh` |
 | `context-card.mjs`, `worktree.sh`, `tickets.mjs`, `unit.sh`, `review-findings.mjs`, `second-look.json`, … | helpers beside `kit` that commands and a project's forwarders run through `kit --home` |
 | `launcher/` | the two launchers `kit init` copies into a project |
+| `systemd/` | the update timer and service `kit update --install-timer` writes into `~/.config/systemd/user/` |
 | `docs/` | the shared kitchen rulebook and the template for a project's extras |
 | `skill-guard.mjs` | keeps paid skills out of every repo (below) |
 | `tests/` | one test file per command or helper |

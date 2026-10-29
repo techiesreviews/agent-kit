@@ -1,0 +1,11 @@
+# kit update --install-timer copies this into ~/.config/systemd/user/ as it is.
+[Unit]
+Description=Bring the newest Agent Kit to this machine every 15 minutes
+
+[Timer]
+# Every quarter hour while you are logged in; a run missed while the computer slept or was off happens at login.
+OnCalendar=*:0/15
+Persistent=true
+
+[Install]
+WantedBy=timers.target
