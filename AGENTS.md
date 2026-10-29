@@ -8,6 +8,7 @@ Agent commands: `scripts/agents/kit --help`; `scripts/agents/kit <command> --hel
 - The kit lives at the top folder (`kit`, `kit-lib.*`, `kit.d/`, `hooks/`, `launcher/`, `docs/`); `kit update` unpacks `main` from here into every machine's `~/.local/share/agent-kit/`, so whatever lands on `main` reaches every project within the update interval.
 - `scripts/agents/kit` here is the launcher like in any project: it runs the machine copy. To try this checkout, set `KIT_HOME` to it (`KIT_HOME=$PWD scripts/agents/kit doctor`), or in a project `KIT_HOME=~/Projects/agent-kit-<branch> scripts/agents/kit unit --affected`.
 - Work in a worktree (`git worktree add -b <branch> ../agent-kit-<branch> main`), land with `scripts/agents/kit pr` into `main`. CI runs this repo's tests, then the Native Site Editor's `npm test` and `npm run lint` from its `dev` branch against the changed kit; a kit change lands only when both pass.
+- Projects link into `docs/kitchen.md` by heading, and their tests check those links against the kit they run. Renaming a heading keeps the old anchor as `<a id="old-heading"></a>` beside the new one, so no project's gate fails on the rename.
 - Every command is one file in `kit.d/` with a `# kit: <summary>` line and its own `tests/kit-<command>.test.ts`; shared helpers sit beside `kit`, reached from commands through `import.meta.dirname` or `KIT_HOME`, never through a project's `scripts/agents/`.
 
 ## Standards
