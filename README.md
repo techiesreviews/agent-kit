@@ -6,6 +6,8 @@ only a small launcher and its own settings; the kit itself lives here, once.
 
 ## How a project uses it
 
+- On a machine without the kit yet, fetch it once and fill the machine copy:
+  `git clone --depth 1 https://github.com/techiesreviews/agent-kit ~/.cache/agent-kit && ~/.cache/agent-kit/kit update`.
 - `kit init` (run once, from the machine copy: `~/.local/share/agent-kit/current/kit init`) writes the project's
   `scripts/agents/kit.json` settings, the launcher `scripts/agents/kit`, the hook launcher
   `scripts/agents/hooks/run.sh` and the hook entries in `.claude/settings.json` and `.codex/hooks.json`.

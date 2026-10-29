@@ -39,6 +39,9 @@ function fixture(t: TestContext) {
   ].join("\n") + "\n");
   // An extensionless file that is not a licence still counts.
   put(join(home, ".claude/skills/crane/Makefile"), "fold:\n\t@echo crease the wing twice and let the crane rest beside the teapot\n");
+  // Files only named like a licence are skill text and are read.
+  put(join(home, ".claude/skills/crane/references/notice-and-consent.md"), "Ask the paper crane politely before folding its wings back along the crease\n");
+  put(join(home, ".claude/skills/crane/scripts/license-check.py"), "print('A crane may only be folded by someone who has thanked the paper first')\n");
   put(join(home, ".codex/plugins/cache/kit/skills/jar/SKILL.md"), "The jar skill keeps its own long line here so plugins are read too, okay\n");
   mkdirSync(repo);
   const env = { ...kitEnv(), HOME: home, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
@@ -72,9 +75,11 @@ test("every file of a skill counts, but only lines of 60 or more characters that
   assert.equal(roots, 2);
   assert.deepEqual(files.map(file => file.path.slice(f.home.length)).sort(),
     ["/.claude/skills/crane/Makefile", "/.claude/skills/crane/SKILL.md", "/.claude/skills/crane/references/more.md",
+      "/.claude/skills/crane/references/notice-and-consent.md", "/.claude/skills/crane/scripts/license-check.py",
       "/.claude/skills/crane/scripts/tool.mjs", "/.claude/skills/crane/templates/page.html", "/.codex/plugins/cache/kit/skills/jar/SKILL.md"]);
   const index = skillIndex(files);
-  assert.equal(index.count, 6);
+  assert.equal(index.count, 8);
+  assert.equal(skillMatch("Ask the paper crane politely before folding its wings back along the crease", index), "crane");
   assert.equal(skillMatch("\t@echo crease the wing twice and let the crane rest beside the teapot", index), "crane");
   assert.equal(skillMatch("<p>The paper crane template greets the reader with a folded welcome banner here</p>", index), "crane");
   for (const line of ['<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">',
@@ -130,7 +135,7 @@ test("without local skill folders the line check is skipped and says so; a clean
   f.git("add", "b.md"); f.git("commit", "-q", "-m", "b");
   const clean = f.run(["--base", "HEAD~1"]);
   assert.equal(clean.status, 0, clean.stderr);
-  assert.match(clean.stdout, /^skill-guard: line check: \d+ lines against 6 skill lines from 6 skill files\nRESULT: ok skill-guard\n$/);
+  assert.match(clean.stdout, /^skill-guard: line check: \d+ lines against 8 skill lines from 8 skill files\nRESULT: ok skill-guard\n$/);
 });
 
 test("--history checks every path, blob and commit message any ref ever held", (t) => {
