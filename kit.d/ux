@@ -4,7 +4,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, matchesGlob, normalize, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { citedRules, parseUxResult, uxBrief, uxCounts, uxReport } from "../ux-brief.mjs";
+import { citedRules, parseRules, parseUxResult, uxBrief, uxCounts, uxReport } from "../ux-brief.mjs";
 
 const { kitHome, kitRoot, kitMainRoot, kitOwner, kitResult, kitScore, kitSettingsFile, scoreCost } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
@@ -106,9 +106,12 @@ export function parseFeatures(markdown) {
   }));
 }
 
-/** First line of each rule in a rulebook (the kit's house style, a project's ux-rulebook.md), by id. */
-export function parseRules(markdown) {
-  return new Map([...markdown.matchAll(/^- \*\*((?:HS|[SLBU])\d+)\*\* (.+)$/gm)].map(match => [match[1], match[2]]));
+export { parseRules };
+
+/** A scripted check's project id that the project's rulebook lacks falls back to the house rule checking the same thing. */
+const houseFallbacks = { S1: "HS2", L2: "HS15", L5: "HS18", L12: "HS17", U4: "HS18", U6: "HS18" };
+export function ruleFor(id, rulebook) {
+  return rulebook.has(id) || !rulebook.has(houseFallbacks[id]) ? id : houseFallbacks[id];
 }
 
 /**
@@ -616,14 +619,16 @@ async function main() {
       coloursLine = `colours: ${coloursCommand}: ${!status ? "ok" : `exited ${status}, ${count}${found.outside ? ` (${found.outside} outside the diff)` : ""}; log ${log}`}`;
     }
     if (coloursLine) console.log(coloursLine);
-    const layout = layoutFindings(tries);
+    const rulebook = loadRules(root);
+    const layout = layoutFindings(tries).map(entry => ({ ...entry, rule: ruleFor(entry.rule, rulebook) }));
     // Base text of each changed source file, so moved or re-edited lines are not counted as new.
     const bases = new Map([...new Set(added.map(entry => entry.file))].map(file => {
       try { return [file, git("show", `${mergeBase}:${file}`)]; } catch { return [file, ""]; }
     }));
-    const sourceFindings = [...colours, ...textFindings(added, bases), ...cssFindings(css, added)];
+    const sourceFindings = [...colours, ...textFindings(added, bases), ...cssFindings(css, added)]
+      .map(finding => ({ ...finding, rule: ruleFor(finding.rule, rulebook) }));
     const findingLines = [
-      ...layout.filter(entry => entry.tap).map(entry => `- U6 tap target under 44 px at 390: ${entry.selector} — ${entry.detail} (${entry.screen}; ${entry.sizes.join(", ")}) ${entry.shot}`),
+      ...layout.filter(entry => entry.tap).map(entry => `- ${entry.rule} tap target under 44 px at 390: ${entry.selector} — ${entry.detail} (${entry.screen}; ${entry.sizes.join(", ")}) ${entry.shot}`),
       ...layout.filter(entry => !entry.tap).map(entry => `- ${entry.rule} layout ${entry.kind}: ${entry.selector} — ${entry.detail} (${entry.screen}; ${entry.sizes.join(", ")}) ${entry.shot}`),
       ...sourceFindings.map(finding => `- ${finding.rule} ${finding.file}${finding.line ? `:${finding.line}` : ""}: ${finding.text}`),
     ];
@@ -649,7 +654,6 @@ async function main() {
       try { mockups = mockupLinks(readFileSync(resolve(root, ticket), "utf8"), ticket); }
       catch { console.error(`problem: ticket ${ticket} unreadable; no mock-up link`); }
     }
-    const rulebook = loadRules(root);
     const rules = citedRules([...selected.map(feature => feature.good), ...layout.map(entry => entry.rule), ...sourceFindings.map(finding => finding.rule)].join(" "));
     const tried = tries.filter(entry => entry.kind === "steps");
     const passed = tried.filter(entry => entry.ok).length;

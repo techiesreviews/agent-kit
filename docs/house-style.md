@@ -2,7 +2,7 @@
 
 How every Techies tool should look and feel, whatever the project. It collects the choices Lex made
 again and again across the Native Site Editor (editor.techies.tools), the script editor
-(script.techies.tools), the prompter (prompter.techies.tools), the TechiesTools site and the Techies
+(script.techies.tools), the prompter (prompter.techies.tools), the techies.tools site and the Techies
 Reviews website (techies.review). It travels with the kit, so a new project starts with it.
 
 Read it when making a mock-up, writing a visible ticket, building one and reviewing one (kitchen
@@ -29,18 +29,17 @@ using it as a person would, in a normal browser and in T3's browser.
   al of them" (prompter, 2026-10-28).
   Check: `eye`.
 - **HS2** No explainer lines, hints or keyboard tips beside controls; a control shows its name or icon.
-  A control shows its name or its icon; the thing itself makes clear what it does.
+  The thing itself makes clear what it does.
   Why: "Drag the dot" removed from the image controls (2026-10-21); the agent menu cut to three
   actions, "no explainer or what soever needed" (2026-10-23); "Remove the explainer on the dragger"
   (prompter, 2026-10-28).
   Check: `eye`.
 - **HS3** An action with a clear icon shows the icon alone, its name only in the tooltip and label.
-  Its name goes in the tooltip and the accessible label.
+  The tooltip and the accessible label carry the same name.
   Why: "remove the text with ask agent, just show the icon" (Native Site Editor, 2026-10-25).
   Check: `eye`.
 - **HS4** Visible words are plain, never code: no ids, file paths, selectors or `localhost` addresses.
-  No commit ids, file paths, selectors, technical field names or computer-only addresses
-  (`localhost`) on screen.
+  Technical field names count as code too.
   Why: the Native Site Editor's Files header and media audit (its rule S7).
   Check: `eye`.
 - **HS5** The main screen holds only what is used all the time; the rest sits in a popover on its button, never a sidebar.

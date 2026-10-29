@@ -230,8 +230,9 @@ test("the real house style gives one block per HS rule, each at its own rule lin
     assert.equal(block.house, true);
   }
   // The intro quotes "- **HS9** …" as an example; it must not become a rule.
-  assert.ok(lines.slice(0, 20).some(line => line.includes("**HS9**")));
-  assert.ok(blocks.every(block => block.line > 20));
+  assert.ok(lines.slice(0, lines.findIndex(line => line.startsWith("## "))).some(line => line.includes("**HS9**")));
+  const firstSection = lines.findIndex(line => line.startsWith("## ")) + 1;
+  assert.ok(blocks.every(block => block.line > firstSection));
 });
 
 test("kit learn reads the house style from KIT_HOME and counts only its numbered rules", (t) => {
@@ -251,6 +252,14 @@ test("kit learn reads the house style from KIT_HOME and counts only its numbered
   assert.match(bundle, /chat: Status\n {2}- covered\?: no rule or guardrail shares 3 key words/);
   // The project's own S1 still covers the hint corrections.
   assert.match(bundle, /covered\?: docs\/agents\/ux-rulebook\.md:5 \(S1\)/);
+  // A project that restates HS1 has replaced it: learn() leaves the kit's HS1 out end to end.
+  const restating = join(dir, "restating");
+  cpSync(join(fixtures, "repo"), restating, { recursive: true });
+  settingsIn(restating);
+  writeFileSync(join(restating, "docs/agents/ux-rulebook.md"), `${readFileSync(join(restating, "docs/agents/ux-rulebook.md"), "utf8")}- **HS1** Not here.\n`);
+  const own = run({ KIT_CHAT_MEMORY: memory, KIT_ROOT: restating, KIT_MAIN_ROOT: main, HOME: dir, KIT_HOME: home }, ["--since", "2026-10-01", "--project", "demo"]);
+  assert.equal(own.status, 0, own.stderr);
+  assert.doesNotMatch(bundleOf(own.stdout), /kit docs\/house-style\.md:5 \(HS1\)/);
   // A machine copy runs without KIT_HOME: the kit's own folder is its home.
   const { KIT_HOME: _unset, ...noHome } = { ...kitEnv(), ASE_SKIP_DOCTOR: "1", KIT_ROOT: repo, KIT_CHAT_MEMORY: memory, KIT_MAIN_ROOT: main, HOME: dir };
   const copy = spawnSync("bash", [join(home, "kit"), "learn", "--since", "2026-10-01", "--project", "demo"], { encoding: "utf8", timeout: 20_000, env: noHome });
