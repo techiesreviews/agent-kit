@@ -12,14 +12,15 @@ differs**: the reviewer is told so, and a project replaces a house rule by writi
 own rulebook (`- **HS19** Not here: the editor's chrome keeps its blue.`). A ticket may break a rule
 only when Lex asked for it there.
 
-Each rule opens with one plain line, then any detail, a **why** naming the corrections it comes from
+Each rule opens with one plain line that holds what is checked (the UX reviewer is given only that
+line), then any detail, a **why** naming the corrections it comes from
 (dates are Lex's own words in that project; the chat memory's `memory/corrections/<project>.md`
 lists them), and a **check**: `eye` is the UX reviewer judging screenshots or trying it, `try` means
 using it as a person would, in a normal browser and in T3's browser.
 
 ## Say less
 
-- **HS1** No toasts, pop-up statuses, banners or info strips after an action.
+- **HS1** No toasts, pop-up statuses, banners or info strips after an action; the result shows where it happened.
   The result shows where it happened: the button's label or a check mark, the item itself, a small
   dot on the button that opens the thing. A screen-reader status line (visually hidden) still
   announces it.
@@ -27,22 +28,22 @@ using it as a person would, in a normal browser and in T3's browser.
   2026-10-23); "not everything needs to be mentioned in a toast" (2026-10-25); "remove the statusses
   al of them" (prompter, 2026-10-28).
   Check: `eye`.
-- **HS2** No explainer lines, hints or keyboard tips beside controls.
+- **HS2** No explainer lines, hints or keyboard tips beside controls; a control shows its name or icon.
   A control shows its name or its icon; the thing itself makes clear what it does.
   Why: "Drag the dot" removed from the image controls (2026-10-21); the agent menu cut to three
   actions, "no explainer or what soever needed" (2026-10-23); "Remove the explainer on the dragger"
   (prompter, 2026-10-28).
   Check: `eye`.
-- **HS3** An action with a clear icon shows the icon alone.
+- **HS3** An action with a clear icon shows the icon alone, its name only in the tooltip and label.
   Its name goes in the tooltip and the accessible label.
   Why: "remove the text with ask agent, just show the icon" (Native Site Editor, 2026-10-25).
   Check: `eye`.
-- **HS4** Visible words are plain, never code.
+- **HS4** Visible words are plain, never code: no ids, file paths, selectors or `localhost` addresses.
   No commit ids, file paths, selectors, technical field names or computer-only addresses
   (`localhost`) on screen.
   Why: the Native Site Editor's Files header and media audit (its rule S7).
   Check: `eye`.
-- **HS5** The main screen holds only what is used all the time.
+- **HS5** The main screen holds only what is used all the time; the rest sits in a popover on its button, never a sidebar.
   Everything else (settings, the microphone, the agent connection, a second screen) sits in a
   popover anchored to the button that opens it, never in a sidebar. Leave out modes and toggles Lex
   did not ask for.
@@ -58,20 +59,20 @@ using it as a person would, in a normal browser and in T3's browser.
   Why: "It needs to be done instantly" (image Replace, 2026-10-21) and "Also instantly" (shape, focus,
   zoom and trimming, 2026-10-21); Native Site Editor rules B10 and B11.
   Check: `try`.
-- **HS7** Nothing pauses after a change or an Undo.
+- **HS7** Nothing pauses after a change or an Undo, and nothing flickers or jumps while zooming, moving or dragging.
   The next keystroke or drag works at once; zooming, moving and dragging draw without a blank frame
   or a jump.
   Why: "It feels there is a delay when I changed something", "Undo feels slow" (2026-10-25); the
   image flicker while zooming and moving (2026-10-22).
   Check: `try`.
-- **HS8** People act on the thing itself, not on a handle for it.
+- **HS8** People act on the thing itself: a click on text types there, and a draggable thing drags from anywhere on it.
   One click on text types there; a draggable thing can be grabbed anywhere along it; no extra dot,
   tab or grip when the object can be dragged.
   Why: "click, and directly select and type text" (2026-10-23); "the dot feels not needed … just use
   the square" (2026-10-25); "I want the horizontal line to be totally draggable" (prompter,
   2026-10-28).
   Check: `try`.
-- **HS9** A tool opens on a clear, calm start screen.
+- **HS9** A tool opens on a clear, calm start screen and never opens content nobody asked for.
   It never opens content by itself that the person did not ask for; text reads left-aligned inside a
   centred column.
   Why: prompter, 2026-10-28.
@@ -90,7 +91,7 @@ using it as a person would, in a normal browser and in T3's browser.
 
 ## The same in every tool
 
-- **HS12** Connecting an agent works the same way in every tool.
+- **HS12** Connecting an agent works like the script editor's Copy MCP button: same labels, states and on-button feedback.
   The Copy MCP button looks, reads and gives feedback exactly like the one in the script editor and
   the Native Site Editor: the same labels, the same states from copying to connected (showing the
   agent's name) to Disconnect, the feedback on the button itself, and setup text that works for any
@@ -101,7 +102,7 @@ using it as a person would, in a normal browser and in T3's browser.
   feedback" (prompter, 2026-10-28); "the prompt is not copied" (2026-10-24, again 2026-10-26); any
   agent (script editor, 2026-10-29).
   Check: `try`, in a normal browser and in T3's browser.
-- **HS13** Agents appear under their own name and logo.
+- **HS13** Agents appear under their own name and logo ("Claude", never "(agent)"), and their edits land in the text with Undo.
   "Claude", "Codex", "ChatGPT", never "(agent)"; the model's own logo where Phosphor has one, else a
   sparkle. A collaborator's caret is a thin line with a small first-letter circle, the name on hover.
   Agent changes go straight into the text, lightly marked with the agent's logo, and Undo takes them
@@ -112,7 +113,7 @@ using it as a person would, in a normal browser and in T3's browser.
 
 ## Looks
 
-- **HS14** No borders between surfaces.
+- **HS14** No borders between surfaces; shadows, tints and lighter stacked surfaces set them apart, while focus rings and table lines stay.
   Cards, panels, headers and secondary buttons are set apart by soft shadows, tinted fills and
   surfaces that get lighter as they stack. Focus rings and functional lines (table rows, a divider)
   stay.
@@ -127,12 +128,12 @@ using it as a person would, in a normal browser and in T3's browser.
   Why: the Techies token set (2026-09-26); code blocks (2026-09-28); Phosphor in the Native Site
   Editor, the script editor and CamFrame.
   Check: `eye`.
-- **HS17** Light and dark both look right, following the device's setting.
+- **HS17** Light and dark both look right, following the device's setting, with text at 4.5:1 (large 3:1) and focus rings at 3:1.
   Text above 4.5:1 (3:1 for large text) and the focus ring above 3:1, in both. A tool used in one
   setting only may ship one scheme, as the prompter ships dark.
   Why: every redesign Lex judged in the dark theme; the prompter's contrast test.
   Check: the project's contrast check where it has one, else `eye` in both schemes.
-- **HS18** Phones and keyboards work too.
+- **HS18** Phones and keyboards work too: tried at 390 px, targets 24 px (44 px on touch), visible focus, Esc closes, calm motion.
   Every visible change is tried at 390 px; `:hover` rules sit inside
   `@media (hover: hover) and (pointer: fine)`; targets are at least 24 px (44 px on touch); focus
   shows with `:focus-visible`; Esc closes what it opened. Motion is quick and calm (about 120–200 ms,
@@ -152,7 +153,7 @@ than picking new values.
 | prompter.techies.tools | none (dark only) | the website's night and its dark orange `oklch(65% 0.227 32.3)` |
 | script.techies.tools | calm neutral greys | night blue (hue 280), warm orange `#ff6a3d` (`oklch(70.4% 0.19 37.1)`) as the only accent |
 
-- **HS19** Orange is the one accent; everything else is neutral or indigo.
+- **HS19** Orange is the one accent (actions, links, focus, what is current); everything else is neutral or indigo.
   Orange marks actions, links, focus and what is current (the reading line, a pending change).
   Green and red only carry a meaning (done, failed, agent marks), never decoration. Until Lex
   decides (see Not yet decided), the Native Site Editor's chrome keeps its blue.

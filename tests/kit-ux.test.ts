@@ -217,7 +217,7 @@ test("a project rulebook entry with an HS id replaces that house rule, and the b
   const text = brief.uxBrief({ bundle: "bundle.md", features: [{ id: "F-x-01" }], rules });
   assert.match(text, /- HS19 Not here: the editor's chrome keeps its blue\./);
   assert.doesNotMatch(text, /Orange is the one accent/);
-  assert.match(text, /S, L, B and U rules are this project's own and win where the two disagree/);
+  assert.match(text, /any S, L, B or U rules are this project's own and win where the two disagree/);
 });
 
 test("the ticket comes from the branch name, and its mock-up links resolve against it", () => {
@@ -754,6 +754,20 @@ test("kit ux hands the reviewer the kit's house rules, a project HS entry replac
   assert.ok(bundle.includes(`- **HS1** ${house.get("HS1")}`), bundle);
   assert.ok(brief.includes(`- HS1 ${house.get("HS1")}`) && brief.includes(`- HS22 ${house.get("HS22")}`), brief);
   assert.ok(!brief.includes(house.get("HS19")!), brief);
+});
+
+test("kit ux runs on the kit's house style alone when the project has no UX rulebook", t => {
+  const { root, git, put, run } = fixture(t);
+  git("rm", "--quiet", "docs/agents/ux-rulebook.md");
+  git("commit", "--quiet", "-m", "no rulebook");
+  git("update-ref", "refs/remotes/origin/dev", "HEAD");
+  put("src/page-builder/media-picker.css", ".a { gap: var(--space); }\n.b { gap: var(--space); }\n");
+  const output = run();
+  assert.equal(output.status, 0, output.stderr + output.stdout);
+  const house = ux.parseRules(readFileSync(resolve("docs/house-style.md"), "utf8"));
+  const brief = readFileSync(join(root, ".scratch/last-brief.md"), "utf8");
+  assert.ok(brief.includes(`- HS1 ${house.get("HS1")}`), brief);
+  assert.doesNotMatch(brief, /- S2 No counts or badges/);
 });
 
 test("kit ux with --features tries only those, and a failed try names the feature and its line", t => {
