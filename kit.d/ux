@@ -6,7 +6,7 @@ import { basename, dirname, join, matchesGlob, normalize, relative, resolve } fr
 import { pathToFileURL } from "node:url";
 import { citedRules, parseUxResult, uxBrief, uxCounts, uxReport } from "../ux-brief.mjs";
 
-const { kitRoot, kitMainRoot, kitOwner, kitResult, kitScore, kitSettingsFile, scoreCost } = await import(
+const { kitHome, kitRoot, kitMainRoot, kitOwner, kitResult, kitScore, kitSettingsFile, scoreCost } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 
@@ -30,8 +30,9 @@ images of at most 300 KB (contact sheets and record strips); the lowest-value it
 trimmed first and named. Raw tries: <main root>/.scratch/ux-tries/<owner>/<time>-XXXXXX/ (same name).
 The ticket (for its mock-up link) is --ticket, else the ticket the branch name ends with.
 Review: one read-only reviewer (ASE_UX_MODEL, default claude-opus-5-5, effort medium, through
-agent.sh review) judges each feature in the bundle fine, looks off or broken against the rulebook
-and the mock-up. Saved beside bundle.md: ux.md (one line per feature, the rules broken), ux.json
+agent.sh review) judges each feature in the bundle fine, looks off or broken against the rules (the
+kit's docs/house-style.md, then docs/agents/ux-rulebook.md, which wins on the same id; either may be
+missing) and the mock-up. Saved beside bundle.md: ux.md (one line per feature, the rules broken), ux.json
 and the reviewer's run.log; counts go to the piece's scoreboard record as ux. --no-review skips it.
 KIT_UX_SHOTS and KIT_UX_AGENT: executables replacing the project's kit shots and agent.sh, same arguments (tests).
 RESULT: ok ux <n> features tried, <m> scripted findings, <f> fine, <o> looks off, <b> broken, bundle <dir>.
@@ -103,9 +104,17 @@ export function parseFeatures(markdown) {
   }));
 }
 
-/** First line of each rule in docs/agents/ux-rulebook.md, by id. */
+/** First line of each rule in a rulebook (the kit's house style, a project's ux-rulebook.md), by id. */
 export function parseRules(markdown) {
-  return new Map([...markdown.matchAll(/^- \*\*([SLBU]\d+)\*\* (.+)$/gm)].map(match => [match[1], match[2]]));
+  return new Map([...markdown.matchAll(/^- \*\*((?:HS|[SLBU])\d+)\*\* (.+)$/gm)].map(match => [match[1], match[2]]));
+}
+
+/** The kit's house style, then the project's own UX rulebook, which wins on the same id; either may be missing. */
+export function loadRules(root, home = kitHome()) {
+  const rules = new Map();
+  for (const file of [join(home, "docs/house-style.md"), join(root, "docs/agents/ux-rulebook.md")])
+    if (existsSync(file)) for (const [id, text] of parseRules(readFileSync(file, "utf8"))) rules.set(id, text);
+  return rules;
 }
 
 
@@ -635,7 +644,7 @@ async function main() {
       try { mockups = mockupLinks(readFileSync(resolve(root, ticket), "utf8"), ticket); }
       catch { console.error(`problem: ticket ${ticket} unreadable; no mock-up link`); }
     }
-    const rulebook = parseRules(readFileSync(join(root, "docs/agents/ux-rulebook.md"), "utf8"));
+    const rulebook = loadRules(root);
     const rules = citedRules([...selected.map(feature => feature.good), ...layout.map(entry => entry.rule), ...sourceFindings.map(finding => finding.rule)].join(" "));
     const tried = tries.filter(entry => entry.kind === "steps");
     const passed = tried.filter(entry => entry.ok).length;

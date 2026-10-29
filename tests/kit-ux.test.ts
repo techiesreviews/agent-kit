@@ -37,6 +37,8 @@ type Ux = {
   guessTicket(branch: string, files: string[]): string | undefined;
   mockupLinks(text: string, ticket: string): string[];
   colourFindings(status: number, output: string, command: string, log: string, scope: { root: string; changed: string[]; known?: string[] }): { findings: Finding[]; outside: number };
+  parseRules(markdown: string): Map<string, string>;
+  loadRules(root: string, home?: string): Map<string, string>;
 };
 const ux: Ux = await import(pathToFileURL(script).href);
 const editorColours: string = JSON.parse(readFileSync(resolve("tests/fixtures/editor-kit.json"), "utf8")).checks.css;
@@ -178,6 +180,28 @@ test("the bundle stays under 60 KB and 12 images, trims the lowest-value items f
   assert.deepEqual(kept.slice(0, 6).map(image => image.priority), [0, 0, 0, 0, 0, 0]);
   assert.equal(dropped.length, 8);
   assert.deepEqual(dropped.find(image => image.name === "image-0")?.reason, "over 300 KB");
+});
+
+test("the kit's house style and the project's UX rulebook load together, the project winning on the same id", t => {
+  const home = mkdtempSync(join(tmpdir(), "kit-ux-home-")), root = mkdtempSync(join(tmpdir(), "kit-ux-rules-"));
+  t.after(() => { rmSync(home, { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }); });
+  assert.deepEqual([...ux.loadRules(root, home)], []);
+  mkdirSync(join(home, "docs"));
+  writeFileSync(join(home, "docs/house-style.md"), "# House style\n- **HS1** No toasts.\n- **S1** Shared wording.\n  Why: detail lines are not rules.\n");
+  assert.deepEqual([...ux.loadRules(root, home)], [["HS1", "No toasts."], ["S1", "Shared wording."]]);
+  mkdirSync(join(root, "docs/agents"), { recursive: true });
+  writeFileSync(join(root, "docs/agents/ux-rulebook.md"), "# UX rulebook\n- **S1** No explainer lines.\n- **L2** Only theme tokens.\n");
+  assert.deepEqual([...ux.loadRules(root, home)], [["HS1", "No toasts."], ["S1", "No explainer lines."], ["L2", "Only theme tokens."]]);
+  rmSync(join(home, "docs/house-style.md"));
+  assert.deepEqual([...ux.loadRules(root, home)], [["S1", "No explainer lines."], ["L2", "Only theme tokens."]]);
+});
+
+test("the kit's own house style numbers its rules HS1 upwards, once each, in order", () => {
+  const text = readFileSync(resolve("docs/house-style.md"), "utf8");
+  const ids = [...ux.parseRules(text).keys()];
+  assert.ok(ids.length > 0);
+  assert.deepEqual(ids, ids.map((_, index) => `HS${index + 1}`));
+  assert.equal([...text.matchAll(/^- \*\*(HS\d+)\*\*/gm)].length, ids.length);
 });
 
 test("the ticket comes from the branch name, and its mock-up links resolve against it", () => {
@@ -772,8 +796,14 @@ type Parsed = { readable: true; features: Verdict[]; rules: string[] } | { reada
 const brief: {
   uxBrief(input: { bundle: string; features: { id: string }[]; images?: string[]; rules?: Map<string, string>; mockups?: string[] }): string;
   parseUxResult(text: string, ids: string[]): Parsed;
+  citedRules(text: string): string[];
   uxCounts(input: { features: Verdict[]; rules: string[] }): { fine: number; off: number; broken: number; rules: string[] };
 } = await import(pathToFileURL(resolve("ux-brief.mjs")).href);
+
+test("cited rule ids include the house style's HS ids, never a heading tag or T3", () => {
+  assert.deepEqual(brief.citedRules("Breaks HS12 and S1, again HS12; an H1 heading in T3, not THS2 or HS"), ["HS12", "S1"]);
+  assert.ok(brief.parseUxResult("F-media-01: looks off — HS1: a toast — a.webp\nRules broken: HS1", ["F-media-01"]).readable);
+});
 
 test("the reviewer's fine, looks off and broken lines parse, with their rules, notes and images", () => {
   const answer = [
