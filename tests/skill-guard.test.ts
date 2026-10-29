@@ -80,6 +80,7 @@ test("every file of a skill counts, but only lines of 60 or more characters that
   const index = skillIndex(files);
   assert.equal(index.count, 8);
   assert.equal(skillMatch("Ask the paper crane politely before folding its wings back along the crease", index), "crane");
+  assert.equal(skillMatch("print('A crane may only be folded by someone who has thanked the paper first')", index), "crane");
   assert.equal(skillMatch("\t@echo crease the wing twice and let the crane rest beside the teapot", index), "crane");
   assert.equal(skillMatch("<p>The paper crane template greets the reader with a folded welcome banner here</p>", index), "crane");
   for (const line of ['<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">',
