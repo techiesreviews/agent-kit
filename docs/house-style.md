@@ -6,7 +6,7 @@ again and again across the Native Site Editor (editor.techies.tools), the script
 Reviews website (techies.review). It travels with the kit, so a new project starts with it.
 
 Read it when making a mock-up, writing a visible ticket, building one and reviewing one (kitchen
-stations 3, 4 and 8). `kit ux` gives these rules to the UX reviewer together with the project's own
+stations 3, 4, 6 and 8). `kit ux` gives these rules to the UX reviewer together with the project's own
 UX rulebook (`docs/agents/ux-rulebook.md`). **The project's rulebook adds detail and wins where it
 differs**: the reviewer is told so, and a project replaces a house rule by writing the same id in its
 own rulebook (`- **HS19** Not here: the editor's chrome keeps its blue.`). A ticket may break a rule
@@ -21,8 +21,8 @@ using it as a person would, in a normal browser and in T3's browser.
 ## Say less
 
 - **HS1** No toasts, pop-up statuses, banners or info strips after an action; the result shows where it happened.
-  The result shows where it happened: the button's label or a check mark, the item itself, a small
-  dot on the button that opens the thing. A screen-reader status line (visually hidden) still
+  That is the button's label or a check mark, the item itself, or a small dot on the button that
+  opens the thing. A screen-reader status line (visually hidden) still
   announces it.
   Why: "the interface should show what is happening or what it is doing" (Native Site Editor,
   2026-10-23); "not everything needs to be mentioned in a toast" (2026-10-25); "remove the statusses
@@ -53,9 +53,8 @@ using it as a person would, in a normal browser and in T3's browser.
 
 ## Feel
 
-- **HS6** Changes apply as they are made; there is no Save, Apply or Done step for a live edit.
-  Undo is the safety net: one action is one Undo step, and Undo restores all of it. Done or Close
-  only leaves.
+- **HS6** Changes apply as they are made, with no Save, Apply or Done step; one action is one Undo step that restores all of it.
+  Undo is the safety net. Done or Close only leaves.
   Why: "It needs to be done instantly" (image Replace, 2026-10-21) and "Also instantly" (shape, focus,
   zoom and trimming, 2026-10-21); Native Site Editor rules B10 and B11.
   Check: `try`.
@@ -72,9 +71,7 @@ using it as a person would, in a normal browser and in T3's browser.
   the square" (2026-10-25); "I want the horizontal line to be totally draggable" (prompter,
   2026-10-28).
   Check: `try`.
-- **HS9** A tool opens on a clear, calm start screen and never opens content nobody asked for.
-  It never opens content by itself that the person did not ask for; text reads left-aligned inside a
-  centred column.
+- **HS9** A tool opens on a clear, calm start screen, never on content nobody asked for; text reads left-aligned in a centred column.
   Why: prompter, 2026-10-28.
   Check: `eye`.
 - **HS10** A look Lex approved stays until he approves a new mock-up.
@@ -91,7 +88,7 @@ using it as a person would, in a normal browser and in T3's browser.
 
 ## The same in every tool
 
-- **HS12** Connecting an agent works like the script editor's Copy MCP button: same labels, states and on-button feedback.
+- **HS12** Connecting an agent works like the script editor's Copy MCP button: same labels, states and on-button feedback, copying on the click itself, with setup text for any agent app.
   The Copy MCP button looks, reads and gives feedback exactly like the one in the script editor and
   the Native Site Editor: the same labels, the same states from copying to connected (showing the
   agent's name) to Disconnect, the feedback on the button itself, and setup text that works for any
@@ -102,7 +99,7 @@ using it as a person would, in a normal browser and in T3's browser.
   feedback" (prompter, 2026-10-28); "the prompt is not copied" (2026-10-24, again 2026-10-26); any
   agent (script editor, 2026-10-29).
   Check: `try`, in a normal browser and in T3's browser.
-- **HS13** Agents appear under their own name and logo ("Claude", never "(agent)"), and their edits land in the text with Undo.
+- **HS13** Agents appear under their own name and logo ("Claude", never "(agent)"), their edits land in the text with Undo, and there is no chat panel.
   "Claude", "Codex", "ChatGPT", never "(agent)"; the model's own logo where Phosphor has one, else a
   sparkle. A collaborator's caret is a thin line with a small first-letter circle, the name on hover.
   Agent changes go straight into the text, lightly marked with the agent's logo, and Undo takes them
@@ -123,8 +120,8 @@ using it as a person would, in a normal browser and in T3's browser.
   Why: "one look across the chrome" (Native Site Editor colours); every Techies stylesheet builds its
   colours from a few named tokens.
   Check: the project's colour check where it has one, else `eye`.
-- **HS16** Inter for text, Roboto Mono for code and numbers, Phosphor for icons.
-  Code panels use Monaco's own themes (light and dark following the page), not the brand palette.
+- **HS16** Inter for text, Roboto Mono for code and numbers, Phosphor for icons; code panels keep Monaco's own themes (not raw colours under HS15).
+  Monaco's themes follow the page's light or dark, never the brand palette.
   Why: the Techies token set (2026-09-26); code blocks (2026-09-28); Phosphor in the Native Site
   Editor, the script editor and CamFrame.
   Check: `eye`.
@@ -153,14 +150,13 @@ than picking new values.
 | prompter.techies.tools | none (dark only) | the website's night and its dark orange `oklch(65% 0.227 32.3)` |
 | script.techies.tools | calm neutral greys | night blue (hue 280), warm orange `#ff6a3d` (`oklch(70.4% 0.19 37.1)`) as the only accent |
 
-- **HS19** Orange is the one accent (actions, links, focus, what is current); everything else is neutral or indigo.
-  Orange marks actions, links, focus and what is current (the reading line, a pending change).
-  Green and red only carry a meaning (done, failed, agent marks), never decoration. Until Lex
-  decides (see Not yet decided), the Native Site Editor's chrome keeps its blue.
+- **HS19** Orange is the one accent (actions, links, focus, what is current), green and red only carry a meaning, the rest is neutral or indigo; the Native Site Editor's chrome keeps its blue until Lex decides.
+  What is current includes the reading line and a pending change; meaning is done, failed or an
+  agent's mark, never decoration. The editor's blue is under Not yet decided.
   Why: the website's tokens ("the orange stays for actions, links and focus"); the script editor
   ("the warm orange as the only accent"); the prompter ("bright orange actions").
   Check: `eye`.
-- **HS20** Dark mode is the indigo night, never pure black or grey-black.
+- **HS20** Dark mode is the indigo night, never pure black or grey-black; the Native Site Editor's chrome keeps its own dark until Lex decides.
   Dark pages, cards, tags and shadows are made from the night colour by lightness; scales stop near
   black (about 8%), never at it.
   Why: the website's default dark mode (techies-reviews PR #10); the prompter uses the same night and

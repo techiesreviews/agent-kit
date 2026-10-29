@@ -202,6 +202,8 @@ test("the kit's own house style numbers its rules HS1 upwards, once each, in ord
   assert.ok(ids.length > 0);
   assert.deepEqual(ids, ids.map((_, index) => `HS${index + 1}`));
   assert.equal([...text.matchAll(/^- \*\*(HS\d+)\*\*/gm)].length, ids.length);
+  // The colour rules name the Native Site Editor's exemption where the reviewer sees it.
+  for (const id of ["HS19", "HS20"]) assert.match(ux.parseRules(text).get(id)!, /Native Site Editor/, id);
   // The reviewer sees only a rule's first line, so it must be the whole opening sentence.
   for (const [id, line] of ux.parseRules(text)) assert.match(line, /[.)]$/, `${id}: ${line}`);
 });
@@ -214,6 +216,8 @@ test("a project rulebook entry with an HS id replaces that house rule, and the b
   writeFileSync(join(root, "docs/agents/ux-rulebook.md"), "- **HS19** Not here: the editor's chrome keeps its blue.\n- **L2** Only theme tokens.\n");
   const rules = ux.loadRules(root, home);
   assert.equal(rules.get("HS19"), "Not here: the editor's chrome keeps its blue.");
+  // A replaced house rule keeps its place, so the brief's order stays stable.
+  assert.deepEqual([...rules.keys()], ["HS1", "HS19", "L2"]);
   const text = brief.uxBrief({ bundle: "bundle.md", features: [{ id: "F-x-01" }], rules });
   assert.match(text, /- HS19 Not here: the editor's chrome keeps its blue\./);
   assert.doesNotMatch(text, /Orange is the one accent/);

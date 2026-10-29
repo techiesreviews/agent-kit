@@ -22,7 +22,7 @@ cpSync(join(fixtures, "repo"), repo, { recursive: true });
 settingsIn(repo);
 type Entry = { date: string; kind: string; text: string; repeats?: string; source: string; file: string; line: number };
 type Group = { members: (Entry & { words: Set<string> })[]; outside: string[]; times: number; kinds: string[] };
-type Block = { file: string; line: number; id?: string; words: Set<string>; house?: boolean };
+type Block = { file: string; line: number; id?: string; text: string; words: Set<string>; house?: boolean };
 // Node loads this extensionless executable as ESM; a URL keeps tsx from resolving it as TS.
 const learn: {
   parseArgs(args: string[]): { since: string; project?: string };
@@ -30,6 +30,7 @@ const learn: {
   groupCorrections(entries: Entry[], otherSlugs?: string[]): Group[];
   ruleBlocks(text: string, file: string): Block[];
   houseBlocks(text: string, file: string, options?: { replaced?: Set<string> }): Block[];
+  replacedIds(blocks: Block[]): Set<string>;
   coveredBy(group: Group, blocks: Block[]): (Block & { shared: string[] }) | undefined;
   projectMap(readme: string): { slug: string; workspace: string }[];
   findSlug(rows: { slug: string; workspace: string }[], roots: string[]): string | undefined;
@@ -206,6 +207,13 @@ test("covered? takes the project's own rule first and the kit's house style only
   const text = "# House style\n- **HS2** No hint text, explainer or tip beside the save button or any control; remove them.\n";
   assert.equal(learn.houseBlocks(text, house).length, 1);
   assert.deepEqual(learn.houseBlocks(text, house, { replaced: new Set(["HS2"]) }), []);
+  // Only a project rule line restating HS2 replaces it; a heading that quotes HS2 does not.
+  const quoting = learn.ruleBlocks("# UX rulebook\n\n## Hints (see **HS2**)\n\n- **S1** No hint text beside controls.\n", rulebook);
+  const restating = learn.ruleBlocks("# UX rulebook\n\n- **HS2** Not here.\n", rulebook);
+  const hintCover = (ownBlocks: Block[]) => learn.groupLines(of("hint text"), repo, [...ownBlocks.filter(block => block.id !== "S1"),
+    ...learn.houseBlocks(text, house, { replaced: learn.replacedIds(ownBlocks) })]).find(line => line.includes("covered?"));
+  assert.match(hintCover(quoting)!, /kit docs\/house-style\.md:2 \(HS2\)/);
+  assert.doesNotMatch(hintCover(restating)!, /house-style/);
   // Why and Check lines do not lend their words to a rule.
   const [rule] = learn.houseBlocks("- **HS1** Dragging works on the whole thing.\n  Why: hint text beside the save button.\n  Check: eye.\n", house);
   assert.ok(!rule.words.has("hint") && !rule.words.has("check"), [...rule.words].join());
