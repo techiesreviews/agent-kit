@@ -535,7 +535,9 @@ test("kit update --install-timer writes %, $ and @ in its paths and repo the way
   const systemctl = fakeSystemctl(k);
   k.publish("one");
   for (const [folder, repo, escapedRepo] of [["da%ta$x", "file:///srv/kit%20repo.git", "file:///srv/kit%%20repo.git"],
-    ["user@corp/data", "git@example.invalid:org/agent-kit.git", "git@example.invalid:org/agent-kit.git"]]) {
+    ["user@corp/data", "git@example.invalid:org/agent-kit.git", "git@example.invalid:org/agent-kit.git"],
+    // Bash 5.2 reads & in an unquoted replacement as the matched text.
+    ["my data&x", "file:///srv/kit&repo.git", "file:///srv/kit&repo.git"]]) {
     const dataHome = join(k.directory, folder);
     assert.equal(k.run([], { XDG_DATA_HOME: dataHome }).status, 0);
     const install = k.run(["--install-timer"], { PATH: systemctl.PATH, XDG_DATA_HOME: dataHome, KIT_REPO: repo });
@@ -553,6 +555,20 @@ test("kit update --install-timer writes %, $ and @ in its paths and repo the way
         XDG_DATA_HOME: dataHome, KIT_REPO: k.env.KIT_REPO } });
     assert.equal(run.status, 0, run.stdout + run.stderr);
     assert.equal(readlinkSync(join(dataHome, "agent-kit/current")), sha);
+  }
+});
+
+test("kit update --install-timer without an absolute XDG_DATA_HOME names the copy under HOME", (t) => {
+  const k = kitRepo(t);
+  const systemctl = fakeSystemctl(k);
+  k.publish("one");
+  for (const dataHome of [undefined, "relative/data"]) {
+    const env = { PATH: systemctl.PATH, XDG_DATA_HOME: dataHome };
+    assert.equal(k.run([], env).status, 0);
+    assert.equal(k.run(["--install-timer"], env).status, 0);
+    const written = readFileSync(join(units(k), "agent-kit-update.service"), "utf8");
+    assert.ok(written.includes(`"XDG_DATA_HOME=${k.directory}/.local/share"`), written);
+    assert.ok(written.includes(`ExecStart="${k.directory}/.local/share/agent-kit/current/kit" update`), written);
   }
 });
 

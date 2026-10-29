@@ -14,7 +14,8 @@ then stays there until main moves on (the normal way back is a revert in the kit
 --install-timer writes the kit's systemd/agent-kit-update.timer and .service into
 ~/.config/systemd/user/ (where a user manager without its own XDG_CONFIG_HOME looks) and starts
 the timer: the machine copy's kit update then runs every 15 minutes while you are logged in. The
-timer does not rewrite its own files: run --install-timer again after a kit change to systemd/.
+timer keeps its files, KIT_REPO and XDG_DATA_HOME as installed: run --install-timer again after a
+kit change to systemd/ or a change to either setting.
 --remove-timer stops it and takes both files out. Both are safe to run again; neither fetches.
 EOF
 }
