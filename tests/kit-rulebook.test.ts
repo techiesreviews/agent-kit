@@ -109,15 +109,26 @@ test("kit rulebook takes no arguments and answers --help", t => {
 
 /** GitHub's heading anchors: punctuation dropped, spaces to dashes, a repeat numbered. */
 function anchors(markdown: string): string[] {
-  // Heading anchors, plus explicit `<a id="…">` ones the rulebook keeps for renamed headings (AGENTS.md).
+  // Heading anchors, plus explicit `<a id="…">` ones the rulebook keeps for renamed headings (AGENTS.md);
+  // code fences only show markup, so no heading or anchor inside one counts, nor an anchor in a code span.
+  const text = markdown.replace(/^(```|~~~)[^\n]*\n[\s\S]*?^\1[^\n]*$/gm, "");
   const seen = new Map<string, number>();
-  return [...markdown.split("\n").filter(line => /^#+ /.test(line)).map(line => {
+  return [...text.split("\n").filter(line => /^#+ /.test(line)).map(line => {
     const base = line.replace(/^#+ /, "").toLowerCase().replace(/[^\w\- ]/g, "").replace(/ /g, "-");
     const count = seen.get(base) ?? 0;
     seen.set(base, count + 1);
     return count ? `${base}-${count}` : base;
-  }), ...[...markdown.matchAll(/<a (?:id|name)="([^"]+)"/g)].map(match => match[1])];
+  }), ...[...text.replace(/(`+)[^`\n][\s\S]*?\1/g, "").matchAll(/<a (?:id|name)="([^"]+)"/g)].map(match => match[1])];
 }
+
+test("a renamed heading's old anchor counts only as a real <a id>, not one shown in code", () => {
+  const link = "See [the old name](#old-name).\n";
+  assert.ok(anchors(`## New name\n<a id="old-name"></a>\n\n${link}`).includes("old-name"));
+  assert.deepEqual(anchors("## The `kit pr` step\n"), ["the-kit-pr-step"]);
+  assert.ok(!anchors(`## New name\n\n${link}`).includes("old-name"));
+  assert.ok(!anchors(`## New name\nKeep it as \`<a id="old-name"></a>\` beside it.\n\n${link}`).includes("old-name"));
+  assert.ok(!anchors(`## New name\n\n\`\`\`html\n<a id="old-name"></a>\n## Old name\n\`\`\`\n\n${link}`).includes("old-name"));
+});
 
 test("every relative link and anchor in the rulebook and its extras template resolves inside the kit", () => {
   for (const path of [shared, template]) {

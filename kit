@@ -17,12 +17,8 @@ if [[ $chosen == true ]]; then unset KIT_HOME_DEFAULT; else export KIT_HOME_DEFA
 export KIT_HOME
 # shellcheck source=kit-lib.sh
 source "$KIT_HOME/kit-lib.sh"
-# Outside git the project is the one around this front door (a kit kept in a project's scripts/agents/), not
-# around KIT_HOME; a kit on its own (its repo, a machine copy) is its own project.
-if [[ -z ${KIT_ROOT:-} ]] && ! git rev-parse --show-toplevel > /dev/null 2>&1; then
-  if [[ $kit_dir == */scripts/agents ]]; then KIT_ROOT=$(cd -- "$kit_dir/../.." && pwd -P); else KIT_ROOT=$kit_dir; fi
-fi
-KIT_ROOT=$(kit_root)
+# Outside git the project is the one around this front door, not around KIT_HOME (kit_root names the rule).
+KIT_ROOT=$(kit_root "$kit_dir")
 
 # KIT_COMMANDS_DIR (tests) replaces both folders.
 if [[ -n ${KIT_COMMANDS_DIR:-} ]]; then

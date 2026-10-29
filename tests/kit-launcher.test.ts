@@ -510,6 +510,10 @@ test("kit --home prints the kit the launcher picked and runs nothing; a person's
   assert.doesNotMatch(readFileSync(old, "utf8"), /--home && \$#/);
   const viaFrontDoor = spawnSync(old, ["--home"], { cwd: f.project, env: { ...f.env, KIT_HOME: f.work }, encoding: "utf8" });
   assert.deepEqual([viaFrontDoor.status, viaFrontDoor.stdout], [0, `${f.work}\n`]);
+  const frontDoorExtra = spawnSync(old, ["--home", "extra"], { cwd: f.project, env: { ...f.env, KIT_HOME: f.work }, encoding: "utf8" });
+  assert.equal(frontDoorExtra.status, 2);
+  assert.doesNotMatch(frontDoorExtra.stdout, new RegExp(`^${f.work}$`, "m"));
+  assert.match(frontDoorExtra.stdout, /RESULT: fail unknown command --home\n$/);
 });
 
 test("this repo's own launchers are the templates kit init writes", () => {
