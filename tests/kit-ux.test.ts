@@ -39,6 +39,7 @@ type Ux = {
   colourFindings(status: number, output: string, command: string, log: string, scope: { root: string; changed: string[]; known?: string[] }): { findings: Finding[]; outside: number };
   parseRules(markdown: string): Map<string, string>;
   loadRules(root: string, home?: string): Map<string, string>;
+  ruleFor(id: string, rulebook: Map<string, string>): string;
 };
 const ux: Ux = await import(pathToFileURL(script).href);
 const editorColours: string = JSON.parse(readFileSync(resolve("tests/fixtures/editor-kit.json"), "utf8")).checks.css;
@@ -745,6 +746,15 @@ test("kit ux tries touched features, runs scripted checks and writes a bounded b
   assert.ok(images.every(name => statSync(join(bundle, name)).size <= 300_000));
 });
 
+test("a scripted check's project id falls back to the matching house rule only when the project lacks it", () => {
+  const rules = (ids: string[]) => new Map(ids.map(id => [id, id]));
+  assert.equal(ux.ruleFor("U6", rules(["U6", "HS18"])), "U6");
+  assert.equal(ux.ruleFor("U6", rules(["HS18"])), "HS18");
+  assert.equal(ux.ruleFor("L12", rules(["HS17"])), "HS17");
+  assert.equal(ux.ruleFor("U6", rules([])), "U6");
+  assert.equal(ux.ruleFor("S2", rules(["HS2"])), "S2");
+});
+
 test("kit ux hands the reviewer the kit's house rules, a project HS entry replacing the kit's", t => {
   const { root, put, run } = fixture(t);
   put("docs/agents/features.md", featuresMarkdown.replace("Plain (S2, L2).", "Plain (HS1, HS19, L2)."));
@@ -772,6 +782,11 @@ test("kit ux runs on the kit's house style alone when the project has no UX rule
   const brief = readFileSync(join(root, ".scratch/last-brief.md"), "utf8");
   assert.ok(brief.includes(`- HS1 ${house.get("HS1")}`), brief);
   assert.doesNotMatch(brief, /- S2 No counts or badges/);
+  // A scripted layout finding cites the house rule the reviewer was given, not the editor's U6.
+  const bundle = readFileSync(join(root, ".scratch/last-bundle.md"), "utf8");
+  assert.match(bundle, /^- HS18 tap target under 44 px at 390/m);
+  assert.ok(bundle.includes(`- **HS18** ${house.get("HS18")}`), bundle);
+  assert.doesNotMatch(bundle, /^- U6 /m);
 });
 
 test("kit ux with --features tries only those, and a failed try names the feature and its line", t => {

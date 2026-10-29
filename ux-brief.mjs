@@ -39,6 +39,11 @@ Nothing else: no preamble, no headings, no markdown fence.
 
 const verdictLine = /^[-*\s]*\**(F-[a-z]+-\d{2})\**\s*:\s*\**(fine|looks off|broken)\**\s*(?:[—–:]|--?)?\s*(.*)$/i;
 const imageName = /\.(?:webp|png|jpe?g)$/i;
+/** First line of each rule in a rulebook (the kit's house style, a project's ux-rulebook.md), by id. */
+export function parseRules(markdown) {
+  return new Map([...markdown.matchAll(/^- \*\*((?:HS|[SLBU])\d+)\*\* (.+)$/gm)].map(match => [match[1], match[2]]));
+}
+
 /** Rulebook ids (HS3, S1, L5, B10, U4…) a text names, once each; kit ux uses it for the rules a bundle cites. */
 export const citedRules = text => [...new Set([...text.matchAll(/\b(?:HS|[SLBU])\d+\b/g)].map(match => match[0]))];
 const ruleIds = citedRules;

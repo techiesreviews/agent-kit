@@ -5,7 +5,8 @@ import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { feedbackHeading, feedbackKinds, parseFeedbackLine } from "../tickets.mjs";
-import { composeBundle, parseRules } from "./ux";
+import { parseRules } from "../ux-brief.mjs";
+import { composeBundle } from "./ux";
 
 const { kitHome, kitRoot, kitMainRoot, kitResult, kitSettings } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
