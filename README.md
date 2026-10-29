@@ -8,7 +8,8 @@ only a small launcher and its own settings; the kit itself lives here, once.
 
 - On a machine without the kit yet, fetch it once and fill the machine copy:
   `git clone --depth 1 https://github.com/techiesreviews/agent-kit ~/.cache/agent-kit && ~/.cache/agent-kit/kit update`.
-- Then turn on the update timer, so every later kit merge reaches the machine within 15 minutes:
+- Then turn on the update timer, so every later kit merge reaches the machine within 15 minutes while you are
+  logged in (a `systemd --user` timer; `loginctl enable-linger` keeps it running logged out):
   `~/.local/share/agent-kit/current/kit update --install-timer`.
 - `kit init` (run once, from the machine copy: `~/.local/share/agent-kit/current/kit init`) writes the project's
   `scripts/agents/kit.json` settings, the launcher `scripts/agents/kit`, the hook launcher

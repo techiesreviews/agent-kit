@@ -450,6 +450,7 @@ case "$*" in
   *is-active*) [ -e "${active}" ] ;;
   *"enable --now"*) : > "${enabled}"; [ -z "\${KIT_TEST_SYSTEMCTL_HALF:-}" ] || exit 1; : > "${active}" ;;
   *"disable --now"*) rm -f "${enabled}" "${active}" ;;
+  *show*) if [ -e "${active}" ]; then echo active; else echo inactive; fi ;;
   *stop*) rm -f "${active}" ;;
 esac
 `, { mode: 0o755 });
@@ -547,7 +548,8 @@ test("kit update --install-timer writes %, $ and @ in its paths and repo the way
     assert.ok(written.includes(`"XDG_DATA_HOME=${escaped}" "KIT_REPO=${escapedRepo}"`), written);
     assert.ok(written.includes(`ExecStart="${escaped}/agent-kit/current/kit" update`), written);
     verifyUnits(t, k);
-    // Read back as systemd does (%% is %, $ stays), the service updates the copy in that folder.
+    // Read back as systemd does (%% is %, $ stays: systemd-analyze verify above resolves the command the way the
+    // manager does, and found it), the service updates the copy in that folder. The real user manager is not used.
     const exec = /^ExecStart="([^"]+)" update$/m.exec(written)![1].replaceAll("%%", "%");
     const sha = k.publish(folder);
     const run = spawnSync(exec, ["update"], { cwd: k.directory, encoding: "utf8", timeout: 30_000,
@@ -573,6 +575,7 @@ test("kit update --install-timer without an absolute XDG_DATA_HOME names the cop
 });
 
 test("kit update --install-timer and --remove-timer fail plainly on a folder they cannot write", (t) => {
+  if (process.getuid?.() === 0) { t.skip("root ignores folder modes"); return; }
   const k = kitRepo(t);
   const systemctl = fakeSystemctl(k);
   k.publish("one");
@@ -616,24 +619,38 @@ test("kit update --remove-timer stops the timer, takes its files out and is safe
   assert.equal(again.status, 0, again.stdout + again.stderr);
   assert.equal(again.stdout, "RESULT: ok update timer already removed\n");
   assert.equal(systemctl.calls().length, 6);
-  // A timer file deleted by hand: the timer may still run, so it is stopped; the service file and the wants link
-  // go without a disable (which needs the timer file).
+  // A timer file deleted by hand: the manager may still run the timer, so it is stopped; the service file and the
+  // wants link go without a disable (which needs the timer file). A stop or manager that fails removes nothing.
   assert.equal(k.run(["--install-timer"], { PATH: systemctl.PATH }).status, 0);
   mkdirSync(join(units(k), "timers.target.wants"));
   symlinkSync(timer, join(units(k), "timers.target.wants/agent-kit-update.timer"));
   rmSync(timer);
+  const show = "--user show --property=ActiveState --value agent-kit-update.timer";
+  for (const [fail, line] of [["stop", "cannot stop agent-kit-update.timer"], ["show", "cannot reach the user manager to stop agent-kit-update.timer"]]) {
+    const failed = k.run(["--remove-timer"], { PATH: systemctl.PATH, KIT_TEST_SYSTEMCTL_FAIL: fail });
+    assert.equal(failed.status, 1, failed.stdout + failed.stderr);
+    assert.equal(failed.stdout, `RESULT: fail update ${line}; nothing removed\n`);
+    assert.ok(existsSync(service) && systemctl.active());
+  }
   const before = systemctl.calls().length;
   assert.equal(k.run(["--remove-timer"], { PATH: systemctl.PATH }).stdout, `removed ${service}\nRESULT: ok update timer removed\n`);
-  assert.deepEqual(systemctl.calls().slice(before), ["--user stop agent-kit-update.timer", "--user daemon-reload"]);
+  assert.deepEqual(systemctl.calls().slice(before), [show, "--user stop agent-kit-update.timer", "--user daemon-reload"]);
   assert.equal(systemctl.active(), false);
   assert.deepEqual(readdirSync(units(k), { recursive: true }), ["timers.target.wants"]);
-  // Only the wants link left: it goes too, and stop failing on a timer that is not loaded says nothing.
+  // Only the wants link left, the timer not running: the link goes without a stop.
   symlinkSync(timer, join(units(k), "timers.target.wants/agent-kit-update.timer"));
-  const link = k.run(["--remove-timer"], { PATH: systemctl.PATH, KIT_TEST_SYSTEMCTL_FAIL: "stop" });
+  const after = systemctl.calls().length;
+  const link = k.run(["--remove-timer"], { PATH: systemctl.PATH });
   assert.equal(link.status, 0, link.stdout + link.stderr);
   assert.equal(link.stdout, "RESULT: ok update timer removed\n");
-  assert.ok(!systemctl.calls().slice(before).some((call) => call.includes("disable")));
+  assert.deepEqual(systemctl.calls().slice(after), [show, "--user daemon-reload"]);
   assert.deepEqual(readdirSync(units(k), { recursive: true }), ["timers.target.wants"]);
+  // A reload that fails after the files went says so.
+  writeFileSync(service, "left\n");
+  const reload = k.run(["--remove-timer"], { PATH: systemctl.PATH, KIT_TEST_SYSTEMCTL_FAIL: "daemon-reload" });
+  assert.equal(reload.status, 1, reload.stdout + reload.stderr);
+  assert.ok(reload.stdout.endsWith("RESULT: fail update removed the timer's files but cannot reload the user manager (systemctl --user daemon-reload)\n"), reload.stdout);
+  assert.equal(existsSync(service), false);
   // Neither touches the machine copy, and removing creates no data folder on a machine without a kit.
   assert.ok(existsSync(join(k.data, "current/kit")));
   const bare = kitRepo(t);

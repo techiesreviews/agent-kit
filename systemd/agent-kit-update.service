@@ -3,6 +3,10 @@
 [Unit]
 Description=Agent Kit: unpack the newest kit into this machine's copy
 Documentation=https://github.com/techiesreviews/agent-kit
+# A run caught up at login or after sleep can start before the network is back (a user unit cannot wait for
+# network-online.target): a failed run tries again after a minute, up to three times in ten minutes.
+StartLimitIntervalSec=10min
+StartLimitBurst=3
 
 [Service]
 Type=oneshot
@@ -10,4 +14,6 @@ Environment="XDG_DATA_HOME=@DATA_HOME@" "KIT_REPO=@KIT_REPO@"
 ExecStart="@KIT@" update
 # kit update gives its fetch and its lock two minutes each.
 TimeoutStartSec=10min
+Restart=on-failure
+RestartSec=1min
 Nice=10
