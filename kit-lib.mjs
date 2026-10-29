@@ -14,7 +14,9 @@ function git(args) {
 
 /** Return the current worktree root, with KIT_ROOT taking precedence. */
 export function kitRoot() {
-  return process.env.KIT_ROOT || (git(["rev-parse", "--show-toplevel"]) || resolve(import.meta.dirname, "../.."));
+  // Outside git: the project around a kit kept in its scripts/agents/, else the kit's own folder.
+  const outside = /[\\/]scripts[\\/]agents$/.test(import.meta.dirname) ? resolve(import.meta.dirname, "../..") : import.meta.dirname;
+  return process.env.KIT_ROOT || (git(["rev-parse", "--show-toplevel"]) || outside);
 }
 
 /**

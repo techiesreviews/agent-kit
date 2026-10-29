@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Usage: kit [<command> [args]]; the Agent Kit launcher kit init writes into each project. Runs the machine's
-# newest kit (${XDG_DATA_HOME:-~/.local/share}/agent-kit/current) for the whole command; a person's KIT_HOME wins.
+# Usage: kit [<command> [args]] | kit --home; the Agent Kit launcher kit init writes into each project. Runs the
+# machine's newest kit (${XDG_DATA_HOME:-~/.local/share}/agent-kit/current) for the whole command; a person's
+# KIT_HOME wins. --home prints that kit's folder and runs nothing (for a project's own helpers and forwarders).
 set -euo pipefail
 export KIT_REPO=${KIT_REPO:-https://github.com/techiesreviews/agent-kit.git}
 data=${XDG_DATA_HOME:-} cache=${XDG_CACHE_HOME:-} why=KIT_HOME clone='' picked=false
@@ -41,4 +42,5 @@ if [[ -z ${KIT_ROOT:-} ]] && ! git rev-parse --show-toplevel > /dev/null 2>&1; t
   KIT_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P) && export KIT_ROOT
 fi
 export KIT_HOME
+if [[ ${1-} == --home && $# == 1 ]]; then printf '%s\n' "$KIT_HOME"; exit 0; fi
 exec "$KIT_HOME/kit" "$@"

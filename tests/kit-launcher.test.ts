@@ -490,7 +490,7 @@ test("a whole clone whose stamp cannot be written is named as such, not as a fai
 
 test("kit --home prints the kit the launcher picked and runs nothing; a person's KIT_HOME wins; no kit fails", (t) => {
   const f = fixture(t);
-  const one = f.publish("one");
+  f.publish("one");
   const picked = f.kit(["--home"]);
   assert.equal(picked.status, 0, picked.stderr);
   assert.equal(picked.stdout, `${realpathSync(f.cache)}/agent-kit\n`);
@@ -503,5 +503,16 @@ test("kit --home prints the kit the launcher picked and runs nothing; a person's
   const none = f.kit(["--home"], { KIT_HOME: join(f.directory, "missing") });
   assert.equal(none.status, 2);
   assert.match(none.stdout, /^RESULT: fail no Agent Kit at /);
-  assert.ok(one);
+  // A launcher older than --home hands it to the front door, which answers it the same way.
+  const old = join(f.agents, "kit-old");
+  writeFileSync(old, readFileSync(join(f.agents, "kit"), "utf8").replace(/^if \[\[ \$\{1-\} == --home .*\n/m, ""));
+  chmodSync(old, 0o755);
+  assert.doesNotMatch(readFileSync(old, "utf8"), /--home && \$#/);
+  const viaFrontDoor = spawnSync(old, ["--home"], { cwd: f.project, env: { ...f.env, KIT_HOME: f.work }, encoding: "utf8" });
+  assert.deepEqual([viaFrontDoor.status, viaFrontDoor.stdout], [0, `${f.work}\n`]);
+});
+
+test("this repo's own launchers are the templates kit init writes", () => {
+  assert.equal(readFileSync("scripts/agents/kit", "utf8"), readFileSync(join(launchers, "kit"), "utf8"));
+  assert.equal(readFileSync("scripts/agents/hooks/run.sh", "utf8"), readFileSync(join(launchers, "hooks-run.sh"), "utf8"));
 });

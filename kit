@@ -17,9 +17,10 @@ if [[ $chosen == true ]]; then unset KIT_HOME_DEFAULT; else export KIT_HOME_DEFA
 export KIT_HOME
 # shellcheck source=kit-lib.sh
 source "$KIT_HOME/kit-lib.sh"
-# Outside git the project is the one around this front door, not around KIT_HOME.
+# Outside git the project is the one around this front door (a kit kept in a project's scripts/agents/), not
+# around KIT_HOME; a kit on its own (its repo, a machine copy) is its own project.
 if [[ -z ${KIT_ROOT:-} ]] && ! git rev-parse --show-toplevel > /dev/null 2>&1; then
-  KIT_ROOT=$(cd -- "$kit_dir/../.." && pwd -P)
+  if [[ $kit_dir == */scripts/agents ]]; then KIT_ROOT=$(cd -- "$kit_dir/../.." && pwd -P); else KIT_ROOT=$kit_dir; fi
 fi
 KIT_ROOT=$(kit_root)
 
@@ -89,6 +90,8 @@ list_commands() {
 
 command=${1-}
 case $command in ''|help|--help|-h) list_commands; exit 0 ;; esac
+# --home prints this kit's folder, as the launcher does, so a launcher older than its --home still answers it.
+if [[ $command == --home && $# == 1 ]]; then printf '%s\n' "$KIT_HOME"; exit 0; fi
 shift
 # The first match is the shared command: a project command never hides a shared one (kit doctor names the clash).
 command_file=''

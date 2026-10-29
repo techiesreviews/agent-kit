@@ -22,7 +22,8 @@ const noLand = 'add "branches": { "land": "<branch>" } to scripts/agents/kit.jso
 const noFile = 'no scripts/agents/kit.json; add one with "project" and "branches": { "land": "<branch>" }';
 
 // Kit runs export these into the test process; each test sets its own.
-const clean: NodeJS.ProcessEnv = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
+// An empty KIT_SKILL_DIRS: kit pr's skill guard never reads the real skill folders.
+const clean: NodeJS.ProcessEnv = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", KIT_SKILL_DIRS: "" };
 for (const key of ["KIT_ROOT", "KIT_MAIN_ROOT", "KIT_DEV_ROOT", "KIT_PREVIEW_URL", "KIT_PLAYWRIGHT_MODULE", "KIT_PLAYWRIGHT_MODULE_DEFAULT", "KIT_LIB", "KIT_LIB_MJS", "KIT_HOME", "KIT_HOME_DEFAULT", "KIT_COMMANDS_DIR", "NODE_TEST_CONTEXT"]) delete clean[key];
 
 function temp(t: TestContext) {

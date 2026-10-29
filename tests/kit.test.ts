@@ -483,14 +483,14 @@ test("bash and mjs roots and owner follow overrides, owner file and branch fallb
   delete process.env.KIT_ROOT;
   assert.equal(bash("unset KIT_ROOT; kit_root", {}, directory).stdout, `${directory}\n`);
   const outside = temp(t);
-  // Outside git and without KIT_ROOT, the folder two above the kit (where a project kept it in scripts/agents/).
-  assert.equal(bash("unset KIT_ROOT; kit_root", {}, outside).stdout, `${resolve("../..")}\n`);
+  // Outside git and without KIT_ROOT, a kit on its own (this repo) is its own project.
+  assert.equal(bash("unset KIT_ROOT; kit_root", {}, outside).stdout, `${resolve(".")}\n`);
   const cwd = process.cwd();
   try {
     process.chdir(directory);
     assert.equal(kitRoot(), directory);
     process.chdir(outside);
-    assert.equal(kitRoot(), resolve(cwd, "../.."));
+    assert.equal(kitRoot(), cwd);
   } finally { process.chdir(cwd); }
   process.env.KIT_ROOT = outside;
   assert.equal(kitOwner(), "unknown");
