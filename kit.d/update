@@ -74,7 +74,8 @@ if [[ $mode == install-timer ]]; then
   fi
   changed=false
   for kind in timer service; do
-    if ! content=$(< "$source_units/$timer.$kind"); then
+    # Checked first: bash before 5.3 leaves the script on a failed $(< file), even inside if.
+    if [[ ! -f $source_units/$timer.$kind || ! -r $source_units/$timer.$kind ]] || ! content=$(< "$source_units/$timer.$kind"); then
       kit_result fail "update this kit has no systemd/$timer.$kind"
       exit 1
     fi
