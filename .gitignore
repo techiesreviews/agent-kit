@@ -1,0 +1,12 @@
+node_modules/
+.scratch/
+test-results/
+.claude/settings.local.json
+.claude/worktrees/
+.codex/*
+!.codex/hooks.json
+# Paid skills never go public (Lex, 2026-10-29): no skill files or skill folders, ever.
+skills/
+.claude/skills/
+.agents/
+**/SKILL.md
