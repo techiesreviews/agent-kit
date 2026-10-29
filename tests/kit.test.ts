@@ -497,6 +497,26 @@ test("bash and mjs roots and owner follow overrides, owner file and branch fallb
   assert.equal(bash("kit_owner", { ...env, KIT_ROOT: outside }).stdout, "unknown\n");
 });
 
+test("outside git, a kit kept in a project's scripts/agents/ takes the project as its root in every library and the front door", (t) => {
+  const project = realpathSync(temp(t)), agents = join(project, "scripts/agents"), commands = join(project, "commands");
+  mkdirSync(agents, { recursive: true });
+  mkdirSync(commands);
+  for (const file of ["kit", "kit-lib.sh", "kit-lib.mjs", "review-findings.mjs"]) copyFileSync(file, join(agents, file));
+  const env = { ...kitEnv(), KIT_ROOT: undefined };
+  const shell = spawnSync("/bin/bash", ["-c", `source "${agents}/kit-lib.sh"; kit_root`], { cwd: agents, env, encoding: "utf8" });
+  assert.equal(shell.stdout, `${project}\n`, shell.stderr);
+  const module = spawnSync(process.execPath, ["--input-type=module", "-e",
+    "const { kitRoot } = await import(process.argv[1]); console.log(kitRoot());", pathToFileURL(join(agents, "kit-lib.mjs")).href],
+  { cwd: agents, env, encoding: "utf8" });
+  assert.equal(module.stdout, `${project}\n`, module.stderr);
+  command(commands, "where", 'echo "root=$KIT_ROOT"; echo "RESULT: ok where"');
+  const frontDoor = spawnSync("/bin/bash", [join(agents, "kit"), "where"], { cwd: project, env: { ...env, KIT_COMMANDS_DIR: commands }, encoding: "utf8" });
+  assert.equal(frontDoor.stdout, `root=${project}\nRESULT: ok where\n`, frontDoor.stderr);
+  // The front door's folder decides, not the KIT_HOME library it sources.
+  const chosen = spawnSync("/bin/bash", [join(agents, "kit"), "where"], { cwd: project, env: { ...env, KIT_COMMANDS_DIR: commands, KIT_HOME: resolve(".") }, encoding: "utf8" });
+  assert.equal(chosen.stdout, `root=${project}\nRESULT: ok where\n`, chosen.stderr);
+});
+
 test("bash and mjs RESULT helpers collapse line breaks and reject bad statuses", (t) => {
   const lines: string[] = [];
   t.mock.method(console, "log", (line: string) => { lines.push(line); });

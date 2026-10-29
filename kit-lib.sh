@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Shared helpers for agent-kit commands. Sourcing this file has no side effects.
 
+# The project's top folder: KIT_ROOT, else the git worktree's. Outside git it is the project around a kit kept in
+# its scripts/agents/ (where a project's settings file sits), else the kit folder itself, which is the folder given
+# (the front door passes its own) or this file's. kitRoot in kit-lib.mjs follows the same rule.
 kit_root() {
   if [[ -n ${KIT_ROOT:-} ]]; then
     printf '%s\n' "$KIT_ROOT"
   elif ! git rev-parse --show-toplevel 2>/dev/null; then
-    # Outside git: the project around a kit kept in its scripts/agents/, else the kit's own folder.
     local here
-    here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+    here=$(cd -- "${1:-$(dirname -- "${BASH_SOURCE[0]}")}" && pwd -P)
     if [[ $here == */scripts/agents ]]; then (cd -- "$here/../.." && pwd -P); else printf '%s\n' "$here"; fi
   fi
 }

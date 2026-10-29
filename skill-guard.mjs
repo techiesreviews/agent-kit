@@ -11,13 +11,18 @@ import { fileURLToPath } from "node:url";
 
 const usage = "Usage: skill-guard.mjs [--base REF | --history] [--paths-only]";
 const minimum = 60, window = 32, largest = 1 << 20;
-// Generated or installed files inside a skill hold registry lines every project shares, not skill text.
-const generated = /(^|\/)(node_modules|\.git)\/|(^|\/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?)$|\.min\.(js|css)$/;
-// Lines every project shares with some skill's code, never skill text: checked once against the kit's own history.
-export const boilerplate = new Set([
-  '<meta name="viewport" content="width=device-width, initial-scale=1">',
-  '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
-]);
+// Files inside a skill that hold lines every project shares, not skill text: generated or installed files
+// (registry lines) and licence texts (MIT, Apache and the like, word for word in many repos).
+const shared = /(^|\/)(node_modules|\.git)\/|(^|\/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?)$|\.min\.(js|css)$|(^|\/)(LICEN[CS]E|COPYING|NOTICE)([.-][^/]*)?$/i;
+// Whole lines every web page shares with some skill's code, never skill text: a page's set-up tags (viewport,
+// charset or http-equiv meta; a link to an outside font, stylesheet or icon), in any attribute spelling.
+export const boilerplate = [
+  /^<meta (?:name="viewport"|charset=|http-equiv=)[^<>]*>$/i,
+  /^<link rel="(?:preconnect|dns-prefetch|preload|stylesheet|icon)" href="https?:\/\/[^"<>]*"[^<>]*>$/i,
+];
+
+/** A normalised line that is shared web boilerplate, never left in the index. */
+export const isBoilerplate = (line) => boilerplate.some(pattern => pattern.test(line));
 
 /** A tracked path that is a skill: a SKILL.md anywhere, or anything under a folder named skills. */
 export const skillPath = (path) => /(^|\/)SKILL\.md$/i.test(path) || /(^|\/)skills\//i.test(path);
@@ -48,8 +53,8 @@ function walk(folder, found, seen) {
 
 /**
  * Every file of every skill under the roots: a skill is a folder holding a SKILL.md, and its other files
- * (references, scripts, templates) count too; binary files are skipped when read, and so are generated ones
- * (lockfiles, installed packages, minified files). Returns
+ * (references, scripts, templates) count too; binary files are skipped when read, and so are shared ones
+ * (lockfiles, installed packages, minified files, licence texts). Returns
  * { files: [{ path, skill }], roots: number of roots that exist }.
  */
 export function skillFiles(roots) {
@@ -63,7 +68,7 @@ export function skillFiles(roots) {
     for (const skillFile of all.filter(path => basename(path) === "SKILL.md")) {
       const folder = dirname(skillFile), inside = [];
       walk(folder, inside, new Set([folder]));
-      for (const path of inside) if (!generated.test(relative(folder, path)) && !files.has(path)) files.set(path, basename(folder));
+      for (const path of inside) if (!shared.test(relative(folder, path)) && !files.has(path)) files.set(path, basename(folder));
     }
   }
   return { files: [...files].map(([path, skill]) => ({ path, skill })), roots: present };
@@ -82,7 +87,7 @@ export function skillIndex(files) {
     if (text.includes("\0")) continue;
     for (const raw of text.split(/\r?\n/)) {
       const line = normalLine(raw);
-      if (line.length < minimum || boilerplate.has(line)) continue;
+      if (line.length < minimum || isBoilerplate(line)) continue;
       const key = line.slice(0, window), list = index.get(key) || [];
       if (!list.some(item => item.line === line)) { list.push({ line, skill }); count++; }
       index.set(key, list);
