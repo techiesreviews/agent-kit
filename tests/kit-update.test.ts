@@ -503,6 +503,11 @@ test("kit update --install-timer writes both unit files, starts the timer and is
   writeFileSync(service, "old\n");
   assert.equal(k.run(["--install-timer"], { PATH: systemctl.PATH }).stdout, `wrote ${service}\n${installed}`);
   assert.equal(readFileSync(service, "utf8"), written);
+  writeFileSync(timer, "old\n");
+  const calls = systemctl.calls().length;
+  assert.equal(k.run(["--install-timer"], { PATH: systemctl.PATH }).stdout, `wrote ${timer}\n${installed}`);
+  assert.equal(readFileSync(timer, "utf8"), readFileSync("systemd/agent-kit-update.timer", "utf8"));
+  assert.ok(systemctl.calls().slice(calls).includes("--user daemon-reload"));
   assert.deepEqual(readdirSync(units(k)).sort(), ["agent-kit-update.service", "agent-kit-update.timer"]);
 });
 
@@ -525,19 +530,22 @@ test("the installed service, run as systemd runs it, brings a new main into the 
   assert.equal(k.link("current"), two);
 });
 
-test("kit update --install-timer writes % and $ in its paths the way systemd reads them back", (t) => {
+test("kit update --install-timer writes %, $ and @ in its paths and repo the way systemd reads them back", (t) => {
   const k = kitRepo(t);
   const systemctl = fakeSystemctl(k);
-  const dataHome = join(k.directory, "da%ta$x");
   k.publish("one");
-  assert.equal(k.run([], { XDG_DATA_HOME: dataHome }).status, 0);
-  const install = k.run(["--install-timer"], { PATH: systemctl.PATH, XDG_DATA_HOME: dataHome });
-  assert.equal(install.status, 0, install.stdout + install.stderr);
-  const written = readFileSync(join(units(k), "agent-kit-update.service"), "utf8");
-  const escaped = join(k.directory, "da%%ta$x");
-  assert.ok(written.includes(`"XDG_DATA_HOME=${escaped}"`), written);
-  assert.ok(written.includes(`ExecStart="${escaped}/agent-kit/current/kit" update`), written);
-  verifyUnits(t, k);
+  for (const [folder, repo, escapedRepo] of [["da%ta$x", "file:///srv/kit%20repo.git", "file:///srv/kit%%20repo.git"],
+    ["user@corp/data", "git@example.invalid:org/agent-kit.git", "git@example.invalid:org/agent-kit.git"]]) {
+    const dataHome = join(k.directory, folder);
+    assert.equal(k.run([], { XDG_DATA_HOME: dataHome }).status, 0);
+    const install = k.run(["--install-timer"], { PATH: systemctl.PATH, XDG_DATA_HOME: dataHome, KIT_REPO: repo });
+    assert.equal(install.status, 0, install.stdout + install.stderr);
+    const written = readFileSync(join(units(k), "agent-kit-update.service"), "utf8");
+    const escaped = join(k.directory, folder.replace("%", "%%"));
+    assert.ok(written.includes(`"XDG_DATA_HOME=${escaped}" "KIT_REPO=${escapedRepo}"`), written);
+    assert.ok(written.includes(`ExecStart="${escaped}/agent-kit/current/kit" update`), written);
+    verifyUnits(t, k);
+  }
 });
 
 test("kit update --remove-timer stops the timer, takes its files out and is safe to run again", (t) => {
@@ -609,10 +617,10 @@ test("kit update --install-timer fails plainly without a machine copy, without s
   assert.equal(existsSync(units(k)), false);
   // A repo name systemd cannot hold in a quoted value (or one that looks like a placeholder) is refused before
   // anything is written.
-  for (const repo of ['file:///tmp/a"b', "file:///tmp/a\\b", "file:///tmp/a\nb", "file:///tmp/@KIT@"]) {
+  for (const repo of ['file:///tmp/a"b', "file:///tmp/a\\b", "file:///tmp/a\nb", "file:///tmp/@DATA_HOME@"]) {
     const refused = k.run(["--install-timer"], { PATH: systemctl.PATH, KIT_REPO: repo });
     assert.equal(refused.status, 1, refused.stdout + refused.stderr);
-    assert.equal(refused.stdout, `RESULT: fail update cannot write the timer's service, because ${repo.replace("\n", " ")} holds a quote, backslash, @ or new line\n`);
+    assert.equal(refused.stdout, `RESULT: fail update cannot write the timer's service, because ${repo.replace("\n", " ")} holds a quote, backslash, new line or @KIT@-style name\n`);
   }
   assert.equal(existsSync(units(k)), false);
   // A kit without its unit files fails before writing the one it lacks.

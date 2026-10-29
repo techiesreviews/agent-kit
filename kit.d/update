@@ -38,6 +38,9 @@ data=${XDG_DATA_HOME:-}
 data=$data/agent-kit
 # A folder holds a kit when it has what the front door needs: kit to run and kit-lib.sh to source.
 has_kit() { [[ -x $1/kit && -f $1/kit-lib.sh ]]; }
+# A value for a unit file: systemd reads % as a specifier, so it is doubled. $ needs nothing: systemd expands
+# variables only in ExecStart's arguments, never in its command or in Environment.
+escape() { printf '%s' "${1//%/%%}"; }
 
 # The timer modes fetch nothing, so they neither create the data folder nor take the update lock.
 timer=agent-kit-update
@@ -55,15 +58,14 @@ if [[ $mode == install-timer ]]; then
     exit 1
   fi
   source_units=$(dirname -- "${BASH_SOURCE[0]}")/../systemd
-  # Quoted unit values cannot hold a quote, a backslash or a new line, and @ could look like a placeholder; % is doubled. $ needs nothing: systemd
-  # expands variables only in ExecStart's arguments, never in its command or in Environment.
+  # Quoted unit values cannot hold a quote, a backslash or a new line, and a placeholder's name would be filled
+  # in again by the next one.
   for value in "$data" "$repo"; do
-    if [[ $value == *[\\\"@$'\n']* ]]; then
-      kit_result fail "update cannot write the timer's service, because $value holds a quote, backslash, @ or new line"
+    if [[ $value == *[\\\"$'\n']* || $value == *@KIT@* || $value == *@DATA_HOME@* || $value == *@KIT_REPO@* ]]; then
+      kit_result fail "update cannot write the timer's service, because $value holds a quote, backslash, new line or @KIT@-style name"
       exit 1
     fi
   done
-  escape() { printf '%s' "${1//%/%%}"; }
   if ! mkdir -p -- "$units"; then
     kit_result fail "update cannot create $units"
     exit 1
@@ -87,7 +89,8 @@ if [[ $mode == install-timer ]]; then
     printf 'wrote %s\n' "$file"
     changed=true
   done
-  # Asked before enable: files left by a start that failed (or a timer stopped by hand) are unchanged, yet the timer was not on.
+  # Asked before enable: files left by a start that failed (or a timer stopped by hand) are unchanged,
+  # yet the timer was not on.
   running=false
   if systemctl --user is-enabled --quiet "$timer.timer" 2> /dev/null && systemctl --user is-active --quiet "$timer.timer" 2> /dev/null; then
     running=true
