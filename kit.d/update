@@ -12,9 +12,10 @@ ${XDG_DATA_HOME:-~/.local/share}/agent-kit/<commit>/, then point current at it i
 --previous points current back at the kit it replaced, for every project at once; kit update
 then stays there until main moves on (the normal way back is a revert in the kit repo).
 --install-timer writes the kit's systemd/agent-kit-update.timer and .service into
-~/.config/systemd/user/ (where systemd looks) and starts the timer: the machine copy's kit update
-then runs every 15 minutes while you are logged in. --remove-timer stops it and takes both files
-out. Both are safe to run again; neither fetches anything.
+~/.config/systemd/user/ (where a user manager without its own XDG_CONFIG_HOME looks) and starts
+the timer: the machine copy's kit update then runs every 15 minutes while you are logged in. The
+timer does not rewrite its own files: run --install-timer again after a kit change to systemd/.
+--remove-timer stops it and takes both files out. Both are safe to run again; neither fetches.
 EOF
 }
 mode=update
@@ -54,11 +55,11 @@ if [[ $mode == install-timer ]]; then
     exit 1
   fi
   source_units=$(dirname -- "${BASH_SOURCE[0]}")/../systemd
-  # Quoted unit values cannot hold a quote, a backslash or a new line; % is doubled. $ needs nothing: systemd
+  # Quoted unit values cannot hold a quote, a backslash or a new line, and @ could look like a placeholder; % is doubled. $ needs nothing: systemd
   # expands variables only in ExecStart's arguments, never in its command or in Environment.
   for value in "$data" "$repo"; do
-    if [[ $value == *[\\\"$'\n']* ]]; then
-      kit_result fail "update cannot write the timer's service, because $value holds a quote, backslash or new line"
+    if [[ $value == *[\\\"@$'\n']* ]]; then
+      kit_result fail "update cannot write the timer's service, because $value holds a quote, backslash, @ or new line"
       exit 1
     fi
   done
@@ -86,14 +87,16 @@ if [[ $mode == install-timer ]]; then
     printf 'wrote %s\n' "$file"
     changed=true
   done
-  # Asked before enable: files left by a start that failed are unchanged, yet the timer was not on.
-  enabled=false
-  if systemctl --user is-enabled --quiet "$timer.timer" 2> /dev/null; then enabled=true; fi
+  # Asked before enable: files left by a start that failed (or a timer stopped by hand) are unchanged, yet the timer was not on.
+  running=false
+  if systemctl --user is-enabled --quiet "$timer.timer" 2> /dev/null && systemctl --user is-active --quiet "$timer.timer" 2> /dev/null; then
+    running=true
+  fi
   if ! systemctl --user daemon-reload || ! systemctl --user enable --now "$timer.timer"; then
     kit_result fail "update cannot start $timer.timer (systemctl --user status $timer.timer says why)"
     exit 1
   fi
-  if [[ $changed == false && $enabled == true ]]; then kit_result ok "update timer already installed: kit update runs every 15 minutes"
+  if [[ $changed == false && $running == true ]]; then kit_result ok "update timer already installed: kit update runs every 15 minutes"
   else kit_result ok "update timer installed: kit update runs every 15 minutes"; fi
   exit 0
 fi
@@ -104,10 +107,15 @@ if [[ $mode == remove-timer ]]; then
     kit_result ok "update timer already removed"
     exit 0
   fi
-  # disable needs the timer file; without it only a leftover link in timers.target.wants can be enabled.
-  if [[ -e $units/$timer.timer ]] && ! systemctl --user disable --now "$timer.timer"; then
-    kit_result fail "update cannot stop $timer.timer; nothing removed"
-    exit 1
+  # disable needs the timer file. Without it the timer can still be loaded and running (its file deleted by
+  # hand), so it is stopped; a timer that is not loaded makes stop fail, which says nothing here.
+  if [[ -e $units/$timer.timer ]]; then
+    if ! systemctl --user disable --now "$timer.timer"; then
+      kit_result fail "update cannot stop $timer.timer; nothing removed"
+      exit 1
+    fi
+  else
+    systemctl --user stop "$timer.timer" 2> /dev/null || :
   fi
   if ! rm -f -- "${found[@]}" "$wants"; then
     kit_result fail "update cannot remove the timer's files from $units"
