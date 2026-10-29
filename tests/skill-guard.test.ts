@@ -19,7 +19,11 @@ function fixture(t: TestContext) {
   const put = (path: string, text: string) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, text); };
   put(join(home, ".claude/skills/crane/SKILL.md"), `---\nname: crane\n---\n# Crane\n\n- ${secret}\nshort line\n`);
   put(join(home, ".claude/skills/crane/references/more.md"), `${other}\n`);
-  put(join(home, ".claude/skills/crane/scripts/tool.mjs"), "const viewport = 'width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover';\n");
+  put(join(home, ".claude/skills/crane/scripts/tool.mjs"), `const fold = "Unfold the crane's left wing slowly and press the crease flat with a spoon";\n` +
+    '<meta name="viewport" content="width=device-width, initial-scale=1">\n');
+  // Generated files in a skill (lockfiles, installed packages) hold registry lines every project shares.
+  put(join(home, ".claude/skills/crane/package-lock.json"), '      "resolved": "https://registry.npmjs.org/some-package/-/some-package-1.2.3.tgz",\n');
+  put(join(home, ".claude/skills/crane/node_modules/x/index.js"), "module.exports = function installedPackageLineThatIsLongEnoughToCount() {};\n");
   put(join(home, ".codex/plugins/cache/kit/skills/jar/SKILL.md"), "The jar skill keeps its own long line here so plugins are read too, okay\n");
   mkdirSync(repo);
   const env = { ...kitEnv(), HOME: home, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
@@ -47,14 +51,17 @@ test("lines compare without list marks, quotes, headings or extra spaces", () =>
   assert.equal(normalLine("12) step"), "step");
 });
 
-test("only the skills' written files count, and only their lines of 60 or more characters", (t) => {
+test("every file of a skill counts, but only lines of 60 or more characters that are not shared boilerplate", (t) => {
   const f = fixture(t);
   const { files, roots } = skillFiles([join(f.home, ".claude/skills"), join(f.home, ".codex/plugins"), join(f.home, "missing")]);
   assert.equal(roots, 2);
   assert.deepEqual(files.map(file => file.path.slice(f.home.length)).sort(),
-    ["/.claude/skills/crane/SKILL.md", "/.claude/skills/crane/references/more.md", "/.codex/plugins/cache/kit/skills/jar/SKILL.md"]);
+    ["/.claude/skills/crane/SKILL.md", "/.claude/skills/crane/references/more.md", "/.claude/skills/crane/scripts/tool.mjs",
+      "/.codex/plugins/cache/kit/skills/jar/SKILL.md"]);
   const index = skillIndex(files);
-  assert.equal(index.count, 3);
+  assert.equal(index.count, 4);
+  assert.equal(skillMatch(`  const fold = "Unfold the crane's left wing slowly and press the crease flat with a spoon"; // copied`, index), "crane");
+  assert.equal(skillMatch('    <meta name="viewport" content="width=device-width, initial-scale=1">', index), "");
   assert.equal(skillMatch(`    // quoted: ${secret} (end)`, index), "crane");
   assert.equal(skillMatch("short line", index), "");
   assert.equal(skillMatch(secret.slice(0, 50), index), "");
@@ -99,7 +106,7 @@ test("without local skill folders the line check is skipped and says so; a clean
   f.git("add", "b.md"); f.git("commit", "-q", "-m", "b");
   const clean = f.run(["--base", "HEAD~1"]);
   assert.equal(clean.status, 0, clean.stderr);
-  assert.match(clean.stdout, /^skill-guard: line check: \d+ lines against 3 skill lines from 3 skill files\nRESULT: ok skill-guard\n$/);
+  assert.match(clean.stdout, /^skill-guard: line check: \d+ lines against 4 skill lines from 4 skill files\nRESULT: ok skill-guard\n$/);
 });
 
 test("--history checks every path, blob and commit message any ref ever held", (t) => {
