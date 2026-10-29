@@ -230,10 +230,12 @@ export function ruleBlocks(text, file) {
 
 /**
  * The house style's rule blocks, each starting at its own `- **HSn**` line, marked house; never its intro (which may
- * quote a rule as an example) or its undecided questions.
+ * quote a rule as an example), its undecided questions, or a rule the project restates (`replaced`, its ids).
  */
-export function houseBlocks(text, file) {
-  return ruleBlocks(text, file).filter(block => /^- \*\*HS\d+\*\* /.test(block.text)).map(block => ({ ...block, house: true }));
+export function houseBlocks(text, file, { replaced = new Set() } = {}) {
+  // Key words stop at the Why line: the Why and Check lines repeat words (check, eye, try) across every rule.
+  return ruleBlocks(text, file).filter(block => /^- \*\*HS\d+\*\* /.test(block.text) && !replaced.has(block.id))
+    .map(block => ({ ...block, words: keyWords(block.text.split(/\sWhy:/)[0]), house: true }));
 }
 
 export const coverWords = 3;
@@ -305,7 +307,8 @@ function learn(args) {
     const own = ["docs/agents/ux-rulebook.md", "docs/agents/guardrails.md"].map(path => join(root, path))
       .filter(path => existsSync(path)).flatMap(path => ruleBlocks(readFileSync(path, "utf8"), path));
     const house = join(kitHome(), "docs/house-style.md");
-    const shared = existsSync(house) ? houseBlocks(readFileSync(house, "utf8"), house) : [];
+    const replaced = new Set(own.map(block => block.id).filter(Boolean));
+    const shared = existsSync(house) ? houseBlocks(readFileSync(house, "utf8"), house, { replaced }) : [];
     const blocks = [...own, ...shared];
     const repeated = groups.filter(group => group.times > 1), once = groups.filter(group => group.times === 1);
     const inWindow = entries.filter(entry => entry.date >= since).length;

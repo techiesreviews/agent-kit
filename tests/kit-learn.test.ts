@@ -29,7 +29,7 @@ const learn: {
   parseCorrections(text: string, file: string): { entries: Entry[]; problems: { file: string; line: number; message: string }[] };
   groupCorrections(entries: Entry[], otherSlugs?: string[]): Group[];
   ruleBlocks(text: string, file: string): Block[];
-  houseBlocks(text: string, file: string): Block[];
+  houseBlocks(text: string, file: string, options?: { replaced?: Set<string> }): Block[];
   coveredBy(group: Group, blocks: Block[]): (Block & { shared: string[] }) | undefined;
   projectMap(readme: string): { slug: string; workspace: string }[];
   findSlug(rows: { slug: string; workspace: string }[], roots: string[]): string | undefined;
@@ -202,6 +202,13 @@ test("covered? takes the project's own rule first and the kit's house style only
   const covered = (text: string, blocks: Block[]) => learn.groupLines(of(text), repo, blocks).find(line => line.includes("covered?"));
   assert.match(covered("hint text", [...shared, ...own])!, /covered\?: docs\/agents\/ux-rulebook\.md:5 \(S1\)/);
   assert.match(covered("hint text", shared)!, /covered\?: kit docs\/house-style\.md:2 \(HS2\)/);
+  // A project that restates HS2 has replaced it: the kit's HS2 no longer covers anything there.
+  const text = "# House style\n- **HS2** No hint text, explainer or tip beside the save button or any control; remove them.\n";
+  assert.equal(learn.houseBlocks(text, house).length, 1);
+  assert.deepEqual(learn.houseBlocks(text, house, { replaced: new Set(["HS2"]) }), []);
+  // Why and Check lines do not lend their words to a rule.
+  const [rule] = learn.houseBlocks("- **HS1** Dragging works on the whole thing.\n  Why: hint text beside the save button.\n  Check: eye.\n", house);
+  assert.ok(!rule.words.has("hint") && !rule.words.has("check"), [...rule.words].join());
 });
 
 test("the real house style gives one block per HS rule, each at its own rule line, never the intro", () => {
@@ -234,6 +241,13 @@ test("kit learn reads the house style from KIT_HOME and counts only its numbered
   assert.match(bundle, /chat: Status\n {2}- covered\?: no rule or guardrail shares 3 key words/);
   // The project's own S1 still covers the hint corrections.
   assert.match(bundle, /covered\?: docs\/agents\/ux-rulebook\.md:5 \(S1\)/);
+  // A kit without a house style still runs, on the project's rules alone.
+  rmSync(join(home, "docs"), { recursive: true });
+  const bare = run({ KIT_CHAT_MEMORY: memory, KIT_MAIN_ROOT: main, HOME: dir, KIT_HOME: home }, ["--since", "2026-10-01", "--project", "demo"]);
+  assert.equal(bare.status, 0, bare.stderr);
+  const plain = bundleOf(bare.stdout);
+  assert.match(plain, /covered\?: docs\/agents\/ux-rulebook\.md:5 \(S1\)/);
+  assert.doesNotMatch(plain, /kit docs\/house-style\.md/);
 });
 
 test("the slug comes from the project map by workspace, a sibling worktree included", () => {
