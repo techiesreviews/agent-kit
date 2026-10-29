@@ -10,7 +10,7 @@ import { kitEnv } from "./support/kit-env.ts";
 const kit = resolve("scripts/agents/kit");
 const clean = "REVIEW_STATUS: complete\nDefects:\nSpec: none\nStandards: none\nValidation gaps: none\nOptional nits: none\n";
 const findings = "REVIEW_STATUS: complete\nDefects:\nSpec:\n- file.txt:1 P1 restore required text\nStandards: none\nValidation gaps: none\nOptional nits: none\n";
-interface Call { phase: string; args: string[] }
+interface Call { phase: string; args: string[]; builderTicket?: string }
 interface State { finished: string[]; build: string; buildModel?: string; review: string; reviewedHead: string; rounds: number; pendingFix?: boolean; pr?: string; queued?: { head: string }; model: string; effort: string; previousModels?: string[] }
 
 // `settings` is committed as the project's settings file (by default the least a project needs), with any extra `files`.
@@ -56,7 +56,7 @@ const args = process.argv.slice(2);
 const git = (...args) => execFileSync("git", args, { encoding: "utf8" }).trim();
 const phase = args[0];
 function call(name) {
-  appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ phase: name, args }) + "\\n");
+  appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ phase: name, args, builderTicket: process.env.KIT_BUILDER_TICKET }) + "\\n");
   // SKIP_PHASE ends that command the way a review out of credit does (exit 3).
   if (process.env.SKIP_PHASE === name) { console.log("RESULT: skip review out of credit (grok-4.7)"); process.exit(3); }
   if (process.env.FAIL_PHASE === name || (process.env.FAIL_FIX_REVIEW && name === "review" && round() > 0)) {
@@ -535,6 +535,41 @@ test("kit slice switches builder after its initial build fails", t => {
   assert.equal(builds[1].args[builds[1].args.indexOf("--model") + 1], "claude-opus-5-5");
   assert.equal(f.state().buildModel, "claude-opus-5-5");
   assert.match(f.git("log", "-1", "--format=%B"), /Co-Authored-By: Claude Opus 5\.5 <noreply@anthropic\.com>/);
+});
+
+test("a build that timed out after its work was committed on top of the start resumes at review", t => {
+  const f = fixture(t), failed = f.run([], { FAIL_PHASE: "build" });
+  assert.equal(failed.status, 1, failed.stdout + failed.stderr);
+  const saved = readFileSync(join(f.root, ".scratch/kit-slice/04-ticket/state.json"), "utf8");
+  writeFileSync(join(f.root, "file.txt"), "built by hand\n");
+  f.git("commit", "-qam", "builder work, checked by hand");
+  const taken = f.git("rev-parse", "HEAD");
+  assert.equal(readFileSync(join(f.root, ".scratch/kit-slice/04-ticket/state.json"), "utf8"), saved, "state.json is not edited");
+  const result = f.run([], { CLEAN_AT: "1" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(result.stdout.includes(`resume: build taken from 1 commit on ${f.head.slice(0, 9)}: ${taken.slice(0, 7)}`), result.stdout);
+  assert.match(result.stdout, /builder work, checked by hand\n/);
+  assert.match(result.stdout, /slice: build ok from commits\nslice: commit ok /);
+  const calls = f.calls();
+  assert.deepEqual(calls.map(call => call.phase), ["build", "review", "fix", "pr"]);
+  // Builders (the build and its fix rounds) get the ticket so kit specs keeps their run small; kit pr does not.
+  assert.deepEqual(calls.map(call => call.builderTicket), [join(f.root, f.ticket), undefined, join(f.root, f.ticket), undefined]);
+  assert.equal(f.git("rev-parse", "HEAD~1"), taken, "only the fix round's commit is on top of the taken work");
+  assert.equal(f.git("log", "--format=%s", `${f.head}..${taken}`), "builder work, checked by hand");
+});
+
+test("a slice whose branch moved to unrelated history still stops before building", t => {
+  const f = fixture(t);
+  assert.equal(f.run([], { FAIL_PHASE: "build" }).status, 1);
+  writeFileSync(join(f.root, "file.txt"), "elsewhere\n");
+  f.git("add", "file.txt");
+  const unrelated = f.git("commit-tree", f.git("write-tree"), "-m", "unrelated history");
+  f.git("reset", "-q", "--hard", unrelated);
+  const result = f.run();
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /RESULT: fail slice build: HEAD \w+ is not on top of the slice's start \w+; a build resumes only from commits on top of it/);
+  assert.deepEqual(f.calls().map(call => call.phase), ["build"]);
+  assert.deepEqual(f.state().finished, ["brief"]);
 });
 
 test("kit slice credits its build to the model that finished the build, then fix rounds to the resumed builder", t => {

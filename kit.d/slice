@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // kit: build, commit, review, fix, check the UX of and land one ticket with resumable phases
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -121,13 +121,15 @@ async function slice(args) {
       assertBranch();
       if (git("rev-parse", "HEAD") !== expected) throw new Error("worktree HEAD changed during slice");
     };
-    async function execute(command, argv) {
+    // A builder's kit specs --affected keeps to the specs closest to the change (project.d/specs); kit pr runs the full set.
+    const builderEnv = { KIT_BUILDER_TICKET: ticket };
+    async function execute(command, argv, overrides = {}) {
       const previous = readFileSync(log, "utf8");
       const fd = openSync(log, "a");
       let code;
       try {
         code = await new Promise((accept, reject) => {
-          const child = spawn(command, argv, { cwd: root, env, stdio: ["ignore", fd, fd] });
+          const child = spawn(command, argv, { cwd: root, env: { ...env, ...overrides }, stdio: ["ignore", fd, fd] });
           const interrupt = () => child.kill("SIGINT"), terminate = () => child.kill("SIGTERM");
           process.once("SIGINT", interrupt); process.once("SIGTERM", terminate);
           const clear = () => { process.removeListener("SIGINT", interrupt); process.removeListener("SIGTERM", terminate); };
@@ -282,14 +284,27 @@ async function slice(args) {
     }
     begin("build");
     if (!state.finished.includes(phase)) {
-      assertHead(state.head);
-      state.build = join(directory, "builder"); state.buildModel = flags.model; save();
-      const output = requireSuccess(await execute(agent, ["build", root, ".scratch/agent-brief.md", "--model", flags.model, "--effort", flags.effort, "--out", state.build]));
-      assertHead(state.head);
-      state.build = resolve(root, /^artifacts: (.+)$/m.exec(output)?.[1] || state.build);
-      complete(state.build);
+      assertBranch();
+      const now = git("rev-parse", "HEAD");
+      // A build that stopped (such as at its time limit) after its work was committed on top of the saved start:
+      // those commits are the build. A HEAD on any other history still stops.
+      if (now !== state.head && spawnSync("git", ["-C", root, "merge-base", "--is-ancestor", state.head, now], { env }).status === 0) {
+        state.taken = git("log", "--reverse", "--format=%h %s", `${state.head}..${now}`).split("\n");
+        console.log(`resume: build taken from ${state.taken.length} commit${state.taken.length === 1 ? "" : "s"} on ${state.head.slice(0, 9)}: ${state.taken.join("; ")}`);
+        state.head = now; state.buildModel ??= flags.model;
+        complete("from commits");
+      } else {
+        if (now !== state.head) throw new Error(`HEAD ${now.slice(0, 9)} is not on top of the slice's start ${state.head.slice(0, 9)}; a build resumes only from commits on top of it`);
+        state.build = join(directory, "builder"); state.buildModel = flags.model; save();
+        const output = requireSuccess(await execute(agent, ["build", root, ".scratch/agent-brief.md", "--model", flags.model, "--effort", flags.effort, "--out", state.build], builderEnv));
+        assertHead(state.head);
+        state.build = resolve(root, /^artifacts: (.+)$/m.exec(output)?.[1] || state.build);
+        complete(state.build);
+      }
     }
     begin("commit");
+    // Commits taken as the build need no builder commit unless work was left uncommitted.
+    if (!state.finished.includes(phase) && state.taken && !git("status", "--porcelain", "--untracked-files=all")) complete(state.head);
     if (!state.finished.includes(phase)) {
       try {
         state.head = commitBuilderWork({ root, branch, head: state.head, message: title, author: builderAuthor(state.buildModel), env });
@@ -314,7 +329,7 @@ async function slice(args) {
       state.pendingFix = true; save();
       const builder = pastBuilder() ? [] : ["--builder", flags.model, "--effort", flags.effort];
       const result = await execute(kit, ["fix", "--ticket", flags.ticket, ...source, ...builder,
-        ...(state.build ? ["--run", state.build] : [])]);
+        ...(state.build ? ["--run", state.build] : [])], builderEnv);
       // kit fix exits 1 both for command failures and completed reviews with findings.
       const remaining = /^RESULT: fail fix \d+ open findings \((.+)\/result\.md\)$/m.exec(result.output);
       if (result.code !== 0 && !remaining) requireSuccess(result);
