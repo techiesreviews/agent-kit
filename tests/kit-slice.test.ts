@@ -572,6 +572,40 @@ test("a slice whose branch moved to unrelated history still stops before buildin
   assert.deepEqual(f.state().finished, ["brief"]);
 });
 
+test("a taken build commits only the work left uncommitted, credited to its builder", t => {
+  const f = fixture(t);
+  assert.equal(f.run([], { FAIL_PHASE: "build" }).status, 1);
+  writeFileSync(join(f.root, "file.txt"), "built by hand\n");
+  f.git("commit", "-qam", "builder work, part one");
+  const taken = f.git("rev-parse", "HEAD");
+  writeFileSync(join(f.root, "rest.txt"), "left uncommitted\n");
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /slice: build ok from commits\n/);
+  assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "pr"]);
+  assert.equal(f.git("rev-parse", "HEAD^"), taken);
+  assert.equal(f.git("log", "-1", "--format=%B"), "Test slice title\n\nCo-Authored-By: GPT-6.1-Sol <noreply@openai.com>");
+  assert.equal(f.git("show", "--format=", "--name-only", "HEAD"), "rest.txt");
+  assert.equal(f.git("status", "--porcelain"), "");
+});
+
+test("commits on a slice that never started a build are not taken as one", t => {
+  const f = fixture(t);
+  assert.equal(f.run([], { FAIL_PHASE: "build" }).status, 1);
+  // A slice stopped after its brief, before the build began, has no builder saved.
+  const path = join(f.root, ".scratch/kit-slice/04-ticket/state.json");
+  const { build: _build, buildModel: _model, ...saved } = JSON.parse(readFileSync(path, "utf8"));
+  writeFileSync(path, JSON.stringify(saved));
+  writeFileSync(join(f.root, "file.txt"), "dev moved on\n");
+  f.git("commit", "-qam", "fast-forward from dev");
+  const result = f.run();
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /RESULT: fail slice build: HEAD moved from the slice's start \w+ before any build started; only a started build resumes from commits/);
+  assert.doesNotMatch(result.stdout, /resume: build taken/);
+  assert.deepEqual(f.calls().map(call => call.phase), ["build"]);
+  assert.deepEqual(f.state().finished, ["brief"]);
+});
+
 test("kit slice credits its build to the model that finished the build, then fix rounds to the resumed builder", t => {
   const f = fixture(t), real = f.realFix();
   const hook = join(f.hooks, "pre-commit");

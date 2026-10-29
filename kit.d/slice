@@ -287,14 +287,17 @@ async function slice(args) {
       assertBranch();
       const now = git("rev-parse", "HEAD");
       // A build that stopped (such as at its time limit) after its work was committed on top of the saved start:
-      // those commits are the build. A HEAD on any other history still stops.
-      if (now !== state.head && spawnSync("git", ["-C", root, "merge-base", "--is-ancestor", state.head, now], { env }).status === 0) {
+      // those commits are the build. buildModel is saved as a build starts, so commits on a slice that never
+      // started one (a merge of dev, a ticket edit) are not taken. A HEAD on any other history still stops.
+      if (now !== state.head && state.buildModel && spawnSync("git", ["-C", root, "merge-base", "--is-ancestor", state.head, now], { env }).status === 0) {
         state.taken = git("log", "--reverse", "--format=%h %s", `${state.head}..${now}`).split("\n");
         console.log(`resume: build taken from ${state.taken.length} commit${state.taken.length === 1 ? "" : "s"} on ${state.head.slice(0, 9)}: ${state.taken.join("; ")}`);
-        state.head = now; state.buildModel ??= flags.model;
+        state.head = now;
         complete("from commits");
       } else {
-        if (now !== state.head) throw new Error(`HEAD ${now.slice(0, 9)} is not on top of the slice's start ${state.head.slice(0, 9)}; a build resumes only from commits on top of it`);
+        if (now !== state.head) throw new Error(state.buildModel
+          ? `HEAD ${now.slice(0, 9)} is not on top of the slice's start ${state.head.slice(0, 9)}; a build resumes only from commits on top of it`
+          : `HEAD moved from the slice's start ${state.head.slice(0, 9)} before any build started; only a started build resumes from commits`);
         state.build = join(directory, "builder"); state.buildModel = flags.model; save();
         const output = requireSuccess(await execute(agent, ["build", root, ".scratch/agent-brief.md", "--model", flags.model, "--effort", flags.effort, "--out", state.build], builderEnv));
         assertHead(state.head);
