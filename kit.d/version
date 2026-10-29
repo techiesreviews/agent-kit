@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # kit: show the kit's commit, owner and Node version, with the kit's age and the project's commit
 set -euo pipefail
-# shellcheck source=scripts/agents/kit-lib.sh
+# shellcheck source=kit-lib.sh
 source "${KIT_LIB:-$(dirname -- "${BASH_SOURCE[0]}")/../kit-lib.sh}"
 case ${1-} in
   --help|-h)

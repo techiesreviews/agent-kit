@@ -5,7 +5,7 @@ set -euo pipefail
 root=$(git rev-parse --show-toplevel)
 # Settings come from this checkout's scripts/agents/kit.json.
 export KIT_ROOT=$root
-# shellcheck source=scripts/agents/kit-lib.sh
+# shellcheck source=kit-lib.sh
 source "$(dirname -- "${BASH_SOURCE[0]}")/kit-lib.sh"
 problems=$(kit_settings_problems) || { printf 'worktree.sh: %s\n' "${problems//$'\n'/; }" >&2; exit 1; }
 branch=$1

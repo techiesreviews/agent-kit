@@ -15,7 +15,7 @@ const { kitBranch, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, kitSt
 );
 const usage = "Usage: kit review [--base REF | --commit SHA] [--ticket FILE] [--pr N] [--second-look]\nDefault scope: --base origin/<land> (branches.land in scripts/agents/kit.json). Model: ASE_REVIEW_MODEL or claude-opus-5-5: claude-*, grok-*, gpt-* (also o<digit>…, codex…) or opencode/<model>;\n" +
   "any other name is refused before any call (ASE_AGENT_CLI=codex|opencode picks the CLI for it).\n" +
-  "--second-look: the review kind from the changed paths (agent, ux, dx, code) picks its model in scripts/agents/second-look.json (ASE_SECOND_LOOK overrides);\n" +
+  "--second-look: the review kind from the changed paths (agent, ux, dx, code) picks its model in the kit's second-look.json (ASE_SECOND_LOOK overrides);\n" +
   "the other family takes it when that model cannot run; when neither can, it skips with exit 3 and says \"second look: skipped (<reason>)\".\n" +
   "Weekly budgets for the whole computer: ASE_REVIEW_BUDGET_GPT (12), ASE_REVIEW_BUDGET_GROK (8); not counted: Claude and OpenCode's -free models.\n" +
   "On OpenCode, openai/… counts as GPT and xai/… as Grok; any other paid OpenCode model is refused.\n";

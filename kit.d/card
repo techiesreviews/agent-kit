@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # kit: print Lex's context card for this project
 set -euo pipefail
-# shellcheck source=scripts/agents/kit-lib.sh
+# shellcheck source=kit-lib.sh
 source "${KIT_LIB:-$(dirname -- "${BASH_SOURCE[0]}")/../kit-lib.sh}"
 case ${1-} in
   --help|-h)

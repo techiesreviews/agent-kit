@@ -15,7 +15,7 @@ if ! KIT_HOME=$(cd -- "$home" 2>/dev/null && pwd -P) || [[ ! -f $KIT_HOME/kit-li
 fi
 if [[ $chosen == true ]]; then unset KIT_HOME_DEFAULT; else export KIT_HOME_DEFAULT=$KIT_HOME; fi
 export KIT_HOME
-# shellcheck source=scripts/agents/kit-lib.sh
+# shellcheck source=kit-lib.sh
 source "$KIT_HOME/kit-lib.sh"
 # Outside git the project is the one around this front door, not around KIT_HOME.
 if [[ -z ${KIT_ROOT:-} ]] && ! git rev-parse --show-toplevel > /dev/null 2>&1; then

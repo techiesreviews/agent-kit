@@ -6,10 +6,9 @@ trap 'exit 0' ERR
 [[ $# == 1 ]] || exit 0
 case $1 in bash-guard|session-env|agent-cap|context-card) ;; *) exit 0 ;; esac
 if [[ $1 == context-card ]]; then
-  # The card never blocks a session: it prints SessionStart context or nothing. It is still the project's own
-  # script (a checkout without it stays silent) until ticket 30 moves it into the kit.
-  root=${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null)}
-  timeout 1 node "$root/scripts/agents/context-card.mjs" --hook 2>/dev/null || true
+  # The card never blocks a session: it prints SessionStart context or nothing. It is the kit's own script,
+  # beside these hooks, for every project.
+  timeout 1 node "$(dirname -- "${BASH_SOURCE[0]}")/../context-card.mjs" --hook 2>/dev/null || true
   exit 0
 fi
 bash "$(dirname -- "${BASH_SOURCE[0]}")/$1.sh" || {

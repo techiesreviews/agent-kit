@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # kit: check or add npm packages in the shared node_modules
 set -euo pipefail
-# shellcheck source=scripts/agents/kit-lib.sh
+# shellcheck source=kit-lib.sh
 source "${KIT_LIB:-$(dirname -- "${BASH_SOURCE[0]}")/../kit-lib.sh}"
 
 finished=false

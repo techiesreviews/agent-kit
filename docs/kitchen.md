@@ -49,7 +49,7 @@ every change" rows here (a row with the same role in the project's extras wins).
 | Review, every change | `claude-opus-5-5`, medium | default (`kit review`), fresh read-only session |
 | Second opinion: final version of a big, delicate slice, once | off since 2026-10-26: no OpenAI reviews (Lex); use Grok | was `ASE_REVIEW_MODEL=gpt-6.1-sol kit review --ticket <t>` |
 | Second opinion: routine, and the weekly sample of 2–3 Claude-approved slices | off since 2026-10-26: no OpenAI reviews (Lex); use Grok | was `ASE_REVIEW_MODEL=gpt-6-luna kit review` |
-| Second look, every change, after Claude's review | per review kind (code, UX, DX, agent) from the table [`scripts/agents/second-look.json`](../second-look.json): `grok-4.7`, else the free `opencode/deepseek-v4.1-flash-free` | `kit slice` and `kit pr` run it (`kit review --second-look`); its findings block and get fix rounds like Claude's. Kind from the changed paths: agent setup first, then UX (`paths.visible`), then DX (build, scripts, docs), else code. Grok out of credit or its weekly count used up: OpenCode takes it; neither can run: the change lands with `second look: skipped (<reason>)`. Never an OpenAI model. The lead updates the table when new models appear |
+| Second look, every change, after Claude's review | per review kind (code, UX, DX, agent) from the table [`second-look.json`](../second-look.json): `grok-4.7`, else the free `opencode/deepseek-v4.1-flash-free` | `kit slice` and `kit pr` run it (`kit review --second-look`); its findings block and get fix rounds like Claude's. Kind from the changed paths: agent setup first, then UX (`paths.visible`), then DX (build, scripts, docs), else code. Grok out of credit or its weekly count used up: OpenCode takes it; neither can run: the change lands with `second look: skipped (<reason>)`. Never an OpenAI model. The lead updates the table when new models appear |
 | UX and design review | `claude-opus-5-5`, medium | see Review |
 
 Sol never builds. `kit review` counts GPT and Grok reviews per week for the whole computer (one count
@@ -60,7 +60,7 @@ on a usage-limit `problem:` line, tell Lex the reset time and carry on with Clau
 
 ### 1. Idea
 
-- **Use:** Lex's T3 chat; `kit status` and `node scripts/agents/tickets.mjs frontier` for what is
+- **Use:** Lex's T3 chat; `kit status` and `node "$(scripts/agents/kit --home)/tickets.mjs" frontier` for what is
   already open; the context card (about 30 lines read fresh from Lex's central memory, printed at
   session start and by `kit card`).
 - **Decides:** Lex, whether it is worth doing; the lead proposes where it goes.
@@ -101,7 +101,7 @@ on a usage-limit `problem:` line, tell Lex the reset time and carry on with Clau
   files, give each `group: <slug>` and list the group in one row of the build README; `kit next`
   then hands the whole group to one builder. Tickets that only sit in the same area stay apart.
 - **Decides:** the lead; choices Lex should see are marked "Check with Lex".
-- **Done when:** `node scripts/agents/tickets.mjs check` passes and the frontier shows the first wave.
+- **Done when:** `node "$(scripts/agents/kit --home)/tickets.mjs" check` passes and the frontier shows the first wave.
 
 ### 5. Hand-out
 

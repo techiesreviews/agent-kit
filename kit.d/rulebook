@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # kit: print the kitchen rulebook: the shared one, then the project's extras
 set -euo pipefail
-# shellcheck source=scripts/agents/kit-lib.sh
+# shellcheck source=kit-lib.sh
 source "${KIT_LIB:-$(dirname -- "${BASH_SOURCE[0]}")/../kit-lib.sh}"
 usage='Usage: kit rulebook'
 case ${1-} in

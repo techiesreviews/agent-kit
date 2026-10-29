@@ -20,4 +20,4 @@ if (( wait_for_head )); then
   head=$(git rev-parse --verify "refs/remotes/origin/$branch^{commit}") || { echo 'problem: origin head'; exit 1; }
   args+=("$head")
 fi
-exec node scripts/agents/ci-summary.mjs "${args[@]}"
+exec node "$(dirname -- "${BASH_SOURCE[0]}")/ci-summary.mjs" "${args[@]}"

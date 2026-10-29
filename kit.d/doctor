@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # kit: check this worktree is safe to build in
 set -euo pipefail
-# shellcheck source=scripts/agents/kit-lib.sh
+# shellcheck source=kit-lib.sh
 source "${KIT_LIB:-$(dirname -- "${BASH_SOURCE[0]}")/../kit-lib.sh}"
 
 usage() {
@@ -142,7 +142,7 @@ if (( status == 2 )); then
 elif [[ $probe == *'Agent Kit not found'* ]]; then
   fail 'hooks live' 'hooks cannot reach a kit (Agent Kit not found)' 'run scripts/agents/kit update to fill the machine copy'
 else
-  fail 'hooks live' "bash-guard returned status $status (expected 2)" 'check jq and scripts/agents/hooks/bash-guard.sh'
+  fail 'hooks live' "bash-guard returned status $status (expected 2)" "check jq and the kit's hooks/bash-guard.sh"
 fi
 
 if node=$(kit_node_find); then
@@ -288,7 +288,7 @@ for index in "${!commands[@]}"; do
   fi
 done
 if (( ${#commands[@]} == 0 )); then
-  fail help "no commands in ${folders[*]}" 'restore scripts/agents/kit.d or the "commands" folder'
+  fail help "no commands in ${folders[*]}" "restore the kit's kit.d/ (kit update) or the \"commands\" folder"
 elif (( ${#broken[@]} == 0 )); then
   pass help "${#commands[@]} commands answer --help"
 else
