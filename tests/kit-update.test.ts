@@ -545,7 +545,35 @@ test("kit update --install-timer writes %, $ and @ in its paths and repo the way
     assert.ok(written.includes(`"XDG_DATA_HOME=${escaped}" "KIT_REPO=${escapedRepo}"`), written);
     assert.ok(written.includes(`ExecStart="${escaped}/agent-kit/current/kit" update`), written);
     verifyUnits(t, k);
+    // Read back as systemd does (%% is %, $ stays), the service updates the copy in that folder.
+    const exec = /^ExecStart="([^"]+)" update$/m.exec(written)![1].replaceAll("%%", "%");
+    const sha = k.publish(folder);
+    const run = spawnSync(exec, ["update"], { cwd: k.directory, encoding: "utf8", timeout: 30_000,
+      env: { HOME: k.directory, PATH: "/usr/local/bin:/usr/bin:/bin", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
+        XDG_DATA_HOME: dataHome, KIT_REPO: k.env.KIT_REPO } });
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.equal(readlinkSync(join(dataHome, "agent-kit/current")), sha);
   }
+});
+
+test("kit update --install-timer and --remove-timer fail plainly on a folder they cannot write", (t) => {
+  const k = kitRepo(t);
+  const systemctl = fakeSystemctl(k);
+  k.publish("one");
+  k.run();
+  assert.equal(k.run(["--install-timer"], { PATH: systemctl.PATH }).status, 0);
+  const timer = join(units(k), "agent-kit-update.timer");
+  rmSync(timer);
+  spawnSync("chmod", ["0555", units(k)]);
+  t.after(() => spawnSync("chmod", ["0755", units(k)]));
+  const install = k.run(["--install-timer"], { PATH: systemctl.PATH });
+  assert.equal(install.status, 1, install.stdout + install.stderr);
+  assert.ok(install.stdout.endsWith(`RESULT: fail update cannot write ${timer}\n`), install.stdout);
+  assert.deepEqual(readdirSync(units(k)), ["agent-kit-update.service"]);
+  const remove = k.run(["--remove-timer"], { PATH: systemctl.PATH });
+  assert.equal(remove.status, 1, remove.stdout + remove.stderr);
+  assert.ok(remove.stdout.endsWith(`RESULT: fail update cannot remove the timer's files from ${units(k)}\n`), remove.stdout);
+  assert.deepEqual(readdirSync(units(k)), ["agent-kit-update.service"]);
 });
 
 test("kit update --remove-timer stops the timer, takes its files out and is safe to run again", (t) => {
@@ -617,10 +645,10 @@ test("kit update --install-timer fails plainly without a machine copy, without s
   assert.equal(existsSync(units(k)), false);
   // A repo name systemd cannot hold in a quoted value (or one that looks like a placeholder) is refused before
   // anything is written.
-  for (const repo of ['file:///tmp/a"b', "file:///tmp/a\\b", "file:///tmp/a\nb", "file:///tmp/@DATA_HOME@"]) {
+  for (const repo of ['file:///tmp/a"b', "file:///tmp/a\\b", "file:///tmp/a\nb", "file:///tmp/a\tb", "file:///tmp/@DATA_HOME@"]) {
     const refused = k.run(["--install-timer"], { PATH: systemctl.PATH, KIT_REPO: repo });
     assert.equal(refused.status, 1, refused.stdout + refused.stderr);
-    assert.equal(refused.stdout, `RESULT: fail update cannot write the timer's service, because ${repo.replace("\n", " ")} holds a quote, backslash, new line or @KIT@-style name\n`);
+    assert.equal(refused.stdout, `RESULT: fail update cannot write the timer's service, because ${repo.replace("\n", " ")} holds a quote, backslash, control character or the text @KIT@, @DATA_HOME@ or @KIT_REPO@\n`);
   }
   assert.equal(existsSync(units(k)), false);
   // A kit without its unit files fails before writing the one it lacks.
