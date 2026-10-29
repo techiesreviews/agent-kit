@@ -203,6 +203,24 @@ test("covered? takes the project's own rule first and the kit's house style only
   assert.match(covered("hint text", shared)!, /covered\?: kit docs\/house-style\.md:2 \(HS2\)/);
 });
 
+test("kit learn reads the house style from KIT_HOME and counts only its numbered rules", (t) => {
+  const dir = temp(t), home = join(dir, "kit"), main = join(dir, "main");
+  mkdirSync(join(home, "docs"), { recursive: true });
+  // A copy, not links: a command only runs when the file Node starts is the module itself.
+  for (const name of ["kit", "kit.d", "kit-lib.sh", "kit-lib.mjs", "tickets.mjs", "ux-brief.mjs", "review-findings.mjs"]) cpSync(resolve(name), join(home, name), { recursive: true });
+  writeFileSync(join(home, "docs/house-style.md"), [
+    "# House style", "", "- **HS1** Dragging a card never snaps it back to its old place on drop.", "",
+    "### Not yet decided", "", "- **Status.** Whether a status line is posted at each milestone of a long build.", "",
+  ].join("\n"));
+  const result = run({ KIT_CHAT_MEMORY: memory, KIT_MAIN_ROOT: main, HOME: dir, KIT_HOME: home }, ["--since", "2026-10-01", "--project", "demo"]);
+  assert.equal(result.status, 0, result.stderr);
+  const bundle = bundleOf(result.stdout);
+  assert.match(bundle, /chat: Drag\n {2}- covered\?: kit docs\/house-style\.md:3 \(HS1\), shared key words:/);
+  assert.match(bundle, /chat: Status\n {2}- covered\?: no rule or guardrail shares 3 key words/);
+  // The project's own S1 still covers the hint corrections.
+  assert.match(bundle, /covered\?: docs\/agents\/ux-rulebook\.md:5 \(S1\)/);
+});
+
 test("the slug comes from the project map by workspace, a sibling worktree included", () => {
   const rows = learn.projectMap("| Slug | Workspace |\n| --- | --- |\n| site | `/w/site` |\n| site-starter | `/w/site-starter` (github) |\n| bad slug | `/w/x` |\n");
   assert.deepEqual(rows.map(row => row.slug), ["site", "site-starter"]);
