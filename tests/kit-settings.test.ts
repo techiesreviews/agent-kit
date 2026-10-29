@@ -412,10 +412,29 @@ test("worktree.sh names, bases and links a worktree from the settings file", t =
   assert.match(readFileSync(join(path, ".scratch/owner"), "utf8"), / feature\/y origin\/main\n$/);
   assert.match(made.stderr, /No sharedNodeModules in scripts\/agents\/kit\.json/);
   assert.equal(existsSync(join(path, "node_modules")), false);
-  // The preview link is made even before the main checkout builds its fixture.
-  const link = join(path, ".scratch/native-static-preview");
-  assert.ok(lstatSync(link).isSymbolicLink());
-  assert.equal(readlinkSync(link), join(realpathSync(f.root), ".scratch/native-static-preview"));
+  // Without worktreeLinks a worktree shares nothing else with the main checkout.
+  assert.deepEqual(readdirSync(join(path, ".scratch")), ["owner"]);
+});
+
+test("worktree.sh links each worktreeLinks path from the main checkout, even before it exists, and refuses a bad list", t => {
+  const settings = { project: "kit-land", branches: { land: "main" } };
+  const f = repo(t, settings);
+  const make = (branch: string) => spawnSync("bash", [resolve("worktree.sh"), branch], { cwd: f.root, env: { ...f.env, KIT_MAIN_ROOT: "" }, encoding: "utf8" });
+  writeFileSync(join(f.root, "scripts/agents/kit.json"), JSON.stringify({ ...settings, worktreeLinks: [".scratch/native-static-preview", "fixtures/shared/data"] }));
+  const made = make("feature/y");
+  assert.equal(made.status, 0, made.stderr);
+  const path = made.stdout.trim();
+  for (const link of [".scratch/native-static-preview", "fixtures/shared/data"]) {
+    assert.ok(lstatSync(join(path, link)).isSymbolicLink(), link);
+    assert.equal(readlinkSync(join(path, link)), join(realpathSync(f.root), link));
+  }
+  for (const worktreeLinks of ["x", [1], ["/abs"], ["a/../../out"], [""]]) {
+    writeFileSync(join(f.root, "scripts/agents/kit.json"), JSON.stringify({ ...settings, worktreeLinks }));
+    const refused = make("feature/z");
+    assert.equal(refused.status, 1, JSON.stringify(worktreeLinks));
+    assert.equal(refused.stderr, "worktree.sh: worktreeLinks in scripts/agents/kit.json must be a list of relative paths inside the project\n");
+    assert.equal(existsSync(join(dirname(path), "kit-land-feature-z")), false);
+  }
 });
 
 test("worktree.sh links the real folder behind a symlinked sharedNodeModules, and refuses a missing one", t => {

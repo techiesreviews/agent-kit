@@ -21,6 +21,15 @@ if [[ -n $dev_modules ]]; then
   if [[ -L $dev_modules ]]; then modules=$(realpath "$dev_modules"); else modules=$dev_modules; fi
   [[ -d $modules ]] || { echo "Missing node_modules: $modules" >&2; exit 1; }
 fi
+# worktreeLinks names paths under the project's top that every worktree shares with the main checkout, linked even
+# before the main checkout makes them (the editor's static preview); none without the key.
+links=()
+if raw=$(kit_setting .worktreeLinks) && [[ -n $raw ]]; then
+  list=$(jq -r 'if type == "array" and all(.[]; type == "string" and . != "" and (startswith("/") | not) and (split("/") | index("..") == null))
+    then .[] else error("bad") end' <<< "$raw" 2>/dev/null) \
+    || { echo 'worktree.sh: worktreeLinks in scripts/agents/kit.json must be a list of relative paths inside the project' >&2; exit 1; }
+  [[ -z $list ]] || mapfile -t links <<< "$list"
+fi
 git worktree add -b "$branch" "$path" "$base" >&2
 mkdir -p "$path/.scratch"
 owner=${ASE_OWNER:-unknown}
@@ -32,7 +41,11 @@ if [[ -n $modules ]]; then
 else
   echo "No sharedNodeModules in scripts/agents/kit.json; install dependencies in $path" >&2
 fi
-# The main checkout's static preview is shared too, even before main builds it.
 main=$(kit_main_root)
-[[ $main == "$path" ]] || ln -s "$main/.scratch/native-static-preview" "$path/.scratch/native-static-preview"
+if [[ $main != "$path" ]]; then
+  for link in "${links[@]}"; do
+    mkdir -p "$(dirname -- "$path/$link")"
+    ln -s "$main/$link" "$path/$link"
+  done
+fi
 printf '%s\n' "$path"
