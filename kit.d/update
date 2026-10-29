@@ -112,22 +112,32 @@ if [[ $mode == remove-timer ]]; then
     kit_result ok "update timer already removed"
     exit 0
   fi
-  # disable needs the timer file. Without it the timer can still be loaded and running (its file deleted by
-  # hand), so it is stopped; a timer that is not loaded makes stop fail, which says nothing here.
+  # disable needs the timer file. Without it (deleted by hand) the user manager can still run the timer, so
+  # it is stopped when the manager says it is not inactive.
   if [[ -e $units/$timer.timer ]]; then
     if ! systemctl --user disable --now "$timer.timer"; then
       kit_result fail "update cannot stop $timer.timer; nothing removed"
       exit 1
     fi
   else
-    systemctl --user stop "$timer.timer" 2> /dev/null || :
+    if ! state=$(systemctl --user show --property=ActiveState --value "$timer.timer"); then
+      kit_result fail "update cannot reach the user manager to stop $timer.timer; nothing removed"
+      exit 1
+    fi
+    if [[ $state != inactive ]] && ! systemctl --user stop "$timer.timer"; then
+      kit_result fail "update cannot stop $timer.timer; nothing removed"
+      exit 1
+    fi
   fi
   if ! rm -f -- "${found[@]}" "$wants"; then
     kit_result fail "update cannot remove the timer's files from $units"
     exit 1
   fi
   if (( ${#found[@]} )); then printf 'removed %s\n' "${found[@]}"; fi
-  systemctl --user daemon-reload || :
+  if ! systemctl --user daemon-reload; then
+    kit_result fail "update removed the timer's files but cannot reload the user manager (systemctl --user daemon-reload)"
+    exit 1
+  fi
   kit_result ok "update timer removed"
   exit 0
 fi
