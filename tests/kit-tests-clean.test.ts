@@ -272,7 +272,9 @@ test("npm test excludes the clean guard and CI runs it separately", () => {
 });
 
 test("the PR full tier runs the clean guard only for agent scripts or kit tests", () => {
-  const steps = (paths: string[], full = false) => checkSteps(classify(paths.map(path => ({ status: "M", path })), { full })).steps;
+  // An editor-like project's settings (a copy of the Native Site Editor's): its kit plumbing is scripts/agents/ and kit tests.
+  const settings = JSON.parse(readFileSync("tests/fixtures/editor-kit.json", "utf8"));
+  const steps = (paths: string[], full = false) => checkSteps(classify(paths.map(path => ({ status: "M", path })), { full, settings })).steps;
   for (const path of ["scripts/agents/kit.d/slice", "scripts/agents/pr-tier.mjs", "tests/kit-wait.test.ts"]) {
     assert.deepEqual(steps([path, "package.json"]), ["check", "unit", "kit-clean", "lint", "specs"]);
     assert.ok(steps([path], true).includes("kit-clean"));
