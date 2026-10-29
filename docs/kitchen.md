@@ -147,6 +147,8 @@ on a usage-limit `problem:` line, tell Lex the reset time and carry on with Clau
 - **Use:** `kit slice --ticket <t> --builder claude-opus-5-5` under `kit bg` (the kit's default reviewer is Claude; set `ASE_REVIEW_MODEL` only for a second opinion);
   wait once with `kit wait job slice-<NN> --timeout 2h` in the background. Order of steps, manual
   fallback and ticket Done: the project's runner guide (`docs/agents/runner.md`).
+- **Visible work:** the builder follows the [house style](house-style.md), the project's UX rulebook
+  and the approved mock-up.
 - **Decides:** the builder, inside the ticket's Files; anything outside them stops the slice.
 - **Done when:** the builder's commits and the ticket's `## Done` are on the slice branch.
 
@@ -246,7 +248,8 @@ reviews (Lex, 2026-10-27; was Monday); both results go into that day's Tuesday p
   project's sync collects in `~/Projects/chat/memory/` with the build feedback logs; the session
   applies `retro` and writes `docs/work/learning/YYYY-MM-DD.md` through `kit pr`. Each correction
   Lex gave more than once gets one proposed automatic check (hook, lint rule or kit check; the
-  project's `docs/agents/guardrails.md`) or UX rulebook line; nothing is added until Lex picks.
+  project's `docs/agents/guardrails.md`) or UX rulebook line, or a [house style](house-style.md)
+  rule when the same correction comes from two or more projects; nothing is added until Lex picks.
 
 ## Tuesday review
 
