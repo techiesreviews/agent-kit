@@ -1,0 +1,71 @@
+# The kit's gate (ticket 01 point 3): a kit change lands only when the kit's own checks pass and the
+# Native Site Editor's npm test and npm run lint, from its dev branch, pass against the changed kit
+# (KIT_HOME set to this checkout). It never deploys and holds no secrets: both repos are public.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  kit:
+    name: kit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # Paid skills never go public: CI has no local skill folders, so it checks tracked paths only.
+      - name: Skill guard
+        run: node skill-guard.mjs --paths-only
+      - run: npm test
+      - name: Kit tests leave no trace
+        run: npm run test:kit-clean
+      - run: npm run lint
+
+  editor:
+    name: editor
+    needs: kit
+    runs-on: ubuntu-latest
+    # KIT_HOME reaches what a person's choice reaches; tests that drop it (a fixture must not run a person's kit)
+    # find the same checkout as the machine copy, so every editor test runs the changed kit, never main's.
+    env:
+      KIT_HOME: ${{ github.workspace }}/kit
+      XDG_DATA_HOME: ${{ github.workspace }}/data
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: kit
+      - uses: actions/checkout@v7
+        with:
+          repository: techiesreviews/native-site-editor
+          ref: dev
+          path: editor
+      - name: The changed kit as the machine copy
+        run: mkdir -p data/agent-kit && ln -s "$KIT_HOME" data/agent-kit/current
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: editor/package-lock.json
+      - run: npm ci
+        working-directory: editor
+      # One editor unit test (owner setup) drives a headless browser.
+      - run: npx playwright install chromium-headless-shell
+        working-directory: editor
+      - run: npm test
+        working-directory: editor
+      - run: npm run lint
+        working-directory: editor

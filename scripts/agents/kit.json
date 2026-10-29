@@ -1,0 +1,23 @@
+{
+  "project": "agent-kit",
+  "mainRoot": "/home/ubulex/Projects/agent-kit",
+  "worktreePrefix": "agent-kit-",
+  "sharedNodeModules": "/home/ubulex/Projects/agent-kit/node_modules",
+  "branches": { "land": "main", "release": "main", "ci": "main" },
+  "checks": {
+    "test": "npm test",
+    "lint": "npm run lint",
+    "extra": ["npm run test:kit-clean"]
+  },
+  "unit": {
+    "run": "./node_modules/.bin/tsx --test --test-reporter=spec",
+    "files": "tests/*.test.ts"
+  },
+  "paths": {
+    "docs": ["(?i:\\.md)$"],
+    "tests": ["^tests/"],
+    "kit": ["^(?!tests/|scripts/agents/kit\\.json$|[^/]+\\.md$)"],
+    "unitTests": ["^tests/[^/]+\\.test\\.ts$"]
+  },
+  "standards": ["AGENTS.md"]
+}
