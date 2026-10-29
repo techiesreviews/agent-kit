@@ -8,7 +8,9 @@ Reviews website (techies.review). It travels with the kit, so a new project star
 Read it when making a mock-up, writing a visible ticket, building one and reviewing one (kitchen
 stations 3, 4 and 8). `kit ux` gives these rules to the UX reviewer together with the project's own
 UX rulebook (`docs/agents/ux-rulebook.md`). **The project's rulebook adds detail and wins where it
-differs**; a ticket may break a rule only when Lex asked for it there.
+differs**: the reviewer is told so, and a project replaces a house rule by writing the same id in its
+own rulebook (`- **HS19** Not here: the editor's chrome keeps its blue.`). A ticket may break a rule
+only when Lex asked for it there.
 
 Each rule opens with one plain line, then any detail, a **why** naming the corrections it comes from
 (dates are Lex's own words in that project; the chat memory's `memory/corrections/<project>.md`
@@ -80,8 +82,8 @@ using it as a person would, in a normal browser and in T3's browser.
   Why: "screen sizes need to stay as is in the current editor, also on the canvas with dragging"
   (2026-10-26); Native Site Editor rule L11.
   Check: `eye` against today's screen.
-- **HS11** A new or redesigned screen starts from a mock-up Lex approved, with references from
-  Mobbin first.
+- **HS11** A new or redesigned screen starts from a mock-up Lex approved.
+  Its references come from Mobbin first.
   Why: "this looks horrible. use mobbin" (Native Site Editor media); "use Mobbin to make it look
   better" (techies.tools, 2026-10-27).
   Check: the ticket links the mock-up; `eye` side by side.
@@ -91,9 +93,9 @@ using it as a person would, in a normal browser and in T3's browser.
 - **HS12** Connecting an agent works the same way in every tool.
   The Copy MCP button looks, reads and gives feedback exactly like the one in the script editor and
   the Native Site Editor: the same labels, the same states from copying to connected (showing the
-  agent's name) to Disconnect, the feedback on the button itself, and setup text that works for any agent app, not
-  only Claude Code. Copy from the newest working one rather than building a new one. The copy happens
-  on the click itself, before any server call, or the browser blocks it.
+  agent's name) to Disconnect, the feedback on the button itself, and setup text that works for any
+  agent app, not only Claude Code. Copy from the newest working one rather than building a new one.
+  The copy happens on the click itself, before any server call, or the browser blocks it.
   Why: "The copy MCP should work exactly the same as in others like the script.techies.tools and
   editor.techies.tools, that means also the same statuses and how that button works and gives
   feedback" (prompter, 2026-10-28); "the prompt is not copied" (2026-10-24, again 2026-10-26); any
@@ -152,7 +154,8 @@ than picking new values.
 
 - **HS19** Orange is the one accent; everything else is neutral or indigo.
   Orange marks actions, links, focus and what is current (the reading line, a pending change).
-  Green and red only carry a meaning (done, failed, agent marks), never decoration.
+  Green and red only carry a meaning (done, failed, agent marks), never decoration. Until Lex
+  decides (see Not yet decided), the Native Site Editor's chrome keeps its blue.
   Why: the website's tokens ("the orange stays for actions, links and focus"); the script editor
   ("the warm orange as the only accent"); the prompter ("bright orange actions").
   Check: `eye`.
@@ -168,8 +171,8 @@ than picking new values.
   Why: the website's `--color-primary` and `--color-night`; the Native Site Editor's
   `--color-primary`.
   Check: `eye` on the stylesheet's token block.
-- **HS22** White text on orange only when it is large and bold; otherwise use dark text on the
-  orange, or the darker orange.
+- **HS22** White text sits on orange only when it is large and bold.
+  Otherwise use dark text on the orange, or the darker orange.
   Why: light text on the brighter oranges falls under 4.5:1 (brand guide, 2026-09-28); the prompter
   allows white on orange only at 19 px bold; the script editor sets dark text on its orange.
   Check: the contrast check, else `eye`.

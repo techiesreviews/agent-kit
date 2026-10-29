@@ -86,8 +86,8 @@ on a usage-limit `problem:` line, tell Lex the reset time and carry on with Clau
 
 - **Use today:** a clickable mock-up (`prototype` skill: a `prototype/<slug>` branch, or an HTML
   page shown with T3 `html_render`), plus screenshots of today's screens with the project's own tool
-  (extras). Visible tickets and mock-ups follow the [house style](house-style.md) and the project's UX
-  rulebook (`docs/agents/ux-rulebook.md`).
+  (extras). Visible tickets and mock-ups follow the [house style](house-style.md) and the project's
+  UX rulebook (`docs/agents/ux-rulebook.md`).
 - **Show and tell** (Lex, 2026-10-27): a mock-up of something that already exists has a Today / After
   switch, with today's real screen against the change, plus demo buttons that play each step with the
   feedback shown in place.
@@ -101,10 +101,11 @@ on a usage-limit `problem:` line, tell Lex the reset time and carry on with Clau
 
 - **Use:** `to-tickets`; a build folder with a README holding rules, gates and waves; one slice per
   ticket with size, Files, Done when, kit commands and the evidence its builder reports; a visible
-  ticket follows the house style and the UX rulebook. `triage` sorts new problems (Lex's feedback, sweep findings,
-  failing tests) before hand-out: when two or more new tickets share a cause and touch the same
-  files, give each `group: <slug>` and list the group in one row of the build README; `kit next`
-  then hands the whole group to one builder. Tickets that only sit in the same area stay apart.
+  ticket follows the house style and the UX rulebook. `triage` sorts new problems (Lex's feedback,
+  sweep findings, failing tests) before hand-out: when two or more new tickets share a cause and
+  touch the same files, give each `group: <slug>` and list the group in one row of the build README;
+  `kit next` then hands the whole group to one builder. Tickets that only sit in the same area stay
+  apart.
 - **Decides:** the lead; choices Lex should see are marked "Check with Lex".
 - **Done when:** `node "$(scripts/agents/kit --home)/tickets.mjs" check` passes and the frontier shows the first wave.
 
@@ -160,11 +161,11 @@ on a usage-limit `problem:` line, tell Lex the reset time and carry on with Clau
 ### 8. Review
 
 - **Use:** `kit review` (inside `kit slice` and `kit pr`), Claude on every change, up to 3 `kit fix`
-  rounds; severities and blocking: the runner guide's Review and close. Second opinions per the
-  pins above. A visible change also gets the Opus UX review (the gate after the code review in
-  `kit slice`; the extras name its command) against the house style, the UX rulebook and the approved mock-up:
-  broken gets one fix round and stops the slice only if still broken, looks off gets one fix round
-  and then lands with UX follow-ups in the ticket.
+  rounds; severities and blocking: the runner guide's Review and close. Second opinions per the pins
+  above. A visible change also gets the Opus UX review (the gate after the code review in
+  `kit slice`; the extras name its command) against the house style, the UX rulebook and the
+  approved mock-up: broken gets one fix round and stops the slice only if still broken, looks off
+  gets one fix round and then lands with UX follow-ups in the ticket.
 - **Decides:** the lead weighs each finding; a rejected finding is written down with its reason.
 - **Evidence:** the main root's `.scratch/reviews/<owner>/<time>/`, with `findings.json` listing each
   finding's kind (real fault, mismatch with the ticket, timing/race, style) and the builder's declined

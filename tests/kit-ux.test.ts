@@ -202,6 +202,22 @@ test("the kit's own house style numbers its rules HS1 upwards, once each, in ord
   assert.ok(ids.length > 0);
   assert.deepEqual(ids, ids.map((_, index) => `HS${index + 1}`));
   assert.equal([...text.matchAll(/^- \*\*(HS\d+)\*\*/gm)].length, ids.length);
+  // The reviewer sees only a rule's first line, so it must be the whole opening sentence.
+  for (const [id, line] of ux.parseRules(text)) assert.match(line, /[.)]$/, `${id}: ${line}`);
+});
+
+test("a project rulebook entry with an HS id replaces that house rule, and the brief says project rules win", t => {
+  const home = mkdtempSync(join(tmpdir(), "kit-ux-home-")), root = mkdtempSync(join(tmpdir(), "kit-ux-rules-"));
+  t.after(() => { rmSync(home, { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }); });
+  mkdirSync(join(home, "docs")); mkdirSync(join(root, "docs/agents"), { recursive: true });
+  writeFileSync(join(home, "docs/house-style.md"), "- **HS1** No toasts.\n- **HS19** Orange is the one accent.\n");
+  writeFileSync(join(root, "docs/agents/ux-rulebook.md"), "- **HS19** Not here: the editor's chrome keeps its blue.\n- **L2** Only theme tokens.\n");
+  const rules = ux.loadRules(root, home);
+  assert.equal(rules.get("HS19"), "Not here: the editor's chrome keeps its blue.");
+  const text = brief.uxBrief({ bundle: "bundle.md", features: [{ id: "F-x-01" }], rules });
+  assert.match(text, /- HS19 Not here: the editor's chrome keeps its blue\./);
+  assert.doesNotMatch(text, /Orange is the one accent/);
+  assert.match(text, /S, L, B and U rules\s+are this project's own and win where the two disagree/);
 });
 
 test("the ticket comes from the branch name, and its mock-up links resolve against it", () => {

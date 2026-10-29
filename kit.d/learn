@@ -19,8 +19,9 @@ map by this repo's workspace, else "project" in scripts/agents/kit.json) and thi
 (maps in scripts/agents/kit.json; with none, no feedback logs are read). It needs a readable
 scripts/agents/kit.json, even with --project.
 Groups corrections that repeat (a repeats: date, or the same kind and close wording), marks each
-group covered? when its key words appear in the kit's docs/house-style.md, docs/agents/ux-rulebook.md
-or docs/agents/guardrails.md, and writes main root .scratch/learn/<date>/bundle.md (under ${bundleLimit} bytes). A group counts when
+group covered? when its key words appear in docs/agents/ux-rulebook.md or docs/agents/guardrails.md,
+else in a numbered rule of the kit's docs/house-style.md, and writes main root
+.scratch/learn/<date>/bundle.md (under ${bundleLimit} bytes). A group counts when
 one of its lines falls in the window: from the date given, or N days before today, both inclusive
 (default 14d). A malformed line or unknown kind or date is reported, not fatal, and not grouped.
 Nothing in the window: RESULT: ok learn nothing recorded yet [(n malformed)].
@@ -293,9 +294,13 @@ function learn(args) {
       return 0;
     }
     groups.sort((a, b) => b.times - a.times || b.members[0].date.localeCompare(a.members[0].date));
+    const own = ["docs/agents/ux-rulebook.md", "docs/agents/guardrails.md"].map(path => join(root, path))
+      .filter(path => existsSync(path)).flatMap(path => ruleBlocks(readFileSync(path, "utf8"), path));
+    // Only the house style's numbered rules can cover a correction, never its intro or its undecided questions.
     const house = join(kitHome(), "docs/house-style.md");
-    const blocks = [house, ...["docs/agents/ux-rulebook.md", "docs/agents/guardrails.md"].map(path => join(root, path))]
-      .filter(path => existsSync(path)).flatMap(path => ruleBlocks(readFileSync(path, "utf8"), path).map(block => path === house ? { ...block, house: true } : block));
+    const shared = existsSync(house) ? ruleBlocks(readFileSync(house, "utf8"), house)
+      .filter(block => /^HS\d+$/.test(block.id ?? "")).map(block => ({ ...block, house: true })) : [];
+    const blocks = [...own, ...shared];
     const repeated = groups.filter(group => group.times > 1), once = groups.filter(group => group.times === 1);
     const inWindow = entries.filter(entry => entry.date >= since).length;
     const date = localDate(new Date(now));
