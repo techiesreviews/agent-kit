@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 // @ts-expect-error The script is plain JavaScript without declarations.
-import { loadFeedback, loadTickets, parseFeedback, parseFiles, parseTicket, resolveTickets } from "../scripts/agents/tickets.mjs";
+import { loadFeedback, loadTickets, parseFeedback, parseFiles, parseTicket, resolveTickets } from "../tickets.mjs";
 
 const fixtures = "tests/fixtures/agent-tickets";
 
@@ -86,14 +86,16 @@ test("unsupported dependency content produces file:line diagnostics and no front
 });
 
 test("check and frontier report fixture dependency errors with file:line and exit 1", () => {
-  const script = resolve("scripts/agents/tickets.mjs");
+  const script = resolve("tickets.mjs");
   for (const fixture of ["list-forms", "unsupported"]) {
     const cwd = mkdtempSync(join(tmpdir(), "agent-tickets-"));
     try {
       mkdirSync(join(cwd, "docs"));
       symlinkSync(resolve(fixtures, fixture), join(cwd, "docs/wayfinder"), "dir");
+      mkdirSync(join(cwd, "scripts/agents"), { recursive: true });
+      writeFileSync(join(cwd, "scripts/agents/kit.json"), JSON.stringify({ project: "p", branches: { land: "dev" }, maps: "docs/wayfinder" }));
       for (const command of ["check", "frontier"]) {
-        const result = spawnSync(process.execPath, [script, command], { cwd, encoding: "utf8" });
+        const result = spawnSync(process.execPath, [script, command], { cwd, env: { ...process.env, KIT_ROOT: cwd }, encoding: "utf8" });
         assert.equal(result.status, 1, result.stderr);
         assert.equal(result.stdout, "");
         assert.match(result.stderr, /docs\/wayfinder\/alpha\/tickets\/.*\.md:\d+: /);
@@ -196,7 +198,7 @@ test("ref loading and CLI use committed tickets, including maps absent from the 
   assert.throws(() => loadTickets(root, "local", { ref, cwd }), /Unknown map: local/);
   assert.throws(() => loadTickets(root, undefined, { ref: "missing-ref", cwd }), /Invalid ref: missing-ref/);
 
-  const script = resolve("scripts/agents/tickets.mjs");
+  const script = resolve("tickets.mjs");
   const run = (...args: string[]) => spawnSync(process.execPath, [script, ...args], { cwd, env, encoding: "utf8", timeout: 5_000 });
   for (const args of [["frontier", "alpha", "--ref", ref], ["frontier", "--ref", ref, "alpha"]]) {
     const output = run(...args);
@@ -225,7 +227,7 @@ test("the CLI in a repo without a settings file says what to add and exits 1", t
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
   const env = repoEnv();
   assert.equal(spawnSync("git", ["init", "-q"], { cwd, env }).status, 0);
-  const output = spawnSync(process.execPath, [resolve("scripts/agents/tickets.mjs"), "check"], { cwd, env, encoding: "utf8", timeout: 5_000 });
+  const output = spawnSync(process.execPath, [resolve("tickets.mjs"), "check"], { cwd, env, encoding: "utf8", timeout: 5_000 });
   assert.equal(output.status, 1);
   assert.match(output.stderr, /no scripts\/agents\/kit\.json/);
 });
@@ -280,7 +282,7 @@ test("check validates build feedback logs and names file:line for a bad date, ki
   assert.deepEqual(parsed.problems, []);
   assert.deepEqual(parsed.entries.map((entry: { line: number; kind: string }) => [entry.line, entry.kind]), [[9, "felt-wrong"], [10, "fault"], [11, "workflow"], [12, "below-bar"]]);
 
-  const script = resolve("scripts/agents/tickets.mjs");
+  const script = resolve("tickets.mjs");
   const run = (...args: string[]) => spawnSync(process.execPath, [script, ...args], { cwd, env, encoding: "utf8", timeout: 5_000 });
   for (const args of [["check"], ["check", "--ref", "HEAD"]]) {
     const output = run(...args);

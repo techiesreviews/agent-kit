@@ -4,8 +4,9 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { kitFiles } from "./support/kit-files.ts";
 
-const update = resolve("scripts/agents/kit.d/update");
+const update = resolve("kit.d/update");
 
 function temp(t: { after: (fn: () => void) => void }) {
   const directory = mkdtempSync(join(tmpdir(), "kit-update-"));
@@ -28,7 +29,7 @@ function kitRepo(t: { after: (fn: () => void) => void }) {
     return result.stdout.trim();
   };
   const work = join(directory, "kit-work");
-  cpSync(resolve("scripts/agents"), work, { recursive: true, filter: (source) => source !== resolve("scripts/agents/project.d") });
+  cpSync(resolve("."), work, { recursive: true, filter: kitFiles });
   git(directory, "init", "-q", "--bare", "--initial-branch=main", "kit.git");
   git(work, "init", "-q", "--initial-branch=main");
   git(work, "remote", "add", "origin", join(directory, "kit.git"));

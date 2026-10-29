@@ -9,8 +9,8 @@ import { pathToFileURL } from "node:url";
 import test, { type TestContext } from "node:test";
 import { kitEnv } from "./support/kit-env.ts";
 
-const kit = resolve("scripts/agents/kit");
-const script = resolve("scripts/agents/kit.d/bg");
+const kit = resolve("kit");
+const script = resolve("kit.d/bg");
 function fixture(t: TestContext) {
   const root = mkdtempSync(join(tmpdir(), "kit-bg-"));
   const env = { ...kitEnv(), KIT_ROOT: root, KIT_WAIT_POLL_MS: "10" };

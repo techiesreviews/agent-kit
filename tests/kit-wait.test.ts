@@ -1,17 +1,17 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import test, { type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { failingTests } from "../scripts/agents/ci-summary.mjs";
+import { failingTests } from "../ci-summary.mjs";
 import { kitEnv } from "./support/kit-env.ts";
 
-const script = resolve("scripts/agents/kit.d/wait");
-const kit = resolve("scripts/agents/kit");
+const script = resolve("kit.d/wait");
+const kit = resolve("kit");
 const baseEnv = { ...kitEnv(), ASE_OWNER: "wait-test", KIT_WAIT_POLL_MS: "50", KIT_WAIT_STATUS_MS: "60000" };
 function temp(t: TestContext) {
   const directory = mkdtempSync(join(tmpdir(), "kit-wait-"));
@@ -471,7 +471,11 @@ case "$1 $2" in
 esac
 `);
   chmodSync(fake, 0o755);
-  return { env: { ...baseEnv, PATH: `${directory}:${process.env.PATH}`, WAIT_FIXTURE: directory, WAIT_MODE: mode },
+  // An editor-like project whose CI branch is dev, the default these tests wait on.
+  const project = join(directory, "project");
+  mkdirSync(join(project, "scripts/agents"), { recursive: true });
+  writeFileSync(join(project, "scripts/agents/kit.json"), JSON.stringify({ project: "p", branches: { land: "dev" } }));
+  return { env: { ...baseEnv, KIT_ROOT: project, PATH: `${directory}:${process.env.PATH}`, WAIT_FIXTURE: directory, WAIT_MODE: mode },
     calls: () => readFileSync(join(directory, "calls"), "utf8") };
 }
 

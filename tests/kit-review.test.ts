@@ -5,17 +5,17 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
-import { codexReviewConfig, isoWeek, makeCodexReviewHome, opencodeModelRuns } from "../scripts/agents/agent-run.mjs";
+import { codexReviewConfig, isoWeek, makeCodexReviewHome, opencodeModelRuns } from "../agent-run.mjs";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
-import { builderChecks, reviewBrief, reviewFormat, ticketReviewBrief } from "../scripts/agents/review-brief.mjs";
+import { builderChecks, reviewBrief, reviewFormat, ticketReviewBrief } from "../review-brief.mjs";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
-import { saveReviewEvidence } from "../scripts/agents/review-evidence.mjs";
+import { saveReviewEvidence } from "../review-evidence.mjs";
 import { kitEnv } from "./support/kit-env.ts";
 
-const kit = resolve("scripts/agents/kit");
-const review = resolve("scripts/agents/kit.d/review");
-const agent = resolve("scripts/agents/agent.sh");
-const briefScript = resolve("scripts/agents/review-brief.sh");
+const kit = resolve("kit");
+const review = resolve("kit.d/review");
+const agent = resolve("agent.sh");
+const briefScript = resolve("review-brief.sh");
 const session = "c9aee50d-ad79-499c-82ae-29138c2be80e";
 const complete = "REVIEW_STATUS: complete\nDefects: none\n";
 
@@ -1370,7 +1370,7 @@ test("the second look never reaches Codex: ASE_AGENT_CLI and ASE_REVIEW_MODEL ca
 
 test("the feature list a visible change updates leaves the kind to the change; alone it is agent setup", async () => {
   // @ts-expect-error The agent helpers are plain JavaScript without declarations.
-  const { reviewKind } = await import("../scripts/agents/pr-tier.mjs");
+  const { reviewKind } = await import("../pr-tier.mjs");
   const settings = { featureList: "docs/agents/features.md", paths: { visible: ["^src/ui/"] } };
   const change = (...paths: string[]) => paths.map(path => ({ status: "M", path }));
   assert.deepEqual(reviewKind(change("docs/agents/features.md", "src/ui/panel.ts"), settings), { kind: "ux", path: "src/ui/panel.ts" });
@@ -1379,8 +1379,8 @@ test("the feature list a visible change updates leaves the kind to the change; a
 
 test("the kit's own second-look table has every kind, a Grok or OpenCode model with the other family as fallback, and a checked date", async () => {
   // @ts-expect-error The agent helpers are plain JavaScript without declarations.
-  const { reviewKinds, secondLookTable } = await import("../scripts/agents/pr-tier.mjs");
-  const table = secondLookTable(resolve("scripts/agents/second-look.json"));
+  const { reviewKinds, secondLookTable } = await import("../pr-tier.mjs");
+  const table = secondLookTable(resolve("second-look.json"));
   assert.deepEqual(Object.keys(table).sort(), [...reviewKinds].sort());
   for (const kind of reviewKinds) {
     const { model, fallback, checked } = table[kind];

@@ -1,0 +1,36 @@
+{
+  "project": "native-site-editor",
+  "mainRoot": "/home/ubulex/Projects/native-site-editor",
+  "devRoot": "/home/ubulex/Projects/native-site-editor-dev",
+  "worktreePrefix": "native-site-editor-",
+  "sharedNodeModules": "/home/ubulex/Projects/native-site-editor-dev/node_modules",
+  "branches": { "land": "dev", "release": "main", "ci": "dev" },
+  "commands": "scripts/agents/project.d",
+  "checks": {
+    "check": "npm run check",
+    "test": "npm test",
+    "lint": "npm run lint",
+    "css": "node scripts/check-colours.mjs",
+    "extra": ["npm run test:kit-clean"]
+  },
+  "unit": {
+    "run": "./node_modules/.bin/tsx --test --test-reporter=spec",
+    "files": "tests/**/*.test.ts",
+    "docsGuards": ["tests/agent-scripts.test.ts", "tests/code-map.test.ts", "tests/mcp-runtime.test.ts"]
+  },
+  "paths": {
+    "docs": ["^docs/", "(?i:\\.md)$"],
+    "tests": ["^(tests|fixtures)/"],
+    "css": ["(?i:\\.css)$"],
+    "kit": ["^scripts/agents/", "^tests/kit-.*\\.test\\.ts$"],
+    "unitTests": ["^tests/[^/]+\\.test\\.ts$"],
+    "visible": ["^src/.+(?i:\\.css)$", "^src/components/", "^src/ui/", "^src/page-builder/(?!rules/)", "^src/icons\\.ts$", "^index\\.html$"]
+  },
+  "featureList": "docs/agents/features.md",
+  "techDebt": "docs/work/tech-debt/issues",
+  "standards": "CODING_STANDARDS.md",
+  "maps": "docs/wayfinder",
+  "sharedFile": "src/main.ts",
+  "preview": "https://preview-editor.techies.tools",
+  "rulebookExtras": "docs/agents/kitchen-extras.md"
+}

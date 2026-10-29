@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 
-const runner = resolve("scripts/agents/agent-run.mjs");
-const shell = resolve("scripts/agents/agent.sh");
+const runner = resolve("agent-run.mjs");
+const shell = resolve("agent.sh");
 const session = "resume-session-123";
 const prompt = "Continue where you stopped; the brief is unchanged.";
 const report = "continued report\n";

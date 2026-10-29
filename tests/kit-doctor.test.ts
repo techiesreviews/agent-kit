@@ -7,9 +7,9 @@ import test from "node:test";
 import { kitEnv } from "./support/kit-env.ts";
 
 const repo = resolve(".");
-const kit = join(repo, "scripts/agents/kit");
-const doctor = join(repo, "scripts/agents/kit.d/doctor");
-const library = join(repo, "scripts/agents/kit-lib.sh");
+const kit = join(repo, "kit");
+const doctor = join(repo, "kit.d/doctor");
+const library = join(repo, "kit-lib.sh");
 
 function temp(t: { after: (fn: () => void) => void }) {
   const directory = mkdtempSync(join(tmpdir(), "kit-doctor-"));
@@ -44,7 +44,7 @@ function fixture(t: { after: (fn: () => void) => void }) {
   git(main, "checkout", "-b", "main");
   mkdirSync(join(main, "scripts/agents/hooks"), { recursive: true });
   for (const name of ["run.sh", "bash-guard.sh"]) {
-    copyFileSync(join(repo, "scripts/agents/hooks", name), join(main, "scripts/agents/hooks", name));
+    copyFileSync(join(repo, "hooks", name), join(main, "scripts/agents/hooks", name));
   }
   mkdirSync(join(main, ".claude"));
   mkdirSync(join(main, ".codex"));
@@ -244,7 +244,7 @@ function playground(t: { after: (fn: () => void) => void }, extra: Record<string
     git(directory, "clone", "-q", join(directory, "origin.git"), root);
   } else git(directory, "init", "-q", "--initial-branch=main", root);
   mkdirSync(join(root, "scripts/agents/hooks"), { recursive: true });
-  for (const name of ["run.sh", "bash-guard.sh"]) copyFileSync(join(repo, "scripts/agents/hooks", name), join(root, "scripts/agents/hooks", name));
+  for (const name of ["run.sh", "bash-guard.sh"]) copyFileSync(join(repo, "hooks", name), join(root, "scripts/agents/hooks", name));
   mkdirSync(join(root, ".claude")); mkdirSync(join(root, ".codex"));
   writeFileSync(join(root, ".claude/settings.json"), "{}\n");
   writeFileSync(join(root, ".codex/hooks.json"), "{}\n");
@@ -567,19 +567,17 @@ test("doctor fails the help check when the command folder has no commands", (t) 
   // Run doctor directly: the kit front door reads the same empty folder.
   const result = f.run([], f.build, { KIT_COMMANDS_DIR: empty }, true);
   failure(result, "help");
-  assert.ok(result.stdout.includes(`✗ help: no commands in ${empty}; fix: restore scripts/agents/kit.d or the "commands" folder\n`), result.stdout);
+  assert.ok(result.stdout.includes(`✗ help: no commands in ${empty}; fix: restore the kit's kit.d/ (kit update) or the "commands" folder\n`), result.stdout);
 });
 
-test("doctor passes the help check when every real shared and project command answers --help", (t) => {
+test("doctor passes the help check when every real shared command answers --help", (t) => {
   const f = fixture(t);
-  const count = (folder: string) => readdirSync(join(repo, folder)).filter(name => !/^[._]/.test(name) && statSync(join(repo, folder, name)).mode & 0o111).length;
-  const shared = count("scripts/agents/kit.d"), own = count("scripts/agents/project.d");
-  // Some helps read this checkout's files (shots runs its CLI), so check from the repository itself.
+  const shared = readdirSync(join(repo, "kit.d")).filter(name => !/^[._]/.test(name) && statSync(join(repo, "kit.d", name)).mode & 0o111).length;
+  // From this repository, the kit's own, through the front door; it has no project commands folder.
   // Under the fixture's 10 s spawn limit, a slow help is named rather than cut off.
-  // Through the front door, so both the kit and doctor find the commands by their default folders.
   const result = f.run([], repo, { KIT_COMMANDS_DIR: undefined, KIT_HELP_TIMEOUT: "5" });
-  assert.ok(result.stdout.includes(`✓ commands: ${shared} shared, ${own} in scripts/agents/project.d\n`), result.stdout);
-  assert.ok(result.stdout.includes(`✓ help: ${shared + own} commands answer --help\n`), result.stdout);
+  assert.ok(result.stdout.includes(`✓ commands: ${shared} shared, no project folder (no "commands" in scripts/agents/kit.json)\n`), result.stdout);
+  assert.ok(result.stdout.includes(`✓ help: ${shared} commands answer --help\n`), result.stdout);
 });
 
 test("doctor fails a project command that takes a shared name, naming both files", (t) => {
@@ -664,22 +662,22 @@ test("doctor reports only the first three conflict locations", (t) => {
 
 test("doctor's live hook probe passes through the hook launcher when current names a machine copy", (t) => {
   const f = fixture(t);
-  copyFileSync(join(repo, "scripts/agents/launcher/hooks-run.sh"), join(f.build, "scripts/agents/hooks/run.sh"));
+  copyFileSync(join(repo, "launcher/hooks-run.sh"), join(f.build, "scripts/agents/hooks/run.sh"));
   const data = join(f.directory, "data"), sha = "0123456789abcdef0123456789abcdef01234567";
-  cpSync(join(repo, "scripts/agents"), join(data, "agent-kit", sha), { recursive: true, filter: (source) => source !== join(repo, "scripts/agents/project.d") });
+  cpSync(repo, join(data, "agent-kit", sha), { recursive: true, filter: (source) => source !== join(repo, "scripts/agents/project.d") });
   symlinkSync(sha, join(data, "agent-kit/current"));
   // KIT_HOME names another kit: the probe drops it and the hook launcher finds current itself.
-  const result = f.run([], f.build, { XDG_DATA_HOME: data, XDG_CACHE_HOME: join(f.directory, "cache"), KIT_HOME: join(repo, "scripts/agents") });
+  const result = f.run([], f.build, { XDG_DATA_HOME: data, XDG_CACHE_HOME: join(f.directory, "cache"), KIT_HOME: repo });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.ok(result.stdout.includes("✓ hooks live: bash-guard rejects the probe (status 2)\n"), result.stdout);
 });
 
 test("doctor fails when the hooks cannot reach a kit: the hook launcher's warning, not silence", (t) => {
   const f = fixture(t);
-  copyFileSync(join(repo, "scripts/agents/launcher/hooks-run.sh"), join(f.build, "scripts/agents/hooks/run.sh"));
+  copyFileSync(join(repo, "launcher/hooks-run.sh"), join(f.build, "scripts/agents/hooks/run.sh"));
   // No machine copy and no cache clone; the KIT_HOME doctor itself runs on does not reach the probe.
   const result = f.run([], f.build, { XDG_DATA_HOME: join(f.directory, "data"), XDG_CACHE_HOME: join(f.directory, "cache"),
-    KIT_HOME: join(repo, "scripts/agents") });
+    KIT_HOME: repo });
   failure(result, "hooks live");
   assert.ok(result.stdout.includes("✗ hooks live: hooks cannot reach a kit (Agent Kit not found); fix: run scripts/agents/kit update to fill the machine copy\n"), result.stdout);
 });
@@ -688,7 +686,7 @@ test("doctor warns, without failing, on a machine copy two days after its last k
   const f = fixture(t);
   const data = join(f.directory, "data"), sha = "0123456789abcdef0123456789abcdef01234567";
   const home = join(data, "agent-kit", sha);
-  cpSync(join(repo, "scripts/agents"), home, { recursive: true, filter: (source) => source !== join(repo, "scripts/agents/project.d") });
+  cpSync(repo, home, { recursive: true, filter: (source) => source !== join(repo, "scripts/agents/project.d") });
   writeFileSync(join(data, "agent-kit/updated"), `${Math.floor(Date.now() / 1000) - 2 * 86400 - 60}\n`);
   symlinkSync(sha, join(data, "agent-kit/current"));
   // A machine copy is read-only; doctor's own copy of it must still clean up.
@@ -719,7 +717,7 @@ test("doctor warns, without failing, on a machine copy two days after its last k
 test("doctor warns, with the same wording, on a launcher cache clone two days old", (t) => {
   const f = fixture(t);
   const home = join(f.directory, "cache", "agent-kit");
-  cpSync(join(repo, "scripts/agents"), home, { recursive: true, filter: (source) => source !== join(repo, "scripts/agents/project.d") });
+  cpSync(repo, home, { recursive: true, filter: (source) => source !== join(repo, "scripts/agents/project.d") });
   git(f.directory, "init", "-q", home);
   git(home, "add", "-A");
   git(home, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "kit");
@@ -775,7 +773,7 @@ function gateFixture(t: { after: (fn: () => void) => void }) {
   const brief = join(directory, "brief.md");
   writeFileSync(brief, "test brief\n");
   const run = (root: string, input = brief, env: NodeJS.ProcessEnv = {}) => spawnSync(
-    "/bin/bash", [join(repo, "scripts/agents/agent.sh"), "build", root, input, "--out", join(directory, "out")], {
+    "/bin/bash", [join(repo, "agent.sh"), "build", root, input, "--out", join(directory, "out")], {
       cwd: directory, encoding: "utf8", timeout: 10_000,
       env: { ...kitEnv(), PATH: `${bin}:${process.env.PATH}`, KIT_COMMANDS_DIR: commands,
         DOCTOR_CAPTURE: capture, ASE_SKIP_DOCTOR: "", ...env },
@@ -840,7 +838,7 @@ test("a broken --help stops agent.sh review and kit doctor but not agent.sh buil
   executable(join(f.build, "scripts/agents/kit"), "exit 0");
   const env = { ...kitEnv(), KIT_MAIN_ROOT: f.main, KIT_LIB: library, KIT_COMMANDS_DIR: f.commands,
     KIT_GROK: join(f.directory, "no-grok"), KIT_HELP_TIMEOUT: "0.3", ASE_SKIP_DOCTOR: "", KIT_DOCTOR_SKIP: "" };
-  const agent = (...args: string[]) => spawnSync("/bin/bash", [join(repo, "scripts/agents/agent.sh"), ...args], {
+  const agent = (...args: string[]) => spawnSync("/bin/bash", [join(repo, "agent.sh"), ...args], {
     cwd: f.directory, encoding: "utf8", timeout: 10_000, env,
   });
   const missing = join(f.directory, "missing.md");
@@ -854,7 +852,7 @@ test("a broken --help stops agent.sh review and kit doctor but not agent.sh buil
   assert.equal(review.status, 3, review.stdout + review.stderr);
   assert.match(review.stderr, /^✗ help: broken \(exit 1\); fix: .*\nRESULT: fail doctor 1 failed: help\nagent.sh: kit doctor failed in /);
   // A KIT_DOCTOR_SKIP from the caller does not reach a review's gate.
-  const forced = spawnSync("/bin/bash", [join(repo, "scripts/agents/agent.sh"), "review", f.build, missing], {
+  const forced = spawnSync("/bin/bash", [join(repo, "agent.sh"), "review", f.build, missing], {
     cwd: f.directory, encoding: "utf8", timeout: 10_000, env: { ...env, KIT_DOCTOR_SKIP: "help" },
   });
   assert.equal(forced.status, 3, forced.stdout + forced.stderr);
@@ -908,7 +906,7 @@ test("agent.sh hands the builder no KIT_DOCTOR_SKIP, so its own kit doctor sees 
   executable(join(bin, "claude"), `printf '%s\\n' "\${KIT_DOCTOR_SKIP-unset}" > ${JSON.stringify(seen)}; exit 1`);
   const brief = join(f.directory, "brief.md");
   writeFileSync(brief, "test brief\n");
-  const result = spawnSync("/bin/bash", [join(repo, "scripts/agents/agent.sh"), "build", f.build, brief, "--cli", "claude", "--out", join(f.directory, "out")], {
+  const result = spawnSync("/bin/bash", [join(repo, "agent.sh"), "build", f.build, brief, "--cli", "claude", "--out", join(f.directory, "out")], {
     cwd: f.directory, encoding: "utf8", timeout: 10_000,
     env: { ...kitEnv(), PATH: `${bin}:${process.env.PATH}`, KIT_MAIN_ROOT: f.main, KIT_LIB: library, KIT_COMMANDS_DIR: f.commands,
       KIT_GROK: join(f.directory, "no-grok"), KIT_HELP_TIMEOUT: "0.3", ASE_SKIP_DOCTOR: "", KIT_DOCTOR_SKIP: "help" },
@@ -928,7 +926,7 @@ test("a broken version command, which the kit home check runs, does not stop age
   executable(join(home, "kit"), 'printf "SyntaxError: missing import\\n" >&2; exit 1');
   const env = { ...kitEnv(), KIT_MAIN_ROOT: f.main, KIT_LIB: library, KIT_COMMANDS_DIR: f.commands, KIT_HOME: home,
     KIT_GROK: join(f.directory, "no-grok"), KIT_HELP_TIMEOUT: "0.3", ASE_SKIP_DOCTOR: "", KIT_DOCTOR_SKIP: "" };
-  const agent = (kind: string) => spawnSync("/bin/bash", [join(repo, "scripts/agents/agent.sh"), kind, f.build, join(f.directory, "missing.md")], {
+  const agent = (kind: string) => spawnSync("/bin/bash", [join(repo, "agent.sh"), kind, f.build, join(f.directory, "missing.md")], {
     cwd: f.directory, encoding: "utf8", timeout: 10_000, env,
   });
   const build = agent("build");
@@ -1027,7 +1025,7 @@ test("through the real front door, a copy's version failing as its help did is s
   // A kit home with the real front door, its library and a version that fails naming its own path.
   const home = join(f.directory, "kit-home");
   mkdirSync(join(home, "kit.d"), { recursive: true });
-  for (const name of ["kit", "kit-lib.sh", "kit-lib.mjs"]) copyFileSync(join(repo, "scripts/agents", name), join(home, name));
+  for (const name of ["kit", "kit-lib.sh", "kit-lib.mjs"]) copyFileSync(join(repo, name), join(home, name));
   chmodSync(join(home, "kit"), 0o755);
   symlinkSync(doctor, join(home, "kit.d/doctor"));
   executable(join(home, "kit.d/version"), 'printf "%s: Cannot find module kit-lib.mjs\\n" "$0" >&2; exit 1');
@@ -1116,7 +1114,7 @@ test("a resumed build with a full status.json passes the build gate and really s
   writeFileSync(join(out, "status.json"), JSON.stringify({ pid: 2_147_483_647, pgid: null, kind: "build", model: "claude-opus-5-5",
     cli: "claude", effort: null, worktree: f.build, brief, out, started: "2026-10-01T00:00:00.000Z", updated: "2026-10-01T00:00:00.000Z",
     state: "interrupted", exitCode: 129, session: "resume-session-1", resumes: 0 }));
-  const result = spawnSync("/bin/bash", [join(repo, "scripts/agents/agent.sh"), "--resume", out], {
+  const result = spawnSync("/bin/bash", [join(repo, "agent.sh"), "--resume", out], {
     cwd: f.directory, encoding: "utf8", timeout: 10_000,
     env: { ...kitEnv(), PATH: `${bin}:${process.env.PATH}`, KIT_MAIN_ROOT: f.main, KIT_LIB: library, KIT_COMMANDS_DIR: f.commands,
       KIT_GROK: join(f.directory, "no-grok"), KIT_HELP_TIMEOUT: "0.3", ASE_SKIP_DOCTOR: "", KIT_DOCTOR_SKIP: "help" },

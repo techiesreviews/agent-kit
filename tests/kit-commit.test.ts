@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
-import { builderAuthor, commitBuilderWork } from "../scripts/agents/kit-lib.mjs";
+import { builderAuthor, commitBuilderWork } from "../kit-lib.mjs";
 
 function fixture(t: TestContext) {
   const root = mkdtempSync(join(tmpdir(), "kit-commit-"));

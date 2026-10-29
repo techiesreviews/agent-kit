@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, readFileSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { kitFiles } from "./support/kit-files.ts";
 
-const launchers = resolve("scripts/agents/launcher");
+const launchers = resolve("launcher");
 const warning = "Agent Kit not found: guards are off; run `scripts/agents/kit doctor`";
 
 function temp(t: { after: (fn: () => void) => void }) {
@@ -30,7 +31,7 @@ function fixture(t: { after: (fn: () => void) => void }) {
     return result.stdout.trim();
   };
   const work = join(directory, "kit-work");
-  cpSync(resolve("scripts/agents"), work, { recursive: true, filter: (source) => source !== resolve("scripts/agents/project.d") });
+  cpSync(resolve("."), work, { recursive: true, filter: kitFiles });
   git(directory, "init", "-q", "--bare", "--initial-branch=main", "kit.git");
   git(work, "init", "-q", "--initial-branch=main");
   git(work, "remote", "add", "origin", join(directory, "kit.git"));
@@ -147,7 +148,7 @@ test("a KIT_HOME a person set wins over the machine copy; one a front door fille
   const one = f.publish("one");
   f.kit(["update"]);
   const branch = join(f.directory, "agent-kit-branch");
-  cpSync(resolve("scripts/agents"), branch, { recursive: true, filter: (source) => source !== resolve("scripts/agents/project.d") });
+  cpSync(resolve("."), branch, { recursive: true, filter: kitFiles });
   writeFileSync(join(branch, "marker"), "branch");
   assert.deepEqual(lines(f.kit(["where"], { KIT_HOME: branch })), [`${branch} branch`]);
   assert.deepEqual(lines(f.kit(["where"], { KIT_HOME: branch, KIT_HOME_DEFAULT: branch })), [`${join(f.data, one)} one`]);
@@ -241,7 +242,7 @@ test("the hook launcher runs the kit's guards, and without a kit warns on every 
   assert.doesNotMatch(f.hook("session-env", { hook_event_name: "SessionStart" }).stdout, /RESULT:|Agent Kit not found/);
   // A person's KIT_HOME (a kit branch) reaches the hooks too, over the machine copy; one a front door filled in does not.
   const branch = join(f.directory, "agent-kit-branch");
-  cpSync(resolve("scripts/agents"), branch, { recursive: true, filter: (source) => source !== resolve("scripts/agents/project.d") });
+  cpSync(resolve("."), branch, { recursive: true, filter: kitFiles });
   writeFileSync(join(branch, "hooks/bash-guard.sh"), 'printf "branch guard\\n" >&2; exit 2\n');
   const tried = f.hook("bash-guard", { ...stashPop, tool_input: { command: "git status" } }, { KIT_HOME: branch });
   assert.deepEqual([tried.status, tried.stderr], [2, "branch guard\n"]);
@@ -444,7 +445,7 @@ test("a person's whole KIT_HOME beside a different marker wins for both launcher
   const one = f.publish("one");
   assert.equal(f.kit(["update"]).status, 0);
   const branch = join(f.directory, "agent-kit-branch");
-  cpSync(resolve("scripts/agents"), branch, { recursive: true, filter: (source) => source !== resolve("scripts/agents/project.d") });
+  cpSync(resolve("."), branch, { recursive: true, filter: kitFiles });
   writeFileSync(join(branch, "marker"), "branch");
   writeFileSync(join(branch, "hooks/bash-guard.sh"), 'printf "branch guard\\n" >&2; exit 2\n');
   const chosen = { KIT_HOME: branch, KIT_HOME_PINNED: join(f.data, one) };
@@ -485,4 +486,22 @@ test("a whole clone whose stamp cannot be written is named as such, not as a fai
   assert.equal(result.status, 2, result.stderr);
   assert.equal(result.stdout, `RESULT: fail no Agent Kit at ${join(f.cache, "agent-kit")} (cannot stamp the clone in ${f.cache})\n`);
   assert.deepEqual(readdirSync(f.cache), []);
+});
+
+test("kit --home prints the kit the launcher picked and runs nothing; a person's KIT_HOME wins; no kit fails", (t) => {
+  const f = fixture(t);
+  const one = f.publish("one");
+  const picked = f.kit(["--home"]);
+  assert.equal(picked.status, 0, picked.stderr);
+  assert.equal(picked.stdout, `${realpathSync(f.cache)}/agent-kit\n`);
+  assert.equal(readFileSync(join(picked.stdout.trim(), "marker"), "utf8"), "one");
+  assert.equal(f.kit(["--home"], { KIT_HOME: f.work }).stdout, `${f.work}\n`);
+  // --home with more arguments is the front door's business, which knows no such command.
+  const extra = f.kit(["--home", "x"]);
+  assert.equal(extra.status, 2);
+  assert.match(extra.stdout, /RESULT: fail unknown command --home/);
+  const none = f.kit(["--home"], { KIT_HOME: join(f.directory, "missing") });
+  assert.equal(none.status, 2);
+  assert.match(none.stdout, /^RESULT: fail no Agent Kit at /);
+  assert.ok(one);
 });

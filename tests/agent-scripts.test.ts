@@ -6,15 +6,15 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
-import { reviewBrief, reviewComplete, reviewFormat } from "../scripts/agents/review-brief.mjs";
+import { reviewBrief, reviewComplete, reviewFormat } from "../review-brief.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
-import { unitSummary } from "../scripts/agents/unit-summary.mjs";
+import { unitSummary } from "../unit-summary.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
-import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokOutOfCredit, grokResult, inferCli, isoWeek, opencodeErrorProblem, opencodeExport, opencodeExportTimeout, opencodeOutOfCredit, opencodeResult, opencodeReviewAgent, opencodeStartTimeout, opencodeReviewConfig, opencodeUsageLimit, outOfCreditProblem, parseAgentArgs, refusedOutright, sessionObserver, releaseReviewBudget, reserveReviewBudget, reviewBase, reviewFamily, usageLimitProblem } from "../scripts/agents/agent-run.mjs";
+import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokOutOfCredit, grokResult, inferCli, isoWeek, opencodeErrorProblem, opencodeExport, opencodeExportTimeout, opencodeOutOfCredit, opencodeResult, opencodeReviewAgent, opencodeStartTimeout, opencodeReviewConfig, opencodeUsageLimit, outOfCreditProblem, parseAgentArgs, refusedOutright, sessionObserver, releaseReviewBudget, reserveReviewBudget, reviewBase, reviewFamily, usageLimitProblem } from "../agent-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
-import { durationMilliseconds } from "../scripts/agents/sol-run.mjs";
+import { durationMilliseconds } from "../sol-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
-import { kitStateDir } from "../scripts/agents/kit-lib.mjs";
+import { kitStateDir } from "../kit-lib.mjs";
 
 test("agent options preserve defaults, infer Claude aliases, and respect explicit overrides", () => {
   for (const kind of ["build", "review"]) {
@@ -141,20 +141,6 @@ function reviewRepository(wt: string) {
   git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "reviewed change");
   return git;
 }
-
-test("runner review, landing and waiting follow the kit and the per-CLI waiting guidance", () => {
-  const runner = readFileSync("docs/agents/runner.md", "utf8");
-  assert.ok(runner.split("\n").length <= 96);
-  assert.match(runner, /Claude runs them with\s+`run_in_background: true`/);
-  assert.match(runner, /Codex runs them in the foreground or its background terminal/);
-  assert.match(runner, /scripts\/agents\/kit wait pid\|output\|ci/);
-  for (const command of ["scripts/agents/kit review --ticket <ticket>", "scripts/agents/kit pr --ticket <ticket>"]) {
-    const line = runner.split("\n").find(line => line.includes(command));
-    assert.ok(line, command);
-    assert.match(line, /in the background/);
-  }
-  assert.doesNotMatch(runner, /\b(?:review|ci-status|land)\.sh/);
-});
 
 test("model verification rejects missing metadata, fallback models and unsuccessful Claude results", () => {
   assert.equal(codexModelMatches("\tmodel: gpt-5.5\n", "gpt-5.5"), true);
@@ -569,7 +555,7 @@ test("a lock that cannot be removed after the ledger is saved is a warning, and 
 });
 
 test("the kit's state folder is XDG_STATE_HOME/agent-kit when absolute, else ~/.local/state/agent-kit, in Node and bash", () => {
-  const lib = resolve("scripts/agents/kit-lib.sh");
+  const lib = resolve("kit-lib.sh");
   const bash = (env: NodeJS.ProcessEnv) => spawnSync("bash", ["-c", `source "${lib}"; kit_state_dir`], { encoding: "utf8", env: { PATH: process.env.PATH, ...env } }).stdout.trim();
   for (const [env, expected] of [
     [{ HOME: "/home/x", XDG_STATE_HOME: "/var/state" }, "/var/state/agent-kit"],
@@ -694,7 +680,7 @@ process.exitCode = 1;
 `);
   for (const cli of ["grok", "codex"]) chmodSync(join(bin, cli), 0o755);
   const capture = join(dir, "capture.json");
-  const invoke = (args: string[], overrides: NodeJS.ProcessEnv = {}) => spawnSync("bash", [resolve("scripts/agents/agent.sh"), ...args], {
+  const invoke = (args: string[], overrides: NodeJS.ProcessEnv = {}) => spawnSync("bash", [resolve("agent.sh"), ...args], {
     encoding: "utf8", timeout: 15_000,
     env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CODEX_HOME: sourceHome, ASE_FAKE_CAPTURE: capture, ASE_AGENT_CLI: "", ASE_REVIEW_MODEL: "", ASE_AGENT_TIMEOUT: "10s", ...overrides },
   });
@@ -788,7 +774,7 @@ console.log(JSON.stringify({ type: "step_start", timestamp: Date.now(), sessionI
 process.exit(1);
 `);
   chmodSync(join(bin, "opencode"), 0o755);
-  const invoke = (args: string[], overrides: NodeJS.ProcessEnv = {}) => spawnSync("bash", [resolve("scripts/agents/agent.sh"), ...args], {
+  const invoke = (args: string[], overrides: NodeJS.ProcessEnv = {}) => spawnSync("bash", [resolve("agent.sh"), ...args], {
     encoding: "utf8", timeout: 15_000,
     env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ASE_AGENT_CLI: "", ASE_REVIEW_MODEL: "", ASE_AGENT_TIMEOUT: "10s", ASE_OPENCODE_START_TIMEOUT_MS: "500", ...overrides },
   });
@@ -843,7 +829,7 @@ process.exitCode = Number(process.env.ASE_FAKE_EXIT || 0);
   writeFileSync(join(bin, "package.json"), '{"type":"module"}');
   for (const cli of ["codex", "claude"]) { writeFileSync(join(bin, cli), fake); chmodSync(join(bin, cli), 0o755); }
   const capture = join(dir, "capture.json");
-  const invoke = (script: string, args: string[], overrides: NodeJS.ProcessEnv = {}) => spawnSync("bash", [resolve(`scripts/agents/${script}`), ...args], {
+  const invoke = (script: string, args: string[], overrides: NodeJS.ProcessEnv = {}) => spawnSync("bash", [resolve(`${script}`), ...args], {
     encoding: "utf8", timeout: 15_000,
     env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CODEX_HOME: sourceHome, ASE_FAKE_CAPTURE: capture, ASE_AGENT_CLI: "", ASE_BUILD_MODEL: "", ASE_REVIEW_MODEL: "", ASE_AGENT_TIMEOUT: "10s", ...overrides },
   });
@@ -943,7 +929,7 @@ if (name === "first") {
   function invoke(name: string) {
     const brief = join(dir, `${name}.md`), output = join(dir, name);
     writeFileSync(brief, `${name}\n`);
-    const child = spawn("bash", [resolve("scripts/agents/review.sh"), wt, brief, output, "--base", "origin/dev"], {
+    const child = spawn("bash", [resolve("review.sh"), wt, brief, output, "--base", "origin/dev"], {
       env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ASE_REVIEW_BARRIER: dir, CODEX_HOME: sourceHome,
         ASE_AGENT_CLI: "codex", ASE_REVIEW_MODEL: "gpt-5.5", ASE_AGENT_TIMEOUT: "10s" },
       stdio: ["ignore", "pipe", "pipe"],
@@ -1020,10 +1006,10 @@ test("slice brief resolves fixture ticket links and states both axes and validat
   assert.ok(reviewBrief(path, "", "HEAD^", wt).includes(git("rev-parse", "HEAD^").trim()));
   assert.throws(() => reviewBrief(path, "", "dev; rm -rf /", wt), /cannot resolve commit ref/);
   assert.throws(() => reviewBrief(path, "", "--output=x", wt), /cannot resolve commit ref/);
-  const result = spawnSync("bash", [resolve("scripts/agents/review-brief.sh"), resolve(path)], { encoding: "utf8", cwd: wt });
+  const result = spawnSync("bash", [resolve("review-brief.sh"), resolve(path)], { encoding: "utf8", cwd: wt });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, reviewBrief(resolve(path), readFileSync(path, "utf8"), "origin/dev", wt));
-  assert.equal(spawnSync("bash", ["scripts/agents/review-brief.sh"], { encoding: "utf8" }).status, 2);
+  assert.equal(spawnSync("bash", ["review-brief.sh"], { encoding: "utf8" }).status, 2);
 });
 
 test("unit summary prints counts and bounded error lines for each failure", () => {
@@ -1093,7 +1079,7 @@ test("Sol expiry kills its process group including a child that ignores TERM", (
       writeFileSync(process.argv[1], JSON.stringify([process.pid, child.pid]));
       setInterval(() => {}, 1000);
     `;
-    const result = spawnSync(process.execPath, ["scripts/agents/sol-run.mjs", "1s", process.execPath, "-e", job, pidFile], { encoding: "utf8", timeout: 10_000 });
+    const result = spawnSync(process.execPath, ["sol-run.mjs", "1s", process.execPath, "-e", job, pidFile], { encoding: "utf8", timeout: 10_000 });
     assert.equal(result.status, 124, result.stderr);
     const pids: number[] = JSON.parse(readFileSync(pidFile, "utf8"));
     for (const pid of pids) {
@@ -1144,7 +1130,7 @@ test("supervisor settles logging and stream failures, kills descendants and clea
           return owned;
         };
         syncBuiltinESMExports();
-        const { supervise } = await import(${JSON.stringify(resolve("scripts/agents/sol-run.mjs"))});
+        const { supervise } = await import(${JSON.stringify(resolve("sol-run.mjs"))});
         const before = [process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")];
         const log = openSync(process.argv[2] === "logging" ? "/dev/full" : "/dev/null", "w");
         try {

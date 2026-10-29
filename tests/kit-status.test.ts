@@ -7,8 +7,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 
-const status = resolve("scripts/agents/kit.d/status");
-const kit = resolve("scripts/agents/kit");
+const status = resolve("kit.d/status");
+const kit = resolve("kit");
 const longSlug = "20-this-ticket-name-is-longer-than-thirty-two-characters";
 interface Check { status?: string; conclusion?: string | null; state?: string }
 const passed: Check = { status: "COMPLETED", conclusion: "SUCCESS" };

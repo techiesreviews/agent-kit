@@ -4,14 +4,14 @@ import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtemp
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
-import { checkSteps, classify, featureListGuard, focusedUnitFiles, parseChanges, visiblePath } from "../scripts/agents/pr-tier.mjs";
-import { sameReviewPatch } from "../scripts/agents/review-findings.mjs";
+import { checkSteps, classify, featureListGuard, focusedUnitFiles, parseChanges, visiblePath } from "../pr-tier.mjs";
+import { sameReviewPatch } from "../review-findings.mjs";
 import { forEachAwait } from "./support/await-race.ts";
 import { kitEnv } from "./support/kit-env.ts";
 import type { ScoreRecord } from "./kit-score.test.ts";
 
-const pr = resolve("scripts/agents/kit.d/pr");
-const kit = resolve("scripts/agents/kit");
+const pr = resolve("kit.d/pr");
+const kit = resolve("kit");
 const cleanReview = "REVIEW_STATUS: complete\nDefects:\n- Spec: none.\n- Standards: none.\nValidation gaps: none.\nOptional nits: none.\n";
 interface Call { tool: string; script?: string; args: string[]; body?: string }
 // Claude's review, not the second look that kit pr runs after it.
@@ -160,12 +160,12 @@ function fixture(t: TestContext, changes?: Record<string, string>, override: Rec
   for (const path of ["scripts/agents/tickets.mjs", "scripts/check-colours.mjs"]) writeFileSync(join(root, path), wrapper);
   writeFileSync(join(root, "scripts/agents/unit.sh"), fake); chmodSync(join(root, "scripts/agents/unit.sh"), 0o755);
   // KIT_HOME is this project's scripts/agents, holding the fakes, with the real commands and library beside them.
-  for (const name of ["kit.d", "kit-lib.sh", "kit-lib.mjs"]) symlinkSync(resolve("scripts/agents", name), join(root, "scripts/agents", name));
+  for (const name of ["kit.d", "kit-lib.sh", "kit-lib.mjs"]) symlinkSync(resolve(name), join(root, "scripts/agents", name));
   env.KIT_HOME = join(root, "scripts/agents");
   for (const name of ["a", "code-map"]) writeFileSync(join(root, `tests/${name}.test.ts`), `// ${name}\n`);
   writeFileSync(join(root, "tests/b.test.ts"), 'import "./fakes/thing.ts";\n');
   // This editor's settings, without its machine folders, and its specs command and CI workflow.
-  const { mainRoot: _main, devRoot: _dev, ...settings } = JSON.parse(readFileSync("scripts/agents/kit.json", "utf8"));
+  const { mainRoot: _main, devRoot: _dev, ...settings } = JSON.parse(readFileSync("tests/fixtures/editor-kit.json", "utf8"));
   writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify(own ?? { ...settings, ...override }));
   mkdirSync(join(root, "scripts/agents/project.d"));
   writeFileSync(join(root, "scripts/agents/project.d/specs"), "#!/bin/sh\n", { mode: 0o755 });
@@ -406,7 +406,28 @@ test("a project with only checks.test: pr --dry-run runs only npm test and skips
     "unit: ok", "lint: skipped (no checks.lint in scripts/agents/kit.json)", "specs: skipped (no specs command in the project's commands folder)"])
     assert.ok(result.stdout.split("\n").includes(line), line);
   assert.match(result.stdout, /RESULT: ok dry-run [a-f0-9]{7} feature\/kit-pr -> main/);
-  assert.match(readFileSync(join(f.logDir(), "body.md"), "utf8"), /## Tests\n\nTier: full \(1 file, src\/app.js is code\)\n\n- check: skipped \(no checks.check in scripts\/agents\/kit.json\)\n- npm test: ok\n- lint: skipped \(no checks.lint in scripts\/agents\/kit.json\)\n- specs: skipped \(no specs command in the project's commands folder\)\n$/);
+  assert.match(readFileSync(join(f.logDir(), "body.md"), "utf8"), /## Tests\n\nTier: full \(1 file, src\/app.js is code\)\n\n- skill guard: ok(?: \(line check: [^)\n]+\))?\n- check: skipped \(no checks.check in scripts\/agents\/kit.json\)\n- npm test: ok\n- lint: skipped \(no checks.lint in scripts\/agents\/kit.json\)\n- specs: skipped \(no specs command in the project's commands folder\)\n$/);
+});
+
+test("kit pr stops before any check when the branch tracks a skill file, naming the path and never the text", t => {
+  // Made-up skill text in a fake HOME's skill folder: the line check reads only skill folders under HOME.
+  const home = mkdtempSync(join(tmpdir(), "kit-pr-skills-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const secret = "Fold the paper crane twice along the moonlit diagonal before the kettle sings";
+  mkdirSync(join(home, ".claude/skills/crane"), { recursive: true });
+  writeFileSync(join(home, ".claude/skills/crane/SKILL.md"), `# Crane\n\n${secret}\n`);
+  for (const [files, problem] of [
+    [{ "src/app.js": "export const app = 1;\n", "notes/skills/crane/SKILL.md": "x\n" }, /notes\/skills\/crane\/SKILL\.md: a skill file or skills\/ folder is tracked/],
+    [{ "src/app.js": `// ${secret}\n` }, /src\/app\.js:1: holds a line from the local skill crane/],
+  ] as const) {
+    const f = fixture(t, { ...files }, {}, { settings: playground, workflows: false });
+    const result = f.run(["--dry-run"], { FAKE_BASE: "main", HOME: home }, true);
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout + result.stderr, problem);
+    assert.doesNotMatch(result.stdout + result.stderr, /moonlit/);
+    assert.deepEqual(f.calls(), []);
+    assert.ok(!result.stdout.split("\n").includes("skills: ok"), result.stdout);
+  }
 });
 
 test("--base main is an ordinary PR when main is both land and release, and still needs --release when land is dev", t => {
@@ -466,9 +487,9 @@ test("only a workflow that runs for a PR branch is CI to wait for; deploy-only, 
     ["on:\n  push:\n    branches: [\n      main ]\n", true], // A flow list over lines is not read: waiting is the safe answer.
     ["on:\n  push:\n    branches: [ke-+]\n", true],
     ["on: { push: { branches: [main] }, schedule: [{ cron: '0 3 * * 1' }] }\n", false],
-    // This editor's own workflows: ci.yml (pull_request) is CI, deploy-preview.yml (push to dev) is not.
-    [readFileSync(".github/workflows/ci.yml", "utf8"), true],
-    [readFileSync(".github/workflows/deploy-preview.yml", "utf8"), false],
+    // The Native Site Editor's workflows (copies): ci.yml (pull_request) is CI, deploy-preview.yml (push to dev) is not.
+    [readFileSync("tests/fixtures/editor-workflows/ci.yml", "utf8"), true],
+    [readFileSync("tests/fixtures/editor-workflows/deploy-preview.yml", "utf8"), false],
   ] as const) {
     const f = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: playground, workflows: workflow });
     const result = f.run([], { FAKE_BASE: "main" }, true);
@@ -1104,7 +1125,21 @@ test("push rejection and an unparseable create URL fail at their steps", t => {
 
 const rows = (...paths: string[]) => paths.map(path => ({ status: "M", path }));
 
-test("each path reaches a tier and the highest present wins", () => {
+// The pure tier rules read the settings of the project around them; these tests read the editor's (a copy).
+function asEditor(body: () => void) {
+  const root = mkdtempSync(join(tmpdir(), "kit-pr-editor-")), before = process.env.KIT_ROOT;
+  try {
+    mkdirSync(join(root, "scripts/agents"), { recursive: true });
+    writeFileSync(join(root, "scripts/agents/kit.json"), readFileSync("tests/fixtures/editor-kit.json", "utf8"));
+    process.env.KIT_ROOT = root;
+    body();
+  } finally {
+    if (before === undefined) delete process.env.KIT_ROOT; else process.env.KIT_ROOT = before;
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test("each path reaches a tier and the highest present wins", () => asEditor(() => {
   assert.deepEqual(classify(rows("README.md", "docs/agents/runner.md", "docs/work/x/tickets/1-a.md", "GLOSSARY.md")),
     { tier: "docs", reason: "4 files, all docs", docs: true });
   assert.deepEqual(classify(rows("tests/a.test.ts", "fixtures/native-starter/index.html", "tests/native-save/x.spec.ts")),
@@ -1120,7 +1155,7 @@ test("each path reaches a tier and the highest present wins", () => {
   assert.equal(classify([]).tier, "full");
   assert.deepEqual(classify(rows("docs/a.md"), { full: true }), { tier: "full", reason: "1 file, --full", docs: false });
   assert.deepEqual(parseChanges("M\tdocs/a.md\nD\tsrc/b.css\n"), [{ status: "M", path: "docs/a.md" }, { status: "D", path: "src/b.css" }]);
-});
+}));
 
 test("tier steps: docs skips unit, specs and review; full keeps today's set", () => {
   assert.deepEqual(checkSteps({ tier: "docs", docs: true }), { steps: ["tickets", "unit-files"], review: false });
@@ -1130,7 +1165,7 @@ test("tier steps: docs skips unit, specs and review; full keeps today's set", ()
   assert.deepEqual(checkSteps({ tier: "full", docs: true }), { steps: ["check", "unit", "lint", "specs"], review: true });
 });
 
-test("focused unit files: changed tests, tests naming a changed helper or fixture, and docs guards", () => {
+test("focused unit files: changed tests, tests naming a changed helper or fixture, and docs guards", () => asEditor(() => {
   const sources = { "tests/a.test.ts": "", "tests/b.test.ts": 'import "./fakes/memory-workspace.ts"; readFileSync("fixtures/native-starter/x")',
     "tests/code-map.test.ts": "", "tests/c.test.ts": "" };
   const changes = [...rows("tests/a.test.ts", "tests/fakes/memory-workspace.ts", "docs/x.md"), { status: "D", path: "tests/c.test.ts" }];
@@ -1141,7 +1176,7 @@ test("focused unit files: changed tests, tests naming a changed helper or fixtur
   const owner = { ...sources, "tests/owner-setup.test.ts": 'readFile("docs/native-github-app.json")' };
   assert.deepEqual(focusedUnitFiles(rows("docs/native-github-app.json"), { tier: "docs", docs: true }, owner),
     ["tests/code-map.test.ts", "tests/owner-setup.test.ts"]);
-});
+}));
 
 test("a docs-only PR runs only doc guards, skips Claude's review but not the second look, and still waits for CI and merges", t => {
   const f = fixture(t, { "docs/guide.md": "# Guide\n", "AGENTS.md": "# Agents\n" }), result = f.run();
@@ -1206,7 +1241,7 @@ test("a CSS-only PR runs the colour check and specs, keeps the review and remind
   for (const name of ["specs", "review"]) assert.ok(calls.some(call => call.tool === "fake-kit" && call.args[0] === name), name);
 });
 
-test("visible paths: CSS, components, ui, page builder except rules, icons and index.html", () => {
+test("visible paths: CSS, components, ui, page builder except rules, icons and index.html", () => asEditor(() => {
   for (const path of ["src/styles/app.css", "src/page-builder/panel.css", "src/components/button.ts", "src/ui/menu.ts",
     "src/page-builder/edit-bar.ts", "src/icons.ts", "index.html"]) assert.equal(visiblePath(path), true, path);
   for (const path of ["src/page-builder/rules/sections.ts", "src/main.ts", "worker/a.css", "docs/agents/features.md",
@@ -1227,7 +1262,7 @@ test("visible paths: CSS, components, ui, page builder except rules, icons and i
   assert.deepEqual(featureListGuard(css, { waive: "Lead\naccepts" }), { ok: true, line: "Feature list: waived (Lead accepts); src/styles/app.css is visible" });
   for (const changes of [rows("src/page-builder/rules/sections.ts"), rows("docs/a.md", "tests/a.test.ts"), rows("src/main.ts")])
     assert.deepEqual(featureListGuard(changes), { ok: true });
-});
+}));
 
 test("a visible change without the feature list or a Done line stops before checks, push or CI", t => {
   for (const ticket of [false, true]) {
@@ -1713,7 +1748,7 @@ execFileSync("git", ["add", "--", "file.txt"]);
   assert.equal(f.ghCalls("merge").length, 0);
 });
 
-const table = JSON.parse(readFileSync("scripts/agents/second-look.json", "utf8")).kinds;
+const table = JSON.parse(readFileSync("second-look.json", "utf8")).kinds;
 
 test("dry-run names the second look's kind, its deciding path, its model and fallback, and its command", t => {
   // A visible change carries its feature-list line in a changed ticket: UX still comes before that DX path.

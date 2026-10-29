@@ -7,15 +7,15 @@ import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
-import { kitDevRoot, kitMainRoot, kitMaps, kitSettings, kitSettingsProblems, scoreMap } from "../scripts/agents/kit-lib.mjs";
+import { kitDevRoot, kitMainRoot, kitMaps, kitSettings, kitSettingsProblems, scoreMap } from "../kit-lib.mjs";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
-import { optionsFor } from "../scripts/agents/deps-check.mjs";
+import { optionsFor } from "../deps-check.mjs";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
-import { classify, featureListGuard } from "../scripts/agents/pr-tier.mjs";
+import { classify, featureListGuard } from "../pr-tier.mjs";
 
-const kit = resolve("scripts/agents/kit");
-const doctor = resolve("scripts/agents/kit.d/doctor");
-const library = resolve("scripts/agents/kit-lib.sh");
+const kit = resolve("kit");
+const doctor = resolve("kit.d/doctor");
+const library = resolve("kit-lib.sh");
 const sha = "abcdef0123456789abcdef0123456789abcdef01";
 const noProject = 'add "project": "<name>" to scripts/agents/kit.json';
 const noLand = 'add "branches": { "land": "<branch>" } to scripts/agents/kit.json';
@@ -268,13 +268,11 @@ test("land: main reaches review, unit --affected, pr --dry-run, status and wait 
   mkdirSync(join(f.root, "scripts/agents/project.d"));
   executable(join(f.root, "scripts/agents/project.d/specs"), "#!/bin/sh\necho 'Usage: kit specs'\n");
   f.git("add", "-A"); f.git("commit", "-qm", "Add a specs command");
-  // The repo has no origin/dev, so the selection can only come from origin/main; --affected reads the project's import scan.
-  symlinkSync(resolve("scripts/agents/specs-affected.mjs"), join(f.root, "scripts/agents/specs-affected.mjs"));
+  // The repo has no origin/dev, so the selection can only come from origin/main.
   const unit = f.run(["unit", "--affected", "--list"]);
   assert.equal(unit.status, 0, unit.stdout + unit.stderr);
   assert.match(unit.stdout, /^tests\/a\.test\.ts — changed$/m);
   assert.equal(lastLine(unit), "RESULT: ok unit 1 selected (list only)");
-  rmSync(join(f.root, "scripts/agents/specs-affected.mjs")); // kit pr needs a clean tree.
   const pr = f.run(["pr", "--dry-run"]);
   assert.equal(pr.status, 0, pr.stdout + pr.stderr);
   assert.match(pr.stdout, /^base: main$/m);
@@ -331,7 +329,7 @@ test("bash-guard's server hint names the servers setting, else port.sh where the
   const root = temp(t);
   spawnSync("git", ["init", "-q", root], { env: clean });
   const hint = () => {
-    const result = spawnSync("bash", [resolve("scripts/agents/hooks/bash-guard.sh")], { cwd: root, env: { ...clean, CLAUDE_PROJECT_DIR: root }, encoding: "utf8",
+    const result = spawnSync("bash", [resolve("hooks/bash-guard.sh")], { cwd: root, env: { ...clean, CLAUDE_PROJECT_DIR: root }, encoding: "utf8",
       input: JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "setsid npx vite" } }) });
     assert.equal(result.status, 2, result.stderr);
     return result.stderr.trim();
@@ -406,7 +404,7 @@ test("kit pr pairs --release with branches.release, whatever its name", t => {
 
 test("worktree.sh names, bases and links a worktree from the settings file", t => {
   const f = repo(t, { project: "kit-land", branches: { land: "main" } });
-  const made = spawnSync("bash", [resolve("scripts/agents/worktree.sh"), "feature/y"], { cwd: f.root, env: { ...f.env, KIT_MAIN_ROOT: "" }, encoding: "utf8" });
+  const made = spawnSync("bash", [resolve("worktree.sh"), "feature/y"], { cwd: f.root, env: { ...f.env, KIT_MAIN_ROOT: "" }, encoding: "utf8" });
   assert.equal(made.status, 0, made.stderr);
   const path = join(dirname(realpathSync(f.root)), "kit-land-feature-y");
   assert.equal(made.stdout, `${path}\n`);
@@ -426,7 +424,7 @@ test("worktree.sh links the real folder behind a symlinked sharedNodeModules, an
   symlinkSync(modules, link);
   settingsFile(f.root, { project: "kit-land", branches: { land: "main" }, sharedNodeModules: link });
   const worktree = (branch: string) =>
-    spawnSync("bash", [resolve("scripts/agents/worktree.sh"), branch], { cwd: f.root, env: { ...f.env, KIT_MAIN_ROOT: "" }, encoding: "utf8" });
+    spawnSync("bash", [resolve("worktree.sh"), branch], { cwd: f.root, env: { ...f.env, KIT_MAIN_ROOT: "" }, encoding: "utf8" });
   const made = worktree("feature/linked");
   assert.equal(made.status, 0, made.stderr);
   const path = join(dirname(realpathSync(f.root)), "kit-land-feature-linked");
@@ -445,7 +443,7 @@ test("without jq, unit.sh and worktree.sh name it and stop, making no worktree",
   mkdirSync(join(f.root, "scripts/agents/project.d"));
   executable(join(f.root, "scripts/agents/project.d/own"), "#!/bin/sh\necho 'RESULT: ok own ran'\n");
   const env = { ...f.env, PATH: withoutJq(t), KIT_MAIN_ROOT: "" };
-  const unit = spawnSync("/bin/bash", [resolve("scripts/agents/unit.sh"), "tests/a.test.ts"], { cwd: f.root, env, encoding: "utf8" });
+  const unit = spawnSync("/bin/bash", [resolve("unit.sh"), "tests/a.test.ts"], { cwd: f.root, env, encoding: "utf8" });
   assert.equal(unit.status, 1, unit.stdout + unit.stderr);
   assert.equal(unit.stderr, "unit.sh: jq is not installed; install jq\n");
   const named = f.run(["unit", "tests/a.test.ts"], { PATH: env.PATH });
@@ -457,7 +455,7 @@ test("without jq, unit.sh and worktree.sh name it and stop, making no worktree",
   assert.equal(version.status, 0, version.stdout + version.stderr);
   assert.match(lastLine(version)!, /^RESULT: ok version /);
   assert.equal(version.stderr, "jq is not installed; install jq\n");
-  const made = spawnSync("/bin/bash", [resolve("scripts/agents/worktree.sh"), "feature/nojq"], { cwd: f.root, env, encoding: "utf8" });
+  const made = spawnSync("/bin/bash", [resolve("worktree.sh"), "feature/nojq"], { cwd: f.root, env, encoding: "utf8" });
   assert.equal(made.status, 1, made.stdout + made.stderr);
   assert.equal(made.stderr, "worktree.sh: jq is not installed; install jq\n");
   assert.equal(existsSync(join(dirname(realpathSync(f.root)), "kit-land-feature-nojq")), false);
@@ -492,7 +490,7 @@ test("without a maps folder, next and heartbeat say so, tickets.mjs reads nothin
     assert.equal(output.status, 1, output.stdout + output.stderr);
     assert.equal(lastLine(output), `RESULT: fail ${args[0]} needs a maps folder; add maps to scripts/agents/kit.json`);
   }
-  const tickets = spawnSync(process.execPath, [resolve("scripts/agents/tickets.mjs"), "check"], { cwd: f.root, env: f.env, encoding: "utf8" });
+  const tickets = spawnSync(process.execPath, [resolve("tickets.mjs"), "check"], { cwd: f.root, env: f.env, encoding: "utf8" });
   assert.equal(tickets.status, 0, tickets.stderr);
   assert.equal(tickets.stdout, "No maps folder in scripts/agents/kit.json; no tickets to read.\n");
   // kitScore files records under _untracked without maps; kit score lists them, and only a page or snapshot needs maps.
@@ -514,7 +512,7 @@ test("a settings problem fails kit review, kit unit --affected and unit.sh as a 
   assert.match(review.stderr, /^problem: add "branches": \{ "land": "<branch>" \} to scripts\/agents\/kit\.json$/m);
   assert.doesNotMatch(review.stderr, /Usage:/);
   const broken = repo(t, '{ "project": ');
-  const unit = spawnSync("bash", [resolve("scripts/agents/unit.sh"), "tests/a.test.ts"], { cwd: broken.root, env: broken.env, encoding: "utf8" });
+  const unit = spawnSync("bash", [resolve("unit.sh"), "tests/a.test.ts"], { cwd: broken.root, env: broken.env, encoding: "utf8" });
   assert.equal(unit.status, 1, unit.stdout + unit.stderr);
   assert.match(unit.stderr, /^unit\.sh: scripts\/agents\/kit\.json is unreadable: /m);
   // kit unit with a named file ends on the problem unit.sh printed, without its prefix.

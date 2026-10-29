@@ -5,11 +5,11 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import test, { type TestContext } from "node:test";
-import { costTotal, kitScore, runCost, scoreMap, scoreReview } from "../scripts/agents/kit-lib.mjs";
-import { allProjectsPage, ladder, scorePage } from "../scripts/agents/score-page.mjs";
+import { costTotal, kitScore, runCost, scoreMap, scoreReview } from "../kit-lib.mjs";
+import { allProjectsPage, ladder, scorePage } from "../score-page.mjs";
 import { kitEnv } from "./support/kit-env.ts";
 
-const kit = resolve("scripts/agents/kit");
+const kit = resolve("kit");
 type Counts = Record<string, number>;
 interface Cost { usd: number | null; tokens: number | null; partial?: true }
 // Builder and review runs are summed apart.
@@ -258,7 +258,7 @@ test("a scoreboard write failure prints one problem line and never throws", t =>
 });
 
 test("parallel writers to one record lose no update; a lock held past the wait is one problem line", async t => {
-  const f = fixture(t), library = pathToFileURL(resolve("scripts/agents/kit-lib.mjs")).href;
+  const f = fixture(t), library = pathToFileURL(resolve("kit-lib.mjs")).href;
   const writer = (name: string, wait = "5000", umask = "") => new Promise<{ status: number | null; stderr: string }>((accept, reject) => {
     const child = spawn(process.execPath, ["--input-type=module", "-e",
       `${umask ? `process.umask(${umask});` : ""}const { kitScore } = await import(${JSON.stringify(library)});
@@ -319,7 +319,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: ${JSON.
   writeFileSync(join(f.root, "file.txt"), "base\n"); git("add", "-A"); git("commit", "-m", "base");
   writeFileSync(join(f.root, ticket), "---\ntitle: X\ntype: task\n---\n\n## Files\n- `file.txt`\n\n## Done when\n- Works.\n");
   writeFileSync(join(f.root, "file.txt"), "changed\n"); git("add", "-A"); git("commit", "-m", "change");
-  const result = spawnSync(process.execPath, [resolve("scripts/agents/kit.d/review"), "--commit", "HEAD", "--ticket", ticket], {
+  const result = spawnSync(process.execPath, [resolve("kit.d/review"), "--commit", "HEAD", "--ticket", ticket], {
     cwd: f.root, encoding: "utf8", timeout: 20_000,
     env: { ...kitEnv(), PATH: `${bin}:${process.env.PATH}`, KIT_ROOT: f.root, KIT_MAIN_ROOT: f.main, ASE_OWNER: "demo-01",
       ASE_REVIEW_MODEL: "claude-opus-5-5", ASE_AGENT_CLI: "", ASE_AGENT_TIMEOUT: "10s" },

@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterFixRounds, blockingFindings, completedFixRounds, countsLine, findingsRecord, openFindings } from "../scripts/agents/review-findings.mjs";
+import { afterFixRounds, blockingFindings, completedFixRounds, countsLine, findingsRecord, openFindings } from "../review-findings.mjs";
 
 const review = (body: string) => `REVIEW_STATUS: complete\n\n${body}\n`;
 const finding = (group: string, text: string, severity: string | null = null, kind: string | null = group === "Validation gaps" ? null : "unsorted") =>

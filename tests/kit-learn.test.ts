@@ -7,7 +7,7 @@ import test, { after, type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
 import { kitEnv } from "./support/kit-env.ts";
 
-const script = resolve("scripts/agents/kit.d/learn"), kit = resolve("scripts/agents/kit");
+const script = resolve("kit.d/learn"), kit = resolve("kit");
 const fixtures = resolve("tests/fixtures/kit-learn"), memory = join(fixtures, "memory");
 // The project's settings name its corrections slug and maps folder; each checkout here gets them.
 const settingsIn = (root: string, settings: object = {}) => {

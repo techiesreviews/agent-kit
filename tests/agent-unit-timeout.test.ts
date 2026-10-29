@@ -20,7 +20,7 @@ test("hung test never settles", async () => {
     // unit.sh's own `tsx --test` run and make it skip the test files.
     const spawned = { ...process.env, ...env };
     delete spawned.NODE_TEST_CONTEXT;
-    const result = spawnSync("bash", [resolve("scripts/agents/unit.sh"), ...args], {
+    const result = spawnSync("bash", [resolve("unit.sh"), ...args], {
       encoding: "utf8",
       timeout: 20_000,
       cwd: process.cwd(),
@@ -60,7 +60,7 @@ test("unit.sh with no files passes the timeout and every tests/*.test.ts file to
   const env = { ...process.env, ASE_UNIT_TIMEOUT_MS: "500" };
   // A kit run exports its own project; this one is the temporary folder.
   for (const key of ["NODE_TEST_CONTEXT", "KIT_ROOT", "KIT_LIB", "KIT_LIB_MJS"]) delete env[key];
-  const result = spawnSync("bash", [resolve("scripts/agents/unit.sh")], { encoding: "utf8", cwd: dir, env, timeout: 20_000 });
+  const result = spawnSync("bash", [resolve("unit.sh")], { encoding: "utf8", cwd: dir, env, timeout: 20_000 });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(readFileSync(join(dir, "args.txt"), "utf8").trim().split("\n"), ["--test", "--test-reporter=spec", "--test-timeout=500", "tests/a.test.ts", "tests/b.test.ts"]);
 });

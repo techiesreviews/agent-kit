@@ -7,10 +7,10 @@ import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
-import { isoWeek } from "../scripts/agents/agent-run.mjs";
+import { isoWeek } from "../agent-run.mjs";
 import { kitEnv } from "./support/kit-env.ts";
 
-const script = resolve("scripts/agents/kit.d/sweep"), kit = resolve("scripts/agents/kit");
+const script = resolve("kit.d/sweep"), kit = resolve("kit");
 // Node loads this extensionless executable as ESM; a URL keeps tsx from resolving it as TS.
 type Counts = { px: number; radii: number; shadows: number; timings: number };
 type Sweep = {

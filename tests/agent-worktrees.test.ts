@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The script is plain JavaScript without declarations.
-import { options, parseWorktrees, pathInside, pruneDecision, pruneWorktree } from "../scripts/agents/worktrees.mjs";
+import { options, parseWorktrees, pathInside, pruneDecision, pruneWorktree } from "../worktrees.mjs";
 
 const eligible = { protected: false, locked: false, dirty: false, merged: true, commitAge: 4, createdAge: 4, live: false };
 
@@ -127,7 +127,7 @@ function worktreeRepo(t: TestContext, settings: object | null, branches: string[
   for (const branch of branches) git("worktree", "add", "-q", "-b", branch, join(dir, `on-${branch}`));
   git("worktree", "add", "-q", "-b", "feature/dev", devRoot);
   const run = (...args: string[]) => {
-    const result = spawnSync("bash", [resolve("scripts/agents/worktrees.sh"), ...args], { cwd: root, env, encoding: "utf8" });
+    const result = spawnSync("bash", [resolve("worktrees.sh"), ...args], { cwd: root, env, encoding: "utf8" });
     const decision = (branch: string) => result.stdout.split("\n").find(line => line.includes(`\tbranch=${JSON.stringify(branch)}\t`))?.split("\t").at(-1);
     return { ...result, decision, last: result.stdout.trimEnd().split("\n").at(-1) };
   };

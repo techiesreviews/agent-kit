@@ -6,10 +6,9 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
-import { screens } from "../scripts/agents/shots/core";
 import { kitEnv } from "./support/kit-env.ts";
 
-const script = resolve("scripts/agents/kit.d/ux"), kit = resolve("scripts/agents/kit");
+const script = resolve("kit.d/ux"), kit = resolve("kit");
 // Node loads this extensionless executable as ESM; a URL keeps tsx from resolving it as TS.
 // The plain-JavaScript module has no declarations; this shape types every fake handed to it.
 type Feature = { id: string; name: string; try: string; good: string; files: string[]; phone: boolean; steps: string | null; matched?: string[] };
@@ -40,7 +39,7 @@ type Ux = {
   colourFindings(status: number, output: string, command: string, log: string, scope: { root: string; changed: string[]; known?: string[] }): { findings: Finding[]; outside: number };
 };
 const ux: Ux = await import(pathToFileURL(script).href);
-const editorColours: string = JSON.parse(readFileSync(resolve("scripts/agents/kit.json"), "utf8")).checks.css;
+const editorColours: string = JSON.parse(readFileSync(resolve("tests/fixtures/editor-kit.json"), "utf8")).checks.css;
 
 const entry = (id: string, files: string[], { phone = "yes", steps = "none yet", good = "Calm (S1)." } = {}) => [
   `### ${id} Feature ${id}`, "- Try: Open it.", `- Good: ${good}`, `- Files: ${files.map(file => `\`${file}\``).join(", ")}`,
@@ -72,7 +71,6 @@ test("features parse outside fences, and a diff touches the features whose Files
   assert.throws(() => ux.selectFeatures(features, [], { features: ["F-media-09"] }), /unknown feature: F-media-09/);
   assert.deepEqual(ux.screensFor(features[0]), ["media-gallery"]);
   assert.deepEqual(ux.screensFor(features[2]), []);
-  assert.deepEqual(Object.keys(ux.screenFiles).sort(), [...screens].sort(), "every kit shots screen maps to its files");
 });
 
 test("flags: --all and --features exclude each other, ids are checked and values required", () => {
@@ -216,7 +214,8 @@ function fixture(t: TestContext, gitConfig: [string, string][] = []) {
   put("src/page-builder/media-library-filter.ts", "export {};\n");
   // This editor's settings: it lands on dev and its colour check is its own helper (checks.css).
   put("scripts/agents/kit.json", JSON.stringify({ project: "x", branches: { land: "dev" }, checks: { css: editorColours } }));
-  put("scripts/check-colours.mjs", readFileSync(resolve("scripts/check-colours.mjs"), "utf8"));
+  // An editor-like colour check (a copy of the Native Site Editor's scripts/check-colours.mjs).
+  put("scripts/check-colours.mjs", readFileSync(resolve("tests/fixtures/check-colours.mjs"), "utf8"));
   put("scripts/check-colours.allow.json", "[]\n");
   git("add", "."); git("commit", "--quiet", "-m", "base");
   git("update-ref", "refs/remotes/origin/dev", "HEAD");
@@ -774,7 +773,7 @@ const brief: {
   uxBrief(input: { bundle: string; features: { id: string }[]; images?: string[]; rules?: Map<string, string>; mockups?: string[] }): string;
   parseUxResult(text: string, ids: string[]): Parsed;
   uxCounts(input: { features: Verdict[]; rules: string[] }): { fine: number; off: number; broken: number; rules: string[] };
-} = await import(pathToFileURL(resolve("scripts/agents/ux-brief.mjs")).href);
+} = await import(pathToFileURL(resolve("ux-brief.mjs")).href);
 
 test("the reviewer's fine, looks off and broken lines parse, with their rules, notes and images", () => {
   const answer = [

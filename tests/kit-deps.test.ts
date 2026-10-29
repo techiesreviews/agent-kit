@@ -6,13 +6,13 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
-import { comparePackages, dependencyClosure, lockedPackages, snapshotChanges, stagedMismatches } from "../scripts/agents/deps-check.mjs";
+import { comparePackages, dependencyClosure, lockedPackages, snapshotChanges, stagedMismatches } from "../deps-check.mjs";
 import { kitEnv } from "./support/kit-env.ts";
 
 const repo = resolve(".");
-const kit = join(repo, "scripts/agents/kit");
-const deps = join(repo, "scripts/agents/kit.d/deps");
-const library = join(repo, "scripts/agents/kit-lib.sh");
+const kit = join(repo, "kit");
+const deps = join(repo, "kit.d/deps");
+const library = join(repo, "kit-lib.sh");
 const generateFile = "node -e \"require('node:fs').writeFileSync('generated.json', JSON.stringify('fixture'))\"";
 type LockEntry = { version?: string; optional?: boolean; link?: boolean; resolved?: string };
 
@@ -32,7 +32,7 @@ function fixture(t: { after: (fn: () => void) => void }) {
   // Any accidental reification of the worktree would hit only this temp tree.
   symlinkSync(modules, join(root, "node_modules"));
   const env = { ...kitEnv(), KIT_ROOT: root, KIT_LIB: library, ASE_OWNER: "ak-11",
-    KIT_COMMANDS_DIR: join(repo, "scripts/agents/kit.d"), npm_config_cache: join(directory, "cache"),
+    KIT_COMMANDS_DIR: join(repo, "kit.d"), npm_config_cache: join(directory, "cache"),
     npm_config_offline: "true", npm_config_update_notifier: "false", npm_config_userconfig: join(directory, "npmrc") };
   writeFileSync(env.npm_config_userconfig, "");
   const lock = (packages: Record<string, LockEntry> = {}) => writeJson(join(root, "package-lock.json"), {

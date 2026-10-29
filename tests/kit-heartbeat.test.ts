@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { kitEnv } from "./support/kit-env.ts";
 
-const heartbeat = resolve("scripts/agents/kit.d/heartbeat");
+const heartbeat = resolve("kit.d/heartbeat");
 const identity = { GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.com", GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.com" };
 
 // A dev repo with fake job records in its worktrees, a fake kit (bg --list reads each
@@ -21,9 +21,12 @@ function fixture(t: TestContext) {
   delete env.KIT_HEARTBEAT_LOCKED;
   const dev = join(root, "dev");
   const git = (...args: string[]) => execFileSync("git", ["-C", dev, ...args], { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-  mkdirSync(dev);
+  mkdirSync(join(dev, "scripts/agents"), { recursive: true });
+  // An editor-like project: lands on dev, maps in docs/wayfinder; the heartbeat runs from its dev worktree.
+  writeFileSync(join(dev, "scripts/agents/kit.json"), JSON.stringify({ project: "p", branches: { land: "dev" }, maps: "docs/wayfinder" }));
   git("init", "-q", "-b", "dev");
-  git("commit", "-q", "--allow-empty", "-m", "fixture");
+  git("add", "-A");
+  git("commit", "-q", "-m", "fixture");
   writeFileSync(join(root, "fake-kit"), `#!/usr/bin/env bash
 if [[ $1 == bg && $2 == --list ]]; then
   [[ $KIT_ROOT != "\${FAKE_BG_FAIL_ROOT:-}" ]] || { echo 'RESULT: fail bg list'; exit 1; }
@@ -57,13 +60,13 @@ exit "\${FAKE_NEXT_STATUS:-0}"
   };
   const nextSays = (...lines: string[]) => writeFileSync(env.FAKE_NEXT_OUT!, `${lines.join("\n")}\n`);
   const run = (...args: string[]) => {
-    const result = spawnSync(process.execPath, [heartbeat, ...args], { env, encoding: "utf8", timeout: 30_000 });
+    const result = spawnSync(process.execPath, [heartbeat, ...args], { cwd: dev, env, encoding: "utf8", timeout: 30_000 });
     return { ...result, lines: result.stdout.trim().split("\n") };
   };
   const nextCalls = () => existsSync(env.FAKE_KIT_LOG!) ? readFileSync(env.FAKE_KIT_LOG!, "utf8").trim().split("\n") : [];
   // Two heartbeats at once, as the schedule and a hand run after a restart.
   const both = (...args: string[]) => Promise.all([0, 1].map(() => new Promise<string>((done, fail) => {
-    const child = spawn(process.execPath, [heartbeat, ...args], { env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.execPath, [heartbeat, ...args], { cwd: dev, env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     child.stdout.setEncoding("utf8").on("data", (text: string) => { stdout += text; });
     child.once("error", fail);

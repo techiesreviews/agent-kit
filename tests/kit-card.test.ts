@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { kitEnv } from "./support/kit-env.ts";
 
-const script = resolve("scripts/agents/context-card.mjs");
-const kit = resolve("scripts/agents/kit");
-const hooks = resolve("scripts/agents/hooks");
+const script = resolve("context-card.mjs");
+const kit = resolve("kit");
+const hooks = resolve("hooks");
 const noNotes = "context card: no notes for this project yet\n";
 
 function fixture(t: { after: (fn: () => void) => void }) {
@@ -137,29 +137,6 @@ test("a folder inside a workspace counts up to its own repository, so unmapped r
   assert.deepEqual([usage.status, usage.stdout, usage.stderr], [2, "", "Usage: context-card.mjs [--cwd DIR] [--hook]\n"]);
 });
 
-test("the documented user-level hook skips repos with their own copy and prints the card elsewhere", (t) => {
-  const f = fixture(t);
-  const block = /```json\n(.+)\n```/.exec(readFileSync("docs/agents/context-card.md", "utf8"))![1];
-  const settings = JSON.parse(block) as { hooks: { SessionStart: { hooks: { command: string }[] }[] } };
-  const command = settings.hooks.SessionStart[0].hooks[0].command
-    .replace("/home/ubulex/Projects/native-site-editor-dev/scripts/agents/context-card.mjs", script);
-  assert.ok(command.includes(script), command);
-  const run = (cwd: string) => spawnSync("/bin/bash", ["-c", command], {
-    cwd, env: f.env, input: JSON.stringify({ hook_event_name: "SessionStart", cwd: join(f.projects, "site") }), encoding: "utf8",
-  });
-  const own = join(f.home, "own");
-  mkdirSync(join(own, "scripts/agents"), { recursive: true });
-  writeFileSync(join(own, "scripts/agents/context-card.mjs"), "");
-  spawnSync("git", ["init", "-q", own]);
-  const skipped = run(own);
-  assert.deepEqual([skipped.status, skipped.stdout, skipped.stderr], [0, "", ""]);
-  spawnSync("git", ["init", "-q", join(f.projects, "other")]);
-  const shown = run(join(f.projects, "other"));
-  assert.equal(shown.status, 0, shown.stderr);
-  const context = (JSON.parse(shown.stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
-  assert.match(context, /^Context card: Site \(updated 2026-10-24\)\n/);
-});
-
 test("missing note, missing slug and missing folder each print one line and exit 0", (t) => {
   const f = fixture(t);
   assert.equal(f.card(join(f.projects, "other")), noNotes);
@@ -201,15 +178,19 @@ test("hook mode reads the payload cwd and prints SessionStart context through ru
   for (const input of ["", "not json"]) {
     assert.match(context(input, join(f.projects, "site")).additionalContext, /^Context card: Site \(updated 2026-10-24\)\n/);
   }
-  // Branches without the script stay silent.
-  const missing = hook("{}", f.home, join(f.projects, "unmapped"));
-  assert.deepEqual([missing.status, missing.stdout, missing.stderr], [0, "", ""]);
-  // A slow card is stopped after 1 second and prints nothing.
-  const slow = join(f.home, "slow");
-  mkdirSync(join(slow, "scripts/agents"), { recursive: true });
-  writeFileSync(join(slow, "scripts/agents/context-card.mjs"), "setTimeout(() => console.log('late'), 3000);\n");
+  // The card is the kit's own: a project without a script of its own still gets it.
+  const unmapped = hook("{}", f.home, join(f.projects, "unmapped"));
+  assert.equal(unmapped.status, 0, unmapped.stderr);
+  assert.equal(JSON.parse(unmapped.stdout).hookSpecificOutput.additionalContext, noNotes.trimEnd());
+  // A slow card (here a node that takes 3 seconds) is stopped after 1 second and prints nothing.
+  const slow = join(f.home, "slow-bin");
+  mkdirSync(slow);
+  writeFileSync(join(slow, "node"), "#!/bin/bash\nsleep 3\necho late\n");
+  chmodSync(join(slow, "node"), 0o755);
   const started = Date.now();
-  const late = hook("{}", f.home, slow);
+  const late = spawnSync("/bin/bash", [join(hooks, "run.sh"), "context-card"], {
+    cwd: f.home, env: { ...f.env, PATH: `${slow}:${process.env.PATH}` }, input: "{}", encoding: "utf8",
+  });
   assert.ok(Date.now() - started < 2000, `took ${Date.now() - started} ms`);
   assert.deepEqual([late.status, late.stdout, late.stderr], [0, "", ""]);
 });
@@ -224,13 +205,13 @@ test("kit card prints the card for the kit root with a RESULT line", (t) => {
   const empty = spawnSync("/bin/bash", [kit, "card"], { cwd: f.home, env: { ...f.env, KIT_ROOT: resolve(".") }, encoding: "utf8" });
   assert.equal(empty.stdout, `${noNotes}RESULT: ok card no notes\n`);
   // The card script comes from the shared kit; a KIT_HOME without it fails with one line.
-  const broken = spawnSync("/bin/bash", [resolve("scripts/agents/kit.d/card")], { cwd: f.home, env: { ...f.env, KIT_ROOT: resolve("."), KIT_HOME: f.home }, encoding: "utf8" });
+  const broken = spawnSync("/bin/bash", [resolve("kit.d/card")], { cwd: f.home, env: { ...f.env, KIT_ROOT: resolve("."), KIT_HOME: f.home }, encoding: "utf8" });
   assert.equal(broken.status, 1);
   assert.equal(broken.stdout, "RESULT: fail card script failed\n");
   // Through the front door: a person's KIT_HOME without the card script reaches the card.
   const home = join(f.home, "kit-home");
   mkdirSync(home);
-  for (const name of ["kit.d", "kit-lib.sh", "kit-lib.mjs"]) symlinkSync(resolve("scripts/agents", name), join(home, name));
+  for (const name of ["kit.d", "kit-lib.sh", "kit-lib.mjs"]) symlinkSync(resolve(name), join(home, name));
   const front = spawnSync("/bin/bash", [kit, "card"], { cwd: f.home, env: { ...f.env, KIT_ROOT: resolve("."), KIT_HOME: home }, encoding: "utf8" });
   assert.equal(front.status, 1);
   assert.equal(front.stdout, "RESULT: fail card script failed\n");

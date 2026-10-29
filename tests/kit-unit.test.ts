@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { kitEnv } from "./support/kit-env.ts";
 
-const kit = resolve("scripts/agents/kit");
+const kit = resolve("kit");
 function fixture(t: TestContext) {
   const root = mkdtempSync(join(tmpdir(), "kit-unit-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -36,8 +36,12 @@ test("selected test runs", () => { mkdirSync(".scratch", { recursive: true }); a
   put("scripts/agents/kit.json", JSON.stringify({ project: "kit-unit", branches: { land: "dev" },
     unit: { run: "./node_modules/.bin/tsx --test --test-reporter=spec", files: "tests/*.test.ts" } }));
   symlinkSync(resolve("node_modules"), join(root, "node_modules"), "dir");
-  // --affected reads the project's own import scan.
-  symlinkSync(resolve("scripts/agents/specs-affected.mjs"), join(root, "scripts/agents/specs-affected.mjs"));
+  // --affected reads the project's own import scan: here a small one over src/, tests/ and scripts/.
+  put("scripts/agents/specs-affected.mjs", `export const graphFile = /^(src|tests|scripts)\\//;
+export function importsOf(text) {
+  return [...text.matchAll(/\\b(?:import|export)\\s+(?:[^;"'\`]*?\\s+from\\s*)?["']([^"']+)["']/g)].map(match => match[1]);
+}
+`);
   git("init", "--quiet", "--initial-branch=feature");
   git("config", "user.name", "Kit unit test");
   git("config", "user.email", "kit-unit@example.test");
@@ -187,13 +191,13 @@ test("without the project's import scan --affected follows plain imports itself;
   }
   const env = { ...kitEnv(), KIT_ROOT: f.root };
   delete env.NODE_TEST_CONTEXT;
-  const bare = spawnSync("bash", [resolve("scripts/agents/unit.sh")], { cwd: f.root, env, encoding: "utf8", timeout: 60_000 });
+  const bare = spawnSync("bash", [resolve("unit.sh")], { cwd: f.root, env, encoding: "utf8", timeout: 60_000 });
   assert.equal(bare.status, 1, bare.stdout + bare.stderr);
   assert.equal(bare.stderr, "unit.sh: kit unit needs unit.files in scripts/agents/kit.json\n");
   // No unit.run: a settings problem too, so status 1, for named files as for none.
   f.put("scripts/agents/kit.json", JSON.stringify({ project: "kit-unit", branches: { land: "dev" }, unit: { files: "tests/*.test.ts" } }));
   for (const args of [["tests/direct.test.ts"], []]) {
-    const output = spawnSync("bash", [resolve("scripts/agents/unit.sh"), ...args], { cwd: f.root, env, encoding: "utf8", timeout: 60_000 });
+    const output = spawnSync("bash", [resolve("unit.sh"), ...args], { cwd: f.root, env, encoding: "utf8", timeout: 60_000 });
     assert.equal(output.status, 1, output.stdout + output.stderr);
     assert.equal(output.stderr, "unit.sh needs unit.run in scripts/agents/kit.json\n");
   }
@@ -243,7 +247,7 @@ test("a unit.files pattern matching nothing and a broken import scan fail withou
   const env = { ...kitEnv(), KIT_ROOT: f.root };
   delete env.NODE_TEST_CONTEXT;
   f.put("scripts/agents/kit.json", JSON.stringify({ project: "kit-unit", branches: { land: "dev" }, unit: { run: "node --test", files: "nomatch/*.test.ts" } }));
-  const none = spawnSync("bash", [resolve("scripts/agents/unit.sh")], { cwd: f.root, env, encoding: "utf8", timeout: 60_000 });
+  const none = spawnSync("bash", [resolve("unit.sh")], { cwd: f.root, env, encoding: "utf8", timeout: 60_000 });
   assert.equal(none.status, 1, none.stdout + none.stderr);
   assert.equal(none.stderr, "unit.sh: no files match unit.files in scripts/agents/kit.json\n");
   // The project's own scan is the repo's code, not an argument: a syntax error in it is a failure.
@@ -264,7 +268,7 @@ test("unit.sh with no files runs only the tests its unit.files pattern matches",
   f.put("tests/direct.test.ts", f.body.replace("selected test runs", "direct test runs"));
   const env = { ...kitEnv(), KIT_ROOT: f.root };
   delete env.NODE_TEST_CONTEXT;
-  const output = spawnSync("bash", [resolve("scripts/agents/unit.sh")], { cwd: f.root, env, encoding: "utf8", timeout: 60_000 });
+  const output = spawnSync("bash", [resolve("unit.sh")], { cwd: f.root, env, encoding: "utf8", timeout: 60_000 });
   assert.equal(output.status, 0, output.stdout + output.stderr);
   assert.match(output.stdout, /^pass 1, fail 0$/m);
   assert.equal(f.executed(), 1);
@@ -279,7 +283,7 @@ test("unit.sh with no files run from its own folder lists and sums the same suit
   // The fixture's own copy of unit.sh and what it calls, so ./unit.sh resolves beside the fixture's kit.json.
   // The list follows the local imports of kit-lib.mjs and kit.d/unit; a new one there belongs here too.
   for (const file of ["unit.sh", "kit-lib.sh", "kit-lib.mjs", "review-findings.mjs", "unit-summary.mjs", "kit.d"]) {
-    cpSync(resolve("scripts/agents", file), join(agents, file), { recursive: true });
+    cpSync(resolve(file), join(agents, file), { recursive: true });
   }
   for (const file of ["tests/hops.test.ts", "tests/helper.test.ts", "tests/direct.test.ts"]) f.put(file, f.body.replace("selected test runs", `${file} runs`));
   // No KIT_ROOT or KIT_LIB from the caller's kit: the copy finds its project from git's top folder.
@@ -336,14 +340,14 @@ test("unit.files patterns pick src/**/*.test.js for --affected and every pattern
   // unit.sh alone expands the same patterns.
   const env = { ...kitEnv(), KIT_ROOT: f.root };
   delete env.NODE_TEST_CONTEXT;
-  const suite = spawnSync("bash", [resolve("scripts/agents/unit.sh")], { cwd: f.root, env, encoding: "utf8", timeout: 60_000 });
+  const suite = spawnSync("bash", [resolve("unit.sh")], { cwd: f.root, env, encoding: "utf8", timeout: 60_000 });
   assert.equal(suite.status, 0, suite.stderr + suite.stdout);
   assert.match(suite.stdout, /pass 4, fail 0/);
   // Ignored build output matching a pattern is left out by both: unit.sh runs what kit unit lists.
   f.put(".gitignore", ".scratch/\nnode_modules/\nsrc/dist/\n");
   f.put("src/dist/x.test.js", 'import test from "node:test"; test("ignored output", () => { throw new Error("ran an ignored file"); });\n');
   result(f.run("--list"), 0, /ok unit 4 selected \(list only\)/);
-  const again = spawnSync("bash", [resolve("scripts/agents/unit.sh")], { cwd: f.root, env, encoding: "utf8", timeout: 60_000 });
+  const again = spawnSync("bash", [resolve("unit.sh")], { cwd: f.root, env, encoding: "utf8", timeout: 60_000 });
   assert.equal(again.status, 0, again.stderr + again.stdout);
   assert.match(again.stdout, /pass 4, fail 0/);
 });

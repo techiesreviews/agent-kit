@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 
-const hooks = resolve("scripts/agents/hooks");
+const hooks = resolve("hooks");
 function run(script: string, payload: unknown, env: NodeJS.ProcessEnv = {}) {
   return spawnSync("/bin/bash", [join(hooks, script)], {
     input: typeof payload === "string" ? payload : JSON.stringify(payload),
@@ -102,7 +102,8 @@ const blocked: [string, string][] = [
     "setsid npm run server", "setsid vite", "setsid python -m http.server", "setsid npx playwright test",
     "true && setsid -f node tests/native-save/server.ts", "bash -c 'setsid npm run server'",
     "2>/dev/null setsid vite",
-  ].map((command): [string, string] => [command, "start servers through scripts/agents/port.sh"]),
+    // This repo has no scripts/agents/port.sh and no "servers" setting, so the guard names kit bg.
+  ].map((command): [string, string] => [command, "start servers through scripts/agents/kit bg <name> -- <command>"]),
 ];
 for (const [command, reason] of blocked) {
   test(`Bash blocks ${command}`, () => {
@@ -427,7 +428,7 @@ test("Claude settings and Codex hooks configuration share executable Bash and Se
     assert.equal(hook.type, "command");
     assert.match(hook.command, /^bash "\$\{CLAUDE_PROJECT_DIR:-\$\(git rev-parse --show-toplevel\)\}"\/scripts\/agents\/hooks\/run\.sh (bash-guard|agent-cap|session-env|context-card)$/);
     const name = hook.command.split(" ").at(-1)!;
-    const script = name === "context-card" ? resolve("scripts/agents/context-card.mjs") : join(hooks, `${name}.sh`);
+    const script = name === "context-card" ? resolve("context-card.mjs") : join(hooks, `${name}.sh`);
     assert.equal(spawnSync("/usr/bin/test", ["-x", script]).status, 0);
   }
   assert.deepEqual(settings.hooks.SessionStart.flatMap((entry) => entry.hooks.map((hook) => hook.command.split(" ").at(-1))), ["session-env", "context-card"]);

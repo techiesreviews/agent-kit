@@ -7,7 +7,7 @@ import test, { type TestContext } from "node:test";
 import { forEachAwait } from "./support/await-race.ts";
 import { kitEnv } from "./support/kit-env.ts";
 
-const kit = resolve("scripts/agents/kit");
+const kit = resolve("kit");
 const clean = "REVIEW_STATUS: complete\nDefects:\nSpec: none\nStandards: none\nValidation gaps: none\nOptional nits: none\n";
 const findings = "REVIEW_STATUS: complete\nDefects:\nSpec:\n- file.txt:1 P1 restore required text\nStandards: none\nValidation gaps: none\nOptional nits: none\n";
 interface Call { phase: string; args: string[]; builderTicket?: string }
@@ -260,8 +260,8 @@ console.log(JSON.stringify({ state: merged ? "MERGED" : "OPEN", mergeCommit: mer
   };
   const realFix = (): NodeJS.ProcessEnv => {
     const commands = join(dir, "commands"); mkdirSync(commands);
-    symlinkSync(resolve("scripts/agents/kit.d/slice"), join(commands, "slice"));
-    symlinkSync(resolve("scripts/agents/kit.d/fix"), join(commands, "fix"));
+    symlinkSync(resolve("kit.d/slice"), join(commands, "slice"));
+    symlinkSync(resolve("kit.d/fix"), join(commands, "fix"));
     const review = join(commands, "review");
     writeFileSync(review, `#!/usr/bin/env node
 const { spawnSync } = require("node:child_process");

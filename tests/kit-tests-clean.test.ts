@@ -6,11 +6,11 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { checkSteps, classify } from "../scripts/agents/pr-tier.mjs";
+import { checkSteps, classify } from "../pr-tier.mjs";
 import { kitEnv } from "./support/kit-env.ts";
 
 const repo = resolve(".");
-const shell = join(repo, "scripts/agents/agent.sh");
+const shell = join(repo, "agent.sh");
 
 function entries(directory: string) {
   return existsSync(directory) ? readdirSync(directory).sort() : [];

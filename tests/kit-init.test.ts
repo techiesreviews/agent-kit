@@ -4,9 +4,10 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, 
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import test from "node:test";
-import { kitRegisterProject } from "../scripts/agents/kit-lib.mjs";
+import { kitFiles } from "./support/kit-files.ts";
+import { kitRegisterProject } from "../kit-lib.mjs";
 
-const launchers = resolve("scripts/agents/launcher");
+const launchers = resolve("launcher");
 type After = { after: (fn: () => void) => void };
 
 // A fake machine kit (a copy of this kit as kit update leaves it, with current and updated) and temporary
@@ -16,7 +17,7 @@ function fixture(t: After) {
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const data = join(directory, "data/agent-kit"), state = join(directory, "state");
   const kit = join(data, "0123456789abcdef0123456789abcdef01234567");
-  cpSync(resolve("scripts/agents"), kit, { recursive: true, filter: (source) => source !== resolve("scripts/agents/project.d") });
+  cpSync(resolve("."), kit, { recursive: true, filter: kitFiles });
   symlinkSync(kit, join(data, "current"));
   writeFileSync(join(data, "updated"), `${Math.floor(Date.now() / 1000)}\n`);
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: directory, XDG_DATA_HOME: join(directory, "data"), XDG_CACHE_HOME: join(directory, "cache"),

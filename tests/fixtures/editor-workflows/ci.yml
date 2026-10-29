@@ -1,0 +1,52 @@
+# The required pull-request check "CI / checks": the same checks as
+# deploy-preview.yml (types, units, lint, byte budget, @smoke browser tests),
+# on every pull request and merge group into dev or main. A newer push to the
+# same pull request cancels its older run; merge-group runs never cancel.
+# Never deploys. Branch settings that require it: docs/agents/github-settings.md.
+name: CI
+
+on:
+  pull_request:
+    branches: [dev, main]
+  merge_group:
+    branches: [dev, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  checks:
+    name: checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # One unit test (owner setup) drives a headless browser.
+      - run: npx playwright install chromium-headless-shell
+      - run: npm run check
+      - run: npm test
+      - run: npm run lint
+      # Enforces the cold-start byte budget in tests/perf/byte-budget.ts (355 KB).
+      - name: Byte budget
+        run: npm run test:budget
+      # The @smoke browser slice (about 30 tests) over the fake GitHub server.
+      - name: Smoke browser tests
+        run: npm run test:browser:smoke -- --reporter=list,html
+      - name: Upload the smoke report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-report
+          path: |
+            playwright-report/
+            .scratch/*/results/
+          include-hidden-files: true
+          retention-days: 14

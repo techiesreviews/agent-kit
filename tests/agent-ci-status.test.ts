@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 // @ts-expect-error The script is plain JavaScript without declarations.
-import { changedLines, failingSteps, latestWorkflowRuns, summarizeRuns } from "../scripts/agents/ci-summary.mjs";
+import { changedLines, failingSteps, latestWorkflowRuns, summarizeRuns } from "../ci-summary.mjs";
 
 const fixture = JSON.parse(readFileSync(new URL("./fixtures/agent-ci-status.json", import.meta.url), "utf8"));
 const head = "abcdef0123456789";

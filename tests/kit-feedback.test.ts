@@ -5,11 +5,11 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The script is plain JavaScript without declarations.
-import { feedbackLegend, parseFeedback } from "../scripts/agents/tickets.mjs";
+import { feedbackLegend, parseFeedback } from "../tickets.mjs";
 import { kitEnv } from "./support/kit-env.ts";
 
-const feedback = resolve("scripts/agents/kit.d/feedback");
-const kit = resolve("scripts/agents/kit");
+const feedback = resolve("kit.d/feedback");
+const kit = resolve("kit");
 const log = "docs/wayfinder/alpha/build/feedback.md";
 
 function today() {

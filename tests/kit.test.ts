@@ -6,11 +6,12 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 // @ts-expect-error The script is plain JavaScript without declarations.
-import { findNode, kitMainRoot, kitOwner, kitResult, kitRoot, nodeEnv } from "../scripts/agents/kit-lib.mjs";
+import { findNode, kitMainRoot, kitOwner, kitResult, kitRoot, nodeEnv } from "../kit-lib.mjs";
 import { kitEnv } from "./support/kit-env.ts";
+import { kitFiles } from "./support/kit-files.ts";
 
-const kit = resolve("scripts/agents/kit");
-const library = resolve("scripts/agents/kit-lib.sh");
+const kit = resolve("kit");
+const library = resolve("kit-lib.sh");
 const nodeError = "kit: no Node >=24 found (system, npx cache or nvm)";
 
 function temp(t: { after: (fn: () => void) => void }) {
@@ -41,7 +42,7 @@ function command(directory: string, name: string, body: string, executable = tru
 }
 
 function run(args: string[] = [], env: NodeJS.ProcessEnv = {}, input = "") {
-  return spawnSync("/bin/bash", ["scripts/agents/kit", ...args], {
+  return spawnSync("/bin/bash", ["kit", ...args], {
     encoding: "utf8", env: { ...kitEnv(), ...env }, input, timeout: 5000,
   });
 }
@@ -126,12 +127,6 @@ test("kit reads the shared folder and the project's own, lists them in two group
   assert.equal(run(["hello"], { ...env, KIT_COMMANDS_DIR: override }).status, 2);
 });
 
-test("kit runs a project command through this repository's own settings file", () => {
-  const specs = run(["specs", "--help"], { KIT_ROOT: resolve("."), KIT_COMMANDS_DIR: undefined });
-  assert.equal(specs.status, 0, specs.stderr);
-  assert.match(specs.stdout, /^Usage: kit specs/);
-});
-
 test("kit takes an absolute commands folder, and without one lists only shared commands", (t) => {
   const root = temp(t), own = temp(t);
   mkdirSync(join(root, "scripts/agents"), { recursive: true });
@@ -162,7 +157,7 @@ test("kit takes an absolute commands folder, and without one lists only shared c
   assert.equal(doctorHelp.status, 0, doctorHelp.stderr);
   assert.match(doctorHelp.stdout, /^Usage: kit doctor/);
   // A "commands" naming the shared folder adds no group and hides nothing.
-  settings({ commands: resolve("scripts/agents/kit.d") });
+  settings({ commands: resolve("kit.d") });
   const same = run([], env);
   assert.equal(same.status, 0, same.stderr);
   assert.doesNotMatch(same.stdout, /Project commands:|\(hidden by the shared/);
@@ -170,7 +165,7 @@ test("kit takes an absolute commands folder, and without one lists only shared c
 
 test("the shared kit runs from a copy named by KIT_HOME for a project with only settings, front door and own commands", (t) => {
   const home = join(temp(t), "kit"), root = temp(t);
-  cpSync(resolve("scripts/agents"), home, { recursive: true, filter: (source) => source !== resolve("scripts/agents/project.d") });
+  cpSync(resolve("."), home, { recursive: true, filter: kitFiles });
   const agents = join(root, "scripts/agents");
   mkdirSync(join(agents, "project.d"), { recursive: true });
   copyFileSync(kit, join(agents, "kit"));
@@ -231,7 +226,7 @@ test("a nested kit in another checkout keeps its own kit unless a person set KIT
   // and, like a kit next --start job, runs another checkout's front door without KIT_ROOT.
   const checkout = () => {
     const root = realpathSync(temp(t)), agents = join(root, "scripts/agents");
-    cpSync(resolve("scripts/agents"), agents, { recursive: true, filter: (source) => source !== resolve("scripts/agents/project.d") });
+    cpSync(resolve("."), agents, { recursive: true, filter: kitFiles });
     writeFileSync(join(agents, "kit.json"), JSON.stringify({ project: "x", branches: { land: "dev" }, commands: "own" }));
     mkdirSync(join(root, "own"));
     command(join(root, "own"), "where", '# kit: print the kit in use\nprintf "%s %s %s\\n" "$KIT_ROOT" "$KIT_HOME" "$KIT_LIB"\n' +
@@ -357,7 +352,7 @@ test("kit preserves stdin and exports resolved roots and library paths from any 
     env: { ...kitEnv(), KIT_COMMANDS_DIR: directory, KIT_ROOT: directory, KIT_MAIN_ROOT: "/persistent" },
   });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, `hello\n${directory}\n/persistent\n${library}\n${resolve("scripts/agents/kit-lib.mjs")}\nRESULT: ok inspect finished\n`);
+  assert.equal(result.stdout, `hello\n${directory}\n/persistent\n${library}\n${resolve("kit-lib.mjs")}\nRESULT: ok inspect finished\n`);
 });
 
 const signals: [NodeJS.Signals, number][] = [["SIGTERM", 143], ["SIGINT", 130], ["SIGHUP", 129]];
@@ -488,13 +483,14 @@ test("bash and mjs roots and owner follow overrides, owner file and branch fallb
   delete process.env.KIT_ROOT;
   assert.equal(bash("unset KIT_ROOT; kit_root", {}, directory).stdout, `${directory}\n`);
   const outside = temp(t);
-  assert.equal(bash("unset KIT_ROOT; kit_root", {}, outside).stdout, `${resolve(".")}\n`);
+  // Outside git and without KIT_ROOT, the folder two above the kit (where a project kept it in scripts/agents/).
+  assert.equal(bash("unset KIT_ROOT; kit_root", {}, outside).stdout, `${resolve("../..")}\n`);
   const cwd = process.cwd();
   try {
     process.chdir(directory);
     assert.equal(kitRoot(), directory);
     process.chdir(outside);
-    assert.equal(kitRoot(), cwd);
+    assert.equal(kitRoot(), resolve(cwd, "../.."));
   } finally { process.chdir(cwd); }
   process.env.KIT_ROOT = outside;
   assert.equal(kitOwner(), "unknown");
@@ -527,7 +523,7 @@ test("bash and mjs RESULT helpers collapse line breaks and reject bad statuses",
 
 test("the real kit exposes an executable version stub and emits its final RESULT", () => {
   assert.equal(statSync(kit).mode & 0o111, 0o111);
-  assert.equal(statSync(resolve("scripts/agents/kit.d/version")).mode & 0o111, 0o111);
+  assert.equal(statSync(resolve("kit.d/version")).mode & 0o111, 0o111);
   assert.equal(statSync(library).mode & 0o111, 0);
   const list = run();
   assert.equal(list.status, 0, list.stderr);
@@ -572,7 +568,7 @@ function kitEnvLeaks(file: string, source: string) {
   lines.forEach((line, index) => {
     if (line.includes(spread) && left(line) && !strips(lines.slice(index, index + 4).join("\n"))) found.push(`${file}:${index + 1}`);
   });
-  // Names bound to a front door or command path, such as const next = resolve("scripts/agents/kit.d/next").
+  // Names bound to a front door or command path, such as const next = resolve("kit.d/next").
   const names = [...source.matchAll(/\b(?:const|let)\s+(\w+)\s*=\s*(?:resolve|join)\([^;\n]*(?:scripts\/agents\/kit"|kit\.d\/|project\.d\/)/g)].map(match => match[1]);
   // A name counts as code, not inside a string ("doctor" is an argument); the literal "kit" is a front door's file name.
   const command = new RegExp(`(^|[^\\w.$"'\`-])(${["kit", ...names].join("|")})([^\\w"'\`-]|$)|"kit"|kit\\.d\\/|project\\.d\\/`);
@@ -603,7 +599,7 @@ test("the KIT_HOME guard finds commands under any name, a half-cleaned env and a
   // Split, so these samples are not spreads or spawns in this file.
   const call = "spawn" + "Sync", spread = "..." + "process.env";
   const leaks = (source: string) => kitEnvLeaks("tests/kit-x.test.ts", `import { ${call} } from "node:child_process";\n${source}`);
-  const next = 'const next = resolve("scripts/agents/kit.d/next");\n';
+  const next = 'const next = resolve("kit.d/next");\n';
   assert.deepEqual(leaks(`${next}${call}(process.execPath, [next, "--help"], { encoding: "utf8" });\n`), ["tests/kit-x.test.ts:3"]);
   assert.deepEqual(leaks(`${next}${call}(process.execPath, [next, "--help"], { env: kitEnv(), encoding: "utf8" });\n`), []);
   assert.deepEqual(leaks(`${next}${call}(process.execPath, [next], { cwd, env });\n`), []);
@@ -611,7 +607,7 @@ test("the KIT_HOME guard finds commands under any name, a half-cleaned env and a
   assert.deepEqual(leaks(`${call}(join(agents, "kit"), ["card"], { cwd: root });\n`), ["tests/kit-x.test.ts:2"]);
   // Not commands: a git call beside a kit folder name, and a subcommand that shares a command's name.
   assert.deepEqual(leaks(`const home = join(root, "kit");\n${call}("git", ["-C", home, "init"]);\n`), []);
-  assert.deepEqual(leaks(`const doctor = resolve("scripts/agents/kit.d/doctor");\n${call}("npm", ["doctor"]);\n`), []);
+  assert.deepEqual(leaks(`const doctor = resolve("kit.d/doctor");\n${call}("npm", ["doctor"]);\n`), []);
   assert.deepEqual(leaks(`const env = { ${spread} }; delete env.KIT_HOME_DEFAULT;\n`), ["tests/kit-x.test.ts:2"]);
   assert.deepEqual(leaks(`const env = { ${spread} };\nconst names = ["KIT_HOME_DEFAULT"]; delete env.OTHER;\n`), ["tests/kit-x.test.ts:2"]);
   assert.deepEqual(leaks(`const env = { ${spread} }; delete env.KIT_HOME; delete env.KIT_HOME_DEFAULT;\n`), []);

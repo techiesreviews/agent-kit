@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { kitEnv } from "./support/kit-env.ts";
 
-const next = resolve("scripts/agents/kit.d/next");
+const next = resolve("kit.d/next");
 const identity = { GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.com", GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.com" };
 
 type Ticket = { type?: string; assignee?: string; builder?: string; files?: string[]; runsAlone?: boolean; blockedBy?: string[]; status?: string; group?: string };
@@ -430,7 +430,7 @@ test("--start without a fake kit starts the job through $KIT_HOME/kit in the new
   // A kit home with the real commands and library, whose front door records its call.
   const home = join(root, "kit-home"), log = join(root, "home-kit.log");
   mkdirSync(home);
-  for (const name of ["kit.d", "kit-lib.sh", "kit-lib.mjs", "docs"]) symlinkSync(resolve("scripts/agents", name), join(home, name));
+  for (const name of ["kit.d", "kit-lib.sh", "kit-lib.mjs", "docs"]) symlinkSync(resolve(name), join(home, name));
   writeFileSync(join(home, "kit"), `#!/usr/bin/env bash\nprintf '%s|%s\\n' "$PWD" "$*" >> ${JSON.stringify(log)}\necho "RESULT: ok bg $2 pid 1"\n`);
   chmodSync(join(home, "kit"), 0o755);
   env.KIT_HOME = home;
@@ -446,7 +446,7 @@ test("--start without a fake kit starts the job through $KIT_HOME/kit in the new
 function pinnedHome(root: string, builder: string, reviewer: string) {
   const home = join(root, "pinned-kit");
   mkdirSync(join(home, "docs"), { recursive: true });
-  const rulebook = readFileSync("scripts/agents/docs/kitchen.md", "utf8")
+  const rulebook = readFileSync("docs/kitchen.md", "utf8")
     .replace(/^\| Builder, every slice \| `[^`]+`/m, `| Builder, every slice | \`${builder}\``)
     .replace(/^\| Review, every change \| `[^`]+`/m, `| Review, every change | \`${reviewer}\``);
   writeFileSync(join(home, "docs/kitchen.md"), rulebook);
@@ -540,11 +540,12 @@ test("--start on a project that lands on main claims, pushes and branches from o
   assert.match(result.stdout, /RESULT: ok next 2 ready, 0 waiting, 1 started\n$/);
 });
 
-test("next --help names this editor's land branch, and placeholders when the settings file is unreadable", t => {
+test("next --help names the project's land branch, and placeholders when the settings file is unreadable", t => {
+  // This repo, the kit's own, lands on main.
   const own = spawnSync(process.execPath, [next, "--help"], { env: kitEnv(), encoding: "utf8" });
   assert.equal(own.status, 0, own.stderr);
-  assert.ok(own.stdout.includes("read from origin/dev in the dev worktree"), own.stdout);
-  assert.ok(own.stdout.includes("--start claims each next: ticket or group on dev"), own.stdout);
+  assert.ok(own.stdout.includes("read from origin/main in the dev worktree"), own.stdout);
+  assert.ok(own.stdout.includes("--start claims each next: ticket or group on main"), own.stdout);
   const broken = mkdtempSync(join(tmpdir(), "kit-next-"));
   t.after(() => rmSync(broken, { recursive: true, force: true }));
   mkdirSync(join(broken, "scripts/agents"), { recursive: true });
@@ -716,7 +717,7 @@ test("the real kit bg --list rows and command quoting reach kit next", t => {
   git(dev, "worktree", "add", "-q", "--detach", worktree, "origin/dev");
   const real = { ...env, KIT_ROOT: worktree };
   delete real.KIT_NEXT_KIT;
-  const bg = (...args: string[]) => spawnSync(process.execPath, [resolve("scripts/agents/kit.d/bg"), ...args], { env: real, cwd: worktree, encoding: "utf8", timeout: 15_000 });
+  const bg = (...args: string[]) => spawnSync(process.execPath, [resolve("kit.d/bg"), ...args], { env: real, cwd: worktree, encoding: "utf8", timeout: 15_000 });
   const started = bg("slice-alpha01", "--", process.execPath, "-e", "setTimeout(() => {}, 60000)", "--", "--ticket", quoted);
   assert.equal(started.status, 0, started.stdout + started.stderr);
   delete env.KIT_NEXT_KIT;

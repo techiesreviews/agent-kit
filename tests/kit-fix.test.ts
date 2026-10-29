@@ -7,8 +7,8 @@ import test, { type TestContext } from "node:test";
 import { forEachAwait } from "./support/await-race.ts";
 import { kitEnv } from "./support/kit-env.ts";
 
-const kit = resolve("scripts/agents/kit"), fix = resolve("scripts/agents/kit.d/fix");
-const briefHelper = resolve("scripts/agents/review-brief.mjs");
+const kit = resolve("kit"), fix = resolve("kit.d/fix");
+const briefHelper = resolve("review-brief.mjs");
 const defect = "abc:file.txt:1, P1, preserve the required text; restore it.";
 const clean = "REVIEW_STATUS: complete\nDefects:\nSpec: none\nStandards: none\nValidation gaps: none\nOptional nits: none\n";
 const findings = `REVIEW_STATUS: complete\nDefects:\nSpec:\n- ${defect}\n  Evidence: the ticket requires this exact text.\nStandards: none\nValidation gaps: none\nOptional nits: none\n`;
