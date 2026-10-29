@@ -433,18 +433,39 @@ test("kit update fails plainly on an unreachable repo, a main without a kit, and
   assert.match(help.stdout, /^Usage: kit update \[--previous \| --install-timer \| --remove-timer\]\n/);
 });
 
-// A fake systemctl that writes each call to a log and fails the calls named in KIT_TEST_SYSTEMCTL_FAIL; the
-// real one never runs, so nothing reaches the real ~/.config/systemd.
+// A fake systemctl that writes each call to a log, keeps whether the timer is enabled in a file, and fails the
+// calls named in KIT_TEST_SYSTEMCTL_FAIL; the real one never runs, so nothing reaches the real ~/.config/systemd.
 function fakeSystemctl(k: { directory: string; env: NodeJS.ProcessEnv }) {
   const bin = join(k.directory, "systemctl-bin");
   const log = join(k.directory, "systemctl.log");
+  const enabled = join(k.directory, "systemctl.enabled");
   mkdirSync(bin);
-  writeFileSync(join(bin, "systemctl"), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${log}"\ncase "$*" in *"\${KIT_TEST_SYSTEMCTL_FAIL:-none}"*) exit 1 ;; esac\n`, { mode: 0o755 });
+  writeFileSync(join(bin, "systemctl"), `#!/bin/sh
+printf '%s\\n' "$*" >> "${log}"
+case "$*" in *"\${KIT_TEST_SYSTEMCTL_FAIL:-none}"*) exit 1 ;; esac
+case "$*" in
+  *is-enabled*) [ -e "${enabled}" ] ;;
+  *enable*) : > "${enabled}" ;;
+  *disable*) rm -f "${enabled}" ;;
+esac
+`, { mode: 0o755 });
   const calls = () => existsSync(log) ? readFileSync(log, "utf8").trimEnd().split("\n") : [];
-  return { PATH: `${bin}:${k.env.PATH}`, calls };
+  return { PATH: `${bin}:${k.env.PATH}`, calls, enabled: () => existsSync(enabled) };
 }
 
-const units = (k: { directory: string }) => join(k.directory, "config/systemd/user");
+// systemd's folder under the temporary HOME, not the test's XDG_CONFIG_HOME.
+const units = (k: { directory: string }) => join(k.directory, ".config/systemd/user");
+const startCalls = ["--user is-enabled --quiet agent-kit-update.timer", "--user daemon-reload", "--user enable --now agent-kit-update.timer"];
+const installed = "RESULT: ok update timer installed: kit update runs every 15 minutes\n";
+const already = "RESULT: ok update timer already installed: kit update runs every 15 minutes\n";
+
+// Both unit files verified by systemd's own reader, where it is installed (it checks ExecStart exists too).
+function verifyUnits(t: { diagnostic: (message: string) => void }, k: { directory: string; env: NodeJS.ProcessEnv }) {
+  if (spawnSync("sh", ["-c", "command -v systemd-analyze"]).status !== 0) { t.diagnostic("no systemd-analyze: unit files not verified by systemd"); return; }
+  const files = ["timer", "service"].map((kind) => join(units(k), `agent-kit-update.${kind}`));
+  const verify = spawnSync("systemd-analyze", ["verify", ...files], { env: k.env, encoding: "utf8", timeout: 30_000 });
+  assert.equal(verify.status, 0, verify.stdout + verify.stderr);
+}
 
 test("kit update --install-timer writes both unit files, starts the timer and is safe to run again", (t) => {
   const k = kitRepo(t);
@@ -455,8 +476,9 @@ test("kit update --install-timer writes both unit files, starts the timer and is
   const service = join(units(k), "agent-kit-update.service");
   const install = k.run(["--install-timer"], { PATH: systemctl.PATH });
   assert.equal(install.status, 0, install.stdout + install.stderr);
-  assert.equal(install.stdout, `wrote ${timer}\nwrote ${service}\nRESULT: ok update timer installed: kit update runs every 15 minutes\n`);
-  assert.deepEqual(systemctl.calls(), ["--user daemon-reload", "--user enable --now agent-kit-update.timer"]);
+  assert.equal(install.stdout, `wrote ${timer}\nwrote ${service}\n${installed}`);
+  assert.deepEqual(systemctl.calls(), startCalls);
+  assert.equal(existsSync(join(k.directory, "config")), false);
   // The timer goes in as the kit holds it: every quarter hour, catching up a run missed while off, from login.
   assert.equal(readFileSync(timer, "utf8"), readFileSync("systemd/agent-kit-update.timer", "utf8"));
   assert.match(readFileSync(timer, "utf8"), /^\[Timer\]\n(?:#.*\n)*OnCalendar=\*:0\/15\nPersistent=true\n\n\[Install\]\nWantedBy=timers\.target\n$/m);
@@ -466,19 +488,15 @@ test("kit update --install-timer writes both unit files, starts the timer and is
     .replace("@KIT@", join(k.data, "current/kit")));
   assert.match(written, /^Type=oneshot$/m);
   assert.doesNotMatch(written, /@[A-Z_]+@/);
-  // systemd's own reader accepts both, where it is installed (it checks the service's ExecStart exists too).
-  if (spawnSync("sh", ["-c", "command -v systemd-analyze"]).status === 0) {
-    const verify = spawnSync("systemd-analyze", ["verify", timer, service], { env: k.env, encoding: "utf8", timeout: 30_000 });
-    assert.equal(verify.status, 0, verify.stdout + verify.stderr);
-  } else t.diagnostic("no systemd-analyze: unit files not verified by systemd");
+  verifyUnits(t, k);
   const again = k.run(["--install-timer"], { PATH: systemctl.PATH });
   assert.equal(again.status, 0, again.stdout + again.stderr);
-  assert.equal(again.stdout, "RESULT: ok update timer already installed: kit update runs every 15 minutes\n");
+  assert.equal(again.stdout, already);
   assert.equal(readFileSync(service, "utf8"), written);
-  assert.deepEqual(systemctl.calls().slice(2), ["--user daemon-reload", "--user enable --now agent-kit-update.timer"]);
+  assert.deepEqual(systemctl.calls().slice(3), startCalls);
   // A changed unit file (an older kit's, or edited by hand) is written again.
   writeFileSync(service, "old\n");
-  assert.equal(k.run(["--install-timer"], { PATH: systemctl.PATH }).stdout.split("\n")[0], `wrote ${service}`);
+  assert.equal(k.run(["--install-timer"], { PATH: systemctl.PATH }).stdout, `wrote ${service}\n${installed}`);
   assert.equal(readFileSync(service, "utf8"), written);
   assert.deepEqual(readdirSync(units(k)).sort(), ["agent-kit-update.service", "agent-kit-update.timer"]);
 });
@@ -502,7 +520,22 @@ test("the installed service, run as systemd runs it, brings a new main into the 
   assert.equal(k.link("current"), two);
 });
 
-test("kit update --remove-timer stops the timer, takes both files out and is safe to run again", (t) => {
+test("kit update --install-timer writes % and $ in its paths the way systemd reads them back", (t) => {
+  const k = kitRepo(t);
+  const systemctl = fakeSystemctl(k);
+  const dataHome = join(k.directory, "da%ta$x");
+  k.publish("one");
+  assert.equal(k.run([], { XDG_DATA_HOME: dataHome }).status, 0);
+  const install = k.run(["--install-timer"], { PATH: systemctl.PATH, XDG_DATA_HOME: dataHome });
+  assert.equal(install.status, 0, install.stdout + install.stderr);
+  const written = readFileSync(join(units(k), "agent-kit-update.service"), "utf8");
+  const escaped = join(k.directory, "da%%ta$x");
+  assert.ok(written.includes(`"XDG_DATA_HOME=${escaped}"`), written);
+  assert.ok(written.includes(`ExecStart="${escaped}/agent-kit/current/kit" update`), written);
+  verifyUnits(t, k);
+});
+
+test("kit update --remove-timer stops the timer, takes its files out and is safe to run again", (t) => {
   const k = kitRepo(t);
   const systemctl = fakeSystemctl(k);
   k.publish("one");
@@ -517,20 +550,26 @@ test("kit update --remove-timer stops the timer, takes both files out and is saf
   assert.ok(existsSync(timer) && existsSync(service));
   const remove = k.run(["--remove-timer"], { PATH: systemctl.PATH });
   assert.equal(remove.status, 0, remove.stdout + remove.stderr);
-  assert.equal(remove.stdout, `removed ${timer} and ${service}\nRESULT: ok update timer removed\n`);
-  assert.deepEqual(systemctl.calls().slice(2), ["--user disable --now agent-kit-update.timer", "--user disable --now agent-kit-update.timer", "--user daemon-reload"]);
+  assert.equal(remove.stdout, `removed ${timer}\nremoved ${service}\nRESULT: ok update timer removed\n`);
+  assert.deepEqual(systemctl.calls().slice(3), ["--user disable --now agent-kit-update.timer", "--user disable --now agent-kit-update.timer", "--user daemon-reload"]);
+  assert.equal(systemctl.enabled(), false);
   assert.deepEqual(readdirSync(units(k)), []);
   const again = k.run(["--remove-timer"], { PATH: systemctl.PATH });
   assert.equal(again.status, 0, again.stdout + again.stderr);
   assert.equal(again.stdout, "RESULT: ok update timer already removed\n");
-  assert.equal(systemctl.calls().length, 5);
-  // A service file left on its own (nothing enabled) goes without a disable.
+  assert.equal(systemctl.calls().length, 6);
+  // A service file left on its own (nothing enabled) goes without a disable, and so does a leftover wants link.
   writeFileSync(service, "left\n");
-  assert.equal(k.run(["--remove-timer"], { PATH: systemctl.PATH }).stdout, `removed ${timer} and ${service}\nRESULT: ok update timer removed\n`);
-  assert.deepEqual(systemctl.calls().slice(5), ["--user daemon-reload"]);
-  assert.equal(existsSync(service), false);
-  // The machine copy is untouched by either.
+  mkdirSync(join(units(k), "timers.target.wants"));
+  symlinkSync(timer, join(units(k), "timers.target.wants/agent-kit-update.timer"));
+  assert.equal(k.run(["--remove-timer"], { PATH: systemctl.PATH }).stdout, `removed ${service}\nRESULT: ok update timer removed\n`);
+  assert.deepEqual(systemctl.calls().slice(6), ["--user daemon-reload"]);
+  assert.deepEqual(readdirSync(units(k), { recursive: true }), ["timers.target.wants"]);
+  // Neither touches the machine copy, and removing creates no data folder on a machine without a kit.
   assert.ok(existsSync(join(k.data, "current/kit")));
+  const bare = kitRepo(t);
+  assert.equal(bare.run(["--remove-timer"], { PATH: fakeSystemctl(bare).PATH }).stdout, "RESULT: ok update timer already removed\n");
+  assert.equal(existsSync(bare.data), false);
 });
 
 test("kit update --install-timer fails plainly without a machine copy, without systemctl and when the timer cannot start", (t) => {
@@ -540,6 +579,7 @@ test("kit update --install-timer fails plainly without a machine copy, without s
   assert.equal(empty.status, 1, empty.stdout + empty.stderr);
   assert.equal(empty.stdout, `RESULT: fail update no machine copy at ${k.data}/current to run; run kit update first\n`);
   assert.equal(existsSync(units(k)), false);
+  assert.equal(existsSync(k.data), false);
   assert.deepEqual(systemctl.calls(), []);
   k.publish("one");
   k.run();
@@ -550,14 +590,28 @@ test("kit update --install-timer fails plainly without a machine copy, without s
     rmSync(join(k.directory, "without-systemctl"), { recursive: true });
   }
   assert.equal(existsSync(units(k)), false);
-  const failed = k.run(["--install-timer"], { PATH: systemctl.PATH, KIT_TEST_SYSTEMCTL_FAIL: "enable" });
+  // A repo name systemd cannot hold in a quoted value is refused before anything is written.
+  const quoted = k.run(["--install-timer"], { PATH: systemctl.PATH, KIT_REPO: 'file:///tmp/a"b' });
+  assert.equal(quoted.status, 1, quoted.stdout + quoted.stderr);
+  assert.equal(quoted.stdout, `RESULT: fail update cannot write the timer's service, because file:///tmp/a"b holds a quote, backslash or new line\n`);
+  assert.equal(existsSync(units(k)), false);
+  const start = "RESULT: fail update cannot start agent-kit-update.timer (systemctl --user status agent-kit-update.timer says why)\n";
+  const reload = k.run(["--install-timer"], { PATH: systemctl.PATH, KIT_TEST_SYSTEMCTL_FAIL: "daemon-reload" });
+  assert.equal(reload.status, 1, reload.stdout + reload.stderr);
+  assert.ok(reload.stdout.endsWith(start), reload.stdout);
+  assert.ok(!systemctl.calls().some((call) => call.includes("enable --now")), systemctl.calls().join("\n"));
+  assert.deepEqual(readdirSync(units(k)).sort(), ["agent-kit-update.service", "agent-kit-update.timer"]);
+  const failed = k.run(["--install-timer"], { PATH: systemctl.PATH, KIT_TEST_SYSTEMCTL_FAIL: "enable --now" });
   assert.equal(failed.status, 1, failed.stdout + failed.stderr);
-  assert.ok(failed.stdout.endsWith("RESULT: fail update cannot start agent-kit-update.timer (systemctl --user status agent-kit-update.timer says why)\n"), failed.stdout);
+  assert.equal(failed.stdout, start);
+  // The files a failed start left are unchanged, yet this is the run that turns the timer on.
+  assert.equal(k.run(["--install-timer"], { PATH: systemctl.PATH }).stdout, installed);
+  assert.equal(systemctl.enabled(), true);
   for (const flags of [["--previous", "--install-timer"], ["--install-timer", "--remove-timer"]]) {
     const both = k.run(flags, { PATH: systemctl.PATH });
     assert.equal(both.status, 2, both.stdout + both.stderr);
     assert.equal(both.stdout, "RESULT: fail update takes one of --previous, --install-timer and --remove-timer\n");
   }
   // The same flag twice is one request.
-  assert.equal(k.run(["--install-timer", "--install-timer"], { PATH: systemctl.PATH }).status, 0);
+  assert.equal(k.run(["--install-timer", "--install-timer"], { PATH: systemctl.PATH }).stdout, already);
 });
