@@ -293,11 +293,12 @@ async function slice(args) {
     if (!state.finished.includes(phase)) {
       assertBranch();
       const now = git("rev-parse", "HEAD");
-      // A build that stopped (such as at its time limit) after its work was committed on top of the saved start:
-      // those commits are the build. buildModel is saved as a build starts, so commits on a slice that never
-      // started one (a merge of dev, a ticket edit) are not taken. A HEAD on any other history still stops.
+      // A build that ran and stopped (such as at its time limit) after its work was committed on top of the saved start:
+      // those commits are the build. Its builder must have recorded a session, so commits after a build that never
+      // ran (a launch failure, then a ticket edit) are not taken. A HEAD on any other history still stops.
       // Commits that came from the land branch (a fast-forward or merge of origin/<land>) are not the builder's.
-      const forward = now !== state.head && state.buildModel && spawnSync("git", ["-C", root, "merge-base", "--is-ancestor", state.head, now], { env }).status === 0;
+      const ran = Boolean(state.build) && resumableBuild(state.build);
+      const forward = now !== state.head && ran && spawnSync("git", ["-C", root, "merge-base", "--is-ancestor", state.head, now], { env }).status === 0;
       const land = kitBranch("land", settings);
       const landRef = land && spawnSync("git", ["-C", root, "rev-parse", "--verify", "-q", `refs/remotes/origin/${land}`], { env }).status === 0 ? `origin/${land}` : undefined;
       const fromLand = forward && landRef
@@ -305,16 +306,14 @@ async function slice(args) {
       if (forward && !fromLand) {
         state.taken = git("log", "--reverse", "--format=%h %s", `${state.head}..${now}`).split("\n");
         console.log(`resume: build taken from ${state.taken.length} commit${state.taken.length === 1 ? "" : "s"} on ${state.head.slice(0, 9)}: ${state.taken.join("; ")}`);
-        // A build that stopped before it recorded a session leaves nothing for kit fix to resume; its rounds start fresh.
-        if (state.build && !resumableBuild(state.build)) delete state.build;
         state.head = now;
         complete("from commits");
       } else {
         if (now !== state.head) throw new Error(fromLand
           ? `HEAD ${now.slice(0, 9)} holds commits from ${landRef} on top of the slice's start ${state.head.slice(0, 9)}; a build resumes only from the builder's own commits`
-          : state.buildModel
+          : ran
           ? `HEAD ${now.slice(0, 9)} is not on top of the slice's start ${state.head.slice(0, 9)}; a build resumes only from commits on top of it`
-          : `HEAD moved from the slice's start ${state.head.slice(0, 9)} before any build started; only a started build resumes from commits`);
+          : `HEAD moved from the slice's start ${state.head.slice(0, 9)} but no build recorded a session; only a build that ran resumes from commits`);
         state.build = join(directory, "builder"); state.buildModel = flags.model; save();
         const output = requireSuccess(await execute(agent, ["build", root, ".scratch/agent-brief.md", "--model", flags.model, "--effort", flags.effort, "--out", state.build], builderEnv));
         assertHead(state.head);
@@ -332,6 +331,8 @@ async function slice(args) {
       } catch (error) { writeFileSync(log, `${error.message}\n`); throw error; }
       complete(state.head);
     }
+    // Once committed, the taken commits are an ordinary build and must not steer a later rerun.
+    if (state.taken) { delete state.taken; save(); }
     begin("review");
     if (!state.finished.includes(phase)) {
       const head = state.head;
