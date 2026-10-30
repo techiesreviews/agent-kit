@@ -40,7 +40,7 @@ only a small launcher and its own settings; the kit itself lives here, once.
   branch belongs in a kit command, never in a raw `git push`.
 - What changes for a lead: docs and ticket commits pushed straight to the landing branch keep working where it is not
   the release branch (the Native Site Editor's `dev`). Where the two are one branch (this repo, a live site), they
-  land through `kit pr` (docs tier), and claims through `kit next`.
+  land through `kit pr` (docs tier), or `kit next --start`, which claims and starts the slice itself.
 
 ## Changing the kit
 

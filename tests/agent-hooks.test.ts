@@ -546,7 +546,7 @@ function pushGuard(command: string, cwd: string, env: NodeJS.ProcessEnv = {}) {
   return run("bash-guard.sh", { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command }, cwd }, { CLAUDE_PROJECT_DIR: "", ...gitEnv, ...env });
 }
 const pushRefused = (branch: string) =>
-  `Pushing straight to \`${branch}\` puts it live without review. Land it with \`scripts/agents/kit pr --ticket <ticket>\` (or \`kit pr --release\` for a release).\n`;
+  `Pushing straight to \`${branch}\` puts it live without review. Land it with \`scripts/agents/kit pr --ticket <ticket>\` (or \`kit pr --release --base ${branch}\` for a release).\n`;
 
 test("a push to the release branch is refused however it is written, and names kit pr", (t) => {
   const { dir, work } = pushProject(t, { land: "dev", release: "main" });
@@ -651,6 +651,13 @@ test("a push from a folder the guard cannot name is checked in the session's fol
     `cd ${plain.work} && cd - && git push origin main`, `pushd ${plain.work}; pushd; git push origin main`,
     `pushd ${plain.work}; popd; git push origin main`, `pushd ${plain.work}; pushd +1; git push origin main`,
     `cd ${plain.work} && git --git-dir=${work}/.git push origin main`, `cd ${plain.work} && GIT_DIR=${work}/.git git push origin main`,
+    // env forms and an exported GIT_DIR name another repo; a cd that may not run in this shell is unknown.
+    `cd ${plain.work}; env GIT_DIR=${work}/.git git push origin main`, `cd ${plain.work}; env -C ${work} git push origin main`,
+    `cd ${plain.work}; export GIT_DIR=${work}/.git; git push origin main`,
+    `false && cd ${plain.work}; git push origin main`, `true || cd ${plain.work}; git push origin main`,
+    `cd ${plain.work} | cat; git push origin main`, `cd ${plain.work} & git push origin main`,
+    // A destination from a variable or $( … ) counts as the current branch.
+    "git push -u origin \"$(git branch --show-current)\"", "git push origin HEAD:\"$TARGET\"", "git push origin `git branch --show-current`",
     // Several pushes: the later one counts; another rule's reason still comes first.
     "git push origin dev && git push origin main",
   ]) assert.equal(pushGuard(command, work, { CLAUDE_PROJECT_DIR: work }).stderr, pushRefused("main"), command);
