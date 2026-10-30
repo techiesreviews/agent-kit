@@ -213,7 +213,8 @@ export function nodeEnv(env = process.env) {
 export function kitGitHubRemote(url = "") {
   const [, host, name] = /^(?:https?|ssh|git):\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(url)
     ?? /^(?:[^@/]+@)?([^/:]+):(?!\/)([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(url) ?? [];
-  return name ? { host: host === "ssh.github.com" ? "github.com" : host, name } : null;
+  const lower = host?.toLowerCase();
+  return name ? { host: lower === "ssh.github.com" ? "github.com" : lower, name } : null;
 }
 
 /**

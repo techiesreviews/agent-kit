@@ -116,7 +116,6 @@ test("a fresh npm repo gets a full setup that passes doctor, is listed in projec
   assert.equal(readFileSync(join(f.state, "agent-kit/projects.json"), "utf8"), listed);
 });
 
-
 test("on a machine with no kit, the hook launcher kit init wrote warns on every hook and exits 0, never blocking", (t) => {
   const f = fixture(t);
   const { work } = f.repo("site", { "package.json": "{}" });
@@ -140,6 +139,7 @@ test("on a machine with no kit, the hook launcher kit init wrote warns on every 
   assert.equal(existsSync(join(bare, "cache")), false);
   assert.equal(existsSync(join(bare, "data")), false);
 });
+
 test("a repo with no package.json gets a light setup that passes doctor and writes less than full", (t) => {
   const f = fixture(t);
   const light = f.repo("plain", { "index.html": "<p>hi</p>\n" }, ["main"]);

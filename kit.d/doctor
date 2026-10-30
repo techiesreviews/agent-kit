@@ -373,7 +373,7 @@ if [[ $quiet == false ]]; then
     printf '✓ PR target: %s (origin%s)\n' "$target" "${others:+; not ${others//,/, }}"
   else
     printf "✗ PR target: origin (%s) is not a GitHub repo, so kit pr cannot open a PR; fix: git remote set-url origin <the project's GitHub repo>\n" \
-      "$(git -C "$root" config --get remote.origin.url 2>/dev/null || :)"
+      "$(git -C "$root" config --get remote.origin.url 2>/dev/null || printf 'no url')"
   fi
 fi
 

@@ -370,6 +370,10 @@ test("doctor shows the GitHub repo PRs go to: origin's, never the upstream a sit
   assert.equal(result.status, 0, result.stdout);
   assert.match(result.stdout, /^✓ PR target: acme\/site \(origin; not mirror, upstream\)$/m);
   assert.match(result.stdout, /RESULT: ok doctor 11\/11 checks passed\n$/);
+  // An origin whose url was taken out is named as such.
+  git(f.build, "config", "--unset", "remote.origin.url");
+  assert.match(f.run().stdout, /^✗ PR target: origin \(no url\) is not a GitHub repo, so kit pr cannot open a PR; /m);
+  git(f.build, "config", "remote.origin.url", "git@github.com:acme/site.git");
   // A note, so --quiet leaves it out.
   assert.equal(f.run(["--quiet"]).stdout, "RESULT: ok doctor 11/11 checks passed\n");
 });
