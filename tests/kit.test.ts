@@ -529,6 +529,7 @@ test("bash and mjs read origin's GitHub repo alike, whatever other remotes there
   assert.deepEqual(kitGhEnv({}, directory), { GH_REPO: "git.example.com/acme/site", GH_HOST: "git.example.com" });
   gitAt("remote", "set-url", "origin", "/srv/git/site.git");
   assert.deepEqual(kitGhEnv({ GH_REPO: "acme/other" }, directory), { GH_REPO: "acme/other" });
+  assert.deepEqual(kitGhEnv({ GH_REPO: "git.example.com/acme/other" }, directory), { GH_REPO: "git.example.com/acme/other", GH_HOST: "git.example.com" });
   assert.deepEqual(kitGhEnv({}, directory), {});
 });
 

@@ -546,10 +546,12 @@ test("a site made from the starter opens its PR in origin's repo: every gh call 
   assert.deepEqual(gh.filter(call => call.repo !== "acme/site" || call.host !== "github.com"), []);
   // gh repo view reads no GH_REPO, so the repo is named.
   assert.deepEqual(gh.find(call => call.args[0] === "repo")?.args.slice(0, 3), ["repo", "view", "acme/site"]);
-  // The kit commands kit pr runs (the review that comments, the CI wait) are told it too.
-  const children = f.calls().filter(call => call.tool === "fake-kit");
-  assert.ok(children.some(call => call.args[0] === "wait"));
-  assert.deepEqual(children.filter(call => call.repo !== "acme/site"), []);
+  // Only gh is told: the project's checks and the kit commands kit pr runs (which work it out themselves) keep the
+  // caller's environment as it was.
+  const children = f.calls().filter(call => call.tool !== "gh");
+  assert.ok(children.some(call => call.tool === "fake-kit" && call.args[0] === "wait"));
+  assert.ok(children.some(call => call.tool === "unit.sh" || call.tool === "npm"), JSON.stringify(children.map(call => call.tool)));
+  assert.deepEqual(children.filter(call => call.repo !== "acme/starter" || call.host), []);
 });
 
 test("an enterprise origin keeps its host on every gh call, the merge's --repo too", t => {
@@ -573,7 +575,8 @@ test("with a folder origin, a GH_REPO already set is what gh is told, and the me
   const f = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: playground });
   const result = f.run([], { FAKE_BASE: "main", GH_REPO: "git.example.com/acme/site" }, true);
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.deepEqual(f.calls().filter(call => call.tool === "gh" && call.repo !== "git.example.com/acme/site"), []);
+  // gh api goes by GH_HOST, so the host GH_REPO names is put there.
+  assert.deepEqual(f.calls().filter(call => call.tool === "gh" && (call.repo !== "git.example.com/acme/site" || call.host !== "git.example.com")), []);
   assert.deepEqual(f.calls().find(call => call.tool === "gh" && call.args[0] === "repo")?.args.slice(0, 3), ["repo", "view", "git.example.com/acme/site"]);
   const merge = f.ghCalls("merge").at(-1)!.args;
   assert.equal(merge[merge.indexOf("--repo") + 1], "git.example.com/test/repo");

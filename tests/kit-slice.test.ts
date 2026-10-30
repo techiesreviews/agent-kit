@@ -857,6 +857,14 @@ test("a queued slice asks gh about origin's GitHub repo, not the upstream a site
   assert.deepEqual(merges.map(call => call.repo), ["acme/site", "acme/site"]);
 });
 
+test("a queued slice with a folder origin leaves a GH_REPO already set as it is", t => {
+  const f = fixture(t);
+  f.git("remote", "add", "origin", join(f.dir, "origin.git"));
+  const result = f.run([], { QUEUE_PR: "1", GH_REPO: "acme/other" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(f.calls().filter(call => call.phase === "merge").map(call => call.repo), ["acme/other"]);
+});
+
 for (const failure of ["lookup", "timeout"]) test(`queued slice resumes its merge wait after ${failure} without reopening the PR`, t => {
   const f = fixture(t);
   const failed = f.run([], { QUEUE_PR: "1", ...(failure === "lookup" ? { MERGE_FAILURE: "1" } : { MERGE_PENDING: "1", ASE_SLICE_MERGE_TIMEOUT_MS: "1" }) });
