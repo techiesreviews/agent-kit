@@ -566,6 +566,7 @@ test("a push to the release branch is refused however it is written, and names k
     ["(cd /tmp && true); git push origin main", work], ["bash -c 'cd /tmp'; git push origin main", work],
     ["echo \"$(cd /tmp)\"; git push origin main", work], [`(cd ${dir}); git push origin main`, work],
     ["git push -onotify origin main", work], ["git push -o notify origin main", work],
+    ["git push origin :", work], ["git push origin 'refs/*:refs/*'", work], ["git push upstream main", work],
   ]) {
     const result = pushGuard(command, cwd, { CLAUDE_PROJECT_DIR: work });
     assert.equal(result.status, 2, command);
@@ -622,4 +623,17 @@ test("a live landing branch (land equal to release) is guarded; a project withou
   const other = pushProject(t, { land: "main", release: "dev" });
   assert.equal(pushGuard("git push origin main", other.work).status, 0);
   assert.equal(pushGuard("git push origin HEAD:dev", other.work).stderr, pushRefused("dev"));
+});
+
+test("a push from a folder the guard cannot name is checked in the session's folder and the project folder", (t) => {
+  const { dir, work } = pushProject(t, { land: "dev", release: "main" });
+  const plain = pushProject(t, { land: "main" });
+  // The session sits in another project or no repo: a folder the guard cannot name is also checked as the
+  // project folder, and cd options or pushd still name the folder.
+  for (const cwd of [plain.work, dir]) for (const command of [
+    "cd \"$CLAUDE_PROJECT_DIR\" && git push origin main", `cd -P ${work} && git push origin main`,
+    `cd -- ${work}; git push`, `pushd ${work} && git push origin main`, "git -C \"$(pwd)\" push origin main",
+  ]) assert.equal(pushGuard(command, cwd, { CLAUDE_PROJECT_DIR: work }).stderr, pushRefused("main"), `${cwd}: ${command}`);
+  const noCwd = run("bash-guard.sh", { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "git push origin main" } }, { ...gitEnv, CLAUDE_PROJECT_DIR: work });
+  assert.equal(noCwd.stderr, pushRefused("main"));
 });

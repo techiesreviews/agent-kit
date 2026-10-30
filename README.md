@@ -28,7 +28,8 @@ only a small launcher and its own settings; the kit itself lives here, once.
   (`branches.release` in `scripts/agents/kit.json`), however it is written (`main`, `HEAD:main`, `refs/heads/main`,
   `+main`, `--force`, `--all`, `--mirror`, a deletion, `git -C`, after a `cd`, or a bare `git push` whose upstream is
   that branch), and names `kit pr` as the way through. A folder named through a variable or `$( … )`, or a `cd`
-  that did not take, is checked as the session's own folder. `--dry-run` passes, and so does every push in a
+  that did not take, is checked as both the session's folder and its project folder. Any remote counts, a fork
+  too. `--dry-run` passes, and so does every push in a
   project without `branches.release`.
 - A landing branch that goes live on every push (a site that deploys from it) is guarded by naming it as the release
   branch too: `"branches": { "land": "main", "release": "main" }`.
