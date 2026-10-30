@@ -102,7 +102,7 @@ test("a cache clone over a day old is kept (one kit per command) but warns until
   assert.match(stale.stdout, new RegExp(`^commit ${one.slice(0, 7)}\nkit cache clone ${join(f.cache, "agent-kit")}, cloned 2 days ago\nproject [0-9a-f]{7,}\n` +
     "warning kit not updated for 2 days; run scripts/agents/kit update\nowner "));
   // The fix the warning names: the machine copy takes over and the warning goes.
-  assert.equal(f.kit(["update"]).status, 0);
+  { const run = f.kit(["update"]); assert.equal(run.status, 0, run.stdout + run.stderr); }
   assert.deepEqual(lines(f.kit(["where"])), [`${join(f.data, two)} two`]);
   assert.doesNotMatch(f.kit(["version"]).stdout, /^warning /m);
 });
@@ -202,7 +202,7 @@ test("an interrupted clone leaves no temporary folder, and a cache folder withou
 test("the hook launcher falls back to the cache clone, or warns, when current points at a removed folder", (t) => {
   const f = fixture(t);
   const one = f.publish("one");
-  assert.equal(f.kit(["update"]).status, 0);
+  { const run = f.kit(["update"]); assert.equal(run.status, 0, run.stdout + run.stderr); }
   rmSync(join(f.cache, "agent-kit"), { recursive: true, force: true });
   spawnSync("chmod", ["-R", "u+w", join(f.data, one)]);
   rmSync(join(f.data, one), { recursive: true, force: true });
@@ -262,11 +262,11 @@ test("the hook launcher runs the kit's guards, and without a kit warns on every 
 test("a launcher's child whose pinned kit folder was removed picks again; a person's missing KIT_HOME still fails", (t) => {
   const f = fixture(t);
   const one = f.publish("one");
-  assert.equal(f.kit(["update"]).status, 0);
+  { const run = f.kit(["update"]); assert.equal(run.status, 0, run.stdout + run.stderr); }
   // What a builder session or kit bg job inherits from a launcher: KIT_HOME and its marker.
   assert.deepEqual(lines(f.kit(["pinned"])), [join(f.data, one)]);
   const two = f.publish("two");
-  assert.equal(f.kit(["update"]).status, 0);
+  { const run = f.kit(["update"]); assert.equal(run.status, 0, run.stdout + run.stderr); }
   spawnSync("chmod", ["-R", "u+w", join(f.data, one)]);
   const inherited = { KIT_HOME: join(f.data, one), KIT_HOME_PINNED: join(f.data, one) };
   // A pinned folder that still holds a kit is kept over current (one kit per command, children included).
@@ -306,7 +306,7 @@ test("a cache folder with kit but no kit-lib.sh is rejected by both launchers, n
 test("a current folder without kit-lib.sh is passed over for a cache clone by both launchers", (t) => {
   const f = fixture(t);
   const one = f.publish("one");
-  assert.equal(f.kit(["update"]).status, 0);
+  { const run = f.kit(["update"]); assert.equal(run.status, 0, run.stdout + run.stderr); }
   spawnSync("chmod", ["-R", "u+w", join(f.data, one)]);
   rmSync(join(f.data, one, "kit-lib.sh"));
   writeFileSync(join(f.data, one, "hooks/bash-guard.sh"), 'printf "half guard\\n" >&2; exit 2\n');
@@ -330,9 +330,9 @@ test("a pinned folder that was removed, with no machine copy and no clone, fails
 test("a person's KIT_HOME beside a different marker still fails plainly; a pinned folder missing kit-lib.sh is picked again", (t) => {
   const f = fixture(t);
   const one = f.publish("one");
-  assert.equal(f.kit(["update"]).status, 0);
+  { const run = f.kit(["update"]); assert.equal(run.status, 0, run.stdout + run.stderr); }
   const two = f.publish("two");
-  assert.equal(f.kit(["update"]).status, 0);
+  { const run = f.kit(["update"]); assert.equal(run.status, 0, run.stdout + run.stderr); }
   const chosen = { KIT_HOME: join(f.directory, "nowhere"), KIT_HOME_PINNED: join(f.data, two) };
   const failed = f.kit(["where"], chosen);
   assert.equal(failed.status, 2);
@@ -385,7 +385,7 @@ test("a fresh clone that is not a whole kit is thrown away, and the hook launche
 test("a picked folder removed just before the launcher resolves it is named in the failure", (t) => {
   const f = fixture(t);
   const one = f.publish("one");
-  assert.equal(f.kit(["update"]).status, 0);
+  { const run = f.kit(["update"]); assert.equal(run.status, 0, run.stdout + run.stderr); }
   const folder = join(f.data, one);
   assert.equal(spawnSync("chmod", ["-R", "u+w", folder]).status, 0);
   // A cd that removes the folder first, as kit update can between the whole-kit check and the resolve step.
@@ -419,9 +419,9 @@ test("a clone of an empty kit repo says the clone holds no whole kit and leaves 
 test("a pinned whole kit without hooks/run.sh is kept by the kit launcher, while the hook launcher runs current's guard", (t) => {
   const f = fixture(t);
   const one = f.publish("one");
-  assert.equal(f.kit(["update"]).status, 0);
+  { const run = f.kit(["update"]); assert.equal(run.status, 0, run.stdout + run.stderr); }
   const two = f.publish("two");
-  assert.equal(f.kit(["update"]).status, 0);
+  { const run = f.kit(["update"]); assert.equal(run.status, 0, run.stdout + run.stderr); }
   assert.equal(spawnSync("chmod", ["-R", "u+w", join(f.data, one), join(f.data, two)]).status, 0);
   rmSync(join(f.data, one, "hooks/run.sh"));
   writeFileSync(join(f.data, two, "hooks/bash-guard.sh"), 'printf "two guard\\n" >&2; exit 2\n');
@@ -449,7 +449,7 @@ test("a removed pinned cache folder is cloned fresh from the newest kit, and the
 test("a person's whole KIT_HOME beside a different marker wins for both launchers", (t) => {
   const f = fixture(t);
   const one = f.publish("one");
-  assert.equal(f.kit(["update"]).status, 0);
+  { const run = f.kit(["update"]); assert.equal(run.status, 0, run.stdout + run.stderr); }
   const branch = join(f.directory, "agent-kit-branch");
   cpSync(resolve("."), branch, { recursive: true, filter: kitFiles });
   writeFileSync(join(branch, "marker"), "branch");
