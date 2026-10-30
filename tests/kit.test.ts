@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 // @ts-expect-error The script is plain JavaScript without declarations.
-import { findNode, kitGhEnv, kitGhRepo, kitHideUserInfo, kitMainRoot, kitOwner, kitResult, kitRoot, nodeEnv } from "../kit-lib.mjs";
+import { findNode, kitGhEnv, kitGhRepo, kitHideUserInfo, kitHidingLog, kitMainRoot, kitOwner, kitResult, kitRoot, nodeEnv } from "../kit-lib.mjs";
 import { ghConfig, kitEnv } from "./support/kit-env.ts";
 import { kitFiles } from "./support/kit-files.ts";
 
@@ -608,6 +608,18 @@ test("bash and mjs RESULT helpers hide every url's user-info, so a remote's toke
   assert.equal(lines.at(-1), `RESULT: fail ${hidden}`);
   assert.equal(bash(`kit_hide_user_info '${text}'`).stdout, `${hidden}\n`);
   assert.equal(bash(`kit_result fail '${text}'`).stdout, `RESULT: fail ${hidden}\n`);
+});
+
+test("kitHidingLog hides a token split across chunks and on a last line with no newline, keeping each stream apart", () => {
+  const written: string[] = [];
+  const log = kitHidingLog((text: string) => written.push(text));
+  log.write("err", "fatal: https://ke63:ke63-fake");
+  log.write("out", "progress 1\nprogress");
+  log.write("err", "-token-0000@gitlab.example.com/a.git\nnext https://only-token@h/x");
+  assert.deepEqual(written, ["fatal: ", "progress 1\n", "https://gitlab.example.com/a.git\nnext "]);
+  log.end();
+  assert.deepEqual(written.slice(3), ["progress", "https://h/x"]);
+  assert.equal(written.join("").includes("token-0000"), false);
 });
 
 test("the real kit exposes an executable version stub and emits its final RESULT", () => {

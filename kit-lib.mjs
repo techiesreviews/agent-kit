@@ -262,11 +262,29 @@ export function kitGhEnv(env = process.env, root = kitRoot()) {
 }
 
 /**
- * Text with every URL's user-info part taken out (https://user:token@host/… becomes https://host/…), so no message,
- * log or report the kit writes shows a remote's token.
+ * Text with each scheme url's user-info part taken out (https://user:token@host/… becomes https://host/…), so no
+ * message, log or report the kit writes shows a remote's token. A bare user name goes too (ssh://git@host/… shows as
+ * ssh://host/…): a token can be all the user-info there is. scp-style git@host:path carries no token and stays.
  */
 export function kitHideUserInfo(text = "") {
   return String(text).replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#]*@/gi, "$1");
+}
+
+/**
+ * A log writer for a child's streams that hides user-info as kitHideUserInfo does. A url holds no whitespace, so only
+ * the text after a stream's last whitespace waits for its next chunk; end() writes what is left.
+ */
+export function kitHidingLog(append) {
+  const unwritten = new Map();
+  return {
+    write(stream, chunk) {
+      const text = (unwritten.get(stream) ?? "") + chunk, end = text.search(/\s\S*$/) + 1;
+      // Set anew, so end() writes the leftovers in the order their streams last wrote.
+      unwritten.delete(stream); unwritten.set(stream, text.slice(end));
+      if (end) append(kitHideUserInfo(text.slice(0, end)));
+    },
+    end() { for (const rest of unwritten.values()) if (rest) append(kitHideUserInfo(rest)); unwritten.clear(); },
+  };
 }
 
 /** Print a single RESULT line, user-info hidden; invalid statuses set exitCode to 2. */
