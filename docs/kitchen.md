@@ -43,14 +43,14 @@ says for today; never claim a planned item ran.
   Editor's repo, on its landing branch), built only by the thread that orchestrates that board. A
   thread in any other project writes the ticket there (or asks the orchestrator to) and goes on
   with its own work.
-- **A build's tests stay in the project:** tests and helper scripts a build depends on are committed
-  and wired into the project's checks (`checks.*`, `unit.files`/`unit.run` or its `specs` command in
-  `scripts/agents/kit.json`), so `kit doctor`, reviews and later builds find them; `/tmp` holds
-  only throwaway output.
-- **Always-loaded files stay short:** `AGENTS.md` and `CLAUDE.md` hold rules and pointers only;
-  feature descriptions, history and long explanations live in the project's docs, linked from
-  there. Docs and `--help` point to the test files for what is checked ("what each suite checks:
-  the comments and assertion messages in its file") instead of listing the checks.
+- **A build's tests stay in the project** (Lex, 2026-10-30): tests and helper scripts a build
+  depends on are committed and wired into the project's checks (`checks.*`,
+  `unit.files`/`unit.run` or its `specs` command in `scripts/agents/kit.json`), so `kit doctor`,
+  reviews and later builds find them; `/tmp` holds only throwaway output.
+- **Always-loaded files stay short** (Lex, 2026-10-30): `AGENTS.md` and `CLAUDE.md` hold rules and
+  pointers only; feature descriptions, history and long explanations live in the project's docs,
+  linked from there. Docs and `--help` point to the test files for what is checked ("what each
+  suite checks: the comments and assertion messages in its file") instead of listing the checks.
 
 ## Who cooks (pins from 2026-10-22)
 

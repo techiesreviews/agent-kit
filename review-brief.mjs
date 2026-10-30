@@ -54,7 +54,7 @@ export function builderChecks(root, settings) {
     lint: command(settings.checks?.lint), specs: projectCommand("specs", root, settings) };
 }
 
-/** The one line every builder and review brief carries (house rule "Plain English"). */
+/** House rule "Plain English": the one line every build (buildContract) and review (reviewFormat) prompt ends with. */
 export const plainEnglish = "Write in plain English: Lex reads every report, ticket and commit message.";
 
 export const reviewFormat = `Required format:

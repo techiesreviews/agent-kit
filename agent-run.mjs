@@ -13,7 +13,7 @@ import { appendFileSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, 
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { durationMilliseconds, supervise } from "./sol-run.mjs";
-import { reviewComplete, reviewFormat, reviewScope } from "./review-brief.mjs";
+import { plainEnglish, reviewComplete, reviewFormat, reviewScope } from "./review-brief.mjs";
 
 const adapters = { codex: codexAdapter, claude: claudeAdapter, grok: grokAdapter, opencode: opencodeAdapter };
 const reviewOnly = { grok: "Grok", opencode: "OpenCode" };
@@ -669,6 +669,7 @@ export const buildContract = `
 Leave changes unstaged. Do not commit, push, deploy, spawn agents or use git stash.
 Run focused unit files for the change (scripts/agents/kit unit --affected; if unavailable, scripts/agents/unit.sh <files>), npm run check when types moved, npm run lint and the ticket's touched specs. kit pr runs the tier's full set.
 Final report: at most 15 lines; changed files, behavior, validation and unresolved risks.
+${plainEnglish}
 `;
 
 function writeStatus(path, status, changes = {}) {

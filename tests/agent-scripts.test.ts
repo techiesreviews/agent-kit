@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
-import { reviewBrief, reviewComplete, reviewFormat } from "../review-brief.mjs";
+import { plainEnglish, reviewBrief, reviewComplete, reviewFormat } from "../review-brief.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { unitSummary } from "../unit-summary.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
@@ -842,7 +842,11 @@ process.exitCode = Number(process.env.ASE_FAKE_EXIT || 0);
     const out = /^artifacts: (.+)$/m.exec(result.stdout)?.[1];
     assert.ok(out);
     assert.ok(out.startsWith(join(wt, ".scratch/agent", `${kind}-`)));
-    if (kind === "build") assert.equal(recorded.input, "tiny brief\n" + buildContract);
+    if (kind === "build") {
+      assert.equal(recorded.input, "tiny brief\n" + buildContract);
+      // A hand-written brief gets the plain-English line too, once (house rule).
+      assert.equal(recorded.input.split("\n").filter(line => line === plainEnglish).length, 1);
+    }
     else {
       assert.ok(recorded.input.includes(`Review scope: git diff ${git("rev-parse", "origin/dev").trim()}...HEAD`));
       for (const file of ["diff.patch", "commits.log", "refs.txt"]) assert.ok(recorded.input.includes(JSON.stringify(join(out, file))));
