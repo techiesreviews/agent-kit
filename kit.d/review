@@ -211,6 +211,7 @@ async function secondLook(flags) {
   // a session but never finishes is stopped, and the look is skipped as timed out so the slice or PR goes on.
   const limit = process.env.ASE_SECOND_LOOK_TIMEOUT || "25m";
   try {
+    // A fallback started after the limit is stopped at once, so it too ends as timed out.
     try { deadline = Date.now() + durationMilliseconds(limit); }
     catch { throw new Error(`ASE_SECOND_LOOK_TIMEOUT must be a duration such as 25m (got ${limit})`); }
     if (flags.base === undefined && flags.commit === undefined) flags.base = `origin/${kitBranch()}`;
@@ -237,9 +238,8 @@ async function secondLook(flags) {
   console.log(`second look: ${pick.kind} (${pick.path}) ${pick.model}`);
   const missed = [];
   for (const model of [pick.model, pick.fallback]) {
-    if (missed.length && Date.now() >= deadline) { missed.push(`${model} not tried, ${limit} spent`); break; }
     if (missed.length) console.log(`second look: ${model} takes it (${missed.at(-1)})`);
-    const result = await reviewOnce(flags, { kind: pick.kind, model, deadline, limit });
+    const result = await reviewOnce(flags, { kind: pick.kind, model, deadline, limit: /^\d+$/.test(limit) ? `${limit}s` : limit });
     if (result.status === 0 && !result.outOfCredit) return report(result);
     if (!result.unavailable && !result.timedOut) return report(result);
     if (result.evidence !== "none") console.log(`evidence: ${result.evidence}`);

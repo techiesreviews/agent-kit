@@ -658,6 +658,21 @@ test("commits after a Claude build that died at launch are not taken, though its
   }
 });
 
+test("a builder switched after a build that failed at launch still refuses the commits on top", t => {
+  const f = fixture(t);
+  assert.equal(f.run([], { FAIL_PHASE: "build" }).status, 1);
+  const build = f.state().build;
+  mkdirSync(build, { recursive: true });
+  writeFileSync(join(build, "status.json"), JSON.stringify({ kind: "build", worktree: f.root, session: "assigned-up-front", pgid: 4242, state: "failed", exitCode: 1, launchFailed: true }));
+  writeFileSync(join(f.root, "file.txt"), "by hand\n");
+  f.git("commit", "-qam", "a hand commit");
+  const result = f.run([], {}, ["--ticket", f.ticket, "--builder", "claude-opus-5-5"]);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /builder switched: gpt-6\.1-sol -> claude-opus-5-5/);
+  assert.match(result.stdout, /RESULT: fail slice build: HEAD moved from the slice's start \w+ but no build ran \(none recorded a session, or it failed at launch\)/);
+  assert.deepEqual(f.calls().map(call => call.phase), ["build"]);
+});
+
 test("a build that timed out resumes from its commits under another builder, whose fix rounds start fresh", t => {
   const f = fixture(t);
   timedOut(f);

@@ -900,6 +900,7 @@ async function invokeAgent(adapter, args, descriptor, context) {
         refusedOutright(options.cli, options.cli === "opencode" ? result.stdout ?? "" : slice, context.prompt)) update({ refused: true });
       // A run's first call that fails within the launch window (a usage limit, a login error) never got to work. Claude
       // and Grok hold a session from before their CLI started, so kit slice reads this to tell such a build never ran.
+      // ASE_LAUNCH_WINDOW_MS (60000) is for tests.
       if ((status || limitProblem) && !previousCalls && ![129, 130, 143].includes(status)
         && Date.now() - spawned < Number(process.env.ASE_LAUNCH_WINDOW_MS ?? 60_000)) update({ launchFailed: true });
     }

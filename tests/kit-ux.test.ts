@@ -300,7 +300,7 @@ copyFileSync(join(bundle, "bundle.md"), ${JSON.stringify(join(root, ".scratch/la
 mkdirSync(out, { recursive: true });
 writeFileSync(join(out, "run.log"), JSON.stringify({ type: "result", modelUsage: { [args[args.indexOf("--model") + 1]]: { inputTokens: 1000, outputTokens: 200 } } }) + "\\n");
 if (process.env.FAKE_COMMIT) execFileSync("git", ["commit", "--quiet", "--allow-empty", "-m", "moved"], { cwd: ${JSON.stringify(root)} });
-if (process.env.FAKE_AGENT_FAIL) { console.error("problem: claude failed (1); see " + join(out, "run.log")); process.exit(1); }
+if (process.env.FAKE_AGENT_FAIL || process.env.FAKE_AGENT_FAIL_AGAIN && /gave no verdict for/.test(brief)) { console.error("problem: claude failed (1); see " + join(out, "run.log")); process.exit(1); }
 const ids = /^Features to judge: (.+)$/m.exec(brief)[1].split(", "), verdicts = JSON.parse(process.env.FAKE_VERDICTS || "{}");
 const note = verdict => verdict === "fine" ? "matches its Good line" : verdict === "broken" ? "the search field is covered by the bar" : "S1: a hint line sits under the search field";
 // FAKE_ANSWER_AGAIN answers the retry kit ux sends after an answer that gave some feature no verdict.
@@ -947,6 +947,35 @@ test("kit ux asks once more for a feature the reviewer gave no verdict, then rep
   assert.deepEqual(report.noVerdict, ["F-media-02"]); assert.deepEqual(report.broken, []); assert.deepEqual(report.off, []);
   assert.deepEqual(scoreboard(root).ux, { fine: 1, off: 0, broken: 0, none: 1, rules: [] });
   assert.match(readFileSync(join(bundle, "ux.md"), "utf8"), /^- F-media-02: no verdict — the reviewer gave none, asked twice — none$/m);
+});
+
+test("kit ux fails a retry that fails, keeps only the retry's rules for what it filled, and passes an answer with no verdicts twice", t => {
+  const { root, run, agentCalls } = fixture(t);
+  const failed = run(["--features", "F-media-01,F-media-02"], { FAKE_ANSWER: "REVIEW_STATUS: complete\nF-media-01: fine — ok — none", FAKE_AGENT_FAIL_AGAIN: "1" });
+  assert.equal(failed.status, 1, failed.stdout + failed.stderr);
+  const named = /, review failed: claude failed \(1\); see (\S+run\.log)$/.exec(failed.result);
+  assert.ok(named, failed.result);
+  const bundle = /bundle (\S+),/.exec(failed.result)![1];
+  assert.equal(named[1], join(bundle, "retry/run.log"), "the RESULT names the retry's log beside the bundle");
+  assert.ok(existsSync(named[1]) && existsSync(join(bundle, "agent.log")));
+  // The retry calls F-media-01 looks off with S1, but its first verdict (fine) stands, so S1 is not recorded.
+  const rules = run(["--features", "F-media-01,F-media-02"], {
+    FAKE_ANSWER: "REVIEW_STATUS: complete\nF-media-01: fine — ok — none",
+    FAKE_ANSWER_AGAIN: "REVIEW_STATUS: complete\nF-media-01: looks off — S1: a hint — none\nF-media-02: fine — ok — none\nRules broken: S1",
+  });
+  assert.equal(rules.status, 0, rules.stdout + rules.stderr);
+  const rulesBundle = /bundle (\S+)$/.exec(rules.result)![1];
+  const report = JSON.parse(readFileSync(join(rulesBundle, "ux.json"), "utf8"));
+  assert.deepEqual(report.features.map((feature: { verdict: string }) => feature.verdict), ["fine", "fine"]);
+  assert.deepEqual(report.rules, []);
+  // The retry's cost is counted beside the first run's.
+  assert.equal(scoreboard(root).costs[join(rulesBundle, "retry")]?.role, "review");
+  // No verdict line at all, twice: every feature is "no verdict" (the lead's call, 2026-10-30), named, not failing.
+  const before = agentCalls().length;
+  const silent = run(["--features", "F-media-02"], { FAKE_ANSWER: "REVIEW_STATUS: complete\nLooks nice overall." });
+  assert.equal(silent.status, 0, silent.stdout + silent.stderr);
+  assert.equal(agentCalls().length, before + 2);
+  assert.match(silent.result, /, 0 fine, 0 looks off, 0 broken, 1 no verdict, bundle \S+$/);
 });
 
 test("the brief keeps the reviewer on the bundle, the rulebook and the mock-up", () => {
