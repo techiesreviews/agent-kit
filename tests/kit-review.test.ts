@@ -338,6 +338,8 @@ test("runner appends the footer exactly once to generated, handwritten and alrea
   for (const severity of ["P0:", "P1:", "P2:", "P3:"]) assert.ok(reviewFormat.includes(severity));
   assert.match(reviewFormat, /Spec defect that breaks a "Done when" item/);
   assert.match(reviewFormat, /Validation gaps:.*no severity/);
+  // Every review, Claude's and the second look's, is asked for plain English (house rule).
+  const plain = "Write in plain English: Lex reads every report, ticket and commit message.";
   for (const brief of [generated, "Hand-written brief", `${generated}${reviewFormat}`]) {
     writeFileSync(f.brief, brief);
     const result = f.runAgent(["--base", "HEAD^"]);
@@ -345,6 +347,7 @@ test("runner appends the footer exactly once to generated, handwritten and alrea
     const input = f.calls().at(-1)!.input;
     assert.equal(input.split(reviewFormat).length - 1, 1);
     assert.equal(input.split("Required format:").length - 1, 1);
+    assert.ok(input.split("\n").includes(plain), input);
   }
 });
 

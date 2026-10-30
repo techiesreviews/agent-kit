@@ -100,6 +100,9 @@ test("a fresh npm repo gets a full setup that passes doctor, is listed in projec
   const extras = readFileSync(join(work, "docs/agents/kitchen-extras.md"), "utf8");
   assert.match(extras, /^# Kitchen extras: site$/m);
   assert.match(extras, /Landing branch `dev`, release branch `main`/);
+  // The pointer sends a wanted kit change to the one board that builds kit changes.
+  assert.match(readFileSync(join(work, "docs/agents/kitchen.md"), "utf8"),
+    /^A change to the shared kit is a ticket on the kitchen-everywhere board in native-site-editor \(on\n`dev`\): write it there, or ask that board's orchestrator to, and go on with this project's work\.$/m);
   assert.match(readFileSync(join(work, "AGENTS.md"), "utf8"), /`scripts\/agents\/kit rulebook`[\s\S]*`scripts\/agents\/kit --help`/);
   assert.deepEqual(f.projects(), { site: { root: main } });
   // The kit's hook set is this repo's own, so the two cannot drift apart.
