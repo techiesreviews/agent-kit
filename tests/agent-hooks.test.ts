@@ -511,15 +511,21 @@ test("Codex subagent lifecycle remains harmless, including missing IDs", (t) => 
   }
 });
 
+// The push guard's git runs without the machine's git settings or HOME.
+const gitHome = mkdtempSync(join(tmpdir(), "agent-hooks-home-"));
+process.on("exit", () => rmSync(gitHome, { recursive: true, force: true }));
+const gitEnv = { HOME: gitHome, XDG_CONFIG_HOME: join(gitHome, ".config"), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
 // A project with a remote, its settings and both branches pushed; the checkout is on `branch`.
 function pushProject(t: { after: (fn: () => void) => void }, branches: Record<string, string> | undefined, branch = "main") {
   const dir = temp(t), work = join(dir, "work");
   const git = (...args: string[]) => {
-    const result = spawnSync("git", ["-C", work, ...args], { encoding: "utf8" });
+    const result = spawnSync("git", ["-C", work, ...args], { encoding: "utf8", env: { ...process.env, ...gitEnv } });
     assert.equal(result.status, 0, result.stderr);
   };
-  spawnSync("git", ["init", "-q", "--bare", "-b", "main", join(dir, "remote.git")]);
-  spawnSync("git", ["init", "-q", "-b", "main", work]);
+  for (const args of [["init", "-q", "--bare", "-b", "main", join(dir, "remote.git")], ["init", "-q", "-b", "main", work]]) {
+    const result = spawnSync("git", args, { encoding: "utf8", env: { ...process.env, ...gitEnv } });
+    assert.equal(result.status, 0, result.stderr);
+  }
   mkdirSync(join(work, "scripts/agents"), { recursive: true });
   writeFileSync(join(work, "scripts/agents/kit.json"), JSON.stringify({ project: "site", ...(branches && { branches }) }));
   git("-c", "user.name=t", "-c", "user.email=t@t", "add", ".");
@@ -530,10 +536,10 @@ function pushProject(t: { after: (fn: () => void) => void }, branches: Record<st
   git("branch", "-q", "--set-upstream-to=origin/main", "main");
   git("checkout", "-q", "-b", "dev", "--track", "origin/dev");
   git("checkout", "-q", branch);
-  return { dir, work };
+  return { dir, work, git };
 }
-function pushGuard(command: string, cwd: string) {
-  return run("bash-guard.sh", { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command }, cwd }, { CLAUDE_PROJECT_DIR: "" });
+function pushGuard(command: string, cwd: string, env: NodeJS.ProcessEnv = {}) {
+  return run("bash-guard.sh", { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command }, cwd }, { CLAUDE_PROJECT_DIR: "", ...gitEnv, ...env });
 }
 const pushRefused = (branch: string) =>
   `Pushing straight to \`${branch}\` puts it live without review. Land it with \`scripts/agents/kit pr --ticket <ticket>\` (or \`kit pr --release\` for a release).\n`;
@@ -552,8 +558,16 @@ test("a push to the release branch is refused however it is written, and names k
     ["git status && git push origin main", work], ["bash -c 'git push origin main'", work],
     [`git -C ${work} push origin main`, dir], [`cd ${work} && git push origin main`, dir], ["cd work && git push", dir],
     ["git -C work push origin HEAD:main", dir], ["GIT_TRACE=0 git -c push.default=simple push origin main", work],
+    // A folder the guard cannot name, or a cd that did not take, is checked as the session's folder.
+    ["cd \"$CLAUDE_PROJECT_DIR\" && git push origin main", work], ["git -C \"$(pwd)\" push origin main", work],
+    ["cd \"$WT\" || exit 1; git push", work], ["git -C `pwd` push origin main", work],
+    ["cd /missing-folder; git push origin main", work], ["cd /tmp; cd \"$OLDPWD\"; git push origin main", work],
+    // A cd inside a ( … ) group or a nested shell ends there.
+    ["(cd /tmp && true); git push origin main", work], ["bash -c 'cd /tmp'; git push origin main", work],
+    ["echo \"$(cd /tmp)\"; git push origin main", work], [`(cd ${dir}); git push origin main`, work],
+    ["git push -onotify origin main", work], ["git push -o notify origin main", work],
   ]) {
-    const result = pushGuard(command, cwd);
+    const result = pushGuard(command, cwd, { CLAUDE_PROJECT_DIR: work });
     assert.equal(result.status, 2, command);
     assert.equal(result.stderr, pushRefused("main"), command);
     assert.equal(result.stdout, "", command);
@@ -568,12 +582,16 @@ test("pushes to other branches, dry runs, tags and text that mentions a push sti
     ["git push -fn origin main", work], ["git push origin --tags", work], ["git push origin tag v1", work],
     ["git push origin refs/tags/v1", work], ["git commit -m 'git push origin main'", work],
     ["echo git push origin main", work], ["scripts/agents/kit pr --ticket t.md", work],
-    ["scripts/agents/kit next --claim", work], ["git -C work push origin dev", dir], ["git push origin main", dir],
+    ["scripts/agents/kit next --start", work], ["git -C work push origin dev", dir], ["git push origin main", dir],
   ]) {
     const result = pushGuard(command, cwd);
     assert.equal(result.status, 0, `${command}: ${result.stderr}`);
     assert.equal(result.stdout + result.stderr, "", command);
   }
+  // A cd or git -C into another project counts for the push, inside a group too.
+  const plain = pushProject(t, { land: "main" });
+  for (const command of [`(cd ${plain.work} && git push origin main)`, `cd ${plain.work}; git push`, `git -C ${plain.work} push origin main`])
+    assert.equal(pushGuard(command, work).status, 0, command);
   // A bare push from the landing branch goes to the landing branch.
   const onDev = pushProject(t, { land: "dev", release: "main" }, "dev");
   for (const command of ["git push", "git push origin", "git push origin HEAD"]) assert.equal(pushGuard(command, onDev.work).status, 0, command);
@@ -592,6 +610,14 @@ test("a live landing branch (land equal to release) is guarded; a project withou
     for (const command of ["git push origin main", "git push", "git push --force origin HEAD:main"])
       assert.equal(pushGuard(command, plain.work).status, 0, `${JSON.stringify(branches)} ${command}`);
   }
+  // A branch that tracks the release branch pushes there when push.default says upstream.
+  const tracking = pushProject(t, { land: "dev", release: "main" });
+  tracking.git("checkout", "-q", "-b", "fix", "--track", "origin/main");
+  tracking.git("config", "push.default", "upstream");
+  for (const command of ["git push origin fix", "git push origin HEAD", "git push"])
+    assert.equal(pushGuard(command, tracking.work).stderr, pushRefused("main"), command);
+  tracking.git("config", "push.default", "simple");
+  assert.equal(pushGuard("git push origin fix", tracking.work).status, 0);
   // Another release branch name is the one guarded.
   const other = pushProject(t, { land: "main", release: "dev" });
   assert.equal(pushGuard("git push origin main", other.work).status, 0);

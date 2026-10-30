@@ -128,8 +128,9 @@ on a usage-limit `problem:` line, tell Lex the reset time and carry on with Clau
 ### 5. Hand-out
 
 - **Use:** `scripts/agents/kit next [map…]` picks the tickets and builders by fixed rules.
-  The lead claims each `next:` ticket on the landing branch (assignee, commit, push) and starts it as
-  **its own T3 thread**: one `delegate_task` per ticket (or group) with `isolation: "worktree"`,
+  The lead claims each `next:` ticket on the landing branch with `kit next --start` (assignee, commit,
+  push) and starts it as **its own T3 thread**: one `delegate_task` per ticket (or group) with
+  `isolation: "worktree"`,
   `mode: "async"`, the ticket's builder as `target`, and this brief:
 
   > Build slice `<ticket path>` in `<project>`, owner `<owner>`. Follow docs/agents/runner.md from Setup to
