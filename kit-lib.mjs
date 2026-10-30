@@ -7,8 +7,8 @@ import { findingsRecord } from "./review-findings.mjs";
 const nodeError = "kit: no Node >=24 found (system, npx cache or nvm)";
 const oneLine = (text) => String(text).replace(/[\n\r]/g, " ");
 
-function git(args) {
-  try { return execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).replace(/\n+$/, ""); }
+function git(args, env = process.env) {
+  try { return execFileSync("git", args, { env, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).replace(/\n+$/, ""); }
   catch { return ""; }
 }
 
@@ -236,7 +236,7 @@ function ghHosts(env) {
  * host alias (Host github-work in ~/.ssh/config) counts by the host name ssh -G gives it, as gh resolves it.
  */
 export function kitGhRepo(root = kitRoot(), env = process.env) {
-  const remote = kitGitHubRemote(git(["-C", root, "config", "--get", "remote.origin.url"]));
+  const remote = kitGitHubRemote(git(["-C", root, "config", "--get", "remote.origin.url"], env));
   if (!remote) return "";
   const known = ghHosts(env);
   let host = remote.host;

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import test from "node:test";
 import { kitFiles } from "./support/kit-files.ts";
+import { ghConfig } from "./support/kit-env.ts";
 import { kitRegisterProject } from "../kit-lib.mjs";
 
 const launchers = resolve("launcher");
@@ -24,6 +25,8 @@ function fixture(t: After) {
     XDG_STATE_HOME: state, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", CLAUDE_PROJECT_DIR: "", KIT_GROK: join(directory, "no-grok") };
   for (const name of ["KIT_ROOT", "KIT_MAIN_ROOT", "KIT_DEV_ROOT", "KIT_LIB", "KIT_LIB_MJS", "KIT_HOME", "KIT_HOME_DEFAULT", "KIT_HOME_PINNED",
     "KIT_COMMANDS_DIR", "KIT_PLAYWRIGHT_MODULE", "KIT_PLAYWRIGHT_MODULE_DEFAULT", "KIT_DOCTOR_SKIP", "ASE_OWNER", "NODE_TEST_CONTEXT"]) delete env[name];
+  // gh's config is the fixture one (it knows ghe.example), and no GH_REPO or GH_HOST comes from the shell.
+  Object.assign(env, { GH_CONFIG_DIR: ghConfig }); delete env.GH_REPO; delete env.GH_HOST;
   const git = (root: string, ...args: string[]) => {
     const result = spawnSync("git", ["-C", root, ...args], { env, encoding: "utf8", timeout: 10_000 });
     assert.equal(result.status, 0, result.stderr);
@@ -705,12 +708,24 @@ test("--close works on another GitHub host and after the repo was renamed, and n
   ]);
 });
 
+test("--issues reads an ssh alias for github.com as kit pr does: gh is asked about OWNER/NAME on github.com", (t) => {
+  const f = fixture(t);
+  const { work } = issueRepo(f, undefined, "git@github-work:acme/tools.git");
+  const gh = fakeGh(f, [issue(3, "Aliased")]);
+  // ssh -G as ssh answers it for Host github-work → HostName github.com.
+  writeFileSync(join(f.directory, "fake-gh/ssh"), '#!/bin/bash\n[[ $3 == github-work ]] && echo "hostname github.com" || echo "hostname $3"\n', { mode: 0o755 });
+  const run = gh.init(work, ["--issues"]);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.deepEqual(gh.calls().map((args) => args.slice(0, 3)), [["repo", "view", "acme/tools"], ["issue", "list", "--repo"]]);
+  assert.equal(gh.calls()[1][3], "acme/tools");
+});
+
 test("--issues runs beside old kit files, and a failing or odd gh issue list writes nothing", (t) => {
   const f = fixture(t);
   const { main, work } = f.repo("old", { "scripts/agents/kit-lib.sh": "# old\n", "scripts/agents/kit.json": JSON.stringify({ project: "old", branches: { land: "dev" }, maps: "docs/wayfinder" }) });
   const gh = fakeGh(f, [issue(1, "Kept")]);
   const noOrigin = gh.init(work, ["--issues"]);
-  assert.equal(result(noOrigin), "RESULT: fail init origin (none) is not a GitHub repo; --issues reads the Issues of origin's repo");
+  assert.equal(result(noOrigin), "RESULT: fail init origin (none) is not a GitHub repo gh knows; --issues reads the Issues of origin's repo");
   f.git(main, "remote", "add", "origin", "https://github.com/acme/tools");
   const bin = join(f.directory, "fake-gh");
   writeFileSync(join(bin, "list-error.txt"), "HTTP 401: Bad credentials\nmore");

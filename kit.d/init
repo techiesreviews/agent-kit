@@ -5,7 +5,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSy
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const { kitGitHubRemote, kitHome, kitRegisterProject, kitResult, kitRoot, kitSettingsFile, kitSettingsProblems, kitStateDir } = await import(
+const { kitGhRepo, kitHome, kitRegisterProject, kitResult, kitRoot, kitSettingsFile, kitSettingsProblems, kitStateDir } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const usage = `Usage: kit init [--light] [--land <branch>]
@@ -335,8 +335,10 @@ function issues() {
   // The Issues are origin's: in a fork gh's own default may be upstream, whose links would not reach the files.
   // gh repo view names the repo as GitHub has it now, so a rename since origin was set is followed.
   const originUrl = git("config", "--get", "remote.origin.url") ?? "";
-  const { host: originHost, name: originName } = kitGitHubRemote(originUrl)
-    ?? fail(`origin (${originUrl || "none"}) is not a GitHub repo; --issues reads the Issues of origin's repo`);
+  // Read as kit pr reads it (kitGhRepo): an ssh alias for github.com is github.com.
+  const target = kitGhRepo(root) || fail(`origin (${originUrl || "none"}) is not a GitHub repo gh knows; --issues reads the Issues of origin's repo`);
+  const parts = target.split("/");
+  const [originHost, originName] = parts.length === 3 ? [parts[0], parts.slice(1).join("/")] : ["github.com", target];
   const ghRepo = (host, name) => host === "github.com" ? name : `${host}/${name}`;
   const repoKey = (host, name) => `${host}/${name}`.toLowerCase();
   const current = new Map();

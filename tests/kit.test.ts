@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, cpSync, existsSync, globSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, globSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -537,6 +537,21 @@ test("origin's GitHub repo is read from its url, whatever other remotes there ar
   assert.deepEqual(kitGhEnv({ ...env, GH_REPO: "acme/other" }, directory), { ...env, GH_REPO: "acme/other" });
   assert.deepEqual(kitGhEnv({ ...env, GH_REPO: "git.example.com/acme/other" }, directory), { ...env, GH_REPO: "git.example.com/acme/other", GH_HOST: "git.example.com" });
   assert.deepEqual(kitGhEnv(env, directory), env);
+  // An ssh alias with no ssh to resolve it, or an ssh that fails, is no GitHub repo; nothing throws.
+  gitAt("remote", "set-url", "origin", "git@github-work:acme/site.git");
+  const empty = temp(t);
+  symlinkSync(process.execPath, join(empty, "node"));
+  assert.equal(kitGhRepo(directory, { ...env, PATH: empty }), "");
+  writeFileSync(join(bin, "ssh"), "#!/bin/bash\nexit 255\n");
+  assert.equal(kitGhRepo(directory, env), "");
+  // Without GH_CONFIG_DIR, gh's config is XDG_CONFIG_HOME/gh, else HOME/.config/gh.
+  gitAt("remote", "set-url", "origin", "https://ghe.example.org/acme/site.git");
+  const xdg = temp(t), home = temp(t);
+  mkdirSync(join(xdg, "gh")); writeFileSync(join(xdg, "gh/hosts.yml"), "ghe.example.org:\n    user: x\n");
+  mkdirSync(join(home, ".config/gh"), { recursive: true }); writeFileSync(join(home, ".config/gh/hosts.yml"), "ghe.example.org:\n    user: x\n");
+  assert.equal(kitGhRepo(directory, { PATH: env.PATH, XDG_CONFIG_HOME: xdg, HOME: home }), "ghe.example.org/acme/site");
+  assert.equal(kitGhRepo(directory, { PATH: env.PATH, HOME: home }), "ghe.example.org/acme/site");
+  assert.equal(kitGhRepo(directory, { PATH: env.PATH, HOME: xdg }), "");
 });
 test("outside git, a kit kept in a project's scripts/agents/ takes the project as its root in every library and the front door", (t) => {
   const project = realpathSync(temp(t)), agents = join(project, "scripts/agents"), commands = join(project, "commands");
