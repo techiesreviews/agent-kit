@@ -20,12 +20,12 @@ function base(s) { sub(/^.*\//, "", s); return s }
 function reject(s) { if (!reason) reason = s }
 # A later relative folder is joined to the one before it; an absolute one replaces it.
 function within(dir, to) { return to ~ /^[\/~]/ || dir == "" ? to : dir "/" to }
-function inspect(a, n, timed, depth, floor,    i,j,k,name,text,dir) {
+function inspect(a, n, timed, depth, floor,    i,j,k,name,text,dir,gitdir) {
   if (a[1] == "done") loopDepth = loopDepth > floor ? loopDepth - 1 : floor
   i = 1
   # Common execution wrappers leave the following word as the command.
   while (i <= n) {
-    if (a[i] ~ /^[A-Za-z_][A-Za-z_0-9]*=/) { i++; continue }
+    if (a[i] ~ /^[A-Za-z_][A-Za-z_0-9]*=/) { if (a[i] ~ /^GIT_(DIR|WORK_TREE)=/) gitdir = 1; i++; continue }
     name = base(a[i])
     if (name == "while" || name == "until") loopDepth++
     if (name == "for" || name == "select") { loopDepth++; return 0 }
@@ -78,17 +78,21 @@ function inspect(a, n, timed, depth, floor,    i,j,k,name,text,dir) {
       reject("run port.sh directly; wait for long runs through your CLI")
   }
   # The folder later commands run in, for the push check: cd here, git -C below.
+  # A folder taken from the directory stack (cd -, popd, a bare pushd or pushd +N) is unknown, which the
+  # push check treats like a variable.
   if (name == "cd" || name == "pushd") {
     for (k = i + 1; k <= n && (a[k] ~ /^-[LPe@]+$/ || a[k] == "--"); k++) ;
-    if (k > n && name == "cd") cwd = within(cwd, "~")
-    else if (k <= n && a[k] != "-") cwd = within(cwd, a[k])
+    if (k > n) cwd = name == "cd" ? within(cwd, "~") : "$OLDPWD"
+    else if (a[k] == "-" || (name == "pushd" && a[k] ~ /^[-+][0-9]+$/)) cwd = "$OLDPWD"
+    else cwd = within(cwd, a[k])
   }
-  # After popd the folder is unknown, which the push check treats like a variable.
   if (name == "popd") cwd = "$OLDPWD"
   if (name == "git") {
-    j = i + 1; dir = cwd
+    j = i + 1; dir = gitdir ? "$GIT_DIR" : cwd
     while (j <= n && a[j] ~ /^-/) {
       if (a[j] == "-C") dir = within(dir, a[j+1])
+      # Another repo named by --git-dir or --work-tree is unknown too.
+      if (a[j] ~ /^--(git-dir|work-tree)/) dir = "$GIT_DIR"
       if (a[j] == "-C" || a[j] == "-c" || a[j] == "--git-dir" || a[j] == "--work-tree" || a[j] == "--namespace" || a[j] == "--config-env") j++
       j++
     }
@@ -356,9 +360,9 @@ guarded_in() {
     if [[ $arg == : ]]; then printf '%s' "$release"; return 0; fi
     if [[ $arg == *:* ]]; then dst=${arg#*:}; [[ -n $dst ]] || dst=${arg%%:*}; else dst=$arg; fi
     [[ $dst == HEAD || $dst == @ ]] && dst=$current
-    # The current branch without a destination goes where push.default sends it, which may be another name.
-    if [[ $arg != *:* && -n $current && $dst == "$current" ]]; then
-      upstream=$(git -C "$dir" rev-parse --symbolic-full-name '@{push}' 2>/dev/null) || upstream=''
+    # A named branch without a destination goes where push.default sends it (its upstream with "upstream").
+    if [[ $arg != *:* && $arg != HEAD && $arg != @ ]]; then
+      upstream=$(git -C "$dir" rev-parse --symbolic-full-name "${arg#refs/heads/}@{push}" 2>/dev/null) || upstream=''
       dsts+=("${upstream#refs/remotes/*/}")
     fi
     case $dst in
@@ -373,12 +377,16 @@ guarded_in() {
     if [[ -n $dst && $release == $dst ]]; then printf '%s' "$release"; return 0; fi
   done
 }
-base=$(jq -r '.cwd | strings' <<<"$payload" 2>/dev/null) || base=''
-base=${base:-${CLAUDE_PROJECT_DIR:-$PWD}}
+base=''
 refusal=''
 while IFS=$'\037' read -r -a fields; do
   if [[ ${fields[0]-} == reason ]]; then refusal=${fields[1]-}; break; fi
   [[ ${fields[0]-} == push ]] || continue
+  # The session's folder, read only when a command pushes.
+  if [[ -z $base ]]; then
+    base=$(jq -r '.cwd | strings' <<<"$payload" 2>/dev/null) || base=''
+    base=${base:-${CLAUDE_PROJECT_DIR:-$PWD}}
+  fi
   branch=$(guarded_target "${fields[@]:1}") || branch=''
   if [[ -n $branch ]]; then
     refusal="Pushing straight to \`$branch\` puts it live without review. Land it with \`scripts/agents/kit pr --ticket <ticket>\` (or \`kit pr --release\` for a release)."
