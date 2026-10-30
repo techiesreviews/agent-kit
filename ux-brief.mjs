@@ -27,7 +27,7 @@ restates is the project's); any S, L, B or U rules are this project's own and wi
 ${[...rules].map(([id, text]) => `- ${id} ${text}`).join("\n")}
 
 Answer format. The runner appends a code-review scope and format after this brief; neither applies here,
-except that the first line must be REVIEW_STATUS: complete.
+except that the first line must be REVIEW_STATUS: complete and the answer is in plain English.
 REVIEW_STATUS: complete
 One line per feature above, in that order:
 F-<area>-<nn>: fine | looks off | broken — <one line on what the images show> — <image file name, or none>

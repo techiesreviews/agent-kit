@@ -919,7 +919,9 @@ test("the brief keeps the reviewer on the bundle, the rulebook and the mock-up",
     rules: new Map([["S1", "No explainer lines."]]), mockups: ["- mock-up: docs/m.html"] });
   for (const line of ["Judge only what is in the bundle: /b/bundle.md and its images (/b/a.webp).", "The approved mock-up: mock-up: docs/m.html.",
     "Features to judge: F-media-01, F-pages-02", "- S1 No explainer lines.", "never against taste of your own",
-    "Without a rule id or a mock-up difference, it is fine.", "Never suggest new text, hints, tips, counts or badges.", "REVIEW_STATUS: complete"]) assert.ok(text.includes(line), line);
+    "Without a rule id or a mock-up difference, it is fine.", "Never suggest new text, hints, tips, counts or badges.", "REVIEW_STATUS: complete",
+    // The appended code-review format does not apply, but its plain-English line does (house rule).
+    "except that the first line must be REVIEW_STATUS: complete and the answer is in plain English."]) assert.ok(text.includes(line), line);
   assert.match(brief.uxBrief({ bundle: "/b", features: [{ id: "F-media-01" }] }), /No mock-up is named/);
 });
 
