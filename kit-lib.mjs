@@ -229,11 +229,14 @@ export function kitGhRepo(root = kitRoot()) {
 /**
  * Copy env for gh with GH_REPO set to origin's repo: with more than one remote gh picks its own default, and a site
  * made from the starter has an upstream it would pick. GH_HOST is origin's host too, for gh api, which takes its
- * host from GH_HOST, not GH_REPO. Without a GitHub origin, env is left as it is.
+ * host from GH_HOST, not GH_REPO. Without a GitHub origin, a GH_REPO already set stays, and a host it names goes
+ * to GH_HOST the same way.
  */
 export function kitGhEnv(env = process.env, root = kitRoot()) {
   const repo = kitGhRepo(root);
-  return repo ? { ...env, GH_REPO: repo, GH_HOST: repo.split("/").length === 3 ? repo.split("/")[0] : "github.com" } : { ...env };
+  if (repo) return { ...env, GH_REPO: repo, GH_HOST: repo.split("/").length === 3 ? repo.split("/")[0] : "github.com" };
+  const parts = env.GH_REPO?.split("/") ?? [];
+  return parts.length === 3 ? { ...env, GH_HOST: parts[0] } : { ...env };
 }
 
 /** Print a single RESULT line; invalid statuses set exitCode to 2. */

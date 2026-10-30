@@ -141,7 +141,8 @@ kit_node() {
 }
 
 # The GitHub repo kit's PRs go to: origin's, as gh names it (OWNER/NAME, or HOST/OWNER/NAME off github.com); empty
-# when origin is missing or no GitHub repo. Reads origin's url as kitGhRepo in kit-lib.mjs does.
+# when origin is missing or no GitHub repo. Reads origin's url as kitGhRepo in kit-lib.mjs does: keep these two
+# patterns in step with kitGitHubRemote's (tests/kit.test.ts runs one table of URLs through both).
 kit_gh_repo() {
   local url host name
   url=$(git -C "${1:-$(kit_root)}" config --get remote.origin.url 2>/dev/null) || return 0
