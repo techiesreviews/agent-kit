@@ -30,6 +30,7 @@ const scripts = { "unit.sh": "unit", "tickets.mjs": "tickets", "check-colours.mj
 const action = tool === "npm" ? (args[0] === "test" ? "unit" : args[1]) : scripts[tool] || (tool === "fake-kit" ? args[0] : args.slice(0, 2).join("-"));
 if (env.FAKE_FAIL === action) {
   for (let i = 1; i <= 35; i++) console.error("failure line " + i);
+  if (env.FAKE_FAIL_TEXT) console.error(env.FAKE_FAIL_TEXT);
   if (tool === "fake-kit") console.log("RESULT: fail child failure");
   process.exit(1);
 }
@@ -659,6 +660,24 @@ test("a token split across a child's output chunks, on a last line with no newli
   assert.equal(log, "fatal: https://gitlab.example.com/a.git");
   assert.match(result.stderr, /^ {2}fatal: https:\/\/gitlab\.example\.com\/a\.git$/m);
   assert.equal(`${result.stdout}${result.stderr}`.includes("ke63-fake"), false, result.stdout + result.stderr);
+});
+
+test("a failing rebase or gh pr merge that names a tokened url fails with the host only, in RESULT, log tail and logs", t => {
+  const token = "ke63-fake-token-0000", url = `https://x-access-token:${token}@github.com/acme/site.git`;
+  const logs = (f: ReturnType<typeof fixture>) => readdirSync(f.logDir()).map(name => readFileSync(join(f.logDir(), name), "utf8")).join("");
+  const merge = fixture(t), merged = merge.run([], { FAKE_FAIL: "pr-merge", FAKE_FAIL_TEXT: `fatal: ${url}` });
+  assert.equal(merged.status, 1, merged.stdout + merged.stderr);
+  assert.match(merged.stdout, /^RESULT: fail merge: fatal: https:\/\/github\.com\/acme\/site\.git$/m);
+  assert.match(merged.stderr, /^ {2}fatal: https:\/\/github\.com\/acme\/site\.git$/m);
+  assert.equal([merged.stdout, merged.stderr, logs(merge)].some(text => text.includes(token)), false);
+  const rebase = fixture(t);
+  const real = spawnSync("bash", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+  writeFileSync(join(rebase.bin, "git"), `#!/bin/bash\nif [[ $1 == rebase && $2 != --abort ]]; then echo 'fatal: ${url}' >&2; exit 1; fi\nexec ${real} "$@"\n`);
+  chmodSync(join(rebase.bin, "git"), 0o755);
+  const rebased = rebase.run();
+  assert.equal(rebased.status, 1, rebased.stdout + rebased.stderr);
+  assert.match(rebased.stdout, /^RESULT: fail rebase: fatal: https:\/\/github\.com\/acme\/site\.git$/m);
+  assert.equal([rebased.stdout, rebased.stderr, logs(rebase)].some(text => text.includes(token)), false);
 });
 
 test("with a folder origin, a GH_REPO already set is what gh is told, and the merge keeps its host", t => {
