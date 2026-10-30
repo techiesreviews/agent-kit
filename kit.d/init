@@ -5,7 +5,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSy
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const { kitGhRepo, kitHome, kitRegisterProject, kitResult, kitRoot, kitSettingsFile, kitSettingsProblems, kitStateDir } = await import(
+const { kitGhRepo, kitHideUserInfo, kitHome, kitRegisterProject, kitResult, kitRoot, kitSettingsFile, kitSettingsProblems, kitStateDir } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const usage = `Usage: kit init [--light] [--land <branch>]
@@ -107,8 +107,8 @@ if (existsSync(at(kitSettingsFile))) {
   if (git("check-ref-format", "--branch", land) === null) fail(`--land ${land} is not a branch name`, 2);
   if (!branchExists(land)) notes.push(`branch ${land} is not here or on origin yet; kit doctor's base check needs origin/${land} once the project has a GitHub repo`);
   const release = ["dev", "develop"].includes(land) ? ["main", "master"].find(branchExists) : undefined;
-  const remote = git("remote", "get-url", "origin");
-  // The last part of the remote's path, after "/" or the ":" of host:repo.
+  const remote = kitHideUserInfo(git("remote", "get-url", "origin") ?? "");
+  // The last part of the remote's path, after "/" or the ":" of host:repo (a token in the url never becomes it).
   const project = (remote && remote.replace(/\/+$/, "").split(/[/:]/).at(-1).replace(/\.git$/, "")) || basename(gitMain);
   settings = { project, mainRoot: gitMain, branches: { land, ...(release ? { release } : {}) } };
   const checks = guessChecks();

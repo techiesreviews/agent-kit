@@ -23,10 +23,13 @@ if [[ -z ${KIT_HOME:-} || $KIT_HOME == "${KIT_HOME_DEFAULT:-}" ]] || { [[ $KIT_H
   # leaves that clone inside the winner's folder, unused, where it used to stay beside it).
   whole "$KIT_HOME" || KIT_HOME=$cache/agent-kit why="$cache/agent-kit exists but holds no kit; remove it"
   if [[ ! -e $KIT_HOME ]]; then
-    why="no machine copy; cannot clone $KIT_REPO"
+    # KIT_REPO is shown without a user:token@ part (kit update's kit_hide_user_info, inlined: no kit-lib.sh yet).
+    shown=$KIT_REPO re='^([A-Za-z][A-Za-z0-9+.-]*://)[^/?#]*@(.*)$'
+    [[ ! $shown =~ $re ]] || shown=${BASH_REMATCH[1]}${BASH_REMATCH[2]}
+    why="no machine copy; cannot clone $shown"
     trap '[[ -z $clone ]] || rm -rf -- "$clone"' EXIT
     mkdir -p -- "$cache" && clone=$(mktemp -d "$cache/agent-kit.XXXXXX") && git clone -q --depth 1 -- "$KIT_REPO" "$clone" >&2 &&
-      { whole "$clone" || { why="the clone of $KIT_REPO holds no whole kit"; false; }; } &&
+      { whole "$clone" || { why="the clone of $shown holds no whole kit"; false; }; } &&
       { date +%s > "$clone/.git/kit-cloned" || { why="cannot stamp the clone in $cache"; false; }; } &&
       why="cannot place the clone at $KIT_HOME" && mv -- "$clone" "$KIT_HOME" 2>/dev/null &&
       { if [[ -e $KIT_HOME/${clone##*/} ]]; then clone=$KIT_HOME/${clone##*/}; else clone=''; fi; } || :

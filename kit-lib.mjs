@@ -261,14 +261,22 @@ export function kitGhEnv(env = process.env, root = kitRoot()) {
   return parts.length === 3 ? { ...env, GH_HOST: parts[0] } : { ...env };
 }
 
-/** Print a single RESULT line; invalid statuses set exitCode to 2. */
+/**
+ * Text with every URL's user-info part taken out (https://user:token@host/… becomes https://host/…), so no message,
+ * log or report the kit writes shows a remote's token.
+ */
+export function kitHideUserInfo(text = "") {
+  return String(text).replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#]*@/gi, "$1");
+}
+
+/** Print a single RESULT line, user-info hidden; invalid statuses set exitCode to 2. */
 export function kitResult(status = "", text = "") {
   if (status !== "ok" && status !== "fail") {
-    console.log(`RESULT: fail kit_result: bad status ${oneLine(status)}`);
+    console.log(`RESULT: fail kit_result: bad status ${kitHideUserInfo(oneLine(status))}`);
     process.exitCode = 2;
     return;
   }
-  console.log(`RESULT: ${status} ${oneLine(text)}`);
+  console.log(`RESULT: ${status} ${kitHideUserInfo(oneLine(text))}`);
 }
 
 /** Resolve a named job without allowing paths outside the worktree's job folder. */

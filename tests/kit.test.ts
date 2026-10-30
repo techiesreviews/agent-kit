@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 // @ts-expect-error The script is plain JavaScript without declarations.
-import { findNode, kitGhEnv, kitGhRepo, kitMainRoot, kitOwner, kitResult, kitRoot, nodeEnv } from "../kit-lib.mjs";
+import { findNode, kitGhEnv, kitGhRepo, kitHideUserInfo, kitMainRoot, kitOwner, kitResult, kitRoot, nodeEnv } from "../kit-lib.mjs";
 import { ghConfig, kitEnv } from "./support/kit-env.ts";
 import { kitFiles } from "./support/kit-files.ts";
 
@@ -595,6 +595,19 @@ test("bash and mjs RESULT helpers collapse line breaks and reject bad statuses",
   assert.equal(bad.stdout, "RESULT: fail kit_result: bad status bad status\n");
   assert.equal(bad.stdout, `${lines.at(-1)}\n`);
   assert.equal(process.exitCode, 2);
+});
+
+test("bash and mjs RESULT helpers hide every url's user-info, so a remote's token never shows", (t) => {
+  const lines: string[] = [];
+  t.mock.method(console, "log", (line: string) => { lines.push(line); });
+  const text = "origin (https://ke63:fake-token@gitlab.example.com/a/b.git), ssh://git@host:22/a/b, http://only-token@h:8080/x?u=a@b, " +
+    "git@github.com:a/b.git and https://github.com/a/b@c stay";
+  const hidden = "origin (https://gitlab.example.com/a/b.git), ssh://host:22/a/b, http://h:8080/x?u=a@b, git@github.com:a/b.git and https://github.com/a/b@c stay";
+  assert.equal(kitHideUserInfo(text), hidden);
+  kitResult("fail", text);
+  assert.equal(lines.at(-1), `RESULT: fail ${hidden}`);
+  assert.equal(bash(`kit_hide_user_info '${text}'`).stdout, `${hidden}\n`);
+  assert.equal(bash(`kit_result fail '${text}'`).stdout, `RESULT: fail ${hidden}\n`);
 });
 
 test("the real kit exposes an executable version stub and emits its final RESULT", () => {
