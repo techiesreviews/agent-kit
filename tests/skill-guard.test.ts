@@ -196,11 +196,18 @@ test("skillGuard.allow names a project's own skill folders; an entry that is not
   settings([".claude/skills/heron/", ".claude/skills/heron", "notes/skills/owl"]);
   assert.deepEqual(allowedSkills(f.repo), { allow: [".claude/skills/heron", "notes/skills/owl"], problems: [] });
   for (const path of [".claude/skills/heron/SKILL.md", ".claude/skills/heron/references/a.md", "notes/skills/owl/SKILL.md"]) assert.ok(allowedPath(path, [".claude/skills/heron", "notes/skills/owl"]), path);
-  for (const path of [".claude/skills/heron-two/SKILL.md", ".claude/skills/SKILL.md", "skills/heron/SKILL.md"]) assert.equal(allowedPath(path, [".claude/skills/heron"]), false, path);
-  settings(["skills", ".claude/skills/", "/abs/skills/x", "../up/skills/x", "./skills/x", "a//b", "", ".", 7]);
+  for (const path of [".claude/skills/heron-two/SKILL.md", ".claude/skills/SKILL.md", "skills/heron/SKILL.md", ".claude/skills/heron",
+    ".claude/skills/heron/skills/paid/SKILL.md", ".claude/skills/heron/Skills/x.md", ".claude/skills/heron/nested/SKILL.md"])
+    assert.equal(allowedPath(path, [".claude/skills/heron"]), false, path);
+  settings(["skills", ".claude/skills/", "/abs/skills/x", "../up/skills/x", "./skills/x", "a//b", "", ".", 7, "skills/skills"]);
   const bad = allowedSkills(f.repo);
   assert.deepEqual(bad.allow, []);
-  assert.equal(bad.problems.length, 9);
+  assert.equal(bad.problems.length, 10);
+  // A repo of skills names each by its top folder; a parent folder lets only its own SKILL.md through, never a skill below it.
+  settings(["heron", "skills/heron", ".claude"]);
+  assert.deepEqual(allowedSkills(f.repo), { allow: ["heron", "skills/heron", ".claude"], problems: [] });
+  for (const path of ["heron/SKILL.md", "heron/references/a.md", ".claude/SKILL.md"]) assert.ok(allowedPath(path, ["heron", ".claude"]), path);
+  for (const path of [".claude/skills/paid/SKILL.md", ".claude/notes/SKILL.md", "heron/skills/paid/x.md"]) assert.equal(allowedPath(path, ["heron", ".claude"]), false, path);
   assert.match(bad.problems[0], /^scripts\/agents\/kit\.json: skillGuard\.allow entry "skills" is not one skill folder's repo path$/);
   settings(".claude/skills/heron");
   assert.deepEqual(allowedSkills(f.repo).problems, ["scripts/agents/kit.json: skillGuard.allow must be a list of skill folder paths"]);
@@ -229,9 +236,34 @@ test("an allowed own skill passes the path check, yet a local skill's line insid
   assert.doesNotMatch(copied.stdout + copied.stderr, /paper crane/);
   assert.match(copied.stdout, /RESULT: fail skill-guard 2 problem/);
 
+  f.git("rm", "-q", "-r", ".claude/skills/egret"); f.git("checkout", "-q", "HEAD~1", "--", ".claude/skills/heron/references/fish.md");
+  f.put(join(f.repo, ".claude/skills/heron/skills/paid/SKILL.md"), "x\n");
+  f.git("add", "-f", "."); f.git("commit", "-q", "-m", "nested");
+  const nested = f.run(["--paths-only"]);
+  assert.equal(nested.status, 1, nested.stderr);
+  assert.equal(nested.stderr, "problem: .claude/skills/heron/skills/paid/SKILL.md: a skill file or skills/ folder is tracked\n");
+
+  f.put(join(f.repo, "scripts/agents/kit.json"), JSON.stringify({ project: "p", branches: { land: "main" }, skillGuard: { allow: [".claude"] } }));
+  const parent = f.run(["--paths-only"]);
+  assert.equal(parent.status, 1);
+  assert.match(parent.stderr, /problem: \.claude\/skills\/heron\/SKILL\.md: a skill file or skills\/ folder is tracked\n/);
+  assert.match(parent.stderr, /problem: \.claude\/skills\/heron\/skills\/paid\/SKILL\.md: /);
   f.put(join(f.repo, "scripts/agents/kit.json"), JSON.stringify({ project: "p", branches: { land: "main" }, skillGuard: { allow: [".claude/skills"] } }));
   const wide = f.run(["--paths-only"]);
   assert.equal(wide.status, 1);
   assert.match(wide.stderr, /problem: scripts\/agents\/kit\.json: skillGuard\.allow entry "\.claude\/skills" is not one skill folder's repo path\n/);
   assert.match(wide.stderr, /problem: \.claude\/skills\/heron\/SKILL\.md: a skill file or skills\/ folder is tracked\n/);
+});
+
+test("--history lets an allowed own skill's past paths through and still names every other skill path", (t) => {
+  const f = fixture(t);
+  f.put(join(f.repo, "scripts/agents/kit.json"), JSON.stringify({ project: "p", skillGuard: { allow: ["notes/skills/heron"] } }));
+  f.put(join(f.repo, "notes/skills/heron/SKILL.md"), "x\n");
+  f.put(join(f.repo, "notes/skills/egret/SKILL.md"), "x\n");
+  f.git("add", "-f", "."); f.git("commit", "-q", "-m", "skills");
+  f.git("rm", "-q", "-r", "notes/skills/egret"); f.git("commit", "-q", "-m", "drop egret");
+  const result = f.run(["--history"]);
+  assert.equal(result.status, 1, result.stderr);
+  assert.equal(result.stderr, "problem: notes/skills/egret/SKILL.md: a skill file or skills/ folder in history\n");
+  assert.match(result.stdout, /^skill-guard: line check: \d+ lines against 9 skill lines from 8 skill files\nskill-guard: allowed own skills: notes\/skills\/heron \(skillGuard\.allow; lines still checked\)\n/);
 });

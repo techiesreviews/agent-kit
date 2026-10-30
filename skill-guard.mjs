@@ -37,8 +37,9 @@ export const skillPath = (path) => /(^|\/)SKILL\.md$/i.test(path) || /(^|\/)skil
 
 /**
  * The project's own skill folders from `skillGuard.allow` in its settings, as { allow, problems }. Each entry is one
- * skill folder by its repo path; an entry that is not (a whole skills/ folder, the top folder, an absolute path or
- * one with . or .. parts) is a problem, so it never widens the allowance. No settings file or no list allows nothing.
+ * skill folder by its repo path (`.claude/skills/<name>`, or `<name>` in a repo of skills); a whole skills/ folder,
+ * the top folder, an absolute path or one with . or .. parts is a problem. An entry only ever lets one skill through:
+ * allowedPath refuses a skills/ folder or another SKILL.md below it. No settings file or no list allows nothing.
  */
 export function allowedSkills(root) {
   let settings;
@@ -57,8 +58,12 @@ export function allowedSkills(root) {
   return { allow, problems };
 }
 
-/** A path inside one of the allowed skill folders. */
-export const allowedPath = (path, allow) => allow.some(folder => path === folder || path.startsWith(`${folder}/`));
+/** A path of one allowed skill folder's own: inside it, but not in a skills/ folder or another skill's folder below it. */
+export const allowedPath = (path, allow) => allow.some(folder => {
+  if (!path.startsWith(`${folder}/`)) return false;
+  const rest = path.slice(folder.length + 1);
+  return !/(^|\/)skills\//i.test(rest) && !/\/SKILL\.md$/i.test(rest);
+});
 
 /** One spelling for comparing lines: no list, quote or heading marks in front, single spaces, trimmed. */
 export function normalLine(line) {
