@@ -515,9 +515,12 @@ async function main(args) {
       console.log(`branch: ${branch}\nbase: ${flags.base}\nHEAD: ${head}\ntitle: ${prTitle}\nbody: ${body}`);
       console.log(`second look: ${look.kind} (${look.path}) ${look.model}, else ${look.fallback}`);
       const reviewCommand = extra => [kit, ...reviewArgs, "N", ...(flags.ticket ? ["--ticket", flags.ticket] : []), ...extra];
-      for (const command of [["git", ...pushArgs()], ["gh", ...createArgs], ...(review ? [reviewCommand([])] : []), reviewCommand(["--second-look"])])
+      // The plan names the repo gh is told, so a command copied from it never lands in another remote's repo.
+      const named = ghEnv.GH_REPO ? ["--repo", ghEnv.GH_REPO] : [];
+      for (const command of [["git", ...pushArgs()], ["gh", ...createArgs, ...named], ...(review ? [reviewCommand([])] : []), reviewCommand(["--second-look"])])
         console.log(command.map(quote).join(" "));
-      if (!flags.noMerge && !flags.release) console.log("gh pr merge N --rebase --delete-branch --repo <owner/name> (or --auto --rebase with a merge queue)");
+      if (!flags.noMerge && !flags.release)
+        console.log(`gh pr merge N --rebase --delete-branch --repo ${ghEnv.GH_REPO || "<owner/name>"} (or --auto --rebase with a merge queue)`);
       kitResult("ok", `dry-run ${head.slice(0, 7)} ${branch} -> ${flags.base}`);
       return 0;
     }

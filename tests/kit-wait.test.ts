@@ -428,7 +428,7 @@ function fakeGh(t: TestContext, mode: string) {
 set -eu
 [[ $GH_PAGER == cat && $NO_COLOR == 1 ]]
 printf '%s\\n' "$*" >> "$WAIT_FIXTURE/calls"
-printf '%s\\n' "\${GH_REPO:--}" >> "$WAIT_FIXTURE/repos"
+printf '%s %s\\n' "\${GH_REPO:--}" "\${GH_HOST:--}" >> "$WAIT_FIXTURE/repos"
 count=0
 [[ ! -f $WAIT_FIXTURE/count ]] || read -r count < "$WAIT_FIXTURE/count"
 old=${head}
@@ -497,7 +497,16 @@ test("ci asks gh about origin's GitHub repo, not the upstream a site made from t
   result(output, 0, /ok ci dev abcdef0 green/);
   const repos = fixture.repos().trim().split("\n");
   assert.ok(repos.length >= 3, fixture.calls());
-  assert.deepEqual(new Set(repos), new Set(["acme/site"]));
+  assert.deepEqual(new Set(repos), new Set(["acme/site github.com"]));
+});
+
+test("ci on an enterprise origin tells gh its host, which gh api goes by", async (t) => {
+  const fixture = fakeGh(t, "green");
+  for (const args of [["init", "-q"], ["remote", "add", "origin", "git@git.example.com:acme/site.git"]])
+    assert.equal(spawnSync("git", ["-C", fixture.project, ...args]).status, 0);
+  const output = await run(t, ["ci", "--timeout", "2s"], fixture.env);
+  result(output, 0, /ok ci dev abcdef0 green/);
+  assert.deepEqual(new Set(fixture.repos().trim().split("\n")), new Set(["git.example.com/acme/site git.example.com"]));
 });
 
 test("ci failure prints test details before the last 20 failed log lines", async (t) => {

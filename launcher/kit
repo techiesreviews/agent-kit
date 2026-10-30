@@ -19,7 +19,8 @@ if [[ -z ${KIT_HOME:-} || $KIT_HOME == "${KIT_HOME_DEFAULT:-}" ]] || { [[ $KIT_H
   [[ -z $KIT_HOME || $KIT_HOME == /* ]] || KIT_HOME=$data/agent-kit/$KIT_HOME
   # No machine copy (CI, a cloud session, a new laptop): one shallow clone in the cache, stamped for kit version;
   # a clone that is not a whole kit is thrown away. The rename is plain mv (macOS has no mv -T): a launcher that
-  # lost the race moves its clone into the winner's folder, and throws it away from there.
+  # lost the race moves its clone into the winner's folder, and throws it away from there (one killed in between
+  # leaves that clone inside the winner's folder, unused, where it used to stay beside it).
   whole "$KIT_HOME" || KIT_HOME=$cache/agent-kit why="$cache/agent-kit exists but holds no kit; remove it"
   if [[ ! -e $KIT_HOME ]]; then
     why="no machine copy; cannot clone $KIT_REPO"

@@ -164,7 +164,7 @@ async function slice(args) {
         throw new Error("merge timeout and poll interval must be positive integer milliseconds");
       const deadline = Date.now() + timeout;
       for (;;) {
-        const output = requireSuccess(await execute(env.ASE_SLICE_GH || "gh", ["pr", "view", state.pr, "--json", "state,mergeCommit,headRefOid"], kitGhEnv({}, root)));
+        const output = requireSuccess(await execute(env.ASE_SLICE_GH || "gh", ["pr", "view", state.pr, "--json", "state,mergeCommit,headRefOid"], kitGhEnv(env, root)));
         const pr = JSON.parse(output);
         if (pr.headRefOid !== state.queued.head) throw new Error(`queued PR #${state.pr} head changed; expected ${state.queued.head}`);
         if (pr.state === "MERGED") {
