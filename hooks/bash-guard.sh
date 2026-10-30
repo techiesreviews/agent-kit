@@ -3,7 +3,8 @@
 set -euo pipefail
 # Only deliberate policy rejections exit 2; infrastructure errors allow the call.
 trap 'exit 0' ERR
-command=$(jq -er 'select(.hook_event_name == "PreToolUse" and .tool_name == "Bash") | .tool_input.command | select(type == "string")' 2>/dev/null)
+payload=$(cat)
+command=$(jq -er 'select(.hook_event_name == "PreToolUse" and .tool_name == "Bash") | .tool_input.command | select(type == "string")' <<<"$payload" 2>/dev/null)
 # The server hint names the project's own server helper: "servers" in scripts/agents/kit.json, else
 # scripts/agents/port.sh where the project has one, else kit bg. Read only when a command could need it.
 servers=''
@@ -17,7 +18,9 @@ servers=${servers:-scripts/agents/kit bg <name> -- <command>}
 reason=$(printf '%s\n' "$command" | KIT_SERVERS=$servers awk '
 function base(s) { sub(/^.*\//, "", s); return s }
 function reject(s) { if (!reason) reason = s }
-function inspect(a, n, timed, depth, floor,    i,j,k,name,text) {
+# A later relative folder is joined to the one before it; an absolute one replaces it.
+function within(dir, to) { return to ~ /^[\/~]/ || dir == "" ? to : dir "/" to }
+function inspect(a, n, timed, depth, floor,    i,j,k,name,text,dir) {
   if (a[1] == "done") loopDepth = loopDepth > floor ? loopDepth - 1 : floor
   i = 1
   # Common execution wrappers leave the following word as the command.
@@ -74,14 +77,23 @@ function inspect(a, n, timed, depth, floor,    i,j,k,name,text) {
     if (base(a[j]) == "port.sh" || base(a[j]) == "full-suite.sh")
       reject("run port.sh directly; wait for long runs through your CLI")
   }
+  # The folder later commands run in, for the push check: cd here, git -C below.
+  if (name == "cd" && a[i+1] != "-") cwd = within(cwd, i < n ? a[i+1] : "~")
   if (name == "git") {
-    j = i + 1
+    j = i + 1; dir = cwd
     while (j <= n && a[j] ~ /^-/) {
+      if (a[j] == "-C") dir = within(dir, a[j+1])
       if (a[j] == "-C" || a[j] == "-c" || a[j] == "--git-dir" || a[j] == "--work-tree" || a[j] == "--namespace" || a[j] == "--config-env") j++
       j++
     }
     if (a[j] == "stash" && a[j+1] != "list" && a[j+1] != "show")
       reject("commit work in progress on your own branch")
+    # Pushes go back to the shell, which reads the settings and branches (awk runs no git).
+    if (a[j] == "push") {
+      text = "push\037" (dir == "" ? "." : dir)
+      for (k = j + 1; k <= n; k++) text = text "\037" a[k]
+      pushes[++pushCount] = text
+    }
   }
   if (name == "pkill" || name == "killall")
     reject("kill your own PID or process group: kill -- -PGID")
@@ -275,9 +287,67 @@ function scan(s, timed, depth,    a,n,i,c,q,word,started,escaped,quoted,redirect
   loopDepth = floor
 }
 { source = source $0 "\n" }
-END { scan(source, 0, 0); if (reason) print reason }
+END { scan(source, 0, 0); if (reason) print "reason\037" reason; for (i = 1; i <= pushCount; i++) print pushes[i] }
 ')
-if [[ -n $reason ]]; then
-  printf '%s\n' "$reason" >&2
+# A push to the project's release branch (branches.release in scripts/agents/kit.json) puts it live
+# without review. A landing branch that deploys on push is guarded by setting it as the release branch
+# too (land equal to release). Prints the guarded branch a push would reach, else nothing.
+guarded_target() {
+  local dir=$1 root release current arg remote='' all=0 skip=0 tag=0 tags=0 dst
+  local -a refs=() dsts=()
+  shift
+  [[ $dir == '~' || $dir == '~/'* ]] && dir=$HOME${dir#'~'}
+  [[ $dir == /* ]] || dir=$base/$dir
+  root=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || return 0
+  release=$(jq -r '.branches.release | strings' "$root/scripts/agents/kit.json" 2>/dev/null) || return 0
+  [[ -n $release ]] || return 0
+  for arg; do
+    if (( skip )); then skip=0; continue; fi
+    case $arg in
+      --dry-run) return 0 ;;
+      --repo|--push-option|-o|--receive-pack|--exec) skip=1 ;;
+      --all|--mirror|--branches) all=1 ;;
+      --tags) tags=1 ;;
+      --*) ;;
+      -*) [[ $arg == *n* ]] && return 0 ;;
+      *) if [[ -z $remote ]]; then remote=$arg; else refs+=("$arg"); fi ;;
+    esac
+  done
+  if (( all )); then printf '%s' "$release"; return 0; fi
+  current=$(git -C "$dir" symbolic-ref -q --short HEAD 2>/dev/null) || current=''
+  # --tags alone pushes tags only.
+  if (( ! ${#refs[@]} && ! tags )); then
+    # No refspec: where push.default and the upstream send the current branch.
+    dst=$(git -C "$dir" rev-parse --symbolic-full-name '@{push}' 2>/dev/null) || dst=''
+    dsts=("${dst#refs/remotes/*/}")
+  fi
+  for arg in "${refs[@]}"; do
+    if (( tag )); then tag=0; continue; fi
+    if [[ $arg == tag ]]; then tag=1; continue; fi
+    arg=${arg#+}
+    if [[ $arg == *:* ]]; then dst=${arg#*:}; [[ -n $dst ]] || dst=${arg%%:*}; else dst=$arg; fi
+    [[ $dst == HEAD || $dst == @ ]] && dst=$current
+    case $dst in refs/heads/*) dst=${dst#refs/heads/} ;; refs/*) continue ;; esac
+    dsts+=("$dst")
+  done
+  for dst in "${dsts[@]}"; do
+    # Unquoted on the right, so a wildcard refspec (refs/heads/*) matches too.
+    if [[ -n $dst && $release == $dst ]]; then printf '%s' "$release"; return 0; fi
+  done
+}
+base=$(jq -r '.cwd | strings' <<<"$payload" 2>/dev/null) || base=''
+base=${base:-${CLAUDE_PROJECT_DIR:-$PWD}}
+refusal=''
+while IFS=$'\037' read -r -a fields; do
+  if [[ ${fields[0]-} == reason ]]; then refusal=${fields[1]-}; break; fi
+  [[ ${fields[0]-} == push ]] || continue
+  branch=$(guarded_target "${fields[@]:1}") || branch=''
+  if [[ -n $branch ]]; then
+    refusal="Pushing straight to \`$branch\` puts it live without review. Land it with \`scripts/agents/kit pr --ticket <ticket>\` (or \`kit pr --release\` for a release)."
+    break
+  fi
+done <<<"$reason"
+if [[ -n $refusal ]]; then
+  printf '%s\n' "$refusal" >&2
   exit 2
 fi

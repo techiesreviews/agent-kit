@@ -22,6 +22,24 @@ only a small launcher and its own settings; the kit itself lives here, once.
   `main` once into `${XDG_CACHE_HOME:-~/.cache}/agent-kit`. This repo is public so that needs no token.
 - To try a kit branch in a project before it lands: `KIT_HOME=~/Projects/agent-kit-<branch> scripts/agents/kit …`.
 
+## A raw push to a live branch is stopped
+
+- The Bash hook (`hooks/bash-guard.sh`) refuses an agent's `git push` that would reach the project's release branch
+  (`branches.release` in `scripts/agents/kit.json`), however it is written (`main`, `HEAD:main`, `refs/heads/main`,
+  `+main`, `--force`, `--all`, `--mirror`, a deletion, `git -C`, after a `cd`, or a bare `git push` whose upstream is
+  that branch), and names `kit pr` as the way through. `--dry-run` passes, and so does every push in a project
+  without `branches.release`.
+- A landing branch that goes live on every push (a site that deploys from it) is guarded by naming it as the release
+  branch too: `"branches": { "land": "main", "release": "main" }`.
+- Only agents' shells are guarded: the hook runs in Claude and Codex sessions, so a person's own terminal, CI and the
+  Native Site Editor's saves (through the GitHub API) are untouched. The kit's own pushes run inside kit commands
+  (`kit next`'s claim commit to the landing branch and `kit pr`'s PR branch, from Node; `kit pr`'s merge goes through
+  `gh`), which the hook never sees. That is the allowance for the kit's steps: a step that must push a guarded
+  branch belongs in a kit command, never in a raw `git push`.
+- What changes for a lead: docs and ticket commits pushed straight to the landing branch keep working where it is not
+  the release branch (the Native Site Editor's `dev`). Where the two are one branch (this repo, a live site), they
+  land through `kit pr` (docs tier), and claims through `kit next`.
+
 ## Changing the kit
 
 - Work in a worktree (`git worktree add -b <branch> ../agent-kit-<branch> main`) and land with this repo's own
