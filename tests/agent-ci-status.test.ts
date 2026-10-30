@@ -4,6 +4,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { ghConfig } from "./support/kit-env.ts";
 // @ts-expect-error The script is plain JavaScript without declarations.
 import { changedLines, failingSteps, latestWorkflowRuns, summarizeRuns } from "../ci-summary.mjs";
 
@@ -146,7 +147,7 @@ esac
   const summary = () => {
     rmSync(join(directory, "calls"), { force: true });
     const result = spawnSync(process.execPath, [resolve("ci-summary.mjs"), "dev", sha], { cwd: project, encoding: "utf8", timeout: 10_000,
-      env: { ...inherited, PATH: `${directory}:${process.env.PATH}`, GH_REPO: "acme/starter", GH_HOST: "git.example.com" } });
+      env: { ...inherited, PATH: `${directory}:${process.env.PATH}`, GH_CONFIG_DIR: ghConfig, GH_REPO: "acme/starter", GH_HOST: "git.example.com" } });
     assert.equal(result.status, 0, result.stdout + result.stderr);
     assert.match(result.stdout, /Checks: success abcdef0/);
     const calls = readFileSync(join(directory, "calls"), "utf8").trim().split("\n");

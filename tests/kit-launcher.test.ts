@@ -477,8 +477,9 @@ test("a launcher whose mv loses the race to another launcher's whole clone uses 
   assert.deepEqual(lines(result), [`${cache} one`]);
   assert.doesNotMatch(result.stdout, /cannot place the clone/);
   assert.deepEqual(readdirSync(f.cache), ["agent-kit"]);
-  // The clone that went into the winner's folder is thrown away from there.
+  // The clone that went into the winner's folder is thrown away from there, leaving that checkout clean.
   assert.deepEqual(readdirSync(cache).filter((name) => name.startsWith("agent-kit.")), []);
+  assert.equal(f.git(cache, "status", "--porcelain"), "");
 });
 
 test("the launcher places its clone with a plain mv, as macOS has no mv -T", (t) => {

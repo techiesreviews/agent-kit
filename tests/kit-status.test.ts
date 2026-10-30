@@ -6,6 +6,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
+import { ghConfig } from "./support/kit-env.ts";
 
 const status = resolve("kit.d/status");
 const kit = resolve("kit");
@@ -53,7 +54,7 @@ async function fixture(t: TestContext) {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const key of Object.keys(env)) if (/^(KIT_|FAKE_|GIT_)/.test(key)) delete env[key];
   Object.assign(env, {
-    KIT_ROOT: root, KIT_STATUS_GH: gh, KIT_PREVIEW_URL: `http://127.0.0.1:${address.port}/?existing=1`,
+    GH_CONFIG_DIR: ghConfig, KIT_ROOT: root, KIT_STATUS_GH: gh, KIT_PREVIEW_URL: `http://127.0.0.1:${address.port}/?existing=1`,
     FAKE_CALLS: join(dir, "calls.jsonl"), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
     GIT_TERMINAL_PROMPT: "0", GIT_AUTHOR_NAME: "Kit test", GIT_AUTHOR_EMAIL: "kit@example.com",
     GIT_COMMITTER_NAME: "Kit test", GIT_COMMITTER_EMAIL: "kit@example.com",
