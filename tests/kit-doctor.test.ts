@@ -384,6 +384,11 @@ test("doctor shows the GitHub repo PRs go to: origin's, never the upstream a sit
   git(f.build, "remote", "set-url", "origin", "git@gitlab.com:acme/site.git");
   assert.match(f.run([], f.build, { PATH: `${bin}:${process.env.PATH}` }).stdout,
     /^✗ PR target: origin \(git@gitlab\.com:acme\/site\.git\) is not a GitHub repo gh knows, so kit pr cannot open a PR; /m);
+  // A lookup that cannot run says so rather than blame a good origin.
+  git(f.build, "remote", "set-url", "origin", "git@github.com:acme/site.git");
+  const broken = f.run([], f.build, { KIT_LIB_MJS: join(f.directory, "missing/kit-lib.mjs") }, true).stdout;
+  assert.match(broken, /^✗ PR target: not checked \(kit-lib\.mjs failed: .+\); fix: run scripts\/agents\/kit update$/m);
+  assert.doesNotMatch(broken, /is not a GitHub repo/);
   // A folder origin with GH_REPO set: kit pr opens its PRs there.
   git(f.build, "remote", "set-url", "origin", join(f.directory, "origin.git"));
   assert.match(f.run([], f.build, { GH_REPO: "acme/site" }).stdout, /^✓ PR target: acme\/site \(GH_REPO; origin is not a GitHub repo\)$/m);

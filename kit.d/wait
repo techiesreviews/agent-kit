@@ -187,10 +187,11 @@ async function wait(config) {
     process.exitCode = ok ? 0 : 1;
   };
   const timeoutMessage = () => `${kind} ${label}${kind === "ci" ? ` ${head.slice(0, 7) || "unknown"}` : kind === "pid" ? " still running," : ""} timed out after ${options.timeout ?? "30m"}`;
-  const ghEnv = { ...kitGhEnv(), GH_PAGER: "cat", NO_COLOR: "1" };
+  let ghEnv; // Only the waits that call gh work out origin's repo.
   const gh = async (argv) => {
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new Error(timeoutMessage());
+    ghEnv ??= { ...kitGhEnv(), GH_PAGER: "cat", NO_COLOR: "1" };
     const { stdout } = await execute("gh", argv, {
       timeout: Math.min(60000, remaining), signal: controller.signal, maxBuffer: 32 * 1024 * 1024, env: ghEnv,
     });
