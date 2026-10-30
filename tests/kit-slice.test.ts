@@ -141,7 +141,8 @@ if (phase === "ux") {
   }
   if (process.env.FAKE_UX === "fail") { console.log("RESULT: fail ux 1 features tried, 0 scripted findings, bundle /b, broken: F-media-01, review failed: claude failed (1)"); process.exit(1); }
   // broken stays broken, off stays looks off, broken-once is fine after the fix round.
-  const mode = process.env.FAKE_UX, verdict = mode === "off" ? "off" : mode === "broken-once" && round() > 0 ? "fine" : "broken";
+  // no-verdict: the reviewer gave F-media-01 none, asked twice; kit ux passes and reports it.
+  const mode = process.env.FAKE_UX, verdict = mode === "off" ? "off" : mode === "no-verdict" ? "none" : mode === "broken-once" && round() > 0 ? "fine" : "broken";
   const bundle = join(process.env.KIT_MAIN_ROOT, ".scratch/ux/ke-04", "bundle-" + round());
   mkdirSync(bundle, { recursive: true });
   // FAKE_UX_TWO: F-media-02 looks off as well.
@@ -149,7 +150,7 @@ if (phase === "ux") {
     { id: "F-media-02", verdict: process.env.FAKE_UX_TWO ? "off" : "fine", note: "L5: the filter label is clipped", image: "" }];
   const pick = word => features.filter(feature => feature.verdict === word).map(feature => feature.id);
   writeFileSync(join(bundle, "ux.md"), "- F-media-01: " + verdict + " — S1: a hint line under the search field\\n");
-  writeFileSync(join(bundle, "ux.json"), JSON.stringify({ features, rules: ["S1"], counts: { fine: pick("fine").length, off: pick("off").length, broken: pick("broken").length, rules: ["S1"] }, broken: pick("broken"), off: pick("off") }));
+  writeFileSync(join(bundle, "ux.json"), JSON.stringify({ features, rules: ["S1"], counts: { fine: pick("fine").length, off: pick("off").length, broken: pick("broken").length, ...pick("none").length ? { none: pick("none").length } : {}, rules: ["S1"] }, broken: pick("broken"), off: pick("off"), ...pick("none").length ? { noVerdict: pick("none") } : {} }));
   console.log("report: " + join(bundle, "ux.json"));
   console.log("RESULT: " + (verdict === "broken" ? "fail" : "ok") + " ux 1 features tried, 0 scripted findings, bundle " + bundle + (verdict === "broken" ? ", broken: F-media-01" : ""));
   process.exit(verdict === "broken" ? 1 : 0);
@@ -543,7 +544,8 @@ function timedOut(f: ReturnType<typeof fixture>) {
   assert.equal(f.run([], { FAIL_PHASE: "build" }).status, 1);
   const build = f.state().build;
   mkdirSync(build, { recursive: true });
-  writeFileSync(join(build, "status.json"), JSON.stringify({ kind: "build", worktree: f.root, session: "builder-session", state: "failed" }));
+  writeFileSync(join(build, "status.json"), JSON.stringify({ kind: "build", worktree: f.root, session: "builder-session", pgid: 4242,
+    state: "timeout", exitCode: 124 }));
   return build;
 }
 
@@ -635,6 +637,44 @@ test("commits from the land branch on top of the start are not taken as the buil
   }
 });
 
+test("commits after a Claude build that died at launch are not taken, though its status holds the up-front session", t => {
+  // agent-run assigns a Claude or Grok session before the CLI starts; a missing CLI never spawns (no pgid), and a
+  // usage limit or login error on the first call ends at once (launchFailed).
+  for (const died of [{ pgid: null, state: "failed", exitCode: 2 }, { pgid: 4242, state: "failed", exitCode: 1, launchFailed: true }]) {
+    const f = fixture(t);
+    assert.equal(f.run([], { FAIL_PHASE: "build" }).status, 1);
+    const build = f.state().build;
+    mkdirSync(build, { recursive: true });
+    writeFileSync(join(build, "status.json"), JSON.stringify({ kind: "build", worktree: f.root, session: "assigned-up-front", ...died }));
+    const ticket = join(f.root, f.ticket);
+    writeFileSync(ticket, readFileSync(ticket, "utf8") + "\nA ticket fix by the runner.\n");
+    f.git("commit", "-qam", "docs: fix the ticket");
+    const result = f.run();
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, /RESULT: fail slice build: HEAD moved from the slice's start \w+ but no build ran \(none recorded a session, or it failed at launch\); only a build that ran resumes from commits/);
+    assert.doesNotMatch(result.stdout, /resume: build taken/);
+    assert.deepEqual(f.calls().map(call => call.phase), ["build"]);
+    assert.deepEqual(f.state().finished, ["brief"]);
+  }
+});
+
+test("a build that timed out resumes from its commits under another builder, whose fix rounds start fresh", t => {
+  const f = fixture(t);
+  timedOut(f);
+  writeFileSync(join(f.root, "file.txt"), "built by hand\n");
+  f.git("commit", "-qam", "builder work");
+  const result = f.run([], { CLEAN_AT: "1" }, ["--ticket", f.ticket, "--builder", "claude-opus-5-5"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /builder switched: gpt-6\.1-sol -> claude-opus-5-5/);
+  assert.match(result.stdout, /resume: build taken from 1 commit on \w+: \w+ builder work\n/);
+  assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "fix", "pr"]);
+  const fix = f.calls().find(call => call.phase === "fix")!;
+  assert.equal(fix.args.includes("--run"), false, "the switched builder does not resume the old builder's session");
+  assert.equal(fix.args[fix.args.indexOf("--builder") + 1], "claude-opus-5-5");
+  assert.equal(f.state().buildModel, "gpt-6.1-sol", "the build stays credited to the model that ran it");
+  assert.equal("switchedBuild" in f.state(), false);
+});
+
 test("commits after a build that failed at launch are not taken as one", t => {
   const f = fixture(t);
   // The builder never ran, so it recorded no session (here no status at all).
@@ -645,7 +685,7 @@ test("commits after a build that failed at launch are not taken as one", t => {
   f.git("commit", "-qam", "docs: fix the ticket");
   const result = f.run();
   assert.equal(result.status, 1, result.stdout + result.stderr);
-  assert.match(result.stdout, /RESULT: fail slice build: HEAD moved from the slice's start \w+ but no build recorded a session; only a build that ran resumes from commits/);
+  assert.match(result.stdout, /RESULT: fail slice build: HEAD moved from the slice's start \w+ but no build ran \(none recorded a session, or it failed at launch\); only a build that ran resumes from commits/);
   assert.doesNotMatch(result.stdout, /resume: build taken/);
   assert.deepEqual(f.calls().map(call => call.phase), ["build"]);
   assert.deepEqual(f.state().finished, ["brief"]);
@@ -1192,6 +1232,13 @@ test("kit slice stops a feature still broken after one UX fix round, and lands o
   assert.equal(fixed.status, 0, fixed.stdout + fixed.stderr);
   assert.deepEqual(g.calls().map(call => call.phase), ["build", "review", "ux", "fix", "ux", "pr"]);
   assert.doesNotMatch(readFileSync(join(g.root, g.ticket), "utf8"), /UX follow-ups/);
+});
+
+test("a feature kit ux could get no verdict for is named on the slice's ux line and stops nothing", t => {
+  const f = fixture(t), result = f.run([], { FAKE_UX: "no-verdict" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^slice: ux ok 1 fine, 0 broken, 1 no verdict \(F-media-01\)$/m);
+  assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "ux", "pr"]);
 });
 
 test("kit slice lands looks off after one UX fix round, with the rest as ticket follow-ups", t => {

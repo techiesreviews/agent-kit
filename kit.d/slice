@@ -74,7 +74,9 @@ async function slice(args) {
         state.previousModels = [...(Array.isArray(state.previousModels) ? state.previousModels : []), state.model];
       if (state.effort !== flags.effort)
         state.previousEfforts = [...(Array.isArray(state.previousEfforts) ? state.previousEfforts : []), state.effort];
-      // A saved run replays its own model and effort, so a switched slice must not resume it.
+      // A saved run replays its own model and effort, so a switched slice must not resume it; an unfinished build's
+      // folder is kept only to show that build ran, so its commits can still be taken as the build.
+      if (state.build && !state.finished.includes("build")) state.switchedBuild = state.build;
       delete state.build;
       console.log(`builder switched: ${label(state.model, state.effort)} -> ${label(flags.model, flags.effort)}`);
       state.model = flags.model; state.effort = flags.effort;
@@ -121,11 +123,13 @@ async function slice(args) {
       assertBranch();
       if (git("rev-parse", "HEAD") !== expected) throw new Error("worktree HEAD changed during slice");
     };
-    // A builder run kit fix can resume (as kit fix checks an explicit --run): a build record with a session for this worktree.
-    const resumableBuild = folder => {
+    // A builder that ran in this worktree: a build record with a session whose CLI started (a pgid) and did not fail at
+    // launch. Claude and Grok runs record a session before their CLI starts, so the session alone proves nothing.
+    const ranBuild = folder => {
       try {
         const status = JSON.parse(readFileSync(join(resolve(root, folder), "status.json"), "utf8"));
-        return status.kind === "build" && Boolean(status.session) && realpathSync(status.worktree) === realpathSync(root);
+        return status.kind === "build" && Boolean(status.session) && status.pgid != null && !status.launchFailed && !status.silent
+          && realpathSync(status.worktree) === realpathSync(root);
       } catch { return false; }
     };
     // A builder's kit specs --affected keeps to the specs closest to the change (project.d/specs); kit pr runs the full set.
@@ -294,10 +298,12 @@ async function slice(args) {
       assertBranch();
       const now = git("rev-parse", "HEAD");
       // A build that ran and stopped (such as at its time limit) after its work was committed on top of the saved start:
-      // those commits are the build. Its builder must have recorded a session, so commits after a build that never
+      // those commits are the build. Its builder must have run (ranBuild), so commits after a build that never
       // ran (a launch failure, then a ticket edit) are not taken. A HEAD on any other history still stops.
       // Commits that came from the land branch (a fast-forward or merge of origin/<land>) are not the builder's.
-      const ran = Boolean(state.build) && resumableBuild(state.build);
+      // A builder switched after the build stopped checks the build that ran before the switch.
+      const ranFolder = state.build ?? state.switchedBuild;
+      const ran = Boolean(ranFolder) && ranBuild(ranFolder);
       const forward = now !== state.head && ran && spawnSync("git", ["-C", root, "merge-base", "--is-ancestor", state.head, now], { env }).status === 0;
       const land = kitBranch("land", settings);
       const landRef = land && spawnSync("git", ["-C", root, "rev-parse", "--verify", "-q", `refs/remotes/origin/${land}`], { env }).status === 0 ? `origin/${land}` : undefined;
@@ -313,7 +319,7 @@ async function slice(args) {
           ? `HEAD ${now.slice(0, 9)} holds commits from ${landRef} on top of the slice's start ${state.head.slice(0, 9)}; a build resumes only from the builder's own commits`
           : ran
           ? `HEAD ${now.slice(0, 9)} is not on top of the slice's start ${state.head.slice(0, 9)}; a build resumes only from commits on top of it`
-          : `HEAD moved from the slice's start ${state.head.slice(0, 9)} but no build recorded a session; only a build that ran resumes from commits`);
+          : `HEAD moved from the slice's start ${state.head.slice(0, 9)} but no build ran (none recorded a session, or it failed at launch); only a build that ran resumes from commits`);
         state.build = join(directory, "builder"); state.buildModel = flags.model; save();
         const output = requireSuccess(await execute(agent, ["build", root, ".scratch/agent-brief.md", "--model", flags.model, "--effort", flags.effort, "--out", state.build], builderEnv));
         assertHead(state.head);
@@ -332,7 +338,7 @@ async function slice(args) {
       complete(state.head);
     }
     // Once committed, the taken commits are an ordinary build and must not steer a later rerun.
-    if (state.taken) { delete state.taken; save(); }
+    if (state.taken || state.switchedBuild) { delete state.taken; delete state.switchedBuild; save(); }
     begin("review");
     if (!state.finished.includes(phase)) {
       const head = state.head;
@@ -436,7 +442,9 @@ async function slice(args) {
         const head = uxFollowups(ux, state.head);
         if (head) { state.head = head; save(); }
       }
-      complete(!ux ? "skipped: nothing visible touched" : `${ux.counts.fine} fine, ${ux.counts.broken} broken${ux.off.length ? `, ${ux.off.length} looks off as follow-ups` : ""}`);
+      // A feature kit ux got no verdict for (asked twice) is named here and stops nothing.
+      const none = ux?.noVerdict ?? [];
+      complete(!ux ? "skipped: nothing visible touched" : `${ux.counts.fine} fine, ${ux.counts.broken} broken${ux.off.length ? `, ${ux.off.length} looks off as follow-ups` : ""}${none.length ? `, ${none.length} no verdict (${none.join(", ")})` : ""}`);
     }
     // The second look, last before landing (after the UX gate, so it sees the final code): its findings get the
     // same fix rounds as Claude's, each answered by Claude's review, then a fresh second look of the new HEAD, so

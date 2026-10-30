@@ -1482,6 +1482,25 @@ test("an OpenCode second look whose retry opens no session still hands over, tho
   assert.deepEqual(f.counts(), { grok: { "kit-review": 1 } });
 });
 
+test("a second look that opened a session but never finishes stops at its overall limit and is skipped as timed out", (t) => {
+  const f = fixture(t); withOpencode(f);
+  const free = { model: opencodeModel, fallback: "grok-4.7" };
+  const table = lookTable(f, { code: free, ux: free, dx: free, agent: free });
+  // The runner's own limit (20s) is far off; the second look's limit (2s) covers the whole look, fallback included.
+  const started = Date.now();
+  const hung = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: table, FAKE_MODE: "hang", ASE_AGENT_TIMEOUT: "20s", ASE_SECOND_LOOK_TIMEOUT: "2s" });
+  assert.equal(hung.status, 3, hung.stdout + hung.stderr);
+  assert.ok(Date.now() - started < 15_000, "stopped at the second look's limit, with the reviewer's processes gone");
+  const reason = "opencode/deepseek-v4\\.1-flash-free timed out after 2s";
+  assert.match(hung.stdout, new RegExp(`^second look: skipped \\(${reason}\\)$`, "m"));
+  assert.match(hung.stdout.trim().split("\n").at(-1)!, new RegExp(`^RESULT: skip second look \\(${reason}\\)$`));
+  assert.doesNotMatch(hung.stdout, /takes it/, "the time limit is spent, so the other family does not start");
+  assert.equal(opencodeCalls(f).filter(call => call.cli === "grok").length, 0);
+  const bad = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: table, ASE_SECOND_LOOK_TIMEOUT: "soon" });
+  assert.equal(bad.status, 1, bad.stdout + bad.stderr);
+  assert.match(bad.stdout.trim().split("\n").at(-1)!, /^RESULT: fail ASE_SECOND_LOOK_TIMEOUT must be a duration such as 25m \(got soon\) evidence none$/);
+});
+
 test("a Grok call that gives no answer before the timeout hands the second look to OpenCode", (t) => {
   const f = fixture(t); withOpencode(f);
   const hung = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: lookTable(f), FAKE_MODE: "grok-hang", ASE_AGENT_TIMEOUT: "3s" });

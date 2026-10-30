@@ -82,23 +82,25 @@ export function parseUxResult(text, ids) {
     if (!earlier) found.set(id, entry);
   }
   const missing = ids.filter(id => !found.has(id));
-  if (missing.length) return { readable: false, problem: `no verdict for ${missing.join(", ")}` };
-  const features = ids.map(id => found.get(id));
+  const features = ids.filter(id => found.has(id)).map(id => found.get(id));
   // A rule cited on a looks off or broken line is broken even when the closing list forgets it.
   for (const feature of features) if (feature.verdict !== "fine") for (const id of ruleIds(feature.note)) rules.add(id);
+  // The verdicts given stay with the missing ids, so kit ux can ask again for those alone.
+  if (missing.length) return { readable: false, problem: `no verdict for ${missing.join(", ")}`, missing, features, rules: [...rules].sort() };
   return { readable: true, features, rules: [...rules].sort() };
 }
 
 /** Counts for the scoreboard: features per verdict and the rule ids broken. */
 export function uxCounts({ features, rules }) {
   const counts = { fine: 0, off: 0, broken: 0, rules };
-  for (const feature of features) counts[feature.verdict]++;
+  // none: features the reviewer gave no verdict, asked twice; counted only when there are any.
+  for (const feature of features) counts[feature.verdict] = (counts[feature.verdict] ?? 0) + 1;
   return counts;
 }
 
 /** ux.md: one line per feature with the image path, then the rules broken with their first lines. */
 export function uxReport({ branch, model, effort, bundle, features, rules, ruleText = new Map() }) {
-  const word = Object.fromEntries(Object.entries(verdicts).map(([text, key]) => [key, text]));
+  const word = { ...Object.fromEntries(Object.entries(verdicts).map(([text, key]) => [key, text])), none: "no verdict" };
   return [
     `# UX review: ${branch}`,
     "",
