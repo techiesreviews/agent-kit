@@ -29,6 +29,8 @@ file wins.
 
 - The release steps after `kit pr --release`, the first-hour check, and where the live version is
   recorded.
+- **First step of the live deploy command:** `scripts/agents/kit release-check &&` before the deploy
+  itself (nothing unsaved, HEAD exactly `origin/<release>`); a preview deploy needs none.
 
 ## Other
 
