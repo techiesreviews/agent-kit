@@ -267,12 +267,13 @@ export function kitGhEnv(env = process.env, root = kitRoot()) {
  * ssh://host/…): a token can be all the user-info there is. scp-style git@host:path carries no token and stays.
  */
 export function kitHideUserInfo(text = "") {
-  return String(text).replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#]*@/gi, "$1");
+  return String(text).replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/?#]*@/gi, "$1");
 }
 
 /**
  * A log writer for a child's streams that hides user-info as kitHideUserInfo does. A url holds no whitespace, so only
- * the text after a stream's last whitespace waits for its next chunk; end() writes what is left.
+ * the text after a stream's last whitespace waits for its next chunk; end() writes what is left. Each stream keeps
+ * its own order, but a held-back piece can land in the log after the other stream's later text.
  */
 export function kitHidingLog(append) {
   const unwritten = new Map();

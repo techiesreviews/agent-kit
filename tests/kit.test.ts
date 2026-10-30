@@ -608,6 +608,9 @@ test("bash and mjs RESULT helpers hide every url's user-info, so a remote's toke
   assert.equal(lines.at(-1), `RESULT: fail ${hidden}`);
   assert.equal(bash(`kit_hide_user_info '${text}'`).stdout, `${hidden}\n`);
   assert.equal(bash(`kit_result fail '${text}'`).stdout, `RESULT: fail ${hidden}\n`);
+  // A word character before the scheme stops neither.
+  assert.equal(kitHideUserInfo("x_https://u:t@h/p 1http://t@h/q"), "x_https://h/p 1http://h/q");
+  assert.equal(bash("kit_hide_user_info 'x_https://u:t@h/p 1http://t@h/q'").stdout, "x_https://h/p 1http://h/q\n");
 });
 
 test("kitHidingLog hides a token split across chunks and on a last line with no newline, keeping each stream apart", () => {

@@ -311,10 +311,11 @@ async function main(args) {
       }
       return { status, stderr, text: stdout, failure };
     }
+    // A failed child's message: its last stderr line, user-info hidden, as it may be printed beside RESULT (landed:).
+    const childMessage = (result, fallback) => kitHideUserInfo(result.failure || result.stderr.trim().split(/\r?\n/).at(-1) || fallback);
     async function run(name, command, argv) {
       const result = await execute(name, command, argv);
-      // A child's message is printed in many places (RESULT, landed, notes): its user-info is hidden once, here.
-      if (result.status !== 0) throw new Error(kitHideUserInfo(result.failure || result.stderr.trim().split(/\r?\n/).at(-1) || `${command} exited ${result.status}`));
+      if (result.status !== 0) throw new Error(childMessage(result, `${command} exited ${result.status}`));
       return result.text.trim();
     }
     const ok = name => console.log(`${name}: ok`);
@@ -370,7 +371,7 @@ async function main(args) {
         const files = await git("rebase", ["-c", "core.quotepath=false", "diff", "--name-only", "--diff-filter=U"]);
         const aborted = await execute("rebase", "git", ["rebase", "--abort"]);
         if (files) throw new Error(`conflict in ${files.split(/\r?\n/).join(", ")}${aborted.status ? "; rebase --abort failed" : ""}`);
-        throw new Error(result.stderr.trim().split(/\r?\n/).at(-1) || "git rebase failed");
+        throw new Error(childMessage(result, "git rebase failed"));
       }
       ok("rebase");
     }
@@ -667,7 +668,7 @@ async function main(args) {
         if (second) for (const line of result.text.match(/^second look: .+$/gm) ?? []) console.log(line);
         // No model could take the second look: it never blocks on availability.
         if (second && result.status === 3) return true;
-        if (result.status !== 0) throw new Error(result.failure || result.stderr.trim().split(/\r?\n/).at(-1) || `${kit} exited ${result.status}`);
+        if (result.status !== 0) throw new Error(childMessage(result, `${kit} exited ${result.status}`));
         const evidence = /^RESULT: ok review .+ evidence (.+)$/m.exec(result.text)?.[1];
         if (!evidence) throw new Error(`${name} did not name its evidence folder`);
         resultPath = join(resolve(root, evidence), "result.md");
@@ -770,7 +771,7 @@ async function main(args) {
       // --match-head-commit refuses a head we did not push and review: stop rather than merge it.
       if (/head branch was modified/i.test(merged.stderr)) throw new Error(`PR head is no longer ${head.slice(0, 7)}; review the new head first`);
       if (!/behind|not up to date|out of date/i.test(merged.stderr))
-        throw new Error(merged.failure || merged.stderr.trim().split(/\r?\n/).at(-1) || "gh pr merge failed");
+        throw new Error(childMessage(merged, "gh pr merge failed"));
       if (attempt === 3) throw new Error("still behind after 3 attempts");
       const reviewedHead = head;
       await rebase();
