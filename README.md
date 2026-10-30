@@ -53,3 +53,9 @@ No skill file or skill text from `~/.claude/skills`, `~/.agents/skills`, `~/.cod
 into this repo or any project. `.gitignore` keeps skill folders out; `skill-guard.mjs` fails CI on a tracked
 `SKILL.md` or anything under a `skills/` folder, and `kit pr` (in every project) also fails when a changed line
 matches a line from the local skill files. Tests use made-up skill text only.
+
+A private project may keep its own skill (not a paid one): list each such folder by its repo path in
+`"skillGuard": { "allow": [".claude/skills/<name>"] }` of `scripts/agents/kit.json`. The path check lets exactly
+those folders through, an entry that is not one skill folder (a whole `skills/` folder, `.`, `..` or an absolute
+path) fails the guard, and the line check against the local skills still reads every line in them. Nothing is
+allowed by default; `kit doctor` lists the allowed skills when the list is set.

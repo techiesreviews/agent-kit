@@ -211,6 +211,24 @@ else
   fail conflicts "git grep returned status $status" 'check tracked files with git grep'
 fi
 
+# skillGuard.allow lets a project's own skill folders through the skill guard's path check: list them, and run
+# that path check, which also refuses a list entry that is not one skill folder. Projects without the list get no line.
+if [[ -n $(setting 'if .skillGuard.allow == null then empty else "set" end') ]]; then
+  if [[ -z $node ]]; then
+    pass skills 'skipped (Node not found)'
+  else
+    code=0
+    output=$(cd -- "$root" && "$node" "$(kit_home)/skill-guard.mjs" --paths-only 2>&1) || code=$?
+    allowed=$(sed -n 's/^skill-guard: allowed own skills: \(.*\) (skillGuard\.allow.*/\1/p' <<< "$output")
+    if (( code == 0 )); then
+      pass skills "allowed own skills: ${allowed:-none} (skillGuard.allow); no other skill paths tracked"
+    else
+      problem=$(awk 'sub(/^problem: /, "") { print; exit }' <<< "$output")
+      fail skills "${problem:-skill guard exited $code}" 'remove the skill files, or list only the project'"'"'s own skill folders in "skillGuard.allow" of scripts/agents/kit.json'
+    fi
+  fi
+fi
+
 # Shared commands sit beside doctor, the project's own in the folder "commands" names; KIT_COMMANDS_DIR (tests) replaces both.
 # A project command may not take a shared name: it would hide a fix to the shared one.
 own_setting='' own_shared=false
