@@ -102,7 +102,7 @@ test("a fresh npm repo gets a full setup that passes doctor, is listed in projec
   assert.match(extras, /Landing branch `dev`, release branch `main`/);
   // The pointer sends a wanted kit change to the one board that builds kit changes.
   assert.match(readFileSync(join(work, "docs/agents/kitchen.md"), "utf8"),
-    /^A change to the shared kit is a ticket on the kitchen-everywhere board in native-site-editor \(on\n`dev`\): write it there, or ask that board's orchestrator to, and go on with this project's work\.$/m);
+    /^A change to the shared kit is a ticket on the kitchen-everywhere board\s+\(`docs\/wayfinder\/kitchen-everywhere\/build\/` in native-site-editor, on `dev`\),\s+built only by that\s+board's orchestrator: write it there, or ask the orchestrator to, and go on with this project's work\.$/m);
   assert.match(readFileSync(join(work, "AGENTS.md"), "utf8"), /`scripts\/agents\/kit rulebook`[\s\S]*`scripts\/agents\/kit --help`/);
   assert.deepEqual(f.projects(), { site: { root: main } });
   // The kit's hook set is this repo's own, so the two cannot drift apart.

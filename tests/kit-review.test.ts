@@ -7,7 +7,7 @@ import test from "node:test";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
 import { codexReviewConfig, isoWeek, makeCodexReviewHome, opencodeModelRuns } from "../agent-run.mjs";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
-import { builderChecks, reviewBrief, reviewFormat, ticketReviewBrief } from "../review-brief.mjs";
+import { builderChecks, plainEnglish, reviewBrief, reviewFormat, ticketReviewBrief } from "../review-brief.mjs";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
 import { saveReviewEvidence } from "../review-evidence.mjs";
 import { kitEnv } from "./support/kit-env.ts";
@@ -338,8 +338,10 @@ test("runner appends the footer exactly once to generated, handwritten and alrea
   for (const severity of ["P0:", "P1:", "P2:", "P3:"]) assert.ok(reviewFormat.includes(severity));
   assert.match(reviewFormat, /Spec defect that breaks a "Done when" item/);
   assert.match(reviewFormat, /Validation gaps:.*no severity/);
-  // Every review, Claude's and the second look's, is asked for plain English (house rule).
+  // Every review goes through this one prompt step (agent-run.mjs preparePrompt), the second look's too,
+  // so each is asked for plain English (house rule); the wording is pinned here, other tests import it.
   const plain = "Write in plain English: Lex reads every report, ticket and commit message.";
+  assert.equal(plainEnglish, plain);
   for (const brief of [generated, "Hand-written brief", `${generated}${reviewFormat}`]) {
     writeFileSync(f.brief, brief);
     const result = f.runAgent(["--base", "HEAD^"]);
