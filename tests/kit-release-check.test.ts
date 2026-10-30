@@ -90,6 +90,41 @@ test("a changed or untracked file fails with the files named", t => {
   assert.match(result.stderr, /problem: unsaved files/);
 });
 
+test("more than five unsaved files are named five and counted; a changed file under .scratch/ does not count", t => {
+  const f = fixture(t);
+  mkdirSync(join(f.root, ".scratch"), { recursive: true });
+  writeFileSync(join(f.root, ".scratch/kept.txt"), "tracked\n");
+  f.git("add", "-f", ".scratch/kept.txt"); f.git("commit", "-q", "-m", "tracked scratch"); f.git("push", "-q", "origin", "main");
+  writeFileSync(join(f.root, ".scratch/kept.txt"), "edited\n");
+  let result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  for (let i = 1; i <= 7; i++) writeFileSync(join(f.root, `draft-${i}.html`), "x\n");
+  result = f.run();
+  assert.equal(result.status, 1);
+  assert.match(lastLine(result.stdout), /^RESULT: fail unsaved files \(draft-1\.html, draft-2\.html, draft-3\.html, draft-4\.html, draft-5\.html and 2 more\): /);
+});
+
+test("no origin remote, and an origin that cannot be fetched, fail with their own lines", t => {
+  const f = fixture(t);
+  f.git("remote", "set-url", "origin", join(f.dir, "gone.git"));
+  let result = f.run();
+  assert.equal(result.status, 1);
+  assert.match(lastLine(result.stdout), /^RESULT: fail could not fetch origin \(.+\): try again once origin answers$/);
+  f.git("remote", "remove", "origin");
+  result = f.run();
+  assert.equal(result.status, 1);
+  assert.equal(lastLine(result.stdout), "RESULT: fail no origin remote: the check compares HEAD with origin/main");
+});
+
+test("a single-branch clone that does not track the release branch still fetches it by name", t => {
+  const f = fixture(t), only = join(f.dir, "only");
+  f.gitAt(f.dir, "clone", "-q", "--single-branch", "--branch", "dev", f.origin, only);
+  // dev and main are one commit, so the clone's HEAD is origin/main once main is fetched.
+  const result = f.run([], { KIT_ROOT: only });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(lastLine(result.stdout), /^RESULT: ok release-check [a-f0-9]{7} is origin\/main, nothing unsaved$/);
+});
+
 test("a HEAD ahead of origin/<release> fails: its commit never reached the release branch", t => {
   const f = fixture(t);
   f.commit(f.root, "local fix");
@@ -140,6 +175,17 @@ test("--land compares HEAD with origin/<land>, for kit pr --release", t => {
   result = f.run(["--land"]);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.equal(lastLine(result.stdout), `RESULT: ok release-check ${f.short()} is origin/dev, nothing unsaved`);
+  // Under --land, a HEAD ahead and a missing branch get advice that does not send kit pr --release round in a circle.
+  f.commit(f.root, "unlanded");
+  result = f.run(["--land"]);
+  assert.equal(lastLine(result.stdout), `RESULT: fail HEAD ${f.short()} is 1 commit ahead of origin/dev: a release carries only what landed on dev; land it with kit pr first`);
+});
+
+test("--land with no landing branch on origin says to land work there first", t => {
+  const f = fixture(t, { land: "trunk", release: "main" });
+  const result = f.run(["--land"]);
+  assert.equal(result.status, 1);
+  assert.equal(lastLine(result.stdout), "RESULT: fail origin has no branch trunk: land work on trunk through kit pr first");
 });
 
 test("only a lead may --waive; a waiver passes, names the reason and what it let through", t => {

@@ -244,7 +244,7 @@ on a usage-limit `problem:` line, tell Lex the reset time and carry on with Clau
   `scripts/agents/kit release-check` (a clean tree outside `.scratch/`, HEAD exactly
   `origin/<release>` after a fetch), so nothing unsaved and nothing that skipped `kit pr` goes live.
   A preview deploy from a landing branch that is not live runs no check. Only a lead may pass it
-  with `--waive "<reason>"`, which its `RESULT:` line names.
+  with `--waive "<reason>"` (`kit pr --release --waive` hands it on), which its `RESULT:` line names.
 - **Done when:** the live project serves the new version and its number is recorded where the
   extras say.
 
