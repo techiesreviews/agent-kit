@@ -188,7 +188,8 @@ async function reviewOnce(flags, look) {
       if (temporary) console.error(`problem: review files kept in ${temporary}`);
     }
   }
-  return { status, outOfCredit, unavailable: status !== 0 && unavailable, timedOut, kept, budget, model, evidence, label, reason };
+  // A run stopped at the limit whose evidence then failed to save fails like any failed save.
+  return { status, outOfCredit, unavailable: status !== 0 && unavailable, timedOut: timedOut && /^timed out after /.test(reason), kept, budget, model, evidence, label, reason };
 }
 
 /** The RESULT line and exit code of one review run. */
@@ -211,7 +212,6 @@ async function secondLook(flags) {
   // a session but never finishes is stopped, and the look is skipped as timed out so the slice or PR goes on.
   const limit = process.env.ASE_SECOND_LOOK_TIMEOUT || "25m";
   try {
-    // A fallback started after the limit is stopped at once, so it too ends as timed out.
     try { deadline = Date.now() + durationMilliseconds(limit); }
     catch { throw new Error(`ASE_SECOND_LOOK_TIMEOUT must be a duration such as 25m (got ${limit})`); }
     if (flags.base === undefined && flags.commit === undefined) flags.base = `origin/${kitBranch()}`;
@@ -237,9 +237,12 @@ async function secondLook(flags) {
   }
   console.log(`second look: ${pick.kind} (${pick.path}) ${pick.model}`);
   const missed = [];
+  const label = /^\d+$/.test(limit) ? `${limit}s` : limit;
   for (const model of [pick.model, pick.fallback]) {
+    // A fallback is not started once the limit has passed: it would reserve a count for a review that cannot run.
+    if (missed.length && Date.now() >= deadline) { missed.push(`${model} not started, timed out after ${label}`); break; }
     if (missed.length) console.log(`second look: ${model} takes it (${missed.at(-1)})`);
-    const result = await reviewOnce(flags, { kind: pick.kind, model, deadline, limit: /^\d+$/.test(limit) ? `${limit}s` : limit });
+    const result = await reviewOnce(flags, { kind: pick.kind, model, deadline, limit: label });
     if (result.status === 0 && !result.outOfCredit) return report(result);
     if (!result.unavailable && !result.timedOut) return report(result);
     if (result.evidence !== "none") console.log(`evidence: ${result.evidence}`);
