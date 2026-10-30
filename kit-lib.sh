@@ -153,7 +153,7 @@ kit_gh_repo() {
     return 0
   fi
   [[ $name != */?*.git ]] || name=${name%.git}
-  host=$(tr '[:upper:]' '[:lower:]' <<< "$host")
+  host=${host,,}
   [[ $host != ssh.github.com ]] || host=github.com
   if [[ $host == github.com ]]; then printf '%s\n' "$name"; else printf '%s/%s\n' "$host" "$name"; fi
 }

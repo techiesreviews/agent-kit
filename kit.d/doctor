@@ -370,7 +370,9 @@ if [[ $quiet == false ]]; then
   if [[ $remote == false ]]; then
     printf '✓ PR target: none (no origin remote)\n'
   elif [[ -n $target ]]; then
-    printf '✓ PR target: %s (origin%s)\n' "$target" "${others:+; not ${others//,/, }}"
+    printf '✓ PR target: %s (origin%s)\n' "$target" "${others:+; other remotes not used: ${others//,/, }}"
+  elif [[ -n ${GH_REPO:-} ]]; then
+    printf '✓ PR target: %s (GH_REPO; origin is not a GitHub repo)\n' "$GH_REPO"
   else
     printf "✗ PR target: origin (%s) is not a GitHub repo, so kit pr cannot open a PR; fix: git remote set-url origin <the project's GitHub repo>\n" \
       "$(git -C "$root" config --get remote.origin.url 2>/dev/null || printf 'no url')"
