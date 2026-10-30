@@ -55,7 +55,8 @@ const ruleIds = citedRules;
 
 /**
  * Read the reviewer's answer: one verdict per expected feature and the rules it names as broken.
- * An answer missing a feature, or giving one feature two verdicts, is unreadable.
+ * An answer giving one feature two verdicts is unreadable. One missing a feature is too, but it keeps the verdicts it
+ * gave and lists the `missing` ids, so kit ux can ask again for those alone.
  */
 export function parseUxResult(text, ids) {
   const found = new Map(), rules = new Set();
