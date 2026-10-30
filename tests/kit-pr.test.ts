@@ -552,6 +552,21 @@ test("a site made from the starter opens its PR in origin's repo: every gh call 
   assert.deepEqual(children.filter(call => call.repo !== "acme/site"), []);
 });
 
+test("an enterprise origin keeps its host on every gh call, the merge's --repo too", t => {
+  const f = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: playground });
+  f.git("config", `url.${f.origin}.insteadOf`, "git@git.example.com:acme/site.git");
+  f.git("remote", "set-url", "origin", "git@git.example.com:acme/site.git");
+  f.git("remote", "add", "upstream", "https://github.com/acme/starter.git");
+  const result = f.run([], { FAKE_BASE: "main" }, true);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const gh = f.calls().filter(call => call.tool === "gh");
+  assert.deepEqual(gh.filter(call => call.repo !== "git.example.com/acme/site"), []);
+  assert.deepEqual(gh.find(call => call.args[0] === "repo")?.args.slice(0, 3), ["repo", "view", "git.example.com/acme/site"]);
+  // repo view answers OWNER/NAME (the fake's test/repo); the merge names the host again.
+  const merge = f.ghCalls("merge").at(-1)!.args;
+  assert.equal(merge[merge.indexOf("--repo") + 1], "git.example.com/test/repo");
+});
+
 test("a land branch that gained commits after the branch started lands without a flag, and no workflows means no CI wait", t => {
   const f = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: playground, workflows: false });
   // An editor save lands straight on main meanwhile (ticket 05 point 3).

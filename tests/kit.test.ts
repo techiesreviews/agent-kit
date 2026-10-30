@@ -516,6 +516,7 @@ test("bash and mjs read origin's GitHub repo alike, whatever other remotes there
     ["https://token@github.com/acme/site.git/", "acme/site"], ["git@github.com:acme/site.git", "acme/site"],
     ["github.com:acme/site", "acme/site"], ["ssh://git@ssh.github.com:443/acme/site.git", "acme/site"],
     ["ssh://git@git.example.com/acme/site.git", "git.example.com/acme/site"], ["git://github.com/acme/my.site.git", "acme/my.site"],
+    ["https://GitHub.com/acme/site.git", "acme/site"], ["ssh://git@Git.Example.com/acme/site", "git.example.com/acme/site"],
     ["/srv/git/site.git", ""], ["file:///srv/git/site.git", ""], ["https://github.com/acme", ""], ["https://github.com/a/b/c.git", ""],
   ]) {
     gitAt("remote", "set-url", "origin", url);

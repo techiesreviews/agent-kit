@@ -56,7 +56,8 @@ const args = process.argv.slice(2);
 const git = (...args) => execFileSync("git", args, { encoding: "utf8" }).trim();
 const phase = args[0];
 function call(name) {
-  appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ phase: name, args, builderTicket: process.env.KIT_BUILDER_TICKET }) + "\\n");
+  appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ phase: name, args, builderTicket: process.env.KIT_BUILDER_TICKET,
+    ...(process.env.GH_REPO ? { repo: process.env.GH_REPO } : {}) }) + "\\n");
   // SKIP_PHASE ends that command the way a review out of credit does (exit 3).
   if (process.env.SKIP_PHASE === name) { console.log("RESULT: skip review out of credit (grok-4.7)"); process.exit(3); }
   if (process.env.FAIL_PHASE === name || (process.env.FAIL_FIX_REVIEW && name === "review" && round() > 0)) {
@@ -843,6 +844,17 @@ test("queued slice waits for the actual merged SHA without reopening the PR", t 
   assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "pr", "merge", "merge"]);
   const { landed } = JSON.parse(readFileSync(join(f.main, ".scratch/scoreboard/_untracked/04-ticket.json"), "utf8"));
   assert.equal(landed.pr, 42); assert.equal(landed.sha, "a".repeat(40)); assert.ok(Date.parse(landed.at));
+});
+
+test("a queued slice asks gh about origin's GitHub repo, not the upstream a site made from the starter also has", t => {
+  const f = fixture(t);
+  f.git("remote", "add", "origin", "https://github.com/acme/site.git");
+  f.git("remote", "add", "upstream", "https://github.com/acme/starter.git");
+  const result = f.run([], { QUEUE_PR: "1", MERGE_AFTER: "2", GH_REPO: "acme/starter" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const merges = f.calls().filter(call => call.phase === "merge");
+  assert.equal(merges.length, 2);
+  assert.deepEqual(merges.map(call => call.repo), ["acme/site", "acme/site"]);
 });
 
 for (const failure of ["lookup", "timeout"]) test(`queued slice resumes its merge wait after ${failure} without reopening the PR`, t => {

@@ -715,10 +715,12 @@ async function main(args) {
     const repo = await gh("merge", ["repo", "view", ...(env.GH_REPO ? [env.GH_REPO] : []), "--json", "nameWithOwner", "--jq", ".nameWithOwner"]);
     const [owner, name] = repo.split("/");
     if (!owner || !name) throw new Error("could not determine owner/name");
+    // --repo wins over GH_REPO and means github.com without a host, so a host GH_REPO names goes back on.
+    const target = env.GH_REPO?.split("/").length === 3 ? `${env.GH_REPO.split("/")[0]}/${repo}` : repo;
     const queue = await execute("merge", "gh", ["api", "graphql", "-f", "query=query($o:String!,$n:String!,$b:String!){repository(owner:$o,name:$n){mergeQueue(branch:$b){id}}}",
       "-F", `o=${owner}`, "-F", `n=${name}`, "-F", `b=${flags.base}`, "--jq", '.data.repository.mergeQueue.id // ""']);
     if (queue.status === 0 && queue.text.trim()) {
-      await gh("merge", ["pr", "merge", number, "--auto", "--rebase", "--match-head-commit", head, "--repo", repo]); ok("merge");
+      await gh("merge", ["pr", "merge", number, "--auto", "--rebase", "--match-head-commit", head, "--repo", target]); ok("merge");
       await recordWaiver();
       land({ queued: true, waived: waivedAny() });
       kitResult("ok", `queued #${number} ${head.slice(0, 7)}`);
@@ -735,7 +737,7 @@ async function main(args) {
         console.log("ci: none (no workflow in .github/workflows runs on pull requests); landing after review");
         land({ ci: "none" });
       }
-      const merged = await execute("merge", "gh", ["pr", "merge", number, "--rebase", "--delete-branch", "--match-head-commit", head, "--repo", repo]);
+      const merged = await execute("merge", "gh", ["pr", "merge", number, "--rebase", "--delete-branch", "--match-head-commit", head, "--repo", target]);
       if (merged.status === 0) {
         const commit = await execute("merge", "gh", ["pr", "view", number, "--json", "mergeCommit", "--jq", ".mergeCommit.oid"]);
         const mergeCommit = commit.status === 0 && /^[a-f0-9]{40}$/i.test(commit.text.trim()) ? commit.text.trim() : undefined;
