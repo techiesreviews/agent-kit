@@ -131,7 +131,7 @@ test("ci-summary asks gh about origin's GitHub repo, not the upstream a site mad
   const sha = "abcdef0123456789abcdef0123456789abcdef01";
   // Each call records GH_REPO, GH_PAGER and NO_COLOR; one green workflow run.
   writeFileSync(join(directory, "gh"), `#!/bin/bash
-printf '%s %s %s\\n' "\${GH_REPO:--}" "\${GH_PAGER:--}" "\${NO_COLOR:--}" >> "${join(directory, "calls")}"
+printf '%s %s %s %s\\n' "\${GH_REPO:--}" "\${GH_HOST:--}" "\${GH_PAGER:--}" "\${NO_COLOR:--}" >> "${join(directory, "calls")}"
 case "$1 $2" in
   'workflow list') echo '[{"id":1,"name":"Checks","state":"active"}]' ;;
   'run list') echo '[{"databaseId":10,"workflowName":"Checks","status":"completed","conclusion":"success","headSha":"${sha}","createdAt":"2026-10-30","url":"https://example.test/run/10"}]' ;;
@@ -143,11 +143,18 @@ esac
   for (const args of [["init", "-q", project], ["-C", project, "remote", "add", "origin", "git@github.com:acme/site.git"],
     ["-C", project, "remote", "add", "upstream", "https://github.com/acme/starter.git"]]) assert.equal(spawnSync("git", args).status, 0);
   const { KIT_ROOT: _root, ...inherited } = process.env;
-  const result = spawnSync(process.execPath, [resolve("ci-summary.mjs"), "dev", sha], { cwd: project, encoding: "utf8", timeout: 10_000,
-    env: { ...inherited, PATH: `${directory}:${process.env.PATH}`, GH_REPO: "acme/starter" } });
-  assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stdout, /Checks: success abcdef0/);
-  const calls = readFileSync(join(directory, "calls"), "utf8").trim().split("\n");
-  assert.equal(calls.length, 2);
-  assert.deepEqual(new Set(calls), new Set(["acme/site cat 1"]));
+  const summary = () => {
+    rmSync(join(directory, "calls"), { force: true });
+    const result = spawnSync(process.execPath, [resolve("ci-summary.mjs"), "dev", sha], { cwd: project, encoding: "utf8", timeout: 10_000,
+      env: { ...inherited, PATH: `${directory}:${process.env.PATH}`, GH_REPO: "acme/starter", GH_HOST: "git.example.com" } });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /Checks: success abcdef0/);
+    const calls = readFileSync(join(directory, "calls"), "utf8").trim().split("\n");
+    assert.equal(calls.length, 2);
+    return new Set(calls);
+  };
+  assert.deepEqual(summary(), new Set(["acme/site github.com cat 1"]));
+  // An enterprise origin: gh api goes by GH_HOST, so that is its host too.
+  assert.equal(spawnSync("git", ["-C", project, "remote", "set-url", "origin", "git@git.example.com:acme/site.git"]).status, 0);
+  assert.deepEqual(summary(), new Set(["git.example.com/acme/site git.example.com cat 1"]));
 });

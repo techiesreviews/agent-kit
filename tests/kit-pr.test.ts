@@ -554,6 +554,22 @@ test("a site made from the starter opens its PR in origin's repo: every gh call 
   assert.deepEqual(children.filter(call => call.repo !== "acme/starter" || call.host), []);
 });
 
+test("the dry-run plan names origin's repo, with its host, never upstream's", t => {
+  const f = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: playground });
+  f.git("config", `url.${f.origin}.insteadOf`, "https://github.com/acme/site.git");
+  f.git("remote", "set-url", "origin", "https://github.com/acme/site.git");
+  f.git("remote", "add", "upstream", "https://github.com/acme/starter.git");
+  const plan = f.run(["--dry-run"], {}, true);
+  assert.equal(plan.status, 0, plan.stdout + plan.stderr);
+  assert.match(plan.stdout, /^'gh' 'pr' 'create' .* '--repo' 'acme\/site'$/m);
+  assert.match(plan.stdout, /^gh pr merge N --rebase --delete-branch --repo acme\/site /m);
+  f.git("config", `url.${f.origin}.insteadOf`, "git@git.example.com:acme/site.git");
+  f.git("remote", "set-url", "origin", "git@git.example.com:acme/site.git");
+  const enterprise = f.run(["--dry-run"], {}, true);
+  assert.match(enterprise.stdout, /^'gh' 'pr' 'create' .* '--repo' 'git\.example\.com\/acme\/site'$/m);
+  assert.match(enterprise.stdout, /^gh pr merge N --rebase --delete-branch --repo git\.example\.com\/acme\/site /m);
+});
+
 test("an enterprise origin keeps its host on every gh call, the merge's --repo too", t => {
   const f = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: playground });
   f.git("config", `url.${f.origin}.insteadOf`, "git@git.example.com:acme/site.git");
