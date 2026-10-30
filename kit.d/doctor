@@ -223,7 +223,7 @@ if [[ -n $(setting 'if .skillGuard.allow == null then empty else "set" end') ]];
     if (( code == 0 )); then
       pass skills "allowed own skills: ${allowed:-none} (skillGuard.allow); no other skill paths tracked"
     else
-      problem=$(awk 'sub(/^problem: /, "") { print; exit }' <<< "$output")
+      problem=$(awk 'sub(/^problem: /, "") { if (!n++) first = $0 } END { if (n) print first (n > 1 ? " (and " n - 1 " more)" : "") }' <<< "$output")
       fail skills "${problem:-skill guard exited $code}" 'remove the skill files, or list only the project'"'"'s own skill folders in "skillGuard.allow" of scripts/agents/kit.json'
     fi
   fi

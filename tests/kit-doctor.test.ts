@@ -325,6 +325,9 @@ test("doctor adds the project's checks.doctor lines and the playwright module, e
 test("doctor lists skillGuard.allow's own skills, counted, and fails on another skill path or a too-wide entry", (t) => {
   const plain = playground(t, { allowMainCheckout: true }).run();
   assert.doesNotMatch(plain.stdout, /skills:/);
+  const empty = playground(t, { allowMainCheckout: true, skillGuard: { allow: [] } }).run();
+  assert.equal(empty.status, 0, empty.stdout);
+  assert.ok(empty.stdout.includes("✓ skills: allowed own skills: none (skillGuard.allow); no other skill paths tracked\n"), empty.stdout);
   const f = playground(t, { allowMainCheckout: true, skillGuard: { allow: [".claude/skills/heron"] } });
   mkdirSync(join(f.root, ".claude/skills/heron"), { recursive: true });
   writeFileSync(join(f.root, ".claude/skills/heron/SKILL.md"), "x\n");
@@ -342,7 +345,7 @@ test("doctor lists skillGuard.allow's own skills, counted, and fails on another 
   writeFileSync(join(f.root, "scripts/agents/kit.json"), JSON.stringify({ project: "techies-playground", mainRoot: f.root, allowMainCheckout: true,
     branches: { land: "main" }, skillGuard: { allow: [".claude/skills"] } }));
   const wide = f.run();
-  assert.ok(wide.stdout.includes('✗ skills: scripts/agents/kit.json: skillGuard.allow entry ".claude/skills" is not one skill folder\'s repo path; fix: '), wide.stdout);
+  assert.ok(wide.stdout.includes('✗ skills: scripts/agents/kit.json: skillGuard.allow entry ".claude/skills" is not one skill folder\'s repo path (and 2 more); fix: '), wide.stdout);
 });
 
 test("the doctor RESULT counts every line it checked, but not the optional grok and kit notes", (t) => {

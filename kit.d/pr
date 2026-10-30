@@ -420,7 +420,8 @@ async function main(args) {
     // Paid skills never go in a repo (Lex, 2026-10-29): no tracked SKILL.md or skills/ path and, on a machine with
     // local skill folders, no changed line from a skill's text (skill-guard.mjs; it never prints that text).
     const guarded = await run("skills", "node", [resolve(import.meta.dirname, "../skill-guard.mjs"), "--base", `origin/${flags.base}`]);
-    const guardNote = guarded.split(/\r?\n/).find(line => line.startsWith("skill-guard: ")) || "";
+    // Every note: the line check's, and which own skills (skillGuard.allow) passed the path check.
+    const guardNote = guarded.split(/\r?\n/).filter(line => line.startsWith("skill-guard: ")).map(line => line.slice("skill-guard: ".length)).join("; ");
     ok("skills");
 
     // Scale the local checks to the PR's own diff (merge base to HEAD, after the rebase).
@@ -440,7 +441,7 @@ async function main(args) {
       throw new Error(featureListProblem(settings));
     }
     const tests = [`Tier: ${plan.tier} (${plan.reason})`, ...(features.line ? [features.line] : []), "",
-      `- skill guard: ok${guardNote ? ` — ${guardNote.slice("skill-guard: ".length)}` : ""}`];
+      `- skill guard: ok${guardNote ? ` — ${guardNote}` : ""}`];
     // The unit test files (paths.unitTests) the focused run picks from, wherever they live.
     const unitFiles = (await git("tier", ["ls-files", "-z"])).split("\0").filter(path => path && unitTestFile(path, settings));
     const sources = () => Object.fromEntries(unitFiles.map(path => [path, readFileSync(join(root, path), "utf8")]));
