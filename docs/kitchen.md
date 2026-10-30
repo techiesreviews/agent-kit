@@ -25,6 +25,8 @@ says for today; never claim a planned item ran.
   `cd … || exit 1`; work in progress is a commit on your own branch.
 - **Lex in plain words:** questions are plain choices about what changes for him, each with a
   recommended answer. Technical questions go to him too, explained plainly with file paths.
+- **Plain English** (Lex, 2026-10-30): every builder, reviewer and runner report, ticket and
+  commit message is in plain English, since Lex reads them.
 - **Tuesday is Lex's only review day** (Lex, 2026-10-27): everything that needs him waits in one
   [Tuesday pack](#tuesday-review); between Tuesdays the work keeps moving. Budget: his $200/month
   Claude subscription and the free workers, never more.
@@ -36,6 +38,18 @@ says for today; never claim a planned item ran.
   prints the folder): quiet screens, instant changes with Undo, the same agent connection
   everywhere, and the Techies brand colours. The project's UX rulebook adds detail and wins where
   it differs.
+- **Kit changes go through one board** (Lex, 2026-10-30): a change to the shared kit is a ticket on
+  the kitchen-everywhere board (`docs/wayfinder/kitchen-everywhere/build/` in native-site-editor,
+  on `dev`), built only by the thread that orchestrates that board. A thread in any other project
+  writes the ticket there (or asks the orchestrator to) and goes on with its own work.
+- **A build's tests stay in the project:** tests and helper scripts a build depends on are committed
+  and wired into the project's checks (`checks.*`, `unit.files`/`unit.run` or its `specs` command in
+  `scripts/agents/kit.json`), so `kit doctor`, reviews and later builds find them; `/tmp` holds
+  only throwaway output.
+- **Always-loaded files stay short:** `AGENTS.md` and `CLAUDE.md` hold rules and pointers only;
+  feature descriptions, history and long explanations live in the project's docs, linked from
+  there. Docs and `--help` point to the test files for what is checked ("what each suite checks:
+  the comments and assertion messages in its file") instead of listing the checks.
 
 ## Who cooks (pins from 2026-10-22)
 

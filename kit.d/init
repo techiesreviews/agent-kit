@@ -196,6 +196,9 @@ release, who decides, and the builder and reviewer pins. It has two parts:
 - **The shared rulebook,** the same for every project, with the kit (\`docs/kitchen.md\` in the Agent Kit).
 - **This project's extras,** which win where they differ: [${extrasFile}](${extrasLink})
   (named by \`rulebookExtras\` in \`scripts/agents/kit.json\`).
+
+A change to the shared kit is a ticket on the kitchen-everywhere board in native-site-editor (on
+\`dev\`): write it there, or ask that board's orchestrator to, and go on with this project's work.
 `;
   if (existsSync(at("docs/agents/kitchen.md"))) kept.push("docs/agents/kitchen.md");
   else writes.push({ path: "docs/agents/kitchen.md", text: pointer });

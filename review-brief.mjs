@@ -54,6 +54,9 @@ export function builderChecks(root, settings) {
     lint: command(settings.checks?.lint), specs: projectCommand("specs", root, settings) };
 }
 
+/** The one line every builder and review brief carries (house rule "Plain English"). */
+export const plainEnglish = "Write in plain English: Lex reads every report, ticket and commit message.";
+
 export const reviewFormat = `Required format:
 REVIEW_STATUS: complete
 Defects: commit:path:line, severity, evidence, and fix; use separate Spec and Standards groups.
@@ -69,6 +72,7 @@ P2: real but minor defect (edge case, misleading message, standards breach with 
 P3: cosmetic or style.
 Validation gaps: concrete missing coverage, or none; no severity.
 Optional nits: separate from defects, or none.
+${plainEnglish}
 The very first line must be REVIEW_STATUS: complete. No preamble or markdown fence.
 `;
 

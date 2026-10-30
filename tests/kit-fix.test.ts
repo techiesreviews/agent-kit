@@ -240,6 +240,7 @@ test("the fix brief names only the checks the settings set", t => {
     if (typeof settings !== "string") assert.equal(result.status, 0, result.stdout + result.stderr);
     const round = readFileSync(join(f.root, ".scratch/kit-fix/build%2Fke-03/round-1.md"), "utf8");
     assert.ok(round.split("\n").includes(line), round);
+    assert.ok(round.split("\n").includes("Write in plain English: Lex reads every report, ticket and commit message."), round);
   }
 });
 
