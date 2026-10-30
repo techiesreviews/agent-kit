@@ -662,6 +662,15 @@ test("a push from a folder the guard cannot name is checked in the session's fol
     "git push origin dev && git push origin main",
   ]) assert.equal(pushGuard(command, work, { CLAUDE_PROJECT_DIR: work }).stderr, pushRefused("main"), command);
   assert.equal(pushGuard("git stash && git push origin main", work).stderr, "commit work in progress on your own branch\n");
+  // From an unguarded session: a folder the command names counts even when the shell may not be there,
+  // and a cd in a pipeline or the background leaves the folder as it was.
+  for (const command of [
+    `true && cd ${work} && git push origin main`, `GIT_DIR=${work}/.git git push origin main`, `env -C ${work} git push origin main`,
+    `env --chdir=${work} git push origin main`, `git --git-dir=${work}/.git push origin main`, `git --git-dir ${work}/.git push origin main`,
+    `export GIT_DIR=${work}/.git; git push origin main`, `cd ${work}; cd /tmp | cat; git push origin main`, `cd ${work}; cd /tmp & git push origin main`,
+  ]) assert.equal(pushGuard(command, plain.work, { CLAUDE_PROJECT_DIR: plain.work }).stderr, pushRefused("main"), command);
+  for (const command of ["true && cd /tmp && git push origin main", "GIT_DIR=/tmp/x/.git git push origin main", "git push origin main"])
+    assert.equal(pushGuard(command, plain.work, { CLAUDE_PROJECT_DIR: plain.work }).status, 0, command);
   const noCwd = run("bash-guard.sh", { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "git push origin main" } }, { ...gitEnv, CLAUDE_PROJECT_DIR: work });
   assert.equal(noCwd.stderr, pushRefused("main"));
 });

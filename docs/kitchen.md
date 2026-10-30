@@ -130,7 +130,8 @@ on a usage-limit `problem:` line, tell Lex the reset time and carry on with Clau
 - **Use:** `scripts/agents/kit next [map…]` picks the tickets and builders by fixed rules.
   The lead claims each `next:` ticket on the landing branch (assignee, commit, push) and starts it as
   **its own T3 thread**: one `delegate_task` per ticket (or group) with `isolation: "worktree"`,
-  `mode: "async"`, the ticket's builder as `target`, and this brief:
+  `mode: "async"`, the ticket's builder as `target`, and this brief (where the landing branch is
+  also the release branch, a raw claim push is refused: claim with a docs-tier `kit pr`):
 
   > Build slice `<ticket path>` in `<project>`, owner `<owner>`. Follow docs/agents/runner.md from Setup to
   > Report with Agent Kit (`scripts/agents/kit`); builder `<model>`, `ASE_REVIEW_MODEL=<review pin>`. Last line: PR <full URL>, head <SHA>, checks and reviews <state>.
