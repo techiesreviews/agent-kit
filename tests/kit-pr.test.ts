@@ -13,7 +13,7 @@ import type { ScoreRecord } from "./kit-score.test.ts";
 const pr = resolve("kit.d/pr");
 const kit = resolve("kit");
 const cleanReview = "REVIEW_STATUS: complete\nDefects:\n- Spec: none.\n- Standards: none.\nValidation gaps: none.\nOptional nits: none.\n";
-interface Call { tool: string; script?: string; args: string[]; body?: string; repo?: string }
+interface Call { tool: string; script?: string; args: string[]; body?: string; repo?: string; host?: string }
 // Claude's review, not the second look that kit pr runs after it.
 const claudeReview = (call: Call) => call.tool === "fake-kit" && call.args[0] === "review" && !call.args.includes("--second-look");
 const fake = `#!/usr/bin/env node
@@ -25,7 +25,7 @@ const bodyField = args.find(arg => arg.startsWith("body=@"));
 const bodyPath = bodyIndex >= 0 ? args[bodyIndex + 1] : bodyField?.slice("body=@".length);
 // repo: the GH_REPO a call was told, when it was told one.
 appendFileSync(env.FAKE_CALLS, JSON.stringify({ tool, script: process.argv[1], args, ...(bodyPath ? { body: readFileSync(bodyPath, "utf8") } : {}),
-  ...(env.GH_REPO ? { repo: env.GH_REPO } : {}) }) + "\\n");
+  ...(env.GH_REPO ? { repo: env.GH_REPO } : {}), ...(env.GH_HOST ? { host: env.GH_HOST } : {}) }) + "\\n");
 const scripts = { "unit.sh": "unit", "tickets.mjs": "tickets", "check-colours.mjs": "colours" };
 const action = tool === "npm" ? (args[0] === "test" ? "unit" : args[1]) : scripts[tool] || (tool === "fake-kit" ? args[0] : args.slice(0, 2).join("-"));
 if (env.FAKE_FAIL === action) {
@@ -144,7 +144,7 @@ function fixture(t: TestContext, changes?: Record<string, string>, override: Rec
     ASE_OWNER: "ak-14", KIT_PR_KIT: join(bin, "fake-kit"), FAKE_CALLS: join(dir, "calls.jsonl"), CLAUDECODE: "",
     GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
   for (const key of Object.keys(env)) if (key.startsWith("FAKE_") && key !== "FAKE_CALLS") delete env[key];
-  delete env.GH_REPO;
+  delete env.GH_REPO; delete env.GH_HOST;
   const gitAt = (cwd: string, ...args: string[]) => {
     const result = spawnSync("git", args, { cwd, env, encoding: "utf8", timeout: 10_000 });
     assert.equal(result.status, 0, result.stderr);
@@ -543,7 +543,7 @@ test("a site made from the starter opens its PR in origin's repo: every gh call 
   assert.match(result.stdout, /RESULT: ok merged #73 abcdef0/);
   const gh = f.calls().filter(call => call.tool === "gh");
   assert.deepEqual(new Set(gh.map(call => `${call.args[0]} ${call.args[1]}`)), new Set(["pr list", "pr create", "repo view", "api graphql", "pr merge", "pr view"]));
-  assert.deepEqual(gh.filter(call => call.repo !== "acme/site"), []);
+  assert.deepEqual(gh.filter(call => call.repo !== "acme/site" || call.host !== "github.com"), []);
   // gh repo view reads no GH_REPO, so the repo is named.
   assert.deepEqual(gh.find(call => call.args[0] === "repo")?.args.slice(0, 3), ["repo", "view", "acme/site"]);
   // The kit commands kit pr runs (the review that comments, the CI wait) are told it too.
@@ -557,12 +557,24 @@ test("an enterprise origin keeps its host on every gh call, the merge's --repo t
   f.git("config", `url.${f.origin}.insteadOf`, "git@git.example.com:acme/site.git");
   f.git("remote", "set-url", "origin", "git@git.example.com:acme/site.git");
   f.git("remote", "add", "upstream", "https://github.com/acme/starter.git");
-  const result = f.run([], { FAKE_BASE: "main" }, true);
+  const result = f.run([], { FAKE_BASE: "main", GH_HOST: "github.com" }, true);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const gh = f.calls().filter(call => call.tool === "gh");
-  assert.deepEqual(gh.filter(call => call.repo !== "git.example.com/acme/site"), []);
+  // gh api takes its host from GH_HOST, not GH_REPO: the merge queue lookup goes to the enterprise host.
+  assert.ok(gh.some(call => call.args[0] === "api"));
+  assert.deepEqual(gh.filter(call => call.repo !== "git.example.com/acme/site" || call.host !== "git.example.com"), []);
   assert.deepEqual(gh.find(call => call.args[0] === "repo")?.args.slice(0, 3), ["repo", "view", "git.example.com/acme/site"]);
   // repo view answers OWNER/NAME (the fake's test/repo); the merge names the host again.
+  const merge = f.ghCalls("merge").at(-1)!.args;
+  assert.equal(merge[merge.indexOf("--repo") + 1], "git.example.com/test/repo");
+});
+
+test("with a folder origin, a GH_REPO already set is what gh is told, and the merge keeps its host", t => {
+  const f = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: playground });
+  const result = f.run([], { FAKE_BASE: "main", GH_REPO: "git.example.com/acme/site" }, true);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(f.calls().filter(call => call.tool === "gh" && call.repo !== "git.example.com/acme/site"), []);
+  assert.deepEqual(f.calls().find(call => call.tool === "gh" && call.args[0] === "repo")?.args.slice(0, 3), ["repo", "view", "git.example.com/acme/site"]);
   const merge = f.ghCalls("merge").at(-1)!.args;
   assert.equal(merge[merge.indexOf("--repo") + 1], "git.example.com/test/repo");
 });

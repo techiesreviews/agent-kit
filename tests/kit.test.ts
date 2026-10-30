@@ -524,7 +524,9 @@ test("bash and mjs read origin's GitHub repo alike, whatever other remotes there
   }
   // gh is told origin's repo, over any GH_REPO already set; without a GitHub origin env is left as it is.
   gitAt("remote", "set-url", "origin", "git@github.com:acme/site.git");
-  assert.deepEqual(kitGhEnv({ GH_REPO: "acme/starter", A: "1" }, directory), { GH_REPO: "acme/site", A: "1" });
+  assert.deepEqual(kitGhEnv({ GH_REPO: "acme/starter", GH_HOST: "git.example.com", A: "1" }, directory), { GH_REPO: "acme/site", GH_HOST: "github.com", A: "1" });
+  gitAt("remote", "set-url", "origin", "git@git.example.com:acme/site.git");
+  assert.deepEqual(kitGhEnv({}, directory), { GH_REPO: "git.example.com/acme/site", GH_HOST: "git.example.com" });
   gitAt("remote", "set-url", "origin", "/srv/git/site.git");
   assert.deepEqual(kitGhEnv({ GH_REPO: "acme/other" }, directory), { GH_REPO: "acme/other" });
   assert.deepEqual(kitGhEnv({}, directory), {});

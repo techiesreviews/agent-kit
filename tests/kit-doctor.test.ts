@@ -368,8 +368,15 @@ test("doctor shows the GitHub repo PRs go to: origin's, never the upstream a sit
   git(f.build, "remote", "add", "mirror", "https://git.example.com/acme/site.git");
   const result = f.run();
   assert.equal(result.status, 0, result.stdout);
-  assert.match(result.stdout, /^✓ PR target: acme\/site \(origin; not mirror, upstream\)$/m);
+  assert.match(result.stdout, /^✓ PR target: acme\/site \(origin; other remotes not used: mirror, upstream\)$/m);
   assert.match(result.stdout, /RESULT: ok doctor 11\/11 checks passed\n$/);
+  // An enterprise origin keeps its host.
+  git(f.build, "config", `url.${join(f.directory, "origin.git")}.insteadOf`, "git@git.example.com:acme/site.git");
+  git(f.build, "remote", "set-url", "origin", "git@git.example.com:acme/site.git");
+  assert.match(f.run().stdout, /^✓ PR target: git\.example\.com\/acme\/site \(origin; other remotes not used: mirror, upstream\)$/m);
+  // A folder origin with GH_REPO set: kit pr opens its PRs there.
+  git(f.build, "remote", "set-url", "origin", join(f.directory, "origin.git"));
+  assert.match(f.run([], f.build, { GH_REPO: "acme/site" }).stdout, /^✓ PR target: acme\/site \(GH_REPO; origin is not a GitHub repo\)$/m);
   // An origin whose url was taken out is named as such.
   git(f.build, "config", "--unset", "remote.origin.url");
   assert.match(f.run().stdout, /^✗ PR target: origin \(no url\) is not a GitHub repo, so kit pr cannot open a PR; /m);
