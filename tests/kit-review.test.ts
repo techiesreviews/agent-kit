@@ -338,8 +338,8 @@ test("runner appends the footer exactly once to generated, handwritten and alrea
   for (const severity of ["P0:", "P1:", "P2:", "P3:"]) assert.ok(reviewFormat.includes(severity));
   assert.match(reviewFormat, /Spec defect that breaks a "Done when" item/);
   assert.match(reviewFormat, /Validation gaps:.*no severity/);
-  // Every review goes through this one prompt step (agent-run.mjs preparePrompt), the second look's too,
-  // so each is asked for plain English (house rule); the wording is pinned here, other tests import it.
+  // Every review goes through this one prompt step (agent-run.mjs preparePrompt), the second look's and kit ux's
+  // too (its brief names plain English as the part of the format that applies), so each is asked for plain English; the wording is pinned here, other tests import it.
   const plain = "Write in plain English: Lex reads every report, ticket and commit message.";
   assert.equal(plainEnglish, plain);
   for (const brief of [generated, "Hand-written brief", `${generated}${reviewFormat}`]) {

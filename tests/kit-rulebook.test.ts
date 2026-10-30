@@ -148,6 +148,9 @@ test("kit rulebook prints the house rules from the 2026-10-30 retros under House
   const house = run.stdout.split("\n## House rules\n")[1]?.split("\n## ")[0] ?? "";
   for (const rule of ["Plain English", "Kit changes go through one board", "A build's tests stay in the project", "Always-loaded files stay short"])
     assert.ok(house.includes(`- **${rule}`), `House rules lack "${rule}"`);
+  // Where kit tickets go, and who builds them, as the ticket decided.
+  for (const words of ["`docs/wayfinder/kitchen-everywhere/build/`", "built only by the thread that orchestrates that board"])
+    assert.ok(house.replace(/\n\s+/g, " ").includes(words), `the board rule lacks ${words}`);
 });
 
 test("the shared rulebook names no editor-only fact and links only inside the kit", () => {
