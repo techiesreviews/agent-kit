@@ -39,9 +39,10 @@ says for today; never claim a planned item ran.
   everywhere, and the Techies brand colours. The project's UX rulebook adds detail and wins where
   it differs.
 - **Kit changes go through one board** (Lex, 2026-10-30): a change to the shared kit is a ticket on
-  the kitchen-everywhere board (`docs/wayfinder/kitchen-everywhere/build/` in native-site-editor,
-  on `dev`), built only by the thread that orchestrates that board. A thread in any other project
-  writes the ticket there (or asks the orchestrator to) and goes on with its own work.
+  the kitchen-everywhere board (`docs/wayfinder/kitchen-everywhere/build/` in the Native Site
+  Editor's repo, on its landing branch), built only by the thread that orchestrates that board. A
+  thread in any other project writes the ticket there (or asks the orchestrator to) and goes on
+  with its own work.
 - **A build's tests stay in the project:** tests and helper scripts a build depends on are committed
   and wired into the project's checks (`checks.*`, `unit.files`/`unit.run` or its `specs` command in
   `scripts/agents/kit.json`), so `kit doctor`, reviews and later builds find them; `/tmp` holds
