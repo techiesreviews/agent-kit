@@ -58,7 +58,13 @@ function problems(root, { land }) {
     found.push({ what: "no origin remote", advice: `the check compares HEAD with origin/${branch}` });
     return { found };
   }
-  const fetch = git("fetch", "-q", "origin");
+  // By name, so a single-branch or CI clone that does not track the branch still fetches it.
+  const fetch = git("fetch", "-q", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`);
+  if (fetch.status !== 0 && /couldn't find remote ref/i.test(fetch.stderr)) {
+    found.push({ what: `origin has no branch ${branch}`, advice: land
+      ? `land work on ${branch} through kit pr first` : "push nothing by hand; land the release with kit pr --release" });
+    return { found };
+  }
   if (fetch.status !== 0) {
     const reason = kitHideUserInfo(fetch.stderr.trim().split(/\r?\n/).at(-1) || `git fetch exited ${fetch.status}`);
     found.push({ what: `could not fetch origin (${reason})`, advice: "try again once origin answers" });
@@ -70,16 +76,13 @@ function problems(root, { land }) {
     return { found };
   }
   const short = git("rev-parse", "--short", head).stdout.trim();
-  if (!git("rev-parse", "--verify", "-q", `refs/remotes/origin/${branch}`).stdout.trim()) {
-    found.push({ what: `origin has no branch ${branch}`, advice: "push nothing by hand; land the release with kit pr --release" });
-    return { found };
-  }
   const counts = git("rev-list", "--left-right", "--count", `HEAD...refs/remotes/origin/${branch}`);
   if (counts.status !== 0) throw new Error(`git rev-list failed: ${counts.stderr.trim()}`);
   const [ahead, behind] = counts.stdout.trim().split(/\s+/).map(Number);
   const update = `update the checkout to origin/${branch} before going live`;
   if (ahead && behind) found.push({ what: `HEAD ${short} and origin/${branch} have split (${plural(ahead, "commit")} ahead, ${behind} behind)`, advice: update });
-  else if (ahead) found.push({ what: `HEAD ${short} is ${plural(ahead, "commit")} ahead of origin/${branch}`, advice: `what goes live must be on ${branch}; land it with kit pr` });
+  else if (ahead) found.push({ what: `HEAD ${short} is ${plural(ahead, "commit")} ahead of origin/${branch}`, advice: land
+    ? `a release carries only what landed on ${branch}; land it with kit pr first` : `what goes live must be on ${branch}; land it with kit pr` });
   else if (behind) found.push({ what: `HEAD ${short} is ${plural(behind, "commit")} behind origin/${branch}`, advice: update });
   return { found, passed: `release-check ${short} is origin/${branch}, nothing unsaved` };
 }

@@ -28,6 +28,11 @@ appendFileSync(env.FAKE_CALLS, JSON.stringify({ tool, script: process.argv[1], a
   ...(env.GH_REPO ? { repo: env.GH_REPO } : {}), ...(env.GH_HOST ? { host: env.GH_HOST } : {}) }) + "\\n");
 const scripts = { "unit.sh": "unit", "tickets.mjs": "tickets", "check-colours.mjs": "colours" };
 const action = tool === "npm" ? (args[0] === "test" ? "unit" : args[1]) : scripts[tool] || (tool === "fake-kit" ? args[0] : args.slice(0, 2).join("-"));
+// FAKE_RELEASE_CHECK is the real kit release-check, which kit pr --release then runs.
+if (tool === "fake-kit" && action === "release-check" && env.FAKE_RELEASE_CHECK) {
+  const run = require("node:child_process").spawnSync(env.FAKE_RELEASE_CHECK, args.slice(1), { stdio: "inherit" });
+  process.exit(run.status ?? 1);
+}
 if (env.FAKE_FAIL === action) {
   for (let i = 1; i <= 35; i++) console.error("failure line " + i);
   if (env.FAKE_FAIL_TEXT) console.error(env.FAKE_FAIL_TEXT);
@@ -774,7 +779,7 @@ test("a release runs kit release-check --land first, a dry run too; only release
     const before = f.calls().length, result = f.run(args);
     assert.equal(result.status, 0, result.stdout + result.stderr);
     assert.deepEqual(f.calls()[before].args, ["release-check", "--land"]);
-    assert.match(result.stdout, /^logs: .+\nrelease-check: ok\n/);
+    assert.match(result.stdout, /^logs: .+\nrelease-check: ok \(release-check done\)\n/);
   }
   const before = f.calls().length, plain = f.run(["--no-merge"]);
   assert.equal(plain.status, 0, plain.stdout + plain.stderr);
@@ -782,12 +787,32 @@ test("a release runs kit release-check --land first, a dry run too; only release
   assert.doesNotMatch(plain.stdout, /release-check/);
 });
 
-test("a failed release check stops the release before the fetch and the push, naming its problem", t => {
-  const f = fixture(t), result = f.run(["--base", "main", "--release"], { FAKE_FAIL: "release-check", FAKE_FAIL_TEXT: "problem: unsaved files (draft.html)" });
+test("a failed release check stops the release before the fetch and the push, with the check's own RESULT text", t => {
+  const f = fixture(t), result = f.run(["--base", "main", "--release"], { FAKE_FAIL: "release-check" });
   assert.equal(result.status, 1);
-  assert.match(result.stdout, /RESULT: fail release-check: problem: unsaved files \(draft\.html\)/);
+  assert.match(result.stdout, /RESULT: fail release-check: child failure$/m);
   assert.deepEqual(f.calls().map(call => call.args[0]), ["release-check"]);
   assert.equal(existsSync(join(f.logDir(), "fetch.log")), false);
+});
+
+test("the real release check passes a release cut at origin/dev, fails one with a commit that never landed, and takes a lead's waiver", t => {
+  const f = fixture(t), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check") };
+  f.git("checkout", "-q", "dev"); f.commit("Landed change", "landed.txt"); f.git("push", "-q", "origin", "dev");
+  f.git("checkout", "-q", "-b", "release/cut");
+  let result = f.run(["--base", "main", "--release", "--dry-run"], real);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^logs: .+\nrelease-check: ok \(release-check [a-f0-9]{7} is origin\/dev, nothing unsaved\)\n/);
+  assert.match(result.stdout, /RESULT: ok dry-run [a-f0-9]{7} release\/cut -> main$/m);
+  assert.match(readFileSync(join(f.logDir(), "body.md"), "utf8"), /- kit release-check --land: release-check [a-f0-9]{7} is origin\/dev, nothing unsaved/);
+  f.commit("Never landed", "extra.txt"); writeFileSync(join(f.root, "draft.txt"), "draft\n");
+  result = f.run(["--base", "main", "--release", "--dry-run"], real);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /^RESULT: fail release-check: unsaved files \(draft\.txt\): .+; HEAD [a-f0-9]{7} is 1 commit ahead of origin\/dev: a release carries only what landed on dev; land it with kit pr first$/m);
+  rmSync(join(f.root, "draft.txt"));
+  result = f.run(["--base", "main", "--release", "--dry-run", "--waive", "hotfix tonight"], { ...real, ASE_OWNER: "ke-lead" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /release-check: ok \(release-check waived by ke-lead \(hotfix tonight\): HEAD [a-f0-9]{7} is 1 commit ahead of origin\/dev\)/);
+  assert.deepEqual(f.calls().filter(call => call.args[0] === "release-check").at(-1)?.args, ["release-check", "--land", "--waive", "hotfix tonight"]);
 });
 
 test("newest complete saved review of the whole PR is posted; incomplete, partial-scope and mismatched ones are skipped", t => {
