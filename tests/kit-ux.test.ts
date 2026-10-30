@@ -978,6 +978,24 @@ test("kit ux fails a retry that fails, keeps only the retry's rules for what it 
   assert.match(silent.result, /, 0 fine, 0 looks off, 0 broken, 1 no verdict, bundle \S+$/);
 });
 
+test("kit ux fails a retry that gives a missing feature two verdicts, and a failed try with no verdict is broken", t => {
+  const { run } = fixture(t);
+  const twice = run(["--features", "F-media-01,F-media-02"], {
+    FAKE_ANSWER: "REVIEW_STATUS: complete\nF-media-01: fine — ok — none",
+    FAKE_ANSWER_AGAIN: "REVIEW_STATUS: complete\nF-media-02: fine — a — none\nF-media-02: broken — b — none",
+  });
+  assert.equal(twice.status, 1, twice.stdout + twice.stderr);
+  assert.match(twice.result, /, bundle (\S+), review unreadable: two verdicts for F-media-02 \(\1\/ux\.md\)$/);
+  const bundle = /bundle (\S+),/.exec(twice.result)![1];
+  assert.match(readFileSync(join(bundle, "ux.md"), "utf8"), /Problem: two verdicts for F-media-02[\s\S]*F-media-02: broken — b/);
+  assert.equal(existsSync(join(bundle, "ux.json")), false);
+  const tryFailed = run(["--features", "F-media-01"], { FAIL_STEP: 'expect visible "Nowhere"', FAKE_ANSWER: "REVIEW_STATUS: complete\nNothing to say." });
+  assert.equal(tryFailed.status, 1, tryFailed.stdout + tryFailed.stderr);
+  assert.match(tryFailed.result, /, 0 fine, 0 looks off, 1 broken, bundle (\S+), broken: F-media-01$/);
+  const report = JSON.parse(readFileSync(join(/bundle (\S+),/.exec(tryFailed.result)![1], "ux.json"), "utf8"));
+  assert.equal("noVerdict" in report, false);
+});
+
 test("the brief keeps the reviewer on the bundle, the rulebook and the mock-up", () => {
   const text = brief.uxBrief({ bundle: "/b", features: [{ id: "F-media-01" }, { id: "F-pages-02" }], images: ["a.webp"],
     rules: new Map([["S1", "No explainer lines."]]), mockups: ["- mock-up: docs/m.html"] });

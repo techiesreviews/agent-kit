@@ -97,7 +97,8 @@ async function slice(args) {
     ended = code => score(record => {
       record.phases.push({ name: phase, start: started, end: new Date().toISOString(), exit: code });
       if (code) return;
-      if (phase === "build" && state.build) scoreCost(record, state.build);
+      // A build taken after a builder switch is still the old builder's run.
+      if (phase === "build" && (state.build ?? state.switchedBuild)) scoreCost(record, state.build ?? state.switchedBuild);
       if (["review", "fix", "second"].includes(phase) && state.review) scoreReview(record, state.review);
       if (phase === "pr" && state.sha) {
         // kit pr prints a short SHA after recording the full one; keep its SHA and time.

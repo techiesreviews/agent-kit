@@ -640,7 +640,8 @@ test("commits from the land branch on top of the start are not taken as the buil
 test("commits after a Claude build that died at launch are not taken, though its status holds the up-front session", t => {
   // agent-run assigns a Claude or Grok session before the CLI starts; a missing CLI never spawns (no pgid), and a
   // usage limit or login error on the first call ends at once (launchFailed).
-  for (const died of [{ pgid: null, state: "failed", exitCode: 2 }, { pgid: 4242, state: "failed", exitCode: 1, launchFailed: true }]) {
+  for (const died of [{ pgid: null, state: "failed", exitCode: 2 }, { pgid: 4242, state: "failed", exitCode: 1, launchFailed: true },
+    { pgid: 4242, state: "failed", exitCode: 1, silent: true }]) {
     const f = fixture(t);
     assert.equal(f.run([], { FAIL_PHASE: "build" }).status, 1);
     const build = f.state().build;
@@ -674,11 +675,13 @@ test("a builder switched after a build that failed at launch still refuses the c
 });
 
 test("a build that timed out resumes from its commits under another builder, whose fix rounds start fresh", t => {
-  const f = fixture(t);
-  timedOut(f);
+  const f = fixture(t), build = timedOut(f);
+  writeFileSync(join(build, "run.log"), JSON.stringify({ type: "result", modelUsage: { "gpt-6.1-sol": { inputTokens: 1000, outputTokens: 200 } } }) + "\n");
   writeFileSync(join(f.root, "file.txt"), "built by hand\n");
   f.git("commit", "-qam", "builder work");
   const result = f.run([], { CLEAN_AT: "1" }, ["--ticket", f.ticket, "--builder", "claude-opus-5-5"]);
+  const record = JSON.parse(readFileSync(join(f.main, ".scratch/scoreboard/_untracked/04-ticket.json"), "utf8"));
+  assert.equal(record.costs[build]?.role, "build", "the taken build's cost is scored though the builder switched");
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /builder switched: gpt-6\.1-sol -> claude-opus-5-5/);
   assert.match(result.stdout, /resume: build taken from 1 commit on \w+: \w+ builder work\n/);
