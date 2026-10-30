@@ -282,10 +282,11 @@ async function main(args) {
       const fd = openSync(log, "a");
       let stdout = "", stderr = "", failure;
       let status;
-      // Logs get whole lines with any url's user-info hidden, so a token in a remote's url never reaches .scratch.
+      // Logs get any url's user-info hidden, so a token in a remote's url never reaches .scratch. A url holds no
+      // whitespace, so only the text after a stream's last whitespace waits for the next chunk.
       const unwritten = { out: "", err: "" };
       const write = (stream, chunk) => {
-        const text = unwritten[stream] + chunk, end = text.lastIndexOf("\n") + 1;
+        const text = unwritten[stream] + chunk, end = text.search(/\s\S*$/) + 1;
         unwritten[stream] = text.slice(end);
         if (end) appendFileSync(fd, kitHideUserInfo(text.slice(0, end)));
       };

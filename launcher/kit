@@ -23,7 +23,7 @@ if [[ -z ${KIT_HOME:-} || $KIT_HOME == "${KIT_HOME_DEFAULT:-}" ]] || { [[ $KIT_H
   # leaves that clone inside the winner's folder, unused, where it used to stay beside it).
   whole "$KIT_HOME" || KIT_HOME=$cache/agent-kit why="$cache/agent-kit exists but holds no kit; remove it"
   if [[ ! -e $KIT_HOME ]]; then
-    # KIT_REPO is shown without a user:token@ part (kit update's kit_hide_user_info, inlined: no kit-lib.sh yet).
+    # KIT_REPO is shown without a user:token@ part (kit-lib.sh's kit_hide_user_info, inlined: no kit-lib.sh yet).
     shown=$KIT_REPO re='^([A-Za-z][A-Za-z0-9+.-]*://)[^/?#]*@(.*)$'
     [[ ! $shown =~ $re ]] || shown=${BASH_REMATCH[1]}${BASH_REMATCH[2]}
     why="no machine copy; cannot clone $shown"
