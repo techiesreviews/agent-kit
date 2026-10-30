@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { afterFixRounds, blockingFindings, completedFixRounds, FIX_ROUNDS, openFindings, reviewCoversHead, sameReviewPatch } from "../review-findings.mjs";
 import { projectCommand, spoken } from "../review-brief.mjs";
 
-const { kitBranch, kitGhEnv, kitHideUserInfo, kitHome, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, nodeEnv, kitScore } = await import(
+const { kitBranch, kitGhEnv, kitHideUserInfo, kitHidingLog, kitHome, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, nodeEnv, kitScore } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const { checkSteps, classify, doneHeading, featureListGuard, featureListProblem, focusedUnitFiles, parseChanges, secondLookPick, unitTestFile } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
@@ -282,14 +282,8 @@ async function main(args) {
       const fd = openSync(log, "a");
       let stdout = "", stderr = "", failure;
       let status;
-      // Logs get any url's user-info hidden, so a token in a remote's url never reaches .scratch. A url holds no
-      // whitespace, so only the text after a stream's last whitespace waits for the next chunk.
-      const unwritten = { out: "", err: "" };
-      const write = (stream, chunk) => {
-        const text = unwritten[stream] + chunk, end = text.search(/\s\S*$/) + 1;
-        unwritten[stream] = text.slice(end);
-        if (end) appendFileSync(fd, kitHideUserInfo(text.slice(0, end)));
-      };
+      // Logs get any url's user-info hidden, so a token in a remote's url never reaches .scratch.
+      const logged = kitHidingLog(text => appendFileSync(fd, text));
       try {
         status = await new Promise(accept => {
           const child = spawn(command, argv, { cwd: root, env: command === "gh" ? ghEnv : env, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
@@ -301,10 +295,10 @@ async function main(args) {
           process.once("SIGINT", interrupt);
           process.once("SIGTERM", terminate);
           child.stdout.setEncoding("utf8");
-          child.stdout.on("data", chunk => { stdout += chunk; write("out", chunk); });
+          child.stdout.on("data", chunk => { stdout += chunk; logged.write("out", chunk); });
           child.stderr.setEncoding("utf8");
-          child.stderr.on("data", chunk => { stderr += chunk; write("err", chunk); });
-          child.once("error", error => { failure = error.message; write("err", `${failure}\n`); });
+          child.stderr.on("data", chunk => { stderr += chunk; logged.write("err", chunk); });
+          child.once("error", error => { failure = error.message; logged.write("err", `${failure}\n`); });
           child.once("close", code => {
             process.removeListener("SIGINT", interrupt);
             process.removeListener("SIGTERM", terminate);
@@ -312,14 +306,15 @@ async function main(args) {
           });
         });
       } finally {
-        for (const rest of Object.values(unwritten)) if (rest) appendFileSync(fd, kitHideUserInfo(rest));
+        logged.end();
         closeSync(fd);
       }
       return { status, stderr, text: stdout, failure };
     }
     async function run(name, command, argv) {
       const result = await execute(name, command, argv);
-      if (result.status !== 0) throw new Error(result.failure || result.stderr.trim().split(/\r?\n/).at(-1) || `${command} exited ${result.status}`);
+      // A child's message is printed in many places (RESULT, landed, notes): its user-info is hidden once, here.
+      if (result.status !== 0) throw new Error(kitHideUserInfo(result.failure || result.stderr.trim().split(/\r?\n/).at(-1) || `${command} exited ${result.status}`));
       return result.text.trim();
     }
     const ok = name => console.log(`${name}: ok`);

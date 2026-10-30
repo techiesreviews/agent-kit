@@ -632,12 +632,16 @@ test("a token in origin's url never shows: kit pr's messages, logs, records and 
   const plan = f.run(["--dry-run"], { GH_REPO: "" }, true);
   assert.equal(plan.status, 0, plan.stdout + plan.stderr);
   assert.deepEqual(leaks(plan), []);
-  // On GitHub: a whole run, from push to merge.
+  // On GitHub: a whole run, from push to merge, whose check of the landed commits fails with git naming the url.
   const github = `https://x-access-token:${token}@github.com/acme/site.git`;
   f.git("config", `url.${f.origin}.insteadOf`, github);
   f.git("remote", "set-url", "origin", github);
+  const real = spawnSync("bash", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+  writeFileSync(join(f.bin, "git"), `#!/bin/bash\nif [[ $1 == fetch && $# == 4 ]]; then echo 'fatal: ${github}' >&2; exit 1; fi\nexec ${real} "$@"\n`);
+  chmodSync(join(f.bin, "git"), 0o755);
   const landed = f.run([], { FAKE_BASE: "main", GH_REPO: "" }, true);
   assert.equal(landed.status, 0, landed.stdout + landed.stderr);
+  assert.match(landed.stdout, /^landed: not checked \(fatal: https:\/\/github\.com\/acme\/site\.git\)$/m);
   assert.match(landed.stdout, /RESULT: ok merged #73 abcdef0/);
   assert.deepEqual(leaks(landed), []);
 });
