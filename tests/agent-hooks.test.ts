@@ -514,7 +514,11 @@ test("Codex subagent lifecycle remains harmless, including missing IDs", (t) => 
 // The push guard's git runs without the machine's git settings or HOME.
 const gitHome = mkdtempSync(join(tmpdir(), "agent-hooks-home-"));
 process.on("exit", () => rmSync(gitHome, { recursive: true, force: true }));
-const gitEnv = { HOME: gitHome, XDG_CONFIG_HOME: join(gitHome, ".config"), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+const gitEnv = {
+  HOME: gitHome, XDG_CONFIG_HOME: join(gitHome, ".config"), XDG_CACHE_HOME: join(gitHome, ".cache"),
+  XDG_DATA_HOME: join(gitHome, ".local/share"), XDG_STATE_HOME: join(gitHome, ".local/state"),
+  GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_DIR: undefined, GIT_WORK_TREE: undefined, GIT_INDEX_FILE: undefined,
+};
 // A project with a remote, its settings and both branches pushed; the checkout is on `branch`.
 function pushProject(t: { after: (fn: () => void) => void }, branches: Record<string, string> | undefined, branch = "main") {
   const dir = temp(t), work = join(dir, "work");
@@ -615,10 +619,18 @@ test("a live landing branch (land equal to release) is guarded; a project withou
   const tracking = pushProject(t, { land: "dev", release: "main" });
   tracking.git("checkout", "-q", "-b", "fix", "--track", "origin/main");
   tracking.git("config", "push.default", "upstream");
-  for (const command of ["git push origin fix", "git push origin HEAD", "git push"])
+  for (const command of ["git push origin fix", "git push origin refs/heads/fix", "git push"])
     assert.equal(pushGuard(command, tracking.work).stderr, pushRefused("main"), command);
+  // HEAD keeps its name (git push origin HEAD makes a branch fix); a named branch maps from any branch.
+  assert.equal(pushGuard("git push origin HEAD", tracking.work).status, 0);
+  tracking.git("checkout", "-q", "dev");
+  assert.equal(pushGuard("git push origin fix", tracking.work).stderr, pushRefused("main"));
   tracking.git("config", "push.default", "simple");
   assert.equal(pushGuard("git push origin fix", tracking.work).status, 0);
+  // A detached HEAD: an explicit destination counts, HEAD alone names no branch.
+  tracking.git("checkout", "-q", "--detach");
+  assert.equal(pushGuard("git push origin HEAD:main", tracking.work).stderr, pushRefused("main"));
+  assert.equal(pushGuard("git push origin HEAD", tracking.work).status, 0);
   // Another release branch name is the one guarded.
   const other = pushProject(t, { land: "main", release: "dev" });
   assert.equal(pushGuard("git push origin main", other.work).status, 0);
@@ -634,6 +646,31 @@ test("a push from a folder the guard cannot name is checked in the session's fol
     "cd \"$CLAUDE_PROJECT_DIR\" && git push origin main", `cd -P ${work} && git push origin main`,
     `cd -- ${work}; git push`, `pushd ${work} && git push origin main`, "git -C \"$(pwd)\" push origin main",
   ]) assert.equal(pushGuard(command, cwd, { CLAUDE_PROJECT_DIR: work }).stderr, pushRefused("main"), `${cwd}: ${command}`);
+  // Back to an earlier folder through the directory stack, or into another repo by --git-dir or GIT_DIR.
+  for (const command of [
+    `cd ${plain.work} && cd - && git push origin main`, `pushd ${plain.work}; pushd; git push origin main`,
+    `pushd ${plain.work}; popd; git push origin main`, `pushd ${plain.work}; pushd +1; git push origin main`,
+    `cd ${plain.work} && git --git-dir=${work}/.git push origin main`, `cd ${plain.work} && GIT_DIR=${work}/.git git push origin main`,
+    // Several pushes: the later one counts; another rule's reason still comes first.
+    "git push origin dev && git push origin main",
+  ]) assert.equal(pushGuard(command, work, { CLAUDE_PROJECT_DIR: work }).stderr, pushRefused("main"), command);
+  assert.equal(pushGuard("git stash && git push origin main", work).stderr, "commit work in progress on your own branch\n");
   const noCwd = run("bash-guard.sh", { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "git push origin main" } }, { ...gitEnv, CLAUDE_PROJECT_DIR: work });
   assert.equal(noCwd.stderr, pushRefused("main"));
+});
+
+test("the push guard reads git and the settings only when a command pushes", (t) => {
+  const { work } = pushProject(t, { land: "dev", release: "main" });
+  const shims = temp(t), log = join(shims, "calls.log");
+  for (const tool of ["git", "jq"]) {
+    const real = spawnSync("bash", ["-c", `command -v ${tool}`], { encoding: "utf8" }).stdout.trim();
+    writeFileSync(join(shims, tool), `#!/bin/bash\necho "${tool} $*" >> "${log}"\nexec "${real}" "$@"\n`);
+    chmodSync(join(shims, tool), 0o755);
+  }
+  const env = { PATH: `${shims}:${process.env.PATH}` };
+  assert.equal(pushGuard("ls -la && git status", work, env).status, 0);
+  const calls = () => (existsSync(log) ? readFileSync(log, "utf8") : "");
+  assert.equal(calls().split("\n").filter(line => line.startsWith("git ") || line.includes(".cwd")).length, 0, calls());
+  assert.equal(pushGuard("git push origin dev", work, env).status, 0);
+  assert.match(calls(), /kit\.json/);
 });

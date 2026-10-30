@@ -8,8 +8,8 @@ file wins.
 ## Branches, checks and the shared file
 
 - **Landing branch `<land>`, release branch `<release>`** (`branches` in `scripts/agents/kit.json`).
-  A landing branch that deploys on every push is the release branch too (`"release": "<land>"`), so
-  the push guard stops an agent's raw `git push` to it.
+  The push guard reads only `branches.release`: a landing branch that deploys on every push needs
+  `"release"` set to it in `scripts/agents/kit.json`, or an agent's raw `git push` to it is not stopped.
 - **Checks:** the commands in `checks` (`check`, `lint`, `test`) and when each runs.
 - **Own check commands** (the `commands` folder): which to run for which change.
 - **Shared file:** the one file two slices may share (`sharedFile`), or none.
