@@ -303,7 +303,9 @@ if (process.env.FAKE_COMMIT) execFileSync("git", ["commit", "--quiet", "--allow-
 if (process.env.FAKE_AGENT_FAIL) { console.error("problem: claude failed (1); see " + join(out, "run.log")); process.exit(1); }
 const ids = /^Features to judge: (.+)$/m.exec(brief)[1].split(", "), verdicts = JSON.parse(process.env.FAKE_VERDICTS || "{}");
 const note = verdict => verdict === "fine" ? "matches its Good line" : verdict === "broken" ? "the search field is covered by the bar" : "S1: a hint line sits under the search field";
-const answer = process.env.FAKE_ANSWER ?? ["REVIEW_STATUS: complete", ...ids.map(id => id + ": " + (verdicts[id] ?? "fine") + " — " + note(verdicts[id] ?? "fine") + " — screens-contact.webp"),
+// FAKE_ANSWER_AGAIN answers the retry kit ux sends after an answer that gave some feature no verdict.
+const again = /gave no verdict for/.test(brief) ? process.env.FAKE_ANSWER_AGAIN : undefined;
+const answer = again ?? process.env.FAKE_ANSWER ?? ["REVIEW_STATUS: complete", ...ids.map(id => id + ": " + (verdicts[id] ?? "fine") + " — " + note(verdicts[id] ?? "fine") + " — screens-contact.webp"),
   "Rules broken: " + (Object.values(verdicts).includes("looks off") ? "S1" : "none")].join("\\n");
 writeFileSync(join(out, "out.md"), answer + "\\n");
 console.log(answer);
@@ -909,9 +911,42 @@ test("the reviewer's fine, looks off and broken lines parse, with their rules, n
 });
 
 test("an answer missing a feature or giving one two verdicts is unreadable, naming which", () => {
-  assert.deepEqual(brief.parseUxResult("REVIEW_STATUS: complete\nAll good.\n", ["F-media-01"]), { readable: false, problem: "no verdict for F-media-01" });
+  assert.deepEqual(brief.parseUxResult("REVIEW_STATUS: complete\nAll good.\n", ["F-media-01"]),
+    { readable: false, problem: "no verdict for F-media-01", missing: ["F-media-01"], features: [], rules: [] });
   assert.deepEqual(brief.parseUxResult("F-media-01: fine — a\nF-media-01: broken — b\n", ["F-media-01"]), { readable: false, problem: "two verdicts for F-media-01" });
-  assert.deepEqual(brief.parseUxResult("F-media-01: great — a\n", ["F-media-01"]), { readable: false, problem: "no verdict for F-media-01" });
+  assert.deepEqual(brief.parseUxResult("F-media-01: great — a\n", ["F-media-01"]),
+    { readable: false, problem: "no verdict for F-media-01", missing: ["F-media-01"], features: [], rules: [] });
+  // The verdicts it did give are kept, so a retry needs to fill only the missing ones.
+  const partial = brief.parseUxResult("F-media-01: looks off — S1: a hint — none\nRules broken: S1\n", ["F-media-01", "F-media-02"]);
+  assert.deepEqual(partial.missing, ["F-media-02"]);
+  assert.deepEqual(partial.features, [{ id: "F-media-01", verdict: "off", note: "S1: a hint", image: "" }]);
+  assert.deepEqual(partial.rules, ["S1"]);
+});
+
+test("kit ux asks once more for a feature the reviewer gave no verdict, then reports it as no verdict and passes", t => {
+  const { root, run, agentCalls } = fixture(t);
+  const filled = run(["--features", "F-media-01,F-media-02"], {
+    FAKE_ANSWER: "REVIEW_STATUS: complete\nF-media-01: looks off — S1: a hint line — none\nRules broken: S1",
+    FAKE_ANSWER_AGAIN: "REVIEW_STATUS: complete\nF-media-01: fine — fine now — none\nF-media-02: fine — matches its Good line — none\nRules broken: none",
+  });
+  assert.equal(filled.status, 0, filled.stdout + filled.stderr);
+  assert.match(filled.stdout, /^review: no verdict for F-media-02; asking the reviewer once more$/m);
+  assert.equal(agentCalls().length, 2);
+  assert.match(readFileSync(join(root, ".scratch/last-brief.md"), "utf8"), /Your earlier answer gave no verdict for F-media-02\./);
+  // The first answer's verdicts stand; the retry fills only what was missing.
+  assert.match(filled.result, /^RESULT: ok ux \d+ features tried, \d+ scripted findings, 1 fine, 1 looks off, 0 broken, bundle \S+$/);
+  const none = run(["--features", "F-media-01,F-media-02"], {
+    FAKE_ANSWER: "REVIEW_STATUS: complete\nF-media-01: fine — ok — none\nRules broken: none", FAKE_ANSWER_AGAIN: "REVIEW_STATUS: complete\nStill thinking.",
+  });
+  assert.equal(none.status, 0, none.stdout + none.stderr);
+  assert.equal(agentCalls().length, 4);
+  assert.match(none.stdout, /^F-media-02: no verdict — the reviewer gave none, asked twice — none$/m);
+  assert.match(none.result, /^RESULT: ok ux \d+ features tried, \d+ scripted findings, 1 fine, 0 looks off, 0 broken, 1 no verdict, bundle \S+$/);
+  const bundle = /bundle (\S+)$/.exec(none.result)![1];
+  const report = JSON.parse(readFileSync(join(bundle, "ux.json"), "utf8"));
+  assert.deepEqual(report.noVerdict, ["F-media-02"]); assert.deepEqual(report.broken, []); assert.deepEqual(report.off, []);
+  assert.deepEqual(scoreboard(root).ux, { fine: 1, off: 0, broken: 0, none: 1, rules: [] });
+  assert.match(readFileSync(join(bundle, "ux.md"), "utf8"), /^- F-media-02: no verdict — the reviewer gave none, asked twice — none$/m);
 });
 
 test("the brief keeps the reviewer on the bundle, the rulebook and the mock-up", () => {
@@ -964,11 +999,11 @@ test("kit ux fails a broken verdict, an unreadable answer and a failed reviewer 
   assert.match(broken.result, /^RESULT: fail ux 0 features tried, \d+ scripted findings, 0 fine, 0 looks off, 1 broken, bundle \S+, broken: F-media-02$/);
   assert.equal(agentCalls()[0][agentCalls()[0].indexOf("--model") + 1], "claude-sonnet-5-5");
   assert.deepEqual(scoreboard(root).ux, { fine: 0, off: 0, broken: 1, rules: [] });
-  const unreadable = run(["--features", "F-media-02"], { FAKE_ANSWER: "REVIEW_STATUS: complete\nLooks nice overall." });
+  const unreadable = run(["--features", "F-media-02"], { FAKE_ANSWER: "REVIEW_STATUS: complete\nF-media-02: fine — a\nF-media-02: broken — b" });
   assert.equal(unreadable.status, 1);
-  assert.match(unreadable.result, /, bundle (\S+), review unreadable: no verdict for F-media-02 \(\1\/ux\.md\)$/);
+  assert.match(unreadable.result, /, bundle (\S+), review unreadable: two verdicts for F-media-02 \(\1\/ux\.md\)$/);
   const bundle = /bundle (\S+),/.exec(unreadable.result)![1];
-  assert.match(readFileSync(join(bundle, "ux.md"), "utf8"), /Problem: no verdict for F-media-02[\s\S]*Looks nice overall\./);
+  assert.match(readFileSync(join(bundle, "ux.md"), "utf8"), /Problem: two verdicts for F-media-02[\s\S]*F-media-02: broken — b/);
   assert.equal(existsSync(join(bundle, "ux.json")), false);
   const failed = run(["--features", "F-media-02"], { FAKE_AGENT_FAIL: "1" });
   assert.equal(failed.status, 1);

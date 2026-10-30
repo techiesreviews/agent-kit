@@ -12,7 +12,7 @@ const prompt = "Continue where you stopped; the brief is unchanged.";
 const report = "continued report\n";
 
 interface Status {
-  pid: number; pgid: number | null; kind: string; model: string; cli: string; effort: string;
+  pid: number; pgid: number | null; kind: string; model: string; cli: string; effort: string; launchFailed?: boolean;
   worktree: string; brief: string; out: string; base?: string; commit?: string;
   started: string; updated: string; state: string; exitCode: number | null; session: string | null; resumes: number;
 }
@@ -459,6 +459,23 @@ for (const [signal, code] of [["SIGHUP", 129], ["SIGINT", 130], ["SIGTERM", 143]
     await until(() => pids.every(pid => !alive(pid)), "dead CLI process group");
   });
 }
+
+test("a first call that fails at once records launchFailed; one that ran past the launch window or timed out does not", async t => {
+  // A Claude build gets its session before the CLI starts, so kit slice reads launchFailed to tell it never ran.
+  const quick = fixture(t);
+  assert.equal((await quick.fresh("claude", { FAKE_EXIT: "1" }).done).code, 1);
+  assert.equal(quick.status().state, "failed"); assert.ok(quick.status().session); assert.ok(quick.status().pgid);
+  assert.equal(quick.status().launchFailed, true);
+  const late = fixture(t);
+  assert.equal((await late.fresh("claude", { FAKE_EXIT: "1", ASE_LAUNCH_WINDOW_MS: "0" }).done).code, 1);
+  assert.equal(late.status().state, "failed"); assert.equal(late.status().launchFailed, undefined);
+  const timedOut = fixture(t);
+  assert.equal((await timedOut.fresh("claude", { FAKE_HOLD: timedOut.hold, ASE_AGENT_TIMEOUT: "1s" }).done).code, 124);
+  assert.equal(timedOut.status().state, "timeout"); assert.equal(timedOut.status().launchFailed, undefined);
+  const worked = fixture(t);
+  assert.equal((await worked.fresh("claude").done).code, 0);
+  assert.equal(worked.status().launchFailed, undefined);
+});
 
 test("timeout writes timeout status", async t => {
   const f = fixture(t);

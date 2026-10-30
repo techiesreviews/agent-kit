@@ -9,6 +9,7 @@ import { reviewBrief, reviewScope, ticketReviewBrief } from "../review-brief.mjs
 import { saveReviewEvidence } from "../review-evidence.mjs";
 import { countsLine, findingsRecord } from "../review-findings.mjs";
 import { parseChanges, reviewKinds, secondLookPick, secondLookTable } from "../pr-tier.mjs";
+import { durationMilliseconds } from "../sol-run.mjs";
 
 const { kitBranch, kitGhEnv, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, kitStateDir, nodeEnv, kitScore, scoreReview } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
@@ -17,6 +18,7 @@ const usage = "Usage: kit review [--base REF | --commit SHA] [--ticket FILE] [--
   "any other name is refused before any call (ASE_AGENT_CLI=codex|opencode picks the CLI for it).\n" +
   "--second-look: the review kind from the changed paths (agent, ux, dx, code) picks its model in the kit's second-look.json (ASE_SECOND_LOOK overrides);\n" +
   "the other family takes it when that model cannot run; when neither can, it skips with exit 3 and says \"second look: skipped (<reason>)\".\n" +
+  "The whole look, fallback included, stops at ASE_SECOND_LOOK_TIMEOUT (25m): then it skips as \"<model> timed out after 25m\".\n" +
   "Weekly budgets for the whole computer: ASE_REVIEW_BUDGET_GPT (12), ASE_REVIEW_BUDGET_GROK (8); not counted: Claude and OpenCode's -free models.\n" +
   "On OpenCode, openai/… counts as GPT and xai/… as Grok; any other paid OpenCode model is refused.\n";
 
@@ -59,7 +61,7 @@ function evidenceDirectory() {
 // model and its CLI, so no ASE_AGENT_CLI can send it to Codex, and marks its evidence folder.
 async function reviewOnce(flags, look) {
   let evidence = "none", temporary, status = 1, reason = "review failed", label, budget, env, model, effort, reviewedHead;
-  let ledger, outOfCredit = false, kept = false, spawned = false, unavailable = false, stderr = "";
+  let ledger, outOfCredit = false, kept = false, spawned = false, unavailable = false, stderr = "", timedOut = false;
   const ticket = flags.ticket;
   try {
     // The default base comes from the settings file; a settings problem is a failure, not a usage error.
@@ -93,7 +95,10 @@ async function reviewOnce(flags, look) {
       const terminate = () => child.kill("SIGTERM");
       process.once("SIGINT", interrupt);
       process.once("SIGTERM", terminate);
+      // A second look's overall limit: the runner stops its CLI's whole process group on SIGTERM.
+      const limit = look?.deadline && setTimeout(() => { timedOut = true; terminate(); }, Math.max(0, look.deadline - Date.now()));
       const clear = () => {
+        clearTimeout(limit);
         process.removeListener("SIGINT", interrupt);
         process.removeListener("SIGTERM", terminate);
       };
@@ -111,7 +116,7 @@ async function reviewOnce(flags, look) {
       child.once("error", error => { clear(); reject(error); });
       child.once("close", code => { clear(); accept(code === 0 ? 0 : 1); });
     });
-    reason = [...stderr.matchAll(/^problem: (.+)$/gm)].at(-1)?.[1] || "review failed";
+    reason = timedOut ? `timed out after ${look.limit}` : [...stderr.matchAll(/^problem: (.+)$/gm)].at(-1)?.[1] || "review failed";
     // An empty account is a review that could not run, not one that failed.
     outOfCredit = status !== 0 && /^\S+ out of credit: /.test(reason);
     if (!status && flags.pr) {
@@ -183,7 +188,7 @@ async function reviewOnce(flags, look) {
       if (temporary) console.error(`problem: review files kept in ${temporary}`);
     }
   }
-  return { status, outOfCredit, unavailable: status !== 0 && unavailable, kept, budget, model, evidence, label, reason };
+  return { status, outOfCredit, unavailable: status !== 0 && unavailable, timedOut, kept, budget, model, evidence, label, reason };
 }
 
 /** The RESULT line and exit code of one review run. */
@@ -201,8 +206,13 @@ function report({ status, outOfCredit, kept, budget, model, evidence, label, rea
 // over when that one cannot run (a used-up count, no credit, a usage limit, a CLI that is missing or down), and when
 // neither can, it is skipped. Any other failure, such as an incomplete answer or a failed save or PR comment, fails.
 async function secondLook(flags) {
-  let pick;
+  let pick, deadline;
+  // One limit for the whole look, fallback included (ASE_SECOND_LOOK_TIMEOUT, default 25m): a reviewer that opened
+  // a session but never finishes is stopped, and the look is skipped as timed out so the slice or PR goes on.
+  const limit = process.env.ASE_SECOND_LOOK_TIMEOUT || "25m";
   try {
+    try { deadline = Date.now() + durationMilliseconds(limit); }
+    catch { throw new Error(`ASE_SECOND_LOOK_TIMEOUT must be a duration such as 25m (got ${limit})`); }
     if (flags.base === undefined && flags.commit === undefined) flags.base = `origin/${kitBranch()}`;
     const root = kitRoot(), scope = reviewScope("", flags, root);
     const range = scope.commit ? [`${scope.commit}^`, scope.commit] : [`${scope.base}...${scope.head}`];
@@ -227,12 +237,14 @@ async function secondLook(flags) {
   console.log(`second look: ${pick.kind} (${pick.path}) ${pick.model}`);
   const missed = [];
   for (const model of [pick.model, pick.fallback]) {
+    if (missed.length && Date.now() >= deadline) { missed.push(`${model} not tried, ${limit} spent`); break; }
     if (missed.length) console.log(`second look: ${model} takes it (${missed.at(-1)})`);
-    const result = await reviewOnce(flags, { kind: pick.kind, model });
+    const result = await reviewOnce(flags, { kind: pick.kind, model, deadline, limit });
     if (result.status === 0 && !result.outOfCredit) return report(result);
-    if (!result.unavailable) return report(result);
+    if (!result.unavailable && !result.timedOut) return report(result);
     if (result.evidence !== "none") console.log(`evidence: ${result.evidence}`);
     missed.push(`${model} ${result.outOfCredit ? "out of credit" : result.reason}`.replace(/\s+/g, " "));
+    if (result.timedOut) break;
   }
   console.log(`second look: skipped (${missed.join("; ")})`);
   console.log(`RESULT: skip second look (${missed.join("; ")})`);

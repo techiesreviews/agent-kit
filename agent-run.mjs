@@ -861,10 +861,11 @@ async function invokeAgent(adapter, args, descriptor, context) {
     Object.assign(process.env, adapter.env);
     const previousLog = readFileSync(logPath, "utf8").length;
     // A CLI with a start limit that names no session within it is stopped as unavailable.
-    let silent = false, startTimer;
+    let silent = false, startTimer, spawned;
     const result = await supervise(limit, adapter.command, args, {
       cwd: options.worktree, input: descriptor, log, capture: adapter.capture,
       onSpawn: pgid => {
+        spawned = Date.now();
         update({ pgid });
         if (adapter.startTimeout) startTimer = setTimeout(() => {
           silent = true;
@@ -897,6 +898,10 @@ async function invokeAgent(adapter, args, descriptor, context) {
       // that worked before the limit, already spent it. kit review gives an out-of-credit run back itself.
       if (limitProblem && !creditProblem && !previousCalls &&
         refusedOutright(options.cli, options.cli === "opencode" ? result.stdout ?? "" : slice, context.prompt)) update({ refused: true });
+      // A run's first call that fails within the launch window (a usage limit, a login error) never got to work. Claude
+      // and Grok hold a session from before their CLI started, so kit slice reads this to tell such a build never ran.
+      if ((status || limitProblem) && !previousCalls && ![129, 130, 143].includes(status)
+        && Date.now() - spawned < Number(process.env.ASE_LAUNCH_WINDOW_MS ?? 60_000)) update({ launchFailed: true });
     }
     try {
       const report = adapter.finish(result.stdout, slice, status);

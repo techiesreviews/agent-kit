@@ -39,7 +39,8 @@ piece's scoreboard record as ux. --no-review skips it.
 KIT_UX_SHOTS and KIT_UX_AGENT: executables replacing the project's kit shots and agent.sh, same arguments (tests).
 RESULT: ok ux <n> features tried, <m> scripted findings, <f> fine, <o> looks off, <b> broken, bundle <dir>.
 A failed try or a broken verdict fails with broken: <feature,…>; a failed screens run adds
-screens failed: <screen,…> (its features stay untried); an unreadable answer fails naming what is missing.
+screens failed: <screen,…> (its features stay untried); an answer giving a feature no verdict is asked once
+more, then that feature is "no verdict" (counted, never failing); any other unreadable answer fails naming why.
 `;
 
 /** Named kit shots screens and the source files each one shows. */
@@ -408,16 +409,18 @@ async function reviewBundle({ root, out, git, mergeBase, features, images, rules
     const copy = join(temporary, "bundle"), run = join(temporary, "run"), log = join(temporary, "agent.log");
     mkdirSync(copy);
     for (const name of ["bundle.md", ...images]) copyFileSync(join(out, name), join(copy, name));
-    const brief = join(temporary, "brief.md");
-    writeFileSync(brief, uxBrief({ bundle: copy, features, images, rules, mockups }));
+    const brief = join(temporary, "brief.md"), text = uxBrief({ bundle: copy, features, images, rules, mockups });
+    writeFileSync(brief, text);
     // agent.sh review needs a non-empty diff; on a branch with nothing committed (dev) the head commit stands in.
     // The brief tells the reviewer to judge the bundle alone either way.
     const scope = git("diff", "--name-only", mergeBase, "HEAD").trim() ? ["--base", mergeBase] : ["--commit", "HEAD"];
     const agent = process.env.KIT_UX_AGENT || resolve(import.meta.dirname, "../agent.sh");
-    const status = await runLogged(root, agent, ["review", root, brief, ...scope, "--model", model, "--effort", effort, "--out", run], log);
-    if (existsSync(join(run, "run.log"))) copyFileSync(join(run, "run.log"), join(out, "run.log"));
-    let answer = "";
-    try { answer = readFileSync(join(run, "out.md"), "utf8"); } catch { /* No answer: the status explains. */ }
+    const ask = async (folder, runLog) => {
+      const status = await runLogged(root, agent, ["review", root, brief, ...scope, "--model", model, "--effort", effort, "--out", folder], log);
+      if (existsSync(join(folder, "run.log"))) copyFileSync(join(folder, "run.log"), join(out, runLog));
+      try { return { status, answer: readFileSync(join(folder, "out.md"), "utf8") }; } catch { return { status, answer: "" }; }
+    };
+    const { status, answer } = await ask(run, "run.log");
     if (status) {
       // The temporary folder goes; the reviewer's own output stays beside the bundle.
       copyFileSync(log, join(out, "agent.log"));
@@ -426,7 +429,23 @@ async function reviewBundle({ root, out, git, mergeBase, features, images, rules
       score(() => {});
       return { problem: `review failed: ${problem}${problem.includes(out) ? "" : `; log ${join(out, "agent.log")}`}` };
     }
-    const parsed = parseUxResult(answer, ids);
+    let parsed = parseUxResult(answer, ids);
+    // A feature the answer gave no verdict is asked for once more, in a fresh run; the verdicts given stand. One still
+    // missing after that is "no verdict": reported and counted, but it breaks nothing, so a slice goes on.
+    if (parsed.missing) {
+      console.log(`review: no verdict for ${parsed.missing.join(", ")}; asking the reviewer once more`);
+      writeFileSync(brief, `${text}\nYour earlier answer gave no verdict for ${parsed.missing.join(", ")}. Give exactly one verdict line for every feature to judge.\n`);
+      const retry = await ask(join(temporary, "run-again"), "run-again.log");
+      const again = retry.status ? undefined : parseUxResult(retry.answer, parsed.missing);
+      if (again && !again.readable && !again.missing) {
+        writeFileSync(join(out, "ux.md"), `# UX review: unreadable\n\nProblem: ${again.problem}\n\nReviewer answer (verbatim):\n\n${retry.answer}`);
+        score(() => {});
+        return { problem: `review unreadable: ${again.problem} (${join(out, "ux.md")})` };
+      }
+      const filled = new Map([...parsed.features, ...again?.features ?? []].map(feature => [feature.id, feature]));
+      parsed = { readable: true, rules: [...new Set([...parsed.rules, ...again?.rules ?? []])].sort(),
+        features: ids.map(id => filled.get(id) ?? { id, verdict: "none", note: "the reviewer gave none, asked twice", image: "" }) };
+    }
     // Only rulebook ids count as broken rules; a made-up id stays in its note.
     if (parsed.readable) parsed.rules = parsed.rules.filter(id => rules.has(id));
     if (!parsed.readable) {
@@ -441,7 +460,8 @@ async function reviewBundle({ root, out, git, mergeBase, features, images, rules
     }
     const counts = uxCounts(parsed);
     const pick = verdict => parsed.features.filter(feature => feature.verdict === verdict).map(feature => feature.id);
-    const record = { model, effort, branch, head, bundle: out, features: parsed.features, rules: parsed.rules, counts, broken: pick("broken"), off: pick("off") };
+    const record = { model, effort, branch, head, bundle: out, features: parsed.features, rules: parsed.rules, counts, broken: pick("broken"), off: pick("off"),
+      ...counts.none ? { noVerdict: pick("none") } : {} };
     const report = uxReport({ branch, model, effort, bundle: out, features: parsed.features, rules: parsed.rules, ruleText: rules });
     writeFileSync(join(out, "ux.md"), report);
     writeFileSync(join(out, "ux.json"), JSON.stringify(record, null, 2) + "\n");
@@ -701,7 +721,7 @@ async function main() {
     if (review?.problem) console.error(`problem: ${review.problem}`);
     const brokenIds = [...new Set([...broken.map(feature => feature.id), ...review?.broken ?? []])];
     const failed = [...brokenIds.length ? [`broken: ${brokenIds.join(", ")}`] : [], ...screensFailed.length ? [`screens failed: ${screensFailed.join(", ")}`] : [], ...review?.problem ? [review.problem] : []];
-    const counts = review?.counts ? [`${review.counts.fine} fine, ${review.counts.off} looks off, ${review.counts.broken} broken`] : [];
+    const counts = review?.counts ? [`${review.counts.fine} fine, ${review.counts.off} looks off, ${review.counts.broken} broken${review.counts.none ? `, ${review.counts.none} no verdict` : ""}`] : [];
     kitResult(failed.length ? "fail" : "ok", [`ux ${tried.length} features tried, ${findingLines.length} scripted findings`, ...counts, `bundle ${out}`, ...failed].join(", "));
     return failed.length ? 1 : 0;
   } catch (error) {
