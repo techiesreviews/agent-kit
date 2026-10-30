@@ -50,6 +50,8 @@ function inspect(a, n, timed, depth, floor,    i,j,k,name,text,dir,gitdir) {
     if (name == "env" || name == "sudo" || name == "command" || name == "exec" || name == "nohup") {
       i++
       while (i <= n && (a[i] ~ /^-/ || a[i] ~ /^[A-Za-z_][A-Za-z_0-9]*=/)) {
+        # env GIT_DIR=…, env -C or --chdir: the push runs in a folder the guard does not follow.
+        if (a[i] ~ /^GIT_(DIR|WORK_TREE)=/ || a[i] == "-C" || a[i] ~ /^--chdir/) gitdir = 1
         if (a[i] == "-u" || a[i] == "--unset" || a[i] == "-C" || a[i] == "--chdir") i++
         i++
       }
@@ -80,15 +82,18 @@ function inspect(a, n, timed, depth, floor,    i,j,k,name,text,dir,gitdir) {
   # The folder later commands run in, for the push check: cd here, git -C below.
   # A folder taken from the directory stack (cd -, popd, a bare pushd or pushd +N) is unknown, which the
   # push check treats like a variable.
+  # So is a cd that may not run in this shell: after && or ||, in a pipeline or in the background.
   if (name == "cd" || name == "pushd") {
     for (k = i + 1; k <= n && (a[k] ~ /^-[LPe@]+$/ || a[k] == "--"); k++) ;
-    if (k > n) cwd = name == "cd" ? within(cwd, "~") : "$OLDPWD"
+    if (uncertain) cwd = "$OLDPWD"
+    else if (k > n) cwd = name == "cd" ? within(cwd, "~") : "$OLDPWD"
     else if (a[k] == "-" || (name == "pushd" && a[k] ~ /^[-+][0-9]+$/)) cwd = "$OLDPWD"
     else cwd = within(cwd, a[k])
   }
   if (name == "popd") cwd = "$OLDPWD"
+  if (name == "export") for (k = i + 1; k <= n; k++) if (a[k] ~ /^GIT_(DIR|WORK_TREE)=/) exported = 1
   if (name == "git") {
-    j = i + 1; dir = gitdir ? "$GIT_DIR" : cwd
+    j = i + 1; dir = gitdir || exported ? "$GIT_DIR" : cwd
     while (j <= n && a[j] ~ /^-/) {
       if (a[j] == "-C") dir = within(dir, a[j+1])
       # Another repo named by --git-dir or --work-tree is unknown too.
@@ -183,7 +188,7 @@ function nested(s, timed, depth, first,    opening) {
   scan(s, timed, depth)
   if (opening) loopDepth--
 }
-function scan(s, timed, depth,    a,n,i,c,q,word,started,escaped,quoted,redirect,strip,end,line,hd,hq,hs,hcode,hdepth,hn,bound,j,code,body,input,ni,floor,saved,expect,skip,k,group,gn,outer) {
+function scan(s, timed, depth,    a,n,i,c,q,word,started,escaped,quoted,redirect,strip,end,line,hd,hq,hs,hcode,hdepth,hn,bound,j,code,body,input,ni,floor,saved,expect,skip,k,group,gn,outer,after,nxt,prv) {
   # Quotes belong to one argument. Thus literal commit -m strings are skipped;
   # shell -c arguments are scanned explicitly. Never execute the input.
   n = 0
@@ -263,7 +268,11 @@ function scan(s, timed, depth,    a,n,i,c,q,word,started,escaped,quoted,redirect
         if (expect && n && (a[1] == "esac" || c !~ /[)|]/)) expect = 0
         skip = expect && n
         if (expect && c == ")") expect = 0
+        # Whether this command may not run in this shell: it follows && or || or a pipe, or ends in | or &.
+        nxt = substr(s, i + 1, 1); prv = substr(s, i - 1, 1)
+        uncertain = after || (c == "|" && nxt != "|" && prv != "|") || (c == "&" && nxt != "&" && prv != "&")
         code = skip ? 0 : inspect(a, n, timed, depth, floor)
+        after = (c == "&" && (nxt == "&" || prv == "&")) || c == "|"
         # A ( … ) group runs in a subshell: a cd inside it ends with the group.
         if (c == "(" && !n) group[++gn] = cwd
         if (c == ")" && !skip && gn) cwd = group[gn--]
@@ -359,6 +368,12 @@ guarded_in() {
     # A lone colon pushes every branch that exists on both sides.
     if [[ $arg == : ]]; then printf '%s' "$release"; return 0; fi
     if [[ $arg == *:* ]]; then dst=${arg#*:}; [[ -n $dst ]] || dst=${arg%%:*}; else dst=$arg; fi
+    # A destination from a variable or $( … ) is taken as the current branch and where it pushes.
+    if [[ $dst == *'$'* || $dst == *EXPANSION* ]]; then
+      upstream=$(git -C "$dir" rev-parse --symbolic-full-name '@{push}' 2>/dev/null) || upstream=''
+      dsts+=("$current" "${upstream#refs/remotes/*/}")
+      continue
+    fi
     [[ $dst == HEAD || $dst == @ ]] && dst=$current
     # A named branch without a destination goes where push.default sends it (its upstream with "upstream").
     if [[ $arg != *:* && $arg != HEAD && $arg != @ ]]; then
@@ -389,7 +404,7 @@ while IFS=$'\037' read -r -a fields; do
   fi
   branch=$(guarded_target "${fields[@]:1}") || branch=''
   if [[ -n $branch ]]; then
-    refusal="Pushing straight to \`$branch\` puts it live without review. Land it with \`scripts/agents/kit pr --ticket <ticket>\` (or \`kit pr --release\` for a release)."
+    refusal="Pushing straight to \`$branch\` puts it live without review. Land it with \`scripts/agents/kit pr --ticket <ticket>\` (or \`kit pr --release --base $branch\` for a release)."
     break
   fi
 done <<<"$reason"
