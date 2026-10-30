@@ -341,11 +341,11 @@ test("doctor lists skillGuard.allow's own skills, counted, and fails on another 
   git(f.root, "add", "-f", "skills"); commit(f.root);
   const other = f.run();
   assert.equal(other.status, 1, other.stdout);
-  assert.ok(other.stdout.includes("✗ skills: skills/egret.md: a skill file or skills/ folder is tracked; fix: remove the skill files,"), other.stdout);
+  assert.ok(other.stdout.includes("✗ skills: skills/egret.md: a skill file or skills/ folder is tracked; fix: remove the skill files (paid skills never go in a repo);"), other.stdout);
   writeFileSync(join(f.root, "scripts/agents/kit.json"), JSON.stringify({ project: "techies-playground", mainRoot: f.root, allowMainCheckout: true,
     branches: { land: "main" }, skillGuard: { allow: [".claude/skills"] } }));
   const wide = f.run();
-  assert.ok(wide.stdout.includes('✗ skills: scripts/agents/kit.json: skillGuard.allow entry ".claude/skills" is not one skill folder\'s repo path (and 2 more); fix: '), wide.stdout);
+  assert.ok(wide.stdout.includes('✗ skills: scripts/agents/kit.json: skillGuard.allow entry ".claude/skills" is not one skill folder\'s repo path (and 2 more); fix: name one skill folder per entry'), wide.stdout);
 });
 
 test("the doctor RESULT counts every line it checked, but not the optional grok and kit notes", (t) => {
@@ -463,6 +463,11 @@ test("doctor reports Node below 24 without searching the user's installations", 
   mkdirSync(bin); mkdirSync(empty);
   executable(join(bin, "node"), "printf 'v22.0.0\\n'");
   failure(f.run([], f.build, { PATH: `${bin}:/usr/bin:/bin`, CLAUDE_NODE_SEARCH_ROOT: empty }, true), "node");
+  // Without Node the skill guard cannot run: a project's skills check says it skipped.
+  const settings = JSON.parse(readFileSync(join(f.build, "scripts/agents/kit.json"), "utf8"));
+  writeFileSync(join(f.build, "scripts/agents/kit.json"), JSON.stringify({ ...settings, skillGuard: { allow: [".claude/skills/heron"] } }));
+  const skipped = f.run([], f.build, { PATH: `${bin}:/usr/bin:/bin`, CLAUDE_NODE_SEARCH_ROOT: empty }, true);
+  assert.ok(skipped.stdout.includes("✓ skills: skipped (Node not found)\n"), skipped.stdout);
 });
 
 for (const kind of ["missing", "real directory", "dangling link", "different shared directory", "shared missing", "shared dangling"]) {
@@ -525,7 +530,12 @@ test("doctor names a missing jq instead of calling a good settings file unreadab
     assert.deepEqual(lines.filter(line => line.includes("scripts/agents/kit.json")), [lines.find(line => line.startsWith("✗ settings: "))]);
     // The hooks read their input with jq too, so the probe cannot be rejected; every other check passes or skips.
     assert.equal(lines.at(-1), "RESULT: fail doctor 2 failed: settings,hooks live");
+    assert.ok(!lines.some(line => line.startsWith("✓ skills: ")), result.stdout);
   }
+  // A project that sets skillGuard hears that jq skipped its skills check.
+  writeFileSync(join(f.build, "scripts/agents/kit.json"), JSON.stringify({ project: "native-site-editor", branches: { land: "dev" },
+    devRoot: f.dev, skillGuard: { allow: [".claude/skills/heron"] } }));
+  assert.ok(f.run([], f.build, { PATH: bin }, true).stdout.includes("✓ skills: skipped (jq is not installed)\n"));
   // Without KIT_COMMANDS_DIR doctor reads the shared folder and would read the settings' commands folder;
   // without jq it skips that folder and says why, without blaming the settings file.
   mkdirSync(join(f.build, "scripts/agents/project.d"));

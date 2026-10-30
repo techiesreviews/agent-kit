@@ -200,8 +200,15 @@ function* historyLines(root) {
 
 /** Run the guard in root; returns { problems, notes }. */
 export function skillGuard(root, { base = "", history = false, pathsOnly = false, env = process.env } = {}) {
-  const { allow, problems } = allowedSkills(root), notes = [];
-  const paths = history ? historyPaths(root) : git(root, ["ls-files", "-z"]).split("\0").filter(Boolean);
+  const notes = [];
+  let { allow, problems } = allowedSkills(root);
+  // The kit's own repo is public and never keeps a skill: it refuses the list, so no PR there can add one with it.
+  const tracked = git(root, ["ls-files", "-z"]).split("\0").filter(Boolean);
+  if (allow.length && tracked.includes("skill-guard.mjs") && tracked.some(path => path.startsWith("kit.d/"))) {
+    problems.push(`${kitSettingsFile}: skillGuard.allow is refused in the kit's own repo, which never keeps a skill`);
+    allow = [];
+  }
+  const paths = history ? historyPaths(root) : tracked;
   for (const path of paths.filter(path => skillPath(path) && !allowedPath(path, allow))) {
     problems.push(`${path}: a skill file or skills/ folder ${history ? "in history" : "is tracked"}`);
   }
