@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
+import { plainEnglish } from "../review-brief.mjs";
 import { forEachAwait } from "./support/await-race.ts";
 import { kitEnv } from "./support/kit-env.ts";
 
@@ -322,7 +323,7 @@ test("kit slice writes the ticket brief, runs phases in order, credits and commi
   assert.match(brief, /the slice records review decisions and landing/);
   assert.match(brief, /Leave changes unstaged; the runner commits/);
   assert.ok(brief.includes("Do not mention staging, committing or unstaged changes in the ticket."), brief);
-  assert.ok(brief.split("\n").includes("Write in plain English: Lex reads every report, ticket and commit message."), brief);
+  assert.ok(brief.split("\n").includes(plainEnglish), brief);
   assert.deepEqual(result.stdout.split("\n").filter(line => line.startsWith("slice:")).map(line => line.split(" ").slice(0, 3).join(" ")), ["slice: brief ok", "slice: build ok", "slice: commit ok", "slice: review ok", "slice: fix ok", "slice: ux ok", "slice: second ok", "slice: pr ok"]);
   assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "pr"]);
   const build = f.calls()[0].args;

@@ -142,6 +142,14 @@ test("every relative link and anchor in the rulebook and its extras template res
   }
 });
 
+test("kit rulebook prints the house rules from the 2026-10-30 retros under House rules", t => {
+  const run = rulebook(t, project);
+  assert.equal(run.status, 0, run.stderr);
+  const house = run.stdout.split("\n## House rules\n")[1]?.split("\n## ")[0] ?? "";
+  for (const rule of ["Plain English", "Kit changes go through one board", "A build's tests stay in the project", "Always-loaded files stay short"])
+    assert.ok(house.includes(`- **${rule}`), `House rules lack "${rule}"`);
+});
+
 test("the shared rulebook names no editor-only fact and links only inside the kit", () => {
   const text = read(shared);
   for (const fact of ["src/main.ts", "npm run", "kit preview", "kit shots", "kit specs", "kit size", "features.md", "deploy:techies",

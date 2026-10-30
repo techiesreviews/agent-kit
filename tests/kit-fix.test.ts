@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
+import { plainEnglish } from "../review-brief.mjs";
 import { forEachAwait } from "./support/await-race.ts";
 import { kitEnv } from "./support/kit-env.ts";
 
@@ -240,7 +241,7 @@ test("the fix brief names only the checks the settings set", t => {
     if (typeof settings !== "string") assert.equal(result.status, 0, result.stdout + result.stderr);
     const round = readFileSync(join(f.root, ".scratch/kit-fix/build%2Fke-03/round-1.md"), "utf8");
     assert.ok(round.split("\n").includes(line), round);
-    assert.ok(round.split("\n").includes("Write in plain English: Lex reads every report, ticket and commit message."), round);
+    assert.ok(round.split("\n").includes(plainEnglish), round);
   }
 });
 
