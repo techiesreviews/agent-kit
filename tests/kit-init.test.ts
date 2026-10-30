@@ -723,15 +723,12 @@ test("--issues reads an ssh alias for github.com as kit pr does: gh is asked abo
 test("a token in origin's url never shows: not in init's messages, the project name or the --issues stop", (t) => {
   const f = fixture(t);
   const token = "ke63-fake-token-0000";
-  // An origin url with no path: the project is named after the folder, never after the token.
+  // An origin url with no path names the project after its host, never after the token (.invalid: no fetch leaves).
   const bare = f.repo("plain", { "index.html": "<p>hi</p>\n" }, ["main"]);
-  const hostOnly = `https://ke63:${token}@gitlab.example.com`;
-  f.git(f.directory, "init", "-q", "--bare", join(f.directory, "plain.git"));
-  f.git(bare.main, "remote", "add", "origin", hostOnly);
-  f.git(bare.main, "config", `url.${join(f.directory, "plain.git")}.insteadOf`, hostOnly);
+  f.git(bare.main, "remote", "add", "origin", `https://ke63:${token}@gitlab.invalid`);
   const run = f.init(bare.work, ["--light"]);
   assert.equal(`${run.stdout}${run.stderr}`.includes(token), false, run.stdout + run.stderr);
-  assert.equal(JSON.parse(readFileSync(join(bare.work, "scripts/agents/kit.json"), "utf8")).project, "plain");
+  assert.equal(JSON.parse(readFileSync(join(bare.work, "scripts/agents/kit.json"), "utf8")).project, "gitlab.invalid");
   // --issues stops on an origin that is no GitHub repo, naming its host only.
   const { work } = issueRepo(f, undefined, `https://ke63:${token}@gitlab.example.com/acme/tools.git`);
   const issues = fakeGh(f, []).init(work, ["--issues"]);

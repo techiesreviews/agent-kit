@@ -642,6 +642,21 @@ test("a token in origin's url never shows: kit pr's messages, logs, records and 
   assert.deepEqual(leaks(landed), []);
 });
 
+test("a token split across a child's output chunks, on a last line with no newline, is still hidden in the log and its tail", t => {
+  const f = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: playground });
+  const real = spawnSync("bash", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+  writeFileSync(join(f.bin, "git"), `#!/bin/bash\nif [[ $1 == fetch ]]; then printf 'fatal: https://ke63:ke63-fake' >&2; sleep 0.2\n` +
+    `printf -- '-token-0000@gitlab.example.com/a.git' >&2; exit 1; fi\nexec ${real} "$@"\n`);
+  chmodSync(join(f.bin, "git"), 0o755);
+  const result = f.run();
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /^RESULT: fail fetch: fatal: https:\/\/gitlab\.example\.com\/a\.git$/m);
+  const log = readFileSync(join(f.logDir(), "fetch.log"), "utf8");
+  assert.equal(log, "fatal: https://gitlab.example.com/a.git");
+  assert.match(result.stderr, /^ {2}fatal: https:\/\/gitlab\.example\.com\/a\.git$/m);
+  assert.equal(`${result.stdout}${result.stderr}`.includes("ke63-fake"), false, result.stdout + result.stderr);
+});
+
 test("with a folder origin, a GH_REPO already set is what gh is told, and the merge keeps its host", t => {
   const f = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: playground });
   const result = f.run([], { FAKE_BASE: "main", GH_REPO: "git.example.com/acme/site" }, true);
