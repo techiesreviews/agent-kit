@@ -45,7 +45,7 @@ export function allowedSkills(root) {
   let settings;
   try { settings = JSON.parse(readFileSync(join(root, kitSettingsFile), "utf8")); } catch { return { allow: [], problems: [] }; }
   const list = settings?.skillGuard?.allow;
-  if (list === undefined) return { allow: [], problems: [] };
+  if (list == null) return { allow: [], problems: [] }; // Unset or null: nothing allowed, as kit doctor reads it.
   if (!Array.isArray(list)) return { allow: [], problems: [`${kitSettingsFile}: skillGuard.allow must be a list of skill folder paths`] };
   const allow = [], problems = [];
   for (const entry of list) {

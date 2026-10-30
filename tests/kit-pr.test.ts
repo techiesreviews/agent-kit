@@ -436,6 +436,15 @@ test("a project's own skill in skillGuard.allow passes, and the PR body names it
     "\n- skill guard: ok — line check: skipped (no local skill folders); allowed own skills: .claude/skills/heron (skillGuard.allow; lines still checked)\n"));
 });
 
+test("kit pr stops on a skillGuard.allow entry that is not one skill folder, before any check", t => {
+  const f = fixture(t, { "src/app.js": "export const app = 1;\n", ".claude/skills/heron/SKILL.md": "x\n" }, {},
+    { settings: { ...playground, skillGuard: { allow: [".claude/skills"] } }, workflows: false });
+  const result = f.run(["--dry-run"], { FAKE_BASE: "main" }, true);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout + result.stderr, /skillGuard\.allow entry "\.claude\/skills" is not one skill folder's repo path/);
+  assert.deepEqual(f.calls(), []);
+});
+
 test("kit pr stops before any check when the branch tracks a skill file, naming the path and never the text", t => {
   // Made-up skill text in a fake skill folder, named by KIT_SKILL_DIRS.
   const home = mkdtempSync(join(tmpdir(), "kit-pr-skills-"));

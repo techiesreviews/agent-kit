@@ -209,6 +209,8 @@ test("skillGuard.allow names a project's own skill folders; an entry that is not
   for (const path of ["heron/SKILL.md", "heron/references/a.md", ".claude/SKILL.md"]) assert.ok(allowedPath(path, ["heron", ".claude"]), path);
   for (const path of [".claude/skills/paid/SKILL.md", ".claude/notes/SKILL.md", "heron/skills/paid/x.md"]) assert.equal(allowedPath(path, ["heron", ".claude"]), false, path);
   assert.match(bad.problems[0], /^scripts\/agents\/kit\.json: skillGuard\.allow entry "skills" is not one skill folder's repo path$/);
+  settings(null);
+  assert.deepEqual(allowedSkills(f.repo), { allow: [], problems: [] });
   settings(".claude/skills/heron");
   assert.deepEqual(allowedSkills(f.repo).problems, ["scripts/agents/kit.json: skillGuard.allow must be a list of skill folder paths"]);
 });

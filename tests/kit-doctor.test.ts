@@ -325,6 +325,15 @@ test("doctor adds the project's checks.doctor lines and the playwright module, e
 test("doctor lists skillGuard.allow's own skills, counted, and fails on another skill path or a too-wide entry", (t) => {
   const plain = playground(t, { allowMainCheckout: true }).run();
   assert.doesNotMatch(plain.stdout, /skills:/);
+  // A null list is unset for doctor and the guard alike.
+  assert.doesNotMatch(playground(t, { allowMainCheckout: true, skillGuard: { allow: null } }).run().stdout, /skills:/);
+  // The kit's own repo refuses the list; the fix is to drop it, never to name a folder.
+  const kitRepo = playground(t, { allowMainCheckout: true, skillGuard: { allow: [".claude/skills/heron"] } });
+  mkdirSync(join(kitRepo.root, "kit.d"));
+  writeFileSync(join(kitRepo.root, "skill-guard.mjs"), "\n"); writeFileSync(join(kitRepo.root, "kit.d/doctor"), "\n");
+  commit(kitRepo.root, "skill-guard.mjs", "kit.d");
+  const refused = kitRepo.run();
+  assert.ok(refused.stdout.includes(`✗ skills: scripts/agents/kit.json: skillGuard.allow is refused in the kit's own repo, which never keeps a skill; fix: remove "skillGuard" from scripts/agents/kit.json (the kit repo never keeps a skill)\n`), refused.stdout);
   const empty = playground(t, { allowMainCheckout: true, skillGuard: { allow: [] } }).run();
   assert.equal(empty.status, 0, empty.stdout);
   assert.ok(empty.stdout.includes("✓ skills: allowed own skills: none (skillGuard.allow); no other skill paths tracked\n"), empty.stdout);
