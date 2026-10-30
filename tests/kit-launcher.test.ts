@@ -113,6 +113,12 @@ test("the launcher fails with a RESULT line when there is no kit and none can be
   const result = f.kit(["where"], { KIT_REPO: nowhere });
   assert.equal(result.status, 2);
   assert.equal(result.stdout, `RESULT: fail no Agent Kit at ${join(f.cache, "agent-kit")} (no machine copy; cannot clone ${nowhere})\n`);
+  // A token in KIT_REPO's url is never shown, by the launcher or the git it runs.
+  const token = "ke63-fake-token-0000";
+  const secret = f.kit(["where"], { KIT_REPO: `https://ke63:${token}@127.0.0.1:1/agent-kit.git` });
+  assert.equal(secret.status, 2);
+  assert.equal(secret.stdout, `RESULT: fail no Agent Kit at ${join(f.cache, "agent-kit")} (no machine copy; cannot clone https://127.0.0.1:1/agent-kit.git)\n`);
+  assert.equal(secret.stderr.includes(token), false, secret.stderr);
   const chosen = f.kit(["where"], { KIT_HOME: join(f.directory, "nowhere") });
   assert.equal(chosen.status, 2);
   assert.equal(chosen.stdout, `RESULT: fail no Agent Kit at ${join(f.directory, "nowhere")} (KIT_HOME)\n`);

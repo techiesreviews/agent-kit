@@ -720,6 +720,25 @@ test("--issues reads an ssh alias for github.com as kit pr does: gh is asked abo
   assert.equal(gh.calls()[1][3], "acme/tools");
 });
 
+test("a token in origin's url never shows: not in init's messages, the project name or the --issues stop", (t) => {
+  const f = fixture(t);
+  const token = "ke63-fake-token-0000";
+  // An origin url with no path: the project is named after the folder, never after the token.
+  const bare = f.repo("plain", { "index.html": "<p>hi</p>\n" }, ["main"]);
+  const hostOnly = `https://ke63:${token}@gitlab.example.com`;
+  f.git(f.directory, "init", "-q", "--bare", join(f.directory, "plain.git"));
+  f.git(bare.main, "remote", "add", "origin", hostOnly);
+  f.git(bare.main, "config", `url.${join(f.directory, "plain.git")}.insteadOf`, hostOnly);
+  const run = f.init(bare.work, ["--light"]);
+  assert.equal(`${run.stdout}${run.stderr}`.includes(token), false, run.stdout + run.stderr);
+  assert.equal(JSON.parse(readFileSync(join(bare.work, "scripts/agents/kit.json"), "utf8")).project, "plain");
+  // --issues stops on an origin that is no GitHub repo, naming its host only.
+  const { work } = issueRepo(f, undefined, `https://ke63:${token}@gitlab.example.com/acme/tools.git`);
+  const issues = fakeGh(f, []).init(work, ["--issues"]);
+  assert.equal(result(issues), "RESULT: fail init origin (https://gitlab.example.com/acme/tools.git) is not a GitHub repo gh knows; --issues reads the Issues of origin's repo");
+  assert.equal(`${issues.stdout}${issues.stderr}`.includes(token), false, issues.stdout + issues.stderr);
+});
+
 test("--issues runs beside old kit files, and a failing or odd gh issue list writes nothing", (t) => {
   const f = fixture(t);
   const { main, work } = f.repo("old", { "scripts/agents/kit-lib.sh": "# old\n", "scripts/agents/kit.json": JSON.stringify({ project: "old", branches: { land: "dev" }, maps: "docs/wayfinder" }) });

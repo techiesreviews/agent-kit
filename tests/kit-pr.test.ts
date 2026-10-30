@@ -613,6 +613,35 @@ test("a GitLab origin stops kit pr before any gh call: no GitHub repo gh knows",
   assert.deepEqual(f.calls(), []);
 });
 
+test("a token in origin's url never shows: kit pr's messages, logs, records and gh calls show the host only", t => {
+  const f = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: playground });
+  const token = "ke63-fake-token-0000";
+  // Every file kit pr writes (its logs, the PR body, the scoreboard) and every call the fakes saw.
+  const written = (folder: string): string[] => !existsSync(folder) ? [] : readdirSync(folder, { withFileTypes: true })
+    .flatMap(entry => entry.isDirectory() ? written(join(folder, entry.name)) : [readFileSync(join(folder, entry.name), "utf8")]);
+  const leaks = (result: { stdout: string; stderr: string }) => [result.stdout, result.stderr, ...written(join(f.root, ".scratch")),
+    ...written(join(f.main, ".scratch")), existsSync(f.env.FAKE_CALLS!) ? readFileSync(f.env.FAKE_CALLS!, "utf8") : ""].filter(text => text.includes(token));
+  // Not on GitHub: the real run stops naming the host only, and the dry run plans.
+  const gitlab = `https://ke63:${token}@gitlab.example.com/acme/site.git`;
+  f.git("config", `url.${f.origin}.insteadOf`, gitlab);
+  f.git("remote", "set-url", "origin", gitlab);
+  const stopped = f.run([], { GH_REPO: "" }, true);
+  assert.equal(stopped.status, 1, stopped.stdout + stopped.stderr);
+  assert.match(stopped.stdout, /^RESULT: fail origin \(https:\/\/gitlab\.example\.com\/acme\/site\.git\) is not a GitHub repo gh knows, /m);
+  assert.deepEqual(leaks(stopped), []);
+  const plan = f.run(["--dry-run"], { GH_REPO: "" }, true);
+  assert.equal(plan.status, 0, plan.stdout + plan.stderr);
+  assert.deepEqual(leaks(plan), []);
+  // On GitHub: a whole run, from push to merge.
+  const github = `https://x-access-token:${token}@github.com/acme/site.git`;
+  f.git("config", `url.${f.origin}.insteadOf`, github);
+  f.git("remote", "set-url", "origin", github);
+  const landed = f.run([], { FAKE_BASE: "main", GH_REPO: "" }, true);
+  assert.equal(landed.status, 0, landed.stdout + landed.stderr);
+  assert.match(landed.stdout, /RESULT: ok merged #73 abcdef0/);
+  assert.deepEqual(leaks(landed), []);
+});
+
 test("with a folder origin, a GH_REPO already set is what gh is told, and the merge keeps its host", t => {
   const f = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: playground });
   const result = f.run([], { FAKE_BASE: "main", GH_REPO: "git.example.com/acme/site" }, true);

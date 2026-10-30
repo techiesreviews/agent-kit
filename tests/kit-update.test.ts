@@ -414,6 +414,11 @@ test("kit update fails plainly on an unreachable repo, a main without a kit, and
   assert.equal(missing.status, 1);
   assert.ok(missing.stdout.endsWith(`RESULT: fail update cannot fetch main from file://${join(k.directory, "nowhere.git")}\n`), missing.stdout);
   assert.equal(existsSync(join(k.data, "current")), false);
+  const token = "ke63-fake-token-0000";
+  const secret = k.run([], { KIT_REPO: `https://ke63:${token}@127.0.0.1:1/agent-kit.git` });
+  assert.equal(secret.status, 1);
+  assert.ok(secret.stdout.endsWith("RESULT: fail update cannot fetch main from https://127.0.0.1:1/agent-kit.git\n"), secret.stdout);
+  assert.equal(`${secret.stdout}${secret.stderr}`.includes(token), false, secret.stdout + secret.stderr);
   const empty = join(k.directory, "empty");
   mkdirSync(empty);
   k.git(empty, "init", "-q", "--initial-branch=main");

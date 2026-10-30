@@ -386,7 +386,7 @@ if [[ $quiet == false ]]; then
     printf '✓ PR target: %s (GH_REPO; origin is not a GitHub repo)\n' "$GH_REPO"
   else
     printf "✗ PR target: origin (%s) is not a GitHub repo gh knows, so kit pr cannot open a PR; fix: git remote set-url origin <the project's GitHub repo>, or gh auth login for its host\n" \
-      "$(git -C "$root" config --get remote.origin.url 2>/dev/null || printf 'no url')"
+      "$(kit_hide_user_info "$(git -C "$root" config --get remote.origin.url 2>/dev/null || printf 'no url')")"
   fi
 fi
 

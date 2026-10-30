@@ -400,6 +400,20 @@ test("doctor shows the GitHub repo PRs go to: origin's, never the upstream a sit
   assert.equal(f.run(["--quiet"]).stdout, "RESULT: ok doctor 11/11 checks passed\n");
 });
 
+test("doctor shows a token in origin's url by the host only", (t) => {
+  const f = fixture(t);
+  const token = "ke63-fake-token-0000";
+  for (const url of [`https://ke63:${token}@gitlab.example.com/acme/site.git`, `https://x-access-token:${token}@github.com/acme/site.git`]) {
+    git(f.build, "config", `url.${join(f.directory, "origin.git")}.insteadOf`, url);
+    git(f.build, "remote", "set-url", "origin", url);
+    const result = f.run();
+    assert.equal(`${result.stdout}${result.stderr}`.includes(token), false, result.stdout + result.stderr);
+    assert.match(result.stdout, url.includes("gitlab")
+      ? /^✗ PR target: origin \(https:\/\/gitlab\.example\.com\/acme\/site\.git\) is not a GitHub repo gh knows, /m
+      : /^✓ PR target: acme\/site \(origin\)$/m);
+  }
+});
+
 test("doctor names missing hook configuration", (t) => {
   const f = fixture(t);
   rmSync(join(f.build, ".codex/hooks.json"));

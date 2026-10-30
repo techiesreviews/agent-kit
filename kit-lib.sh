@@ -140,6 +140,12 @@ kit_node() {
   export KIT_NODE=$node
 }
 
+# Text with every URL's user-info part taken out (https://user:token@host/… prints as https://host/…), so no
+# message, log or report the kit writes shows a remote's token.
+kit_hide_user_info() {
+  printf '%s\n' "${1-}" | sed -E 's|([A-Za-z][A-Za-z0-9+.-]*://)[^[:space:]/?#]*@|\1|g'
+}
+
 kit_result() {
   local status=${1-} text
   local IFS=' '
@@ -150,6 +156,7 @@ kit_result() {
   esac
   text=${text//$'\n'/ }
   text=${text//$'\r'/ }
+  text=$(kit_hide_user_info "$text")
   if [[ $status == bad ]]; then
     printf 'RESULT: fail %s\n' "$text"
     return 2

@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { afterFixRounds, blockingFindings, completedFixRounds, FIX_ROUNDS, openFindings, reviewCoversHead, sameReviewPatch } from "../review-findings.mjs";
 import { projectCommand, spoken } from "../review-brief.mjs";
 
-const { kitBranch, kitGhEnv, kitHome, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, nodeEnv, kitScore } = await import(
+const { kitBranch, kitGhEnv, kitHideUserInfo, kitHome, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, nodeEnv, kitScore } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const { checkSteps, classify, doneHeading, featureListGuard, featureListProblem, focusedUnitFiles, parseChanges, secondLookPick, unitTestFile } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
@@ -282,6 +282,13 @@ async function main(args) {
       const fd = openSync(log, "a");
       let stdout = "", stderr = "", failure;
       let status;
+      // Logs get whole lines with any url's user-info hidden, so a token in a remote's url never reaches .scratch.
+      const unwritten = { out: "", err: "" };
+      const write = (stream, chunk) => {
+        const text = unwritten[stream] + chunk, end = text.lastIndexOf("\n") + 1;
+        unwritten[stream] = text.slice(end);
+        if (end) appendFileSync(fd, kitHideUserInfo(text.slice(0, end)));
+      };
       try {
         status = await new Promise(accept => {
           const child = spawn(command, argv, { cwd: root, env: command === "gh" ? ghEnv : env, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
@@ -293,17 +300,20 @@ async function main(args) {
           process.once("SIGINT", interrupt);
           process.once("SIGTERM", terminate);
           child.stdout.setEncoding("utf8");
-          child.stdout.on("data", chunk => { stdout += chunk; appendFileSync(fd, chunk); });
+          child.stdout.on("data", chunk => { stdout += chunk; write("out", chunk); });
           child.stderr.setEncoding("utf8");
-          child.stderr.on("data", chunk => { stderr += chunk; appendFileSync(fd, chunk); });
-          child.once("error", error => { failure = error.message; appendFileSync(fd, `${failure}\n`); });
+          child.stderr.on("data", chunk => { stderr += chunk; write("err", chunk); });
+          child.once("error", error => { failure = error.message; write("err", `${failure}\n`); });
           child.once("close", code => {
             process.removeListener("SIGINT", interrupt);
             process.removeListener("SIGTERM", terminate);
             accept(code ?? 1);
           });
         });
-      } finally { closeSync(fd); }
+      } finally {
+        for (const rest of Object.values(unwritten)) if (rest) appendFileSync(fd, kitHideUserInfo(rest));
+        closeSync(fd);
+      }
       return { status, stderr, text: stdout, failure };
     }
     async function run(name, command, argv) {
