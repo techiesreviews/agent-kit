@@ -20,12 +20,15 @@ function base(s) { sub(/^.*\//, "", s); return s }
 function reject(s) { if (!reason) reason = s }
 # A later relative folder is joined to the one before it; an absolute one replaces it.
 function within(dir, to) { return to ~ /^[\/~]/ || dir == "" ? to : dir "/" to }
+# A folder the shell may or may not be in: the push check tries it beside the session and project folders.
+function unsure(dir, to) { sub(/^UNSURE:/, "", dir); return "UNSURE:" within(dir, to) }
+function value(word) { return substr(word, index(word, "=") + 1) }
 function inspect(a, n, timed, depth, floor,    i,j,k,name,text,dir,gitdir) {
   if (a[1] == "done") loopDepth = loopDepth > floor ? loopDepth - 1 : floor
   i = 1
   # Common execution wrappers leave the following word as the command.
   while (i <= n) {
-    if (a[i] ~ /^[A-Za-z_][A-Za-z_0-9]*=/) { if (a[i] ~ /^GIT_(DIR|WORK_TREE)=/) gitdir = 1; i++; continue }
+    if (a[i] ~ /^[A-Za-z_][A-Za-z_0-9]*=/) { if (a[i] ~ /^GIT_(DIR|WORK_TREE)=./) gitdir = value(a[i]); i++; continue }
     name = base(a[i])
     if (name == "while" || name == "until") loopDepth++
     if (name == "for" || name == "select") { loopDepth++; return 0 }
@@ -50,8 +53,9 @@ function inspect(a, n, timed, depth, floor,    i,j,k,name,text,dir,gitdir) {
     if (name == "env" || name == "sudo" || name == "command" || name == "exec" || name == "nohup") {
       i++
       while (i <= n && (a[i] ~ /^-/ || a[i] ~ /^[A-Za-z_][A-Za-z_0-9]*=/)) {
-        # env GIT_DIR=…, env -C or --chdir: the push runs in a folder the guard does not follow.
-        if (a[i] ~ /^GIT_(DIR|WORK_TREE)=/ || a[i] == "-C" || a[i] ~ /^--chdir/) gitdir = 1
+        # env GIT_DIR=…, env -C or --chdir: the push may run in that folder.
+        if (a[i] ~ /^GIT_(DIR|WORK_TREE)=./ || a[i] ~ /^--chdir=./) gitdir = value(a[i])
+        if (a[i] == "-C" || a[i] == "--chdir") gitdir = a[i+1]
         if (a[i] == "-u" || a[i] == "--unset" || a[i] == "-C" || a[i] == "--chdir") i++
         i++
       }
@@ -81,23 +85,23 @@ function inspect(a, n, timed, depth, floor,    i,j,k,name,text,dir,gitdir) {
   }
   # The folder later commands run in, for the push check: cd here, git -C below.
   # A folder taken from the directory stack (cd -, popd, a bare pushd or pushd +N) is unknown, which the
-  # push check treats like a variable.
-  # So is a cd that may not run in this shell: after && or ||, in a pipeline or in the background.
-  if (name == "cd" || name == "pushd") {
+  # push check treats like a variable. A cd in a pipeline or in the background runs in a subshell and
+  # changes nothing; one after && or || may not run, so its folder is only possible.
+  if ((name == "cd" || name == "pushd") && !subshell) {
     for (k = i + 1; k <= n && (a[k] ~ /^-[LPe@]+$/ || a[k] == "--"); k++) ;
-    if (uncertain) cwd = "$OLDPWD"
-    else if (k > n) cwd = name == "cd" ? within(cwd, "~") : "$OLDPWD"
+    if (k > n) cwd = name == "cd" ? within(cwd, "~") : "$OLDPWD"
     else if (a[k] == "-" || (name == "pushd" && a[k] ~ /^[-+][0-9]+$/)) cwd = "$OLDPWD"
-    else cwd = within(cwd, a[k])
+    else cwd = uncertain ? unsure(cwd, a[k]) : within(cwd, a[k])
   }
   if (name == "popd") cwd = "$OLDPWD"
-  if (name == "export") for (k = i + 1; k <= n; k++) if (a[k] ~ /^GIT_(DIR|WORK_TREE)=/) exported = 1
+  if (name == "export") for (k = i + 1; k <= n; k++) if (a[k] ~ /^GIT_(DIR|WORK_TREE)=./) exported = value(a[k])
   if (name == "git") {
-    j = i + 1; dir = gitdir || exported ? "$GIT_DIR" : cwd
+    j = i + 1; dir = gitdir != "" ? unsure(cwd, gitdir) : exported != "" ? unsure(cwd, exported) : cwd
     while (j <= n && a[j] ~ /^-/) {
       if (a[j] == "-C") dir = within(dir, a[j+1])
-      # Another repo named by --git-dir or --work-tree is unknown too.
-      if (a[j] ~ /^--(git-dir|work-tree)/) dir = "$GIT_DIR"
+      # Another repo named by --git-dir or --work-tree is possible too.
+      if (a[j] ~ /^--(git-dir|work-tree)=./) dir = unsure(dir, value(a[j]))
+      if (a[j] == "--git-dir" || a[j] == "--work-tree") dir = unsure(dir, a[j+1])
       if (a[j] == "-C" || a[j] == "-c" || a[j] == "--git-dir" || a[j] == "--work-tree" || a[j] == "--namespace" || a[j] == "--config-env") j++
       j++
     }
@@ -268,9 +272,10 @@ function scan(s, timed, depth,    a,n,i,c,q,word,started,escaped,quoted,redirect
         if (expect && n && (a[1] == "esac" || c !~ /[)|]/)) expect = 0
         skip = expect && n
         if (expect && c == ")") expect = 0
-        # Whether this command may not run in this shell: it follows && or || or a pipe, or ends in | or &.
+        # Whether this command may not run (it follows && or || or a pipe) or runs in a subshell (it ends in | or &).
         nxt = substr(s, i + 1, 1); prv = substr(s, i - 1, 1)
-        uncertain = after || (c == "|" && nxt != "|" && prv != "|") || (c == "&" && nxt != "&" && prv != "&")
+        uncertain = after
+        subshell = (c == "|" && nxt != "|" && prv != "|") || (c == "&" && nxt != "&" && prv != "&")
         code = skip ? 0 : inspect(a, n, timed, depth, floor)
         after = (c == "&" && (nxt == "&" || prv == "&")) || c == "|"
         # A ( … ) group runs in a subshell: a cd inside it ends with the group.
@@ -318,8 +323,9 @@ END { scan(source, 0, 0); if (reason) print "reason\037" reason; for (i = 1; i <
 # without review. A landing branch that deploys on push is guarded by setting it as the release branch
 # too (land equal to release). Prints the guarded branch a push would reach, else nothing.
 guarded_target() {
-  local dir=$1 folder
+  local dir=$1 folder named=''
   shift
+  if [[ $dir == UNSURE:* ]]; then named=${dir#UNSURE:}; dir='$'; fi
   [[ $dir == '~' || $dir == '~/'* ]] && dir=$HOME${dir#'~'}
   [[ $dir == /* ]] || dir=$base/$dir
   # A folder named through a variable or $( … ), or one that is no repo (a failed cd leaves the shell
@@ -328,7 +334,15 @@ guarded_target() {
     guarded_in "$dir" "$@"
     return 0
   fi
-  for folder in "$base" ${CLAUDE_PROJECT_DIR:+"$CLAUDE_PROJECT_DIR"}; do
+  # The folder the command names, when the shell may be there (a cd after &&, GIT_DIR, --git-dir, env -C).
+  if [[ -n $named && $named != *'$'* && $named != *EXPANSION* ]]; then
+    [[ $named == '~' || $named == '~/'* ]] && named=$HOME${named#'~'}
+    [[ $named == /* ]] || named=$base/$named
+    named=${named%/}; named=${named%/.git}
+  else
+    named=''
+  fi
+  for folder in "$base" ${CLAUDE_PROJECT_DIR:+"$CLAUDE_PROJECT_DIR"} ${named:+"$named"}; do
     folder=$(guarded_in "$folder" "$@") || folder=''
     if [[ -n $folder ]]; then printf '%s' "$folder"; return 0; fi
   done
