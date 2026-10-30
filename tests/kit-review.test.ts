@@ -30,7 +30,7 @@ import { basename, dirname, join } from "node:path";
 const cli = basename(process.argv[1]);
 const args = process.argv.slice(2);
 if (cli === "gh") {
-  writeFileSync(process.env.FAKE_GH, JSON.stringify({ args, body: readFileSync(args[args.indexOf("--body-file") + 1], "utf8"), cwd: process.cwd(), repo: process.env.GH_REPO }));
+  writeFileSync(process.env.FAKE_GH, JSON.stringify({ args, body: readFileSync(args[args.indexOf("--body-file") + 1], "utf8"), cwd: process.cwd(), repo: process.env.GH_REPO, host: process.env.GH_HOST }));
   process.exit(Number(process.env.FAKE_GH_EXIT || 0));
 }
 const home = process.env.CODEX_HOME;
@@ -489,9 +489,14 @@ test("--pr posts on origin's GitHub repo, not the upstream a site made from the 
   f.git("remote", "add", "upstream", "https://github.com/acme/starter.git");
   const result = f.run(["--base", "HEAD^", "--pr", "7"], { GH_REPO: "acme/starter" });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  const posted: { args: string[]; repo?: string } = JSON.parse(readFileSync(f.ghFile, "utf8"));
+  const posted: { args: string[]; repo?: string; host?: string } = JSON.parse(readFileSync(f.ghFile, "utf8"));
   assert.deepEqual(posted.args.slice(0, 3), ["pr", "comment", "7"]);
-  assert.equal(posted.repo, "acme/site");
+  assert.deepEqual([posted.repo, posted.host], ["acme/site", "github.com"]);
+  // An enterprise origin: its host goes to GH_HOST too.
+  f.git("remote", "set-url", "origin", "git@git.example.com:acme/site.git");
+  assert.equal(f.run(["--base", "HEAD^", "--pr", "7"], { GH_REPO: "acme/starter", GH_HOST: "github.com" }).status, 0);
+  const enterprise: { repo?: string; host?: string } = JSON.parse(readFileSync(f.ghFile, "utf8"));
+  assert.deepEqual([enterprise.repo, enterprise.host], ["git.example.com/acme/site", "git.example.com"]);
 });
 
 test("kit review removes its temporary files after a good save and keeps them, named, when a copy fails", (t) => {
