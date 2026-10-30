@@ -768,6 +768,28 @@ test("release into main opens but never waits or merges", t => {
   assert.ok(f.ghCalls("create")[0].args.includes("main"));
 });
 
+test("a release runs kit release-check --land first, a dry run too; only releases run it", t => {
+  const f = fixture(t);
+  for (const args of [["--base", "main", "--release", "--dry-run"], ["--base", "main", "--release"]]) {
+    const before = f.calls().length, result = f.run(args);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.deepEqual(f.calls()[before].args, ["release-check", "--land"]);
+    assert.match(result.stdout, /^logs: .+\nrelease-check: ok\n/);
+  }
+  const before = f.calls().length, plain = f.run(["--no-merge"]);
+  assert.equal(plain.status, 0, plain.stdout + plain.stderr);
+  assert.equal(f.calls().slice(before).some(call => call.args[0] === "release-check"), false);
+  assert.doesNotMatch(plain.stdout, /release-check/);
+});
+
+test("a failed release check stops the release before the fetch and the push, naming its problem", t => {
+  const f = fixture(t), result = f.run(["--base", "main", "--release"], { FAKE_FAIL: "release-check", FAKE_FAIL_TEXT: "problem: unsaved files (draft.html)" });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /RESULT: fail release-check: problem: unsaved files \(draft\.html\)/);
+  assert.deepEqual(f.calls().map(call => call.args[0]), ["release-check"]);
+  assert.equal(existsSync(join(f.logDir(), "fetch.log")), false);
+});
+
 test("newest complete saved review of the whole PR is posted; incomplete, partial-scope and mismatched ones are skipped", t => {
   const f = fixture(t), parent = join(f.main, ".scratch/reviews/ak-14");
   const base = f.git("merge-base", "origin/dev", "HEAD"), parentCommit = f.git("rev-parse", "HEAD~1");

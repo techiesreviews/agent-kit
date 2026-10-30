@@ -1,0 +1,116 @@
+#!/usr/bin/env node
+// kit: before going live: nothing unsaved, and HEAD exactly the release branch on origin
+import { spawnSync } from "node:child_process";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+
+const { kitBranch, kitHideUserInfo, kitOwner, kitResult, kitRoot, kitSettings, kitSettingsFile } = await import(
+  pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
+);
+const usage = `Usage: kit release-check [--land] [--waive "<reason>"]
+Run first by a project's live deploy command, and by kit pr --release. Fails unless the working tree is
+clean (no changed or untracked files outside .scratch/) and HEAD is exactly origin/<release> after a
+fetch (branches.release in ${kitSettingsFile}, the same branch the push guard reads). Pushes nothing.
+--land compares HEAD with origin/<land> instead: kit pr --release checks that it sends out exactly what
+landed. --waive requires a *-lead owner; the RESULT line names the reason and what it let through.
+`;
+
+class UsageError extends Error {}
+
+function options(args) {
+  const flags = {};
+  for (let i = 0; i < args.length; i++) {
+    const flag = args[i];
+    if (!["--land", "--waive"].includes(flag) || Object.hasOwn(flags, flag)) throw new UsageError(`unknown or duplicate option: ${flag}`);
+    if (flag === "--waive") {
+      const value = args[++i];
+      if (!value?.trim() || value.startsWith("-")) throw new UsageError("--waive requires a value");
+      flags[flag] = value.replace(/[\r\n]+/g, " ");
+    } else flags[flag] = true;
+  }
+  if (flags["--waive"] && !kitOwner().endsWith("-lead")) throw new UsageError("--waive requires a *-lead owner");
+  return { land: Boolean(flags["--land"]), waive: flags["--waive"] };
+}
+
+const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
+
+/** What stops this checkout going live: a list of { what, advice }, and the line an ok result prints. */
+function problems(root, { land }) {
+  const git = (...args) => spawnSync("git", ["-C", root, ...args], { encoding: "utf8" });
+  const found = [];
+  const settings = kitSettings(root), release = kitBranch("release", settings);
+  // Changed and untracked files, one path each; .scratch/ holds the kit's own logs and evidence.
+  const status = git("-c", "core.quotepath=false", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames");
+  if (status.status !== 0) throw new Error(`git status failed: ${status.stderr.trim()}`);
+  const files = status.stdout.split("\0").filter(Boolean).map(entry => entry.slice(3))
+    .filter(path => !path.startsWith(".scratch/")).sort();
+  if (files.length) {
+    const named = files.length > 5 ? `${files.slice(0, 5).join(", ")} and ${files.length - 5} more` : files.join(", ");
+    found.push({ what: `unsaved files (${named})`, advice: "commit them through kit pr or remove them before going live" });
+  }
+  if (!release) {
+    found.push({ what: `no branches.release in ${kitSettingsFile}`, advice: "name the branch that goes live there" });
+    return { found };
+  }
+  const branch = land ? kitBranch("land", settings) : release;
+  // Only git's "No such remote" (exit 2) means there is no origin; other failures surface at the fetch.
+  if (git("remote", "get-url", "origin").status === 2) {
+    found.push({ what: "no origin remote", advice: `the check compares HEAD with origin/${branch}` });
+    return { found };
+  }
+  const fetch = git("fetch", "-q", "origin");
+  if (fetch.status !== 0) {
+    const reason = kitHideUserInfo(fetch.stderr.trim().split(/\r?\n/).at(-1) || `git fetch exited ${fetch.status}`);
+    found.push({ what: `could not fetch origin (${reason})`, advice: "try again once origin answers" });
+    return { found };
+  }
+  const head = git("rev-parse", "--verify", "-q", "HEAD^{commit}").stdout.trim();
+  if (!head) {
+    found.push({ what: "no commit checked out", advice: `check out origin/${branch} before going live` });
+    return { found };
+  }
+  const short = git("rev-parse", "--short", head).stdout.trim();
+  if (!git("rev-parse", "--verify", "-q", `refs/remotes/origin/${branch}`).stdout.trim()) {
+    found.push({ what: `origin has no branch ${branch}`, advice: "push nothing by hand; land the release with kit pr --release" });
+    return { found };
+  }
+  const counts = git("rev-list", "--left-right", "--count", `HEAD...refs/remotes/origin/${branch}`);
+  if (counts.status !== 0) throw new Error(`git rev-list failed: ${counts.stderr.trim()}`);
+  const [ahead, behind] = counts.stdout.trim().split(/\s+/).map(Number);
+  const update = `update the checkout to origin/${branch} before going live`;
+  if (ahead && behind) found.push({ what: `HEAD ${short} and origin/${branch} have split (${plural(ahead, "commit")} ahead, ${behind} behind)`, advice: update });
+  else if (ahead) found.push({ what: `HEAD ${short} is ${plural(ahead, "commit")} ahead of origin/${branch}`, advice: `what goes live must be on ${branch}; land it with kit pr` });
+  else if (behind) found.push({ what: `HEAD ${short} is ${plural(behind, "commit")} behind origin/${branch}`, advice: update });
+  return { found, passed: `release-check ${short} is origin/${branch}, nothing unsaved` };
+}
+
+function main(args) {
+  let flags;
+  try { flags = options(args); }
+  catch (error) {
+    if (!(error instanceof UsageError)) throw error;
+    process.stderr.write(usage);
+    kitResult("fail", `invalid arguments: ${error.message}`);
+    return 2;
+  }
+  try {
+    const { found, passed } = problems(resolve(kitRoot()), flags);
+    if (!found.length) {
+      kitResult("ok", flags.waive ? `${passed} (waiver not needed: ${flags.waive})` : passed);
+      return 0;
+    }
+    if (flags.waive) {
+      kitResult("ok", `release-check waived by ${kitOwner()} (${flags.waive}): ${found.map(item => item.what).join("; ")}`);
+      return 0;
+    }
+    for (const item of found) console.error(`problem: ${item.what}: ${item.advice}`);
+    kitResult("fail", found.map(item => `${item.what}: ${item.advice}`).join("; "));
+    return 1;
+  } catch (error) {
+    kitResult("fail", error.message);
+    return 1;
+  }
+}
+
+if (process.argv.length === 3 && ["--help", "-h"].includes(process.argv[2])) process.stdout.write(usage);
+else process.exitCode = main(process.argv.slice(2));

@@ -42,6 +42,15 @@ only a small launcher and its own settings; the kit itself lives here, once.
   the release branch (the Native Site Editor's `dev`). Where the two are one branch (this repo, a live site), they
   land through `kit pr` (docs tier), or `kit next --start`, which claims and starts the slice itself.
 
+## Nothing unsaved goes live
+
+- `kit release-check` is the second half of that gate: it fails unless the working tree is clean (no changed or
+  untracked file outside `.scratch/`) and HEAD is exactly `origin/<release>` after a fetch (`branches.release`,
+  the branch the push guard reads). A project's own live deploy command runs it first
+  (`scripts/agents/kit release-check && <deploy>`); `kit pr --release` runs `kit release-check --land` before it
+  opens the release PR, so the release sends out exactly what landed. It pushes nothing. Only a `*-lead` owner may
+  pass it with `--waive "<reason>"`, which its `RESULT:` line names with what was let through.
+
 ## Changing the kit
 
 - Work in a worktree (`git worktree add -b <branch> ../agent-kit-<branch> main`) and land with this repo's own

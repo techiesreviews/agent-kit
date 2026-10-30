@@ -12,7 +12,7 @@ const { kitBranch, kitGhEnv, kitHideUserInfo, kitHidingLog, kitHome, kitRoot, ki
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const { checkSteps, classify, doneHeading, featureListGuard, featureListProblem, focusedUnitFiles, parseChanges, secondLookPick, unitTestFile } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
-const usage = 'Usage: kit pr [--base <land>] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release] [--full] [--waive "<reason>"]\nBranches come from scripts/agents/kit.json: --base defaults to branches.land; --release needs --base branches.release.\n--waive requires a *-lead owner; records the reason for merging with open findings or without a feature-list update.\nAfter the Claude review (none in the docs tier), every change gets a second look (kit review --second-look), whose findings block the same way;\nwhen no model can take it, the PR lands and says "second look: skipped (<reason>)".\n';
+const usage = 'Usage: kit pr [--base <land>] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release] [--full] [--waive "<reason>"]\nBranches come from scripts/agents/kit.json: --base defaults to branches.land; --release needs --base branches.release and first runs kit release-check --land (nothing unsaved, HEAD exactly origin/<land>).\n--waive requires a *-lead owner; records the reason for merging with open findings or without a feature-list update.\nAfter the Claude review (none in the docs tier), every change gets a second look (kit review --second-look), whose findings block the same way;\nwhen no model can take it, the PR lands and says "second look: skipped (<reason>)".\n';
 const kit = process.env.KIT_PR_KIT || resolve(import.meta.dirname, "../kit");
 
 function options(args) {
@@ -343,6 +343,8 @@ async function main(args) {
     // A project that lands on its release branch (land and release both main) opens ordinary PRs into it.
     if (release && release !== kitBranch("land", settings) && flags.base === release && !flags.release) throw new Error(`--base ${release} requires --release`);
     if (flags.release && flags.base !== release) throw new Error(`--release requires --base ${release}`);
+    // A release sends out exactly what landed: nothing unsaved, HEAD exactly origin/<land> (ticket 72).
+    if (flags.release) { await run("release-check", kit, ["release-check", "--land"]); ok("release-check"); }
     const checks = settings.checks ?? {}, extra = extraChecks(checks.extra);
     await git("guards", ["check-ref-format", `refs/heads/${flags.base}`]);
     if (await git("guards", ["status", "--porcelain"])) throw new Error("uncommitted changes");
