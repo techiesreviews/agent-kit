@@ -80,8 +80,8 @@ function failure(result: ReturnType<typeof spawnSync<string>>, name: string) {
   assert.equal(result.status, 1, result.stdout + result.stderr);
   const lines = result.stdout.trimEnd().split("\n");
   assert.equal(lines.filter(line => line.startsWith("RESULT: ")).length, 1);
-  // The kit note shows whenever the kit's own version runs.
-  assert.equal(lines.filter(line => !line.startsWith("✓ kit: ")).length, 13, result.stdout);
+  // The kit note shows whenever the kit's own version runs; the PR target note always shows.
+  assert.equal(lines.filter(line => !line.startsWith("✓ kit: ") && !line.startsWith("✗ PR target: ")).length, 13, result.stdout);
   assert.ok(lines.some(line => line.startsWith(`✗ ${name}: `) && line.includes("; fix: ")), result.stdout);
   assert.equal(lines.at(-1), `RESULT: fail doctor 1 failed: ${name}`);
   assert.equal(result.stderr, "");
@@ -97,8 +97,8 @@ test("doctor checks all eleven conditions quickly, notes Grok, and quiet success
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.ok(elapsed < 2000, `doctor took ${elapsed}ms`);
   const lines = result.stdout.trimEnd().split("\n");
-  assert.deepEqual(lines.slice(0, 13).map(line => line.split(":")[0]), [
-    "✓ settings", "✓ place", "✓ base", "✓ hook config", "✓ hooks live", "✓ node", "✓ node_modules", "✓ conflicts", "✓ commands", "✓ help", "✓ kit home", "✓ kit", "✗ grok",
+  assert.deepEqual(lines.slice(0, 14).map(line => line.split(":")[0]), [
+    "✓ settings", "✓ place", "✓ base", "✓ hook config", "✓ hooks live", "✓ node", "✓ node_modules", "✓ conflicts", "✓ commands", "✓ help", "✓ kit home", "✓ kit", "✗ PR target", "✗ grok",
   ]);
   assert.equal(lines[0], "✓ settings: scripts/agents/kit.json (native-site-editor, lands on dev)");
   assert.equal(lines[8], `✓ commands: 2 in ${f.commands} (KIT_COMMANDS_DIR)`);
@@ -106,9 +106,12 @@ test("doctor checks all eleven conditions quickly, notes Grok, and quiet success
   assert.equal(lines[10], `✓ kit home: a copy of ${realpathSync(dirname(library))} runs kit version for a project with only its settings and front door`);
   // The kit's commit and age beside the project's is a note, not a counted check.
   assert.match(lines[11], new RegExp(`^✓ kit: commit [0-9a-f]{7,} \\(checkout ${repo}, commit \\d+ \\w+ old\\); project [0-9a-f]{7,}$`));
-  assert.equal(lines[12], "✗ grok: not installed (optional reviewer); fix: install the grok CLI for Grok reviews");
-  assert.equal(lines.length, 14);
-  assert.equal(lines[13], "RESULT: ok doctor 11/11 checks passed");
+  // The fixture's origin is a folder, so kit pr would have no repo to open a PR in: a note, not a counted check.
+  assert.equal(lines[12], `✗ PR target: origin (${join(f.directory, "origin.git")}) is not a GitHub repo, so kit pr cannot open a PR; ` +
+    "fix: git remote set-url origin <the project's GitHub repo>");
+  assert.equal(lines[13], "✗ grok: not installed (optional reviewer); fix: install the grok CLI for Grok reviews");
+  assert.equal(lines.length, 15);
+  assert.equal(lines[14], "RESULT: ok doctor 11/11 checks passed");
   assert.equal(result.stderr, "");
   const quiet = f.run(["--quiet"]);
   assert.equal(quiet.status, 0, quiet.stderr);
@@ -350,6 +353,25 @@ test("doctor says no GitHub repo for a repo without a remote and still passes", 
   const result = playground(t, { allowMainCheckout: true }, false).run();
   assert.equal(result.status, 0, result.stdout);
   assert.match(result.stdout, /✓ base: no GitHub repo \(no origin remote\); nothing to fetch\n/);
+  assert.match(result.stdout, /^✓ PR target: none \(no origin remote\)$/m);
+});
+
+test("doctor shows the GitHub repo PRs go to: origin's, never the upstream a site made from the starter has", (t) => {
+  const f = fixture(t);
+  // insteadOf keeps fetches on the local origin while origin names the site's GitHub repo.
+  git(f.build, "config", `url.${join(f.directory, "origin.git")}.insteadOf`, "git@github.com:acme/site.git");
+  git(f.build, "remote", "set-url", "origin", "git@github.com:acme/site.git");
+  const alone = f.run();
+  assert.equal(alone.status, 0, alone.stdout);
+  assert.match(alone.stdout, /^✓ PR target: acme\/site \(origin\)$/m);
+  git(f.build, "remote", "add", "upstream", "https://github.com/acme/starter.git");
+  git(f.build, "remote", "add", "mirror", "https://git.example.com/acme/site.git");
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout);
+  assert.match(result.stdout, /^✓ PR target: acme\/site \(origin; not mirror, upstream\)$/m);
+  assert.match(result.stdout, /RESULT: ok doctor 11\/11 checks passed\n$/);
+  // A note, so --quiet leaves it out.
+  assert.equal(f.run(["--quiet"]).stdout, "RESULT: ok doctor 11/11 checks passed\n");
 });
 
 test("doctor names missing hook configuration", (t) => {

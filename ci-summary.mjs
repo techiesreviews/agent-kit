@@ -3,6 +3,7 @@
 import { execFile } from "node:child_process";
 import { promisify, stripVTControlCharacters } from "node:util";
 import { pathToFileURL } from "node:url";
+import { kitGhEnv } from "./kit-lib.mjs";
 
 const successful = new Set(["success", "neutral", "skipped"]);
 const failed = (run) => run.status === "completed" && !successful.has(run.conclusion);
@@ -97,12 +98,12 @@ export async function latestWorkflowRuns(gh, branch, head) {
 const execute = promisify(execFile);
 async function main(branch, head) {
   const deadline = Date.now() + 20 * 60 * 1000;
+  const ghEnv = { ...kitGhEnv(), GH_PAGER: "cat", NO_COLOR: "1" };
   const gh = async (args) => {
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new Error("CI wait timed out after 20 min");
     const { stdout } = await execute("gh", args, {
-      timeout: Math.min(60_000, remaining), maxBuffer: 32 * 1024 * 1024,
-      env: { ...process.env, GH_PAGER: "cat", NO_COLOR: "1" },
+      timeout: Math.min(60_000, remaining), maxBuffer: 32 * 1024 * 1024, env: ghEnv,
     });
     return stdout;
   };

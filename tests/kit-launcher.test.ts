@@ -470,13 +470,28 @@ test("a launcher whose mv loses the race to another launcher's whole clone uses 
   const f = fixture(t);
   f.publish("one");
   const cache = join(f.cache, "agent-kit");
-  // Another launcher puts its clone in place first, so this mv -T meets a folder that is not empty.
-  const mv = `() { command cp -r -- "$3" "\${@: -1}"; command mv "$@"; }`;
+  // Another launcher puts its clone in place first, so this mv moves the clone into that folder.
+  const mv = `() { command cp -r -- "\${@: -2:1}" "\${@: -1}"; command mv "$@"; }`;
   const result = f.kit(["where"], { "BASH_FUNC_mv%%": mv });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(lines(result), [`${cache} one`]);
   assert.doesNotMatch(result.stdout, /cannot place the clone/);
   assert.deepEqual(readdirSync(f.cache), ["agent-kit"]);
+  // The clone that went into the winner's folder is thrown away from there.
+  assert.deepEqual(readdirSync(cache).filter((name) => name.startsWith("agent-kit.")), []);
+});
+
+test("the launcher places its clone with a plain mv, as macOS has no mv -T", (t) => {
+  const f = fixture(t);
+  f.publish("one");
+  const cache = join(f.cache, "agent-kit");
+  // BSD mv: no -T option.
+  const mv = `() { [[ $1 != -T ]] || { echo "mv: illegal option -- T" >&2; return 64; }; command mv "$@"; }`;
+  const result = f.kit(["where"], { "BASH_FUNC_mv%%": mv });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(lines(result), [`${cache} one`]);
+  assert.deepEqual(readdirSync(f.cache), ["agent-kit"]);
+  assert.doesNotMatch(readFileSync(join(launchers, "kit"), "utf8"), /mv -T --/);
 });
 
 test("a whole clone whose stamp cannot be written is named as such, not as a failed clone, and is thrown away", (t) => {

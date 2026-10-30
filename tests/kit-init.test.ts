@@ -116,6 +116,30 @@ test("a fresh npm repo gets a full setup that passes doctor, is listed in projec
   assert.equal(readFileSync(join(f.state, "agent-kit/projects.json"), "utf8"), listed);
 });
 
+
+test("on a machine with no kit, the hook launcher kit init wrote warns on every hook and exits 0, never blocking", (t) => {
+  const f = fixture(t);
+  const { work } = f.repo("site", { "package.json": "{}" });
+  const run = f.init(work);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  // Another machine: empty HOME and XDG folders, so no machine copy and no cache clone, and no KIT_HOME.
+  const bare = join(f.directory, "bare");
+  mkdirSync(bare);
+  const env = { ...f.env, HOME: bare, XDG_DATA_HOME: join(bare, "data"), XDG_CACHE_HOME: join(bare, "cache"), XDG_STATE_HOME: join(bare, "state"), CLAUDE_PROJECT_DIR: work };
+  const warning = "Agent Kit not found: guards are off; run `scripts/agents/kit doctor`";
+  // Each hook as .claude/settings.json runs it, with a payload that a kit's guard would block.
+  const commands = (Object.values(JSON.parse(readFileSync(join(work, ".claude/settings.json"), "utf8")).hooks) as { hooks: { command: string }[] }[][])
+    .flat().flatMap((entry) => entry.hooks.map((hook) => hook.command));
+  const payload = JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "git stash pop" } });
+  for (const [name, stdout] of [["bash-guard", `{"systemMessage":"${warning}"}\n`], ["agent-cap", `{"systemMessage":"${warning}"}\n`],
+    ["session-env", `${warning}\n`], ["context-card", ""]]) {
+    assert.ok(commands.includes(hookCommand(name)), name);
+    const hook = spawnSync("bash", ["-c", hookCommand(name)], { cwd: work, env, input: payload, encoding: "utf8", timeout: 10_000 });
+    assert.deepEqual([hook.status, hook.stdout, hook.stderr], [0, stdout, ""], name);
+  }
+  assert.equal(existsSync(join(bare, "cache")), false);
+  assert.equal(existsSync(join(bare, "data")), false);
+});
 test("a repo with no package.json gets a light setup that passes doctor and writes less than full", (t) => {
   const f = fixture(t);
   const light = f.repo("plain", { "index.html": "<p>hi</p>\n" }, ["main"]);

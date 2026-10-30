@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 // @ts-expect-error The script is plain JavaScript without declarations.
-import { findNode, kitMainRoot, kitOwner, kitResult, kitRoot, nodeEnv } from "../kit-lib.mjs";
+import { findNode, kitGhEnv, kitGhRepo, kitMainRoot, kitOwner, kitResult, kitRoot, nodeEnv } from "../kit-lib.mjs";
 import { kitEnv } from "./support/kit-env.ts";
 import { kitFiles } from "./support/kit-files.ts";
 
@@ -495,6 +495,38 @@ test("bash and mjs roots and owner follow overrides, owner file and branch fallb
   process.env.KIT_ROOT = outside;
   assert.equal(kitOwner(), "unknown");
   assert.equal(bash("kit_owner", { ...env, KIT_ROOT: outside }).stdout, "unknown\n");
+});
+
+test("bash and mjs read origin's GitHub repo alike, whatever other remotes there are, and nothing from a path", (t) => {
+  const directory = temp(t);
+  assert.equal(spawnSync("git", ["init", "-q", directory]).status, 0);
+  const gitAt = (...args: string[]) => assert.equal(spawnSync("git", ["-C", directory, ...args]).status, 0);
+  const both = () => {
+    const shell = bash(`kit_gh_repo ${JSON.stringify(directory)}`);
+    assert.equal(shell.status, 0, shell.stderr);
+    assert.equal(shell.stdout, kitGhRepo(directory) ? `${kitGhRepo(directory)}\n` : "");
+    return kitGhRepo(directory);
+  };
+  assert.equal(both(), "");
+  gitAt("remote", "add", "upstream", "https://github.com/acme/starter.git");
+  assert.equal(both(), "");
+  gitAt("remote", "add", "origin", "x");
+  for (const [url, repo] of [
+    ["https://github.com/acme/site.git", "acme/site"], ["https://github.com/acme/site", "acme/site"],
+    ["https://token@github.com/acme/site.git/", "acme/site"], ["git@github.com:acme/site.git", "acme/site"],
+    ["github.com:acme/site", "acme/site"], ["ssh://git@ssh.github.com:443/acme/site.git", "acme/site"],
+    ["ssh://git@git.example.com/acme/site.git", "git.example.com/acme/site"], ["git://github.com/acme/my.site.git", "acme/my.site"],
+    ["/srv/git/site.git", ""], ["file:///srv/git/site.git", ""], ["https://github.com/acme", ""], ["https://github.com/a/b/c.git", ""],
+  ]) {
+    gitAt("remote", "set-url", "origin", url);
+    assert.equal(both(), repo, url);
+  }
+  // gh is told origin's repo, over any GH_REPO already set; without a GitHub origin env is left as it is.
+  gitAt("remote", "set-url", "origin", "git@github.com:acme/site.git");
+  assert.deepEqual(kitGhEnv({ GH_REPO: "acme/starter", A: "1" }, directory), { GH_REPO: "acme/site", A: "1" });
+  gitAt("remote", "set-url", "origin", "/srv/git/site.git");
+  assert.deepEqual(kitGhEnv({ GH_REPO: "acme/other" }, directory), { GH_REPO: "acme/other" });
+  assert.deepEqual(kitGhEnv({}, directory), {});
 });
 
 test("outside git, a kit kept in a project's scripts/agents/ takes the project as its root in every library and the front door", (t) => {

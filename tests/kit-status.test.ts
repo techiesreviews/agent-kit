@@ -21,6 +21,7 @@ const fakeGH = `#!/usr/bin/env node
 const { appendFileSync } = require("node:fs");
 const args = process.argv.slice(2), kind = args[0];
 appendFileSync(process.env.FAKE_CALLS, JSON.stringify(args) + "\\n");
+appendFileSync(process.env.FAKE_CALLS + ".repos", (process.env.GH_REPO || "-") + "\\n");
 if (process.env.FAKE_GH_FAIL === "all" || process.env.FAKE_GH_FAIL === kind) {
   console.error("authentication required"); process.exit(1);
 }
@@ -268,6 +269,16 @@ test("cached default ref and local ref work without fetching", async t => {
   const local = await f.run(["alpha", "--ref", "dev", "--no-fetch"]);
   assert.equal(local.code, 0);
   assert.doesNotMatch(local.stdout, /fetch failed|offline/);
+});
+
+test("gh is told origin's GitHub repo, not the upstream a site made from the starter also has", async t => {
+  const f = await fixture(t);
+  f.git("remote", "set-url", "origin", "git@github.com:acme/site.git");
+  f.git("remote", "add", "upstream", "https://github.com/acme/starter.git");
+  const output = await f.run(["--no-fetch"], { env: { GH_REPO: "acme/starter" } });
+  assert.equal(output.code, 0, output.stdout + output.stderr);
+  assert.equal(f.calls().length, 2);
+  assert.equal(readFileSync(`${f.env.FAKE_CALLS}.repos`, "utf8"), "acme/site\nacme/site\n");
 });
 
 test("a repo with no remote gets no GitHub repo, its local land branch and no gh calls", async t => {

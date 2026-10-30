@@ -428,6 +428,7 @@ function fakeGh(t: TestContext, mode: string) {
 set -eu
 [[ $GH_PAGER == cat && $NO_COLOR == 1 ]]
 printf '%s\\n' "$*" >> "$WAIT_FIXTURE/calls"
+printf '%s\\n' "\${GH_REPO:--}" >> "$WAIT_FIXTURE/repos"
 count=0
 [[ ! -f $WAIT_FIXTURE/count ]] || read -r count < "$WAIT_FIXTURE/count"
 old=${head}
@@ -476,7 +477,7 @@ esac
   mkdirSync(join(project, "scripts/agents"), { recursive: true });
   writeFileSync(join(project, "scripts/agents/kit.json"), JSON.stringify({ project: "p", branches: { land: "dev" } }));
   return { env: { ...baseEnv, KIT_ROOT: project, PATH: `${directory}:${process.env.PATH}`, WAIT_FIXTURE: directory, WAIT_MODE: mode },
-    calls: () => readFileSync(join(directory, "calls"), "utf8") };
+    project, calls: () => readFileSync(join(directory, "calls"), "utf8"), repos: () => readFileSync(join(directory, "repos"), "utf8") };
 }
 
 test("ci green uses the default branch and pinned per-workflow reads", async (t) => {
@@ -486,6 +487,17 @@ test("ci green uses the default branch and pinned per-workflow reads", async (t)
   assert.match(output.stdout, /Checks: success abcdef0/);
   assert.match(fixture.calls(), /api repos\/\{owner\}\/\{repo\}\/commits\/dev --jq .sha/);
   assert.match(fixture.calls(), new RegExp(`--branch dev --limit 1 .*--commit ${head}`));
+});
+
+test("ci asks gh about origin's GitHub repo, not the upstream a site made from the starter also has", async (t) => {
+  const fixture = fakeGh(t, "green");
+  for (const args of [["init", "-q"], ["remote", "add", "origin", "https://github.com/acme/site.git"], ["remote", "add", "upstream", "https://github.com/acme/starter.git"]])
+    assert.equal(spawnSync("git", ["-C", fixture.project, ...args]).status, 0);
+  const output = await run(t, ["ci", "--timeout", "2s"], { ...fixture.env, GH_REPO: "acme/starter" });
+  result(output, 0, /ok ci dev abcdef0 green/);
+  const repos = fixture.repos().trim().split("\n");
+  assert.ok(repos.length >= 3, fixture.calls());
+  assert.deepEqual(new Set(repos), new Set(["acme/site"]));
 });
 
 test("ci failure prints test details before the last 20 failed log lines", async (t) => {

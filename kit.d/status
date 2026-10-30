@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { loadTickets } from "../tickets.mjs";
 
-const { kitBranch, kitRoot, kitResult, kitSettings } = await import(
+const { kitBranch, kitGhEnv, kitRoot, kitResult, kitSettings } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const usage = "Usage: kit status [map] [--ref <ref>] [--no-fetch] [--help]\n";
@@ -38,9 +38,9 @@ function reason(error) {
   return cut(String(error.stderr || error.message).trim().split(/\r?\n/)[0], 48);
 }
 
-async function command(command, args, cwd) {
+async function command(command, args, cwd, env = process.env) {
   const { stdout } = await execute(command, args, {
-    cwd, encoding: "utf8", timeout: 20_000, killSignal: "SIGKILL", maxBuffer: 32 * 1024 * 1024,
+    cwd, env, encoding: "utf8", timeout: 20_000, killSignal: "SIGKILL", maxBuffer: 32 * 1024 * 1024,
   });
   return stdout.trim();
 }
@@ -129,11 +129,11 @@ async function status(args) {
     const { tickets } = settings.maps ? loadTickets(settings.maps, map, { ref, cwd: root }) : { tickets: [] };
     const sha = await git(["rev-parse", "--verify", `${ref}^{commit}`]);
     const branch = ref.replace(/^(?:refs\/remotes\/)?origin\//, "").replace(/^refs\/heads\//, "");
-    const gh = process.env.KIT_STATUS_GH || "gh";
+    const gh = process.env.KIT_STATUS_GH || "gh", ghEnv = kitGhEnv(process.env, root);
     const [github, live] = await Promise.all([
       !remote ? { prs: [], runs: [], none: true } : Promise.allSettled([
-        command(gh, ["pr", "list", "--state", "all", "--base", branch, "--limit", "200", "--json", "number,state,title,body,headRefName,mergeCommit,statusCheckRollup"], root),
-        command(gh, ["run", "list", "--branch", branch, "--limit", "100", "--json", "headSha,status,conclusion,workflowName,event"], root),
+        command(gh, ["pr", "list", "--state", "all", "--base", branch, "--limit", "200", "--json", "number,state,title,body,headRefName,mergeCommit,statusCheckRollup"], root, ghEnv),
+        command(gh, ["run", "list", "--branch", branch, "--limit", "100", "--json", "headSha,status,conclusion,workflowName,event"], root, ghEnv),
       ]).then(responses => {
         const failed = responses.find(response => response.status === "rejected");
         if (failed) throw failed.reason;
