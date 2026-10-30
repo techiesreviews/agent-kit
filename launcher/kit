@@ -18,7 +18,8 @@ if [[ -z ${KIT_HOME:-} || $KIT_HOME == "${KIT_HOME_DEFAULT:-}" ]] || { [[ $KIT_H
   KIT_HOME=$(readlink -- "$data/agent-kit/current" 2>/dev/null) || KIT_HOME=''
   [[ -z $KIT_HOME || $KIT_HOME == /* ]] || KIT_HOME=$data/agent-kit/$KIT_HOME
   # No machine copy (CI, a cloud session, a new laptop): one shallow clone in the cache, stamped for kit version;
-  # a clone that is not a whole kit is thrown away.
+  # a clone that is not a whole kit is thrown away. The rename is plain mv (macOS has no mv -T): a launcher that
+  # lost the race moves its clone into the winner's folder, and throws it away from there.
   whole "$KIT_HOME" || KIT_HOME=$cache/agent-kit why="$cache/agent-kit exists but holds no kit; remove it"
   if [[ ! -e $KIT_HOME ]]; then
     why="no machine copy; cannot clone $KIT_REPO"
@@ -26,7 +27,8 @@ if [[ -z ${KIT_HOME:-} || $KIT_HOME == "${KIT_HOME_DEFAULT:-}" ]] || { [[ $KIT_H
     mkdir -p -- "$cache" && clone=$(mktemp -d "$cache/agent-kit.XXXXXX") && git clone -q --depth 1 -- "$KIT_REPO" "$clone" >&2 &&
       { whole "$clone" || { why="the clone of $KIT_REPO holds no whole kit"; false; }; } &&
       { date +%s > "$clone/.git/kit-cloned" || { why="cannot stamp the clone in $cache"; false; }; } &&
-      why="cannot place the clone at $KIT_HOME" && mv -T -- "$clone" "$KIT_HOME" 2>/dev/null && clone='' || :
+      why="cannot place the clone at $KIT_HOME" && mv -- "$clone" "$KIT_HOME" 2>/dev/null &&
+      { if [[ -e $KIT_HOME/${clone##*/} ]]; then clone=$KIT_HOME/${clone##*/}; else clone=''; fi; } || :
     [[ -z $clone ]] || rm -rf -- "$clone"
   fi
 fi

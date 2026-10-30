@@ -362,6 +362,21 @@ if [[ $version =~ (^|$'\n')commit\ ([^$'\n']*)$'\n'kit\ ([^$'\n']*)$'\n'project\
   fi
 fi
 
+# Where kit pr opens PRs: origin's GitHub repo, which every kit gh call is told (GH_REPO) whatever other remotes
+# there are (a site made from the starter has an upstream gh would pick). A note, not a counted check.
+if [[ $quiet == false ]]; then
+  target=$(kit_gh_repo "$root")
+  others=$(git -C "$root" remote 2>/dev/null | grep -vx origin | paste -sd, -) || others=''
+  if [[ $remote == false ]]; then
+    printf '✓ PR target: none (no origin remote)\n'
+  elif [[ -n $target ]]; then
+    printf '✓ PR target: %s (origin%s)\n' "$target" "${others:+; not ${others//,/, }}"
+  else
+    printf "✗ PR target: origin (%s) is not a GitHub repo, so kit pr cannot open a PR; fix: git remote set-url origin <the project's GitHub repo>\n" \
+      "$(git -C "$root" config --get remote.origin.url 2>/dev/null || :)"
+  fi
+fi
+
 # Grok is an optional second reviewer: report it, never fail on it.
 if [[ $quiet == false ]]; then
   grok=${KIT_GROK:-grok}

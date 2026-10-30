@@ -10,7 +10,7 @@ import { saveReviewEvidence } from "../review-evidence.mjs";
 import { countsLine, findingsRecord } from "../review-findings.mjs";
 import { parseChanges, reviewKinds, secondLookPick, secondLookTable } from "../pr-tier.mjs";
 
-const { kitBranch, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, kitStateDir, nodeEnv, kitScore, scoreReview } = await import(
+const { kitBranch, kitGhEnv, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, kitStateDir, nodeEnv, kitScore, scoreReview } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const usage = "Usage: kit review [--base REF | --commit SHA] [--ticket FILE] [--pr N] [--second-look]\nDefault scope: --base origin/<land> (branches.land in scripts/agents/kit.json). Model: ASE_REVIEW_MODEL or claude-opus-5-5: claude-*, grok-*, gpt-* (also o<digit>…, codex…) or opencode/<model>;\n" +
@@ -119,7 +119,7 @@ async function reviewOnce(flags, look) {
       const body = join(temporary, "pr-comment.md");
       const [headName, baseName] = scope.commit ? ["Commit", "Parent"] : ["HEAD", "Base"];
       writeFileSync(body, `${look ? `Second look: ${look.kind}\n` : ""}Model: ${model}\nScope: ${label}\n${headName}: ${head}\n${baseName}: ${base}\n\n${readFileSync(join(temporary, "out.md"), "utf8")}`);
-      const posted = spawnSync("gh", ["pr", "comment", flags.pr, "--body-file", body], { cwd: root, env, encoding: "utf8" });
+      const posted = spawnSync("gh", ["pr", "comment", flags.pr, "--body-file", body], { cwd: root, env: kitGhEnv(env, root), encoding: "utf8" });
       if (posted.error || posted.status !== 0) throw new Error(`gh pr comment failed: ${posted.error?.message || posted.stderr.trim() || posted.status}`);
     }
   } catch (error) {

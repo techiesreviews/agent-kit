@@ -140,6 +140,23 @@ kit_node() {
   export KIT_NODE=$node
 }
 
+# The GitHub repo kit's PRs go to: origin's, as gh names it (OWNER/NAME, or HOST/OWNER/NAME off github.com); empty
+# when origin is missing or no GitHub repo. Reads origin's url as kitGhRepo in kit-lib.mjs does.
+kit_gh_repo() {
+  local url host name
+  url=$(git -C "${1:-$(kit_root)}" config --get remote.origin.url 2>/dev/null) || return 0
+  if [[ $url =~ ^(https?|ssh|git)://([^@/]+@)?([^/:]+)(:[0-9]+)?/([^/]+/[^/]+)/?$ ]]; then
+    host=${BASH_REMATCH[3]} name=${BASH_REMATCH[5]}
+  elif [[ $url =~ ^([^@/]+@)?([^/:]+):([^/]+/[^/]+)/?$ ]]; then
+    host=${BASH_REMATCH[2]} name=${BASH_REMATCH[3]}
+  else
+    return 0
+  fi
+  [[ $name != */?*.git ]] || name=${name%.git}
+  [[ $host != ssh.github.com ]] || host=github.com
+  if [[ $host == github.com ]]; then printf '%s\n' "$name"; else printf '%s/%s\n' "$host" "$name"; fi
+}
+
 kit_result() {
   local status=${1-} text
   local IFS=' '

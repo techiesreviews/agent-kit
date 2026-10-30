@@ -13,7 +13,7 @@ import type { ScoreRecord } from "./kit-score.test.ts";
 const pr = resolve("kit.d/pr");
 const kit = resolve("kit");
 const cleanReview = "REVIEW_STATUS: complete\nDefects:\n- Spec: none.\n- Standards: none.\nValidation gaps: none.\nOptional nits: none.\n";
-interface Call { tool: string; script?: string; args: string[]; body?: string }
+interface Call { tool: string; script?: string; args: string[]; body?: string; repo?: string }
 // Claude's review, not the second look that kit pr runs after it.
 const claudeReview = (call: Call) => call.tool === "fake-kit" && call.args[0] === "review" && !call.args.includes("--second-look");
 const fake = `#!/usr/bin/env node
@@ -23,7 +23,9 @@ const tool = basename(process.argv[1]), args = process.argv.slice(2), env = proc
 const bodyIndex = args.indexOf("--body-file");
 const bodyField = args.find(arg => arg.startsWith("body=@"));
 const bodyPath = bodyIndex >= 0 ? args[bodyIndex + 1] : bodyField?.slice("body=@".length);
-appendFileSync(env.FAKE_CALLS, JSON.stringify({ tool, script: process.argv[1], args, ...(bodyPath ? { body: readFileSync(bodyPath, "utf8") } : {}) }) + "\\n");
+// repo: the GH_REPO a call was told, when it was told one.
+appendFileSync(env.FAKE_CALLS, JSON.stringify({ tool, script: process.argv[1], args, ...(bodyPath ? { body: readFileSync(bodyPath, "utf8") } : {}),
+  ...(env.GH_REPO ? { repo: env.GH_REPO } : {}) }) + "\\n");
 const scripts = { "unit.sh": "unit", "tickets.mjs": "tickets", "check-colours.mjs": "colours" };
 const action = tool === "npm" ? (args[0] === "test" ? "unit" : args[1]) : scripts[tool] || (tool === "fake-kit" ? args[0] : args.slice(0, 2).join("-"));
 if (env.FAKE_FAIL === action) {
@@ -142,6 +144,7 @@ function fixture(t: TestContext, changes?: Record<string, string>, override: Rec
     ASE_OWNER: "ak-14", KIT_PR_KIT: join(bin, "fake-kit"), FAKE_CALLS: join(dir, "calls.jsonl"), CLAUDECODE: "",
     GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
   for (const key of Object.keys(env)) if (key.startsWith("FAKE_") && key !== "FAKE_CALLS") delete env[key];
+  delete env.GH_REPO;
   const gitAt = (cwd: string, ...args: string[]) => {
     const result = spawnSync("git", args, { cwd, env, encoding: "utf8", timeout: 10_000 });
     assert.equal(result.status, 0, result.stderr);
@@ -526,6 +529,27 @@ test("a repo with no remote gets no GitHub repo from pr before any check runs", 
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stdout, /^RESULT: fail no GitHub repo \(no origin remote\); kit pr needs one to open a PR$/m);
   assert.deepEqual(f.calls(), []);
+});
+
+test("a site made from the starter opens its PR in origin's repo: every gh call is told origin's, never upstream's", t => {
+  const f = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: playground });
+  // origin names the site's GitHub repo (insteadOf takes git to the local one); upstream is the starter it was made from,
+  // which gh, left to itself, would pick.
+  f.git("config", `url.${f.origin}.insteadOf`, "https://github.com/acme/site.git");
+  f.git("remote", "set-url", "origin", "https://github.com/acme/site.git");
+  f.git("remote", "add", "upstream", "https://github.com/acme/starter.git");
+  const result = f.run([], { FAKE_BASE: "main", GH_REPO: "acme/starter" }, true);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /RESULT: ok merged #73 abcdef0/);
+  const gh = f.calls().filter(call => call.tool === "gh");
+  assert.deepEqual(new Set(gh.map(call => `${call.args[0]} ${call.args[1]}`)), new Set(["pr list", "pr create", "repo view", "api graphql", "pr merge", "pr view"]));
+  assert.deepEqual(gh.filter(call => call.repo !== "acme/site"), []);
+  // gh repo view reads no GH_REPO, so the repo is named.
+  assert.deepEqual(gh.find(call => call.args[0] === "repo")?.args.slice(0, 3), ["repo", "view", "acme/site"]);
+  // The kit commands kit pr runs (the review that comments, the CI wait) are told it too.
+  const children = f.calls().filter(call => call.tool === "fake-kit");
+  assert.ok(children.some(call => call.args[0] === "wait"));
+  assert.deepEqual(children.filter(call => call.repo !== "acme/site"), []);
 });
 
 test("a land branch that gained commits after the branch started lands without a flag, and no workflows means no CI wait", t => {

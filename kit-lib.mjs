@@ -209,6 +209,31 @@ export function nodeEnv(env = process.env) {
   return { ...env, PATH: path.split(":")[0] === directory ? path : `${directory}${path ? `:${path}` : ""}`, KIT_NODE: node };
 }
 
+/** A GitHub-style remote URL's host and OWNER/NAME (https, ssh, git or scp form), or null for any other URL or path. */
+export function kitGitHubRemote(url = "") {
+  const [, host, name] = /^(?:https?|ssh|git):\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(url)
+    ?? /^(?:[^@/]+@)?([^/:]+):(?!\/)([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(url) ?? [];
+  return name ? { host: host === "ssh.github.com" ? "github.com" : host, name } : null;
+}
+
+/**
+ * The GitHub repo kit's PRs go to: origin's, as gh names it (OWNER/NAME, or HOST/OWNER/NAME off github.com), or ""
+ * when origin is missing or no GitHub repo. Read from origin's own url, before any insteadOf rewrite.
+ */
+export function kitGhRepo(root = kitRoot()) {
+  const remote = kitGitHubRemote(git(["-C", root, "config", "--get", "remote.origin.url"]));
+  return !remote ? "" : remote.host === "github.com" ? remote.name : `${remote.host}/${remote.name}`;
+}
+
+/**
+ * Copy env for gh with GH_REPO set to origin's repo: with more than one remote gh picks its own default, and a site
+ * made from the starter has an upstream it would pick. Without a GitHub origin, env is left as it is.
+ */
+export function kitGhEnv(env = process.env, root = kitRoot()) {
+  const repo = kitGhRepo(root);
+  return repo ? { ...env, GH_REPO: repo } : { ...env };
+}
+
 /** Print a single RESULT line; invalid statuses set exitCode to 2. */
 export function kitResult(status = "", text = "") {
   if (status !== "ok" && status !== "fail") {
