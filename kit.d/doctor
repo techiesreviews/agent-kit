@@ -213,7 +213,9 @@ fi
 
 # skillGuard.allow lets a project's own skill folders through the skill guard's path check: list them, and run
 # that path check, which also refuses a list entry that is not one skill folder. Projects without the list get no line.
-if [[ -n $(setting 'if .skillGuard.allow == null then empty else "set" end') ]]; then
+if [[ $jq_missing == true ]]; then
+  if grep -q '"skillGuard"' "$(kit_settings_file)" 2>/dev/null; then pass skills 'skipped (jq is not installed)'; fi
+elif [[ -n $(setting 'if .skillGuard.allow == null then empty else "set" end') ]]; then
   if [[ -z $node ]]; then
     pass skills 'skipped (Node not found)'
   else
@@ -224,7 +226,12 @@ if [[ -n $(setting 'if .skillGuard.allow == null then empty else "set" end') ]];
       pass skills "allowed own skills: ${allowed:-none} (skillGuard.allow); no other skill paths tracked"
     else
       problem=$(awk 'sub(/^problem: /, "") { if (!n++) first = $0 } END { if (n) print first (n > 1 ? " (and " n - 1 " more)" : "") }' <<< "$output")
-      fail skills "${problem:-skill guard exited $code}" 'remove the skill files, or list only the project'"'"'s own skill folders in "skillGuard.allow" of scripts/agents/kit.json'
+      if [[ $problem == *'skillGuard.allow'* ]]; then
+        fix='name one skill folder per entry in "skillGuard.allow" of scripts/agents/kit.json, or remove the list'
+      else
+        fix='remove the skill files (paid skills never go in a repo); only a private project'"'"'s own skill folder belongs in "skillGuard.allow"'
+      fi
+      fail skills "${problem:-skill guard exited $code}" "$fix"
     fi
   fi
 fi

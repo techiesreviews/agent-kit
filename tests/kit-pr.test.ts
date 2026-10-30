@@ -427,6 +427,15 @@ test("with local skill folders and a clean change, the PR body says how many lin
     /\n- skill guard: ok — line check: \d+ lines against 1 skill lines from 1 skill files\n/);
 });
 
+test("a project's own skill in skillGuard.allow passes, and the PR body names it beside the line check", t => {
+  const f = fixture(t, { "src/app.js": "export const app = 1;\n", ".claude/skills/heron/SKILL.md": "x\n" }, {},
+    { settings: { ...playground, skillGuard: { allow: [".claude/skills/heron"] } }, workflows: false });
+  const result = f.run(["--dry-run"], { FAKE_BASE: "main" }, true);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(readFileSync(join(f.logDir(), "body.md"), "utf8").includes(
+    "\n- skill guard: ok — line check: skipped (no local skill folders); allowed own skills: .claude/skills/heron (skillGuard.allow; lines still checked)\n"));
+});
+
 test("kit pr stops before any check when the branch tracks a skill file, naming the path and never the text", t => {
   // Made-up skill text in a fake skill folder, named by KIT_SKILL_DIRS.
   const home = mkdtempSync(join(tmpdir(), "kit-pr-skills-"));

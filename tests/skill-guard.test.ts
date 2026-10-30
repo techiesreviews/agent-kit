@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -266,4 +266,23 @@ test("--history lets an allowed own skill's past paths through and still names e
   assert.equal(result.status, 1, result.stderr);
   assert.equal(result.stderr, "problem: notes/skills/egret/SKILL.md: a skill file or skills/ folder in history\n");
   assert.match(result.stdout, /^skill-guard: line check: \d+ lines against 9 skill lines from 8 skill files\nskill-guard: allowed own skills: notes\/skills\/heron \(skillGuard\.allow; lines still checked\)\n/);
+});
+
+test("a broken settings file allows nothing, and the kit's own repo refuses the list (its kit.json never sets one)", (t) => {
+  const f = fixture(t);
+  f.put(join(f.repo, ".claude/skills/heron/SKILL.md"), "x\n");
+  f.put(join(f.repo, "scripts/agents/kit.json"), "{");
+  f.git("add", "-f", "."); f.git("commit", "-q", "-m", "broken settings");
+  const broken = f.run(["--paths-only"]);
+  assert.equal(broken.status, 1);
+  assert.equal(broken.stderr, "problem: .claude/skills/heron/SKILL.md: a skill file or skills/ folder is tracked\n");
+
+  f.put(join(f.repo, "scripts/agents/kit.json"), JSON.stringify({ project: "agent-kit", skillGuard: { allow: [".claude/skills/heron"] } }));
+  f.put(join(f.repo, "skill-guard.mjs"), "\n"); f.put(join(f.repo, "kit.d/doctor"), "\n");
+  f.git("add", "-f", "."); f.git("commit", "-q", "-m", "kit");
+  const kit = f.run(["--paths-only"]);
+  assert.equal(kit.status, 1);
+  assert.equal(kit.stderr, "problem: scripts/agents/kit.json: skillGuard.allow is refused in the kit's own repo, which never keeps a skill\n" +
+    "problem: .claude/skills/heron/SKILL.md: a skill file or skills/ folder is tracked\n");
+  assert.equal(JSON.parse(readFileSync(resolve("scripts/agents/kit.json"), "utf8")).skillGuard, undefined);
 });
