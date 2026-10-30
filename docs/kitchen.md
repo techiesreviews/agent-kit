@@ -196,6 +196,8 @@ on a usage-limit `problem:` line, tell Lex the reset time and carry on with Clau
   `link_pull_request` for every PR. Lead-only `--waive "<reason>"`. A project with a feature list
   (`featureList` in the settings) stops a visible change unless it updated the list or its Done says
   `Feature list: no change (<reason>)`.
+- **Never:** a raw `git push` to the release branch (or a landing branch that is also the release
+  branch, as on a live site); the Bash hook refuses it and names `kit pr`.
 - **Done when:** the PR is merged into the landing branch and its number is in the ticket's `landed:`.
 
 ### 10. After a merge: note, scoreboard
