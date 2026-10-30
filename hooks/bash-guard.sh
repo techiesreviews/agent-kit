@@ -173,11 +173,13 @@ function nested(s, timed, depth, first,    opening) {
   scan(s, timed, depth)
   if (opening) loopDepth--
 }
-function scan(s, timed, depth,    a,n,i,c,q,word,started,escaped,quoted,redirect,strip,end,line,hd,hq,hs,hcode,hdepth,hn,bound,j,code,body,input,ni,floor,saved,expect,skip,k) {
+function scan(s, timed, depth,    a,n,i,c,q,word,started,escaped,quoted,redirect,strip,end,line,hd,hq,hs,hcode,hdepth,hn,bound,j,code,body,input,ni,floor,saved,expect,skip,k,group,gn,outer) {
   # Quotes belong to one argument. Thus literal commit -m strings are skipped;
   # shell -c arguments are scanned explicitly. Never execute the input.
   n = 0
   floor = loopDepth
+  # A cd inside bash -c or $( … ) stays there.
+  outer = cwd
   for (i = 1; i <= length(s) + 1; i++) {
     c = substr(s, i, 1)
     if (escaped) { if (c != "\n") word = word c; escaped = 0; continue }
@@ -252,6 +254,9 @@ function scan(s, timed, depth,    a,n,i,c,q,word,started,escaped,quoted,redirect
         skip = expect && n
         if (expect && c == ")") expect = 0
         code = skip ? 0 : inspect(a, n, timed, depth, floor)
+        # A ( … ) group runs in a subshell: a cd inside it ends with the group.
+        if (c == "(" && !n) group[++gn] = cwd
+        if (c == ")" && !skip && gn) cwd = group[gn--]
         for (k = 1; k < n && a[k] ~ /^(do|then|else|elif|\{|!)$/; k++) ;
         if (!skip && n && a[k] == "case") expect = c == "|" || (c != ")" && a[n] == "in")
         if (c == ";" && substr(s, i + 1, 1) ~ /[;&]/) expect = 1
@@ -285,6 +290,7 @@ function scan(s, timed, depth,    a,n,i,c,q,word,started,escaped,quoted,redirect
     word = word c; started = 1
   }
   loopDepth = floor
+  if (depth) cwd = outer
 }
 { source = source $0 "\n" }
 END { scan(source, 0, 0); if (reason) print "reason\037" reason; for (i = 1; i <= pushCount; i++) print pushes[i] }
@@ -293,12 +299,17 @@ END { scan(source, 0, 0); if (reason) print "reason\037" reason; for (i = 1; i <
 # without review. A landing branch that deploys on push is guarded by setting it as the release branch
 # too (land equal to release). Prints the guarded branch a push would reach, else nothing.
 guarded_target() {
-  local dir=$1 root release current arg remote='' all=0 skip=0 tag=0 tags=0 dst
+  local dir=$1 root release current arg remote='' all=0 skip=0 tag=0 tags=0 dst upstream
   local -a refs=() dsts=()
   shift
   [[ $dir == '~' || $dir == '~/'* ]] && dir=$HOME${dir#'~'}
   [[ $dir == /* ]] || dir=$base/$dir
-  root=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || return 0
+  # A folder named through a variable or $( … ), or one that is no repo (a failed cd leaves the shell
+  # where it was), is checked as the session's own folder.
+  if [[ $dir == *'$'* || $dir == *EXPANSION* ]] || ! root=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null); then
+    dir=$base
+    root=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || return 0
+  fi
   release=$(jq -r '.branches.release | strings' "$root/scripts/agents/kit.json" 2>/dev/null) || return 0
   [[ -n $release ]] || return 0
   for arg; do
@@ -306,10 +317,11 @@ guarded_target() {
     case $arg in
       --dry-run) return 0 ;;
       --repo|--push-option|-o|--receive-pack|--exec) skip=1 ;;
+      -o*) ;;
       --all|--mirror|--branches) all=1 ;;
       --tags) tags=1 ;;
       --*) ;;
-      -*) [[ $arg == *n* ]] && return 0 ;;
+      -*) [[ $arg =~ ^-[a-zA-Z0-9]*n[a-zA-Z0-9]*$ ]] && return 0 ;;
       *) if [[ -z $remote ]]; then remote=$arg; else refs+=("$arg"); fi ;;
     esac
   done
@@ -327,6 +339,11 @@ guarded_target() {
     arg=${arg#+}
     if [[ $arg == *:* ]]; then dst=${arg#*:}; [[ -n $dst ]] || dst=${arg%%:*}; else dst=$arg; fi
     [[ $dst == HEAD || $dst == @ ]] && dst=$current
+    # The current branch without a destination goes where push.default sends it, which may be another name.
+    if [[ $arg != *:* && -n $current && $dst == "$current" ]]; then
+      upstream=$(git -C "$dir" rev-parse --symbolic-full-name '@{push}' 2>/dev/null) || upstream=''
+      dsts+=("${upstream#refs/remotes/*/}")
+    fi
     case $dst in refs/heads/*) dst=${dst#refs/heads/} ;; refs/*) continue ;; esac
     dsts+=("$dst")
   done
