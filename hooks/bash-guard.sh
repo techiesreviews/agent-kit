@@ -78,7 +78,13 @@ function inspect(a, n, timed, depth, floor,    i,j,k,name,text,dir) {
       reject("run port.sh directly; wait for long runs through your CLI")
   }
   # The folder later commands run in, for the push check: cd here, git -C below.
-  if (name == "cd" && a[i+1] != "-") cwd = within(cwd, i < n ? a[i+1] : "~")
+  if (name == "cd" || name == "pushd") {
+    for (k = i + 1; k <= n && (a[k] ~ /^-[LPe@]+$/ || a[k] == "--"); k++) ;
+    if (k > n && name == "cd") cwd = within(cwd, "~")
+    else if (k <= n && a[k] != "-") cwd = within(cwd, a[k])
+  }
+  # After popd the folder is unknown, which the push check treats like a variable.
+  if (name == "popd") cwd = "$OLDPWD"
   if (name == "git") {
     j = i + 1; dir = cwd
     while (j <= n && a[j] ~ /^-/) {
@@ -299,17 +305,26 @@ END { scan(source, 0, 0); if (reason) print "reason\037" reason; for (i = 1; i <
 # without review. A landing branch that deploys on push is guarded by setting it as the release branch
 # too (land equal to release). Prints the guarded branch a push would reach, else nothing.
 guarded_target() {
-  local dir=$1 root release current arg remote='' all=0 skip=0 tag=0 tags=0 dst upstream
-  local -a refs=() dsts=()
+  local dir=$1 folder
   shift
   [[ $dir == '~' || $dir == '~/'* ]] && dir=$HOME${dir#'~'}
   [[ $dir == /* ]] || dir=$base/$dir
   # A folder named through a variable or $( … ), or one that is no repo (a failed cd leaves the shell
-  # where it was), is checked as the session's own folder.
-  if [[ $dir == *'$'* || $dir == *EXPANSION* ]] || ! root=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null); then
-    dir=$base
-    root=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || return 0
+  # where it was), is checked as both the session's folder and its project folder.
+  if [[ $dir != *'$'* && $dir != *EXPANSION* ]] && git -C "$dir" rev-parse --show-toplevel >/dev/null 2>&1; then
+    guarded_in "$dir" "$@"
+    return 0
   fi
+  for folder in "$base" ${CLAUDE_PROJECT_DIR:+"$CLAUDE_PROJECT_DIR"}; do
+    folder=$(guarded_in "$folder" "$@") || folder=''
+    if [[ -n $folder ]]; then printf '%s' "$folder"; return 0; fi
+  done
+}
+guarded_in() {
+  local dir=$1 root release current arg remote='' all=0 skip=0 tag=0 tags=0 dst upstream
+  local -a refs=() dsts=()
+  shift
+  root=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || return 0
   release=$(jq -r '.branches.release | strings' "$root/scripts/agents/kit.json" 2>/dev/null) || return 0
   [[ -n $release ]] || return 0
   for arg; do
@@ -337,6 +352,8 @@ guarded_target() {
     if (( tag )); then tag=0; continue; fi
     if [[ $arg == tag ]]; then tag=1; continue; fi
     arg=${arg#+}
+    # A lone colon pushes every branch that exists on both sides.
+    if [[ $arg == : ]]; then printf '%s' "$release"; return 0; fi
     if [[ $arg == *:* ]]; then dst=${arg#*:}; [[ -n $dst ]] || dst=${arg%%:*}; else dst=$arg; fi
     [[ $dst == HEAD || $dst == @ ]] && dst=$current
     # The current branch without a destination goes where push.default sends it, which may be another name.
@@ -344,7 +361,11 @@ guarded_target() {
       upstream=$(git -C "$dir" rev-parse --symbolic-full-name '@{push}' 2>/dev/null) || upstream=''
       dsts+=("${upstream#refs/remotes/*/}")
     fi
-    case $dst in refs/heads/*) dst=${dst#refs/heads/} ;; refs/*) continue ;; esac
+    case $dst in
+      refs/heads/*) dst=${dst#refs/heads/} ;;
+      # A wildcard such as refs/*:refs/* takes branches along.
+      refs/*) [[ $dst == *'*'* && refs/heads/$release == $dst ]] && dsts+=("$release"); continue ;;
+    esac
     dsts+=("$dst")
   done
   for dst in "${dsts[@]}"; do
