@@ -322,6 +322,29 @@ test("doctor adds the project's checks.doctor lines and the playwright module, e
   assert.match(passing.stdout, /RESULT: ok doctor 12\/12 checks passed\n$/);
 });
 
+test("doctor lists skillGuard.allow's own skills, counted, and fails on another skill path or a too-wide entry", (t) => {
+  const plain = playground(t, { allowMainCheckout: true }).run();
+  assert.doesNotMatch(plain.stdout, /skills:/);
+  const f = playground(t, { allowMainCheckout: true, skillGuard: { allow: [".claude/skills/heron"] } });
+  mkdirSync(join(f.root, ".claude/skills/heron"), { recursive: true });
+  writeFileSync(join(f.root, ".claude/skills/heron/SKILL.md"), "x\n");
+  git(f.root, "add", "-f", ".claude/skills"); commit(f.root);
+  const listed = f.run();
+  assert.equal(listed.status, 0, listed.stdout);
+  assert.ok(listed.stdout.includes("✓ skills: allowed own skills: .claude/skills/heron (skillGuard.allow); no other skill paths tracked\n"), listed.stdout);
+  assert.match(listed.stdout, /RESULT: ok doctor 12\/12 checks passed\n$/);
+  mkdirSync(join(f.root, "skills"));
+  writeFileSync(join(f.root, "skills/egret.md"), "x\n");
+  git(f.root, "add", "-f", "skills"); commit(f.root);
+  const other = f.run();
+  assert.equal(other.status, 1, other.stdout);
+  assert.ok(other.stdout.includes("✗ skills: skills/egret.md: a skill file or skills/ folder is tracked; fix: remove the skill files,"), other.stdout);
+  writeFileSync(join(f.root, "scripts/agents/kit.json"), JSON.stringify({ project: "techies-playground", mainRoot: f.root, allowMainCheckout: true,
+    branches: { land: "main" }, skillGuard: { allow: [".claude/skills"] } }));
+  const wide = f.run();
+  assert.ok(wide.stdout.includes('✗ skills: scripts/agents/kit.json: skillGuard.allow entry ".claude/skills" is not one skill folder\'s repo path; fix: '), wide.stdout);
+});
+
 test("the doctor RESULT counts every line it checked, but not the optional grok and kit notes", (t) => {
   const f = playground(t, { allowMainCheckout: true, playwright: "vendor/playwright", checks: { doctor: "true" } });
   mkdirSync(join(f.root, "vendor/playwright"), { recursive: true });

@@ -3,11 +3,14 @@
 // Fails when a tracked path is a SKILL.md or lies under a skills/ folder, and, on a machine that has the local
 // skill folders, when a changed line (or with --history any line of any blob in history) holds a line of 60+
 // characters from a skill there. It never prints skill text: only the repo path and line, and the skill's name.
+// A project's own skill folders, listed by path in `skillGuard.allow` of scripts/agents/kit.json, pass the path
+// check; the line check still reads every line in them.
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { kitSettingsFile } from "./kit-lib.mjs";
 
 const usage = "Usage: skill-guard.mjs [--base REF | --history] [--paths-only]";
 const minimum = 60, window = 32, largest = 1 << 20;
@@ -31,6 +34,31 @@ export const isBoilerplate = (line) => boilerplate.some(pattern => pattern.test(
 
 /** A tracked path that is a skill: a SKILL.md anywhere, or anything under a folder named skills. */
 export const skillPath = (path) => /(^|\/)SKILL\.md$/i.test(path) || /(^|\/)skills\//i.test(path);
+
+/**
+ * The project's own skill folders from `skillGuard.allow` in its settings, as { allow, problems }. Each entry is one
+ * skill folder by its repo path; an entry that is not (a whole skills/ folder, the top folder, an absolute path or
+ * one with . or .. parts) is a problem, so it never widens the allowance. No settings file or no list allows nothing.
+ */
+export function allowedSkills(root) {
+  let settings;
+  try { settings = JSON.parse(readFileSync(join(root, kitSettingsFile), "utf8")); } catch { return { allow: [], problems: [] }; }
+  const list = settings?.skillGuard?.allow;
+  if (list === undefined) return { allow: [], problems: [] };
+  if (!Array.isArray(list)) return { allow: [], problems: [`${kitSettingsFile}: skillGuard.allow must be a list of skill folder paths`] };
+  const allow = [], problems = [];
+  for (const entry of list) {
+    const folder = typeof entry === "string" ? entry.replace(/\/+$/, "") : "";
+    const parts = folder.split("/");
+    if (!folder || folder.startsWith("/") || parts.some(part => ["", ".", ".."].includes(part)) || /^skills$/i.test(parts.at(-1))) {
+      problems.push(`${kitSettingsFile}: skillGuard.allow entry ${JSON.stringify(entry)} is not one skill folder's repo path`);
+    } else if (!allow.includes(folder)) allow.push(folder);
+  }
+  return { allow, problems };
+}
+
+/** A path inside one of the allowed skill folders. */
+export const allowedPath = (path, allow) => allow.some(folder => path === folder || path.startsWith(`${folder}/`));
 
 /** One spelling for comparing lines: no list, quote or heading marks in front, single spaces, trimmed. */
 export function normalLine(line) {
@@ -167,12 +195,19 @@ function* historyLines(root) {
 
 /** Run the guard in root; returns { problems, notes }. */
 export function skillGuard(root, { base = "", history = false, pathsOnly = false, env = process.env } = {}) {
-  const problems = [], notes = [];
+  const { allow, problems } = allowedSkills(root), notes = [];
   const paths = history ? historyPaths(root) : git(root, ["ls-files", "-z"]).split("\0").filter(Boolean);
-  for (const path of paths.filter(skillPath)) problems.push(`${path}: a skill file or skills/ folder ${history ? "in history" : "is tracked"}`);
-  if (pathsOnly) { notes.push("line check: skipped (paths only)"); return { problems, notes }; }
+  for (const path of paths.filter(path => skillPath(path) && !allowedPath(path, allow))) {
+    problems.push(`${path}: a skill file or skills/ folder ${history ? "in history" : "is tracked"}`);
+  }
+  const done = (note) => {
+    notes.push(note);
+    if (allow.length) notes.push(`allowed own skills: ${allow.join(", ")} (skillGuard.allow; lines still checked)`);
+    return { problems, notes };
+  };
+  if (pathsOnly) return done("line check: skipped (paths only)");
   const { files, roots } = skillFiles(skillRoots(env));
-  if (!roots) { notes.push("line check: skipped (no local skill folders)"); return { problems, notes }; }
+  if (!roots) return done("line check: skipped (no local skill folders)");
   const index = skillIndex(files);
   const lines = history ? historyLines(root) : changedLines(root, base);
   let checked = 0;
@@ -181,8 +216,7 @@ export function skillGuard(root, { base = "", history = false, pathsOnly = false
     const skill = skillMatch(item.text, index);
     if (skill) problems.push(`${item.path}:${item.line}: holds a line from the local skill ${skill}`);
   }
-  notes.push(`line check: ${checked} lines against ${index.count} skill lines from ${files.length} skill files`);
-  return { problems, notes };
+  return done(`line check: ${checked} lines against ${index.count} skill lines from ${files.length} skill files`);
 }
 
 function main(argv) {

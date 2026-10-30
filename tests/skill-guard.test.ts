@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
-import { normalLine, skillFiles, skillIndex, skillMatch, skillPath } from "../skill-guard.mjs";
+import { allowedPath, allowedSkills, normalLine, skillFiles, skillIndex, skillMatch, skillPath } from "../skill-guard.mjs";
 import { kitEnv } from "./support/kit-env.ts";
 
 const guard = resolve("skill-guard.mjs");
@@ -187,4 +187,51 @@ test("KIT_SKILL_DIRS names the skill folders instead of HOME's; bad arguments ar
   const missing = f.run([]);
   assert.equal(missing.status, 2);
   assert.match(missing.stderr, /the line check needs --base REF or --history \(or --paths-only\)/);
+});
+
+test("skillGuard.allow names a project's own skill folders; an entry that is not one skill folder is a problem", (t) => {
+  const f = fixture(t);
+  assert.deepEqual(allowedSkills(f.repo), { allow: [], problems: [] });
+  const settings = (allow: unknown) => f.put(join(f.repo, "scripts/agents/kit.json"), JSON.stringify({ project: "p", skillGuard: { allow } }));
+  settings([".claude/skills/heron/", ".claude/skills/heron", "notes/skills/owl"]);
+  assert.deepEqual(allowedSkills(f.repo), { allow: [".claude/skills/heron", "notes/skills/owl"], problems: [] });
+  for (const path of [".claude/skills/heron/SKILL.md", ".claude/skills/heron/references/a.md", "notes/skills/owl/SKILL.md"]) assert.ok(allowedPath(path, [".claude/skills/heron", "notes/skills/owl"]), path);
+  for (const path of [".claude/skills/heron-two/SKILL.md", ".claude/skills/SKILL.md", "skills/heron/SKILL.md"]) assert.equal(allowedPath(path, [".claude/skills/heron"]), false, path);
+  settings(["skills", ".claude/skills/", "/abs/skills/x", "../up/skills/x", "./skills/x", "a//b", "", ".", 7]);
+  const bad = allowedSkills(f.repo);
+  assert.deepEqual(bad.allow, []);
+  assert.equal(bad.problems.length, 9);
+  assert.match(bad.problems[0], /^scripts\/agents\/kit\.json: skillGuard\.allow entry "skills" is not one skill folder's repo path$/);
+  settings(".claude/skills/heron");
+  assert.deepEqual(allowedSkills(f.repo).problems, ["scripts/agents/kit.json: skillGuard.allow must be a list of skill folder paths"]);
+});
+
+test("an allowed own skill passes the path check, yet a local skill's line inside it fails and unlisted skill paths still fail", (t) => {
+  const f = fixture(t);
+  f.put(join(f.repo, "scripts/agents/kit.json"), JSON.stringify({ project: "p", branches: { land: "main" }, skillGuard: { allow: [".claude/skills/heron"] } }));
+  f.git("add", "."); f.git("commit", "-q", "-m", "settings");
+  f.put(join(f.repo, ".claude/skills/heron/SKILL.md"), "---\nname: heron\n---\nThe heron waits in the reeds until the river forgets it was ever there at all\n");
+  f.put(join(f.repo, ".claude/skills/heron/references/fish.md"), "A short note.\n");
+  f.git("add", "-f", "."); f.git("commit", "-q", "-m", "own skill");
+  const own = f.run(["--base", "HEAD~1"]);
+  assert.equal(own.status, 0, own.stderr);
+  assert.match(own.stdout, /^skill-guard: line check: \d+ lines against 9 skill lines from 8 skill files\nskill-guard: allowed own skills: \.claude\/skills\/heron \(skillGuard\.allow; lines still checked\)\nRESULT: ok skill-guard\n$/);
+  assert.equal(f.run(["--paths-only"]).status, 0);
+
+  f.put(join(f.repo, ".claude/skills/heron/references/fish.md"), `A short note.\n${secret}\n`);
+  f.put(join(f.repo, ".claude/skills/egret/SKILL.md"), "x\n");
+  f.git("add", "-f", "."); f.git("commit", "-q", "-m", "copied");
+  const copied = f.run(["--base", "HEAD~2"]);
+  assert.equal(copied.status, 1, copied.stderr);
+  assert.match(copied.stderr, /problem: \.claude\/skills\/egret\/SKILL\.md: a skill file or skills\/ folder is tracked\n/);
+  assert.match(copied.stderr, /problem: \.claude\/skills\/heron\/references\/fish\.md:2: holds a line from the local skill crane\n/);
+  assert.doesNotMatch(copied.stderr, /heron\/SKILL\.md/);
+  assert.doesNotMatch(copied.stdout + copied.stderr, /paper crane/);
+  assert.match(copied.stdout, /RESULT: fail skill-guard 2 problem/);
+
+  f.put(join(f.repo, "scripts/agents/kit.json"), JSON.stringify({ project: "p", branches: { land: "main" }, skillGuard: { allow: [".claude/skills"] } }));
+  const wide = f.run(["--paths-only"]);
+  assert.equal(wide.status, 1);
+  assert.match(wide.stderr, /problem: scripts\/agents\/kit\.json: skillGuard\.allow entry "\.claude\/skills" is not one skill folder's repo path\n/);
+  assert.match(wide.stderr, /problem: \.claude\/skills\/heron\/SKILL\.md: a skill file or skills\/ folder is tracked\n/);
 });
