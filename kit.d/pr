@@ -346,8 +346,8 @@ async function main(args) {
       return 1;
     }
     // An origin that is no GitHub repo leaves gh to pick its own default, which in a site made from the starter is
-    // the starter's upstream: stop, unless GH_REPO names the repo.
-    if (!ghEnv.GH_REPO) {
+    // the starter's upstream: stop, unless GH_REPO names the repo. A dry run opens nothing, so it only says so.
+    if (!ghEnv.GH_REPO && !flags.dryRun) {
       const url = (await execute("guards", "git", ["config", "--get", "remote.origin.url"])).text.trim() || "no url";
       kitResult("fail", `origin (${url}) is not a GitHub repo, so gh would pick a repo itself; point origin at the project's GitHub repo, or set GH_REPO`);
       return 1;
@@ -524,6 +524,7 @@ async function main(args) {
       const reviewCommand = extra => [kit, ...reviewArgs, "N", ...(flags.ticket ? ["--ticket", flags.ticket] : []), ...extra];
       // The plan names the repo gh is told, so a command copied from it never lands in another remote's repo.
       const named = ghEnv.GH_REPO ? ["--repo", ghEnv.GH_REPO] : [];
+      if (!named.length) console.log("note: origin is not a GitHub repo and GH_REPO is unset, so a real run stops before opening a PR");
       for (const command of [["git", ...pushArgs()], ["gh", ...createArgs, ...named], ...(review ? [reviewCommand([])] : []), reviewCommand(["--second-look"])])
         console.log(command.map(quote).join(" "));
       if (!flags.noMerge && !flags.release)

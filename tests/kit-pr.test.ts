@@ -596,6 +596,9 @@ test("a folder origin with no GH_REPO stops kit pr before any gh call, as gh wou
   assert.match(result.stdout, new RegExp(`^RESULT: fail origin \\(${f.origin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\) is not a GitHub repo, so gh would pick a repo itself; ` +
     "point origin at the project's GitHub repo, or set GH_REPO$", "m"));
   assert.deepEqual(f.calls(), []);
+  const plan = f.run(["--dry-run"], { GH_REPO: "" }, true);
+  assert.equal(plan.status, 0, plan.stdout + plan.stderr);
+  assert.match(plan.stdout, /^note: origin is not a GitHub repo and GH_REPO is unset, so a real run stops before opening a PR$/m);
 });
 
 test("with a folder origin, a GH_REPO already set is what gh is told, and the merge keeps its host", t => {
