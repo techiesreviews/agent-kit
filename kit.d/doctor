@@ -364,8 +364,13 @@ fi
 
 # Where kit pr opens PRs: origin's GitHub repo, which every kit gh call is told (GH_REPO) whatever other remotes
 # there are (a site made from the starter has an upstream gh would pick). A note, not a counted check.
+# kitGhRepo answers it (Node), so doctor and kit pr never read origin differently.
 if [[ $quiet == false ]]; then
-  target=$(kit_gh_repo "$root")
+  target='' library=${KIT_LIB_MJS:-$(cd -- "$(dirname -- "${KIT_LIB:-$(dirname -- "${BASH_SOURCE[0]}")/../kit-lib.sh}")" && pwd -P)/kit-lib.mjs}
+  if node=$(kit_node_find); then
+    target=$("$node" --input-type=module -e 'const [library, root] = process.argv.slice(1); console.log((await import(library)).kitGhRepo(root));' \
+      "$library" "$root" 2>/dev/null) || target=''
+  fi
   remotes=()
   while IFS= read -r name; do [[ $name == origin ]] || remotes+=("$name"); done < <(git -C "$root" remote 2>/dev/null)
   others=$(printf '%s, ' "${remotes[@]}") others=${others%, }
@@ -376,7 +381,7 @@ if [[ $quiet == false ]]; then
   elif [[ -n ${GH_REPO:-} ]]; then
     printf '✓ PR target: %s (GH_REPO; origin is not a GitHub repo)\n' "$GH_REPO"
   else
-    printf "✗ PR target: origin (%s) is not a GitHub repo, so kit pr cannot open a PR; fix: git remote set-url origin <the project's GitHub repo>\n" \
+    printf "✗ PR target: origin (%s) is not a GitHub repo gh knows, so kit pr cannot open a PR; fix: git remote set-url origin <the project's GitHub repo>, or gh auth login for its host\n" \
       "$(git -C "$root" config --get remote.origin.url 2>/dev/null || printf 'no url')"
   fi
 fi

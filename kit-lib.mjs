@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
@@ -209,21 +209,43 @@ export function nodeEnv(env = process.env) {
   return { ...env, PATH: path.split(":")[0] === directory ? path : `${directory}${path ? `:${path}` : ""}`, KIT_NODE: node };
 }
 
-/** A GitHub-style remote URL's host and OWNER/NAME (https, ssh, git or scp form), or null for any other URL or path. */
+/**
+ * A GitHub-style remote URL's host, OWNER/NAME and whether it goes over ssh (ssh:// or scp form), or null for any
+ * other URL or path. The host may be anyone's (GitLab too) or an ssh alias: kitGhRepo decides whether it is GitHub.
+ */
 export function kitGitHubRemote(url = "") {
-  const [, host, name] = /^(?:https?|ssh|git):\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(url)
-    ?? /^(?:[^@/]+@)?([^/:]+):(?!\/)([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(url) ?? [];
+  const web = /^(https?|ssh|git):\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(url);
+  const scp = web ? null : /^(?:[^@/]+@)?([^/:]+):(?!\/)([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(url);
+  const [host, name] = web ? [web[2], web[3]] : scp ? [scp[1], scp[2]] : [];
   const lower = host?.toLowerCase();
-  return name ? { host: lower === "ssh.github.com" ? "github.com" : lower, name } : null;
+  return name ? { host: lower === "ssh.github.com" ? "github.com" : lower, name, ssh: Boolean(scp) || web[1] === "ssh" } : null;
+}
+
+// The hosts gh can talk to: github.com, the ones in its hosts.yml (gh auth login) and a GH_HOST already set.
+function ghHosts(env) {
+  const folder = env.GH_CONFIG_DIR || join(env.XDG_CONFIG_HOME || join(env.HOME || homedir(), ".config"), "gh");
+  let text = "";
+  try { text = readFileSync(join(folder, "hosts.yml"), "utf8"); } catch {}
+  const listed = [...text.matchAll(/^([^\s#:][^:]*):\s*$/gm)].map(match => match[1].trim().toLowerCase());
+  return new Set(["github.com", ...listed, ...(env.GH_HOST ? [env.GH_HOST.toLowerCase()] : [])]);
 }
 
 /**
  * The GitHub repo kit's PRs go to: origin's, as gh names it (OWNER/NAME, or HOST/OWNER/NAME off github.com), or ""
- * when origin is missing or no GitHub repo. Read from origin's own url, before any insteadOf rewrite.
+ * when origin is missing or no GitHub repo gh knows. Read from origin's own url, before any insteadOf rewrite; an ssh
+ * host alias (Host github-work in ~/.ssh/config) counts by the host name ssh -G gives it, as gh resolves it.
  */
-export function kitGhRepo(root = kitRoot()) {
+export function kitGhRepo(root = kitRoot(), env = process.env) {
   const remote = kitGitHubRemote(git(["-C", root, "config", "--get", "remote.origin.url"]));
-  return !remote ? "" : remote.host === "github.com" ? remote.name : `${remote.host}/${remote.name}`;
+  if (!remote) return "";
+  const known = ghHosts(env);
+  let host = remote.host;
+  if (!known.has(host) && remote.ssh) {
+    const resolved = spawnSync("ssh", ["-G", "--", host], { env, encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+    host = /^hostname (\S+)$/m.exec(resolved.stdout ?? "")?.[1].toLowerCase() ?? "";
+    if (host === "ssh.github.com") host = "github.com";
+  }
+  return !known.has(host) ? "" : host === "github.com" ? remote.name : `${host}/${remote.name}`;
 }
 
 /**
@@ -233,7 +255,7 @@ export function kitGhRepo(root = kitRoot()) {
  * to GH_HOST the same way.
  */
 export function kitGhEnv(env = process.env, root = kitRoot()) {
-  const repo = kitGhRepo(root);
+  const repo = kitGhRepo(root, env);
   if (repo) return { ...env, GH_REPO: repo, GH_HOST: repo.split("/").length === 3 ? repo.split("/")[0] : "github.com" };
   const parts = env.GH_REPO?.split("/") ?? [];
   return parts.length === 3 ? { ...env, GH_HOST: parts[0] } : { ...env };

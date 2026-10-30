@@ -349,7 +349,7 @@ async function main(args) {
     // the starter's upstream: stop, unless GH_REPO names the repo. A dry run opens nothing, so it only says so.
     if (!ghEnv.GH_REPO && !flags.dryRun) {
       const url = (await execute("guards", "git", ["config", "--get", "remote.origin.url"])).text.trim() || "no url";
-      kitResult("fail", `origin (${url}) is not a GitHub repo, so gh would pick a repo itself; point origin at the project's GitHub repo, or set GH_REPO`);
+      kitResult("fail", `origin (${url}) is not a GitHub repo gh knows, so gh would pick a repo itself; point origin at the project's GitHub repo, gh auth login for its host, or set GH_REPO`);
       return 1;
     }
     ok("guards");
@@ -723,7 +723,7 @@ async function main(args) {
         });
       } catch (error) { console.log(`landed: not checked (${error.message})`); }
     }
-    // gh repo view ignores GH_REPO, so it is named here; it answers with the repo's current name.
+    // The repo is named, so the merge's --repo matches GH_REPO exactly; gh answers with the repo's current name.
     const repo = await gh("merge", ["repo", "view", ...(ghEnv.GH_REPO ? [ghEnv.GH_REPO] : []), "--json", "nameWithOwner", "--jq", ".nameWithOwner"]);
     const [owner, name] = repo.split("/");
     if (!owner || !name) throw new Error("could not determine owner/name");

@@ -107,8 +107,8 @@ test("doctor checks all eleven conditions quickly, notes Grok, and quiet success
   // The kit's commit and age beside the project's is a note, not a counted check.
   assert.match(lines[11], new RegExp(`^✓ kit: commit [0-9a-f]{7,} \\(checkout ${repo}, commit \\d+ \\w+ old\\); project [0-9a-f]{7,}$`));
   // The fixture's origin is a folder, so kit pr would have no repo to open a PR in: a note, not a counted check.
-  assert.equal(lines[12], `✗ PR target: origin (${join(f.directory, "origin.git")}) is not a GitHub repo, so kit pr cannot open a PR; ` +
-    "fix: git remote set-url origin <the project's GitHub repo>");
+  assert.equal(lines[12], `✗ PR target: origin (${join(f.directory, "origin.git")}) is not a GitHub repo gh knows, so kit pr cannot open a PR; ` +
+    "fix: git remote set-url origin <the project's GitHub repo>, or gh auth login for its host");
   assert.equal(lines[13], "✗ grok: not installed (optional reviewer); fix: install the grok CLI for Grok reviews");
   assert.equal(lines.length, 15);
   assert.equal(lines[14], "RESULT: ok doctor 11/11 checks passed");
@@ -376,12 +376,20 @@ test("doctor shows the GitHub repo PRs go to: origin's, never the upstream a sit
   git(f.build, "config", `url.${join(f.directory, "origin.git")}.insteadOf`, "git@git.example.com:acme/site.git");
   git(f.build, "remote", "set-url", "origin", "git@git.example.com:acme/site.git");
   assert.match(f.run().stdout, /^✓ PR target: git\.example\.com\/acme\/site \(origin; other remotes not used: mirror, upstream\)$/m);
+  // A GitLab origin is no GitHub repo gh knows.
+  const bin = join(f.directory, "bin");
+  mkdirSync(bin);
+  executable(join(bin, "ssh"), 'echo "hostname $3"');
+  git(f.build, "config", `url.${join(f.directory, "origin.git")}.insteadOf`, "git@gitlab.com:acme/site.git");
+  git(f.build, "remote", "set-url", "origin", "git@gitlab.com:acme/site.git");
+  assert.match(f.run([], f.build, { PATH: `${bin}:${process.env.PATH}` }).stdout,
+    /^✗ PR target: origin \(git@gitlab\.com:acme\/site\.git\) is not a GitHub repo gh knows, so kit pr cannot open a PR; /m);
   // A folder origin with GH_REPO set: kit pr opens its PRs there.
   git(f.build, "remote", "set-url", "origin", join(f.directory, "origin.git"));
   assert.match(f.run([], f.build, { GH_REPO: "acme/site" }).stdout, /^✓ PR target: acme\/site \(GH_REPO; origin is not a GitHub repo\)$/m);
   // An origin whose url was taken out is named as such.
   git(f.build, "config", "--unset", "remote.origin.url");
-  assert.match(f.run().stdout, /^✗ PR target: origin \(no url\) is not a GitHub repo, so kit pr cannot open a PR; /m);
+  assert.match(f.run().stdout, /^✗ PR target: origin \(no url\) is not a GitHub repo gh knows, so kit pr cannot open a PR; /m);
   git(f.build, "config", "remote.origin.url", "git@github.com:acme/site.git");
   // A note, so --quiet leaves it out.
   assert.equal(f.run(["--quiet"]).stdout, "RESULT: ok doctor 11/11 checks passed\n");

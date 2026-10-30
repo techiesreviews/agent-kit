@@ -593,12 +593,24 @@ test("a folder origin with no GH_REPO stops kit pr before any gh call, as gh wou
   f.git("remote", "add", "upstream", "https://github.com/acme/starter.git");
   const result = f.run([], { GH_REPO: "" }, true);
   assert.equal(result.status, 1, result.stdout + result.stderr);
-  assert.match(result.stdout, new RegExp(`^RESULT: fail origin \\(${f.origin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\) is not a GitHub repo, so gh would pick a repo itself; ` +
-    "point origin at the project's GitHub repo, or set GH_REPO$", "m"));
+  assert.match(result.stdout, new RegExp(`^RESULT: fail origin \\(${f.origin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\) is not a GitHub repo gh knows, so gh would pick a repo itself; ` +
+    "point origin at the project's GitHub repo, gh auth login for its host, or set GH_REPO$", "m"));
   assert.deepEqual(f.calls(), []);
   const plan = f.run(["--dry-run"], { GH_REPO: "" }, true);
   assert.equal(plan.status, 0, plan.stdout + plan.stderr);
   assert.match(plan.stdout, /^note: origin is not a GitHub repo and GH_REPO is unset, so a real run stops before opening a PR$/m);
+});
+
+test("a GitLab origin stops kit pr before any gh call: no GitHub repo gh knows", t => {
+  const f = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: playground });
+  writeFileSync(join(f.bin, "ssh"), '#!/bin/bash\necho "hostname $3"\n'); chmodSync(join(f.bin, "ssh"), 0o755);
+  f.git("config", `url.${f.origin}.insteadOf`, "git@gitlab.com:acme/site.git");
+  f.git("remote", "set-url", "origin", "git@gitlab.com:acme/site.git");
+  f.git("remote", "add", "upstream", "https://github.com/acme/starter.git");
+  const result = f.run([], { GH_REPO: "" }, true);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /^RESULT: fail origin \(git@gitlab\.com:acme\/site\.git\) is not a GitHub repo gh knows, so gh would pick a repo itself; /m);
+  assert.deepEqual(f.calls(), []);
 });
 
 test("with a folder origin, a GH_REPO already set is what gh is told, and the merge keeps its host", t => {
