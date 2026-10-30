@@ -21,7 +21,7 @@ const fakeGH = `#!/usr/bin/env node
 const { appendFileSync } = require("node:fs");
 const args = process.argv.slice(2), kind = args[0];
 appendFileSync(process.env.FAKE_CALLS, JSON.stringify(args) + "\\n");
-appendFileSync(process.env.FAKE_CALLS + ".repos", (process.env.GH_REPO || "-") + "\\n");
+appendFileSync(process.env.FAKE_CALLS + ".repos", (process.env.GH_REPO || "-") + " " + (process.env.GH_HOST || "-") + "\\n");
 if (process.env.FAKE_GH_FAIL === "all" || process.env.FAKE_GH_FAIL === kind) {
   console.error("authentication required"); process.exit(1);
 }
@@ -278,7 +278,12 @@ test("gh is told origin's GitHub repo, not the upstream a site made from the sta
   const output = await f.run(["--no-fetch"], { env: { GH_REPO: "acme/starter" } });
   assert.equal(output.code, 0, output.stdout + output.stderr);
   assert.equal(f.calls().length, 2);
-  assert.equal(readFileSync(`${f.env.FAKE_CALLS}.repos`, "utf8"), "acme/site\nacme/site\n");
+  assert.equal(readFileSync(`${f.env.FAKE_CALLS}.repos`, "utf8"), "acme/site github.com\n".repeat(2));
+  // An enterprise origin: its host goes to GH_HOST too.
+  f.git("remote", "set-url", "origin", "git@git.example.com:acme/site.git");
+  const enterprise = await f.run(["--no-fetch"], { env: { GH_REPO: "acme/starter", GH_HOST: "github.com" } });
+  assert.equal(enterprise.code, 0, enterprise.stdout + enterprise.stderr);
+  assert.equal(readFileSync(`${f.env.FAKE_CALLS}.repos`, "utf8").split("\n").slice(2).join("\n"), "git.example.com/acme/site git.example.com\n".repeat(2));
 });
 
 test("a repo with no remote gets no GitHub repo, its local land branch and no gh calls", async t => {

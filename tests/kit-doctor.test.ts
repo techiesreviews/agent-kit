@@ -364,6 +364,8 @@ test("doctor shows the GitHub repo PRs go to: origin's, never the upstream a sit
   const alone = f.run();
   assert.equal(alone.status, 0, alone.stdout);
   assert.match(alone.stdout, /^✓ PR target: acme\/site \(origin\)$/m);
+  // origin wins over a GH_REPO already set, as kit pr tells gh.
+  assert.match(f.run([], f.build, { GH_REPO: "acme/starter" }).stdout, /^✓ PR target: acme\/site \(origin\)$/m);
   git(f.build, "remote", "add", "upstream", "https://github.com/acme/starter.git");
   git(f.build, "remote", "add", "mirror", "https://git.example.com/acme/site.git");
   const result = f.run();

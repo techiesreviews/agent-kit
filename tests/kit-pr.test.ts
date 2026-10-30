@@ -144,7 +144,8 @@ function fixture(t: TestContext, changes?: Record<string, string>, override: Rec
     ASE_OWNER: "ak-14", KIT_PR_KIT: join(bin, "fake-kit"), FAKE_CALLS: join(dir, "calls.jsonl"), CLAUDECODE: "",
     GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
   for (const key of Object.keys(env)) if (key.startsWith("FAKE_") && key !== "FAKE_CALLS") delete env[key];
-  delete env.GH_REPO; delete env.GH_HOST;
+  // The origin is a folder, so GH_REPO names the fake's repo (what its gh repo view answers); kit pr stops without one.
+  env.GH_REPO = "test/repo"; delete env.GH_HOST;
   const gitAt = (cwd: string, ...args: string[]) => {
     const result = spawnSync("git", args, { cwd, env, encoding: "utf8", timeout: 10_000 });
     assert.equal(result.status, 0, result.stderr);
@@ -585,6 +586,16 @@ test("an enterprise origin keeps its host on every gh call, the merge's --repo t
   // repo view answers OWNER/NAME (the fake's test/repo); the merge names the host again.
   const merge = f.ghCalls("merge").at(-1)!.args;
   assert.equal(merge[merge.indexOf("--repo") + 1], "git.example.com/test/repo");
+});
+
+test("a folder origin with no GH_REPO stops kit pr before any gh call, as gh would pick the upstream itself", t => {
+  const f = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: playground });
+  f.git("remote", "add", "upstream", "https://github.com/acme/starter.git");
+  const result = f.run([], { GH_REPO: "" }, true);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, new RegExp(`^RESULT: fail origin \\(${f.origin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\) is not a GitHub repo, so gh would pick a repo itself; ` +
+    "point origin at the project's GitHub repo, or set GH_REPO$", "m"));
+  assert.deepEqual(f.calls(), []);
 });
 
 test("with a folder origin, a GH_REPO already set is what gh is told, and the merge keeps its host", t => {
