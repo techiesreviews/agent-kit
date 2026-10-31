@@ -418,7 +418,7 @@ test("--start claims on dev, pushes, makes the worktree and starts the slice; de
   assert.ok(!existsSync(join(root, "wt-build-al-02-free")));
   const out = result.stdout;
   assert.match(out, /^claimed: docs\/wayfinder\/alpha\/build\/tickets\/01-first-slice\.md owner=al-01 [0-9a-f]+ \(pushed\)$/m);
-  assert.ok(out.includes(`worktree: ${worktree}\nstarted: slice-al01\nwait: KIT_ROOT=${worktree} scripts/agents/kit wait job slice-al01 --timeout 2h\n`));
+  assert.ok(out.includes(`worktree: ${worktree}\nstarted: slice-al01\nwait: KIT_ROOT=${worktree} scripts/agents/kit go slice-al01\n`));
   assert.match(out, /^delegate: docs\/wayfinder\/alpha\/build\/tickets\/02-free\.md opencode\/deepseek-v4\.1-flash-free owner=al-02$/m);
   assert.match(out, /RESULT: ok next 2 ready, 0 waiting, 1 started\n$/);
   assert.equal(git(dev, "status", "--porcelain").trim(), "");
@@ -823,7 +823,7 @@ test("--start claims a ready group in one commit and starts one job that runs it
   for (const file of files) assert.match(git(join(root, "origin.git"), "show", `dev:${file}`), /^assignee: al-g-fonts$/m);
   assert.equal(git(worktree, "branch", "--show-current").trim(), "build/al-g-fonts");
   assert.equal(readFileSync(env.FAKE_KIT_LOG!, "utf8"),
-    `${worktree}|claude-opus-5-5|al-g-fonts|bg slice-alg-fonts -- scripts/agents/kit next --run-group --branch build/al-g-fonts --builder claude-opus-5-5 --ticket ${files[1]} --ticket ${files[0]}\n`);
+    `${worktree}|claude-opus-5-5|al-g-fonts|bg slice-alg-fonts --max 0 -- scripts/agents/kit next --run-group --branch build/al-g-fonts --builder claude-opus-5-5 --ticket ${files[1]} --ticket ${files[0]}\n`);
   assert.match(result.stdout, /^claimed: group fonts tickets=02-b,01-a owner=al-g-fonts [0-9a-f]+ \(pushed\)$/m);
   assert.match(result.stdout, /^started: slice-alg-fonts$/m);
   assert.match(result.stdout, /RESULT: ok next 1 ready, 0 waiting, 1 started\n$/);

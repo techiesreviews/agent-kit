@@ -107,7 +107,7 @@ if [[ -z $command_file ]]; then
   exit 2
 fi
 
-last_result=false
+last_result=false last_running=false
 partial=false
 child_pid=''
 signal_status=0
@@ -121,7 +121,8 @@ finish() {
   local status=$?
   trap - EXIT INT TERM HUP
   if (( signal_status )); then status=$signal_status; fi
-  if [[ $enforce_result == true && $last_result == false ]]; then
+  if [[ $last_running == true && $status == 75 ]]; then :
+  elif [[ $enforce_result == true && $last_result == false ]]; then
     [[ $partial == false ]] || printf '\n'
     if (( signal_status )); then
       kit_result fail "$command interrupted"
@@ -206,6 +207,9 @@ while :; do
     printf '%s' "$line"
     last_result=false
     [[ $line != 'RESULT: '* ]] || last_result=true
+    # kit go's RUNNING line stands in for the RESULT line, when go exits 75 (its job still runs).
+    last_running=false
+    [[ $command != go || $line != 'RUNNING: '* ]] || last_running=true
     partial=true
     if (( read_status == 0 )); then printf '\n'; partial=false; fi
   fi

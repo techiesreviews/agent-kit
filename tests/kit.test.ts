@@ -327,13 +327,16 @@ test("kit guarantees a final RESULT while preserving child stdout, stderr and st
     ["partial", "printf 'intact \\ backslash'; printf error >&2", 0, "intact \\ backslash\nRESULT: ok partial finished\n"],
     ["partial-result", "printf 'RESULT: ok partial-result'", 0, "RESULT: ok partial-result"],
     ["blank", "printf '\\n'", 0, "\nRESULT: ok blank finished\n"],
+    // kit go's RUNNING line closes its run only when go exits 75; anywhere else it is an ordinary line.
+    ["go", "printf 'RUNNING: job (1s, step x). Run again: scripts/agents/kit go job\\n'; exit 75", 75, "RUNNING: job (1s, step x). Run again: scripts/agents/kit go job\n"],
+    ["stray", "printf 'RUNNING: job\\n'; exit 75", 75, "RUNNING: job\nRESULT: fail stray exited 75 without a RESULT line\n"],
   ];
   for (const [name, body, status, stdout] of cases) {
     command(directory, name, body);
     const result = run([name], { KIT_COMMANDS_DIR: directory });
     assert.equal(result.status, status, `${name}: ${result.stderr}`);
     assert.equal(result.stdout, stdout, name);
-    assert.equal(results(result.stdout).length, 1, name);
+    assert.equal(results(result.stdout).length, name === "go" ? 0 : 1, name);
     if (name === "partial") assert.equal(result.stderr, "error");
   }
   const startup = join(directory, "startup");

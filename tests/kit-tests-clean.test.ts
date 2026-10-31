@@ -116,8 +116,13 @@ test(guardName, { timeout: limit + 60_000 }, async t => {
   const before = new Set(entries(artifacts));
   // A private OS temp directory attributes every leftover to this child suite,
   // without racing unrelated tests or builders using the system temp directory.
-  const env = { ...kitEnv(), TMPDIR: temporary, TMP: temporary, TEMP: temporary,
+  // A state folder of its own, with no forced talk style: a test that moves the talk-style counter
+  // (the 7-day trial's order) outside its own state folder leaves talk-style.json here.
+  const state = mkdtempSync(join(tmpdir(), "kit-tests-clean-state-"));
+  t.after(() => rmSync(state, { recursive: true, force: true }));
+  const env = { ...kitEnv(), TMPDIR: temporary, TMP: temporary, TEMP: temporary, XDG_STATE_HOME: state,
     TSX_DISABLE_CACHE: "1", NODE_DISABLE_COMPILE_CACHE: "1" };
+  delete env.KIT_TALK_STYLE;
   // Node otherwise treats this as an existing test worker and runs no files.
   delete env.NODE_TEST_CONTEXT;
   delete env.ASE_KIT_CLEAN_LIMIT_MS;
@@ -137,6 +142,7 @@ test(guardName, { timeout: limit + 60_000 }, async t => {
   assert.ok(!result.cutOff, `kit suite run was cut off after ${result.seconds} s (limit ${limit / 1000} s); ` +
     `removing the temp paths it left: ${leftovers.join(", ") || "none"}`);
   assert.deepEqual(result.survivors, [], `processes still running after SIGKILL: ${result.survivors.join("; ")}`);
+  assert.ok(!existsSync(join(state, "agent-kit/talk-style.json")), "a test moved the shared talk-style counter; give it KIT_TALK_STYLE or its own XDG_STATE_HOME");
   assert.deepEqual(result.leftRunning, [], `processes left running: ${result.leftRunning.join("; ")}`);
   assert.deepEqual(folders, [], `new folders in ${artifacts}: ${folders.join(", ")}`);
   assert.deepEqual(leftovers, [], `test temp paths left behind: ${leftovers.join(", ")}`);

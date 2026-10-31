@@ -1577,3 +1577,25 @@ test("ticket files leave the second look's kind alone unless nothing else change
     assert.match(result.stdout, new RegExp(`^second look: ${kind} \\(${path.replaceAll(".", "\\.")}\\) `, "m"), files.join(" "));
   }
 });
+
+test("the review brief names the skills map's UI review skills for a ticket touching UI, and none otherwise", (t) => {
+  const f = fixture(t);
+  const ui = "---\ntitle: A colour menu\n---\n\n## Files\n\n- `src/ui/menu.css`\n\n## Done when\n\n- done\n";
+  const brief = reviewBrief("ticket.md", ui, "HEAD^", f.root);
+  assert.match(brief, /^Skills for this UI change \(house rules beat skill advice\):$/m);
+  for (const name of ["emil-ui-review", "emil-unslop-design", "break-ui"]) assert.match(brief, new RegExp(`^- /${name} — `, "m"));
+  assert.doesNotMatch(brief, /good-css/);
+  assert.doesNotMatch(reviewBrief("ticket.md", ui, "HEAD^", f.root, [], false), /Skills for this UI change/);
+  assert.doesNotMatch(reviewBrief("ticket.md", "## Files\n\n- `kit.d/go`\n", "HEAD^", f.root), /Skills for/);
+  // A second look on Grok or OpenCode gets the kit's own lines, never a skill it cannot load.
+  const second = reviewBrief("ticket.md", ui, "HEAD^", f.root, [], true, "grok-4.7");
+  assert.match(second, /^- UI review: /m);
+  assert.doesNotMatch(second, /\/emil-ui-review|\$emil-ui-review/);
+});
+
+test("a review without a ticket takes skills from the changed files and keeps the no-ticket spec axis", (t) => {
+  const f = fixture(t);
+  const brief = reviewBrief("", "", "HEAD^", f.root, [], true, "claude-opus-5-5", "## Files\n- `src/ui/menu.css`\n- `docs/map/spec.md`\n");
+  assert.match(brief, /^Spec axis: no ticket supplied/m);
+  assert.match(brief, /^- \/emil-ui-review — /m);
+});

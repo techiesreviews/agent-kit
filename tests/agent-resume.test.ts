@@ -94,7 +94,7 @@ function fixture(t: TestContext) {
   git("init", "-b", "test");
   git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "base");
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "20s",
-    ASE_RESUME_POLL_MS: "10", ASE_AGENT_CLI: "", ASE_BUILD_MODEL: "", FAKE_CALLS: callsFile };
+    ASE_RESUME_POLL_MS: "10", ASE_AGENT_CLI: "", ASE_BUILD_MODEL: "", FAKE_CALLS: callsFile, KIT_TALK_STYLE: "plain" };
   const children: ChildProcess[] = [];
   const groups = new Set<number>();
   t.after(async () => {

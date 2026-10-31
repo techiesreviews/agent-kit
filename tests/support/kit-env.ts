@@ -19,7 +19,11 @@ function testState() {
   process.once("exit", () => rmSync(folder, { recursive: true, force: true }));
   return state = folder;
 }
+// KIT_SKILL_HOME names a folder that never exists, so kit doctor's skills map note reads no real skill folder.
+const noSkills = resolve(import.meta.dirname, "../fixtures/no-skill-home");
+// KIT_TALK_STYLE=plain leaves the talk-style counter (the 7-day trial's order) alone, and KIT_BG_SCOPE=off keeps
+// kit bg jobs out of the user's systemd; the tests of those two unset them.
 export function kitEnv(): NodeJS.ProcessEnv {
   const { KIT_HOME: _home, KIT_HOME_DEFAULT: _default, GH_REPO: _repo, GH_HOST: _host, ...env } = process.env;
-  return { ...env, KIT_SKILL_DIRS: "", GH_CONFIG_DIR: ghConfig, XDG_STATE_HOME: testState() };
+  return { ...env, KIT_SKILL_DIRS: "", GH_CONFIG_DIR: ghConfig, XDG_STATE_HOME: testState(), KIT_TALK_STYLE: "plain", KIT_BG_SCOPE: "off", KIT_SKILL_HOME: noSkills };
 }

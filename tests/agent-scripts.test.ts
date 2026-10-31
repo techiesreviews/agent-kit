@@ -7,6 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { plainEnglish, reviewBrief, reviewComplete, reviewFormat } from "../review-brief.mjs";
+import { talkStyleLine } from "../brief-lib.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { unitSummary } from "../unit-summary.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
@@ -813,7 +814,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
 const args = process.argv.slice(2);
 const input = readFileSync(0, "utf8");
-writeFileSync(process.env.ASE_FAKE_CAPTURE, JSON.stringify({ args, input, cwd: process.cwd() }));
+writeFileSync(process.env.ASE_FAKE_CAPTURE, JSON.stringify({ args, input, cwd: process.cwd(), allowStop: process.env.KIT_ALLOW_STOP }));
 const model = process.env.ASE_FAKE_MODEL || args[args.indexOf(basename(process.argv[1]) === "codex" ? "-m" : "--model") + 1];
 const report = process.env.ASE_FAKE_REPORT || "REVIEW_STATUS: complete\\nDefects: none\\n";
 if (basename(process.argv[1]) === "codex") {
@@ -831,19 +832,21 @@ process.exitCode = Number(process.env.ASE_FAKE_EXIT || 0);
   const capture = join(dir, "capture.json");
   const invoke = (script: string, args: string[], overrides: NodeJS.ProcessEnv = {}) => spawnSync("bash", [resolve(script), ...args], {
     encoding: "utf8", timeout: 15_000,
-    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CODEX_HOME: sourceHome, ASE_FAKE_CAPTURE: capture, ASE_AGENT_CLI: "", ASE_BUILD_MODEL: "", ASE_REVIEW_MODEL: "", ASE_AGENT_TIMEOUT: "10s", ...overrides },
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CODEX_HOME: sourceHome, ASE_FAKE_CAPTURE: capture, ASE_AGENT_CLI: "", ASE_BUILD_MODEL: "", ASE_REVIEW_MODEL: "", ASE_AGENT_TIMEOUT: "10s", KIT_TALK_STYLE: "plain", ...overrides },
   });
   for (const model of ["gpt-5.5", "claude-haiku-5-5"]) for (const kind of ["build", "review"]) {
     const result = invoke("agent.sh", [kind, wt, brief, "--model", model, "--effort", "low", ...(kind === "review" ? ["--base", "origin/dev"] : [])]);
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /REVIEW_STATUS: complete/);
-    const recorded: { args: string[]; input: string; cwd: string } = JSON.parse(readFileSync(capture, "utf8"));
+    const recorded: { args: string[]; input: string; cwd: string; allowStop?: string } = JSON.parse(readFileSync(capture, "utf8"));
     assert.equal(recorded.cwd, wt);
+    // A headless agent's own turn is never held by the Stop hook: the kit waits for it.
+    assert.equal(recorded.allowStop, "1");
     const out = /^artifacts: (.+)$/m.exec(result.stdout)?.[1];
     assert.ok(out);
     assert.ok(out.startsWith(join(wt, ".scratch/agent", `${kind}-`)));
     if (kind === "build") {
-      assert.equal(recorded.input, "tiny brief\n" + buildContract);
+      assert.equal(recorded.input, "tiny brief\n" + buildContract + talkStyleLine("plain") + "\n");
       // A hand-written brief gets the plain-English line too, once (house rule).
       assert.equal(recorded.input.split("\n").filter(line => line === plainEnglish).length, 1);
     }
@@ -858,6 +861,17 @@ process.exitCode = Number(process.env.ASE_FAKE_EXIT || 0);
     assert.match(readFileSync(join(out, "run.log"), "utf8"), new RegExp(model));
     assert.deepEqual(readFileSync(brief, "utf8"), "tiny brief\n");
   }
+  // The build contract carries the talk style for the start (ticket 83) in place of the plain-English line.
+  assert.equal(invoke("agent.sh", ["build", wt, brief, "--model", "claude-haiku-5-5"], { KIT_TALK_STYLE: "wenyan" }).status, 0);
+  const styled: { input: string } = JSON.parse(readFileSync(capture, "utf8"));
+  assert.equal(styled.input, "tiny brief\n" + buildContract + talkStyleLine("wenyan") + "\n");
+  assert.ok(!styled.input.includes(plainEnglish));
+  // kit fix reads the fixer's "Declined:" list, so the styled line keeps those keywords in English.
+  // A mistyped style stops the build with the plain reason, as kit brief does.
+  const mistyped = invoke("agent.sh", ["build", wt, brief, "--model", "claude-haiku-5-5"], { KIT_TALK_STYLE: "wen" });
+  assert.notEqual(mistyped.status, 0);
+  assert.match(mistyped.stdout + mistyped.stderr, /KIT_TALK_STYLE must be en, wenyan or plain, not wen/);
+  assert.match(styled.input, /report keywords the kit reads \(Declined:, RESULT:, REVIEW_STATUS:\) with each declined finding's reason/);
   const defaultBuild = invoke("agent.sh", ["build", wt, brief]);
   assert.equal(defaultBuild.status, 0, defaultBuild.stderr);
   const defaultOut = /^artifacts: (.+)$/m.exec(defaultBuild.stdout)?.[1];

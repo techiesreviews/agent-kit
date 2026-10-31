@@ -13,7 +13,8 @@ import { appendFileSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, 
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { durationMilliseconds, supervise } from "./sol-run.mjs";
-import { plainEnglish, reviewComplete, reviewFormat, reviewScope } from "./review-brief.mjs";
+import { reviewComplete, reviewFormat, reviewScope } from "./review-brief.mjs";
+import { nextTalkStyle, talkStyleLine } from "./brief-lib.mjs";
 
 const adapters = { codex: codexAdapter, claude: claudeAdapter, grok: grokAdapter, opencode: opencodeAdapter };
 const reviewOnly = { grok: "Grok", opencode: "OpenCode" };
@@ -669,8 +670,16 @@ export const buildContract = `
 Leave changes unstaged. Do not commit, push, deploy, spawn agents or use git stash.
 Run focused unit files for the change (scripts/agents/kit unit --affected; if unavailable, scripts/agents/unit.sh <files>), npm run check when types moved, npm run lint and the ticket's touched specs. kit pr runs the tier's full set.
 Final report: at most 15 lines; changed files, behavior, validation and unresolved risks.
-${plainEnglish}
 `;
+
+/** The build contract with the talk style for this start (ticket 83): the next in turn, or KIT_TALK_STYLE's. */
+export function buildContractWithStyle(env = process.env) {
+  if (env.KIT_TALK_STYLE && !["en", "wenyan", "plain"].includes(env.KIT_TALK_STYLE)) throw new Error(`KIT_TALK_STYLE must be en, wenyan or plain, not ${env.KIT_TALK_STYLE}`);
+  let style;
+  // A counter that cannot be read or moved does not stop a build: it runs plain and says so.
+  try { style = nextTalkStyle(env); } catch (error) { style = "plain"; console.error(`note: talk style plain (${error.message})`); }
+  return `${buildContract}${talkStyleLine(style)}\n`;
+}
 
 function writeStatus(path, status, changes = {}) {
   Object.assign(status, changes, { updated: new Date().toISOString() });
@@ -856,9 +865,12 @@ async function invokeAgent(adapter, args, descriptor, context) {
   const { options, limit, logPath, log, output, messages, update } = context;
   const previousCalls = context.calls;
   context.calls = previousCalls + 1;
-  const previous = Object.fromEntries(Object.keys(adapter.env ?? {}).map(key => [key, process.env[key]]));
+  // The kit waits for the agents it starts itself, so their own turn ends freely: the Stop hook (stop-guard)
+  // would otherwise hold a slice's builder for the very kit go job that runs it.
+  const extra = { KIT_ALLOW_STOP: "1", ...adapter.env };
+  const previous = Object.fromEntries(Object.keys(extra).map(key => [key, process.env[key]]));
   try {
-    Object.assign(process.env, adapter.env);
+    Object.assign(process.env, extra);
     const previousLog = readFileSync(logPath, "utf8").length;
     // A CLI with a start limit that names no session within it is stopped as unavailable.
     let silent = false, startTimer, spawned;
@@ -932,7 +944,7 @@ async function executeRun(options, out, previous, update, brief) {
   const reportPath = join(out, "out.md"), logPath = join(out, "run.log"), inputPath = join(out, `brief-${process.pid}.md`);
   // A resumed Codex report must not truncate the earlier final report.
   const output = previous ? join(out, `resume-${process.pid}-${randomUUID()}.md`) : reportPath;
-  const prompt = prepared.prompt + (!previous && options.kind === "build" ? buildContract : "");
+  const prompt = prepared.prompt + (!previous && options.kind === "build" ? buildContractWithStyle() : "");
   let input, log, reviewHome;
   try {
     writeFileSync(inputPath, prompt);

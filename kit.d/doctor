@@ -479,6 +479,40 @@ if [[ $quiet == false ]]; then
   fi
 fi
 
+# The skills the skills map names (skills.json, plus the settings' "skills.add", less "skills.remove") are optional
+# too: a brief gives the kit's own line where one is missing. Folders: ~/.claude/skills, ~/.agents/skills,
+# ~/.codex/skills and Claude plugins (KIT_SKILL_HOME, for tests, stands in for HOME).
+if [[ $quiet == false ]]; then
+  own=$(jq -c '.skills // {} | if type == "object" then . else {} end' "$(kit_settings_file)" 2>/dev/null) || own='{}'
+  if ! named=$(jq -r --argjson own "${own:-{\}}" '
+      def names($key): ($own[$key] // []) | if type == "array" then map(strings) else [] end;
+      reduce ([.talk] + [.sets[].skills[]] + names("add"))[] as $name ([]; if any(.[]; . == $name) then . else . + [$name] end)
+      | map(select(. as $name | names("remove") | any(.[]; . == $name) | not)) | .[]' "$(kit_home)/skills.json" 2>/dev/null); then
+    printf "✗ skills map: could not be read (optional); fix: check the kit's skills.json\n"
+  else
+    skill_home=${KIT_SKILL_HOME:-${HOME:-}} missing_skills=() count=0
+    declare -A plugin_skills=()
+    while IFS= read -r found; do found=${found%/SKILL.md}; plugin_skills[${found##*/}]=1; done < <(
+      find "$skill_home/.claude/plugins" -mindepth 3 -maxdepth 9 -path '*/skills/*/SKILL.md' 2>/dev/null)
+    while IFS= read -r name; do
+      [[ -n $name ]] || continue
+      count=$((count + 1))
+      bare=${name##*:}
+      [[ -f $skill_home/.claude/skills/$bare/SKILL.md || -f $skill_home/.agents/skills/$bare/SKILL.md ||
+        -f $skill_home/.codex/skills/$bare/SKILL.md || -n ${plugin_skills[$bare]-} ]] || missing_skills+=("$name")
+    done <<< "$named"
+    if (( count == 0 )); then
+      printf '✓ skills map: names no skills (all removed by the "skills" setting)\n'
+    elif (( ${#missing_skills[@]} == 0 )); then
+      printf '✓ skills map: all %s skills it names are on this machine\n' "$count"
+    else
+      list=$(IFS=,; printf '%s' "${missing_skills[*]}")
+      printf '✗ skills map: %s of %s skills it names are not on this machine: %s (optional; briefs give the kit'"'"'s own line instead); fix: install them, or drop them with the "skills" setting'"'"'s "remove" list\n' \
+        "${#missing_skills[@]}" "$count" "${list//,/, }"
+    fi
+  fi
+fi
+
 if (( ${#failed[@]} )); then
   names=$(IFS=,; printf '%s' "${failed[*]}")
   kit_result fail "doctor ${#failed[@]} failed: $names"

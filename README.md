@@ -46,6 +46,25 @@ only a small launcher and its own settings; the kit itself lives here, once.
   the release branch (the Native Site Editor's `dev`). Where the two are one branch (this repo, a live site), they
   land through `kit pr` (docs tier), or `kit next --start`, which claims and starts the slice itself.
 
+## The factory: generated briefs, long jobs that wait
+
+- `kit brief <ticket> [--stage build|review|second-look|fix] [--note "<text>"]` prints the whole brief for a
+  delegated child from the ticket, the project's settings and the rules: owner, worktree setup, pins, commands and
+  evidence, the house rules, the wait rule, the skills for the ticket's files (the skills map, `skills.json`), the
+  talk style and the report's last line. It ends with a marker line, `kit-brief: <kit version> <ticket> <stage>`.
+  A lead passes it to `delegate_task`; a rule changes once, here.
+- `kit go <job> -- <command>` starts a long job (a slice, a long `kit pr`, specs) with `kit bg`, in its own user
+  systemd scope, and waits in the foreground for at most 9 minutes per call. While the job runs it ends with
+  `RUNNING: <job> (…). Run again: scripts/agents/kit go <job>` and exit 75; once the job ends it prints the job's
+  RESULT line and exits with the job's code (1 for a job's own 75, or for a job whose RESULT line says fail
+  although it exited 0).
+- Two hooks back this up. `brief-guard` (Claude `PreToolUse` on `mcp__t3-code__delegate_task` and `Agent|Task`)
+  refuses a brief without the marker; research, review-only and question tasks start with
+  `kit-brief: none (<reason>)`, and the read-only agent types (Explore, Plan) pass. `stop-guard` (Claude and Codex
+  `Stop`) refuses to end a turn while a `kit go` job of the worktree, or a `kit-*` systemd unit working in it, still
+  runs; it lets the turn end for a job past its time limit, after six refusals in a row, or with
+  `KIT_ALLOW_STOP=1`.
+
 ## Nothing unsaved goes live
 
 - `kit release-check` is the second half of that gate: it fails unless the working tree is clean (no changed or
@@ -74,8 +93,9 @@ only a small launcher and its own settings; the kit itself lives here, once.
 | --- | --- |
 | `kit`, `kit-lib.sh`, `kit-lib.mjs` | the front door and the shared library |
 | `kit.d/` | one file per shared command, each with a `# kit:` summary line |
-| `hooks/` | the guard hooks (`bash-guard`, `agent-cap`, `session-env`) and their `run.sh` |
+| `hooks/` | the guard hooks (`bash-guard`, `agent-cap`, `session-env`, `brief-guard`, `stop-guard`) and their `run.sh` |
 | `context-card.mjs`, `worktree.sh`, `tickets.mjs`, `unit.sh`, `review-findings.mjs`, `second-look.json`, … | helpers beside `kit` that commands and a project's forwarders run through `kit --home` |
+| `skills.json`, `skills.mjs`, `brief-lib.mjs` | the skills map (names and the kit's own one-line fallbacks, never a skill's text), and the brief `kit brief` writes |
 | `launcher/` | the two launchers `kit init` copies into a project |
 | `systemd/` | the update timer and service `kit update --install-timer` writes into `~/.config/systemd/user/` |
 | `docs/` | the shared kitchen rulebook and the template for a project's extras |

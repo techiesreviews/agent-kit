@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Usage: run.sh <bash-guard|session-env|agent-cap|context-card> < hook.json.
+# Usage: run.sh <bash-guard|session-env|agent-cap|context-card|brief-guard|stop-guard> < hook.json.
 # The guard hooks sit beside this file, in the kit, so a project's hook launcher can run it from the machine copy.
 set -euo pipefail
 trap 'exit 0' ERR
 [[ $# == 1 ]] || exit 0
-case $1 in bash-guard|session-env|agent-cap|context-card) ;; *) exit 0 ;; esac
+case $1 in bash-guard|session-env|agent-cap|context-card|brief-guard|stop-guard) ;; *) exit 0 ;; esac
 if [[ $1 == context-card ]]; then
   # The card never blocks a session: it prints SessionStart context or nothing. It is the kit's own script,
   # beside these hooks, for every project.

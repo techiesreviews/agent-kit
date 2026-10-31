@@ -317,7 +317,9 @@ test("kit slice writes the ticket brief, runs phases in order, credits and commi
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const brief = readFileSync(join(f.root, ".scratch/agent-brief.md"), "utf8");
   for (const text of [f.ticket, "## Files", "`file.txt`", "## Done when", "Required content", "## Done (YYYY-MM-DD)", "describing only behaviour, tests and commits", "status: closed", "assignee: ke-04", "scripts/agents/kit"]) assert.ok(brief.includes(text), text);
-  assert.match(brief, /Do not run kit review, kit fix, kit slice, kit pr, kit bg or agent\.sh/);
+  assert.match(brief, /Do not run kit review, kit fix, kit slice, kit pr, kit bg, kit go or agent\.sh/);
+  // file.txt touches no UI, so the skills map adds nothing.
+  assert.doesNotMatch(brief, /## Skills/);
   assert.match(brief, /the slice runs those commands/);
   assert.match(brief, /Validate with scripts\/agents\/kit unit --affected and the ticket's focused checks; run npm run check when types moved\. Report/);
   assert.match(brief, /the slice records review decisions and landing/);
@@ -1500,4 +1502,15 @@ test("a slice stopped while its second-look fix round is pending resumes that ro
   const fix = f.calls()[4].args;
   assert.equal(fix[fix.indexOf("--review") + 1], join(f.main, ".scratch/reviews/ke-04/second-000"));
   assert.equal(f.state().rounds, 1);
+});
+
+test("the slice brief names the skills map's set for a ticket touching UI, for the builder's model", t => {
+  const f = fixture(t), path = join(f.root, f.ticket);
+  writeFileSync(path, readFileSync(path, "utf8").replace("`file.txt`", "`src/ui/panel.css`"));
+  f.git("commit", "-qam", "a UI ticket");
+  f.run([], { FAIL_PHASE: "build" });
+  const brief = readFileSync(join(f.root, ".scratch/agent-brief.md"), "utf8");
+  assert.match(brief, /^## Skills\nUse these where they fit; house rules beat skill advice\.$/m);
+  // The fixture's builder is gpt-6.1-sol: Codex names a skill with $.
+  for (const name of ["good-css", "emil-design-foundations", "emil-ui-polish"]) assert.match(brief, new RegExp(`^- \\$${name} \\(the ${name} skill\\) — `, "m"));
 });

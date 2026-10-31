@@ -203,10 +203,15 @@ template("scripts/agents/hooks/run.sh", "launcher/hooks-run.sh", 0o755, "the hoo
 // Hook entries, merged into each file: a missing entry is added beside the others, nothing is replaced.
 const hook = (name) => ({ type: "command", command: `bash "\${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"/scripts/agents/hooks/run.sh ${name}` });
 const agentCap = ["agent-cap"], session = ["session-env", "context-card"];
+// brief-guard refuses a child's brief kit brief did not write; stop-guard refuses a turn end while a kit go job runs.
+// Codex's PreToolUse sees only Bash, so it gets the Stop hook alone.
 const hookFiles = {
-  ".claude/settings.json": [["PreToolUse", "Bash", ["bash-guard"]], ["PreToolUse", "Agent|Task", agentCap], ["PostToolUse", "Agent|Task", agentCap],
-    ["PostToolUseFailure", "Agent|Task", agentCap], ["SubagentStart", undefined, agentCap], ["SubagentStop", undefined, agentCap], ["SessionStart", undefined, session]],
-  ".codex/hooks.json": [["PreToolUse", "Bash", ["bash-guard"]], ["SubagentStart", undefined, agentCap], ["SubagentStop", undefined, agentCap], ["SessionStart", undefined, session]],
+  ".claude/settings.json": [["PreToolUse", "Bash", ["bash-guard"]], ["PreToolUse", "Agent|Task", agentCap],
+    ["PreToolUse", "mcp__t3-code__delegate_task|Agent|Task", ["brief-guard"]], ["PostToolUse", "Agent|Task", agentCap],
+    ["PostToolUseFailure", "Agent|Task", agentCap], ["SubagentStart", undefined, agentCap], ["SubagentStop", undefined, agentCap], ["SessionStart", undefined, session],
+    ["Stop", undefined, ["stop-guard"]]],
+  ".codex/hooks.json": [["PreToolUse", "Bash", ["bash-guard"]], ["SubagentStart", undefined, agentCap], ["SubagentStop", undefined, agentCap], ["SessionStart", undefined, session],
+    ["Stop", undefined, ["stop-guard"]]],
 };
 for (const [path, entries] of Object.entries(hookFiles)) {
   const there = existsSync(at(path));
