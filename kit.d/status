@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 // kit: one table of tickets, PRs, CI and the live preview
 import { execFile } from "node:child_process";
-import { resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { FLAKY_DAYS, flakyFiles } from "../browser-runs.mjs";
 import { loadTickets } from "../tickets.mjs";
 
-const { kitBranch, kitGhEnv, kitRoot, kitResult, kitSettings } = await import(
+const { kitBranch, kitGhEnv, kitRoot, kitResult, kitSettings, kitStateDir } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const usage = "Usage: kit status [map] [--ref <ref>] [--no-fetch] [--help]\n";
@@ -178,7 +180,13 @@ async function status(args) {
       const who = clean(ticket.assignee || ticket.builder || "-").split(/\s+/)[0];
       row([ticket.slug, ticket.status, who, location, ticketCI]);
     }
-    result("ok", `${map || "all"} ${tickets.length} tickets, ${tickets.filter(ticket => ticket.status === "closed").length} closed, ${open} open PRs${github.none ? ", no GitHub repo" : notes.length ? ", offline" : ""}`);
+    // Spec files that kit pr forgave as flaky under load too often (ticket ke-88) want a real fix.
+    let log = "";
+    try { log = readFileSync(join(kitStateDir(), "flaky.jsonl"), "utf8"); } catch { /* No flaky run on this machine. */ }
+    const flaky = flakyFiles(log, { project: settings.project });
+    for (const { file, count } of flaky) print(`flaky: ${file} ${count} times in ${FLAKY_DAYS} days (give it a fix ticket)`);
+    const flakyCount = flaky.length ? `, ${flaky.length} flaky file${flaky.length === 1 ? "" : "s"}` : "";
+    result("ok", `${map || "all"} ${tickets.length} tickets, ${tickets.filter(ticket => ticket.status === "closed").length} closed, ${open} open PRs${github.none ? ", no GitHub repo" : notes.length ? ", offline" : ""}${flakyCount}`);
     return 0;
   } catch (error) {
     console.error(cut(error.message, 100));
