@@ -262,3 +262,22 @@ test("brief: a fix brief switches to the pushed slice branch; a ticket with no a
   assert.match(unclaimed.stdout, /RESULT: fail brief docs\/tickets\/07-panel\.md has no assignee; claim it first or pass --owner/);
   assert.match(f.run(["docs/tickets/07-panel.md", "--owner", "ke-7"]).stdout, /owner `ke-7`/);
 });
+
+test("brief --task: a project without ticket files gets a brief for a named task, with the note as its content", t => {
+  const f = fixture(t);
+  const output = f.run(["--task", "Fix the login form", "--owner", "cf-12", "--note", "Issue #12: the login button stays busy."]);
+  assert.equal(output.status, 0, output.stdout + output.stderr);
+  const text = body(output.stdout);
+  assert.match(text, /^Kit brief: build the task "Fix the login form" in `demo`/m);
+  assert.match(text, /Note from the lead: Issue #12: the login button stays busy\./);
+  assert.match(text, /`git fetch -q origin && git switch -c build\/cf-12-fix-the-login-form origin\/dev`/);
+  assert.match(text, /`scripts\/agents\/kit pr --title "Fix the login form"`/);
+  assert.doesNotMatch(text, /--ticket|kit slice/);
+  // A form task brings the UI set from its words.
+  assert.match(text, /^- \/emil-forms-and-inputs — /m);
+  assert.match(output.stdout.trimEnd().split("\n").at(-2)!, /^kit-brief: \S+ task:fix-the-login-form build$/);
+  for (const args of [["--task", "Fix it"], ["--task", "Fix it", "--owner", "cf-1"], ["docs/tickets/07-panel.md", "--task", "Fix it", "--owner", "cf-1", "--note", "x"]]) {
+    const failed = f.run(args);
+    assert.equal(failed.status, 1, `${args}: ${failed.stdout}`);
+  }
+});

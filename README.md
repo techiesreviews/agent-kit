@@ -52,7 +52,8 @@ only a small launcher and its own settings; the kit itself lives here, once.
   delegated child from the ticket, the project's settings and the rules: owner, worktree setup, pins, commands and
   evidence, the house rules, the wait rule, the skills for the ticket's files (the skills map, `skills.json`), the
   talk style and the report's last line. It ends with a marker line, `kit-brief: <kit version> <ticket> <stage>`.
-  A lead passes it to `delegate_task`; a rule changes once, here.
+  A lead passes it to `delegate_task`; a rule changes once, here. A project without ticket files uses
+  `kit brief --task "<title>" --owner <id> --note "<the task>"`.
 - `kit go <job> -- <command>` starts a long job (a slice, a long `kit pr`, specs) with `kit bg`, in its own user
   systemd scope, and waits in the foreground for at most 9 minutes per call. While the job runs it ends with
   `RUNNING: <job> (…). Run again: scripts/agents/kit go <job>` and exit 75; once the job ends it prints the job's

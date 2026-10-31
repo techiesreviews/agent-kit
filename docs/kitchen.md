@@ -149,7 +149,9 @@ on a usage-limit `problem:` line, tell Lex the reset time and carry on with Clau
   **its own T3 thread**: one `delegate_task` per ticket (or group) with `isolation: "worktree"`,
   `mode: "async"`, the ticket's builder as `target`, and as `task` the whole output of
   `scripts/agents/kit brief <ticket path> [--note "<text>"]` above its RESULT line. A group's tickets
-  run as one job through `kit next --start`, which `kit brief` points to. Where the landing
+  run as one job through `kit next --start`, which `kit brief` points to. A project that keeps no
+  ticket files (its work is in GitHub Issues) uses `kit brief --task "<title>" --owner <id> --note
+  "<the task>"`. Where the landing
   branch is also the release branch, a raw claim push is refused: claim with a docs-tier `kit pr`.
   The brief names the owner, setup, pins, commands, evidence, house rules, wait rule, skills, talk
   style and the report's last line (PR <full URL>, head <SHA>, checks and reviews <state>).
