@@ -9,6 +9,8 @@ import { map, modelFamily, pickSkills, readTicket, skillLine } from "./skills.mj
 export { map, modelFamily, pickSkills, readTicket, skillLine, skillSettingsProblems } from "./skills.mjs";
 
 export const STAGES = ["build", "review", "second-look", "fix"];
+// One shell word, as written: single quotes, so a title's $ or backtick is never run.
+const shellQuote = value => `'${value.replace(/'/g, "'\\''")}'`;
 
 const peopleText = "Everything written to a file or GitHub (code, comments, docs, tickets, commits, PR text) and every message for Lex stays plain full English, and so do the report keywords the kit reads (Declined:, RESULT:, REVIEW_STATUS:) with each declined finding's reason.";
 /** The talk-style line (ticket 83): en, wenyan, or plain (the house rule's plain English line). */
@@ -109,9 +111,9 @@ export function composeBrief({ root, settings, ticket, text, stage, owner, note,
     section("Commands and evidence", [
       "Agent Kit is required: `scripts/agents/kit doctor` first; fix every ✗ that is not marked optional (a missing optional reviewer or skill is only a note). A kit command that cannot run is said in the report, never skipped silently or claimed.",
       "Tests first: each new test fails before the change.",
-      `While building: ${[unit && "`scripts/agents/kit unit --affected`", check && `\`${check}\` ${when}`, lint && `\`${lint}\``, "the ticket's focused checks"].filter(Boolean).join(", ")}.`,
+      `While building: ${[unit && "`scripts/agents/kit unit --affected`", check && `\`${check}\` ${when}`, lint && `\`${lint}\``, task ? "the task's focused checks" : "the ticket's focused checks"].filter(Boolean).join(", ")}.`,
       ...(stage === "build" && task ? [
-        `Build it, then \`scripts/agents/kit review\` and \`scripts/agents/kit pr --title ${JSON.stringify(task)}\` into \`${land}\` (checks for the change's tier, the second look, CI, merge), each under \`kit go\`. Link the PR with T3 \`link_pull_request\`.`,
+        `Build it, then \`scripts/agents/kit review\` and \`scripts/agents/kit pr --title ${shellQuote(task)}\` into \`${land}\` (checks for the change's tier, the second look, CI, merge), each under \`kit go\`. Link the PR with T3 \`link_pull_request\`.`,
         "Report every RESULT line, the PR URL and the merge SHA.",
       ] : stage === "build" ? [
         `Default: the slice builds, reviews, runs the fix rounds and the second look, and lands with \`kit pr\`: \`${sliceLine}\`; then \`scripts/agents/kit go ${job}\` again while it prints RUNNING.`,
@@ -139,7 +141,7 @@ export function composeBrief({ root, settings, ticket, text, stage, owner, note,
   section("House rules", [
     "Paid skills never go in a repo: name a skill, never copy its text (`skill-guard.mjs` runs in `kit pr`).",
     `Second look: \`${SECOND_LOOK.first}\`, else the free \`${SECOND_LOOK.fallback}\`; never an OpenAI model; \`second look: skipped (<reason>)\` when neither can run.`,
-    "After three fix rounds only P0/P1 findings block; P2/P3 go to the lead, who may land with `ASE_OWNER=<lead> scripts/agents/kit pr … --waive \"<reason>\"`; say so in the ticket's Done.",
+    `After three fix rounds only P0/P1 findings block; P2/P3 go to the lead, who may land with \`ASE_OWNER=<lead> scripts/agents/kit pr … --waive "<reason>"\`; say so in ${task ? "your report" : "the ticket's Done"}.`,
     "Anything a person sees: No toasts or explainers; show state on the control itself. Reuse the theme tokens and components.",
     "House rules beat skill advice: where a skill suggests something a house rule forbids (a toast, say), the house rule wins.",
     "Commits use the repo's or the machine's set git identity; never borrow another person's name.",

@@ -11,7 +11,8 @@ Prints the whole brief for one child: owner, worktree setup, builder and review 
 evidence to report, the house rules, the wait rule (kit go), the skills for the ticket's files (the skills map,
 skills.json; "skills": { "add", "remove" } in scripts/agents/kit.json), the talk style and the report's last line.
 It ends with the marker line "kit-brief: <kit version> <ticket> <stage>", which the brief-guard hook looks for; pass
-everything above the RESULT line to delegate_task. A copy is kept in .scratch/kit-briefs/<ticket>-<stage>.md.
+everything above the RESULT line to delegate_task. A copy is kept in .scratch/kit-briefs/<ticket>-<stage>.md
+(task-<slug>-<stage>.md for --task).
 --stage defaults to build. --owner defaults to the ticket's assignee; a ticket with neither is refused. --repo is the
 project's top folder (default: this one); the ticket path is read from there. --model names the child's model
 (default: the stage's pin), which picks how skills are named: /name for Claude, $name for Codex, the kit's own
@@ -35,6 +36,7 @@ function parse(args) {
   if (options.task !== undefined) {
     if (rest.length) throw new Error("give a ticket path or --task, not both");
     if (!options.task.trim() || !options.owner || !options.note) throw new Error("--task needs a title, --owner and --note (the task itself)");
+    if (!STAGES.includes(options.stage)) throw new Error(`--stage must be ${STAGES.join(", ")}, not ${options.stage}`);
     return { ...options };
   }
   if (rest.length !== 1) throw new Error("expected one ticket path");

@@ -271,12 +271,25 @@ test("brief --task: a project without ticket files gets a brief for a named task
   assert.match(text, /^Kit brief: build the task "Fix the login form" in `demo`/m);
   assert.match(text, /Note from the lead: Issue #12: the login button stays busy\./);
   assert.match(text, /`git fetch -q origin && git switch -c build\/cf-12-fix-the-login-form origin\/dev`/);
-  assert.match(text, /`scripts\/agents\/kit pr --title "Fix the login form"`/);
+  assert.match(text, /`scripts\/agents\/kit pr --title 'Fix the login form'`/);
   assert.doesNotMatch(text, /--ticket|kit slice/);
   // A form task brings the UI set from its words.
   assert.match(text, /^- \/emil-forms-and-inputs — /m);
   assert.match(output.stdout.trimEnd().split("\n").at(-2)!, /^kit-brief: \S+ task:fix-the-login-form build$/);
-  for (const args of [["--task", "Fix it"], ["--task", "Fix it", "--owner", "cf-1"], ["docs/tickets/07-panel.md", "--task", "Fix it", "--owner", "cf-1", "--note", "x"]]) {
+  // A title with a quote, $ and a backtick stays one shell word in the kit pr line.
+  const odd = f.run(["--task", "Fix `kit pr` and $HOME's path", "--owner", "cf-1", "--note", "x"]);
+  const line = /`scripts\/agents\/kit pr --title (.+?)` into/.exec(odd.stdout)![1];
+  assert.equal(spawnSync("bash", ["-c", `printf %s ${line}`], { encoding: "utf8" }).stdout, "Fix `kit pr` and $HOME's path");
+  for (const stage of ["review", "second-look", "fix"]) {
+    const staged = f.run(["--task", "Fix the login form", "--owner", "cf-12", "--note", "the task", "--stage", stage]);
+    assert.equal(staged.status, 0, staged.stdout);
+    assert.doesNotMatch(staged.stdout, /--ticket|ticket's Done/, stage);
+    assert.match(staged.stdout, new RegExp(`kit-brief: \\S+ task:fix-the-login-form ${stage}$`, "m"));
+  }
+  // A ticket whose title names a form but whose files are not UI still names the UI set: the words count too.
+  assert.match(f.run(["--task", "Fix the login form", "--owner", "cf-12", "--note", "x"]).stdout, /good-css/);
+  for (const args of [["--task", "Fix it"], ["--task", "Fix it", "--owner", "cf-1"], ["docs/tickets/07-panel.md", "--task", "Fix it", "--owner", "cf-1", "--note", "x"],
+    ["--task", "Fix it", "--owner", "cf-1", "--note", "x", "--stage", "bild"]]) {
     const failed = f.run(args);
     assert.equal(failed.status, 1, `${args}: ${failed.stdout}`);
   }
