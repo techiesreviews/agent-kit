@@ -813,6 +813,29 @@ test("the real release check passes a release cut at origin/dev, fails one with 
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /release-check: ok \(release-check waived by ke-lead \(hotfix tonight\): HEAD [a-f0-9]{7} is 1 commit ahead of origin\/dev\)/);
   assert.deepEqual(f.calls().filter(call => call.args[0] === "release-check").at(-1)?.args, ["release-check", "--land", "--waive", "hotfix tonight"]);
+  assert.match(readFileSync(join(f.logDir(), "body.md"), "utf8"), /- kit release-check --land: release-check waived by ke-lead \(hotfix tonight\): HEAD [a-f0-9]{7} is 1 commit ahead of origin\/dev/);
+});
+
+test("a release cut at origin/dev passes the check before kit pr rebases it onto a main that has a commit dev lacks", t => {
+  const f = fixture(t), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check") }, peer = f.peer();
+  f.gitAt(peer, "checkout", "-q", "main"); writeFileSync(join(peer, "hotfix.txt"), "hotfix\n");
+  f.gitAt(peer, "add", "hotfix.txt"); f.gitAt(peer, "commit", "-q", "-m", "Hotfix on main"); f.gitAt(peer, "push", "-q", "origin", "main");
+  f.git("checkout", "-q", "dev"); f.commit("Landed change", "landed.txt"); f.git("push", "-q", "origin", "dev");
+  f.git("checkout", "-q", "-b", "release/cut");
+  const cut = f.git("rev-parse", "HEAD"), result = f.run(["--base", "main", "--release", "--no-merge"], real);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, new RegExp(`release-check: ok \\(release-check ${cut.slice(0, 7)} is origin/dev, nothing unsaved\\)`));
+  assert.match(result.stdout, /RESULT: ok opened #73 [a-f0-9]{7}$/m);
+  // The pushed release is the cut rebased onto origin/main: the hotfix stays and the landed change follows it.
+  assert.notEqual(f.git("rev-parse", "HEAD"), cut);
+  assert.equal(f.git("log", "--format=%s", "-2"), "Landed change\nHotfix on main");
+});
+
+test("a waived release check is named on the release's final RESULT line", t => {
+  const f = fixture(t), result = f.run(["--base", "main", "--release", "--waive", "hotfix tonight"],
+    { ASE_OWNER: "ke-lead", FAKE_RELEASE_CHECK: resolve("kit.d/release-check") });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /RESULT: ok opened #73 [a-f0-9]{7} \(release-check waived: hotfix tonight\)$/m);
 });
 
 test("newest complete saved review of the whole PR is posted; incomplete, partial-scope and mismatched ones are skipped", t => {
