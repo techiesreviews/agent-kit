@@ -13,7 +13,8 @@ import type { ScoreRecord } from "./kit-score.test.ts";
 const pr = resolve("kit.d/pr");
 const kit = resolve("kit");
 const cleanReview = "REVIEW_STATUS: complete\nDefects:\n- Spec: none.\n- Standards: none.\nValidation gaps: none.\nOptional nits: none.\n";
-interface Call { tool: string; script?: string; args: string[]; body?: string; repo?: string; host?: string }
+// A kit specs call also says whether the machine's full-run lock (full) and quiet lock (quiet) were held during it.
+interface Call { tool: string; script?: string; args: string[]; body?: string; repo?: string; host?: string; full?: boolean; quiet?: boolean; holder?: string }
 // Claude's review, not the second look that kit pr runs after it.
 const claudeReview = (call: Call) => call.tool === "fake-kit" && call.args[0] === "review" && !call.args.includes("--second-look");
 const fake = `#!/usr/bin/env node
@@ -25,7 +26,9 @@ const bodyField = args.find(arg => arg.startsWith("body=@"));
 const bodyPath = bodyIndex >= 0 ? args[bodyIndex + 1] : bodyField?.slice("body=@".length);
 // repo: the GH_REPO a call was told, when it was told one.
 appendFileSync(env.FAKE_CALLS, JSON.stringify({ tool, script: process.argv[1], args, ...(bodyPath ? { body: readFileSync(bodyPath, "utf8") } : {}),
-  ...(env.GH_REPO ? { repo: env.GH_REPO } : {}), ...(env.GH_HOST ? { host: env.GH_HOST } : {}) }) + "\\n");
+  ...(env.GH_REPO ? { repo: env.GH_REPO } : {}), ...(env.GH_HOST ? { host: env.GH_HOST } : {}),
+  ...(tool === "fake-kit" && args[0] === "specs" ? { full: existsSync(join(env.XDG_STATE_HOME, "agent-kit/browser-run.lock")),
+    quiet: existsSync(join(env.XDG_STATE_HOME, "agent-kit/quiet.lock")), holder: env.KIT_QUIET_HOLDER || "" } : {}) }) + "\\n");
 const scripts = { "unit.sh": "unit", "tickets.mjs": "tickets", "check-colours.mjs": "colours" };
 const action = tool === "npm" ? (args[0] === "test" ? "unit" : args[1]) : scripts[tool] || (tool === "fake-kit" ? args[0] : args.slice(0, 2).join("-"));
 // FAKE_RELEASE_CHECK_STDERR: the check fails with only that stderr line and no RESULT line.
@@ -40,6 +43,21 @@ if (env.FAKE_FAIL === action) {
   if (env.FAKE_FAIL_TEXT) console.error(env.FAKE_FAIL_TEXT);
   if (tool === "fake-kit") console.log("RESULT: fail child failure");
   process.exit(1);
+}
+// FAKE_SPECS plans kit specs: its files are the --affected selection; a file in "full" fails only in a run with other
+// files (as one does on a busy machine), one in "always" fails every time.
+if (tool === "fake-kit" && action === "specs" && env.FAKE_SPECS) {
+  const plan = JSON.parse(env.FAKE_SPECS), rest = args.slice(1);
+  const files = rest[0] === "--affected" ? plan.files : rest.filter(arg => !arg.startsWith("-"));
+  if (rest.includes("--list")) {
+    for (const file of files) console.log(file + " [default] — changed");
+    console.log("RESULT: ok specs " + files.length + " selected (list only)");
+    process.exit(0);
+  }
+  const failed = files.filter(file => (plan.always || []).includes(file) || (files.length > 1 && (plan.full || []).includes(file)));
+  for (const file of files) console.log(failed.includes(file) ? "✗ " + file + ": a test — timed out" : "✓ " + file + " (1 passed)");
+  console.log(failed.length ? "RESULT: fail specs " + failed.length + " of " + files.length + " failed" : "RESULT: ok specs " + files.length + "/" + files.length + " passed");
+  process.exit(failed.length ? 1 : 0);
 }
 // The second look: FAKE_SECOND=skip has no model to take it, =fail fails; FAKE_SECOND_REVIEW is its report (clean by default).
 if (tool === "fake-kit" && action === "review" && args.includes("--second-look")) {
@@ -150,7 +168,7 @@ function fixture(t: TestContext, changes?: Record<string, string>, override: Rec
   symlinkSync(process.execPath, join(bin, "node"));
   const env: NodeJS.ProcessEnv = { ...kitEnv(), PATH: `${bin}:${process.env.PATH}`, KIT_ROOT: root, KIT_MAIN_ROOT: main,
     ASE_OWNER: "ak-14", KIT_PR_KIT: join(bin, "fake-kit"), FAKE_CALLS: join(dir, "calls.jsonl"), CLAUDECODE: "",
-    GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
+    GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", XDG_STATE_HOME: join(dir, "state") };
   for (const key of Object.keys(env)) if (key.startsWith("FAKE_") && key !== "FAKE_CALLS") delete env[key];
   // The origin is a folder, so GH_REPO names the fake's repo (what its gh repo view answers); kit pr stops without one.
   env.GH_REPO = "test/repo"; delete env.GH_HOST;
@@ -2163,4 +2181,90 @@ test("a saved second look of the HEAD before Claude's follow-ups commit is reuse
   assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "review"), false);
   assert.ok(f.ghCalls("comment").some(call => call.body?.startsWith(`Reused second look: ${folder}\nHEAD: ${f.git("rev-parse", "HEAD")}`)));
   assert.match(result.stdout, /RESULT: ok merged #73/);
+});
+
+// Full browser runs on a busy machine (ticket ke-88).
+const specsCalls = (f: ReturnType<typeof fixture>) => f.calls().filter(call => call.tool === "fake-kit" && call.args[0] === "specs");
+const spec = (name: string) => `tests/native-save/${name}.spec.ts`;
+
+test("a spec file that fails in the full run but passes alone lets the run pass, named flaky under load and logged", t => {
+  const f = fixture(t), files = [spec("a"), spec("native-mcp-menu")];
+  const result = f.run(["--ticket", "ticket.md"], { FAKE_SPECS: JSON.stringify({ files, full: [files[1]] }) });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const specs = specsCalls(f);
+  assert.deepEqual(specs.map(call => call.args), [["specs", "--affected", "--base", "origin/dev"], ["specs", files[1]]]);
+  // The full run holds the machine's full-run lock; the lone rerun also holds the quiet lock, so no kit job starts.
+  assert.deepEqual(specs.map(call => [call.full, call.quiet]), [[true, false], [true, true]]);
+  assert.match(specs[1].holder!, /^\d+$/);
+  assert.match(result.stdout, /^specs: flaky under load: tests\/native-save\/native-mcp-menu\.spec\.ts \(failed in the full run at load \d+(\.\d+)?, passed alone\)$/m);
+  assert.match(result.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: ok merged #73 [a-f0-9]{7} \(flaky under load: tests\/native-save\/native-mcp-menu\.spec\.ts\)$/);
+  const log = readFileSync(join(f.env.XDG_STATE_HOME!, "agent-kit/flaky.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+  assert.equal(log.length, 1);
+  const { time, load, ...rest } = log[0];
+  assert.deepEqual(rest, { project: "native-site-editor", file: files[1], test: "a test", owner: "ak-14", branch: "feature/kit-pr" });
+  assert.ok(Date.now() - Date.parse(time) < 60_000, time);
+  assert.equal(typeof load, "number");
+  assert.match(f.body(), /^- flaky under load: tests\/native-save\/native-mcp-menu\.spec\.ts \(failed in the full run, passed alone\)$/m);
+  for (const lock of ["browser-run", "quiet"]) assert.equal(existsSync(join(f.env.XDG_STATE_HOME!, `agent-kit/${lock}.lock`)), false, lock);
+});
+
+test("a spec file that fails alone too fails the run, and nothing is logged as flaky", t => {
+  const f = fixture(t), files = [spec("a"), spec("b")];
+  const result = f.run(["--ticket", "ticket.md"], { FAKE_SPECS: JSON.stringify({ files, always: [files[1]] }) });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.deepEqual(specsCalls(f).map(call => call.args), [["specs", "--affected", "--base", "origin/dev"], ["specs", files[1]]]);
+  assert.match(result.stdout, /RESULT: fail specs: 1 spec file failed: tests\/native-save\/b\.spec\.ts \(failed alone too\)$/);
+  assert.equal(f.ghCalls("create").length, 0);
+  assert.equal(existsSync(join(f.env.XDG_STATE_HOME!, "agent-kit/flaky.jsonl")), false);
+  for (const lock of ["browser-run", "quiet"]) assert.equal(existsSync(join(f.env.XDG_STATE_HOME!, `agent-kit/${lock}.lock`)), false, lock);
+});
+
+test("a spec file the change touches is never forgiven: it must pass in the full run", t => {
+  const f = fixture(t, { [spec("b")]: "// changed\n" }), files = [spec("a"), spec("b")];
+  const result = f.run(["--ticket", "ticket.md"], { FAKE_SPECS: JSON.stringify({ files, full: [files[1]] }) });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.deepEqual(specsCalls(f).map(call => call.args), [["specs", "--affected", "--base", "origin/dev"]]);
+  assert.match(result.stdout, /RESULT: fail specs: 1 spec file failed: tests\/native-save\/b\.spec\.ts \(this change touches it\)$/);
+  assert.equal(existsSync(join(f.env.XDG_STATE_HOME!, "agent-kit/flaky.jsonl")), false);
+});
+
+test("timing spec files run after the rest, each alone, while no other kit job may start", t => {
+  const f = fixture(t, undefined, { timing: ["native-edit-latency", "native-boot-memory.spec.ts"] });
+  const files = [spec("a"), spec("native-boot-memory"), spec("c"), spec("native-edit-latency")];
+  const result = f.run(["--ticket", "ticket.md", "--no-merge"], { FAKE_SPECS: JSON.stringify({ files }) });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const specs = specsCalls(f);
+  assert.deepEqual(specs.map(call => call.args), [["specs", "--affected", "--base", "origin/dev", "--list"],
+    ["specs", spec("a"), spec("c")], ["specs", spec("native-boot-memory")], ["specs", spec("native-edit-latency")]]);
+  assert.deepEqual(specs.map(call => [call.full, call.quiet]), [[true, false], [true, false], [true, true], [true, true]]);
+  const body = f.body();
+  for (const line of [`- kit specs ${spec("a")} ${spec("c")}: RESULT: ok specs 2/2 passed`,
+    `- kit specs ${spec("native-boot-memory")} (timing, alone): RESULT: ok specs 1/1 passed`,
+    `- kit specs ${spec("native-edit-latency")} (timing, alone): RESULT: ok specs 1/1 passed`]) assert.ok(body.includes(line), `${line}\n${body}`);
+  // A selection without timing files runs as before.
+  const plain = fixture(t, undefined, { timing: ["native-edit-latency"] });
+  const again = plain.run(["--ticket", "ticket.md", "--no-merge"], { FAKE_SPECS: JSON.stringify({ files: [spec("a")] }) });
+  assert.equal(again.status, 0, again.stdout + again.stderr);
+  assert.deepEqual(specsCalls(plain).map(call => call.args), [["specs", "--affected", "--base", "origin/dev", "--list"], ["specs", "--affected", "--base", "origin/dev"]]);
+  // A timing list that is no list stops at the specs step.
+  const bad = fixture(t, undefined, { timing: "native-edit-latency" });
+  const refused = bad.run(["--ticket", "ticket.md", "--no-merge"], { FAKE_SPECS: JSON.stringify({ files }) });
+  assert.equal(refused.status, 1, refused.stdout);
+  assert.match(refused.stdout, /RESULT: fail specs: "timing" in scripts\/agents\/kit\.json must be a list of spec files/);
+});
+
+test("two full browser runs at once: the second waits for the first, saying whose run it waits for", t => {
+  const f = fixture(t), lock = join(f.env.XDG_STATE_HOME!, "agent-kit/browser-run.lock");
+  const holder = spawn("sleep", ["2"]);
+  t.after(() => { holder.kill(); });
+  const stat = () => readFileSync(`/proc/${holder.pid}/stat`, "utf8").replace(/^.*\) /s, "").split(" ");
+  mkdirSync(lock, { recursive: true });
+  writeFileSync(join(lock, "owner"), `${holder.pid} ${stat()[19]} ke-60\n`);
+  const result = f.run(["--ticket", "ticket.md", "--no-merge"], { KIT_LOCK_POLL_MS: "50", FAKE_SPECS: JSON.stringify({ files: [spec("a")] }) });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(result.stdout.match(/^specs: waiting for ke-60's full browser run$/gm)?.length, 1, result.stdout);
+  // spawnSync holds this test, so the ended holder is still a zombie: the run went on only after it ended.
+  assert.equal(stat()[0], "Z");
+  assert.equal(specsCalls(f).length, 1);
+  assert.equal(existsSync(lock), false);
 });

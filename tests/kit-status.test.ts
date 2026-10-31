@@ -55,7 +55,7 @@ async function fixture(t: TestContext) {
   for (const key of Object.keys(env)) if (/^(KIT_|FAKE_|GIT_)/.test(key)) delete env[key];
   Object.assign(env, {
     GH_CONFIG_DIR: ghConfig, KIT_ROOT: root, KIT_STATUS_GH: gh, KIT_PREVIEW_URL: `http://127.0.0.1:${address.port}/?existing=1`,
-    FAKE_CALLS: join(dir, "calls.jsonl"), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
+    FAKE_CALLS: join(dir, "calls.jsonl"), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", XDG_STATE_HOME: join(dir, "state"),
     GIT_TERMINAL_PROMPT: "0", GIT_AUTHOR_NAME: "Kit test", GIT_AUTHOR_EMAIL: "kit@example.com",
     GIT_COMMITTER_NAME: "Kit test", GIT_COMMITTER_EMAIL: "kit@example.com",
   });
@@ -337,4 +337,25 @@ test("a broken settings file fails status with the problem and no network calls"
   assert.match(output.stderr, /^scripts\/agents\/kit\.json is unreadable: /);
   assert.match(output.results[0], /^RESULT: fail status scripts\/agents\/kit\.json is unreadable: /);
   assert.deepEqual(f.calls(), []); assert.deepEqual(f.requests, []);
+});
+
+test("spec files flaky under load three or more times in 7 days are named, so they get a real fix", async t => {
+  const f = await fixture(t), now = Date.now(), day = 86_400_000;
+  const state = join(f.env.XDG_STATE_HOME!, "agent-kit");
+  const line = (file: string, ago: number, project = "kit-status") =>
+    JSON.stringify({ time: new Date(now - ago).toISOString(), project, file, test: "a test", load: 20.5 });
+  const quiet = await f.run(["alpha", "--no-fetch"]);
+  assert.doesNotMatch(quiet.stdout, /flaky/);
+  mkdirSync(state, { recursive: true });
+  writeFileSync(join(state, "flaky.jsonl"), [
+    ...[0, 1, 2].map(n => line("tests/native-save/native-mcp-menu.spec.ts", n * day)),
+    line("tests/native-save/native-history.spec.ts", 0), line("tests/native-save/native-history.spec.ts", day),
+    ...[0, 1, 2].map(n => line("tests/native-save/elsewhere.spec.ts", n * day, "other-project")),
+    line("tests/native-save/old.spec.ts", 0), line("tests/native-save/old.spec.ts", 8 * day), line("tests/native-save/old.spec.ts", 9 * day),
+  ].join("\n") + "\n");
+  const output = await f.run(["alpha", "--no-fetch"]);
+  assert.equal(output.code, 0, output.stderr);
+  assert.deepEqual(output.stdout.split("\n").filter(text => /flaky/.test(text)),
+    ["flaky: tests/native-save/native-mcp-menu.spec.ts 3 times in 7 days (give it a fix ticket)"]);
+  assert.equal(output.stdout.trimEnd().split("\n").at(-1), "RESULT: ok status alpha 10 tickets, 1 closed, 8 open PRs, 1 flaky file");
 });
