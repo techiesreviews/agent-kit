@@ -32,6 +32,7 @@ test("brief-guard refuses a hand-written coding brief and names kit brief", () =
 test("brief-guard allows a kit brief, a first line kit-brief: none (reason), read-only agent types and other tools", () => {
   for (const payload of [
     delegate("Build it.\n\nkit-brief: 974ed10 docs/tickets/84.md build\n"),
+    delegate("Fix the login form.\n\nkit-brief: 974ed10 task:fix-the-login-form build"),
     delegate("kit-brief: none (research only: compare two libraries)\nFind out which is smaller."),
     delegate("\n  kit-brief: none (a question for the lead)\nWhat is the land branch?"),
     agent("Where is kitRoot defined?", "Explore"),
@@ -150,4 +151,42 @@ test("stop-guard never blocks on bad input or outside a Stop event", () => {
     assert.equal(output.status, 0);
     assert.equal(output.stdout.trim(), "");
   }
+});
+
+test("agent-cap books no slot for a brief that brief-guard refuses, where the project runs brief-guard", t => {
+  const project = mkdtempSync(join(tmpdir(), "agent-cap-brief-"));
+  t.after(() => rmSync(project, { recursive: true, force: true }));
+  const state = join(project, ".cap");
+  const settings = (hooks: string[]) => {
+    mkdirSync(join(project, ".claude"), { recursive: true });
+    writeFileSync(join(project, ".claude/settings.json"), JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Agent|Task",
+      hooks: hooks.map(name => ({ type: "command", command: `bash "\${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"/scripts/agents/hooks/run.sh ${name}` })) }] } }));
+  };
+  const call = (prompt: string, id: string) => spawnSync("/bin/bash", [join(hooks, "agent-cap.sh")], {
+    input: JSON.stringify({ hook_event_name: "PreToolUse", session_id: "s1", tool_name: "Agent", tool_use_id: id, tool_input: { prompt } }),
+    encoding: "utf8", env: { ...kitEnv(), CLAUDE_PROJECT_DIR: project, CLAUDE_AGENT_CAP_STATE_DIR: state, CLAUDE_AGENT_CAP: "5" } });
+  const pending = () => existsSync(join(state, "s1/.pending")) ? readdirSync(join(state, "s1/.pending")).length : 0;
+  settings(["agent-cap", "brief-guard"]);
+  assert.equal(call("Fix the bug", "t1").status, 0);
+  assert.equal(pending(), 0, "a refused brief books no slot");
+  assert.equal(call("Fix it.\nkit-brief: abc1234 docs/t.md build", "t2").status, 0);
+  assert.equal(pending(), 1, "a kit brief books its slot");
+  // Task (the older name) and a kit-brief: none first line work the same way.
+  const task = (prompt: string, id: string) => spawnSync("/bin/bash", [join(hooks, "agent-cap.sh")], {
+    input: JSON.stringify({ hook_event_name: "PreToolUse", session_id: "s1", tool_name: "Task", tool_use_id: id, tool_input: { prompt } }),
+    encoding: "utf8", env: { ...kitEnv(), CLAUDE_PROJECT_DIR: project, CLAUDE_AGENT_CAP_STATE_DIR: state, CLAUDE_AGENT_CAP: "5" } });
+  assert.equal(task("Fix the bug", "t4").status, 0);
+  assert.equal(pending(), 1);
+  assert.equal(call("kit-brief: none (a question)\nWhere is X?", "t5").status, 0);
+  assert.equal(pending(), 2);
+  // brief-guard on delegate_task alone does not see Agent calls, so those still count.
+  writeFileSync(join(project, ".claude/settings.json"), JSON.stringify({ hooks: { PreToolUse: [
+    { matcher: "Agent|Task", hooks: [{ type: "command", command: 'bash "${CLAUDE_PROJECT_DIR}"/scripts/agents/hooks/run.sh agent-cap' }] },
+    { matcher: "mcp__t3-code__delegate_task", hooks: [{ type: "command", command: 'bash "${CLAUDE_PROJECT_DIR}"/scripts/agents/hooks/run.sh brief-guard' }] }] } }));
+  assert.equal(call("Fix the bug", "t6").status, 0);
+  assert.equal(pending(), 3);
+  // A project that leaves brief-guard out still counts every launch.
+  settings(["agent-cap"]);
+  assert.equal(call("Fix the bug", "t3").status, 0);
+  assert.equal(pending(), 4);
 });

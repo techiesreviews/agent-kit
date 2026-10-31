@@ -2,7 +2,8 @@
 # Usage: agent-cap.sh < hook.json; track subagents, cap Claude Agent/Task launches.
 set -euo pipefail
 trap 'exit 0' ERR
-fields=$(jq -er '[.hook_event_name, .session_id, (.agent_id // "-"), (.tool_name // "-"), (.tool_use_id // "-")] | map(select(type == "string")) | select(length == 5) | @tsv' 2>/dev/null)
+input=$(cat)
+fields=$(jq -er '[.hook_event_name, .session_id, (.agent_id // "-"), (.tool_name // "-"), (.tool_use_id // "-")] | map(select(type == "string")) | select(length == 5) | @tsv' <<< "$input" 2>/dev/null)
 IFS=$'\t' read -r event session agent tool launch <<< "$fields"
 [[ $session =~ ^[a-zA-Z0-9_-]+$ ]] || exit 0
 state="${CLAUDE_AGENT_CAP_STATE_DIR:-${XDG_RUNTIME_DIR:-/tmp}/claude-agent-cap}/$session"
@@ -60,6 +61,12 @@ case $event in
     done
     ;;
   PreToolUse)
+    # A brief that brief-guard refuses never starts, so it books no slot; only where the project runs brief-guard
+    # on this very tool (a PreToolUse group whose matcher takes the tool's name, or one with no matcher).
+    project=${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || :)}
+    if [[ -n $project ]] && jq -e --arg tool "$tool" '[.hooks.PreToolUse[]? | select((.matcher // "") as $m | $m == "" or ($tool | test("^(" + $m + ")$")))
+        | .hooks[]?.command | strings | select(test("hooks/run\\.sh brief-guard$"))] | length > 0' "$project/.claude/settings.json" > /dev/null 2>&1 &&
+      ! bash "$(dirname -- "${BASH_SOURCE[0]}")/brief-guard.sh" <<< "$input" 2>/dev/null; then exit 0; fi
     for entry in "$pending"/*; do
       [[ -f $entry ]] || continue
       read -r reserved < "$entry"

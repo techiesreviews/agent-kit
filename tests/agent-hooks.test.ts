@@ -6,11 +6,13 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 
 const hooks = resolve("hooks");
+// agent-cap reads the project's hook settings for brief-guard (tests/agent-hooks-factory.test.ts covers that);
+// here it runs for a project with none, so every launch counts.
 function run(script: string, payload: unknown, env: NodeJS.ProcessEnv = {}) {
   return spawnSync("/bin/bash", [join(hooks, script)], {
     input: typeof payload === "string" ? payload : JSON.stringify(payload),
     encoding: "utf8",
-    env: { ...process.env, ...env },
+    env: { ...process.env, ...(script === "agent-cap.sh" ? { CLAUDE_PROJECT_DIR: "/nonexistent/agent-cap-project" } : {}), ...env },
   });
 }
 function bash(command: string) {
@@ -252,7 +254,7 @@ test("agent cap reserves five rapid launches before any start event", (t) => {
 
 test("agent cap atomically reserves concurrent launches and counts live plus pending", async (t) => {
   const dir = temp(t);
-  const env = { ...process.env, CLAUDE_AGENT_CAP_STATE_DIR: dir, CLAUDE_AGENT_CAP: "5" };
+  const env = { ...process.env, CLAUDE_AGENT_CAP_STATE_DIR: dir, CLAUDE_AGENT_CAP: "5", CLAUDE_PROJECT_DIR: "/nonexistent/agent-cap-project" };
   for (let i = 0; i < 4; i++) {
     assert.equal(run("agent-cap.sh", { hook_event_name: "SubagentStart", session_id: "session", agent_id: `agent-${i}` }, env).status, 0);
   }

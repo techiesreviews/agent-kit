@@ -6,15 +6,19 @@ import { composeBrief, kitVersion, nextTalkStyle, readTicket, skillSettingsProbl
 import { kitHome, kitResult, kitRoot, kitRulebookPins, kitSettings } from "../kit-lib.mjs";
 
 const usage = `Usage: kit brief <ticket> [--stage build|review|second-look|fix] [--owner ID] [--repo PATH] [--model M] [--note "<text>"]
+       kit brief --task "<title>" --owner ID --note "<what to do>" [--stage …] [--repo PATH] [--model M]
 Prints the whole brief for one child: owner, worktree setup, builder and review pins, the commands to run and the
 evidence to report, the house rules, the wait rule (kit go), the skills for the ticket's files (the skills map,
 skills.json; "skills": { "add", "remove" } in scripts/agents/kit.json), the talk style and the report's last line.
 It ends with the marker line "kit-brief: <kit version> <ticket> <stage>", which the brief-guard hook looks for; pass
-everything above the RESULT line to delegate_task. A copy is kept in .scratch/kit-briefs/<ticket>-<stage>.md.
+everything above the RESULT line to delegate_task. A copy is kept in .scratch/kit-briefs/<ticket>-<stage>.md
+(task-<slug>-<stage>.md for --task).
 --stage defaults to build. --owner defaults to the ticket's assignee; a ticket with neither is refused. --repo is the
 project's top folder (default: this one); the ticket path is read from there. --model names the child's model
 (default: the stage's pin), which picks how skills are named: /name for Claude, $name for Codex, the kit's own
 words for models without skills.
+--task is for a project that keeps no ticket file for the job (its work is in GitHub Issues, say): the note holds
+the task, the marker names it task:<slug>, and the brief lands it with kit pr --title in place of kit slice.
 Talk style: each brief takes the next of en and wenyan in turn (a counter in the kit's state folder);
 KIT_TALK_STYLE=en|wenyan|plain forces one, and plain turns it off. Review briefs stay plain English.`;
 
@@ -23,11 +27,17 @@ function parse(args) {
   const rest = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (["--stage", "--owner", "--repo", "--note", "--model"].includes(arg)) {
+    if (["--stage", "--owner", "--repo", "--note", "--model", "--task"].includes(arg)) {
       if (args[i + 1] === undefined || (arg !== "--note" && args[i + 1].startsWith("-"))) throw new Error(`${arg} needs a value`);
       options[arg.slice(2)] = args[++i];
     } else if (arg.startsWith("-")) throw new Error(`unknown option ${arg}`);
     else rest.push(arg);
+  }
+  if (options.task !== undefined) {
+    if (rest.length) throw new Error("give a ticket path or --task, not both");
+    if (!options.task.trim() || !options.owner || !options.note) throw new Error("--task needs a title, --owner and --note (the task itself)");
+    if (!STAGES.includes(options.stage)) throw new Error(`--stage must be ${STAGES.join(", ")}, not ${options.stage}`);
+    return { ...options };
   }
   if (rest.length !== 1) throw new Error("expected one ticket path");
   if (!STAGES.includes(options.stage)) throw new Error(`--stage must be ${STAGES.join(", ")}, not ${options.stage}`);
@@ -39,10 +49,17 @@ if (args.includes("--help") || args.includes("-h")) { console.log(usage); proces
 try {
   const options = parse(args);
   const root = realpathSync(resolve(options.repo ?? kitRoot()));
-  const absolute = isAbsolute(options.ticket) ? options.ticket : join(root, options.ticket);
-  if (!existsSync(absolute)) throw new Error(`no ticket at ${options.ticket} in ${root}`);
-  const ticket = relative(root, realpathSync(absolute));
-  const text = readFileSync(absolute, "utf8");
+  let ticket, text;
+  if (options.task !== undefined) {
+    // A task with no ticket file: its title stands in for the ticket's, the note for its body.
+    ticket = `task:${options.task.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 60).replace(/^-+|-+$/g, "") || "task"}`;
+    text = `---\ntitle: ${JSON.stringify(options.task.trim())}\n---\n`;
+  } else {
+    const absolute = isAbsolute(options.ticket) ? options.ticket : join(root, options.ticket);
+    if (!existsSync(absolute)) throw new Error(`no ticket at ${options.ticket} in ${root} (for a project without ticket files, use --task)`);
+    ticket = relative(root, realpathSync(absolute));
+    text = readFileSync(absolute, "utf8");
+  }
   const settings = kitSettings(root);
   const problems = skillSettingsProblems(settings);
   if (problems.length) throw new Error(problems.join("; "));
@@ -55,8 +72,8 @@ try {
   if (!owner) throw new Error(`${ticket} has no assignee; claim it first or pass --owner`);
   // Review briefs carry no talk style (their findings go to GitHub), so they leave the counter alone.
   const style = options.stage === "review" || options.stage === "second-look" ? "plain" : nextTalkStyle();
-  const brief = composeBrief({ root, settings, ticket, text, stage: options.stage, owner, note: options.note, model: options.model, style, pins, version: kitVersion(kitHome()) });
-  const file = join(".scratch/kit-briefs", `${basename(ticket).replace(/\.md$/i, "")}-${options.stage}.md`);
+  const brief = composeBrief({ root, settings, ticket, text, stage: options.stage, owner, note: options.note, model: options.model, style, pins, version: kitVersion(kitHome()), task: options.task?.trim() });
+  const file = join(".scratch/kit-briefs", `${basename(ticket).replace(/^task:/, "task-").replace(/\.md$/i, "")}-${options.stage}.md`);
   mkdirSync(join(root, ".scratch/kit-briefs"), { recursive: true });
   writeFileSync(join(root, file), `${brief}\n`);
   console.log(brief);
