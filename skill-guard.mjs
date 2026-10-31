@@ -4,8 +4,8 @@
 // skill folders, when a changed line (or with --history any line of any blob in history) holds a line of 60+
 // characters from a skill there. It never prints skill text: only the repo path and line, and the skill's name.
 // A project's own skill folders, listed by path in `skillGuard.allow` of scripts/agents/kit.json, pass the path
-// check; the line check still reads every line in them. A project's own licence files (LICENSE, COPYING, …) are not
-// read: licence texts are shared word for word by design.
+// check; the line check still reads every line in them. A changed file that is the project's own licence (LICENSE,
+// COPYING, …) is not read: licence texts are shared word for word by design. --history reads every blob.
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -20,11 +20,19 @@ const minimum = 60, window = 32, largest = 1 << 20;
 // the like, word for word in many repos). A licence is named so in any case, on its own or after a name and a dot
 // or dash (a vendored package's or a font's: x-1.0.LICENSE.md, y.LICENSE, Font-OFL.txt, OFL.txt), with at most a
 // licence family, version and text extension after it (License.md, LICENSE-MIT, LICENSE.APACHE-2.0.txt); a file
-// merely named like one (notice-and-consent.md, license-check.py, privacy-notice.md) is skill text and is read.
+// merely named like one (notice-and-consent.md, license-check.py, privacy-notice.md) is skill text and is read. A
+// note whose name ends in a licence name (how-to-license.md) counts as a licence too: the price of reading every
+// prefixed licence text as one.
 const generated = /(^|\/)(node_modules|\.git|\.venv|venv|site-packages|vendor)\/|(^|\/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|poetry\.lock|uv\.lock|Pipfile\.lock|Cargo\.lock|Gemfile\.lock|composer\.lock)$|\.min\.(js|css)$/;
-const licence = /(^|\/)(licen[cs]e|copying|notice|[^/]*[-.]licen[cs]e)([-.](mit|apache|bsd|isc|mpl|gpl|lgpl|agpl|unlicense|ofl|zlib)([-.]?v?\d[\d.]*)?(-\d-clause)?)?(\.(md|txt|rst))?$|(^|\/)([^/]*[-.])?ofl(\.(md|txt))?$/i;
-/** A path named as a licence text. Skipped in skills as a source of lines, and in the project as a changed file. */
+const licenceTail = String.raw`([-.](mit|apache|bsd|isc|mpl|gpl|lgpl|agpl|unlicense|ofl|zlib)([-.]?v?\d[\d.]*)?(-\d-clause)?)?(\.(md|txt|rst))?$`;
+const licence = new RegExp(String.raw`(^|\/)(licen[cs]e|copying|notice|[^/]*[-.]licen[cs]e)${licenceTail}|(^|\/)([^/]*[-.])?ofl([-.]?v?\d[\d.]*)?(\.(md|txt))?$`, "i");
+// A project's own licence file has a licence name on its own (LICENSE, LICENSE.md, COPYING, LICENSE-MIT): any longer
+// name in a project is read, as it may hold anything.
+const ownLicence = new RegExp(String.raw`(^|\/)(licen[cs]e|copying|notice)${licenceTail}`, "i");
+/** A skill's file that holds a licence text, never read as a source of skill lines. */
 export const licencePath = (path) => licence.test(path);
+/** A project's own licence file, left out of the changed lines (licence texts are shared word for word by design). */
+export const ownLicencePath = (path) => ownLicence.test(path);
 const shared = (path) => generated.test(path) || licencePath(path);
 // Whole lines every web page shares with some skill's code, never skill text: a page's set-up tags (viewport,
 // charset or http-equiv meta; a link to an outside font, stylesheet or icon), in any attribute spelling.
@@ -161,13 +169,13 @@ function changedLines(root, base) {
       if (text.startsWith("+++ ")) { path = text.slice(4).replace(/^b\//, ""); continue; }
       const hunk = /^@@ -\S+ \+(\d+)/.exec(text);
       if (hunk) { number = Number(hunk[1]); continue; }
-      if (text.startsWith("+") && path !== "/dev/null" && !licencePath(path)) lines.push({ path, line: number++, text: text.slice(1) });
+      if (text.startsWith("+") && path !== "/dev/null" && !ownLicencePath(path)) lines.push({ path, line: number++, text: text.slice(1) });
       else if (!text.startsWith("-") && !text.startsWith("\\")) number++;
     }
   };
   read(git(root, ["diff", "--no-color", "--no-ext-diff", "-U0", `${base}...HEAD`]));
   read(git(root, ["diff", "--no-color", "--no-ext-diff", "-U0", "HEAD"]));
-  for (const path of git(root, ["ls-files", "-z", "--others", "--exclude-standard"]).split("\0").filter(path => path && !licencePath(path))) {
+  for (const path of git(root, ["ls-files", "-z", "--others", "--exclude-standard"]).split("\0").filter(path => path && !ownLicencePath(path))) {
     try {
       if (statSync(join(root, path)).size > largest) continue;
       const text = readFileSync(join(root, path), "utf8");
@@ -180,7 +188,7 @@ function changedLines(root, base) {
 /** Every path any commit of any ref has held. */
 const historyPaths = (root) => [...new Set(git(root, ["log", "--all", "--name-only", "--format="]).split("\n").filter(Boolean))];
 
-/** Every blob any ref reaches but licence files, as { path, line, text } for each line, plus every commit message. */
+/** Every blob any ref reaches, as { path, line, text } for each line, plus every commit message. */
 function* historyLines(root) {
   const names = new Map();
   for (const row of git(root, ["rev-list", "--all", "--objects"]).split("\n")) {
@@ -195,7 +203,7 @@ function* historyLines(root) {
     if (type === "commit") {
       const message = body.toString("utf8").split("\n\n").slice(1).join("\n\n");
       yield* message.split("\n").map((text, index) => ({ path: `commit ${sha.slice(0, 9)}`, line: index + 1, text }));
-    } else if (type === "blob" && body.length <= largest && !body.includes(0) && !licencePath(names.get(sha) || "")) {
+    } else if (type === "blob" && body.length <= largest && !body.includes(0)) {
       const path = `${names.get(sha) || "blob"}@${sha.slice(0, 9)}`;
       yield* body.toString("utf8").split(/\r?\n/).map((text, index) => ({ path, line: index + 1, text }));
     }
