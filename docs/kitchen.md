@@ -243,7 +243,8 @@ on a usage-limit `problem:` line, tell Lex the reset time and carry on with Clau
   exactly `origin/<land>` before its rebase onto `origin/<release>`), and a project's own live
   deploy command starts with `scripts/agents/kit release-check` (a clean tree outside `.scratch/`,
   HEAD exactly `origin/<release>` after a fetch), so nothing unsaved and nothing that skipped
-  `kit pr` goes live. A preview deploy from a landing branch that is not live runs no check. Only a
+  `kit pr` goes live (a rerun after kit pr rebased the cut says to cut it again from
+  `origin/<land>`). A preview deploy from a landing branch that is not live runs no check. Only a
   lead may pass it with `--waive "<reason>"`, which its `RESULT:` line names; `kit pr --release
   --waive` hands the reason on, so one waiver covers both the review findings and the check.
 - **Done when:** the live project serves the new version and its number is recorded where the
