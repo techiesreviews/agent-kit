@@ -2238,7 +2238,7 @@ test("timing spec files run after the rest, each alone, while no other kit job m
     ["specs", spec("a"), spec("c")], ["specs", spec("native-boot-memory")], ["specs", spec("native-edit-latency")]]);
   assert.deepEqual(specs.map(call => [call.full, call.quiet]), [[true, false], [true, false], [true, true], [true, true]]);
   const body = f.body();
-  for (const line of [`- kit specs ${spec("a")} ${spec("c")}: RESULT: ok specs 2/2 passed`,
+  for (const line of ["- kit specs <2 affected files without the timing ones>: RESULT: ok specs 2/2 passed",
     `- kit specs ${spec("native-boot-memory")} (timing, alone): RESULT: ok specs 1/1 passed`,
     `- kit specs ${spec("native-edit-latency")} (timing, alone): RESULT: ok specs 1/1 passed`]) assert.ok(body.includes(line), `${line}\n${body}`);
   // A selection without timing files runs as before.
