@@ -1234,3 +1234,28 @@ test("a resumed build with a full status.json passes the build gate and really s
   assert.match(args, /--resume resume-session-1/);
   assert.equal(JSON.parse(readFileSync(join(out, "status.json"), "utf8")).resumes, 1);
 });
+
+test("doctor warns once per piece kit init would add today, also when quiet, never failing; init.skip keeps a piece quiet", (t) => {
+  const f = fixture(t);
+  // A project set up by kit init before two pieces came in: a stand-in hook launcher in place of the old guard files.
+  const agents = join(f.build, "scripts/agents");
+  rmSync(join(agents, "hooks/bash-guard.sh"));
+  executable(join(agents, "hooks/run.sh"), "cat > /dev/null; exit 2");
+  copyFileSync(join(repo, "launcher/kit"), join(agents, "kit"));
+  for (const path of [".claude/settings.json", ".codex/hooks.json"]) copyFileSync(join(repo, path), join(f.build, path));
+  writeFileSync(join(f.build, "AGENTS.md"), "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\n");
+  const sha = git(repo, "rev-parse", "--short", "HEAD");
+  const fix = 'fix: run scripts/agents/kit init (or name it in "init.skip" in scripts/agents/kit.json to keep it out)';
+  const warnings = [`✗ setup: missing since kit ${sha}: AGENTS.md kit --help (the line naming scripts/agents/kit --help); ${fix}`,
+    `✗ setup: missing since kit ${sha}: .gitattributes (the line "* text=auto eol=lf"); ${fix}`];
+  const passed = "RESULT: ok doctor 11/11 checks passed";
+  const run = f.run();
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.deepEqual(run.stdout.split("\n").filter(line => line.startsWith("✗ setup: ")), warnings);
+  assert.equal(run.stdout.trimEnd().split("\n").at(-1), `${passed}; warning: 2 setup pieces missing (run scripts/agents/kit init)`);
+  const quiet = f.run(["--quiet"]);
+  assert.equal(quiet.stdout, `${warnings.join("\n")}\n${passed}; warning: 2 setup pieces missing (run scripts/agents/kit init)\n`);
+  const settings = join(agents, "kit.json");
+  writeFileSync(settings, JSON.stringify({ ...JSON.parse(readFileSync(settings, "utf8")), init: { skip: [".gitattributes", "AGENTS.md"] } }));
+  assert.equal(f.run(["--quiet"]).stdout, `${passed}\n`);
+});
