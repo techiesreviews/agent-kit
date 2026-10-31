@@ -702,8 +702,9 @@ function all() {
     const [author, email] = git(main, "log", "-1", "--format=%an%n%ae", `refs/remotes/origin/${land}`).stdout.split("\n");
     const from = { NAME: ["user.name", author], EMAIL: ["user.email", email] };
     for (const [part, [key, value]] of Object.entries(from)) {
-      if (!value || git(path, "config", "--get", key).stdout.trim()) continue;
+      if (!value || git(path, "config", "--get", key).stdout.trim() || local[`GIT_AUTHOR_${part}`]) continue;
       for (const role of ["AUTHOR", "COMMITTER"]) local[`GIT_${role}_${part}`] ??= value;
+      console.log(`${name}: no ${key} set for git; commits as ${value}, from origin/${land}'s last commit`);
     }
     const commit = (...messages) => run("git", ["-C", path, "commit", "-q", ...messages.flatMap((message) => ["-m", message])], { env: local });
     const pieces = run(process.execPath, [join(home, "kit.d/init"), "--pieces"], { cwd: path, env: local });
@@ -745,8 +746,7 @@ function all() {
     }
 
     // The project's checks run in kit pr: they find its shared dependencies as in any of its worktrees.
-    // As worktree.sh sets up any of its worktrees, sharedNodeModules (relative to the main checkout) and the
-    // worktreeLinks paths of the main checkout are linked in.
+    // As worktree.sh does, the main checkout's worktreeLinks paths are linked in; node_modules comes below.
     let projectSettings = {};
     try { projectSettings = JSON.parse(readFileSync(join(path, kitSettingsFile), "utf8")) ?? {}; } catch {}
     // --all's own choice: a project without sharedNodeModules keeps its own in the main checkout, and that one
@@ -760,7 +760,7 @@ function all() {
       if (!target || existsSync(join(path, link))) continue;
       try {
         mkdirSync(dirname(join(path, link)), { recursive: true });
-        symlinkSync(link === "node_modules" ? realpathSync(target) : target, join(path, link));
+        symlinkSync(target, join(path, link));
       } catch {}
     }
     // kit pr wants a clean tree, so node_modules must be one git ignores: a link, or, where .gitignore names
@@ -775,7 +775,10 @@ function all() {
           rmSync(modules);
           mkdirSync(modules);
           for (const entry of readdirSync(real)) symlinkSync(join(real, entry), join(modules, entry));
-          if (git(path, "check-ignore", "-q", "node_modules/").status !== 0) rmSync(modules, { recursive: true, force: true });
+          if (git(path, "check-ignore", "-q", "node_modules/").status !== 0) {
+            rmSync(modules, { recursive: true, force: true });
+            console.log(`${name}: nothing in git ignores node_modules, so the worktree has none; kit pr's checks run without ${shared}`);
+          }
         }
       } catch {}
     }
