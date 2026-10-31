@@ -240,11 +240,12 @@ on a usage-limit `problem:` line, tell Lex the reset time and carry on with Clau
   branch into the release branch, `branches.release`), merge once CI passes, then the project's
   release steps and first-hour check (extras). A build with a rollout checklist follows it.
 - **Release check:** `kit pr --release` first runs `kit release-check --land` (a clean tree, HEAD
-  exactly `origin/<land>` before its rebase onto `origin/<release>`), and a project's own live deploy command starts with
-  `scripts/agents/kit release-check` (a clean tree outside `.scratch/`, HEAD exactly
-  `origin/<release>` after a fetch), so nothing unsaved and nothing that skipped `kit pr` goes live.
-  A preview deploy from a landing branch that is not live runs no check. Only a lead may pass it
-  with `--waive "<reason>"` (`kit pr --release --waive` hands it on), which its `RESULT:` line names.
+  exactly `origin/<land>` before its rebase onto `origin/<release>`), and a project's own live
+  deploy command starts with `scripts/agents/kit release-check` (a clean tree outside `.scratch/`,
+  HEAD exactly `origin/<release>` after a fetch), so nothing unsaved and nothing that skipped
+  `kit pr` goes live. A preview deploy from a landing branch that is not live runs no check. Only a
+  lead may pass it with `--waive "<reason>"`, which its `RESULT:` line names; `kit pr --release
+  --waive` hands the reason on, so one waiver covers both the review findings and the check.
 - **Done when:** the live project serves the new version and its number is recorded where the
   extras say.
 

@@ -346,14 +346,16 @@ async function main(args) {
     // A release is cut from exactly what landed: nothing unsaved, HEAD exactly origin/<land> before the rebase onto
     // origin/<release> (ticket 72).
     // A lead's --waive reaches the check too; its RESULT text, every problem it names, is this step's.
-    let releaseCheck;
+    let releaseCheck = "";
     if (flags.release) {
       const checked = await execute("release-check", kit, ["release-check", "--land", ...(flags.waive ? ["--waive", flags.waive] : [])]);
       const line = checked.text.split(/\r?\n/).findLast(text => text.startsWith("RESULT: "))?.slice("RESULT: ".length);
       if (checked.status !== 0) throw new Error(kitHideUserInfo(line?.replace(/^fail /, "") || childMessage(checked, `${kit} exited ${checked.status}`)));
-      releaseCheck = kitHideUserInfo(line?.replace(/^ok /, "") || "ok");
+      releaseCheck = kitHideUserInfo(line?.replace(/^ok (release-check )?/, "") || "ok");
       console.log(`release-check: ok (${releaseCheck})`);
     }
+    // A waiver the check used (not "waiver not needed") goes on the final RESULT line.
+    const releaseWaived = () => releaseCheck.startsWith("waived by ") ? ` (release-check waived: ${flags.waive})` : "";
     const checks = settings.checks ?? {}, extra = extraChecks(checks.extra);
     await git("guards", ["check-ref-format", `refs/heads/${flags.base}`]);
     if (await git("guards", ["status", "--porcelain"])) throw new Error("uncommitted changes");
@@ -548,7 +550,7 @@ async function main(args) {
         console.log(command.map(quote).join(" "));
       if (!flags.noMerge && !flags.release)
         console.log(`gh pr merge N --rebase --delete-branch --repo ${ghEnv.GH_REPO || "<owner/name>"} (or --auto --rebase with a merge queue)`);
-      kitResult("ok", `dry-run ${head.slice(0, 7)} ${branch} -> ${flags.base}`);
+      kitResult("ok", `dry-run ${head.slice(0, 7)} ${branch} -> ${flags.base}${releaseWaived()}`);
       return 0;
     }
     const push = async () => {
@@ -708,7 +710,7 @@ async function main(args) {
     }
     if (!await reviewHead()) return 1;
     if (flags.noMerge || flags.release) {
-      kitResult("ok", `opened #${number} ${head.slice(0, 7)}${releaseCheck?.startsWith("release-check waived") ? ` (release-check waived: ${flags.waive})` : ""}`);
+      kitResult("ok", `opened #${number} ${head.slice(0, 7)}${releaseWaived()}`);
       return 0;
     }
     // A lead's waiver of the feature-list guard is recorded like waived review findings.

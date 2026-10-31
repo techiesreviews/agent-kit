@@ -82,6 +82,27 @@ test("a clean HEAD exactly on origin/<release> passes, and a file under .scratch
   assert.equal(lastLine(result.stdout), `RESULT: ok release-check ${f.short()} is origin/main, nothing unsaved`);
 });
 
+test("the deploy form, the kit front door, passes a clean checkout and fails an unsaved file", t => {
+  const f = fixture(t);
+  let result = f.run([], {}, true);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(lastLine(result.stdout), `RESULT: ok release-check ${f.short()} is origin/main, nothing unsaved`);
+  writeFileSync(join(f.root, "draft.html"), "x\n");
+  result = f.run([], {}, true);
+  assert.equal(result.status, 1);
+  assert.match(lastLine(result.stdout), /^RESULT: fail unsaved files \(draft\.html\): /);
+});
+
+test("a project whose landing branch is live checks that same branch", t => {
+  const f = fixture(t, { land: "main", release: "main" });
+  assert.equal(f.run().status, 0);
+  assert.equal(f.run(["--land"]).status, 0);
+  f.commit(f.root, "local fix");
+  const result = f.run();
+  assert.equal(result.status, 1);
+  assert.equal(lastLine(result.stdout), `RESULT: fail HEAD ${f.short()} is 1 commit ahead of origin/main: what goes live must be on main; land it with kit pr`);
+});
+
 test("a changed or untracked file fails with the files named", t => {
   const f = fixture(t);
   writeFileSync(join(f.root, "page.html"), "<p>edited</p>\n");
