@@ -4,13 +4,15 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
-import { allowedPath, allowedSkills, normalLine, skillFiles, skillIndex, skillMatch, skillPath } from "../skill-guard.mjs";
+import { allowedPath, allowedSkills, licencePath, normalLine, skillFiles, skillIndex, skillMatch, skillPath } from "../skill-guard.mjs";
 import { kitEnv } from "./support/kit-env.ts";
 
 const guard = resolve("skill-guard.mjs");
 // Made-up skill text: never a line from a real skill.
 const secret = "Fold the paper crane twice along the moonlit diagonal before the kettle sings";
 const other = "Count seven marbles into the blue jar and whisper the inventory to the cat";
+// Made-up licence text, standing in for an MIT, Apache or OFL text that many repos and skills hold word for word.
+const licenceText = "Permission is hereby granted to anyone who folds this crane to fold it again and to share the folds";
 
 function fixture(t: TestContext) {
   const directory = mkdtempSync(join(tmpdir(), "kit-skill-guard-"));
@@ -34,6 +36,9 @@ function fixture(t: TestContext) {
   put(join(home, ".claude/skills/crane/LICENSE"), "Licence: anyone may fold this paper crane freely, with no promise it will ever fly\n");
   for (const [index, path] of ["license", "License.md", "LICENSE-MIT", "LICENSE.APACHE-2.0.txt", "COPYING", "NOTICE.txt", "vendor/pkg/LICENSE"].entries())
     put(join(home, ".claude/skills/crane", path), `licence line ${index}: THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND\n`);
+  // Licence texts kept under a name that ends in a licence name: a vendored package's or a font's.
+  for (const [index, path] of ["templates/x-1.0.LICENSE.md", "y.LICENSE", "assets/fonts/Font-OFL.txt", "OFL.txt", "third-party-LICENSE-MIT.txt"].entries())
+    put(join(home, ".claude/skills/crane", path), `${licenceText}\nlicence copy ${index}: the crane may be shared and folded again by anyone who keeps this note\n`);
   put(join(home, ".claude/skills/crane/templates/page.html"), [
     '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">',
     '  <meta name="viewport" content="width=device-width, initial-scale=1" />',
@@ -70,6 +75,14 @@ function fixture(t: TestContext) {
 test("a SKILL.md or a file under a skills/ folder is a skill path; other paths are not", () => {
   for (const path of ["SKILL.md", "a/SKILL.md", "skills/x.md", ".claude/skills/a/b.md", "docs/Skills/x"]) assert.ok(skillPath(path), path);
   for (const path of ["skill.md.bak/x", "skillset/x", "docs/skills.md", "SKILL.md.txt"]) assert.equal(skillPath(path), false, path);
+});
+
+test("a licence is named so on its own or at the end of a longer name; a file merely named like one is not", () => {
+  for (const path of ["LICENSE", "a/license", "License.md", "LICENSE-MIT", "LICENSE.APACHE-2.0.txt", "COPYING", "NOTICE.txt", "licence.rst",
+    "vendor/shadcn-tailwind-4.13.0.LICENSE.md", "sites-vite-plugin.LICENSE", "x.license.txt", "third-party-LICENSE-MIT.txt", "pkg-licence",
+    "assets/fonts/Fraunces-OFL.txt", "OFL.txt", "ofl.md", "Font.OFL"]) assert.ok(licencePath(path), path);
+  for (const path of ["license-check.py", "notice-and-consent.md", "scripts/license-check.py", "LICENSE.py", "licenses/mit.js", "my-license-notes.md",
+    "privacy-notice.md", "x.copying", "x-NOTICE.txt", "OFL.py", "official.txt", "LICENSE.md/x", "README.md"]) assert.equal(licencePath(path), false, path);
 });
 
 test("lines compare without list marks, quotes, headings or extra spaces", () => {
@@ -138,6 +151,39 @@ test("a changed line holding a skill line fails with its place and the skill's n
   assert.match(result.stderr, /problem: untracked\.md:1: holds a line from the local skill jar\n/);
   assert.doesNotMatch(result.stdout + result.stderr, /paper crane|marbles|own long line/);
   assert.match(result.stdout, /RESULT: fail skill-guard 3 problem/);
+});
+
+test("a project's own licence passes whatever licence text it holds, and a skill line in any other file still fails", (t) => {
+  const f = fixture(t);
+  const project = `MIT License\n\nCopyright (c) 2026 Someone\n\n${licenceText}\n`;
+  f.put(join(f.repo, "docs/credits.md"), `# Credits\n\n${licenceText}\n`);
+  f.put(join(f.repo, "LICENSE"), project);
+  f.git("add", "."); f.git("commit", "-q", "-m", "licence");
+  const own = f.run(["--base", "HEAD~1"]);
+  assert.equal(own.status, 0, own.stderr);
+  assert.match(own.stdout, /RESULT: ok skill-guard\n$/);
+  assert.equal(f.run(["--history"]).status, 0);
+
+  // A project's own licence file is never read, so its text matching a skill's licence under a name not yet known passes too.
+  f.put(join(f.home, ".claude/skills/crane/LEGAL-TERMS.md"), `${licenceText}\n`);
+  for (const path of ["LICENSE.md", "COPYING", "fonts/Font-OFL.txt"]) f.put(join(f.repo, path), project);
+  f.git("add", "."); f.git("commit", "-q", "-m", "more licences");
+  const unknown = f.run(["--base", "HEAD~2"]);
+  assert.equal(unknown.status, 1, unknown.stderr);
+  assert.equal(unknown.stderr, "problem: docs/credits.md:3: holds a line from the local skill crane\n");
+  const history = f.run(["--history"]);
+  assert.equal(history.status, 1, history.stderr);
+  assert.match(history.stderr, /^problem: docs\/credits\.md@[0-9a-f]{9}:3: holds a line from the local skill crane\n$/);
+
+  f.git("rm", "-q", "docs/credits.md");
+  f.put(join(f.repo, "scripts/license-check.py"), `# ${secret}\n`);
+  f.put(join(f.repo, "notice-and-consent.md"), `${other}\n`);
+  f.git("add", "."); f.git("commit", "-q", "-m", "named like a licence");
+  const copied = f.run(["--base", "HEAD~3"]);
+  assert.equal(copied.status, 1, copied.stderr);
+  assert.equal(copied.stderr, "problem: notice-and-consent.md:1: holds a line from the local skill crane\n" +
+    "problem: scripts/license-check.py:1: holds a line from the local skill crane\n");
+  assert.doesNotMatch(copied.stdout + copied.stderr, /paper crane|marbles|fold it again/);
 });
 
 test("without local skill folders the line check is skipped and says so; a clean change passes", (t) => {
