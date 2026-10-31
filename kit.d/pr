@@ -475,7 +475,13 @@ async function main(args) {
         return files.map(file => ({ ...file, load: Math.max(peak, loadavg()[0]) }));
       };
       const blame = file => failed.push(`${file} (this change touches it)`);
+      // A machine without flock runs the specs as before, unlocked, and says so.
+      const noFlock = () => {
+        const line = "specs: problem: flock is not installed, so browser runs are not kept one at a time (install util-linux)";
+        if (!lines.includes(`- ${line.slice("specs: ".length)}`)) { console.log(line); lines.push(`- ${line.slice("specs: ".length)}`); }
+      };
       const full = await kitMachineLock("browser-run", { onWait: owner => console.log(`specs: waiting for ${owner}'s full browser run`) });
+      if (full.missing) noFlock();
       let quiet;
       try {
         const retry = [];
@@ -489,11 +495,13 @@ async function main(args) {
         }
         const holdQuiet = async () => {
           quiet ??= await kitMachineLock("quiet", { onWait: owner => console.log(`specs: waiting for ${owner}'s lone browser run`) });
+          if (quiet.missing) noFlock();
           env.KIT_QUIET_HOLDER = String(process.pid);
         };
         // Once a touched file failed the run fails anyway: no lone runs to hold other kit jobs back for.
-        const notRun = failed.length ? alone.splice(0) : [];
-        for (const file of alone) {
+        const notRun = [];
+        for (const [index, file] of alone.entries()) {
+          if (failed.length) { notRun.push(...alone.slice(index)); break; }
           await holdQuiet();
           const [first] = await check(["specs", file], `specs ${file} (timing, alone)`, [file]);
           if (!first) continue;

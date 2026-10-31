@@ -1271,3 +1271,12 @@ test("doctor warns once per piece kit init would add today, also when quiet, nev
   assert.equal(unread.stdout, '✗ setup: not checked ("init.skip" in scripts/agents/kit.json must be a list of piece names; fix it first); ' +
     `fix: run scripts/agents/kit init --check to see why\n${passed}; warning: setup not checked (run scripts/agents/kit init --check)\n`);
 });
+
+test("doctor notes a machine without flock, which kit pr needs to keep browser runs one at a time, without failing", (t) => {
+  const f = fixture(t);
+  const result = f.run([], f.build, { KIT_FLOCK: join(f.directory, "no-flock") });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(result.stdout.includes("✗ flock: not installed, so kit pr cannot keep browser runs one at a time; fix: install util-linux (flock)\n"), result.stdout);
+  assert.match(result.stdout, /RESULT: ok doctor 11\/11 checks passed\n$/);
+  assert.equal(f.run([], f.build).stdout.includes("flock"), false);
+});

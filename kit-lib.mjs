@@ -127,17 +127,18 @@ export function kitProjects(env = process.env) {
  * small child process for as long as this process lives, so the system frees it when the holder ends however it
  * ends. While held the file reads `<pid> <owner>` (the front door's kit_quiet_wait reads the quiet lock's).
  * A held lock is waited for; onWait(owner) is told once. release() empties the file and lets the lock go,
- * resolving once flock has ended, so the next taker never finds it still held.
+ * resolving once flock has ended, so the next taker never finds it still held. Without flock (KIT_FLOCK names
+ * another program) nothing is locked: the lock says `missing`, so the caller can say so.
  */
 export async function kitMachineLock(name, { owner = kitOwner(), onWait, env = process.env } = {}) {
   const lock = join(kitStateDir(env), `${name}.lock`), mine = `${process.pid} ${oneLine(owner)}\n`;
   mkdirSync(dirname(lock), { recursive: true });
   // flock prints "held" once it has the lock, then keeps it until its stdin closes (release, or this process ends).
   const hold = wait => new Promise((accept, reject) => {
-    const child = spawn("flock", [...(wait ? [] : ["-n"]), "-o", "-x", lock, "sh", "-c", "echo held; exec cat > /dev/null"],
+    const child = spawn(env.KIT_FLOCK || "flock", [...(wait ? [] : ["-n"]), "-o", "-x", lock, "sh", "-c", "echo held; exec cat > /dev/null"],
       { stdio: ["pipe", "pipe", "ignore"] });
     let held = false;
-    child.once("error", error => reject(new Error(`cannot lock ${lock}: ${error.message} (is flock installed?)`)));
+    child.once("error", error => error.code === "ENOENT" ? accept("missing") : reject(new Error(`cannot lock ${lock}: ${error.message}`)));
     child.stdout.setEncoding("utf8").on("data", text => {
       if (held || !text.includes("held")) return;
       held = true; child.unref(); child.stdout.unref?.(); accept(child);
@@ -145,6 +146,7 @@ export async function kitMachineLock(name, { owner = kitOwner(), onWait, env = p
     child.once("close", () => { if (!held) accept(null); });
   });
   let child = await hold(false);
+  if (child === "missing") return { path: lock, missing: true, release: () => Promise.resolve() };
   if (!child) {
     let text = "";
     try { text = readFileSync(lock, "utf8"); } catch { /* Not written yet. */ }

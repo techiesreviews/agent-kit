@@ -755,3 +755,27 @@ test("while kit pr runs spec files alone it holds the machine's quiet lock and n
   // The line the ended holder left in the file stops nothing.
   quick(["job"]);
 });
+
+test("a kit job waiting for a lone browser run stops at once on SIGTERM", async (t) => {
+  const directory = temp(t), state = join(directory, "state"), lock = join(state, "agent-kit/quiet.lock");
+  command(directory, "job", "# kit: a job\necho 'RESULT: ok job ran'");
+  mkdirSync(dirname(lock), { recursive: true });
+  const holder = spawn("flock", ["-o", "-x", lock, "sleep", "20"]);
+  t.after(() => { holder.kill(); });
+  const held = () => spawnSync("flock", ["-n", lock, "true"]).status !== 0;
+  for (let i = 0; i < 200 && !held(); i++) await new Promise((accept) => setTimeout(accept, 20));
+  writeFileSync(lock, `${holder.pid} ke-60\n`);
+  const job = spawn("/bin/bash", ["kit", "job"], { env: { ...kitEnv(), KIT_COMMANDS_DIR: directory, XDG_STATE_HOME: state } });
+  let stdout = "", stderr = "";
+  job.stdout.setEncoding("utf8").on("data", (text) => { stdout += text; });
+  job.stderr.setEncoding("utf8").on("data", (text) => { stderr += text; });
+  for (let i = 0; i < 250 && !stderr.includes("waiting for"); i++) await new Promise((accept) => setTimeout(accept, 20));
+  assert.match(stderr, /kit: waiting for ke-60's lone browser run/);
+  const sent = Date.now();
+  job.kill("SIGTERM");
+  const code = await new Promise((accept) => job.once("close", (status) => accept(status)));
+  assert.ok(Date.now() - sent < 3000, `took ${Date.now() - sent} ms`);
+  assert.equal(code, 143);
+  assert.match(stdout, /RESULT: fail job interrupted/);
+  assert.doesNotMatch(stdout, /job ran/);
+});

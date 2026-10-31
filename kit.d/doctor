@@ -452,6 +452,11 @@ if [[ $quiet == false ]]; then
   fi
 fi
 
+# kit pr keeps browser runs one at a time with flock (ticket ke-88); without it they run unlocked: say so, never fail.
+if [[ $quiet == false ]] && ! command -v -- "${KIT_FLOCK:-flock}" > /dev/null 2>&1; then
+  printf '✗ flock: not installed, so kit pr cannot keep browser runs one at a time; fix: install util-linux (flock)\n'
+fi
+
 # Grok is an optional second reviewer: report it, never fail on it.
 if [[ $quiet == false ]]; then
   grok=${KIT_GROK:-grok}

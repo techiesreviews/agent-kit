@@ -90,13 +90,15 @@ kit_quiet_wait() {
   local lock pid='' owner=''
   local IFS=$' \t\n'
   lock=$(kit_state_dir)/quiet.lock
-  [[ -f $lock ]] && command -v flock > /dev/null || return 0
+  local flock=${KIT_FLOCK:-flock}
+  [[ -f $lock ]] && command -v "$flock" > /dev/null || return 0
   read -r pid owner < "$lock" 2>/dev/null || :
   [[ -z $pid || ${KIT_QUIET_HOLDER:-} != "$pid" ]] || return 0
-  flock -n -s "$lock" true 2>/dev/null && return 0
+  "$flock" -n -s "$lock" true 2>/dev/null && return 0
   printf "kit: waiting for %s's lone browser run (no kit job starts until it ends)\n" "${owner:-unknown}" >&2
-  # In the background, so the front door's TERM and HUP traps fire at once instead of after the lone run.
-  flock -s "$lock" true 2>/dev/null &
+  # In the background, so the front door's TERM and HUP traps fire at once instead of after the lone run; off the
+  # caller's output, so a waiter left behind by an interrupted job holds no pipe open.
+  "$flock" -s "$lock" true < /dev/null > /dev/null 2>&1 &
   wait "$!" || :
 }
 
