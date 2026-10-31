@@ -440,6 +440,16 @@ test(".gitattributes gets the line-endings line at the top of the project's own,
   assert.equal(readFileSync(join(windows.work, ".gitattributes"), "utf8"), "* text=auto eol=lf\r\n*.png binary\r\n");
 });
 
+test("a light project with its own commands folder stays light: --check names no full piece", (t) => {
+  const f = fixture(t);
+  const { work } = f.repo("own-commands", { "scripts/agents/kit.json": JSON.stringify({ project: "own-commands", branches: { land: "dev" }, commands: "scripts/agents/project.d" }),
+    "scripts/agents/project.d/shots": "#!/bin/sh\n" });
+  const check = f.init(work, ["--check"]);
+  assert.equal(check.status, 0, check.stdout + check.stderr);
+  assert.doesNotMatch(check.stdout, /kitchen|wayfinder|project\.d/);
+  assert.match(check.stdout, /^missing: \.gitattributes /m);
+});
+
 test("a project whose kit.json names no full piece but holds a full stub at its default place counts as full", (t) => {
   const f = fixture(t);
   const { work } = f.repo("stubbed", { "scripts/agents/kit.json": JSON.stringify({ project: "stubbed", branches: { land: "dev" } }),
