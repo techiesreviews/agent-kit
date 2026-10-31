@@ -110,7 +110,7 @@ into this repo or any project. `.gitignore` keeps skill folders out; `skill-guar
 matches a line from the local skill files. Licence texts are shared word for word, so they are never compared:
 a skill's licence files (`LICENSE`, `UNLICENSE`, `COPYING`, `NOTICE`, a longer name ending in `LICENSE` such as
 `x-1.0.LICENSE.md`, or a font's `OFL.txt` / `Font-OFL.txt`) give no skill lines, and a project's own licence in its
-top folder (`LICENSE`, `LICENSE.md`, `COPYING`) is left out of the changed lines `kit pr` checks (`--history` still
+top folder (a licence name on its own, such as `LICENSE`, `LICENSE.md`, `LICENSE-MIT`, `COPYING` or `UNLICENSE`) is left out of the changed lines `kit pr` checks (`--history` still
 reads it). Tests use made-up skill text only.
 
 A private project may keep its own skill (not a paid one): list each such folder by its repo path in

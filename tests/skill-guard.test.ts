@@ -186,6 +186,13 @@ test("a project's own licence passes whatever licence text it holds, and a skill
   const unknown = f.run(["--base", "HEAD~2"]);
   assert.equal(unknown.status, 1, unknown.stderr);
   assert.equal(unknown.stderr, "problem: docs/credits.md:3: holds a line from the local skill crane\nproblem: notes.md:1: holds a line from the local skill crane\n");
+  // The paths do not hang on the user's diff prefix settings.
+  for (const [key, value] of [["diff.mnemonicPrefix", "true"], ["diff.noprefix", "true"]]) {
+    f.git("config", key, value);
+    const prefixed = f.run(["--base", "HEAD~2"]);
+    assert.equal(prefixed.stderr, unknown.stderr, key);
+    f.git("config", "--unset", key);
+  }
   // --history reads every blob, the project's licence files too.
   const history = f.run(["--history"]);
   assert.equal(history.status, 1, history.stderr);
@@ -203,7 +210,7 @@ test("a project's own licence passes whatever licence text it holds, and a skill
   f.put(join(f.repo, "docs/NOTICE.md"), `${secret}\n`);
   f.put(join(f.repo, "packages/a/LICENSE.md"), `${secret}\n`);
   // An added line that looks like a file header is still a line of the file it is in.
-  f.put(join(f.repo, "docs/diff-notes.md"), `+ LICENSE\n${other}\n`);
+  f.put(join(f.repo, "docs/diff-notes.md"), `++ LICENSE\n${other}\n`);
   f.git("add", "."); f.git("commit", "-q", "-m", "named like a licence");
   const copied = f.run(["--base", "HEAD~3"]);
   assert.equal(copied.status, 1, copied.stderr);

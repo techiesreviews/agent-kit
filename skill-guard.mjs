@@ -21,10 +21,9 @@ const minimum = 60, window = 32, largest = 1 << 20;
 // the like, word for word in many repos). A licence is named so in any case, on its own or after a name and a dot
 // or dash (a vendored package's: x-1.0.LICENSE.md, y.LICENSE), or a font's OFL.txt or Font-OFL.txt, with at most a
 // licence family, version and text extension after it (License.md, LICENSE-MIT, LICENSE.APACHE-2.0.txt, UNLICENSE,
-// COPYING.LESSER); a file
-// merely named like one (notice-and-consent.md, license-check.py, privacy-notice.md) is skill text and is read. A
-// note whose name ends in a licence name (how-to-license.md) counts as a licence too: the price of reading every
-// prefixed licence text as one.
+// COPYING.LESSER); a file merely named like one (notice-and-consent.md, license-check.py, privacy-notice.md) is
+// skill text and is read. A note whose name ends in a licence name (how-to-license.md) counts as a licence too: the
+// price of reading every prefixed licence text as one.
 const generated = /(^|\/)(node_modules|\.git|\.venv|venv|site-packages|vendor)\/|(^|\/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|poetry\.lock|uv\.lock|Pipfile\.lock|Cargo\.lock|Gemfile\.lock|composer\.lock)$|\.min\.(js|css)$/;
 const licenceTail = String.raw`([-.](mit|apache|bsd|isc|mpl|gpl|lgpl|agpl|unlicense|ofl|zlib|lesser)([-.]?v?\d[\d.]*)?(-\d-clause)?)?(\.(md|txt|rst))?$`;
 const licence = new RegExp(String.raw`(^|\/)(licen[cs]e|unlicense|copying|notice|[^/]*[-.]licen[cs]e)${licenceTail}|(^|\/)([^/]*[-.])?ofl\.txt$`, "i");
@@ -178,8 +177,8 @@ function changedLines(root, base) {
       else if (!text.startsWith("-") && !text.startsWith("\\")) number++;
     }
   };
-  read(git(root, ["diff", "--no-color", "--no-ext-diff", "-U0", `${base}...HEAD`]));
-  read(git(root, ["diff", "--no-color", "--no-ext-diff", "-U0", "HEAD"]));
+  read(git(root, ["diff", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "-U0", `${base}...HEAD`]));
+  read(git(root, ["diff", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "-U0", "HEAD"]));
   for (const path of git(root, ["ls-files", "-z", "--others", "--exclude-standard"]).split("\0").filter(path => path && !ownLicencePath(path))) {
     try {
       if (statSync(join(root, path)).size > largest) continue;
