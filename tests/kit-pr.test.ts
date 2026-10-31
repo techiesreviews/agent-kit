@@ -2365,3 +2365,22 @@ test("a lone rerun that passes without reporting its file counts as failed alone
   assert.match(result.stdout, /RESULT: fail specs: 1 spec file failed: tests\/native-save\/b\.spec\.ts \(failed alone too\)$/m);
   assert.equal(existsSync(join(f.env.XDG_STATE_HOME!, "agent-kit/flaky.jsonl")), false);
 });
+
+test("a touched timing file that fails stops the timing files after it from running alone", t => {
+  const files = [spec("a"), spec("native-edit-latency"), spec("native-boot-memory")];
+  const f = fixture(t, { [files[1]]: "// changed\n" }, { timing: ["native-edit-latency", "native-boot-memory"] });
+  const result = f.run(["--ticket", "ticket.md"], { FAKE_SPECS: JSON.stringify({ files, once: [files[1]] }) });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.deepEqual(specsCalls(f).map(call => call.args).slice(1), [["specs", files[0]], ["specs", files[1]]]);
+  assert.match(result.stdout, /RESULT: fail specs: 2 spec files failed: tests\/native-save\/native-edit-latency\.spec\.ts \(this change touches it\), tests\/native-save\/native-boot-memory\.spec\.ts \(timing, not run\)$/m);
+});
+
+test("a machine without flock runs the browser specs unlocked and says so", t => {
+  const f = fixture(t), files = [spec("a"), spec("b")];
+  const result = f.run(["--ticket", "ticket.md", "--no-merge"], { KIT_FLOCK: join(f.dir, "no-flock"), FAKE_SPECS: JSON.stringify({ files, full: [files[1]] }) });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(result.stdout.match(/^specs: problem: flock is not installed, so browser runs are not kept one at a time \(install util-linux\)$/gm)?.length, 1, result.stdout);
+  assert.deepEqual(specsCalls(f).map(call => call.args), [["specs", "--affected", "--base", "origin/dev"], ["specs", files[1]]]);
+  assert.match(f.body(), /^- problem: flock is not installed, so browser runs are not kept one at a time \(install util-linux\)$/m);
+  assert.match(result.stdout, /RESULT: ok opened #73 [a-f0-9]{7} \(flaky under load: tests\/native-save\/b\.spec\.ts\)$/m);
+});

@@ -208,8 +208,10 @@ on a usage-limit `problem:` line, tell Lex the reset time and carry on with Clau
   `flaky.jsonl` in the kit's state folder; a file the change touched must pass in the full run, and a
   run that did not report every file it ran is never forgiven. The settings' `timing` spec files run
   after the rest, each alone; with a `timing` list the selection is listed first, and a change that
-  selects nothing takes no lock. While a spec file runs alone (timing file or rerun) no other kit job
-  starts (`waiting for <owner>'s lone browser run`). What `kit pr` reads from the project's specs command:
+  selects nothing takes no lock. While a spec file runs alone (timing file or rerun) no new kit job
+  starts (`waiting for <owner>'s lone browser run`), except `wait`, `status`, `heartbeat`, `version`,
+  `card`, `rulebook` and help; jobs already running carry on. The locks need `flock` (`kit doctor`
+  says when it is missing; the runs then go unlocked). What `kit pr` reads from the project's specs command:
   `--list` prints one `<file> [<groups>] …` line per selected file, or ends `RESULT: ok specs none
   affected` (or `0 selected`); a run prints `✓ <file> (…)` or `✗ <file>: <test> — <error>` per file and
   ends `RESULT: fail specs N of M failed` when any failed.

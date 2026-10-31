@@ -74,6 +74,11 @@ test("a failed run counts as whole only when it reported every file it ran", () 
   // A crash part way: one file named, the count says more failed than were named.
   assert.equal(wholeReport("✗ tests/b.spec.ts: opens\nRESULT: fail specs 2 of 2 failed: a.spec.ts, b.spec.ts\n"), false);
   assert.equal(wholeReport("✗ tests/b.spec.ts: opens\nRESULT: fail child failure\n"), false);
+  // A ✗ line failedSpecs cannot read would leave that failure unblamed: not whole, even when every file was seen.
+  const odd = "✗ tests/x.spec.ts (crashed)\n✗ tests/y.spec.ts: t — e\nRESULT: fail specs 2 of 2 failed\n";
+  assert.deepEqual(failedSpecs(odd).map(file => file.file), ["tests/y.spec.ts"]);
+  assert.equal(wholeReport(odd, ["tests/x.spec.ts", "tests/y.spec.ts"]), false);
+  assert.equal(wholeReport(odd), false);
 });
 
 // A lock holder made the way kitMachineLock holds one: flock with the file saying "<pid> <owner>".

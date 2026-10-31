@@ -38,6 +38,9 @@ export function wholeReport(text, expected) {
     seen.add(match[2]);
     if (match[1] === "✗") failed.add(match[2]);
   }
+  // Every ✗ line must be one failedSpecs reads, or a failure would go unblamed and unrerun.
+  const named = new Set(failedSpecs(text).map(file => file.file));
+  if ([...failed].some(file => !named.has(file))) return false;
   if (expected) return expected.every(file => seen.has(file));
   const counts = /^RESULT: fail specs (\d+) of (\d+) failed\b/m.exec(text);
   return Boolean(counts) && Number(counts[1]) === failed.size && Number(counts[2]) === seen.size;
