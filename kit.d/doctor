@@ -398,7 +398,7 @@ fi
 # project was set up shows here until kit init (or kit init --all) adds it; "init.skip" in the settings keeps one out.
 # Without settings, Node or a kit init in the kit (a copy cut short, which the help and kit home checks name) the
 # settings and node checks say what is wrong, and there is no list to compare with.
-setup_missing=0
+setup_missing=0 setup_warning=''
 if [[ -n $settings_unread || ! -f $home/kit.d/init ]] || ! node=$(kit_node_find); then :
 else
   code=0
@@ -406,9 +406,11 @@ else
   # The check shares the checks.doctor lines' limit (KIT_DOCTOR_CHECK_TIMEOUT).
   if (( code == 124 || code == 137 )); then
     printf '✗ setup: not checked (kit init --check timed out); fix: run scripts/agents/kit init --check to see why\n'
+    setup_warning='setup not checked (kit init --check timed out)'
   elif (( code != 0 )); then
     last=$(sed -n 's/^RESULT: fail init //p' <<< "$output" | tail -n 1)
     printf '✗ setup: not checked (%s); fix: run scripts/agents/kit init --check to see why\n' "${last:-kit init --check exited $code}"
+    setup_warning='setup not checked (run scripts/agents/kit init --check)'
   else
     while IFS= read -r line; do
       [[ $line == 'missing: '* ]] || continue
@@ -418,7 +420,6 @@ else
     done <<< "$output"
   fi
 fi
-setup_warning=''
 if (( setup_missing )); then
   setup_warning="$setup_missing setup piece$( (( setup_missing == 1 )) || printf s) missing (run scripts/agents/kit init)"
 fi
