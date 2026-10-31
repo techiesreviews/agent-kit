@@ -96,7 +96,11 @@ async function reviewOnce(flags, look) {
       process.once("SIGINT", interrupt);
       process.once("SIGTERM", terminate);
       // A second look's overall limit: the runner stops its CLI's whole process group on SIGTERM.
-      const limit = look?.deadline && setTimeout(() => { timedOut = true; terminate(); }, Math.max(0, look.deadline - Date.now()));
+      // A runner that already exited for its own reason keeps that reason.
+      const limit = look?.deadline && setTimeout(() => {
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        timedOut = true; terminate();
+      }, Math.max(0, look.deadline - Date.now()));
       const clear = () => {
         clearTimeout(limit);
         process.removeListener("SIGINT", interrupt);
@@ -240,7 +244,7 @@ async function secondLook(flags) {
   const label = /^\d+$/.test(limit) ? `${limit}s` : limit;
   for (const model of [pick.model, pick.fallback]) {
     // A fallback needs a minute left to start: with less it would reserve a count for a review the limit stops.
-    if (missed.length && deadline - Date.now() < 60_000) { missed.push(`${model} not started, timed out after ${label}`); break; }
+    if (missed.length && deadline - Date.now() < 60_000) { missed.push(`${model} not started: under a minute left of ${label}`); break; }
     if (missed.length) console.log(`second look: ${model} takes it (${missed.at(-1)})`);
     const result = await reviewOnce(flags, { kind: pick.kind, model, deadline, limit: label });
     if (result.status === 0 && !result.outOfCredit) return report(result);
