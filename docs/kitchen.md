@@ -184,7 +184,9 @@ on a usage-limit `problem:` line, tell Lex the reset time and carry on with Clau
   above. A visible change also gets the Opus UX review (the gate after the code review in
   `kit slice`; the extras name its command) against the house style, the UX rulebook and the
   approved mock-up: broken gets one fix round and stops the slice only if still broken, looks off
-  gets one fix round and then lands with UX follow-ups in the ticket.
+  gets one fix round and then lands with UX follow-ups in the ticket. A feature the reviewer gives no
+  verdict is asked for once more; still none, it is "no verdict": counted, named on the slice's ux line,
+  and it lands without a fix round or a follow-up.
 - **Decides:** the lead weighs each finding; a rejected finding is written down with its reason.
 - **Evidence:** the main root's `.scratch/reviews/<owner>/<time>/`, with `findings.json` listing each
   finding's kind (real fault, mismatch with the ticket, timing/race, style) and the builder's declined

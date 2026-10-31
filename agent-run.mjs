@@ -898,11 +898,12 @@ async function invokeAgent(adapter, args, descriptor, context) {
       // that worked before the limit, already spent it. kit review gives an out-of-credit run back itself.
       if (limitProblem && !creditProblem && !previousCalls &&
         refusedOutright(options.cli, options.cli === "opencode" ? result.stdout ?? "" : slice, context.prompt)) update({ refused: true });
-      // A run's first call that fails within the launch window (a usage limit, a login error) never got to work. Claude
-      // and Grok hold a session from before their CLI started, so kit slice reads this to tell such a build never ran.
-      // ASE_LAUNCH_WINDOW_MS (60000) is for tests.
+      // A run's first call that fails within the launch window (a usage limit, a login error) and left the worktree as
+      // it found it never got to work. Claude and Grok hold a session from before their CLI started, so kit slice reads
+      // this to tell such a build never ran. ASE_LAUNCH_WINDOW_MS (60000) is for tests.
       if ((status || limitProblem) && !previousCalls && ![129, 130, 143].includes(status)
-        && Date.now() - spawned < Number(process.env.ASE_LAUNCH_WINDOW_MS ?? 60_000)) update({ launchFailed: true });
+        && Date.now() - spawned < Number(process.env.ASE_LAUNCH_WINDOW_MS ?? 60_000)
+        && execFileSync("git", ["-C", options.worktree, "status", "--porcelain", "--untracked-files=all"], { encoding: "utf8" }) === context.startTree) update({ launchFailed: true });
     }
     try {
       const report = adapter.finish(result.stdout, slice, status);
@@ -945,7 +946,9 @@ async function executeRun(options, out, previous, update, brief) {
     }
     const adapter = agentInvocation(options, common, output);
     // A resumed run's first call is not the review's first call, so it never refunds.
-    const context = { options, limit, logPath, log, output, messages, update, prompt, calls: previous ? 1 : 0 };
+    // The worktree as the run found it: a first call that left it changed did some work, however soon it failed.
+    const startTree = execFileSync("git", ["-C", options.worktree, "status", "--porcelain", "--untracked-files=all"], { encoding: "utf8" });
+    const context = { options, limit, logPath, log, output, messages, update, prompt, startTree, calls: previous ? 1 : 0 };
     const invoke = (args, descriptor) => invokeAgent(adapter, args, descriptor, context);
     const complete = () => existsSync(output) && reviewComplete(readFileSync(output, "utf8"));
     const result = await invoke(previous ? adapter.resume(previous.session) : adapter.args, input);
