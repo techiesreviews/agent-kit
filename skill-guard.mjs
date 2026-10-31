@@ -5,7 +5,7 @@
 // characters from a skill there. It never prints skill text: only the repo path and line, and the skill's name.
 // A project's own skill folders, listed by path in `skillGuard.allow` of scripts/agents/kit.json, pass the path
 // check; the line check still reads every line in them. A changed file that is the project's own licence (LICENSE,
-// LICENSE.md, COPYING, … in the top folder) is not read: licence texts are shared word for word by design.
+// LICENSE.md, COPYING, … in the top folder) is left out of the changed lines: licence texts are shared word for word by design.
 // --history reads every blob.
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
@@ -20,16 +20,17 @@ const minimum = 60, window = 32, largest = 1 << 20;
 // (lockfiles and installed packages of any package manager, minified bundles) and licence texts (MIT, Apache and
 // the like, word for word in many repos). A licence is named so in any case, on its own or after a name and a dot
 // or dash (a vendored package's: x-1.0.LICENSE.md, y.LICENSE), or a font's OFL.txt or Font-OFL.txt, with at most a
-// licence family, version and text extension after it (License.md, LICENSE-MIT, LICENSE.APACHE-2.0.txt); a file
+// licence family, version and text extension after it (License.md, LICENSE-MIT, LICENSE.APACHE-2.0.txt, UNLICENSE,
+// COPYING.LESSER); a file
 // merely named like one (notice-and-consent.md, license-check.py, privacy-notice.md) is skill text and is read. A
 // note whose name ends in a licence name (how-to-license.md) counts as a licence too: the price of reading every
 // prefixed licence text as one.
 const generated = /(^|\/)(node_modules|\.git|\.venv|venv|site-packages|vendor)\/|(^|\/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|poetry\.lock|uv\.lock|Pipfile\.lock|Cargo\.lock|Gemfile\.lock|composer\.lock)$|\.min\.(js|css)$/;
-const licenceTail = String.raw`([-.](mit|apache|bsd|isc|mpl|gpl|lgpl|agpl|unlicense|ofl|zlib)([-.]?v?\d[\d.]*)?(-\d-clause)?)?(\.(md|txt|rst))?$`;
-const licence = new RegExp(String.raw`(^|\/)(licen[cs]e|copying|notice|[^/]*[-.]licen[cs]e)${licenceTail}|(^|\/)([^/]*[-.])?ofl\.txt$`, "i");
+const licenceTail = String.raw`([-.](mit|apache|bsd|isc|mpl|gpl|lgpl|agpl|unlicense|ofl|zlib|lesser)([-.]?v?\d[\d.]*)?(-\d-clause)?)?(\.(md|txt|rst))?$`;
+const licence = new RegExp(String.raw`(^|\/)(licen[cs]e|unlicense|copying|notice|[^/]*[-.]licen[cs]e)${licenceTail}|(^|\/)([^/]*[-.])?ofl\.txt$`, "i");
 // A project's own licence file is in its top folder with a licence name on its own (LICENSE, LICENSE.md, COPYING,
-// LICENSE-MIT); a NOTICE, a longer name or a licence in any other folder is read, as it may hold anything.
-const ownLicence = new RegExp(String.raw`^(licen[cs]e|copying)${licenceTail}`, "i");
+// UNLICENSE, LICENSE-MIT); a NOTICE, a longer name or a licence in any other folder is read, as it may hold anything.
+const ownLicence = new RegExp(String.raw`^(licen[cs]e|unlicense|copying)${licenceTail}`, "i");
 /** A skill's file that holds a licence text, never read as a source of skill lines. */
 export const licencePath = (path) => licence.test(path);
 /** A project's own licence file, left out of the changed lines (licence texts are shared word for word by design). */
@@ -161,15 +162,18 @@ export function skillMatch(text, { index }) {
 
 const git = (root, args) => execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 1 << 30, stdio: ["ignore", "pipe", "pipe"] });
 
-/** Added lines of base...HEAD plus staged, unstaged and untracked changes, as { path, line, text }; licence files are left out. */
+/** Added lines of base...HEAD plus staged, unstaged and untracked changes, as { path, line, text }; the project's own licence files are left out. */
 function changedLines(root, base) {
   const lines = [];
   const read = (diff) => {
-    let path = "", number = 0;
+    let path = "", number = 0, header = false;
     for (const text of diff.split("\n")) {
-      if (text.startsWith("+++ ")) { path = text.slice(4).replace(/^b\//, ""); continue; }
+      // A file's header runs from its diff line to its first hunk, so an added line that starts with "++ " is a line.
+      if (text.startsWith("diff ")) { header = true; continue; }
+      if (header && text.startsWith("+++ ")) { path = text.slice(4).replace(/^b\//, ""); continue; }
       const hunk = /^@@ -\S+ \+(\d+)/.exec(text);
-      if (hunk) { number = Number(hunk[1]); continue; }
+      if (hunk) { header = false; number = Number(hunk[1]); continue; }
+      if (header) continue;
       if (text.startsWith("+") && path !== "/dev/null" && !ownLicencePath(path)) lines.push({ path, line: number++, text: text.slice(1) });
       else if (!text.startsWith("-") && !text.startsWith("\\")) number++;
     }
