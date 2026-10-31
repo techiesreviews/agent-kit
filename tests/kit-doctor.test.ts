@@ -255,13 +255,13 @@ function playground(t: { after: (fn: () => void) => void }, extra: Record<string
   writeFileSync(join(root, ".claude/settings.json"), "{}\n");
   writeFileSync(join(root, ".codex/hooks.json"), "{}\n");
   writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify({ project: "techies-playground", mainRoot: root,
-    branches: { land: "main", release: "main", ci: "main" }, checks: { test: "npm test" }, ...extra }));
+    branches: { land: "main", release: "main", ci: "main", exception: "a test project that lands on main" }, checks: { test: "npm test" }, ...extra }));
   commit(root, "scripts", ".claude", ".codex");
   if (remote) git(root, "push", "-q", "origin", "main");
   const commands = join(directory, "commands");
   mkdirSync(commands);
   symlinkSync(doctor, join(commands, "doctor"));
-  const run = (env: NodeJS.ProcessEnv = {}) => spawnSync("/bin/bash", [kit, "doctor"], {
+  const run = (env: NodeJS.ProcessEnv = {}, args: string[] = []) => spawnSync("/bin/bash", [kit, "doctor", ...args], {
     cwd: root, encoding: "utf8", timeout: 10_000,
     env: { ...kitEnv(), KIT_ROOT: root, KIT_MAIN_ROOT: "", KIT_LIB: library, KIT_COMMANDS_DIR: commands, KIT_GROK: join(directory, "no-grok"), KIT_SKILL_HOME: directory, ...env },
   });
@@ -359,7 +359,7 @@ test("doctor lists skillGuard.allow's own skills, counted, and fails on another 
   assert.ok(wide.stdout.includes('✗ skills: scripts/agents/kit.json: skillGuard.allow entry ".claude/skills" is not one skill folder\'s repo path (and 2 more); fix: name one skill folder per entry'), wide.stdout);
 });
 
-test("the doctor RESULT counts every line it checked, but not the optional grok and kit notes", (t) => {
+test("the doctor RESULT counts every line it checked, but not the optional grok, kit and branches notes", (t) => {
   const f = playground(t, { allowMainCheckout: true, playwright: "vendor/playwright", checks: { doctor: "true" } });
   mkdirSync(join(f.root, "vendor/playwright"), { recursive: true });
   const grok = join(f.directory, "grok");
@@ -368,7 +368,9 @@ test("the doctor RESULT counts every line it checked, but not the optional grok 
   assert.equal(result.status, 0, result.stdout);
   assert.match(result.stdout, /^✓ grok: installed and logged in \(optional reviewer\)$/m);
   assert.match(result.stdout, /^✓ kit: commit /m);
-  assert.equal(result.stdout.split("\n").filter(line => line.startsWith("✓ ")).length, 15);
+  // The branches note (the playground names its exception) is not counted either.
+  assert.match(result.stdout, /^✓ branches: lands on main \(exception: /m);
+  assert.equal(result.stdout.split("\n").filter(line => line.startsWith("✓ ")).length, 16);
   assert.match(result.stdout, /RESULT: ok doctor 13\/13 checks passed\n$/);
 });
 
@@ -384,6 +386,28 @@ test("doctor notes a failed fetch on a passing base and judges the last fetched 
   const result = f.run();
   assert.equal(result.status, 0, result.stdout);
   assert.match(result.stdout, /^✓ base: contains origin\/dev [0-9a-f]{7} \(fetch failed; judged the last fetched origin\/dev\)$/m);
+});
+
+test("doctor warns when a project's settings land on main or it has no dev branch, and names an exception instead", (t) => {
+  const fix = 'fix: land on dev and release to main: "branches": { "land": "dev", "release": "main" } in scripts/agents/kit.json (kit init makes dev from main), or name why it lands on main in "branches": { "exception": "<reason>" }';
+  for (const branches of [{ land: "main", release: "main", ci: "main" }, { land: "main" }, { land: "master" }]) {
+    const result = playground(t, { allowMainCheckout: true, branches }, false).run();
+    assert.equal(result.status, 0, result.stdout);
+    assert.ok(result.stdout.includes(`✗ branches: settings land on ${branches.land}, so work skips dev; main takes only dev; ${fix}\n`), result.stdout);
+    assert.match(result.stdout, new RegExp(`RESULT: ok doctor 11/11 checks passed; warning: lands on ${branches.land}, not dev\n$`));
+  }
+  // Landing on dev with no dev branch here (no GitHub repo, so the base check cannot say so).
+  const missing = playground(t, { allowMainCheckout: true, branches: { land: "dev", release: "main" } }, false).run();
+  assert.ok(missing.stdout.includes("✗ branches: no dev branch; fix: git branch dev main, then git push origin dev once there is a GitHub repo\n"), missing.stdout);
+  assert.match(missing.stdout, /RESULT: (ok|fail) doctor .*; warning: no dev branch\n$|RESULT: fail doctor/);
+  // A named exception is shown, never warned about.
+  const named = playground(t, { allowMainCheckout: true }, false).run();
+  assert.equal(named.status, 0, named.stdout);
+  assert.ok(named.stdout.includes("✓ branches: lands on main (exception: a test project that lands on main)\n"), named.stdout);
+  assert.match(named.stdout, /RESULT: ok doctor 11\/11 checks passed\n$/);
+  // Quiet still warns.
+  const quiet = playground(t, { allowMainCheckout: true, branches: { land: "main" } }, false).run({}, ["--quiet"]);
+  assert.match(quiet.stdout, /^✗ branches: settings land on main/m);
 });
 
 test("doctor says no GitHub repo for a repo without a remote and still passes", (t) => {

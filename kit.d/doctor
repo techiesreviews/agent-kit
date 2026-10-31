@@ -424,6 +424,23 @@ if (( setup_missing )); then
   setup_warning="$setup_missing setup piece$( (( setup_missing == 1 )) || printf s) missing (run scripts/agents/kit init)"
 fi
 
+# Work lands on dev and main takes only dev (Lex, 2026-10-31; ticket ke-89): settings that land on main or master
+# (or on their release branch), or no dev branch to land on, warn, also when quiet, never fail. A project that lands
+# on main on purpose names why in "branches": { "exception": "<reason>" }, shown instead.
+branches_warning=''
+if [[ $jq_missing == false && -z $settings_unread && -n $land ]]; then
+  release=$(setting .branches.release) exception=$(setting '.branches.exception | strings')
+  if [[ -n $exception ]]; then
+    [[ $quiet == true ]] || printf '✓ branches: lands on %s (exception: %s)\n' "$land" "$exception"
+  elif [[ $land == main || $land == master || $land == "$release" ]]; then
+    printf '✗ branches: settings land on %s, so work skips dev; main takes only dev; fix: land on dev and release to main: "branches": { "land": "dev", "release": "main" } in scripts/agents/kit.json (kit init makes dev from main), or name why it lands on main in "branches": { "exception": "<reason>" }\n' "$land"
+    branches_warning="lands on $land, not dev"
+  elif [[ $remote == false ]] && ! git -C "$root" rev-parse --verify --quiet "refs/heads/$land" > /dev/null; then
+    printf '✗ branches: no %s branch; fix: git branch %s %s, then git push origin %s once there is a GitHub repo\n' "$land" "$land" "${release:-main}" "$land"
+    branches_warning="no $land branch"
+  fi
+fi
+
 # Where kit pr opens PRs: origin's GitHub repo, which every kit gh call is told (GH_REPO) whatever other remotes
 # there are (a site made from the starter has an upstream gh would pick). A note, not a counted check.
 # kitGhRepo answers it (Node), so doctor and kit pr never read origin differently.
@@ -519,4 +536,4 @@ if (( ${#failed[@]} )); then
   exit 1
 fi
 skipped_list=$(IFS=,; printf '%s' "${skipped[*]}")
-kit_result ok "doctor $checks/$checks checks passed${skipped_list:+; skipped ${skipped_list//,/, } (KIT_DOCTOR_SKIP)}${kit_warning:+; warning: $kit_warning}${setup_warning:+; warning: $setup_warning}"
+kit_result ok "doctor $checks/$checks checks passed${skipped_list:+; skipped ${skipped_list//,/, } (KIT_DOCTOR_SKIP)}${kit_warning:+; warning: $kit_warning}${setup_warning:+; warning: $setup_warning}${branches_warning:+; warning: $branches_warning}"

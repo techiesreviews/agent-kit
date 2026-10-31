@@ -26,15 +26,31 @@ only a small launcher and its own settings; the kit itself lives here, once.
   `main` once into `${XDG_CACHE_HOME:-~/.cache}/agent-kit`. This repo is public so that needs no token.
 - To try a kit branch in a project before it lands: `KIT_HOME=~/Projects/agent-kit-<branch> scripts/agents/kit …`.
 
-## A raw push to a live branch is stopped
+## Work lands on dev, main takes only dev
+
+- Lex, 2026-10-31: "a branch can go into dev, main can only get dev". Every project lands on `dev`
+  (`branches.land`) and releases to `main` (`branches.release`); `kit init` writes both and makes `dev` from
+  `main` (here and on origin) when it is missing; `--land` and `--release` name other branches.
+- `kit pr` opens every PR into `dev`; a PR into `main` is refused unless it is a release (`kit pr --release
+  --base main`, from a branch cut at `origin/dev`), and its RESULT line names that rule. `kit init --all` opens
+  its PRs into the landing branch only: a project whose settings still land on `main` is skipped and named.
+- `kit doctor` warns (never fails) when the settings land on `main` or `master` (or on their release branch) or
+  there is no `dev` branch. A project that lands on `main` on purpose names why in
+  `"branches": { "exception": "<reason>" }`; doctor shows it instead, and `kit init --all` lands there and names it.
+- Exceptions outside the kit's PRs: the Native Site Editor's saves to a site's live branch (techies-reviews,
+  lexvd-site) go to `main` through the GitHub API, the chat workspace's backup routine commits to its own branch,
+  and this repo's daily release of `dev` to `main` is the orchestrator's.
+
+## A raw push to dev or a live branch is stopped
 
 - The Bash hook (`hooks/bash-guard.sh`) refuses an agent's `git push` that would reach the project's release branch
-  (`branches.release` in `scripts/agents/kit.json`), however it is written (`main`, `HEAD:main`, `refs/heads/main`,
+  (`branches.release` in `scripts/agents/kit.json`) or its landing branch (`branches.land`), however it is written (`main`, `HEAD:main`, `refs/heads/main`,
   `+main`, `--force`, `--all`, `--mirror`, a lone `:`, a deletion, `git -C`, after a `cd`, or a bare `git push`
   whose upstream is that branch), and names `kit pr` as the way through. A folder named through a variable,
   `$( … )`, `cd -`, `popd` or `--git-dir`, or a `cd` that did not take, is checked as both the session's folder and
   its project folder. Any remote counts, a fork too. `--dry-run` passes, and so does every push in a project
-  without `branches.release`. The hook reads the settings only when a command pushes.
+  without `branches.release`. The hook reads the settings only when a command pushes. A push to the landing branch
+  gets its own message: a branch goes into `dev` only through `kit pr` (docs too, in the docs tier).
 - A landing branch that goes live on every push (a site that deploys from it) is guarded by naming it as the release
   branch too: `"branches": { "land": "main", "release": "main" }`.
 - Only agents' shells are guarded: the hook runs in Claude and Codex sessions, so a person's own terminal, CI and the
@@ -42,9 +58,8 @@ only a small launcher and its own settings; the kit itself lives here, once.
   (`kit next`'s claim commit to the landing branch and `kit pr`'s PR branch, from Node; `kit pr`'s merge goes through
   `gh`), which the hook never sees. That is the allowance for the kit's steps: a step that must push a guarded
   branch belongs in a kit command, never in a raw `git push`.
-- What changes for a lead: docs and ticket commits pushed straight to the landing branch keep working where it is not
-  the release branch (the Native Site Editor's `dev`). Where the two are one branch (this repo, a live site), they
-  land through `kit pr` (docs tier), or `kit next --start`, which claims and starts the slice itself.
+- What changes for a lead: docs and ticket commits are never pushed straight to the landing branch; they land
+  through `kit pr` (docs tier), or `kit next --start`, which claims and starts the slice itself.
 
 ## The factory: generated briefs, long jobs that wait
 

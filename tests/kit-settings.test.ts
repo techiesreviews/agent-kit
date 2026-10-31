@@ -393,7 +393,7 @@ test("deps add takes its prefix from KIT_DEV_ROOT, then devRoot, else asks for -
 
 test("kit pr pairs --release with branches.release, whatever its name", t => {
   const prod = repo(t, { project: "kit-land", branches: { land: "main", release: "prod" } });
-  for (const [args, message] of [[["--base", "prod"], "--base prod requires --release"], [["--release"], "--release requires --base prod"]] as const) {
+  for (const [args, message] of [[["--base", "prod"], "--base prod requires --release: prod only takes main (kit pr --release --base prod, from a branch cut at origin/main); every other branch goes into main"], [["--release"], "--release requires --base prod"]] as const) {
     const output = prod.run(["pr", "--dry-run", ...args]);
     assert.equal(output.status, 1, output.stdout + output.stderr);
     assert.equal(lastLine(output), `RESULT: fail guards: ${message}`);

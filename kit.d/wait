@@ -6,7 +6,7 @@ import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
 import { kitBranch, kitGhEnv, kitResult, kitOwner, kitRoot, kitJob, kitJobDirectory, kitJobExit, kitJobRunning } from "../kit-lib.mjs";
-import { summarizeRuns, failingSteps, failingTests, latestWorkflowRuns } from "../ci-summary.mjs";
+import { summarizeRuns, failingSteps, failingTests, latestWorkflowRuns, activeWorkflows } from "../ci-summary.mjs";
 
 const usage = `Usage: kit wait pid <pid> [--timeout D]
        kit wait job <name> [--timeout D]
@@ -15,7 +15,9 @@ const usage = `Usage: kit wait pid <pid> [--timeout D]
 Durations: seconds (bare number or s), minutes (m), hours (h). Default timeout: 30m.
 Output without --until finishes when every process seen writing the file has exited and its size
 stayed unchanged for the quiet period (default 5s); a writer never seen holding the file is covered
-only by the quiet period. CI branch: branches.ci in scripts/agents/kit.json, else branches.land.`;
+only by the quiet period. CI branch: branches.ci in scripts/agents/kit.json, else branches.land.
+CI with nothing to wait for passes as "no checks": a repo with no active workflows, or a PR none of them runs
+for and GitHub lists no checks on after KIT_WAIT_NO_CHECKS_MS (default 2 min).`;
 const args = process.argv.slice(2);
 const execute = promisify(execFile);
 const controller = new AbortController();
@@ -145,6 +147,7 @@ async function wait(config) {
   const deadline = started + timeout;
   const poll = interval("KIT_WAIT_POLL_MS", kind === "ci" ? 30000 : 1000);
   const status = interval("KIT_WAIT_STATUS_MS", 60000);
+  const noChecks = interval("KIT_WAIT_NO_CHECKS_MS", 120000);
   let lastStatus = started;
   let head = options.sha ?? "";
   // Only a plain branch wait reads the settings; --pr and --sha find their branch from GitHub.
@@ -247,7 +250,14 @@ async function wait(config) {
           // Stay on the starting head; only a cancelled run on a moved head switches it,
           // and a --sha wait stays on its commit even then.
           if (!head) head = await resolveHead();
-          const runs = await latestWorkflowRuns(gh, branch, head);
+          // A repo with no active workflows, or a PR none of them runs for and GitHub lists no checks on once
+          // KIT_WAIT_NO_CHECKS_MS (default 2 min) has passed, has nothing to wait for (ticket ke-89).
+          const workflows = await activeWorkflows(gh);
+          if (!workflows.length) return finish(true, `ci ${label} ${head.slice(0, 7)}: no checks (the repo has no active workflows)`);
+          const runs = await latestWorkflowRuns(gh, branch, head, workflows);
+          if (!runs.length && options.pr !== undefined && Date.now() - started >= noChecks &&
+              !JSON.parse(await gh(["pr", "view", options.pr, "--json", "statusCheckRollup"])).statusCheckRollup?.length)
+            return finish(true, `ci ${label} ${head.slice(0, 7)}: no checks (no workflow ran for it and GitHub lists no checks on the PR)`);
           const summary = summarizeRuns(runs, head);
           // Summary owns run selection; pair its failure IDs with cancellation metadata.
           const cancelled = runs.some((run) => summary.failedRunIds.includes(run.databaseId) && run.conclusion === "cancelled");

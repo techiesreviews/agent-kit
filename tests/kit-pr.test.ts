@@ -513,7 +513,8 @@ test("--base main is an ordinary PR when main is both land and release, and stil
   const split = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: { ...playground, branches: { land: "dev", release: "main" } } });
   const refused = split.run(["--dry-run", "--base", "main"], {}, true);
   assert.equal(refused.status, 1, refused.stdout + refused.stderr);
-  assert.match(refused.stdout, /RESULT: fail guards: --base main requires --release/);
+  assert.match(refused.stdout, /RESULT: fail guards: --base main requires --release: main only takes dev \(kit pr --release --base main, from a branch cut at origin\/dev\); every other branch goes into dev$/m);
+  assert.deepEqual(split.calls(), []);
 });
 
 test("with the playground settings and a CI workflow, pr still waits for CI and records ci: pass", t => {
