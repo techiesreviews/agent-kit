@@ -20,6 +20,24 @@ export function failedSpecs(text) {
   return [...failed.values()];
 }
 
+/**
+ * Whether a failed run reported every file it ran, so its failures can be told apart from a crash: each expected
+ * file has a `✓ <file>` or `✗ <file>:` line; with no expected list, its `RESULT: fail specs N of M failed` line
+ * counts the ✗ files as N and every reported file as M.
+ */
+export function wholeReport(text, expected) {
+  const seen = new Set(), failed = new Set();
+  for (const line of text.split(/\r?\n/)) {
+    const match = /^([✓✗]) (\S+?)(?::| \(|$)/.exec(line);
+    if (!match) continue;
+    seen.add(match[2]);
+    if (match[1] === "✗") failed.add(match[2]);
+  }
+  if (expected) return expected.every(file => seen.has(file));
+  const counts = /^RESULT: fail specs (\d+) of (\d+) failed\b/m.exec(text);
+  return Boolean(counts) && Number(counts[1]) === failed.size && Number(counts[2]) === seen.size;
+}
+
 /** The settings' `timing` list (spec files that measure speed or memory); none when unset. */
 export function timingList(settings) {
   const timing = settings.timing;

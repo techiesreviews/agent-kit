@@ -719,35 +719,39 @@ test("the KIT_HOME guard finds commands under any name, a half-cleaned env and a
   assert.deepEqual(leaks(`const env = { ${spread} };\nfor (const key of Object.keys(env)) if (key.startsWith("KIT_")) delete env[key];\n`), []);
 });
 
-test("while a timing run holds the machine's quiet lock no kit job starts; its own children and read-only commands go on", (t) => {
+test("while kit pr runs spec files alone it holds the machine's quiet lock and no kit job starts; its own calls and read-only commands go on", (t) => {
   const directory = temp(t), state = join(directory, "state"), lock = join(state, "agent-kit/quiet.lock");
   command(directory, "job", "# kit: a job\necho 'RESULT: ok job ran'");
   command(directory, "status", "# kit: a command that only reads\necho 'RESULT: ok status read'");
-  const holder = spawn("sleep", ["3"]);
-  t.after(() => { holder.kill(); });
-  // The holder's state and start time from /proc; a holder that ended is a zombie (Z) until this test reaps it.
-  const stat = () => readFileSync(`/proc/${holder.pid}/stat`, "utf8").replace(/^.*\) /s, "").split(" ");
-  mkdirSync(lock, { recursive: true });
-  writeFileSync(join(lock, "owner"), `${holder.pid} ${stat()[19]} ke-60\n`);
   const env = { KIT_COMMANDS_DIR: directory, XDG_STATE_HOME: state };
   const quick = (args: string[], extra: NodeJS.ProcessEnv = {}) => {
     const result = run(args, { ...env, ...extra });
     assert.equal(result.status, 0, result.stdout + result.stderr);
     assert.doesNotMatch(result.stderr, /waiting for/);
-    assert.notEqual(stat()[0], "Z", `${args.join(" ")} ran while the timing run was still going`);
     return result;
   };
-  // The timing run's own kit calls, help and the commands that only read go on at once.
-  assert.match(quick(["job"], { KIT_QUIET_HOLDER: String(holder.pid) }).stdout, /RESULT: ok job ran/);
-  quick(["job", "--help"]);
-  quick(["status"]);
+  // No lock file, and an empty one nobody holds, stop nothing.
+  quick(["job"]);
+  mkdirSync(dirname(lock), { recursive: true });
+  writeFileSync(lock, "");
+  quick(["job"]);
+  // Held the way kitMachineLock holds it: flock, with the file saying "<pid> <owner>".
+  const holder = spawn("flock", ["-o", "-x", lock, "sleep", "3"]);
+  t.after(() => { holder.kill(); });
+  const held = () => spawnSync("flock", ["-n", lock, "true"]).status !== 0;
+  for (let i = 0; i < 200 && !held(); i++) spawnSync("sleep", ["0.02"]);
+  writeFileSync(lock, `${holder.pid} ke-60\n`);
+  // A holder that ended is a zombie (Z) until this test reaps it.
+  const state0 = () => readFileSync(`/proc/${holder.pid}/stat`, "utf8").replace(/^.*\) /s, "").split(" ")[0];
+  for (const [args, extra] of [[["job"], { KIT_QUIET_HOLDER: String(holder.pid) }], [["job", "--help"], {}], [["status"], {}]] as const) {
+    quick([...args], extra);
+    assert.notEqual(state0(), "Z", `${args.join(" ")} ran while the lone run was still going`);
+  }
   const waited = spawnSync("/bin/bash", ["kit", "job"], { encoding: "utf8", env: { ...kitEnv(), ...env }, timeout: 15_000 });
   assert.equal(waited.status, 0, waited.stdout + waited.stderr);
-  assert.equal(stat()[0], "Z", "the job started only after the timing run ended");
-  assert.equal(waited.stderr.match(/kit: waiting for ke-60's timing run/g)?.length, 1, waited.stderr);
+  assert.equal(state0(), "Z", "the job started only after the lone run ended");
+  assert.equal(waited.stderr.match(/kit: waiting for ke-60's lone browser run/g)?.length, 1, waited.stderr);
   assert.match(waited.stdout, /RESULT: ok job ran/);
-  // A lock left by a process that is gone stops nothing.
-  const after = run(["job"], env);
-  assert.equal(after.status, 0, after.stdout + after.stderr);
-  assert.doesNotMatch(after.stderr, /waiting for/);
+  // The line the ended holder left in the file stops nothing.
+  quick(["job"]);
 });

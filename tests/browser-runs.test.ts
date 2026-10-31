@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { failedSpecs, flakyFiles, isTiming, listedSpecs, timingList } from "../browser-runs.mjs";
+import { failedSpecs, flakyFiles, isTiming, listedSpecs, timingList, wholeReport } from "../browser-runs.mjs";
 // @ts-expect-error The script is plain JavaScript without declarations.
 import { kitMachineLock } from "../kit-lib.mjs";
 
@@ -14,9 +14,6 @@ function state(t: TestContext) {
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   return { directory, env: { ...process.env, XDG_STATE_HOME: directory }, lock: join(directory, "agent-kit/browser-run.lock") };
 }
-
-// A process's start time as /proc names it (field 22), which the lock keeps beside the pid.
-const started = (pid: number) => readFileSync(`/proc/${pid}/stat`, "utf8").replace(/^.*\) /s, "").split(" ")[19];
 
 test("the specs command's output is read: its --list selection, and each failed file with its first failed test", () => {
   assert.deepEqual(listedSpecs([
@@ -65,37 +62,63 @@ test("files flaky three or more times in seven days are named, this project's on
   assert.deepEqual(flakyFiles("", { project: "editor", now }), []);
 });
 
+test("a failed run counts as whole only when it reported every file it ran", () => {
+  const run = ["✓ tests/a.spec.ts (4 passed)", "✗ tests/b.spec.ts: opens — timed out", "RESULT: fail specs 1 of 2 failed: b.spec.ts"].join("\n");
+  assert.equal(wholeReport(run, ["tests/a.spec.ts", "tests/b.spec.ts"]), true);
+  assert.equal(wholeReport(run, ["tests/a.spec.ts", "tests/b.spec.ts", "tests/c.spec.ts"]), false);
+  assert.equal(wholeReport(run), true);
+  // A crash part way: one file named, the count says more failed than were named.
+  assert.equal(wholeReport("✗ tests/b.spec.ts: opens\nRESULT: fail specs 2 of 2 failed: a.spec.ts, b.spec.ts\n"), false);
+  assert.equal(wholeReport("✗ tests/b.spec.ts: opens\nRESULT: fail child failure\n"), false);
+});
+
+// A lock holder made the way kitMachineLock holds one: flock with the file saying "<pid> <owner>".
+async function holder(t: TestContext, lock: string, owner: string, seconds = "30") {
+  mkdirSync(join(lock, ".."), { recursive: true });
+  const child = spawn("flock", ["-o", "-x", lock, "sleep", seconds]);
+  t.after(() => { child.kill(); });
+  for (let i = 0; i < 100 && spawnSync("flock", ["-n", lock, "true"]).status === 0; i++) await delay(20);
+  writeFileSync(lock, `${child.pid} ${owner}\n`);
+  return child;
+}
+const held = (lock: string) => spawnSync("flock", ["-n", lock, "true"]).status !== 0;
+
 test("a machine lock makes the second taker wait, saying whose run it waits for, until the first lets go", async t => {
   const s = state(t), waits: string[] = [];
   const first = await kitMachineLock("browser-run", { owner: "ke-60", env: s.env });
-  assert.match(readFileSync(join(s.lock, "owner"), "utf8"), new RegExp(`^${process.pid} ${started(process.pid)} ke-60\n$`));
+  assert.equal(readFileSync(s.lock, "utf8"), `${process.pid} ke-60\n`);
+  assert.equal(held(s.lock), true);
   let taken = false;
-  const second = kitMachineLock("browser-run", { owner: "ke-88", env: s.env, pollMs: 20, onWait: (owner: string) => waits.push(owner) })
+  const second = kitMachineLock("browser-run", { owner: "ke-88", env: s.env, onWait: (owner: string) => waits.push(owner) })
     .then((lock: { release: () => void }) => { taken = true; return lock; });
-  await delay(150);
+  await delay(300);
   assert.equal(taken, false);
   assert.deepEqual(waits, ["ke-60"]);
   first.release();
   const lock = await second;
   assert.deepEqual(waits, ["ke-60"]);
-  assert.match(readFileSync(join(s.lock, "owner"), "utf8"), / ke-88\n$/);
-  // A release after the lock changed hands leaves the new owner's lock alone.
+  assert.equal(readFileSync(s.lock, "utf8"), `${process.pid} ke-88\n`);
+  // A second release of the first lock leaves the new owner's alone.
   first.release();
-  assert.equal(existsSync(s.lock), true);
+  assert.equal(readFileSync(s.lock, "utf8"), `${process.pid} ke-88\n`);
   lock.release();
-  assert.equal(existsSync(s.lock), false);
+  await delay(100);
+  assert.equal(readFileSync(s.lock, "utf8"), "");
+  assert.equal(held(s.lock), false);
 });
 
-test("a machine lock whose process is gone, or whose pid now belongs to another process, is taken over at once", async t => {
+test("a machine lock is free the moment its holder ends, however it ends; a file left behind holds nothing", async t => {
   const s = state(t), waits: string[] = [];
-  const child = spawn("true");
-  await new Promise(accept => child.once("close", accept));
-  for (const owner of [`${child.pid} 1 ghost\n`, `${process.pid} 1 reused\n`]) {
-    mkdirSync(s.lock, { recursive: true });
-    writeFileSync(join(s.lock, "owner"), owner);
-    const lock = await kitMachineLock("browser-run", { owner: "ke-88", env: s.env, pollMs: 20, onWait: (who: string) => waits.push(who) });
-    assert.match(readFileSync(join(s.lock, "owner"), "utf8"), / ke-88\n$/);
-    lock.release();
-  }
-  assert.deepEqual(waits, []);
+  const child = await holder(t, s.lock, "ke-60");
+  const taking = kitMachineLock("browser-run", { owner: "ke-88", env: s.env, onWait: (who: string) => waits.push(who) });
+  await delay(200);
+  child.kill("SIGKILL");
+  (await taking).release();
+  assert.deepEqual(waits, ["ke-60"]);
+  // A release lets go as its flock ends, a moment later.
+  for (let i = 0; i < 100 && held(s.lock); i++) await delay(20);
+  // The killed holder's line is still in the file, but nothing holds the lock.
+  writeFileSync(s.lock, "1 ghost\n");
+  (await kitMachineLock("browser-run", { owner: "ke-88", env: s.env, onWait: (who: string) => waits.push(who) })).release();
+  assert.deepEqual(waits, ["ke-60"]);
 });
