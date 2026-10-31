@@ -83,8 +83,8 @@ only a small launcher and its own settings; the kit itself lives here, once.
   through `scripts/agents/kit pr --release --base main` from a branch cut at `origin/dev` (`kit pr` refuses to
   run on `dev` itself); machines keep following `main`.
 - CI runs the kit's tests and lint, then the Native Site Editor's `npm test` and `npm run lint` from its `dev`
-  branch against the changed kit. A kit change lands only when both pass, because every project runs the newest
-  kit.
+  branch against the changed kit. A kit change lands only when both pass, because every project runs the kit
+  once it is released to `main`.
 - After a release to `main`, `kit update` brings it to every project on the machine. `kit update --install-timer`
   (once per machine, and again after a change to `systemd/` or to `KIT_REPO` or `XDG_DATA_HOME`, which the timer
   keeps) runs it every 15 minutes through a `systemd --user` timer; `kit update --remove-timer` takes it out.
