@@ -14,5 +14,5 @@ verdict=$(jq -r '
       else "refuse" end
   end' 2>/dev/null) || exit 0
 [[ $verdict == refuse ]] || exit 0
-printf '%s\n' 'Brief refused: a coding brief comes from `scripts/agents/kit brief <ticket> [--stage build|review|second-look|fix] [--note "<text>"]`; pass its whole output (it ends with a kit-brief: marker line). For research, review-only or a question, make the first line `kit-brief: none (<reason>)`.' >&2
+printf '%s\n' 'Brief refused: a coding brief comes from `scripts/agents/kit brief <ticket> [--stage build|review|second-look|fix] [--note "<text>"]` (in a project without ticket files: `scripts/agents/kit brief --task "<title>" --owner <id> --note "<the task>"`); pass its whole output (it ends with a kit-brief: marker line). For research, review-only or a question, make the first line `kit-brief: none (<reason>)`.' >&2
 exit 2
