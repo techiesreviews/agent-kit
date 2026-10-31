@@ -5,7 +5,8 @@
 // characters from a skill there. It never prints skill text: only the repo path and line, and the skill's name.
 // A project's own skill folders, listed by path in `skillGuard.allow` of scripts/agents/kit.json, pass the path
 // check; the line check still reads every line in them. A changed file that is the project's own licence (LICENSE,
-// COPYING, …) is not read: licence texts are shared word for word by design. --history reads every blob.
+// LICENSE.md, COPYING, … in the top folder) is not read: licence texts are shared word for word by design.
+// --history reads every blob.
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -18,17 +19,17 @@ const minimum = 60, window = 32, largest = 1 << 20;
 // Files inside a skill that hold lines every project shares, not skill text: generated or installed files
 // (lockfiles and installed packages of any package manager, minified bundles) and licence texts (MIT, Apache and
 // the like, word for word in many repos). A licence is named so in any case, on its own or after a name and a dot
-// or dash (a vendored package's or a font's: x-1.0.LICENSE.md, y.LICENSE, Font-OFL.txt, OFL.txt), with at most a
+// or dash (a vendored package's: x-1.0.LICENSE.md, y.LICENSE), or a font's OFL.txt or Font-OFL.txt, with at most a
 // licence family, version and text extension after it (License.md, LICENSE-MIT, LICENSE.APACHE-2.0.txt); a file
 // merely named like one (notice-and-consent.md, license-check.py, privacy-notice.md) is skill text and is read. A
 // note whose name ends in a licence name (how-to-license.md) counts as a licence too: the price of reading every
 // prefixed licence text as one.
 const generated = /(^|\/)(node_modules|\.git|\.venv|venv|site-packages|vendor)\/|(^|\/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|poetry\.lock|uv\.lock|Pipfile\.lock|Cargo\.lock|Gemfile\.lock|composer\.lock)$|\.min\.(js|css)$/;
 const licenceTail = String.raw`([-.](mit|apache|bsd|isc|mpl|gpl|lgpl|agpl|unlicense|ofl|zlib)([-.]?v?\d[\d.]*)?(-\d-clause)?)?(\.(md|txt|rst))?$`;
-const licence = new RegExp(String.raw`(^|\/)(licen[cs]e|copying|notice|[^/]*[-.]licen[cs]e)${licenceTail}|(^|\/)([^/]*[-.])?ofl([-.]?v?\d[\d.]*)?(\.(md|txt))?$`, "i");
-// A project's own licence file has a licence name on its own (LICENSE, LICENSE.md, COPYING, LICENSE-MIT): any longer
-// name in a project is read, as it may hold anything.
-const ownLicence = new RegExp(String.raw`(^|\/)(licen[cs]e|copying|notice)${licenceTail}`, "i");
+const licence = new RegExp(String.raw`(^|\/)(licen[cs]e|copying|notice|[^/]*[-.]licen[cs]e)${licenceTail}|(^|\/)([^/]*[-.])?ofl\.txt$`, "i");
+// A project's own licence file is in its top folder with a licence name on its own (LICENSE, LICENSE.md, COPYING,
+// LICENSE-MIT); a NOTICE, a longer name or a licence in any other folder is read, as it may hold anything.
+const ownLicence = new RegExp(String.raw`^(licen[cs]e|copying)${licenceTail}`, "i");
 /** A skill's file that holds a licence text, never read as a source of skill lines. */
 export const licencePath = (path) => licence.test(path);
 /** A project's own licence file, left out of the changed lines (licence texts are shared word for word by design). */
