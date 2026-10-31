@@ -28,6 +28,8 @@ appendFileSync(env.FAKE_CALLS, JSON.stringify({ tool, script: process.argv[1], a
   ...(env.GH_REPO ? { repo: env.GH_REPO } : {}), ...(env.GH_HOST ? { host: env.GH_HOST } : {}) }) + "\\n");
 const scripts = { "unit.sh": "unit", "tickets.mjs": "tickets", "check-colours.mjs": "colours" };
 const action = tool === "npm" ? (args[0] === "test" ? "unit" : args[1]) : scripts[tool] || (tool === "fake-kit" ? args[0] : args.slice(0, 2).join("-"));
+// FAKE_RELEASE_CHECK_STDERR: the check fails with only that stderr line and no RESULT line.
+if (tool === "fake-kit" && action === "release-check" && env.FAKE_RELEASE_CHECK_STDERR) { console.error(env.FAKE_RELEASE_CHECK_STDERR); process.exit(3); }
 // FAKE_RELEASE_CHECK is the real kit release-check, which kit pr --release then runs.
 if (tool === "fake-kit" && action === "release-check" && env.FAKE_RELEASE_CHECK) {
   const run = require("node:child_process").spawnSync(env.FAKE_RELEASE_CHECK, args.slice(1), { stdio: "inherit" });
@@ -792,6 +794,13 @@ test("a failed release check stops the release before the fetch and the push, wi
   assert.equal(result.status, 1);
   assert.match(result.stdout, /RESULT: fail release-check: child failure$/m);
   assert.deepEqual(f.calls().map(call => call.args[0]), ["release-check"]);
+  assert.equal(existsSync(join(f.logDir(), "fetch.log")), false);
+});
+
+test("a release check that fails without a RESULT line is named by its last stderr line", t => {
+  const f = fixture(t), result = f.run(["--base", "main", "--release"], { FAKE_RELEASE_CHECK_STDERR: "kit-lib: cannot read settings" });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /RESULT: fail release-check: kit-lib: cannot read settings$/m);
   assert.equal(existsSync(join(f.logDir(), "fetch.log")), false);
 });
 
