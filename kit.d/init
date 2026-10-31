@@ -36,7 +36,7 @@ note naming how to make a worktree. A rerun changes nothing and says so. Old kit
 name being the one "init.skip" takes (kit doctor shows these as warnings). It needs scripts/agents/kit.json.
 --all brings every project in the machine's projects.json up to date, one after another: in a temporary
 worktree of origin's landing branch it adds the missing pieces, commits them (and, when .gitattributes was
-added, a git add --renormalize . commit), and lands them through the project's own kit pr. It prints one RESULT
+added, a git add --renormalize . commit), and lands them through the project's own kit pr (its tier from the changed paths). One RESULT
 line per project, then one for the run. A project whose main checkout has uncommitted changes in the files
 the change touches is skipped and named, as is one without a git checkout, an origin or a kit.json; a failed
 kit pr keeps its worktree and names it and its log. --pieces is that worktree's step: add the missing pieces
