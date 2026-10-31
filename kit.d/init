@@ -11,6 +11,7 @@ const { kitGhRepo, kitHideUserInfo, kitHome, kitProjects, kitRegisterProject, ki
 const usage = `Usage: kit init [--light | --full] [--land <branch>]
        kit init --check
        kit init --all
+       kit init --pieces   (--all's own step, in its temporary worktree)
        kit init --issues [--close]
 Set the project around the working folder up for the shared kit; the kit itself is never copied in.
 Run it in the project's git repo (from the machine copy, ~/.local/share/agent-kit/current/kit init,
@@ -628,7 +629,9 @@ function all() {
   let projects;
   try { projects = kitProjects(); } catch (error) { fail(String(error.message).replace(/\n/g, " ")); }
   const names = Object.keys(projects).sort();
-  const sha = /^commit (\S+)$/m.exec(spawnSync(join(home, "kit.d/version"), [], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).stdout ?? "")?.[1] ?? "unknown";
+  const versionEnv = { ...process.env };
+  delete versionEnv.KIT_ROOT;
+  const sha = /^commit (\S+)$/m.exec(spawnSync(join(home, "kit.d/version"), [], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env: versionEnv, timeout: 10_000 }).stdout ?? "")?.[1] ?? "unknown";
   // Each step runs on this kit, in the project it works on: the front door's settings for where --all started go.
   const env = { ...process.env, KIT_HOME: home, GIT_TERMINAL_PROMPT: "0" };
   for (const name of ["KIT_ROOT", "KIT_MAIN_ROOT", "KIT_DEV_ROOT", "KIT_HOME_DEFAULT", "KIT_LIB", "KIT_LIB_MJS", "KIT_PLAYWRIGHT_MODULE", "KIT_PLAYWRIGHT_MODULE_DEFAULT"]) delete env[name];
@@ -669,9 +672,23 @@ function all() {
     if (!land) return ["skipped", `skipped: no ${kitSettingsFile} naming a landing branch, here or on origin; run kit init there first`];
     if (git(main, "cat-file", "-e", `refs/remotes/origin/${land}:${kitSettingsFile}`).status !== 0) return ["skipped", `skipped: origin/${land} has no ${kitSettingsFile}; land the project's setup first`];
 
-    const branch = "kit/init-pieces", path = `${main}-kit-init-pieces`;
-    if (existsSync(path) || git(main, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`).status === 0) {
-      return ["failed", `${path} or branch ${branch} is left from an earlier run; land or remove it, then rerun`];
+    const branch = "kit/init-pieces", path = `${main}-kit-init-pieces`, tip = `refs/heads/${branch}`;
+    const names = (step) => step.stdout.split("\0").filter(Boolean);
+    const leftover = git(main, "rev-parse", "--verify", "--quiet", tip).status === 0;
+    if (existsSync(path) || leftover) {
+      // An earlier run's change that has landed since (the branch merged into origin/<land>, or squashed: its files
+      // there as on the branch; the worktree clean) is cleared away; any other leftover waits for a person.
+      const base = leftover ? git(main, "merge-base", `refs/remotes/origin/${land}`, tip).stdout.trim() : "";
+      const mine = base ? names(git(main, "diff", "-z", "--name-only", base, tip)) : [];
+      const differ = new Set(base ? names(git(main, "diff", "-z", "--name-only", `refs/remotes/origin/${land}`, tip)) : []);
+      const clean = !existsSync(path) || git(path, "status", "--porcelain").stdout.trim() === "";
+      const merged = leftover && git(main, "merge-base", "--is-ancestor", tip, `refs/remotes/origin/${land}`).status === 0;
+      if (!clean || !(merged || (mine.length && !mine.some((file) => differ.has(file))))) {
+        return ["failed", `${path} or branch ${branch} is left from an earlier run; land or remove it, then rerun`];
+      }
+      if (existsSync(path)) git(main, "worktree", "remove", "--force", path);
+      git(main, "branch", "-D", branch);
+      console.log(`${name}: the earlier run's ${branch} has landed on origin/${land}; removed it and its worktree`);
     }
     const added = git(main, "worktree", "add", "-q", "--no-track", "-b", branch, path, `refs/remotes/origin/${land}`);
     if (added.status !== 0) return ["failed", `git worktree add failed: ${said(added)}`];
