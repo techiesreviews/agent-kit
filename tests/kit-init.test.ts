@@ -448,6 +448,16 @@ test("a light project with its own commands folder stays light: --check names no
   assert.equal(check.status, 0, check.stdout + check.stderr);
   assert.doesNotMatch(check.stdout, /kitchen|wayfinder|project\.d/);
   assert.match(check.stdout, /^missing: \.gitattributes /m);
+  // --full still adds the full pieces, beside the commands folder it keeps.
+  const full = f.init(work, ["--full", "--check"]);
+  assert.equal(full.status, 2);
+  const fuller = f.init(work, ["--full"]);
+  for (const path of ["docs/agents/kitchen.md", "docs/agents/kitchen-extras.md", "docs/wayfinder/README.md"]) assert.ok(written(fuller).includes(path), path);
+  assert.ok(!written(fuller).includes("scripts/agents/project.d/.gitkeep"));
+  // Naming the rulebook extras beside its commands makes a project full: a missing pointer is named.
+  const named = f.repo("named-extras", { "scripts/agents/kit.json": JSON.stringify({ project: "named-extras", branches: { land: "dev" },
+    commands: "scripts/agents/project.d", rulebookExtras: "docs/agents/kitchen-extras.md" }), "scripts/agents/project.d/shots": "#!/bin/sh\n" });
+  assert.match(f.init(named.work, ["--check"]).stdout, /^missing: docs\/agents\/kitchen\.md \(the kitchen pointer\)$/m);
 });
 
 test("a project whose kit.json names no full piece but holds a full stub at its default place counts as full", (t) => {
