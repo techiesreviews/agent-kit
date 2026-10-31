@@ -36,7 +36,9 @@ async function fixture(t: TestContext) {
   const requests: { url: string; cache?: string }[] = [];
   let html = '<script type="module" src="/assets/index-abc123.js"></script>', httpStatus = 200;
   const server = createServer((request, response) => {
-    requests.push({ url: request.url || "", cache: request.headers["cache-control"] });
+    // A bare "GET /" is not kit status (it always asks with a query): a port probe from the machine (T3 checks new
+    // local ports), which would otherwise count as a request.
+    if (request.url !== "/") requests.push({ url: request.url || "", cache: request.headers["cache-control"] });
     response.writeHead(httpStatus, { "Content-Type": "text/html" });
     response.end(html);
   });

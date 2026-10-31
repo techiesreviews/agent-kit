@@ -79,10 +79,16 @@ async function reviewOnce(flags, look) {
     temporary = mkdtempSync(join(artifacts, "kit-review-"));
     const briefPath = join(temporary, "brief.md");
     const resolved = scope.commit ? { commit: scope.commit } : { base: scope.base };
-    writeFileSync(briefPath, flags.ticket ? ticketReviewBrief(flags.ticket, resolved, root) : reviewBrief("", "", resolved, root));
     const agentArgs = ["review", root, briefPath, ...(scope.commit ? ["--commit", scope.commit] : ["--base", scope.base]), "--out", temporary];
     let cli;
     ({ model, effort, cli } = parseAgentArgs(agentArgs, env));
+    // The brief names skills for the model that reviews (a second look's own).
+    // Without a ticket, the skills map picks from the reviewed diff's file names.
+    const changed = () => {
+      const listed = spawnSync("git", ["-C", root, "diff", "--name-only", scope.commit ? `${scope.commit}^..${scope.commit}` : `${scope.base}...HEAD`], { encoding: "utf8" });
+      return listed.status === 0 ? `## Files\n${listed.stdout.split("\n").filter(Boolean).map(file => `- \`${file}\``).join("\n")}\n` : "";
+    };
+    writeFileSync(briefPath, flags.ticket ? ticketReviewBrief(flags.ticket, resolved, root, undefined, true, model) : reviewBrief("", "", resolved, root, [], true, model, changed()));
     console.log(`model: ${model}`);
     // One count for the computer; this project's old per-project count moves in on first use.
     ledger = { path: join(kitStateDir(env), "review-budget.json"), project: kitSettings(root).project, legacy: join(kitMainRoot(), ".scratch/review-budget.json") };

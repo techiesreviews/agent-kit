@@ -13,6 +13,6 @@ Agent commands: `scripts/agents/kit --help`; `scripts/agents/kit <command> --hel
 
 ## Standards
 
-- Plain words in every message a person reads; every run ends with one `RESULT: ok|fail …` line. The one exception is `kit --home` (launcher and front door): scripts read its output, so it prints only the kit's folder.
+- Plain words in every message a person reads; every run ends with one `RESULT: ok|fail …` line. The exceptions: `kit --home` (launcher and front door), whose output scripts read, prints only the kit's folder; and `kit go` ends with its `RUNNING: …` line (exit 75) while its job still runs.
 - Tests never touch the real `~/.local`, `~/.cache`, `~/.claude`, `~/.codex` or `~/.agents`: temporary `HOME` and `XDG_*` folders.
-- **Paid skills never go in this repo** (Lex, 2026-10-29): no `SKILL.md`, nothing under a `skills/` folder, and no text from a local skill, in any file, commit or test fixture. `.gitignore` keeps them out; `skill-guard.mjs` runs in CI (paths) and in `kit pr` (paths and, on a machine with skill folders, changed lines). This repo never sets `skillGuard.allow` (a private project's own skills only). Tests use made-up skill text only.
+- **Paid skills never go in this repo** (Lex, 2026-10-29): the skills map (`skills.json`) names skills and gives the kit's own one-line fallback, never a skill's text; no `SKILL.md`, nothing under a `skills/` folder, and no text from a local skill, in any file, commit or test fixture. `.gitignore` keeps them out; `skill-guard.mjs` runs in CI (paths) and in `kit pr` (paths and, on a machine with skill folders, changed lines). This repo never sets `skillGuard.allow` (a private project's own skills only). Tests use made-up skill text only.

@@ -70,7 +70,7 @@ function fixture(t: { after: (fn: () => void) => void }) {
     "/bin/bash", direct ? [doctor, ...args] : [kit, "doctor", ...args], {
       cwd: root, encoding: "utf8", timeout: 10_000,
       env: { ...kitEnv(), KIT_ROOT: root, KIT_MAIN_ROOT: main, KIT_LIB: library,
-        KIT_COMMANDS_DIR: commands, KIT_GROK: join(directory, "no-grok"), ...env },
+        KIT_COMMANDS_DIR: commands, KIT_GROK: join(directory, "no-grok"), KIT_SKILL_HOME: directory, ...env },
     },
   );
   return { directory, main, dev, build, commands, run };
@@ -80,8 +80,8 @@ function failure(result: ReturnType<typeof spawnSync<string>>, name: string) {
   assert.equal(result.status, 1, result.stdout + result.stderr);
   const lines = result.stdout.trimEnd().split("\n");
   assert.equal(lines.filter(line => line.startsWith("RESULT: ")).length, 1);
-  // The kit note shows whenever the kit's own version runs; the PR target note always shows.
-  assert.equal(lines.filter(line => !line.startsWith("✓ kit: ") && !line.startsWith("✗ PR target: ")).length, 13, result.stdout);
+  // The kit note shows whenever the kit's own version runs; the PR target and skills notes always show.
+  assert.equal(lines.filter(line => !line.startsWith("✓ kit: ") && !line.startsWith("✗ PR target: ") && !/^[✓✗] skills map: /.test(line)).length, 13, result.stdout);
   assert.ok(lines.some(line => line.startsWith(`✗ ${name}: `) && line.includes("; fix: ")), result.stdout);
   assert.equal(lines.at(-1), `RESULT: fail doctor 1 failed: ${name}`);
   assert.equal(result.stderr, "");
@@ -110,8 +110,10 @@ test("doctor checks all eleven conditions quickly, notes Grok, and quiet success
   assert.equal(lines[12], `✗ PR target: origin (${join(f.directory, "origin.git")}) is not a GitHub repo gh knows, so kit pr cannot open a PR; ` +
     "fix: git remote set-url origin <the project's GitHub repo>, or gh auth login for its host");
   assert.equal(lines[13], "✗ grok: not installed (optional reviewer); fix: install the grok CLI for Grok reviews");
-  assert.equal(lines.length, 15);
-  assert.equal(lines[14], "RESULT: ok doctor 11/11 checks passed");
+  // The fixture's machine has no skills: each one the skills map names is a note, never a failure.
+  assert.match(lines[14], /^✗ skills map: 20 of 20 skills it names are not on this machine: caveman, good-css, .*, emil-prep-for-prod \(optional; briefs give the kit's own line instead\); fix: /);
+  assert.equal(lines.length, 16);
+  assert.equal(lines[15], "RESULT: ok doctor 11/11 checks passed");
   assert.equal(result.stderr, "");
   const quiet = f.run(["--quiet"]);
   assert.equal(quiet.status, 0, quiet.stderr);
@@ -261,7 +263,7 @@ function playground(t: { after: (fn: () => void) => void }, extra: Record<string
   symlinkSync(doctor, join(commands, "doctor"));
   const run = (env: NodeJS.ProcessEnv = {}) => spawnSync("/bin/bash", [kit, "doctor"], {
     cwd: root, encoding: "utf8", timeout: 10_000,
-    env: { ...kitEnv(), KIT_ROOT: root, KIT_MAIN_ROOT: "", KIT_LIB: library, KIT_COMMANDS_DIR: commands, KIT_GROK: join(directory, "no-grok"), ...env },
+    env: { ...kitEnv(), KIT_ROOT: root, KIT_MAIN_ROOT: "", KIT_LIB: library, KIT_COMMANDS_DIR: commands, KIT_GROK: join(directory, "no-grok"), KIT_SKILL_HOME: directory, ...env },
   });
   return { directory, root, run };
 }
@@ -1279,4 +1281,28 @@ test("doctor notes a machine without flock, which kit pr needs to keep browser r
   assert.ok(result.stdout.includes("✗ flock: not installed, so kit pr cannot keep browser runs one at a time; fix: install util-linux (flock)\n"), result.stdout);
   assert.match(result.stdout, /RESULT: ok doctor 11\/11 checks passed\n$/);
   assert.equal(f.run([], f.build).stdout.includes("flock"), false);
+});
+
+test("doctor notes the skills the skills map names that are missing, counting the project's own additions", (t) => {
+  const f = fixture(t);
+  const home = join(f.directory, "skills-home");
+  for (const name of ["good-css", "caveman"]) {
+    mkdirSync(join(home, name === "caveman" ? ".codex/skills" : ".claude/skills", name), { recursive: true });
+    writeFileSync(join(home, name === "caveman" ? ".codex/skills" : ".claude/skills", name, "SKILL.md"), "made-up test skill\n");
+  }
+  mkdirSync(join(home, ".claude/plugins/cache/vendor/plugin/skills/break-ui"), { recursive: true });
+  writeFileSync(join(home, ".claude/plugins/cache/vendor/plugin/skills/break-ui/SKILL.md"), "made-up test skill\n");
+  const settings = join(f.build, "scripts/agents/kit.json");
+  writeFileSync(settings, JSON.stringify({ ...JSON.parse(readFileSync(settings, "utf8")), skills: { add: ["own-skill"] } }));
+  const result = f.run([], f.build, { KIT_SKILL_HOME: home });
+  assert.equal(result.status, 0, result.stdout);
+  const line = result.stdout.split("\n").find(entry => entry.startsWith("✗ skills map: "))!;
+  assert.match(line, /^✗ skills map: 18 of 21 /);
+  for (const present of ["good-css", "caveman", "break-ui"]) assert.doesNotMatch(line, new RegExp(`[:,] ${present}[,( ]`));
+  assert.match(line, /own-skill/);
+  // A skill the project removes is no longer counted or named.
+  writeFileSync(settings, JSON.stringify({ ...JSON.parse(readFileSync(settings, "utf8")), skills: { add: ["own-skill"], remove: ["emil-color"] } }));
+  const removed = f.run([], f.build, { KIT_SKILL_HOME: home }).stdout.split("\n").find(entry => entry.startsWith("✗ skills map: "))!;
+  assert.match(removed, /^✗ skills map: 17 of 20 /);
+  assert.doesNotMatch(removed, /emil-color/);
 });

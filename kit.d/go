@@ -1,0 +1,126 @@
+#!/usr/bin/env node
+// kit: start a long job in its own scope and wait for it in the foreground, at most 9 minutes per call
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { kitJob, kitJobDirectory, kitJobExit, kitJobMarkGo, kitJobRecord, kitJobRunning, kitResult, kitRoot } from "../kit-lib.mjs";
+
+// Under the 10-minute limit of one agent tool call. KIT_GO_WAIT_MS (tests) can only shorten it.
+const LIMIT = 9 * 60 * 1000;
+const wanted = Number(process.env.KIT_GO_WAIT_MS);
+const wait = Number.isFinite(wanted) && wanted > 0 ? Math.min(wanted, LIMIT) : LIMIT;
+const span = ms => ms % 60000 === 0 ? `${ms / 60000}m` : ms % 1000 === 0 ? `${ms / 1000}s` : `${ms}ms`;
+const usage = `Usage: kit go <job> [--max D] -- <command…>
+       kit go <job>
+Starts the job with kit bg (its own user systemd scope, so a turn end or an app restart does not stop it; --max is
+its time limit, default 6h, 0 for none), then waits for it in the foreground: at most 9 minutes per call, under the
+10-minute limit of one tool call; this call waits ${span(wait)} per call. Run it with a tool time limit of 10
+minutes (Claude's Bash tool: timeout 600000; its 2-minute default cuts the wait short).
+While the job runs, the last line is "RUNNING: <job> (<elapsed>, step <step>). Run again: scripts/agents/kit go <job>"
+and the exit code is 75: run that line again, in the foreground. When the job has ended, kit go prints its log's tail
+and its RESULT line and exits with the job's code; called again, it answers the same. A job already running is
+never started twice. The Stop hook (stop-guard) refuses to end a turn while a kit go job of the worktree runs.`;
+
+const elapsed = ms => {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  return `${seconds >= 60 ? `${Math.floor(seconds / 60)}m` : ""}${seconds % 60}s`;
+};
+const logLines = directory => {
+  try { return readFileSync(join(directory, "log"), "utf8").split(/\r?\n/).filter(line => line.trim()); }
+  catch { return []; }
+};
+// The step: the job's last "slice: …" or "step: …" line, else its last log line, else "starting".
+const step = lines => {
+  const named = lines.findLast(line => /^(slice|step): /.test(line));
+  const last = named ?? lines.findLast(line => !line.startsWith("RESULT: "));
+  return last ? (last.length > 80 ? `${last.slice(0, 77)}...` : last) : "starting";
+};
+
+function parse(args) {
+  const [name, ...rest] = args;
+  if (!name || name.startsWith("-")) throw new Error("expected <job> [--max D] [-- <command…>]");
+  const directory = kitJobDirectory(name);
+  let max;
+  if (rest[0] === "--max") {
+    if (!/^\d+(s|m|h)?$/.test(rest[1] ?? "")) throw new Error(`invalid --max: ${rest[1] ?? "(none)"}`);
+    max = rest[1];
+    rest.splice(0, 2);
+  }
+  if (rest.length && rest[0] !== "--") throw new Error(`unexpected ${rest[0]}; the command goes after --`);
+  const command = rest.slice(1);
+  if (rest[0] === "--" && !command.length) throw new Error("no command after --");
+  if (max !== undefined && !command.length) throw new Error("--max needs a command to start");
+  return { name, directory, max, command };
+}
+
+const job = directory => { try { return kitJob(directory); } catch { return null; } };
+
+async function main() {
+  const args = process.argv.slice(2);
+  if (args[0] === "--help" || args[0] === "-h") { console.log(usage); return; }
+  const { name, directory, max, command } = parse(args);
+  if (command.length) {
+    const current = existsSync(join(directory, "pid")) ? job(directory) : null;
+    if (current && kitJobRunning(current)) {
+      console.log(`go ${name}: already running (pid ${current.pid}); waiting for it, not starting another`);
+      kitJobMarkGo(directory);
+    }
+    else {
+      const started = spawnSync(process.execPath, [join(import.meta.dirname, "bg"), name, ...(max ? ["--max", max] : []), "--", ...command], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+      const said = `${started.stdout ?? ""}`.split("\n").filter(line => line && !line.startsWith("RESULT: "));
+      if (said.length) console.log(said.join("\n"));
+      const why = (started.stderr || started.stdout || "").trim().split("\n").at(-1);
+      // Another kit go started it a moment ago: wait for that one.
+      if (started.status !== 0 && !/already running/.test(why)) throw new Error(`could not start ${name}: ${why}`);
+      if (started.status !== 0) console.log(`go ${name}: already running; waiting for it, not starting another`);
+      kitJobMarkGo(directory);
+    }
+  }
+  // A job in another worktree (kit next's wait line sets KIT_ROOT) is waited for again the same way.
+  const top = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  const again = `${resolve(kitRoot()) !== (top.status === 0 ? top.stdout.trim() : process.cwd()) ? `KIT_ROOT=${kitRoot()} ` : ""}scripts/agents/kit go ${name}`;
+  if (!existsSync(join(directory, "pid"))) throw new Error(`${name}: no such job in ${dirname(directory)}; start it with scripts/agents/kit go ${name} -- <command>`);
+  const record = job(directory);
+  if (!record) throw new Error(`${name}: its records are incomplete (${directory})`);
+  const deadline = Date.now() + wait;
+  while (kitJobRunning(record) && Date.now() < deadline) await delay(Math.min(200, Math.max(10, deadline - Date.now())));
+  const lines = logLines(directory);
+  if (kitJobRunning(record)) {
+    const since = Date.parse(kitJobRecord(directory, "started") ?? "");
+    console.log(`RUNNING: ${name} (${Number.isFinite(since) ? elapsed(Date.now() - since) : "unknown"}, step ${step(lines)}). Run again: ${again}`);
+    return 75;
+  }
+  const code = kitJobExit(record);
+  const result = lines.findLast(line => line.startsWith("RESULT: "));
+  // The call ends with one bare RESULT line; the job's earlier steps' lines show as "job: RESULT: …".
+  const tail = lines.filter(line => line !== result).slice(-15).map(line => line.startsWith("RESULT: ") ? `job: ${line}` : line);
+  if (tail.length) console.log(tail.join("\n"));
+  if (code === null) {
+    // systemd kills a scope's every process some time after its limit's TERM, the records' writer too.
+    const max = Number(kitJobRecord(directory, "max") ?? 0), since = Date.parse(kitJobRecord(directory, "started") ?? "");
+    const limited = max > 0 && existsSync(join(directory, "scope")) && Date.now() - since >= max * 1000;
+    kitResult("fail", `go ${name} died without an exit record${limited ? ` after its time limit (${max}s)` : ""}; see ${join(directory, "log")}`);
+    return 1;
+  }
+  const limit = lines.findLast(line => line.startsWith("kit bg: the time limit"));
+  const why = limit && code === 143 ? `: ${limit.replace(/^kit bg: /, "")}` : "";
+  // Exit 75 means "still running" from kit go, so a job's own 75 is passed on as 1.
+  if (code === 75) { if (result) console.log(`job: ${result}`); kitResult("fail", `go ${name} exit 75 (the job's own code; kit go gives 1 for it); see ${join(directory, "log")}`); return 1; }
+  // The scope's time limit ended it: that is the result, whatever an earlier step's RESULT line said.
+  if (why) { if (result) console.log(`job: ${result}`); kitResult("fail", `go ${name} exit ${code}${why}; see ${join(directory, "log")}`); return code; }
+  // A job whose RESULT line says fail exits non-zero through kit go, even if the job itself exited 0.
+  if (result && code === 0 && result.startsWith("RESULT: fail")) { console.log(result); return 1; }
+  if (result && !(code !== 0 && result.startsWith("RESULT: ok"))) console.log(result);
+  // A job stopped after its RESULT line said ok (its scope's time limit, a signal) still fails.
+  else if (result) { console.log(`job: ${result}`); kitResult("fail", `go ${name} exit ${code} after its RESULT line said ok${why}; see ${join(directory, "log")}`); }
+  else kitResult(code === 0 ? "ok" : "fail", `go ${name} exit ${code} without a RESULT line${why}; see ${join(directory, "log")}`);
+  return code;
+}
+
+try { process.exitCode = await main(); }
+catch (error) {
+  console.error(error.message);
+  kitResult("fail", `go ${error.message}`);
+  process.exitCode = 1;
+}

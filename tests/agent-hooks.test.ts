@@ -420,13 +420,13 @@ test("Claude settings and Codex hooks configuration share executable Bash and Se
   const settings = JSON.parse(readFileSync(".claude/settings.json", "utf8")) as {
     hooks: Record<string, { matcher?: string; hooks: { type: string; command: string }[] }[]>;
   };
-  assert.deepEqual(Object.keys(settings.hooks).sort(), ["PostToolUse", "PostToolUseFailure", "PreToolUse", "SessionStart", "SubagentStart", "SubagentStop"]);
-  assert.deepEqual(settings.hooks.PreToolUse.map((entry) => entry.matcher), ["Bash", "Agent|Task"]);
+  assert.deepEqual(Object.keys(settings.hooks).sort(), ["PostToolUse", "PostToolUseFailure", "PreToolUse", "SessionStart", "Stop", "SubagentStart", "SubagentStop"]);
+  assert.deepEqual(settings.hooks.PreToolUse.map((entry) => entry.matcher), ["Bash", "Agent|Task", "mcp__t3-code__delegate_task|Agent|Task"]);
   assert.deepEqual(settings.hooks.PostToolUse.map((entry) => entry.matcher), ["Agent|Task"]);
   assert.deepEqual(settings.hooks.PostToolUseFailure.map((entry) => entry.matcher), ["Agent|Task"]);
   for (const entries of Object.values(settings.hooks)) for (const entry of entries) for (const hook of entry.hooks) {
     assert.equal(hook.type, "command");
-    assert.match(hook.command, /^bash "\$\{CLAUDE_PROJECT_DIR:-\$\(git rev-parse --show-toplevel\)\}"\/scripts\/agents\/hooks\/run\.sh (bash-guard|agent-cap|session-env|context-card)$/);
+    assert.match(hook.command, /^bash "\$\{CLAUDE_PROJECT_DIR:-\$\(git rev-parse --show-toplevel\)\}"\/scripts\/agents\/hooks\/run\.sh (bash-guard|agent-cap|session-env|context-card|brief-guard|stop-guard)$/);
     const name = hook.command.split(" ").at(-1)!;
     const script = name === "context-card" ? resolve("context-card.mjs") : join(hooks, `${name}.sh`);
     assert.equal(spawnSync("/usr/bin/test", ["-x", script]).status, 0);
@@ -434,9 +434,9 @@ test("Claude settings and Codex hooks configuration share executable Bash and Se
   assert.deepEqual(settings.hooks.SessionStart.flatMap((entry) => entry.hooks.map((hook) => hook.command.split(" ").at(-1))), ["session-env", "context-card"]);
   assert.equal(spawnSync("/usr/bin/test", ["-x", join(hooks, "run.sh")]).status, 0);
   const codex: typeof settings = JSON.parse(readFileSync(".codex/hooks.json", "utf8"));
-  assert.deepEqual(Object.keys(codex.hooks).sort(), ["PreToolUse", "SessionStart", "SubagentStart", "SubagentStop"]);
+  assert.deepEqual(Object.keys(codex.hooks).sort(), ["PreToolUse", "SessionStart", "Stop", "SubagentStart", "SubagentStop"]);
   assert.deepEqual(codex.hooks.PreToolUse, [settings.hooks.PreToolUse[0]]);
-  for (const event of ["SessionStart", "SubagentStart", "SubagentStop"]) {
+  for (const event of ["SessionStart", "SubagentStart", "SubagentStop", "Stop"]) {
     assert.deepEqual(codex.hooks[event], settings.hooks[event]);
   }
   assert.equal(spawnSync("git", ["check-ignore", ".claude/settings.json"]).status, 1);

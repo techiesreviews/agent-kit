@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -13,7 +13,8 @@ const kit = resolve("kit");
 const script = resolve("kit.d/bg");
 function fixture(t: TestContext) {
   const root = mkdtempSync(join(tmpdir(), "kit-bg-"));
-  const env = { ...kitEnv(), KIT_ROOT: root, KIT_WAIT_POLL_MS: "10" };
+  // The scope start has its own tests below, with a fake systemd-run; the rest run the plain way on any machine.
+  const env: NodeJS.ProcessEnv = { ...kitEnv(), KIT_ROOT: root, KIT_WAIT_POLL_MS: "10", KIT_BG_SCOPE: "off" };
   const run = (...args: string[]) => spawnSync(kit, ["bg", ...args], { env, encoding: "utf8" });
   t.after(() => {
     const jobs = join(root, ".scratch/kit-jobs");
@@ -357,4 +358,58 @@ test("bg stop refuses invalid process identities without signalling another grou
     assert.match(f.run("--stop", "identity").stdout, /not running/);
     assert.ok(live(Number(readFileSync(join(dir, "pid"), "utf8"))));
   } finally { writeFileSync(file, original); }
+});
+
+// A fake systemd-run: records its options, then runs the command after them in place, as --scope does.
+function fakeSystemd(t: TestContext, fail = false) {
+  const f = fixture(t);
+  const bin = join(f.root, ".bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "systemd-run"), `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> ${JSON.stringify(join(f.root, "systemd.log"))}
+${fail ? "exit 1" : ""}
+while (( $# )); do case $1 in --description|-p) shift 2 ;; --*) shift ;; *) break ;; esac; done
+exec "$@"
+`);
+  chmodSync(join(bin, "systemd-run"), 0o755);
+  const { KIT_BG_SCOPE: _off, ...env } = f.env;
+  Object.assign(f.env, { ...env, PATH: `${bin}:${process.env.PATH}` });
+  delete f.env.KIT_BG_SCOPE;
+  return { ...f, log: () => readFileSync(join(f.root, "systemd.log"), "utf8") };
+}
+
+test("bg starts its launcher in a user systemd scope with a description and the time limit", async t => {
+  const f = fakeSystemd(t);
+  const done = join(f.root, "done");
+  ok(f.run("scoped", "--", process.execPath, "-e", `require("fs").writeFileSync(${JSON.stringify(done)}, "")`));
+  await until(() => existsSync(done));
+  const line = f.log().split("\n").find(entry => entry.includes("setsid"))!;
+  assert.match(line, new RegExp(`^--user --scope --quiet --collect --description kit bg scoped \\(${f.root.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}\\) -p RuntimeMaxSec=21600 setsid nohup `));
+  ok(f.run("hours", "--max", "2h", "--", "true"));
+  assert.match(f.log(), /RuntimeMaxSec=7200 setsid/);
+  ok(f.run("forever", "--max", "0", "--", "true"));
+  assert.match(f.log().trimEnd().split("\n").at(-1)!, /--description kit bg forever \(.*\) setsid nohup /);
+  const bad = f.run("bad", "--max", "soon", "--", "true");
+  assert.equal(bad.status, 1);
+  assert.match(bad.stdout, /RESULT: fail invalid --max: soon/);
+});
+
+test("bg without a user systemd starts the old way and says the job ends with the session", async t => {
+  const f = fakeSystemd(t, true);
+  const done = join(f.root, "done");
+  const output = f.run("plain", "--", process.execPath, "-e", `require("fs").writeFileSync(${JSON.stringify(done)}, "")`);
+  ok(output);
+  assert.match(output.stdout, /^note: no user systemd; this job ends with the session$/m);
+  await until(() => existsSync(done));
+  assert.doesNotMatch(f.log(), /setsid/);
+});
+
+test("bg names the time limit only when its scope set one, never for a job stopped by hand", async t => {
+  const f = fixture(t);
+  const held = join(f.root, "never");
+  ok(f.run("by-hand", "--max", "1", "--", process.execPath, "-e", `const fs = require("fs"); setInterval(() => { if (fs.existsSync(${JSON.stringify(held)})) process.exit(0); }, 10);`));
+  await delay(1200);
+  ok(f.run("--stop", "by-hand"));
+  await until(() => existsSync(join(f.directory("by-hand"), "exit")));
+  assert.doesNotMatch(readFileSync(join(f.directory("by-hand"), "log"), "utf8"), /time limit/);
 });

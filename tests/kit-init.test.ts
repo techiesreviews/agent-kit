@@ -137,6 +137,7 @@ test("on a machine with no kit, the hook launcher kit init wrote warns on every 
     .flat().flatMap((entry) => entry.hooks.map((hook) => hook.command));
   const payload = JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "git stash pop" } });
   for (const [name, stdout] of [["bash-guard", `{"systemMessage":"${warning}"}\n`], ["agent-cap", `{"systemMessage":"${warning}"}\n`],
+    ["brief-guard", `{"systemMessage":"${warning}"}\n`], ["stop-guard", `{"systemMessage":"${warning}"}\n`],
     ["session-env", `${warning}\n`], ["context-card", ""]]) {
     assert.ok(commands.includes(hookCommand(name)), name);
     const hook = spawnSync("bash", ["-c", hookCommand(name)], { cwd: work, env, input: payload, encoding: "utf8", timeout: 10_000 });
@@ -173,14 +174,16 @@ test("existing .claude/settings.json keys, hooks and AGENTS.md text survive; onl
   const { work } = f.repo("kept", { ".claude/settings.json": JSON.stringify(settings), "AGENTS.md": "# Agents\n\nOur own rules.\nRun `scripts/agents/kit --help` for commands.\n" });
   const run = f.init(work, ["--light"]);
   assert.equal(run.status, 0, run.stdout + run.stderr);
-  assert.match(run.stdout, /^wrote \.claude\/settings\.json \(merged 7 hook entries\)$/m);
+  assert.match(run.stdout, /^wrote \.claude\/settings\.json \(merged 9 hook entries\)$/m);
   assert.match(run.stdout, /^wrote AGENTS\.md \(added 1 line\)$/m);
   const merged = JSON.parse(readFileSync(join(work, ".claude/settings.json"), "utf8"));
   assert.equal(merged.model, "opus");
   assert.deepEqual(merged.permissions, settings.permissions);
-  assert.deepEqual(merged.hooks.Stop, settings.hooks.Stop);
+  // The project's own Stop hook stays first; the kit's stop-guard joins it.
+  assert.deepEqual(merged.hooks.Stop, [{ hooks: [own, { type: "command", command: hookCommand("stop-guard") }] }]);
   assert.deepEqual(merged.hooks.PreToolUse, [{ matcher: "Bash", hooks: [own, { type: "command", command: hookCommand("bash-guard") }] },
-    { matcher: "Agent|Task", hooks: [{ type: "command", command: hookCommand("agent-cap") }] }]);
+    { matcher: "Agent|Task", hooks: [{ type: "command", command: hookCommand("agent-cap") }] },
+    { matcher: "mcp__t3-code__delegate_task|Agent|Task", hooks: [{ type: "command", command: hookCommand("brief-guard") }] }]);
   assert.deepEqual(merged.hooks.SessionStart, [{ hooks: [{ type: "command", command: hookCommand("session-env") }, { type: "command", command: hookCommand("context-card") }] }]);
   for (const event of ["PostToolUse", "PostToolUseFailure", "SubagentStart", "SubagentStop"]) assert.equal(merged.hooks[event].length, 1, event);
   const agents = readFileSync(join(work, "AGENTS.md"), "utf8");
@@ -286,12 +289,13 @@ test("an existing .codex/hooks.json keeps its own entries, and a kit hook under 
   f.git(main, "push", "-q", "origin", "main", "dev");
   const run = f.init(work, ["--light"]);
   assert.equal(run.status, 0, run.stdout + run.stderr);
-  assert.match(run.stdout, /^wrote \.codex\/hooks\.json \(merged 4 hook entries\)$/m);
+  assert.match(run.stdout, /^wrote \.codex\/hooks\.json \(merged 5 hook entries\)$/m);
   assert.equal(JSON.parse(readFileSync(join(work, "scripts/agents/kit.json"), "utf8")).project, "shop");
   const merged = JSON.parse(readFileSync(join(work, ".codex/hooks.json"), "utf8"));
   assert.deepEqual(merged.hooks.PreToolUse, codex.hooks.PreToolUse);
   assert.deepEqual(merged.hooks.SessionStart, [{ hooks: [own, { type: "command", command: hookCommand("session-env") }, { type: "command", command: hookCommand("context-card") }] }]);
   for (const event of ["SubagentStart", "SubagentStop"]) assert.deepEqual(merged.hooks[event], [{ hooks: [{ type: "command", command: hookCommand("agent-cap") }] }], event);
+  assert.deepEqual(merged.hooks.Stop, [{ hooks: [{ type: "command", command: hookCommand("stop-guard") }] }]);
 });
 
 test("a write that fails ends with a RESULT line naming it and what was written, and lists nothing", (t) => {

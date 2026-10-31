@@ -25,8 +25,22 @@ says for today; never claim a planned item ran.
   `cd … || exit 1`; work in progress is a commit on your own branch.
 - **Lex in plain words:** questions are plain choices about what changes for him, each with a
   recommended answer. Technical questions go to him too, explained plainly with file paths.
-- **Plain English** (Lex, 2026-10-30): every builder, reviewer and runner report, ticket and
-  commit message is in plain English, since Lex reads them.
+- **Plain English** (Lex, 2026-10-30): every ticket, doc, code comment, commit message, PR text,
+  review finding and message to Lex is in plain English, since Lex reads them. Talk between agents
+  (a brief, a child's report to its lead) follows the talk style `kit brief` sets: short English or
+  Classical Chinese in turn during the 7-day trial from 2026-10-31 (`KIT_TALK_STYLE=en|wenyan|plain`
+  forces one), never in anything a person reads. The lead ends the trial by hand after its verdict
+  (due 2026-11-07, ticket 83), with a kit change to the chosen style.
+- **Briefs come from the kit** (Lex, 2026-10-31): every child's brief is the output of
+  `scripts/agents/kit brief <ticket> [--stage build|review|second-look|fix] [--note "<text>"]`, never
+  retyped, so a rule changes once, in the kit. The `brief-guard` hook refuses a `delegate_task` or
+  `Agent` brief without its `kit-brief:` marker line; a research, review-only or question task starts
+  with `kit-brief: none (<reason>)`.
+- **Finish the job in the turn** (Lex, 2026-10-31): a short check runs in the foreground; a long job
+  runs as `scripts/agents/kit go <job> -- <command>`, and its `Run again: scripts/agents/kit go <job>`
+  line is run again in the foreground until the job's RESULT line. The `stop-guard` hook refuses a
+  turn end while such a job runs (it gives way past the job's time limit, after six refusals in a
+  row, or with `KIT_ALLOW_STOP=1`).
 - **Tuesday is Lex's only review day** (Lex, 2026-10-27): everything that needs him waits in one
   [Tuesday pack](#tuesday-review); between Tuesdays the work keeps moving. Budget: his $200/month
   Claude subscription and the free workers, never more.
@@ -133,18 +147,20 @@ on a usage-limit `problem:` line, tell Lex the reset time and carry on with Clau
 - **Use:** `scripts/agents/kit next [map…]` picks the tickets and builders by fixed rules.
   The lead claims each `next:` ticket on the landing branch (assignee, commit, push) and starts it as
   **its own T3 thread**: one `delegate_task` per ticket (or group) with `isolation: "worktree"`,
-  `mode: "async"`, the ticket's builder as `target`, and this brief (where the landing branch is
-  also the release branch, a raw claim push is refused: claim with a docs-tier `kit pr`):
-
-  > Build slice `<ticket path>` in `<project>`, owner `<owner>`. Follow docs/agents/runner.md from Setup to
-  > Report with Agent Kit (`scripts/agents/kit`); builder `<model>`, `ASE_REVIEW_MODEL=<review pin>`. Last line: PR <full URL>, head <SHA>, checks and reviews <state>.
+  `mode: "async"`, the ticket's builder as `target`, and as `task` the whole output of
+  `scripts/agents/kit brief <ticket path> [--note "<text>"]` above its RESULT line. A group's tickets
+  run as one job through `kit next --start`, which `kit brief` points to. Where the landing
+  branch is also the release branch, a raw claim push is refused: claim with a docs-tier `kit pr`.
+  The brief names the owner, setup, pins, commands, evidence, house rules, wait rule, skills, talk
+  style and the report's last line (PR <full URL>, head <SHA>, checks and reviews <state>).
 
   The child thread runs the slice from setup to `kit pr`, links only its own PR and settles when T3 sees it merged.
   Delegated (`opencode/…`) tickets go the same way with their free model.
 - **The lead's thread is the overview** (Lex, 2026-10-26): pinned (`t3_thread_organize pin`), no PR
   links, no long jobs of its own. It follows each child's `next` notice, relays what matters to Lex,
-  asks his decisions and keeps the map; jobs started in a lead turn die when that turn ends (each
-  turn is its own systemd scope), so building, checks and landing live in the child threads.
+  asks his decisions and keeps the map. Building, checks and landing live in the child threads: a
+  long job in the lead's own worktree would hold its turn (the Stop hook) and keep it from the
+  overview.
 - **Heartbeat** (while a build runs): the lead creates a T3 `schedule_task` every 30 minutes, bound
   to the lead's thread, with this prompt: "In the landing-branch worktree (`devRoot` in the settings) run
   `scripts/agents/kit heartbeat <map> --start` and post its `done:` and `running/next:` lines to
@@ -163,9 +179,14 @@ on a usage-limit `problem:` line, tell Lex the reset time and carry on with Clau
 
 ### 6. Build
 
-- **Use:** `kit slice --ticket <t> --builder claude-opus-5-5` under `kit bg` (the kit's default reviewer is Claude; set `ASE_REVIEW_MODEL` only for a second opinion);
-  wait once with `kit wait job slice-<NN> --timeout 2h` in the background. Order of steps, manual
-  fallback and ticket Done: the project's runner guide (`docs/agents/runner.md`).
+- **Use:** `scripts/agents/kit go slice-<prefix><NN> -- scripts/agents/kit slice --ticket <t> --builder claude-opus-5-5`
+  (the kit's default reviewer is Claude; set `ASE_REVIEW_MODEL` only for a second opinion). `kit go`
+  starts the slice in its own systemd scope and waits at most 9 minutes per call (give the call a
+  10-minute tool time limit: Claude's Bash `timeout: 600000`); on its `RUNNING:`
+  line (exit 75) run `scripts/agents/kit go slice-<prefix><NN>` again (the job `kit next` prints, such as `slice-ke84`), in the foreground, until the slice's
+  RESULT line. A long `kit pr` or spec run goes the same way. Order of steps, manual fallback and
+  ticket Done: the project's runner guide (`docs/agents/runner.md`).
+- **Skills:** the brief names the skills the [skills map](#skills-map) picks for the ticket's files.
 - **Visible work:** the builder follows the [house style](house-style.md), the project's UX rulebook
   and the approved mock-up.
 - **Decides:** the builder, inside the ticket's Files; anything outside them stops the slice.
@@ -266,6 +287,37 @@ on a usage-limit `problem:` line, tell Lex the reset time and carry on with Clau
   --waive` hands the reason on, so one waiver covers both the review findings and the check.
 - **Done when:** the live project serves the new version and its number is recorded where the
   extras say.
+
+## Skills map
+
+The kit names skills, never copies them (paid skills stay on the machine): `skills.json` in the kit
+maps a job to skill names, each with the kit's own one-line fallback. `kit brief`, `kit slice`'s
+build brief and `kit review`'s brief use it. Claude gets `/name`, Codex `$name`, and a model without
+skills (OpenCode, Grok) the fallback line. **House rules beat skill advice:** where a skill suggests
+what a house rule forbids (a toast, say, against "no toasts, feedback in place"), the house rule wins.
+
+| Job | Skills |
+| --- | --- |
+| Talk style (the style line) | caveman |
+| Any UI build or styling (CSS, UI and component files, or styling words in the ticket's title and Files) | good-css, emil-design-foundations, emil-ui-polish |
+| Forms, inputs and buttons | emil-forms-and-inputs |
+| Type | emil-typography |
+| Colour and tokens | emil-color |
+| Menus, popovers, panels and dialogs | emil-surfaces |
+| Touch and accessibility | emil-touch-and-accessibility |
+| Phone layouts | emil-mobile-native |
+| Motion | emil-animations, animate |
+| Speed | emil-performance |
+| Component APIs | emil-component-design |
+| The design system docs | emil-design-system-docs |
+| Marketing pages | emil-marketing-pages |
+| UI review (`kit review` on a UI diff; **planned** for `kit ux`) | emil-ui-review, emil-unslop-design, break-ui |
+| Before a release (**planned**: no release brief yet) | emil-prep-for-prod |
+
+The rows from forms to UI review apply only when the slice touches UI; the release row is for a
+release brief (**planned**). A project adds or removes
+names with `"skills": { "add": [...], "remove": [...] }` in `scripts/agents/kit.json`. A skill
+missing on a machine is a `kit doctor` note (`skills map`), never a failure.
 
 ## UX confidence ladder
 

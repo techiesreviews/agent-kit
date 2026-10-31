@@ -3,7 +3,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, normalize, relative, resolve } from "node:path";
-import { kitBranch, kitDevRoot, kitHome, kitResult, kitRoot, kitSettings } from "../kit-lib.mjs";
+import { kitBranch, kitDevRoot, kitHome, kitJobMarkGo, kitResult, kitRoot, kitRulebookPins, kitSettings, kitSliceBranch } from "../kit-lib.mjs";
 import { loadTickets, parseTicket, resolveTickets } from "../tickets.mjs";
 
 // Settings from scripts/agents/kit.json; an unreadable file still lets --help print, with placeholders.
@@ -41,17 +41,7 @@ let pins = {}, reviewModel = "";
 const cap = 5;
 
 function rulebookPins() {
-  const rows = new Map();
-  const read = (file, label) => {
-    let text;
-    try { text = readFileSync(file, "utf8"); }
-    catch (error) { throw new Error(`cannot read the ${label} ${file}: ${error.code ?? error.message}`); }
-    for (const [, role, model] of text.matchAll(/^\| (Builder, every slice|Review, every change) \| `([^`]+)`/gm)) rows.set(role, model);
-  };
-  read(join(kitHome(), "docs/kitchen.md"), "shared rulebook");
-  if (settings?.rulebookExtras) read(resolve(kitRoot(), settings.rulebookExtras), "rulebook extras");
-  const builder = rows.get("Builder, every slice"), reviewer = rows.get("Review, every change");
-  if (!builder || !reviewer) throw new Error(`the rulebook has no ${builder ? "Review, every change" : "Builder, every slice"} pin`);
+  const { builder, reviewer } = kitRulebookPins(kitRoot(), settings ?? {});
   pins = { "": builder, claude: builder, sol: builder };
   reviewModel = reviewer;
 }
@@ -126,7 +116,7 @@ function number(slug) { return /^(\d+)-/.exec(slug)?.[1] ?? slug; }
 function naming(ticket, prefix) {
   const nn = `${ticket.file.includes("/build/tickets/") ? "" : "m"}${number(ticket.slug)}`;
   const owner = `${prefix}-${nn}`;
-  return { owner, job: `slice-${prefix}${nn}`, branch: `build/${owner}-${ticket.slug.replace(/^\d+-/, "")}` };
+  return { owner, job: `slice-${prefix}${nn}`, branch: kitSliceBranch(owner, ticket.slug) };
 }
 
 // A group gets "g-" and its slug in place of a number: owner sf-g-fonts, job slice-sfg-fonts.
@@ -374,10 +364,15 @@ function start(item) {
   const command = group
     ? ["next", "--run-group", "--branch", item.branch, "--builder", item.builder.model, ...tickets.flatMap(ticket => ["--ticket", ticket.file])]
     : ["slice", "--ticket", tickets[0].file, "--builder", item.builder.model];
-  const started = run(kit, ["bg", item.job, "--", "scripts/agents/kit", ...command], { cwd: worktree, env });
+  // A group runs its slices one after the other in one job, so it gets no time limit; a slice keeps kit bg's 6h.
+  const started = run(kit, ["bg", item.job, ...(group ? ["--max", "0"] : []), "--", "scripts/agents/kit", ...command], { cwd: worktree, env });
   if (started.status !== 0) throw new Error(`kit bg ${item.job} failed: ${(started.stdout + started.stderr).trim().split("\n").at(-1)}`);
+  // A kit go job, so kit go waits for it 9 minutes at a time. The Stop hook holds only a session working in that
+  // worktree; a lead elsewhere waits by running the wait line in the foreground.
+  const job = join(worktree, ".scratch/kit-jobs", item.job);
+  if (existsSync(job)) kitJobMarkGo(job);
   console.log(`started: ${item.job}`);
-  console.log(`wait: KIT_ROOT=${worktree} scripts/agents/kit wait job ${item.job} --timeout 2h`);
+  console.log(`wait: KIT_ROOT=${worktree} scripts/agents/kit go ${item.job}`);
 }
 
 // A group's one kit bg job: its slices one after the other in this worktree, with one model and a

@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, posix, resolve } from "node:path";
 import { kitBranch, kitSettings } from "./kit-lib.mjs";
+import { ticketSkillLines } from "./skills.mjs";
 
 // The settings file sits at the top of the reviewed checkout, which may be given as any folder in it.
 const topFolder = worktree => {
@@ -110,7 +111,7 @@ export function reviewComplete(result) {
   return lines[0] === "REVIEW_STATUS: complete";
 }
 
-export function reviewBrief(ticketPath, ticket, scope, worktree = process.cwd(), declined = []) {
+export function reviewBrief(ticketPath, ticket, scope, worktree = process.cwd(), declined = [], withSkills = true, model = process.env.ASE_REVIEW_MODEL || "claude-opus-5-5", skillText = ticket) {
   scope ??= landRef(worktree);
   if (!Array.isArray(declined) || declined.some(item => typeof item !== "string" || !item.trim())) {
     throw new Error("declined findings must be a list of non-empty strings");
@@ -127,18 +128,20 @@ export function reviewBrief(ticketPath, ticket, scope, worktree = process.cwd(),
   // standards: one file or a list (AGENTS.md where a project has no standards file).
   const standards = spoken([settings.standards].flat().filter(file => typeof file === "string" && file.trim()));
   const checks = projectChecks(top, settings);
+  // The skills map's review set, for a change that touches UI, named for the reviewer's model.
+  const skills = withSkills ? ticketSkillLines(skillText, "review", settings, model) : [];
   return `Review this build slice in read-only mode. Make no changes.
 Scope: ${label}.
 ${sources.length ? `Spec axis: read ${sources.join(", ")}, including the linked spec and deciding tickets.` : "Spec axis: no ticket supplied; assess the change against the stated intent and repo documentation."}
 ${standards ? `Standards axis: apply ${standards}; cite the applicable rule with each defect.` : "Standards axis: no standards file in scripts/agents/kit.json; judge against the repository's own conventions."}
 ${checks.length ? `The author already ran ${spoken(checks)}; do not report inability to run tests.` : "The project sets no checks in scripts/agents/kit.json; do not assume any ran, and do not report inability to run tests."}
 Report validation gaps only for missing coverage or evidence in the change, with a concrete test to add.
-${declined.length ? `\nDeclined by the author (with reasons):\n${declined.map(item => `- ${item}`).join("\n")}\nReport a declined finding again only if the reason is wrong, and say why.\n` : ""}`;
+${skills.length ? `Skills for this UI change (house rules beat skill advice):\n${skills.join("\n")}\n` : ""}${declined.length ? `\nDeclined by the author (with reasons):\n${declined.map(item => `- ${item}`).join("\n")}\nReport a declined finding again only if the reason is wrong, and say why.\n` : ""}`;
 }
 
 // kit fix passes the list through the child environment so kit review needs no
 // additional flags and its ordinary evidence/permission handling stays shared.
-export function ticketReviewBrief(path, scope, worktree = process.cwd(), declined = JSON.parse(process.env.ASE_REVIEW_DECLINED || "[]")) {
+export function ticketReviewBrief(path, scope, worktree = process.cwd(), declined = JSON.parse(process.env.ASE_REVIEW_DECLINED || "[]"), withSkills = true, model) {
   const absolute = resolve(worktree, path);
   let ticket = readFileSync(absolute, "utf8");
   // Build-map tickets often omit a link to their sibling ../spec.md.
@@ -146,7 +149,7 @@ export function ticketReviewBrief(path, scope, worktree = process.cwd(), decline
   try { readFileSync(spec); ticket += "\n[Map spec](../spec.md)\n"; } catch (error) {
     if (error.code !== "ENOENT") throw error;
   }
-  return reviewBrief(path, ticket, scope, worktree, declined);
+  return reviewBrief(path, ticket, scope, worktree, declined, withSkills, model);
 }
 
 if (import.meta.main) {

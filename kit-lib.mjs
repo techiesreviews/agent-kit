@@ -384,6 +384,37 @@ export function kitJob(directory) {
   return { directory, pid, pgid, started: identity.started };
 }
 
+/**
+ * The pins from the rulebook's "Who cooks" table: the shared rulebook (docs/kitchen.md in the kit), where a row
+ * with the same role in the project's extras (rulebookExtras) wins. Returns { builder, reviewer }; a missing file
+ * or row throws one plain line.
+ */
+export function kitRulebookPins(root = kitRoot(), settings = kitSettings(root)) {
+  const rows = new Map();
+  const read = (file, label) => {
+    let text;
+    try { text = readFileSync(file, "utf8"); }
+    catch (error) { throw new Error(`cannot read the ${label} ${file}: ${error.code ?? error.message}`); }
+    for (const [, role, model] of text.matchAll(/^\| (Builder, every slice|Review, every change) \| `([^`]+)`/gm)) rows.set(role, model);
+  };
+  read(join(kitHome(), "docs/kitchen.md"), "shared rulebook");
+  if (settings?.rulebookExtras) read(resolve(root, settings.rulebookExtras), "rulebook extras");
+  const builder = rows.get("Builder, every slice"), reviewer = rows.get("Review, every change");
+  if (!builder || !reviewer) throw new Error(`the rulebook has no ${builder ? "Review, every change" : "Builder, every slice"} pin`);
+  return { builder, reviewer };
+}
+
+/** A slice's branch: build/<owner>-<ticket slug without its number> (kit next and kit brief name it alike). */
+export function kitSliceBranch(owner, slug) {
+  return `build/${owner}-${slug.replace(/\.md$/i, "").replace(/^\d+-/, "")}`;
+}
+
+/** Mark a job as a kit go job, the kind the Stop hook (hooks/stop-guard.mjs) holds a turn for. */
+export function kitJobMarkGo(directory) {
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, "go"), `${new Date().toISOString()}\n`);
+}
+
 export function kitJobRunning(job) {
   return kitJobMembers(job).length > 0;
 }

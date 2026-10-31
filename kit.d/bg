@@ -1,18 +1,21 @@
 #!/usr/bin/env node
 // kit: start, list or stop detached jobs by name
-import { spawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { constants } from "node:os";
 import { Socket } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { kitJob, kitJobDirectory, kitJobExit, kitJobGroup, kitJobMembers, kitJobProcess, kitJobRecord, kitJobRunning, kitResult } from "../kit-lib.mjs";
+import { kitJob, kitJobDirectory, kitJobExit, kitJobGroup, kitJobMembers, kitJobProcess, kitJobRecord, kitJobRunning, kitResult, kitRoot } from "../kit-lib.mjs";
 
-const usage = `Usage: kit bg <name> [--cwd DIR] -- <command…>
+const usage = `Usage: kit bg <name> [--cwd DIR] [--max D] -- <command…>
        kit bg --list
        kit bg --stop <name>
 Names: [a-z0-9][a-z0-9._-]*. Records/logs: <worktree>/.scratch/kit-jobs/<name>/.
-Jobs use setsid + nohup, their own process group, and stdin /dev/null.
+Jobs use setsid + nohup, their own process group, and stdin /dev/null, inside their own user systemd scope
+(systemd-run --user --scope), so the end of a turn or an app restart does not stop them. --max is the scope's
+time limit (seconds, or with s, m or h; default 6h; 0 for none); a job it ends shows exit 143. Without a user
+systemd (CI, containers, root; or KIT_BG_SCOPE=off) the job starts without a scope and ends with the session.
 Stop sends SIGTERM to that group, then SIGKILL after a 2s grace period.`;
 const args = process.argv.slice(2);
 const quote = value => `'${value.replace(/'/g, "'\\''")}'`;
@@ -67,9 +70,20 @@ async function wrapper(kind, directory, cwd, command) {
   // The supervisor excludes the leader to avoid waiting on each other.
   while (kitJobGroup(pgid).some(member => member.pid !== pgid && member.pid !== process.pid)) await delay(25);
   if (kind === "--command") { process.exitCode = status; return; }
+  // A TERM once the job's own time limit has passed is the scope's RuntimeMaxSec: the log says so.
+  const max = Number(kitJobRecord(directory, "max") ?? 0), started = Date.parse(kitJobRecord(directory, "started") ?? "");
+  if (terminated && max > 0 && existsSync(join(directory, "scope")) && Date.now() - started >= max * 1000 - 1000)
+    appendFileSync(join(directory, "log"), `kit bg: the time limit (${max}s) ended this job\n`);
   writeFileSync(join(directory, "ended"), `${new Date().toISOString()}\n`);
   writeFileSync(join(directory, "exit.tmp"), `${terminated ? 143 : status}\n`);
   renameSync(join(directory, "exit.tmp"), join(directory, "exit"));
+}
+
+/** A --max value in seconds: a number, or one with s, m or h; 0 is no limit. */
+function maxSeconds(value) {
+  const match = /^(\d+)(s|m|h)?$/.exec(value ?? "");
+  if (!match) throw new Error(`invalid --max: ${value}`);
+  return Number(match[1]) * { s: 1, m: 60, h: 3600 }[match[2] ?? "s"];
 }
 
 function parse() {
@@ -77,10 +91,21 @@ function parse() {
   if (args[0] === "--stop" && args.length === 2) return { kind: "stop", name: args[1] };
   const name = args[0];
   let index = 1;
-  let cwd = process.cwd();
-  if (args[index] === "--cwd" && args[index + 1]) { cwd = args[index + 1]; index += 2; }
-  if (args[index] !== "--" || !args[index + 1]) throw new Error("expected <name> [--cwd DIR] -- <command…>");
-  return { kind: "start", name, cwd: realpathSync(resolve(cwd)), command: args.slice(index + 1) };
+  let cwd = process.cwd(), max = 6 * 3600;
+  for (let seen = new Set(); ["--cwd", "--max"].includes(args[index]) && !seen.has(args[index]) && args[index + 1]; index += 2) {
+    seen.add(args[index]);
+    if (args[index] === "--cwd") cwd = args[index + 1];
+    else max = maxSeconds(args[index + 1]);
+  }
+  if (args[index] !== "--" || !args[index + 1]) throw new Error("expected <name> [--cwd DIR] [--max D] -- <command…>");
+  return { kind: "start", name, cwd: realpathSync(resolve(cwd)), max, command: args.slice(index + 1) };
+}
+
+// Whether a user systemd can start a scope here: probed once per start, with a short time limit.
+function scopeWorks() {
+  if (process.env.KIT_BG_SCOPE === "off") return false;
+  const probe = spawnSync("systemd-run", ["--user", "--scope", "--quiet", "--collect", "true"], { stdio: "ignore", timeout: 5000 });
+  return probe.status === 0;
 }
 
 async function lockJob(path, name) {
@@ -134,12 +159,18 @@ async function start(config, directory) {
   writeFileSync(join(directory, "command"), `${config.command.map(quote).join(" ")}\n`);
   writeFileSync(join(directory, "cwd"), `${config.cwd}\n`);
   writeFileSync(join(directory, "started"), `${new Date().toISOString()}\n`);
+  writeFileSync(join(directory, "max"), `${config.max}\n`);
   const log = join(directory, "log");
+  // The scope keeps the launcher's pid, open files (the fd 3 handshake) and environment: systemd-run execs in place.
+  const scope = scopeWorks();
+  const launcher = ["setsid", "nohup", process.execPath, process.argv[1], "--wrapper", directory, config.cwd, ...config.command];
+  const [program, ...argv] = scope ? ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--description", `kit bg ${config.name} (${resolve(kitRoot())})`,
+    ...(config.max ? ["-p", `RuntimeMaxSec=${config.max}`] : []), ...launcher] : launcher;
   const fd = openSync(log, "w");
   let child;
   let launched;
   try {
-    child = gatedSpawn("setsid", ["nohup", process.execPath, process.argv[1], "--wrapper", directory, config.cwd, ...config.command], ["ignore", fd, fd], launch => {
+    child = gatedSpawn(program, argv, ["ignore", fd, fd], launch => {
       launched = launch;
       writeFileSync(join(directory, "launch.tmp"), JSON.stringify(launch));
       renameSync(join(directory, "launch.tmp"), join(directory, "launch"));
@@ -157,6 +188,8 @@ async function start(config, directory) {
   }
   const job = kitJob(directory);
   if (job.pid !== launched.pid || job.started !== launched.started) throw new Error(`job ${config.name} was replaced during launch`);
+  if (!scope) console.log("note: no user systemd; this job ends with the session");
+  else writeFileSync(join(directory, "scope"), `${config.max}\n`);
   console.log(`name: ${config.name}\npid: ${job.pid}\nlog: ${log}`);
   kitResult("ok", `bg ${config.name} pid ${job.pid}`);
 }
