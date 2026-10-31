@@ -23,8 +23,12 @@ const noFile = 'no scripts/agents/kit.json; add one with "project" and "branches
 
 // Kit runs export these into the test process; each test sets its own.
 // An empty KIT_SKILL_DIRS: kit pr's skill guard never reads the real skill folders.
-// KIT_SKILL_HOME: doctor's skills map note reads no real skill folder.
-const clean: NodeJS.ProcessEnv = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", KIT_SKILL_DIRS: "", KIT_SKILL_HOME: join(import.meta.dirname, "fixtures/no-skill-home") };
+// KIT_SKILL_HOME: doctor's skills map note reads no real skill folder. XDG_STATE_HOME: a state folder of this
+// file's own, so kit pr never waits on the machine's real browser-run lock (another agent's specs).
+const state = mkdtempSync(join(tmpdir(), "kit-settings-state-"));
+process.once("exit", () => rmSync(state, { recursive: true, force: true }));
+const clean: NodeJS.ProcessEnv = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", KIT_SKILL_DIRS: "",
+  KIT_SKILL_HOME: join(import.meta.dirname, "fixtures/no-skill-home"), XDG_STATE_HOME: state };
 for (const key of ["KIT_ROOT", "KIT_MAIN_ROOT", "KIT_DEV_ROOT", "KIT_PREVIEW_URL", "KIT_PLAYWRIGHT_MODULE", "KIT_PLAYWRIGHT_MODULE_DEFAULT", "KIT_LIB", "KIT_LIB_MJS", "KIT_HOME", "KIT_HOME_DEFAULT", "KIT_COMMANDS_DIR", "NODE_TEST_CONTEXT"]) delete clean[key];
 
 function temp(t: TestContext) {
