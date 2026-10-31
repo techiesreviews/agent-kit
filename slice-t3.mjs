@@ -109,6 +109,14 @@ export function t3Slice({ root, branch, settings, flags }) {
     };
     // After a review or second look: fix rounds while findings block (all of them before three rounds, P0/P1 after);
     // past the limit the slice stops for the lead.
+    // A skipped second look leaves a mark kit pr reads (second-look.json ok false, skipped), so kit pr --open does not
+    // start a look of its own; it has no result.md, so no reader takes it for a review.
+    const skipMark = reason => {
+      const folder = join(kitMainRoot(), ".scratch/reviews", kitOwner(), `${new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}-t3-skipped`);
+      mkdirSync(folder, { recursive: true });
+      writeFileSync(join(folder, "refs.txt"), `${state.head}\n`);
+      writeFileSync(join(folder, "second-look.json"), JSON.stringify({ kind: "code", ok: false, skipped: reason, runner: "t3" }));
+    };
     const weigh = (folder, after) => {
       const findings = openFindings(readFileSync(join(folder, "result.md"), "utf8")).findings;
       const blocking = afterFixRounds(state.rounds) ? blockingFindings(findings) : findings;
@@ -160,23 +168,33 @@ export function t3Slice({ root, branch, settings, flags }) {
         delete state.fixFrom;
         move("review", `round ${state.rounds}`);
       } else if (stage === "second-look") {
-        const model = flags.model ?? SECOND_LOOK.first;
-        if (openAi(model)) throw new Error(`never an OpenAI model (${model})`);
+        const model = flags.model;
+        if (model && openAi(model)) throw new Error(`never an OpenAI model (${model})`);
         const late = Date.now() - Date.parse(state.stageStarted) > SECOND_LOOK_LIMIT_MS;
         if (late || flags.skipped !== undefined) {
           state.secondLook = { skipped: late ? "no report within 25 minutes" : flags.skipped.trim() || "no reason given" };
+          skipMark(state.secondLook.skipped);
           skippedLine = `second look: skipped (${state.secondLook.skipped})`;
           if (late) console.log("A second look past its time limit is cancelled: task_cancel its child if it still runs.");
           move("pr", skippedLine);
         } else {
           const text = report();
           if (text === null) throw new Error('needs --report FILE, or --skipped "<reason>" when no model can take it');
+          if (!model) throw new Error(`needs --model with the report: the model that took the look (${SECOND_LOOK.first} or ${SECOND_LOOK.fallback})`);
           const now = git("rev-parse", "HEAD");
           if (now !== state.head) throw new Error(`HEAD moved since the second look started (${state.head.slice(0, 7)}, now ${now.slice(0, 7)}); nothing commits during a review`);
           clean();
           state.secondLook = { evidence: evidence(text, model) };
           weigh(state.secondLook.evidence, "pr");
         }
+      } else if (stage === "pr" && flags.report) {
+        // kit pr --open stopped on its own review's findings (after a rebase, or a review it ran itself): the
+        // result.md its RESULT line names. Its findings get the fix rounds, as a review's do.
+        const result = resolve(flags.report);
+        if (basename(result) !== "result.md" || !existsSync(join(result, "..", "refs.txt"))) throw new Error("--report at the pr stage is the result.md that kit pr --open named");
+        clean();
+        state.head = git("rev-parse", "HEAD");
+        weigh(resolve(result, ".."), "pr");
       } else if (stage === "pr") {
         const gh = spawnSync(env.ASE_SLICE_GH || "gh", ["pr", "list", "--head", state.branch, "--state", "all", "--json", "number,state,mergeCommit"],
           { cwd: root, env: kitGhEnv(env, root), encoding: "utf8" });
@@ -216,6 +234,7 @@ function print({ root, settings, state, ticketPath }) {
     console.log(`run: scripts/agents/kit go ${job} -- scripts/agents/kit pr --open --ticket ${ticketPath}`);
     console.log("then: call watch_pull_request on its WATCH: URL, link the PR with link_pull_request and end your turn");
     console.log(`on the wake: scripts/agents/kit pr --merge --ticket ${ticketPath}, then scripts/agents/kit slice --next`);
+    console.log("if kit pr --open stops on review findings: scripts/agents/kit slice --next --report <the result.md it names>");
     kitResult("ok", `slice ${ticketPath} t3 next pr`);
     return 0;
   }

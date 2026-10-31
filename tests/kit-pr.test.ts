@@ -2442,3 +2442,24 @@ test("--open and --merge go alone: not together, nor with --no-merge, --dry-run 
   }
   assert.deepEqual(f.calls(), []);
 });
+
+test("--open takes a T3 slice's skipped second look as skipped, and --merge then queues into a merge queue", t => {
+  const f = fixture(t);
+  const folder = join(f.main, ".scratch/reviews/ak-14/20261031T000000Z-t3-skipped");
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "refs.txt"), `${f.head}\n`);
+  writeFileSync(join(folder, "second-look.json"), JSON.stringify({ kind: "code", ok: false, skipped: "no model", runner: "t3" }));
+  let result = f.run(["--open", "--ticket", "ticket.md"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^second look: skipped \(no model\)$/m);
+  assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args.includes("--second-look")), false);
+  result = f.run(["--merge", "--ticket", "ticket.md"], { FAKE_QUEUE: "1" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^second look: skipped at kit pr --open \(no model\)$/m);
+  assert.match(result.stdout, /^RESULT: ok queued #73 [a-f0-9]{7}$/m);
+  assert.ok(f.ghCalls("merge").at(-1)!.args.includes("--auto"));
+  // --merge for another ticket than --open's is refused.
+  assert.equal(f.run(["--open", "--ticket", "ticket.md"]).status, 0);
+  result = f.run(["--merge"]);
+  assert.equal(result.status, 1); assert.match(result.stdout, /opened PR #73 for ticket\.md, not no ticket/);
+});

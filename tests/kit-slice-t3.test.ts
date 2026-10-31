@@ -238,3 +238,59 @@ test("the T3 runner is picked by --runner auto inside a T3 thread, headless outs
   assert.doesNotMatch(outside.stdout, /^NEXT: /m);
   assert.match(outside.stdout, /RESULT: fail slice build/);
 });
+
+test("a skipped second look leaves the mark kit pr reads, and a second look's report needs its model", t => {
+  const f = fixture(t);
+  f.start(); f.commit("built\n"); f.next(); f.next("--report", f.report(clean));
+  let result = f.next("--report", f.report(clean));
+  assert.equal(result.status, 1); assert.match(result.stdout, /RESULT: fail slice second-look: needs --model with the report/);
+  result = f.next("--skipped", "no model");
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const folder = join(f.main, ".scratch/reviews/ke-04", f.reviews().find(name => name.endsWith("-t3-skipped"))!);
+  assert.deepEqual(JSON.parse(readFileSync(join(folder, "second-look.json"), "utf8")), { kind: "code", ok: false, skipped: "no model", runner: "t3" });
+  assert.equal(readFileSync(join(folder, "refs.txt"), "utf8").trim(), f.git("rev-parse", "HEAD"));
+  assert.equal(existsSync(join(folder, "result.md")), false);
+});
+
+test("a kit pr --open stopped on review findings sends the slice back to a fix round", t => {
+  const f = fixture(t);
+  f.start(); f.commit("built\n"); f.next(); f.next("--report", f.report(clean)); f.next("--skipped", "no model");
+  const folder = join(f.main, ".scratch/reviews/ke-04/pr-review");
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "refs.txt"), `${f.git("rev-parse", "HEAD")}\n`); writeFileSync(join(folder, "result.md"), p1);
+  let result = f.next("--report", f.report(p1));
+  assert.equal(result.status, 1); assert.match(result.stdout, /--report at the pr stage is the result\.md that kit pr --open named/);
+  result = f.next("--report", join(folder, "result.md"));
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^NEXT: fix$/m);
+  assert.match(result.stdout, /file\.txt:1 P1 fault: restore required text/);
+});
+
+test("T3 mode stops at visible paths: refused at the start by the ticket's Files, stopped at review by the diff", t => {
+  const f = fixture(t);
+  writeFileSync(join(f.root, "scripts/agents/kit.json"), JSON.stringify({ project: "kit-slice", branches: { land: "dev" }, paths: { visible: ["file.txt"] } }));
+  f.git("commit", "-q", "-am", "visible settings");
+  let result = f.start();
+  assert.equal(result.status, 1); assert.match(result.stdout, /the ticket's Files reach visible paths \(file\.txt\); T3 mode has no UX stage yet/);
+  writeFileSync(join(f.root, "scripts/agents/kit.json"), JSON.stringify({ project: "kit-slice", branches: { land: "dev" }, paths: { visible: ["page.html"] } }));
+  f.git("commit", "-q", "-am", "other visible path");
+  assert.equal(f.start().status, 0);
+  writeFileSync(join(f.root, "page.html"), "<p>new</p>\n"); f.git("add", "page.html"); f.git("commit", "-q", "-m", "page");
+  f.next();
+  result = f.next("--report", f.report(clean));
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /^NEXT: lead$/m);
+  assert.match(result.stdout, /visible paths changed \(page\.html\)/);
+  assert.equal(f.state().stage, "stopped");
+});
+
+test("the headless slice refuses a T3 slice's state, and --next and --runner refuse each other's options", t => {
+  const f = fixture(t);
+  f.start();
+  let result = f.run("--ticket", ticket, "--builder", "claude-opus-5-5");
+  assert.equal(result.status, 1); assert.match(result.stdout, /this slice runs in T3 mode; go on with kit slice --next/);
+  for (const args of [["--next", "--ticket", ticket], ["--next", "--runner", "t3"], ["--runner", "t3", "--ticket", ticket, "--builder", "x", "--report", "r"]]) {
+    result = f.run(...args);
+    assert.equal(result.status, 1, args.join(" ")); assert.match(result.stdout, /RESULT: fail slice brief: (--next takes only|--report, --model and --skipped go with --next)/);
+  }
+});
