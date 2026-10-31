@@ -127,6 +127,24 @@ test("more than five unsaved files are named five and counted; a changed file un
   assert.match(lastLine(result.stdout), /^RESULT: fail unsaved files \(draft-1\.html, draft-2\.html, draft-3\.html, draft-4\.html, draft-5\.html and 2 more\): /);
 });
 
+test("a token in origin's URL stays off the lines a failed fetch prints", t => {
+  const f = fixture(t);
+  f.git("remote", "set-url", "origin", "https://user:s3cret@127.0.0.1:9/x.git");
+  const result = f.run();
+  assert.equal(result.status, 1);
+  assert.match(lastLine(result.stdout), /^RESULT: fail could not fetch origin \(/);
+  assert.doesNotMatch(result.stdout + result.stderr, /s3cret/);
+});
+
+test("unsaved paths with spaces, accents and a deleted file are named as written", t => {
+  const f = fixture(t);
+  writeFileSync(join(f.root, "my draft.html"), "x\n"); writeFileSync(join(f.root, "café.html"), "x\n");
+  rmSync(join(f.root, "page.html"));
+  const result = f.run();
+  assert.equal(result.status, 1);
+  assert.match(lastLine(result.stdout), /^RESULT: fail unsaved files \(café\.html, my draft\.html, page\.html\): /);
+});
+
 test("no origin remote, and an origin that cannot be fetched, fail with their own lines", t => {
   const f = fixture(t);
   f.git("remote", "set-url", "origin", join(f.dir, "gone.git"));
@@ -153,7 +171,7 @@ test("a HEAD ahead of origin/<release> fails: its commit never reached the relea
   f.commit(f.root, "local fix");
   const result = f.run();
   assert.equal(result.status, 1);
-  assert.equal(lastLine(result.stdout), `RESULT: fail HEAD ${f.short()} is 1 commit ahead of origin/main: what goes live must be on main; land it with kit pr`);
+  assert.equal(lastLine(result.stdout), `RESULT: fail HEAD ${f.short()} is 1 commit ahead of origin/main: what goes live must be on main; land it on dev with kit pr, then kit pr --release`);
 });
 
 test("a HEAD behind origin/<release> fails after a fetch, though the local origin/<release> was stale", t => {
@@ -172,7 +190,7 @@ test("an origin branch force-pushed back is fetched over the newer one the clone
   f.gitAt(peer, "push", "-q", "--force", "origin", `${base}:main`);
   const result = f.run();
   assert.equal(result.status, 1);
-  assert.equal(lastLine(result.stdout), `RESULT: fail HEAD ${f.short()} is 1 commit ahead of origin/main: what goes live must be on main; land it with kit pr`);
+  assert.equal(lastLine(result.stdout), `RESULT: fail HEAD ${f.short()} is 1 commit ahead of origin/main: what goes live must be on main; land it on dev with kit pr, then kit pr --release`);
 });
 
 test("a checkout with no commit fails with its own line", t => {
@@ -223,6 +241,12 @@ test("--land compares HEAD with origin/<land>, for kit pr --release", t => {
   f.commit(f.root, "unlanded");
   result = f.run(["--land"]);
   assert.equal(lastLine(result.stdout), `RESULT: fail HEAD ${f.short()} is 1 commit ahead of origin/dev: a release carries only what landed on dev; land it with kit pr first`);
+});
+
+test("a live landing branch missing on origin says to land work there, not to run kit pr --release", t => {
+  const f = fixture(t, { land: "live", release: "live" });
+  const result = f.run();
+  assert.equal(lastLine(result.stdout), "RESULT: fail origin has no branch live: land work on live through kit pr first");
 });
 
 test("--land with no landing branch on origin says to land work there first", t => {
