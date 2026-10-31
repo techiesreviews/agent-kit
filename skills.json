@@ -4,7 +4,7 @@
   "sets": [
     { "name": "ui", "why": "any UI build or styling",
       "paths": ["\\.(css|scss|sass|less)$", "(^|/)(components|ui|styles|page-builder)/", "\\.(html|vue|svelte|astro|jsx|tsx)$"],
-      "words": ["\\b(css|styl(e|es|ing)|layout|screens?)\\b"],
+      "words": ["\\b(css|styl(e|es|ing)|layout|screens?|buttons?|forms?|dialogs?|menus?|popovers?)\\b"],
       "skills": ["good-css", "emil-design-foundations", "emil-ui-polish"] },
     { "name": "forms", "needs": "ui", "why": "forms, inputs and buttons",
       "paths": ["(^|[/_.-])(forms?|inputs?|buttons?|fields?|checkbox(es)?|selects?)([/_.-]|$)"], "words": ["\\b(forms?|inputs?|buttons?|fields?|checkbox(es)?|submit)\\b"],
