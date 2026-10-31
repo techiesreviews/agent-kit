@@ -73,12 +73,12 @@ const SECOND_LOOK = { first: "grok-4.7", fallback: "opencode/deepseek-v4.1-flash
  * settings, the ticket's path there and its text, the stage, owner, note, the target model, the talk style and
  * the kit's version.
  */
-export function composeBrief({ root, settings, ticket, text, stage, owner, note, model, style, version, pins = kitRulebookPins(root, settings), review = process.env.ASE_REVIEW_MODEL || pins.reviewer }) {
+export function composeBrief({ root, settings, ticket, text, stage, owner, note, model, style, version, task, pins = kitRulebookPins(root, settings), review = process.env.ASE_REVIEW_MODEL || pins.reviewer }) {
   const info = readTicket(text);
   // kit next runs a group's tickets as one job (kit next --run-group) on the group's own branch.
   if (info.group) throw new Error(`${ticket} is in group ${info.group}: kit next --start runs a group as one job; kit brief writes briefs for single tickets`);
   const land = settings.branches?.land ?? "main";
-  const slug = basename(ticket).replace(/\.md$/i, "");
+  const slug = task ? ticket.replace(/^task:/, "") : basename(ticket).replace(/\.md$/i, "");
   const branch = kitSliceBranch(owner, slug);
   const builder = builderModel(info.builder, pins.builder);
   const target = model || (stage === "review" ? review : stage === "second-look" ? SECOND_LOOK.first : builder);
@@ -87,14 +87,16 @@ export function composeBrief({ root, settings, ticket, text, stage, owner, note,
   // al-01 runs as slice-al01, site-fonts-01 as slice-site-fonts01. Another owner keeps its name.
   const job = `slice-${owner.toLowerCase().replace(/-(m?\d+)$/, "$1").replace(/[^a-z0-9._-]/g, "")}`;
   const sliceLine = `scripts/agents/kit go ${job} -- scripts/agents/kit slice --ticket ${ticket} --builder ${target}`;
-  const skills = pickSkills({ files: info.files, words: `${info.title}\n${info.filesText}`, stage, settings });
+  const skills = pickSkills({ files: info.files, words: `${info.title}\n${info.filesText}${task ? `\n${note ?? ""}` : ""}`, stage, settings });
+  // What the brief is about: a ticket file, or a task the note holds.
+  const what = task ? `the task "${task}"` : `\`${ticket}\``;
   const out = [];
   const section = (title, lines) => { if (lines.length) out.push("", `## ${title}`, ...lines.map(line => `- ${line}`)); };
   const project = settings.project ?? basename(root);
-  if (stage === "build") out.push(`Kit brief: build \`${ticket}\` in \`${project}\` (${root}), owner \`${owner}\`. Build the whole ticket, from setup to a merged PR, with Agent Kit.`);
-  if (stage === "fix") out.push(`Kit brief: fix round for \`${ticket}\` in \`${project}\` (${root}), owner \`${owner}\`. Fix round: fix each open finding in one commit on the slice branch \`${branch}\`.`);
-  if (reviewing) out.push(`Kit brief: ${stage === "review" ? "review" : "second look"} of \`${ticket}\` in \`${project}\` (${root}), branch \`${branch}\`. You are the reviewer: read-only. Make no changes, no commits and no PR.`);
-  out.push(`Read first: the ticket with all its Comments, the build README beside it, the docs it links, and AGENTS.md; ${reviewing ? "" : "the project's runner guide (`docs/agents/runner.md`) for the order of steps; "}\`scripts/agents/kit rulebook\` holds the house rules in full.`);
+  if (stage === "build") out.push(`Kit brief: build ${what} in \`${project}\` (${root}), owner \`${owner}\`. Build the whole ${task ? "task (it is in the note below; the project keeps no ticket file for it)" : "ticket"}, from setup to a merged PR, with Agent Kit.`);
+  if (stage === "fix") out.push(`Kit brief: fix round for ${what} in \`${project}\` (${root}), owner \`${owner}\`. Fix round: fix each open finding in one commit on the slice branch \`${branch}\`.`);
+  if (reviewing) out.push(`Kit brief: ${stage === "review" ? "review" : "second look"} of ${what} in \`${project}\` (${root}), branch \`${branch}\`. You are the reviewer: read-only. Make no changes, no commits and no PR.`);
+  out.push(`Read first: ${task ? "the note below" : "the ticket with all its Comments, the build README beside it, the docs it links"}, and AGENTS.md; ${reviewing ? "" : "the project's runner guide (`docs/agents/runner.md`) for the order of steps; "}\`scripts/agents/kit rulebook\` holds the house rules in full.`);
   if (!reviewing) {
     section("Setup", [
       stage === "fix"
@@ -108,12 +110,15 @@ export function composeBrief({ root, settings, ticket, text, stage, owner, note,
       "Agent Kit is required: `scripts/agents/kit doctor` first; fix every ✗ that is not marked optional (a missing optional reviewer or skill is only a note). A kit command that cannot run is said in the report, never skipped silently or claimed.",
       "Tests first: each new test fails before the change.",
       `While building: ${[unit && "`scripts/agents/kit unit --affected`", check && `\`${check}\` ${when}`, lint && `\`${lint}\``, "the ticket's focused checks"].filter(Boolean).join(", ")}.`,
-      ...(stage === "build" ? [
+      ...(stage === "build" && task ? [
+        `Build it, then \`scripts/agents/kit review\` and \`scripts/agents/kit pr --title ${JSON.stringify(task)}\` into \`${land}\` (checks for the change's tier, the second look, CI, merge), each under \`kit go\`. Link the PR with T3 \`link_pull_request\`.`,
+        "Report every RESULT line, the PR URL and the merge SHA.",
+      ] : stage === "build" ? [
         `Default: the slice builds, reviews, runs the fix rounds and the second look, and lands with \`kit pr\`: \`${sliceLine}\`; then \`scripts/agents/kit go ${job}\` again while it prints RUNNING.`,
         `Manual fallback (the runner guide's): build it yourself, then \`scripts/agents/kit review --ticket ${ticket}\` and \`scripts/agents/kit pr --ticket ${ticket}\` into \`${land}\` (checks for the change's tier, the second look, CI, merge), each under \`kit go\`. Link the PR with T3 \`link_pull_request\`.`,
         "The ticket's own \"Kit commands and evidence\" section adds to this. Report every RESULT line, the PR URL and the merge SHA.",
       ] : [
-        `For each finding you decline, give it with its reason in your report: \`scripts/agents/kit review --ticket ${ticket}\` reads declined findings with their reasons.`,
+        `For each finding you decline, give it with its reason in your report: \`scripts/agents/kit review${task ? "" : ` --ticket ${ticket}`}\` reads declined findings with their reasons.`,
         "The findings are in the note below, else in the newest `findings.json` under the main checkout's `.scratch/reviews/<owner>/`.",
       ]),
     ]);
@@ -121,11 +126,13 @@ export function composeBrief({ root, settings, ticket, text, stage, owner, note,
     // The slice branch, not the lead's checkout, is what is reviewed.
     const range = `Scope: git diff origin/${land}...origin/${branch} (\`git fetch -q origin\` first).`;
     let scope;
-    try { scope = ticketReviewBrief(ticket, undefined, root, [], false).trimEnd().replace(/^Scope: .*$/m, range); }
-    catch { scope = `Review this build slice in read-only mode. Make no changes.\n${range}\nSpec axis: read ${ticket}, including the linked spec and deciding tickets.`; }
+    try {
+      if (task) throw new Error("no ticket file");
+      scope = ticketReviewBrief(ticket, undefined, root, [], false).trimEnd().replace(/^Scope: .*$/m, range);
+    } catch { scope = `Review this build slice in read-only mode. Make no changes.\n${range}\nSpec axis: ${task ? "the task in the note below" : `read ${ticket}, including the linked spec and deciding tickets`}.`; }
     out.push("", scope);
     if (stage === "second-look") section("Second look", [
-      `Model: \`${SECOND_LOOK.first}\`, else the free \`${SECOND_LOOK.fallback}\`; never an OpenAI model. Headless: \`ASE_REVIEW_MODEL=${SECOND_LOOK.first} scripts/agents/kit review --second-look --ticket ${ticket}\`.`,
+      `Model: \`${SECOND_LOOK.first}\`, else the free \`${SECOND_LOOK.fallback}\`; never an OpenAI model. Headless: \`ASE_REVIEW_MODEL=${SECOND_LOOK.first} scripts/agents/kit review --second-look${task ? "" : ` --ticket ${ticket}`}\`.`,
       "When neither model can run, say `second look: skipped (<reason>)` and stop.",
     ]);
   }
