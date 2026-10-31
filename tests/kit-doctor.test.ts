@@ -1269,5 +1269,5 @@ test("doctor warns once per piece kit init would add today, also when quiet, nev
   const unread = f.run(["--quiet"]);
   assert.equal(unread.status, 0, unread.stdout + unread.stderr);
   assert.equal(unread.stdout, '✗ setup: not checked ("init.skip" in scripts/agents/kit.json must be a list of piece names; fix it first); ' +
-    `fix: run scripts/agents/kit init --check to see why\n${passed}\n`);
+    `fix: run scripts/agents/kit init --check to see why\n${passed}; warning: setup not checked (run scripts/agents/kit init --check)\n`);
 });

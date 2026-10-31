@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import test from "node:test";
@@ -432,6 +432,26 @@ test(".gitattributes gets the line-endings line at the top of the project's own,
   assert.equal(kept.status, 0, kept.stdout + kept.stderr);
   assert.ok(!written(kept).includes(".gitattributes"));
   assert.equal(readFileSync(join(own.work, ".gitattributes"), "utf8"), "*.svg text\n*   text=auto   eol=lf\n");
+  // The same two attributes in another order count too; a CRLF file gets the line with its own endings.
+  const swapped = f.repo("swapped", { ".gitattributes": "* eol=lf text=auto\n" });
+  assert.ok(!written(f.init(swapped.work, ["--light"])).includes(".gitattributes"));
+  const windows = f.repo("windows", { ".gitattributes": "*.png binary\r\n" });
+  assert.equal(f.init(windows.work, ["--light"]).status, 0);
+  assert.equal(readFileSync(join(windows.work, ".gitattributes"), "utf8"), "* text=auto eol=lf\r\n*.png binary\r\n");
+});
+
+test("a project whose kit.json names no full piece but holds a full stub at its default place counts as full", (t) => {
+  const f = fixture(t);
+  const { work } = f.repo("stubbed", { "scripts/agents/kit.json": JSON.stringify({ project: "stubbed", branches: { land: "dev" } }),
+    "docs/wayfinder/README.md": "# Maps\n", ".codex/hooks.json": "{ not json" });
+  // A whole hook file turned off is not read, so one kit init could not merge into is left out, not a stop.
+  const kitJson = join(work, "scripts/agents/kit.json");
+  writeFileSync(kitJson, JSON.stringify({ ...JSON.parse(readFileSync(kitJson, "utf8")), init: { skip: [".codex/hooks.json"] } }));
+  const check = f.init(work, ["--check"]);
+  assert.equal(check.status, 0, check.stdout + check.stderr);
+  for (const piece of ["scripts/agents/project.d/ (the project's own commands folder)", "docs/agents/kitchen.md (the kitchen pointer)",
+    "docs/agents/kitchen-extras.md (the project's kitchen extras)"]) assert.match(check.stdout, new RegExp(`^missing: ${piece.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"));
+  assert.match(result(check), /^RESULT: ok init check: \d+ missing; 1 turned off in init\.skip$/);
 });
 
 // A project set up a while ago, listed in projects.json: its main checkout and origin hold the setup of then (no
@@ -546,21 +566,29 @@ test("--all skips a project with no origin or no settings on origin, names old k
   mkdirSync(modules);
   const slow = olderProject(f, "slow", (work) => {
     const kitJson = join(work, "scripts/agents/kit.json");
-    writeFileSync(kitJson, JSON.stringify({ ...JSON.parse(readFileSync(kitJson, "utf8")), sharedNodeModules: modules }));
+    writeFileSync(kitJson, JSON.stringify({ ...JSON.parse(readFileSync(kitJson, "utf8")), sharedNodeModules: "../shared-modules", worktreeLinks: ["public/preview"] }));
   });
+  // A main checkout busy with a file only the line-endings commit touches; one whose origin went away.
+  const edited = olderProject(f, "edited");
+  writeFileSync(join(edited, "notes.txt"), "mine\n");
+  const lost = olderProject(f, "lost");
+  f.git(lost, "remote", "set-url", "origin", join(f.directory, "nowhere.git"));
   const { records, all } = standInKit(f);
   const run = all({ KIT_INIT_PR_TIMEOUT: "1" });
   assert.equal(run.status, 1, run.stdout + run.stderr);
-  assert.deepEqual(run.stdout.split("\n").filter((line) => line.startsWith("RESULT: ")), [
+  assert.deepEqual(run.stdout.split("\n").filter((line) => line.startsWith("RESULT: ")).map((line) => line.replace(/(fetch origin failed: ).*/, "$1…")), [
+    `RESULT: ok init edited: skipped: ${edited} has uncommitted changes in notes.txt; commit or land them, then rerun`,
     "RESULT: ok init fresh: skipped: origin/main has no scripts/agents/kit.json; land the project's setup first",
     "RESULT: fail init legacy: adding the pieces failed: old kit files: scripts/agents/kit-lib.sh",
+    "RESULT: fail init lost: git fetch origin failed: …",
     `RESULT: fail init slow: kit pr timed out after 1s and was stopped; the change waits in ${slow}-kit-init-pieces on kit/init-pieces (its branch on origin may have moved), log ${join(f.state, "agent-kit/init-all/slow.log")}`,
     "RESULT: ok init solo: skipped: no origin remote, so no kit pr; run kit init there by hand",
-    "RESULT: fail init --all: 0 updated, 0 up to date, 2 skipped (fresh, solo), 2 failed (legacy, slow)",
+    "RESULT: fail init --all: 0 updated, 0 up to date, 3 skipped (edited, fresh, solo), 3 failed (legacy, lost, slow)",
   ]);
   assert.equal(existsSync(`${legacy}-kit-init-pieces`), false);
   // The slow project's kit pr ran with the shared dependencies linked, as in any of its worktrees.
   assert.match(readFileSync(join(records, "slow-kit-init-pieces"), "utf8"), new RegExp(`^node_modules ${modules}$`, "m"));
+  assert.equal(readlinkSync(`${slow}-kit-init-pieces/public/preview`), join(slow, "public/preview"));
   assert.equal(existsSync(`${slow}-kit-init-pieces`), true);
 });
 

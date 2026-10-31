@@ -127,8 +127,10 @@ if (existsSync(at(kitSettingsFile))) {
   const problems = kitSettingsProblems(settings);
   if (problems.length) fail(`${problems.join("; ")}; fix it first, kit init never overwrites it`);
   kept.push(kitSettingsFile);
-  // A project stays as it was set up: full when its settings name a full piece's place, else light.
-  full = options.full || (!options.light && ["commands", "maps", "rulebookExtras"].some((key) => settings[key]));
+  // A project stays as it was set up: full when its settings name a full piece's place or a full stub is at its
+  // default place (an older kit init wrote them there without naming them), else light.
+  full = options.full || (!options.light && (["commands", "maps", "rulebookExtras"].some((key) => settings[key]) ||
+    [commandsPath, `${mapsPath}/README.md`, extrasPath].some((path) => existsSync(at(path)))));
   if (options.land) notes.push(`--land ignored: ${kitSettingsFile} already names "branches"`);
   unnamed = full ? [["commands", commandsPath, `${commandsPath}/.gitkeep`], ["maps", mapsPath, `${mapsPath}/README.md`], ["rulebookExtras", extrasPath, extrasPath]]
     .filter(([key]) => !settings[key]) : [];
@@ -297,10 +299,13 @@ else writes.push({ path: "AGENTS.md", text: `${agents.replace(/\n*$/, "\n\n")}${
 // at the top, so the project's own lines after it (*.png binary) still win for their files.
 const lineEndings = "* text=auto eol=lf";
 const attributes = existsSync(at(".gitattributes")) ? readText(".gitattributes") : null;
-if (attributes?.split(/\r?\n/).some((line) => line.trim().split(/\s+/).join(" ") === lineEndings)) kept.push(".gitattributes");
+// A line for every file setting the same two attributes, in any order or spacing, counts as there.
+const sameLine = (line) => { const [pattern, ...set] = line.trim().split(/\s+/); return pattern === "*" && set.sort().join(" ") === "eol=lf text=auto"; };
+if (attributes?.split(/\r?\n/).some(sameLine)) kept.push(".gitattributes");
 else if (piece(".gitattributes", ".gitattributes", `the line "${lineEndings}"`)) {
+  const newline = attributes?.includes("\r\n") ? "\r\n" : "\n";
   writes.push(attributes === null ? { path: ".gitattributes", text: `${lineEndings}\n` }
-    : { path: ".gitattributes", text: `${lineEndings}\n${attributes}`, before: attributes, said: "(added the line-endings line at the top)" });
+    : { path: ".gitattributes", text: `${lineEndings}${newline}${attributes}`, before: attributes, said: "(added the line-endings line at the top)" });
 }
 
 if (options.check) {
@@ -674,7 +679,8 @@ function all() {
     let normalized = 0;
     if (listed.includes(".gitattributes")) {
       // The one-time commit that gives files committed with CRLF the LF endings the new line asks for.
-      git(path, "add", "--renormalize", ".");
+      const renormalized = git(path, "add", "--renormalize", ".");
+      if (renormalized.status !== 0) { remove(); return ["failed", `git add --renormalize failed: ${said(renormalized)}`]; }
       normalized = git(path, "diff", "--cached", "--name-only").stdout.trim().split("\n").filter(Boolean).length;
       if (normalized) {
         const again = git(path, "commit", "-q", "-m", "Normalize line endings (git add --renormalize . after .gitattributes)");
@@ -692,10 +698,20 @@ function all() {
     }
 
     // The project's checks run in kit pr: they find its shared dependencies as in any of its worktrees.
-    let shared;
-    try { shared = JSON.parse(readFileSync(join(path, kitSettingsFile), "utf8")).sharedNodeModules; } catch {}
-    if (typeof shared === "string" && existsSync(shared) && !existsSync(join(path, "node_modules"))) {
-      try { symlinkSync(realpathSync(shared), join(path, "node_modules")); } catch {}
+    // As worktree.sh sets up any of its worktrees: sharedNodeModules (relative to the main checkout) and the
+    // worktreeLinks paths of the main checkout.
+    let projectSettings = {};
+    try { projectSettings = JSON.parse(readFileSync(join(path, kitSettingsFile), "utf8")) ?? {}; } catch {}
+    const shared = typeof projectSettings.sharedNodeModules === "string" ? resolve(main, projectSettings.sharedNodeModules) : null;
+    const links = [[shared, "node_modules"], ...(Array.isArray(projectSettings.worktreeLinks) ? projectSettings.worktreeLinks : [])
+      .filter((link) => typeof link === "string" && link && !link.startsWith("/") && !link.split("/").includes(".."))
+      .map((link) => [join(main, link), link])];
+    for (const [target, link] of links) {
+      if (!target || existsSync(join(path, link))) continue;
+      try {
+        mkdirSync(dirname(join(path, link)), { recursive: true });
+        symlinkSync(link === "node_modules" ? realpathSync(target) : target, join(path, link));
+      } catch {}
     }
     const log = join(logs, `${name}.log`);
     const output = openSync(log, "w");
