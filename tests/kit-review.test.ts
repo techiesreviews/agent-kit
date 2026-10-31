@@ -1501,6 +1501,15 @@ test("a second look that opened a session but never finishes stops at its overal
   assert.match(bad.stdout.trim().split("\n").at(-1)!, /^RESULT: fail ASE_SECOND_LOOK_TIMEOUT must be a duration such as 25m \(got soon\) evidence none$/);
 });
 
+test("a Grok second look stopped at the overall limit keeps its count and hands nothing to OpenCode", (t) => {
+  const f = fixture(t); withOpencode(f);
+  const hung = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: lookTable(f), FAKE_MODE: "grok-hang", ASE_AGENT_TIMEOUT: "20s", ASE_SECOND_LOOK_TIMEOUT: "2s" });
+  assert.equal(hung.status, 3, hung.stdout + hung.stderr);
+  assert.match(hung.stdout.trim().split("\n").at(-1)!, /^RESULT: skip second look \(grok-4\.7 timed out after 2s\)$/);
+  assert.equal(opencodeCalls(f).filter(call => call.cli === "opencode").length, 0);
+  assert.deepEqual(f.counts(), { grok: { "kit-review": 1 } });
+});
+
 test("a Grok call that gives no answer before the timeout hands the second look to OpenCode", (t) => {
   const f = fixture(t); withOpencode(f);
   const hung = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: lookTable(f), FAKE_MODE: "grok-hang", ASE_AGENT_TIMEOUT: "3s" });
