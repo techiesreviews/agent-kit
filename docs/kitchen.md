@@ -203,10 +203,12 @@ on a usage-limit `problem:` line, tell Lex the reset time and carry on with Clau
   (`featureList` in the settings) stops a visible change unless it updated the list or its Done says
   `Feature list: no change (<reason>)`.
 - **Browser runs on a busy machine:** `kit pr`'s browser step runs one at a time per machine (it waits,
-  saying `waiting for <owner>'s full browser run`). The settings' `timing` spec files run after the
-  rest, each alone, while no other kit job starts. A failed spec file the change did not touch is
+  saying `waiting for <owner>'s full browser run`). A failed spec file the change did not touch is
   rerun once alone: passing alone, it lands as `flaky under load: <file>` on the `RESULT:` line and in
-  `~/.local/state/agent-kit/flaky.jsonl`; a file the change touched must pass in the full run.
+  `flaky.jsonl` in the kit's state folder; a file the change touched must pass in the full run, and a
+  run that did not report every file it ran is never forgiven. The settings' `timing` spec files
+  (which need a specs command that answers `--list`) run after the rest, each alone. While a spec file
+  runs alone (timing file or rerun) no other kit job starts (`waiting for <owner>'s lone browser run`).
   `kit status` names a file flaky 3 or more times in 7 days: give it a fix ticket.
 - **Never:** a raw `git push` to the release branch (or a landing branch that is also the release
   branch, as on a live site); the Bash hook refuses it and names `kit pr`.

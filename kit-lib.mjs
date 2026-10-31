@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
@@ -123,55 +123,41 @@ export function kitProjects(env = process.env) {
 }
 
 /**
- * Take a machine-wide lock in the kit's state folder (ticket ke-88): `<state>/<name>.lock`, a folder whose owner file
- * reads `<pid> <process start> <owner>` (the front door's kit_quiet_wait reads the quiet lock's the same way).
- * A held lock is waited for, polling every pollMs (KIT_LOCK_POLL_MS, else 2 s); onWait(owner) is told once.
- * A lock whose process is gone, or whose pid now names another process, is taken over. release() removes the lock
- * only while it is still this one.
+ * Take a machine-wide lock in the kit's state folder (ticket ke-88): `<state>/<name>.lock`, held with flock(1) by a
+ * small child process for as long as this process lives, so the system frees it when the holder ends however it
+ * ends. While held the file reads `<pid> <owner>` (the front door's kit_quiet_wait reads the quiet lock's).
+ * A held lock is waited for; onWait(owner) is told once. release() empties the file and lets the lock go.
  */
-export async function kitMachineLock(name, { owner = kitOwner(), onWait, pollMs, env = process.env } = {}) {
-  const lock = join(kitStateDir(env), `${name}.lock`);
-  const poll = pollMs ?? (Number(env.KIT_LOCK_POLL_MS) > 0 ? Number(env.KIT_LOCK_POLL_MS) : 2_000);
-  const mine = `${process.pid} ${kitJobProcess(process.pid)?.started ?? 0} ${oneLine(owner)}\n`;
+export async function kitMachineLock(name, { owner = kitOwner(), onWait, env = process.env } = {}) {
+  const lock = join(kitStateDir(env), `${name}.lock`), mine = `${process.pid} ${oneLine(owner)}\n`;
   mkdirSync(dirname(lock), { recursive: true });
-  let told = false;
-  for (;;) {
-    let made = false;
-    try {
-      mkdirSync(lock); made = true;
-      writeFileSync(join(lock, "owner"), mine);
-      break;
-    } catch (error) {
-      if (made) { rmSync(lock, { recursive: true, force: true }); throw error; }
-      if (error.code !== "EEXIST") throw error;
-    }
-    let text = null, seen;
-    try { text = readFileSync(join(lock, "owner"), "utf8"); } catch { /* Not written yet, or just released. */ }
-    try { seen = statSync(lock); } catch { continue; }
-    const [pid, started, ...who] = (text ?? "").trim().split(" ");
-    const holder = Number(pid) > 0 ? kitJobProcess(Number(pid)) : null;
-    // No owner file a minute on means its taker died between the folder and the file.
-    const stale = text === null ? Date.now() - seen.mtimeMs > 60_000 : !holder || holder.started !== started;
-    if (stale) {
-      // Moved aside first, and removed only if it is the folder judged stale (same inode), as takeLock does.
-      const aside = `${lock}.stale.${process.pid}.${Date.now()}`;
-      try { renameSync(lock, aside); } catch { continue; }
-      let moved;
-      try { moved = statSync(aside); } catch { continue; }
-      if (moved.ino !== seen.ino) {
-        try { if (!existsSync(lock)) { renameSync(aside, lock); continue; } } catch { /* Its place was taken. */ }
-      }
-      rmSync(aside, { recursive: true, force: true });
-      continue;
-    }
-    if (!told && text !== null) { told = true; onWait?.(who.join(" ") || "unknown"); }
-    await new Promise(accept => setTimeout(accept, poll));
+  // flock prints "held" once it has the lock, then keeps it until its stdin closes (release, or this process ends).
+  const hold = wait => new Promise((accept, reject) => {
+    const child = spawn("flock", [...(wait ? [] : ["-n"]), "-o", "-x", lock, "sh", "-c", "echo held; exec cat > /dev/null"],
+      { stdio: ["pipe", "pipe", "ignore"] });
+    let held = false;
+    child.once("error", error => reject(new Error(`cannot lock ${lock}: ${error.message} (is flock installed?)`)));
+    child.stdout.setEncoding("utf8").on("data", text => {
+      if (held || !text.includes("held")) return;
+      held = true; child.unref(); child.stdout.unref?.(); accept(child);
+    });
+    child.once("close", () => { if (!held) accept(null); });
+  });
+  let child = await hold(false);
+  if (!child) {
+    let text = "";
+    try { text = readFileSync(lock, "utf8"); } catch { /* Not written yet. */ }
+    onWait?.(text.trim().split(" ").slice(1).join(" ") || "unknown");
+    child = await hold(true);
+    if (!child) throw new Error(`cannot lock ${lock}`);
   }
+  writeFileSync(lock, mine);
   return {
     path: lock,
     release() {
-      try { if (readFileSync(join(lock, "owner"), "utf8") === mine) rmSync(lock, { recursive: true, force: true }); }
-      catch { /* Already gone. */ }
+      if (child.exitCode !== null || child.signalCode !== null || child.stdin.destroyed) return;
+      try { if (readFileSync(lock, "utf8") === mine) writeFileSync(lock, ""); } catch { /* Already gone. */ }
+      child.stdin.end();
     },
   };
 }

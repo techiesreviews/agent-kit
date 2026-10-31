@@ -83,29 +83,19 @@ kit_state_dir() {
   printf '%s/agent-kit\n' "$state"
 }
 
-# While a timing run holds the machine's quiet lock (<state>/quiet.lock, kitMachineLock in kit-lib.mjs, ticket ke-88),
-# no other kit job starts: wait for it, saying so once on stderr. The run's own kit calls (KIT_QUIET_HOLDER is its
-# pid) go on; so does everyone once its process is gone or its pid names another process.
+# While kit pr runs spec files alone (timing files, lone reruns) it holds the machine's quiet lock (<state>/quiet.lock,
+# kitMachineLock in kit-lib.mjs, ticket ke-88) and no other kit job starts: wait for it, saying so once on stderr.
+# That run's own kit calls (KIT_QUIET_HOLDER is its pid, the first word of the lock file) go on.
 kit_quiet_wait() {
-  local lock pid started owner stat fields told=false missing=0
+  local lock pid='' owner=''
   local IFS=$' \t\n'
   lock=$(kit_state_dir)/quiet.lock
-  while [[ -d $lock ]]; do
-    if ! read -r pid started owner < "$lock/owner" 2>/dev/null; then
-      # Being written, or just released; a folder with no owner file for a few seconds stops nothing.
-      (( ++missing < 10 )) || return 0
-      sleep 0.3; continue
-    fi
-    [[ $pid =~ ^[1-9][0-9]*$ && ${KIT_QUIET_HOLDER:-} != "$pid" ]] || return 0
-    stat=$(< "/proc/$pid/stat") 2>/dev/null || return 0
-    read -r -a fields <<< "${stat##*) }"
-    [[ ${fields[0]} != [ZX] && ${fields[19]} == "$started" ]] || return 0
-    if [[ $told == false ]]; then
-      printf "kit: waiting for %s's timing run (no kit job starts until it ends)\n" "${owner:-unknown}" >&2
-      told=true
-    fi
-    sleep "${KIT_QUIET_POLL_S:-1}"
-  done
+  [[ -f $lock ]] && command -v flock > /dev/null || return 0
+  read -r pid owner < "$lock" 2>/dev/null || :
+  [[ -z $pid || ${KIT_QUIET_HOLDER:-} != "$pid" ]] || return 0
+  flock -n -s "$lock" true 2>/dev/null && return 0
+  printf "kit: waiting for %s's lone browser run (no kit job starts until it ends)\n" "${owner:-unknown}" >&2
+  flock -s "$lock" true 2>/dev/null || :
 }
 
 kit_owner() {

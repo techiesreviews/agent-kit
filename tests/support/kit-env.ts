@@ -1,4 +1,6 @@
-import { resolve } from "node:path";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 // This test process's environment without the kit's own home names. The kit run that started the tests exports
 // KIT_HOME, and KIT_HOME_DEFAULT when its front door filled that in: a fixture inheriting a person's KIT_HOME would
@@ -8,7 +10,16 @@ import { resolve } from "node:path";
 // gh's config is tests/fixtures/gh-config, whose hosts.yml knows github.com, git.example.com and ghe.example, never the
 // real one.
 export const ghConfig = resolve(import.meta.dirname, "../fixtures/gh-config");
+// XDG_STATE_HOME is one temporary folder per test process (removed when it exits), so no test reads or writes the
+// machine's kit state, such as a real run's quiet lock (ticket ke-88); a fixture may still set its own.
+let state: string | undefined;
+function testState() {
+  if (state) return state;
+  const folder = mkdtempSync(join(tmpdir(), "kit-test-state-"));
+  process.once("exit", () => rmSync(folder, { recursive: true, force: true }));
+  return state = folder;
+}
 export function kitEnv(): NodeJS.ProcessEnv {
   const { KIT_HOME: _home, KIT_HOME_DEFAULT: _default, GH_REPO: _repo, GH_HOST: _host, ...env } = process.env;
-  return { ...env, KIT_SKILL_DIRS: "", GH_CONFIG_DIR: ghConfig };
+  return { ...env, KIT_SKILL_DIRS: "", GH_CONFIG_DIR: ghConfig, XDG_STATE_HOME: testState() };
 }

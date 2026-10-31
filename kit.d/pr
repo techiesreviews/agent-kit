@@ -11,7 +11,7 @@ import { projectCommand, spoken } from "../review-brief.mjs";
 const { kitBranch, kitGhEnv, kitHideUserInfo, kitHidingLog, kitHome, kitMachineLock, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, kitStateDir, nodeEnv, kitScore } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const { failedSpecs, isTiming, listedSpecs, timingList } = await import(pathToFileURL(resolve(import.meta.dirname, "../browser-runs.mjs")).href);
+const { failedSpecs, isTiming, listedSpecs, timingList, wholeReport } = await import(pathToFileURL(resolve(import.meta.dirname, "../browser-runs.mjs")).href);
 const { checkSteps, classify, doneHeading, featureListGuard, featureListProblem, focusedUnitFiles, parseChanges, secondLookPick, unitTestFile } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
 const usage = 'Usage: kit pr [--base <land>] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release] [--full] [--waive "<reason>"]\nBranches come from scripts/agents/kit.json: --base defaults to branches.land; --release needs --base branches.release and first runs kit release-check --land (nothing unsaved, HEAD exactly origin/<land>).\n--waive requires a *-lead owner; records the reason for merging with open findings or without a feature-list update;\nwith --release it also passes the release check, which names the reason (kit pr still needs a clean tree).\nAfter the Claude review (none in the docs tier), every change gets a second look (kit review --second-look), whose findings block the same way;\nwhen no model can take it, the PR lands and says "second look: skipped (<reason>)".\n';
 const kit = process.env.KIT_PR_KIT || resolve(import.meta.dirname, "../kit");
@@ -441,62 +441,77 @@ async function main(args) {
     ok("skills");
 
     // The browser specs (ticket ke-88), as lines for the PR body. One full run per machine at a time (the full-run
-    // lock in the kit's state folder, waited for). The settings' timing files run after the rest, each alone, and
-    // a failed file the change did not touch is rerun once alone; both under the quiet lock, so no other kit job
-    // starts meanwhile. A file that passes alone counts as flaky under load: named, logged to flaky.jsonl, forgiven.
+    // lock in the kit's state folder, waited for). With a `timing` list (which needs a specs command that answers
+    // --list) the selection is listed first: nothing selected takes no lock, and the timing files run after the
+    // rest, each alone. A failed file the change did not touch is rerun once alone. Both alone kinds hold the quiet
+    // lock, so no other kit job starts meanwhile. A file that passes alone is flaky under load: named, logged to
+    // flaky.jsonl, forgiven; but only when the run reported every file it ran, so a crash is never forgiven.
     async function browserSpecs(changes, settings) {
       step = "specs";
       const timing = timingList(settings), base = ["specs", "--affected", "--base", `origin/${flags.base}`];
       const lines = [], failed = [], touched = new Set(changes.map(change => change.path));
       const result = text => text.split(/\r?\n/).findLast(line => line.startsWith("RESULT: ")) || "ok";
+      let main = base, alone = [], listed;
+      if (timing.length) {
+        const list = await run("specs", kit, [...base, "--list"]);
+        listed = listedSpecs(list);
+        if (!listed.length) return [`- kit ${base.join(" ")}: ${result(list)}`];
+        alone = listed.filter(file => isTiming(file, timing));
+        if (alone.length) main = listed.length > alone.length ? ["specs", ...listed.filter(file => !alone.includes(file))] : null;
+      }
+      // A run's failed files, with the highest load seen while it ran; a failed run that did not report every file
+      // it ran (a crash, a server that never started) fails as before.
+      const check = async (argv, label, expected) => {
+        let peak = loadavg()[0];
+        const timer = setInterval(() => { peak = Math.max(peak, loadavg()[0]); }, 5_000);
+        let ran;
+        try { ran = await execute("specs", kit, argv); } finally { clearInterval(timer); }
+        lines.push(`- kit ${label}: ${result(ran.text)}`);
+        if (ran.status === 0) return [];
+        const files = failedSpecs(ran.text);
+        if (!files.length || !wholeReport(ran.text, expected)) throw new Error(childMessage(ran, `${kit} exited ${ran.status}`));
+        return files.map(file => ({ ...file, load: Math.max(peak, loadavg()[0]) }));
+      };
+      const blame = file => failed.push(`${file} (this change touches it)`);
       const full = await kitMachineLock("browser-run", { onWait: owner => console.log(`specs: waiting for ${owner}'s full browser run`) });
       let quiet;
       try {
-        let main = base, alone = [];
-        if (timing.length) {
-          const listed = listedSpecs(await run("specs", kit, [...base, "--list"]));
-          alone = listed.filter(file => isTiming(file, timing));
-          if (alone.length) main = listed.length > alone.length ? ["specs", ...listed.filter(file => !alone.includes(file))] : null;
-        }
-        // A failed run with no failed file named (a crash, a broken report) fails as before.
-        const check = async (argv, label) => {
-          const ran = await execute("specs", kit, argv);
-          lines.push(`- kit ${label}: ${result(ran.text)}`);
-          if (ran.status === 0) return [];
-          const files = failedSpecs(ran.text);
-          if (!files.length) throw new Error(childMessage(ran, `${kit} exited ${ran.status}`));
-          return files;
-        };
         const retry = [];
         if (main) {
-          const files = await check(main, main === base ? base.join(" ") : `specs <${main.length - 1} affected files without the timing ones>`);
-          const load = loadavg()[0];
-          for (const file of files) {
-            if (touched.has(file.file)) failed.push(`${file.file} (this change touches it)`);
-            else retry.push({ ...file, load, where: "the full run" });
+          const expected = main === base ? listed : main.slice(1);
+          const label = main === base ? base.join(" ") : `specs <${main.length - 1} affected files without the timing ones>`;
+          for (const file of await check(main, label, expected)) {
+            if (touched.has(file.file)) blame(file.file);
+            else retry.push({ ...file, where: "the full run" });
           }
         }
-        if (retry.length || alone.length) {
-          quiet = await kitMachineLock("quiet", { onWait: owner => console.log(`specs: waiting for ${owner}'s timing run`) });
+        const holdQuiet = async () => {
+          quiet ??= await kitMachineLock("quiet", { onWait: owner => console.log(`specs: waiting for ${owner}'s lone browser run`) });
           env.KIT_QUIET_HOLDER = String(process.pid);
-        }
+        };
         for (const file of alone) {
-          const files = await check(["specs", file], `specs ${file} (timing, alone)`), load = loadavg()[0];
-          if (!files.length) continue;
-          if (touched.has(file)) failed.push(`${file} (this change touches it)`);
-          else retry.push({ ...files[0], file, load, where: "its timing run" });
+          await holdQuiet();
+          const [first] = await check(["specs", file], `specs ${file} (timing, alone)`, [file]);
+          if (!first) continue;
+          if (touched.has(file)) blame(file);
+          else retry.push({ ...first, file, where: "its timing run" });
         }
+        // Once a touched file failed the run fails anyway: no reruns to hold other kit jobs back for.
+        const skipped = failed.length ? retry.splice(0) : [];
         for (const file of retry) {
+          await holdQuiet();
           const again = await execute("specs", kit, ["specs", file.file]);
-          if (again.status !== 0) { failed.push(`${file.file} (failed alone too)`); continue; }
-          console.log(`specs: flaky under load: ${file.file} (failed in ${file.where} at load ${file.load.toFixed(2)}, passed alone)`);
+          if (again.status !== 0 || !wholeReport(again.text, [file.file])) { failed.push(`${file.file} (failed alone too)`); continue; }
+          const load = Number(file.load.toFixed(2));
+          console.log(`specs: flaky under load: ${file.file} (failed in ${file.where} at load ${load}, passed alone)`);
           lines.push(`- flaky under load: ${file.file} (failed in ${file.where}, passed alone)`);
           flaky.push(file.file);
           const state = kitStateDir(env);
           mkdirSync(state, { recursive: true });
           appendFileSync(join(state, "flaky.jsonl"), `${JSON.stringify({ time: new Date().toISOString(), project: settings.project,
-            file: file.file, test: file.test, load: Number(file.load.toFixed(2)), owner: kitOwner(), branch })}\n`);
+            file: file.file, test: file.test, load, owner: kitOwner(), branch })}\n`);
         }
+        failed.push(...skipped.map(file => `${file.file} (not rerun)`));
       } finally {
         delete env.KIT_QUIET_HOLDER;
         quiet?.release();

@@ -146,7 +146,7 @@ trap 'interrupted INT 2' INT
 trap 'interrupted TERM 15' TERM
 trap 'interrupted HUP 1' HUP
 
-# A timing run (kit pr, ticket ke-88) runs with no other kit job starting; help and the commands that only read or
+# While kit pr runs spec files alone (ticket ke-88) no other kit job starts; help and the commands that only read or
 # wait go on.
 case $command in
   wait|status|heartbeat|version|card|rulebook) ;;
