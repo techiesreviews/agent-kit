@@ -14,12 +14,13 @@ steps and history. **Where the extras differ, they win.** Below, "the landing br
 `branches.land` in the settings file, "the project's checks" are its `checks` commands, and
 "`<land>`" stands for the landing branch's name.
 
-**Branches (Lex, 2026-10-31): a branch can go into `dev`; `main` can only get `dev`.** Every project
-lands on `dev` (`branches.land`) and releases to `main` (`branches.release`); `kit init` sets this up
-and makes `dev` from `main`, and `kit doctor` warns where a project still lands on `main`. A project
-that lands on `main` on purpose names why in `branches.exception`. Outside the kit's PRs: the Native
-Site Editor's saves go to a site's live branch, the chat workspace's backups to their own branch, and
-the kit's own `dev` is released to `main` daily by the orchestrator after its checks.
+**Branches (Lex, 2026-10-31): a branch goes into the landing branch; the release branch takes
+only the landing branch.** Every project lands on `branches.land` and releases to
+`branches.release` (the usual pair is named in the kit README); `kit init` sets this up and makes the
+landing branch from the release branch, and `kit doctor` warns where a project still lands on its
+release branch. A project that lands there on purpose names why in `branches.exception`. Outside the
+kit's PRs: the editor's saves go to a site's live branch, the chat workspace's backups to their own
+branch, and the kit's own landing branch is released daily by the orchestrator after its checks.
 
 Items marked **planned** are decided but not built. Until a planned item lands, do what the station
 says for today; never claim a planned item ran.
@@ -246,8 +247,8 @@ on a usage-limit `problem:` line, tell Lex the reset time and carry on with Clau
   ends `RESULT: fail specs N of M failed` when any failed.
   `kit status` names a file flaky 3 or more times in 7 days: give it a fix ticket.
 - **Never:** a raw `git push` to the landing or the release branch; the Bash hook refuses it and
-  names `kit pr`. A branch goes into `dev`; `main` takes only `dev` (`kit pr --release`), and `kit pr`
-  refuses any other PR into it.
+  names `kit pr`. A branch goes into the landing branch; the release branch takes only the landing
+  branch (`kit pr --release`), and `kit pr` refuses any other PR into it.
 - **Done when:** the PR is merged into the landing branch and its number is in the ticket's `landed:`.
 
 ### 10. After a merge: note, scoreboard
