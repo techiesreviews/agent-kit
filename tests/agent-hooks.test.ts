@@ -549,6 +549,8 @@ function pushGuard(command: string, cwd: string, env: NodeJS.ProcessEnv = {}) {
 }
 const pushRefused = (branch: string) =>
   `Pushing straight to \`${branch}\` puts it live without review. Land it with \`scripts/agents/kit pr --ticket <ticket>\` (or \`kit pr --release --base ${branch}\` for a release).\n`;
+const landRefused = (branch: string) =>
+  `Pushing straight to \`${branch}\` skips review: a branch goes into \`${branch}\` only through \`scripts/agents/kit pr --ticket <ticket>\` (docs too, in its docs tier).\n`;
 
 test("a push to the release branch is refused however it is written, and names kit pr", (t) => {
   const { dir, work } = pushProject(t, { land: "dev", release: "main" });
@@ -584,12 +586,12 @@ test("a push to the release branch is refused however it is written, and names k
 test("pushes to other branches, dry runs, tags and text that mentions a push still pass", (t) => {
   const { dir, work } = pushProject(t, { land: "dev", release: "main" });
   for (const [command, cwd] of [
-    ["git push origin dev", work], ["git push origin HEAD:dev", work], ["git push -u origin HEAD:feature/x", work],
-    ["git push origin main:dev", work], ["git push --dry-run origin main", work], ["git push -n origin main", work],
+    ["git push -u origin HEAD:feature/x", work],
+    ["git push --dry-run origin main", work], ["git push -n origin main", work], ["git push --dry-run origin dev", work],
     ["git push -fn origin main", work], ["git push origin --tags", work], ["git push origin tag v1", work],
     ["git push origin refs/tags/v1", work], ["git commit -m 'git push origin main'", work],
     ["echo git push origin main", work], ["scripts/agents/kit pr --ticket t.md", work],
-    ["scripts/agents/kit next --start", work], ["git -C work push origin dev", dir], ["git push origin main", dir],
+    ["scripts/agents/kit next --start", work], ["git push origin main", dir],
   ]) {
     const result = pushGuard(command, cwd);
     assert.equal(result.status, 0, `${command}: ${result.stderr}`);
@@ -599,9 +601,30 @@ test("pushes to other branches, dry runs, tags and text that mentions a push sti
   const plain = pushProject(t, { land: "main" });
   for (const command of [`(cd ${plain.work} && git push origin main)`, `cd ${plain.work}; git push`, `git -C ${plain.work} push origin main`])
     assert.equal(pushGuard(command, work).status, 0, command);
+});
+
+test("a push to the landing branch is refused too: a branch goes into dev only through kit pr", (t) => {
+  const { dir, work } = pushProject(t, { land: "dev", release: "main" });
+  for (const [command, cwd] of [
+    ["git push origin dev", work], ["git push origin HEAD:dev", work], ["git push origin main:dev", work],
+    ["git push origin +HEAD:refs/heads/dev", work], ["git push --force origin dev", work], ["git -C work push origin dev", dir],
+    ["git push origin :dev", work],
+  ]) {
+    const result = pushGuard(command, cwd, { CLAUDE_PROJECT_DIR: work });
+    assert.equal(result.status, 2, command);
+    assert.equal(result.stderr, landRefused("dev"), command);
+  }
   // A bare push from the landing branch goes to the landing branch.
   const onDev = pushProject(t, { land: "dev", release: "main" }, "dev");
-  for (const command of ["git push", "git push origin", "git push origin HEAD"]) assert.equal(pushGuard(command, onDev.work).status, 0, command);
+  for (const command of ["git push", "git push origin", "git push origin HEAD"]) assert.equal(pushGuard(command, onDev.work).stderr, landRefused("dev"), command);
+  // Every branch at once reaches the release branch first; a feature branch and a dry run still pass.
+  assert.equal(pushGuard("git push --all origin", onDev.work).stderr, pushRefused("main"));
+  assert.equal(pushGuard("git push -u origin HEAD:feature/y", onDev.work).status, 0);
+  assert.equal(pushGuard("git push -n origin dev", onDev.work).status, 0);
+  // Settings naming only a release branch guard that one.
+  const releaseOnly = pushProject(t, { release: "main" });
+  assert.equal(pushGuard("git push origin main", releaseOnly.work).stderr, pushRefused("main"));
+  assert.equal(pushGuard("git push origin HEAD:dev", releaseOnly.work).status, 0);
 });
 
 test("a live landing branch (land equal to release) is guarded; a project without branches.release is not", (t) => {
@@ -633,10 +656,11 @@ test("a live landing branch (land equal to release) is guarded; a project withou
   tracking.git("checkout", "-q", "--detach");
   assert.equal(pushGuard("git push origin HEAD:main", tracking.work).stderr, pushRefused("main"));
   assert.equal(pushGuard("git push origin HEAD", tracking.work).status, 0);
-  // Another release branch name is the one guarded.
+  // Another release branch name is the one guarded, its landing branch too.
   const other = pushProject(t, { land: "main", release: "dev" });
-  assert.equal(pushGuard("git push origin main", other.work).status, 0);
+  assert.equal(pushGuard("git push origin main", other.work).stderr, landRefused("main"));
   assert.equal(pushGuard("git push origin HEAD:dev", other.work).stderr, pushRefused("dev"));
+  assert.equal(pushGuard("git push origin HEAD:fix/thing", other.work).status, 0);
 });
 
 test("a push from a folder the guard cannot name is checked in the session's folder and the project folder", (t) => {
@@ -661,7 +685,7 @@ test("a push from a folder the guard cannot name is checked in the session's fol
     // A destination from a variable or $( … ) counts as the current branch.
     "git push -u origin \"$(git branch --show-current)\"", "git push origin HEAD:\"$TARGET\"", "git push origin `git branch --show-current`",
     // Several pushes: the later one counts; another rule's reason still comes first.
-    "git push origin dev && git push origin main",
+    "git push origin feature/x && git push origin main",
   ]) assert.equal(pushGuard(command, work, { CLAUDE_PROJECT_DIR: work }).stderr, pushRefused("main"), command);
   assert.equal(pushGuard("git stash && git push origin main", work).stderr, "commit work in progress on your own branch\n");
   // From an unguarded session: a folder the command names counts even when the shell may not be there,
@@ -689,6 +713,6 @@ test("the push guard reads git and the settings only when a command pushes", (t)
   assert.equal(pushGuard("ls -la && git status", work, env).status, 0);
   const calls = () => (existsSync(log) ? readFileSync(log, "utf8") : "");
   assert.equal(calls().split("\n").filter(line => line.startsWith("git ") || line.includes(".cwd")).length, 0, calls());
-  assert.equal(pushGuard("git push origin dev", work, env).status, 0);
+  assert.equal(pushGuard("git push origin feature/x", work, env).status, 0);
   assert.match(calls(), /kit\.json/);
 });

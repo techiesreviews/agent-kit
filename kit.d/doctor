@@ -90,7 +90,12 @@ elif [[ -z $land ]]; then
 elif [[ $remote == false ]]; then
   pass base "no GitHub repo (no origin remote); nothing to fetch"
 elif ! tip=$(git -C "$root" rev-parse --verify "refs/remotes/origin/$land" 2>/dev/null); then
-  fail base "missing origin/$land$fetched" 'git fetch origin'
+  release=$(setting .branches.release)
+  if [[ -n $release && $release != "$land" ]] && git -C "$root" rev-parse --verify --quiet "refs/remotes/origin/$release" > /dev/null; then
+    fail base "missing origin/$land$fetched" "git fetch origin; if GitHub has no $land yet, a person makes it from their own terminal (git push origin origin/$release:refs/heads/$land), as the push guard refuses that push in an agent's shell"
+  else
+    fail base "missing origin/$land$fetched" 'git fetch origin'
+  fi
 elif [[ $root == "$dev" && $current == "$land" ]]; then
   pass base "$land in the dev worktree$fetched"
 elif [[ $root == "$main" && $allow_main == true && $current == "$land" ]]; then
@@ -424,6 +429,26 @@ if (( setup_missing )); then
   setup_warning="$setup_missing setup piece$( (( setup_missing == 1 )) || printf s) missing (run scripts/agents/kit init)"
 fi
 
+# Work lands on dev and the release branch takes only dev (Lex, 2026-10-31; ticket ke-89): settings that land on main or master
+# (or on their release branch), or no dev branch to land on, warn, also when quiet, never fail. A project that lands
+# on main on purpose names why in "branches": { "exception": "<reason>" }, shown instead.
+branches_warning=''
+if [[ $jq_missing == false && -z $settings_unread && -n $land ]]; then
+  release=$(setting .branches.release) exception=$(setting '.branches.exception | strings')
+  if [[ $land == main || $land == master || $land == "$release" ]]; then
+    if [[ -n $exception ]]; then
+      [[ $quiet == true ]] || printf '✓ branches: lands on %s (exception: %s)\n' "$land" "$exception"
+    else
+      if [[ -z $release || $land == "$release" ]]; then why='so a merge goes straight to what is released'; else why='not on dev'; fi
+      printf '✗ branches: settings land on %s, %s; a branch goes into a landing branch of its own, which the release branch then takes; fix: "branches": { "land": "dev", "release": "%s" } in scripts/agents/kit.json, once dev exists (a person makes it from their own terminal: git push origin origin/%s:refs/heads/dev), or name why it lands there in "branches": { "exception": "<reason>" }\n' "$land" "$why" "${release:-$land}" "${release:-$land}"
+      branches_warning="lands on $land, not dev"
+    fi
+  elif [[ $remote == false ]] && ! git -C "$root" rev-parse --verify --quiet "refs/heads/$land" > /dev/null; then
+    printf '✗ branches: no %s branch; fix: git branch %s %s; once there is a GitHub repo, a person pushes it from their own terminal (git push origin %s), as the push guard refuses that push in an agent'"'"'s shell\n' "$land" "$land" "${release:-main}" "$land"
+    branches_warning="no $land branch"
+  fi
+fi
+
 # Where kit pr opens PRs: origin's GitHub repo, which every kit gh call is told (GH_REPO) whatever other remotes
 # there are (a site made from the starter has an upstream gh would pick). A note, not a counted check.
 # kitGhRepo answers it (Node), so doctor and kit pr never read origin differently.
@@ -519,4 +544,4 @@ if (( ${#failed[@]} )); then
   exit 1
 fi
 skipped_list=$(IFS=,; printf '%s' "${skipped[*]}")
-kit_result ok "doctor $checks/$checks checks passed${skipped_list:+; skipped ${skipped_list//,/, } (KIT_DOCTOR_SKIP)}${kit_warning:+; warning: $kit_warning}${setup_warning:+; warning: $setup_warning}"
+kit_result ok "doctor $checks/$checks checks passed${skipped_list:+; skipped ${skipped_list//,/, } (KIT_DOCTOR_SKIP)}${kit_warning:+; warning: $kit_warning}${setup_warning:+; warning: $setup_warning}${branches_warning:+; warning: $branches_warning}"

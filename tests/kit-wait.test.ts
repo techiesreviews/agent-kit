@@ -440,10 +440,22 @@ case "$1 $2" in
     if [[ $WAIT_MODE == pinned || ( ( $WAIT_MODE == superseded || $WAIT_MODE == moved ) && $count -gt 1 ) ]]; then echo "$new"; else echo "$old"; fi ;;
   'api repos/{owner}/{repo}/commits/abcdef0') echo "$old" ;;
   'pr view')
-    [[ $3 == 42 && $4 == --json && $5 == headRefName,headRefOid ]]
+    [[ $3 == 42 && $4 == --json ]]
+    if [[ $5 == statusCheckRollup ]]; then
+      case $WAIT_MODE in
+        pr-other-checks|no-workflows-pages) echo '{"statusCheckRollup":[{"__typename":"CheckRun","name":"Pages","status":"IN_PROGRESS","conclusion":""}]}' ;;
+        no-workflows-pages-green) echo '{"statusCheckRollup":[{"__typename":"CheckRun","name":"Pages","status":"COMPLETED","conclusion":"SUCCESS"},{"__typename":"StatusContext","context":"deploy","state":"SUCCESS"}]}' ;;
+        no-workflows-pages-red) echo '{"statusCheckRollup":[{"__typename":"StatusContext","context":"deploy","state":"FAILURE"}]}' ;;
+        *) echo '{"statusCheckRollup":[]}' ;;
+      esac
+      exit
+    fi
+    [[ $5 == headRefName,headRefOid ]]
     echo '{"headRefName":"feature/work","headRefOid":"${head}"}' ;;
-  'workflow list') echo '[{"id":1,"name":"Checks","state":"active"}]' ;;
+  'workflow list')
+    if [[ $WAIT_MODE == no-workflows* ]]; then echo '[{"id":2,"name":"Old","state":"disabled_manually"}]'; else echo '[{"id":1,"name":"Checks","state":"active"}]'; fi ;;
   'run list')
+    if [[ $WAIT_MODE == pr-no-checks || $WAIT_MODE == pr-other-checks ]] && [[ $* == *'--workflow'* ]]; then echo '[]'; exit; fi
     if [[ $* == *'--json headBranch'* ]]; then
       count=$((count + 1)); printf '%s\\n' "$count" > "$WAIT_FIXTURE/count"
       if [[ $WAIT_MODE == no-runs || ( $WAIT_MODE == sha-empty && $count -eq 1 ) ]]; then echo '[]'; else echo '[{"headBranch":"dev"}]'; fi
@@ -639,6 +651,39 @@ test("ci PR resolves the PR branch and head", async (t) => {
   assert.match(fixture.calls(), /--branch feature\/work/);
 });
 
+test("ci on a repo with no active workflows says no checks instead of waiting, for a branch, a commit and a PR", async (t) => {
+  for (const [args, label] of [[[], "dev"], [["--sha", "abcdef0"], "abcdef0"]] as const) {
+    const fixture = fakeGh(t, "no-workflows");
+    const output = await run(t, ["ci", ...args, "--timeout", "5s"], fixture.env);
+    result(output, 0, new RegExp(`^RESULT: ok ci ${label} abcdef0: no checks \\(the repo has no active workflows\\)$`));
+    assert.doesNotMatch(fixture.calls(), /--workflow|statusCheckRollup/);
+  }
+  // A PR waits KIT_WAIT_NO_CHECKS_MS for a late outside check before it passes.
+  const pr = fakeGh(t, "no-workflows");
+  result(await run(t, ["ci", "--pr", "42", "--timeout", "5s"], { ...pr.env, KIT_WAIT_NO_CHECKS_MS: "1" }), 0,
+    /^RESULT: ok ci pr 42 abcdef0: no checks \(no active workflows and GitHub lists no checks on the PR\)$/);
+  const early = fakeGh(t, "no-workflows");
+  result(await run(t, ["ci", "--pr", "42", "--timeout", "1"], { ...early.env, KIT_WAIT_NO_CHECKS_MS: "600000" }), 1, /timed out after 1/);
+  // Outside checks on the PR decide it: all passed is green, one failed fails.
+  const green = fakeGh(t, "no-workflows-pages-green");
+  const passed = await run(t, ["ci", "--pr", "42", "--timeout", "5s"], green.env);
+  result(passed, 0, /^RESULT: ok ci pr 42 abcdef0 green \(2 checks from outside workflows\) after /);
+  assert.match(passed.stdout, /^Pages: passed$/m);
+  const red = fakeGh(t, "no-workflows-pages-red");
+  result(await run(t, ["ci", "--pr", "42", "--timeout", "5s"], red.env), 1, /^RESULT: fail ci pr 42 abcdef0 failed: deploy$/);
+});
+
+test("ci PR in a repo with workflows keeps waiting for a run, which can be slow to start, and for outside checks", async (t) => {
+  // No run yet and GitHub lists no checks: never a pass, however long it has been.
+  const fixture = fakeGh(t, "pr-no-checks");
+  result(await run(t, ["ci", "--pr", "42", "--timeout", "1"], { ...fixture.env, KIT_WAIT_NO_CHECKS_MS: "1" }), 1, /timed out after 1/);
+  // A pending outside check keeps it waiting, with workflows or without.
+  const pages = fakeGh(t, "no-workflows-pages");
+  result(await run(t, ["ci", "--pr", "42", "--timeout", "1"], pages.env), 1, /timed out after 1/);
+  const other = fakeGh(t, "pr-other-checks");
+  result(await run(t, ["ci", "--pr", "42", "--timeout", "1"], { ...other.env, KIT_WAIT_NO_CHECKS_MS: "1" }), 1, /timed out after 1/);
+});
+
 test("ci SHA waits for a branch before reading workflows", async (t) => {
   const fixture = fakeGh(t, "sha-empty");
   const output = await run(t, ["ci", "--sha", head, "--timeout", "2"], fixture.env);
@@ -658,7 +703,8 @@ test("ci SHA with no runs waits until its deadline", async (t) => {
   const fixture = fakeGh(t, "no-runs");
   const output = await run(t, ["ci", "--sha", head, "--timeout", "0.2s"], fixture.env);
   result(output, 1, /abcdef0 timed out after 0.2s/);
-  assert.doesNotMatch(fixture.calls(), /workflow list/);
+  // It lists the workflows (a repo with none passes), but reads no workflow's runs before it knows the branch.
+  assert.doesNotMatch(fixture.calls(), /--workflow/);
 });
 
 test("ci cancellation on an unchanged head reports failure", async (t) => {

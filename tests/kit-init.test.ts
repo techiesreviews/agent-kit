@@ -154,7 +154,10 @@ test("a repo with no package.json gets a light setup that passes doctor and writ
   assert.equal(run.status, 0, run.stdout + run.stderr);
   assert.match(result(run), /^RESULT: ok init wrote 7 files, listed the project; doctor (\d+)\/\1 checks passed$/);
   assert.match(run.stdout, /^note: checks: none guessed \(no package\.json\); add "checks" to scripts\/agents\/kit\.json$/m);
-  assert.deepEqual(JSON.parse(readFileSync(join(light.work, "scripts/agents/kit.json"), "utf8")), { project: "plain", mainRoot: light.main, branches: { land: "main" } });
+  // A repo with only main lands on dev, made from main, and releases to main.
+  assert.deepEqual(JSON.parse(readFileSync(join(light.work, "scripts/agents/kit.json"), "utf8")), { project: "plain", mainRoot: light.main, branches: { land: "dev", release: "main" } });
+  assert.match(run.stdout, /^made branch dev from main \([0-9a-f]{7}\)$/m);
+  assert.equal(f.git(light.main, "rev-parse", "dev"), f.git(light.main, "rev-parse", "main"));
   const full = f.repo("plain-full", { "index.html": "<p>hi</p>\n" }, ["main"]);
   const fullRun = f.init(full.work);
   assert.equal(fullRun.status, 0, fullRun.stdout + fullRun.stderr);
@@ -340,6 +343,75 @@ test("a broken package.json, hook file or project list stops kit init with nothi
   assert.equal(readFileSync(list, "utf8"), "{");
 });
 
+test("a repo with only main on origin gets dev made from origin/main, here and on origin; --release names another branch", (t) => {
+  const f = fixture(t);
+  const { main, work } = f.repo("solo", { "index.html": "<p>hi</p>\n" }, ["main"]);
+  const remote = join(f.directory, "solo.git");
+  f.git(f.directory, "init", "-q", "--bare", "-b", "main", remote);
+  f.git(main, "remote", "add", "origin", remote);
+  f.git(main, "push", "-q", "origin", "main");
+  f.git(main, "fetch", "-q", "origin");
+  const run = f.init(work, ["--light"]);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.match(run.stdout, /^made branch dev from origin\/main \([0-9a-f]{7}\), here and on origin$/m);
+  assert.deepEqual(JSON.parse(readFileSync(join(work, "scripts/agents/kit.json"), "utf8")).branches, { land: "dev", release: "main" });
+  const tip = f.git(main, "rev-parse", "main");
+  assert.equal(f.git(remote, "rev-parse", "refs/heads/dev"), tip);
+  assert.equal(f.git(main, "rev-parse", "dev"), tip);
+  assert.equal(f.git(main, "rev-parse", "origin/dev"), tip);
+  // A project can name its own release branch; it must differ from the landing branch.
+  const named = f.repo("named", {}, ["live", "dev"]);
+  const own = f.init(named.work, ["--light", "--release", "live"]);
+  assert.equal(own.status, 0, own.stdout + own.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(join(named.work, "scripts/agents/kit.json"), "utf8")).branches, { land: "dev", release: "live" });
+  const same = f.repo("same", {}, ["main", "dev"]);
+  const refused = f.init(same.work, ["--light", "--land", "main", "--release", "main"]);
+  assert.equal(refused.status, 2, refused.stdout + refused.stderr);
+  assert.equal(result(refused), 'RESULT: fail init --release main is the landing branch too; the release branch takes only the landing branch, so name two branches (a site that goes live from the branch it lands on adds "exception": "<reason>" to "branches" by hand)');
+  // A repo with only its --release branch gets dev made from that one.
+  const live = f.repo("live", {}, ["live"]);
+  const fromLive = f.init(live.work, ["--light", "--release", "live"]);
+  assert.equal(fromLive.status, 0, fromLive.stdout + fromLive.stderr);
+  assert.match(fromLive.stdout, /^made branch dev from live \([0-9a-f]{7}\)$/m);
+  assert.deepEqual(JSON.parse(readFileSync(join(live.work, "scripts/agents/kit.json"), "utf8")).branches, { land: "dev", release: "live" });
+  // A --release branch that is not there yet makes nothing: dev is named with a note, never made from main.
+  const notYet = f.repo("not-yet", {}, ["main"]);
+  const later = f.init(notYet.work, ["--light", "--release", "live"]);
+  assert.equal(later.status, 0, later.stdout + later.stderr);
+  assert.doesNotMatch(later.stdout, /^made branch/m);
+  assert.match(later.stdout, /^note: branch dev is not here or on origin yet/m);
+  assert.deepEqual(JSON.parse(readFileSync(join(notYet.work, "scripts/agents/kit.json"), "utf8")).branches, { land: "dev", release: "live" });
+});
+
+test("a repo with no commit yet names dev with a note and makes no branch", (t) => {
+  const f = fixture(t);
+  const empty = join(f.directory, "empty");
+  mkdirSync(empty);
+  f.git(empty, "init", "-q", "--initial-branch=main");
+  const run = f.init(empty, ["--light"]);
+  assert.doesNotMatch(run.stdout, /^made branch|could not make branch/m);
+  assert.match(run.stdout, /^note: branch dev is not here or on origin yet/m);
+  assert.deepEqual(JSON.parse(readFileSync(join(empty, "scripts/agents/kit.json"), "utf8")).branches, { land: "dev", release: "main" });
+});
+
+test("a dev that cannot be pushed to origin is made here, with a note naming the push", (t) => {
+  const f = fixture(t);
+  const { main, work } = f.repo("locked", {}, ["main"]);
+  const remote = join(f.directory, "locked.git");
+  f.git(f.directory, "init", "-q", "--bare", "-b", "main", remote);
+  f.git(main, "remote", "add", "origin", remote);
+  f.git(main, "push", "-q", "origin", "main");
+  f.git(main, "fetch", "-q", "origin");
+  writeFileSync(join(remote, "hooks/pre-receive"), "#!/bin/sh\nexit 1\n");
+  chmodSync(join(remote, "hooks/pre-receive"), 0o755);
+  const run = f.init(work, ["--light"]);
+  assert.match(run.stdout, /^made branch dev from origin\/main \([0-9a-f]{7}\)$/m);
+  assert.match(run.stdout, /^note: could not push dev to origin; a person pushes it from their own terminal \(git push origin dev\), as the push guard refuses that push in an agent's shell$/m);
+  assert.equal(f.git(main, "rev-parse", "dev"), f.git(main, "rev-parse", "main"));
+  assert.equal(spawnSync("git", ["-C", main, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/dev"], { env: f.env }).status, 1);
+  assert.equal(spawnSync("git", ["-C", remote, "rev-parse", "--verify", "--quiet", "refs/heads/dev"], { env: f.env }).status, 1);
+});
+
 test("--land names a branch not made yet with a note", (t) => {
   const f = fixture(t);
   const { work } = f.repo("later", {});
@@ -495,6 +567,8 @@ function olderProject(f: ReturnType<typeof fixture>, name: string, change: (work
   change(work);
   f.git(work, "add", "-A");
   f.git(work, "commit", "-q", "-m", "setup");
+  // The setup landed on dev and was released to main; kit init made dev from main, here and on origin.
+  f.git(work, "push", "-q", "origin", "HEAD:dev");
   f.git(work, "push", "-q", "origin", "HEAD:main");
   f.git(main, "pull", "-q", "origin", "main");
   f.git(main, "worktree", "remove", "--force", work);
@@ -515,7 +589,7 @@ name=$(basename "$PWD")
 { printf 'args %s\\n' "$*"; printf 'root %s\\n' "$KIT_ROOT"; printf 'branch %s\\n' "$(git branch --show-current)"
   printf 'node_modules %s %s\\n' "$(readlink node_modules)" "$(readlink node_modules/dep)"; printf 'status %s\\n' "$(git status --porcelain | tr '\\n' ' ')"
   printf 'author %s\\n' "$(git log -1 --format='%an <%ae> | %cn <%ce>')"; printf 'env author %s\\n' "\${GIT_AUTHOR_NAME:-none}"
-  git log --format='commit %s' origin/main..HEAD; git diff --name-only origin/main HEAD | sed 's/^/file /'; } > "${records}/$name"
+  git log --format='commit %s' origin/dev..HEAD; git diff --name-only origin/dev HEAD | sed 's/^/file /'; } > "${records}/$name"
 if [[ $name == stuck-* ]]; then echo 'RESULT: fail pr #9 checks failed'; exit 1; fi
 if [[ $name == slow-* ]]; then sleep 30; fi
 if [[ $name == open-* ]]; then echo 'RESULT: ok opened #8'; exit 0; fi
@@ -538,7 +612,7 @@ test("--all lands the missing pieces in every listed project through its own kit
   writeFileSync(join(behind, ".gitignore"), "node_modules/\n");
   f.git(behind, "add", ".gitignore");
   f.git(behind, "commit", "-q", "-m", "ignore");
-  f.git(behind, "push", "-q", "origin", "HEAD:main");
+  f.git(behind, "push", "-q", "origin", "HEAD:dev");
   const exclude = readFileSync(join(behind, ".git/info/exclude"), "utf8");
   const busy = project("busy"), stuck = project("stuck"), open = project("open");
   // A full project set up before the kitchen pointer: the pieces go in as full ones.
@@ -549,7 +623,7 @@ test("--all lands the missing pieces in every listed project through its own kit
   const kitJson = join(current, "scripts/agents/kit.json");
   writeFileSync(kitJson, JSON.stringify({ ...JSON.parse(readFileSync(kitJson, "utf8")), init: { skip: [".gitattributes", ".claude/settings.json"] } }));
   f.git(current, "commit", "-q", "-am", "keep out");
-  f.git(current, "push", "-q", "origin", "HEAD:main");
+  f.git(current, "push", "-q", "origin", "HEAD:dev");
   const listed = f.projects();
   writeFileSync(join(f.state, "agent-kit/projects.json"), JSON.stringify({ ...listed, gone: { root: join(f.directory, "gone") } }));
 
@@ -558,19 +632,19 @@ test("--all lands the missing pieces in every listed project through its own kit
   assert.equal(run.status, 1, run.stdout + run.stderr);
   const results = run.stdout.split("\n").filter((line) => line.startsWith("RESULT: "));
   assert.deepEqual(results.slice(0, -1), [
-    "RESULT: ok init behind: 2 files changed, 1 file renormalized, through kit pr into main: merged #7 abc1234",
+    "RESULT: ok init behind: 2 files changed, 1 file renormalized, through kit pr into dev: merged #7 abc1234",
     `RESULT: ok init busy: skipped: ${busy} has uncommitted changes in .claude/settings.json; commit or land them, then rerun`,
-    "RESULT: ok init current: nothing missing on origin/main",
+    "RESULT: ok init current: nothing missing on origin/dev",
     `RESULT: ok init gone: skipped: no git checkout at ${join(f.directory, "gone")}`,
     `RESULT: ok init open: waiting: kit pr says opened #8; the change waits in ${open}-kit-init-pieces on kit/init-pieces until it lands, log ${join(f.state, "agent-kit/init-all/open.log")}`,
     `RESULT: fail init stuck: kit pr failed (pr #9 checks failed); the change waits in ${stuck}-kit-init-pieces on kit/init-pieces, log ${join(f.state, "agent-kit/init-all/stuck.log")}`,
-    "RESULT: ok init wide: 3 files changed, 1 file renormalized, through kit pr into main: merged #7 abc1234",
+    "RESULT: ok init wide: 3 files changed, 1 file renormalized, through kit pr into dev: merged #7 abc1234",
   ]);
-  assert.equal(results.at(-1), "RESULT: fail init --all: 2 updated (behind, wide), 1 waiting (open), 1 up to date, 2 skipped (busy, gone), 1 failed (stuck)");
+  assert.equal(results.at(-1), "RESULT: fail init --all: 2 updated (behind, wide), 1 waiting (open), 1 up to date, 2 skipped (busy, gone), 1 failed (stuck); branches: 6 on dev/main");
   assert.deepEqual(readFileSync(join(records, "wide-kit-init-pieces"), "utf8").split("\n").filter((line) => line.startsWith("file ")),
     ["file .claude/settings.json", "file .gitattributes", "file docs/agents/kitchen.md", "file notes.txt"]);
   assert.equal(existsSync(`${open}-kit-init-pieces`), true);
-  // behind's change ran through kit pr from a worktree of origin/main: the pieces, then the line-endings commit.
+  // behind's change ran through kit pr from a worktree of origin/dev: the pieces, then the line-endings commit.
   const record = readFileSync(join(records, "behind-kit-init-pieces"), "utf8");
   assert.match(record, /^args --title Kit setup: add what kit init writes today \(kit 0123456\)$/m);
   assert.match(record, new RegExp(`^root ${behind}-kit-init-pieces$`, "m"));
@@ -589,11 +663,11 @@ test("--all lands the missing pieces in every listed project through its own kit
   assert.equal(existsSync(join(behind, ".gitattributes")), false);
   for (const name of ["busy-kit-init-pieces", "current-kit-init-pieces"]) assert.equal(existsSync(join(records, name)), false, name);
   // A rerun says the failed one's worktree is still there rather than make another; the waiting one's PR has
-  // landed since (its branch is on origin/main), so its worktree goes and the project is up to date.
-  f.git(`${open}-kit-init-pieces`, "push", "-q", "origin", "HEAD:main");
+  // landed since (its branch is on origin/dev), so its worktree goes and the project is up to date.
+  f.git(`${open}-kit-init-pieces`, "push", "-q", "origin", "HEAD:dev");
   const again = all();
-  assert.match(again.stdout, /^open: the earlier run's kit\/init-pieces has landed on origin\/main; removed it and its worktree$/m);
-  assert.match(again.stdout, /^RESULT: ok init open: nothing missing on origin\/main$/m);
+  assert.match(again.stdout, /^open: the earlier run's kit\/init-pieces has landed on origin\/dev; removed it and its worktree$/m);
+  assert.match(again.stdout, /^RESULT: ok init open: nothing missing on origin\/dev$/m);
   assert.equal(existsSync(`${open}-kit-init-pieces`), false);
   assert.match(again.stdout, new RegExp(`^RESULT: fail init stuck: ${stuck}-kit-init-pieces or branch kit/init-pieces is left from an earlier run; land or remove it, then rerun$`, "m"));
 });
@@ -603,11 +677,11 @@ test("--all skips a project with no origin or no settings on origin, names old k
   Object.assign(f.env, ident);
   const solo = f.repo("solo", {}, ["main"]);
   assert.equal(f.init(solo.work, ["--light"]).status, 0);
-  // Set up in the main checkout only: origin/main has no settings yet.
+  // Set up in the main checkout only: origin/dev has no settings yet.
   const fresh = olderProject(f, "fresh");
   f.git(fresh, "rm", "-q", "-r", "scripts");
   f.git(fresh, "commit", "-q", "-m", "not yet");
-  f.git(fresh, "push", "-q", "origin", "HEAD:main");
+  f.git(fresh, "push", "-q", "origin", "HEAD:dev");
   f.git(fresh, "checkout", "-q", "HEAD~1", "--", "scripts");
   const legacy = olderProject(f, "legacy", (work) => writeFileSync(join(work, "scripts/agents/kit-lib.sh"), "# old\n"));
   const modules = join(f.directory, "shared-modules");
@@ -626,7 +700,7 @@ test("--all skips a project with no origin or no settings on origin, names old k
   const landed = (main: string, who: string) => {
     const [name, email] = who.split(" ");
     spawnSync("git", ["-C", main, "commit", "-q", "--allow-empty", "-m", "last"], { env: { ...f.env, GIT_AUTHOR_NAME: name, GIT_AUTHOR_EMAIL: email } });
-    f.git(main, "push", "-q", "origin", "HEAD:main");
+    f.git(main, "push", "-q", "origin", "HEAD:dev");
   };
   const nameless = olderProject(f, "nameless");
   landed(nameless, "Lander land@example.test");
@@ -646,29 +720,57 @@ test("--all skips a project with no origin or no settings on origin, names old k
   assert.equal(run.status, 1, run.stdout + run.stderr);
   assert.deepEqual(run.stdout.split("\n").filter((line) => line.startsWith("RESULT: ")).map((line) => line.replace(/(fetch origin failed: ).*/, "$1…")), [
     `RESULT: ok init edited: skipped: ${edited} has uncommitted changes in notes.txt; commit or land them, then rerun`,
-    "RESULT: ok init fresh: skipped: origin/main has no scripts/agents/kit.json; land the project's setup first",
-    "RESULT: ok init half: 2 files changed, 1 file renormalized, through kit pr into main: merged #7 abc1234",
+    "RESULT: ok init fresh: skipped: origin/dev has no scripts/agents/kit.json; land the project's setup first",
+    "RESULT: ok init half: 2 files changed, 1 file renormalized, through kit pr into dev: merged #7 abc1234",
     "RESULT: fail init legacy: adding the pieces failed: old kit files: scripts/agents/kit-lib.sh",
     "RESULT: fail init lost: git fetch origin failed: …",
-    "RESULT: ok init nameless: 2 files changed, 1 file renormalized, through kit pr into main: merged #7 abc1234",
-    "RESULT: ok init owned: 2 files changed, 1 file renormalized, through kit pr into main: merged #7 abc1234",
+    "RESULT: ok init nameless: 2 files changed, 1 file renormalized, through kit pr into dev: merged #7 abc1234",
+    "RESULT: ok init owned: 2 files changed, 1 file renormalized, through kit pr into dev: merged #7 abc1234",
     `RESULT: fail init slow: kit pr timed out after 1s and was stopped; the change waits in ${slow}-kit-init-pieces on kit/init-pieces (its branch on origin may have moved), log ${join(f.state, "agent-kit/init-all/slow.log")}`,
     "RESULT: ok init solo: skipped: no origin remote, so no kit pr; run kit init there by hand",
-    "RESULT: fail init --all: 3 updated (half, nameless, owned), 0 up to date, 3 skipped (edited, fresh, solo), 3 failed (legacy, lost, slow)",
+    "RESULT: fail init --all: 3 updated (half, nameless, owned), 0 up to date, 3 skipped (edited, fresh, solo), 3 failed (legacy, lost, slow); branches: 7 on dev/main",
   ]);
   assert.equal(existsSync(`${legacy}-kit-init-pieces`), false);
   // The slow project's kit pr ran with the shared dependencies linked, as in any of its worktrees.
   // No .gitignore line covers node_modules there: there is none, rather than one kit pr would see as a change.
   assert.match(readFileSync(join(records, "slow-kit-init-pieces"), "utf8"), /^node_modules  $/m);
   assert.match(run.stdout, new RegExp(`^slow: nothing in git ignores node_modules, so the worktree has none; kit pr's checks run without ${modules}$`, "m"));
-  assert.match(run.stdout, /^nameless: no user\.email set for git; commits as land@example\.test, from origin\/main's last commit$/m);
-  assert.match(run.stdout, /^half: no user\.email set for git; commits as land@example\.test, from origin\/main's last commit$/m);
+  assert.match(run.stdout, /^nameless: no user\.email set for git; commits as land@example\.test, from origin\/dev's last commit$/m);
+  assert.match(run.stdout, /^half: no user\.email set for git; commits as land@example\.test, from origin\/dev's last commit$/m);
   assert.doesNotMatch(run.stdout, /^owned: no user/m);
   assert.equal(readlinkSync(`${slow}-kit-init-pieces/public/preview`), join(slow, "public/preview"));
   assert.match(readFileSync(join(records, "nameless-kit-init-pieces"), "utf8"), /^author Lander <land@example\.test> \| Lander <land@example\.test>\nenv author Lander$/m);
   assert.match(readFileSync(join(records, "half-kit-init-pieces"), "utf8"), /^author Own <land@example\.test> \| Own <land@example\.test>\nenv author none$/m);
   assert.match(readFileSync(join(records, "owned-kit-init-pieces"), "utf8"), /^author Own <own@example\.test> \| Own <own@example\.test>\nenv author none$/m);
   assert.equal(existsSync(`${slow}-kit-init-pieces`), true);
+});
+
+test("--all opens no PR into a release branch: settings that still land on main are skipped and named, an exception lands where it says", (t) => {
+  const f = fixture(t);
+  Object.assign(f.env, ident);
+  const branches = (value: Record<string, string>) => (work: string) => {
+    const kitJson = join(work, "scripts/agents/kit.json");
+    writeFileSync(kitJson, JSON.stringify({ ...JSON.parse(readFileSync(kitJson, "utf8")), branches: value }));
+  };
+  olderProject(f, "onmain", branches({ land: "main" }));
+  olderProject(f, "same", branches({ land: "main", release: "main" }));
+  olderProject(f, "kept", branches({ land: "main", release: "main", exception: "Lex's own edits go live at once" }));
+  olderProject(f, "usual");
+  olderProject(f, "unreleased", branches({ land: "dev", exception: "explains nothing here" }));
+  const { records, all } = standInKit(f);
+  const run = all();
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  const fix = (release: string) => `set "branches": { "land": "dev", "release": "${release}" } once dev exists (a person makes it from their own terminal: git push origin origin/${release}:refs/heads/dev), or name its exception in "branches": { "exception": "<reason>" }`;
+  const skip = "its settings land on main, the branch it releases from, so kit init --all opens no PR into it";
+  assert.deepEqual(run.stdout.split("\n").filter((line) => line.startsWith("RESULT: ")), [
+    "RESULT: ok init kept: 2 files changed, 1 file renormalized, through kit pr into main: merged #7 abc1234",
+    `RESULT: ok init onmain: skipped: ${skip}; ${fix("main")}`,
+    `RESULT: ok init same: skipped: ${skip}; ${fix("main")}`,
+    "RESULT: ok init unreleased: 2 files changed, 1 file renormalized, through kit pr into dev: merged #7 abc1234",
+    "RESULT: ok init usual: 2 files changed, 1 file renormalized, through kit pr into dev: merged #7 abc1234",
+    "RESULT: ok init --all: 3 updated (kept, unreleased, usual), 0 up to date, 2 skipped (onmain, same), 0 failed; branches: 1 on dev/main, 1 on dev/no release branch (unreleased), 2 on main/main (kept, same), 1 on main/no release branch (onmain); exceptions: kept: Lex's own edits go live at once",
+  ]);
+  for (const name of ["onmain", "same"]) assert.equal(existsSync(join(records, `${name}-kit-init-pieces`)), false, name);
 });
 
 test("kitRegisterProject lists nothing when during() throws, and a failed write leaves no temporary file or lock", (t) => {

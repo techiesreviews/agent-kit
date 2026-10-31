@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 const { kitGhRepo, kitHideUserInfo, kitHome, kitProjects, kitRegisterProject, kitResult, kitRoot, kitSettingsFile, kitSettingsProblems, kitStateDir } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const usage = `Usage: kit init [--light | --full] [--land <branch>]
+const usage = `Usage: kit init [--light | --full] [--land <branch>] [--release <branch>]
        kit init --check
        kit init --all
        kit init --pieces   (--all's own step, in its temporary worktree)
@@ -16,8 +16,9 @@ const usage = `Usage: kit init [--light | --full] [--land <branch>]
 Set the project around the working folder up for the shared kit; the kit itself is never copied in.
 Run it in the project's git repo (from the machine copy, ~/.local/share/agent-kit/current/kit init,
 before the project has a launcher). It writes only what is missing and never deletes or overwrites a file:
-  scripts/agents/kit.json   project, mainRoot and branches from git (land: --land, else dev, develop,
-                            main or master), checks guessed from package.json scripts (printed to confirm)
+  scripts/agents/kit.json   project, mainRoot and branches: land dev (or develop, or --land), release main
+                            (or master, or --release); a repo with only main gets dev made from it, here and
+                            on origin; checks guessed from package.json scripts (printed to confirm)
   scripts/agents/kit, scripts/agents/hooks/run.sh   the kit launcher and the hook launcher
   .claude/settings.json, .codex/hooks.json   the kit's hook entries, merged in; other settings stay
   AGENTS.md                 two lines pointing at scripts/agents/kit rulebook and kit --help
@@ -35,15 +36,17 @@ note naming how to make a worktree. A rerun changes nothing and says so. Old kit
 
 --check writes nothing: it prints "missing: <name> (<what>)" for each piece kit init would write today, the
 name being the one "init.skip" takes (kit doctor shows these as warnings). It needs scripts/agents/kit.json.
---all brings every project in the machine's projects.json up to date, one after another: in a temporary
-worktree of origin's landing branch it adds the missing pieces, commits them (and, when .gitattributes was
-added, a git add --renormalize . commit), and lands them through the project's own kit pr (its tier from the
-changed paths). One RESULT line per project, then one for the run: updated (merged), waiting (a PR opened or
-queued, its worktree kept until it lands), up to date, skipped or failed. A project whose main checkout has
-uncommitted changes in the files the change touches is skipped and named, as is one without a git checkout,
-an origin or a kit.json; a failed kit pr keeps its worktree and names it and its log. --pieces is that
-worktree's step: add the missing pieces only, with no project list entry and no doctor. Each kit pr stops
-after KIT_INIT_PR_TIMEOUT seconds (default 7200).
+--all brings every project in the machine's projects.json up to date, one after another: in a temporary worktree
+of origin's landing branch it adds the missing pieces, commits them (and, when .gitattributes was added, a git
+add --renormalize . commit), and lands them through the project's own kit pr (its tier from the changed paths),
+always into the landing branch: a project whose settings still land on main (or on their release branch) is
+skipped and named, unless "branches": { "exception": "<reason>" } says why. One RESULT line per project, then one
+for the run: updated (merged), waiting (a PR opened or queued, its worktree kept until it lands), up to date,
+skipped or failed, and each landing/release pair (dev/main) with its count and exceptions. A project whose main
+checkout has uncommitted changes in the files the change touches is skipped and named, as is one without a git
+checkout, an origin or a kit.json; a failed kit pr keeps its worktree and names it and its log. --pieces is that
+worktree's step: add the missing pieces only, with no project list entry and no doctor. Each kit pr stops after
+KIT_INIT_PR_TIMEOUT seconds (default 7200).
 
 --issues copies the project's open GitHub Issues (gh issue list) into needs-triage tickets, one file each in
 <maps>/backlog/tickets/NN-<slug>.md (maps from kit.json, else docs/wayfinder), with the Issue's text, labels,
@@ -58,7 +61,7 @@ linking its file there; it closes nothing while any open Issue's file is missing
 // fail never returns: it prints the RESULT line and exits, so it also ends expressions such as readJson's catch.
 const fail = (text, code = 1) => { kitResult("fail", `init ${text}`); process.exit(code); };
 const isObject = (value) => value && typeof value === "object" && !Array.isArray(value);
-const options = { light: false, full: false, land: "", issues: false, close: false, check: false, all: false, pieces: false };
+const options = { light: false, full: false, land: "", release: "", issues: false, close: false, check: false, all: false, pieces: false };
 const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
@@ -70,9 +73,9 @@ for (let i = 0; i < args.length; i++) {
   else if (arg === "--pieces") options.pieces = true;
   else if (arg === "--issues") options.issues = true;
   else if (arg === "--close") options.close = true;
-  else if (arg === "--land") {
-    if (!args[i + 1] || args[i + 1].startsWith("-")) { process.stderr.write(usage); fail("--land needs a branch name", 2); }
-    options.land = args[++i];
+  else if (arg === "--land" || arg === "--release") {
+    if (!args[i + 1] || args[i + 1].startsWith("-")) { process.stderr.write(usage); fail(`${arg} needs a branch name`, 2); }
+    options[arg.slice(2)] = args[++i];
   }
   else { process.stderr.write(usage); fail(`unknown argument ${arg}`, 2); }
 }
@@ -122,7 +125,7 @@ const extrasPath = "docs/agents/kitchen-extras.md", mapsPath = "docs/wayfinder",
 
 // The settings file: kept as it is when there, else filled from git and package.json.
 // unnamed: stub keys an existing settings file lacks, as [key, default, the stub file written there].
-let settings, unnamed = [], full = !options.light;
+let settings, unnamed = [], full = !options.light, makeLand = null;
 if (options.check && !existsSync(at(kitSettingsFile))) { kitResult("ok", `init check: no ${kitSettingsFile} (run kit init to set the project up)`); process.exit(0); }
 if (options.pieces && !existsSync(at(kitSettingsFile))) fail(`--pieces needs ${kitSettingsFile}`);
 if (existsSync(at(kitSettingsFile))) {
@@ -135,15 +138,24 @@ if (existsSync(at(kitSettingsFile))) {
   // commands folder says nothing: a light project may have one too.
   full = options.full || (!options.light && (["maps", "rulebookExtras"].some((key) => settings[key]) ||
     [`${mapsPath}/README.md`, extrasPath].some((path) => existsSync(at(path)))));
-  if (options.land) notes.push(`--land ignored: ${kitSettingsFile} already names "branches"`);
+  for (const flag of ["land", "release"]) if (options[flag]) notes.push(`--${flag} ignored: ${kitSettingsFile} already names "branches"`);
   unnamed = full ? [["commands", commandsPath, `${commandsPath}/.gitkeep`], ["maps", mapsPath, `${mapsPath}/README.md`], ["rulebookExtras", extrasPath, extrasPath]]
     .filter(([key]) => !settings[key]) : [];
 } else {
-  const land = options.land || ["dev", "develop", "main", "master"].find(branchExists);
+  // Work lands on dev and the release branch (main) takes only dev, through kit pr --release (Lex, 2026-10-31;
+  // ticket ke-89): a repo with only main (or master, or the --release branch) gets dev made from it.
+  // --land and --release name other branches.
+  const usual = options.release && branchExists(options.release) ? options.release : ["main", "master"].find(branchExists);
+  const land = options.land || ["dev", "develop"].find(branchExists) || (usual ? "dev" : "");
   if (!land) fail("no dev, develop, main or master branch; name the landing branch with kit init --land <branch>", 2);
   if (git("check-ref-format", "--branch", land) === null) fail(`--land ${land} is not a branch name`, 2);
-  if (!branchExists(land)) notes.push(`branch ${land} is not here or on origin yet; kit doctor's base check needs origin/${land} once the project has a GitHub repo`);
-  const release = ["dev", "develop"].includes(land) ? ["main", "master"].find(branchExists) : undefined;
+  const release = options.release || (["dev", "develop"].includes(land) ? usual : undefined);
+  if (release && git("check-ref-format", "--branch", release) === null) fail(`--release ${release} is not a branch name`, 2);
+  if (release === land) fail(`--release ${release} is the landing branch too; the release branch takes only the landing branch, so name two branches (a site that goes live from the branch it lands on adds "exception": "<reason>" to "branches" by hand)`, 2);
+  // The release branch must hold a commit to make the landing branch from (an unborn HEAD names a branch with none).
+  const hasCommit = (name) => [`refs/heads/${name}`, `refs/remotes/origin/${name}`].some((ref) => git("rev-parse", "--verify", "--quiet", `${ref}^{commit}`) !== null);
+  if (!branchExists(land) && release && hasCommit(release)) makeLand = { land, from: release };
+  else if (!branchExists(land)) notes.push(`branch ${land} is not here or on origin yet; kit doctor's base check needs origin/${land} once the project has a GitHub repo`);
   const remote = kitHideUserInfo(git("remote", "get-url", "origin") ?? "");
   // The last part of the remote's path, after "/" or the ":" of host:repo (a token in the url never becomes it).
   const project = (remote && remote.replace(/\/+$/, "").split(/[/:]/).at(-1).replace(/\.git$/, "")) || basename(gitMain);
@@ -357,6 +369,22 @@ try {
   if (options.pieces) writeAll();
   else registered = kitRegisterProject(settings.project, projectRoot, process.env, writeAll);
 } catch (error) { fail(String(error.message).replace(/\n/g, " ")); }
+// The landing branch a new setup names, made from the release branch where it is missing: here, and on origin
+// when origin has the release branch, so kit doctor's base check and the first kit pr find origin/<land>.
+if (makeLand) {
+  const { land, from } = makeLand, onOrigin = git("rev-parse", "--verify", "--quiet", `refs/remotes/origin/${from}^{commit}`);
+  const start = onOrigin ?? git("rev-parse", "--verify", "--quiet", `${from}^{commit}`);
+  if (!start || git("branch", "--no-track", land, start) === null) notes.push(`could not make branch ${land} from ${from}; make it with git branch ${land} ${from}`);
+  else if (!onOrigin) console.log(`made branch ${land} from ${from} (${start.slice(0, 7)})`);
+  else if (spawnSync("git", ["-C", root, "push", "-q", "origin", `${start}:refs/heads/${land}`],
+    { stdio: "ignore", timeout: 60_000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } }).status !== 0) {
+    console.log(`made branch ${land} from origin/${from} (${start.slice(0, 7)})`);
+    notes.push(`could not push ${land} to origin; a person pushes it from their own terminal (git push origin ${land}), as the push guard refuses that push in an agent's shell`);
+  } else {
+    git("fetch", "-q", "origin", `+refs/heads/${land}:refs/remotes/origin/${land}`);
+    console.log(`made branch ${land} from origin/${from} (${start.slice(0, 7)}), here and on origin`);
+  }
+}
 if (kept.length) console.log(`kept (already there): ${kept.join(", ")}`);
 if (off.length) console.log(`left out (init.skip in ${kitSettingsFile}): ${off.join(", ")}`);
 if (registered === "added") console.log(`listed ${settings.project} at ${projectRoot} in ${join(kitStateDir(), "projects.json")}`);
@@ -649,7 +677,10 @@ function all() {
   const said = (step) => (step.error ? String(step.error.message) : (step.stderr || step.stdout || `exit ${step.status}`)).trim().split("\n").at(-1);
   const lastResult = (text) => String(text ?? "").split("\n").findLast((line) => line.startsWith("RESULT: "))?.replace(/^RESULT: (?:ok|fail) /, "");
   const files = (count) => `${count} file${count === 1 ? "" : "s"}`;
-  const landOf = (text) => { try { const land = JSON.parse(text)?.branches?.land; return typeof land === "string" && land.trim() ? land : null; } catch { return null; } };
+  const named = (value) => typeof value === "string" && value.trim() ? value : null;
+  const branchesOf = (text) => { try { const { land, release, exception } = JSON.parse(text)?.branches ?? {}; return named(land) && { land, release: named(release), exception: named(exception) }; } catch { return null; } };
+  // Where each project lands and releases, for the run's RESULT line: "dev/main" for most, its exception named.
+  const pairs = new Map(), exceptions = [];
 
   // One project: [group, text], the group being updated, current, skipped or failed.
   // A step that throws (a file that cannot be read or written) fails that project alone, and removes its worktree.
@@ -669,13 +700,26 @@ function all() {
     const fetched = git(main, "fetch", "-q", "origin");
     if (fetched.status !== 0) return ["failed", `git fetch origin failed: ${said(fetched)}`];
     // The landing branch: as the main checkout's settings name it, else as the first usual branch on origin with settings does.
-    let land = existsSync(join(main, kitSettingsFile)) ? landOf(readFileSync(join(main, kitSettingsFile), "utf8")) : null;
+    let branches = existsSync(join(main, kitSettingsFile)) ? branchesOf(readFileSync(join(main, kitSettingsFile), "utf8")) : null;
     for (const branch of ["dev", "develop", "main", "master"]) {
-      if (land) break;
+      if (branches) break;
       const shown = git(main, "show", `refs/remotes/origin/${branch}:${kitSettingsFile}`);
-      if (shown.status === 0) land = landOf(shown.stdout);
+      if (shown.status === 0) branches = branchesOf(shown.stdout);
     }
-    if (!land) return ["skipped", `skipped: no ${kitSettingsFile} naming a landing branch, here or on origin; run kit init there first`];
+    if (!branches) return ["skipped", `skipped: no ${kitSettingsFile} naming a landing branch, here or on origin; run kit init there first`];
+    // The PR goes into the landing branch, never the release branch, which takes only the landing branch (ticket
+    // ke-89). Settings that still land on main (or on their release branch) are skipped, unless they name their
+    // exception; every project with settings counts in the run's landing/release pairs.
+    const { land, release, exception } = branches;
+    const pair = `${land}/${release ?? "no release branch"}`;
+    pairs.set(pair, [...(pairs.get(pair) ?? []), name]);
+    const onRelease = land === release || ["main", "master"].includes(land);
+    // Only an exception that explains landing on the release branch is named, as kit doctor shows it.
+    if (exception && onRelease) exceptions.push(`${name}: ${exception}`);
+    if (!exception && onRelease) {
+      const why = land === release || !release ? "the branch it releases from" : "not dev";
+      return ["skipped", `skipped: its settings land on ${land}, ${why}, so kit init --all opens no PR into it; set "branches": { "land": "dev", "release": "${release ?? land}" } once dev exists (a person makes it from their own terminal: git push origin origin/${release ?? land}:refs/heads/dev), or name its exception in "branches": { "exception": "<reason>" }`];
+    }
     if (git(main, "cat-file", "-e", `refs/remotes/origin/${land}:${kitSettingsFile}`).status !== 0) return ["skipped", `skipped: origin/${land} has no ${kitSettingsFile}; land the project's setup first`];
 
     const branch = "kit/init-pieces", path = `${main}-kit-init-pieces`, tip = `refs/heads/${branch}`;
@@ -815,8 +859,12 @@ function all() {
     kitResult(group === "failed" ? "fail" : "ok", `init ${name}: ${text}`);
   }
   const count = (group, word) => `${groups[group].length} ${word}${groups[group].length && group !== "current" ? ` (${groups[group].join(", ")})` : ""}`;
+  // Each landing/release pair with its count; any pair but dev/main names its projects, an exception its reason.
+  const landing = [...pairs].sort(([a], [b]) => (a === "dev/main" ? -1 : b === "dev/main" ? 1 : a.localeCompare(b)))
+    .map(([pair, list]) => `${list.length} on ${pair}${pair === "dev/main" ? "" : ` (${list.join(", ")})`}`);
+  const branchesNote = landing.length ? `; branches: ${landing.join(", ")}${exceptions.length ? `; exceptions: ${exceptions.join("; ")}` : ""}` : "";
   kitResult(groups.failed.length ? "fail" : "ok", names.length
-    ? `init --all: ${count("updated", "updated")}, ${groups.waiting.length ? `${count("waiting", "waiting")}, ` : ""}${count("current", "up to date")}, ${count("skipped", "skipped")}, ${count("failed", "failed")}`
+    ? `init --all: ${count("updated", "updated")}, ${groups.waiting.length ? `${count("waiting", "waiting")}, ` : ""}${count("current", "up to date")}, ${count("skipped", "skipped")}, ${count("failed", "failed")}${branchesNote}`
     : `init --all: no projects in ${join(kitStateDir(), "projects.json")}`);
   process.exit(groups.failed.length ? 1 : 0);
 }

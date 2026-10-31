@@ -6,7 +6,7 @@ import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
 import { kitBranch, kitGhEnv, kitResult, kitOwner, kitRoot, kitJob, kitJobDirectory, kitJobExit, kitJobRunning } from "../kit-lib.mjs";
-import { summarizeRuns, failingSteps, failingTests, latestWorkflowRuns } from "../ci-summary.mjs";
+import { summarizeRuns, failingSteps, failingTests, latestWorkflowRuns, activeWorkflows } from "../ci-summary.mjs";
 
 const usage = `Usage: kit wait pid <pid> [--timeout D]
        kit wait job <name> [--timeout D]
@@ -15,7 +15,10 @@ const usage = `Usage: kit wait pid <pid> [--timeout D]
 Durations: seconds (bare number or s), minutes (m), hours (h). Default timeout: 30m.
 Output without --until finishes when every process seen writing the file has exited and its size
 stayed unchanged for the quiet period (default 5s); a writer never seen holding the file is covered
-only by the quiet period. CI branch: branches.ci in scripts/agents/kit.json, else branches.land.`;
+only by the quiet period. CI branch: branches.ci in scripts/agents/kit.json, else branches.land.
+In a repo with no active workflows there is no run to wait for: a branch or commit passes as "no checks"; a PR
+waits for the checks GitHub lists on it from elsewhere (a Pages app) and passes or fails on them, or passes as
+"no checks" when GitHub still lists none after KIT_WAIT_NO_CHECKS_MS (default 2 min).`;
 const args = process.argv.slice(2);
 const execute = promisify(execFile);
 const controller = new AbortController();
@@ -145,6 +148,7 @@ async function wait(config) {
   const deadline = started + timeout;
   const poll = interval("KIT_WAIT_POLL_MS", kind === "ci" ? 30000 : 1000);
   const status = interval("KIT_WAIT_STATUS_MS", 60000);
+  const noChecks = interval("KIT_WAIT_NO_CHECKS_MS", 120000);
   let lastStatus = started;
   let head = options.sha ?? "";
   // Only a plain branch wait reads the settings; --pr and --sha find their branch from GitHub.
@@ -205,6 +209,12 @@ async function wait(config) {
     }
     return (await gh(["api", `repos/{owner}/{repo}/commits/${encodeURIComponent(branch)}`, "--jq", ".sha"])).trim();
   };
+  // The checks GitHub lists on the PR (check runs and commit statuses), each passed, failed or pending.
+  const prChecks = async () => (JSON.parse(await gh(["pr", "view", options.pr, "--json", "statusCheckRollup"])).statusCheckRollup ?? []).map((check) => {
+    const state = String(check.conclusion || check.state || "").toUpperCase(), done = !check.status || String(check.status).toUpperCase() === "COMPLETED";
+    return { name: check.name || check.context || "check",
+      state: ["SUCCESS", "NEUTRAL", "SKIPPED"].includes(state) && done ? "passed" : ["PENDING", "EXPECTED", ""].includes(state) || !done ? "pending" : "failed" };
+  });
   try {
     // Pin the log before verifying identity; name reuse cannot redirect later async reads.
     if (job) jobLog = openSync(`${job.directory}/log`, "r");
@@ -235,41 +245,63 @@ async function wait(config) {
           }
         } else size = null;
       } else {
-        if (options.sha && !branchResolved) {
-          const runs = JSON.parse(await gh(["run", "list", "--commit", options.sha, "--limit", "1", "--json", "headBranch"]));
-          if (runs.length) {
-            branch = runs[0].headBranch;
-            if (head.length < 40) head = (await gh(["api", `repos/{owner}/{repo}/commits/${head}`, "--jq", ".sha"])).trim();
-            branchResolved = true;
-          }
-        }
-        if (!options.sha || branchResolved) {
-          // Stay on the starting head; only a cancelled run on a moved head switches it,
-          // and a --sha wait stays on its commit even then.
+        // A repo with no active workflows has no runs to wait for (ticket ke-89): a branch or commit passes as
+        // "no checks"; a PR waits for the checks GitHub lists on it from elsewhere (a Pages app), and passes as
+        // "no checks" once it lists none after KIT_WAIT_NO_CHECKS_MS (default 2 min), as such a check can come late.
+        const workflows = await activeWorkflows(gh);
+        if (!workflows.length) {
           if (!head) head = await resolveHead();
-          const runs = await latestWorkflowRuns(gh, branch, head);
-          const summary = summarizeRuns(runs, head);
-          // Summary owns run selection; pair its failure IDs with cancellation metadata.
-          const cancelled = runs.some((run) => summary.failedRunIds.includes(run.databaseId) && run.conclusion === "cancelled");
-          const fresh = cancelled && !options.sha ? await resolveHead() : head;
-          if (fresh !== head) {
-            console.log(`superseded by ${fresh.slice(0, 7)}`);
-            head = fresh; previous = []; continue;
+          if (options.pr === undefined) return finish(true, `ci ${label} ${head.slice(0, 7)}: no checks (the repo has no active workflows)`);
+          const checks = await prChecks();
+          if (!checks.length && Date.now() - started >= noChecks)
+            return finish(true, `ci ${label} ${head.slice(0, 7)}: no checks (no active workflows and GitHub lists no checks on the PR)`);
+          if (checks.length) {
+            const lines = checks.map((check) => `${check.name}: ${check.state}`);
+            for (const line of lines) if (!previous.includes(line)) console.log(line);
+            previous = lines;
+            const failed = checks.filter((check) => check.state === "failed").map((check) => check.name);
+            if (failed.length) return finish(false, `ci ${label} ${head.slice(0, 7)} failed: ${failed.join(", ")}`);
+            if (checks.every((check) => check.state === "passed"))
+              return finish(true, `ci ${label} ${head.slice(0, 7)} green (${checks.length} checks from outside workflows) after ${elapsed(Date.now() - started)}`);
           }
-          for (const line of summary.lines) if (!previous.includes(line)) console.log(line);
-          previous = summary.lines;
-          if (!summary.pending) {
-            if (!summary.exitCode) return finish(true, `ci ${label} ${head.slice(0, 7)} green (${summary.lines.length} workflows) after ${elapsed(Date.now() - started)}`);
-            const names = [];
-            for (const id of summary.failedRunIds) {
-              names.push(runs.find((run) => run.databaseId === id).workflowName);
-              const { jobs } = JSON.parse(await gh(["run", "view", String(id), "--json", "jobs"]));
-              for (const line of failingSteps(jobs)) console.log(line);
-              const log = await gh(["run", "view", String(id), "--log-failed"]);
-              for (const line of failingTests(log)) console.log(line);
-              tail(log);
+        } else {
+          if (options.sha && !branchResolved) {
+            const runs = JSON.parse(await gh(["run", "list", "--commit", options.sha, "--limit", "1", "--json", "headBranch"]));
+            if (runs.length) {
+              branch = runs[0].headBranch;
+              if (head.length < 40) head = (await gh(["api", `repos/{owner}/{repo}/commits/${head}`, "--jq", ".sha"])).trim();
+              branchResolved = true;
             }
-            return finish(false, `ci ${label} ${head.slice(0, 7)} failed: ${names.join(", ")}`);
+          }
+          if (!options.sha || branchResolved) {
+            // Stay on the starting head; only a cancelled run on a moved head switches it,
+            // and a --sha wait stays on its commit even then.
+            if (!head) head = await resolveHead();
+            // With workflows, a run is expected (one can be slow to start), so no run is never a pass.
+            const runs = await latestWorkflowRuns(gh, branch, head, workflows);
+            const summary = summarizeRuns(runs, head);
+            // Summary owns run selection; pair its failure IDs with cancellation metadata.
+            const cancelled = runs.some((run) => summary.failedRunIds.includes(run.databaseId) && run.conclusion === "cancelled");
+            const fresh = cancelled && !options.sha ? await resolveHead() : head;
+            if (fresh !== head) {
+              console.log(`superseded by ${fresh.slice(0, 7)}`);
+              head = fresh; previous = []; continue;
+            }
+            for (const line of summary.lines) if (!previous.includes(line)) console.log(line);
+            previous = summary.lines;
+            if (!summary.pending) {
+              if (!summary.exitCode) return finish(true, `ci ${label} ${head.slice(0, 7)} green (${summary.lines.length} workflows) after ${elapsed(Date.now() - started)}`);
+              const names = [];
+              for (const id of summary.failedRunIds) {
+                names.push(runs.find((run) => run.databaseId === id).workflowName);
+                const { jobs } = JSON.parse(await gh(["run", "view", String(id), "--json", "jobs"]));
+                for (const line of failingSteps(jobs)) console.log(line);
+                const log = await gh(["run", "view", String(id), "--log-failed"]);
+                for (const line of failingTests(log)) console.log(line);
+                tail(log);
+              }
+              return finish(false, `ci ${label} ${head.slice(0, 7)} failed: ${names.join(", ")}`);
+            }
           }
         }
       }
