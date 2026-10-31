@@ -636,6 +636,10 @@ test("--all skips a project with no origin or no settings on origin, names old k
   // The slow project's kit pr ran with the shared dependencies linked, as in any of its worktrees.
   // No .gitignore line covers node_modules there: there is none, rather than one kit pr would see as a change.
   assert.match(readFileSync(join(records, "slow-kit-init-pieces"), "utf8"), /^node_modules  $/m);
+  assert.match(run.stdout, new RegExp(`^slow: nothing in git ignores node_modules, so the worktree has none; kit pr's checks run without ${modules}$`, "m"));
+  assert.match(run.stdout, /^nameless: no user\.email set for git; commits as land@example\.test, from origin\/main's last commit$/m);
+  assert.match(run.stdout, /^half: no user\.email set for git; commits as land@example\.test, from origin\/main's last commit$/m);
+  assert.doesNotMatch(run.stdout, /^owned: no user/m);
   assert.equal(readlinkSync(`${slow}-kit-init-pieces/public/preview`), join(slow, "public/preview"));
   assert.match(readFileSync(join(records, "nameless-kit-init-pieces"), "utf8"), /^author Lander <land@example\.test> \| Lander <land@example\.test>\nenv author Lander$/m);
   assert.match(readFileSync(join(records, "half-kit-init-pieces"), "utf8"), /^author Own <land@example\.test> \| Own <land@example\.test>\nenv author none$/m);
