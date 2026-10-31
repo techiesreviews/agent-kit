@@ -26,7 +26,7 @@ before the project has a launcher). It writes only what is missing and never del
 Full (the default for a new project) also writes an empty scripts/agents/project.d/ (its own commands),
 docs/agents/kitchen.md (a pointer), docs/agents/kitchen-extras.md (from the kit's template),
 docs/wayfinder/README.md, and names them in a new kit.json; --light leaves those out. A project with a kit.json
-stays as it was set up: full when kit.json names "commands", "maps" or "rulebookExtras", else light; --full
+stays as it was set up: full when kit.json names "maps" or "rulebookExtras", else light; --full
 adds the full pieces anyway. Pieces named in kit.json's "init": { "skip": [...] } (the name --check prints, or a
 file's path for every piece in it) are never written. It lists the project in the machine's projects.json and
 ends with kit doctor's result. Run in the main checkout, doctor's failing place check (no builds there) is a
@@ -130,10 +130,11 @@ if (existsSync(at(kitSettingsFile))) {
   const problems = kitSettingsProblems(settings);
   if (problems.length) fail(`${problems.join("; ")}; fix it first, kit init never overwrites it`);
   kept.push(kitSettingsFile);
-  // A project stays as it was set up: full when its settings name a full piece's place or a full stub is at its
-  // default place (an older kit init wrote them there without naming them), else light.
-  full = options.full || (!options.light && (["commands", "maps", "rulebookExtras"].some((key) => settings[key]) ||
-    [commandsPath, `${mapsPath}/README.md`, extrasPath].some((path) => existsSync(at(path)))));
+  // A project stays as it was set up: full when its settings name the maps or the rulebook extras, or one of those
+  // stubs is at its default place (an older kit init wrote them there without naming them), else light. Its own
+  // commands folder says nothing: a light project may have one too.
+  full = options.full || (!options.light && (["maps", "rulebookExtras"].some((key) => settings[key]) ||
+    [`${mapsPath}/README.md`, extrasPath].some((path) => existsSync(at(path)))));
   if (options.land) notes.push(`--land ignored: ${kitSettingsFile} already names "branches"`);
   unnamed = full ? [["commands", commandsPath, `${commandsPath}/.gitkeep`], ["maps", mapsPath, `${mapsPath}/README.md`], ["rulebookExtras", extrasPath, extrasPath]]
     .filter(([key]) => !settings[key]) : [];
