@@ -15,7 +15,9 @@ function fixture(t: TestContext, branches: Record<string, string> = { land: "dev
   const dir = mkdtempSync(join(tmpdir(), "kit-release-check-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const origin = join(dir, "origin.git"), root = join(dir, "work");
-  const env: NodeJS.ProcessEnv = { ...kitEnv(), KIT_ROOT: root, ASE_OWNER: "ke-72",
+  // Temporary HOME and XDG folders: the front door's kit-lib.sh reads HOME.
+  const env: NodeJS.ProcessEnv = { ...kitEnv(), KIT_ROOT: root, ASE_OWNER: "ke-72", HOME: join(dir, "home"),
+    XDG_STATE_HOME: join(dir, "state"), XDG_CONFIG_HOME: join(dir, "config"), XDG_CACHE_HOME: join(dir, "cache"), XDG_DATA_HOME: join(dir, "data"),
     GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
   const gitAt = (cwd: string, ...args: string[]) => {
     const result = spawnSync("git", args, { cwd, env, encoding: "utf8", timeout: 10_000 });
@@ -140,6 +142,27 @@ test("a HEAD behind origin/<release> fails after a fetch, though the local origi
   const result = f.run();
   assert.equal(result.status, 1);
   assert.equal(lastLine(result.stdout), `RESULT: fail HEAD ${f.short()} is 2 commits behind origin/main: update the checkout to origin/main before going live`);
+});
+
+test("an origin branch force-pushed back is fetched over the newer one the clone saw", t => {
+  const f = fixture(t), peer = f.peer(), base = f.gitAt(peer, "rev-parse", "HEAD");
+  f.commit(peer, "merged"); f.gitAt(peer, "push", "-q", "origin", "main");
+  f.git("pull", "-q", "--ff-only", "origin", "main");
+  f.gitAt(peer, "push", "-q", "--force", "origin", `${base}:main`);
+  const result = f.run();
+  assert.equal(result.status, 1);
+  assert.equal(lastLine(result.stdout), `RESULT: fail HEAD ${f.short()} is 1 commit ahead of origin/main: what goes live must be on main; land it with kit pr`);
+});
+
+test("a checkout with no commit fails with its own line", t => {
+  const f = fixture(t);
+  f.git("checkout", "-q", "--orphan", "empty"); f.git("rm", "-rfq", "."); f.git("clean", "-fdq");
+  // The settings come back as the one unsaved file.
+  mkdirSync(join(f.root, "scripts/agents"), { recursive: true });
+  writeFileSync(join(f.root, "scripts/agents/kit.json"), JSON.stringify({ project: "site", branches: { land: "dev", release: "main" } }));
+  const result = f.run();
+  assert.equal(result.status, 1);
+  assert.match(lastLine(result.stdout), /; no commit checked out: check out origin\/main before going live$/);
 });
 
 test("a HEAD that has split from origin/<release> names both counts", t => {

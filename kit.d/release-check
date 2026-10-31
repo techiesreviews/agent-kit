@@ -11,8 +11,8 @@ const usage = `Usage: kit release-check [--land] [--waive "<reason>"]
 Run first by a project's live deploy command, and by kit pr --release. Fails unless the working tree is
 clean (no changed or untracked files outside .scratch/) and HEAD is exactly origin/<release> after a
 fetch (branches.release in ${kitSettingsFile}, the same branch the push guard reads). Pushes nothing.
---land compares HEAD with origin/<land> instead: kit pr --release checks that it sends out exactly what
-landed. --waive requires a *-lead owner; the RESULT line names the reason and what it let through.
+--land compares HEAD with origin/<land> instead: kit pr --release checks that the release is cut exactly
+from what landed, before it rebases the cut onto origin/<release>. --waive requires a *-lead owner; the RESULT line names the reason and what it let through.
 `;
 
 class UsageError extends Error {}
@@ -36,7 +36,8 @@ const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
 /** What stops this checkout going live: a list of { what, advice }, and the line an ok result prints. */
 function problems(root, { land }) {
-  const git = (...args) => spawnSync("git", ["-C", root, ...args], { encoding: "utf8" });
+  // git's own messages in English, so a missing branch is told apart from a failed fetch in any locale.
+  const git = (...args) => spawnSync("git", ["-C", root, ...args], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } });
   const found = [];
   const settings = kitSettings(root), release = kitBranch("release", settings);
   // Changed and untracked files, one path each; .scratch/ holds the kit's own logs and evidence.

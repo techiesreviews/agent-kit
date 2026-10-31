@@ -12,7 +12,7 @@ const { kitBranch, kitGhEnv, kitHideUserInfo, kitHidingLog, kitHome, kitRoot, ki
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const { checkSteps, classify, doneHeading, featureListGuard, featureListProblem, focusedUnitFiles, parseChanges, secondLookPick, unitTestFile } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
-const usage = 'Usage: kit pr [--base <land>] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release] [--full] [--waive "<reason>"]\nBranches come from scripts/agents/kit.json: --base defaults to branches.land; --release needs --base branches.release and first runs kit release-check --land (nothing unsaved, HEAD exactly origin/<land>).\n--waive requires a *-lead owner; records the reason for merging with open findings or without a feature-list update;\nwith --release it also passes the release check, which names the reason.\nAfter the Claude review (none in the docs tier), every change gets a second look (kit review --second-look), whose findings block the same way;\nwhen no model can take it, the PR lands and says "second look: skipped (<reason>)".\n';
+const usage = 'Usage: kit pr [--base <land>] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release] [--full] [--waive "<reason>"]\nBranches come from scripts/agents/kit.json: --base defaults to branches.land; --release needs --base branches.release and first runs kit release-check --land (nothing unsaved, HEAD exactly origin/<land>).\n--waive requires a *-lead owner; records the reason for merging with open findings or without a feature-list update;\nwith --release it also passes the release check, which names the reason (kit pr still needs a clean tree).\nAfter the Claude review (none in the docs tier), every change gets a second look (kit review --second-look), whose findings block the same way;\nwhen no model can take it, the PR lands and says "second look: skipped (<reason>)".\n';
 const kit = process.env.KIT_PR_KIT || resolve(import.meta.dirname, "../kit");
 
 function options(args) {
@@ -343,14 +343,15 @@ async function main(args) {
     // A project that lands on its release branch (land and release both main) opens ordinary PRs into it.
     if (release && release !== kitBranch("land", settings) && flags.base === release && !flags.release) throw new Error(`--base ${release} requires --release`);
     if (flags.release && flags.base !== release) throw new Error(`--release requires --base ${release}`);
-    // A release sends out exactly what landed: nothing unsaved, HEAD exactly origin/<land> (ticket 72).
+    // A release is cut from exactly what landed: nothing unsaved, HEAD exactly origin/<land> before the rebase onto
+    // origin/<release> (ticket 72).
     // A lead's --waive reaches the check too; its RESULT text, every problem it names, is this step's.
     let releaseCheck;
     if (flags.release) {
       const checked = await execute("release-check", kit, ["release-check", "--land", ...(flags.waive ? ["--waive", flags.waive] : [])]);
       const line = checked.text.split(/\r?\n/).findLast(text => text.startsWith("RESULT: "))?.slice("RESULT: ".length);
       if (checked.status !== 0) throw new Error(kitHideUserInfo(line?.replace(/^fail /, "") || childMessage(checked, `${kit} exited ${checked.status}`)));
-      releaseCheck = line?.replace(/^ok /, "") || "ok";
+      releaseCheck = kitHideUserInfo(line?.replace(/^ok /, "") || "ok");
       console.log(`release-check: ok (${releaseCheck})`);
     }
     const checks = settings.checks ?? {}, extra = extraChecks(checks.extra);
@@ -707,7 +708,7 @@ async function main(args) {
     }
     if (!await reviewHead()) return 1;
     if (flags.noMerge || flags.release) {
-      kitResult("ok", `opened #${number} ${head.slice(0, 7)}`);
+      kitResult("ok", `opened #${number} ${head.slice(0, 7)}${releaseCheck?.startsWith("release-check waived") ? ` (release-check waived: ${flags.waive})` : ""}`);
       return 0;
     }
     // A lead's waiver of the feature-list guard is recorded like waived review findings.
