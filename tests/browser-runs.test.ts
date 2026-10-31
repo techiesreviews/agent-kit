@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { failedSpecs, flakyFiles, isTiming, listedSpecs, timingList, wholeReport } from "../browser-runs.mjs";
+import { failedSpecs, flakyFiles, isTiming, listedSpecs, nothingSelected, timingList, wholeReport } from "../browser-runs.mjs";
 // @ts-expect-error The script is plain JavaScript without declarations.
 import { kitMachineLock } from "../kit-lib.mjs";
 
@@ -23,6 +23,8 @@ test("the specs command's output is read: its --list selection, and each failed 
     "RESULT: ok specs 2 selected (list only)",
   ].join("\n")), ["tests/native-save/a.spec.ts", "tests/native-preview/b.spec.ts"]);
   assert.deepEqual(listedSpecs("RESULT: ok specs none affected\n"), []);
+  for (const text of ["RESULT: ok specs none affected\n", "RESULT: ok specs 0 selected (list only)\n"]) assert.equal(nothingSelected(text), true, text);
+  for (const text of ["RESULT: ok specs 2 selected (list only)\n", "RESULT: ok specs done\n", ""]) assert.equal(nothingSelected(text), false, text);
   assert.deepEqual(failedSpecs([
     "log: .scratch/kit-specs/run-1/0-default.log",
     "✓ tests/native-save/a.spec.ts (4 passed)",
@@ -55,6 +57,8 @@ test("files flaky three or more times in seven days are named, this project's on
     ...[0, 1, 2].map(n => line("tests/b.spec.ts", n * day)),
     line("tests/c.spec.ts", 0), line("tests/c.spec.ts", day),
     line("tests/old.spec.ts", 0), line("tests/old.spec.ts", 8 * day), line("tests/old.spec.ts", 9 * day),
+    // A line dated in the future (a clock set wrong) counts for nothing.
+    line("tests/c.spec.ts", -day),
     ...[0, 1, 2].map(n => line("tests/other.spec.ts", n * day, "other")),
     "not json", "",
   ].join("\n");
@@ -101,8 +105,7 @@ test("a machine lock makes the second taker wait, saying whose run it waits for,
   // A second release of the first lock leaves the new owner's alone.
   first.release();
   assert.equal(readFileSync(s.lock, "utf8"), `${process.pid} ke-88\n`);
-  lock.release();
-  await delay(100);
+  await lock.release();
   assert.equal(readFileSync(s.lock, "utf8"), "");
   assert.equal(held(s.lock), false);
 });
@@ -113,12 +116,12 @@ test("a machine lock is free the moment its holder ends, however it ends; a file
   const taking = kitMachineLock("browser-run", { owner: "ke-88", env: s.env, onWait: (who: string) => waits.push(who) });
   await delay(200);
   child.kill("SIGKILL");
-  (await taking).release();
+  // A release resolves once its flock has ended, so the lock is free straight after.
+  await (await taking).release();
+  assert.equal(held(s.lock), false);
   assert.deepEqual(waits, ["ke-60"]);
-  // A release lets go as its flock ends, a moment later.
-  for (let i = 0; i < 100 && held(s.lock); i++) await delay(20);
   // The killed holder's line is still in the file, but nothing holds the lock.
   writeFileSync(s.lock, "1 ghost\n");
-  (await kitMachineLock("browser-run", { owner: "ke-88", env: s.env, onWait: (who: string) => waits.push(who) })).release();
+  await (await kitMachineLock("browser-run", { owner: "ke-88", env: s.env, onWait: (who: string) => waits.push(who) })).release();
   assert.deepEqual(waits, ["ke-60"]);
 });

@@ -126,7 +126,8 @@ export function kitProjects(env = process.env) {
  * Take a machine-wide lock in the kit's state folder (ticket ke-88): `<state>/<name>.lock`, held with flock(1) by a
  * small child process for as long as this process lives, so the system frees it when the holder ends however it
  * ends. While held the file reads `<pid> <owner>` (the front door's kit_quiet_wait reads the quiet lock's).
- * A held lock is waited for; onWait(owner) is told once. release() empties the file and lets the lock go.
+ * A held lock is waited for; onWait(owner) is told once. release() empties the file and lets the lock go,
+ * resolving once flock has ended, so the next taker never finds it still held.
  */
 export async function kitMachineLock(name, { owner = kitOwner(), onWait, env = process.env } = {}) {
   const lock = join(kitStateDir(env), `${name}.lock`), mine = `${process.pid} ${oneLine(owner)}\n`;
@@ -155,9 +156,15 @@ export async function kitMachineLock(name, { owner = kitOwner(), onWait, env = p
   return {
     path: lock,
     release() {
-      if (child.exitCode !== null || child.signalCode !== null || child.stdin.destroyed) return;
-      try { if (readFileSync(lock, "utf8") === mine) writeFileSync(lock, ""); } catch { /* Already gone. */ }
-      child.stdin.end();
+      if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+      // Referenced again, so a caller awaiting this release is not left behind by an emptied event loop.
+      child.ref(); child.stdout.ref?.();
+      const ended = new Promise(accept => child.once("close", () => accept()));
+      if (!child.stdin.destroyed) {
+        try { if (readFileSync(lock, "utf8") === mine) writeFileSync(lock, ""); } catch { /* Already gone. */ }
+        child.stdin.end();
+      }
+      return ended;
     },
   };
 }

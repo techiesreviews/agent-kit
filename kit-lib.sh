@@ -95,7 +95,9 @@ kit_quiet_wait() {
   [[ -z $pid || ${KIT_QUIET_HOLDER:-} != "$pid" ]] || return 0
   flock -n -s "$lock" true 2>/dev/null && return 0
   printf "kit: waiting for %s's lone browser run (no kit job starts until it ends)\n" "${owner:-unknown}" >&2
-  flock -s "$lock" true 2>/dev/null || :
+  # In the background, so the front door's TERM and HUP traps fire at once instead of after the lone run.
+  flock -s "$lock" true 2>/dev/null &
+  wait "$!" || :
 }
 
 kit_owner() {
