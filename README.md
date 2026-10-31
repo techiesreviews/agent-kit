@@ -13,7 +13,11 @@ only a small launcher and its own settings; the kit itself lives here, once.
   `~/.local/share/agent-kit/current/kit update --install-timer`.
 - `kit init` (run once, from the machine copy: `~/.local/share/agent-kit/current/kit init`) writes the project's
   `scripts/agents/kit.json` settings, the launcher `scripts/agents/kit`, the hook launcher
-  `scripts/agents/hooks/run.sh` and the hook entries in `.claude/settings.json` and `.codex/hooks.json`.
+  `scripts/agents/hooks/run.sh`, the hook entries in `.claude/settings.json` and `.codex/hooks.json`, and the
+  line `* text=auto eol=lf` in `.gitattributes`. It writes only what is missing, so it can run again: when the kit
+  adds a piece later, `kit doctor` warns about it in every project set up before, `kit init` adds it, and
+  `kit init --all` lands it in every project the machine lists, each through its own `kit pr`. A project keeps a
+  piece out on purpose by naming it in `"init": { "skip": [...] }` in its settings (`kit init --check` prints the names).
 - Every command then goes through the launcher: `scripts/agents/kit <command>`; bare `scripts/agents/kit` lists
   them, `scripts/agents/kit <command> --help` explains one. A project's own commands sit in the folder its
   settings name (`commands`).

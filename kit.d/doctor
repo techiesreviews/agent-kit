@@ -381,8 +381,9 @@ fi
 
 # The kit's commit and age beside the project's, from kit version: a note, never a failure. A machine copy
 # without an update for over a day warns, also when quiet, and the RESULT says so.
-kit_warning='' version=$(timeout -k 2 "${KIT_HOME_TIMEOUT:-10}" "$home/kit.d/version" 2>/dev/null < /dev/null) || version=''
+kit_warning='' kit_commit=unknown version=$(timeout -k 2 "${KIT_HOME_TIMEOUT:-10}" "$home/kit.d/version" 2>/dev/null < /dev/null) || version=''
 if [[ $version =~ (^|$'\n')commit\ ([^$'\n']*)$'\n'kit\ ([^$'\n']*)$'\n'project\ ([^$'\n']*) ]]; then
+  kit_commit=${BASH_REMATCH[2]}
   kit_line="commit ${BASH_REMATCH[2]} (${BASH_REMATCH[3]}); project ${BASH_REMATCH[4]}"
   if [[ $version =~ (^|$'\n')warning\ ([^;$'\n']*)\;\ ([^$'\n']*) ]]; then
     kit_warning=${BASH_REMATCH[2]}
@@ -390,6 +391,33 @@ if [[ $version =~ (^|$'\n')commit\ ([^$'\n']*)$'\n'kit\ ([^$'\n']*)$'\n'project\
   elif [[ $quiet == false ]]; then
     printf '✓ kit: %s\n' "$kit_line"
   fi
+fi
+
+# What kit init writes into a project today, compared with what the project has (kit init --check, the one list
+# of pieces): a warning per missing piece, also when quiet, never a failure. A piece added to the kit after the
+# project was set up shows here until kit init (or kit init --all) adds it; "init.skip" in the settings keeps one out.
+# Without settings, Node or a kit init in the kit (a copy cut short, which the help and kit home checks name) the
+# settings and node checks say what is wrong, and there is no list to compare with.
+setup_missing=0
+if [[ -n $settings_unread || ! -f $home/kit.d/init ]] || ! node=$(kit_node_find); then :
+else
+  code=0
+  output=$(cd -- "$root" && KIT_ROOT=$root timeout -k 2 "${KIT_DOCTOR_CHECK_TIMEOUT:-20}" "$node" "$home/kit.d/init" --check 2>&1 < /dev/null) || code=$?
+  if (( code != 0 )); then
+    last=$(sed -n 's/^RESULT: fail init //p' <<< "$output" | tail -n 1)
+    printf '✗ setup: not checked (%s); fix: run scripts/agents/kit init --check to see why\n' "${last:-kit init --check exited $code}"
+  else
+    while IFS= read -r line; do
+      [[ $line == 'missing: '* ]] || continue
+      setup_missing=$((setup_missing + 1))
+      printf '✗ setup: missing since kit %s: %s; fix: run scripts/agents/kit init (or name it in "init.skip" in scripts/agents/kit.json to keep it out)\n' \
+        "$kit_commit" "${line#missing: }"
+    done <<< "$output"
+  fi
+fi
+setup_warning=''
+if (( setup_missing )); then
+  setup_warning="$setup_missing setup piece$( (( setup_missing == 1 )) || printf s) missing (run scripts/agents/kit init)"
 fi
 
 # Where kit pr opens PRs: origin's GitHub repo, which every kit gh call is told (GH_REPO) whatever other remotes
@@ -448,4 +476,4 @@ if (( ${#failed[@]} )); then
   exit 1
 fi
 skipped_list=$(IFS=,; printf '%s' "${skipped[*]}")
-kit_result ok "doctor $checks/$checks checks passed${skipped_list:+; skipped ${skipped_list//,/, } (KIT_DOCTOR_SKIP)}${kit_warning:+; warning: $kit_warning}"
+kit_result ok "doctor $checks/$checks checks passed${skipped_list:+; skipped ${skipped_list//,/, } (KIT_DOCTOR_SKIP)}${kit_warning:+; warning: $kit_warning}${setup_warning:+; warning: $setup_warning}"

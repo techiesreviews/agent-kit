@@ -42,7 +42,10 @@ says for today; never claim a planned item ran.
   the kitchen-everywhere board (`docs/wayfinder/kitchen-everywhere/build/` in the Native Site
   Editor's repo, on its landing branch), built only by the thread that orchestrates that board. A
   thread in any other project writes the ticket there (or asks the orchestrator to) and goes on
-  with its own work.
+  with its own work. A kit change that adds something `kit init` writes into a project (a file, a
+  line, a hook entry) is done only when `kit init --all` has run on the machine and every listed
+  project's PR has landed: `kit doctor` warns about each missing piece until then, and a project
+  keeps one out on purpose by naming it in `init.skip` in its `scripts/agents/kit.json`.
 - **A build's tests stay in the project** (Lex, 2026-10-30): tests and helper scripts a build
   depends on are committed and wired into the project's checks (`checks.*`,
   `unit.files`/`unit.run` or its `specs` command in `scripts/agents/kit.json`), so `kit doctor`,

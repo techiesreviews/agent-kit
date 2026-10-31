@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import test from "node:test";
@@ -80,8 +80,8 @@ test("a fresh npm repo gets a full setup that passes doctor, is listed in projec
   const { main, work } = f.repo("site", { "package.json": JSON.stringify({ scripts: { check: "tsc", test: "node --test", lint: "eslint ." } }) });
   const run = f.init(work);
   assert.equal(run.status, 0, run.stdout + run.stderr);
-  assert.match(result(run), /^RESULT: ok init wrote 10 files, listed the project; doctor (\d+)\/\1 checks passed$/);
-  assert.deepEqual(written(run), [".claude/settings.json", ".codex/hooks.json", "AGENTS.md", "docs/agents/kitchen-extras.md", "docs/agents/kitchen.md",
+  assert.match(result(run), /^RESULT: ok init wrote 11 files, listed the project; doctor (\d+)\/\1 checks passed$/);
+  assert.deepEqual(written(run), [".claude/settings.json", ".codex/hooks.json", ".gitattributes", "AGENTS.md", "docs/agents/kitchen-extras.md", "docs/agents/kitchen.md",
     "docs/wayfinder/README.md", "scripts/agents/hooks/run.sh", "scripts/agents/kit", "scripts/agents/kit.json", "scripts/agents/project.d/.gitkeep"]);
   assert.match(run.stdout, /^note: checks guessed from package\.json: check=npm run check, test=npm test, lint=npm run lint; confirm them in scripts\/agents\/kit\.json$/m);
   assert.match(run.stdout, /^✓ hooks live: bash-guard rejects the probe/m);
@@ -151,14 +151,14 @@ test("a repo with no package.json gets a light setup that passes doctor and writ
   const light = f.repo("plain", { "index.html": "<p>hi</p>\n" }, ["main"]);
   const run = f.init(light.work, ["--light"]);
   assert.equal(run.status, 0, run.stdout + run.stderr);
-  assert.match(result(run), /^RESULT: ok init wrote 6 files, listed the project; doctor (\d+)\/\1 checks passed$/);
+  assert.match(result(run), /^RESULT: ok init wrote 7 files, listed the project; doctor (\d+)\/\1 checks passed$/);
   assert.match(run.stdout, /^note: checks: none guessed \(no package\.json\); add "checks" to scripts\/agents\/kit\.json$/m);
   assert.deepEqual(JSON.parse(readFileSync(join(light.work, "scripts/agents/kit.json"), "utf8")), { project: "plain", mainRoot: light.main, branches: { land: "main" } });
   const full = f.repo("plain-full", { "index.html": "<p>hi</p>\n" }, ["main"]);
   const fullRun = f.init(full.work);
   assert.equal(fullRun.status, 0, fullRun.stdout + fullRun.stderr);
   const lightFiles = written(run), fullFiles = written(fullRun);
-  assert.deepEqual(lightFiles, [".claude/settings.json", ".codex/hooks.json", "AGENTS.md", "scripts/agents/hooks/run.sh", "scripts/agents/kit", "scripts/agents/kit.json"]);
+  assert.deepEqual(lightFiles, [".claude/settings.json", ".codex/hooks.json", ".gitattributes", "AGENTS.md", "scripts/agents/hooks/run.sh", "scripts/agents/kit", "scripts/agents/kit.json"]);
   assert.ok(lightFiles.every((path) => fullFiles.includes(path)) && fullFiles.length > lightFiles.length, fullFiles.join(" "));
   for (const path of ["docs", "scripts/agents/project.d"]) assert.equal(existsSync(join(light.work, path)), false, path);
   assert.deepEqual(f.projects(), { plain: { root: light.main }, "plain-full": { root: full.main } });
@@ -211,7 +211,7 @@ test("with no usual landing branch kit init asks for --land and writes nothing; 
   const main = join(f.directory, "trunk");
   const landed = f.init(main, ["--light", "--land", "trunk"]);
   assert.equal(landed.status, 0, landed.stdout + landed.stderr);
-  assert.equal(result(landed), "RESULT: ok init wrote 6 files, listed the project; doctor ok but for place (the main checkout; see the note)");
+  assert.equal(result(landed), "RESULT: ok init wrote 7 files, listed the project; doctor ok but for place (the main checkout; see the note)");
   assert.match(landed.stdout, /^note: place: this is the main checkout, where kit doctor stops builds; build in a worktree \(git worktree add -b <branch> \.\.\/trunk-<branch> trunk\), or add "allowMainCheckout": true to scripts\/agents\/kit\.json to build here$/m);
   assert.doesNotMatch(landed.stdout, /^✗ place/m);
   assert.deepEqual(JSON.parse(readFileSync(join(main, "scripts/agents/kit.json"), "utf8")).branches, { land: "trunk" });
@@ -259,17 +259,17 @@ test("checks are guessed from package.json as its lockfile's package manager run
   }
 });
 
-test("an existing kit.json is kept byte for byte with notes; a failing doctor fails init, and what it wrote stays", (t) => {
+test("an existing kit.json is kept byte for byte with notes (--full on one that names no full piece); a failing doctor fails init, and what it wrote stays", (t) => {
   const f = fixture(t);
   const settings = `{"project":"mine","branches":{"land":"dev"},"checks":{"doctor":"exit 3"}}`;
   const { main, work } = f.repo("mine-folder", { "scripts/agents/kit.json": settings });
-  const run = f.init(work, ["--land", "dev"]);
+  const run = f.init(work, ["--land", "dev", "--full"]);
   assert.equal(run.status, 1, run.stdout + run.stderr);
-  assert.equal(result(run), "RESULT: fail init wrote 9 files, listed the project; doctor 1 failed: exit 3");
+  assert.equal(result(run), "RESULT: fail init wrote 10 files, listed the project; doctor 1 failed: exit 3");
   assert.equal(readFileSync(join(work, "scripts/agents/kit.json"), "utf8"), settings);
   assert.match(run.stdout, /^note: --land ignored: scripts\/agents\/kit\.json already names "branches"$/m);
   assert.match(run.stdout, /^note: add to scripts\/agents\/kit\.json \(kit init never edits it\): "commands": "scripts\/agents\/project\.d", "maps": "docs\/wayfinder", "rulebookExtras": "docs\/agents\/kitchen-extras\.md"$/m);
-  assert.equal(written(run).length, 9);
+  assert.equal(written(run).length, 10);
   for (const path of written(run)) assert.ok(existsSync(join(work, path)), path);
   assert.deepEqual(f.projects(), { mine: { root: main } });
 });
@@ -352,13 +352,164 @@ test("the stubs go where an existing kit.json points, and allowMainCheckout lets
   const { main } = f.repo("own-paths", { "scripts/agents/kit.json": JSON.stringify(settings) });
   const run = f.init(main);
   assert.equal(run.status, 0, run.stdout + run.stderr);
-  assert.match(result(run), /^RESULT: ok init wrote 9 files, listed the project; doctor (\d+)\/\1 checks passed$/);
+  assert.match(result(run), /^RESULT: ok init wrote 10 files, listed the project; doctor (\d+)\/\1 checks passed$/);
   assert.doesNotMatch(run.stdout, /^note: (place|add to)/m);
   assert.match(run.stdout, /^✓ place: .+ \(main checkout; allowMainCheckout\)$/m);
   for (const path of ["tools/kit/.gitkeep", "plans/README.md", "docs/kitchen.local.md", "docs/agents/kitchen.md"]) assert.ok(written(run).includes(path), path);
   for (const path of ["scripts/agents/project.d", "docs/wayfinder", "docs/agents/kitchen-extras.md"]) assert.equal(existsSync(join(main, path)), false, path);
   assert.match(readFileSync(join(main, "docs/agents/kitchen.md"), "utf8"), /\[docs\/kitchen\.local\.md\]\(\.\.\/kitchen\.local\.md\)/);
   assert.match(readFileSync(join(main, "plans/README.md"), "utf8"), /`plans\/<map>\/`/);
+});
+
+test("a project set up before a new piece: --check names it, kit init adds it and the check goes quiet; init.skip keeps one out", (t) => {
+  const f = fixture(t);
+  const { work } = f.repo("older", { "package.json": "{}" });
+  assert.equal(f.init(work, ["--light"]).status, 0);
+  // As set up before the session's context card and the line-endings file came in.
+  const settingsPath = join(work, ".claude/settings.json");
+  const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+  settings.hooks.SessionStart[0].hooks = settings.hooks.SessionStart[0].hooks.filter((hook: { command: string }) => !hook.command.endsWith(" context-card"));
+  writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
+  rmSync(join(work, ".gitattributes"));
+  const before = snapshot(work);
+  const check = f.init(work, ["--check"]);
+  assert.equal(check.status, 0, check.stdout + check.stderr);
+  assert.equal(check.stdout, "missing: .claude/settings.json SessionStart context-card (the context-card hook entry)\n" +
+    "missing: .gitattributes (the line \"* text=auto eol=lf\")\nRESULT: ok init check: 2 missing\n");
+  assert.deepEqual(snapshot(work), before);
+  // A light project stays light: kit init adds the two pieces and none of the full ones.
+  const run = f.init(work);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.deepEqual(written(run), [".claude/settings.json", ".gitattributes"]);
+  assert.match(run.stdout, /^wrote \.claude\/settings\.json \(merged 1 hook entry\)$/m);
+  assert.equal(existsSync(join(work, "docs")), false);
+  assert.equal(result(f.init(work, ["--check"])), "RESULT: ok init check: nothing missing");
+
+  // Turned off by name, and a whole file by its path: never reported, never written.
+  const kitJson = join(work, "scripts/agents/kit.json");
+  writeFileSync(kitJson, JSON.stringify({ ...JSON.parse(readFileSync(kitJson, "utf8")), init: { skip: [".gitattributes", ".codex/hooks.json SessionStart context-card"] } }));
+  rmSync(join(work, ".gitattributes"));
+  const codexPath = join(work, ".codex/hooks.json"), codex = JSON.parse(readFileSync(codexPath, "utf8"));
+  codex.hooks.SessionStart[0].hooks = codex.hooks.SessionStart[0].hooks.filter((hook: { command: string }) => !hook.command.endsWith(" context-card"));
+  writeFileSync(codexPath, `${JSON.stringify(codex, null, 2)}\n`);
+  const quiet = f.init(work, ["--check"]);
+  assert.equal(quiet.stdout, "RESULT: ok init check: nothing missing; 2 turned off in init.skip\n");
+  const again = f.init(work);
+  assert.equal(again.status, 0, again.stdout + again.stderr);
+  assert.deepEqual(written(again), []);
+  assert.match(again.stdout, /^left out \(init\.skip in scripts\/agents\/kit\.json\): \.codex\/hooks\.json SessionStart context-card, \.gitattributes$/m);
+  assert.equal(existsSync(join(work, ".gitattributes")), false);
+  writeFileSync(kitJson, JSON.stringify({ ...JSON.parse(readFileSync(kitJson, "utf8")), init: { skip: ".gitattributes" } }));
+  const bad = f.init(work, ["--check"]);
+  assert.equal(bad.status, 1);
+  assert.equal(result(bad), "RESULT: fail init \"init.skip\" in scripts/agents/kit.json must be a list of piece names; fix it first");
+  // --check needs settings and takes nothing else; --full adds the full pieces to a light project.
+  const fresh = f.repo("fresh", {});
+  assert.equal(result(f.init(fresh.work, ["--check"])), "RESULT: ok init check: no scripts/agents/kit.json (run kit init to set the project up)");
+  assert.equal(f.init(fresh.work, ["--check", "--light"]).status, 2);
+  writeFileSync(kitJson, JSON.stringify({ ...JSON.parse(readFileSync(kitJson, "utf8")), init: { skip: [] } }));
+  const full = f.init(work, ["--full"]);
+  assert.equal(full.status, 0, full.stdout + full.stderr);
+  for (const path of ["docs/agents/kitchen.md", "docs/agents/kitchen-extras.md", "docs/wayfinder/README.md", "scripts/agents/project.d/.gitkeep"]) assert.ok(written(full).includes(path), path);
+});
+
+test(".gitattributes gets the line-endings line at the top of the project's own, never overwritten, with a note on CRLF files", (t) => {
+  const f = fixture(t);
+  const { work } = f.repo("endings", { ".gitattributes": "*.png binary\n", "notes.txt": "one\r\ntwo\r\n" });
+  const run = f.init(work, ["--light"]);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.match(run.stdout, /^wrote \.gitattributes \(added the line-endings line at the top\)$/m);
+  assert.equal(readFileSync(join(work, ".gitattributes"), "utf8"), "* text=auto eol=lf\n*.png binary\n");
+  assert.match(run.stdout, /^note: line endings: 1 tracked file holds CRLF; commit \.gitattributes, then run git add --renormalize \. and commit that$/m);
+  // A file that has the line already, spaced its own way, is kept byte for byte.
+  const own = f.repo("own-endings", { ".gitattributes": "*.svg text\n*   text=auto   eol=lf\n" });
+  const kept = f.init(own.work, ["--light"]);
+  assert.equal(kept.status, 0, kept.stdout + kept.stderr);
+  assert.ok(!written(kept).includes(".gitattributes"));
+  assert.equal(readFileSync(join(own.work, ".gitattributes"), "utf8"), "*.svg text\n*   text=auto   eol=lf\n");
+});
+
+test("--all lands the missing pieces in every listed project through its own kit pr, skipping a busy main checkout", (t) => {
+  const f = fixture(t);
+  const ident = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
+  Object.assign(f.env, ident);
+  // A project set up a while ago: its main checkout and origin hold the setup of then (no context card, no
+  // line-endings file), and a file committed with CRLF.
+  const project = (name: string) => {
+    const origin = join(f.directory, `${name}.git`);
+    f.git(f.directory, "init", "-q", "--bare", "--initial-branch=main", origin);
+    const { main, work } = f.repo(name, { "notes.txt": "one\r\ntwo\r\n" }, ["main"]);
+    f.git(main, "remote", "add", "origin", origin);
+    f.git(main, "push", "-q", "origin", "main");
+    const setUp = f.init(work, ["--light"]);
+    assert.equal(setUp.status, 0, setUp.stdout + setUp.stderr);
+    const settingsPath = join(work, ".claude/settings.json"), settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+    settings.hooks.SessionStart[0].hooks = settings.hooks.SessionStart[0].hooks.filter((hook: { command: string }) => !hook.command.endsWith(" context-card"));
+    writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
+    rmSync(join(work, ".gitattributes"));
+    f.git(work, "add", "-A");
+    f.git(work, "commit", "-q", "-m", "setup");
+    f.git(work, "push", "-q", "origin", "HEAD:main");
+    f.git(main, "pull", "-q", "origin", "main");
+    f.git(main, "worktree", "remove", "--force", work);
+    return main;
+  };
+  const behind = project("behind"), busy = project("busy"), stuck = project("stuck");
+  writeFileSync(join(busy, ".claude/settings.json"), "{ \"someone\": \"working\" }\n");
+  // A project already up to date.
+  const current = project("current");
+  const kitJson = join(current, "scripts/agents/kit.json");
+  writeFileSync(kitJson, JSON.stringify({ ...JSON.parse(readFileSync(kitJson, "utf8")), init: { skip: [".gitattributes", ".claude/settings.json"] } }));
+  f.git(current, "commit", "-q", "-am", "keep out");
+  f.git(current, "push", "-q", "origin", "HEAD:main");
+  const listed = f.projects();
+  writeFileSync(join(f.state, "agent-kit/projects.json"), JSON.stringify({ ...listed, gone: { root: join(f.directory, "gone") } }));
+
+  // kit pr stands in through KIT_COMMANDS_DIR: it records where it ran and what it would land.
+  const commands = join(f.directory, "commands"), records = join(f.directory, "records");
+  mkdirSync(commands);
+  mkdirSync(records);
+  symlinkSync(join(f.kit, "kit.d/init"), join(commands, "init"));
+  symlinkSync(join(f.kit, "kit.d/version"), join(commands, "version"));
+  writeFileSync(join(commands, "pr"), `#!/bin/bash
+# kit: stand-in pr
+name=$(basename "$PWD")
+{ printf 'args %s\\n' "$*"; printf 'root %s\\n' "$KIT_ROOT"; printf 'branch %s\\n' "$(git branch --show-current)"
+  git log --format='commit %s' origin/main..HEAD; git diff --name-only origin/main HEAD | sed 's/^/file /'; } > "${records}/$name"
+if [[ $name == stuck-* ]]; then echo 'RESULT: fail pr checks failed'; exit 1; fi
+echo 'RESULT: ok pr merged #7'
+`);
+  chmodSync(join(commands, "pr"), 0o755);
+  const run = spawnSync(join(f.kit, "kit"), ["init", "--all"], { cwd: f.directory, env: { ...f.env, KIT_COMMANDS_DIR: commands }, encoding: "utf8", timeout: 120_000 });
+  assert.equal(run.status, 1, run.stdout + run.stderr);
+  const results = run.stdout.split("\n").filter((line) => line.startsWith("RESULT: "));
+  assert.deepEqual(results.slice(0, -1), [
+    "RESULT: ok init behind: 2 files added, 1 file renormalized, through kit pr into main: pr merged #7",
+    `RESULT: ok init busy: skipped: ${busy} has uncommitted changes in .claude/settings.json; commit or land them, then rerun`,
+    "RESULT: ok init current: nothing missing on origin/main",
+    `RESULT: ok init gone: skipped: no git checkout at ${join(f.directory, "gone")}`,
+    `RESULT: fail init stuck: kit pr failed (pr checks failed); the change waits in ${stuck}-kit-init-pieces on kit/init-pieces, log ${join(f.state, "agent-kit/init-all/stuck.log")}`,
+  ]);
+  assert.equal(results.at(-1), "RESULT: fail init --all: 1 updated (behind), 1 up to date, 2 skipped (busy, gone), 1 failed (stuck)");
+  // behind's change ran through kit pr from a worktree of origin/main: the pieces, then the line-endings commit.
+  const record = readFileSync(join(records, "behind-kit-init-pieces"), "utf8");
+  assert.match(record, /^args --title Kit setup: add what kit init writes today \(kit 0123456\)$/m);
+  assert.match(record, new RegExp(`^root ${behind}-kit-init-pieces$`, "m"));
+  assert.match(record, /^branch kit\/init-pieces$/m);
+  assert.deepEqual(record.split("\n").filter((line) => line.startsWith("commit ")),
+    ["commit Normalize line endings (git add --renormalize . after .gitattributes)", "commit Kit setup: add what kit init writes today (kit 0123456)"]);
+  assert.deepEqual(record.split("\n").filter((line) => line.startsWith("file ")), ["file .claude/settings.json", "file .gitattributes", "file notes.txt"]);
+  // The worktree and its branch are gone once kit pr landed it; a failed one waits; the main checkouts are untouched.
+  assert.equal(existsSync(`${behind}-kit-init-pieces`), false);
+  assert.equal(spawnSync("git", ["-C", behind, "rev-parse", "--verify", "--quiet", "refs/heads/kit/init-pieces"], { env: f.env }).status, 1);
+  assert.equal(existsSync(`${stuck}-kit-init-pieces`), true);
+  assert.equal(existsSync(`${busy}-kit-init-pieces`), false);
+  assert.equal(readFileSync(join(busy, ".claude/settings.json"), "utf8"), "{ \"someone\": \"working\" }\n");
+  assert.equal(existsSync(join(behind, ".gitattributes")), false);
+  for (const name of ["busy-kit-init-pieces", "current-kit-init-pieces"]) assert.equal(existsSync(join(records, name)), false, name);
+  // A rerun says the failed one's worktree is still there rather than make another.
+  const again = spawnSync(join(f.kit, "kit"), ["init", "--all"], { cwd: f.directory, env: { ...f.env, KIT_COMMANDS_DIR: commands }, encoding: "utf8", timeout: 120_000 });
+  assert.match(again.stdout, new RegExp(`^RESULT: fail init stuck: ${stuck}-kit-init-pieces or branch kit/init-pieces is left from an earlier run; land or remove it, then rerun$`, "m"));
 });
 
 test("kitRegisterProject lists nothing when during() throws, and a failed write leaves no temporary file or lock", (t) => {

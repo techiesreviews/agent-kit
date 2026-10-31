@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 // kit: set a project up for the shared kit: settings, launchers, hooks and docs stubs
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const { kitGhRepo, kitHideUserInfo, kitHome, kitRegisterProject, kitResult, kitRoot, kitSettingsFile, kitSettingsProblems, kitStateDir } = await import(
+const { kitGhRepo, kitHideUserInfo, kitHome, kitProjects, kitRegisterProject, kitResult, kitRoot, kitSettingsFile, kitSettingsProblems, kitStateDir } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const usage = `Usage: kit init [--light] [--land <branch>]
+const usage = `Usage: kit init [--light | --full] [--land <branch>]
+       kit init --check
+       kit init --all
        kit init --issues [--close]
 Set the project around the working folder up for the shared kit; the kit itself is never copied in.
 Run it in the project's git repo (from the machine copy, ~/.local/share/agent-kit/current/kit init,
@@ -18,12 +20,27 @@ before the project has a launcher). It writes only what is missing and never del
   scripts/agents/kit, scripts/agents/hooks/run.sh   the kit launcher and the hook launcher
   .claude/settings.json, .codex/hooks.json   the kit's hook entries, merged in; other settings stay
   AGENTS.md                 two lines pointing at scripts/agents/kit rulebook and kit --help
-Full (the default) also writes an empty scripts/agents/project.d/ (its own commands), docs/agents/kitchen.md
-(a pointer), docs/agents/kitchen-extras.md (from the kit's template), docs/wayfinder/README.md, and names
-them in a new kit.json; --light leaves those out. It lists the project in the machine's projects.json and
+  .gitattributes            the line "* text=auto eol=lf", added at the top, so every checkout keeps LF
+                            endings (a note names tracked files with CRLF to renormalize)
+Full (the default for a new project) also writes an empty scripts/agents/project.d/ (its own commands),
+docs/agents/kitchen.md (a pointer), docs/agents/kitchen-extras.md (from the kit's template),
+docs/wayfinder/README.md, and names them in a new kit.json; --light leaves those out. A project with a kit.json
+stays as it was set up: full when kit.json names "commands", "maps" or "rulebookExtras", else light; --full
+adds the full pieces anyway. Pieces named in kit.json's "init": { "skip": [...] } (the name --check prints, or a
+file's path for every piece in it) are never written. It lists the project in the machine's projects.json and
 ends with kit doctor's result. Run in the main checkout, doctor's failing place check (no builds there) is a
 note naming how to make a worktree. A rerun changes nothing and says so. Old kit files in the project
 (kit-lib.sh, kit-lib.mjs, kit.d/, the guard hooks) stop it with a list, so the move removes them on purpose.
+
+--check writes nothing: it prints "missing: <name> (<what>)" for each piece kit init would write today, the
+name being the one "init.skip" takes (kit doctor shows these as warnings). It needs scripts/agents/kit.json.
+--all brings every project in the machine's projects.json up to date, one after another: in a temporary
+worktree of origin's landing branch it adds the missing pieces, commits them (and, when .gitattributes was
+added, a git add --renormalize . commit), and lands them through the project's own kit pr. It prints one RESULT
+line per project, then one for the run. A project whose main checkout has uncommitted changes in the files
+the change touches is skipped and named, as is one without a git checkout, an origin or a kit.json; a failed
+kit pr keeps its worktree and names it and its log. --pieces is that worktree's step: add the missing pieces
+only, with no project list entry and no doctor.
 
 --issues copies the project's open GitHub Issues (gh issue list) into needs-triage tickets, one file each in
 <maps>/backlog/tickets/NN-<slug>.md (maps from kit.json, else docs/wayfinder), with the Issue's text, labels,
@@ -37,12 +54,16 @@ linking its file there; it closes nothing while any open Issue's file is missing
 
 // fail never returns: it prints the RESULT line and exits, so it also ends expressions such as readJson's catch.
 const fail = (text, code = 1) => { kitResult("fail", `init ${text}`); process.exit(code); };
-const options = { light: false, land: "", issues: false, close: false };
+const options = { light: false, full: false, land: "", issues: false, close: false, check: false, all: false, pieces: false };
 const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
   if (arg === "--help" || arg === "-h") { process.stdout.write(usage); process.exit(0); }
   else if (arg === "--light") options.light = true;
+  else if (arg === "--full") options.full = true;
+  else if (arg === "--check") options.check = true;
+  else if (arg === "--all") options.all = true;
+  else if (arg === "--pieces") options.pieces = true;
   else if (arg === "--issues") options.issues = true;
   else if (arg === "--close") options.close = true;
   else if (arg === "--land") {
@@ -52,7 +73,12 @@ for (let i = 0; i < args.length; i++) {
   else { process.stderr.write(usage); fail(`unknown argument ${arg}`, 2); }
 }
 if (options.close && !options.issues) { process.stderr.write(usage); fail("--close goes with --issues", 2); }
-if (options.issues && (options.light || options.land)) { process.stderr.write(usage); fail("--issues takes only --close", 2); }
+if (options.issues && args.some((arg) => !["--issues", "--close"].includes(arg))) { process.stderr.write(usage); fail("--issues takes only --close", 2); }
+if (options.light && options.full) { process.stderr.write(usage); fail("--light and --full do not go together", 2); }
+for (const alone of ["--check", "--all", "--pieces"]) {
+  if (args.includes(alone) && args.length > 1) { process.stderr.write(usage); fail(`${alone} takes no other arguments`, 2); }
+}
+if (options.all) all();
 
 const root = kitRoot();
 const git = (...gitArgs) => {
@@ -66,6 +92,7 @@ if (options.issues) issues();
 
 const old = ["scripts/agents/kit-lib.sh", "scripts/agents/kit-lib.mjs", "scripts/agents/kit.d/",
   "scripts/agents/hooks/bash-guard.sh", "scripts/agents/hooks/agent-cap.sh", "scripts/agents/hooks/session-env.sh"].filter((path) => existsSync(at(path)));
+if (old.length && options.check) { kitResult("ok", `init check: old kit files (${old.join(", ")}); the move to the shared kit comes first`); process.exit(0); }
 if (old.length) {
   console.log("kit init: this project holds old kit files; remove them on purpose first (the move does):");
   for (const path of old) console.log(`  ${path}`);
@@ -87,17 +114,20 @@ const common = git("rev-parse", "--path-format=absolute", "--git-common-dir");
 const gitMain = common ? dirname(common) : root;
 
 const writes = [], kept = [], notes = [];
-const full = !options.light;
 const extrasPath = "docs/agents/kitchen-extras.md", mapsPath = "docs/wayfinder", commandsPath = "scripts/agents/project.d";
 
 // The settings file: kept as it is when there, else filled from git and package.json.
 // unnamed: stub keys an existing settings file lacks, as [key, default, the stub file written there].
-let settings, unnamed = [];
+let settings, unnamed = [], full = !options.light;
+if (options.check && !existsSync(at(kitSettingsFile))) { kitResult("ok", `init check: no ${kitSettingsFile} (run kit init to set the project up)`); process.exit(0); }
+if (options.pieces && !existsSync(at(kitSettingsFile))) fail(`--pieces needs ${kitSettingsFile}`);
 if (existsSync(at(kitSettingsFile))) {
   settings = readJson(kitSettingsFile);
   const problems = kitSettingsProblems(settings);
   if (problems.length) fail(`${problems.join("; ")}; fix it first, kit init never overwrites it`);
   kept.push(kitSettingsFile);
+  // A project stays as it was set up: full when its settings name a full piece's place, else light.
+  full = options.full || (!options.light && ["commands", "maps", "rulebookExtras"].some((key) => settings[key]));
   if (options.land) notes.push(`--land ignored: ${kitSettingsFile} already names "branches"`);
   unnamed = full ? [["commands", commandsPath, `${commandsPath}/.gitkeep`], ["maps", mapsPath, `${mapsPath}/README.md`], ["rulebookExtras", extrasPath, extrasPath]]
     .filter(([key]) => !settings[key]) : [];
@@ -121,6 +151,20 @@ if (existsSync(at(kitSettingsFile))) {
 const named = (key, fallback) => typeof settings[key] === "string" && settings[key].trim() ? settings[key].replace(/\/+$/, "") : fallback;
 const commandsDir = named("commands", commandsPath), mapsDir = named("maps", mapsPath), extrasFile = named("rulebookExtras", extrasPath);
 
+// Every piece kit init writes into a project goes through piece(): its name (the one "init.skip" takes and --check
+// prints), its file, and what it is. One the project turned off (by name, or by its file's path) is left out;
+// the rest are what --check reports missing, kit doctor warns about and --all brings to every project.
+const skip = settings.init?.skip ?? [];
+if (!Array.isArray(skip) || skip.some((name) => typeof name !== "string")) fail(`"init.skip" in ${kitSettingsFile} must be a list of piece names; fix it first`);
+const bare = (name) => name.trim().replace(/\/+$/, "");
+const off = [], missing = [];
+const turnedOff = (name, path) => skip.some((entry) => [name, path].map(bare).includes(bare(entry)));
+const piece = (name, path, what) => {
+  if (turnedOff(name, path)) { off.push(name); return false; }
+  missing.push(`${name} (${what})`);
+  return true;
+};
+
 // checks from package.json scripts, run as the lockfile's package manager does; printed for the lead to confirm.
 function guessChecks() {
   if (!existsSync(at("package.json"))) { notes.push(`checks: none guessed (no package.json); add "checks" to ${kitSettingsFile}`); return null; }
@@ -141,12 +185,12 @@ function guessChecks() {
 }
 
 // A file written only when missing; one already there is kept as it is.
-const template = (path, source, mode) => {
+const template = (path, source, mode, what) => {
   if (existsSync(at(path))) { kept.push(path); return; }
-  writes.push({ path, text: readFileSync(join(home, source), "utf8"), mode });
+  if (piece(path, path, what)) writes.push({ path, text: readFileSync(join(home, source), "utf8"), mode });
 };
-template("scripts/agents/kit", "launcher/kit", 0o755);
-template("scripts/agents/hooks/run.sh", "launcher/hooks-run.sh", 0o755);
+template("scripts/agents/kit", "launcher/kit", 0o755, "the kit launcher");
+template("scripts/agents/hooks/run.sh", "launcher/hooks-run.sh", 0o755, "the hook launcher");
 
 // Hook entries, merged into each file: a missing entry is added beside the others, nothing is replaced.
 const hook = (name) => ({ type: "command", command: `bash "\${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"/scripts/agents/hooks/run.sh ${name}` });
@@ -158,6 +202,7 @@ const hookFiles = {
 };
 const isObject = (value) => value && typeof value === "object" && !Array.isArray(value);
 for (const [path, entries] of Object.entries(hookFiles)) {
+  if (turnedOff(path, path)) { off.push(path); continue; }
   const there = existsSync(at(path));
   const before = there ? readText(path) : null;
   const config = there ? readJson(path, before) : {};
@@ -166,13 +211,15 @@ for (const [path, entries] of Object.entries(hookFiles)) {
   if (!isObject(config.hooks)) fail(`"hooks" in ${path} must be an object; fix it first, kit init never overwrites it`);
   let added = 0;
   for (const [event, matcher, names] of entries) {
-    const groups = config.hooks[event] ??= [];
+    const groups = config.hooks[event] ?? [];
     if (!Array.isArray(groups)) fail(`"hooks.${event}" in ${path} must be a list; fix it first, kit init never overwrites it`);
     const same = groups.filter((group) => isObject(group) && group.matcher === matcher);
     for (const name of names) {
       const entry = hook(name);
       // Already there under any matcher of the event (say "Bash|Edit"): a second copy would run the hook twice.
       if (groups.some((group) => isObject(group) && Array.isArray(group.hooks) && group.hooks.some((other) => other?.command === entry.command))) continue;
+      if (!piece(`${path} ${event} ${name}`, path, `the ${name} hook entry`)) continue;
+      config.hooks[event] = groups;
       let group = same.find((candidate) => Array.isArray(candidate.hooks));
       if (!group) { group = { ...(matcher === undefined ? {} : { matcher }), hooks: [] }; groups.push(group); same.push(group); }
       group.hooks.push(entry);
@@ -186,7 +233,7 @@ for (const [path, entries] of Object.entries(hookFiles)) {
 // Full only: the project's own commands folder (kept in git by .gitkeep) and the docs stubs.
 if (full) {
   if (existsSync(at(commandsDir))) kept.push(`${commandsDir}/`);
-  else writes.push({ path: `${commandsDir}/.gitkeep`, text: "" });
+  else if (piece(`${commandsDir}/`, commandsDir, "the project's own commands folder")) writes.push({ path: `${commandsDir}/.gitkeep`, text: "" });
   const extrasLink = relative(at("docs/agents"), at(extrasFile));
   const pointer = `# The kitchen
 
@@ -202,9 +249,9 @@ A change to the shared kit is a ticket on the kitchen-everywhere board
 board's orchestrator: write it there, or ask the orchestrator to, and go on with this project's work.
 `;
   if (existsSync(at("docs/agents/kitchen.md"))) kept.push("docs/agents/kitchen.md");
-  else writes.push({ path: "docs/agents/kitchen.md", text: pointer });
+  else if (piece("docs/agents/kitchen.md", "docs/agents/kitchen.md", "the kitchen pointer")) writes.push({ path: "docs/agents/kitchen.md", text: pointer });
   if (existsSync(at(extrasFile))) kept.push(extrasFile);
-  else {
+  else if (piece(extrasFile, extrasFile, "the project's kitchen extras")) {
     const land = settings.branches.land, release = settings.branches.release || land;
     const text = readFileSync(join(home, "docs/kitchen-extras-template.md"), "utf8")
       .replaceAll("<project>", () => settings.project).replaceAll("<land>", () => land).replaceAll("<release>", () => release);
@@ -217,7 +264,7 @@ One folder per map, \`${mapsDir}/<map>/\`: its tickets in \`tickets/\` and its b
 map goes from idea to tickets, and \`scripts/agents/kit next <map>\` to hand its work out.
 `;
   if (existsSync(at(`${mapsDir}/README.md`))) kept.push(`${mapsDir}/README.md`);
-  else writes.push({ path: `${mapsDir}/README.md`, text: readme });
+  else if (piece(`${mapsDir}/README.md`, `${mapsDir}/README.md`, "the maps README")) writes.push({ path: `${mapsDir}/README.md`, text: readme });
 }
 
 // The keys an existing settings file lacks are named only when this run writes their stubs, not on every rerun.
@@ -230,45 +277,76 @@ const agentLines = [
   ["scripts/agents/kit --help", "Agent commands: `scripts/agents/kit --help`; `scripts/agents/kit <command> --help` for one."],
 ];
 const agents = existsSync(at("AGENTS.md")) ? readText("AGENTS.md") : null;
-const missingLines = agentLines.filter(([marker]) => !agents?.includes(marker)).map(([, line]) => line);
-if (!missingLines.length) kept.push("AGENTS.md");
+const absentLines = agentLines.filter(([marker]) => !agents?.includes(marker));
+const missingLines = absentLines.filter(([marker]) => piece(`AGENTS.md ${marker.replace("scripts/agents/", "")}`, "AGENTS.md", `the line naming ${marker}`))
+  .map(([, line]) => line);
+if (!absentLines.length) kept.push("AGENTS.md");
+else if (!missingLines.length) { /* every absent line is turned off */ }
 else if (agents === null) writes.push({ path: "AGENTS.md", text: `# Agents\n\n${missingLines.join("\n")}\n` });
 else writes.push({ path: "AGENTS.md", text: `${agents.replace(/\n*$/, "\n\n")}${missingLines.join("\n")}\n`, before: agents, said: `(added ${missingLines.length} line${missingLines.length === 1 ? "" : "s"})` });
+
+// .gitattributes: LF endings in every checkout, so a Windows clone cannot break tests that read files. The line goes
+// at the top, so the project's own lines after it (*.png binary) still win for their files.
+const lineEndings = "* text=auto eol=lf";
+const attributes = existsSync(at(".gitattributes")) ? readText(".gitattributes") : null;
+if (attributes?.split(/\r?\n/).some((line) => line.trim().split(/\s+/).join(" ") === lineEndings)) kept.push(".gitattributes");
+else if (piece(".gitattributes", ".gitattributes", `the line "${lineEndings}"`)) {
+  writes.push(attributes === null ? { path: ".gitattributes", text: `${lineEndings}\n` }
+    : { path: ".gitattributes", text: `${lineEndings}\n${attributes}`, before: attributes, said: "(added the line-endings line at the top)" });
+}
+
+if (options.check) {
+  for (const line of missing) console.log(`missing: ${line}`);
+  kitResult("ok", `init check: ${missing.length ? `${missing.length} missing` : "nothing missing"}${off.length ? `; ${off.length} turned off in init.skip` : ""}`);
+  process.exit(0);
+}
 
 // The files are written under the project list's lock, once the name is checked: a name another root holds
 // stops the run before anything is written, and two runs cannot both take one name. A new file is created only
 // if it is still missing, and a merged one written only if it still holds what was read, so nothing is overwritten.
 const projectRoot = settings.mainRoot || gitMain;
 const done = [];
+const writeAll = () => {
+  for (const { path, text, mode, said, before = null } of writes) {
+    try {
+      mkdirSync(dirname(at(path)), { recursive: true });
+      if (before === null) {
+        writeFileSync(at(path), text, { flag: "wx" });
+        if (mode) chmodSync(at(path), mode);
+      } else {
+        if (readFileSync(at(path), "utf8") !== before) throw new Error("it changed while kit init ran; run kit init again");
+        // A merged file is replaced in one rename, keeping its mode, so a failed write never leaves it cut short.
+        const temporary = `${at(path)}.${process.pid}.tmp`;
+        try {
+          writeFileSync(temporary, text, { flag: "wx", mode: statSync(at(path)).mode & 0o7777 });
+          renameSync(temporary, at(path));
+        } catch (error) { rmSync(temporary, { force: true }); throw error; }
+      }
+    } catch (error) {
+      throw new Error(`writing ${path} failed: ${error.message}; wrote ${done.length ? done.join(", ") : "nothing"}`);
+    }
+    done.push(path);
+    console.log(`wrote ${path}${said ? ` ${said}` : ""}`);
+  }
+};
 let registered;
 try {
-  registered = kitRegisterProject(settings.project, projectRoot, process.env, () => {
-    for (const { path, text, mode, said, before = null } of writes) {
-      try {
-        mkdirSync(dirname(at(path)), { recursive: true });
-        if (before === null) {
-          writeFileSync(at(path), text, { flag: "wx" });
-          if (mode) chmodSync(at(path), mode);
-        } else {
-          if (readFileSync(at(path), "utf8") !== before) throw new Error("it changed while kit init ran; run kit init again");
-          // A merged file is replaced in one rename, keeping its mode, so a failed write never leaves it cut short.
-          const temporary = `${at(path)}.${process.pid}.tmp`;
-          try {
-            writeFileSync(temporary, text, { flag: "wx", mode: statSync(at(path)).mode & 0o7777 });
-            renameSync(temporary, at(path));
-          } catch (error) { rmSync(temporary, { force: true }); throw error; }
-        }
-      } catch (error) {
-        throw new Error(`writing ${path} failed: ${error.message}; wrote ${done.length ? done.join(", ") : "nothing"}`);
-      }
-      done.push(path);
-      console.log(`wrote ${path}${said ? ` ${said}` : ""}`);
-    }
-  });
+  // --pieces (kit init --all's step, in a temporary worktree) adds the pieces only: the project is listed already.
+  if (options.pieces) writeAll();
+  else registered = kitRegisterProject(settings.project, projectRoot, process.env, writeAll);
 } catch (error) { fail(String(error.message).replace(/\n/g, " ")); }
 if (kept.length) console.log(`kept (already there): ${kept.join(", ")}`);
+if (off.length) console.log(`left out (init.skip in ${kitSettingsFile}): ${off.join(", ")}`);
 if (registered === "added") console.log(`listed ${settings.project} at ${projectRoot} in ${join(kitStateDir(), "projects.json")}`);
+// Files committed with CRLF keep it until renormalized; kit init --all makes that commit itself.
+if (done.includes(".gitattributes") && !options.pieces) {
+  const crlf = (git("ls-files", "--eol") ?? "").split("\n").filter((line) => /^i\/(?:crlf|mixed)\s/.test(line)).length;
+  if (crlf) notes.push(`line endings: ${crlf} tracked file${crlf === 1 ? " holds" : "s hold"} CRLF; commit .gitattributes, then run git add --renormalize . and commit that`);
+}
 for (const note of notes) console.log(`note: ${note}`);
+const changed = writes.length || registered === "added";
+const summary = changed ? `wrote ${writes.length} file${writes.length === 1 ? "" : "s"}${registered === "added" ? ", listed the project" : ""}` : "nothing to write (already set up)";
+if (options.pieces) { kitResult("ok", `init ${summary}`); process.exit(0); }
 
 // kit doctor's result for the new setup ends the run. In the main checkout, where a new project is set up, its
 // place check fails until work moves to a worktree: that is a note here, naming how, since the project has no
@@ -298,8 +376,6 @@ if (placeFailed && failedChecks) {
   if (!rest.length) { doctorOk = true; doctorResult = "doctor ok but for place (the main checkout; see the note)"; }
   else doctorResult = `doctor ${rest.length} failed: ${rest.join(",")}; place: the main checkout (see the note)`;
 }
-const changed = writes.length || registered === "added";
-const summary = changed ? `wrote ${writes.length} file${writes.length === 1 ? "" : "s"}${registered === "added" ? ", listed the project" : ""}` : "nothing to write (already set up)";
 if (!doctorOk) fail(`${summary}; ${doctorResult}`);
 kitResult("ok", `init ${summary}; ${doctorResult}`);
 
@@ -527,4 +603,117 @@ Work carried over from the project's GitHub Issues, one \`needs-triage\` ticket 
   console.log(`next: land ${folder} on ${land ?? "the landing branch"}, then run kit init --issues --close to close ${open.length === 1 ? "the Issue" : `the ${open.length} Issues`} with a link to each file`);
   kitResult("ok", `init issues wrote ${tickets} ticket${tickets === 1 ? "" : "s"}${writes.length > tickets ? " and the map" : ""}${skipped.length ? `, skipped ${skipped.length} with a file` : ""}; nothing closed`);
   process.exit(0);
+}
+
+// --all: every project in the machine's projects.json gets the pieces kit init writes today, each through its own
+// kit pr from a temporary worktree of origin's landing branch, so the main checkout and its work stay as they are.
+// One RESULT line per project, then one for the run; it fails when any project failed. Never returns.
+function all() {
+  const home = kitHome();
+  let projects;
+  try { projects = kitProjects(); } catch (error) { fail(String(error.message).replace(/\n/g, " ")); }
+  const names = Object.keys(projects).sort();
+  const sha = /^commit (\S+)$/m.exec(spawnSync(join(home, "kit.d/version"), [], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).stdout ?? "")?.[1] ?? "unknown";
+  // Each step runs on this kit, in the project it works on: the front door's settings for where --all started go.
+  const env = { ...process.env, KIT_HOME: home, GIT_TERMINAL_PROMPT: "0" };
+  for (const name of ["KIT_ROOT", "KIT_MAIN_ROOT", "KIT_DEV_ROOT", "KIT_HOME_DEFAULT", "KIT_LIB", "KIT_LIB_MJS", "KIT_PLAYWRIGHT_MODULE", "KIT_PLAYWRIGHT_MODULE_DEFAULT"]) delete env[name];
+  const logs = join(kitStateDir(), "init-all");
+  mkdirSync(logs, { recursive: true });
+  const seconds = Number(process.env.KIT_INIT_PR_TIMEOUT) > 0 ? Number(process.env.KIT_INIT_PR_TIMEOUT) : 7200;
+  const run = (command, commandArgs, options = {}) => spawnSync(command, commandArgs, { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+    timeout: 300_000, maxBuffer: 64 * 1024 * 1024, ...options });
+  const git = (cwd, ...gitArgs) => run("git", ["-C", cwd, ...gitArgs]);
+  const said = (step) => (step.error ? String(step.error.message) : (step.stderr || step.stdout || `exit ${step.status}`)).trim().split("\n").at(-1);
+  const lastResult = (text) => String(text ?? "").split("\n").findLast((line) => line.startsWith("RESULT: "))?.replace(/^RESULT: (?:ok|fail) /, "");
+  const files = (count) => `${count} file${count === 1 ? "" : "s"}`;
+  const landOf = (text) => { try { const land = JSON.parse(text)?.branches?.land; return typeof land === "string" && land.trim() ? land : null; } catch { return null; } };
+
+  // One project: [group, text], the group being updated, current, skipped or failed.
+  const bring = (name, main) => {
+    if (typeof main !== "string" || !existsSync(join(main, ".git"))) return ["skipped", `skipped: no git checkout at ${main}`];
+    if (git(main, "remote", "get-url", "origin").status !== 0) return ["skipped", "skipped: no origin remote, so no kit pr; run kit init there by hand"];
+    const fetched = git(main, "fetch", "-q", "origin");
+    if (fetched.status !== 0) return ["failed", `git fetch origin failed: ${said(fetched)}`];
+    // The landing branch: as the main checkout's settings name it, else as the first usual branch on origin with settings does.
+    let land = existsSync(join(main, kitSettingsFile)) ? landOf(readFileSync(join(main, kitSettingsFile), "utf8")) : null;
+    for (const branch of ["dev", "develop", "main", "master"]) {
+      if (land) break;
+      const shown = git(main, "show", `refs/remotes/origin/${branch}:${kitSettingsFile}`);
+      if (shown.status === 0) land = landOf(shown.stdout);
+    }
+    if (!land) return ["skipped", `skipped: no ${kitSettingsFile} naming a landing branch, here or on origin; run kit init there first`];
+    if (git(main, "cat-file", "-e", `refs/remotes/origin/${land}:${kitSettingsFile}`).status !== 0) return ["skipped", `skipped: origin/${land} has no ${kitSettingsFile}; land the project's setup first`];
+
+    const branch = "kit/init-pieces", path = `${main}-kit-init-pieces`;
+    if (existsSync(path) || git(main, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`).status === 0) {
+      return ["failed", `${path} or branch ${branch} is left from an earlier run; land or remove it, then rerun`];
+    }
+    const added = git(main, "worktree", "add", "-q", "--no-track", "-b", branch, path, `refs/remotes/origin/${land}`);
+    if (added.status !== 0) return ["failed", `git worktree add failed: ${said(added)}`];
+    // The worktree is this run's own: removed (with its branch) unless a change waits in it.
+    const remove = () => { git(main, "worktree", "remove", "--force", path); git(main, "branch", "-D", branch); };
+    const local = { ...env, KIT_ROOT: path };
+    const pieces = run(process.execPath, [join(home, "kit.d/init"), "--pieces"], { cwd: path, env: local });
+    if (pieces.status !== 0) { remove(); return ["failed", `adding the pieces failed: ${lastResult(pieces.stdout) ?? said(pieces)}`]; }
+    const status = git(path, "status", "--porcelain");
+    if (status.status !== 0) { remove(); return ["failed", `git status failed: ${said(status)}`]; }
+    if (!status.stdout.trim()) { remove(); return ["current", `nothing missing on origin/${land}`]; }
+
+    git(path, "add", "-A");
+    const listed = git(path, "diff", "--cached", "--name-only").stdout.trim().split("\n").filter(Boolean);
+    const committed = git(path, "commit", "-q", "-m", `Kit setup: add what kit init writes today (kit ${sha})`, "-m", `kit init --all added: ${listed.join(", ")}.`);
+    if (committed.status !== 0) { remove(); return ["failed", `git commit failed: ${said(committed)}`]; }
+    let normalized = 0;
+    if (listed.includes(".gitattributes")) {
+      // The one-time commit that gives files committed with CRLF the LF endings the new line asks for.
+      git(path, "add", "--renormalize", ".");
+      normalized = git(path, "diff", "--cached", "--name-only").stdout.trim().split("\n").filter(Boolean).length;
+      if (normalized) {
+        const again = git(path, "commit", "-q", "-m", "Normalize line endings (git add --renormalize . after .gitattributes)");
+        if (again.status !== 0) { remove(); return ["failed", `git commit of the line endings failed: ${said(again)}`]; }
+      }
+    }
+    // A main checkout with uncommitted changes in any of these files would clash with the landed change: skipped.
+    const touched = git(path, "diff", "-z", "--name-only", `refs/remotes/origin/${land}`, "HEAD").stdout.split("\0").filter(Boolean);
+    const dirty = run("git", ["-C", main, "status", "--porcelain", "--", ...touched], { env: { ...env, GIT_LITERAL_PATHSPECS: "1" } });
+    const busy = dirty.stdout.split("\n").filter(Boolean).map((line) => line.slice(3));
+    if (dirty.status !== 0 || busy.length) {
+      remove();
+      return ["skipped", dirty.status !== 0 ? `skipped: git status in ${main} failed: ${said(dirty)}`
+        : `skipped: ${main} has uncommitted changes in ${busy.slice(0, 5).join(", ")}${busy.length > 5 ? ` and ${busy.length - 5} more` : ""}; commit or land them, then rerun`];
+    }
+
+    // The project's checks run in kit pr: they find its shared dependencies as in any of its worktrees.
+    let shared;
+    try { shared = JSON.parse(readFileSync(join(path, kitSettingsFile), "utf8")).sharedNodeModules; } catch {}
+    if (typeof shared === "string" && existsSync(shared) && !existsSync(join(path, "node_modules"))) {
+      try { symlinkSync(realpathSync(shared), join(path, "node_modules")); } catch {}
+    }
+    const log = join(logs, `${name}.log`);
+    const output = openSync(log, "w");
+    const pr = run(join(home, "kit"), ["pr", "--title", `Kit setup: add what kit init writes today (kit ${sha})`],
+      { cwd: path, env: local, stdio: ["ignore", output, output], timeout: seconds * 1000 });
+    closeSync(output);
+    const prResult = lastResult(readFileSync(log, "utf8"));
+    if (pr.status !== 0) {
+      const why = prResult ?? (pr.error?.code === "ETIMEDOUT" ? `timed out after ${seconds}s` : `exit ${pr.status}`);
+      return ["failed", `kit pr failed (${why}); the change waits in ${path} on ${branch}, log ${log}`];
+    }
+    remove();
+    return ["updated", `${files(listed.length)} added${normalized ? `, ${files(normalized)} renormalized` : ""}, through kit pr into ${land}: ${prResult ?? "ok"}`];
+  };
+
+  const groups = { updated: [], current: [], skipped: [], failed: [] };
+  for (const name of names) {
+    const main = projects[name]?.root;
+    console.log(`${name}: ${main}`);
+    const [group, text] = bring(name, main);
+    groups[group].push(name);
+    kitResult(group === "failed" ? "fail" : "ok", `init ${name}: ${text}`);
+  }
+  const count = (group, word) => `${groups[group].length} ${word}${groups[group].length && group !== "current" ? ` (${groups[group].join(", ")})` : ""}`;
+  kitResult(groups.failed.length ? "fail" : "ok", names.length
+    ? `init --all: ${count("updated", "updated")}, ${count("current", "up to date")}, ${count("skipped", "skipped")}, ${count("failed", "failed")}`
+    : `init --all: no projects in ${join(kitStateDir(), "projects.json")}`);
+  process.exit(groups.failed.length ? 1 : 0);
 }
