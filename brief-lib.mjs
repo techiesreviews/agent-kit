@@ -155,7 +155,7 @@ export function composeBrief({ root, settings, ticket, text, stage, owner, note,
   ]);
   if (skills.length) {
     const family = modelFamily(target);
-    out.push("", "## Skills", `Use these for the parts of the ticket they fit${family === "none" ? " (in the kit's own words; this model has no skills)" : ""}:`,
+    out.push("", "## Skills", `Use these for the parts of the ${task ? "task" : "ticket"} they fit${family === "none" ? " (in the kit's own words; this model has no skills)" : ""}:`,
       ...skills.map(entry => `- ${skillLine(entry, family)}`));
   }
   // A review's findings are posted to GitHub, so they stay plain English (reviewFormat's own line).
