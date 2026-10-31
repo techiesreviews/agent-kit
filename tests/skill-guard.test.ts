@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
-import { allowedPath, allowedSkills, licencePath, normalLine, skillFiles, skillIndex, skillMatch, skillPath } from "../skill-guard.mjs";
+import { allowedPath, allowedSkills, licencePath, normalLine, ownLicencePath, skillFiles, skillIndex, skillMatch, skillPath } from "../skill-guard.mjs";
 import { kitEnv } from "./support/kit-env.ts";
 
 const guard = resolve("skill-guard.mjs");
@@ -80,9 +80,13 @@ test("a SKILL.md or a file under a skills/ folder is a skill path; other paths a
 test("a licence is named so on its own or at the end of a longer name; a file merely named like one is not", () => {
   for (const path of ["LICENSE", "a/license", "License.md", "LICENSE-MIT", "LICENSE.APACHE-2.0.txt", "COPYING", "NOTICE.txt", "licence.rst",
     "vendor/shadcn-tailwind-4.13.0.LICENSE.md", "sites-vite-plugin.LICENSE", "x.license.txt", "third-party-LICENSE-MIT.txt", "pkg-licence",
-    "assets/fonts/Fraunces-OFL.txt", "OFL.txt", "ofl.md", "Font.OFL"]) assert.ok(licencePath(path), path);
+    "assets/fonts/Fraunces-OFL.txt", "OFL.txt", "ofl.md", "Font.OFL", "Font-OFL-1.1.txt", "how-to-license.md"]) assert.ok(licencePath(path), path);
   for (const path of ["license-check.py", "notice-and-consent.md", "scripts/license-check.py", "LICENSE.py", "licenses/mit.js", "my-license-notes.md",
     "privacy-notice.md", "x.copying", "x-NOTICE.txt", "OFL.py", "official.txt", "LICENSE.md/x", "README.md"]) assert.equal(licencePath(path), false, path);
+  // In a project only a licence name on its own is the project's licence; a longer name is read like any file.
+  for (const path of ["LICENSE", "LICENSE.md", "COPYING", "docs/License.txt", "LICENSE-MIT", "NOTICE"]) assert.ok(ownLicencePath(path), path);
+  for (const path of ["docs/choose-a-license.md", "notes.license.md", "x-1.0.LICENSE.md", "brand-OFL.md", "OFL.txt", "license-check.py"])
+    assert.equal(ownLicencePath(path), false, path);
 });
 
 test("lines compare without list marks, quotes, headings or extra spaces", () => {
@@ -164,24 +168,33 @@ test("a project's own licence passes whatever licence text it holds, and a skill
   assert.match(own.stdout, /RESULT: ok skill-guard\n$/);
   assert.equal(f.run(["--history"]).status, 0);
 
-  // A project's own licence file is never read, so its text matching a skill's licence under a name not yet known passes too.
+  // A project's own licence file is never read, committed, staged or untracked, so its text matching a skill's
+  // licence under a name not yet known passes too; any other file holding it still fails.
   f.put(join(f.home, ".claude/skills/crane/LEGAL-TERMS.md"), `${licenceText}\n`);
-  for (const path of ["LICENSE.md", "COPYING", "fonts/Font-OFL.txt"]) f.put(join(f.repo, path), project);
+  f.put(join(f.repo, "LICENSE.md"), project);
   f.git("add", "."); f.git("commit", "-q", "-m", "more licences");
+  f.put(join(f.repo, "COPYING"), project); f.git("add", "COPYING");
+  f.put(join(f.repo, "LICENSE"), `${project}${licenceText}\n`);
+  f.put(join(f.repo, "NOTICE"), project);
+  f.put(join(f.repo, "notes.md"), `${licenceText}\n`);
   const unknown = f.run(["--base", "HEAD~2"]);
   assert.equal(unknown.status, 1, unknown.stderr);
-  assert.equal(unknown.stderr, "problem: docs/credits.md:3: holds a line from the local skill crane\n");
+  assert.equal(unknown.stderr, "problem: docs/credits.md:3: holds a line from the local skill crane\nproblem: notes.md:1: holds a line from the local skill crane\n");
+  // --history reads every blob, the project's licence files too.
   const history = f.run(["--history"]);
   assert.equal(history.status, 1, history.stderr);
-  assert.match(history.stderr, /^problem: docs\/credits\.md@[0-9a-f]{9}:3: holds a line from the local skill crane\n$/);
+  assert.match(history.stderr, /problem: LICENSE@[0-9a-f]{9}:5: holds a line from the local skill crane\n/);
+  assert.match(history.stderr, /problem: docs\/credits\.md@[0-9a-f]{9}:3: holds a line from the local skill crane\n/);
 
-  f.git("rm", "-q", "docs/credits.md");
+  f.git("rm", "-q", "-f", "docs/credits.md", "COPYING"); rmSync(join(f.repo, "notes.md")); rmSync(join(f.repo, "NOTICE")); f.git("checkout", "-q", "LICENSE");
   f.put(join(f.repo, "scripts/license-check.py"), `# ${secret}\n`);
   f.put(join(f.repo, "notice-and-consent.md"), `${other}\n`);
+  f.put(join(f.repo, "docs/choose-a-license.md"), `${secret}\n`);
   f.git("add", "."); f.git("commit", "-q", "-m", "named like a licence");
   const copied = f.run(["--base", "HEAD~3"]);
   assert.equal(copied.status, 1, copied.stderr);
-  assert.equal(copied.stderr, "problem: notice-and-consent.md:1: holds a line from the local skill crane\n" +
+  assert.equal(copied.stderr, "problem: docs/choose-a-license.md:1: holds a line from the local skill crane\n" +
+    "problem: notice-and-consent.md:1: holds a line from the local skill crane\n" +
     "problem: scripts/license-check.py:1: holds a line from the local skill crane\n");
   assert.doesNotMatch(copied.stdout + copied.stderr, /paper crane|marbles|fold it again/);
 });
