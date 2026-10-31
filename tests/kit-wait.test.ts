@@ -673,22 +673,15 @@ test("ci on a repo with no active workflows says no checks instead of waiting, f
   result(await run(t, ["ci", "--pr", "42", "--timeout", "5s"], red.env), 1, /^RESULT: fail ci pr 42 abcdef0 failed: deploy$/);
 });
 
-test("ci PR with workflows that never run for it says no checks once GitHub lists none for the PR", async (t) => {
+test("ci PR in a repo with workflows keeps waiting for a run, which can be slow to start, and for outside checks", async (t) => {
+  // No run yet and GitHub lists no checks: never a pass, however long it has been.
   const fixture = fakeGh(t, "pr-no-checks");
-  const output = await run(t, ["ci", "--pr", "42", "--timeout", "5s"], { ...fixture.env, KIT_WAIT_NO_CHECKS_MS: "1" });
-  result(output, 0, /^RESULT: ok ci pr 42 abcdef0: no checks \(no workflow ran for it and GitHub lists no checks on the PR\)$/);
-  assert.match(fixture.calls(), /pr view 42 --json statusCheckRollup/);
-  // Before KIT_WAIT_NO_CHECKS_MS has passed it keeps waiting and never asks for the PR's checks.
-  const early = fakeGh(t, "pr-no-checks");
-  const waiting = await run(t, ["ci", "--pr", "42", "--timeout", "1"], { ...early.env, KIT_WAIT_NO_CHECKS_MS: "600000" });
-  result(waiting, 1, /timed out after 1/);
-  assert.doesNotMatch(early.calls(), /statusCheckRollup/);
-  // Checks from elsewhere (a Pages app) keep it waiting, as before, with workflows or without.
+  result(await run(t, ["ci", "--pr", "42", "--timeout", "1"], { ...fixture.env, KIT_WAIT_NO_CHECKS_MS: "1" }), 1, /timed out after 1/);
+  // A pending outside check keeps it waiting, with workflows or without.
   const pages = fakeGh(t, "no-workflows-pages");
   result(await run(t, ["ci", "--pr", "42", "--timeout", "1"], pages.env), 1, /timed out after 1/);
   const other = fakeGh(t, "pr-other-checks");
-  const waited = await run(t, ["ci", "--pr", "42", "--timeout", "1"], { ...other.env, KIT_WAIT_NO_CHECKS_MS: "1" });
-  result(waited, 1, /timed out after 1/);
+  result(await run(t, ["ci", "--pr", "42", "--timeout", "1"], { ...other.env, KIT_WAIT_NO_CHECKS_MS: "1" }), 1, /timed out after 1/);
 });
 
 test("ci SHA waits for a branch before reading workflows", async (t) => {

@@ -90,7 +90,12 @@ elif [[ -z $land ]]; then
 elif [[ $remote == false ]]; then
   pass base "no GitHub repo (no origin remote); nothing to fetch"
 elif ! tip=$(git -C "$root" rev-parse --verify "refs/remotes/origin/$land" 2>/dev/null); then
-  fail base "missing origin/$land$fetched" 'git fetch origin'
+  release=$(setting .branches.release)
+  if [[ -n $release && $release != "$land" ]] && git -C "$root" rev-parse --verify --quiet "refs/remotes/origin/$release" > /dev/null; then
+    fail base "missing origin/$land$fetched" "git fetch origin; if GitHub has no $land yet, a person makes it from their own terminal (git push origin origin/$release:refs/heads/$land), as the push guard refuses that push in an agent's shell"
+  else
+    fail base "missing origin/$land$fetched" 'git fetch origin'
+  fi
 elif [[ $root == "$dev" && $current == "$land" ]]; then
   pass base "$land in the dev worktree$fetched"
 elif [[ $root == "$main" && $allow_main == true && $current == "$land" ]]; then
@@ -434,7 +439,8 @@ if [[ $jq_missing == false && -z $settings_unread && -n $land ]]; then
     if [[ -n $exception ]]; then
       [[ $quiet == true ]] || printf '✓ branches: lands on %s (exception: %s)\n' "$land" "$exception"
     else
-      printf '✗ branches: settings land on %s, so a merge goes straight to what is released; a branch goes into a landing branch of its own, which the release branch then takes; fix: "branches": { "land": "dev", "release": "%s" } in scripts/agents/kit.json (kit init makes dev from it), or name why it lands there in "branches": { "exception": "<reason>" }\n' "$land" "${release:-$land}"
+      if [[ -z $release || $land == "$release" ]]; then why='so a merge goes straight to what is released'; else why='not on dev'; fi
+      printf '✗ branches: settings land on %s, %s; a branch goes into a landing branch of its own, which the release branch then takes; fix: "branches": { "land": "dev", "release": "%s" } in scripts/agents/kit.json (kit init makes dev from it), or name why it lands there in "branches": { "exception": "<reason>" }\n' "$land" "$why" "${release:-$land}"
       branches_warning="lands on $land, not dev"
     fi
   elif [[ $remote == false ]] && ! git -C "$root" rev-parse --verify --quiet "refs/heads/$land" > /dev/null; then

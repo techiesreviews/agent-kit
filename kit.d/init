@@ -152,7 +152,9 @@ if (existsSync(at(kitSettingsFile))) {
   const release = options.release || (["dev", "develop"].includes(land) ? usual : undefined);
   if (release && git("check-ref-format", "--branch", release) === null) fail(`--release ${release} is not a branch name`, 2);
   if (release === land) fail(`--release ${release} is the landing branch too; the release branch takes only the landing branch, so name two branches (a site that goes live from the branch it lands on adds "exception": "<reason>" to "branches" by hand)`, 2);
-  if (!branchExists(land) && release && branchExists(release)) makeLand = { land, from: release };
+  // The release branch must hold a commit to make the landing branch from (an unborn HEAD names a branch with none).
+  const hasCommit = (name) => [`refs/heads/${name}`, `refs/remotes/origin/${name}`].some((ref) => git("rev-parse", "--verify", "--quiet", `${ref}^{commit}`) !== null);
+  if (!branchExists(land) && release && hasCommit(release)) makeLand = { land, from: release };
   else if (!branchExists(land)) notes.push(`branch ${land} is not here or on origin yet; kit doctor's base check needs origin/${land} once the project has a GitHub repo`);
   const remote = kitHideUserInfo(git("remote", "get-url", "origin") ?? "");
   // The last part of the remote's path, after "/" or the ":" of host:repo (a token in the url never becomes it).

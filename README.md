@@ -36,8 +36,9 @@ only a small launcher and its own settings; the kit itself lives here, once.
   that rule. A project whose settings still land on `main` gets its PRs there, with `kit doctor`'s warning, until
   its settings move to `dev`. `kit init --all` opens its PRs into the landing branch only: a project whose settings
   still land on `main` is skipped and named.
-- `kit doctor` warns (never fails) when the settings land on `main` or `master` (or on their release branch) or
-  there is no `dev` branch. A project that lands on `main` on purpose names why in
+- `kit doctor` warns (never fails) when the settings land on `main` or `master` (or on their release branch), or
+  there is no `dev` branch in a project with no GitHub repo; with a GitHub repo, a missing `origin/dev` fails its
+  base check, which names how a person makes it. A project that lands on `main` on purpose names why in
   `"branches": { "exception": "<reason>" }`; doctor shows it instead, and `kit init --all` lands there and names it.
 - Exceptions outside the kit's PRs: the Native Site Editor's saves to a site's live branch (techies-reviews,
   lexvd-site) go to `main` through the GitHub API, the chat workspace's backup routine commits to its own branch,

@@ -383,6 +383,17 @@ test("a repo with only main on origin gets dev made from origin/main, here and o
   assert.deepEqual(JSON.parse(readFileSync(join(notYet.work, "scripts/agents/kit.json"), "utf8")).branches, { land: "dev", release: "live" });
 });
 
+test("a repo with no commit yet names dev with a note and makes no branch", (t) => {
+  const f = fixture(t);
+  const empty = join(f.directory, "empty");
+  mkdirSync(empty);
+  f.git(empty, "init", "-q", "--initial-branch=main");
+  const run = f.init(empty, ["--light"]);
+  assert.doesNotMatch(run.stdout, /^made branch|could not make branch/m);
+  assert.match(run.stdout, /^note: branch dev is not here or on origin yet/m);
+  assert.deepEqual(JSON.parse(readFileSync(join(empty, "scripts/agents/kit.json"), "utf8")).branches, { land: "dev", release: "main" });
+});
+
 test("a dev that cannot be pushed to origin is made here, with a note naming the push", (t) => {
   const f = fixture(t);
   const { main, work } = f.repo("locked", {}, ["main"]);

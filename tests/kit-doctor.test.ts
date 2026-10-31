@@ -390,10 +390,12 @@ test("doctor notes a failed fetch on a passing base and judges the last fetched 
 
 test("doctor warns when a project's settings land on main or it has no dev branch, and names an exception instead", (t) => {
   const fix = (release: string) => `fix: "branches": { "land": "dev", "release": "${release}" } in scripts/agents/kit.json (kit init makes dev from it), or name why it lands there in "branches": { "exception": "<reason>" }`;
-  for (const branches of [{ land: "main", release: "main", ci: "main" }, { land: "main" }, { land: "master" }, { land: "prod", release: "prod" }]) {
+  for (const branches of [{ land: "main", release: "main", ci: "main" }, { land: "main" }, { land: "master" }, { land: "prod", release: "prod" }, { land: "main", release: "prod" }]) {
     const result = playground(t, { allowMainCheckout: true, branches }, false).run();
     assert.equal(result.status, 0, result.stdout);
-    assert.ok(result.stdout.includes(`✗ branches: settings land on ${branches.land}, so a merge goes straight to what is released; a branch goes into a landing branch of its own, which the release branch then takes; ${fix(branches.land)}\n`), result.stdout);
+    // Only where main is what gets released does a merge go straight there.
+    const why = branches.release === "prod" && branches.land === "main" ? "not on dev" : "so a merge goes straight to what is released";
+    assert.ok(result.stdout.includes(`✗ branches: settings land on ${branches.land}, ${why}; a branch goes into a landing branch of its own, which the release branch then takes; ${fix(branches.release ?? branches.land)}\n`), result.stdout);
     assert.match(result.stdout, new RegExp(`RESULT: ok doctor 11/11 checks passed; warning: lands on ${branches.land}, not dev\n$`));
   }
   // Landing on dev with no dev branch here (no GitHub repo, so the base check cannot say so).
@@ -410,6 +412,10 @@ test("doctor warns when a project's settings land on main or it has no dev branc
   // An exception on a project that lands on dev explains nothing, so it is not shown.
   const devException = playground(t, { allowMainCheckout: true, branches: { land: "dev", release: "main", exception: "x" } }, false).run();
   assert.doesNotMatch(devException.stdout, /exception: x/);
+  // With a GitHub repo that has main but no dev, the base check fails and names a person's push to make dev.
+  const noOriginDev = playground(t, { allowMainCheckout: true, branches: { land: "dev", release: "main" } }).run();
+  assert.equal(noOriginDev.status, 1, noOriginDev.stdout);
+  assert.ok(noOriginDev.stdout.includes("✗ base: missing origin/dev (fetch failed; judged the last fetched origin/dev); fix: git fetch origin; if GitHub has no dev yet, a person makes it from their own terminal (git push origin origin/main:refs/heads/dev), as the push guard refuses that push in an agent's shell\n"), noOriginDev.stdout);
   // A named exception is shown, never warned about.
   const named = playground(t, { allowMainCheckout: true }, false).run();
   assert.equal(named.status, 0, named.stdout);
