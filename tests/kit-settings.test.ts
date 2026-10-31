@@ -560,3 +560,15 @@ test("a settings problem fails kit review, kit unit --affected and unit.sh as a 
   assert.doesNotMatch(none.stderr, /Usage:/);
   assert.equal(lastLine(none), `RESULT: fail unit ${noFile}`);
 });
+
+test("the kit's own CI runs on pull requests and pushes into both its land and its release branch", () => {
+  // Without this, a PR into a newly named land branch gets no CI and kit pr lands it after review with "ci: none".
+  const { branches } = JSON.parse(readFileSync("scripts/agents/kit.json", "utf8"));
+  const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
+  for (const event of ["pull_request", "push"]) {
+    const line = workflow.match(new RegExp(`^  ${event}:\\n    branches: \\[([^\\]]*)\\]`, "m"));
+    assert.ok(line, `ci.yml has no "${event}: branches: [...]" list`);
+    const listed = line[1].split(",").map(name => name.trim());
+    for (const branch of [branches.land, branches.release]) assert.ok(listed.includes(branch), `ci.yml ${event} does not list ${branch}`);
+  }
+});
