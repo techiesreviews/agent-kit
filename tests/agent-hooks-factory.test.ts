@@ -170,8 +170,16 @@ test("agent-cap books no slot for a brief that brief-guard refuses, where the pr
   assert.equal(pending(), 0, "a refused brief books no slot");
   assert.equal(call("Fix it.\nkit-brief: abc1234 docs/t.md build", "t2").status, 0);
   assert.equal(pending(), 1, "a kit brief books its slot");
+  // Task (the older name) and a kit-brief: none first line work the same way.
+  const task = (prompt: string, id: string) => spawnSync("/bin/bash", [join(hooks, "agent-cap.sh")], {
+    input: JSON.stringify({ hook_event_name: "PreToolUse", session_id: "s1", tool_name: "Task", tool_use_id: id, tool_input: { prompt } }),
+    encoding: "utf8", env: { ...kitEnv(), CLAUDE_PROJECT_DIR: project, CLAUDE_AGENT_CAP_STATE_DIR: state, CLAUDE_AGENT_CAP: "5" } });
+  assert.equal(task("Fix the bug", "t4").status, 0);
+  assert.equal(pending(), 1);
+  assert.equal(call("kit-brief: none (a question)\nWhere is X?", "t5").status, 0);
+  assert.equal(pending(), 2);
   // A project that leaves brief-guard out still counts every launch.
   settings(["agent-cap"]);
   assert.equal(call("Fix the bug", "t3").status, 0);
-  assert.equal(pending(), 2);
+  assert.equal(pending(), 3);
 });
