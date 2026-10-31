@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // kit: before going live: nothing unsaved, and HEAD exactly the release branch on origin
 import { spawnSync } from "node:child_process";
-import { resolve } from "node:path";
+import { closeSync, mkdtempSync, openSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const { kitBranch, kitHideUserInfo, kitOwner, kitResult, kitRoot, kitSettings, kitSettingsFile } = await import(
@@ -36,13 +38,10 @@ const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
 /** What stops this checkout going live: a list of { what, advice }, and the line an ok result prints. */
 function problems(root, { land }) {
-  // git's own messages in English, so a missing branch is told apart from a failed fetch in any locale.
-  // No HTTPS or SSH prompt and a time limit (KIT_RELEASE_CHECK_TIMEOUT seconds, default 120), so a stalled origin
-  // fails the check instead of hanging the deploy. A person's own GIT_SSH_COMMAND or GIT_SSH is kept.
-  const seconds = Number(process.env.KIT_RELEASE_CHECK_TIMEOUT) > 0 ? Number(process.env.KIT_RELEASE_CHECK_TIMEOUT) : 120;
-  const ssh = process.env.GIT_SSH_COMMAND || process.env.GIT_SSH ? {} : { GIT_SSH_COMMAND: "ssh -o BatchMode=yes" };
-  const git = (...args) => spawnSync("git", ["-C", root, ...args],
-    { encoding: "utf8", timeout: seconds * 1000, env: { ...process.env, LC_ALL: "C", GIT_TERMINAL_PROMPT: "0", ...ssh } });
+  // git's own messages in English, so a missing branch is told apart from a failed fetch in any locale; no HTTPS
+  // credential prompt (an SSH origin keeps the project's own ssh setup, prompts included).
+  const env = { ...process.env, LC_ALL: "C", GIT_TERMINAL_PROMPT: "0" };
+  const git = (...args) => spawnSync("git", ["-C", root, ...args], { encoding: "utf8", env });
   const found = [];
   const settings = kitSettings(root), release = kitBranch("release", settings);
   // Changed and untracked files, one path each; .scratch/ holds the kit's own logs and evidence.
@@ -65,16 +64,15 @@ function problems(root, { land }) {
     found.push({ what: "no origin remote", advice: `the check compares HEAD with origin/${branch}` });
     return { found };
   }
-  // By name, so a single-branch or CI clone that does not track the branch still fetches it.
-  const fetch = git("fetch", "-q", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`);
+  const fetch = fetchBranch(root, branch, env);
   if (fetch.status !== 0 && /couldn't find remote ref/i.test(fetch.stderr)) {
     found.push({ what: `origin has no branch ${branch}`, advice: land || one
       ? `land work on ${branch} through kit pr first` : "push nothing by hand; land the release with kit pr --release" });
     return { found };
   }
   if (fetch.status !== 0) {
-    const reason = kitHideUserInfo(fetch.error ? `no answer within ${seconds} seconds`
-      : fetch.stderr.trim().split(/\r?\n/).at(-1) || `git fetch exited ${fetch.status}`);
+    const reason = kitHideUserInfo(fetch.error?.code === "ETIMEDOUT" ? `no answer within ${fetch.seconds} seconds`
+      : fetch.error ? fetch.error.message : fetch.stderr.trim().split(/\r?\n/).at(-1) || `git fetch exited ${fetch.status}`);
     found.push({ what: `could not fetch origin (${reason})`, advice: "try again once origin answers" });
     return { found };
   }
@@ -87,15 +85,40 @@ function problems(root, { land }) {
   const counts = git("rev-list", "--left-right", "--count", `HEAD...refs/remotes/origin/${branch}`);
   if (counts.status !== 0) throw new Error(`git rev-list failed: ${counts.stderr.trim()}`);
   const [ahead, behind] = counts.stdout.trim().split(/\s+/).map(Number);
-  // A cut that an earlier kit pr --release rebased onto origin/<release> is cut again from origin/<land>.
-  const update = land ? `cut the release again from origin/${branch} (git reset --hard origin/${branch}) and rerun kit pr --release`
+  // Under --land, a cut whose own commits all landed already (an earlier kit pr --release rebased it onto
+  // origin/<release>) is cut again; git cherry marks each commit past origin/<release> that origin/<land> has with "-".
+  // A commit that never landed is landed first, so the advice never drops work.
+  const landed = !ahead || git("cherry", `refs/remotes/origin/${branch}`, "HEAD", ...(release === branch ? [] : [`refs/remotes/origin/${release}`]))
+    .stdout.split(/\r?\n/).filter(Boolean).every(line => line.startsWith("-"));
+  const update = land
+    ? landed ? `cut the release again from origin/${branch} (git reset --keep origin/${branch}) and rerun kit pr --release`
+      : `a release carries only what landed on ${branch}; land it with kit pr first`
     : `update the checkout to origin/${branch} before going live`;
+  const unlanded = land ? update : one ? `what goes live must be on ${branch}; land it with kit pr`
+    : `what goes live must be on ${branch}; land it on ${landing} with kit pr, then kit pr --release`;
   if (ahead && behind) found.push({ what: `HEAD ${short} and origin/${branch} have split (${plural(ahead, "commit")} ahead, ${behind} behind)`, advice: update });
-  else if (ahead) found.push({ what: `HEAD ${short} is ${plural(ahead, "commit")} ahead of origin/${branch}`, advice: land
-    ? `a release carries only what landed on ${branch}; land it with kit pr first` : one ? `what goes live must be on ${branch}; land it with kit pr`
-    : `what goes live must be on ${branch}; land it on ${landing} with kit pr, then kit pr --release` });
+  else if (ahead) found.push({ what: `HEAD ${short} is ${plural(ahead, "commit")} ahead of origin/${branch}`, advice: unlanded });
   else if (behind) found.push({ what: `HEAD ${short} is ${plural(behind, "commit")} behind origin/${branch}`, advice: update });
   return { found, passed: `release-check ${short} is origin/${branch}, nothing unsaved` };
+}
+
+/**
+ * Fetch one branch by name (a single-branch or CI clone that does not track it still gets it), stopped after
+ * KIT_RELEASE_CHECK_TIMEOUT seconds (default 120). Its stderr goes to a file, not a pipe, so an ssh or helper git
+ * started cannot hold the check open after git is stopped.
+ */
+function fetchBranch(root, branch, env) {
+  const seconds = Number(process.env.KIT_RELEASE_CHECK_TIMEOUT) > 0 ? Number(process.env.KIT_RELEASE_CHECK_TIMEOUT) : 120;
+  const directory = mkdtempSync(join(tmpdir(), "kit-release-check-")), log = join(directory, "fetch.err");
+  const fd = openSync(log, "w");
+  try {
+    const run = spawnSync("git", ["-C", root, "fetch", "-q", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`],
+      { stdio: ["ignore", "ignore", fd], timeout: seconds * 1000, env });
+    return { status: run.status, error: run.error, seconds, stderr: readFileSync(log, "utf8") };
+  } finally {
+    closeSync(fd);
+    rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 function main(args) {

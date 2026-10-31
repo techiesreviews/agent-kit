@@ -850,11 +850,22 @@ test("a rerun after an earlier run rebased the cut onto a hotfixed main says to 
   assert.equal(result.status, 1); assert.match(result.stdout, /RESULT: fail review: /);
   result = f.run(["--base", "main", "--release", "--no-merge"], real);
   assert.equal(result.status, 1);
-  assert.match(result.stdout, /^RESULT: fail release-check: HEAD [a-f0-9]{7} and origin\/dev have split \(2 commits ahead, 1 behind\): cut the release again from origin\/dev \(git reset --hard origin\/dev\) and rerun kit pr --release$/m);
+  assert.match(result.stdout, /^RESULT: fail release-check: HEAD [a-f0-9]{7} and origin\/dev have split \(2 commits ahead, 1 behind\): cut the release again from origin\/dev \(git reset --keep origin\/dev\) and rerun kit pr --release$/m);
   f.git("reset", "-q", "--hard", "origin/dev");
   result = f.run(["--base", "main", "--release", "--no-merge"], real);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /RESULT: ok opened #73 [a-f0-9]{7}$/m);
+});
+
+test("a lead's waiver lets unsaved files through the release check, and kit pr still stops on them before any push", t => {
+  const f = fixture(t);
+  writeFileSync(join(f.root, "draft.txt"), "draft\n");
+  const result = f.run(["--base", "main", "--release", "--waive", "x"], { ASE_OWNER: "ke-lead", FAKE_RELEASE_CHECK: resolve("kit.d/release-check") });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /release-check: ok \(waived by ke-lead \(x\): unsaved files \(draft\.txt\)/);
+  assert.match(result.stdout, /RESULT: fail guards: uncommitted changes$/m);
+  assert.equal(f.calls().some(call => call.tool === "gh"), false);
+  assert.equal(f.gitAt(f.origin, "branch", "--list", "feature/kit-pr"), "");
 });
 
 test("a waived release check is named on the release's final RESULT line, a dry run's too; a waiver not needed is not", t => {
