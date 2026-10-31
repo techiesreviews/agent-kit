@@ -760,8 +760,8 @@ test("--all opens no PR into a release branch: settings that still land on main 
   const { records, all } = standInKit(f);
   const run = all();
   assert.equal(run.status, 0, run.stdout + run.stderr);
-  const fix = (release: string) => `set "branches": { "land": "dev", "release": "${release}" } (kit init makes dev) or name its exception in "branches": { "exception": "<reason>" }`;
-  const skip = "its settings land on main, and the release branch takes only the landing branch, so no PR goes into it";
+  const fix = (release: string) => `set "branches": { "land": "dev", "release": "${release}" } once dev exists (a person makes it from their own terminal: git push origin origin/${release}:refs/heads/dev), or name its exception in "branches": { "exception": "<reason>" }`;
+  const skip = "its settings land on main, the branch it releases from, so kit init --all opens no PR into it";
   assert.deepEqual(run.stdout.split("\n").filter((line) => line.startsWith("RESULT: ")), [
     "RESULT: ok init kept: 2 files changed, 1 file renormalized, through kit pr into main: merged #7 abc1234",
     `RESULT: ok init onmain: skipped: ${skip}; ${fix("main")}`,

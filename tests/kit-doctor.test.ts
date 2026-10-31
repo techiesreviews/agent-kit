@@ -389,7 +389,7 @@ test("doctor notes a failed fetch on a passing base and judges the last fetched 
 });
 
 test("doctor warns when a project's settings land on main or it has no dev branch, and names an exception instead", (t) => {
-  const fix = (release: string) => `fix: "branches": { "land": "dev", "release": "${release}" } in scripts/agents/kit.json (kit init makes dev from it), or name why it lands there in "branches": { "exception": "<reason>" }`;
+  const fix = (release: string) => `fix: "branches": { "land": "dev", "release": "${release}" } in scripts/agents/kit.json, once dev exists (a person makes it from their own terminal: git push origin origin/${release}:refs/heads/dev), or name why it lands there in "branches": { "exception": "<reason>" }`;
   for (const branches of [{ land: "main", release: "main", ci: "main" }, { land: "main" }, { land: "master" }, { land: "prod", release: "prod" }, { land: "main", release: "prod" }]) {
     const result = playground(t, { allowMainCheckout: true, branches }, false).run();
     assert.equal(result.status, 0, result.stdout);

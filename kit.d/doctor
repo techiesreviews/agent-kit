@@ -440,7 +440,7 @@ if [[ $jq_missing == false && -z $settings_unread && -n $land ]]; then
       [[ $quiet == true ]] || printf '✓ branches: lands on %s (exception: %s)\n' "$land" "$exception"
     else
       if [[ -z $release || $land == "$release" ]]; then why='so a merge goes straight to what is released'; else why='not on dev'; fi
-      printf '✗ branches: settings land on %s, %s; a branch goes into a landing branch of its own, which the release branch then takes; fix: "branches": { "land": "dev", "release": "%s" } in scripts/agents/kit.json (kit init makes dev from it), or name why it lands there in "branches": { "exception": "<reason>" }\n' "$land" "$why" "${release:-$land}"
+      printf '✗ branches: settings land on %s, %s; a branch goes into a landing branch of its own, which the release branch then takes; fix: "branches": { "land": "dev", "release": "%s" } in scripts/agents/kit.json, once dev exists (a person makes it from their own terminal: git push origin origin/%s:refs/heads/dev), or name why it lands there in "branches": { "exception": "<reason>" }\n' "$land" "$why" "${release:-$land}" "${release:-$land}"
       branches_warning="lands on $land, not dev"
     fi
   elif [[ $remote == false ]] && ! git -C "$root" rev-parse --verify --quiet "refs/heads/$land" > /dev/null; then

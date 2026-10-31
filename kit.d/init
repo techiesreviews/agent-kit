@@ -717,7 +717,8 @@ function all() {
     // Only an exception that explains landing on the release branch is named, as kit doctor shows it.
     if (exception && onRelease) exceptions.push(`${name}: ${exception}`);
     if (!exception && onRelease) {
-      return ["skipped", `skipped: its settings land on ${land}, and the release branch takes only the landing branch, so no PR goes into it; set "branches": { "land": "dev", "release": "${release ?? land}" } (kit init makes dev) or name its exception in "branches": { "exception": "<reason>" }`];
+      const why = land === release || !release ? "the branch it releases from" : "not dev";
+      return ["skipped", `skipped: its settings land on ${land}, ${why}, so kit init --all opens no PR into it; set "branches": { "land": "dev", "release": "${release ?? land}" } once dev exists (a person makes it from their own terminal: git push origin origin/${release ?? land}:refs/heads/dev), or name its exception in "branches": { "exception": "<reason>" }`];
     }
     if (git(main, "cat-file", "-e", `refs/remotes/origin/${land}:${kitSettingsFile}`).status !== 0) return ["skipped", `skipped: origin/${land} has no ${kitSettingsFile}; land the project's setup first`];
 
