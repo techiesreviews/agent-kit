@@ -56,6 +56,8 @@ function fixture(t: TestContext) {
   // Files only named like a licence are skill text and are read.
   put(join(home, ".claude/skills/crane/references/notice-and-consent.md"), "Ask the paper crane politely before folding its wings back along the crease\n");
   put(join(home, ".claude/skills/crane/scripts/license-check.py"), "print('A crane may only be folded by someone who has thanked the paper first')\n");
+  // A note whose name ends in a licence name is the price of reading prefixed licence texts as licences: it is skipped.
+  put(join(home, ".claude/skills/crane/references/how-to-license.md"), "How to license the paper crane pattern when you sell a folded copy of it\n");
   put(join(home, ".codex/plugins/cache/kit/skills/jar/SKILL.md"), "The jar skill keeps its own long line here so plugins are read too, okay\n");
   mkdirSync(repo);
   const env = { ...kitEnv(), HOME: home, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
@@ -80,12 +82,14 @@ test("a SKILL.md or a file under a skills/ folder is a skill path; other paths a
 test("a licence is named so on its own or at the end of a longer name; a file merely named like one is not", () => {
   for (const path of ["LICENSE", "a/license", "License.md", "LICENSE-MIT", "LICENSE.APACHE-2.0.txt", "COPYING", "NOTICE.txt", "licence.rst",
     "vendor/shadcn-tailwind-4.13.0.LICENSE.md", "sites-vite-plugin.LICENSE", "x.license.txt", "third-party-LICENSE-MIT.txt", "pkg-licence",
-    "assets/fonts/Fraunces-OFL.txt", "OFL.txt", "ofl.md", "Font.OFL", "Font-OFL-1.1.txt", "how-to-license.md"]) assert.ok(licencePath(path), path);
+    "assets/fonts/Fraunces-OFL.txt", "OFL.txt", "how-to-license.md"]) assert.ok(licencePath(path), path);
   for (const path of ["license-check.py", "notice-and-consent.md", "scripts/license-check.py", "LICENSE.py", "licenses/mit.js", "my-license-notes.md",
-    "privacy-notice.md", "x.copying", "x-NOTICE.txt", "OFL.py", "official.txt", "LICENSE.md/x", "README.md"]) assert.equal(licencePath(path), false, path);
-  // In a project only a licence name on its own is the project's licence; a longer name is read like any file.
-  for (const path of ["LICENSE", "LICENSE.md", "COPYING", "docs/License.txt", "LICENSE-MIT", "NOTICE"]) assert.ok(ownLicencePath(path), path);
-  for (const path of ["docs/choose-a-license.md", "notes.license.md", "x-1.0.LICENSE.md", "brand-OFL.md", "OFL.txt", "license-check.py"])
+    "privacy-notice.md", "x.copying", "x-NOTICE.txt", "OFL.py", "official.txt", "LICENSE.md/x", "README.md",
+    "ofl.md", "Font.OFL", "Font-OFL-1.1.txt"]) assert.equal(licencePath(path), false, path);
+  // In a project only a licence name on its own in the top folder is the project's licence; anything else is read.
+  for (const path of ["LICENSE", "LICENSE.md", "COPYING", "License.txt", "LICENSE-MIT", "licence"]) assert.ok(ownLicencePath(path), path);
+  for (const path of ["docs/choose-a-license.md", "notes.license.md", "x-1.0.LICENSE.md", "brand-OFL.md", "OFL.txt", "license-check.py",
+    "NOTICE", "NOTICE.md", "docs/License.txt", "packages/a/LICENSE.md"])
     assert.equal(ownLicencePath(path), false, path);
 });
 
@@ -120,7 +124,8 @@ test("every file of a skill counts, but only lines of 60 or more characters that
     '<link rel="preload" href="https://cdn.example.com/fonts/a-long-font-name-regular.woff2" as="font">',
     "generated line 0 that every project which installs the same package shares",
     'licence line 0: THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND',
-    "Licence: anyone may fold this paper crane freely, with no promise it will ever fly"])
+    "Licence: anyone may fold this paper crane freely, with no promise it will ever fly",
+    "How to license the paper crane pattern when you sell a folded copy of it"])
     assert.equal(skillMatch(line, index), "", line);
   assert.equal(skillMatch(`  const fold = "Unfold the crane's left wing slowly and press the crease flat with a spoon"; // copied`, index), "crane");
   assert.equal(skillMatch('    <meta name="viewport" content="width=device-width, initial-scale=1">', index), "");
@@ -175,7 +180,7 @@ test("a project's own licence passes whatever licence text it holds, and a skill
   f.git("add", "."); f.git("commit", "-q", "-m", "more licences");
   f.put(join(f.repo, "COPYING"), project); f.git("add", "COPYING");
   f.put(join(f.repo, "LICENSE"), `${project}${licenceText}\n`);
-  f.put(join(f.repo, "NOTICE"), project);
+  f.put(join(f.repo, "LICENSE-APACHE"), project);
   f.put(join(f.repo, "notes.md"), `${licenceText}\n`);
   const unknown = f.run(["--base", "HEAD~2"]);
   assert.equal(unknown.status, 1, unknown.stderr);
@@ -186,16 +191,21 @@ test("a project's own licence passes whatever licence text it holds, and a skill
   assert.match(history.stderr, /problem: LICENSE@[0-9a-f]{9}:5: holds a line from the local skill crane\n/);
   assert.match(history.stderr, /problem: docs\/credits\.md@[0-9a-f]{9}:3: holds a line from the local skill crane\n/);
 
-  f.git("rm", "-q", "-f", "docs/credits.md", "COPYING"); rmSync(join(f.repo, "notes.md")); rmSync(join(f.repo, "NOTICE")); f.git("checkout", "-q", "LICENSE");
+  // A file named like a licence, a NOTICE, or a licence below the top folder is read like any other.
+  f.git("rm", "-q", "-f", "docs/credits.md", "COPYING");
+  rmSync(join(f.repo, "notes.md"));
+  rmSync(join(f.repo, "LICENSE-APACHE"));
+  f.git("checkout", "-q", "LICENSE");
   f.put(join(f.repo, "scripts/license-check.py"), `# ${secret}\n`);
   f.put(join(f.repo, "notice-and-consent.md"), `${other}\n`);
   f.put(join(f.repo, "docs/choose-a-license.md"), `${secret}\n`);
+  f.put(join(f.repo, "docs/NOTICE.md"), `${secret}\n`);
+  f.put(join(f.repo, "packages/a/LICENSE.md"), `${secret}\n`);
   f.git("add", "."); f.git("commit", "-q", "-m", "named like a licence");
   const copied = f.run(["--base", "HEAD~3"]);
   assert.equal(copied.status, 1, copied.stderr);
-  assert.equal(copied.stderr, "problem: docs/choose-a-license.md:1: holds a line from the local skill crane\n" +
-    "problem: notice-and-consent.md:1: holds a line from the local skill crane\n" +
-    "problem: scripts/license-check.py:1: holds a line from the local skill crane\n");
+  assert.equal(copied.stderr, ["docs/NOTICE.md", "docs/choose-a-license.md", "notice-and-consent.md", "packages/a/LICENSE.md", "scripts/license-check.py"]
+    .map(path => `problem: ${path}:1: holds a line from the local skill crane\n`).join(""));
   assert.doesNotMatch(copied.stdout + copied.stderr, /paper crane|marbles|fold it again/);
 });
 
