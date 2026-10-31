@@ -722,6 +722,7 @@ test("the KIT_HOME guard finds commands under any name, a half-cleaned env and a
 test("while a timing run holds the machine's quiet lock no kit job starts; its own children and read-only commands go on", (t) => {
   const directory = temp(t), state = join(directory, "state"), lock = join(state, "agent-kit/quiet.lock");
   command(directory, "job", "# kit: a job\necho 'RESULT: ok job ran'");
+  command(directory, "status", "# kit: a command that only reads\necho 'RESULT: ok status read'");
   const holder = spawn("sleep", ["3"]);
   t.after(() => { holder.kill(); });
   // The holder's state and start time from /proc; a holder that ended is a zombie (Z) until this test reaps it.
@@ -739,7 +740,7 @@ test("while a timing run holds the machine's quiet lock no kit job starts; its o
   // The timing run's own kit calls, help and the commands that only read go on at once.
   assert.match(quick(["job"], { KIT_QUIET_HOLDER: String(holder.pid) }).stdout, /RESULT: ok job ran/);
   quick(["job", "--help"]);
-  quick(["version"]);
+  quick(["status"]);
   const waited = spawnSync("/bin/bash", ["kit", "job"], { encoding: "utf8", env: { ...kitEnv(), ...env }, timeout: 15_000 });
   assert.equal(waited.status, 0, waited.stdout + waited.stderr);
   assert.equal(stat()[0], "Z", "the job started only after the timing run ended");

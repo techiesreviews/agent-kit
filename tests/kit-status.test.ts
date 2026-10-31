@@ -355,7 +355,7 @@ test("spec files flaky under load three or more times in 7 days are named, so th
   ].join("\n") + "\n");
   const output = await f.run(["alpha", "--no-fetch"]);
   assert.equal(output.code, 0, output.stderr);
-  assert.deepEqual(output.stdout.split("\n").filter(text => /flaky/.test(text)),
+  assert.deepEqual(output.stdout.split("\n").filter(text => text.startsWith("flaky:")),
     ["flaky: tests/native-save/native-mcp-menu.spec.ts 3 times in 7 days (give it a fix ticket)"]);
   assert.equal(output.stdout.trimEnd().split("\n").at(-1), "RESULT: ok status alpha 10 tickets, 1 closed, 8 open PRs, 1 flaky file");
 });

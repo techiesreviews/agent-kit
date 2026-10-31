@@ -123,6 +123,60 @@ export function kitProjects(env = process.env) {
 }
 
 /**
+ * Take a machine-wide lock in the kit's state folder (ticket ke-88): `<state>/<name>.lock`, a folder whose owner file
+ * reads `<pid> <process start> <owner>` (the front door's kit_quiet_wait reads the quiet lock's the same way).
+ * A held lock is waited for, polling every pollMs (KIT_LOCK_POLL_MS, else 2 s); onWait(owner) is told once.
+ * A lock whose process is gone, or whose pid now names another process, is taken over. release() removes the lock
+ * only while it is still this one.
+ */
+export async function kitMachineLock(name, { owner = kitOwner(), onWait, pollMs, env = process.env } = {}) {
+  const lock = join(kitStateDir(env), `${name}.lock`);
+  const poll = pollMs ?? (Number(env.KIT_LOCK_POLL_MS) > 0 ? Number(env.KIT_LOCK_POLL_MS) : 2_000);
+  const mine = `${process.pid} ${kitJobProcess(process.pid)?.started ?? 0} ${oneLine(owner)}\n`;
+  mkdirSync(dirname(lock), { recursive: true });
+  let told = false;
+  for (;;) {
+    let made = false;
+    try {
+      mkdirSync(lock); made = true;
+      writeFileSync(join(lock, "owner"), mine);
+      break;
+    } catch (error) {
+      if (made) { rmSync(lock, { recursive: true, force: true }); throw error; }
+      if (error.code !== "EEXIST") throw error;
+    }
+    let text = null, seen;
+    try { text = readFileSync(join(lock, "owner"), "utf8"); } catch { /* Not written yet, or just released. */ }
+    try { seen = statSync(lock); } catch { continue; }
+    const [pid, started, ...who] = (text ?? "").trim().split(" ");
+    const holder = Number(pid) > 0 ? kitJobProcess(Number(pid)) : null;
+    // No owner file a minute on means its taker died between the folder and the file.
+    const stale = text === null ? Date.now() - seen.mtimeMs > 60_000 : !holder || holder.started !== started;
+    if (stale) {
+      // Moved aside first, and removed only if it is the folder judged stale (same inode), as takeLock does.
+      const aside = `${lock}.stale.${process.pid}.${Date.now()}`;
+      try { renameSync(lock, aside); } catch { continue; }
+      let moved;
+      try { moved = statSync(aside); } catch { continue; }
+      if (moved.ino !== seen.ino) {
+        try { if (!existsSync(lock)) { renameSync(aside, lock); continue; } } catch { /* Its place was taken. */ }
+      }
+      rmSync(aside, { recursive: true, force: true });
+      continue;
+    }
+    if (!told && text !== null) { told = true; onWait?.(who.join(" ") || "unknown"); }
+    await new Promise(accept => setTimeout(accept, poll));
+  }
+  return {
+    path: lock,
+    release() {
+      try { if (readFileSync(join(lock, "owner"), "utf8") === mine) rmSync(lock, { recursive: true, force: true }); }
+      catch { /* Already gone. */ }
+    },
+  };
+}
+
+/**
  * List a project in projects.json (kit init), under its lock and written atomically: "added", or "listed" when
  * it is already there with the same root. Throws one plain line when the list is broken or the name is taken
  * by another root, so two projects never share a name. during() runs under the lock once the name is checked

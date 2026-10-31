@@ -2,15 +2,16 @@
 // kit: open a PR into the land branch, attach the review, merge when checks pass
 import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { loadavg, tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterFixRounds, blockingFindings, completedFixRounds, FIX_ROUNDS, openFindings, reviewCoversHead, sameReviewPatch } from "../review-findings.mjs";
 import { projectCommand, spoken } from "../review-brief.mjs";
 
-const { kitBranch, kitGhEnv, kitHideUserInfo, kitHidingLog, kitHome, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, nodeEnv, kitScore } = await import(
+const { kitBranch, kitGhEnv, kitHideUserInfo, kitHidingLog, kitHome, kitMachineLock, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, kitStateDir, nodeEnv, kitScore } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
+const { failedSpecs, isTiming, listedSpecs, timingList } = await import(pathToFileURL(resolve(import.meta.dirname, "../browser-runs.mjs")).href);
 const { checkSteps, classify, doneHeading, featureListGuard, featureListProblem, focusedUnitFiles, parseChanges, secondLookPick, unitTestFile } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
 const usage = 'Usage: kit pr [--base <land>] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release] [--full] [--waive "<reason>"]\nBranches come from scripts/agents/kit.json: --base defaults to branches.land; --release needs --base branches.release and first runs kit release-check --land (nothing unsaved, HEAD exactly origin/<land>).\n--waive requires a *-lead owner; records the reason for merging with open findings or without a feature-list update;\nwith --release it also passes the release check, which names the reason (kit pr still needs a clean tree).\nAfter the Claude review (none in the docs tier), every change gets a second look (kit review --second-look), whose findings block the same way;\nwhen no model can take it, the PR lands and says "second look: skipped (<reason>)".\n';
 const kit = process.env.KIT_PR_KIT || resolve(import.meta.dirname, "../kit");
@@ -271,6 +272,8 @@ async function main(args) {
     // Every gh call is told origin's repo (GH_REPO, GH_HOST); the kit commands that call gh work it out themselves,
     // and the project's own checks run without it.
     const root = resolve(kitRoot()), env = nodeEnv(), ghEnv = kitGhEnv(env, root);
+    // Spec files that failed in a full run and passed alone (ticket ke-88), named on the RESULT line.
+    const flaky = [], flakyNote = () => flaky.length ? ` (flaky under load: ${flaky.join(", ")})` : "";
     directory = join(root, ".scratch/pr", `${new Date().toISOString().replace(/[-:]/g, "")}-${process.pid}`);
     mkdirSync(directory, { recursive: true });
     console.log(`logs: ${directory}`);
@@ -437,6 +440,72 @@ async function main(args) {
     const guardNote = guarded.split(/\r?\n/).filter(line => line.startsWith("skill-guard: ")).map(line => line.slice("skill-guard: ".length)).join("; ");
     ok("skills");
 
+    // The browser specs (ticket ke-88), as lines for the PR body. One full run per machine at a time (the full-run
+    // lock in the kit's state folder, waited for). The settings' timing files run after the rest, each alone, and
+    // a failed file the change did not touch is rerun once alone; both under the quiet lock, so no other kit job
+    // starts meanwhile. A file that passes alone counts as flaky under load: named, logged to flaky.jsonl, forgiven.
+    async function browserSpecs(changes, settings) {
+      step = "specs";
+      const timing = timingList(settings), base = ["specs", "--affected", "--base", `origin/${flags.base}`];
+      const lines = [], failed = [], touched = new Set(changes.map(change => change.path));
+      const result = text => text.split(/\r?\n/).findLast(line => line.startsWith("RESULT: ")) || "ok";
+      const full = await kitMachineLock("browser-run", { onWait: owner => console.log(`specs: waiting for ${owner}'s full browser run`) });
+      let quiet;
+      try {
+        let main = base, alone = [];
+        if (timing.length) {
+          const listed = listedSpecs(await run("specs", kit, [...base, "--list"]));
+          alone = listed.filter(file => isTiming(file, timing));
+          if (alone.length) main = listed.length > alone.length ? ["specs", ...listed.filter(file => !alone.includes(file))] : null;
+        }
+        // A failed run with no failed file named (a crash, a broken report) fails as before.
+        const check = async (argv, label) => {
+          const ran = await execute("specs", kit, argv);
+          lines.push(`- kit ${label}: ${result(ran.text)}`);
+          if (ran.status === 0) return [];
+          const files = failedSpecs(ran.text);
+          if (!files.length) throw new Error(childMessage(ran, `${kit} exited ${ran.status}`));
+          return files;
+        };
+        const retry = [];
+        if (main) {
+          const files = await check(main, main === base ? base.join(" ") : main.join(" "));
+          const load = loadavg()[0];
+          for (const file of files) {
+            if (touched.has(file.file)) failed.push(`${file.file} (this change touches it)`);
+            else retry.push({ ...file, load, where: "the full run" });
+          }
+        }
+        if (retry.length || alone.length) {
+          quiet = await kitMachineLock("quiet", { onWait: owner => console.log(`specs: waiting for ${owner}'s timing run`) });
+          env.KIT_QUIET_HOLDER = String(process.pid);
+        }
+        for (const file of alone) {
+          const files = await check(["specs", file], `specs ${file} (timing, alone)`), load = loadavg()[0];
+          if (!files.length) continue;
+          if (touched.has(file)) failed.push(`${file} (this change touches it)`);
+          else retry.push({ ...files[0], file, load, where: "its timing run" });
+        }
+        for (const file of retry) {
+          const again = await execute("specs", kit, ["specs", file.file]);
+          if (again.status !== 0) { failed.push(`${file.file} (failed alone too)`); continue; }
+          console.log(`specs: flaky under load: ${file.file} (failed in ${file.where} at load ${file.load.toFixed(2)}, passed alone)`);
+          lines.push(`- flaky under load: ${file.file} (failed in ${file.where}, passed alone)`);
+          flaky.push(file.file);
+          const state = kitStateDir(env);
+          mkdirSync(state, { recursive: true });
+          appendFileSync(join(state, "flaky.jsonl"), `${JSON.stringify({ time: new Date().toISOString(), project: settings.project,
+            file: file.file, test: file.test, load: Number(file.load.toFixed(2)), owner: kitOwner(), branch })}\n`);
+        }
+      } finally {
+        delete env.KIT_QUIET_HOLDER;
+        quiet?.release();
+        full.release();
+      }
+      if (failed.length) throw new Error(`${failed.length} spec file${failed.length === 1 ? "" : "s"} failed: ${failed.join(", ")}`);
+      return lines;
+    }
+
     // Scale the local checks to the PR's own diff (merge base to HEAD, after the rebase).
     step = "tier";
     const changes = parseChanges(await git("tier", ["-c", "core.quotepath=false", "diff", "--name-status", "--no-renames", `origin/${flags.base}...HEAD`]));
@@ -493,8 +562,8 @@ async function main(args) {
         continue;
       }
       if (id === "specs") {
-        const specs = await run("specs", kit, ["specs", "--affected", "--base", `origin/${flags.base}`]); ok("specs");
-        tests.push(`- kit specs --affected --base origin/${flags.base}: ${specs.split(/\r?\n/).findLast(line => line.startsWith("RESULT: ")) || "ok"}`);
+        tests.push(...await browserSpecs(changes, settings));
+        ok("specs");
         continue;
       }
       const name = id === "unit-files" ? "unit" : id, list = commands[id]();
@@ -550,7 +619,7 @@ async function main(args) {
         console.log(command.map(quote).join(" "));
       if (!flags.noMerge && !flags.release)
         console.log(`gh pr merge N --rebase --delete-branch --repo ${ghEnv.GH_REPO || "<owner/name>"} (or --auto --rebase with a merge queue)`);
-      kitResult("ok", `dry-run ${head.slice(0, 7)} ${branch} -> ${flags.base}${releaseWaived()}`);
+      kitResult("ok", `dry-run ${head.slice(0, 7)} ${branch} -> ${flags.base}${releaseWaived()}${flakyNote()}`);
       return 0;
     }
     const push = async () => {
@@ -710,7 +779,7 @@ async function main(args) {
     }
     if (!await reviewHead()) return 1;
     if (flags.noMerge || flags.release) {
-      kitResult("ok", `opened #${number} ${head.slice(0, 7)}${releaseWaived()}`);
+      kitResult("ok", `opened #${number} ${head.slice(0, 7)}${releaseWaived()}${flakyNote()}`);
       return 0;
     }
     // A lead's waiver of the feature-list guard is recorded like waived review findings.
@@ -756,7 +825,7 @@ async function main(args) {
       await gh("merge", ["pr", "merge", number, "--auto", "--rebase", "--match-head-commit", head, "--repo", target]); ok("merge");
       await recordWaiver();
       land({ queued: true, waived: waivedAny() });
-      kitResult("ok", `queued #${number} ${head.slice(0, 7)}`);
+      kitResult("ok", `queued #${number} ${head.slice(0, 7)}${flakyNote()}`);
       return 0;
     }
     // A repo without GitHub workflows has no checks to wait for: it lands once the review passes.
@@ -779,7 +848,7 @@ async function main(args) {
         await recordWaiver();
         land({ sha, at: new Date().toISOString(), waived: waivedAny() });
         await reportLanded(mergeCommit);
-        kitResult("ok", `merged #${number} ${sha.slice(0, 7)}`);
+        kitResult("ok", `merged #${number} ${sha.slice(0, 7)}${flakyNote()}`);
         return 0;
       }
       // --match-head-commit refuses a head we did not push and review: stop rather than merge it.

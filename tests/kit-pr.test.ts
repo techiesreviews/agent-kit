@@ -2213,7 +2213,7 @@ test("a spec file that fails alone too fails the run, and nothing is logged as f
   const result = f.run(["--ticket", "ticket.md"], { FAKE_SPECS: JSON.stringify({ files, always: [files[1]] }) });
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.deepEqual(specsCalls(f).map(call => call.args), [["specs", "--affected", "--base", "origin/dev"], ["specs", files[1]]]);
-  assert.match(result.stdout, /RESULT: fail specs: 1 spec file failed: tests\/native-save\/b\.spec\.ts \(failed alone too\)$/);
+  assert.match(result.stdout, /RESULT: fail specs: 1 spec file failed: tests\/native-save\/b\.spec\.ts \(failed alone too\)$/m);
   assert.equal(f.ghCalls("create").length, 0);
   assert.equal(existsSync(join(f.env.XDG_STATE_HOME!, "agent-kit/flaky.jsonl")), false);
   for (const lock of ["browser-run", "quiet"]) assert.equal(existsSync(join(f.env.XDG_STATE_HOME!, `agent-kit/${lock}.lock`)), false, lock);
@@ -2224,7 +2224,7 @@ test("a spec file the change touches is never forgiven: it must pass in the full
   const result = f.run(["--ticket", "ticket.md"], { FAKE_SPECS: JSON.stringify({ files, full: [files[1]] }) });
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.deepEqual(specsCalls(f).map(call => call.args), [["specs", "--affected", "--base", "origin/dev"]]);
-  assert.match(result.stdout, /RESULT: fail specs: 1 spec file failed: tests\/native-save\/b\.spec\.ts \(this change touches it\)$/);
+  assert.match(result.stdout, /RESULT: fail specs: 1 spec file failed: tests\/native-save\/b\.spec\.ts \(this change touches it\)$/m);
   assert.equal(existsSync(join(f.env.XDG_STATE_HOME!, "agent-kit/flaky.jsonl")), false);
 });
 
