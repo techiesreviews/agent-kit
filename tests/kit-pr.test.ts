@@ -515,6 +515,11 @@ test("--base main is an ordinary PR when main is both land and release, and stil
   assert.equal(refused.status, 1, refused.stdout + refused.stderr);
   assert.match(refused.stdout, /RESULT: fail guards: --base main requires --release: main only takes dev \(kit pr --release --base main, from a branch cut at origin\/dev\); every other branch goes into dev$/m);
   assert.deepEqual(split.calls(), []);
+  // Settings that still land on main get ordinary PRs there (kit doctor warns about them), as the README says.
+  const onMain = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: { ...playground, branches: { land: "main" } }, workflows: false });
+  const kept = onMain.run(["--dry-run"], { FAKE_BASE: "main" }, true);
+  assert.equal(kept.status, 0, kept.stdout + kept.stderr);
+  assert.match(kept.stdout, /RESULT: ok dry-run [a-f0-9]{7} feature\/kit-pr -> main/);
 });
 
 test("with the playground settings and a CI workflow, pr still waits for CI and records ci: pass", t => {

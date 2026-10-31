@@ -374,6 +374,13 @@ test("a repo with only main on origin gets dev made from origin/main, here and o
   assert.equal(fromLive.status, 0, fromLive.stdout + fromLive.stderr);
   assert.match(fromLive.stdout, /^made branch dev from live \([0-9a-f]{7}\)$/m);
   assert.deepEqual(JSON.parse(readFileSync(join(live.work, "scripts/agents/kit.json"), "utf8")).branches, { land: "dev", release: "live" });
+  // A --release branch that is not there yet makes nothing: dev is named with a note, never made from main.
+  const notYet = f.repo("not-yet", {}, ["main"]);
+  const later = f.init(notYet.work, ["--light", "--release", "live"]);
+  assert.equal(later.status, 0, later.stdout + later.stderr);
+  assert.doesNotMatch(later.stdout, /^made branch/m);
+  assert.match(later.stdout, /^note: branch dev is not here or on origin yet/m);
+  assert.deepEqual(JSON.parse(readFileSync(join(notYet.work, "scripts/agents/kit.json"), "utf8")).branches, { land: "dev", release: "live" });
 });
 
 test("a dev that cannot be pushed to origin is made here, with a note naming the push", (t) => {
@@ -387,8 +394,8 @@ test("a dev that cannot be pushed to origin is made here, with a note naming the
   writeFileSync(join(remote, "hooks/pre-receive"), "#!/bin/sh\nexit 1\n");
   chmodSync(join(remote, "hooks/pre-receive"), 0o755);
   const run = f.init(work, ["--light"]);
-  assert.match(run.stdout, /^made branch dev from main \([0-9a-f]{7}\)$/m);
-  assert.match(run.stdout, /^note: could not push dev to origin; push it with git push origin dev$/m);
+  assert.match(run.stdout, /^made branch dev from origin\/main \([0-9a-f]{7}\)$/m);
+  assert.match(run.stdout, /^note: could not push dev to origin; a person pushes it from their own terminal \(git push origin dev\), as the push guard refuses that push in an agent's shell$/m);
   assert.equal(f.git(main, "rev-parse", "dev"), f.git(main, "rev-parse", "main"));
   assert.equal(spawnSync("git", ["-C", main, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/dev"], { env: f.env }).status, 1);
   assert.equal(spawnSync("git", ["-C", remote, "rev-parse", "--verify", "--quiet", "refs/heads/dev"], { env: f.env }).status, 1);
@@ -738,7 +745,7 @@ test("--all opens no PR into a release branch: settings that still land on main 
   olderProject(f, "same", branches({ land: "main", release: "main" }));
   olderProject(f, "kept", branches({ land: "main", release: "main", exception: "Lex's own edits go live at once" }));
   olderProject(f, "usual");
-  olderProject(f, "unreleased", branches({ land: "dev" }));
+  olderProject(f, "unreleased", branches({ land: "dev", exception: "explains nothing here" }));
   const { records, all } = standInKit(f);
   const run = all();
   assert.equal(run.status, 0, run.stdout + run.stderr);

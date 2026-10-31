@@ -405,7 +405,7 @@ test("doctor warns when a project's settings land on main or it has no dev branc
   spawnSync("git", ["-C", missingDev.root, "branch", "-q", "-D", "dev"]);
   const missing = missingDev.run();
   assert.equal(missing.status, 0, missing.stdout);
-  assert.ok(missing.stdout.includes("✗ branches: no dev branch; fix: git branch dev main, then git push origin dev once there is a GitHub repo\n"), missing.stdout);
+  assert.ok(missing.stdout.includes("✗ branches: no dev branch; fix: git branch dev main; once there is a GitHub repo, a person pushes it from their own terminal (git push origin dev), as the push guard refuses that push in an agent's shell\n"), missing.stdout);
   assert.match(missing.stdout, /RESULT: ok doctor 11\/11 checks passed; warning: no dev branch\n$/);
   // An exception on a project that lands on dev explains nothing, so it is not shown.
   const devException = playground(t, { allowMainCheckout: true, branches: { land: "dev", release: "main", exception: "x" } }, false).run();

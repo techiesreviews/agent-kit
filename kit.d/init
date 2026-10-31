@@ -376,8 +376,8 @@ if (makeLand) {
   else if (!onOrigin) console.log(`made branch ${land} from ${from} (${start.slice(0, 7)})`);
   else if (spawnSync("git", ["-C", root, "push", "-q", "origin", `${start}:refs/heads/${land}`],
     { stdio: "ignore", timeout: 60_000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } }).status !== 0) {
-    console.log(`made branch ${land} from ${from} (${start.slice(0, 7)})`);
-    notes.push(`could not push ${land} to origin; push it with git push origin ${land}`);
+    console.log(`made branch ${land} from origin/${from} (${start.slice(0, 7)})`);
+    notes.push(`could not push ${land} to origin; a person pushes it from their own terminal (git push origin ${land}), as the push guard refuses that push in an agent's shell`);
   } else {
     git("fetch", "-q", "origin", `+refs/heads/${land}:refs/remotes/origin/${land}`);
     console.log(`made branch ${land} from origin/${from} (${start.slice(0, 7)}), here and on origin`);
@@ -711,8 +711,10 @@ function all() {
     const { land, release, exception } = branches;
     const pair = `${land}/${release ?? "no release branch"}`;
     pairs.set(pair, [...(pairs.get(pair) ?? []), name]);
-    if (exception) exceptions.push(`${name}: ${exception}`);
-    if (!exception && (land === release || ["main", "master"].includes(land))) {
+    const onRelease = land === release || ["main", "master"].includes(land);
+    // Only an exception that explains landing on the release branch is named, as kit doctor shows it.
+    if (exception && onRelease) exceptions.push(`${name}: ${exception}`);
+    if (!exception && onRelease) {
       return ["skipped", `skipped: its settings land on ${land}, and the release branch takes only the landing branch, so no PR goes into it; set "branches": { "land": "dev", "release": "${release ?? land}" } (kit init makes dev) or name its exception in "branches": { "exception": "<reason>" }`];
     }
     if (git(main, "cat-file", "-e", `refs/remotes/origin/${land}:${kitSettingsFile}`).status !== 0) return ["skipped", `skipped: origin/${land} has no ${kitSettingsFile}; land the project's setup first`];

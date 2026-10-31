@@ -31,9 +31,11 @@ only a small launcher and its own settings; the kit itself lives here, once.
 - Lex, 2026-10-31: "a branch can go into dev, main can only get dev". Every project lands on `dev`
   (`branches.land`) and releases to `main` (`branches.release`); `kit init` writes both and makes `dev` from
   `main` (here and on origin) when it is missing; `--land` and `--release` name other branches.
-- `kit pr` opens every PR into `dev`; a PR into `main` is refused unless it is a release (`kit pr --release
-  --base main`, from a branch cut at `origin/dev`), and its RESULT line names that rule. `kit init --all` opens
-  its PRs into the landing branch only: a project whose settings still land on `main` is skipped and named.
+- `kit pr` opens every PR into the landing branch (`dev`); a PR into the release branch (`main`) is refused unless
+  it is a release (`kit pr --release --base main`, from a branch cut at `origin/dev`), and its RESULT line names
+  that rule. A project whose settings still land on `main` gets its PRs there, with `kit doctor`'s warning, until
+  its settings move to `dev`. `kit init --all` opens its PRs into the landing branch only: a project whose settings
+  still land on `main` is skipped and named.
 - `kit doctor` warns (never fails) when the settings land on `main` or `master` (or on their release branch) or
   there is no `dev` branch. A project that lands on `main` on purpose names why in
   `"branches": { "exception": "<reason>" }`; doctor shows it instead, and `kit init --all` lands there and names it.

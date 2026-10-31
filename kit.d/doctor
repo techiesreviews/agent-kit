@@ -438,7 +438,7 @@ if [[ $jq_missing == false && -z $settings_unread && -n $land ]]; then
       branches_warning="lands on $land, not dev"
     fi
   elif [[ $remote == false ]] && ! git -C "$root" rev-parse --verify --quiet "refs/heads/$land" > /dev/null; then
-    printf '✗ branches: no %s branch; fix: git branch %s %s, then git push origin %s once there is a GitHub repo\n' "$land" "$land" "${release:-main}" "$land"
+    printf '✗ branches: no %s branch; fix: git branch %s %s; once there is a GitHub repo, a person pushes it from their own terminal (git push origin %s), as the push guard refuses that push in an agent'"'"'s shell\n' "$land" "$land" "${release:-main}" "$land"
     branches_warning="no $land branch"
   fi
 fi
