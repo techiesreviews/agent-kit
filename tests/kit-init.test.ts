@@ -489,7 +489,7 @@ function standInKit(f: ReturnType<typeof fixture>) {
 # kit: stand-in pr
 name=$(basename "$PWD")
 { printf 'args %s\\n' "$*"; printf 'root %s\\n' "$KIT_ROOT"; printf 'branch %s\\n' "$(git branch --show-current)"
-  printf 'node_modules %s\\n' "$(readlink node_modules)"; printf 'status %s\\n' "$(git status --porcelain | tr '\\n' ' ')"
+  printf 'node_modules %s %s\\n' "$(readlink node_modules)" "$(readlink node_modules/dep)"; printf 'status %s\\n' "$(git status --porcelain | tr '\\n' ' ')"
   printf 'author %s\\n' "$(git log -1 --format='%an <%ae> | %cn <%ce>')"; printf 'env author %s\\n' "\${GIT_AUTHOR_NAME:-none}"
   git log --format='commit %s' origin/main..HEAD; git diff --name-only origin/main HEAD | sed 's/^/file /'; } > "${records}/$name"
 if [[ $name == stuck-* ]]; then echo 'RESULT: fail pr #9 checks failed'; exit 1; fi
@@ -508,8 +508,14 @@ test("--all lands the missing pieces in every listed project through its own kit
   Object.assign(f.env, ident);
   const project = (name: string) => olderProject(f, name);
   const behind = project("behind");
-  // Its own dependencies in the main checkout (no sharedNodeModules), which no .gitignore line covers.
-  mkdirSync(join(behind, "node_modules"));
+  // Its own dependencies in the main checkout (no sharedNodeModules), and a .gitignore naming node_modules/ (a
+  // folder) on origin; the main checkout's git settings stay as they were.
+  mkdirSync(join(behind, "node_modules/dep"), { recursive: true });
+  writeFileSync(join(behind, ".gitignore"), "node_modules/\n");
+  f.git(behind, "add", ".gitignore");
+  f.git(behind, "commit", "-q", "-m", "ignore");
+  f.git(behind, "push", "-q", "origin", "HEAD:main");
+  const exclude = readFileSync(join(behind, ".git/info/exclude"), "utf8");
   const busy = project("busy"), stuck = project("stuck"), open = project("open");
   // A full project set up before the kitchen pointer: the pieces go in as full ones.
   olderProject(f, "wide", (work) => rmSync(join(work, "docs/agents/kitchen.md")), []);
@@ -545,7 +551,8 @@ test("--all lands the missing pieces in every listed project through its own kit
   assert.match(record, /^args --title Kit setup: add what kit init writes today \(kit 0123456\)$/m);
   assert.match(record, new RegExp(`^root ${behind}-kit-init-pieces$`, "m"));
   assert.match(record, /^branch kit\/init-pieces$/m);
-  assert.match(record, new RegExp(`^node_modules ${join(behind, "node_modules")}\nstatus $`, "m"));
+  assert.match(record, new RegExp(`^node_modules  ${join(behind, "node_modules/dep")}\nstatus $`, "m"));
+  assert.equal(readFileSync(join(behind, ".git/info/exclude"), "utf8"), exclude);
   assert.deepEqual(record.split("\n").filter((line) => line.startsWith("commit ")),
     ["commit Normalize line endings (git add --renormalize . after .gitattributes)", "commit Kit setup: add what kit init writes today (kit 0123456)"]);
   assert.deepEqual(record.split("\n").filter((line) => line.startsWith("file ")), ["file .claude/settings.json", "file .gitattributes", "file notes.txt"]);
@@ -580,7 +587,7 @@ test("--all skips a project with no origin or no settings on origin, names old k
   f.git(fresh, "checkout", "-q", "HEAD~1", "--", "scripts");
   const legacy = olderProject(f, "legacy", (work) => writeFileSync(join(work, "scripts/agents/kit-lib.sh"), "# old\n"));
   const modules = join(f.directory, "shared-modules");
-  mkdirSync(modules);
+  mkdirSync(join(modules, "dep"), { recursive: true });
   const slow = olderProject(f, "slow", (work) => {
     const kitJson = join(work, "scripts/agents/kit.json");
     writeFileSync(kitJson, JSON.stringify({ ...JSON.parse(readFileSync(kitJson, "utf8")), sharedNodeModules: "../shared-modules", worktreeLinks: ["public/preview"] }));
@@ -599,6 +606,9 @@ test("--all skips a project with no origin or no settings on origin, names old k
   };
   const nameless = olderProject(f, "nameless");
   landed(nameless, "Lander land@example.test");
+  const half = olderProject(f, "half");
+  f.git(half, "config", "user.name", "Own");
+  landed(half, "Lander land@example.test");
   const owned = olderProject(f, "owned");
   f.git(owned, "config", "user.name", "Own");
   f.git(owned, "config", "user.email", "own@example.test");
@@ -606,25 +616,29 @@ test("--all skips a project with no origin or no settings on origin, names old k
   const { records, all } = standInKit(f);
   for (const key of Object.keys(ident)) delete f.env[key];
   delete f.env.EMAIL;
-  const run = all({ KIT_INIT_PR_TIMEOUT: "1", GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "user.useConfigOnly", GIT_CONFIG_VALUE_0: "true",
-    ...Object.fromEntries(Object.keys(ident).map((key) => [key, undefined])) });
+  // No user.useConfigOnly: a name git could guess from the host never stands in for the landing branch's author.
+  // all() adds the fixture's identity unless told otherwise.
+  const run = all({ KIT_INIT_PR_TIMEOUT: "1", ...Object.fromEntries(Object.keys(ident).map((key) => [key, undefined])) });
   assert.equal(run.status, 1, run.stdout + run.stderr);
   assert.deepEqual(run.stdout.split("\n").filter((line) => line.startsWith("RESULT: ")).map((line) => line.replace(/(fetch origin failed: ).*/, "$1…")), [
     `RESULT: ok init edited: skipped: ${edited} has uncommitted changes in notes.txt; commit or land them, then rerun`,
     "RESULT: ok init fresh: skipped: origin/main has no scripts/agents/kit.json; land the project's setup first",
+    "RESULT: ok init half: 2 files changed, 1 file renormalized, through kit pr into main: merged #7 abc1234",
     "RESULT: fail init legacy: adding the pieces failed: old kit files: scripts/agents/kit-lib.sh",
     "RESULT: fail init lost: git fetch origin failed: …",
     "RESULT: ok init nameless: 2 files changed, 1 file renormalized, through kit pr into main: merged #7 abc1234",
     "RESULT: ok init owned: 2 files changed, 1 file renormalized, through kit pr into main: merged #7 abc1234",
     `RESULT: fail init slow: kit pr timed out after 1s and was stopped; the change waits in ${slow}-kit-init-pieces on kit/init-pieces (its branch on origin may have moved), log ${join(f.state, "agent-kit/init-all/slow.log")}`,
     "RESULT: ok init solo: skipped: no origin remote, so no kit pr; run kit init there by hand",
-    "RESULT: fail init --all: 2 updated (nameless, owned), 0 up to date, 3 skipped (edited, fresh, solo), 3 failed (legacy, lost, slow)",
+    "RESULT: fail init --all: 3 updated (half, nameless, owned), 0 up to date, 3 skipped (edited, fresh, solo), 3 failed (legacy, lost, slow)",
   ]);
   assert.equal(existsSync(`${legacy}-kit-init-pieces`), false);
   // The slow project's kit pr ran with the shared dependencies linked, as in any of its worktrees.
-  assert.match(readFileSync(join(records, "slow-kit-init-pieces"), "utf8"), new RegExp(`^node_modules ${modules}$`, "m"));
+  // No .gitignore line covers node_modules there: there is none, rather than one kit pr would see as a change.
+  assert.match(readFileSync(join(records, "slow-kit-init-pieces"), "utf8"), /^node_modules  $/m);
   assert.equal(readlinkSync(`${slow}-kit-init-pieces/public/preview`), join(slow, "public/preview"));
   assert.match(readFileSync(join(records, "nameless-kit-init-pieces"), "utf8"), /^author Lander <land@example\.test> \| Lander <land@example\.test>\nenv author Lander$/m);
+  assert.match(readFileSync(join(records, "half-kit-init-pieces"), "utf8"), /^author Own <land@example\.test> \| Own <land@example\.test>\nenv author none$/m);
   assert.match(readFileSync(join(records, "owned-kit-init-pieces"), "utf8"), /^author Own <own@example\.test> \| Own <own@example\.test>\nenv author none$/m);
   assert.equal(existsSync(`${slow}-kit-init-pieces`), true);
 });

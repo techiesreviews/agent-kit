@@ -696,12 +696,14 @@ function all() {
     const remove = () => { git(main, "worktree", "remove", "--force", path); git(main, "branch", "-D", branch); };
     made = remove;
     const local = { ...env, KIT_ROOT: path };
-    // A repo git has no identity for (none in its config or the user's) commits, and runs kit pr, as the author of
-    // its landing branch's last commit; only the part git lacks is filled in. Without one there either, the commit
-    // fails and says so.
+    // A repo for which git has no user.name or user.email set (in its config or the user's, or as GIT_* in the
+    // environment) commits, and runs kit pr, with the missing one taken from the author of its landing branch's last
+    // commit; a guess from the host name never stands in. These reach kit pr's checks too, as a person's own would.
     const [author, email] = git(main, "log", "-1", "--format=%an%n%ae", `refs/remotes/origin/${land}`).stdout.split("\n");
-    for (const role of ["AUTHOR", "COMMITTER"]) {
-      if (author && email && git(path, "var", `GIT_${role}_IDENT`).status !== 0) Object.assign(local, { [`GIT_${role}_NAME`]: author, [`GIT_${role}_EMAIL`]: email });
+    const from = { NAME: ["user.name", author], EMAIL: ["user.email", email] };
+    for (const [part, [key, value]] of Object.entries(from)) {
+      if (!value || git(path, "config", "--get", key).stdout.trim()) continue;
+      for (const role of ["AUTHOR", "COMMITTER"]) local[`GIT_${role}_${part}`] ??= value;
     }
     const commit = (...messages) => run("git", ["-C", path, "commit", "-q", ...messages.flatMap((message) => ["-m", message])], { env: local });
     const pieces = run(process.execPath, [join(home, "kit.d/init"), "--pieces"], { cwd: path, env: local });
@@ -743,14 +745,15 @@ function all() {
     }
 
     // The project's checks run in kit pr: they find its shared dependencies as in any of its worktrees.
-    // As worktree.sh sets up any of its worktrees: sharedNodeModules (relative to the main checkout) and the
-    // worktreeLinks paths of the main checkout.
+    // As worktree.sh sets up any of its worktrees, sharedNodeModules (relative to the main checkout) and the
+    // worktreeLinks paths of the main checkout are linked in.
     let projectSettings = {};
     try { projectSettings = JSON.parse(readFileSync(join(path, kitSettingsFile), "utf8")) ?? {}; } catch {}
-    // A project without sharedNodeModules keeps its own in the main checkout: that one serves the checks.
+    // --all's own choice: a project without sharedNodeModules keeps its own in the main checkout, and that one
+    // serves the checks (worktree.sh leaves such a worktree to install its own).
     const shared = typeof projectSettings.sharedNodeModules === "string" ? resolve(main, projectSettings.sharedNodeModules)
       : existsSync(join(main, "node_modules")) ? join(main, "node_modules") : null;
-    const links = [[shared, "node_modules"], ...(Array.isArray(projectSettings.worktreeLinks) ? projectSettings.worktreeLinks : [])
+    const links = [...(Array.isArray(projectSettings.worktreeLinks) ? projectSettings.worktreeLinks : [])
       .filter((link) => typeof link === "string" && link && !link.startsWith("/") && !link.split("/").includes(".."))
       .map((link) => [join(main, link), link])];
     for (const [target, link] of links) {
@@ -760,14 +763,21 @@ function all() {
         symlinkSync(link === "node_modules" ? realpathSync(target) : target, join(path, link));
       } catch {}
     }
-    // kit pr wants a clean tree: a linked node_modules that .gitignore misses ("node_modules/" matches no link) is
-    // kept out through the repo's info/exclude.
-    if (existsSync(join(path, "node_modules")) && git(path, "check-ignore", "-q", "node_modules").status !== 0) {
-      const exclude = git(path, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude").stdout.trim();
-      if (exclude) {
-        mkdirSync(dirname(exclude), { recursive: true });
-        writeFileSync(exclude, "/node_modules\n", { flag: "a" });
-      }
+    // kit pr wants a clean tree, so node_modules must be one git ignores: a link, or, where .gitignore names
+    // "node_modules/" (a folder, which a link is not), a folder of links to its entries. Nothing in the repo's own
+    // git settings changes; where nothing ignores node_modules, there is none.
+    const modules = join(path, "node_modules");
+    if (shared && existsSync(shared) && !existsSync(modules)) {
+      try {
+        const real = realpathSync(shared);
+        symlinkSync(real, modules);
+        if (git(path, "check-ignore", "-q", "node_modules").status !== 0) {
+          rmSync(modules);
+          mkdirSync(modules);
+          for (const entry of readdirSync(real)) symlinkSync(join(real, entry), join(modules, entry));
+          if (git(path, "check-ignore", "-q", "node_modules/").status !== 0) rmSync(modules, { recursive: true, force: true });
+        }
+      } catch {}
     }
     const log = join(logs, `${name}.log`);
     mkdirSync(logs, { recursive: true });
