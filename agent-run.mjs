@@ -947,7 +947,9 @@ async function executeRun(options, out, previous, update, brief) {
     const adapter = agentInvocation(options, common, output);
     // A resumed run's first call is not the review's first call, so it never refunds.
     // The worktree as the run found it: a first call that left it changed did some work, however soon it failed.
-    const tree = () => execFileSync("git", ["-C", options.worktree, "rev-parse", "HEAD"], { encoding: "utf8" })
+    // A repository with no commit yet has no HEAD; its tree alone shows any work.
+    const head = () => { try { return execFileSync("git", ["-C", options.worktree, "rev-parse", "-q", "--verify", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }); } catch { return ""; } };
+    const tree = () => head()
       + execFileSync("git", ["-C", options.worktree, "status", "--porcelain", "--untracked-files=all"], { encoding: "utf8" });
     const startTree = tree();
     const context = { options, limit, logPath, log, output, messages, update, prompt, startTree, tree, calls: previous ? 1 : 0 };
