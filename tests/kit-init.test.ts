@@ -456,13 +456,13 @@ test("a project whose kit.json names no full piece but holds a full stub at its 
 
 // A project set up a while ago, listed in projects.json: its main checkout and origin hold the setup of then (no
 // context card, no line-endings file) and a file committed with CRLF; change() edits the setup before it is pushed.
-function olderProject(f: ReturnType<typeof fixture>, name: string, change: (work: string) => void = () => {}) {
+function olderProject(f: ReturnType<typeof fixture>, name: string, change: (work: string) => void = () => {}, setup = ["--light"]) {
   const origin = join(f.directory, `${name}.git`);
   f.git(f.directory, "init", "-q", "--bare", "--initial-branch=main", origin);
   const { main, work } = f.repo(name, { "notes.txt": "one\r\ntwo\r\n" }, ["main"]);
   f.git(main, "remote", "add", "origin", origin);
   f.git(main, "push", "-q", "origin", "main");
-  const setUp = f.init(work, ["--light"]);
+  const setUp = f.init(work, setup);
   assert.equal(setUp.status, 0, setUp.stdout + setUp.stderr);
   const settingsPath = join(work, ".claude/settings.json"), settings = JSON.parse(readFileSync(settingsPath, "utf8"));
   settings.hooks.SessionStart[0].hooks = settings.hooks.SessionStart[0].hooks.filter((hook: { command: string }) => !hook.command.endsWith(" context-card"));
@@ -493,6 +493,7 @@ name=$(basename "$PWD")
   git log --format='commit %s' origin/main..HEAD; git diff --name-only origin/main HEAD | sed 's/^/file /'; } > "${records}/$name"
 if [[ $name == stuck-* ]]; then echo 'RESULT: fail pr checks failed'; exit 1; fi
 if [[ $name == slow-* ]]; then sleep 30; fi
+if [[ $name == open-* ]]; then echo 'RESULT: ok pr opened #8'; exit 0; fi
 echo 'RESULT: ok pr merged #7'
 `);
   chmodSync(join(commands, "pr"), 0o755);
@@ -505,7 +506,9 @@ test("--all lands the missing pieces in every listed project through its own kit
   const f = fixture(t);
   Object.assign(f.env, ident);
   const project = (name: string) => olderProject(f, name);
-  const behind = project("behind"), busy = project("busy"), stuck = project("stuck");
+  const behind = project("behind"), busy = project("busy"), stuck = project("stuck"), open = project("open");
+  // A full project set up before the kitchen pointer: the pieces go in as full ones.
+  olderProject(f, "wide", (work) => rmSync(join(work, "docs/agents/kitchen.md")), []);
   writeFileSync(join(busy, ".claude/settings.json"), "{ \"someone\": \"working\" }\n");
   // A project already up to date.
   const current = project("current");
@@ -525,9 +528,14 @@ test("--all lands the missing pieces in every listed project through its own kit
     `RESULT: ok init busy: skipped: ${busy} has uncommitted changes in .claude/settings.json; commit or land them, then rerun`,
     "RESULT: ok init current: nothing missing on origin/main",
     `RESULT: ok init gone: skipped: no git checkout at ${join(f.directory, "gone")}`,
+    `RESULT: ok init open: waiting: kit pr says pr opened #8; the change waits in ${open}-kit-init-pieces on kit/init-pieces until it lands, log ${join(f.state, "agent-kit/init-all/open.log")}`,
     `RESULT: fail init stuck: kit pr failed (pr checks failed); the change waits in ${stuck}-kit-init-pieces on kit/init-pieces, log ${join(f.state, "agent-kit/init-all/stuck.log")}`,
+    "RESULT: ok init wide: 3 files changed, 1 file renormalized, through kit pr into main: pr merged #7",
   ]);
-  assert.equal(results.at(-1), "RESULT: fail init --all: 1 updated (behind), 1 up to date, 2 skipped (busy, gone), 1 failed (stuck)");
+  assert.equal(results.at(-1), "RESULT: fail init --all: 2 updated (behind, wide), 1 waiting (open), 1 up to date, 2 skipped (busy, gone), 1 failed (stuck)");
+  assert.deepEqual(readFileSync(join(records, "wide-kit-init-pieces"), "utf8").split("\n").filter((line) => line.startsWith("file ")),
+    ["file .claude/settings.json", "file .gitattributes", "file docs/agents/kitchen.md", "file notes.txt"]);
+  assert.equal(existsSync(`${open}-kit-init-pieces`), true);
   // behind's change ran through kit pr from a worktree of origin/main: the pieces, then the line-endings commit.
   const record = readFileSync(join(records, "behind-kit-init-pieces"), "utf8");
   assert.match(record, /^args --title Kit setup: add what kit init writes today \(kit 0123456\)$/m);

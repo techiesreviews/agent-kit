@@ -36,11 +36,13 @@ note naming how to make a worktree. A rerun changes nothing and says so. Old kit
 name being the one "init.skip" takes (kit doctor shows these as warnings). It needs scripts/agents/kit.json.
 --all brings every project in the machine's projects.json up to date, one after another: in a temporary
 worktree of origin's landing branch it adds the missing pieces, commits them (and, when .gitattributes was
-added, a git add --renormalize . commit), and lands them through the project's own kit pr (its tier from the changed paths). One RESULT
-line per project, then one for the run. A project whose main checkout has uncommitted changes in the files
-the change touches is skipped and named, as is one without a git checkout, an origin or a kit.json; a failed
-kit pr keeps its worktree and names it and its log. --pieces is that worktree's step: add the missing pieces
-only, with no project list entry and no doctor. Each kit pr stops after KIT_INIT_PR_TIMEOUT seconds (default 7200).
+added, a git add --renormalize . commit), and lands them through the project's own kit pr (its tier from the
+changed paths). One RESULT line per project, then one for the run: updated (merged), waiting (a PR opened or
+queued, its worktree kept until it lands), up to date, skipped or failed. A project whose main checkout has
+uncommitted changes in the files the change touches is skipped and named, as is one without a git checkout,
+an origin or a kit.json; a failed kit pr keeps its worktree and names it and its log. --pieces is that
+worktree's step: add the missing pieces only, with no project list entry and no doctor. Each kit pr stops
+after KIT_INIT_PR_TIMEOUT seconds (default 7200).
 
 --issues copies the project's open GitHub Issues (gh issue list) into needs-triage tickets, one file each in
 <maps>/backlog/tickets/NN-<slug>.md (maps from kit.json, else docs/wayfinder), with the Issue's text, labels,
@@ -631,7 +633,6 @@ function all() {
   const env = { ...process.env, KIT_HOME: home, GIT_TERMINAL_PROMPT: "0" };
   for (const name of ["KIT_ROOT", "KIT_MAIN_ROOT", "KIT_DEV_ROOT", "KIT_HOME_DEFAULT", "KIT_LIB", "KIT_LIB_MJS", "KIT_PLAYWRIGHT_MODULE", "KIT_PLAYWRIGHT_MODULE_DEFAULT"]) delete env[name];
   const logs = join(kitStateDir(), "init-all");
-  mkdirSync(logs, { recursive: true });
   const seconds = Number(process.env.KIT_INIT_PR_TIMEOUT) > 0 ? Number(process.env.KIT_INIT_PR_TIMEOUT) : 7200;
   const run = (command, commandArgs, options = {}) => spawnSync(command, commandArgs, { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
     timeout: 300_000, maxBuffer: 64 * 1024 * 1024, ...options });
@@ -642,8 +643,19 @@ function all() {
   const landOf = (text) => { try { const land = JSON.parse(text)?.branches?.land; return typeof land === "string" && land.trim() ? land : null; } catch { return null; } };
 
   // One project: [group, text], the group being updated, current, skipped or failed.
-  const bring = (name, main) => {
-    if (typeof main !== "string" || !existsSync(join(main, ".git"))) return ["skipped", `skipped: no git checkout at ${main}`];
+  // A step that throws (a file that cannot be read or written) fails that project alone, and removes its worktree.
+  let made = null;
+  const bring = (name, root) => {
+    made = null;
+    try { return bringOne(name, root); }
+    catch (error) {
+      made?.();
+      return ["failed", String(error.message).split("\n")[0]];
+    }
+  };
+  const bringOne = (name, root) => {
+    if (typeof root !== "string" || !existsSync(join(root, ".git"))) return ["skipped", `skipped: no git checkout at ${root}`];
+    const main = resolve(root);
     if (git(main, "remote", "get-url", "origin").status !== 0) return ["skipped", "skipped: no origin remote, so no kit pr; run kit init there by hand"];
     const fetched = git(main, "fetch", "-q", "origin");
     if (fetched.status !== 0) return ["failed", `git fetch origin failed: ${said(fetched)}`];
@@ -665,6 +677,7 @@ function all() {
     if (added.status !== 0) return ["failed", `git worktree add failed: ${said(added)}`];
     // The worktree is this run's own: removed (with its branch) unless a change waits in it.
     const remove = () => { git(main, "worktree", "remove", "--force", path); git(main, "branch", "-D", branch); };
+    made = remove;
     const local = { ...env, KIT_ROOT: path };
     const pieces = run(process.execPath, [join(home, "kit.d/init"), "--pieces"], { cwd: path, env: local });
     if (pieces.status !== 0) { remove(); return ["failed", `adding the pieces failed: ${lastResult(pieces.stdout)?.replace(/^init /, "") ?? said(pieces)}`]; }
@@ -689,8 +702,15 @@ function all() {
     }
     // A main checkout with uncommitted changes in any of these files would clash with the landed change: skipped.
     const touched = git(path, "diff", "-z", "--name-only", `refs/remotes/origin/${land}`, "HEAD").stdout.split("\0").filter(Boolean);
-    const dirty = run("git", ["-C", main, "status", "--porcelain", "--", ...touched], { env: { ...env, GIT_LITERAL_PATHSPECS: "1" } });
-    const busy = dirty.stdout.split("\n").filter(Boolean).map((line) => line.slice(3));
+    // The whole status, matched here: a renormalize commit can touch more files than one command line holds.
+    const dirty = git(main, "status", "--porcelain", "-z", "--untracked-files=all");
+    const changedThere = new Set();
+    for (let entries = dirty.stdout.split("\0").filter(Boolean), i = 0; i < entries.length; i++) {
+      changedThere.add(entries[i].slice(3));
+      // A rename or copy is followed by the path it came from.
+      if (/^[RC]|^.[RC]/.test(entries[i])) changedThere.add(entries[++i]);
+    }
+    const busy = touched.filter((file) => changedThere.has(file));
     if (dirty.status !== 0 || busy.length) {
       remove();
       return ["skipped", dirty.status !== 0 ? `skipped: git status in ${main} failed: ${said(dirty)}`
@@ -714,6 +734,7 @@ function all() {
       } catch {}
     }
     const log = join(logs, `${name}.log`);
+    mkdirSync(logs, { recursive: true });
     const output = openSync(log, "w");
     // timeout stops kit pr's whole process group (its checks, gh, git), not only the front door.
     const pr = run("timeout", ["-k", "30", String(seconds), join(home, "kit"), "pr", "--title", `Kit setup: add what kit init writes today (kit ${sha})`],
@@ -724,11 +745,13 @@ function all() {
     }
     const prResult = lastResult(readFileSync(log, "utf8"));
     if (pr.status !== 0) return ["failed", `kit pr failed (${prResult ?? `exit ${pr.status}`}); the change waits in ${path} on ${branch}, log ${log}`];
+    // Only a merge has landed it; an opened or queued PR keeps the worktree, so a rerun cannot open a second one.
+    if (!/^pr merged\b/.test(prResult ?? "")) return ["waiting", `waiting: kit pr says ${prResult ?? "ok"}; the change waits in ${path} on ${branch} until it lands, log ${log}`];
     remove();
     return ["updated", `${files(listed.length)} changed${normalized ? `, ${files(normalized)} renormalized` : ""}, through kit pr into ${land}: ${prResult ?? "ok"}`];
   };
 
-  const groups = { updated: [], current: [], skipped: [], failed: [] };
+  const groups = { updated: [], waiting: [], current: [], skipped: [], failed: [] };
   for (const name of names) {
     const main = projects[name]?.root;
     console.log(`${name}: ${main}`);
@@ -738,7 +761,7 @@ function all() {
   }
   const count = (group, word) => `${groups[group].length} ${word}${groups[group].length && group !== "current" ? ` (${groups[group].join(", ")})` : ""}`;
   kitResult(groups.failed.length ? "fail" : "ok", names.length
-    ? `init --all: ${count("updated", "updated")}, ${count("current", "up to date")}, ${count("skipped", "skipped")}, ${count("failed", "failed")}`
+    ? `init --all: ${count("updated", "updated")}, ${groups.waiting.length ? `${count("waiting", "waiting")}, ` : ""}${count("current", "up to date")}, ${count("skipped", "skipped")}, ${count("failed", "failed")}`
     : `init --all: no projects in ${join(kitStateDir(), "projects.json")}`);
   process.exit(groups.failed.length ? 1 : 0);
 }
