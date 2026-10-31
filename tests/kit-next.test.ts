@@ -541,11 +541,11 @@ test("--start on a project that lands on main claims, pushes and branches from o
 });
 
 test("next --help names the project's land branch, and placeholders when the settings file is unreadable", t => {
-  // This repo, the kit's own, lands on main.
+  // This repo, the kit's own, lands on dev.
   const own = spawnSync(process.execPath, [next, "--help"], { env: kitEnv(), encoding: "utf8" });
   assert.equal(own.status, 0, own.stderr);
-  assert.ok(own.stdout.includes("read from origin/main in the dev worktree"), own.stdout);
-  assert.ok(own.stdout.includes("--start claims each next: ticket or group on main"), own.stdout);
+  assert.ok(own.stdout.includes("read from origin/dev in the dev worktree"), own.stdout);
+  assert.ok(own.stdout.includes("--start claims each next: ticket or group on dev"), own.stdout);
   const broken = mkdtempSync(join(tmpdir(), "kit-next-"));
   t.after(() => rmSync(broken, { recursive: true, force: true }));
   mkdirSync(join(broken, "scripts/agents"), { recursive: true });

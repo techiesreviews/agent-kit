@@ -3,7 +3,7 @@
   "mainRoot": "/home/ubulex/Projects/agent-kit",
   "worktreePrefix": "agent-kit-",
   "sharedNodeModules": "/home/ubulex/Projects/agent-kit/node_modules",
-  "branches": { "land": "main", "release": "main", "ci": "main" },
+  "branches": { "land": "dev", "release": "main", "ci": "dev" },
   "checks": {
     "test": "npm test",
     "lint": "npm run lint",
