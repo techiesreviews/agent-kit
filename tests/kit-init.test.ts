@@ -490,6 +490,7 @@ function standInKit(f: ReturnType<typeof fixture>) {
 name=$(basename "$PWD")
 { printf 'args %s\\n' "$*"; printf 'root %s\\n' "$KIT_ROOT"; printf 'branch %s\\n' "$(git branch --show-current)"
   printf 'node_modules %s\\n' "$(readlink node_modules)"
+  printf 'author %s\\n' "$(git log -1 --format='%an <%ae>')"
   git log --format='commit %s' origin/main..HEAD; git diff --name-only origin/main HEAD | sed 's/^/file /'; } > "${records}/$name"
 if [[ $name == stuck-* ]]; then echo 'RESULT: fail pr checks failed'; exit 1; fi
 if [[ $name == slow-* ]]; then sleep 30; fi
@@ -586,22 +587,27 @@ test("--all skips a project with no origin or no settings on origin, names old k
   writeFileSync(join(edited, "notes.txt"), "mine\n");
   const lost = olderProject(f, "lost");
   f.git(lost, "remote", "set-url", "origin", join(f.directory, "nowhere.git"));
+  // One with no git identity at all commits as its landing branch's last author ("t", who made the fixture).
+  const nameless = olderProject(f, "nameless");
   const { records, all } = standInKit(f);
-  const run = all({ KIT_INIT_PR_TIMEOUT: "1" });
+  for (const key of Object.keys(ident)) delete f.env[key];
+  const run = all({ KIT_INIT_PR_TIMEOUT: "1", ...Object.fromEntries(Object.keys(ident).map((key) => [key, undefined])) });
   assert.equal(run.status, 1, run.stdout + run.stderr);
   assert.deepEqual(run.stdout.split("\n").filter((line) => line.startsWith("RESULT: ")).map((line) => line.replace(/(fetch origin failed: ).*/, "$1…")), [
     `RESULT: ok init edited: skipped: ${edited} has uncommitted changes in notes.txt; commit or land them, then rerun`,
     "RESULT: ok init fresh: skipped: origin/main has no scripts/agents/kit.json; land the project's setup first",
     "RESULT: fail init legacy: adding the pieces failed: old kit files: scripts/agents/kit-lib.sh",
     "RESULT: fail init lost: git fetch origin failed: …",
+    "RESULT: ok init nameless: 2 files changed, 1 file renormalized, through kit pr into main: pr merged #7",
     `RESULT: fail init slow: kit pr timed out after 1s and was stopped; the change waits in ${slow}-kit-init-pieces on kit/init-pieces (its branch on origin may have moved), log ${join(f.state, "agent-kit/init-all/slow.log")}`,
     "RESULT: ok init solo: skipped: no origin remote, so no kit pr; run kit init there by hand",
-    "RESULT: fail init --all: 0 updated, 0 up to date, 3 skipped (edited, fresh, solo), 3 failed (legacy, lost, slow)",
+    "RESULT: fail init --all: 1 updated (nameless), 0 up to date, 3 skipped (edited, fresh, solo), 3 failed (legacy, lost, slow)",
   ]);
   assert.equal(existsSync(`${legacy}-kit-init-pieces`), false);
   // The slow project's kit pr ran with the shared dependencies linked, as in any of its worktrees.
   assert.match(readFileSync(join(records, "slow-kit-init-pieces"), "utf8"), new RegExp(`^node_modules ${modules}$`, "m"));
   assert.equal(readlinkSync(`${slow}-kit-init-pieces/public/preview`), join(slow, "public/preview"));
+  assert.match(readFileSync(join(records, "nameless-kit-init-pieces"), "utf8"), /^author t <t@t>$/m);
   assert.equal(existsSync(`${slow}-kit-init-pieces`), true);
 });
 

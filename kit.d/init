@@ -696,6 +696,13 @@ function all() {
     const remove = () => { git(main, "worktree", "remove", "--force", path); git(main, "branch", "-D", branch); };
     made = remove;
     const local = { ...env, KIT_ROOT: path };
+    // A repo with no git identity (none in its config or the user's) commits, and runs kit pr, as the author of its
+    // landing branch's last commit.
+    if (git(path, "var", "GIT_COMMITTER_IDENT").status !== 0) {
+      const [author, email] = git(main, "log", "-1", "--format=%an%n%ae", `refs/remotes/origin/${land}`).stdout.split("\n");
+      if (author && email) Object.assign(local, { GIT_AUTHOR_NAME: author, GIT_AUTHOR_EMAIL: email, GIT_COMMITTER_NAME: author, GIT_COMMITTER_EMAIL: email });
+    }
+    const commit = (...messages) => run("git", ["-C", path, "commit", "-q", ...messages.flatMap((message) => ["-m", message])], { env: local });
     const pieces = run(process.execPath, [join(home, "kit.d/init"), "--pieces"], { cwd: path, env: local });
     if (pieces.status !== 0) { remove(); return ["failed", `adding the pieces failed: ${lastResult(pieces.stdout)?.replace(/^init /, "") ?? said(pieces)}`]; }
     const status = git(path, "status", "--porcelain");
@@ -704,7 +711,7 @@ function all() {
 
     git(path, "add", "-A");
     const listed = git(path, "diff", "--cached", "--name-only").stdout.trim().split("\n").filter(Boolean);
-    const committed = git(path, "commit", "-q", "-m", `Kit setup: add what kit init writes today (kit ${sha})`, "-m", `kit init --all added: ${listed.join(", ")}.`);
+    const committed = commit(`Kit setup: add what kit init writes today (kit ${sha})`, `kit init --all added: ${listed.join(", ")}.`);
     if (committed.status !== 0) { remove(); return ["failed", `git commit failed: ${said(committed)}`]; }
     let normalized = 0;
     if (listed.includes(".gitattributes")) {
@@ -713,7 +720,7 @@ function all() {
       if (renormalized.status !== 0) { remove(); return ["failed", `git add --renormalize failed: ${said(renormalized)}`]; }
       normalized = git(path, "diff", "--cached", "--name-only").stdout.trim().split("\n").filter(Boolean).length;
       if (normalized) {
-        const again = git(path, "commit", "-q", "-m", "Normalize line endings (git add --renormalize . after .gitattributes)");
+        const again = commit("Normalize line endings (git add --renormalize . after .gitattributes)");
         if (again.status !== 0) { remove(); return ["failed", `git commit of the line endings failed: ${said(again)}`]; }
       }
     }
