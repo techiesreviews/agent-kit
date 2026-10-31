@@ -367,7 +367,31 @@ test("a repo with only main on origin gets dev made from origin/main, here and o
   const same = f.repo("same", {}, ["main", "dev"]);
   const refused = f.init(same.work, ["--light", "--land", "main", "--release", "main"]);
   assert.equal(refused.status, 2, refused.stdout + refused.stderr);
-  assert.equal(result(refused), "RESULT: fail init --release main is the landing branch too; main takes only dev, so name two branches");
+  assert.equal(result(refused), 'RESULT: fail init --release main is the landing branch too; the release branch takes only the landing branch, so name two branches (a site that goes live from the branch it lands on adds "exception": "<reason>" to "branches" by hand)');
+  // A repo with only its --release branch gets dev made from that one.
+  const live = f.repo("live", {}, ["live"]);
+  const fromLive = f.init(live.work, ["--light", "--release", "live"]);
+  assert.equal(fromLive.status, 0, fromLive.stdout + fromLive.stderr);
+  assert.match(fromLive.stdout, /^made branch dev from live \([0-9a-f]{7}\)$/m);
+  assert.deepEqual(JSON.parse(readFileSync(join(live.work, "scripts/agents/kit.json"), "utf8")).branches, { land: "dev", release: "live" });
+});
+
+test("a dev that cannot be pushed to origin is made here, with a note naming the push", (t) => {
+  const f = fixture(t);
+  const { main, work } = f.repo("locked", {}, ["main"]);
+  const remote = join(f.directory, "locked.git");
+  f.git(f.directory, "init", "-q", "--bare", "-b", "main", remote);
+  f.git(main, "remote", "add", "origin", remote);
+  f.git(main, "push", "-q", "origin", "main");
+  f.git(main, "fetch", "-q", "origin");
+  writeFileSync(join(remote, "hooks/pre-receive"), "#!/bin/sh\nexit 1\n");
+  chmodSync(join(remote, "hooks/pre-receive"), 0o755);
+  const run = f.init(work, ["--light"]);
+  assert.match(run.stdout, /^made branch dev from main \([0-9a-f]{7}\)$/m);
+  assert.match(run.stdout, /^note: could not push dev to origin; push it with git push origin dev$/m);
+  assert.equal(f.git(main, "rev-parse", "dev"), f.git(main, "rev-parse", "main"));
+  assert.equal(spawnSync("git", ["-C", main, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/dev"], { env: f.env }).status, 1);
+  assert.equal(spawnSync("git", ["-C", remote, "rev-parse", "--verify", "--quiet", "refs/heads/dev"], { env: f.env }).status, 1);
 });
 
 test("--land names a branch not made yet with a note", (t) => {
@@ -714,16 +738,19 @@ test("--all opens no PR into a release branch: settings that still land on main 
   olderProject(f, "same", branches({ land: "main", release: "main" }));
   olderProject(f, "kept", branches({ land: "main", release: "main", exception: "Lex's own edits go live at once" }));
   olderProject(f, "usual");
+  olderProject(f, "unreleased", branches({ land: "dev" }));
   const { records, all } = standInKit(f);
   const run = all();
   assert.equal(run.status, 0, run.stdout + run.stderr);
   const fix = (release: string) => `set "branches": { "land": "dev", "release": "${release}" } (kit init makes dev) or name its exception in "branches": { "exception": "<reason>" }`;
+  const skip = "its settings land on main, and the release branch takes only the landing branch, so no PR goes into it";
   assert.deepEqual(run.stdout.split("\n").filter((line) => line.startsWith("RESULT: ")), [
     "RESULT: ok init kept: 2 files changed, 1 file renormalized, through kit pr into main: merged #7 abc1234",
-    `RESULT: ok init onmain: skipped: its settings land on main, and main takes only dev, so no PR goes into it; ${fix("main")}`,
-    `RESULT: ok init same: skipped: its settings land on main, and main takes only dev, so no PR goes into it; ${fix("main")}`,
+    `RESULT: ok init onmain: skipped: ${skip}; ${fix("main")}`,
+    `RESULT: ok init same: skipped: ${skip}; ${fix("main")}`,
+    "RESULT: ok init unreleased: 2 files changed, 1 file renormalized, through kit pr into dev: merged #7 abc1234",
     "RESULT: ok init usual: 2 files changed, 1 file renormalized, through kit pr into dev: merged #7 abc1234",
-    "RESULT: ok init --all: 2 updated (kept, usual), 0 up to date, 2 skipped (onmain, same), 0 failed; branches: 1 on dev/main, 1 on main/main (kept); exceptions: kept: Lex's own edits go live at once",
+    "RESULT: ok init --all: 3 updated (kept, unreleased, usual), 0 up to date, 2 skipped (onmain, same), 0 failed; branches: 1 on dev/main, 1 on dev/no release branch (unreleased), 2 on main/main (kept, same), 1 on main/no release branch (onmain); exceptions: kept: Lex's own edits go live at once",
   ]);
   for (const name of ["onmain", "same"]) assert.equal(existsSync(join(records, `${name}-kit-init-pieces`)), false, name);
 });

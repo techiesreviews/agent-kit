@@ -389,17 +389,27 @@ test("doctor notes a failed fetch on a passing base and judges the last fetched 
 });
 
 test("doctor warns when a project's settings land on main or it has no dev branch, and names an exception instead", (t) => {
-  const fix = 'fix: land on dev and release to main: "branches": { "land": "dev", "release": "main" } in scripts/agents/kit.json (kit init makes dev from main), or name why it lands on main in "branches": { "exception": "<reason>" }';
-  for (const branches of [{ land: "main", release: "main", ci: "main" }, { land: "main" }, { land: "master" }]) {
+  const fix = (release: string) => `fix: "branches": { "land": "dev", "release": "${release}" } in scripts/agents/kit.json (kit init makes dev from it), or name why it lands there in "branches": { "exception": "<reason>" }`;
+  for (const branches of [{ land: "main", release: "main", ci: "main" }, { land: "main" }, { land: "master" }, { land: "prod", release: "prod" }]) {
     const result = playground(t, { allowMainCheckout: true, branches }, false).run();
     assert.equal(result.status, 0, result.stdout);
-    assert.ok(result.stdout.includes(`✗ branches: settings land on ${branches.land}, so work skips dev; main takes only dev; ${fix}\n`), result.stdout);
+    assert.ok(result.stdout.includes(`✗ branches: settings land on ${branches.land}, so a merge goes straight to what is released; a branch goes into a landing branch of its own, which the release branch then takes; ${fix(branches.land)}\n`), result.stdout);
     assert.match(result.stdout, new RegExp(`RESULT: ok doctor 11/11 checks passed; warning: lands on ${branches.land}, not dev\n$`));
   }
   // Landing on dev with no dev branch here (no GitHub repo, so the base check cannot say so).
-  const missing = playground(t, { allowMainCheckout: true, branches: { land: "dev", release: "main" } }, false).run();
+  // The checkout is on dev, so the place and base checks pass; dev stands only as the checked-out name, no branch yet.
+  const missingDev = playground(t, { allowMainCheckout: true, branches: { land: "dev", release: "main" } }, false);
+  spawnSync("git", ["-C", missingDev.root, "checkout", "-q", "--orphan", "dev"]);
+  spawnSync("git", ["-C", missingDev.root, "commit", "-q", "-m", "x"], { env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
+  spawnSync("git", ["-C", missingDev.root, "checkout", "-q", "--detach"]);
+  spawnSync("git", ["-C", missingDev.root, "branch", "-q", "-D", "dev"]);
+  const missing = missingDev.run();
+  assert.equal(missing.status, 0, missing.stdout);
   assert.ok(missing.stdout.includes("✗ branches: no dev branch; fix: git branch dev main, then git push origin dev once there is a GitHub repo\n"), missing.stdout);
-  assert.match(missing.stdout, /RESULT: (ok|fail) doctor .*; warning: no dev branch\n$|RESULT: fail doctor/);
+  assert.match(missing.stdout, /RESULT: ok doctor 11\/11 checks passed; warning: no dev branch\n$/);
+  // An exception on a project that lands on dev explains nothing, so it is not shown.
+  const devException = playground(t, { allowMainCheckout: true, branches: { land: "dev", release: "main", exception: "x" } }, false).run();
+  assert.doesNotMatch(devException.stdout, /exception: x/);
   // A named exception is shown, never warned about.
   const named = playground(t, { allowMainCheckout: true }, false).run();
   assert.equal(named.status, 0, named.stdout);

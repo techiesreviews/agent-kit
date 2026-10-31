@@ -252,11 +252,13 @@ async function wait(config) {
           if (!head) head = await resolveHead();
           // A repo with no active workflows, or a PR none of them runs for and GitHub lists no checks on once
           // KIT_WAIT_NO_CHECKS_MS (default 2 min) has passed, has nothing to wait for (ticket ke-89).
+          // A PR's checks from elsewhere (a Pages app) are waited for as before, workflows or none.
+          const prChecks = async () => JSON.parse(await gh(["pr", "view", options.pr, "--json", "statusCheckRollup"])).statusCheckRollup?.length ?? 0;
           const workflows = await activeWorkflows(gh);
-          if (!workflows.length) return finish(true, `ci ${label} ${head.slice(0, 7)}: no checks (the repo has no active workflows)`);
+          if (!workflows.length && (options.pr === undefined || !await prChecks()))
+            return finish(true, `ci ${label} ${head.slice(0, 7)}: no checks (the repo has no active workflows)`);
           const runs = await latestWorkflowRuns(gh, branch, head, workflows);
-          if (!runs.length && options.pr !== undefined && Date.now() - started >= noChecks &&
-              !JSON.parse(await gh(["pr", "view", options.pr, "--json", "statusCheckRollup"])).statusCheckRollup?.length)
+          if (workflows.length && !runs.length && options.pr !== undefined && Date.now() - started >= noChecks && !await prChecks())
             return finish(true, `ci ${label} ${head.slice(0, 7)}: no checks (no workflow ran for it and GitHub lists no checks on the PR)`);
           const summary = summarizeRuns(runs, head);
           // Summary owns run selection; pair its failure IDs with cancellation metadata.

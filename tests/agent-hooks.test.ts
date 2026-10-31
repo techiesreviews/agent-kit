@@ -621,6 +621,10 @@ test("a push to the landing branch is refused too: a branch goes into dev only t
   assert.equal(pushGuard("git push --all origin", onDev.work).stderr, pushRefused("main"));
   assert.equal(pushGuard("git push -u origin HEAD:feature/y", onDev.work).status, 0);
   assert.equal(pushGuard("git push -n origin dev", onDev.work).status, 0);
+  // Settings naming only a release branch guard that one.
+  const releaseOnly = pushProject(t, { release: "main" });
+  assert.equal(pushGuard("git push origin main", releaseOnly.work).stderr, pushRefused("main"));
+  assert.equal(pushGuard("git push origin HEAD:dev", releaseOnly.work).status, 0);
 });
 
 test("a live landing branch (land equal to release) is guarded; a project without branches.release is not", (t) => {

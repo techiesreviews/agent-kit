@@ -442,13 +442,13 @@ case "$1 $2" in
   'pr view')
     [[ $3 == 42 && $4 == --json ]]
     if [[ $5 == statusCheckRollup ]]; then
-      if [[ $WAIT_MODE == pr-other-checks ]]; then echo '{"statusCheckRollup":[{"name":"Pages","status":"IN_PROGRESS"}]}'; else echo '{"statusCheckRollup":[]}'; fi
+      if [[ $WAIT_MODE == pr-other-checks || $WAIT_MODE == no-workflows-pages ]]; then echo '{"statusCheckRollup":[{"name":"Pages","status":"IN_PROGRESS"}]}'; else echo '{"statusCheckRollup":[]}'; fi
       exit
     fi
     [[ $5 == headRefName,headRefOid ]]
     echo '{"headRefName":"feature/work","headRefOid":"${head}"}' ;;
   'workflow list')
-    if [[ $WAIT_MODE == no-workflows ]]; then echo '[{"id":2,"name":"Old","state":"disabled_manually"}]'; else echo '[{"id":1,"name":"Checks","state":"active"}]'; fi ;;
+    if [[ $WAIT_MODE == no-workflows || $WAIT_MODE == no-workflows-pages ]]; then echo '[{"id":2,"name":"Old","state":"disabled_manually"}]'; else echo '[{"id":1,"name":"Checks","state":"active"}]'; fi ;;
   'run list')
     if [[ $WAIT_MODE == pr-no-checks || $WAIT_MODE == pr-other-checks ]] && [[ $* == *'--workflow'* ]]; then echo '[]'; exit; fi
     if [[ $* == *'--json headBranch'* ]]; then
@@ -660,7 +660,14 @@ test("ci PR with workflows that never run for it says no checks once GitHub list
   const output = await run(t, ["ci", "--pr", "42", "--timeout", "5s"], { ...fixture.env, KIT_WAIT_NO_CHECKS_MS: "1" });
   result(output, 0, /^RESULT: ok ci pr 42 abcdef0: no checks \(no workflow ran for it and GitHub lists no checks on the PR\)$/);
   assert.match(fixture.calls(), /pr view 42 --json statusCheckRollup/);
-  // Checks from elsewhere (a Pages app) keep it waiting, as before.
+  // Before KIT_WAIT_NO_CHECKS_MS has passed it keeps waiting and never asks for the PR's checks.
+  const early = fakeGh(t, "pr-no-checks");
+  const waiting = await run(t, ["ci", "--pr", "42", "--timeout", "1"], { ...early.env, KIT_WAIT_NO_CHECKS_MS: "600000" });
+  result(waiting, 1, /timed out after 1/);
+  assert.doesNotMatch(early.calls(), /statusCheckRollup/);
+  // Checks from elsewhere (a Pages app) keep it waiting, as before, with workflows or without.
+  const pages = fakeGh(t, "no-workflows-pages");
+  result(await run(t, ["ci", "--pr", "42", "--timeout", "1"], pages.env), 1, /timed out after 1/);
   const other = fakeGh(t, "pr-other-checks");
   const waited = await run(t, ["ci", "--pr", "42", "--timeout", "1"], { ...other.env, KIT_WAIT_NO_CHECKS_MS: "1" });
   result(waited, 1, /timed out after 1/);

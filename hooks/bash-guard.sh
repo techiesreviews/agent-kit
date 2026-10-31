@@ -356,7 +356,7 @@ guarded_in() {
   release=$(jq -r '.branches.release | strings' "$root/scripts/agents/kit.json" 2>/dev/null) || return 0
   [[ -n $release ]] || return 0
   land=$(jq -r '.branches.land | strings' "$root/scripts/agents/kit.json" 2>/dev/null) || land=''
-  [[ -n $land ]] || land=$release
+  [[ -n $land && $land != "$release" ]] || land=''
   for arg; do
     if (( skip )); then skip=0; continue; fi
     case $arg in
@@ -401,12 +401,12 @@ guarded_in() {
       refs/heads/*) dst=${dst#refs/heads/} ;;
       # A wildcard such as refs/*:refs/* takes branches along.
       refs/*)
-        for guarded in "$release" "$land"; do [[ $dst == *'*'* && refs/heads/$guarded == $dst ]] && dsts+=("$guarded"); done
+        for guarded in "$release" ${land:+"$land"}; do [[ $dst == *'*'* && refs/heads/$guarded == $dst ]] && dsts+=("$guarded"); done
         continue ;;
     esac
     dsts+=("$dst")
   done
-  for guarded in "$release" "$land"; do
+  for guarded in "$release" ${land:+"$land"}; do
     for dst in "${dsts[@]}"; do
       # Unquoted on the right, so a wildcard refspec (refs/heads/*) matches too.
       if [[ -n $dst && $guarded == $dst ]]; then printf '%s\037%s' "$guarded" "$([[ $guarded == "$release" ]] && echo release || echo land)"; return 0; fi

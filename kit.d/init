@@ -36,17 +36,17 @@ note naming how to make a worktree. A rerun changes nothing and says so. Old kit
 
 --check writes nothing: it prints "missing: <name> (<what>)" for each piece kit init would write today, the
 name being the one "init.skip" takes (kit doctor shows these as warnings). It needs scripts/agents/kit.json.
---all brings every project in the machine's projects.json up to date, one after another: in a temporary
-worktree of origin's landing branch it adds the missing pieces, commits them (and, when .gitattributes was
-added, a git add --renormalize . commit), and lands them through the project's own kit pr (its tier from the
-changed paths), always into the landing branch: a project whose settings still land on main (or on their release
-branch) is skipped and named, unless "branches": { "exception": "<reason>" } says why. One RESULT line per
-project, then one for the run: updated (merged), waiting (a PR opened or queued, its worktree kept until it
-lands), up to date, skipped or failed, and each landing/release pair (dev/main) with its count and exceptions. A project whose main checkout has
-uncommitted changes in the files the change touches is skipped and named, as is one without a git checkout,
-an origin or a kit.json; a failed kit pr keeps its worktree and names it and its log. --pieces is that
-worktree's step: add the missing pieces only, with no project list entry and no doctor. Each kit pr stops
-after KIT_INIT_PR_TIMEOUT seconds (default 7200).
+--all brings every project in the machine's projects.json up to date, one after another: in a temporary worktree
+of origin's landing branch it adds the missing pieces, commits them (and, when .gitattributes was added, a git
+add --renormalize . commit), and lands them through the project's own kit pr (its tier from the changed paths),
+always into the landing branch: a project whose settings still land on main (or on their release branch) is
+skipped and named, unless "branches": { "exception": "<reason>" } says why. One RESULT line per project, then one
+for the run: updated (merged), waiting (a PR opened or queued, its worktree kept until it lands), up to date,
+skipped or failed, and each landing/release pair (dev/main) with its count and exceptions. A project whose main
+checkout has uncommitted changes in the files the change touches is skipped and named, as is one without a git
+checkout, an origin or a kit.json; a failed kit pr keeps its worktree and names it and its log. --pieces is that
+worktree's step: add the missing pieces only, with no project list entry and no doctor. Each kit pr stops after
+KIT_INIT_PR_TIMEOUT seconds (default 7200).
 
 --issues copies the project's open GitHub Issues (gh issue list) into needs-triage tickets, one file each in
 <maps>/backlog/tickets/NN-<slug>.md (maps from kit.json, else docs/wayfinder), with the Issue's text, labels,
@@ -142,15 +142,16 @@ if (existsSync(at(kitSettingsFile))) {
   unnamed = full ? [["commands", commandsPath, `${commandsPath}/.gitkeep`], ["maps", mapsPath, `${mapsPath}/README.md`], ["rulebookExtras", extrasPath, extrasPath]]
     .filter(([key]) => !settings[key]) : [];
 } else {
-  // Work lands on dev and main takes only dev, through kit pr --release (Lex, 2026-10-31; ticket ke-89): a repo
-  // with only main (or master) gets dev made from it. --land and --release name other branches.
-  const usual = ["main", "master"].find(branchExists);
+  // Work lands on dev and the release branch (main) takes only dev, through kit pr --release (Lex, 2026-10-31;
+  // ticket ke-89): a repo with only main (or master, or the --release branch) gets dev made from it.
+  // --land and --release name other branches.
+  const usual = options.release && branchExists(options.release) ? options.release : ["main", "master"].find(branchExists);
   const land = options.land || ["dev", "develop"].find(branchExists) || (usual ? "dev" : "");
   if (!land) fail("no dev, develop, main or master branch; name the landing branch with kit init --land <branch>", 2);
   if (git("check-ref-format", "--branch", land) === null) fail(`--land ${land} is not a branch name`, 2);
   const release = options.release || (["dev", "develop"].includes(land) ? usual : undefined);
   if (release && git("check-ref-format", "--branch", release) === null) fail(`--release ${release} is not a branch name`, 2);
-  if (release === land) fail(`--release ${release} is the landing branch too; main takes only dev, so name two branches`, 2);
+  if (release === land) fail(`--release ${release} is the landing branch too; the release branch takes only the landing branch, so name two branches (a site that goes live from the branch it lands on adds "exception": "<reason>" to "branches" by hand)`, 2);
   if (!branchExists(land) && release && branchExists(release)) makeLand = { land, from: release };
   else if (!branchExists(land)) notes.push(`branch ${land} is not here or on origin yet; kit doctor's base check needs origin/${land} once the project has a GitHub repo`);
   const remote = kitHideUserInfo(git("remote", "get-url", "origin") ?? "");
@@ -704,15 +705,16 @@ function all() {
       if (shown.status === 0) branches = branchesOf(shown.stdout);
     }
     if (!branches) return ["skipped", `skipped: no ${kitSettingsFile} naming a landing branch, here or on origin; run kit init there first`];
-    // The PR goes into the landing branch, never the release branch: main takes only dev (ticket ke-89). Settings
-    // that still land on main (or on their release branch) are skipped, unless they name their exception.
+    // The PR goes into the landing branch, never the release branch, which takes only the landing branch (ticket
+    // ke-89). Settings that still land on main (or on their release branch) are skipped, unless they name their
+    // exception; every project with settings counts in the run's landing/release pairs.
     const { land, release, exception } = branches;
-    if (!exception && (land === release || ["main", "master"].includes(land))) {
-      return ["skipped", `skipped: its settings land on ${land}, and main takes only dev, so no PR goes into it; set "branches": { "land": "dev", "release": "${release ?? land}" } (kit init makes dev) or name its exception in "branches": { "exception": "<reason>" }`];
-    }
     const pair = `${land}/${release ?? "no release branch"}`;
     pairs.set(pair, [...(pairs.get(pair) ?? []), name]);
     if (exception) exceptions.push(`${name}: ${exception}`);
+    if (!exception && (land === release || ["main", "master"].includes(land))) {
+      return ["skipped", `skipped: its settings land on ${land}, and the release branch takes only the landing branch, so no PR goes into it; set "branches": { "land": "dev", "release": "${release ?? land}" } (kit init makes dev) or name its exception in "branches": { "exception": "<reason>" }`];
+    }
     if (git(main, "cat-file", "-e", `refs/remotes/origin/${land}:${kitSettingsFile}`).status !== 0) return ["skipped", `skipped: origin/${land} has no ${kitSettingsFile}; land the project's setup first`];
 
     const branch = "kit/init-pieces", path = `${main}-kit-init-pieces`, tip = `refs/heads/${branch}`;

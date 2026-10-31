@@ -44,15 +44,17 @@ only a small launcher and its own settings; the kit itself lives here, once.
 ## A raw push to dev or a live branch is stopped
 
 - The Bash hook (`hooks/bash-guard.sh`) refuses an agent's `git push` that would reach the project's release branch
-  (`branches.release` in `scripts/agents/kit.json`) or its landing branch (`branches.land`), however it is written (`main`, `HEAD:main`, `refs/heads/main`,
-  `+main`, `--force`, `--all`, `--mirror`, a lone `:`, a deletion, `git -C`, after a `cd`, or a bare `git push`
-  whose upstream is that branch), and names `kit pr` as the way through. A folder named through a variable,
-  `$( … )`, `cd -`, `popd` or `--git-dir`, or a `cd` that did not take, is checked as both the session's folder and
-  its project folder. Any remote counts, a fork too. `--dry-run` passes, and so does every push in a project
-  without `branches.release`. The hook reads the settings only when a command pushes. A push to the landing branch
-  gets its own message: a branch goes into `dev` only through `kit pr` (docs too, in the docs tier).
+  (`branches.release` in `scripts/agents/kit.json`) or its landing branch (`branches.land`), however it is written
+  (`main`, `HEAD:main`, `refs/heads/main`, `+main`, `--force`, `--all`, `--mirror`, a lone `:`, a deletion, `git -C`,
+  after a `cd`, or a bare `git push` whose upstream is that branch), and names `kit pr` as the way through. A folder
+  named through a variable, `$( … )`, `cd -`, `popd` or `--git-dir`, or a `cd` that did not take, is checked as both the
+  session's folder and its project folder. Any remote counts, a fork too. `--dry-run` passes, and so does every push in
+  a project without `branches.release`. The hook reads the settings only when a command pushes. A push to the landing
+  branch gets its own message: a branch goes into `dev` only through `kit pr` (docs too, in the docs tier).
 - A landing branch that goes live on every push (a site that deploys from it) is guarded by naming it as the release
-  branch too: `"branches": { "land": "main", "release": "main" }`.
+  branch too, with the reason it lands there:
+  `"branches": { "land": "main", "release": "main", "exception": "<reason>" }` (without the exception, `kit doctor`
+  warns and `kit init --all` skips it). The usual way is `dev` and `main`.
 - Only agents' shells are guarded: the hook runs in Claude and Codex sessions, so a person's own terminal, CI and the
   Native Site Editor's saves (through the GitHub API) are untouched. The kit's own pushes run inside kit commands
   (`kit next`'s claim commit to the landing branch and `kit pr`'s PR branch, from Node; `kit pr`'s merge goes through
