@@ -1255,7 +1255,19 @@ test("doctor warns once per piece kit init would add today, also when quiet, nev
   assert.equal(run.stdout.trimEnd().split("\n").at(-1), `${passed}; warning: 2 setup pieces missing (run scripts/agents/kit init)`);
   const quiet = f.run(["--quiet"]);
   assert.equal(quiet.stdout, `${warnings.join("\n")}\n${passed}; warning: 2 setup pieces missing (run scripts/agents/kit init)\n`);
-  const settings = join(agents, "kit.json");
-  writeFileSync(settings, JSON.stringify({ ...JSON.parse(readFileSync(settings, "utf8")), init: { skip: [".gitattributes", "AGENTS.md"] } }));
+  // With the pieces added the warnings go.
+  writeFileSync(join(f.build, ".gitattributes"), "* text=auto eol=lf\n");
+  writeFileSync(join(f.build, "AGENTS.md"), "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\n");
   assert.equal(f.run(["--quiet"]).stdout, `${passed}\n`);
+  rmSync(join(f.build, ".gitattributes"));
+  writeFileSync(join(f.build, "AGENTS.md"), "# Agents\n");
+  const settings = join(agents, "kit.json"), kept = JSON.parse(readFileSync(settings, "utf8"));
+  writeFileSync(settings, JSON.stringify({ ...kept, init: { skip: [".gitattributes", "AGENTS.md"] } }));
+  assert.equal(f.run(["--quiet"]).stdout, `${passed}\n`);
+  // A list it cannot read is a warning too, never a failure.
+  writeFileSync(settings, JSON.stringify({ ...kept, init: { skip: ".gitattributes" } }));
+  const unread = f.run(["--quiet"]);
+  assert.equal(unread.status, 0, unread.stdout + unread.stderr);
+  assert.equal(unread.stdout, '✗ setup: not checked ("init.skip" in scripts/agents/kit.json must be a list of piece names; fix it first); ' +
+    `fix: run scripts/agents/kit init --check to see why\n${passed}\n`);
 });

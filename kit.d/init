@@ -40,7 +40,7 @@ added, a git add --renormalize . commit), and lands them through the project's o
 line per project, then one for the run. A project whose main checkout has uncommitted changes in the files
 the change touches is skipped and named, as is one without a git checkout, an origin or a kit.json; a failed
 kit pr keeps its worktree and names it and its log. --pieces is that worktree's step: add the missing pieces
-only, with no project list entry and no doctor.
+only, with no project list entry and no doctor. Each kit pr stops after KIT_INIT_PR_TIMEOUT seconds (default 7200).
 
 --issues copies the project's open GitHub Issues (gh issue list) into needs-triage tickets, one file each in
 <maps>/backlog/tickets/NN-<slug>.md (maps from kit.json, else docs/wayfinder), with the Issue's text, labels,
@@ -54,6 +54,7 @@ linking its file there; it closes nothing while any open Issue's file is missing
 
 // fail never returns: it prints the RESULT line and exits, so it also ends expressions such as readJson's catch.
 const fail = (text, code = 1) => { kitResult("fail", `init ${text}`); process.exit(code); };
+const isObject = (value) => value && typeof value === "object" && !Array.isArray(value);
 const options = { light: false, full: false, land: "", issues: false, close: false, check: false, all: false, pieces: false };
 const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i++) {
@@ -154,6 +155,7 @@ const commandsDir = named("commands", commandsPath), mapsDir = named("maps", map
 // Every piece kit init writes into a project goes through piece(): its name (the one "init.skip" takes and --check
 // prints), its file, and what it is. One the project turned off (by name, or by its file's path) is left out;
 // the rest are what --check reports missing, kit doctor warns about and --all brings to every project.
+if (settings.init !== undefined && !isObject(settings.init)) fail(`"init" in ${kitSettingsFile} must be an object, as in "init": { "skip": [...] }; fix it first`);
 const skip = settings.init?.skip ?? [];
 if (!Array.isArray(skip) || skip.some((name) => typeof name !== "string")) fail(`"init.skip" in ${kitSettingsFile} must be a list of piece names; fix it first`);
 const bare = (name) => name.trim().replace(/\/+$/, "");
@@ -200,10 +202,16 @@ const hookFiles = {
     ["PostToolUseFailure", "Agent|Task", agentCap], ["SubagentStart", undefined, agentCap], ["SubagentStop", undefined, agentCap], ["SessionStart", undefined, session]],
   ".codex/hooks.json": [["PreToolUse", "Bash", ["bash-guard"]], ["SubagentStart", undefined, agentCap], ["SubagentStop", undefined, agentCap], ["SessionStart", undefined, session]],
 };
-const isObject = (value) => value && typeof value === "object" && !Array.isArray(value);
 for (const [path, entries] of Object.entries(hookFiles)) {
-  if (turnedOff(path, path)) { off.push(path); continue; }
   const there = existsSync(at(path));
+  // A file turned off whole is left as it is: counted as left out when it is missing or not a hook file kit init
+  // could merge into, else entry by entry below (piece() matches its path), so only an entry it lacks counts.
+  if (turnedOff(path, path)) {
+    let config;
+    try { config = there ? JSON.parse(readFileSync(at(path), "utf8")) : null; } catch {}
+    if (!isObject(config) || (config.hooks !== undefined && !isObject(config.hooks)) ||
+      entries.some(([event]) => config.hooks?.[event] !== undefined && !Array.isArray(config.hooks[event]))) { off.push(path); continue; }
+  }
   const before = there ? readText(path) : null;
   const config = there ? readJson(path, before) : {};
   if (!isObject(config)) fail(`${path} must hold one JSON object; fix it first, kit init never overwrites it`);
@@ -654,7 +662,7 @@ function all() {
     const remove = () => { git(main, "worktree", "remove", "--force", path); git(main, "branch", "-D", branch); };
     const local = { ...env, KIT_ROOT: path };
     const pieces = run(process.execPath, [join(home, "kit.d/init"), "--pieces"], { cwd: path, env: local });
-    if (pieces.status !== 0) { remove(); return ["failed", `adding the pieces failed: ${lastResult(pieces.stdout) ?? said(pieces)}`]; }
+    if (pieces.status !== 0) { remove(); return ["failed", `adding the pieces failed: ${lastResult(pieces.stdout)?.replace(/^init /, "") ?? said(pieces)}`]; }
     const status = git(path, "status", "--porcelain");
     if (status.status !== 0) { remove(); return ["failed", `git status failed: ${said(status)}`]; }
     if (!status.stdout.trim()) { remove(); return ["current", `nothing missing on origin/${land}`]; }
@@ -691,16 +699,17 @@ function all() {
     }
     const log = join(logs, `${name}.log`);
     const output = openSync(log, "w");
-    const pr = run(join(home, "kit"), ["pr", "--title", `Kit setup: add what kit init writes today (kit ${sha})`],
-      { cwd: path, env: local, stdio: ["ignore", output, output], timeout: seconds * 1000 });
+    // timeout stops kit pr's whole process group (its checks, gh, git), not only the front door.
+    const pr = run("timeout", ["-k", "30", String(seconds), join(home, "kit"), "pr", "--title", `Kit setup: add what kit init writes today (kit ${sha})`],
+      { cwd: path, env: local, stdio: ["ignore", output, output], timeout: 0 });
     closeSync(output);
-    const prResult = lastResult(readFileSync(log, "utf8"));
-    if (pr.status !== 0) {
-      const why = prResult ?? (pr.error?.code === "ETIMEDOUT" ? `timed out after ${seconds}s` : `exit ${pr.status}`);
-      return ["failed", `kit pr failed (${why}); the change waits in ${path} on ${branch}, log ${log}`];
+    if (pr.status === 124 || pr.status === 137) {
+      return ["failed", `kit pr timed out after ${seconds}s and was stopped; the change waits in ${path} on ${branch} (its branch on origin may have moved), log ${log}`];
     }
+    const prResult = lastResult(readFileSync(log, "utf8"));
+    if (pr.status !== 0) return ["failed", `kit pr failed (${prResult ?? `exit ${pr.status}`}); the change waits in ${path} on ${branch}, log ${log}`];
     remove();
-    return ["updated", `${files(listed.length)} added${normalized ? `, ${files(normalized)} renormalized` : ""}, through kit pr into ${land}: ${prResult ?? "ok"}`];
+    return ["updated", `${files(listed.length)} changed${normalized ? `, ${files(normalized)} renormalized` : ""}, through kit pr into ${land}: ${prResult ?? "ok"}`];
   };
 
   const groups = { updated: [], current: [], skipped: [], failed: [] };

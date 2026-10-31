@@ -403,7 +403,10 @@ if [[ -n $settings_unread || ! -f $home/kit.d/init ]] || ! node=$(kit_node_find)
 else
   code=0
   output=$(cd -- "$root" && KIT_ROOT=$root timeout -k 2 "${KIT_DOCTOR_CHECK_TIMEOUT:-20}" "$node" "$home/kit.d/init" --check 2>&1 < /dev/null) || code=$?
-  if (( code != 0 )); then
+  # The check shares the checks.doctor lines' limit (KIT_DOCTOR_CHECK_TIMEOUT).
+  if (( code == 124 || code == 137 )); then
+    printf '✗ setup: not checked (kit init --check timed out); fix: run scripts/agents/kit init --check to see why\n'
+  elif (( code != 0 )); then
     last=$(sed -n 's/^RESULT: fail init //p' <<< "$output" | tail -n 1)
     printf '✗ setup: not checked (%s); fix: run scripts/agents/kit init --check to see why\n' "${last:-kit init --check exited $code}"
   else

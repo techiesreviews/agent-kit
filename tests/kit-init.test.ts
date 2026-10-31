@@ -411,6 +411,11 @@ test("a project set up before a new piece: --check names it, kit init adds it an
   const full = f.init(work, ["--full"]);
   assert.equal(full.status, 0, full.stdout + full.stderr);
   for (const path of ["docs/agents/kitchen.md", "docs/agents/kitchen-extras.md", "docs/wayfinder/README.md", "scripts/agents/project.d/.gitkeep"]) assert.ok(written(full).includes(path), path);
+  // A whole file turned off counts only for what it lacks; "init" must be an object.
+  writeFileSync(kitJson, JSON.stringify({ ...JSON.parse(readFileSync(kitJson, "utf8")), init: { skip: [".claude/settings.json"] } }));
+  assert.equal(f.init(work, ["--check"]).stdout, "RESULT: ok init check: nothing missing\n");
+  writeFileSync(kitJson, JSON.stringify({ ...JSON.parse(readFileSync(kitJson, "utf8")), init: [".gitattributes"] }));
+  assert.equal(result(f.init(work, ["--check"])), 'RESULT: fail init "init" in scripts/agents/kit.json must be an object, as in "init": { "skip": [...] }; fix it first');
 });
 
 test(".gitattributes gets the line-endings line at the top of the project's own, never overwritten, with a note on CRLF files", (t) => {
@@ -429,31 +434,57 @@ test(".gitattributes gets the line-endings line at the top of the project's own,
   assert.equal(readFileSync(join(own.work, ".gitattributes"), "utf8"), "*.svg text\n*   text=auto   eol=lf\n");
 });
 
+// A project set up a while ago, listed in projects.json: its main checkout and origin hold the setup of then (no
+// context card, no line-endings file) and a file committed with CRLF; change() edits the setup before it is pushed.
+function olderProject(f: ReturnType<typeof fixture>, name: string, change: (work: string) => void = () => {}) {
+  const origin = join(f.directory, `${name}.git`);
+  f.git(f.directory, "init", "-q", "--bare", "--initial-branch=main", origin);
+  const { main, work } = f.repo(name, { "notes.txt": "one\r\ntwo\r\n" }, ["main"]);
+  f.git(main, "remote", "add", "origin", origin);
+  f.git(main, "push", "-q", "origin", "main");
+  const setUp = f.init(work, ["--light"]);
+  assert.equal(setUp.status, 0, setUp.stdout + setUp.stderr);
+  const settingsPath = join(work, ".claude/settings.json"), settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+  settings.hooks.SessionStart[0].hooks = settings.hooks.SessionStart[0].hooks.filter((hook: { command: string }) => !hook.command.endsWith(" context-card"));
+  writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
+  rmSync(join(work, ".gitattributes"));
+  change(work);
+  f.git(work, "add", "-A");
+  f.git(work, "commit", "-q", "-m", "setup");
+  f.git(work, "push", "-q", "origin", "HEAD:main");
+  f.git(main, "pull", "-q", "origin", "main");
+  f.git(main, "worktree", "remove", "--force", work);
+  return main;
+}
+const ident = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
+// kit pr's stand-in, through KIT_COMMANDS_DIR beside the kit's init and version: it records where it ran and what it
+// would land in records/<worktree folder>, fails for a stuck-* folder and sleeps for a slow-* one.
+function standInKit(f: ReturnType<typeof fixture>) {
+  const commands = join(f.directory, "commands"), records = join(f.directory, "records");
+  mkdirSync(commands);
+  mkdirSync(records);
+  symlinkSync(join(f.kit, "kit.d/init"), join(commands, "init"));
+  symlinkSync(join(f.kit, "kit.d/version"), join(commands, "version"));
+  writeFileSync(join(commands, "pr"), `#!/bin/bash
+# kit: stand-in pr
+name=$(basename "$PWD")
+{ printf 'args %s\\n' "$*"; printf 'root %s\\n' "$KIT_ROOT"; printf 'branch %s\\n' "$(git branch --show-current)"
+  printf 'node_modules %s\\n' "$(readlink node_modules)"
+  git log --format='commit %s' origin/main..HEAD; git diff --name-only origin/main HEAD | sed 's/^/file /'; } > "${records}/$name"
+if [[ $name == stuck-* ]]; then echo 'RESULT: fail pr checks failed'; exit 1; fi
+if [[ $name == slow-* ]]; then sleep 30; fi
+echo 'RESULT: ok pr merged #7'
+`);
+  chmodSync(join(commands, "pr"), 0o755);
+  const all = (env: NodeJS.ProcessEnv = {}) => spawnSync(join(f.kit, "kit"), ["init", "--all"],
+    { cwd: f.directory, env: { ...f.env, ...ident, KIT_COMMANDS_DIR: commands, ...env }, encoding: "utf8", timeout: 120_000 });
+  return { records, all };
+}
+
 test("--all lands the missing pieces in every listed project through its own kit pr, skipping a busy main checkout", (t) => {
   const f = fixture(t);
-  const ident = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
   Object.assign(f.env, ident);
-  // A project set up a while ago: its main checkout and origin hold the setup of then (no context card, no
-  // line-endings file), and a file committed with CRLF.
-  const project = (name: string) => {
-    const origin = join(f.directory, `${name}.git`);
-    f.git(f.directory, "init", "-q", "--bare", "--initial-branch=main", origin);
-    const { main, work } = f.repo(name, { "notes.txt": "one\r\ntwo\r\n" }, ["main"]);
-    f.git(main, "remote", "add", "origin", origin);
-    f.git(main, "push", "-q", "origin", "main");
-    const setUp = f.init(work, ["--light"]);
-    assert.equal(setUp.status, 0, setUp.stdout + setUp.stderr);
-    const settingsPath = join(work, ".claude/settings.json"), settings = JSON.parse(readFileSync(settingsPath, "utf8"));
-    settings.hooks.SessionStart[0].hooks = settings.hooks.SessionStart[0].hooks.filter((hook: { command: string }) => !hook.command.endsWith(" context-card"));
-    writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
-    rmSync(join(work, ".gitattributes"));
-    f.git(work, "add", "-A");
-    f.git(work, "commit", "-q", "-m", "setup");
-    f.git(work, "push", "-q", "origin", "HEAD:main");
-    f.git(main, "pull", "-q", "origin", "main");
-    f.git(main, "worktree", "remove", "--force", work);
-    return main;
-  };
+  const project = (name: string) => olderProject(f, name);
   const behind = project("behind"), busy = project("busy"), stuck = project("stuck");
   writeFileSync(join(busy, ".claude/settings.json"), "{ \"someone\": \"working\" }\n");
   // A project already up to date.
@@ -465,26 +496,12 @@ test("--all lands the missing pieces in every listed project through its own kit
   const listed = f.projects();
   writeFileSync(join(f.state, "agent-kit/projects.json"), JSON.stringify({ ...listed, gone: { root: join(f.directory, "gone") } }));
 
-  // kit pr stands in through KIT_COMMANDS_DIR: it records where it ran and what it would land.
-  const commands = join(f.directory, "commands"), records = join(f.directory, "records");
-  mkdirSync(commands);
-  mkdirSync(records);
-  symlinkSync(join(f.kit, "kit.d/init"), join(commands, "init"));
-  symlinkSync(join(f.kit, "kit.d/version"), join(commands, "version"));
-  writeFileSync(join(commands, "pr"), `#!/bin/bash
-# kit: stand-in pr
-name=$(basename "$PWD")
-{ printf 'args %s\\n' "$*"; printf 'root %s\\n' "$KIT_ROOT"; printf 'branch %s\\n' "$(git branch --show-current)"
-  git log --format='commit %s' origin/main..HEAD; git diff --name-only origin/main HEAD | sed 's/^/file /'; } > "${records}/$name"
-if [[ $name == stuck-* ]]; then echo 'RESULT: fail pr checks failed'; exit 1; fi
-echo 'RESULT: ok pr merged #7'
-`);
-  chmodSync(join(commands, "pr"), 0o755);
-  const run = spawnSync(join(f.kit, "kit"), ["init", "--all"], { cwd: f.directory, env: { ...f.env, KIT_COMMANDS_DIR: commands }, encoding: "utf8", timeout: 120_000 });
+  const { records, all } = standInKit(f);
+  const run = all();
   assert.equal(run.status, 1, run.stdout + run.stderr);
   const results = run.stdout.split("\n").filter((line) => line.startsWith("RESULT: "));
   assert.deepEqual(results.slice(0, -1), [
-    "RESULT: ok init behind: 2 files added, 1 file renormalized, through kit pr into main: pr merged #7",
+    "RESULT: ok init behind: 2 files changed, 1 file renormalized, through kit pr into main: pr merged #7",
     `RESULT: ok init busy: skipped: ${busy} has uncommitted changes in .claude/settings.json; commit or land them, then rerun`,
     "RESULT: ok init current: nothing missing on origin/main",
     `RESULT: ok init gone: skipped: no git checkout at ${join(f.directory, "gone")}`,
@@ -496,6 +513,7 @@ echo 'RESULT: ok pr merged #7'
   assert.match(record, /^args --title Kit setup: add what kit init writes today \(kit 0123456\)$/m);
   assert.match(record, new RegExp(`^root ${behind}-kit-init-pieces$`, "m"));
   assert.match(record, /^branch kit\/init-pieces$/m);
+  assert.match(record, /^node_modules $/m);
   assert.deepEqual(record.split("\n").filter((line) => line.startsWith("commit ")),
     ["commit Normalize line endings (git add --renormalize . after .gitattributes)", "commit Kit setup: add what kit init writes today (kit 0123456)"]);
   assert.deepEqual(record.split("\n").filter((line) => line.startsWith("file ")), ["file .claude/settings.json", "file .gitattributes", "file notes.txt"]);
@@ -508,8 +526,42 @@ echo 'RESULT: ok pr merged #7'
   assert.equal(existsSync(join(behind, ".gitattributes")), false);
   for (const name of ["busy-kit-init-pieces", "current-kit-init-pieces"]) assert.equal(existsSync(join(records, name)), false, name);
   // A rerun says the failed one's worktree is still there rather than make another.
-  const again = spawnSync(join(f.kit, "kit"), ["init", "--all"], { cwd: f.directory, env: { ...f.env, KIT_COMMANDS_DIR: commands }, encoding: "utf8", timeout: 120_000 });
+  const again = all();
   assert.match(again.stdout, new RegExp(`^RESULT: fail init stuck: ${stuck}-kit-init-pieces or branch kit/init-pieces is left from an earlier run; land or remove it, then rerun$`, "m"));
+});
+
+test("--all skips a project with no origin or no settings on origin, names old kit files, links shared node_modules and stops a slow kit pr", (t) => {
+  const f = fixture(t);
+  Object.assign(f.env, ident);
+  const solo = f.repo("solo", {}, ["main"]);
+  assert.equal(f.init(solo.work, ["--light"]).status, 0);
+  // Set up in the main checkout only: origin/main has no settings yet.
+  const fresh = olderProject(f, "fresh");
+  f.git(fresh, "rm", "-q", "-r", "scripts");
+  f.git(fresh, "commit", "-q", "-m", "not yet");
+  f.git(fresh, "push", "-q", "origin", "HEAD:main");
+  f.git(fresh, "checkout", "-q", "HEAD~1", "--", "scripts");
+  const legacy = olderProject(f, "legacy", (work) => writeFileSync(join(work, "scripts/agents/kit-lib.sh"), "# old\n"));
+  const modules = join(f.directory, "shared-modules");
+  mkdirSync(modules);
+  const slow = olderProject(f, "slow", (work) => {
+    const kitJson = join(work, "scripts/agents/kit.json");
+    writeFileSync(kitJson, JSON.stringify({ ...JSON.parse(readFileSync(kitJson, "utf8")), sharedNodeModules: modules }));
+  });
+  const { records, all } = standInKit(f);
+  const run = all({ KIT_INIT_PR_TIMEOUT: "1" });
+  assert.equal(run.status, 1, run.stdout + run.stderr);
+  assert.deepEqual(run.stdout.split("\n").filter((line) => line.startsWith("RESULT: ")), [
+    "RESULT: ok init fresh: skipped: origin/main has no scripts/agents/kit.json; land the project's setup first",
+    "RESULT: fail init legacy: adding the pieces failed: old kit files: scripts/agents/kit-lib.sh",
+    `RESULT: fail init slow: kit pr timed out after 1s and was stopped; the change waits in ${slow}-kit-init-pieces on kit/init-pieces (its branch on origin may have moved), log ${join(f.state, "agent-kit/init-all/slow.log")}`,
+    "RESULT: ok init solo: skipped: no origin remote, so no kit pr; run kit init there by hand",
+    "RESULT: fail init --all: 0 updated, 0 up to date, 2 skipped (fresh, solo), 2 failed (legacy, slow)",
+  ]);
+  assert.equal(existsSync(`${legacy}-kit-init-pieces`), false);
+  // The slow project's kit pr ran with the shared dependencies linked, as in any of its worktrees.
+  assert.match(readFileSync(join(records, "slow-kit-init-pieces"), "utf8"), new RegExp(`^node_modules ${modules}$`, "m"));
+  assert.equal(existsSync(`${slow}-kit-init-pieces`), true);
 });
 
 test("kitRegisterProject lists nothing when during() throws, and a failed write leaves no temporary file or lock", (t) => {
