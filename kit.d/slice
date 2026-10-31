@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // kit: build, commit, review, fix, check the UX of and land one ticket with resumable phases
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterFixRounds, blockingFindings, completedFixRounds, FIX_ROUNDS, openFindings, reviewCoversHead } from "../review-findings.mjs";
@@ -13,7 +13,7 @@ import { t3Runner, t3Slice } from "../slice-t3.mjs";
 const { kitBranch, kitGhEnv, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, nodeEnv, commitBuilderWork, builderAuthor, kitScore, scoreCost, scoreReview } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const usage = "Usage: kit slice --ticket FILE --builder MODEL [--effort high] [--rounds 3] [--no-pr] [--runner headless|t3|auto]\n       kit slice --next [--report FILE] [--model M] [--skipped \"<reason>\"]\nT3 mode (--runner t3; auto picks it inside a T3 thread): the slice starts no agent; it prints NEXT: build|review|second-look|fix|pr\nwith a delegate: line and that stage's brief for delegate_task, and --next checks the stage's evidence (a commit, the review\nchild's --report, the merged PR) before it prints the next stage. --model names the second look's model; --skipped records\na second look no model could take; past 25 minutes a second look counts as skipped. Without T3: headless, as below.\nResume saved phases under .scratch/kit-slice/<ticket-slug>/.\nAfter the code review and its fix rounds, kit ux checks touched features: broken or looks off gets one kit fix --note round;\nstill broken stops (decide: ux broken <feature>), looks off lands with UX follow-ups in the ticket.\nLast, a second look (kit review --second-look) gets the same fix rounds, then looks again at the new HEAD;\nwhen no model can take it, the slice goes on and says why.\nQueued PRs are awaited for up to 2h; reruns resume the wait.\nOverrides: ASE_SLICE_AGENT, ASE_SLICE_KIT, ASE_SLICE_GH; ASE_SLICE_MERGE_TIMEOUT_MS, ASE_SLICE_MERGE_POLL_MS.\n";
+const usage = "Usage: kit slice --ticket FILE --builder MODEL [--effort high] [--rounds 3] [--no-pr] [--runner headless|t3|auto]\n       kit slice --next [--report FILE] [--model M] [--skipped \"<reason>\"]\nT3 mode (--runner t3; auto picks it inside a T3 thread): the slice starts no agent; it prints NEXT: build|review|second-look|fix|pr\nwith a delegate: line and that stage's brief for delegate_task, and --next checks the stage's evidence (a commit, the review\nchild's --report, the merged PR) before it prints the next stage. --model names the second look's model; --skipped records\na second look no model could take; past 25 minutes a second look counts as skipped. Without T3: headless, as below.\nResume saved phases under .scratch/kit-slice/<ticket-slug>/.\nAfter the code review and its fix rounds, kit ux checks touched features: broken or looks off gets one kit fix --note round;\nstill broken stops (decide: ux broken <feature>), looks off lands with UX follow-ups in the ticket.\nLast, a second look (kit review --second-look) gets the same fix rounds, then looks again at the new HEAD;\nwhen no model can take it, the slice goes on and says why.\nQueued PRs are awaited for up to 2h; reruns resume the wait.\nOverrides: KIT_SLICE_RUNNER (the --runner default), ASE_SLICE_AGENT, ASE_SLICE_KIT, ASE_SLICE_GH; ASE_SLICE_MERGE_TIMEOUT_MS, ASE_SLICE_MERGE_POLL_MS.\n";
 
 function options(args) {
   const flags = { effort: "high", rounds: FIX_ROUNDS, noPr: false, runner: process.env.KIT_SLICE_RUNNER || "headless", next: false };
@@ -31,7 +31,7 @@ function options(args) {
     flags[flag.slice(2)] = args[++i];
   }
   if (flags.next) {
-    if (flags.ticket || flags.builder || seen.has("--runner") || flags.noPr) throw new Error("--next takes only --report, --model and --skipped");
+    if (flags.ticket || flags.builder || ["--runner", "--effort", "--rounds"].some(flag => seen.has(flag)) || flags.noPr) throw new Error("--next takes only --report, --model and --skipped");
     return flags;
   }
   if (flags.report || flags.model || flags.skipped !== undefined) throw new Error("--report, --model and --skipped go with --next");
@@ -71,6 +71,16 @@ async function slice(args) {
     if (!title || !files || !done) throw new Error("ticket must have a title, Files and Done when");
     directory = join(root, ".scratch/kit-slice", basename(ticket, ".md"));
     const statePath = join(directory, "state.json");
+    // The headless fallback takes over a T3 slice that never got past its build (T3 could not start the child);
+    // one further on goes on in T3 mode.
+    if (existsSync(statePath)) {
+      const saved = JSON.parse(readFileSync(statePath, "utf8"));
+      if (saved.mode === "t3") {
+        if (saved.stage !== "build" || git("rev-parse", "HEAD") !== saved.start) throw new Error(`this slice runs in T3 mode (stage ${saved.stage}); go on with kit slice --next`);
+        rmSync(statePath);
+        console.log("slice: taking over a T3-mode slice that never built; headless from here");
+      }
+    }
     const resuming = existsSync(statePath);
     if (!resuming && git("status", "--porcelain", "--untracked-files=all"))
       throw new Error("new slice requires a clean worktree; staged, unstaged or untracked changes exist");
@@ -78,7 +88,6 @@ async function slice(args) {
     state = resuming ? JSON.parse(readFileSync(statePath, "utf8")) : {
       ticket, branch, model: flags.model, effort: flags.effort, head: git("rev-parse", "HEAD"), finished: [], rounds: 0,
     };
-    if (state.mode === "t3") throw new Error("this slice runs in T3 mode; go on with kit slice --next");
     if (state.ticket !== ticket || state.branch !== branch)
       throw new Error("saved slice belongs to a different ticket or branch");
     state.effort ||= "high"; // States saved before effort was recorded ran at the default.

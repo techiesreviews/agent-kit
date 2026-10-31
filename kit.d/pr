@@ -409,6 +409,15 @@ async function main(args) {
       // A lead's waiver given at --open (the feature-list guard's, or findings') still holds at --merge.
       const waive = flags.waive ?? record.waive ?? undefined;
       const head = await git("merge", ["rev-parse", "HEAD"]), number = String(record.number);
+      // A PR --merge put in the merge queue: merged by now, or still waiting there.
+      if (record.queued) {
+        const view = JSON.parse(await gh("merge", ["pr", "view", number, "--json", "state,headRefOid,url"]));
+        if (view.state !== "MERGED") { kitResult("ok", `queued #${number} ${String(view.headRefOid).slice(0, 7)} (still in the merge queue)`); return 0; }
+        const oid = (await gh("merge", ["pr", "view", number, "--json", "mergeCommit", "--jq", ".mergeCommit.oid"])).trim();
+        rmSync(openRecord, { force: true });
+        kitResult("ok", `merged #${number} ${oid.slice(0, 7)}`);
+        return 0;
+      }
       if (head !== record.head) throw new Error(`HEAD moved since kit pr --open (${record.head.slice(0, 7)}, now ${head.slice(0, 7)}); run kit pr --open again`);
       const view = JSON.parse(await gh("merge", ["pr", "view", number, "--json", "state,headRefOid,url"]));
       if (view.state !== "OPEN") throw new Error(`PR #${number} is ${view.state}, not open`);
@@ -445,8 +454,13 @@ async function main(args) {
       const what = [waived && `with ${waived} waived findings`, record.featuresWaived && "without a feature-list update"].filter(Boolean).join(" and ");
       const recordWaived = async () => {
         if (!what) return;
+        const reason = String(waive).replace(/[\r\n]+/g, " ");
+        // The PR body says so too, as the one-run kit pr's waiver does.
+        const body = join(directory, "body.md");
+        writeFileSync(body, `${(await gh("waiver", ["pr", "view", number, "--json", "body", "--jq", ".body"])).trimEnd()}\n\nmerged ${what}: ${reason}\n`);
+        await gh("waiver", ["api", "--method", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "-F", `body=@${body}`]);
         const comment = join(directory, "waiver.md");
-        writeFileSync(comment, `Merged ${what}: ${String(waive).replace(/[\r\n]+/g, " ")}`);
+        writeFileSync(comment, `Merged ${what}: ${reason}`);
         await gh("waiver", ["pr", "comment", number, "--body-file", comment]);
       };
       // A repo with a merge queue takes the PR into it, as the one-run kit pr does.
@@ -457,7 +471,7 @@ async function main(args) {
         await gh("merge", ["pr", "merge", number, "--auto", "--rebase", "--match-head-commit", head, "--repo", target]); ok("merge");
         await recordWaived();
         land({ queued: true, waived: what ? waive : null });
-        rmSync(openRecord, { force: true });
+        writeFileSync(openRecord, `${JSON.stringify({ ...record, queued: true }, null, 2)}\n`);
         kitResult("ok", `queued #${number} ${head.slice(0, 7)}`);
         return 0;
       }
@@ -873,9 +887,8 @@ async function main(args) {
         const comment = join(directory, second ? "second-look.md" : "review.md");
         writeFileSync(comment, `Reused ${name}: ${saved.folder}\nHEAD: ${head}\n\n${readFileSync(resultPath, "utf8")}`);
         await gh("review", ["pr", "comment", number, "--body-file", comment]);
-      } else if (second && skippedSecondLook(head, flags.ticket, root)) {
+      } else if (second && (secondSkipped = skippedSecondLook(head, flags.ticket, root))) {
         // A T3-mode slice already recorded this HEAD's second look as skipped: kit pr starts no look of its own.
-        secondSkipped = skippedSecondLook(head, flags.ticket, root);
         console.log(`second look: skipped (${secondSkipped})`);
         ok(name);
         return true;

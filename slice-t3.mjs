@@ -23,18 +23,25 @@ export function t3Runner(choice, env = process.env) {
   return choice === "t3" || (choice === "auto" && Boolean(env.T3CODE_THREAD_ID));
 }
 
-/** The T3 state of the slice on this branch: the newest state.json in .scratch/kit-slice with mode t3. */
+/** The T3 state of the slice on this branch: the live one (not done or stopped) whose stage started last, else the last ended. */
 function findState(root, branch) {
   const parent = join(root, ".scratch/kit-slice");
   if (!existsSync(parent)) return null;
-  for (const name of readdirSync(parent).sort().reverse()) {
+  const found = readdirSync(parent).flatMap(name => {
     const path = join(parent, name, "state.json");
     try {
       const state = JSON.parse(readFileSync(path, "utf8"));
-      if (state.mode === "t3" && state.branch === branch) return { state, path };
-    } catch { /* Not a slice folder, or a headless state being written. */ }
-  }
-  return null;
+      return state.mode === "t3" && state.branch === branch ? [{ state, path }] : [];
+    } catch { return []; /* Not a slice folder, or a headless state being written. */ }
+  });
+  const ended = entry => ["done", "stopped"].includes(entry.state.stage);
+  const newest = list => list.sort((a, b) => Date.parse(b.state.stageStarted) - Date.parse(a.state.stageStarted))[0] ?? null;
+  return newest(found.filter(entry => !ended(entry))) ?? newest(found);
+}
+
+/** What kit pr --open left for --merge on this branch (number, queued), or null. */
+function openRecord(root, branch) {
+  try { return JSON.parse(readFileSync(join(root, ".scratch/pr", `open-${encodeURIComponent(branch)}.json`), "utf8")); } catch { return null; }
 }
 
 export function t3Slice({ root, branch, settings, flags }) {
@@ -94,8 +101,10 @@ export function t3Slice({ root, branch, settings, flags }) {
       return text;
     };
     // A review's report as evidence kit pr reads: the reviewed HEAD and its base, the report, and for a second look its mark.
-    const evidence = (text, second) => {
-      if (!/^REVIEW_STATUS: complete\s*$/m.test(text)) throw new Error("the report has no REVIEW_STATUS: complete line (the review format's first line)");
+    const evidence = (raw, second) => {
+      // Line endings as kit pr reads them, so a CRLF report still counts there.
+      const text = raw.replace(/\r\n?/g, "\n").replace(/[ \t]+$/gm, "");
+      if (!/^REVIEW_STATUS: complete$/m.test(text)) throw new Error("the report has no REVIEW_STATUS: complete line (the review format's first line)");
       const { readable } = openFindings(text);
       if (!readable) throw new Error("the report's findings are unreadable (review format)");
       const land = kitBranch("land", settings);
@@ -120,7 +129,8 @@ export function t3Slice({ root, branch, settings, flags }) {
     const weigh = (folder, after) => {
       const findings = openFindings(readFileSync(join(folder, "result.md"), "utf8")).findings;
       const blocking = afterFixRounds(state.rounds) ? blockingFindings(findings) : findings;
-      if (!blocking.length) return move(after);
+      // Nothing blocks at the pr stage: it stays there, with no extra history entry.
+      if (!blocking.length) return after === state.stage ? save() : move(after);
       if (state.rounds < state.maxRounds) { state.fixFrom = folder; return move("fix"); }
       state.stopped = `${blocking.length} blocking findings after ${state.rounds} fix rounds (${join(folder, "result.md")})`;
       move("stopped");
@@ -196,16 +206,19 @@ export function t3Slice({ root, branch, settings, flags }) {
         state.head = git("rev-parse", "HEAD");
         weigh(resolve(result, ".."), "pr");
       } else if (stage === "pr") {
-        const gh = spawnSync(env.ASE_SLICE_GH || "gh", ["pr", "list", "--head", state.branch, "--state", "all", "--json", "number,state,mergeCommit"],
+        const gh = spawnSync(env.ASE_SLICE_GH || "gh", ["pr", "list", "--head", state.branch, "--state", "all", "--json", "number,state,mergeCommit,createdAt"],
           { cwd: root, env: kitGhEnv(env, root), encoding: "utf8" });
         if (gh.status !== 0) throw new Error(`gh pr list failed: ${(gh.stderr || gh.stdout || "").trim().split("\n").at(-1)}`);
-        const prs = JSON.parse(gh.stdout || "[]");
+        // Only a PR opened after the slice started is its PR: a reused branch name's older merged PR is not.
+        const since = Date.parse(state.history[0]?.started ?? state.stageStarted);
+        const prs = JSON.parse(gh.stdout || "[]").filter(pr => !pr.createdAt || Date.parse(pr.createdAt) >= since);
         const merged = prs.find(pr => pr.state === "MERGED"), open = prs.find(pr => pr.state === "OPEN");
         if (merged) {
           if (!/^[a-f\d]{40}$/i.test(merged.mergeCommit?.oid ?? "")) throw new Error(`PR #${merged.number} merged without a merge SHA`);
           state.pr = String(merged.number); state.sha = merged.mergeCommit.oid;
           move("done");
-        } else if (open) throw new Error(`PR #${open.number} is open, not merged; when the watch wakes you, run scripts/agents/kit pr --merge --ticket ${ticketPath}`);
+        } else if (open && openRecord(root, state.branch)?.queued) throw new Error(`PR #${open.number} is in the merge queue, not merged yet; the watch wakes you when it merges, then run scripts/agents/kit slice --next`);
+        else if (open) throw new Error(`PR #${open.number} is open, not merged; when the watch wakes you, run scripts/agents/kit pr --merge --ticket ${ticketPath}`);
         else throw new Error(`no PR for ${state.branch} yet; run scripts/agents/kit pr --open --ticket ${ticketPath}`);
       }
     }

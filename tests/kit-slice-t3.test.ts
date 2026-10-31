@@ -21,7 +21,9 @@ function fixture(t: TestContext) {
   const origin = join(dir, "origin.git"), root = join(dir, "work"), main = join(dir, "main"), bin = join(dir, "bin");
   for (const path of [main, bin]) mkdirSync(path);
   const env: NodeJS.ProcessEnv = { ...kitEnv(), KIT_ROOT: root, KIT_MAIN_ROOT: main, ASE_OWNER: "ke-04", GIT_CONFIG_NOSYSTEM: "1",
-    GIT_CONFIG_GLOBAL: "/dev/null", ASE_SLICE_GH: join(bin, "gh"), FAKE_PR: join(dir, "pr.json"), T3CODE_THREAD_ID: "" };
+    GIT_CONFIG_GLOBAL: "/dev/null", ASE_SLICE_GH: join(bin, "gh"), FAKE_PR: join(dir, "pr.json"), T3CODE_THREAD_ID: "",
+    // A headless run here never starts a real agent or kit command: both are missing files.
+    ASE_SLICE_AGENT: join(dir, "no-agent"), ASE_SLICE_KIT: join(dir, "no-kit") };
   const at = (cwd: string, ...args: string[]) => {
     const result = spawnSync("git", ["-C", cwd, ...args], { env, encoding: "utf8" });
     assert.equal(result.status, 0, result.stderr);
@@ -228,7 +230,7 @@ test("the pr stage waits for the merge: an open PR or none is refused", t => {
 test("the T3 runner is picked by --runner auto inside a T3 thread, headless outside", t => {
   const f = fixture(t);
   const auto = (thread: string) => spawnSync(kit, ["slice", "--runner", "auto", "--ticket", ticket, "--builder", "claude-opus-5-5"],
-    { cwd: f.root, env: { ...f.env, T3CODE_THREAD_ID: thread, ASE_SLICE_AGENT: join(f.dir, "no-agent") }, encoding: "utf8", timeout: 30_000 });
+    { cwd: f.root, env: { ...f.env, T3CODE_THREAD_ID: thread }, encoding: "utf8", timeout: 30_000 });
   const inside = auto("thread:1");
   assert.equal(inside.status, 0, inside.stdout + inside.stderr);
   assert.match(inside.stdout, /^NEXT: build$/m);
@@ -284,13 +286,55 @@ test("T3 mode stops at visible paths: refused at the start by the ticket's Files
   assert.equal(f.state().stage, "stopped");
 });
 
-test("the headless slice refuses a T3 slice's state, and --next and --runner refuse each other's options", t => {
+test("the headless fallback takes over a T3 slice that never built, refuses one further on; --next and --runner refuse each other's options", t => {
   const f = fixture(t);
   f.start();
   let result = f.run("--ticket", ticket, "--builder", "claude-opus-5-5");
-  assert.equal(result.status, 1); assert.match(result.stdout, /this slice runs in T3 mode; go on with kit slice --next/);
-  for (const args of [["--next", "--ticket", ticket], ["--next", "--runner", "t3"], ["--runner", "t3", "--ticket", ticket, "--builder", "x", "--report", "r"]]) {
+  assert.match(result.stdout, /^slice: taking over a T3-mode slice that never built; headless from here$/m);
+  // The headless state is the slice's now (its builder, missing here, failed).
+  assert.equal((f.state() as unknown as { mode?: string }).mode, undefined);
+  rmSync(join(f.root, ".scratch"), { recursive: true, force: true });
+  f.start(); f.commit("built\n"); f.next();
+  result = f.run("--ticket", ticket, "--builder", "claude-opus-5-5");
+  assert.equal(result.status, 1); assert.match(result.stdout, /this slice runs in T3 mode \(stage review\); go on with kit slice --next/);
+  for (const args of [["--next", "--ticket", ticket], ["--next", "--runner", "t3"], ["--next", "--rounds", "2"], ["--runner", "t3", "--ticket", ticket, "--builder", "x", "--report", "r"]]) {
     result = f.run(...args);
     assert.equal(result.status, 1, args.join(" ")); assert.match(result.stdout, /RESULT: fail slice brief: (--next takes only|--report, --model and --skipped go with --next)/);
   }
+});
+
+test("KIT_SLICE_RUNNER sets the --runner default; --next goes on with the live slice of the branch, not a finished one", t => {
+  const f = fixture(t);
+  const viaEnv = (value: string) => spawnSync(kit, ["slice", "--ticket", ticket, "--builder", "claude-opus-5-5"], { cwd: f.root, env: { ...f.env, KIT_SLICE_RUNNER: value }, encoding: "utf8" });
+  assert.match(viaEnv("cloud").stdout, /--runner must be t3, headless or auto/);
+  assert.match(viaEnv("t3").stdout, /^NEXT: build$/m);
+  // A finished slice of another ticket on the same branch, named so it sorts after this one.
+  const done = join(f.root, ".scratch/kit-slice/99-done");
+  mkdirSync(done, { recursive: true });
+  writeFileSync(join(done, "state.json"), JSON.stringify({ mode: "t3", branch: "build/ke-04-ticket", stage: "done", stageStarted: new Date(Date.now() + 60_000).toISOString() }));
+  f.commit("built\n");
+  const result = f.next();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^NEXT: review$/m);
+});
+
+test("a CRLF review report is kept with LF endings, as kit pr reads it", t => {
+  const f = fixture(t);
+  f.start(); f.commit("built\n"); f.next();
+  const result = f.next("--report", f.report(clean.replace(/\n/g, "\r\n")));
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(readFileSync(join(f.main, ".scratch/reviews/ke-04", f.reviews()[0], "result.md"), "utf8"), clean);
+});
+
+test("the pr stage: a queued PR waits for the watch, and a reused branch name's older merged PR is not the slice's", t => {
+  const f = fixture(t);
+  f.start(); f.commit("built\n"); f.next(); f.next("--report", f.report(clean)); f.next("--skipped", "no model");
+  writeFileSync(f.prFile, JSON.stringify([{ number: 70, state: "MERGED", mergeCommit: { oid: "b".repeat(40) }, createdAt: "2020-01-01T00:00:00Z" }]));
+  let result = f.next();
+  assert.equal(result.status, 1); assert.match(result.stdout, /no PR for build\/ke-04-ticket yet/);
+  mkdirSync(join(f.root, ".scratch/pr"), { recursive: true });
+  writeFileSync(join(f.root, ".scratch/pr", `open-${encodeURIComponent("build/ke-04-ticket")}.json`), JSON.stringify({ number: 73, queued: true }));
+  writeFileSync(f.prFile, JSON.stringify([{ number: 73, state: "OPEN", mergeCommit: null, createdAt: new Date().toISOString() }]));
+  result = f.next();
+  assert.equal(result.status, 1); assert.match(result.stdout, /PR #73 is in the merge queue, not merged yet; the watch wakes you when it merges/);
 });

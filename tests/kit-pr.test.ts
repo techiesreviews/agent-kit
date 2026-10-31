@@ -2458,6 +2458,11 @@ test("--open takes a T3 slice's skipped second look as skipped, and --merge then
   assert.match(result.stdout, /^second look: skipped at kit pr --open \(no model\)$/m);
   assert.match(result.stdout, /^RESULT: ok queued #73 [a-f0-9]{7}$/m);
   assert.ok(f.ghCalls("merge").at(-1)!.args.includes("--auto"));
+  // Run again while queued: it says so; once GitHub merged it, merged.
+  result = f.run(["--merge", "--ticket", "ticket.md"], { FAKE_QUEUE: "1" });
+  assert.equal(result.status, 0, result.stdout); assert.match(result.stdout, /^RESULT: ok queued #73 [a-f0-9]{7} \(still in the merge queue\)$/m);
+  result = f.run(["--merge", "--ticket", "ticket.md"], { FAKE_PR_STATE: "MERGED" });
+  assert.equal(result.status, 0, result.stdout); assert.match(result.stdout, /^RESULT: ok merged #73 [a-f0-9]{7}$/m);
   // --merge for another ticket than --open's is refused.
   assert.equal(f.run(["--open", "--ticket", "ticket.md"]).status, 0);
   result = f.run(["--merge"]);
