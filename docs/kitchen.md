@@ -181,7 +181,23 @@ on a usage-limit `problem:` line, tell Lex the reset time and carry on with Clau
 
 ### 6. Build
 
-- **Use:** `scripts/agents/kit go slice-<prefix><NN> -- scripts/agents/kit slice --ticket <t> --builder claude-opus-5-5`
+- **T3 mode** (ticket ke-85; on trial: the lead picks it with `kit brief <t> --runner t3` until its first real run
+  is compared with a headless slice, then `--runner auto` makes it the default inside T3): the slice's child thread
+  is the **runner**, the only thread that starts children. `scripts/agents/kit slice --runner t3 --ticket <t> --builder claude-opus-5-5`
+  starts no agent: it prints `NEXT: build|review|second-look|fix|pr`, a `delegate:` line (role, `isolation: "shared"`,
+  model, mode) and that stage's child brief (`kit brief --stage <stage> --child`), and keeps the state in
+  `.scratch/kit-slice/<ticket>/state.json`. The runner passes the brief to `delegate_task` and ends its turn; T3 wakes
+  it when the child ends. It saves the child's report and runs `kit slice --next [--report <file>] [--model <m>]`,
+  which checks the stage's evidence (a commit on top of the start or the reviewed HEAD, a review report with
+  `REVIEW_STATUS: complete`, a fix round's commit or its `Declined:` lines, the merged PR) before it prints the next
+  stage; a review's report becomes evidence `kit pr` reads (`.scratch/reviews/<owner>/`), a fix round a `round-N.md`.
+  The kit keeps the rules: stage order, three fix rounds, then only P0/P1 block (`NEXT: lead`, the lead's
+  `--waive`); the second look runs in mode wait and past 25 minutes counts as skipped (the runner `task_cancel`s its
+  child), `--skipped "<reason>"` when no model can take it, never an OpenAI model. A stage child does its one stage
+  in the runner's checkout and starts no children. T3 mode has no UX stage yet: a ticket whose Files reach
+  `paths.visible` runs headless, and a review that finds visible paths changed stops for the lead. `kit next` counts
+  a T3 slice (runner plus its one child) as one slot until its state says done or stopped.
+- **Headless (outside T3, the fallback):** `scripts/agents/kit go slice-<prefix><NN> -- scripts/agents/kit slice --ticket <t> --builder claude-opus-5-5`
   (the kit's default reviewer is Claude; set `ASE_REVIEW_MODEL` only for a second opinion). `kit go`
   starts the slice in its own systemd scope and waits at most 9 minutes per call (give the call a
   10-minute tool time limit: Claude's Bash `timeout: 600000`); on its `RUNNING:`
@@ -222,7 +238,11 @@ on a usage-limit `problem:` line, tell Lex the reset time and carry on with Clau
 ### 9. Land
 
 - **Use:** `kit pr --ticket <t>` (`kit slice` does it); a lead's own change runs `kit pr` too. T3
-  `link_pull_request` for every PR. Lead-only `--waive "<reason>"`. A project with a feature list
+  `link_pull_request` for every PR. In T3 mode the PR is watched, not polled: `kit pr --open --ticket <t>` runs
+  the checks and reviews, opens the PR and prints `WATCH: <url>`; the runner calls `watch_pull_request` and ends
+  its turn, and on the wake `kit pr --merge --ticket <t>` checks the PR is open at the reviewed HEAD, both reviews
+  cover it without blocking findings and its checks are green, then merges (a PR behind its base: `--open` again,
+  which rebases). Lead-only `--waive "<reason>"`. A project with a feature list
   (`featureList` in the settings) stops a visible change unless it updated the list or its Done says
   `Feature list: no change (<reason>)`.
 - **Browser runs on a busy machine:** `kit pr`'s browser step runs one at a time per machine (it waits,

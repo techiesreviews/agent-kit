@@ -298,3 +298,34 @@ test("brief --task: a project without ticket files gets a brief for a named task
     assert.equal(failed.status, 1, `${args}: ${failed.stdout}`);
   }
 });
+
+test("brief --runner t3: the runner's brief drives kit slice in T3 mode, starts one stage child at a time and ends its turn between stages", t => {
+  const f = fixture(t);
+  const output = f.run(["docs/tickets/07-panel.md", "--runner", "t3"]);
+  assert.equal(output.status, 0, output.stderr + output.stdout);
+  const text = body(output.stdout);
+  for (const expected of [
+    "You are the runner of a T3-mode slice: the only one here who starts children (`delegate_task`), one stage child at a time.",
+    "`scripts/agents/kit slice --runner t3 --ticket docs/tickets/07-panel.md --builder claude-opus-5-5`",
+    "`scripts/agents/kit slice --next`",
+    "`scripts/agents/kit go pr-ke99 -- scripts/agents/kit pr --open --ticket docs/tickets/07-panel.md`",
+    "`watch_pull_request`",
+    "`scripts/agents/kit pr --merge --ticket docs/tickets/07-panel.md`",
+    "Between stages end your turn: T3 wakes you when the child ends or the PR changes.",
+  ]) assert.ok(text.includes(expected), expected);
+  assert.ok(!text.includes("Finish the whole job in this turn."));
+  // A stage child's brief does its one stage and starts no children.
+  for (const [stage, line] of [["build", "You are the build child"], ["fix", "You are the fix child"], ["review", "Start no subagents or T3 tasks."]]) {
+    const child = f.run(["docs/tickets/07-panel.md", "--stage", stage, "--child"]);
+    assert.equal(child.status, 0, child.stderr + child.stdout);
+    assert.ok(body(child.stdout).includes(line), `${stage}: ${line}`);
+    assert.ok(body(child.stdout).includes("Start no subagents or T3 tasks."), stage);
+    assert.match(child.stdout, new RegExp(`^kit-brief: \\S+ docs/tickets/07-panel\\.md ${stage}$`, "m"));
+  }
+  assert.match(body(f.run(["docs/tickets/07-panel.md", "--stage", "review", "--child"]).stdout), /git diff origin\/dev\.\.\.HEAD/);
+  assert.match(body(f.run(["docs/tickets/07-panel.md", "--stage", "build", "--child"]).stdout), /Last line: BUILT head <SHA>\./);
+  for (const args of [["--runner", "cloud"], ["--runner", "t3", "--stage", "fix"], ["--runner", "t3", "--child"]]) {
+    const refused = f.run(["docs/tickets/07-panel.md", ...args]);
+    assert.equal(refused.status, 1, args.join(" ")); assert.match(refused.stdout, /RESULT: fail brief /);
+  }
+});

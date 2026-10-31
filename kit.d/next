@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // kit: pick the tickets that may start now and their builders; --start claims and starts them
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { kitBranch, kitDevRoot, kitHome, kitJobMarkGo, kitResult, kitRoot, kitRulebookPins, kitSettings, kitSliceBranch } from "../kit-lib.mjs";
 import { loadTickets, parseTicket, resolveTickets } from "../tickets.mjs";
@@ -17,7 +17,8 @@ const usage = `Usage: kit next [map…] [--start] [--max N]
        kit next --run-group --branch BRANCH --builder MODEL --ticket FILE [--ticket FILE…]
 Lists the running slices (running:), the open frontier tickets that may start now (next:)
 and why the rest wait (waits:),
-read from origin/${land} in the dev worktree, the running slice-* jobs of every worktree
+read from origin/${land} in the dev worktree, the running slice-* jobs of every worktree,
+its T3-mode slices (kit slice --runner t3 state, until done or stopped; one slot each: the runner and its one stage child)
 and the running kit-slice-* systemd user units.
 Maps go in the order given, else alphabetical; tickets by number within a map.
 Tickets sharing a group: slug are one hand-out (next: group <slug> tickets=…) once every open one
@@ -210,13 +211,27 @@ function systemdSlices(worktrees) {
   });
 }
 
-// Running slices: every worktree's `kit bg --list` rows named slice-* and running, and the running kit-slice-*
-// systemd units. Each job's recorded command names its tickets (a group job several), read from its worktree.
+// T3-mode slices (kit slice --runner t3, ticket ke-85) run no kit job: their runner thread and its one stage child
+// at a time are one slice, from its state.json until the stage is done or stopped. Named t3:<ticket slug>.
+function t3Slices(worktree, worktrees) {
+  const parent = join(worktree, ".scratch/kit-slice");
+  if (!existsSync(parent)) return [];
+  return readdirSync(parent).flatMap(name => {
+    let state;
+    try { state = JSON.parse(readFileSync(join(parent, name, "state.json"), "utf8")); } catch { return []; }
+    if (state?.mode !== "t3" || ["done", "stopped"].includes(state.stage)) return [];
+    return [{ name: `t3:${name}`, worktree, unit: sliceUnit(["--ticket", String(state.ticket ?? "")], worktree, worktrees) }];
+  });
+}
+
+// Running slices: every worktree's `kit bg --list` rows named slice-* and running, its T3-mode slices, and the
+// running kit-slice-* systemd units. Each job's recorded command names its tickets (a group job several), read from its worktree.
 function runningSlices() {
   const worktrees = git(["worktree", "list", "--porcelain"]).split("\n").filter(line => line.startsWith("worktree ")).map(line => line.slice(9));
   const kit = fakeKit || resolve(import.meta.dirname, "../kit");
   const slices = [];
   for (const worktree of worktrees) {
+    slices.push(...t3Slices(worktree, worktrees));
     if (!existsSync(join(worktree, ".scratch/kit-jobs"))) continue;
     const listed = run(kit, ["bg", "--list"], { cwd: worktree, env: { ...process.env, KIT_ROOT: worktree } });
     if (listed.status !== 0) throw new Error(`kit bg --list failed in ${worktree}`);
