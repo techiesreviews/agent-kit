@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -19,6 +19,7 @@ function fixture(t: TestContext, branches: Record<string, string> = { land: "dev
   const env: NodeJS.ProcessEnv = { ...kitEnv(), KIT_ROOT: root, ASE_OWNER: "ke-72", HOME: join(dir, "home"),
     XDG_STATE_HOME: join(dir, "state"), XDG_CONFIG_HOME: join(dir, "config"), XDG_CACHE_HOME: join(dir, "cache"), XDG_DATA_HOME: join(dir, "data"),
     GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
+  delete env.GIT_SSH_COMMAND; delete env.GIT_SSH; delete env.KIT_RELEASE_CHECK_TIMEOUT;
   const gitAt = (cwd: string, ...args: string[]) => {
     const result = spawnSync("git", args, { cwd, env, encoding: "utf8", timeout: 10_000 });
     assert.equal(result.status, 0, result.stderr);
@@ -145,6 +146,25 @@ test("unsaved paths with spaces, accents and a deleted file are named as written
   assert.match(lastLine(result.stdout), /^RESULT: fail unsaved files \(café\.html, my draft\.html, page\.html\): /);
 });
 
+test("an origin that does not answer fails after KIT_RELEASE_CHECK_TIMEOUT seconds", t => {
+  const f = fixture(t), stall = join(f.dir, "stall.sh");
+  writeFileSync(stall, "#!/bin/sh\nsleep 4\n"); chmodSync(stall, 0o755);
+  f.git("config", "protocol.ext.allow", "always"); f.git("remote", "set-url", "origin", `ext::${stall}`);
+  const result = f.run([], { KIT_RELEASE_CHECK_TIMEOUT: "1" });
+  assert.equal(result.status, 1);
+  assert.equal(lastLine(result.stdout), "RESULT: fail could not fetch origin (no answer within 1 seconds): try again once origin answers");
+});
+
+test("an SSH origin is fetched in batch mode, so ssh never asks for a passphrase or host key", t => {
+  const f = fixture(t), bin = join(f.dir, "bin"), log = join(f.dir, "ssh.log");
+  mkdirSync(bin); writeFileSync(join(bin, "ssh"), `#!/bin/sh\necho "$@" >> ${log}\nexit 255\n`); chmodSync(join(bin, "ssh"), 0o755);
+  f.git("remote", "set-url", "origin", "ssh://example.invalid/x.git");
+  const result = f.run([], { PATH: `${bin}:${process.env.PATH}` });
+  assert.equal(result.status, 1);
+  assert.match(lastLine(result.stdout), /^RESULT: fail could not fetch origin \(/);
+  assert.match(readFileSync(log, "utf8"), /-o BatchMode=yes/);
+});
+
 test("no origin remote, and an origin that cannot be fetched, fail with their own lines", t => {
   const f = fixture(t);
   f.git("remote", "set-url", "origin", join(f.dir, "gone.git"));
@@ -232,7 +252,7 @@ test("--land compares HEAD with origin/<land>, for kit pr --release", t => {
   f.commit(peer, "landed"); f.gitAt(peer, "push", "-q", "origin", "HEAD:dev");
   let result = f.run(["--land"]);
   assert.equal(result.status, 1);
-  assert.match(lastLine(result.stdout), /^RESULT: fail HEAD [a-f0-9]{7} is 1 commit behind origin\/dev: /);
+  assert.match(lastLine(result.stdout), /^RESULT: fail HEAD [a-f0-9]{7} is 1 commit behind origin\/dev: cut the release again from origin\/dev \(git reset --hard origin\/dev\) and rerun kit pr --release$/);
   f.git("fetch", "-q", "origin"); f.git("checkout", "-q", "--detach", "origin/dev");
   result = f.run(["--land"]);
   assert.equal(result.status, 0, result.stdout + result.stderr);
