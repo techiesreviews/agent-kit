@@ -469,7 +469,7 @@ async function main(args) {
         };
         const retry = [];
         if (main) {
-          const files = await check(main, main === base ? base.join(" ") : main.join(" "));
+          const files = await check(main, main === base ? base.join(" ") : `specs <${main.length - 1} affected files without the timing ones>`);
           const load = loadavg()[0];
           for (const file of files) {
             if (touched.has(file.file)) failed.push(`${file.file} (this change touches it)`);
