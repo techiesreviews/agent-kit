@@ -110,9 +110,10 @@ No skill file or skill text from `~/.claude/skills`, `~/.agents/skills`, `~/.cod
 into this repo or any project. `.gitignore` keeps skill folders out; `skill-guard.mjs` fails CI on a tracked
 `SKILL.md` or anything under a `skills/` folder, and `kit pr` (in every project) also fails when a changed line
 matches a line from the local skill files. Licence texts are shared word for word, so they are never compared:
-a skill's licence files (`LICENSE`, `COPYING`, or a longer name ending in one, such as `x-1.0.LICENSE.md` or
-`Font-OFL.txt`) give no skill lines, and a project's own licence in its top folder (`LICENSE`, `LICENSE.md`,
-`COPYING`) is not read. Tests use made-up skill text only.
+a skill's licence files (`LICENSE`, `UNLICENSE`, `COPYING`, `NOTICE`, a longer name ending in `LICENSE` such as
+`x-1.0.LICENSE.md`, or a font's `OFL.txt` / `Font-OFL.txt`) give no skill lines, and a project's own licence in its
+top folder (`LICENSE`, `LICENSE.md`, `COPYING`) is left out of the changed lines `kit pr` checks (`--history` still
+reads it). Tests use made-up skill text only.
 
 A private project may keep its own skill (not a paid one): list each such folder by its repo path in
 `"skillGuard": { "allow": [".claude/skills/<name>"] }` of `scripts/agents/kit.json` (a repo of skills lists
