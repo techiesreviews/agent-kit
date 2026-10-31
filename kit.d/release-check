@@ -25,7 +25,7 @@ function options(args) {
     if (flag === "--waive") {
       const value = args[++i];
       if (!value?.trim() || value.startsWith("-")) throw new UsageError("--waive requires a value");
-      flags[flag] = value.replace(/[\r\n]+/g, " ");
+      flags[flag] = value;
     } else flags[flag] = true;
   }
   if (flags["--waive"] && !kitOwner().endsWith("-lead")) throw new UsageError("--waive requires a *-lead owner");

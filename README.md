@@ -48,9 +48,10 @@ only a small launcher and its own settings; the kit itself lives here, once.
   untracked file outside `.scratch/`) and HEAD is exactly `origin/<release>` after a fetch (`branches.release`,
   the branch the push guard reads). A project's own live deploy command runs it first
   (`scripts/agents/kit release-check && <deploy>`); `kit pr --release` runs `kit release-check --land` before it
-  opens the release PR, so the release is cut from exactly what landed (then rebased onto `origin/<release>`). It pushes nothing; ignored files (a
-  built `dist/`) do not count. Only a `*-lead` owner may pass it with `--waive "<reason>"` (`kit pr --release --waive`
-  hands its reason on), which its `RESULT:` line names with what was let through.
+  opens the release PR, so the release is cut from exactly what landed (then rebased onto `origin/<release>`).
+  It pushes nothing; ignored files (a built `dist/`) do not count. Only a `*-lead` owner may pass it with
+  `--waive "<reason>"`, which its `RESULT:` line names with what was let through; `kit pr --release --waive` hands
+  its reason on, so one waiver covers both the review findings and the check.
 
 ## Changing the kit
 

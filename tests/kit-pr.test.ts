@@ -779,7 +779,7 @@ test("a release runs kit release-check --land first, a dry run too; only release
     const before = f.calls().length, result = f.run(args);
     assert.equal(result.status, 0, result.stdout + result.stderr);
     assert.deepEqual(f.calls()[before].args, ["release-check", "--land"]);
-    assert.match(result.stdout, /^logs: .+\nrelease-check: ok \(release-check done\)\n/);
+    assert.match(result.stdout, /^logs: .+\nrelease-check: ok \(done\)\n/);
   }
   const before = f.calls().length, plain = f.run(["--no-merge"]);
   assert.equal(plain.status, 0, plain.stdout + plain.stderr);
@@ -801,9 +801,9 @@ test("the real release check passes a release cut at origin/dev, fails one with 
   f.git("checkout", "-q", "-b", "release/cut");
   let result = f.run(["--base", "main", "--release", "--dry-run"], real);
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stdout, /^logs: .+\nrelease-check: ok \(release-check [a-f0-9]{7} is origin\/dev, nothing unsaved\)\n/);
+  assert.match(result.stdout, /^logs: .+\nrelease-check: ok \([a-f0-9]{7} is origin\/dev, nothing unsaved\)\n/);
   assert.match(result.stdout, /RESULT: ok dry-run [a-f0-9]{7} release\/cut -> main$/m);
-  assert.match(readFileSync(join(f.logDir(), "body.md"), "utf8"), /- kit release-check --land: release-check [a-f0-9]{7} is origin\/dev, nothing unsaved/);
+  assert.match(readFileSync(join(f.logDir(), "body.md"), "utf8"), /- kit release-check --land: [a-f0-9]{7} is origin\/dev, nothing unsaved/);
   f.commit("Never landed", "extra.txt"); writeFileSync(join(f.root, "draft.txt"), "draft\n");
   result = f.run(["--base", "main", "--release", "--dry-run"], real);
   assert.equal(result.status, 1);
@@ -811,9 +811,9 @@ test("the real release check passes a release cut at origin/dev, fails one with 
   rmSync(join(f.root, "draft.txt"));
   result = f.run(["--base", "main", "--release", "--dry-run", "--waive", "hotfix tonight"], { ...real, ASE_OWNER: "ke-lead" });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stdout, /release-check: ok \(release-check waived by ke-lead \(hotfix tonight\): HEAD [a-f0-9]{7} is 1 commit ahead of origin\/dev\)/);
+  assert.match(result.stdout, /release-check: ok \(waived by ke-lead \(hotfix tonight\): HEAD [a-f0-9]{7} is 1 commit ahead of origin\/dev\)/);
   assert.deepEqual(f.calls().filter(call => call.args[0] === "release-check").at(-1)?.args, ["release-check", "--land", "--waive", "hotfix tonight"]);
-  assert.match(readFileSync(join(f.logDir(), "body.md"), "utf8"), /- kit release-check --land: release-check waived by ke-lead \(hotfix tonight\): HEAD [a-f0-9]{7} is 1 commit ahead of origin\/dev/);
+  assert.match(readFileSync(join(f.logDir(), "body.md"), "utf8"), /- kit release-check --land: waived by ke-lead \(hotfix tonight\): HEAD [a-f0-9]{7} is 1 commit ahead of origin\/dev/);
 });
 
 test("a release cut at origin/dev passes the check before kit pr rebases it onto a main that has a commit dev lacks", t => {
@@ -824,18 +824,28 @@ test("a release cut at origin/dev passes the check before kit pr rebases it onto
   f.git("checkout", "-q", "-b", "release/cut");
   const cut = f.git("rev-parse", "HEAD"), result = f.run(["--base", "main", "--release", "--no-merge"], real);
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stdout, new RegExp(`release-check: ok \\(release-check ${cut.slice(0, 7)} is origin/dev, nothing unsaved\\)`));
+  assert.match(result.stdout, new RegExp(`release-check: ok \\(${cut.slice(0, 7)} is origin/dev, nothing unsaved\\)`));
   assert.match(result.stdout, /RESULT: ok opened #73 [a-f0-9]{7}$/m);
   // The pushed release is the cut rebased onto origin/main: the hotfix stays and the landed change follows it.
   assert.notEqual(f.git("rev-parse", "HEAD"), cut);
   assert.equal(f.git("log", "--format=%s", "-2"), "Landed change\nHotfix on main");
 });
 
-test("a waived release check is named on the release's final RESULT line", t => {
-  const f = fixture(t), result = f.run(["--base", "main", "--release", "--waive", "hotfix tonight"],
-    { ASE_OWNER: "ke-lead", FAKE_RELEASE_CHECK: resolve("kit.d/release-check") });
+test("a waived release check is named on the release's final RESULT line, a dry run's too; a waiver not needed is not", t => {
+  const lead = { ASE_OWNER: "ke-lead", FAKE_RELEASE_CHECK: resolve("kit.d/release-check") };
+  for (const dry of [false, true]) {
+    const f = fixture(t), result = f.run(["--base", "main", "--release", "--waive", "hotfix tonight", ...(dry ? ["--dry-run"] : [])], lead);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, dry ? /RESULT: ok dry-run [a-f0-9]{7} feature\/kit-pr -> main \(release-check waived: hotfix tonight\)$/m
+      : /RESULT: ok opened #73 [a-f0-9]{7} \(release-check waived: hotfix tonight\)$/m);
+  }
+  const f = fixture(t);
+  f.git("checkout", "-q", "dev"); f.commit("Landed change", "landed.txt"); f.git("push", "-q", "origin", "dev");
+  f.git("checkout", "-q", "-b", "release/cut");
+  const result = f.run(["--base", "main", "--release", "--no-merge", "--waive", "x"], lead);
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stdout, /RESULT: ok opened #73 [a-f0-9]{7} \(release-check waived: hotfix tonight\)$/m);
+  assert.match(result.stdout, /release-check: ok \([a-f0-9]{7} is origin\/dev, nothing unsaved \(waiver not needed: x\)\)/);
+  assert.match(result.stdout, /RESULT: ok opened #73 [a-f0-9]{7}$/m);
 });
 
 test("newest complete saved review of the whole PR is posted; incomplete, partial-scope and mismatched ones are skipped", t => {
