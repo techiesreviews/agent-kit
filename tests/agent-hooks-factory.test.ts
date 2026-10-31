@@ -32,6 +32,7 @@ test("brief-guard refuses a hand-written coding brief and names kit brief", () =
 test("brief-guard allows a kit brief, a first line kit-brief: none (reason), read-only agent types and other tools", () => {
   for (const payload of [
     delegate("Build it.\n\nkit-brief: 974ed10 docs/tickets/84.md build\n"),
+    delegate("Fix the login form.\n\nkit-brief: 974ed10 task:fix-the-login-form build"),
     delegate("kit-brief: none (research only: compare two libraries)\nFind out which is smaller."),
     delegate("\n  kit-brief: none (a question for the lead)\nWhat is the land branch?"),
     agent("Where is kitRoot defined?", "Explore"),
@@ -178,8 +179,14 @@ test("agent-cap books no slot for a brief that brief-guard refuses, where the pr
   assert.equal(pending(), 1);
   assert.equal(call("kit-brief: none (a question)\nWhere is X?", "t5").status, 0);
   assert.equal(pending(), 2);
+  // brief-guard on delegate_task alone does not see Agent calls, so those still count.
+  writeFileSync(join(project, ".claude/settings.json"), JSON.stringify({ hooks: { PreToolUse: [
+    { matcher: "Agent|Task", hooks: [{ type: "command", command: 'bash "${CLAUDE_PROJECT_DIR}"/scripts/agents/hooks/run.sh agent-cap' }] },
+    { matcher: "mcp__t3-code__delegate_task", hooks: [{ type: "command", command: 'bash "${CLAUDE_PROJECT_DIR}"/scripts/agents/hooks/run.sh brief-guard' }] }] } }));
+  assert.equal(call("Fix the bug", "t6").status, 0);
+  assert.equal(pending(), 3);
   // A project that leaves brief-guard out still counts every launch.
   settings(["agent-cap"]);
   assert.equal(call("Fix the bug", "t3").status, 0);
-  assert.equal(pending(), 3);
+  assert.equal(pending(), 4);
 });
