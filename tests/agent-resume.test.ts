@@ -19,13 +19,14 @@ interface Status {
 interface Call { cli: string; args: string[]; input: string; cwd: string }
 
 const fake = `#!/usr/bin/env node
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
 const cli = basename(process.argv[1]), args = process.argv.slice(2);
 appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ cli, args, input: readFileSync(0, "utf8"), cwd: process.cwd() }) + "\\n");
 if (process.env.FAKE_EVENTS) appendFileSync(process.env.FAKE_EVENTS, JSON.stringify({ phase: "start", pid: process.pid }) + "\\n");
 if (process.env.FAKE_WRITE) writeFileSync(process.env.FAKE_WRITE, "work\\n");
+if (process.env.FAKE_COMMIT) execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "--allow-empty", "-m", "work"]);
 const model = process.env.FAKE_WRONG_MODEL ? "wrong-model" : args[args.indexOf(cli === "codex" ? "-m" : "--model") + 1];
 if (cli === "codex") {
   if (!process.env.FAKE_NO_MODEL) console.error("model: " + model);
@@ -477,6 +478,10 @@ test("a first call that fails at once records launchFailed; one that ran past th
   const changed = fixture(t);
   assert.equal((await changed.fresh("claude", { FAKE_EXIT: "1", FAKE_WRITE: "work.txt" }).done).code, 1);
   assert.equal(changed.status().state, "failed"); assert.equal(changed.status().launchFailed, undefined);
+  // So did one that committed its work, leaving a clean tree.
+  const committed = fixture(t);
+  assert.equal((await committed.fresh("claude", { FAKE_EXIT: "1", FAKE_COMMIT: "1" }).done).code, 1);
+  assert.equal(committed.status().launchFailed, undefined);
   const worked = fixture(t);
   assert.equal((await worked.fresh("claude").done).code, 0);
   assert.equal(worked.status().launchFailed, undefined);

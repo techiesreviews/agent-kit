@@ -903,7 +903,7 @@ async function invokeAgent(adapter, args, descriptor, context) {
       // this to tell such a build never ran. ASE_LAUNCH_WINDOW_MS (60000) is for tests.
       if ((status || limitProblem) && !previousCalls && ![129, 130, 143].includes(status)
         && Date.now() - spawned < Number(process.env.ASE_LAUNCH_WINDOW_MS ?? 60_000)
-        && execFileSync("git", ["-C", options.worktree, "status", "--porcelain", "--untracked-files=all"], { encoding: "utf8" }) === context.startTree) update({ launchFailed: true });
+        && context.tree() === context.startTree) update({ launchFailed: true });
     }
     try {
       const report = adapter.finish(result.stdout, slice, status);
@@ -947,8 +947,10 @@ async function executeRun(options, out, previous, update, brief) {
     const adapter = agentInvocation(options, common, output);
     // A resumed run's first call is not the review's first call, so it never refunds.
     // The worktree as the run found it: a first call that left it changed did some work, however soon it failed.
-    const startTree = execFileSync("git", ["-C", options.worktree, "status", "--porcelain", "--untracked-files=all"], { encoding: "utf8" });
-    const context = { options, limit, logPath, log, output, messages, update, prompt, startTree, calls: previous ? 1 : 0 };
+    const tree = () => execFileSync("git", ["-C", options.worktree, "rev-parse", "HEAD"], { encoding: "utf8" })
+      + execFileSync("git", ["-C", options.worktree, "status", "--porcelain", "--untracked-files=all"], { encoding: "utf8" });
+    const startTree = tree();
+    const context = { options, limit, logPath, log, output, messages, update, prompt, startTree, tree, calls: previous ? 1 : 0 };
     const invoke = (args, descriptor) => invokeAgent(adapter, args, descriptor, context);
     const complete = () => existsSync(output) && reviewComplete(readFileSync(output, "utf8"));
     const result = await invoke(previous ? adapter.resume(previous.session) : adapter.args, input);
