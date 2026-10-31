@@ -52,7 +52,7 @@ try {
   let ticket, text;
   if (options.task !== undefined) {
     // A task with no ticket file: its title stands in for the ticket's, the note for its body.
-    ticket = `task:${options.task.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "task"}`;
+    ticket = `task:${options.task.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 60).replace(/^-+|-+$/g, "") || "task"}`;
     text = `---\ntitle: ${JSON.stringify(options.task.trim())}\n---\n`;
   } else {
     const absolute = isAbsolute(options.ticket) ? options.ticket : join(root, options.ticket);

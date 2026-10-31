@@ -61,9 +61,11 @@ case $event in
     done
     ;;
   PreToolUse)
-    # A brief that brief-guard refuses never starts, so it books no slot; only where the project runs brief-guard.
+    # A brief that brief-guard refuses never starts, so it books no slot; only where the project runs brief-guard
+    # on this very tool (a PreToolUse group whose matcher takes the tool's name, or one with no matcher).
     project=${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || :)}
-    if [[ -n $project ]] && grep -qs 'hooks/run.sh brief-guard' "$project/.claude/settings.json" &&
+    if [[ -n $project ]] && jq -e --arg tool "$tool" '[.hooks.PreToolUse[]? | select((.matcher // "") as $m | $m == "" or ($tool | test("^(" + $m + ")$")))
+        | .hooks[]?.command | strings | select(test("hooks/run\\.sh brief-guard$"))] | length > 0' "$project/.claude/settings.json" > /dev/null 2>&1 &&
       ! bash "$(dirname -- "${BASH_SOURCE[0]}")/brief-guard.sh" <<< "$input" 2>/dev/null; then exit 0; fi
     for entry in "$pending"/*; do
       [[ -f $entry ]] || continue
