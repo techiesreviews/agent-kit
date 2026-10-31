@@ -553,8 +553,13 @@ test("--all lands the missing pieces in every listed project through its own kit
   assert.equal(readFileSync(join(busy, ".claude/settings.json"), "utf8"), "{ \"someone\": \"working\" }\n");
   assert.equal(existsSync(join(behind, ".gitattributes")), false);
   for (const name of ["busy-kit-init-pieces", "current-kit-init-pieces"]) assert.equal(existsSync(join(records, name)), false, name);
-  // A rerun says the failed one's worktree is still there rather than make another.
+  // A rerun says the failed one's worktree is still there rather than make another; the waiting one's PR has
+  // landed since (its branch is on origin/main), so its worktree goes and the project is up to date.
+  f.git(`${open}-kit-init-pieces`, "push", "-q", "origin", "HEAD:main");
   const again = all();
+  assert.match(again.stdout, /^open: the earlier run's kit\/init-pieces has landed on origin\/main; removed it and its worktree$/m);
+  assert.match(again.stdout, /^RESULT: ok init open: nothing missing on origin\/main$/m);
+  assert.equal(existsSync(`${open}-kit-init-pieces`), false);
   assert.match(again.stdout, new RegExp(`^RESULT: fail init stuck: ${stuck}-kit-init-pieces or branch kit/init-pieces is left from an earlier run; land or remove it, then rerun$`, "m"));
 });
 
