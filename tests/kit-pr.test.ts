@@ -868,6 +868,14 @@ test("a lead's waiver lets unsaved files through the release check, and kit pr s
   assert.equal(f.gitAt(f.origin, "branch", "--list", "feature/kit-pr"), "");
 });
 
+test("a release where the landing branch is the live one checks origin/main", t => {
+  const f = fixture(t, undefined, { branches: { land: "main", release: "main", ci: "main" } });
+  f.git("checkout", "-q", "main"); f.commit("Landed on main", "landed.txt"); f.git("push", "-q", "origin", "main");
+  f.git("checkout", "-q", "-b", "release/live");
+  const result = f.run(["--base", "main", "--release", "--dry-run"], { FAKE_RELEASE_CHECK: resolve("kit.d/release-check"), FAKE_BASE: "main" });
+  assert.match(result.stdout, /^logs: .+\nrelease-check: ok \([a-f0-9]{7} is origin\/main, nothing unsaved\)\n/);
+});
+
 test("a waived release check is named on the release's final RESULT line, a dry run's too; a waiver not needed is not", t => {
   const lead = { ASE_OWNER: "ke-lead", FAKE_RELEASE_CHECK: resolve("kit.d/release-check") };
   for (const dry of [false, true]) {

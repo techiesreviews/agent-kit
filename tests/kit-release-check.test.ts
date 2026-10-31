@@ -149,7 +149,7 @@ test("unsaved paths with spaces, accents and a deleted file are named as written
 test("an origin that does not answer fails after KIT_RELEASE_CHECK_TIMEOUT seconds", t => {
   const f = fixture(t), stall = join(f.dir, "stall.sh");
   // The helper git starts keeps running past git's own stop; the check must not wait for it.
-  writeFileSync(stall, "#!/bin/sh\nsleep 30\n"); chmodSync(stall, 0o755);
+  writeFileSync(stall, "#!/bin/sh\nsleep 8\n"); chmodSync(stall, 0o755);
   f.git("config", "protocol.ext.allow", "always"); f.git("remote", "set-url", "origin", `ext::${stall}`);
   const started = Date.now(), result = f.run([], { KIT_RELEASE_CHECK_TIMEOUT: "1" });
   assert.ok(Date.now() - started < 5000, `took ${Date.now() - started} ms`);
@@ -231,7 +231,7 @@ test("a HEAD that has split from origin/<release> names both counts", t => {
   f.commit(f.root, "local");
   const result = f.run();
   assert.equal(result.status, 1);
-  assert.equal(lastLine(result.stdout), `RESULT: fail HEAD ${f.short()} and origin/main have split (1 commit ahead, 1 behind): update the checkout to origin/main before going live`);
+  assert.equal(lastLine(result.stdout), `RESULT: fail HEAD ${f.short()} and origin/main have split (1 commit ahead, 1 behind): what goes live must be on main; land it on dev with kit pr, then kit pr --release`);
 });
 
 test("a project without branches.release fails with the line saying so", t => {
@@ -277,6 +277,17 @@ test("--land on an older cut with a commit made by hand says to land it, never t
   const result = f.run(["--land"]);
   assert.equal(result.status, 1);
   assert.equal(lastLine(result.stdout), `RESULT: fail HEAD ${f.short()} and origin/dev have split (1 commit ahead, 1 behind): a release carries only what landed on dev; land it with kit pr first`);
+  assert.doesNotMatch(result.stdout, /reset/);
+});
+
+test("--land in a clone without origin/<release> still says to land a hand-made commit, never to reset", t => {
+  const f = fixture(t), only = join(f.dir, "only");
+  f.gitAt(f.dir, "clone", "-q", "--single-branch", "--branch", "dev", f.origin, only);
+  f.gitAt(only, "config", "user.name", "Kit test"); f.gitAt(only, "config", "user.email", "kit@example.com");
+  f.commit(only, "by hand");
+  const result = f.run(["--land"], { KIT_ROOT: only });
+  assert.equal(result.status, 1);
+  assert.match(lastLine(result.stdout), /is 1 commit ahead of origin\/dev: a release carries only what landed on dev; land it with kit pr first$/);
   assert.doesNotMatch(result.stdout, /reset/);
 });
 

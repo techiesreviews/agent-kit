@@ -14,7 +14,9 @@ Run first by a project's live deploy command, and by kit pr --release. Fails unl
 clean (no changed or untracked files outside .scratch/) and HEAD is exactly origin/<release> after a
 fetch (branches.release in ${kitSettingsFile}, the same branch the push guard reads). Pushes nothing.
 --land compares HEAD with origin/<land> instead: kit pr --release checks that the release is cut exactly
-from what landed, before it rebases the cut onto origin/<release>. --waive requires a *-lead owner; the RESULT line names the reason and what it let through.
+from what landed, before it rebases the cut onto origin/<release>. --waive requires a *-lead owner;
+the RESULT line names the reason and what it let through. KIT_RELEASE_CHECK_TIMEOUT: the fetch's limit
+in seconds (default 120).
 `;
 
 class UsageError extends Error {}
@@ -88,15 +90,20 @@ function problems(root, { land }) {
   // Under --land, a cut whose own commits all landed already (an earlier kit pr --release rebased it onto
   // origin/<release>) is cut again; git cherry marks each commit past origin/<release> that origin/<land> has with "-".
   // A commit that never landed is landed first, so the advice never drops work.
-  const landed = !ahead || git("cherry", `refs/remotes/origin/${branch}`, "HEAD", ...(release === branch ? [] : [`refs/remotes/origin/${release}`]))
-    .stdout.split(/\r?\n/).filter(Boolean).every(line => line.startsWith("-"));
+  // A clone without origin/<release> (single-branch, CI) leaves the limit out: release-only commits then show "+",
+  // and a failed git cherry counts as not landed, so both give the safe advice.
+  const limit = release !== branch && git("rev-parse", "--verify", "-q", `refs/remotes/origin/${release}`).status === 0
+    ? [`refs/remotes/origin/${release}`] : [];
+  const cherry = land && ahead ? git("cherry", `refs/remotes/origin/${branch}`, "HEAD", ...limit) : undefined;
+  const landed = !cherry || (cherry.status === 0 && cherry.stdout.split(/\r?\n/).filter(Boolean).every(line => line.startsWith("-")));
   const update = land
     ? landed ? `cut the release again from origin/${branch} (git reset --keep origin/${branch}) and rerun kit pr --release`
       : `a release carries only what landed on ${branch}; land it with kit pr first`
     : `update the checkout to origin/${branch} before going live`;
   const unlanded = land ? update : one ? `what goes live must be on ${branch}; land it with kit pr`
     : `what goes live must be on ${branch}; land it on ${landing} with kit pr, then kit pr --release`;
-  if (ahead && behind) found.push({ what: `HEAD ${short} and origin/${branch} have split (${plural(ahead, "commit")} ahead, ${behind} behind)`, advice: update });
+  // A split HEAD holds commits of its own: without --land it gets the ahead advice, which never drops them.
+  if (ahead && behind) found.push({ what: `HEAD ${short} and origin/${branch} have split (${plural(ahead, "commit")} ahead, ${behind} behind)`, advice: land ? update : unlanded });
   else if (ahead) found.push({ what: `HEAD ${short} is ${plural(ahead, "commit")} ahead of origin/${branch}`, advice: unlanded });
   else if (behind) found.push({ what: `HEAD ${short} is ${plural(behind, "commit")} behind origin/${branch}`, advice: update });
   return { found, passed: `release-check ${short} is origin/${branch}, nothing unsaved` };
