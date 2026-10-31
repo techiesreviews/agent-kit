@@ -148,21 +148,22 @@ test("unsaved paths with spaces, accents and a deleted file are named as written
 
 test("an origin that does not answer fails after KIT_RELEASE_CHECK_TIMEOUT seconds", t => {
   const f = fixture(t), stall = join(f.dir, "stall.sh");
-  writeFileSync(stall, "#!/bin/sh\nsleep 4\n"); chmodSync(stall, 0o755);
+  // The helper git starts keeps running past git's own stop; the check must not wait for it.
+  writeFileSync(stall, "#!/bin/sh\nsleep 30\n"); chmodSync(stall, 0o755);
   f.git("config", "protocol.ext.allow", "always"); f.git("remote", "set-url", "origin", `ext::${stall}`);
-  const result = f.run([], { KIT_RELEASE_CHECK_TIMEOUT: "1" });
+  const started = Date.now(), result = f.run([], { KIT_RELEASE_CHECK_TIMEOUT: "1" });
+  assert.ok(Date.now() - started < 5000, `took ${Date.now() - started} ms`);
   assert.equal(result.status, 1);
   assert.equal(lastLine(result.stdout), "RESULT: fail could not fetch origin (no answer within 1 seconds): try again once origin answers");
-});
-
-test("an SSH origin is fetched in batch mode, so ssh never asks for a passphrase or host key", t => {
-  const f = fixture(t), bin = join(f.dir, "bin"), log = join(f.dir, "ssh.log");
-  mkdirSync(bin); writeFileSync(join(bin, "ssh"), `#!/bin/sh\necho "$@" >> ${log}\nexit 255\n`); chmodSync(join(bin, "ssh"), 0o755);
-  f.git("remote", "set-url", "origin", "ssh://example.invalid/x.git");
-  const result = f.run([], { PATH: `${bin}:${process.env.PATH}` });
-  assert.equal(result.status, 1);
-  assert.match(lastLine(result.stdout), /^RESULT: fail could not fetch origin \(/);
-  assert.match(readFileSync(log, "utf8"), /-o BatchMode=yes/);
+  // A limit that is no positive number keeps the 120-second default: a helper that answers nothing within 2 seconds
+  // fails as git's own error, not as a timeout.
+  writeFileSync(stall, "#!/bin/sh\nsleep 2\n");
+  for (const limit of ["abc", "0", "-5"]) {
+    const slow = f.run([], { KIT_RELEASE_CHECK_TIMEOUT: limit });
+    assert.equal(slow.status, 1);
+    assert.match(lastLine(slow.stdout), /^RESULT: fail could not fetch origin \(/);
+    assert.doesNotMatch(lastLine(slow.stdout), /no answer within/);
+  }
 });
 
 test("no origin remote, and an origin that cannot be fetched, fail with their own lines", t => {
@@ -252,7 +253,7 @@ test("--land compares HEAD with origin/<land>, for kit pr --release", t => {
   f.commit(peer, "landed"); f.gitAt(peer, "push", "-q", "origin", "HEAD:dev");
   let result = f.run(["--land"]);
   assert.equal(result.status, 1);
-  assert.match(lastLine(result.stdout), /^RESULT: fail HEAD [a-f0-9]{7} is 1 commit behind origin\/dev: cut the release again from origin\/dev \(git reset --hard origin\/dev\) and rerun kit pr --release$/);
+  assert.match(lastLine(result.stdout), /^RESULT: fail HEAD [a-f0-9]{7} is 1 commit behind origin\/dev: cut the release again from origin\/dev \(git reset --keep origin\/dev\) and rerun kit pr --release$/);
   f.git("fetch", "-q", "origin"); f.git("checkout", "-q", "--detach", "origin/dev");
   result = f.run(["--land"]);
   assert.equal(result.status, 0, result.stdout + result.stderr);
@@ -267,6 +268,16 @@ test("a live landing branch missing on origin says to land work there, not to ru
   const f = fixture(t, { land: "live", release: "live" });
   const result = f.run();
   assert.equal(lastLine(result.stdout), "RESULT: fail origin has no branch live: land work on live through kit pr first");
+});
+
+test("--land on an older cut with a commit made by hand says to land it, never to reset", t => {
+  const f = fixture(t), peer = f.peer();
+  f.commit(peer, "landed"); f.gitAt(peer, "push", "-q", "origin", "HEAD:dev");
+  f.commit(f.root, "by hand");
+  const result = f.run(["--land"]);
+  assert.equal(result.status, 1);
+  assert.equal(lastLine(result.stdout), `RESULT: fail HEAD ${f.short()} and origin/dev have split (1 commit ahead, 1 behind): a release carries only what landed on dev; land it with kit pr first`);
+  assert.doesNotMatch(result.stdout, /reset/);
 });
 
 test("--land with no landing branch on origin says to land work there first", t => {

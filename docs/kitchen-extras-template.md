@@ -30,7 +30,10 @@ file wins.
 - The release steps after `kit pr --release`, the first-hour check, and where the live version is
   recorded.
 - **First step of the live deploy command:** `scripts/agents/kit release-check &&` before the deploy
-  itself (nothing unsaved, HEAD exactly `origin/<release>`); a preview deploy needs none.
+  itself (nothing unsaved, HEAD exactly `origin/<release>`); a preview deploy needs none. A lead who
+  must deploy past it runs `scripts/agents/kit release-check --waive "<reason>"` and then the deploy's
+  own steps. A deploy that uploads a built folder builds it in the same command, as ignored files
+  are not checked.
 
 ## Other
 
