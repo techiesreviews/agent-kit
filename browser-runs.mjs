@@ -10,6 +10,11 @@ export function listedSpecs(text) {
   return text.split(/\r?\n/).map(line => /^(\S+) \[[^\]]*\]/.exec(line)?.[1]).filter(Boolean);
 }
 
+/** Whether `kit specs … --list` said it selected nothing (`none affected`, `0 selected`), as an empty list must. */
+export function nothingSelected(text) {
+  return /^RESULT: ok specs (?:none affected|0 selected)\b/m.test(text);
+}
+
 /** The failed files of a `kit specs` run, each with its first failed test: `✗ <file>: <test> — <error>`. */
 export function failedSpecs(text) {
   const failed = new Map();

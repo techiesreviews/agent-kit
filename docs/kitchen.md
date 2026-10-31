@@ -206,9 +206,13 @@ on a usage-limit `problem:` line, tell Lex the reset time and carry on with Clau
   saying `waiting for <owner>'s full browser run`). A failed spec file the change did not touch is
   rerun once alone: passing alone, it lands as `flaky under load: <file>` on the `RESULT:` line and in
   `flaky.jsonl` in the kit's state folder; a file the change touched must pass in the full run, and a
-  run that did not report every file it ran is never forgiven. The settings' `timing` spec files
-  (which need a specs command that answers `--list`) run after the rest, each alone. While a spec file
-  runs alone (timing file or rerun) no other kit job starts (`waiting for <owner>'s lone browser run`).
+  run that did not report every file it ran is never forgiven. The settings' `timing` spec files run
+  after the rest, each alone; with a `timing` list the selection is listed first, and a change that
+  selects nothing takes no lock. While a spec file runs alone (timing file or rerun) no other kit job
+  starts (`waiting for <owner>'s lone browser run`). What `kit pr` reads from the project's `kit specs`:
+  `--list` prints one `<file> [<groups>] …` line per selected file, or ends `RESULT: ok specs none
+  affected` (or `0 selected`); a run prints `✓ <file> (…)` or `✗ <file>: <test> — <error>` per file and
+  ends `RESULT: fail specs N of M failed` when any failed.
   `kit status` names a file flaky 3 or more times in 7 days: give it a fix ticket.
 - **Never:** a raw `git push` to the release branch (or a landing branch that is also the release
   branch, as on a live site); the Bash hook refuses it and names `kit pr`.

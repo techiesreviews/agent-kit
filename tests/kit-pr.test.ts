@@ -48,11 +48,13 @@ if (env.FAKE_FAIL === action) {
 }
 // FAKE_SPECS plans kit specs: its files are the --affected selection; a file in "full" fails only in a run with other
 // files (as one does on a busy machine), one in "always" fails every time, one in "once" only the first time it runs.
-// With "crash" the run reports only its failed "full" files and says every file failed, as a run that broke part way.
+// With "crash" the run reports only its failed "full" files and says every file failed, as a run that broke part way;
+// with "listBlank" --list names no files though it selected some; a lone run of a file in "silent" prints only RESULT.
 if (tool === "fake-kit" && action === "specs" && env.FAKE_SPECS) {
   const plan = JSON.parse(env.FAKE_SPECS), rest = args.slice(1);
   const files = rest[0] === "--affected" ? plan.files : rest.filter(arg => !arg.startsWith("-"));
   if (rest.includes("--list")) {
+    if (plan.listBlank) { console.log("RESULT: ok specs " + files.length + " selected (list only)"); process.exit(0); }
     for (const file of files) console.log(file + " [default] — changed");
     console.log("RESULT: ok specs " + files.length + " selected (list only)");
     process.exit(0);
@@ -61,6 +63,7 @@ if (tool === "fake-kit" && action === "specs" && env.FAKE_SPECS) {
     .filter(call => call.tool === "fake-kit" && call.args[0] === "specs" && call.args.includes(file)).length;
   const failed = files.filter(file => (plan.always || []).includes(file) || (files.length > 1 && (plan.full || []).includes(file)) ||
     ((plan.once || []).includes(file) && runs(file) === 1));
+  if (files.length === 1 && (plan.silent || []).includes(files[0])) { console.log("RESULT: ok specs 1/1 passed"); process.exit(0); }
   if (plan.crash) {
     for (const file of failed) console.log("✗ " + file + ": a test — timed out");
     console.log("RESULT: fail specs " + files.length + " of " + files.length + " failed");
@@ -2335,4 +2338,30 @@ test("a lone rerun waits for another run's quiet lock, saying whose lone run it 
   assert.equal(result.stdout.match(/^specs: waiting for ke-60's lone browser run$/gm)?.length, 1, result.stdout);
   assert.equal(state(), "Z");
   assert.deepEqual(specsCalls(f).map(call => call.args), [["specs", "--affected", "--base", "origin/dev"], ["specs", files[1]]]);
+});
+
+test("once a touched file failed, the untouched failures and the timing files are not run alone", t => {
+  const files = [spec("a"), spec("b"), spec("native-edit-latency")];
+  const f = fixture(t, { [files[1]]: "// changed\n" }, { timing: ["native-edit-latency"] });
+  const result = f.run(["--ticket", "ticket.md"], { FAKE_SPECS: JSON.stringify({ files, full: [files[0], files[1]] }) });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.deepEqual(specsCalls(f).map(call => call.args).slice(1), [["specs", files[0], files[1]]]);
+  assert.match(result.stdout, /RESULT: fail specs: 3 spec files failed: tests\/native-save\/b\.spec\.ts \(this change touches it\), tests\/native-save\/a\.spec\.ts \(not rerun\), tests\/native-save\/native-edit-latency\.spec\.ts \(timing, not run\)$/m);
+  assert.equal(existsSync(join(f.env.XDG_STATE_HOME!, "agent-kit/flaky.jsonl")), false);
+});
+
+test("a --list that names no files without saying none were selected fails the specs step", t => {
+  const f = fixture(t, undefined, { timing: ["native-edit-latency"] });
+  const result = f.run(["--ticket", "ticket.md"], { FAKE_SPECS: JSON.stringify({ files: [spec("a"), spec("b")], listBlank: true }) });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /RESULT: fail specs: kit specs --list named no spec files and did not say none were selected \(RESULT: ok specs 2 selected \(list only\)\)$/m);
+  assert.equal(specsCalls(f).length, 1);
+});
+
+test("a lone rerun that passes without reporting its file counts as failed alone too", t => {
+  const f = fixture(t), files = [spec("a"), spec("b")];
+  const result = f.run(["--ticket", "ticket.md"], { FAKE_SPECS: JSON.stringify({ files, full: [files[1]], silent: [files[1]] }) });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /RESULT: fail specs: 1 spec file failed: tests\/native-save\/b\.spec\.ts \(failed alone too\)$/m);
+  assert.equal(existsSync(join(f.env.XDG_STATE_HOME!, "agent-kit/flaky.jsonl")), false);
 });
