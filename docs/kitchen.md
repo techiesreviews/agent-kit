@@ -93,6 +93,12 @@ Sol never builds. `kit review` counts GPT and Grok reviews per week for the whol
 whatever project asks; the Tuesday sweep shows the week's Grok use by project) and refuses at the limit;
 on a usage-limit `problem:` line, tell Lex the reset time and carry on with Claude.
 
+The OpenCode second look reads only: it may read, search and list files, nothing else. The kit
+works with OpenCode 1 and 2 (it reads `opencode run --help` to tell them apart). OpenCode 2 has no
+switch to turn plugins off, so on OpenCode 2 a plugin in the branch under review stays out (the kit
+turns project settings off) but a plugin installed on the machine in `~/.config/opencode` still
+loads into every review: keep that folder free of plugins.
+
 ## Stations
 
 ### 1. Idea
