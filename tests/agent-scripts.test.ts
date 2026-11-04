@@ -275,19 +275,25 @@ test("OpenCode adapter runs reviews only, as a read-only agent, and resumes its 
   assert.deepEqual(legacy.resume("ses_1"), [...legacyArgs, "--session", "ses_1"]);
   assert.deepEqual(opencodeCommands(opencodeHelpV1, model, "/work tree").export("ses_1"), ["export", "--pure", "ses_1"]);
   // No help at all (no OpenCode to start) keeps the older arguments; the call itself then fails as a missing CLI did before.
-  assert.deepEqual(opencodeAdapter(options, "/git", "/out", () => "").args, legacyArgs);
-  assert.equal(opencodeRunHelp("/", {}, "/no/such/opencode"), "");
+  assert.deepEqual(opencodeAdapter(options, "/git", "/out", () => null).args, legacyArgs);
+  assert.equal(opencodeRunHelp("/", {}, "/no/such/opencode"), null);
+  // OpenCode 2 has no switch for plugins, so its run gets an empty config folder of its own, in the run's folder; OpenCode 1 keeps the machine's.
+  assert.equal(call.env.XDG_CONFIG_HOME, "/opencode-config");
+  assert.equal(legacy.env.XDG_CONFIG_HOME, undefined);
+  assert.deepEqual({ ...call.env, XDG_CONFIG_HOME: undefined }, { ...legacy.env, XDG_CONFIG_HOME: undefined });
   // Help that names neither flag, or a probe that failed, stops the review in plain words rather than guessing.
   const neither = /^could not tell how to run this OpenCode read-only: `opencode run --help` lists neither --standalone \(OpenCode 2\) nor --pure \(OpenCode 1\); it said: /;
   assert.throws(() => opencodeAdapter(options, "/git", "/out", () => "Error: unknown command run\n"), (error: Error) => neither.test(error.message) && error.message.endsWith("it said: Error: unknown command run"));
   const failed = opencodeRunHelp("/", {}, "false");
-  assert.equal(failed.trim(), "(opencode run --help exit 1)");
+  assert.equal(failed!.trim(), "(opencode run --help exit 1)");
   assert.throws(() => opencodeCommands(failed, model, "/work tree"), (error: Error) => neither.test(error.message) && error.message.endsWith("(opencode run --help exit 1)"));
+  // Empty help (a clean exit that printed nothing) is not a missing CLI: it stops too.
+  assert.throws(() => opencodeCommands("", model, "/work tree"), (error: Error) => neither.test(error.message) && error.message.endsWith("it said: nothing"));
   // The probe gets the review's folder and its OpenCode switches.
   let probed: unknown[] = [];
   opencodeAdapter(options, "/git", "/out", (...args: unknown[]) => { probed = args; return opencodeHelpV2; });
   assert.equal(probed[0], "/work tree");
-  assert.deepEqual(probed[1], call.env);
+  assert.deepEqual(probed[1], legacy.env);
   // The agent denies every tool but reading, searching and listing; project config and Claude Code files stay out.
   assert.equal(call.env.OPENCODE_CONFIG_CONTENT, opencodeReviewConfig);
   assert.deepEqual(JSON.parse(opencodeReviewConfig).agent[opencodeReviewAgent].permission, { "*": "deny", read: "allow", grep: "allow", glob: "allow", list: "allow" });
@@ -303,6 +309,39 @@ test("OpenCode adapter runs reviews only, as a read-only agent, and resumes its 
   assert.equal(parseAgentArgs(["review", ".", "brief", "--model", model, "--effort", "medium"]).effort, null);
   assert.throws(() => parseAgentArgs(["build", ".", "brief", "--cli", "opencode"]), /reviews only/);
   assert.throws(() => agentInvocation({ ...options, kind: "build" }, "/git", "/out"), /reviews only/);
+});
+
+test("the OpenCode help probe reads stdout and stderr together, and a hung one stops at its own limit", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ase-opencode-help-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const fake = (name: string, body: string) => { const file = join(dir, name); writeFileSync(file, `#!/usr/bin/env node\n${body}\n`); chmodSync(file, 0o755); return file; };
+  const model = "opencode/deepseek-v4.1-flash-free";
+  // Help on stderr only, with a clean exit, still picks OpenCode 2.
+  const stderrOnly = opencodeRunHelp(dir, {}, fake("stderr", `process.stderr.write(${JSON.stringify(opencodeHelpV2)});`));
+  assert.deepEqual(opencodeCommands(stderrOnly, model, dir).run, ["run", "--standalone", "--agent", opencodeReviewAgent, "--format", "json", "-m", model]);
+  // A clean exit that printed nothing stops in plain words, never with --pure or --dir.
+  const silent = opencodeRunHelp(dir, {}, fake("silent", ""));
+  assert.equal(silent, "");
+  assert.throws(() => opencodeCommands(silent, model, dir), /lists neither --standalone \(OpenCode 2\) nor --pure \(OpenCode 1\); it said: nothing$/);
+  // A probe that hangs is stopped at its limit and named so.
+  const hung = opencodeRunHelp(dir, {}, fake("hang", "setTimeout(() => {}, 30_000);"), 300);
+  assert.match(hung!, /\(opencode run --help timed out after 0\.3s\)$/);
+  assert.throws(() => opencodeCommands(hung, model, dir), /it said: \(opencode run --help timed out after 0\.3s\)$/);
+});
+
+test("a real OpenCode 2.2.5 run transcript names its session and gives the last answer's text", () => {
+  // `opencode run --standalone --format json` on 2026-11-04, cut down; the answer's text is replaced by a review's.
+  const stdout = [
+    '{"type":"step_start","timestamp":1793801148105,"sessionID":"ses_e591eb2afffeoV1ExfQZXk6iOk","part":{"id":"prt_1a6e156c9001SuXG3geuMEmdqD","sessionID":"ses_e591eb2afffeoV1ExfQZXk6iOk","messageID":"msg_1a6e14e08001OgUXLOXYafc7ro","type":"step-start"}}',
+    '{"type":"tool_use","timestamp":1793801150783,"sessionID":"ses_e591eb2afffeoV1ExfQZXk6iOk","part":{"partID":"prt_1a6e1606b001fY8J0d4eSXt3DQ","sessionID":"ses_e591eb2afffeoV1ExfQZXk6iOk","messageID":"msg_1a6e14e08001OgUXLOXYafc7ro","type":"tool","id":"chatcmpl-tool-b30c9292cdd8836b","tool":"read","state":{"status":"completed","input":{"path":"hello.txt"},"output":"Read file hello.txt, lines 1-1\\n1: the secret word is pumpkin"}}}',
+    '{"type":"step_finish","timestamp":1793801150820,"sessionID":"ses_e591eb2afffeoV1ExfQZXk6iOk","part":{"id":"prt_1a6e16164001VdWlrToqiMI92q","sessionID":"ses_e591eb2afffeoV1ExfQZXk6iOk","messageID":"msg_1a6e14e08001OgUXLOXYafc7ro","type":"step-finish","reason":"tool-calls","cost":0}}',
+    '{"type":"text","timestamp":1793801168289,"sessionID":"ses_e591eb2afffeoV1ExfQZXk6iOk","part":{"id":"prt_1a6e183c2001VSddHvD8l9tlC1","sessionID":"ses_e591eb2afffeoV1ExfQZXk6iOk","messageID":"msg_1a6e180ba001rM3vUldtAqcKAK","type":"text","text":"REVIEW_STATUS: complete\\nDefects: none","time":{"start":1793801159618,"end":1793801168289}}}',
+  ].join("\n");
+  const model = "opencode/deepseek-v4.1-flash-free";
+  const call = opencodeAdapter(parseAgentArgs(["review", ".", "brief", "--model", model]), "/git", "/out", () => opencodeHelpV2);
+  assert.equal(call.session(stdout), "ses_e591eb2afffeoV1ExfQZXk6iOk");
+  const exported = () => JSON.stringify({ messages: [{ type: "user" }, { type: "assistant", model: { id: "deepseek-v4.1-flash-free", providerID: "opencode", variant: "default" } }] });
+  assert.equal(opencodeResult(stdout, model, exported), "REVIEW_STATUS: complete\nDefects: none");
 });
 
 test("OpenCode's start limit defaults to five minutes and refuses a value that is not a positive integer", () => {
