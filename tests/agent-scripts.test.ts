@@ -342,6 +342,12 @@ setTimeout(() => {}, 30_000);`), 300);
   const leaver = opencodeRunHelp(dir, {}, fake("leaver", `require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], { stdio: "inherit" }).unref();
 process.stdout.write(${JSON.stringify(opencodeHelpV2)});`), 5_000);
   assert.equal(opencodeCommands(leaver, model, dir).version, 2);
+  // Help that names --standalone still picks OpenCode 2 when the CLI then exits with an error.
+  const failing = opencodeRunHelp(dir, {}, fake("failing", `process.stdout.write(${JSON.stringify(opencodeHelpV2)}); process.exitCode = 1;`));
+  assert.match(failing!, /\(opencode run --help failed \(exit 1\)\)$/);
+  assert.equal(opencodeCommands(failing, model, dir).version, 2);
+  // A worktree folder that does not exist gives no help at all, like a missing CLI.
+  assert.equal(opencodeRunHelp(join(dir, "no such folder"), {}, "true"), null);
   // A CLI file that is not executable stops in plain words, naming the cause.
   const plain = fake("plain", "");
   chmodSync(plain, 0o644);
