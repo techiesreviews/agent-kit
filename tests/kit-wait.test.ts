@@ -673,11 +673,12 @@ test("ci on a repo with no active workflows says no checks instead of waiting, f
   result(await run(t, ["ci", "--pr", "42", "--timeout", "5s"], red.env), 1, /^RESULT: fail ci pr 42 abcdef0 failed: deploy$/);
 });
 
-test("ci PR in a repo with workflows keeps waiting for a run, which can be slow to start, and for outside checks", async (t) => {
+test("ci PR in a repo with workflows keeps waiting for a run, which can be slow to start, whatever outside checks it lists", async (t) => {
   // No run yet and GitHub lists no checks: never a pass, however long it has been.
   const fixture = fakeGh(t, "pr-no-checks");
   result(await run(t, ["ci", "--pr", "42", "--timeout", "1"], { ...fixture.env, KIT_WAIT_NO_CHECKS_MS: "1" }), 1, /timed out after 1/);
-  // A pending outside check keeps it waiting, with workflows or without.
+  // Without workflows a pending outside check keeps it waiting; with workflows only a run ends the wait, so outside
+  // checks with no run still wait (the wait never reads them there).
   const pages = fakeGh(t, "no-workflows-pages");
   result(await run(t, ["ci", "--pr", "42", "--timeout", "1"], pages.env), 1, /timed out after 1/);
   const other = fakeGh(t, "pr-other-checks");

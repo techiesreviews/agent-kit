@@ -35,7 +35,8 @@ only a small launcher and its own settings; the kit itself lives here, once.
   it is a release (`kit pr --release --base main`, from a branch cut at `origin/dev`), and its RESULT line names
   that rule. A project whose settings still land on `main` gets its PRs there, with `kit doctor`'s warning, until
   its settings move to `dev`. `kit init --all` opens its PRs into the landing branch only: a project whose settings
-  still land on `main` is skipped and named.
+  still land on `main` is skipped and named, as is one whose landing branch is not on origin yet (with the push a
+  person runs to make it). Its `kit pr` gets `--base` with the landing branch the main checkout's settings name.
 - `kit doctor` warns (never fails) when the settings land on `main` or `master` (or on their release branch), or
   there is no `dev` branch in a project with no GitHub repo; with a GitHub repo, a missing `origin/dev` fails its
   base check, which names how a person makes it. A project that lands on `main` on purpose names why in

@@ -720,6 +720,10 @@ function all() {
       const why = land === release || !release ? "the branch it releases from" : "not dev";
       return ["skipped", `skipped: its settings land on ${land}, ${why}, so kit init --all opens no PR into it; set "branches": { "land": "dev", "release": "${release ?? land}" } once dev exists (a person makes it from their own terminal: git push origin origin/${release ?? land}:refs/heads/dev), or name its exception in "branches": { "exception": "<reason>" }`];
     }
+    if (git(main, "rev-parse", "--verify", "--quiet", `refs/remotes/origin/${land}`).status !== 0) {
+      const push = release ? `git push origin origin/${release}:refs/heads/${land}` : `git push origin <branch>:refs/heads/${land}`;
+      return ["skipped", `skipped: origin has no ${land} branch; a person makes it from their own terminal (${push}), then kit init --all lands the setup there`];
+    }
     if (git(main, "cat-file", "-e", `refs/remotes/origin/${land}:${kitSettingsFile}`).status !== 0) return ["skipped", `skipped: origin/${land} has no ${kitSettingsFile}; land the project's setup first`];
 
     const branch = "kit/init-pieces", path = `${main}-kit-init-pieces`, tip = `refs/heads/${branch}`;
@@ -835,8 +839,9 @@ function all() {
     const log = join(logs, `${name}.log`);
     mkdirSync(logs, { recursive: true });
     const output = openSync(log, "w");
-    // timeout stops kit pr's whole process group (its checks, gh, git), not only the front door.
-    const pr = run("timeout", ["-k", "30", String(seconds), join(home, "kit"), "pr", "--title", `Kit setup: add what kit init writes today (kit ${sha})`],
+    // timeout stops kit pr's whole process group (its checks, gh, git), not only the front door. --base names the
+    // landing branch the main checkout's settings give, as the worktree's own (origin/<land>'s) may still name main.
+    const pr = run("timeout", ["-k", "30", String(seconds), join(home, "kit"), "pr", "--base", land, "--title", `Kit setup: add what kit init writes today (kit ${sha})`],
       { cwd: path, env: local, stdio: ["ignore", output, output], timeout: 0 });
     closeSync(output);
     if (pr.status === 124 || pr.status === 137) {

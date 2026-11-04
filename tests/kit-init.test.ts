@@ -389,6 +389,7 @@ test("a repo with no commit yet names dev with a note and makes no branch", (t) 
   mkdirSync(empty);
   f.git(empty, "init", "-q", "--initial-branch=main");
   const run = f.init(empty, ["--light"]);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
   assert.doesNotMatch(run.stdout, /^made branch|could not make branch/m);
   assert.match(run.stdout, /^note: branch dev is not here or on origin yet/m);
   assert.deepEqual(JSON.parse(readFileSync(join(empty, "scripts/agents/kit.json"), "utf8")).branches, { land: "dev", release: "main" });
@@ -646,7 +647,7 @@ test("--all lands the missing pieces in every listed project through its own kit
   assert.equal(existsSync(`${open}-kit-init-pieces`), true);
   // behind's change ran through kit pr from a worktree of origin/dev: the pieces, then the line-endings commit.
   const record = readFileSync(join(records, "behind-kit-init-pieces"), "utf8");
-  assert.match(record, /^args --title Kit setup: add what kit init writes today \(kit 0123456\)$/m);
+  assert.match(record, /^args --base dev --title Kit setup: add what kit init writes today \(kit 0123456\)$/m);
   assert.match(record, new RegExp(`^root ${behind}-kit-init-pieces$`, "m"));
   assert.match(record, /^branch kit\/init-pieces$/m);
   assert.match(record, new RegExp(`^node_modules  ${join(behind, "node_modules/dep")}\nstatus $`, "m"));
@@ -774,6 +775,34 @@ test("--all opens no PR into a release branch: settings that still land on main 
     "RESULT: ok init --all: 3 updated (kept, unreleased, usual), 0 up to date, 3 skipped (onmain, prod, same), 0 failed; branches: 1 on dev/main, 1 on dev/no release branch (unreleased), 2 on main/main (kept, same), 1 on main/no release branch (onmain), 1 on main/prod (prod); exceptions: kept: Lex's own edits go live at once",
   ]);
   for (const name of ["onmain", "prod", "same"]) assert.equal(existsSync(join(records, `${name}-kit-init-pieces`)), false, name);
+});
+
+test("--all lands into the landing branch the main checkout names, and names a landing branch missing on origin", (t) => {
+  const f = fixture(t);
+  Object.assign(f.env, ident);
+  const branches = (value: Record<string, string>) => (work: string) => {
+    const kitJson = join(work, "scripts/agents/kit.json");
+    writeFileSync(kitJson, JSON.stringify({ ...JSON.parse(readFileSync(kitJson, "utf8")), branches: value }));
+  };
+  // origin/dev still holds settings landing on main, as when dev was cut before the settings changed; the main
+  // checkout's settings land on dev, so its PR goes into dev, never where origin/dev's settings would send it.
+  const behind = olderProject(f, "behind", branches({ land: "main" }));
+  branches({ land: "dev", release: "main" })(behind);
+  f.git(behind, "commit", "-q", "-am", "land on dev");
+  // Settings landing on dev, with no dev on origin: what is missing is the branch, which a person makes.
+  const nodev = olderProject(f, "nodev");
+  f.git(nodev, "push", "-q", "origin", "--delete", "dev");
+  f.git(nodev, "update-ref", "-d", "refs/remotes/origin/dev");
+  const { records, all } = standInKit(f);
+  const run = all();
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.deepEqual(run.stdout.split("\n").filter((line) => line.startsWith("RESULT: ")), [
+    "RESULT: ok init behind: 2 files changed, 1 file renormalized, through kit pr into dev: merged #7 abc1234",
+    "RESULT: ok init nodev: skipped: origin has no dev branch; a person makes it from their own terminal (git push origin origin/main:refs/heads/dev), then kit init --all lands the setup there",
+    "RESULT: ok init --all: 1 updated (behind), 0 up to date, 1 skipped (nodev), 0 failed; branches: 2 on dev/main",
+  ]);
+  assert.match(readFileSync(join(records, "behind-kit-init-pieces"), "utf8"), /^args --base dev --title Kit setup: add what kit init writes today \(kit 0123456\)$/m);
+  assert.equal(existsSync(join(records, "nodev-kit-init-pieces")), false);
 });
 
 test("kitRegisterProject lists nothing when during() throws, and a failed write leaves no temporary file or lock", (t) => {
