@@ -236,9 +236,20 @@ test("Grok results parse to their text and accept only the requested model with 
   assert.throws(() => grokResult("not JSON", "grok-4.7"));
 });
 
-// The flags each OpenCode's run --help lists, as far as the adapter reads them.
-const opencodeHelpV2 = "USAGE\n  opencode run [flags] [<message...>]\n\nFLAGS\n  --session, -s string    Session ID\n  --agent string\n\nGLOBAL FLAGS\n  --standalone            Run with a private server instead of the background service\n";
-const opencodeHelpV1 = "opencode run [message..]\n\nOptions:\n  --pure      run without external plugins\n  --dir       directory to run in\n  --session   session id to continue\n";
+// `opencode run --help`, cut down, from the real OpenCode 2.2.5 and 1.19.5 (2026-11-04).
+const opencodeHelpV2 = [
+  "USAGE", "  opencode run [flags] [<message...>]", "", "FLAGS",
+  "  --session, -s string    Session ID to continue, or to create if it does not exist",
+  "  --model, -m string      Model to use in the format provider/model#variant", "  --agent string          Agent to use",
+  "  --format choice         Output format (choices: default, json)", "", "GLOBAL FLAGS",
+  "  --standalone                                                        Run with a private server instead of the background service",
+  "  --server string                                                     Connect to a server URL instead of the background service", ""].join("\n");
+const opencodeHelpV1 = [
+  "opencode run [message..]", "", "Options:",
+  "      --pure         run without external plugins                                          [boolean]",
+  "  -s, --session      session id to continue                                                 [string]",
+  "      --agent        agent to use                                                           [string]",
+  "      --dir          directory to run in, path on remote server if attaching                [string]", ""].join("\n");
 
 test("OpenCode adapter runs reviews only, as a read-only agent, and resumes its own session", () => {
   const model = "opencode/deepseek-v4.1-flash-free";
@@ -263,10 +274,20 @@ test("OpenCode adapter runs reviews only, as a read-only agent, and resumes its 
   assert.deepEqual(legacy.args, legacyArgs);
   assert.deepEqual(legacy.resume("ses_1"), [...legacyArgs, "--session", "ses_1"]);
   assert.deepEqual(opencodeCommands(opencodeHelpV1, model, "/work tree").export("ses_1"), ["export", "--pure", "ses_1"]);
-  // Help that cannot be read (no OpenCode at all) keeps the older arguments; the call itself then fails as before.
+  // No help at all (no OpenCode to start) keeps the older arguments; the call itself then fails as a missing CLI did before.
   assert.deepEqual(opencodeAdapter(options, "/git", "/out", () => "").args, legacyArgs);
-  // The real probe asks run --help, so a missing CLI gives empty help rather than an error.
-  assert.equal(opencodeRunHelp("/no/such/opencode"), "");
+  assert.equal(opencodeRunHelp("/", {}, "/no/such/opencode"), "");
+  // Help that names neither flag, or a probe that failed, stops the review in plain words rather than guessing.
+  const neither = /^could not tell how to run this OpenCode read-only: `opencode run --help` lists neither --standalone \(OpenCode 2\) nor --pure \(OpenCode 1\); it said: /;
+  assert.throws(() => opencodeAdapter(options, "/git", "/out", () => "Error: unknown command run\n"), (error: Error) => neither.test(error.message) && error.message.endsWith("it said: Error: unknown command run"));
+  const failed = opencodeRunHelp("/", {}, "false");
+  assert.equal(failed.trim(), "(opencode run --help exit 1)");
+  assert.throws(() => opencodeCommands(failed, model, "/work tree"), (error: Error) => neither.test(error.message) && error.message.endsWith("(opencode run --help exit 1)"));
+  // The probe gets the review's folder and its OpenCode switches.
+  let probed: unknown[] = [];
+  opencodeAdapter(options, "/git", "/out", (...args: unknown[]) => { probed = args; return opencodeHelpV2; });
+  assert.equal(probed[0], "/work tree");
+  assert.deepEqual(probed[1], call.env);
   // The agent denies every tool but reading, searching and listing; project config and Claude Code files stay out.
   assert.equal(call.env.OPENCODE_CONFIG_CONTENT, opencodeReviewConfig);
   assert.deepEqual(JSON.parse(opencodeReviewConfig).agent[opencodeReviewAgent].permission, { "*": "deny", read: "allow", grep: "allow", glob: "allow", list: "allow" });
@@ -343,6 +364,15 @@ test("OpenCode results take the last message's text and accept only the requeste
   for (const models of [[], ["opencode/deepseek-v4.1-flash"], [model, "opencode/other-free"]]) {
     assert.throws(() => opencodeResult(stdout, model, exported2(...models)), /requested model/);
   }
+  // A real OpenCode 2.2.5 `session export`, cut down (2026-11-04): an agent switch, the brief, one answer, the idle mark.
+  const real = JSON.stringify({ info: { id: "ses_e591eb2afffeoV1ExfQZXk6iOk", agent: "ase-review", model: { id: "deepseek-v4.1-flash-free", providerID: "opencode", variant: "default" } },
+    messages: [{ id: "msg_1a6e14d91001RcM0hOjpPA5ZRR", type: "agent-switched", agent: "ase-review", previous: "ase-review" }, { id: "msg_1a6e14d8e001SAxA0HPWlbyyBd", type: "user" },
+      { id: "msg_1a6e14e08001OgUXLOXYafc7ro", type: "assistant", agent: "ase-review", model: { id: "deepseek-v4.1-flash-free", providerID: "opencode", variant: "default" }, finish: "tool-calls", rawFinish: "tool_calls", cost: 0 },
+      { id: "msg_1a6e1a5d2001WzLEidVB6moQPk", type: "idle", outcome: "succeeded" }] });
+  assert.equal(opencodeResult(stdout, model, () => real), "REVIEW_STATUS: complete\nDefects: none");
+  // An answer that names no model is "missing", in either shape.
+  assert.throws(() => opencodeResult(stdout, model, () => JSON.stringify({ messages: [{ type: "assistant" }] })), /\(actual: missing\)$/);
+  assert.throws(() => opencodeResult(stdout, model, () => JSON.stringify({ messages: [{ info: { role: "assistant" } }] })), /\(actual: missing\)$/);
   assert.equal(opencodeResult(event("step_finish"), model, exported(model)), "");
   // Parts without a message id: the last part alone is the report.
   const bare = (value: string) => event("text", { part: { type: "text", text: value } });
