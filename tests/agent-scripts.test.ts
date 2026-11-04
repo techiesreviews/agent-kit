@@ -11,7 +11,7 @@ import { talkStyleLine } from "../brief-lib.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { unitSummary } from "../unit-summary.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
-import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokOutOfCredit, grokResult, inferCli, isoWeek, opencodeAdapter, opencodeCommands, opencodeErrorProblem, opencodeExport, opencodeExportTimeout, opencodeRunHelp, opencodeOutOfCredit, opencodeResult, opencodeReviewAgent, opencodeStartTimeout, opencodeReviewConfig, opencodeUsageLimit, outOfCreditProblem, parseAgentArgs, refusedOutright, sessionObserver, releaseReviewBudget, reserveReviewBudget, reviewBase, reviewFamily, usageLimitProblem } from "../agent-run.mjs";
+import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokOutOfCredit, grokResult, inferCli, isoWeek, opencodeAdapter, opencodeCommands, opencodeErrorProblem, opencodeExport, opencodeExportTimeout, opencodeReviewEnv, opencodeRunHelp, opencodeOutOfCredit, opencodeResult, opencodeReviewAgent, opencodeStartTimeout, opencodeReviewConfig, opencodeUsageLimit, outOfCreditProblem, parseAgentArgs, refusedOutright, sessionObserver, releaseReviewBudget, reserveReviewBudget, reviewBase, reviewFamily, usageLimitProblem } from "../agent-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { durationMilliseconds } from "../sol-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
@@ -290,8 +290,8 @@ test("OpenCode adapter runs reviews only, as a read-only agent, and resumes its 
   const neither = /^could not tell how to run this OpenCode read-only: `opencode run --help` lists neither --standalone \(OpenCode 2\) nor --pure \(OpenCode 1\); it said: /;
   assert.throws(() => opencodeAdapter(options, "/git", "/out", () => "Error: unknown command run\n"), (error: Error) => neither.test(error.message) && error.message.endsWith("it said: Error: unknown command run"));
   const failed = opencodeRunHelp("/", {}, "false");
-  assert.equal(failed!.trim(), "(opencode run --help exit 1)");
-  assert.throws(() => opencodeCommands(failed, model, "/work tree"), (error: Error) => neither.test(error.message) && error.message.endsWith("(opencode run --help exit 1)"));
+  assert.equal(failed!.trim(), "(opencode run --help failed (exit 1))");
+  assert.throws(() => opencodeCommands(failed, model, "/work tree"), (error: Error) => neither.test(error.message) && error.message.endsWith("(opencode run --help failed (exit 1))"));
   // Empty help (a clean exit that printed nothing) is not a missing CLI: it stops too.
   assert.throws(() => opencodeCommands("", model, "/work tree"), (error: Error) => neither.test(error.message) && error.message.endsWith("it said: nothing"));
   // The probe gets the review's folder and its OpenCode switches.
@@ -342,6 +342,29 @@ setTimeout(() => {}, 30_000);`), 300);
   const leaver = opencodeRunHelp(dir, {}, fake("leaver", `require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], { stdio: "inherit" }).unref();
 process.stdout.write(${JSON.stringify(opencodeHelpV2)});`), 5_000);
   assert.equal(opencodeCommands(leaver, model, dir).version, 2);
+  // A CLI file that is not executable stops in plain words, naming the cause.
+  const plain = fake("plain", "");
+  chmodSync(plain, 0o644);
+  assert.throws(() => opencodeCommands(opencodeRunHelp(dir, {}, plain), model, dir), /lists neither .*it said: \(opencode run --help could not be run: not executable \(EACCES\)\)$/);
+});
+
+test("the real OpenCode help probe gets OpenCode 2's environment, a dropped variable included", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ase-opencode-help-env-")), saved = process.env.OPENCODE_CONFIG;
+  t.after(() => {
+    if (saved === undefined) delete process.env.OPENCODE_CONFIG; else process.env.OPENCODE_CONFIG = saved;
+    rmSync(dir, { recursive: true, force: true });
+  });
+  process.env.OPENCODE_CONFIG = join(dir, "elsewhere.json");
+  const fake = join(dir, "opencode");
+  writeFileSync(fake, `#!/usr/bin/env node
+console.log("OPENCODE_CONFIG=" + (process.env.OPENCODE_CONFIG ?? "unset") + "\\nXDG_CONFIG_HOME=" + process.env.XDG_CONFIG_HOME);
+process.stdout.write(${JSON.stringify(opencodeHelpV2)});
+`);
+  chmodSync(fake, 0o755);
+  const help = opencodeRunHelp(dir, opencodeReviewEnv(2, join(dir, "out.md")), fake)!;
+  assert.match(help, /^OPENCODE_CONFIG=unset$/m);
+  assert.ok(help.includes(`XDG_CONFIG_HOME=${join(dir, "opencode-config")}\n`), help);
+  assert.equal(opencodeCommands(help, "opencode/deepseek-v4.1-flash-free", dir).version, 2);
 });
 
 test("a real OpenCode 2.2.5 run transcript names its session and gives the last answer's text", () => {
