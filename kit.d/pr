@@ -344,7 +344,10 @@ async function main(args) {
     });
     if (flags.release && !release) throw new Error("--release needs branches.release in scripts/agents/kit.json");
     // A project that lands on its release branch (land and release both main) opens ordinary PRs into it.
-    if (release && release !== kitBranch("land", settings) && flags.base === release && !flags.release) throw new Error(`--base ${release} requires --release`);
+    // Lex, 2026-10-31: "a branch can go into dev, main can only get dev" (ticket ke-89).
+    const landing = kitBranch("land", settings);
+    if (release && release !== landing && flags.base === release && !flags.release)
+      throw new Error(`--base ${release} requires --release: ${release} only takes ${landing} (kit pr --release --base ${release}, from a branch cut at origin/${landing}); every other branch goes into ${landing}`);
     if (flags.release && flags.base !== release) throw new Error(`--release requires --base ${release}`);
     // A release is cut from exactly what landed: nothing unsaved, HEAD exactly origin/<land> before the rebase onto
     // origin/<release> (ticket 72).

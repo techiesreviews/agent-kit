@@ -320,8 +320,9 @@ function scan(s, timed, depth,    a,n,i,c,q,word,started,escaped,quoted,redirect
 END { scan(source, 0, 0); if (reason) print "reason\037" reason; for (i = 1; i <= pushCount; i++) print pushes[i] }
 ')
 # A push to the project's release branch (branches.release in scripts/agents/kit.json) puts it live
-# without review. A landing branch that deploys on push is guarded by setting it as the release branch
-# too (land equal to release). Prints the guarded branch a push would reach, else nothing.
+# without review, and one to its landing branch (branches.land) skips it: a branch goes into the landing
+# branch, and the release branch takes only the landing branch, both through kit pr. A project whose
+# settings name no release branch is not guarded. Prints the guarded branch a push would reach, else nothing.
 guarded_target() {
   local dir=$1 folder named=''
   shift
@@ -348,12 +349,14 @@ guarded_target() {
   done
 }
 guarded_in() {
-  local dir=$1 root release current arg remote='' all=0 skip=0 tag=0 tags=0 dst upstream
+  local dir=$1 root release land current arg remote='' all=0 skip=0 tag=0 tags=0 dst upstream guarded
   local -a refs=() dsts=()
   shift
   root=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || return 0
   release=$(jq -r '.branches.release | strings' "$root/scripts/agents/kit.json" 2>/dev/null) || return 0
   [[ -n $release ]] || return 0
+  land=$(jq -r '.branches.land | strings' "$root/scripts/agents/kit.json" 2>/dev/null) || land=''
+  [[ -n $land && $land != "$release" ]] || land=''
   for arg; do
     if (( skip )); then skip=0; continue; fi
     case $arg in
@@ -367,7 +370,7 @@ guarded_in() {
       *) if [[ -z $remote ]]; then remote=$arg; else refs+=("$arg"); fi ;;
     esac
   done
-  if (( all )); then printf '%s' "$release"; return 0; fi
+  if (( all )); then printf '%s\037release' "$release"; return 0; fi
   current=$(git -C "$dir" symbolic-ref -q --short HEAD 2>/dev/null) || current=''
   # --tags alone pushes tags only.
   if (( ! ${#refs[@]} && ! tags )); then
@@ -380,7 +383,7 @@ guarded_in() {
     if [[ $arg == tag ]]; then tag=1; continue; fi
     arg=${arg#+}
     # A lone colon pushes every branch that exists on both sides.
-    if [[ $arg == : ]]; then printf '%s' "$release"; return 0; fi
+    if [[ $arg == : ]]; then printf '%s\037release' "$release"; return 0; fi
     if [[ $arg == *:* ]]; then dst=${arg#*:}; [[ -n $dst ]] || dst=${arg%%:*}; else dst=$arg; fi
     # A destination from a variable or $( … ) is taken as the current branch and where it pushes.
     if [[ $dst == *'$'* || $dst == *EXPANSION* ]]; then
@@ -397,13 +400,17 @@ guarded_in() {
     case $dst in
       refs/heads/*) dst=${dst#refs/heads/} ;;
       # A wildcard such as refs/*:refs/* takes branches along.
-      refs/*) [[ $dst == *'*'* && refs/heads/$release == $dst ]] && dsts+=("$release"); continue ;;
+      refs/*)
+        for guarded in "$release" ${land:+"$land"}; do [[ $dst == *'*'* && refs/heads/$guarded == $dst ]] && dsts+=("$guarded"); done
+        continue ;;
     esac
     dsts+=("$dst")
   done
-  for dst in "${dsts[@]}"; do
-    # Unquoted on the right, so a wildcard refspec (refs/heads/*) matches too.
-    if [[ -n $dst && $release == $dst ]]; then printf '%s' "$release"; return 0; fi
+  for guarded in "$release" ${land:+"$land"}; do
+    for dst in "${dsts[@]}"; do
+      # Unquoted on the right, so a wildcard refspec (refs/heads/*) matches too.
+      if [[ -n $dst && $guarded == $dst ]]; then printf '%s\037%s' "$guarded" "$([[ $guarded == "$release" ]] && echo release || echo land)"; return 0; fi
+    done
   done
 }
 base=''
@@ -417,7 +424,12 @@ while IFS=$'\037' read -r -a fields; do
     base=${base:-${CLAUDE_PROJECT_DIR:-$PWD}}
   fi
   branch=$(guarded_target "${fields[@]:1}") || branch=''
-  if [[ -n $branch ]]; then
+  if [[ $branch == *$'\037'land ]]; then
+    branch=${branch%$'\037'land}
+    refusal="Pushing straight to \`$branch\` skips review: a branch goes into \`$branch\` only through \`scripts/agents/kit pr --ticket <ticket>\` (docs too, in its docs tier)."
+    break
+  elif [[ -n $branch ]]; then
+    branch=${branch%$'\037'release}
     refusal="Pushing straight to \`$branch\` puts it live without review. Land it with \`scripts/agents/kit pr --ticket <ticket>\` (or \`kit pr --release --base $branch\` for a release)."
     break
   fi

@@ -82,11 +82,16 @@ export function failingTests(log) {
   return [...failures.values()].slice(0, 10);
 }
 
-export async function latestWorkflowRuns(gh, branch, head) {
-  const workflows = JSON.parse(await gh(["workflow", "list", "--json", "id,name,state"]));
+/** The repo's active workflows ({ id, name, state }). */
+export async function activeWorkflows(gh) {
+  return JSON.parse(await gh(["workflow", "list", "--json", "id,name,state"])).filter((workflow) => workflow.state === "active");
+}
+
+/** Each active workflow's latest run on the branch (at head when given); `workflows` saves listing them again. */
+export async function latestWorkflowRuns(gh, branch, head, workflows) {
+  workflows ??= await activeWorkflows(gh);
   const runs = [];
   for (const workflow of workflows) {
-    if (workflow.state !== "active") continue;
     const args = ["run", "list", "--workflow", String(workflow.id), "--branch", branch, "--limit", "1",
       "--json", "workflowName,status,conclusion,headSha,createdAt,url,databaseId"];
     if (head) args.push("--commit", head);

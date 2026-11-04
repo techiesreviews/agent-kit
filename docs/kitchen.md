@@ -14,6 +14,14 @@ steps and history. **Where the extras differ, they win.** Below, "the landing br
 `branches.land` in the settings file, "the project's checks" are its `checks` commands, and
 "`<land>`" stands for the landing branch's name.
 
+**Branches (Lex, 2026-10-31): a branch goes into the landing branch; the release branch takes
+only the landing branch.** Every project lands on `branches.land` and releases to
+`branches.release` (the usual pair is named in the kit README); `kit init` sets this up and makes the
+landing branch from the release branch, and `kit doctor` warns where a project still lands on its
+release branch. A project that lands there on purpose names why in `branches.exception`. Outside the
+kit's PRs: the editor's saves go to a site's live branch, the chat workspace's backups to their own
+branch, and the kit's own landing branch is released daily by the orchestrator after its checks.
+
 Items marked **planned** are decided but not built. Until a planned item lands, do what the station
 says for today; never claim a planned item ran.
 
@@ -151,8 +159,7 @@ on a usage-limit `problem:` line, tell Lex the reset time and carry on with Clau
   `scripts/agents/kit brief <ticket path> [--note "<text>"]` above its RESULT line. A group's tickets
   run as one job through `kit next --start`, which `kit brief` points to. A project that keeps no
   ticket files (its work is in GitHub Issues) uses `kit brief --task "<title>" --owner <id> --note
-  "<the task>"`. Where the landing
-  branch is also the release branch, a raw claim push is refused: claim with a docs-tier `kit pr`.
+  "<the task>"`. A raw claim push to the landing branch is refused: claim with a docs-tier `kit pr`.
   The brief names the owner, setup, pins, commands, evidence, house rules, wait rule, skills, talk
   style and the report's last line (PR <full URL>, head <SHA>, checks and reviews <state>).
 
@@ -239,8 +246,9 @@ on a usage-limit `problem:` line, tell Lex the reset time and carry on with Clau
   affected` (or `0 selected`); a run prints `✓ <file> (…)` or `✗ <file>: <test> — <error>` per file and
   ends `RESULT: fail specs N of M failed` when any failed.
   `kit status` names a file flaky 3 or more times in 7 days: give it a fix ticket.
-- **Never:** a raw `git push` to the release branch (or a landing branch that is also the release
-  branch, as on a live site); the Bash hook refuses it and names `kit pr`.
+- **Never:** a raw `git push` to the landing or the release branch; the Bash hook refuses it and
+  names `kit pr`. A branch goes into the landing branch; the release branch takes only the landing
+  branch (`kit pr --release`), and `kit pr` refuses any other PR into it.
 - **Done when:** the PR is merged into the landing branch and its number is in the ticket's `landed:`.
 
 ### 10. After a merge: note, scoreboard
