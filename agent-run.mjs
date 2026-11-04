@@ -607,6 +607,11 @@ export const opencodeReviewConfig = JSON.stringify({ agent: { [opencodeReviewAge
 // --pure and --dir and moved export under `session`; it runs in the folder it starts in (the runner starts it
 // in the worktree) and, unless --standalone, hands the call to a shared background service that would not see
 // this call's read-only agent from OPENCODE_CONFIG_CONTENT. --standalone gives each call its own server.
+// The review call itself runs under supervise, which stops its process group only at the limit, a signal or an
+// error. On OpenCode 2.2.5 (2026-11-04) the private server ends with the call: after full second looks through
+// the kit and after plain `run --standalone` calls (one a free-usage refusal), `pgrep -fa opencode` listed no
+// OpenCode process and `opencode service status` said stopped. A later OpenCode that leaves its server running
+// would need supervise to stop the group once the call exits.
 // Help that lists --standalone means OpenCode 2; help that lists --pure means OpenCode 1, where --pure drops
 // plugins and --dir names the worktree. No help (null) means the CLI did not start at all: the old arguments
 // are kept, so the call fails as a missing CLI did before. Any other help, empty included, names neither flag,
