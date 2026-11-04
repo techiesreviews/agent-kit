@@ -754,6 +754,7 @@ test("--all opens no PR into a release branch: settings that still land on main 
   };
   olderProject(f, "onmain", branches({ land: "main" }));
   olderProject(f, "same", branches({ land: "main", release: "main" }));
+  olderProject(f, "prod", branches({ land: "main", release: "prod" }));
   olderProject(f, "kept", branches({ land: "main", release: "main", exception: "Lex's own edits go live at once" }));
   olderProject(f, "usual");
   olderProject(f, "unreleased", branches({ land: "dev", exception: "explains nothing here" }));
@@ -765,12 +766,14 @@ test("--all opens no PR into a release branch: settings that still land on main 
   assert.deepEqual(run.stdout.split("\n").filter((line) => line.startsWith("RESULT: ")), [
     "RESULT: ok init kept: 2 files changed, 1 file renormalized, through kit pr into main: merged #7 abc1234",
     `RESULT: ok init onmain: skipped: ${skip}; ${fix("main")}`,
+    // Main is not the release branch here, so the reason is only that it is not dev, as kit doctor says.
+    `RESULT: ok init prod: skipped: its settings land on main, not dev, so kit init --all opens no PR into it; ${fix("prod")}`,
     `RESULT: ok init same: skipped: ${skip}; ${fix("main")}`,
     "RESULT: ok init unreleased: 2 files changed, 1 file renormalized, through kit pr into dev: merged #7 abc1234",
     "RESULT: ok init usual: 2 files changed, 1 file renormalized, through kit pr into dev: merged #7 abc1234",
-    "RESULT: ok init --all: 3 updated (kept, unreleased, usual), 0 up to date, 2 skipped (onmain, same), 0 failed; branches: 1 on dev/main, 1 on dev/no release branch (unreleased), 2 on main/main (kept, same), 1 on main/no release branch (onmain); exceptions: kept: Lex's own edits go live at once",
+    "RESULT: ok init --all: 3 updated (kept, unreleased, usual), 0 up to date, 3 skipped (onmain, prod, same), 0 failed; branches: 1 on dev/main, 1 on dev/no release branch (unreleased), 2 on main/main (kept, same), 1 on main/no release branch (onmain), 1 on main/prod (prod); exceptions: kept: Lex's own edits go live at once",
   ]);
-  for (const name of ["onmain", "same"]) assert.equal(existsSync(join(records, `${name}-kit-init-pieces`)), false, name);
+  for (const name of ["onmain", "prod", "same"]) assert.equal(existsSync(join(records, `${name}-kit-init-pieces`)), false, name);
 });
 
 test("kitRegisterProject lists nothing when during() throws, and a failed write leaves no temporary file or lock", (t) => {

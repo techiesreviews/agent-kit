@@ -601,6 +601,9 @@ test("pushes to other branches, dry runs, tags and text that mentions a push sti
   const plain = pushProject(t, { land: "main" });
   for (const command of [`(cd ${plain.work} && git push origin main)`, `cd ${plain.work}; git push`, `git -C ${plain.work} push origin main`])
     assert.equal(pushGuard(command, work).status, 0, command);
+  // Settings with a landing branch but no release branch guard nothing, the landing branch included.
+  const unreleased = pushProject(t, { land: "dev" });
+  for (const command of ["git push origin dev", "git push origin HEAD:dev"]) assert.equal(pushGuard(command, unreleased.work).status, 0, command);
 });
 
 test("a push to the landing branch is refused too: a branch goes into dev only through kit pr", (t) => {
