@@ -764,6 +764,13 @@ test("an OpenCode export stopped with its review, or left behind by it, takes it
   mkdirSync(bin);
   assert.throws(() => opencodeExport("ses_1", dir, 1000, undefined, ["session", "export", "ses_1"], { PATH: bin }),
     /^Error: OpenCode export for ses_1 failed: could not be run \(ENOENT\)$/);
+  // An export that says far more on stderr than the helper keeps, in control characters (sixfold in JSON), still reads.
+  writeFileSync(join(bin, "opencode"), `#!/usr/bin/env node
+process.stderr.write("\\u0001".repeat(300 * 1024));
+process.stdout.write('{"messages":[]}');
+`);
+  chmodSync(join(bin, "opencode"), 0o755);
+  assert.equal(opencodeExport("ses_1", dir, 5000, undefined, ["session", "export", "ses_1"], { PATH: `${bin}:${process.env.PATH}` }), '{"messages":[]}');
   // An export that leaves a child holding its stderr, as a private server would, then hangs.
   writeFileSync(join(bin, "opencode"), `#!/usr/bin/env node
 const child = require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], { stdio: ["ignore", "ignore", "inherit"] });
