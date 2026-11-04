@@ -775,7 +775,8 @@ setTimeout(() => {}, 30_000);
   // The review's runner, in a process group of its own, as kit bg and supervise start it.
   const runner = (session: string) => spawn(process.execPath, ["--input-type=module", "-e",
     `import { opencodeExport } from ${JSON.stringify(agentRun)}; opencodeExport(${JSON.stringify(session)}, ${JSON.stringify(dir)}, 30000, undefined, ["session", "export", ${JSON.stringify(session)}], {});`],
-  { cwd: dir, detached: true, stdio: "ignore", env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+  // Killed on purpose, it leaves its export folder behind: TMPDIR keeps that inside this test's folder.
+  { cwd: dir, detached: true, stdio: "ignore", env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, TMPDIR: dir } });
   const until = async (ready: () => boolean, what: string) => {
     for (let i = 0; i < 100 && !ready(); i++) await new Promise(done => setTimeout(done, 50));
     assert.ok(ready(), what);
