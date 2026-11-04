@@ -1138,11 +1138,13 @@ test("with no OpenCode on the machine a review on OpenCode still fails as a miss
   const nodeBin = join(f.dir, "node-bin");
   mkdirSync(nodeBin);
   symlinkSync(process.execPath, join(nodeBin, "node"));
-  const result = f.run(["--base", "HEAD~1"], { ASE_AGENT_CLI: "opencode", ASE_REVIEW_MODEL: "xai/grok-4.7", ASE_REVIEW_BUDGET_GROK: "1",
-    PATH: `${join(f.dir, "bin")}:${nodeBin}:/usr/bin:/bin` });
-  // An opencode in /usr/bin or /bin would be found: this test needs a machine without one there.
-  assert.notEqual(spawnSync("sh", ["-c", "command -v opencode"], { env: { PATH: `${join(f.dir, "bin")}:${nodeBin}:/usr/bin:/bin` } }).status, 0,
-    "an opencode is installed in /usr/bin or /bin, so this test cannot show a missing CLI");
+  const path = `${join(f.dir, "bin")}:${nodeBin}:/usr/bin:/bin`;
+  // An opencode in /usr/bin or /bin would be found and run for real: on such a machine this test cannot show a missing CLI.
+  if (spawnSync("sh", ["-c", "command -v opencode"], { env: { PATH: path } }).status === 0) {
+    t.skip("an opencode is installed in /usr/bin or /bin");
+    return;
+  }
+  const result = f.run(["--base", "HEAD~1"], { ASE_AGENT_CLI: "opencode", ASE_REVIEW_MODEL: "xai/grok-4.7", ASE_REVIEW_BUDGET_GROK: "1", PATH: path });
   assert.notEqual(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stderr, /spawn opencode ENOENT/);
   assert.doesNotMatch(result.stderr, /could not tell how to run this OpenCode/);

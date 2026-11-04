@@ -621,9 +621,11 @@ export function opencodeCommands(help, model, worktree) {
 
 // A helper that runs `<command> <args…>` in a process group of its own and, at the limit or once the command has
 // exited, kills that whole group, so nothing the command left behind (a wrapper's real binary, OpenCode 2's private
-// server) can hold its output open or outlive the limit. The command's stdout goes to the helper's fd 3 when its
-// second argument is "file", else it is kept; stderr is kept. Each keeps its first 256 KiB. The helper prints how
-// the command ended as one JSON line and exits once that line is written.
+// server) can hold its output open or outlive the limit. The group goes too when the helper is stopped (SIGTERM,
+// SIGINT, SIGHUP, as when the runner's own group is stopped) or its parent is gone (a runner killed outright).
+// The command's stdout goes to the helper's fd 3 when its second argument is "file", else it is kept; stderr is
+// kept. Each keeps its first 256 KiB. The helper prints how the command ended as one JSON line and exits once
+// that line is written.
 const groupRun = `
 const { spawn } = require("node:child_process");
 const [limit, stdout, command, ...args] = process.argv.slice(1);
@@ -636,6 +638,10 @@ const finish = end => {
   if (child.pid) try { process.kill(-child.pid, "SIGKILL"); } catch {}
   process.stdout.write(JSON.stringify({ out, err, ...end }) + "\\n", () => process.exit(0));
 };
+process.stdout.on("error", () => process.exit(0));
+for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(signal, () => finish({ stopped: signal }));
+const parent = process.ppid;
+setInterval(() => { if (process.ppid !== parent) finish({ stopped: "parent gone" }); }, 250).unref();
 child.on("error", error => finish({ error: error.code ?? error.message }));
 child.stdout?.on("data", chunk => { if (out.length < cap) out += chunk; });
 child.stderr.on("data", chunk => { if (err.length < cap) err += chunk; });
@@ -665,7 +671,7 @@ export function opencodeRunHelp(worktree, env = {}, command = "opencode", timeou
   if (result.helper.error?.code === "ENOENT" || result.error === "ENOENT") return null;
   if (result.failed) return `${result.helper.stdout ?? ""}${result.helper.stderr ?? ""}\n(opencode run --help: the probe failed: ${result.failed})`;
   const said = `${result.out}${result.err}`;
-  const why = result.timedOut ? `timed out after ${timeout / 1000}s`
+  const why = result.timedOut ? `timed out after ${timeout / 1000}s` : result.stopped ? `was stopped with the review (${result.stopped})`
     : result.error === "EACCES" ? "could not be run: not executable (EACCES)" : result.error ? `could not be run (${result.error})`
     : result.signal ? `was stopped (${result.signal})` : result.status ? `failed (exit ${result.status})` : null;
   return why ? `${said}\n(opencode run --help ${why})` : said;
@@ -739,6 +745,7 @@ export function opencodeExport(session, worktree, timeout, open = openSync, args
     const result = runInGroup("opencode", args, { cwd: worktree, env, timeout, out });
     const last = String(result.err || "").trim().split("\n").at(-1);
     const why = result.failed ? `its helper failed (${result.failed})` : result.timedOut ? `timed out after ${timeout} ms`
+      : result.stopped ? `was stopped with the review (${result.stopped})`
       : result.error ? `could not be run (${result.error})` : result.signal ? `was stopped (${result.signal})`
       : result.status ? `exit ${result.status}${last ? `: ${last}` : ""}` : null;
     if (why) throw new Error(`OpenCode export for ${session} failed: ${why}`);

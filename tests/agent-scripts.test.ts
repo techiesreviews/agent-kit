@@ -758,6 +758,38 @@ test("an HTTP 402 closing line becomes an out-of-credit problem; tool traces, qu
     `${grok}\n${"read more\n".repeat(5)}`]) assert.equal(outOfCreditProblem(text, "grok"), null, text);
 });
 
+test("an OpenCode export stopped with its review, or left behind by it, takes its children down; a missing CLI is named", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ase-opencode-export-stop-")), bin = join(dir, "bin");
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(bin);
+  assert.throws(() => opencodeExport("ses_1", dir, 1000, undefined, ["session", "export", "ses_1"], { PATH: bin }),
+    /^Error: OpenCode export for ses_1 failed: could not be run \(ENOENT\)$/);
+  // An export that leaves a child holding its stderr, as a private server would, then hangs.
+  writeFileSync(join(bin, "opencode"), `#!/usr/bin/env node
+const child = require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], { stdio: ["ignore", "ignore", "inherit"] });
+require("node:fs").writeFileSync(${JSON.stringify(join(dir, "child-"))} + process.argv.at(-1), String(child.pid));
+setTimeout(() => {}, 30_000);
+`);
+  chmodSync(join(bin, "opencode"), 0o755);
+  const agentRun = new URL("../agent-run.mjs", import.meta.url).href;
+  // The review's runner, in a process group of its own, as kit bg and supervise start it.
+  const runner = (session: string) => spawn(process.execPath, ["--input-type=module", "-e",
+    `import { opencodeExport } from ${JSON.stringify(agentRun)}; opencodeExport(${JSON.stringify(session)}, ${JSON.stringify(dir)}, 30000, undefined, ["session", "export", ${JSON.stringify(session)}], {});`],
+  { cwd: dir, detached: true, stdio: "ignore", env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+  const until = async (ready: () => boolean, what: string) => {
+    for (let i = 0; i < 100 && !ready(); i++) await new Promise(done => setTimeout(done, 50));
+    assert.ok(ready(), what);
+  };
+  const gone = (pid: number) => { try { process.kill(pid, 0); return false; } catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; } };
+  for (const [session, stop] of [["stopped", (pid: number) => process.kill(-pid, "SIGTERM")], ["orphaned", (pid: number) => process.kill(pid, "SIGKILL")]] as const) {
+    const run = runner(session), file = join(dir, `child-${session}`);
+    await until(() => existsSync(file) && readFileSync(file, "utf8") !== "", `the ${session} export started its child`);
+    stop(run.pid!);
+    const child = Number(readFileSync(file, "utf8"));
+    await until(() => gone(child), `the ${session} export's child ${child} is still running`);
+  }
+});
+
 test("an OpenCode export whose file cannot be opened still removes its temp folder", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ase-export-tmp-")), previous = process.env.TMPDIR;
   t.after(() => {
