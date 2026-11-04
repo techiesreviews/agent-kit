@@ -95,8 +95,8 @@ on a usage-limit `problem:` line, tell Lex the reset time and carry on with Clau
 
 The OpenCode second look reads only: it may read, search and list files, nothing else. The kit
 works with OpenCode 1 and 2 (before each OpenCode review it reads `opencode run --help` to tell them
-apart, a second at most unless the CLI hangs, then 30 seconds; it stops in plain words when the help
-names neither). OpenCode 2 has no switch to turn plugins off, so there the kit
+apart, usually well under a second, about 30 seconds at most if the CLI hangs; it stops in plain
+words when the help names neither). OpenCode 2 has no switch to turn plugins off, so there the kit
 turns the branch's own OpenCode settings off and gives each review an empty settings folder of its
 own, and drops a settings file or folder named in `OPENCODE_CONFIG` or `OPENCODE_CONFIG_DIR`: no
 plugin from the branch under review or from `~/.config/opencode` loads, and the machine's
