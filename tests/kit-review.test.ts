@@ -965,6 +965,13 @@ if (v1 ? args[0] === "export" : args[0] === "session" && args[1] === "export") {
   appendFileSync(process.env.FAKE_CALLS + ".export-config", JSON.stringify([process.env.OPENCODE_CONFIG ?? null, process.env.OPENCODE_CONFIG_DIR ?? null]) + "\\n");
   if (process.env.FAKE_EXPORT === "fail") { console.error("Exporting session: " + args.at(-1) + "\\nError: session not found"); process.exit(1); }
   if (process.env.FAKE_EXPORT === "hang") await new Promise(done => setTimeout(done, 30_000));
+  // Leaves a child holding stderr open, as a private server would, and records its pid.
+  if (process.env.FAKE_EXPORT === "leave-child") {
+    const { spawn } = await import("node:child_process");
+    const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], { stdio: ["ignore", "ignore", "inherit"] });
+    child.unref();
+    appendFileSync(process.env.FAKE_CALLS + ".export-child", child.pid + "\\n");
+  }
   const models = existsSync(answers) ? readFileSync(answers, "utf8").trim().split("\\n") : [];
   console.error("Exporting session: " + args.at(-1));
   const exported = JSON.stringify({ info: { id: args.at(-1) }, messages: models.flatMap(model => v1 ? [{ info: { role: "user" } },
@@ -1121,6 +1128,7 @@ test("on OpenCode 2 a plugin in the reviewed worktree stays out, and help naming
   const broken = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_OPENCODE_VERSION: "broken" });
   assert.notEqual(broken.status, 0);
   assert.match(broken.stderr, /could not tell how to run this OpenCode read-only: `opencode run --help` lists neither --standalone \(OpenCode 2\) nor --pure \(OpenCode 1\); it said: Error: unknown command run \/ \(opencode run --help failed \(exit 2\)\)$/m);
+  assert.match(broken.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: fail .*could not tell how to run this OpenCode read-only/);
   assert.equal(opencodeCalls(f).length, 1, "no run call after the failed probe");
 });
 
@@ -1132,6 +1140,9 @@ test("with no OpenCode on the machine a review on OpenCode still fails as a miss
   symlinkSync(process.execPath, join(nodeBin, "node"));
   const result = f.run(["--base", "HEAD~1"], { ASE_AGENT_CLI: "opencode", ASE_REVIEW_MODEL: "xai/grok-4.7", ASE_REVIEW_BUDGET_GROK: "1",
     PATH: `${join(f.dir, "bin")}:${nodeBin}:/usr/bin:/bin` });
+  // An opencode in /usr/bin or /bin would be found: this test needs a machine without one there.
+  assert.notEqual(spawnSync("sh", ["-c", "command -v opencode"], { env: { PATH: `${join(f.dir, "bin")}:${nodeBin}:/usr/bin:/bin` } }).status, 0,
+    "an opencode is installed in /usr/bin or /bin, so this test cannot show a missing CLI");
   assert.notEqual(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stderr, /spawn opencode ENOENT/);
   assert.doesNotMatch(result.stderr, /could not tell how to run this OpenCode/);
@@ -1141,14 +1152,19 @@ test("with no OpenCode on the machine a review on OpenCode still fails as a miss
 test("kit review still runs an older OpenCode, whose run --help lists --pure and --dir, with the arguments it took before", (t) => {
   const f = fixture(t);
   withOpencode(f);
-  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_OPENCODE_VERSION: "1" }, true);
+  // The caller's own config folder and file reach OpenCode 1, run and export alike, as before.
+  const config = { XDG_CONFIG_HOME: join(f.dir, "xdg-config"), OPENCODE_CONFIG: join(f.dir, "opencode.json") };
+  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_OPENCODE_VERSION: "1", ...config }, true);
   assert.equal(result.status, 0, result.stderr);
   const call = opencodeCalls(f).at(-1)!;
   assert.equal(call.cwd, f.root);
+  assert.equal(call.xdg, config.XDG_CONFIG_HOME, "OpenCode 1 keeps the caller's config; --pure drops its plugins");
+  assert.equal(call.configFile, config.OPENCODE_CONFIG);
+  assert.equal(readFileSync(join(f.dir, "calls.jsonl.export-xdg"), "utf8").trim(), config.XDG_CONFIG_HOME);
+  assert.deepEqual(JSON.parse(readFileSync(join(f.dir, "calls.jsonl.export-config"), "utf8").trim()), [config.OPENCODE_CONFIG, null]);
   assert.deepEqual(call.args, ["run", "--pure", "--agent", "ase-review", "--format", "json", "-m", opencodeModel, "--dir", f.root]);
   assert.deepEqual(readFileSync(join(f.dir, "calls.jsonl.export-args"), "utf8").trim().split("\n").map(line => JSON.parse(line)),
     [["export", "--pure", "ses_fake"]]);
-  assert.equal(call.xdg, undefined, "OpenCode 1 keeps the machine's config; --pure drops its plugins");
   assert.deepEqual(JSON.parse(call.config).agent["ase-review"].permission, { "*": "deny", read: "allow", grep: "allow", glob: "allow", list: "allow" });
 });
 
@@ -1322,6 +1338,19 @@ test("a failed or hung OpenCode export fails the review with a named problem", (
     assert.ok(Date.now() - started < 10_000, "the export limit stops a hung export");
     assert.match(result.stderr, problem);
   }
+});
+
+test("an OpenCode export that leaves a child holding its output ends on time, and the child is stopped", (t) => {
+  const f = fixture(t);
+  withOpencode(f);
+  const started = Date.now();
+  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_EXPORT: "leave-child" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(Date.now() - started < 10_000, `the review took ${Date.now() - started} ms`);
+  const pid = Number(readFileSync(join(f.dir, "calls.jsonl.export-child"), "utf8").trim());
+  const gone = () => { try { process.kill(pid, 0); return false; } catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; } };
+  for (let i = 0; i < 50 && !gone(); i++) spawnSync("sleep", ["0.05"]);
+  assert.ok(gone(), `the export's child ${pid} is still running`);
 });
 
 test("a large OpenCode export is read whole, not cut where a pipe would stop", (t) => {

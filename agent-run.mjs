@@ -613,45 +613,57 @@ export const opencodeReviewConfig = JSON.stringify({ agent: { [opencodeReviewAge
 // and the review stops with that in plain words.
 export function opencodeCommands(help, model, worktree) {
   const agent = ["--agent", opencodeReviewAgent, "--format", "json", "-m", model];
-  if (help !== null && /^\s{2,}--standalone\b/m.test(help)) return { version: 2, run: ["run", "--standalone", ...agent], export: session => ["session", "export", "--standalone", session] };
-  if (help === null || /^\s{2,}--pure\b/m.test(help)) return { version: 1, run: ["run", "--pure", ...agent, "--dir", worktree], export: session => ["export", "--pure", session] };
+  if (help !== null && /^[ \t]{2,}--standalone\b/m.test(help)) return { version: 2, run: ["run", "--standalone", ...agent], export: session => ["session", "export", "--standalone", session] };
+  if (help === null || /^[ \t]{2,}--pure\b/m.test(help)) return { version: 1, run: ["run", "--pure", ...agent, "--dir", worktree], export: session => ["export", "--pure", session] };
   const said = help.trim().split("\n").filter(line => line.trim()).slice(-3).join(" / ").replace(/\s+/g, " ").slice(0, 300) || "nothing";
   throw new Error(`could not tell how to run this OpenCode read-only: \`opencode run --help\` lists neither --standalone (OpenCode 2) nor --pure (OpenCode 1); it said: ${said}`);
 }
 
-// The probe's helper: it starts `<command> run --help` in a process group of its own and, at the limit or once the
-// command has exited, kills that whole group, so a child the command left behind cannot hold the pipes open. It
-// prints what the command said and how it ended as one JSON line.
-const opencodeHelpProbe = `
+// A helper that runs `<command> <args…>` in a process group of its own and, at the limit or once the command has
+// exited, kills that whole group, so nothing the command left behind (a wrapper's real binary, OpenCode 2's private
+// server) can hold its output open or outlive the limit. The command's stdout goes to the helper's fd 3 when its
+// second argument is "file", else it is kept; stderr is kept. Each keeps its first 256 KiB. The helper prints how
+// the command ended as one JSON line and exits once that line is written.
+const groupRun = `
 const { spawn } = require("node:child_process");
-const [command, limit] = process.argv.slice(1);
-let out = "", err = "", child, done = false;
-const stop = () => { try { process.kill(-child.pid, "SIGKILL"); } catch {} };
-const finish = end => { if (done) return; done = true; stop(); process.stdout.write(JSON.stringify({ out, err, ...end })); process.exit(0); };
-try { child = spawn(command, ["run", "--help"], { detached: true, stdio: ["ignore", "pipe", "pipe"] }); }
-catch (error) { finish({ error: error.code ?? error.message }); }
+const [limit, stdout, command, ...args] = process.argv.slice(1);
+const cap = 262144;
+let out = "", err = "", done = false;
+const child = spawn(command, args, { detached: true, stdio: ["ignore", stdout === "file" ? 3 : "pipe", "pipe"] });
+const finish = end => {
+  if (done) return;
+  done = true;
+  if (child.pid) try { process.kill(-child.pid, "SIGKILL"); } catch {}
+  process.stdout.write(JSON.stringify({ out, err, ...end }) + "\\n", () => process.exit(0));
+};
 child.on("error", error => finish({ error: error.code ?? error.message }));
-child.stdout.on("data", chunk => { out += chunk; });
-child.stderr.on("data", chunk => { err += chunk; });
+child.stdout?.on("data", chunk => { if (out.length < cap) out += chunk; });
+child.stderr.on("data", chunk => { if (err.length < cap) err += chunk; });
 setTimeout(() => finish({ timedOut: true }), Number(limit));
 child.on("close", (status, signal) => finish({ status, signal }));
 // A command that exits while something it started still holds its output ends a moment later all the same.
 child.on("exit", (status, signal) => setTimeout(() => finish({ status, signal }), 500));
 `;
 
+// Runs command with groupRun and returns its JSON line, or null with the helper's own output when it gave none.
+// out, when given, is an open file the command's stdout goes to. The helper gets 10 s beyond the limit to report.
+function runInGroup(command, args, { cwd, env, timeout, out }) {
+  const helper = spawnSync(process.execPath, ["-e", groupRun, String(timeout), out === undefined ? "keep" : "file", command, ...args], {
+    cwd, env: { ...process.env, ...env }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe", ...(out === undefined ? [] : [out])],
+    timeout: timeout + 10_000, killSignal: "SIGKILL" });
+  try { return { ...JSON.parse(helper.stdout), helper }; }
+  catch { return { helper, failed: `${helper.error ? helper.error.code ?? helper.error.message : `exit ${helper.status ?? helper.signal}`}` }; }
+}
+
 // Reads `opencode run --help` (stdout and stderr together) in the worktree with the review's own environment.
 // Help prints and exits without starting a server or reaching a model, so it has its own short limit, apart
 // from ASE_OPENCODE_START_TIMEOUT_MS. A CLI that cannot start (missing, or no such folder) gives null; one that
 // fails, is stopped or hangs gives what it printed and why it stopped, which opencodeCommands then refuses.
 export function opencodeRunHelp(worktree, env = {}, command = "opencode", timeout = 30_000) {
-  const probe = spawnSync(process.execPath, ["-e", opencodeHelpProbe, command, String(timeout)], { cwd: worktree,
-    env: { ...process.env, ...env }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: timeout + 10_000, killSignal: "SIGKILL" });
+  const result = runInGroup(command, ["run", "--help"], { cwd: worktree, env, timeout });
   // The helper itself cannot start in a missing folder: the CLI could not either.
-  if (probe.error?.code === "ENOENT") return null;
-  let result;
-  try { result = JSON.parse(probe.stdout); }
-  catch { return `${probe.stdout ?? ""}${probe.stderr ?? ""}\n(opencode run --help: the probe failed${probe.error ? `: ${probe.error.message}` : ""})`; }
-  if (result.error === "ENOENT") return null;
+  if (result.helper.error?.code === "ENOENT" || result.error === "ENOENT") return null;
+  if (result.failed) return `${result.helper.stdout ?? ""}${result.helper.stderr ?? ""}\n(opencode run --help: the probe failed: ${result.failed})`;
   const said = `${result.out}${result.err}`;
   const why = result.timedOut ? `timed out after ${timeout / 1000}s`
     : result.error === "EACCES" ? "could not be run: not executable (EACCES)" : result.error ? `could not be run (${result.error})`
@@ -717,20 +729,23 @@ export function opencodeStartTimeout(env = process.env) {
 
 // OpenCode exits before a pipe drains, cutting a large export at 192 KiB, so it writes to a file.
 // open is openSync; tests pass one that fails. args are the export's arguments (opencodeCommands) and env the
-// run's own (opencodeReviewEnv), since the export starts OpenCode again.
+// run's own (opencodeReviewEnv), since the export starts OpenCode again. It runs in a process group of its own
+// (runInGroup): OpenCode 2's export starts a private server, which the limit stops with it.
 export function opencodeExport(session, worktree, timeout, open = openSync, args = ["export", "--pure", session], env = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ase-opencode-export-")), file = join(dir, "export.json");
   let out;
   try {
     out = open(file, "w");
-    execFileSync("opencode", args, { cwd: worktree, env: { ...process.env, ...env }, encoding: "utf8", stdio: ["ignore", out, "pipe"],
-      timeout, killSignal: "SIGKILL" });
+    const result = runInGroup("opencode", args, { cwd: worktree, env, timeout, out });
+    const last = String(result.err || "").trim().split("\n").at(-1);
+    const why = result.failed ? `its helper failed (${result.failed})` : result.timedOut ? `timed out after ${timeout} ms`
+      : result.error ? `could not be run (${result.error})` : result.signal ? `was stopped (${result.signal})`
+      : result.status ? `exit ${result.status}${last ? `: ${last}` : ""}` : null;
+    if (why) throw new Error(`OpenCode export for ${session} failed: ${why}`);
     return readFileSync(file, "utf8");
   } catch (error) {
-    const last = String(error.stderr || "").trim().split("\n").at(-1);
-    const why = error.code === "ETIMEDOUT" || error.signal === "SIGKILL" ? `timed out after ${timeout} ms`
-      : error.status ? `exit ${error.status}${last ? `: ${last}` : ""}` : error.message;
-    throw new Error(`OpenCode export for ${session} failed: ${why}`);
+    if (error.message.startsWith(`OpenCode export for ${session} failed: `)) throw error;
+    throw new Error(`OpenCode export for ${session} failed: ${error.message}`);
   } finally {
     if (out !== undefined) closeSync(out);
     rmSync(dir, { recursive: true, force: true });
