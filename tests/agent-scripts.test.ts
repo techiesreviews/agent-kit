@@ -11,7 +11,7 @@ import { talkStyleLine } from "../brief-lib.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { unitSummary } from "../unit-summary.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
-import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokOutOfCredit, grokResult, inferCli, isoWeek, opencodeErrorProblem, opencodeExport, opencodeExportTimeout, opencodeOutOfCredit, opencodeResult, opencodeReviewAgent, opencodeStartTimeout, opencodeReviewConfig, opencodeUsageLimit, outOfCreditProblem, parseAgentArgs, refusedOutright, sessionObserver, releaseReviewBudget, reserveReviewBudget, reviewBase, reviewFamily, usageLimitProblem } from "../agent-run.mjs";
+import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokOutOfCredit, grokResult, inferCli, isoWeek, opencodeAdapter, opencodeCommands, opencodeErrorProblem, opencodeExport, opencodeExportTimeout, opencodeRunHelp, opencodeOutOfCredit, opencodeResult, opencodeReviewAgent, opencodeStartTimeout, opencodeReviewConfig, opencodeUsageLimit, outOfCreditProblem, parseAgentArgs, refusedOutright, sessionObserver, releaseReviewBudget, reserveReviewBudget, reviewBase, reviewFamily, usageLimitProblem } from "../agent-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { durationMilliseconds } from "../sol-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
@@ -236,19 +236,37 @@ test("Grok results parse to their text and accept only the requested model with 
   assert.throws(() => grokResult("not JSON", "grok-4.7"));
 });
 
+// The flags each OpenCode's run --help lists, as far as the adapter reads them.
+const opencodeHelpV2 = "USAGE\n  opencode run [flags] [<message...>]\n\nFLAGS\n  --session, -s string    Session ID\n  --agent string\n\nGLOBAL FLAGS\n  --standalone            Run with a private server instead of the background service\n";
+const opencodeHelpV1 = "opencode run [message..]\n\nOptions:\n  --pure      run without external plugins\n  --dir       directory to run in\n  --session   session id to continue\n";
+
 test("OpenCode adapter runs reviews only, as a read-only agent, and resumes its own session", () => {
   const model = "opencode/deepseek-v4.1-flash-free";
   assert.equal(inferCli(model), "opencode");
   for (const other of ["opencode", "opencode/", "OpenCode/deepseek-v4.1-flash-free", "deepseek-v4.1-flash-free"]) assert.notEqual(inferCli(other), "opencode");
   const options = parseAgentArgs(["review", "/work tree", "brief"], { ASE_REVIEW_MODEL: model });
   assert.equal(options.cli, "opencode");
-  const call = agentInvocation(options, "/shared git", "/out file.md");
+  // OpenCode 2 (2.2.5, 2026-11-04) has no --pure or --dir: it runs in the review's folder with a private server
+  // (--standalone), so this call's read-only agent reaches it rather than a shared background service.
+  const call = opencodeAdapter(options, "/shared git", "/out file.md", () => opencodeHelpV2);
   assert.equal(call.command, "opencode");
   assert.equal(call.capture, true);
-  const args = ["run", "--pure", "--agent", opencodeReviewAgent, "--format", "json", "-m", model, "--dir", "/work tree"];
+  const args = ["run", "--standalone", "--agent", opencodeReviewAgent, "--format", "json", "-m", model];
   assert.deepEqual(call.args, args);
+  assert.ok(!call.args.includes("--pure") && !call.args.includes("--dir"), "OpenCode 2 refuses --pure and --dir");
   assert.deepEqual(call.resume("ses_1"), [...args, "--session", "ses_1"]);
   assert.ok(!call.args.some((arg: string) => /auto|yolo|skip-permissions/.test(arg)));
+  assert.deepEqual(opencodeCommands(opencodeHelpV2, model, "/work tree").export("ses_1"), ["session", "export", "--standalone", "ses_1"]);
+  // An older OpenCode, whose run --help lists --pure and --dir, keeps the arguments it ran with before.
+  const legacy = opencodeAdapter(options, "/shared git", "/out file.md", () => opencodeHelpV1);
+  const legacyArgs = ["run", "--pure", "--agent", opencodeReviewAgent, "--format", "json", "-m", model, "--dir", "/work tree"];
+  assert.deepEqual(legacy.args, legacyArgs);
+  assert.deepEqual(legacy.resume("ses_1"), [...legacyArgs, "--session", "ses_1"]);
+  assert.deepEqual(opencodeCommands(opencodeHelpV1, model, "/work tree").export("ses_1"), ["export", "--pure", "ses_1"]);
+  // Help that cannot be read (no OpenCode at all) keeps the older arguments; the call itself then fails as before.
+  assert.deepEqual(opencodeAdapter(options, "/git", "/out", () => "").args, legacyArgs);
+  // The real probe asks run --help, so a missing CLI gives empty help rather than an error.
+  assert.equal(opencodeRunHelp("/no/such/opencode"), "");
   // The agent denies every tool but reading, searching and listing; project config and Claude Code files stay out.
   assert.equal(call.env.OPENCODE_CONFIG_CONTENT, opencodeReviewConfig);
   assert.deepEqual(JSON.parse(opencodeReviewConfig).agent[opencodeReviewAgent].permission, { "*": "deny", read: "allow", grep: "allow", glob: "allow", list: "allow" });
@@ -304,7 +322,8 @@ test("the session observer records a session only when its id changes", () => {
   const claude = agentInvocation(parseAgentArgs(["review", ".", "brief"]), "/git", "/out");
   // Claude's one JSON result may span chunks.
   assert.deepEqual(watch(claude, [['{"session_id":', true], ['"c1"}', true], ["ignored", false]]), ["c1"]);
-  const opencode = agentInvocation(parseAgentArgs(["review", ".", "brief", "--model", "opencode/deepseek-v4.1-flash-free"]), "/git", "/out");
+  // Given help, so no real OpenCode is asked.
+  const opencode = opencodeAdapter(parseAgentArgs(["review", ".", "brief", "--model", "opencode/deepseek-v4.1-flash-free"]), "/git", "/out", () => opencodeHelpV2);
   // OpenCode's first event names the session, split across chunks; later lines are not read for it.
   const first = JSON.stringify({ type: "step_start", sessionID: "ses_1" }), later = JSON.stringify({ type: "text", sessionID: "ses_2" });
   assert.deepEqual(watch(opencode, [[first.slice(0, 10), true], [`${first.slice(10)}\n`, true], [`${later}\n`, true]]), ["ses_1"]);
@@ -318,6 +337,12 @@ test("OpenCode results take the last message's text and accept only the requeste
   const exported = (...models: string[]) => () => "Exporting session: ses_1\n" + JSON.stringify({ messages: [{ info: { role: "user", model: { providerID: "x", modelID: "y" } } },
     ...models.map(name => ({ info: { role: "assistant", providerID: name.split("/")[0], modelID: name.split("/").slice(1).join("/") } }))] });
   assert.equal(opencodeResult(stdout, model, exported(model, model)), "REVIEW_STATUS: complete\nDefects: none");
+  const exported2 = (...models: string[]) => () => JSON.stringify({ info: { id: "ses_1" }, messages: [{ type: "agent-switched" }, { type: "user", text: "brief" },
+    ...models.map(name => ({ type: "assistant", model: { providerID: name.split("/")[0], id: name.split("/").slice(1).join("/"), variant: "default" } })), { type: "idle" }] });
+  assert.equal(opencodeResult(stdout, model, exported2(model, model)), "REVIEW_STATUS: complete\nDefects: none");
+  for (const models of [[], ["opencode/deepseek-v4.1-flash"], [model, "opencode/other-free"]]) {
+    assert.throws(() => opencodeResult(stdout, model, exported2(...models)), /requested model/);
+  }
   assert.equal(opencodeResult(event("step_finish"), model, exported(model)), "");
   // Parts without a message id: the last part alone is the report.
   const bare = (value: string) => event("text", { part: { type: "text", text: value } });
@@ -770,6 +795,7 @@ test("only a review's first OpenCode call that opens no session is marked silent
   writeFileSync(brief, "tiny brief\n");
   // Silent: no event at all. Otherwise it names its session and stops, as a crash would.
   writeFileSync(join(bin, "opencode"), `#!/usr/bin/env node
+if (process.argv.includes("--help")) { console.log("GLOBAL FLAGS\\n  --standalone  Run with a private server"); process.exit(0); }
 if (process.env.FAKE_OPENCODE_SILENT) await new Promise(done => setTimeout(done, 30_000));
 console.log(JSON.stringify({ type: "step_start", timestamp: Date.now(), sessionID: "ses_fake", part: { type: "step-start", messageID: "m0" } }));
 process.exit(1);

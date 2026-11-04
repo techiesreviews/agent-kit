@@ -248,8 +248,8 @@ export function opencodeErrorProblem(stdout) {
 }
 
 // The events never name the model; the session export does, per assistant message, as
-// provider and model ID. Every answer in the session, retries included, must be the
-// requested provider/model. The report is the text of the last message that has text.
+// provider and model ID (OpenCode 1: info.role and info.providerID/modelID; OpenCode 2: type and
+// model.providerID/id). Every answer in the session, retries included, must be the requested provider/model. The report is the text of the last message that has text.
 // exportSession(id) returns the export's output. A call that failed (non-zero exit or timeout)
 // is not exported and gives no report (null); the runner names its cause. A run that printed
 // an error event but exited 0 is not exported either: the error is thrown.
@@ -265,8 +265,8 @@ export function opencodeResult(stdout, requested, exportSession, failed = false)
   let session;
   try { session = JSON.parse(exported.slice(start)); }
   catch (cause) { throw new Error(`OpenCode export for ${id} is not JSON: ${cause.message}`); }
-  const models = (session.messages ?? []).filter(message => message.info?.role === "assistant")
-    .map(({ info }) => `${info.providerID}/${info.modelID}`);
+  const models = (session.messages ?? []).flatMap(message => message.info?.role === "assistant" ? [`${message.info.providerID}/${message.info.modelID}`]
+    : message.type === "assistant" ? [`${message.model?.providerID}/${message.model?.id}`] : []);
   if (!models.length || !models.every(model => model === requested)) {
     throw new Error(`OpenCode session does not name requested model ${requested} (actual: ${[...new Set(models)].join(", ") || "missing"})`);
   }
@@ -600,13 +600,36 @@ export const opencodeReviewAgent = "ase-review";
 export const opencodeReviewConfig = JSON.stringify({ agent: { [opencodeReviewAgent]: { mode: "primary", description: "Read-only kit review",
   permission: { "*": "deny", read: "allow", grep: "allow", glob: "allow", list: "allow" } } } });
 
-export function opencodeAdapter(options) {
+// OpenCode's flags as its own `run --help` lists them. OpenCode 2 (2.2.5 on 2026-11-04) dropped run's
+// --pure and --dir and moved export under `session`; it runs in the folder it starts in (the runner starts it
+// in the worktree) and, unless --standalone, hands the call to a shared background service that would not see
+// this call's read-only agent from OPENCODE_CONFIG_CONTENT. --standalone gives each call its own server.
+// Help that lists --standalone means OpenCode 2; any other help, or none, keeps OpenCode 1's arguments,
+// where --pure drops plugins and --dir names the worktree. OpenCode 2 has no flag to drop plugins.
+export function opencodeCommands(help, model, worktree) {
+  const agent = ["--agent", opencodeReviewAgent, "--format", "json", "-m", model];
+  return /^\s*--standalone\b/m.test(help)
+    ? { run: ["run", "--standalone", ...agent], export: session => ["session", "export", "--standalone", session] }
+    : { run: ["run", "--pure", ...agent, "--dir", worktree], export: session => ["export", "--pure", session] };
+}
+
+// Reads `opencode run --help` (stdout and stderr; empty when the CLI is missing or fails). It prints and exits at once.
+export function opencodeRunHelp(command = "opencode") {
+  try {
+    return execFileSync(command, ["run", "--help"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000, killSignal: "SIGKILL" });
+  } catch (error) {
+    return `${error.stdout ?? ""}${error.stderr ?? ""}`;
+  }
+}
+
+// help returns `opencode run --help`; tests pass their own.
+export function opencodeAdapter(options, _common, _output, help = opencodeRunHelp) {
   const { kind, worktree, model } = options;
   if (kind !== "review") throw new Error("OpenCode runs reviews only");
   const timeout = opencodeExportTimeout(), startTimeout = opencodeStartTimeout();
-  // --pure drops plugins; the project's own OpenCode config and Claude Code files are not read.
+  // The project's own OpenCode config and Claude Code files are not read (the env below).
   // Effort is not passed: OpenCode's --variant names differ by provider.
-  const args = ["run", "--pure", "--agent", opencodeReviewAgent, "--format", "json", "-m", model, "--dir", worktree];
+  const commands = opencodeCommands(help(), model, worktree), args = commands.run;
   return {
     // Each event is one line and the first names the session, so the runner reads it line by line.
     command: "opencode", capture: true, lines: true,
@@ -618,7 +641,7 @@ export function opencodeAdapter(options) {
     usageLimit: stdout => opencodeUsageLimit(stdout),
     outOfCredit: (stdout, log, status) => opencodeOutOfCredit(stdout) ?? (status ? outOfCreditProblem(log, "opencode") : null),
     errorProblem: stdout => opencodeErrorProblem(stdout),
-    finish: (stdout, _log, status) => opencodeResult(stdout, model, session => opencodeExport(session, worktree, timeout), Boolean(status)),
+    finish: (stdout, _log, status) => opencodeResult(stdout, model, session => opencodeExport(session, worktree, timeout, openSync, commands.export(session)), Boolean(status)),
   };
 }
 
@@ -641,13 +664,13 @@ export function opencodeStartTimeout(env = process.env) {
 }
 
 // OpenCode exits before a pipe drains, cutting a large export at 192 KiB, so it writes to a file.
-// open is openSync; tests pass one that fails.
-export function opencodeExport(session, worktree, timeout, open = openSync) {
+// open is openSync; tests pass one that fails. args are the export's arguments (opencodeCommands).
+export function opencodeExport(session, worktree, timeout, open = openSync, args = ["export", "--pure", session]) {
   const dir = mkdtempSync(join(tmpdir(), "ase-opencode-export-")), file = join(dir, "export.json");
   let out;
   try {
     out = open(file, "w");
-    execFileSync("opencode", ["export", "--pure", session], { cwd: worktree, encoding: "utf8", stdio: ["ignore", out, "pipe"],
+    execFileSync("opencode", args, { cwd: worktree, encoding: "utf8", stdio: ["ignore", out, "pipe"],
       timeout, killSignal: "SIGKILL" });
     return readFileSync(file, "utf8");
   } catch (error) {
