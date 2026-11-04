@@ -962,6 +962,7 @@ if (v1 ? args[0] === "export" : args[0] === "session" && args[1] === "export") {
   appendFileSync(process.env.FAKE_CALLS + ".exports", args.at(-1) + "\\n");
   appendFileSync(process.env.FAKE_CALLS + ".export-args", JSON.stringify(args) + "\\n");
   appendFileSync(process.env.FAKE_CALLS + ".export-xdg", (process.env.XDG_CONFIG_HOME ?? "none") + "\\n");
+  appendFileSync(process.env.FAKE_CALLS + ".export-config", JSON.stringify([process.env.OPENCODE_CONFIG ?? null, process.env.OPENCODE_CONFIG_DIR ?? null]) + "\\n");
   if (process.env.FAKE_EXPORT === "fail") { console.error("Exporting session: " + args.at(-1) + "\\nError: session not found"); process.exit(1); }
   if (process.env.FAKE_EXPORT === "hang") await new Promise(done => setTimeout(done, 30_000));
   const models = existsSync(answers) ? readFileSync(answers, "utf8").trim().split("\\n") : [];
@@ -977,7 +978,8 @@ if (v1 ? args[0] === "export" : args[0] === "session" && args[1] === "export") {
 const input = readFileSync(0, "utf8");
 const resumed = args.includes("--session");
 appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ cli: "opencode", args, input, cwd: process.cwd(), config: process.env.OPENCODE_CONFIG_CONTENT, xdg: process.env.XDG_CONFIG_HOME,
-  noProject: process.env.OPENCODE_DISABLE_PROJECT_CONFIG, noClaude: process.env.OPENCODE_DISABLE_CLAUDE_CODE }) + "\\n");
+  noProject: process.env.OPENCODE_DISABLE_PROJECT_CONFIG, noClaude: process.env.OPENCODE_DISABLE_CLAUDE_CODE,
+  configFile: process.env.OPENCODE_CONFIG, configDir: process.env.OPENCODE_CONFIG_DIR }) + "\\n");
 const emit = (type, extra = {}) => console.log(JSON.stringify({ type, timestamp: Date.now(), sessionID: "ses_fake", ...extra }));
 const mode = process.env.FAKE_MODE || "pass";
 // A provider that is down: no event at all, as on 2026-10-27.
@@ -1016,7 +1018,7 @@ emit("step_finish", { part: { type: "step-finish", reason: "stop", cost: 0 } });
 `;
 
 // What the fake opencode records for each run call.
-interface OpencodeCall { cli: string; args: string[]; input: string; cwd: string; config: string; xdg?: string; noProject: string; noClaude: string }
+interface OpencodeCall { cli: string; args: string[]; input: string; cwd: string; config: string; xdg?: string; noProject: string; noClaude: string; configFile?: string; configDir?: string }
 
 function opencodeCalls(f: ReturnType<typeof fixture>): OpencodeCall[] {
   const file = join(f.dir, "calls.jsonl");
@@ -1082,8 +1084,11 @@ test("an incomplete OpenCode answer is re-asked once in the same session", (t) =
     assert.ok(!calls[0].args.includes("--session"));
     assert.equal(calls[1].args[calls[1].args.indexOf("--session") + 1], "ses_fake");
     assert.equal(calls[1].args[calls[1].args.indexOf("--agent") + 1], "ase-review");
-    // OpenCode 2 reopens the session with its own private server too.
+    // OpenCode 2 reopens the session with its own private server too, and the same empty config folder as the first call and the export.
     assert.ok(calls[1].args.includes("--standalone"));
+    assert.match(calls[0].xdg!, /\/opencode-config$/);
+    assert.equal(calls[1].xdg, calls[0].xdg);
+    if (mode === "retry-pass") for (const xdg of readFileSync(join(f.dir, "calls.jsonl.export-xdg"), "utf8").trim().split("\n")) assert.equal(xdg, calls[0].xdg);
     assert.match(calls[1].input, /^Your reply must start with the line REVIEW_STATUS: complete/);
     const evidence = f.evidence(result.stdout);
     if (mode === "retry-pass") assert.equal(readFileSync(join(evidence, "result.md"), "utf8").trimEnd(), complete.trimEnd());
@@ -1105,9 +1110,14 @@ test("on OpenCode 2 a plugin in the reviewed worktree stays out, and help naming
   withOpencode(f);
   mkdirSync(join(f.root, ".opencode", "plugin"), { recursive: true });
   writeFileSync(join(f.root, ".opencode", "plugin", "x.js"), "export const X = async () => ({});\n");
-  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel }, true);
+  // A config file or folder named in the caller's environment reaches neither the run nor the export.
+  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, OPENCODE_CONFIG: join(f.dir, "elsewhere.json"), OPENCODE_CONFIG_DIR: join(f.dir, "elsewhere") }, true);
   assert.equal(result.status, 0, result.stderr);
   assert.doesNotMatch(result.stderr, /plugin loaded/);
+  const run = opencodeCalls(f).at(-1)!;
+  assert.equal(run.configFile, undefined);
+  assert.equal(run.configDir, undefined);
+  assert.deepEqual(JSON.parse(readFileSync(join(f.dir, "calls.jsonl.export-config"), "utf8").trim()), [null, null]);
   const broken = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_OPENCODE_VERSION: "broken" });
   assert.notEqual(broken.status, 0);
   assert.match(broken.stderr, /could not tell how to run this OpenCode read-only: `opencode run --help` lists neither --standalone \(OpenCode 2\) nor --pure \(OpenCode 1\); it said: Error: unknown command run \/ \(opencode run --help exit 2\)$/m);
