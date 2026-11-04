@@ -1124,6 +1124,20 @@ test("on OpenCode 2 a plugin in the reviewed worktree stays out, and help naming
   assert.equal(opencodeCalls(f).length, 1, "no run call after the failed probe");
 });
 
+test("with no OpenCode on the machine a review on OpenCode still fails as a missing CLI and gives its count back", (t) => {
+  const f = fixture(t);
+  // Only node joins the fake bin: an opencode installed beside node must not be found.
+  const nodeBin = join(f.dir, "node-bin");
+  mkdirSync(nodeBin);
+  symlinkSync(process.execPath, join(nodeBin, "node"));
+  const result = f.run(["--base", "HEAD~1"], { ASE_AGENT_CLI: "opencode", ASE_REVIEW_MODEL: "xai/grok-4.7", ASE_REVIEW_BUDGET_GROK: "1",
+    PATH: `${join(f.dir, "bin")}:${nodeBin}:/usr/bin:/bin` });
+  assert.notEqual(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stderr, /spawn opencode ENOENT/);
+  assert.doesNotMatch(result.stderr, /could not tell how to run this OpenCode/);
+  assert.deepEqual(f.counts(), { grok: { "kit-review": 0 } }, "the count reserved for the call is given back");
+});
+
 test("kit review still runs an older OpenCode, whose run --help lists --pure and --dir, with the arguments it took before", (t) => {
   const f = fixture(t);
   withOpencode(f);
