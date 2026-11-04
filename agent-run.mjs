@@ -7,7 +7,7 @@
 // for a refusal its CLI prints as JSON, and lines: true when a captured CLI prints one JSON
 // event per line, so the runner reads its session from new lines only. The shared
 // runner owns logs, the build contract, deadlines, process groups and Git status.
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -248,8 +248,9 @@ export function opencodeErrorProblem(stdout) {
 }
 
 // The events never name the model; the session export does, per assistant message, as
-// provider and model ID. Every answer in the session, retries included, must be the
-// requested provider/model. The report is the text of the last message that has text.
+// provider and model ID (OpenCode 1: info.role and info.providerID/modelID; OpenCode 2: type and
+// model.providerID/id). Every answer in the session, retries included, must be the requested
+// provider/model. The report is the text of the last message that has text.
 // exportSession(id) returns the export's output. A call that failed (non-zero exit or timeout)
 // is not exported and gives no report (null); the runner names its cause. A run that printed
 // an error event but exited 0 is not exported either: the error is thrown.
@@ -265,8 +266,10 @@ export function opencodeResult(stdout, requested, exportSession, failed = false)
   let session;
   try { session = JSON.parse(exported.slice(start)); }
   catch (cause) { throw new Error(`OpenCode export for ${id} is not JSON: ${cause.message}`); }
-  const models = (session.messages ?? []).filter(message => message.info?.role === "assistant")
-    .map(({ info }) => `${info.providerID}/${info.modelID}`);
+  // An answer that names no provider or model counts as "missing", which never matches.
+  const named = (provider, id) => provider && id ? `${provider}/${id}` : "missing";
+  const models = (session.messages ?? []).flatMap(message => message.info?.role === "assistant" ? [named(message.info.providerID, message.info.modelID)]
+    : message.type === "assistant" ? [named(message.model?.providerID, message.model?.id)] : []);
   if (!models.length || !models.every(model => model === requested)) {
     throw new Error(`OpenCode session does not name requested model ${requested} (actual: ${[...new Set(models)].join(", ") || "missing"})`);
   }
@@ -600,17 +603,114 @@ export const opencodeReviewAgent = "ase-review";
 export const opencodeReviewConfig = JSON.stringify({ agent: { [opencodeReviewAgent]: { mode: "primary", description: "Read-only kit review",
   permission: { "*": "deny", read: "allow", grep: "allow", glob: "allow", list: "allow" } } } });
 
-export function opencodeAdapter(options) {
+// OpenCode's flags as its own `run --help` lists them. OpenCode 2 (2.2.5 on 2026-11-04) dropped run's
+// --pure and --dir and moved export under `session`; it runs in the folder it starts in (the runner starts it
+// in the worktree) and, unless --standalone, hands the call to a shared background service that would not see
+// this call's read-only agent from OPENCODE_CONFIG_CONTENT. --standalone gives each call its own server.
+// The review call itself runs under supervise, which stops its process group only at the limit, a signal or an
+// error. On OpenCode 2.2.5 (2026-11-04) the private server ends with the call: after full second looks through
+// the kit and after plain `run --standalone` calls (one a free-usage refusal), `pgrep -fa opencode` listed no
+// OpenCode process and `opencode service status` said stopped. A later OpenCode that leaves its server running
+// would need supervise to stop the group once the call exits.
+// Help that lists --standalone means OpenCode 2; help that lists --pure means OpenCode 1, where --pure drops
+// plugins and --dir names the worktree. No help (null) means the CLI did not start at all: the old arguments
+// are kept, so the call fails as a missing CLI did before. Any other help, empty included, names neither flag,
+// and the review stops with that in plain words.
+export function opencodeCommands(help, model, worktree) {
+  const agent = ["--agent", opencodeReviewAgent, "--format", "json", "-m", model];
+  if (help !== null && /^[ \t]{2,}--standalone\b/m.test(help)) return { version: 2, run: ["run", "--standalone", ...agent], export: session => ["session", "export", "--standalone", session] };
+  if (help === null || /^[ \t]{2,}--pure\b/m.test(help)) return { version: 1, run: ["run", "--pure", ...agent, "--dir", worktree], export: session => ["export", "--pure", session] };
+  const said = help.trim().split("\n").filter(line => line.trim()).slice(-3).join(" / ").replace(/\s+/g, " ").slice(0, 300) || "nothing";
+  throw new Error(`could not tell how to run this OpenCode read-only: \`opencode run --help\` lists neither --standalone (OpenCode 2) nor --pure (OpenCode 1); it said: ${said}`);
+}
+
+// A helper that runs `<command> <args…>` in a process group of its own and, at the limit or once the command has
+// exited, kills that whole group, so nothing the command left behind (a wrapper's real binary, OpenCode 2's private
+// server) can hold its output open or outlive the limit. The group goes too when the helper is stopped (SIGTERM,
+// SIGINT, SIGHUP, as when the runner's own group is stopped) or its parent is gone (a runner killed outright).
+// The command's stdout goes to the helper's fd 3 when its second argument is "file", else it is kept; stderr is
+// kept. Each keeps its first 256 KiB. The helper prints how the command ended as one JSON line and exits once
+// that line is written.
+const groupRun = `
+const { spawn } = require("node:child_process");
+const [limit, stdout, command, ...args] = process.argv.slice(1);
+const cap = 262144;
+let out = "", err = "", done = false;
+const child = spawn(command, args, { detached: true, stdio: ["ignore", stdout === "file" ? 3 : "pipe", "pipe"] });
+const finish = end => {
+  if (done) return;
+  done = true;
+  if (child.pid) try { process.kill(-child.pid, "SIGKILL"); } catch {}
+  process.stdout.write(JSON.stringify({ out, err, ...end }) + "\\n", () => process.exit(0));
+};
+process.stdout.on("error", () => process.exit(0));
+for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(signal, () => finish({ stopped: signal }));
+const parent = process.ppid;
+setInterval(() => { if (process.ppid !== parent) finish({ stopped: "parent gone" }); }, 250).unref();
+child.on("error", error => finish({ error: error.code ?? error.message }));
+child.stdout?.on("data", chunk => { if (out.length < cap) out = (out + chunk).slice(0, cap); });
+child.stderr.on("data", chunk => { if (err.length < cap) err = (err + chunk).slice(0, cap); });
+setTimeout(() => finish({ timedOut: true }), Number(limit));
+child.on("close", (status, signal) => finish({ status, signal }));
+// A command that exits while something it started still holds its output ends a moment later all the same.
+child.on("exit", (status, signal) => setTimeout(() => finish({ status, signal }), 500));
+`;
+
+// Runs command with groupRun and returns its JSON line, or null with the helper's own output when it gave none.
+// out, when given, is an open file the command's stdout goes to. The helper gets 10 s beyond the limit to report,
+// and room for its line however the kept output escapes in JSON (two 256 KiB captures, six bytes a character at most).
+function runInGroup(command, args, { cwd, env, timeout, out }) {
+  const helper = spawnSync(process.execPath, ["-e", groupRun, String(timeout), out === undefined ? "keep" : "file", command, ...args], {
+    cwd, env: { ...process.env, ...env }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe", ...(out === undefined ? [] : [out])],
+    timeout: timeout + 10_000, killSignal: "SIGKILL", maxBuffer: 8 * 1024 * 1024 });
+  try { return { ...JSON.parse(helper.stdout), helper }; }
+  catch { return { helper, failed: `${helper.error ? helper.error.code ?? helper.error.message : `exit ${helper.status ?? helper.signal}`}` }; }
+}
+
+// Reads `opencode run --help` (stdout and stderr together) in the worktree with the review's own environment.
+// Help prints and exits without starting a server or reaching a model, so it has its own short limit, apart
+// from ASE_OPENCODE_START_TIMEOUT_MS. A CLI that cannot start (missing, or no such folder) gives null; one that
+// fails, is stopped or hangs gives what it printed and why it stopped, which opencodeCommands then refuses.
+export function opencodeRunHelp(worktree, env = {}, command = "opencode", timeout = 30_000) {
+  const result = runInGroup(command, ["run", "--help"], { cwd: worktree, env, timeout });
+  // The helper itself cannot start in a missing folder: the CLI could not either.
+  if (result.helper.error?.code === "ENOENT" || result.error === "ENOENT") return null;
+  if (result.failed) return `${result.helper.stdout ?? ""}${result.helper.stderr ?? ""}\n(opencode run --help: the probe failed: ${result.failed})`;
+  const said = `${result.out}${result.err}`;
+  const why = result.timedOut ? `timed out after ${timeout / 1000}s` : result.stopped ? `was stopped with the review (${result.stopped})`
+    : result.error === "EACCES" ? "could not be run: not executable (EACCES)" : result.error ? `could not be run (${result.error})`
+    : result.signal ? `was stopped (${result.signal})` : result.status ? `failed (exit ${result.status})` : null;
+  return why ? `${said}\n(opencode run --help ${why})` : said;
+}
+
+// The project's own OpenCode config and Claude Code files stay out.
+const opencodeEnv = { OPENCODE_CONFIG_CONTENT: opencodeReviewConfig, OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_DISABLE_CLAUDE_CODE: "1" };
+
+// OpenCode 2 has no switch to drop plugins. OPENCODE_DISABLE_PROJECT_CONFIG keeps the worktree's .opencode plugins
+// out; the machine's own (~/.config/opencode) would still load, so its run and export get an empty config folder
+// of their own: XDG_CONFIG_HOME in the run's folder, which OpenCode makes itself (checked on 2.2.5, 2026-11-04;
+// kit review removes the run's folder afterwards). OpenCode 2.2.5 does not read plugins from ~/.opencode/plugin
+// or ~/.opencode/plugins (checked the same day with a marker plugin there, and one in the config folder as control). A config file or folder named by OPENCODE_CONFIG or
+// OPENCODE_CONFIG_DIR in the caller's environment is dropped (undefined removes a variable). OpenCode 1 keeps the
+// machine's config, as before; --pure drops its plugins.
+export function opencodeReviewEnv(version, output) {
+  return version === 2 ? { ...opencodeEnv, XDG_CONFIG_HOME: join(dirname(output), "opencode-config"), OPENCODE_CONFIG: undefined, OPENCODE_CONFIG_DIR: undefined }
+    : opencodeEnv;
+}
+
+// help(worktree, env) returns `opencode run --help`; tests pass their own.
+export function opencodeAdapter(options, _common, output, help = opencodeRunHelp) {
   const { kind, worktree, model } = options;
   if (kind !== "review") throw new Error("OpenCode runs reviews only");
   const timeout = opencodeExportTimeout(), startTimeout = opencodeStartTimeout();
-  // --pure drops plugins; the project's own OpenCode config and Claude Code files are not read.
   // Effort is not passed: OpenCode's --variant names differ by provider.
-  const args = ["run", "--pure", "--agent", opencodeReviewAgent, "--format", "json", "-m", model, "--dir", worktree];
+  // The probe gets OpenCode 2's environment whichever OpenCode answers: OpenCode 1's help does not read it.
+  const commands = opencodeCommands(help(worktree, opencodeReviewEnv(2, output)), model, worktree), args = commands.run;
+  const env = opencodeReviewEnv(commands.version, output);
   return {
     // Each event is one line and the first names the session, so the runner reads it line by line.
     command: "opencode", capture: true, lines: true,
-    env: { OPENCODE_CONFIG_CONTENT: opencodeReviewConfig, OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_DISABLE_CLAUDE_CODE: "1" },
+    env,
     args,
     resume: session => [...args, "--session", session],
     session: stdout => opencodeSession(stdout),
@@ -618,7 +718,7 @@ export function opencodeAdapter(options) {
     usageLimit: stdout => opencodeUsageLimit(stdout),
     outOfCredit: (stdout, log, status) => opencodeOutOfCredit(stdout) ?? (status ? outOfCreditProblem(log, "opencode") : null),
     errorProblem: stdout => opencodeErrorProblem(stdout),
-    finish: (stdout, _log, status) => opencodeResult(stdout, model, session => opencodeExport(session, worktree, timeout), Boolean(status)),
+    finish: (stdout, _log, status) => opencodeResult(stdout, model, session => opencodeExport(session, worktree, timeout, openSync, commands.export(session), env), Boolean(status)),
   };
 }
 
@@ -641,20 +741,25 @@ export function opencodeStartTimeout(env = process.env) {
 }
 
 // OpenCode exits before a pipe drains, cutting a large export at 192 KiB, so it writes to a file.
-// open is openSync; tests pass one that fails.
-export function opencodeExport(session, worktree, timeout, open = openSync) {
+// open is openSync; tests pass one that fails. args are the export's arguments (opencodeCommands) and env the
+// run's own (opencodeReviewEnv), since the export starts OpenCode again. It runs in a process group of its own
+// (runInGroup): OpenCode 2's export starts a private server, which the limit stops with it.
+export function opencodeExport(session, worktree, timeout, open = openSync, args = ["export", "--pure", session], env = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ase-opencode-export-")), file = join(dir, "export.json");
   let out;
   try {
     out = open(file, "w");
-    execFileSync("opencode", ["export", "--pure", session], { cwd: worktree, encoding: "utf8", stdio: ["ignore", out, "pipe"],
-      timeout, killSignal: "SIGKILL" });
+    const result = runInGroup("opencode", args, { cwd: worktree, env, timeout, out });
+    const last = String(result.err || "").trim().split("\n").at(-1);
+    const why = result.failed ? `its helper failed (${result.failed})` : result.timedOut ? `timed out after ${timeout / 1000}s`
+      : result.stopped ? `was stopped with the review (${result.stopped})`
+      : result.error ? `could not be run (${result.error})` : result.signal ? `was stopped (${result.signal})`
+      : result.status ? `exit ${result.status}${last ? `: ${last}` : ""}` : null;
+    if (why) throw new Error(`OpenCode export for ${session} failed: ${why}`);
     return readFileSync(file, "utf8");
   } catch (error) {
-    const last = String(error.stderr || "").trim().split("\n").at(-1);
-    const why = error.code === "ETIMEDOUT" || error.signal === "SIGKILL" ? `timed out after ${timeout} ms`
-      : error.status ? `exit ${error.status}${last ? `: ${last}` : ""}` : error.message;
-    throw new Error(`OpenCode export for ${session} failed: ${why}`);
+    if (error.message.startsWith(`OpenCode export for ${session} failed: `)) throw error;
+    throw new Error(`OpenCode export for ${session} failed: ${error.message}`);
   } finally {
     if (out !== undefined) closeSync(out);
     rmSync(dir, { recursive: true, force: true });
@@ -867,10 +972,14 @@ async function invokeAgent(adapter, args, descriptor, context) {
   context.calls = previousCalls + 1;
   // The kit waits for the agents it starts itself, so their own turn ends freely: the Stop hook (stop-guard)
   // would otherwise hold a slice's builder for the very kit go job that runs it.
+  // An undefined value removes that variable for the call.
   const extra = { KIT_ALLOW_STOP: "1", ...adapter.env };
   const previous = Object.fromEntries(Object.keys(extra).map(key => [key, process.env[key]]));
   try {
-    Object.assign(process.env, extra);
+    for (const [key, value] of Object.entries(extra)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     const previousLog = readFileSync(logPath, "utf8").length;
     // A CLI with a start limit that names no session within it is stopped as unavailable.
     let silent = false, startTimer, spawned;

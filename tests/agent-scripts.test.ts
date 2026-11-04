@@ -11,7 +11,7 @@ import { talkStyleLine } from "../brief-lib.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { unitSummary } from "../unit-summary.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
-import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokOutOfCredit, grokResult, inferCli, isoWeek, opencodeErrorProblem, opencodeExport, opencodeExportTimeout, opencodeOutOfCredit, opencodeResult, opencodeReviewAgent, opencodeStartTimeout, opencodeReviewConfig, opencodeUsageLimit, outOfCreditProblem, parseAgentArgs, refusedOutright, sessionObserver, releaseReviewBudget, reserveReviewBudget, reviewBase, reviewFamily, usageLimitProblem } from "../agent-run.mjs";
+import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokOutOfCredit, grokResult, inferCli, isoWeek, opencodeAdapter, opencodeCommands, opencodeErrorProblem, opencodeExport, opencodeExportTimeout, opencodeReviewEnv, opencodeRunHelp, opencodeOutOfCredit, opencodeResult, opencodeReviewAgent, opencodeStartTimeout, opencodeReviewConfig, opencodeUsageLimit, outOfCreditProblem, parseAgentArgs, refusedOutright, sessionObserver, releaseReviewBudget, reserveReviewBudget, reviewBase, reviewFamily, usageLimitProblem } from "../agent-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { durationMilliseconds } from "../sol-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
@@ -236,19 +236,69 @@ test("Grok results parse to their text and accept only the requested model with 
   assert.throws(() => grokResult("not JSON", "grok-4.7"));
 });
 
+// `opencode run --help`, cut down, from the real OpenCode 2.2.5 and 1.19.5 (2026-11-04).
+const opencodeHelpV2 = [
+  "USAGE", "  opencode run [flags] [<message...>]", "", "FLAGS",
+  "  --session, -s string    Session ID to continue, or to create if it does not exist",
+  "  --model, -m string      Model to use in the format provider/model#variant", "  --agent string          Agent to use",
+  "  --format choice         Output format (choices: default, json)", "", "GLOBAL FLAGS",
+  "  --standalone                                                        Run with a private server instead of the background service",
+  "  --server string                                                     Connect to a server URL instead of the background service", ""].join("\n");
+const opencodeHelpV1 = [
+  "opencode run [message..]", "", "Options:",
+  "      --pure         run without external plugins                                          [boolean]",
+  "  -s, --session      session id to continue                                                 [string]",
+  "      --agent        agent to use                                                           [string]",
+  "      --dir          directory to run in, path on remote server if attaching                [string]", ""].join("\n");
+
 test("OpenCode adapter runs reviews only, as a read-only agent, and resumes its own session", () => {
   const model = "opencode/deepseek-v4.1-flash-free";
   assert.equal(inferCli(model), "opencode");
   for (const other of ["opencode", "opencode/", "OpenCode/deepseek-v4.1-flash-free", "deepseek-v4.1-flash-free"]) assert.notEqual(inferCli(other), "opencode");
   const options = parseAgentArgs(["review", "/work tree", "brief"], { ASE_REVIEW_MODEL: model });
   assert.equal(options.cli, "opencode");
-  const call = agentInvocation(options, "/shared git", "/out file.md");
+  // OpenCode 2 (2.2.5, 2026-11-04) has no --pure or --dir: it runs in the review's folder with a private server
+  // (--standalone), so this call's read-only agent reaches it rather than a shared background service.
+  const call = opencodeAdapter(options, "/shared git", "/out file.md", () => opencodeHelpV2);
   assert.equal(call.command, "opencode");
   assert.equal(call.capture, true);
-  const args = ["run", "--pure", "--agent", opencodeReviewAgent, "--format", "json", "-m", model, "--dir", "/work tree"];
+  const args = ["run", "--standalone", "--agent", opencodeReviewAgent, "--format", "json", "-m", model];
   assert.deepEqual(call.args, args);
+  assert.ok(!call.args.includes("--pure") && !call.args.includes("--dir"), "OpenCode 2 refuses --pure and --dir");
   assert.deepEqual(call.resume("ses_1"), [...args, "--session", "ses_1"]);
   assert.ok(!call.args.some((arg: string) => /auto|yolo|skip-permissions/.test(arg)));
+  assert.deepEqual(opencodeCommands(opencodeHelpV2, model, "/work tree").export("ses_1"), ["session", "export", "--standalone", "ses_1"]);
+  // An older OpenCode, whose run --help lists --pure and --dir, keeps the arguments it ran with before.
+  const legacy = opencodeAdapter(options, "/shared git", "/out file.md", () => opencodeHelpV1);
+  const legacyArgs = ["run", "--pure", "--agent", opencodeReviewAgent, "--format", "json", "-m", model, "--dir", "/work tree"];
+  assert.deepEqual(legacy.args, legacyArgs);
+  assert.deepEqual(legacy.resume("ses_1"), [...legacyArgs, "--session", "ses_1"]);
+  assert.deepEqual(opencodeCommands(opencodeHelpV1, model, "/work tree").export("ses_1"), ["export", "--pure", "ses_1"]);
+  // No help at all (no OpenCode to start) keeps the older arguments; the call itself then fails as a missing CLI did before.
+  assert.deepEqual(opencodeAdapter(options, "/git", "/out", () => null).args, legacyArgs);
+  assert.equal(opencodeRunHelp("/", {}, "/no/such/opencode"), null);
+  // OpenCode 2 has no switch for plugins, so its run gets an empty config folder of its own, in the run's folder; OpenCode 1 keeps the machine's.
+  assert.equal(call.env.XDG_CONFIG_HOME, "/opencode-config");
+  assert.equal(legacy.env.XDG_CONFIG_HOME, undefined);
+  for (const [key, value] of Object.entries(legacy.env)) assert.equal(call.env[key], value, key);
+  // A config file or folder the caller's environment names is dropped on OpenCode 2 (undefined removes the variable).
+  for (const key of ["OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR"]) {
+    assert.ok(key in call.env && call.env[key] === undefined, key);
+    assert.ok(!(key in legacy.env), key);
+  }
+  // Help that names neither flag, or a probe that failed, stops the review in plain words rather than guessing.
+  const neither = /^could not tell how to run this OpenCode read-only: `opencode run --help` lists neither --standalone \(OpenCode 2\) nor --pure \(OpenCode 1\); it said: /;
+  assert.throws(() => opencodeAdapter(options, "/git", "/out", () => "Error: unknown command run\n"), (error: Error) => neither.test(error.message) && error.message.endsWith("it said: Error: unknown command run"));
+  const failed = opencodeRunHelp("/", {}, "false");
+  assert.equal(failed!.trim(), "(opencode run --help failed (exit 1))");
+  assert.throws(() => opencodeCommands(failed, model, "/work tree"), (error: Error) => neither.test(error.message) && error.message.endsWith("(opencode run --help failed (exit 1))"));
+  // Empty help (a clean exit that printed nothing) is not a missing CLI: it stops too.
+  assert.throws(() => opencodeCommands("", model, "/work tree"), (error: Error) => neither.test(error.message) && error.message.endsWith("it said: nothing"));
+  // The probe gets the review's folder and its OpenCode switches.
+  let probed: unknown[] = [];
+  opencodeAdapter(options, "/git", "/out", (...args: unknown[]) => { probed = args; return opencodeHelpV2; });
+  assert.equal(probed[0], "/work tree");
+  assert.deepEqual(probed[1], call.env);
   // The agent denies every tool but reading, searching and listing; project config and Claude Code files stay out.
   assert.equal(call.env.OPENCODE_CONFIG_CONTENT, opencodeReviewConfig);
   assert.deepEqual(JSON.parse(opencodeReviewConfig).agent[opencodeReviewAgent].permission, { "*": "deny", read: "allow", grep: "allow", glob: "allow", list: "allow" });
@@ -264,6 +314,99 @@ test("OpenCode adapter runs reviews only, as a read-only agent, and resumes its 
   assert.equal(parseAgentArgs(["review", ".", "brief", "--model", model, "--effort", "medium"]).effort, null);
   assert.throws(() => parseAgentArgs(["build", ".", "brief", "--cli", "opencode"]), /reviews only/);
   assert.throws(() => agentInvocation({ ...options, kind: "build" }, "/git", "/out"), /reviews only/);
+});
+
+test("the OpenCode help probe reads stdout and stderr together, and a hung one stops at its own limit", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ase-opencode-help-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const fake = (name: string, body: string) => { const file = join(dir, name); writeFileSync(file, `#!/usr/bin/env node\n${body}\n`); chmodSync(file, 0o755); return file; };
+  const model = "opencode/deepseek-v4.1-flash-free";
+  // Help on stderr only, with a clean exit, still picks OpenCode 2.
+  const stderrOnly = opencodeRunHelp(dir, {}, fake("stderr", `process.stderr.write(${JSON.stringify(opencodeHelpV2)});`));
+  assert.deepEqual(opencodeCommands(stderrOnly, model, dir).run, ["run", "--standalone", "--agent", opencodeReviewAgent, "--format", "json", "-m", model]);
+  // A clean exit that printed nothing stops in plain words, never with --pure or --dir.
+  const silent = opencodeRunHelp(dir, {}, fake("silent", ""));
+  assert.equal(silent, "");
+  assert.throws(() => opencodeCommands(silent, model, dir), /lists neither --standalone \(OpenCode 2\) nor --pure \(OpenCode 1\); it said: nothing$/);
+  // A probe that hangs is stopped at its limit and named so.
+  const hung = opencodeRunHelp(dir, {}, fake("hang", "setTimeout(() => {}, 30_000);"), 300);
+  assert.match(hung!, /\(opencode run --help timed out after 0\.3s\)$/);
+  assert.throws(() => opencodeCommands(hung, model, dir), /it said: \(opencode run --help timed out after 0\.3s\)$/);
+  // A CLI that leaves a child holding its output (as a wrapper starting the real binary would) is stopped with it.
+  const started = Date.now();
+  const pidFile = join(dir, "child.pid");
+  const wrapped = opencodeRunHelp(dir, {}, fake("wrapper", `const child = require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], { stdio: "inherit" });
+require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));
+setTimeout(() => {}, 30_000);`), 300);
+  // The child the wrapper started is stopped with it.
+  const orphan = Number(readFileSync(pidFile, "utf8"));
+  const gone = () => { try { process.kill(orphan, 0); return false; } catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; } };
+  for (let i = 0; i < 50 && !gone(); i++) spawnSync("sleep", ["0.05"]);
+  assert.ok(gone(), `the wrapper's child ${orphan} is still running`);
+  assert.ok(Date.now() - started < 5_000, `the probe took ${Date.now() - started} ms`);
+  assert.match(wrapped!, /\(opencode run --help timed out after 0\.3s\)$/);
+  // One that exits but leaves such a child behind still answers with its help.
+  const leaver = opencodeRunHelp(dir, {}, fake("leaver", `require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], { stdio: "inherit" }).unref();
+process.stdout.write(${JSON.stringify(opencodeHelpV2)});`), 5_000);
+  assert.equal(opencodeCommands(leaver, model, dir).version, 2);
+  // Help that names --standalone still picks OpenCode 2 when the CLI then exits with an error.
+  const failing = opencodeRunHelp(dir, {}, fake("failing", `process.stdout.write(${JSON.stringify(opencodeHelpV2)}); process.exitCode = 1;`));
+  assert.match(failing!, /\(opencode run --help failed \(exit 1\)\)$/);
+  assert.equal(opencodeCommands(failing, model, dir).version, 2);
+  // A worktree folder that does not exist gives no help at all, like a missing CLI.
+  assert.equal(opencodeRunHelp(join(dir, "no such folder"), {}, "true"), null);
+  // A CLI stopped by a signal, and a helper that gives no report, both stop in plain words.
+  const killed = opencodeRunHelp(dir, {}, fake("killed", 'process.kill(process.pid, "SIGTERM");'));
+  assert.match(killed!, /\(opencode run --help was stopped \(SIGTERM\)\)$/);
+  assert.throws(() => opencodeCommands(killed, model, dir), /lists neither .*was stopped \(SIGTERM\)\)$/);
+  const noReport = opencodeRunHelp(dir, {}, "");
+  assert.match(noReport!, /\(opencode run --help: the probe failed: exit 1\)$/);
+  assert.throws(() => opencodeCommands(noReport, model, dir), /lists neither .*the probe failed: exit 1\)$/);
+  // A CLI file that is not executable stops in plain words, naming the cause.
+  const plain = fake("plain", "");
+  chmodSync(plain, 0o644);
+  assert.throws(() => opencodeCommands(opencodeRunHelp(dir, {}, plain), model, dir), /lists neither .*it said: \(opencode run --help could not be run: not executable \(EACCES\)\)$/);
+});
+
+test("the real OpenCode help probe gets OpenCode 2's environment, a dropped variable included", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ase-opencode-help-env-")), saved = [process.env.OPENCODE_CONFIG, process.env.OPENCODE_CONFIG_DIR];
+  t.after(() => {
+    for (const [key, value] of [["OPENCODE_CONFIG", saved[0]], ["OPENCODE_CONFIG_DIR", saved[1]]] as const) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    rmSync(dir, { recursive: true, force: true });
+  });
+  process.env.OPENCODE_CONFIG = join(dir, "elsewhere.json");
+  process.env.OPENCODE_CONFIG_DIR = join(dir, "elsewhere");
+  const fake = join(dir, "opencode");
+  writeFileSync(fake, `#!/usr/bin/env node
+console.log("OPENCODE_CONFIG=" + (process.env.OPENCODE_CONFIG ?? "unset") + "\\nOPENCODE_CONFIG_DIR=" + (process.env.OPENCODE_CONFIG_DIR ?? "unset") +
+  "\\nXDG_CONFIG_HOME=" + process.env.XDG_CONFIG_HOME + "\\nCWD=" + process.cwd());
+process.stdout.write(${JSON.stringify(opencodeHelpV2)});
+`);
+  chmodSync(fake, 0o755);
+  const help = opencodeRunHelp(dir, opencodeReviewEnv(2, join(dir, "out.md")), fake)!;
+  assert.match(help, /^OPENCODE_CONFIG=unset$/m);
+  assert.match(help, /^OPENCODE_CONFIG_DIR=unset$/m);
+  // The probe runs in the review's folder.
+  assert.ok(help.includes(`CWD=${dir}\n`), help);
+  assert.ok(help.includes(`XDG_CONFIG_HOME=${join(dir, "opencode-config")}\n`), help);
+  assert.equal(opencodeCommands(help, "opencode/deepseek-v4.1-flash-free", dir).version, 2);
+});
+
+test("a real OpenCode 2.2.5 run transcript names its session and gives the last answer's text", () => {
+  // `opencode run --standalone --format json` on 2026-11-04, cut down; the answer's text is replaced by a review's.
+  const stdout = [
+    '{"type":"step_start","timestamp":1793801148105,"sessionID":"ses_e591eb2afffeoV1ExfQZXk6iOk","part":{"id":"prt_1a6e156c9001SuXG3geuMEmdqD","sessionID":"ses_e591eb2afffeoV1ExfQZXk6iOk","messageID":"msg_1a6e14e08001OgUXLOXYafc7ro","type":"step-start"}}',
+    '{"type":"tool_use","timestamp":1793801150783,"sessionID":"ses_e591eb2afffeoV1ExfQZXk6iOk","part":{"partID":"prt_1a6e1606b001fY8J0d4eSXt3DQ","sessionID":"ses_e591eb2afffeoV1ExfQZXk6iOk","messageID":"msg_1a6e14e08001OgUXLOXYafc7ro","type":"tool","id":"chatcmpl-tool-b30c9292cdd8836b","tool":"read","state":{"status":"completed","input":{"path":"hello.txt"},"output":"Read file hello.txt, lines 1-1\\n1: the secret word is pumpkin"}}}',
+    '{"type":"step_finish","timestamp":1793801150820,"sessionID":"ses_e591eb2afffeoV1ExfQZXk6iOk","part":{"id":"prt_1a6e16164001VdWlrToqiMI92q","sessionID":"ses_e591eb2afffeoV1ExfQZXk6iOk","messageID":"msg_1a6e14e08001OgUXLOXYafc7ro","type":"step-finish","reason":"tool-calls","cost":0}}',
+    '{"type":"text","timestamp":1793801168289,"sessionID":"ses_e591eb2afffeoV1ExfQZXk6iOk","part":{"id":"prt_1a6e183c2001VSddHvD8l9tlC1","sessionID":"ses_e591eb2afffeoV1ExfQZXk6iOk","messageID":"msg_1a6e180ba001rM3vUldtAqcKAK","type":"text","text":"REVIEW_STATUS: complete\\nDefects: none","time":{"start":1793801159618,"end":1793801168289}}}',
+  ].join("\n");
+  const model = "opencode/deepseek-v4.1-flash-free";
+  const call = opencodeAdapter(parseAgentArgs(["review", ".", "brief", "--model", model]), "/git", "/out", () => opencodeHelpV2);
+  assert.equal(call.session(stdout), "ses_e591eb2afffeoV1ExfQZXk6iOk");
+  const exported = () => JSON.stringify({ messages: [{ type: "user" }, { type: "assistant", model: { id: "deepseek-v4.1-flash-free", providerID: "opencode", variant: "default" } }] });
+  assert.equal(opencodeResult(stdout, model, exported), "REVIEW_STATUS: complete\nDefects: none");
 });
 
 test("OpenCode's start limit defaults to five minutes and refuses a value that is not a positive integer", () => {
@@ -304,7 +447,8 @@ test("the session observer records a session only when its id changes", () => {
   const claude = agentInvocation(parseAgentArgs(["review", ".", "brief"]), "/git", "/out");
   // Claude's one JSON result may span chunks.
   assert.deepEqual(watch(claude, [['{"session_id":', true], ['"c1"}', true], ["ignored", false]]), ["c1"]);
-  const opencode = agentInvocation(parseAgentArgs(["review", ".", "brief", "--model", "opencode/deepseek-v4.1-flash-free"]), "/git", "/out");
+  // Given help, so no real OpenCode is asked.
+  const opencode = opencodeAdapter(parseAgentArgs(["review", ".", "brief", "--model", "opencode/deepseek-v4.1-flash-free"]), "/git", "/out", () => opencodeHelpV2);
   // OpenCode's first event names the session, split across chunks; later lines are not read for it.
   const first = JSON.stringify({ type: "step_start", sessionID: "ses_1" }), later = JSON.stringify({ type: "text", sessionID: "ses_2" });
   assert.deepEqual(watch(opencode, [[first.slice(0, 10), true], [`${first.slice(10)}\n`, true], [`${later}\n`, true]]), ["ses_1"]);
@@ -318,6 +462,21 @@ test("OpenCode results take the last message's text and accept only the requeste
   const exported = (...models: string[]) => () => "Exporting session: ses_1\n" + JSON.stringify({ messages: [{ info: { role: "user", model: { providerID: "x", modelID: "y" } } },
     ...models.map(name => ({ info: { role: "assistant", providerID: name.split("/")[0], modelID: name.split("/").slice(1).join("/") } }))] });
   assert.equal(opencodeResult(stdout, model, exported(model, model)), "REVIEW_STATUS: complete\nDefects: none");
+  const exported2 = (...models: string[]) => () => JSON.stringify({ info: { id: "ses_1" }, messages: [{ type: "agent-switched" }, { type: "user", text: "brief" },
+    ...models.map(name => ({ type: "assistant", model: { providerID: name.split("/")[0], id: name.split("/").slice(1).join("/"), variant: "default" } })), { type: "idle" }] });
+  assert.equal(opencodeResult(stdout, model, exported2(model, model)), "REVIEW_STATUS: complete\nDefects: none");
+  for (const models of [[], ["opencode/deepseek-v4.1-flash"], [model, "opencode/other-free"]]) {
+    assert.throws(() => opencodeResult(stdout, model, exported2(...models)), /requested model/);
+  }
+  // A real OpenCode 2.2.5 `session export`, cut down (2026-11-04): an agent switch, the brief, one answer, the idle mark.
+  const real = JSON.stringify({ info: { id: "ses_e591eb2afffeoV1ExfQZXk6iOk", agent: "ase-review", model: { id: "deepseek-v4.1-flash-free", providerID: "opencode", variant: "default" } },
+    messages: [{ id: "msg_1a6e14d91001RcM0hOjpPA5ZRR", type: "agent-switched", agent: "ase-review", previous: "ase-review" }, { id: "msg_1a6e14d8e001SAxA0HPWlbyyBd", type: "user" },
+      { id: "msg_1a6e14e08001OgUXLOXYafc7ro", type: "assistant", agent: "ase-review", model: { id: "deepseek-v4.1-flash-free", providerID: "opencode", variant: "default" }, finish: "tool-calls", rawFinish: "tool_calls", cost: 0 },
+      { id: "msg_1a6e1a5d2001WzLEidVB6moQPk", type: "idle", outcome: "succeeded" }] });
+  assert.equal(opencodeResult(stdout, model, () => real), "REVIEW_STATUS: complete\nDefects: none");
+  // An answer that names no model is "missing", in either shape.
+  assert.throws(() => opencodeResult(stdout, model, () => JSON.stringify({ messages: [{ type: "assistant" }] })), /\(actual: missing\)$/);
+  assert.throws(() => opencodeResult(stdout, model, () => JSON.stringify({ messages: [{ info: { role: "assistant" } }] })), /\(actual: missing\)$/);
   assert.equal(opencodeResult(event("step_finish"), model, exported(model)), "");
   // Parts without a message id: the last part alone is the report.
   const bare = (value: string) => event("text", { part: { type: "text", text: value } });
@@ -599,6 +758,46 @@ test("an HTTP 402 closing line becomes an out-of-credit problem; tool traces, qu
     `${grok}\n${"read more\n".repeat(5)}`]) assert.equal(outOfCreditProblem(text, "grok"), null, text);
 });
 
+test("an OpenCode export stopped with its review, or left behind by it, takes its children down; a missing CLI is named", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ase-opencode-export-stop-")), bin = join(dir, "bin");
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(bin);
+  assert.throws(() => opencodeExport("ses_1", dir, 1000, undefined, ["session", "export", "ses_1"], { PATH: bin }),
+    /^Error: OpenCode export for ses_1 failed: could not be run \(ENOENT\)$/);
+  // An export that says far more on stderr than the helper keeps, in control characters (sixfold in JSON), still reads.
+  writeFileSync(join(bin, "opencode"), `#!/usr/bin/env node
+process.stderr.write("\\u0001".repeat(300 * 1024));
+process.stdout.write('{"messages":[]}');
+`);
+  chmodSync(join(bin, "opencode"), 0o755);
+  assert.equal(opencodeExport("ses_1", dir, 5000, undefined, ["session", "export", "ses_1"], { PATH: `${bin}:${process.env.PATH}` }), '{"messages":[]}');
+  // An export that leaves a child holding its stderr, as a private server would, then hangs.
+  writeFileSync(join(bin, "opencode"), `#!/usr/bin/env node
+const child = require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], { stdio: ["ignore", "ignore", "inherit"] });
+require("node:fs").writeFileSync(${JSON.stringify(join(dir, "child-"))} + process.argv.at(-1), String(child.pid));
+setTimeout(() => {}, 30_000);
+`);
+  chmodSync(join(bin, "opencode"), 0o755);
+  const agentRun = new URL("../agent-run.mjs", import.meta.url).href;
+  // The review's runner, in a process group of its own, as kit bg and supervise start it.
+  const runner = (session: string) => spawn(process.execPath, ["--input-type=module", "-e",
+    `import { opencodeExport } from ${JSON.stringify(agentRun)}; opencodeExport(${JSON.stringify(session)}, ${JSON.stringify(dir)}, 30000, undefined, ["session", "export", ${JSON.stringify(session)}], {});`],
+  // Killed on purpose, it leaves its export folder behind: TMPDIR keeps that inside this test's folder.
+  { cwd: dir, detached: true, stdio: "ignore", env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, TMPDIR: dir } });
+  const until = async (ready: () => boolean, what: string) => {
+    for (let i = 0; i < 100 && !ready(); i++) await new Promise(done => setTimeout(done, 50));
+    assert.ok(ready(), what);
+  };
+  const gone = (pid: number) => { try { process.kill(pid, 0); return false; } catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; } };
+  for (const [session, stop] of [["stopped", (pid: number) => process.kill(-pid, "SIGTERM")], ["orphaned", (pid: number) => process.kill(pid, "SIGKILL")]] as const) {
+    const run = runner(session), file = join(dir, `child-${session}`);
+    await until(() => existsSync(file) && readFileSync(file, "utf8") !== "", `the ${session} export started its child`);
+    stop(run.pid!);
+    const child = Number(readFileSync(file, "utf8"));
+    await until(() => gone(child), `the ${session} export's child ${child} is still running`);
+  }
+});
+
 test("an OpenCode export whose file cannot be opened still removes its temp folder", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ase-export-tmp-")), previous = process.env.TMPDIR;
   t.after(() => {
@@ -770,6 +969,7 @@ test("only a review's first OpenCode call that opens no session is marked silent
   writeFileSync(brief, "tiny brief\n");
   // Silent: no event at all. Otherwise it names its session and stops, as a crash would.
   writeFileSync(join(bin, "opencode"), `#!/usr/bin/env node
+if (process.argv.includes("--help")) { console.log("GLOBAL FLAGS\\n  --standalone  Run with a private server"); process.exit(0); }
 if (process.env.FAKE_OPENCODE_SILENT) await new Promise(done => setTimeout(done, 30_000));
 console.log(JSON.stringify({ type: "step_start", timestamp: Date.now(), sessionID: "ses_fake", part: { type: "step-start", messageID: "m0" } }));
 process.exit(1);

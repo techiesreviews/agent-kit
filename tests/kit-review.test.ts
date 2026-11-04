@@ -942,18 +942,42 @@ test("kit review gives the budget back when the Grok CLI is missing", (t) => {
 });
 
 // A fake opencode: `run` reads the brief on stdin and prints JSON events; `export` names the model of each answer so far.
+// It is OpenCode 2 (2.2.5), which refuses --pure and --dir and exports with `session export`, unless FAKE_OPENCODE_VERSION=1.
 const fakeOpencode = `#!/usr/bin/env node
 import { appendFileSync, existsSync, fstatSync, readFileSync, writeSync } from "node:fs";
 const args = process.argv.slice(2);
 const answers = process.env.FAKE_CALLS + ".answers";
-if (args[0] === "export") {
+const v1 = process.env.FAKE_OPENCODE_VERSION === "1";
+if (args.includes("--help")) {
+  if (process.env.FAKE_OPENCODE_VERSION === "broken") { console.error("Error: unknown command run"); process.exit(2); }
+  console.log(v1 ? "opencode run [message..]\\n  --pure  run without external plugins\\n  --dir  directory to run in" : "USAGE\\n  opencode run [flags]\\nGLOBAL FLAGS\\n  --standalone  Run with a private server instead of the background service");
+  process.exit(0);
+}
+const unknown = v1 ? [] : args.filter(arg => arg === "--pure" || arg === "--dir");
+// Mimics what was seen on the real 2.2.5: a worktree plugin loads unless OPENCODE_DISABLE_PROJECT_CONFIG=1. The test
+// using it shows the kit sets that switch, as call.noProject does; it is no proof about the real CLI.
+if (!v1 && existsSync(".opencode/plugin") && process.env.OPENCODE_DISABLE_PROJECT_CONFIG !== "1") { console.error("plugin loaded from the worktree"); process.exit(1); }
+if (unknown.length) { console.error("ERRORS\\n" + unknown.map(flag => "  Unrecognized flag: " + flag + " in command opencode " + args[0]).join("\\n")); process.exit(1); }
+if (v1 ? args[0] === "export" : args[0] === "session" && args[1] === "export") {
   appendFileSync(process.env.FAKE_CALLS + ".exports", args.at(-1) + "\\n");
+  appendFileSync(process.env.FAKE_CALLS + ".export-args", JSON.stringify(args) + "\\n");
+  appendFileSync(process.env.FAKE_CALLS + ".export-xdg", (process.env.XDG_CONFIG_HOME ?? "none") + "\\n");
+  appendFileSync(process.env.FAKE_CALLS + ".export-config", JSON.stringify([process.env.OPENCODE_CONFIG ?? null, process.env.OPENCODE_CONFIG_DIR ?? null]) + "\\n");
   if (process.env.FAKE_EXPORT === "fail") { console.error("Exporting session: " + args.at(-1) + "\\nError: session not found"); process.exit(1); }
   if (process.env.FAKE_EXPORT === "hang") await new Promise(done => setTimeout(done, 30_000));
+  // Leaves a child holding stderr open, as a private server would, and records its pid; noisy-child says a lot on stderr first.
+  if (process.env.FAKE_EXPORT === "noisy-child") process.stderr.write("\\u0001".repeat(300 * 1024));
+  if (process.env.FAKE_EXPORT === "leave-child" || process.env.FAKE_EXPORT === "noisy-child") {
+    const { spawn } = await import("node:child_process");
+    const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], { stdio: ["ignore", "ignore", "inherit"] });
+    child.unref();
+    appendFileSync(process.env.FAKE_CALLS + ".export-child", child.pid + "\\n");
+  }
   const models = existsSync(answers) ? readFileSync(answers, "utf8").trim().split("\\n") : [];
   console.error("Exporting session: " + args.at(-1));
-  const exported = JSON.stringify({ info: { id: args.at(-1) }, messages: models.flatMap(model => [{ info: { role: "user" } },
-    { info: { role: "assistant", providerID: model.split("/")[0], modelID: model.split("/").slice(1).join("/") } }]),
+  const exported = JSON.stringify({ info: { id: args.at(-1) }, messages: models.flatMap(model => v1 ? [{ info: { role: "user" } },
+    { info: { role: "assistant", providerID: model.split("/")[0], modelID: model.split("/").slice(1).join("/") } }]
+    : [{ type: "user", text: "brief" }, { type: "assistant", model: { providerID: model.split("/")[0], id: model.split("/").slice(1).join("/"), variant: "default" } }]),
     ...(process.env.FAKE_EXPORT === "big" ? { padding: "x".repeat(400_000) } : {}) }) + "\\n";
   // Like the real CLI, which exits before a pipe drains: anything but a file gets only the first 192 KiB.
   writeSync(1, !fstatSync(1).isFile() ? exported.slice(0, 196_608) : exported);
@@ -961,8 +985,9 @@ if (args[0] === "export") {
 }
 const input = readFileSync(0, "utf8");
 const resumed = args.includes("--session");
-appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ cli: "opencode", args, input, cwd: process.cwd(), config: process.env.OPENCODE_CONFIG_CONTENT,
-  noProject: process.env.OPENCODE_DISABLE_PROJECT_CONFIG, noClaude: process.env.OPENCODE_DISABLE_CLAUDE_CODE }) + "\\n");
+appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ cli: "opencode", args, input, cwd: process.cwd(), config: process.env.OPENCODE_CONFIG_CONTENT, xdg: process.env.XDG_CONFIG_HOME,
+  noProject: process.env.OPENCODE_DISABLE_PROJECT_CONFIG, noClaude: process.env.OPENCODE_DISABLE_CLAUDE_CODE,
+  configFile: process.env.OPENCODE_CONFIG, configDir: process.env.OPENCODE_CONFIG_DIR }) + "\\n");
 const emit = (type, extra = {}) => console.log(JSON.stringify({ type, timestamp: Date.now(), sessionID: "ses_fake", ...extra }));
 const mode = process.env.FAKE_MODE || "pass";
 // A provider that is down: no event at all, as on 2026-10-27.
@@ -1001,7 +1026,7 @@ emit("step_finish", { part: { type: "step-finish", reason: "stop", cost: 0 } });
 `;
 
 // What the fake opencode records for each run call.
-interface OpencodeCall { cli: string; args: string[]; input: string; cwd: string; config: string; noProject: string; noClaude: string }
+interface OpencodeCall { cli: string; args: string[]; input: string; cwd: string; config: string; xdg?: string; noProject: string; noClaude: string; configFile?: string; configDir?: string }
 
 function opencodeCalls(f: ReturnType<typeof fixture>): OpencodeCall[] {
   const file = join(f.dir, "calls.jsonl");
@@ -1033,8 +1058,14 @@ test("kit review runs opencode/<model> read-only, saves findings with severities
   const call = opencodeCalls(f).at(-1)!;
   assert.equal(call.cli, "opencode");
   assert.equal(call.cwd, f.root);
-  assert.deepEqual(call.args.slice(0, 5), ["run", "--pure", "--agent", "ase-review", "--format"]);
-  assert.equal(call.args[call.args.indexOf("-m") + 1], opencodeModel);
+  // OpenCode 2 runs in the review's folder with a private server; it has no --pure or --dir.
+  assert.deepEqual(call.args, ["run", "--standalone", "--agent", "ase-review", "--format", "json", "-m", opencodeModel]);
+  assert.deepEqual(readFileSync(join(f.dir, "calls.jsonl.export-args"), "utf8").trim().split("\n").map(line => JSON.parse(line)),
+    [["session", "export", "--standalone", "ses_fake"]]);
+  // OpenCode 2's run and export get an empty config folder in the run's folder, so the machine's plugins stay out.
+  assert.match(call.xdg!, /\/opencode-config$/);
+  assert.ok(!call.xdg!.startsWith(f.home), call.xdg);
+  assert.equal(readFileSync(join(f.dir, "calls.jsonl.export-xdg"), "utf8").trim(), call.xdg);
   assert.deepEqual(JSON.parse(call.config).agent["ase-review"].permission, { "*": "deny", read: "allow", grep: "allow", glob: "allow", list: "allow" });
   assert.equal(call.noProject, "1");
   assert.equal(call.noClaude, "1");
@@ -1061,6 +1092,11 @@ test("an incomplete OpenCode answer is re-asked once in the same session", (t) =
     assert.ok(!calls[0].args.includes("--session"));
     assert.equal(calls[1].args[calls[1].args.indexOf("--session") + 1], "ses_fake");
     assert.equal(calls[1].args[calls[1].args.indexOf("--agent") + 1], "ase-review");
+    // OpenCode 2 reopens the session with its own private server too, and the same empty config folder as the first call and the export.
+    assert.ok(calls[1].args.includes("--standalone"));
+    assert.match(calls[0].xdg!, /\/opencode-config$/);
+    assert.equal(calls[1].xdg, calls[0].xdg);
+    if (mode === "retry-pass") for (const xdg of readFileSync(join(f.dir, "calls.jsonl.export-xdg"), "utf8").trim().split("\n")) assert.equal(xdg, calls[0].xdg);
     assert.match(calls[1].input, /^Your reply must start with the line REVIEW_STATUS: complete/);
     const evidence = f.evidence(result.stdout);
     if (mode === "retry-pass") assert.equal(readFileSync(join(evidence, "result.md"), "utf8").trimEnd(), complete.trimEnd());
@@ -1075,6 +1111,64 @@ test("an OpenCode answer from another model fails the model check", (t) => {
   const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /OpenCode session does not name requested model opencode\/deepseek-v4\.1-flash-free \(actual: opencode\/other-free, opencode\/deepseek-v4\.1-flash-free\)/);
+});
+
+test("on OpenCode 2 a plugin in the reviewed worktree stays out, and help naming neither flag stops the review in plain words", (t) => {
+  const f = fixture(t);
+  withOpencode(f);
+  mkdirSync(join(f.root, ".opencode", "plugin"), { recursive: true });
+  writeFileSync(join(f.root, ".opencode", "plugin", "x.js"), "export const X = async () => ({});\n");
+  // A config file or folder named in the caller's environment reaches neither the run nor the export.
+  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, OPENCODE_CONFIG: join(f.dir, "elsewhere.json"), OPENCODE_CONFIG_DIR: join(f.dir, "elsewhere") }, true);
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stderr, /plugin loaded/);
+  const run = opencodeCalls(f).at(-1)!;
+  assert.equal(run.configFile, undefined);
+  assert.equal(run.configDir, undefined);
+  assert.deepEqual(JSON.parse(readFileSync(join(f.dir, "calls.jsonl.export-config"), "utf8").trim()), [null, null]);
+  const broken = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_OPENCODE_VERSION: "broken" });
+  assert.notEqual(broken.status, 0);
+  assert.match(broken.stderr, /could not tell how to run this OpenCode read-only: `opencode run --help` lists neither --standalone \(OpenCode 2\) nor --pure \(OpenCode 1\); it said: Error: unknown command run \/ \(opencode run --help failed \(exit 2\)\)$/m);
+  assert.match(broken.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: fail .*could not tell how to run this OpenCode read-only/);
+  assert.equal(opencodeCalls(f).length, 1, "no run call after the failed probe");
+});
+
+test("with no OpenCode on the machine a review on OpenCode still fails as a missing CLI and gives its count back", (t) => {
+  const f = fixture(t);
+  // Only node joins the fake bin: an opencode installed beside node must not be found.
+  const nodeBin = join(f.dir, "node-bin");
+  mkdirSync(nodeBin);
+  symlinkSync(process.execPath, join(nodeBin, "node"));
+  const path = `${join(f.dir, "bin")}:${nodeBin}:/usr/bin:/bin`;
+  // An opencode in /usr/bin or /bin would be found and run for real: on such a machine this test cannot show a missing CLI.
+  if (spawnSync("sh", ["-c", "command -v opencode"], { env: { PATH: path } }).status === 0) {
+    t.skip("an opencode is installed in /usr/bin or /bin");
+    return;
+  }
+  const result = f.run(["--base", "HEAD~1"], { ASE_AGENT_CLI: "opencode", ASE_REVIEW_MODEL: "xai/grok-4.7", ASE_REVIEW_BUDGET_GROK: "1", PATH: path });
+  assert.notEqual(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stderr, /spawn opencode ENOENT/);
+  assert.doesNotMatch(result.stderr, /could not tell how to run this OpenCode/);
+  assert.deepEqual(f.counts(), { grok: { "kit-review": 0 } }, "the count reserved for the call is given back");
+});
+
+test("kit review still runs an older OpenCode, whose run --help lists --pure and --dir, with the arguments it took before", (t) => {
+  const f = fixture(t);
+  withOpencode(f);
+  // The caller's own config folder and file reach OpenCode 1, run and export alike, as before.
+  const config = { XDG_CONFIG_HOME: join(f.dir, "xdg-config"), OPENCODE_CONFIG: join(f.dir, "opencode.json") };
+  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_OPENCODE_VERSION: "1", ...config }, true);
+  assert.equal(result.status, 0, result.stderr);
+  const call = opencodeCalls(f).at(-1)!;
+  assert.equal(call.cwd, f.root);
+  assert.equal(call.xdg, config.XDG_CONFIG_HOME, "OpenCode 1 keeps the caller's config; --pure drops its plugins");
+  assert.equal(call.configFile, config.OPENCODE_CONFIG);
+  assert.equal(readFileSync(join(f.dir, "calls.jsonl.export-xdg"), "utf8").trim(), config.XDG_CONFIG_HOME);
+  assert.deepEqual(JSON.parse(readFileSync(join(f.dir, "calls.jsonl.export-config"), "utf8").trim()), [config.OPENCODE_CONFIG, null]);
+  assert.deepEqual(call.args, ["run", "--pure", "--agent", "ase-review", "--format", "json", "-m", opencodeModel, "--dir", f.root]);
+  assert.deepEqual(readFileSync(join(f.dir, "calls.jsonl.export-args"), "utf8").trim().split("\n").map(line => JSON.parse(line)),
+    [["export", "--pure", "ses_fake"]]);
+  assert.deepEqual(JSON.parse(call.config).agent["ase-review"].permission, { "*": "deny", read: "allow", grep: "allow", glob: "allow", list: "allow" });
 });
 
 test("an OpenCode rate-limit refusal prints the opencode usage-limit problem and counts nothing, whatever its exit", (t) => {
@@ -1238,7 +1332,7 @@ test("a usage limit on the completeness retry is the last problem line", (t) => 
 
 test("a failed or hung OpenCode export fails the review with a named problem", (t) => {
   for (const [mode, problem] of [["fail", /^problem: OpenCode export for ses_fake failed: exit 1: Error: session not found; see .*run\.log$/m],
-    ["hang", /^problem: OpenCode export for ses_fake failed: timed out after 500 ms; see .*run\.log$/m]] as const) {
+    ["hang", /^problem: OpenCode export for ses_fake failed: timed out after 0\.5s; see .*run\.log$/m]] as const) {
     const f = fixture(t);
     withOpencode(f);
     const started = Date.now();
@@ -1246,6 +1340,23 @@ test("a failed or hung OpenCode export fails the review with a named problem", (
     assert.equal(result.status, 1, result.stderr);
     assert.ok(Date.now() - started < 10_000, "the export limit stops a hung export");
     assert.match(result.stderr, problem);
+  }
+});
+
+test("an OpenCode export that leaves a child holding its output ends on time, and the child is stopped", (t) => {
+  const f = fixture(t);
+  withOpencode(f);
+  const started = Date.now();
+  // Quiet, and then with stderr far past what the helper keeps, in control characters, which grow sixfold in JSON.
+  for (const mode of ["leave-child", "noisy-child"]) {
+    rmSync(join(f.dir, "calls.jsonl.export-child"), { force: true });
+    const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_EXPORT: mode });
+    assert.equal(result.status, 0, `${mode}: ${result.stderr}`);
+    assert.ok(Date.now() - started < 20_000, `the review took ${Date.now() - started} ms`);
+    const pid = Number(readFileSync(join(f.dir, "calls.jsonl.export-child"), "utf8").trim());
+    const gone = () => { try { process.kill(pid, 0); return false; } catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; } };
+    for (let i = 0; i < 50 && !gone(); i++) spawnSync("sleep", ["0.05"]);
+    assert.ok(gone(), `${mode}: the export's child ${pid} is still running`);
   }
 });
 
@@ -1285,6 +1396,13 @@ test("agent.sh --resume continues the OpenCode session recorded from its first e
   const call = opencodeCalls(f).at(-1)!;
   assert.equal(call.args[call.args.indexOf("--session") + 1], "ses_fake");
   assert.equal(call.args[call.args.indexOf("--agent") + 1], "ase-review");
+  // On OpenCode 2 the resumed run asks the help again and keeps the first call's arguments and config folder.
+  assert.deepEqual(call.args, ["run", "--standalone", "--agent", "ase-review", "--format", "json", "-m", opencodeModel, "--session", "ses_fake"]);
+  assert.equal(call.xdg, opencodeCalls(f)[0].xdg);
+  assert.equal(call.xdg, join(f.out, "opencode-config"));
+  assert.deepEqual(readFileSync(join(f.dir, "calls.jsonl.export-args"), "utf8").trim().split("\n").map(line => JSON.parse(line)),
+    [["session", "export", "--standalone", "ses_fake"]]);
+  assert.equal(readFileSync(join(f.dir, "calls.jsonl.export-xdg"), "utf8").trim(), call.xdg);
   assert.match(readFileSync(join(f.out, "out.md"), "utf8"), /^REVIEW_STATUS: complete/);
 });
 
