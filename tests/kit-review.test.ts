@@ -1056,7 +1056,7 @@ test("kit review runs opencode/<model> read-only, saves findings with severities
     [["session", "export", "--standalone", "ses_fake"]]);
   // OpenCode 2's run and export get an empty config folder in the run's folder, so the machine's plugins stay out.
   assert.match(call.xdg!, /\/opencode-config$/);
-  assert.ok(!call.xdg!.startsWith(f.home ?? "\0"), call.xdg);
+  assert.ok(!call.xdg!.startsWith(f.home), call.xdg);
   assert.equal(readFileSync(join(f.dir, "calls.jsonl.export-xdg"), "utf8").trim(), call.xdg);
   assert.deepEqual(JSON.parse(call.config).agent["ase-review"].permission, { "*": "deny", read: "allow", grep: "allow", glob: "allow", list: "allow" });
   assert.equal(call.noProject, "1");
@@ -1120,7 +1120,7 @@ test("on OpenCode 2 a plugin in the reviewed worktree stays out, and help naming
   assert.deepEqual(JSON.parse(readFileSync(join(f.dir, "calls.jsonl.export-config"), "utf8").trim()), [null, null]);
   const broken = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_OPENCODE_VERSION: "broken" });
   assert.notEqual(broken.status, 0);
-  assert.match(broken.stderr, /could not tell how to run this OpenCode read-only: `opencode run --help` lists neither --standalone \(OpenCode 2\) nor --pure \(OpenCode 1\); it said: Error: unknown command run \/ \(opencode run --help exit 2\)$/m);
+  assert.match(broken.stderr, /could not tell how to run this OpenCode read-only: `opencode run --help` lists neither --standalone \(OpenCode 2\) nor --pure \(OpenCode 1\); it said: Error: unknown command run \/ \(opencode run --help failed \(exit 2\)\)$/m);
   assert.equal(opencodeCalls(f).length, 1, "no run call after the failed probe");
 });
 
@@ -1346,6 +1346,13 @@ test("agent.sh --resume continues the OpenCode session recorded from its first e
   const call = opencodeCalls(f).at(-1)!;
   assert.equal(call.args[call.args.indexOf("--session") + 1], "ses_fake");
   assert.equal(call.args[call.args.indexOf("--agent") + 1], "ase-review");
+  // On OpenCode 2 the resumed run asks the help again and keeps the first call's arguments and config folder.
+  assert.deepEqual(call.args, ["run", "--standalone", "--agent", "ase-review", "--format", "json", "-m", opencodeModel, "--session", "ses_fake"]);
+  assert.equal(call.xdg, opencodeCalls(f)[0].xdg);
+  assert.equal(call.xdg, join(f.out, "opencode-config"));
+  assert.deepEqual(readFileSync(join(f.dir, "calls.jsonl.export-args"), "utf8").trim().split("\n").map(line => JSON.parse(line)),
+    [["session", "export", "--standalone", "ses_fake"]]);
+  assert.equal(readFileSync(join(f.dir, "calls.jsonl.export-xdg"), "utf8").trim(), call.xdg);
   assert.match(readFileSync(join(f.out, "out.md"), "utf8"), /^REVIEW_STATUS: complete/);
 });
 
