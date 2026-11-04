@@ -949,10 +949,13 @@ const args = process.argv.slice(2);
 const answers = process.env.FAKE_CALLS + ".answers";
 const v1 = process.env.FAKE_OPENCODE_VERSION === "1";
 if (args.includes("--help")) {
+  if (process.env.FAKE_OPENCODE_VERSION === "broken") { console.error("Error: unknown command run"); process.exit(2); }
   console.log(v1 ? "opencode run [message..]\\n  --pure  run without external plugins\\n  --dir  directory to run in" : "USAGE\\n  opencode run [flags]\\nGLOBAL FLAGS\\n  --standalone  Run with a private server instead of the background service");
   process.exit(0);
 }
 const unknown = v1 ? [] : args.filter(arg => arg === "--pure" || arg === "--dir");
+// OpenCode 2 has no switch for plugins: only OPENCODE_DISABLE_PROJECT_CONFIG keeps the worktree's own out (as on 2.2.5).
+if (!v1 && existsSync(".opencode/plugin") && process.env.OPENCODE_DISABLE_PROJECT_CONFIG !== "1") { console.error("plugin loaded from the worktree"); process.exit(1); }
 if (unknown.length) { console.error("ERRORS\\n" + unknown.map(flag => "  Unrecognized flag: " + flag + " in command opencode " + args[0]).join("\\n")); process.exit(1); }
 if (v1 ? args[0] === "export" : args[0] === "session" && args[1] === "export") {
   appendFileSync(process.env.FAKE_CALLS + ".exports", args.at(-1) + "\\n");
@@ -1073,6 +1076,8 @@ test("an incomplete OpenCode answer is re-asked once in the same session", (t) =
     assert.ok(!calls[0].args.includes("--session"));
     assert.equal(calls[1].args[calls[1].args.indexOf("--session") + 1], "ses_fake");
     assert.equal(calls[1].args[calls[1].args.indexOf("--agent") + 1], "ase-review");
+    // OpenCode 2 reopens the session with its own private server too.
+    assert.ok(calls[1].args.includes("--standalone"));
     assert.match(calls[1].input, /^Your reply must start with the line REVIEW_STATUS: complete/);
     const evidence = f.evidence(result.stdout);
     if (mode === "retry-pass") assert.equal(readFileSync(join(evidence, "result.md"), "utf8").trimEnd(), complete.trimEnd());
@@ -1087,6 +1092,20 @@ test("an OpenCode answer from another model fails the model check", (t) => {
   const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /OpenCode session does not name requested model opencode\/deepseek-v4\.1-flash-free \(actual: opencode\/other-free, opencode\/deepseek-v4\.1-flash-free\)/);
+});
+
+test("on OpenCode 2 a plugin in the reviewed worktree stays out, and help naming neither flag stops the review in plain words", (t) => {
+  const f = fixture(t);
+  withOpencode(f);
+  mkdirSync(join(f.root, ".opencode", "plugin"), { recursive: true });
+  writeFileSync(join(f.root, ".opencode", "plugin", "x.js"), "export const X = async () => ({});\n");
+  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel }, true);
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stderr, /plugin loaded/);
+  const broken = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_OPENCODE_VERSION: "broken" });
+  assert.notEqual(broken.status, 0);
+  assert.match(broken.stderr, /could not tell how to run this OpenCode read-only: `opencode run --help` lists neither --standalone \(OpenCode 2\) nor --pure \(OpenCode 1\); it said: Error: unknown command run \/ \(opencode run --help exit 2\)$/m);
+  assert.equal(opencodeCalls(f).length, 1, "no run call after the failed probe");
 });
 
 test("kit review still runs an older OpenCode, whose run --help lists --pure and --dir, with the arguments it took before", (t) => {
