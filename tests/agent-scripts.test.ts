@@ -334,8 +334,15 @@ test("the OpenCode help probe reads stdout and stderr together, and a hung one s
   assert.throws(() => opencodeCommands(hung, model, dir), /it said: \(opencode run --help timed out after 0\.3s\)$/);
   // A CLI that leaves a child holding its output (as a wrapper starting the real binary would) is stopped with it.
   const started = Date.now();
-  const wrapped = opencodeRunHelp(dir, {}, fake("wrapper", `require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], { stdio: "inherit" });
+  const pidFile = join(dir, "child.pid");
+  const wrapped = opencodeRunHelp(dir, {}, fake("wrapper", `const child = require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], { stdio: "inherit" });
+require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));
 setTimeout(() => {}, 30_000);`), 300);
+  // The child the wrapper started is stopped with it.
+  const orphan = Number(readFileSync(pidFile, "utf8"));
+  const gone = () => { try { process.kill(orphan, 0); return false; } catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; } };
+  for (let i = 0; i < 50 && !gone(); i++) spawnSync("sleep", ["0.05"]);
+  assert.ok(gone(), `the wrapper's child ${orphan} is still running`);
   assert.ok(Date.now() - started < 5_000, `the probe took ${Date.now() - started} ms`);
   assert.match(wrapped!, /\(opencode run --help timed out after 0\.3s\)$/);
   // One that exits but leaves such a child behind still answers with its help.
@@ -348,6 +355,13 @@ process.stdout.write(${JSON.stringify(opencodeHelpV2)});`), 5_000);
   assert.equal(opencodeCommands(failing, model, dir).version, 2);
   // A worktree folder that does not exist gives no help at all, like a missing CLI.
   assert.equal(opencodeRunHelp(join(dir, "no such folder"), {}, "true"), null);
+  // A CLI stopped by a signal, and a helper that gives no report, both stop in plain words.
+  const killed = opencodeRunHelp(dir, {}, fake("killed", 'process.kill(process.pid, "SIGTERM");'));
+  assert.match(killed!, /\(opencode run --help was stopped \(SIGTERM\)\)$/);
+  assert.throws(() => opencodeCommands(killed, model, dir), /lists neither .*was stopped \(SIGTERM\)\)$/);
+  const noReport = opencodeRunHelp(dir, {}, "");
+  assert.match(noReport!, /\(opencode run --help: the probe failed: exit 1\)$/);
+  assert.throws(() => opencodeCommands(noReport, model, dir), /lists neither .*the probe failed: exit 1\)$/);
   // A CLI file that is not executable stops in plain words, naming the cause.
   const plain = fake("plain", "");
   chmodSync(plain, 0o644);
@@ -355,20 +369,27 @@ process.stdout.write(${JSON.stringify(opencodeHelpV2)});`), 5_000);
 });
 
 test("the real OpenCode help probe gets OpenCode 2's environment, a dropped variable included", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "ase-opencode-help-env-")), saved = process.env.OPENCODE_CONFIG;
+  const dir = mkdtempSync(join(tmpdir(), "ase-opencode-help-env-")), saved = [process.env.OPENCODE_CONFIG, process.env.OPENCODE_CONFIG_DIR];
   t.after(() => {
-    if (saved === undefined) delete process.env.OPENCODE_CONFIG; else process.env.OPENCODE_CONFIG = saved;
+    for (const [key, value] of [["OPENCODE_CONFIG", saved[0]], ["OPENCODE_CONFIG_DIR", saved[1]]] as const) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
     rmSync(dir, { recursive: true, force: true });
   });
   process.env.OPENCODE_CONFIG = join(dir, "elsewhere.json");
+  process.env.OPENCODE_CONFIG_DIR = join(dir, "elsewhere");
   const fake = join(dir, "opencode");
   writeFileSync(fake, `#!/usr/bin/env node
-console.log("OPENCODE_CONFIG=" + (process.env.OPENCODE_CONFIG ?? "unset") + "\\nXDG_CONFIG_HOME=" + process.env.XDG_CONFIG_HOME);
+console.log("OPENCODE_CONFIG=" + (process.env.OPENCODE_CONFIG ?? "unset") + "\\nOPENCODE_CONFIG_DIR=" + (process.env.OPENCODE_CONFIG_DIR ?? "unset") +
+  "\\nXDG_CONFIG_HOME=" + process.env.XDG_CONFIG_HOME + "\\nCWD=" + process.cwd());
 process.stdout.write(${JSON.stringify(opencodeHelpV2)});
 `);
   chmodSync(fake, 0o755);
   const help = opencodeRunHelp(dir, opencodeReviewEnv(2, join(dir, "out.md")), fake)!;
   assert.match(help, /^OPENCODE_CONFIG=unset$/m);
+  assert.match(help, /^OPENCODE_CONFIG_DIR=unset$/m);
+  // The probe runs in the review's folder.
+  assert.ok(help.includes(`CWD=${dir}\n`), help);
   assert.ok(help.includes(`XDG_CONFIG_HOME=${join(dir, "opencode-config")}\n`), help);
   assert.equal(opencodeCommands(help, "opencode/deepseek-v4.1-flash-free", dir).version, 2);
 });
