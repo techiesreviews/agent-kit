@@ -965,8 +965,9 @@ if (v1 ? args[0] === "export" : args[0] === "session" && args[1] === "export") {
   appendFileSync(process.env.FAKE_CALLS + ".export-config", JSON.stringify([process.env.OPENCODE_CONFIG ?? null, process.env.OPENCODE_CONFIG_DIR ?? null]) + "\\n");
   if (process.env.FAKE_EXPORT === "fail") { console.error("Exporting session: " + args.at(-1) + "\\nError: session not found"); process.exit(1); }
   if (process.env.FAKE_EXPORT === "hang") await new Promise(done => setTimeout(done, 30_000));
-  // Leaves a child holding stderr open, as a private server would, and records its pid.
-  if (process.env.FAKE_EXPORT === "leave-child") {
+  // Leaves a child holding stderr open, as a private server would, and records its pid; noisy-child says a lot on stderr first.
+  if (process.env.FAKE_EXPORT === "noisy-child") process.stderr.write("\\u0001".repeat(300 * 1024));
+  if (process.env.FAKE_EXPORT === "leave-child" || process.env.FAKE_EXPORT === "noisy-child") {
     const { spawn } = await import("node:child_process");
     const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], { stdio: ["ignore", "ignore", "inherit"] });
     child.unref();
@@ -1331,7 +1332,7 @@ test("a usage limit on the completeness retry is the last problem line", (t) => 
 
 test("a failed or hung OpenCode export fails the review with a named problem", (t) => {
   for (const [mode, problem] of [["fail", /^problem: OpenCode export for ses_fake failed: exit 1: Error: session not found; see .*run\.log$/m],
-    ["hang", /^problem: OpenCode export for ses_fake failed: timed out after 500 ms; see .*run\.log$/m]] as const) {
+    ["hang", /^problem: OpenCode export for ses_fake failed: timed out after 0\.5s; see .*run\.log$/m]] as const) {
     const f = fixture(t);
     withOpencode(f);
     const started = Date.now();
@@ -1346,13 +1347,17 @@ test("an OpenCode export that leaves a child holding its output ends on time, an
   const f = fixture(t);
   withOpencode(f);
   const started = Date.now();
-  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_EXPORT: "leave-child" });
-  assert.equal(result.status, 0, result.stderr);
-  assert.ok(Date.now() - started < 10_000, `the review took ${Date.now() - started} ms`);
-  const pid = Number(readFileSync(join(f.dir, "calls.jsonl.export-child"), "utf8").trim());
-  const gone = () => { try { process.kill(pid, 0); return false; } catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; } };
-  for (let i = 0; i < 50 && !gone(); i++) spawnSync("sleep", ["0.05"]);
-  assert.ok(gone(), `the export's child ${pid} is still running`);
+  // Quiet, and then with stderr far past what the helper keeps, in control characters, which grow sixfold in JSON.
+  for (const mode of ["leave-child", "noisy-child"]) {
+    rmSync(join(f.dir, "calls.jsonl.export-child"), { force: true });
+    const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_EXPORT: mode });
+    assert.equal(result.status, 0, `${mode}: ${result.stderr}`);
+    assert.ok(Date.now() - started < 20_000, `the review took ${Date.now() - started} ms`);
+    const pid = Number(readFileSync(join(f.dir, "calls.jsonl.export-child"), "utf8").trim());
+    const gone = () => { try { process.kill(pid, 0); return false; } catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; } };
+    for (let i = 0; i < 50 && !gone(); i++) spawnSync("sleep", ["0.05"]);
+    assert.ok(gone(), `${mode}: the export's child ${pid} is still running`);
+  }
 });
 
 test("a large OpenCode export is read whole, not cut where a pipe would stop", (t) => {

@@ -643,8 +643,8 @@ for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(signal, () => f
 const parent = process.ppid;
 setInterval(() => { if (process.ppid !== parent) finish({ stopped: "parent gone" }); }, 250).unref();
 child.on("error", error => finish({ error: error.code ?? error.message }));
-child.stdout?.on("data", chunk => { if (out.length < cap) out += chunk; });
-child.stderr.on("data", chunk => { if (err.length < cap) err += chunk; });
+child.stdout?.on("data", chunk => { if (out.length < cap) out = (out + chunk).slice(0, cap); });
+child.stderr.on("data", chunk => { if (err.length < cap) err = (err + chunk).slice(0, cap); });
 setTimeout(() => finish({ timedOut: true }), Number(limit));
 child.on("close", (status, signal) => finish({ status, signal }));
 // A command that exits while something it started still holds its output ends a moment later all the same.
@@ -652,11 +652,12 @@ child.on("exit", (status, signal) => setTimeout(() => finish({ status, signal })
 `;
 
 // Runs command with groupRun and returns its JSON line, or null with the helper's own output when it gave none.
-// out, when given, is an open file the command's stdout goes to. The helper gets 10 s beyond the limit to report.
+// out, when given, is an open file the command's stdout goes to. The helper gets 10 s beyond the limit to report,
+// and room for its line however the kept output escapes in JSON (two 256 KiB captures, six bytes a character at most).
 function runInGroup(command, args, { cwd, env, timeout, out }) {
   const helper = spawnSync(process.execPath, ["-e", groupRun, String(timeout), out === undefined ? "keep" : "file", command, ...args], {
     cwd, env: { ...process.env, ...env }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe", ...(out === undefined ? [] : [out])],
-    timeout: timeout + 10_000, killSignal: "SIGKILL" });
+    timeout: timeout + 10_000, killSignal: "SIGKILL", maxBuffer: 8 * 1024 * 1024 });
   try { return { ...JSON.parse(helper.stdout), helper }; }
   catch { return { helper, failed: `${helper.error ? helper.error.code ?? helper.error.message : `exit ${helper.status ?? helper.signal}`}` }; }
 }
@@ -683,7 +684,8 @@ const opencodeEnv = { OPENCODE_CONFIG_CONTENT: opencodeReviewConfig, OPENCODE_DI
 // OpenCode 2 has no switch to drop plugins. OPENCODE_DISABLE_PROJECT_CONFIG keeps the worktree's .opencode plugins
 // out; the machine's own (~/.config/opencode) would still load, so its run and export get an empty config folder
 // of their own: XDG_CONFIG_HOME in the run's folder, which OpenCode makes itself (checked on 2.2.5, 2026-11-04;
-// kit review removes the run's folder afterwards). A config file or folder named by OPENCODE_CONFIG or
+// kit review removes the run's folder afterwards). OpenCode 2.2.5 does not read plugins from ~/.opencode/plugin
+// or ~/.opencode/plugins (checked the same day with a marker plugin there, and one in the config folder as control). A config file or folder named by OPENCODE_CONFIG or
 // OPENCODE_CONFIG_DIR in the caller's environment is dropped (undefined removes a variable). OpenCode 1 keeps the
 // machine's config, as before; --pure drops its plugins.
 export function opencodeReviewEnv(version, output) {
@@ -744,7 +746,7 @@ export function opencodeExport(session, worktree, timeout, open = openSync, args
     out = open(file, "w");
     const result = runInGroup("opencode", args, { cwd: worktree, env, timeout, out });
     const last = String(result.err || "").trim().split("\n").at(-1);
-    const why = result.failed ? `its helper failed (${result.failed})` : result.timedOut ? `timed out after ${timeout} ms`
+    const why = result.failed ? `its helper failed (${result.failed})` : result.timedOut ? `timed out after ${timeout / 1000}s`
       : result.stopped ? `was stopped with the review (${result.stopped})`
       : result.error ? `could not be run (${result.error})` : result.signal ? `was stopped (${result.signal})`
       : result.status ? `exit ${result.status}${last ? `: ${last}` : ""}` : null;
