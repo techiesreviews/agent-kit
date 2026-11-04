@@ -7,7 +7,7 @@
 // for a refusal its CLI prints as JSON, and lines: true when a captured CLI prints one JSON
 // event per line, so the runner reads its session from new lines only. The shared
 // runner owns logs, the build contract, deadlines, process groups and Git status.
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -249,7 +249,8 @@ export function opencodeErrorProblem(stdout) {
 
 // The events never name the model; the session export does, per assistant message, as
 // provider and model ID (OpenCode 1: info.role and info.providerID/modelID; OpenCode 2: type and
-// model.providerID/id). Every answer in the session, retries included, must be the requested provider/model. The report is the text of the last message that has text.
+// model.providerID/id). Every answer in the session, retries included, must be the requested
+// provider/model. The report is the text of the last message that has text.
 // exportSession(id) returns the export's output. A call that failed (non-zero exit or timeout)
 // is not exported and gives no report (null); the runner names its cause. A run that printed
 // an error event but exited 0 is not exported either: the error is thrown.
@@ -607,47 +608,53 @@ export const opencodeReviewConfig = JSON.stringify({ agent: { [opencodeReviewAge
 // in the worktree) and, unless --standalone, hands the call to a shared background service that would not see
 // this call's read-only agent from OPENCODE_CONFIG_CONTENT. --standalone gives each call its own server.
 // Help that lists --standalone means OpenCode 2; help that lists --pure means OpenCode 1, where --pure drops
-// plugins and --dir names the worktree. OpenCode 2 has no switch to drop plugins: OPENCODE_DISABLE_PROJECT_CONFIG
-// keeps the worktree's own .opencode plugins out (checked on 2.2.5), but plugins in ~/.config/opencode load.
-// Empty help means the CLI did not start at all; the old arguments are kept, so the call fails as a missing CLI
-// did before. Any other help names neither flag, and the review stops with that in plain words.
+// plugins and --dir names the worktree. No help (null) means the CLI did not start at all: the old arguments
+// are kept, so the call fails as a missing CLI did before. Any other help, empty included, names neither flag,
+// and the review stops with that in plain words.
 export function opencodeCommands(help, model, worktree) {
   const agent = ["--agent", opencodeReviewAgent, "--format", "json", "-m", model];
-  if (/^\s*--standalone\b/m.test(help)) return { run: ["run", "--standalone", ...agent], export: session => ["session", "export", "--standalone", session] };
-  if (help === "" || /^\s*--pure\b/m.test(help)) return { run: ["run", "--pure", ...agent, "--dir", worktree], export: session => ["export", "--pure", session] };
-  const said = help.trim().split("\n").filter(line => line.trim()).slice(-3).join(" / ").replace(/\s+/g, " ").slice(0, 300);
+  if (help !== null && /^\s*--standalone\b/m.test(help)) return { version: 2, run: ["run", "--standalone", ...agent], export: session => ["session", "export", "--standalone", session] };
+  if (help === null || /^\s*--pure\b/m.test(help)) return { version: 1, run: ["run", "--pure", ...agent, "--dir", worktree], export: session => ["export", "--pure", session] };
+  const said = help.trim().split("\n").filter(line => line.trim()).slice(-3).join(" / ").replace(/\s+/g, " ").slice(0, 300) || "nothing";
   throw new Error(`could not tell how to run this OpenCode read-only: \`opencode run --help\` lists neither --standalone (OpenCode 2) nor --pure (OpenCode 1); it said: ${said}`);
 }
 
-// Reads `opencode run --help` in the worktree with the review's own environment. Help prints and exits without
-// starting a server or reaching a model, so it has its own short limit, apart from ASE_OPENCODE_START_TIMEOUT_MS.
-// A CLI that cannot start (missing, or no such folder) gives ""; one that fails or hangs gives what it printed
-// and why it stopped, which opencodeCommands then refuses.
-export function opencodeRunHelp(worktree, env = {}, command = "opencode") {
-  try {
-    return execFileSync(command, ["run", "--help"], { cwd: worktree, env: { ...process.env, ...env }, encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"], timeout: 30_000, killSignal: "SIGKILL" });
-  } catch (error) {
-    if (error.code === "ENOENT") return "";
-    const why = error.code === "ETIMEDOUT" || error.signal === "SIGKILL" ? "timed out after 30s" : `exit ${error.status ?? error.signal ?? error.message}`;
-    return `${error.stdout ?? ""}${error.stderr ?? ""}\n(opencode run --help ${why})`;
-  }
+// Reads `opencode run --help` (stdout and stderr together) in the worktree with the review's own environment.
+// Help prints and exits without starting a server or reaching a model, so it has its own short limit, apart
+// from ASE_OPENCODE_START_TIMEOUT_MS. A CLI that cannot start (missing, or no such folder) gives null; one that
+// fails, is stopped or hangs gives what it printed and why it stopped, which opencodeCommands then refuses.
+export function opencodeRunHelp(worktree, env = {}, command = "opencode", timeout = 30_000) {
+  const result = spawnSync(command, ["run", "--help"], { cwd: worktree, env: { ...process.env, ...env }, encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"], timeout, killSignal: "SIGKILL" });
+  if (result.error?.code === "ENOENT") return null;
+  const said = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+  const why = result.error?.code === "ETIMEDOUT" ? `timed out after ${timeout / 1000}s` : result.error ? result.error.message
+    : result.signal ? `stopped by ${result.signal}` : result.status ? `exit ${result.status}` : null;
+  return why ? `${said}\n(opencode run --help ${why})` : said;
 }
 
+// The project's own OpenCode config and Claude Code files stay out.
 const opencodeEnv = { OPENCODE_CONFIG_CONTENT: opencodeReviewConfig, OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_DISABLE_CLAUDE_CODE: "1" };
 
+// OpenCode 2 has no switch to drop plugins. OPENCODE_DISABLE_PROJECT_CONFIG keeps the worktree's .opencode plugins
+// out; the machine's own (~/.config/opencode) would still load, so its run and export get an empty config folder
+// of their own: XDG_CONFIG_HOME in the run's folder, which OpenCode makes itself (checked on 2.2.5, 2026-11-04).
+// OpenCode 1 keeps the machine's config, as before; --pure drops its plugins.
+export function opencodeReviewEnv(version, output) {
+  return version === 2 ? { ...opencodeEnv, XDG_CONFIG_HOME: join(dirname(output), "opencode-config") } : opencodeEnv;
+}
+
 // help(worktree, env) returns `opencode run --help`; tests pass their own.
-export function opencodeAdapter(options, _common, _output, help = opencodeRunHelp) {
+export function opencodeAdapter(options, _common, output, help = opencodeRunHelp) {
   const { kind, worktree, model } = options;
   if (kind !== "review") throw new Error("OpenCode runs reviews only");
   const timeout = opencodeExportTimeout(), startTimeout = opencodeStartTimeout();
-  // The project's own OpenCode config and Claude Code files are not read (the env below).
   // Effort is not passed: OpenCode's --variant names differ by provider.
-  const commands = opencodeCommands(help(worktree, opencodeEnv), model, worktree), args = commands.run;
+  const commands = opencodeCommands(help(worktree, opencodeEnv), model, worktree), args = commands.run, env = opencodeReviewEnv(commands.version, output);
   return {
     // Each event is one line and the first names the session, so the runner reads it line by line.
     command: "opencode", capture: true, lines: true,
-    env: opencodeEnv,
+    env,
     args,
     resume: session => [...args, "--session", session],
     session: stdout => opencodeSession(stdout),
@@ -655,7 +662,7 @@ export function opencodeAdapter(options, _common, _output, help = opencodeRunHel
     usageLimit: stdout => opencodeUsageLimit(stdout),
     outOfCredit: (stdout, log, status) => opencodeOutOfCredit(stdout) ?? (status ? outOfCreditProblem(log, "opencode") : null),
     errorProblem: stdout => opencodeErrorProblem(stdout),
-    finish: (stdout, _log, status) => opencodeResult(stdout, model, session => opencodeExport(session, worktree, timeout, openSync, commands.export(session)), Boolean(status)),
+    finish: (stdout, _log, status) => opencodeResult(stdout, model, session => opencodeExport(session, worktree, timeout, openSync, commands.export(session), env), Boolean(status)),
   };
 }
 
@@ -678,13 +685,14 @@ export function opencodeStartTimeout(env = process.env) {
 }
 
 // OpenCode exits before a pipe drains, cutting a large export at 192 KiB, so it writes to a file.
-// open is openSync; tests pass one that fails. args are the export's arguments (opencodeCommands).
-export function opencodeExport(session, worktree, timeout, open = openSync, args = ["export", "--pure", session]) {
+// open is openSync; tests pass one that fails. args are the export's arguments (opencodeCommands) and env the
+// run's own (opencodeReviewEnv), since the export starts OpenCode again.
+export function opencodeExport(session, worktree, timeout, open = openSync, args = ["export", "--pure", session], env = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ase-opencode-export-")), file = join(dir, "export.json");
   let out;
   try {
     out = open(file, "w");
-    execFileSync("opencode", args, { cwd: worktree, encoding: "utf8", stdio: ["ignore", out, "pipe"],
+    execFileSync("opencode", args, { cwd: worktree, env: { ...process.env, ...env }, encoding: "utf8", stdio: ["ignore", out, "pipe"],
       timeout, killSignal: "SIGKILL" });
     return readFileSync(file, "utf8");
   } catch (error) {

@@ -954,12 +954,14 @@ if (args.includes("--help")) {
   process.exit(0);
 }
 const unknown = v1 ? [] : args.filter(arg => arg === "--pure" || arg === "--dir");
-// OpenCode 2 has no switch for plugins: only OPENCODE_DISABLE_PROJECT_CONFIG keeps the worktree's own out (as on 2.2.5).
+// Mimics what was seen on the real 2.2.5: a worktree plugin loads unless OPENCODE_DISABLE_PROJECT_CONFIG=1. The test
+// using it shows the kit sets that switch, as call.noProject does; it is no proof about the real CLI.
 if (!v1 && existsSync(".opencode/plugin") && process.env.OPENCODE_DISABLE_PROJECT_CONFIG !== "1") { console.error("plugin loaded from the worktree"); process.exit(1); }
 if (unknown.length) { console.error("ERRORS\\n" + unknown.map(flag => "  Unrecognized flag: " + flag + " in command opencode " + args[0]).join("\\n")); process.exit(1); }
 if (v1 ? args[0] === "export" : args[0] === "session" && args[1] === "export") {
   appendFileSync(process.env.FAKE_CALLS + ".exports", args.at(-1) + "\\n");
   appendFileSync(process.env.FAKE_CALLS + ".export-args", JSON.stringify(args) + "\\n");
+  appendFileSync(process.env.FAKE_CALLS + ".export-xdg", (process.env.XDG_CONFIG_HOME ?? "none") + "\\n");
   if (process.env.FAKE_EXPORT === "fail") { console.error("Exporting session: " + args.at(-1) + "\\nError: session not found"); process.exit(1); }
   if (process.env.FAKE_EXPORT === "hang") await new Promise(done => setTimeout(done, 30_000));
   const models = existsSync(answers) ? readFileSync(answers, "utf8").trim().split("\\n") : [];
@@ -974,7 +976,7 @@ if (v1 ? args[0] === "export" : args[0] === "session" && args[1] === "export") {
 }
 const input = readFileSync(0, "utf8");
 const resumed = args.includes("--session");
-appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ cli: "opencode", args, input, cwd: process.cwd(), config: process.env.OPENCODE_CONFIG_CONTENT,
+appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ cli: "opencode", args, input, cwd: process.cwd(), config: process.env.OPENCODE_CONFIG_CONTENT, xdg: process.env.XDG_CONFIG_HOME,
   noProject: process.env.OPENCODE_DISABLE_PROJECT_CONFIG, noClaude: process.env.OPENCODE_DISABLE_CLAUDE_CODE }) + "\\n");
 const emit = (type, extra = {}) => console.log(JSON.stringify({ type, timestamp: Date.now(), sessionID: "ses_fake", ...extra }));
 const mode = process.env.FAKE_MODE || "pass";
@@ -1014,7 +1016,7 @@ emit("step_finish", { part: { type: "step-finish", reason: "stop", cost: 0 } });
 `;
 
 // What the fake opencode records for each run call.
-interface OpencodeCall { cli: string; args: string[]; input: string; cwd: string; config: string; noProject: string; noClaude: string }
+interface OpencodeCall { cli: string; args: string[]; input: string; cwd: string; config: string; xdg?: string; noProject: string; noClaude: string }
 
 function opencodeCalls(f: ReturnType<typeof fixture>): OpencodeCall[] {
   const file = join(f.dir, "calls.jsonl");
@@ -1050,6 +1052,10 @@ test("kit review runs opencode/<model> read-only, saves findings with severities
   assert.deepEqual(call.args, ["run", "--standalone", "--agent", "ase-review", "--format", "json", "-m", opencodeModel]);
   assert.deepEqual(readFileSync(join(f.dir, "calls.jsonl.export-args"), "utf8").trim().split("\n").map(line => JSON.parse(line)),
     [["session", "export", "--standalone", "ses_fake"]]);
+  // OpenCode 2's run and export get an empty config folder in the run's folder, so the machine's plugins stay out.
+  assert.match(call.xdg!, /\/opencode-config$/);
+  assert.ok(!call.xdg!.startsWith(f.home ?? "\0"), call.xdg);
+  assert.equal(readFileSync(join(f.dir, "calls.jsonl.export-xdg"), "utf8").trim(), call.xdg);
   assert.deepEqual(JSON.parse(call.config).agent["ase-review"].permission, { "*": "deny", read: "allow", grep: "allow", glob: "allow", list: "allow" });
   assert.equal(call.noProject, "1");
   assert.equal(call.noClaude, "1");
@@ -1118,6 +1124,7 @@ test("kit review still runs an older OpenCode, whose run --help lists --pure and
   assert.deepEqual(call.args, ["run", "--pure", "--agent", "ase-review", "--format", "json", "-m", opencodeModel, "--dir", f.root]);
   assert.deepEqual(readFileSync(join(f.dir, "calls.jsonl.export-args"), "utf8").trim().split("\n").map(line => JSON.parse(line)),
     [["export", "--pure", "ses_fake"]]);
+  assert.equal(call.xdg, undefined, "OpenCode 1 keeps the machine's config; --pure drops its plugins");
   assert.deepEqual(JSON.parse(call.config).agent["ase-review"].permission, { "*": "deny", read: "allow", grep: "allow", glob: "allow", list: "allow" });
 });
 
