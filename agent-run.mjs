@@ -613,8 +613,8 @@ export const opencodeReviewConfig = JSON.stringify({ agent: { [opencodeReviewAge
 // and the review stops with that in plain words.
 export function opencodeCommands(help, model, worktree) {
   const agent = ["--agent", opencodeReviewAgent, "--format", "json", "-m", model];
-  if (help !== null && /^\s*--standalone\b/m.test(help)) return { version: 2, run: ["run", "--standalone", ...agent], export: session => ["session", "export", "--standalone", session] };
-  if (help === null || /^\s*--pure\b/m.test(help)) return { version: 1, run: ["run", "--pure", ...agent, "--dir", worktree], export: session => ["export", "--pure", session] };
+  if (help !== null && /^\s{2,}--standalone\b/m.test(help)) return { version: 2, run: ["run", "--standalone", ...agent], export: session => ["session", "export", "--standalone", session] };
+  if (help === null || /^\s{2,}--pure\b/m.test(help)) return { version: 1, run: ["run", "--pure", ...agent, "--dir", worktree], export: session => ["export", "--pure", session] };
   const said = help.trim().split("\n").filter(line => line.trim()).slice(-3).join(" / ").replace(/\s+/g, " ").slice(0, 300) || "nothing";
   throw new Error(`could not tell how to run this OpenCode read-only: \`opencode run --help\` lists neither --standalone (OpenCode 2) nor --pure (OpenCode 1); it said: ${said}`);
 }
@@ -653,8 +653,9 @@ export function opencodeRunHelp(worktree, env = {}, command = "opencode", timeou
   catch { return `${probe.stdout ?? ""}${probe.stderr ?? ""}\n(opencode run --help: the probe failed${probe.error ? `: ${probe.error.message}` : ""})`; }
   if (result.error === "ENOENT") return null;
   const said = `${result.out}${result.err}`;
-  const why = result.timedOut ? `timed out after ${timeout / 1000}s` : result.error ? result.error
-    : result.signal ? `stopped by ${result.signal}` : result.status ? `exit ${result.status}` : null;
+  const why = result.timedOut ? `timed out after ${timeout / 1000}s`
+    : result.error === "EACCES" ? "could not be run: not executable (EACCES)" : result.error ? `could not be run (${result.error})`
+    : result.signal ? `was stopped (${result.signal})` : result.status ? `failed (exit ${result.status})` : null;
   return why ? `${said}\n(opencode run --help ${why})` : said;
 }
 
