@@ -942,18 +942,28 @@ test("kit review gives the budget back when the Grok CLI is missing", (t) => {
 });
 
 // A fake opencode: `run` reads the brief on stdin and prints JSON events; `export` names the model of each answer so far.
+// It is OpenCode 2 (2.2.5), which refuses --pure and --dir and exports with `session export`, unless FAKE_OPENCODE_VERSION=1.
 const fakeOpencode = `#!/usr/bin/env node
 import { appendFileSync, existsSync, fstatSync, readFileSync, writeSync } from "node:fs";
 const args = process.argv.slice(2);
 const answers = process.env.FAKE_CALLS + ".answers";
-if (args[0] === "export") {
+const v1 = process.env.FAKE_OPENCODE_VERSION === "1";
+if (args.includes("--help")) {
+  console.log(v1 ? "opencode run [message..]\\n  --pure  run without external plugins\\n  --dir  directory to run in" : "USAGE\\n  opencode run [flags]\\nGLOBAL FLAGS\\n  --standalone  Run with a private server instead of the background service");
+  process.exit(0);
+}
+const unknown = v1 ? [] : args.filter(arg => arg === "--pure" || arg === "--dir");
+if (unknown.length) { console.error("ERRORS\\n" + unknown.map(flag => "  Unrecognized flag: " + flag + " in command opencode " + args[0]).join("\\n")); process.exit(1); }
+if (v1 ? args[0] === "export" : args[0] === "session" && args[1] === "export") {
   appendFileSync(process.env.FAKE_CALLS + ".exports", args.at(-1) + "\\n");
+  appendFileSync(process.env.FAKE_CALLS + ".export-args", JSON.stringify(args) + "\\n");
   if (process.env.FAKE_EXPORT === "fail") { console.error("Exporting session: " + args.at(-1) + "\\nError: session not found"); process.exit(1); }
   if (process.env.FAKE_EXPORT === "hang") await new Promise(done => setTimeout(done, 30_000));
   const models = existsSync(answers) ? readFileSync(answers, "utf8").trim().split("\\n") : [];
   console.error("Exporting session: " + args.at(-1));
-  const exported = JSON.stringify({ info: { id: args.at(-1) }, messages: models.flatMap(model => [{ info: { role: "user" } },
-    { info: { role: "assistant", providerID: model.split("/")[0], modelID: model.split("/").slice(1).join("/") } }]),
+  const exported = JSON.stringify({ info: { id: args.at(-1) }, messages: models.flatMap(model => v1 ? [{ info: { role: "user" } },
+    { info: { role: "assistant", providerID: model.split("/")[0], modelID: model.split("/").slice(1).join("/") } }]
+    : [{ type: "user", text: "brief" }, { type: "assistant", model: { providerID: model.split("/")[0], id: model.split("/").slice(1).join("/"), variant: "default" } }]),
     ...(process.env.FAKE_EXPORT === "big" ? { padding: "x".repeat(400_000) } : {}) }) + "\\n";
   // Like the real CLI, which exits before a pipe drains: anything but a file gets only the first 192 KiB.
   writeSync(1, !fstatSync(1).isFile() ? exported.slice(0, 196_608) : exported);
@@ -1033,8 +1043,10 @@ test("kit review runs opencode/<model> read-only, saves findings with severities
   const call = opencodeCalls(f).at(-1)!;
   assert.equal(call.cli, "opencode");
   assert.equal(call.cwd, f.root);
-  assert.deepEqual(call.args.slice(0, 5), ["run", "--pure", "--agent", "ase-review", "--format"]);
-  assert.equal(call.args[call.args.indexOf("-m") + 1], opencodeModel);
+  // OpenCode 2 runs in the review's folder with a private server; it has no --pure or --dir.
+  assert.deepEqual(call.args, ["run", "--standalone", "--agent", "ase-review", "--format", "json", "-m", opencodeModel]);
+  assert.deepEqual(readFileSync(join(f.dir, "calls.jsonl.export-args"), "utf8").trim().split("\n").map(line => JSON.parse(line)),
+    [["session", "export", "--standalone", "ses_fake"]]);
   assert.deepEqual(JSON.parse(call.config).agent["ase-review"].permission, { "*": "deny", read: "allow", grep: "allow", glob: "allow", list: "allow" });
   assert.equal(call.noProject, "1");
   assert.equal(call.noClaude, "1");
@@ -1075,6 +1087,19 @@ test("an OpenCode answer from another model fails the model check", (t) => {
   const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /OpenCode session does not name requested model opencode\/deepseek-v4\.1-flash-free \(actual: opencode\/other-free, opencode\/deepseek-v4\.1-flash-free\)/);
+});
+
+test("kit review still runs an older OpenCode, whose run --help lists --pure and --dir, with the arguments it took before", (t) => {
+  const f = fixture(t);
+  withOpencode(f);
+  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_OPENCODE_VERSION: "1" }, true);
+  assert.equal(result.status, 0, result.stderr);
+  const call = opencodeCalls(f).at(-1)!;
+  assert.equal(call.cwd, f.root);
+  assert.deepEqual(call.args, ["run", "--pure", "--agent", "ase-review", "--format", "json", "-m", opencodeModel, "--dir", f.root]);
+  assert.deepEqual(readFileSync(join(f.dir, "calls.jsonl.export-args"), "utf8").trim().split("\n").map(line => JSON.parse(line)),
+    [["export", "--pure", "ses_fake"]]);
+  assert.deepEqual(JSON.parse(call.config).agent["ase-review"].permission, { "*": "deny", read: "allow", grep: "allow", glob: "allow", list: "allow" });
 });
 
 test("an OpenCode rate-limit refusal prints the opencode usage-limit problem and counts nothing, whatever its exit", (t) => {
