@@ -619,16 +619,41 @@ export function opencodeCommands(help, model, worktree) {
   throw new Error(`could not tell how to run this OpenCode read-only: \`opencode run --help\` lists neither --standalone (OpenCode 2) nor --pure (OpenCode 1); it said: ${said}`);
 }
 
+// The probe's helper: it starts `<command> run --help` in a process group of its own and, at the limit or once the
+// command has exited, kills that whole group, so a child the command left behind cannot hold the pipes open. It
+// prints what the command said and how it ended as one JSON line.
+const opencodeHelpProbe = `
+const { spawn } = require("node:child_process");
+const [command, limit] = process.argv.slice(1);
+let out = "", err = "", child, done = false;
+const stop = () => { try { process.kill(-child.pid, "SIGKILL"); } catch {} };
+const finish = end => { if (done) return; done = true; stop(); process.stdout.write(JSON.stringify({ out, err, ...end })); process.exit(0); };
+try { child = spawn(command, ["run", "--help"], { detached: true, stdio: ["ignore", "pipe", "pipe"] }); }
+catch (error) { finish({ error: error.code ?? error.message }); }
+child.on("error", error => finish({ error: error.code ?? error.message }));
+child.stdout.on("data", chunk => { out += chunk; });
+child.stderr.on("data", chunk => { err += chunk; });
+setTimeout(() => finish({ timedOut: true }), Number(limit));
+child.on("close", (status, signal) => finish({ status, signal }));
+// A command that exits while something it started still holds its output ends a moment later all the same.
+child.on("exit", (status, signal) => setTimeout(() => finish({ status, signal }), 500));
+`;
+
 // Reads `opencode run --help` (stdout and stderr together) in the worktree with the review's own environment.
 // Help prints and exits without starting a server or reaching a model, so it has its own short limit, apart
 // from ASE_OPENCODE_START_TIMEOUT_MS. A CLI that cannot start (missing, or no such folder) gives null; one that
 // fails, is stopped or hangs gives what it printed and why it stopped, which opencodeCommands then refuses.
 export function opencodeRunHelp(worktree, env = {}, command = "opencode", timeout = 30_000) {
-  const result = spawnSync(command, ["run", "--help"], { cwd: worktree, env: { ...process.env, ...env }, encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"], timeout, killSignal: "SIGKILL" });
-  if (result.error?.code === "ENOENT") return null;
-  const said = `${result.stdout ?? ""}${result.stderr ?? ""}`;
-  const why = result.error?.code === "ETIMEDOUT" ? `timed out after ${timeout / 1000}s` : result.error ? result.error.message
+  const probe = spawnSync(process.execPath, ["-e", opencodeHelpProbe, command, String(timeout)], { cwd: worktree,
+    env: { ...process.env, ...env }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: timeout + 10_000, killSignal: "SIGKILL" });
+  // The helper itself cannot start in a missing folder: the CLI could not either.
+  if (probe.error?.code === "ENOENT") return null;
+  let result;
+  try { result = JSON.parse(probe.stdout); }
+  catch { return `${probe.stdout ?? ""}${probe.stderr ?? ""}\n(opencode run --help: the probe failed${probe.error ? `: ${probe.error.message}` : ""})`; }
+  if (result.error === "ENOENT") return null;
+  const said = `${result.out}${result.err}`;
+  const why = result.timedOut ? `timed out after ${timeout / 1000}s` : result.error ? result.error
     : result.signal ? `stopped by ${result.signal}` : result.status ? `exit ${result.status}` : null;
   return why ? `${said}\n(opencode run --help ${why})` : said;
 }
@@ -638,10 +663,13 @@ const opencodeEnv = { OPENCODE_CONFIG_CONTENT: opencodeReviewConfig, OPENCODE_DI
 
 // OpenCode 2 has no switch to drop plugins. OPENCODE_DISABLE_PROJECT_CONFIG keeps the worktree's .opencode plugins
 // out; the machine's own (~/.config/opencode) would still load, so its run and export get an empty config folder
-// of their own: XDG_CONFIG_HOME in the run's folder, which OpenCode makes itself (checked on 2.2.5, 2026-11-04).
-// OpenCode 1 keeps the machine's config, as before; --pure drops its plugins.
+// of their own: XDG_CONFIG_HOME in the run's folder, which OpenCode makes itself (checked on 2.2.5, 2026-11-04;
+// kit review removes the run's folder afterwards). A config file or folder named by OPENCODE_CONFIG or
+// OPENCODE_CONFIG_DIR in the caller's environment is dropped (undefined removes a variable). OpenCode 1 keeps the
+// machine's config, as before; --pure drops its plugins.
 export function opencodeReviewEnv(version, output) {
-  return version === 2 ? { ...opencodeEnv, XDG_CONFIG_HOME: join(dirname(output), "opencode-config") } : opencodeEnv;
+  return version === 2 ? { ...opencodeEnv, XDG_CONFIG_HOME: join(dirname(output), "opencode-config"), OPENCODE_CONFIG: undefined, OPENCODE_CONFIG_DIR: undefined }
+    : opencodeEnv;
 }
 
 // help(worktree, env) returns `opencode run --help`; tests pass their own.
@@ -650,7 +678,9 @@ export function opencodeAdapter(options, _common, output, help = opencodeRunHelp
   if (kind !== "review") throw new Error("OpenCode runs reviews only");
   const timeout = opencodeExportTimeout(), startTimeout = opencodeStartTimeout();
   // Effort is not passed: OpenCode's --variant names differ by provider.
-  const commands = opencodeCommands(help(worktree, opencodeEnv), model, worktree), args = commands.run, env = opencodeReviewEnv(commands.version, output);
+  // The probe gets OpenCode 2's environment whichever OpenCode answers: OpenCode 1's help does not read it.
+  const commands = opencodeCommands(help(worktree, opencodeReviewEnv(2, output)), model, worktree), args = commands.run;
+  const env = opencodeReviewEnv(commands.version, output);
   return {
     // Each event is one line and the first names the session, so the runner reads it line by line.
     command: "opencode", capture: true, lines: true,
@@ -912,10 +942,14 @@ async function invokeAgent(adapter, args, descriptor, context) {
   context.calls = previousCalls + 1;
   // The kit waits for the agents it starts itself, so their own turn ends freely: the Stop hook (stop-guard)
   // would otherwise hold a slice's builder for the very kit go job that runs it.
+  // An undefined value removes that variable for the call.
   const extra = { KIT_ALLOW_STOP: "1", ...adapter.env };
   const previous = Object.fromEntries(Object.keys(extra).map(key => [key, process.env[key]]));
   try {
-    Object.assign(process.env, extra);
+    for (const [key, value] of Object.entries(extra)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     const previousLog = readFileSync(logPath, "utf8").length;
     // A CLI with a start limit that names no session within it is stopped as unavailable.
     let silent = false, startTimer, spawned;

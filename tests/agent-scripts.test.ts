@@ -280,7 +280,12 @@ test("OpenCode adapter runs reviews only, as a read-only agent, and resumes its 
   // OpenCode 2 has no switch for plugins, so its run gets an empty config folder of its own, in the run's folder; OpenCode 1 keeps the machine's.
   assert.equal(call.env.XDG_CONFIG_HOME, "/opencode-config");
   assert.equal(legacy.env.XDG_CONFIG_HOME, undefined);
-  assert.deepEqual({ ...call.env, XDG_CONFIG_HOME: undefined }, { ...legacy.env, XDG_CONFIG_HOME: undefined });
+  for (const [key, value] of Object.entries(legacy.env)) assert.equal(call.env[key], value, key);
+  // A config file or folder the caller's environment names is dropped on OpenCode 2 (undefined removes the variable).
+  for (const key of ["OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR"]) {
+    assert.ok(key in call.env && call.env[key] === undefined, key);
+    assert.ok(!(key in legacy.env), key);
+  }
   // Help that names neither flag, or a probe that failed, stops the review in plain words rather than guessing.
   const neither = /^could not tell how to run this OpenCode read-only: `opencode run --help` lists neither --standalone \(OpenCode 2\) nor --pure \(OpenCode 1\); it said: /;
   assert.throws(() => opencodeAdapter(options, "/git", "/out", () => "Error: unknown command run\n"), (error: Error) => neither.test(error.message) && error.message.endsWith("it said: Error: unknown command run"));
@@ -293,7 +298,7 @@ test("OpenCode adapter runs reviews only, as a read-only agent, and resumes its 
   let probed: unknown[] = [];
   opencodeAdapter(options, "/git", "/out", (...args: unknown[]) => { probed = args; return opencodeHelpV2; });
   assert.equal(probed[0], "/work tree");
-  assert.deepEqual(probed[1], legacy.env);
+  assert.deepEqual(probed[1], call.env);
   // The agent denies every tool but reading, searching and listing; project config and Claude Code files stay out.
   assert.equal(call.env.OPENCODE_CONFIG_CONTENT, opencodeReviewConfig);
   assert.deepEqual(JSON.parse(opencodeReviewConfig).agent[opencodeReviewAgent].permission, { "*": "deny", read: "allow", grep: "allow", glob: "allow", list: "allow" });
@@ -327,6 +332,16 @@ test("the OpenCode help probe reads stdout and stderr together, and a hung one s
   const hung = opencodeRunHelp(dir, {}, fake("hang", "setTimeout(() => {}, 30_000);"), 300);
   assert.match(hung!, /\(opencode run --help timed out after 0\.3s\)$/);
   assert.throws(() => opencodeCommands(hung, model, dir), /it said: \(opencode run --help timed out after 0\.3s\)$/);
+  // A CLI that leaves a child holding its output (as a wrapper starting the real binary would) is stopped with it.
+  const started = Date.now();
+  const wrapped = opencodeRunHelp(dir, {}, fake("wrapper", `require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], { stdio: "inherit" });
+setTimeout(() => {}, 30_000);`), 300);
+  assert.ok(Date.now() - started < 5_000, `the probe took ${Date.now() - started} ms`);
+  assert.match(wrapped!, /\(opencode run --help timed out after 0\.3s\)$/);
+  // One that exits but leaves such a child behind still answers with its help.
+  const leaver = opencodeRunHelp(dir, {}, fake("leaver", `require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], { stdio: "inherit" }).unref();
+process.stdout.write(${JSON.stringify(opencodeHelpV2)});`), 5_000);
+  assert.equal(opencodeCommands(leaver, model, dir).version, 2);
 });
 
 test("a real OpenCode 2.2.5 run transcript names its session and gives the last answer's text", () => {
