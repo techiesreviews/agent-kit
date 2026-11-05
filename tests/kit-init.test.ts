@@ -1710,3 +1710,15 @@ test("the direct note says only what ran: no comparison with --land, the real br
   assert.match(out, /lands directly on master \(branches\.direct\)$/m, out);
   assert.doesNotMatch(out, /compared with/);
 });
+
+test("--land master with main and master both there compares dev with master", (t) => {
+  const f = fixture(t);
+  const gh = visibilityGh(f, "PRIVATE");
+  const repo = withOrigin(f, "twins", { "index.html": "<p>hi</p>\n" }, ["main", "master", "dev"]);
+  writeFileSync(join(repo.work, "m.txt"), "master-only work on dev\n");
+  f.git(repo.work, "add", "m.txt");
+  f.git(repo.work, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "dev work");
+  f.git(repo.main, "branch", "-f", "dev", "build/one");
+  const run = gh.init(repo.work, ["--light", "--land", "master"]);
+  assert.match(run.stdout, /lands directly on master \(branches\.direct\); dev has 1 commit master lacks, which stay behind/, run.stdout);
+});
