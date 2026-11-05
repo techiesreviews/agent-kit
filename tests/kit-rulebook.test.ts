@@ -197,6 +197,8 @@ test("the Messages to Lex rule wins over the whole rulebook, names the status-no
   for (const words of ["wins over every other line of this rulebook for what a message to him holds and how it reads",
     "The two-line status notes (the after-merge note, `kit heartbeat`) keep their two-line shape (done, then running/next); when the lead passes them on, anything he must answer or do goes first",
     "a two-line plain note to Lex (see [Messages to Lex](#messages-to-lex))"])
+    assert.ok(text.includes(words), `the rulebook lacks: ${words}`);
+});
 
 test("the rulebook lets a direct project go live mid-week without \"ship it\", and says what the lead tells Lex about his two sites", () => {
   const text = read(shared).replace(/\n\s+/g, " ");
