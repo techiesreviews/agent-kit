@@ -191,3 +191,11 @@ test("the Messages to Lex rule's text changes only with a new version (projects 
   const { version, rule } = kitMessagesToLexRule(resolve("."));
   assert.equal(createHash("sha256").update(rule).digest("hex"), hashes[version], `the rule's text changed but version v${version} did not`);
 });
+
+test("the Messages to Lex rule wins over the whole rulebook, names the status-note exception, and step 10 points to it", () => {
+  const text = read(shared).replace(/\n\s+/g, " ");
+  for (const words of ["wins over every other line of this rulebook for what a message to him holds and how it reads",
+    "The two-line status notes (the after-merge note, `kit heartbeat`) keep their two-line shape, but anything he must answer or do goes first",
+    "a two-line plain note to Lex (see [Messages to Lex](#messages-to-lex))"])
+    assert.ok(text.includes(words), `the rulebook lacks: ${words}`);
+});
