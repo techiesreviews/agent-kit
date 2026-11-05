@@ -166,3 +166,14 @@ test("the shared rulebook names no editor-only fact and links only inside the ki
   assert.match(text, /^\| Builder, every slice \| `claude-[^`]+`/m);
   assert.match(text, /^\| Review, every change \| `claude-[^`]+`/m);
 });
+
+test("kit rulebook prints the Messages to Lex rule, the one source briefs and kit init copy", t => {
+  const run = rulebook(t, project);
+  assert.equal(run.status, 0, run.stderr);
+  const rule = run.stdout.split("\n## Messages to Lex\n")[1]?.split("\n## ")[0] ?? "";
+  for (const words of ["Start with the question, or what he must do", "recommendation", "Caveman", "bullets", "He asks if he wants more context", "SHAs"])
+    assert.ok(rule.includes(words), `the Messages to Lex rule lacks "${words}"`);
+  assert.match(rule, /<!-- messages-to-lex:start -->\n[\s\S]+\n<!-- messages-to-lex:end -->/);
+  // The House rules list points to it.
+  assert.match(run.stdout.split("\n## House rules\n")[1]?.split("\n## ")[0] ?? "", /\*\*Messages to Lex\*\*[\s\S]*\(#messages-to-lex\)/);
+});

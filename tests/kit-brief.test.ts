@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { kitEnv } from "./support/kit-env.ts";
 import { pickSkills, skillLine, talkStyleLine } from "../brief-lib.mjs";
+import { kitMessagesToLex } from "../kit-lib.mjs";
 
 const kit = resolve("kit");
 const ticketText = (files: string, extra = "") => `---
@@ -296,5 +297,19 @@ test("brief --task: a project without ticket files gets a brief for a named task
     ["--task", "Fix it", "--owner", "cf-1", "--note", "x", "--stage", "bild"]]) {
     const failed = f.run(args);
     assert.equal(failed.status, 1, `${args}: ${failed.stdout}`);
+  }
+});
+
+test("brief: every stage carries the Messages to Lex rule from the rulebook, the one source, with its example", t => {
+  const rule = kitMessagesToLex(resolve("."));
+  assert.ok(readFileSync(resolve("docs/kitchen.md"), "utf8").includes(rule), "the rule is the rulebook's own text");
+  assert.match(rule, /Start with the question, or what he must do/);
+  assert.match(rule, /Example/);
+  const f = fixture(t);
+  for (const stage of ["build", "review", "second-look", "fix"]) {
+    const output = f.run(["docs/tickets/07-panel.md", "--stage", stage]);
+    assert.equal(output.status, 0, output.stderr + output.stdout);
+    const text = body(output.stdout);
+    assert.ok(text.includes(`## Messages to Lex\n${rule}\n`), `${stage}: no Messages to Lex rule`);
   }
 });
