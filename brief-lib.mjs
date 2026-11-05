@@ -148,7 +148,7 @@ export function composeBrief({ messages = kitMessagesToLex(), root, settings, ti
     "Commits use the repo's or the machine's set git identity; never borrow another person's name.",
   ]);
   // The rule is the shared rulebook's (docs/kitchen.md of the kit that runs), not the project's.
-  out.push("", "## Messages to Lex", "This covers messages meant for Lex. The Report section's format still applies in full (RESULT lines, PR URL, SHAs, finding locations).", messages);
+  out.push("", "## Messages to Lex", "This covers messages meant for Lex. The Report section's format still applies in full (RESULT lines, PR URL, SHAs, finding locations). A project's own or newer \"Messages to Lex\" section in AGENTS.md wins over this copy.", messages);
   if (!reviewing) section("Waiting", [
     "Finish the whole job in this turn. A short check runs in the foreground.",
     "A long job (a slice, a long `kit pr`, specs) runs as `scripts/agents/kit go <job> -- <command>`: it starts the job in its own systemd scope and waits at most 9 minutes per call.",
