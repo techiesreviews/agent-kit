@@ -130,11 +130,14 @@ const writes = [], kept = [], notes = [], visibilityNotes = [];
 const visibilityNote = (text) => { notes.push(text); visibilityNotes.push(text); };
 const extrasPath = "docs/agents/kitchen-extras.md", mapsPath = "docs/wayfinder", commandsPath = "scripts/agents/project.d";
 
-// How many commits `from` holds, in its local branch or origin's, that neither the local nor origin's `to` has (0 when `from` is missing).
+// How many commits `from` holds, in its local branch or origin's, that `to` lacks by patch: a release or a rebase merge writes
+// every commit anew, so the same change under another SHA is not missing. 0 when either branch is missing.
 const refsOf = (name) => ["refs/heads/", "refs/remotes/origin/"].map((prefix) => `${prefix}${name}`).filter((ref) => git("rev-parse", "--verify", "-q", ref) !== null);
 const commitsAhead = (from, to) => {
   const a = refsOf(from), b = refsOf(to);
-  return a.length && b.length ? Number(git("rev-list", "--count", ...a, "--not", ...b) ?? 0) || 0 : 0;
+  if (!a.length || !b.length) return 0;
+  // Ahead only when ahead of every copy of `to` (local and origin's); the most any copy of `from` holds.
+  return Math.max(...a.map((x) => Math.min(...b.map((y) => Number(git("rev-list", "--count", "--cherry-pick", "--right-only", `${y}...${x}`) ?? 0) || 0))));
 };
 
 // The settings file: kept as it is when there, else filled from git and package.json.
