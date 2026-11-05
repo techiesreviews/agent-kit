@@ -12,7 +12,7 @@ export const STAGES = ["build", "review", "second-look", "fix"];
 // One shell word, as written: single quotes, so a title's $ or backtick is never run.
 const shellQuote = value => `'${value.replace(/'/g, "'\\''")}'`;
 
-const peopleText = "Everything written to a file or GitHub (code, comments, docs, tickets, commits, PR text) stays plain full English, and so do the report keywords the kit reads (Declined:, RESULT:, REVIEW_STATUS:) with each declined finding's reason. Messages for Lex follow the Messages to Lex rule (caveman bullets in plain words).";
+const peopleText = "Everything written to a file or GitHub (code, comments, docs, tickets, commits, PR text) stays plain full English, and so do the report keywords the kit reads (Declined:, RESULT:, REVIEW_STATUS:) with each declined finding's reason. Messages for Lex follow the Messages to Lex rule (`scripts/agents/kit rulebook`, section \"Messages to Lex\"): caveman bullets in plain words.";
 /** The talk-style line (ticket 83): en, wenyan, or plain (the house rule's plain English line). */
 export function talkStyleLine(style) {
   if (style === "en") return `Talk style: very short English for your messages and report to the agent that started you (Claude: /${map.talk} ultra): drop articles and filler; keep paths, commands, numbers and quoted rules exact. ${peopleText}`;

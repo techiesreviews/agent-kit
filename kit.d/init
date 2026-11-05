@@ -47,7 +47,7 @@ changed paths). One RESULT line per project, then one for the run: updated (merg
 queued, its worktree kept until it lands), up to date, skipped or failed. A project whose main checkout has
 uncommitted changes in the files the change touches is skipped and named, as is one without a git checkout,
 an origin or a kit.json; a failed kit pr keeps its worktree and names it and its log. --pieces is that
-worktree's step: add the missing pieces only, with no project list entry and no doctor. Each kit pr stops
+worktree's step: add the missing pieces and bring an outdated one up to date, nothing else, with no project list entry and no doctor. Each kit pr stops
 after KIT_INIT_PR_TIMEOUT seconds (default 7200).
 
 --issues copies the project's open GitHub Issues (gh issue list) into needs-triage tickets, one file each in
@@ -307,7 +307,7 @@ const absentLines = agentLines.filter(([marker]) => !agents?.includes(marker));
 const missingLines = absentLines.filter(([marker]) => piece(`AGENTS.md ${marker.replace("scripts/agents/", "")}`, "AGENTS.md", `the line naming ${marker}`));
 const lexHeading = /^#+[ \t]+Messages to Lex[ \t]*$/m;
 // A match never crosses a second start marker (a leftover one cannot swallow the project's text), and takes CRLF files.
-const lexMarked = /<!-- messages-to-lex:start(?: v(\d+))? -->\r?\n(?:(?!<!-- messages-to-lex:start)[\s\S])*?\r?\n<!-- messages-to-lex:end -->/;
+const lexMarked = /<!-- messages-to-lex:start(?: v(\d+))? -->(?:\r?\n(?:(?!<!-- messages-to-lex:start)[\s\S])*?)?\r?\n<!-- messages-to-lex:end -->/;
 const lexRule = () => {
   try { return kitMessagesToLexRule(home); } catch (error) { return fail(`cannot read the Messages to Lex rule: ${error.message}`); }
 };
@@ -749,7 +749,7 @@ function all() {
 
     git(path, "add", "-A");
     const listed = git(path, "diff", "--cached", "--name-only").stdout.trim().split("\n").filter(Boolean);
-    const committed = commit(`Kit setup: add what kit init writes today (kit ${sha})`, `kit init --all added: ${listed.join(", ")}.`);
+    const committed = commit(`Kit setup: bring the project up to what kit init writes today (kit ${sha})`, `kit init --all added or updated: ${listed.join(", ")}.`);
     if (committed.status !== 0) { remove(); return ["failed", `git commit failed: ${said(committed)}`]; }
     let normalized = 0;
     if (listed.includes(".gitattributes")) {
@@ -820,7 +820,7 @@ function all() {
     mkdirSync(logs, { recursive: true });
     const output = openSync(log, "w");
     // timeout stops kit pr's whole process group (its checks, gh, git), not only the front door.
-    const pr = run("timeout", ["-k", "30", String(seconds), join(home, "kit"), "pr", "--title", `Kit setup: add what kit init writes today (kit ${sha})`],
+    const pr = run("timeout", ["-k", "30", String(seconds), join(home, "kit"), "pr", "--title", `Kit setup: bring the project up to what kit init writes today (kit ${sha})`],
       { cwd: path, env: local, stdio: ["ignore", output, output], timeout: 0 });
     closeSync(output);
     if (pr.status === 124 || pr.status === 137) {
