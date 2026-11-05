@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { builderChecks, plainEnglish, reviewFormat, ticketReviewBrief } from "./review-brief.mjs";
-import { kitRulebookPins, kitSliceBranch, kitStateDir } from "./kit-lib.mjs";
+import { kitMessagesToLex, kitRulebookPins, kitSliceBranch, kitStateDir } from "./kit-lib.mjs";
 import { map, modelFamily, pickSkills, readTicket, skillLine } from "./skills.mjs";
 
 export { map, modelFamily, pickSkills, readTicket, skillLine, skillSettingsProblems } from "./skills.mjs";
@@ -147,6 +147,8 @@ export function composeBrief({ root, settings, ticket, text, stage, owner, note,
     "House rules beat skill advice: where a skill suggests something a house rule forbids (a toast, say), the house rule wins.",
     "Commits use the repo's or the machine's set git identity; never borrow another person's name.",
   ]);
+  // The rule sits beside the brief, not in the project: the kit's own docs/kitchen.md is its one source.
+  out.push("", "## Messages to Lex", kitMessagesToLex(import.meta.dirname));
   if (!reviewing) section("Waiting", [
     "Finish the whole job in this turn. A short check runs in the foreground.",
     "A long job (a slice, a long `kit pr`, specs) runs as `scripts/agents/kit go <job> -- <command>`: it starts the job in its own systemd scope and waits at most 9 minutes per call.",

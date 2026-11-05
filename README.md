@@ -46,6 +46,14 @@ only a small launcher and its own settings; the kit itself lives here, once.
   the release branch (the Native Site Editor's `dev`). Where the two are one branch (this repo, a live site), they
   land through `kit pr` (docs tier), or `kit next --start`, which claims and starts the slice itself.
 
+## Messages to Lex
+
+One short rule for every message to Lex (question or what he must do first, a recommendation, caveman bullets,
+no internal process): the "Messages to Lex" section of `docs/kitchen.md` is its only text. `kit rulebook` prints it,
+every `kit brief` carries it, and `kit init` copies it into a project's `AGENTS.md` (a project that already has a
+"Messages to Lex" heading keeps its own words). A project set up before the rule gets the `AGENTS.md` block the same
+way as any new piece: `kit doctor` warns, `kit init` (in the project) or `kit init --all` (machine-wide) adds it.
+
 ## The factory: generated briefs, long jobs that wait
 
 - `kit brief <ticket> [--stage build|review|second-look|fix] [--note "<text>"]` prints the whole brief for a
