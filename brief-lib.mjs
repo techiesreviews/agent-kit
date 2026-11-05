@@ -12,7 +12,7 @@ export const STAGES = ["build", "review", "second-look", "fix"];
 // One shell word, as written: single quotes, so a title's $ or backtick is never run.
 const shellQuote = value => `'${value.replace(/'/g, "'\\''")}'`;
 
-const peopleText = "Everything written to a file or GitHub (code, comments, docs, tickets, commits, PR text) and every message for Lex stays plain full English, and so do the report keywords the kit reads (Declined:, RESULT:, REVIEW_STATUS:) with each declined finding's reason.";
+const peopleText = "Everything written to a file or GitHub (code, comments, docs, tickets, commits, PR text) stays plain full English, and so do the report keywords the kit reads (Declined:, RESULT:, REVIEW_STATUS:) with each declined finding's reason. Messages for Lex follow the Messages to Lex rule (caveman bullets in plain words).";
 /** The talk-style line (ticket 83): en, wenyan, or plain (the house rule's plain English line). */
 export function talkStyleLine(style) {
   if (style === "en") return `Talk style: very short English for your messages and report to the agent that started you (Claude: /${map.talk} ultra): drop articles and filler; keep paths, commands, numbers and quoted rules exact. ${peopleText}`;
@@ -147,8 +147,8 @@ export function composeBrief({ root, settings, ticket, text, stage, owner, note,
     "House rules beat skill advice: where a skill suggests something a house rule forbids (a toast, say), the house rule wins.",
     "Commits use the repo's or the machine's set git identity; never borrow another person's name.",
   ]);
-  // The rule sits beside the brief, not in the project: the kit's own docs/kitchen.md is its one source.
-  out.push("", "## Messages to Lex", kitMessagesToLex(import.meta.dirname));
+  // The rule is the shared rulebook's (docs/kitchen.md of the kit that runs), not the project's.
+  out.push("", "## Messages to Lex", "This covers messages meant for Lex. The Report section's format still applies in full (RESULT lines, PR URL, SHAs, finding locations).", kitMessagesToLex());
   if (!reviewing) section("Waiting", [
     "Finish the whole job in this turn. A short check runs in the foreground.",
     "A long job (a slice, a long `kit pr`, specs) runs as `scripts/agents/kit go <job> -- <command>`: it starts the job in its own systemd scope and waits at most 9 minutes per call.",

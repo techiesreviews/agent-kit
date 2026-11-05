@@ -21,7 +21,9 @@ before the project has a launcher). It writes only what is missing and never del
   scripts/agents/kit, scripts/agents/hooks/run.sh   the kit launcher and the hook launcher
   .claude/settings.json, .codex/hooks.json   the kit's hook entries, merged in; other settings stay
   AGENTS.md                 two lines pointing at scripts/agents/kit rulebook and kit --help, and the short
-                            "Messages to Lex" rule (copied from the shared rulebook)
+                            "Messages to Lex" section (the shared rulebook's rule between
+                            markers; a section with the markers that differs from the rulebook is updated in place,
+                            a heading without them is the project's own and stays)
   .gitattributes            the line "* text=auto eol=lf", added at the top, so every checkout keeps LF
                             endings (a note names tracked files with CRLF to renormalize)
 Full (the default for a new project) also writes an empty scripts/agents/project.d/ (its own commands),
@@ -291,21 +293,37 @@ map goes from idea to tickets, and \`scripts/agents/kit next <map>\` to hand its
 const stubsWritten = unnamed.filter(([, , stub]) => writes.some(({ path }) => path === stub));
 if (stubsWritten.length) notes.push(`add to ${kitSettingsFile} (kit init never edits it): ${stubsWritten.map(([key, value]) => `"${key}": "${value}"`).join(", ")}`);
 
-// AGENTS.md: the two lines, added to the end when missing.
+// AGENTS.md: the two lines and the "Messages to Lex" section, added to the end when missing. The section holds the
+// shared rulebook's rule between markers; a section with the markers is the kit's own and is brought up to date
+// when the rulebook's rule changes, a heading without them is the project's own words and stays.
 const agentLines = [
-  ["scripts/agents/kit rulebook", "Kitchen rulebook: `scripts/agents/kit rulebook` (stations, who decides, builder and reviewer pins)."],
-  ["scripts/agents/kit --help", "Agent commands: `scripts/agents/kit --help`; `scripts/agents/kit <command> --help` for one."],
-  // The rule's text is the shared rulebook's (docs/kitchen.md), copied so the always-loaded file carries it.
-  ["Messages to Lex", `\n## Messages to Lex\n${kitMessagesToLex(home)}`],
+  ["scripts/agents/kit rulebook", "Kitchen rulebook: `scripts/agents/kit rulebook` (stations, who decides, builder and reviewer pins).", "the rulebook line"],
+  ["scripts/agents/kit --help", "Agent commands: `scripts/agents/kit --help`; `scripts/agents/kit <command> --help` for one.", "the commands line"],
 ];
 const agents = existsSync(at("AGENTS.md")) ? readText("AGENTS.md") : null;
 const absentLines = agentLines.filter(([marker]) => !agents?.includes(marker));
-const missingLines = absentLines.filter(([marker]) => piece(`AGENTS.md ${marker.replace("scripts/agents/", "")}`, "AGENTS.md", `the line naming ${marker}`))
-  .map(([, line]) => line);
-if (!absentLines.length) kept.push("AGENTS.md");
-else if (!missingLines.length) { /* every absent line is turned off */ }
-else if (agents === null) writes.push({ path: "AGENTS.md", text: `# Agents\n\n${missingLines.join("\n")}\n` });
-else writes.push({ path: "AGENTS.md", text: `${agents.replace(/\n*$/, "\n\n")}${missingLines.join("\n")}\n`, before: agents, said: `(added ${missingLines.length} line${missingLines.length === 1 ? "" : "s"})` });
+const missingLines = absentLines.filter(([marker]) => piece(`AGENTS.md ${marker.replace("scripts/agents/", "")}`, "AGENTS.md", `the line naming ${marker}`));
+const lexHeading = /^#+[ \t]+Messages to Lex[ \t]*$/m;
+const lexMarked = /<!-- messages-to-lex:start -->\n[\s\S]*?\n<!-- messages-to-lex:end -->/;
+const lexRule = () => {
+  try { return kitMessagesToLex(home); } catch (error) { return fail(`cannot read the Messages to Lex rule: ${error.message}`); }
+};
+const lexSection = (rule) => `<!-- messages-to-lex:start -->\n${rule}\n<!-- messages-to-lex:end -->`;
+let lexAdd = false, lexUpdate = false;
+if (!agents || !lexHeading.test(agents)) lexAdd = piece("AGENTS.md Messages to Lex", "AGENTS.md", "the Messages to Lex section");
+else if (lexMarked.test(agents) && agents.match(lexMarked)[0] !== lexSection(lexRule()))
+  lexUpdate = piece("AGENTS.md Messages to Lex", "AGENTS.md", "the Messages to Lex section, out of date with the rulebook");
+if (!absentLines.length && !lexAdd && !lexUpdate && !off.some((name) => name.startsWith("AGENTS.md"))) kept.push("AGENTS.md");
+else if (missingLines.length || lexAdd || lexUpdate) {
+  const rule = lexAdd || lexUpdate ? lexRule() : "";
+  let text = agents ?? "# Agents";
+  if (lexUpdate) text = text.replace(lexMarked, () => lexSection(rule));
+  const tail = [missingLines.map(([, line]) => line).join("\n"), lexAdd ? `## Messages to Lex\n${lexSection(rule)}` : ""].filter(Boolean).join("\n\n");
+  if (tail) text = `${text.replace(/\n*$/, "\n\n")}${tail}`;
+  const said = [[...missingLines.map(([, , what]) => what), ...(lexAdd ? ["the Messages to Lex section"] : [])], lexUpdate ? ["the Messages to Lex section"] : []]
+    .map((list, index) => list.length ? `${index ? "updated" : "added"} ${list.join(" and ")}` : "").filter(Boolean).join("; ");
+  writes.push(agents === null ? { path: "AGENTS.md", text: `${text}\n` } : { path: "AGENTS.md", text: `${text.replace(/\n*$/, "")}\n`, before: agents, said: `(${said})` });
+}
 
 // .gitattributes: LF endings in every checkout, so a Windows clone cannot break tests that read files. The line goes
 // at the top, so the project's own lines after it (*.png binary) still win for their files.
