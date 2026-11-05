@@ -317,8 +317,8 @@ OpenCode settings (default model, global instructions) do not apply to the revie
 - **Decides:** Lex. Each correction becomes a ticket in the build (station 4) and one feedback log
   line (`kit feedback <map> --kind K --fix <ticket> "<text>"`, committed with the ticket); the
   log is what the ladder counts. A problem he finds after release adds `--after-release`.
-- **Done when:** Lex says "ship it". A direct project (`branches.direct`) is the exception: nothing waits for
-  Tuesday and the Tuesday pack is skipped; the project's `checks` are the gate, and Lex hears about the change
+- **Done when:** Lex says "ship it". A direct project (`branches.direct`) is the exception: the release does not wait
+  for Tuesday (other hard-to-undo items still do) and needs no Tuesday pack entry; the project's `checks` are the gate, and Lex hears about the change
   afterwards (the house rule says how for his two websites).
 
 ### 12. Release
