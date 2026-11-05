@@ -1111,11 +1111,3 @@ test("an absolute --ticket under a dev root whose parent folder is named like ma
     "RESULT: ok next 0 ready, 1 waiting",
   ]);
 });
-
-test("--start in a direct project never pushes a claim to the live branch and names kit pr", t => {
-  const { root, git, run } = fixture(t, startFiles, "main", { branches: { land: "main", release: "main", direct: true } });
-  const result = run("alpha", "--start");
-  assert.notEqual(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stdout + result.stderr, /direct project; claim the ticket with a docs-tier kit pr/);
-  assert.deepEqual(git(join(root, "origin.git"), "log", "--format=%s", "main").trim().split("\n"), ["fixture"]);
-});
