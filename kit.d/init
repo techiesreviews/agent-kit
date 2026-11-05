@@ -5,7 +5,7 @@ import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, rea
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const { kitGhRepo, kitHideUserInfo, kitHome, kitMessagesToLexRule, kitProjects, kitRegisterProject, kitResult, kitRoot, kitSettingsFile, kitSettingsProblems, kitStateDir } = await import(
+const { kitGhRepo, kitHideUserInfo, kitHome, kitMessagesToLexRule, kitProjects, kitRepoPrivate, kitRegisterProject, kitResult, kitRoot, kitSettingsFile, kitSettingsProblems, kitStateDir } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const usage = `Usage: kit init [--light | --full] [--land <branch>]
@@ -25,6 +25,10 @@ before the project has a launcher). It writes only what is missing and never del
                             "Messages to Lex" section (the shared rulebook's rule between
                             markers; one with an older version than the rulebook's is updated in
                             place, a heading without markers is the project's own and stays)
+  (branches.direct)         a new project in a PRIVATE GitHub repo (gh repo view --json visibility) is set to land
+                            straight on main: branches land and release main, direct true; when gh cannot tell, nothing
+                            is set and a note says so. An existing project's settings are never edited: a note (also
+                            in --check) names the change; "direct" in init.skip silences it
   .gitattributes            the line "* text=auto eol=lf", added at the top, so every checkout keeps LF
                             endings (a note names tracked files with CRLF to renormalize)
 Full (the default for a new project) also writes an empty scripts/agents/project.d/ (its own commands),
@@ -122,11 +126,15 @@ const branchExists = (name) => git("rev-parse", "--verify", "--quiet", `refs/hea
 const common = git("rev-parse", "--path-format=absolute", "--git-common-dir");
 const gitMain = common ? dirname(common) : root;
 
-const writes = [], kept = [], notes = [];
+const writes = [], kept = [], notes = [], visibilityNotes = [];
+const visibilityNote = (text) => { notes.push(text); visibilityNotes.push(text); };
 const extrasPath = "docs/agents/kitchen-extras.md", mapsPath = "docs/wayfinder", commandsPath = "scripts/agents/project.d";
 
 // The settings file: kept as it is when there, else filled from git and package.json.
 // unnamed: stub keys an existing settings file lacks, as [key, default, the stub file written there].
+// How many commits `from` has that `to` lacks (local branch, else origin's); 0 when either is missing.
+const refFor = (name) => ["refs/heads/", "refs/remotes/origin/"].map((prefix) => `${prefix}${name}`).find((ref) => git("rev-parse", "--verify", "-q", ref) !== null);
+const commitsAhead = (from, to) => { const a = refFor(from), b = refFor(to); return a && b ? Number(git("rev-list", "--count", `${b}..${a}`) ?? 0) || 0 : 0; };
 let settings, unnamed = [], full = !options.light;
 if (options.check && !existsSync(at(kitSettingsFile))) { kitResult("ok", `init check: no ${kitSettingsFile} (run kit init to set the project up)`); process.exit(0); }
 if (options.pieces && !existsSync(at(kitSettingsFile))) fail(`--pieces needs ${kitSettingsFile}`);
@@ -141,6 +149,20 @@ if (existsSync(at(kitSettingsFile))) {
   full = options.full || (!options.light && (["maps", "rulebookExtras"].some((key) => settings[key]) ||
     [`${mapsPath}/README.md`, extrasPath].some((path) => existsSync(at(path)))));
   if (options.land) notes.push(`--land ignored: ${kitSettingsFile} already names "branches"`);
+  // A private repo can land straight on main; the settings file is never edited, so the note names the change.
+  if (!options.pieces && !process.env.KIT_INIT_NO_VISIBILITY && settings.branches.direct === undefined && !(Array.isArray(settings.init?.skip) && settings.init.skip.some((entry) => ["direct", kitSettingsFile].includes(entry)))) {
+    const asked = kitRepoPrivate(root);
+    if (asked.private) {
+      // The branch that is live already: the release branch, else a main or master landing branch, else a main or master that exists.
+      const live = settings.branches.release || (["main", "master"].includes(settings.branches.land) ? settings.branches.land : ["main", "master"].find(branchExists));
+      const behind = live && settings.branches.land !== live ? commitsAhead(settings.branches.land, live) : 0;
+      visibilityNote(live && branchExists(live)
+        ? `private GitHub repo ${asked.repo}: to land directly on ${live} set "branches": { "land": "${live}", "release": "${live}", "direct": true } in ${kitSettingsFile} (kit init never edits it)` +
+          (behind ? `; merge ${settings.branches.land} into ${live} first, it has ${behind} commit${behind === 1 ? "" : "s"} ${live} lacks` : "")
+        : `private GitHub repo ${asked.repo}, but there is no main or master branch here to land on directly: branches.direct is not set (create that branch, then set "branches" in ${kitSettingsFile} yourself)`);
+    }
+    else if (asked.repo && asked.private === undefined) visibilityNote(`could not tell whether the GitHub repo ${asked.repo} is private (${asked.reason}); branches.direct is not set (add it yourself if the repo is private)`);
+  }
   unnamed = full ? [["commands", commandsPath, `${commandsPath}/.gitkeep`], ["maps", mapsPath, `${mapsPath}/README.md`], ["rulebookExtras", extrasPath, extrasPath]]
     .filter(([key]) => !settings[key]) : [];
 } else {
@@ -152,11 +174,26 @@ if (existsSync(at(kitSettingsFile))) {
   const remote = kitHideUserInfo(git("remote", "get-url", "origin") ?? "");
   // The last part of the remote's path, after "/" or the ":" of host:repo (a token in the url never becomes it).
   const project = (remote && remote.replace(/\/+$/, "").split(/[/:]/).at(-1).replace(/\.git$/, "")) || basename(gitMain);
-  settings = { project, mainRoot: gitMain, branches: { land, ...(release ? { release } : {}) } };
+  // A private GitHub repo lands straight on main (no dev branch, no release step); what gh cannot tell is never taken for private.
+  const asked = options.pieces ? {} : kitRepoPrivate(root);
+  const mainBranch = ["main", "master"].find(branchExists);
+  // A dev or develop branch ahead of main holds work that going direct would strand (or push live in one go): no direct, a warning.
+  const unmerged = options.land || !mainBranch ? null : ["dev", "develop"].filter(branchExists).map((name) => [name, commitsAhead(name, mainBranch)]).find(([, count]) => count > 0);
+  const direct = asked.private === true && !unmerged && !!(options.land ? ["main", "master"].includes(options.land) && branchExists(options.land) : mainBranch);
+  if (direct) visibilityNote(`private GitHub repo ${asked.repo}: it lands directly on ${options.land || mainBranch} (branches.direct)`);
+  else if (asked.repo && asked.private === undefined) visibilityNote(`could not tell whether the GitHub repo ${asked.repo} is private (${asked.reason}); branches.direct is not set (add it yourself if the repo is private)`);
+  else if (asked.private && unmerged) visibilityNote(`private GitHub repo ${asked.repo}, but ${unmerged[0]} has ${unmerged[1]} commit${unmerged[1] === 1 ? "" : "s"} ${mainBranch} lacks: branches.direct is not set (merge ${unmerged[0]} into ${mainBranch} first, then set "branches" in ${kitSettingsFile} yourself)`);
+  else if (asked.private) visibilityNote(options.land && !branchExists(options.land)
+    ? `private GitHub repo ${asked.repo}, but branch ${options.land} does not exist yet: branches.direct is not set (create it, then set "branches" in ${kitSettingsFile} yourself)`
+    : options.land
+      ? `private GitHub repo ${asked.repo}, but --land ${options.land} names a branch other than main or master: branches.direct is not set (${mainBranch ? `leave out --land to land directly on ${mainBranch}` : "there is no main or master branch here yet; create one first"})`
+      : `private GitHub repo ${asked.repo}, but there is no main or master branch here to land on directly: branches.direct is not set (create that branch, then set "branches" in ${kitSettingsFile} yourself)`);
+  const target = direct ? options.land || mainBranch : land;
+  settings = { project, mainRoot: gitMain, branches: direct ? { land: target, release: target, direct: true } : { land, ...(release ? { release } : {}) } };
   const checks = guessChecks();
   if (checks) settings.checks = checks;
   if (full) Object.assign(settings, { commands: commandsPath, maps: mapsPath, rulebookExtras: extrasPath });
-  writes.push({ path: kitSettingsFile, text: `${JSON.stringify(settings, null, 2)}\n`, said: `(${project}, lands on ${land})` });
+  writes.push({ path: kitSettingsFile, text: `${JSON.stringify(settings, null, 2)}\n`, said: `(${project}, lands on ${settings.branches.land})` });
 }
 
 // Where the stubs go: the folders and file the settings name, else the defaults a new settings file names.
@@ -346,6 +383,7 @@ else if (piece(".gitattributes", ".gitattributes", `the line "${lineEndings}"`))
 }
 
 if (options.check) {
+  for (const note of visibilityNotes) console.log(`note: ${note}`);
   for (const line of missing) console.log(`missing: ${line}`);
   for (const line of outdated) console.log(`outdated: ${line}`);
   kitResult("ok", `init check: ${missing.length || outdated.length ? [missing.length && `${missing.length} missing`, outdated.length && `${outdated.length} out of date`].filter(Boolean).join(", ") : "nothing missing"}${off.length ? `; ${off.length} turned off in init.skip` : ""}`);

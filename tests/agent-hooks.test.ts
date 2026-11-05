@@ -550,6 +550,25 @@ function pushGuard(command: string, cwd: string, env: NodeJS.ProcessEnv = {}) {
 const pushRefused = (branch: string) =>
   `Pushing straight to \`${branch}\` puts it live without review. Land it with \`scripts/agents/kit pr --ticket <ticket>\` (or \`kit pr --release --base ${branch}\` for a release).\n`;
 
+test("a direct project's refused push advises kit pr without the release step it does not have", (t) => {
+  const { work } = pushProject(t, { land: "main", release: "main", direct: true });
+  const refused = pushGuard("git push origin main", work);
+  assert.equal(refused.status, 2, refused.stdout + refused.stderr);
+  assert.equal(refused.stderr, "Pushing straight to `main` puts it live without review. Land it with `scripts/agents/kit pr --ticket <ticket>` (this project lands directly on `main`; there is no release step).\n");
+});
+
+test("the push guard reads the settings of the repo the push reaches: a subfolder of a direct project, and another project by git -C", (t) => {
+  const direct = pushProject(t, { land: "main", release: "main", direct: true });
+  const split = pushProject(t, { land: "dev", release: "main" });
+  mkdirSync(join(direct.work, "src"), { recursive: true });
+  const noRelease = "Pushing straight to `main` puts it live without review. Land it with `scripts/agents/kit pr --ticket <ticket>` (this project lands directly on `main`; there is no release step).\n";
+  assert.equal(pushGuard("git push origin main", join(direct.work, "src")).stderr, noRelease);
+  for (const command of ["git push --all origin", "git push origin HEAD:main", "git push origin dev:refs/heads/main", "git push"])
+    assert.equal(pushGuard(command, direct.work).stderr, noRelease, command);
+  assert.equal(pushGuard(`git -C ${split.work} push origin main`, direct.work).stderr, pushRefused("main"));
+  assert.equal(pushGuard(`git -C ${direct.work} push origin main`, split.work).stderr, noRelease);
+});
+
 test("a push to the release branch is refused however it is written, and names kit pr", (t) => {
   const { dir, work } = pushProject(t, { land: "dev", release: "main" });
   for (const [command, cwd] of [

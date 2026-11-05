@@ -47,6 +47,14 @@ says for today; never claim a planned item ran.
   row, or with `KIT_ALLOW_STOP=1`).
 - **Messages to Lex** (Lex, 2026-11-05): only what matters to him, question first, caveman bullets;
   the rule is under [Messages to Lex](#messages-to-lex) below.
+- **Private repos land directly on main** (Lex, 2026-11-05): a project in a private GitHub repo sets
+  `"branches": { "land": "main", "release": "main", "direct": true }`; its PRs then go straight into main
+  as ordinary PRs, with every check, the review and the second look, no raw pushes and no `--release` step.
+  `kit init` sets it up for a new private repo and `kit init --check` names the change for an existing
+  one; a public repo keeps its landing and release branches. A direct project goes live mid-week, as soon
+  as its checks and review pass, without Lex's "ship it" (Lex, 2026-11-05: "yes", his own sites too). For
+  his two websites, techies-reviews and lexvd-site, the lead tells Lex right after each change goes live
+  and notes how to roll it back in one command (`git revert -m 1 <merge commit>`, landed with `kit pr`).
 - **Tuesday is Lex's only review day** (Lex, 2026-10-27): everything that needs him waits in one
   [Tuesday pack](#tuesday-review); between Tuesdays the work keeps moving. Budget: his $200/month
   Claude subscription and the free workers, never more.
@@ -307,7 +315,10 @@ OpenCode settings (default model, global instructions) do not apply to the revie
 
 ### 12. Release
 
-- **Use:** only after Lex's written "ship it" (given on Tuesday): `kit pr --release` (the landing
+- **Use:** only after Lex's written "ship it" (given on Tuesday). The exception is a direct project
+  (`branches.direct`): it has no release step and needs no "ship it", its merge into main is the release as
+  soon as checks and review pass, and the project's steps follow it (the house rule says what the lead
+  tells Lex). Otherwise `kit pr --release` (the landing
   branch into the release branch, `branches.release`), merge once CI passes, then the project's
   release steps and first-hour check (extras). A build with a rollout checklist follows it.
 - **Release check:** `kit pr --release` first runs `kit release-check --land` (a clean tree, HEAD
@@ -394,9 +405,10 @@ keep working on everything that doesn't need him.
   the ready-date guesses.
 - **Easy-to-undo defaults:** mid-week, an easy-to-undo choice takes its recommended answer at once, and
   the pack lists it. Easy to undo: anything that lands on the landing branch (or a preview of it)
-  and can be changed by a later slice. Grilling answers and mock-up choices count when the work
+  and can be changed by a later slice (not in a direct project, whose landing branch is live). Grilling answers and mock-up choices count when the work
   they steer is still unreleased.
-- **Hard to undo, waits for Tuesday:** going live (release, and every move up the ladder); public
+- **Hard to undo, waits for Tuesday:** going live (release, and every move up the ladder; a direct
+  project goes live on its own merge, see the house rule); public
   repos, packages or GitHub Issues; anything that costs money; deleting what cannot be recovered;
   changes to visitors' sites; his settings, keys and secrets (T3 `request_secret`, never chat); a
   change in builder routing; which sweep findings become tickets; new checks or rulebook lines from

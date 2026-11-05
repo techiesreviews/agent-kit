@@ -1316,3 +1316,27 @@ test("doctor notes the skills the skills map names that are missing, counting th
   assert.match(removed, /^✗ skills map: 17 of 20 /);
   assert.doesNotMatch(removed, /emil-color/);
 });
+
+test("doctor never asks GitHub whether the repo is private (its setup check runs kit init --check without that question)", (t) => {
+  const f = fixture(t);
+  // A project set up by the shared kit (no old guard files), so the setup check runs kit init --check.
+  const agents = join(f.build, "scripts/agents");
+  rmSync(join(agents, "hooks/bash-guard.sh"));
+  executable(join(agents, "hooks/run.sh"), "cat > /dev/null; exit 2");
+  copyFileSync(join(repo, "launcher/kit"), join(agents, "kit"));
+  for (const path of [".claude/settings.json", ".codex/hooks.json"]) copyFileSync(join(repo, path), join(f.build, path));
+  const bin = join(f.directory, "fake-gh");
+  mkdirSync(bin);
+  executable(join(bin, "gh"), `printf '%s\\n' "$*" >> ${JSON.stringify(join(bin, "calls.log"))}\nif [ "$1 $2" = "repo view" ]; then printf '{"visibility":"PRIVATE","nameWithOwner":"acme/tools","url":"https://github.com/acme/tools"}'; fi`);
+  git(f.build, "remote", "set-url", "origin", "https://github.com/acme/tools.git");
+  git(f.build, "config", `url.${join(f.directory, "origin.git")}.insteadOf`, "https://github.com/acme/tools.git");
+  const ran = f.run(["--quiet"], f.build, { KIT_HOME: repo, KIT_LIB_MJS: join(repo, "kit-lib.mjs"), PATH: `${bin}:${process.env.PATH}` });
+  assert.doesNotMatch(ran.stdout, /setup: not checked/, ran.stdout);
+  const calls = (() => { try { return readFileSync(join(bin, "calls.log"), "utf8"); } catch { return ""; } })();
+  assert.doesNotMatch(calls, /visibility/, calls);
+  // The control: kit init --check run by hand in the same project does ask.
+  const control = spawnSync(process.execPath, [join(repo, "kit.d/init"), "--check"], { cwd: f.build, encoding: "utf8", env: { ...kitEnv(), KIT_ROOT: f.build, KIT_HOME: repo, KIT_LIB_MJS: join(repo, "kit-lib.mjs"), PATH: `${bin}:${process.env.PATH}` } });
+  let asked = "";
+  try { asked = readFileSync(join(bin, "calls.log"), "utf8"); } catch { /* No call: the message below shows why. */ }
+  assert.match(asked, /repo view acme\/tools --json visibility/, control.stdout + control.stderr);
+});

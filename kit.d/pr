@@ -342,6 +342,7 @@ async function main(args) {
     land = changes => kitScore({ ticket: flags.ticket, branch, root }, record => {
       record.landed = { ...(changes.pr === undefined || record.landed?.pr === changes.pr ? record.landed : {}), ...changes };
     });
+    if (flags.release && settings.branches.direct === true) throw new Error("--release has no step in a direct project (branches.direct): its PRs land on its one branch as they are");
     if (flags.release && !release) throw new Error("--release needs branches.release in scripts/agents/kit.json");
     // A project that lands on its release branch (land and release both main) opens ordinary PRs into it.
     if (release && release !== kitBranch("land", settings) && flags.base === release && !flags.release) throw new Error(`--base ${release} requires --release`);

@@ -50,7 +50,12 @@ kit_settings_problems() {
       (if (.project | type) == "string" and (.project | test("\\S")) then empty
         else "add \"project\": \"<name>\" to scripts/agents/kit.json" end),
       (if (.branches | type) == "object" and (.branches.land | type) == "string" and (.branches.land | test("\\S")) then empty
-        else "add \"branches\": { \"land\": \"<branch>\" } to scripts/agents/kit.json" end)
+        else "add \"branches\": { \"land\": \"<branch>\" } to scripts/agents/kit.json" end),
+      (if (.branches | type) != "object" or (.branches | has("direct") | not) then empty
+        elif (.branches.direct | type) != "boolean" then "\"branches.direct\" must be true or false in scripts/agents/kit.json"
+        elif .branches.direct and ((.branches.land | type) != "string" or (.branches.land | test("\\S") | not) or .branches.land != .branches.release) then
+          "direct landing needs the same branch as \"land\" and \"release\" in scripts/agents/kit.json (for example both \"main\")"
+        else empty end)
     end' "$file" 2>&1); then
     printf 'scripts/agents/kit.json is unreadable: %s\n' "${problems//$'\n'/ }"
     return 1
