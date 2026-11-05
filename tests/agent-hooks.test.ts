@@ -563,7 +563,7 @@ test("the push guard reads the settings of the repo the push reaches: a subfolde
   mkdirSync(join(direct.work, "src"), { recursive: true });
   const noRelease = "Pushing straight to `main` puts it live without review. Land it with `scripts/agents/kit pr --ticket <ticket>` (this project lands directly on `main`; there is no release step).\n";
   assert.equal(pushGuard("git push origin main", join(direct.work, "src")).stderr, noRelease);
-  for (const command of ["git push --all origin", "git push origin HEAD:main", "git push origin dev:refs/heads/main", "git push"])
+  for (const command of ["git push --all origin", "git push origin HEAD:main", "git push origin dev:refs/heads/main", "git push", "git push origin :", "git push origin 'refs/heads/*:refs/heads/*'"])
     assert.equal(pushGuard(command, direct.work).stderr, noRelease, command);
   assert.equal(pushGuard(`git -C ${split.work} push origin main`, direct.work).stderr, pushRefused("main"));
   assert.equal(pushGuard(`git -C ${direct.work} push origin main`, split.work).stderr, noRelease);

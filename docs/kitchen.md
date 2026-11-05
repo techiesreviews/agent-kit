@@ -49,12 +49,14 @@ says for today; never claim a planned item ran.
   the rule is under [Messages to Lex](#messages-to-lex) below.
 - **Private repos land directly on main** (Lex, 2026-11-05): a project in a private GitHub repo sets
   `"branches": { "land": "main", "release": "main", "direct": true }`; its PRs then go straight into main
-  as ordinary PRs, with every check, the review and the second look, no raw pushes and no `--release` step.
+  as ordinary PRs through the same gates as any `kit pr` (checks and review by the change's size, the second look when a
+  model can take it), with no raw pushes and no `--release` step.
   `kit init` sets it up for a new private repo and `kit init --check` names the change for an existing
   one; a public repo keeps its landing and release branches. A direct project goes live mid-week, as soon
   as its checks and review pass, without Lex's "ship it" (Lex, 2026-11-05: "yes", his own sites too). For
   his two websites, techies-reviews and lexvd-site, the lead tells Lex right after each change goes live
-  and notes how to roll it back in one command (`git revert -m 1 <merge commit>`, landed with `kit pr`).
+  and notes how to roll it back in one command (`git revert --no-edit <first commit>^..<last commit>`, the commits
+  `kit pr` printed as "landed:", then landed with `kit pr`).
 - **Tuesday is Lex's only review day** (Lex, 2026-10-27): everything that needs him waits in one
   [Tuesday pack](#tuesday-review); between Tuesdays the work keeps moving. Budget: his $200/month
   Claude subscription and the free workers, never more.
@@ -300,7 +302,7 @@ OpenCode settings (default model, global instructions) do not apply to the revie
 
 ### 11. Lex's end check
 
-- **Releases wait for Tuesday, work doesn't:** when a build's (or stage's) frontier is empty, its end
+- **Releases wait for Tuesday, work doesn't** (a direct project has no release to wait for): when a build's (or stage's) frontier is empty, its end
   check goes into the next Tuesday pack, and the next stage or the next build in the queue starts at
   once on the landing branch. A gate line in a build README saying "after X's release" means "after
   X's frontier is empty" for starting work; X's release itself still waits for Lex.
@@ -311,7 +313,9 @@ OpenCode settings (default model, global instructions) do not apply to the revie
 - **Decides:** Lex. Each correction becomes a ticket in the build (station 4) and one feedback log
   line (`kit feedback <map> --kind K --fix <ticket> "<text>"`, committed with the ticket); the
   log is what the ladder counts. A problem he finds after release adds `--after-release`.
-- **Done when:** Lex says "ship it".
+- **Done when:** Lex says "ship it". A direct project (`branches.direct`) is the exception: nothing waits for
+  Tuesday; the user-level check runs on the PR before it merges, and Lex hears about the change afterwards
+  (the house rule says how for his two websites).
 
 ### 12. Release
 
@@ -410,7 +414,7 @@ keep working on everything that doesn't need him.
 - **Hard to undo, waits for Tuesday:** going live (release, and every move up the ladder; a direct
   project goes live on its own merge, see the house rule); public
   repos, packages or GitHub Issues; anything that costs money; deleting what cannot be recovered;
-  changes to visitors' sites; his settings, keys and secrets (T3 `request_secret`, never chat); a
+  changes to visitors' sites (a direct project's own site excepted: it goes live on its merge, see the house rule); his settings, keys and secrets (T3 `request_secret`, never chat); a
   change in builder routing; which sweep findings become tickets; new checks or rulebook lines from
   chat learning.
 - **Ready-date guesses:** each build README carries one line, `**Ready (guess):**`, with the date it
