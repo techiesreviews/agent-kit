@@ -1249,7 +1249,7 @@ test("doctor warns once per piece kit init would add today, also when quiet, nev
   const sha = git(repo, "rev-parse", "--short", "HEAD");
   const fix = 'fix: run scripts/agents/kit init (or name it in "init.skip" in scripts/agents/kit.json to keep it out)';
   const warnings = [`✗ setup: missing since kit ${sha}: AGENTS.md kit --help (the line naming scripts/agents/kit --help); ${fix}`,
-    `✗ setup: missing since kit ${sha}: AGENTS.md Messages to Lex (the line naming Messages to Lex); ${fix}`,
+    `✗ setup: missing since kit ${sha}: AGENTS.md Messages to Lex (the Messages to Lex section); ${fix}`,
     `✗ setup: missing since kit ${sha}: .gitattributes (the line "* text=auto eol=lf"); ${fix}`];
   const passed = "RESULT: ok doctor 11/11 checks passed";
   const run = f.run();
