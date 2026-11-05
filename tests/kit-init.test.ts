@@ -1379,7 +1379,7 @@ test("a new project in a PRIVATE GitHub repo is set up to land directly on main;
   const run = priv.init(a.work, ["--light"]);
   // (doctor then fails on the fake origin, which is not what is tested here)
   assert.deepEqual(JSON.parse(readFileSync(join(a.work, "scripts/agents/kit.json"), "utf8")).branches, directSettings);
-  assert.match(run.stdout, /^note: private GitHub repo acme\/tools: it lands directly on main \(branches\.direct\)$/m);
+  assert.match(run.stdout, /^note: private GitHub repo acme\/tools: it lands directly on main \(branches\.direct; dev and main were compared as last fetched, so run git fetch first if unsure\)$/m);
   assert.ok(priv.calls().some((args) => args.join(" ").startsWith("repo view acme/tools --json visibility")), JSON.stringify(priv.calls()));
   // Public: the usual dev and main, no direct.
   const g = fixture(t);
@@ -1664,7 +1664,7 @@ test("a dev merged into a local main that origin's main lacks is not direct; a p
   const g = fixture(t);
   const pub = visibilityGh(g, "PUBLIC");
   const open = withOrigin(g, "openone", { "scripts/agents/kit.json": JSON.stringify({ project: "tools", branches: directSettings }) });
-  assert.match(pub.init(open.work, ["--check"]).stdout, /^note: GitHub repo acme\/tools is public but scripts\/agents\/kit\.json lands directly on main \(branches\.direct\): every merge goes live without Lex's go-ahead; set "direct": false if that is not wanted$/m);
+  assert.match(pub.init(open.work, ["--check"]).stdout, /^note: GitHub repo acme\/tools is public but scripts\/agents\/kit\.json lands directly on main \(branches\.direct\): every merge goes live without Lex's go-ahead; to go back to a landing branch and a release branch set "branches": \{ "land": "dev", "release": "main" \} \(and drop "direct"\)$/m);
   // A new direct project with no package.json and no workflow.
   const h = fixture(t);
   const bare = visibilityGh(h, "PRIVATE");
@@ -1686,4 +1686,11 @@ test("an existing direct project with no checks is told so by --check; one with 
   const withChecks = visibilityGh(g, "PRIVATE");
   const ok = withOrigin(g, "haschecks", { "scripts/agents/kit.json": JSON.stringify({ project: "tools", branches: directSettings, checks: { test: "npm test" } }) });
   assert.doesNotMatch(withChecks.init(ok.work, ["--check"]).stdout, /no "checks"/);
+});
+
+test("a checks setting with only keys that do not gate a merge still gets the no-checks note", (t) => {
+  const f = fixture(t);
+  const gh = visibilityGh(f, "PRIVATE");
+  const repo = withOrigin(f, "doctoronly", { "scripts/agents/kit.json": JSON.stringify({ project: "tools", branches: directSettings, checks: { doctor: "scripts/agents/kit doctor" } }) });
+  assert.match(gh.init(repo.work, ["--check"]).stdout, /has no "checks"/);
 });
