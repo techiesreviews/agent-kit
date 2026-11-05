@@ -312,7 +312,7 @@ OpenCode settings (default model, global instructions) do not apply to the revie
   extras), with a plain what-to-test list (what a user could notice, where to look, what to try).
   First the lead runs the project's whole user-level check on the landing branch, where it has one
   (extras), and sends its summary with that list. In a direct project the landing branch is live: a user-level check the
-  project wants before going live belongs in its `checks` (which `kit pr` runs); otherwise the lead runs it right
+  project wants before going live belongs in its `checks` (which `kit pr` runs for code-size changes; docs and CSS changes run lighter steps, so a check that must guard those needs a CI workflow on pull requests); otherwise the lead runs it right
   after the merge, rolls the change back if it fails, and the note to Lex follows (see the Done-when line).
 - **Decides:** Lex. Each correction becomes a ticket in the build (station 4) and one feedback log
   line (`kit feedback <map> --kind K --fix <ticket> "<text>"`, committed with the ticket); the
