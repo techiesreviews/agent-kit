@@ -54,9 +54,9 @@ says for today; never claim a planned item ran.
   `kit init` sets it up for a new private repo and `kit init --check` names the change for an existing
   one; a public repo keeps its landing and release branches. A direct project goes live mid-week, as soon
   as its checks and review pass, without Lex's "ship it" (Lex, 2026-11-05: "yes", his own sites too). For
-  his two websites, techies-reviews and lexvd-site, the lead tells Lex right after each change goes live
-  and notes how to roll it back: from a branch cut at origin/main, `git revert --no-edit <first commit>^..<last commit>`
-  (the commits `kit pr` printed as "landed:", else the PR's commit list on main), landed with `kit pr` like any change
+  his two websites, techies-reviews and lexvd-site, the lead tells Lex in plain words right after each change goes live
+  and keeps the rollback in the ticket or PR (never in the message to Lex): from a branch cut at origin/main, `git revert --no-edit <first commit>^..<last commit>`
+  (the commits `kit pr` printed as "landed:", else found by subject in `git log origin/main`), landed with `kit pr` like any change
   (it waits for its gates).
 - **Tuesday is Lex's only review day** (Lex, 2026-10-27): everything that needs him waits in one
   [Tuesday pack](#tuesday-review); between Tuesdays the work keeps moving. Budget: his $200/month

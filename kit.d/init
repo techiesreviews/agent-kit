@@ -136,8 +136,9 @@ const refsOf = (name) => ["refs/heads/", "refs/remotes/origin/"].map((prefix) =>
 const commitsAhead = (from, to) => {
   const a = refsOf(from), b = refsOf(to);
   if (!a.length || !b.length) return 0;
-  // Ahead only when ahead of every copy of `to` (local and origin's); the most any copy of `from` holds.
-  return Math.max(...a.map((x) => Math.min(...b.map((y) => Number(git("rev-list", "--count", "--cherry-pick", "--right-only", `${y}...${x}`) ?? 0) || 0))));
+  // Against origin's `to` when it has one (what is live), else the local branch; the most any copy of `from` holds.
+  const target = b.find((ref) => ref.startsWith("refs/remotes/")) ?? b[0];
+  return Math.max(...a.map((x) => Number(git("rev-list", "--count", "--cherry-pick", "--right-only", `${target}...${x}`) ?? 0) || 0));
 };
 
 // The settings file: kept as it is when there, else filled from git and package.json.
@@ -157,9 +158,12 @@ if (existsSync(at(kitSettingsFile))) {
     [`${mapsPath}/README.md`, extrasPath].some((path) => existsSync(at(path)))));
   if (options.land) notes.push(`--land ignored: ${kitSettingsFile} already names "branches"`);
   // A private repo can land straight on main; the settings file is never edited, so the note names the change.
-  if (!options.pieces && !process.env.KIT_INIT_NO_VISIBILITY && settings.branches.direct === undefined && !(Array.isArray(settings.init?.skip) && settings.init.skip.some((entry) => ["direct", kitSettingsFile].includes(entry)))) {
+  if (!options.pieces && !process.env.KIT_INIT_NO_VISIBILITY && settings.branches.direct !== false && !(Array.isArray(settings.init?.skip) && settings.init.skip.some((entry) => ["direct", kitSettingsFile].includes(entry)))) {
     const asked = kitRepoPrivate(root);
-    if (asked.private) {
+    if (settings.branches.direct === true) {
+      // Already direct: only a repo that turns out public needs a word.
+      if (asked.private === false) visibilityNote(`GitHub repo ${asked.repo} is public but ${kitSettingsFile} lands directly on ${settings.branches.land} (branches.direct): every merge goes live without Lex's go-ahead; set "direct": false if that is not wanted`);
+    } else if (asked.private) {
       // The branch that is live already: the release branch, else a main or master landing branch, else a main or master that exists.
       const live = settings.branches.release || (["main", "master"].includes(settings.branches.land) ? settings.branches.land : ["main", "master"].find(branchExists));
       const behind = live && settings.branches.land !== live ? commitsAhead(settings.branches.land, live) : 0;
@@ -201,6 +205,7 @@ if (existsSync(at(kitSettingsFile))) {
   settings = { project, mainRoot: gitMain, branches: direct ? { land: target, release: target, direct: true } : { land, ...(release ? { release } : {}) } };
   const checks = guessChecks();
   if (checks) settings.checks = checks;
+  if (direct && !checks && !existsSync(at(".github/workflows"))) notes.push("this project lands directly on main and has no checks and no CI yet: a change goes live after the review alone; add \"checks\" to " + kitSettingsFile);
   if (full) Object.assign(settings, { commands: commandsPath, maps: mapsPath, rulebookExtras: extrasPath });
   writes.push({ path: kitSettingsFile, text: `${JSON.stringify(settings, null, 2)}\n`, said: `(${project}, lands on ${settings.branches.land})` });
 }

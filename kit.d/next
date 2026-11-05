@@ -316,6 +316,8 @@ function push() {
 // Claim on the land branch: fast-forward, recheck the tickets, fill assignee, commit, push (rebase and retry once).
 // A group's tickets are claimed together in one commit, or not at all.
 function claim(item) {
+  // A direct project's landing branch is live (no review before a push): the claim goes through a docs-tier kit pr instead.
+  if (settings?.branches?.direct === true) throw new Error(`${land} is live in this direct project; claim the ticket with a docs-tier kit pr (kit next --start never pushes to ${land})`);
   git(["fetch", "-q", "origin"]);
   if (git(["branch", "--show-current"]).trim() !== land) throw new Error(`${devRoot} is not on ${land}`);
   if (git(["status", "--porcelain", "--untracked-files=no"]).trim()) throw new Error(`${devRoot} has uncommitted changes`);
