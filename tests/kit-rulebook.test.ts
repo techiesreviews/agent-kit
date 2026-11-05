@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { kitEnv } from "./support/kit-env.ts";
+import { kitMessagesToLexRule } from "../kit-lib.mjs";
 
 // kit rulebook (kitchen-everywhere 20): the shared rulebook with the kit, then the project's extras.
 const kit = resolve("kit");
@@ -173,7 +174,12 @@ test("kit rulebook prints the Messages to Lex rule, the one source briefs and ki
   const rule = run.stdout.split("\n## Messages to Lex\n")[1]?.split("\n## ")[0] ?? "";
   for (const words of ["Start with the question, or what he must do", "recommendation", "Caveman", "bullets", "He asks if he wants more context", "SHAs"])
     assert.ok(rule.includes(words), `the Messages to Lex rule lacks "${words}"`);
-  assert.match(rule, /<!-- messages-to-lex:start -->\n[\s\S]+\n<!-- messages-to-lex:end -->/);
+  assert.match(rule, /<!-- messages-to-lex:start v\d+ -->\n[\s\S]+\n<!-- messages-to-lex:end -->/);
   // The House rules list points to it.
   assert.match(run.stdout.split("\n## House rules\n")[1]?.split("\n## ")[0] ?? "", /\*\*Messages to Lex\*\*[\s\S]*\(#messages-to-lex\)/);
+});
+
+test("this repo's AGENTS.md carries the rulebook's current Messages to Lex rule, at its version", () => {
+  const { version, rule } = kitMessagesToLexRule(resolve("."));
+  assert.ok(read("AGENTS.md").includes(`<!-- messages-to-lex:start v${version} -->\n${rule}\n<!-- messages-to-lex:end -->`), "AGENTS.md: copy the rule and its version from docs/kitchen.md");
 });

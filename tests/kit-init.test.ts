@@ -6,7 +6,7 @@ import { join, relative, resolve } from "node:path";
 import test from "node:test";
 import { kitFiles } from "./support/kit-files.ts";
 import { ghConfig } from "./support/kit-env.ts";
-import { kitMessagesToLex, kitRegisterProject } from "../kit-lib.mjs";
+import { kitMessagesToLexRule, kitRegisterProject } from "../kit-lib.mjs";
 
 const launchers = resolve("launcher");
 type After = { after: (fn: () => void) => void };
@@ -73,7 +73,11 @@ function result(run: { stdout: string; stderr: string }): string {
   return last;
 }
 // The "Messages to Lex" section as kit init writes it: the rulebook's rule between its markers.
-const section = `<!-- messages-to-lex:start -->\n${kitMessagesToLex(resolve("."))}\n<!-- messages-to-lex:end -->`;
+const { version, rule } = kitMessagesToLexRule(resolve("."));
+const section = `<!-- messages-to-lex:start v${version} -->\n${rule}\n<!-- messages-to-lex:end -->`;
+const older = (text: string, number = 0) => `<!-- messages-to-lex:start${number ? ` v${number}` : ""} -->\n${text}\n<!-- messages-to-lex:end -->`;
+const base = "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\n";
+const settingsOf = (extra: Record<string, unknown> = {}) => JSON.stringify({ project: "p", branches: { land: "dev" }, ...extra });
 const written = (run: { stdout: string }) => run.stdout.split("\n").filter((line) => line.startsWith("wrote ")).map((line) => line.split(" ")[1]).sort();
 const hookCommand = (name: string) => `bash "\${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"/scripts/agents/hooks/run.sh ${name}`;
 
@@ -219,16 +223,42 @@ test("a project set up before the rule is told so by --check; only a heading cou
   assert.doesNotMatch(check("current", `${lines}\n## Messages to Lex\n${section}\n`), /Messages to Lex/);
 });
 
-test("a marked section that differs from the rulebook is brought up to date in place; the project's text around it stays", (t) => {
+test("a marked section with a lower version is brought up to date in place, one with the same or a higher version is left alone", (t) => {
   const f = fixture(t);
-  const lines = "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\n";
-  const old = `${lines}\n## Messages to Lex\n<!-- messages-to-lex:start -->\n- Old words.\n<!-- messages-to-lex:end -->\n\n## After\nMine.\n`;
-  const { work } = f.repo("stale", { "scripts/agents/kit.json": JSON.stringify({ project: "p", branches: { land: "dev" } }), "AGENTS.md": old });
-  assert.match(f.init(work, ["--check"]).stdout, /^missing: AGENTS\.md Messages to Lex \(the Messages to Lex section, out of date with the rulebook\)$/m);
+  const around = (block: string) => `${base}\n## Messages to Lex\n${block}\n\n## After\nMine.\n`;
+  const { work } = f.repo("stale", { "scripts/agents/kit.json": settingsOf(), "AGENTS.md": around(older("- Old words.")) });
+  assert.match(f.init(work, ["--check"]).stdout, /^missing: AGENTS\.md Messages to Lex \(the Messages to Lex section, older than the rulebook's\)$/m);
   const run = f.init(work, ["--light"]);
   assert.match(run.stdout, /^wrote AGENTS\.md \(updated the Messages to Lex section\)$/m);
-  assert.equal(readFileSync(join(work, "AGENTS.md"), "utf8"), `${lines}\n## Messages to Lex\n${section}\n\n## After\nMine.\n`);
+  assert.equal(readFileSync(join(work, "AGENTS.md"), "utf8"), around(section));
   assert.doesNotMatch(f.init(work, ["--check"]).stdout, /Messages to Lex/);
+  // The project's own edit at the same version, and a copy from a newer kit (this machine's kit is behind), stay as they are.
+  for (const block of [older("- Our words.", version), older("- Newer words.", version + 1)]) {
+    const kept = f.repo(`kept${block.length}`, { "scripts/agents/kit.json": settingsOf(), "AGENTS.md": around(block) });
+    assert.doesNotMatch(f.init(kept.work, ["--check"]).stdout, /Messages to Lex/);
+    f.init(kept.work, ["--light"]);
+    assert.equal(readFileSync(join(kept.work, "AGENTS.md"), "utf8"), around(block));
+  }
+});
+
+test("a marked section under a changed heading counts as there: no second copy is added", (t) => {
+  const f = fixture(t);
+  const text = `${base}\n## Messages to Lex (house)\n${older("- Old words.")}\n`;
+  const { work } = f.repo("renamed", { "scripts/agents/kit.json": settingsOf(), "AGENTS.md": text });
+  f.init(work, ["--light"]);
+  const after = readFileSync(join(work, "AGENTS.md"), "utf8");
+  assert.equal(after.match(/messages-to-lex:start/g)!.length, 1);
+  assert.equal(after, `${base}\n## Messages to Lex (house)\n${section}\n`);
+});
+
+test("--pieces updates a stale marked section and keeps the text around it; a rule with $& in it is copied exactly", (t) => {
+  const f = fixture(t);
+  writeFileSync(join(f.kit, "docs/kitchen.md"), readFileSync(join(f.kit, "docs/kitchen.md"), "utf8").replace(rule, () => `${rule}\n- Costs $& and $1.`));
+  const { work } = f.repo("pieces-stale", { "scripts/agents/kit.json": settingsOf(), "AGENTS.md": `${base}\n## Messages to Lex\n${older("- Old words.", 0)}\n\n## After\nMine.\n` });
+  assert.match(result(f.init(work, ["--pieces"])), /^RESULT: ok/);
+  const after = readFileSync(join(work, "AGENTS.md"), "utf8");
+  assert.ok(after.includes("- Costs $& and $1.\n<!-- messages-to-lex:end -->\n\n## After\nMine.\n"), after);
+  assert.ok(!after.includes("Old words"));
 });
 
 test("init.skip keeps the Messages to Lex section out: nothing is written and --check says it is turned off", (t) => {
@@ -240,6 +270,14 @@ test("init.skip keeps the Messages to Lex section out: nothing is written and --
   assert.match(check.stdout, /1 turned off in init\.skip/);
   f.init(work, ["--light"]);
   assert.equal(readFileSync(join(work, "AGENTS.md"), "utf8"), lines);
+  // A stale marked section is kept out the same way.
+  const stale = `${lines}\n## Messages to Lex\n${older("- Old words.")}\n`;
+  const kept = f.repo("skip-stale", { "scripts/agents/kit.json": settingsOf({ init: { skip: ["AGENTS.md Messages to Lex"] } }), "AGENTS.md": stale });
+  const again = f.init(kept.work, ["--check"]);
+  assert.doesNotMatch(again.stdout, /^missing: AGENTS/m);
+  assert.match(again.stdout, /1 turned off in init\.skip/);
+  f.init(kept.work, ["--light"]);
+  assert.equal(readFileSync(join(kept.work, "AGENTS.md"), "utf8"), stale);
 });
 
 test("--pieces (kit init --all's own step) writes the Messages to Lex section into an older project", (t) => {

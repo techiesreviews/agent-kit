@@ -1262,6 +1262,11 @@ test("doctor warns once per piece kit init would add today, also when quiet, nev
   writeFileSync(join(f.build, ".gitattributes"), "* text=auto eol=lf\n");
   writeFileSync(join(f.build, "AGENTS.md"), "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\n\n## Messages to Lex\n- Question first.\n");
   assert.equal(f.run(["--quiet"]).stdout, `${passed}\n`);
+  // A Messages to Lex section older than the rulebook's is a warning too, and goes once it is brought up to date.
+  const lines = "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\n";
+  writeFileSync(join(f.build, "AGENTS.md"), `${lines}\n## Messages to Lex\n<!-- messages-to-lex:start v0 -->\n- Old.\n<!-- messages-to-lex:end -->\n`);
+  const stale = f.run(["--quiet"]);
+  assert.equal(stale.stdout, `✗ setup: missing since kit ${sha}: AGENTS.md Messages to Lex (the Messages to Lex section, older than the rulebook's); ${fix}\n${passed}; warning: 1 setup piece missing (run scripts/agents/kit init)\n`);
   rmSync(join(f.build, ".gitattributes"));
   writeFileSync(join(f.build, "AGENTS.md"), "# Agents\n");
   const settings = join(agents, "kit.json"), kept = JSON.parse(readFileSync(settings, "utf8"));

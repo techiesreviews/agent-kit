@@ -322,9 +322,20 @@ test("brief: a rulebook without the Messages to Lex rule fails with a RESULT lin
   t.after(() => rmSync(home, { recursive: true, force: true }));
   cpSync(resolve("."), home, { recursive: true, filter: kitFiles });
   const rulebook = join(home, "docs/kitchen.md");
-  writeFileSync(rulebook, readFileSync(rulebook, "utf8").replace(/<!-- messages-to-lex:(start|end) -->\n?/g, ""));
+  writeFileSync(rulebook, readFileSync(rulebook, "utf8").replace(/<!-- messages-to-lex:(start v\d+|end) -->\n?/g, ""));
   const output = f.run(["docs/tickets/07-panel.md"], { KIT_HOME: home });
   assert.equal(output.status, 1, output.stdout + output.stderr);
   assert.match(output.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: fail brief .*has no Messages to Lex rule$/);
   assert.doesNotMatch(output.stdout, /kit-brief: /);
+});
+
+test("brief: a rulebook without the rule leaves the talk-style counter where it was", t => {
+  const f = fixture(t);
+  const home = mkdtempSync(join(tmpdir(), "kit-brief-home-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  cpSync(resolve("."), home, { recursive: true, filter: kitFiles });
+  const rulebook = join(home, "docs/kitchen.md");
+  writeFileSync(rulebook, readFileSync(rulebook, "utf8").replace(/<!-- messages-to-lex:(start v\d+|end) -->\n?/g, ""));
+  assert.equal(f.run(["docs/tickets/07-panel.md"], { KIT_HOME: home }).status, 1);
+  assert.ok(!existsSync(join(f.state, "agent-kit/talk-style.json")), "a failed brief moved the counter");
 });
