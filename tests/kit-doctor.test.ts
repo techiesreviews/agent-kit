@@ -1249,17 +1249,18 @@ test("doctor warns once per piece kit init would add today, also when quiet, nev
   const sha = git(repo, "rev-parse", "--short", "HEAD");
   const fix = 'fix: run scripts/agents/kit init (or name it in "init.skip" in scripts/agents/kit.json to keep it out)';
   const warnings = [`✗ setup: missing since kit ${sha}: AGENTS.md kit --help (the line naming scripts/agents/kit --help); ${fix}`,
+    `✗ setup: missing since kit ${sha}: AGENTS.md Messages to Lex (the line naming Messages to Lex); ${fix}`,
     `✗ setup: missing since kit ${sha}: .gitattributes (the line "* text=auto eol=lf"); ${fix}`];
   const passed = "RESULT: ok doctor 11/11 checks passed";
   const run = f.run();
   assert.equal(run.status, 0, run.stdout + run.stderr);
   assert.deepEqual(run.stdout.split("\n").filter(line => line.startsWith("✗ setup: ")), warnings);
-  assert.equal(run.stdout.trimEnd().split("\n").at(-1), `${passed}; warning: 2 setup pieces missing (run scripts/agents/kit init)`);
+  assert.equal(run.stdout.trimEnd().split("\n").at(-1), `${passed}; warning: 3 setup pieces missing (run scripts/agents/kit init)`);
   const quiet = f.run(["--quiet"]);
-  assert.equal(quiet.stdout, `${warnings.join("\n")}\n${passed}; warning: 2 setup pieces missing (run scripts/agents/kit init)\n`);
+  assert.equal(quiet.stdout, `${warnings.join("\n")}\n${passed}; warning: 3 setup pieces missing (run scripts/agents/kit init)\n`);
   // With the pieces added the warnings go.
   writeFileSync(join(f.build, ".gitattributes"), "* text=auto eol=lf\n");
-  writeFileSync(join(f.build, "AGENTS.md"), "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\n");
+  writeFileSync(join(f.build, "AGENTS.md"), "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\n\n## Messages to Lex\n- Question first.\n");
   assert.equal(f.run(["--quiet"]).stdout, `${passed}\n`);
   rmSync(join(f.build, ".gitattributes"));
   writeFileSync(join(f.build, "AGENTS.md"), "# Agents\n");
