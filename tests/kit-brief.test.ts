@@ -342,5 +342,5 @@ test("brief: a rulebook without the rule leaves the talk-style counter where it 
 });
 
 test("brief: the talk-style line tells a headless builder where the Messages to Lex rule is", () => {
-  for (const style of ["en", "wenyan"]) assert.match(talkStyleLine(style), /Messages for Lex follow the Messages to Lex rule \(`scripts\/agents\/kit rulebook`, section "Messages to Lex"\)/, style);
+  for (const style of ["en", "wenyan", "plain"]) assert.match(talkStyleLine(style), /Messages for Lex follow the Messages to Lex rule \(`scripts\/agents\/kit rulebook`, section "Messages to Lex"\)/, style);
 });

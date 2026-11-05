@@ -17,7 +17,7 @@ const peopleText = "Everything written to a file or GitHub (code, comments, docs
 export function talkStyleLine(style) {
   if (style === "en") return `Talk style: very short English for your messages and report to the agent that started you (Claude: /${map.talk} ultra): drop articles and filler; keep paths, commands, numbers and quoted rules exact. ${peopleText}`;
   if (style === "wenyan") return `Talk style: Classical Chinese (wenyan), terse, for your messages and report to the agent that started you (Claude: /${map.talk} wenyan-ultra); leave paths, commands, code, numbers and quoted rules exactly as written. ${peopleText}`;
-  return plainEnglish;
+  return `${plainEnglish}\nMessages for Lex follow the Messages to Lex rule (\`scripts/agents/kit rulebook\`, section \"Messages to Lex\"): caveman bullets in plain words.`;
 }
 
 /**

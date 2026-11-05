@@ -26,7 +26,8 @@ says for today; never claim a planned item ran.
 - **Lex in plain words:** questions are plain choices about what changes for him, each with a
   recommended answer. Technical questions go to him too, explained plainly, with file paths only where
   he must act on them. What a message to him holds and how it reads: [Messages to
-  Lex](#messages-to-lex), which wins over the rest of this list for those messages.
+  Lex](#messages-to-lex), which wins over every other line of this rulebook for what a message to him
+  holds and how it reads.
 - **Plain English** (Lex, 2026-10-30): every ticket, doc, code comment, commit message, PR text,
   and review finding is in plain English, since Lex reads them; a message to Lex follows [Messages to
   Lex](#messages-to-lex) (caveman bullets in plain words). Talk between agents
@@ -83,6 +84,8 @@ says for today; never claim a planned item ran.
 - Leave out internal process (review rounds, waivers, SHAs, file paths) unless he must act on it.
 - Example: "Keep the old export button or remove it?" / "Both do the same." / "Recommend: remove it."
 <!-- messages-to-lex:end -->
+
+The two-line status notes (the after-merge note, `kit heartbeat`) keep their two-line shape, but anything he must answer or do goes first.
 
 The start marker carries the rule's version. Raise it (v2, v3 …) whenever the text changes: `kit init` brings a
 project's copy up to date only when the rulebook's version is higher, so a machine with an older kit never
@@ -274,7 +277,7 @@ OpenCode settings (default model, global instructions) do not apply to the revie
 ### 10. After a merge: note, scoreboard
 
 - **Use:** the lead runs the project's after-merge step (a preview deploy where the project has one;
-  extras). Then a two-line plain note to Lex: what was done, and whether he would notice anything;
+  extras). Then a two-line plain note to Lex (see [Messages to Lex](#messages-to-lex)): what was done, and whether he would notice anything;
   a screenshot contact sheet through `html_render` only when something visible changed. Every
   correction from Lex gets one line in the build's feedback log: `kit feedback <map> --kind K
   "<text>"` (the issue tracker guide's build files); fill its fix with `--fix-for` once the ticket
