@@ -1267,6 +1267,10 @@ test("doctor warns once per piece kit init would add today, also when quiet, nev
   writeFileSync(join(f.build, "AGENTS.md"), `${lines}\n## Messages to Lex\n<!-- messages-to-lex:start v0 -->\n- Old.\n<!-- messages-to-lex:end -->\n`);
   const stale = f.run(["--quiet"]);
   assert.equal(stale.stdout, `✗ setup: outdated since kit ${sha}: AGENTS.md Messages to Lex (older than the rulebook's); fix: run scripts/agents/kit init (or name it in "init.skip" in scripts/agents/kit.json to keep it out)\n${passed}; warning: 1 setup piece out of date (run scripts/agents/kit init)\n`);
+  // Missing and out of date together: one summary line counts both.
+  writeFileSync(join(f.build, "AGENTS.md"), `# Agents\n\nKitchen rulebook: \`scripts/agents/kit rulebook\`.\n\n## Messages to Lex\n<!-- messages-to-lex:start v0 -->\n- Old.\n<!-- messages-to-lex:end -->\n`);
+  const both = f.run(["--quiet"]);
+  assert.match(both.stdout, /warning: 1 setup piece missing, 1 setup piece out of date \(run scripts\/agents\/kit init\)\n$/);
   rmSync(join(f.build, ".gitattributes"));
   writeFileSync(join(f.build, "AGENTS.md"), "# Agents\n");
   const settings = join(agents, "kit.json"), kept = JSON.parse(readFileSync(settings, "utf8"));

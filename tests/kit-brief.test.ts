@@ -340,3 +340,7 @@ test("brief: a rulebook without the rule leaves the talk-style counter where it 
   assert.equal(f.run(["docs/tickets/07-panel.md"], { KIT_HOME: home }).status, 1);
   assert.ok(!existsSync(join(f.state, "agent-kit/talk-style.json")), "a failed brief moved the counter");
 });
+
+test("brief: the talk-style line tells a headless builder where the Messages to Lex rule is", () => {
+  for (const style of ["en", "wenyan"]) assert.match(talkStyleLine(style), /Messages for Lex follow the Messages to Lex rule \(`scripts\/agents\/kit rulebook`, section "Messages to Lex"\)/, style);
+});
