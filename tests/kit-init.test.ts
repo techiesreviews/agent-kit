@@ -1409,7 +1409,7 @@ test("when kit init cannot tell whether the repo is private it never sets direct
 });
 
 test("an existing project's settings are never edited: --check names the exact change for a private repo, and stays quiet once direct is set or for a public repo", (t) => {
-  const settings = (branches: object) => JSON.stringify({ project: "tools", branches });
+  const settings = (branches: object) => JSON.stringify({ project: "tools", branches, checks: { test: "npm test" } });
   const f = fixture(t);
   const gh = visibilityGh(f, "PRIVATE");
   const old = withOrigin(f, "old", { "scripts/agents/kit.json": settings({ land: "dev", release: "main" }) });
@@ -1669,18 +1669,21 @@ test("a dev merged into a local main that origin's main lacks is not direct; a p
   const h = fixture(t);
   const bare = visibilityGh(h, "PRIVATE");
   const plain = withOrigin(h, "nochecks", { "index.html": "<p>hi</p>\n" });
-  assert.match(bare.init(plain.work, ["--light"]).stdout, /^note: this project lands directly on main and has no checks and no CI for pull requests yet: a change goes live after the review alone; add "checks" to scripts\/agents\/kit\.json$/m);
-  // A deploy-only workflow gates nothing before the merge; one that runs on pull requests does; a master-only repo says master.
-  const deploy = fixture(t);
-  const deployGh = visibilityGh(deploy, "PRIVATE");
-  const site = withOrigin(deploy, "deployonly", { "index.html": "<p>hi</p>\n", ".github/workflows/deploy.yml": "on: { push: { branches: [main] } }\n" });
-  assert.match(deployGh.init(site.work, ["--light"]).stdout, /has no checks and no CI for pull requests yet/);
-  const ci = fixture(t);
-  const ciGh = visibilityGh(ci, "PRIVATE");
-  const tested = withOrigin(ci, "withci", { "index.html": "<p>hi</p>\n", ".github/workflows/ci.yml": "on: { pull_request: {} }\n" });
-  assert.doesNotMatch(ciGh.init(tested.work, ["--light"]).stdout, /no checks and no CI/);
+  assert.match(bare.init(plain.work, ["--light"]).stdout, /^note: this project lands directly on main and has no "checks" in scripts\/agents\/kit\.json: unless a CI workflow runs on pull requests, a change goes live after the review alone; add "checks"$/m);
+  // A master-only repo says master; a project with checks gets no such note.
   const ms = fixture(t);
   const msGh = visibilityGh(ms, "PRIVATE");
   const masterOnly = withOrigin(ms, "masteronly", { "index.html": "<p>hi</p>\n" }, ["master"]);
-  assert.match(msGh.init(masterOnly.work, ["--light"]).stdout, /lands directly on master and has no checks/);
+  assert.match(msGh.init(masterOnly.work, ["--light"]).stdout, /lands directly on master and has no "checks"/);
+});
+
+test("an existing direct project with no checks is told so by --check; one with checks is not", (t) => {
+  const f = fixture(t);
+  const gh = visibilityGh(f, "PRIVATE");
+  const bare = withOrigin(f, "nochecksold", { "scripts/agents/kit.json": JSON.stringify({ project: "tools", branches: directSettings }) });
+  assert.match(gh.init(bare.work, ["--check"]).stdout, /^note: scripts\/agents\/kit\.json lands directly on main and has no "checks": unless a CI workflow runs on pull requests/m);
+  const g = fixture(t);
+  const withChecks = visibilityGh(g, "PRIVATE");
+  const ok = withOrigin(g, "haschecks", { "scripts/agents/kit.json": JSON.stringify({ project: "tools", branches: directSettings, checks: { test: "npm test" } }) });
+  assert.doesNotMatch(withChecks.init(ok.work, ["--check"]).stdout, /no "checks"/);
 });
