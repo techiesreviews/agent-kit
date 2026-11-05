@@ -1629,3 +1629,22 @@ test("--land master in a private repo that also has main goes direct on master",
   gh.init(repo.work, ["--light", "--land", "master"]);
   assert.deepEqual(JSON.parse(readFileSync(join(repo.work, "scripts/agents/kit.json"), "utf8")).branches, { land: "master", release: "master", direct: true });
 });
+
+test("a dev whose changes already sit on main under other SHAs (a release or rebase merge) is not ahead of main", (t) => {
+  const f = fixture(t);
+  const gh = visibilityGh(f, "PRIVATE");
+  const repo = withOrigin(f, "released", { "index.html": "<p>hi</p>\n" });
+  writeFileSync(join(repo.work, "w.txt"), "released work\n");
+  f.git(repo.work, "add", "w.txt");
+  f.git(repo.work, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "work");
+  f.git(repo.main, "branch", "-f", "dev", "build/one");
+  // The same change lands on main as a new commit, as GitHub's rebase merge writes it.
+  writeFileSync(join(repo.main, "other.txt"), "main moved on\n");
+  f.git(repo.main, "add", "other.txt");
+  f.git(repo.main, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "main moved on");
+  f.git(repo.main, "-c", "user.name=t", "-c", "user.email=t@t", "cherry-pick", "dev");
+  assert.notEqual(f.git(repo.main, "rev-parse", "main"), f.git(repo.main, "rev-parse", "dev"));
+  const run = gh.init(repo.work, ["--light"]);
+  assert.deepEqual(JSON.parse(readFileSync(join(repo.work, "scripts/agents/kit.json"), "utf8")).branches, directSettings);
+  assert.doesNotMatch(run.stdout, /commits? main lacks/);
+});
