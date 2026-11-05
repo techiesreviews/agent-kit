@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { kitEnv } from "./support/kit-env.ts";
+import { kitFiles } from "./support/kit-files.ts";
 import { pickSkills, skillLine, talkStyleLine } from "../brief-lib.mjs";
 import { kitMessagesToLex } from "../kit-lib.mjs";
 
@@ -310,6 +311,20 @@ test("brief: every stage carries the Messages to Lex rule from the rulebook, the
     const output = f.run(["docs/tickets/07-panel.md", "--stage", stage]);
     assert.equal(output.status, 0, output.stderr + output.stdout);
     const text = body(output.stdout);
-    assert.ok(text.includes(`## Messages to Lex\n${rule}\n`), `${stage}: no Messages to Lex rule`);
+    assert.ok(text.includes(`## Messages to Lex\nThis covers messages meant for Lex. The Report section's format still applies in full`), `${stage}: no Messages to Lex note`);
+    assert.ok(text.includes(`\n${rule}\n`), `${stage}: no Messages to Lex rule`);
   }
+});
+
+test("brief: a rulebook without the Messages to Lex rule fails with a RESULT line naming it, and prints no brief", t => {
+  const f = fixture(t);
+  const home = mkdtempSync(join(tmpdir(), "kit-brief-home-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  cpSync(resolve("."), home, { recursive: true, filter: kitFiles });
+  const rulebook = join(home, "docs/kitchen.md");
+  writeFileSync(rulebook, readFileSync(rulebook, "utf8").replace(/<!-- messages-to-lex:(start|end) -->\n?/g, ""));
+  const output = f.run(["docs/tickets/07-panel.md"], { KIT_HOME: home });
+  assert.equal(output.status, 1, output.stdout + output.stderr);
+  assert.match(output.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: fail brief .*has no Messages to Lex rule$/);
+  assert.doesNotMatch(output.stdout, /kit-brief: /);
 });
