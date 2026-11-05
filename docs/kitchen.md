@@ -85,7 +85,7 @@ says for today; never claim a planned item ran.
 - Example: "Keep the old export button or remove it?" / "Both do the same." / "Recommend: remove it."
 <!-- messages-to-lex:end -->
 
-The two-line status notes (the after-merge note, `kit heartbeat`) keep their two-line shape, but anything he must answer or do goes first.
+The two-line status notes (the after-merge note, `kit heartbeat`) keep their two-line shape (done, then running/next); when the lead passes them on, anything he must answer or do goes first.
 
 The start marker carries the rule's version. Raise it (v2, v3 …) whenever the text changes: `kit init` brings a
 project's copy up to date only when the rulebook's version is higher, so a machine with an older kit never
