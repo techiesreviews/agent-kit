@@ -1648,3 +1648,26 @@ test("a dev whose changes already sit on main under other SHAs (a release or reb
   assert.deepEqual(JSON.parse(readFileSync(join(repo.work, "scripts/agents/kit.json"), "utf8")).branches, directSettings);
   assert.doesNotMatch(run.stdout, /commits? main lacks/);
 });
+
+test("a dev merged into a local main that origin's main lacks is not direct; a public repo already set to direct gets a note; no checks and no CI is said", (t) => {
+  const f = fixture(t);
+  const gh = visibilityGh(f, "PRIVATE");
+  const repo = withOrigin(f, "unpushed", { "index.html": "<p>hi</p>\n" });
+  const start = f.git(repo.main, "rev-parse", "main");
+  devAhead(f, repo);
+  f.git(repo.main, "merge", "-q", "--ff-only", "dev");
+  f.git(repo.main, "update-ref", "refs/remotes/origin/main", start);
+  const run = gh.init(repo.work, ["--light"]);
+  assert.equal(JSON.parse(readFileSync(join(repo.work, "scripts/agents/kit.json"), "utf8")).branches.direct, undefined);
+  assert.match(run.stdout, /but dev has 1 commit main lacks/, run.stdout);
+  // A public repo whose settings say direct.
+  const g = fixture(t);
+  const pub = visibilityGh(g, "PUBLIC");
+  const open = withOrigin(g, "openone", { "scripts/agents/kit.json": JSON.stringify({ project: "tools", branches: directSettings }) });
+  assert.match(pub.init(open.work, ["--check"]).stdout, /^note: GitHub repo acme\/tools is public but scripts\/agents\/kit\.json lands directly on main \(branches\.direct\): every merge goes live without Lex's go-ahead; set "direct": false if that is not wanted$/m);
+  // A new direct project with no package.json and no workflow.
+  const h = fixture(t);
+  const bare = visibilityGh(h, "PRIVATE");
+  const plain = withOrigin(h, "nochecks", { "index.html": "<p>hi</p>\n" });
+  assert.match(bare.init(plain.work, ["--light"]).stdout, /^note: this project lands directly on main and has no checks and no CI yet: a change goes live after the review alone; add "checks" to scripts\/agents\/kit\.json$/m);
+});
