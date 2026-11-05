@@ -203,7 +203,7 @@ test("the Messages to Lex rule wins over the whole rulebook, names the status-no
 test("the rulebook lets a direct project go live mid-week without \"ship it\", and says what the lead tells Lex about his two sites", () => {
   const text = read(shared).replace(/\n\s+/g, " ");
   for (const words of ["goes live mid-week, as soon as its checks and review pass, without Lex's \"ship it\"", "techies-reviews and lexvd-site, the lead tells Lex right after each change goes live",
-    "git revert --no-edit <first commit>^..<last commit>", "A direct project (`branches.direct`) is the exception: nothing waits for Tuesday", "a direct project's own site excepted", "(a direct project has no release to wait for)", "through the same gates as any `kit pr`", "The exception is a direct project (`branches.direct`): it has no release step and needs no \"ship it\"",
+    "from a branch cut at origin/main, `git revert --no-edit <first commit>^..<last commit>`", "before `kit pr`, because `kit pr` merges as soon as its gates pass", "A direct project (`branches.direct`) is the exception: nothing waits for Tuesday", "a direct project's own site excepted", "(a direct project has no release to wait for)", "through the same gates as any `kit pr`", "In a direct project the landing branch is live, so the check runs on the branch before `kit pr`", "The exception is a direct project (`branches.direct`): it has no release step and needs no \"ship it\"",
     "a direct project goes live on its own merge", "not in a direct project, whose landing branch is live"])
     assert.ok(text.includes(words), `the rulebook lacks: ${words}`);
 });
@@ -218,15 +218,17 @@ test("the documented rollback works on commits landed by rebase: it puts main ba
     };
     git("init", "-q", "-b", "main");
     writeFileSync(join(dir, "a.txt"), "one\n"); git("add", "."); git("commit", "-qm", "start");
-    const before = git("rev-parse", "HEAD^{tree}");
     // A two-commit branch lands on main by rebase (gh pr merge --rebase): new commits, no merge commit.
     git("checkout", "-qb", "work");
     writeFileSync(join(dir, "a.txt"), "two\n"); git("commit", "-qam", "one change");
     writeFileSync(join(dir, "b.txt"), "new\n"); git("add", "."); git("commit", "-qm", "another");
-    git("checkout", "-q", "main"); git("rebase", "work");
+    // Main moved on meanwhile, so the rebase really rewrites the commits.
+    git("checkout", "-q", "main"); writeFileSync(join(dir, "c.txt"), "later\n"); git("add", "."); git("commit", "-qm", "main moved");
+    const earlier = git("rev-parse", "HEAD^{tree}");
+    git("rebase", "main", "work"); git("checkout", "-q", "main"); git("merge", "-q", "--ff-only", "work");
     const landed = git("rev-list", "--reverse", "main", "^" + git("rev-parse", "main~2")).split("\n");
     assert.equal(landed.length, 2);
     git("revert", "--no-edit", `${landed[0]}^..${landed[1]}`);
-    assert.equal(git("rev-parse", "HEAD^{tree}"), before);
+    assert.equal(git("rev-parse", "HEAD^{tree}"), earlier);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
