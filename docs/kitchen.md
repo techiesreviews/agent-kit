@@ -24,9 +24,12 @@ says for today; never claim a planned item ran.
 - **One job, one worktree:** `scripts/agents/worktree.sh` from `origin/<land>`; `git -C` or
   `cd … || exit 1`; work in progress is a commit on your own branch.
 - **Lex in plain words:** questions are plain choices about what changes for him, each with a
-  recommended answer. Technical questions go to him too, explained plainly with file paths.
+  recommended answer. Technical questions go to him too, explained plainly, with file paths only where
+  he must act on them. What a message to him holds and how it reads: [Messages to
+  Lex](#messages-to-lex), which wins over the rest of this list for those messages.
 - **Plain English** (Lex, 2026-10-30): every ticket, doc, code comment, commit message, PR text,
-  review finding and message to Lex is in plain English, since Lex reads them. Talk between agents
+  and review finding is in plain English, since Lex reads them; a message to Lex follows [Messages to
+  Lex](#messages-to-lex) (caveman bullets in plain words). Talk between agents
   (a brief, a child's report to its lead) follows the talk style `kit brief` sets: short English or
   Classical Chinese in turn during the 7-day trial from 2026-10-31 (`KIT_TALK_STYLE=en|wenyan|plain`
   forces one), never in anything a person reads. The lead ends the trial by hand after its verdict

@@ -72,6 +72,8 @@ function result(run: { stdout: string; stderr: string }): string {
   if (!last) throw new Error(`no output: ${run.stderr}`);
   return last;
 }
+// The "Messages to Lex" section as kit init writes it: the rulebook's rule between its markers.
+const section = `<!-- messages-to-lex:start -->\n${kitMessagesToLex(resolve("."))}\n<!-- messages-to-lex:end -->`;
 const written = (run: { stdout: string }) => run.stdout.split("\n").filter((line) => line.startsWith("wrote ")).map((line) => line.split(" ")[1]).sort();
 const hookCommand = (name: string) => `bash "\${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"/scripts/agents/hooks/run.sh ${name}`;
 
@@ -175,7 +177,7 @@ test("existing .claude/settings.json keys, hooks and AGENTS.md text survive; onl
   const run = f.init(work, ["--light"]);
   assert.equal(run.status, 0, run.stdout + run.stderr);
   assert.match(run.stdout, /^wrote \.claude\/settings\.json \(merged 9 hook entries\)$/m);
-  assert.match(run.stdout, /^wrote AGENTS\.md \(added 2 lines\)$/m);
+  assert.match(run.stdout, /^wrote AGENTS\.md \(added the rulebook line and the Messages to Lex section\)$/m);
   const merged = JSON.parse(readFileSync(join(work, ".claude/settings.json"), "utf8"));
   assert.equal(merged.model, "opus");
   assert.deepEqual(merged.permissions, settings.permissions);
@@ -189,22 +191,74 @@ test("existing .claude/settings.json keys, hooks and AGENTS.md text survive; onl
   const agents = readFileSync(join(work, "AGENTS.md"), "utf8");
   assert.ok(agents.startsWith("# Agents\n\nOur own rules.\nRun `scripts/agents/kit --help` for commands.\n\nKitchen rulebook: `scripts/agents/kit rulebook`"), agents);
   assert.equal(agents.match(/kit --help/g)!.length, 1);
-  assert.ok(agents.endsWith(`\n\n## Messages to Lex\n${kitMessagesToLex(resolve("."))}\n`), agents);
+  assert.ok(agents.endsWith(`\n\n## Messages to Lex\n${section}\n`), agents);
 });
 
-test("AGENTS.md gets the Messages to Lex rule from the rulebook; an existing project is told it is missing, and a rerun adds nothing", (t) => {
+test("AGENTS.md gets the Messages to Lex section from the rulebook, exactly once, with one blank line before it", (t) => {
   const f = fixture(t);
-  const rule = kitMessagesToLex(resolve("."));
-  const { work } = f.repo("lex", { "AGENTS.md": "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\n" });
-  assert.equal(f.init(work, ["--light"]).status, 0);
-  const again = f.init(work, ["--light"]);
-  assert.doesNotMatch(again.stdout, /wrote AGENTS\.md/);
-  assert.ok(readFileSync(join(work, "AGENTS.md"), "utf8").includes(`## Messages to Lex\n${rule}\n`));
-  // A project set up before the rule: --check names the piece (the name init.skip takes); a project that has the heading is left alone.
-  const old = f.repo("old", { "scripts/agents/kit.json": JSON.stringify({ project: "old", branches: { land: "dev" } }), "AGENTS.md": "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\n" });
-  assert.match(f.init(old.work, ["--check"]).stdout, /^missing: AGENTS\.md Messages to Lex \(the line naming Messages to Lex\)$/m);
-  const own = f.repo("own", { "scripts/agents/kit.json": JSON.stringify({ project: "own", branches: { land: "dev" } }), "AGENTS.md": "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\n\n## Messages to Lex\nMy own words.\n" });
-  assert.doesNotMatch(f.init(own.work, ["--check"]).stdout, /Messages to Lex/);
+  const had = "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\n";
+  const { work } = f.repo("lex", { "AGENTS.md": had });
+  const first = f.init(work, ["--light"]);
+  assert.match(first.stdout, /^wrote AGENTS\.md \(added the Messages to Lex section\)$/m);
+  assert.equal(readFileSync(join(work, "AGENTS.md"), "utf8"), `${had}\n## Messages to Lex\n${section}\n`);
+  assert.doesNotMatch(f.init(work, ["--light"]).stdout, /wrote AGENTS\.md/);
+  assert.equal(readFileSync(join(work, "AGENTS.md"), "utf8").match(/## Messages to Lex/g)!.length, 1);
+});
+
+test("a project set up before the rule is told so by --check; only a heading counts as having it, and the project's own words stay", (t) => {
+  const f = fixture(t);
+  const lines = "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\n";
+  const settings = JSON.stringify({ project: "p", branches: { land: "dev" } });
+  const check = (name: string, agents: string) => f.init(f.repo(name, { "scripts/agents/kit.json": settings, "AGENTS.md": agents }).work, ["--check"]).stdout;
+  const piece = /^missing: AGENTS\.md Messages to Lex \(the Messages to Lex section\)$/m;
+  assert.match(check("old", lines), piece);
+  // The words in a sentence are not the section.
+  assert.match(check("mention", `${lines}\nSee Messages to Lex in the rulebook.\n`), piece);
+  // A heading without the kit's markers is the project's own words.
+  assert.doesNotMatch(check("own", `${lines}\n## Messages to Lex\nMy own words.\n`), /Messages to Lex/);
+  assert.doesNotMatch(check("current", `${lines}\n## Messages to Lex\n${section}\n`), /Messages to Lex/);
+});
+
+test("a marked section that differs from the rulebook is brought up to date in place; the project's text around it stays", (t) => {
+  const f = fixture(t);
+  const lines = "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\n";
+  const old = `${lines}\n## Messages to Lex\n<!-- messages-to-lex:start -->\n- Old words.\n<!-- messages-to-lex:end -->\n\n## After\nMine.\n`;
+  const { work } = f.repo("stale", { "scripts/agents/kit.json": JSON.stringify({ project: "p", branches: { land: "dev" } }), "AGENTS.md": old });
+  assert.match(f.init(work, ["--check"]).stdout, /^missing: AGENTS\.md Messages to Lex \(the Messages to Lex section, out of date with the rulebook\)$/m);
+  const run = f.init(work, ["--light"]);
+  assert.match(run.stdout, /^wrote AGENTS\.md \(updated the Messages to Lex section\)$/m);
+  assert.equal(readFileSync(join(work, "AGENTS.md"), "utf8"), `${lines}\n## Messages to Lex\n${section}\n\n## After\nMine.\n`);
+  assert.doesNotMatch(f.init(work, ["--check"]).stdout, /Messages to Lex/);
+});
+
+test("init.skip keeps the Messages to Lex section out: nothing is written and --check says it is turned off", (t) => {
+  const f = fixture(t);
+  const lines = "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\n";
+  const { work } = f.repo("skip", { "scripts/agents/kit.json": JSON.stringify({ project: "p", branches: { land: "dev" }, init: { skip: ["AGENTS.md Messages to Lex"] } }), "AGENTS.md": lines });
+  const check = f.init(work, ["--check"]);
+  assert.doesNotMatch(check.stdout, /^missing: AGENTS/m);
+  assert.match(check.stdout, /1 turned off in init\.skip/);
+  f.init(work, ["--light"]);
+  assert.equal(readFileSync(join(work, "AGENTS.md"), "utf8"), lines);
+});
+
+test("--pieces (kit init --all's own step) writes the Messages to Lex section into an older project", (t) => {
+  const f = fixture(t);
+  const lines = "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\n";
+  const { work } = f.repo("pieces", { "scripts/agents/kit.json": JSON.stringify({ project: "p", branches: { land: "dev" } }), "AGENTS.md": lines });
+  const run = f.init(work, ["--pieces"]);
+  assert.match(result(run), /^RESULT: ok/);
+  assert.ok(readFileSync(join(work, "AGENTS.md"), "utf8").includes(`## Messages to Lex\n${section}\n`));
+});
+
+test("a rulebook without the rule fails kit init with a RESULT line naming it, and writes nothing", (t) => {
+  const f = fixture(t);
+  writeFileSync(join(f.kit, "docs/kitchen.md"), "# Rulebook without the rule\n");
+  const { work } = f.repo("broken", { "package.json": "{}" });
+  const run = f.init(work, ["--light"]);
+  assert.equal(run.status, 1, run.stdout);
+  assert.match(result(run), /^RESULT: fail init cannot read the Messages to Lex rule: the shared rulebook .*docs\/kitchen\.md has no Messages to Lex rule$/);
+  assert.ok(!existsSync(join(work, "AGENTS.md")));
 });
 
 test("old kit files stop kit init with a list and nothing is written", (t) => {
