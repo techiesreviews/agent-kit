@@ -1669,5 +1669,18 @@ test("a dev merged into a local main that origin's main lacks is not direct; a p
   const h = fixture(t);
   const bare = visibilityGh(h, "PRIVATE");
   const plain = withOrigin(h, "nochecks", { "index.html": "<p>hi</p>\n" });
-  assert.match(bare.init(plain.work, ["--light"]).stdout, /^note: this project lands directly on main and has no checks and no CI yet: a change goes live after the review alone; add "checks" to scripts\/agents\/kit\.json$/m);
+  assert.match(bare.init(plain.work, ["--light"]).stdout, /^note: this project lands directly on main and has no checks and no CI for pull requests yet: a change goes live after the review alone; add "checks" to scripts\/agents\/kit\.json$/m);
+  // A deploy-only workflow gates nothing before the merge; one that runs on pull requests does; a master-only repo says master.
+  const deploy = fixture(t);
+  const deployGh = visibilityGh(deploy, "PRIVATE");
+  const site = withOrigin(deploy, "deployonly", { "index.html": "<p>hi</p>\n", ".github/workflows/deploy.yml": "on: { push: { branches: [main] } }\n" });
+  assert.match(deployGh.init(site.work, ["--light"]).stdout, /has no checks and no CI for pull requests yet/);
+  const ci = fixture(t);
+  const ciGh = visibilityGh(ci, "PRIVATE");
+  const tested = withOrigin(ci, "withci", { "index.html": "<p>hi</p>\n", ".github/workflows/ci.yml": "on: { pull_request: {} }\n" });
+  assert.doesNotMatch(ciGh.init(tested.work, ["--light"]).stdout, /no checks and no CI/);
+  const ms = fixture(t);
+  const msGh = visibilityGh(ms, "PRIVATE");
+  const masterOnly = withOrigin(ms, "masteronly", { "index.html": "<p>hi</p>\n" }, ["master"]);
+  assert.match(msGh.init(masterOnly.work, ["--light"]).stdout, /lands directly on master and has no checks/);
 });

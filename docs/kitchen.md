@@ -50,7 +50,8 @@ says for today; never claim a planned item ran.
 - **Private repos land directly on main** (Lex, 2026-11-05): a project in a private GitHub repo sets
   `"branches": { "land": "main", "release": "main", "direct": true }`; its PRs then go straight into main
   as ordinary PRs through the same gates as any `kit pr` (checks and review by the change's size, the second look when a
-  model can take it), with no raw pushes and no `--release` step.
+  model can take it), with no raw pushes and no `--release` step (one known exception: `kit next --start` still pushes its
+  docs-only ticket-claim commit straight to main).
   `kit init` sets it up for a new private repo and `kit init --check` names the change for an existing
   one; a public repo keeps its landing and release branches. A direct project goes live mid-week, as soon
   as its checks and review pass, without Lex's "ship it" (Lex, 2026-11-05: "yes", his own sites too). For

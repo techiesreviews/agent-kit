@@ -205,7 +205,10 @@ if (existsSync(at(kitSettingsFile))) {
   settings = { project, mainRoot: gitMain, branches: direct ? { land: target, release: target, direct: true } : { land, ...(release ? { release } : {}) } };
   const checks = guessChecks();
   if (checks) settings.checks = checks;
-  if (direct && !checks && !existsSync(at(".github/workflows"))) notes.push("this project lands directly on main and has no checks and no CI yet: a change goes live after the review alone; add \"checks\" to " + kitSettingsFile);
+  // CI counts only when a workflow runs for pull requests (a deploy-only workflow gates nothing before the merge).
+  const workflows = existsSync(at(".github/workflows")) ? readdirSync(at(".github/workflows")).filter((name) => /\.ya?ml$/.test(name)) : [];
+  const ciForPrs = workflows.some((name) => /pull_request/.test(readFileSync(at(`.github/workflows/${name}`), "utf8")));
+  if (direct && !checks && !ciForPrs) notes.push(`this project lands directly on ${target} and has no checks and no CI for pull requests yet: a change goes live after the review alone; add "checks" to ${kitSettingsFile}`);
   if (full) Object.assign(settings, { commands: commandsPath, maps: mapsPath, rulebookExtras: extrasPath });
   writes.push({ path: kitSettingsFile, text: `${JSON.stringify(settings, null, 2)}\n`, said: `(${project}, lands on ${settings.branches.land})` });
 }
