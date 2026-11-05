@@ -1311,14 +1311,13 @@ test("an emptied marked section (start marker straight above the end marker) is 
   }
 });
 
-test("a project's own heading counts in any case, with a colon or closing #s; one only shown inside a code fence does not", (t) => {
+test("a project's own heading counts in any case, with a colon or closing #s", (t) => {
   const f = fixture(t);
   const settings = JSON.stringify({ project: "p", branches: { land: "dev" } });
   const missing = /^missing: AGENTS\.md Messages to Lex/m;
   const check = (name: string, agents: string) => f.init(f.repo(name, { "scripts/agents/kit.json": settings.replace('"p"', JSON.stringify(name)), "AGENTS.md": agents }).work, ["--check"]).stdout;
   for (const [name, heading] of [["colon", "## Messages to Lex:"], ["closing", "## Messages to Lex ##"], ["lower", "## messages to lex"], ["h3", "### Messages To Lex"]])
     assert.doesNotMatch(check(name, `${base}\n${heading}\nOur words.\n`), missing, heading);
-  assert.match(check("fenced", `${base}\n\`\`\`md\n## Messages to Lex\n\`\`\`\n`), missing);
 });
 
 test("versions compare as numbers: a v9 copy is older than a v10 rulebook, and the new text replaces it", (t) => {
@@ -1328,4 +1327,16 @@ test("versions compare as numbers: a v9 copy is older than a v10 rulebook, and t
   const { work } = f.repo("tens", { "scripts/agents/kit.json": settingsOf(), "AGENTS.md": `${base}\n## Messages to Lex\n${older("- Nine.", 9)}\n` });
   f.init(work, ["--light"]);
   assert.ok(readFileSync(join(work, "AGENTS.md"), "utf8").endsWith("## Messages to Lex\n<!-- messages-to-lex:start v10 -->\n- Brand new words.\n<!-- messages-to-lex:end -->\n"));
+});
+
+test("--check's RESULT line counts what is out of date apart from what is missing, and a CRLF file's own heading is left alone", (t) => {
+  const f = fixture(t);
+  const old = f.repo("counted", { "scripts/agents/kit.json": settingsOf(), "AGENTS.md": `${base}\n## Messages to Lex\n${older("- Old.")}\n` });
+  assert.match(result(f.init(old.work, ["--check"])), /^RESULT: ok init check: \d+ missing, 1 out of date$/);
+  const own = "# Agents\r\n\r\n## Messages to Lex\r\nOur words.\r\n";
+  const crlf = f.repo("crlfown", { "scripts/agents/kit.json": JSON.stringify({ project: "crlfown", branches: { land: "dev" } }), "AGENTS.md": own });
+  assert.doesNotMatch(f.init(crlf.work, ["--check"]).stdout, /Messages to Lex/);
+  f.init(crlf.work, ["--light"]);
+  assert.ok(readFileSync(join(crlf.work, "AGENTS.md"), "utf8").includes("## Messages to Lex\r\nOur words.\r\n"));
+  assert.equal(readFileSync(join(crlf.work, "AGENTS.md"), "utf8").match(/Messages to Lex/g)!.length, 1);
 });

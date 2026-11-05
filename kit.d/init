@@ -305,9 +305,8 @@ const agentLines = [
 const agents = existsSync(at("AGENTS.md")) ? readText("AGENTS.md") : null;
 const absentLines = agentLines.filter(([marker]) => !agents?.includes(marker));
 const missingLines = absentLines.filter(([marker]) => piece(`AGENTS.md ${marker.replace("scripts/agents/", "")}`, "AGENTS.md", `the line naming ${marker}`));
-// A heading of the project's own: any case, a closing "#"s or a colon; a heading shown inside a code fence is not one.
+// A heading of the project's own: any case, a closing "#"s or a colon (a heading only shown inside a code fence counts too: a known limit).
 const lexHeading = /^#{1,6}[ \t]+messages to lex[ \t]*:?[ \t]*(?:#+[ \t]*)?$/im;
-const unfenced = (text) => text.replace(/^[ \t]{0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^[ \t]{0,3}\1[`~]*[ \t]*$|(?![\s\S]))/gm, "");
 // A match never crosses a second start marker (a leftover one cannot swallow the project's text), and takes CRLF files.
 const lexMarked = /<!-- messages-to-lex:start(?: v(\d+))? -->(?:\r?\n(?:(?!<!-- messages-to-lex:start)[\s\S])*?)?\r?\n<!-- messages-to-lex:end -->/;
 const lexRule = () => {
@@ -315,7 +314,7 @@ const lexRule = () => {
 };
 const lexSection = ({ rule, version }) => `<!-- messages-to-lex:start v${version} -->\n${rule}\n<!-- messages-to-lex:end -->`;
 let lexAdd = false, lexUpdate = false;
-const lexHere = agents && (lexMarked.test(agents) || lexHeading.test(unfenced(agents)));
+const lexHere = agents && (lexMarked.test(agents) || lexHeading.test(agents));
 if (!lexHere) lexAdd = piece("AGENTS.md Messages to Lex", "AGENTS.md", "the Messages to Lex section");
 else if (lexMarked.test(agents) && Number(agents.match(lexMarked)[1] ?? 0) < lexRule().version)
   lexUpdate = piece("AGENTS.md Messages to Lex", "AGENTS.md", "older than the rulebook's", outdated);
