@@ -41,7 +41,7 @@ note naming how to make a worktree. A rerun changes nothing and says so. Old kit
 "outdated: <name> (<what>)" for a piece it would bring up to date), the
 name being the one "init.skip" takes (kit doctor shows these as warnings). It needs scripts/agents/kit.json.
 --all brings every project in the machine's projects.json up to date, one after another: in a temporary
-worktree of origin's landing branch it adds the missing pieces, commits them (and, when .gitattributes was
+worktree of origin's landing branch it adds the missing pieces (and brings an outdated one up to date), commits them (and, when .gitattributes was
 added, a git add --renormalize . commit), and lands them through the project's own kit pr (its tier from the
 changed paths). One RESULT line per project, then one for the run: updated (merged), waiting (a PR opened or
 queued, its worktree kept until it lands), up to date, skipped or failed. A project whose main checkout has
@@ -305,7 +305,9 @@ const agentLines = [
 const agents = existsSync(at("AGENTS.md")) ? readText("AGENTS.md") : null;
 const absentLines = agentLines.filter(([marker]) => !agents?.includes(marker));
 const missingLines = absentLines.filter(([marker]) => piece(`AGENTS.md ${marker.replace("scripts/agents/", "")}`, "AGENTS.md", `the line naming ${marker}`));
-const lexHeading = /^#+[ \t]+Messages to Lex[ \t]*$/m;
+// A heading of the project's own: any case, a closing "#"s or a colon; a heading shown inside a code fence is not one.
+const lexHeading = /^#{1,6}[ \t]+messages to lex[ \t]*:?[ \t]*(?:#+[ \t]*)?$/im;
+const unfenced = (text) => text.replace(/^[ \t]{0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^[ \t]{0,3}\1[`~]*[ \t]*$|(?![\s\S]))/gm, "");
 // A match never crosses a second start marker (a leftover one cannot swallow the project's text), and takes CRLF files.
 const lexMarked = /<!-- messages-to-lex:start(?: v(\d+))? -->(?:\r?\n(?:(?!<!-- messages-to-lex:start)[\s\S])*?)?\r?\n<!-- messages-to-lex:end -->/;
 const lexRule = () => {
@@ -313,7 +315,7 @@ const lexRule = () => {
 };
 const lexSection = ({ rule, version }) => `<!-- messages-to-lex:start v${version} -->\n${rule}\n<!-- messages-to-lex:end -->`;
 let lexAdd = false, lexUpdate = false;
-const lexHere = agents && (lexMarked.test(agents) || lexHeading.test(agents));
+const lexHere = agents && (lexMarked.test(agents) || lexHeading.test(unfenced(agents)));
 if (!lexHere) lexAdd = piece("AGENTS.md Messages to Lex", "AGENTS.md", "the Messages to Lex section");
 else if (lexMarked.test(agents) && Number(agents.match(lexMarked)[1] ?? 0) < lexRule().version)
   lexUpdate = piece("AGENTS.md Messages to Lex", "AGENTS.md", "older than the rulebook's", outdated);
