@@ -313,6 +313,7 @@ test("brief: every stage carries the Messages to Lex rule from the rulebook, the
     const text = body(output.stdout);
     assert.ok(text.includes(`## Messages to Lex\nThis covers messages meant for Lex. The Report section's format still applies in full`), `${stage}: no Messages to Lex note`);
     assert.ok(text.includes(`\n${rule}\n`), `${stage}: no Messages to Lex rule`);
+    assert.match(text, /A project's own or newer "Messages to Lex" section in AGENTS\.md wins over this copy/, stage);
   }
 });
 

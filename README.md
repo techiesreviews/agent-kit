@@ -52,7 +52,7 @@ One short rule for every message to Lex (question or what he must do first, a re
 no internal process): the "Messages to Lex" section of `docs/kitchen.md` is its only text. `kit rulebook` prints it,
 every `kit brief` carries it, and `kit init` copies it into a project's `AGENTS.md` between markers. A later change
 to the rule reaches those copies the same way: the rule carries a version (`v1` in its start marker, raised with
-every text change); `kit doctor` and `kit init --check` report a marked section with a lower version, and `kit init`
+every text change); `kit doctor` and `kit init --check` report a marked section with a lower version as outdated (not missing), and `kit init`
 updates it in place. A machine with an older kit never undoes a newer copy. A project whose "Messages to Lex" heading has no
 markers keeps its own words. A project set up before the rule gets the section like any new piece: `kit doctor`
 warns, `kit init` (in the project) or `kit init --all` (every listed project, each through its own `kit pr`) adds it.
