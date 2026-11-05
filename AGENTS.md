@@ -18,7 +18,7 @@ Agent commands: `scripts/agents/kit --help`; `scripts/agents/kit <command> --hel
 - **Paid skills never go in this repo** (Lex, 2026-10-29): the skills map (`skills.json`) names skills and gives the kit's own one-line fallback, never a skill's text; no `SKILL.md`, nothing under a `skills/` folder, and no text from a local skill, in any file, commit or test fixture. `.gitignore` keeps them out; `skill-guard.mjs` runs in CI (paths) and in `kit pr` (paths and, on a machine with skill folders, changed lines; licence texts are never compared, see the README). This repo never sets `skillGuard.allow` (a private project's own skills only). Tests use made-up skill text only.
 
 ## Messages to Lex
-<!-- messages-to-lex:start -->
+<!-- messages-to-lex:start v1 -->
 - Only what matters to him. Start with the question, or what he must do (test, do or answer).
 - Add a recommendation when it fits.
 - Caveman style, short bullets, plain words (he is not technical). He asks if he wants more context.
