@@ -54,6 +54,11 @@ only a small launcher and its own settings; the kit itself lives here, once.
   talk style and the report's last line. It ends with a marker line, `kit-brief: <kit version> <ticket> <stage>`.
   A lead passes it to `delegate_task`; a rule changes once, here. A project without ticket files uses
   `kit brief --task "<title>" --owner <id> --note "<the task>"`.
+- `kit slice --runner t3` (ticket ke-85) runs a slice the T3 way: it starts no agent, prints `NEXT: <stage>` with a
+  `delegate:` line and the stage child's brief (`kit brief --stage <stage> --child`), and `kit slice --next` checks
+  the stage's evidence before it prints the next stage; `kit pr --open` opens the PR and prints `WATCH: <url>` for
+  `watch_pull_request`, and `kit pr --merge` merges it once it is ready. `kit brief <ticket> --runner t3` is the
+  runner's brief. Headless (`agent-run.mjs`) stays the default outside T3 and the fallback inside it.
 - `kit go <job> -- <command>` starts a long job (a slice, a long `kit pr`, specs) with `kit bg`, in its own user
   systemd scope, and waits in the foreground for at most 9 minutes per call. While the job runs it ends with
   `RUNNING: <job> (…). Run again: scripts/agents/kit go <job>` and exit 75; once the job ends it prints the job's

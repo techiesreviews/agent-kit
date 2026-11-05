@@ -75,7 +75,7 @@ const SECOND_LOOK = { first: "grok-4.7", fallback: "opencode/deepseek-v4.1-flash
  * settings, the ticket's path there and its text, the stage, owner, note, the target model, the talk style and
  * the kit's version.
  */
-export function composeBrief({ root, settings, ticket, text, stage, owner, note, model, style, version, task, pins = kitRulebookPins(root, settings), review = process.env.ASE_REVIEW_MODEL || pins.reviewer }) {
+export function composeBrief({ root, settings, ticket, text, stage, owner, note, model, style, version, task, runner, child = false, pins = kitRulebookPins(root, settings), review = process.env.ASE_REVIEW_MODEL || pins.reviewer }) {
   const info = readTicket(text);
   // kit next runs a group's tickets as one job (kit next --run-group) on the group's own branch.
   if (info.group) throw new Error(`${ticket} is in group ${info.group}: kit next --start runs a group as one job; kit brief writes briefs for single tickets`);
@@ -89,19 +89,25 @@ export function composeBrief({ root, settings, ticket, text, stage, owner, note,
   // al-01 runs as slice-al01, site-fonts-01 as slice-site-fonts01. Another owner keeps its name.
   const job = `slice-${owner.toLowerCase().replace(/-(m?\d+)$/, "$1").replace(/[^a-z0-9._-]/g, "")}`;
   const sliceLine = `scripts/agents/kit go ${job} -- scripts/agents/kit slice --ticket ${ticket} --builder ${target}`;
+  // T3 mode (ticket ke-85): the runner starts one stage child at a time; each child does its one stage in the runner's checkout.
+  const t3 = runner === "t3";
+  const prJob = `pr-${job.slice("slice-".length)}`;
   const skills = pickSkills({ files: info.files, words: `${info.title}\n${info.filesText}${task ? `\n${note ?? ""}` : ""}`, stage, settings });
   // What the brief is about: a ticket file, or a task the note holds.
   const what = task ? `the task "${task}"` : `\`${ticket}\``;
   const out = [];
   const section = (title, lines) => { if (lines.length) out.push("", `## ${title}`, ...lines.map(line => `- ${line}`)); };
   const project = settings.project ?? basename(root);
-  if (stage === "build") out.push(`Kit brief: build ${what} in \`${project}\` (${root}), owner \`${owner}\`. Build the whole ${task ? "task (it is in the note below; the project keeps no ticket file for it)" : "ticket"}, from setup to a merged PR, with Agent Kit.`);
-  if (stage === "fix") out.push(`Kit brief: fix round for ${what} in \`${project}\` (${root}), owner \`${owner}\`. Fix round: fix each open finding in one commit on the slice branch \`${branch}\`.`);
+  if (stage === "build" && child) out.push(`Kit brief: build stage of ${what} in \`${project}\` (${root}), owner \`${owner}\`. You are the build child of a T3-mode slice: build the ticket in this checkout, commit it on \`${branch}\`, and stop; the runner reviews and lands it.`);
+  else if (stage === "build") out.push(`Kit brief: build ${what} in \`${project}\` (${root}), owner \`${owner}\`. Build the whole ${task ? "task (it is in the note below; the project keeps no ticket file for it)" : "ticket"}, from setup to a merged PR, with Agent Kit.`);
+  if (stage === "fix" && child) out.push(`Kit brief: fix round for ${what} in \`${project}\` (${root}), owner \`${owner}\`. You are the fix child of a T3-mode slice: fix each open finding in one commit on \`${branch}\`, then stop.`);
+  else if (stage === "fix") out.push(`Kit brief: fix round for ${what} in \`${project}\` (${root}), owner \`${owner}\`. Fix round: fix each open finding in one commit on the slice branch \`${branch}\`.`);
   if (reviewing) out.push(`Kit brief: ${stage === "review" ? "review" : "second look"} of ${what} in \`${project}\` (${root}), branch \`${branch}\`. You are the reviewer: read-only. Make no changes, no commits and no PR.`);
-  out.push(`Read first: ${task ? "the note below" : "the ticket with all its Comments, the build README beside it, the docs it links"}, and AGENTS.md; ${reviewing ? "" : "the project's runner guide (`docs/agents/runner.md`) for the order of steps; "}\`scripts/agents/kit rulebook\` holds the house rules in full.`);
+  out.push(`Read first: ${task ? "the note below" : "the ticket with all its Comments, the build README beside it, the docs it links"}, and AGENTS.md; ${reviewing || child ? "" : "the project's runner guide (`docs/agents/runner.md`) for the order of steps; "}\`scripts/agents/kit rulebook\` holds the house rules in full.`);
   if (!reviewing) {
     section("Setup", [
-      stage === "fix"
+      child ? `This checkout is the runner's, already on \`${branch}\`: work here; never switch branches, push or open a PR. Use \`git -C\` or \`cd … || exit 1\`.`
+      : stage === "fix"
         ? `The slice branch holds the work: \`git fetch -q origin && git switch ${branch}\` (it tracks \`origin/${branch}\`). Use \`git -C\` or \`cd … || exit 1\`.`
         : `In a T3 child thread your checkout is the worktree: \`git fetch -q origin && git switch -c ${branch} origin/${land}\`. Elsewhere: \`ASE_OWNER=${owner} scripts/agents/worktree.sh ${branch} origin/${land}\`. Use \`git -C\` or \`cd … || exit 1\`.`,
       `Pins: builder \`${target}\`; reviews \`ASE_REVIEW_MODEL=${review}\`; commands run with \`ASE_OWNER=${owner}\`.`,
@@ -112,7 +118,19 @@ export function composeBrief({ root, settings, ticket, text, stage, owner, note,
       "Agent Kit is required: `scripts/agents/kit doctor` first; fix every ✗ that is not marked optional (a missing optional reviewer or skill is only a note). A kit command that cannot run is said in the report, never skipped silently or claimed.",
       "Tests first: each new test fails before the change.",
       `While building: ${[unit && "`scripts/agents/kit unit --affected`", check && `\`${check}\` ${when}`, lint && `\`${lint}\``, task ? "the task's focused checks" : "the ticket's focused checks"].filter(Boolean).join(", ")}.`,
-      ...(stage === "build" && task ? [
+      ...(stage === "build" && child ? [
+        `Commit your work on \`${branch}\` (credit your model with a Co-Authored-By line). Do not run kit review, kit fix, kit slice, kit pr or agent.sh: the runner runs them.`,
+        `Append \`## Done (YYYY-MM-DD)\` describing behaviour, tests and commits (no landing result); set \`status: closed\`, \`assignee: ${owner}\`. The ticket's own "Kit commands and evidence" section adds to this.`,
+      ] : stage === "build" && t3 ? [
+        "You are the runner of a T3-mode slice: the only one here who starts children (`delegate_task`), one stage child at a time.",
+        `Start: \`scripts/agents/kit slice --runner t3 --ticket ${ticket} --builder ${target}\`. It prints \`NEXT: <stage>\`, a \`delegate:\` line and that stage's brief: pass the brief (from its \`Kit brief:\` line to its \`kit-brief:\` line) to \`delegate_task\` with the delegate line's settings, then end your turn.`,
+        "When T3 wakes you, save the child's report to a file and run `scripts/agents/kit slice --next` (add `--report <file>` after a review, a second look or a fix, and `--model <model>` for the second look's model). It checks the stage's evidence and prints the next stage; a refusal names what is missing.",
+        "The second look's child runs in mode wait with its timeoutMs; past it, `task_cancel` the child and run `scripts/agents/kit slice --next --skipped \"no report within 25 minutes\"`; when neither model can run, `--skipped \"<reason>\"`.",
+        `At \`NEXT: pr\`: \`scripts/agents/kit go ${prJob} -- scripts/agents/kit pr --open --ticket ${ticket}\`, then call \`watch_pull_request\` on its \`WATCH:\` URL, link it with T3 \`link_pull_request\` and end your turn. When the watch wakes you: \`scripts/agents/kit pr --merge --ticket ${ticket}\`, then \`scripts/agents/kit slice --next\`; unwatch the PR once it merged. When \`kit pr --open\` stops on review findings, run \`scripts/agents/kit slice --next --report <the result.md it names>\`: its findings get the fix rounds.`,
+        "At `NEXT: lead`: report the blocking findings to the lead and stop.",
+        `Headless fallback (outside T3, or when T3 cannot start a child): \`${sliceLine}\`; then \`scripts/agents/kit go ${job}\` again while it prints RUNNING.`,
+        "The ticket's own \"Kit commands and evidence\" section adds to this. Report every RESULT line, the PR URL and the merge SHA.",
+      ] : stage === "build" && task ? [
         `Build it, then \`scripts/agents/kit review\` and \`scripts/agents/kit pr --title ${shellQuote(task)}\` into \`${land}\` (checks for the change's tier, the second look, CI, merge), each under \`kit go\`. Link the PR with T3 \`link_pull_request\`.`,
         "Report every RESULT line, the PR URL and the merge SHA.",
       ] : stage === "build" ? [
@@ -120,14 +138,17 @@ export function composeBrief({ root, settings, ticket, text, stage, owner, note,
         `Manual fallback (the runner guide's): build it yourself, then \`scripts/agents/kit review --ticket ${ticket}\` and \`scripts/agents/kit pr --ticket ${ticket}\` into \`${land}\` (checks for the change's tier, the second look, CI, merge), each under \`kit go\`. Link the PR with T3 \`link_pull_request\`.`,
         "The ticket's own \"Kit commands and evidence\" section adds to this. Report every RESULT line, the PR URL and the merge SHA.",
       ] : [
-        `For each finding you decline, give it with its reason in your report: \`scripts/agents/kit review${task ? "" : ` --ticket ${ticket}`}\` reads declined findings with their reasons.`,
+        child ? "Commit the fixes on the branch. For each finding you decline, give it in your report as `Declined: <finding> <reason>`; the runner hands those to the next review."
+          : `For each finding you decline, give it with its reason in your report: \`scripts/agents/kit review${task ? "" : ` --ticket ${ticket}`}\` reads declined findings with their reasons.`,
         task ? "The findings are in the newest `findings.json` under the main checkout's `.scratch/reviews/<owner>/` (the note below holds the task)."
           : "The findings are in the note below, else in the newest `findings.json` under the main checkout's `.scratch/reviews/<owner>/`.",
       ]),
     ]);
   } else {
     // The slice branch, not the lead's checkout, is what is reviewed.
-    const range = `Scope: git diff origin/${land}...origin/${branch} (\`git fetch -q origin\` first).`;
+    // A T3 stage child reviews the runner's own checkout, where the slice branch is not pushed yet.
+    const range = child ? `Scope: git diff origin/${land}...HEAD in this checkout, on \`${branch}\` (\`git fetch -q origin\` first).`
+      : `Scope: git diff origin/${land}...origin/${branch} (\`git fetch -q origin\` first).`;
     let scope;
     try {
       if (task) throw new Error("no ticket file");
@@ -146,9 +167,11 @@ export function composeBrief({ root, settings, ticket, text, stage, owner, note,
     "Anything a person sees: No toasts or explainers; show state on the control itself. Reuse the theme tokens and components.",
     "House rules beat skill advice: where a skill suggests something a house rule forbids (a toast, say), the house rule wins.",
     "Commits use the repo's or the machine's set git identity; never borrow another person's name.",
+    ...(child ? ["Start no subagents or T3 tasks. Do your one stage and report in your last line."] : []),
   ]);
   if (!reviewing) section("Waiting", [
-    "Finish the whole job in this turn. A short check runs in the foreground.",
+    t3 ? "Between stages end your turn: T3 wakes you when the child ends or the PR changes. Do not poll a child (`task_status`, `sleep`, watchers). A short check runs in the foreground."
+      : "Finish the whole job in this turn. A short check runs in the foreground.",
     "A long job (a slice, a long `kit pr`, specs) runs as `scripts/agents/kit go <job> -- <command>`: it starts the job in its own systemd scope and waits at most 9 minutes per call.",
     "Give every `kit go` call a tool time limit of 10 minutes (Claude's Bash tool: `timeout: 600000`; its default of 2 minutes cuts the wait short; Codex: a 600-second limit on the shell call).",
     "While the job runs, `kit go` ends with `RUNNING: <job> (…). Run again: scripts/agents/kit go <job>` and exit 75: run that line again at once, in the foreground, until it prints the job's RESULT line.",
@@ -164,6 +187,7 @@ export function composeBrief({ root, settings, ticket, text, stage, owner, note,
   if (note) out.push("", "## Note from the lead", `Note from the lead: ${note}`);
   out.push("", "## Report");
   if (reviewing) out.push(reviewFormat.trimEnd());
+  else if (stage === "build" && child) out.push("Report the RESULT lines and the new head.", "Last line: BUILT head <SHA>.");
   else if (stage === "fix") out.push("Report each finding as fixed or declined (with the reason), the RESULT lines, and the new head.", "Last line: FIXED <n>, DECLINED <n>, head <SHA>.");
   else out.push("Report the RESULT lines, the PR URL and the merge SHA.", "Last line: PR <full URL>, head <SHA>, checks and reviews <state>.");
   out.push("", `kit-brief: ${version} ${ticket} ${stage}`);

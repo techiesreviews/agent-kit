@@ -13,14 +13,14 @@ const { kitBranch, kitGhEnv, kitHideUserInfo, kitHidingLog, kitHome, kitMachineL
 );
 const { failedSpecs, isTiming, listedSpecs, nothingSelected, timingList, wholeReport } = await import(pathToFileURL(resolve(import.meta.dirname, "../browser-runs.mjs")).href);
 const { checkSteps, classify, doneHeading, featureListGuard, featureListProblem, focusedUnitFiles, parseChanges, secondLookPick, unitTestFile } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
-const usage = 'Usage: kit pr [--base <land>] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release] [--full] [--waive "<reason>"]\nBranches come from scripts/agents/kit.json: --base defaults to branches.land; --release needs --base branches.release and first runs kit release-check --land (nothing unsaved, HEAD exactly origin/<land>).\n--waive requires a *-lead owner; records the reason for merging with open findings or without a feature-list update;\nwith --release it also passes the release check, which names the reason (kit pr still needs a clean tree).\nAfter the Claude review (none in the docs tier), every change gets a second look (kit review --second-look), whose findings block the same way;\nwhen no model can take it, the PR lands and says "second look: skipped (<reason>)".\n';
+const usage = 'Usage: kit pr [--base <land>] [--title T] [--ticket FILE] [--no-merge | --open | --merge] [--dry-run] [--release] [--full] [--waive "<reason>"]\n--open (T3 mode, ticket ke-85) runs the checks and reviews, opens the PR and prints WATCH: <url> without waiting for CI;\nthe runner watches the PR (watch_pull_request) and, woken, runs --merge: it checks the PR is open at the reviewed HEAD,\nits reviews cover that HEAD without blocking findings and its checks are green, then merges; anything else is refused\n(a PR behind its base: --open again, which rebases). Without either, kit pr waits for CI and merges in one run.\nBranches come from scripts/agents/kit.json: --base defaults to branches.land; --release needs --base branches.release and first runs kit release-check --land (nothing unsaved, HEAD exactly origin/<land>).\n--waive requires a *-lead owner; records the reason for merging with open findings or without a feature-list update;\nwith --release it also passes the release check, which names the reason (kit pr still needs a clean tree).\nAfter the Claude review (none in the docs tier), every change gets a second look (kit review --second-look), whose findings block the same way;\nwhen no model can take it, the PR lands and says "second look: skipped (<reason>)".\n';
 const kit = process.env.KIT_PR_KIT || resolve(import.meta.dirname, "../kit");
 
 function options(args) {
   const flags = {};
   for (let i = 0; i < args.length; i++) {
     const flag = args[i];
-    if (!["--base", "--title", "--ticket", "--no-merge", "--dry-run", "--release", "--full", "--waive"].includes(flag) || Object.hasOwn(flags, flag))
+    if (!["--base", "--title", "--ticket", "--no-merge", "--open", "--merge", "--dry-run", "--release", "--full", "--waive"].includes(flag) || Object.hasOwn(flags, flag))
       throw new Error(`unknown or duplicate option: ${flag}`);
     if (["--base", "--title", "--ticket", "--waive"].includes(flag)) {
       const value = args[++i];
@@ -28,9 +28,13 @@ function options(args) {
       flags[flag] = value;
     } else flags[flag] = true;
   }
+  for (const mode of ["--open", "--merge"]) {
+    const other = ["--open", "--merge", "--no-merge", "--dry-run", "--release"].find(flag => flag !== mode && flags[flag]);
+    if (flags[mode] && other) throw new Error(`${mode} goes alone, not with ${other}`);
+  }
   if (flags["--waive"] && !kitOwner().endsWith("-lead")) throw new Error("--waive requires a *-lead owner");
   return { base: flags["--base"], title: flags["--title"], ticket: flags["--ticket"], waive: flags["--waive"],
-    noMerge: flags["--no-merge"], dryRun: flags["--dry-run"], release: flags["--release"], full: flags["--full"] };
+    noMerge: flags["--no-merge"], open: flags["--open"], merge: flags["--merge"], dryRun: flags["--dry-run"], release: flags["--release"], full: flags["--full"] };
 }
 
 function ticketTitle(file) {
@@ -38,6 +42,22 @@ function ticketTitle(file) {
   const front = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text)?.[1];
   const title = /^title:\s*(.+)$/m.exec(front ?? "")?.[1].trim() ?? "";
   return title.replace(/^(["'])(.*)\1$/, "$2");
+}
+
+/**
+ * A second look a T3-mode slice recorded as skipped (kit slice --next --skipped, or past its time limit) for this HEAD:
+ * its reason, else null. The mark is { ok: false, skipped, runner: "t3" } beside refs.txt, with no result.md.
+ */
+function skippedSecondLook(head, ticket, root) {
+  const parent = join(kitMainRoot(), ".scratch/reviews", kitOwner());
+  if (!existsSync(parent)) return null;
+  for (const name of readdirSync(parent).sort((a, b) => b.localeCompare(a, "en", { numeric: true }))) {
+    const folder = join(parent, name), mark = secondLookMark(folder);
+    if (mark?.runner !== "t3" || mark.ok !== false || typeof mark.skipped !== "string") continue;
+    try { if (reviewCoversHead(readFileSync(join(folder, "refs.txt"), "utf8").split(/\r?\n/)[0], head, ticket, root)) return mark.skipped; }
+    catch { /* Incomplete marks cover nothing. */ }
+  }
+  return null;
 }
 
 /** A second look's mark ({ kind, model, ok }), null for any other review; an unreadable mark is still a second look. */
@@ -376,6 +396,102 @@ async function main(args) {
       return 1;
     }
     ok("guards");
+    // What kit pr --open left for --merge: the PR, the reviewed HEAD, its tier's review and a skipped second look.
+    const openRecord = join(root, ".scratch/pr", `open-${encodeURIComponent(branch)}.json`);
+    if (flags.merge) return await mergeOpened();
+    // kit pr --merge (T3 mode): no checks, review or push again; only the readiness of the PR --open opened, then the merge.
+    async function mergeOpened() {
+      step = "merge";
+      let record;
+      try { record = JSON.parse(readFileSync(openRecord, "utf8")); } catch { throw new Error(`no PR opened with kit pr --open for ${branch}`); }
+      if (record.base !== flags.base) throw new Error(`kit pr --open opened PR #${record.number} into ${record.base}, not ${flags.base}`);
+      if ((record.ticket ?? null) !== (flags.ticket ?? null)) throw new Error(`kit pr --open opened PR #${record.number} for ${record.ticket ?? "no ticket"}, not ${flags.ticket ?? "no ticket"}`);
+      // A lead's waiver given at --open (the feature-list guard's, or findings') still holds at --merge.
+      const waive = flags.waive ?? record.waive ?? undefined;
+      const head = await git("merge", ["rev-parse", "HEAD"]), number = String(record.number);
+      // A PR --merge put in the merge queue: merged by now, or still waiting there.
+      if (record.queued) {
+        const view = JSON.parse(await gh("merge", ["pr", "view", number, "--json", "state,headRefOid,url"]));
+        if (view.state !== "MERGED") { kitResult("ok", `queued #${number} ${String(view.headRefOid).slice(0, 7)} (still in the merge queue)`); return 0; }
+        const oid = (await gh("merge", ["pr", "view", number, "--json", "mergeCommit", "--jq", ".mergeCommit.oid"])).trim();
+        rmSync(openRecord, { force: true });
+        kitResult("ok", `merged #${number} ${oid.slice(0, 7)}`);
+        return 0;
+      }
+      if (head !== record.head) throw new Error(`HEAD moved since kit pr --open (${record.head.slice(0, 7)}, now ${head.slice(0, 7)}); run kit pr --open again`);
+      const view = JSON.parse(await gh("merge", ["pr", "view", number, "--json", "state,headRefOid,url"]));
+      if (view.state !== "OPEN") throw new Error(`PR #${number} is ${view.state}, not open`);
+      if (view.headRefOid !== head) throw new Error(`PR #${number} head on GitHub is ${String(view.headRefOid).slice(0, 7)}, not ${head.slice(0, 7)}; run kit pr --open again`);
+      await git("fetch", ["fetch", "-q", "origin", flags.base]);
+      const base = await git("merge", ["merge-base", `origin/${flags.base}`, "HEAD"]);
+      const relaxed = afterFixRounds(completedFixRounds(join(kitMainRoot(), ".scratch/kit-fix", encodeURIComponent(branch)),
+        join(root, ".scratch/kit-fix", encodeURIComponent(branch))));
+      let waived = 0;
+      for (const second of record.review ? [false, true] : [true]) {
+        const name = second ? "second look" : "review";
+        if (second && record.secondSkipped) { console.log(`second look: skipped at kit pr --open (${record.secondSkipped})`); continue; }
+        const saved = await savedReview(head, base, patchId, flags.ticket, root, second);
+        if (!saved) throw new Error(`no ${name} covers ${head.slice(0, 7)}; run kit pr --open again`);
+        const resultPath = join(saved.folder, "result.md");
+        const { findings } = openFindings(readFileSync(resultPath, "utf8"));
+        const blocking = relaxed ? blockingFindings(findings) : findings;
+        if (blocking.length && !waive) throw new Error(`PR #${number} ${name} has ${blocking.length} open findings (${resultPath})`);
+        waived += blocking.length;
+        ok(name);
+      }
+      // One look at the checks: the watch woke the runner, so they should have ended; still running is not ready.
+      const files = (await git("ci", ["ls-tree", "--name-only", "HEAD", ".github/workflows/"])).split(/\r?\n/).filter(path => /\.ya?ml$/.test(path));
+      let workflows = false;
+      for (const file of files) if (runsOnPullRequests(await git("ci", ["show", `HEAD:${file}`]))) workflows = true;
+      if (workflows) {
+        const ci = await execute("ci", kit, ["wait", "ci", "--pr", number, "--timeout", "20s"]);
+        const said = ci.text.split(/\r?\n/).findLast(line => line.startsWith("RESULT: "))?.replace(/^RESULT: (ok|fail) /, "");
+        if (ci.status !== 0) throw new Error(`checks of PR #${number} are not green yet (${said || "no result"}); wait for the watch to wake you again`);
+        ok("ci"); land({ ci: "pass" });
+      } else { console.log("ci: none (no workflow in .github/workflows runs on pull requests)"); land({ ci: "none" }); }
+      const repo = await gh("merge", ["repo", "view", ...(ghEnv.GH_REPO ? [ghEnv.GH_REPO] : []), "--json", "nameWithOwner", "--jq", ".nameWithOwner"]);
+      const target = ghEnv.GH_REPO?.split("/").length === 3 ? `${ghEnv.GH_REPO.split("/")[0]}/${repo}` : repo;
+      const what = [waived && `with ${waived} waived findings`, record.featuresWaived && "without a feature-list update"].filter(Boolean).join(" and ");
+      const recordWaived = async () => {
+        if (!what) return;
+        const reason = String(waive).replace(/[\r\n]+/g, " ");
+        // The PR body says so too, as the one-run kit pr's waiver does.
+        const body = join(directory, "body.md");
+        writeFileSync(body, `${(await gh("waiver", ["pr", "view", number, "--json", "body", "--jq", ".body"])).trimEnd()}\n\nmerged ${what}: ${reason}\n`);
+        await gh("waiver", ["api", "--method", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "-F", `body=@${body}`]);
+        const comment = join(directory, "waiver.md");
+        writeFileSync(comment, `Merged ${what}: ${reason}`);
+        await gh("waiver", ["pr", "comment", number, "--body-file", comment]);
+      };
+      // A repo with a merge queue takes the PR into it, as the one-run kit pr does.
+      const [owner, name] = repo.split("/");
+      const queue = await execute("merge", "gh", ["api", "graphql", "-f", "query=query($o:String!,$n:String!,$b:String!){repository(owner:$o,name:$n){mergeQueue(branch:$b){id}}}",
+        "-F", `o=${owner}`, "-F", `n=${name}`, "-F", `b=${flags.base}`, "--jq", '.data.repository.mergeQueue.id // ""']);
+      if (queue.status === 0 && queue.text.trim()) {
+        await gh("merge", ["pr", "merge", number, "--auto", "--rebase", "--match-head-commit", head, "--repo", target]); ok("merge");
+        await recordWaived();
+        land({ queued: true, waived: what ? waive : null });
+        writeFileSync(openRecord, `${JSON.stringify({ ...record, queued: true }, null, 2)}\n`);
+        kitResult("ok", `queued #${number} ${head.slice(0, 7)}`);
+        return 0;
+      }
+      const merged = await execute("merge", "gh", ["pr", "merge", number, "--rebase", "--delete-branch", "--match-head-commit", head, "--repo", target]);
+      if (merged.status !== 0) {
+        if (/head branch was modified/i.test(merged.stderr)) throw new Error(`PR head is no longer ${head.slice(0, 7)}; run kit pr --open again`);
+        if (/behind|not up to date|out of date/i.test(merged.stderr)) throw new Error(`PR #${number} is behind ${flags.base}: run kit pr --open again (it rebases), then watch it again`);
+        throw new Error(childMessage(merged, "gh pr merge failed"));
+      }
+      const commit = await execute("merge", "gh", ["pr", "view", number, "--json", "mergeCommit", "--jq", ".mergeCommit.oid"]);
+      const mergeCommit = commit.status === 0 && /^[a-f0-9]{40}$/i.test(commit.text.trim()) ? commit.text.trim() : undefined;
+      const sha = mergeCommit ?? head;
+      ok("merge");
+      await recordWaived();
+      land({ sha, at: new Date().toISOString(), waived: what ? waive : null });
+      await reportLanded(mergeCommit);
+      rmSync(openRecord, { force: true });
+      kitResult("ok", `merged #${number} ${sha.slice(0, 7)}`);
+      return 0;
+    }
     // The deps check guards a node_modules shared between worktrees; a project with its own has none to guard.
     if (settings.sharedNodeModules) { await run("deps", kit, ["deps", "check"]); ok("deps"); }
     else console.log("deps: skipped (no sharedNodeModules in scripts/agents/kit.json)");
@@ -670,7 +786,7 @@ async function main(args) {
     step = "review";
     console.log(`PR #${number}; ${review ? "review running" : `review: skipped (${plan.tier} tier)`}`);
     // The docs tier has no model review; CI still gates the merge.
-    let waived = 0;
+    let waived = 0, secondSkipped = null;
     // `name` is "review" (Claude's) or "second look", whose lines and summary say so.
     async function recordFollowups(findings, name = "review") {
       if (!findings.length) return;
@@ -771,12 +887,20 @@ async function main(args) {
         const comment = join(directory, second ? "second-look.md" : "review.md");
         writeFileSync(comment, `Reused ${name}: ${saved.folder}\nHEAD: ${head}\n\n${readFileSync(resultPath, "utf8")}`);
         await gh("review", ["pr", "comment", number, "--body-file", comment]);
+      } else if (second && (secondSkipped = skippedSecondLook(head, flags.ticket, root))) {
+        // A T3-mode slice already recorded this HEAD's second look as skipped: kit pr starts no look of its own.
+        console.log(`second look: skipped (${secondSkipped})`);
+        ok(name);
+        return true;
       } else {
         const result = await execute(second ? "second-look" : "review", kit, [...reviewArgs, number, ...(flags.ticket ? ["--ticket", flags.ticket] : []), ...(second ? ["--second-look"] : [])]);
         // The second look's kind, model and any fallback, as kit review said them.
         if (second) for (const line of result.text.match(/^second look: .+$/gm) ?? []) console.log(line);
         // No model could take the second look: it never blocks on availability.
-        if (second && result.status === 3) return true;
+        if (second && result.status === 3) {
+          secondSkipped = /^second look: skipped \((.+)\)$/m.exec(result.text)?.[1] || "no model could take it";
+          return true;
+        }
         if (result.status !== 0) throw new Error(childMessage(result, `${kit} exited ${result.status}`));
         const evidence = /^RESULT: ok review .+ evidence (.+)$/m.exec(result.text)?.[1];
         if (!evidence) throw new Error(`${name} did not name its evidence folder`);
@@ -804,7 +928,14 @@ async function main(args) {
       return true;
     }
     if (!await reviewHead()) return 1;
-    if (flags.noMerge || flags.release) {
+    if (flags.open) {
+      const url = await gh("open", ["pr", "view", number, "--json", "url", "--jq", ".url"]);
+      const featuresWaived = Boolean(features.line?.startsWith("Feature list: waived"));
+      writeFileSync(openRecord, `${JSON.stringify({ number: Number(number), url, head, base: flags.base, ticket: flags.ticket ?? null, review, secondSkipped,
+        featuresWaived, waive: flags.waive ?? null }, null, 2)}\n`);
+      console.log(`WATCH: ${url}`);
+    }
+    if (flags.noMerge || flags.release || flags.open) {
       kitResult("ok", `opened #${number} ${head.slice(0, 7)}${releaseWaived()}${flakyNote()}`);
       return 0;
     }

@@ -1111,3 +1111,23 @@ test("an absolute --ticket under a dev root whose parent folder is named like ma
     "RESULT: ok next 0 ready, 1 waiting",
   ]);
 });
+
+test("a T3-mode slice (kit slice --runner t3 state) is a running slice until it is done or stopped", t => {
+  const f = fixture(t, {
+    [build("alpha", "01-run")]: ticket({ assignee: "alpha-01", files: ["a/one.ts"] }),
+    [build("alpha", "02-shared")]: ticket({ files: ["a/one.ts"] }),
+  });
+  const path = f.worktree("t3"), folder = join(path, ".scratch/kit-slice/01-run");
+  mkdirSync(folder, { recursive: true });
+  const state = (stage: string) => writeFileSync(join(folder, "state.json"), JSON.stringify({ mode: "t3", stage, ticket: join(path, build("alpha", "01-run")) }));
+  state("review");
+  let result = f.run("alpha");
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, new RegExp(`^running: t3:01-run ${build("alpha", "01-run")}`, "m"));
+  assert.deepEqual(f.lines("alpha"), [`waits: ${build("alpha", "02-shared")} shares a/one.ts with t3:01-run`, "RESULT: ok next 0 ready, 1 waiting"]);
+  for (const stage of ["done", "stopped"]) {
+    state(stage);
+    result = f.run("alpha");
+    assert.doesNotMatch(result.stdout, /^running: t3:/m);
+  }
+});

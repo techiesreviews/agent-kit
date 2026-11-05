@@ -147,6 +147,14 @@ else if (tool === "gh") {
     }
   } else if (action === "pr-view") {
     if (env.FAKE_VIEW_ERROR) process.exit(1);
+    // kit pr --merge reads the PR's state and head (FAKE_PR_STATE, FAKE_PR_HEAD; else open at HEAD), --open its url.
+    const url = "https://github.com/test/repo/pull/73";
+    if (args.includes("state,headRefOid,url")) {
+      const head = env.FAKE_PR_HEAD || require("node:child_process").execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      console.log(JSON.stringify({ state: env.FAKE_PR_STATE || "OPEN", headRefOid: head, url }));
+      process.exit(0);
+    }
+    if (args[args.indexOf("--json") + 1] === "url") { console.log(url); process.exit(0); }
     if (args.includes("comments")) {
       const comments = readFileSync(env.FAKE_CALLS, "utf8").trim().split("\\n").map(line => JSON.parse(line))
         .filter(call => call.tool === "gh" && call.args[0] === "pr" && call.args[1] === "comment");
@@ -2383,4 +2391,80 @@ test("a machine without flock runs the browser specs unlocked and says so", t =>
   assert.deepEqual(specsCalls(f).map(call => call.args), [["specs", "--affected", "--base", "origin/dev"], ["specs", files[1]]]);
   assert.match(f.body(), /^- problem: flock is not installed, so browser runs are not kept one at a time \(install util-linux\)$/m);
   assert.match(result.stdout, /RESULT: ok opened #73 [a-f0-9]{7} \(flaky under load: tests\/native-save\/b\.spec\.ts\)$/m);
+});
+
+test("--open opens the PR and prints WATCH without waiting for CI or merging; --merge then merges a ready PR", t => {
+  const f = fixture(t);
+  let result = f.run(["--open", "--ticket", "ticket.md"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^WATCH: https:\/\/github\.com\/test\/repo\/pull\/73$/m);
+  assert.match(result.stdout, /^RESULT: ok opened #73 [a-f0-9]{7}$/m);
+  assert.equal(f.ghCalls("merge").length, 0);
+  assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "wait"), false);
+  const reviews = f.calls().filter(claudeReview).length, before = f.calls().length;
+  result = f.run(["--merge", "--ticket", "ticket.md"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^RESULT: ok merged #73 [a-f0-9]{7}$/m);
+  const later = f.calls().slice(before);
+  // No checks, review or push again: only the readiness check (CI once) and the merge.
+  assert.equal(f.calls().filter(claudeReview).length, reviews);
+  assert.deepEqual(later.filter(call => call.tool === "fake-kit").map(call => call.args.slice(0, 4)), [["wait", "ci", "--pr", "73"]]);
+  assert.equal(later.some(call => ["unit", "lint", "check"].includes(call.args[0]) || call.tool === "npm"), false);
+  assert.equal(f.ghCalls("merge").length, 1);
+  assert.equal(f.ghCalls("create").length, 1);
+});
+
+test("--merge refuses an unready PR: never opened, HEAD moved, other head on GitHub, closed, red or running CI, behind", t => {
+  const f = fixture(t);
+  let result = f.run(["--merge", "--ticket", "ticket.md"]);
+  assert.equal(result.status, 1); assert.match(result.stdout, /RESULT: fail merge: no PR opened with kit pr --open for feature\/kit-pr/);
+  assert.equal(f.run(["--open", "--ticket", "ticket.md"]).status, 0);
+  const opened = f.git("rev-parse", "HEAD");
+  for (const [env, why] of [[{ FAKE_PR_HEAD: "f".repeat(40) }, /PR #73 head on GitHub is fffffff, not [a-f0-9]{7}; run kit pr --open again/],
+    [{ FAKE_PR_STATE: "CLOSED" }, /PR #73 is CLOSED, not open/],
+    [{ FAKE_FAIL: "wait" }, /checks of PR #73 are not green yet/],
+    [{ FAKE_BEHIND: "1" }, /PR #73 is behind dev: run kit pr --open again \(it rebases\), then watch it again/]] as const) {
+    result = f.run(["--merge", "--ticket", "ticket.md"], env);
+    assert.equal(result.status, 1, result.stdout); assert.match(result.stdout, why);
+  }
+  // The behind case tried the merge once and did not rebase or push.
+  assert.equal(f.ghCalls("merge").length, 1);
+  assert.equal(f.git("rev-parse", "HEAD"), opened);
+  f.commit("Third change");
+  result = f.run(["--merge", "--ticket", "ticket.md"]);
+  assert.equal(result.status, 1); assert.match(result.stdout, /RESULT: fail merge: HEAD moved since kit pr --open \([a-f0-9]{7}, now [a-f0-9]{7}\); run kit pr --open again/);
+});
+
+test("--open and --merge go alone: not together, nor with --no-merge, --dry-run or --release", t => {
+  const f = fixture(t);
+  for (const args of [["--open", "--merge"], ["--open", "--no-merge"], ["--merge", "--dry-run"], ["--open", "--release"]]) {
+    const result = f.run(args); assert.equal(result.status, 2, args.join(" ")); assert.match(result.stdout, /RESULT: fail invalid arguments: /);
+  }
+  assert.deepEqual(f.calls(), []);
+});
+
+test("--open takes a T3 slice's skipped second look as skipped, and --merge then queues into a merge queue", t => {
+  const f = fixture(t);
+  const folder = join(f.main, ".scratch/reviews/ak-14/20261031T000000Z-t3-skipped");
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "refs.txt"), `${f.head}\n`);
+  writeFileSync(join(folder, "second-look.json"), JSON.stringify({ kind: "code", ok: false, skipped: "no model", runner: "t3" }));
+  let result = f.run(["--open", "--ticket", "ticket.md"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^second look: skipped \(no model\)$/m);
+  assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args.includes("--second-look")), false);
+  result = f.run(["--merge", "--ticket", "ticket.md"], { FAKE_QUEUE: "1" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^second look: skipped at kit pr --open \(no model\)$/m);
+  assert.match(result.stdout, /^RESULT: ok queued #73 [a-f0-9]{7}$/m);
+  assert.ok(f.ghCalls("merge").at(-1)!.args.includes("--auto"));
+  // Run again while queued: it says so; once GitHub merged it, merged.
+  result = f.run(["--merge", "--ticket", "ticket.md"], { FAKE_QUEUE: "1" });
+  assert.equal(result.status, 0, result.stdout); assert.match(result.stdout, /^RESULT: ok queued #73 [a-f0-9]{7} \(still in the merge queue\)$/m);
+  result = f.run(["--merge", "--ticket", "ticket.md"], { FAKE_PR_STATE: "MERGED" });
+  assert.equal(result.status, 0, result.stdout); assert.match(result.stdout, /^RESULT: ok merged #73 [a-f0-9]{7}$/m);
+  // --merge for another ticket than --open's is refused.
+  assert.equal(f.run(["--open", "--ticket", "ticket.md"]).status, 0);
+  result = f.run(["--merge"]);
+  assert.equal(result.status, 1); assert.match(result.stdout, /opened PR #73 for ticket\.md, not no ticket/);
 });

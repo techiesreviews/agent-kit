@@ -5,7 +5,7 @@ import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { composeBrief, kitVersion, nextTalkStyle, readTicket, skillSettingsProblems, STAGES } from "../brief-lib.mjs";
 import { kitHome, kitResult, kitRoot, kitRulebookPins, kitSettings } from "../kit-lib.mjs";
 
-const usage = `Usage: kit brief <ticket> [--stage build|review|second-look|fix] [--owner ID] [--repo PATH] [--model M] [--note "<text>"]
+const usage = `Usage: kit brief <ticket> [--stage build|review|second-look|fix] [--owner ID] [--repo PATH] [--model M] [--note "<text>"] [--runner t3 | --child]
        kit brief --task "<title>" --owner ID --note "<what to do>" [--stage …] [--repo PATH] [--model M]
 Prints the whole brief for one child: owner, worktree setup, builder and review pins, the commands to run and the
 evidence to report, the house rules, the wait rule (kit go), the skills for the ticket's files (the skills map,
@@ -19,20 +19,28 @@ project's top folder (default: this one); the ticket path is read from there. --
 words for models without skills.
 --task is for a project that keeps no ticket file for the job (its work is in GitHub Issues, say): the note holds
 the task, the marker names it task:<slug>, and the brief lands it with kit pr --title in place of kit slice.
+--runner t3 (build stage only) writes the runner's brief for a T3-mode slice (kit slice --runner t3): it starts one
+stage child at a time with delegate_task and ends its turn between stages. --child writes one stage child's brief, as
+kit slice --runner t3 prints it: the child works in the runner's checkout, does its one stage and starts no children.
 Talk style: each brief takes the next of en and wenyan in turn (a counter in the kit's state folder);
 KIT_TALK_STYLE=en|wenyan|plain forces one, and plain turns it off. Review briefs stay plain English.`;
 
 function parse(args) {
-  const options = { stage: "build" };
+  const options = { stage: "build", child: false };
   const rest = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (["--stage", "--owner", "--repo", "--note", "--model", "--task"].includes(arg)) {
+    if (arg === "--child") options.child = true;
+    else if (["--stage", "--owner", "--repo", "--note", "--model", "--task", "--runner"].includes(arg)) {
       if (args[i + 1] === undefined || (arg !== "--note" && args[i + 1].startsWith("-"))) throw new Error(`${arg} needs a value`);
       options[arg.slice(2)] = args[++i];
     } else if (arg.startsWith("-")) throw new Error(`unknown option ${arg}`);
     else rest.push(arg);
   }
+  if (options.runner !== undefined && options.runner !== "t3") throw new Error(`--runner must be t3, not ${options.runner}`);
+  if (options.runner && options.stage !== "build") throw new Error("--runner t3 is the runner's brief: build stage only");
+  if (options.runner && options.child) throw new Error("give --runner t3 (the runner) or --child (a stage child), not both");
+  if (options.task !== undefined && (options.runner || options.child)) throw new Error("a T3-mode slice needs a ticket file, not --task");
   if (options.task !== undefined) {
     if (rest.length) throw new Error("give a ticket path or --task, not both");
     if (!options.task.trim() || !options.owner || !options.note) throw new Error("--task needs a title, --owner and --note (the task itself)");
@@ -72,8 +80,9 @@ try {
   if (!owner) throw new Error(`${ticket} has no assignee; claim it first or pass --owner`);
   // Review briefs carry no talk style (their findings go to GitHub), so they leave the counter alone.
   const style = options.stage === "review" || options.stage === "second-look" ? "plain" : nextTalkStyle();
-  const brief = composeBrief({ root, settings, ticket, text, stage: options.stage, owner, note: options.note, model: options.model, style, pins, version: kitVersion(kitHome()), task: options.task?.trim() });
-  const file = join(".scratch/kit-briefs", `${basename(ticket).replace(/^task:/, "task-").replace(/\.md$/i, "")}-${options.stage}.md`);
+  const brief = composeBrief({ root, settings, ticket, text, stage: options.stage, owner, note: options.note, model: options.model, style, pins, version: kitVersion(kitHome()), task: options.task?.trim(),
+    runner: options.runner, child: options.child });
+  const file = join(".scratch/kit-briefs", `${basename(ticket).replace(/^task:/, "task-").replace(/\.md$/i, "")}-${options.runner ? "runner" : options.stage}${options.child ? "-child" : ""}.md`);
   mkdirSync(join(root, ".scratch/kit-briefs"), { recursive: true });
   writeFileSync(join(root, file), `${brief}\n`);
   console.log(brief);
