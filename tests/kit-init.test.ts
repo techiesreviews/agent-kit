@@ -1379,7 +1379,7 @@ test("a new project in a PRIVATE GitHub repo is set up to land directly on main;
   const run = priv.init(a.work, ["--light"]);
   // (doctor then fails on the fake origin, which is not what is tested here)
   assert.deepEqual(JSON.parse(readFileSync(join(a.work, "scripts/agents/kit.json"), "utf8")).branches, directSettings);
-  assert.match(run.stdout, /^note: private GitHub repo acme\/tools: it lands directly on main \(branches\.direct; dev and main were compared as last fetched, so run git fetch first if unsure\)$/m);
+  assert.match(run.stdout, /^note: private GitHub repo acme\/tools: it lands directly on main \(branches\.direct\); dev compared with main as last fetched, so run git fetch first if unsure$/m);
   assert.ok(priv.calls().some((args) => args.join(" ").startsWith("repo view acme/tools --json visibility")), JSON.stringify(priv.calls()));
   // Public: the usual dev and main, no direct.
   const g = fixture(t);
@@ -1693,4 +1693,20 @@ test("a checks setting with only keys that do not gate a merge still gets the no
   const gh = visibilityGh(f, "PRIVATE");
   const repo = withOrigin(f, "doctoronly", { "scripts/agents/kit.json": JSON.stringify({ project: "tools", branches: directSettings, checks: { doctor: "scripts/agents/kit doctor" } }) });
   assert.match(gh.init(repo.work, ["--check"]).stdout, /has no "checks"/);
+});
+
+test("the direct note says only what ran: no comparison with --land, the real branch names otherwise", (t) => {
+  const f = fixture(t);
+  const gh = visibilityGh(f, "PRIVATE");
+  const repo = withOrigin(f, "landed", { "index.html": "<p>hi</p>\n" });
+  devAhead(f, repo);
+  const run = gh.init(repo.work, ["--light", "--land", "main"]);
+  assert.match(run.stdout, /lands directly on main \(branches\.direct\); dev has 1 commit main lacks, which stay behind|lands directly on main \(branches\.direct; dev has 1 commit main lacks, which stay behind\)/, run.stdout);
+  assert.doesNotMatch(run.stdout, /as last fetched/);
+  const g = fixture(t);
+  const only = visibilityGh(g, "PRIVATE");
+  const master = withOrigin(g, "mastercompare", { "index.html": "<p>hi</p>\n" }, ["master"]);
+  const out = only.init(master.work, ["--light"]).stdout;
+  assert.match(out, /lands directly on master \(branches\.direct\)$/m, out);
+  assert.doesNotMatch(out, /compared with/);
 });

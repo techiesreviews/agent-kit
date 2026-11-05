@@ -160,8 +160,8 @@ if (existsSync(at(kitSettingsFile))) {
   // A private repo can land straight on main; the settings file is never edited, so the note names the change.
   if (!options.pieces && !process.env.KIT_INIT_NO_VISIBILITY && settings.branches.direct !== false && !(Array.isArray(settings.init?.skip) && settings.init.skip.some((entry) => ["direct", kitSettingsFile].includes(entry)))) {
     const asked = kitRepoPrivate(root);
-    // Only these checks gate a merge in kit pr; any other key does not.
-    const noChecks = !["check", "test", "lint", "extra", "css"].some((key) => settings.checks?.[key]);
+    // Only these checks gate an ordinary change in kit pr (extra and css run for special changes only).
+    const noChecks = !["check", "test", "lint"].some((key) => settings.checks?.[key]);
     if (settings.branches.direct === true) {
       // Already direct: a repo that turns out public, or one with no checks, needs a word.
       if (noChecks) visibilityNote(`${kitSettingsFile} lands directly on ${settings.branches.land} and has no "checks": unless a CI workflow runs on pull requests, a change goes live after the review alone; add "checks"`);
@@ -194,9 +194,12 @@ if (existsSync(at(kitSettingsFile))) {
   const asked = kitRepoPrivate(root);
   const mainBranch = ["main", "master"].find(branchExists);
   // A dev or develop branch ahead of main holds work that going direct would strand (or push live in one go): no direct, a warning.
-  const unmerged = options.land || !mainBranch ? null : ["dev", "develop"].filter(branchExists).map((name) => [name, commitsAhead(name, mainBranch)]).find(([, count]) => count > 0);
+  const compared = mainBranch ? ["dev", "develop"].filter(branchExists).map((name) => [name, commitsAhead(name, mainBranch)]).find(([, count]) => count > 0) : null;
+  const unmerged = options.land ? null : compared;
   const direct = asked.private === true && !unmerged && !!(options.land ? ["main", "master"].includes(options.land) && branchExists(options.land) : mainBranch);
-  if (direct) visibilityNote(`private GitHub repo ${asked.repo}: it lands directly on ${options.land || mainBranch} (branches.direct; dev and main were compared as last fetched, so run git fetch first if unsure)`);
+  if (direct) visibilityNote(`private GitHub repo ${asked.repo}: it lands directly on ${options.land || mainBranch} (branches.direct)` + (options.land
+    ? (compared ? `; ${compared[0]} has ${compared[1]} commit${compared[1] === 1 ? "" : "s"} ${mainBranch} lacks, which stay behind` : "")
+    : mainBranch && ["dev", "develop"].some(branchExists) ? `; ${["dev", "develop"].filter(branchExists).join(" and ")} compared with ${mainBranch} as last fetched, so run git fetch first if unsure` : ""));
   else if (asked.repo && asked.private === undefined) visibilityNote(`could not tell whether the GitHub repo ${asked.repo} is private (${asked.reason}); branches.direct is not set (add it yourself if the repo is private)`);
   else if (asked.private && unmerged) visibilityNote(`private GitHub repo ${asked.repo}, but ${unmerged[0]} has ${unmerged[1]} commit${unmerged[1] === 1 ? "" : "s"} ${mainBranch} lacks: branches.direct is not set (merge ${unmerged[0]} into ${mainBranch} first, then set "branches" in ${kitSettingsFile} yourself)`);
   else if (asked.private) visibilityNote(options.land && !branchExists(options.land)
