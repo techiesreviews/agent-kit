@@ -569,6 +569,13 @@ test("the push guard reads the settings of the repo the push reaches: a subfolde
   assert.equal(pushGuard(`git -C ${direct.work} push origin main`, split.work).stderr, noRelease);
 });
 
+test("direct: false and a direct that is not true keep the normal release advice", (t) => {
+  for (const direct of [false, "yes"]) {
+    const { work } = pushProject(t, { land: "dev", release: "main", direct } as unknown as Record<string, string>);
+    assert.equal(pushGuard("git push origin main", work).stderr, pushRefused("main"), String(direct));
+  }
+});
+
 test("a push to the release branch is refused however it is written, and names kit pr", (t) => {
   const { dir, work } = pushProject(t, { land: "dev", release: "main" });
   for (const [command, cwd] of [
