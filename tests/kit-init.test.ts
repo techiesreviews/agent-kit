@@ -725,13 +725,13 @@ test("--all lands the missing pieces in every listed project through its own kit
   assert.equal(existsSync(`${open}-kit-init-pieces`), true);
   // behind's change ran through kit pr from a worktree of origin/main: the pieces, then the line-endings commit.
   const record = readFileSync(join(records, "behind-kit-init-pieces"), "utf8");
-  assert.match(record, /^args --title Kit setup: add what kit init writes today \(kit 0123456\)$/m);
+  assert.match(record, /^args --title Kit setup: bring the project up to what kit init writes today \(kit 0123456\)$/m);
   assert.match(record, new RegExp(`^root ${behind}-kit-init-pieces$`, "m"));
   assert.match(record, /^branch kit\/init-pieces$/m);
   assert.match(record, new RegExp(`^node_modules  ${join(behind, "node_modules/dep")}\nstatus $`, "m"));
   assert.equal(readFileSync(join(behind, ".git/info/exclude"), "utf8"), exclude);
   assert.deepEqual(record.split("\n").filter((line) => line.startsWith("commit ")),
-    ["commit Normalize line endings (git add --renormalize . after .gitattributes)", "commit Kit setup: add what kit init writes today (kit 0123456)"]);
+    ["commit Normalize line endings (git add --renormalize . after .gitattributes)", "commit Kit setup: bring the project up to what kit init writes today (kit 0123456)"]);
   assert.deepEqual(record.split("\n").filter((line) => line.startsWith("file ")), ["file .claude/settings.json", "file .gitattributes", "file notes.txt"]);
   // The worktree and its branch are gone once kit pr landed it; a failed one waits; the main checkouts are untouched.
   assert.equal(existsSync(`${behind}-kit-init-pieces`), false);
@@ -1296,4 +1296,17 @@ test("an Issue list and a landed ticket over 1 MiB are read whole, and a gh that
   const slow = gh.init(work, ["--issues"], { KIT_ISSUES_TIMEOUT: "1" });
   assert.equal(slow.status, 1, slow.stdout + slow.stderr);
   assert.equal(result(slow), "RESULT: fail init gh issue list failed: timed out after 1s");
+});
+
+test("an emptied marked section (start marker straight above the end marker) is still the one section: updated by version, never copied again", (t) => {
+  const f = fixture(t);
+  const empty = "<!-- messages-to-lex:start v0 -->\n<!-- messages-to-lex:end -->";
+  for (const [name, heading] of [["empty-with", "## Messages to Lex\n"], ["empty-bare", ""]] as const) {
+    const { work } = f.repo(name, { "scripts/agents/kit.json": JSON.stringify({ project: name, branches: { land: "dev" } }), "AGENTS.md": `${base}\n${heading}${empty}\n` });
+    assert.match(f.init(work, ["--check"]).stdout, /^outdated: AGENTS\.md Messages to Lex \(older than the rulebook's\)$/m, name);
+    f.init(work, ["--light"]);
+    const after = readFileSync(join(work, "AGENTS.md"), "utf8");
+    assert.equal(after.match(/messages-to-lex:start/g)!.length, 1, after);
+    assert.ok(after.includes(section), after);
+  }
 });
