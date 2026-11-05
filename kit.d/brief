@@ -3,7 +3,7 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { composeBrief, kitVersion, nextTalkStyle, readTicket, skillSettingsProblems, STAGES } from "../brief-lib.mjs";
-import { kitHome, kitMessagesToLex, kitResult, kitRoot, kitRulebookPins, kitSettings } from "../kit-lib.mjs";
+import { kitHome, kitMessagesToLexRule, kitResult, kitRoot, kitRulebookPins, kitSettings } from "../kit-lib.mjs";
 
 const usage = `Usage: kit brief <ticket> [--stage build|review|second-look|fix] [--owner ID] [--repo PATH] [--model M] [--note "<text>"]
        kit brief --task "<title>" --owner ID --note "<what to do>" [--stage …] [--repo PATH] [--model M]
@@ -67,7 +67,7 @@ try {
   const { group } = readTicket(text);
   if (group) throw new Error(`${ticket} is in group ${group}: kit next --start runs a group as one job; kit brief writes briefs for single tickets`);
   const pins = kitRulebookPins(root, settings);
-  const messages = kitMessagesToLex();
+  const messages = kitMessagesToLexRule();
   // The child's owner is the claim's: a brief written before the claim would hand it the lead's own owner.
   const owner = options.owner || readTicket(text).assignee;
   if (!owner) throw new Error(`${ticket} has no assignee; claim it first or pass --owner`);
