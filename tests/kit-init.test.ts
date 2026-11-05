@@ -1619,5 +1619,13 @@ test("a release branch the project names but that does not exist is named in the
   const repo = withOrigin(f, "norelease", { "scripts/agents/kit.json": JSON.stringify({ project: "tools", branches: { land: "dev", release: "production" } }) });
   const out = gh.init(repo.work, ["--check"]).stdout;
   assert.match(out, /^note: private GitHub repo acme\/tools, but its release branch production is not here or on origin: branches\.direct is not set /m, out);
-  assert.doesNotMatch(out, /no main or master/);
+  assert.doesNotMatch(out, /there is no main or master branch/);
+});
+
+test("--land master in a private repo that also has main goes direct on master", (t) => {
+  const f = fixture(t);
+  const gh = visibilityGh(f, "PRIVATE");
+  const repo = withOrigin(f, "bothbranches", { "index.html": "<p>hi</p>\n" }, ["main", "master"]);
+  gh.init(repo.work, ["--light", "--land", "master"]);
+  assert.deepEqual(JSON.parse(readFileSync(join(repo.work, "scripts/agents/kit.json"), "utf8")).branches, { land: "master", release: "master", direct: true });
 });

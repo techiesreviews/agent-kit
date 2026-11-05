@@ -55,8 +55,8 @@ says for today; never claim a planned item ran.
   one; a public repo keeps its landing and release branches. A direct project goes live mid-week, as soon
   as its checks and review pass, without Lex's "ship it" (Lex, 2026-11-05: "yes", his own sites too). For
   his two websites, techies-reviews and lexvd-site, the lead tells Lex right after each change goes live
-  and notes how to roll it back in one command (`git revert --no-edit <first commit>^..<last commit>`, the commits
-  `kit pr` printed as "landed:", then landed with `kit pr`).
+  and notes how to roll it back: from a branch cut at origin/main, `git revert --no-edit <first commit>^..<last commit>`
+  (the commits `kit pr` printed as "landed:"), landed with `kit pr` like any change (it waits for its gates).
 - **Tuesday is Lex's only review day** (Lex, 2026-10-27): everything that needs him waits in one
   [Tuesday pack](#tuesday-review); between Tuesdays the work keeps moving. Budget: his $200/month
   Claude subscription and the free workers, never more.
@@ -309,12 +309,14 @@ OpenCode settings (default model, global instructions) do not apply to the revie
 - **Use:** the lead tells Lex the change is ready to try (in the Tuesday pack; where to try it:
   extras), with a plain what-to-test list (what a user could notice, where to look, what to try).
   First the lead runs the project's whole user-level check on the landing branch, where it has one
-  (extras), and sends its summary with that list.
+  (extras), and sends its summary with that list. In a direct project the landing branch is live, so the check
+  runs on the branch before `kit pr` and the note to Lex follows the merge (see the Done-when line).
 - **Decides:** Lex. Each correction becomes a ticket in the build (station 4) and one feedback log
   line (`kit feedback <map> --kind K --fix <ticket> "<text>"`, committed with the ticket); the
   log is what the ladder counts. A problem he finds after release adds `--after-release`.
 - **Done when:** Lex says "ship it". A direct project (`branches.direct`) is the exception: nothing waits for
-  Tuesday; the user-level check runs on the PR before it merges, and Lex hears about the change afterwards
+  Tuesday and the Tuesday pack is skipped; the lead runs the user-level check on the branch (or its preview)
+  before `kit pr`, because `kit pr` merges as soon as its gates pass, and Lex hears about the change afterwards
   (the house rule says how for his two websites).
 
 ### 12. Release
