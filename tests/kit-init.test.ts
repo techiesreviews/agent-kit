@@ -227,7 +227,8 @@ test("a marked section with a lower version is brought up to date in place, one 
   const f = fixture(t);
   const around = (block: string) => `${base}\n## Messages to Lex\n${block}\n\n## After\nMine.\n`;
   const { work } = f.repo("stale", { "scripts/agents/kit.json": settingsOf(), "AGENTS.md": around(older("- Old words.")) });
-  assert.match(f.init(work, ["--check"]).stdout, /^missing: AGENTS\.md Messages to Lex \(the Messages to Lex section, older than the rulebook's\)$/m);
+  assert.match(f.init(work, ["--check"]).stdout, /^outdated: AGENTS\.md Messages to Lex \(older than the rulebook's\)$/m);
+  assert.doesNotMatch(f.init(work, ["--check"]).stdout, /^missing: AGENTS\.md Messages/m);
   const run = f.init(work, ["--light"]);
   assert.match(run.stdout, /^wrote AGENTS\.md \(updated the Messages to Lex section\)$/m);
   assert.equal(readFileSync(join(work, "AGENTS.md"), "utf8"), around(section));
@@ -272,7 +273,7 @@ test("a CRLF AGENTS.md is checked, updated and added to in its own line endings"
   const crlf = (text: string) => text.replace(/\n/g, "\r\n");
   const old = crlf(`${base}\n## Messages to Lex\n${older("- Old.")}\n\n## After\nMine.\n`);
   const { work } = f.repo("crlf", { "scripts/agents/kit.json": settingsOf(), "AGENTS.md": old });
-  assert.match(f.init(work, ["--check"]).stdout, /^missing: AGENTS\.md Messages to Lex \(the Messages to Lex section, older/m);
+  assert.match(f.init(work, ["--check"]).stdout, /^outdated: AGENTS\.md Messages to Lex \(older/m);
   f.init(work, ["--light"]);
   assert.equal(readFileSync(join(work, "AGENTS.md"), "utf8"), crlf(`${base}\n## Messages to Lex\n${section}\n\n## After\nMine.\n`));
   const bare = f.repo("crlf-new", { "scripts/agents/kit.json": JSON.stringify({ project: "q", branches: { land: "dev" } }), "AGENTS.md": crlf("# Agents\n") });

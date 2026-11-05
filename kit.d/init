@@ -37,7 +37,8 @@ ends with kit doctor's result. Run in the main checkout, doctor's failing place 
 note naming how to make a worktree. A rerun changes nothing and says so. Old kit files in the project
 (kit-lib.sh, kit-lib.mjs, kit.d/, the guard hooks) stop it with a list, so the move removes them on purpose.
 
---check writes nothing: it prints "missing: <name> (<what>)" for each piece kit init would write today, the
+--check writes nothing: it prints "missing: <name> (<what>)" for each piece kit init would write today (and
+"outdated: <name> (<what>)" for a piece it would bring up to date), the
 name being the one "init.skip" takes (kit doctor shows these as warnings). It needs scripts/agents/kit.json.
 --all brings every project in the machine's projects.json up to date, one after another: in a temporary
 worktree of origin's landing branch it adds the missing pieces, commits them (and, when .gitattributes was
@@ -169,11 +170,11 @@ if (settings.init !== undefined && !isObject(settings.init)) fail(`"init" in ${k
 const skip = settings.init?.skip ?? [];
 if (!Array.isArray(skip) || skip.some((name) => typeof name !== "string")) fail(`"init.skip" in ${kitSettingsFile} must be a list of piece names; fix it first`);
 const bare = (name) => name.trim().replace(/\/+$/, "");
-const off = [], missing = [];
+const off = [], missing = [], outdated = [];
 const turnedOff = (name, path) => skip.some((entry) => [name, path].map(bare).includes(bare(entry)));
-const piece = (name, path, what) => {
+const piece = (name, path, what, list = missing) => {
   if (turnedOff(name, path)) { off.push(name); return false; }
-  missing.push(`${name} (${what})`);
+  list.push(`${name} (${what})`);
   return true;
 };
 
@@ -315,7 +316,7 @@ let lexAdd = false, lexUpdate = false;
 const lexHere = agents && (lexMarked.test(agents) || lexHeading.test(agents));
 if (!lexHere) lexAdd = piece("AGENTS.md Messages to Lex", "AGENTS.md", "the Messages to Lex section");
 else if (lexMarked.test(agents) && Number(agents.match(lexMarked)[1] ?? 0) < lexRule().version)
-  lexUpdate = piece("AGENTS.md Messages to Lex", "AGENTS.md", "the Messages to Lex section, older than the rulebook's");
+  lexUpdate = piece("AGENTS.md Messages to Lex", "AGENTS.md", "older than the rulebook's", outdated);
 if (!absentLines.length && !lexAdd && !lexUpdate && !off.some((name) => name.startsWith("AGENTS.md"))) kept.push("AGENTS.md");
 else if (missingLines.length || lexAdd || lexUpdate) {
   const rule = lexAdd || lexUpdate ? lexRule() : null;
@@ -345,7 +346,8 @@ else if (piece(".gitattributes", ".gitattributes", `the line "${lineEndings}"`))
 
 if (options.check) {
   for (const line of missing) console.log(`missing: ${line}`);
-  kitResult("ok", `init check: ${missing.length ? `${missing.length} missing` : "nothing missing"}${off.length ? `; ${off.length} turned off in init.skip` : ""}`);
+  for (const line of outdated) console.log(`outdated: ${line}`);
+  kitResult("ok", `init check: ${missing.length || outdated.length ? [missing.length && `${missing.length} missing`, outdated.length && `${outdated.length} out of date`].filter(Boolean).join(", ") : "nothing missing"}${off.length ? `; ${off.length} turned off in init.skip` : ""}`);
   process.exit(0);
 }
 
