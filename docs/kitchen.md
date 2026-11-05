@@ -54,7 +54,7 @@ says for today; never claim a planned item ran.
   docs-only ticket-claim commit straight to main).
   `kit init` sets it up for a new private repo and `kit init --check` names the change for an existing
   one; a public repo keeps its landing and release branches. A direct project goes live mid-week, as soon
-  as its checks and review pass, without Lex's "ship it" (Lex, 2026-11-05: "yes", his own sites too). For
+  as the gates `kit pr` applies to that change pass, without Lex's "ship it" (Lex, 2026-11-05: "yes", his own sites too). For
   his two websites, techies-reviews and lexvd-site, the lead tells Lex in plain words right after each change goes live
   and keeps the rollback in the ticket or PR (never in the message to Lex): from a branch cut at origin/main, `git revert --no-edit <first commit>^..<last commit>`
   (the commits `kit pr` printed as "landed:", else found by subject in `git log origin/main`), landed with `kit pr` like any change

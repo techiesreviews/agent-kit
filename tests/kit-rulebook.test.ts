@@ -202,7 +202,7 @@ test("the Messages to Lex rule wins over the whole rulebook, names the status-no
 
 test("the rulebook lets a direct project go live mid-week without \"ship it\", and says what the lead tells Lex about his two sites", () => {
   const text = read(shared).replace(/\n\s+/g, " ");
-  for (const words of ["goes live mid-week, as soon as its checks and review pass, without Lex's \"ship it\"", "techies-reviews and lexvd-site, the lead tells Lex in plain words right after each change goes live",
+  for (const words of ["goes live mid-week, as soon as the gates `kit pr` applies to that change pass, without Lex's \"ship it\"", "techies-reviews and lexvd-site, the lead tells Lex in plain words right after each change goes live",
     "from a branch cut at origin/main, `git revert --no-edit <first commit>^..<last commit>`", "the project's `checks` are the gate", "A direct project (`branches.direct`) is the exception: the release does not wait for Tuesday", "a direct project's own site excepted", "(a direct project has no release to wait for)", "through the same gates as any `kit pr`", "`kit next --start` still pushes its docs-only ticket-claim commit straight to main", "belongs in its `checks` (which `kit pr` runs for code-size changes; docs and CSS changes run lighter steps, so a check that must guard those needs a CI workflow on pull requests); otherwise the lead runs it right after the merge, rolls the change back if it fails", "The exception is a direct project (`branches.direct`): it has no release step and needs no \"ship it\"",
     "a direct project goes live on its own merge", "not in a direct project, whose landing branch is live"])
     assert.ok(text.includes(words), `the rulebook lacks: ${words}`);

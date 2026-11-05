@@ -194,11 +194,12 @@ if (existsSync(at(kitSettingsFile))) {
   const asked = kitRepoPrivate(root);
   const mainBranch = ["main", "master"].find(branchExists);
   // A dev or develop branch ahead of main holds work that going direct would strand (or push live in one go): no direct, a warning.
-  const compared = mainBranch ? ["dev", "develop"].filter(branchExists).map((name) => [name, commitsAhead(name, mainBranch)]).find(([, count]) => count > 0) : null;
+  const liveBranch = options.land || mainBranch;
+  const compared = liveBranch ? ["dev", "develop"].filter(branchExists).map((name) => [name, commitsAhead(name, liveBranch)]).find(([, count]) => count > 0) : null;
   const unmerged = options.land ? null : compared;
   const direct = asked.private === true && !unmerged && !!(options.land ? ["main", "master"].includes(options.land) && branchExists(options.land) : mainBranch);
   if (direct) visibilityNote(`private GitHub repo ${asked.repo}: it lands directly on ${options.land || mainBranch} (branches.direct)` + (options.land
-    ? (compared ? `; ${compared[0]} has ${compared[1]} commit${compared[1] === 1 ? "" : "s"} ${mainBranch} lacks, which stay behind` : "")
+    ? (compared ? `; ${compared[0]} has ${compared[1]} commit${compared[1] === 1 ? "" : "s"} ${liveBranch} lacks, which stay behind` : "")
     : mainBranch && ["dev", "develop"].some(branchExists) ? `; ${["dev", "develop"].filter(branchExists).join(" and ")} compared with ${mainBranch} as last fetched, so run git fetch first if unsure` : ""));
   else if (asked.repo && asked.private === undefined) visibilityNote(`could not tell whether the GitHub repo ${asked.repo} is private (${asked.reason}); branches.direct is not set (add it yourself if the repo is private)`);
   else if (asked.private && unmerged) visibilityNote(`private GitHub repo ${asked.repo}, but ${unmerged[0]} has ${unmerged[1]} commit${unmerged[1] === 1 ? "" : "s"} ${mainBranch} lacks: branches.direct is not set (merge ${unmerged[0]} into ${mainBranch} first, then set "branches" in ${kitSettingsFile} yourself)`);
