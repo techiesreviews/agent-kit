@@ -404,6 +404,17 @@ export function kitRulebookPins(root = kitRoot(), settings = kitSettings(root)) 
   return { builder, reviewer };
 }
 
+/**
+ * The Messages to Lex rule: the lines between the markers of the "Messages to Lex" section of the shared rulebook
+ * (docs/kitchen.md), the one source `kit rulebook` prints, `kit brief` carries and `kit init` copies into AGENTS.md.
+ */
+export function kitMessagesToLex(home = kitHome()) {
+  const file = join(home, "docs/kitchen.md");
+  const rule = /<!-- messages-to-lex:start -->\n([\s\S]+?)\n<!-- messages-to-lex:end -->/.exec(readFileSync(file, "utf8"))?.[1];
+  if (!rule) throw new Error(`the shared rulebook ${file} has no Messages to Lex rule`);
+  return rule;
+}
+
 /** A slice's branch: build/<owner>-<ticket slug without its number> (kit next and kit brief name it alike). */
 export function kitSliceBranch(owner, slug) {
   return `build/${owner}-${slug.replace(/\.md$/i, "").replace(/^\d+-/, "")}`;

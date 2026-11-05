@@ -5,7 +5,7 @@ import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, rea
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const { kitGhRepo, kitHideUserInfo, kitHome, kitProjects, kitRegisterProject, kitResult, kitRoot, kitSettingsFile, kitSettingsProblems, kitStateDir } = await import(
+const { kitGhRepo, kitHideUserInfo, kitHome, kitMessagesToLex, kitProjects, kitRegisterProject, kitResult, kitRoot, kitSettingsFile, kitSettingsProblems, kitStateDir } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const usage = `Usage: kit init [--light | --full] [--land <branch>]
@@ -20,7 +20,8 @@ before the project has a launcher). It writes only what is missing and never del
                             main or master), checks guessed from package.json scripts (printed to confirm)
   scripts/agents/kit, scripts/agents/hooks/run.sh   the kit launcher and the hook launcher
   .claude/settings.json, .codex/hooks.json   the kit's hook entries, merged in; other settings stay
-  AGENTS.md                 two lines pointing at scripts/agents/kit rulebook and kit --help
+  AGENTS.md                 two lines pointing at scripts/agents/kit rulebook and kit --help, and the short
+                            "Messages to Lex" rule (copied from the shared rulebook)
   .gitattributes            the line "* text=auto eol=lf", added at the top, so every checkout keeps LF
                             endings (a note names tracked files with CRLF to renormalize)
 Full (the default for a new project) also writes an empty scripts/agents/project.d/ (its own commands),
@@ -294,6 +295,8 @@ if (stubsWritten.length) notes.push(`add to ${kitSettingsFile} (kit init never e
 const agentLines = [
   ["scripts/agents/kit rulebook", "Kitchen rulebook: `scripts/agents/kit rulebook` (stations, who decides, builder and reviewer pins)."],
   ["scripts/agents/kit --help", "Agent commands: `scripts/agents/kit --help`; `scripts/agents/kit <command> --help` for one."],
+  // The rule's text is the shared rulebook's (docs/kitchen.md), copied so the always-loaded file carries it.
+  ["Messages to Lex", `\n## Messages to Lex\n${kitMessagesToLex(home)}`],
 ];
 const agents = existsSync(at("AGENTS.md")) ? readText("AGENTS.md") : null;
 const absentLines = agentLines.filter(([marker]) => !agents?.includes(marker));

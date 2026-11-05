@@ -41,6 +41,8 @@ says for today; never claim a planned item ran.
   line is run again in the foreground until the job's RESULT line. The `stop-guard` hook refuses a
   turn end while such a job runs (it gives way past the job's time limit, after six refusals in a
   row, or with `KIT_ALLOW_STOP=1`).
+- **Messages to Lex** (Lex, 2026-11-05): only what matters to him, question first, caveman bullets;
+  the rule is under [Messages to Lex](#messages-to-lex) below.
 - **Tuesday is Lex's only review day** (Lex, 2026-10-27): everything that needs him waits in one
   [Tuesday pack](#tuesday-review); between Tuesdays the work keeps moving. Budget: his $200/month
   Claude subscription and the free workers, never more.
@@ -68,6 +70,16 @@ says for today; never claim a planned item ran.
   pointers only; feature descriptions, history and long explanations live in the project's docs,
   linked from there. Docs and `--help` point to the test files for what is checked ("what each
   suite checks: the comments and assertion messages in its file") instead of listing the checks.
+
+## Messages to Lex
+
+<!-- messages-to-lex:start -->
+- Only what matters to him. Start with the question, or what he must do (test, do or answer).
+- Add a recommendation when it fits.
+- Caveman style, short bullets, plain words (he is not technical). He asks if he wants more context.
+- Leave out internal process (review rounds, waivers, SHAs, file paths) unless he must act on it.
+- Example: "Keep the old export button or remove it?" / "Both do the same." / "Recommend: remove it."
+<!-- messages-to-lex:end -->
 
 ## Who cooks (pins from 2026-10-22)
 
