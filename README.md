@@ -18,7 +18,7 @@ only a small launcher and its own settings; the kit itself lives here, once.
   adds a piece later, `kit doctor` warns about it in every project set up before, `kit init` adds it, and
   `kit init --all` lands it in every project the machine lists, each through its own `kit pr`. A project keeps a
   piece out on purpose by naming it in `"init": { "skip": [...] }` in its settings (`kit init --check` prints the names).
-- A project in a **private** GitHub repo lands straight on main: `"branches": { "land": "main", "release": "main", "direct": true }` in its settings, so `kit pr` opens ordinary PRs into main (all checks, review and second look stay; no `--release` step).
+- A project in a **private** GitHub repo lands straight on main: `"branches": { "land": "main", "release": "main", "direct": true }` in its settings, so `kit pr` opens ordinary PRs into main (the same gates as any `kit pr`: checks and review by the change's size, the second look when a model can take it; no `--release` step).
   `kit init` sets this for a new private repo (asked of `gh repo view --json visibility`; if gh cannot tell, it sets nothing and says so), and `kit init --check` prints the exact change for an existing project, whose settings it never edits.
 - Every command then goes through the launcher: `scripts/agents/kit <command>`; bare `scripts/agents/kit` lists
   them, `scripts/agents/kit <command> --help` explains one. A project's own commands sit in the folder its

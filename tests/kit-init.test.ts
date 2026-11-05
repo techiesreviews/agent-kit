@@ -1578,3 +1578,46 @@ test("the --land note without any main or master branch says so, and an unreadab
   assert.equal(JSON.parse(readFileSync(join(other.work, "scripts/agents/kit.json"), "utf8")).branches.direct, undefined);
   assert.match(garbled.stdout, /^note: could not tell whether the GitHub repo acme\/tools is private \(gh says nothing\); branches\.direct is not set /m, garbled.stdout);
 });
+
+test("branches are compared with origin's too: a stale local dev or main never decides, and develop counts like dev", (t) => {
+  // Local dev equals main, but origin/dev holds a commit: not direct, the commit is named.
+  const f = fixture(t);
+  const gh = visibilityGh(f, "PRIVATE");
+  const repo = withOrigin(f, "stale", { "index.html": "<p>hi</p>\n" });
+  writeFileSync(join(repo.work, "x.txt"), "x\n");
+  f.git(repo.work, "add", "x.txt");
+  f.git(repo.work, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "only on origin/dev");
+  f.git(repo.main, "update-ref", "refs/remotes/origin/dev", "build/one");
+  const run = gh.init(repo.work, ["--light"]);
+  assert.equal(JSON.parse(readFileSync(join(repo.work, "scripts/agents/kit.json"), "utf8")).branches.direct, undefined);
+  assert.match(run.stdout, /but dev has 1 commit main lacks/);
+  // The reverse: local main is behind origin/main, which already holds everything on dev.
+  const g = fixture(t);
+  const reverse = visibilityGh(g, "PRIVATE");
+  const behind = withOrigin(g, "behind", { "index.html": "<p>hi</p>\n" });
+  writeFileSync(join(behind.work, "y.txt"), "y\n");
+  g.git(behind.work, "add", "y.txt");
+  g.git(behind.work, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "on dev and origin/main");
+  g.git(behind.main, "branch", "-f", "dev", "build/one");
+  g.git(behind.main, "update-ref", "refs/remotes/origin/main", "build/one");
+  reverse.init(behind.work, ["--light"]);
+  assert.deepEqual(JSON.parse(readFileSync(join(behind.work, "scripts/agents/kit.json"), "utf8")).branches, directSettings);
+  // develop is held to the same rule.
+  const h = fixture(t);
+  const develop = visibilityGh(h, "PRIVATE");
+  const dv = withOrigin(h, "develop", { "index.html": "<p>hi</p>\n" }, ["main", "develop"]);
+  writeFileSync(join(dv.work, "z.txt"), "z\n");
+  h.git(dv.work, "add", "z.txt");
+  h.git(dv.work, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "develop only");
+  h.git(dv.main, "branch", "-f", "develop", "build/one");
+  assert.match(develop.init(dv.work, ["--light"]).stdout, /but develop has 1 commit main lacks/);
+});
+
+test("a release branch the project names but that does not exist is named in the note, not blamed on main or master", (t) => {
+  const f = fixture(t);
+  const gh = visibilityGh(f, "PRIVATE");
+  const repo = withOrigin(f, "norelease", { "scripts/agents/kit.json": JSON.stringify({ project: "tools", branches: { land: "dev", release: "production" } }) });
+  const out = gh.init(repo.work, ["--check"]).stdout;
+  assert.match(out, /^note: private GitHub repo acme\/tools, but its release branch production is not here or on origin: branches\.direct is not set /m, out);
+  assert.doesNotMatch(out, /no main or master/);
+});
