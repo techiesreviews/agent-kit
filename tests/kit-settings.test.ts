@@ -19,6 +19,7 @@ const library = resolve("kit-lib.sh");
 const sha = "abcdef0123456789abcdef0123456789abcdef01";
 const noProject = 'add "project": "<name>" to scripts/agents/kit.json';
 const noLand = 'add "branches": { "land": "<branch>" } to scripts/agents/kit.json';
+const sameBranch = 'direct landing needs the same branch as "land" and "release" in scripts/agents/kit.json (for example both "main")';
 const noFile = 'no scripts/agents/kit.json; add one with "project" and "branches": { "land": "<branch>" }';
 
 // Kit runs export these into the test process; each test sets its own.
@@ -122,14 +123,28 @@ test("only project and branches.land are required, and both readers say what to 
     [{ project: "x", branches: { land: " " } }, [noLand]],
     [{ project: "", branches: { land: "main" }, preview: "https://example.test" }, [noProject]],
     [[], ["scripts/agents/kit.json must hold one JSON object"]],
+    // branches.direct: the shell reader and the Node reader say the same thing.
+    [{ project: "x", branches: { land: "dev", release: "main", direct: true } }, [sameBranch]],
+    [{ project: "x", branches: { land: "main", direct: true } }, [sameBranch]],
+    [{ project: "x", branches: { land: "main", release: "main", direct: "yes" } }, ['"branches.direct" must be true or false in scripts/agents/kit.json']],
+    [{ project: "x", branches: { land: "main", release: "main", direct: true } }, []],
   ];
-  for (const [settings, problems] of cases) {
+  for (const [settings, problems] of cases.slice(0, 5)) {
     const root = temp(t);
     if (settings !== null) settingsFile(root, settings);
     assert.throws(() => kitSettings(root), { message: problems.join("; ") }, JSON.stringify(settings));
     const shell = bash("kit_settings_problems", { KIT_ROOT: root });
     assert.equal(shell.status, 1, JSON.stringify(settings));
     assert.equal(shell.stdout, `${problems.join("\n")}\n`, JSON.stringify(settings));
+  }
+  for (const [settings, problems] of cases.slice(5)) {
+    const root = temp(t);
+    settingsFile(root, settings as object);
+    if (problems.length) assert.throws(() => kitSettings(root), { message: problems.join("; ") }, JSON.stringify(settings));
+    else assert.doesNotThrow(() => kitSettings(root));
+    const shellDirect = bash("kit_settings_problems", { KIT_ROOT: root });
+    assert.equal(shellDirect.stdout, problems.length ? `${problems.join("\n")}\n` : "", JSON.stringify(settings));
+    assert.equal(shellDirect.status, problems.length ? 1 : 0, JSON.stringify(settings));
   }
   const broken = temp(t);
   settingsFile(broken, '{ "project": ');
@@ -572,4 +587,19 @@ test("the kit's own CI runs on pull requests and pushes into its land, release a
     const listed = line[1].split(",").map(name => name.trim());
     for (const branch of new Set([branches.land, branches.release, branches.ci ?? branches.land])) assert.ok(listed.includes(branch), `ci.yml ${event} does not list ${branch}`);
   }
+});
+
+test("branches.direct (a private repo landing straight on main) needs one branch as land and release, and must be true or false", t => {
+  const settings = (branches: object) => ({ project: "x", branches });
+  assert.deepEqual(kitSettingsProblems(settings({ land: "main", release: "main", direct: true })), []);
+  assert.deepEqual(kitSettingsProblems(settings({ land: "dev", release: "main", direct: false })), []);
+  const sameBranch = 'direct landing needs the same branch as "land" and "release" in scripts/agents/kit.json (for example both "main")';
+  assert.deepEqual(kitSettingsProblems(settings({ land: "dev", release: "main", direct: true })), [sameBranch]);
+  assert.deepEqual(kitSettingsProblems(settings({ land: "main", direct: true })), [sameBranch]);
+  assert.deepEqual(kitSettingsProblems(settings({ land: "main", release: "main", direct: "yes" })), ['"branches.direct" must be true or false in scripts/agents/kit.json']);
+  // The reader every command uses throws the same plain line.
+  const dir = temp(t);
+  mkdirSync(join(dir, "scripts/agents"), { recursive: true });
+  writeFileSync(join(dir, "scripts/agents/kit.json"), JSON.stringify(settings({ land: "dev", release: "main", direct: true })));
+  assert.throws(() => kitSettings(dir), new RegExp(sameBranch.replace(/[()]/g, "\\$&")));
 });

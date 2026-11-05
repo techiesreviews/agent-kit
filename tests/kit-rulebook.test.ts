@@ -148,7 +148,7 @@ test("kit rulebook prints the house rules from the 2026-10-30 retros under House
   const run = rulebook(t, project);
   assert.equal(run.status, 0, run.stderr);
   const house = run.stdout.split("\n## House rules\n")[1]?.split("\n## ")[0] ?? "";
-  for (const rule of ["Plain English", "Kit changes go through one board", "A build's tests stay in the project", "Always-loaded files stay short"])
+  for (const rule of ["Plain English", "Private repos land directly on main", "Kit changes go through one board", "A build's tests stay in the project", "Always-loaded files stay short"])
     assert.ok(house.includes(`- **${rule}`), `House rules lack "${rule}"`);
   // Where kit tickets go, and who builds them, as the ticket decided.
   for (const words of ["`docs/wayfinder/kitchen-everywhere/build/`", "built only by the thread that orchestrates that board"])
@@ -197,5 +197,11 @@ test("the Messages to Lex rule wins over the whole rulebook, names the status-no
   for (const words of ["wins over every other line of this rulebook for what a message to him holds and how it reads",
     "The two-line status notes (the after-merge note, `kit heartbeat`) keep their two-line shape (done, then running/next); when the lead passes them on, anything he must answer or do goes first",
     "a two-line plain note to Lex (see [Messages to Lex](#messages-to-lex))"])
+
+test("the rulebook lets a direct project go live mid-week without \"ship it\", and says what the lead tells Lex about his two sites", () => {
+  const text = read(shared).replace(/\n\s+/g, " ");
+  for (const words of ["goes live mid-week, as soon as its checks and review pass, without Lex's \"ship it\"", "techies-reviews and lexvd-site, the lead tells Lex right after each change goes live",
+    "git revert -m 1 <merge commit>", "The exception is a direct project (`branches.direct`): it has no release step and needs no \"ship it\"",
+    "a direct project goes live on its own merge", "not in a direct project, whose landing branch is live"])
     assert.ok(text.includes(words), `the rulebook lacks: ${words}`);
 });

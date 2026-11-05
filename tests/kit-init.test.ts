@@ -21,7 +21,11 @@ function fixture(t: After) {
   cpSync(resolve("."), kit, { recursive: true, filter: kitFiles });
   symlinkSync(kit, join(data, "current"));
   writeFileSync(join(data, "updated"), `${Math.floor(Date.now() / 1000)}\n`);
-  const env: NodeJS.ProcessEnv = { ...process.env, HOME: directory, XDG_DATA_HOME: join(directory, "data"), XDG_CACHE_HOME: join(directory, "cache"),
+  // A gh that always fails, so no test reaches the real GitHub (or rewrites the fixture gh config); tests of their own put a fake in front.
+  const noGh = join(directory, "no-gh");
+  mkdirSync(noGh);
+  writeFileSync(join(noGh, "gh"), "#!/bin/sh\necho 'gh is not available in this test' >&2\nexit 1\n", { mode: 0o755 });
+  const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${noGh}:${process.env.PATH}`, HOME: directory, XDG_DATA_HOME: join(directory, "data"), XDG_CACHE_HOME: join(directory, "cache"),
     XDG_STATE_HOME: state, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", CLAUDE_PROJECT_DIR: "", KIT_GROK: join(directory, "no-grok") };
   for (const name of ["KIT_ROOT", "KIT_MAIN_ROOT", "KIT_DEV_ROOT", "KIT_LIB", "KIT_LIB_MJS", "KIT_HOME", "KIT_HOME_DEFAULT", "KIT_HOME_PINNED",
     "KIT_COMMANDS_DIR", "KIT_PLAYWRIGHT_MODULE", "KIT_PLAYWRIGHT_MODULE_DEFAULT", "KIT_DOCTOR_SKIP", "ASE_OWNER", "NODE_TEST_CONTEXT"]) delete env[name];
@@ -1339,4 +1343,237 @@ test("--check's RESULT line counts what is out of date apart from what is missin
   f.init(crlf.work, ["--light"]);
   assert.ok(readFileSync(join(crlf.work, "AGENTS.md"), "utf8").includes("## Messages to Lex\r\nOur words.\r\n"));
   assert.equal(readFileSync(join(crlf.work, "AGENTS.md"), "utf8").match(/Messages to Lex/g)!.length, 1);
+
+// A fake gh that answers `repo view <repo> --json visibility` with what visibility.txt holds ("fail" makes it fail), logging every call.
+function visibilityGh(f: ReturnType<typeof fixture>, answer: string) {
+  const bin = join(f.directory, "visibility-gh");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "answer.txt"), answer);
+  writeFileSync(join(bin, "gh"), `#!/usr/bin/env node
+const { appendFileSync, readFileSync } = require("node:fs");
+const args = process.argv.slice(2), answer = readFileSync(${JSON.stringify(join(bin, "answer.txt"))}, "utf8").trim();
+appendFileSync(${JSON.stringify(join(bin, "calls.log"))}, JSON.stringify(args) + "\\n");
+if (args[0] === "repo" && args[1] === "view" && args.includes("visibility")) {
+  if (answer === "fail") { process.stderr.write("HTTP 502: try later"); process.exit(1); }
+  process.stdout.write(answer === "garbage" ? "not json at all" : JSON.stringify({ visibility: answer }));
+} else { process.stderr.write("unexpected gh " + args.join(" ")); process.exit(1); }
+`, { mode: 0o755 });
+  const env = { ...f.env, PATH: `${bin}:${f.env.PATH}` };
+  return {
+    init: (cwd: string, args: string[]) => spawnSync(join(f.directory, "data/agent-kit/current/kit"), ["init", ...args], { cwd, env, encoding: "utf8", timeout: 60_000 }),
+    calls: () => existsSync(join(bin, "calls.log")) ? readFileSync(join(bin, "calls.log"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as string[]) : [],
+  };
+}
+const withOrigin = (f: ReturnType<typeof fixture>, name: string, files: Record<string, string> = {}, branches?: string[]) => {
+  const repo = f.repo(name, files, branches);
+  f.git(repo.main, "remote", "add", "origin", "https://github.com/acme/tools.git");
+  return repo;
+};
+const directSettings = { land: "main", release: "main", direct: true };
+
+test("a new project in a PRIVATE GitHub repo is set up to land directly on main; a public one keeps dev and main", (t) => {
+  const f = fixture(t);
+  const priv = visibilityGh(f, "PRIVATE");
+  const a = withOrigin(f, "secret", { "index.html": "<p>hi</p>\n" });
+  const run = priv.init(a.work, ["--light"]);
+  // (doctor then fails on the fake origin, which is not what is tested here)
+  assert.deepEqual(JSON.parse(readFileSync(join(a.work, "scripts/agents/kit.json"), "utf8")).branches, directSettings);
+  assert.match(run.stdout, /^note: private GitHub repo acme\/tools: it lands directly on main \(branches\.direct\)$/m);
+  assert.ok(priv.calls().some((args) => args.join(" ").startsWith("repo view acme/tools --json visibility")), JSON.stringify(priv.calls()));
+  // Public: the usual dev and main, no direct.
+  const g = fixture(t);
+  const pub = visibilityGh(g, "PUBLIC");
+  const b = withOrigin(g, "open", { "index.html": "<p>hi</p>\n" });
+  pub.init(b.work, ["--light"]);
+  assert.deepEqual(JSON.parse(readFileSync(join(b.work, "scripts/agents/kit.json"), "utf8")).branches, { land: "dev", release: "main" });
+});
+
+test("when kit init cannot tell whether the repo is private it never sets direct and says so", (t) => {
+  for (const answer of ["fail", "INTERNAL"]) {
+    const f = fixture(t);
+    const gh = visibilityGh(f, answer);
+    const { work } = withOrigin(f, "unsure", { "index.html": "<p>hi</p>\n" });
+    const run = gh.init(work, ["--light"]);
+    const branches = JSON.parse(readFileSync(join(work, "scripts/agents/kit.json"), "utf8")).branches;
+    assert.equal(branches.direct, undefined, answer);
+    assert.match(run.stdout, /^note: could not tell whether the GitHub repo acme\/tools is private .*; branches\.direct is not set \(add it yourself if the repo is private\)$/m, run.stdout);
+  }
+  // No GitHub origin: nothing to ask, no note.
+  const f = fixture(t);
+  const gh = visibilityGh(f, "PRIVATE");
+  const { work } = f.repo("local", { "index.html": "<p>hi</p>\n" });
+  const run = gh.init(work, ["--light"]);
+  assert.doesNotMatch(run.stdout, /private|branches\.direct/);
+  assert.deepEqual(gh.calls(), []);
+});
+
+test("an existing project's settings are never edited: --check names the exact change for a private repo, and stays quiet once direct is set or for a public repo", (t) => {
+  const settings = (branches: object) => JSON.stringify({ project: "tools", branches });
+  const f = fixture(t);
+  const gh = visibilityGh(f, "PRIVATE");
+  const old = withOrigin(f, "old", { "scripts/agents/kit.json": settings({ land: "dev", release: "main" }) });
+  const check = gh.init(old.work, ["--check"]);
+  assert.match(check.stdout, /^note: private GitHub repo acme\/tools: to land directly on main set "branches": \{ "land": "main", "release": "main", "direct": true \} in scripts\/agents\/kit\.json \(kit init never edits it\)$/m, check.stdout);
+  assert.equal(JSON.parse(readFileSync(join(old.work, "scripts/agents/kit.json"), "utf8")).branches.direct, undefined);
+  // Already direct, or "direct": false on purpose: nothing to say.
+  for (const [name, branches] of [["done", directSettings], ["no", { land: "dev", release: "main", direct: false }]] as const) {
+    const g = fixture(t);
+    const answer = visibilityGh(g, "PRIVATE");
+    const repo = withOrigin(g, name, { "scripts/agents/kit.json": settings(branches) });
+    assert.doesNotMatch(answer.init(repo.work, ["--check"]).stdout, /private|direct/, name);
+  }
+  // A public repo is left as it is.
+  const g = fixture(t);
+  const pub = visibilityGh(g, "PUBLIC");
+  const open = withOrigin(g, "open", { "scripts/agents/kit.json": settings({ land: "dev", release: "main" }) });
+  assert.doesNotMatch(pub.init(open.work, ["--check"]).stdout, /private|direct/);
+});
+
+test("KIT_INIT_NO_VISIBILITY (what kit doctor sets) keeps kit init --check from asking GitHub", (t) => {
+  const f = fixture(t);
+  const gh = visibilityGh(f, "PRIVATE");
+  const repo = withOrigin(f, "quiet", { "scripts/agents/kit.json": JSON.stringify({ project: "tools", branches: { land: "dev", release: "main" } }) });
+  const env = { ...f.env, PATH: `${join(f.directory, "visibility-gh")}:${f.env.PATH}`, KIT_INIT_NO_VISIBILITY: "1" };
+  const run = spawnSync(join(f.directory, "data/agent-kit/current/kit"), ["init", "--check"], { cwd: repo.work, env, encoding: "utf8" });
+  assert.doesNotMatch(run.stdout, /private/);
+  assert.deepEqual(gh.calls(), []);
+});
+
+test("a private repo that cannot go direct says why; master works like main; a note names the branch that exists", (t) => {
+  const settings = (branches: object) => JSON.stringify({ project: "tools", branches });
+  // Only a dev branch: nothing to land on directly.
+  const a = fixture(t);
+  const devOnly = visibilityGh(a, "PRIVATE");
+  const dev = withOrigin(a, "devonly", { "index.html": "<p>hi</p>\n" }, ["dev"]);
+  const run = devOnly.init(dev.work, ["--light"]);
+  assert.equal(JSON.parse(readFileSync(join(dev.work, "scripts/agents/kit.json"), "utf8")).branches.direct, undefined);
+  assert.match(run.stdout, /^note: private GitHub repo acme\/tools, but there is no main or master branch here to land on directly: branches\.direct is not set /m, run.stdout);
+  // --land dev on a repo that has main is honoured, with the same note.
+  const b = fixture(t);
+  const explicit = visibilityGh(b, "PRIVATE");
+  const named = withOrigin(b, "named", { "index.html": "<p>hi</p>\n" });
+  const explicitRun = explicit.init(named.work, ["--light", "--land", "dev"]);
+  assert.equal(JSON.parse(readFileSync(join(named.work, "scripts/agents/kit.json"), "utf8")).branches.direct, undefined);
+  assert.match(explicitRun.stdout, /^note: private GitHub repo acme\/tools, but --land dev names a branch other than main or master: branches\.direct is not set \(leave out --land to land directly on main\)$/m, explicitRun.stdout);
+  // A master-only private repo lands directly on master.
+  const c = fixture(t);
+  const masterGh = visibilityGh(c, "PRIVATE");
+  const master = withOrigin(c, "masterrepo", { "index.html": "<p>hi</p>\n" }, ["master"]);
+  masterGh.init(master.work, ["--light"]);
+  assert.deepEqual(JSON.parse(readFileSync(join(master.work, "scripts/agents/kit.json"), "utf8")).branches, { land: "master", release: "master", direct: true });
+  // An existing master project is told master, not main.
+  const d = fixture(t);
+  const existing = visibilityGh(d, "PRIVATE");
+  const old = withOrigin(d, "oldmaster", { "scripts/agents/kit.json": settings({ land: "master" }) }, ["master"]);
+  assert.match(existing.init(old.work, ["--check"]).stdout, /to land directly on master set "branches": \{ "land": "master", "release": "master", "direct": true \}/);
+});
+
+test("init.skip (\"direct\" or the settings file) and --pieces never ask GitHub; a missing gh is said in plain words", (t) => {
+  const settings = (extra: object = {}) => JSON.stringify({ project: "tools", branches: { land: "dev", release: "main" }, ...extra });
+  for (const skip of [["direct"], ["scripts/agents/kit.json"]]) {
+    const f = fixture(t);
+    const gh = visibilityGh(f, "PRIVATE");
+    const repo = withOrigin(f, "skipper", { "scripts/agents/kit.json": settings({ init: { skip } }) });
+    assert.doesNotMatch(gh.init(repo.work, ["--check"]).stdout, /private|could not tell/, JSON.stringify(skip));
+    assert.deepEqual(gh.calls(), [], JSON.stringify(skip));
+  }
+  const f = fixture(t);
+  const gh = visibilityGh(f, "PRIVATE");
+  const repo = withOrigin(f, "pieces", { "scripts/agents/kit.json": settings() });
+  gh.init(repo.work, ["--pieces"]);
+  assert.deepEqual(gh.calls(), []);
+  // No gh on the machine at all.
+  const g = fixture(t);
+  const bare = withOrigin(g, "nogh", { "scripts/agents/kit.json": settings() });
+  const nothing = mkdtempSync(join(tmpdir(), "no-gh-path-"));
+  t.after(() => rmSync(nothing, { recursive: true, force: true }));
+  for (const name of ["git", "node", "bash", "sh", "env", "jq", "timeout", "dirname", "cat", "mkdir", "rm", "ls", "uname", "date", "basename", "readlink", "tail", "head", "sed", "grep", "awk", "tr", "mktemp", "sleep", "cp", "mv", "ln", "chmod", "cut", "sort", "wc", "tee", "which", "flock", "ssh"]) {
+    const found = spawnSync("sh", ["-c", `command -v ${name}`], { encoding: "utf8" }).stdout.trim();
+    if (found) symlinkSync(found, join(nothing, name));
+  }
+  const run = spawnSync(join(g.directory, "data/agent-kit/current/kit"), ["init", "--check"], { cwd: bare.work, env: { ...g.env, PATH: nothing }, encoding: "utf8" });
+  assert.match(run.stdout, /^note: could not tell whether the GitHub repo acme\/tools is private \(gh is not installed\); branches\.direct is not set /m, run.stdout + run.stderr);
+});
+
+test("plain kit init on an existing private project prints the note once and leaves kit.json byte for byte; the note names the live branch", (t) => {
+  const f = fixture(t);
+  const gh = visibilityGh(f, "PRIVATE");
+  const text = JSON.stringify({ project: "tools", branches: { land: "dev", release: "master" } });
+  const repo = withOrigin(f, "plain", { "scripts/agents/kit.json": text });
+  f.git(repo.main, "branch", "master");
+  const run = gh.init(repo.work, ["--light"]);
+  assert.equal(run.stdout.match(/^note: private GitHub repo/gm)!.length, 1, run.stdout);
+  // Release is master and main also exists: master is the live branch.
+  assert.match(run.stdout, /to land directly on master set "branches": \{ "land": "master", "release": "master", "direct": true \}/);
+  assert.equal(readFileSync(join(repo.work, "scripts/agents/kit.json"), "utf8"), text);
+  // No main or master at all (a trunk project): the cannot-go-direct wording, not a settings line.
+  const g = fixture(t);
+  const trunk = visibilityGh(g, "PRIVATE");
+  const odd = withOrigin(g, "trunk", { "scripts/agents/kit.json": JSON.stringify({ project: "tools", branches: { land: "trunk" } }) }, ["trunk"]);
+  const oddRun = trunk.init(odd.work, ["--check"]);
+  assert.match(oddRun.stdout, /^note: private GitHub repo acme\/tools, but there is no main or master branch here to land on directly: branches\.direct is not set /m, oddRun.stdout);
+  assert.doesNotMatch(oddRun.stdout, /"direct": true/);
+});
+
+test("kit init --land with a branch that does not exist never claims it lands on main", (t) => {
+  const f = fixture(t);
+  const gh = visibilityGh(f, "PRIVATE");
+  const repo = withOrigin(f, "nomain", { "index.html": "<p>hi</p>\n" }, ["dev"]);
+  const run = gh.init(repo.work, ["--light", "--land", "main"]);
+  assert.equal(JSON.parse(readFileSync(join(repo.work, "scripts/agents/kit.json"), "utf8")).branches.direct, undefined);
+  assert.match(run.stdout, /^note: private GitHub repo acme\/tools, but branch main does not exist yet: branches\.direct is not set /m, run.stdout);
+  assert.doesNotMatch(run.stdout, /not on main or master/);
+});
+
+// Commits on dev that main lacks: the work branch is cut from dev, so a commit there moves dev ahead.
+const devAhead = (f: ReturnType<typeof fixture>, repo: { main: string; work: string }) => {
+  writeFileSync(join(repo.work, "extra.txt"), "work only on dev\n");
+  f.git(repo.work, "add", "extra.txt");
+  f.git(repo.work, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "dev only");
+  f.git(repo.main, "branch", "-f", "dev", "build/one");
+};
+
+test("a new private repo whose dev is ahead of main is not set to direct: a warning names the branch and the commits", (t) => {
+  const f = fixture(t);
+  const gh = visibilityGh(f, "PRIVATE");
+  const repo = withOrigin(f, "ahead", { "index.html": "<p>hi</p>\n" });
+  devAhead(f, repo);
+  const run = gh.init(repo.work, ["--light"]);
+  assert.deepEqual(JSON.parse(readFileSync(join(repo.work, "scripts/agents/kit.json"), "utf8")).branches, { land: "dev", release: "main" });
+  assert.match(run.stdout, /^note: private GitHub repo acme\/tools, but dev has 1 commit main lacks: branches\.direct is not set \(merge dev into main first, then set "branches" in scripts\/agents\/kit\.json yourself\)$/m, run.stdout);
+  // --land main is the explicit choice: direct, whatever dev holds.
+  const g = fixture(t);
+  const explicit = visibilityGh(g, "PRIVATE");
+  const chosen = withOrigin(g, "chosen", { "index.html": "<p>hi</p>\n" });
+  devAhead(g, chosen);
+  explicit.init(chosen.work, ["--light", "--land", "main"]);
+  assert.deepEqual(JSON.parse(readFileSync(join(chosen.work, "scripts/agents/kit.json"), "utf8")).branches, directSettings);
+});
+
+test("the note for an existing private project keeps its live branch, whatever its name, and warns about commits the landing branch would strand", (t) => {
+  const settings = (branches: object) => JSON.stringify({ project: "tools", branches });
+  const f = fixture(t);
+  const gh = visibilityGh(f, "PRIVATE");
+  const trunk = withOrigin(f, "trunkrel", { "scripts/agents/kit.json": settings({ land: "next", release: "trunk" }) }, ["trunk", "next"]);
+  const run = gh.init(trunk.work, ["--check"]);
+  assert.match(run.stdout, /to land directly on trunk set "branches": \{ "land": "trunk", "release": "trunk", "direct": true \}/, run.stdout);
+  assert.doesNotMatch(run.stdout, /land directly on main/);
+  const g = fixture(t);
+  const split = visibilityGh(g, "PRIVATE");
+  const repo = withOrigin(g, "split", { "scripts/agents/kit.json": settings({ land: "dev", release: "main" }) });
+  devAhead(g, repo);
+  assert.match(split.init(repo.work, ["--check"]).stdout, /to land directly on main set .*; merge dev into main first, it has 1 commit main lacks$/m);
+});
+
+test("the --land note without any main or master branch says so, and an unreadable gh answer is said plainly", (t) => {
+  const f = fixture(t);
+  const gh = visibilityGh(f, "PRIVATE");
+  const repo = withOrigin(f, "trunkonly", { "index.html": "<p>hi</p>\n" }, ["trunk"]);
+  assert.match(gh.init(repo.work, ["--light", "--land", "trunk"]).stdout, /^note: private GitHub repo acme\/tools, but --land trunk names a branch other than main or master: branches\.direct is not set \(there is no main or master branch here yet; create one first\)$/m);
+  const g = fixture(t);
+  const odd = visibilityGh(g, "garbage");
+  const other = withOrigin(g, "garbled", { "index.html": "<p>hi</p>\n" });
+  const garbled = odd.init(other.work, ["--light"]);
+  assert.equal(JSON.parse(readFileSync(join(other.work, "scripts/agents/kit.json"), "utf8")).branches.direct, undefined);
+  assert.match(garbled.stdout, /^note: could not tell whether the GitHub repo acme\/tools is private \(gh says nothing\); branches\.direct is not set /m, garbled.stdout);
 });

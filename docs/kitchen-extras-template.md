@@ -27,8 +27,8 @@ file wins.
 
 ## Release
 
-- The release steps after `kit pr --release`, the first-hour check, and where the live version is
-  recorded.
+- The release steps after `kit pr --release` (a direct project, `branches.direct`, has no such step: its steps
+  follow the merge into <release>), the first-hour check, and where the live version is recorded.
 - **First step of the live deploy command:** `scripts/agents/kit release-check &&` before the deploy
   itself (nothing unsaved, HEAD exactly `origin/<release>`); a preview deploy needs none. A lead who
   must deploy past it runs `scripts/agents/kit release-check --waive "<reason>"` and then the deploy's

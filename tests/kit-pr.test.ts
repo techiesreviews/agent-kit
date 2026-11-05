@@ -516,6 +516,40 @@ test("--base main is an ordinary PR when main is both land and release, and stil
   assert.match(refused.stdout, /RESULT: fail guards: --base main requires --release/);
 });
 
+test("a direct project (branches.direct, land and release both main) lands ordinary PRs on main and has no release step", t => {
+  const direct = { ...playground, branches: { land: "main", release: "main", ci: "main", direct: true } };
+  const f = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: direct, workflows: false });
+  for (const args of [["--dry-run"], ["--dry-run", "--base", "main"]]) {
+    const run = f.run(args, { FAKE_BASE: "main" }, true);
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.match(run.stdout, /RESULT: ok dry-run [a-f0-9]{7} feature\/kit-pr -> main/);
+  }
+  // The other gates stay: kit pr will not run on main itself, and there is no release step to run.
+  f.git("checkout", "main");
+  const onMain = f.run(["--dry-run"], { FAKE_BASE: "main" }, true);
+  assert.equal(onMain.status, 1, onMain.stdout + onMain.stderr);
+  assert.match(onMain.stdout, /RESULT: fail guards: refusing branch main/);
+  f.git("checkout", "feature/kit-pr");
+  const release = f.run(["--dry-run", "--release", "--base", "main"], { FAKE_BASE: "main" }, true);
+  assert.equal(release.status, 1, release.stdout + release.stderr);
+  assert.match(release.stdout, /RESULT: fail guards: --release has no step in a direct project/);
+  // A direct project whose land branch is not its release branch is a settings problem, not a silent split.
+  const split = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: { ...direct, branches: { land: "dev", release: "main", direct: true } } });
+  const refused = split.run(["--dry-run", "--base", "main"], {}, true);
+  assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+  assert.match(refused.stdout, /RESULT: fail guards: direct landing needs the same branch as "land" and "release"/);
+});
+
+test("a direct project's full kit pr runs the review, lands the PR on main and needs no release step", t => {
+  const direct = { ...playground, branches: { land: "main", release: "main", ci: "main", direct: true } };
+  const f = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: direct, workflows: false });
+  const run = f.run([], { FAKE_BASE: "main" }, true);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.match(run.stdout, /RESULT: ok merged #\d+ [a-f0-9]{7}/);
+  assert.ok(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "review"), "the review ran");
+  assert.ok(f.calls().some(call => call.tool === "gh" && call.args.includes("--base") && call.args.includes("main")), JSON.stringify(f.calls().map(call => call.tool)));
+});
+
 test("with the playground settings and a CI workflow, pr still waits for CI and records ci: pass", t => {
   const f = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: playground });
   const result = f.run([], { FAKE_BASE: "main" }, true);
