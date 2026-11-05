@@ -14,7 +14,7 @@ only a small launcher and its own settings; the kit itself lives here, once.
 - `kit init` (run once, from the machine copy: `~/.local/share/agent-kit/current/kit init`) writes the project's
   `scripts/agents/kit.json` settings, the launcher `scripts/agents/kit`, the hook launcher
   `scripts/agents/hooks/run.sh`, the hook entries in `.claude/settings.json` and `.codex/hooks.json`, and the
-  line `* text=auto eol=lf` in `.gitattributes`. It writes only what is missing, so it can run again: when the kit
+  line `* text=auto eol=lf` in `.gitattributes`. It writes only what is missing (and updates the kit's own marked "Messages to Lex" section when the rulebook's version is higher), so it can run again: when the kit
   adds a piece later, `kit doctor` warns about it in every project set up before, `kit init` adds it, and
   `kit init --all` lands it in every project the machine lists, each through its own `kit pr`. A project keeps a
   piece out on purpose by naming it in `"init": { "skip": [...] }` in its settings (`kit init --check` prints the names).
@@ -51,8 +51,9 @@ only a small launcher and its own settings; the kit itself lives here, once.
 One short rule for every message to Lex (question or what he must do first, a recommendation, caveman bullets,
 no internal process): the "Messages to Lex" section of `docs/kitchen.md` is its only text. `kit rulebook` prints it,
 every `kit brief` carries it, and `kit init` copies it into a project's `AGENTS.md` between markers. A later change
-to the rule reaches those copies the same way: `kit doctor` and `kit init --check` call a marked section that differs
-from the rulebook missing, and `kit init` updates it in place. A project whose "Messages to Lex" heading has no
+to the rule reaches those copies the same way: the rule carries a version (`v1` in its start marker, raised with
+every text change); `kit doctor` and `kit init --check` report a marked section with a lower version, and `kit init`
+updates it in place. A machine with an older kit never undoes a newer copy. A project whose "Messages to Lex" heading has no
 markers keeps its own words. A project set up before the rule gets the section like any new piece: `kit doctor`
 warns, `kit init` (in the project) or `kit init --all` (every listed project, each through its own `kit pr`) adds it.
 

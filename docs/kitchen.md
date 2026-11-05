@@ -76,13 +76,17 @@ says for today; never claim a planned item ran.
 
 ## Messages to Lex
 
-<!-- messages-to-lex:start -->
+<!-- messages-to-lex:start v1 -->
 - Only what matters to him. Start with the question, or what he must do (test, do or answer).
 - Add a recommendation when it fits.
 - Caveman style, short bullets, plain words (he is not technical). He asks if he wants more context.
 - Leave out internal process (review rounds, waivers, SHAs, file paths) unless he must act on it.
 - Example: "Keep the old export button or remove it?" / "Both do the same." / "Recommend: remove it."
 <!-- messages-to-lex:end -->
+
+The start marker carries the rule's version. Raise it (v2, v3 …) whenever the text changes: `kit init` brings a
+project's copy up to date only when the rulebook's version is higher, so a machine with an older kit never
+undoes a newer rule.
 
 ## Who cooks (pins from 2026-10-22)
 
@@ -177,7 +181,7 @@ OpenCode settings (default model, global instructions) do not apply to the revie
   ticket files (its work is in GitHub Issues) uses `kit brief --task "<title>" --owner <id> --note
   "<the task>"`. Where the landing
   branch is also the release branch, a raw claim push is refused: claim with a docs-tier `kit pr`.
-  The brief names the owner, setup, pins, commands, evidence, house rules, wait rule, skills, talk
+  The brief names the owner, setup, pins, commands, evidence, house rules, the Messages to Lex rule, wait rule, skills, talk
   style and the report's last line (PR <full URL>, head <SHA>, checks and reviews <state>).
 
   The child thread runs the slice from setup to `kit pr`, links only its own PR and settles when T3 sees it merged.

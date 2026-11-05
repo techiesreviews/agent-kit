@@ -75,7 +75,7 @@ const SECOND_LOOK = { first: "grok-4.7", fallback: "opencode/deepseek-v4.1-flash
  * settings, the ticket's path there and its text, the stage, owner, note, the target model, the talk style and
  * the kit's version.
  */
-export function composeBrief({ root, settings, ticket, text, stage, owner, note, model, style, version, task, pins = kitRulebookPins(root, settings), review = process.env.ASE_REVIEW_MODEL || pins.reviewer }) {
+export function composeBrief({ messages = kitMessagesToLex(), root, settings, ticket, text, stage, owner, note, model, style, version, task, pins = kitRulebookPins(root, settings), review = process.env.ASE_REVIEW_MODEL || pins.reviewer }) {
   const info = readTicket(text);
   // kit next runs a group's tickets as one job (kit next --run-group) on the group's own branch.
   if (info.group) throw new Error(`${ticket} is in group ${info.group}: kit next --start runs a group as one job; kit brief writes briefs for single tickets`);
@@ -148,7 +148,7 @@ export function composeBrief({ root, settings, ticket, text, stage, owner, note,
     "Commits use the repo's or the machine's set git identity; never borrow another person's name.",
   ]);
   // The rule is the shared rulebook's (docs/kitchen.md of the kit that runs), not the project's.
-  out.push("", "## Messages to Lex", "This covers messages meant for Lex. The Report section's format still applies in full (RESULT lines, PR URL, SHAs, finding locations).", kitMessagesToLex());
+  out.push("", "## Messages to Lex", "This covers messages meant for Lex. The Report section's format still applies in full (RESULT lines, PR URL, SHAs, finding locations).", messages);
   if (!reviewing) section("Waiting", [
     "Finish the whole job in this turn. A short check runs in the foreground.",
     "A long job (a slice, a long `kit pr`, specs) runs as `scripts/agents/kit go <job> -- <command>`: it starts the job in its own systemd scope and waits at most 9 minutes per call.",
