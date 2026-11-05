@@ -3,8 +3,10 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { createHash } from "node:crypto";
 import test, { type TestContext } from "node:test";
 import { kitEnv } from "./support/kit-env.ts";
+import { kitMessagesToLexRule } from "../kit-lib.mjs";
 
 // kit rulebook (kitchen-everywhere 20): the shared rulebook with the kit, then the project's extras.
 const kit = resolve("kit");
@@ -146,7 +148,7 @@ test("kit rulebook prints the house rules from the 2026-10-30 retros under House
   const run = rulebook(t, project);
   assert.equal(run.status, 0, run.stderr);
   const house = run.stdout.split("\n## House rules\n")[1]?.split("\n## ")[0] ?? "";
-  for (const rule of ["Plain English", "Kit changes go through one board", "A build's tests stay in the project", "Always-loaded files stay short"])
+  for (const rule of ["Plain English", "Private repos land directly on main", "Kit changes go through one board", "A build's tests stay in the project", "Always-loaded files stay short"])
     assert.ok(house.includes(`- **${rule}`), `House rules lack "${rule}"`);
   // Where kit tickets go, and who builds them, as the ticket decided.
   for (const words of ["`docs/wayfinder/kitchen-everywhere/build/`", "built only by the thread that orchestrates that board"])
@@ -165,4 +167,68 @@ test("the shared rulebook names no editor-only fact and links only inside the ki
   // kit next reads these two rows; their first backticked word is the model.
   assert.match(text, /^\| Builder, every slice \| `claude-[^`]+`/m);
   assert.match(text, /^\| Review, every change \| `claude-[^`]+`/m);
+});
+
+test("kit rulebook prints the Messages to Lex rule, the one source briefs and kit init copy", t => {
+  const run = rulebook(t, project);
+  assert.equal(run.status, 0, run.stderr);
+  const rule = run.stdout.split("\n## Messages to Lex\n")[1]?.split("\n## ")[0] ?? "";
+  for (const words of ["Start with the question, or what he must do", "recommendation", "Caveman", "bullets", "He asks if he wants more context", "SHAs"])
+    assert.ok(rule.includes(words), `the Messages to Lex rule lacks "${words}"`);
+  assert.match(rule, /<!-- messages-to-lex:start v\d+ -->\n[\s\S]+\n<!-- messages-to-lex:end -->/);
+  // The House rules list points to it.
+  assert.match(run.stdout.split("\n## House rules\n")[1]?.split("\n## ")[0] ?? "", /\*\*Messages to Lex\*\*[\s\S]*\(#messages-to-lex\)/);
+});
+
+test("this repo's AGENTS.md carries the rulebook's current Messages to Lex rule, at its version", () => {
+  const { version, rule } = kitMessagesToLexRule(resolve("."));
+  assert.ok(read("AGENTS.md").includes(`<!-- messages-to-lex:start v${version} -->\n${rule}\n<!-- messages-to-lex:end -->`), "AGENTS.md: copy the rule and its version from docs/kitchen.md");
+});
+
+test("the Messages to Lex rule's text changes only with a new version (projects update their copy by version)", () => {
+  // Changing the text? Raise the version in docs/kitchen.md and AGENTS.md, then add the new version and hash here.
+  const hashes: Record<number, string> = { 1: "0756a810b421006273dd9f346a878c9bce51f03330ca3fc8865bf555124d4590" };
+  const { version, rule } = kitMessagesToLexRule(resolve("."));
+  assert.equal(createHash("sha256").update(rule).digest("hex"), hashes[version], `the rule's text changed but version v${version} did not`);
+});
+
+test("the Messages to Lex rule wins over the whole rulebook, names the status-note exception, and step 10 points to it", () => {
+  const text = read(shared).replace(/\n\s+/g, " ");
+  for (const words of ["wins over every other line of this rulebook for what a message to him holds and how it reads",
+    "The two-line status notes (the after-merge note, `kit heartbeat`) keep their two-line shape (done, then running/next); when the lead passes them on, anything he must answer or do goes first",
+    "a two-line plain note to Lex (see [Messages to Lex](#messages-to-lex))"])
+    assert.ok(text.includes(words), `the rulebook lacks: ${words}`);
+});
+
+test("the rulebook lets a direct project go live mid-week without \"ship it\", and says what the lead tells Lex about his two sites", () => {
+  const text = read(shared).replace(/\n\s+/g, " ");
+  for (const words of ["goes live mid-week, as soon as the gates `kit pr` applies to that change pass, without Lex's \"ship it\"", "techies-reviews and lexvd-site, the lead tells Lex in plain words right after each change goes live",
+    "from a branch cut at origin/main, `git revert --no-edit <first commit>^..<last commit>`", "the project's `checks` are the gate", "A direct project (`branches.direct`) is the exception: the release does not wait for Tuesday", "a direct project's own site excepted", "(a direct project has no release to wait for)", "through the same gates as any `kit pr`", "`kit next --start` still pushes its docs-only ticket-claim commit straight to main", "belongs in its `checks` (which `kit pr` runs for code-size changes; docs and CSS changes run lighter steps, so a check that must guard those needs a CI workflow on pull requests); otherwise the lead runs it right after the merge, rolls the change back if it fails", "The exception is a direct project (`branches.direct`): it has no release step and needs no \"ship it\"",
+    "a direct project goes live on its own merge", "not in a direct project, whose landing branch is live"])
+    assert.ok(text.includes(words), `the rulebook lacks: ${words}`);
+});
+
+test("the documented rollback works on commits landed by rebase: it puts main back to its earlier tree", () => {
+  const dir = mkdtempSync(join(tmpdir(), "kit-rollback-"));
+  try {
+    const git = (...args: string[]) => {
+      const run = spawnSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", ...args], { encoding: "utf8" });
+      assert.equal(run.status, 0, run.stderr);
+      return run.stdout.trim();
+    };
+    git("init", "-q", "-b", "main");
+    writeFileSync(join(dir, "a.txt"), "one\n"); git("add", "."); git("commit", "-qm", "start");
+    // A two-commit branch lands on main by rebase (gh pr merge --rebase): new commits, no merge commit.
+    git("checkout", "-qb", "work");
+    writeFileSync(join(dir, "a.txt"), "two\n"); git("commit", "-qam", "one change");
+    writeFileSync(join(dir, "b.txt"), "new\n"); git("add", "."); git("commit", "-qm", "another");
+    // Main moved on meanwhile, so the rebase really rewrites the commits.
+    git("checkout", "-q", "main"); writeFileSync(join(dir, "c.txt"), "later\n"); git("add", "."); git("commit", "-qm", "main moved");
+    const earlier = git("rev-parse", "HEAD^{tree}");
+    git("rebase", "main", "work"); git("checkout", "-q", "main"); git("merge", "-q", "--ff-only", "work");
+    const landed = git("rev-list", "--reverse", "main", "^" + git("rev-parse", "main~2")).split("\n");
+    assert.equal(landed.length, 2);
+    git("revert", "--no-edit", `${landed[0]}^..${landed[1]}`);
+    assert.equal(git("rev-parse", "HEAD^{tree}"), earlier);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

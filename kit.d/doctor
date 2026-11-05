@@ -395,14 +395,14 @@ fi
 
 # What kit init writes into a project today, compared with what the project has (kit init --check, the one list
 # of pieces): a warning per missing piece, also when quiet, never a failure. A piece added to the kit after the
-# project was set up shows here until kit init (or kit init --all) adds it; "init.skip" in the settings keeps one out.
+# project was set up shows here (without asking GitHub whether the repo is private: KIT_INIT_NO_VISIBILITY) until kit init (or kit init --all) adds it; "init.skip" in the settings keeps one out.
 # Without settings, Node or a kit init in the kit (a copy cut short, which the help and kit home checks name) the
 # settings and node checks say what is wrong, and there is no list to compare with.
-setup_missing=0 setup_warning=''
+setup_missing=0 setup_outdated=0 setup_warning=''
 if [[ -n $settings_unread || ! -f $home/kit.d/init ]] || ! node=$(kit_node_find); then :
 else
   code=0
-  output=$(cd -- "$root" && KIT_ROOT=$root timeout -k 2 "${KIT_DOCTOR_CHECK_TIMEOUT:-20}" "$node" "$home/kit.d/init" --check 2>&1 < /dev/null) || code=$?
+  output=$(cd -- "$root" && KIT_INIT_NO_VISIBILITY=1 KIT_ROOT=$root timeout -k 2 "${KIT_DOCTOR_CHECK_TIMEOUT:-20}" "$node" "$home/kit.d/init" --check 2>&1 < /dev/null) || code=$?
   # The check shares the checks.doctor lines' limit (KIT_DOCTOR_CHECK_TIMEOUT).
   if (( code == 124 || code == 137 )); then
     printf '✗ setup: not checked (kit init --check timed out); fix: run scripts/agents/kit init --check to see why\n'
@@ -413,15 +413,22 @@ else
     setup_warning='setup not checked (run scripts/agents/kit init --check)'
   else
     while IFS= read -r line; do
-      [[ $line == 'missing: '* ]] || continue
-      setup_missing=$((setup_missing + 1))
-      printf '✗ setup: missing since kit %s: %s; fix: run scripts/agents/kit init (or name it in "init.skip" in scripts/agents/kit.json to keep it out)\n' \
-        "$kit_commit" "${line#missing: }"
+      case $line in
+        'missing: '*) setup_missing=$((setup_missing + 1)); word=missing; text=${line#missing: } ;;
+        'outdated: '*) setup_outdated=$((setup_outdated + 1)); word=outdated; text=${line#outdated: } ;;
+        *) continue ;;
+      esac
+      if [[ $word == outdated ]]; then keep='keep this copy as it is'; else keep='keep it out'; fi
+      printf '✗ setup: %s since kit %s: %s; fix: run scripts/agents/kit init (or name it in "init.skip" in scripts/agents/kit.json to %s)\n' \
+        "$word" "$kit_commit" "$text" "$keep"
     done <<< "$output"
   fi
 fi
-if (( setup_missing )); then
-  setup_warning="$setup_missing setup piece$( (( setup_missing == 1 )) || printf s) missing (run scripts/agents/kit init)"
+if (( setup_missing || setup_outdated )); then
+  parts=()
+  (( setup_missing )) && parts+=("$setup_missing setup piece$( (( setup_missing == 1 )) || printf s) missing")
+  (( setup_outdated )) && parts+=("$setup_outdated setup piece$( (( setup_outdated == 1 )) || printf s) out of date")
+  setup_warning="$(IFS=,; printf '%s' "${parts[*]/#/ }" | sed 's/^ //; s/,/,/g') (run scripts/agents/kit init)"
 fi
 
 # Where kit pr opens PRs: origin's GitHub repo, which every kit gh call is told (GH_REPO) whatever other remotes

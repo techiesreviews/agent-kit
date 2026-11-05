@@ -24,9 +24,13 @@ says for today; never claim a planned item ran.
 - **One job, one worktree:** `scripts/agents/worktree.sh` from `origin/<land>`; `git -C` or
   `cd … || exit 1`; work in progress is a commit on your own branch.
 - **Lex in plain words:** questions are plain choices about what changes for him, each with a
-  recommended answer. Technical questions go to him too, explained plainly with file paths.
+  recommended answer. Technical questions go to him too, explained plainly, with file paths only where
+  he must act on them. What a message to him holds and how it reads: [Messages to
+  Lex](#messages-to-lex), which wins over every other line of this rulebook for what a message to him
+  holds and how it reads.
 - **Plain English** (Lex, 2026-10-30): every ticket, doc, code comment, commit message, PR text,
-  review finding and message to Lex is in plain English, since Lex reads them. Talk between agents
+  and review finding is in plain English, since Lex reads them; a message to Lex follows [Messages to
+  Lex](#messages-to-lex) (caveman bullets in plain words). Talk between agents
   (a brief, a child's report to its lead) follows the talk style `kit brief` sets: short English or
   Classical Chinese in turn during the 7-day trial from 2026-10-31 (`KIT_TALK_STYLE=en|wenyan|plain`
   forces one), never in anything a person reads. The lead ends the trial by hand after its verdict
@@ -41,6 +45,20 @@ says for today; never claim a planned item ran.
   line is run again in the foreground until the job's RESULT line. The `stop-guard` hook refuses a
   turn end while such a job runs (it gives way past the job's time limit, after six refusals in a
   row, or with `KIT_ALLOW_STOP=1`).
+- **Messages to Lex** (Lex, 2026-11-05): only what matters to him, question first, caveman bullets;
+  the rule is under [Messages to Lex](#messages-to-lex) below.
+- **Private repos land directly on main** (Lex, 2026-11-05): a project in a private GitHub repo sets
+  `"branches": { "land": "main", "release": "main", "direct": true }`; its PRs then go straight into main
+  as ordinary PRs through the same gates as any `kit pr` (checks and review by the change's size, the second look when a
+  model can take it), with no raw pushes and no `--release` step (one known exception: `kit next --start` still pushes its
+  docs-only ticket-claim commit straight to main).
+  `kit init` sets it up for a new private repo and `kit init --check` names the change for an existing
+  one; a public repo keeps its landing and release branches. A direct project goes live mid-week, as soon
+  as the gates `kit pr` applies to that change pass, without Lex's "ship it" (Lex, 2026-11-05: "yes", his own sites too). For
+  his two websites, techies-reviews and lexvd-site, the lead tells Lex in plain words right after each change goes live
+  and keeps the rollback in the ticket or PR (never in the message to Lex): from a branch cut at origin/main, `git revert --no-edit <first commit>^..<last commit>`
+  (the commits `kit pr` printed as "landed:", else found by subject in `git log origin/main`), landed with `kit pr` like any change
+  (it waits for its gates).
 - **Tuesday is Lex's only review day** (Lex, 2026-10-27): everything that needs him waits in one
   [Tuesday pack](#tuesday-review); between Tuesdays the work keeps moving. Budget: his $200/month
   Claude subscription and the free workers, never more.
@@ -68,6 +86,22 @@ says for today; never claim a planned item ran.
   pointers only; feature descriptions, history and long explanations live in the project's docs,
   linked from there. Docs and `--help` point to the test files for what is checked ("what each
   suite checks: the comments and assertion messages in its file") instead of listing the checks.
+
+## Messages to Lex
+
+<!-- messages-to-lex:start v1 -->
+- Only what matters to him. Start with the question, or what he must do (test, do or answer).
+- Add a recommendation when it fits.
+- Caveman style, short bullets, plain words (he is not technical). He asks if he wants more context.
+- Leave out internal process (review rounds, waivers, SHAs, file paths) unless he must act on it.
+- Example: "Keep the old export button or remove it?" / "Both do the same." / "Recommend: remove it."
+<!-- messages-to-lex:end -->
+
+The two-line status notes (the after-merge note, `kit heartbeat`) keep their two-line shape (done, then running/next); when the lead passes them on, anything he must answer or do goes first.
+
+The start marker carries the rule's version. Raise it (v2, v3 …) whenever the text changes: `kit init` brings a
+project's copy up to date only when the rulebook's version is higher, so a machine with an older kit never
+undoes a newer rule.
 
 ## Who cooks (pins from 2026-10-22)
 
@@ -162,7 +196,7 @@ OpenCode settings (default model, global instructions) do not apply to the revie
   ticket files (its work is in GitHub Issues) uses `kit brief --task "<title>" --owner <id> --note
   "<the task>"`. Where the landing
   branch is also the release branch, a raw claim push is refused: claim with a docs-tier `kit pr`.
-  The brief names the owner, setup, pins, commands, evidence, house rules, wait rule, skills, talk
+  The brief names the owner, setup, pins, commands, evidence, house rules, the Messages to Lex rule, wait rule, skills, talk
   style and the report's last line (PR <full URL>, head <SHA>, checks and reviews <state>).
 
   The child thread runs the slice from setup to `kit pr`, links only its own PR and settles when T3 sees it merged.
@@ -255,7 +289,7 @@ OpenCode settings (default model, global instructions) do not apply to the revie
 ### 10. After a merge: note, scoreboard
 
 - **Use:** the lead runs the project's after-merge step (a preview deploy where the project has one;
-  extras). Then a two-line plain note to Lex: what was done, and whether he would notice anything;
+  extras). Then a two-line plain note to Lex (see [Messages to Lex](#messages-to-lex)): what was done, and whether he would notice anything;
   a screenshot contact sheet through `html_render` only when something visible changed. Every
   correction from Lex gets one line in the build's feedback log: `kit feedback <map> --kind K
   "<text>"` (the issue tracker guide's build files); fill its fix with `--fix-for` once the ticket
@@ -270,22 +304,29 @@ OpenCode settings (default model, global instructions) do not apply to the revie
 
 ### 11. Lex's end check
 
-- **Releases wait for Tuesday, work doesn't:** when a build's (or stage's) frontier is empty, its end
+- **Releases wait for Tuesday, work doesn't** (a direct project has no release to wait for): when a build's (or stage's) frontier is empty, its end
   check goes into the next Tuesday pack, and the next stage or the next build in the queue starts at
   once on the landing branch. A gate line in a build README saying "after X's release" means "after
   X's frontier is empty" for starting work; X's release itself still waits for Lex.
 - **Use:** the lead tells Lex the change is ready to try (in the Tuesday pack; where to try it:
   extras), with a plain what-to-test list (what a user could notice, where to look, what to try).
   First the lead runs the project's whole user-level check on the landing branch, where it has one
-  (extras), and sends its summary with that list.
+  (extras), and sends its summary with that list. In a direct project the landing branch is live: a user-level check the
+  project wants before going live belongs in its `checks` (which `kit pr` runs for code-size changes; docs and CSS changes run lighter steps, so a check that must guard those needs a CI workflow on pull requests); otherwise the lead runs it right
+  after the merge, rolls the change back if it fails, and the note to Lex follows (see the Done-when line).
 - **Decides:** Lex. Each correction becomes a ticket in the build (station 4) and one feedback log
   line (`kit feedback <map> --kind K --fix <ticket> "<text>"`, committed with the ticket); the
   log is what the ladder counts. A problem he finds after release adds `--after-release`.
-- **Done when:** Lex says "ship it".
+- **Done when:** Lex says "ship it". A direct project (`branches.direct`) is the exception: the release does not wait
+  for Tuesday (other hard-to-undo items still do) and needs no Tuesday pack entry; the project's `checks` are the gate, and Lex hears about the change
+  afterwards (the house rule says how for his two websites).
 
 ### 12. Release
 
-- **Use:** only after Lex's written "ship it" (given on Tuesday): `kit pr --release` (the landing
+- **Use:** only after Lex's written "ship it" (given on Tuesday). The exception is a direct project
+  (`branches.direct`): it has no release step and needs no "ship it", its merge into main is the release as
+  soon as checks and review pass, and the project's steps follow it (the house rule says what the lead
+  tells Lex). Otherwise `kit pr --release` (the landing
   branch into the release branch, `branches.release`), merge once CI passes, then the project's
   release steps and first-hour check (extras). A build with a rollout checklist follows it.
 - **Release check:** `kit pr --release` first runs `kit release-check --land` (a clean tree, HEAD
@@ -372,11 +413,12 @@ keep working on everything that doesn't need him.
   the ready-date guesses.
 - **Easy-to-undo defaults:** mid-week, an easy-to-undo choice takes its recommended answer at once, and
   the pack lists it. Easy to undo: anything that lands on the landing branch (or a preview of it)
-  and can be changed by a later slice. Grilling answers and mock-up choices count when the work
+  and can be changed by a later slice (not in a direct project, whose landing branch is live). Grilling answers and mock-up choices count when the work
   they steer is still unreleased.
-- **Hard to undo, waits for Tuesday:** going live (release, and every move up the ladder); public
+- **Hard to undo, waits for Tuesday:** going live (release, and every move up the ladder; a direct
+  project goes live on its own merge, see the house rule); public
   repos, packages or GitHub Issues; anything that costs money; deleting what cannot be recovered;
-  changes to visitors' sites; his settings, keys and secrets (T3 `request_secret`, never chat); a
+  changes to visitors' sites (a direct project's own site excepted: it goes live on its merge, see the house rule); his settings, keys and secrets (T3 `request_secret`, never chat); a
   change in builder routing; which sweep findings become tickets; new checks or rulebook lines from
   chat learning.
 - **Ready-date guesses:** each build README carries one line, `**Ready (guess):**`, with the date it

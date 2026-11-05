@@ -348,12 +348,14 @@ guarded_target() {
   done
 }
 guarded_in() {
-  local dir=$1 root release current arg remote='' all=0 skip=0 tag=0 tags=0 dst upstream
+  local dir=$1 root release current arg mark='' remote='' all=0 skip=0 tag=0 tags=0 dst upstream
   local -a refs=() dsts=()
   shift
   root=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || return 0
   release=$(jq -r '.branches.release | strings' "$root/scripts/agents/kit.json" 2>/dev/null) || return 0
   [[ -n $release ]] || return 0
+  # A direct project (branches.direct) has no release step; its branch is printed with a trailing \035 so the refusal can say so.
+  if [[ $(jq -r '.branches.direct // false' "$root/scripts/agents/kit.json" 2>/dev/null) == true ]]; then mark=$'\035'; fi
   for arg; do
     if (( skip )); then skip=0; continue; fi
     case $arg in
@@ -367,7 +369,7 @@ guarded_in() {
       *) if [[ -z $remote ]]; then remote=$arg; else refs+=("$arg"); fi ;;
     esac
   done
-  if (( all )); then printf '%s' "$release"; return 0; fi
+  if (( all )); then printf '%s%s' "$release" "$mark"; return 0; fi
   current=$(git -C "$dir" symbolic-ref -q --short HEAD 2>/dev/null) || current=''
   # --tags alone pushes tags only.
   if (( ! ${#refs[@]} && ! tags )); then
@@ -380,7 +382,7 @@ guarded_in() {
     if [[ $arg == tag ]]; then tag=1; continue; fi
     arg=${arg#+}
     # A lone colon pushes every branch that exists on both sides.
-    if [[ $arg == : ]]; then printf '%s' "$release"; return 0; fi
+    if [[ $arg == : ]]; then printf '%s%s' "$release" "$mark"; return 0; fi
     if [[ $arg == *:* ]]; then dst=${arg#*:}; [[ -n $dst ]] || dst=${arg%%:*}; else dst=$arg; fi
     # A destination from a variable or $( … ) is taken as the current branch and where it pushes.
     if [[ $dst == *'$'* || $dst == *EXPANSION* ]]; then
@@ -403,7 +405,7 @@ guarded_in() {
   done
   for dst in "${dsts[@]}"; do
     # Unquoted on the right, so a wildcard refspec (refs/heads/*) matches too.
-    if [[ -n $dst && $release == $dst ]]; then printf '%s' "$release"; return 0; fi
+    if [[ -n $dst && $release == $dst ]]; then printf '%s%s' "$release" "$mark"; return 0; fi
   done
 }
 base=''
@@ -418,7 +420,13 @@ while IFS=$'\037' read -r -a fields; do
   fi
   branch=$(guarded_target "${fields[@]:1}") || branch=''
   if [[ -n $branch ]]; then
-    refusal="Pushing straight to \`$branch\` puts it live without review. Land it with \`scripts/agents/kit pr --ticket <ticket>\` (or \`kit pr --release --base $branch\` for a release)."
+    direct=''
+    if [[ $branch == *$'\035' ]]; then branch=${branch%$'\035'}; direct=1; fi
+    if [[ -n $direct ]]; then
+      refusal="Pushing straight to \`$branch\` puts it live without review. Land it with \`scripts/agents/kit pr --ticket <ticket>\` (this project lands directly on \`$branch\`; there is no release step)."
+    else
+      refusal="Pushing straight to \`$branch\` puts it live without review. Land it with \`scripts/agents/kit pr --ticket <ticket>\` (or \`kit pr --release --base $branch\` for a release)."
+    fi
     break
   fi
 done <<<"$reason"

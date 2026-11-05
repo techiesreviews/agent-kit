@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { kitEnv } from "./support/kit-env.ts";
+import { kitFiles } from "./support/kit-files.ts";
 import { pickSkills, skillLine, talkStyleLine } from "../brief-lib.mjs";
+import { kitMessagesToLex } from "../kit-lib.mjs";
 
 const kit = resolve("kit");
 const ticketText = (files: string, extra = "") => `---
@@ -297,4 +299,48 @@ test("brief --task: a project without ticket files gets a brief for a named task
     const failed = f.run(args);
     assert.equal(failed.status, 1, `${args}: ${failed.stdout}`);
   }
+});
+
+test("brief: every stage carries the Messages to Lex rule from the rulebook, the one source, with its example", t => {
+  const rule = kitMessagesToLex(resolve("."));
+  assert.ok(readFileSync(resolve("docs/kitchen.md"), "utf8").includes(rule), "the rule is the rulebook's own text");
+  assert.match(rule, /Start with the question, or what he must do/);
+  assert.match(rule, /Example/);
+  const f = fixture(t);
+  for (const stage of ["build", "review", "second-look", "fix"]) {
+    const output = f.run(["docs/tickets/07-panel.md", "--stage", stage]);
+    assert.equal(output.status, 0, output.stderr + output.stdout);
+    const text = body(output.stdout);
+    assert.ok(text.includes(`## Messages to Lex\nThis covers messages meant for Lex. The Report section's format still applies in full`), `${stage}: no Messages to Lex note`);
+    assert.ok(text.includes(`\n${rule}\n`), `${stage}: no Messages to Lex rule`);
+    assert.match(text, /This copy is v\d+; a project's own or newer "Messages to Lex" section in AGENTS\.md wins over it/, stage);
+  }
+});
+
+test("brief: a rulebook without the Messages to Lex rule fails with a RESULT line naming it, and prints no brief", t => {
+  const f = fixture(t);
+  const home = mkdtempSync(join(tmpdir(), "kit-brief-home-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  cpSync(resolve("."), home, { recursive: true, filter: kitFiles });
+  const rulebook = join(home, "docs/kitchen.md");
+  writeFileSync(rulebook, readFileSync(rulebook, "utf8").replace(/<!-- messages-to-lex:(start v\d+|end) -->\n?/g, ""));
+  const output = f.run(["docs/tickets/07-panel.md"], { KIT_HOME: home });
+  assert.equal(output.status, 1, output.stdout + output.stderr);
+  assert.match(output.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: fail brief .*has no Messages to Lex rule$/);
+  assert.doesNotMatch(output.stdout, /kit-brief: /);
+});
+
+test("brief: a rulebook without the rule leaves the talk-style counter where it was", t => {
+  const f = fixture(t);
+  const home = mkdtempSync(join(tmpdir(), "kit-brief-home-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  cpSync(resolve("."), home, { recursive: true, filter: kitFiles });
+  const rulebook = join(home, "docs/kitchen.md");
+  writeFileSync(rulebook, readFileSync(rulebook, "utf8").replace(/<!-- messages-to-lex:(start v\d+|end) -->\n?/g, ""));
+  assert.equal(f.run(["docs/tickets/07-panel.md"], { KIT_HOME: home }).status, 1);
+  assert.ok(!existsSync(join(f.state, "agent-kit/talk-style.json")), "a failed brief moved the counter");
+});
+
+test("brief: the talk-style line tells a headless builder where the Messages to Lex rule is", () => {
+  for (const style of ["en", "wenyan", "plain"]) assert.match(talkStyleLine(style), /Messages for Lex follow the Messages to Lex rule \(`scripts\/agents\/kit rulebook`, section "Messages to Lex"\): short bullets in plain English/, style);
 });

@@ -14,10 +14,12 @@ only a small launcher and its own settings; the kit itself lives here, once.
 - `kit init` (run once, from the machine copy: `~/.local/share/agent-kit/current/kit init`) writes the project's
   `scripts/agents/kit.json` settings, the launcher `scripts/agents/kit`, the hook launcher
   `scripts/agents/hooks/run.sh`, the hook entries in `.claude/settings.json` and `.codex/hooks.json`, and the
-  line `* text=auto eol=lf` in `.gitattributes`. It writes only what is missing, so it can run again: when the kit
+  line `* text=auto eol=lf` in `.gitattributes`. It writes only what is missing (and updates the kit's own marked "Messages to Lex" section when the rulebook's version is higher), so it can run again: when the kit
   adds a piece later, `kit doctor` warns about it in every project set up before, `kit init` adds it, and
   `kit init --all` lands it in every project the machine lists, each through its own `kit pr`. A project keeps a
   piece out on purpose by naming it in `"init": { "skip": [...] }` in its settings (`kit init --check` prints the names).
+- A project in a **private** GitHub repo lands straight on main: `"branches": { "land": "main", "release": "main", "direct": true }` in its settings, so `kit pr` opens ordinary PRs into main (the same gates as any `kit pr`: checks and review by the change's size, the second look when a model can take it; no `--release` step).
+  `kit init` sets this for a new private repo (asked of `gh repo view --json visibility`; if gh cannot tell, it sets nothing and says so), and `kit init --check` prints the exact change for an existing project, whose settings it never edits.
 - Every command then goes through the launcher: `scripts/agents/kit <command>`; bare `scripts/agents/kit` lists
   them, `scripts/agents/kit <command> --help` explains one. A project's own commands sit in the folder its
   settings name (`commands`).
@@ -45,6 +47,17 @@ only a small launcher and its own settings; the kit itself lives here, once.
 - What changes for a lead: docs and ticket commits pushed straight to the landing branch keep working where it is not
   the release branch (the Native Site Editor's `dev`). Where the two are one branch (this repo, a live site), they
   land through `kit pr` (docs tier), or `kit next --start`, which claims and starts the slice itself.
+
+## Messages to Lex
+
+One short rule for every message to Lex (question or what he must do first, a recommendation, caveman bullets,
+no internal process): the "Messages to Lex" section of `docs/kitchen.md` is its only text. `kit rulebook` prints it,
+every `kit brief` carries it, and `kit init` copies it into a project's `AGENTS.md` between markers. A later change
+to the rule reaches those copies the same way: the rule carries a version (`v1` in its start marker, raised with
+every text change); `kit doctor` and `kit init --check` report a marked section with a lower version as outdated (not missing), and `kit init`
+updates it in place. A machine with an older kit never undoes a newer copy. A project whose "Messages to Lex" heading has no
+markers keeps its own words. A project set up before the rule gets the section like any new piece: `kit doctor`
+warns, `kit init` (in the project) or `kit init --all` (every listed project, each through its own `kit pr`) adds it.
 
 ## The factory: generated briefs, long jobs that wait
 

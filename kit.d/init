@@ -5,7 +5,7 @@ import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, rea
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const { kitGhRepo, kitHideUserInfo, kitHome, kitProjects, kitRegisterProject, kitResult, kitRoot, kitSettingsFile, kitSettingsProblems, kitStateDir } = await import(
+const { kitGhRepo, kitHideUserInfo, kitHome, kitMessagesToLexRule, kitProjects, kitRepoPrivate, kitRegisterProject, kitResult, kitRoot, kitSettingsFile, kitSettingsProblems, kitStateDir } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const usage = `Usage: kit init [--light | --full] [--land <branch>]
@@ -15,12 +15,20 @@ const usage = `Usage: kit init [--light | --full] [--land <branch>]
        kit init --issues [--close]
 Set the project around the working folder up for the shared kit; the kit itself is never copied in.
 Run it in the project's git repo (from the machine copy, ~/.local/share/agent-kit/current/kit init,
-before the project has a launcher). It writes only what is missing and never deletes or overwrites a file:
+before the project has a launcher). It writes only what is missing and never deletes or overwrites a file (the one exception: the kit's own marked
+"Messages to Lex" section in AGENTS.md, replaced when the rulebook's version is higher):
   scripts/agents/kit.json   project, mainRoot and branches from git (land: --land, else dev, develop,
                             main or master), checks guessed from package.json scripts (printed to confirm)
   scripts/agents/kit, scripts/agents/hooks/run.sh   the kit launcher and the hook launcher
   .claude/settings.json, .codex/hooks.json   the kit's hook entries, merged in; other settings stay
-  AGENTS.md                 two lines pointing at scripts/agents/kit rulebook and kit --help
+  AGENTS.md                 two lines pointing at scripts/agents/kit rulebook and kit --help, and the short
+                            "Messages to Lex" section (the shared rulebook's rule between
+                            markers; one with an older version than the rulebook's is updated in
+                            place, a heading without markers is the project's own and stays)
+  (branches.direct)         a new project in a PRIVATE GitHub repo (gh repo view --json visibility) is set to land
+                            straight on main: branches land and release main, direct true; when gh cannot tell, nothing
+                            is set and a note says so. An existing project's settings are never edited: a note (also
+                            in --check) names the change; "direct" in init.skip silences it
   .gitattributes            the line "* text=auto eol=lf", added at the top, so every checkout keeps LF
                             endings (a note names tracked files with CRLF to renormalize)
 Full (the default for a new project) also writes an empty scripts/agents/project.d/ (its own commands),
@@ -33,16 +41,17 @@ ends with kit doctor's result. Run in the main checkout, doctor's failing place 
 note naming how to make a worktree. A rerun changes nothing and says so. Old kit files in the project
 (kit-lib.sh, kit-lib.mjs, kit.d/, the guard hooks) stop it with a list, so the move removes them on purpose.
 
---check writes nothing: it prints "missing: <name> (<what>)" for each piece kit init would write today, the
+--check writes nothing: it prints "missing: <name> (<what>)" for each piece kit init would write today (and
+"outdated: <name> (<what>)" for a piece it would bring up to date), the
 name being the one "init.skip" takes (kit doctor shows these as warnings). It needs scripts/agents/kit.json.
 --all brings every project in the machine's projects.json up to date, one after another: in a temporary
-worktree of origin's landing branch it adds the missing pieces, commits them (and, when .gitattributes was
+worktree of origin's landing branch it adds the missing pieces (and brings an outdated one up to date), commits them (and, when .gitattributes was
 added, a git add --renormalize . commit), and lands them through the project's own kit pr (its tier from the
 changed paths). One RESULT line per project, then one for the run: updated (merged), waiting (a PR opened or
 queued, its worktree kept until it lands), up to date, skipped or failed. A project whose main checkout has
 uncommitted changes in the files the change touches is skipped and named, as is one without a git checkout,
 an origin or a kit.json; a failed kit pr keeps its worktree and names it and its log. --pieces is that
-worktree's step: add the missing pieces only, with no project list entry and no doctor. Each kit pr stops
+worktree's step: add the missing pieces and bring an outdated one up to date, nothing else, with no project list entry and no doctor. Each kit pr stops
 after KIT_INIT_PR_TIMEOUT seconds (default 7200).
 
 --issues copies the project's open GitHub Issues (gh issue list) into needs-triage tickets, one file each in
@@ -117,8 +126,20 @@ const branchExists = (name) => git("rev-parse", "--verify", "--quiet", `refs/hea
 const common = git("rev-parse", "--path-format=absolute", "--git-common-dir");
 const gitMain = common ? dirname(common) : root;
 
-const writes = [], kept = [], notes = [];
+const writes = [], kept = [], notes = [], visibilityNotes = [];
+const visibilityNote = (text) => { notes.push(text); visibilityNotes.push(text); };
 const extrasPath = "docs/agents/kitchen-extras.md", mapsPath = "docs/wayfinder", commandsPath = "scripts/agents/project.d";
+
+// How many commits `from` holds, in its local branch or origin's, that `to` lacks by patch: a release or a rebase merge writes
+// every commit anew, so the same change under another SHA is not missing. 0 when either branch is missing.
+const refsOf = (name) => ["refs/heads/", "refs/remotes/origin/"].map((prefix) => `${prefix}${name}`).filter((ref) => git("rev-parse", "--verify", "-q", ref) !== null);
+const commitsAhead = (from, to) => {
+  const a = refsOf(from), b = refsOf(to);
+  if (!a.length || !b.length) return 0;
+  // Against origin's `to` when it has one (what is live), else the local branch; the most any copy of `from` holds.
+  const target = b.find((ref) => ref.startsWith("refs/remotes/")) ?? b[0];
+  return Math.max(...a.map((x) => Number(git("rev-list", "--count", "--cherry-pick", "--right-only", `${target}...${x}`) ?? 0) || 0));
+};
 
 // The settings file: kept as it is when there, else filled from git and package.json.
 // unnamed: stub keys an existing settings file lacks, as [key, default, the stub file written there].
@@ -136,6 +157,28 @@ if (existsSync(at(kitSettingsFile))) {
   full = options.full || (!options.light && (["maps", "rulebookExtras"].some((key) => settings[key]) ||
     [`${mapsPath}/README.md`, extrasPath].some((path) => existsSync(at(path)))));
   if (options.land) notes.push(`--land ignored: ${kitSettingsFile} already names "branches"`);
+  // A private repo can land straight on main; the settings file is never edited, so the note names the change.
+  if (!options.pieces && !process.env.KIT_INIT_NO_VISIBILITY && settings.branches.direct !== false && !(Array.isArray(settings.init?.skip) && settings.init.skip.some((entry) => ["direct", kitSettingsFile].includes(entry)))) {
+    const asked = kitRepoPrivate(root);
+    // Only these checks gate an ordinary change in kit pr (extra and css run for special changes only).
+    const noChecks = !["check", "test", "lint"].some((key) => settings.checks?.[key]);
+    if (settings.branches.direct === true) {
+      // Already direct: a repo that turns out public, or one with no checks, needs a word.
+      if (noChecks) visibilityNote(`${kitSettingsFile} lands directly on ${settings.branches.land} and has no "checks": unless a CI workflow runs on pull requests, a change goes live after the review alone; add "checks"`);
+      if (asked.private === false) visibilityNote(`GitHub repo ${asked.repo} is public but ${kitSettingsFile} lands directly on ${settings.branches.land} (branches.direct): every merge goes live without Lex's go-ahead; to go back to a landing branch and a release branch set "branches": { "land": "dev", "release": "${settings.branches.land}" } (and drop "direct")`);
+    } else if (asked.private) {
+      // The branch that is live already: the release branch, else a main or master landing branch, else a main or master that exists.
+      const live = settings.branches.release || (["main", "master"].includes(settings.branches.land) ? settings.branches.land : ["main", "master"].find(branchExists));
+      const behind = live && settings.branches.land !== live ? commitsAhead(settings.branches.land, live) : 0;
+      visibilityNote(live && !branchExists(live) && settings.branches.release
+        ? `private GitHub repo ${asked.repo}, but its release branch ${live} is not here or on origin: branches.direct is not set (create it or fix "release" in ${kitSettingsFile} yourself first)`
+        : live && branchExists(live)
+        ? `private GitHub repo ${asked.repo}: to land directly on ${live} set "branches": { "land": "${live}", "release": "${live}", "direct": true } in ${kitSettingsFile} (kit init never edits it)` +
+          (behind ? `; merge ${settings.branches.land} into ${live} first, it has ${behind} commit${behind === 1 ? "" : "s"} ${live} lacks` : "")
+        : `private GitHub repo ${asked.repo}, but there is no main or master branch here to land on directly: branches.direct is not set (create that branch, then set "branches" in ${kitSettingsFile} yourself)`);
+    }
+    else if (asked.repo && asked.private === undefined) visibilityNote(`could not tell whether the GitHub repo ${asked.repo} is private (${asked.reason}); branches.direct is not set (add it yourself if the repo is private)`);
+  }
   unnamed = full ? [["commands", commandsPath, `${commandsPath}/.gitkeep`], ["maps", mapsPath, `${mapsPath}/README.md`], ["rulebookExtras", extrasPath, extrasPath]]
     .filter(([key]) => !settings[key]) : [];
 } else {
@@ -147,11 +190,31 @@ if (existsSync(at(kitSettingsFile))) {
   const remote = kitHideUserInfo(git("remote", "get-url", "origin") ?? "");
   // The last part of the remote's path, after "/" or the ":" of host:repo (a token in the url never becomes it).
   const project = (remote && remote.replace(/\/+$/, "").split(/[/:]/).at(-1).replace(/\.git$/, "")) || basename(gitMain);
-  settings = { project, mainRoot: gitMain, branches: { land, ...(release ? { release } : {}) } };
+  // A private GitHub repo lands straight on main (no dev branch, no release step); what gh cannot tell is never taken for private.
+  const asked = kitRepoPrivate(root);
+  const mainBranch = ["main", "master"].find(branchExists);
+  // A dev or develop branch ahead of main holds work that going direct would strand (or push live in one go): no direct, a warning.
+  const liveBranch = options.land || mainBranch;
+  const compared = liveBranch ? ["dev", "develop"].filter(branchExists).map((name) => [name, commitsAhead(name, liveBranch)]).find(([, count]) => count > 0) : null;
+  const unmerged = options.land ? null : compared;
+  const direct = asked.private === true && !unmerged && !!(options.land ? ["main", "master"].includes(options.land) && branchExists(options.land) : mainBranch);
+  if (direct) visibilityNote(`private GitHub repo ${asked.repo}: it lands directly on ${options.land || mainBranch} (branches.direct)` + (options.land
+    ? (compared ? `; ${compared[0]} has ${compared[1]} commit${compared[1] === 1 ? "" : "s"} ${liveBranch} lacks, which stay behind` : "")
+    : mainBranch && ["dev", "develop"].some(branchExists) ? `; ${["dev", "develop"].filter(branchExists).join(" and ")} compared with ${mainBranch} as last fetched, so run git fetch first if unsure` : ""));
+  else if (asked.repo && asked.private === undefined) visibilityNote(`could not tell whether the GitHub repo ${asked.repo} is private (${asked.reason}); branches.direct is not set (add it yourself if the repo is private)`);
+  else if (asked.private && unmerged) visibilityNote(`private GitHub repo ${asked.repo}, but ${unmerged[0]} has ${unmerged[1]} commit${unmerged[1] === 1 ? "" : "s"} ${mainBranch} lacks: branches.direct is not set (merge ${unmerged[0]} into ${mainBranch} first, then set "branches" in ${kitSettingsFile} yourself)`);
+  else if (asked.private) visibilityNote(options.land && !branchExists(options.land)
+    ? `private GitHub repo ${asked.repo}, but branch ${options.land} does not exist yet: branches.direct is not set (create it, then set "branches" in ${kitSettingsFile} yourself)`
+    : options.land
+      ? `private GitHub repo ${asked.repo}, but --land ${options.land} names a branch other than main or master: branches.direct is not set (${mainBranch ? `leave out --land to land directly on ${mainBranch}` : "there is no main or master branch here yet; create one first"})`
+      : `private GitHub repo ${asked.repo}, but there is no main or master branch here to land on directly: branches.direct is not set (create that branch, then set "branches" in ${kitSettingsFile} yourself)`);
+  const target = direct ? options.land || mainBranch : land;
+  settings = { project, mainRoot: gitMain, branches: direct ? { land: target, release: target, direct: true } : { land, ...(release ? { release } : {}) } };
   const checks = guessChecks();
   if (checks) settings.checks = checks;
+  if (direct && !checks) notes.push(`this project lands directly on ${target} and has no "checks" in ${kitSettingsFile}: unless a CI workflow runs on pull requests, a change goes live after the review alone; add "checks"`);
   if (full) Object.assign(settings, { commands: commandsPath, maps: mapsPath, rulebookExtras: extrasPath });
-  writes.push({ path: kitSettingsFile, text: `${JSON.stringify(settings, null, 2)}\n`, said: `(${project}, lands on ${land})` });
+  writes.push({ path: kitSettingsFile, text: `${JSON.stringify(settings, null, 2)}\n`, said: `(${project}, lands on ${settings.branches.land})` });
 }
 
 // Where the stubs go: the folders and file the settings name, else the defaults a new settings file names.
@@ -165,11 +228,11 @@ if (settings.init !== undefined && !isObject(settings.init)) fail(`"init" in ${k
 const skip = settings.init?.skip ?? [];
 if (!Array.isArray(skip) || skip.some((name) => typeof name !== "string")) fail(`"init.skip" in ${kitSettingsFile} must be a list of piece names; fix it first`);
 const bare = (name) => name.trim().replace(/\/+$/, "");
-const off = [], missing = [];
+const off = [], missing = [], outdated = [];
 const turnedOff = (name, path) => skip.some((entry) => [name, path].map(bare).includes(bare(entry)));
-const piece = (name, path, what) => {
+const piece = (name, path, what, list = missing) => {
   if (turnedOff(name, path)) { off.push(name); return false; }
-  missing.push(`${name} (${what})`);
+  list.push(`${name} (${what})`);
   return true;
 };
 
@@ -290,19 +353,42 @@ map goes from idea to tickets, and \`scripts/agents/kit next <map>\` to hand its
 const stubsWritten = unnamed.filter(([, , stub]) => writes.some(({ path }) => path === stub));
 if (stubsWritten.length) notes.push(`add to ${kitSettingsFile} (kit init never edits it): ${stubsWritten.map(([key, value]) => `"${key}": "${value}"`).join(", ")}`);
 
-// AGENTS.md: the two lines, added to the end when missing.
+// AGENTS.md: the two lines and the "Messages to Lex" section, added to the end when missing. The section holds the
+// shared rulebook's rule between markers; a section with the markers is the kit's own and is brought up to date
+// only when the rulebook's rule has a higher version, a heading without markers is the project's own words and stays.
 const agentLines = [
-  ["scripts/agents/kit rulebook", "Kitchen rulebook: `scripts/agents/kit rulebook` (stations, who decides, builder and reviewer pins)."],
-  ["scripts/agents/kit --help", "Agent commands: `scripts/agents/kit --help`; `scripts/agents/kit <command> --help` for one."],
+  ["scripts/agents/kit rulebook", "Kitchen rulebook: `scripts/agents/kit rulebook` (stations, who decides, builder and reviewer pins).", "the rulebook line"],
+  ["scripts/agents/kit --help", "Agent commands: `scripts/agents/kit --help`; `scripts/agents/kit <command> --help` for one.", "the commands line"],
 ];
 const agents = existsSync(at("AGENTS.md")) ? readText("AGENTS.md") : null;
 const absentLines = agentLines.filter(([marker]) => !agents?.includes(marker));
-const missingLines = absentLines.filter(([marker]) => piece(`AGENTS.md ${marker.replace("scripts/agents/", "")}`, "AGENTS.md", `the line naming ${marker}`))
-  .map(([, line]) => line);
-if (!absentLines.length) kept.push("AGENTS.md");
-else if (!missingLines.length) { /* every absent line is turned off */ }
-else if (agents === null) writes.push({ path: "AGENTS.md", text: `# Agents\n\n${missingLines.join("\n")}\n` });
-else writes.push({ path: "AGENTS.md", text: `${agents.replace(/\n*$/, "\n\n")}${missingLines.join("\n")}\n`, before: agents, said: `(added ${missingLines.length} line${missingLines.length === 1 ? "" : "s"})` });
+const missingLines = absentLines.filter(([marker]) => piece(`AGENTS.md ${marker.replace("scripts/agents/", "")}`, "AGENTS.md", `the line naming ${marker}`));
+// A heading of the project's own: any case, a closing "#"s or a colon (a heading only shown inside a code fence counts too: a known limit).
+const lexHeading = /^#{1,6}[ \t]+messages to lex[ \t]*:?[ \t]*(?:#+[ \t]*)?$/im;
+// A match never crosses a second start marker (a leftover one cannot swallow the project's text), and takes CRLF files.
+const lexMarked = /<!-- messages-to-lex:start(?: v(\d+))? -->(?:\r?\n(?:(?!<!-- messages-to-lex:start)[\s\S])*?)?\r?\n<!-- messages-to-lex:end -->/;
+const lexRule = () => {
+  try { return kitMessagesToLexRule(home); } catch (error) { return fail(`cannot read the Messages to Lex rule: ${error.message}`); }
+};
+const lexSection = ({ rule, version }) => `<!-- messages-to-lex:start v${version} -->\n${rule}\n<!-- messages-to-lex:end -->`;
+let lexAdd = false, lexUpdate = false;
+const lexHere = agents && (lexMarked.test(agents) || lexHeading.test(agents));
+if (!lexHere) lexAdd = piece("AGENTS.md Messages to Lex", "AGENTS.md", "the Messages to Lex section");
+else if (lexMarked.test(agents) && Number(agents.match(lexMarked)[1] ?? 0) < lexRule().version)
+  lexUpdate = piece("AGENTS.md Messages to Lex", "AGENTS.md", "older than the rulebook's", outdated);
+if (!absentLines.length && !lexAdd && !lexUpdate && !off.some((name) => name.startsWith("AGENTS.md"))) kept.push("AGENTS.md");
+else if (missingLines.length || lexAdd || lexUpdate) {
+  const rule = lexAdd || lexUpdate ? lexRule() : null;
+  // New text follows the file's own line endings.
+  const eol = agents?.includes("\r\n") ? "\r\n" : "\n", own = (text) => text.replace(/\n/g, eol);
+  let text = agents ?? "# Agents";
+  if (lexUpdate) text = text.replace(lexMarked, () => own(lexSection(rule)));
+  const tail = [missingLines.map(([, line]) => line).join("\n"), lexAdd ? `## Messages to Lex\n${lexSection(rule)}` : ""].filter(Boolean).join("\n\n");
+  if (tail) text = `${text.replace(/(\r?\n)*$/, `${eol}${eol}`)}${own(tail)}`;
+  const said = [[...missingLines.map(([, , what]) => what), ...(lexAdd ? ["the Messages to Lex section"] : [])], lexUpdate ? ["the Messages to Lex section"] : []]
+    .map((list, index) => list.length ? `${index ? "updated" : "added"} ${list.join(" and ")}` : "").filter(Boolean).join("; ");
+  writes.push(agents === null ? { path: "AGENTS.md", text: `${text}\n` } : { path: "AGENTS.md", text: `${text.replace(/(\r?\n)*$/, "")}${eol}`, before: agents, said: `(${said})` });
+}
 
 // .gitattributes: LF endings in every checkout, so a Windows clone cannot break tests that read files. The line goes
 // at the top, so the project's own lines after it (*.png binary) still win for their files.
@@ -318,8 +404,10 @@ else if (piece(".gitattributes", ".gitattributes", `the line "${lineEndings}"`))
 }
 
 if (options.check) {
+  for (const note of visibilityNotes) console.log(`note: ${note}`);
   for (const line of missing) console.log(`missing: ${line}`);
-  kitResult("ok", `init check: ${missing.length ? `${missing.length} missing` : "nothing missing"}${off.length ? `; ${off.length} turned off in init.skip` : ""}`);
+  for (const line of outdated) console.log(`outdated: ${line}`);
+  kitResult("ok", `init check: ${missing.length || outdated.length ? [missing.length && `${missing.length} missing`, outdated.length && `${outdated.length} out of date`].filter(Boolean).join(", ") : "nothing missing"}${off.length ? `; ${off.length} turned off in init.skip` : ""}`);
   process.exit(0);
 }
 
@@ -721,7 +809,7 @@ function all() {
 
     git(path, "add", "-A");
     const listed = git(path, "diff", "--cached", "--name-only").stdout.trim().split("\n").filter(Boolean);
-    const committed = commit(`Kit setup: add what kit init writes today (kit ${sha})`, `kit init --all added: ${listed.join(", ")}.`);
+    const committed = commit(`Kit setup: bring the project up to what kit init writes today (kit ${sha})`, `kit init --all added or updated: ${listed.join(", ")}.`);
     if (committed.status !== 0) { remove(); return ["failed", `git commit failed: ${said(committed)}`]; }
     let normalized = 0;
     if (listed.includes(".gitattributes")) {
@@ -792,7 +880,7 @@ function all() {
     mkdirSync(logs, { recursive: true });
     const output = openSync(log, "w");
     // timeout stops kit pr's whole process group (its checks, gh, git), not only the front door.
-    const pr = run("timeout", ["-k", "30", String(seconds), join(home, "kit"), "pr", "--title", `Kit setup: add what kit init writes today (kit ${sha})`],
+    const pr = run("timeout", ["-k", "30", String(seconds), join(home, "kit"), "pr", "--title", `Kit setup: bring the project up to what kit init writes today (kit ${sha})`],
       { cwd: path, env: local, stdio: ["ignore", output, output], timeout: 0 });
     closeSync(output);
     if (pr.status === 124 || pr.status === 137) {

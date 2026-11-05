@@ -1249,18 +1249,28 @@ test("doctor warns once per piece kit init would add today, also when quiet, nev
   const sha = git(repo, "rev-parse", "--short", "HEAD");
   const fix = 'fix: run scripts/agents/kit init (or name it in "init.skip" in scripts/agents/kit.json to keep it out)';
   const warnings = [`✗ setup: missing since kit ${sha}: AGENTS.md kit --help (the line naming scripts/agents/kit --help); ${fix}`,
+    `✗ setup: missing since kit ${sha}: AGENTS.md Messages to Lex (the Messages to Lex section); ${fix}`,
     `✗ setup: missing since kit ${sha}: .gitattributes (the line "* text=auto eol=lf"); ${fix}`];
   const passed = "RESULT: ok doctor 11/11 checks passed";
   const run = f.run();
   assert.equal(run.status, 0, run.stdout + run.stderr);
   assert.deepEqual(run.stdout.split("\n").filter(line => line.startsWith("✗ setup: ")), warnings);
-  assert.equal(run.stdout.trimEnd().split("\n").at(-1), `${passed}; warning: 2 setup pieces missing (run scripts/agents/kit init)`);
+  assert.equal(run.stdout.trimEnd().split("\n").at(-1), `${passed}; warning: 3 setup pieces missing (run scripts/agents/kit init)`);
   const quiet = f.run(["--quiet"]);
-  assert.equal(quiet.stdout, `${warnings.join("\n")}\n${passed}; warning: 2 setup pieces missing (run scripts/agents/kit init)\n`);
+  assert.equal(quiet.stdout, `${warnings.join("\n")}\n${passed}; warning: 3 setup pieces missing (run scripts/agents/kit init)\n`);
   // With the pieces added the warnings go.
   writeFileSync(join(f.build, ".gitattributes"), "* text=auto eol=lf\n");
-  writeFileSync(join(f.build, "AGENTS.md"), "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\n");
+  writeFileSync(join(f.build, "AGENTS.md"), "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\n\n## Messages to Lex\n- Question first.\n");
   assert.equal(f.run(["--quiet"]).stdout, `${passed}\n`);
+  // A Messages to Lex section older than the rulebook's is a warning too, and goes once it is brought up to date.
+  const lines = "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\n";
+  writeFileSync(join(f.build, "AGENTS.md"), `${lines}\n## Messages to Lex\n<!-- messages-to-lex:start v0 -->\n- Old.\n<!-- messages-to-lex:end -->\n`);
+  const stale = f.run(["--quiet"]);
+  assert.equal(stale.stdout, `✗ setup: outdated since kit ${sha}: AGENTS.md Messages to Lex (older than the rulebook's); fix: run scripts/agents/kit init (or name it in "init.skip" in scripts/agents/kit.json to keep this copy as it is)\n${passed}; warning: 1 setup piece out of date (run scripts/agents/kit init)\n`);
+  // Missing and out of date together: one summary line counts both.
+  writeFileSync(join(f.build, "AGENTS.md"), `# Agents\n\nKitchen rulebook: \`scripts/agents/kit rulebook\`.\n\n## Messages to Lex\n<!-- messages-to-lex:start v0 -->\n- Old.\n<!-- messages-to-lex:end -->\n`);
+  const both = f.run(["--quiet"]);
+  assert.match(both.stdout, /warning: 1 setup piece missing, 1 setup piece out of date \(run scripts\/agents\/kit init\)\n$/);
   rmSync(join(f.build, ".gitattributes"));
   writeFileSync(join(f.build, "AGENTS.md"), "# Agents\n");
   const settings = join(agents, "kit.json"), kept = JSON.parse(readFileSync(settings, "utf8"));
@@ -1305,4 +1315,28 @@ test("doctor notes the skills the skills map names that are missing, counting th
   const removed = f.run([], f.build, { KIT_SKILL_HOME: home }).stdout.split("\n").find(entry => entry.startsWith("✗ skills map: "))!;
   assert.match(removed, /^✗ skills map: 17 of 20 /);
   assert.doesNotMatch(removed, /emil-color/);
+});
+
+test("doctor never asks GitHub whether the repo is private (its setup check runs kit init --check without that question)", (t) => {
+  const f = fixture(t);
+  // A project set up by the shared kit (no old guard files), so the setup check runs kit init --check.
+  const agents = join(f.build, "scripts/agents");
+  rmSync(join(agents, "hooks/bash-guard.sh"));
+  executable(join(agents, "hooks/run.sh"), "cat > /dev/null; exit 2");
+  copyFileSync(join(repo, "launcher/kit"), join(agents, "kit"));
+  for (const path of [".claude/settings.json", ".codex/hooks.json"]) copyFileSync(join(repo, path), join(f.build, path));
+  const bin = join(f.directory, "fake-gh");
+  mkdirSync(bin);
+  executable(join(bin, "gh"), `printf '%s\\n' "$*" >> ${JSON.stringify(join(bin, "calls.log"))}\nif [ "$1 $2" = "repo view" ]; then printf '{"visibility":"PRIVATE","nameWithOwner":"acme/tools","url":"https://github.com/acme/tools"}'; fi`);
+  git(f.build, "remote", "set-url", "origin", "https://github.com/acme/tools.git");
+  git(f.build, "config", `url.${join(f.directory, "origin.git")}.insteadOf`, "https://github.com/acme/tools.git");
+  const ran = f.run(["--quiet"], f.build, { KIT_HOME: repo, KIT_LIB_MJS: join(repo, "kit-lib.mjs"), PATH: `${bin}:${process.env.PATH}` });
+  assert.doesNotMatch(ran.stdout, /setup: not checked/, ran.stdout);
+  const calls = (() => { try { return readFileSync(join(bin, "calls.log"), "utf8"); } catch { return ""; } })();
+  assert.doesNotMatch(calls, /visibility/, calls);
+  // The control: kit init --check run by hand in the same project does ask.
+  const control = spawnSync(process.execPath, [join(repo, "kit.d/init"), "--check"], { cwd: f.build, encoding: "utf8", env: { ...kitEnv(), KIT_ROOT: f.build, KIT_HOME: repo, KIT_LIB_MJS: join(repo, "kit-lib.mjs"), PATH: `${bin}:${process.env.PATH}` } });
+  let asked = "";
+  try { asked = readFileSync(join(bin, "calls.log"), "utf8"); } catch { /* No call: the message below shows why. */ }
+  assert.match(asked, /repo view acme\/tools --json visibility/, control.stdout + control.stderr);
 });

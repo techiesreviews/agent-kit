@@ -32,6 +32,18 @@ export function kitHome() {
 export const kitSettingsFile = "scripts/agents/kit.json";
 const settingsCache = new Map();
 
+/**
+ * Problems with branches.direct (a private repo whose PRs land straight on main, with no dev branch or release step):
+ * it is true or false, and true needs one branch as land and release, so every reader and the push guard see the same one.
+ */
+function kitDirectProblems(branches) {
+  if (!branches || branches.direct === undefined) return [];
+  if (typeof branches.direct !== "boolean") return [`"branches.direct" must be true or false in ${kitSettingsFile}`];
+  const named = value => typeof value === "string" && value.trim() !== "";
+  return branches.direct && !(named(branches.land) && branches.land === branches.release)
+    ? [`direct landing needs the same branch as "land" and "release" in ${kitSettingsFile} (for example both "main")`] : [];
+}
+
 /** Problems with parsed settings: only `project` and `branches.land` are required. */
 export function kitSettingsProblems(settings) {
   if (!settings || typeof settings !== "object" || Array.isArray(settings)) return [`${kitSettingsFile} must hold one JSON object`];
@@ -39,6 +51,7 @@ export function kitSettingsProblems(settings) {
   return [
     ...(text(settings.project) ? [] : [`add "project": "<name>" to ${kitSettingsFile}`]),
     ...(text(settings.branches?.land) ? [] : [`add "branches": { "land": "<branch>" } to ${kitSettingsFile}`]),
+    ...kitDirectProblems(settings.branches),
   ];
 }
 
@@ -63,6 +76,20 @@ export function kitSettings(root = kitRoot()) {
 export function kitBranch(name = "land", settings = kitSettings()) {
   const branches = settings.branches;
   return (typeof branches[name] === "string" && branches[name]) || (name === "ci" ? branches.land : undefined);
+}
+
+/**
+ * Whether origin's GitHub repo is private, as gh says: { private: true|false } when it answers PRIVATE or PUBLIC, else
+ * { reason } (no GitHub origin, gh missing or failing, INTERNAL). Nothing here ever guesses: only a plain answer counts.
+ */
+export function kitRepoPrivate(root = kitRoot(), env = process.env) {
+  const repo = kitGhRepo(root, env);
+  if (!repo) return { reason: "no GitHub origin" };
+  const asked = spawnSync("gh", ["repo", "view", repo, "--json", "visibility"], { env: kitGhEnv(env, root), encoding: "utf8", timeout: 15_000, stdio: ["ignore", "pipe", "pipe"] });
+  if (asked.status !== 0) return { repo, reason: oneLine(asked.stderr || (asked.error?.code === "ENOENT" ? "gh is not installed" : asked.error?.code === "ETIMEDOUT" ? "gh did not answer in time" : asked.error?.message) || `gh exited ${asked.status}`).trim().slice(0, 120) };
+  let visibility;
+  try { visibility = JSON.parse(asked.stdout).visibility; } catch { /* Not JSON: unknown. */ }
+  return visibility === "PRIVATE" ? { repo, private: true } : visibility === "PUBLIC" ? { repo, private: false } : { repo, reason: `gh says ${visibility ?? "nothing"}` };
 }
 
 /** The persistent dev worktree: KIT_DEV_ROOT, else the settings' devRoot, else null. */
@@ -402,6 +429,23 @@ export function kitRulebookPins(root = kitRoot(), settings = kitSettings(root)) 
   const builder = rows.get("Builder, every slice"), reviewer = rows.get("Review, every change");
   if (!builder || !reviewer) throw new Error(`the rulebook has no ${builder ? "Review, every change" : "Builder, every slice"} pin`);
   return { builder, reviewer };
+}
+
+/**
+ * The Messages to Lex rule: the lines between the markers of the "Messages to Lex" section of the shared rulebook
+ * (docs/kitchen.md), the one source `kit rulebook` prints, `kit brief` carries and `kit init` copies into AGENTS.md.
+ * The start marker's "vN" is the rule's version: `kit init` updates a project's copy only to a higher one.
+ */
+export function kitMessagesToLexRule(home = kitHome()) {
+  const file = join(home, "docs/kitchen.md");
+  const found = /<!-- messages-to-lex:start v(\d+) -->\n([\s\S]+?)\n<!-- messages-to-lex:end -->/.exec(readFileSync(file, "utf8"));
+  if (!found) throw new Error(`the shared rulebook ${file} has no Messages to Lex rule`);
+  return { version: Number(found[1]), rule: found[2] };
+}
+
+/** Just the rule's text (see kitMessagesToLexRule). */
+export function kitMessagesToLex(home = kitHome()) {
+  return kitMessagesToLexRule(home).rule;
 }
 
 /** A slice's branch: build/<owner>-<ticket slug without its number> (kit next and kit brief name it alike). */
