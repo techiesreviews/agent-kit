@@ -1343,6 +1343,7 @@ test("--check's RESULT line counts what is out of date apart from what is missin
   f.init(crlf.work, ["--light"]);
   assert.ok(readFileSync(join(crlf.work, "AGENTS.md"), "utf8").includes("## Messages to Lex\r\nOur words.\r\n"));
   assert.equal(readFileSync(join(crlf.work, "AGENTS.md"), "utf8").match(/Messages to Lex/g)!.length, 1);
+});
 
 // A fake gh that answers `repo view <repo> --json visibility` with what visibility.txt holds ("fail" makes it fail), logging every call.
 function visibilityGh(f: ReturnType<typeof fixture>, answer: string) {
