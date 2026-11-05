@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { createHash } from "node:crypto";
 import test, { type TestContext } from "node:test";
 import { kitEnv } from "./support/kit-env.ts";
 import { kitMessagesToLexRule } from "../kit-lib.mjs";
@@ -182,4 +183,11 @@ test("kit rulebook prints the Messages to Lex rule, the one source briefs and ki
 test("this repo's AGENTS.md carries the rulebook's current Messages to Lex rule, at its version", () => {
   const { version, rule } = kitMessagesToLexRule(resolve("."));
   assert.ok(read("AGENTS.md").includes(`<!-- messages-to-lex:start v${version} -->\n${rule}\n<!-- messages-to-lex:end -->`), "AGENTS.md: copy the rule and its version from docs/kitchen.md");
+});
+
+test("the Messages to Lex rule's text changes only with a new version (projects update their copy by version)", () => {
+  // Changing the text? Raise the version in docs/kitchen.md and AGENTS.md, then add the new version and hash here.
+  const hashes: Record<number, string> = { 1: "0756a810b421006273dd9f346a878c9bce51f03330ca3fc8865bf555124d4590" };
+  const { version, rule } = kitMessagesToLexRule(resolve("."));
+  assert.equal(createHash("sha256").update(rule).digest("hex"), hashes[version], `the rule's text changed but version v${version} did not`);
 });
