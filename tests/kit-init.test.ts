@@ -251,6 +251,50 @@ test("a marked section under a changed heading counts as there: no second copy i
   assert.equal(after, `${base}\n## Messages to Lex (house)\n${section}\n`);
 });
 
+test("a leftover start marker never lets kit init swallow the project's own text", (t) => {
+  const f = fixture(t);
+  const text = `${base}\n<!-- messages-to-lex:start v0 -->\n\n## Our rules\nKeep this.\n`;
+  const { work } = f.repo("leftover", { "scripts/agents/kit.json": settingsOf(), "AGENTS.md": text });
+  f.init(work, ["--light"]);
+  f.init(work, ["--light"]);
+  const after = readFileSync(join(work, "AGENTS.md"), "utf8");
+  assert.ok(after.includes("## Our rules\nKeep this.\n"), after);
+  assert.ok(after.includes(section), after);
+  // A stale section added later is replaced alone.
+  writeFileSync(join(work, "AGENTS.md"), after.replace(section, older("- Old.")));
+  f.init(work, ["--light"]);
+  const again = readFileSync(join(work, "AGENTS.md"), "utf8");
+  assert.ok(again.includes("## Our rules\nKeep this.\n") && again.includes(section) && !again.includes("- Old."), again);
+});
+
+test("a CRLF AGENTS.md is checked, updated and added to in its own line endings", (t) => {
+  const f = fixture(t);
+  const crlf = (text: string) => text.replace(/\n/g, "\r\n");
+  const old = crlf(`${base}\n## Messages to Lex\n${older("- Old.")}\n\n## After\nMine.\n`);
+  const { work } = f.repo("crlf", { "scripts/agents/kit.json": settingsOf(), "AGENTS.md": old });
+  assert.match(f.init(work, ["--check"]).stdout, /^missing: AGENTS\.md Messages to Lex \(the Messages to Lex section, older/m);
+  f.init(work, ["--light"]);
+  assert.equal(readFileSync(join(work, "AGENTS.md"), "utf8"), crlf(`${base}\n## Messages to Lex\n${section}\n\n## After\nMine.\n`));
+  const bare = f.repo("crlf-new", { "scripts/agents/kit.json": JSON.stringify({ project: "q", branches: { land: "dev" } }), "AGENTS.md": crlf("# Agents\n") });
+  f.init(bare.work, ["--light"]);
+  const added = readFileSync(join(bare.work, "AGENTS.md"), "utf8");
+  assert.ok(!/[^\r]\n/.test(added), "a bare LF in a CRLF file");
+  assert.ok(added.includes(crlf(`## Messages to Lex\n${section}\n`)), JSON.stringify(added));
+});
+
+test("a missing line and an out-of-date section are fixed in one run; a brand-new AGENTS.md ends with the section", (t) => {
+  const f = fixture(t);
+  const { work } = f.repo("both", { "scripts/agents/kit.json": settingsOf(), "AGENTS.md": `# Agents\n\n## Messages to Lex\n${older("- Old.")}\n` });
+  const run = f.init(work, ["--light"]);
+  assert.match(run.stdout, /^wrote AGENTS\.md \(added the rulebook line and the commands line; updated the Messages to Lex section\)$/m);
+  const after = readFileSync(join(work, "AGENTS.md"), "utf8");
+  assert.equal(after.match(/messages-to-lex:start/g)!.length, 1);
+  assert.ok(after.indexOf(section) < after.indexOf("Kitchen rulebook"), after);
+  const fresh = f.repo("fresh2", { "package.json": "{}" });
+  f.init(fresh.work, ["--light"]);
+  assert.ok(readFileSync(join(fresh.work, "AGENTS.md"), "utf8").endsWith(`\n\n## Messages to Lex\n${section}\n`));
+});
+
 test("--pieces updates a stale marked section and keeps the text around it; a rule with $& in it is copied exactly", (t) => {
   const f = fixture(t);
   writeFileSync(join(f.kit, "docs/kitchen.md"), readFileSync(join(f.kit, "docs/kitchen.md"), "utf8").replace(rule, () => `${rule}\n- Costs $& and $1.`));

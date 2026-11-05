@@ -305,7 +305,8 @@ const agents = existsSync(at("AGENTS.md")) ? readText("AGENTS.md") : null;
 const absentLines = agentLines.filter(([marker]) => !agents?.includes(marker));
 const missingLines = absentLines.filter(([marker]) => piece(`AGENTS.md ${marker.replace("scripts/agents/", "")}`, "AGENTS.md", `the line naming ${marker}`));
 const lexHeading = /^#+[ \t]+Messages to Lex[ \t]*$/m;
-const lexMarked = /<!-- messages-to-lex:start(?: v(\d+))? -->\n[\s\S]*?\n<!-- messages-to-lex:end -->/;
+// A match never crosses a second start marker (a leftover one cannot swallow the project's text), and takes CRLF files.
+const lexMarked = /<!-- messages-to-lex:start(?: v(\d+))? -->\r?\n(?:(?!<!-- messages-to-lex:start)[\s\S])*?\r?\n<!-- messages-to-lex:end -->/;
 const lexRule = () => {
   try { return kitMessagesToLexRule(home); } catch (error) { return fail(`cannot read the Messages to Lex rule: ${error.message}`); }
 };
@@ -318,13 +319,15 @@ else if (lexMarked.test(agents) && Number(agents.match(lexMarked)[1] ?? 0) < lex
 if (!absentLines.length && !lexAdd && !lexUpdate && !off.some((name) => name.startsWith("AGENTS.md"))) kept.push("AGENTS.md");
 else if (missingLines.length || lexAdd || lexUpdate) {
   const rule = lexAdd || lexUpdate ? lexRule() : null;
+  // New text follows the file's own line endings.
+  const eol = agents?.includes("\r\n") ? "\r\n" : "\n", own = (text) => text.replace(/\n/g, eol);
   let text = agents ?? "# Agents";
-  if (lexUpdate) text = text.replace(lexMarked, () => lexSection(rule));
+  if (lexUpdate) text = text.replace(lexMarked, () => own(lexSection(rule)));
   const tail = [missingLines.map(([, line]) => line).join("\n"), lexAdd ? `## Messages to Lex\n${lexSection(rule)}` : ""].filter(Boolean).join("\n\n");
-  if (tail) text = `${text.replace(/\n*$/, "\n\n")}${tail}`;
+  if (tail) text = `${text.replace(/(\r?\n)*$/, `${eol}${eol}`)}${own(tail)}`;
   const said = [[...missingLines.map(([, , what]) => what), ...(lexAdd ? ["the Messages to Lex section"] : [])], lexUpdate ? ["the Messages to Lex section"] : []]
     .map((list, index) => list.length ? `${index ? "updated" : "added"} ${list.join(" and ")}` : "").filter(Boolean).join("; ");
-  writes.push(agents === null ? { path: "AGENTS.md", text: `${text}\n` } : { path: "AGENTS.md", text: `${text.replace(/\n*$/, "")}\n`, before: agents, said: `(${said})` });
+  writes.push(agents === null ? { path: "AGENTS.md", text: `${text}\n` } : { path: "AGENTS.md", text: `${text.replace(/(\r?\n)*$/, "")}${eol}`, before: agents, said: `(${said})` });
 }
 
 // .gitattributes: LF endings in every checkout, so a Windows clone cannot break tests that read files. The line goes
