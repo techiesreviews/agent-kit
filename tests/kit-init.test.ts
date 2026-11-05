@@ -235,7 +235,7 @@ test("a marked section with a lower version is brought up to date in place, one 
   assert.doesNotMatch(f.init(work, ["--check"]).stdout, /Messages to Lex/);
   // The project's own edit at the same version, and a copy from a newer kit (this machine's kit is behind), stay as they are.
   for (const block of [older("- Our words.", version), older("- Newer words.", version + 1)]) {
-    const kept = f.repo(`kept${block.length}`, { "scripts/agents/kit.json": settingsOf(), "AGENTS.md": around(block) });
+    const kept = f.repo(`kept${block.length}`, { "scripts/agents/kit.json": settingsOf({ project: `kept${block.length}` }), "AGENTS.md": around(block) });
     assert.doesNotMatch(f.init(kept.work, ["--check"]).stdout, /Messages to Lex/);
     f.init(kept.work, ["--light"]);
     assert.equal(readFileSync(join(kept.work, "AGENTS.md"), "utf8"), around(block));
@@ -317,7 +317,7 @@ test("init.skip keeps the Messages to Lex section out: nothing is written and --
   assert.equal(readFileSync(join(work, "AGENTS.md"), "utf8"), lines);
   // A stale marked section is kept out the same way.
   const stale = `${lines}\n## Messages to Lex\n${older("- Old words.")}\n`;
-  const kept = f.repo("skip-stale", { "scripts/agents/kit.json": settingsOf({ init: { skip: ["AGENTS.md Messages to Lex"] } }), "AGENTS.md": stale });
+  const kept = f.repo("skip-stale", { "scripts/agents/kit.json": settingsOf({ project: "skip-stale", init: { skip: ["AGENTS.md Messages to Lex"] } }), "AGENTS.md": stale });
   const again = f.init(kept.work, ["--check"]);
   assert.doesNotMatch(again.stdout, /^missing: AGENTS/m);
   assert.match(again.stdout, /1 turned off in init\.skip/);

@@ -313,7 +313,7 @@ test("brief: every stage carries the Messages to Lex rule from the rulebook, the
     const text = body(output.stdout);
     assert.ok(text.includes(`## Messages to Lex\nThis covers messages meant for Lex. The Report section's format still applies in full`), `${stage}: no Messages to Lex note`);
     assert.ok(text.includes(`\n${rule}\n`), `${stage}: no Messages to Lex rule`);
-    assert.match(text, /A project's own or newer "Messages to Lex" section in AGENTS\.md wins over this copy/, stage);
+    assert.match(text, /This copy is v\d+; a project's own or newer "Messages to Lex" section in AGENTS\.md wins over it/, stage);
   }
 });
 
@@ -342,5 +342,5 @@ test("brief: a rulebook without the rule leaves the talk-style counter where it 
 });
 
 test("brief: the talk-style line tells a headless builder where the Messages to Lex rule is", () => {
-  for (const style of ["en", "wenyan", "plain"]) assert.match(talkStyleLine(style), /Messages for Lex follow the Messages to Lex rule \(`scripts\/agents\/kit rulebook`, section "Messages to Lex"\)/, style);
+  for (const style of ["en", "wenyan", "plain"]) assert.match(talkStyleLine(style), /Messages for Lex follow the Messages to Lex rule \(`scripts\/agents\/kit rulebook`, section "Messages to Lex"\): short bullets in plain English/, style);
 });
