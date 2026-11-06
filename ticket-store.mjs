@@ -63,7 +63,7 @@ const blockedLine = /^Blocked by:\s*(.*)$/i;
 const plannedLine = /^Planned dates:/i;
 const notesHeading = "## Notes";
 const isNotesHeading = line => line.trimEnd() === notesHeading;
-const tick = /^(?:[\s>]|[-*+](?=\s)|\d+[.)](?=\s))*\[[xX]\]\s+(.*)$/;
+const tick = /^(?:[\s>]|[-*+](?=\s)|\d+[.)](?=\s))*\[[xX]\](?:\s+(.*))?$/;
 
 const split = text => String(text ?? "").split("\n");
 const blockerKey = /^[A-Za-z][A-Za-z0-9_]*-[0-9]+$/;
@@ -188,9 +188,9 @@ function ticked(description) {
   let open = false;
   for (const line of String(description ?? "").split(/\r\n|[\n\r\u2028\u2029]/)) {
     const found = tick.exec(line), text = line.replace(/^[\s>]+/, "");
-    if (found) { items.push(found[1]); open = true; }
-    // The item runs on until a blank line, a heading or the next list item.
-    else if (open && text && !/^(?:[-*+]|\d+[.)])\s|^#/.test(text)) items[items.length - 1] += ` ${text}`;
+    if (found) { items.push(found[1] ?? ""); open = true; }
+    // The item runs on until a blank line, a heading, the next list item or one of the kit's own lines.
+    else if (open && text && !/^(?:[-*+]|\d+[.)])\s|^#/.test(text) && !plannedLine.test(text) && !blockedLine.test(text)) items[items.length - 1] += ` ${text}`;
     else open = false;
   }
   const entity = (_, hex, decimal) => { const code = hex ? parseInt(hex, 16) : Number(decimal); return code <= 0x10FFFF ? String.fromCodePoint(code) : " "; };
