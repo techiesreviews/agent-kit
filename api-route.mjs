@@ -6,7 +6,8 @@
 // spend log.
 import { accessSync, appendFileSync, constants, mkdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
+import { kitStateDir } from "./kit-lib.mjs";
 
 const home = env => env.HOME || homedir();
 
@@ -35,6 +36,18 @@ export function apiRoute(env = process.env) {
   } catch (error) {
     problem = `KIT_API_KEY_FILE ${keyFile} cannot be read (${error.code ?? "error"})`;
   }
+  // The config folder: made by the wrapper, so its nearest existing parent must be a folder the user can write to.
+  if (!problem && isAbsolute(configDir)) {
+    let nearest = configDir;
+    for (; ; nearest = dirname(nearest)) {
+      try { statSync(nearest); break; } catch { if (nearest === dirname(nearest)) break; }
+    }
+    try {
+      if (!statSync(nearest).isDirectory()) problem = `KIT_API_CONFIG_DIR ${configDir} cannot be made: ${nearest} is not a folder`;
+      else accessSync(nearest, constants.W_OK);
+    } catch { problem = `KIT_API_CONFIG_DIR ${configDir} cannot be made: ${nearest} is not writable`; }
+  }
+  if (!problem && !env.KIT_API_CONFIG_DIR && !env.HOME) problem = "HOME is not set, so the config folder cannot be chosen; set KIT_API_CONFIG_DIR";
   return { on: true, keyFile, configDir, problem };
 }
 
@@ -45,17 +58,16 @@ export function claudeCommand(env = process.env) {
 
 /** Where the spend log lives: <state home>/agent-kit/api-spend.log. */
 export function apiSpendLog(env = process.env) {
-  return join(env.XDG_STATE_HOME || join(home(env), ".local/state"), "agent-kit/api-spend.log");
+  return join(kitStateDir(env), "api-spend.log");
 }
 
 /**
  * Adds one line to the spend log for a finished headless Claude call when the route is on: time, what ran, model, the
- * tokens and cost the CLI printed (claude -p --output-format json), whether it worked. Never throws, never holds a secret.
+ * tokens and cost the CLI printed (claude -p --output-format json), whether it worked. A call the wrapper refused
+ * (`refused`: its log holds a "claude-api-run:" line) never reached the API and adds no line. Never throws, never holds a secret.
  */
-export function recordApiSpend({ env = process.env, command, model, stdout, status }) {
-  // A call the wrapper refused never reached the API: no line.
-  const route = apiRoute(env);
-  if (!route.on || route.problem) return null;
+export function recordApiSpend({ env = process.env, command, model, stdout, status, refused = false }) {
+  if (!apiRoute(env).on || refused) return null;
   let result = {};
   try { result = JSON.parse(stdout ?? "") ?? {}; } catch { /* No JSON (a failed call): the line still says it ran. */ }
   if (typeof result !== "object") result = {};

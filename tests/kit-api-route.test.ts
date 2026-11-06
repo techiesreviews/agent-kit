@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -211,6 +211,31 @@ test("a relative config folder is refused by both; a refused call adds no spend 
   assert.equal(run.status, 2);
   assert.match(run.stderr, /KIT_API_CONFIG_DIR must be an absolute path/);
   assert.ok(!existsSync(join(f.dir, "relative-config")), "no folder is made in the working folder");
-  assert.equal(recordApiSpend({ env, command: "review", model: "m", stdout: "", status: 2 }), null);
+  assert.equal(recordApiSpend({ env, command: "review", model: "m", stdout: "", status: 2, refused: true }), null);
   assert.ok(!existsSync(apiSpendLog(env)));
+});
+
+test("a symlinked key file works for both; a missing claude, an unusable config folder and an unset HOME are plain refusals with no spend line", t => {
+  const f = folder(t);
+  const link = join(f.dir, "key-link");
+  symlinkSync(f.keyFile, link);
+  assert.equal(apiRoute({ ...f.env, KIT_API_KEY_FILE: link }).problem, null);
+  assert.equal(spawnSync(wrapper, ["-p"], { env: { ...f.env, KIT_API_KEY_FILE: link }, encoding: "utf8" }).status, 0);
+  // A PATH with the few tools the wrapper needs and no claude.
+  const lean = join(f.dir, "lean"); mkdirSync(lean);
+  for (const tool of ["bash", "env", "stat", "mkdir", "chmod"]) symlinkSync(spawnSync("sh", ["-c", `command -v ${tool}`], { encoding: "utf8" }).stdout.trim(), join(lean, tool));
+  const noClaude = spawnSync(wrapper, ["-p"], { env: { ...f.env, KIT_API_KEY_FILE: f.keyFile, PATH: lean }, encoding: "utf8" });
+  assert.equal(noClaude.status, 2, noClaude.stderr);
+  assert.match(noClaude.stderr, /claude-api-run: the claude command is not installed or not on PATH/);
+  const file = join(f.dir, "plain-file"); writeFileSync(file, "x");
+  const inFile = { ...f.env, KIT_API_KEY_FILE: f.keyFile, KIT_API_CONFIG_DIR: join(file, "sub") };
+  assert.match(apiRoute(inFile).problem, /cannot be made: .* is not a folder/);
+  const run = spawnSync(wrapper, ["-p"], { env: inFile, encoding: "utf8" });
+  assert.equal(run.status, 2); assert.match(run.stderr, /claude-api-run: the config folder .* cannot be made/);
+  const noHome = { ...f.env, KIT_API_KEY_FILE: f.keyFile }; delete noHome.HOME;
+  assert.match(apiRoute(noHome).problem, /HOME is not set/);
+  assert.equal(recordApiSpend({ env: inFile, command: "build claude", model: "m", stdout: "", status: 2, refused: true }), null);
+  assert.ok(!existsSync(apiSpendLog(inFile)));
+  // The log follows the kit's state folder rule: a relative XDG_STATE_HOME is ignored.
+  assert.equal(apiSpendLog({ ...f.env, XDG_STATE_HOME: "relative" }), join(f.home, ".local/state/agent-kit/api-spend.log"));
 });
