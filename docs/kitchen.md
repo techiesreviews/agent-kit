@@ -67,6 +67,15 @@ says for today; never claim a planned item ran.
 - **Everything is a file on the landing branch:** maps, tickets, Lex's feedback and decisions
   (the project's issue tracker guide, `docs/agents/issue-tracker.md`). A change Lex asks for always
   has a ticket that opens with "Lex (YYYY-MM-DD): …", including lead fixes.
+- **Tickets are moving to Orbit, in stages** (Lex, 2026-11-06): the fleet manages every card in every
+  project through `scripts/agents/kit ticket` (`--help`), Orbit's public API inside the kit; no other
+  tool sits beside it. A project switches with `"tickets": "orbit"` in its `scripts/agents/kit.json`
+  (default `files`); until later stages land, `kit next`, `kit slice`, `kit pr`, `kit status` and
+  `kit init --issues` still use ticket files, and maps and research notes stay documents. **The Orbit rule:** only leads
+  write (`ORBIT_ROLE=lead`); helpers read and report to their lead. Never delete a card for good; the
+  trash, the Publish status and the "Scheduled in Radaar" tick each need Lex's exact words
+  (`--lex-said`). No date without a source. The Orbit token and the Cloudflare pass never go in a
+  chat, a log or a repository.
 - **One house style for every tool:** anything a person sees follows the kit's
   [house style](house-style.md) (`docs/house-style.md` in the kit; `scripts/agents/kit --home`
   prints the folder): quiet screens, instant changes with Undo, the same agent connection

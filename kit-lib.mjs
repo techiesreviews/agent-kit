@@ -44,6 +44,22 @@ function kitDirectProblems(branches) {
     ? [`direct landing needs the same branch as "land" and "release" in ${kitSettingsFile} (for example both "main")`] : [];
 }
 
+/**
+ * Problems with the ticket store settings: "tickets" is files or orbit (default files), and "orbit" names the project's
+ * Orbit board and, if it has one, the card new tickets go under; "tickets": "orbit" needs the board.
+ */
+function kitTicketProblems(settings) {
+  const problems = [];
+  if (settings.tickets !== undefined && settings.tickets !== "files" && settings.tickets !== "orbit") problems.push(`"tickets" must be "files" or "orbit" in ${kitSettingsFile}`);
+  const orbit = settings.orbit;
+  if (orbit !== undefined && (!orbit || typeof orbit !== "object" || Array.isArray(orbit))) return [...problems, `"orbit" must be an object in ${kitSettingsFile}, like { "project": "TOOLS" }`];
+  if (orbit?.project !== undefined && !(typeof orbit.project === "string" && /^[A-Za-z][A-Za-z0-9_]*$/.test(orbit.project))) problems.push(`"orbit.project" must be an Orbit project key in ${kitSettingsFile}, like "TOOLS"`);
+  if (orbit?.parent !== undefined && !(typeof orbit.parent === "string" && /^[A-Za-z][A-Za-z0-9_]*-[0-9]+$/.test(orbit.parent))) problems.push(`"orbit.parent" must be a card key in ${kitSettingsFile}, like "TOOLS-10"`);
+  if (orbit?.parent !== undefined && orbit?.project === undefined) problems.push(`"orbit.parent" needs "orbit.project" in ${kitSettingsFile}`);
+  if (settings.tickets === "orbit" && orbit?.project === undefined) problems.push(`"tickets": "orbit" needs "orbit": { "project": "<KEY>" } in ${kitSettingsFile}`);
+  return problems;
+}
+
 /** Problems with parsed settings: only `project` and `branches.land` are required. */
 export function kitSettingsProblems(settings) {
   if (!settings || typeof settings !== "object" || Array.isArray(settings)) return [`${kitSettingsFile} must hold one JSON object`];
@@ -52,6 +68,7 @@ export function kitSettingsProblems(settings) {
     ...(text(settings.project) ? [] : [`add "project": "<name>" to ${kitSettingsFile}`]),
     ...(text(settings.branches?.land) ? [] : [`add "branches": { "land": "<branch>" } to ${kitSettingsFile}`]),
     ...kitDirectProblems(settings.branches),
+    ...kitTicketProblems(settings),
   ];
 }
 

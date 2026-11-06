@@ -108,6 +108,30 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
   runs; it lets the turn end for a job past its time limit, after six refusals in a row, or with
   `KIT_ALLOW_STOP=1`.
 
+## Tickets are moving to Orbit (in stages)
+
+- Tickets are moving from markdown files to Orbit cards, one project at a time. Stage 1 is here: the Orbit client and
+  `kit ticket` (`kit ticket --help`): create, get, list, update, dates, note, comment, sub-tasks, next-lex and
+  clear-next-lex, trash, setup. It reaches every board the token covers, from any project folder or with `--project`.
+- A project's `scripts/agents/kit.json` says which store it uses: `"tickets": "files"` (the default) or `"orbit"`, and
+  `"orbit": { "project": "TOOLS", "parent": "TOOLS-10" }` names its board and the card new tickets go under (parent is
+  optional). `kit next`, `kit slice`, `kit pr`, `kit status` and `kit init --issues` still use ticket files; later
+  stages move them behind `ticket-store.mjs`, then remove the file store.
+- The rules are built in: reads work for anyone; writes need `ORBIT_ROLE=lead`, read the latest version first and retry
+  once on a version conflict. A move to a Publish status or a tick on "Scheduled in Radaar" needs `--lex-said "<his exact
+  words>"`; so does `trash`, which only moves a card to Orbit's trash (the kit has no permanent delete). A date needs a
+  `--source`, written on the card's "Planned dates" line; a plain date is a whole day in Europe/Amsterdam. `--dry-run`
+  on every write prints the exact change and sends nothing. Each write adds one line (time, card, fields, who) to
+  `~/.local/state/fleet/orbit.log`.
+- Secrets live in `~/.config/fleet/orbit.json`: mode 600, outside every git work tree, refused otherwise, never printed
+  or logged. `kit ticket setup` makes it, with a hidden prompt for the token or `--from-file <path>` (read, then
+  deleted); `--from-mcp-config [file]` copies the Cloudflare pass from the MCP settings (default `~/.claude.json`) only
+  after a yes. `kit ticket setup --help` gives the steps.
+- Only leads write, so an agent the kit starts never inherits `ORBIT_ROLE` (`agent-run.mjs`, `kit ask`): a lead sets it in
+  its own shell for its own `kit ticket` calls.
+- Orbit's public API has no task relations, so blockers are a `Blocked by: KEY-n, KEY-m` line in the description
+  (`--blocked-by`). Its docs: `docs/public-api.md` in github.com/coollabsio/orbit.
+
 ## Nothing unsaved goes live
 
 - `kit release-check` is the second half of that gate: it fails unless the working tree is clean (no changed or
@@ -140,6 +164,7 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
 | `kit.d/` | one file per shared command, each with a `# kit:` summary line |
 | `hooks/` | the guard hooks (`bash-guard`, `agent-cap`, `session-env`, `brief-guard`, `stop-guard`) and their `run.sh` |
 | `context-card.mjs`, `worktree.sh`, `tickets.mjs`, `unit.sh`, `review-findings.mjs`, `second-look.json`, … | helpers beside `kit` that commands and a project's forwarders run through `kit --home` |
+| `orbit-client.mjs`, `ticket-store.mjs`, `orbit-setup.mjs` | the Orbit API client and its secrets file, the ticket store's rules and guards, and `kit ticket setup` |
 | `skills.json`, `skills.mjs`, `brief-lib.mjs` | the skills map (names and the kit's own one-line fallbacks, never a skill's text), and the brief `kit brief` writes |
 | `launcher/` | the two launchers `kit init` copies into a project |
 | `systemd/` | the update timer and service `kit update --install-timer` writes into `~/.config/systemd/user/` |
