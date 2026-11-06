@@ -5,6 +5,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 
+// The opt-in API route is read from the environment: these tests run with it off, whatever the shell exports.
+delete process.env.KIT_API_KEY_FILE; delete process.env.KIT_API_CONFIG_DIR;
+
 const runner = resolve("agent-run.mjs");
 const shell = resolve("agent.sh");
 const session = "resume-session-123";

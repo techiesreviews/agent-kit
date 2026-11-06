@@ -16,6 +16,8 @@ import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokOu
 import { durationMilliseconds } from "../sol-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { kitStateDir } from "../kit-lib.mjs";
+// The opt-in API route is read from the environment: these tests run with it off, whatever the shell exports.
+delete process.env.KIT_API_KEY_FILE; delete process.env.KIT_API_CONFIG_DIR;
 
 test("agent options preserve defaults, infer Claude aliases, and respect explicit overrides", () => {
   for (const kind of ["build", "review"]) {

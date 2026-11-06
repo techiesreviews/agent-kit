@@ -15,6 +15,7 @@ import { dirname, join, resolve } from "node:path";
 import { durationMilliseconds, supervise } from "./sol-run.mjs";
 import { reviewComplete, reviewFormat, reviewScope } from "./review-brief.mjs";
 import { nextTalkStyle, talkStyleLine } from "./brief-lib.mjs";
+import { apiRouteProblem, apiWrapperRefused, claudeCommand, recordApiSpend } from "./api-route.mjs";
 
 const adapters = { codex: codexAdapter, claude: claudeAdapter, grok: grokAdapter, opencode: opencodeAdapter };
 const reviewOnly = { grok: "Grok", opencode: "OpenCode" };
@@ -570,12 +571,14 @@ export function codexAdapter(options, common, output) {
 export function claudeAdapter(options, common) {
   const { kind, model, effort } = options;
   return {
-    command: "claude", capture: true,
+    command: claudeCommand(), label: "claude", capture: true,
     args: ["-p", "--model", model, "--effort", effort, "--permission-mode", kind === "build" ? "acceptEdits" : "plan",
       ...(kind === "build" ? ["--allowedTools", "Bash", "--disallowedTools", "Task,Agent", "--add-dir", common] : ["--tools", "Read,Grep,Glob", "--setting-sources", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}']),
       "--output-format", "json", ...(options.sessionId ? ["--session-id", options.sessionId] : [])],
     // A resumed session keeps its id; --session-id would demand --fork-session.
     resume: session => [...claudeAdapter({ ...options, sessionId: undefined }, common).args, "--resume", session],
+    // On the opt-in API route: the wrapper's own refusal (a key file it will not use) and an empty API account say so in plain words.
+    outOfCredit: (stdout, log, status) => status ? apiRouteProblem(stdout, log, process.env, status) : null,
     session: stdout => JSON.parse(stdout).session_id,
     finish: stdout => claudeResult(stdout, model, kind === "review"),
   };
@@ -997,11 +1000,13 @@ async function invokeAgent(adapter, args, descriptor, context) {
     }).finally(() => clearTimeout(startTimer));
     let status = result.status;
     const slice = readFileSync(logPath, "utf8").slice(previousLog);
+    // The opt-in API credit route logs each headless Claude call's tokens and cost (never a secret); a call its wrapper refused adds nothing.
+    if (options.cli === "claude") recordApiSpend({ command: `${options.kind} claude`, model: options.model, stdout: result.stdout, status, refused: apiWrapperRefused(status, slice), answerRequired: options.kind !== "review" });
     const session = recordedSession(adapter, result.stdout, slice);
     if (session) update({ session });
     // The CLI's own failure is the cause; executeRun reports it after its consequences.
     if (silent) {
-      context.cause = `problem: ${adapter.command} unavailable: no session within ${adapter.startTimeout / 1000}s`;
+      context.cause = `problem: ${adapter.label ?? adapter.command} unavailable: no session within ${adapter.startTimeout / 1000}s`;
       // Like a refusal, only a silent first call refunds the review: a retry after a call that opened a session spent it.
       if (!previousCalls) update({ silent: true });
     }
@@ -1013,12 +1018,15 @@ async function invokeAgent(adapter, args, descriptor, context) {
       const limitProblem = creditProblem ?? adapter.usageLimit?.(result.stdout ?? "") ??
         (status ? usageLimitProblem(slice, options.cli) ?? usageLimitProblem(result.stdout ?? "", options.cli) : null);
       if (status || limitProblem) {
-        context.cause = limitProblem ?? adapter.errorProblem?.(result.stdout ?? "") ?? `problem: ${adapter.command} failed (${status}); see ${logPath}`;
+        context.cause = limitProblem ?? adapter.errorProblem?.(result.stdout ?? "") ?? `problem: ${adapter.label ?? adapter.command} failed (${status}); see ${logPath}`;
       }
       // A refusal of the first call refunds the review; a completed first call, or one
       // that worked before the limit, already spent it. kit review gives an out-of-credit run back itself.
       if (limitProblem && !creditProblem && !previousCalls &&
         refusedOutright(options.cli, options.cli === "opencode" ? result.stdout ?? "" : slice, context.prompt)) update({ refused: true });
+      // The API route's wrapper refused the first call (a key file it will not use, no claude): the model was never reached,
+      // so the call is refunded like any refusal, and kit review moves to its fallback.
+      if (!previousCalls && options.cli === "claude" && apiWrapperRefused(status, slice)) update({ refused: true });
       // A run's first call that fails within the launch window (a usage limit, a login error) and left the worktree as
       // it found it never got to work. Claude and Grok hold a session from before their CLI started, so kit slice reads
       // this to tell such a build never ran. ASE_LAUNCH_WINDOW_MS (60000) is for tests.

@@ -59,6 +59,24 @@ updates it in place. A machine with an older kit never undoes a newer copy. A pr
 markers keeps its own words. A project set up before the rule gets the section like any new piece: `kit doctor`
 warns, `kit init` (in the project) or `kit init --all` (every listed project, each through its own `kit pr`) adds it.
 
+## Spending API credit on the kit's own Claude calls (opt-in, off by default)
+
+- **Turn on:** put your API key alone on one line in a file, run `chmod 600` on it, and start the kit with `KIT_API_KEY_FILE=<that file>` in the environment (optional: `KIT_API_CONFIG_DIR`, default `~/.claude-api`).
+- **What it covers:** the kit's headless Claude calls (`kit review`, `kit fix`, `kit slice` builders, `kit ux`). Interactive sessions are not touched; Anthropic's credit does not cover them.
+- **Jobs systemd starts for you** do not see your shell's variables: run `systemctl --user import-environment KIT_API_KEY_FILE KIT_API_CONFIG_DIR` first (leave out the second if you use the default), or export them in the shell that starts the kit; to turn the route off for those jobs, run `systemctl --user unset-environment KIT_API_KEY_FILE KIT_API_CONFIG_DIR` as well.
+- **Turn off:** unset `KIT_API_KEY_FILE`. The kit then uses the subscription as before.
+- **Safety:** only the child process that runs `claude` passes the key on (the kit itself reads the key file's first line just to see it is not blank, and never keeps, prints or logs it, or puts it on a command line), and Claude Code is told to keep it out of the shell commands a builder starts (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`). The key file and the config folder must be absolute paths, the key file with mode 600; otherwise the call stops with a plain message.
+- **Limits:** the API config folder starts empty, so skills and settings from `~/.claude` are not used on the route (link them in if you want them); a saved session does not resume across switching the route on or off (start a fresh run); a run killed before it printed its cost counts as unknown, and doctor says so.
+- **Known limits (follow-ups):** the spend total misses a run whose runner was killed outright (no line is written); `kit doctor` shows the total only while the route is on and healthy; a config folder that exists but cannot be written gets the CLI's own error, not a plain refusal; a Claude started from a builder's shell on the route cannot sign in to the subscription (its `CLAUDE_CONFIG_DIR` still points at the API folder).
+- **Check it:** `kit doctor` says whether the route is on or off, the key file's mode, and the total spent; every run adds a line (time, command, model, tokens, cost) to `~/.local/state/agent-kit/api-spend.log`.
+
+### Writing with the credit: `kit ask`
+
+- **Plain call:** `scripts/agents/kit ask --api --prompt-file <file> [--model sonnet|opus|haiku]` runs one headless `claude -p` on the API route, prints the answer and ends with its cost; `--out <file>` writes it to a file instead. It needs the route on (`KIT_API_KEY_FILE`), so a lead or helper first checks `kit doctor` says "api route: on".
+- **Script mode:** add `--script --out <file>`. The call is then given Lex's own rules in front of your prompt (`youtube/AGENTS.md` and the "Current script and prompter playbook" section of `youtube/shared/taste/scripts.md`, under `~/Projects/chat/youtube`, or `KIT_SCRIPT_RULES_ROOT`). If a rules file or that section is missing, nothing is sent and the message names it; the playbook's linked voice and workflow files are not added, so name them in your prompt file if the task needs them.
+- **Safe output:** `--out` never overwrites. If the file exists (a connected editor may hold newer edits) the answer goes beside it as `<name>.draft-<time><ext>`, and a lead merges by hand.
+- **Spend:** every call adds a line to `~/.local/state/agent-kit/api-spend.log`; the credit expires 2026-11-11.
+
 ## The factory: generated briefs, long jobs that wait
 
 - `kit brief <ticket> [--stage build|review|second-look|fix] [--note "<text>"]` prints the whole brief for a
