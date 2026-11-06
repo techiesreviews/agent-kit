@@ -12,8 +12,9 @@ export const NORMAL_ROUNDS = 3;
 export const RISKY_ROUNDS = 5;
 
 // Security, permissions, auth, data loss, state and concurrency: by path, or by the words of a ticket or title.
-const riskyPaths = [/(?:^|\/)(?:auth|authn|authz|security|permissions?|acl|rbac|crypto|secrets?|credentials?|tokens?|sessions?|oauth|login|passwords?)(?:[./_-]|\/|$)/i,
-  /(?:^|\/)\.env(?:\.|$)/i, /(?:^|\/)migrations?\//i, /(?:^|\/)(?:locks?|queues?|transactions?|concurrency|state|states|store|stores)(?:[./_-]|\/|$)/i];
+const named = names => new RegExp(`(?:^|/)(?:${names})(?:\\.[^/]+)?(?:/|$)`, "i");
+const riskyPaths = [named("auth|authn|authz|security|permissions?|acl|rbac|crypto|secrets?|credentials?|sessions?|oauth|login|passwords?"),
+  /(?:^|\/)\.env(?:\.|$)/i, /(?:^|\/)migrations?\//i, named("locks?|queues?|transactions?|concurrency"), /(?:^|\/)(?:state|states|stores?)\//i];
 const riskyWords = /\b(?:security|permissions?|authenticat\w*|authoriz\w*|auth|credentials?|secrets?|data loss|lose data|delete data|deletion|destructive|concurren\w+|race conditions?|deadlocks?|transactions?|shared state|global state|stale state|persisted state|state machine|state sync\w*)\b/i;
 
 /**
@@ -61,6 +62,7 @@ export function severityWord(item) {
   return item.severity === "P2" ? "should" : "nit";
 }
 export const isNit = item => severityWord(item) === "nit";
+const hasEvidence = item => String(item.text ?? "").trim() !== "" && !/still open: no reason given$/.test(String(item.text));
 
 /**
  * The open findings that still call for a fix round, or that stop a landing, after `rounds` fix rounds:
@@ -72,7 +74,8 @@ export function stoppingFindings(open, rounds, risky) {
   const real = open.filter(item => !isNit(item));
   if (!real.length) return [];
   if (rounds >= roundLimit(risky)) return blockingFindings(open);
-  if (rounds >= NORMAL_ROUNDS && !real.some(item => String(item.text ?? "").trim())) return [];
+  // Rounds past the third need a finding that is open with its evidence: a mark that gave no reason is none.
+  if (rounds >= NORMAL_ROUNDS && !real.some(hasEvidence)) return [];
   return real;
 }
 
@@ -93,17 +96,21 @@ export const unmarkedIds = (ids, marks) => ids.filter(id => !marks.has(id));
  * The brief section for round 2 and later (later rounds): review only what changed since the last reviewed head and the open ids,
  * and mark each old id. `open` is [{ id, severity, kind, text }].
  */
-export function loopBriefSection({ round, limit, previousHead, currentHead, open }) {
-  const list = open.map(item => `- ${item.id} (${item.severity ?? "no severity"}${item.kind && item.kind !== "unsorted" ? ` ${item.kind}` : ""}): ${String(item.text).slice(0, 200)}`).join("\n");
+export function loopBriefSection({ round, limit, previousHead, currentHead, sinceFile = true, open, answer = "" }) {
+  const label = item => item.group === "Validation gaps" ? "validation gap" : `${item.severity ?? "no severity"}${item.kind && item.kind !== "unsorted" ? ` ${item.kind}` : ""}`;
+  const list = open.map(item => `- ${item.id} (${label(item)}): ${String(item.text).slice(0, 200)}`).join("\n");
   const scope = previousHead && previousHead === currentHead
-    ? "No commit came after the last review (the builder answered or declined in writing): check each finding below against that answer; there is no new code to read."
-    : `Review only the code changed since ${previousHead} (\`git diff ${previousHead}..HEAD\`) and the findings still open below. Do not review unchanged code again.`;
+    ? "No commit came after the last review (the builder answered or declined in writing): check each finding below against the builder's answer; there is no new code to read."
+    : !previousHead || !sinceFile
+      ? "The branch was rebuilt since the last review (a rebase), so there is no earlier head to compare with: review the prepared diff, but only for the findings still open below, and mark every id."
+      : `Review only the code changed since ${previousHead} (the \`Changes since the last review\` file named in the scope note) and the findings still open below. Do not review unchanged code again.`;
   return [
     `## Review loop: review round ${round}, after ${round - 1} fix round${round === 2 ? "" : "s"} (at most ${limit} fix rounds)`,
     scope,
     "Open findings from the last round:", list,
-    "Before your Defects heading, write the block `Previous findings:` with one line for every id above, none left out: `<id>: resolved` or `<id>: still open (<its severity>): <reason>`. A review that leaves an id out is incomplete and is run again.",
-    "You are the only reviewer: start no subagents. New findings use the usual format; a nit is a rare path, a small cost, or a comment, doc or format-only point.",
+    ...(answer ? [`The builder's written answer to them (the latest fix round's report):\n${answer}`] : []),
+    "Before your Defects heading, write the block `Previous findings:` with one line for every id above, none left out: `<id>: resolved` or `<id>: still open (<its severity, or gap for a validation gap>): <reason>`. A review that leaves an id out is incomplete and is run again.",
+    "You are the only reviewer: start no subagents. New findings use the usual format; a nit is a rare path, a small cost, a comment, doc or format-only point, or a missing test.",
   ].join("\n\n");
 }
 
@@ -119,15 +126,25 @@ export function prLine({ rounds, model, verdict = "approved" }) {
  */
 export function ledgerRows(chain) {
   const rows = [];
-  chain.forEach((record, index) => {
+  // The outcome of one id: the next review's mark; "still open" follows the finding the mark carried into that round, so a problem
+  // fixed in round 3 never stays "still open" in the ledger.
+  const outcome = (id, index) => {
     const next = chain[index + 1];
+    if (!next) return "open at the end";
+    const mark = next.marks?.get(id);
+    if (!mark) return "not marked by the next review";
+    if (mark.status === "resolved") return "resolved";
+    const carried = (next.findings ?? []).find(item => item.group === "Previous findings" && String(item.text).startsWith(`${id} still open`));
+    const reason = mark.reason || "no reason given";
+    if (!carried) return `still open: ${reason}`;
+    const later = outcome(carried.id, index + 1);
+    return later === "open at the end" ? `still open: ${reason}` : later;
+  };
+  chain.forEach((record, index) => {
     for (const finding of record.findings ?? []) {
-      let outcome = "open at the end";
-      if (next) {
-        const mark = next.marks?.get(finding.id);
-        outcome = !mark ? "not marked by the next review" : mark.status === "resolved" ? "resolved" : `still open: ${mark.reason || "no reason given"}`;
-      }
-      rows.push({ id: finding.id, severity: severityWord(finding), outcome });
+      // A finding carried over by a "still open" mark is the same finding: one row, under its first id.
+      if (finding.group === "Previous findings") continue;
+      rows.push({ id: finding.id, severity: severityWord(finding), outcome: outcome(finding.id, index) });
     }
   });
   return rows;
@@ -172,7 +189,7 @@ export function reviewChain(folder) {
  * same base that still had findings and whose reviewed head is an ancestor of the current head. A second look's folder is never one.
  * Returns { name, round, head, findings } or null (then this is round 1, a full review).
  */
-export function findPreviousReview(parent, { head, base, root }) {
+export function findPreviousReview(parent, { head, base, root, branch }) {
   if (!existsSync(parent) || !head || !base) return null;
   const isAncestor = other => {
     try { execFileSync("git", ["-C", root, "merge-base", "--is-ancestor", other, head], { stdio: "ignore" }); return true; }
@@ -185,10 +202,13 @@ export function findPreviousReview(parent, { head, base, root }) {
       const [reviewedHead, reviewedBase] = readFileSync(join(folder, "refs.txt"), "utf8").trim().split("\n");
       const record = JSON.parse(readFileSync(join(folder, "findings.json"), "utf8"));
       // The base may have moved on (another PR landed): the earlier base only has to be part of this branch's history.
-      if (record.unreadable || record.round === undefined || (reviewedBase !== base && !isAncestor(reviewedBase)) || (reviewedHead !== head && !isAncestor(reviewedHead))) continue;
+      // After a rebase the old head is no longer in this history: the same branch still answers its own earlier review.
+      const sameBranch = Boolean(branch) && record.branch === branch;
+      const connected = (reviewedBase === base || isAncestor(reviewedBase)) && (reviewedHead === head || isAncestor(reviewedHead));
+      if (record.unreadable || record.incomplete || record.round === undefined || !(connected || sameBranch)) continue;
       // The newest review of this change decides: one that found nothing ended the loop, so the next review starts again at round 1.
       if (!record.findings?.length) return null;
-      return { name, round: record.round ?? 1, head: reviewedHead, findings: record.findings.map((item, index) => ({ ...item, id: item.id ?? `R${record.round ?? 1}-${index + 1}` })) };
+      return { name, round: record.round ?? 1, head: reviewedHead, headKnown: reviewedHead === head || isAncestor(reviewedHead), findings: record.findings.map((item, index) => ({ ...item, id: item.id ?? `R${record.round ?? 1}-${index + 1}` })) };
     } catch { /* An unreadable record is not a previous review. */ }
   }
   return null;

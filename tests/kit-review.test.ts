@@ -228,7 +228,7 @@ test("kit review writes findings.json with kinds and counts, or unreadable for a
   assert.equal(unreadable.status, 0, unreadable.stderr);
   assert.match(unreadable.stdout, /^findings unreadable$/m);
   assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(unreadable.stdout), "findings.json"), "utf8")), {
-    model: "claude-opus-5-5", effort: "medium", scope: `git diff ${f.commits[0]}...HEAD`, head: f.commits[2], round: 1, unreadable: true,
+    model: "claude-opus-5-5", effort: "medium", scope: `git diff ${f.commits[0]}...HEAD`, head: f.commits[2], round: 1, branch: "feature/review", unreadable: true,
   });
 });
 
@@ -1737,7 +1737,8 @@ test("review loop: round 1 is a full review with ids; a later review of changed 
   assert.match(second.stdout, /^review loop: round 2, answering \S+ \(1 open findings\)$/m);
   const brief = f.calls().at(-1)!.input;
   assert.match(brief, /^## Review loop: review round 2, after 1 fix round \(at most 3 fix rounds\)$/m);
-  assert.ok(brief.includes(`git diff ${reviewedHead}..HEAD`), "only the code changed since the last reviewed head");
+  assert.ok(brief.includes(`Review only the code changed since ${reviewedHead}`), "only the code changed since the last reviewed head");
+  assert.ok(f.calls().at(-1)!.input.includes("Changes since the last review (git diff " + reviewedHead), "the runner prepared the changes since the last review as a file");
   assert.match(brief, /- R1-1 \(P1 fault\): file\.txt:1 — P1 fault: the save drops the second write\./);
   const secondEvidence = f.evidence(second.stdout);
   const secondRecord = JSON.parse(readFileSync(join(secondEvidence, "findings.json"), "utf8"));
@@ -1765,6 +1766,8 @@ test("review loop: a later review that leaves an earlier id out is incomplete an
   const left = f.run([], { FAKE_REPORT: "REVIEW_STATUS: complete\nDefects: none\nValidation gaps: none.\n", ASE_REVIEW_MODEL: "claude-opus-5-5" });
   assert.notEqual(left.status, 0, left.stdout);
   assert.match(left.stderr, /^problem: the review left out R1-1: every earlier finding must be marked resolved or still open$/m);
+  // Its evidence says so, so kit pr never reuses it and the next round never answers it.
+  assert.equal(JSON.parse(readFileSync(join(/ evidence (\S+)$/m.exec(left.stdout)![1], "findings.json"), "utf8")).incomplete, true);
   const failed = f.run([], { FAKE_REPORT: "REVIEW_STATUS: complete\nDefects: none\nValidation gaps: none.\n", ASE_REVIEW_MODEL: "claude-opus-5-5" });
   assert.notEqual(failed.status, 0);
   // The incomplete reviews saved no round: the next one still answers the first, although the base moved.
