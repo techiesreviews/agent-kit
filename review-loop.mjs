@@ -114,7 +114,7 @@ export function loopBriefSection({ round, limit, previousHead, currentHead, open
     `## Review loop: review round ${round}, after ${round - 1} fix round${round === 2 ? "" : "s"} (at most ${limit} fix rounds)`,
     scope,
     "Open findings from the last round:", list,
-    "Before your Defects heading, write the block `Previous findings:` with one line for every id above, none left out: `<id>: resolved` or `<id>: still open (<its severity, or gap for a validation gap>): <reason>`. A review that leaves an id out is incomplete and is run again.",
+    "Before your Defects heading, write the block `Previous findings:` with one line for every id above, none left out: `<id>: resolved` or `<id>: still open (<its severity, or gap for a validation gap>): <reason>`. A review that leaves an id out is rejected as incomplete and is not reused; it has to be run again.",
     "You are the only reviewer: start no subagents. New findings use the usual format; a nit is a rare path, a small cost, a comment, doc or format-only point, or a missing test.",
   ].join("\n\n");
 }
