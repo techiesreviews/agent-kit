@@ -98,7 +98,7 @@ test("create reads its description from a file or standard input, and names the 
 });
 
 test("a project with no Orbit setting needs --project, and kit ticket still works outside any kit project", async t => {
-  const { home, orbit, run, env } = await fixture(t, {});
+  const { home, orbit, run } = await fixture(t, {});
   refused(await run(["create", "--title", "A"]), /--project/);
   ok(await run(["create", "--title", "A", "--project", "TOOLS"]));
   assert.equal(orbit.tasks.length, 1);
@@ -106,7 +106,6 @@ test("a project with no Orbit setting needs --project, and kit ticket still work
   mkdirSync(outside);
   ok(await run(["get", "TOOLS-1"], { KIT_ROOT: outside }));
   ok(await run(["list", "--project", "TOOLS"], { KIT_ROOT: outside }));
-  assert.equal(env.KIT_ROOT !== outside, true);
 });
 
 test("get shows status name, assignees, next step, blockers, dates and comments; --json gives the card", async t => {
@@ -320,7 +319,7 @@ test("trash moves a card to Orbit's trash only with Lex's words, and a permanent
   assert.equal(orbit.writes().length, 0);
   const version = task.version;
   const done = ok(await run(["trash", "TOOLS-1", "--lex-said", "bin that card"]));
-  assert.match(done.all, /1 sub-task/);
+  assert.match(done.all, /1 directly under it/);
   assert.match(done.all, /30 days/);
   assert.equal(task.trashed, true);
   const remove = orbit.writes()[0];
@@ -553,7 +552,7 @@ test("no answer to a read is plain; no answer to a write says it may have gone t
 });
 
 test("the secrets file is refused when missing, too open, a link, broken, inside a git work tree or plain http", async t => {
-  const { home, run, save, configPath, config, env, orbit } = await fixture(t);
+  const { home, run, save, configPath, config, orbit } = await fixture(t);
   orbit.addTask(orbit.tools);
   rmSync(configPath);
   refused(await run(["get", "TOOLS-1"]), /kit ticket setup/);
@@ -588,7 +587,6 @@ test("the secrets file is refused when missing, too open, a link, broken, inside
   mkdirSync(join(repo, "config/fleet"), { recursive: true });
   writeFileSync(join(repo, "config/fleet/orbit.json"), JSON.stringify(config), { mode: 0o600 });
   refused(await run(["get", "TOOLS-1"], { XDG_CONFIG_HOME: join(repo, "config") }), /git work tree/);
-  assert.equal(env.HOME, home);
   // A link in the path into a work tree counts too.
   symlinkSync(join(repo, "config"), join(home, "linked-config"));
   refused(await run(["get", "TOOLS-1"], { XDG_CONFIG_HOME: join(home, "linked-config") }), /git work tree/);
@@ -660,7 +658,7 @@ test("setup: a pass held as a reference, or missing, is said plainly and asked f
 });
 
 test("setup refuses a wrong token, a wrong-looking token, a git work tree and saves nothing", async t => {
-  const { home, run, orbit, configPath, env } = await fixture(t);
+  const { home, run, orbit, configPath } = await fixture(t);
   rmSync(configPath);
   const mcp = fakeMcpSettings(home, orbit.origin);
   const secret = join(home, "secret-box");
@@ -688,7 +686,6 @@ test("setup refuses a wrong token, a wrong-looking token, a git work tree and sa
   refused(await run(["setup", "--from-file", secret], { XDG_CONFIG_HOME: join(repo, "config") }), /git work tree/);
   assert.ok(existsSync(secret), "refused before the token file is touched");
   assert.ok(!existsSync(join(repo, "config")));
-  assert.equal(env.HOME, home);
 });
 
 test("setup again asks before replacing, keeps the address and pass for a new token, and its dry run does nothing", async t => {
@@ -756,6 +753,62 @@ test("setup's hidden prompt shows nothing typed, through the real front door on 
   assert.equal(status, 0, seen);
   assert.ok(!seen.includes(fakeToken), "the token never shows on the screen");
   assert.equal(JSON.parse(readFileSync(configPath, "utf8")).token, fakeToken);
+});
+
+test("an option never swallows the next option as its value; --flag=value lets a value start with dashes", async t => {
+  const { orbit, run } = await fixture(t);
+  const task = orbit.addTask(orbit.tools);
+  refused(await run(["trash", "TOOLS-1", "--lex-said", "--dry-run"]), /--lex-said needs a value/);
+  refused(await run(["update", "TOOLS-1", "--title", "--dry-run"]), /--title needs a value/);
+  assert.equal(orbit.writes().length, 0);
+  assert.equal(task.trashed, false);
+  ok(await run(["update", "TOOLS-1", "--title=--odd title"]));
+  assert.equal(task.title, "--odd title");
+  ok(await run(["update", "TOOLS-1", "--title=a=b"]));
+  assert.equal(task.title, "a=b");
+  refused(await run(["update", "TOOLS-1", "--dry-run=yes", "--title", "x"]), /--dry-run/);
+  refused(await run(["update", "TOOLS-1", "--wat=1"]), /--wat/);
+});
+
+test("a write answered by a gateway page may have saved, so it says so, and is not retried", async t => {
+  const { orbit, run, log } = await fixture(t);
+  orbit.controls.writeAnswers.push("saved-then-502");
+  const said = refused(await run(["create", "--title", "Maybe"]), /may or may not have gone through/);
+  assert.equal(orbit.writes().length, 1);
+  assert.ok(!said.all.includes("Bad gateway"), "the page itself is never shown");
+  assert.match(log(), /action=create .* result=fail:502/);
+  // A read has nothing to lose: it only says to try later.
+  orbit.addTask(orbit.tools);
+  orbit.controls.answers.push("gateway-page");
+  refused(await run(["get", "TOOLS-1"]), /try again later/);
+});
+
+test("get names the parent by its key", async t => {
+  const { orbit, run } = await fixture(t);
+  const parent = orbit.addTask(orbit.tools);
+  orbit.addTask(orbit.tools, { parent_task_id: parent.id });
+  assert.match(ok(await run(["get", "TOOLS-2"])).stdout, /Parent: TOOLS-1/);
+  assert.equal(JSON.parse(ok(await run(["get", "TOOLS-2", "--json"])).stdout.split("\nRESULT:")[0]).parent_key, "TOOLS-1");
+});
+
+test("a card that already holds a token-shaped text can still be edited; adding one is refused", async t => {
+  const { orbit, run } = await fixture(t);
+  const task = orbit.addTask(orbit.tools, { description: "Old text orb_abcdefghijklmnopqrstuvwx" });
+  ok(await run(["note", "TOOLS-1", "fine"]));
+  assert.match(task.description, /fine/);
+  const clean = orbit.addTask(orbit.tools, { description: "Clean" });
+  refused(await run(["note", "TOOLS-2", "orb_abcdefghijklmnopqrstuvwx"]), /secret/i);
+  assert.equal(clean.description, "Clean");
+});
+
+test("setup names a --workspace the token does not reach", async t => {
+  const { home, run, orbit, configPath } = await fixture(t);
+  rmSync(configPath);
+  const mcp = fakeMcpSettings(home, orbit.origin);
+  const secret = join(home, "secret-box");
+  writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
+  const said = refused(await run(["setup", "--from-file", secret, "--from-mcp-config", mcp, "--workspace", "99999999-9999-4999-8999-999999999999"], {}, "yes\n"), /No workspace 99999999-9999-4999-8999-999999999999/);
+  assert.ok(!said.all.includes("1 workspaces"));
 });
 
 test("setup's help is numbered plain steps with no jargon; kit ticket help names every command", async t => {

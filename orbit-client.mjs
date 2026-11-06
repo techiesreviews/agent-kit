@@ -151,13 +151,16 @@ export function orbitClient(config, { timeoutMs = 30_000, longestWaitSeconds = 3
     }
   }
 
-  function failure({ response, text }) {
+  function failure(method, { response, text }) {
     let problem = null;
     try { problem = JSON.parse(text); } catch { /* Not Orbit's own error document. */ }
     const status = response.status;
     if (status >= 300 && status < 400) return new OrbitError(cloudflareStop, { status });
     if (!problem || typeof problem !== "object" || !problem.code) {
-      return new OrbitError(status === 401 || status === 403 ? cloudflareStop : `Orbit answered ${status} with a page that is not Orbit's own (often Cloudflare); try again later.`, { status });
+      if (status === 401 || status === 403) return new OrbitError(cloudflareStop, { status });
+      // A gateway's error page (Cloudflare's 502, 504, 524) can come after Orbit saved the change.
+      const lost = status >= 500 && method !== "GET";
+      return new OrbitError(`Orbit answered ${status} with a page that is not Orbit's own (often Cloudflare); ${lost ? "the change may or may not have gone through: read the card before trying again" : "try again later"}.`, { status, noAnswer: lost });
     }
     const fields = problem.errors && typeof problem.errors === "object" ? ` (${Object.keys(problem.errors).join(", ")})` : "";
     const hint = status === 401 ? " The API token is wrong, expired or revoked. Run: scripts/agents/kit ticket setup" : "";
@@ -174,7 +177,7 @@ export function orbitClient(config, { timeoutMs = 30_000, longestWaitSeconds = 3
       answer = await once(method, path, options);
       if (answer.response.status === 429) throw new OrbitError("Orbit still says too many requests after waiting once. Try again later.", { status: 429, code: "rate_limit_exceeded" });
     }
-    if (!answer.response.ok) throw failure(answer);
+    if (!answer.response.ok) throw failure(method, answer);
     if (answer.response.status === 204) return null;
     try { return JSON.parse(answer.text); }
     catch { throw new OrbitError(cloudflareStop, { status: answer.response.status }); }

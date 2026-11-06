@@ -57,7 +57,7 @@ Never paste the token in a chat.
 If it cannot copy the pass, it asks you to paste the two parts instead. The saved file stays private to you, outside every project.
 
 Other ways to start it:
---from-file file     reads the token from that file, then deletes the file (for T3's secret box).
+--from-file file     reads the token from that file, then deletes the file (for T3's secret box). If setup stops after that, make a new token in Orbit.
 --from-mcp-config file     copies the pass from that settings file, not from your Claude settings.
 --origin address     Orbit's web address, when it cannot be copied.
 --workspace id       the workspace, when the token reaches more than one.
@@ -87,13 +87,15 @@ function parse(name, words) {
     const word = words[index];
     if (word === "--") { found.rest.push(...words.slice(index + 1)); break; }
     if (!word.startsWith("--")) { found.rest.push(word); continue; }
-    const flag = word.slice(2);
-    if (found.flags[flag] !== undefined) throw new UsageProblem(`${word} is given twice`);
-    if (spec.flags.includes(flag)) found.flags[flag] = true;
-    else if (spec.optional?.includes(flag)) found.flags[flag] = words[index + 1] && !words[index + 1].startsWith("-") ? words[++index] : true;
+    // --flag=value is the one way a value starts with dashes: a next word like --dry-run is never taken as a value.
+    const equals = word.indexOf("="), flag = equals < 0 ? word.slice(2) : word.slice(2, equals), inline = equals < 0 ? undefined : word.slice(equals + 1);
+    if (found.flags[flag] !== undefined) throw new UsageProblem(`--${flag} is given twice`);
+    if (spec.flags.includes(flag) && inline === undefined) found.flags[flag] = true;
+    else if (spec.optional?.includes(flag)) found.flags[flag] = inline ?? (words[index + 1] && !words[index + 1].startsWith("-") ? words[++index] : true);
     else if (spec.values.includes(flag)) {
-      if (words[index + 1] === undefined) throw new UsageProblem(`${word} needs a value`);
-      found.flags[flag] = words[++index];
+      if (inline !== undefined) found.flags[flag] = inline;
+      else if (words[index + 1] === undefined || words[index + 1].startsWith("--")) throw new UsageProblem(`--${flag} needs a value (a value that starts with dashes goes as --${flag}=value)`);
+      else found.flags[flag] = words[++index];
     } else throw new UsageProblem(`${name} does not take ${word}`);
   }
   if (found.rest.length < spec.args.length) throw new UsageProblem(`${name} needs a ${spec.args[found.rest.length]}`);
@@ -126,7 +128,7 @@ function report(name, outcome) {
     const { method, path, body } = outcome.dry;
     say(`Would send: ${method} ${path}`);
     if (body) say(JSON.stringify(body, null, 2));
-    if (name === "trash") say(`Its ${outcome.subTasks} sub-task(s) would go to the trash with it.`);
+    if (name === "trash") say(`Its sub-tasks (${outcome.subTasks} directly under it) would go to the trash with it.`);
     say("Dry run: nothing was sent.");
     return finish("ok", `${name} ${outcome.key} dry run`);
   }
@@ -134,7 +136,7 @@ function report(name, outcome) {
   if (outcome.task?.url && name !== "trash") say(`${outcome.key}  ${outcome.task.url}`);
   if (name === "next-lex") say(`${outcome.key} waits for Lex. Assign the card to Lex in Orbit.`);
   if (name === "clear-next-lex" && outcome.task?.assignee_ids?.length) say(`${outcome.key} no longer waits for Lex. Ask Lex to unassign it (assignee_ids: ${assignees(outcome.task)}).`);
-  if (name === "trash") say(`${outcome.key} and ${outcome.subTasks} sub-task(s) are in Orbit's trash; members can restore them there for 30 days.`);
+  if (name === "trash") say(`${outcome.key} and its sub-tasks (${outcome.subTasks} directly under it) are in Orbit's trash; members can restore them there for 30 days.`);
   finish("ok", `${name} ${outcome.key}${outcome.fields ? ` (${outcome.fields.join(", ")})` : ""}`);
 }
 
@@ -148,7 +150,7 @@ async function show(store, key, { json, comments }) {
   if (task.next_lex !== null) say(`Next step (Lex): ${task.next_lex}`);
   if (task.blocked_by.length) say(`Blocked by: ${task.blocked_by.join(", ")}`);
   if (task.due_at) say(`Dates: ${[task.due_start_at && `start ${showDate(task.due_start_at)}`, `due ${showDate(task.due_at)}`].filter(Boolean).join(", ")}`);
-  if (task.parent_task_id) say(`Parent: ${task.parent_task_id}`);
+  if (task.parent_key) say(`Parent: ${task.parent_key}`);
   say(`Version: ${task.version}`);
   if (task.url) say(`Link: ${task.url}`);
   if (task.description) say(`\n${task.description}`);

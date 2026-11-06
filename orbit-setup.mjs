@@ -180,7 +180,8 @@ export async function orbitSetup({ env = process.env, flags = {}, say, io = term
   }
   const workspaces = Array.isArray(me?.workspaces) && me.workspaces.length ? me.workspaces : me?.workspace ? [me.workspace] : [];
   const workspace = flags.workspace ? workspaces.find(item => item.id === flags.workspace) : workspaces.length === 1 ? workspaces[0] : null;
-  if (!workspace) stop(`This token reaches ${workspaces.length} workspaces; name one with --workspace <id>: ${workspaces.map(item => `${item.id} (${item.name})`).join(", ")}. Nothing was saved.`);
+  const reached = workspaces.map(item => `${item.id} (${item.name})`).join(", ");
+  if (!workspace) stop(`${flags.workspace ? `No workspace ${flags.workspace} for this token; it reaches: ${reached}` : `This token reaches several workspaces; name one with --workspace <id>: ${reached}`}. Nothing was saved.`);
   config.workspace_id = workspace.id;
 
   saveConfig(path, config);

@@ -30,9 +30,9 @@ export async function fakeOrbit(t: TestContext) {
     conflicts: 0,
     concurrentEdit: undefined as undefined | ((task: FakeTask) => void),
     // Answers for the next requests, oldest first: a 429, a Cloudflare redirect or page, or a problem.
-    answers: [] as ("redirect" | "cloudflare-page" | "login-page-200" | { retryAfter?: string } | { status: number; code: string; detail: string; errors?: any })[],
+    answers: [] as ("redirect" | "cloudflare-page" | "login-page-200" | "gateway-page" | { retryAfter?: string } | { status: number; code: string; detail: string; errors?: any })[],
     // Answers for the next task writes only (after the reads went through): a problem, or a dropped connection.
-    writeAnswers: [] as ("drop" | { status: number; code: string; detail: string })[],
+    writeAnswers: [] as ("drop" | "saved-then-502" | { status: number; code: string; detail: string })[],
     me: { token: { id: randomUUID(), name: "fleet", scopes: ["tasks:write"], project_ids: projects.map(project => project.id), expires_at: "2027-02-04T00:00:00.000Z" } } as Record<string, any>,
     requireCloudflare: true,
   };
@@ -72,6 +72,7 @@ export async function fakeOrbit(t: TestContext) {
     const answer = controls.answers.shift();
     if (answer === "redirect") { response.writeHead(302, { location: "https://login.example.test/cdn-cgi/access/login" }); return response.end(); }
     if (answer === "cloudflare-page") { response.writeHead(403, { "content-type": "text/html" }); return response.end(`<html>Forbidden ${fakeToken}</html>`); }
+    if (answer === "gateway-page") { response.writeHead(502, { "content-type": "text/html" }); return response.end("<html>Bad gateway</html>"); }
     if (answer === "login-page-200") { response.writeHead(200, { "content-type": "text/html" }); return response.end("<html>Sign in</html>"); }
     if (answer && "status" in answer) return problem(response, answer.status, answer.code, answer.detail, answer.errors ? { errors: answer.errors } : {});
     if (answer) return problem(response, 429, "rate_limit_exceeded", "Too many requests", {}, answer.retryAfter ? { "retry-after": answer.retryAfter } : {});
@@ -109,6 +110,17 @@ export async function fakeOrbit(t: TestContext) {
         && (!parentId || task.parent_task_id === parentId)
         && (!query.get("q") || `${task.title} ${task.description} ${task.identifier}`.toLowerCase().includes(query.get("q")!.toLowerCase()))).reverse().map(show));
     }
+    if (request.method !== "GET") {
+      const planned = controls.writeAnswers.shift();
+      if (planned === "drop") return request.socket.destroy();
+      if (planned === "saved-then-502") {
+        // The change reached Orbit, and only the answer was lost on the way back.
+        if (rest === "/tasks") addTask(projects.find(item => item.id === body.project_id)!, { title: body.title, status_id: body.status_id });
+        response.writeHead(502, { "content-type": "text/html" });
+        return response.end("<html>Bad gateway</html>");
+      }
+      if (planned) return problem(response, planned.status, planned.code, planned.detail);
+    }
     if (rest === "/tasks" && request.method === "POST") {
       const known = new Set(["project_id", "status_id", "title", "description", "priority", "assignee_ids", "label_ids", "parent_task_id", "due_start_at", "due_at"]);
       const unknown = Object.keys(body ?? {}).find(key => !known.has(key));
@@ -140,11 +152,6 @@ export async function fakeOrbit(t: TestContext) {
       task.version = nextVersion();
       return problem(response, 409, "conflict", "The resource changed after you read it.", { conflict: { current_version: task.version } });
     };
-    if (request.method !== "GET") {
-      const planned = controls.writeAnswers.shift();
-      if (planned === "drop") return request.socket.destroy();
-      if (planned) return problem(response, planned.status, planned.code, planned.detail);
-    }
     if (request.method === "PATCH") {
       if (controls.conflicts > 0) return conflict();
       if (body?.expected_version !== task.version) return problem(response, 409, "conflict", "The resource changed after you read it.", { conflict: { current_version: task.version } });
