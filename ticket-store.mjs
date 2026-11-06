@@ -223,6 +223,31 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
     if (found.length !== 1) throw new OrbitError(`no status called ${oneLine(name)} on this board; it has: ${list.map(status => status.name).join(", ")}`);
     return found[0];
   };
+  const labelCache = new Map();
+  const labelsOf = projectId => {
+    // As for statuses: cards read at the same time share one request.
+    if (!labelCache.has(projectId)) labelCache.set(projectId, client.labels(projectId));
+    return labelCache.get(projectId);
+  };
+  /** The card's label names, an id Orbit no longer lists shown as it is; a card without labels asks Orbit nothing. */
+  const labelNames = async task => {
+    if (!task.label_ids?.length) return [];
+    const known = await labelsOf(task.project_id);
+    return task.label_ids.map(id => known.find(label => label.id === id)?.name ?? id);
+  };
+  /** Ids for a NAME[,NAME] list on one board. A name Orbit does not list is refused: labels are never made here. */
+  const labelIds = async (projectId, value) => {
+    const names = String(value).split(",").map(name => oneLine(name)).filter(Boolean);
+    if (!names.length) throw new OrbitError("--label needs label names; to take every label off use --clear-labels");
+    const known = await labelsOf(projectId);
+    const ids = names.map(name => {
+      const found = known.filter(label => label.name.toLowerCase() === name.toLowerCase());
+      if (found.length !== 1) throw new OrbitError(`no label called ${name} on this board; it has: ${known.map(label => label.name).join(", ") || "none"}`);
+      return found[0].id;
+    });
+    return [...new Set(ids)];
+  };
+  const withNames = async task => ({ ...task, status_name: await statusName(task), label_names: await labelNames(task) });
   const firstOpenStatus = async projectId => {
     const list = [...await statusesOf(projectId)].sort((a, b) => a.position - b.position);
     return list.find(status => status.category === "unstarted") ?? list[0];
@@ -365,7 +390,7 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
         try { parent_key = (await client.task(task.parent_task_id)).identifier; }
         catch (error) { if (![403, 404].includes(error?.status)) throw error; }
       }
-      return { ...task, status_name: await statusName(task), blocked_by: blockedBy(task.description), next_lex: nextLexReason(task.description), parent_key };
+      return { ...await withNames(task), blocked_by: blockedBy(task.description), next_lex: nextLexReason(task.description), parent_key };
     },
     comments: key => client.comments(orbitCardKey(key)),
     /** The cards of one board, or of every board the token reaches with project "all". */
@@ -378,13 +403,18 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       const query = { project_id: board?.id, assignee_id: assignee, q, parent_task_id: parent === undefined ? undefined : orbitCardKey(parent) };
       if (status !== undefined) query.status_id = (await statusByName(board.id, status)).id;
       const { items, more } = await client.tasks(query, limit);
-      return { more, items: await Promise.all(items.map(async task => ({ ...task, status_name: await statusName(task) }))) };
+      return { more, items: await Promise.all(items.map(withNames)) };
+    },
+    /** The label names of one board. */
+    async labels(project) {
+      const board = await projectFrom(project);
+      return { board: board.key, items: await labelsOf(board.id) };
     },
     async subTasks(key) {
       const { items, more } = await client.tasks({ parent_task_id: orbitCardKey(key) });
-      return { more, items: await Promise.all(items.map(async task => ({ ...task, status_name: await statusName(task) }))) };
+      return { more, items: await Promise.all(items.map(withNames)) };
     },
-    async create({ project, title, description, status, priority, parent, noParent, blocked, lexSaid }) {
+    async create({ project, title, description, status, priority, parent, noParent, blocked, label, lexSaid }) {
       if (!oneLine(title)) throw new OrbitError("a new card needs --title");
       if (priority !== undefined && !priorities.includes(priority)) throw new OrbitError(`priority must be one of ${priorities.join(", ")}`);
       // A blank --parent (an empty variable, say) must not quietly drop the default parent.
@@ -399,6 +429,7 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       const text = blocked === undefined ? description : withBlockedBy(description, blockers(blocked));
       if (text !== undefined) body.description = text;
       if (priority !== undefined) body.priority = priority;
+      if (label !== undefined) body.label_ids = await labelIds(board.id, label);
       const ownBoard = board.key.toLowerCase() === String(defaults.project ?? "").toLowerCase();
       const ownParent = parent ?? (noParent || !ownBoard ? undefined : defaults.parent ?? undefined);
       if (ownParent) body.parent_task_id = await parentId(ownParent);
@@ -411,16 +442,17 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       });
       return { key: task.identifier, action: "create", task, fields: Object.keys(body) };
     },
-    update(key, { title, description: text, clearDescription, status, priority, parent, blocked, lexSaid }) {
+    update(key, { title, description: text, clearDescription, status, priority, parent, blocked, label, clearLabels, lexSaid }) {
+      if (clearLabels && label !== undefined) throw new OrbitError("use --label or --clear-labels, not both");
       if (clearDescription && text !== undefined) throw new OrbitError("use --description or --clear-description, not both");
       // A blank text is more often a failed pipe than a wish: wiping a card is asked for by name.
       if (text !== undefined && !text.trim()) throw new OrbitError("that description is blank, so nothing was sent; to empty a card on purpose use --clear-description (its next step, blockers and dates line stay)");
       const description = clearDescription ? "" : text;
-      if ([title, description, status, priority, parent, blocked].every(value => value === undefined)) throw new OrbitError("nothing to change: name at least one of --title, --description, --clear-description, --status, --priority, --parent, --blocked-by");
+      if ([title, description, status, priority, parent, blocked, label].every(value => value === undefined) && !clearLabels) throw new OrbitError("nothing to change: name at least one of --title, --description, --clear-description, --status, --priority, --parent, --blocked-by, --label, --clear-labels");
       if (priority !== undefined && !priorities.includes(priority)) throw new OrbitError(`priority must be one of ${priorities.join(", ")}`);
       if (title !== undefined && !oneLine(title)) throw new OrbitError("--title cannot be blank");
       // The fields set outright; a retry stops if someone else changed one of them. A blockers-only change merges.
-      const replaces = [title !== undefined && "title", description !== undefined && "description", status !== undefined && "status_id", priority !== undefined && "priority", parent !== undefined && "parent_task_id"].filter(Boolean);
+      const replaces = [title !== undefined && "title", description !== undefined && "description", status !== undefined && "status_id", priority !== undefined && "priority", parent !== undefined && "parent_task_id", (label !== undefined || clearLabels) && "label_ids"].filter(Boolean);
       const keys = blocked === undefined ? undefined : blockers(blocked);
       return changeCard("update", key, async task => {
         const wanted = {};
@@ -435,6 +467,12 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
         }
         if (status !== undefined) wanted.status_id = (await statusByName(task.project_id, status)).id;
         if (priority !== undefined) wanted.priority = priority;
+        if (clearLabels) wanted.label_ids = [];
+        else if (label !== undefined) {
+          const ids = await labelIds(task.project_id, label);
+          // The same labels in another order are no change.
+          wanted.label_ids = same([...ids].sort(), [...(task.label_ids ?? [])].sort()) ? task.label_ids : ids;
+        }
         if (parent !== undefined) wanted.parent_task_id = parent === "none" ? null : await parentId(parent);
         return wanted;
       }, { replaces, lexSaid });
