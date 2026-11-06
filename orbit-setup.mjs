@@ -186,7 +186,9 @@ export async function orbitSetup({ env = process.env, flags = {}, say, io = term
     }
   }
   const origin = orbitOrigin(flags.origin ?? copiedOrigin ?? saved?.origin ?? await io.ask("Orbit's web address (like https://orbit.example.com):"));
-  let id = copied?.id ?? (flags.newPass ? undefined : saved?.cf_access_client_id), secret = copied?.secret ?? (flags.newPass ? undefined : saved?.cf_access_client_secret);
+  // What is saved belongs to the saved address: a new address never gets the saved token or pass.
+  const kept = saved?.origin === origin ? saved : null;
+  let id = copied?.id ?? (flags.newPass ? undefined : kept?.cf_access_client_id), secret = copied?.secret ?? (flags.newPass ? undefined : kept?.cf_access_client_secret);
   if (!id) {
     say("Orbit sits behind Cloudflare, so it needs a pass with two parts. Press Enter on both if yours does not.");
     id = await io.askHidden("Paste the Cloudflare pass id");
@@ -196,7 +198,7 @@ export async function orbitSetup({ env = process.env, flags = {}, say, io = term
 
   // Fixing only the pass needs no new token: Orbit shows a token one time only.
   const token = flags.fromFile ? takeTokenFile(flags.fromFile)
-    : await io.askHidden(saved?.token ? "Paste the new Orbit token, or press Enter to keep the saved one" : "Paste the Orbit token, then press Enter") || saved?.token || "";
+    : await io.askHidden(kept?.token ? "Paste the new Orbit token, or press Enter to keep the saved one" : "Paste the Orbit token, then press Enter") || kept?.token || "";
   if (!looksLikeToken(token)) stop(notAToken);
   // Once a token file is used it is gone, and Orbit shows a token only once.
   const after = flags.fromFile ? " The token file is gone, so make a new token in Orbit before running this again." : "";
@@ -211,7 +213,7 @@ export async function orbitSetup({ env = process.env, flags = {}, say, io = term
   }
   const workspaces = Array.isArray(me?.workspaces) && me.workspaces.length ? me.workspaces : me?.workspace ? [me.workspace] : [];
   // A new token for the same setup stays on the saved workspace when it still reaches it.
-  const wanted = flags.workspace ?? saved?.workspace_id;
+  const wanted = flags.workspace ?? kept?.workspace_id;
   const workspace = workspaces.find(item => item.id === wanted) ?? (!flags.workspace && workspaces.length === 1 ? workspaces[0] : null);
   const reached = workspaces.map(item => `${item.id} (${item.name})`).join(", ");
   if (!workspace) {

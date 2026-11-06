@@ -425,10 +425,12 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       return changeCard("update", key, async task => {
         const wanted = {};
         if (title !== undefined) wanted.title = oneLine(title);
-        if (description !== undefined) wanted.description = keepingKitLines(description, task);
+        // --blocked-by none with a new text asks for no Blocked by line at all, so the old one is not carried over.
+        const dropping = keys?.length === 0 && description !== undefined;
+        if (description !== undefined) wanted.description = keepingKitLines(description, dropping ? { ...task, description: split(task.description).filter(line => !blockedLine.test(line.trim())).join("\n") } : task);
         if (keys !== undefined) {
           const others = otherBlockedWords(wanted.description ?? task.description);
-          if (others.length) throw new OrbitError(`the Blocked by line also says: ${others.join(", ")}; change that line with --description so these words are not lost`);
+          if (others.length) throw new OrbitError(`the Blocked by line also says: ${others.join(", ")}; to change that line, give the new text with --description, and add --blocked-by none to drop it`);
           wanted.description = withBlockedBy(wanted.description ?? task.description, keys);
         }
         if (status !== undefined) wanted.status_id = (await statusByName(task.project_id, status)).id;
