@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { kitOwner, kitResult, kitRoot, kitSettings } from "../kit-lib.mjs";
-import { OrbitError, OrbitSetupProblem, orbitClient, orbitLogPath, orbitRedactor, orbitSecrets, readOrbitConfig } from "../orbit-client.mjs";
+import { OrbitError, OrbitSetupProblem, orbitCardRedactor, orbitClient, orbitLogPath, orbitRedactor, orbitSecrets, readOrbitConfig } from "../orbit-client.mjs";
 import { orbitSetup } from "../orbit-setup.mjs";
 import { orbitStore, showDate, ticketSettings } from "../ticket-store.mjs";
 
@@ -65,13 +65,13 @@ Other ways to start it:
 `;
 
 class UsageProblem extends Error {}
-const text = ["title", "description", "description-file", "status", "priority", "parent", "project", "blocked-by", "lex-said"];
+const cardOptions = ["title", "description", "description-file", "status", "priority", "parent", "project", "blocked-by", "lex-said"];
 const commands = {
   get: { args: ["card key"], flags: ["json", "comments"], values: [] },
   list: { args: [], flags: ["json"], values: ["project", "status", "parent", "assignee", "q", "limit"] },
   "sub-tasks": { args: ["card key"], flags: ["json"], values: [] },
-  create: { args: [], flags: ["dry-run", "no-parent"], values: text },
-  update: { args: ["card key"], flags: ["dry-run"], values: text.filter(name => name !== "project") },
+  create: { args: [], flags: ["dry-run", "no-parent"], values: cardOptions },
+  update: { args: ["card key"], flags: ["dry-run"], values: cardOptions.filter(name => name !== "project") },
   dates: { args: ["card key"], flags: ["dry-run", "clear"], values: ["start", "due", "source"] },
   note: { args: ["card key", "text"], flags: ["dry-run"], values: [] },
   comment: { args: ["card key", "text"], flags: ["dry-run"], values: [] },
@@ -120,10 +120,12 @@ const printable = value => String(value ?? "").replace(/[^\P{Cc}\n\t]|[\u202A-\u
 const assignees = task => task.assignee_ids?.length ? task.assignee_ids.join(", ") : "none";
 const cardLine = task => `${task.identifier}  [${task.status_name}]  ${task.priority}  assignees: ${assignees(task)}  ${task.title}`;
 
-let redact = orbitRedactor();
-const say = line => console.log(redact(printable(line)));
-// JSON already escapes control characters and goes to scripts, which get the card's text as it is.
-const sayJson = value => console.log(redact(JSON.stringify(value, null, 2)));
+// Errors, results and log lines hide all that looks like a secret. Card text on the screen, in --json and in a dry run
+// stays whole apart from real secrets, so a script reading it gets the card's own words.
+let redact = orbitRedactor(), redactCard = orbitCardRedactor();
+const say = line => console.log(redactCard(printable(line)));
+// JSON already escapes control characters.
+const sayJson = value => console.log(redactCard(JSON.stringify(value, null, 2)));
 function finish(status, message, code = status === "ok" ? 0 : 1) {
   kitResult(status, redact(printable(`ticket ${message}`)).replace(/\s+/g, " "));
   process.exitCode = code;
@@ -155,7 +157,7 @@ async function show(store, key, { json, comments }) {
   say(`Assignees (assignee_ids): ${assignees(task)}`);
   if (task.next_lex !== null) say(`Next step (Lex): ${task.next_lex}`);
   if (task.blocked_by.length) say(`Blocked by: ${task.blocked_by.join(", ")}`);
-  if (task.due_at) say(`Dates: ${[task.due_start_at && `start ${showDate(task.due_start_at)}`, `due ${showDate(task.due_at)}`].filter(Boolean).join(", ")}`);
+  if (task.due_at) say(`Dates: ${[task.due_start_at && `start ${showDate(task.due_start_at, "start")}`, `due ${showDate(task.due_at, "due")}`].filter(Boolean).join(", ")}`);
   if (task.parent_task_id) say(`Parent: ${task.parent_key ?? `${task.parent_task_id} (this token cannot read it)`}`);
   say(`Version: ${task.version}`);
   if (task.url) say(`Link: ${task.url}`);
@@ -164,10 +166,10 @@ async function show(store, key, { json, comments }) {
   finish("ok", `get ${task.identifier}`);
 }
 
-function showList(label, { items, more }, json) {
+function showList(label, { items, more }, json, moreHint = "") {
   if (json) sayJson(items);
   else for (const task of items) say(cardLine(task));
-  finish("ok", `${label}: ${items.length} card${items.length === 1 ? "" : "s"}${more ? "; more exist (use --limit)" : ""}`);
+  finish("ok", `${label}: ${items.length} card${items.length === 1 ? "" : "s"}${more ? `; more exist${moreHint}` : ""}`);
 }
 
 async function main() {
@@ -191,6 +193,7 @@ async function main() {
 
   const config = readOrbitConfig();
   redact = orbitRedactor(orbitSecrets(config));
+  redactCard = orbitCardRedactor(orbitSecrets(config));
   const dryRun = Boolean(flags["dry-run"]);
   const store = orbitStore({ client: orbitClient(config), role: process.env.ORBIT_ROLE, who: kitOwner(), logPath: orbitLogPath(), redact, secrets: orbitSecrets(config), dryRun,
     defaults: { project, parent, problem: settingsProblem } });
@@ -200,7 +203,7 @@ async function main() {
     case "list": {
       const limit = flags.limit === undefined ? 50 : Number(flags.limit);
       if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new UsageProblem("--limit must be a whole number from 1 to 1000");
-      return showList("list", await store.list({ project: flags.project, status: flags.status, parent: flags.parent, assignee: flags.assignee, q: flags.q, limit }), flags.json);
+      return showList("list", await store.list({ project: flags.project, status: flags.status, parent: flags.parent, assignee: flags.assignee, q: flags.q, limit }), flags.json, " (use --limit)");
     }
     case "sub-tasks": return showList(`sub-tasks ${key}`, await store.subTasks(key), flags.json);
     case "create": {

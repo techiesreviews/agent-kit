@@ -100,15 +100,20 @@ function terminal(input = process.stdin, output = process.stderr) {
 
 const stop = message => { throw new OrbitSetupProblem("stopped", message); };
 
-/** Reads the token file, then deletes it, whatever comes after. Only a plain file: a folder or a pipe stays as it is. */
+const looksLikeToken = token => token.startsWith("orb_") && !/\s/.test(token);
+const notAToken = "That does not look like an Orbit token (they start with orb_). Nothing was saved.";
+
+/** Reads the token from a plain file, then deletes it. A file that holds no token (a mistyped path) stays as it is. */
 function takeTokenFile(path) {
   let info;
   try { info = lstatSync(path); } catch { stop(`no file at ${path}, so it cannot be read`); }
   if (!info.isFile()) stop(`${path} must be a plain file`);
-  let text = "";
-  try { text = readFileSync(path, "utf8"); }
-  finally { rmSync(path, { force: true }); }
-  return text.split("\n", 1)[0].trim();
+  let text;
+  try { text = readFileSync(path, "utf8"); } catch { stop(`${path} cannot be read`); }
+  const token = text.split("\n", 1)[0].trim();
+  if (!looksLikeToken(token)) stop(`${notAToken} ${path} was left as it is.`);
+  rmSync(path, { force: true });
+  return token;
 }
 
 function saveConfig(path, config) {
@@ -167,7 +172,9 @@ export async function orbitSetup({ env = process.env, flags = {}, say, io = term
   // The address comes before the token: a bad one stops here, with a token file still in place.
   const origin = orbitOrigin(flags.origin ?? copied?.origin ?? saved?.origin ?? await io.ask("Orbit's web address (like https://orbit.example.com):"));
   const token = flags.fromFile ? takeTokenFile(flags.fromFile) : await io.askHidden("Paste the Orbit token, then press Enter");
-  if (!token.startsWith("orb_") || /\s/.test(token)) stop("That does not look like an Orbit token (they start with orb_). Nothing was saved.");
+  if (!looksLikeToken(token)) stop(notAToken);
+  // Once a token file is used it is gone, and Orbit shows a token only once.
+  const after = flags.fromFile ? " The token file is gone, so make a new token in Orbit before running this again." : "";
 
   let id = copied?.id ?? saved?.cf_access_client_id, secret = copied?.secret ?? saved?.cf_access_client_secret;
   if (!id) {
@@ -175,19 +182,24 @@ export async function orbitSetup({ env = process.env, flags = {}, say, io = term
     id = await io.askHidden("Paste the Cloudflare pass id");
     secret = await io.askHidden("Paste the Cloudflare pass secret");
   }
-  if (Boolean(id) !== Boolean(secret)) stop("The Cloudflare pass has two parts and one is missing. Nothing was saved.");
+  if (Boolean(id) !== Boolean(secret)) stop(`The Cloudflare pass has two parts and one is missing. Nothing was saved.${after}`);
 
   const config = { origin, workspace_id: flags.workspace ?? "", token, ...(id ? { cf_access_client_id: id, cf_access_client_secret: secret } : {}) };
   let me;
   try { me = await orbitClient(config).me(); }
   catch (error) {
-    if (error instanceof OrbitError) stop(orbitRedactor(orbitSecrets(config))(`Orbit refused this setup, so nothing was saved. ${error.message}`));
+    // Only Orbit's own answer is a refusal; no answer, or a page from something in between, says nothing about the token.
+    if (error instanceof OrbitError) stop(orbitRedactor(orbitSecrets(config))(`${error.code && !error.noAnswer ? "Orbit refused this setup, so nothing was saved. " : "Nothing was saved. "}${error.message}${after}`));
     throw error;
   }
   const workspaces = Array.isArray(me?.workspaces) && me.workspaces.length ? me.workspaces : me?.workspace ? [me.workspace] : [];
   const workspace = flags.workspace ? workspaces.find(item => item.id === flags.workspace) : workspaces.length === 1 ? workspaces[0] : null;
   const reached = workspaces.map(item => `${item.id} (${item.name})`).join(", ");
-  if (!workspace) stop(`${flags.workspace ? `No workspace ${flags.workspace} for this token; it reaches: ${reached}` : `This token reaches several workspaces; name one with --workspace <id>: ${reached}`}. Nothing was saved.`);
+  if (!workspace) {
+    const why = flags.workspace ? `No workspace ${flags.workspace} for this token; it reaches: ${reached || "none"}`
+      : workspaces.length ? `This token reaches several workspaces; name one with --workspace <id>: ${reached}` : "This token reaches no workspace";
+    stop(`${why}. Nothing was saved.${after}`);
+  }
   config.workspace_id = workspace.id;
 
   saveConfig(path, config);

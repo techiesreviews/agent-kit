@@ -50,11 +50,11 @@ export function orbitDate(value, edge) {
   return new Date(ms).toISOString();
 }
 
-/** An Orbit time as a person reads it: the plain date when it is a day's start or end in Amsterdam, else the UTC time. */
-export function showDate(iso) {
+/** An Orbit time as a person reads it: the plain date when it is that edge of a day in Amsterdam (see orbitDate), else the UTC time. */
+export function showDate(iso, edge) {
   if (!iso) return "";
   const when = zoneParts(Date.parse(iso)), minutes = `${when.hour}:${when.minute}`;
-  return when.second === "00" && (minutes === "00:00" || minutes === "23:59") ? `${when.year}-${when.month}-${when.day}` : new Date(iso).toISOString();
+  return when.second === "00" && minutes === (edge === "start" ? "00:00" : "23:59") ? `${when.year}-${when.month}-${when.day}` : new Date(iso).toISOString();
 }
 
 const oneLine = text => String(text ?? "").replace(/\s*[\r\n]+\s*/g, " ").trim();
@@ -62,7 +62,7 @@ const nextLexPrefix = "Next step (Lex):";
 const blockedLine = /^Blocked by:\s*(.*)$/i;
 const plannedLine = /^Planned dates:/i;
 const notesHeading = "## Notes";
-const tick = /^\s*(?:[-*+]|\d+[.)])\s+\[[xX]\]\s+.*scheduled in radaar/i;
+const tick = /^[\s>]*(?:(?:[-*+]|\d+[.)])\s+)?\[[xX]\]\s+(.*)$/;
 
 const split = text => String(text ?? "").split("\n");
 /** The text without the matching lines and the blank line each leaves behind; every other line stays exactly as it was. */
@@ -151,8 +151,10 @@ export function withNote(description, date, who, text) {
   return lines.join("\n");
 }
 
-/** The ticked "Scheduled in Radaar" lines, spacing and letter case aside. */
-const ticked = description => split(description).filter(line => tick.test(line)).map(line => line.trim().replace(/\s+/g, " ").toLowerCase());
+/** The ticked "Scheduled in Radaar" lines, with spacing, emphasis, quote marks and letter case aside. */
+const ticked = description => split(description)
+  .map(line => (tick.exec(line)?.[1] ?? "").replace(/[*_~`]/g, "").replace(/\s+/g, " ").trim().toLowerCase())
+  .filter(text => text.includes("scheduled in radaar"));
 const amsterdamToday = () => { const now = zoneParts(Date.now()); return `${now.year}-${now.month}-${now.day}`; };
 const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 const sameTime = (a, b) => (a && b) ? Date.parse(a) === Date.parse(b) : same(a, b);
@@ -168,7 +170,8 @@ const words = "needs Lex's exact words";
 export function orbitStore({ client, role, who, logPath, redact, secrets = [], dryRun = false, defaults = {} }) {
   const statusCache = new Map();
   const statusesOf = async projectId => {
-    if (!statusCache.has(projectId)) statusCache.set(projectId, await client.statuses(projectId));
+    // The promise goes in the cache, so cards read at the same time share one request.
+    if (!statusCache.has(projectId)) statusCache.set(projectId, client.statuses(projectId));
     return statusCache.get(projectId);
   };
   const statusName = async task => (await statusesOf(task.project_id)).find(status => status.id === task.status_id)?.name ?? task.status_id;
@@ -292,7 +295,12 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
     });
   }
 
-  const blockers = value => value === "none" ? [] : [...new Set(String(value).split(/[\s,]+/).filter(Boolean).map(orbitCardKey))];
+  const blockers = value => {
+    if (value === "none") return [];
+    const keys = String(value).split(/[\s,]+/).filter(Boolean);
+    if (!keys.length) throw new OrbitError("--blocked-by needs card keys, or none to clear them");
+    return [...new Set(keys.map(orbitCardKey))];
+  };
   const parentId = async value => (await client.task(value)).id;
   const textOnly = (name, text) => { if (!oneLine(text)) throw new OrbitError(`${name} needs some text`); };
 
@@ -327,6 +335,8 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
     async create({ project, title, description, status, priority, parent, noParent, blocked, lexSaid }) {
       if (!oneLine(title)) throw new OrbitError("a new card needs --title");
       if (priority !== undefined && !priorities.includes(priority)) throw new OrbitError(`priority must be one of ${priorities.join(", ")}`);
+      // Broken settings hide the project's default parent; a card made without it would be in the wrong place.
+      if (defaults.problem && parent === undefined && !noParent) throw new OrbitError(`scripts/agents/kit.json has a problem (${defaults.problem}), so its default parent cannot be read: fix it, or add --parent <KEY> or --no-parent`);
       requireLead();
       checkLog();
       const board = await projectFrom(project);
@@ -349,6 +359,7 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
     update(key, { title, description, status, priority, parent, blocked, lexSaid }) {
       if ([title, description, status, priority, parent, blocked].every(value => value === undefined)) throw new OrbitError("nothing to change: name at least one of --title, --description, --status, --priority, --parent, --blocked-by");
       if (priority !== undefined && !priorities.includes(priority)) throw new OrbitError(`priority must be one of ${priorities.join(", ")}`);
+      if (title !== undefined && !oneLine(title)) throw new OrbitError("--title cannot be blank");
       // The fields set outright; a retry stops if someone else changed one of them. A blockers-only change merges.
       const replaces = [title !== undefined && "title", description !== undefined && "description", status !== undefined && "status_id", priority !== undefined && "priority", parent !== undefined && "parent_task_id"].filter(Boolean);
       const keys = blocked === undefined ? undefined : blockers(blocked);
@@ -378,7 +389,7 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
         const kept = (newStart === undefined && task.due_start_at) || newDue === undefined;
         const old = kept ? plannedSource(task.description) : null;
         const named = old && old !== oneLine(source) ? `${oneLine(source)}; before: ${old}` : oneLine(source);
-        const when = [startAt && `start ${showDate(startAt)}`, `due ${showDate(dueAt)}`].filter(Boolean).join(", ");
+        const when = [startAt && `start ${showDate(startAt, "start")}`, `due ${showDate(dueAt, "due")}`].filter(Boolean).join(", ");
         return { description: withPlannedDates(task.description, `Planned dates: ${when} (source: ${named})`), due_start_at: startAt ?? null, due_at: dueAt };
       }, { replaces: [(clear || start !== undefined) && "due_start_at", (clear || due !== undefined) && "due_at"].filter(Boolean) });
     },
