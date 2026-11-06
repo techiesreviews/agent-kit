@@ -1129,7 +1129,7 @@ test("setup's help is numbered plain steps with no jargon; kit ticket help names
   assert.ok(!/\b(stdin|TTY|JSON|env|chmod|OAuth|CLI|header)\b/i.test(help.stdout), help.stdout);
   const main = await run(["--help"]);
   assert.equal(main.status, 0);
-  for (const name of ["create", "get", "list", "update", "dates", "note", "comment", "sub-tasks", "next-lex", "clear-next-lex", "trash", "setup"]) assert.match(main.stdout, new RegExp(`\\b${name}\\b`));
+  for (const name of ["labels", "create", "get", "list", "update", "dates", "note", "comment", "sub-tasks", "next-lex", "clear-next-lex", "trash", "setup"]) assert.match(main.stdout, new RegExp(`\\b${name}\\b`));
   refused(await run([]), /Usage/);
   refused(await run(["nonsense"]), /nonsense/);
   refused(await run(["get"]), /card key/i);
@@ -1655,6 +1655,93 @@ test("setup saves the token's expiry when Orbit names one, and asks when it does
   box();
   assert.match(ok(await run(["setup", "--from-file", secret, "--from-mcp-config", mcp], {}, "yes\nsoon\n")).all, /not a date.*no expiry/i);
   assert.ok(!("token_expires_at" in JSON.parse(readFileSync(configPath, "utf8"))));
+});
+
+test("labels lists the names Orbit has for a board, for anyone, and needs a board", async t => {
+  const { orbit, run } = await fixture(t);
+  const listed = ok(await run(["labels"], { ORBIT_ROLE: "" }));
+  assert.deepEqual(lines(listed.stdout).slice(0, -1), ["Script", "Record", "Short video"]);
+  assert.match(result(listed), /labels TOOLS: 3 labels/);
+  orbit.labels.get(orbit.video.id)!.splice(1);
+  assert.deepEqual(lines(ok(await run(["labels", "--project", "VID"])).stdout).slice(0, -1), ["Script"]);
+  refused(await run(["labels", "--project", "NOPE"]), /TOOLS.*VID/);
+  const bare = await fixture(t, {});
+  refused(await bare.run(["labels"]), /--project/);
+  refused(await run(["labels", "extra"]), /does not take extra/);
+});
+
+test("create and update set labels by name, an unknown name is refused with the known names, and none is ever made", async t => {
+  const { orbit, run, log } = await fixture(t);
+  const ids = (project: typeof orbit.tools, ...names: string[]) => names.map(name => orbit.labels.get(project.id)!.find(label => label.name === name)!.id);
+  ok(await run(["create", "--title", "Video", "--label", "Script,short video"]));
+  assert.deepEqual(orbit.tasks[0].label_ids, ids(orbit.tools, "Script", "Short video"));
+  assert.match(log(), /action=create fields=.*label_ids/);
+  ok(await run(["update", "TOOLS-1", "--label", " Record , Record "]));
+  assert.deepEqual(orbit.tasks[0].label_ids, ids(orbit.tools, "Record"), "a list replaces the old list");
+  assert.match(lines(log()).at(-1)!, /action=update fields=label_ids/);
+
+  const writes = orbit.writes().length;
+  for (const args of [["update", "TOOLS-1", "--label", "Script,Nope"], ["create", "--title", "x", "--label", "Nope"]]) {
+    refused(await run(args), /Nope.*Script, Record, Short video/);
+  }
+  refused(await run(["update", "TOOLS-1", "--label", " , "]), /--clear-labels/);
+  refused(await run(["update", "TOOLS-1", "--label", "Record", "--clear-labels"]), /--clear-labels/);
+  assert.equal(orbit.writes().length, writes, "a refused name sends nothing");
+  assert.equal(orbit.labels.get(orbit.tools.id)!.length, 3);
+  assert.ok(!orbit.requests.some(item => item.method !== "GET" && item.path.endsWith("/labels")), "never creates a label");
+
+  // Each board has its own labels: a name resolves on the card's own board.
+  ok(await run(["create", "--project", "VID", "--title", "Other", "--label", "Script"]));
+  assert.deepEqual(orbit.tasks[1].label_ids, ids(orbit.video, "Script"));
+
+  ok(await run(["update", "TOOLS-1", "--label", "Script,Record"]));
+  const same = ok(await run(["update", "TOOLS-1", "--label", "Record,Script"]));
+  assert.match(result(same), /already/, "the same labels in another order are no change");
+  ok(await run(["update", "TOOLS-1", "--clear-labels"]));
+  assert.deepEqual(orbit.tasks[0].label_ids, []);
+  assert.match(result(ok(await run(["update", "TOOLS-1", "--clear-labels"]))), /already/);
+});
+
+test("label writes are lead-only and take --dry-run, and a retry never overwrites labels someone else changed", async t => {
+  const { orbit, run, log } = await fixture(t);
+  const task = orbit.addTask(orbit.tools);
+  const [script, record] = orbit.labels.get(orbit.tools.id)!.map(label => label.id);
+  refused(await run(["update", "TOOLS-1", "--label", "Script"], { ORBIT_ROLE: "" }), /ORBIT_ROLE=lead/);
+  refused(await run(["update", "TOOLS-1", "--clear-labels"], { ORBIT_ROLE: "" }), /ORBIT_ROLE=lead/);
+  refused(await run(["create", "--title", "x", "--label", "Script"], { ORBIT_ROLE: "" }), /ORBIT_ROLE=lead/);
+  const dry = ok(await run(["update", "TOOLS-1", "--label", "Script", "--dry-run"], { ORBIT_ROLE: "" }));
+  assert.ok(dry.stdout.includes(script));
+  assert.match(dry.stdout, /"label_ids"/);
+  assert.match(ok(await run(["create", "--title", "x", "--label", "Script", "--dry-run"])).stdout, /"label_ids"/);
+  assert.equal(orbit.writes().length, 0);
+  assert.equal(log(), "");
+
+  orbit.controls.conflicts = 1;
+  orbit.controls.concurrentEdit = card => { card.label_ids = [record]; };
+  refused(await run(["update", "TOOLS-1", "--label", "Script"]), /label_ids|labels/);
+  assert.deepEqual(task.label_ids, [record]);
+});
+
+test("get and list show label names; a card without labels asks Orbit for none", async t => {
+  const { orbit, run } = await fixture(t);
+  const [script, record] = orbit.labels.get(orbit.tools.id)!.map(label => label.id);
+  orbit.addTask(orbit.tools, { title: "Plain" });
+  orbit.addTask(orbit.tools, { title: "Tagged", label_ids: [script, record, "gone-label-id"] });
+  ok(await run(["get", "TOOLS-1"]));
+  assert.ok(!orbit.requests.some(item => item.path.endsWith("/labels")));
+  const shown = ok(await run(["get", "TOOLS-2"]));
+  assert.match(shown.stdout, /^Labels: Script, Record, gone-label-id$/m);
+  const json = JSON.parse(ok(await run(["get", "TOOLS-2", "--json"])).stdout.split("\nRESULT:")[0]);
+  assert.deepEqual(json.label_names, ["Script", "Record", "gone-label-id"]);
+  assert.deepEqual(json.label_ids, [script, record, "gone-label-id"]);
+  const list = ok(await run(["list"]));
+  assert.match(list.stdout, /TOOLS-2 .*labels: Script, Record, gone-label-id .*Tagged/);
+  assert.ok(!/TOOLS-1 .*labels:/.test(list.stdout));
+  orbit.requests.length = 0;
+  ok(await run(["list"]));
+  assert.equal(orbit.requests.filter(item => item.path.endsWith("/labels")).length, 1, "one request per board");
+  assert.deepEqual(JSON.parse(ok(await run(["list", "--json"])).stdout.split("\nRESULT:")[0]).find((item: { title: string }) => item.title === "Tagged").label_names, ["Script", "Record", "gone-label-id"]);
+  assert.match(ok(await run(["sub-tasks", "TOOLS-1"])).stdout, /RESULT: ok/);
 });
 
 test("a project on files keeps its other commands; kit ticket still reaches Orbit there", async t => {

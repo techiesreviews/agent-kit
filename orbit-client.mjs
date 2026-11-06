@@ -257,6 +257,7 @@ export function orbitClient(config, { timeoutMs = 30_000, longestWaitSeconds = 3
     me: () => request("GET", "/me"),
     projects: async () => (await list(`${workspace}/projects`)).items,
     statuses: async projectId => (await list(`${workspace}/projects/${encodeURIComponent(projectId)}/statuses`)).items,
+    labels: async projectId => (await list(`${workspace}/projects/${encodeURIComponent(projectId)}/labels`)).items,
     tasks: (query, limit) => list(`${workspace}/tasks`, query, limit),
     task: key => request("GET", taskPath(key)),
     createTask: body => request("POST", `${workspace}/tasks`, { body }),
