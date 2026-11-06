@@ -24,6 +24,8 @@ export async function fakeOrbit(t: TestContext) {
   ];
   const statuses = new Map(projects.map(project => [project.id, statusNames.map(([name, category], position) => (
     { id: randomUUID(), project_id: project.id, name, description: "", color: "gray", category, position, version: 1 }))]));
+  const labels = new Map(projects.map(project => [project.id, ["Script", "Record", "Short video"].map(name => (
+    { id: randomUUID(), project_id: project.id, name, color: "gray", version: 1 }))]));
   const tasks: FakeTask[] = [], comments: Record<string, any[]> = {}, requests: FakeRequest[] = [];
   let versionSeed = 4_503_599_627_000_000;
   const nextVersion = () => (versionSeed += 1_000_003);
@@ -100,6 +102,10 @@ export async function fakeOrbit(t: TestContext) {
     if (rest === "/projects" && request.method === "GET") return send(response, 200, { items: projects, next_cursor: null });
     const statusPath = /^\/projects\/([^/]+)\/statuses$/.exec(rest);
     if (statusPath && request.method === "GET") return page(statuses.get(statusPath[1]) ?? []);
+    // Reading labels needs tasks:read, and the public API has no way to make one.
+    const labelPath = /^\/projects\/([^/]+)\/labels$/.exec(rest);
+    if (labelPath && request.method === "GET") return page(labels.get(labelPath[1]) ?? []);
+    const wrongLabel = (projectId: string, ids: unknown) => Array.isArray(ids) && ids.some(id => !labels.get(projectId)!.some(label => label.id === id));
 
     if (rest === "/tasks" && request.method === "GET") {
       const query = url.searchParams;
@@ -132,6 +138,7 @@ export async function fakeOrbit(t: TestContext) {
       if (unknown) return problem(response, 400, "invalid_request", `Unknown field ${unknown}`);
       const project = projects.find(item => item.id === body?.project_id);
       if (!project || !body.title || !statuses.get(project.id)!.some(status => status.id === body.status_id)) return problem(response, 422, "validation_failed", "A value is not valid", { errors: { title: ["bad"] } });
+      if (wrongLabel(project.id, body.label_ids)) return problem(response, 422, "validation_failed", "Unknown label", { errors: { label_ids: ["unknown"] } });
       const parent = body.parent_task_id ? find(body.parent_task_id) : null;
       if (body.parent_task_id && !parent) return problem(response, 422, "parent_invalid", "No such parent");
       return send(response, 201, show(addTask(project, { ...body, parent_task_id: parent?.id ?? null })));
@@ -164,6 +171,7 @@ export async function fakeOrbit(t: TestContext) {
       const known = new Set(["title", "description", "status_id", "priority", "assignee_ids", "label_ids", "due_start_at", "due_at", "parent_task_id"]);
       const unknown = Object.keys(fields).find(key => !known.has(key));
       if (unknown) return problem(response, 400, "invalid_request", `Unknown field ${unknown}`);
+      if (wrongLabel(task.project_id, fields.label_ids)) return problem(response, 422, "validation_failed", "Unknown label", { errors: { label_ids: ["unknown"] } });
       const after = { ...task, ...fields };
       if (fields.parent_task_id) {
         const parent = find(fields.parent_task_id);
@@ -192,5 +200,5 @@ export async function fakeOrbit(t: TestContext) {
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const writes = () => requests.filter(item => item.method !== "GET");
   const statusOf = (task: FakeTask) => statuses.get(task.project_id)!.find(status => status.id === task.status_id)!.name;
-  return { origin, projects, statuses, tasks, comments, requests, controls, addTask, writes, statusOf, tools: projects[0], video: projects[1] };
+  return { origin, projects, statuses, labels, tasks, comments, requests, controls, addTask, writes, statusOf, tools: projects[0], video: projects[1] };
 }

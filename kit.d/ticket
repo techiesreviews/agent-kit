@@ -14,12 +14,13 @@ Read (anyone):
   get <KEY> [--comments] [--json]                  one card, with its status, assignee_ids, next step and blockers
   list [--project KEY|all] [--status NAME] [--parent KEY] [--assignee ID|none] [--q TEXT] [--limit N] [--json]
   sub-tasks <KEY> [--json]                         the card's direct sub-tasks
+  labels [--project KEY]                           the label names a board has
 
 Write (leads only: ORBIT_ROLE=lead; every write takes --dry-run, which prints the exact change and sends nothing):
   create --title T [--description D | --description-file F|-] [--status NAME] [--priority P] [--project KEY]
-         [--parent KEY | --no-parent] [--blocked-by KEY,KEY] [--lex-said "<his exact words>"]
+         [--parent KEY | --no-parent] [--blocked-by KEY,KEY] [--label NAME,NAME] [--lex-said "<his exact words>"]
   update <KEY> [--title T] [--description D | --description-file F|- | --clear-description] [--status NAME] [--priority P]
-         [--parent KEY|none] [--blocked-by KEY,KEY|none] [--lex-said "<his exact words>"]
+         [--parent KEY|none] [--blocked-by KEY,KEY|none] [--label NAME,NAME | --clear-labels] [--lex-said "<his exact words>"]
   dates <KEY> [--start DATE] [--due DATE] --source "<where the date comes from>"   or   dates <KEY> --clear
          A new description keeps the card's "Next step", "Blocked by" and "Planned dates" lines unless it has its own.
   note <KEY> "<text>"                              a dated line under Notes in the description
@@ -66,13 +67,14 @@ Other ways to start it:
 `;
 
 class UsageProblem extends Error {}
-const cardOptions = ["title", "description", "description-file", "status", "priority", "parent", "project", "blocked-by", "lex-said"];
+const cardOptions = ["title", "description", "description-file", "status", "priority", "parent", "project", "blocked-by", "label", "lex-said"];
 const commands = {
   get: { args: ["card key"], flags: ["json", "comments"], values: [] },
   list: { args: [], flags: ["json"], values: ["project", "status", "parent", "assignee", "q", "limit"] },
   "sub-tasks": { args: ["card key"], flags: ["json"], values: [] },
+  labels: { args: [], flags: [], values: ["project"] },
   create: { args: [], flags: ["dry-run", "no-parent"], values: cardOptions },
-  update: { args: ["card key"], flags: ["dry-run", "clear-description"], values: cardOptions.filter(name => name !== "project") },
+  update: { args: ["card key"], flags: ["dry-run", "clear-description", "clear-labels"], values: cardOptions.filter(name => name !== "project") },
   dates: { args: ["card key"], flags: ["dry-run", "clear"], values: ["start", "due", "source"] },
   note: { args: ["card key", "text"], flags: ["dry-run"], values: [] },
   comment: { args: ["card key", "text"], flags: ["dry-run"], values: [] },
@@ -122,7 +124,8 @@ function description(flags) {
 const printable = value => String(value ?? "").replace(/[^\P{Cc}\n\t]|[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu, "");
 const assignees = task => task.assignee_ids?.length ? task.assignee_ids.join(", ") : "none";
 const oneLine = text => String(text).replace(/\s*[\r\n]+\s*/g, " ");
-const cardLine = task => `${task.identifier}  [${task.status_name}]  ${task.priority}  assignees: ${assignees(task)}  ${oneLine(task.title)}`;
+const labelWords = task => task.label_names?.length ? `labels: ${task.label_names.join(", ")}  ` : "";
+const cardLine = task => `${task.identifier}  [${task.status_name}]  ${task.priority}  assignees: ${assignees(task)}  ${labelWords(task)}${oneLine(task.title)}`;
 
 // Errors, results and log lines hide all that looks like a secret. Card text on the screen, in --json and in a dry run
 // stays whole apart from real secrets, so a script reading it gets the card's own words.
@@ -159,6 +162,7 @@ async function show(store, key, { json, comments }) {
   say(`${task.identifier}  ${oneLine(task.title)}`);
   say(`Status: ${task.status_name}  Priority: ${task.priority}`);
   say(`Assignees (assignee_ids): ${assignees(task)}`);
+  if (task.label_names.length) say(`Labels: ${task.label_names.join(", ")}`);
   if (task.next_lex !== null) say(`Next step (Lex): ${task.next_lex}`);
   if (task.blocked_by.length) say(`Blocked by: ${task.blocked_by.join(", ")}`);
   if (task.due_at) say(`Dates: ${[task.due_start_at && `start ${showDate(task.due_start_at, "start")}`, `due ${showDate(task.due_at, "due")}`].filter(Boolean).join(", ")}`);
@@ -209,12 +213,17 @@ async function main() {
       if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new UsageProblem("--limit must be a whole number from 1 to 1000");
       return showList("list", await store.list({ project: flags.project, status: flags.status, parent: flags.parent, assignee: flags.assignee, q: flags.q, limit }), flags.json, " (use --limit)");
     }
+    case "labels": {
+      const { board, items } = await store.labels(flags.project);
+      for (const label of items) say(oneLine(label.name));
+      return finish("ok", `labels ${board}: ${items.length} label${items.length === 1 ? "" : "s"}`);
+    }
     case "sub-tasks": return showList(`sub-tasks ${key}`, await store.subTasks(key), flags.json);
     case "create": {
       if (flags.parent !== undefined && flags["no-parent"]) throw new UsageProblem("use --parent or --no-parent, not both");
-      return report(name, await store.create({ project: flags.project, title: flags.title, description: description(flags), status: flags.status, priority: flags.priority, parent: flags.parent, noParent: flags["no-parent"], blocked: flags["blocked-by"], lexSaid: flags["lex-said"] }));
+      return report(name, await store.create({ project: flags.project, title: flags.title, description: description(flags), status: flags.status, priority: flags.priority, parent: flags.parent, noParent: flags["no-parent"], blocked: flags["blocked-by"], label: flags.label, lexSaid: flags["lex-said"] }));
     }
-    case "update": return report(name, await store.update(key, { title: flags.title, description: description(flags), clearDescription: flags["clear-description"], status: flags.status, priority: flags.priority, parent: flags.parent, blocked: flags["blocked-by"], lexSaid: flags["lex-said"] }));
+    case "update": return report(name, await store.update(key, { title: flags.title, description: description(flags), clearDescription: flags["clear-description"], status: flags.status, priority: flags.priority, parent: flags.parent, blocked: flags["blocked-by"], label: flags.label, clearLabels: flags["clear-labels"], lexSaid: flags["lex-said"] }));
     case "dates": return report(name, await store.dates(key, { start: flags.start, due: flags.due, source: flags.source, clear: flags.clear }));
     case "note": return report(name, await store.note(key, wording));
     case "comment": return report(name, await store.comment(key, wording));
