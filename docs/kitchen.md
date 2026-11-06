@@ -107,10 +107,10 @@ undoes a newer rule.
 
 ## Review loop
 
-<!-- review-loop:start v1 -->
+<!-- review-loop:start v2 -->
 - Budget: 3 fix rounds; 5 only for security, permissions, auth, data loss, or state and concurrency, and only while a blocker or a should stays open with its evidence. The kit decides it from the changed paths and the ticket's words (`paths.risky` in the settings adds project patterns), never from a fixed number.
 - Stop early: a round that returns only nits (a rare path, a small cost, a comment, doc or format-only point, or a missing test) ends the loop. Declined nits need no new round.
-- Round 1 reviews everything. Later rounds review only the code changed since the last review and the open finding ids; the reviewer marks every old id `resolved` or `still open (<severity>): <reason>`, and a review that leaves one out is run again. A "still open" id counts as an open finding.
+- Round 1 reviews everything. Later rounds review only the code changed since the last review and the open finding ids; the reviewer marks every old id `resolved` or `still open (<severity>): <reason>`, and a review that leaves one out is rejected as incomplete (`kit review` exits 1 and nothing reuses it): run `kit review` again. A "still open" id counts as an open finding.
 - One reviewer at a time: Claude Opus through `kit review` (read-only, never the builder), and it starts no subagents. `kit pr` then runs the second look, its model picked from [`second-look.json`](../second-look.json) (Grok, else the free OpenCode model; never OpenAI or Sol); when no such model can run, the PR says `second look: skipped (<reason>)`, never a silent swap.
 - The builder checks each finding and its severity itself (blocker, should or nit), downgrades the rare-path ones, fixes with the smallest change, and declines with evidence.
 - The ledger (id, severity, outcome) comes from what the reviews wrote and is shown in the PR, never guessed.
@@ -119,6 +119,8 @@ undoes a newer rule.
 <!-- review-loop:end -->
 
 The start marker carries this rule's version too (v2, v3 …).
+
+Known limits of the review loop today (waived follow-ups): the PR line and ledger have edge cases (a "behind" rebase can leave an earlier "approved" until the next review finishes; a merge from the base puts other people's code in the "changes since the last review" file; a nits-only review is not reused after a rebase; second-look findings are in the verdict but not the ledger; a skipped second look is printed, not written to the PR); an out-of-budget should lands as a follow-up with a budget report that shows only the reviewer's side, and "disputed after two replies" is not detected, so the lead tells Lex both sides by hand; a ticket's risk is read from its title, goal and named files only.
 
 ## Who cooks (pins from 2026-10-22)
 

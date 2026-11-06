@@ -350,7 +350,7 @@ test("brief: every stage carries the Review loop rule from the rulebook, the one
   return import("../kit-lib.mjs").then(({ kitReviewLoopRule }: { kitReviewLoopRule: (home: string) => { rule: string; version: number } }) => {
     const { rule, version } = kitReviewLoopRule(resolve("."));
     assert.ok(readFileSync(resolve("docs/kitchen.md"), "utf8").includes(rule), "the rule is the rulebook's own text");
-    assert.equal(version, 1);
+    assert.equal(version, 2);
     const f = fixture(t);
     for (const stage of ["build", "review", "second-look", "fix"]) {
       const output = f.run(["docs/tickets/07-panel.md", "--stage", stage]);
