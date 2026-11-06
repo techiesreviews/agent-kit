@@ -84,6 +84,8 @@ test("later rounds: ids, marks and the brief section of a later round", () => {
   assert.match(section, /- R1-1 \(P1 fault\): P1 finding with its evidence/);
   assert.match(section, /`<id>: resolved` or `<id>: still open \(<its severity, or gap for a validation gap>\): <reason>`/);
   assert.match(section, /start no subagents/);
+  assert.doesNotMatch(section, /and is run again|\. A review that leaves an id out is incomplete and is run again/);
+  assert.match(section, /rejected as incomplete and is not reused; it has to be run again/);
 });
 
 test("ledger and PR line: the ledger holds only what a review wrote, and the PR line is exact", () => {

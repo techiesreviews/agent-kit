@@ -57,6 +57,8 @@ each marked resolved or still open; `kit pr` puts the line "Reviewed with review
 findings ledger in the PR, and an out-of-budget run is reported, never approved. The rule's one source is the "Review loop" section of
 `docs/kitchen.md`; briefs carry it and `kit init` points projects at it.
 
+Known limits (waived follow-ups): the PR line and ledger have edge cases (an earlier "approved" can stay in the PR after a "behind" rebase until the next review finishes; a merge from the base puts other people's code in the "changes since the last review" file; a nits-only review is not reused after a rebase; second-look findings count in the verdict but not in the ledger; a skipped second look is printed, not written to the PR). An out-of-budget should lands as a follow-up with a budget report that shows only the reviewer's side. A review that leaves an id out is rejected as incomplete: run `kit review` again by hand. A ticket's risk comes from its title, goal and named files only, and the fix brief points at the newest complete review.
+
 ## Messages to Lex
 
 One short rule for every message to Lex (question or what he must do first, a recommendation, caveman bullets,

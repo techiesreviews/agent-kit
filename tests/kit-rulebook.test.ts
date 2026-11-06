@@ -246,3 +246,12 @@ test("the rulebook holds the Review loop rule once, versioned, with its rules an
   assert.match(run.stdout.split("\n## House rules\n")[1]?.split("\n## ")[0] ?? "", /\*\*Review loop\*\*[\s\S]*\(#review-loop\)/);
   assert.equal((run.stdout.match(/## Review loop\n/g) ?? []).length, 1);
 });
+
+test("the Review loop rule promises only what happens: an incomplete review is rejected, rerun by hand; its known limits are listed", t => {
+  const run = rulebook(t, project);
+  const text = run.stdout.replace(/\n\s*/g, " ");
+  assert.ok(text.includes("rejected as incomplete (`kit review` exits 1 and nothing reuses it): run `kit review` again"));
+  assert.ok(!/is run again|and is run again/.test(text.split("## Review loop")[1]?.split("## Who cooks")[0] ?? ""), "no promise that the kit runs it again");
+  assert.ok(text.includes("Known limits of the review loop today (waived follow-ups)"));
+  assert.ok(text.includes("shows only the reviewer's side"));
+});
