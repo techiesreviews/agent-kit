@@ -142,7 +142,7 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
   section("House rules", [
     "Paid skills never go in a repo: name a skill, never copy its text (`skill-guard.mjs` runs in `kit pr`).",
     `Second look: \`${SECOND_LOOK.first}\`, else the free \`${SECOND_LOOK.fallback}\`; never an OpenAI model; \`second look: skipped (<reason>)\` when neither can run.`,
-    `After three fix rounds only P0/P1 findings block; P2/P3 go to the lead, who may land with \`ASE_OWNER=<lead> scripts/agents/kit pr … --waive "<reason>"\`; say so in ${task ? "your report" : "the ticket's Done"}.`,
+    `Once the review loop's budget is used (3 fix rounds, 5 for a risky change) only P0/P1 findings block; P2/P3 go to the lead, who may land with \`ASE_OWNER=<lead> scripts/agents/kit pr … --waive "<reason>"\`; say so in ${task ? "your report" : "the ticket's Done"}.`,
     "Anything a person sees: No toasts or explainers; show state on the control itself. Reuse the theme tokens and components.",
     "House rules beat skill advice: where a skill suggests something a house rule forbids (a toast, say), the house rule wins.",
     "Commits use the repo's or the machine's set git identity; never borrow another person's name.",

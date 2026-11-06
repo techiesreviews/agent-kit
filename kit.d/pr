@@ -3,9 +3,10 @@
 import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { loadavg, tmpdir } from "node:os";
-import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterFixRounds, blockingFindings, completedFixRounds, FIX_ROUNDS, openFindings, reviewCoversHead, sameReviewPatch } from "../review-findings.mjs";
+import { budgetReport, ledgerRows, prLine, renderLedger, reviewChain, riskyChange, roundLimit, stoppingFindings, withIds } from "../review-loop.mjs";
 import { projectCommand, spoken } from "../review-brief.mjs";
 
 const { kitBranch, kitGhEnv, kitHideUserInfo, kitHidingLog, kitHome, kitMachineLock, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, kitStateDir, nodeEnv, kitScore } = await import(
@@ -545,6 +546,9 @@ async function main(args) {
     const features = flags.release ? { ok: true }
       : featureListGuard(changes, { ticketText: flags.ticket ? readFileSync(resolve(root, flags.ticket), "utf8") : "", waive: flags.waive, settings });
     if (features.line) console.log(features.line);
+    // The review loop's budget follows the change's risk (security, permissions, auth, data loss, state, concurrency): 3 fix rounds, or 5.
+    const loopRisk = riskyChange({ paths: changes.map(change => change.path), text: (() => { try { return flags.ticket ? readFileSync(resolve(root, flags.ticket), "utf8").slice(0, 2000) : ""; } catch { return ""; } })(), settings });
+    if (loopRisk.risky) console.log(`review loop: risky change (${loopRisk.reasons.join("; ")}): up to ${roundLimit(true)} fix rounds`);
     if (!features.ok) {
       console.error(`problem: ${featureListProblem(settings)}`);
       throw new Error(featureListProblem(settings));
@@ -673,10 +677,10 @@ async function main(args) {
     // The docs tier has no model review; CI still gates the merge.
     let waived = 0;
     // `name` is "review" (Claude's) or "second look", whose lines and summary say so.
-    async function recordFollowups(findings, name = "review") {
+    async function recordFollowups(findings, name = "review", budgetUsed = true) {
       if (!findings.length) return;
       const reviewedHead = head, second = name !== "review";
-      console.log(`${name}: ${findings.length} follow-ups after ${FIX_ROUNDS} fix rounds (non-blocking)`);
+      console.log(`${name}: ${findings.length} follow-ups ${budgetUsed ? `after ${roundLimit(loopRisk.risky)} fix rounds` : "(nits only)"} (non-blocking)`);
       const label = item => `- ${item.group} (${item.severity || "gap"}${second ? ", second look" : ""}): `;
       const fullLines = findings.map(item => label(item) + item.text);
       const shortLines = findings.map(item => label(item) + shortText(item.text));
@@ -684,7 +688,7 @@ async function main(args) {
       // PR comment as posted and swaps such a ticket bullet for the full text. A cut through a surrogate
       // pair was written as U+FFFD, so the old cut is compared after the same trip through UTF-8.
       const oldLines = findings.map(item => label(item) + Buffer.from(item.text.slice(0, 160)).toString());
-      const heading = `${second ? "Second-look follow-ups" : "Follow-ups"} (non-blocking after ${FIX_ROUNDS} fix rounds):\n`;
+      const heading = `${second ? "Second-look follow-ups" : "Follow-ups"} (non-blocking ${budgetUsed ? `after ${roundLimit(loopRisk.risky)} fix rounds` : "nits only"}):\n`;
       const summary = heading + shortLines.join("\n");
       const oldSummary = heading + oldLines.join("\n");
       if (!readFileSync(body, "utf8").includes(summary)) appendFileSync(body, `\n${summary}\n`);
@@ -787,20 +791,39 @@ async function main(args) {
       try { resultMd = readFileSync(resultPath, "utf8"); }
       catch { /* Missing or unreadable evidence fails closed through openFindings. */ }
       const { findings } = openFindings(resultMd);
-      const relaxed = afterFixRounds(completedFixRounds(join(kitMainRoot(), ".scratch/kit-fix", encodeURIComponent(branch)),
-        join(root, ".scratch/kit-fix", encodeURIComponent(branch))));
-      const blocking = relaxed ? blockingFindings(findings) : findings;
+      const rounds = completedFixRounds(join(kitMainRoot(), ".scratch/kit-fix", encodeURIComponent(branch)),
+        join(root, ".scratch/kit-fix", encodeURIComponent(branch)));
+      const limit = roundLimit(loopRisk.risky);
+      // Nits alone never block or call for a round; blockers and shoulds do while the budget lasts, then only blockers (rule 2, rule 6).
+      const relaxed = rounds >= limit;
+      const blocking = stoppingFindings(findings, rounds, loopRisk.risky);
       if (findings.length) {
         const ordered = [...blocking, ...findings.filter(item => !blocking.includes(item))];
         for (const finding of ordered.slice(0, 15)) console.log(`${finding.group}: ${shortText(finding.text)}`);
         if (findings.length > 15) console.log(`… and ${findings.length - 15} more`);
+        // Out of budget with findings left is reported for Lex to decide, never taken as approval.
+        if (relaxed && blocking.length) console.log(budgetReport({ rounds, limit, open: withIds(blocking, rounds + 1) }));
         if (blocking.length && !flags.waive) {
           kitResult("fail", `pr #${number} ${name} has ${blocking.length} open findings (${resultPath})`);
           return false;
         }
         waived += blocking.length;
       }
-      if (relaxed) await recordFollowups(findings.filter(item => !blocking.includes(item)), name);
+      const rest = findings.filter(item => !blocking.includes(item));
+      if (rest.length) await recordFollowups(rest, name, relaxed);
+      // Rule 5 and 7: the PR says how it was reviewed, with the ledger of what the reviews wrote.
+      if (!second) {
+        const chain = reviewChain(dirname(resultPath));
+        if (chain.length) {
+          const verdict = blocking.length ? `not approved (${blocking.length} open finding${blocking.length === 1 ? "" : "s"} waived by the lead)` : "approved";
+          const line = prLine({ rounds: chain.length, model: chain.at(-1).model ?? "unknown model", verdict });
+          if (!readFileSync(body, "utf8").includes(line)) {
+            appendFileSync(body, `\n${line}\n\n${renderLedger(ledgerRows(chain))}\n`);
+            await gh("review-loop", ["api", "--method", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "-F", `body=@${body}`]);
+          }
+          console.log(line);
+        }
+      }
       ok(name);
       return true;
     }
