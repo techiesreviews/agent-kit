@@ -305,6 +305,13 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       const target = (await statusesOf(projectId)).find(status => status.id === change.status_id);
       if (/publish/i.test(target?.name ?? "")) needsWords(lexSaid, `moving a card to ${target.name}`);
     }
+    // With stages as labels, putting the Publish label on a card is the same move as the Publish status.
+    if (change.label_ids?.length) {
+      const known = await labelsOf(projectId);
+      const added = change.label_ids.filter(id => !before?.label_ids?.includes(id)).map(id => known.find(label => label.id === id)?.name);
+      const publish = added.find(name => name?.trim().toLowerCase() === "publish");
+      if (publish) needsWords(lexSaid, `adding the ${publish} label`);
+    }
     if (change.description !== undefined) {
       // No date without a source: a Planned dates line this change brings must name one.
       const had = split(before?.description).map(line => line.trim());

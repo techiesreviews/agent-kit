@@ -73,7 +73,7 @@ says for today; never claim a planned item ran.
   (default `files`); until later stages land, `kit next`, `kit slice`, `kit pr`, `kit status` and
   `kit init --issues` still use ticket files, and maps and research notes stay documents. **The Orbit rule:** only leads
   write (`ORBIT_ROLE=lead`); helpers read and report to their lead. Never delete a card for good; the
-  trash, the Publish status and the "Scheduled in Radaar" tick each need Lex's exact words
+  trash, the Publish status or label and the "Scheduled in Radaar" tick each need Lex's exact words
   (`--lex-said`). No date without a source. The Orbit token and the Cloudflare pass never go in a
   chat, a log or a repository.
 - **One house style for every tool:** anything a person sees follows the kit's
