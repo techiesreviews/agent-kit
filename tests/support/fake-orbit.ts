@@ -32,7 +32,7 @@ export async function fakeOrbit(t: TestContext) {
     // Answers for the next requests, oldest first: a 429, a Cloudflare redirect or page, or a problem.
     answers: [] as ("redirect" | "cloudflare-page" | "login-page-200" | "gateway-page" | { retryAfter?: string } | { status: number; code: string; detail: string; errors?: any })[],
     // Answers for the next task writes only (after the reads went through): a problem, or a dropped connection.
-    writeAnswers: [] as ("drop" | "saved-then-502" | { status: number; code: string; detail: string })[],
+    writeAnswers: [] as ("drop" | "saved-then-502" | "page-200" | { retryAfter: string } | { status: number; code: string; detail: string })[],
     me: { token: { id: randomUUID(), name: "fleet", scopes: ["tasks:write"], project_ids: projects.map(project => project.id), expires_at: "2027-02-04T00:00:00.000Z" } } as Record<string, any>,
     requireCloudflare: true,
   };
@@ -119,6 +119,8 @@ export async function fakeOrbit(t: TestContext) {
         response.writeHead(502, { "content-type": "text/html" });
         return response.end("<html>Bad gateway</html>");
       }
+      if (planned === "page-200") { response.writeHead(200, { "content-type": "text/html" }); return response.end("<html>Saved?</html>"); }
+      if (planned && "retryAfter" in planned) return problem(response, 429, "rate_limit_exceeded", "Too many requests", {}, { "retry-after": planned.retryAfter });
       if (planned) return problem(response, planned.status, planned.code, planned.detail);
     }
     if (rest === "/tasks" && request.method === "POST") {

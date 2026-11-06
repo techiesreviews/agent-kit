@@ -434,6 +434,64 @@ test("a retry never overwrites a field someone else changed meanwhile, and only 
 
 });
 
+test("a retry that stops still leaves one log line for the write Orbit refused", async t => {
+  const { orbit, run, log } = await fixture(t);
+  orbit.addTask(orbit.tools, { description: "Theirs" });
+  orbit.controls.conflicts = 1;
+  orbit.controls.concurrentEdit = card => { card.description = "Their newer text"; };
+  refused(await run(["update", "TOOLS-1", "--description", "Mine"]), /changed/);
+  assert.equal((log().match(/action=update fields=description who=test-lead result=fail:conflict/g) ?? []).length, 1);
+});
+
+test("a 429 on a write waits once and sends the same version again, with one log line", async t => {
+  const { orbit, run, log } = await fixture(t);
+  orbit.addTask(orbit.tools);
+  orbit.controls.writeAnswers.push({ retryAfter: "1" });
+  ok(await run(["update", "TOOLS-1", "--title", "New"]));
+  const [first, second] = orbit.writes();
+  assert.equal(orbit.writes().length, 2);
+  assert.equal(first.body.expected_version, second.body.expected_version);
+  assert.equal(lines(log()).length, 1);
+  assert.match(log(), /action=update fields=title who=test-lead result=ok/);
+});
+
+test("moving the tick from one Scheduled in Radaar line to another still needs Lex's words", async t => {
+  const { orbit, run } = await fixture(t);
+  const task = orbit.addTask(orbit.tools, { description: "- [x] Scheduled in Radaar: clip\n- [ ] Scheduled in Radaar: post" });
+  refused(await run(["update", "TOOLS-1", "--description", "- [ ] Scheduled in Radaar: clip\n- [x] Scheduled in Radaar: post"]), /--lex-said/);
+  assert.equal(orbit.writes().length, 0);
+  ok(await run(["update", "TOOLS-1", "--description", "- [ ] Scheduled in Radaar: clip\n- [ ] Scheduled in Radaar: post"]));
+  assert.match(task.description, /\[ \] Scheduled in Radaar: clip/);
+});
+
+test("help is only asked for standing alone: a -h in text is text, a -h after a value option is refused", async t => {
+  const { orbit, run } = await fixture(t);
+  const task = orbit.addTask(orbit.tools);
+  refused(await run(["update", "TOOLS-1", "--title", "-h"]), /--title needs a value/);
+  ok(await run(["comment", "TOOLS-1", "-h"]));
+  assert.equal(orbit.comments[task.id][0].body, "-h");
+  ok(await run(["update", "TOOLS-1", "--title=-h"]));
+  assert.equal(task.title, "-h");
+  ok(await run(["note", "TOOLS-1", "--", "--help"]));
+  assert.match(task.description, /--help$/);
+  for (const args of [["update", "TOOLS-1", "--help"], ["update", "-h"], ["-h"]]) {
+    const help = await start(process.execPath, [ticket, ...args], kitEnv());
+    assert.equal(help.status, 0);
+    assert.match(help.stdout, /^Usage: kit ticket/);
+  }
+  ok(await run(["create", "--title", "From stdin", "--description-file", "-"], {}, "text"));
+});
+
+test("a write answered 2xx with a page that is not Orbit's may have saved; terminal tricks in card text never reach the screen", async t => {
+  const { orbit, run } = await fixture(t);
+  const task = orbit.addTask(orbit.tools, { title: "Plain\u202Etext\u001b[31m" });
+  const shown = ok(await run(["get", "TOOLS-1"]));
+  assert.ok(!/[\u202E\u001b]/.test(shown.stdout));
+  orbit.controls.writeAnswers.push("page-200");
+  refused(await run(["update", "TOOLS-1", "--title", "x"]), /may or may not have gone through/);
+  assert.ok(task);
+});
+
 test("a trash that meets a version conflict retries once with the fresh version", async t => {
   const { orbit, run } = await fixture(t);
   const task = orbit.addTask(orbit.tools);
@@ -517,6 +575,10 @@ test("every write adds one log line (time, card, fields, who) in a private file"
   const entries = lines(log());
   assert.equal(entries.length, 2);
   assert.match(entries[0], /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z card=TOOLS-1 action=update fields=title who=test-lead result=ok$/);
+  assert.equal(statSync(logPath).mode & 0o777, 0o600);
+  // A log someone opened up goes back to private on the next write.
+  chmodSync(logPath, 0o644);
+  ok(await run(["comment", "TOOLS-1", "z"]));
   assert.equal(statSync(logPath).mode & 0o777, 0o600);
   // No log, no write: a log that cannot be written stops the change before it is sent.
   rmSync(logPath);
@@ -783,12 +845,16 @@ test("a write answered by a gateway page may have saved, so it says so, and is n
   refused(await run(["get", "TOOLS-1"]), /try again later/);
 });
 
-test("get names the parent by its key", async t => {
+test("get names the parent by its key, and a parent it cannot read does not hide the card", async t => {
   const { orbit, run } = await fixture(t);
   const parent = orbit.addTask(orbit.tools);
   orbit.addTask(orbit.tools, { parent_task_id: parent.id });
   assert.match(ok(await run(["get", "TOOLS-2"])).stdout, /Parent: TOOLS-1/);
   assert.equal(JSON.parse(ok(await run(["get", "TOOLS-2", "--json"])).stdout.split("\nRESULT:")[0]).parent_key, "TOOLS-1");
+  const unseen = "33333333-3333-4333-8333-333333333333";
+  orbit.addTask(orbit.tools, { parent_task_id: unseen });
+  assert.match(ok(await run(["get", "TOOLS-3"])).stdout, new RegExp(`Parent: ${unseen} \\(this token cannot read it\\)`));
+  assert.equal(JSON.parse(ok(await run(["get", "TOOLS-3", "--json"])).stdout.split("\nRESULT:")[0]).parent_key, null);
 });
 
 test("a card that already holds a token-shaped text can still be edited; adding one is refused", async t => {
@@ -799,6 +865,14 @@ test("a card that already holds a token-shaped text can still be edited; adding 
   const clean = orbit.addTask(orbit.tools, { description: "Clean" });
   refused(await run(["note", "TOOLS-2", "orb_abcdefghijklmnopqrstuvwx"]), /secret/i);
   assert.equal(clean.description, "Clean");
+  // The old text excuses only itself: the real saved secrets, and any other token shape, stay out.
+  const before = task.description, writes = orbit.writes().length;
+  refused(await run(["note", "TOOLS-1", `token ${fakeToken}`]), /secret/i);
+  refused(await run(["note", "TOOLS-1", `pass ${fakeCfSecret}`]), /secret/i);
+  refused(await run(["next-lex", "TOOLS-1", `pass ${fakeCfId}`]), /secret/i);
+  refused(await run(["dates", "TOOLS-1", "--due", "2026-11-30", "--source", `orb_anothertokenshape0000`]), /secret/i);
+  assert.equal(task.description, before);
+  assert.equal(orbit.writes().length, writes);
 });
 
 test("setup names a --workspace the token does not reach", async t => {
