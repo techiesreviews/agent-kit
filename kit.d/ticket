@@ -100,7 +100,7 @@ function parse(name, words) {
       found.flags[flag] = words[++index];
     } else {
       const named = word.slice(2, word.includes("=") ? word.indexOf("=") : undefined);
-      if (word.includes("=") && spec.values.includes(named)) throw new UsageProblem(`${name} does not take ${word}: write it as --${named} <value>`);
+      if (word.includes("=") && (spec.values.includes(named) || spec.optional?.includes(named))) throw new UsageProblem(`${name} does not take ${word}: write it as --${named} <value>`);
       throw new UsageProblem(`${name} does not take ${word}${/\s/.test(word) ? "; put -- before text that starts with dashes" : ""}`);
     }
   }
