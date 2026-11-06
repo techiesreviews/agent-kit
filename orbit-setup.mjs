@@ -175,7 +175,8 @@ export async function orbitSetup({ env = process.env, flags = {}, say, io = term
   let copiedOrigin = copied?.origin;
   if (!flags.origin && copiedOrigin && saved?.origin && copiedOrigin !== saved.origin) {
     const move = await io.ask(`Those settings name a different address for Orbit: ${copiedOrigin} (saved: ${saved.origin}). Use the new address? Type yes or no:`);
-    if (move.toLowerCase() !== "yes") copiedOrigin = undefined;
+    // A no leaves that other connection out altogether: its pass belongs to its address.
+    if (move.toLowerCase() !== "yes") { copiedOrigin = undefined; copied = null; say("Keeping the saved address and pass."); }
   }
   const origin = orbitOrigin(flags.origin ?? copiedOrigin ?? saved?.origin ?? await io.ask("Orbit's web address (like https://orbit.example.com):"));
   let id = copied?.id ?? (flags.newPass ? undefined : saved?.cf_access_client_id), secret = copied?.secret ?? (flags.newPass ? undefined : saved?.cf_access_client_secret);
