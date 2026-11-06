@@ -46,9 +46,14 @@ export function riskyChange({ paths = [], text = "", settings = {} } = {}) {
 export function branchRisk({ root, base, ticket, settings }) {
   let paths = [];
   try { paths = execFileSync("git", ["-C", root, "diff", "--name-only", `${base}...HEAD`], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).split("\n").filter(Boolean); } catch { /* No base to compare: the ticket decides. */ }
-  let text = "";
-  try { text = ticket ? readFileSync(resolve(root, ticket), "utf8").slice(0, 2000) : ""; } catch { /* No ticket text. */ }
-  const named = [...text.matchAll(/`([^`\s]*[./][^`\s]*)`/g)].map(match => match[1]);
+  // The ticket's title and goal and the files it names: what it is about, not the follow-up notes kit pr writes into it later.
+  let text = "", raw = "";
+  try { raw = ticket ? readFileSync(resolve(root, ticket), "utf8") : ""; } catch { /* No ticket text. */ }
+  const title = /^title:\s*["']?(.+?)["']?\s*$/m.exec(raw)?.[1] ?? "";
+  const goal = /^##\s+Goal\s*\n([\s\S]*?)(?=^##\s|$(?![\s\S]))/m.exec(raw)?.[1] ?? "";
+  const files = /^##\s+Files\s*\n([\s\S]*?)(?=^##\s|$(?![\s\S]))/m.exec(raw)?.[1] ?? "";
+  text = `${title}\n${goal.slice(0, 1500)}`;
+  const named = [...files.matchAll(/`([^`\s]*[./][^`\s]*)`/g)].map(match => match[1]);
   return riskyChange({ paths: [...paths, ...named], text, settings });
 }
 
@@ -189,6 +194,12 @@ export function reviewChain(folder) {
  * same base that still had findings and whose reviewed head is an ancestor of the current head. A second look's folder is never one.
  * Returns { name, round, head, findings } or null (then this is round 1, a full review).
  */
+/** The rules every review round gets, round 1 included (the later-round section adds the open ids). */
+export const loopReviewerNote = [
+  "## Review loop rules for the reviewer",
+  "You are the only reviewer: start no subagents. Rate each finding blocker (P0, P1), should (P2) or nit (P3, or a missing test): a nit is a rare path with a small cost, a comment, doc or format-only point, or a missing test. A review that returns only nits ends the loop.",
+].join("\n\n");
+
 export function findPreviousReview(parent, { head, base, root, branch }) {
   if (!existsSync(parent) || !head || !base) return null;
   const isAncestor = other => {
@@ -206,9 +217,8 @@ export function findPreviousReview(parent, { head, base, root, branch }) {
       // (its old head is gone from the history), which gets the full first review its new code needs.
       const connected = (reviewedBase === base || isAncestor(reviewedBase)) && (reviewedHead === head || isAncestor(reviewedHead));
       if (record.unreadable || record.incomplete || record.round === undefined || !connected || (record.branch && branch && record.branch !== branch)) continue;
-      // The newest review of this change decides: one that found nothing ended the loop, so the next review starts again at round 1.
-      if (!record.findings?.length) return null;
-      return { name, round: record.round ?? 1, head: reviewedHead, findings: record.findings.map((item, index) => ({ ...item, id: item.id ?? `R${record.round ?? 1}-${index + 1}` })) };
+      // The newest review of this change decides: when it found nothing, the loop had ended, so no open ids carry over, but the rounds still link.
+      return { name, clean: !record.findings?.length, round: record.round ?? 1, head: reviewedHead, findings: record.findings.map((item, index) => ({ ...item, id: item.id ?? `R${record.round ?? 1}-${index + 1}` })) };
     } catch { /* An unreadable record is not a previous review. */ }
   }
   return null;

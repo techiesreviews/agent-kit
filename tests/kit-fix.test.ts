@@ -882,3 +882,13 @@ test("review loop: a review with only nits needs no fix round, and an incomplete
   f.run();
   assert.ok(f.calls().length > 0, "the builder was started for the complete review's finding");
 });
+
+test("kit fix refuses a review given with --review when it is marked incomplete", t => {
+  const f = fixture(t); f.builder();
+  const folder = f.review("20261019T000000Z", findings);
+  writeFileSync(join(folder, "findings.json"), JSON.stringify({ incomplete: true, findings: [] }));
+  const result = f.run(["--review", folder]);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /is an incomplete review \(it left an earlier finding id out\); run kit review again/);
+  assert.equal(f.calls().length, 0);
+});

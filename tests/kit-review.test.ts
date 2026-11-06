@@ -227,8 +227,12 @@ test("kit review writes findings.json with kinds and counts, or unreadable for a
   const unreadable = f.run([], { FAKE_REPORT: "REVIEW_STATUS: complete\nLooks fine to me.\n" });
   assert.equal(unreadable.status, 0, unreadable.stderr);
   assert.match(unreadable.stdout, /^findings unreadable$/m);
-  assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(unreadable.stdout), "findings.json"), "utf8")), {
-    model: "claude-opus-5-5", effort: "medium", scope: `git diff ${f.commits[0]}...HEAD`, head: f.commits[2], round: 1, branch: "feature/review", unreadable: true,
+  // The earlier base-scope review (the clean one) links the chain: this one is its next round.
+  const unreadableRecord = JSON.parse(readFileSync(join(f.evidence(unreadable.stdout), "findings.json"), "utf8"));
+  assert.match(unreadableRecord.previous, /^\d{8}T\d{6}Z/);
+  delete unreadableRecord.previous;
+  assert.deepEqual(unreadableRecord, {
+    model: "claude-opus-5-5", effort: "medium", scope: `git diff ${f.commits[0]}...HEAD`, head: f.commits[2], round: 2, branch: "feature/review", unreadable: true,
   });
 });
 
@@ -1750,8 +1754,15 @@ test("review loop: round 1 is a full review with ids; a later review of changed 
   f.git("add", "file.txt"); f.git("commit", "-m", "another change");
   const third = f.run([], { FAKE_REPORT: "REVIEW_STATUS: complete\nDefects: none\nValidation gaps: none.\n", ASE_REVIEW_MODEL: "claude-opus-5-5" });
   assert.equal(third.status, 0, third.stderr);
-  assert.ok(!f.calls().at(-1)!.input.includes("Review loop: round"));
-  assert.equal(JSON.parse(readFileSync(join(f.evidence(third.stdout), "findings.json"), "utf8")).round, 1);
+  // After a review that found nothing no ids carry over (no loop section), but the rounds still link, so the PR line and ledger keep every round.
+  assert.ok(!f.calls().at(-1)!.input.includes("Review loop: review round"));
+  assert.ok(f.calls().at(-1)!.input.includes("## Review loop rules for the reviewer"), "every round carries the reviewer's rules");
+  const thirdRecord = JSON.parse(readFileSync(join(f.evidence(third.stdout), "findings.json"), "utf8"));
+  assert.equal(thirdRecord.round, 3);
+  assert.equal(thirdRecord.previous, secondEvidence.split("/").at(-1));
+  assert.equal(loop.reviewChain(f.evidence(third.stdout)).length, 3);
+  // Round 1 is told the rules too.
+  assert.ok(first.stdout && f.calls()[0].input.includes("start no subagents"));
 });
 
 test("review loop: a later review that leaves an earlier id out is incomplete and fails; a moved base and a same-head review still make round 2", async (t) => {
