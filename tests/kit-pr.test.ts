@@ -2178,6 +2178,15 @@ test("when no model can take the second look the PR still lands and says why", t
   assert.match(result.stdout, /RESULT: ok merged #73/);
 });
 
+test("a skipped second look is written into the PR's review block, so the PR never reads as double-checked", t => {
+  const f = fixture(t);
+  const path = f.saveReview(cleanReview);
+  writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ round: 1, model: "claude-opus-5-5", head: f.git("rev-parse", "HEAD"), findings: [] }));
+  assert.equal(f.run([], { FAKE_SECOND: "skip" }).status, 0);
+  const block = f.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body ?? "").find(text => text.includes("<!-- review-loop -->"))!;
+  assert.match(block, /Verdict: approved\n\nsecond look: skipped \(grok-4\.7 out of credit; opencode\/deepseek-v4\.1-flash-free out of credit\)\n\nFindings ledger: none\./);
+});
+
 test("a saved second look is reused only as a second look that ran; it is never taken for Claude's review", t => {
   for (const ok of [true, false]) {
     const f = fixture(t), folder = join(f.main, ".scratch/reviews/ak-14/20261019T100000Z");
