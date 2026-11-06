@@ -70,8 +70,8 @@ says for today; never claim a planned item ran.
 - **Tickets are moving to Orbit, in stages** (Lex, 2026-11-06): the fleet manages every card in every
   project through `scripts/agents/kit ticket` (`--help`), Orbit's public API inside the kit; no other
   tool sits beside it. A project switches with `"tickets": "orbit"` in its `scripts/agents/kit.json`
-  (default `files`); until later stages land, `kit next`, `kit slice`, `kit pr` and `kit status`
-  still read ticket files, and maps and research notes stay documents. **The Orbit rule:** only leads
+  (default `files`); until later stages land, `kit next`, `kit slice`, `kit pr`, `kit status` and
+  `kit init --issues` still use ticket files, and maps and research notes stay documents. **The Orbit rule:** only leads
   write (`ORBIT_ROLE=lead`); helpers read and report to their lead. Never delete a card for good; the
   trash, the Publish status and the "Scheduled in Radaar" tick each need Lex's exact words
   (`--lex-said`). No date without a source. The Orbit token and the Cloudflare pass never go in a

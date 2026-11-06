@@ -443,6 +443,43 @@ test("a retry that stops still leaves one log line for the write Orbit refused",
   assert.equal((log().match(/action=update fields=description who=test-lead result=fail:conflict/g) ?? []).length, 1);
 });
 
+test("a retry that finds the card already as asked still logs the write Orbit refused", async t => {
+  const { orbit, run, log } = await fixture(t);
+  orbit.addTask(orbit.tools);
+  // The change someone else already made: the retry has nothing to send, and the refused write is on the log.
+  orbit.controls.conflicts = 1;
+  orbit.controls.concurrentEdit = card => { card.description = "Next step (Lex): go"; };
+  assert.match(result(ok(await run(["next-lex", "TOOLS-1", "go"]))), /already/);
+  assert.equal(lines(log()).length, 1);
+  assert.match(lines(log()).at(-1)!, /action=next-lex fields=description who=test-lead result=fail:conflict/);
+});
+
+test("a create with no answer says to look for the card before trying again", async t => {
+  const { orbit, run, log } = await fixture(t);
+  orbit.controls.writeAnswers.push("drop");
+  refused(await run(["create", "--title", "Maybe made"]), /may or may not have been made.*list --q/);
+  assert.match(log(), /action=create .*result=fail:no-answer/);
+  orbit.controls.writeAnswers.push("saved-then-502");
+  refused(await run(["create", "--title", "Maybe made"]), /may or may not have been made/);
+});
+
+test("Ctrl-C at a setup prompt ends with a plain RESULT line, the terminal back as it was and nothing saved", async t => {
+  const script = await start("sh", ["-c", "command -v script"], kitEnv());
+  if (script.status !== 0) return t.skip("no script command on this machine");
+  const { root, configPath, env } = await fixture(t);
+  rmSync(configPath);
+  const child = spawn("script", ["-qfec", `${kit} ticket setup --origin http://127.0.0.1:9`, "/dev/null"], { env: { ...env, KIT_ROOT: root }, stdio: ["pipe", "pipe", "pipe"] });
+  let seen = "", sent = false;
+  const finished = new Promise<number | null>(done => child.on("close", done));
+  child.stdout.on("data", chunk => {
+    seen += chunk;
+    if (!sent && /hidden/.test(seen)) { sent = true; setTimeout(() => child.stdin.write("\u0003"), 150); }
+  });
+  assert.notEqual(await finished, 0);
+  assert.match(seen, /RESULT: fail ticket Setup was cancelled\. Nothing was saved\./);
+  assert.ok(!existsSync(configPath));
+});
+
 test("a 429 on a write waits once and sends the same version again, with one log line", async t => {
   const { orbit, run, log } = await fixture(t);
   orbit.addTask(orbit.tools);
@@ -465,7 +502,7 @@ test("moving the tick from one Scheduled in Radaar line to another still needs L
 });
 
 test("help is only asked for standing alone: a -h in text is text, a -h after a value option is refused", async t => {
-  const { orbit, run } = await fixture(t);
+  const { orbit, run, env } = await fixture(t);
   const task = orbit.addTask(orbit.tools);
   refused(await run(["update", "TOOLS-1", "--title", "-h"]), /--title needs a value/);
   ok(await run(["comment", "TOOLS-1", "-h"]));
@@ -475,11 +512,18 @@ test("help is only asked for standing alone: a -h in text is text, a -h after a 
   ok(await run(["note", "TOOLS-1", "--", "--help"]));
   assert.match(task.description, /--help$/);
   for (const args of [["update", "TOOLS-1", "--help"], ["update", "-h"], ["-h"]]) {
-    const help = await start(process.execPath, [ticket, ...args], kitEnv());
+    const help = await start(process.execPath, [ticket, ...args], env);
     assert.equal(help.status, 0);
     assert.match(help.stdout, /^Usage: kit ticket/);
   }
   ok(await run(["create", "--title", "From stdin", "--description-file", "-"], {}, "text"));
+});
+
+test("--json keeps a card's text exactly; only the screen form drops direction marks; text with leading dashes gets a hint", async t => {
+  const { orbit, run } = await fixture(t);
+  orbit.addTask(orbit.tools, { title: "Plain\u202Etext" });
+  assert.equal(JSON.parse(ok(await run(["get", "TOOLS-1", "--json"])).stdout.split("\nRESULT:")[0]).title, "Plain\u202Etext");
+  refused(await run(["note", "TOOLS-1", "--fix later"]), /put -- before/);
 });
 
 test("a write answered 2xx with a page that is not Orbit's may have saved; terminal tricks in card text never reach the screen", async t => {
@@ -835,14 +879,16 @@ test("an option never swallows the next option as its value; --flag=value lets a
 test("a write answered by a gateway page may have saved, so it says so, and is not retried", async t => {
   const { orbit, run, log } = await fixture(t);
   orbit.controls.writeAnswers.push("saved-then-502");
-  const said = refused(await run(["create", "--title", "Maybe"]), /may or may not have gone through/);
+  const said = refused(await run(["create", "--title", "Maybe"]), /may or may not have been made/);
   assert.equal(orbit.writes().length, 1);
   assert.ok(!said.all.includes("Bad gateway"), "the page itself is never shown");
   assert.match(log(), /action=create .* result=fail:502/);
+  const card = orbit.addTask(orbit.tools);
+  orbit.controls.writeAnswers.push("saved-then-502");
+  refused(await run(["update", card.identifier, "--title", "x"]), /may or may not have gone through/);
   // A read has nothing to lose: it only says to try later.
-  orbit.addTask(orbit.tools);
   orbit.controls.answers.push("gateway-page");
-  refused(await run(["get", "TOOLS-1"]), /try again later/);
+  refused(await run(["get", card.identifier]), /try again later/);
 });
 
 test("get names the parent by its key, and a parent it cannot read does not hide the card", async t => {
@@ -932,6 +978,7 @@ test("the store's line edits leave the rest of a description exactly as it was",
   assert.equal(withPlannedDates("A\n\nPlanned dates: x\n\nB\nPlanned dates: y", "Planned dates: z"), "A\n\nPlanned dates: z\n\nB");
   assert.equal(withPlannedDates("Text\n\n## Notes\n\n- a", "Planned dates: z"), "Text\n\nPlanned dates: z\n\n## Notes\n\n- a");
   assert.equal(withPlannedDates("", "Planned dates: z"), "Planned dates: z");
+  assert.equal(withPlannedDates("Text\n## Notes\n\n- a", "Planned dates: z"), "Text\n\nPlanned dates: z\n\n## Notes\n\n- a");
   assert.equal(withNote("## Notes\n\n- a\n\n## After\n\ntext", "2026-01-01", "me", "b"), "## Notes\n\n- a\n- 2026-01-01 (me): b\n\n## After\n\ntext");
 });
 
@@ -960,6 +1007,7 @@ test("the ticket settings are checked the same by the kit's JavaScript and by ki
     [{ tickets: "jira" }, /"tickets" must be "files" or "orbit"/],
     [{ tickets: "orbit" }, /"tickets": "orbit" needs "orbit"/],
     [{ orbit: "TOOLS" }, /"orbit" must be an object/],
+    [{ orbit: null }, /"orbit" must be an object/],
     [{ orbit: { project: "no spaces" } }, /"orbit.project" must be an Orbit project key/],
     [{ orbit: { project: "TOOLS", parent: "TOOLS" } }, /"orbit.parent" must be a card key/],
   ];

@@ -32,7 +32,7 @@ Set up once:
 
 Without --project a board comes from "orbit": { "project": "<KEY>", "parent": "<KEY-n>" } in scripts/agents/kit.json;
 parent is the card new tickets go under (--no-parent skips it). "tickets": "files"|"orbit" (default files) says which
-store this project's kit next, slice, pr and status read: they still read ticket files in this stage. kit ticket itself
+store this project's kit next, slice, pr, status and init --issues use: they still use ticket files in this stage. kit ticket itself
 always talks to Orbit.
 
 The rules it keeps: a move to a Publish status and a tick on "Scheduled in Radaar" need --lex-said; a card is never
@@ -57,7 +57,7 @@ Never paste the token in a chat.
 If it cannot copy the pass, it asks you to paste the two parts instead. The saved file stays private to you, outside every project.
 
 Other ways to start it:
---from-file file     reads the token from that file, then deletes the file (for T3's secret box). If setup stops after that, make a new token in Orbit.
+--from-file file     reads the token from that file, then deletes the file. If setup stops after that, make a new token in Orbit.
 --from-mcp-config file     copies the pass from that settings file, not from your Claude settings.
 --origin address     Orbit's web address, when it cannot be copied.
 --workspace id       the workspace, when the token reaches more than one.
@@ -99,7 +99,7 @@ function parse(name, words) {
       // A next word shaped like an option is not a value. A lone "-" is (standard input), and so is text with spaces ("- [x] done").
       else if (words[index + 1] === undefined || /^-\S+$/.test(words[index + 1])) throw new UsageProblem(`--${flag} needs a value (a value shaped like an option goes as --${flag}=value)`);
       else found.flags[flag] = words[++index];
-    } else throw new UsageProblem(`${name} does not take ${word}`);
+    } else throw new UsageProblem(`${name} does not take ${word}${/\s/.test(word) ? "; put -- before text that starts with dashes" : ""}`);
   }
   if (found.help) return found;
   if (found.rest.length < spec.args.length) throw new UsageProblem(`${name} needs a ${spec.args[found.rest.length]}`);
@@ -122,6 +122,8 @@ const cardLine = task => `${task.identifier}  [${task.status_name}]  ${task.prio
 
 let redact = orbitRedactor();
 const say = line => console.log(redact(printable(line)));
+// JSON already escapes control characters and goes to scripts, which get the card's text as it is.
+const sayJson = value => console.log(redact(JSON.stringify(value, null, 2)));
 function finish(status, message, code = status === "ok" ? 0 : 1) {
   kitResult(status, redact(printable(`ticket ${message}`)).replace(/\s+/g, " "));
   process.exitCode = code;
@@ -131,7 +133,7 @@ function report(name, outcome) {
   if (outcome.dry) {
     const { method, path, body } = outcome.dry;
     say(`Would send: ${method} ${path}`);
-    if (body) say(JSON.stringify(body, null, 2));
+    if (body) sayJson(body);
     if (name === "trash") say(`Its sub-tasks (${outcome.subTasks} directly under it) would go to the trash with it.`);
     say("Dry run: nothing was sent.");
     return finish("ok", `${name} ${outcome.key} dry run`);
@@ -147,7 +149,7 @@ function report(name, outcome) {
 async function show(store, key, { json, comments }) {
   const task = await store.read(key);
   const notes = comments ? await store.comments(task.identifier) : null;
-  if (json) { say(JSON.stringify(notes ? { ...task, comments: notes } : task, null, 2)); return finish("ok", `get ${task.identifier}`); }
+  if (json) { sayJson(notes ? { ...task, comments: notes } : task); return finish("ok", `get ${task.identifier}`); }
   say(`${task.identifier}  ${task.title}`);
   say(`Status: ${task.status_name}  Priority: ${task.priority}`);
   say(`Assignees (assignee_ids): ${assignees(task)}`);
@@ -163,7 +165,7 @@ async function show(store, key, { json, comments }) {
 }
 
 function showList(label, { items, more }, json) {
-  if (json) say(JSON.stringify(items, null, 2));
+  if (json) sayJson(items);
   else for (const task of items) say(cardLine(task));
   finish("ok", `${label}: ${items.length} card${items.length === 1 ? "" : "s"}${more ? "; more exist (use --limit)" : ""}`);
 }
@@ -175,7 +177,7 @@ async function main() {
   if (!Object.hasOwn(commands, name)) throw new UsageProblem(`unknown command ${name}; see kit ticket --help`);
   const { flags, rest, help } = parse(name, words);
   if (help) return void process.stdout.write(name === "setup" ? setupUsage : usage);
-  const [key, words2] = rest;
+  const [key, wording] = rest;
 
   if (name === "setup") {
     const message = await orbitSetup({ flags: { fromFile: flags["from-file"], fromMcpConfig: flags["from-mcp-config"], origin: flags.origin, workspace: flags.workspace, dryRun: flags["dry-run"] }, say });
@@ -207,9 +209,9 @@ async function main() {
     }
     case "update": return report(name, await store.update(key, { title: flags.title, description: description(flags), status: flags.status, priority: flags.priority, parent: flags.parent, blocked: flags["blocked-by"], lexSaid: flags["lex-said"] }));
     case "dates": return report(name, await store.dates(key, { start: flags.start, due: flags.due, source: flags.source, clear: flags.clear }));
-    case "note": return report(name, await store.note(key, words2));
-    case "comment": return report(name, await store.comment(key, words2));
-    case "next-lex": return report(name, await store.nextLex(key, words2));
+    case "note": return report(name, await store.note(key, wording));
+    case "comment": return report(name, await store.comment(key, wording));
+    case "next-lex": return report(name, await store.nextLex(key, wording));
     case "clear-next-lex": return report(name, await store.clearNextLex(key));
     case "trash": return report(name, await store.trash(key, flags["lex-said"]));
   }

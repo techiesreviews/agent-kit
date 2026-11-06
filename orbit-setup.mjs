@@ -62,13 +62,19 @@ function terminal(input = process.stdin, output = process.stderr) {
     }
     return piped.shift() ?? "";
   };
-  const fromKeys = hidden => new Promise(done => {
+  const fromKeys = hidden => new Promise((done, cancelled) => {
     let text = "";
     const finish = () => { input.off("data", onData); input.setRawMode(false); input.pause(); output.write("\n"); done(text); };
     const onData = chunk => {
       for (const key of chunk.toString("utf8")) {
         if (key === "\r" || key === "\n" || key === "\u0004") return finish();
-        if (key === "\u0003") { input.setRawMode(false); output.write("\n"); process.kill(process.pid, "SIGINT"); return; }
+        if (key === "\u0003") {
+          input.off("data", onData);
+          input.setRawMode(false);
+          input.pause();
+          output.write("\n");
+          return cancelled(new OrbitSetupProblem("stopped", "Setup was cancelled. Nothing was saved."));
+        }
         if (key === "\u007f" || key === "\b") {
           if (text && !hidden) output.write("\b \b");
           text = text.slice(0, -1);

@@ -115,7 +115,7 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
   clear-next-lex, trash, setup. It reaches every board the token covers, from any project folder or with `--project`.
 - A project's `scripts/agents/kit.json` says which store it uses: `"tickets": "files"` (the default) or `"orbit"`, and
   `"orbit": { "project": "TOOLS", "parent": "TOOLS-10" }` names its board and the card new tickets go under (parent is
-  optional). `kit next`, `kit slice`, `kit pr`, `kit status` and `kit init --issues` still read ticket files; later
+  optional). `kit next`, `kit slice`, `kit pr`, `kit status` and `kit init --issues` still use ticket files; later
   stages move them behind `ticket-store.mjs`, then remove the file store.
 - The rules are built in: reads work for anyone; writes need `ORBIT_ROLE=lead`, read the latest version first and retry
   once on a version conflict. A move to a Publish status or a tick on "Scheduled in Radaar" needs `--lex-said "<his exact
