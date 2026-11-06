@@ -213,9 +213,15 @@ export async function orbitSetup({ env = process.env, flags = {}, say, io = term
   let workspace = workspaces.find(item => item.id === kept?.workspace_id) ?? (workspaces.length === 1 ? workspaces[0] : null);
   if (!workspace) {
     if (!workspaces.length) stop(`This token reaches no workspace. Nothing was saved.${after}`);
-    const reached = workspaces.map(item => `${item.id} (${item.name})`).join(", ");
-    const answer = await io.ask(`This token reaches several workspaces: ${reached}. Type the id of the one to use:`);
-    workspace = workspaces.find(item => item.id === answer);
+    // Names come from Orbit: no terminal control characters reach the screen.
+    const reached = workspaces.map(item => `${item.id} (${item.name})`).join(", ").replace(/\p{Cc}/gu, "");
+    // A used token file cannot come back, so a slip gets two more tries, and the name counts as well as the id.
+    let answer = "";
+    for (let tries = 0; tries < 3 && !workspace; tries++) {
+      try { answer = await io.ask(`This token reaches several workspaces: ${reached}. Type the id or name of the one to use:`); }
+      catch (error) { if (error instanceof OrbitSetupProblem) stop(`${error.message}${after}`); throw error; }
+      workspace = workspaces.find(item => item.id.toLowerCase() === answer.toLowerCase() || String(item.name).toLowerCase() === answer.toLowerCase());
+    }
     if (!workspace) stop(`No workspace ${answer || "was named"} for this token; it reaches: ${reached}. Nothing was saved.${after}`);
   }
   config.workspace_id = workspace.id;
