@@ -112,7 +112,8 @@ function takeTokenFile(path) {
   try { text = readFileSync(path, "utf8"); } catch { stop(`${path} cannot be read`); }
   const token = text.split("\n", 1)[0].trim();
   if (!looksLikeToken(token)) stop(`${notAToken} ${path} was left as it is.`);
-  rmSync(path, { force: true });
+  try { rmSync(path, { force: true }); }
+  catch { stop(`${path} could not be deleted, and the token is still in it: delete it yourself. Nothing was saved.`); }
   return token;
 }
 
@@ -185,7 +186,9 @@ export async function orbitSetup({ env = process.env, flags = {}, say, io = term
   }
   if (Boolean(id) !== Boolean(secret)) stop("The Cloudflare pass has two parts and one is missing. Nothing was saved.");
 
-  const token = flags.fromFile ? takeTokenFile(flags.fromFile) : await io.askHidden("Paste the Orbit token, then press Enter");
+  // Fixing only the pass needs no new token: Orbit shows a token one time only.
+  const token = flags.fromFile ? takeTokenFile(flags.fromFile)
+    : await io.askHidden(saved?.token ? "Paste the new Orbit token, or press Enter to keep the saved one" : "Paste the Orbit token, then press Enter") || saved?.token || "";
   if (!looksLikeToken(token)) stop(notAToken);
   // Once a token file is used it is gone, and Orbit shows a token only once.
   const after = flags.fromFile ? " The token file is gone, so make a new token in Orbit before running this again." : "";

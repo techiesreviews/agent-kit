@@ -891,6 +891,26 @@ test("setup asks before moving a saved setup to a different address found in the
   assert.equal(JSON.parse(readFileSync(configPath, "utf8")).origin, orbit.origin);
 });
 
+test("setup --new-pass keeps a working saved token when Enter is pressed at its prompt", async t => {
+  const { run, orbit, configPath, config, save } = await fixture(t);
+  save({ ...config, cf_access_client_id: "old-id", cf_access_client_secret: "old-secret" });
+  ok(await run(["setup", "--new-pass"], {}, `yes\n${fakeCfId}\n${fakeCfSecret}\n\n`));
+  const saved = JSON.parse(readFileSync(configPath, "utf8"));
+  assert.equal(saved.token, fakeToken);
+  assert.equal(saved.cf_access_client_id, fakeCfId);
+  assert.equal(orbit.requests.at(-1)!.headers.authorization, `Bearer ${fakeToken}`);
+});
+
+test("setup says when the settings cannot be read after a yes, then asks for the pass", async t => {
+  const { home, run, orbit, configPath } = await fixture(t);
+  rmSync(configPath);
+  const secret = join(home, "secret-box");
+  writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
+  const said = ok(await run(["setup", "--from-file", secret, "--from-mcp-config", join(home, "missing.json")], {}, `yes\n${orbit.origin}\n${fakeCfId}\n${fakeCfSecret}\n`));
+  assert.match(said.all, /Could not read/);
+  assert.equal(JSON.parse(readFileSync(configPath, "utf8")).cf_access_client_secret, fakeCfSecret);
+});
+
 test("setup warns about a read-only token and asks which workspace when there are several", async t => {
   const { home, run, orbit, configPath } = await fixture(t);
   rmSync(configPath);
@@ -1087,7 +1107,7 @@ test("the screen and --json keep ordinary card text whole; only real secrets and
 test("every way of writing the Radaar tick counts: spacing, emphasis, quote marks and links", async t => {
   const { orbit, run } = await fixture(t);
   orbit.addTask(orbit.tools, { description: "- [ ] Scheduled in Radaar" });
-  for (const text of ["- [x] Scheduled  in Radaar", "- [x] **Scheduled** in Radaar", "> - [x] Scheduled in Radaar", "- [x] [Scheduled in Radaar](https://example.test)", "  * [X] _scheduled in radaar_", "[x] Scheduled in Radaar", "- [x] Scheduled in [Radaar](https://example.test)", "- - [x] Scheduled in Radaar", "- [x] Scheduled in [Radaar][r]", "- [x] <b>Scheduled</b> in Radaar"]) {
+  for (const text of ["- [x] Scheduled  in Radaar", "- [x] **Scheduled** in Radaar", "> - [x] Scheduled in Radaar", "- [x] [Scheduled in Radaar](https://example.test)", "  * [X] _scheduled in radaar_", "[x] Scheduled in Radaar", "- [x] Scheduled in [Radaar](https://example.test)", "- - [x] Scheduled in Radaar", "- [x] Scheduled in [Radaar][r]", "- [x] <b>Scheduled</b> in Radaar", "- [x] Scheduled in\n  Radaar", "- [x] Scheduled&nbsp;in Radaar"]) {
     refused(await run(["update", "TOOLS-1", "--description", text]), /--lex-said/);
   }
   assert.equal(orbit.writes().length, 0);
@@ -1192,6 +1212,39 @@ test("no answer to a comment or a trash says it may have gone through, is logged
   refused(await run(["trash", "TOOLS-1", "--lex-said", "bin it"]), /may or may not have gone through/);
   assert.match(log(), /action=trash .*result=fail:no-answer/);
   assert.equal(orbit.writes().length, 2);
+});
+
+test("replacing a dated card's description keeps its Planned dates line, so no date loses its source", async t => {
+  const { orbit, run } = await fixture(t);
+  const task = orbit.addTask(orbit.tools, { description: "Old" });
+  ok(await run(["dates", "TOOLS-1", "--due", "2026-11-30", "--source", "plan.md"]));
+  ok(await run(["update", "TOOLS-1", "--description", "New"]));
+  assert.equal(task.description, "New\n\nPlanned dates: due 2026-11-30 (source: plan.md)");
+  ok(await run(["update", "TOOLS-1", "--clear-description"]));
+  assert.equal(task.description, "Planned dates: due 2026-11-30 (source: plan.md)");
+  ok(await run(["update", "TOOLS-1", "--description", "Mine\n\nPlanned dates: due 2026-11-30 (source: Lex)"]));
+  assert.equal(task.description, "Mine\n\nPlanned dates: due 2026-11-30 (source: Lex)");
+});
+
+test("changing blockers never drops other words on the Blocked by line without saying so", async t => {
+  const { orbit, run } = await fixture(t);
+  const task = orbit.addTask(orbit.tools, { description: "Blocked by: legal team, tools-3" });
+  refused(await run(["update", "TOOLS-1", "--blocked-by", "TOOLS-4"]), /legal, team/);
+  refused(await run(["update", "TOOLS-1", "--blocked-by", "none"]), /legal, team/);
+  assert.equal(task.description, "Blocked by: legal team, tools-3");
+  assert.equal(orbit.writes().length, 0);
+});
+
+test("Retry-After as a date is honoured too: a near one waits once, a far one is reported", async t => {
+  const { orbit, run } = await fixture(t);
+  orbit.addTask(orbit.tools);
+  orbit.controls.answers.push({ retryAfter: new Date(Date.now() + 2000).toUTCString() });
+  ok(await run(["get", "TOOLS-1"]));
+  assert.equal(orbit.requests.length, 3);
+  orbit.requests.length = 0;
+  orbit.controls.answers.push({ retryAfter: new Date(Date.now() + 3_600_000).toUTCString() });
+  refused(await run(["get", "TOOLS-1"]), /wait \d+ seconds/);
+  assert.equal(orbit.requests.length, 1);
 });
 
 test("a blank --parent never drops the board's default parent", async t => {
