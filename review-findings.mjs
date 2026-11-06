@@ -175,7 +175,8 @@ export function findingsRecord(resultMd, meta) {
     counts.kind[gap ? "gap" : kind]++;
     counts.severity[gap ? "gap" : severity ?? "none"]++;
   }
-  return { ...meta, findings: findings.map(({ group, severity, kind, text }) => ({ group, severity, kind, text })), counts, notes: notes.length };
+  // With a round, each finding carries its id (R<round>-<n>), which a later review marks resolved or still open.
+  return { ...meta, findings: findings.map(({ group, severity, kind, text }, index) => ({ ...(meta.round ? { id: `R${meta.round}-${index + 1}` } : {}), group, severity, kind, text })), counts, notes: notes.length };
 }
 
 // One line for logs: "findings 3: fault 1, ticket 2; P1 2, P2 1".

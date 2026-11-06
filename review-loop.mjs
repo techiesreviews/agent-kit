@@ -1,7 +1,8 @@
 // The review loop (Lex, 2026-11-06; after Theo's sol-loop): the budget as a function of risk, the early stop on nits,
 // finding ids and the ledger, and the PR line. The rule text is the "Review loop" section of docs/kitchen.md.
 // The pure parts live here so kit review, kit fix, kit slice and kit pr never read the rules differently.
-import { existsSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { blockingFindings } from "./review-findings.mjs";
 
@@ -154,4 +155,30 @@ export function reviewChain(folder) {
     current = record.previous ? join(dirname(current), record.previous) : null;
   }
   return chain;
+}
+
+/**
+ * The earlier review this one answers (rule 3): in `parent` (the owner's folder under .scratch/reviews) the newest review of the
+ * same base that still had findings and whose reviewed head is an ancestor of the current head. A second look's folder is never one.
+ * Returns { name, round, head, findings } or null (then this is round 1, a full review).
+ */
+export function findPreviousReview(parent, { head, base, root }) {
+  if (!existsSync(parent) || !head || !base) return null;
+  const isAncestor = other => {
+    try { execFileSync("git", ["-C", root, "merge-base", "--is-ancestor", other, head], { stdio: "ignore" }); return true; }
+    catch { return false; }
+  };
+  for (const name of readdirSync(parent).sort().reverse()) {
+    const folder = join(parent, name);
+    if (existsSync(join(folder, "second-look.json")) || !existsSync(join(folder, "findings.json")) || !existsSync(join(folder, "refs.txt"))) continue;
+    try {
+      const [reviewedHead, reviewedBase] = readFileSync(join(folder, "refs.txt"), "utf8").trim().split("\n");
+      const record = JSON.parse(readFileSync(join(folder, "findings.json"), "utf8"));
+      if (record.unreadable || record.round === undefined || reviewedBase !== base || reviewedHead === head || !isAncestor(reviewedHead)) continue;
+      // The newest review of this change decides: one that found nothing ended the loop, so the next review starts again at round 1.
+      if (!record.findings?.length) return null;
+      return { name, round: record.round ?? 1, head: reviewedHead, findings: record.findings.map((item, index) => ({ ...item, id: item.id ?? `R${record.round ?? 1}-${index + 1}` })) };
+    } catch { /* An unreadable record is not a previous review. */ }
+  }
+  return null;
 }

@@ -228,7 +228,7 @@ test("kit review writes findings.json with kinds and counts, or unreadable for a
   assert.equal(unreadable.status, 0, unreadable.stderr);
   assert.match(unreadable.stdout, /^findings unreadable$/m);
   assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(unreadable.stdout), "findings.json"), "utf8")), {
-    model: "claude-opus-5-5", effort: "medium", scope: `git diff ${f.commits[0]}...HEAD`, head: f.commits[2], unreadable: true,
+    model: "claude-opus-5-5", effort: "medium", scope: `git diff ${f.commits[0]}...HEAD`, head: f.commits[2], round: 1, unreadable: true,
   });
 });
 
@@ -1716,4 +1716,39 @@ test("a review without a ticket takes skills from the changed files and keeps th
   const brief = reviewBrief("", "", "HEAD^", f.root, [], true, "claude-opus-5-5", "## Files\n- `src/ui/menu.css`\n- `docs/map/spec.md`\n");
   assert.match(brief, /^Spec axis: no ticket supplied/m);
   assert.match(brief, /^- \/emil-ui-review — /m);
+});
+
+test("review loop: round 1 is a full review with ids; a later review of changed code gets the open ids and the diff since, and its marks make the ledger", async (t) => {
+  const f = fixture(t);
+  const loop = await import("../review-loop.mjs");
+  const first = f.run([], { FAKE_REPORT: "REVIEW_STATUS: complete\nDefects:\n- file.txt:1 — P1 fault: the save drops the second write.\nValidation gaps: none.\n", ASE_REVIEW_MODEL: "claude-opus-5-5" });
+  assert.equal(first.status, 0, first.stderr);
+  const firstEvidence = f.evidence(first.stdout);
+  assert.ok(!f.calls().at(-1)!.input.includes("Review loop: round"), "round 1 is a full review with no loop section");
+  const firstRecord = JSON.parse(readFileSync(join(firstEvidence, "findings.json"), "utf8"));
+  assert.equal(firstRecord.round, 1);
+  assert.deepEqual(firstRecord.findings.map((item: { id: string }) => item.id), ["R1-1"]);
+  // The builder fixes it: a new commit; the next review answers the first.
+  const reviewedHead = f.commits[2];
+  writeFileSync(join(f.root, "file.txt"), "fixed\n");
+  f.git("add", "file.txt"); f.git("commit", "-m", "fix the second write");
+  const second = f.run([], { FAKE_REPORT: "REVIEW_STATUS: complete\nPrevious findings:\n- R1-1: resolved\n\nDefects: none\nValidation gaps: none.\n", ASE_REVIEW_MODEL: "claude-opus-5-5" });
+  assert.equal(second.status, 0, second.stderr);
+  assert.match(second.stdout, /^review loop: round 2, answering \S+ \(1 open findings\)$/m);
+  const brief = f.calls().at(-1)!.input;
+  assert.match(brief, /^## Review loop: round 2 of at most 3$/m);
+  assert.ok(brief.includes(`git diff ${reviewedHead}..HEAD`), "only the code changed since the last reviewed head");
+  assert.match(brief, /- R1-1 \(P1 fault\): file\.txt:1 — P1 fault: the save drops the second write\./);
+  const secondEvidence = f.evidence(second.stdout);
+  const secondRecord = JSON.parse(readFileSync(join(secondEvidence, "findings.json"), "utf8"));
+  assert.equal(secondRecord.round, 2);
+  assert.equal(secondRecord.previous, firstEvidence.split("/").at(-1));
+  assert.deepEqual(loop.ledgerRows(loop.reviewChain(secondEvidence)), [{ id: "R1-1", severity: "blocker", outcome: "resolved" }]);
+  // A review that found nothing leaves nothing to answer: the next review is a fresh round 1.
+  writeFileSync(join(f.root, "file.txt"), "again\n");
+  f.git("add", "file.txt"); f.git("commit", "-m", "another change");
+  const third = f.run([], { FAKE_REPORT: "REVIEW_STATUS: complete\nDefects: none\nValidation gaps: none.\n", ASE_REVIEW_MODEL: "claude-opus-5-5" });
+  assert.equal(third.status, 0, third.stderr);
+  assert.ok(!f.calls().at(-1)!.input.includes("Review loop: round"));
+  assert.equal(JSON.parse(readFileSync(join(f.evidence(third.stdout), "findings.json"), "utf8")).round, 1);
 });
