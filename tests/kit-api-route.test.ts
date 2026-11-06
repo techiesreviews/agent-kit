@@ -73,7 +73,7 @@ test("with the key file set, claude runs through the wrapper with the key and co
 
 test("the adapter uses the wrapper only while the route is on, and the key is not in the kit's own environment or arguments", t => {
   const f = folder(t);
-  const saved = { ...process.env };
+  const saved = Object.assign({}, process.env);
   try {
     process.env.KIT_API_KEY_FILE = f.keyFile;
     const adapter = claudeAdapter({ kind: "review", model: "claude-opus-5-5", effort: "medium", sessionId: "x" }, "/common");
