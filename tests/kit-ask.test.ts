@@ -169,3 +169,26 @@ test("kit ask --help is plain and lists the options", t => {
   assert.equal(help.status, 0);
   for (const word of ["--api", "--prompt-file", "--model", "--script", "--out", "2026-11-11"]) assert.ok(help.stdout.includes(word), word);
 });
+
+test("a bad --out costs nothing, and a file that cannot be written after the call still shows the answer", t => {
+  const f = folder(t);
+  const blocker = join(f.work, "a-file"); writeFileSync(blocker, "x");
+  const early = f.ask(["--api", "--prompt-file", f.prompt, "--out", join(blocker, "sub/out.md")]);
+  assert.equal(early.status, 1);
+  assert.match(last(early.stdout), /^RESULT: fail ask cannot make the folder for .*out\.md \(ENOTDIR\); nothing was sent$/);
+  assert.deepEqual(f.callList(), []);
+  const locked = join(f.work, "locked"); mkdirSync(locked); chmodSync(locked, 0o500);
+  t.after(() => chmodSync(locked, 0o700));
+  const late = f.ask(["--api", "--prompt-file", f.prompt, "--out", join(locked, "out.md")]);
+  assert.equal(late.status, 1, late.stdout);
+  assert.ok(late.stdout.startsWith("The drafted answer.\n"), "the paid answer is printed");
+  assert.match(last(late.stdout), /^RESULT: fail ask .*; the answer was printed above$/);
+});
+
+test("the playbook section ends at the next real heading, not at a # line inside a code block", t => {
+  const f = folder(t);
+  writeFileSync(join(f.rules, "shared/taste/scripts.md"), "# Taste\n\n## Current script and prompter playbook\n\nTOP RULE.\n\n```sh\n# a comment, not a heading\n```\n\nAFTER FENCE RULE.\n\n## Next section\nNOT INCLUDED\n");
+  assert.equal(f.ask(["--api", "--script", "--prompt-file", f.prompt, "--out", join(f.work, "o.md")]).status, 0);
+  const input: string = f.callList()[0].input;
+  assert.ok(input.includes("AFTER FENCE RULE.") && !input.includes("NOT INCLUDED"));
+});
