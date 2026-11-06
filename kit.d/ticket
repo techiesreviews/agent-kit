@@ -40,7 +40,8 @@ The rules it keeps: a move to a Publish status and a tick on "Scheduled in Radaa
 deleted for good; a date needs a source. A plain date YYYY-MM-DD is a whole day in Europe/Amsterdam (a start begins at
 00:00, a due date ends at 23:59); a full time with its offset is taken as it is. The public API has no relations, so blockers
 are a "Blocked by: KEY-n, KEY-m" line in the description. It reads the latest version first and tries once more on a
-version conflict. Each write adds one line to ~/.local/state/fleet/orbit.log.
+version conflict. Each write adds one line to ~/.local/state/fleet/orbit.log. Like every kit command it ends with a
+RESULT line, also after --json: a script drops that last line before it reads the JSON.
 `;
 const setupUsage = `Usage: kit ticket setup [--from-mcp-config [file]] [--from-file file] [--new-pass] [--origin address] [--workspace id] [--dry-run]
 
@@ -120,7 +121,8 @@ function description(flags) {
 // Terminal control characters in card text never reach the screen; a RESULT line is one line.
 const printable = value => String(value ?? "").replace(/[^\P{Cc}\n\t]|[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu, "");
 const assignees = task => task.assignee_ids?.length ? task.assignee_ids.join(", ") : "none";
-const cardLine = task => `${task.identifier}  [${task.status_name}]  ${task.priority}  assignees: ${assignees(task)}  ${String(task.title).replace(/\s*[\r\n]+\s*/g, " ")}`;
+const oneLine = text => String(text).replace(/\s*[\r\n]+\s*/g, " ");
+const cardLine = task => `${task.identifier}  [${task.status_name}]  ${task.priority}  assignees: ${assignees(task)}  ${oneLine(task.title)}`;
 
 // Errors, results and log lines hide all that looks like a secret. Card text on the screen, in --json and in a dry run
 // stays whole apart from real secrets, so a script reading it gets the card's own words.
@@ -154,7 +156,7 @@ async function show(store, key, { json, comments }) {
   const task = await store.read(key);
   const notes = comments ? await store.comments(task.identifier) : null;
   if (json) { sayJson(notes ? { ...task, comments: notes } : task); return finish("ok", `get ${task.identifier}`); }
-  say(`${task.identifier}  ${task.title}`);
+  say(`${task.identifier}  ${oneLine(task.title)}`);
   say(`Status: ${task.status_name}  Priority: ${task.priority}`);
   say(`Assignees (assignee_ids): ${assignees(task)}`);
   if (task.next_lex !== null) say(`Next step (Lex): ${task.next_lex}`);
