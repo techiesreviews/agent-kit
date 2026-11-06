@@ -68,6 +68,13 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
 - **Limits:** the API config folder starts empty, so skills and settings from `~/.claude` are not used on the route (link them in if you want them); a saved session does not resume across switching the route on or off (start a fresh run); a run killed before it printed its cost counts as unknown, and doctor says so.
 - **Check it:** `kit doctor` says whether the route is on or off, the key file's mode, and the total spent; every run adds a line (time, command, model, tokens, cost) to `~/.local/state/agent-kit/api-spend.log`.
 
+### Writing with the credit: `kit ask`
+
+- **Plain call:** `scripts/agents/kit ask --api --prompt-file <file> [--model sonnet|opus|haiku]` runs one headless `claude -p` on the API route, prints the answer and ends with its cost; `--out <file>` writes it to a file instead. It needs the route on (`KIT_API_KEY_FILE`), so a lead or helper first checks `kit doctor` says "api route: on".
+- **Script mode:** add `--script --out <file>`. The call is then given Lex's own rules in front of your prompt (`youtube/AGENTS.md` and the "Current script and prompter playbook" section of `youtube/shared/taste/scripts.md`, under `~/Projects/chat/youtube`, or `KIT_SCRIPT_RULES_ROOT`). If a rules file or that section is missing, nothing is sent and the message names it; the playbook's linked voice and workflow files are not added, so name them in your prompt file if the task needs them.
+- **Safe output:** `--out` never overwrites. If the file exists (a connected editor may hold newer edits) the answer goes beside it as `<name>.draft-<time><ext>`, and a lead merges by hand.
+- **Spend:** every call adds a line to `~/.local/state/agent-kit/api-spend.log`; the credit expires 2026-11-11.
+
 ## The factory: generated briefs, long jobs that wait
 
 - `kit brief <ticket> [--stage build|review|second-look|fix] [--note "<text>"]` prints the whole brief for a
