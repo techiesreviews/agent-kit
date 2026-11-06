@@ -8,6 +8,7 @@ import { inferCli, opencodeModelRuns, parseAgentArgs, releaseReviewBudget, reser
 import { reviewBrief, reviewScope, ticketReviewBrief } from "../review-brief.mjs";
 import { saveReviewEvidence } from "../review-evidence.mjs";
 import { countsLine, findingsRecord } from "../review-findings.mjs";
+import { findPreviousReview, loopBriefSection, riskyChange, roundLimit } from "../review-loop.mjs";
 import { parseChanges, reviewKinds, secondLookPick, secondLookTable } from "../pr-tier.mjs";
 import { durationMilliseconds } from "../sol-run.mjs";
 
@@ -62,7 +63,7 @@ function evidenceDirectory() {
 // model and its CLI, so no ASE_AGENT_CLI can send it to Codex, and marks its evidence folder.
 async function reviewOnce(flags, look) {
   let evidence = "none", temporary, status = 1, reason = "review failed", label, budget, env, model, effort, reviewedHead;
-  let ledger, outOfCredit = false, kept = false, spawned = false, unavailable = false, stderr = "", timedOut = false;
+  let previous = null, round = 1, loopMeta = {}, ledger, outOfCredit = false, kept = false, spawned = false, unavailable = false, stderr = "", timedOut = false;
   const ticket = flags.ticket;
   try {
     // The default base comes from the settings file; a settings problem is a failure, not a usage error.
@@ -88,7 +89,19 @@ async function reviewOnce(flags, look) {
       const listed = spawnSync("git", ["-C", root, "diff", "--name-only", scope.commit ? `${scope.commit}^..${scope.commit}` : `${scope.base}...HEAD`], { encoding: "utf8" });
       return listed.status === 0 ? `## Files\n${listed.stdout.split("\n").filter(Boolean).map(file => `- \`${file}\``).join("\n")}\n` : "";
     };
-    writeFileSync(briefPath, flags.ticket ? ticketReviewBrief(flags.ticket, resolved, root, undefined, true, model) : reviewBrief("", "", resolved, root, [], true, model, changed()));
+    let brief = flags.ticket ? ticketReviewBrief(flags.ticket, resolved, root, undefined, true, model) : reviewBrief("", "", resolved, root, [], true, model, changed());
+    // Rule 3 of the review loop: round 1 is a full review; a later round reviews only what changed since the last reviewed head and the open ids.
+    // A second look or a --commit review is never a loop round.
+    previous = !look && !scope.commit ? findPreviousReview(join(kitMainRoot(), ".scratch/reviews", kitOwner()), { head: scope.head, base: scope.base, root }) : null;
+    round = previous ? previous.round + 1 : 1;
+    loopMeta = look || scope.commit ? {} : { round, ...(previous ? { previous: previous.name } : {}) };
+    if (previous) {
+      const paths = spawnSync("git", ["-C", root, "diff", "--name-only", `${scope.base}...HEAD`], { encoding: "utf8" }).stdout.split("\n").filter(Boolean);
+      const { risky } = riskyChange({ paths, text: flags.ticket ? readFileSync(resolve(root, flags.ticket), "utf8").slice(0, 2000) : "", settings: kitSettings(root) });
+      brief += `\n${loopBriefSection({ round, limit: roundLimit(risky), previousHead: previous.head, open: previous.findings })}\n`;
+      console.log(`review loop: round ${round}, answering ${previous.name} (${previous.findings.length} open findings)`);
+    }
+    writeFileSync(briefPath, brief);
     console.log(`model: ${model}`);
     // One count for the computer; this project's old per-project count moves in on first use.
     ledger = { path: join(kitStateDir(env), "review-budget.json"), project: kitSettings(root).project, legacy: join(kitMainRoot(), ".scratch/review-budget.json") };
@@ -182,7 +195,7 @@ async function reviewOnce(flags, look) {
         evidence = evidenceDirectory();
         if (look) mark(false);
         return evidence;
-      }, text => findingsRecord(text, { model, effort, scope: label, head: reviewedHead }));
+      }, text => findingsRecord(text, { model, effort, scope: label, head: reviewedHead, ...loopMeta }));
       // The evidence is saved; a leftover temporary folder is reported but fails nothing.
       if (cleanup) console.error(`problem: removing ${temporary} failed: ${cleanup}`);
       if (record) {
