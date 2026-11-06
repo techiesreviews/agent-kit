@@ -172,8 +172,10 @@ test("a review's read-only tool list runs without the scrub flag (it leaves empt
   const f = folder(t);
   const env = { ...f.env, KIT_API_KEY_FILE: f.keyFile };
   for (const args of [["-p", "--tools", "Read,Grep,Glob"], ["-p", "--tools=Read,Grep"], ["-p", "--tools", ""]]) spawnSync(wrapper, args, { env, encoding: "utf8" });
-  for (const args of [["-p", "--allowedTools", "Bash"], ["-p", "--tools", "Read,Bash"], ["-p", "--tools=Bash(git *),Read"], ["-p"]]) spawnSync(wrapper, args, { env, encoding: "utf8" });
-  assert.deepEqual(f.callList().map(call => call.scrub), ["0", "0", "0", "1", "1", "1", "1"]);
+  const keeps = [["-p", "--allowedTools", "Bash"], ["-p", "--tools", "Read,Bash"], ["-p", "--tools=Bash(git *),Read"], ["-p"],
+    ["-p", "--tools", "default"], ["-p", "--tools", "Read", "Bash"], ["-p", "--tools", "Read Bash"], ["-p", "--tools", "Read,Grep", "--tools", "Bash"], ["-p", "--tools", "Read", "--tools=default"], ["-p", "--tools", "Edit"]];
+  for (const args of keeps) spawnSync(wrapper, args, { env, encoding: "utf8" });
+  assert.deepEqual(f.callList().map(call => call.scrub), ["0", "0", "0", ...keeps.map(() => "1")]);
 });
 
 test("doctor's view and the wrapper agree: a relative path, a newline-only file and an unreadable file are all refused in plain words", t => {

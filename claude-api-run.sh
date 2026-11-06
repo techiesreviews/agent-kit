@@ -23,15 +23,25 @@ unset KIT_API_KEY_FILE KIT_API_CONFIG_DIR ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH
 # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 keeps the key out of the shell commands, hooks and nested kit calls a builder starts.
 # It also makes claude set up its own sandbox, which leaves empty .env, .npmrc, yarn.lock ... files in the folder it runs in.
 # A call with an explicit tool list that has no Bash (a review) starts no shell command, so it runs without the flag and leaves no files.
+# Fail closed: the flag goes off only when every --tools value (the list is variadic, so the words after it count) is a plain reader.
 scrub=1
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
   tools=''
   case ${args[i]} in
     --tools=*) tools=${args[i]#--tools=} ;;
-    --tools) tools=${args[i + 1]-} ;;
+    --tools)
+      for ((j = i + 1; j < ${#args[@]}; j++)); do
+        [[ ${args[j]} == -* ]] && break
+        tools+=${tools:+,}${args[j]}
+      done ;;
     *) continue ;;
   esac
-  if [[ ,${tools// /}, != *,Bash,* && ,${tools// /}, != *,Bash\(* ]]; then scrub=0; fi
+  readers=1
+  IFS=',' read -r -a names <<< "${tools// /,}"
+  for name in "${names[@]}"; do
+    case $name in Read|Grep|Glob|'') ;; *) readers=0 ;; esac
+  done
+  if (( readers )); then scrub=0; else scrub=1; break; fi
 done
 ANTHROPIC_API_KEY=$key CLAUDE_CONFIG_DIR=$dir CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=$scrub exec claude "$@"
