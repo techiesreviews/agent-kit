@@ -29,13 +29,15 @@ function start(command: string, args: string[], env: NodeJS.ProcessEnv, input = 
     child.stdout.on("data", chunk => { stdout += chunk; });
     child.stderr.on("data", chunk => { stderr += chunk; });
     child.on("close", status => done({ status, stdout, stderr, all: stdout + stderr }));
+    // A command may end without reading its input: that is its answer, not this suite's error.
+    child.stdin.on("error", () => {});
     child.stdin.end(input);
   });
 }
 
 async function fixture(t: TestContext, settings: object = { tickets: "orbit", orbit: { project: "TOOLS" } }) {
   const home = mkdtempSync(join(tmpdir(), "kit-ticket-"));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
+  t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const root = join(home, "project");
   mkdirSync(join(root, "scripts/agents"), { recursive: true });
   writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify({ project: "kit-ticket", branches: { land: "dev" }, ...settings }));
@@ -472,6 +474,7 @@ test("Ctrl-C at a setup prompt ends with a plain RESULT line, the terminal back 
   const { root, configPath, env } = await fixture(t);
   rmSync(configPath);
   const child = spawn("script", ["-qfec", `${kit} ticket setup --origin http://127.0.0.1:9`, "/dev/null"], { env: { ...env, KIT_ROOT: root }, stdio: ["pipe", "pipe", "pipe"] });
+  child.stdin.on("error", () => {});
   let seen = "", sent = false;
   const finished = new Promise<number | null>(done => child.on("close", done));
   child.stdout.on("data", chunk => {
@@ -947,6 +950,7 @@ test("setup's hidden prompt shows nothing typed, through the real front door on 
   rmSync(configPath);
   const mcp = fakeMcpSettings(home, orbit.origin);
   const child = spawn("script", ["-qfec", `${kit} ticket setup --from-mcp-config ${mcp}`, "/dev/null"], { env: { ...env, KIT_ROOT: root, ORBIT_ROLE: "" }, stdio: ["pipe", "pipe", "pipe"] });
+  child.stdin.on("error", () => {});
   let seen = "";
   // Each answer goes in only after its question shows: typed earlier, the terminal itself would still echo it.
   const answers: [RegExp, string][] = [[/yes or no/i, "yes\r"], [/hidden/i, `${fakeToken}\r`]];

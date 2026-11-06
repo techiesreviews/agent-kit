@@ -185,6 +185,8 @@ export async function fakeOrbit(t: TestContext) {
     return problem(response, 405, "method_not_allowed", "No");
   });
   await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
+  // A test that fails before its after-hook is set must not leave this server holding the test file open for ever.
+  server.unref();
   t.after(() => new Promise<void>(done => { server.closeAllConnections(); server.close(() => done()); }));
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const writes = () => requests.filter(item => item.method !== "GET");
