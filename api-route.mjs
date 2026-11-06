@@ -126,6 +126,10 @@ export function apiRouteProblem(stdout, log, env = process.env) {
   if (!apiRoute(env).on) return null;
   const refusal = /^claude-api-run: (.+)$/m.exec(log ?? "")?.[1];
   if (refusal) return `problem: API route: ${refusal}`;
-  if (/credit balance is too low/i.test(`${stdout ?? ""}\n${log ?? ""}`)) return "problem: Claude out of credit: API credit is used up (Credit balance is too low); unset KIT_API_KEY_FILE to go back to the subscription";
+  // Only the CLI's own closing words count: the JSON result's error text, or the last lines of the log.
+  let said = "";
+  try { const result = JSON.parse(stdout ?? ""); if (result?.is_error) said = String(result.result ?? ""); } catch { /* No JSON result. */ }
+  const closing = (log ?? "").split(/\r?\n/).filter(line => line.trim()).slice(-5).join("\n");
+  if (/credit balance is too low/i.test(`${said}\n${closing}`)) return "problem: Claude out of credit: API credit is used up (Credit balance is too low); unset KIT_API_KEY_FILE to go back to the subscription";
   return null;
 }

@@ -571,7 +571,7 @@ export function codexAdapter(options, common, output) {
 export function claudeAdapter(options, common) {
   const { kind, model, effort } = options;
   return {
-    command: claudeCommand(), capture: true,
+    command: claudeCommand(), label: "claude", capture: true,
     args: ["-p", "--model", model, "--effort", effort, "--permission-mode", kind === "build" ? "acceptEdits" : "plan",
       ...(kind === "build" ? ["--allowedTools", "Bash", "--disallowedTools", "Task,Agent", "--add-dir", common] : ["--tools", "Read,Grep,Glob", "--setting-sources", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}']),
       "--output-format", "json", ...(options.sessionId ? ["--session-id", options.sessionId] : [])],
@@ -1006,7 +1006,7 @@ async function invokeAgent(adapter, args, descriptor, context) {
     if (session) update({ session });
     // The CLI's own failure is the cause; executeRun reports it after its consequences.
     if (silent) {
-      context.cause = `problem: ${adapter.command} unavailable: no session within ${adapter.startTimeout / 1000}s`;
+      context.cause = `problem: ${adapter.label ?? adapter.command} unavailable: no session within ${adapter.startTimeout / 1000}s`;
       // Like a refusal, only a silent first call refunds the review: a retry after a call that opened a session spent it.
       if (!previousCalls) update({ silent: true });
     }
@@ -1018,7 +1018,7 @@ async function invokeAgent(adapter, args, descriptor, context) {
       const limitProblem = creditProblem ?? adapter.usageLimit?.(result.stdout ?? "") ??
         (status ? usageLimitProblem(slice, options.cli) ?? usageLimitProblem(result.stdout ?? "", options.cli) : null);
       if (status || limitProblem) {
-        context.cause = limitProblem ?? adapter.errorProblem?.(result.stdout ?? "") ?? `problem: ${adapter.command} failed (${status}); see ${logPath}`;
+        context.cause = limitProblem ?? adapter.errorProblem?.(result.stdout ?? "") ?? `problem: ${adapter.label ?? adapter.command} failed (${status}); see ${logPath}`;
       }
       // A refusal of the first call refunds the review; a completed first call, or one
       // that worked before the limit, already spent it. kit review gives an out-of-credit run back itself.
