@@ -9,6 +9,8 @@ import { apiRoute, apiRouteProblem, apiRouteReport, apiSpendLog, apiSpendTotal, 
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { claudeAdapter } from "../agent-run.mjs";
 import { kitEnv } from "./support/kit-env.ts";
+// The opt-in API route is read from the environment: these tests run with it off, whatever the shell exports.
+delete process.env.KIT_API_KEY_FILE; delete process.env.KIT_API_CONFIG_DIR;
 
 // The opt-in API credit route (Lex, 2026-11-06): off by default; with KIT_API_KEY_FILE set the kit's headless Claude
 // calls run through claude-api-run.sh with the key read inside the child; each run adds a line to a local spend log.
@@ -29,11 +31,8 @@ function folder(t: TestContext) {
   const calls = join(dir, "calls.jsonl");
   writeFileSync(join(bin, "claude"), `#!/usr/bin/env node
 import { appendFileSync } from "node:fs";
-
-// The opt-in API route is read from the environment: these tests run with it off, whatever the shell exports.
-delete process.env.KIT_API_KEY_FILE; delete process.env.KIT_API_CONFIG_DIR;
 const args = process.argv.slice(2);
-appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ args, keyMatches: process.env.ANTHROPIC_API_KEY === ${JSON.stringify(secret)}, configDir: process.env.CLAUDE_CONFIG_DIR, keyFileVar: process.env.KIT_API_KEY_FILE ?? null, scrub: process.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB ?? null }) + "\\n");
+appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ args, keyMatches: process.env.ANTHROPIC_API_KEY === ${JSON.stringify(secret)}, configDir: process.env.CLAUDE_CONFIG_DIR, keyFileVar: process.env.KIT_API_KEY_FILE ?? null, configDirVar: process.env.KIT_API_CONFIG_DIR ?? null, scrub: process.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB ?? null }) + "\\n");
 console.log(JSON.stringify({ result: "ok", modelUsage: { "claude-haiku-5-5": {} }, usage: { input_tokens: 120, output_tokens: 30, cache_read_input_tokens: 10, cache_creation_input_tokens: 5 }, total_cost_usd: 0.0123, session_id: "s" }));
 `);
   writeFileSync(join(bin, "package.json"), '{"type":"module"}');
@@ -66,6 +65,7 @@ test("with the key file set, claude runs through the wrapper with the key and co
   assert.equal(call.keyMatches, true);
   assert.equal(call.configDir, join(f.home, ".claude-api"));
   assert.equal(call.keyFileVar, null, "claude is not told where the key file is");
+  assert.equal(call.configDirVar, null, "claude is not given the kit's own switch");
   assert.ok(!result.stdout.includes(secret) && !result.stderr.includes(secret), "the key is never printed");
   assert.ok(existsSync(join(f.home, ".claude-api")), "the config folder is made");
   // KIT_API_CONFIG_DIR picks another folder.
