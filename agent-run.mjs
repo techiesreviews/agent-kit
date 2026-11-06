@@ -999,9 +999,9 @@ async function invokeAgent(adapter, args, descriptor, context) {
       onOutput: sessionObserver(adapter, session => { clearTimeout(startTimer); update({ session }); }),
     }).finally(() => clearTimeout(startTimer));
     let status = result.status;
-    // The opt-in API credit route logs each headless Claude call's tokens and cost (never a secret).
-    if (options.cli === "claude") recordApiSpend({ command: `${options.kind} claude`, model: options.model, stdout: result.stdout, status });
     const slice = readFileSync(logPath, "utf8").slice(previousLog);
+    // The opt-in API credit route logs each headless Claude call's tokens and cost (never a secret); a call its wrapper refused adds nothing.
+    if (options.cli === "claude") recordApiSpend({ command: `${options.kind} claude`, model: options.model, stdout: result.stdout, status, refused: /^claude-api-run: /m.test(slice) });
     const session = recordedSession(adapter, result.stdout, slice);
     if (session) update({ session });
     // The CLI's own failure is the cause; executeRun reports it after its consequences.
