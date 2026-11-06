@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { checkSteps, classify, featureListGuard, focusedUnitFiles, parseChanges, visiblePath } from "../pr-tier.mjs";
 import { sameReviewPatch } from "../review-findings.mjs";
@@ -1063,7 +1063,7 @@ test("saved and fresh reviews stop on findings before CI or merge, capped at 15 
     const path = source === "saved" ? f.saveReview(report) : join(f.main, ".scratch/reviews/ak-14/fresh/result.md");
     const result = f.run([], { FAKE_REVIEW: report });
     assert.equal(result.status, 1, result.stderr);
-    assert.equal(result.stdout.trimEnd().split("\n").at(-1), `RESULT: fail pr #73 review has 17 open findings (${path})`);
+    assert.equal(result.stdout.trimEnd().split("\n").at(-1), `RESULT: fail pr #73 review has 16 open findings (${path})`);
     assert.ok(result.stdout.includes(`Spec: ${long.slice(0, 160)}…\n`), result.stdout);
     assert.doesNotMatch(result.stdout, /A{154}/);
     for (let i = 2; i <= 15; i++) assert.ok(result.stdout.includes(`Spec: a.ts:${i} Defect ${i}.\n`));
@@ -1134,12 +1134,13 @@ test("lead waiver merges saved or fresh findings, comments and patches the body 
     assert.match(result.stdout, /RESULT: ok merged #73/);
     assert.equal(f.ghCalls("merge").length, 1);
     assert.ok(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "wait"));
-    assert.equal(f.ghCalls("comment").at(-1)?.body, `Merged with 2 waived findings: ${reason}`);
+    assert.equal(f.ghCalls("comment").at(-1)?.body, `Merged with 1 waived findings: ${reason}`);
     const patches = f.apiCalls().filter(call => call.args[1] === "--method");
-    assert.equal(patches.length, 2);
-    assert.deepEqual(patches[1].args.slice(0, 5), ["api", "--method", "PATCH", "repos/{owner}/{repo}/pulls/73", "-F"]);
-    assert.match(patches[1].args[5], /^body=@/);
-    assert.equal(patches[1].body, `${patches[0].body}\nmerged with 2 waived findings: ${reason}\n`);
+    // The opening body, then (when the review left its evidence) the review loop's PR line and ledger, then the waiver.
+    assert.ok(patches.length >= 2 && patches.length <= 3, String(patches.length));
+    assert.deepEqual(patches.at(-1)!.args.slice(0, 5), ["api", "--method", "PATCH", "repos/{owner}/{repo}/pulls/73", "-F"]);
+    assert.match(patches.at(-1)!.args[5], /^body=@/);
+    assert.equal(patches.at(-1)!.body, `${patches.at(-2)!.body}\nmerged with 1 waived findings: ${reason}\n`);
   }
 });
 
@@ -1733,16 +1734,28 @@ test("--full forces today's checks on a docs-only PR; a failing doc guard stops 
 
 const minorReview = cleanReview.replace("Spec: none.", "Spec: P2: Minor defect.").replace("Validation gaps: none.", "Validation gaps: Add coverage.");
 
-for (const pending of [false, true]) test(`P3 blocks with only two completed rounds (pending=${pending})`, t => {
+for (const pending of [false, true]) test(`a should (P2) still blocks with only two completed rounds (pending=${pending})`, t => {
   const f = fixture(t);
   f.rounds(pending ? 3 : 2, pending ? 3 : undefined);
-  const report = cleanReview.replace("Spec: none.", "Spec: P3: Cosmetic defect.");
+  const report = cleanReview.replace("Spec: none.", "Spec: P2: Real minor defect.");
   f.saveReview(report);
   const result = f.run();
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stdout, /RESULT: fail pr #73 review has 1 open findings/);
   assert.equal(f.ghCalls("merge").length, 0);
   assert.equal(f.calls().some(call => call.args[0] === "wait"), false);
+});
+
+// Rule 2 of the review loop: a review that returns only nits needs no fix round and does not block, whatever the round count.
+for (const rounds of [0, 2]) test(`a review with only nits (a P3 and a validation gap) lands, with the nits as follow-ups (${rounds} rounds)`, t => {
+  const f = fixture(t);
+  if (rounds) f.rounds(rounds);
+  const report = cleanReview.replace("Spec: none.", "Spec: P3: Cosmetic defect.").replace("Validation gaps: none.", "Validation gaps: Add coverage.");
+  f.saveReview(report);
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /review: 2 follow-ups \(nits only\) \(non-blocking\)/);
+  assert.equal(f.ghCalls("merge").length, 1);
 });
 
 for (const local of [false, true]) for (const source of ["saved", "fresh"]) test(`three completed rounds merge follow-ups, preserve coverage and avoid duplicates (local=${local}, source=${source})`, t => {
@@ -2417,4 +2430,46 @@ test("a machine without flock runs the browser specs unlocked and says so", t =>
   assert.deepEqual(specsCalls(f).map(call => call.args), [["specs", "--affected", "--base", "origin/dev"], ["specs", files[1]]]);
   assert.match(f.body(), /^- problem: flock is not installed, so browser runs are not kept one at a time \(install util-linux\)$/m);
   assert.match(result.stdout, /RESULT: ok opened #73 [a-f0-9]{7} \(flaky under load: tests\/native-save\/b\.spec\.ts\)$/m);
+});
+
+// The review loop: the budget follows the risk, running out is reported, and the PR says how it was reviewed.
+test("a risky change (a path named auth) gets 5 fix rounds: a should still blocks after 3, and lands as a follow-up after 5", t => {
+  const should = cleanReview.replace("Spec: none.", "Spec: P2: Real minor defect.");
+  const three = fixture(t, { "src/auth/login.ts": "export const login = 1;\n" });
+  three.rounds(3); three.saveReview(should);
+  const blocked = three.run();
+  assert.equal(blocked.status, 1, blocked.stdout + blocked.stderr);
+  assert.match(blocked.stdout, /^review loop: risky change \(path src\/auth\/login\.ts\): up to 5 fix rounds$/m);
+  assert.match(blocked.stdout, /RESULT: fail pr #73 review has 1 open findings/);
+  const five = fixture(t, { "src/auth/login.ts": "export const login = 1;\n" });
+  five.rounds(5); five.saveReview(should);
+  const landed = five.run();
+  assert.equal(landed.status, 0, landed.stdout + landed.stderr);
+  assert.match(landed.stdout, /review: 1 follow-ups after 5 fix rounds \(non-blocking\)/);
+  // An ordinary change with the same finding after 3 rounds lands as a follow-up.
+  const plain = fixture(t);
+  plain.rounds(3); plain.saveReview(should);
+  const ordinary = plain.run();
+  assert.equal(ordinary.status, 0, ordinary.stdout + ordinary.stderr);
+  assert.doesNotMatch(ordinary.stdout, /review loop: risky change/);
+});
+
+test("out of budget with a blocker left is reported for Lex and never approved", t => {
+  const f = fixture(t);
+  f.rounds(3); f.saveReview(cleanReview.replace("Spec: none.", "Spec: P1: Real wrong behaviour."));
+  const result = f.run();
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /^Review budget used: 3 of 3 rounds, 1 open finding\. Running out of budget is not approval; Lex decides\.$/m);
+  assert.doesNotMatch(result.stdout, /Verdict: approved/);
+});
+
+test("the PR says how it was reviewed: the line and the findings ledger from the reviews' own evidence", t => {
+  const f = fixture(t);
+  const path = f.saveReview(cleanReview);
+  writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ round: 1, model: "claude-opus-5-5", head: f.git("rev-parse", "HEAD"), findings: [] }));
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^Reviewed with review-loop: 1 round with claude-opus-5-5\. Verdict: approved$/m);
+  const patch = f.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body).find(text => text?.includes("Reviewed with review-loop"));
+  assert.ok(patch?.includes("Reviewed with review-loop: 1 round with claude-opus-5-5. Verdict: approved\n\nFindings ledger: none."), patch);
 });
