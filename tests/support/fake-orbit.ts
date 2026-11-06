@@ -5,6 +5,8 @@ import type { TestContext } from "node:test";
 
 // A small local stand-in for Orbit's public API, written from github.com/coollabsio/orbit docs/public-api.md: the same
 // paths, problem documents, version checks and date rules. It holds made-up data and a made-up token only.
+// Two things it takes because those docs say Orbit does, on GET /tasks: "assignee_id (a user ID, or none for tasks
+// without an assignee)" and "parent_task_id (only the direct sub-issues of this task, as a UUID or an identifier such as ENG-12...)".
 export type FakeRequest = { method: string; path: string; query: URLSearchParams; headers: IncomingMessage["headers"]; body: any };
 export type FakeTask = Record<string, any>;
 
