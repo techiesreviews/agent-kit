@@ -1107,7 +1107,7 @@ test("the screen and --json keep ordinary card text whole; only real secrets and
 test("every way of writing the Radaar tick counts: spacing, emphasis, quote marks and links", async t => {
   const { orbit, run } = await fixture(t);
   orbit.addTask(orbit.tools, { description: "- [ ] Scheduled in Radaar" });
-  for (const text of ["- [x] Scheduled  in Radaar", "- [x] **Scheduled** in Radaar", "> - [x] Scheduled in Radaar", "- [x] [Scheduled in Radaar](https://example.test)", "  * [X] _scheduled in radaar_", "[x] Scheduled in Radaar", "- [x] Scheduled in [Radaar](https://example.test)", "- - [x] Scheduled in Radaar", "- [x] Scheduled in [Radaar][r]", "- [x] <b>Scheduled</b> in Radaar", "- [x] Scheduled in\n  Radaar", "- [x] Scheduled&nbsp;in Radaar", "- [x] Scheduled in\nRadaar", "> - [x] Scheduled in\n>   Radaar"]) {
+  for (const text of ["- [x] Scheduled  in Radaar", "- [x] **Scheduled** in Radaar", "> - [x] Scheduled in Radaar", "- [x] [Scheduled in Radaar](https://example.test)", "  * [X] _scheduled in radaar_", "[x] Scheduled in Radaar", "- [x] Scheduled in [Radaar](https://example.test)", "- - [x] Scheduled in Radaar", "- [x] Scheduled in [Radaar][r]", "- [x] <b>Scheduled</b> in Radaar", "- [x] Scheduled in\n  Radaar", "- [x] Scheduled&nbsp;in Radaar", "- [x] Scheduled in\nRadaar", "> - [x] Scheduled in\n>   Radaar", "- [x] &#83;cheduled in Radaar", "- [x] Schedu&#x6C;ed in Radaar"]) {
     refused(await run(["update", "TOOLS-1", "--description", text]), /--lex-said/);
   }
   assert.equal(orbit.writes().length, 0);
@@ -1224,6 +1224,10 @@ test("replacing a dated card's description keeps its Planned dates line, so no d
   assert.equal(task.description, "Planned dates: due 2026-11-30 (source: plan.md)");
   ok(await run(["update", "TOOLS-1", "--description", "Mine\n\nPlanned dates: due 2026-11-30 (source: Lex)"]));
   assert.equal(task.description, "Mine\n\nPlanned dates: due 2026-11-30 (source: Lex)");
+  // A dates line without a source is not a way round the rule.
+  const writes = orbit.writes().length;
+  refused(await run(["update", "TOOLS-1", "--description", "Mine\n\nPlanned dates: due 2026-11-30"]), /source/);
+  assert.equal(orbit.writes().length, writes);
 });
 
 test("replacing a description keeps the next step and blockers; their own commands take them out", async t => {
@@ -1238,6 +1242,19 @@ test("replacing a description keeps the next step and blockers; their own comman
   ok(await run(["update", "TOOLS-1", "--blocked-by", "none"]));
   ok(await run(["clear-next-lex", "TOOLS-1"]));
   assert.equal(task.description, "Text");
+  // A Blocked by line in ordinary words comes over exactly as it was written.
+  const worded = orbit.addTask(orbit.tools, { description: "Blocked by: legal team, tools-3\n\nOld" });
+  ok(await run(["update", "TOOLS-2", "--description", "New"]));
+  assert.equal(worded.description, "Blocked by: legal team, tools-3\n\nNew");
+  // Emptying such a card leaves those lines, and the refusal of a blank text says so.
+  refused(await run(["update", "TOOLS-2", "--description", ""]), /next step, blockers and dates line stay/);
+});
+
+test("list --parent with a status name reads the status on the parent's own board", async t => {
+  const { orbit, run } = await fixture(t);
+  const parent = orbit.addTask(orbit.video);
+  orbit.addTask(orbit.video, { title: "Under video", parent_task_id: parent.id });
+  assert.ok(ok(await run(["list", "--parent", "VID-1", "--status", "Idea"])).stdout.includes("Under video"));
 });
 
 test("changing blockers never drops other words on the Blocked by line without saying so", async t => {

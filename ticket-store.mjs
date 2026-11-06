@@ -133,10 +133,13 @@ function keepingKitLines(text, task) {
   if (task.due_at && !has(body, plannedLine)) {
     const planned = split(task.description).find(line => plannedLine.test(line.trim()));
     if (planned) body = withPlannedDates(body, planned.trim());
+  } else if (task.due_at && split(body).some(line => plannedLine.test(line.trim()) && !line.includes("(source:"))) {
+    throw new OrbitError('this card has dates, so its Planned dates line needs its source: end the line with (source: <where the date comes from>)');
   }
   if (!has(body, blockedLine)) {
-    const old = blockedWords(task.description);
-    if (old.length) body = withBlockedBy(body, old);
+    // Carried as written: the line can hold ordinary words as well as card keys.
+    const old = split(task.description).filter(line => blockedLine.test(line.trim())).map(line => line.trim());
+    if (old.length) body = `${old.join("\n")}${body ? `\n\n${body}` : ""}`;
   }
   const reason = nextLexReason(task.description);
   return reason !== null && nextLexReason(body) === null ? withNextLex(body, reason) : body;
@@ -187,7 +190,8 @@ function ticked(description) {
     else if (open && text && !/^(?:[-*+]|\d+[.)])\s|^#/.test(text)) items[items.length - 1] += ` ${text}`;
     else open = false;
   }
-  return items.map(text => text.replace(/&#?\w+;/g, " ").replace(/<[^>]*>/g, "").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").toLowerCase().replace(/[^\p{L}\p{N}]/gu, ""))
+  const entity = (_, hex, decimal) => { const code = hex ? parseInt(hex, 16) : Number(decimal); return code <= 0x10FFFF ? String.fromCodePoint(code) : " "; };
+  return items.map(text => text.replace(/&#x([0-9a-f]+);|&#(\d+);/gi, entity).replace(/&\w+;/g, " ").replace(/<[^>]*>/g, "").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").toLowerCase().replace(/[^\p{L}\p{N}]/gu, ""))
     .filter(text => text.includes("scheduledinradaar"));
 }
 const amsterdamToday = () => { const now = zoneParts(Date.now()); return `${now.year}-${now.month}-${now.day}`; };
@@ -361,7 +365,8 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       // A parent's key already names the card, on whichever board it sits; a status name needs one board.
       const everywhere = project?.toLowerCase() === "all" || (project === undefined && parent !== undefined && status === undefined);
       if (everywhere && status !== undefined) throw new OrbitError("--status names differ per board: use it with one --project");
-      const board = everywhere ? null : await projectFrom(project);
+      // With a parent and no board named, a status name is read on the parent's own board.
+      const board = everywhere ? null : project === undefined && parent !== undefined ? { id: (await client.task(orbitCardKey(parent))).project_id } : await projectFrom(project);
       const query = { project_id: board?.id, assignee_id: assignee, q, parent_task_id: parent === undefined ? undefined : orbitCardKey(parent) };
       if (status !== undefined) query.status_id = (await statusByName(board.id, status)).id;
       const { items, more } = await client.tasks(query, limit);
@@ -400,7 +405,7 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
     update(key, { title, description: text, clearDescription, status, priority, parent, blocked, lexSaid }) {
       if (clearDescription && text !== undefined) throw new OrbitError("use --description or --clear-description, not both");
       // A blank text is more often a failed pipe than a wish: wiping a card is asked for by name.
-      if (text !== undefined && !text.trim()) throw new OrbitError("that description is blank, so nothing was sent; to empty a card on purpose use --clear-description");
+      if (text !== undefined && !text.trim()) throw new OrbitError("that description is blank, so nothing was sent; to empty a card on purpose use --clear-description (its next step, blockers and dates line stay)");
       const description = clearDescription ? "" : text;
       if ([title, description, status, priority, parent, blocked].every(value => value === undefined)) throw new OrbitError("nothing to change: name at least one of --title, --description, --clear-description, --status, --priority, --parent, --blocked-by");
       if (priority !== undefined && !priorities.includes(priority)) throw new OrbitError(`priority must be one of ${priorities.join(", ")}`);

@@ -21,7 +21,7 @@ Write (leads only: ORBIT_ROLE=lead; every write takes --dry-run, which prints th
   update <KEY> [--title T] [--description D | --description-file F|- | --clear-description] [--status NAME] [--priority P]
          [--parent KEY|none] [--blocked-by KEY,KEY|none] [--lex-said "<his exact words>"]
   dates <KEY> [--start DATE] [--due DATE] --source "<where the date comes from>"   or   dates <KEY> --clear
-         A new description keeps the card's next step, blockers and Planned dates line unless it has its own.
+         A new description keeps the card's "Next step", "Blocked by" and "Planned dates" lines unless it has its own.
   note <KEY> "<text>"                              a dated line under Notes in the description
   comment <KEY> "<text>"                           a comment on the card
   next-lex <KEY> "<reason>"                        first description line "Next step (Lex): reason"
