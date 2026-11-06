@@ -12,7 +12,8 @@ export const orbitConfigPath = (env = process.env) => join(folder(env, "XDG_CONF
 /** The write log: ~/.local/state/fleet/orbit.log (an absolute XDG_STATE_HOME moves it, as kitStateDir does). */
 export const orbitLogPath = (env = process.env) => join(folder(env, "XDG_STATE_HOME", ".local/state"), "fleet/orbit.log");
 
-const tokenShape = /\borb_[A-Za-z0-9_-]+/g;
+// One shape for hiding and for refusing: a short word like orb_notes is ordinary text.
+const tokenShape = /\borb_[A-Za-z0-9_-]{16,}/g;
 
 /** For card text on the screen: hides the given secrets and Orbit token shapes, and leaves ordinary words whole. */
 export function orbitCardRedactor(secrets = []) {
@@ -36,7 +37,7 @@ export function orbitRedactor(secrets = []) {
   };
 }
 
-const tokenShapes = text => new Set(String(text ?? "").match(/\borb_[A-Za-z0-9_-]{16,}/g) ?? []);
+const tokenShapes = text => new Set(String(text ?? "").match(tokenShape) ?? []);
 
 /** True when the text brings a saved secret or a token shape that the old text does not hold; it must not go on a card. */
 export function orbitBringsSecret(text, before = "", secrets = []) {

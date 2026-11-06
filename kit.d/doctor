@@ -541,7 +541,7 @@ fi
 
 # A project on the Orbit ticket store says so (kit ticket; a project on the default files store says nothing).
 if [[ $quiet == false && $(kit_setting .tickets 2>/dev/null) == orbit ]]; then
-  printf 'tickets: Orbit board %s (kit ticket; kit next, slice, pr and status still read ticket files in this stage)\n' "$(kit_setting .orbit.project 2>/dev/null)"
+  printf 'tickets: Orbit board %s (kit ticket; kit next, slice, pr, status and init --issues still use ticket files in this stage)\n' "$(kit_setting .orbit.project 2>/dev/null)"
 fi
 
 if (( ${#failed[@]} )); then

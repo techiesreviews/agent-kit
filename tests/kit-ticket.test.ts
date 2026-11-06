@@ -863,6 +863,34 @@ test("setup again says it keeps the saved pass when it cannot copy one, and keep
   assert.equal(JSON.parse(readFileSync(configPath, "utf8")).workspace_id, fakeWorkspace);
 });
 
+test("setup with no file reads the pass from the Claude settings in the home folder", async t => {
+  const { home, run, orbit, configPath } = await fixture(t);
+  rmSync(configPath);
+  fakeMcpSettings(home, orbit.origin);
+  writeFileSync(join(home, ".claude.json"), readFileSync(join(home, "fake-mcp.json")));
+  const secret = join(home, "secret-box");
+  writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
+  const said = ok(await run(["setup", "--from-file", secret, "--from-mcp-config"], {}, "yes\n"));
+  assert.match(said.stderr, /\.claude\.json/);
+  assert.equal(JSON.parse(readFileSync(configPath, "utf8")).cf_access_client_secret, fakeCfSecret);
+});
+
+test("setup asks before moving a saved setup to a different address found in the settings", async t => {
+  const { home, run, orbit, configPath } = await fixture(t);
+  const mcp = fakeMcpSettings(home, "https://elsewhere.example.test");
+  const secret = join(home, "secret-box");
+  writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
+  const kept = ok(await run(["setup", "--from-file", secret, "--from-mcp-config", mcp], {}, "yes\nyes\nno\n"));
+  assert.match(kept.stderr, /elsewhere\.example\.test/);
+  assert.equal(JSON.parse(readFileSync(configPath, "utf8")).origin, orbit.origin);
+  writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
+  // A yes moves it: the check then goes to the new address, which does not answer here, and nothing changes.
+  const moved = join(home, "moved.json");
+  writeFileSync(moved, readFileSync(mcp, "utf8").replace("https://elsewhere.example.test", "http://127.0.0.1:9"));
+  refused(await run(["setup", "--from-file", secret, "--from-mcp-config", moved], {}, "yes\nyes\nyes\n"), /could not reach/i);
+  assert.equal(JSON.parse(readFileSync(configPath, "utf8")).origin, orbit.origin);
+});
+
 test("setup warns about a read-only token and asks which workspace when there are several", async t => {
   const { home, run, orbit, configPath } = await fixture(t);
   rmSync(configPath);
@@ -1059,7 +1087,7 @@ test("the screen and --json keep ordinary card text whole; only real secrets and
 test("every way of writing the Radaar tick counts: spacing, emphasis, quote marks and links", async t => {
   const { orbit, run } = await fixture(t);
   orbit.addTask(orbit.tools, { description: "- [ ] Scheduled in Radaar" });
-  for (const text of ["- [x] Scheduled  in Radaar", "- [x] **Scheduled** in Radaar", "> - [x] Scheduled in Radaar", "- [x] [Scheduled in Radaar](https://example.test)", "  * [X] _scheduled in radaar_", "[x] Scheduled in Radaar", "- [x] Scheduled in [Radaar](https://example.test)"]) {
+  for (const text of ["- [x] Scheduled  in Radaar", "- [x] **Scheduled** in Radaar", "> - [x] Scheduled in Radaar", "- [x] [Scheduled in Radaar](https://example.test)", "  * [X] _scheduled in radaar_", "[x] Scheduled in Radaar", "- [x] Scheduled in [Radaar](https://example.test)", "- - [x] Scheduled in Radaar", "- [x] Scheduled in [Radaar][r]", "- [x] <b>Scheduled</b> in Radaar"]) {
     refused(await run(["update", "TOOLS-1", "--description", text]), /--lex-said/);
   }
   assert.equal(orbit.writes().length, 0);
@@ -1124,6 +1152,46 @@ test("a tick counts through any line ending, and a second identical ticked line 
   refused(await run(["update", "TOOLS-2", "--description", "- [x] Scheduled in Radaar\n- [x] Scheduled in Radaar"]), /--lex-said/);
   assert.equal(orbit.writes().length, 0);
   ok(await run(["update", "TOOLS-2", "--description", "- [x] Scheduled in Radaar\n- [ ] Scheduled in Radaar\n\nMore"]));
+});
+
+test("a short word that starts orb_ is ordinary text: shown whole, in a dry run and in --json", async t => {
+  const { orbit, run } = await fixture(t);
+  orbit.addTask(orbit.tools, { description: "see orb_notes" });
+  assert.ok(ok(await run(["note", "TOOLS-1", "orb_notes", "--dry-run"])).stdout.includes("orb_notes"));
+  assert.equal(JSON.parse(ok(await run(["get", "TOOLS-1", "--json"])).stdout.split("\nRESULT:")[0]).description, "see orb_notes");
+});
+
+test("list --parent finds a card's sub-tasks on any board, also with no board set", async t => {
+  const { orbit, run } = await fixture(t);
+  const parent = orbit.addTask(orbit.video);
+  orbit.addTask(orbit.video, { title: "Under video", parent_task_id: parent.id });
+  assert.ok(ok(await run(["list", "--parent", "VID-1"])).stdout.includes("Under video"));
+  const bare = await fixture(t, {});
+  const other = bare.orbit.addTask(bare.orbit.video);
+  bare.orbit.addTask(bare.orbit.video, { title: "Under video", parent_task_id: other.id });
+  assert.ok(ok(await bare.run(["list", "--parent", "VID-1"])).stdout.includes("Under video"));
+});
+
+test("a card with Windows line endings keeps one Notes section", async t => {
+  const { orbit, run } = await fixture(t);
+  const task = orbit.addTask(orbit.tools, { description: "Text\r\n\r\n## Notes\r\n\r\n- a" });
+  ok(await run(["note", "TOOLS-1", "b"]));
+  assert.equal(task.description.match(/## Notes/g)!.length, 1);
+  ok(await run(["dates", "TOOLS-1", "--due", "2026-11-30", "--source", "s"]));
+  assert.ok(task.description.indexOf("Planned dates") < task.description.indexOf("## Notes"));
+});
+
+test("no answer to a comment or a trash says it may have gone through, is logged and not retried", async t => {
+  const { orbit, run, log } = await fixture(t);
+  orbit.addTask(orbit.tools);
+  orbit.controls.writeAnswers.push("drop");
+  refused(await run(["comment", "TOOLS-1", "x"]), /may or may not have gone through/);
+  assert.match(log(), /action=comment .*result=fail:no-answer/);
+  assert.equal(orbit.writes().length, 1);
+  orbit.controls.writeAnswers.push("drop");
+  refused(await run(["trash", "TOOLS-1", "--lex-said", "bin it"]), /may or may not have gone through/);
+  assert.match(log(), /action=trash .*result=fail:no-answer/);
+  assert.equal(orbit.writes().length, 2);
 });
 
 test("a blank --parent never drops the board's default parent", async t => {
@@ -1221,7 +1289,7 @@ test("the ticket settings are checked the same by the kit's JavaScript and by ki
   const { root, run, env } = await fixture(t, { tickets: "orbit", orbit: { project: "TOOLS", parent: "TOOLS-10" } });
   const write = (value: object) => writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify({ project: "kit-ticket", branches: { land: "dev" }, ...value }));
   const doctor = () => start(resolve("kit.d/doctor"), [], { ...env, KIT_DOCTOR_SKIP: "" });
-  assert.match((await doctor()).stdout, /tickets: Orbit board TOOLS/);
+  assert.match((await doctor()).stdout, /tickets: Orbit board TOOLS.*init --issues/);
   write({});
   assert.ok(!(await doctor()).stdout.includes("tickets:"), "files is the default and says nothing");
   const wrong: [object, RegExp][] = [
