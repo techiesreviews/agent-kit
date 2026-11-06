@@ -13,6 +13,7 @@ IFS= read -r key < "$file" || [[ -n $key ]] || :
 key=${key//[$' \t\r']/}
 if [[ -z $key ]]; then echo "claude-api-run: the API key file is empty" >&2; exit 2; fi
 dir=${KIT_API_CONFIG_DIR:-${HOME}/.claude-api}
+if [[ $dir != /* ]]; then echo "claude-api-run: KIT_API_CONFIG_DIR must be an absolute path" >&2; exit 2; fi
 mkdir -p -- "$dir"
 chmod 700 -- "$dir" 2>/dev/null || :
 unset KIT_API_KEY_FILE KIT_API_CONFIG_DIR
