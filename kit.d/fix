@@ -175,6 +175,7 @@ async function fix(args) {
     const note = pending?.note || (flags["--note"] ? resolve(root, flags["--note"]) : undefined);
     const review = pending?.review || (!note && (flags["--review"] ? resolve(root, flags["--review"]) : coveringReview(head)));
     if (!review && !note) throw new Error("no review covers HEAD");
+    if (review && reviewIncomplete(review)) throw new Error(`${review} is an incomplete review (it left an earlier finding id out); run kit review again`);
     const resultPath = note || join(review, "result.md");
     let original = pending?.original || "";
     if (!pending) {
