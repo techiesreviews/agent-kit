@@ -18,6 +18,7 @@ if [[ $dir != /* ]]; then echo "claude-api-run: KIT_API_CONFIG_DIR must be an ab
 if ! mkdir -p -- "$dir" 2>/dev/null; then echo "claude-api-run: the config folder $dir cannot be made" >&2; exit 2; fi
 chmod 700 -- "$dir" 2>/dev/null || :
 if ! command -v claude > /dev/null 2>&1; then echo "claude-api-run: the claude command is not installed or not on PATH" >&2; exit 2; fi
-unset KIT_API_KEY_FILE KIT_API_CONFIG_DIR
+# Other ways to sign in or to reach another service would win over the key: drop them for this call.
+unset KIT_API_KEY_FILE KIT_API_CONFIG_DIR ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX
 # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 keeps the key out of the shell commands, hooks and nested kit calls a builder starts.
 ANTHROPIC_API_KEY=$key CLAUDE_CONFIG_DIR=$dir CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 exec claude "$@"
