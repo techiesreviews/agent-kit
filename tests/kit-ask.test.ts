@@ -178,7 +178,7 @@ test("a bad --out costs nothing, and a file that cannot be written after the cal
   assert.match(last(early.stdout), /^RESULT: fail ask cannot make the folder for .*out\.md \(ENOTDIR\); nothing was sent$/);
   assert.deepEqual(f.callList(), []);
   const locked = join(f.work, "locked"); mkdirSync(locked); chmodSync(locked, 0o500);
-  t.after(() => chmodSync(locked, 0o700));
+  t.after(() => { try { chmodSync(locked, 0o700); } catch { /* The folder is already gone. */ } });
   const late = f.ask(["--api", "--prompt-file", f.prompt, "--out", join(locked, "out.md")]);
   assert.equal(late.status, 1, late.stdout);
   assert.ok(late.stdout.startsWith("The drafted answer.\n"), "the paid answer is printed");
