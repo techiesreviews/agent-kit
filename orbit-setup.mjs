@@ -173,10 +173,17 @@ export async function orbitSetup({ env = process.env, flags = {}, say, io = term
 
   // The address and the pass come before the token: a stop or a slip here leaves a token file in place.
   let copiedOrigin = copied?.origin;
-  if (!flags.origin && copiedOrigin && saved?.origin && copiedOrigin !== saved.origin) {
-    const move = await io.ask(`Those settings name a different address for Orbit: ${copiedOrigin} (saved: ${saved.origin}). Use the new address? Type yes or no:`);
-    // A no leaves that other connection out altogether: its pass belongs to its address.
-    if (move.toLowerCase() !== "yes") { copiedOrigin = undefined; copied = null; say("Keeping the saved address and pass."); }
+  // A copied pass belongs to its own address: it never goes to another one without a yes.
+  const named = flags.origin === undefined ? saved?.origin : orbitOrigin(flags.origin);
+  if (copiedOrigin && named && copiedOrigin !== named) {
+    const move = await io.ask(`Those settings name a different address for Orbit: ${copiedOrigin} (this setup: ${named}). Use the settings' address and pass? Type yes or no:`);
+    if (move.toLowerCase() === "yes") {
+      if (flags.origin !== undefined) stop(`--origin says ${named}, so run again without it to use ${copiedOrigin}. Nothing was saved.`);
+    } else {
+      copiedOrigin = undefined;
+      copied = null;
+      say(saved?.cf_access_client_id && !flags.newPass && !flags.origin ? "Keeping the saved address and pass." : flags.origin ? "Keeping the address you named." : "Keeping the saved address.");
+    }
   }
   const origin = orbitOrigin(flags.origin ?? copiedOrigin ?? saved?.origin ?? await io.ask("Orbit's web address (like https://orbit.example.com):"));
   let id = copied?.id ?? (flags.newPass ? undefined : saved?.cf_access_client_id), secret = copied?.secret ?? (flags.newPass ? undefined : saved?.cf_access_client_secret);
