@@ -86,6 +86,8 @@ function parse(name, words) {
   for (let index = 0; index < words.length; index++) {
     const word = words[index];
     if (word === "--") { found.rest.push(...words.slice(index + 1)); break; }
+    // Help stands alone: --help anywhere as its own word, -h only right after the command. Text and values stay text.
+    if (word === "--help" || (word === "-h" && index === 0)) { found.help = true; continue; }
     if (!word.startsWith("--")) { found.rest.push(word); continue; }
     // --flag=value is the one way a value starts with dashes: a next word like --dry-run is never taken as a value.
     const equals = word.indexOf("="), flag = equals < 0 ? word.slice(2) : word.slice(2, equals), inline = equals < 0 ? undefined : word.slice(equals + 1);
@@ -94,10 +96,12 @@ function parse(name, words) {
     else if (spec.optional?.includes(flag)) found.flags[flag] = inline ?? (words[index + 1] && !words[index + 1].startsWith("-") ? words[++index] : true);
     else if (spec.values.includes(flag)) {
       if (inline !== undefined) found.flags[flag] = inline;
-      else if (words[index + 1] === undefined || words[index + 1].startsWith("--")) throw new UsageProblem(`--${flag} needs a value (a value that starts with dashes goes as --${flag}=value)`);
+      // A next word shaped like an option is not a value. A lone "-" is (standard input), and so is text with spaces ("- [x] done").
+      else if (words[index + 1] === undefined || /^-\S+$/.test(words[index + 1])) throw new UsageProblem(`--${flag} needs a value (a value shaped like an option goes as --${flag}=value)`);
       else found.flags[flag] = words[++index];
     } else throw new UsageProblem(`${name} does not take ${word}`);
   }
+  if (found.help) return found;
   if (found.rest.length < spec.args.length) throw new UsageProblem(`${name} needs a ${spec.args[found.rest.length]}`);
   if (found.rest.length > spec.args.length) throw new UsageProblem(`${name} does not take ${found.rest.slice(spec.args.length).join(" ")}; put quotes around text`);
   return found;
@@ -112,7 +116,7 @@ function description(flags) {
 }
 
 // Terminal control characters in card text never reach the screen; a RESULT line is one line.
-const printable = value => String(value ?? "").replace(/[^\P{Cc}\n\t]/gu, "");
+const printable = value => String(value ?? "").replace(/[^\P{Cc}\n\t]|[\u202A-\u202E\u2066-\u2069]/gu, "");
 const assignees = task => task.assignee_ids?.length ? task.assignee_ids.join(", ") : "none";
 const cardLine = task => `${task.identifier}  [${task.status_name}]  ${task.priority}  assignees: ${assignees(task)}  ${task.title}`;
 
@@ -150,7 +154,7 @@ async function show(store, key, { json, comments }) {
   if (task.next_lex !== null) say(`Next step (Lex): ${task.next_lex}`);
   if (task.blocked_by.length) say(`Blocked by: ${task.blocked_by.join(", ")}`);
   if (task.due_at) say(`Dates: ${[task.due_start_at && `start ${showDate(task.due_start_at)}`, `due ${showDate(task.due_at)}`].filter(Boolean).join(", ")}`);
-  if (task.parent_key) say(`Parent: ${task.parent_key}`);
+  if (task.parent_task_id) say(`Parent: ${task.parent_key ?? `${task.parent_task_id} (this token cannot read it)`}`);
   say(`Version: ${task.version}`);
   if (task.url) say(`Link: ${task.url}`);
   if (task.description) say(`\n${task.description}`);
@@ -169,8 +173,8 @@ async function main() {
   if (name === undefined) { process.stderr.write(usage); throw new UsageProblem("Usage: kit ticket <command>; see kit ticket --help"); }
   if (name === "--help" || name === "-h" || name === "help") return void process.stdout.write(usage);
   if (!Object.hasOwn(commands, name)) throw new UsageProblem(`unknown command ${name}; see kit ticket --help`);
-  if (words.includes("--help") || words.includes("-h")) return void process.stdout.write(name === "setup" ? setupUsage : usage);
-  const { flags, rest } = parse(name, words);
+  const { flags, rest, help } = parse(name, words);
+  if (help) return void process.stdout.write(name === "setup" ? setupUsage : usage);
   const [key, words2] = rest;
 
   if (name === "setup") {

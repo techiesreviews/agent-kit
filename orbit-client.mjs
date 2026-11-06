@@ -28,9 +28,12 @@ export function orbitRedactor(secrets = []) {
   };
 }
 
-/** True when the text holds a saved secret or something shaped like an Orbit token, so it must not go on a card. */
-export function orbitHoldsSecret(text, secrets = []) {
-  return secrets.some(secret => secret && String(text).includes(secret)) || /\borb_[A-Za-z0-9_-]{16,}/.test(String(text));
+const tokenShapes = text => new Set(String(text ?? "").match(/\borb_[A-Za-z0-9_-]{16,}/g) ?? []);
+
+/** True when the text brings a saved secret or a token shape that the old text does not hold; it must not go on a card. */
+export function orbitBringsSecret(text, before = "", secrets = []) {
+  const now = String(text ?? ""), old = String(before ?? ""), oldShapes = tokenShapes(old);
+  return secrets.some(secret => secret && now.includes(secret) && !old.includes(secret)) || [...tokenShapes(now)].some(shape => !oldShapes.has(shape));
 }
 
 /** The git work tree holding this path, or null; links in the path are followed and folders not made yet count as their parent. */
@@ -180,7 +183,11 @@ export function orbitClient(config, { timeoutMs = 30_000, longestWaitSeconds = 3
     if (!answer.response.ok) throw failure(method, answer);
     if (answer.response.status === 204) return null;
     try { return JSON.parse(answer.text); }
-    catch { throw new OrbitError(cloudflareStop, { status: answer.response.status }); }
+    catch {
+      // On a read this is Cloudflare's login page. On a write the 2xx may mean the change was saved.
+      if (method === "GET") throw new OrbitError(cloudflareStop, { status: answer.response.status });
+      throw new OrbitError("Orbit's answer was not readable. The change may or may not have gone through: read the card before trying again.", { status: answer.response.status, code: "no-answer", noAnswer: true });
+    }
   }
 
   /** Every item of a list, up to `limit`; { items, more }. Pages are bounded by the limit, so this never runs on. */
