@@ -37,7 +37,7 @@ for (let i = 0; i < args.length; i++) {
   } else done("fail", `unknown option ${flag}`, 2);
 }
 if (!options.api) done("fail", "needs --api (it runs on the API credit route, not the subscription)", 2);
-const model = models[options.model] ?? (/^claude-[\w.-]+$/.test(options.model) ? options.model : null);
+const model = (Object.hasOwn(models, options.model) ? models[options.model] : null) ?? (/^claude-[\w.-]+$/.test(options.model) ? options.model : null);
 if (!model) done("fail", `--model must be sonnet, opus, haiku or a claude- model id, not ${options.model}`, 2);
 if (!options.promptFile) done("fail", "needs --prompt-file <file>", 2);
 if (options.script && !options.out) done("fail", "--script needs --out <file> (where the script goes)", 2);

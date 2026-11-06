@@ -86,6 +86,7 @@ test("--model takes sonnet, opus, haiku or a claude- id, and nothing else", t =>
     assert.equal(f.ask(["--api", "--prompt-file", f.prompt, "--model", name]).status, 0, name);
     assert.equal(f.callList().at(-1).args[2], id);
   }
+  for (const odd of ["constructor", "__proto__", "toString"]) assert.equal(f.ask(["--api", "--prompt-file", f.prompt, "--model", odd]).status, 2, odd);
   const wrong = f.ask(["--api", "--prompt-file", f.prompt, "--model", "gpt-9"]);
   assert.equal(wrong.status, 2);
   assert.match(last(wrong.stdout), /^RESULT: fail ask --model must be sonnet, opus, haiku or a claude- model id, not gpt-9$/);
