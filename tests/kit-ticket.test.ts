@@ -948,6 +948,26 @@ test("setup --new-pass with a declined address says only what it keeps", async t
   assert.equal(JSON.parse(readFileSync(configPath, "utf8")).origin, orbit.origin);
 });
 
+test("a saved token and pass never go to a new address", async t => {
+  const { home, run, orbit, configPath, config } = await fixture(t);
+  const other = await fakeOrbit(t);
+  const before = readFileSync(configPath, "utf8");
+  // A new address by --origin: Enter on the pass and on the token leaves nothing to send.
+  refused(await run(["setup", "--origin", other.origin], {}, "yes\n\n\n\n"), /Orbit token/);
+  assert.equal(other.requests.length, 0);
+  assert.equal(readFileSync(configPath, "utf8"), before);
+  // A new address from the settings: its own pass goes along, the saved token does not.
+  const mcp = fakeMcpSettings(home, other.origin);
+  const moved = refused(await run(["setup", "--from-mcp-config", mcp], {}, "yes\nyes\nyes\n\n"), /Orbit token/);
+  assert.ok(!moved.all.includes("press Enter to keep"));
+  assert.equal(other.requests.length, 0);
+  assert.equal(readFileSync(configPath, "utf8"), before);
+  // The same address still keeps them.
+  const same = fakeMcpSettings(home, orbit.origin);
+  ok(await run(["setup", "--from-mcp-config", same], {}, "yes\nyes\n\n"));
+  assert.equal(JSON.parse(readFileSync(configPath, "utf8")).token, config.token);
+});
+
 test("setup warns about a read-only token and asks which workspace when there are several", async t => {
   const { home, run, orbit, configPath } = await fixture(t);
   rmSync(configPath);
@@ -1302,6 +1322,20 @@ test("create --blocked-by never drops other words on a Blocked by line in its te
   const { orbit, run } = await fixture(t);
   refused(await run(["create", "--title", "x", "--description", "Blocked by: legal team", "--blocked-by", "TOOLS-1"]), /legal, team/);
   assert.equal(orbit.writes().length, 0);
+});
+
+test("a worded Blocked by line can be removed with a new text and --blocked-by none, and the refusal says so", async t => {
+  const { orbit, run } = await fixture(t);
+  const task = orbit.addTask(orbit.tools, { description: "Blocked by: legal team\n\nOld" });
+  refused(await run(["update", "TOOLS-1", "--blocked-by", "none"]), /--description.*--blocked-by none/);
+  ok(await run(["update", "TOOLS-1", "--description", "New", "--blocked-by", "none"]));
+  assert.equal(task.description, "New");
+});
+
+test("get shows a title with a line break on one line, so it cannot pass as another field", async t => {
+  const { orbit, run } = await fixture(t);
+  orbit.addTask(orbit.tools, { title: "Made\nStatus: Publish" });
+  assert.ok(!lines(ok(await run(["get", "TOOLS-1"])).stdout).includes("Status: Publish"));
 });
 
 test("list --parent with a status name reads the status on the parent's own board", async t => {
