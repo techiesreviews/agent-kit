@@ -168,6 +168,16 @@ test("claude is told to keep the key out of the shell commands a builder starts"
   assert.equal(f.callList()[0].scrub, "1");
 });
 
+test("a review's read-only tool list runs without the scrub flag (it leaves empty .env, .npmrc, yarn.lock files); anything that can run Bash keeps it", t => {
+  const f = folder(t);
+  const env = { ...f.env, KIT_API_KEY_FILE: f.keyFile };
+  for (const args of [["-p", "--tools", "Read,Grep,Glob"], ["-p", "--tools=Read,Grep"], ["-p", "--tools", ""]]) spawnSync(wrapper, args, { env, encoding: "utf8" });
+  const keeps = [["-p", "--allowedTools", "Bash"], ["-p", "--tools", "Read,Bash"], ["-p", "--tools=Bash(git *),Read"], ["-p"],
+    ["-p", "--tools", "default"], ["-p", "--tools", "Read", "Bash"], ["-p", "--tools", "Read Bash"], ["-p", "--tools", "Read,Grep", "--tools", "Bash"], ["-p", "--tools", "Read", "--tools=default"], ["-p", "--tools", "Edit"]];
+  for (const args of keeps) spawnSync(wrapper, args, { env, encoding: "utf8" });
+  assert.deepEqual(f.callList().map(call => call.scrub), ["0", "0", "0", ...keeps.map(() => "1")]);
+});
+
 test("doctor's view and the wrapper agree: a relative path, a newline-only file and an unreadable file are all refused in plain words", t => {
   const f = folder(t);
   const blank = join(f.dir, "blank-key"); writeFileSync(blank, "\n", { mode: 0o600 }); chmodSync(blank, 0o600);

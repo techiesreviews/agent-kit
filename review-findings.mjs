@@ -63,6 +63,20 @@ const severityOf = text => classify(text).severity;
 // A defects line with no severity anywhere and no leading location is reviewer prose (a note).
 const prose = text => !SEVERITY.test(text) && !LOCATION.test(text);
 
+const MARK = /^\s*(?:[-*+]\s+)?`?(R\d+-\d+)`?\s*:\s*(resolved|still open)\b\s*(?:\((P[0-3]|gap)\))?[\s.:;,—–-]*(.*)$/i;
+/**
+ * The marks a later review gives the earlier finding ids (review loop): `R1-2: resolved` or `R1-2: still open (P2): <reason>`
+ * in the block before its defects. Returns a Map id -> { status: "resolved" | "open", severity, reason }.
+ */
+export function parseMarks(resultMd) {
+  const marks = new Map();
+  for (const line of resultMd.split(/\r?\n/)) {
+    const found = MARK.exec(line.replace(/\*\*|__/g, ""));
+    if (found) marks.set(found[1].toUpperCase(), { status: found[2].toLowerCase() === "resolved" ? "resolved" : "open", severity: found[3]?.toUpperCase() ?? null, reason: found[4].trim() });
+  }
+  return marks;
+}
+
 // Parse the Markdown variants emitted by kit review without reading files or changing state.
 // A group whose first line says "none" holds notes, not findings, until the next heading;
 // an indented sub-bullet belongs to the finding above it. A defects line that names no severity
@@ -156,6 +170,13 @@ export function openFindings(resultMd) {
   }
   flush();
   const readable = /^REVIEW_STATUS: complete\s*$/m.test(resultMd.replace(/^\uFEFF/, "")) && defects;
+  // An earlier finding the reviewer marks "still open" is an open finding (its own severity when given, else unread: it blocks).
+  if (readable) for (const [id, mark] of parseMarks(resultMd)) {
+    if (mark.status !== "open") continue;
+    // A validation gap carried over stays a gap (a nit); the rest keep their own severity, or none (which blocks).
+    const gap = mark.severity === "GAP";
+    findings.unshift({ group: gap ? "Validation gaps" : "Previous findings", text: `${id} still open: ${mark.reason || "no reason given"}`, severity: gap ? null : mark.severity, kind: gap ? null : "unsorted" });
+  }
   return readable ? { findings, notes, readable } : {
     findings: [{ group: "Review", text: "review format unreadable", severity: null, kind: "unsorted" }], notes: [], readable: false,
   };
@@ -175,7 +196,8 @@ export function findingsRecord(resultMd, meta) {
     counts.kind[gap ? "gap" : kind]++;
     counts.severity[gap ? "gap" : severity ?? "none"]++;
   }
-  return { ...meta, findings: findings.map(({ group, severity, kind, text }) => ({ group, severity, kind, text })), counts, notes: notes.length };
+  // With a round, each finding carries its id (R<round>-<n>), which a later review marks resolved or still open.
+  return { ...meta, findings: findings.map(({ group, severity, kind, text }, index) => ({ ...(meta.round ? { id: `R${meta.round}-${index + 1}` } : {}), group, severity, kind, text })), counts, notes: notes.length };
 }
 
 // One line for logs: "findings 3: fault 1, ticket 2; P1 2, P2 1".
@@ -183,4 +205,9 @@ export function countsLine({ findings, counts, unreadable }) {
   if (unreadable) return "findings unreadable";
   const nonzero = values => Object.entries(values).filter(([, count]) => count).map(([name, count]) => `${name} ${count}`).join(", ");
   return `findings ${findings.length}${findings.length ? `: ${nonzero(counts.kind)}; ${nonzero(counts.severity)}` : ""}`;
+}
+
+/** A saved review marked incomplete (a later review loop round that left an earlier id out) is never reused or answered. */
+export function reviewIncomplete(folder) {
+  try { return JSON.parse(readFileSync(resolve(folder, "findings.json"), "utf8")).incomplete === true; } catch { return false; }
 }

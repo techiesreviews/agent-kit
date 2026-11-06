@@ -48,6 +48,17 @@ only a small launcher and its own settings; the kit itself lives here, once.
   the release branch (the Native Site Editor's `dev`). Where the two are one branch (this repo, a live site), they
   land through `kit pr` (docs tier), or `kit next --start`, which claims and starts the slice itself.
 
+## Review loop
+
+The review budget follows the risk (after Theo's sol-loop): 3 fix rounds, 5 only for security, permissions, auth, data loss, state or
+concurrency (by changed paths and the ticket's words; `paths.risky` in the settings adds project patterns), and a review that returns
+only nits ends the loop. Round 2 and later review only the code changed since the last review and the open finding ids (`R1-1`, …),
+each marked resolved or still open; `kit pr` puts the line "Reviewed with review-loop: N rounds with <model>. Verdict: approved" and a
+findings ledger in the PR, and an out-of-budget run is reported, never approved. The rule's one source is the "Review loop" section of
+`docs/kitchen.md`; briefs carry it and `kit init` points projects at it.
+
+Known limits (waived follow-ups): the PR line and ledger have edge cases (an earlier "approved" can stay in the PR after a "behind" rebase until the next review finishes; a merge from the base puts other people's code in the "changes since the last review" file; a nits-only review is not reused after a rebase; second-look findings count in the verdict but not in the ledger). A second look that no model could take is written into the PR block as "second look: skipped (<reason>)". An out-of-budget should lands as a follow-up with a budget report that shows only the reviewer's side. A review that leaves an id out is rejected as incomplete: run `kit review` again by hand. A ticket's risk comes from its title, goal and named files only, and the fix brief points at the newest complete review.
+
 ## Messages to Lex
 
 One short rule for every message to Lex (question or what he must do first, a recommendation, caveman bullets,
@@ -65,7 +76,7 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
 - **What it covers:** the kit's headless Claude calls (`kit review`, `kit fix`, `kit slice` builders, `kit ux`). Interactive sessions are not touched; Anthropic's credit does not cover them.
 - **Jobs systemd starts for you** do not see your shell's variables: run `systemctl --user import-environment KIT_API_KEY_FILE KIT_API_CONFIG_DIR` first (leave out the second if you use the default), or export them in the shell that starts the kit; to turn the route off for those jobs, run `systemctl --user unset-environment KIT_API_KEY_FILE KIT_API_CONFIG_DIR` as well.
 - **Turn off:** unset `KIT_API_KEY_FILE`. The kit then uses the subscription as before.
-- **Safety:** only the child process that runs `claude` passes the key on (the kit itself reads the key file's first line just to see it is not blank, and never keeps, prints or logs it, or puts it on a command line), and Claude Code is told to keep it out of the shell commands a builder starts (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`). The key file and the config folder must be absolute paths, the key file with mode 600; otherwise the call stops with a plain message.
+- **Safety:** only the child process that runs `claude` passes the key on (the kit itself reads the key file's first line just to see it is not blank, and never keeps, prints or logs it, or puts it on a command line), and Claude Code is told to keep it out of the shell commands a builder starts (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`); a call whose tool list has no Bash, such as a review, runs without that flag because it starts no shell command and the flag would make claude leave empty `.env`, `.npmrc`, `yarn.lock` files in the folder. The key file and the config folder must be absolute paths, the key file with mode 600; otherwise the call stops with a plain message.
 - **Limits:** the API config folder starts empty, so skills and settings from `~/.claude` are not used on the route (link them in if you want them); a saved session does not resume across switching the route on or off (start a fresh run); a run killed before it printed its cost counts as unknown, and doctor says so.
 - **Known limits (follow-ups):** the spend total misses a run whose runner was killed outright (no line is written); `kit doctor` shows the total only while the route is on and healthy; a config folder that exists but cannot be written gets the CLI's own error, not a plain refusal; a Claude started from a builder's shell on the route cannot sign in to the subscription (its `CLAUDE_CONFIG_DIR` still points at the API folder).
 - **Check it:** `kit doctor` says whether the route is on or off, the key file's mode, and the total spent; every run adds a line (time, command, model, tokens, cost) to `~/.local/state/agent-kit/api-spend.log`.

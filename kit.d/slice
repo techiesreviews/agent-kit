@@ -4,7 +4,8 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterFixRounds, blockingFindings, completedFixRounds, FIX_ROUNDS, openFindings, reviewCoversHead } from "../review-findings.mjs";
+import { completedFixRounds, openFindings, reviewCoversHead, reviewIncomplete } from "../review-findings.mjs";
+import { branchRisk, roundLimit, stoppingFindings } from "../review-loop.mjs";
 import { builderChecks, spoken } from "../review-brief.mjs";
 import { ticketSkillLines } from "../skills.mjs";
 import { visiblePath } from "../pr-tier.mjs";
@@ -12,10 +13,10 @@ import { visiblePath } from "../pr-tier.mjs";
 const { kitBranch, kitGhEnv, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, nodeEnv, commitBuilderWork, builderAuthor, kitScore, scoreCost, scoreReview } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const usage = "Usage: kit slice --ticket FILE --builder MODEL [--effort high] [--rounds 3] [--no-pr]\nResume saved phases under .scratch/kit-slice/<ticket-slug>/.\nAfter the code review and its fix rounds, kit ux checks touched features: broken or looks off gets one kit fix --note round;\nstill broken stops (decide: ux broken <feature>), looks off lands with UX follow-ups in the ticket.\nLast, a second look (kit review --second-look) gets the same fix rounds, then looks again at the new HEAD;\nwhen no model can take it, the slice goes on and says why.\nQueued PRs are awaited for up to 2h; reruns resume the wait.\nOverrides: ASE_SLICE_AGENT, ASE_SLICE_KIT, ASE_SLICE_GH; ASE_SLICE_MERGE_TIMEOUT_MS, ASE_SLICE_MERGE_POLL_MS.\n";
+const usage = "Usage: kit slice --ticket FILE --builder MODEL [--effort high] [--rounds N] [--no-pr]\nResume saved phases under .scratch/kit-slice/<ticket-slug>/.\nAfter the code review and its fix rounds, kit ux checks touched features: broken or looks off gets one kit fix --note round;\nstill broken stops (decide: ux broken <feature>), looks off lands with UX follow-ups in the ticket.\nLast, a second look (kit review --second-look) gets the same fix rounds, then looks again at the new HEAD;\nwhen no model can take it, the slice goes on and says why.\nQueued PRs are awaited for up to 2h; reruns resume the wait.\nOverrides: ASE_SLICE_AGENT, ASE_SLICE_KIT, ASE_SLICE_GH; ASE_SLICE_MERGE_TIMEOUT_MS, ASE_SLICE_MERGE_POLL_MS.\n";
 
 function options(args) {
-  const flags = { effort: "high", rounds: FIX_ROUNDS, noPr: false };
+  const flags = { effort: "high", rounds: undefined, noPr: false };
   const seen = new Set();
   for (let i = 0; i < args.length; i++) {
     const flag = args[i];
@@ -27,9 +28,11 @@ function options(args) {
     flags[flag.slice(2)] = args[++i];
   }
   if (!flags.ticket || !flags.builder) throw new Error("--ticket and --builder are required");
-  if (!/^[1-9]\d*$/.test(String(flags.rounds)) || !Number.isSafeInteger(Number(flags.rounds)))
-    throw new Error("--rounds must be a positive integer");
-  flags.rounds = Number(flags.rounds);
+  // Without --rounds the limit follows the change's risk (3, or 5 for security, permissions, auth, data loss, state, concurrency).
+  if (flags.rounds !== undefined) {
+    if (!/^[1-9]\d*$/.test(String(flags.rounds)) || !Number.isSafeInteger(Number(flags.rounds))) throw new Error("--rounds must be a positive integer");
+    flags.rounds = Number(flags.rounds);
+  }
   flags.model = flags.builder === "sol" ? "gpt-6.1-sol" : flags.builder;
   return flags;
 }
@@ -196,7 +199,7 @@ async function slice(args) {
       }
       for (const folder of folders) {
         try {
-          if (reviewCoversHead(readFileSync(join(folder, "refs.txt"), "utf8").split(/\r?\n/)[0], git("rev-parse", "HEAD"), ticket, root)) return folder;
+          if (!reviewIncomplete(folder) && reviewCoversHead(readFileSync(join(folder, "refs.txt"), "utf8").split(/\r?\n/)[0], git("rev-parse", "HEAD"), ticket, root)) return folder;
         } catch { /* Incomplete evidence cannot cover HEAD. */ }
       }
       throw new Error("no review evidence covers HEAD");
@@ -235,7 +238,10 @@ async function slice(args) {
     };
     const branchRounds = () => completedFixRounds(join(kitMainRoot(), ".scratch/kit-fix", encodeURIComponent(branch)),
       join(root, ".scratch/kit-fix", encodeURIComponent(branch)));
-    const stopping = open => afterFixRounds(branchRounds()) ? blockingFindings(open) : open;
+    // The review loop: risk from what the branch changes against the landing branch and the ticket's words.
+    const loopRisky = () => branchRisk({ root, base: `origin/${kitBranch("land", settings)}`, ticket: flags.ticket, settings }).risky;
+    const roundCap = () => flags.rounds ?? roundLimit(loopRisky());
+    const stopping = open => stoppingFindings(open, branchRounds(), loopRisky());
     const kit = env.ASE_SLICE_KIT || resolve(import.meta.dirname, "../kit");
     const agent = env.ASE_SLICE_AGENT || resolve(import.meta.dirname, "../agent.sh");
     const pendingPath = join(root, ".scratch/kit-fix", encodeURIComponent(branch), "pending.json");
@@ -390,7 +396,7 @@ async function slice(args) {
     begin("fix");
     if (!state.finished.includes(phase)) {
       let open = findings();
-      while (stopping(open).length && state.rounds < flags.rounds) {
+      while (stopping(open).length && state.rounds < roundCap()) {
         await fixRound(["--review", state.review]);
         open = findings();
       }
@@ -433,7 +439,7 @@ async function slice(args) {
           state.uxFix.done = true; save();
         }
         // The round's own review gets the usual fix rounds, a half-done one resumed first; only what still blocks stops the slice.
-        while (pendingFix() || (stopping(findings()).length && state.rounds < flags.rounds)) await fixRound(["--review", state.review]);
+        while (pendingFix() || (stopping(findings()).length && state.rounds < roundCap())) await fixRound(["--review", state.review]);
         const open = stopping(findings());
         if (open.length) throw new Error(`${open.length} open review findings after the UX fix round (${join(state.review, "result.md")})`);
         ux = await uxCheck();
@@ -474,7 +480,7 @@ async function slice(args) {
         if (state.secondLook?.answering) {
           // A round answering the second look, resumed where it stopped (saved before it started), then Claude's rounds.
           if (!pendingFix() && state.rounds === state.secondLook.round) await fixRound(["--review", state.secondLook.evidence]);
-          while (pendingFix() || (stopping(findings()).length && state.rounds < flags.rounds)) await fixRound(pendingSource() ?? ["--review", state.review]);
+          while (pendingFix() || (stopping(findings()).length && state.rounds < roundCap())) await fixRound(pendingSource() ?? ["--review", state.review]);
           const open = stopping(findings());
           if (open.length) {
             await unmergedPr();
@@ -516,7 +522,7 @@ async function slice(args) {
         try { text = readFileSync(result, "utf8"); } catch { /* Fail closed. */ }
         const open = stopping(openFindings(text).findings);
         if (!open.length) { await uxAgain(); complete(result); break; }
-        if (state.rounds >= flags.rounds) {
+        if (state.rounds >= roundCap()) {
           await unmergedPr();
           throw new Error(`${open.length} open second-look findings after ${state.rounds} rounds (${result})`);
         }

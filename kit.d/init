@@ -359,6 +359,8 @@ if (stubsWritten.length) notes.push(`add to ${kitSettingsFile} (kit init never e
 const agentLines = [
   ["scripts/agents/kit rulebook", "Kitchen rulebook: `scripts/agents/kit rulebook` (stations, who decides, builder and reviewer pins).", "the rulebook line"],
   ["scripts/agents/kit --help", "Agent commands: `scripts/agents/kit --help`; `scripts/agents/kit <command> --help` for one.", "the commands line"],
+  // The review loop's rule stays in the shared rulebook (one source); the project's file points to it.
+  ["section \"Review loop\"", "Review loop: `scripts/agents/kit rulebook`, section \"Review loop\" (3 fix rounds, 5 only for risk; stop when only nits are left; one reviewer; a findings ledger in the PR).", "the review loop line"],
 ];
 const agents = existsSync(at("AGENTS.md")) ? readText("AGENTS.md") : null;
 const absentLines = agentLines.filter(([marker]) => !agents?.includes(marker));

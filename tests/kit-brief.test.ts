@@ -73,7 +73,7 @@ test("brief: the build brief holds the owner, setup, pins, commands, every house
     /scripts\/agents\/kit pr --ticket docs\/tickets\/07-panel\.md/,
     /Paid skills never go in a repo/,
     /never an OpenAI model/,
-    /After three fix rounds only P0\/P1 findings block/,
+    /Once the review loop's budget is used \(3 fix rounds, 5 for a risky change\) only P0\/P1 findings block/,
     /--waive "<reason>"/,
     /No toasts or explainers/,
     /theme tokens/,
@@ -286,7 +286,7 @@ test("brief --task: a project without ticket files gets a brief for a named task
     const staged = f.run(["--task", "Fix the login form", "--owner", "cf-12", "--note", "the task", "--stage", stage]);
     assert.equal(staged.status, 0, staged.stdout);
     assert.doesNotMatch(staged.stdout, /--ticket|ticket's Done/, stage);
-    if (stage === "fix") assert.match(staged.stdout, /The findings are in the newest `findings\.json` .* \(the note below holds the task\)/);
+    if (stage === "fix") assert.match(staged.stdout, /The findings are in the newest complete review.s `findings\.json` .* \(the note below holds the task\)/);
     assert.match(staged.stdout, new RegExp(`kit-brief: \\S+ task:fix-the-login-form ${stage}$`, "m"));
   }
   // A long title's slug is cut at 60 characters and never ends on a dash.
@@ -343,4 +343,21 @@ test("brief: a rulebook without the rule leaves the talk-style counter where it 
 
 test("brief: the talk-style line tells a headless builder where the Messages to Lex rule is", () => {
   for (const style of ["en", "wenyan", "plain"]) assert.match(talkStyleLine(style), /Messages for Lex follow the Messages to Lex rule \(`scripts\/agents\/kit rulebook`, section "Messages to Lex"\): short bullets in plain English/, style);
+});
+
+test("brief: every stage carries the Review loop rule from the rulebook, the one source", t => {
+  // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
+  return import("../kit-lib.mjs").then(({ kitReviewLoopRule }: { kitReviewLoopRule: (home: string) => { rule: string; version: number } }) => {
+    const { rule, version } = kitReviewLoopRule(resolve("."));
+    assert.ok(readFileSync(resolve("docs/kitchen.md"), "utf8").includes(rule), "the rule is the rulebook's own text");
+    assert.equal(version, 2);
+    const f = fixture(t);
+    for (const stage of ["build", "review", "second-look", "fix"]) {
+      const output = f.run(["docs/tickets/07-panel.md", "--stage", stage]);
+      assert.equal(output.status, 0, output.stderr + output.stdout);
+      assert.ok(body(output.stdout).includes(`## Review loop\n${rule}\n`), `${stage}: no Review loop rule`);
+    }
+    assert.match(rule, /Budget: 3 fix rounds; 5 only for security, permissions, auth, data loss/);
+    assert.match(rule, /Reviewed with review-loop: N rounds with <model>\. Verdict: approved/);
+  });
 });

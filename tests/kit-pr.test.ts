@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { checkSteps, classify, featureListGuard, focusedUnitFiles, parseChanges, visiblePath } from "../pr-tier.mjs";
 import { sameReviewPatch } from "../review-findings.mjs";
@@ -1063,7 +1063,7 @@ test("saved and fresh reviews stop on findings before CI or merge, capped at 15 
     const path = source === "saved" ? f.saveReview(report) : join(f.main, ".scratch/reviews/ak-14/fresh/result.md");
     const result = f.run([], { FAKE_REVIEW: report });
     assert.equal(result.status, 1, result.stderr);
-    assert.equal(result.stdout.trimEnd().split("\n").at(-1), `RESULT: fail pr #73 review has 17 open findings (${path})`);
+    assert.equal(result.stdout.trimEnd().split("\n").at(-1), `RESULT: fail pr #73 review has 16 open findings (${path})`);
     assert.ok(result.stdout.includes(`Spec: ${long.slice(0, 160)}…\n`), result.stdout);
     assert.doesNotMatch(result.stdout, /A{154}/);
     for (let i = 2; i <= 15; i++) assert.ok(result.stdout.includes(`Spec: a.ts:${i} Defect ${i}.\n`));
@@ -1134,12 +1134,13 @@ test("lead waiver merges saved or fresh findings, comments and patches the body 
     assert.match(result.stdout, /RESULT: ok merged #73/);
     assert.equal(f.ghCalls("merge").length, 1);
     assert.ok(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "wait"));
-    assert.equal(f.ghCalls("comment").at(-1)?.body, `Merged with 2 waived findings: ${reason}`);
+    assert.equal(f.ghCalls("comment").at(-1)?.body, `Merged with 1 waived findings: ${reason}`);
     const patches = f.apiCalls().filter(call => call.args[1] === "--method");
-    assert.equal(patches.length, 2);
-    assert.deepEqual(patches[1].args.slice(0, 5), ["api", "--method", "PATCH", "repos/{owner}/{repo}/pulls/73", "-F"]);
-    assert.match(patches[1].args[5], /^body=@/);
-    assert.equal(patches[1].body, `${patches[0].body}\nmerged with 2 waived findings: ${reason}\n`);
+    // The opening body, then (when the review left its evidence) the review loop's PR line and ledger, then the waiver.
+    assert.ok(patches.length >= 2 && patches.length <= 3, String(patches.length));
+    assert.deepEqual(patches.at(-1)!.args.slice(0, 5), ["api", "--method", "PATCH", "repos/{owner}/{repo}/pulls/73", "-F"]);
+    assert.match(patches.at(-1)!.args[5], /^body=@/);
+    assert.equal(patches.at(-1)!.body, `${patches.at(-2)!.body}\nmerged with 1 waived findings: ${reason}\n`);
   }
 });
 
@@ -1733,16 +1734,28 @@ test("--full forces today's checks on a docs-only PR; a failing doc guard stops 
 
 const minorReview = cleanReview.replace("Spec: none.", "Spec: P2: Minor defect.").replace("Validation gaps: none.", "Validation gaps: Add coverage.");
 
-for (const pending of [false, true]) test(`P3 blocks with only two completed rounds (pending=${pending})`, t => {
+for (const pending of [false, true]) test(`a should (P2) still blocks with only two completed rounds (pending=${pending})`, t => {
   const f = fixture(t);
   f.rounds(pending ? 3 : 2, pending ? 3 : undefined);
-  const report = cleanReview.replace("Spec: none.", "Spec: P3: Cosmetic defect.");
+  const report = cleanReview.replace("Spec: none.", "Spec: P2: Real minor defect.");
   f.saveReview(report);
   const result = f.run();
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stdout, /RESULT: fail pr #73 review has 1 open findings/);
   assert.equal(f.ghCalls("merge").length, 0);
   assert.equal(f.calls().some(call => call.args[0] === "wait"), false);
+});
+
+// Review loop, nits: a review that returns only nits needs no fix round and does not block, whatever the round count.
+for (const rounds of [0, 2]) test(`a review with only nits (a P3 and a validation gap) lands, with the nits as follow-ups (${rounds} rounds)`, t => {
+  const f = fixture(t);
+  if (rounds) f.rounds(rounds);
+  const report = cleanReview.replace("Spec: none.", "Spec: P3: Cosmetic defect.").replace("Validation gaps: none.", "Validation gaps: Add coverage.");
+  f.saveReview(report);
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /review: 2 follow-ups \(nits only\) \(non-blocking\)/);
+  assert.equal(f.ghCalls("merge").length, 1);
 });
 
 for (const local of [false, true]) for (const source of ["saved", "fresh"]) test(`three completed rounds merge follow-ups, preserve coverage and avoid duplicates (local=${local}, source=${source})`, t => {
@@ -2165,6 +2178,15 @@ test("when no model can take the second look the PR still lands and says why", t
   assert.match(result.stdout, /RESULT: ok merged #73/);
 });
 
+test("a skipped second look is written into the PR's review block, so the PR never reads as double-checked", t => {
+  const f = fixture(t);
+  const path = f.saveReview(cleanReview);
+  writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ round: 1, model: "claude-opus-5-5", head: f.git("rev-parse", "HEAD"), findings: [] }));
+  assert.equal(f.run([], { FAKE_SECOND: "skip" }).status, 0);
+  const block = f.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body ?? "").find(text => text.includes("<!-- review-loop -->"))!;
+  assert.match(block, /Verdict: approved\n\nsecond look: skipped \(grok-4\.7 out of credit; opencode\/deepseek-v4\.1-flash-free out of credit\)\n\nFindings ledger: none\./);
+});
+
 test("a saved second look is reused only as a second look that ran; it is never taken for Claude's review", t => {
   for (const ok of [true, false]) {
     const f = fixture(t), folder = join(f.main, ".scratch/reviews/ak-14/20261019T100000Z");
@@ -2417,4 +2439,119 @@ test("a machine without flock runs the browser specs unlocked and says so", t =>
   assert.deepEqual(specsCalls(f).map(call => call.args), [["specs", "--affected", "--base", "origin/dev"], ["specs", files[1]]]);
   assert.match(f.body(), /^- problem: flock is not installed, so browser runs are not kept one at a time \(install util-linux\)$/m);
   assert.match(result.stdout, /RESULT: ok opened #73 [a-f0-9]{7} \(flaky under load: tests\/native-save\/b\.spec\.ts\)$/m);
+});
+
+// The review loop: the budget follows the risk, running out is reported, and the PR says how it was reviewed.
+test("a risky change (a path named auth) gets 5 fix rounds: a should still blocks after 3, and lands as a follow-up after 5", t => {
+  const should = cleanReview.replace("Spec: none.", "Spec: P2: Real minor defect.");
+  const three = fixture(t, { "src/auth/login.ts": "export const login = 1;\n" });
+  three.rounds(3); three.saveReview(should);
+  const blocked = three.run();
+  assert.equal(blocked.status, 1, blocked.stdout + blocked.stderr);
+  assert.match(blocked.stdout, /^review loop: risky change \(path src\/auth\/login\.ts\): up to 5 fix rounds$/m);
+  assert.match(blocked.stdout, /RESULT: fail pr #73 review has 1 open findings/);
+  const five = fixture(t, { "src/auth/login.ts": "export const login = 1;\n" });
+  five.rounds(5); five.saveReview(should);
+  const landed = five.run();
+  assert.equal(landed.status, 0, landed.stdout + landed.stderr);
+  assert.match(landed.stdout, /review: 1 follow-ups after 5 fix rounds \(non-blocking\)/);
+  // An ordinary change with the same finding after 3 rounds lands as a follow-up.
+  const plain = fixture(t);
+  plain.rounds(3); plain.saveReview(should);
+  const ordinary = plain.run();
+  assert.equal(ordinary.status, 0, ordinary.stdout + ordinary.stderr);
+  assert.doesNotMatch(ordinary.stdout, /review loop: risky change/);
+});
+
+test("out of budget with a blocker left is reported for Lex and never approved", t => {
+  const f = fixture(t);
+  f.rounds(3); f.saveReview(cleanReview.replace("Spec: none.", "Spec: P1: Real wrong behaviour."));
+  const result = f.run();
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /^Review budget used: 3 of 3 fix rounds, 1 open finding\. Running out of budget is not approval; Lex decides\.$/m);
+  assert.doesNotMatch(result.stdout, /Verdict: approved/);
+});
+
+test("the PR says how it was reviewed: the line and the findings ledger from the reviews' own evidence", t => {
+  const f = fixture(t);
+  const path = f.saveReview(cleanReview);
+  writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ round: 1, model: "claude-opus-5-5", head: f.git("rev-parse", "HEAD"), findings: [] }));
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^Reviewed with review-loop: 1 round with claude-opus-5-5\. Verdict: approved$/m);
+  const patch = f.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body).find(text => text?.includes("Reviewed with review-loop"));
+  assert.ok(patch?.includes("Reviewed with review-loop: 1 round with claude-opus-5-5. Verdict: approved\n\nFindings ledger: none."), patch);
+});
+
+test("a later review that marks an earlier id \"still open\" and finds nothing new does not land and is never approved", t => {
+  const f = fixture(t);
+  const path = f.saveReview("REVIEW_STATUS: complete\nPrevious findings:\nR1-1: still open (P1): the save still drops the second write\n\nDefects: none\nValidation gaps: none.\n");
+  writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ round: 2, model: "claude-opus-5-5", head: f.git("rev-parse", "HEAD"), findings: [{ id: "R2-1", group: "Previous findings", severity: "P1", kind: "unsorted", text: "R1-1 still open: x" }] }));
+  const result = f.run();
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /Previous findings: R1-1 still open: the save still drops the second write/);
+  assert.match(result.stdout, /RESULT: fail pr #73 review has 1 open findings/);
+  assert.equal(f.ghCalls("merge").length, 0);
+  assert.doesNotMatch(result.stdout, /Verdict: approved/);
+});
+
+test("out of budget with a should (P2) left lands as a follow-up for Lex but the PR says not approved, with the budget report and the saved ids", t => {
+  const f = fixture(t);
+  f.rounds(3);
+  const path = f.saveReview(cleanReview.replace("Spec: none.", "Spec: P2: Real minor defect."));
+  writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ round: 4, model: "claude-opus-5-5", head: f.git("rev-parse", "HEAD"), findings: [{ id: "R4-1", group: "Spec", severity: "P2", kind: "unsorted", text: "P2: Real minor defect." }] }));
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^Review budget used: 3 of 3 fix rounds, 1 open finding\. Running out of budget is not approval; Lex decides\.$/m);
+  assert.match(result.stdout, /^- R4-1 \(should\): /m);
+  assert.match(result.stdout, /^Reviewed with review-loop: 1 round with claude-opus-5-5\. Verdict: not approved \(budget used, 1 open finding left for Lex\)$/m);
+  assert.doesNotMatch(result.stdout, /Verdict: approved/);
+});
+
+test("the PR's review block is replaced between markers on a later run, never added twice", t => {
+  const f = fixture(t);
+  const path = f.saveReview(cleanReview);
+  writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ round: 1, model: "claude-opus-5-5", head: f.git("rev-parse", "HEAD"), findings: [] }));
+  assert.equal(f.run().status, 0);
+  const bodies = f.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body ?? "");
+  const block = bodies.find(text => text.includes("<!-- review-loop -->"))!;
+  assert.equal((block.match(/<!-- review-loop -->/g) ?? []).length, 1);
+  assert.match(block, /<!-- review-loop -->\nReviewed with review-loop: 1 round with claude-opus-5-5\. Verdict: approved\n\nFindings ledger: none\.\n<!-- \/review-loop -->/);
+});
+
+test("the PR's verdict counts the second look too: a second-look P2 after the budget is used, or a second-look P1 under --waive, is never approved", t => {
+  const withEvidence = (f: ReturnType<typeof fixture>, owner?: string) => {
+    const path = f.saveReview(cleanReview, owner);
+    writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ round: 1, model: "claude-opus-5-5", head: f.git("rev-parse", "HEAD"), findings: [] }));
+  };
+  const budget = fixture(t); withEvidence(budget); budget.rounds(3);
+  const used = budget.run([], { FAKE_SECOND_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P2 a second-look should.\n" });
+  assert.equal(used.status, 0, used.stdout + used.stderr);
+  assert.match(used.stdout, /^Reviewed with review-loop: 1 round with claude-opus-5-5\. Verdict: not approved \(budget used, 1 open finding left for Lex\)$/m);
+  const waiver = fixture(t); withEvidence(waiver, "ke-lead");
+  const waived = waiver.run(["--waive", "Accepted for follow-up"], { ASE_OWNER: "ke-lead", FAKE_SECOND_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P1 the second look found this.\n" });
+  assert.equal(waived.status, 0, waived.stdout + waived.stderr);
+  assert.match(waived.stdout, /^Reviewed with review-loop: 1 round with claude-opus-5-5\. Verdict: not approved \(1 open finding waived by the lead\)$/m);
+  assert.doesNotMatch(waived.stdout, /Verdict: approved/);
+});
+
+test("a saved review marked incomplete (a later round that left an id out) is never reused: a fresh review runs", t => {
+  const f = fixture(t);
+  const path = f.saveReview(cleanReview);
+  writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ incomplete: true, model: "claude-opus-5-5", head: f.git("rev-parse", "HEAD"), findings: [] }));
+  const result = f.run(["--no-merge"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(f.calls().some(claudeReview), "the incomplete review was not reused");
+});
+
+test("a should with no reason on a risky change at round 3 lands as a follow-up but the PR says nobody waived it and it is not approved", t => {
+  const f = fixture(t, { "src/auth/login.ts": "export const login = 1;\n" });
+  f.rounds(3);
+  const path = f.saveReview("REVIEW_STATUS: complete\nPrevious findings:\nR1-1: still open (P2)\n\nDefects: none\nValidation gaps: none.\n");
+  writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ round: 4, model: "claude-opus-5-5", head: f.git("rev-parse", "HEAD"), findings: [{ id: "R4-1", group: "Previous findings", severity: "P2", kind: "unsorted", text: "R1-1 still open: no reason given" }] }));
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^review: 1 follow-ups \(no reason given\) \(non-blocking\)$/m);
+  assert.match(result.stdout, /Verdict: not approved \(1 open finding left for Lex: no reason was given for it\)$/m);
+  assert.doesNotMatch(result.stdout, /waived by the lead/);
 });

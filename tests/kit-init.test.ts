@@ -80,7 +80,7 @@ function result(run: { stdout: string; stderr: string }): string {
 const { version, rule } = kitMessagesToLexRule(resolve("."));
 const section = `<!-- messages-to-lex:start v${version} -->\n${rule}\n<!-- messages-to-lex:end -->`;
 const older = (text: string, number = 0) => `<!-- messages-to-lex:start${number ? ` v${number}` : ""} -->\n${text}\n<!-- messages-to-lex:end -->`;
-const base = "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\n";
+const base = "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\nReview loop: `scripts/agents/kit rulebook`, section \"Review loop\" (3 fix rounds, 5 only for risk; stop when only nits are left; one reviewer; a findings ledger in the PR).\n";
 const settingsOf = (extra: Record<string, unknown> = {}) => JSON.stringify({ project: "p", branches: { land: "dev" }, ...extra });
 const written = (run: { stdout: string }) => run.stdout.split("\n").filter((line) => line.startsWith("wrote ")).map((line) => line.split(" ")[1]).sort();
 const hookCommand = (name: string) => `bash "\${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"/scripts/agents/hooks/run.sh ${name}`;
@@ -185,7 +185,7 @@ test("existing .claude/settings.json keys, hooks and AGENTS.md text survive; onl
   const run = f.init(work, ["--light"]);
   assert.equal(run.status, 0, run.stdout + run.stderr);
   assert.match(run.stdout, /^wrote \.claude\/settings\.json \(merged 9 hook entries\)$/m);
-  assert.match(run.stdout, /^wrote AGENTS\.md \(added the rulebook line and the Messages to Lex section\)$/m);
+  assert.match(run.stdout, /^wrote AGENTS\.md \(added the rulebook line and the review loop line and the Messages to Lex section\)$/m);
   const merged = JSON.parse(readFileSync(join(work, ".claude/settings.json"), "utf8"));
   assert.equal(merged.model, "opus");
   assert.deepEqual(merged.permissions, settings.permissions);
@@ -204,7 +204,7 @@ test("existing .claude/settings.json keys, hooks and AGENTS.md text survive; onl
 
 test("AGENTS.md gets the Messages to Lex section from the rulebook, exactly once, with one blank line before it", (t) => {
   const f = fixture(t);
-  const had = "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\n";
+  const had = "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\nReview loop: `scripts/agents/kit rulebook`, section \"Review loop\" (3 fix rounds, 5 only for risk; stop when only nits are left; one reviewer; a findings ledger in the PR).\n";
   const { work } = f.repo("lex", { "AGENTS.md": had });
   const first = f.init(work, ["--light"]);
   assert.match(first.stdout, /^wrote AGENTS\.md \(added the Messages to Lex section\)$/m);
@@ -215,7 +215,7 @@ test("AGENTS.md gets the Messages to Lex section from the rulebook, exactly once
 
 test("a project set up before the rule is told so by --check; only a heading counts as having it, and the project's own words stay", (t) => {
   const f = fixture(t);
-  const lines = "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\n";
+  const lines = "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\nReview loop: `scripts/agents/kit rulebook`, section \"Review loop\" (3 fix rounds, 5 only for risk; stop when only nits are left; one reviewer; a findings ledger in the PR).\n";
   const settings = JSON.stringify({ project: "p", branches: { land: "dev" } });
   const check = (name: string, agents: string) => f.init(f.repo(name, { "scripts/agents/kit.json": settings, "AGENTS.md": agents }).work, ["--check"]).stdout;
   const piece = /^missing: AGENTS\.md Messages to Lex \(the Messages to Lex section\)$/m;
@@ -291,7 +291,7 @@ test("a missing line and an out-of-date section are fixed in one run; a brand-ne
   const f = fixture(t);
   const { work } = f.repo("both", { "scripts/agents/kit.json": settingsOf(), "AGENTS.md": `# Agents\n\n## Messages to Lex\n${older("- Old.")}\n` });
   const run = f.init(work, ["--light"]);
-  assert.match(run.stdout, /^wrote AGENTS\.md \(added the rulebook line and the commands line; updated the Messages to Lex section\)$/m);
+  assert.match(run.stdout, /^wrote AGENTS\.md \(added the rulebook line and the commands line and the review loop line; updated the Messages to Lex section\)$/m);
   const after = readFileSync(join(work, "AGENTS.md"), "utf8");
   assert.equal(after.match(/messages-to-lex:start/g)!.length, 1);
   assert.ok(after.indexOf(section) < after.indexOf("Kitchen rulebook"), after);
@@ -312,7 +312,7 @@ test("--pieces updates a stale marked section and keeps the text around it; a ru
 
 test("init.skip keeps the Messages to Lex section out: nothing is written and --check says it is turned off", (t) => {
   const f = fixture(t);
-  const lines = "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\n";
+  const lines = "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\nReview loop: `scripts/agents/kit rulebook`, section \"Review loop\" (3 fix rounds, 5 only for risk; stop when only nits are left; one reviewer; a findings ledger in the PR).\n";
   const { work } = f.repo("skip", { "scripts/agents/kit.json": JSON.stringify({ project: "p", branches: { land: "dev" }, init: { skip: ["AGENTS.md Messages to Lex"] } }), "AGENTS.md": lines });
   const check = f.init(work, ["--check"]);
   assert.doesNotMatch(check.stdout, /^missing: AGENTS/m);
@@ -331,7 +331,7 @@ test("init.skip keeps the Messages to Lex section out: nothing is written and --
 
 test("--pieces (kit init --all's own step) writes the Messages to Lex section into an older project", (t) => {
   const f = fixture(t);
-  const lines = "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\n";
+  const lines = "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\nReview loop: `scripts/agents/kit rulebook`, section \"Review loop\" (3 fix rounds, 5 only for risk; stop when only nits are left; one reviewer; a findings ledger in the PR).\n";
   const { work } = f.repo("pieces", { "scripts/agents/kit.json": JSON.stringify({ project: "p", branches: { land: "dev" } }), "AGENTS.md": lines });
   const run = f.init(work, ["--pieces"]);
   assert.match(result(run), /^RESULT: ok/);

@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { builderChecks, plainEnglish, reviewFormat, ticketReviewBrief } from "./review-brief.mjs";
-import { kitMessagesToLexRule, kitRulebookPins, kitSliceBranch, kitStateDir } from "./kit-lib.mjs";
+import { kitMessagesToLexRule, kitReviewLoopRule, kitRulebookPins, kitSliceBranch, kitStateDir } from "./kit-lib.mjs";
 import { map, modelFamily, pickSkills, readTicket, skillLine } from "./skills.mjs";
 
 export { map, modelFamily, pickSkills, readTicket, skillLine, skillSettingsProblems } from "./skills.mjs";
@@ -75,7 +75,7 @@ const SECOND_LOOK = { first: "grok-4.7", fallback: "opencode/deepseek-v4.1-flash
  * settings, the ticket's path there and its text, the stage, owner, note, the target model, the talk style and
  * the kit's version.
  */
-export function composeBrief({ messages = kitMessagesToLexRule(), root, settings, ticket, text, stage, owner, note, model, style, version, task, pins = kitRulebookPins(root, settings), review = process.env.ASE_REVIEW_MODEL || pins.reviewer }) {
+export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = kitReviewLoopRule(), root, settings, ticket, text, stage, owner, note, model, style, version, task, pins = kitRulebookPins(root, settings), review = process.env.ASE_REVIEW_MODEL || pins.reviewer }) {
   const info = readTicket(text);
   // kit next runs a group's tickets as one job (kit next --run-group) on the group's own branch.
   if (info.group) throw new Error(`${ticket} is in group ${info.group}: kit next --start runs a group as one job; kit brief writes briefs for single tickets`);
@@ -121,8 +121,8 @@ export function composeBrief({ messages = kitMessagesToLexRule(), root, settings
         "The ticket's own \"Kit commands and evidence\" section adds to this. Report every RESULT line, the PR URL and the merge SHA.",
       ] : [
         `For each finding you decline, give it with its reason in your report: \`scripts/agents/kit review${task ? "" : ` --ticket ${ticket}`}\` reads declined findings with their reasons.`,
-        task ? "The findings are in the newest `findings.json` under the main checkout's `.scratch/reviews/<owner>/` (the note below holds the task)."
-          : "The findings are in the note below, else in the newest `findings.json` under the main checkout's `.scratch/reviews/<owner>/`.",
+        task ? "The findings are in the newest complete review's `findings.json` under the main checkout's `.scratch/reviews/<owner>/` (a record marked `incomplete: true` is not one) (the note below holds the task)."
+          : "The findings are in the note below, else in the newest complete review's `findings.json` under the main checkout's `.scratch/reviews/<owner>/` (a record marked `incomplete: true` is not one).",
       ]),
     ]);
   } else {
@@ -142,13 +142,15 @@ export function composeBrief({ messages = kitMessagesToLexRule(), root, settings
   section("House rules", [
     "Paid skills never go in a repo: name a skill, never copy its text (`skill-guard.mjs` runs in `kit pr`).",
     `Second look: \`${SECOND_LOOK.first}\`, else the free \`${SECOND_LOOK.fallback}\`; never an OpenAI model; \`second look: skipped (<reason>)\` when neither can run.`,
-    `After three fix rounds only P0/P1 findings block; P2/P3 go to the lead, who may land with \`ASE_OWNER=<lead> scripts/agents/kit pr … --waive "<reason>"\`; say so in ${task ? "your report" : "the ticket's Done"}.`,
+    `Once the review loop's budget is used (3 fix rounds, 5 for a risky change) only P0/P1 findings block; P2/P3 go to the lead, who may land with \`ASE_OWNER=<lead> scripts/agents/kit pr … --waive "<reason>"\`; say so in ${task ? "your report" : "the ticket's Done"}.`,
     "Anything a person sees: No toasts or explainers; show state on the control itself. Reuse the theme tokens and components.",
     "House rules beat skill advice: where a skill suggests something a house rule forbids (a toast, say), the house rule wins.",
     "Commits use the repo's or the machine's set git identity; never borrow another person's name.",
   ]);
   // The rule is the shared rulebook's (docs/kitchen.md of the kit that runs), not the project's.
   out.push("", "## Messages to Lex", `This covers messages meant for Lex. The Report section's format still applies in full (RESULT lines, PR URL, SHAs, finding locations). This copy is v${messages.version}; a project's own or newer \"Messages to Lex\" section in AGENTS.md wins over it.`, messages.rule);
+  // The review loop's rules (budget by risk, stop on nits, ledger): one source, the rulebook's "Review loop" section.
+  out.push("", "## Review loop", reviewLoop.rule);
   if (!reviewing) section("Waiting", [
     "Finish the whole job in this turn. A short check runs in the foreground.",
     "A long job (a slice, a long `kit pr`, specs) runs as `scripts/agents/kit go <job> -- <command>`: it starts the job in its own systemd scope and waits at most 9 minutes per call.",

@@ -4,7 +4,8 @@ import { execFileSync, spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { openFindings } from "../review-findings.mjs";
+import { openFindings, reviewIncomplete } from "../review-findings.mjs";
+import { isNit } from "../review-loop.mjs";
 import { builderChecks, spoken } from "../review-brief.mjs";
 
 const { kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, nodeEnv, commitBuilderWork, builderAuthor, kitScore, scoreCost, scoreReview } = await import(
@@ -38,7 +39,7 @@ function newestDirectories(parent) {
 // Claude's newest review of HEAD; a second look (marked second-look.json) is answered only through --review.
 function coveringReview(head) {
   for (const folder of newestDirectories(join(kitMainRoot(), ".scratch/reviews", kitOwner()))) {
-    if (existsSync(join(folder, "second-look.json"))) continue;
+    if (existsSync(join(folder, "second-look.json")) || reviewIncomplete(folder)) continue;
     try {
       if (readFileSync(join(folder, "refs.txt"), "utf8").split(/\r?\n/)[0] === head) return folder;
     } catch { /* A partial folder without refs cannot cover HEAD. */ }
@@ -174,6 +175,7 @@ async function fix(args) {
     const note = pending?.note || (flags["--note"] ? resolve(root, flags["--note"]) : undefined);
     const review = pending?.review || (!note && (flags["--review"] ? resolve(root, flags["--review"]) : coveringReview(head)));
     if (!review && !note) throw new Error("no review covers HEAD");
+    if (review && reviewIncomplete(review)) throw new Error(`${review} is an incomplete review (it left an earlier finding id out); run kit review again`);
     const resultPath = note || join(review, "result.md");
     let original = pending?.original || "";
     if (!pending) {
@@ -184,7 +186,8 @@ async function fix(args) {
     }
     const { findings, readable } = note ? { findings: [], readable: true } : openFindings(original);
     if (!readable) throw new Error(`${findings.length} open findings (${resultPath}): review format unreadable`);
-    if (!note && !findings.length) { kitResult("ok", "fix clean"); return 0; }
+    // Nothing but nits (a rare path, a small cost, a missing test) needs no round: the review loop ends here.
+    if (!note && findings.every(isNit)) { kitResult("ok", findings.length ? "fix clean (only nits left, no round needed)" : "fix clean"); return 0; }
     const slice = latestSlice(root, branch);
     const found = pending ? undefined : builderRun(root, flags["--run"], slice, requested, requestedEffort);
     const builder = found?.rejected ? undefined : found;
@@ -321,7 +324,7 @@ async function fix(args) {
     }
     let result = "";
     try { result = readFileSync(nextResult, "utf8"); } catch { /* Missing evidence is an open finding. */ }
-    const remaining = openFindings(result).findings.length;
+    const remaining = openFindings(result).findings.filter(item => !isNit(item)).length;
     rmSync(pendingPath);
     // The round, its builder's reported cost and the declined list on the review it answered.
     kitScore({ ticket, branch, root }, record => {

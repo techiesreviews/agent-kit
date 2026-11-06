@@ -79,13 +79,13 @@ function evidence() {
   const folder = join(process.env.KIT_MAIN_ROOT, ".scratch/reviews/ke-04", String(round()).padStart(3, "0"));
   mkdirSync(folder, { recursive: true });
   writeFileSync(join(folder, "refs.txt"), git("rev-parse", "HEAD") + "\\n");
-  // NOTE_FINDINGS: the review after a --note (UX) fix round has one P3 finding; "stay" keeps a P1 on every later fix review.
+  // NOTE_FINDINGS: the review after a --note (UX) fix round has one P2 finding (a P3 nit would need no round); "stay" keeps a P1 on every later fix review.
   const stay = process.env.NOTE_FINDINGS === "stay";
   const noteFinding = Boolean(process.env.NOTE_FINDINGS && phase === "fix" && (args.includes("--note") || stay));
   // DIRTY_FROM: every review from that round on keeps a P1.
   const open = round() < Number(process.env.CLEAN_AT || 0) || round() >= Number(process.env.DIRTY_FROM || Infinity) || noteFinding;
-  const report = noteFinding && !stay ? ${JSON.stringify(findings)}.replace("P1", "P3") : process.env.MINOR_REVIEW && round() >= 3 ? ${JSON.stringify(findings)}.replace("P1", "P2").replace("Standards: none", "Standards: P3: Cosmetic issue") : ${JSON.stringify(findings)};
-  writeFileSync(join(folder, "result.md"), process.env.UNREADABLE_REVIEW ? "partial" : open ? report : process.env.CLEAN_REVIEW || ${JSON.stringify(clean)});
+  const report = noteFinding && !stay ? ${JSON.stringify(findings)}.replace("P1", "P2") : process.env.MINOR_REVIEW && round() >= 3 ? ${JSON.stringify(findings)}.replace("P1", "P2").replace("Standards: none", "Standards: P3: Cosmetic issue") : ${JSON.stringify(findings)};
+  writeFileSync(join(folder, "result.md"), process.env.UNREADABLE_REVIEW ? "partial" : open ? (process.env.NITS_ONLY ? ${JSON.stringify(findings)}.replace("P1", "P3") : report) : process.env.CLEAN_REVIEW || ${JSON.stringify(clean)});
   if (process.env.FINDINGS_JSON) writeFileSync(join(folder, "findings.json"), JSON.stringify({ model: "fake-reviewer", effort: "high",
     findings: [], counts: { kind: { fault: 0, ticket: 0, race: 0, style: 0, unsorted: open ? 1 : 0, gap: 0 }, severity: {} } }));
   return { folder, open };
@@ -196,7 +196,7 @@ if (phase === "review") {
     process.exit(1);
   }
   const { folder, open } = evidence();
-  if (open && !(process.env.MINOR_REVIEW && round() >= 3)) {
+  if (open && !process.env.NITS_ONLY && !(process.env.MINOR_REVIEW && round() >= 3)) {
     console.log("RESULT: fail pr #42 review has 1 open findings (" + folder + "/result.md)");
     process.exitCode = 1;
   } else if (args.includes("--no-merge")) console.log("RESULT: ok opened #42 " + git("rev-parse", "--short", "HEAD"));
@@ -1513,4 +1513,26 @@ test("the slice brief names the skills map's set for a ticket touching UI, for t
   assert.match(brief, /^## Skills\nUse these where they fit; house rules beat skill advice\.$/m);
   // The fixture's builder is gpt-6.1-sol: Codex names a skill with $.
   for (const name of ["good-css", "emil-design-foundations", "emil-ui-polish"]) assert.match(brief, new RegExp(`^- \\$${name} \\(the ${name} skill\\) — `, "m"));
+});
+
+// The review loop in the slice: nits need no round, and a risky change gets up to 5.
+test("a review with only a nit (P3) needs no fix round: the slice goes straight to the PR", t => {
+  const f = fixture(t), result = f.run([], { CLEAN_AT: "99", NITS_ONLY: "1" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(f.calls().filter(call => call.phase === "fix").length, 0);
+  assert.equal(f.state().rounds, 0);
+  assert.match(result.stdout, /RESULT: ok slice .* PR #42/);
+});
+
+test("a risky change (paths.risky names its file) gets 5 fix rounds, a normal one 3, and --rounds still decides when given", t => {
+  const risky = fixture(t, { project: "kit-slice", branches: { land: "dev" }, paths: { risky: ["^file\\.txt$"] } });
+  const five = risky.run([], { CLEAN_AT: "99" });
+  assert.equal(five.status, 1, five.stdout + five.stderr);
+  assert.match(five.stdout, /RESULT: fail slice fix: 1 open findings after 5 rounds/);
+  assert.equal(risky.calls().filter(call => call.phase === "fix").length, 5);
+  const plain = fixture(t), three = plain.run([], { CLEAN_AT: "99" });
+  assert.match(three.stdout, /after 3 rounds/);
+  const given = fixture(t, { project: "kit-slice", branches: { land: "dev" }, paths: { risky: ["^file\\.txt$"] } });
+  const two = given.run([], { CLEAN_AT: "99" }, ["--ticket", given.ticket, "--builder", "claude-opus-5-5", "--rounds", "2"]);
+  assert.match(two.stdout, /after 2 rounds/);
 });
