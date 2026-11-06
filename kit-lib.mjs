@@ -55,6 +55,7 @@ function kitTicketProblems(settings) {
   if (orbit !== undefined && (!orbit || typeof orbit !== "object" || Array.isArray(orbit))) return [...problems, `"orbit" must be an object in ${kitSettingsFile}, like { "project": "TOOLS" }`];
   if (orbit?.project !== undefined && !(typeof orbit.project === "string" && /^[A-Za-z][A-Za-z0-9_]*$/.test(orbit.project))) problems.push(`"orbit.project" must be an Orbit project key in ${kitSettingsFile}, like "TOOLS"`);
   if (orbit?.parent !== undefined && !(typeof orbit.parent === "string" && /^[A-Za-z][A-Za-z0-9_]*-[0-9]+$/.test(orbit.parent))) problems.push(`"orbit.parent" must be a card key in ${kitSettingsFile}, like "TOOLS-10"`);
+  if (orbit?.parent !== undefined && orbit?.project === undefined) problems.push(`"orbit.parent" needs "orbit.project" in ${kitSettingsFile}`);
   if (settings.tickets === "orbit" && orbit?.project === undefined) problems.push(`"tickets": "orbit" needs "orbit": { "project": "<KEY>" } in ${kitSettingsFile}`);
   return problems;
 }

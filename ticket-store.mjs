@@ -154,7 +154,7 @@ export function withNote(description, date, who, text) {
 
 /** The ticked "Scheduled in Radaar" lines, with spacing, emphasis, quote marks and letter case aside. */
 const ticked = description => String(description ?? "").split(/\r\n|[\n\r\u2028\u2029]/)
-  .map(line => (tick.exec(line)?.[1] ?? "").replace(/[*_~`]/g, "").replace(/\s+/g, " ").trim().toLowerCase())
+  .map(line => (tick.exec(line)?.[1] ?? "").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[*_~`]/g, "").replace(/\s+/g, " ").trim().toLowerCase())
   .filter(text => text.includes("scheduled in radaar"));
 const amsterdamToday = () => { const now = zoneParts(Date.now()); return `${now.year}-${now.month}-${now.day}`; };
 const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
@@ -210,12 +210,12 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
   };
   /** A failure's log line; the failure itself is what gets reported, so a log problem here does not replace it. */
   const logFailure = entry => { try { logLine(entry); } catch { /* The caller reports the failure. */ } };
-  /** Sends the change and logs its outcome once; a stale version waits for the retry's outcome. */
-  const sent = async (entry, send) => {
+  /** Sends the change and logs its outcome once; with `retries`, a stale version waits for the retry's outcome. */
+  const sent = async (entry, send, { retries = false } = {}) => {
     let answer;
     try { answer = await send(); }
     catch (error) {
-      if (!error?.staleVersion) logFailure({ ...entry, card: entry.card ?? "new", result: `fail:${error?.code ?? error?.status ?? "error"}` });
+      if (!(retries && error?.staleVersion)) logFailure({ ...entry, card: entry.card ?? "new", result: `fail:${error?.code ?? error?.status ?? "error"}` });
       throw error;
     }
     const card = entry.card ?? answer?.identifier;
@@ -254,7 +254,7 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
     let refused = null;
     const send = async (entry, call) => {
       refused = null;
-      try { return await sent(entry, call); }
+      try { return await sent(entry, call, { retries: true }); }
       catch (error) { if (error?.staleVersion) refused = entry; throw error; }
     };
     try {
@@ -337,6 +337,8 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
     async create({ project, title, description, status, priority, parent, noParent, blocked, lexSaid }) {
       if (!oneLine(title)) throw new OrbitError("a new card needs --title");
       if (priority !== undefined && !priorities.includes(priority)) throw new OrbitError(`priority must be one of ${priorities.join(", ")}`);
+      // A blank --parent (an empty variable, say) must not quietly drop the default parent.
+      if (parent !== undefined) orbitCardKey(parent);
       // Broken settings hide the project's default parent; a card made without it would be in the wrong place.
       if (defaults.problem && parent === undefined && !noParent) throw new OrbitError(`scripts/agents/kit.json has a problem (${defaults.problem}), so its default parent cannot be read: fix it, or add --parent <KEY> or --no-parent`);
       requireLead();
