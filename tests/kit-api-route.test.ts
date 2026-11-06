@@ -269,3 +269,19 @@ test("doctor's view refuses a route whose claude is missing, as the wrapper does
   assert.match(apiRouteReport(noClaude).text, /^on, but the claude command is not installed or not on PATH$/);
   assert.equal(apiRoute({ ...f.env, KIT_API_KEY_FILE: f.keyFile }).problem, null);
 });
+
+test("a call the wrapper refuses is marked refused in the run's status, so kit review refunds it and moves on", async t => {
+  const f = folder(t);
+  const open = join(f.dir, "open-key"); writeFileSync(open, `${secret}\n`); chmodSync(open, 0o644);
+  const root = join(f.dir, "work2"), out = join(f.dir, "out2"), brief = join(f.dir, "brief2.md");
+  mkdirSync(root); mkdirSync(out); writeFileSync(brief, "Review this.\n");
+  const git = (...args: string[]) => { const run = spawnSync("git", ["-C", root, ...args], { encoding: "utf8" }); assert.equal(run.status, 0, run.stderr); };
+  git("init", "-b", "test"); git("-c", "user.name=T", "-c", "user.email=t@t", "commit", "--allow-empty", "-m", "base");
+  const env = { ...f.env, KIT_API_KEY_FILE: open, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "20s", ASE_BUILD_MODEL: "", KIT_TALK_STYLE: "plain" };
+  const run = spawnSync(process.execPath, [resolve("agent-run.mjs"), "build", root, brief, "--out", out, "--cli", "claude", "--model", "claude-haiku-5-5"], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
+  assert.notEqual(run.status, 0);
+  assert.match(run.stdout + run.stderr, /problem: API route: the API key file can be read by others \(mode 644\); run chmod 600 on it/);
+  assert.equal(JSON.parse(readFileSync(join(out, "status.json"), "utf8")).refused, true);
+  assert.deepEqual(f.callList(), []);
+  assert.ok(!existsSync(apiSpendLog(env)), "a refused call adds no spend line");
+});
