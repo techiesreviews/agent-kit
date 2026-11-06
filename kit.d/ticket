@@ -18,7 +18,7 @@ Read (anyone):
 Write (leads only: ORBIT_ROLE=lead; every write takes --dry-run, which prints the exact change and sends nothing):
   create --title T [--description D | --description-file F|-] [--status NAME] [--priority P] [--project KEY]
          [--parent KEY | --no-parent] [--blocked-by KEY,KEY] [--lex-said "<his exact words>"]
-  update <KEY> [--title T] [--description D | --description-file F|-] [--status NAME] [--priority P]
+  update <KEY> [--title T] [--description D | --description-file F|- | --clear-description] [--status NAME] [--priority P]
          [--parent KEY|none] [--blocked-by KEY,KEY|none] [--lex-said "<his exact words>"]
   dates <KEY> [--start DATE] [--due DATE] --source "<where the date comes from>"   or   dates <KEY> --clear
   note <KEY> "<text>"                              a dated line under Notes in the description
@@ -41,7 +41,7 @@ deleted for good; a date needs a source. A plain date YYYY-MM-DD is a whole day 
 are a "Blocked by: KEY-n, KEY-m" line in the description. It reads the latest version first and tries once more on a
 version conflict. Each write adds one line to ~/.local/state/fleet/orbit.log.
 `;
-const setupUsage = `Usage: kit ticket setup [--from-mcp-config [file]] [--from-file file] [--origin address] [--workspace id] [--dry-run]
+const setupUsage = `Usage: kit ticket setup [--from-mcp-config [file]] [--from-file file] [--new-pass] [--origin address] [--workspace id] [--dry-run]
 
 Connects this computer to Orbit. It takes about 5 minutes and you do it once.
 
@@ -59,6 +59,7 @@ If it cannot copy the pass, it asks you to paste the two parts instead. The save
 Other ways to start it:
 --from-file file     reads the token from that file, then deletes the file. If setup stops after that, make a new token in Orbit.
 --from-mcp-config file     copies the pass from that settings file, not from your Claude settings.
+--new-pass           asks for a new Cloudflare pass, when the saved one stopped working.
 --origin address     Orbit's web address, when it cannot be copied.
 --workspace id       the workspace, when the token reaches more than one.
 --dry-run            says what it would do and touches nothing.
@@ -71,18 +72,18 @@ const commands = {
   list: { args: [], flags: ["json"], values: ["project", "status", "parent", "assignee", "q", "limit"] },
   "sub-tasks": { args: ["card key"], flags: ["json"], values: [] },
   create: { args: [], flags: ["dry-run", "no-parent"], values: cardOptions },
-  update: { args: ["card key"], flags: ["dry-run"], values: cardOptions.filter(name => name !== "project") },
+  update: { args: ["card key"], flags: ["dry-run", "clear-description"], values: cardOptions.filter(name => name !== "project") },
   dates: { args: ["card key"], flags: ["dry-run", "clear"], values: ["start", "due", "source"] },
   note: { args: ["card key", "text"], flags: ["dry-run"], values: [] },
   comment: { args: ["card key", "text"], flags: ["dry-run"], values: [] },
   "next-lex": { args: ["card key", "reason"], flags: ["dry-run"], values: [] },
   "clear-next-lex": { args: ["card key"], flags: ["dry-run"], values: [] },
   trash: { args: ["card key"], flags: ["dry-run"], values: ["lex-said"] },
-  setup: { args: [], flags: ["dry-run"], values: ["from-file", "origin", "workspace"], optional: ["from-mcp-config"] },
+  setup: { args: [], flags: ["dry-run", "new-pass"], values: ["from-file", "origin", "workspace"], optional: ["from-mcp-config"] },
 };
 
 function parse(name, words) {
-  const spec = commands[name], found = { flags: {}, rest: [] };
+  const spec = commands[name], found = { flags: Object.create(null), rest: [] };
   for (let index = 0; index < words.length; index++) {
     const word = words[index];
     if (word === "--") { found.rest.push(...words.slice(index + 1)); break; }
@@ -116,16 +117,16 @@ function description(flags) {
 }
 
 // Terminal control characters in card text never reach the screen; a RESULT line is one line.
-const printable = value => String(value ?? "").replace(/[^\P{Cc}\n\t]|[\u202A-\u202E\u2066-\u2069]/gu, "");
+const printable = value => String(value ?? "").replace(/[^\P{Cc}\n\t]|[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu, "");
 const assignees = task => task.assignee_ids?.length ? task.assignee_ids.join(", ") : "none";
-const cardLine = task => `${task.identifier}  [${task.status_name}]  ${task.priority}  assignees: ${assignees(task)}  ${task.title}`;
+const cardLine = task => `${task.identifier}  [${task.status_name}]  ${task.priority}  assignees: ${assignees(task)}  ${String(task.title).replace(/\s*[\r\n]+\s*/g, " ")}`;
 
 // Errors, results and log lines hide all that looks like a secret. Card text on the screen, in --json and in a dry run
 // stays whole apart from real secrets, so a script reading it gets the card's own words.
 let redact = orbitRedactor(), redactCard = orbitCardRedactor();
 const say = line => console.log(redactCard(printable(line)));
-// JSON already escapes control characters.
-const sayJson = value => console.log(redactCard(JSON.stringify(value, null, 2)));
+// JSON escapes only the lowest control characters: the others go out as \\uXXXX too, and parse back to the same text.
+const sayJson = value => console.log(redactCard(JSON.stringify(value, null, 2)).replace(/[\u007F-\u009F\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, mark => `\\u${mark.charCodeAt(0).toString(16).padStart(4, "0")}`));
 function finish(status, message, code = status === "ok" ? 0 : 1) {
   kitResult(status, redact(printable(`ticket ${message}`)).replace(/\s+/g, " "));
   process.exitCode = code;
@@ -182,7 +183,7 @@ async function main() {
   const [key, wording] = rest;
 
   if (name === "setup") {
-    const message = await orbitSetup({ flags: { fromFile: flags["from-file"], fromMcpConfig: flags["from-mcp-config"], origin: flags.origin, workspace: flags.workspace, dryRun: flags["dry-run"] }, say });
+    const message = await orbitSetup({ flags: { fromFile: flags["from-file"], fromMcpConfig: flags["from-mcp-config"], origin: flags.origin, workspace: flags.workspace, dryRun: flags["dry-run"], newPass: flags["new-pass"] }, say });
     return finish("ok", message);
   }
 
@@ -210,7 +211,7 @@ async function main() {
       if (flags.parent !== undefined && flags["no-parent"]) throw new UsageProblem("use --parent or --no-parent, not both");
       return report(name, await store.create({ project: flags.project, title: flags.title, description: description(flags), status: flags.status, priority: flags.priority, parent: flags.parent, noParent: flags["no-parent"], blocked: flags["blocked-by"], lexSaid: flags["lex-said"] }));
     }
-    case "update": return report(name, await store.update(key, { title: flags.title, description: description(flags), status: flags.status, priority: flags.priority, parent: flags.parent, blocked: flags["blocked-by"], lexSaid: flags["lex-said"] }));
+    case "update": return report(name, await store.update(key, { title: flags.title, description: description(flags), clearDescription: flags["clear-description"], status: flags.status, priority: flags.priority, parent: flags.parent, blocked: flags["blocked-by"], lexSaid: flags["lex-said"] }));
     case "dates": return report(name, await store.dates(key, { start: flags.start, due: flags.due, source: flags.source, clear: flags.clear }));
     case "note": return report(name, await store.note(key, wording));
     case "comment": return report(name, await store.comment(key, wording));

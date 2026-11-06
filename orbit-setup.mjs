@@ -169,20 +169,20 @@ export async function orbitSetup({ env = process.env, flags = {}, say, io = term
     }
   }
 
-  // The address comes before the token: a bad one stops here, with a token file still in place.
+  // The address and the pass come before the token: a stop or a slip here leaves a token file in place.
   const origin = orbitOrigin(flags.origin ?? copied?.origin ?? saved?.origin ?? await io.ask("Orbit's web address (like https://orbit.example.com):"));
-  const token = flags.fromFile ? takeTokenFile(flags.fromFile) : await io.askHidden("Paste the Orbit token, then press Enter");
-  if (!looksLikeToken(token)) stop(notAToken);
-  // Once a token file is used it is gone, and Orbit shows a token only once.
-  const after = flags.fromFile ? " The token file is gone, so make a new token in Orbit before running this again." : "";
-
-  let id = copied?.id ?? saved?.cf_access_client_id, secret = copied?.secret ?? saved?.cf_access_client_secret;
+  let id = copied?.id ?? (flags.newPass ? undefined : saved?.cf_access_client_id), secret = copied?.secret ?? (flags.newPass ? undefined : saved?.cf_access_client_secret);
   if (!id) {
     say("Orbit sits behind Cloudflare, so it needs a pass with two parts. Press Enter on both if yours does not.");
     id = await io.askHidden("Paste the Cloudflare pass id");
     secret = await io.askHidden("Paste the Cloudflare pass secret");
   }
-  if (Boolean(id) !== Boolean(secret)) stop(`The Cloudflare pass has two parts and one is missing. Nothing was saved.${after}`);
+  if (Boolean(id) !== Boolean(secret)) stop("The Cloudflare pass has two parts and one is missing. Nothing was saved.");
+
+  const token = flags.fromFile ? takeTokenFile(flags.fromFile) : await io.askHidden("Paste the Orbit token, then press Enter");
+  if (!looksLikeToken(token)) stop(notAToken);
+  // Once a token file is used it is gone, and Orbit shows a token only once.
+  const after = flags.fromFile ? " The token file is gone, so make a new token in Orbit before running this again." : "";
 
   const config = { origin, workspace_id: flags.workspace ?? "", token, ...(id ? { cf_access_client_id: id, cf_access_client_secret: secret } : {}) };
   let me;
@@ -202,7 +202,8 @@ export async function orbitSetup({ env = process.env, flags = {}, say, io = term
   }
   config.workspace_id = workspace.id;
 
-  saveConfig(path, config);
+  try { saveConfig(path, config); }
+  catch { stop(`The setup could not be saved in ${path}: check that the folder can be written.${after}`); }
   say(`Saved in ${path}, private to you.`);
   const expires = me?.token?.expires_at ? `, runs out ${String(me.token.expires_at).slice(0, 10)}` : "";
   say(`Connected to ${workspace.name} with the token named ${me?.token?.name ?? "(no name)"}${expires}.`);

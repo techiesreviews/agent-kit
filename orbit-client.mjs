@@ -123,7 +123,7 @@ export class OrbitError extends Error {
   get staleVersion() { return this.status === 409 && this.code === "conflict"; }
 }
 
-const cloudflareStop = "Cloudflare stopped the request before it reached Orbit (the Cloudflare pass may be wrong or expired). Run: scripts/agents/kit ticket setup";
+const cloudflareStop = "Cloudflare stopped the request before it reached Orbit (the Cloudflare pass may be wrong or expired). Run: scripts/agents/kit ticket setup --new-pass";
 
 function retrySeconds(header) {
   if (!header) return null;

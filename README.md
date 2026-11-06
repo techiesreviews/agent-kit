@@ -127,6 +127,8 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
   or logged. `kit ticket setup` makes it, with a hidden prompt for the token or `--from-file <path>` (read, then
   deleted); `--from-mcp-config [file]` copies the Cloudflare pass from the MCP settings (default `~/.claude.json`) only
   after a yes. `kit ticket setup --help` gives the steps.
+- Only leads write, so an agent the kit starts never inherits `ORBIT_ROLE` (`agent-run.mjs`, `kit ask`): a lead sets it in
+  its own shell for its own `kit ticket` calls.
 - Orbit's public API has no task relations, so blockers are a `Blocked by: KEY-n, KEY-m` line in the description
   (`--blocked-by`). Its docs: `docs/public-api.md` in github.com/coollabsio/orbit.
 
