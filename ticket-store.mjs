@@ -2,9 +2,9 @@
 // `ticketSettings` says which store a project uses (scripts/agents/kit.json: "tickets": "files"|"orbit", default files,
 // and "orbit": { "project": "<KEY>", "parent": "<KEY-n>" }); `orbitStore` is the Orbit side. The markdown side stays in
 // tickets.mjs until kit next, slice, pr and status move here in later stages.
-import { appendFileSync, closeSync, mkdirSync, openSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, mkdirSync, openSync } from "node:fs";
 import { dirname } from "node:path";
-import { OrbitError, orbitCardKey, orbitHoldsSecret } from "./orbit-client.mjs";
+import { OrbitError, orbitBringsSecret, orbitCardKey } from "./orbit-client.mjs";
 
 /** The project's ticket store and its Orbit board: { backend, project, parent }. */
 export function ticketSettings(settings = {}) {
@@ -151,7 +151,8 @@ export function withNote(description, date, who, text) {
   return lines.join("\n");
 }
 
-const ticks = description => split(description).filter(line => tick.test(line)).length;
+/** The ticked "Scheduled in Radaar" lines, spacing and letter case aside. */
+const ticked = description => split(description).filter(line => tick.test(line)).map(line => line.trim().replace(/\s+/g, " ").toLowerCase());
 const amsterdamToday = () => { const now = zoneParts(Date.now()); return `${now.year}-${now.month}-${now.day}`; };
 const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 const sameTime = (a, b) => (a && b) ? Date.parse(a) === Date.parse(b) : same(a, b);
@@ -196,6 +197,7 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
     try {
       mkdirSync(dirname(logPath), { recursive: true, mode: 0o700 });
       closeSync(openSync(logPath, "a", 0o600));
+      chmodSync(logPath, 0o600);
     } catch { throw new OrbitError(`the write log ${logPath} cannot be written, so nothing was sent`); }
   };
   const logLine = ({ card, action, fields, result, lexSaid }) => {
@@ -220,7 +222,7 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
 
   /** Refuses a text that brings a secret onto a card; a card that already held such a text can still be edited. */
   const refuseSecrets = (text, before = "") => {
-    if (text !== undefined && orbitHoldsSecret(text, secrets) && !orbitHoldsSecret(before ?? "", secrets)) throw new OrbitError("that text holds a secret (an Orbit token or the Cloudflare pass), so it was not sent; take it out");
+    if (text !== undefined && orbitBringsSecret(text, before, secrets)) throw new OrbitError("that text holds a secret (an Orbit token or the Cloudflare pass), so it was not sent; take it out");
   };
   const needsWords = (lexSaid, what) => {
     if (!oneLine(lexSaid)) throw new OrbitError(`${what} ${words}: add --lex-said "<his exact words>"`);
@@ -233,8 +235,34 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       const target = (await statusesOf(projectId)).find(status => status.id === change.status_id);
       if (/publish/i.test(target?.name ?? "")) needsWords(lexSaid, `moving a card to ${target.name}`);
     }
-    if (change.description !== undefined && ticks(change.description) > ticks(before?.description)) needsWords(lexSaid, 'ticking "Scheduled in Radaar"');
+    if (change.description !== undefined) {
+      const old = new Set(ticked(before?.description));
+      if (ticked(change.description).some(line => !old.has(line))) needsWords(lexSaid, 'ticking "Scheduled in Radaar"');
+    }
   };
+
+  /**
+   * Runs `attempt` on the latest version, a second time after a stale version and never a third. A write Orbit refused
+   * as stale has its log line once the outcome is known: the retry's own, or a failure when the retry stops first.
+   */
+  async function onLatest(attempt) {
+    let refused = null;
+    const send = async (entry, call) => {
+      refused = null;
+      try { return await sent(entry, call); }
+      catch (error) { if (error?.staleVersion) refused = entry; throw error; }
+    };
+    try {
+      for (let round = 1; ; round++) {
+        try { return await attempt(send); }
+        catch (error) { if (!error?.staleVersion || round === 2) throw error; }
+      }
+    } catch (error) {
+      if (refused) logFailure({ ...refused, result: "fail:conflict" });
+      if (error?.staleVersion) throw new OrbitError(`${refused?.card ?? "The card"} changed again while saving, so nothing was saved; read the card and try again`, { status: 409, code: "conflict" });
+      throw error;
+    }
+  }
 
   /** Runs one change on the latest version: `build` makes the new fields from the card as it is now. */
   async function changeCard(action, rawKey, build, { replaces = [], lexSaid } = {}) {
@@ -242,7 +270,7 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
     requireLead();
     checkLog();
     let first;
-    for (let attempt = 1; ; attempt++) {
+    return onLatest(async send => {
       const task = await client.task(key);
       first ??= task;
       for (const field of replaces) {
@@ -255,17 +283,9 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       await guard(task, change, task.project_id, lexSaid);
       const body = { expected_version: task.version, ...change };
       if (dryRun) return { key: task.identifier, action, task, dry: { method: "PATCH", path: client.pathOf.task(task.identifier), body } };
-      try {
-        const saved = await sent({ card: task.identifier, action, fields, lexSaid }, () => client.patchTask(task.identifier, body));
-        return { key: saved.identifier, action, fields, task: saved };
-      } catch (error) {
-        if (!(error instanceof OrbitError) || !error.staleVersion) throw error;
-        if (attempt === 2) {
-          logFailure({ card: task.identifier, action, fields, result: "fail:conflict", lexSaid });
-          throw new OrbitError(`${task.identifier} changed again while saving, so nothing was saved; read the card and try again`, { status: 409, code: "conflict" });
-        }
-      }
-    }
+      const saved = await send({ card: task.identifier, action, fields, lexSaid }, () => client.patchTask(task.identifier, body));
+      return { key: saved.identifier, action, fields, task: saved };
+    });
   }
 
   const blockers = value => value === "none" ? [] : [...new Set(String(value).split(/[\s,]+/).filter(Boolean).map(orbitCardKey))];
@@ -277,7 +297,12 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
     /** A card with what the kit reads from it: status name, next step and blockers. */
     async read(key) {
       const task = await client.task(orbitCardKey(key));
-      const parent_key = task.parent_task_id ? (await client.task(task.parent_task_id)).identifier : null;
+      let parent_key = null;
+      if (task.parent_task_id) {
+        // A parent this token cannot read does not hide the card: its id still shows.
+        try { parent_key = (await client.task(task.parent_task_id)).identifier; }
+        catch (error) { if (![403, 404].includes(error?.status)) throw error; }
+      }
       return { ...task, status_name: await statusName(task), blocked_by: blockedBy(task.description), next_lex: nextLexReason(task.description), parent_key };
     },
     comments: key => client.comments(orbitCardKey(key)),
@@ -377,22 +402,13 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       const key = orbitCardKey(rawKey);
       requireLead();
       checkLog();
-      for (let attempt = 1; ; attempt++) {
+      return onLatest(async send => {
         const task = await client.task(key);
         const { items } = await client.tasks({ parent_task_id: task.identifier });
-        const entry = { card: task.identifier, action: "trash", fields: ["trash"], lexSaid };
         if (dryRun) return { key: task.identifier, action: "trash", subTasks: items.length, dry: { method: "DELETE", path: `${client.pathOf.task(task.identifier)}?expected_version=${task.version}` } };
-        try {
-          await sent(entry, () => client.trashTask(task.identifier, task.version));
-          return { key: task.identifier, action: "trash", subTasks: items.length, task };
-        } catch (error) {
-          if (!(error instanceof OrbitError) || !error.staleVersion) throw error;
-          if (attempt === 2) {
-            logFailure({ ...entry, result: "fail:conflict" });
-            throw new OrbitError(`${task.identifier} changed again while saving, so nothing was saved; read the card and try again`, { status: 409, code: "conflict" });
-          }
-        }
-      }
+        await send({ card: task.identifier, action: "trash", fields: ["trash"], lexSaid }, () => client.trashTask(task.identifier, task.version));
+        return { key: task.identifier, action: "trash", subTasks: items.length, task };
+      });
     },
   };
 }
