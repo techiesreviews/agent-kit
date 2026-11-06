@@ -218,15 +218,17 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
     return answer;
   };
 
-  const refuseSecrets = (...texts) => {
-    if (texts.some(text => text !== undefined && orbitHoldsSecret(text, secrets))) throw new OrbitError("that text holds a secret (an Orbit token or the Cloudflare pass), so it was not sent; take it out");
+  /** Refuses a text that brings a secret onto a card; a card that already held such a text can still be edited. */
+  const refuseSecrets = (text, before = "") => {
+    if (text !== undefined && orbitHoldsSecret(text, secrets) && !orbitHoldsSecret(before ?? "", secrets)) throw new OrbitError("that text holds a secret (an Orbit token or the Cloudflare pass), so it was not sent; take it out");
   };
   const needsWords = (lexSaid, what) => {
     if (!oneLine(lexSaid)) throw new OrbitError(`${what} ${words}: add --lex-said "<his exact words>"`);
   };
   /** The two moves only Lex may order: into a Publish status, and ticking "Scheduled in Radaar". */
   const guard = async (before, change, projectId, lexSaid) => {
-    refuseSecrets(change.title, change.description);
+    refuseSecrets(change.title, before?.title);
+    refuseSecrets(change.description, before?.description);
     if (change.status_id && change.status_id !== before?.status_id) {
       const target = (await statusesOf(projectId)).find(status => status.id === change.status_id);
       if (/publish/i.test(target?.name ?? "")) needsWords(lexSaid, `moving a card to ${target.name}`);
@@ -275,7 +277,8 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
     /** A card with what the kit reads from it: status name, next step and blockers. */
     async read(key) {
       const task = await client.task(orbitCardKey(key));
-      return { ...task, status_name: await statusName(task), blocked_by: blockedBy(task.description), next_lex: nextLexReason(task.description) };
+      const parent_key = task.parent_task_id ? (await client.task(task.parent_task_id)).identifier : null;
+      return { ...task, status_name: await statusName(task), blocked_by: blockedBy(task.description), next_lex: nextLexReason(task.description), parent_key };
     },
     comments: key => client.comments(orbitCardKey(key)),
     /** The cards of one board, or of every board the token reaches with project "all". */
