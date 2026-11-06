@@ -911,6 +911,17 @@ test("setup says when the settings cannot be read after a yes, then asks for the
   assert.equal(JSON.parse(readFileSync(configPath, "utf8")).cf_access_client_secret, fakeCfSecret);
 });
 
+test("a no to a different address keeps the saved pass too, so nothing of that other connection is used", async t => {
+  const { home, run, configPath, orbit } = await fixture(t);
+  const mcp = join(home, "other-mcp.json");
+  writeFileSync(mcp, JSON.stringify({ mcpServers: { orbit: { url: "https://elsewhere.example.test/mcp", headers: { "CF-Access-Client-Id": "other-id", "CF-Access-Client-Secret": "other-secret" } } } }));
+  const secret = join(home, "secret-box");
+  writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
+  ok(await run(["setup", "--from-file", secret, "--from-mcp-config", mcp], {}, "yes\nyes\nno\n"));
+  assert.equal(JSON.parse(readFileSync(configPath, "utf8")).cf_access_client_id, fakeCfId);
+  assert.equal(orbit.requests.at(-1)!.headers["cf-access-client-id"], fakeCfId);
+});
+
 test("setup warns about a read-only token and asks which workspace when there are several", async t => {
   const { home, run, orbit, configPath } = await fixture(t);
   rmSync(configPath);
@@ -1227,7 +1238,13 @@ test("replacing a dated card's description keeps its Planned dates line, so no d
   // A dates line without a source is not a way round the rule.
   const writes = orbit.writes().length;
   refused(await run(["update", "TOOLS-1", "--description", "Mine\n\nPlanned dates: due 2026-11-30"]), /source/);
+  orbit.addTask(orbit.tools, { description: "No dates" });
+  refused(await run(["update", "TOOLS-2", "--description", "Planned dates: due 2026-11-30"]), /source/);
+  refused(await run(["create", "--title", "x", "--description", "Planned dates: due 2026-11-30"]), /source/);
   assert.equal(orbit.writes().length, writes);
+  // A line that was already on the card is not stopped by this rule.
+  const old = orbit.addTask(orbit.tools, { description: "Planned dates: spring" });
+  ok(await run(["note", old.identifier, "fine"]));
 });
 
 test("replacing a description keeps the next step and blockers; their own commands take them out", async t => {
@@ -1242,12 +1259,22 @@ test("replacing a description keeps the next step and blockers; their own comman
   ok(await run(["update", "TOOLS-1", "--blocked-by", "none"]));
   ok(await run(["clear-next-lex", "TOOLS-1"]));
   assert.equal(task.description, "Text");
+  // Its own next step stays first when blockers are carried over.
+  const own = orbit.addTask(orbit.tools, { description: "Next step (Lex): old\n\nBlocked by: TOOLS-9\n\nOld" });
+  ok(await run(["update", own.identifier, "--description", "Next step (Lex): new\n\nBody"]));
+  assert.equal(own.description, "Next step (Lex): new\n\nBlocked by: TOOLS-9\n\nBody");
   // A Blocked by line in ordinary words comes over exactly as it was written.
   const worded = orbit.addTask(orbit.tools, { description: "Blocked by: legal team, tools-3\n\nOld" });
-  ok(await run(["update", "TOOLS-2", "--description", "New"]));
+  ok(await run(["update", worded.identifier, "--description", "New"]));
   assert.equal(worded.description, "Blocked by: legal team, tools-3\n\nNew");
   // Emptying such a card leaves those lines, and the refusal of a blank text says so.
-  refused(await run(["update", "TOOLS-2", "--description", ""]), /next step, blockers and dates line stay/);
+  refused(await run(["update", worded.identifier, "--description", ""]), /next step, blockers and dates line stay/);
+});
+
+test("create --blocked-by never drops other words on a Blocked by line in its text", async t => {
+  const { orbit, run } = await fixture(t);
+  refused(await run(["create", "--title", "x", "--description", "Blocked by: legal team", "--blocked-by", "TOOLS-1"]), /legal, team/);
+  assert.equal(orbit.writes().length, 0);
 });
 
 test("list --parent with a status name reads the status on the parent's own board", async t => {

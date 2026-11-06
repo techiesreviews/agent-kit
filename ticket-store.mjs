@@ -133,13 +133,16 @@ function keepingKitLines(text, task) {
   if (task.due_at && !has(body, plannedLine)) {
     const planned = split(task.description).find(line => plannedLine.test(line.trim()));
     if (planned) body = withPlannedDates(body, planned.trim());
-  } else if (task.due_at && split(body).some(line => plannedLine.test(line.trim()) && !line.includes("(source:"))) {
-    throw new OrbitError('this card has dates, so its Planned dates line needs its source: end the line with (source: <where the date comes from>)');
   }
   if (!has(body, blockedLine)) {
     // Carried as written: the line can hold ordinary words as well as card keys.
     const old = split(task.description).filter(line => blockedLine.test(line.trim())).map(line => line.trim());
-    if (old.length) body = `${old.join("\n")}${body ? `\n\n${body}` : ""}`;
+    if (old.length) {
+      // Under the text's own next step, if it has one, which stays the first line.
+      const own = nextLexReason(body), rest = withoutNextLex(body);
+      body = `${old.join("\n")}${rest ? `\n\n${rest}` : ""}`;
+      if (own !== null) body = withNextLex(body, own);
+    }
   }
   const reason = nextLexReason(task.description);
   return reason !== null && nextLexReason(body) === null ? withNextLex(body, reason) : body;
@@ -278,6 +281,11 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       if (/publish/i.test(target?.name ?? "")) needsWords(lexSaid, `moving a card to ${target.name}`);
     }
     if (change.description !== undefined) {
+      // No date without a source: a Planned dates line this change brings must name one.
+      const had = split(before?.description).map(line => line.trim());
+      if (split(change.description).some(line => plannedLine.test(line.trim()) && !line.includes("(source:") && !had.includes(line.trim()))) {
+        throw new OrbitError("a Planned dates line needs its source: end the line with (source: <where the date comes from>)");
+      }
       // Counted per text: a second identical line ticked is a new tick too.
       const old = ticked(before?.description);
       if (ticked(change.description).some(line => { const index = old.indexOf(line); if (index < 0) return true; old.splice(index, 1); return false; })) needsWords(lexSaid, 'ticking "Scheduled in Radaar"');
@@ -387,6 +395,7 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       checkLog();
       const board = await projectFrom(project);
       const body = { project_id: board.id, status_id: (status === undefined ? await firstOpenStatus(board.id) : await statusByName(board.id, status)).id, title: oneLine(title) };
+      if (blocked !== undefined && otherBlockedWords(description).length) throw new OrbitError(`the Blocked by line also says: ${otherBlockedWords(description).join(", ")}; keep it in the text without --blocked-by, so these words are not lost`);
       const text = blocked === undefined ? description : withBlockedBy(description, blockers(blocked));
       if (text !== undefined) body.description = text;
       if (priority !== undefined) body.priority = priority;
