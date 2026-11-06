@@ -81,22 +81,25 @@ if (options.script) {
 }
 
 // The call runs in an empty folder so no project's CLAUDE.md or settings reach it.
+const seconds = process.env.KIT_ASK_TIMEOUT === undefined ? 600 : Number(process.env.KIT_ASK_TIMEOUT);
+if (!Number.isInteger(seconds) || seconds < 1) done("fail", `KIT_ASK_TIMEOUT must be a whole number of seconds, 1 or more, not ${process.env.KIT_ASK_TIMEOUT}`, 2);
 const empty = mkdtempSync(join(tmpdir(), "kit-ask-"));
 let run;
 try {
   run = spawnSync(claudeCommand(), ["-p", "--model", model, "--output-format", "json", "--tools", ""], {
     cwd: empty, input, encoding: "utf8", env: process.env, maxBuffer: 64 * 1024 * 1024,
-    timeout: (Number(process.env.KIT_ASK_TIMEOUT) || 600) * 1000, killSignal: "SIGKILL" });
+    timeout: seconds * 1000, killSignal: "SIGKILL" });
 } finally { rmSync(empty, { recursive: true, force: true }); }
 const stdout = run.stdout ?? "", stderr = run.stderr ?? "";
 recordApiSpend({ command: "ask", model, stdout, status: run.status ?? 1, refused: /^claude-api-run: /m.test(stderr) });
 let result = null;
 try { result = JSON.parse(stdout); } catch { /* Not JSON: handled below. */ }
-if (run.error?.code === "ETIMEDOUT") done("fail", `claude did not answer within ${Number(process.env.KIT_ASK_TIMEOUT) || 600} seconds`);
-if (run.status !== 0 || !result || result.is_error || typeof result.result !== "string") {
+if (run.error?.code === "ETIMEDOUT") done("fail", `claude did not answer within ${seconds} seconds`);
+if (run.status !== 0 || !result || result.is_error || typeof result.result !== "string" || !result.result.trim()) {
   const problem = apiRouteProblem(stdout, stderr);
   if (problem) done("fail", problem.replace(/^problem: /, ""));
   const said = (result?.is_error && typeof result.result === "string" ? result.result : stderr.trim().split("\n").at(-1) ?? "").slice(0, 200);
+  if (run.status === 0 && result && !result.is_error && typeof result.result === "string") done("fail", "claude returned an empty answer (the call was paid for and logged); nothing was written");
   done("fail", `claude failed (${run.status ?? run.error?.code ?? "no exit"})${said ? `: ${said}` : ""}`);
 }
 
