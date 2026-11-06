@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // kit: one headless Claude call on the API credit route (for writing), with a script mode that adds Lex's script rules
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -48,7 +48,7 @@ if (route.problem) done("fail", route.problem);
 
 // The output folder is made before the paid call, so a bad --out costs nothing.
 if (options.out) {
-  try { mkdirSync(dirname(resolve(options.out)), { recursive: true }); }
+  try { mkdirSync(dirname(resolve(options.out)), { recursive: true }); accessSync(dirname(resolve(options.out)), constants.W_OK); }
   catch (error) { done("fail", `cannot make the folder for ${resolve(options.out)} (${error.code ?? "error"}); nothing was sent`); }
 }
 let prompt;
@@ -64,15 +64,20 @@ if (options.script) {
   const read = path => { try { return readFileSync(path, "utf8"); } catch { return missing(`${path} cannot be read`); } };
   const agentsPath = join(root, "AGENTS.md"), scriptsPath = join(root, "shared/taste/scripts.md");
   const agents = read(agentsPath), scripts = read(scriptsPath).split("\n");
+  if (!agents.trim()) missing(`${agentsPath} is blank`);
   const start = scripts.findIndex(line => /^#+\s+Current script and prompter playbook\s*$/.test(line));
   if (start < 0) missing(`${scriptsPath} has no "Current script and prompter playbook" section`);
   const level = scripts[start].match(/^#+/)[0].length;
-  let end = scripts.length, fenced = false;
+  // A fence closes only on the same character, at least as long as the one that opened it.
+  let end = scripts.length, fence = null;
   for (let i = start + 1; i < scripts.length; i++) {
-    if (/^\s{0,3}(```|~~~)/.test(scripts[i])) fenced = !fenced;
-    else if (!fenced && new RegExp(`^#{1,${level}}\\s`).test(scripts[i])) { end = i; break; }
+    const opened = /^\s{0,3}(`{3,}|~{3,})/.exec(scripts[i])?.[1];
+    if (opened && !fence) fence = opened;
+    else if (opened && fence && opened[0] === fence[0] && opened.length >= fence.length && !scripts[i].replace(/^\s{0,3}[`~]+/, "").trim()) fence = null;
+    else if (!fence && new RegExp(`^#{1,${level}}\\s`).test(scripts[i])) { end = i; break; }
   }
   const playbook = scripts.slice(start, end).join("\n").trimEnd();
+  if (!scripts.slice(start + 1, end).join("").trim()) missing(`${scriptsPath} has a "Current script and prompter playbook" heading with nothing under it`);
   input = [
     "You are writing a script for Lex. Follow the rules below exactly; they come from his own files.",
     `=== ${agentsPath} ===`, agents.trimEnd(),
@@ -100,7 +105,8 @@ try { result = JSON.parse(stdout); } catch { /* Not JSON: handled below. */ }
 if (run.error?.code === "ETIMEDOUT") done("fail", `claude did not answer within ${seconds} seconds`);
 if (run.status !== 0 || !result || result.is_error || typeof result.result !== "string" || !result.result.trim()) {
   const problem = apiRouteProblem(stdout, stderr);
-  if (problem) done("fail", problem.replace(/^problem: /, ""));
+  // kit ask only runs with the route on, so "unset the switch" is no advice here: its own words for an empty account.
+  if (problem) done("fail", problem.replace(/^problem: /, "").replace(/; unset KIT_API_KEY_FILE to go back to the subscription$/, "; add credit to the API account, or run this another way"));
   const said = (result?.is_error && typeof result.result === "string" ? result.result : stderr.trim().split("\n").at(-1) ?? "").slice(0, 200);
   if (run.status === 0 && result && !result.is_error && typeof result.result === "string") done("fail", "claude returned an empty answer (the call was paid for and logged); nothing was written");
   done("fail", `claude failed (${run.status ?? run.error?.code ?? "no exit"})${said ? `: ${said}` : ""}`);
