@@ -63,6 +63,8 @@ kit_settings_problems() {
           "\"orbit.project\" must be an Orbit project key in scripts/agents/kit.json, like \"TOOLS\"" else empty end),
         (if (.orbit | type) == "object" and (.orbit | has("parent")) and ((.orbit.parent | type) != "string" or (.orbit.parent | test("^[A-Za-z][A-Za-z0-9_]*-[0-9]+$") | not)) then
           "\"orbit.parent\" must be a card key in scripts/agents/kit.json, like \"TOOLS-10\"" else empty end),
+        (if (.orbit | type) == "object" and (.orbit | has("parent")) and (.orbit | has("project") | not) then
+          "\"orbit.parent\" needs \"orbit.project\" in scripts/agents/kit.json" else empty end),
         (if .tickets == "orbit" and ((.orbit | type) != "object" or (.orbit | has("project") | not)) then
           "\"tickets\": \"orbit\" needs \"orbit\": { \"project\": \"<KEY>\" } in scripts/agents/kit.json" else empty end)
       end)
