@@ -1251,28 +1251,29 @@ test("doctor warns once per piece kit init would add today, also when quiet, nev
   const sha = git(repo, "rev-parse", "--short", "HEAD");
   const fix = 'fix: run scripts/agents/kit init (or name it in "init.skip" in scripts/agents/kit.json to keep it out)';
   const warnings = [`✗ setup: missing since kit ${sha}: AGENTS.md kit --help (the line naming scripts/agents/kit --help); ${fix}`,
+    `✗ setup: missing since kit ${sha}: AGENTS.md section "Review loop" (the line naming section "Review loop"); ${fix}`,
     `✗ setup: missing since kit ${sha}: AGENTS.md Messages to Lex (the Messages to Lex section); ${fix}`,
     `✗ setup: missing since kit ${sha}: .gitattributes (the line "* text=auto eol=lf"); ${fix}`];
   const passed = "RESULT: ok doctor 11/11 checks passed";
   const run = f.run();
   assert.equal(run.status, 0, run.stdout + run.stderr);
   assert.deepEqual(run.stdout.split("\n").filter(line => line.startsWith("✗ setup: ")), warnings);
-  assert.equal(run.stdout.trimEnd().split("\n").at(-1), `${passed}; warning: 3 setup pieces missing (run scripts/agents/kit init)`);
+  assert.equal(run.stdout.trimEnd().split("\n").at(-1), `${passed}; warning: 4 setup pieces missing (run scripts/agents/kit init)`);
   const quiet = f.run(["--quiet"]);
-  assert.equal(quiet.stdout, `${warnings.join("\n")}\n${passed}; warning: 3 setup pieces missing (run scripts/agents/kit init)\n`);
+  assert.equal(quiet.stdout, `${warnings.join("\n")}\n${passed}; warning: 4 setup pieces missing (run scripts/agents/kit init)\n`);
   // With the pieces added the warnings go.
   writeFileSync(join(f.build, ".gitattributes"), "* text=auto eol=lf\n");
-  writeFileSync(join(f.build, "AGENTS.md"), "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\n\n## Messages to Lex\n- Question first.\n");
+  writeFileSync(join(f.build, "AGENTS.md"), "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\nReview loop: `scripts/agents/kit rulebook`, section \"Review loop\" (3 fix rounds, 5 only for risk; stop when only nits are left; one reviewer; a findings ledger in the PR).\n\n## Messages to Lex\n- Question first.\n");
   assert.equal(f.run(["--quiet"]).stdout, `${passed}\n`);
   // A Messages to Lex section older than the rulebook's is a warning too, and goes once it is brought up to date.
-  const lines = "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\n";
+  const lines = "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\nReview loop: `scripts/agents/kit rulebook`, section \"Review loop\" (3 fix rounds, 5 only for risk; stop when only nits are left; one reviewer; a findings ledger in the PR).\n";
   writeFileSync(join(f.build, "AGENTS.md"), `${lines}\n## Messages to Lex\n<!-- messages-to-lex:start v0 -->\n- Old.\n<!-- messages-to-lex:end -->\n`);
   const stale = f.run(["--quiet"]);
   assert.equal(stale.stdout, `✗ setup: outdated since kit ${sha}: AGENTS.md Messages to Lex (older than the rulebook's); fix: run scripts/agents/kit init (or name it in "init.skip" in scripts/agents/kit.json to keep this copy as it is)\n${passed}; warning: 1 setup piece out of date (run scripts/agents/kit init)\n`);
   // Missing and out of date together: one summary line counts both.
   writeFileSync(join(f.build, "AGENTS.md"), `# Agents\n\nKitchen rulebook: \`scripts/agents/kit rulebook\`.\n\n## Messages to Lex\n<!-- messages-to-lex:start v0 -->\n- Old.\n<!-- messages-to-lex:end -->\n`);
   const both = f.run(["--quiet"]);
-  assert.match(both.stdout, /warning: 1 setup piece missing, 1 setup piece out of date \(run scripts\/agents\/kit init\)\n$/);
+  assert.match(both.stdout, /warning: 2 setup pieces missing, 1 setup piece out of date \(run scripts\/agents\/kit init\)\n$/);
   rmSync(join(f.build, ".gitattributes"));
   writeFileSync(join(f.build, "AGENTS.md"), "# Agents\n");
   const settings = join(agents, "kit.json"), kept = JSON.parse(readFileSync(settings, "utf8"));
