@@ -529,8 +529,10 @@ if [[ -n ${KIT_API_KEY_FILE:-} || $quiet == false ]]; then
     case $api_state in
       off) printf 'api route: %s\n' "$api_text" ;;
       ok) pass "api route" "$api_text" ;;
-      *) fail "api route" "$api_text" "make KIT_API_KEY_FILE name a file with mode 600 holding one line, the key, or unset KIT_API_KEY_FILE to turn the route off" ;;
+      *) fail "api route" "$api_text" "make KIT_API_KEY_FILE name a file (absolute path) with mode 600 holding one line, the key, or unset KIT_API_KEY_FILE to turn the route off" ;;
     esac
+  elif [[ -n ${KIT_API_KEY_FILE:-} ]]; then
+    fail "api route" "on, but doctor could not read the route's state (Node >=24 or api-route.mjs missing)" "install Node 24, or unset KIT_API_KEY_FILE to turn the route off"
   fi
 fi
 
