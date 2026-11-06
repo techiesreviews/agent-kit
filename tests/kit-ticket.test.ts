@@ -925,6 +925,29 @@ test("a no to a different address keeps the saved pass too, so nothing of that o
   assert.equal(orbit.requests.at(-1)!.headers["cf-access-client-id"], fakeCfId);
 });
 
+test("setup never sends a copied pass to an address other than its own without asking", async t => {
+  const { home, run, orbit, configPath } = await fixture(t);
+  rmSync(configPath);
+  const mcp = join(home, "other-mcp.json");
+  writeFileSync(mcp, JSON.stringify({ mcpServers: { orbit: { url: "https://elsewhere.example.test/mcp", headers: { "CF-Access-Client-Id": "other-id", "CF-Access-Client-Secret": "other-secret" } } } }));
+  const secret = join(home, "secret-box");
+  writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
+  // yes to copying, no to the other address, then the two parts of this address's own pass.
+  const said = ok(await run(["setup", "--origin", orbit.origin, "--from-file", secret, "--from-mcp-config", mcp], {}, `yes\nno\n${fakeCfId}\n${fakeCfSecret}\n`));
+  assert.match(said.stderr, /elsewhere\.example\.test/);
+  assert.ok(!orbit.requests.some(item => item.headers["cf-access-client-id"] === "other-id"));
+  assert.equal(JSON.parse(readFileSync(configPath, "utf8")).cf_access_client_id, fakeCfId);
+});
+
+test("setup --new-pass with a declined address says only what it keeps", async t => {
+  const { home, run, orbit, configPath } = await fixture(t);
+  const mcp = fakeMcpSettings(home, "https://elsewhere.example.test");
+  const said = ok(await run(["setup", "--new-pass", "--from-mcp-config", mcp], {}, `yes\nyes\nno\n${fakeCfId}\n${fakeCfSecret}\n\n`));
+  assert.match(said.all, /Keeping the saved address\./);
+  assert.ok(!said.all.includes("address and pass"));
+  assert.equal(JSON.parse(readFileSync(configPath, "utf8")).origin, orbit.origin);
+});
+
 test("setup warns about a read-only token and asks which workspace when there are several", async t => {
   const { home, run, orbit, configPath } = await fixture(t);
   rmSync(configPath);
@@ -1122,7 +1145,7 @@ test("the screen and --json keep ordinary card text whole; only real secrets and
 test("every way of writing the Radaar tick counts: spacing, emphasis, quote marks and links", async t => {
   const { orbit, run } = await fixture(t);
   orbit.addTask(orbit.tools, { description: "- [ ] Scheduled in Radaar" });
-  for (const text of ["- [x] Scheduled  in Radaar", "- [x] **Scheduled** in Radaar", "> - [x] Scheduled in Radaar", "- [x] [Scheduled in Radaar](https://example.test)", "  * [X] _scheduled in radaar_", "[x] Scheduled in Radaar", "- [x] Scheduled in [Radaar](https://example.test)", "- - [x] Scheduled in Radaar", "- [x] Scheduled in [Radaar][r]", "- [x] <b>Scheduled</b> in Radaar", "- [x] Scheduled in\n  Radaar", "- [x] Scheduled&nbsp;in Radaar", "- [x] Scheduled in\nRadaar", "> - [x] Scheduled in\n>   Radaar", "- [x] &#83;cheduled in Radaar", "- [x] Schedu&#x6C;ed in Radaar"]) {
+  for (const text of ["- [x] Scheduled  in Radaar", "- [x] **Scheduled** in Radaar", "> - [x] Scheduled in Radaar", "- [x] [Scheduled in Radaar](https://example.test)", "  * [X] _scheduled in radaar_", "[x] Scheduled in Radaar", "- [x] Scheduled in [Radaar](https://example.test)", "- - [x] Scheduled in Radaar", "- [x] Scheduled in [Radaar][r]", "- [x] <b>Scheduled</b> in Radaar", "- [x] Scheduled in\n  Radaar", "- [x] Scheduled&nbsp;in Radaar", "- [x] Scheduled in\nRadaar", "> - [x] Scheduled in\n>   Radaar", "- [x] &#83;cheduled in Radaar", "- [x] Schedu&#x6C;ed in Radaar", "- [x]\n  Scheduled in Radaar"]) {
     refused(await run(["update", "TOOLS-1", "--description", text]), /--lex-said/);
   }
   assert.equal(orbit.writes().length, 0);
@@ -1314,6 +1337,13 @@ test("Retry-After as a date is honoured too: a near one waits once, a far one is
   orbit.controls.answers.push({ retryAfter: new Date(Date.now() + 3_600_000).toUTCString() });
   refused(await run(["get", "TOOLS-1"]), /wait \d+ seconds/);
   assert.equal(orbit.requests.length, 1);
+});
+
+test("kit lines under a ticked line stay outside the tick, so dates and blockers can still change", async t => {
+  const { orbit, run } = await fixture(t);
+  const task = orbit.addTask(orbit.tools, { description: "- [x] Scheduled in Radaar\nPlanned dates: due 2026-12-01 (source: a)" });
+  ok(await run(["dates", "TOOLS-1", "--due", "2026-12-02", "--source", "b"]));
+  assert.match(task.description, /due 2026-12-02/);
 });
 
 test("a blank --parent never drops the board's default parent", async t => {
