@@ -106,7 +106,7 @@ test("a key file others can read, an empty one or a missing one stops the call i
 test("each run adds one line to the spend log with the tokens and cost the CLI printed, and never a secret", t => {
   const f = folder(t);
   const env = { ...f.env, KIT_API_KEY_FILE: f.keyFile };
-  const stdout = JSON.stringify({ usage: { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 7, cache_creation_input_tokens: 3 }, total_cost_usd: 0.05 });
+  const stdout = JSON.stringify({ usage: { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 7, cache_creation_input_tokens: 3 }, total_cost_usd: 0.05, result: "done" });
   recordApiSpend({ env, command: "review", model: "claude-opus-5-5", stdout, status: 0 });
   recordApiSpend({ env, command: "build", model: "claude-opus-5-5", stdout: "not json", status: 1 });
   const log = readFileSync(apiSpendLog(env), "utf8");
@@ -127,7 +127,7 @@ test("kit doctor says whether the route is off or on, the key file's mode and th
   const off = doctor();
   assert.match(off.stdout, /^api route: off \(headless Claude calls use the subscription; KIT_API_KEY_FILE turns the API route on\)$/m, off.stdout);
   assert.doesNotMatch(doctor({}, ["--quiet"]).stdout, /api route/, "quiet doctor stays quiet while the route is off");
-  recordApiSpend({ env: { ...f.env, KIT_API_KEY_FILE: f.keyFile }, command: "review", model: "claude-opus-5-5", stdout: JSON.stringify({ usage: { input_tokens: 1000, output_tokens: 200 }, total_cost_usd: 1.5 }), status: 0 });
+  recordApiSpend({ env: { ...f.env, KIT_API_KEY_FILE: f.keyFile }, command: "review", model: "claude-opus-5-5", stdout: JSON.stringify({ result: "done", usage: { input_tokens: 1000, output_tokens: 200 }, total_cost_usd: 1.5 }), status: 0 });
   const on = doctor({ KIT_API_KEY_FILE: f.keyFile });
   assert.match(on.stdout, new RegExp(`^✓ api route: on: key file ${f.keyFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\(mode 600\\), config folder ${f.home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/\\.claude-api; 1 run logged, \\$1\\.50 spent, 1000 tokens in, 200 out$`, "m"), on.stdout);
   assert.ok(!on.stdout.includes(secret) && !on.stderr.includes(secret));
@@ -200,7 +200,7 @@ test("a refused key file or an empty API account becomes one plain problem line,
 test("the spend total says when runs printed no cost, and skips log rows that are not records", t => {
   const f = folder(t);
   const env = { ...f.env, KIT_API_KEY_FILE: f.keyFile };
-  recordApiSpend({ env, command: "review", model: "m", stdout: JSON.stringify({ total_cost_usd: 2, usage: { input_tokens: 5, output_tokens: 1 } }), status: 0 });
+  recordApiSpend({ env, command: "review", model: "m", stdout: JSON.stringify({ result: "done", total_cost_usd: 2, usage: { input_tokens: 5, output_tokens: 1 } }), status: 0 });
   recordApiSpend({ env, command: "build", model: "m", stdout: "", status: 124 });
   writeFileSync(apiSpendLog(env), `${readFileSync(apiSpendLog(env), "utf8")}null\n42\n`);
   assert.equal(apiSpendTotal(env).unknownCost, 1);
@@ -297,4 +297,19 @@ test("only a failed claude call with the wrapper's refusal is marked refused: a 
   const run = spawnSync(process.execPath, [resolve("agent-run.mjs"), "build", root, brief, "--out", out, "--cli", "claude", "--model", "claude-haiku-5-5"], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
   assert.equal(run.status, 0, run.stdout + run.stderr);
   assert.notEqual(JSON.parse(readFileSync(join(out, "status.json"), "utf8")).refused, true);
+});
+
+test("the spend line says worked only for a real success, and a non-refusal exit never reads as the wrapper's refusal", t => {
+  const f = folder(t);
+  const env = { ...f.env, KIT_API_KEY_FILE: f.keyFile };
+  recordApiSpend({ env, command: "build claude", model: "m", stdout: "plain text", status: 0 });
+  recordApiSpend({ env, command: "build claude", model: "m", stdout: JSON.stringify({ subtype: "error_max_turns", result: "x" }), status: 0 });
+  recordApiSpend({ env, command: "ask", model: "m", stdout: JSON.stringify({ result: "  " }), status: 0 });
+  recordApiSpend({ env, command: "review claude", model: "m", stdout: JSON.stringify({ result: "" }), status: 0, answerRequired: false });
+  recordApiSpend({ env, command: "ask", model: "m", stdout: JSON.stringify({ result: "fine", subtype: "success" }), status: 0 });
+  const rows = readFileSync(apiSpendLog(env), "utf8").trim().split("\n").map(line => JSON.parse(line));
+  assert.deepEqual(rows.map(row => row.ok), [false, false, false, true, true]);
+  const log = "claude-api-run: the API key file is empty\n";
+  assert.match(apiRouteProblem("", log, env, 2), /^problem: API route: the API key file is empty$/);
+  assert.equal(apiRouteProblem("", log, env, 1), null);
 });

@@ -91,16 +91,16 @@ if (options.script) {
   ].join("\n\n") + "\n";
 }
 
-if (options.out) {
-  try { mkdirSync(dirname(resolve(options.out)), { recursive: true }); }
-  catch (error) { done("fail", `cannot make the folder for ${resolve(options.out)} (${error.code ?? "error"}); nothing was sent`); }
-}
 // The call runs in an empty folder so no project's CLAUDE.md or settings reach it.
 const seconds = process.env.KIT_ASK_TIMEOUT === undefined ? 600 : Number(process.env.KIT_ASK_TIMEOUT);
 if (!Number.isInteger(seconds) || seconds < 1) done("fail", `KIT_ASK_TIMEOUT must be a whole number of seconds, 1 or more, not ${process.env.KIT_ASK_TIMEOUT}`, 2);
 let empty;
 try { empty = mkdtempSync(join(tmpdir(), "kit-ask-")); }
 catch (error) { done("fail", `cannot make a temporary folder (${error.code ?? "error"}); nothing was sent`); }
+if (options.out) {
+  try { mkdirSync(dirname(resolve(options.out)), { recursive: true }); }
+  catch (error) { done("fail", `cannot make the folder for ${resolve(options.out)} (${error.code ?? "error"}); nothing was sent`); }
+}
 let run;
 try {
   run = spawnSync(claudeCommand(), ["-p", "--model", model, "--output-format", "json", "--tools", ""], {
@@ -113,7 +113,7 @@ let result = null;
 try { result = JSON.parse(stdout); } catch { /* Not JSON: handled below. */ }
 if (run.error?.code === "ETIMEDOUT") done("fail", `claude did not answer within ${seconds} seconds`);
 if (run.status !== 0 || !result || result.is_error || typeof result.result !== "string" || !result.result.trim()) {
-  const problem = apiRouteProblem(stdout, stderr);
+  const problem = apiRouteProblem(stdout, stderr, process.env, run.status ?? 1);
   // kit ask only runs with the route on, so "unset the switch" is no advice here: its own words for an empty account.
   if (problem) done("fail", problem.replace(/^problem: /, "").replace(/; unset KIT_API_KEY_FILE to go back to the subscription$/, "; add credit to the API account, or run this another way"));
   const said = (result?.is_error && typeof result.result === "string" ? result.result : stderr.trim().split("\n").at(-1) ?? "").slice(0, 200);
