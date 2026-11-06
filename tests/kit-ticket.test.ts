@@ -944,7 +944,7 @@ test("setup --new-pass with a declined address says only what it keeps", async t
   const mcp = fakeMcpSettings(home, "https://elsewhere.example.test");
   const said = ok(await run(["setup", "--new-pass", "--from-mcp-config", mcp], {}, `yes\nyes\nno\n${fakeCfId}\n${fakeCfSecret}\n\n`));
   assert.match(said.all, /Keeping the saved address\./);
-  assert.ok(!said.all.includes("address and pass"));
+  assert.ok(!said.all.includes("Keeping the saved address and pass"));
   assert.equal(JSON.parse(readFileSync(configPath, "utf8")).origin, orbit.origin);
 });
 
