@@ -208,3 +208,12 @@ test("an empty answer is a failure that writes no file, and a bad KIT_ASK_TIMEOU
   }
   assert.equal(f.callList().length, 1);
 });
+
+test("a blank prompt file is refused before any call", t => {
+  const f = folder(t);
+  const blank = join(f.work, "blank-prompt.md"); writeFileSync(blank, " \n\n");
+  const run = f.ask(["--api", "--prompt-file", blank]);
+  assert.equal(run.status, 1);
+  assert.match(last(run.stdout), /^RESULT: fail ask the prompt file .*blank-prompt\.md is blank; nothing was sent$/);
+  assert.deepEqual(f.callList(), []);
+});

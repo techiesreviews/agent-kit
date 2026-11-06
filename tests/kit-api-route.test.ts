@@ -251,3 +251,21 @@ test("only the CLI's closing words make an empty account: a failure that merely 
   assert.match(apiRouteProblem("", `${quoting}\nCredit balance is too low\n`, env), /out of credit/);
   assert.equal(claudeAdapter({ kind: "build", model: "claude-opus-5-5", effort: "low" }, "/c").label, "claude");
 });
+
+test("a whole line of the closing words is an empty account; a failure that quotes the phrase, even on its last line, is not", t => {
+  const f = folder(t);
+  const env = { ...f.env, KIT_API_KEY_FILE: f.keyFile };
+  assert.match(apiRouteProblem("", "log\nCredit balance is too low\n", env), /out of credit/);
+  assert.match(apiRouteProblem("", "Error: Credit balance is too low.\n", env), /out of credit/);
+  assert.match(apiRouteProblem(JSON.stringify({ is_error: true, result: "Credit balance is too low" }), "", env), /out of credit/);
+  assert.equal(apiRouteProblem("", "FAIL: the test says Credit balance is too low when empty\n", env), null);
+  assert.equal(apiRouteProblem(JSON.stringify({ is_error: true, result: "build failed: see Credit balance is too low in the log" }), "", env), null);
+});
+
+test("doctor's view refuses a route whose claude is missing, as the wrapper does", t => {
+  const f = folder(t);
+  const noClaude = { ...f.env, KIT_API_KEY_FILE: f.keyFile, PATH: "/nonexistent-folder" };
+  assert.match(apiRoute(noClaude).problem, /^the claude command is not installed or not on PATH$/);
+  assert.match(apiRouteReport(noClaude).text, /^on, but the claude command is not installed or not on PATH$/);
+  assert.equal(apiRoute({ ...f.env, KIT_API_KEY_FILE: f.keyFile }).problem, null);
+});

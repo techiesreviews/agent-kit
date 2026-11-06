@@ -47,8 +47,18 @@ export function apiRoute(env = process.env) {
       else accessSync(nearest, constants.W_OK);
     } catch { problem = `KIT_API_CONFIG_DIR ${configDir} cannot be made: ${nearest} is not writable`; }
   }
+  if (!problem && !claudeOnPath(env)) problem = "the claude command is not installed or not on PATH";
   if (!problem && !env.KIT_API_CONFIG_DIR && !env.HOME) problem = "HOME is not set, so the config folder cannot be chosen; set KIT_API_CONFIG_DIR";
   return { on: true, keyFile, configDir, problem };
+}
+
+/** True when an executable named claude is on the PATH of env (the wrapper checks the same before it starts claude). */
+function claudeOnPath(env) {
+  for (const folder of (env.PATH ?? "").split(":")) {
+    if (!folder) continue;
+    try { accessSync(join(folder, "claude"), constants.X_OK); if (statSync(join(folder, "claude")).isFile()) return true; } catch { /* Not here. */ }
+  }
+  return false;
 }
 
 /** The command a headless Claude call runs: the wrapper that reads the key inside the child when the route is on, else claude. */
@@ -126,10 +136,12 @@ export function apiRouteProblem(stdout, log, env = process.env) {
   if (!apiRoute(env).on) return null;
   const refusal = /^claude-api-run: (.+)$/m.exec(log ?? "")?.[1];
   if (refusal) return `problem: API route: ${refusal}`;
-  // Only the CLI's own closing words count: the JSON result's error text, or the last lines of the log.
+  // Only the CLI's own closing words count, and only as a whole line: a failure that merely quotes the phrase is not an
+  // empty account. The JSON result's error text must be that message alone; the log's last lines are checked line by line.
+  const message = /^(?:error:[ \t]*|api error:[ \t]*)?credit balance is too low\.?$/i;
   let said = "";
-  try { const result = JSON.parse(stdout ?? ""); if (result?.is_error) said = String(result.result ?? ""); } catch { /* No JSON result. */ }
-  const closing = (log ?? "").split(/\r?\n/).filter(line => line.trim()).slice(-5).join("\n");
-  if (/credit balance is too low/i.test(`${said}\n${closing}`)) return "problem: Claude out of credit: API credit is used up (Credit balance is too low); unset KIT_API_KEY_FILE to go back to the subscription";
+  try { const result = JSON.parse(stdout ?? ""); if (result?.is_error) said = String(result.result ?? "").trim(); } catch { /* No JSON result. */ }
+  const closing = (log ?? "").split(/\r?\n/).map(line => line.trim()).filter(Boolean).slice(-5);
+  if (message.test(said) || closing.some(line => message.test(line))) return "problem: Claude out of credit: API credit is used up (Credit balance is too low); unset KIT_API_KEY_FILE to go back to the subscription";
   return null;
 }
