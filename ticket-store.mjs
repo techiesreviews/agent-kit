@@ -133,7 +133,7 @@ export function withPlannedDates(description, line) {
   if (replaced !== null) return replaced;
   if (!String(description ?? "").trim()) return line;
   const lines = split(description), notes = lines.indexOf(notesHeading);
-  if (notes >= 0) lines.splice(notes, 0, line, "");
+  if (notes >= 0) lines.splice(notes, 0, ...(notes && lines[notes - 1].trim() !== "" ? [""] : []), line, "");
   else lines.push(...(lines.at(-1).trim() === "" ? [] : [""]), line);
   return lines.join("\n");
 }
@@ -254,8 +254,12 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
     };
     try {
       for (let round = 1; ; round++) {
-        try { return await attempt(send); }
-        catch (error) { if (!error?.staleVersion || round === 2) throw error; }
+        try {
+          const outcome = await attempt(send);
+          // The retry had nothing left to send: the refused write's line goes in now.
+          if (refused) { logFailure({ ...refused, result: "fail:conflict" }); refused = null; }
+          return outcome;
+        } catch (error) { if (!error?.staleVersion || round === 2) throw error; }
       }
     } catch (error) {
       if (refused) logFailure({ ...refused, result: "fail:conflict" });
@@ -335,7 +339,11 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       if (ownParent) body.parent_task_id = await parentId(ownParent);
       await guard(null, body, board.id, lexSaid);
       if (dryRun) return { action: "create", key: board.key, dry: { method: "POST", path: client.pathOf.tasks, body } };
-      const task = await sent({ action: "create", fields: Object.keys(body), lexSaid }, () => client.createTask(body));
+      const task = await sent({ action: "create", fields: Object.keys(body), lexSaid }, () => client.createTask(body)).catch(error => {
+        // No key to read yet, and running create again could make a second card.
+        if (error?.noAnswer) throw new OrbitError(`Orbit gave no clear answer, so the new card may or may not have been made: look for it with kit ticket list --q "<its title>" before trying again.`, { status: error.status, code: error.code, noAnswer: true });
+        throw error;
+      });
       return { key: task.identifier, action: "create", task, fields: Object.keys(body) };
     },
     update(key, { title, description, status, priority, parent, blocked, lexSaid }) {
