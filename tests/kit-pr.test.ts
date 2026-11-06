@@ -2534,3 +2534,15 @@ test("a saved review marked incomplete (a later round that left an id out) is ne
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.ok(f.calls().some(claudeReview), "the incomplete review was not reused");
 });
+
+test("a should with no reason on a risky change at round 3 lands as a follow-up but the PR says nobody waived it and it is not approved", t => {
+  const f = fixture(t, { "src/auth/login.ts": "export const login = 1;\n" });
+  f.rounds(3);
+  const path = f.saveReview("REVIEW_STATUS: complete\nPrevious findings:\nR1-1: still open (P2)\n\nDefects: none\nValidation gaps: none.\n");
+  writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ round: 4, model: "claude-opus-5-5", head: f.git("rev-parse", "HEAD"), findings: [{ id: "R4-1", group: "Previous findings", severity: "P2", kind: "unsorted", text: "R1-1 still open: no reason given" }] }));
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^review: 1 follow-ups \(no reason given\) \(non-blocking\)$/m);
+  assert.match(result.stdout, /Verdict: not approved \(1 open finding left for Lex: no reason was given for it\)$/m);
+  assert.doesNotMatch(result.stdout, /waived by the lead/);
+});

@@ -8,7 +8,7 @@ import { inferCli, opencodeModelRuns, parseAgentArgs, releaseReviewBudget, reser
 import { reviewBrief, reviewScope, ticketReviewBrief } from "../review-brief.mjs";
 import { saveReviewEvidence } from "../review-evidence.mjs";
 import { countsLine, findingsRecord } from "../review-findings.mjs";
-import { branchRisk, findPreviousReview, loopBriefSection, parseMarks, roundLimit, unmarkedIds } from "../review-loop.mjs";
+import { branchRisk, findPreviousReview, loopBriefSection, loopReviewerNote, parseMarks, roundLimit, unmarkedIds } from "../review-loop.mjs";
 import { parseChanges, reviewKinds, secondLookPick, secondLookTable } from "../pr-tier.mjs";
 import { durationMilliseconds } from "../sol-run.mjs";
 
@@ -97,13 +97,15 @@ async function reviewOnce(flags, look) {
     previous = !look && !scope.commit ? findPreviousReview(join(kitMainRoot(), ".scratch/reviews", kitOwner()), { head: scope.head, base: scope.base, root, branch: branchName }) : null;
     round = previous ? previous.round + 1 : 1;
     loopMeta = look || scope.commit ? {} : { round, ...(branchName ? { branch: branchName } : {}), ...(previous ? { previous: previous.name } : {}) };
-    if (previous) {
+    // Every round, the first included, carries the reviewer's loop rules; a later round with open ids adds its section.
+    if (!look) brief += `\n${loopReviewerNote}\n`;
+    if (previous && !previous.clean) {
       const { risky } = branchRisk({ root, base: scope.base, ticket: flags.ticket, settings: kitSettings(root) });
       sinceHead = previous.head !== scope.head ? previous.head : null;
       brief += `\n${loopBriefSection({ round, limit: roundLimit(risky), previousHead: previous.head, currentHead: scope.head, open: previous.findings })}\n`;
       console.log(`review loop: round ${round}, answering ${previous.name} (${previous.findings.length} open findings)`);
     }
-    if (sinceHead) agentArgs.push("--since", sinceHead);
+    if (sinceHead && previous && !previous.clean) agentArgs.push("--since", sinceHead);
     writeFileSync(briefPath, brief);
     console.log(`model: ${model}`);
     // One count for the computer; this project's old per-project count moves in on first use.
@@ -147,7 +149,7 @@ async function reviewOnce(flags, look) {
     // An empty account is a review that could not run, not one that failed.
     outOfCredit = status !== 0 && /^\S+ out of credit: /.test(reason);
     // A later round must mark every earlier id (resolved or still open); a review that leaves one out is incomplete.
-    if (status === 0 && previous) {
+    if (status === 0 && previous && !previous.clean) {
       const left = unmarkedIds(previous.findings.map(item => item.id), parseMarks(readFileSync(join(temporary, "out.md"), "utf8")));
       if (left.length) {
         status = 1;

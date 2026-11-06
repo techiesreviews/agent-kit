@@ -69,8 +69,8 @@ race: timing, ordering or stale state (P2 race: two saves can interleave and dro
 style: a standards or readability breach with no behaviour change (P3 style: name the helper after what it returns).
 P0: data loss, security hole, broken build/tests, or the change does not work at all.
 P1: wrong behaviour a user or runner would hit, or a Spec defect that breaks a "Done when" item.
-P2: real but minor defect (edge case, misleading message, standards breach with low impact).
-P3: cosmetic or style.
+P2: real but minor defect (a common edge case, misleading message, standards breach with low impact).
+P3: cosmetic or style, or a nit: a rare path with a small cost, a comment, doc or format-only point.
 Validation gaps: concrete missing coverage, or none; no severity.
 Optional nits: separate from defects, or none.
 ${plainEnglish}
