@@ -157,7 +157,7 @@ test("an empty API account is one plain failure, writes no file and still logs t
   const out = join(f.work, "never.md");
   const run = f.ask(["--api", "--prompt-file", f.prompt, "--out", out], { ...f.on, FAKE_EMPTY_ACCOUNT: "1" });
   assert.equal(run.status, 1);
-  assert.match(last(run.stdout), /^RESULT: fail ask Claude out of credit: API credit is used up \(Credit balance is too low\); unset KIT_API_KEY_FILE to go back to the subscription$/);
+  assert.match(last(run.stdout), /^RESULT: fail ask Claude out of credit: API credit is used up \(Credit balance is too low\); add credit to the API account, or run this another way$/);
   assert.ok(!existsSync(out));
   assert.equal(f.spend().length, 1);
   assert.equal(f.spend()[0].ok, false);
@@ -177,12 +177,17 @@ test("a bad --out costs nothing, and a file that cannot be written after the cal
   assert.equal(early.status, 1);
   assert.match(last(early.stdout), /^RESULT: fail ask cannot make the folder for .*out\.md \(ENOTDIR\); nothing was sent$/);
   assert.deepEqual(f.callList(), []);
+  // A folder nobody can write to is caught before the call too.
   const locked = join(f.work, "locked"); mkdirSync(locked); chmodSync(locked, 0o500);
   t.after(() => { try { chmodSync(locked, 0o700); } catch { /* The folder is already gone. */ } });
-  const late = f.ask(["--api", "--prompt-file", f.prompt, "--out", join(locked, "out.md")]);
-  assert.equal(late.status, 1, late.stdout);
-  assert.ok(late.stdout.startsWith("The drafted answer.\n"), "the paid answer is printed");
-  assert.match(last(late.stdout), /^RESULT: fail ask .*; the answer was printed above$/);
+  const readOnly = f.ask(["--api", "--prompt-file", f.prompt, "--out", join(locked, "out.md")]);
+  assert.equal(readOnly.status, 1, readOnly.stdout);
+  assert.match(last(readOnly.stdout), /^RESULT: fail ask cannot make the folder for .*out\.md \(EACCES\); nothing was sent$/);
+  assert.deepEqual(f.callList(), []);
+  // A target that is itself a folder cannot be written either: the draft beside it takes the answer, nothing is lost.
+  mkdirSync(join(f.work, "target-dir"));
+  const beside = f.ask(["--api", "--prompt-file", f.prompt, "--out", join(f.work, "target-dir")]);
+  assert.equal(beside.status, 0, beside.stdout);
 });
 
 test("the playbook section ends at the next real heading, not at a # line inside a code block", t => {
@@ -216,4 +221,19 @@ test("a blank prompt file is refused before any call", t => {
   assert.equal(run.status, 1);
   assert.match(last(run.stdout), /^RESULT: fail ask the prompt file .*blank-prompt\.md is blank; nothing was sent$/);
   assert.deepEqual(f.callList(), []);
+});
+
+test("script rules that are blank or have an empty playbook stop the call; a fence only closes on a matching fence", t => {
+  const f = folder(t);
+  const out = join(f.work, "o.md");
+  writeFileSync(join(f.rules, "AGENTS.md"), "  \n");
+  assert.match(last(f.ask(["--api", "--script", "--prompt-file", f.prompt, "--out", out]).stdout), /script rules missing: .*AGENTS\.md is blank; nothing was sent$/);
+  writeFileSync(join(f.rules, "AGENTS.md"), "rules\n");
+  writeFileSync(join(f.rules, "shared/taste/scripts.md"), "# T\n\n## Current script and prompter playbook\n\n## Next\ntext\n");
+  assert.match(last(f.ask(["--api", "--script", "--prompt-file", f.prompt, "--out", out]).stdout), /has a "Current script and prompter playbook" heading with nothing under it; nothing was sent$/);
+  assert.deepEqual(f.callList(), []);
+  writeFileSync(join(f.rules, "shared/taste/scripts.md"), "# T\n\n## Current script and prompter playbook\n\nRULE A.\n\n~~~md\n```\n# still inside\n~~~\n\nRULE B.\n\n## Next\nNOT INCLUDED\n");
+  assert.equal(f.ask(["--api", "--script", "--prompt-file", f.prompt, "--out", out]).status, 0);
+  const input: string = f.callList()[0].input;
+  assert.ok(input.includes("RULE B.") && input.includes("# still inside") && !input.includes("NOT INCLUDED"));
 });
