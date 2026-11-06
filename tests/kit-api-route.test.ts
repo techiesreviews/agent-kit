@@ -134,7 +134,8 @@ test("kit doctor says whether the route is off or on, the key file's mode and th
   chmodSync(f.keyFile, 0o644);
   const unsafe = doctor({ KIT_API_KEY_FILE: f.keyFile });
   assert.match(unsafe.stdout, /^✗ api route: on, but KIT_API_KEY_FILE .* can be read by others \(mode 644\); run chmod 600 on it/m, unsafe.stdout);
-  assert.notEqual(unsafe.status, 0, "an unusable route fails doctor");
+  assert.doesNotMatch(unsafe.stdout, /^RESULT: fail doctor .*api route/m, "a broken route is a warning: it must not stop builds that never use it");
+  assert.match(unsafe.stdout, /\(optional; only runs on the API route fail\); fix: /);
   assert.ok(!unsafe.stdout.includes(secret));
 });
 

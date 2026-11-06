@@ -145,3 +145,8 @@ export function apiRouteProblem(stdout, log, env = process.env) {
   if (message.test(said) || closing.some(line => message.test(line))) return "problem: Claude out of credit: API credit is used up (Credit balance is too low); unset KIT_API_KEY_FILE to go back to the subscription";
   return null;
 }
+
+/** True when the wrapper itself refused the call: it exits 2 and says so on a "claude-api-run:" line. One test for every place that asks. */
+export function apiWrapperRefused(status, log) {
+  return status === 2 && /^claude-api-run: /m.test(log ?? "");
+}
