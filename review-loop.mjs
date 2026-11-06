@@ -4,7 +4,8 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { blockingFindings } from "./review-findings.mjs";
+import { blockingFindings, parseMarks } from "./review-findings.mjs";
+export { parseMarks };
 
 /** Rounds of fixing a normal change gets, and the most a risky change gets while a blocker or should stays open. */
 export const NORMAL_ROUNDS = 3;
@@ -12,8 +13,8 @@ export const RISKY_ROUNDS = 5;
 
 // Security, permissions, auth, data loss, state and concurrency: by path, or by the words of a ticket or title.
 const riskyPaths = [/(?:^|\/)(?:auth|authn|authz|security|permissions?|acl|rbac|crypto|secrets?|credentials?|tokens?|sessions?|oauth|login|passwords?)(?:[./_-]|\/|$)/i,
-  /(?:^|\/)\.env(?:\.|$)/i, /(?:^|\/)migrations?\//i, /(?:^|\/)(?:locks?|queues?|transactions?|concurrency)(?:[./_-]|\/|$)/i];
-const riskyWords = /\b(?:security|permission|authenticat\w*|authoriz\w*|auth|credential|secret|data loss|lose data|delete data|deletion|destructive|concurren\w+|race condition|deadlock|transaction)\b/i;
+  /(?:^|\/)\.env(?:\.|$)/i, /(?:^|\/)migrations?\//i, /(?:^|\/)(?:locks?|queues?|transactions?|concurrency|state|states|store|stores)(?:[./_-]|\/|$)/i];
+const riskyWords = /\b(?:security|permissions?|authenticat\w*|authoriz\w*|auth|credentials?|secrets?|data loss|lose data|delete data|deletion|destructive|concurren\w+|race conditions?|deadlocks?|transactions?|shared state|global state|stale state|persisted state|state machine|state sync\w*)\b/i;
 
 /**
  * Whether a change is risky enough for the longer budget: any changed path, or the text (a ticket's title and goal), names
@@ -21,7 +22,13 @@ const riskyWords = /\b(?:security|permission|authenticat\w*|authoriz\w*|auth|cre
  * Returns { risky, reasons } with plain reasons.
  */
 export function riskyChange({ paths = [], text = "", settings = {} } = {}) {
-  const extra = (settings.paths?.risky ?? []).flatMap(source => { try { return [new RegExp(source)]; } catch { return []; } });
+  // `paths.risky` is a list of regular expressions; a bad one is named, as the other path settings do.
+  const listed = settings.paths?.risky ?? [];
+  if (!Array.isArray(listed)) throw new Error("paths.risky in scripts/agents/kit.json must be a list of regular expressions");
+  const extra = listed.map(source => {
+    try { return new RegExp(source); }
+    catch (error) { throw new Error(`paths.risky in scripts/agents/kit.json: ${error.message}`); }
+  });
   const reasons = [];
   for (const path of paths) {
     if ([...riskyPaths, ...extra].some(pattern => pattern.test(path))) reasons.push(`path ${path}`);
@@ -29,6 +36,19 @@ export function riskyChange({ paths = [], text = "", settings = {} } = {}) {
   const word = riskyWords.exec(text)?.[0];
   if (word) reasons.push(`text mentions "${word}"`);
   return { risky: reasons.length > 0, reasons: reasons.slice(0, 5) };
+}
+
+/**
+ * One risk function for every command (kit review, kit pr, kit slice): the paths changed against `base` (a ref), the files a
+ * ticket names in backticks, and the ticket's words. `ticket` is the ticket file's path or null.
+ */
+export function branchRisk({ root, base, ticket, settings }) {
+  let paths = [];
+  try { paths = execFileSync("git", ["-C", root, "diff", "--name-only", `${base}...HEAD`], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).split("\n").filter(Boolean); } catch { /* No base to compare: the ticket decides. */ }
+  let text = "";
+  try { text = ticket ? readFileSync(resolve(root, ticket), "utf8").slice(0, 2000) : ""; } catch { /* No ticket text. */ }
+  const named = [...text.matchAll(/`([^`\s]*[./][^`\s]*)`/g)].map(match => match[1]);
+  return riskyChange({ paths: [...paths, ...named], text, settings });
 }
 
 /** The fix-round limit for a change: 3, or 5 for a risky one (rounds past 3 still need an open blocker or should). */
@@ -44,8 +64,8 @@ export const isNit = item => severityWord(item) === "nit";
 
 /**
  * The open findings that still call for a fix round, or that stop a landing, after `rounds` fix rounds:
- * nothing but nits never does (rule 2); within the limit every blocker and should does; once the limit is used
- * only blockers do, and the rest go to the lead (rule 6: running out of budget is never approval).
+ * nothing but nits never does (nits); within the limit every blocker and should does; once the limit is used
+ * only blockers do, and the rest go to the lead (running out of budget is never approval).
  * The 4th and 5th round of a risky change run only while a blocker or should is open with its evidence written.
  */
 export function stoppingFindings(open, rounds, risky) {
@@ -66,40 +86,28 @@ export function loopStop(open, rounds, risky) {
 /** Ids for one review's findings: R<round>-<n>, in the order the reviewer wrote them. */
 export const withIds = (findings, round) => findings.map((item, index) => ({ ...item, id: `R${round}-${index + 1}` }));
 
-const MARK = /^\s*(?:[-*+]\s+)?`?(R\d+-\d+)`?\s*:\s*(resolved|still open)\b[\s.:;,—–-]*(.*)$/i;
-/**
- * The marks a later review gives the earlier ids: `R1-2: resolved` or `R1-2: still open: <reason>`, in the block
- * before its defects (the parser reads defects only after a Defects heading, so the marks never count as findings).
- * Returns a Map id -> { status: "resolved" | "open", reason }.
- */
-export function parseMarks(resultMd) {
-  const marks = new Map();
-  for (const line of resultMd.split(/\r?\n/)) {
-    const found = MARK.exec(line);
-    if (found) marks.set(found[1].toUpperCase(), { status: found[2].toLowerCase() === "resolved" ? "resolved" : "open", reason: found[3].trim() });
-  }
-  return marks;
-}
-
 /** Ids from the earlier round that the later review did not mark: the review must say each one is resolved or still open. */
 export const unmarkedIds = (ids, marks) => ids.filter(id => !marks.has(id));
 
 /**
- * The brief section for round 2 and later (rule 3): review only what changed since the last reviewed head and the open ids,
+ * The brief section for round 2 and later (later rounds): review only what changed since the last reviewed head and the open ids,
  * and mark each old id. `open` is [{ id, severity, kind, text }].
  */
-export function loopBriefSection({ round, limit, previousHead, open }) {
+export function loopBriefSection({ round, limit, previousHead, currentHead, open }) {
   const list = open.map(item => `- ${item.id} (${item.severity ?? "no severity"}${item.kind && item.kind !== "unsorted" ? ` ${item.kind}` : ""}): ${String(item.text).slice(0, 200)}`).join("\n");
+  const scope = previousHead && previousHead === currentHead
+    ? "No commit came after the last review (the builder answered or declined in writing): check each finding below against that answer; there is no new code to read."
+    : `Review only the code changed since ${previousHead} (\`git diff ${previousHead}..HEAD\`) and the findings still open below. Do not review unchanged code again.`;
   return [
-    `## Review loop: round ${round} of at most ${limit}`,
-    `Review only the code changed since ${previousHead} (\`git diff ${previousHead}..HEAD\`) and the findings still open below. Do not review unchanged code again.`,
+    `## Review loop: review round ${round}, after ${round - 1} fix round${round === 2 ? "" : "s"} (at most ${limit} fix rounds)`,
+    scope,
     "Open findings from the last round:", list,
-    "Before your Defects heading, write the block `Previous findings:` with one line for every id above, none left out: `<id>: resolved` or `<id>: still open: <reason>`.",
+    "Before your Defects heading, write the block `Previous findings:` with one line for every id above, none left out: `<id>: resolved` or `<id>: still open (<its severity>): <reason>`. A review that leaves an id out is incomplete and is run again.",
     "You are the only reviewer: start no subagents. New findings use the usual format; a nit is a rare path, a small cost, or a comment, doc or format-only point.",
   ].join("\n\n");
 }
 
-/** The PR line (rule 7): `Reviewed with review-loop: N rounds with <model>. Verdict: approved`. */
+/** The PR line : `Reviewed with review-loop: N rounds with <model>. Verdict: approved`. */
 export function prLine({ rounds, model, verdict = "approved" }) {
   return `Reviewed with review-loop: ${rounds} round${rounds === 1 ? "" : "s"} with ${model}. Verdict: ${verdict}`;
 }
@@ -132,10 +140,10 @@ export function renderLedger(rows) {
   return ["Findings ledger:", "", "| id | severity | outcome |", "| --- | --- | --- |", ...rows.map(row => `| ${row.id} | ${row.severity} | ${cell(row.outcome)} |`)].join("\n");
 }
 
-/** The report for a loop that ran out of budget or is stuck (rule 6): open findings for Lex, never an approval. */
+/** The report for a loop that ran out of budget or is stuck: open findings for Lex, never an approval. */
 export function budgetReport({ rounds, limit, open }) {
-  const lines = open.slice(0, 5).map(item => `- ${item.id ?? "finding"} (${severityWord(item)}): ${String(item.text).replace(/\s+/g, " ").slice(0, 160)}`);
-  return [`Review budget used: ${rounds} of ${limit} rounds, ${open.length} open finding${open.length === 1 ? "" : "s"}. Running out of budget is not approval; Lex decides.`, ...lines].join("\n");
+  const lines = open.slice(0, 5).map(item => `- ${item.id ? `${item.id} ` : ""}(${severityWord(item)}): ${String(item.text).replace(/\s+/g, " ").slice(0, 160)}`);
+  return [`Review budget used: ${rounds} of ${limit} fix rounds, ${open.length} open finding${open.length === 1 ? "" : "s"}. Running out of budget is not approval; Lex decides.`, ...lines].join("\n");
 }
 
 /**
@@ -151,14 +159,16 @@ export function reviewChain(folder) {
     try { record = JSON.parse(readFileSync(recordPath, "utf8")); } catch { break; }
     let marks = new Map();
     try { marks = parseMarks(readFileSync(join(current, "result.md"), "utf8")); } catch { /* No report text: no marks. */ }
-    chain.unshift({ round: record.round ?? 1, model: record.model, head: record.head, findings: record.findings ?? [], marks });
+    const round = record.round ?? 1;
+    // A review saved before ids existed gets the ids a new one would have been given.
+    chain.unshift({ round, model: record.model, head: record.head, findings: (record.findings ?? []).map((item, index) => ({ ...item, id: item.id ?? `R${round}-${index + 1}` })), marks });
     current = record.previous ? join(dirname(current), record.previous) : null;
   }
   return chain;
 }
 
 /**
- * The earlier review this one answers (rule 3): in `parent` (the owner's folder under .scratch/reviews) the newest review of the
+ * The earlier review this one answers (later rounds): in `parent` (the owner's folder under .scratch/reviews) the newest review of the
  * same base that still had findings and whose reviewed head is an ancestor of the current head. A second look's folder is never one.
  * Returns { name, round, head, findings } or null (then this is round 1, a full review).
  */
@@ -174,7 +184,8 @@ export function findPreviousReview(parent, { head, base, root }) {
     try {
       const [reviewedHead, reviewedBase] = readFileSync(join(folder, "refs.txt"), "utf8").trim().split("\n");
       const record = JSON.parse(readFileSync(join(folder, "findings.json"), "utf8"));
-      if (record.unreadable || record.round === undefined || reviewedBase !== base || reviewedHead === head || !isAncestor(reviewedHead)) continue;
+      // The base may have moved on (another PR landed): the earlier base only has to be part of this branch's history.
+      if (record.unreadable || record.round === undefined || (reviewedBase !== base && !isAncestor(reviewedBase)) || (reviewedHead !== head && !isAncestor(reviewedHead))) continue;
       // The newest review of this change decides: one that found nothing ended the loop, so the next review starts again at round 1.
       if (!record.findings?.length) return null;
       return { name, round: record.round ?? 1, head: reviewedHead, findings: record.findings.map((item, index) => ({ ...item, id: item.id ?? `R${record.round ?? 1}-${index + 1}` })) };
