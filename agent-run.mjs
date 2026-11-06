@@ -15,6 +15,7 @@ import { dirname, join, resolve } from "node:path";
 import { durationMilliseconds, supervise } from "./sol-run.mjs";
 import { reviewComplete, reviewFormat, reviewScope } from "./review-brief.mjs";
 import { nextTalkStyle, talkStyleLine } from "./brief-lib.mjs";
+import { claudeCommand, recordApiSpend } from "./api-route.mjs";
 
 const adapters = { codex: codexAdapter, claude: claudeAdapter, grok: grokAdapter, opencode: opencodeAdapter };
 const reviewOnly = { grok: "Grok", opencode: "OpenCode" };
@@ -570,7 +571,7 @@ export function codexAdapter(options, common, output) {
 export function claudeAdapter(options, common) {
   const { kind, model, effort } = options;
   return {
-    command: "claude", capture: true,
+    command: claudeCommand(), capture: true,
     args: ["-p", "--model", model, "--effort", effort, "--permission-mode", kind === "build" ? "acceptEdits" : "plan",
       ...(kind === "build" ? ["--allowedTools", "Bash", "--disallowedTools", "Task,Agent", "--add-dir", common] : ["--tools", "Read,Grep,Glob", "--setting-sources", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}']),
       "--output-format", "json", ...(options.sessionId ? ["--session-id", options.sessionId] : [])],
@@ -996,6 +997,8 @@ async function invokeAgent(adapter, args, descriptor, context) {
       onOutput: sessionObserver(adapter, session => { clearTimeout(startTimer); update({ session }); }),
     }).finally(() => clearTimeout(startTimer));
     let status = result.status;
+    // The opt-in API credit route logs each headless Claude call's tokens and cost (never a secret).
+    if (options.cli === "claude") recordApiSpend({ command: `${options.kind} claude`, model: options.model, stdout: result.stdout, status });
     const slice = readFileSync(logPath, "utf8").slice(previousLog);
     const session = recordedSession(adapter, result.stdout, slice);
     if (session) update({ session });
