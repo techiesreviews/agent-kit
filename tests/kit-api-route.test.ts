@@ -187,7 +187,7 @@ test("a refused key file or an empty API account becomes one plain problem line,
   const env = { ...f.env, KIT_API_KEY_FILE: f.keyFile };
   assert.equal(apiRouteProblem("", "claude-api-run: the API key file can be read by others (mode 644); run chmod 600 on it\n", env),
     "problem: API route: the API key file can be read by others (mode 644); run chmod 600 on it");
-  assert.match(apiRouteProblem('{"is_error":true,"result":"Credit balance is too low"}', "", env), /^problem: API route: the API credit is used up \(Credit balance is too low\)/);
+  assert.match(apiRouteProblem('{"is_error":true,"result":"Credit balance is too low"}', "", env), /^problem: Claude out of credit: API credit is used up \(Credit balance is too low\)/);
   assert.equal(apiRouteProblem("{}", "some other failure\n", env), null);
   assert.equal(apiRouteProblem('{"result":"Credit balance is too low"}', "", f.env), null);
   assert.equal(claudeAdapter({ kind: "review", model: "claude-opus-5-5", effort: "medium" }, "/common").outOfCredit("", "", 0), null);
@@ -201,4 +201,16 @@ test("the spend total says when runs printed no cost, and skips log rows that ar
   writeFileSync(apiSpendLog(env), `${readFileSync(apiSpendLog(env), "utf8")}null\n42\n`);
   assert.equal(apiSpendTotal(env).unknownCost, 1);
   assert.match(apiRouteReport(env).text, /2 runs logged \(1 failed\), at least \$2\.00 spent \(1 run with no cost printed\), 5 tokens in, 1 out$/);
+});
+
+test("a relative config folder is refused by both; a refused call adds no spend line", t => {
+  const f = folder(t);
+  const env = { ...f.env, KIT_API_KEY_FILE: f.keyFile, KIT_API_CONFIG_DIR: "relative-config" };
+  assert.match(apiRoute(env).problem, /KIT_API_CONFIG_DIR relative-config must be an absolute path/);
+  const run = spawnSync(wrapper, ["-p"], { env, cwd: f.dir, encoding: "utf8" });
+  assert.equal(run.status, 2);
+  assert.match(run.stderr, /KIT_API_CONFIG_DIR must be an absolute path/);
+  assert.ok(!existsSync(join(f.dir, "relative-config")), "no folder is made in the working folder");
+  assert.equal(recordApiSpend({ env, command: "review", model: "m", stdout: "", status: 2 }), null);
+  assert.ok(!existsSync(apiSpendLog(env)));
 });
