@@ -32,7 +32,7 @@ export async function fakeOrbit(t: TestContext) {
     conflicts: 0,
     concurrentEdit: undefined as undefined | ((task: FakeTask) => void),
     // Answers for the next requests, oldest first: a 429, a Cloudflare redirect or page, or a problem.
-    answers: [] as ("redirect" | "cloudflare-page" | "login-page-200" | "gateway-page" | { retryAfter?: string } | { status: number; code: string; detail: string; errors?: any })[],
+    answers: [] as ("redirect" | "cloudflare-page" | "login-page-200" | "gateway-page" | "hang" | { retryAfter?: string } | { status: number; code: string; detail: string; errors?: any })[],
     // Answers for the next task writes only (after the reads went through): a problem, or a dropped connection.
     writeAnswers: [] as ("drop" | "saved-then-502" | "page-200" | { retryAfter: string } | { status: number; code: string; detail: string })[],
     me: { token: { id: randomUUID(), name: "fleet", scopes: ["tasks:write"], project_ids: projects.map(project => project.id), expires_at: "2027-02-04T00:00:00.000Z" } } as Record<string, any>,
@@ -74,6 +74,7 @@ export async function fakeOrbit(t: TestContext) {
     const answer = controls.answers.shift();
     if (answer === "redirect") { response.writeHead(302, { location: "https://login.example.test/cdn-cgi/access/login" }); return response.end(); }
     if (answer === "cloudflare-page") { response.writeHead(403, { "content-type": "text/html" }); return response.end(`<html>Forbidden ${fakeToken}</html>`); }
+    if (answer === "hang") return;
     if (answer === "gateway-page") { response.writeHead(502, { "content-type": "text/html" }); return response.end("<html>Bad gateway</html>"); }
     if (answer === "login-page-200") { response.writeHead(200, { "content-type": "text/html" }); return response.end("<html>Sign in</html>"); }
     if (answer && "status" in answer) return problem(response, answer.status, answer.code, answer.detail, answer.errors ? { errors: answer.errors } : {});

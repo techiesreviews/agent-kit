@@ -43,7 +43,7 @@ are a "Blocked by: KEY-n, KEY-m" line in the description. It reads the latest ve
 version conflict. Each write adds one line to ~/.local/state/fleet/orbit.log. Like every kit command it ends with a
 RESULT line, also after --json: a script drops that last line before it reads the JSON.
 `;
-const setupUsage = `Usage: kit ticket setup [--from-mcp-config [file]] [--from-file file] [--new-pass] [--origin address] [--workspace id] [--dry-run]
+const setupUsage = `Usage: kit ticket setup [--from-mcp-config [file]] [--from-file file] [--new-pass] [--dry-run]
 
 Connects this computer to Orbit. It takes about 5 minutes and you do it once.
 
@@ -56,14 +56,12 @@ Connects this computer to Orbit. It takes about 5 minutes and you do it once.
 
 Never paste the token in a chat.
 
-If it cannot copy the pass, it asks you to paste the two parts instead. The saved file stays private to you, outside every project.
+If it cannot copy the pass, it asks you to paste the two parts instead. It also asks for Orbit's web address, or which workspace to use, when it cannot find them. The saved file stays private to you, outside every project.
 
 Other ways to start it:
 --from-file file     reads the token from that file, then deletes the file. If setup stops after that, make a new token in Orbit.
 --from-mcp-config file     copies the pass from that settings file, not from your Claude settings.
 --new-pass           asks for a new Cloudflare pass, when the saved one stopped working.
---origin address     Orbit's web address, when it cannot be copied.
---workspace id       the workspace, when the token reaches more than one.
 --dry-run            says what it would do and touches nothing.
 `;
 
@@ -81,7 +79,7 @@ const commands = {
   "next-lex": { args: ["card key", "reason"], flags: ["dry-run"], values: [] },
   "clear-next-lex": { args: ["card key"], flags: ["dry-run"], values: [] },
   trash: { args: ["card key"], flags: ["dry-run"], values: ["lex-said"] },
-  setup: { args: [], flags: ["dry-run", "new-pass"], values: ["from-file", "origin", "workspace"], optional: ["from-mcp-config"] },
+  setup: { args: [], flags: ["dry-run", "new-pass"], values: ["from-file"], optional: ["from-mcp-config"] },
 };
 
 function parse(name, words) {
@@ -92,17 +90,19 @@ function parse(name, words) {
     // Help stands alone: --help anywhere as its own word, -h only right after the command. Text and values stay text.
     if (word === "--help" || (word === "-h" && index === 0)) { found.help = true; continue; }
     if (!word.startsWith("--")) { found.rest.push(word); continue; }
-    // --flag=value is the one way a value starts with dashes: a next word like --dry-run is never taken as a value.
-    const equals = word.indexOf("="), flag = equals < 0 ? word.slice(2) : word.slice(2, equals), inline = equals < 0 ? undefined : word.slice(equals + 1);
+    const flag = word.slice(2);
     if (found.flags[flag] !== undefined) throw new UsageProblem(`--${flag} is given twice`);
-    if (spec.flags.includes(flag) && inline === undefined) found.flags[flag] = true;
-    else if (spec.optional?.includes(flag)) found.flags[flag] = inline ?? (words[index + 1] && !words[index + 1].startsWith("-") ? words[++index] : true);
+    if (spec.flags.includes(flag)) found.flags[flag] = true;
+    else if (spec.optional?.includes(flag)) found.flags[flag] = words[index + 1] && !words[index + 1].startsWith("-") ? words[++index] : true;
     else if (spec.values.includes(flag)) {
-      if (inline !== undefined) found.flags[flag] = inline;
       // A next word shaped like an option is not a value. A lone "-" is (standard input), and so is text with spaces ("- [x] done").
-      else if (words[index + 1] === undefined || /^-\S+$/.test(words[index + 1])) throw new UsageProblem(`--${flag} needs a value (a value shaped like an option goes as --${flag}=value)`);
-      else found.flags[flag] = words[++index];
-    } else throw new UsageProblem(`${name} does not take ${word}${/\s/.test(word) ? "; put -- before text that starts with dashes" : ""}`);
+      if (words[index + 1] === undefined || /^-\S+$/.test(words[index + 1])) throw new UsageProblem(`--${flag} needs a value (a one-word value cannot start with a dash)`);
+      found.flags[flag] = words[++index];
+    } else {
+      const named = word.slice(2, word.includes("=") ? word.indexOf("=") : undefined);
+      if (word.includes("=") && (spec.values.includes(named) || spec.optional?.includes(named))) throw new UsageProblem(`${name} does not take ${word}: write it as --${named} <value>`);
+      throw new UsageProblem(`${name} does not take ${word}${/\s/.test(word) ? "; put -- before text that starts with dashes" : ""}`);
+    }
   }
   if (found.help) return found;
   if (found.rest.length < spec.args.length) throw new UsageProblem(`${name} needs a ${spec.args[found.rest.length]}`);
@@ -186,7 +186,7 @@ async function main() {
   const [key, wording] = rest;
 
   if (name === "setup") {
-    const message = await orbitSetup({ flags: { fromFile: flags["from-file"], fromMcpConfig: flags["from-mcp-config"], origin: flags.origin, workspace: flags.workspace, dryRun: flags["dry-run"], newPass: flags["new-pass"] }, say });
+    const message = await orbitSetup({ flags: { fromFile: flags["from-file"], fromMcpConfig: flags["from-mcp-config"], dryRun: flags["dry-run"], newPass: flags["new-pass"] }, say });
     return finish("ok", message);
   }
 

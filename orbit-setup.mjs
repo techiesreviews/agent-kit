@@ -4,6 +4,7 @@
 import { chmodSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { orbitDate } from "./ticket-store.mjs";
 import { OrbitError, OrbitSetupProblem, orbitClient, orbitConfigPath, orbitOrigin, orbitRedactor, orbitSecrets, orbitWorkTreeAround, readOrbitConfig } from "./orbit-client.mjs";
 
 const headerValue = (headers, name) => {
@@ -174,18 +175,15 @@ export async function orbitSetup({ env = process.env, flags = {}, say, io = term
   // The address and the pass come before the token: a stop or a slip here leaves a token file in place.
   let copiedOrigin = copied?.origin;
   // A copied pass belongs to its own address: it never goes to another one without a yes.
-  const named = flags.origin === undefined ? saved?.origin : orbitOrigin(flags.origin);
-  if (copiedOrigin && named && copiedOrigin !== named) {
-    const move = await io.ask(`Those settings name a different address for Orbit: ${copiedOrigin} (this setup: ${named}). Use the settings' address and pass? Type yes or no:`);
-    if (move.toLowerCase() === "yes") {
-      if (flags.origin !== undefined) stop(`--origin says ${named}, so run again without it to use ${copiedOrigin}. Nothing was saved.`);
-    } else {
+  if (copiedOrigin && saved?.origin && copiedOrigin !== saved.origin) {
+    const move = await io.ask(`Those settings name a different address for Orbit: ${copiedOrigin} (this setup: ${saved.origin}). Use the settings' address and pass? Type yes or no:`);
+    if (move.toLowerCase() !== "yes") {
       copiedOrigin = undefined;
       copied = null;
-      say(saved?.cf_access_client_id && !flags.newPass && !flags.origin ? "Keeping the saved address and pass." : flags.origin ? "Keeping the address you named." : "Keeping the saved address.");
+      say(saved.cf_access_client_id && !flags.newPass ? "Keeping the saved address and pass." : "Keeping the saved address.");
     }
   }
-  const origin = orbitOrigin(flags.origin ?? copiedOrigin ?? saved?.origin ?? await io.ask("Orbit's web address (like https://orbit.example.com):"));
+  const origin = orbitOrigin(copiedOrigin ?? saved?.origin ?? await io.ask("Orbit's web address (like https://orbit.example.com):"));
   // What is saved belongs to the saved address: a new address never gets the saved token or pass.
   const kept = saved?.origin === origin ? saved : null;
   let id = copied?.id ?? (flags.newPass ? undefined : kept?.cf_access_client_id), secret = copied?.secret ?? (flags.newPass ? undefined : kept?.cf_access_client_secret);
@@ -202,8 +200,13 @@ export async function orbitSetup({ env = process.env, flags = {}, say, io = term
   if (!looksLikeToken(token)) stop(notAToken);
   // Once a token file is used it is gone, and Orbit shows a token only once.
   const after = flags.fromFile ? " The token file is gone, so make a new token in Orbit before running this again." : "";
+  // A question after that point: Ctrl-C there says the same.
+  const askAfter = async question => {
+    try { return await io.ask(question); }
+    catch (error) { if (error instanceof OrbitSetupProblem) stop(`${error.message}${after}`); throw error; }
+  };
 
-  const config = { origin, workspace_id: flags.workspace ?? "", token, ...(id ? { cf_access_client_id: id, cf_access_client_secret: secret } : {}) };
+  const config = { origin, workspace_id: "", token, ...(id ? { cf_access_client_id: id, cf_access_client_secret: secret } : {}) };
   let me;
   try { me = await orbitClient(config).me(); }
   catch (error) {
@@ -213,15 +216,31 @@ export async function orbitSetup({ env = process.env, flags = {}, say, io = term
   }
   const workspaces = Array.isArray(me?.workspaces) && me.workspaces.length ? me.workspaces : me?.workspace ? [me.workspace] : [];
   // A new token for the same setup stays on the saved workspace when it still reaches it.
-  const wanted = flags.workspace ?? kept?.workspace_id;
-  const workspace = workspaces.find(item => item.id === wanted) ?? (!flags.workspace && workspaces.length === 1 ? workspaces[0] : null);
-  const reached = workspaces.map(item => `${item.id} (${item.name})`).join(", ");
+  let workspace = workspaces.find(item => item.id === kept?.workspace_id) ?? (workspaces.length === 1 ? workspaces[0] : null);
   if (!workspace) {
-    const why = flags.workspace ? `No workspace ${flags.workspace} for this token; it reaches: ${reached || "none"}`
-      : workspaces.length ? `This token reaches several workspaces; name one with --workspace <id>: ${reached}` : "This token reaches no workspace";
-    stop(`${why}. Nothing was saved.${after}`);
+    if (!workspaces.length) stop(`This token reaches no workspace. Nothing was saved.${after}`);
+    // Names come from Orbit: no terminal control characters reach the screen.
+    const reached = workspaces.map(item => `${item.id} (${item.name})`).join(", ").replace(/\p{Cc}|[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu, "");
+    // A used token file cannot come back, so a slip gets two more tries, and the name counts as well as the id.
+    let answer = "";
+    for (let tries = 0; tries < 3 && !workspace; tries++) {
+      answer = await askAfter(`This token reaches several workspaces: ${reached}. Type the id or name of the one to use:`);
+      const said = answer.toLowerCase(), byName = workspaces.filter(item => String(item.name).toLowerCase() === said);
+      // A name counts only when one workspace has it.
+      workspace = workspaces.find(item => item.id.toLowerCase() === said) ?? (byName.length === 1 ? byName[0] : null);
+    }
+    if (!workspace) stop(`No workspace ${answer || "was named"} for this token; it reaches: ${reached}. Nothing was saved.${after}`);
   }
   config.workspace_id = workspace.id;
+  // The expiry is for kit doctor's days left. Orbit's own date wins; only without one does setup ask.
+  if (me?.token?.expires_at) config.token_expires_at = me.token.expires_at;
+  else {
+    const expiry = await askAfter("When does this token expire? (YYYY-MM-DD, Enter if unknown)");
+    if (expiry) {
+      try { config.token_expires_at = orbitDate(expiry, "due"); }
+      catch { say("That is not a date, so no expiry was saved."); }
+    }
+  }
 
   try { saveConfig(path, config); }
   catch { stop(`The setup could not be saved in ${path}: check that the folder can be written.${after}`); }

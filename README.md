@@ -129,6 +129,9 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
   after a yes. `kit ticket setup --help` gives the steps.
 - Only leads write, so an agent the kit starts never inherits `ORBIT_ROLE` (`agent-run.mjs`, `kit ask`): a lead sets it in
   its own shell for its own `kit ticket` calls.
+- `kit doctor` on a project with `"tickets": "orbit"` names its board and asks Orbit once, with a short limit: connected,
+  token refused or expired, Cloudflare blocked it, Orbit not answering, setup file needs attention, or not set up, with
+  the days left when the saved file records the token's expiry. The line never fails doctor, and `kit doctor --quiet` makes no call.
 - Orbit's public API has no task relations, so blockers are a `Blocked by: KEY-n, KEY-m` line in the description
   (`--blocked-by`). Its docs: `docs/public-api.md` in github.com/coollabsio/orbit.
 
