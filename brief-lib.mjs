@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { builderChecks, plainEnglish, reviewFormat, ticketReviewBrief } from "./review-brief.mjs";
-import { kitMessagesToLexRule, kitRulebookPins, kitSliceBranch, kitStateDir } from "./kit-lib.mjs";
+import { kitMessagesToLexRule, kitReviewLoopRule, kitRulebookPins, kitSliceBranch, kitStateDir } from "./kit-lib.mjs";
 import { map, modelFamily, pickSkills, readTicket, skillLine } from "./skills.mjs";
 
 export { map, modelFamily, pickSkills, readTicket, skillLine, skillSettingsProblems } from "./skills.mjs";
@@ -75,7 +75,7 @@ const SECOND_LOOK = { first: "grok-4.7", fallback: "opencode/deepseek-v4.1-flash
  * settings, the ticket's path there and its text, the stage, owner, note, the target model, the talk style and
  * the kit's version.
  */
-export function composeBrief({ messages = kitMessagesToLexRule(), root, settings, ticket, text, stage, owner, note, model, style, version, task, pins = kitRulebookPins(root, settings), review = process.env.ASE_REVIEW_MODEL || pins.reviewer }) {
+export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = kitReviewLoopRule(), root, settings, ticket, text, stage, owner, note, model, style, version, task, pins = kitRulebookPins(root, settings), review = process.env.ASE_REVIEW_MODEL || pins.reviewer }) {
   const info = readTicket(text);
   // kit next runs a group's tickets as one job (kit next --run-group) on the group's own branch.
   if (info.group) throw new Error(`${ticket} is in group ${info.group}: kit next --start runs a group as one job; kit brief writes briefs for single tickets`);
@@ -149,6 +149,8 @@ export function composeBrief({ messages = kitMessagesToLexRule(), root, settings
   ]);
   // The rule is the shared rulebook's (docs/kitchen.md of the kit that runs), not the project's.
   out.push("", "## Messages to Lex", `This covers messages meant for Lex. The Report section's format still applies in full (RESULT lines, PR URL, SHAs, finding locations). This copy is v${messages.version}; a project's own or newer \"Messages to Lex\" section in AGENTS.md wins over it.`, messages.rule);
+  // The review loop's rules (budget by risk, stop on nits, ledger): one source, the rulebook's "Review loop" section.
+  out.push("", "## Review loop", reviewLoop.rule);
   if (!reviewing) section("Waiting", [
     "Finish the whole job in this turn. A short check runs in the foreground.",
     "A long job (a slice, a long `kit pr`, specs) runs as `scripts/agents/kit go <job> -- <command>`: it starts the job in its own systemd scope and waits at most 9 minutes per call.",

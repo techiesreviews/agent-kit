@@ -443,6 +443,17 @@ export function kitMessagesToLexRule(home = kitHome()) {
   return { version: Number(found[1]), rule: found[2] };
 }
 
+/**
+ * The review loop rule: the lines between the markers of the "Review loop" section of the shared rulebook, with the
+ * version in its start marker (the brief carries the text; `kit init` points projects at the section).
+ */
+export function kitReviewLoopRule(home = kitHome()) {
+  const file = join(home, "docs/kitchen.md");
+  const found = /<!-- review-loop:start v(\d+) -->\n([\s\S]+?)\n<!-- review-loop:end -->/.exec(readFileSync(file, "utf8"));
+  if (!found) throw new Error(`the shared rulebook ${file} has no Review loop rule`);
+  return { version: Number(found[1]), rule: found[2] };
+}
+
 /** Just the rule's text (see kitMessagesToLexRule). */
 export function kitMessagesToLex(home = kitHome()) {
   return kitMessagesToLexRule(home).rule;
