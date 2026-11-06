@@ -46,6 +46,11 @@ const route = apiRoute();
 if (!route.on) done("fail", 'the API route is off: set KIT_API_KEY_FILE (see the README, "Spending API credit")');
 if (route.problem) done("fail", route.problem);
 
+// The output folder is made before the paid call, so a bad --out costs nothing.
+if (options.out) {
+  try { mkdirSync(dirname(resolve(options.out)), { recursive: true }); }
+  catch (error) { done("fail", `cannot make the folder for ${resolve(options.out)} (${error.code ?? "error"}); nothing was sent`); }
+}
 let prompt;
 try { prompt = readFileSync(resolve(options.promptFile), "utf8"); }
 catch { done("fail", `cannot read the prompt file ${resolve(options.promptFile)}`); }
@@ -61,8 +66,11 @@ if (options.script) {
   const start = scripts.findIndex(line => /^#+\s+Current script and prompter playbook\s*$/.test(line));
   if (start < 0) missing(`${scriptsPath} has no "Current script and prompter playbook" section`);
   const level = scripts[start].match(/^#+/)[0].length;
-  let end = scripts.length;
-  for (let i = start + 1; i < scripts.length; i++) if (new RegExp(`^#{1,${level}}\\s`).test(scripts[i])) { end = i; break; }
+  let end = scripts.length, fenced = false;
+  for (let i = start + 1; i < scripts.length; i++) {
+    if (/^\s{0,3}(```|~~~)/.test(scripts[i])) fenced = !fenced;
+    else if (!fenced && new RegExp(`^#{1,${level}}\\s`).test(scripts[i])) { end = i; break; }
+  }
   const playbook = scripts.slice(start, end).join("\n").trimEnd();
   input = [
     "You are writing a script for Lex. Follow the rules below exactly; they come from his own files.",
@@ -92,6 +100,8 @@ if (run.status !== 0 || !result || result.is_error || typeof result.result !== "
   done("fail", `claude failed (${run.status ?? run.error?.code ?? "no exit"})${said ? `: ${said}` : ""}`);
 }
 
+// The call is paid for: if the file cannot be written, the answer is printed so it is not lost.
+const keepAnswer = problem => { process.stdout.write(result.result.endsWith("\n") ? result.result : `${result.result}\n`); done("fail", `${problem}; the answer was printed above`); };
 const usage_ = result.usage ?? {};
 const tokens = ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"].reduce((sum, key) => sum + (Number.isFinite(usage_[key]) ? usage_[key] : 0), 0);
 const summary = `${model}${Number.isFinite(result.total_cost_usd) ? ` $${result.total_cost_usd.toFixed(4)},` : ","} ${tokens} tokens`;
@@ -102,7 +112,6 @@ if (!options.out) {
 
 // Never overwrite: an existing file (an editor's newer edits) stays as it is and the answer goes beside it.
 const target = resolve(options.out);
-mkdirSync(dirname(target), { recursive: true });
 const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
 const candidates = [target, ...Array.from({ length: 50 }, (_, n) => join(dirname(target), `${basename(target, extname(target))}.draft-${stamp}${n ? `-${n}` : ""}${extname(target)}`))];
 for (const [index, path] of candidates.entries()) {
@@ -110,7 +119,7 @@ for (const [index, path] of candidates.entries()) {
     writeFileSync(path, result.result, { flag: "wx" });
     done("ok", `${summary} -> ${path}${index ? ` (${basename(target)} already exists and was not touched)` : ""}`);
   } catch (error) {
-    if (error.code !== "EEXIST") done("fail", `cannot write ${path} (${error.code ?? "error"})`);
+    if (error.code !== "EEXIST") keepAnswer(`cannot write ${path} (${error.code ?? "error"})`);
   }
 }
-done("fail", `cannot find a free name beside ${target}`);
+keepAnswer(`cannot find a free name beside ${target}`);
