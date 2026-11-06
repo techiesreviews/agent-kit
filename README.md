@@ -48,6 +48,15 @@ only a small launcher and its own settings; the kit itself lives here, once.
   the release branch (the Native Site Editor's `dev`). Where the two are one branch (this repo, a live site), they
   land through `kit pr` (docs tier), or `kit next --start`, which claims and starts the slice itself.
 
+## Review loop
+
+The review budget follows the risk (after Theo's sol-loop): 3 fix rounds, 5 only for security, permissions, auth, data loss, state or
+concurrency (by changed paths and the ticket's words; `paths.risky` in the settings adds project patterns), and a review that returns
+only nits ends the loop. Round 2 and later review only the code changed since the last review and the open finding ids (`R1-1`, …),
+each marked resolved or still open; `kit pr` puts the line "Reviewed with review-loop: N rounds with <model>. Verdict: approved" and a
+findings ledger in the PR, and an out-of-budget run is reported, never approved. The rule's one source is the "Review loop" section of
+`docs/kitchen.md`; briefs carry it and `kit init` points projects at it.
+
 ## Messages to Lex
 
 One short rule for every message to Lex (question or what he must do first, a recommendation, caveman bullets,

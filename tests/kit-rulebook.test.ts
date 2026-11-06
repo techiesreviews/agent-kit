@@ -232,3 +232,17 @@ test("the documented rollback works on commits landed by rebase: it puts main ba
     assert.equal(git("rev-parse", "HEAD^{tree}"), earlier);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("the rulebook holds the Review loop rule once, versioned, with the seven rules and a House rules pointer", t => {
+  const run = rulebook(t, project);
+  assert.equal(run.status, 0, run.stderr);
+  const rule = run.stdout.split("\n## Review loop\n")[1]?.split("\n## ")[0] ?? "";
+  assert.match(rule, /<!-- review-loop:start v\d+ -->\n[\s\S]+\n<!-- review-loop:end -->/);
+  for (const words of ["Budget: 3 fix rounds; 5 only for security, permissions, auth, data loss, or state and concurrency", "Stop early: a round that returns only nits",
+    "Round 1 reviews everything", "marks every old id", "One reviewer at a time", "starts no subagents", "never OpenAI or Sol", "never swap silently",
+    "downgrades the rare-path ones", "The ledger (id, severity, outcome)", "never guessed", "disputed after two replies", "running out of budget is never approval",
+    "Reviewed with review-loop: N rounds with <model>. Verdict: approved"])
+    assert.ok(rule.replace(/\n\s*/g, " ").includes(words), `the Review loop rule lacks "${words}"`);
+  assert.match(run.stdout.split("\n## House rules\n")[1]?.split("\n## ")[0] ?? "", /\*\*Review loop\*\*[\s\S]*\(#review-loop\)/);
+  assert.equal((run.stdout.match(/## Review loop\n/g) ?? []).length, 1);
+});
