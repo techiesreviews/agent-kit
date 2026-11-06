@@ -63,7 +63,7 @@ const severityOf = text => classify(text).severity;
 // A defects line with no severity anywhere and no leading location is reviewer prose (a note).
 const prose = text => !SEVERITY.test(text) && !LOCATION.test(text);
 
-const MARK = /^\s*(?:[-*+]\s+)?`?(R\d+-\d+)`?\s*:\s*(resolved|still open)\b\s*(?:\((P[0-3])\))?[\s.:;,—–-]*(.*)$/i;
+const MARK = /^\s*(?:[-*+]\s+)?`?(R\d+-\d+)`?\s*:\s*(resolved|still open)\b\s*(?:\((P[0-3]|gap)\))?[\s.:;,—–-]*(.*)$/i;
 /**
  * The marks a later review gives the earlier finding ids (review loop): `R1-2: resolved` or `R1-2: still open (P2): <reason>`
  * in the block before its defects. Returns a Map id -> { status: "resolved" | "open", severity, reason }.
@@ -172,7 +172,10 @@ export function openFindings(resultMd) {
   const readable = /^REVIEW_STATUS: complete\s*$/m.test(resultMd.replace(/^\uFEFF/, "")) && defects;
   // An earlier finding the reviewer marks "still open" is an open finding (its own severity when given, else unread: it blocks).
   if (readable) for (const [id, mark] of parseMarks(resultMd)) {
-    if (mark.status === "open") findings.unshift({ group: "Previous findings", text: `${id} still open: ${mark.reason || "no reason given"}`, severity: mark.severity, kind: "unsorted" });
+    if (mark.status !== "open") continue;
+    // A validation gap carried over stays a gap (a nit); the rest keep their own severity, or none (which blocks).
+    const gap = mark.severity === "GAP";
+    findings.unshift({ group: gap ? "Validation gaps" : "Previous findings", text: `${id} still open: ${mark.reason || "no reason given"}`, severity: gap ? null : mark.severity, kind: gap ? null : "unsorted" });
   }
   return readable ? { findings, notes, readable } : {
     findings: [{ group: "Review", text: "review format unreadable", severity: null, kind: "unsorted" }], notes: [], readable: false,

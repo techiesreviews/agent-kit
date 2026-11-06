@@ -2509,3 +2509,28 @@ test("the PR's review block is replaced between markers on a later run, never ad
   assert.equal((block.match(/<!-- review-loop -->/g) ?? []).length, 1);
   assert.match(block, /<!-- review-loop -->\nReviewed with review-loop: 1 round with claude-opus-5-5\. Verdict: approved\n\nFindings ledger: none\.\n<!-- \/review-loop -->/);
 });
+
+test("the PR's verdict counts the second look too: a second-look P2 after the budget is used, or a second-look P1 under --waive, is never approved", t => {
+  const withEvidence = (f: ReturnType<typeof fixture>, owner?: string) => {
+    const path = f.saveReview(cleanReview, owner);
+    writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ round: 1, model: "claude-opus-5-5", head: f.git("rev-parse", "HEAD"), findings: [] }));
+  };
+  const budget = fixture(t); withEvidence(budget); budget.rounds(3);
+  const used = budget.run([], { FAKE_SECOND_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P2 a second-look should.\n" });
+  assert.equal(used.status, 0, used.stdout + used.stderr);
+  assert.match(used.stdout, /^Reviewed with review-loop: 1 round with claude-opus-5-5\. Verdict: not approved \(budget used, 1 open finding left for Lex\)$/m);
+  const waiver = fixture(t); withEvidence(waiver, "ke-lead");
+  const waived = waiver.run(["--waive", "Accepted for follow-up"], { ASE_OWNER: "ke-lead", FAKE_SECOND_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P1 the second look found this.\n" });
+  assert.equal(waived.status, 0, waived.stdout + waived.stderr);
+  assert.match(waived.stdout, /^Reviewed with review-loop: 1 round with claude-opus-5-5\. Verdict: not approved \(1 open finding waived by the lead\)$/m);
+  assert.doesNotMatch(waived.stdout, /Verdict: approved/);
+});
+
+test("a saved review marked incomplete (a later round that left an id out) is never reused: a fresh review runs", t => {
+  const f = fixture(t);
+  const path = f.saveReview(cleanReview);
+  writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ incomplete: true, model: "claude-opus-5-5", head: f.git("rev-parse", "HEAD"), findings: [] }));
+  const result = f.run(["--no-merge"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(f.calls().some(claudeReview), "the incomplete review was not reused");
+});
