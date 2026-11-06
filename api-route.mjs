@@ -76,18 +76,20 @@ export function apiSpendLog(env = process.env) {
  * tokens and cost the CLI printed (claude -p --output-format json), whether it worked. A call the wrapper refused
  * (`refused`: its log holds a "claude-api-run:" line) never reached the API and adds no line. Never throws, never holds a secret.
  */
-export function recordApiSpend({ env = process.env, command, model, stdout, status, refused = false }) {
+export function recordApiSpend({ env = process.env, command, model, stdout, status, refused = false, answerRequired = true }) {
   if (!apiRoute(env).on || refused) return null;
-  let result = {};
-  try { result = JSON.parse(stdout ?? "") ?? {}; } catch { /* No JSON (a failed call): the line still says it ran. */ }
-  if (typeof result !== "object") result = {};
+  let result = {}, parsed = false;
+  try { result = JSON.parse(stdout ?? "") ?? {}; parsed = true; } catch { /* No JSON (a failed call): the line still says it ran. */ }
+  if (typeof result !== "object") { result = {}; parsed = false; }
   const usage = result.usage ?? {};
   const number = value => (Number.isFinite(value) ? value : undefined);
   const line = {
     time: new Date().toISOString(), command, model,
     input_tokens: number(usage.input_tokens), output_tokens: number(usage.output_tokens),
     cache_read_tokens: number(usage.cache_read_input_tokens), cache_write_tokens: number(usage.cache_creation_input_tokens),
-    cost_usd: number(result.total_cost_usd), ok: status === 0 && !result.is_error,
+    cost_usd: number(result.total_cost_usd),
+    // Worked means: exit 0, a JSON result, no error, a subtype that is absent or success, and (when the caller needs an answer) a real answer.
+    ok: status === 0 && parsed && !result.is_error && (result.subtype === undefined || result.subtype === "success") && (!answerRequired || (typeof result.result === "string" && result.result.trim() !== "")),
   };
   try {
     const file = apiSpendLog(env);
@@ -132,9 +134,9 @@ export function apiRouteReport(env = process.env) {
  * A plain problem line for a failed headless Claude call on the API route: the wrapper's own refusal, or an empty API
  * account ("Credit balance is too low"); null otherwise, or while the route is off.
  */
-export function apiRouteProblem(stdout, log, env = process.env) {
+export function apiRouteProblem(stdout, log, env = process.env, status = 2) {
   if (!apiRoute(env).on) return null;
-  const refusal = /^claude-api-run: (.+)$/m.exec(log ?? "")?.[1];
+  const refusal = apiWrapperRefused(status, log) ? /^claude-api-run: (.+)$/m.exec(log ?? "")?.[1] : null;
   if (refusal) return `problem: API route: ${refusal}`;
   // Only the CLI's own closing words count, and only as a whole line: a failure that merely quotes the phrase is not an
   // empty account. The JSON result's error text must be that message alone; the log's last lines are checked line by line.
