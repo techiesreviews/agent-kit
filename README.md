@@ -64,7 +64,8 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
 - **Turn on:** put your API key alone on one line in a file, run `chmod 600` on it, and start the kit with `KIT_API_KEY_FILE=<that file>` in the environment (optional: `KIT_API_CONFIG_DIR`, default `~/.claude-api`).
 - **What it covers:** the kit's headless Claude calls (`kit review`, `kit fix`, `kit slice` builders, `kit ux`). Interactive sessions are not touched; Anthropic's credit does not cover them.
 - **Turn off:** unset `KIT_API_KEY_FILE`. The kit then uses the subscription as before.
-- **Safety:** the key is read only inside the child process that runs `claude`; it is never printed, logged or put on a command line. A key file that others can read stops the call with a plain message.
+- **Safety:** the key is read only inside the child process that runs `claude`; it is never printed, logged or put on a command line, and Claude Code is told to keep it out of the shell commands a builder starts (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`). The key file must be an absolute path with mode 600; otherwise the call stops with a plain message.
+- **Limits:** the API config folder starts empty, so skills and settings from `~/.claude` are not used on the route (link them in if you want them); a saved session does not resume across switching the route on or off (start a fresh run); a run killed before it printed its cost counts as unknown, and doctor says so.
 - **Check it:** `kit doctor` says whether the route is on or off, the key file's mode, and the total spent; every run adds a line (time, command, model, tokens, cost) to `~/.local/state/agent-kit/api-spend.log`.
 
 ## The factory: generated briefs, long jobs that wait
