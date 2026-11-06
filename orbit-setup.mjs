@@ -4,6 +4,7 @@
 import { chmodSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { orbitDate } from "./ticket-store.mjs";
 import { OrbitError, OrbitSetupProblem, orbitClient, orbitConfigPath, orbitOrigin, orbitRedactor, orbitSecrets, orbitWorkTreeAround, readOrbitConfig } from "./orbit-client.mjs";
 
 const headerValue = (headers, name) => {
@@ -199,6 +200,11 @@ export async function orbitSetup({ env = process.env, flags = {}, say, io = term
   if (!looksLikeToken(token)) stop(notAToken);
   // Once a token file is used it is gone, and Orbit shows a token only once.
   const after = flags.fromFile ? " The token file is gone, so make a new token in Orbit before running this again." : "";
+  // A question after that point: Ctrl-C there says the same.
+  const askAfter = async question => {
+    try { return await io.ask(question); }
+    catch (error) { if (error instanceof OrbitSetupProblem) stop(`${error.message}${after}`); throw error; }
+  };
 
   const config = { origin, workspace_id: "", token, ...(id ? { cf_access_client_id: id, cf_access_client_secret: secret } : {}) };
   let me;
@@ -218,8 +224,7 @@ export async function orbitSetup({ env = process.env, flags = {}, say, io = term
     // A used token file cannot come back, so a slip gets two more tries, and the name counts as well as the id.
     let answer = "";
     for (let tries = 0; tries < 3 && !workspace; tries++) {
-      try { answer = await io.ask(`This token reaches several workspaces: ${reached}. Type the id or name of the one to use:`); }
-      catch (error) { if (error instanceof OrbitSetupProblem) stop(`${error.message}${after}`); throw error; }
+      answer = await askAfter(`This token reaches several workspaces: ${reached}. Type the id or name of the one to use:`);
       const said = answer.toLowerCase(), byName = workspaces.filter(item => String(item.name).toLowerCase() === said);
       // A name counts only when one workspace has it.
       workspace = workspaces.find(item => item.id.toLowerCase() === said) ?? (byName.length === 1 ? byName[0] : null);
@@ -227,7 +232,15 @@ export async function orbitSetup({ env = process.env, flags = {}, say, io = term
     if (!workspace) stop(`No workspace ${answer || "was named"} for this token; it reaches: ${reached}. Nothing was saved.${after}`);
   }
   config.workspace_id = workspace.id;
+  // The expiry is for kit doctor's days left. Orbit's own date wins; only without one does setup ask.
   if (me?.token?.expires_at) config.token_expires_at = me.token.expires_at;
+  else {
+    const expiry = await askAfter("When does this token expire? (YYYY-MM-DD, Enter if unknown)");
+    if (expiry) {
+      try { config.token_expires_at = orbitDate(expiry, "due"); }
+      catch { say("That is not a date, so no expiry was saved."); }
+    }
+  }
 
   try { saveConfig(path, config); }
   catch { stop(`The setup could not be saved in ${path}: check that the folder can be written.${after}`); }
