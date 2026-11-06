@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -818,6 +818,38 @@ test("setup again asks before replacing, keeps the address and pass for a new to
   refused(await run(["setup", "--from-file", secret], {}, "yes\n"), /chmod 600/);
 });
 
+test("setup --new-pass asks for a new Cloudflare pass, before it touches the token file", async t => {
+  const { home, run, orbit, configPath, config, save } = await fixture(t);
+  save({ ...config, cf_access_client_id: "old-id", cf_access_client_secret: "old-secret" });
+  const secret = join(home, "secret-box");
+  writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
+  const kept = refused(await run(["get", "TOOLS-1"]), /Cloudflare.*--new-pass/);
+  assert.ok(!kept.all.includes("old-secret"));
+  ok(await run(["setup", "--new-pass", "--from-file", secret], {}, `yes\n${fakeCfId}\n${fakeCfSecret}\n`));
+  assert.equal(JSON.parse(readFileSync(configPath, "utf8")).cf_access_client_secret, fakeCfSecret);
+  assert.equal(orbit.requests.at(-1)!.headers["cf-access-client-id"], fakeCfId);
+
+  // A half pass stops before the token file is read, so the token is not lost to a typing slip.
+  rmSync(configPath);
+  writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
+  refused(await run(["setup", "--origin", orbit.origin, "--from-file", secret], {}, `${fakeCfId}\n\n`), /two parts/);
+  assert.ok(existsSync(secret));
+});
+
+test("a setup that cannot save says so plainly, with what to do about the used token file", async t => {
+  if (process.getuid?.() === 0) return t.skip("a root user can write anywhere");
+  const { home, run, orbit, configPath } = await fixture(t);
+  rmSync(configPath);
+  const folder = join(home, ".config/fleet");
+  chmodSync(folder, 0o500);
+  const mcp = fakeMcpSettings(home, orbit.origin);
+  const secret = join(home, "secret-box");
+  writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
+  const output = await run(["setup", "--from-file", secret, "--from-mcp-config", mcp], {}, "yes\n");
+  chmodSync(folder, 0o700);
+  refused(output, /could not be saved.*token file is gone/i);
+});
+
 test("setup warns about a read-only token and asks which workspace when there are several", async t => {
   const { home, run, orbit, configPath } = await fixture(t);
   rmSync(configPath);
@@ -949,6 +981,7 @@ test("setup's help is numbered plain steps with no jargon; kit ticket help names
   refused(await run(["nonsense"]), /nonsense/);
   refused(await run(["get"]), /card key/i);
   refused(await run(["get", "TOOLS-1", "--wat"]), /--wat/);
+  refused(await run(["get", "TOOLS-1", "--constructor"]), /does not take --constructor/);
   refused(await run(["update", "TOOLS-1", "--title"]), /--title/);
   refused(await run(["update", "TOOLS-1", "--title", "a", "--title", "b"]), /--title/);
   refused(await run(["update", "TOOLS-1", "--description", "a", "--description-file", "b"]), /description/);
@@ -1065,6 +1098,76 @@ test("setup leaves a file that holds no token, and after a used token file says 
   writeFileSync(offline, JSON.stringify({ mcpServers: { orbit: { url: "http://127.0.0.1:9/mcp", headers: { "CF-Access-Client-Id": fakeCfId, "CF-Access-Client-Secret": fakeCfSecret } } } }));
   const noReach = refused(await run(["setup", "--from-file", secret, "--from-mcp-config", offline], {}, "yes\n"), /could not reach.*token file is gone.*new token/i);
   assert.ok(!/Orbit refused/.test(noReach.all));
+});
+
+test("a tick counts through any line ending, and a second identical ticked line counts too", async t => {
+  const { home, orbit, run } = await fixture(t);
+  orbit.addTask(orbit.tools, { description: "- [ ] Scheduled in Radaar" });
+  const file = join(home, "windows.md");
+  writeFileSync(file, "- [x] Scheduled in Radaar\r\n- [ ] Other\r\n");
+  refused(await run(["update", "TOOLS-1", "--description-file", file]), /--lex-said/);
+  refused(await run(["update", "TOOLS-1", "--description", "Top\u2028- [x] Scheduled in Radaar"]), /--lex-said/);
+  orbit.addTask(orbit.tools, { description: "- [x] Scheduled in Radaar\n- [ ] Scheduled in Radaar" });
+  refused(await run(["update", "TOOLS-2", "--description", "- [x] Scheduled in Radaar\n- [x] Scheduled in Radaar"]), /--lex-said/);
+  assert.equal(orbit.writes().length, 0);
+  ok(await run(["update", "TOOLS-2", "--description", "- [x] Scheduled in Radaar\n- [ ] Scheduled in Radaar\n\nMore"]));
+});
+
+test("a blank description never wipes a card by accident; --clear-description does it on purpose", async t => {
+  const { home, orbit, run } = await fixture(t);
+  const task = orbit.addTask(orbit.tools, { description: "Keep me" });
+  const empty = join(home, "empty.md");
+  writeFileSync(empty, "");
+  refused(await run(["update", "TOOLS-1", "--description", ""]), /--clear-description/);
+  refused(await run(["update", "TOOLS-1", "--description-file", empty]), /--clear-description/);
+  refused(await run(["update", "TOOLS-1", "--description-file", "-"], {}, " \n"), /--clear-description/);
+  assert.equal(orbit.writes().length, 0);
+  refused(await run(["update", "TOOLS-1", "--clear-description", "--description", "x"]), /--clear-description/);
+  ok(await run(["update", "TOOLS-1", "--clear-description"]));
+  assert.equal(task.description, "");
+});
+
+test("--json and a dry run print no raw terminal tricks, and the text parses back the same; titles stay one line", async t => {
+  const { orbit, run } = await fixture(t);
+  const trick = "A\u202Eb\u009bc\u007fd\u200Fe\u061Cf";
+  orbit.addTask(orbit.tools, { title: trick });
+  const output = ok(await run(["get", "TOOLS-1", "--json"]));
+  assert.ok(!/[\u202E\u009b\u007f\u200F\u061C]/.test(output.stdout));
+  assert.equal(JSON.parse(output.stdout.split("\nRESULT:")[0]).title, trick);
+  assert.ok(!/[\u202E\u009b\u007f\u200F\u061C]/.test(ok(await run(["get", "TOOLS-1"])).stdout));
+  assert.ok(!/[\u202E\u009b]/.test(ok(await run(["note", "TOOLS-1", trick, "--dry-run"])).stdout));
+
+  ok(await run(["create", "--title", "Two\nlines"]));
+  assert.equal(orbit.tasks[1].title, "Two lines");
+  ok(await run(["update", "TOOLS-2", "--title", "Again\ntwo"]));
+  assert.equal(orbit.tasks[1].title, "Again two");
+  orbit.addTask(orbit.tools, { title: "Made\nelsewhere" });
+  assert.equal(lines(ok(await run(["list"])).stdout).length, 4, "one line per card, then the RESULT line");
+});
+
+test("only card keys count as blockers", async t => {
+  const { orbit, run } = await fixture(t);
+  orbit.addTask(orbit.tools, { description: "Blocked by: legal team, tools-3" });
+  assert.deepEqual(JSON.parse(ok(await run(["get", "TOOLS-1", "--json"])).stdout.split("\nRESULT:")[0]).blocked_by, ["TOOLS-3"]);
+});
+
+test("an agent the kit starts never inherits a lead's ORBIT_ROLE", async t => {
+  const home = mkdtempSync(join(tmpdir(), "kit-ticket-role-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const bin = join(home, "bin"), seen = join(home, "seen"), root = join(home, "work");
+  mkdirSync(bin);
+  mkdirSync(root);
+  spawnSync("git", ["init", "-q", root]);
+  const fake = (name: string) => {
+    writeFileSync(join(bin, name), `#!/bin/sh\nprintf '%s' "\${ORBIT_ROLE-none}" > "${seen}"\ncat > /dev/null\necho "{}"\n`);
+    chmodSync(join(bin, name), 0o755);
+  };
+  fake("claude");
+  const brief = join(home, "brief.md");
+  writeFileSync(brief, "brief");
+  const env = { ...kitEnv(), HOME: home, PATH: `${bin}:${kitEnv().PATH}`, ASE_SKIP_DOCTOR: "1", ORBIT_ROLE: "lead" };
+  await start(process.execPath, [resolve("agent-run.mjs"), "build", root, brief, "--cli", "claude", "--model", "claude-opus-5-5", "--out", join(home, "out")], env);
+  assert.equal(readFileSync(seen, "utf8"), "none");
 });
 
 test("a saved change whose log line cannot be written says the change went through", async t => {

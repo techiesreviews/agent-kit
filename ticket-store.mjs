@@ -65,6 +65,7 @@ const notesHeading = "## Notes";
 const tick = /^[\s>]*(?:(?:[-*+]|\d+[.)])\s+)?\[[xX]\]\s+(.*)$/;
 
 const split = text => String(text ?? "").split("\n");
+const blockerKey = /^[A-Za-z][A-Za-z0-9_]*-[0-9]+$/;
 /** The text without the matching lines and the blank line each leaves behind; every other line stays exactly as it was. */
 function dropLines(description, match) {
   const lines = split(description), kept = [];
@@ -104,7 +105,7 @@ export function withNextLex(description, reason) {
 export function blockedBy(description) {
   for (const line of split(description)) {
     const found = blockedLine.exec(line.trim());
-    if (found) return found[1].split(/[\s,]+/).filter(Boolean);
+    if (found) return found[1].split(/[\s,]+/).filter(word => blockerKey.test(word)).map(word => word.toUpperCase());
   }
   return [];
 }
@@ -152,7 +153,7 @@ export function withNote(description, date, who, text) {
 }
 
 /** The ticked "Scheduled in Radaar" lines, with spacing, emphasis, quote marks and letter case aside. */
-const ticked = description => split(description)
+const ticked = description => String(description ?? "").split(/\r\n|[\n\r\u2028\u2029]/)
   .map(line => (tick.exec(line)?.[1] ?? "").replace(/[*_~`]/g, "").replace(/\s+/g, " ").trim().toLowerCase())
   .filter(text => text.includes("scheduled in radaar"));
 const amsterdamToday = () => { const now = zoneParts(Date.now()); return `${now.year}-${now.month}-${now.day}`; };
@@ -239,8 +240,9 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       if (/publish/i.test(target?.name ?? "")) needsWords(lexSaid, `moving a card to ${target.name}`);
     }
     if (change.description !== undefined) {
-      const old = new Set(ticked(before?.description));
-      if (ticked(change.description).some(line => !old.has(line))) needsWords(lexSaid, 'ticking "Scheduled in Radaar"');
+      // Counted per text: a second identical line ticked is a new tick too.
+      const old = ticked(before?.description);
+      if (ticked(change.description).some(line => { const index = old.indexOf(line); if (index < 0) return true; old.splice(index, 1); return false; })) needsWords(lexSaid, 'ticking "Scheduled in Radaar"');
     }
   };
 
@@ -340,7 +342,7 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       requireLead();
       checkLog();
       const board = await projectFrom(project);
-      const body = { project_id: board.id, status_id: (status === undefined ? await firstOpenStatus(board.id) : await statusByName(board.id, status)).id, title };
+      const body = { project_id: board.id, status_id: (status === undefined ? await firstOpenStatus(board.id) : await statusByName(board.id, status)).id, title: oneLine(title) };
       const text = blocked === undefined ? description : withBlockedBy(description, blockers(blocked));
       if (text !== undefined) body.description = text;
       if (priority !== undefined) body.priority = priority;
@@ -356,8 +358,12 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       });
       return { key: task.identifier, action: "create", task, fields: Object.keys(body) };
     },
-    update(key, { title, description, status, priority, parent, blocked, lexSaid }) {
-      if ([title, description, status, priority, parent, blocked].every(value => value === undefined)) throw new OrbitError("nothing to change: name at least one of --title, --description, --status, --priority, --parent, --blocked-by");
+    update(key, { title, description: text, clearDescription, status, priority, parent, blocked, lexSaid }) {
+      if (clearDescription && text !== undefined) throw new OrbitError("use --description or --clear-description, not both");
+      // A blank text is more often a failed pipe than a wish: wiping a card is asked for by name.
+      if (text !== undefined && !text.trim()) throw new OrbitError("that description is blank, so nothing was sent; to empty a card on purpose use --clear-description");
+      const description = clearDescription ? "" : text;
+      if ([title, description, status, priority, parent, blocked].every(value => value === undefined)) throw new OrbitError("nothing to change: name at least one of --title, --description, --clear-description, --status, --priority, --parent, --blocked-by");
       if (priority !== undefined && !priorities.includes(priority)) throw new OrbitError(`priority must be one of ${priorities.join(", ")}`);
       if (title !== undefined && !oneLine(title)) throw new OrbitError("--title cannot be blank");
       // The fields set outright; a retry stops if someone else changed one of them. A blockers-only change merges.
@@ -365,7 +371,7 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       const keys = blocked === undefined ? undefined : blockers(blocked);
       return changeCard("update", key, async task => {
         const wanted = {};
-        if (title !== undefined) wanted.title = title;
+        if (title !== undefined) wanted.title = oneLine(title);
         if (description !== undefined) wanted.description = description;
         if (keys !== undefined) wanted.description = withBlockedBy(wanted.description ?? task.description, keys);
         if (status !== undefined) wanted.status_id = (await statusByName(task.project_id, status)).id;

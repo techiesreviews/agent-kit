@@ -1181,6 +1181,8 @@ async function run(args) {
 }
 
 if (import.meta.main) {
+  // Only leads write to Orbit: an agent the kit starts never inherits a lead's ORBIT_ROLE.
+  delete process.env.ORBIT_ROLE;
   for (const stream of [process.stdout, process.stderr]) {
     stream.on("error", error => { if (!disconnected(error)) throw error; });
   }
