@@ -5,7 +5,7 @@ import { appendFileSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync
 import { loadavg, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import { completedFixRounds, openFindings, reviewCoversHead, sameReviewPatch } from "../review-findings.mjs";
+import { completedFixRounds, openFindings, reviewIncomplete, reviewCoversHead, sameReviewPatch } from "../review-findings.mjs";
 import { branchRisk, budgetReport, isNit, ledgerRows, prLine, renderLedger, reviewChain, roundLimit, stoppingFindings } from "../review-loop.mjs";
 import { projectCommand, spoken } from "../review-brief.mjs";
 
@@ -65,7 +65,7 @@ async function savedReview(head, base, patchId, ticket, root, second = false, re
     const resultMd = readFileSync(result, "utf8");
     if (!/^REVIEW_STATUS: complete$/m.test(resultMd)) continue;
     // A later review loop round that left an earlier id out was marked incomplete when it was saved: never reused.
-    try { if (JSON.parse(readFileSync(join(folder, "findings.json"), "utf8")).incomplete) continue; } catch { /* No record: an older review. */ }
+    if (reviewIncomplete(folder)) continue;
     if (reviewedBase === base && reviewCoversHead(reviewedHead, head, ticket, root)) return { folder, samePatch: false };
     if (!reviewedHead || !reviewedBase || openFindings(resultMd).findings.length) continue;
     currentIds ??= [await patchId(base, head), ...(reviewable === head ? [] : [await patchId(base, reviewable)])];
@@ -824,7 +824,7 @@ async function main(args) {
         if (findings.length > 15) console.log(`… and ${findings.length - 15} more`);
         // Out of budget with findings left is reported for Lex to decide, never taken as approval.
         if (relaxed && blocking.length) {
-          const saved = reviewChain(dirname(resultPath)).at(-1)?.findings ?? [];
+          const saved = second ? [] : reviewChain(dirname(resultPath)).at(-1)?.findings ?? [];
           console.log(budgetReport({ rounds, limit, open: blocking.map(item => ({ ...item, id: saved[findings.indexOf(item)]?.id })) }));
         }
         if (blocking.length && !flags.waive) {

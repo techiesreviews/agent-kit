@@ -206,3 +206,8 @@ export function countsLine({ findings, counts, unreadable }) {
   const nonzero = values => Object.entries(values).filter(([, count]) => count).map(([name, count]) => `${name} ${count}`).join(", ");
   return `findings ${findings.length}${findings.length ? `: ${nonzero(counts.kind)}; ${nonzero(counts.severity)}` : ""}`;
 }
+
+/** A saved review marked incomplete (a later review loop round that left an earlier id out) is never reused or answered. */
+export function reviewIncomplete(folder) {
+  try { return JSON.parse(readFileSync(resolve(folder, "findings.json"), "utf8")).incomplete === true; } catch { return false; }
+}
