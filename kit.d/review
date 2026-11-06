@@ -8,7 +8,7 @@ import { inferCli, opencodeModelRuns, parseAgentArgs, releaseReviewBudget, reser
 import { reviewBrief, reviewScope, ticketReviewBrief } from "../review-brief.mjs";
 import { saveReviewEvidence } from "../review-evidence.mjs";
 import { countsLine, findingsRecord } from "../review-findings.mjs";
-import { findPreviousReview, loopBriefSection, riskyChange, roundLimit } from "../review-loop.mjs";
+import { branchRisk, findPreviousReview, loopBriefSection, parseMarks, roundLimit, unmarkedIds } from "../review-loop.mjs";
 import { parseChanges, reviewKinds, secondLookPick, secondLookTable } from "../pr-tier.mjs";
 import { durationMilliseconds } from "../sol-run.mjs";
 
@@ -90,15 +90,14 @@ async function reviewOnce(flags, look) {
       return listed.status === 0 ? `## Files\n${listed.stdout.split("\n").filter(Boolean).map(file => `- \`${file}\``).join("\n")}\n` : "";
     };
     let brief = flags.ticket ? ticketReviewBrief(flags.ticket, resolved, root, undefined, true, model) : reviewBrief("", "", resolved, root, [], true, model, changed());
-    // Rule 3 of the review loop: round 1 is a full review; a later round reviews only what changed since the last reviewed head and the open ids.
+    // Review loop: round 1 is a full review; a later round reviews only what changed since the last reviewed head and the open ids.
     // A second look or a --commit review is never a loop round.
     previous = !look && !scope.commit ? findPreviousReview(join(kitMainRoot(), ".scratch/reviews", kitOwner()), { head: scope.head, base: scope.base, root }) : null;
     round = previous ? previous.round + 1 : 1;
     loopMeta = look || scope.commit ? {} : { round, ...(previous ? { previous: previous.name } : {}) };
     if (previous) {
-      const paths = spawnSync("git", ["-C", root, "diff", "--name-only", `${scope.base}...HEAD`], { encoding: "utf8" }).stdout.split("\n").filter(Boolean);
-      const { risky } = riskyChange({ paths, text: flags.ticket ? readFileSync(resolve(root, flags.ticket), "utf8").slice(0, 2000) : "", settings: kitSettings(root) });
-      brief += `\n${loopBriefSection({ round, limit: roundLimit(risky), previousHead: previous.head, open: previous.findings })}\n`;
+      const { risky } = branchRisk({ root, base: scope.base, ticket: flags.ticket, settings: kitSettings(root) });
+      brief += `\n${loopBriefSection({ round, limit: roundLimit(risky), previousHead: previous.head, currentHead: scope.head, open: previous.findings })}\n`;
       console.log(`review loop: round ${round}, answering ${previous.name} (${previous.findings.length} open findings)`);
     }
     writeFileSync(briefPath, brief);
@@ -143,6 +142,16 @@ async function reviewOnce(flags, look) {
     reason = timedOut ? `timed out after ${look.limit}` : [...stderr.matchAll(/^problem: (.+)$/gm)].at(-1)?.[1] || "review failed";
     // An empty account is a review that could not run, not one that failed.
     outOfCredit = status !== 0 && /^\S+ out of credit: /.test(reason);
+    // A later round must mark every earlier id (resolved or still open); a review that leaves one out is incomplete.
+    if (status === 0 && previous) {
+      const left = unmarkedIds(previous.findings.map(item => item.id), parseMarks(readFileSync(join(temporary, "out.md"), "utf8")));
+      if (left.length) {
+        status = 1;
+        loopMeta = {};
+        reason = `the review left out ${left.join(", ")}: every earlier finding must be marked resolved or still open`;
+        console.error(`problem: ${reason}`);
+      }
+    }
     if (!status && flags.pr) {
       const [head, base] = readFileSync(join(temporary, "refs.txt"), "utf8").trim().split("\n");
       const body = join(temporary, "pr-comment.md");

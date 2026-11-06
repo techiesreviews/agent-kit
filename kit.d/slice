@@ -4,8 +4,8 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterFixRounds, blockingFindings, completedFixRounds, FIX_ROUNDS, openFindings, reviewCoversHead } from "../review-findings.mjs";
-import { riskyChange, roundLimit, stoppingFindings } from "../review-loop.mjs";
+import { completedFixRounds, openFindings, reviewCoversHead } from "../review-findings.mjs";
+import { branchRisk, roundLimit, stoppingFindings } from "../review-loop.mjs";
 import { builderChecks, spoken } from "../review-brief.mjs";
 import { ticketSkillLines } from "../skills.mjs";
 import { visiblePath } from "../pr-tier.mjs";
@@ -239,15 +239,7 @@ async function slice(args) {
     const branchRounds = () => completedFixRounds(join(kitMainRoot(), ".scratch/kit-fix", encodeURIComponent(branch)),
       join(root, ".scratch/kit-fix", encodeURIComponent(branch)));
     // The review loop: risk from what the branch changes against the landing branch and the ticket's words.
-    const loopRisky = () => {
-      const land = kitBranch("land", settings);
-      const listed = spawnSync("git", ["-C", root, "diff", "--name-only", `origin/${land}...HEAD`], { encoding: "utf8", env });
-      let text = "";
-      try { text = readFileSync(resolve(root, flags.ticket), "utf8").slice(0, 2000); } catch { /* No ticket text: paths decide. */ }
-      // The files the ticket names count too: they are known before the builder has changed anything.
-      const named = [...text.matchAll(/`([^`\s]*[./][^`\s]*)`/g)].map(match => match[1]);
-      return riskyChange({ paths: [...(listed.status === 0 ? listed.stdout.split("\n").filter(Boolean) : []), ...named], text, settings }).risky;
-    };
+    const loopRisky = () => branchRisk({ root, base: `origin/${kitBranch("land", settings)}`, ticket: flags.ticket, settings }).risky;
     const roundCap = () => flags.rounds ?? roundLimit(loopRisky());
     const stopping = open => stoppingFindings(open, branchRounds(), loopRisky());
     const kit = env.ASE_SLICE_KIT || resolve(import.meta.dirname, "../kit");

@@ -1746,7 +1746,7 @@ for (const pending of [false, true]) test(`a should (P2) still blocks with only 
   assert.equal(f.calls().some(call => call.args[0] === "wait"), false);
 });
 
-// Rule 2 of the review loop: a review that returns only nits needs no fix round and does not block, whatever the round count.
+// Review loop, nits: a review that returns only nits needs no fix round and does not block, whatever the round count.
 for (const rounds of [0, 2]) test(`a review with only nits (a P3 and a validation gap) lands, with the nits as follow-ups (${rounds} rounds)`, t => {
   const f = fixture(t);
   if (rounds) f.rounds(rounds);
@@ -2459,7 +2459,7 @@ test("out of budget with a blocker left is reported for Lex and never approved",
   f.rounds(3); f.saveReview(cleanReview.replace("Spec: none.", "Spec: P1: Real wrong behaviour."));
   const result = f.run();
   assert.equal(result.status, 1, result.stdout + result.stderr);
-  assert.match(result.stdout, /^Review budget used: 3 of 3 rounds, 1 open finding\. Running out of budget is not approval; Lex decides\.$/m);
+  assert.match(result.stdout, /^Review budget used: 3 of 3 fix rounds, 1 open finding\. Running out of budget is not approval; Lex decides\.$/m);
   assert.doesNotMatch(result.stdout, /Verdict: approved/);
 });
 
@@ -2472,4 +2472,40 @@ test("the PR says how it was reviewed: the line and the findings ledger from the
   assert.match(result.stdout, /^Reviewed with review-loop: 1 round with claude-opus-5-5\. Verdict: approved$/m);
   const patch = f.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body).find(text => text?.includes("Reviewed with review-loop"));
   assert.ok(patch?.includes("Reviewed with review-loop: 1 round with claude-opus-5-5. Verdict: approved\n\nFindings ledger: none."), patch);
+});
+
+test("a later review that marks an earlier id \"still open\" and finds nothing new does not land and is never approved", t => {
+  const f = fixture(t);
+  const path = f.saveReview("REVIEW_STATUS: complete\nPrevious findings:\nR1-1: still open (P1): the save still drops the second write\n\nDefects: none\nValidation gaps: none.\n");
+  writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ round: 2, model: "claude-opus-5-5", head: f.git("rev-parse", "HEAD"), findings: [{ id: "R2-1", group: "Previous findings", severity: "P1", kind: "unsorted", text: "R1-1 still open: x" }] }));
+  const result = f.run();
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /Previous findings: R1-1 still open: the save still drops the second write/);
+  assert.match(result.stdout, /RESULT: fail pr #73 review has 1 open findings/);
+  assert.equal(f.ghCalls("merge").length, 0);
+  assert.doesNotMatch(result.stdout, /Verdict: approved/);
+});
+
+test("out of budget with a should (P2) left lands as a follow-up for Lex but the PR says not approved, with the budget report and the saved ids", t => {
+  const f = fixture(t);
+  f.rounds(3);
+  const path = f.saveReview(cleanReview.replace("Spec: none.", "Spec: P2: Real minor defect."));
+  writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ round: 4, model: "claude-opus-5-5", head: f.git("rev-parse", "HEAD"), findings: [{ id: "R4-1", group: "Spec", severity: "P2", kind: "unsorted", text: "P2: Real minor defect." }] }));
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^Review budget used: 3 of 3 fix rounds, 1 open finding\. Running out of budget is not approval; Lex decides\.$/m);
+  assert.match(result.stdout, /^- R4-1 \(should\): /m);
+  assert.match(result.stdout, /^Reviewed with review-loop: 1 round with claude-opus-5-5\. Verdict: not approved \(budget used, 1 open finding left for Lex\)$/m);
+  assert.doesNotMatch(result.stdout, /Verdict: approved/);
+});
+
+test("the PR's review block is replaced between markers on a later run, never added twice", t => {
+  const f = fixture(t);
+  const path = f.saveReview(cleanReview);
+  writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ round: 1, model: "claude-opus-5-5", head: f.git("rev-parse", "HEAD"), findings: [] }));
+  assert.equal(f.run().status, 0);
+  const bodies = f.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body ?? "");
+  const block = bodies.find(text => text.includes("<!-- review-loop -->"))!;
+  assert.equal((block.match(/<!-- review-loop -->/g) ?? []).length, 1);
+  assert.match(block, /<!-- review-loop -->\nReviewed with review-loop: 1 round with claude-opus-5-5\. Verdict: approved\n\nFindings ledger: none\.\n<!-- \/review-loop -->/);
 });
