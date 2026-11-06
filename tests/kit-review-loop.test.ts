@@ -79,9 +79,12 @@ test("later rounds: ids, marks and the brief section of a later round", () => {
   assert.match(section, /^## Review loop: review round 2, after 1 fix round \(at most 3 fix rounds\)$/m);
   assert.match(loopBriefSection({ round: 4, limit: 3, previousHead: "a", currentHead: "b", open: [] }), /review round 4, after 3 fix rounds \(at most 3 fix rounds\)/);
   assert.match(loopBriefSection({ round: 2, limit: 3, previousHead: "same", currentHead: "same", open: withIds([finding("P1")], 1) }), /No commit came after the last review/);
-  assert.match(section, /git diff abc1234\.\.HEAD/);
+  assert.match(section, /Review only the code changed since abc1234 \(the `Changes since the last review` file named in the scope note\)/);
+  assert.match(loopBriefSection({ round: 2, limit: 3, previousHead: null, currentHead: "x", open: [] }), /rebuilt since the last review \(a rebase\)/);
+  assert.match(loopBriefSection({ round: 2, limit: 3, previousHead: "a", currentHead: "b", open: withIds([finding("P1")], 1), answer: "Declined R1-1: rare path" }), /The builder's written answer to them[^]*Declined R1-1: rare path/);
+  assert.match(loopBriefSection({ round: 2, limit: 3, previousHead: "a", currentHead: "b", open: [{ id: "R1-2", group: "Validation gaps", severity: null, kind: null, text: "add a test" }] }), /- R1-2 \(validation gap\): add a test/);
   assert.match(section, /- R1-1 \(P1 fault\): P1 finding with its evidence/);
-  assert.match(section, /`<id>: resolved` or `<id>: still open \(<its severity>\): <reason>`/);
+  assert.match(section, /`<id>: resolved` or `<id>: still open \(<its severity, or gap for a validation gap>\): <reason>`/);
   assert.match(section, /start no subagents/);
 });
 
@@ -160,4 +163,31 @@ test("old saved reviews without ids get the ids a new one would have", t => {
   writeFileSync(join(dir, "r1", "findings.json"), JSON.stringify({ model: "m", head: "h", findings: [{ group: "Spec", severity: "P2", kind: "fault", text: "x" }] }));
   writeFileSync(join(dir, "r1", "result.md"), "REVIEW_STATUS: complete\nDefects: x\n");
   assert.deepEqual(ledgerRows(reviewChain(join(dir, "r1"))), [{ id: "R1-1", severity: "should", outcome: "open at the end" }]);
+});
+
+test("a validation gap marked still open stays a gap (a nit); a mark with no reason is no evidence for rounds 4 and 5", () => {
+  const gapMark = openFindings("REVIEW_STATUS: complete\nPrevious findings:\nR1-2: still open (gap): add a test\nDefects: none\nValidation gaps: none.\n").findings;
+  assert.deepEqual(gapMark.map((item: { group: string; severity: string | null }) => [item.group, item.severity]), [["Validation gaps", null]]);
+  assert.equal(severityWord(gapMark[0]), "nit");
+  assert.deepEqual(stoppingFindings(gapMark, 0, false), []);
+  const noReason = openFindings("REVIEW_STATUS: complete\nPrevious findings:\nR1-1: still open (P2)\nDefects: none\nValidation gaps: none.\n").findings;
+  assert.equal(stoppingFindings(noReason, 2, true).length, 1, "within the 3 rounds it still counts");
+  assert.deepEqual(stoppingFindings(noReason, 3, true), [], "round 4 needs evidence");
+  assert.equal(stoppingFindings(openFindings("REVIEW_STATUS: complete\nPrevious findings:\nR1-1: still open (P2): the retry drops a write\nDefects: none\nValidation gaps: none.\n").findings, 3, true).length, 1);
+});
+
+test("the ledger links a carried finding to its first id: one row, the latest outcome", () => {
+  const chain = [
+    { round: 1, findings: withIds([finding("P1")], 1), marks: new Map() },
+    { round: 2, findings: [{ id: "R2-1", group: "Previous findings", severity: "P1", text: "R1-1 still open: drops" }], marks: new Map([["R1-1", { status: "open", severity: "P1", reason: "drops" }]]) },
+    { round: 3, findings: [], marks: new Map([["R2-1", { status: "resolved", severity: null, reason: "" }]]) },
+  ];
+  assert.deepEqual(ledgerRows(chain), [{ id: "R1-1", severity: "blocker", outcome: "resolved" }]);
+  // Still open at the last round: one row with the reason.
+  assert.deepEqual(ledgerRows(chain.slice(0, 2)), [{ id: "R1-1", severity: "blocker", outcome: "still open: drops" }]);
+});
+
+test("risk by path needs the name itself: auth/, auth.ts, session.ts, but not auth-card.ts, tokens.css or state-label.tsx", () => {
+  for (const path of ["src/auth/login.ts", "src/auth.ts", "lib/session.ts", "src/permissions/rules.ts", "src/state/store.ts"]) assert.equal(riskyChange({ paths: [path] }).risky, true, path);
+  for (const path of ["src/auth-card.tsx", "src/tokens.css", "src/state-label.tsx", "src/store-card.tsx", "src/session-card.tsx", "src/author.ts"]) assert.equal(riskyChange({ paths: [path] }).risky, false, path);
 });

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // kit: review a diff or commit and save the evidence
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { inferCli, opencodeModelRuns, parseAgentArgs, releaseReviewBudget, reserveReviewBudget } from "../agent-run.mjs";
@@ -63,7 +63,7 @@ function evidenceDirectory() {
 // model and its CLI, so no ASE_AGENT_CLI can send it to Codex, and marks its evidence folder.
 async function reviewOnce(flags, look) {
   let evidence = "none", temporary, status = 1, reason = "review failed", label, budget, env, model, effort, reviewedHead;
-  let previous = null, round = 1, loopMeta = {}, ledger, outOfCredit = false, kept = false, spawned = false, unavailable = false, stderr = "", timedOut = false;
+  let previous = null, round = 1, loopMeta = {}, sinceHead = null, ledger, outOfCredit = false, kept = false, spawned = false, unavailable = false, stderr = "", timedOut = false;
   const ticket = flags.ticket;
   try {
     // The default base comes from the settings file; a settings problem is a failure, not a usage error.
@@ -81,6 +81,7 @@ async function reviewOnce(flags, look) {
     const briefPath = join(temporary, "brief.md");
     const resolved = scope.commit ? { commit: scope.commit } : { base: scope.base };
     const agentArgs = ["review", root, briefPath, ...(scope.commit ? ["--commit", scope.commit] : ["--base", scope.base]), "--out", temporary];
+    // The runner prepares "the changes since the last review" for a later round (set once that round is known, below).
     let cli;
     ({ model, effort, cli } = parseAgentArgs(agentArgs, env));
     // The brief names skills for the model that reviews (a second look's own).
@@ -92,14 +93,24 @@ async function reviewOnce(flags, look) {
     let brief = flags.ticket ? ticketReviewBrief(flags.ticket, resolved, root, undefined, true, model) : reviewBrief("", "", resolved, root, [], true, model, changed());
     // Review loop: round 1 is a full review; a later round reviews only what changed since the last reviewed head and the open ids.
     // A second look or a --commit review is never a loop round.
-    previous = !look && !scope.commit ? findPreviousReview(join(kitMainRoot(), ".scratch/reviews", kitOwner()), { head: scope.head, base: scope.base, root }) : null;
+    const branchName = spawnSync("git", ["-C", root, "branch", "--show-current"], { encoding: "utf8" }).stdout.trim();
+    previous = !look && !scope.commit ? findPreviousReview(join(kitMainRoot(), ".scratch/reviews", kitOwner()), { head: scope.head, base: scope.base, root, branch: branchName }) : null;
     round = previous ? previous.round + 1 : 1;
-    loopMeta = look || scope.commit ? {} : { round, ...(previous ? { previous: previous.name } : {}) };
+    loopMeta = look || scope.commit ? {} : { round, ...(branchName ? { branch: branchName } : {}), ...(previous ? { previous: previous.name } : {}) };
     if (previous) {
       const { risky } = branchRisk({ root, base: scope.base, ticket: flags.ticket, settings: kitSettings(root) });
-      brief += `\n${loopBriefSection({ round, limit: roundLimit(risky), previousHead: previous.head, currentHead: scope.head, open: previous.findings })}\n`;
+      sinceHead = previous.headKnown && previous.head !== scope.head ? previous.head : null;
+      // The builder's written answer: the newest fix round's report for this branch (what it fixed, and what it declined with evidence).
+      let answer = "";
+      try {
+        const folder = join(kitMainRoot(), ".scratch/kit-fix", encodeURIComponent(branchName));
+        const newest = readdirSync(folder).filter(name => /^round-[1-9]\d*\.md$/.test(name)).sort((a, b) => parseInt(b.slice(6), 10) - parseInt(a.slice(6), 10))[0];
+        if (newest) answer = readFileSync(join(folder, newest), "utf8").trim().slice(0, 4000);
+      } catch { /* No fix round yet: no answer to give. */ }
+      brief += `\n${loopBriefSection({ round, limit: roundLimit(risky), previousHead: previous.headKnown ? previous.head : null, currentHead: scope.head, sinceFile: true, open: previous.findings, answer })}\n`;
       console.log(`review loop: round ${round}, answering ${previous.name} (${previous.findings.length} open findings)`);
     }
+    if (sinceHead) agentArgs.push("--since", sinceHead);
     writeFileSync(briefPath, brief);
     console.log(`model: ${model}`);
     // One count for the computer; this project's old per-project count moves in on first use.
@@ -147,7 +158,7 @@ async function reviewOnce(flags, look) {
       const left = unmarkedIds(previous.findings.map(item => item.id), parseMarks(readFileSync(join(temporary, "out.md"), "utf8")));
       if (left.length) {
         status = 1;
-        loopMeta = {};
+        loopMeta = { incomplete: true };
         reason = `the review left out ${left.join(", ")}: every earlier finding must be marked resolved or still open`;
         console.error(`problem: ${reason}`);
       }
