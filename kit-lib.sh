@@ -55,7 +55,17 @@ kit_settings_problems() {
         elif (.branches.direct | type) != "boolean" then "\"branches.direct\" must be true or false in scripts/agents/kit.json"
         elif .branches.direct and ((.branches.land | type) != "string" or (.branches.land | test("\\S") | not) or .branches.land != .branches.release) then
           "direct landing needs the same branch as \"land\" and \"release\" in scripts/agents/kit.json (for example both \"main\")"
-        else empty end)
+        else empty end),
+      (if has("tickets") | not then empty elif .tickets == "files" or .tickets == "orbit" then empty
+        else "\"tickets\" must be \"files\" or \"orbit\" in scripts/agents/kit.json" end),
+      (if has("orbit") and (.orbit | type) != "object" then "\"orbit\" must be an object in scripts/agents/kit.json, like { \"project\": \"TOOLS\" }" else
+        (if (.orbit | type) == "object" and (.orbit | has("project")) and ((.orbit.project | type) != "string" or (.orbit.project | test("^[A-Za-z][A-Za-z0-9_]*$") | not)) then
+          "\"orbit.project\" must be an Orbit project key in scripts/agents/kit.json, like \"TOOLS\"" else empty end),
+        (if (.orbit | type) == "object" and (.orbit | has("parent")) and ((.orbit.parent | type) != "string" or (.orbit.parent | test("^[A-Za-z][A-Za-z0-9_]*-[0-9]+$") | not)) then
+          "\"orbit.parent\" must be a card key in scripts/agents/kit.json, like \"TOOLS-10\"" else empty end),
+        (if .tickets == "orbit" and ((.orbit | type) != "object" or (.orbit | has("project") | not)) then
+          "\"tickets\": \"orbit\" needs \"orbit\": { \"project\": \"<KEY>\" } in scripts/agents/kit.json" else empty end)
+      end)
     end' "$file" 2>&1); then
     printf 'scripts/agents/kit.json is unreadable: %s\n' "${problems//$'\n'/ }"
     return 1

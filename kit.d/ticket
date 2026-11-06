@@ -1,0 +1,218 @@
+#!/usr/bin/env node
+// kit: tickets on the Orbit board: create, read, update, dates, notes, comments, sub-tasks, next-lex, trash, setup
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { kitOwner, kitResult, kitRoot, kitSettings } from "../kit-lib.mjs";
+import { OrbitError, OrbitSetupProblem, orbitClient, orbitLogPath, orbitRedactor, orbitSecrets, readOrbitConfig } from "../orbit-client.mjs";
+import { orbitSetup } from "../orbit-setup.mjs";
+import { orbitStore, showDate, ticketSettings } from "../ticket-store.mjs";
+
+const usage = `Usage: kit ticket <command> [options]
+Tickets on the Orbit board, from any project folder. A card is named by its key, like TOOLS-10.
+
+Read (anyone):
+  get <KEY> [--comments] [--json]                  one card, with its status, assignee_ids, next step and blockers
+  list [--project KEY|all] [--status NAME] [--parent KEY] [--assignee ID|none] [--q TEXT] [--limit N] [--json]
+  sub-tasks <KEY> [--json]                         the card's direct sub-tasks
+
+Write (leads only: ORBIT_ROLE=lead; every write takes --dry-run, which prints the exact change and sends nothing):
+  create --title T [--description D | --description-file F|-] [--status NAME] [--priority P] [--project KEY]
+         [--parent KEY | --no-parent] [--blocked-by KEY,KEY] [--lex-said "<his exact words>"]
+  update <KEY> [--title T] [--description D | --description-file F|-] [--status NAME] [--priority P]
+         [--parent KEY|none] [--blocked-by KEY,KEY|none] [--lex-said "<his exact words>"]
+  dates <KEY> [--start DATE] [--due DATE] --source "<where the date comes from>"   or   dates <KEY> --clear
+  note <KEY> "<text>"                              a dated line under Notes in the description
+  comment <KEY> "<text>"                           a comment on the card
+  next-lex <KEY> "<reason>"                        first description line "Next step (Lex): reason"
+  clear-next-lex <KEY>                             takes that line out
+  trash <KEY> --lex-said "<his exact words>"       moves the card and its sub-tasks to Orbit's trash (30 days)
+
+Set up once:
+  setup [--help]                                   the private Orbit setup file, step by step
+
+Without --project a board comes from "orbit": { "project": "<KEY>", "parent": "<KEY-n>" } in scripts/agents/kit.json;
+parent is the card new tickets go under (--no-parent skips it). "tickets": "files"|"orbit" (default files) says which
+store this project's kit next, slice, pr and status read: they still read ticket files in this stage. kit ticket itself
+always talks to Orbit.
+
+The rules it keeps: a move to a Publish status and a tick on "Scheduled in Radaar" need --lex-said; a card is never
+deleted for good; a date needs a source. A plain date YYYY-MM-DD is a whole day in Europe/Amsterdam (a start begins at
+00:00, a due date ends at 23:59); a full RFC 3339 time is taken as it is. The public API has no relations, so blockers
+are a "Blocked by: KEY-n, KEY-m" line in the description. It reads the latest version first and tries once more on a
+version conflict. Each write adds one line to ~/.local/state/fleet/orbit.log.
+`;
+const setupUsage = `Usage: kit ticket setup [--from-mcp-config [file]] [--from-file file] [--origin address] [--workspace id] [--dry-run]
+
+Connects this computer to Orbit. It takes about 5 minutes and you do it once.
+
+1. In Orbit, open Settings, then API tokens.
+2. Create a token named fleet: service account, Tasks set to Write, the projects it should reach, expiry 90 days. Copy it. Orbit shows it one time only.
+3. In a terminal, in any project folder, run: scripts/agents/kit ticket setup --from-mcp-config
+4. Type yes when it asks to copy the Cloudflare pass. Your Claude settings hold the pass, and nothing else there is copied.
+5. Paste the token when it asks. The screen shows nothing while you paste. That is normal. Press Enter.
+6. It checks the token with Orbit and says "Saved". Say "done" in the Waiting for Lex thread.
+
+Never paste the token in a chat.
+
+If it cannot copy the pass, it asks you to paste the two parts instead. The saved file stays private to you, outside every project.
+
+Other ways to start it:
+--from-file file     reads the token from that file, then deletes the file (for T3's secret box).
+--from-mcp-config file     copies the pass from that settings file, not from your Claude settings.
+--origin address     Orbit's web address, when it cannot be copied.
+--workspace id       the workspace, when the token reaches more than one.
+--dry-run            says what it would do and touches nothing.
+`;
+
+class UsageProblem extends Error {}
+const text = ["title", "description", "description-file", "status", "priority", "parent", "project", "blocked-by", "lex-said"];
+const commands = {
+  get: { args: ["card key"], flags: ["json", "comments"], values: [] },
+  list: { args: [], flags: ["json"], values: ["project", "status", "parent", "assignee", "q", "limit"] },
+  "sub-tasks": { args: ["card key"], flags: ["json"], values: [] },
+  create: { args: [], flags: ["dry-run", "no-parent"], values: text },
+  update: { args: ["card key"], flags: ["dry-run"], values: text.filter(name => name !== "project") },
+  dates: { args: ["card key"], flags: ["dry-run", "clear"], values: ["start", "due", "source"] },
+  note: { args: ["card key", "text"], flags: ["dry-run"], values: [] },
+  comment: { args: ["card key", "text"], flags: ["dry-run"], values: [] },
+  "next-lex": { args: ["card key", "reason"], flags: ["dry-run"], values: [] },
+  "clear-next-lex": { args: ["card key"], flags: ["dry-run"], values: [] },
+  trash: { args: ["card key"], flags: ["dry-run"], values: ["lex-said"] },
+  setup: { args: [], flags: ["dry-run"], values: ["from-file", "origin", "workspace"], optional: ["from-mcp-config"] },
+};
+
+function parse(name, words) {
+  const spec = commands[name], found = { flags: {}, rest: [] };
+  for (let index = 0; index < words.length; index++) {
+    const word = words[index];
+    if (word === "--") { found.rest.push(...words.slice(index + 1)); break; }
+    if (!word.startsWith("--")) { found.rest.push(word); continue; }
+    const flag = word.slice(2);
+    if (found.flags[flag] !== undefined) throw new UsageProblem(`${word} is given twice`);
+    if (spec.flags.includes(flag)) found.flags[flag] = true;
+    else if (spec.optional?.includes(flag)) found.flags[flag] = words[index + 1] && !words[index + 1].startsWith("-") ? words[++index] : true;
+    else if (spec.values.includes(flag)) {
+      if (words[index + 1] === undefined) throw new UsageProblem(`${word} needs a value`);
+      found.flags[flag] = words[++index];
+    } else throw new UsageProblem(`${name} does not take ${word}`);
+  }
+  if (found.rest.length < spec.args.length) throw new UsageProblem(`${name} needs a ${spec.args[found.rest.length]}`);
+  if (found.rest.length > spec.args.length) throw new UsageProblem(`${name} does not take ${found.rest.slice(spec.args.length).join(" ")}; put quotes around text`);
+  return found;
+}
+
+function description(flags) {
+  if (flags.description !== undefined && flags["description-file"] !== undefined) throw new UsageProblem("use --description or --description-file, not both");
+  const file = flags["description-file"];
+  if (file === undefined) return flags.description;
+  try { return readFileSync(file === "-" ? 0 : resolve(file), "utf8"); }
+  catch { throw new OrbitError(`cannot read the description from ${file}`); }
+}
+
+// Terminal control characters in card text never reach the screen; a RESULT line is one line.
+const printable = value => String(value ?? "").replace(/[^\P{Cc}\n\t]/gu, "");
+const assignees = task => task.assignee_ids?.length ? task.assignee_ids.join(", ") : "none";
+const cardLine = task => `${task.identifier}  [${task.status_name}]  ${task.priority}  assignees: ${assignees(task)}  ${task.title}`;
+
+let redact = orbitRedactor();
+const say = line => console.log(redact(printable(line)));
+function finish(status, message, code = status === "ok" ? 0 : 1) {
+  kitResult(status, redact(printable(`ticket ${message}`)).replace(/\s+/g, " "));
+  process.exitCode = code;
+}
+
+function report(name, outcome) {
+  if (outcome.dry) {
+    const { method, path, body } = outcome.dry;
+    say(`Would send: ${method} ${path}`);
+    if (body) say(JSON.stringify(body, null, 2));
+    if (name === "trash") say(`Its ${outcome.subTasks} sub-task(s) would go to the trash with it.`);
+    say("Dry run: nothing was sent.");
+    return finish("ok", `${name} ${outcome.key} dry run`);
+  }
+  if (outcome.unchanged) return finish("ok", `${name} ${outcome.key} already as asked; nothing to send`);
+  if (outcome.task?.url && name !== "trash") say(`${outcome.key}  ${outcome.task.url}`);
+  if (name === "next-lex") say(`${outcome.key} waits for Lex. Assign the card to Lex in Orbit.`);
+  if (name === "clear-next-lex" && outcome.task?.assignee_ids?.length) say(`${outcome.key} no longer waits for Lex. Ask Lex to unassign it (assignee_ids: ${assignees(outcome.task)}).`);
+  if (name === "trash") say(`${outcome.key} and ${outcome.subTasks} sub-task(s) are in Orbit's trash; members can restore them there for 30 days.`);
+  finish("ok", `${name} ${outcome.key}${outcome.fields ? ` (${outcome.fields.join(", ")})` : ""}`);
+}
+
+async function show(store, key, { json, comments }) {
+  const task = await store.read(key);
+  const notes = comments ? await store.comments(task.identifier) : null;
+  if (json) { say(JSON.stringify(notes ? { ...task, comments: notes } : task, null, 2)); return finish("ok", `get ${task.identifier}`); }
+  say(`${task.identifier}  ${task.title}`);
+  say(`Status: ${task.status_name}  Priority: ${task.priority}`);
+  say(`Assignees (assignee_ids): ${assignees(task)}`);
+  if (task.next_lex !== null) say(`Next step (Lex): ${task.next_lex}`);
+  if (task.blocked_by.length) say(`Blocked by: ${task.blocked_by.join(", ")}`);
+  if (task.due_at) say(`Dates: ${[task.due_start_at && `start ${showDate(task.due_start_at)}`, `due ${showDate(task.due_at)}`].filter(Boolean).join(", ")}`);
+  if (task.parent_task_id) say(`Parent: ${task.parent_task_id}`);
+  say(`Version: ${task.version}`);
+  if (task.url) say(`Link: ${task.url}`);
+  if (task.description) say(`\n${task.description}`);
+  for (const note of notes ?? []) say(`\n--- ${note.author_service_account?.name ?? note.author_id ?? "someone"}, ${note.created_at}\n${note.body}`);
+  finish("ok", `get ${task.identifier}`);
+}
+
+function showList(label, { items, more }, json) {
+  if (json) say(JSON.stringify(items, null, 2));
+  else for (const task of items) say(cardLine(task));
+  finish("ok", `${label}: ${items.length} card${items.length === 1 ? "" : "s"}${more ? "; more exist (use --limit)" : ""}`);
+}
+
+async function main() {
+  const [name, ...words] = process.argv.slice(2);
+  if (name === undefined) { process.stderr.write(usage); throw new UsageProblem("Usage: kit ticket <command>; see kit ticket --help"); }
+  if (name === "--help" || name === "-h" || name === "help") return void process.stdout.write(usage);
+  if (!Object.hasOwn(commands, name)) throw new UsageProblem(`unknown command ${name}; see kit ticket --help`);
+  if (words.includes("--help") || words.includes("-h")) return void process.stdout.write(name === "setup" ? setupUsage : usage);
+  const { flags, rest } = parse(name, words);
+  const [key, words2] = rest;
+
+  if (name === "setup") {
+    const message = await orbitSetup({ flags: { fromFile: flags["from-file"], fromMcpConfig: flags["from-mcp-config"], origin: flags.origin, workspace: flags.workspace, dryRun: flags["dry-run"] }, say });
+    return finish("ok", message);
+  }
+
+  let settings = {}, settingsProblem = "";
+  try { settings = kitSettings(kitRoot()); }
+  catch (error) { if (!/^no scripts\/agents\/kit\.json/.test(error.message)) settingsProblem = error.message; }
+  const { project, parent } = ticketSettings(settings);
+
+  const config = readOrbitConfig();
+  redact = orbitRedactor(orbitSecrets(config));
+  const dryRun = Boolean(flags["dry-run"]);
+  const store = orbitStore({ client: orbitClient(config), role: process.env.ORBIT_ROLE, who: kitOwner(), logPath: orbitLogPath(), redact, secrets: orbitSecrets(config), dryRun,
+    defaults: { project, parent, problem: settingsProblem } });
+
+  switch (name) {
+    case "get": return show(store, key, flags);
+    case "list": {
+      const limit = flags.limit === undefined ? 50 : Number(flags.limit);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new UsageProblem("--limit must be a whole number from 1 to 1000");
+      return showList("list", await store.list({ project: flags.project, status: flags.status, parent: flags.parent, assignee: flags.assignee, q: flags.q, limit }), flags.json);
+    }
+    case "sub-tasks": return showList(`sub-tasks ${key}`, await store.subTasks(key), flags.json);
+    case "create": {
+      if (flags.parent !== undefined && flags["no-parent"]) throw new UsageProblem("use --parent or --no-parent, not both");
+      return report(name, await store.create({ project: flags.project, title: flags.title, description: description(flags), status: flags.status, priority: flags.priority, parent: flags.parent, noParent: flags["no-parent"], blocked: flags["blocked-by"], lexSaid: flags["lex-said"] }));
+    }
+    case "update": return report(name, await store.update(key, { title: flags.title, description: description(flags), status: flags.status, priority: flags.priority, parent: flags.parent, blocked: flags["blocked-by"], lexSaid: flags["lex-said"] }));
+    case "dates": return report(name, await store.dates(key, { start: flags.start, due: flags.due, source: flags.source, clear: flags.clear }));
+    case "note": return report(name, await store.note(key, words2));
+    case "comment": return report(name, await store.comment(key, words2));
+    case "next-lex": return report(name, await store.nextLex(key, words2));
+    case "clear-next-lex": return report(name, await store.clearNextLex(key));
+    case "trash": return report(name, await store.trash(key, flags["lex-said"]));
+  }
+}
+
+try { await main(); }
+catch (error) {
+  if (error instanceof UsageProblem) finish("fail", error.message, 2);
+  else if (error instanceof OrbitError || error instanceof OrbitSetupProblem) finish("fail", error.message);
+  // Anything else stays one plain line: a stack or a system error can quote what it was reading.
+  else finish("fail", `stopped on an unexpected error (${error?.code ?? error?.name ?? "unknown"})`);
+}
