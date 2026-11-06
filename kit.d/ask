@@ -54,6 +54,7 @@ if (options.out) {
 let prompt;
 try { prompt = readFileSync(resolve(options.promptFile), "utf8"); }
 catch { done("fail", `cannot read the prompt file ${resolve(options.promptFile)}`); }
+if (!prompt.trim()) done("fail", `the prompt file ${resolve(options.promptFile)} is blank; nothing was sent`);
 
 // Script mode: Lex's rules go in front of the prompt, read from where they live; a missing file or section stops the call.
 let input = prompt;
@@ -83,7 +84,9 @@ if (options.script) {
 // The call runs in an empty folder so no project's CLAUDE.md or settings reach it.
 const seconds = process.env.KIT_ASK_TIMEOUT === undefined ? 600 : Number(process.env.KIT_ASK_TIMEOUT);
 if (!Number.isInteger(seconds) || seconds < 1) done("fail", `KIT_ASK_TIMEOUT must be a whole number of seconds, 1 or more, not ${process.env.KIT_ASK_TIMEOUT}`, 2);
-const empty = mkdtempSync(join(tmpdir(), "kit-ask-"));
+let empty;
+try { empty = mkdtempSync(join(tmpdir(), "kit-ask-")); }
+catch (error) { done("fail", `cannot make a temporary folder (${error.code ?? "error"}); nothing was sent`); }
 let run;
 try {
   run = spawnSync(claudeCommand(), ["-p", "--model", model, "--output-format", "json", "--tools", ""], {
