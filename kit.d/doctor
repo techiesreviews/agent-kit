@@ -539,9 +539,15 @@ if [[ -n ${KIT_API_KEY_FILE:-} || $quiet == false ]]; then
   fi
 fi
 
-# A project on the Orbit ticket store says so (kit ticket; a project on the default files store says nothing).
+# A project on the Orbit ticket store shows what Orbit really answers, asked once (a project on the default files store
+# says nothing). Only a note, never a counted check: this line never fails doctor, and doctor --quiet stays off the network.
 if [[ $quiet == false && $(kit_setting .tickets 2>/dev/null) == orbit ]]; then
-  printf 'tickets: Orbit board %s (kit ticket; kit next, slice, pr, status and init --issues still use ticket files in this stage)\n' "$(kit_setting .orbit.project 2>/dev/null)"
+  orbit_library=$(dirname -- "${KIT_LIB_MJS:-$(dirname -- "${KIT_LIB:-$(dirname -- "${BASH_SOURCE[0]}")/../kit-lib.sh}")/kit-lib.mjs}")/orbit-client.mjs
+  orbit_answer=''
+  if node=$(kit_node_find); then
+    orbit_answer=$(timeout -k 2 10 "$node" --input-type=module -e 'console.log(await (await import(process.argv[1])).orbitReport());' "$(realpath -m -- "$orbit_library")" 2>/dev/null < /dev/null) || orbit_answer=''
+  fi
+  printf 'tickets: Orbit board %s: %s\n' "$(kit_setting .orbit.project 2>/dev/null)" "${orbit_answer:-not checked (the check could not run)}"
 fi
 
 if (( ${#failed[@]} )); then

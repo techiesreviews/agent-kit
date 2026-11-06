@@ -7,7 +7,7 @@ import test, { type TestContext } from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { orbitDate, orbitStore, showDate, ticketSettings, withBlockedBy, withNote, withPlannedDates, withoutNextLex } from "../ticket-store.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { orbitRedactor } from "../orbit-client.mjs";
+import { orbitRedactor, orbitReport } from "../orbit-client.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { cloudflarePassFrom } from "../orbit-setup.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
@@ -473,12 +473,13 @@ test("Ctrl-C at a setup prompt ends with a plain RESULT line, the terminal back 
   if (script.status !== 0) return t.skip("no script command on this machine");
   const { root, configPath, env } = await fixture(t);
   rmSync(configPath);
-  const child = spawn("script", ["-qfec", `${kit} ticket setup --origin http://127.0.0.1:9`, "/dev/null"], { env: { ...env, KIT_ROOT: root }, stdio: ["pipe", "pipe", "pipe"] });
+  const child = spawn("script", ["-qfec", `${kit} ticket setup`, "/dev/null"], { env: { ...env, KIT_ROOT: root }, stdio: ["pipe", "pipe", "pipe"] });
   child.stdin.on("error", () => {});
-  let seen = "", sent = false;
+  let seen = "", sent = false, addressed = false;
   const finished = new Promise<number | null>(done => child.on("close", done));
   child.stdout.on("data", chunk => {
     seen += chunk;
+    if (!addressed && /web address/.test(seen)) { addressed = true; setTimeout(() => child.stdin.write("http://127.0.0.1:9\r"), 150); }
     if (!sent && /hidden/.test(seen)) { sent = true; setTimeout(() => child.stdin.write("\u0003"), 150); }
   });
   assert.notEqual(await finished, 0);
@@ -513,8 +514,6 @@ test("help is only asked for standing alone: a -h in text is text, a -h after a 
   refused(await run(["update", "TOOLS-1", "--title", "-h"]), /--title needs a value/);
   ok(await run(["comment", "TOOLS-1", "-h"]));
   assert.equal(orbit.comments[task.id][0].body, "-h");
-  ok(await run(["update", "TOOLS-1", "--title=-h"]));
-  assert.equal(task.title, "-h");
   ok(await run(["note", "TOOLS-1", "--", "--help"]));
   assert.match(task.description, /--help$/);
   for (const args of [["update", "TOOLS-1", "--help"], ["update", "-h"], ["-h"]]) {
@@ -722,7 +721,7 @@ test("setup --from-file reads then deletes the token file, finds the workspace a
   assert.equal(readFileSync(mcp, "utf8"), before, "the MCP settings stay as they were");
   assert.equal(statSync(configPath).mode & 0o777, 0o600);
   assert.equal(statSync(join(home, ".config/fleet")).mode & 0o777, 0o700);
-  assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")), { origin: orbit.origin, workspace_id: fakeWorkspace, token: fakeToken, cf_access_client_id: fakeCfId, cf_access_client_secret: fakeCfSecret });
+  assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")), { origin: orbit.origin, workspace_id: fakeWorkspace, token: fakeToken, cf_access_client_id: fakeCfId, cf_access_client_secret: fakeCfSecret, token_expires_at: "2027-02-04T00:00:00.000Z" });
   assert.equal(readdirSync(join(home, ".config/fleet")).length, 1, "no temporary file left");
   assert.match(output.all, /fleet/);
   assert.match(output.all, /2027-02-04/);
@@ -785,7 +784,7 @@ test("setup refuses a wrong token, a wrong-looking token, a git work tree and sa
   refused(await run(["setup", "--from-file", join(home, "nothing"), "--from-mcp-config", mcp], {}, "yes\n"), /cannot be read|no file/i);
   // A bad address stops before the token file is read.
   writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
-  refused(await run(["setup", "--from-file", secret, "--origin", "http://orbit.example.test"]), /https/);
+  refused(await run(["setup", "--from-file", secret], {}, "http://orbit.example.test\n"), /https/);
   assert.ok(existsSync(secret));
   // A folder is not a token file, and is left alone.
   mkdirSync(join(home, "folder"));
@@ -813,7 +812,7 @@ test("setup again asks before replacing, keeps the address and pass for a new to
   refused(await run(["setup", "--from-file", secret], {}, "no\n"), /kept/i);
   assert.ok(existsSync(secret), "a no leaves the token file too");
   ok(await run(["setup", "--from-file", secret], {}, "yes\n"));
-  assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")), config);
+  assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")), { ...config, token_expires_at: "2027-02-04T00:00:00.000Z" });
   assert.equal(orbit.requests.at(-1)!.headers["cf-access-client-secret"], fakeCfSecret);
 
   save(config, 0o644);
@@ -835,7 +834,7 @@ test("setup --new-pass asks for a new Cloudflare pass, before it touches the tok
   // A half pass stops before the token file is read, so the token is not lost to a typing slip.
   rmSync(configPath);
   writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
-  refused(await run(["setup", "--origin", orbit.origin, "--from-file", secret], {}, `${fakeCfId}\n\n`), /two parts/);
+  refused(await run(["setup", "--from-file", secret], {}, `${orbit.origin}\n${fakeCfId}\n\n`), /two parts/);
   assert.ok(existsSync(secret));
 });
 
@@ -925,20 +924,6 @@ test("a no to a different address keeps the saved pass too, so nothing of that o
   assert.equal(orbit.requests.at(-1)!.headers["cf-access-client-id"], fakeCfId);
 });
 
-test("setup never sends a copied pass to an address other than its own without asking", async t => {
-  const { home, run, orbit, configPath } = await fixture(t);
-  rmSync(configPath);
-  const mcp = join(home, "other-mcp.json");
-  writeFileSync(mcp, JSON.stringify({ mcpServers: { orbit: { url: "https://elsewhere.example.test/mcp", headers: { "CF-Access-Client-Id": "other-id", "CF-Access-Client-Secret": "other-secret" } } } }));
-  const secret = join(home, "secret-box");
-  writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
-  // yes to copying, no to the other address, then the two parts of this address's own pass.
-  const said = ok(await run(["setup", "--origin", orbit.origin, "--from-file", secret, "--from-mcp-config", mcp], {}, `yes\nno\n${fakeCfId}\n${fakeCfSecret}\n`));
-  assert.match(said.stderr, /elsewhere\.example\.test/);
-  assert.ok(!orbit.requests.some(item => item.headers["cf-access-client-id"] === "other-id"));
-  assert.equal(JSON.parse(readFileSync(configPath, "utf8")).cf_access_client_id, fakeCfId);
-});
-
 test("setup --new-pass with a declined address says only what it keeps", async t => {
   const { home, run, orbit, configPath } = await fixture(t);
   const mcp = fakeMcpSettings(home, "https://elsewhere.example.test");
@@ -952,10 +937,6 @@ test("a saved token and pass never go to a new address", async t => {
   const { home, run, orbit, configPath, config } = await fixture(t);
   const other = await fakeOrbit(t);
   const before = readFileSync(configPath, "utf8");
-  // A new address by --origin: Enter on the pass and on the token leaves nothing to send.
-  refused(await run(["setup", "--origin", other.origin], {}, "yes\n\n\n\n"), /Orbit token/);
-  assert.equal(other.requests.length, 0);
-  assert.equal(readFileSync(configPath, "utf8"), before);
   // A new address from the settings: its own pass goes along, the saved token does not.
   const mcp = fakeMcpSettings(home, other.origin);
   const moved = refused(await run(["setup", "--from-mcp-config", mcp], {}, "yes\nyes\nyes\n\n"), /Orbit token/);
@@ -979,10 +960,7 @@ test("setup warns about a read-only token and asks which workspace when there ar
   rmSync(configPath);
   orbit.controls.me.workspaces = [{ id: fakeWorkspace, name: "Fake" }, { id: "22222222-2222-4222-8222-222222222222", name: "Other" }];
   writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
-  refused(await run(["setup", "--from-file", secret, "--from-mcp-config", mcp], {}, "yes\n"), /--workspace/);
-  assert.ok(!existsSync(configPath));
-  writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
-  ok(await run(["setup", "--from-file", secret, "--from-mcp-config", mcp, "--workspace", fakeWorkspace], {}, "yes\n"));
+  ok(await run(["setup", "--from-file", secret, "--from-mcp-config", mcp], {}, `yes\n${fakeWorkspace}\n`));
   assert.equal(JSON.parse(readFileSync(configPath, "utf8")).workspace_id, fakeWorkspace);
 });
 
@@ -1015,19 +993,29 @@ test("setup's hidden prompt shows nothing typed, through the real front door on 
   assert.equal(JSON.parse(readFileSync(configPath, "utf8")).token, fakeToken);
 });
 
-test("an option never swallows the next option as its value; --flag=value lets a value start with dashes", async t => {
+test("an option never swallows the next option as its value, and only the space form exists", async t => {
   const { orbit, run } = await fixture(t);
   const task = orbit.addTask(orbit.tools);
   refused(await run(["trash", "TOOLS-1", "--lex-said", "--dry-run"]), /--lex-said needs a value/);
   refused(await run(["update", "TOOLS-1", "--title", "--dry-run"]), /--title needs a value/);
-  assert.equal(orbit.writes().length, 0);
   assert.equal(task.trashed, false);
-  ok(await run(["update", "TOOLS-1", "--title=--odd title"]));
-  assert.equal(task.title, "--odd title");
-  ok(await run(["update", "TOOLS-1", "--title=a=b"]));
+  for (const word of ["--title=x", "--dry-run=yes", "--wat=1"]) refused(await run(["update", "TOOLS-1", word]), /does not take/);
+  assert.equal(orbit.writes().length, 0);
+  ok(await run(["update", "TOOLS-1", "--title", "a=b"]));
   assert.equal(task.title, "a=b");
-  refused(await run(["update", "TOOLS-1", "--dry-run=yes", "--title", "x"]), /--dry-run/);
-  refused(await run(["update", "TOOLS-1", "--wat=1"]), /--wat/);
+});
+
+test("setup takes no --origin or --workspace: it asks for the address and the workspace when it cannot find them", async t => {
+  const { home, run, orbit, configPath } = await fixture(t);
+  rmSync(configPath);
+  refused(await run(["setup", "--origin", orbit.origin]), /does not take --origin/);
+  refused(await run(["setup", "--workspace", fakeWorkspace]), /does not take --workspace/);
+  assert.equal(orbit.requests.length, 0);
+  const secret = join(home, "secret-box");
+  writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
+  const asked = ok(await run(["setup", "--from-file", secret], {}, `${orbit.origin}\n${fakeCfId}\n${fakeCfSecret}\n`));
+  assert.match(asked.stderr, /web address/);
+  assert.equal(JSON.parse(readFileSync(configPath, "utf8")).origin, orbit.origin);
 });
 
 test("a write answered by a gateway page may have saved, so it says so, and is not retried", async t => {
@@ -1075,14 +1063,16 @@ test("a card that already holds a token-shaped text can still be edited; adding 
   assert.equal(orbit.writes().length, writes);
 });
 
-test("setup names a --workspace the token does not reach", async t => {
+test("setup asks which workspace when the token reaches several, and refuses an answer it does not reach", async t => {
   const { home, run, orbit, configPath } = await fixture(t);
   rmSync(configPath);
   const mcp = fakeMcpSettings(home, orbit.origin);
   const secret = join(home, "secret-box");
+  orbit.controls.me.workspaces = [{ id: fakeWorkspace, name: "Fake" }, { id: "22222222-2222-4222-8222-222222222222", name: "Other" }];
   writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
-  const said = refused(await run(["setup", "--from-file", secret, "--from-mcp-config", mcp, "--workspace", "99999999-9999-4999-8999-999999999999"], {}, "yes\n"), /No workspace 99999999-9999-4999-8999-999999999999/);
-  assert.ok(!said.all.includes("1 workspaces"));
+  const said = refused(await run(["setup", "--from-file", secret, "--from-mcp-config", mcp], {}, "yes\n99999999-9999-4999-8999-999999999999\n"), /No workspace 99999999-9999-4999-8999-999999999999/);
+  assert.match(said.stderr, /several workspaces/);
+  assert.ok(!existsSync(configPath));
 });
 
 test("setup's help is numbered plain steps with no jargon; kit ticket help names every command", async t => {
@@ -1206,7 +1196,7 @@ test("setup leaves a file that holds no token, and after a used token file says 
   const box = () => writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
   box();
   orbit.controls.me.workspaces = [{ id: fakeWorkspace, name: "Fake" }, { id: "22222222-2222-4222-8222-222222222222", name: "Other" }];
-  refused(await run(["setup", "--from-file", secret, "--from-mcp-config", mcp], {}, "yes\n"), /--workspace.*token file is gone.*new token/);
+  refused(await run(["setup", "--from-file", secret, "--from-mcp-config", mcp], {}, "yes\nnot-one-of-them\n"), /No workspace.*token file is gone.*new token/);
   orbit.controls.me.workspaces = undefined;
   box();
   orbit.controls.answers.push("gateway-page");
@@ -1384,7 +1374,6 @@ test("a blank --parent never drops the board's default parent", async t => {
   const { orbit, run } = await fixture(t, { tickets: "orbit", orbit: { project: "TOOLS", parent: "TOOLS-1" } });
   orbit.addTask(orbit.tools);
   refused(await run(["create", "--title", "x", "--parent", ""]), /card key/i);
-  refused(await run(["create", "--title", "x", "--parent="]), /card key/i);
   assert.equal(orbit.writes().length, 0);
 });
 
@@ -1475,7 +1464,7 @@ test("the ticket settings are checked the same by the kit's JavaScript and by ki
   const { root, run, env } = await fixture(t, { tickets: "orbit", orbit: { project: "TOOLS", parent: "TOOLS-10" } });
   const write = (value: object) => writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify({ project: "kit-ticket", branches: { land: "dev" }, ...value }));
   const doctor = () => start(resolve("kit.d/doctor"), [], { ...env, KIT_DOCTOR_SKIP: "" });
-  assert.match((await doctor()).stdout, /tickets: Orbit board TOOLS.*init --issues/);
+  assert.match((await doctor()).stdout, /tickets: Orbit board TOOLS: connected/);
   write({});
   assert.ok(!(await doctor()).stdout.includes("tickets:"), "files is the default and says nothing");
   const wrong: [object, RegExp][] = [
@@ -1498,6 +1487,101 @@ test("the ticket settings are checked the same by the kit's JavaScript and by ki
   ok(await run(["list", "--project", "TOOLS"]));
   refused(await run(["list"]), /"orbit.parent"/);
   assert.deepEqual(kitSettingsProblems({ project: "x", branches: { land: "dev" }, tickets: "files" }), []);
+});
+
+test("kit doctor's Orbit line says what Orbit really answers, asking once, never failing and never printing a secret", async t => {
+  const { env, orbit, configPath, config, save } = await fixture(t);
+  const doctor = (args: string[] = []) => start(resolve("kit.d/doctor"), args, { ...env, KIT_DOCTOR_SKIP: "" });
+  const line = async () => {
+    orbit.requests.length = 0;
+    const output = await doctor();
+    for (const secret of secrets) assert.ok(!output.all.includes(secret), "a secret was printed");
+    assert.equal(orbit.requests.length <= 1, true, "asks Orbit at most once");
+    return { status: output.status, line: lines(output.stdout).find(item => item.startsWith("tickets:")) ?? "", result: lines(output.stdout).at(-1)! };
+  };
+  const connected = await line();
+  assert.equal(connected.line, "tickets: Orbit board TOOLS: connected");
+  assert.equal(orbit.requests[0].method, "GET");
+  assert.ok(orbit.requests[0].path.endsWith("/me"), "a read-only call");
+
+  const states: [() => void, RegExp][] = [
+    [() => orbit.controls.answers.push({ status: 401, code: "unauthorized", detail: `bad ${fakeToken}` }), /token refused or expired$/],
+    [() => orbit.controls.answers.push({ status: 403, code: "insufficient_scope", detail: "no" }), /token refused or expired$/],
+    [() => orbit.controls.answers.push("redirect"), /Cloudflare blocked it$/],
+    [() => orbit.controls.answers.push("cloudflare-page"), /Cloudflare blocked it$/],
+    [() => orbit.controls.answers.push("login-page-200"), /Cloudflare blocked it$/],
+    [() => orbit.controls.answers.push("gateway-page"), /Orbit not answering \(502\)$/],
+    [() => orbit.controls.answers.push({ status: 500, code: "internal_error", detail: "down" }), /Orbit not answering \(500\)$/],
+    [() => orbit.controls.answers.push({ retryAfter: "1" }), /Orbit not answering \(too many requests\)$/],
+  ];
+  for (const [arrange, pattern] of states) {
+    arrange();
+    const answer = await line();
+    assert.match(answer.line, new RegExp(`^tickets: Orbit board TOOLS: ${pattern.source}`), String(pattern));
+    assert.equal(answer.status, connected.status, "the Orbit line never changes how doctor ends");
+    assert.equal(answer.result, connected.result);
+    assert.equal(orbit.requests.length, 1, "a 429 or an error is not retried");
+  }
+
+  // The real refusals, not queued answers: a wrong token, a wrong pass, nothing listening.
+  save({ ...config, token: "orb_wrongtokenforthedoctorcheck000" });
+  assert.match((await line()).line, /token refused or expired$/);
+  save({ ...config, cf_access_client_secret: "wrong-pass-secret" });
+  assert.match((await line()).line, /Cloudflare blocked it$/);
+  save({ ...config, origin: "http://127.0.0.1:9" });
+  assert.match((await line()).line, /Orbit not answering$/);
+
+  // Days left only when the saved file records an expiry.
+  const inDays = (days: number) => new Date(Date.now() + days * 86_400_000 + 3_600_000).toISOString();
+  save({ ...config, token_expires_at: inDays(42) });
+  assert.equal((await line()).line, "tickets: Orbit board TOOLS: connected; token runs out in 42 days");
+  save({ ...config, token_expires_at: new Date(Date.now() - 2.5 * 86_400_000).toISOString() });
+  orbit.controls.answers.push({ status: 401, code: "unauthorized", detail: "expired" });
+  assert.equal((await line()).line, "tickets: Orbit board TOOLS: token refused or expired; token ran out 2 days ago");
+  save({ ...config, token_expires_at: "whenever" });
+  assert.equal((await line()).line, "tickets: Orbit board TOOLS: connected");
+
+  // No setup file: no call at all. A file that cannot be used says why, without its contents.
+  rmSync(configPath);
+  orbit.requests.length = 0;
+  const none = await line();
+  assert.equal(none.line, "tickets: Orbit board TOOLS: not set up");
+  assert.equal(none.status, connected.status);
+  assert.equal(orbit.requests.length, 0);
+  save(`{"token":"${fakeToken}", broken`);
+  assert.match((await line()).line, /setup file needs attention/);
+  save(config, 0o644);
+  assert.match((await line()).line, /chmod 600/);
+  save(config);
+
+  // kit doctor --quiet, the gate before builds and reviews, stays off the network.
+  orbit.requests.length = 0;
+  assert.ok(!(await doctor(["--quiet"])).stdout.includes("tickets:"));
+  assert.equal(orbit.requests.length, 0);
+});
+
+test("a silent Orbit is reported after the short limit, and the check gives up by itself", async t => {
+  const { env, orbit } = await fixture(t);
+  orbit.controls.answers.push("hang");
+  const started = Date.now();
+  assert.equal(await orbitReport({ ...env }, { timeoutMs: 300 }), "Orbit not answering");
+  assert.ok(Date.now() - started < 5000);
+  assert.equal(orbit.requests.length, 1);
+});
+
+test("setup saves the token's expiry when Orbit names one, and nothing when it does not", async t => {
+  const { home, run, orbit, configPath } = await fixture(t);
+  rmSync(configPath);
+  const mcp = fakeMcpSettings(home, orbit.origin);
+  const secret = join(home, "secret-box");
+  writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
+  ok(await run(["setup", "--from-file", secret, "--from-mcp-config", mcp], {}, "yes\n"));
+  assert.equal(JSON.parse(readFileSync(configPath, "utf8")).token_expires_at, "2027-02-04T00:00:00.000Z");
+  rmSync(configPath);
+  orbit.controls.me.token.expires_at = null;
+  writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
+  ok(await run(["setup", "--from-file", secret, "--from-mcp-config", mcp], {}, "yes\n"));
+  assert.ok(!("token_expires_at" in JSON.parse(readFileSync(configPath, "utf8"))));
 });
 
 test("a project on files keeps its other commands; kit ticket still reaches Orbit there", async t => {
