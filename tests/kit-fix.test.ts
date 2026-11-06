@@ -866,3 +866,19 @@ test("kit fix without --review answers Claude's newest review, never a newer sec
   assert.ok(round.includes(defect), round);
   assert.equal(round.includes("the second look's own finding"), false);
 });
+
+test("review loop: a review with only nits needs no fix round, and an incomplete review is never the one kit fix answers", t => {
+  const nits = fixture(t);
+  nits.review("20261019T000000Z", "REVIEW_STATUS: complete\nDefects:\n- a.ts:1 — P3 style: rename it.\nValidation gaps: Add a test.\n");
+  const result = nits.run();
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  assert.equal(result.stdout.trim(), "RESULT: ok fix clean (only nits left, no round needed)");
+  assert.equal(nits.calls().length, 0, "no builder started");
+  // The newest review of HEAD says "no defects" but is marked incomplete: the older, complete one with a finding is answered instead.
+  const f = fixture(t); f.builder();
+  f.review("20261018T000000Z", findings);
+  const incomplete = f.review("20261019T000000Z", clean);
+  writeFileSync(join(incomplete, "findings.json"), JSON.stringify({ incomplete: true, findings: [] }));
+  f.run();
+  assert.ok(f.calls().length > 0, "the builder was started for the complete review's finding");
+});

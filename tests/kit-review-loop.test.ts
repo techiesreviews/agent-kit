@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { NORMAL_ROUNDS, RISKY_ROUNDS, branchRisk, budgetReport, isNit, ledgerRows, loopBriefSection, loopStop, parseMarks, prLine, renderLedger, reviewChain, riskyChange, roundLimit, severityWord, stoppingFindings, unmarkedIds, withIds } from "../review-loop.mjs";
+import { NORMAL_ROUNDS, RISKY_ROUNDS, branchRisk, budgetReport, findPreviousReview, isNit, ledgerRows, loopBriefSection, loopStop, parseMarks, prLine, renderLedger, reviewChain, riskyChange, roundLimit, severityWord, stoppingFindings, unmarkedIds, withIds } from "../review-loop.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { openFindings } from "../review-findings.mjs";
 
@@ -80,8 +80,6 @@ test("later rounds: ids, marks and the brief section of a later round", () => {
   assert.match(loopBriefSection({ round: 4, limit: 3, previousHead: "a", currentHead: "b", open: [] }), /review round 4, after 3 fix rounds \(at most 3 fix rounds\)/);
   assert.match(loopBriefSection({ round: 2, limit: 3, previousHead: "same", currentHead: "same", open: withIds([finding("P1")], 1) }), /No commit came after the last review/);
   assert.match(section, /Review only the code changed since abc1234 \(the `Changes since the last review` file named in the scope note\)/);
-  assert.match(loopBriefSection({ round: 2, limit: 3, previousHead: null, currentHead: "x", open: [] }), /rebuilt since the last review \(a rebase\)/);
-  assert.match(loopBriefSection({ round: 2, limit: 3, previousHead: "a", currentHead: "b", open: withIds([finding("P1")], 1), answer: "Declined R1-1: rare path" }), /The builder's written answer to them[^]*Declined R1-1: rare path/);
   assert.match(loopBriefSection({ round: 2, limit: 3, previousHead: "a", currentHead: "b", open: [{ id: "R1-2", group: "Validation gaps", severity: null, kind: null, text: "add a test" }] }), /- R1-2 \(validation gap\): add a test/);
   assert.match(section, /- R1-1 \(P1 fault\): P1 finding with its evidence/);
   assert.match(section, /`<id>: resolved` or `<id>: still open \(<its severity, or gap for a validation gap>\): <reason>`/);
@@ -190,4 +188,42 @@ test("the ledger links a carried finding to its first id: one row, the latest ou
 test("risk by path needs the name itself: auth/, auth.ts, session.ts, but not auth-card.ts, tokens.css or state-label.tsx", () => {
   for (const path of ["src/auth/login.ts", "src/auth.ts", "lib/session.ts", "src/permissions/rules.ts", "src/state/store.ts"]) assert.equal(riskyChange({ paths: [path] }).risky, true, path);
   for (const path of ["src/auth-card.tsx", "src/tokens.css", "src/state-label.tsx", "src/store-card.tsx", "src/session-card.tsx", "src/author.ts"]) assert.equal(riskyChange({ paths: [path] }).risky, false, path);
+});
+
+test("a blocker with no reason still holds rounds 4 and 5; a should with no reason does not", () => {
+  const mark = (severity: string) => openFindings(`REVIEW_STATUS: complete\nPrevious findings:\nR1-1: still open${severity}\nDefects: none\nValidation gaps: none.\n`).findings;
+  assert.equal(stoppingFindings(mark(" (P1)"), 3, true).length, 1);
+  assert.equal(stoppingFindings(mark(""), 4, true).length, 1, "an unread severity is a blocker");
+  assert.deepEqual(stoppingFindings(mark(" (P2)"), 3, true), []);
+});
+
+test("a carried validation gap is one ledger row, not two", () => {
+  const chain = [
+    { round: 1, findings: [{ id: "R1-2", group: "Validation gaps", severity: null, kind: null, text: "add a test" }], marks: new Map() },
+    { round: 2, findings: [{ id: "R2-1", group: "Validation gaps", severity: null, kind: null, text: "R1-2 still open: add a test" }], marks: new Map([["R1-2", { status: "open", severity: "GAP", reason: "add a test" }]]) },
+    { round: 3, findings: [], marks: new Map([["R2-1", { status: "resolved", severity: null, reason: "" }]]) },
+  ];
+  assert.deepEqual(ledgerRows(chain), [{ id: "R1-2", severity: "nit", outcome: "resolved" }]);
+});
+
+test("a later round answers only its own branch's history: a branch cut from a reviewed head, or a rebased one, starts at round 1", t => {
+  const dir = mkdtempSync(join(tmpdir(), "kit-prev-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const git = (...args: string[]) => spawnSync("git", ["-C", dir, "-c", "user.name=T", "-c", "user.email=t@t", ...args], { encoding: "utf8" });
+  git("init", "-q", "-b", "main"); writeFileSync(join(dir, "a"), "1\n"); git("add", "."); git("commit", "-qm", "base");
+  const base = git("rev-parse", "HEAD").stdout.trim();
+  git("checkout", "-qb", "feature"); writeFileSync(join(dir, "a"), "2\n"); git("commit", "-qam", "work");
+  const reviewed = git("rev-parse", "HEAD").stdout.trim();
+  const parent = join(dir, "reviews"); mkdirSync(join(parent, "20261106T100000Z"), { recursive: true });
+  writeFileSync(join(parent, "20261106T100000Z", "refs.txt"), `${reviewed}\n${base}\n`);
+  writeFileSync(join(parent, "20261106T100000Z", "findings.json"), JSON.stringify({ round: 1, branch: "feature", model: "m", head: reviewed, findings: withIds([finding("P1")], 1) }));
+  writeFileSync(join(dir, "a"), "3\n"); git("commit", "-qam", "fix");
+  const head = git("rev-parse", "HEAD").stdout.trim();
+  assert.equal(findPreviousReview(parent, { head, base, root: dir, branch: "feature" })?.round, 1, "the same branch answers its review");
+  assert.equal(findPreviousReview(parent, { head, base, root: dir, branch: "stacked-on-feature" }), null, "another branch starts at round 1");
+  // A rebase leaves the old head out of the history: no earlier review to answer.
+  git("checkout", "-q", "main"); writeFileSync(join(dir, "b"), "x\n"); git("add", "."); git("commit", "-qm", "main moved");
+  git("checkout", "-qb", "rebuilt"); writeFileSync(join(dir, "a"), "2b\n"); git("commit", "-qam", "same work again");
+  const rebuilt = git("rev-parse", "HEAD").stdout.trim(), newBase = git("rev-parse", "main").stdout.trim();
+  assert.equal(findPreviousReview(parent, { head: rebuilt, base: newBase, root: dir, branch: "feature" }), null);
 });
