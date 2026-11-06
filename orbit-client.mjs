@@ -103,6 +103,46 @@ export function readOrbitConfig(env = process.env) {
   return { ...config, origin: orbitOrigin(config.origin) };
 }
 
+/** What the saved file says about the token's expiry, in plain words with a leading "; ", or nothing without a readable date. */
+function expiryWords(expires, now = Date.now()) {
+  const at = Date.parse(expires ?? "");
+  if (Number.isNaN(at)) return "";
+  const days = Math.floor(Math.abs(at - now) / 86_400_000), plural = `${days} day${days === 1 ? "" : "s"}`;
+  return at >= now ? `; token runs out in ${plural}` : `; token ran out ${plural} ago`;
+}
+
+/** The one state kit doctor shows for an Orbit failure. Only the kit's own words: nothing Orbit or a page sent goes in it. */
+function reportOf(error) {
+  const { status, code, noAnswer } = error ?? {};
+  if (status === 429) return "Orbit not answering (too many requests)";
+  if (status >= 500) return `Orbit not answering (${status})`;
+  if (noAnswer) return "Orbit not answering";
+  if ((status === 401 || status === 403) && code) return "token refused or expired";
+  // No Orbit error document: a redirect to the login page, its 403 page, or that page answered with a 200.
+  if (!code && (status < 400 || status === 401 || status === 403)) return "Cloudflare blocked it";
+  return `Orbit gave an unexpected answer${status ? ` (${status})` : ""}`;
+}
+
+/**
+ * One line for kit doctor: what Orbit answers now, and the days left when the saved file records an expiry. It asks once
+ * with a short limit (GET /me reads only), and a too-many-requests answer neither waits nor retries.
+ */
+export async function orbitReport(env = process.env, { timeoutMs = 5_000 } = {}) {
+  let config;
+  try { config = readOrbitConfig(env); }
+  catch (error) {
+    if (error?.reason === "missing") return "not set up";
+    return `setup file needs attention: ${error instanceof OrbitSetupProblem ? orbitRedactor()(error.message) : "it cannot be read"}`;
+  }
+  const expiry = expiryWords(config.token_expires_at);
+  try {
+    const me = await orbitClient(config, { timeoutMs, longestWaitSeconds: -1 }).me();
+    return `${me?.token ? "connected" : "Orbit gave an unexpected answer"}${expiry}`;
+  } catch (error) {
+    return `${reportOf(error)}${expiry}`;
+  }
+}
+
 /** The secret values of a setup, for the redactor. */
 export const orbitSecrets = config => [config?.token, config?.cf_access_client_id, config?.cf_access_client_secret].filter(Boolean);
 
