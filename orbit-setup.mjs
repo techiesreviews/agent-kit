@@ -171,7 +171,12 @@ export async function orbitSetup({ env = process.env, flags = {}, say, io = term
   }
 
   // The address and the pass come before the token: a stop or a slip here leaves a token file in place.
-  const origin = orbitOrigin(flags.origin ?? copied?.origin ?? saved?.origin ?? await io.ask("Orbit's web address (like https://orbit.example.com):"));
+  let copiedOrigin = copied?.origin;
+  if (!flags.origin && copiedOrigin && saved?.origin && copiedOrigin !== saved.origin) {
+    const move = await io.ask(`Those settings name a different address for Orbit: ${copiedOrigin} (saved: ${saved.origin}). Use the new address? Type yes or no:`);
+    if (move.toLowerCase() !== "yes") copiedOrigin = undefined;
+  }
+  const origin = orbitOrigin(flags.origin ?? copiedOrigin ?? saved?.origin ?? await io.ask("Orbit's web address (like https://orbit.example.com):"));
   let id = copied?.id ?? (flags.newPass ? undefined : saved?.cf_access_client_id), secret = copied?.secret ?? (flags.newPass ? undefined : saved?.cf_access_client_secret);
   if (!id) {
     say("Orbit sits behind Cloudflare, so it needs a pass with two parts. Press Enter on both if yours does not.");

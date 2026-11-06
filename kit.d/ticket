@@ -48,7 +48,7 @@ Connects this computer to Orbit. It takes about 5 minutes and you do it once.
 1. In Orbit, open Settings, then API tokens.
 2. Create a token named fleet: service account, Tasks set to Write, the projects it should reach, expiry 90 days. Copy it. Orbit shows it one time only.
 3. In a terminal, in any project folder, run: scripts/agents/kit ticket setup --from-mcp-config
-4. Type yes when it asks to copy the Cloudflare pass. Your Claude settings hold the pass, and nothing else there is copied.
+4. Type yes when it asks to copy the Cloudflare pass. Your Claude settings hold the pass and Orbit's web address, and nothing else there is copied.
 5. Paste the token when it asks. The screen shows nothing while you paste. That is normal. Press Enter.
 6. It checks the token with Orbit and says "Saved". Say "done" in the Waiting for Lex thread.
 
