@@ -59,6 +59,14 @@ updates it in place. A machine with an older kit never undoes a newer copy. A pr
 markers keeps its own words. A project set up before the rule gets the section like any new piece: `kit doctor`
 warns, `kit init` (in the project) or `kit init --all` (every listed project, each through its own `kit pr`) adds it.
 
+## Spending API credit on the kit's own Claude calls (opt-in, off by default)
+
+- **Turn on:** put your API key alone on one line in a file, run `chmod 600` on it, and start the kit with `KIT_API_KEY_FILE=<that file>` in the environment (optional: `KIT_API_CONFIG_DIR`, default `~/.claude-api`).
+- **What it covers:** the kit's headless Claude calls (`kit review`, `kit fix`, `kit slice` builders, `kit ux`). Interactive sessions are not touched; Anthropic's credit does not cover them.
+- **Turn off:** unset `KIT_API_KEY_FILE`. The kit then uses the subscription as before.
+- **Safety:** the key is read only inside the child process that runs `claude`; it is never printed, logged or put on a command line. A key file that others can read stops the call with a plain message.
+- **Check it:** `kit doctor` says whether the route is on or off, the key file's mode, and the total spent; every run adds a line (time, command, model, tokens, cost) to `~/.local/state/agent-kit/api-spend.log`.
+
 ## The factory: generated briefs, long jobs that wait
 
 - `kit brief <ticket> [--stage build|review|second-look|fix] [--note "<text>"]` prints the whole brief for a

@@ -520,6 +520,20 @@ if [[ $quiet == false ]]; then
   fi
 fi
 
+# The opt-in API credit route (KIT_API_KEY_FILE): when on, a counted check (mode of the key file, spend so far, never the
+# key); when off, one note outside --quiet. api-route.mjs answers it, so doctor and the runner never read the switch differently.
+if [[ -n ${KIT_API_KEY_FILE:-} || $quiet == false ]]; then
+  api_library=$(dirname -- "${KIT_LIB_MJS:-$(dirname -- "${KIT_LIB:-$(dirname -- "${BASH_SOURCE[0]}")/../kit-lib.sh}")/kit-lib.mjs}")/api-route.mjs
+  if node=$(kit_node_find) && api_report=$("$node" --input-type=module -e 'const r = (await import(process.argv[1])).apiRouteReport(); console.log(r.state + "\t" + r.text);' "$(realpath -m -- "$api_library")" 2>/dev/null); then
+    api_state=${api_report%%$'\t'*} api_text=${api_report#*$'\t'}
+    case $api_state in
+      off) printf 'api route: %s\n' "$api_text" ;;
+      ok) pass "api route" "$api_text" ;;
+      *) fail "api route" "$api_text" "make KIT_API_KEY_FILE name a file with mode 600 holding one line, the key, or unset KIT_API_KEY_FILE to turn the route off" ;;
+    esac
+  fi
+fi
+
 if (( ${#failed[@]} )); then
   names=$(IFS=,; printf '%s' "${failed[*]}")
   kit_result fail "doctor ${#failed[@]} failed: $names"
