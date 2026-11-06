@@ -21,4 +21,17 @@ if ! command -v claude > /dev/null 2>&1; then echo "claude-api-run: the claude c
 # Other ways to sign in or to reach another service would win over the key: drop them for this call.
 unset KIT_API_KEY_FILE KIT_API_CONFIG_DIR ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX
 # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 keeps the key out of the shell commands, hooks and nested kit calls a builder starts.
-ANTHROPIC_API_KEY=$key CLAUDE_CONFIG_DIR=$dir CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 exec claude "$@"
+# It also makes claude set up its own sandbox, which leaves empty .env, .npmrc, yarn.lock ... files in the folder it runs in.
+# A call with an explicit tool list that has no Bash (a review) starts no shell command, so it runs without the flag and leaves no files.
+scrub=1
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+  tools=''
+  case ${args[i]} in
+    --tools=*) tools=${args[i]#--tools=} ;;
+    --tools) tools=${args[i + 1]-} ;;
+    *) continue ;;
+  esac
+  if [[ ,${tools// /}, != *,Bash,* && ,${tools// /}, != *,Bash\(* ]]; then scrub=0; fi
+done
+ANTHROPIC_API_KEY=$key CLAUDE_CONFIG_DIR=$dir CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=$scrub exec claude "$@"
