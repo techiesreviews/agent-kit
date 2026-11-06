@@ -12,7 +12,7 @@ const usage = `Usage: kit ask --api --prompt-file <file> [--model sonnet|opus|ha
 Runs one headless \`claude -p\` call on the opt-in API credit route and prints the answer (or writes it to --out).
 Needs --api and the route on: KIT_API_KEY_FILE names a file (absolute path, mode 600, one line, the key); see the README,
 "Spending API credit". The prompt goes in on stdin, never on a command line; the key is read only inside the child.
-The call runs in an empty folder, so no project's CLAUDE.md or settings reach it. Model: sonnet (default), opus, haiku
+The call runs in an empty folder, so no project's CLAUDE.md or project settings are read (the API config folder's own files still apply). Model: sonnet (default), opus, haiku
 or a claude- model id. Every call adds a line to ~/.local/state/agent-kit/api-spend.log and ends with its cost.
 --script writes a script for Lex: before your prompt it puts Lex's rules: youtube/AGENTS.md and the "Current script and
 prompter playbook" section of youtube/shared/taste/scripts.md (under KIT_SCRIPT_RULES_ROOT, default

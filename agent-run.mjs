@@ -1026,7 +1026,7 @@ async function invokeAgent(adapter, args, descriptor, context) {
         refusedOutright(options.cli, options.cli === "opencode" ? result.stdout ?? "" : slice, context.prompt)) update({ refused: true });
       // The API route's wrapper refused the first call (a key file it will not use, no claude): the model was never reached,
       // so the call is refunded like any refusal, and kit review moves to its fallback.
-      if (!previousCalls && /^claude-api-run: /m.test(slice)) update({ refused: true });
+      if (!previousCalls && options.cli === "claude" && status && /^claude-api-run: /m.test(slice)) update({ refused: true });
       // A run's first call that fails within the launch window (a usage limit, a login error) and left the worktree as
       // it found it never got to work. Claude and Grok hold a session from before their CLI started, so kit slice reads
       // this to tell such a build never ran. ASE_LAUNCH_WINDOW_MS (60000) is for tests.

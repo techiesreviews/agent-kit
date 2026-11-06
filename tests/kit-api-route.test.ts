@@ -285,3 +285,15 @@ test("a call the wrapper refuses is marked refused in the run's status, so kit r
   assert.deepEqual(f.callList(), []);
   assert.ok(!existsSync(apiSpendLog(env)), "a refused call adds no spend line");
 });
+
+test("only a failed claude call with the wrapper's refusal is marked refused: a working call is not", async t => {
+  const f = folder(t);
+  const root = join(f.dir, "work3"), out = join(f.dir, "out3"), brief = join(f.dir, "brief3.md");
+  mkdirSync(root); mkdirSync(out); writeFileSync(brief, "Build this.\n");
+  const git = (...args: string[]) => { const run = spawnSync("git", ["-C", root, ...args], { encoding: "utf8" }); assert.equal(run.status, 0, run.stderr); };
+  git("init", "-b", "test"); git("-c", "user.name=T", "-c", "user.email=t@t", "commit", "--allow-empty", "-m", "base");
+  const env = { ...f.env, KIT_API_KEY_FILE: f.keyFile, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "20s", ASE_BUILD_MODEL: "", KIT_TALK_STYLE: "plain" };
+  const run = spawnSync(process.execPath, [resolve("agent-run.mjs"), "build", root, brief, "--out", out, "--cli", "claude", "--model", "claude-haiku-5-5"], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.notEqual(JSON.parse(readFileSync(join(out, "status.json"), "utf8")).refused, true);
+});
