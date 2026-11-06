@@ -850,6 +850,19 @@ test("a setup that cannot save says so plainly, with what to do about the used t
   refused(output, /could not be saved.*token file is gone/i);
 });
 
+test("setup again says it keeps the saved pass when it cannot copy one, and keeps the saved workspace for a new token", async t => {
+  const { home, run, orbit, configPath } = await fixture(t);
+  const empty = join(home, "empty-mcp.json");
+  writeFileSync(empty, JSON.stringify({ mcpServers: {} }));
+  const secret = join(home, "secret-box");
+  writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
+  orbit.controls.me.workspaces = [{ id: "22222222-2222-4222-8222-222222222222", name: "Other" }, { id: fakeWorkspace, name: "Fake" }];
+  const said = ok(await run(["setup", "--from-file", secret, "--from-mcp-config", empty], {}, "yes\nyes\n"));
+  assert.match(said.all, /Keeping the saved pass/);
+  assert.ok(!said.all.includes("I will ask for it"));
+  assert.equal(JSON.parse(readFileSync(configPath, "utf8")).workspace_id, fakeWorkspace);
+});
+
 test("setup warns about a read-only token and asks which workspace when there are several", async t => {
   const { home, run, orbit, configPath } = await fixture(t);
   rmSync(configPath);
@@ -1046,7 +1059,7 @@ test("the screen and --json keep ordinary card text whole; only real secrets and
 test("every way of writing the Radaar tick counts: spacing, emphasis, quote marks and links", async t => {
   const { orbit, run } = await fixture(t);
   orbit.addTask(orbit.tools, { description: "- [ ] Scheduled in Radaar" });
-  for (const text of ["- [x] Scheduled  in Radaar", "- [x] **Scheduled** in Radaar", "> - [x] Scheduled in Radaar", "- [x] [Scheduled in Radaar](https://example.test)", "  * [X] _scheduled in radaar_", "[x] Scheduled in Radaar"]) {
+  for (const text of ["- [x] Scheduled  in Radaar", "- [x] **Scheduled** in Radaar", "> - [x] Scheduled in Radaar", "- [x] [Scheduled in Radaar](https://example.test)", "  * [X] _scheduled in radaar_", "[x] Scheduled in Radaar", "- [x] Scheduled in [Radaar](https://example.test)"]) {
     refused(await run(["update", "TOOLS-1", "--description", text]), /--lex-said/);
   }
   assert.equal(orbit.writes().length, 0);
@@ -1111,6 +1124,26 @@ test("a tick counts through any line ending, and a second identical ticked line 
   refused(await run(["update", "TOOLS-2", "--description", "- [x] Scheduled in Radaar\n- [x] Scheduled in Radaar"]), /--lex-said/);
   assert.equal(orbit.writes().length, 0);
   ok(await run(["update", "TOOLS-2", "--description", "- [x] Scheduled in Radaar\n- [ ] Scheduled in Radaar\n\nMore"]));
+});
+
+test("a blank --parent never drops the board's default parent", async t => {
+  const { orbit, run } = await fixture(t, { tickets: "orbit", orbit: { project: "TOOLS", parent: "TOOLS-1" } });
+  orbit.addTask(orbit.tools);
+  refused(await run(["create", "--title", "x", "--parent", ""]), /card key/i);
+  refused(await run(["create", "--title", "x", "--parent="]), /card key/i);
+  assert.equal(orbit.writes().length, 0);
+});
+
+test("a create or comment Orbit refuses as a conflict still leaves its log line", async t => {
+  const { orbit, run, log } = await fixture(t);
+  orbit.addTask(orbit.tools);
+  orbit.controls.writeAnswers.push({ status: 409, code: "conflict", detail: "Changed" });
+  refused(await run(["comment", "TOOLS-1", "x"]), /Changed/);
+  assert.match(log(), /action=comment fields=body who=test-lead result=fail:conflict/);
+  orbit.controls.writeAnswers.push({ status: 409, code: "conflict", detail: "Changed" });
+  refused(await run(["create", "--title", "x"]), /Changed/);
+  assert.match(log(), /card=new action=create .*result=fail:conflict/);
+  assert.equal(lines(log()).length, 2);
 });
 
 test("a blank description never wipes a card by accident; --clear-description does it on purpose", async t => {
@@ -1198,6 +1231,7 @@ test("the ticket settings are checked the same by the kit's JavaScript and by ki
     [{ orbit: null }, /"orbit" must be an object/],
     [{ orbit: { project: "no spaces" } }, /"orbit.project" must be an Orbit project key/],
     [{ orbit: { project: "TOOLS", parent: "TOOLS" } }, /"orbit.parent" must be a card key/],
+    [{ orbit: { parent: "TOOLS-10" } }, /"orbit.parent" needs "orbit.project"/],
   ];
   for (const [settings, pattern] of wrong) {
     assert.ok(kitSettingsProblems({ project: "x", branches: { land: "dev" }, ...settings }).some((item: string) => pattern.test(item)), String(pattern));
@@ -1208,7 +1242,7 @@ test("the ticket settings are checked the same by the kit's JavaScript and by ki
   }
   // Broken settings do not stop a card read named outright: the board comes from the flag.
   ok(await run(["list", "--project", "TOOLS"]));
-  refused(await run(["list"]), /must be a card key/);
+  refused(await run(["list"]), /"orbit.parent"/);
   assert.deepEqual(kitSettingsProblems({ project: "x", branches: { land: "dev" }, tickets: "files" }), []);
 });
 

@@ -163,7 +163,8 @@ export async function orbitSetup({ env = process.env, flags = {}, say, io = term
       try { text = readFileSync(mcpPath, "utf8"); } catch { say(`Could not read ${mcpPath}.`); }
       if (text !== null) {
         const found = cloudflarePassFrom(text);
-        if (found.problem) say(`Could not copy the pass: ${found.problem}. I will ask for it instead.`);
+        const fallback = saved?.cf_access_client_id && !flags.newPass ? "Keeping the saved pass (--new-pass replaces it)." : "I will ask for it instead.";
+        if (found.problem) say(`Could not copy the pass: ${found.problem}. ${fallback}`);
         else { copied = found; say("Found the Cloudflare pass. It stays hidden."); }
       }
     }
@@ -193,7 +194,9 @@ export async function orbitSetup({ env = process.env, flags = {}, say, io = term
     throw error;
   }
   const workspaces = Array.isArray(me?.workspaces) && me.workspaces.length ? me.workspaces : me?.workspace ? [me.workspace] : [];
-  const workspace = flags.workspace ? workspaces.find(item => item.id === flags.workspace) : workspaces.length === 1 ? workspaces[0] : null;
+  // A new token for the same setup stays on the saved workspace when it still reaches it.
+  const wanted = flags.workspace ?? saved?.workspace_id;
+  const workspace = workspaces.find(item => item.id === wanted) ?? (!flags.workspace && workspaces.length === 1 ? workspaces[0] : null);
   const reached = workspaces.map(item => `${item.id} (${item.name})`).join(", ");
   if (!workspace) {
     const why = flags.workspace ? `No workspace ${flags.workspace} for this token; it reaches: ${reached || "none"}`

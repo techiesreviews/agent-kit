@@ -30,7 +30,7 @@ function folder(t: TestContext) {
   writeFileSync(join(bin, "claude"), `#!/usr/bin/env node
 import { appendFileSync, readFileSync } from "node:fs";
 const args = process.argv.slice(2), input = readFileSync(0, "utf8");
-appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ args, input, keyMatches: process.env.ANTHROPIC_API_KEY === ${JSON.stringify(secret)}, configDir: process.env.CLAUDE_CONFIG_DIR }) + "\\n");
+appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ args, input, keyMatches: process.env.ANTHROPIC_API_KEY === ${JSON.stringify(secret)}, configDir: process.env.CLAUDE_CONFIG_DIR, orbitRole: process.env.ORBIT_ROLE ?? null }) + "\\n");
 if (process.env.FAKE_EMPTY_ACCOUNT) { console.log(JSON.stringify({ is_error: true, result: "Credit balance is too low" })); process.exit(1); }
 console.log(JSON.stringify({ result: process.env.FAKE_ANSWER ?? "The drafted answer.\\n", modelUsage: { "claude-sonnet-5-5": {} }, usage: { input_tokens: 200, output_tokens: 50 }, total_cost_usd: 0.0456 }));
 `);
@@ -78,6 +78,13 @@ test("kit ask --api sends the prompt on stdin to claude -p on the route, prints 
   assert.ok(!(run.stdout + run.stderr).includes(secret));
   const [line] = f.spend();
   assert.equal(line.command, "ask"); assert.equal(line.model, "claude-sonnet-5-5"); assert.equal(line.cost_usd, 0.0456); assert.equal(line.ok, true);
+});
+
+test("the call never inherits a lead's ORBIT_ROLE: only leads write to Orbit", t => {
+  const f = folder(t);
+  const output = f.ask(["--api", "--prompt-file", f.prompt], { ...f.on, ORBIT_ROLE: "lead" });
+  assert.equal(output.status, 0, output.stdout + output.stderr);
+  assert.equal(f.callList()[0].orbitRole, null);
 });
 
 test("--model takes sonnet, opus, haiku or a claude- id, and nothing else", t => {
