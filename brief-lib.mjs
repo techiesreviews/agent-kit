@@ -121,8 +121,8 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
         "The ticket's own \"Kit commands and evidence\" section adds to this. Report every RESULT line, the PR URL and the merge SHA.",
       ] : [
         `For each finding you decline, give it with its reason in your report: \`scripts/agents/kit review${task ? "" : ` --ticket ${ticket}`}\` reads declined findings with their reasons.`,
-        task ? "The findings are in the newest `findings.json` under the main checkout's `.scratch/reviews/<owner>/` (the note below holds the task)."
-          : "The findings are in the note below, else in the newest `findings.json` under the main checkout's `.scratch/reviews/<owner>/`.",
+        task ? "The findings are in the newest complete review's `findings.json` under the main checkout's `.scratch/reviews/<owner>/` (a record marked `incomplete: true` is not one) (the note below holds the task)."
+          : "The findings are in the note below, else in the newest complete review's `findings.json` under the main checkout's `.scratch/reviews/<owner>/` (a record marked `incomplete: true` is not one).",
       ]),
     ]);
   } else {

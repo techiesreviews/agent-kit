@@ -286,7 +286,7 @@ test("brief --task: a project without ticket files gets a brief for a named task
     const staged = f.run(["--task", "Fix the login form", "--owner", "cf-12", "--note", "the task", "--stage", stage]);
     assert.equal(staged.status, 0, staged.stdout);
     assert.doesNotMatch(staged.stdout, /--ticket|ticket's Done/, stage);
-    if (stage === "fix") assert.match(staged.stdout, /The findings are in the newest `findings\.json` .* \(the note below holds the task\)/);
+    if (stage === "fix") assert.match(staged.stdout, /The findings are in the newest complete review.s `findings\.json` .* \(the note below holds the task\)/);
     assert.match(staged.stdout, new RegExp(`kit-brief: \\S+ task:fix-the-login-form ${stage}$`, "m"));
   }
   // A long title's slug is cut at 60 characters and never ends on a dash.

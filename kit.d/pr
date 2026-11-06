@@ -679,10 +679,10 @@ async function main(args) {
     // The docs tier has no model review; CI still gates the merge.
     let waived = 0, loopSummary = null, loopLeft = 0, loopBudgetUsed = false;
     // `name` is "review" (Claude's) or "second look", whose lines and summary say so.
-    async function recordFollowups(findings, name = "review", budgetUsed = true) {
+    async function recordFollowups(findings, name = "review", budgetUsed = true, nitsOnly = true) {
       if (!findings.length) return;
       const reviewedHead = head, second = name !== "review";
-      console.log(`${name}: ${findings.length} follow-ups ${budgetUsed ? `after ${roundLimit(loopRisk.risky)} fix rounds` : "(nits only)"} (non-blocking)`);
+      console.log(`${name}: ${findings.length} follow-ups ${budgetUsed ? `after ${roundLimit(loopRisk.risky)} fix rounds` : nitsOnly ? "(nits only)" : "(no reason given)"} (non-blocking)`);
       const label = item => `- ${item.group} (${item.severity || "gap"}${second ? ", second look" : ""}): `;
       const fullLines = findings.map(item => label(item) + item.text);
       const shortLines = findings.map(item => label(item) + shortText(item.text));
@@ -690,7 +690,7 @@ async function main(args) {
       // PR comment as posted and swaps such a ticket bullet for the full text. A cut through a surrogate
       // pair was written as U+FFFD, so the old cut is compared after the same trip through UTF-8.
       const oldLines = findings.map(item => label(item) + Buffer.from(item.text.slice(0, 160)).toString());
-      const heading = `${second ? "Second-look follow-ups" : "Follow-ups"} (non-blocking ${budgetUsed ? `after ${roundLimit(loopRisk.risky)} fix rounds` : "nits only"}):\n`;
+      const heading = `${second ? "Second-look follow-ups" : "Follow-ups"} (non-blocking ${budgetUsed ? `after ${roundLimit(loopRisk.risky)} fix rounds` : nitsOnly ? "nits only" : "no reason given"}):\n`;
       const summary = heading + shortLines.join("\n");
       const oldSummary = heading + oldLines.join("\n");
       if (!readFileSync(body, "utf8").includes(summary)) appendFileSync(body, `\n${summary}\n`);
@@ -761,7 +761,8 @@ async function main(args) {
     async function recordReviewLoop() {
       if (!loopSummary) return;
       const open = `${loopLeft} open finding${loopLeft === 1 ? "" : "s"}`;
-      const verdict = !loopLeft ? "approved" : loopBudgetUsed ? `not approved (budget used, ${open} left for Lex${waived ? ", waived by the lead" : ""})` : `not approved (${open} waived by the lead)`;
+      const verdict = !loopLeft ? "approved" : loopBudgetUsed ? `not approved (budget used, ${open} left for Lex${waived ? ", waived by the lead" : ""})`
+        : waived ? `not approved (${open} waived by the lead)` : `not approved (${open} left for Lex: no reason was given for it)`;
       const line = prLine({ ...loopSummary, verdict });
       const block = `<!-- review-loop -->\n${line}\n\n${loopSummary.ledger}\n<!-- /review-loop -->`;
       const current = readFileSync(body, "utf8");
@@ -834,7 +835,7 @@ async function main(args) {
         waived += blocking.length;
       }
       const rest = findings.filter(item => !blocking.includes(item));
-      if (rest.length) await recordFollowups(rest, name, relaxed);
+      if (rest.length) await recordFollowups(rest, name, relaxed, rest.every(isNit));
       // What is left that is not a nit, across both looks: out of budget it is reported for Lex and the PR is never called approved.
       const left = findings.filter(item => !isNit(item));
       loopLeft += left.length;

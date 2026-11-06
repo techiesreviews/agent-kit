@@ -227,3 +227,14 @@ test("a later round answers only its own branch's history: a branch cut from a r
   const rebuilt = git("rev-parse", "HEAD").stdout.trim(), newBase = git("rev-parse", "main").stdout.trim();
   assert.equal(findPreviousReview(parent, { head: rebuilt, base: newBase, root: dir, branch: "feature" }), null);
 });
+
+test("a ticket's risk is read from its title, goal and named files, not the follow-up notes written into it later", t => {
+  const dir = mkdtempSync(join(tmpdir(), "kit-risk2-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const git = (...args: string[]) => spawnSync("git", ["-C", dir, "-c", "user.name=T", "-c", "user.email=t@t", ...args], { encoding: "utf8" });
+  git("init", "-q", "-b", "main"); writeFileSync(join(dir, "a"), "1\n"); git("add", "."); git("commit", "-qm", "base");
+  writeFileSync(join(dir, "t.md"), '---\ntitle: "Change the button colour"\n---\n\n## Goal\nA bluer button.\n\n## Files\n- `src/ui/button.css`\n\n## Done (2026-11-06)\n\n### Follow-ups\n- Spec: a finding about authentication and src/auth/x.ts\n');
+  assert.equal(branchRisk({ root: dir, base: "main", ticket: "t.md", settings: {} }).risky, false);
+  writeFileSync(join(dir, "t2.md"), '---\ntitle: "Harden authentication"\n---\n\n## Goal\nx\n');
+  assert.equal(branchRisk({ root: dir, base: "main", ticket: "t2.md", settings: {} }).risky, true);
+});
