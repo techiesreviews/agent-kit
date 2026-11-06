@@ -578,7 +578,7 @@ export function claudeAdapter(options, common) {
     // A resumed session keeps its id; --session-id would demand --fork-session.
     resume: session => [...claudeAdapter({ ...options, sessionId: undefined }, common).args, "--resume", session],
     // On the opt-in API route: the wrapper's own refusal (a key file it will not use) and an empty API account say so in plain words.
-    outOfCredit: (stdout, log, status) => status ? apiRouteProblem(stdout, log) : null,
+    outOfCredit: (stdout, log, status) => status ? apiRouteProblem(stdout, log, process.env, status) : null,
     session: stdout => JSON.parse(stdout).session_id,
     finish: stdout => claudeResult(stdout, model, kind === "review"),
   };
@@ -1001,7 +1001,7 @@ async function invokeAgent(adapter, args, descriptor, context) {
     let status = result.status;
     const slice = readFileSync(logPath, "utf8").slice(previousLog);
     // The opt-in API credit route logs each headless Claude call's tokens and cost (never a secret); a call its wrapper refused adds nothing.
-    if (options.cli === "claude") recordApiSpend({ command: `${options.kind} claude`, model: options.model, stdout: result.stdout, status, refused: apiWrapperRefused(status, slice) });
+    if (options.cli === "claude") recordApiSpend({ command: `${options.kind} claude`, model: options.model, stdout: result.stdout, status, refused: apiWrapperRefused(status, slice), answerRequired: options.kind !== "review" });
     const session = recordedSession(adapter, result.stdout, slice);
     if (session) update({ session });
     // The CLI's own failure is the cause; executeRun reports it after its consequences.
