@@ -1012,6 +1012,9 @@ test("both adapters run through the shared shell entry and compatibility wrapper
   const fake = `#!/usr/bin/env node
 import { readFileSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
+
+// The opt-in API route is read from the environment: these tests run with it off, whatever the shell exports.
+delete process.env.KIT_API_KEY_FILE; delete process.env.KIT_API_CONFIG_DIR;
 const args = process.argv.slice(2);
 const input = readFileSync(0, "utf8");
 writeFileSync(process.env.ASE_FAKE_CAPTURE, JSON.stringify({ args, input, cwd: process.cwd(), allowStop: process.env.KIT_ALLOW_STOP }));

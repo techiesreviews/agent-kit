@@ -29,6 +29,9 @@ function folder(t: TestContext) {
   const calls = join(dir, "calls.jsonl");
   writeFileSync(join(bin, "claude"), `#!/usr/bin/env node
 import { appendFileSync } from "node:fs";
+
+// The opt-in API route is read from the environment: these tests run with it off, whatever the shell exports.
+delete process.env.KIT_API_KEY_FILE; delete process.env.KIT_API_CONFIG_DIR;
 const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ args, keyMatches: process.env.ANTHROPIC_API_KEY === ${JSON.stringify(secret)}, configDir: process.env.CLAUDE_CONFIG_DIR, keyFileVar: process.env.KIT_API_KEY_FILE ?? null, scrub: process.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB ?? null }) + "\\n");
 console.log(JSON.stringify({ result: "ok", modelUsage: { "claude-haiku-5-5": {} }, usage: { input_tokens: 120, output_tokens: 30, cache_read_input_tokens: 10, cache_creation_input_tokens: 5 }, total_cost_usd: 0.0123, session_id: "s" }));
@@ -238,4 +241,13 @@ test("a symlinked key file works for both; a missing claude, an unusable config 
   assert.ok(!existsSync(apiSpendLog(inFile)));
   // The log follows the kit's state folder rule: a relative XDG_STATE_HOME is ignored.
   assert.equal(apiSpendLog({ ...f.env, XDG_STATE_HOME: "relative" }), join(f.home, ".local/state/agent-kit/api-spend.log"));
+});
+
+test("only the CLI's closing words make an empty account: a failure that merely quotes the phrase is not one", t => {
+  const f = folder(t);
+  const env = { ...f.env, KIT_API_KEY_FILE: f.keyFile };
+  const quoting = Array.from({ length: 8 }, (_, index) => index === 0 ? "the test says Credit balance is too low" : `line ${index}`).join("\n");
+  assert.equal(apiRouteProblem('{"is_error":true,"result":"build failed"}', quoting, env), null);
+  assert.match(apiRouteProblem("", `${quoting}\nCredit balance is too low\n`, env), /out of credit/);
+  assert.equal(claudeAdapter({ kind: "build", model: "claude-opus-5-5", effort: "low" }, "/c").label, "claude");
 });
