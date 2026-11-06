@@ -1037,6 +1037,7 @@ test("setup takes no --origin or --workspace: it asks for the address and the wo
   rmSync(configPath);
   refused(await run(["setup", "--origin", orbit.origin]), /does not take --origin/);
   refused(await run(["setup", "--workspace", fakeWorkspace]), /does not take --workspace/);
+  refused(await run(["setup", "--from-mcp-config=/some/file"]), /write it as --from-mcp-config <value>/);
   assert.equal(orbit.requests.length, 0);
   const secret = join(home, "secret-box");
   writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
@@ -1106,10 +1107,16 @@ test("setup asks which workspace when the token reaches several, and refuses an 
   assert.equal(JSON.parse(readFileSync(configPath, "utf8")).workspace_id, "22222222-2222-4222-8222-222222222222");
   // Names from Orbit reach the screen without terminal tricks.
   rmSync(configPath);
-  orbit.controls.me.workspaces = [{ id: fakeWorkspace, name: "Fake\u001b[31m" }, { id: "22222222-2222-4222-8222-222222222222", name: "Other" }];
+  orbit.controls.me.workspaces = [{ id: fakeWorkspace, name: "Fake\u001b[31m\u202E" }, { id: "22222222-2222-4222-8222-222222222222", name: "Other" }];
   writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
   const clean = ok(await run(["setup", "--from-file", secret, "--from-mcp-config", mcp], {}, `yes\n${fakeWorkspace}\n`));
-  assert.ok(!clean.stderr.includes("\u001b"));
+  assert.ok(!/[\u001b\u202E]/.test(clean.stderr));
+  // A name two workspaces share picks neither: it counts as a slip, and the id still works.
+  rmSync(configPath);
+  orbit.controls.me.workspaces = [{ id: fakeWorkspace, name: "Same" }, { id: "22222222-2222-4222-8222-222222222222", name: "Same" }];
+  writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
+  ok(await run(["setup", "--from-file", secret, "--from-mcp-config", mcp], {}, "yes\nSame\n22222222-2222-4222-8222-222222222222\n"));
+  assert.equal(JSON.parse(readFileSync(configPath, "utf8")).workspace_id, "22222222-2222-4222-8222-222222222222");
 });
 
 test("setup's help is numbered plain steps with no jargon; kit ticket help names every command", async t => {
