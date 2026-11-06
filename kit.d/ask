@@ -1,0 +1,116 @@
+#!/usr/bin/env node
+// kit: one headless Claude call on the API credit route (for writing), with a script mode that adds Lex's script rules
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, extname, join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { apiRoute, apiRouteProblem, claudeCommand, recordApiSpend } from "../api-route.mjs";
+import { kitResult } from "../kit-lib.mjs";
+
+const usage = `Usage: kit ask --api --prompt-file <file> [--model sonnet|opus|haiku|claude-<id>] [--out <file>]
+       kit ask --api --script --prompt-file <file> --out <file> [--model …]
+Runs one headless \`claude -p\` call on the opt-in API credit route and prints the answer (or writes it to --out).
+Needs --api and the route on: KIT_API_KEY_FILE names a file (absolute path, mode 600, one line, the key); see the README,
+"Spending API credit". The prompt goes in on stdin, never on a command line; the key is read only inside the child.
+The call runs in an empty folder, so no project's CLAUDE.md or settings reach it. Model: sonnet (default), opus, haiku
+or a claude- model id. Every call adds a line to ~/.local/state/agent-kit/api-spend.log and ends with its cost.
+--script writes a script for Lex: before your prompt it puts Lex's rules: youtube/AGENTS.md and the "Current script and
+prompter playbook" section of youtube/shared/taste/scripts.md (under KIT_SCRIPT_RULES_ROOT, default
+~/Projects/chat/youtube). If either is missing the call stops and says so; nothing is sent. --script needs --out.
+--out never overwrites: if the file exists (an editor may have newer edits), the answer goes beside it as
+<name>.draft-<time><ext> and the RESULT line says so.
+The credit this route spends expires 2026-11-11. KIT_ASK_TIMEOUT (seconds, default 600) stops a slow call.
+`;
+const models = { sonnet: "claude-sonnet-5-5", opus: "claude-opus-5-5", haiku: "claude-haiku-5-5" };
+const done = (status, text, code) => { kitResult(status, `ask ${text}`); process.exit(code ?? (status === "ok" ? 0 : 1)); };
+
+const args = process.argv.slice(2);
+if (args.includes("--help") || args.includes("-h")) { process.stdout.write(usage); process.exit(0); }
+const options = { api: false, script: false, model: "sonnet", promptFile: undefined, out: undefined };
+for (let i = 0; i < args.length; i++) {
+  const flag = args[i];
+  if (flag === "--api") options.api = true;
+  else if (flag === "--script") options.script = true;
+  else if (["--model", "--prompt-file", "--out"].includes(flag)) {
+    if (i + 1 >= args.length) done("fail", `${flag} needs a value`, 2);
+    options[{ "--model": "model", "--prompt-file": "promptFile", "--out": "out" }[flag]] = args[++i];
+  } else done("fail", `unknown option ${flag}`, 2);
+}
+if (!options.api) done("fail", "needs --api (it runs on the API credit route, not the subscription)", 2);
+const model = models[options.model] ?? (/^claude-[\w.-]+$/.test(options.model) ? options.model : null);
+if (!model) done("fail", `--model must be sonnet, opus, haiku or a claude- model id, not ${options.model}`, 2);
+if (!options.promptFile) done("fail", "needs --prompt-file <file>", 2);
+if (options.script && !options.out) done("fail", "--script needs --out <file> (where the script goes)", 2);
+
+const route = apiRoute();
+if (!route.on) done("fail", 'the API route is off: set KIT_API_KEY_FILE (see the README, "Spending API credit")');
+if (route.problem) done("fail", route.problem);
+
+let prompt;
+try { prompt = readFileSync(resolve(options.promptFile), "utf8"); }
+catch { done("fail", `cannot read the prompt file ${resolve(options.promptFile)}`); }
+
+// Script mode: Lex's rules go in front of the prompt, read from where they live; a missing file or section stops the call.
+let input = prompt;
+if (options.script) {
+  const root = process.env.KIT_SCRIPT_RULES_ROOT || join(homedir(), "Projects/chat/youtube");
+  const missing = what => done("fail", `script rules missing: ${what}; nothing was sent`);
+  const read = path => { try { return readFileSync(path, "utf8"); } catch { return missing(`${path} cannot be read`); } };
+  const agentsPath = join(root, "AGENTS.md"), scriptsPath = join(root, "shared/taste/scripts.md");
+  const agents = read(agentsPath), scripts = read(scriptsPath).split("\n");
+  const start = scripts.findIndex(line => /^#+\s+Current script and prompter playbook\s*$/.test(line));
+  if (start < 0) missing(`${scriptsPath} has no "Current script and prompter playbook" section`);
+  const level = scripts[start].match(/^#+/)[0].length;
+  let end = scripts.length;
+  for (let i = start + 1; i < scripts.length; i++) if (new RegExp(`^#{1,${level}}\\s`).test(scripts[i])) { end = i; break; }
+  const playbook = scripts.slice(start, end).join("\n").trimEnd();
+  input = [
+    "You are writing a script for Lex. Follow the rules below exactly; they come from his own files.",
+    `=== ${agentsPath} ===`, agents.trimEnd(),
+    `=== ${scriptsPath}: Current script and prompter playbook ===`, playbook,
+    "=== The task ===", prompt,
+  ].join("\n\n") + "\n";
+}
+
+// The call runs in an empty folder so no project's CLAUDE.md or settings reach it.
+const empty = mkdtempSync(join(tmpdir(), "kit-ask-"));
+let run;
+try {
+  run = spawnSync(claudeCommand(), ["-p", "--model", model, "--output-format", "json", "--tools", ""], {
+    cwd: empty, input, encoding: "utf8", env: process.env, maxBuffer: 64 * 1024 * 1024,
+    timeout: (Number(process.env.KIT_ASK_TIMEOUT) || 600) * 1000, killSignal: "SIGKILL" });
+} finally { rmSync(empty, { recursive: true, force: true }); }
+const stdout = run.stdout ?? "", stderr = run.stderr ?? "";
+recordApiSpend({ command: "ask", model, stdout, status: run.status ?? 1, refused: /^claude-api-run: /m.test(stderr) });
+let result = null;
+try { result = JSON.parse(stdout); } catch { /* Not JSON: handled below. */ }
+if (run.error?.code === "ETIMEDOUT") done("fail", `claude did not answer within ${Number(process.env.KIT_ASK_TIMEOUT) || 600} seconds`);
+if (run.status !== 0 || !result || result.is_error || typeof result.result !== "string") {
+  const problem = apiRouteProblem(stdout, stderr);
+  if (problem) done("fail", problem.replace(/^problem: /, ""));
+  const said = (result?.is_error && typeof result.result === "string" ? result.result : stderr.trim().split("\n").at(-1) ?? "").slice(0, 200);
+  done("fail", `claude failed (${run.status ?? run.error?.code ?? "no exit"})${said ? `: ${said}` : ""}`);
+}
+
+const usage_ = result.usage ?? {};
+const tokens = ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"].reduce((sum, key) => sum + (Number.isFinite(usage_[key]) ? usage_[key] : 0), 0);
+const summary = `${model}${Number.isFinite(result.total_cost_usd) ? ` $${result.total_cost_usd.toFixed(4)},` : ","} ${tokens} tokens`;
+if (!options.out) {
+  process.stdout.write(result.result.endsWith("\n") ? result.result : `${result.result}\n`);
+  done("ok", summary);
+}
+
+// Never overwrite: an existing file (an editor's newer edits) stays as it is and the answer goes beside it.
+const target = resolve(options.out);
+mkdirSync(dirname(target), { recursive: true });
+const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
+const candidates = [target, ...Array.from({ length: 50 }, (_, n) => join(dirname(target), `${basename(target, extname(target))}.draft-${stamp}${n ? `-${n}` : ""}${extname(target)}`))];
+for (const [index, path] of candidates.entries()) {
+  try {
+    writeFileSync(path, result.result, { flag: "wx" });
+    done("ok", `${summary} -> ${path}${index ? ` (${basename(target)} already exists and was not touched)` : ""}`);
+  } catch (error) {
+    if (error.code !== "EEXIST") done("fail", `cannot write ${path} (${error.code ?? "error"})`);
+  }
+}
+done("fail", `cannot find a free name beside ${target}`);
