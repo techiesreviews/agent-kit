@@ -468,6 +468,29 @@ test("a create with no answer says to look for the card before trying again", as
   refused(await run(["create", "--title", "Maybe made"]), /may or may not have been made/);
 });
 
+test("Ctrl-C at the workspace question says the used token file is gone", async t => {
+  const script = await start("sh", ["-c", "command -v script"], kitEnv());
+  if (script.status !== 0) return t.skip("no script command on this machine");
+  const { home, root, orbit, configPath, env } = await fixture(t);
+  rmSync(configPath);
+  orbit.controls.me.workspaces = [{ id: fakeWorkspace, name: "Fake" }, { id: "22222222-2222-4222-8222-222222222222", name: "Other" }];
+  const mcp = fakeMcpSettings(home, orbit.origin);
+  const secret = join(home, "secret-box");
+  writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
+  const child = spawn("script", ["-qfec", `${kit} ticket setup --from-file ${secret} --from-mcp-config ${mcp}`, "/dev/null"], { env: { ...env, KIT_ROOT: root }, stdio: ["pipe", "pipe", "pipe"] });
+  child.stdin.on("error", () => {});
+  let seen = "", copied = false, cancelled = false;
+  const finished = new Promise<number | null>(done => child.on("close", done));
+  child.stdout.on("data", chunk => {
+    seen += chunk;
+    if (!copied && /yes or no/.test(seen)) { copied = true; setTimeout(() => child.stdin.write("yes\r"), 150); }
+    if (!cancelled && /several workspaces/.test(seen)) { cancelled = true; setTimeout(() => child.stdin.write("\u0003"), 150); }
+  });
+  assert.notEqual(await finished, 0);
+  assert.match(seen, /RESULT: fail ticket Setup was cancelled\. Nothing was saved\. The token file is gone/);
+  assert.ok(!existsSync(configPath));
+});
+
 test("Ctrl-C at a setup prompt ends with a plain RESULT line, the terminal back as it was and nothing saved", async t => {
   const script = await start("sh", ["-c", "command -v script"], kitEnv());
   if (script.status !== 0) return t.skip("no script command on this machine");
@@ -999,7 +1022,11 @@ test("an option never swallows the next option as its value, and only the space 
   refused(await run(["trash", "TOOLS-1", "--lex-said", "--dry-run"]), /--lex-said needs a value/);
   refused(await run(["update", "TOOLS-1", "--title", "--dry-run"]), /--title needs a value/);
   assert.equal(task.trashed, false);
-  for (const word of ["--title=x", "--dry-run=yes", "--wat=1"]) refused(await run(["update", "TOOLS-1", word]), /does not take/);
+  for (const word of ["--dry-run=yes", "--wat=1"]) refused(await run(["update", "TOOLS-1", word]), /does not take/);
+  // The form that is gone says what to write instead, also with a value holding spaces.
+  for (const word of ["--title=x", "--title=my new title"]) refused(await run(["update", "TOOLS-1", word]), /write it as --title <value>/);
+  // A one-word value that starts with a dash cannot be given, and the refusal says so.
+  refused(await run(["update", "TOOLS-1", "--lex-said", "-ok"]), /cannot start with a dash/);
   assert.equal(orbit.writes().length, 0);
   ok(await run(["update", "TOOLS-1", "--title", "a=b"]));
   assert.equal(task.title, "a=b");
@@ -1070,9 +1097,19 @@ test("setup asks which workspace when the token reaches several, and refuses an 
   const secret = join(home, "secret-box");
   orbit.controls.me.workspaces = [{ id: fakeWorkspace, name: "Fake" }, { id: "22222222-2222-4222-8222-222222222222", name: "Other" }];
   writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
-  const said = refused(await run(["setup", "--from-file", secret, "--from-mcp-config", mcp], {}, "yes\n99999999-9999-4999-8999-999999999999\n"), /No workspace 99999999-9999-4999-8999-999999999999/);
+  const said = refused(await run(["setup", "--from-file", secret, "--from-mcp-config", mcp], {}, `yes\n${"99999999-9999-4999-8999-999999999999\n".repeat(3)}`), /No workspace 99999999-9999-4999-8999-999999999999/);
   assert.match(said.stderr, /several workspaces/);
   assert.ok(!existsSync(configPath));
+  // A slip gets two more tries, and the name counts as well as the id, so a used token file is not lost to a typo.
+  writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
+  ok(await run(["setup", "--from-file", secret, "--from-mcp-config", mcp], {}, "yes\nnope\nother\n"));
+  assert.equal(JSON.parse(readFileSync(configPath, "utf8")).workspace_id, "22222222-2222-4222-8222-222222222222");
+  // Names from Orbit reach the screen without terminal tricks.
+  rmSync(configPath);
+  orbit.controls.me.workspaces = [{ id: fakeWorkspace, name: "Fake\u001b[31m" }, { id: "22222222-2222-4222-8222-222222222222", name: "Other" }];
+  writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
+  const clean = ok(await run(["setup", "--from-file", secret, "--from-mcp-config", mcp], {}, `yes\n${fakeWorkspace}\n`));
+  assert.ok(!clean.stderr.includes("\u001b"));
 });
 
 test("setup's help is numbered plain steps with no jargon; kit ticket help names every command", async t => {
@@ -1558,6 +1595,19 @@ test("kit doctor's Orbit line says what Orbit really answers, asking once, never
   orbit.requests.length = 0;
   assert.ok(!(await doctor(["--quiet"])).stdout.includes("tickets:"));
   assert.equal(orbit.requests.length, 0);
+});
+
+test("the expiry reads right at its edges, and a check that cannot run is said plainly", async t => {
+  const { env, save, config } = await fixture(t);
+  const hour = 3_600_000, inHours = (hours: number) => new Date(Date.now() + hours * hour).toISOString();
+  save({ ...config, token_expires_at: inHours(25) });
+  assert.equal(await orbitReport({ ...env }), "connected; token runs out in 1 day");
+  save({ ...config, token_expires_at: inHours(2) });
+  assert.equal(await orbitReport({ ...env }), "connected; token runs out in 0 days");
+  const elsewhere = join(env.HOME!, "no-library");
+  mkdirSync(elsewhere);
+  const output = await start(resolve("kit.d/doctor"), [], { ...env, KIT_LIB_MJS: join(elsewhere, "kit-lib.mjs"), KIT_DOCTOR_SKIP: "" });
+  assert.match(output.stdout, /tickets: Orbit board TOOLS: not checked \(the check could not run\)/);
 });
 
 test("a silent Orbit is reported after the short limit, and the check gives up by itself", async t => {

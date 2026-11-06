@@ -96,9 +96,13 @@ function parse(name, words) {
     else if (spec.optional?.includes(flag)) found.flags[flag] = words[index + 1] && !words[index + 1].startsWith("-") ? words[++index] : true;
     else if (spec.values.includes(flag)) {
       // A next word shaped like an option is not a value. A lone "-" is (standard input), and so is text with spaces ("- [x] done").
-      if (words[index + 1] === undefined || /^-\S+$/.test(words[index + 1])) throw new UsageProblem(`--${flag} needs a value`);
+      if (words[index + 1] === undefined || /^-\S+$/.test(words[index + 1])) throw new UsageProblem(`--${flag} needs a value (a one-word value cannot start with a dash)`);
       found.flags[flag] = words[++index];
-    } else throw new UsageProblem(`${name} does not take ${word}${/\s/.test(word) ? "; put -- before text that starts with dashes" : ""}`);
+    } else {
+      const named = word.slice(2, word.includes("=") ? word.indexOf("=") : undefined);
+      if (word.includes("=") && spec.values.includes(named)) throw new UsageProblem(`${name} does not take ${word}: write it as --${named} <value>`);
+      throw new UsageProblem(`${name} does not take ${word}${/\s/.test(word) ? "; put -- before text that starts with dashes" : ""}`);
+    }
   }
   if (found.help) return found;
   if (found.rest.length < spec.args.length) throw new UsageProblem(`${name} needs a ${spec.args[found.rest.length]}`);
