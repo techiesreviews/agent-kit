@@ -15,7 +15,7 @@ import { dirname, join, resolve } from "node:path";
 import { durationMilliseconds, supervise } from "./sol-run.mjs";
 import { reviewComplete, reviewFormat, reviewScope } from "./review-brief.mjs";
 import { nextTalkStyle, talkStyleLine } from "./brief-lib.mjs";
-import { claudeCommand, recordApiSpend } from "./api-route.mjs";
+import { apiRouteProblem, claudeCommand, recordApiSpend } from "./api-route.mjs";
 
 const adapters = { codex: codexAdapter, claude: claudeAdapter, grok: grokAdapter, opencode: opencodeAdapter };
 const reviewOnly = { grok: "Grok", opencode: "OpenCode" };
@@ -577,6 +577,8 @@ export function claudeAdapter(options, common) {
       "--output-format", "json", ...(options.sessionId ? ["--session-id", options.sessionId] : [])],
     // A resumed session keeps its id; --session-id would demand --fork-session.
     resume: session => [...claudeAdapter({ ...options, sessionId: undefined }, common).args, "--resume", session],
+    // On the opt-in API route: the wrapper's own refusal (a key file it will not use) and an empty API account say so in plain words.
+    outOfCredit: (stdout, log, status) => status ? apiRouteProblem(stdout, log) : null,
     session: stdout => JSON.parse(stdout).session_id,
     finish: stdout => claudeResult(stdout, model, kind === "review"),
   };

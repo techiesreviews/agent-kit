@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { apiRoute, apiRouteReport, apiSpendLog, apiSpendTotal, claudeCommand, recordApiSpend } from "../api-route.mjs";
+import { apiRoute, apiRouteProblem, apiRouteReport, apiSpendLog, apiSpendTotal, claudeCommand, recordApiSpend } from "../api-route.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { claudeAdapter } from "../agent-run.mjs";
 import { kitEnv } from "./support/kit-env.ts";
@@ -30,7 +30,7 @@ function folder(t: TestContext) {
   writeFileSync(join(bin, "claude"), `#!/usr/bin/env node
 import { appendFileSync } from "node:fs";
 const args = process.argv.slice(2);
-appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ args, keyMatches: process.env.ANTHROPIC_API_KEY === ${JSON.stringify(secret)}, configDir: process.env.CLAUDE_CONFIG_DIR, keyFileVar: process.env.KIT_API_KEY_FILE ?? null }) + "\\n");
+appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ args, keyMatches: process.env.ANTHROPIC_API_KEY === ${JSON.stringify(secret)}, configDir: process.env.CLAUDE_CONFIG_DIR, keyFileVar: process.env.KIT_API_KEY_FILE ?? null, scrub: process.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB ?? null }) + "\\n");
 console.log(JSON.stringify({ result: "ok", modelUsage: { "claude-haiku-5-5": {} }, usage: { input_tokens: 120, output_tokens: 30, cache_read_input_tokens: 10, cache_creation_input_tokens: 5 }, total_cost_usd: 0.0123, session_id: "s" }));
 `);
   writeFileSync(join(bin, "package.json"), '{"type":"module"}');
@@ -114,7 +114,7 @@ test("each run adds one line to the spend log with the tokens and cost the CLI p
   assert.match(first.time, /^\d{4}-\d\d-\d\dT/);
   assert.equal(second.ok, false); assert.equal(second.input_tokens, undefined);
   assert.ok(!log.includes(secret) && !log.includes(f.keyFile), "no key and no key file path in the log");
-  assert.deepEqual(apiSpendTotal(env), { runs: 2, failed: 1, costUsd: 0.05, inputTokens: 110, outputTokens: 20 });
+  assert.deepEqual(apiSpendTotal(env), { runs: 2, failed: 1, unknownCost: 1, costUsd: 0.05, inputTokens: 110, outputTokens: 20 });
 });
 
 test("kit doctor says whether the route is off or on, the key file's mode and the spend total, never the key", t => {
@@ -156,4 +156,49 @@ test("a real kit run through agent-run.mjs sends the key to claude only inside t
   assert.equal(line.model, "claude-haiku-5-5"); assert.equal(line.command, "build claude"); assert.equal(line.input_tokens, 120); assert.equal(line.cost_usd, 0.0123); assert.equal(line.ok, true);
   assert.ok(!log.includes(secret));
   for (const file of ["run.log", "out.md", "status.json"]) assert.ok(!readFileSync(join(out, file), "utf8").includes(secret), file);
+});
+
+test("claude is told to keep the key out of the shell commands a builder starts", t => {
+  const f = folder(t);
+  spawnSync(wrapper, ["-p"], { env: { ...f.env, KIT_API_KEY_FILE: f.keyFile }, encoding: "utf8" });
+  assert.equal(f.callList()[0].scrub, "1");
+});
+
+test("doctor's view and the wrapper agree: a relative path, a newline-only file and an unreadable file are all refused in plain words", t => {
+  const f = folder(t);
+  const blank = join(f.dir, "blank-key"); writeFileSync(blank, "\n", { mode: 0o600 }); chmodSync(blank, 0o600);
+  const spaces = join(f.dir, "spaces-key"); writeFileSync(spaces, "  \t \nsk-second-line\n", { mode: 0o600 }); chmodSync(spaces, 0o600);
+  const closed = join(f.dir, "closed-key"); writeFileSync(closed, `${secret}\n`, { mode: 0o000 }); chmodSync(closed, 0o000);
+  for (const [file, words] of [["relative-key", /must be an absolute path/], [blank, /is empty/], [spaces, /is empty/], [closed, /cannot be read|can be read by others/]] as const) {
+    const env = { ...f.env, KIT_API_KEY_FILE: file };
+    const route = apiRoute(env);
+    assert.ok(route.problem, `doctor accepts ${file}`);
+    const run = spawnSync(wrapper, ["-p"], { env, cwd: f.dir, encoding: "utf8" });
+    assert.equal(run.status, 2, `wrapper accepts ${file}: ${run.stderr}`);
+    assert.match(run.stderr, words);
+    assert.match(route.problem, words);
+  }
+  chmodSync(closed, 0o600);
+  assert.deepEqual(f.callList(), []);
+});
+
+test("a refused key file or an empty API account becomes one plain problem line, and only while the route is on", t => {
+  const f = folder(t);
+  const env = { ...f.env, KIT_API_KEY_FILE: f.keyFile };
+  assert.equal(apiRouteProblem("", "claude-api-run: the API key file can be read by others (mode 644); run chmod 600 on it\n", env),
+    "problem: API route: the API key file can be read by others (mode 644); run chmod 600 on it");
+  assert.match(apiRouteProblem('{"is_error":true,"result":"Credit balance is too low"}', "", env), /^problem: API route: the API credit is used up \(Credit balance is too low\)/);
+  assert.equal(apiRouteProblem("{}", "some other failure\n", env), null);
+  assert.equal(apiRouteProblem('{"result":"Credit balance is too low"}', "", f.env), null);
+  assert.equal(claudeAdapter({ kind: "review", model: "claude-opus-5-5", effort: "medium" }, "/common").outOfCredit("", "", 0), null);
+});
+
+test("the spend total says when runs printed no cost, and skips log rows that are not records", t => {
+  const f = folder(t);
+  const env = { ...f.env, KIT_API_KEY_FILE: f.keyFile };
+  recordApiSpend({ env, command: "review", model: "m", stdout: JSON.stringify({ total_cost_usd: 2, usage: { input_tokens: 5, output_tokens: 1 } }), status: 0 });
+  recordApiSpend({ env, command: "build", model: "m", stdout: "", status: 124 });
+  writeFileSync(apiSpendLog(env), `${readFileSync(apiSpendLog(env), "utf8")}null\n42\n`);
+  assert.equal(apiSpendTotal(env).unknownCost, 1);
+  assert.match(apiRouteReport(env).text, /2 runs logged \(1 failed\), at least \$2\.00 spent \(1 run with no cost printed\), 5 tokens in, 1 out$/);
 });
