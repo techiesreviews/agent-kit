@@ -120,7 +120,7 @@ undoes a newer rule.
 
 The start marker carries this rule's version too (v2, v3 …).
 
-Known limits of the review loop today (waived follow-ups): the PR line and ledger have edge cases (a "behind" rebase can leave an earlier "approved" until the next review finishes; a merge from the base puts other people's code in the "changes since the last review" file; a nits-only review is not reused after a rebase; second-look findings are in the verdict but not the ledger); an out-of-budget should lands as a follow-up with a budget report that shows only the reviewer's side, and "disputed after two replies" is not detected, so the lead tells Lex both sides by hand; a ticket's risk is read from its title, goal and named files only.
+Known limits of the review loop today (waived follow-ups): the PR line and ledger have edge cases (a "behind" rebase can leave an earlier "approved" until the next review finishes; a merge from the base puts other people's code in the "changes since the last review" file; a nits-only review is not reused after a rebase; second-look findings are in the verdict but not the ledger); an out-of-budget should lands as a follow-up with a budget report that shows only the reviewer's side, and "disputed after two replies" is not detected, so the lead tells Lex both sides by hand; a ticket's risk is read from its title, goal and named files only; a finding carried by a "still open" mark loses its original text (only the id and the reason stay); a rerun of the same head tells the reviewer the builder's declined findings are in the brief when they are not.
 
 ## Who cooks (pins from 2026-10-22)
 
