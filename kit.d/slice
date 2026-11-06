@@ -4,7 +4,7 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { completedFixRounds, openFindings, reviewCoversHead } from "../review-findings.mjs";
+import { completedFixRounds, openFindings, reviewCoversHead, reviewIncomplete } from "../review-findings.mjs";
 import { branchRisk, roundLimit, stoppingFindings } from "../review-loop.mjs";
 import { builderChecks, spoken } from "../review-brief.mjs";
 import { ticketSkillLines } from "../skills.mjs";
@@ -199,7 +199,7 @@ async function slice(args) {
       }
       for (const folder of folders) {
         try {
-          if (reviewCoversHead(readFileSync(join(folder, "refs.txt"), "utf8").split(/\r?\n/)[0], git("rev-parse", "HEAD"), ticket, root)) return folder;
+          if (!reviewIncomplete(folder) && reviewCoversHead(readFileSync(join(folder, "refs.txt"), "utf8").split(/\r?\n/)[0], git("rev-parse", "HEAD"), ticket, root)) return folder;
         } catch { /* Incomplete evidence cannot cover HEAD. */ }
       }
       throw new Error("no review evidence covers HEAD");

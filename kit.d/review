@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // kit: review a diff or commit and save the evidence
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { inferCli, opencodeModelRuns, parseAgentArgs, releaseReviewBudget, reserveReviewBudget } from "../agent-run.mjs";
@@ -99,15 +99,8 @@ async function reviewOnce(flags, look) {
     loopMeta = look || scope.commit ? {} : { round, ...(branchName ? { branch: branchName } : {}), ...(previous ? { previous: previous.name } : {}) };
     if (previous) {
       const { risky } = branchRisk({ root, base: scope.base, ticket: flags.ticket, settings: kitSettings(root) });
-      sinceHead = previous.headKnown && previous.head !== scope.head ? previous.head : null;
-      // The builder's written answer: the newest fix round's report for this branch (what it fixed, and what it declined with evidence).
-      let answer = "";
-      try {
-        const folder = join(kitMainRoot(), ".scratch/kit-fix", encodeURIComponent(branchName));
-        const newest = readdirSync(folder).filter(name => /^round-[1-9]\d*\.md$/.test(name)).sort((a, b) => parseInt(b.slice(6), 10) - parseInt(a.slice(6), 10))[0];
-        if (newest) answer = readFileSync(join(folder, newest), "utf8").trim().slice(0, 4000);
-      } catch { /* No fix round yet: no answer to give. */ }
-      brief += `\n${loopBriefSection({ round, limit: roundLimit(risky), previousHead: previous.headKnown ? previous.head : null, currentHead: scope.head, sinceFile: true, open: previous.findings, answer })}\n`;
+      sinceHead = previous.head !== scope.head ? previous.head : null;
+      brief += `\n${loopBriefSection({ round, limit: roundLimit(risky), previousHead: previous.head, currentHead: scope.head, open: previous.findings })}\n`;
       console.log(`review loop: round ${round}, answering ${previous.name} (${previous.findings.length} open findings)`);
     }
     if (sinceHead) agentArgs.push("--since", sinceHead);
