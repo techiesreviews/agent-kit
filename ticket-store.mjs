@@ -24,7 +24,7 @@ function amsterdamMs(year, month, day, hour, minute) {
   return wall - zoneParts(first).offset;
 }
 
-const dateProblem = value => new OrbitError(`not a date: ${value} (use YYYY-MM-DD, read as Europe/Amsterdam, or a full RFC 3339 time with its offset)`);
+const dateProblem = value => new OrbitError(`not a date: ${value} (use YYYY-MM-DD, read as Europe/Amsterdam, or a full time with its offset, like 2026-12-02T09:30:00+01:00)`);
 const realDay = (year, month, day) => {
   const date = new Date(Date.UTC(year, month - 1, day));
   return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
@@ -122,6 +122,15 @@ export function withBlockedBy(description, keys) {
   return reason === null ? body : withNextLex(body, reason);
 }
 
+/** The words on the "Blocked by:" line that are not card keys, which a change of blockers would lose. */
+function otherBlockedWords(description) {
+  for (const line of split(description)) {
+    const found = blockedLine.exec(line.trim());
+    if (found) return found[1].split(/[\s,]+/).filter(word => word && !blockerKey.test(word));
+  }
+  return [];
+}
+
 /** The source named on the "Planned dates:" line, without what it replaced; null when there is none. */
 function plannedSource(description) {
   const line = split(description).find(item => plannedLine.test(item.trim()));
@@ -153,10 +162,22 @@ export function withNote(description, date, who, text) {
   return lines.join("\n");
 }
 
-/** The ticked "Scheduled in Radaar" lines as letters and digits only, so markup, spacing and letter case make no difference. */
-const ticked = description => String(description ?? "").split(/\r\n|[\n\r\u2028\u2029]/)
-  .map(line => (tick.exec(line)?.[1] ?? "").replace(/<[^>]*>/g, "").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").toLowerCase().replace(/[^\p{L}\p{N}]/gu, ""))
-  .filter(text => text.includes("scheduledinradaar"));
+/**
+ * The ticked "Scheduled in Radaar" items as letters and digits only, so markup, spacing and letter case make no difference.
+ * An indented line after a ticked one belongs to it, as in Markdown.
+ */
+function ticked(description) {
+  const items = [];
+  let open = false;
+  for (const line of String(description ?? "").split(/\r\n|[\n\r\u2028\u2029]/)) {
+    const found = tick.exec(line);
+    if (found) { items.push(found[1]); open = true; }
+    else if (open && /^\s+\S/.test(line) && !/^\s*(?:[-*+]|\d+[.)])\s/.test(line)) items[items.length - 1] += ` ${line}`;
+    else open = false;
+  }
+  return items.map(text => text.replace(/&#?\w+;/g, " ").replace(/<[^>]*>/g, "").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").toLowerCase().replace(/[^\p{L}\p{N}]/gu, ""))
+    .filter(text => text.includes("scheduledinradaar"));
+}
 const amsterdamToday = () => { const now = zoneParts(Date.now()); return `${now.year}-${now.month}-${now.day}`; };
 const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 const sameTime = (a, b) => (a && b) ? Date.parse(a) === Date.parse(b) : same(a, b);
@@ -376,8 +397,14 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       return changeCard("update", key, async task => {
         const wanted = {};
         if (title !== undefined) wanted.title = oneLine(title);
-        if (description !== undefined) wanted.description = description;
-        if (keys !== undefined) wanted.description = withBlockedBy(wanted.description ?? task.description, keys);
+        // A dated card keeps its Planned dates line, so no date ever loses its source.
+        const plannedNow = task.due_at ? split(task.description).find(line => plannedLine.test(line.trim())) : undefined;
+        if (description !== undefined) wanted.description = plannedNow && !split(description).some(line => plannedLine.test(line.trim())) ? withPlannedDates(description, plannedNow.trim()) : description;
+        if (keys !== undefined) {
+          const others = otherBlockedWords(wanted.description ?? task.description);
+          if (others.length) throw new OrbitError(`the Blocked by line also says: ${others.join(", ")}; change that line with --description so these words are not lost`);
+          wanted.description = withBlockedBy(wanted.description ?? task.description, keys);
+        }
         if (status !== undefined) wanted.status_id = (await statusByName(task.project_id, status)).id;
         if (priority !== undefined) wanted.priority = priority;
         if (parent !== undefined) wanted.parent_task_id = parent === "none" ? null : await parentId(parent);
