@@ -1626,7 +1626,7 @@ test("a silent Orbit is reported after the short limit, and the check gives up b
   assert.equal(orbit.requests.length, 1);
 });
 
-test("setup saves the token's expiry when Orbit names one, and nothing when it does not", async t => {
+test("setup saves the token's expiry when Orbit names one, and asks when it does not", async t => {
   const { home, run, orbit, configPath } = await fixture(t);
   rmSync(configPath);
   const mcp = fakeMcpSettings(home, orbit.origin);
@@ -1634,10 +1634,26 @@ test("setup saves the token's expiry when Orbit names one, and nothing when it d
   writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
   ok(await run(["setup", "--from-file", secret, "--from-mcp-config", mcp], {}, "yes\n"));
   assert.equal(JSON.parse(readFileSync(configPath, "utf8")).token_expires_at, "2027-02-04T00:00:00.000Z");
+  // Orbit named the date, so nothing was asked.
+  const box = () => writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
   rmSync(configPath);
+  box();
+  assert.ok(!ok(await run(["setup", "--from-file", secret, "--from-mcp-config", mcp], {}, "yes\n")).stderr.includes("When does this token expire?"));
+
+  // Orbit names none: setup asks; a date is read as the end of that day in Amsterdam, Enter saves none, and a slip saves none and says so.
   orbit.controls.me.token.expires_at = null;
-  writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
-  ok(await run(["setup", "--from-file", secret, "--from-mcp-config", mcp], {}, "yes\n"));
+  rmSync(configPath);
+  box();
+  const asked = ok(await run(["setup", "--from-file", secret, "--from-mcp-config", mcp], {}, "yes\n2027-11-06\n"));
+  assert.match(asked.stderr, /When does this token expire\? \(YYYY-MM-DD, Enter if unknown\)/);
+  assert.equal(JSON.parse(readFileSync(configPath, "utf8")).token_expires_at, "2027-11-06T22:59:00.000Z");
+  rmSync(configPath);
+  box();
+  ok(await run(["setup", "--from-file", secret, "--from-mcp-config", mcp], {}, "yes\n\n"));
+  assert.ok(!("token_expires_at" in JSON.parse(readFileSync(configPath, "utf8"))));
+  rmSync(configPath);
+  box();
+  assert.match(ok(await run(["setup", "--from-file", secret, "--from-mcp-config", mcp], {}, "yes\nsoon\n")).all, /not a date.*no expiry/i);
   assert.ok(!("token_expires_at" in JSON.parse(readFileSync(configPath, "utf8"))));
 });
 
