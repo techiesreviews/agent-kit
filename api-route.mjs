@@ -1,7 +1,8 @@
 // The opt-in API credit route: the kit's headless Claude calls (kit review, kit fix, kit slice builders, kit ux) can
 // run on an Anthropic API key instead of the subscription. It is off unless KIT_API_KEY_FILE names a file (absolute
-// path, mode 600, one line, the key). The key is read only inside the child process (claude-api-run.sh); it is never
-// printed, logged, kept in this process's environment or put on a command line. Each run adds one line to a local
+// path, mode 600, one line, the key). Only the child process (claude-api-run.sh) passes the key on to claude; this file
+// reads the key file's first line only to see that it is not blank, and never keeps, returns, prints or logs it, nor puts it
+// in an environment or on a command line. Each run adds one line to a local
 // spend log.
 import { accessSync, appendFileSync, constants, mkdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -11,8 +12,8 @@ const home = env => env.HOME || homedir();
 
 /**
  * The state of the route: { on, keyFile, configDir, problem } (problem is plain words, null when the route is usable).
- * The tests and their order are those of claude-api-run.sh, so doctor and the runner never read the switch differently;
- * the key file's first line is read only to see that it is not blank and is never returned.
+ * The tests are those of claude-api-run.sh, so doctor and the runner never read the switch differently; the key file's
+ * first line is read only to see that it is not blank and is never returned.
  */
 export function apiRoute(env = process.env) {
   const keyFile = env.KIT_API_KEY_FILE;
@@ -20,7 +21,8 @@ export function apiRoute(env = process.env) {
   const configDir = env.KIT_API_CONFIG_DIR || join(home(env), ".claude-api");
   let problem = null;
   try {
-    if (!isAbsolute(keyFile)) problem = `KIT_API_KEY_FILE ${keyFile} must be an absolute path`;
+    if (!isAbsolute(configDir)) problem = `KIT_API_CONFIG_DIR ${configDir} must be an absolute path`;
+    else if (!isAbsolute(keyFile)) problem = `KIT_API_KEY_FILE ${keyFile} must be an absolute path`;
     else {
       const info = statSync(keyFile);
       if (!info.isFile()) problem = `KIT_API_KEY_FILE ${keyFile} is not a file`;
@@ -51,7 +53,9 @@ export function apiSpendLog(env = process.env) {
  * tokens and cost the CLI printed (claude -p --output-format json), whether it worked. Never throws, never holds a secret.
  */
 export function recordApiSpend({ env = process.env, command, model, stdout, status }) {
-  if (!apiRoute(env).on) return null;
+  // A call the wrapper refused never reached the API: no line.
+  const route = apiRoute(env);
+  if (!route.on || route.problem) return null;
   let result = {};
   try { result = JSON.parse(stdout ?? "") ?? {}; } catch { /* No JSON (a failed call): the line still says it ran. */ }
   if (typeof result !== "object") result = {};
@@ -110,6 +114,6 @@ export function apiRouteProblem(stdout, log, env = process.env) {
   if (!apiRoute(env).on) return null;
   const refusal = /^claude-api-run: (.+)$/m.exec(log ?? "")?.[1];
   if (refusal) return `problem: API route: ${refusal}`;
-  if (/credit balance is too low/i.test(`${stdout ?? ""}\n${log ?? ""}`)) return "problem: API route: the API credit is used up (Credit balance is too low); unset KIT_API_KEY_FILE to go back to the subscription";
+  if (/credit balance is too low/i.test(`${stdout ?? ""}\n${log ?? ""}`)) return "problem: Claude out of credit: API credit is used up (Credit balance is too low); unset KIT_API_KEY_FILE to go back to the subscription";
   return null;
 }
