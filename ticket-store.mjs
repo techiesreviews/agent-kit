@@ -62,7 +62,8 @@ const nextLexPrefix = "Next step (Lex):";
 const blockedLine = /^Blocked by:\s*(.*)$/i;
 const plannedLine = /^Planned dates:/i;
 const notesHeading = "## Notes";
-const tick = /^[\s>]*(?:(?:[-*+]|\d+[.)])\s+)?\[[xX]\]\s+(.*)$/;
+const isNotesHeading = line => line.trimEnd() === notesHeading;
+const tick = /^(?:[\s>]|[-*+](?=\s)|\d+[.)](?=\s))*\[[xX]\]\s+(.*)$/;
 
 const split = text => String(text ?? "").split("\n");
 const blockerKey = /^[A-Za-z][A-Za-z0-9_]*-[0-9]+$/;
@@ -133,7 +134,7 @@ export function withPlannedDates(description, line) {
   const replaced = replaceLine(description, isPlanned, line);
   if (replaced !== null) return replaced;
   if (!String(description ?? "").trim()) return line;
-  const lines = split(description), notes = lines.indexOf(notesHeading);
+  const lines = split(description), notes = lines.findIndex(isNotesHeading);
   if (notes >= 0) lines.splice(notes, 0, ...(notes && lines[notes - 1].trim() !== "" ? [""] : []), line, "");
   else lines.push(...(lines.at(-1).trim() === "" ? [] : [""]), line);
   return lines.join("\n");
@@ -142,7 +143,7 @@ export function withPlannedDates(description, line) {
 /** The description with a dated line added at the end of its Notes section. */
 export function withNote(description, date, who, text) {
   const line = `- ${date} (${oneLine(who)}): ${oneLine(text)}`;
-  const body = String(description ?? "").replace(/\n+$/, ""), lines = split(body), heading = lines.indexOf(notesHeading);
+  const body = String(description ?? "").replace(/\s+$/, ""), lines = split(body), heading = lines.findIndex(isNotesHeading);
   if (heading < 0) return `${body ? `${body}\n\n` : ""}${notesHeading}\n\n${line}`;
   // The end of the Notes section: before the next heading and the blank lines above it.
   let end = lines.findIndex((item, index) => index > heading && /^#{1,6}\s/.test(item));
@@ -152,10 +153,10 @@ export function withNote(description, date, who, text) {
   return lines.join("\n");
 }
 
-/** The ticked "Scheduled in Radaar" lines, with spacing, emphasis, quote marks and letter case aside. */
+/** The ticked "Scheduled in Radaar" lines as letters and digits only, so markup, spacing and letter case make no difference. */
 const ticked = description => String(description ?? "").split(/\r\n|[\n\r\u2028\u2029]/)
-  .map(line => (tick.exec(line)?.[1] ?? "").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[*_~`]/g, "").replace(/\s+/g, " ").trim().toLowerCase())
-  .filter(text => text.includes("scheduled in radaar"));
+  .map(line => (tick.exec(line)?.[1] ?? "").replace(/<[^>]*>/g, "").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").toLowerCase().replace(/[^\p{L}\p{N}]/gu, ""))
+  .filter(text => text.includes("scheduledinradaar"));
 const amsterdamToday = () => { const now = zoneParts(Date.now()); return `${now.year}-${now.month}-${now.day}`; };
 const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 const sameTime = (a, b) => (a && b) ? Date.parse(a) === Date.parse(b) : same(a, b);
@@ -322,7 +323,8 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
     comments: key => client.comments(orbitCardKey(key)),
     /** The cards of one board, or of every board the token reaches with project "all". */
     async list({ project, status, parent, assignee, q, limit = 50 }) {
-      const everywhere = project?.toLowerCase() === "all";
+      // A parent's key already names the card, on whichever board it sits; a status name needs one board.
+      const everywhere = project?.toLowerCase() === "all" || (project === undefined && parent !== undefined && status === undefined);
       if (everywhere && status !== undefined) throw new OrbitError("--status names differ per board: use it with one --project");
       const board = everywhere ? null : await projectFrom(project);
       const query = { project_id: board?.id, assignee_id: assignee, q, parent_task_id: parent === undefined ? undefined : orbitCardKey(parent) };
