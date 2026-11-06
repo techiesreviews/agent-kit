@@ -239,10 +239,13 @@ test("a plain date is a day in Europe/Amsterdam on both sides of the March and O
   assert.equal(orbitDate("2026-10-25", "due"), "2026-10-25T22:59:00.000Z");
   assert.equal(orbitDate("2026-10-26", "start"), "2026-10-25T23:00:00.000Z");
   for (const day of ["2026-03-29", "2026-10-25", "2026-07-01", "2026-01-01"]) {
-    assert.equal(showDate(orbitDate(day, "start")), day);
-    assert.equal(showDate(orbitDate(day, "due")), day);
+    assert.equal(showDate(orbitDate(day, "start"), "start"), day);
+    assert.equal(showDate(orbitDate(day, "due"), "due"), day);
   }
-  assert.equal(showDate("2026-07-01T10:15:00.000Z"), "2026-07-01T10:15:00.000Z");
+  assert.equal(showDate("2026-07-01T10:15:00.000Z", "due"), "2026-07-01T10:15:00.000Z");
+  // An exact midnight is not the end of a due day, and an exact 23:59 is not the start of a day.
+  assert.equal(showDate(orbitDate("2026-12-02T00:00:00+01:00", "due"), "due"), "2026-12-01T23:00:00.000Z");
+  assert.equal(showDate(orbitDate("2026-12-02T23:59:00+01:00", "start"), "start"), "2026-12-02T22:59:00.000Z");
   assert.equal(orbitDate("2026-07-01T10:15:00Z", "due"), "2026-07-01T10:15:00.000Z");
   assert.equal(orbitDate("2026-07-01T10:15:00.5+02:00", "due"), "2026-07-01T08:15:00.500Z");
   for (const bad of ["2026-13-01", "2026-02-30", "2026-02-30T10:00:00Z", "2026-07-01T25:00:00Z", "2026-07-01T10:15:00", "tomorrow", ""]) {
@@ -533,7 +536,7 @@ test("a write answered 2xx with a page that is not Orbit's may have saved; termi
   assert.ok(!/[\u202E\u001b]/.test(shown.stdout));
   orbit.controls.writeAnswers.push("page-200");
   refused(await run(["update", "TOOLS-1", "--title", "x"]), /may or may not have gone through/);
-  assert.ok(task);
+  assert.equal(task.title, "Plain\u202Etext\u001b[31m");
 });
 
 test("a trash that meets a version conflict retries once with the fresh version", async t => {
@@ -951,7 +954,7 @@ test("setup's help is numbered plain steps with no jargon; kit ticket help names
   refused(await run(["update", "TOOLS-1", "--description", "a", "--description-file", "b"]), /description/);
 });
 
-test("the ticket setting defaults to files, names the Orbit board, and the store is chosen by one seam", async () => {
+test("the ticket setting defaults to files and names the Orbit board", async () => {
   assert.deepEqual(ticketSettings({}), { backend: "files", project: null, parent: null });
   assert.deepEqual(ticketSettings({ tickets: "orbit", orbit: { project: "TOOLS", parent: "TOOLS-10" } }), { backend: "orbit", project: "TOOLS", parent: "TOOLS-10" });
   assert.deepEqual(ticketSettings({ orbit: { project: "TOOLS" } }), { backend: "files", project: "TOOLS", parent: null });
@@ -980,6 +983,88 @@ test("the store's line edits leave the rest of a description exactly as it was",
   assert.equal(withPlannedDates("", "Planned dates: z"), "Planned dates: z");
   assert.equal(withPlannedDates("Text\n## Notes\n\n- a", "Planned dates: z"), "Text\n\nPlanned dates: z\n\n## Notes\n\n- a");
   assert.equal(withNote("## Notes\n\n- a\n\n## After\n\ntext", "2026-01-01", "me", "b"), "## Notes\n\n- a\n- 2026-01-01 (me): b\n\n## After\n\ntext");
+});
+
+test("a list asks for each board's status names once, however many cards it shows", async t => {
+  const { orbit, run } = await fixture(t);
+  const parent = orbit.addTask(orbit.tools);
+  for (let index = 0; index < 120; index++) orbit.addTask(orbit.tools, { parent_task_id: parent.id });
+  const statusCalls = () => orbit.requests.filter(item => item.path.endsWith("/statuses")).length;
+  ok(await run(["list", "--limit", "110"]));
+  assert.equal(statusCalls(), 1);
+  orbit.requests.length = 0;
+  const subs = ok(await run(["sub-tasks", "TOOLS-1"]));
+  assert.equal(statusCalls(), 1);
+  assert.ok(!result(subs).includes("--limit"), "sub-tasks takes no --limit, so it never advises one");
+});
+
+test("the screen and --json keep ordinary card text whole; only real secrets and token shapes are hidden", async t => {
+  const { orbit, run } = await fixture(t);
+  const words = "the bearer of news, ssh://git@host/x, token: yes";
+  orbit.addTask(orbit.tools, { description: words });
+  assert.equal(JSON.parse(ok(await run(["get", "TOOLS-1", "--json"])).stdout.split("\nRESULT:")[0]).description, words);
+  assert.ok(ok(await run(["get", "TOOLS-1"])).stdout.includes(words));
+  assert.ok(ok(await run(["note", "TOOLS-1", "the bearer of news", "--dry-run"])).stdout.includes("the bearer of news"));
+  orbit.addTask(orbit.tools, { description: `leak orb_abcdefghijklmnopqrstuvwx and ${fakeToken}` });
+  const leak = ok(await run(["get", "TOOLS-2", "--json"]));
+  assert.ok(!leak.stdout.includes("orb_abcdefghijklmnopqrstuvwx"));
+});
+
+test("every way of writing the Radaar tick counts: spacing, emphasis, quote marks and links", async t => {
+  const { orbit, run } = await fixture(t);
+  orbit.addTask(orbit.tools, { description: "- [ ] Scheduled in Radaar" });
+  for (const text of ["- [x] Scheduled  in Radaar", "- [x] **Scheduled** in Radaar", "> - [x] Scheduled in Radaar", "- [x] [Scheduled in Radaar](https://example.test)", "  * [X] _scheduled in radaar_", "[x] Scheduled in Radaar"]) {
+    refused(await run(["update", "TOOLS-1", "--description", text]), /--lex-said/);
+  }
+  assert.equal(orbit.writes().length, 0);
+});
+
+test("broken settings never silently drop the default parent on a new card", async t => {
+  const { orbit, run } = await fixture(t, { branches: { land: "dev", direct: "nope" }, orbit: { project: "TOOLS", parent: "TOOLS-1" } });
+  orbit.addTask(orbit.tools);
+  refused(await run(["create", "--project", "TOOLS", "--title", "x"]), /direct/);
+  assert.equal(orbit.writes().length, 0);
+  ok(await run(["create", "--project", "TOOLS", "--title", "x", "--no-parent"]));
+  ok(await run(["create", "--project", "TOOLS", "--title", "y", "--parent", "TOOLS-1"]));
+  assert.equal(orbit.tasks[1].parent_task_id, null);
+  assert.equal(orbit.tasks[2].parent_task_id, orbit.tasks[0].id);
+});
+
+test("an empty value never clears blockers or blanks a title", async t => {
+  const { orbit, run } = await fixture(t);
+  const task = orbit.addTask(orbit.tools, { description: "Blocked by: TOOLS-9", title: "Kept" });
+  refused(await run(["update", "TOOLS-1", "--blocked-by", ""]), /none/);
+  refused(await run(["update", "TOOLS-1", "--blocked-by", " , "]), /none/);
+  refused(await run(["update", "TOOLS-1", "--title", "  "]), /title/);
+  assert.equal(task.description, "Blocked by: TOOLS-9");
+  assert.equal(task.title, "Kept");
+  assert.equal(orbit.writes().length, 0);
+});
+
+test("setup leaves a file that holds no token, and after a used token file says plainly what to do next", async t => {
+  const { home, run, orbit, configPath } = await fixture(t);
+  rmSync(configPath);
+  const mcp = fakeMcpSettings(home, orbit.origin);
+  const notes = join(home, "notes.txt");
+  writeFileSync(notes, "hello there\n", { mode: 0o600 });
+  refused(await run(["setup", "--from-file", notes, "--from-mcp-config", mcp], {}, "yes\n"), /orb_/);
+  assert.equal(readFileSync(notes, "utf8"), "hello there\n");
+
+  const secret = join(home, "secret-box");
+  const box = () => writeFileSync(secret, `${fakeToken}\n`, { mode: 0o600 });
+  box();
+  orbit.controls.me.workspaces = [{ id: fakeWorkspace, name: "Fake" }, { id: "22222222-2222-4222-8222-222222222222", name: "Other" }];
+  refused(await run(["setup", "--from-file", secret, "--from-mcp-config", mcp], {}, "yes\n"), /--workspace.*token file is gone.*new token/);
+  orbit.controls.me.workspaces = undefined;
+  box();
+  orbit.controls.answers.push("gateway-page");
+  const reached = refused(await run(["setup", "--from-file", secret, "--from-mcp-config", mcp], {}, "yes\n"), /token file is gone.*new token/);
+  assert.ok(!/Orbit refused/.test(reached.all), "a page that is not Orbit's is not Orbit's refusal");
+  box();
+  const offline = join(home, "offline.json");
+  writeFileSync(offline, JSON.stringify({ mcpServers: { orbit: { url: "http://127.0.0.1:9/mcp", headers: { "CF-Access-Client-Id": fakeCfId, "CF-Access-Client-Secret": fakeCfSecret } } } }));
+  const noReach = refused(await run(["setup", "--from-file", secret, "--from-mcp-config", offline], {}, "yes\n"), /could not reach.*token file is gone.*new token/i);
+  assert.ok(!/Orbit refused/.test(noReach.all));
 });
 
 test("a saved change whose log line cannot be written says the change went through", async t => {

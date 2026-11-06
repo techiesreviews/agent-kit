@@ -14,13 +14,21 @@ export const orbitLogPath = (env = process.env) => join(folder(env, "XDG_STATE_H
 
 const tokenShape = /\borb_[A-Za-z0-9_-]+/g;
 
-/** A function that hides the given secrets and anything shaped like one; every error, result and log line passes it. */
-export function orbitRedactor(secrets = []) {
+/** For card text on the screen: hides the given secrets and Orbit token shapes, and leaves ordinary words whole. */
+export function orbitCardRedactor(secrets = []) {
   const known = secrets.filter(secret => typeof secret === "string" && secret).sort((a, b) => b.length - a.length);
   return text => {
     let out = String(text);
     for (const secret of known) out = out.split(secret).join("[hidden]");
-    return out.replace(tokenShape, "[hidden]")
+    return out.replace(tokenShape, "[hidden]");
+  };
+}
+
+/** For errors, results and log lines: also hides whatever is shaped like a secret, even at the cost of a few plain words. */
+export function orbitRedactor(secrets = []) {
+  const card = orbitCardRedactor(secrets);
+  return text => {
+    return card(text)
       .replace(/\b(Bearer)\s+[^\s"',]+/gi, "$1 [hidden]")
       .replace(/(CF-Access-Client-(?:Id|Secret)["']?\s*[:=]\s*["']?)[^\s"',}]+/gi, "$1[hidden]")
       .replace(/("(?:token|cf_access_client_id|cf_access_client_secret)"\s*:\s*")[^"]*/gi, "$1[hidden]")
