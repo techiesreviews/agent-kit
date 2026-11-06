@@ -70,7 +70,7 @@ export function parseAgentArgs(args, env = {}) {
   const seen = new Set();
   for (let i = 0; i < flags.length; i += 2) {
     const flag = flags[i], value = flags[i + 1];
-    if (!["--model", "--cli", "--effort", "--base", "--commit", "--out"].includes(flag) || !value || (value.startsWith("--") && !["--base", "--commit"].includes(flag)) || seen.has(flag)) {
+    if (!["--model", "--cli", "--effort", "--base", "--commit", "--since", "--out"].includes(flag) || !value || (value.startsWith("--") && !["--base", "--commit"].includes(flag)) || seen.has(flag)) {
       throw new Error(`Invalid option: ${flag}`);
     }
     seen.add(flag);
@@ -933,9 +933,16 @@ function preparePrompt(options, brief, out) {
     writeFileSync(diff, patch);
     writeFileSync(commits, execFileSync("git", ["-C", options.worktree, "log", "--oneline", `${base}..${head}`]));
     writeFileSync(refs, `${head}\n${base}\n`);
+    // A later review-loop round also gets the changes since the last reviewed head as a prepared file (the reviewer runs no git).
+    let sinceNote = "";
+    if (options.since && !commit) {
+      const since = join(out, "since-last-review.patch");
+      writeFileSync(since, execFileSync("git", ["-C", options.worktree, "diff", options.since, head], { maxBuffer: 64 * 1024 * 1024 }));
+      sinceNote = ` Changes since the last review (git diff ${options.since}..${head}): read ${JSON.stringify(since)}.`;
+    }
     if (!patch.length) return { problem: `problem: empty diff for ${label}` };
     prompt = prompt.replaceAll(reviewFormat, "");
-    prompt += `\nReview scope: ${label}. Read ${JSON.stringify(diff)} for the diff, ${JSON.stringify(commits)} for git log --oneline ${base}..${head}, and ${JSON.stringify(refs)} for ${commit ? "commit and parent" : "HEAD and base"} SHAs (in that order). These prepared files define the scope; do not run git.\n${reviewFormat}`;
+    prompt += `\nReview scope: ${label}. Read ${JSON.stringify(diff)} for the diff, ${JSON.stringify(commits)} for git log --oneline ${base}..${head}, and ${JSON.stringify(refs)} for ${commit ? "commit and parent" : "HEAD and base"} SHAs (in that order).${sinceNote} These prepared files define the scope; do not run git.\n${reviewFormat}`;
   }
   return { prompt };
 }
