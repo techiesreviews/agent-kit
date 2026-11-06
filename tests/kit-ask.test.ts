@@ -192,3 +192,19 @@ test("the playbook section ends at the next real heading, not at a # line inside
   const input: string = f.callList()[0].input;
   assert.ok(input.includes("AFTER FENCE RULE.") && !input.includes("NOT INCLUDED"));
 });
+
+test("an empty answer is a failure that writes no file, and a bad KIT_ASK_TIMEOUT is a plain failure before any call", t => {
+  const f = folder(t);
+  const out = join(f.work, "blank.md");
+  const blank = f.ask(["--api", "--prompt-file", f.prompt, "--out", out], { ...f.on, FAKE_ANSWER: "  \n" });
+  assert.equal(blank.status, 1);
+  assert.match(last(blank.stdout), /^RESULT: fail ask claude returned an empty answer \(the call was paid for and logged\); nothing was written$/);
+  assert.ok(!existsSync(out));
+  assert.equal(f.spend().length, 1);
+  for (const value of ["-1", "0", "0.5", "abc"]) {
+    const bad = f.ask(["--api", "--prompt-file", f.prompt], { ...f.on, KIT_ASK_TIMEOUT: value });
+    assert.equal(bad.status, 2, value);
+    assert.match(last(bad.stdout), /^RESULT: fail ask KIT_ASK_TIMEOUT must be a whole number of seconds, 1 or more/);
+  }
+  assert.equal(f.callList().length, 1);
+});
