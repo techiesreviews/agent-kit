@@ -109,9 +109,9 @@ undoes a newer rule.
 
 <!-- review-loop:start v1 -->
 - Budget: 3 fix rounds; 5 only for security, permissions, auth, data loss, or state and concurrency, and only while a blocker or a should stays open with its evidence. The kit decides it from the changed paths and the ticket's words (`paths.risky` in the settings adds project patterns), never from a fixed number.
-- Stop early: a round that returns only nits (a rare path, a small cost, or a comment, doc or format-only point) ends the loop. Declined nits need no new round.
-- Round 1 reviews everything. Later rounds review only the code changed since the last review and the open finding ids; the reviewer marks every old id `resolved` or `still open: <reason>`.
-- One reviewer at a time: Claude Opus through `kit review` (read-only, never the builder), and it starts no subagents. The optional second opinion is `kit review --second-look` (the free OpenCode model, never OpenAI or Sol); when that model is unavailable, say so, never swap silently.
+- Stop early: a round that returns only nits (a rare path, a small cost, a comment, doc or format-only point, or a missing test) ends the loop. Declined nits need no new round.
+- Round 1 reviews everything. Later rounds review only the code changed since the last review and the open finding ids; the reviewer marks every old id `resolved` or `still open (<severity>): <reason>`, and a review that leaves one out is run again. A "still open" id counts as an open finding.
+- One reviewer at a time: Claude Opus through `kit review` (read-only, never the builder), and it starts no subagents. `kit pr` then runs the second look, its model picked from [`second-look.json`](../second-look.json) (Grok, else the free OpenCode model; never OpenAI or Sol); when no such model can run, the PR says `second look: skipped (<reason>)`, never a silent swap.
 - The builder checks each finding and its severity itself (blocker, should or nit), downgrades the rare-path ones, fixes with the smallest change, and declines with evidence.
 - The ledger (id, severity, outcome) comes from what the reviews wrote and is shown in the PR, never guessed.
 - Stuck (disputed after two replies) or out of budget: give both sides in 2-3 lines for Lex to decide; running out of budget is never approval.
