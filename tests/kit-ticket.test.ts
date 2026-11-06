@@ -1107,7 +1107,7 @@ test("the screen and --json keep ordinary card text whole; only real secrets and
 test("every way of writing the Radaar tick counts: spacing, emphasis, quote marks and links", async t => {
   const { orbit, run } = await fixture(t);
   orbit.addTask(orbit.tools, { description: "- [ ] Scheduled in Radaar" });
-  for (const text of ["- [x] Scheduled  in Radaar", "- [x] **Scheduled** in Radaar", "> - [x] Scheduled in Radaar", "- [x] [Scheduled in Radaar](https://example.test)", "  * [X] _scheduled in radaar_", "[x] Scheduled in Radaar", "- [x] Scheduled in [Radaar](https://example.test)", "- - [x] Scheduled in Radaar", "- [x] Scheduled in [Radaar][r]", "- [x] <b>Scheduled</b> in Radaar", "- [x] Scheduled in\n  Radaar", "- [x] Scheduled&nbsp;in Radaar"]) {
+  for (const text of ["- [x] Scheduled  in Radaar", "- [x] **Scheduled** in Radaar", "> - [x] Scheduled in Radaar", "- [x] [Scheduled in Radaar](https://example.test)", "  * [X] _scheduled in radaar_", "[x] Scheduled in Radaar", "- [x] Scheduled in [Radaar](https://example.test)", "- - [x] Scheduled in Radaar", "- [x] Scheduled in [Radaar][r]", "- [x] <b>Scheduled</b> in Radaar", "- [x] Scheduled in\n  Radaar", "- [x] Scheduled&nbsp;in Radaar", "- [x] Scheduled in\nRadaar", "> - [x] Scheduled in\n>   Radaar"]) {
     refused(await run(["update", "TOOLS-1", "--description", text]), /--lex-said/);
   }
   assert.equal(orbit.writes().length, 0);
@@ -1226,12 +1226,33 @@ test("replacing a dated card's description keeps its Planned dates line, so no d
   assert.equal(task.description, "Mine\n\nPlanned dates: due 2026-11-30 (source: Lex)");
 });
 
+test("replacing a description keeps the next step and blockers; their own commands take them out", async t => {
+  const { orbit, run } = await fixture(t);
+  const task = orbit.addTask(orbit.tools, { description: "Next step (Lex): choose\n\nBlocked by: TOOLS-9\n\nOld" });
+  ok(await run(["update", "TOOLS-1", "--description", "New"]));
+  assert.equal(task.description, "Next step (Lex): choose\n\nBlocked by: TOOLS-9\n\nNew");
+  ok(await run(["update", "TOOLS-1", "--clear-description"]));
+  assert.equal(task.description, "Next step (Lex): choose\n\nBlocked by: TOOLS-9");
+  ok(await run(["update", "TOOLS-1", "--description", "Next step (Lex): other\n\nBlocked by: VID-1\n\nText"]));
+  assert.equal(task.description, "Next step (Lex): other\n\nBlocked by: VID-1\n\nText");
+  ok(await run(["update", "TOOLS-1", "--blocked-by", "none"]));
+  ok(await run(["clear-next-lex", "TOOLS-1"]));
+  assert.equal(task.description, "Text");
+});
+
 test("changing blockers never drops other words on the Blocked by line without saying so", async t => {
   const { orbit, run } = await fixture(t);
   const task = orbit.addTask(orbit.tools, { description: "Blocked by: legal team, tools-3" });
   refused(await run(["update", "TOOLS-1", "--blocked-by", "TOOLS-4"]), /legal, team/);
   refused(await run(["update", "TOOLS-1", "--blocked-by", "none"]), /legal, team/);
   assert.equal(task.description, "Blocked by: legal team, tools-3");
+  // A second such line counts too, and is read as blockers as well.
+  const twice = orbit.addTask(orbit.tools, { description: "Blocked by: TOOLS-1\nBlocked by: legal team, VID-2" });
+  refused(await run(["update", "TOOLS-2", "--blocked-by", "TOOLS-4"]), /legal, team/);
+  assert.match(twice.description, /legal team/);
+  assert.deepEqual(JSON.parse(ok(await run(["get", "TOOLS-2", "--json"])).stdout.split("\nRESULT:")[0]).blocked_by, ["TOOLS-1", "VID-2"]);
+  // A blocker is written by its key, which is what the kit reads back.
+  refused(await run(["update", "TOOLS-2", "--blocked-by", "33333333-3333-4333-8333-333333333333"]), /card key/i);
   assert.equal(orbit.writes().length, 0);
 });
 
