@@ -25,7 +25,7 @@ root=$(cd -- "$(kit_root)" && pwd -P)
 main=$(realpath -m -- "$(kit_main_root)")
 dev=$(kit_dev_root 2>/dev/null || :)
 [[ -z $dev ]] || dev=$(realpath -m -- "$dev")
-failed=() skipped=() checks=0
+failed=() skipped=() checks=0 api_warning=''
 # KIT_DOCTOR_SKIP=help (agent.sh sets it for builds): a broken --help prints a problem: line and does not fail,
 # so the builder that should repair it can start; so does a failing kit home check (it runs kit version)
 # when the copy's version fails as version's help did: both hang, or both exit alike and print the same.
@@ -529,10 +529,12 @@ if [[ -n ${KIT_API_KEY_FILE:-} || $quiet == false ]]; then
     case $api_state in
       off) printf 'api route: %s\n' "$api_text" ;;
       ok) pass "api route" "$api_text" ;;
-      # A broken route is a warning, not a failure: it must not stop builds and reviews that never use it (agent.sh gates on doctor).
-      *) printf '✗ api route: %s (optional; only runs on the API route fail); fix: the setting named above (KIT_API_KEY_FILE: an absolute path to a file with mode 600 holding one line, the key; KIT_API_CONFIG_DIR: an absolute path), or unset KIT_API_KEY_FILE to turn the route off\n' "$api_text" ;;
+      # A broken route is a warning, not a failure (the RESULT line carries it as a warning): it must not stop builds and reviews that never use it (agent.sh gates on doctor).
+      *) api_warning='api route needs attention (see the ✗ api route line)'
+         printf '✗ api route: %s (optional; only runs on the API route fail); fix: the setting named above (KIT_API_KEY_FILE: an absolute path to a file with mode 600 holding one line, the key; KIT_API_CONFIG_DIR: an absolute path), or unset KIT_API_KEY_FILE to turn the route off\n' "$api_text" ;;
     esac
   elif [[ -n ${KIT_API_KEY_FILE:-} ]]; then
+    api_warning='api route not checked (see the ✗ api route line)'
     printf '✗ api route: on, but doctor could not read the route'"'"'s state (Node >=24 or api-route.mjs missing) (optional); fix: install Node 24, or unset KIT_API_KEY_FILE to turn the route off\n'
   fi
 fi
@@ -543,4 +545,4 @@ if (( ${#failed[@]} )); then
   exit 1
 fi
 skipped_list=$(IFS=,; printf '%s' "${skipped[*]}")
-kit_result ok "doctor $checks/$checks checks passed${skipped_list:+; skipped ${skipped_list//,/, } (KIT_DOCTOR_SKIP)}${kit_warning:+; warning: $kit_warning}${setup_warning:+; warning: $setup_warning}"
+kit_result ok "doctor $checks/$checks checks passed${skipped_list:+; skipped ${skipped_list//,/, } (KIT_DOCTOR_SKIP)}${kit_warning:+; warning: $kit_warning}${setup_warning:+; warning: $setup_warning}${api_warning:+; warning: $api_warning}"

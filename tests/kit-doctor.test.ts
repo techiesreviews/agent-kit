@@ -1342,3 +1342,14 @@ test("doctor never asks GitHub whether the repo is private (its setup check runs
   try { asked = readFileSync(join(bin, "calls.log"), "utf8"); } catch { /* No call: the message below shows why. */ }
   assert.match(asked, /repo view acme\/tools --json visibility/, control.stdout + control.stderr);
 });
+
+test("a broken API route is a doctor warning on the RESULT line, never a failure", (t) => {
+  const f = fixture(t);
+  const bad = join(f.directory, "open-key");
+  writeFileSync(bad, "not-a-real-key\n", { mode: 0o644 });
+  chmodSync(bad, 0o644);
+  const run = f.run(["--quiet"], f.build, { KIT_API_KEY_FILE: bad });
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.match(run.stdout, /^✗ api route: on, but KIT_API_KEY_FILE .* can be read by others \(mode 644\); run chmod 600 on it \(optional; only runs on the API route fail\); fix: /m);
+  assert.match(run.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: ok doctor 11\/11 checks passed; warning: api route needs attention \(see the ✗ api route line\)$/);
+});
