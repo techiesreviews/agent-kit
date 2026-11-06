@@ -15,7 +15,7 @@ import { dirname, join, resolve } from "node:path";
 import { durationMilliseconds, supervise } from "./sol-run.mjs";
 import { reviewComplete, reviewFormat, reviewScope } from "./review-brief.mjs";
 import { nextTalkStyle, talkStyleLine } from "./brief-lib.mjs";
-import { apiRouteProblem, claudeCommand, recordApiSpend } from "./api-route.mjs";
+import { apiRouteProblem, apiWrapperRefused, claudeCommand, recordApiSpend } from "./api-route.mjs";
 
 const adapters = { codex: codexAdapter, claude: claudeAdapter, grok: grokAdapter, opencode: opencodeAdapter };
 const reviewOnly = { grok: "Grok", opencode: "OpenCode" };
@@ -1001,7 +1001,7 @@ async function invokeAgent(adapter, args, descriptor, context) {
     let status = result.status;
     const slice = readFileSync(logPath, "utf8").slice(previousLog);
     // The opt-in API credit route logs each headless Claude call's tokens and cost (never a secret); a call its wrapper refused adds nothing.
-    if (options.cli === "claude") recordApiSpend({ command: `${options.kind} claude`, model: options.model, stdout: result.stdout, status, refused: /^claude-api-run: /m.test(slice) });
+    if (options.cli === "claude") recordApiSpend({ command: `${options.kind} claude`, model: options.model, stdout: result.stdout, status, refused: apiWrapperRefused(status, slice) });
     const session = recordedSession(adapter, result.stdout, slice);
     if (session) update({ session });
     // The CLI's own failure is the cause; executeRun reports it after its consequences.
@@ -1026,7 +1026,7 @@ async function invokeAgent(adapter, args, descriptor, context) {
         refusedOutright(options.cli, options.cli === "opencode" ? result.stdout ?? "" : slice, context.prompt)) update({ refused: true });
       // The API route's wrapper refused the first call (a key file it will not use, no claude): the model was never reached,
       // so the call is refunded like any refusal, and kit review moves to its fallback.
-      if (!previousCalls && options.cli === "claude" && status && /^claude-api-run: /m.test(slice)) update({ refused: true });
+      if (!previousCalls && options.cli === "claude" && apiWrapperRefused(status, slice)) update({ refused: true });
       // A run's first call that fails within the launch window (a usage limit, a login error) and left the worktree as
       // it found it never got to work. Claude and Grok hold a session from before their CLI started, so kit slice reads
       // this to tell such a build never ran. ASE_LAUNCH_WINDOW_MS (60000) is for tests.

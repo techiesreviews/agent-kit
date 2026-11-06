@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // kit: one headless Claude call on the API credit route (for writing), with a script mode that adds Lex's script rules
-import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, statSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { apiRoute, apiRouteProblem, claudeCommand, recordApiSpend } from "../api-route.mjs";
+import { apiRoute, apiRouteProblem, apiWrapperRefused, claudeCommand, recordApiSpend } from "../api-route.mjs";
 import { kitResult } from "../kit-lib.mjs";
 
 const usage = `Usage: kit ask --api --prompt-file <file> [--model sonnet|opus|haiku|claude-<id>] [--out <file>]
@@ -46,10 +46,15 @@ const route = apiRoute();
 if (!route.on) done("fail", 'the API route is off: set KIT_API_KEY_FILE (see the README, "Spending API credit")');
 if (route.problem) done("fail", route.problem);
 
-// The output folder is made before the paid call, so a bad --out costs nothing.
+// A bad --out costs nothing: the nearest folder that exists must be a folder you can write to (checked now; the
+// missing folders are made just before the paid call, so a call that stops early leaves nothing behind).
 if (options.out) {
-  try { mkdirSync(dirname(resolve(options.out)), { recursive: true }); accessSync(dirname(resolve(options.out)), constants.W_OK); }
-  catch (error) { done("fail", `cannot make the folder for ${resolve(options.out)} (${error.code ?? "error"}); nothing was sent`); }
+  let nearest = dirname(resolve(options.out));
+  while (!existsSync(nearest) && nearest !== dirname(nearest)) nearest = dirname(nearest);
+  let problem = null;
+  try { if (!statSync(nearest).isDirectory()) problem = "ENOTDIR"; else accessSync(nearest, constants.W_OK); }
+  catch (error) { problem = error.code ?? "error"; }
+  if (problem) done("fail", `cannot make the folder for ${resolve(options.out)} (${problem}); nothing was sent`);
 }
 let prompt;
 try { prompt = readFileSync(resolve(options.promptFile), "utf8"); }
@@ -86,6 +91,10 @@ if (options.script) {
   ].join("\n\n") + "\n";
 }
 
+if (options.out) {
+  try { mkdirSync(dirname(resolve(options.out)), { recursive: true }); }
+  catch (error) { done("fail", `cannot make the folder for ${resolve(options.out)} (${error.code ?? "error"}); nothing was sent`); }
+}
 // The call runs in an empty folder so no project's CLAUDE.md or settings reach it.
 const seconds = process.env.KIT_ASK_TIMEOUT === undefined ? 600 : Number(process.env.KIT_ASK_TIMEOUT);
 if (!Number.isInteger(seconds) || seconds < 1) done("fail", `KIT_ASK_TIMEOUT must be a whole number of seconds, 1 or more, not ${process.env.KIT_ASK_TIMEOUT}`, 2);
@@ -99,7 +108,7 @@ try {
     timeout: seconds * 1000, killSignal: "SIGKILL" });
 } finally { rmSync(empty, { recursive: true, force: true }); }
 const stdout = run.stdout ?? "", stderr = run.stderr ?? "";
-recordApiSpend({ command: "ask", model, stdout, status: run.status ?? 1, refused: /^claude-api-run: /m.test(stderr) });
+recordApiSpend({ command: "ask", model, stdout, status: run.status ?? 1, refused: apiWrapperRefused(run.status, stderr) });
 let result = null;
 try { result = JSON.parse(stdout); } catch { /* Not JSON: handled below. */ }
 if (run.error?.code === "ETIMEDOUT") done("fail", `claude did not answer within ${seconds} seconds`);
