@@ -701,8 +701,9 @@ ${comments.length ? comments.join("\n\n") : "None."}
       }
       let task;
       try {
-        const { items } = await store.list({ q: issue.url, limit: 100 });
+        const { items, more } = await store.list({ q: marker, limit: 1000 });
         task = items.find((item) => String(item.description ?? "").split("\n").some((line) => line.trim() === marker));
+        if (!task && more) fail(`issues stopped at #${issue.number}: more than 1000 cards match its link, so an earlier card for it may be missed; ${summary()}; find it with kit ticket list --q "${marker}"`);
         if (task) console.log(`found ${task.identifier} for #${issue.number}`);
         else {
           ({ task } = await store.create({ title: issue.title, description: text }));

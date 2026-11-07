@@ -1821,3 +1821,13 @@ test("on Orbit, --issues --close makes the cards and closes the Issues the same 
   assert.equal(orbit.tasks[1].title, "First");
   assert.deepEqual(gh.closes(), [["issue", "close", "5", "--repo", "acme/tools", "--comment", "Moved to Orbit card KIT-2: http://orbit.test/tasks/2\nWork on it goes on there."]]);
 });
+
+test("on Orbit, a rerun that cannot see every card matching an Issue's link stops instead of making a second card", async (t) => {
+  const { orbit, gh, init } = await orbitIssues(t, [issue(1, "One")]);
+  for (let index = 0; index < 1001; index++) orbit.addTask(orbit.kit, { title: `Other ${index}`, description: `GitHub Issue: https://github.com/acme/tools/issues/1${index}` });
+  const run = await init();
+  assert.equal(run.status, 1, run.all);
+  assert.match(result(run), /^RESULT: fail init issues stopped at #1: more than 1000 cards match its link, so an earlier card for it may be missed/);
+  assert.deepEqual(gh.closes(), []);
+  assert.equal(orbit.tasks.length, 1002);
+});
