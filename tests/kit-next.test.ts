@@ -1128,7 +1128,7 @@ test("on Orbit, next hands out the Todo cards whose blockers are done, in build 
   const { card, run, orbit } = await orbitNext(t);
   card({ title: "First" });
   card({ title: "After first", description: "Blocked by: KIT-1\n\n## Files\n\n- `b.ts`\n\n## Done when\n\n- done" });
-  card({ title: "After second", description: "Blocked by: KIT-2" });
+  card({ title: "After second", description: "Blocked by: KIT-2\n\n## Files\n\n- `d.ts`\n\n## Done when\n\n- done" });
   card({ title: "Not yet" }, "Backlog");
   card({ title: "Landed" }, "Done");
   card({ title: "Ask Lex", description: "Next step (Lex): choose a name" });
@@ -1238,4 +1238,19 @@ test("on Orbit, an In Progress card with no Claimed by line waits as such and is
   assert.equal(output.status, 0, output.all);
   assert.deepEqual(outputLines(output), ["waits: KIT-1 In Progress with no claim recorded", "RESULT: ok next 0 ready, 1 waiting, 0 started"]);
   assert.equal(orbit.writes().length, 0);
+});
+
+test("on Orbit, only cards that may start begin a wave: a card behind a Backlog, Lex or unbuildable card gets no wave", async t => {
+  const { card, run } = await orbitNext(t);
+  card({ title: "Later" }, "Backlog");
+  card({ title: "Ask", description: "Next step (Lex): choose" });
+  card({ title: "Bare", description: "Only a goal" });
+  card({ title: "Behind backlog", description: "Blocked by: KIT-1" });
+  card({ title: "Behind Lex", description: "Blocked by: KIT-2" });
+  card({ title: "Behind bare", description: "Blocked by: KIT-3" });
+  card({ title: "Free" });
+  card({ title: "Behind free", description: "Blocked by: KIT-7\n\n## Files\n\n- `d.ts`\n\n## Done when\n\n- done" });
+  const output = await run();
+  assert.equal(output.status, 0, output.all);
+  assert.deepEqual(outputLines(output).filter(line => line.startsWith("wave ")), ["wave 2: KIT-8"]);
 });

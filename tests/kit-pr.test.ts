@@ -2589,12 +2589,14 @@ test("on Orbit, a landed PR closes its card: Done, a note with the PR link and m
 });
 
 test("on Orbit, kit pr --ticket KEY reads the card into its brief and closes it on landing", async t => {
-  const { card, pr, orbit, root } = await orbitPr(t);
+  const { card, pr, orbit, root, body } = await orbitPr(t);
   const task = card({ title: "Straight from the card" }, "In Progress");
   const output = await pr(["--ticket", "KIT-1"]);
   assert.equal(output.status, 0, output.all);
   assert.equal(finalLine(output), "RESULT: ok merged #73 abcdef0 (card KIT-1 Done)");
-  assert.match(readFileSync(join(root, ".scratch/kit-tickets/KIT-1.md"), "utf8"), /^title: Straight from the card$/m);
+  // The brief stays in kit pr's own run folder: a slice in this worktree never takes it for its own resumed brief.
+  assert.ok(!existsSync(join(root, ".scratch/kit-tickets/KIT-1.md")));
+  assert.match(body(), /^Ticket: Straight from the card \(/m);
   assert.equal(orbit.statusOf(task), "Done");
 });
 

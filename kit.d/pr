@@ -348,8 +348,9 @@ async function main(args) {
     const cardFollowups = [];
     if (flags.ticket && onOrbit(settings)) {
       if (isCardKey(flags.ticket)) {
-        // A dry run keeps the brief in its own run folder, so it changes nothing a later run reads.
-        try { flags.ticket = relative(root, (await cardBriefFor({ root, key: flags.ticket, settings, who: kitOwner(), folder: flags.dryRun ? directory : undefined })).path); }
+        // The brief stays in this run's own folder: kit pr claims nothing, so a later kit slice here must not take it
+        // for a resumed slice's brief.
+        try { flags.ticket = relative(root, (await cardBriefFor({ root, key: flags.ticket, settings, who: kitOwner(), folder: directory })).path); }
         catch (error) { throw new Error(orbitProblem(error)); }
       }
       card = ticketCardKey(root, flags.ticket);

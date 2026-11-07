@@ -441,14 +441,18 @@ function cardNaming(card) {
   const words = String(card.title ?? "").toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").split("-").slice(0, 6).join("-");
   return { owner, job: `slice-${owner}`, branch: words ? kitSliceBranch(owner, words) : `build/${owner}` };
 }
-// The build wave of each card: 1 for one that may start (or runs now), else one more than its latest open blocker's;
-// a blocker that is not found, or a cycle, gives no wave.
+// The build wave of each card: 1 for one that may start (or runs now), else one more than its latest open blocker's.
+// A card that cannot start by itself (Backlog, Next step (Lex), no Files or Done when), a blocker that is not found, or
+// a cycle gives no wave, and neither do the cards behind it.
 function waves(cards) {
   const byKey = new Map(cards.map(card => [card.identifier, card])), level = new Map();
   const openKeys = card => card.blocked_by.filter(key => card.open_blockers.some(text => text.startsWith(`${key} `)));
   const of = (card, seen = new Set()) => {
     if (level.has(card.identifier)) return level.get(card.identifier);
-    if (card.stage === "working" || !card.open_blockers.length) return level.set(card.identifier, 1).get(card.identifier);
+    if (card.stage === "working") return level.set(card.identifier, 1).get(card.identifier);
+    const stuck = card.stage !== "ready" || card.next_lex !== null || !cardBuildable(card.description);
+    if (stuck) return level.set(card.identifier, Infinity).get(card.identifier);
+    if (!card.open_blockers.length) return level.set(card.identifier, 1).get(card.identifier);
     if (seen.has(card.identifier)) return Infinity;
     seen.add(card.identifier);
     let deepest = 1;
