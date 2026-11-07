@@ -75,7 +75,9 @@ function cardPR(key, prs) {
   const branch = new RegExp(`^build/${name}(?:-|$)`, "i");
   const rank = state => state === "OPEN" ? 0 : state === "MERGED" ? 1 : 2;
   const tiers = [pr => branch.test(pr.headRefName || ""), pr => match.test(pr.title || ""),
-    pr => (pr.body || "").split("\n").some(line => line.startsWith("Ticket: ") && match.test(line)), pr => match.test(pr.body || "")];
+    pr => (pr.body || "").split("\n").some(line => line.startsWith("Ticket: ") && match.test(line)),
+    // Another card's own PR (on its build branch) only mentions this key, so it never counts as this card's.
+    pr => !/^build\/[a-z][a-z0-9_]*-\d+(?:-|$)/i.test(pr.headRefName || "") && match.test(pr.body || "")];
   for (const tier of tiers) {
     const found = prs.filter(tier).sort((a, b) => rank(a.state) - rank(b.state) || b.number - a.number)[0];
     if (found) return found;
