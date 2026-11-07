@@ -6,7 +6,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const { orbitBringsSecret } = await import(pathToFileURL(resolve(import.meta.dirname, "../orbit-client.mjs")).href);
-const { openOrbitTickets, orbitProblem } = await import(pathToFileURL(resolve(import.meta.dirname, "../ticket-cards.mjs")).href);
+const { onOrbit, openOrbitTickets, orbitProblem } = await import(pathToFileURL(resolve(import.meta.dirname, "../ticket-cards.mjs")).href);
 const { kitGhRepo, kitHideUserInfo, kitHome, kitMessagesToLexRule, kitOwner, kitProjects, kitRepoPrivate, kitRegisterProject, kitResult, kitRoot, kitSettingsFile, kitSettingsProblems, kitStateDir } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
@@ -579,7 +579,7 @@ async function issues() {
   };
 
   // On Orbit the Issues become cards, made and closed in one run below.
-  const orbit = settings?.tickets === "orbit";
+  const orbit = onOrbit(settings);
   if (options.close && !orbit) {
     if (!land) fail(`--close needs ${kitSettingsFile} with "branches": { "land": "<branch>" }; run kit init first`);
     if (!open.length) { kitResult("ok", "init issues no open Issues to close"); process.exit(0); }

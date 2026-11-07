@@ -36,9 +36,12 @@ export const cardBriefArg = key => `.scratch/kit-tickets/${orbitCardKey(key)}.md
 const hasSection = (text, name) => new RegExp(`^## ${name}[ \\t]*$`, "m").test(String(text ?? ""));
 const oneLine = text => String(text ?? "").replace(/\s*[\r\n]+\s*/g, " ").trim();
 
+/** True when a card's description has the "## Files" and "## Done when" sections a slice builds from. */
+export const cardBuildable = description => hasSection(description, "Files") && hasSection(description, "Done when");
+
 /** A card as a ticket file; a card without "## Files" and "## Done when" in its description cannot be built yet. */
 export function cardBrief(task, owner = "") {
-  if (!hasSection(task.description, "Files") || !hasSection(task.description, "Done when")) {
+  if (!cardBuildable(task.description)) {
     throw new OrbitError(`${task.identifier} cannot be built yet: its description needs a "## Files" and a "## Done when" section`);
   }
   return `---\ntitle: ${oneLine(task.title)}\norbit: ${task.identifier}\ntype: task (AFK)\nstatus: open\nassignee: ${oneLine(owner)}\n---\n\n`
@@ -83,4 +86,34 @@ export async function cardBriefFor({ root, key, settings, owner, who = owner }) 
     throw new OrbitError(`the brief ${path} could not be written (${error?.code ?? "error"}), so ${task.identifier} was not claimed${back}`);
   }
   return { path, arg: cardBriefArg(key), key: task.identifier, claimed: Boolean(claim && !claim.unchanged) };
+}
+
+/** The follow-up lines a slice kept under "### UX follow-ups" in a card's brief. */
+export function briefFollowups(text) {
+  const list = /^### UX follow-ups[ \t]*\r?\n([\s\S]*?)(?=^#{1,3} |$(?![\s\S]))/m.exec(String(text ?? ""))?.[1] ?? "";
+  return list.split(/\r?\n/).map(line => line.trimEnd()).filter(line => line.startsWith("- "));
+}
+
+/**
+ * Closes a landed card: status Done with a note naming the PR and its merge SHA, then its follow-ups (review and UX) as
+ * one comment, added once (a rerun on a card already closed adds nothing). The merge already happened, so a failure is
+ * returned as words for the caller to show, with the command that closes the card by hand.
+ */
+export async function closeLandedCard({ settings, key, pr, sha, followups = [], who }) {
+  let redact;
+  try {
+    const opened = openOrbitTickets({ settings, who });
+    redact = opened.redact;
+    const closed = await opened.store.close(key, `Landed in ${pr} (merge ${sha})`);
+    let extra = "";
+    const lines = [...new Set(followups)];
+    if (lines.length && !closed.unchanged) {
+      try { await opened.store.comment(key, `Follow-ups from ${pr}:\n${lines.join("\n")}`); }
+      catch (error) { extra = `; its follow-ups were not added (${orbitProblem(error, redact)}): they are in ${pr}`; }
+    }
+    return { closed: true, line: `card: ${key} Done (${pr})${extra}`, suffix: ` (card ${key} Done)` };
+  } catch (error) {
+    const why = orbitProblem(error, redact);
+    return { closed: false, line: `card: ${key} not closed: ${why}; close it with kit ticket update ${key} --status Done`, suffix: `; card ${key} not closed: ${why}` };
+  }
 }

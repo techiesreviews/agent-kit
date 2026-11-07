@@ -139,13 +139,15 @@ async function status(args) {
     // On Orbit the rows are the board's cards; no maps folder: no ticket rows, with a line saying why.
     const orbit = onOrbit(settings);
     if (orbit && map) throw new Error(`a map does not apply on Orbit: the rows are the cards of the board in scripts/agents/kit.json`);
-    let board = "", cards = [];
+    let board = "", cards = [], more = "";
     if (orbit) {
       let redact;
       try {
         const opened = openOrbitTickets({ settings, who: kitOwner() });
         redact = opened.redact;
-        ({ board, cards } = await opened.store.board({ project: opened.project, parent: opened.parent }));
+        const read = await opened.store.board({ project: opened.project, parent: opened.parent });
+        ({ board, cards } = read);
+        if (read.more) more = `board ${board} holds more than 1000 cards; only the first 1000 are shown`;
       } catch (error) { throw new Error(orbitProblem(error, redact)); }
     }
     const { tickets } = orbit ? { tickets: cards.map(card => ({ slug: card.identifier, map: board, status: card.status_name, done: card.stage === "done", assignee: card.claimed_by ?? "", card: true })) }
@@ -176,7 +178,7 @@ async function status(args) {
     print(`ref ${ref} ${sha.slice(0, 7)}  ${branch} CI: ${branchCI}${older ? " (older sha)" : ""}`);
     if (live.line) print(live.line);
     if (!orbit && !settings.maps) print("tickets: none (no maps folder in scripts/agents/kit.json)");
-    for (const note of notes) print(`note: ${note}`);
+    for (const note of more ? [...notes, more] : notes) print(`note: ${note}`);
     const widths = [32, 15, 10, 21, 4];
     const row = cells => print(cells.map((cell, i) => cut(cell, widths[i]).padEnd(widths[i])).join("  ").trimEnd());
     row(["TICKET", "STATUS", "WHO", "LANDED", "CI"]);

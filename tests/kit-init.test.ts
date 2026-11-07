@@ -1812,3 +1812,12 @@ test("on Orbit, Orbit down or no lead role stops before closing anything; an Iss
   assert.equal(orbit.tasks.length, 2);
   for (const secret of orbitSecretsForTests) assert.ok(!run.all.includes(secret));
 });
+
+test("on Orbit, --issues --close makes the cards and closes the Issues the same way", async (t) => {
+  const { orbit, gh, init } = await orbitIssues(t, [issue(5, "First")]);
+  const run = await init(["--issues", "--close"]);
+  assert.equal(run.status, 0, run.all);
+  assert.equal(result(run), "RESULT: ok init issues made 1 Orbit card and closed 1 of 1 Issue");
+  assert.equal(orbit.tasks[1].title, "First");
+  assert.deepEqual(gh.closes(), [["issue", "close", "5", "--repo", "acme/tools", "--comment", "Moved to Orbit card KIT-2: http://orbit.test/tasks/2\nWork on it goes on there."]]);
+});

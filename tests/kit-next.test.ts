@@ -1210,3 +1210,23 @@ test("on Orbit, Orbit down, a refused token or a Cloudflare block gives one plai
     for (const secret of orbitSecretsForTests) assert.ok(!output.all.includes(secret));
   }
 });
+
+test("on Orbit, a Todo card without Files and Done when waits and is never claimed; a blocker cycle or a missing blocker gets no wave", async t => {
+  const { card, run, orbit, root } = await orbitNext(t);
+  const bare = card({ title: "Bare", description: "Only a goal" });
+  card({ title: "Loop a", description: "Blocked by: KIT-3" });
+  card({ title: "Loop b", description: "Blocked by: KIT-2" });
+  card({ title: "Missing", description: "Blocked by: VID-9" });
+  const output = await run("--start");
+  assert.equal(output.status, 0, output.all);
+  assert.deepEqual(outputLines(output), [
+    'waits: KIT-1 needs "## Files" and "## Done when" in its description',
+    "waits: KIT-2 blocked by KIT-3 (Todo)",
+    "waits: KIT-3 blocked by KIT-2 (Todo)",
+    "waits: KIT-4 blocked by VID-9 (not found)",
+    "RESULT: ok next 0 ready, 4 waiting, 0 started",
+  ]);
+  assert.equal(orbit.writes().length, 0);
+  assert.equal(orbit.statusOf(bare), "Todo");
+  assert.ok(!existsSync(join(root, "kit.log")), "no job started");
+});
