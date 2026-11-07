@@ -686,9 +686,12 @@ ${comments.length ? comments.join("\n\n") : "None."}
     try { opened = openOrbitTickets({ settings, who: kitOwner() }); }
     catch (error) { fail(`issues ${orbitProblem(error)}; made no card, closed nothing`); }
     const { store, redact, secrets } = opened;
+    // A copied line shaped like one of the kit's own card lines (blockers, claim, next step, dates) gets a "> " in
+    // front, so nothing an Issue says can block, claim or date its card.
+    const kitLine = /^\s*(?:blocked by|claimed by|next step \(lex\)|planned dates):/i;
     const cardText = (issue) => {
-      const ticket = ticketText(issue);
-      return `GitHub Issue: ${issue.url}\n\n${ticket.slice(ticket.indexOf("From GitHub Issue")).trim()}`;
+      const ticket = ticketText(issue), copiedText = ticket.slice(ticket.indexOf("From GitHub Issue")).trim();
+      return `GitHub Issue: ${issue.url}\n\n${copiedText.split("\n").map((line) => kitLine.test(line) ? `> ${line}` : line).join("\n")}`;
     };
     const made = [], closed = [], failed = [], left = [];
     const summary = () => `made ${made.length} Orbit card${made.length === 1 ? "" : "s"} and closed ${closed.length} of ${open.length} Issue${open.length === 1 ? "" : "s"}`;
