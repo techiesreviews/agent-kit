@@ -458,7 +458,7 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
         try { parent_key = (await client.task(task.parent_task_id)).identifier; }
         catch (error) { if (![403, 404].includes(error?.status)) throw error; }
       }
-      return { ...await withNames(task), blocked_by: blockedBy(task.description), next_lex: nextLexReason(task.description), parent_key };
+      return { ...await withNames(task), stage: (await stageOf(task)).stage, blocked_by: blockedBy(task.description), claimed_by: claimedBy(task.description), next_lex: nextLexReason(task.description), parent_key };
     },
     comments: key => client.comments(orbitCardKey(key)),
     /** The cards of one board, or of every board the token reaches with project "all". */

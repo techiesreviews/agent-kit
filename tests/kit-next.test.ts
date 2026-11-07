@@ -1256,3 +1256,13 @@ test("on Orbit, only cards that may start begin a wave: a card behind a Backlog,
   assert.equal(output.status, 0, output.all);
   assert.deepEqual(outputLines(output).filter(line => line.startsWith("wave ")), ["wave 2: KIT-9"]);
 });
+
+test("on Orbit, a failure outside Orbit keeps its own words on the RESULT line", async t => {
+  const { card, env, running, orbit } = await orbitNext(t);
+  card({ title: "First" });
+  running("slice-kit-9", "KIT-9");
+  const output = await runAsync(process.execPath, [next], { cwd: env.KIT_DEV_ROOT, env: { ...env, KIT_NEXT_KIT: join(env.KIT_DEV_ROOT!, "no-such-kit") } });
+  assert.equal(output.status, 1, output.all);
+  assert.match(output.stdout.trim().split("\n").at(-1)!, /^RESULT: fail next spawnSync .*no-such-kit ENOENT$/);
+  assert.equal(orbit.writes().length, 0);
+});
