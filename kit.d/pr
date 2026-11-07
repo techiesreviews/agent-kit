@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { completedFixRounds, openFindings, reviewIncomplete, reviewCoversHead, sameReviewPatch } from "../review-findings.mjs";
 import { branchRisk, budgetReport, isNit, ledgerRows, prLine, renderLedger, reviewChain, roundLimit, stoppingFindings } from "../review-loop.mjs";
 import { projectCommand, spoken } from "../review-brief.mjs";
-import { briefFollowups, cardBriefFor, closeLandedCard, isCardKey, onOrbit, orbitProblem, ticketCardKey } from "../ticket-cards.mjs";
+import { briefFollowups, cardBriefFor, closeLandedCard, isCardKey, onOrbit, orbitProblem, ticketCardKey, withReviewFollowups } from "../ticket-cards.mjs";
 
 const { kitBranch, kitGhEnv, kitHideUserInfo, kitHidingLog, kitHome, kitMachineLock, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, kitStateDir, nodeEnv, kitScore } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
@@ -348,7 +348,8 @@ async function main(args) {
     const cardFollowups = [];
     if (flags.ticket && onOrbit(settings)) {
       if (isCardKey(flags.ticket)) {
-        try { flags.ticket = (await cardBriefFor({ root, key: flags.ticket, settings, who: kitOwner() })).arg; }
+        // A dry run keeps the brief in its own run folder, so it changes nothing a later run reads.
+        try { flags.ticket = relative(root, (await cardBriefFor({ root, key: flags.ticket, settings, who: kitOwner(), folder: flags.dryRun ? directory : undefined })).path); }
         catch (error) { throw new Error(orbitProblem(error)); }
       }
       card = ticketCardKey(root, flags.ticket);
@@ -910,7 +911,7 @@ async function main(args) {
     async function closeCard(number, sha, host, repo) {
       if (!card) return "";
       let ux = [];
-      try { ux = briefFollowups(readFileSync(resolve(root, flags.ticket), "utf8")); } catch { /* No brief left: no UX follow-ups. */ }
+      try { ux = briefFollowups(readFileSync(resolve(root, flags.ticket), "utf8")); } catch { /* No brief left: no follow-ups kept in it. */ }
       const closed = await closeLandedCard({ settings, key: card, pr: `https://${host}/${repo}/pull/${number}`, sha, followups: [...cardFollowups, ...ux], who: kitOwner() });
       console.log(closed.line);
       return closed.suffix;
@@ -928,7 +929,12 @@ async function main(args) {
       await recordWaiver();
       land({ queued: true, waived: waivedAny() });
       // The card closes when the queue lands the PR: kit slice, which waits for it, closes it then.
-      if (card) console.log(`card: ${card} stays open until the queue lands #${number}; kit slice closes it then, else run kit ticket update ${card} --status Done`);
+      if (card) {
+        // The review follow-ups wait in the brief, where kit slice reads them when it closes the card.
+        try { writeFileSync(resolve(root, flags.ticket), withReviewFollowups(readFileSync(resolve(root, flags.ticket), "utf8"), cardFollowups)); }
+        catch { console.log(`card: ${card} follow-ups stay in the PR comment only (the brief could not be written)`); }
+        console.log(`card: ${card} stays open until the queue lands #${number}; kit slice closes it then, else run kit ticket update ${card} --status Done`);
+      }
       kitResult("ok", `queued #${number} ${head.slice(0, 7)}${card ? `; card ${card} closes when the queue lands it` : ""}${flakyNote()}`);
       return 0;
     }
@@ -952,7 +958,7 @@ async function main(args) {
         await recordWaiver();
         land({ sha, at: new Date().toISOString(), waived: waivedAny() });
         await reportLanded(mergeCommit);
-        const closed = await closeCard(number, sha, target.split("/").length === 3 ? target.split("/")[0] : "github.com", repo);
+        const closed = await closeCard(number, mergeCommit, target.split("/").length === 3 ? target.split("/")[0] : "github.com", repo);
         kitResult("ok", `merged #${number} ${sha.slice(0, 7)}${closed}${flakyNote()}`);
         return 0;
       }

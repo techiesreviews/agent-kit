@@ -1885,3 +1885,11 @@ test("unclaim gives the status and the claim back; close sets Done with a dated 
   assert.ok((await store.close("KIT-1", "Landed: PR https://github.com/acme/tools/pull/7, merge abc1234")).unchanged);
   assert.equal(orbit.writes().length, writes);
 });
+
+test("close never moves a card to a Publish status in place of a missing Done: it says the board has no Done status", async t => {
+  const { orbit, store } = await boardStore(t);
+  const task = orbit.addTask(orbit.tools, { status_id: orbit.statusId(orbit.tools, "Edit") });
+  await assert.rejects(() => store.close(task.identifier, "Landed in PR #1 (merge commit abc)"), /this board has no done status \(it has: Idea, Script, Record, Edit, Publish\)/);
+  assert.equal(orbit.statusOf(task), "Edit");
+  assert.equal(orbit.writes().length, 0);
+});

@@ -555,8 +555,9 @@ async function slice(args) {
         const result = await execute(kit, ["pr", "--ticket", flags.ticket]);
         state.pr = /#(\d+)/.exec(result.output)?.[1] || state.pr; save();
         const output = requireSuccess(result);
-        const merged = /^RESULT: ok merged #(\d+) ([a-f\d]{7,40})$/m.exec(output);
-        const queued = /^RESULT: ok queued #(\d+) ([a-f\d]{7,40})$/m.exec(output);
+        // kit pr may add words after the SHA (a card closed or not, a flaky spec file): only the number and SHA count.
+        const merged = /^RESULT: ok merged #(\d+) ([a-f\d]{7,40})(?:[ ;].*)?$/m.exec(output);
+        const queued = /^RESULT: ok queued #(\d+) ([a-f\d]{7,40})(?:[ ;].*)?$/m.exec(output);
         if (merged) {
           state.pr = merged[1]; state.sha = merged[2]; state.head = git("rev-parse", "HEAD");
           complete(`#${state.pr}`);
