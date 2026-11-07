@@ -362,3 +362,25 @@ test("migrate picks the next free tag name, and stops before removing anything w
   assert.equal(q.git("status", "--porcelain").trim(), "");
   assert.equal(q.prCalls(), "");
 });
+
+test("a run cut off after making the cards is finished by the next one: the bare cards get their text and no card is made twice", async t => {
+  const p = await project(t);
+  // The four creates go through; the first text write after them fails.
+  p.orbit.controls.writeAnswers.push(...([undefined, undefined, undefined, undefined, { status: 500, code: "server_error", detail: "Down" }] as any[]));
+  refused(await p.run(["import"]), /Orbit refused: Down/);
+  assert.equal(p.orbit.tasks.length, 4);
+  const again = ok(await p.run(["import"]));
+  assert.match(again.stdout.trimEnd().split("\n").at(-1)!, /0 created, 4 updated, 0 unchanged, 2 comments added/);
+  assert.equal(p.orbit.tasks.length, 4);
+  ok(await p.run(["parity"]));
+});
+
+test("a board other than kit.json's gets no default parent from kit.json, and migrate drops that old parent from kit.json", async t => {
+  const p = await project(t, { settings: { orbit: { project: "TOOLS", parent: "TOOLS-1" } } });
+  p.orbit.addTask(p.orbit.tools, { title: "Old parent on another board" });
+  ok(await p.run(["import", "--project", "KIT"]));
+  assert.ok(p.orbit.writes().filter(write => write.method === "POST").every(write => !write.body.parent_task_id), "no create names a parent");
+  const output = ok(await p.run(["migrate", "--project", "KIT"]));
+  assert.match(output.stdout, /4\. committed/);
+  assert.deepEqual(JSON.parse(readFileSync(join(p.root, "scripts/agents/kit.json"), "utf8")).orbit, { project: "KIT" });
+});
