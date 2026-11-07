@@ -187,13 +187,23 @@ export function orbitClient(config, { timeoutMs = 30_000, longestWaitSeconds = 3
   }
   const workspace = `/workspaces/${encodeURIComponent(config.workspace_id ?? "")}`;
 
+  // Orbit refuses a write (POST, PATCH, DELETE) that has no Origin header, or one that is not its own public origin.
+  // The header is always the saved address itself, and only when that address is exactly an origin; never anything else.
+  function writeOrigin() {
+    let origin = null;
+    try { origin = orbitOrigin(config.origin); } catch { /* Refused below. */ }
+    if (origin === null || origin !== config.origin) throw new OrbitError("The saved Orbit address is not exactly the site's address (like https://orbit.example.com, no path and no slash at the end), so no change was sent. Run: scripts/agents/kit ticket setup", { code: "bad-origin" });
+    return origin;
+  }
+
   async function once(method, path, { query, body }) {
     const url = new URL(base + path);
+    const origin = method === "GET" ? null : writeOrigin();
     for (const [name, value] of Object.entries(query ?? {})) if (value !== undefined && value !== null) url.searchParams.set(name, String(value));
     try {
       const response = await fetch(url, {
         method, redirect: "manual", signal: AbortSignal.timeout(timeoutMs),
-        headers: body === undefined ? headers : { ...headers, "Content-Type": "application/json" },
+        headers: { ...headers, ...(body === undefined ? {} : { "Content-Type": "application/json" }), ...(origin ? { Origin: origin } : {}) },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
       return { response, text: await response.text() };
@@ -214,6 +224,7 @@ export function orbitClient(config, { timeoutMs = 30_000, longestWaitSeconds = 3
       const lost = status >= 500 && method !== "GET";
       return new OrbitError(`Orbit answered ${status} with a page that is not Orbit's own (often Cloudflare); ${lost ? "the change may or may not have gone through: read the card before trying again" : "try again later"}.`, { status, noAnswer: lost });
     }
+    if (problem.code === "origin_forbidden") return new OrbitError(`Orbit refused the change: it does not accept the address the kit sends as the request origin (${config.origin}) [origin_forbidden]. Run: scripts/agents/kit ticket setup`, { status, code: problem.code });
     const fields = problem.errors && typeof problem.errors === "object" ? ` (${Object.keys(problem.errors).join(", ")})` : "";
     const hint = status === 401 ? " The API token is wrong, expired or revoked. Run: scripts/agents/kit ticket setup" : "";
     return new OrbitError(`Orbit refused: ${problem.detail ?? problem.title ?? problem.code}${fields} [${problem.code}].${hint}`, { status, code: problem.code });
