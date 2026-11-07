@@ -201,7 +201,7 @@ if (phase === "review") {
     console.log("RESULT: fail pr #42 review has 1 open findings (" + folder + "/result.md)");
     process.exitCode = 1;
   } else if (args.includes("--no-merge")) console.log("RESULT: ok opened #42 " + git("rev-parse", "--short", "HEAD"));
-  else if (process.env.QUEUE_PR) console.log("RESULT: ok queued #42 " + git("rev-parse", "HEAD"));
+  else if (process.env.QUEUE_PR) console.log("RESULT: ok queued #42 " + git("rev-parse", "HEAD") + (process.env.PR_SUFFIX || ""));
   else {
     if (process.env.ADD_FOLLOWUPS) {
       const ticket = args[args.indexOf("--ticket") + 1];
@@ -220,7 +220,7 @@ if (phase === "review") {
       record.landed = { pr: 42, tier: "full", ci: "pass", sha, at: "2026-10-01T00:00:00.000Z", waived: null };
       writeFileSync(path, JSON.stringify(record));
     }
-    console.log("RESULT: ok merged #42 " + (process.env.SHORT_MERGE ? sha.slice(0, 7) : sha));
+    console.log("RESULT: ok merged #42 " + (process.env.SHORT_MERGE ? sha.slice(0, 7) : sha) + (process.env.PR_SUFFIX || ""));
   }
 }
 `);
@@ -1606,7 +1606,35 @@ test("on Orbit, a slice whose PR was queued closes the card when the queue lands
   assert.equal(output.status, 0, output.all);
   assert.match(output.stdout, /^card: KIT-1 Done \(PR #42\)$/m);
   assert.equal(orbit.statusOf(task), "Done");
-  assert.match(task.description, new RegExp(`Landed in PR #42 \\(merge ${"a".repeat(40)}\\)`));
+  assert.match(task.description, new RegExp(`Landed in PR #42 \\(merge commit ${"a".repeat(40)}\\)`));
   assert.ok(!task.description.includes("Claimed by"));
   assert.match(log(), /card=KIT-1 action=close .* result=ok/);
+});
+
+test("on Orbit, the slice reads kit pr's RESULT line with the card words after the SHA, merged or queued", async t => {
+  for (const [extra, words] of [
+    [{ PR_SUFFIX: " (card KIT-1 Done)" }, /^RESULT: ok slice \.scratch\/kit-tickets\/KIT-1\.md PR #42 [0-9a-f]{40}$/],
+    [{ PR_SUFFIX: "; card KIT-1 not closed: Orbit answered 502" }, /^RESULT: ok slice \.scratch\/kit-tickets\/KIT-1\.md PR #42 [0-9a-f]{40}$/],
+    [{ PR_SUFFIX: "; card KIT-1 closes when the queue lands it", QUEUE_PR: "1" }, /^RESULT: ok slice \.scratch\/kit-tickets\/KIT-1\.md PR #42 a{40}$/],
+  ] as const) {
+    const { card, slice } = await orbitSlice(t);
+    card();
+    const output = await slice("KIT-1", extra);
+    assert.equal(output.status, 0, output.all);
+    assert.match(lastLine(output), words);
+  }
+});
+
+test("on Orbit, a queued card closes with the review and UX follow-ups its brief kept, as one comment", async t => {
+  const { card, slice, orbit, root } = await orbitSlice(t);
+  const task = card();
+  const first = await slice("KIT-1", { FAIL_PHASE: "review" });
+  assert.equal(first.status, 1, first.all);
+  const brief = join(root, ".scratch/kit-tickets/KIT-1.md");
+  writeFileSync(brief, `${readFileSync(brief, "utf8")}\n### Review follow-ups\n\n- Spec (P3): P3: Cosmetic defect.\n\n### UX follow-ups\n\n- UX (looks off): F-1 S1: a hint line\n`);
+  const output = await slice("KIT-1", { QUEUE_PR: "1" });
+  assert.equal(output.status, 0, output.all);
+  assert.equal(orbit.statusOf(task), "Done");
+  assert.deepEqual((orbit.comments[task.id] ?? []).map((comment: any) => comment.body),
+    ["Follow-ups from PR #42:\n- Spec (P3): P3: Cosmetic defect.\n- UX (looks off): F-1 S1: a hint line"]);
 });
