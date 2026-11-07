@@ -427,7 +427,8 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
   /** The status a card moves to, by NAME first (In Progress, Done), else the board's first status of that category. */
   const statusFor = async (projectId, name, category) => {
     const list = [...await statusesOf(projectId)].sort((a, b) => a.position - b.position);
-    const found = list.find(status => status.name.trim().toLowerCase() === name) ?? list.find(status => status.category === category);
+    // A Publish status needs Lex's words, so the kit never picks one in place of a missing name.
+    const found = list.find(status => status.name.trim().toLowerCase() === name) ?? list.find(status => status.category === category && !/publish/i.test(status.name));
     if (!found) throw new OrbitError(`this board has no ${name} status (it has: ${list.map(status => status.name).join(", ")})`);
     return found;
   };

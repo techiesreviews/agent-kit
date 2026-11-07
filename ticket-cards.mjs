@@ -3,7 +3,7 @@
 // a ticket file (title, the card's Files and Done when), so the build, review, fix and UX steps read it as they read a
 // ticket; only the lead's own kit commands write the board (ORBIT_ROLE=lead), and the agents they start never do.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { OrbitError, OrbitSetupProblem, orbitCardKey, orbitClient, orbitLogPath, orbitRedactor, orbitSecrets, readOrbitConfig } from "./orbit-client.mjs";
 import { orbitStore, ticketSettings } from "./ticket-store.mjs";
 
@@ -59,7 +59,7 @@ export function briefCardKey(text) {
 export function ticketCardKey(root, ticket) {
   if (!ticket) return null;
   if (isCardKey(ticket)) return orbitCardKey(ticket);
-  try { return briefCardKey(readFileSync(join(root, ticket), "utf8")); } catch { return null; }
+  try { return briefCardKey(readFileSync(resolve(root, ticket), "utf8")); } catch { return null; }
 }
 
 /**
@@ -67,15 +67,15 @@ export function ticketCardKey(root, ticket) {
  * first (status In Progress, "Claimed by: owner"), and the claim is given back when the brief cannot be written, so a
  * failure never leaves a half-claimed card. A brief already there is a resumed slice: it is used as it is.
  */
-export async function cardBriefFor({ root, key, settings, owner, who = owner }) {
-  const path = cardBriefPath(root, key);
+export async function cardBriefFor({ root, key, settings, owner, who = owner, folder }) {
+  const path = folder ? join(folder, `${orbitCardKey(key)}.md`) : cardBriefPath(root, key);
   if (existsSync(path)) return { path, arg: cardBriefArg(key), key: orbitCardKey(key), resumed: true };
   const { store } = openOrbitTickets({ settings, who });
   const task = await store.read(key);
   const text = cardBrief(task, owner);
   const claim = owner ? await store.claim(task.identifier, owner) : null;
   try {
-    mkdirSync(join(root, ".scratch/kit-tickets"), { recursive: true });
+    mkdirSync(folder ?? join(root, ".scratch/kit-tickets"), { recursive: true });
     writeFileSync(path, text);
   } catch (error) {
     let back = "";
@@ -88,10 +88,20 @@ export async function cardBriefFor({ root, key, settings, owner, who = owner }) 
   return { path, arg: cardBriefArg(key), key: task.identifier, claimed: Boolean(claim && !claim.unchanged) };
 }
 
-/** The follow-up lines a slice kept under "### UX follow-ups" in a card's brief. */
+const followupList = name => new RegExp(`^### ${name} follow-ups[ \\t]*\\r?\\n([\\s\\S]*?)(?=^#{1,3} |$(?![\\s\\S]))`, "m");
+/** The follow-up lines kept in a card's brief: "### Review follow-ups" (kit pr, for a queued PR) and "### UX follow-ups" (kit slice). */
 export function briefFollowups(text) {
-  const list = /^### UX follow-ups[ \t]*\r?\n([\s\S]*?)(?=^#{1,3} |$(?![\s\S]))/m.exec(String(text ?? ""))?.[1] ?? "";
-  return list.split(/\r?\n/).map(line => line.trimEnd()).filter(line => line.startsWith("- "));
+  return ["Review", "UX"].flatMap(name => (followupList(name).exec(String(text ?? ""))?.[1] ?? "").split(/\r?\n/))
+    .map(line => line.trimEnd()).filter(line => line.startsWith("- "));
+}
+/** The brief with these review follow-ups added at its end under "### Review follow-ups", each line once. */
+export function withReviewFollowups(text, lines) {
+  const kept = new Set(briefFollowups(text)), missing = [...new Set(lines)].filter(line => !kept.has(line));
+  if (!missing.length) return text;
+  const list = followupList("Review").exec(text);
+  if (!list) return `${String(text).trimEnd()}\n\n### Review follow-ups\n\n${missing.join("\n")}\n`;
+  const end = list.index + list[0].trimEnd().length;
+  return `${text.slice(0, end)}\n${missing.join("\n")}${text.slice(end)}`;
 }
 
 /**
@@ -104,7 +114,7 @@ export async function closeLandedCard({ settings, key, pr, sha, followups = [], 
   try {
     const opened = openOrbitTickets({ settings, who });
     redact = opened.redact;
-    const closed = await opened.store.close(key, `Landed in ${pr} (merge ${sha})`);
+    const closed = await opened.store.close(key, `Landed in ${pr} (${sha ? `merge commit ${sha}` : "GitHub named no merge commit"})`);
     let extra = "";
     const lines = [...new Set(followups)];
     if (lines.length && !closed.unchanged) {

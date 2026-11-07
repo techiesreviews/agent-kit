@@ -432,7 +432,7 @@ function runGroup({ branch, builder, tickets }) {
 // owner on its "Claimed by:" line once it is In Progress.
 function cardTicket(card, board) {
   return { file: card.identifier, map: board, slug: card.identifier, title: card.title, type: "task (AFK)", builder: "",
-    assignee: card.stage === "working" ? card.claimed_by ?? "someone" : "", status: "open", group: "", runs_alone: false,
+    assignee: card.stage === "working" ? card.claimed_by ?? "" : "", status: "open", group: "", runs_alone: false,
     blocked_by: [], files: parseFiles(card.description ?? ""), valid: true };
 }
 // owner kit-12, job slice-kit-12, branch build/kit-12-<first words of the title>.
@@ -470,7 +470,7 @@ function waves(cards) {
 }
 
 async function orbitMain(flags) {
-  if (flags.maps.length) throw new UsageError(`maps do not apply on Orbit: the cards come from the board in ${"scripts/agents/kit.json"}`);
+  if (flags.maps.length) throw new UsageError("maps do not apply on Orbit: the cards come from the board in scripts/agents/kit.json");
   devRoot ??= kitRoot();
   rulebookPins();
   let redact;
@@ -486,7 +486,7 @@ async function orbitMain(flags) {
       if (card.stage === "done") continue;
       const ticket = cardTicket(card, board);
       cardIndex.set(card.identifier, ticket);
-      const wait = card.stage === "working" ? "" : card.next_lex !== null ? `needs Lex (Next step (Lex): ${card.next_lex})`
+      const wait = card.stage === "working" ? card.claimed_by ? "" : `${card.status_name} with no claim recorded` : card.next_lex !== null ? `needs Lex (Next step (Lex): ${card.next_lex})`
         : card.open_blockers.length ? `blocked by ${card.open_blockers.join(", ")}` : card.stage === "waiting" ? `in ${card.status_name}`
         : !cardBuildable(card.description) ? 'needs "## Files" and "## Done when" in its description' : "";
       if (wait) { early.push({ unit: { label: card.identifier }, reason: wait }); continue; }
@@ -516,9 +516,9 @@ async function orbitMain(flags) {
       try { start(item); started++; }
       catch (error) {
         // A claimed card with no slice is half-claimed: the claim goes back, or the line says how to give it back.
-        let back = claim.unchanged ? `; ${key} was already claimed by ${item.owner}, so it was left as it was` : "; the claim was given back";
+        let back = `; ${key} was already claimed by ${item.owner}, so it was left as it was`;
         if (!claim.unchanged) {
-          try { await store.unclaim(key, item.owner, claim.previous); }
+          try { back = (await store.unclaim(key, item.owner, claim.previous)).unchanged ? "; the claim had already moved to another owner" : "; the claim was given back"; }
           catch (problem) { back = `; giving the claim back failed (${orbitProblem(problem, redact)}): run kit ticket update ${key} --status Todo`; }
         }
         kitResult("fail", `next start ${item.unit.label}: ${error.message}${back}`);
