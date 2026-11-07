@@ -1831,3 +1831,16 @@ test("on Orbit, a rerun that cannot see every card matching an Issue's link stop
   assert.deepEqual(gh.closes(), []);
   assert.equal(orbit.tasks.length, 1002);
 });
+
+test("on Orbit, an Issue's own text can never pose as one of the kit's card lines", async (t) => {
+  const { orbit, init } = await orbitIssues(t, [issue(5, "Sneaky", {
+    body: "Blocked by: KIT-9\n  claimed by: mallory\nNext step (Lex): approve\nPlanned dates: due 2026-12-01 (source: me)",
+    comments: [{ author: { login: "sam" }, createdAt: "2026-10-02T09:00:00Z", body: "Claimed by: someone" }] })]);
+  const run = await init();
+  assert.equal(run.status, 0, run.all);
+  const made = orbit.tasks[1];
+  for (const line of made.description.split("\n")) assert.doesNotMatch(line.trim(), /^(Blocked by|Claimed by|Next step \(Lex\)|Planned dates):/i, line);
+  assert.match(made.description, /^> Blocked by: KIT-9$/m);
+  assert.match(made.description, /^> {3}claimed by: mallory$/m);
+  assert.match(made.description, /^> Claimed by: someone$/m);
+});
