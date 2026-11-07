@@ -3,15 +3,18 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, normalize, relative, resolve } from "node:path";
-import { kitBranch, kitDevRoot, kitHome, kitJobMarkGo, kitResult, kitRoot, kitRulebookPins, kitSettings, kitSliceBranch } from "../kit-lib.mjs";
-import { loadTickets, parseTicket, resolveTickets } from "../tickets.mjs";
+import { kitBranch, kitDevRoot, kitHome, kitJobMarkGo, kitOwner, kitResult, kitRoot, kitRulebookPins, kitSettings, kitSliceBranch } from "../kit-lib.mjs";
+import { loadTickets, parseFiles, parseTicket, resolveTickets } from "../tickets.mjs";
+import { onOrbit, openOrbitTickets, orbitProblem } from "../ticket-cards.mjs";
 
 // Settings from scripts/agents/kit.json; an unreadable file still lets --help print, with placeholders.
 let settings = null, settingsProblem = "";
 try { settings = kitSettings(); } catch (error) { settingsProblem = error.message; }
 const land = settings ? kitBranch("land", settings) : "<land>";
 const mapsDir = settings?.maps || "";
-const devRoot = settings ? kitDevRoot(settings) : process.env.KIT_DEV_ROOT || null;
+let devRoot = settings ? kitDevRoot(settings) : process.env.KIT_DEV_ROOT || null;
+// "tickets": "orbit" in the settings: the tickets are the cards on the project's Orbit board.
+const orbit = settings ? onOrbit(settings) : false;
 
 const usage = `Usage: kit next [map…] [--start] [--max N]
        kit next --run-group --branch BRANCH --builder MODEL --ticket FILE [--ticket FILE…]
@@ -32,7 +35,12 @@ Both are read from the running kit and checkout, not from origin/${land}: update
 --run-group runs kit slice for each ticket in order here, stopping at the first failure: the first
 on BRANCH, each later one on its own BRANCH-<NN> from the fetched origin/${land}. A rerun skips
 tickets closed on origin/${land} or merged by their saved slice and resumes a slice with saved state
-on its branch.`;
+on its branch.
+On Orbit ("tickets": "orbit"), the tickets are the cards of the project's board (under its parent card when
+one is set): a Todo card whose "Blocked by:" cards are all Done may start (next: KEY), the rest wait (In
+Progress, Backlog, Next step (Lex), blocked), and wave N: lines say which cards follow in which build wave.
+--start claims each card on Orbit (status In Progress and a "Claimed by: <owner>" line, ORBIT_ROLE=lead) and
+starts kit slice --ticket KEY; a start that fails gives the claim back.`;
 
 // Pins from the "Who cooks" table: the shared rulebook (docs/kitchen.md in the kit), where a row with
 // the same role in the project's extras (rulebookExtras) wins. "Builder, every slice" builds every
@@ -171,8 +179,11 @@ function unquote(command) {
 // on its own, so one unreadable ticket leaves the others' Files counting. A group job keeps the Files of members
 // that already landed until it ends: safe, if broad. A ticket keys by its path inside the worktree holding it
 // (the longest match), so an absolute path whose parent folders share the maps folder's name still names the right map.
+// On Orbit, a running slice names its card by key (--ticket KEY): the card's own Files, read from the board.
+const cardIndex = new Map();
 function sliceUnit(words, cwd, worktrees) {
   const tickets = words.flatMap((word, i) => word === "--ticket" && words[i + 1] ? [words[i + 1]] : []).flatMap(file => {
+    if (cardIndex.has(file.toUpperCase())) return [cardIndex.get(file.toUpperCase())];
     if (!cwd && !isAbsolute(file)) return []; // No known working directory: a relative ticket names nothing.
     const path = cwd ? resolve(cwd, file) : file, home = worktrees.filter(tree => path.startsWith(`${tree}/`)).sort((a, b) => b.length - a.length)[0];
     const key = home ? relative(home, path) : normalize(file);
@@ -279,7 +290,7 @@ function plan(candidates, running, max) {
     if (candidate.runs_alone && sameMap.length) { wait(`runs alone; waits for ${sameMap.map(slice => slice.name).join(", ")}`); continue; }
     const alone = sameMap.find(slice => slice.unit.runs_alone);
     if (alone) { wait(`${alone.name} runs alone`); continue; }
-    const names = candidate.group ? groupNaming(candidate.group, readme.prefix) : naming(tickets[0], readme.prefix);
+    const names = candidate.names ?? (candidate.group ? groupNaming(candidate.group, readme.prefix) : naming(tickets[0], readme.prefix));
     if (!/^[a-z0-9][a-z0-9._-]*$/.test(names.job)) { wait(`job name ${names.job} is not a kit bg name; add a prefix: line to the build README`); continue; }
     const same = active.find(slice => slice.name === names.job);
     if (same) { wait(`job name ${names.job} already used by ${same.unit.label || same.name}`); continue; }
@@ -417,7 +428,112 @@ function runGroup({ branch, builder, tickets }) {
   kitResult("ok", `next group ${ran} slices done${ran < tickets.length ? `, ${tickets.length - ran} landed before` : ""}`);
 }
 
-function main(args) {
+// A card as a ticket for the fixed rules: its key in place of a file, its Files from the description, and the
+// owner on its "Claimed by:" line once it is In Progress.
+function cardTicket(card, board) {
+  return { file: card.identifier, map: board, slug: card.identifier, title: card.title, type: "task (AFK)", builder: "",
+    assignee: card.stage === "working" ? card.claimed_by ?? "someone" : "", status: "open", group: "", runs_alone: false,
+    blocked_by: [], files: parseFiles(card.description ?? ""), valid: true };
+}
+// owner kit-12, job slice-kit-12, branch build/kit-12-<first words of the title>.
+function cardNaming(card) {
+  const owner = card.identifier.toLowerCase();
+  const words = String(card.title ?? "").toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").split("-").slice(0, 6).join("-");
+  return { owner, job: `slice-${owner}`, branch: words ? kitSliceBranch(owner, words) : `build/${owner}` };
+}
+// The build wave of each card: 1 for one that may start (or runs now), else one more than its latest open blocker's;
+// a blocker that is not found, or a cycle, gives no wave.
+function waves(cards) {
+  const byKey = new Map(cards.map(card => [card.identifier, card])), level = new Map();
+  const openKeys = card => card.blocked_by.filter(key => card.open_blockers.some(text => text.startsWith(`${key} `)));
+  const of = (card, seen = new Set()) => {
+    if (level.has(card.identifier)) return level.get(card.identifier);
+    if (card.stage === "working" || !card.open_blockers.length) return level.set(card.identifier, 1).get(card.identifier);
+    if (seen.has(card.identifier)) return Infinity;
+    seen.add(card.identifier);
+    let deepest = 1;
+    for (const key of openKeys(card)) {
+      const blocker = byKey.get(key);
+      const missing = card.open_blockers.some(text => text === `${key} (not found)`);
+      deepest = Math.max(deepest, missing ? Infinity : blocker ? of(blocker, seen) : 1);
+    }
+    seen.delete(card.identifier);
+    return level.set(card.identifier, deepest + 1).get(card.identifier);
+  };
+  const out = new Map();
+  for (const card of cards) {
+    if (card.stage === "done" || card.stage === "working") continue;
+    const wave = of(card);
+    if (Number.isFinite(wave) && wave > 1) out.set(wave, [...(out.get(wave) ?? []), card.identifier]);
+  }
+  return [...out.entries()].sort((a, b) => a[0] - b[0]);
+}
+
+async function orbitMain(flags) {
+  if (flags.maps.length) throw new UsageError(`maps do not apply on Orbit: the cards come from the board in ${"scripts/agents/kit.json"}`);
+  devRoot ??= kitRoot();
+  rulebookPins();
+  let redact;
+  try {
+    const opened = openOrbitTickets({ settings, who: kitOwner() });
+    redact = opened.redact;
+    const { store } = opened;
+    if (!tryGit(["fetch", "-q", "origin"])) console.log(`problem: fetch failed; using the local origin/${land}`);
+    const { board, cards, more } = await store.board({ project: opened.project, parent: opened.parent });
+    if (more) console.log(`problem: board ${board} holds more than 1000 cards; only the first 1000 were read`);
+    const candidates = [], early = [], readme = { prefix: board.toLowerCase(), notStarted: false };
+    for (const card of cards) {
+      if (card.stage === "done") continue;
+      const ticket = cardTicket(card, board);
+      cardIndex.set(card.identifier, ticket);
+      const wait = card.stage === "working" ? "" : card.next_lex !== null ? `needs Lex (Next step (Lex): ${card.next_lex})`
+        : card.open_blockers.length ? `blocked by ${card.open_blockers.join(", ")}` : card.stage === "waiting" ? `in ${card.status_name}` : "";
+      if (wait) { early.push({ unit: { label: card.identifier }, reason: wait }); continue; }
+      candidates.push({ first: ticket, ...unitOf([ticket]), readme, names: cardNaming(card) });
+    }
+    const running = runningSlices();
+    for (const slice of running) console.log(`running: ${slice.name} ${slice.unit.label || "(ticket unknown)"}`);
+    const { next, waits } = plan(candidates, running, flags.max);
+    const waiting = [...early, ...waits];
+    for (const item of next) console.log(`next: ${item.unit.label} builder=${item.builder.label} owner=${item.owner} why=${item.why}`);
+    for (const { unit, reason } of waiting) console.log(`waits: ${unit.label} ${reason}`);
+    for (const [wave, keys] of waves(cards)) console.log(`wave ${wave}: ${keys.join(", ")}`);
+    if (!flags.start) { kitResult("ok", `next ${next.length} ready, ${waiting.length} waiting`); return; }
+    let started = 0, taken = 0;
+    for (const item of next) {
+      const key = item.unit.tickets[0].file;
+      let claim;
+      try { claim = await store.claim(key, item.owner); }
+      catch (error) {
+        if (!error?.taken) throw error;
+        console.log(`waits: ${item.unit.label} claimed meanwhile (${orbitProblem(error, redact)})`);
+        taken++;
+        continue;
+      }
+      console.log(`claimed: ${item.unit.label} owner=${item.owner} (Orbit)`);
+      if (item.builder.delegate) { console.log(`delegate: ${item.unit.label} ${item.builder.model} owner=${item.owner}`); continue; }
+      try { start(item); started++; }
+      catch (error) {
+        // A claimed card with no slice is half-claimed: the claim goes back, or the line says how to give it back.
+        let back = "; the claim was given back";
+        if (!claim.unchanged) {
+          try { await store.unclaim(key, item.owner, claim.previous); }
+          catch (problem) { back = `; giving the claim back failed (${orbitProblem(problem, redact)}): run kit ticket update ${key} --status Todo`; }
+        }
+        kitResult("fail", `next start ${item.unit.label}: ${error.message}${back}`);
+        process.exitCode = 1;
+        return;
+      }
+    }
+    kitResult("ok", `next ${next.length - taken} ready, ${waiting.length + taken} waiting, ${started} started`);
+  } catch (error) {
+    if (error instanceof UsageError) throw error;
+    kitResult("fail", `next ${orbitProblem(error, redact)}`);
+    process.exitCode = 1;
+  }
+}
+
+async function main(args) {
   let flags;
   try { flags = options(args); }
   catch (error) {
@@ -430,6 +546,7 @@ function main(args) {
   if (flags.help) { console.log(usage); return; }
   if (!settings) throw new Error(settingsProblem);
   if (flags.runGroup) { runGroup(flags); return; }
+  if (orbit) return orbitMain(flags);
   if (!devRoot) throw new Error("needs a dev worktree; add devRoot to scripts/agents/kit.json");
   if (!mapsDir) throw new Error("needs a maps folder; add maps to scripts/agents/kit.json");
   rulebookPins();
@@ -475,5 +592,5 @@ function main(args) {
   kitResult("ok", `next ${next.length - taken} ready, ${waits.length + taken} waiting, ${started} started`);
 }
 
-try { main(process.argv.slice(2)); }
+try { await main(process.argv.slice(2)); }
 catch (error) { kitResult("fail", `next ${error.message}`); process.exitCode = 1; }
