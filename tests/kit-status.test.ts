@@ -411,3 +411,15 @@ test("on Orbit, status says when the board holds more cards than it reads", asyn
   assert.match(output.stdout, /^note: board KIT holds more than 1000 cards; only the first 1000 are shown$/m);
   assert.match(output.results[0], /^RESULT: ok status KIT 1000 cards, 0 done, 0 open PRs$/);
 });
+
+test("on Orbit, status shows a card's owner only while it is In Progress, so a stale Claimed by line on a done card shows nobody", async t => {
+  const f = await fixture(t);
+  const o = await orbitProject(t);
+  writeFileSync(join(f.root, "scripts/agents/kit.json"), JSON.stringify({ project: "kit-status", branches: { land: "dev" }, ...orbitSettings }));
+  o.card({ title: "Closed by hand", description: "Claimed by: kit-1" }, "Done");
+  o.card({ title: "Given back by hand", description: "Claimed by: kit-2" });
+  const output = await f.run(["--no-fetch"], { prs: [], env: o.env });
+  assert.equal(output.code, 0, output.stdout + output.stderr);
+  assert.equal(f.row(output.stdout, "KIT-1")[2], "-");
+  assert.equal(f.row(output.stdout, "KIT-2")[2], "-");
+});

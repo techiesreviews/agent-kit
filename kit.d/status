@@ -150,7 +150,7 @@ async function status(args) {
         if (read.more) more = `board ${board} holds more than 1000 cards; only the first 1000 are shown`;
       } catch (error) { throw new Error(orbitProblem(error, redact)); }
     }
-    const { tickets } = orbit ? { tickets: cards.map(card => ({ slug: card.identifier, map: board, status: card.status_name, done: card.stage === "done", assignee: card.claimed_by ?? "", card: true })) }
+    const { tickets } = orbit ? { tickets: cards.map(card => ({ slug: card.identifier, map: board, status: card.status_name, done: card.stage === "done", assignee: card.stage === "working" ? card.claimed_by ?? "" : "", card: true })) }
       : settings.maps ? loadTickets(settings.maps, map, { ref, cwd: root }) : { tickets: [] };
     const sha = await git(["rev-parse", "--verify", `${ref}^{commit}`]);
     const branch = ref.replace(/^(?:refs\/remotes\/)?origin\//, "").replace(/^refs\/heads\//, "");
