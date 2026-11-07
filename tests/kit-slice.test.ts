@@ -1667,3 +1667,11 @@ test("on Orbit, a queued card that cannot be closed when the queue lands it is n
   assert.match(lastLine(output), /^RESULT: ok slice \.scratch\/kit-tickets\/KIT-1\.md PR #42 a{40}; card KIT-1 not closed: Orbit answered 502/);
   assert.equal(orbit.statusOf(task), "In Progress");
 });
+
+test("on Orbit, a rerun under another owner name still resumes a card its brief says it claimed", async t => {
+  const { card, slice } = await orbitSlice(t);
+  card();
+  assert.equal((await slice("KIT-1", { FAIL_PHASE: "review" })).status, 1);
+  const again = await slice("KIT-1", { ASE_OWNER: "someone-else" });
+  assert.equal(again.status, 0, again.all);
+});
