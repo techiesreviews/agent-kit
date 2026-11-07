@@ -5,6 +5,7 @@ import { basename, join } from "node:path";
 import { builderChecks, plainEnglish, reviewFormat, ticketReviewBrief } from "./review-brief.mjs";
 import { kitMessagesToLexRule, kitReviewLoopRule, kitRulebookPins, kitSliceBranch, kitStateDir } from "./kit-lib.mjs";
 import { map, modelFamily, pickSkills, readTicket, skillLine } from "./skills.mjs";
+import { cardNaming } from "./ticket-cards.mjs";
 
 export { map, modelFamily, pickSkills, readTicket, skillLine, skillSettingsProblems } from "./skills.mjs";
 
@@ -80,16 +81,16 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
   // kit next runs a group's tickets as one job (kit next --run-group) on the group's own branch.
   if (info.group) throw new Error(`${ticket} is in group ${info.group}: kit next --start runs a group as one job; kit brief writes briefs for single tickets`);
   const land = settings.branches?.land ?? "main";
-  // A card's branch and job are kit next's for it: build/<owner>-<first words of the title>, job slice-<key>.
-  const cardWords = card ? String(card.title).toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").split("-").slice(0, 6).join("-") : "";
-  const slug = task ? ticket.replace(/^task:/, "") : card ? cardWords || ticket.toLowerCase() : basename(ticket).replace(/\.md$/i, "");
-  const branch = kitSliceBranch(owner, slug);
+  const slug = task ? ticket.replace(/^task:/, "") : basename(ticket).replace(/\.md$/i, "");
+  // A card's branch and job are kit next's for it (cardNaming), whoever the brief's owner is.
+  const named = card ? cardNaming({ identifier: ticket, title: card.title }) : null;
+  const branch = named?.branch ?? kitSliceBranch(owner, slug);
   const builder = builderModel(info.builder, pins.builder);
   const target = model || (stage === "review" ? review : stage === "second-look" ? SECOND_LOOK.first : builder);
   const reviewing = stage === "review" || stage === "second-look";
   // kit next's owner is <prefix>-<NN> (a map ticket's <NN> starts with m) and its job slice-<prefix><NN>:
   // al-01 runs as slice-al01, site-fonts-01 as slice-site-fonts01. Another owner keeps its name.
-  const job = card ? `slice-${ticket.toLowerCase()}` : `slice-${owner.toLowerCase().replace(/-(m?\d+)$/, "$1").replace(/[^a-z0-9._-]/g, "")}`;
+  const job = named ? named.job : `slice-${owner.toLowerCase().replace(/-(m?\d+)$/, "$1").replace(/[^a-z0-9._-]/g, "")}`;
   const sliceLine = `scripts/agents/kit go ${job} -- scripts/agents/kit slice --ticket ${ticket} --builder ${target}`;
   const skills = pickSkills({ files: info.files, words: `${info.title}\n${info.filesText}${task ? `\n${note ?? ""}` : ""}`, stage, settings });
   // What the brief is about: a ticket file, an Orbit card (its text is in the brief), or a task the note holds.
