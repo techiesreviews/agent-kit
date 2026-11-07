@@ -440,3 +440,15 @@ test("on Orbit, a card's own PR wins over another card's PR that only mentions i
   assert.equal(f.row(output.stdout, "KIT-2")[3], "#130 open");
   assert.deepEqual(output.results, ["RESULT: ok status KIT 2 cards, 1 done, 1 open PRs"]);
 });
+
+test("on Orbit, a card with no PR of its own does not take another card's PR that mentions it", async t => {
+  const f = await fixture(t);
+  const o = await orbitProject(t);
+  writeFileSync(join(f.root, "scripts/agents/kit.json"), JSON.stringify({ project: "kit-status", branches: { land: "dev" }, ...orbitSettings }));
+  o.card({ title: "Landed" }, "Done");
+  o.card({ title: "Follow-up" });
+  const prs = [{ ...f.pr(121, "Landed", [], "MERGED"), headRefName: "build/kit-1-landed", body: "## Summary\n\n- KIT-2 follow-up noted" }];
+  const output = await f.run(["--no-fetch"], { prs, env: o.env });
+  assert.equal(output.code, 0, output.stdout + output.stderr);
+  assert.deepEqual(f.row(output.stdout, "KIT-2"), ["KIT-2", "Todo", "-", "-", "-"]);
+});

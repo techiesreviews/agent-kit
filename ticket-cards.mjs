@@ -85,7 +85,11 @@ export async function cardBriefFor({ root, key, settings, owner, who = owner, fo
     } catch (error) {
       return { ...resumed, note: `card: ${resumed.key} could not be checked on Orbit (${orbitProblem(error, redact)}); going on from the saved brief` };
     }
-    if (task.stage === "done" || (task.stage === "working" && task.claimed_by === oneLine(owner))) return resumed;
+    // Its own: the owner now, or the one the brief recorded when it claimed the card.
+    let recorded = "";
+    try { recorded = /^assignee:[ \t]*(.*?)\s*$/m.exec(readFileSync(path, "utf8"))?.[1] ?? ""; } catch { /* Read above; gone now is no owner. */ }
+    const own = [oneLine(owner), recorded].filter(Boolean);
+    if (task.stage === "done" || (task.stage === "working" && own.includes(task.claimed_by))) return resumed;
     const holder = task.stage === "working" ? task.claimed_by ?? "nobody" : "nobody";
     throw new OrbitError(`${resumed.key} is now held by ${holder} (${task.status_name}), so this slice's saved brief is stale; remove .scratch/kit-tickets/${resumed.key}.md and .scratch/kit-slice/${resumed.key} to start over`);
   }
