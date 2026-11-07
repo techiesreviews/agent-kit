@@ -190,6 +190,7 @@ async function slice(args) {
           if (card) {
             const closed = await closeLandedCard({ settings, key: card, pr: pr.url || `PR #${state.pr}`, sha: state.sha, followups: briefFollowups(brief), who: kitOwner() });
             console.log(closed.line);
+            state.card = closed.suffix;
           }
           complete(`#${state.pr}`); return;
         }
@@ -556,10 +557,12 @@ async function slice(args) {
         state.pr = /#(\d+)/.exec(result.output)?.[1] || state.pr; save();
         const output = requireSuccess(result);
         // kit pr may add words after the SHA (a card closed or not, a flaky spec file): only the number and SHA count.
-        const merged = /^RESULT: ok merged #(\d+) ([a-f\d]{7,40})(?:[ ;].*)?$/m.exec(output);
+        const merged = /^RESULT: ok merged #(\d+) ([a-f\d]{7,40})((?:[ ;].*)?)$/m.exec(output);
         const queued = /^RESULT: ok queued #(\d+) ([a-f\d]{7,40})(?:[ ;].*)?$/m.exec(output);
         if (merged) {
           state.pr = merged[1]; state.sha = merged[2]; state.head = git("rev-parse", "HEAD");
+          // What kit pr said about the card (closed, or not and why) goes on the slice's own RESULT line too.
+          state.card = / \(card \S+ Done\)|; card \S+ not closed: .*/.exec(merged[3])?.[0];
           complete(`#${state.pr}`);
         } else if (queued) {
           const head = git("rev-parse", "HEAD");
@@ -569,7 +572,7 @@ async function slice(args) {
         } else throw new Error("PR did not report a merged or queued commit; see phase log");
       }
     } else if (flags.noPr) console.log("slice: pr ok skipped (--no-pr)");
-    kitResult("ok", `slice ${flags.ticket} ${flags.noPr ? `reviewed ${findings().length ? "with follow-ups" : "clean"} ${state.head}` : `PR #${state.pr} ${state.sha}`}`);
+    kitResult("ok", `slice ${flags.ticket} ${flags.noPr ? `reviewed ${findings().length ? "with follow-ups" : "clean"} ${state.head}` : `PR #${state.pr} ${state.sha}${state.card ?? ""}`}`);
     return 0;
   } catch (error) {
     if (ended && started) ended(exit || 1);
