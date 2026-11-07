@@ -14,7 +14,7 @@ Tickets on the Orbit board, from any project folder. A card is named by its key,
 
 Read (anyone):
   get <KEY> [--comments] [--json]                  one card, with its status, assignee_ids, next step and blockers
-  list [--project KEY|all] [--status NAME] [--parent KEY] [--assignee ID|none] [--q TEXT] [--limit N] [--json]
+  list [--project KEY|all] [--status NAME] [--parent KEY] [--assignee NAME|ID|none] [--q TEXT] [--limit N] [--json]
   sub-tasks <KEY> [--json]                         the card's direct sub-tasks
   labels [--project KEY]                           the label names a board has
   members                                          the workspace members: display name and id (for --assignee)
@@ -177,7 +177,11 @@ function report(name, outcome) {
     say("Dry run: nothing was sent.");
     return finish("ok", `${name} ${outcome.key} dry run`);
   }
-  if (outcome.unchanged) return finish("ok", `${name} ${outcome.key} already as asked; nothing to send`);
+  if (outcome.unchanged) {
+    // A next step already on the card can still leave Lex unassigned: say so.
+    if (outcome.assign?.note) say(`${outcome.key}: ${outcome.assign.note}`);
+    return finish("ok", `${name} ${outcome.key} already as asked; nothing to send`);
+  }
   if (outcome.task?.url && name !== "trash") say(`${outcome.key}  ${outcome.task.url}`);
   if (name === "next-lex") say(outcome.assign?.assigned ? `${outcome.key} waits for Lex and is assigned to ${outcome.assign.assigned}.` : `${outcome.key} waits for Lex. ${outcome.assign?.note ?? ""}`.trim());
   if (name === "clear-next-lex") say(outcome.assign?.unassigned ? `${outcome.key} no longer waits for Lex and is no longer assigned to ${outcome.assign.unassigned}.` : `${outcome.key} no longer waits for Lex.${outcome.assign?.note ? ` ${outcome.assign.note}` : ""}`);

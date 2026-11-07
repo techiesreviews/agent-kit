@@ -136,7 +136,7 @@ test("get shows status name, assignees, next step, blockers, dates and comments;
   assert.ok(!orbit.requests.some(item => item.path.endsWith("/me")), "a bad key never reaches Orbit");
 });
 
-test("list shows assignee ids, filters by status, parent, assignee and text, follows pages and says when more exist", async t => {
+test("list shows assignees, filters by status, parent, assignee and text, follows pages and says when more exist", async t => {
   const { orbit, run } = await fixture(t);
   const parent = orbit.addTask(orbit.tools, { title: "Parent" });
   orbit.addTask(orbit.tools, { title: "Child", parent_task_id: parent.id, assignee_ids: ["user-a"], status_id: orbit.statuses.get(orbit.tools.id)![2].id });
@@ -404,9 +404,63 @@ test("next-lex still writes the first line when no single member is called Lex, 
   const two = ok(await run(["next-lex", "TOOLS-1", "approve it now"]));
   assert.match(two.stdout, /could not assign: more than one member is called Lex; assign in Orbit/);
   assert.equal(task.description, "Next step (Lex): approve it now\n\nText");
-  const cleared = ok(await run(["clear-next-lex", "TOOLS-1"]));
+  const quiet = ok(await run(["clear-next-lex", "TOOLS-1"]));
   assert.equal(task.description, "Text");
+  assert.doesNotMatch(quiet.stdout, /could not/, "no note when none of the members called Lex is on the card");
+  task.assignee_ids = [member(orbit, "Sam Helper"), "66666666-6666-4666-8666-666666666666"];
+  ok(await run(["next-lex", "TOOLS-1", "approve it again"]));
+  const cleared = ok(await run(["clear-next-lex", "TOOLS-1"]));
   assert.match(cleared.stdout, /could not unassign: more than one member is called Lex; unassign in Orbit/);
+});
+
+test("a next-lex that is already on the card still says when Lex could not be assigned", async t => {
+  const { orbit, run } = await fixture(t);
+  orbit.addTask(orbit.tools, { description: "Next step (Lex): go" });
+  orbit.members.splice(orbit.members.findIndex(item => item.display_name === "Lex"), 1);
+  const out = ok(await run(["next-lex", "TOOLS-1", "go"]));
+  assert.match(out.stdout, /TOOLS-1: could not assign: no member is called Lex; assign in Orbit/);
+  assert.match(result(out), /already as asked/);
+});
+
+test("a members list that cannot be read: get shows the ids, an assignee by name is refused, next-lex still writes its line and says so", async t => {
+  const { orbit, run } = await fixture(t);
+  const task = orbit.addTask(orbit.tools, { description: "Text", assignee_ids: [member(orbit, "Sam Helper")] });
+  orbit.controls.membersFail = 1;
+  const got = ok(await run(["get", "TOOLS-1"]));
+  assert.match(got.stdout, new RegExp(`^Assignees: ${member(orbit, "Sam Helper")}$`, "m"));
+  orbit.controls.membersFail = 1;
+  refused(await run(["update", "TOOLS-1", "--assignee", "Lex"]), /500|members list|boom|Orbit/);
+  assert.equal(orbit.writes().length, 0);
+  orbit.controls.membersFail = 1;
+  const set = ok(await run(["next-lex", "TOOLS-1", "go"]));
+  assert.equal(task.description, "Next step (Lex): go\n\nText");
+  assert.match(set.stdout, /could not assign: Orbit would not list the members/);
+  assert.match(set.stdout, /assign in Orbit/);
+  assert.deepEqual(task.assignee_ids, [member(orbit, "Sam Helper")]);
+  orbit.controls.membersFail = 0;
+  assert.match(ok(await run(["get", "TOOLS-1"])).stdout, /^Assignees: Sam Helper$/m, "the next run asks again and shows names");
+});
+
+test("assigning keeps the lead-only guard for create too", async t => {
+  const { orbit, run } = await fixture(t);
+  refused(await run(["create", "--title", "x", "--assignee", "Lex"], { ORBIT_ROLE: "helper" }), /only a lead may write/);
+  assert.equal(orbit.writes().length, 0);
+});
+
+test("list --assignee takes a name, an id or none, like create and update", async t => {
+  const { orbit, run } = await fixture(t);
+  orbit.addTask(orbit.tools, { title: "Lex's", assignee_ids: [member(orbit, "Lex")] });
+  orbit.addTask(orbit.tools, { title: "Sam's", assignee_ids: [member(orbit, "Sam Helper")] });
+  orbit.addTask(orbit.tools, { title: "Nobody's" });
+  const named = ok(await run(["list", "--assignee", "lex"]));
+  assert.match(named.stdout, /TOOLS-1 /);
+  assert.equal(orbit.requests.filter(item => item.path.endsWith("/tasks")).at(-1)!.query.get("assignee_id"), member(orbit, "Lex"));
+  ok(await run(["list", "--assignee", member(orbit, "Sam Helper")]));
+  assert.equal(orbit.requests.filter(item => item.path.endsWith("/tasks")).at(-1)!.query.get("assignee_id"), member(orbit, "Sam Helper"));
+  ok(await run(["list", "--assignee", "none"]));
+  assert.equal(orbit.requests.filter(item => item.path.endsWith("/tasks")).at(-1)!.query.get("assignee_id"), "none");
+  ok(await run(["list", "--assignee", "99999999-9999-4999-8999-999999999999"]));
+  refused(await run(["list", "--assignee", "Nobody"]), /no member called Nobody/);
 });
 
 test("assigning keeps the lead-only guard: a helper cannot assign by --assignee or next-lex", async t => {
@@ -1235,7 +1289,7 @@ test("setup's help is numbered plain steps with no jargon; kit ticket help names
   assert.ok(!/\b(stdin|TTY|JSON|env|chmod|OAuth|CLI|header)\b/i.test(help.stdout), help.stdout);
   const main = await run(["--help"]);
   assert.equal(main.status, 0);
-  for (const name of ["labels", "create", "get", "list", "update", "dates", "note", "comment", "sub-tasks", "next-lex", "clear-next-lex", "trash", "setup"]) assert.match(main.stdout, new RegExp(`\\b${name}\\b`));
+  for (const name of ["labels", "create", "get", "list", "update", "dates", "note", "comment", "sub-tasks", "members", "next-lex", "clear-next-lex", "trash", "setup"]) assert.match(main.stdout, new RegExp(`\\b${name}\\b`));
   refused(await run([]), /Usage/);
   refused(await run(["nonsense"]), /nonsense/);
   refused(await run(["get"]), /card key/i);
