@@ -1613,9 +1613,9 @@ test("on Orbit, a slice whose PR was queued closes the card when the queue lands
 
 test("on Orbit, the slice reads kit pr's RESULT line with the card words after the SHA, merged or queued", async t => {
   for (const [extra, words] of [
-    [{ PR_SUFFIX: " (card KIT-1 Done)" }, /^RESULT: ok slice \.scratch\/kit-tickets\/KIT-1\.md PR #42 [0-9a-f]{40}$/],
-    [{ PR_SUFFIX: "; card KIT-1 not closed: Orbit answered 502" }, /^RESULT: ok slice \.scratch\/kit-tickets\/KIT-1\.md PR #42 [0-9a-f]{40}$/],
-    [{ PR_SUFFIX: "; card KIT-1 closes when the queue lands it", QUEUE_PR: "1" }, /^RESULT: ok slice \.scratch\/kit-tickets\/KIT-1\.md PR #42 a{40}$/],
+    [{ PR_SUFFIX: " (card KIT-1 Done)" }, /^RESULT: ok slice \.scratch\/kit-tickets\/KIT-1\.md PR #42 [0-9a-f]{40} \(card KIT-1 Done\)$/],
+    [{ PR_SUFFIX: "; card KIT-1 not closed: Orbit answered 502" }, /^RESULT: ok slice \.scratch\/kit-tickets\/KIT-1\.md PR #42 [0-9a-f]{40}; card KIT-1 not closed: Orbit answered 502$/],
+    [{ PR_SUFFIX: "; card KIT-1 closes when the queue lands it", QUEUE_PR: "1" }, /^RESULT: ok slice \.scratch\/kit-tickets\/KIT-1\.md PR #42 a{40} \(card KIT-1 Done\)$/],
   ] as const) {
     const { card, slice } = await orbitSlice(t);
     card();
@@ -1637,4 +1637,16 @@ test("on Orbit, a queued card closes with the review and UX follow-ups its brief
   assert.equal(orbit.statusOf(task), "Done");
   assert.deepEqual((orbit.comments[task.id] ?? []).map((comment: any) => comment.body),
     ["Follow-ups from PR #42:\n- Spec (P3): P3: Cosmetic defect.\n- UX (looks off): F-1 S1: a hint line"]);
+});
+
+test("on Orbit, a queued card that cannot be closed when the queue lands it is named on the slice's RESULT line", async t => {
+  const { card, slice, orbit } = await orbitSlice(t);
+  const task = card();
+  assert.equal((await slice("KIT-1", { FAIL_PHASE: "review" })).status, 1);
+  // The resumed slice asks Orbit nothing until it closes the card, so this answer is the close's.
+  orbit.controls.answers.push("gateway-page");
+  const output = await slice("KIT-1", { QUEUE_PR: "1" });
+  assert.equal(output.status, 0, output.all);
+  assert.match(lastLine(output), /^RESULT: ok slice \.scratch\/kit-tickets\/KIT-1\.md PR #42 a{40}; card KIT-1 not closed: Orbit answered 502/);
+  assert.equal(orbit.statusOf(task), "In Progress");
 });
