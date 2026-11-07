@@ -49,6 +49,8 @@ export async function fakeOrbit(t: TestContext, { kitBoard = false }: { kitBoard
     requireCloudflare: true,
     // Like the running Orbit: a write (POST, PATCH, DELETE) needs `Origin: <the Orbit origin>`; a read does not.
     requireOrigin: true,
+    // How many reads of the members list fail with a 500 next (the other requests are untouched).
+    membersFail: 0,
   };
 
   const addTask = (project: (typeof projects)[number], fields: FakeTask = {}): FakeTask => {
@@ -117,7 +119,7 @@ export async function fakeOrbit(t: TestContext, { kitBoard = false }: { kitBoard
     if (labelPath && request.method === "GET") return page(labels.get(labelPath[1]) ?? []);
     const wrongLabel = (projectId: string, ids: unknown) => Array.isArray(ids) && ids.some(id => !labels.get(projectId)!.some(label => label.id === id));
 
-    if (rest === "/members" && request.method === "GET") return page(members);
+    if (rest === "/members" && request.method === "GET") return controls.membersFail-- > 0 ? problem(response, 500, "internal_error", "The members list is down") : page(members);
     if (rest === "/tasks" && request.method === "GET") {
       const query = url.searchParams;
       const parent = query.get("parent_task_id");

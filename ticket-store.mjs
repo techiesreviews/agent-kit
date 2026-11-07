@@ -283,18 +283,21 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
   // The workspace members, read once per run. A failed read is not kept, so the next call asks again.
   let memberRead;
   const membersOf = () => memberRead ??= client.members().catch(error => { memberRead = undefined; throw error; });
-  const memberName = member => oneLine(member.display_name ?? "");
+  const memberName = member => oneLine(member.display_name ?? "").trim();
+  const nameList = members => members.length > 20 ? `${members.slice(0, 20).map(memberName).join(", ")}, … (kit ticket members lists them all)` : members.map(memberName).join(", ") || "none";
   /** Assignee ids for one NAME, ID or none: a name must fit exactly one member (case-insensitive); anything else is refused with the members listed. */
-  const assigneeIds = async value => {
+  const assigneeIds = async (value, { anyId = false } = {}) => {
     const wanted = oneLine(value ?? "");
     if (!wanted) throw new OrbitError("--assignee needs a member's name or id, or none to clear it");
     if (wanted.toLowerCase() === "none") return [];
     const members = await membersOf();
     const byId = members.find(member => String(member.user_id).toLowerCase() === wanted.toLowerCase());
     if (byId) return [byId.user_id];
+    // A filter may name a person who has left: an id that is no member still asks Orbit.
+    if (anyId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(wanted)) return [wanted];
     const found = members.filter(member => memberName(member).toLowerCase() === wanted.toLowerCase());
     if (found.length === 1) return [found[0].user_id];
-    if (!found.length) throw new OrbitError(`no member called ${wanted}; the members are: ${members.map(memberName).join(", ") || "none"}`);
+    if (!found.length) throw new OrbitError(`no member called ${wanted}; the members are: ${nameList(members)}`);
     throw new OrbitError(`more than one member called ${wanted}: ${found.map(memberName).join(", ")}; use the id (kit ticket members lists them)`);
   };
   /** The assignees by name; an id that is no member, or a members list that cannot be read, shows the id. */
@@ -304,13 +307,16 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
     try { members = await membersOf(); } catch { /* The ids are still true. */ }
     return task.assignee_ids.map(id => { const found = members.find(member => member.user_id === id); return found ? memberName(found) : id; });
   };
-  /** The one member called exactly Lex (any capitals): { id, name }, or { why } when there is not exactly one or the list cannot be read. */
+  /**
+   * The member called exactly Lex (any capitals): { id, name } for exactly one; otherwise { why } and `ids`, the ids of every member so
+   * called (`unreadable` when the list cannot be read, so nobody can say who is Lex).
+   */
   const lexMember = async () => {
     let members;
-    try { members = await membersOf(); } catch (error) { return { why: `Orbit would not list the members (${oneLine(error?.message ?? "no answer").slice(0, 120)})` }; }
-    const found = members.filter(member => memberName(member).trim().toLowerCase() === "lex");
-    if (found.length === 1) return { id: found[0].user_id, name: memberName(found[0]) };
-    return { why: found.length ? "more than one member is called Lex" : "no member is called Lex" };
+    try { members = await membersOf(); } catch (error) { return { ids: [], unreadable: true, why: `Orbit would not list the members (${oneLine(error?.message ?? "no answer").slice(0, 120)})` }; }
+    const found = members.filter(member => memberName(member).toLowerCase() === "lex");
+    if (found.length === 1) return { id: found[0].user_id, name: memberName(found[0]), ids: [found[0].user_id] };
+    return { ids: found.map(member => member.user_id), why: found.length ? "more than one member is called Lex" : "no member is called Lex" };
   };
   const withNames = async task => ({ ...task, status_name: await statusName(task), label_names: await labelNames(task), assignee_names: await assigneeNames(task) });
   const firstOpenStatus = async projectId => {
@@ -502,7 +508,8 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       if (everywhere && status !== undefined) throw new OrbitError("--status names differ per board: use it with one --project");
       // With a parent and no board named, a status name is read on the parent's own board.
       const board = everywhere ? null : project === undefined && parent !== undefined ? { id: (await client.task(orbitCardKey(parent))).project_id } : await projectFrom(project);
-      const query = { project_id: board?.id, assignee_id: assignee, q, parent_task_id: parent === undefined ? undefined : orbitCardKey(parent) };
+      const assigneeId = assignee === undefined || String(assignee).toLowerCase() === "none" ? assignee : (await assigneeIds(assignee, { anyId: true }))[0];
+      const query = { project_id: board?.id, assignee_id: assigneeId, q, parent_task_id: parent === undefined ? undefined : orbitCardKey(parent) };
       if (status !== undefined) query.status_id = (await statusByName(board.id, status)).id;
       const { items, more } = await client.tasks(query, limit);
       return { more, items: await Promise.all(items.map(withNames)) };
@@ -644,7 +651,9 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
         assign = undefined;
         if (lex?.id) {
           if (ids.includes(lex.id)) { wanted.assignee_ids = ids.filter(id => id !== lex.id); assign = { unassigned: lex.name }; }
-        } else if (lex) assign = { note: `could not unassign: ${lex.why}; unassign in Orbit` };
+        } else if (lex?.unreadable) assign = { note: `could not check whether Lex is assigned (${lex.why}); unassign him in Orbit if he is` };
+        // With none or several members called Lex, a note only when one of them is on the card.
+        else if (lex && lex.ids.some(id => ids.includes(id))) assign = { note: `could not unassign: ${lex.why}; unassign in Orbit` };
         return wanted;
       });
       return { ...outcome, assign };
