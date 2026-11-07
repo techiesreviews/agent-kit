@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { forEachAwait } from "./support/await-race.ts";
 import { kitEnv } from "./support/kit-env.ts";
+import { orbitProject, orbitSecretsForTests, orbitSettings, runAsync, type Run } from "./support/orbit-project.ts";
 
 const kit = resolve("kit");
 const clean = "REVIEW_STATUS: complete\nDefects:\nSpec: none\nStandards: none\nValidation gaps: none\nOptional nits: none\n";
@@ -1535,4 +1536,65 @@ test("a risky change (paths.risky names its file) gets 5 fix rounds, a normal on
   const given = fixture(t, { project: "kit-slice", branches: { land: "dev" }, paths: { risky: ["^file\\.txt$"] } });
   const two = given.run([], { CLEAN_AT: "99" }, ["--ticket", given.ticket, "--builder", "claude-opus-5-5", "--rounds", "2"]);
   assert.match(two.stdout, /after 2 rounds/);
+});
+
+// Stage 2: on a project with "tickets": "orbit", kit slice --ticket KEY builds the card from a brief made from it.
+async function orbitSlice(t: TestContext) {
+  const o = await orbitProject(t);
+  const f = fixture(t, { project: "kit-slice", branches: { land: "dev" }, ...orbitSettings });
+  const env = { ...f.env, ...o.env };
+  const slice = (key = "KIT-1", extra: NodeJS.ProcessEnv = {}) => runAsync("bash", [kit, "slice", "--ticket", key, "--builder", "sol"], { cwd: f.root, env: { ...env, ...extra } });
+  return { ...f, ...o, env, slice };
+}
+const lastLine = (output: Run) => output.stdout.trim().split("\n").at(-1)!;
+
+test("on Orbit, slice --ticket KEY claims the card, writes its brief and hands the brief to every step", async t => {
+  const { card, slice, orbit, root, calls, log } = await orbitSlice(t);
+  const task = card({ title: "First card" });
+  const output = await slice();
+  assert.equal(output.status, 0, output.all);
+  assert.match(lastLine(output), /^RESULT: ok slice \.scratch\/kit-tickets\/KIT-1\.md PR #42 /);
+  const brief = readFileSync(join(root, ".scratch/kit-tickets/KIT-1.md"), "utf8");
+  assert.match(brief, /^---\ntitle: First card\norbit: KIT-1\ntype: task \(AFK\)\nstatus: open\nassignee: ke-04\n---\n\nOrbit card KIT-1: http:\/\/orbit\.test\/tasks\/1\n\n## Goal/);
+  assert.equal(orbit.statusOf(task), "In Progress");
+  assert.match(task.description, /^Claimed by: ke-04\n/);
+  assert.match(log(), /card=KIT-1 action=claim .* who=ke-04 result=ok/);
+  const steps = calls();
+  assert.equal(steps.find(call => call.phase === "build")?.builderTicket, join(root, ".scratch/kit-tickets/KIT-1.md"));
+  for (const phase of ["review", "pr"]) assert.deepEqual(steps.filter(call => call.phase === phase).map(call => call.args[call.args.indexOf("--ticket") + 1]).at(-1), ".scratch/kit-tickets/KIT-1.md");
+  assert.equal(readFileSync(join(root, ".scratch/agent-brief.md"), "utf8").split("\n")[0], "Ticket: .scratch/kit-tickets/KIT-1.md");
+});
+
+test("on Orbit, a rerun resumes from the brief without asking Orbit again", async t => {
+  const { card, slice, orbit } = await orbitSlice(t);
+  card();
+  const failed = await slice("KIT-1", { FAIL_PHASE: "review" });
+  assert.equal(failed.status, 1, failed.all);
+  const asked = orbit.requests.length;
+  orbit.controls.answers.push("gateway-page", "gateway-page", "gateway-page");
+  const again = await slice();
+  assert.equal(again.status, 0, again.all);
+  assert.equal(orbit.requests.length, asked, "the resumed slice made no Orbit call");
+});
+
+test("on Orbit, slice refuses a card someone else holds, one without Files and Done when, and Orbit down, and leaves no claim or brief", async t => {
+  const { card, slice, orbit, root, calls } = await orbitSlice(t);
+  card({ description: "Claimed by: other\n\n## Files\n\n- `file.txt`\n\n## Done when\n\n- done" }, "In Progress");
+  const bare = card({ description: "Only a goal" });
+  const free = card();
+  const taken = await slice("KIT-1");
+  assert.equal(taken.status, 1, taken.all);
+  assert.match(lastLine(taken), /^RESULT: fail slice brief: KIT-1 is already taken by other \(In Progress\), so it was not claimed$/);
+  const empty = await slice("KIT-2");
+  assert.match(lastLine(empty), /^RESULT: fail slice brief: KIT-2 cannot be built yet: its description needs a "## Files" and a "## Done when" section$/);
+  assert.equal(orbit.statusOf(bare), "Todo");
+  orbit.controls.answers.push({ status: 401, code: "unauthorized", detail: "No token, or the token is not correct." });
+  const refused = await slice("KIT-3");
+  assert.match(lastLine(refused), /^RESULT: fail slice brief: Orbit refused: .*token is wrong, expired or revoked/);
+  assert.equal(orbit.statusOf(free), "Todo");
+  assert.ok(!free.description.includes("Claimed by"));
+  assert.equal(orbit.writes().length, 0);
+  assert.ok(!existsSync(join(root, ".scratch/kit-tickets")), "no brief was written");
+  assert.deepEqual(calls(), []);
+  for (const output of [taken, empty, refused]) for (const secret of orbitSecretsForTests) assert.ok(!output.all.includes(secret));
 });

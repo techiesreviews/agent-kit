@@ -3,9 +3,10 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { kitFiles } from "./support/kit-files.ts";
 import { ghConfig } from "./support/kit-env.ts";
+import { orbitProject, orbitSecretsForTests, runAsync } from "./support/orbit-project.ts";
 import { kitMessagesToLexRule, kitRegisterProject } from "../kit-lib.mjs";
 
 const launchers = resolve("launcher");
@@ -1721,4 +1722,93 @@ test("--land master with main and master both there compares dev with master", (
   f.git(repo.main, "branch", "-f", "dev", "build/one");
   const run = gh.init(repo.work, ["--light", "--land", "master"]);
   assert.match(run.stdout, /lands directly on master \(branches\.direct\); dev has 1 commit master lacks, which stay behind/, run.stdout);
+});
+
+// Stage 2: on a project with "tickets": "orbit", --issues makes an Orbit card per open Issue (the fake Orbit) and closes
+// the Issue with a comment naming its card; no ticket file is written.
+async function orbitIssues(t: TestContext, issues: GhIssue[]) {
+  const o = await orbitProject(t);
+  const f = fixture(t);
+  const { work } = issueRepo(f, JSON.stringify({ project: "tools", branches: { land: "dev" }, tickets: "orbit", orbit: { project: "KIT", parent: "KIT-1" } }));
+  const gh = fakeGh(f, issues);
+  const parent = o.card({ title: "Imported Issues" }, "In Progress");
+  const env = { ...f.env, PATH: `${join(f.directory, "fake-gh")}:${f.env.PATH}`, ...o.env };
+  const init = (args: string[] = ["--issues"], extra: NodeJS.ProcessEnv = {}) =>
+    runAsync(join(f.directory, "data/agent-kit/current/kit"), ["init", ...args], { cwd: work, env: { ...env, ...extra }, timeout: 60_000 });
+  return { ...o, f, work, gh, parent, init };
+}
+
+test("on Orbit, --issues makes a Backlog card per open Issue under the parent, then closes each Issue pointing to its card", async (t) => {
+  const { orbit, work, gh, parent, init } = await orbitIssues(t, [
+    issue(14, "Search: results ignore accents!", { body: "Typing *café* finds nothing.\n\n## Files\n\nnot a section", labels: [{ name: "bug" }],
+      comments: [{ author: { login: "sam" }, createdAt: "2026-10-02T09:00:00Z", body: "Same on mobile." }] }),
+    issue(3, "Add a dark mode toggle"),
+    issue(9, "Closed already", { state: "CLOSED" }),
+  ]);
+  const run = await init();
+  assert.equal(run.status, 0, run.all);
+  assert.equal(result(run), "RESULT: ok init issues made 2 Orbit cards and closed 2 of 2 Issues");
+  const [, toggle, search] = orbit.tasks;
+  assert.deepEqual([toggle.identifier, toggle.title, orbit.statusOf(toggle), toggle.parent_task_id], ["KIT-2", "Add a dark mode toggle", "Backlog", parent.id]);
+  assert.equal(search.identifier, "KIT-3");
+  assert.equal(search.description, `GitHub Issue: https://github.com/acme/tools/issues/14
+
+From GitHub Issue [acme/tools#14](https://github.com/acme/tools/issues/14), opened by lex on 2026-10-01.
+
+Labels: \`bug\`
+
+Typing *café* finds nothing.
+
+#### Files
+
+not a section
+
+## Comments
+
+**sam, 2026-10-02:**
+
+Same on mobile.`);
+  assert.deepEqual(gh.closes(), [
+    ["issue", "close", "3", "--repo", "acme/tools", "--comment", "Moved to Orbit card KIT-2: http://orbit.test/tasks/2\nWork on it goes on there."],
+    ["issue", "close", "14", "--repo", "acme/tools", "--comment", "Moved to Orbit card KIT-3: http://orbit.test/tasks/3\nWork on it goes on there."],
+  ]);
+  assert.ok(!existsSync(join(work, backlog)), "no ticket file on Orbit");
+  const again = await init();
+  assert.equal(result(again), "RESULT: ok init issues no open Issues");
+  assert.equal(orbit.tasks.length, 3);
+});
+
+test("on Orbit, a close that fails is retried by a rerun, which finds the card it made and makes no second one", async (t) => {
+  const { orbit, f, gh, init } = await orbitIssues(t, [issue(5, "First"), issue(7, "Second")]);
+  writeFileSync(join(f.directory, "fake-gh/fail-close.json"), JSON.stringify(["7"]));
+  const first = await init();
+  assert.equal(first.status, 1, first.all);
+  assert.equal(result(first), "RESULT: fail init issues made 2 Orbit cards and closed 1 of 2 Issues; failed: #7; rerun to retry them");
+  const again = await init();
+  assert.equal(again.status, 0, again.all);
+  assert.equal(result(again), "RESULT: ok init issues made 0 Orbit cards and closed 1 of 1 Issue");
+  assert.match(again.stdout, /^found KIT-3 for #7$/m);
+  assert.equal(orbit.tasks.length, 3);
+  assert.deepEqual(gh.closes().map((args) => args[2]), ["5", "7", "7"]);
+});
+
+test("on Orbit, Orbit down or no lead role stops before closing anything; an Issue holding a secret stays open", async (t) => {
+  for (const [extra, words] of [[{}, /Orbit answered 502/], [{ ORBIT_ROLE: "" }, /only a lead may write to Orbit/]] as const) {
+    const { orbit, gh, init } = await orbitIssues(t, [issue(5, "First")]);
+    if (!("ORBIT_ROLE" in extra)) orbit.controls.answers.push("gateway-page");
+    const run = await init(["--issues"], extra);
+    assert.equal(run.status, 1, run.all);
+    assert.match(result(run), /^RESULT: fail init issues stopped at #5: /);
+    assert.match(result(run), words);
+    assert.deepEqual(gh.closes(), []);
+    assert.equal(orbit.tasks.length, 1);
+  }
+  const { orbit, gh, init } = await orbitIssues(t, [issue(5, "Leaky", { body: `my token ${orbitSecretsForTests[0]}` }), issue(6, "Fine")]);
+  const run = await init();
+  assert.equal(run.status, 0, run.all);
+  assert.equal(result(run), "RESULT: ok init issues made 1 Orbit card and closed 1 of 2 Issues; left open: #5");
+  assert.match(run.stdout, /^left open: #5: its text holds a secret \(an Orbit token or the Cloudflare pass\); take it out of the Issue, then rerun$/m);
+  assert.deepEqual(gh.closes().map((args) => args[2]), ["6"]);
+  assert.equal(orbit.tasks.length, 2);
+  for (const secret of orbitSecretsForTests) assert.ok(!run.all.includes(secret));
 });

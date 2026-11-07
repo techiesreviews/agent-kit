@@ -115,8 +115,19 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
   clear-next-lex, trash, setup. It reaches every board the token covers, from any project folder or with `--project`.
 - A project's `scripts/agents/kit.json` says which store it uses: `"tickets": "files"` (the default) or `"orbit"`, and
   `"orbit": { "project": "TOOLS", "parent": "TOOLS-10" }` names its board and the card new tickets go under (parent is
-  optional). `kit next`, `kit slice`, `kit pr`, `kit status` and `kit init --issues` still use ticket files; later
-  stages move them behind `ticket-store.mjs`, then remove the file store.
+  optional). Stage 2: with `"orbit"`, `kit next`, `kit slice`, `kit pr`, `kit status` and `kit init --issues` read and
+  write cards through `ticket-store.mjs` and `ticket-cards.mjs` instead of ticket files; a later stage imports the old
+  files and removes the file store.
+- On Orbit: `kit next` lists the Todo cards (under the parent card when one is set) whose "Blocked by:" cards are Done
+  as `next:`, the rest as `waits:` (In Progress, Backlog, Next step (Lex), blocked), and `wave N:` lines for the build
+  waves that follow. A claim (`kit next --start`, `kit slice --ticket <KEY>`) is one write: status In Progress and a
+  "Claimed by: <owner>" line; a card someone else holds is refused, and a start that fails gives the claim back. The
+  slice copies the card once to `.scratch/kit-tickets/<KEY>.md`, the brief its build, review, fix and UX steps read (a
+  card needs "## Files" and "## Done when"); a rerun resumes from it. When the PR lands, `kit pr` sets the card to Done
+  with a note naming the PR and merge SHA; when that write fails the merge still counts and the RESULT line says so.
+  `kit status` shows status name, claim, PR and CI per card. `kit init --issues` makes a card per open GitHub Issue in
+  the project and parent (its "GitHub Issue:" line holds the link and number), then closes each Issue with a comment
+  naming its card; a rerun finds the cards it made, and an Issue whose text holds a secret stays open.
 - The rules are built in: reads work for anyone; writes need `ORBIT_ROLE=lead`, read the latest version first and retry
   once on a version conflict. A move to a Publish status or a tick on "Scheduled in Radaar" needs `--lex-said "<his exact
   words>"`; so does `trash`, which only moves a card to Orbit's trash (the kit has no permanent delete). A date needs a
