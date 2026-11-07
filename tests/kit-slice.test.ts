@@ -1598,3 +1598,15 @@ test("on Orbit, slice refuses a card someone else holds, one without Files and D
   assert.deepEqual(calls(), []);
   for (const output of [taken, empty, refused]) for (const secret of orbitSecretsForTests) assert.ok(!output.all.includes(secret));
 });
+
+test("on Orbit, a slice whose PR was queued closes the card when the queue lands it", async t => {
+  const { card, slice, orbit, log } = await orbitSlice(t);
+  const task = card();
+  const output = await slice("KIT-1", { QUEUE_PR: "1" });
+  assert.equal(output.status, 0, output.all);
+  assert.match(output.stdout, /^card: KIT-1 Done \(PR #42\)$/m);
+  assert.equal(orbit.statusOf(task), "Done");
+  assert.match(task.description, new RegExp(`Landed in PR #42 \\(merge ${"a".repeat(40)}\\)`));
+  assert.ok(!task.description.includes("Claimed by"));
+  assert.match(log(), /card=KIT-1 action=close .* result=ok/);
+});

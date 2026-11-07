@@ -400,3 +400,14 @@ test("on Orbit, status says in one plain line when Orbit cannot be read, and pri
   assert.match(output.results[0], /^RESULT: fail status Cloudflare stopped the request/);
   for (const secret of orbitSecretsForTests) assert.ok(!(output.stdout + output.stderr).includes(secret));
 });
+
+test("on Orbit, status says when the board holds more cards than it reads", async t => {
+  const f = await fixture(t);
+  const o = await orbitProject(t);
+  writeFileSync(join(f.root, "scripts/agents/kit.json"), JSON.stringify({ project: "kit-status", branches: { land: "dev" }, ...orbitSettings }));
+  for (let index = 0; index < 1001; index++) o.card({ title: `Card ${index}` });
+  const output = await f.run(["--no-fetch"], { prs: [], env: o.env });
+  assert.equal(output.code, 0, output.stdout + output.stderr);
+  assert.match(output.stdout, /^note: board KIT holds more than 1000 cards; only the first 1000 are shown$/m);
+  assert.match(output.results[0], /^RESULT: ok status KIT 1000 cards, 0 done, 0 open PRs$/);
+});
