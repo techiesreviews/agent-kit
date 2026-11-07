@@ -336,6 +336,12 @@ test("brief KEY: on an Orbit project the brief is built from the card (title, te
   assert.equal(free.status, 1);
   assert.match(free.stdout, /RESULT: fail brief KIT-2 has no assignee; claim it first or pass --owner/);
   assert.equal((await run("KIT-2", "--owner", "kit-2")).status, 0);
+  // An imported card nobody claimed: its "Assignee:" line is the owner, and the branch and job stay kit next's.
+  o.card({ title: "!!!", description: "Imported from: docs/t/01-x.md (project demo)\nAssignee: claude\n\n## Goal\n\nx" });
+  const unclaimed = await run("KIT-3", "--stage", "review");
+  assert.equal(unclaimed.status, 0, unclaimed.all);
+  assert.match(unclaimed.stdout, /git diff origin\/dev\.\.\.origin\/build\/kit-3 /);
+  assert.match((await run("KIT-1", "--owner", "someone-else")).stdout, /git switch -c build\/kit-1-a-settings-panel-with-a-colour origin\/dev/);
   const missing = await run("KIT-99");
   assert.equal(missing.status, 1);
   assert.match(missing.stdout, /RESULT: fail brief card KIT-99 could not be read: .*does not exist/);

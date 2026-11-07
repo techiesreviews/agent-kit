@@ -150,8 +150,8 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
   (`--blocked-by`). Its docs: `docs/public-api.md` in github.com/coollabsio/orbit.
 - How a project moves (`ticket-import.mjs`; a lead, `ORBIT_ROLE=lead`, in the project, from a fresh branch:
   `git switch -c tickets-to-orbit origin/<land>`): `kit ticket migrate [--project KEY] [--parent KEY-n] [--dry-run]`
-  runs every step in order and stops at the first problem. (1) It waits while a build runs: an open AFK ticket with an
-  assignee (kit next's claim) or an imported card In Progress. (2) `kit ticket import` makes one card per ticket file
+  runs every step in order and stops at the first problem. (1) It refuses while a build runs (an open AFK ticket with an
+  assignee, kit next's claim, or an imported card In Progress); run it again once the build lands. (2) `kit ticket import` makes one card per ticket file
   (every map's `tickets/` and `build/tickets/`, as `tickets.mjs` reads them) under the parent card: the first line
   "Imported from: <path> (project <name>)" names the file, so a rerun finds the card and makes no second one; then the
   frontmatter (Type, Assignee, Builder, ...), a "Blocked by:" line with the blockers' card keys, and the ticket's text,

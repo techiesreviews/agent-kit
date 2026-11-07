@@ -78,11 +78,12 @@ says for today; never claim a planned item ran.
   naming its card. Statuses go by name (Backlog, Todo, In Progress, Done); a board that keeps its
   stage in labels keeps them. Ticket files stay only for `files` projects, and maps and research
   notes stay documents. **A project moves** with `scripts/agents/kit ticket migrate` from a fresh
-  branch (a lead; `--dry-run` first): it waits while a build runs, imports every ticket file as a
-  card (status, text, comments, blockers and links kept; a rerun makes no duplicates), stops on any
-  difference `kit ticket parity` finds, tags the commit that still holds the files
-  (`tickets-in-files-YYYYMMDD`, pushed), and lands one PR through `kit pr` that removes the ticket
-  files, sets `"tickets": "orbit"` and points doc links at the cards. No further OK is needed. **The Orbit rule:** only leads write (`ORBIT_ROLE=lead`); helpers read and
+  branch (a lead; `--dry-run` first): it refuses while a build runs, imports every ticket file as
+  a card (status, text, comments, blockers and links kept; a rerun makes no duplicates), stops on
+  any difference `kit ticket parity` finds, tags the commit that still holds the files
+  (`tickets-in-files-YYYYMMDD`, pushed), and lands one PR through `kit pr` that removes the
+  ticket files, sets `"tickets": "orbit"` and points doc links at the cards. No further OK is
+  needed. **The Orbit rule:** only leads write (`ORBIT_ROLE=lead`); helpers read and
   report to their lead. Never delete a card for good; the trash, the Publish status or label and
   the "Scheduled in Radaar" tick each need Lex's exact words (`--lex-said`). No date without a
   source. The Orbit token and the Cloudflare pass never go in a chat, a log or a repository.
