@@ -5,7 +5,7 @@ import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, 
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { openFindings, reviewIncomplete } from "../review-findings.mjs";
-import { isNit } from "../review-loop.mjs";
+import { isNit, reviewChain } from "../review-loop.mjs";
 import { builderChecks, spoken } from "../review-brief.mjs";
 
 const { kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, nodeEnv, commitBuilderWork, builderAuthor, kitScore, scoreCost, scoreReview } = await import(
@@ -184,7 +184,8 @@ async function fix(args) {
         if (!original.trim()) throw new Error("failure note is empty");
       } else try { original = readFileSync(resultPath, "utf8"); } catch { /* Fail closed below. */ }
     }
-    const { findings, readable } = note ? { findings: [], readable: true } : openFindings(original);
+    // A finding a "still open" mark carried keeps its first text: it comes from the review before this one.
+    const { findings, readable } = note ? { findings: [], readable: true } : openFindings(original, reviewChain(review).at(-2)?.findings ?? []);
     if (!readable) throw new Error(`${findings.length} open findings (${resultPath}): review format unreadable`);
     // Nothing but nits (a rare path, a small cost, a missing test) needs no round: the review loop ends here.
     if (!note && findings.every(isNit)) { kitResult("ok", findings.length ? "fix clean (only nits left, no round needed)" : "fix clean"); return 0; }

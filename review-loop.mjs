@@ -69,7 +69,8 @@ export function severityWord(item) {
 /** A finding a "still open" mark carried into a round (its text starts `R1-2 still open`). */
 export const isCarried = item => /^R\d+-\d+ still open/.test(String(item.text ?? ""));
 export const isNit = item => severityWord(item) === "nit";
-const hasEvidence = item => String(item.text ?? "").trim() !== "" && !/still open: no reason given$/.test(String(item.text));
+// A mark that gave no reason is no evidence, whether or not the finding's original text follows it.
+const hasEvidence = item => String(item.text ?? "").trim() !== "" && !/still open: no reason given(?: \(original finding: .*\))?$/s.test(String(item.text));
 
 /**
  * The open findings that still call for a fix round, or that stop a landing, after `rounds` fix rounds:
@@ -104,16 +105,20 @@ export const unmarkedIds = (ids, marks) => ids.filter(id => !marks.has(id));
  * The brief section for round 2 and later (later rounds): review only what changed since the last reviewed head and the open ids,
  * and mark each old id. `open` is [{ id, severity, kind, text }].
  */
-export function loopBriefSection({ round, limit, previousHead, currentHead, open }) {
+export function loopBriefSection({ round, limit, previousHead, currentHead, open, declined = [], declinedInBrief = false }) {
   const label = item => item.group === "Validation gaps" ? "validation gap" : `${item.severity ?? "no severity"}${item.kind && item.kind !== "unsorted" ? ` ${item.kind}` : ""}`;
-  const list = open.map(item => `- ${item.id} (${label(item)}): ${String(item.text).slice(0, 200)}`).join("\n");
+  // A carried finding keeps its original text after the reviewer's reason, so it gets more room.
+  const list = open.map(item => `- ${item.id} (${label(item)}): ${String(item.text).slice(0, isCarried(item) ? 600 : 200)}`).join("\n");
+  // Only what is really in the brief is pointed at: the builder's declined findings listed below, the ones kit fix put in the brief, or none.
+  const listed = declined.length > 0;
   const scope = previousHead === currentHead
-    ? "No commit came after the last review (the builder answered or declined: its declined findings and their reasons are in this brief): check each finding below against that answer; there is no new code to read."
+    ? `No commit came after the last review (${listed ? "the builder answered or declined: its declined findings and their reasons are listed below" : declinedInBrief ? 'the builder answered or declined: its declined findings and their reasons are in the "Declined by the author" part of this brief' : "no declined finding was recorded, so the builder fixed nothing or its answer was not saved"}): check each finding below against ${listed || declinedInBrief ? "that answer" : "the code"}; there is no new code to read.`
     : `Review only the code changed since ${previousHead} (the \`Changes since the last review\` file named in the scope note) and the findings still open below. Do not review unchanged code again.`;
   return [
     `## Review loop: review round ${round}, after ${round - 1} fix round${round === 2 ? "" : "s"} (at most ${limit} fix rounds)`,
     scope,
     "Open findings from the last round:", list,
+    ...(listed && previousHead === currentHead ? [`Declined by the builder (with reasons):\n${declined.map(({ text, reason }) => `- ${text} — reason: ${reason || "none given"}`).join("\n")}\nReport a declined finding again only if the reason is wrong, and say why.`] : []),
     "Before your Defects heading, write the block `Previous findings:` with one line for every id above, none left out: `<id>: resolved` or `<id>: still open (<its severity, or gap for a validation gap>): <reason>`. A review that leaves an id out is rejected as incomplete and is not reused; it has to be run again.",
     "You are the only reviewer: start no subagents. New findings use the usual format; a nit is a rare path, a small cost, a comment, doc or format-only point, or a missing test.",
   ].join("\n\n");
@@ -131,25 +136,29 @@ export function prLine({ rounds, model, verdict = "approved" }) {
  */
 export function ledgerRows(chain) {
   const rows = [];
-  // The outcome of one id: the next review's mark; "still open" follows the finding the mark carried into that round, so a problem
-  // fixed in round 3 never stays "still open" in the ledger.
-  const outcome = (id, index) => {
+  // The word a mark's own severity gives ("gap" is a nit); a mark that names none leaves the severity known so far.
+  const markWord = (mark, known) => mark.severity ? severityWord({ group: mark.severity === "GAP" ? "Validation gaps" : "Previous findings", severity: mark.severity === "GAP" ? null : mark.severity }) : known;
+  // The outcome and the current severity of one finding: the next review's mark; "still open" follows the finding the mark carried into
+  // that round, so a problem fixed in round 3 never stays "still open" in the ledger, and the severity is the latest one a review gave.
+  const follow = (finding, index, known) => {
+    const severity = finding.severity || finding.group === "Validation gaps" || !known ? severityWord(finding) : known;
     const next = chain[index + 1];
-    if (!next) return "open at the end";
-    const mark = next.marks?.get(id);
-    if (!mark) return "not marked by the next review";
-    if (mark.status === "resolved") return "resolved";
-    const carried = (next.findings ?? []).find(item => isCarried(item) && String(item.text).startsWith(`${id} still open`));
+    if (!next) return { severity, outcome: "open at the end" };
+    const mark = next.marks?.get(finding.id);
+    if (!mark) return { severity, outcome: "not marked by the next review" };
+    if (mark.status === "resolved") return { severity, outcome: "resolved" };
+    const carried = (next.findings ?? []).find(item => isCarried(item) && String(item.text).startsWith(`${finding.id} still open`));
     const reason = mark.reason || "no reason given";
-    if (!carried) return `still open: ${reason}`;
-    const later = outcome(carried.id, index + 1);
-    return later === "open at the end" ? `still open: ${reason}` : later;
+    if (!carried) return { severity: markWord(mark, severity), outcome: `still open: ${reason}` };
+    const later = follow(carried, index + 1, severity);
+    return later.outcome === "open at the end" ? { severity: later.severity, outcome: `still open: ${reason}` } : later;
   };
   chain.forEach((record, index) => {
     for (const finding of record.findings ?? []) {
       // A finding carried over by a "still open" mark is the same finding: one row, under its first id.
       if (isCarried(finding)) continue;
-      rows.push({ id: finding.id, severity: severityWord(finding), outcome: outcome(finding.id, index) });
+      const { severity, outcome } = follow(finding, index, null);
+      rows.push({ id: finding.id, severity, outcome });
     }
   });
   return rows;
@@ -179,6 +188,7 @@ export function reviewChain(folder) {
     if (!existsSync(recordPath)) break;
     let record;
     try { record = JSON.parse(readFileSync(recordPath, "utf8")); } catch { break; }
+    if (!record || typeof record !== "object" || Array.isArray(record)) break;
     let marks = new Map();
     try { marks = parseMarks(readFileSync(join(current, "result.md"), "utf8")); } catch { /* No report text: no marks. */ }
     const round = record.round ?? 1;
@@ -192,7 +202,7 @@ export function reviewChain(folder) {
 /**
  * The earlier review this one answers (later rounds): in `parent` (the owner's folder under .scratch/reviews) the newest review of the
  * same base that still had findings and whose reviewed head is an ancestor of the current head. A second look's folder is never one.
- * Returns { name, round, head, findings } or null (then this is round 1, a full review).
+ * Returns { name, round, head, findings, declined } or null (then this is round 1, a full review).
  */
 /** The rules every review round gets, round 1 included (the later-round section adds the open ids). */
 export const loopReviewerNote = [
@@ -218,7 +228,9 @@ export function findPreviousReview(parent, { head, base, root, branch }) {
       const connected = (reviewedBase === base || isAncestor(reviewedBase)) && (reviewedHead === head || isAncestor(reviewedHead));
       if (record.unreadable || record.incomplete || record.round === undefined || !connected || (record.branch && branch && record.branch !== branch)) continue;
       // The newest review of this change decides: when it found nothing, the loop had ended, so no open ids carry over, but the rounds still link.
-      return { name, clean: !record.findings?.length, round: record.round ?? 1, head: reviewedHead, findings: record.findings.map((item, index) => ({ ...item, id: item.id ?? `R${record.round ?? 1}-${index + 1}` })) };
+      // The builder's declined findings kit fix saved on that review (text, reason, round); a malformed entry is dropped.
+      const declined = (Array.isArray(record.declined) ? record.declined : []).filter(entry => entry && typeof entry.text === "string" && entry.text.trim());
+      return { name, clean: !record.findings?.length, round: record.round ?? 1, head: reviewedHead, declined, findings: record.findings.map((item, index) => ({ ...item, id: item.id ?? `R${record.round ?? 1}-${index + 1}` })) };
     } catch { /* An unreadable record is not a previous review. */ }
   }
   return null;
