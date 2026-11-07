@@ -2572,7 +2572,7 @@ async function orbitPr(t: TestContext) {
 }
 const prCommand = pr;
 const finalLine = (output: Run) => output.stdout.trim().split("\n").at(-1)!;
-const landedNote = /Landed in https:\/\/github\.com\/test\/repo\/pull\/73 \(merge abcdef0123456789abcdef0123456789abcdef01\)/;
+const landedNote = /Landed in https:\/\/github\.com\/test\/repo\/pull\/73 \(merge commit abcdef0123456789abcdef0123456789abcdef01\)/;
 
 test("on Orbit, a landed PR closes its card: Done, a note with the PR link and merge SHA, no claim; the brief enters no commit", async t => {
   const { card, pr, brief, orbit, git, log, body } = await orbitPr(t);
@@ -2649,4 +2649,30 @@ test("on Orbit, a queued PR leaves its card open and says the queue closes it; r
     "Follow-ups from https://github.com/test/repo/pull/73:\n- Spec (P3): P3: Cosmetic defect.\n- Validation gaps (gap): Add coverage.\n- UX (looks off): F-1 S1: a hint line",
   ]);
   assert.doesNotMatch(nits.git("log", "--format=%s", "origin/dev..HEAD"), /docs: KIT-1/);
+});
+
+test("on Orbit, an absolute brief path closes its card; a dry run with a KEY writes no brief where a slice would read it", async t => {
+  const f = await orbitPr(t);
+  const task = f.card({}, "In Progress");
+  const output = await f.pr(["--ticket", join(f.root, f.brief())]);
+  assert.equal(output.status, 0, output.all);
+  assert.equal(finalLine(output), "RESULT: ok merged #73 abcdef0 (card KIT-1 Done)");
+  assert.equal(f.orbit.statusOf(task), "Done");
+
+  const dry = await orbitPr(t);
+  dry.card({}, "In Progress");
+  const planned = await dry.pr(["--ticket", "KIT-1", "--dry-run"]);
+  assert.equal(planned.status, 0, planned.all);
+  assert.ok(!existsSync(join(dry.root, ".scratch/kit-tickets/KIT-1.md")), "the dry run left no brief");
+  assert.equal(dry.orbit.writes().length, 0);
+});
+
+test("on Orbit, a queued PR keeps its review follow-ups in the brief for the slice that closes the card", async t => {
+  const f = await orbitPr(t);
+  f.card({}, "In Progress");
+  const brief = f.brief();
+  f.saveReview(cleanReview.replace("Spec: none.", "Spec: P3: Cosmetic defect."));
+  const output = await f.pr(["--ticket", brief], { FAKE_QUEUE: "1" });
+  assert.equal(output.status, 0, output.all);
+  assert.match(readFileSync(join(f.root, brief), "utf8"), /\n### Review follow-ups\n\n- Spec \(P3\): P3: Cosmetic defect\.\n$/);
 });

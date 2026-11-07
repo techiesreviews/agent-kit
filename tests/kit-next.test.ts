@@ -1230,3 +1230,12 @@ test("on Orbit, a Todo card without Files and Done when waits and is never claim
   assert.equal(orbit.statusOf(bare), "Todo");
   assert.ok(!existsSync(join(root, "kit.log")), "no job started");
 });
+
+test("on Orbit, an In Progress card with no Claimed by line waits as such and is never handed out", async t => {
+  const { card, run, orbit } = await orbitNext(t);
+  card({ title: "Moved by hand" }, "In Progress");
+  const output = await run("--start");
+  assert.equal(output.status, 0, output.all);
+  assert.deepEqual(outputLines(output), ["waits: KIT-1 In Progress with no claim recorded", "RESULT: ok next 0 ready, 1 waiting, 0 started"]);
+  assert.equal(orbit.writes().length, 0);
+});
