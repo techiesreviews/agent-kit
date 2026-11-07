@@ -92,7 +92,11 @@ test("settings it cannot read, broken or without jq, fail after the shared part 
   for (const folder of (process.env.PATH ?? "").split(":").filter(Boolean)) {
     let names: string[];
     try { names = readdirSync(folder); } catch { continue; }
-    for (const name of names) if (name !== "jq" && !existsSync(join(bin, name))) symlinkSync(join(folder, name), join(bin, name));
+    for (const name of names) {
+      if (name === "jq") continue;
+      // A dangling link in two PATH folders (some CI images have them) is already there the second time.
+      try { symlinkSync(join(folder, name), join(bin, name)); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+    }
   }
   const noJq = rulebookWith(t, { PATH: bin }, { ...project, rulebookExtras: "x.md" }, { "x.md": "# X\n" });
   assert.equal(noJq.status, 1, noJq.stderr);
