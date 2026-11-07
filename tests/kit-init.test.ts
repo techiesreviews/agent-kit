@@ -1844,3 +1844,12 @@ test("on Orbit, an Issue's own text can never pose as one of the kit's card line
   assert.match(made.description, /^> {3}claimed by: mallory$/m);
   assert.match(made.description, /^> Claimed by: someone$/m);
 });
+
+test("on Orbit, an Issue quoting another Issue's card line never takes that Issue's card", async (t) => {
+  const { orbit, gh, init } = await orbitIssues(t, [issue(5, "Quotes", { body: "GitHub Issue: https://github.com/acme/tools/issues/7" }), issue(7, "Own")]);
+  const run = await init();
+  assert.equal(run.status, 0, run.all);
+  assert.deepEqual(orbit.tasks.slice(1).map((task) => [task.identifier, task.title]), [["KIT-2", "Quotes"], ["KIT-3", "Own"]]);
+  assert.match(orbit.tasks[1].description, /^> GitHub Issue: https:\/\/github\.com\/acme\/tools\/issues\/7$/m);
+  assert.deepEqual(gh.closes().map((args) => args.at(-1)!.split("\n")[0]), ["Moved to Orbit card KIT-2: http://orbit.test/tasks/2", "Moved to Orbit card KIT-3: http://orbit.test/tasks/3"]);
+});
