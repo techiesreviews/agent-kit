@@ -299,6 +299,37 @@ test("review briefs carry declined findings and reasons into kit review", t => {
   assert.throws(() => reviewBrief(ticket, "", "HEAD^", f.root, "bad list"), /declined findings/);
 });
 
+test("a same-head rerun's brief carries the builder's declined findings once: the part kit fix hands over, or the saved ones", t => {
+  const f = fixture(t);
+  const ticket = "ticket.md"; writeFileSync(join(f.root, ticket), "Review this ticket.\n");
+  const first = f.run(["--ticket", ticket], { FAKE_REPORT: "REVIEW_STATUS: complete\nDefects:\n- file.txt:1 — P1 fault: the save drops the second write.\nValidation gaps: none.\n", ASE_REVIEW_MODEL: "claude-opus-5-5" });
+  assert.equal(first.status, 0, first.stderr);
+  const file = join(f.evidence(first.stdout), "findings.json");
+  const saved = { text: "file.txt:1 — P2 style: rename it", reason: "the spec keeps the name", round: 1 };
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), declined: [saved] }));
+  const handed = ["file.txt:1 — P2 style: rename it — reason: the spec keeps the name"];
+  const mark = (id: string) => `REVIEW_STATUS: complete\nPrevious findings:\n${id}: still open (P1): still drops\n\nDefects: none\nValidation gaps: none.\n`;
+  // A rerun by hand (no ticket, nothing handed over): the saved ones are listed in the section itself.
+  const byHand = f.run([], { FAKE_REPORT: mark("R1-1"), ASE_REVIEW_MODEL: "claude-opus-5-5" });
+  assert.equal(byHand.status, 0, byHand.stderr);
+  const listed = f.calls().at(-1)!.input;
+  assert.match(listed, /Declined by the builder \(with reasons\):\n- file\.txt:1 — P2 style: rename it — reason: the spec keeps the name/);
+  assert.match(listed, /its declined findings and their reasons are listed below/);
+  assert.ok(!listed.includes("Declined by the author (with reasons):"));
+  // kit fix hands the declined findings over with the ticket: they are in the brief once, as the author's part, and the section points there.
+  const withTicket = f.run(["--ticket", ticket], { FAKE_REPORT: mark("R2-1"), ASE_REVIEW_MODEL: "claude-opus-5-5", ASE_REVIEW_DECLINED: JSON.stringify(handed) });
+  assert.equal(withTicket.status, 0, withTicket.stderr);
+  const input = f.calls().at(-1)!.input;
+  assert.equal(input.split("Declined by the author (with reasons):").length, 2);
+  assert.ok(!input.includes("Declined by the builder (with reasons):"));
+  assert.match(input, /its declined findings and their reasons are in the "Declined by the author" part of this brief/);
+  // Nothing saved and nothing handed over: the section says none were recorded.
+  const none = f.run([], { FAKE_REPORT: mark("R3-1"), ASE_REVIEW_MODEL: "claude-opus-5-5" });
+  assert.equal(none.status, 0, none.stderr);
+  assert.match(f.calls().at(-1)!.input, /no declined finding was recorded/);
+  assert.doesNotMatch(f.calls().at(-1)!.input, /Declined by the (?:builder|author)/);
+});
+
 test("single-commit scope reviews that commit even when it is not HEAD; brief scope parses without flags", (t) => {
   const f = fixture(t);
   const result = f.run(["--commit", f.commits[1].slice(0, 8)]);
@@ -1788,10 +1819,17 @@ test("review loop: a later review that leaves an earlier id out is incomplete an
   const secondRecord = JSON.parse(readFileSync(join(f.evidence(second.stdout), "findings.json"), "utf8"));
   assert.equal(secondRecord.round, 2); assert.equal(secondRecord.previous, firstEvidence.split("/").at(-1));
   assert.equal(secondRecord.findings[0].group, "Previous findings");
+  // The "still open" mark keeps the original finding's text, so a later round and the fix builder still read what it was about.
+  assert.match(secondRecord.findings[0].text, /^R1-1 still open: still drops \(original finding: .*the save drops the second write\./);
+  // The builder declined a finding in this round (kit fix saves it on the review's record): a same-head rerun lists it in its brief.
+  const secondFile = join(f.evidence(second.stdout), "findings.json");
+  writeFileSync(secondFile, JSON.stringify({ ...secondRecord, declined: [{ text: "file.txt:1 — P2 style: rename it", reason: "the spec keeps the name", round: 1 }] }));
   // A review of the same head (the builder declined everything: no commit) is the next round, with its own ids.
   const same = f.run([], { FAKE_REPORT: "REVIEW_STATUS: complete\nPrevious findings:\nR2-1: resolved\n\nDefects: none\nValidation gaps: none.\n", ASE_REVIEW_MODEL: "claude-opus-5-5" });
   assert.equal(same.status, 0, same.stderr);
   assert.match(same.stdout, /^review loop: round 3, answering /m);
   assert.match(f.calls().at(-1)!.input, /review round 3, after 2 fix rounds/);
   assert.match(f.calls().at(-1)!.input, /No commit came after the last review/);
+  assert.match(f.calls().at(-1)!.input, /Declined by the builder \(with reasons\):\n- file\.txt:1 — P2 style: rename it — reason: the spec keeps the name/);
+  assert.match(f.calls().at(-1)!.input, /its declined findings and their reasons are listed below/);
 });

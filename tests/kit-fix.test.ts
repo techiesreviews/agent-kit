@@ -267,6 +267,18 @@ test("reviewer notes are not open findings: a notes-only review is clean, and a 
   assert.ok(round.split("Review evidence")[1].includes(prose), round);
 });
 
+test("a finding a \"still open\" mark carried keeps its original text in the round's open findings", t => {
+  const f = fixture(t); f.builder();
+  // Round 1's review (its record holds the finding), then round 2's review that marks it still open.
+  const first = f.review("20261019T000000Z", "REVIEW_STATUS: complete\nDefects:\n- a.ts:1 — P2 fault: the retry loses the second write.\nValidation gaps: none\n");
+  writeFileSync(join(first, "findings.json"), JSON.stringify({ round: 1, findings: [{ id: "R1-1", group: "Defects", severity: "P2", kind: "fault", text: "a.ts:1 — P2 fault: the retry loses the second write." }] }));
+  const second = f.review("20261019T000100Z", "REVIEW_STATUS: complete\nPrevious findings:\nR1-1: still open (P2): still loses it\n\nDefects: none\nValidation gaps: none\n");
+  writeFileSync(join(second, "findings.json"), JSON.stringify({ round: 2, previous: "20261019T000000Z", findings: [] }));
+  f.run();
+  const round = readFileSync(join(f.root, ".scratch/kit-fix/build%2Fke-03/round-1.md"), "utf8");
+  assert.ok(round.includes("Open findings:\n- Previous findings: R1-1 still open: still loses it (original finding: a.ts:1 — P2 fault: the retry loses the second write.)"), round);
+});
+
 test("kit fix ignores reviews for other HEADs, picks the newest covering review, and skips a clean review", t => {
   const f = fixture(t);
   f.review("20261017T000000Z", findings, f.base);

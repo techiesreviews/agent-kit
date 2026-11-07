@@ -28,9 +28,16 @@ function folder(t: TestContext) {
   const calls = join(dir, "calls.jsonl");
   writeFileSync(join(bin, "package.json"), '{"type":"module"}');
   writeFileSync(join(bin, "claude"), `#!/usr/bin/env node
+import { spawnSync } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
 const args = process.argv.slice(2), input = readFileSync(0, "utf8");
 appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ args, input, keyMatches: process.env.ANTHROPIC_API_KEY === ${JSON.stringify(secret)}, configDir: process.env.CLAUDE_CONFIG_DIR, orbitRole: process.env.ORBIT_ROLE ?? null }) + "\\n");
+// A hook the way Claude Code starts one (unless the call switches hooks off); the scrub flag takes the key out of its environment.
+if (process.env.FAKE_HOOK_LOG && !args.includes("--bare")) {
+  const hookEnv = Object.assign({}, process.env);
+  if (process.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB === "1") delete hookEnv.ANTHROPIC_API_KEY;
+  spawnSync(process.execPath, ["-e", "const fs = require('node:fs'); const leaks = Object.entries(process.env).filter(([, v]) => String(v).includes(" + JSON.stringify(${JSON.stringify(secret)}) + ")).map(([k]) => k); fs.appendFileSync(process.env.FAKE_HOOK_LOG, JSON.stringify({ leaks }) + String.fromCharCode(10));"], { env: hookEnv });
+}
 if (process.env.FAKE_EMPTY_ACCOUNT) { console.log(JSON.stringify({ is_error: true, result: "Credit balance is too low" })); process.exit(1); }
 console.log(JSON.stringify({ result: process.env.FAKE_ANSWER ?? "The drafted answer.\\n", modelUsage: { "claude-sonnet-5-5": {} }, usage: { input_tokens: 200, output_tokens: 50 }, total_cost_usd: 0.0456 }));
 `);
@@ -60,6 +67,27 @@ test("kit ask needs --api and the opt-in route: without either it stops in plain
   assert.match(last(unsafe.stdout), /^RESULT: fail ask .*can be read by others \(mode 644\); run chmod 600 on it$/);
   assert.deepEqual(f.callList(), []);
   assert.ok(!(noFlag.stdout + off.stdout + unsafe.stdout + unsafe.stderr).includes(secret));
+});
+
+test("kit ask --api: no hook and no other child of the call can read the key (the scrub flag is on and hooks are switched off)", t => {
+  const f = folder(t);
+  const log = join(f.dir, "hook.jsonl");
+  const run = f.ask(["--api", "--prompt-file", f.prompt], { ...f.on, FAKE_HOOK_LOG: log });
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  const [call] = f.callList();
+  assert.ok(call.args.includes("--bare"), "hooks are switched off for the call");
+  assert.equal(call.keyMatches, true, "the Claude call itself has the key");
+  // A hook that did run (an older Claude without the switch) still finds no key in its environment.
+  const seen = existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) : [];
+  for (const row of seen) assert.deepEqual(row.leaks, []);
+  // Even with the switch ignored, the wrapper's scrub flag keeps the key from hooks: the same call with a claude that starts its hook anyway.
+  writeFileSync(join(f.dir, "bin", "claude"), readFileSync(join(f.dir, "bin", "claude"), "utf8").replace('!args.includes("--bare")', "true"));
+  const forced = f.ask(["--api", "--prompt-file", f.prompt], { ...f.on, FAKE_HOOK_LOG: log });
+  assert.equal(forced.status, 0, forced.stdout + forced.stderr);
+  const after = readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
+  assert.ok(after.length >= 1, "the hook ran this time");
+  for (const row of after) assert.deepEqual(row.leaks, []);
+  assert.ok(!(run.stdout + run.stderr + forced.stdout + forced.stderr).includes(secret));
 });
 
 test("kit ask --api sends the prompt on stdin to claude -p on the route, prints the answer, and logs the spend", t => {

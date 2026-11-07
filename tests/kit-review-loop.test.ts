@@ -7,7 +7,7 @@ import test from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { NORMAL_ROUNDS, RISKY_ROUNDS, branchRisk, budgetReport, findPreviousReview, isNit, ledgerRows, loopBriefSection, loopStop, parseMarks, prLine, renderLedger, reviewChain, riskyChange, roundLimit, severityWord, stoppingFindings, unmarkedIds, withIds } from "../review-loop.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { openFindings } from "../review-findings.mjs";
+import { findingsRecord, openFindings } from "../review-findings.mjs";
 
 // The review loop (Lex, 2026-11-06, after Theo's sol-loop): budget by risk, stop on nits, ids, ledger, PR line.
 const finding = (severity: string | null, extra: Record<string, unknown> = {}) => ({ group: "Spec", severity, kind: "fault", text: `${severity ?? "unread"} finding with its evidence`, ...extra });
@@ -239,4 +239,91 @@ test("a ticket's risk is read from its title, goal and named files, not the foll
   assert.equal(branchRisk({ root: dir, base: "main", ticket: "t.md", settings: {} }).risky, false);
   writeFileSync(join(dir, "t2.md"), '---\ntitle: "Harden authentication"\n---\n\n## Goal\nx\n');
   assert.equal(branchRisk({ root: dir, base: "main", ticket: "t2.md", settings: {} }).risky, true);
+});
+
+// Follow-ups of the review loop (TOOLS-13): items 1, 2 and 10.
+const marksReport = (marks: string) => `REVIEW_STATUS: complete\nPrevious findings:\n${marks}\nDefects: none\nValidation gaps: none.\n`;
+const earlier = [{ id: "R1-2", group: "Spec", severity: "P2", kind: "fault", text: "file.txt:4 — P2 fault: the retry loses the second write when the first fails." }];
+
+test("a \"still open\" mark keeps the original finding text, beside the reviewer's reason", () => {
+  const [carried] = openFindings(marksReport("R1-2: still open (P2): the retry still loses it"), earlier).findings;
+  assert.match(carried.text, /^R1-2 still open: the retry still loses it/);
+  assert.ok(carried.text.includes("file.txt:4 — P2 fault: the retry loses the second write when the first fails."), carried.text);
+  assert.equal(carried.severity, "P2");
+  // It is still a carried finding (the ledger and the rounds find it by its start), and without the earlier text nothing is added.
+  assert.match(carried.text, /^R\d+-\d+ still open/);
+  assert.equal(openFindings(marksReport("R1-2: still open (P2): rare path")).findings[0].text, "R1-2 still open: rare path");
+  assert.equal(openFindings(marksReport("R1-2: still open (P2): rare path"), [{ id: "R1-9", text: "other" }]).findings[0].text, "R1-2 still open: rare path");
+  // A mark with no reason is still no evidence for rounds 4 and 5, with the original text beside it or not.
+  const noReason = openFindings(marksReport("R1-2: still open (P2)"), earlier).findings;
+  assert.ok(noReason[0].text.includes("the retry loses the second write"));
+  assert.equal(stoppingFindings(noReason, 3, true).length, 0);
+  assert.equal(stoppingFindings(openFindings(marksReport("R1-2: still open (P2): drops it"), earlier).findings, 3, true).length, 1);
+});
+
+test("a finding carried over twice keeps its first text once, not a copy inside a copy", () => {
+  const first = openFindings(marksReport("R1-2: still open (P2): still drops"), earlier).findings[0];
+  const second = openFindings(marksReport("R2-1: still open (P2): still drops"), [{ ...first, id: "R2-1" }]).findings[0];
+  assert.ok(second.text.startsWith("R2-1 still open: still drops"), second.text);
+  assert.equal(second.text.split("the retry loses the second write").length, 2, "the first text is there exactly once");
+  assert.equal(second.text.includes("still open: still drops (original"), true);
+  assert.ok(!second.text.includes("R1-2 still open"), second.text);
+});
+
+test("the saved record keeps a carried finding's original text, and the next round's brief shows it", () => {
+  const record = findingsRecord(marksReport("R1-2: still open (P2): still drops"), { round: 2 }, earlier);
+  assert.ok(record.findings[0].text.includes("the retry loses the second write"));
+  assert.equal(record.findings[0].id, "R2-1");
+  const section = loopBriefSection({ round: 3, limit: 3, previousHead: "a", currentHead: "b", open: record.findings });
+  assert.ok(section.includes("the retry loses the second write when the first fails."), section);
+});
+
+test("the ledger shows a finding's current severity: a reviewer's later mark wins over the first rating", () => {
+  const nit = { id: "R1-1", group: "Spec", severity: "P3", kind: "fault", text: "a.ts:1 — P3 fault: rare" };
+  const chain = [
+    { round: 1, findings: [nit], marks: new Map() },
+    { round: 2, findings: [{ id: "R2-1", group: "Previous findings", severity: "P1", kind: "unsorted", text: "R1-1 still open: it drops data" }], marks: new Map([["R1-1", { status: "open", severity: "P1", reason: "it drops data" }]]) },
+  ];
+  assert.deepEqual(ledgerRows(chain), [{ id: "R1-1", severity: "blocker", outcome: "still open: it drops data" }]);
+  // Resolved later: the row keeps the last severity a review gave it.
+  assert.deepEqual(ledgerRows([...chain, { round: 3, findings: [], marks: new Map([["R2-1", { status: "resolved", severity: null, reason: "" }]]) }]), [{ id: "R1-1", severity: "blocker", outcome: "resolved" }]);
+  // Downgraded: a blocker marked still open as P3 is a nit in the ledger.
+  const down = [{ round: 1, findings: [{ ...nit, severity: "P1" }], marks: new Map() },
+    { round: 2, findings: [{ id: "R2-1", group: "Previous findings", severity: "P3", kind: "unsorted", text: "R1-1 still open: rare path only" }], marks: new Map([["R1-1", { status: "open", severity: "P3", reason: "rare path only" }]]) },
+    { round: 3, findings: [], marks: new Map([["R2-1", { status: "open", severity: "P2", reason: "slightly worse" }]]) }];
+  assert.deepEqual(ledgerRows(down.slice(0, 2)), [{ id: "R1-1", severity: "nit", outcome: "still open: rare path only" }]);
+  // A mark that ends the chain for lack of a carried finding still gives its severity.
+  assert.deepEqual(ledgerRows(down), [{ id: "R1-1", severity: "should", outcome: "still open: slightly worse" }]);
+});
+
+test("a same-head rerun's brief lists the builder's declined findings itself, or says none were recorded", () => {
+  const open = withIds([finding("P1")], 1);
+  const declined = [{ text: "file.txt:1 — P2 style: rename it", reason: "the spec keeps the name", round: 1 }];
+  const listed = loopBriefSection({ round: 2, limit: 3, previousHead: "same", currentHead: "same", open, declined });
+  assert.match(listed, /Declined by the builder \(with reasons\):\n- file\.txt:1 — P2 style: rename it — reason: the spec keeps the name/);
+  assert.match(listed, /its declined findings and their reasons are listed below/);
+  assert.doesNotMatch(listed, /are in this brief/);
+  // Declined findings that the brief already carries (kit fix hands them over) are pointed at, not repeated.
+  const carried = loopBriefSection({ round: 2, limit: 3, previousHead: "same", currentHead: "same", open, declinedInBrief: true });
+  assert.match(carried, /its declined findings and their reasons are in the "Declined by the author" part of this brief/);
+  // None known: the brief never points at a list that is not there.
+  const none = loopBriefSection({ round: 2, limit: 3, previousHead: "same", currentHead: "same", open });
+  assert.match(none, /No commit came after the last review/);
+  assert.match(none, /no declined finding was recorded/);
+  assert.doesNotMatch(none, /their reasons are (?:in this brief|listed below)/);
+  // A changed head never claims declined findings are there.
+  assert.doesNotMatch(loopBriefSection({ round: 2, limit: 3, previousHead: "a", currentHead: "b", open }), /declined/);
+});
+
+test("the ledger keeps the severity known so far when a mark names none or the next review leaves the finding out", () => {
+  const p1 = { id: "R1-1", group: "Spec", severity: "P1", kind: "fault", text: "a.ts:1 — P1 fault: drops data" };
+  // A carried finding with no severity and a mark with no severity: the row stays a blocker, as its first rating was.
+  const unnamed = [{ round: 1, findings: [p1], marks: new Map() },
+    { round: 2, findings: [{ id: "R2-1", group: "Previous findings", severity: null, kind: "unsorted", text: "R1-1 still open: still drops" }], marks: new Map([["R1-1", { status: "open", severity: null, reason: "still drops" }]]) }];
+  assert.deepEqual(ledgerRows(unnamed), [{ id: "R1-1", severity: "blocker", outcome: "still open: still drops" }]);
+  // Same with a should: it stays a should, not a blocker (the severity known so far, not the gate's fail-closed reading).
+  const should = [{ round: 1, findings: [{ ...p1, severity: "P2" }], marks: new Map() }, unnamed[1]];
+  assert.deepEqual(ledgerRows(should), [{ id: "R1-1", severity: "should", outcome: "still open: still drops" }]);
+  // The next review leaves the finding unmarked: its first severity and the outcome "not marked".
+  assert.deepEqual(ledgerRows([unnamed[0], { round: 2, findings: [], marks: new Map() }]), [{ id: "R1-1", severity: "blocker", outcome: "not marked by the next review" }]);
 });
