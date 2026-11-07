@@ -9,11 +9,12 @@ import { branchRisk, roundLimit, stoppingFindings } from "../review-loop.mjs";
 import { builderChecks, spoken } from "../review-brief.mjs";
 import { ticketSkillLines } from "../skills.mjs";
 import { visiblePath } from "../pr-tier.mjs";
+import { briefCardKey, cardBriefFor, isCardKey, onOrbit, orbitProblem } from "../ticket-cards.mjs";
 
 const { kitBranch, kitGhEnv, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, nodeEnv, commitBuilderWork, builderAuthor, kitScore, scoreCost, scoreReview } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const usage = "Usage: kit slice --ticket FILE --builder MODEL [--effort high] [--rounds N] [--no-pr]\nResume saved phases under .scratch/kit-slice/<ticket-slug>/.\nAfter the code review and its fix rounds, kit ux checks touched features: broken or looks off gets one kit fix --note round;\nstill broken stops (decide: ux broken <feature>), looks off lands with UX follow-ups in the ticket.\nLast, a second look (kit review --second-look) gets the same fix rounds, then looks again at the new HEAD;\nwhen no model can take it, the slice goes on and says why.\nQueued PRs are awaited for up to 2h; reruns resume the wait.\nOverrides: ASE_SLICE_AGENT, ASE_SLICE_KIT, ASE_SLICE_GH; ASE_SLICE_MERGE_TIMEOUT_MS, ASE_SLICE_MERGE_POLL_MS.\n";
+const usage = "Usage: kit slice --ticket FILE|KEY --builder MODEL [--effort high] [--rounds N] [--no-pr]\nResume saved phases under .scratch/kit-slice/<ticket-slug>/.\nOn Orbit (\"tickets\": \"orbit\"), --ticket KEY claims the card (In Progress, \"Claimed by: <owner>\", ORBIT_ROLE=lead) and copies it once to\n.scratch/kit-tickets/KEY.md, the brief every step reads; a rerun resumes from that brief. kit pr closes the card when it lands.\nAfter the code review and its fix rounds, kit ux checks touched features: broken or looks off gets one kit fix --note round;\nstill broken stops (decide: ux broken <feature>), looks off lands with UX follow-ups in the ticket.\nLast, a second look (kit review --second-look) gets the same fix rounds, then looks again at the new HEAD;\nwhen no model can take it, the slice goes on and says why.\nQueued PRs are awaited for up to 2h; reruns resume the wait.\nOverrides: ASE_SLICE_AGENT, ASE_SLICE_KIT, ASE_SLICE_GH; ASE_SLICE_MERGE_TIMEOUT_MS, ASE_SLICE_MERGE_POLL_MS.\n";
 
 function options(args) {
   const flags = { effort: "high", rounds: undefined, noPr: false };
@@ -51,6 +52,11 @@ async function slice(args) {
     const refused = [...new Set([kitBranch("land", settings), kitBranch("release", settings)].filter(Boolean))];
     const not = [...refused, "detached HEAD"];
     if (!branch || refused.includes(branch)) throw new Error(`use a build branch, not ${not.slice(0, -1).join(", ")} or ${not.at(-1)}`);
+    // On Orbit a card key becomes the card's brief (claimed first); every later step reads that brief as a ticket.
+    if (onOrbit(settings) && isCardKey(flags.ticket)) {
+      try { flags.ticket = (await cardBriefFor({ root, key: flags.ticket, settings, owner: kitOwner() })).arg; }
+      catch (error) { throw new Error(orbitProblem(error)); }
+    }
     const ticket = resolve(root, flags.ticket);
     const source = readFileSync(ticket, "utf8");
     const section = name => new RegExp(`^## ${name}\\s*\\n([\\s\\S]*?)(?=^## |$(?![\\s\\S]))`, "m").exec(source)?.[1]?.trim();
@@ -209,6 +215,8 @@ async function slice(args) {
     // Images are named from the main root, so the ticket holds no machine path. Returns the new HEAD, or null.
     function uxFollowups(ux, head) {
       const original = readFileSync(ticket, "utf8");
+      // A card's brief is no tracked file: the list is kept in it and printed, with no commit.
+      const card = briefCardKey(original);
       const start = [...original.matchAll(/^## Done(?:[ \t]+\(\d{4}-\d{2}-\d{2}\))?[ \t]*\r?$/gm)].at(-1)?.index;
       const prefix = start === undefined ? `${original.trimEnd()}\n\n## Done (${new Date().toISOString().slice(0, 10)})` : original.slice(0, start);
       const rest = start === undefined ? "" : original.slice(start);
@@ -227,6 +235,10 @@ async function slice(args) {
       } else done = `${done.trimEnd()}\n\n### UX follow-ups\n\n${missing.join("\n")}\n\n`;
       const after = rest.slice(doneEnd);
       writeFileSync(ticket, after ? prefix + done + after : `${(prefix + done).trimEnd()}\n`);
+      if (card) {
+        for (const line of missing) console.log(`ux follow-up (${card}): ${line.slice(2)}`);
+        return null;
+      }
       git("commit", "--quiet", "-m", `docs: ${basename(ticket, ".md")} UX follow-ups`, "--", ticket);
       if (git("rev-parse", "HEAD^") !== head) throw new Error("UX follow-ups commit is not one commit on the checked HEAD");
       return git("rev-parse", "HEAD");
