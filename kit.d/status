@@ -7,11 +7,12 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { FLAKY_DAYS, flakyFiles } from "../browser-runs.mjs";
 import { loadTickets } from "../tickets.mjs";
+import { onOrbit, openOrbitTickets, orbitProblem } from "../ticket-cards.mjs";
 
-const { kitBranch, kitGhEnv, kitRoot, kitResult, kitSettings, kitStateDir } = await import(
+const { kitBranch, kitGhEnv, kitOwner, kitRoot, kitResult, kitSettings, kitStateDir } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const usage = "Usage: kit status [map] [--ref <ref>] [--no-fetch] [--help]\n";
+const usage = "Usage: kit status [map] [--ref <ref>] [--no-fetch] [--help]\nOn Orbit (\"tickets\": \"orbit\") the rows are the cards of the project's board: status name,\nthe owner on its \"Claimed by:\" line and the PR naming its key; a map does not apply there.\n";
 const execute = promisify(execFile);
 const clean = value => String(value).replace(/[\x00-\x1f\x7f]/g, " ").trim();
 function cut(value, width) {
@@ -64,6 +65,23 @@ function ci(checks) {
 function latest(runs) {
   const seen = new Set();
   return runs.filter(run => !seen.has(run.workflowName) && seen.add(run.workflowName));
+}
+
+// A card's PR, in any letter case (KIT-12 is not KIT-121): first one on its own branch (build/kit-12-…, as kit next
+// names it), then one whose title or "Ticket:" line names the key, and only then one whose body mentions it, since a PR
+// body lists every commit subject and another card's PR can name this key in passing.
+function cardPR(key, prs) {
+  const name = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), match = new RegExp(`(?<![A-Za-z0-9])${name}(?![0-9])`, "i");
+  const branch = new RegExp(`^build/${name}(?:-|$)`, "i");
+  const rank = state => state === "OPEN" ? 0 : state === "MERGED" ? 1 : 2;
+  const tiers = [pr => branch.test(pr.headRefName || ""), pr => match.test(pr.title || ""),
+    pr => (pr.body || "").split("\n").some(line => line.startsWith("Ticket: ") && match.test(line)),
+    // Another card's own PR (on its build branch) only mentions this key, so it never counts as this card's.
+    pr => !/^build\/[a-z][a-z0-9_]*-\d+(?:-|$)/i.test(pr.headRefName || "") && match.test(pr.body || "")];
+  for (const tier of tiers) {
+    const found = prs.filter(tier).sort((a, b) => rank(a.state) - rank(b.state) || b.number - a.number)[0];
+    if (found) return found;
+  }
 }
 
 function ticketPR(ticket, prs) {
@@ -127,8 +145,22 @@ async function status(args) {
       try { await git(["fetch", "-q", "origin"]); }
       catch { notes.push(`fetch failed; using cached ${ref}`); }
     }
-    // No maps folder: no ticket rows, with a line saying why.
-    const { tickets } = settings.maps ? loadTickets(settings.maps, map, { ref, cwd: root }) : { tickets: [] };
+    // On Orbit the rows are the board's cards; no maps folder: no ticket rows, with a line saying why.
+    const orbit = onOrbit(settings);
+    if (orbit && map) throw new Error(`a map does not apply on Orbit: the rows are the cards of the board in scripts/agents/kit.json`);
+    let board = "", cards = [], more = "";
+    if (orbit) {
+      let redact;
+      try {
+        const opened = openOrbitTickets({ settings, who: kitOwner() });
+        redact = opened.redact;
+        const read = await opened.store.board({ project: opened.project, parent: opened.parent });
+        ({ board, cards } = read);
+        if (read.more) more = `board ${board} holds more than 1000 cards; only the first 1000 are shown`;
+      } catch (error) { throw new Error(orbitProblem(error, redact)); }
+    }
+    const { tickets } = orbit ? { tickets: cards.map(card => ({ slug: card.identifier, map: board, status: card.status_name, done: card.stage === "done", assignee: card.stage === "working" ? card.claimed_by ?? "" : "", card: true })) }
+      : settings.maps ? loadTickets(settings.maps, map, { ref, cwd: root }) : { tickets: [] };
     const sha = await git(["rev-parse", "--verify", `${ref}^{commit}`]);
     const branch = ref.replace(/^(?:refs\/remotes\/)?origin\//, "").replace(/^refs\/heads\//, "");
     const gh = process.env.KIT_STATUS_GH || "gh", ghEnv = kitGhEnv(process.env, root);
@@ -154,21 +186,23 @@ async function status(args) {
     const branchCI = github.unavailable ? "?" : github.none ? "-" : ci(latest(currentRuns.length ? currentRuns : github.runs.slice(0, 1)));
     print(`ref ${ref} ${sha.slice(0, 7)}  ${branch} CI: ${branchCI}${older ? " (older sha)" : ""}`);
     if (live.line) print(live.line);
-    if (!settings.maps) print("tickets: none (no maps folder in scripts/agents/kit.json)");
-    for (const note of notes) print(`note: ${note}`);
+    if (!orbit && !settings.maps) print("tickets: none (no maps folder in scripts/agents/kit.json)");
+    for (const note of more ? [...notes, more] : notes) print(`note: ${note}`);
     const widths = [32, 15, 10, 21, 4];
     const row = cells => print(cells.map((cell, i) => cut(cell, widths[i]).padEnd(widths[i])).join("  ").trimEnd());
     row(["TICKET", "STATUS", "WHO", "LANDED", "CI"]);
-    tickets.sort((a, b) => a.map.localeCompare(b.map) || a.slug.localeCompare(b.slug, "en", { numeric: true }));
+    if (!orbit) tickets.sort((a, b) => a.map.localeCompare(b.map) || a.slug.localeCompare(b.slug, "en", { numeric: true }));
     const groups = new Set(tickets.map(ticket => ticket.map));
-    let group, open = 0;
+    // An open PR counts once, even when more than one ticket names it.
+    let group;
+    const openPRs = new Set();
     for (const ticket of tickets) {
       if (groups.size > 1 && group !== ticket.map) { group = ticket.map; print(`== ${group} ==`); }
-      const pr = ticketPR(ticket, github.prs);
-      if (pr?.state === "OPEN") open++;
+      const pr = ticket.card ? cardPR(ticket.slug, github.prs) : ticketPR(ticket, github.prs);
+      if (pr?.state === "OPEN") openPRs.add(pr.number);
       const merged = pr?.state === "MERGED";
       // Closed tickets land with the commit that closed them; an open ticket can still have a merged PR.
-      const landed = ticket.status === "closed"
+      const landed = !ticket.card && ticket.status === "closed"
         ? await git(["log", ref, "-1", "--format=%h", "-G", "^status:[[:space:]]*closed", "--", ticket.file])
         : merged ? await onRef(pr.mergeCommit?.oid) : "";
       // CI always describes the commit or PR shown in LANDED.
@@ -186,7 +220,9 @@ async function status(args) {
     const flaky = flakyFiles(log, { project: settings.project });
     for (const { file, count } of flaky) print(`flaky: ${file} ${count} times in ${FLAKY_DAYS} days (give it a fix ticket)`);
     const flakyCount = flaky.length ? `, ${flaky.length} flaky file${flaky.length === 1 ? "" : "s"}` : "";
-    result("ok", `${map || "all"} ${tickets.length} tickets, ${tickets.filter(ticket => ticket.status === "closed").length} closed, ${open} open PRs${github.none ? ", no GitHub repo" : notes.length ? ", offline" : ""}${flakyCount}`);
+    const counted = orbit ? `${board} ${tickets.length} card${tickets.length === 1 ? "" : "s"}, ${tickets.filter(ticket => ticket.done).length} done`
+      : `${map || "all"} ${tickets.length} tickets, ${tickets.filter(ticket => ticket.status === "closed").length} closed`;
+    result("ok", `${counted}, ${openPRs.size} open PRs${github.none ? ", no GitHub repo" : notes.length ? ", offline" : ""}${flakyCount}`);
     return 0;
   } catch (error) {
     console.error(cut(error.message, 100));

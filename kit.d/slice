@@ -9,11 +9,12 @@ import { branchRisk, roundLimit, stoppingFindings } from "../review-loop.mjs";
 import { builderChecks, spoken } from "../review-brief.mjs";
 import { ticketSkillLines } from "../skills.mjs";
 import { visiblePath } from "../pr-tier.mjs";
+import { briefCardKey, briefFollowups, cardBriefFor, closeLandedCard, isCardKey, onOrbit, orbitProblem } from "../ticket-cards.mjs";
 
 const { kitBranch, kitGhEnv, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, nodeEnv, commitBuilderWork, builderAuthor, kitScore, scoreCost, scoreReview } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const usage = "Usage: kit slice --ticket FILE --builder MODEL [--effort high] [--rounds N] [--no-pr]\nResume saved phases under .scratch/kit-slice/<ticket-slug>/.\nAfter the code review and its fix rounds, kit ux checks touched features: broken or looks off gets one kit fix --note round;\nstill broken stops (decide: ux broken <feature>), looks off lands with UX follow-ups in the ticket.\nLast, a second look (kit review --second-look) gets the same fix rounds, then looks again at the new HEAD;\nwhen no model can take it, the slice goes on and says why.\nQueued PRs are awaited for up to 2h; reruns resume the wait.\nOverrides: ASE_SLICE_AGENT, ASE_SLICE_KIT, ASE_SLICE_GH; ASE_SLICE_MERGE_TIMEOUT_MS, ASE_SLICE_MERGE_POLL_MS.\n";
+const usage = "Usage: kit slice --ticket FILE|KEY --builder MODEL [--effort high] [--rounds N] [--no-pr]\nResume saved phases under .scratch/kit-slice/<ticket-slug>/.\nOn Orbit (\"tickets\": \"orbit\"), --ticket KEY claims the card (In Progress, \"Claimed by: <owner>\", ORBIT_ROLE=lead) and copies it once to\n.scratch/kit-tickets/KEY.md, the brief every step reads; a rerun resumes from that brief. kit pr closes the card when it lands.\nAfter the code review and its fix rounds, kit ux checks touched features: broken or looks off gets one kit fix --note round;\nstill broken stops (decide: ux broken <feature>), looks off lands with UX follow-ups in the ticket.\nLast, a second look (kit review --second-look) gets the same fix rounds, then looks again at the new HEAD;\nwhen no model can take it, the slice goes on and says why.\nQueued PRs are awaited for up to 2h; reruns resume the wait.\nOverrides: ASE_SLICE_AGENT, ASE_SLICE_KIT, ASE_SLICE_GH; ASE_SLICE_MERGE_TIMEOUT_MS, ASE_SLICE_MERGE_POLL_MS.\n";
 
 function options(args) {
   const flags = { effort: "high", rounds: undefined, noPr: false };
@@ -51,6 +52,14 @@ async function slice(args) {
     const refused = [...new Set([kitBranch("land", settings), kitBranch("release", settings)].filter(Boolean))];
     const not = [...refused, "detached HEAD"];
     if (!branch || refused.includes(branch)) throw new Error(`use a build branch, not ${not.slice(0, -1).join(", ")} or ${not.at(-1)}`);
+    // On Orbit a card key becomes the card's brief (claimed first); every later step reads that brief as a ticket.
+    if (onOrbit(settings) && isCardKey(flags.ticket)) {
+      let brief;
+      try { brief = await cardBriefFor({ root, key: flags.ticket, settings, owner: kitOwner() }); }
+      catch (error) { throw new Error(orbitProblem(error)); }
+      if (brief.note) console.log(brief.note);
+      flags.ticket = brief.arg;
+    }
     const ticket = resolve(root, flags.ticket);
     const source = readFileSync(ticket, "utf8");
     const section = name => new RegExp(`^## ${name}\\s*\\n([\\s\\S]*?)(?=^## |$(?![\\s\\S]))`, "m").exec(source)?.[1]?.trim();
@@ -173,12 +182,19 @@ async function slice(args) {
         throw new Error("merge timeout and poll interval must be positive integer milliseconds");
       const deadline = Date.now() + timeout, ghEnv = kitGhEnv(env, root);
       for (;;) {
-        const output = requireSuccess(await execute(env.ASE_SLICE_GH || "gh", ["pr", "view", state.pr, "--json", "state,mergeCommit,headRefOid"], ghEnv));
+        const output = requireSuccess(await execute(env.ASE_SLICE_GH || "gh", ["pr", "view", state.pr, "--json", "state,mergeCommit,headRefOid,url"], ghEnv));
         const pr = JSON.parse(output);
         if (pr.headRefOid !== state.queued.head) throw new Error(`queued PR #${state.pr} head changed; expected ${state.queued.head}`);
         if (pr.state === "MERGED") {
           if (!/^[a-f\d]{40}$/i.test(pr.mergeCommit?.oid || "")) throw new Error("merged PR has no merge SHA");
           state.sha = pr.mergeCommit.oid; delete state.queued;
+          // A queued PR's card closes here, where its landing is seen (kit pr only queued it).
+          const brief = readFileSync(ticket, "utf8"), card = briefCardKey(brief);
+          if (card) {
+            const closed = await closeLandedCard({ settings, key: card, pr: pr.url || `PR #${state.pr}`, sha: state.sha, followups: briefFollowups(brief), who: kitOwner() });
+            console.log(closed.line);
+            state.card = closed.suffix;
+          }
           complete(`#${state.pr}`); return;
         }
         if (pr.state !== "OPEN") throw new Error(`queued PR #${state.pr} is ${pr.state}, not merged`);
@@ -209,6 +225,8 @@ async function slice(args) {
     // Images are named from the main root, so the ticket holds no machine path. Returns the new HEAD, or null.
     function uxFollowups(ux, head) {
       const original = readFileSync(ticket, "utf8");
+      // A card's brief is no tracked file: the list is kept in it and printed, with no commit.
+      const card = briefCardKey(original);
       const start = [...original.matchAll(/^## Done(?:[ \t]+\(\d{4}-\d{2}-\d{2}\))?[ \t]*\r?$/gm)].at(-1)?.index;
       const prefix = start === undefined ? `${original.trimEnd()}\n\n## Done (${new Date().toISOString().slice(0, 10)})` : original.slice(0, start);
       const rest = start === undefined ? "" : original.slice(start);
@@ -227,6 +245,10 @@ async function slice(args) {
       } else done = `${done.trimEnd()}\n\n### UX follow-ups\n\n${missing.join("\n")}\n\n`;
       const after = rest.slice(doneEnd);
       writeFileSync(ticket, after ? prefix + done + after : `${(prefix + done).trimEnd()}\n`);
+      if (card) {
+        for (const line of missing) console.log(`ux follow-up (${card}): ${line.slice(2)}`);
+        return null;
+      }
       git("commit", "--quiet", "-m", `docs: ${basename(ticket, ".md")} UX follow-ups`, "--", ticket);
       if (git("rev-parse", "HEAD^") !== head) throw new Error("UX follow-ups commit is not one commit on the checked HEAD");
       return git("rev-parse", "HEAD");
@@ -537,10 +559,13 @@ async function slice(args) {
         const result = await execute(kit, ["pr", "--ticket", flags.ticket]);
         state.pr = /#(\d+)/.exec(result.output)?.[1] || state.pr; save();
         const output = requireSuccess(result);
-        const merged = /^RESULT: ok merged #(\d+) ([a-f\d]{7,40})$/m.exec(output);
-        const queued = /^RESULT: ok queued #(\d+) ([a-f\d]{7,40})$/m.exec(output);
+        // kit pr may add words after the SHA (a card closed or not, a flaky spec file): only the number and SHA count.
+        const merged = /^RESULT: ok merged #(\d+) ([a-f\d]{7,40})((?:[ ;].*)?)$/m.exec(output);
+        const queued = /^RESULT: ok queued #(\d+) ([a-f\d]{7,40})(?:[ ;].*)?$/m.exec(output);
         if (merged) {
           state.pr = merged[1]; state.sha = merged[2]; state.head = git("rev-parse", "HEAD");
+          // What kit pr said about the card (closed, or not and why) goes on the slice's own RESULT line too.
+          state.card = / \(card \S+ Done\)|; card \S+ not closed: .*/.exec(merged[3])?.[0];
           complete(`#${state.pr}`);
         } else if (queued) {
           const head = git("rev-parse", "HEAD");
@@ -550,7 +575,7 @@ async function slice(args) {
         } else throw new Error("PR did not report a merged or queued commit; see phase log");
       }
     } else if (flags.noPr) console.log("slice: pr ok skipped (--no-pr)");
-    kitResult("ok", `slice ${flags.ticket} ${flags.noPr ? `reviewed ${findings().length ? "with follow-ups" : "clean"} ${state.head}` : `PR #${state.pr} ${state.sha}`}`);
+    kitResult("ok", `slice ${flags.ticket} ${flags.noPr ? `reviewed ${findings().length ? "with follow-ups" : "clean"} ${state.head}` : `PR #${state.pr} ${state.sha}${state.card ?? ""}`}`);
     return 0;
   } catch (error) {
     if (ended && started) ended(exit || 1);

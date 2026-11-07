@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { ghConfig } from "./support/kit-env.ts";
+import { orbitProject, orbitSecretsForTests, orbitSettings } from "./support/orbit-project.ts";
 
 const status = resolve("kit.d/status");
 const kit = resolve("kit");
@@ -360,4 +361,94 @@ test("spec files flaky under load three or more times in 7 days are named, so th
   assert.deepEqual(output.stdout.split("\n").filter(text => text.startsWith("flaky:")),
     ["flaky: tests/native-save/native-mcp-menu.spec.ts 3 times in 7 days (give it a fix ticket)"]);
   assert.equal(output.stdout.trimEnd().split("\n").at(-1), "RESULT: ok status alpha 10 tickets, 1 closed, 8 open PRs, 1 flaky file");
+});
+
+// Stage 2: on a project with "tickets": "orbit" the rows are the cards of its Orbit board (the fake one).
+test("on Orbit, status shows each card's status name, its claim, its PR and CI, in number order", async t => {
+  const f = await fixture(t);
+  const o = await orbitProject(t);
+  writeFileSync(join(f.root, "scripts/agents/kit.json"), JSON.stringify({ project: "kit-status", branches: { land: "dev" }, ...orbitSettings }));
+  o.card({ title: "Landed" }, "Done");
+  o.card({ title: "Building", description: "Claimed by: kit-2" }, "In Progress");
+  o.card({ title: "Next" });
+  o.card({ title: "Later" }, "Backlog");
+  const success = { status: "COMPLETED", conclusion: "SUCCESS" };
+  const prs = [
+    { ...f.pr(121, "KIT-1: Landed", [], "MERGED") },
+    { ...f.pr(130, "Building", [success]), headRefName: "build/kit-2-building" },
+    { ...f.pr(131, "KIT-21 is another card", [success]) },
+  ];
+  const output = await f.run(["--no-fetch"], { prs, env: o.env });
+  assert.equal(output.code, 0, output.stdout + output.stderr);
+  assert.deepEqual(f.row(output.stdout, "KIT-1"), ["KIT-1", "Done", "-", `${f.landed} #121`, "pass"]);
+  assert.deepEqual(f.row(output.stdout, "KIT-2"), ["KIT-2", "In Progress", "kit-2", "#130 open", "pass"]);
+  assert.deepEqual(f.row(output.stdout, "KIT-3"), ["KIT-3", "Todo", "-", "-", "-"]);
+  assert.deepEqual(f.row(output.stdout, "KIT-4"), ["KIT-4", "Backlog", "-", "-", "-"]);
+  assert.ok(output.stdout.indexOf("KIT-3 ") < output.stdout.indexOf("KIT-4 "));
+  assert.doesNotMatch(output.stdout, /2-foo|tickets: none/);
+  assert.deepEqual(output.results, ["RESULT: ok status KIT 4 cards, 1 done, 1 open PRs"]);
+  assert.equal(o.orbit.writes().length, 0);
+});
+
+test("on Orbit, status says in one plain line when Orbit cannot be read, and prints no secret", async t => {
+  const f = await fixture(t);
+  const o = await orbitProject(t);
+  writeFileSync(join(f.root, "scripts/agents/kit.json"), JSON.stringify({ project: "kit-status", branches: { land: "dev" }, ...orbitSettings }));
+  o.orbit.controls.answers.push("redirect");
+  const output = await f.run(["--no-fetch"], { env: o.env });
+  assert.equal(output.code, 1);
+  assert.match(output.results[0], /^RESULT: fail status Cloudflare stopped the request/);
+  for (const secret of orbitSecretsForTests) assert.ok(!(output.stdout + output.stderr).includes(secret));
+});
+
+test("on Orbit, status says when the board holds more cards than it reads", async t => {
+  const f = await fixture(t);
+  const o = await orbitProject(t);
+  writeFileSync(join(f.root, "scripts/agents/kit.json"), JSON.stringify({ project: "kit-status", branches: { land: "dev" }, ...orbitSettings }));
+  for (let index = 0; index < 1001; index++) o.card({ title: `Card ${index}` });
+  const output = await f.run(["--no-fetch"], { prs: [], env: o.env });
+  assert.equal(output.code, 0, output.stdout + output.stderr);
+  assert.match(output.stdout, /^note: board KIT holds more than 1000 cards; only the first 1000 are shown$/m);
+  assert.match(output.results[0], /^RESULT: ok status KIT 1000 cards, 0 done, 0 open PRs$/);
+});
+
+test("on Orbit, status shows a card's owner only while it is In Progress, so a stale Claimed by line on a done card shows nobody", async t => {
+  const f = await fixture(t);
+  const o = await orbitProject(t);
+  writeFileSync(join(f.root, "scripts/agents/kit.json"), JSON.stringify({ project: "kit-status", branches: { land: "dev" }, ...orbitSettings }));
+  o.card({ title: "Closed by hand", description: "Claimed by: kit-1" }, "Done");
+  o.card({ title: "Given back by hand", description: "Claimed by: kit-2" });
+  const output = await f.run(["--no-fetch"], { prs: [], env: o.env });
+  assert.equal(output.code, 0, output.stdout + output.stderr);
+  assert.equal(f.row(output.stdout, "KIT-1")[2], "-");
+  assert.equal(f.row(output.stdout, "KIT-2")[2], "-");
+});
+
+test("on Orbit, a card's own PR wins over another card's PR that only mentions its key, and each open PR counts once", async t => {
+  const f = await fixture(t);
+  const o = await orbitProject(t);
+  writeFileSync(join(f.root, "scripts/agents/kit.json"), JSON.stringify({ project: "kit-status", branches: { land: "dev" }, ...orbitSettings }));
+  o.card({ title: "Landed" }, "Done");
+  o.card({ title: "Building", description: "Claimed by: kit-2" }, "In Progress");
+  const prs = [
+    { ...f.pr(121, "Landed", [], "MERGED"), headRefName: "build/kit-1-landed" },
+    { ...f.pr(130, "Building", []), headRefName: "build/kit-2-building", body: "## Summary\n\n- KIT-1 follow-up" },
+  ];
+  const output = await f.run(["--no-fetch"], { prs, env: o.env });
+  assert.equal(output.code, 0, output.stdout + output.stderr);
+  assert.deepEqual(f.row(output.stdout, "KIT-1").slice(0, 4), ["KIT-1", "Done", "-", `${f.landed} #121`]);
+  assert.equal(f.row(output.stdout, "KIT-2")[3], "#130 open");
+  assert.deepEqual(output.results, ["RESULT: ok status KIT 2 cards, 1 done, 1 open PRs"]);
+});
+
+test("on Orbit, a card with no PR of its own does not take another card's PR that mentions it", async t => {
+  const f = await fixture(t);
+  const o = await orbitProject(t);
+  writeFileSync(join(f.root, "scripts/agents/kit.json"), JSON.stringify({ project: "kit-status", branches: { land: "dev" }, ...orbitSettings }));
+  o.card({ title: "Landed" }, "Done");
+  o.card({ title: "Follow-up" });
+  const prs = [{ ...f.pr(121, "Landed", [], "MERGED"), headRefName: "build/kit-1-landed", body: "## Summary\n\n- KIT-2 follow-up noted" }];
+  const output = await f.run(["--no-fetch"], { prs, env: o.env });
+  assert.equal(output.code, 0, output.stdout + output.stderr);
+  assert.deepEqual(f.row(output.stdout, "KIT-2"), ["KIT-2", "Todo", "-", "-", "-"]);
 });

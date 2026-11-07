@@ -1,7 +1,7 @@
-// The kit's ticket store on Orbit: the card rules and guards every ticket action passes, and the seam later stages use.
-// `ticketSettings` says which store a project uses (scripts/agents/kit.json: "tickets": "files"|"orbit", default files,
-// and "orbit": { "project": "<KEY>", "parent": "<KEY-n>" }); `orbitStore` is the Orbit side. The markdown side stays in
-// tickets.mjs until kit next, slice, pr and status move here in later stages.
+// The kit's ticket store on Orbit: the card rules and guards every ticket action passes, and the seam kit next, slice,
+// pr, status and init --issues use when a project is on Orbit. `ticketSettings` says which store a project uses
+// (scripts/agents/kit.json: "tickets": "files"|"orbit", default files, and "orbit": { "project": "<KEY>", "parent":
+// "<KEY-n>" }); `orbitStore` is the Orbit side. The markdown side stays in tickets.mjs.
 import { appendFileSync, chmodSync, closeSync, mkdirSync, openSync } from "node:fs";
 import { dirname } from "node:path";
 import { OrbitError, orbitBringsSecret, orbitCardKey } from "./orbit-client.mjs";
@@ -120,6 +120,36 @@ export function withBlockedBy(description, keys) {
   return reason === null ? body : withNextLex(body, reason);
 }
 
+const claimedLine = /^Claimed by:\s*(.*)$/i;
+/** The owner on the description's "Claimed by:" line (the slice building the card), or null. */
+export function claimedBy(description) {
+  const line = split(description).map(item => claimedLine.exec(item.trim())).find(Boolean);
+  return line ? oneLine(line[1]) || null : null;
+}
+/** The description with one "Claimed by: owner" line (first after a next-step line), or none for a null owner. */
+export function withClaimedBy(description, owner) {
+  const rest = dropLines(description, line => claimedLine.test(line));
+  if (!owner) return rest;
+  const reason = nextLexReason(rest), body = withoutNextLex(rest);
+  const claimed = `Claimed by: ${oneLine(owner)}${body ? `\n\n${body}` : ""}`;
+  return reason === null ? claimed : withNextLex(claimed, reason);
+}
+
+/**
+ * Where a card stands for the kit, by its status NAME on the project's board: done (Done, or a completed, cancelled or
+ * duplicate status), working (In Progress, or another started status), ready (Todo; on a board without Todo, any
+ * unstarted status) or waiting (Backlog and the other unstarted ones). Labels never count: a board that keeps its stage in
+ * labels keeps them as they are.
+ */
+export function cardStage(status, statuses = []) {
+  const name = String(status?.name ?? "").trim().toLowerCase(), category = status?.category;
+  if (name === "done" || ["completed", "cancelled", "canceled", "duplicate"].includes(category)) return "done";
+  if (name === "in progress" || category === "started") return "working";
+  const hasTodo = statuses.some(item => String(item.name).trim().toLowerCase() === "todo");
+  if (name === "todo" || (!hasTodo && category === "unstarted")) return "ready";
+  return "waiting";
+}
+
 /** The words on the "Blocked by:" lines that are not card keys, which a change of blockers would lose. */
 const otherBlockedWords = description => blockedWords(description).filter(word => !blockerKey.test(word));
 
@@ -144,6 +174,9 @@ function keepingKitLines(text, task) {
       if (own !== null) body = withNextLex(body, own);
     }
   }
+  // The claim of the slice building the card stays until the slice lands or gives it back.
+  const owner = claimedBy(task.description);
+  if (owner && !has(body, claimedLine)) body = withClaimedBy(body, owner);
   const reason = nextLexReason(task.description);
   return reason !== null && nextLexReason(body) === null ? withNextLex(body, reason) : body;
 }
@@ -386,6 +419,34 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
   const parentId = async value => (await client.task(value)).id;
   const textOnly = (name, text) => { if (!oneLine(text)) throw new OrbitError(`${name} needs some text`); };
 
+  /** The card's status and stage (cardStage) on its own board. */
+  const stageOf = async task => {
+    const list = await statusesOf(task.project_id), status = list.find(item => item.id === task.status_id);
+    return { status: status?.name ?? task.status_id, stage: cardStage(status, list) };
+  };
+  /** The status a card moves to, by NAME first (In Progress, Done), else the board's first status of that category. */
+  const statusFor = async (projectId, name, category) => {
+    const list = [...await statusesOf(projectId)].sort((a, b) => a.position - b.position);
+    // A Publish status needs Lex's words, so the kit never picks one in place of a missing name.
+    const found = list.find(status => status.name.trim().toLowerCase() === name) ?? list.find(status => status.category === category && !/publish/i.test(status.name));
+    if (!found) throw new OrbitError(`this board has no ${name} status (it has: ${list.map(status => status.name).join(", ")})`);
+    return found;
+  };
+  /** The blockers of a card that are not done yet, as "KEY (status)"; one this token cannot read counts as not done. */
+  const openBlockers = async (task, known = new Map()) => {
+    const open = [];
+    for (const key of blockedBy(task.description)) {
+      let stage = known.get(key);
+      if (!stage) {
+        try { const card = await client.task(key); stage = await stageOf(card); }
+        catch (error) { if (![403, 404].includes(error?.status)) throw error; stage = { status: "not found", stage: "missing" }; }
+        known.set(key, stage);
+      }
+      if (stage.stage !== "done") open.push(`${key} (${stage.status})`);
+    }
+    return open;
+  };
+
   return {
     statusName,
     /** A card with what the kit reads from it: status name, next step and blockers. */
@@ -397,7 +458,7 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
         try { parent_key = (await client.task(task.parent_task_id)).identifier; }
         catch (error) { if (![403, 404].includes(error?.status)) throw error; }
       }
-      return { ...await withNames(task), blocked_by: blockedBy(task.description), next_lex: nextLexReason(task.description), parent_key };
+      return { ...await withNames(task), stage: (await stageOf(task)).stage, blocked_by: blockedBy(task.description), claimed_by: claimedBy(task.description), next_lex: nextLexReason(task.description), parent_key };
     },
     comments: key => client.comments(orbitCardKey(key)),
     /** The cards of one board, or of every board the token reaches with project "all". */
@@ -524,6 +585,74 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
     },
     clearNextLex(key) {
       return changeCard("clear-next-lex", key, task => ({ description: withoutNextLex(task.description) }));
+    },
+    /**
+     * The cards of the project's board (under its parent card when one is set), each with its stage, blockers, open
+     * blockers, claim and next step; `more` when the board holds more than the limit.
+     */
+    async board({ project, parent, limit = 1000 } = {}) {
+      const board = await projectFrom(project);
+      const query = { project_id: board.id, parent_task_id: parent ? orbitCardKey(parent) : undefined };
+      const { items, more } = await client.tasks(query, limit);
+      const known = new Map();
+      const cards = [];
+      for (const task of items) {
+        const { status, stage } = await stageOf(task);
+        known.set(task.identifier, { status, stage });
+        cards.push({ ...task, status_name: status, stage, blocked_by: blockedBy(task.description), claimed_by: claimedBy(task.description), next_lex: nextLexReason(task.description) });
+      }
+      for (const card of cards) card.open_blockers = await openBlockers(card, known);
+      cards.sort((a, b) => (a.number ?? 0) - (b.number ?? 0) || a.identifier.localeCompare(b.identifier, "en", { numeric: true }));
+      return { board: board.key, cards, more };
+    },
+    /**
+     * Claims a card for a slice in one write: status In Progress and a "Claimed by: owner" line. A card the same owner
+     * already holds is no change (a resumed slice needs no lead); one held by anyone else, done, waiting for Lex or still
+     * blocked is refused. Two claims at once: Orbit takes the first, and the second, read again, is refused as taken.
+     */
+    async claim(rawKey, owner) {
+      const key = orbitCardKey(rawKey), who = oneLine(owner);
+      if (!who) throw new OrbitError("a claim needs an owner");
+      // A card someone else holds, done, waiting for Lex or blocked: no failure of Orbit's, the card is just not free.
+      const taken = message => Object.assign(new OrbitError(message), { taken: true });
+      const held = async task => {
+        const { status, stage } = await stageOf(task), holder = claimedBy(task.description);
+        if (stage === "done") throw taken(`${task.identifier} is already ${status}, so there is nothing to build`);
+        if (stage === "working") {
+          if (holder === who) return true;
+          throw taken(`${task.identifier} is already taken by ${holder ?? "someone"} (${status}), so it was not claimed`);
+        }
+        return false;
+      };
+      const first = await client.task(key);
+      if (await held(first)) return { key: first.identifier, action: "claim", task: first, unchanged: true, previous: null };
+      let previous = null;
+      const outcome = await changeCard("claim", key, async task => {
+        if (await held(task)) return {};
+        if (nextLexReason(task.description) !== null) throw taken(`${task.identifier} waits for Lex (Next step (Lex): ${nextLexReason(task.description)}), so it was not claimed`);
+        const open = await openBlockers(task);
+        if (open.length) throw taken(`${task.identifier} is blocked by ${open.join(", ")}, so it was not claimed`);
+        previous = task.status_id;
+        return { status_id: (await statusFor(task.project_id, "in progress", "started")).id, description: withClaimedBy(task.description, who) };
+      });
+      return { ...outcome, previous: outcome.unchanged ? null : previous };
+    },
+    /** Gives a claim back: the status it had and no "Claimed by" line. A card someone else holds now is left alone. */
+    unclaim(key, owner, statusId) {
+      return changeCard("unclaim", key, task => claimedBy(task.description) !== oneLine(owner) ? {}
+        : { ...(statusId ? { status_id: statusId } : {}), description: withClaimedBy(task.description, null) });
+    },
+    /** Closes a landed card in one write: status Done, a dated note (the PR link and merge SHA), and no claim line. */
+    close(key, text) {
+      textOnly("a closing note", text);
+      return changeCard("close", key, async task => {
+        const { stage } = await stageOf(task);
+        const noted = split(task.description).some(line => line.includes(oneLine(text)));
+        return {
+          ...(stage === "done" ? {} : { status_id: (await statusFor(task.project_id, "done", "completed")).id }),
+          description: withClaimedBy(noted ? task.description : withNote(task.description, amsterdamToday(), who, text), null),
+        };
+      });
     },
     /** Moves a card (and its sub-tasks, as Orbit does) to Orbit's trash. Nothing here can delete a card for good. */
     async trash(rawKey, lexSaid) {

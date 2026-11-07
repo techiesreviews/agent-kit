@@ -8,13 +8,14 @@ import { pathToFileURL } from "node:url";
 import { completedFixRounds, openFindings, reviewIncomplete, reviewCoversHead, sameReviewPatch } from "../review-findings.mjs";
 import { branchRisk, budgetReport, isNit, ledgerRows, prLine, renderLedger, reviewChain, roundLimit, stoppingFindings } from "../review-loop.mjs";
 import { projectCommand, spoken } from "../review-brief.mjs";
+import { briefFollowups, cardBriefFor, closeLandedCard, isCardKey, onOrbit, openOrbitTickets, orbitProblem, ticketCardKey, withReviewFollowups } from "../ticket-cards.mjs";
 
 const { kitBranch, kitGhEnv, kitHideUserInfo, kitHidingLog, kitHome, kitMachineLock, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, kitStateDir, nodeEnv, kitScore } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const { failedSpecs, isTiming, listedSpecs, nothingSelected, timingList, wholeReport } = await import(pathToFileURL(resolve(import.meta.dirname, "../browser-runs.mjs")).href);
 const { checkSteps, classify, doneHeading, featureListGuard, featureListProblem, focusedUnitFiles, parseChanges, secondLookPick, unitTestFile } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
-const usage = 'Usage: kit pr [--base <land>] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release] [--full] [--waive "<reason>"]\nBranches come from scripts/agents/kit.json: --base defaults to branches.land; --release needs --base branches.release and first runs kit release-check --land (nothing unsaved, HEAD exactly origin/<land>).\n--waive requires a *-lead owner; records the reason for merging with open findings or without a feature-list update;\nwith --release it also passes the release check, which names the reason (kit pr still needs a clean tree).\nAfter the Claude review (none in the docs tier), every change gets a second look (kit review --second-look), whose findings block the same way;\nwhen no model can take it, the PR lands and says "second look: skipped (<reason>)".\n';
+const usage = 'Usage: kit pr [--base <land>] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release] [--full] [--waive "<reason>"]\nBranches come from scripts/agents/kit.json: --base defaults to branches.land; --release needs --base branches.release and first runs kit release-check --land (nothing unsaved, HEAD exactly origin/<land>).\n--waive requires a *-lead owner; records the reason for merging with open findings or without a feature-list update;\nwith --release it also passes the release check, which names the reason (kit pr still needs a clean tree).\nAfter the Claude review (none in the docs tier), every change gets a second look (kit review --second-look), whose findings block the same way;\nwhen no model can take it, the PR lands and says "second look: skipped (<reason>)".\nOn Orbit ("tickets": "orbit"), --ticket takes a card KEY or its brief (.scratch/kit-tickets/KEY.md, which kit slice writes); when the PR\nlands the card goes to Done with a note naming the PR and its merge SHA (ORBIT_ROLE=lead); a card that cannot be closed is named on the RESULT line.\n';
 const kit = process.env.KIT_PR_KIT || resolve(import.meta.dirname, "../kit");
 
 function options(args) {
@@ -340,6 +341,21 @@ async function main(args) {
     const settings = kitSettings(), release = kitBranch("release", settings);
     flags.base ??= kitBranch("land", settings);
     if ([kitBranch("land", settings), release, flags.base].includes(branch)) throw new Error(`refusing branch ${branch}`);
+    // On Orbit the ticket is a card: a KEY is read into its brief (read only), and the brief's card closes on landing.
+    // A brief is no tracked file, so none of kit's ticket commits (follow-ups, commits by subject) is made for it.
+    let card = null, fromKey = false;
+    // A card's review follow-ups go on the card as one comment when it closes (its brief is no tracked file).
+    const cardFollowups = [];
+    if (flags.ticket && onOrbit(settings)) {
+      if (isCardKey(flags.ticket)) {
+        fromKey = true;
+        // The brief stays in this run's own folder: kit pr claims nothing, so a later kit slice here must not take it
+        // for a resumed slice's brief.
+        try { flags.ticket = relative(root, (await cardBriefFor({ root, key: flags.ticket, settings, who: kitOwner(), folder: directory })).path); }
+        catch (error) { throw new Error(orbitProblem(error)); }
+      }
+      card = ticketCardKey(root, flags.ticket);
+    }
     // The scoreboard's landing record for this piece.
     // A new PR number starts a fresh landing, so an earlier PR's merge never carries over.
     land = changes => kitScore({ ticket: flags.ticket, branch, root }, record => {
@@ -409,7 +425,7 @@ async function main(args) {
     // the SHAs the builder saw change here and again on landing (reportLanded prints those).
     // Synchronous from the captured HEAD to the commit, so no await sits between the proof and the write.
     function nameCommits() {
-      if (!flags.ticket || flags.release || flags.dryRun) return;
+      if (!flags.ticket || card || flags.release || flags.dryRun) return;
       step = "commits";
       const current = args => execFileSync("git", ["-C", root, ...args],
         { cwd: root, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -701,7 +717,8 @@ async function main(args) {
         writeFileSync(comment, summary);
         await gh("follow-ups", ["pr", "comment", number, "--body-file", comment]);
       }
-      if (!flags.ticket) return;
+      if (card) cardFollowups.push(...fullLines);
+      if (!flags.ticket || card) return;
       const current = args => execFileSync("git", ["-C", root, ...args],
         { cwd: root, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
       // Recheck the captured proof after network awaits, immediately before writing.
@@ -891,6 +908,16 @@ async function main(args) {
         });
       } catch (error) { console.log(`landed: not checked (${error.message})`); }
     }
+    // The landed card goes to Done with the PR link and merge SHA. The merge already happened, so a card that cannot be
+    // closed (Orbit down, no lead role) is said once, with the command that closes it, and the run still counts.
+    async function closeCard(number, sha, host, repo) {
+      if (!card) return "";
+      let ux = [];
+      try { ux = briefFollowups(readFileSync(resolve(root, flags.ticket), "utf8")); } catch { /* No brief left: no follow-ups kept in it. */ }
+      const closed = await closeLandedCard({ settings, key: card, pr: `https://${host}/${repo}/pull/${number}`, sha, followups: [...cardFollowups, ...ux], who: kitOwner() });
+      console.log(closed.line);
+      return closed.suffix;
+    }
     // The repo is named, so the merge's --repo matches GH_REPO exactly; gh answers with the repo's current name.
     const repo = await gh("merge", ["repo", "view", ...(ghEnv.GH_REPO ? [ghEnv.GH_REPO] : []), "--json", "nameWithOwner", "--jq", ".nameWithOwner"]);
     const [owner, name] = repo.split("/");
@@ -903,7 +930,28 @@ async function main(args) {
       await gh("merge", ["pr", "merge", number, "--auto", "--rebase", "--match-head-commit", head, "--repo", target]); ok("merge");
       await recordWaiver();
       land({ queued: true, waived: waivedAny() });
-      kitResult("ok", `queued #${number} ${head.slice(0, 7)}${flakyNote()}`);
+      // The card closes when the queue lands the PR: kit slice, which waits for it, closes it then. A lead's own
+      // kit pr --ticket KEY has no slice behind it, so it says so and puts the follow-ups on the card now.
+      let queuedWords = card ? `; card ${card} closes when the queue lands it` : "";
+      if (card && fromKey) {
+        let where = "";
+        if (cardFollowups.length) {
+          let redact;
+          try {
+            const opened = openOrbitTickets({ settings, who: kitOwner() });
+            redact = opened.redact;
+            await opened.store.comment(card, `Follow-ups from https://${target.split("/").length === 3 ? target.split("/")[0] : "github.com"}/${repo}/pull/${number}:\n${[...new Set(cardFollowups)].join("\n")}`);
+          } catch (error) { where = ` (its follow-ups were not added: ${orbitProblem(error, redact)}; they are in the PR comment)`; }
+        }
+        console.log(`card: ${card} stays open: nothing here waits for the queue; run kit ticket update ${card} --status Done once #${number} lands${where}`);
+        queuedWords = `; card ${card} stays open: close it once #${number} lands`;
+      } else if (card) {
+        // The review follow-ups wait in the brief, where kit slice reads them when it closes the card.
+        try { writeFileSync(resolve(root, flags.ticket), withReviewFollowups(readFileSync(resolve(root, flags.ticket), "utf8"), cardFollowups)); }
+        catch { console.log(`card: ${card} follow-ups stay in the PR comment only (the brief could not be written)`); }
+        console.log(`card: ${card} stays open until the queue lands #${number}; kit slice closes it then, else run kit ticket update ${card} --status Done`);
+      }
+      kitResult("ok", `queued #${number} ${head.slice(0, 7)}${queuedWords}${flakyNote()}`);
       return 0;
     }
     // A repo without GitHub workflows has no checks to wait for: it lands once the review passes.
@@ -926,7 +974,8 @@ async function main(args) {
         await recordWaiver();
         land({ sha, at: new Date().toISOString(), waived: waivedAny() });
         await reportLanded(mergeCommit);
-        kitResult("ok", `merged #${number} ${sha.slice(0, 7)}${flakyNote()}`);
+        const closed = await closeCard(number, mergeCommit, target.split("/").length === 3 ? target.split("/")[0] : "github.com", repo);
+        kitResult("ok", `merged #${number} ${sha.slice(0, 7)}${closed}${flakyNote()}`);
         return 0;
       }
       // --match-head-commit refuses a head we did not push and review: stop rather than merge it.

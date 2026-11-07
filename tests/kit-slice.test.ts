@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { forEachAwait } from "./support/await-race.ts";
 import { kitEnv } from "./support/kit-env.ts";
+import { orbitProject, orbitSecretsForTests, orbitSettings, runAsync, type Run } from "./support/orbit-project.ts";
 
 const kit = resolve("kit");
 const clean = "REVIEW_STATUS: complete\nDefects:\nSpec: none\nStandards: none\nValidation gaps: none\nOptional nits: none\n";
@@ -200,7 +201,7 @@ if (phase === "review") {
     console.log("RESULT: fail pr #42 review has 1 open findings (" + folder + "/result.md)");
     process.exitCode = 1;
   } else if (args.includes("--no-merge")) console.log("RESULT: ok opened #42 " + git("rev-parse", "--short", "HEAD"));
-  else if (process.env.QUEUE_PR) console.log("RESULT: ok queued #42 " + git("rev-parse", "HEAD"));
+  else if (process.env.QUEUE_PR) console.log("RESULT: ok queued #42 " + git("rev-parse", "HEAD") + (process.env.PR_SUFFIX || ""));
   else {
     if (process.env.ADD_FOLLOWUPS) {
       const ticket = args[args.indexOf("--ticket") + 1];
@@ -219,7 +220,7 @@ if (phase === "review") {
       record.landed = { pr: 42, tier: "full", ci: "pass", sha, at: "2026-10-01T00:00:00.000Z", waived: null };
       writeFileSync(path, JSON.stringify(record));
     }
-    console.log("RESULT: ok merged #42 " + (process.env.SHORT_MERGE ? sha.slice(0, 7) : sha));
+    console.log("RESULT: ok merged #42 " + (process.env.SHORT_MERGE ? sha.slice(0, 7) : sha) + (process.env.PR_SUFFIX || ""));
   }
 }
 `);
@@ -1535,4 +1536,142 @@ test("a risky change (paths.risky names its file) gets 5 fix rounds, a normal on
   const given = fixture(t, { project: "kit-slice", branches: { land: "dev" }, paths: { risky: ["^file\\.txt$"] } });
   const two = given.run([], { CLEAN_AT: "99" }, ["--ticket", given.ticket, "--builder", "claude-opus-5-5", "--rounds", "2"]);
   assert.match(two.stdout, /after 2 rounds/);
+});
+
+// Stage 2: on a project with "tickets": "orbit", kit slice --ticket KEY builds the card from a brief made from it.
+async function orbitSlice(t: TestContext) {
+  const o = await orbitProject(t);
+  const f = fixture(t, { project: "kit-slice", branches: { land: "dev" }, ...orbitSettings });
+  const env = { ...f.env, ...o.env };
+  const slice = (key = "KIT-1", extra: NodeJS.ProcessEnv = {}) => runAsync("bash", [kit, "slice", "--ticket", key, "--builder", "sol"], { cwd: f.root, env: { ...env, ...extra } });
+  return { ...f, ...o, env, slice };
+}
+const lastLine = (output: Run) => output.stdout.trim().split("\n").at(-1)!;
+
+test("on Orbit, slice --ticket KEY claims the card, writes its brief and hands the brief to every step", async t => {
+  const { card, slice, orbit, root, calls, log } = await orbitSlice(t);
+  const task = card({ title: "First card" });
+  const output = await slice();
+  assert.equal(output.status, 0, output.all);
+  assert.match(lastLine(output), /^RESULT: ok slice \.scratch\/kit-tickets\/KIT-1\.md PR #42 /);
+  const brief = readFileSync(join(root, ".scratch/kit-tickets/KIT-1.md"), "utf8");
+  assert.match(brief, /^---\ntitle: First card\norbit: KIT-1\ntype: task \(AFK\)\nstatus: open\nassignee: ke-04\n---\n\nOrbit card KIT-1: http:\/\/orbit\.test\/tasks\/1\n\n## Goal/);
+  assert.equal(orbit.statusOf(task), "In Progress");
+  assert.match(task.description, /^Claimed by: ke-04\n/);
+  assert.match(log(), /card=KIT-1 action=claim .* who=ke-04 result=ok/);
+  const steps = calls();
+  assert.equal(steps.find(call => call.phase === "build")?.builderTicket, join(root, ".scratch/kit-tickets/KIT-1.md"));
+  for (const phase of ["review", "pr"]) assert.deepEqual(steps.filter(call => call.phase === phase).map(call => call.args[call.args.indexOf("--ticket") + 1]).at(-1), ".scratch/kit-tickets/KIT-1.md");
+  assert.equal(readFileSync(join(root, ".scratch/agent-brief.md"), "utf8").split("\n")[0], "Ticket: .scratch/kit-tickets/KIT-1.md");
+});
+
+test("on Orbit, a rerun checks the card is still its own and resumes from the brief; with Orbit down it goes on and says so", async t => {
+  const { card, slice, orbit } = await orbitSlice(t);
+  const task = card();
+  const failed = await slice("KIT-1", { FAIL_PHASE: "review" });
+  assert.equal(failed.status, 1, failed.all);
+  const writes = orbit.writes().length;
+  orbit.controls.answers.push("gateway-page");
+  const again = await slice();
+  assert.equal(again.status, 0, again.all);
+  assert.match(again.stdout, /^card: KIT-1 could not be checked on Orbit \(Orbit answered 502.*\); going on from the saved brief$/m);
+  assert.equal(orbit.writes().length, writes, "a resumed slice claims nothing again");
+  assert.equal(orbit.statusOf(task), "In Progress");
+});
+
+test("on Orbit, a rerun whose card was given back and taken by someone else stops before building", async t => {
+  const { card, slice, orbit, calls } = await orbitSlice(t);
+  const task = card();
+  assert.equal((await slice("KIT-1", { FAIL_PHASE: "review" })).status, 1);
+  task.description = task.description.replace("Claimed by: ke-04", "Claimed by: other");
+  const before = calls().length;
+  const again = await slice();
+  assert.equal(again.status, 1, again.all);
+  assert.match(lastLine(again), /^RESULT: fail slice brief: KIT-1 is now held by other \(In Progress\), so this slice's saved brief is stale; remove \.scratch\/kit-tickets\/KIT-1\.md and \.scratch\/kit-slice\/KIT-1 to start over$/);
+  assert.equal(calls().length, before, "nothing was built");
+  task.status_id = orbit.statusId(orbit.kit, "Todo");
+  task.description = task.description.replace(/Claimed by: other\n\n/, "");
+  assert.match(lastLine(await slice()), /KIT-1 is now held by nobody \(Todo\)/);
+});
+
+test("on Orbit, slice refuses a card someone else holds, one without Files and Done when, and Orbit down, and leaves no claim or brief", async t => {
+  const { card, slice, orbit, root, calls } = await orbitSlice(t);
+  card({ description: "Claimed by: other\n\n## Files\n\n- `file.txt`\n\n## Done when\n\n- done" }, "In Progress");
+  const bare = card({ description: "Only a goal" });
+  const free = card();
+  const taken = await slice("KIT-1");
+  assert.equal(taken.status, 1, taken.all);
+  assert.match(lastLine(taken), /^RESULT: fail slice brief: KIT-1 is already taken by other \(In Progress\), so it was not claimed$/);
+  const empty = await slice("KIT-2");
+  assert.match(lastLine(empty), /^RESULT: fail slice brief: KIT-2 cannot be built yet: its description needs a "## Files" and a "## Done when" section$/);
+  assert.equal(orbit.statusOf(bare), "Todo");
+  orbit.controls.answers.push({ status: 401, code: "unauthorized", detail: "No token, or the token is not correct." });
+  const refused = await slice("KIT-3");
+  assert.match(lastLine(refused), /^RESULT: fail slice brief: Orbit refused: .*token is wrong, expired or revoked/);
+  assert.equal(orbit.statusOf(free), "Todo");
+  assert.ok(!free.description.includes("Claimed by"));
+  assert.equal(orbit.writes().length, 0);
+  assert.ok(!existsSync(join(root, ".scratch/kit-tickets")), "no brief was written");
+  assert.deepEqual(calls(), []);
+  for (const output of [taken, empty, refused]) for (const secret of orbitSecretsForTests) assert.ok(!output.all.includes(secret));
+});
+
+test("on Orbit, a slice whose PR was queued closes the card when the queue lands it", async t => {
+  const { card, slice, orbit, log } = await orbitSlice(t);
+  const task = card();
+  const output = await slice("KIT-1", { QUEUE_PR: "1" });
+  assert.equal(output.status, 0, output.all);
+  assert.match(output.stdout, /^card: KIT-1 Done \(PR #42\)$/m);
+  assert.equal(orbit.statusOf(task), "Done");
+  assert.match(task.description, new RegExp(`Landed in PR #42 \\(merge commit ${"a".repeat(40)}\\)`));
+  assert.ok(!task.description.includes("Claimed by"));
+  assert.match(log(), /card=KIT-1 action=close .* result=ok/);
+});
+
+test("on Orbit, the slice reads kit pr's RESULT line with the card words after the SHA, merged or queued", async t => {
+  for (const [extra, words] of [
+    [{ PR_SUFFIX: " (card KIT-1 Done)" }, /^RESULT: ok slice \.scratch\/kit-tickets\/KIT-1\.md PR #42 [0-9a-f]{40} \(card KIT-1 Done\)$/],
+    [{ PR_SUFFIX: "; card KIT-1 not closed: Orbit answered 502" }, /^RESULT: ok slice \.scratch\/kit-tickets\/KIT-1\.md PR #42 [0-9a-f]{40}; card KIT-1 not closed: Orbit answered 502$/],
+    [{ PR_SUFFIX: "; card KIT-1 closes when the queue lands it", QUEUE_PR: "1" }, /^RESULT: ok slice \.scratch\/kit-tickets\/KIT-1\.md PR #42 a{40} \(card KIT-1 Done\)$/],
+  ] as const) {
+    const { card, slice } = await orbitSlice(t);
+    card();
+    const output = await slice("KIT-1", extra);
+    assert.equal(output.status, 0, output.all);
+    assert.match(lastLine(output), words);
+  }
+});
+
+test("on Orbit, a queued card closes with the review and UX follow-ups its brief kept, as one comment", async t => {
+  const { card, slice, orbit, root } = await orbitSlice(t);
+  const task = card();
+  const first = await slice("KIT-1", { FAIL_PHASE: "review" });
+  assert.equal(first.status, 1, first.all);
+  const brief = join(root, ".scratch/kit-tickets/KIT-1.md");
+  writeFileSync(brief, `${readFileSync(brief, "utf8")}\n### Review follow-ups\n\n- Spec (P3): P3: Cosmetic defect.\n\n### UX follow-ups\n\n- UX (looks off): F-1 S1: a hint line\n`);
+  const output = await slice("KIT-1", { QUEUE_PR: "1" });
+  assert.equal(output.status, 0, output.all);
+  assert.equal(orbit.statusOf(task), "Done");
+  assert.deepEqual((orbit.comments[task.id] ?? []).map((comment: any) => comment.body),
+    ["Follow-ups from PR #42:\n- Spec (P3): P3: Cosmetic defect.\n- UX (looks off): F-1 S1: a hint line"]);
+});
+
+test("on Orbit, a queued card that cannot be closed when the queue lands it is named on the slice's RESULT line", async t => {
+  const { card, slice, orbit } = await orbitSlice(t);
+  const task = card();
+  assert.equal((await slice("KIT-1", { FAIL_PHASE: "review" })).status, 1);
+  // The resumed slice reads the card once (and goes on when it cannot), then closes it: both answers fail.
+  orbit.controls.answers.push("gateway-page", "gateway-page");
+  const output = await slice("KIT-1", { QUEUE_PR: "1" });
+  assert.equal(output.status, 0, output.all);
+  assert.match(lastLine(output), /^RESULT: ok slice \.scratch\/kit-tickets\/KIT-1\.md PR #42 a{40}; card KIT-1 not closed: Orbit answered 502/);
+  assert.equal(orbit.statusOf(task), "In Progress");
+});
+
+test("on Orbit, a rerun under another owner name still resumes a card its brief says it claimed", async t => {
+  const { card, slice } = await orbitSlice(t);
+  card();
+  assert.equal((await slice("KIT-1", { FAIL_PHASE: "review" })).status, 1);
+  const again = await slice("KIT-1", { ASE_OWNER: "someone-else" });
+  assert.equal(again.status, 0, again.all);
 });

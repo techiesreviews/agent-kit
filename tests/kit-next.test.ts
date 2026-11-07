@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { kitEnv } from "./support/kit-env.ts";
+import { orbitProject, orbitSecretsForTests, orbitSettings, runAsync, type Run } from "./support/orbit-project.ts";
 
 const next = resolve("kit.d/next");
 const identity = { GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.com", GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.com" };
@@ -1110,4 +1111,158 @@ test("an absolute --ticket under a dev root whose parent folder is named like ma
     `waits: ${plan("02-alone")} runs alone; waits for slice-alpha01`,
     "RESULT: ok next 0 ready, 1 waiting",
   ]);
+});
+
+// Stage 2: a project with "tickets": "orbit" takes its tickets from the cards on its Orbit board (the fake one).
+async function orbitNext(t: TestContext) {
+  const o = await orbitProject(t);
+  const f = fixture(t, {}, "dev", orbitSettings);
+  const env = { ...f.env, ...o.env };
+  const run = (...args: string[]) => runAsync(process.execPath, [next, ...args], { cwd: f.dev, env });
+  for (const secret of orbitSecretsForTests) assert.ok(!JSON.stringify(env).includes(secret));
+  return { ...f, ...o, env, run };
+}
+const outputLines = (output: Run) => output.stdout.trim().split("\n").filter(line => !line.startsWith("running: "));
+
+test("on Orbit, next hands out the Todo cards whose blockers are done, in build waves, and says why the rest wait", async t => {
+  const { card, run, orbit } = await orbitNext(t);
+  card({ title: "First" });
+  card({ title: "After first", description: "Blocked by: KIT-1\n\n## Files\n\n- `b.ts`\n\n## Done when\n\n- done" });
+  card({ title: "After second", description: "Blocked by: KIT-2\n\n## Files\n\n- `d.ts`\n\n## Done when\n\n- done" });
+  card({ title: "Not yet" }, "Backlog");
+  card({ title: "Landed" }, "Done");
+  card({ title: "Ask Lex", description: "Next step (Lex): choose a name" });
+  card({ title: "Taken", description: "Claimed by: kit-7" }, "In Progress");
+  card({ title: "After landed", description: "Blocked by: KIT-5\n\n## Files\n\n- `c.ts`\n\n## Done when\n\n- done" });
+  const output = await run();
+  assert.equal(output.status, 0, output.all);
+  assert.deepEqual(outputLines(output), [
+    "next: KIT-1 builder=claude-opus-5-5 owner=kit-1 why=slot 1/5",
+    "next: KIT-8 builder=claude-opus-5-5 owner=kit-8 why=slot 2/5",
+    "waits: KIT-2 blocked by KIT-1 (Todo)",
+    "waits: KIT-3 blocked by KIT-2 (Todo)",
+    "waits: KIT-4 in Backlog",
+    "waits: KIT-6 needs Lex (Next step (Lex): choose a name)",
+    "waits: KIT-7 claimed by kit-7, no running job found",
+    "wave 2: KIT-2",
+    "wave 3: KIT-3",
+    "RESULT: ok next 2 ready, 5 waiting",
+  ]);
+  assert.equal(orbit.writes().length, 0, "listing writes nothing");
+});
+
+test("on Orbit, next --start claims each card (In Progress, Claimed by), makes its worktree and starts kit slice --ticket KEY", async t => {
+  const { card, run, orbit, root, log, running } = await orbitNext(t);
+  const first = card({ title: "First" });
+  const busy = card({ title: "Running", description: "Claimed by: kit-2\n\n## Files\n\n- `x.ts`\n\n## Done when\n\n- done" }, "In Progress");
+  running("slice-kit-2", "KIT-2");
+  const output = await run("--start");
+  assert.equal(output.status, 0, output.all);
+  assert.match(output.stdout, /^running: slice-kit-2 KIT-2$/m);
+  assert.match(output.stdout, /^claimed: KIT-1 owner=kit-1 \(Orbit\)$/m);
+  assert.equal(orbit.statusOf(first), "In Progress");
+  assert.match(first.description, /^Claimed by: kit-1\n\n## Goal/);
+  assert.equal(orbit.statusOf(busy), "In Progress");
+  assert.match(log(), /card=KIT-1 action=claim/);
+  const calls = readFileSync(join(root, "kit.log"), "utf8").trim().split("\n");
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /\|kit-1\|bg slice-kit-1 -- scripts\/agents\/kit slice --ticket KIT-1 --builder claude-opus-5-5$/);
+  assert.match(output.stdout.trim().split("\n").at(-1)!, /^RESULT: ok next 1 ready, 0 waiting, 1 started$/);
+});
+
+test("on Orbit, a start that fails after the claim gives the claim back, so no card is left half-claimed", async t => {
+  const { card, run, orbit, env } = await orbitNext(t);
+  const first = card({ title: "First" });
+  const output = await runAsync(process.execPath, [next, "--start"], { cwd: env.KIT_DEV_ROOT, env: { ...env, FAKE_WORKTREE_FAIL: "1" } });
+  assert.equal(output.status, 1, output.all);
+  assert.match(output.stdout, /RESULT: fail next start KIT-1: worktree\.sh .* failed: .*; the claim was given back$/m);
+  assert.equal(orbit.statusOf(first), "Todo");
+  assert.ok(!first.description.includes("Claimed by"));
+});
+
+test("on Orbit, a card claimed by someone else between the list and the claim moves to waiting", async t => {
+  const { card, run, orbit } = await orbitNext(t);
+  const first = card({ title: "First" });
+  orbit.controls.conflicts = 1;
+  orbit.controls.concurrentEdit = task => { task.status_id = orbit.statusId(orbit.kit, "In Progress"); task.description = "Claimed by: other-lead"; };
+  const output = await run("--start");
+  assert.equal(output.status, 0, output.all);
+  assert.match(output.stdout, /^waits: KIT-1 claimed meanwhile \(KIT-1 is already taken by other-lead/m);
+  assert.match(output.stdout, /^RESULT: ok next 0 ready, 1 waiting, 0 started$/m);
+  assert.equal(first.description, "Claimed by: other-lead");
+});
+
+test("on Orbit, Orbit down, a refused token or a Cloudflare block gives one plain line, writes nothing and prints no secret", async t => {
+  for (const [answer, words] of [
+    ["gateway-page", /Orbit answered 502/],
+    [{ status: 401, code: "unauthorized", detail: "No token, or the token is not correct." }, /token is wrong, expired or revoked/],
+    ["redirect", /Cloudflare stopped the request/],
+  ] as const) {
+    const { card, run, orbit } = await orbitNext(t);
+    card({ title: "First" });
+    orbit.controls.answers.push(answer as any);
+    const output = await run("--start");
+    assert.equal(output.status, 1, output.all);
+    const last = output.stdout.trim().split("\n").at(-1)!;
+    assert.match(last, /^RESULT: fail next /);
+    assert.match(last, words);
+    assert.equal(orbit.writes().length, 0);
+    for (const secret of orbitSecretsForTests) assert.ok(!output.all.includes(secret));
+  }
+});
+
+test("on Orbit, a Todo card without Files and Done when waits and is never claimed; a blocker cycle or a missing blocker gets no wave", async t => {
+  const { card, run, orbit, root } = await orbitNext(t);
+  const bare = card({ title: "Bare", description: "Only a goal" });
+  card({ title: "Loop a", description: "Blocked by: KIT-3" });
+  card({ title: "Loop b", description: "Blocked by: KIT-2" });
+  card({ title: "Missing", description: "Blocked by: VID-9" });
+  const output = await run("--start");
+  assert.equal(output.status, 0, output.all);
+  assert.deepEqual(outputLines(output), [
+    'waits: KIT-1 needs "## Files" and "## Done when" in its description',
+    "waits: KIT-2 blocked by KIT-3 (Todo)",
+    "waits: KIT-3 blocked by KIT-2 (Todo)",
+    "waits: KIT-4 blocked by VID-9 (not found)",
+    "RESULT: ok next 0 ready, 4 waiting, 0 started",
+  ]);
+  assert.equal(orbit.writes().length, 0);
+  assert.equal(orbit.statusOf(bare), "Todo");
+  assert.ok(!existsSync(join(root, "kit.log")), "no job started");
+});
+
+test("on Orbit, an In Progress card with no Claimed by line waits as such and is never handed out", async t => {
+  const { card, run, orbit } = await orbitNext(t);
+  card({ title: "Moved by hand" }, "In Progress");
+  const output = await run("--start");
+  assert.equal(output.status, 0, output.all);
+  assert.deepEqual(outputLines(output), ["waits: KIT-1 In Progress with no claim recorded", "RESULT: ok next 0 ready, 1 waiting, 0 started"]);
+  assert.equal(orbit.writes().length, 0);
+});
+
+test("on Orbit, only cards that may start begin a wave: a card behind a Backlog, Lex, unbuildable or other board's card gets no wave", async t => {
+  const { card, run, orbit } = await orbitNext(t);
+  card({ title: "Later" }, "Backlog");
+  card({ title: "Ask", description: "Next step (Lex): choose" });
+  card({ title: "Bare", description: "Only a goal" });
+  card({ title: "Behind backlog", description: "Blocked by: KIT-1" });
+  card({ title: "Behind Lex", description: "Blocked by: KIT-2" });
+  card({ title: "Behind bare", description: "Blocked by: KIT-3" });
+  card({ title: "Free" });
+  orbit.addTask(orbit.video, { title: "Elsewhere" });
+  card({ title: "Behind another board", description: "Blocked by: VID-1" });
+  card({ title: "Behind free", description: "Blocked by: KIT-7\n\n## Files\n\n- `d.ts`\n\n## Done when\n\n- done" });
+  const output = await run();
+  assert.equal(output.status, 0, output.all);
+  assert.deepEqual(outputLines(output).filter(line => line.startsWith("wave ")), ["wave 2: KIT-9"]);
+});
+
+test("on Orbit, a failure outside Orbit keeps its own words on the RESULT line", async t => {
+  const { card, env, running, orbit } = await orbitNext(t);
+  card({ title: "First" });
+  running("slice-kit-9", "KIT-9");
+  const output = await runAsync(process.execPath, [next], { cwd: env.KIT_DEV_ROOT, env: { ...env, KIT_NEXT_KIT: join(env.KIT_DEV_ROOT!, "no-such-kit") } });
+  assert.equal(output.status, 1, output.all);
+  assert.match(output.stdout.trim().split("\n").at(-1)!, /^RESULT: fail next spawnSync .*no-such-kit ENOENT$/);
+  assert.equal(orbit.writes().length, 0);
 });

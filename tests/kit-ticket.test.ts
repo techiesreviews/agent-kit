@@ -5,9 +5,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { orbitDate, orbitStore, showDate, ticketSettings, withBlockedBy, withNote, withPlannedDates, withoutNextLex } from "../ticket-store.mjs";
+import { cardStage, orbitDate, orbitStore, showDate, ticketSettings, withBlockedBy, withNote, withPlannedDates, withoutNextLex } from "../ticket-store.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { orbitRedactor, orbitReport } from "../orbit-client.mjs";
+import { orbitClient, orbitRedactor, orbitReport } from "../orbit-client.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { cloudflarePassFrom } from "../orbit-setup.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
@@ -1788,4 +1788,108 @@ test("a project on files keeps its other commands; kit ticket still reaches Orbi
   const { orbit, run } = await fixture(t, { tickets: "files", orbit: { project: "TOOLS" } });
   ok(await run(["create", "--title", "On the board"]));
   assert.equal(orbit.tasks.length, 1);
+});
+
+// Stage 2: the store calls kit next, slice, pr and status make on a project that keeps its tickets on Orbit.
+async function boardStore(t: TestContext, role = "lead", who = "kit-1") {
+  const orbit = await fakeOrbit(t, { kitBoard: true });
+  const home = mkdtempSync(join(tmpdir(), "kit-board-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const client = orbitClient({ origin: orbit.origin, workspace_id: fakeWorkspace, token: fakeToken, cf_access_client_id: fakeCfId, cf_access_client_secret: fakeCfSecret }, { timeoutMs: 5_000 });
+  const make = (asRole = role, asWho = who) => orbitStore({ client, role: asRole, who: asWho, logPath: join(home, "orbit.log"), redact: orbitRedactor(secrets), secrets, defaults: { project: "KIT" } });
+  const card = (fields: Record<string, any> = {}, status = "Todo") => orbit.addTask(orbit.kit, { status_id: orbit.statusId(orbit.kit, status), ...fields });
+  return { orbit, store: make(), make, card, log: () => existsSync(join(home, "orbit.log")) ? readFileSync(join(home, "orbit.log"), "utf8") : "" };
+}
+
+test("cardStage reads the status by name: Done, In Progress, Todo, Backlog; a board without Todo starts on any unstarted status", () => {
+  const kitBoard = ["Backlog", "Todo", "In Progress", "Done"].map(name => ({ name, category: name === "Done" ? "completed" : name === "In Progress" ? "started" : "unstarted" }));
+  assert.deepEqual(kitBoard.map(status => cardStage(status, kitBoard)), ["waiting", "ready", "working", "done"]);
+  const video = [{ name: "Idea", category: "unstarted" }, { name: "Script", category: "started" }, { name: "Publish", category: "completed" }];
+  assert.deepEqual(video.map(status => cardStage(status, video)), ["ready", "working", "done"]);
+  assert.equal(cardStage({ name: "Won't do", category: "cancelled" }, kitBoard), "done");
+});
+
+test("board lists the cards under the project's parent with their stage, claim, next step and open blockers, in number order", async t => {
+  const { orbit, store, card } = await boardStore(t);
+  const parent = card({ title: "Parent" }, "In Progress");
+  card({ title: "Done one", parent_task_id: parent.id }, "Done");
+  card({ title: "Needs done one", parent_task_id: parent.id, description: "Blocked by: KIT-2" });
+  card({ title: "Needs three", parent_task_id: parent.id, description: "Blocked by: KIT-3, VID-9" });
+  card({ title: "Elsewhere" });
+  const { board, cards } = await store.board({ parent: "KIT-1" });
+  assert.equal(board, "KIT");
+  assert.deepEqual(cards.map((item: any) => [item.identifier, item.stage, item.open_blockers]), [
+    ["KIT-2", "done", []], ["KIT-3", "ready", []], ["KIT-4", "ready", ["KIT-3 (Todo)", "VID-9 (not found)"]],
+  ]);
+  assert.equal(orbit.writes().length, 0, "reading the board writes nothing");
+});
+
+test("claim moves a card to In Progress with a Claimed by line in one write; the same owner again is no change and needs no lead", async t => {
+  const { orbit, store, make, card, log } = await boardStore(t);
+  const task = card({ description: "Next text" });
+  const claimed = await store.claim("KIT-1", "kit-1");
+  assert.equal(orbit.statusOf(task), "In Progress");
+  assert.equal(task.description, "Claimed by: kit-1\n\nNext text");
+  assert.equal(claimed.previous, orbit.statusId(orbit.kit, "Todo"));
+  assert.equal(orbit.writes().length, 1);
+  assert.match(log(), /card=KIT-1 action=claim fields=status_id,description who=kit-1 result=ok/);
+  const again = await make("helper").claim("KIT-1", "kit-1");
+  assert.ok(again.unchanged);
+  assert.equal(orbit.writes().length, 1);
+  // A note or a new description from the lead keeps the claim line.
+  await store.update("KIT-1", { description: "Rewritten" });
+  assert.equal(task.description, "Claimed by: kit-1\n\nRewritten");
+});
+
+test("a second helper claiming the same card is refused, also when both read it before either wrote", async t => {
+  const { orbit, store, make, card } = await boardStore(t);
+  const task = card();
+  await store.claim("KIT-1", "kit-1");
+  await assert.rejects(() => make("lead", "other").claim("KIT-1", "other"), /KIT-1 is already taken by kit-1 \(In Progress\), so it was not claimed/);
+  const raced = card();
+  // The other helper's claim lands between this read and this write: Orbit answers 409, and the fresh read shows it taken.
+  orbit.controls.conflicts = 1;
+  orbit.controls.concurrentEdit = edited => { edited.status_id = orbit.statusId(orbit.kit, "In Progress"); edited.description = "Claimed by: other"; };
+  await assert.rejects(() => store.claim("KIT-2", "kit-2"), /KIT-2 is already taken by other/);
+  assert.equal(raced.description, "Claimed by: other");
+  assert.equal(task.description, "Claimed by: kit-1");
+});
+
+test("claim refuses a done card, one waiting for Lex, one still blocked and a helper without the lead role", async t => {
+  const { orbit, store, make, card } = await boardStore(t);
+  card({}, "Done");
+  card({ description: "Next step (Lex): choose a name" });
+  card({ description: "Blocked by: KIT-4" });
+  card();
+  await assert.rejects(() => store.claim("KIT-1", "kit-1"), /KIT-1 is already Done/);
+  await assert.rejects(() => store.claim("KIT-2", "kit-2"), /KIT-2 waits for Lex/);
+  await assert.rejects(() => store.claim("KIT-3", "kit-3"), /KIT-3 is blocked by KIT-4 \(Todo\)/);
+  await assert.rejects(() => make("helper").claim("KIT-4", "kit-4"), /only a lead may write/);
+  assert.equal(orbit.writes().length, 0);
+});
+
+test("unclaim gives the status and the claim back; close sets Done with a dated note and drops the claim, once", async t => {
+  const { orbit, store, card } = await boardStore(t);
+  const task = card({ description: "Text" });
+  const { previous } = await store.claim("KIT-1", "kit-1");
+  await store.unclaim("KIT-1", "kit-1", previous);
+  assert.equal(orbit.statusOf(task), "Todo");
+  assert.equal(task.description, "Text");
+  await store.claim("KIT-1", "kit-1");
+  const unchanged = await store.unclaim("KIT-1", "someone-else", previous);
+  assert.ok(unchanged.unchanged, "a claim someone else holds is left alone");
+  await store.close("KIT-1", "Landed: PR https://github.com/acme/tools/pull/7, merge abc1234");
+  assert.equal(orbit.statusOf(task), "Done");
+  assert.match(task.description, /^Text\n\n## Notes\n\n- \d{4}-\d{2}-\d{2} \(kit-1\): Landed: PR https:\/\/github\.com\/acme\/tools\/pull\/7, merge abc1234$/);
+  const writes = orbit.writes().length;
+  assert.ok((await store.close("KIT-1", "Landed: PR https://github.com/acme/tools/pull/7, merge abc1234")).unchanged);
+  assert.equal(orbit.writes().length, writes);
+});
+
+test("close never moves a card to a Publish status in place of a missing Done: it says the board has no Done status", async t => {
+  const { orbit, store } = await boardStore(t);
+  const task = orbit.addTask(orbit.tools, { status_id: orbit.statusId(orbit.tools, "Edit") });
+  await assert.rejects(() => store.close(task.identifier, "Landed in PR #1 (merge commit abc)"), /this board has no done status \(it has: Idea, Script, Record, Edit, Publish\)/);
+  assert.equal(orbit.statusOf(task), "Edit");
+  assert.equal(orbit.writes().length, 0);
 });

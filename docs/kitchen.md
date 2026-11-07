@@ -70,12 +70,17 @@ says for today; never claim a planned item ran.
 - **Tickets are moving to Orbit, in stages** (Lex, 2026-11-06): the fleet manages every card in every
   project through `scripts/agents/kit ticket` (`--help`), Orbit's public API inside the kit; no other
   tool sits beside it. A project switches with `"tickets": "orbit"` in its `scripts/agents/kit.json`
-  (default `files`); until later stages land, `kit next`, `kit slice`, `kit pr`, `kit status` and
-  `kit init --issues` still use ticket files, and maps and research notes stay documents. **The Orbit rule:** only leads
-  write (`ORBIT_ROLE=lead`); helpers read and report to their lead. Never delete a card for good; the
-  trash, the Publish status or label and the "Scheduled in Radaar" tick each need Lex's exact words
-  (`--lex-said`). No date without a source. The Orbit token and the Cloudflare pass never go in a
-  chat, a log or a repository.
+  (default `files`). With `orbit` the tickets live in Orbit: `kit next` hands out the Todo cards
+  whose "Blocked by:" cards are Done, in build waves; `kit next --start` and `kit slice --ticket <KEY>`
+  claim the card (status In Progress and a "Claimed by: <owner>" line) and build from its brief;
+  `kit pr` moves the card to Done with a note naming the PR and its merge SHA; `kit status` shows the
+  cards; `kit init --issues` makes a card per open GitHub Issue and closes the Issue with a comment
+  naming its card. Statuses go by name (Backlog, Todo, In Progress, Done); a board that keeps its
+  stage in labels keeps them. Ticket files stay only for `files` projects, and maps and research
+  notes stay documents. **The Orbit rule:** only leads write (`ORBIT_ROLE=lead`); helpers read and
+  report to their lead. Never delete a card for good; the trash, the Publish status or label and
+  the "Scheduled in Radaar" tick each need Lex's exact words (`--lex-said`). No date without a
+  source. The Orbit token and the Cloudflare pass never go in a chat, a log or a repository.
 - **One house style for every tool:** anything a person sees follows the kit's
   [house style](house-style.md) (`docs/house-style.md` in the kit; `scripts/agents/kit --home`
   prints the folder): quiet screens, instant changes with Undo, the same agent connection

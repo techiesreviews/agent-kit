@@ -8,6 +8,7 @@ import { checkSteps, classify, featureListGuard, focusedUnitFiles, parseChanges,
 import { sameReviewPatch } from "../review-findings.mjs";
 import { forEachAwait } from "./support/await-race.ts";
 import { kitEnv } from "./support/kit-env.ts";
+import { orbitProject, orbitSecretsForTests, orbitSettings, runAsync, type Run } from "./support/orbit-project.ts";
 import type { ScoreRecord } from "./kit-score.test.ts";
 
 const pr = resolve("kit.d/pr");
@@ -2554,4 +2555,138 @@ test("a should with no reason on a risky change at round 3 lands as a follow-up 
   assert.match(result.stdout, /^review: 1 follow-ups \(no reason given\) \(non-blocking\)$/m);
   assert.match(result.stdout, /Verdict: not approved \(1 open finding left for Lex: no reason was given for it\)$/m);
   assert.doesNotMatch(result.stdout, /waived by the lead/);
+});
+
+// Stage 2: on a project with "tickets": "orbit", kit pr closes the card when its PR lands.
+async function orbitPr(t: TestContext) {
+  const o = await orbitProject(t);
+  const f = fixture(t, undefined, orbitSettings);
+  const env = { ...f.env, ...o.env };
+  const pr = (args: string[], extra: NodeJS.ProcessEnv = {}) => runAsync(prCommand, args, { cwd: f.root, env: { ...env, ...extra } });
+  const brief = (key = "KIT-1") => {
+    mkdirSync(join(f.root, ".scratch/kit-tickets"), { recursive: true });
+    writeFileSync(join(f.root, `.scratch/kit-tickets/${key}.md`), `---\ntitle: Card title\norbit: ${key}\ntype: task (AFK)\nstatus: open\nassignee: ak-14\n---\n\nOrbit card ${key}\n\n## Files\n\n- \`feature.txt\`\n\n## Done when\n\n- done\n`);
+    return `.scratch/kit-tickets/${key}.md`;
+  };
+  return { ...f, ...o, env, pr, brief };
+}
+const prCommand = pr;
+const finalLine = (output: Run) => output.stdout.trim().split("\n").at(-1)!;
+const landedNote = /Landed in https:\/\/github\.com\/test\/repo\/pull\/73 \(merge commit abcdef0123456789abcdef0123456789abcdef01\)/;
+
+test("on Orbit, a landed PR closes its card: Done, a note with the PR link and merge SHA, no claim; the brief enters no commit", async t => {
+  const { card, pr, brief, orbit, git, log, body } = await orbitPr(t);
+  const task = card({ title: "Card title", description: "Claimed by: ak-14\n\n## Files\n\n- `feature.txt`\n\n## Done when\n\n- done" }, "In Progress");
+  const output = await pr(["--ticket", brief()]);
+  assert.equal(output.status, 0, output.all);
+  assert.equal(finalLine(output), "RESULT: ok merged #73 abcdef0 (card KIT-1 Done)");
+  assert.equal(orbit.statusOf(task), "Done");
+  assert.match(task.description, landedNote);
+  assert.ok(!task.description.includes("Claimed by"));
+  assert.match(log(), /card=KIT-1 action=close fields=status_id,description who=ak-14 result=ok/);
+  assert.match(body(), /^Ticket: Card title \(\.scratch\/kit-tickets\/KIT-1\.md\)$/m);
+  assert.doesNotMatch(git("log", "--format=%s", "origin/dev..HEAD"), /docs: KIT-1/);
+});
+
+test("on Orbit, kit pr --ticket KEY reads the card into its brief and closes it on landing", async t => {
+  const { card, pr, orbit, root, body } = await orbitPr(t);
+  const task = card({ title: "Straight from the card" }, "In Progress");
+  const output = await pr(["--ticket", "KIT-1"]);
+  assert.equal(output.status, 0, output.all);
+  assert.equal(finalLine(output), "RESULT: ok merged #73 abcdef0 (card KIT-1 Done)");
+  // The brief stays in kit pr's own run folder: a slice in this worktree never takes it for its own resumed brief.
+  assert.ok(!existsSync(join(root, ".scratch/kit-tickets/KIT-1.md")));
+  assert.match(body(), /^Ticket: Straight from the card \(/m);
+  assert.equal(orbit.statusOf(task), "Done");
+});
+
+test("on Orbit, a card that cannot be closed after the merge says so in one plain line and the merge still counts", async t => {
+  for (const [extra, words] of [
+    [{}, /Orbit answered 502/],
+    [{ ORBIT_ROLE: "" }, /only a lead may write to Orbit/],
+  ] as const) {
+    const { card, pr, brief, orbit } = await orbitPr(t);
+    const task = card({}, "In Progress");
+    if (!("ORBIT_ROLE" in extra)) orbit.controls.answers.push("gateway-page");
+    const output = await pr(["--ticket", brief()], extra);
+    assert.equal(output.status, 0, output.all);
+    const last = finalLine(output);
+    assert.match(last, /^RESULT: ok merged #73 abcdef0; card KIT-1 not closed: /);
+    assert.match(last, words);
+    assert.match(output.stdout, /^card: KIT-1 not closed: .*; close it with kit ticket update KIT-1 --status Done$/m);
+    assert.equal(orbit.statusOf(task), "In Progress");
+    for (const secret of orbitSecretsForTests) assert.ok(!output.all.includes(secret));
+  }
+});
+
+test("on Orbit, an unmerged PR (--no-merge) leaves its card as it is", async t => {
+  const { card, pr, brief, orbit } = await orbitPr(t);
+  const task = card({}, "In Progress");
+  const output = await pr(["--ticket", brief(), "--no-merge"]);
+  assert.equal(output.status, 0, output.all);
+  assert.match(finalLine(output), /^RESULT: ok opened #73 /);
+  assert.equal(orbit.statusOf(task), "In Progress");
+  assert.equal(orbit.writes().length, 0);
+});
+
+test("on Orbit, a queued PR leaves its card open and says the queue closes it; review follow-ups go on the card as one comment", async t => {
+  const queued = await orbitPr(t);
+  const open = queued.card({}, "In Progress");
+  const output = await queued.pr(["--ticket", queued.brief()], { FAKE_QUEUE: "1" });
+  assert.equal(output.status, 0, output.all);
+  assert.match(finalLine(output), /^RESULT: ok queued #73 [0-9a-f]{7}; card KIT-1 closes when the queue lands it$/);
+  assert.match(output.stdout, /^card: KIT-1 stays open until the queue lands #73; kit slice closes it then, else run kit ticket update KIT-1 --status Done$/m);
+  assert.equal(queued.orbit.statusOf(open), "In Progress");
+  assert.equal(queued.orbit.writes().length, 0);
+
+  const nits = await orbitPr(t);
+  const task = nits.card({}, "In Progress");
+  const brief = nits.brief();
+  writeFileSync(join(nits.root, brief), `${readFileSync(join(nits.root, brief), "utf8")}\n## Done (2026-11-07)\n\n### UX follow-ups\n\n- UX (looks off): F-1 S1: a hint line\n`);
+  nits.saveReview(cleanReview.replace("Spec: none.", "Spec: P3: Cosmetic defect.").replace("Validation gaps: none.", "Validation gaps: Add coverage."));
+  const landed = await nits.pr(["--ticket", brief]);
+  assert.equal(landed.status, 0, landed.all);
+  assert.equal(nits.orbit.statusOf(task), "Done");
+  assert.deepEqual((nits.orbit.comments[task.id] ?? []).map((comment: any) => comment.body), [
+    "Follow-ups from https://github.com/test/repo/pull/73:\n- Spec (P3): P3: Cosmetic defect.\n- Validation gaps (gap): Add coverage.\n- UX (looks off): F-1 S1: a hint line",
+  ]);
+  assert.doesNotMatch(nits.git("log", "--format=%s", "origin/dev..HEAD"), /docs: KIT-1/);
+});
+
+test("on Orbit, an absolute brief path closes its card; a dry run with a KEY writes no brief where a slice would read it", async t => {
+  const f = await orbitPr(t);
+  const task = f.card({}, "In Progress");
+  const output = await f.pr(["--ticket", join(f.root, f.brief())]);
+  assert.equal(output.status, 0, output.all);
+  assert.equal(finalLine(output), "RESULT: ok merged #73 abcdef0 (card KIT-1 Done)");
+  assert.equal(f.orbit.statusOf(task), "Done");
+
+  const dry = await orbitPr(t);
+  dry.card({}, "In Progress");
+  const planned = await dry.pr(["--ticket", "KIT-1", "--dry-run"]);
+  assert.equal(planned.status, 0, planned.all);
+  assert.ok(!existsSync(join(dry.root, ".scratch/kit-tickets/KIT-1.md")), "the dry run left no brief");
+  assert.equal(dry.orbit.writes().length, 0);
+});
+
+test("on Orbit, a queued PR keeps its review follow-ups in the brief for the slice that closes the card", async t => {
+  const f = await orbitPr(t);
+  f.card({}, "In Progress");
+  const brief = f.brief();
+  f.saveReview(cleanReview.replace("Spec: none.", "Spec: P3: Cosmetic defect."));
+  const output = await f.pr(["--ticket", brief], { FAKE_QUEUE: "1" });
+  assert.equal(output.status, 0, output.all);
+  assert.match(readFileSync(join(f.root, brief), "utf8"), /\n### Review follow-ups\n\n- Spec \(P3\): P3: Cosmetic defect\.\n$/);
+});
+
+test("on Orbit, a lead's kit pr --ticket KEY on a merge queue says nobody waits to close the card and puts its follow-ups on it now", async t => {
+  const f = await orbitPr(t);
+  const task = f.card({}, "In Progress");
+  f.saveReview(cleanReview.replace("Spec: none.", "Spec: P3: Cosmetic defect."));
+  const output = await f.pr(["--ticket", "KIT-1"], { FAKE_QUEUE: "1" });
+  assert.equal(output.status, 0, output.all);
+  assert.match(finalLine(output), /^RESULT: ok queued #73 [0-9a-f]{7}; card KIT-1 stays open: close it once #73 lands$/);
+  assert.match(output.stdout, /^card: KIT-1 stays open: nothing here waits for the queue; run kit ticket update KIT-1 --status Done once #73 lands$/m);
+  assert.equal(f.orbit.statusOf(task), "In Progress");
+  assert.deepEqual((f.orbit.comments[task.id] ?? []).map((comment: any) => comment.body), ["Follow-ups from https://github.com/test/repo/pull/73:\n- Spec (P3): P3: Cosmetic defect."]);
 });

@@ -5,7 +5,9 @@ import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, rea
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const { kitGhRepo, kitHideUserInfo, kitHome, kitMessagesToLexRule, kitProjects, kitRepoPrivate, kitRegisterProject, kitResult, kitRoot, kitSettingsFile, kitSettingsProblems, kitStateDir } = await import(
+const { orbitBringsSecret } = await import(pathToFileURL(resolve(import.meta.dirname, "../orbit-client.mjs")).href);
+const { onOrbit, openOrbitTickets, orbitProblem } = await import(pathToFileURL(resolve(import.meta.dirname, "../ticket-cards.mjs")).href);
+const { kitGhRepo, kitHideUserInfo, kitHome, kitMessagesToLexRule, kitOwner, kitProjects, kitRepoPrivate, kitRegisterProject, kitResult, kitRoot, kitSettingsFile, kitSettingsProblems, kitStateDir } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const usage = `Usage: kit init [--light | --full] [--land <branch>]
@@ -62,6 +64,10 @@ fork's upstream. Copied headings go two levels down. It does no setup and runs n
 stop it. gh and git fetch stop after KIT_ISSUES_TIMEOUT seconds (default 120).
 --issues --close, once those files are on origin's landing branch, closes each open Issue with a comment
 linking its file there; it closes nothing while any open Issue's file is missing on that branch.
+On Orbit ("tickets": "orbit" in kit.json) --issues writes no file: each open Issue becomes a card on the project's
+board, under its parent card when one is set (first status, the Issue's link and number on its "GitHub Issue:"
+line), and the Issue is closed with a comment naming its card (ORBIT_ROLE=lead). A rerun finds the cards it made
+and closes what is left; an Issue whose text holds a secret stays open. --close does the same there.
 `;
 
 // fail never returns: it prints the RESULT line and exits, so it also ends expressions such as readJson's catch.
@@ -101,7 +107,7 @@ const git = (...gitArgs) => {
 if (!git("rev-parse", "--show-toplevel")) fail(`${root} is not in a git repo; run kit init in the project's top folder`);
 const at = (path) => resolve(root, path);
 const home = kitHome();
-if (options.issues) issues();
+if (options.issues) await issues();
 
 const old = ["scripts/agents/kit-lib.sh", "scripts/agents/kit-lib.mjs", "scripts/agents/kit.d/",
   "scripts/agents/hooks/bash-guard.sh", "scripts/agents/hooks/agent-cap.sh", "scripts/agents/hooks/session-env.sh"].filter((path) => existsSync(at(path)));
@@ -493,7 +499,7 @@ kitResult("ok", `init ${summary}; ${doctorResult}`);
 
 // --issues: the project's open GitHub Issues become needs-triage tickets in the backlog map, once; with --close,
 // each open Issue whose file is on origin's landing branch is closed with a link to it. Never returns.
-function issues() {
+async function issues() {
   let settings = null;
   if (existsSync(at(kitSettingsFile))) {
     try { settings = JSON.parse(readFileSync(at(kitSettingsFile), "utf8")); }
@@ -572,7 +578,9 @@ function issues() {
     return Number(number) === issue.number && (repoKey(host, name) === ours || currentRepo(host, name) === ours);
   };
 
-  if (options.close) {
+  // On Orbit the Issues become cards, made and closed in one run below.
+  const orbit = onOrbit(settings);
+  if (options.close && !orbit) {
     if (!land) fail(`--close needs ${kitSettingsFile} with "branches": { "land": "<branch>" }; run kit init first`);
     if (!open.length) { kitResult("ok", "init issues no open Issues to close"); process.exit(0); }
     const fetched = bounded("git", ["-C", root, "fetch", "--quiet", "origin", `+refs/heads/${land}:refs/remotes/origin/${land}`]);
@@ -670,6 +678,58 @@ ${copied(issue.body)}
 ${comments.length ? comments.join("\n\n") : "None."}
 `;
   };
+  if (orbit) await issueCards();
+  // On Orbit: a card per open Issue (found again by its "GitHub Issue:" line on a rerun), then the Issue closed with a
+  // comment naming its card. A failure of Orbit's stops the run before the next Issue; nothing is closed without its card.
+  async function issueCards() {
+    let opened;
+    try { opened = openOrbitTickets({ settings, who: kitOwner() }); }
+    catch (error) { fail(`issues ${orbitProblem(error)}; made no card, closed nothing`); }
+    const { store, redact, secrets } = opened;
+    // A copied line shaped like one of the kit's own card lines (blockers, claim, next step, dates, the Issue link)
+    // gets a "> " in front, so nothing an Issue says can block, claim or date its card, or pass for another Issue's.
+    const kitLine = /^\s*(?:blocked by|claimed by|next step \(lex\)|planned dates|github issue):/i;
+    const cardText = (issue) => {
+      const ticket = ticketText(issue), copiedText = ticket.slice(ticket.indexOf("From GitHub Issue")).trim();
+      return `GitHub Issue: ${issue.url}\n\n${copiedText.split("\n").map((line) => kitLine.test(line) ? `> ${line}` : line).join("\n")}`;
+    };
+    const made = [], closed = [], failed = [], left = [];
+    const summary = () => `made ${made.length} Orbit card${made.length === 1 ? "" : "s"} and closed ${closed.length} of ${open.length} Issue${open.length === 1 ? "" : "s"}`;
+    for (const issue of open) {
+      const [, host, repo] = repoOf(issue), marker = `GitHub Issue: ${issue.url}`, text = cardText(issue);
+      if (orbitBringsSecret(`${issue.title}\n${text}`, "", secrets)) {
+        left.push(`#${issue.number}`);
+        console.log(`left open: #${issue.number}: its text holds a secret (an Orbit token or the Cloudflare pass); take it out of the Issue, then rerun`);
+        continue;
+      }
+      let task;
+      try {
+        const { items, more } = await store.list({ q: marker, limit: 1000 });
+        // Only the kit writes this line as it is (a copied one starts with "> "); kit lines may sit above it by now.
+        task = items.find((item) => String(item.description ?? "").split("\n").some((line) => line === marker));
+        if (!task && more) fail(`issues stopped at #${issue.number}: more than 1000 cards match its link, so an earlier card for it may be missed; ${summary()}; find it with kit ticket list --q "${marker}"`);
+        if (task) console.log(`found ${task.identifier} for #${issue.number}`);
+        else {
+          ({ task } = await store.create({ title: issue.title, description: text }));
+          made.push(task.identifier);
+          console.log(`made ${task.identifier} (#${issue.number} ${issue.title})`);
+        }
+      } catch (error) { fail(`issues stopped at #${issue.number}: ${orbitProblem(error, redact)}; ${summary()}; rerun to go on`); }
+      const { problem } = bounded("gh", ["issue", "close", String(issue.number), "--repo", ghRepo(host, repo),
+        "--comment", `Moved to Orbit card ${task.identifier}${task.url ? `: ${task.url}` : ""}\nWork on it goes on there.`]);
+      if (problem) {
+        failed.push(`#${issue.number}`);
+        console.log(`close failed: #${issue.number}: ${problem}`);
+      } else {
+        closed.push(issue.number);
+        console.log(`closed #${issue.number} → ${task.identifier}`);
+      }
+    }
+    if (failed.length) fail(`issues ${summary()}; failed: ${failed.join(", ")}; rerun to retry them`);
+    kitResult("ok", open.length ? `init issues ${summary()}${left.length ? `; left open: ${left.join(", ")}` : ""}` : "init issues no open Issues");
+    process.exit(0);
+  }
+
   const writes = [], skipped = [];
   for (const issue of open) {
     const there = texts.find(({ text }) => sameIssue(issueOf(text), issue));
