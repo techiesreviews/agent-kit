@@ -102,7 +102,9 @@ async function reviewOnce(flags, look) {
     if (previous && !previous.clean) {
       const { risky } = branchRisk({ root, base: scope.base, ticket: flags.ticket, settings: kitSettings(root) });
       sinceHead = previous.head !== scope.head ? previous.head : null;
-      brief += `\n${loopBriefSection({ round, limit: roundLimit(risky), previousHead: previous.head, currentHead: scope.head, open: previous.findings })}\n`;
+      // Declined findings reach the brief once: kit fix hands them over with the ticket (the "Declined by the author" part), else the saved ones are listed.
+      const declinedInBrief = brief.includes("\nDeclined by the author (with reasons):\n");
+      brief += `\n${loopBriefSection({ round, limit: roundLimit(risky), previousHead: previous.head, currentHead: scope.head, open: previous.findings, declined: declinedInBrief ? [] : previous.declined, declinedInBrief })}\n`;
       console.log(`review loop: round ${round}, answering ${previous.name} (${previous.findings.length} open findings)`);
     }
     if (sinceHead && previous && !previous.clean) agentArgs.push("--since", sinceHead);
@@ -210,7 +212,7 @@ async function reviewOnce(flags, look) {
         evidence = evidenceDirectory();
         if (look) mark(false);
         return evidence;
-      }, text => findingsRecord(text, { model, effort, scope: label, head: reviewedHead, ...loopMeta }));
+      }, text => findingsRecord(text, { model, effort, scope: label, head: reviewedHead, ...loopMeta }, previous?.findings ?? []));
       // The evidence is saved; a leftover temporary folder is reported but fails nothing.
       if (cleanup) console.error(`problem: removing ${temporary} failed: ${cleanup}`);
       if (record) {
