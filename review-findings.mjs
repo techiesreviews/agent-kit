@@ -77,11 +77,23 @@ export function parseMarks(resultMd) {
   return marks;
 }
 
+// A carried finding reads `<id> still open: <reason> (original finding: <the first text>)`; the first text is kept once, however
+// many rounds carry it, and cut at 400 characters.
+const ORIGINAL = " (original finding: ";
+const originalText = item => {
+  let text = String(item?.text ?? "");
+  if (/^R\d+-\d+ still open/.test(text)) {
+    const at = text.indexOf(ORIGINAL);
+    text = at < 0 ? "" : text.slice(at + ORIGINAL.length).replace(/\)$/, "");
+  }
+  return text.replace(/\s+/g, " ").trim().slice(0, 400);
+};
+
 // Parse the Markdown variants emitted by kit review without reading files or changing state.
 // A group whose first line says "none" holds notes, not findings, until the next heading;
 // an indented sub-bullet belongs to the finding above it. A defects line that names no severity
 // and starts with no location is reviewer prose: it is returned under notes and never blocks.
-export function openFindings(resultMd) {
+export function openFindings(resultMd, earlier = []) {
   const findings = [], notes = [];
   let defects = false, labelled = false, section = "", group = "", pending;
   // noneGroup: the group's first line said "none"; fresh: the group's first line is still to come;
@@ -175,7 +187,9 @@ export function openFindings(resultMd) {
     if (mark.status !== "open") continue;
     // A validation gap carried over stays a gap (a nit); the rest keep their own severity, or none (which blocks).
     const gap = mark.severity === "GAP";
-    findings.unshift({ group: gap ? "Validation gaps" : "Previous findings", text: `${id} still open: ${mark.reason || "no reason given"}`, severity: gap ? null : mark.severity, kind: gap ? null : "unsorted" });
+    // `earlier` (the findings of the review this one answers, with their ids) lets the mark keep the finding's own text.
+    const original = originalText(earlier.find(item => item?.id === id));
+    findings.unshift({ group: gap ? "Validation gaps" : "Previous findings", text: `${id} still open: ${mark.reason || "no reason given"}${original ? `${ORIGINAL}${original})` : ""}`, severity: gap ? null : mark.severity, kind: gap ? null : "unsorted" });
   }
   return readable ? { findings, notes, readable } : {
     findings: [{ group: "Review", text: "review format unreadable", severity: null, kind: "unsorted" }], notes: [], readable: false,
@@ -186,8 +200,8 @@ export function openFindings(resultMd) {
 // notes counts the prose lines openFindings set aside; lines under a "none" group are not counted.
 // Validation gaps carry neither and count as "gap" in both, so a severity "none" is always a
 // defect whose severity could not be read (one that blocks).
-export function findingsRecord(resultMd, meta) {
-  const { findings, notes, readable } = openFindings(resultMd);
+export function findingsRecord(resultMd, meta, earlier = []) {
+  const { findings, notes, readable } = openFindings(resultMd, earlier);
   if (!readable) return { ...meta, unreadable: true };
   const counts = { kind: Object.fromEntries([...KINDS, "unsorted", "gap"].map(kind => [kind, 0])),
     severity: Object.fromEntries(["P0", "P1", "P2", "P3", "none", "gap"].map(severity => [severity, 0])) };

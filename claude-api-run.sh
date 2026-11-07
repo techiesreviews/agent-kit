@@ -20,28 +20,62 @@ chmod 700 -- "$dir" 2>/dev/null || :
 if ! command -v claude > /dev/null 2>&1; then echo "claude-api-run: the claude command is not installed or not on PATH" >&2; exit 2; fi
 # Other ways to sign in or to reach another service would win over the key: drop them for this call.
 unset KIT_API_KEY_FILE KIT_API_CONFIG_DIR ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX
-# CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 keeps the key out of the shell commands, hooks and nested kit calls a builder starts.
-# It also makes claude set up its own sandbox, which leaves empty .env, .npmrc, yarn.lock ... files in the folder it runs in.
-# A call with an explicit tool list that has no Bash (a review) starts no shell command, so it runs without the flag and leaves no files.
-# Fail closed: the flag goes off only when every --tools value (the list is variadic, so the words after it count) is a plain reader.
+# CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 keeps the key out of everything Claude starts besides itself: the shell commands, the hooks
+# (from settings or plugins) and the nested kit calls of a run. Only claude's own process has the key.
+# The flag also makes claude set up its own sandbox, which leaves empty .env, .npmrc, yarn.lock ... files in the folder it runs in,
+# so it goes off in one case only: a call that has a tool list of plain readers (Read, Grep, Glob) and starts no hooks (--bare, or
+# --setting-sources with an empty value). No tool list, an empty one, or hooks that may run keep the flag on.
+# Fail closed: every doubt keeps the flag on. A tool list is read as claude reads it (variadic: the words after --tools count; commas,
+# spaces and line breaks all separate names), and --tools, --bare or --setting-sources count only where they are options of this call:
+# not as the value of another option, and not after a bare -- (words after it are the prompt).
 scrub=1
 args=("$@")
-for ((i = 0; i < ${#args[@]}; i++)); do
-  tools=''
-  case ${args[i]} in
-    --tools=*) tools=${args[i]#--tools=} ;;
-    --tools)
-      for ((j = i + 1; j < ${#args[@]}; j++)); do
-        [[ ${args[j]} == -* ]] && break
-        tools+=${tools:+,}${args[j]}
-      done ;;
-    *) continue ;;
-  esac
-  readers=1
-  IFS=',' read -r -a names <<< "${tools// /,}"
-  for name in "${names[@]}"; do
-    case $name in Read|Grep|Glob|'') ;; *) readers=0 ;; esac
-  done
-  if (( readers )); then scrub=0; else scrub=1; break; fi
+count=${#args[@]}
+end=$count
+for ((i = 0; i < count; i++)); do
+  if [[ ${args[i]} == -- ]]; then end=$i; break; fi
 done
+# is_option N: args[N] starts a new option (it is first, or follows a plain word, an option with its value in the same word, or a
+# switch that takes no value); after another option it would be that option's value, which we cannot tell from here: not an option.
+is_option() {
+  local n=$1 before
+  (( n < end )) || return 1
+  (( n == 0 )) && return 0
+  before=${args[n - 1]}
+  [[ $before != -* || $before == *=* ]] && return 0
+  case $before in
+    -p|--print|--bare|--verbose|--strict-mcp-config|--dangerously-skip-permissions|--no-session-persistence|--restricted|--safe-mode|--include-partial-messages|--include-hook-events|-c|--continue|--fork-session) return 0 ;;
+  esac
+  return 1
+}
+tool_lists=0 readers=1 misplaced=0 bare=0 sources_empty=0 sources_other=0
+for ((i = 0; i < count; i++)); do
+  case ${args[i]} in
+    --tools|--tools=*)
+      if ! is_option "$i"; then misplaced=1; continue; fi
+      tools=''
+      if [[ ${args[i]} == --tools=* ]]; then tools=${args[i]#--tools=}
+      else
+        for ((j = i + 1; j < end; j++)); do
+          [[ ${args[j]} == -* ]] && break
+          tools+=${tools:+,}${args[j]}
+        done
+      fi
+      tool_lists=$((tool_lists + 1))
+      IFS=',' read -r -a names <<< "${tools//[[:space:]]/,}"
+      named=0
+      for name in "${names[@]}"; do
+        case $name in Read|Grep|Glob) named=1 ;; '') ;; *) readers=0 ;; esac
+      done
+      (( named )) || readers=0 ;;
+    --bare) if is_option "$i"; then bare=1; else misplaced=1; fi ;;
+    --setting-sources|--setting-sources=*)
+      if ! is_option "$i"; then misplaced=1; continue; fi
+      if [[ ${args[i]} == --setting-sources=* ]]; then value=${args[i]#--setting-sources=}
+      elif (( i + 1 < end )) && [[ ${args[i + 1]} != -* ]]; then value=${args[i + 1]}
+      else value=x; fi
+      if [[ -z $value ]]; then sources_empty=1; else sources_other=1; fi ;;
+  esac
+done
+if (( tool_lists > 0 && readers && !misplaced && (bare || (sources_empty && !sources_other)) )); then scrub=0; fi
 ANTHROPIC_API_KEY=$key CLAUDE_CONFIG_DIR=$dir CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=$scrub exec claude "$@"

@@ -168,14 +168,83 @@ test("claude is told to keep the key out of the shell commands a builder starts"
   assert.equal(f.callList()[0].scrub, "1");
 });
 
-test("a review's read-only tool list runs without the scrub flag (it leaves empty .env, .npmrc, yarn.lock files); anything that can run Bash keeps it", t => {
+// The review's own arguments: a plain-reader tool list and no settings (so no hooks) are what let the scrub flag go off.
+const reviewArgs = ["-p", "--tools", "Read,Grep,Glob", "--setting-sources", "", "--strict-mcp-config"];
+
+test("the scrub flag goes off only for a call of plain readers whose hooks are off too (it leaves empty .env, .npmrc, yarn.lock files); anything else keeps it", t => {
   const f = folder(t);
   const env = { ...f.env, KIT_API_KEY_FILE: f.keyFile };
-  for (const args of [["-p", "--tools", "Read,Grep,Glob"], ["-p", "--tools=Read,Grep"], ["-p", "--tools", ""]]) spawnSync(wrapper, args, { env, encoding: "utf8" });
-  const keeps = [["-p", "--allowedTools", "Bash"], ["-p", "--tools", "Read,Bash"], ["-p", "--tools=Bash(git *),Read"], ["-p"],
-    ["-p", "--tools", "default"], ["-p", "--tools", "Read", "Bash"], ["-p", "--tools", "Read Bash"], ["-p", "--tools", "Read,Grep", "--tools", "Bash"], ["-p", "--tools", "Read", "--tools=default"], ["-p", "--tools", "Edit"]];
+  const offs = [reviewArgs, ["-p", "--tools=Read,Grep", "--setting-sources=", "--bare"], ["-p", "--tools", "Read", "--bare"], ["-p", "--model", "m", "--tools", "Read,Grep,Glob", "--setting-sources", "", "--output-format", "json"]];
+  for (const args of offs) spawnSync(wrapper, args, { env, encoding: "utf8" });
+  const keeps = [["-p", "--allowedTools", "Bash"], ["-p", "--tools", "Read,Bash", "--setting-sources", ""], ["-p", "--tools=Bash(git *),Read", "--bare"], ["-p"],
+    ["-p", "--tools", "default", "--bare"], ["-p", "--tools", "Read", "Bash", "--bare"], ["-p", "--tools", "Read Bash", "--bare"], ["-p", "--tools", "Read,Grep", "--tools", "Bash", "--bare"],
+    ["-p", "--tools", "Read", "--tools=default", "--bare"], ["-p", "--tools", "Edit", "--bare"],
+    // Plain readers alone are not enough: their hooks could still run (settings or plugins), so the flag stays on.
+    ["-p", "--tools", "Read,Grep,Glob"], ["-p", "--tools=Read"], ["-p", "--tools", "Read", "--setting-sources", "user"],
+    // No tools at all (kit ask) is not a reader list either: the call runs in a throwaway folder, so the flag stays on.
+    ["-p", "--tools", ""], ["-p", "--tools", "", "--bare"], ["-p", "--tools=", "--setting-sources", ""]];
   for (const args of keeps) spawnSync(wrapper, args, { env, encoding: "utf8" });
-  assert.deepEqual(f.callList().map(call => call.scrub), ["0", "0", "0", ...keeps.map(() => "1")]);
+  assert.deepEqual(f.callList().map(call => call.scrub), [...offs.map(() => "0"), ...keeps.map(() => "1")]);
+});
+
+test("a tool list over several lines, or a --tools that is no option of this call, never turns the scrub flag off", t => {
+  const f = folder(t);
+  const env = { ...f.env, KIT_API_KEY_FILE: f.keyFile };
+  const hooksOff = ["--setting-sources", ""];
+  const keeps = [
+    // A list written over several lines: every line counts, not only the first.
+    ["-p", "--tools", "Read\nBash", ...hooksOff], ["-p", "--tools", "Read,Grep\nBash", ...hooksOff], ["-p", "--tools=Read\nBash", ...hooksOff], ["-p", "--tools", "Read", "Grep\nEdit", ...hooksOff],
+    ["-p", "--tools", "\nBash", ...hooksOff], ["-p", "--tools", "Read\r\nBash", ...hooksOff], ["-p", "--tools", "Read\tBash", ...hooksOff],
+    // The word --tools as the value of another option, or after the end-of-options marker, is no tool list.
+    ["-p", "--append-system-prompt", "--tools", "Read", ...hooksOff], ["-p", "--append-system-prompt", "--tools=Read", ...hooksOff],
+    ["-p", ...hooksOff, "--", "--tools", "Read"], ["-p", ...hooksOff, "--", "--tools=Read"], ["-p", "--add-dir", "--tools=Read,Grep", ...hooksOff],
+    // The same for the hooks-off switch: as a value or after the marker it switches nothing off.
+    ["-p", "--tools", "Read", "--append-system-prompt", "--bare"], ["-p", "--tools", "Read", "--append-system-prompt", "--setting-sources", ""],
+    ["-p", "--tools", "Read", "--", "--bare"], ["-p", "--tools", "Read", "--setting-sources"], ["-p", "--tools", "Read", "--setting-sources", "--strict-mcp-config"],
+  ];
+  for (const args of keeps) spawnSync(wrapper, args, { env, encoding: "utf8" });
+  const seen = f.callList();
+  assert.equal(seen.length, keeps.length);
+  keeps.forEach((args, index) => assert.equal(seen[index].scrub, "1", `scrub stays on for ${JSON.stringify(args)}`));
+});
+
+// A fake claude that behaves as the documented flag says: it starts one "hook" (a child process) the way Claude Code does, unless
+// the call switches hooks off, and CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 takes the key out of that child's environment.
+function hookClaude(f: ReturnType<typeof folder>) {
+  const seen = join(f.dir, "hook-saw.jsonl");
+  writeFileSync(join(f.bin, "hook.mjs"), `import { appendFileSync } from "node:fs";
+const leaks = Object.entries(process.env).filter(([, value]) => String(value).includes(${JSON.stringify(secret)})).map(([name]) => name);
+appendFileSync(${JSON.stringify(seen)}, JSON.stringify({ leaks, hasKeyVariable: "ANTHROPIC_API_KEY" in process.env, scrubVariable: process.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB ?? null }) + "\\n");
+`);
+  writeFileSync(join(f.bin, "claude"), `#!/usr/bin/env node
+import { spawnSync } from "node:child_process";
+import { appendFileSync, readFileSync } from "node:fs";
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(join(f.dir, "calls.jsonl"))}, JSON.stringify({ args, keyMatches: process.env.ANTHROPIC_API_KEY === ${JSON.stringify(secret)}, scrub: process.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB ?? null }) + "\\n");
+const hooksOff = args.includes("--bare") || args.some((arg, i) => (arg === "--setting-sources" && args[i + 1] === "") || arg === "--setting-sources=");
+if (!hooksOff) {
+  const hookEnv = Object.assign({}, process.env);
+  if (process.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB === "1") delete hookEnv.ANTHROPIC_API_KEY;
+  spawnSync(process.execPath, [${JSON.stringify(join(f.bin, "hook.mjs"))}], { env: hookEnv });
+}
+console.log(JSON.stringify({ result: "ok", usage: {}, total_cost_usd: 0.01 }));
+`);
+  chmodSync(join(f.bin, "claude"), 0o755);
+  return () => existsSync(seen) ? readFileSync(seen, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) : [];
+}
+
+test("a hook Claude starts never sees the key, whatever the call's tools or settings are; only the one Claude call has it", t => {
+  const f = folder(t);
+  const hooks = hookClaude(f);
+  const env = { ...f.env, KIT_API_KEY_FILE: f.keyFile };
+  // A call with no tools (kit ask), a build, a review's own arguments, and calls that name no tools or hide hooks nowhere.
+  const calls = [["-p", "--model", "m", "--output-format", "json", "--tools", ""], ["-p", "--allowedTools", "Bash"], reviewArgs, ["-p", "--tools", "Read,Grep,Glob"], ["-p"]];
+  for (const args of calls) assert.equal(spawnSync(wrapper, args, { env, encoding: "utf8" }).status, 0);
+  const ran = hooks();
+  // The review's call starts no hook at all (settings are off); every other call's hook ran and found no key anywhere in its environment.
+  assert.equal(ran.length, calls.length - 1);
+  for (const row of ran) assert.deepEqual({ leaks: row.leaks, hasKeyVariable: row.hasKeyVariable }, { leaks: [], hasKeyVariable: false });
+  assert.ok(f.callList().every(call => call.keyMatches === true), "the Claude call itself still has the key");
 });
 
 test("doctor's view and the wrapper agree: a relative path, a newline-only file and an unreadable file are all refused in plain words", t => {
