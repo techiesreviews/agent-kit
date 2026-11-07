@@ -66,7 +66,7 @@ export function severityWord(item) {
   if (item.severity === "P0" || item.severity === "P1" || !item.severity) return "blocker";
   return item.severity === "P2" ? "should" : "nit";
 }
-/** A finding a "still open" mark carried into a round (its text starts `R1-2 still open`). */
+/** A finding a "still open" mark carried into a round (its text starts `R1-2 still open`; review-findings.mjs writes that start and reads it back in originalText). */
 export const isCarried = item => /^R\d+-\d+ still open/.test(String(item.text ?? ""));
 export const isNit = item => severityWord(item) === "nit";
 // A mark that gave no reason is no evidence, whether or not the finding's original text follows it.
@@ -199,17 +199,17 @@ export function reviewChain(folder) {
   return chain;
 }
 
-/**
- * The earlier review this one answers (later rounds): in `parent` (the owner's folder under .scratch/reviews) the newest review of the
- * same base that still had findings and whose reviewed head is an ancestor of the current head. A second look's folder is never one.
- * Returns { name, round, head, findings, declined } or null (then this is round 1, a full review).
- */
 /** The rules every review round gets, round 1 included (the later-round section adds the open ids). */
 export const loopReviewerNote = [
   "## Review loop rules for the reviewer",
   "You are the only reviewer: start no subagents. Rate each finding blocker (P0, P1), should (P2) or nit (P3, or a missing test): a nit is a rare path with a small cost, a comment, doc or format-only point, or a missing test. A review that returns only nits ends the loop.",
 ].join("\n\n");
 
+/**
+ * The earlier review this one answers (later rounds): in `parent` (the owner's folder under .scratch/reviews) the newest review of the
+ * same base that still had findings and whose reviewed head is an ancestor of the current head. A second look's folder is never one.
+ * Returns { name, round, head, findings, declined } or null (then this is round 1, a full review).
+ */
 export function findPreviousReview(parent, { head, base, root, branch }) {
   if (!existsSync(parent) || !head || !base) return null;
   const isAncestor = other => {

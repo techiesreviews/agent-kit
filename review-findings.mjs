@@ -77,6 +77,7 @@ export function parseMarks(resultMd) {
   return marks;
 }
 
+// (isCarried in review-loop.mjs reads the same start: change both together.)
 // A carried finding reads `<id> still open: <reason> (original finding: <the first text>)`; the first text is kept once, however
 // many rounds carry it, and cut at 400 characters.
 const ORIGINAL = " (original finding: ";

@@ -174,13 +174,21 @@ const reviewArgs = ["-p", "--tools", "Read,Grep,Glob", "--setting-sources", "", 
 test("the scrub flag goes off only for a call of plain readers whose hooks are off too (it leaves empty .env, .npmrc, yarn.lock files); anything else keeps it", t => {
   const f = folder(t);
   const env = { ...f.env, KIT_API_KEY_FILE: f.keyFile };
-  const offs = [reviewArgs, ["-p", "--tools=Read,Grep", "--setting-sources=", "--bare"], ["-p", "--tools", "Read", "--bare"], ["-p", "--model", "m", "--tools", "Read,Grep,Glob", "--setting-sources", "", "--output-format", "json"]];
+  const offs = [reviewArgs, ["-p", "--tools=Read,Grep", "--setting-sources=", "--bare", "--strict-mcp-config"], ["-p", "--tools", "Read", "--bare", "--strict-mcp-config"],
+    ["-p", "--model", "m", "--tools", "Read,Grep,Glob", "--setting-sources", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--output-format", "json"], ["-p", "--tools", "Read", "--bare", "--strict-mcp-config", "--mcp-config={ \"mcpServers\": {} }"]];
   for (const args of offs) spawnSync(wrapper, args, { env, encoding: "utf8" });
   const keeps = [["-p", "--allowedTools", "Bash"], ["-p", "--tools", "Read,Bash", "--setting-sources", ""], ["-p", "--tools=Bash(git *),Read", "--bare"], ["-p"],
     ["-p", "--tools", "default", "--bare"], ["-p", "--tools", "Read", "Bash", "--bare"], ["-p", "--tools", "Read Bash", "--bare"], ["-p", "--tools", "Read,Grep", "--tools", "Bash", "--bare"],
     ["-p", "--tools", "Read", "--tools=default", "--bare"], ["-p", "--tools", "Edit", "--bare"],
     // Plain readers alone are not enough: their hooks could still run (settings or plugins), so the flag stays on.
-    ["-p", "--tools", "Read,Grep,Glob"], ["-p", "--tools=Read"], ["-p", "--tools", "Read", "--setting-sources", "user"],
+    ["-p", "--tools", "Read,Grep,Glob", "--strict-mcp-config"], ["-p", "--tools=Read", "--strict-mcp-config"], ["-p", "--tools", "Read", "--setting-sources", "user", "--strict-mcp-config"],
+    // Anything that starts another program (MCP servers, plugins, extra settings or agents) keeps it on, and so does MCP left open.
+    ["-p", "--tools", "Read", "--bare"], ["-p", "--tools", "Read", "--setting-sources", ""],
+    ["-p", "--tools", "Read", "--bare", "--strict-mcp-config", "--mcp-config", "x.json"], ["-p", "--tools", "Read", "--setting-sources", "", "--mcp-config", "x.json"],
+    ["-p", "--tools", "Read", "--bare", "--mcp-config", "x.json"], ["-p", "--tools", "Read", "--bare", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "x.json"],
+    ["-p", "--tools", "Read", "--bare", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{"a":{"command":"x"}}}'],
+    ["-p", "--tools", "Read", "--bare", "--strict-mcp-config", "--plugin-dir", "/tmp/p"], ["-p", "--tools", "Read", "--bare", "--strict-mcp-config", "--plugin-url", "https://x/p.zip"],
+    ["-p", "--tools", "Read", "--bare", "--strict-mcp-config", "--settings", "s.json"], ["-p", "--tools", "Read", "--bare", "--strict-mcp-config", "--agents", "{}"],
     // No tools at all (kit ask) is not a reader list either: the call runs in a throwaway folder, so the flag stays on.
     ["-p", "--tools", ""], ["-p", "--tools", "", "--bare"], ["-p", "--tools=", "--setting-sources", ""]];
   for (const args of keeps) spawnSync(wrapper, args, { env, encoding: "utf8" });
@@ -190,7 +198,7 @@ test("the scrub flag goes off only for a call of plain readers whose hooks are o
 test("a tool list over several lines, or a --tools that is no option of this call, never turns the scrub flag off", t => {
   const f = folder(t);
   const env = { ...f.env, KIT_API_KEY_FILE: f.keyFile };
-  const hooksOff = ["--setting-sources", ""];
+  const hooksOff = ["--setting-sources", "", "--strict-mcp-config"];
   const keeps = [
     // A list written over several lines: every line counts, not only the first.
     ["-p", "--tools", "Read\nBash", ...hooksOff], ["-p", "--tools", "Read,Grep\nBash", ...hooksOff], ["-p", "--tools=Read\nBash", ...hooksOff], ["-p", "--tools", "Read", "Grep\nEdit", ...hooksOff],
@@ -199,8 +207,10 @@ test("a tool list over several lines, or a --tools that is no option of this cal
     ["-p", "--append-system-prompt", "--tools", "Read", ...hooksOff], ["-p", "--append-system-prompt", "--tools=Read", ...hooksOff],
     ["-p", ...hooksOff, "--", "--tools", "Read"], ["-p", ...hooksOff, "--", "--tools=Read"], ["-p", "--add-dir", "--tools=Read,Grep", ...hooksOff],
     // The same for the hooks-off switch: as a value or after the marker it switches nothing off.
-    ["-p", "--tools", "Read", "--append-system-prompt", "--bare"], ["-p", "--tools", "Read", "--append-system-prompt", "--setting-sources", ""],
-    ["-p", "--tools", "Read", "--", "--bare"], ["-p", "--tools", "Read", "--setting-sources"], ["-p", "--tools", "Read", "--setting-sources", "--strict-mcp-config"],
+    ["-p", "--tools", "Read", "--strict-mcp-config", "--append-system-prompt", "--bare"], ["-p", "--tools", "Read", "--strict-mcp-config", "--append-system-prompt", "--setting-sources", ""],
+    ["-p", "--tools", "Read", "--strict-mcp-config", "--", "--bare"], ["-p", "--tools", "Read", "--strict-mcp-config", "--setting-sources"], ["-p", "--tools", "Read", "--setting-sources", "--strict-mcp-config"],
+    // --strict-mcp-config as the value of another option is no switch either.
+    ["-p", "--tools", "Read", "--bare", "--append-system-prompt", "--strict-mcp-config"],
   ];
   for (const args of keeps) spawnSync(wrapper, args, { env, encoding: "utf8" });
   const seen = f.callList();

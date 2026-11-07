@@ -24,7 +24,9 @@ unset KIT_API_KEY_FILE KIT_API_CONFIG_DIR ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH
 # (from settings or plugins) and the nested kit calls of a run. Only claude's own process has the key.
 # The flag also makes claude set up its own sandbox, which leaves empty .env, .npmrc, yarn.lock ... files in the folder it runs in,
 # so it goes off in one case only: a call that has a tool list of plain readers (Read, Grep, Glob) and starts no hooks (--bare, or
-# --setting-sources with an empty value). No tool list, an empty one, or hooks that may run keep the flag on.
+# --setting-sources with an empty value), and loads no MCP servers (--strict-mcp-config, with no --mcp-config but an empty server list), no
+# plugins (--plugin-dir, --plugin-url) and no extra settings or agents (--settings, --agents), all of which can start programs of their
+# own. No tool list, an empty one, or anything that may start another program keeps the flag on.
 # Fail closed: every doubt keeps the flag on. A tool list is read as claude reads it (variadic: the words after --tools count; commas,
 # spaces and line breaks all separate names), and --tools, --bare or --setting-sources count only where they are options of this call:
 # not as the value of another option, and not after a bare -- (words after it are the prompt).
@@ -48,7 +50,7 @@ is_option() {
   esac
   return 1
 }
-tool_lists=0 readers=1 misplaced=0 bare=0 sources_empty=0 sources_other=0
+tool_lists=0 readers=1 misplaced=0 bare=0 sources_empty=0 sources_other=0 strict_mcp=0 loads=0
 for ((i = 0; i < count; i++)); do
   case ${args[i]} in
     --tools|--tools=*)
@@ -69,6 +71,21 @@ for ((i = 0; i < count; i++)); do
       done
       (( named )) || readers=0 ;;
     --bare) if is_option "$i"; then bare=1; else misplaced=1; fi ;;
+    --strict-mcp-config) if is_option "$i"; then strict_mcp=1; else misplaced=1; fi ;;
+    --plugin-dir|--plugin-dir=*|--plugin-url|--plugin-url=*|--settings|--settings=*|--agents|--agents=*) loads=1 ;;
+    --mcp-config|--mcp-config=*)
+      # Only an empty server list starts nothing; the option is variadic, so every word after it counts.
+      if ! is_option "$i"; then misplaced=1; continue; fi
+      servers=''
+      if [[ ${args[i]} == --mcp-config=* ]]; then servers=${args[i]#--mcp-config=}
+      else
+        for ((j = i + 1; j < end; j++)); do
+          [[ ${args[j]} == -* ]] && break
+          servers+=${args[j]}
+        done
+      fi
+      servers=${servers//[[:space:]]/}
+      [[ $servers == '{"mcpServers":{}}' ]] || loads=1 ;;
     --setting-sources|--setting-sources=*)
       if ! is_option "$i"; then misplaced=1; continue; fi
       if [[ ${args[i]} == --setting-sources=* ]]; then value=${args[i]#--setting-sources=}
@@ -77,5 +94,5 @@ for ((i = 0; i < count; i++)); do
       if [[ -z $value ]]; then sources_empty=1; else sources_other=1; fi ;;
   esac
 done
-if (( tool_lists > 0 && readers && !misplaced && (bare || (sources_empty && !sources_other)) )); then scrub=0; fi
+if (( tool_lists > 0 && readers && !misplaced && strict_mcp && !loads && (bare || (sources_empty && !sources_other)) )); then scrub=0; fi
 ANTHROPIC_API_KEY=$key CLAUDE_CONFIG_DIR=$dir CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=$scrub exec claude "$@"
