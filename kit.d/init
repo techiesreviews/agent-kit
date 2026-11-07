@@ -705,8 +705,8 @@ ${comments.length ? comments.join("\n\n") : "None."}
       let task;
       try {
         const { items, more } = await store.list({ q: marker, limit: 1000 });
-        // The marker is the card's first line, where this command writes it.
-        task = items.find((item) => String(item.description ?? "").split("\n", 1)[0].trim() === marker);
+        // Only the kit writes this line as it is (a copied one starts with "> "); kit lines may sit above it by now.
+        task = items.find((item) => String(item.description ?? "").split("\n").some((line) => line === marker));
         if (!task && more) fail(`issues stopped at #${issue.number}: more than 1000 cards match its link, so an earlier card for it may be missed; ${summary()}; find it with kit ticket list --q "${marker}"`);
         if (task) console.log(`found ${task.identifier} for #${issue.number}`);
         else {

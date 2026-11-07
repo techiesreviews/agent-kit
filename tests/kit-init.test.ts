@@ -1853,3 +1853,15 @@ test("on Orbit, an Issue quoting another Issue's card line never takes that Issu
   assert.match(orbit.tasks[1].description, /^> GitHub Issue: https:\/\/github\.com\/acme\/tools\/issues\/7$/m);
   assert.deepEqual(gh.closes().map((args) => args.at(-1)!.split("\n")[0]), ["Moved to Orbit card KIT-2: http://orbit.test/tasks/2", "Moved to Orbit card KIT-3: http://orbit.test/tasks/3"]);
 });
+
+test("on Orbit, a rerun finds an imported card again after kit lines were put above its GitHub Issue line", async (t) => {
+  const { orbit, f, gh, init } = await orbitIssues(t, [issue(5, "First")]);
+  writeFileSync(join(f.directory, "fake-gh/fail-close.json"), JSON.stringify(["5"]));
+  assert.equal((await init()).status, 1);
+  orbit.tasks[1].description = `Claimed by: kit-2\n\nBlocked by: KIT-9\n\n${orbit.tasks[1].description}`;
+  const again = await init();
+  assert.equal(again.status, 0, again.all);
+  assert.match(again.stdout, /^found KIT-2 for #5$/m);
+  assert.equal(orbit.tasks.length, 2);
+  assert.equal(gh.closes().length, 2);
+});
