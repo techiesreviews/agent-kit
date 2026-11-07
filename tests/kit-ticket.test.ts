@@ -1750,6 +1750,18 @@ test("adding a Publish label needs Lex's words, in any letter case, like the Pub
   ok(await run(["update", "TOOLS-1", "--label", "Record"]));
 });
 
+test("any label with the word publish in its name needs Lex's words, the same test as the status guard", async t => {
+  const { orbit, run } = await fixture(t);
+  for (const [id, name] of [["label-ready", "Ready to publish"], ["label-done", "Published"]]) orbit.labels.get(orbit.tools.id)!.push({ id, project_id: orbit.tools.id, name, color: "gray", version: 1 });
+  const task = orbit.addTask(orbit.tools);
+  refused(await run(["update", "TOOLS-1", "--label", "Ready to publish"]), /adding the Ready to publish label.*--lex-said/);
+  refused(await run(["update", "TOOLS-1", "--label", "Published"]), /--lex-said/);
+  refused(await run(["create", "--title", "x", "--label", "ready to PUBLISH"]), /--lex-said/);
+  assert.equal(orbit.writes().length, 0);
+  ok(await run(["update", "TOOLS-1", "--label", "Ready to publish", "--lex-said", "ready to publish it"]));
+  assert.deepEqual(task.label_ids, ["label-ready"]);
+});
+
 test("get and list show label names; a card without labels asks Orbit for none", async t => {
   const { orbit, run } = await fixture(t);
   const [script, record] = orbit.labels.get(orbit.tools.id)!.map(label => label.id);

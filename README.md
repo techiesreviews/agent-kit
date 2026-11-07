@@ -133,8 +133,8 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
   token refused or expired, Cloudflare blocked it, Orbit not answering, setup file needs attention, or not set up, with
   the days left when the saved file records the token's expiry. The line never fails doctor, and `kit doctor --quiet` makes no call.
 - Labels are set by name on the card's own board (`--label NAME,NAME`, `--clear-labels`, `kit ticket labels`); a name
-  Orbit does not list is refused, and the kit never makes a label (the public API has no way to). Adding a Publish label
-  (any letter case) needs `--lex-said`, like a move to a Publish status.
+  Orbit does not list is refused, and the kit never makes a label (the public API has no way to). Adding a label with the
+  word publish in its name (any letter case) needs `--lex-said`, like a move to a Publish status.
 - Orbit's public API has no task relations, so blockers are a `Blocked by: KEY-n, KEY-m` line in the description
   (`--blocked-by`). Its docs: `docs/public-api.md` in github.com/coollabsio/orbit.
 
