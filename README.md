@@ -116,8 +116,8 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
 - A project's `scripts/agents/kit.json` says which store it uses: `"tickets": "files"` (the default) or `"orbit"`, and
   `"orbit": { "project": "TOOLS", "parent": "TOOLS-10" }` names its board and the card new tickets go under (parent is
   optional). Stage 2: with `"orbit"`, `kit next`, `kit slice`, `kit pr`, `kit status` and `kit init --issues` read and
-  write cards through `ticket-store.mjs` and `ticket-cards.mjs` instead of ticket files; a later stage imports the old
-  files and removes the file store.
+  write cards through `ticket-store.mjs` and `ticket-cards.mjs` instead of ticket files. Stage 3 moves a project's
+  ticket files to cards (below); removing the file store from the kit comes last, once every project has moved.
 - On Orbit: `kit next` lists the Todo cards (under the parent card when one is set) whose "Blocked by:" cards are Done
   as `next:`, the rest as `waits:` (In Progress, Backlog, Next step (Lex), blocked), and `wave N:` lines for the build
   waves that follow. A claim (`kit next --start`, `kit slice --ticket <KEY>`) is one write: status In Progress and a
@@ -148,6 +148,24 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
   word publish in its name (any letter case) needs `--lex-said`, like a move to a Publish status.
 - Orbit's public API has no task relations, so blockers are a `Blocked by: KEY-n, KEY-m` line in the description
   (`--blocked-by`). Its docs: `docs/public-api.md` in github.com/coollabsio/orbit.
+- How a project moves (`ticket-import.mjs`; a lead, `ORBIT_ROLE=lead`, in the project, from a fresh branch:
+  `git switch -c tickets-to-orbit origin/<land>`): `kit ticket migrate [--project KEY] [--parent KEY-n] [--dry-run]`
+  runs every step in order and stops at the first problem. (1) It waits while a build runs: an open AFK ticket with an
+  assignee (kit next's claim) or an imported card In Progress. (2) `kit ticket import` makes one card per ticket file
+  (every map's `tickets/` and `build/tickets/`, as `tickets.mjs` reads them) under the parent card: the first line
+  "Imported from: <path> (project <name>)" names the file, so a rerun finds the card and makes no second one; then the
+  frontmatter (Type, Assignee, Builder, ...), a "Blocked by:" line with the blockers' card keys, and the ticket's text,
+  whose links to other tickets point at their cards. Each entry of a "## Comments" section becomes a card comment; the
+  closing notes (Done, Resolution) stay in the text. Status: closed is Done, wontfix Cancelled, an open "task (AFK)"
+  Todo, the rest Backlog (a "File status:" line keeps needs-info and the like). (3) `kit ticket parity` compares files
+  and cards (count, title, status, text, comments, blockers) and lists every difference; any difference stops the move.
+  (4) A tag `tickets-in-files-YYYYMMDD` on the commit that still holds the files, pushed to origin
+  (`git show <tag>:<path>` reads a file back). (5) One commit through `kit pr`: the ticket files removed,
+  `"tickets": "orbit"` and the board in `scripts/agents/kit.json`, and links in docs that named a ticket file now name
+  its card (a ticket path in backticks gets "(Orbit KEY)"). Maps, research notes, ADRs and other docs stay as they are.
+  `import --dry-run` and `migrate --dry-run` print every card, comment and change and send nothing.
+- `kit brief <KEY>` on an Orbit project builds the brief from the card: its title, text and comments, in place of a
+  ticket file's.
 
 ## Nothing unsaved goes live
 
@@ -181,7 +199,7 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
 | `kit.d/` | one file per shared command, each with a `# kit:` summary line |
 | `hooks/` | the guard hooks (`bash-guard`, `agent-cap`, `session-env`, `brief-guard`, `stop-guard`) and their `run.sh` |
 | `context-card.mjs`, `worktree.sh`, `tickets.mjs`, `unit.sh`, `review-findings.mjs`, `second-look.json`, … | helpers beside `kit` that commands and a project's forwarders run through `kit --home` |
-| `orbit-client.mjs`, `ticket-store.mjs`, `orbit-setup.mjs` | the Orbit API client and its secrets file, the ticket store's rules and guards, and `kit ticket setup` |
+| `orbit-client.mjs`, `ticket-store.mjs`, `orbit-setup.mjs`, `ticket-import.mjs` | the Orbit API client and its secrets file, the ticket store's rules and guards, `kit ticket setup`, and moving a project's ticket files to cards |
 | `skills.json`, `skills.mjs`, `brief-lib.mjs` | the skills map (names and the kit's own one-line fallbacks, never a skill's text), and the brief `kit brief` writes |
 | `launcher/` | the two launchers `kit init` copies into a project |
 | `systemd/` | the update timer and service `kit update --install-timer` writes into `~/.config/systemd/user/` |

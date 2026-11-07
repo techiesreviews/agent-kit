@@ -238,11 +238,13 @@ function realDate(value) {
   return date.toISOString().slice(0, 10) === value;
 }
 
-// A fix is "open", "PR #n" or a markdown link whose target exists beside the log.
+// A fix is "open", "PR #n", a markdown link whose target exists beside the log, or a link to a card's web address
+// (kit ticket migrate points the links at the cards once the ticket files are gone).
 function fixProblem(fix, file, exists) {
   if (fix === "open" || /^PR #[1-9]\d*$/.test(fix)) return "";
   const link = /^\[[^\]]+\]\(([^()\s]+)\)$/.exec(fix);
   if (!link) return `Invalid fix: ${fix} (use open, PR #n or [NN](tickets/NN-slug.md))`;
+  if (/^https?:\/\/[^\s/]+\//i.test(link[1])) return "";
   const target = join(dirname(file), link[1]);
   return exists(target) ? "" : `Fix link not found: ${link[1]}`;
 }
