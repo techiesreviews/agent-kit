@@ -1240,8 +1240,8 @@ test("on Orbit, an In Progress card with no Claimed by line waits as such and is
   assert.equal(orbit.writes().length, 0);
 });
 
-test("on Orbit, only cards that may start begin a wave: a card behind a Backlog, Lex or unbuildable card gets no wave", async t => {
-  const { card, run } = await orbitNext(t);
+test("on Orbit, only cards that may start begin a wave: a card behind a Backlog, Lex, unbuildable or other board's card gets no wave", async t => {
+  const { card, run, orbit } = await orbitNext(t);
   card({ title: "Later" }, "Backlog");
   card({ title: "Ask", description: "Next step (Lex): choose" });
   card({ title: "Bare", description: "Only a goal" });
@@ -1249,8 +1249,10 @@ test("on Orbit, only cards that may start begin a wave: a card behind a Backlog,
   card({ title: "Behind Lex", description: "Blocked by: KIT-2" });
   card({ title: "Behind bare", description: "Blocked by: KIT-3" });
   card({ title: "Free" });
+  orbit.addTask(orbit.video, { title: "Elsewhere" });
+  card({ title: "Behind another board", description: "Blocked by: VID-1" });
   card({ title: "Behind free", description: "Blocked by: KIT-7\n\n## Files\n\n- `d.ts`\n\n## Done when\n\n- done" });
   const output = await run();
   assert.equal(output.status, 0, output.all);
-  assert.deepEqual(outputLines(output).filter(line => line.startsWith("wave ")), ["wave 2: KIT-8"]);
+  assert.deepEqual(outputLines(output).filter(line => line.startsWith("wave ")), ["wave 2: KIT-9"]);
 });

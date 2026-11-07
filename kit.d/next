@@ -459,7 +459,8 @@ function waves(cards) {
     for (const key of openKeys(card)) {
       const blocker = byKey.get(key);
       const missing = card.open_blockers.some(text => text === `${key} (not found)`);
-      deepest = Math.max(deepest, missing ? Infinity : blocker ? of(blocker, seen) : 1);
+      // An open blocker on another board is not planned here, so the card behind it gets no wave.
+      deepest = Math.max(deepest, missing || !blocker ? Infinity : of(blocker, seen));
     }
     seen.delete(card.identifier);
     return level.set(card.identifier, deepest + 1).get(card.identifier);
