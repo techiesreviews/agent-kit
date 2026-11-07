@@ -3,7 +3,8 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { composeBrief, kitVersion, nextTalkStyle, readTicket, skillSettingsProblems, STAGES } from "../brief-lib.mjs";
-import { kitHome, kitMessagesToLexRule, kitResult, kitReviewLoopRule, kitRoot, kitRulebookPins, kitSettings } from "../kit-lib.mjs";
+import { kitHome, kitMessagesToLexRule, kitOwner, kitResult, kitReviewLoopRule, kitRoot, kitRulebookPins, kitSettings } from "../kit-lib.mjs";
+import { isCardKey, isOrbitFailure, onOrbit, openOrbitTickets, orbitProblem } from "../ticket-cards.mjs";
 
 const usage = `Usage: kit brief <ticket> [--stage build|review|second-look|fix] [--owner ID] [--repo PATH] [--model M] [--note "<text>"]
        kit brief --task "<title>" --owner ID --note "<what to do>" [--stage …] [--repo PATH] [--model M]
@@ -17,6 +18,8 @@ everything above the RESULT line to delegate_task. A copy is kept in .scratch/ki
 project's top folder (default: this one); the ticket path is read from there. --model names the child's model
 (default: the stage's pin), which picks how skills are named: /name for Claude, $name for Codex, the kit's own
 words for models without skills.
+On an Orbit project ("tickets": "orbit") the ticket is a card KEY such as KIT-12: the brief holds the card's title, text
+and comments in place of a ticket file's, and --owner defaults to its "Claimed by:" owner (else its "Assignee:" line).
 --task is for a project that keeps no ticket file for the job (its work is in GitHub Issues, say): the note holds
 the task, the marker names it task:<slug>, and the brief lands it with kit pr --title in place of kit slice.
 Talk style: each brief takes the next of en and wenyan in turn (a counter in the kit's state folder);
@@ -44,13 +47,35 @@ function parse(args) {
   return { ...options, ticket: rest[0] };
 }
 
+/** A card as the ticket text the brief reads (title, builder, assignee, Files), and the card itself for the brief. */
+async function readCard(settings, key) {
+  let redact;
+  try {
+    const opened = openOrbitTickets({ settings, who: kitOwner() });
+    redact = opened.redact;
+    const task = await opened.store.read(key);
+    const comments = await opened.store.comments(task.identifier);
+    const line = name => new RegExp(`^${name}:[ \\t]*(.*?)\\s*$`, "m").exec(task.description ?? "")?.[1] ?? "";
+    const one = value => String(value ?? "").replace(/\s*[\r\n]+\s*/g, " ").trim();
+    const owner = task.claimed_by || line("Assignee");
+    const text = `---\ntitle: ${JSON.stringify(one(task.title))}\norbit: ${task.identifier}\nbuilder: ${one(line("Builder"))}\nassignee: ${one(owner)}\n---\n\n${String(task.description ?? "").replace(/\r\n?/g, "\n")}\n`;
+    return { key: task.identifier, text, card: { title: one(task.title), url: task.url, description: task.description,
+      comments: comments.map(note => ({ who: note.author_service_account?.name ?? note.author_id ?? "someone", when: note.created_at, body: note.body })) } };
+  } catch (error) {
+    if (isOrbitFailure(error)) throw new Error(`card ${key} could not be read: ${orbitProblem(error, redact)}`);
+    throw error;
+  }
+}
+
 const args = process.argv.slice(2);
 if (args.includes("--help") || args.includes("-h")) { console.log(usage); process.exit(0); }
 try {
   const options = parse(args);
   const root = realpathSync(resolve(options.repo ?? kitRoot()));
-  let ticket, text;
-  if (options.task !== undefined) {
+  let ticket, text, card;
+  const onCard = options.task === undefined && isCardKey(options.ticket) && onOrbit(kitSettings(root));
+  if (onCard) ({ key: ticket, text, card } = await readCard(kitSettings(root), options.ticket));
+  else if (options.task !== undefined) {
     // A task with no ticket file: its title stands in for the ticket's, the note for its body.
     ticket = `task:${options.task.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 60).replace(/^-+|-+$/g, "") || "task"}`;
     text = `---\ntitle: ${JSON.stringify(options.task.trim())}\n---\n`;
@@ -73,7 +98,7 @@ try {
   if (!owner) throw new Error(`${ticket} has no assignee; claim it first or pass --owner`);
   // Review briefs carry no talk style (their findings go to GitHub), so they leave the counter alone.
   const style = options.stage === "review" || options.stage === "second-look" ? "plain" : nextTalkStyle();
-  const brief = composeBrief({ messages, reviewLoop, root, settings, ticket, text, stage: options.stage, owner, note: options.note, model: options.model, style, pins, version: kitVersion(kitHome()), task: options.task?.trim() });
+  const brief = composeBrief({ messages, reviewLoop, root, settings, ticket, text, stage: options.stage, owner, note: options.note, model: options.model, style, pins, version: kitVersion(kitHome()), task: options.task?.trim(), card });
   const file = join(".scratch/kit-briefs", `${basename(ticket).replace(/^task:/, "task-").replace(/\.md$/i, "")}-${options.stage}.md`);
   mkdirSync(join(root, ".scratch/kit-briefs"), { recursive: true });
   writeFileSync(join(root, file), `${brief}\n`);
