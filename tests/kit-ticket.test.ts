@@ -120,7 +120,7 @@ test("get shows status name, assignees, next step, blockers, dates and comments;
   assert.match(shown.stdout, /TOOLS-1\s+Shown/);
   assert.match(shown.stdout, /Status: Idea/);
   assert.match(shown.stdout, /Priority: urgent/);
-  assert.match(shown.stdout, /Assignees \(assignee_ids\): user-a, user-b/);
+  assert.match(shown.stdout, /^Assignees: user-a, user-b$/m);
   assert.match(shown.stdout, /Next step \(Lex\): record it/);
   assert.match(shown.stdout, /Blocked by: TOOLS-9, VID-2/);
   assert.match(shown.stdout, /start 2026-11-06, due 2026-11-07/);
@@ -136,7 +136,7 @@ test("get shows status name, assignees, next step, blockers, dates and comments;
   assert.ok(!orbit.requests.some(item => item.path.endsWith("/me")), "a bad key never reaches Orbit");
 });
 
-test("list shows assignee ids, filters by status, parent, assignee and text, follows pages and says when more exist", async t => {
+test("list shows assignees, filters by status, parent, assignee and text, follows pages and says when more exist", async t => {
   const { orbit, run } = await fixture(t);
   const parent = orbit.addTask(orbit.tools, { title: "Parent" });
   orbit.addTask(orbit.tools, { title: "Child", parent_task_id: parent.id, assignee_ids: ["user-a"], status_id: orbit.statuses.get(orbit.tools.id)![2].id });
@@ -296,7 +296,7 @@ test("sub-tasks: create --parent, the project's default parent, update --parent 
 
 test("next-lex writes the first description line, replaces an old one, and clear-next-lex takes it out", async t => {
   const { orbit, run } = await fixture(t);
-  const task = orbit.addTask(orbit.tools, { description: "Text", assignee_ids: ["lex"] });
+  const task = orbit.addTask(orbit.tools, { description: "Text", assignee_ids: [member(orbit, "Lex")] });
   const set = ok(await run(["next-lex", "TOOLS-1", "record\nthe intro"]));
   assert.equal(task.description, "Next step (Lex): record the intro\n\nText");
   assert.match(set.all, /assign/i);
@@ -305,12 +305,171 @@ test("next-lex writes the first description line, replaces an old one, and clear
   refused(await run(["next-lex", "TOOLS-1", " "]), /reason/);
   const cleared = ok(await run(["clear-next-lex", "TOOLS-1"]));
   assert.equal(task.description, "Text");
-  assert.match(cleared.all, /unassign/i);
+  assert.match(cleared.all, /no longer assigned to Lex/);
   const again = ok(await run(["clear-next-lex", "TOOLS-1"]));
   assert.match(result(again), /already/);
   const empty = orbit.addTask(orbit.tools, { description: "" });
   ok(await run(["next-lex", "TOOLS-2", "go"]));
   assert.equal(empty.description, "Next step (Lex): go");
+});
+
+// Assignees: members by name, --assignee on create and update, and next-lex / clear-next-lex that assign and unassign Lex.
+const member = (orbit: Awaited<ReturnType<typeof fakeOrbit>>, name: string) => orbit.members.find(item => item.display_name === name)!.user_id;
+
+test("members lists the workspace members by display name and id, and writes nothing", async t => {
+  const { orbit, run } = await fixture(t);
+  const listed = ok(await run(["members"]));
+  assert.match(listed.stdout, new RegExp(`^Lex  ${member(orbit, "Lex")}$`, "m"));
+  assert.match(listed.stdout, new RegExp(`^Sam Helper  ${member(orbit, "Sam Helper")}$`, "m"));
+  assert.match(result(listed), /^RESULT: ok ticket members: 2 members$/);
+  assert.equal(orbit.writes().length, 0);
+});
+
+test("create and update take --assignee NAME|ID|none: a name matches one member exactly, ignoring case; none clears", async t => {
+  const { orbit, run } = await fixture(t);
+  ok(await run(["create", "--title", "By name", "--assignee", "lEx"]));
+  assert.deepEqual(orbit.tasks[0].assignee_ids, [member(orbit, "Lex")]);
+  ok(await run(["create", "--title", "By id", "--assignee", member(orbit, "Sam Helper")]));
+  assert.deepEqual(orbit.tasks[1].assignee_ids, [member(orbit, "Sam Helper")]);
+  ok(await run(["create", "--title", "None", "--assignee", "none"]));
+  assert.deepEqual(orbit.tasks[2].assignee_ids, []);
+  ok(await run(["update", "TOOLS-3", "--assignee", "sam helper"]));
+  assert.deepEqual(orbit.tasks[2].assignee_ids, [member(orbit, "Sam Helper")]);
+  ok(await run(["update", "TOOLS-3", "--assignee", "NONE"]));
+  assert.deepEqual(orbit.tasks[2].assignee_ids, []);
+  const before = orbit.writes().length;
+  const dry = ok(await run(["update", "TOOLS-1", "--assignee", "Sam Helper", "--dry-run"]));
+  assert.match(dry.stdout, new RegExp(`"assignee_ids": \\[\\s*"${member(orbit, "Sam Helper")}"\\s*\\]`));
+  assert.equal(orbit.writes().length, before, "a dry run sends nothing");
+});
+
+test("an assignee that is no member, or a name that fits no or several members, is refused with the members listed, and nothing is sent", async t => {
+  const { orbit, run } = await fixture(t);
+  const none = orbit.writes().length;
+  refused(await run(["create", "--title", "x", "--assignee", "Nobody"]), /no member called Nobody; the members are: Lex, Sam Helper/);
+  refused(await run(["create", "--title", "x", "--assignee", "Sam"]), /no member called Sam/);
+  refused(await run(["create", "--title", "x", "--assignee", "00000000-0000-4000-8000-000000000000"]), /no member/);
+  orbit.members.push({ user_id: "22222222-2222-4222-8222-222222222222", display_name: "LEX" });
+  const several = refused(await run(["create", "--title", "x", "--assignee", "lex"]), /more than one member called lex: Lex, LEX/);
+  assert.match(several.all, /use the id/);
+  assert.equal(orbit.writes().length, none);
+  ok(await run(["create", "--title", "by id", "--assignee", "22222222-2222-4222-8222-222222222222"]));
+  assert.deepEqual(orbit.tasks[0].assignee_ids, ["22222222-2222-4222-8222-222222222222"]);
+  refused(await run(["update", "TOOLS-1"]), /--assignee/);
+});
+
+test("get and list show assignees by name; an id that is no member shows as it is", async t => {
+  const { orbit, run } = await fixture(t);
+  orbit.addTask(orbit.tools, { title: "Mine", assignee_ids: [member(orbit, "Lex"), member(orbit, "Sam Helper")] });
+  orbit.addTask(orbit.tools, { title: "Gone", assignee_ids: ["33333333-3333-4333-8333-333333333333"] });
+  orbit.addTask(orbit.tools, { title: "Free" });
+  const got = ok(await run(["get", "TOOLS-1"]));
+  assert.match(got.stdout, /^Assignees: Lex, Sam Helper$/m);
+  const json = JSON.parse(ok(await run(["get", "TOOLS-1", "--json"])).stdout.replace(/\nRESULT:.*$/s, ""));
+  assert.deepEqual(json.assignee_names, ["Lex", "Sam Helper"]);
+  const listed = ok(await run(["list"]));
+  assert.match(listed.stdout, /TOOLS-1 .*assignees: Lex, Sam Helper/);
+  assert.match(listed.stdout, /TOOLS-2 .*assignees: 33333333-3333-4333-8333-333333333333/);
+  assert.match(listed.stdout, /TOOLS-3 .*assignees: none/);
+});
+
+test("next-lex also assigns the one member called exactly Lex, keeping the others; clear-next-lex removes only that member", async t => {
+  const { orbit, run } = await fixture(t);
+  orbit.members.push({ user_id: "44444444-4444-4444-8444-444444444444", display_name: "Lex Luthor" });
+  const task = orbit.addTask(orbit.tools, { description: "Text", assignee_ids: [member(orbit, "Sam Helper")] });
+  const set = ok(await run(["next-lex", "TOOLS-1", "record the intro"]));
+  assert.equal(task.description, "Next step (Lex): record the intro\n\nText");
+  assert.deepEqual(task.assignee_ids, [member(orbit, "Sam Helper"), member(orbit, "Lex")]);
+  assert.match(set.stdout, /waits for Lex and is assigned to Lex/);
+  const again = ok(await run(["next-lex", "TOOLS-1", "record the intro"]));
+  assert.match(result(again), /already/);
+  const cleared = ok(await run(["clear-next-lex", "TOOLS-1"]));
+  assert.equal(task.description, "Text");
+  assert.deepEqual(task.assignee_ids, [member(orbit, "Sam Helper")], "only Lex is taken off");
+  assert.match(cleared.stdout, /no longer waits for Lex and is no longer assigned to Lex/);
+  const dry = ok(await run(["next-lex", "TOOLS-1", "again", "--dry-run"]));
+  assert.match(dry.stdout, new RegExp(member(orbit, "Lex")));
+  assert.deepEqual(task.assignee_ids, [member(orbit, "Sam Helper")], "a dry run changes nothing");
+});
+
+test("next-lex still writes the first line when no single member is called Lex, and says plainly it could not assign", async t => {
+  const { orbit, run } = await fixture(t);
+  const task = orbit.addTask(orbit.tools, { description: "Text", assignee_ids: [member(orbit, "Sam Helper")] });
+  orbit.members.splice(orbit.members.findIndex(item => item.display_name === "Lex"), 1);
+  const none = ok(await run(["next-lex", "TOOLS-1", "approve it"]));
+  assert.equal(task.description, "Next step (Lex): approve it\n\nText");
+  assert.match(none.stdout, /could not assign: no member is called Lex; assign in Orbit/);
+  assert.deepEqual(task.assignee_ids, [member(orbit, "Sam Helper")]);
+  orbit.members.push({ user_id: "55555555-5555-4555-8555-555555555555", display_name: "Lex" }, { user_id: "66666666-6666-4666-8666-666666666666", display_name: "lex" });
+  const two = ok(await run(["next-lex", "TOOLS-1", "approve it now"]));
+  assert.match(two.stdout, /could not assign: more than one member is called Lex; assign in Orbit/);
+  assert.equal(task.description, "Next step (Lex): approve it now\n\nText");
+  const quiet = ok(await run(["clear-next-lex", "TOOLS-1"]));
+  assert.equal(task.description, "Text");
+  assert.doesNotMatch(quiet.stdout, /could not/, "no note when none of the members called Lex is on the card");
+  task.assignee_ids = [member(orbit, "Sam Helper"), "66666666-6666-4666-8666-666666666666"];
+  ok(await run(["next-lex", "TOOLS-1", "approve it again"]));
+  const cleared = ok(await run(["clear-next-lex", "TOOLS-1"]));
+  assert.match(cleared.stdout, /could not unassign: more than one member is called Lex; unassign in Orbit/);
+});
+
+test("a next-lex that is already on the card still says when Lex could not be assigned", async t => {
+  const { orbit, run } = await fixture(t);
+  orbit.addTask(orbit.tools, { description: "Next step (Lex): go" });
+  orbit.members.splice(orbit.members.findIndex(item => item.display_name === "Lex"), 1);
+  const out = ok(await run(["next-lex", "TOOLS-1", "go"]));
+  assert.match(out.stdout, /TOOLS-1: could not assign: no member is called Lex; assign in Orbit/);
+  assert.match(result(out), /already as asked/);
+});
+
+test("a members list that cannot be read: get shows the ids, an assignee by name is refused, next-lex still writes its line and says so", async t => {
+  const { orbit, run } = await fixture(t);
+  const task = orbit.addTask(orbit.tools, { description: "Text", assignee_ids: [member(orbit, "Sam Helper")] });
+  orbit.controls.membersFail = 1;
+  const got = ok(await run(["get", "TOOLS-1"]));
+  assert.match(got.stdout, new RegExp(`^Assignees: ${member(orbit, "Sam Helper")}$`, "m"));
+  orbit.controls.membersFail = 1;
+  refused(await run(["update", "TOOLS-1", "--assignee", "Lex"]), /500|members list|boom|Orbit/);
+  assert.equal(orbit.writes().length, 0);
+  orbit.controls.membersFail = 1;
+  const set = ok(await run(["next-lex", "TOOLS-1", "go"]));
+  assert.equal(task.description, "Next step (Lex): go\n\nText");
+  assert.match(set.stdout, /could not assign: Orbit would not list the members/);
+  assert.match(set.stdout, /assign in Orbit/);
+  assert.deepEqual(task.assignee_ids, [member(orbit, "Sam Helper")]);
+  orbit.controls.membersFail = 0;
+  assert.match(ok(await run(["get", "TOOLS-1"])).stdout, /^Assignees: Sam Helper$/m, "the next run asks again and shows names");
+});
+
+test("assigning keeps the lead-only guard for create too", async t => {
+  const { orbit, run } = await fixture(t);
+  refused(await run(["create", "--title", "x", "--assignee", "Lex"], { ORBIT_ROLE: "helper" }), /only a lead may write/);
+  assert.equal(orbit.writes().length, 0);
+});
+
+test("list --assignee takes a name, an id or none, like create and update", async t => {
+  const { orbit, run } = await fixture(t);
+  orbit.addTask(orbit.tools, { title: "Lex's", assignee_ids: [member(orbit, "Lex")] });
+  orbit.addTask(orbit.tools, { title: "Sam's", assignee_ids: [member(orbit, "Sam Helper")] });
+  orbit.addTask(orbit.tools, { title: "Nobody's" });
+  const named = ok(await run(["list", "--assignee", "lex"]));
+  assert.match(named.stdout, /TOOLS-1 /);
+  assert.equal(orbit.requests.filter(item => item.path.endsWith("/tasks")).at(-1)!.query.get("assignee_id"), member(orbit, "Lex"));
+  ok(await run(["list", "--assignee", member(orbit, "Sam Helper")]));
+  assert.equal(orbit.requests.filter(item => item.path.endsWith("/tasks")).at(-1)!.query.get("assignee_id"), member(orbit, "Sam Helper"));
+  ok(await run(["list", "--assignee", "none"]));
+  assert.equal(orbit.requests.filter(item => item.path.endsWith("/tasks")).at(-1)!.query.get("assignee_id"), "none");
+  ok(await run(["list", "--assignee", "99999999-9999-4999-8999-999999999999"]));
+  refused(await run(["list", "--assignee", "Nobody"]), /no member called Nobody/);
+});
+
+test("assigning keeps the lead-only guard: a helper cannot assign by --assignee or next-lex", async t => {
+  const { orbit, run } = await fixture(t);
+  const task = orbit.addTask(orbit.tools, { description: "Text" });
+  refused(await run(["update", "TOOLS-1", "--assignee", "Lex"], { ORBIT_ROLE: "helper" }), /only a lead may write/);
+  refused(await run(["next-lex", "TOOLS-1", "go"], { ORBIT_ROLE: "helper" }), /only a lead may write/);
+  assert.equal(orbit.writes().length, 0);
+  assert.deepEqual(task.assignee_ids, []);
 });
 
 test("trash moves a card to Orbit's trash only with Lex's words, and a permanent delete cannot be asked for", async t => {
@@ -454,10 +613,10 @@ test("a retry that finds the card already as asked still logs the write Orbit re
   orbit.addTask(orbit.tools);
   // The change someone else already made: the retry has nothing to send, and the refused write is on the log.
   orbit.controls.conflicts = 1;
-  orbit.controls.concurrentEdit = card => { card.description = "Next step (Lex): go"; };
+  orbit.controls.concurrentEdit = card => { card.description = "Next step (Lex): go"; card.assignee_ids = [member(orbit, "Lex")]; };
   assert.match(result(ok(await run(["next-lex", "TOOLS-1", "go"]))), /already/);
   assert.equal(lines(log()).length, 1);
-  assert.match(lines(log()).at(-1)!, /action=next-lex fields=description who=test-lead result=fail:conflict/);
+  assert.match(lines(log()).at(-1)!, /action=next-lex fields=description,assignee_ids who=test-lead result=fail:conflict/);
 });
 
 test("a create with no answer says to look for the card before trying again", async t => {
@@ -1130,7 +1289,7 @@ test("setup's help is numbered plain steps with no jargon; kit ticket help names
   assert.ok(!/\b(stdin|TTY|JSON|env|chmod|OAuth|CLI|header)\b/i.test(help.stdout), help.stdout);
   const main = await run(["--help"]);
   assert.equal(main.status, 0);
-  for (const name of ["labels", "create", "get", "list", "update", "dates", "note", "comment", "sub-tasks", "next-lex", "clear-next-lex", "trash", "setup"]) assert.match(main.stdout, new RegExp(`\\b${name}\\b`));
+  for (const name of ["labels", "create", "get", "list", "update", "dates", "note", "comment", "sub-tasks", "members", "next-lex", "clear-next-lex", "trash", "setup"]) assert.match(main.stdout, new RegExp(`\\b${name}\\b`));
   refused(await run([]), /Usage/);
   refused(await run(["nonsense"]), /nonsense/);
   refused(await run(["get"]), /card key/i);

@@ -271,6 +271,8 @@ export function orbitClient(config, { timeoutMs = 30_000, longestWaitSeconds = 3
     projects: async () => (await list(`${workspace}/projects`)).items,
     statuses: async projectId => (await list(`${workspace}/projects/${encodeURIComponent(projectId)}/statuses`)).items,
     labels: async projectId => (await list(`${workspace}/projects/${encodeURIComponent(projectId)}/labels`)).items,
+    /** The workspace members: { user_id, display_name } and nothing else (the API shows no emails or roles). */
+    members: async () => (await list(`${workspace}/members`)).items,
     tasks: (query, limit) => list(`${workspace}/tasks`, query, limit),
     task: key => request("GET", taskPath(key)),
     createTask: body => request("POST", `${workspace}/tasks`, { body }),

@@ -14,21 +14,22 @@ Tickets on the Orbit board, from any project folder. A card is named by its key,
 
 Read (anyone):
   get <KEY> [--comments] [--json]                  one card, with its status, assignee_ids, next step and blockers
-  list [--project KEY|all] [--status NAME] [--parent KEY] [--assignee ID|none] [--q TEXT] [--limit N] [--json]
+  list [--project KEY|all] [--status NAME] [--parent KEY] [--assignee NAME|ID|none] [--q TEXT] [--limit N] [--json]
   sub-tasks <KEY> [--json]                         the card's direct sub-tasks
   labels [--project KEY]                           the label names a board has
+  members                                          the workspace members: display name and id (for --assignee)
 
 Write (leads only: ORBIT_ROLE=lead; every write takes --dry-run, which prints the exact change and sends nothing):
   create --title T [--description D | --description-file F|-] [--status NAME] [--priority P] [--project KEY]
-         [--parent KEY | --no-parent] [--blocked-by KEY,KEY] [--label NAME,NAME] [--lex-said "<his exact words>"]
+         [--parent KEY | --no-parent] [--blocked-by KEY,KEY] [--label NAME,NAME] [--assignee NAME|ID|none] [--lex-said "<his exact words>"]
   update <KEY> [--title T] [--description D | --description-file F|- | --clear-description] [--status NAME] [--priority P]
-         [--parent KEY|none] [--blocked-by KEY,KEY|none] [--label NAME,NAME | --clear-labels] [--lex-said "<his exact words>"]
+         [--parent KEY|none] [--blocked-by KEY,KEY|none] [--label NAME,NAME | --clear-labels] [--assignee NAME|ID|none] [--lex-said "<his exact words>"]
   dates <KEY> [--start DATE] [--due DATE] --source "<where the date comes from>"   or   dates <KEY> --clear
          A new description keeps the card's "Next step", "Blocked by" and "Planned dates" lines unless it has its own.
   note <KEY> "<text>"                              a dated line under Notes in the description
   comment <KEY> "<text>"                           a comment on the card
-  next-lex <KEY> "<reason>"                        first description line "Next step (Lex): reason"
-  clear-next-lex <KEY>                             takes that line out
+  next-lex <KEY> "<reason>"                        first description line "Next step (Lex): reason", and assigns the member called Lex
+  clear-next-lex <KEY>                             takes that line out, and Lex off the assignees (only him)
   trash <KEY> --lex-said "<his exact words>"       moves the card and its sub-tasks to Orbit's trash (30 days)
 
 Set up once:
@@ -89,12 +90,13 @@ Other ways to start it:
 `;
 
 class UsageProblem extends Error {}
-const cardOptions = ["title", "description", "description-file", "status", "priority", "parent", "project", "blocked-by", "label", "lex-said"];
+const cardOptions = ["title", "description", "description-file", "status", "priority", "parent", "project", "blocked-by", "label", "assignee", "lex-said"];
 const commands = {
   get: { args: ["card key"], flags: ["json", "comments"], values: [] },
   list: { args: [], flags: ["json"], values: ["project", "status", "parent", "assignee", "q", "limit"] },
   "sub-tasks": { args: ["card key"], flags: ["json"], values: [] },
   labels: { args: [], flags: [], values: ["project"] },
+  members: { args: [], flags: [], values: [] },
   create: { args: [], flags: ["dry-run", "no-parent"], values: cardOptions },
   update: { args: ["card key"], flags: ["dry-run", "clear-description", "clear-labels"], values: cardOptions.filter(name => name !== "project") },
   dates: { args: ["card key"], flags: ["dry-run", "clear"], values: ["start", "due", "source"] },
@@ -149,7 +151,7 @@ function description(flags) {
 
 // Terminal control characters in card text never reach the screen; a RESULT line is one line.
 const printable = value => String(value ?? "").replace(/[^\P{Cc}\n\t]|[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu, "");
-const assignees = task => task.assignee_ids?.length ? task.assignee_ids.join(", ") : "none";
+const assignees = task => (task.assignee_names ?? task.assignee_ids)?.length ? (task.assignee_names ?? task.assignee_ids).join(", ") : "none";
 const oneLine = text => String(text).replace(/\s*[\r\n]+\s*/g, " ");
 const labelWords = task => task.label_names?.length ? `labels: ${task.label_names.join(", ")}  ` : "";
 const cardLine = task => `${task.identifier}  [${task.status_name}]  ${task.priority}  assignees: ${assignees(task)}  ${labelWords(task)}${oneLine(task.title)}`;
@@ -175,10 +177,14 @@ function report(name, outcome) {
     say("Dry run: nothing was sent.");
     return finish("ok", `${name} ${outcome.key} dry run`);
   }
-  if (outcome.unchanged) return finish("ok", `${name} ${outcome.key} already as asked; nothing to send`);
+  if (outcome.unchanged) {
+    // A next step already on the card can still leave Lex unassigned: say so.
+    if (outcome.assign?.note) say(`${outcome.key}: ${outcome.assign.note}`);
+    return finish("ok", `${name} ${outcome.key} already as asked; nothing to send`);
+  }
   if (outcome.task?.url && name !== "trash") say(`${outcome.key}  ${outcome.task.url}`);
-  if (name === "next-lex") say(`${outcome.key} waits for Lex. Assign the card to Lex in Orbit.`);
-  if (name === "clear-next-lex" && outcome.task?.assignee_ids?.length) say(`${outcome.key} no longer waits for Lex. Ask Lex to unassign it (assignee_ids: ${assignees(outcome.task)}).`);
+  if (name === "next-lex") say(outcome.assign?.assigned ? `${outcome.key} waits for Lex and is assigned to ${outcome.assign.assigned}.` : `${outcome.key} waits for Lex. ${outcome.assign?.note ?? ""}`.trim());
+  if (name === "clear-next-lex") say(outcome.assign?.unassigned ? `${outcome.key} no longer waits for Lex and is no longer assigned to ${outcome.assign.unassigned}.` : `${outcome.key} no longer waits for Lex.${outcome.assign?.note ? ` ${outcome.assign.note}` : ""}`);
   if (name === "trash") say(`${outcome.key} and its sub-tasks (${outcome.subTasks} directly under it) are in Orbit's trash; members can restore them there for 30 days.`);
   finish("ok", `${name} ${outcome.key}${outcome.fields ? ` (${outcome.fields.join(", ")})` : ""}`);
 }
@@ -189,7 +195,7 @@ async function show(store, key, { json, comments }) {
   if (json) { sayJson(notes ? { ...task, comments: notes } : task); return finish("ok", `get ${task.identifier}`); }
   say(`${task.identifier}  ${oneLine(task.title)}`);
   say(`Status: ${task.status_name}  Priority: ${task.priority}`);
-  say(`Assignees (assignee_ids): ${assignees(task)}`);
+  say(`Assignees: ${assignees(task)}`);
   if (task.label_names.length) say(`Labels: ${task.label_names.join(", ")}`);
   if (task.next_lex !== null) say(`Next step (Lex): ${task.next_lex}`);
   if (task.blocked_by.length) say(`Blocked by: ${task.blocked_by.join(", ")}`);
@@ -249,6 +255,11 @@ async function main() {
       if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new UsageProblem("--limit must be a whole number from 1 to 1000");
       return showList("list", await store.list({ project: flags.project, status: flags.status, parent: flags.parent, assignee: flags.assignee, q: flags.q, limit }), flags.json, " (use --limit)");
     }
+    case "members": {
+      const members = await store.members();
+      for (const member of members) say(`${oneLine(member.display_name)}  ${member.user_id}`);
+      return finish("ok", `members: ${members.length} member${members.length === 1 ? "" : "s"}`);
+    }
     case "labels": {
       const { board, items } = await store.labels(flags.project);
       for (const label of items) say(oneLine(label.name));
@@ -257,9 +268,9 @@ async function main() {
     case "sub-tasks": return showList(`sub-tasks ${key}`, await store.subTasks(key), flags.json);
     case "create": {
       if (flags.parent !== undefined && flags["no-parent"]) throw new UsageProblem("use --parent or --no-parent, not both");
-      return report(name, await store.create({ project: flags.project, title: flags.title, description: description(flags), status: flags.status, priority: flags.priority, parent: flags.parent, noParent: flags["no-parent"], blocked: flags["blocked-by"], label: flags.label, lexSaid: flags["lex-said"] }));
+      return report(name, await store.create({ project: flags.project, title: flags.title, description: description(flags), status: flags.status, priority: flags.priority, parent: flags.parent, noParent: flags["no-parent"], blocked: flags["blocked-by"], label: flags.label, assignee: flags.assignee, lexSaid: flags["lex-said"] }));
     }
-    case "update": return report(name, await store.update(key, { title: flags.title, description: description(flags), clearDescription: flags["clear-description"], status: flags.status, priority: flags.priority, parent: flags.parent, blocked: flags["blocked-by"], label: flags.label, clearLabels: flags["clear-labels"], lexSaid: flags["lex-said"] }));
+    case "update": return report(name, await store.update(key, { title: flags.title, description: description(flags), clearDescription: flags["clear-description"], status: flags.status, priority: flags.priority, parent: flags.parent, blocked: flags["blocked-by"], label: flags.label, assignee: flags.assignee, clearLabels: flags["clear-labels"], lexSaid: flags["lex-said"] }));
     case "dates": return report(name, await store.dates(key, { start: flags.start, due: flags.due, source: flags.source, clear: flags.clear }));
     case "note": return report(name, await store.note(key, wording));
     case "comment": return report(name, await store.comment(key, wording));

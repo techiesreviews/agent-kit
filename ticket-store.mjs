@@ -280,7 +280,45 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
     });
     return [...new Set(ids)];
   };
-  const withNames = async task => ({ ...task, status_name: await statusName(task), label_names: await labelNames(task) });
+  // The workspace members, read once per run. A failed read is not kept, so the next call asks again.
+  let memberRead;
+  const membersOf = () => memberRead ??= client.members().catch(error => { memberRead = undefined; throw error; });
+  const memberName = member => oneLine(member.display_name ?? "").trim();
+  const nameList = members => members.length > 20 ? `${members.slice(0, 20).map(memberName).join(", ")}, … (kit ticket members lists them all)` : members.map(memberName).join(", ") || "none";
+  /** Assignee ids for one NAME, ID or none: a name must fit exactly one member (case-insensitive); anything else is refused with the members listed. */
+  const assigneeIds = async (value, { anyId = false } = {}) => {
+    const wanted = oneLine(value ?? "");
+    if (!wanted) throw new OrbitError("--assignee needs a member's name or id, or none to clear it");
+    if (wanted.toLowerCase() === "none") return [];
+    const members = await membersOf();
+    const byId = members.find(member => String(member.user_id).toLowerCase() === wanted.toLowerCase());
+    if (byId) return [byId.user_id];
+    // A filter may name a person who has left: an id that is no member still asks Orbit.
+    if (anyId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(wanted)) return [wanted];
+    const found = members.filter(member => memberName(member).toLowerCase() === wanted.toLowerCase());
+    if (found.length === 1) return [found[0].user_id];
+    if (!found.length) throw new OrbitError(`no member called ${wanted}; the members are: ${nameList(members)}`);
+    throw new OrbitError(`more than one member called ${wanted}: ${found.map(memberName).join(", ")}; use the id (kit ticket members lists them)`);
+  };
+  /** The assignees by name; an id that is no member, or a members list that cannot be read, shows the id. */
+  const assigneeNames = async task => {
+    if (!task.assignee_ids?.length) return [];
+    let members = [];
+    try { members = await membersOf(); } catch { /* The ids are still true. */ }
+    return task.assignee_ids.map(id => { const found = members.find(member => member.user_id === id); return found ? memberName(found) : id; });
+  };
+  /**
+   * The member called exactly Lex (any capitals): { id, name } for exactly one; otherwise { why } and `ids`, the ids of every member so
+   * called (`unreadable` when the list cannot be read, so nobody can say who is Lex).
+   */
+  const lexMember = async () => {
+    let members;
+    try { members = await membersOf(); } catch (error) { return { ids: [], unreadable: true, why: `Orbit would not list the members (${oneLine(error?.message ?? "no answer").slice(0, 120)})` }; }
+    const found = members.filter(member => memberName(member).toLowerCase() === "lex");
+    if (found.length === 1) return { id: found[0].user_id, name: memberName(found[0]), ids: [found[0].user_id] };
+    return { ids: found.map(member => member.user_id), why: found.length ? "more than one member is called Lex" : "no member is called Lex" };
+  };
+  const withNames = async task => ({ ...task, status_name: await statusName(task), label_names: await labelNames(task), assignee_names: await assigneeNames(task) });
   const firstOpenStatus = async projectId => {
     const list = [...await statusesOf(projectId)].sort((a, b) => a.position - b.position);
     return list.find(status => status.category === "unstarted") ?? list[0];
@@ -461,6 +499,8 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       return { ...await withNames(task), stage: (await stageOf(task)).stage, blocked_by: blockedBy(task.description), claimed_by: claimedBy(task.description), next_lex: nextLexReason(task.description), parent_key };
     },
     comments: key => client.comments(orbitCardKey(key)),
+    /** The workspace members, as { user_id, display_name }. */
+    members: async () => [...await membersOf()],
     /** The cards of one board, or of every board the token reaches with project "all". */
     async list({ project, status, parent, assignee, q, limit = 50 }) {
       // A parent's key already names the card, on whichever board it sits; a status name needs one board.
@@ -468,7 +508,8 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       if (everywhere && status !== undefined) throw new OrbitError("--status names differ per board: use it with one --project");
       // With a parent and no board named, a status name is read on the parent's own board.
       const board = everywhere ? null : project === undefined && parent !== undefined ? { id: (await client.task(orbitCardKey(parent))).project_id } : await projectFrom(project);
-      const query = { project_id: board?.id, assignee_id: assignee, q, parent_task_id: parent === undefined ? undefined : orbitCardKey(parent) };
+      const assigneeId = assignee === undefined || String(assignee).toLowerCase() === "none" ? assignee : (await assigneeIds(assignee, { anyId: true }))[0];
+      const query = { project_id: board?.id, assignee_id: assigneeId, q, parent_task_id: parent === undefined ? undefined : orbitCardKey(parent) };
       if (status !== undefined) query.status_id = (await statusByName(board.id, status)).id;
       const { items, more } = await client.tasks(query, limit);
       return { more, items: await Promise.all(items.map(withNames)) };
@@ -482,7 +523,7 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       const { items, more } = await client.tasks({ parent_task_id: orbitCardKey(key) });
       return { more, items: await Promise.all(items.map(withNames)) };
     },
-    async create({ project, title, description, status, priority, parent, noParent, blocked, label, lexSaid }) {
+    async create({ project, title, description, status, priority, parent, noParent, blocked, label, assignee, lexSaid }) {
       if (!oneLine(title)) throw new OrbitError("a new card needs --title");
       if (priority !== undefined && !priorities.includes(priority)) throw new OrbitError(`priority must be one of ${priorities.join(", ")}`);
       // A blank --parent (an empty variable, say) must not quietly drop the default parent.
@@ -498,6 +539,7 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       if (text !== undefined) body.description = text;
       if (priority !== undefined) body.priority = priority;
       if (label !== undefined) body.label_ids = await labelIds(board.id, label);
+      if (assignee !== undefined) body.assignee_ids = await assigneeIds(assignee);
       const ownBoard = board.key.toLowerCase() === String(defaults.project ?? "").toLowerCase();
       const ownParent = parent ?? (noParent || !ownBoard ? undefined : defaults.parent ?? undefined);
       if (ownParent) body.parent_task_id = await parentId(ownParent);
@@ -510,17 +552,17 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       });
       return { key: task.identifier, action: "create", task, fields: Object.keys(body) };
     },
-    update(key, { title, description: text, clearDescription, status, priority, parent, blocked, label, clearLabels, lexSaid }) {
+    update(key, { title, description: text, clearDescription, status, priority, parent, blocked, label, clearLabels, assignee, lexSaid }) {
       if (clearLabels && label !== undefined) throw new OrbitError("use --label or --clear-labels, not both");
       if (clearDescription && text !== undefined) throw new OrbitError("use --description or --clear-description, not both");
       // A blank text is more often a failed pipe than a wish: wiping a card is asked for by name.
       if (text !== undefined && !text.trim()) throw new OrbitError("that description is blank, so nothing was sent; to empty a card on purpose use --clear-description (its next step, blockers and dates line stay)");
       const description = clearDescription ? "" : text;
-      if ([title, description, status, priority, parent, blocked, label].every(value => value === undefined) && !clearLabels) throw new OrbitError("nothing to change: name at least one of --title, --description, --clear-description, --status, --priority, --parent, --blocked-by, --label, --clear-labels");
+      if ([title, description, status, priority, parent, blocked, label, assignee].every(value => value === undefined) && !clearLabels) throw new OrbitError("nothing to change: name at least one of --assignee, --title, --description, --clear-description, --status, --priority, --parent, --blocked-by, --label, --clear-labels");
       if (priority !== undefined && !priorities.includes(priority)) throw new OrbitError(`priority must be one of ${priorities.join(", ")}`);
       if (title !== undefined && !oneLine(title)) throw new OrbitError("--title cannot be blank");
       // The fields set outright; a retry stops if someone else changed one of them. A blockers-only change merges.
-      const replaces = [title !== undefined && "title", description !== undefined && "description", status !== undefined && "status_id", priority !== undefined && "priority", parent !== undefined && "parent_task_id", (label !== undefined || clearLabels) && "label_ids"].filter(Boolean);
+      const replaces = [title !== undefined && "title", description !== undefined && "description", status !== undefined && "status_id", priority !== undefined && "priority", parent !== undefined && "parent_task_id", assignee !== undefined && "assignee_ids", (label !== undefined || clearLabels) && "label_ids"].filter(Boolean);
       const keys = blocked === undefined ? undefined : blockers(blocked);
       return changeCard("update", key, async task => {
         const wanted = {};
@@ -542,6 +584,10 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
           wanted.label_ids = same([...ids].sort(), [...(task.label_ids ?? [])].sort()) ? task.label_ids : ids;
         }
         if (parent !== undefined) wanted.parent_task_id = parent === "none" ? null : await parentId(parent);
+        if (assignee !== undefined) {
+          const ids = await assigneeIds(assignee);
+          wanted.assignee_ids = same([...ids].sort(), [...(task.assignee_ids ?? [])].sort()) ? task.assignee_ids : ids;
+        }
         return wanted;
       }, { replaces, lexSaid });
     },
@@ -579,12 +625,38 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       await sent({ card: task.identifier, action: "comment", fields: ["body"] }, () => client.addComment(task.identifier, text));
       return { key: task.identifier, action: "comment", fields: ["body"], task };
     },
-    nextLex(key, reason) {
+    /** Writes the first line and assigns the one member called Lex; with none or several, the line is still written and `assign.note` says why. */
+    async nextLex(key, reason) {
       if (!oneLine(reason)) throw new OrbitError("next-lex needs a reason");
-      return changeCard("next-lex", key, task => ({ description: withNextLex(task.description, reason) }));
+      let assign;
+      const outcome = await changeCard("next-lex", key, async task => {
+        const wanted = { description: withNextLex(task.description, reason) };
+        const lex = await lexMember();
+        if (lex.id) {
+          const ids = task.assignee_ids ?? [];
+          wanted.assignee_ids = ids.includes(lex.id) ? ids : [...ids, lex.id];
+          assign = { assigned: lex.name };
+        } else assign = { note: `could not assign: ${lex.why}; assign in Orbit` };
+        return wanted;
+      });
+      return { ...outcome, assign };
     },
-    clearNextLex(key) {
-      return changeCard("clear-next-lex", key, task => ({ description: withoutNextLex(task.description) }));
+    /** Takes the line out and Lex (only that member) off the assignees. */
+    async clearNextLex(key) {
+      let assign;
+      const outcome = await changeCard("clear-next-lex", key, async task => {
+        const wanted = { description: withoutNextLex(task.description) };
+        const ids = task.assignee_ids ?? [];
+        const lex = ids.length ? await lexMember() : null;
+        assign = undefined;
+        if (lex?.id) {
+          if (ids.includes(lex.id)) { wanted.assignee_ids = ids.filter(id => id !== lex.id); assign = { unassigned: lex.name }; }
+        } else if (lex?.unreadable) assign = { note: `could not check whether Lex is assigned (${lex.why}); unassign him in Orbit if he is` };
+        // With none or several members called Lex, a note only when one of them is on the card.
+        else if (lex && lex.ids.some(id => ids.includes(id))) assign = { note: `could not unassign: ${lex.why}; unassign in Orbit` };
+        return wanted;
+      });
+      return { ...outcome, assign };
     },
     /**
      * The cards of the project's board (under its parent card when one is set), each with its stage, blockers, open
