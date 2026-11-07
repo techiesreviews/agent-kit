@@ -170,6 +170,7 @@ test("import makes one card per ticket file with its status, header lines, block
   const parent = p.card({ title: "Tickets of the demo project" }, "Backlog");
   const output = ok(await p.run(["import"]));
   assert.match(output.stdout.trimEnd().split("\n").at(-1)!, /import 4 tickets into KIT: 4 created, 0 updated, 0 unchanged, 2 comments added/);
+  assert.match(output.stdout, /^created KIT-\d+ from .*\n(?:.*\n)*wrote the text of KIT-\d+ from /m);
   const [first, second, dropped, grill] = paths.map(p.cardFor);
   for (const card of [first, second, dropped, grill]) { assert.ok(card); assert.equal(card.parent_task_id, parent.id); }
   assert.deepEqual([first, second, dropped, grill].map(card => p.orbit.statusOf(card)), ["Done", "Todo", "Cancelled", "Backlog"]);
@@ -367,8 +368,11 @@ test("a run cut off after making the cards is finished by the next one: the bare
   const p = await project(t);
   // The four creates go through; the first text write after them fails.
   p.orbit.controls.writeAnswers.push(...([undefined, undefined, undefined, undefined, { status: 500, code: "server_error", detail: "Down" }] as any[]));
-  refused(await p.run(["import"]), /Orbit refused: Down/);
+  const cut = refused(await p.run(["import"]), /Orbit refused: Down/);
   assert.equal(p.orbit.tasks.length, 4);
+  // The output shows which cards were made and that none got its text yet.
+  assert.equal(cut.stdout.match(/^created KIT-\d+ from /gm)?.length, 4);
+  assert.doesNotMatch(cut.stdout, /wrote the text of/);
   const again = ok(await p.run(["import"]));
   assert.match(again.stdout.trimEnd().split("\n").at(-1)!, /0 created, 4 updated, 0 unchanged, 2 comments added/);
   assert.equal(p.orbit.tasks.length, 4);
