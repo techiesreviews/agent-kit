@@ -17,12 +17,17 @@ export const fakeWorkspace = "11111111-1111-4111-8111-111111111111";
 
 const statusNames = [["Idea", "unstarted"], ["Script", "started"], ["Record", "started"], ["Edit", "started"], ["Publish", "completed"]] as const;
 
-export async function fakeOrbit(t: TestContext) {
+// A kit project's board, as kit next, slice, pr and status read it by name.
+const kitStatusNames = [["Backlog", "unstarted"], ["Todo", "unstarted"], ["In Progress", "started"], ["Done", "completed"], ["Cancelled", "cancelled"]] as const;
+
+/** With `kitBoard`, a third board KIT ("Agent Kit") with the statuses Backlog, Todo, In Progress, Done and Cancelled. */
+export async function fakeOrbit(t: TestContext, { kitBoard = false }: { kitBoard?: boolean } = {}) {
   const projects = [
     { id: randomUUID(), name: "Tools and Builds", key: "TOOLS", color: "blue", version: 1 },
     { id: randomUUID(), name: "Video Production", key: "VID", color: "red", version: 1 },
+    ...(kitBoard ? [{ id: randomUUID(), name: "Agent Kit", key: "KIT", color: "green", version: 1 }] : []),
   ];
-  const statuses = new Map(projects.map(project => [project.id, statusNames.map(([name, category], position) => (
+  const statuses = new Map(projects.map(project => [project.id, (project.key === "KIT" ? kitStatusNames : statusNames).map(([name, category], position) => (
     { id: randomUUID(), project_id: project.id, name, description: "", color: "gray", category, position, version: 1 }))]));
   const labels = new Map(projects.map(project => [project.id, ["Script", "Record", "Short video"].map(name => (
     { id: randomUUID(), project_id: project.id, name, color: "gray", version: 1 }))]));
@@ -200,5 +205,6 @@ export async function fakeOrbit(t: TestContext) {
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const writes = () => requests.filter(item => item.method !== "GET");
   const statusOf = (task: FakeTask) => statuses.get(task.project_id)!.find(status => status.id === task.status_id)!.name;
-  return { origin, projects, statuses, labels, tasks, comments, requests, controls, addTask, writes, statusOf, tools: projects[0], video: projects[1] };
+  const statusId = (project: (typeof projects)[number], name: string) => statuses.get(project.id)!.find(status => status.name === name)!.id;
+  return { origin, projects, statuses, labels, tasks, comments, requests, controls, addTask, writes, statusOf, statusId, tools: projects[0], video: projects[1], kit: projects[2] };
 }
