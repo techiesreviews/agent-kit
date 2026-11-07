@@ -686,9 +686,9 @@ ${comments.length ? comments.join("\n\n") : "None."}
     try { opened = openOrbitTickets({ settings, who: kitOwner() }); }
     catch (error) { fail(`issues ${orbitProblem(error)}; made no card, closed nothing`); }
     const { store, redact, secrets } = opened;
-    // A copied line shaped like one of the kit's own card lines (blockers, claim, next step, dates) gets a "> " in
-    // front, so nothing an Issue says can block, claim or date its card.
-    const kitLine = /^\s*(?:blocked by|claimed by|next step \(lex\)|planned dates):/i;
+    // A copied line shaped like one of the kit's own card lines (blockers, claim, next step, dates, the Issue link)
+    // gets a "> " in front, so nothing an Issue says can block, claim or date its card, or pass for another Issue's.
+    const kitLine = /^\s*(?:blocked by|claimed by|next step \(lex\)|planned dates|github issue):/i;
     const cardText = (issue) => {
       const ticket = ticketText(issue), copiedText = ticket.slice(ticket.indexOf("From GitHub Issue")).trim();
       return `GitHub Issue: ${issue.url}\n\n${copiedText.split("\n").map((line) => kitLine.test(line) ? `> ${line}` : line).join("\n")}`;
@@ -705,7 +705,8 @@ ${comments.length ? comments.join("\n\n") : "None."}
       let task;
       try {
         const { items, more } = await store.list({ q: marker, limit: 1000 });
-        task = items.find((item) => String(item.description ?? "").split("\n").some((line) => line.trim() === marker));
+        // The marker is the card's first line, where this command writes it.
+        task = items.find((item) => String(item.description ?? "").split("\n", 1)[0].trim() === marker);
         if (!task && more) fail(`issues stopped at #${issue.number}: more than 1000 cards match its link, so an earlier card for it may be missed; ${summary()}; find it with kit ticket list --q "${marker}"`);
         if (task) console.log(`found ${task.identifier} for #${issue.number}`);
         else {
