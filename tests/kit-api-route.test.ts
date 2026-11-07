@@ -209,6 +209,8 @@ test("a tool list over several lines, or a --tools that is no option of this cal
     // The same for the hooks-off switch: as a value or after the marker it switches nothing off.
     ["-p", "--tools", "Read", "--strict-mcp-config", "--append-system-prompt", "--bare"], ["-p", "--tools", "Read", "--strict-mcp-config", "--append-system-prompt", "--setting-sources", ""],
     ["-p", "--tools", "Read", "--strict-mcp-config", "--", "--bare"], ["-p", "--tools", "Read", "--strict-mcp-config", "--setting-sources"], ["-p", "--tools", "Read", "--setting-sources", "--strict-mcp-config"],
+    // --mcp-config as the value of another option, or after the marker, is no option of the call (the flag stays on either way: a later edit must not drop the check).
+    ["-p", "--tools", "Read", "--bare", "--strict-mcp-config", "--append-system-prompt", "--mcp-config", "x.json"], ["-p", "--tools", "Read", "--bare", "--strict-mcp-config", "--", "--mcp-config", "x.json"],
     // --strict-mcp-config as the value of another option is no switch either.
     ["-p", "--tools", "Read", "--bare", "--append-system-prompt", "--strict-mcp-config"],
   ];

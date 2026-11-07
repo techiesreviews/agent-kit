@@ -24,12 +24,12 @@ unset KIT_API_KEY_FILE KIT_API_CONFIG_DIR ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH
 # (from settings or plugins) and the nested kit calls of a run. Only claude's own process has the key.
 # The flag also makes claude set up its own sandbox, which leaves empty .env, .npmrc, yarn.lock ... files in the folder it runs in,
 # so it goes off in one case only: a call that has a tool list of plain readers (Read, Grep, Glob) and starts no hooks (--bare, or
-# --setting-sources with an empty value), and loads no MCP servers (--strict-mcp-config, with no --mcp-config but an empty server list), no
-# plugins (--plugin-dir, --plugin-url) and no extra settings or agents (--settings, --agents), all of which can start programs of their
-# own. No tool list, an empty one, or anything that may start another program keeps the flag on.
+# --setting-sources with an empty value), and loads no MCP servers (--strict-mcp-config, and no --mcp-config other than an empty server list,
+# {"mcpServers":{}}), no plugins (--plugin-dir, --plugin-url) and no extra settings or agents (--settings, --agents), all of which can
+# start programs of their own. No tool list, an empty one, or anything that may start another program keeps the flag on.
 # Fail closed: every doubt keeps the flag on. A tool list is read as claude reads it (variadic: the words after --tools count; commas,
-# spaces and line breaks all separate names), and --tools, --bare or --setting-sources count only where they are options of this call:
-# not as the value of another option, and not after a bare -- (words after it are the prompt).
+# spaces and line breaks all separate names), and --tools, --bare, --setting-sources, --strict-mcp-config and --mcp-config count only
+# where they are options of this call: not as the value of another option, and not after a bare -- (words after it are the prompt).
 scrub=1
 args=("$@")
 count=${#args[@]}
@@ -72,6 +72,7 @@ for ((i = 0; i < count; i++)); do
       (( named )) || readers=0 ;;
     --bare) if is_option "$i"; then bare=1; else misplaced=1; fi ;;
     --strict-mcp-config) if is_option "$i"; then strict_mcp=1; else misplaced=1; fi ;;
+    # Anywhere, even as another option's value or after --: these only ever keep the flag on, so a doubt fails closed.
     --plugin-dir|--plugin-dir=*|--plugin-url|--plugin-url=*|--settings|--settings=*|--agents|--agents=*) loads=1 ;;
     --mcp-config|--mcp-config=*)
       # Only an empty server list starts nothing; the option is variadic, so every word after it counts.
