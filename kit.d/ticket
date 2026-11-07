@@ -1,11 +1,13 @@
 #!/usr/bin/env node
-// kit: tickets on the Orbit board: create, read, update, dates, notes, comments, sub-tasks, next-lex, trash, setup
+// kit: tickets on the Orbit board: create, read, update, dates, notes, comments, sub-tasks, next-lex, trash, setup, import, parity, migrate
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { kitOwner, kitResult, kitRoot, kitSettings } from "../kit-lib.mjs";
 import { OrbitError, OrbitSetupProblem, orbitCardRedactor, orbitClient, orbitLogPath, orbitRedactor, orbitSecrets, readOrbitConfig } from "../orbit-client.mjs";
 import { orbitSetup } from "../orbit-setup.mjs";
 import { orbitStore, showDate, ticketSettings } from "../ticket-store.mjs";
+import { importTickets, migrateTickets, ticketParity } from "../ticket-import.mjs";
 
 const usage = `Usage: kit ticket <command> [options]
 Tickets on the Orbit board, from any project folder. A card is named by its key, like TOOLS-10.
@@ -32,6 +34,13 @@ Write (leads only: ORBIT_ROLE=lead; every write takes --dry-run, which prints th
 Set up once:
   setup [--help]                                   the private Orbit setup file, step by step
 
+Move a project's ticket files to Orbit (run in the project; leads only):
+  import [--project KEY] [--dry-run]               a card per ticket file (title, status, type, assignee, blockers,
+                                                   body, comments, links); a rerun finds its cards and makes no new ones
+  parity [--project KEY]                           compares the files with their cards; lists every difference, fails on one
+  migrate [--project KEY] [--parent KEY] [--dry-run]   import, parity, tag, then one PR through kit pr that removes the
+                                                   ticket files and sets "tickets": "orbit"
+
 Without --project a board comes from "orbit": { "project": "<KEY>", "parent": "<KEY-n>" } in scripts/agents/kit.json;
 parent is the card new tickets go under (--no-parent skips it). "tickets": "files"|"orbit" (default files) says which
 store this project's kit next, slice, pr, status and init --issues use; with orbit they read and write these cards (a slice
@@ -44,6 +53,18 @@ deleted for good; a date needs a source. A plain date YYYY-MM-DD is a whole day 
 are a "Blocked by: KEY-n, KEY-m" line in the description. It reads the latest version first and tries once more on a
 version conflict. Each write adds one line to ~/.local/state/fleet/orbit.log. Like every kit command it ends with a
 RESULT line, also after --json: a script drops that last line before it reads the JSON.
+
+How a project moves (kit ticket migrate, from a fresh branch: git switch -c tickets-to-orbit origin/<land>):
+1. It refuses while a build runs: an open AFK ticket with an assignee (kit next's claim) or a card In Progress.
+2. import: one card per ticket file in every map's tickets/ and build/tickets/, under the project's parent card. The
+   card's first line "Imported from: <path> (project <name>)" names its file, then the frontmatter (Type, Assignee,
+   Builder, ...), a "Blocked by:" line with the blockers' card keys and the ticket's text; each entry of its "## Comments"
+   section becomes a comment. Links to other tickets point at their cards. Status: closed is Done, wontfix Cancelled,
+   an open "task (AFK)" Todo, the rest Backlog (a "File status:" line keeps needs-info and the like).
+3. parity: any difference stops the move before anything is tagged or removed.
+4. A tag tickets-in-files-YYYYMMDD on the commit that still holds the files, pushed to origin.
+5. One commit, landed with kit pr: the ticket files removed, "tickets": "orbit" and the board in scripts/agents/kit.json,
+   and links in docs that named a ticket file now name its card. Maps, research notes, ADRs and other docs stay.
 `;
 const setupUsage = `Usage: kit ticket setup [--from-mcp-config [file]] [--from-file file] [--new-pass] [--dry-run]
 
@@ -83,7 +104,12 @@ const commands = {
   "clear-next-lex": { args: ["card key"], flags: ["dry-run"], values: [] },
   trash: { args: ["card key"], flags: ["dry-run"], values: ["lex-said"] },
   setup: { args: [], flags: ["dry-run", "new-pass"], values: ["from-file"], optional: ["from-mcp-config"] },
+  import: { args: [], flags: ["dry-run"], values: ["project"] },
+  parity: { args: [], flags: [], values: ["project"] },
+  migrate: { args: [], flags: ["dry-run"], values: ["project", "parent"] },
 };
+const moving = new Set(["import", "parity", "migrate"]);
+const kitCommand = process.env.KIT_TICKET_KIT || resolve(import.meta.dirname, "../kit");
 
 function parse(name, words) {
   const spec = commands[name], found = { flags: Object.create(null), rest: [] };
@@ -132,6 +158,7 @@ const cardLine = task => `${task.identifier}  [${task.status_name}]  ${task.prio
 // stays whole apart from real secrets, so a script reading it gets the card's own words.
 let redact = orbitRedactor(), redactCard = orbitCardRedactor();
 const say = line => console.log(redactCard(printable(line)));
+const sayAll = (...lines) => lines.forEach(say);
 // JSON escapes only the lowest control characters: the others go out as \\uXXXX too, and parse back to the same text.
 const sayJson = value => console.log(redactCard(JSON.stringify(value, null, 2)).replace(/[\u007F-\u009F\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, mark => `\\u${mark.charCodeAt(0).toString(16).padStart(4, "0")}`));
 function finish(status, message, code = status === "ok" ? 0 : 1) {
@@ -197,8 +224,14 @@ async function main() {
 
   let settings = {}, settingsProblem = "";
   try { settings = kitSettings(kitRoot()); }
-  catch (error) { if (!/^no scripts\/agents\/kit\.json/.test(error.message)) settingsProblem = error.message; }
-  const { project, parent } = ticketSettings(settings);
+  catch (error) {
+    // Moving a project's tickets reads its settings: no kit project, or broken settings, stops it.
+    if (moving.has(name)) throw new OrbitError(`${name} runs in a kit project: ${error.message}`);
+    if (!/^no scripts\/agents\/kit\.json/.test(error.message)) settingsProblem = error.message;
+  }
+  const own = ticketSettings(settings);
+  const project = moving.has(name) ? flags.project ?? own.project : own.project;
+  const parent = name === "migrate" ? flags.parent ?? own.parent : own.parent;
 
   const config = readOrbitConfig();
   redact = orbitRedactor(orbitSecrets(config));
@@ -231,6 +264,25 @@ async function main() {
     case "next-lex": return report(name, await store.nextLex(key, wording));
     case "clear-next-lex": return report(name, await store.clearNextLex(key));
     case "trash": return report(name, await store.trash(key, flags["lex-said"]));
+    case "import": {
+      if (!project) throw new UsageProblem('which board? Add --project <KEY>, or "orbit": { "project": "<KEY>" } to scripts/agents/kit.json');
+      const done = await importTickets({ store, root: kitRoot(), settings, project, dryRun, say: sayAll });
+      if (dryRun) say("Dry run: nothing was sent.");
+      return finish("ok", `import ${done.tickets} tickets into ${done.board}${dryRun ? " (dry run)" : ""}: ${done.created} ${dryRun ? "to create" : "created"}, ${done.updated} ${dryRun ? "to update" : "updated"}, ${done.unchanged} unchanged, ${done.comments} comment${done.comments === 1 ? "" : "s"} ${dryRun ? "to add" : "added"}`);
+    }
+    case "parity": {
+      if (!project) throw new UsageProblem('which board? Add --project <KEY>, or "orbit": { "project": "<KEY>" } to scripts/agents/kit.json');
+      const { differences, tickets, cards, board } = await ticketParity({ store, root: kitRoot(), settings, project });
+      for (const line of differences) say(line);
+      if (differences.length) return finish("fail", `parity ${board}: ${differences.length} difference${differences.length === 1 ? "" : "s"} (${tickets} files, ${cards} cards)`);
+      return finish("ok", `parity ${board}: ${tickets} files and ${cards} cards match`);
+    }
+    case "migrate": {
+      const root = kitRoot();
+      const runPr = args => spawnSync(kitCommand, args, { cwd: root, stdio: "inherit", env: process.env }).status === 0;
+      const outcome = await migrateTickets({ store, root, settings, project, parent, dryRun, say: sayAll, runPr });
+      return finish(outcome.status, outcome.message);
+    }
   }
 }
 
