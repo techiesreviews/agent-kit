@@ -1810,7 +1810,7 @@ test("the fake Orbit refuses a write with no Origin or another one, as the runni
 });
 
 test("every write the client makes sends the saved Orbit origin as Origin, and no read does", async t => {
-  const { orbit, store } = await boardStore(t);
+  const orbit = await fakeOrbit(t, { kitBoard: true });
   const client = orbitClient({ origin: orbit.origin, workspace_id: fakeWorkspace, token: fakeToken, cf_access_client_id: fakeCfId, cf_access_client_secret: fakeCfSecret }, { timeoutMs: 5_000 });
   const made = await client.createTask({ project_id: orbit.kit.id, title: "Origin", status_id: orbit.statusId(orbit.kit, "Todo") });
   await client.patchTask(made.id, { title: "Origin 2", expected_version: made.version });
@@ -1823,29 +1823,30 @@ test("every write the client makes sends the saved Orbit origin as Origin, and n
   assert.deepEqual(writes.map(item => item.method), ["POST", "PATCH", "POST", "DELETE"]);
   for (const item of writes) assert.equal(item.headers.origin, orbit.origin, `${item.method} ${item.path}`);
   for (const item of orbit.requests.filter(item => item.method === "GET")) assert.equal(item.headers.origin, undefined, `GET ${item.path}`);
-  assert.ok(store);
 });
 
 test("a write never sends an Origin that is not the saved Orbit origin: an address with a path or a slash is refused before anything is sent", async t => {
   const orbit = await fakeOrbit(t);
   for (const origin of [`${orbit.origin}/`, `${orbit.origin}/api`, "https://user:pw@board.example.test", "ftp://board.example.test"]) {
     const client = orbitClient({ origin, workspace_id: fakeWorkspace, token: fakeToken, cf_access_client_id: fakeCfId, cf_access_client_secret: fakeCfSecret }, { timeoutMs: 2_000 });
-    await assert.rejects(() => client.patchTask("TOOLS-1", { title: "x" }), (error: Error) => /saved Orbit address/.test(error.message) && !error.message.includes(fakeToken));
+    await assert.rejects(() => client.patchTask("TOOLS-1", { title: "x" }), (error: Error) => /saved Orbit address/.test(error.message) && !error.message.includes(fakeToken) && (error as any).code === "bad-origin" && (error as any).noAnswer === false && /--from-mcp-config/.test(error.message));
+    await assert.rejects(() => client.createTask({ project_id: "x", title: "x" }), (error: Error) => (error as any).code === "bad-origin" && !/may or may not/.test(error.message));
   }
   assert.equal(orbit.requests.length, 0, "nothing reached the server");
 });
 
 test("origin_forbidden is told in plain words: what Orbit refused and what the kit sent", async t => {
-  const { orbit, store } = await boardStore(t);
+  const orbit = await fakeOrbit(t, { kitBoard: true });
   orbit.controls.writeAnswers.push({ status: 403, code: "origin_forbidden", detail: "The request origin is not allowed." });
   const card = orbit.addTask(orbit.kit, { title: "Plain", status_id: orbit.statusId(orbit.kit, "Todo") });
   const client = orbitClient({ origin: orbit.origin, workspace_id: fakeWorkspace, token: fakeToken, cf_access_client_id: fakeCfId, cf_access_client_secret: fakeCfSecret }, { timeoutMs: 5_000 });
   await assert.rejects(() => client.patchTask(card.id, { title: "x", expected_version: card.version }), (error: Error & { code?: string }) => {
     assert.equal(error.code, "origin_forbidden");
-    assert.match(error.message, new RegExp(`^Orbit refused the change: it does not accept the address the kit sends as the request origin \\(${orbit.origin.replace(/[.]/g, "\\.")}\\) \\[origin_forbidden\\]\\. Run: scripts/agents/kit ticket setup`));
+    assert.ok(error.message.startsWith(`Orbit refused the change because the saved Orbit address (${orbit.origin}) is not the one Orbit expects: it must be exactly the address you open Orbit at [origin_forbidden].`), error.message);
+    assert.match(error.message, /ticket setup --from-mcp-config/);
+    assert.doesNotMatch(error.message, /request origin|Origin header/);
     return true;
   });
-  assert.ok(store);
 });
 
 // Stage 2: the store calls kit next, slice, pr and status make on a project that keeps its tickets on Orbit.
