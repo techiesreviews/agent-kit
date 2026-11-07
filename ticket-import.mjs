@@ -231,9 +231,9 @@ function missingComments(wanted, have) {
 }
 
 /**
- * Makes or brings up to date one card per ticket file, then adds the comments each card is missing. Cards for tickets
- * that name tickets without a card yet are written again once those exist. A dry run prints every card and comment it
- * would send. Returns the counts.
+ * Makes or brings up to date one card per ticket file, then adds the comments each card is missing. Missing cards are
+ * made first, so every card's text can name every other card. A dry run prints every card and comment it would send.
+ * Returns the counts.
  */
 export async function importTickets({ store, root, settings, project: boardKey, dryRun = false, say = console.log }) {
   const project = importProject(settings, root);
@@ -250,42 +250,47 @@ export async function importTickets({ store, root, settings, project: boardKey, 
     if (!statusIds.has(id)) statusIds.set(id, await statusIdFor(store, board.id, wanted));
     return statusIds.get(id);
   };
-  const again = [];
-  const write = async (source, existing) => {
+  // First every missing card, with only its "Imported from" line: then every key is known, and no text is ever
+  // sent with a link or blocker that names a card not made yet. A run cut off here is finished by the next one.
+  const fresh = new Set();
+  for (const source of sources) {
+    if (byPath.has(source.path)) continue;
+    const status = await statusOf(source.status);
+    if (dryRun) {
+      const want = expectedCard(source, { project, ...look });
+      say(`would create a card from ${source.path}: ${source.title} [${status.name}]`);
+      say("  description:", ...quoteBlock(want.description));
+    } else {
+      const outcome = await store.create({ project: boardKey, title: source.title, description: `Imported from: ${source.path} (project ${project})`, status: status.name });
+      made.set(source.path, { key: outcome.key, url: outcome.task?.url });
+      fresh.add(source.path);
+      say(`created ${outcome.key} from ${source.path}`);
+    }
+    counts.created++;
+  }
+  // Then each card's title, status and text, as its file says.
+  if (!dryRun) for (const source of sources) {
+    const key = made.get(source.path).key;
+    const existing = fresh.has(source.path) ? null : byPath.get(source.path);
     const want = expectedCard(source, { project, ...look });
     const status = await statusOf(source.status);
-    if (!existing) {
-      if (dryRun) {
-        say(`would create a card from ${source.path}: ${source.title} [${status.name}]`);
-        say("  description:", ...quoteBlock(want.description));
-      } else {
-        const outcome = await store.create({ project: boardKey, title: want.title, description: want.description, status: status.name });
-        made.set(source.path, { key: outcome.key, url: outcome.task?.url });
-        say(`created ${outcome.key} from ${source.path}`);
-        if (want.unresolved.length) again.push(source);
-      }
-      counts.created++;
-      return;
-    }
     const change = {};
-    if (normal(existing.title) !== want.title) change.title = want.title;
-    if (existing.status_id !== status.id) change.status_id = status.id;
-    if (normal(existing.description) !== normal(want.description)) change.description = want.description;
-    if (!Object.keys(change).length) { counts.unchanged++; return; }
-    if (dryRun) {
-      say(`would update ${existing.identifier} from ${source.path} (${Object.keys(change).join(", ")})`);
-      if (change.description) say("  description:", ...quoteBlock(want.description));
-    } else {
-      await store.replace(existing.identifier, change);
-      say(`updated ${existing.identifier} from ${source.path} (${Object.keys(change).join(", ")})`);
-    }
-    counts.updated++;
-  };
-  for (const source of sources) await write(source, byPath.get(source.path));
-  for (const source of again) {
-    const key = made.get(source.path).key;
+    if (existing && normal(existing.title) !== want.title) change.title = want.title;
+    if (existing && existing.status_id !== status.id) change.status_id = status.id;
+    if (normal(existing ? existing.description : `Imported from: ${source.path} (project ${project})`) !== normal(want.description)) change.description = want.description;
+    if (!Object.keys(change).length) { if (existing) counts.unchanged++; continue; }
+    await store.replace(key, change);
+    if (existing) { say(`updated ${key} from ${source.path} (${Object.keys(change).join(", ")})`); counts.updated++; }
+  } else for (const source of sources) {
+    const existing = byPath.get(source.path);
+    if (!existing) continue;
     const want = expectedCard(source, { project, ...look });
-    await store.replace(key, { description: want.description });
+    const status = await statusOf(source.status);
+    const change = [normal(existing.title) !== want.title && "title", existing.status_id !== status.id && "status_id", normal(existing.description) !== normal(want.description) && "description"].filter(Boolean);
+    if (!change.length) { counts.unchanged++; continue; }
+    say(`would update ${existing.identifier} from ${source.path} (${change.join(", ")})`);
+    if (change.includes("description")) say("  description:", ...quoteBlock(want.description));
+    counts.updated++;
   }
   for (const source of sources) {
     if (!source.comments.length) continue;
@@ -446,7 +451,7 @@ export async function migrateTickets({ store, root, settings, project: boardKey,
   git("commit", "-q", "-m", prTitle, "-m", `The ${changes.remove.length} ticket files are now cards on Orbit board ${before.board}; the files stay in git history at tag ${tag}. Links in ${changes.docs.length} doc${changes.docs.length === 1 ? "" : "s"} now name the cards.`);
   say(`4. committed on ${branch}: ${changes.remove.length} ticket files removed, "tickets": "orbit", ${changes.docs.length} doc${changes.docs.length === 1 ? "" : "s"} with card links`);
   say(`5. kit pr --title ${JSON.stringify(prTitle)}`);
-  const landed = runPr(["pr", "--title", prTitle]);
+  const landed = await runPr(["pr", "--title", prTitle]);
   if (!landed) return { status: "fail", message: `migrate: the commit and tag ${tag} are made, but kit pr did not land the move; fix what it says and run kit pr --title ${JSON.stringify(prTitle)}` };
   return { status: "ok", message: `migrate ${sources.length} tickets to ${before.board}, tag ${tag}, landed through kit pr` };
 }

@@ -201,6 +201,10 @@ test("a rerun after a half-done import finishes it: the missing card and comment
   const remade = p.cardFor(paths[1]);
   assert.ok(remade && remade.id !== second.id);
   assert.match(p.cardFor(paths[3]).description, new RegExp(`Blocked by: ${remade.identifier}`), "blockers name the new card");
+  // A card before the remade one in the order links to it too, in the same run.
+  assert.match(p.cardFor(paths[0]).description, new RegExp(`\\[the next one\\]\\(${remade.url.replace(/[.]/g, "\\.")}\\)`));
+  assert.ok(!p.orbit.writes().some(write => JSON.stringify(write.body ?? "").includes("<new card for")), "no placeholder ever reaches Orbit");
+  ok(await p.run(["parity"]));
 });
 
 test("import refuses broken ticket files, a project without maps, and two cards made from one file; helpers may not write", async t => {
@@ -303,7 +307,7 @@ test("migrate stops at a parity difference before anything is tagged or removed,
 
   const q = await project(t);
   const failed = refused(await q.run(["migrate"], { FAKE_PR_RESULT: "fail" }), /kit pr did not land the move/);
-  assert.match(failed.stdout, /RESULT: fail pr fake/);
+  assert.match(failed.stdout, /^   RESULT: fail pr fake$/m, "kit pr's own lines are indented under step 5");
   assert.match(q.git("tag", "--list"), /tickets-in-files-/);
 });
 
@@ -333,4 +337,28 @@ test("migrate waits while a build runs and refuses a checkout that is not a fres
   p.git("commit", "-q", "-m", "extra");
   refused(await p.run(["migrate"]), /must be exactly origin\/dev/);
   assert.deepEqual(p.orbit.writes(), []);
+});
+
+test("migrate picks the next free tag name, and stops before removing anything when the tag cannot be pushed", async t => {
+  const p = await project(t);
+  const day = amsterdamDay();
+  // Another commit already holds today's tag on origin.
+  p.git("commit", "-q", "--allow-empty", "-m", "elsewhere");
+  p.git("tag", `tickets-in-files-${day}`);
+  p.git("push", "-q", "origin", `refs/tags/tickets-in-files-${day}`);
+  p.git("reset", "-q", "--hard", "origin/dev");
+  p.git("tag", "-d", `tickets-in-files-${day}`);
+  const start = p.git("rev-parse", "HEAD").trim();
+  const output = ok(await p.run(["migrate"]));
+  assert.match(output.stdout, new RegExp(`tagged [0-9a-f]{7} as tickets-in-files-${day}-2 \\(pushed\\)`));
+  assert.equal(execFileSync("git", ["-C", p.origin, "rev-parse", `tickets-in-files-${day}-2^{commit}`], { encoding: "utf8" }).trim(), start);
+
+  const q = await project(t);
+  writeFileSync(join(q.origin, "hooks/pre-receive"), "#!/bin/sh\nwhile read old new ref; do case $ref in refs/tags/*) echo no tags >&2; exit 1;; esac; done\n");
+  chmodSync(join(q.origin, "hooks/pre-receive"), 0o755);
+  const head = q.git("rev-parse", "HEAD");
+  refused(await q.run(["migrate"]), /the tag tickets-in-files-\d{8} could not be pushed to origin, so the ticket files were not removed/);
+  assert.equal(q.git("rev-parse", "HEAD"), head);
+  assert.equal(q.git("status", "--porcelain").trim(), "");
+  assert.equal(q.prCalls(), "");
 });

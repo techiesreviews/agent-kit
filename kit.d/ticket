@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // kit: tickets on the Orbit board: create, read, update, dates, notes, comments, sub-tasks, next-lex, trash, setup, import, parity, migrate
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { kitOwner, kitResult, kitRoot, kitSettings } from "../kit-lib.mjs";
@@ -55,7 +55,7 @@ version conflict. Each write adds one line to ~/.local/state/fleet/orbit.log. Li
 RESULT line, also after --json: a script drops that last line before it reads the JSON.
 
 How a project moves (kit ticket migrate, from a fresh branch: git switch -c tickets-to-orbit origin/<land>):
-1. It refuses while a build runs: an open AFK ticket with an assignee (kit next's claim) or a card In Progress.
+1. It refuses while a build runs (an open AFK ticket with an assignee, kit next's claim, or a card In Progress); run it again once the build lands.
 2. import: one card per ticket file in every map's tickets/ and build/tickets/, under the project's parent card. The
    card's first line "Imported from: <path> (project <name>)" names its file, then the frontmatter (Type, Assignee,
    Builder, ...), a "Blocked by:" line with the blockers' card keys and the ticket's text; each entry of its "## Comments"
@@ -231,7 +231,9 @@ async function main() {
   }
   const own = ticketSettings(settings);
   const project = moving.has(name) ? flags.project ?? own.project : own.project;
-  const parent = name === "migrate" ? flags.parent ?? own.parent : own.parent;
+  // kit.json's parent card sits on kit.json's board: another --project board gets no default parent.
+  const sameBoard = String(project ?? "").toLowerCase() === String(own.project ?? "").toLowerCase();
+  const parent = name === "migrate" && flags.parent !== undefined ? flags.parent : sameBoard ? own.parent : null;
 
   const config = readOrbitConfig();
   redact = orbitRedactor(orbitSecrets(config));
@@ -279,7 +281,20 @@ async function main() {
     }
     case "migrate": {
       const root = kitRoot();
-      const runPr = args => spawnSync(kitCommand, args, { cwd: root, stdio: "inherit", env: process.env }).status === 0;
+      // kit pr's lines show as they come, indented under step 5, so the last line at the margin is migrate's own RESULT.
+      const runPr = args => new Promise(done => {
+        const child = spawn(kitCommand, args, { cwd: root, stdio: ["ignore", "pipe", "pipe"], env: process.env });
+        for (const stream of [child.stdout, child.stderr]) {
+          let rest = "";
+          stream.setEncoding("utf8").on("data", chunk => {
+            const lines = (rest + chunk).split("\n");
+            rest = lines.pop();
+            for (const line of lines) say(`   ${line}`);
+          }).on("end", () => { if (rest) say(`   ${rest}`); });
+        }
+        child.once("error", () => done(false));
+        child.once("close", status => done(status === 0));
+      });
       const outcome = await migrateTickets({ store, root, settings, project, parent, dryRun, say: sayAll, runPr });
       return finish(outcome.status, outcome.message);
     }
