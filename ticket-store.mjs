@@ -309,7 +309,7 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
     if (change.label_ids?.length) {
       const known = await labelsOf(projectId);
       const added = change.label_ids.filter(id => !before?.label_ids?.includes(id)).map(id => known.find(label => label.id === id)?.name);
-      const publish = added.find(name => name?.trim().toLowerCase() === "publish");
+      const publish = added.find(name => /publish/i.test(name ?? ""));
       if (publish) needsWords(lexSaid, `adding the ${publish} label`);
     }
     if (change.description !== undefined) {
