@@ -44,6 +44,8 @@ export async function fakeOrbit(t: TestContext, { kitBoard = false }: { kitBoard
     writeAnswers: [] as ("drop" | "saved-then-502" | "page-200" | { retryAfter: string } | { status: number; code: string; detail: string })[],
     me: { token: { id: randomUUID(), name: "fleet", scopes: ["tasks:write"], project_ids: projects.map(project => project.id), expires_at: "2027-02-04T00:00:00.000Z" } } as Record<string, any>,
     requireCloudflare: true,
+    // Like the running Orbit: a write (POST, PATCH, DELETE) needs `Origin: <the Orbit origin>`; a read does not.
+    requireOrigin: true,
   };
 
   const addTask = (project: (typeof projects)[number], fields: FakeTask = {}): FakeTask => {
@@ -125,6 +127,7 @@ export async function fakeOrbit(t: TestContext, { kitBoard = false }: { kitBoard
         && (!query.get("q") || `${task.title} ${task.description} ${task.identifier}`.toLowerCase().includes(query.get("q")!.toLowerCase()))).reverse().map(show));
     }
     if (request.method !== "GET") {
+      if (controls.requireOrigin && request.headers.origin !== origin) return problem(response, 403, "origin_forbidden", "The request origin is not allowed.");
       const planned = controls.writeAnswers.shift();
       if (planned === "drop") return request.socket.destroy();
       if (planned === "saved-then-502") {
