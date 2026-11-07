@@ -21,6 +21,9 @@ export function openOrbitTickets({ settings, who, role = process.env.ORBIT_ROLE,
   return { store, redact, secrets, project, parent };
 }
 
+/** True for a failure of Orbit or of its setup, whose words orbitProblem gives; any other error keeps its own message. */
+export const isOrbitFailure = error => error instanceof OrbitError || error instanceof OrbitSetupProblem;
+
 /** One plain line for an Orbit failure: Orbit down, token refused, Cloudflare blocked or a refused change. */
 export function orbitProblem(error, redact = orbitRedactor()) {
   if (error instanceof OrbitError || error instanceof OrbitSetupProblem) return redact(String(error.message)).replace(/\s+/g, " ").trim();
@@ -65,11 +68,27 @@ export function ticketCardKey(root, ticket) {
 /**
  * The brief for a card in this worktree, made from the card when it is not there yet. With `owner` the card is claimed
  * first (status In Progress, "Claimed by: owner"), and the claim is given back when the brief cannot be written, so a
- * failure never leaves a half-claimed card. A brief already there is a resumed slice: it is used as it is.
+ * failure never leaves a half-claimed card. A brief already there is a resumed slice: with `owner`, the card is read once
+ * to check it is still that owner's (or done); someone else's card stops it, and an Orbit it cannot read lets it go on
+ * from the saved brief with a `note` saying so.
  */
 export async function cardBriefFor({ root, key, settings, owner, who = owner, folder }) {
   const path = folder ? join(folder, `${orbitCardKey(key)}.md`) : cardBriefPath(root, key);
-  if (existsSync(path)) return { path, arg: cardBriefArg(key), key: orbitCardKey(key), resumed: true };
+  if (existsSync(path)) {
+    const resumed = { path, arg: cardBriefArg(key), key: orbitCardKey(key), resumed: true };
+    if (!owner) return resumed;
+    let task, redact;
+    try {
+      const opened = openOrbitTickets({ settings, who });
+      redact = opened.redact;
+      task = await opened.store.read(key);
+    } catch (error) {
+      return { ...resumed, note: `card: ${resumed.key} could not be checked on Orbit (${orbitProblem(error, redact)}); going on from the saved brief` };
+    }
+    if (task.stage === "done" || (task.stage === "working" && task.claimed_by === oneLine(owner))) return resumed;
+    const holder = task.stage === "working" ? task.claimed_by ?? "nobody" : "nobody";
+    throw new OrbitError(`${resumed.key} is now held by ${holder} (${task.status_name}), so this slice's saved brief is stale; remove .scratch/kit-tickets/${resumed.key}.md and .scratch/kit-slice/${resumed.key} to start over`);
+  }
   const { store } = openOrbitTickets({ settings, who });
   const task = await store.read(key);
   const text = cardBrief(task, owner);

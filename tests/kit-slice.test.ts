@@ -1565,16 +1565,33 @@ test("on Orbit, slice --ticket KEY claims the card, writes its brief and hands t
   assert.equal(readFileSync(join(root, ".scratch/agent-brief.md"), "utf8").split("\n")[0], "Ticket: .scratch/kit-tickets/KIT-1.md");
 });
 
-test("on Orbit, a rerun resumes from the brief without asking Orbit again", async t => {
+test("on Orbit, a rerun checks the card is still its own and resumes from the brief; with Orbit down it goes on and says so", async t => {
   const { card, slice, orbit } = await orbitSlice(t);
-  card();
+  const task = card();
   const failed = await slice("KIT-1", { FAIL_PHASE: "review" });
   assert.equal(failed.status, 1, failed.all);
-  const asked = orbit.requests.length;
-  orbit.controls.answers.push("gateway-page", "gateway-page", "gateway-page");
+  const writes = orbit.writes().length;
+  orbit.controls.answers.push("gateway-page");
   const again = await slice();
   assert.equal(again.status, 0, again.all);
-  assert.equal(orbit.requests.length, asked, "the resumed slice made no Orbit call");
+  assert.match(again.stdout, /^card: KIT-1 could not be checked on Orbit \(Orbit answered 502.*\); going on from the saved brief$/m);
+  assert.equal(orbit.writes().length, writes, "a resumed slice claims nothing again");
+  assert.equal(orbit.statusOf(task), "In Progress");
+});
+
+test("on Orbit, a rerun whose card was given back and taken by someone else stops before building", async t => {
+  const { card, slice, orbit, calls } = await orbitSlice(t);
+  const task = card();
+  assert.equal((await slice("KIT-1", { FAIL_PHASE: "review" })).status, 1);
+  task.description = task.description.replace("Claimed by: ke-04", "Claimed by: other");
+  const before = calls().length;
+  const again = await slice();
+  assert.equal(again.status, 1, again.all);
+  assert.match(lastLine(again), /^RESULT: fail slice brief: KIT-1 is now held by other \(In Progress\), so this slice's saved brief is stale; remove \.scratch\/kit-tickets\/KIT-1\.md and \.scratch\/kit-slice\/KIT-1 to start over$/);
+  assert.equal(calls().length, before, "nothing was built");
+  task.status_id = orbit.statusId(orbit.kit, "Todo");
+  task.description = task.description.replace(/Claimed by: other\n\n/, "");
+  assert.match(lastLine(await slice()), /KIT-1 is now held by nobody \(Todo\)/);
 });
 
 test("on Orbit, slice refuses a card someone else holds, one without Files and Done when, and Orbit down, and leaves no claim or brief", async t => {
@@ -1643,8 +1660,8 @@ test("on Orbit, a queued card that cannot be closed when the queue lands it is n
   const { card, slice, orbit } = await orbitSlice(t);
   const task = card();
   assert.equal((await slice("KIT-1", { FAIL_PHASE: "review" })).status, 1);
-  // The resumed slice asks Orbit nothing until it closes the card, so this answer is the close's.
-  orbit.controls.answers.push("gateway-page");
+  // The resumed slice reads the card once (and goes on when it cannot), then closes it: both answers fail.
+  orbit.controls.answers.push("gateway-page", "gateway-page");
   const output = await slice("KIT-1", { QUEUE_PR: "1" });
   assert.equal(output.status, 0, output.all);
   assert.match(lastLine(output), /^RESULT: ok slice \.scratch\/kit-tickets\/KIT-1\.md PR #42 a{40}; card KIT-1 not closed: Orbit answered 502/);

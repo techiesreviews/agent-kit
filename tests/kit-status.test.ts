@@ -423,3 +423,20 @@ test("on Orbit, status shows a card's owner only while it is In Progress, so a s
   assert.equal(f.row(output.stdout, "KIT-1")[2], "-");
   assert.equal(f.row(output.stdout, "KIT-2")[2], "-");
 });
+
+test("on Orbit, a card's own PR wins over another card's PR that only mentions its key, and each open PR counts once", async t => {
+  const f = await fixture(t);
+  const o = await orbitProject(t);
+  writeFileSync(join(f.root, "scripts/agents/kit.json"), JSON.stringify({ project: "kit-status", branches: { land: "dev" }, ...orbitSettings }));
+  o.card({ title: "Landed" }, "Done");
+  o.card({ title: "Building", description: "Claimed by: kit-2" }, "In Progress");
+  const prs = [
+    { ...f.pr(121, "Landed", [], "MERGED"), headRefName: "build/kit-1-landed" },
+    { ...f.pr(130, "Building", []), headRefName: "build/kit-2-building", body: "## Summary\n\n- KIT-1 follow-up" },
+  ];
+  const output = await f.run(["--no-fetch"], { prs, env: o.env });
+  assert.equal(output.code, 0, output.stdout + output.stderr);
+  assert.deepEqual(f.row(output.stdout, "KIT-1").slice(0, 4), ["KIT-1", "Done", "-", `${f.landed} #121`]);
+  assert.equal(f.row(output.stdout, "KIT-2")[3], "#130 open");
+  assert.deepEqual(output.results, ["RESULT: ok status KIT 2 cards, 1 done, 1 open PRs"]);
+});
