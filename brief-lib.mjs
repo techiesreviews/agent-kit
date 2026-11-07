@@ -75,30 +75,33 @@ const SECOND_LOOK = { first: "grok-4.7", fallback: "opencode/deepseek-v4.1-flash
  * settings, the ticket's path there and its text, the stage, owner, note, the target model, the talk style and
  * the kit's version.
  */
-export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = kitReviewLoopRule(), root, settings, ticket, text, stage, owner, note, model, style, version, task, pins = kitRulebookPins(root, settings), review = process.env.ASE_REVIEW_MODEL || pins.reviewer }) {
+export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = kitReviewLoopRule(), root, settings, ticket, text, stage, owner, note, model, style, version, task, card, pins = kitRulebookPins(root, settings), review = process.env.ASE_REVIEW_MODEL || pins.reviewer }) {
   const info = readTicket(text);
   // kit next runs a group's tickets as one job (kit next --run-group) on the group's own branch.
   if (info.group) throw new Error(`${ticket} is in group ${info.group}: kit next --start runs a group as one job; kit brief writes briefs for single tickets`);
   const land = settings.branches?.land ?? "main";
-  const slug = task ? ticket.replace(/^task:/, "") : basename(ticket).replace(/\.md$/i, "");
+  // A card's branch and job are kit next's for it: build/<owner>-<first words of the title>, job slice-<key>.
+  const cardWords = card ? String(card.title).toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").split("-").slice(0, 6).join("-") : "";
+  const slug = task ? ticket.replace(/^task:/, "") : card ? cardWords || ticket.toLowerCase() : basename(ticket).replace(/\.md$/i, "");
   const branch = kitSliceBranch(owner, slug);
   const builder = builderModel(info.builder, pins.builder);
   const target = model || (stage === "review" ? review : stage === "second-look" ? SECOND_LOOK.first : builder);
   const reviewing = stage === "review" || stage === "second-look";
   // kit next's owner is <prefix>-<NN> (a map ticket's <NN> starts with m) and its job slice-<prefix><NN>:
   // al-01 runs as slice-al01, site-fonts-01 as slice-site-fonts01. Another owner keeps its name.
-  const job = `slice-${owner.toLowerCase().replace(/-(m?\d+)$/, "$1").replace(/[^a-z0-9._-]/g, "")}`;
+  const job = card ? `slice-${ticket.toLowerCase()}` : `slice-${owner.toLowerCase().replace(/-(m?\d+)$/, "$1").replace(/[^a-z0-9._-]/g, "")}`;
   const sliceLine = `scripts/agents/kit go ${job} -- scripts/agents/kit slice --ticket ${ticket} --builder ${target}`;
   const skills = pickSkills({ files: info.files, words: `${info.title}\n${info.filesText}${task ? `\n${note ?? ""}` : ""}`, stage, settings });
-  // What the brief is about: a ticket file, or a task the note holds.
-  const what = task ? `the task "${task}"` : `\`${ticket}\``;
+  // What the brief is about: a ticket file, an Orbit card (its text is in the brief), or a task the note holds.
+  const what = task ? `the task "${task}"` : card ? `the Orbit card ${ticket}` : `\`${ticket}\``;
   const out = [];
   const section = (title, lines) => { if (lines.length) out.push("", `## ${title}`, ...lines.map(line => `- ${line}`)); };
   const project = settings.project ?? basename(root);
-  if (stage === "build") out.push(`Kit brief: build ${what} in \`${project}\` (${root}), owner \`${owner}\`. Build the whole ${task ? "task (it is in the note below; the project keeps no ticket file for it)" : "ticket"}, from setup to a merged PR, with Agent Kit.`);
+  if (stage === "build") out.push(`Kit brief: build ${what} in \`${project}\` (${root}), owner \`${owner}\`. Build the whole ${task ? "task (it is in the note below; the project keeps no ticket file for it)" : card ? "card (its text and comments are below)" : "ticket"}, from setup to a merged PR, with Agent Kit.`);
   if (stage === "fix") out.push(`Kit brief: fix round for ${what} in \`${project}\` (${root}), owner \`${owner}\`. Fix round: fix each open finding in one commit on the slice branch \`${branch}\`.`);
   if (reviewing) out.push(`Kit brief: ${stage === "review" ? "review" : "second look"} of ${what} in \`${project}\` (${root}), branch \`${branch}\`. You are the reviewer: read-only. Make no changes, no commits and no PR.`);
-  out.push(`Read first: ${task ? "the note below" : "the ticket with all its Comments, the build README beside it, the docs it links"}, and AGENTS.md; ${reviewing ? "" : "the project's runner guide (`docs/agents/runner.md`) for the order of steps; "}\`scripts/agents/kit rulebook\` holds the house rules in full.`);
+  const readFirst = task ? "the note below" : card ? `the card below with all its comments (\`scripts/agents/kit ticket get ${ticket} --comments\` reads it fresh), the docs it links` : "the ticket with all its Comments, the build README beside it, the docs it links";
+  out.push(`Read first: ${readFirst}, and AGENTS.md; ${reviewing ? "" : "the project's runner guide (`docs/agents/runner.md`) for the order of steps; "}\`scripts/agents/kit rulebook\` holds the house rules in full.`);
   if (!reviewing) {
     section("Setup", [
       stage === "fix"
@@ -111,16 +114,16 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
     section("Commands and evidence", [
       "Agent Kit is required: `scripts/agents/kit doctor` first; fix every ✗ that is not marked optional (a missing optional reviewer or skill is only a note). A kit command that cannot run is said in the report, never skipped silently or claimed.",
       "Tests first: each new test fails before the change.",
-      `While building: ${[unit && "`scripts/agents/kit unit --affected`", check && `\`${check}\` ${when}`, lint && `\`${lint}\``, task ? "the task's focused checks" : "the ticket's focused checks"].filter(Boolean).join(", ")}.`,
+      `While building: ${[unit && "`scripts/agents/kit unit --affected`", check && `\`${check}\` ${when}`, lint && `\`${lint}\``, task ? "the task's focused checks" : card ? "the card's focused checks" : "the ticket's focused checks"].filter(Boolean).join(", ")}.`,
       ...(stage === "build" && task ? [
         `Build it, then \`scripts/agents/kit review\` and \`scripts/agents/kit pr --title ${shellQuote(task)}\` into \`${land}\` (checks for the change's tier, the second look, CI, merge), each under \`kit go\`. Link the PR with T3 \`link_pull_request\`.`,
         "Report every RESULT line, the PR URL and the merge SHA.",
       ] : stage === "build" ? [
         `Default: the slice builds, reviews, runs the fix rounds and the second look, and lands with \`kit pr\`: \`${sliceLine}\`; then \`scripts/agents/kit go ${job}\` again while it prints RUNNING.`,
-        `Manual fallback (the runner guide's): build it yourself, then \`scripts/agents/kit review --ticket ${ticket}\` and \`scripts/agents/kit pr --ticket ${ticket}\` into \`${land}\` (checks for the change's tier, the second look, CI, merge), each under \`kit go\`. Link the PR with T3 \`link_pull_request\`.`,
-        "The ticket's own \"Kit commands and evidence\" section adds to this. Report every RESULT line, the PR URL and the merge SHA.",
+        `Manual fallback (the runner guide's): build it yourself, then \`scripts/agents/kit review${card ? "" : ` --ticket ${ticket}`}\` and \`scripts/agents/kit pr --ticket ${ticket}\` into \`${land}\` (checks for the change's tier, the second look, CI, merge), each under \`kit go\`. Link the PR with T3 \`link_pull_request\`.`,
+        `The ${card ? "card's" : "ticket's"} own "Kit commands and evidence" section adds to this. Report every RESULT line, the PR URL and the merge SHA.`,
       ] : [
-        `For each finding you decline, give it with its reason in your report: \`scripts/agents/kit review${task ? "" : ` --ticket ${ticket}`}\` reads declined findings with their reasons.`,
+        `For each finding you decline, give it with its reason in your report: \`scripts/agents/kit review${task || card ? "" : ` --ticket ${ticket}`}\` reads declined findings with their reasons.`,
         task ? "The findings are in the newest complete review's `findings.json` under the main checkout's `.scratch/reviews/<owner>/` (a record marked `incomplete: true` is not one) (the note below holds the task)."
           : "The findings are in the note below, else in the newest complete review's `findings.json` under the main checkout's `.scratch/reviews/<owner>/` (a record marked `incomplete: true` is not one).",
       ]),
@@ -130,19 +133,19 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
     const range = `Scope: git diff origin/${land}...origin/${branch} (\`git fetch -q origin\` first).`;
     let scope;
     try {
-      if (task) throw new Error("no ticket file");
+      if (task || card) throw new Error("no ticket file");
       scope = ticketReviewBrief(ticket, undefined, root, [], false).trimEnd().replace(/^Scope: .*$/m, range);
-    } catch { scope = `Review this build slice in read-only mode. Make no changes.\n${range}\nSpec axis: ${task ? "the task in the note below" : `read ${ticket}, including the linked spec and deciding tickets`}.`; }
+    } catch { scope = `Review this build slice in read-only mode. Make no changes.\n${range}\nSpec axis: ${task ? "the task in the note below" : card ? `the card ${ticket} below, with its comments` : `read ${ticket}, including the linked spec and deciding tickets`}.`; }
     out.push("", scope);
     if (stage === "second-look") section("Second look", [
-      `Model: \`${SECOND_LOOK.first}\`, else the free \`${SECOND_LOOK.fallback}\`; never an OpenAI model. Headless: \`ASE_REVIEW_MODEL=${SECOND_LOOK.first} scripts/agents/kit review --second-look${task ? "" : ` --ticket ${ticket}`}\`.`,
+      `Model: \`${SECOND_LOOK.first}\`, else the free \`${SECOND_LOOK.fallback}\`; never an OpenAI model. Headless: \`ASE_REVIEW_MODEL=${SECOND_LOOK.first} scripts/agents/kit review --second-look${task || card ? "" : ` --ticket ${ticket}`}\`.`,
       "When neither model can run, say `second look: skipped (<reason>)` and stop.",
     ]);
   }
   section("House rules", [
     "Paid skills never go in a repo: name a skill, never copy its text (`skill-guard.mjs` runs in `kit pr`).",
     `Second look: \`${SECOND_LOOK.first}\`, else the free \`${SECOND_LOOK.fallback}\`; never an OpenAI model; \`second look: skipped (<reason>)\` when neither can run.`,
-    `Once the review loop's budget is used (3 fix rounds, 5 for a risky change) only P0/P1 findings block; P2/P3 go to the lead, who may land with \`ASE_OWNER=<lead> scripts/agents/kit pr … --waive "<reason>"\`; say so in ${task ? "your report" : "the ticket's Done"}.`,
+    `Once the review loop's budget is used (3 fix rounds, 5 for a risky change) only P0/P1 findings block; P2/P3 go to the lead, who may land with \`ASE_OWNER=<lead> scripts/agents/kit pr … --waive "<reason>"\`; say so in ${task || card ? "your report" : "the ticket's Done"}.`,
     "Anything a person sees: No toasts or explainers; show state on the control itself. Reuse the theme tokens and components.",
     "House rules beat skill advice: where a skill suggests something a house rule forbids (a toast, say), the house rule wins.",
     "Commits use the repo's or the machine's set git identity; never borrow another person's name.",
@@ -160,12 +163,16 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
   ]);
   if (skills.length) {
     const family = modelFamily(target);
-    out.push("", "## Skills", `Use these for the parts of the ${task ? "task" : "ticket"} they fit${family === "none" ? " (in the kit's own words; this model has no skills)" : ""}:`,
+    out.push("", "## Skills", `Use these for the parts of the ${task ? "task" : card ? "card" : "ticket"} they fit${family === "none" ? " (in the kit's own words; this model has no skills)" : ""}:`,
       ...skills.map(entry => `- ${skillLine(entry, family)}`));
   }
   // A review's findings are posted to GitHub, so they stay plain English (reviewFormat's own line).
   out.push("", "## Talk style", reviewing ? plainEnglish : talkStyleLine(style));
   if (note) out.push("", "## Note from the lead", `Note from the lead: ${note}`);
+  if (card) {
+    out.push("", `## Card ${ticket}`, `Title: ${card.title}`, ...(card.url ? [`Link: ${card.url}`] : []), "", String(card.description ?? "").replace(/\r\n?/g, "\n").trim());
+    if (card.comments.length) out.push("", "### Comments", ...card.comments.flatMap(comment => ["", `- ${comment.who}, ${comment.when}:`, String(comment.body ?? "").replace(/\r\n?/g, "\n").trim()]));
+  }
   out.push("", "## Report");
   if (reviewing) out.push(reviewFormat.trimEnd());
   else if (stage === "fix") out.push("Report each finding as fixed or declined (with the reason), the RESULT lines, and the new head.", "Last line: FIXED <n>, DECLINED <n>, head <SHA>.");

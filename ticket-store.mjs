@@ -603,7 +603,17 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       }
       for (const card of cards) card.open_blockers = await openBlockers(card, known);
       cards.sort((a, b) => (a.number ?? 0) - (b.number ?? 0) || a.identifier.localeCompare(b.identifier, "en", { numeric: true }));
-      return { board: board.key, cards, more };
+      return { board: board.key, id: board.id, cards, more };
+    },
+    /** The board's status for a NAME (Todo, Done), else its first status of that category (statusFor). */
+    statusOn: (projectId, name, category) => statusFor(projectId, name, category),
+    /**
+     * Sets these fields to exactly these values in one write (kit ticket import): unlike update, a new description
+     * carries over none of the old card's own lines, so the card holds what its ticket file says and nothing else.
+     */
+    replace(key, fields) {
+      const named = Object.keys(fields);
+      return changeCard("import", key, () => ({ ...fields }), { replaces: named });
     },
     /**
      * Claims a card for a slice in one write: status In Progress and a "Claimed by: owner" line. A card the same owner

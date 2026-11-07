@@ -8,6 +8,7 @@ import { kitEnv } from "./support/kit-env.ts";
 import { kitFiles } from "./support/kit-files.ts";
 import { pickSkills, skillLine, talkStyleLine } from "../brief-lib.mjs";
 import { kitMessagesToLex } from "../kit-lib.mjs";
+import { orbitProject, orbitSecretsForTests, orbitSettings, runAsync } from "./support/orbit-project.ts";
 
 const kit = resolve("kit");
 const ticketText = (files: string, extra = "") => `---
@@ -299,6 +300,50 @@ test("brief --task: a project without ticket files gets a brief for a named task
     const failed = f.run(args);
     assert.equal(failed.status, 1, `${args}: ${failed.stdout}`);
   }
+});
+
+test("brief KEY: on an Orbit project the brief is built from the card (title, text, comments); a files project still wants a ticket file", async t => {
+  const o = await orbitProject(t);
+  const f = fixture(t, orbitSettings);
+  const card = o.card({ title: "A settings panel with a colour field", description: "Claimed by: kit-1\n\nBuilder: claude\n\n## Goal\n\nBuild the panel.\n\n## Files\n\n- `src/ui/panel.css`\n\n## Done when\n\n- It works.\n" }, "In Progress");
+  o.orbit.comments[card.id] = [{ id: "c1", body: "Lex: keep it small", author_service_account: { name: "fleet" }, created_at: "2026-11-06T10:00:00.000Z" }];
+  const { KIT_TALK_STYLE: _style, ASE_REVIEW_MODEL: _review, ASE_OWNER: _owner, ...base } = kitEnv();
+  const env = { ...base, ...o.env, KIT_ROOT: f.root, XDG_STATE_HOME: f.state, ORBIT_ROLE: "", KIT_TALK_STYLE: "plain" };
+  const run = (...args: string[]) => runAsync(kit, ["brief", ...args], { cwd: f.root, env });
+  const output = await run("kit-1");
+  assert.equal(output.status, 0, output.all);
+  for (const secret of orbitSecretsForTests) assert.ok(!output.all.includes(secret));
+  const text = body(output.stdout);
+  assert.match(text, /^Kit brief: build the Orbit card KIT-1 in `demo` .*owner `kit-1`\. Build the whole card \(its text and comments are below\)/m);
+  assert.match(text, /Read first: the card below with all its comments \(`scripts\/agents\/kit ticket get KIT-1 --comments` reads it fresh\)/);
+  assert.match(text, /^## Card KIT-1\nTitle: A settings panel with a colour field\nLink: http:\/\/orbit\.test\/tasks\/1\n\nClaimed by: kit-1\n\nBuilder: claude\n\n## Goal\n\nBuild the panel\./m);
+  assert.match(text, /^### Comments\n\n- fleet, 2026-11-06T10:00:00\.000Z:\nLex: keep it small$/m);
+  assert.match(text, /kit go slice-kit-1 -- scripts\/agents\/kit slice --ticket KIT-1 --builder claude-opus-5-5/);
+  assert.match(text, /git switch -c build\/kit-1-a-settings-panel-with-a-colour origin\/dev/);
+  assert.doesNotMatch(text, /ticket's (Done|focused)|parts of the ticket/);
+  assert.match(text, /`scripts\/agents\/kit review` and `scripts\/agents\/kit pr --ticket KIT-1`/);
+  // The card's Files pick the skills, as a ticket file's do.
+  assert.match(text, /good-css/);
+  assert.match(output.stdout.trimEnd().split("\n").at(-2)!, /^kit-brief: \S+ KIT-1 build$/);
+  assert.match(output.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: ok brief KIT-1 build \(talk plain\) \.scratch\/kit-briefs\/KIT-1-build\.md$/);
+  assert.ok(existsSync(join(f.root, ".scratch/kit-briefs/KIT-1-build.md")));
+  const review = await run("KIT-1", "--stage", "review");
+  assert.match(review.stdout, /Spec axis: the card KIT-1 below, with its comments\./);
+  assert.doesNotMatch(review.stdout, /--ticket KIT-1/);
+  // No claim and no Assignee line: an owner is needed, as for a ticket without one.
+  o.card({ title: "Free", description: "## Goal\n\nx" });
+  const free = await run("KIT-2");
+  assert.equal(free.status, 1);
+  assert.match(free.stdout, /RESULT: fail brief KIT-2 has no assignee; claim it first or pass --owner/);
+  assert.equal((await run("KIT-2", "--owner", "kit-2")).status, 0);
+  const missing = await run("KIT-99");
+  assert.equal(missing.status, 1);
+  assert.match(missing.stdout, /RESULT: fail brief card KIT-99 could not be read: .*does not exist/);
+
+  const files = fixture(t);
+  const plain = await runAsync(kit, ["brief", "KIT-1"], { cwd: files.root, env: { ...env, KIT_ROOT: files.root } });
+  assert.equal(plain.status, 1);
+  assert.match(plain.stdout, /RESULT: fail brief no ticket at KIT-1/);
 });
 
 test("brief: every stage carries the Messages to Lex rule from the rulebook, the one source, with its example", t => {
