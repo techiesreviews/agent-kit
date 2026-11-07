@@ -2678,3 +2678,15 @@ test("on Orbit, a queued PR keeps its review follow-ups in the brief for the sli
   assert.equal(output.status, 0, output.all);
   assert.match(readFileSync(join(f.root, brief), "utf8"), /\n### Review follow-ups\n\n- Spec \(P3\): P3: Cosmetic defect\.\n$/);
 });
+
+test("on Orbit, a lead's kit pr --ticket KEY on a merge queue says nobody waits to close the card and puts its follow-ups on it now", async t => {
+  const f = await orbitPr(t);
+  const task = f.card({}, "In Progress");
+  f.saveReview(cleanReview.replace("Spec: none.", "Spec: P3: Cosmetic defect."));
+  const output = await f.pr(["--ticket", "KIT-1"], { FAKE_QUEUE: "1" });
+  assert.equal(output.status, 0, output.all);
+  assert.match(finalLine(output), /^RESULT: ok queued #73 [0-9a-f]{7}; card KIT-1 stays open: close it once #73 lands$/);
+  assert.match(output.stdout, /^card: KIT-1 stays open: nothing here waits for the queue; run kit ticket update KIT-1 --status Done once #73 lands$/m);
+  assert.equal(f.orbit.statusOf(task), "In Progress");
+  assert.deepEqual((f.orbit.comments[task.id] ?? []).map((comment: any) => comment.body), ["Follow-ups from https://github.com/test/repo/pull/73:\n- Spec (P3): P3: Cosmetic defect."]);
+});
