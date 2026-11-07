@@ -314,3 +314,16 @@ test("a same-head rerun's brief lists the builder's declined findings itself, or
   // A changed head never claims declined findings are there.
   assert.doesNotMatch(loopBriefSection({ round: 2, limit: 3, previousHead: "a", currentHead: "b", open }), /declined/);
 });
+
+test("the ledger keeps the severity known so far when a mark names none or the next review leaves the finding out", () => {
+  const p1 = { id: "R1-1", group: "Spec", severity: "P1", kind: "fault", text: "a.ts:1 — P1 fault: drops data" };
+  // A carried finding with no severity and a mark with no severity: the row stays a blocker, as its first rating was.
+  const unnamed = [{ round: 1, findings: [p1], marks: new Map() },
+    { round: 2, findings: [{ id: "R2-1", group: "Previous findings", severity: null, kind: "unsorted", text: "R1-1 still open: still drops" }], marks: new Map([["R1-1", { status: "open", severity: null, reason: "still drops" }]]) }];
+  assert.deepEqual(ledgerRows(unnamed), [{ id: "R1-1", severity: "blocker", outcome: "still open: still drops" }]);
+  // Same with a should: it stays a should, not a blocker (the severity known so far, not the gate's fail-closed reading).
+  const should = [{ round: 1, findings: [{ ...p1, severity: "P2" }], marks: new Map() }, unnamed[1]];
+  assert.deepEqual(ledgerRows(should), [{ id: "R1-1", severity: "should", outcome: "still open: still drops" }]);
+  // The next review leaves the finding unmarked: its first severity and the outcome "not marked".
+  assert.deepEqual(ledgerRows([unnamed[0], { round: 2, findings: [], marks: new Map() }]), [{ id: "R1-1", severity: "blocker", outcome: "not marked by the next review" }]);
+});
