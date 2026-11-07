@@ -1722,6 +1722,46 @@ test("label writes are lead-only and take --dry-run, and a retry never overwrite
   assert.deepEqual(task.label_ids, [record]);
 });
 
+test("adding a Publish label needs Lex's words, in any letter case, like the Publish status", async t => {
+  const { orbit, run, log } = await fixture(t);
+  orbit.labels.get(orbit.tools.id)!.push({ id: "label-publish", project_id: orbit.tools.id, name: "Publish", color: "gray", version: 1 });
+  const task = orbit.addTask(orbit.tools);
+  for (const args of [["update", "TOOLS-1", "--label", "Publish"], ["update", "TOOLS-1", "--label", "publish"], ["update", "TOOLS-1", "--label", "Script,PUBLISH"], ["create", "--title", "x", "--label", "Publish"]]) {
+    refused(await run(args), /--lex-said/);
+    refused(await run([...args, "--dry-run"]), /--lex-said/);
+  }
+  assert.equal(orbit.writes().length, 0);
+
+  ok(await run(["update", "TOOLS-1", "--label", "Publish", "--lex-said", "publish it"]));
+  assert.deepEqual(task.label_ids, ["label-publish"]);
+  assert.match(log(), /fields=label_ids .*lex_said="publish it"/);
+  ok(await run(["create", "--title", "y", "--label", "Publish", "--lex-said", "publish that one"]));
+  assert.deepEqual(orbit.tasks[1].label_ids, ["label-publish"]);
+
+  // Already on the card, or taken off: no new move, so no words are needed.
+  const script = orbit.labels.get(orbit.tools.id)![0].id;
+  ok(await run(["update", "TOOLS-1", "--label", "Publish,Script"]));
+  assert.deepEqual(task.label_ids, ["label-publish", script]);
+  ok(await run(["update", "TOOLS-1", "--label", "Script"]));
+  assert.deepEqual(task.label_ids, [script]);
+  ok(await run(["update", "TOOLS-2", "--clear-labels"]));
+  // Back on after it came off is a new move again; other labels never ask.
+  refused(await run(["update", "TOOLS-1", "--label", "Publish"]), /--lex-said/);
+  ok(await run(["update", "TOOLS-1", "--label", "Record"]));
+});
+
+test("any label with the word publish in its name needs Lex's words, the same test as the status guard", async t => {
+  const { orbit, run } = await fixture(t);
+  for (const [id, name] of [["label-ready", "Ready to publish"], ["label-done", "Published"]]) orbit.labels.get(orbit.tools.id)!.push({ id, project_id: orbit.tools.id, name, color: "gray", version: 1 });
+  const task = orbit.addTask(orbit.tools);
+  refused(await run(["update", "TOOLS-1", "--label", "Ready to publish"]), /adding the Ready to publish label.*--lex-said/);
+  refused(await run(["update", "TOOLS-1", "--label", "Published"]), /--lex-said/);
+  refused(await run(["create", "--title", "x", "--label", "ready to PUBLISH"]), /--lex-said/);
+  assert.equal(orbit.writes().length, 0);
+  ok(await run(["update", "TOOLS-1", "--label", "Ready to publish", "--lex-said", "ready to publish it"]));
+  assert.deepEqual(task.label_ids, ["label-ready"]);
+});
+
 test("get and list show label names; a card without labels asks Orbit for none", async t => {
   const { orbit, run } = await fixture(t);
   const [script, record] = orbit.labels.get(orbit.tools.id)!.map(label => label.id);

@@ -37,7 +37,7 @@ parent is the card new tickets go under (--no-parent skips it). "tickets": "file
 store this project's kit next, slice, pr, status and init --issues use: they still use ticket files in this stage. kit ticket itself
 always talks to Orbit.
 
-The rules it keeps: a move to a Publish status and a tick on "Scheduled in Radaar" need --lex-said; a card is never
+The rules it keeps: a move to a Publish status, adding a Publish label and a tick on "Scheduled in Radaar" need --lex-said; a card is never
 deleted for good; a date needs a source. A plain date YYYY-MM-DD is a whole day in Europe/Amsterdam (a start begins at
 00:00, a due date ends at 23:59); a full time with its offset is taken as it is. The public API has no relations, so blockers
 are a "Blocked by: KEY-n, KEY-m" line in the description. It reads the latest version first and tries once more on a
