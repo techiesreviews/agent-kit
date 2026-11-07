@@ -67,12 +67,19 @@ function latest(runs) {
   return runs.filter(run => !seen.has(run.workflowName) && seen.add(run.workflowName));
 }
 
-// A card's PR names its key in the title, body or branch, in any letter case (build/kit-12-…); KIT-12 is not KIT-121.
+// A card's PR, in any letter case (KIT-12 is not KIT-121): first one on its own branch (build/kit-12-…, as kit next
+// names it), then one whose title or "Ticket:" line names the key, and only then one whose body mentions it, since a PR
+// body lists every commit subject and another card's PR can name this key in passing.
 function cardPR(key, prs) {
-  const match = new RegExp(`(?<![A-Za-z0-9])${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![0-9])`, "i");
+  const name = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), match = new RegExp(`(?<![A-Za-z0-9])${name}(?![0-9])`, "i");
+  const branch = new RegExp(`^build/${name}(?:-|$)`, "i");
   const rank = state => state === "OPEN" ? 0 : state === "MERGED" ? 1 : 2;
-  return prs.filter(pr => [pr.title, pr.body, pr.headRefName].some(text => match.test(text || "")))
-    .sort((a, b) => rank(a.state) - rank(b.state) || b.number - a.number)[0];
+  const tiers = [pr => branch.test(pr.headRefName || ""), pr => match.test(pr.title || ""),
+    pr => (pr.body || "").split("\n").some(line => line.startsWith("Ticket: ") && match.test(line)), pr => match.test(pr.body || "")];
+  for (const tier of tiers) {
+    const found = prs.filter(tier).sort((a, b) => rank(a.state) - rank(b.state) || b.number - a.number)[0];
+    if (found) return found;
+  }
 }
 
 function ticketPR(ticket, prs) {
@@ -184,11 +191,13 @@ async function status(args) {
     row(["TICKET", "STATUS", "WHO", "LANDED", "CI"]);
     if (!orbit) tickets.sort((a, b) => a.map.localeCompare(b.map) || a.slug.localeCompare(b.slug, "en", { numeric: true }));
     const groups = new Set(tickets.map(ticket => ticket.map));
-    let group, open = 0;
+    // An open PR counts once, even when more than one ticket names it.
+    let group;
+    const openPRs = new Set();
     for (const ticket of tickets) {
       if (groups.size > 1 && group !== ticket.map) { group = ticket.map; print(`== ${group} ==`); }
       const pr = ticket.card ? cardPR(ticket.slug, github.prs) : ticketPR(ticket, github.prs);
-      if (pr?.state === "OPEN") open++;
+      if (pr?.state === "OPEN") openPRs.add(pr.number);
       const merged = pr?.state === "MERGED";
       // Closed tickets land with the commit that closed them; an open ticket can still have a merged PR.
       const landed = !ticket.card && ticket.status === "closed"
@@ -211,7 +220,7 @@ async function status(args) {
     const flakyCount = flaky.length ? `, ${flaky.length} flaky file${flaky.length === 1 ? "" : "s"}` : "";
     const counted = orbit ? `${board} ${tickets.length} card${tickets.length === 1 ? "" : "s"}, ${tickets.filter(ticket => ticket.done).length} done`
       : `${map || "all"} ${tickets.length} tickets, ${tickets.filter(ticket => ticket.status === "closed").length} closed`;
-    result("ok", `${counted}, ${open} open PRs${github.none ? ", no GitHub repo" : notes.length ? ", offline" : ""}${flakyCount}`);
+    result("ok", `${counted}, ${openPRs.size} open PRs${github.none ? ", no GitHub repo" : notes.length ? ", offline" : ""}${flakyCount}`);
     return 0;
   } catch (error) {
     console.error(cut(error.message, 100));
