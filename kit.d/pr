@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { completedFixRounds, openFindings, reviewIncomplete, reviewCoversHead, sameReviewPatch } from "../review-findings.mjs";
 import { branchRisk, budgetReport, isNit, ledgerRows, prLine, renderLedger, reviewChain, roundLimit, stoppingFindings } from "../review-loop.mjs";
 import { projectCommand, spoken } from "../review-brief.mjs";
-import { cardBriefFor, isCardKey, onOrbit, openOrbitTickets, orbitProblem, ticketCardKey } from "../ticket-cards.mjs";
+import { briefFollowups, cardBriefFor, closeLandedCard, isCardKey, onOrbit, orbitProblem, ticketCardKey } from "../ticket-cards.mjs";
 
 const { kitBranch, kitGhEnv, kitHideUserInfo, kitHidingLog, kitHome, kitMachineLock, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, kitStateDir, nodeEnv, kitScore } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
@@ -344,6 +344,8 @@ async function main(args) {
     // On Orbit the ticket is a card: a KEY is read into its brief (read only), and the brief's card closes on landing.
     // A brief is no tracked file, so none of kit's ticket commits (follow-ups, commits by subject) is made for it.
     let card = null;
+    // A card's review follow-ups go on the card as one comment when it closes (its brief is no tracked file).
+    const cardFollowups = [];
     if (flags.ticket && onOrbit(settings)) {
       if (isCardKey(flags.ticket)) {
         try { flags.ticket = (await cardBriefFor({ root, key: flags.ticket, settings, who: kitOwner() })).arg; }
@@ -712,6 +714,7 @@ async function main(args) {
         writeFileSync(comment, summary);
         await gh("follow-ups", ["pr", "comment", number, "--body-file", comment]);
       }
+      if (card) cardFollowups.push(...fullLines);
       if (!flags.ticket || card) return;
       const current = args => execFileSync("git", ["-C", root, ...args],
         { cwd: root, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -906,17 +909,11 @@ async function main(args) {
     // closed (Orbit down, no lead role) is said once, with the command that closes it, and the run still counts.
     async function closeCard(number, sha, host, repo) {
       if (!card) return "";
-      const url = `https://${host}/${repo}/pull/${number}`;
-      try {
-        const { store } = openOrbitTickets({ settings, who: kitOwner() });
-        await store.close(card, `Landed in ${url} (merge ${sha})`);
-        console.log(`card: ${card} Done (${url})`);
-        return ` (card ${card} Done)`;
-      } catch (error) {
-        const why = orbitProblem(error);
-        console.log(`card: ${card} not closed: ${why}; close it with kit ticket update ${card} --status Done`);
-        return `; card ${card} not closed: ${why}`;
-      }
+      let ux = [];
+      try { ux = briefFollowups(readFileSync(resolve(root, flags.ticket), "utf8")); } catch { /* No brief left: no UX follow-ups. */ }
+      const closed = await closeLandedCard({ settings, key: card, pr: `https://${host}/${repo}/pull/${number}`, sha, followups: [...cardFollowups, ...ux], who: kitOwner() });
+      console.log(closed.line);
+      return closed.suffix;
     }
     // The repo is named, so the merge's --repo matches GH_REPO exactly; gh answers with the repo's current name.
     const repo = await gh("merge", ["repo", "view", ...(ghEnv.GH_REPO ? [ghEnv.GH_REPO] : []), "--json", "nameWithOwner", "--jq", ".nameWithOwner"]);
@@ -930,7 +927,9 @@ async function main(args) {
       await gh("merge", ["pr", "merge", number, "--auto", "--rebase", "--match-head-commit", head, "--repo", target]); ok("merge");
       await recordWaiver();
       land({ queued: true, waived: waivedAny() });
-      kitResult("ok", `queued #${number} ${head.slice(0, 7)}${flakyNote()}`);
+      // The card closes when the queue lands the PR: kit slice, which waits for it, closes it then.
+      if (card) console.log(`card: ${card} stays open until the queue lands #${number}; kit slice closes it then, else run kit ticket update ${card} --status Done`);
+      kitResult("ok", `queued #${number} ${head.slice(0, 7)}${card ? `; card ${card} closes when the queue lands it` : ""}${flakyNote()}`);
       return 0;
     }
     // A repo without GitHub workflows has no checks to wait for: it lands once the review passes.

@@ -2626,3 +2626,27 @@ test("on Orbit, an unmerged PR (--no-merge) leaves its card as it is", async t =
   assert.equal(orbit.statusOf(task), "In Progress");
   assert.equal(orbit.writes().length, 0);
 });
+
+test("on Orbit, a queued PR leaves its card open and says the queue closes it; review follow-ups go on the card as one comment", async t => {
+  const queued = await orbitPr(t);
+  const open = queued.card({}, "In Progress");
+  const output = await queued.pr(["--ticket", queued.brief()], { FAKE_QUEUE: "1" });
+  assert.equal(output.status, 0, output.all);
+  assert.match(finalLine(output), /^RESULT: ok queued #73 [0-9a-f]{7}; card KIT-1 closes when the queue lands it$/);
+  assert.match(output.stdout, /^card: KIT-1 stays open until the queue lands #73; kit slice closes it then, else run kit ticket update KIT-1 --status Done$/m);
+  assert.equal(queued.orbit.statusOf(open), "In Progress");
+  assert.equal(queued.orbit.writes().length, 0);
+
+  const nits = await orbitPr(t);
+  const task = nits.card({}, "In Progress");
+  const brief = nits.brief();
+  writeFileSync(join(nits.root, brief), `${readFileSync(join(nits.root, brief), "utf8")}\n## Done (2026-11-07)\n\n### UX follow-ups\n\n- UX (looks off): F-1 S1: a hint line\n`);
+  nits.saveReview(cleanReview.replace("Spec: none.", "Spec: P3: Cosmetic defect.").replace("Validation gaps: none.", "Validation gaps: Add coverage."));
+  const landed = await nits.pr(["--ticket", brief]);
+  assert.equal(landed.status, 0, landed.all);
+  assert.equal(nits.orbit.statusOf(task), "Done");
+  assert.deepEqual((nits.orbit.comments[task.id] ?? []).map((comment: any) => comment.body), [
+    "Follow-ups from https://github.com/test/repo/pull/73:\n- Spec (P3): P3: Cosmetic defect.\n- Validation gaps (gap): Add coverage.\n- UX (looks off): F-1 S1: a hint line",
+  ]);
+  assert.doesNotMatch(nits.git("log", "--format=%s", "origin/dev..HEAD"), /docs: KIT-1/);
+});
