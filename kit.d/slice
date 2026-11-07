@@ -9,7 +9,7 @@ import { branchRisk, roundLimit, stoppingFindings } from "../review-loop.mjs";
 import { builderChecks, spoken } from "../review-brief.mjs";
 import { ticketSkillLines } from "../skills.mjs";
 import { visiblePath } from "../pr-tier.mjs";
-import { briefCardKey, cardBriefFor, isCardKey, onOrbit, orbitProblem } from "../ticket-cards.mjs";
+import { briefCardKey, briefFollowups, cardBriefFor, closeLandedCard, isCardKey, onOrbit, orbitProblem } from "../ticket-cards.mjs";
 
 const { kitBranch, kitGhEnv, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, nodeEnv, commitBuilderWork, builderAuthor, kitScore, scoreCost, scoreReview } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
@@ -179,12 +179,18 @@ async function slice(args) {
         throw new Error("merge timeout and poll interval must be positive integer milliseconds");
       const deadline = Date.now() + timeout, ghEnv = kitGhEnv(env, root);
       for (;;) {
-        const output = requireSuccess(await execute(env.ASE_SLICE_GH || "gh", ["pr", "view", state.pr, "--json", "state,mergeCommit,headRefOid"], ghEnv));
+        const output = requireSuccess(await execute(env.ASE_SLICE_GH || "gh", ["pr", "view", state.pr, "--json", "state,mergeCommit,headRefOid,url"], ghEnv));
         const pr = JSON.parse(output);
         if (pr.headRefOid !== state.queued.head) throw new Error(`queued PR #${state.pr} head changed; expected ${state.queued.head}`);
         if (pr.state === "MERGED") {
           if (!/^[a-f\d]{40}$/i.test(pr.mergeCommit?.oid || "")) throw new Error("merged PR has no merge SHA");
           state.sha = pr.mergeCommit.oid; delete state.queued;
+          // A queued PR's card closes here, where its landing is seen (kit pr only queued it).
+          const brief = readFileSync(ticket, "utf8"), card = briefCardKey(brief);
+          if (card) {
+            const closed = await closeLandedCard({ settings, key: card, pr: pr.url || `PR #${state.pr}`, sha: state.sha, followups: briefFollowups(brief), who: kitOwner() });
+            console.log(closed.line);
+          }
           complete(`#${state.pr}`); return;
         }
         if (pr.state !== "OPEN") throw new Error(`queued PR #${state.pr} is ${pr.state}, not merged`);
