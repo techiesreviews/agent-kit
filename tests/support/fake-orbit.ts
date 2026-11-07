@@ -31,6 +31,9 @@ export async function fakeOrbit(t: TestContext, { kitBoard = false }: { kitBoard
     { id: randomUUID(), project_id: project.id, name, description: "", color: "gray", category, position, version: 1 }))]));
   const labels = new Map(projects.map(project => [project.id, ["Script", "Record", "Short video"].map(name => (
     { id: randomUUID(), project_id: project.id, name, color: "gray", version: 1 }))]));
+  // The workspace's members, as the public API shows them: an id and a display name, nothing else.
+  const members = [{ user_id: randomUUID(), display_name: "Lex" }, { user_id: randomUUID(), display_name: "Sam Helper" }];
+  const wrongAssignee = (ids: unknown) => Array.isArray(ids) && ids.some(id => !members.some(member => member.user_id === id));
   const tasks: FakeTask[] = [], comments: Record<string, any[]> = {}, requests: FakeRequest[] = [];
   let versionSeed = 4_503_599_627_000_000;
   const nextVersion = () => (versionSeed += 1_000_003);
@@ -114,6 +117,7 @@ export async function fakeOrbit(t: TestContext, { kitBoard = false }: { kitBoard
     if (labelPath && request.method === "GET") return page(labels.get(labelPath[1]) ?? []);
     const wrongLabel = (projectId: string, ids: unknown) => Array.isArray(ids) && ids.some(id => !labels.get(projectId)!.some(label => label.id === id));
 
+    if (rest === "/members" && request.method === "GET") return page(members);
     if (rest === "/tasks" && request.method === "GET") {
       const query = url.searchParams;
       const parent = query.get("parent_task_id");
@@ -147,6 +151,7 @@ export async function fakeOrbit(t: TestContext, { kitBoard = false }: { kitBoard
       const project = projects.find(item => item.id === body?.project_id);
       if (!project || !body.title || !statuses.get(project.id)!.some(status => status.id === body.status_id)) return problem(response, 422, "validation_failed", "A value is not valid", { errors: { title: ["bad"] } });
       if (wrongLabel(project.id, body.label_ids)) return problem(response, 422, "validation_failed", "Unknown label", { errors: { label_ids: ["unknown"] } });
+      if (wrongAssignee(body.assignee_ids)) return problem(response, 422, "validation_failed", "Unknown assignee", { errors: { assignee_ids: ["unknown"] } });
       const parent = body.parent_task_id ? find(body.parent_task_id) : null;
       if (body.parent_task_id && !parent) return problem(response, 422, "parent_invalid", "No such parent");
       return send(response, 201, show(addTask(project, { ...body, parent_task_id: parent?.id ?? null })));
@@ -180,6 +185,7 @@ export async function fakeOrbit(t: TestContext, { kitBoard = false }: { kitBoard
       const unknown = Object.keys(fields).find(key => !known.has(key));
       if (unknown) return problem(response, 400, "invalid_request", `Unknown field ${unknown}`);
       if (wrongLabel(task.project_id, fields.label_ids)) return problem(response, 422, "validation_failed", "Unknown label", { errors: { label_ids: ["unknown"] } });
+      if (wrongAssignee(fields.assignee_ids)) return problem(response, 422, "validation_failed", "Unknown assignee", { errors: { assignee_ids: ["unknown"] } });
       const after = { ...task, ...fields };
       if (fields.parent_task_id) {
         const parent = find(fields.parent_task_id);
@@ -209,5 +215,5 @@ export async function fakeOrbit(t: TestContext, { kitBoard = false }: { kitBoard
   const writes = () => requests.filter(item => item.method !== "GET");
   const statusOf = (task: FakeTask) => statuses.get(task.project_id)!.find(status => status.id === task.status_id)!.name;
   const statusId = (project: (typeof projects)[number], name: string) => statuses.get(project.id)!.find(status => status.name === name)!.id;
-  return { origin, projects, statuses, labels, tasks, comments, requests, controls, addTask, writes, statusOf, statusId, tools: projects[0], video: projects[1], kit: projects[2] };
+  return { origin, projects, members, statuses, labels, tasks, comments, requests, controls, addTask, writes, statusOf, statusId, tools: projects[0], video: projects[1], kit: projects[2] };
 }
