@@ -6,10 +6,17 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { OrbitError, OrbitSetupProblem, orbitCardKey, orbitClient, orbitLogPath, orbitRedactor, orbitSecrets, readOrbitConfig } from "./orbit-client.mjs";
 import { orbitStore, ticketSettings } from "./ticket-store.mjs";
+import { kitSliceBranch } from "./kit-lib.mjs";
 
 const keyShape = /^[A-Za-z][A-Za-z0-9_]*-[0-9]+$/;
 /** True for a card key such as TOOLS-10 (never a path: a ticket file always has a slash or .md). */
 export const isCardKey = value => keyShape.test(String(value ?? "").trim());
+/** A card's slice names, the same in kit next and kit brief: owner kit-12, job slice-kit-12, branch build/kit-12-<first words of the title>. */
+export function cardNaming(card) {
+  const owner = String(card.identifier).toLowerCase();
+  const words = String(card.title ?? "").toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").split("-").slice(0, 6).join("-");
+  return { owner, job: `slice-${owner}`, branch: words ? kitSliceBranch(owner, words) : `build/${owner}` };
+}
 /** True when the project keeps its tickets on Orbit. */
 export const onOrbit = settings => ticketSettings(settings).backend === "orbit";
 

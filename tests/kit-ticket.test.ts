@@ -15,6 +15,7 @@ import { kitSettingsProblems } from "../kit-lib.mjs";
 import { kitEnv } from "./support/kit-env.ts";
 import { fakeCfId, fakeCfSecret, fakeOrbit, fakeToken, fakeWorkspace } from "./support/fake-orbit.ts";
 
+// kit ticket import, parity and migrate have their own file: tests/ticket-import.test.ts.
 const ticket = resolve("kit.d/ticket");
 const kit = resolve("kit");
 const secrets = [fakeToken, fakeCfId, fakeCfSecret];
