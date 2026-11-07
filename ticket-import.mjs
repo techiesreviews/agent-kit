@@ -281,6 +281,7 @@ export async function importTickets({ store, root, settings, project: boardKey, 
     if (!Object.keys(change).length) { if (existing) counts.unchanged++; continue; }
     await store.replace(key, change);
     if (existing) { say(`updated ${key} from ${source.path} (${Object.keys(change).join(", ")})`); counts.updated++; }
+    else say(`wrote the text of ${key} from ${source.path}`);
   } else for (const source of sources) {
     const existing = byPath.get(source.path);
     if (!existing) continue;
@@ -369,7 +370,10 @@ export function migrationChanges({ root, sources, cards, project, parent, tracke
   const settingsFile = join(root, "scripts/agents/kit.json");
   const json = JSON.parse(readFileSync(settingsFile, "utf8"));
   json.tickets = "orbit";
-  json.orbit = { ...(json.orbit ?? {}), project, ...(parent ? { parent } : {}) };
+  // The parent card sits on the board: without one for this board, an old parent from another board goes.
+  json.orbit = { ...(json.orbit ?? {}), project };
+  if (parent) json.orbit.parent = parent;
+  else delete json.orbit.parent;
   return { remove: [...tickets], docs, settings: `${JSON.stringify(json, null, 2)}\n` };
 }
 
@@ -434,7 +438,7 @@ export async function migrateTickets({ store, root, settings, project: boardKey,
   const prTitle = `Move the tickets to Orbit board ${before.board}`;
   if (dryRun) {
     say(`3. would tag ${head.slice(0, 7)} as ${tag} and push the tag to origin`);
-    say(`4. would commit on ${branch}: remove ${changes.remove.length} ticket files, set "tickets": "orbit" with board ${before.board}${parent ? ` and parent ${parent}` : ""} in scripts/agents/kit.json, and point ticket links at the cards in ${changes.docs.length} doc${changes.docs.length === 1 ? "" : "s"}`);
+    say(`4. would commit on ${branch}: remove ${changes.remove.length} ticket files, set "tickets": "orbit" with board ${before.board}${parent ? ` and parent ${parent}` : " and no parent card"} in scripts/agents/kit.json, and point ticket links at the cards in ${changes.docs.length} doc${changes.docs.length === 1 ? "" : "s"}`);
     for (const doc of changes.docs) say(`   ${doc.file}: ${doc.count} link${doc.count === 1 ? "" : "s"}`);
     say(`5. would run: kit pr --title ${JSON.stringify(prTitle)}`);
     return { status: "ok", message: `migrate dry run: ${sources.length} tickets, tag ${tag}, ${changes.docs.length} docs; nothing was changed` };
