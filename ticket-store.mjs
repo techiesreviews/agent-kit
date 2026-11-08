@@ -2,8 +2,8 @@
 // pr, status and init --issues use when a project is on Orbit. `ticketSettings` says which store a project uses
 // (scripts/agents/kit.json: "tickets": "files"|"orbit", default files, and "orbit": { "project": "<KEY>", "parent":
 // "<KEY-n>" }); `orbitStore` is the Orbit side. The markdown side stays in tickets.mjs.
-import { appendFileSync, chmodSync, closeSync, mkdirSync, openSync } from "node:fs";
-import { dirname } from "node:path";
+import { appendFileSync, chmodSync, closeSync, mkdirSync, openSync, readFileSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { OrbitError, orbitBringsSecret, orbitCardKey } from "./orbit-client.mjs";
 
 /** The project's ticket store and its Orbit board: { backend, project, parent }. */
@@ -150,6 +150,24 @@ export function cardStage(status, statuses = []) {
   return "waiting";
 }
 
+/** How many lines with text a card's own description may have (the kit's own lines do not count). */
+export const cardStandardLines = 12;
+const kitLine = line => line.startsWith(nextLexPrefix) || plannedLine.test(line) || blockedLine.test(line) || claimedLine.test(line);
+/**
+ * The ways a description breaks the Orbit card standard (docs/orbit-card-standard.md): [{ rule, message }], none when it
+ * follows it. Lines without text are not counted, and neither are the lines the kit keeps (Next step, Planned dates,
+ * Blocked by, Claimed by).
+ */
+export function cardStandardProblems(description) {
+  const own = split(description).map(line => line.trim()).filter(line => line && !kitLine(line));
+  const problems = [];
+  if (own.length > cardStandardLines) problems.push({ rule: "too-long", message: `The description is ${own.length} lines; the standard allows ${cardStandardLines}. Move history to comments and parts to sub-tasks.` });
+  if (own.some(line => /^##\s*Notes\b/i.test(line))) problems.push({ rule: "notes", message: 'The description has a "## Notes" section. Put history in comments, one per event.' });
+  if (own.some(line => /^[-*+]\s+\[[ xX]\]/.test(line))) problems.push({ rule: "checklist", message: "The description has a checklist (- [ ] or - [x]). Make each part a sub-task." });
+  if (!own.some(line => /^[*_]*Done when:/i.test(line))) problems.push({ rule: "no-done-when", message: 'The description has no "Done when:" line.' });
+  return problems;
+}
+
 /** The words on the "Blocked by:" lines that are not card keys, which a change of blockers would lose. */
 const otherBlockedWords = description => blockedWords(description).filter(word => !blockerKey.test(word));
 
@@ -233,6 +251,52 @@ function ticked(description) {
 const amsterdamToday = () => { const now = zoneParts(Date.now()); return `${now.year}-${now.month}-${now.day}`; };
 const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 const sameTime = (a, b) => (a && b) ? Date.parse(a) === Date.parse(b) : same(a, b);
+
+/**
+ * What a `kit ticket tidy` folder holds: description.txt (the new description), comments.txt (comments, split by a line
+ * with only -----) and subtasks.json (a list of { title, description, assignee }), each one optional. Every problem is
+ * found here, before anything is sent.
+ */
+export function readTidyFolder(folder) {
+  const dir = String(folder ?? "");
+  let info;
+  try { info = statSync(dir); } catch { throw new OrbitError(`the folder ${dir} does not exist`); }
+  if (!info.isDirectory()) throw new OrbitError(`${dir} is not a folder`);
+  const read = name => {
+    try { return readFileSync(join(dir, name), "utf8").replace(/\r\n?/g, "\n"); }
+    catch (error) {
+      if (error?.code === "ENOENT") return undefined;
+      throw new OrbitError(`cannot read ${name} in ${dir}`);
+    }
+  };
+  const [descriptionText, commentsText, subtasksText] = ["description.txt", "comments.txt", "subtasks.json"].map(read);
+  if (descriptionText === undefined && commentsText === undefined && subtasksText === undefined) throw new OrbitError(`${dir} holds none of description.txt, comments.txt or subtasks.json`);
+  const found = {};
+  if (descriptionText !== undefined) {
+    found.description = descriptionText.replace(/\s+$/, "");
+    if (!found.description.trim()) throw new OrbitError("description.txt is blank, so nothing was sent; leave the file out to keep the description");
+  }
+  if (commentsText !== undefined) found.comments = commentsText.split(/^-----[ \t]*$/m).map(text => text.trim()).filter(Boolean);
+  if (subtasksText !== undefined) {
+    let list;
+    try { list = JSON.parse(subtasksText); } catch { throw new OrbitError("subtasks.json cannot be read: it must be a list of { title, description, assignee }"); }
+    if (!Array.isArray(list)) throw new OrbitError("subtasks.json must be a list of { title, description, assignee }");
+    const titles = new Set();
+    found.subtasks = list.map((item, index) => {
+      const at = `subtasks.json item ${index + 1}`;
+      if (!item || typeof item !== "object" || Array.isArray(item)) throw new OrbitError(`${at} must be { title, description, assignee }`);
+      if (typeof item.title !== "string" || !oneLine(item.title)) throw new OrbitError(`${at} needs a title`);
+      for (const field of ["description", "assignee"]) {
+        if (item[field] !== undefined && item[field] !== null && typeof item[field] !== "string") throw new OrbitError(`${at}: ${field} must be ${field === "assignee" ? "a member's name or id, or null" : "text, or null"}`);
+      }
+      const title = oneLine(item.title);
+      if (titles.has(title)) throw new OrbitError(`subtasks.json lists the title "${title}" twice`);
+      titles.add(title);
+      return { title, description: item.description ?? undefined, assignee: item.assignee && oneLine(item.assignee) ? oneLine(item.assignee) : undefined };
+    });
+  }
+  return found;
+}
 
 const priorities = ["none", "low", "medium", "high", "urgent"];
 const words = "needs Lex's exact words";
@@ -485,7 +549,16 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
     return open;
   };
 
-  return {
+  /** One comment unless the card already has a comment with exactly this text; a dry run says what it would send. */
+  async function postComment(identifier, text) {
+    const same = comment => String(comment.body ?? "").trim() === text.trim();
+    if ((await client.comments(identifier)).some(same)) return { skipped: true };
+    if (dryRun) return { dry: { method: "POST", path: client.pathOf.comments(identifier), body: { body: text } } };
+    await sent({ card: identifier, action: "comment", fields: ["body"] }, () => client.addComment(identifier, text));
+    return { posted: true };
+  }
+
+  const api = {
     statusName,
     /** A card with what the kit reads from it: status name, next step and blockers. */
     async read(key) {
@@ -544,13 +617,13 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       const ownParent = parent ?? (noParent || !ownBoard ? undefined : defaults.parent ?? undefined);
       if (ownParent) body.parent_task_id = await parentId(ownParent);
       await guard(null, body, board.id, lexSaid);
-      if (dryRun) return { action: "create", key: board.key, dry: { method: "POST", path: client.pathOf.tasks, body } };
+      if (dryRun) return { action: "create", key: board.key, dry: { method: "POST", path: client.pathOf.tasks, body }, warnings: cardStandardProblems(body.description) };
       const task = await sent({ action: "create", fields: Object.keys(body), lexSaid }, () => client.createTask(body)).catch(error => {
         // No key to read yet, and running create again could make a second card.
         if (error?.noAnswer) throw new OrbitError(`Orbit gave no clear answer, so the new card may or may not have been made: look for it with kit ticket list --q "<its title>" before trying again.`, { status: error.status, code: error.code, noAnswer: true });
         throw error;
       });
-      return { key: task.identifier, action: "create", task, fields: Object.keys(body) };
+      return { key: task.identifier, action: "create", task, fields: Object.keys(body), warnings: cardStandardProblems(body.description) };
     },
     update(key, { title, description: text, clearDescription, status, priority, parent, blocked, label, clearLabels, assignee, lexSaid }) {
       if (clearLabels && label !== undefined) throw new OrbitError("use --label or --clear-labels, not both");
@@ -564,12 +637,15 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       // The fields set outright; a retry stops if someone else changed one of them. A blockers-only change merges.
       const replaces = [title !== undefined && "title", description !== undefined && "description", status !== undefined && "status_id", priority !== undefined && "priority", parent !== undefined && "parent_task_id", assignee !== undefined && "assignee_ids", (label !== undefined || clearLabels) && "label_ids"].filter(Boolean);
       const keys = blocked === undefined ? undefined : blockers(blocked);
+      // The standard is checked on the text the card will hold, once the kit's own lines are carried over.
+      let warnings = [];
       return changeCard("update", key, async task => {
         const wanted = {};
         if (title !== undefined) wanted.title = oneLine(title);
         // --blocked-by none with a new text asks for no Blocked by line at all, so the old one is not carried over.
         const dropping = keys?.length === 0 && description !== undefined;
         if (description !== undefined) wanted.description = keepingKitLines(description, dropping ? { ...task, description: split(task.description).filter(line => !blockedLine.test(line.trim())).join("\n") } : task);
+        warnings = description === undefined ? [] : cardStandardProblems(wanted.description);
         if (keys !== undefined) {
           const others = otherBlockedWords(wanted.description ?? task.description);
           if (others.length) throw new OrbitError(`the Blocked by line also says: ${others.join(", ")}; to change that line, give the new text with --description, and add --blocked-by none to drop it`);
@@ -589,7 +665,7 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
           wanted.assignee_ids = same([...ids].sort(), [...(task.assignee_ids ?? [])].sort()) ? task.assignee_ids : ids;
         }
         return wanted;
-      }, { replaces, lexSaid });
+      }, { replaces, lexSaid }).then(outcome => ({ ...outcome, warnings }));
     },
     dates(key, { start, due, source, clear }) {
       if (clear && (start !== undefined || due !== undefined)) throw new OrbitError("--clear takes the dates away; use it without --start or --due");
@@ -610,9 +686,10 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
         return { description: withPlannedDates(task.description, `Planned dates: ${when} (source: ${named})`), due_start_at: startAt ?? null, due_at: dueAt };
       }, { replaces: [(clear || start !== undefined) && "due_start_at", (clear || due !== undefined) && "due_at"].filter(Boolean) });
     },
+    /** A dated comment (the card standard keeps history in comments, never in the description). */
     note(key, text) {
       textOnly("a note", text);
-      return changeCard("note", key, task => ({ description: withNote(task.description, amsterdamToday(), who, text) }));
+      return api.comment(key, `${amsterdamToday()} ${text.trim()}`);
     },
     async comment(rawKey, text) {
       textOnly("a comment", text);
@@ -625,9 +702,15 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       await sent({ card: task.identifier, action: "comment", fields: ["body"] }, () => client.addComment(task.identifier, text));
       return { key: task.identifier, action: "comment", fields: ["body"], task };
     },
-    /** Writes the first line and assigns the one member called Lex; with none or several, the line is still written and `assign.note` says why. */
-    async nextLex(key, reason) {
+    /**
+     * Writes the first line, assigns the one member called Lex (with none or several, the line is still written and
+     * `assign.note` says why), moves a Backlog or Todo card to In Progress, and posts a comment that starts with @Lex and
+     * holds the details (the reason when there are none). A comment the card already has is not posted again.
+     */
+    async nextLex(key, reason, { comment } = {}) {
       if (!oneLine(reason)) throw new OrbitError("next-lex needs a reason");
+      const text = `@Lex ${String(comment ?? "").trim() || oneLine(reason)}`;
+      refuseSecrets(text);
       let assign;
       const outcome = await changeCard("next-lex", key, async task => {
         const wanted = { description: withNextLex(task.description, reason) };
@@ -637,9 +720,16 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
           wanted.assignee_ids = ids.includes(lex.id) ? ids : [...ids, lex.id];
           assign = { assigned: lex.name };
         } else assign = { note: `could not assign: ${lex.why}; assign in Orbit` };
+        // A card that waits for Lex is In Progress; a board without that status keeps the card where it is.
+        if (["backlog", "todo"].includes((await statusName(task)).trim().toLowerCase())) {
+          const working = (await statusesOf(task.project_id)).find(status => status.name.trim().toLowerCase() === "in progress");
+          if (working) wanted.status_id = working.id;
+        }
         return wanted;
       });
-      return { ...outcome, assign };
+      const comments = await postComment(outcome.key, text);
+      const dries = [outcome.dry, comments.dry].filter(Boolean);
+      return { ...outcome, assign, commented: Boolean(comments.posted), ...(dries.length ? { dry: dries[0], dries } : {}), unchanged: Boolean(outcome.unchanged) && !comments.posted && !comments.dry };
     },
     /** Takes the line out and Lex (only that member) off the assignees. */
     async clearNextLex(key) {
@@ -736,6 +826,77 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
         };
       });
     },
+    /**
+     * The cards that break the Orbit card standard (cardStandardProblems): one card by key, a board by project, or every
+     * board the token reaches with `all`. Read-only, for any role. { total, more, broken: [{ identifier, title, status, url, rules, problems }] }.
+     */
+    async check({ key, project, all }) {
+      let items, more = false;
+      if (key !== undefined) items = [await client.task(orbitCardKey(key))];
+      else ({ items, more } = await client.tasks(all ? {} : { project_id: (await projectFrom(project)).id }, 1000));
+      const broken = [];
+      for (const task of items) {
+        const problems = cardStandardProblems(task.description);
+        if (problems.length) broken.push({ identifier: task.identifier, title: oneLine(task.title), status: await statusName(task), url: task.url, rules: problems.map(item => item.rule), problems: problems.map(item => item.message) });
+      }
+      return { total: items.length, more, broken, key: items[0]?.identifier };
+    },
+    /**
+     * Tidies one card from a folder (readTidyFolder): posts the comments (skipping one whose exact text is already a comment),
+     * then sets the description (the kit keeps Next step, Planned dates and Blocked by as `update` does), then creates the
+     * sub-tasks (skipping a title that is already under the card). Every step skips what is already done, so a run again
+     * after a failure finishes the rest and never doubles anything. `step` is told about each step as it happens.
+     */
+    async tidy(rawKey, { description, comments, subtasks }, { step = () => {} } = {}) {
+      const key = orbitCardKey(rawKey);
+      requireLead();
+      checkLog();
+      const card = await client.task(key);
+      const board = card.identifier.replace(/-\d+$/, "");
+      // Everything that can be refused is refused before the first write.
+      for (const text of [description, ...(comments ?? []), ...(subtasks ?? []).flatMap(item => [item.title, item.description])]) refuseSecrets(text);
+      for (const item of subtasks ?? []) if (item.assignee) await assigneeIds(item.assignee);
+      const done = { key: card.identifier, comments: 0, description: description === undefined ? "absent" : "unchanged", subTasks: 0, warnings: [] };
+
+      if (comments?.length) {
+        const known = new Set((await client.comments(card.identifier)).map(item => String(item.body ?? "").trim()));
+        for (const [index, text] of comments.entries()) {
+          const label = `comment ${index + 1} of ${comments.length}`;
+          if (known.has(text)) { step({ message: `Skipped ${label}: the card already has it.` }); continue; }
+          known.add(text);
+          if (dryRun) {
+            step({ message: `Would post ${label}:`, dry: { method: "POST", path: client.pathOf.comments(card.identifier), body: { body: text } } });
+            done.comments++;
+            continue;
+          }
+          await sent({ card: card.identifier, action: "comment", fields: ["body"] }, () => client.addComment(card.identifier, text));
+          step({ message: `Posted ${label}.` });
+          done.comments++;
+        }
+      }
+
+      if (description !== undefined) {
+        const outcome = await api.update(card.identifier, { description });
+        done.warnings.push(...outcome.warnings.map(item => ({ where: "the description", message: item.message })));
+        if (outcome.unchanged) step({ message: "The description is already as asked." });
+        else {
+          done.description = "set";
+          step({ message: dryRun ? "Would set the description:" : "Set the description.", dry: outcome.dry });
+        }
+      }
+
+      if (subtasks?.length) {
+        const have = new Set((await client.tasks({ parent_task_id: card.identifier })).items.map(item => oneLine(item.title)));
+        for (const item of subtasks) {
+          if (have.has(item.title)) { step({ message: `Skipped sub-task "${item.title}": it is already under the card.` }); continue; }
+          const made = await api.create({ project: board, title: item.title, description: item.description, parent: card.identifier, assignee: item.assignee });
+          done.warnings.push(...made.warnings.map(problem => ({ where: `sub-task "${item.title}"`, message: problem.message })));
+          step({ message: dryRun ? `Would create sub-task "${item.title}":` : `Created sub-task "${item.title}" (${made.key}).`, dry: made.dry });
+          done.subTasks++;
+        }
+      }
+      return done;
+    },
     /** Moves a card (and its sub-tasks, as Orbit does) to Orbit's trash. Nothing here can delete a card for good. */
     async trash(rawKey, lexSaid) {
       needsWords(lexSaid, "moving a card to the trash");
@@ -751,4 +912,5 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       });
     },
   };
+  return api;
 }

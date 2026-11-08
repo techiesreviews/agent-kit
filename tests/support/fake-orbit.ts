@@ -43,8 +43,8 @@ export async function fakeOrbit(t: TestContext, { kitBoard = false }: { kitBoard
     concurrentEdit: undefined as undefined | ((task: FakeTask) => void),
     // Answers for the next requests, oldest first: a 429, a Cloudflare redirect or page, or a problem.
     answers: [] as ("redirect" | "cloudflare-page" | "login-page-200" | "gateway-page" | "hang" | { retryAfter?: string } | { status: number; code: string; detail: string; errors?: any })[],
-    // Answers for the next task writes only (after the reads went through): a problem, or a dropped connection.
-    writeAnswers: [] as ("drop" | "saved-then-502" | "page-200" | { retryAfter: string } | { status: number; code: string; detail: string })[],
+    // Answers for the next task writes only (after the reads went through): a problem, a dropped connection, or "pass" to let one write go through.
+    writeAnswers: [] as ("pass" | "drop" | "saved-then-502" | "page-200" | { retryAfter: string } | { status: number; code: string; detail: string })[],
     me: { token: { id: randomUUID(), name: "fleet", scopes: ["tasks:write"], project_ids: projects.map(project => project.id), expires_at: "2027-02-04T00:00:00.000Z" } } as Record<string, any>,
     requireCloudflare: true,
     // Like the running Orbit: a write (POST, PATCH, DELETE) needs `Origin: <the Orbit origin>`; a read does not.
@@ -134,7 +134,9 @@ export async function fakeOrbit(t: TestContext, { kitBoard = false }: { kitBoard
     }
     if (request.method !== "GET") {
       if (controls.requireOrigin && request.headers.origin !== origin) return problem(response, 403, "origin_forbidden", "The request origin is not allowed.");
-      const planned = controls.writeAnswers.shift();
+      let planned = controls.writeAnswers.shift();
+      // "pass": this write goes through, so a test can fail a later one.
+      if (planned === "pass") planned = undefined;
       if (planned === "drop") return request.socket.destroy();
       if (planned === "saved-then-502") {
         // The change reached Orbit, and only the answer was lost on the way back.

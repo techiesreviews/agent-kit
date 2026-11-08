@@ -167,6 +167,17 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
   `import --dry-run` and `migrate --dry-run` print every card, comment and change and send nothing.
 - `kit brief <KEY>` on an Orbit project builds the brief from the card: its title, text and comments, in place of a
   ticket file's.
+- The card standard (`docs/orbit-card-standard.md`: one short card, history in comments, parts as sub-tasks, questions in a
+  desk thread) is kept by the tickets tool, not by guesswork: `kit ticket note KEY text` posts a dated comment (the
+  description is not touched); `create` and `update` print a warning, and still exit 0, when a new description is over 12
+  lines with text, has a `## Notes` section or a checklist line, or has no `Done when:` line (the kit's own Next step,
+  Planned dates, Blocked by and Claimed by lines do not count); `kit ticket check KEY | --project KEY | --all [--json]`
+  lists every card that breaks it and which rule, for any role; `kit ticket next-lex KEY "reason" [--comment "details"]`
+  also posts a comment that starts with `@Lex` (never the same text twice) and moves a Backlog or Todo card to In Progress;
+  `kit ticket tidy KEY --dir FOLDER [--dry-run]` posts `comments.txt` (split by a line with only `-----`), sets
+  `description.txt` and creates each sub-task of `subtasks.json` (`[{title, description, assignee}]`, assignee `Lex` by
+  member name), skipping what is already there, so a run again after a failure finishes the rest and never doubles anything.
+  Projects that keep ticket files (`"tickets": "files"`) are untouched.
 
 ## Nothing unsaved goes live
 
