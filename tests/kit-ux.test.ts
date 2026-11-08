@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -1098,6 +1098,9 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
   modelUsage: { "claude-opus-5-5": { inputTokens: 300, outputTokens: 40 } } }));
 `);
   chmodSync(join(bin, "claude"), 0o755);
+  // The kit puts the folder of the node it runs on first on PATH. Where that folder also holds the real claude
+  // (a machine that keeps both in ~/.local/bin), it would hide the fake: node here too keeps the fake folder first.
+  symlinkSync(process.execPath, join(bin, "node"));
   const output = run(["--features", "F-media-02"], { KIT_UX_AGENT: "", PATH: `${bin}:${env.PATH}`, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "20s" });
   assert.equal(output.status, 0, output.stderr + output.stdout);
   assert.match(output.result, /, 0 fine, 1 looks off, 0 broken, bundle /);
