@@ -955,6 +955,16 @@ test("a release whose repo lookup fails after the PR is open still ends ok, and 
   assert.match(result.stdout, /RESULT: ok opened #73 [a-f0-9]{7}$/m);
 });
 
+test("a release whose repo lookup fails keeps the host a host-prefixed GH_REPO names", t => {
+  const f = fixture(t), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check"), FAKE_FAIL: "repo-view", GH_REPO: "git.example.com/acme/site" };
+  f.git("checkout", "-q", "dev"); f.commit("Landed change", "landed.txt"); f.git("push", "-q", "origin", "dev");
+  f.git("checkout", "-q", "-b", "release/cut");
+  const result = f.run(["--base", "main", "--release", "--no-merge"], real);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, / --repo git\.example\.com\/acme\/site \(a merge commit, never --rebase\)$/m);
+  assert.match(result.stdout, /RESULT: ok opened #73 [a-f0-9]{7}$/m);
+});
+
 test("a release dry run shows the merge command, and a cut that main already holds is refused as nothing to release", t => {
   const f = fixture(t), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check") };
   f.git("checkout", "-q", "dev"); f.commit("Landed change", "landed.txt"); f.git("push", "-q", "origin", "dev");
