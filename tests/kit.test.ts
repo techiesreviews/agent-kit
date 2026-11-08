@@ -14,6 +14,13 @@ const kit = resolve("kit");
 const library = resolve("kit-lib.sh");
 const nodeError = "kit: no Node >=24 found (system, npx cache or nvm)";
 
+test("the test process has a folder holding only node first on PATH, and the kit adds nothing ahead of it", () => {
+  const first = (process.env.PATH ?? "").split(":")[0];
+  assert.deepEqual(readdirSync(first), ["node"]);
+  assert.equal(realpathSync(join(first, "node")), realpathSync(process.execPath));
+  assert.equal(nodeEnv(kitEnv()).PATH, kitEnv().PATH ?? process.env.PATH);
+});
+
 function temp(t: { after: (fn: () => void) => void }) {
   const directory = mkdtempSync(join(tmpdir(), "agent-kit-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
