@@ -153,7 +153,7 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
   runs every step in order and stops at the first problem. (1) It refuses while a build runs (an open AFK ticket with an
   assignee, kit next's claim, or an imported card In Progress); run it again once the build lands. (2) `kit ticket import` makes one card per ticket file
   (every map's `tickets/` and `build/tickets/`, as `tickets.mjs` reads them) under the parent card (a board other than
-  kit.json's gets none unless `--parent` names one, and migrate then drops kit.json's old parent): the first line
+  kit.json's gets none unless `--parent` names one, and migrate then drops kit.json's old parent; a typed `migrate --parent KEY` also moves cards an earlier import made under that parent, whatever parent they had, and the parent card itself stays where it is): the first line
   "Imported from: <path> (project <name>)" names the file, so a rerun finds the card and makes no second one; then the
   frontmatter (Type, Assignee, Builder, ...), a "Blocked by:" line with the blockers' card keys, and the ticket's text,
   whose links to other tickets point at their cards. Each entry of a "## Comments" section becomes a card comment; the
@@ -174,7 +174,7 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
   untracked file outside `.scratch/`) and HEAD is exactly `origin/<release>` after a fetch (`branches.release`,
   the branch the push guard reads). A project's own live deploy command runs it first
   (`scripts/agents/kit release-check && <deploy>`); `kit pr --release` runs `kit release-check --land` before it
-  opens the release PR, so the release is cut from exactly what landed (then rebased onto `origin/<release>`).
+  opens the release PR, so the release is cut from exactly what landed (then `origin/<release>` is merged into it, never replayed: merge the PR with `--merge`).
   It pushes nothing; ignored files (a built `dist/`) do not count. Only a `*-lead` owner may pass it with
   `--waive "<reason>"`, which its `RESULT:` line names with what was let through; `kit pr --release --waive` hands
   its reason on, so one waiver covers both the review findings and the check.

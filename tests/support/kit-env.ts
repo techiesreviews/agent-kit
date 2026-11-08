@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -19,6 +19,20 @@ function testState() {
   process.once("exit", () => rmSync(folder, { recursive: true, force: true }));
   return state = folder;
 }
+// The kit puts the folder of the first Node 24+ on PATH ahead of everything else. Where that folder also holds a real
+// claude, codex, grok or opencode (a machine keeping them in ~/.local/bin), it would hide a test's fake of that tool.
+// One folder holding only node, first on PATH, is the folder the kit puts first, so a fixture's own fake folder, put
+// before the rest of PATH, still wins. Fixtures build their PATH from process.env.PATH, so this process's own PATH
+// gets the folder once, when this file is first loaded: only test files that import this file are covered.
+let nodeOnly: string | undefined;
+function testNode() {
+  if (nodeOnly) return nodeOnly;
+  const folder = mkdtempSync(join(tmpdir(), "kit-test-node-"));
+  symlinkSync(process.execPath, join(folder, "node"));
+  process.once("exit", () => rmSync(folder, { recursive: true, force: true }));
+  return nodeOnly = folder;
+}
+process.env.PATH = `${testNode()}${process.env.PATH ? `:${process.env.PATH}` : ""}`;
 // KIT_SKILL_HOME names a folder that never exists, so kit doctor's skills map note reads no real skill folder.
 const noSkills = resolve(import.meta.dirname, "../fixtures/no-skill-home");
 // KIT_TALK_STYLE=plain leaves the talk-style counter (the 7-day trial's order) alone, and KIT_BG_SCOPE=off keeps
