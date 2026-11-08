@@ -73,7 +73,7 @@ says for today; never claim a planned item ran.
   (default `files`). With `orbit` the tickets live in Orbit: `kit next` hands out the Todo cards
   whose "Blocked by:" cards are Done, in build waves; `kit next --start` and `kit slice --ticket <KEY>`
   claim the card (status In Progress and a "Claimed by: <owner>" line) and build from its brief;
-  `kit pr` moves the card to Done with a note naming the PR and its merge SHA; `kit status` shows the
+  `kit pr` moves the card to Done with a dated comment naming the PR and its merge SHA; `kit status` shows the
   cards; `kit init --issues` makes a card per open GitHub Issue and closes the Issue with a comment
   naming its card. Statuses go by name (Backlog, Todo, In Progress, Done); a board that keeps its
   stage in labels keeps them. Ticket files stay only for `files` projects, and maps and research
@@ -87,6 +87,9 @@ says for today; never claim a planned item ran.
   report to their lead. Never delete a card for good; the trash, the Publish status or label and
   the "Scheduled in Radaar" tick each need Lex's exact words (`--lex-said`). No date without a
   source. The Orbit token and the Cloudflare pass never go in a chat, a log or a repository.
+  **The card standard** ([`orbit-card-standard.md`](orbit-card-standard.md), `docs/orbit-card-standard.md` in the kit): one short card, history in
+  dated comments, parts as sub-tasks, a question for Lex in a desk thread; `kit ticket check` lists the cards that break it,
+  and `create`, `update`, `note`, `next-lex` and `tidy` keep it.
 - **One house style for every tool:** anything a person sees follows the kit's
   [house style](house-style.md) (`docs/house-style.md` in the kit; `scripts/agents/kit --home`
   prints the folder): quiet screens, instant changes with Undo, the same agent connection

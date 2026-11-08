@@ -2685,11 +2685,27 @@ test("on Orbit, a landed PR closes its card: Done, a note with the PR link and m
   assert.equal(output.status, 0, output.all);
   assert.equal(finalLine(output), "RESULT: ok merged #73 abcdef0 (card KIT-1 Done)");
   assert.equal(orbit.statusOf(task), "Done");
-  assert.match(task.description, landedNote);
+  assert.match(orbit.comments[task.id][0].body, landedNote);
+  assert.match(orbit.comments[task.id][0].body, /^\d{4}-\d{2}-\d{2} Landed in /);
   assert.ok(!task.description.includes("Claimed by"));
+  assert.ok(!task.description.includes("## Notes"), "the landing is a comment, not a Notes section");
   assert.match(log(), /card=KIT-1 action=close fields=status_id,description who=ak-14 result=ok/);
   assert.match(body(), /^Ticket: Card title \(\.scratch\/kit-tickets\/KIT-1\.md\)$/m);
   assert.doesNotMatch(git("log", "--format=%s", "origin/dev..HEAD"), /docs: KIT-1/);
+});
+
+test("on Orbit, a landing comment Orbit refuses after the card is Done leaves the card Done and says only the comment is missing", async t => {
+  const { card, pr, brief, orbit } = await orbitPr(t);
+  const task = card({ title: "Card title", description: "Claimed by: ak-14\n\n## Files\n\n- `feature.txt`\n\n## Done when\n\n- done" }, "In Progress");
+  // The Done write goes through; the landing comment does not.
+  orbit.controls.writeAnswers.push("pass", { status: 500, code: "internal_error", detail: "down" });
+  const output = await pr(["--ticket", brief()]);
+  assert.equal(output.status, 0, output.all);
+  assert.equal(orbit.statusOf(task), "Done");
+  assert.match(output.stdout, /card: KIT-1 Done \(https:\/\/github\.com\/test\/repo\/pull\/73\); the landing comment was not added \(.*\): add it with kit ticket note KIT-1 "Landed in https:\/\/github\.com\/test\/repo\/pull\/73/);
+  assert.doesNotMatch(output.all, /not closed|--status Done/);
+  assert.match(finalLine(output), /^RESULT: ok merged #73 abcdef0/);
+  assert.equal(orbit.comments[task.id], undefined);
 });
 
 test("on Orbit, kit pr --ticket KEY reads the card into its brief and closes it on landing", async t => {
@@ -2751,7 +2767,9 @@ test("on Orbit, a queued PR leaves its card open and says the queue closes it; r
   const landed = await nits.pr(["--ticket", brief]);
   assert.equal(landed.status, 0, landed.all);
   assert.equal(nits.orbit.statusOf(task), "Done");
-  assert.deepEqual((nits.orbit.comments[task.id] ?? []).map((comment: any) => comment.body), [
+  const bodies = (nits.orbit.comments[task.id] ?? []).map((comment: any) => comment.body);
+  assert.match(bodies[0], landedNote, "the landing is the first comment");
+  assert.deepEqual(bodies.slice(1), [
     "Follow-ups from https://github.com/test/repo/pull/73:\n- Spec (P3): P3: Cosmetic defect.\n- Validation gaps (gap): Add coverage.\n- UX (looks off): F-1 S1: a hint line",
   ]);
   assert.doesNotMatch(nits.git("log", "--format=%s", "origin/dev..HEAD"), /docs: KIT-1/);

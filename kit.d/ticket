@@ -1,16 +1,18 @@
 #!/usr/bin/env node
-// kit: tickets on the Orbit board: create, read, update, dates, notes, comments, sub-tasks, next-lex, trash, setup, import, parity, migrate
+// kit: tickets on the Orbit board: create, read, update, dates, notes, comments, sub-tasks, next-lex, check, tidy, trash, setup, import, parity, migrate
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { kitOwner, kitResult, kitRoot, kitSettings } from "../kit-lib.mjs";
 import { OrbitError, OrbitSetupProblem, orbitCardRedactor, orbitClient, orbitLogPath, orbitRedactor, orbitSecrets, readOrbitConfig } from "../orbit-client.mjs";
 import { orbitSetup } from "../orbit-setup.mjs";
-import { orbitStore, showDate, ticketSettings } from "../ticket-store.mjs";
+import { orbitStore, readTidyFolder, showDate, ticketSettings } from "../ticket-store.mjs";
 import { importTickets, migrateTickets, ticketParity } from "../ticket-import.mjs";
 
 const usage = `Usage: kit ticket <command> [options]
 Tickets on the Orbit board, from any project folder. A card is named by its key, like TOOLS-10.
+The card standard (one short card, history in comments, parts as sub-tasks): docs/orbit-card-standard.md in the kit
+(scripts/agents/kit --home prints the kit's folder). create and update warn when a description breaks it (exit code stays 0).
 
 Read (anyone):
   get <KEY> [--comments] [--json]                  one card, with its status, assignee_ids, next step and blockers
@@ -18,6 +20,7 @@ Read (anyone):
   sub-tasks <KEY> [--json]                         the card's direct sub-tasks
   labels [--project KEY]                           the label names a board has
   members                                          the workspace members: display name and id (for --assignee)
+  check <KEY> | --project KEY | --all [--json]     the cards that break the Orbit card standard, and which rule (changes nothing)
 
 Write (leads only: ORBIT_ROLE=lead; every write takes --dry-run, which prints the exact change and sends nothing):
   create --title T [--description D | --description-file F|-] [--status NAME] [--priority P] [--project KEY]
@@ -26,10 +29,18 @@ Write (leads only: ORBIT_ROLE=lead; every write takes --dry-run, which prints th
          [--parent KEY|none] [--blocked-by KEY,KEY|none] [--label NAME,NAME | --clear-labels] [--assignee NAME|ID|none] [--lex-said "<his exact words>"]
   dates <KEY> [--start DATE] [--due DATE] --source "<where the date comes from>"   or   dates <KEY> --clear
          A new description keeps the card's "Next step", "Blocked by" and "Planned dates" lines unless it has its own.
-  note <KEY> "<text>"                              a dated line under Notes in the description
+  note <KEY> "<text>"                              a comment that starts with today's date (the description is not touched)
   comment <KEY> "<text>"                           a comment on the card
-  next-lex <KEY> "<reason>"                        first description line "Next step (Lex): reason", and assigns the member called Lex
+  next-lex <KEY> "<reason>" [--comment "<details>"]
+                                                   first description line "Next step (Lex): reason", assigns the member called Lex,
+                                                   moves a Backlog or Todo card to In Progress, and posts a comment that starts with
+                                                   @Lex and the details (the reason when there are none); the same comment is never posted twice
   clear-next-lex <KEY>                             takes that line out, and Lex off the assignees (only him)
+  tidy <KEY> --dir FOLDER [--dry-run]              tidies one card from FOLDER: comments.txt (comments split by a line with only -----)
+                                                   are posted, then description.txt is set (the card's Next step, Planned dates and
+                                                   Blocked by lines stay), then each entry of subtasks.json ([{title, description, assignee}])
+                                                   becomes a sub-task. Each file is optional. A comment, or a sub-task title, already
+                                                   there is skipped, so a run again finishes the rest and never doubles anything
   trash <KEY> --lex-said "<his exact words>"       moves the card and its sub-tasks to Orbit's trash (30 days)
 
 Set up once:
@@ -93,6 +104,8 @@ Other ways to start it:
 class UsageProblem extends Error {}
 const cardOptions = ["title", "description", "description-file", "status", "priority", "parent", "project", "blocked-by", "label", "assignee", "lex-said"];
 const commands = {
+  check: { args: [], maybeKey: true, flags: ["json", "all"], values: ["project"] },
+  tidy: { args: ["card key"], flags: ["dry-run"], values: ["dir"] },
   get: { args: ["card key"], flags: ["json", "comments"], values: [] },
   list: { args: [], flags: ["json"], values: ["project", "status", "parent", "assignee", "q", "limit"] },
   "sub-tasks": { args: ["card key"], flags: ["json"], values: [] },
@@ -103,7 +116,7 @@ const commands = {
   dates: { args: ["card key"], flags: ["dry-run", "clear"], values: ["start", "due", "source"] },
   note: { args: ["card key", "text"], flags: ["dry-run"], values: [] },
   comment: { args: ["card key", "text"], flags: ["dry-run"], values: [] },
-  "next-lex": { args: ["card key", "reason"], flags: ["dry-run"], values: [] },
+  "next-lex": { args: ["card key", "reason"], flags: ["dry-run"], values: ["comment"] },
   "clear-next-lex": { args: ["card key"], flags: ["dry-run"], values: [] },
   trash: { args: ["card key"], flags: ["dry-run"], values: ["lex-said"] },
   setup: { args: [], flags: ["dry-run", "new-pass"], values: ["from-file"], optional: ["from-mcp-config"] },
@@ -138,7 +151,8 @@ function parse(name, words) {
   }
   if (found.help) return found;
   if (found.rest.length < spec.args.length) throw new UsageProblem(`${name} needs a ${spec.args[found.rest.length]}`);
-  if (found.rest.length > spec.args.length) throw new UsageProblem(`${name} does not take ${found.rest.slice(spec.args.length).join(" ")}; put quotes around text`);
+  const most = spec.args.length + (spec.maybeKey ? 1 : 0);
+  if (found.rest.length > most) throw new UsageProblem(`${name} does not take ${found.rest.slice(most).join(" ")}; put quotes around text`);
   return found;
 }
 
@@ -169,11 +183,18 @@ function finish(status, message, code = status === "ok" ? 0 : 1) {
   process.exitCode = code;
 }
 
+// What a card text breaks of the Orbit card standard: a warning each, and the exit code stays 0.
+function showWarnings(list) {
+  if (!list?.length) return;
+  for (const { where, message } of list) say(`Warning: ${where ? `${where}: ` : ""}${message}`);
+  say("The standard: docs/orbit-card-standard.md in the kit (scripts/agents/kit --home prints the kit's folder).");
+}
+const showDry = ({ method, path, body }) => { say(`Would send: ${method} ${path}`); if (body) sayJson(body); };
+
 function report(name, outcome) {
+  showWarnings(outcome.warnings?.map(({ message }) => ({ message })));
   if (outcome.dry) {
-    const { method, path, body } = outcome.dry;
-    say(`Would send: ${method} ${path}`);
-    if (body) sayJson(body);
+    for (const dry of outcome.dries ?? [outcome.dry]) showDry(dry);
     if (name === "trash") say(`Its sub-tasks (${outcome.subTasks} directly under it) would go to the trash with it.`);
     say("Dry run: nothing was sent.");
     return finish("ok", `${name} ${outcome.key} dry run`);
@@ -184,7 +205,12 @@ function report(name, outcome) {
     return finish("ok", `${name} ${outcome.key} already as asked; nothing to send`);
   }
   if (outcome.task?.url && name !== "trash") say(`${outcome.key}  ${outcome.task.url}`);
-  if (name === "next-lex") say(outcome.assign?.assigned ? `${outcome.key} waits for Lex and is assigned to ${outcome.assign.assigned}.` : `${outcome.key} waits for Lex. ${outcome.assign?.note ?? ""}`.trim());
+  if (name === "next-lex") {
+    say(outcome.assign?.assigned ? `${outcome.key} waits for Lex and is assigned to ${outcome.assign.assigned}.` : `${outcome.key} waits for Lex. ${outcome.assign?.note ?? ""}`.trim());
+    if (outcome.fields?.includes("status_id")) say(`${outcome.key} is In Progress.`);
+    if (outcome.commented) say(`${outcome.key} has a comment that starts with @Lex.`);
+    else if (outcome.commentExisted) say(`${outcome.key} already has this @Lex comment.`);
+  }
   if (name === "clear-next-lex") say(outcome.assign?.unassigned ? `${outcome.key} no longer waits for Lex and is no longer assigned to ${outcome.assign.unassigned}.` : `${outcome.key} no longer waits for Lex.${outcome.assign?.note ? ` ${outcome.assign.note}` : ""}`);
   if (name === "trash") say(`${outcome.key} and its sub-tasks (${outcome.subTasks} directly under it) are in Orbit's trash; members can restore them there for 30 days.`);
   finish("ok", `${name} ${outcome.key}${outcome.fields ? ` (${outcome.fields.join(", ")})` : ""}`);
@@ -274,8 +300,28 @@ async function main() {
     case "update": return report(name, await store.update(key, { title: flags.title, description: description(flags), clearDescription: flags["clear-description"], status: flags.status, priority: flags.priority, parent: flags.parent, blocked: flags["blocked-by"], label: flags.label, assignee: flags.assignee, clearLabels: flags["clear-labels"], lexSaid: flags["lex-said"] }));
     case "dates": return report(name, await store.dates(key, { start: flags.start, due: flags.due, source: flags.source, clear: flags.clear }));
     case "note": return report(name, await store.note(key, wording));
+    case "check": {
+      const chosen = [key !== undefined, flags.project !== undefined, Boolean(flags.all)].filter(Boolean).length;
+      if (chosen !== 1) throw new UsageProblem("check needs exactly one of a card key, --project KEY or --all");
+      const { total, more, broken, key: card } = await store.check({ key, project: flags.project, all: flags.all });
+      const where = key !== undefined ? card : flags.all ? "all boards" : flags.project;
+      if (flags.json) sayJson(broken);
+      else if (key !== undefined && !broken.length) say(`${card} follows the standard.`);
+      else for (const item of broken) { say(`${item.identifier}  [${item.status}]  ${oneLine(item.title)}`); for (const problem of item.problems) say(`  - ${problem}`); }
+      return finish("ok", `check ${where}: ${broken.length} of ${total} card${total === 1 ? "" : "s"} ${total === 1 ? "breaks" : "break"} the standard${more ? "; more exist, only the first 1000 were read" : ""}`);
+    }
+    case "tidy": {
+      if (flags.dir === undefined) throw new UsageProblem("tidy needs --dir FOLDER (with description.txt, comments.txt and subtasks.json)");
+      const folder = readTidyFolder(resolve(flags.dir));
+      const done = await store.tidy(key, folder, { step: ({ message, dry }) => { say(message); if (dry) showDry(dry); } });
+      showWarnings(done.warnings);
+      const count = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+      if (dryRun) { say("Dry run: nothing was sent."); return finish("ok", `tidy ${done.key} dry run: ${count(done.comments, "comment")} to post, description ${done.description === "set" ? "to set" : done.description === "absent" ? "not in the folder" : "already set"}, ${count(done.subTasks, "sub-task")} to create`); }
+      if (!done.comments && done.description !== "set" && !done.subTasks) return finish("ok", `tidy ${done.key}: nothing to do`);
+      return finish("ok", `tidy ${done.key}: ${count(done.comments, "comment")}, description ${done.description === "set" ? "set" : done.description === "absent" ? "not in the folder" : "already set"}, ${count(done.subTasks, "sub-task")}`);
+    }
     case "comment": return report(name, await store.comment(key, wording));
-    case "next-lex": return report(name, await store.nextLex(key, wording));
+    case "next-lex": return report(name, await store.nextLex(key, wording, { comment: flags.comment }));
     case "clear-next-lex": return report(name, await store.clearNextLex(key));
     case "trash": return report(name, await store.trash(key, flags["lex-said"]));
     case "import": {

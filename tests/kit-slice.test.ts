@@ -1623,7 +1623,7 @@ test("on Orbit, a slice whose PR was queued closes the card when the queue lands
   assert.equal(output.status, 0, output.all);
   assert.match(output.stdout, /^card: KIT-1 Done \(PR #42\)$/m);
   assert.equal(orbit.statusOf(task), "Done");
-  assert.match(task.description, new RegExp(`Landed in PR #42 \\(merge commit ${"a".repeat(40)}\\)`));
+  assert.match(orbit.comments[task.id][0].body, new RegExp(`Landed in PR #42 \\(merge commit ${"a".repeat(40)}\\)`));
   assert.ok(!task.description.includes("Claimed by"));
   assert.match(log(), /card=KIT-1 action=close .* result=ok/);
 });
@@ -1652,7 +1652,9 @@ test("on Orbit, a queued card closes with the review and UX follow-ups its brief
   const output = await slice("KIT-1", { QUEUE_PR: "1" });
   assert.equal(output.status, 0, output.all);
   assert.equal(orbit.statusOf(task), "Done");
-  assert.deepEqual((orbit.comments[task.id] ?? []).map((comment: any) => comment.body),
+  const bodies = (orbit.comments[task.id] ?? []).map((comment: any) => comment.body);
+  assert.match(bodies[0], /^\d{4}-\d{2}-\d{2} Landed in PR #42 /, "the landing is the first comment");
+  assert.deepEqual(bodies.slice(1),
     ["Follow-ups from PR #42:\n- Spec (P3): P3: Cosmetic defect.\n- UX (looks off): F-1 S1: a hint line"]);
 });
 

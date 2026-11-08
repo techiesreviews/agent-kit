@@ -124,7 +124,7 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
   "Claimed by: <owner>" line; a card someone else holds is refused, and a start that fails gives the claim back. The
   slice copies the card once to `.scratch/kit-tickets/<KEY>.md`, the brief its build, review, fix and UX steps read (a
   card needs "## Files" and "## Done when"); a rerun resumes from it. When the PR lands, `kit pr` sets the card to Done
-  with a note naming the PR and merge SHA; when that write fails the merge still counts and the RESULT line says so.
+  and adds a dated comment naming the PR and merge SHA; when that write fails the merge still counts and the RESULT line says so.
   `kit status` shows status name, claim, PR and CI per card. `kit init --issues` makes a card per open GitHub Issue in
   the project and parent (its "GitHub Issue:" line holds the link and number), then closes each Issue with a comment
   naming its card; a rerun finds the cards it made, and an Issue whose text holds a secret stays open.
@@ -167,6 +167,20 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
   `import --dry-run` and `migrate --dry-run` print every card, comment and change and send nothing.
 - `kit brief <KEY>` on an Orbit project builds the brief from the card: its title, text and comments, in place of a
   ticket file's.
+- The card standard (`docs/orbit-card-standard.md`: one short card, history in comments, parts as sub-tasks, questions in a
+  desk thread) is kept by the tickets tool, not by guesswork: `kit ticket note KEY text` posts a dated comment (the
+  description is not touched); `create` and `update` print a warning, and still exit 0, when a new description is over 12
+  lines with text, has a `## Notes` section or a checklist line, or has no `Done when:` line (the kit's own Next step,
+  Planned dates, Blocked by and Claimed by lines do not count); `kit ticket check KEY | --project KEY | --all [--json]`
+  lists every card that breaks it and which rule, for any role; `kit ticket next-lex KEY "reason" [--comment "details"]`
+  also posts a comment that starts with `@Lex` (never the same text twice) and moves a Backlog or Todo card to In Progress;
+  `kit ticket tidy KEY --dir FOLDER [--dry-run]` posts `comments.txt` (split by a line with only `-----`), sets
+  `description.txt` and creates each sub-task of `subtasks.json` (`[{title, description, assignee}]`, assignee `Lex` by
+  member name), skipping what is already there, so a run again after a failure finishes the rest and never doubles anything.
+  A card that waited for Lex and was given back by `clear-next-lex` stays In Progress; a slice may claim it when it has no
+  claim line, no assignee and no next step.
+  Projects that keep ticket files (`"tickets": "files"`) keep how `kit next`, `kit slice`, `kit pr` and `kit status` work
+  today; `kit ticket` itself always talks to Orbit, as before.
 
 ## Nothing unsaved goes live
 
