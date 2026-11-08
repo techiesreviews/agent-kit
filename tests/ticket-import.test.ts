@@ -310,6 +310,21 @@ test("migrate --parent moves the cards an earlier import made under the new pare
   assert.ok(first && third);
 });
 
+test("a plain migrate leaves earlier-imported cards where they are, even when kit.json names a parent; only a typed --parent moves them", async t => {
+  const p = await project(t, { settings: { orbit: { project: "KIT" } } });
+  ok(await p.run(["import"]));
+  const parent = p.card({ title: "Named in kit.json" }, "Backlog"), other = p.card({ title: "Placed on purpose" }, "Backlog");
+  const second = p.cardFor(paths[1]);
+  second.parent_task_id = other.id;
+  writeFileSync(join(p.root, "scripts/agents/kit.json"), JSON.stringify({ project: "demo", maps: "docs/wayfinder", branches: { land: "dev" }, orbit: { project: "KIT", parent: parent.identifier } }, null, 2) + "\n");
+  p.git("commit", "-q", "-am", "name a parent"); p.git("push", "-q", "origin", "HEAD:dev"); p.git("fetch", "-q", "origin"); p.git("reset", "-q", "--hard", "origin/dev");
+  const writes = p.orbit.writes().length;
+  const output = ok(await p.run(["migrate"]));
+  assert.equal(second.parent_task_id, other.id, "a card placed under another parent stays there");
+  assert.doesNotMatch(output.stdout, /\(parent_task_id\)/);
+  assert.equal(p.orbit.writes().length, writes, "nothing was written for the cards");
+});
+
 test("migrate --parent --dry-run says which cards it would move and sends nothing", async t => {
   const p = await project(t, { settings: { orbit: { project: "KIT" } } });
   ok(await p.run(["import"]));
@@ -324,7 +339,9 @@ test("migrate --parent is safe to run again: cards already under the parent are 
   const p = await project(t, { settings: { orbit: { project: "KIT" } } });
   ok(await p.run(["import"]));
   const parent = p.card({ title: "New parent" }, "Backlog");
+  const beforeMissing = p.orbit.writes().length;
   refused(await p.run(["migrate", "--parent", "KIT-999"], { FAKE_PR_RESULT: "fail" }), /KIT-999|not exist|cannot use/);
+  assert.equal(p.orbit.writes().length, beforeMissing, "a missing parent stopped the run before any write");
   for (const path of paths) assert.equal(p.cardFor(path).parent_task_id ?? null, null, "a missing parent moved nothing");
   refused(await p.run(["migrate", "--parent", parent.identifier], { FAKE_PR_RESULT: "fail" }), /kit pr did not land the move/);
   for (const path of paths) assert.equal(p.cardFor(path).parent_task_id, parent.id);
