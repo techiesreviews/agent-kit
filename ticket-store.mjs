@@ -824,6 +824,7 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
      */
     async close(key, text) {
       textOnly("a closing note", text);
+      refuseSecrets(text);
       const outcome = await changeCard("close", key, async task => {
         const { stage } = await stageOf(task);
         return {
@@ -834,7 +835,11 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       const landing = oneLine(text);
       const known = split(outcome.task.description).some(line => line.includes(landing))
         || (await client.comments(outcome.key)).some(item => String(item.body ?? "").includes(landing));
-      if (!known) await sent({ card: outcome.key, action: "comment", fields: ["body"] }, () => client.addComment(outcome.key, `${amsterdamToday()} ${landing}`));
+      if (!known && !dryRun) {
+        // The card is Done by now: a comment that fails is reported on its own, so the card is not called open.
+        try { await sent({ card: outcome.key, action: "comment", fields: ["body"] }, () => client.addComment(outcome.key, `${amsterdamToday()} ${landing}`)); }
+        catch (error) { return { ...outcome, unchanged: false, landingNotAdded: error }; }
+      }
       return { ...outcome, unchanged: Boolean(outcome.unchanged) && known };
     },
     /**
