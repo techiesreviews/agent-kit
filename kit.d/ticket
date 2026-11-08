@@ -40,7 +40,8 @@ Move a project's ticket files to Orbit (run in the project; leads only):
                                                    body, comments, links); a rerun finds its cards and makes no new ones
   parity [--project KEY]                           compares the files with their cards; lists every difference, fails on one
   migrate [--project KEY] [--parent KEY] [--dry-run]   import, parity, tag, then one PR through kit pr that removes the
-                                                   ticket files and sets "tickets": "orbit"
+                                                   ticket files and sets "tickets": "orbit"; with --parent, cards an
+                                                   earlier import made move under it too
 
 Without --project a board comes from "orbit": { "project": "<KEY>", "parent": "<KEY-n>" } in scripts/agents/kit.json;
 parent is the card new tickets go under (--no-parent skips it). "tickets": "files"|"orbit" (default files) says which

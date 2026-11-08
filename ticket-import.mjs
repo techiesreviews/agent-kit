@@ -224,6 +224,9 @@ async function statusIdFor(store, boardId, wanted) {
   catch (error) { if (!wanted.fallback) throw error; return store.statusOn(boardId, wanted.fallback.name, wanted.fallback.category); }
 }
 
+/** True when a card made earlier is not under the named parent yet (the parent card itself never moves under itself). */
+const movesUnder = (card, parentCard) => Boolean(parentCard) && card.identifier !== parentCard.identifier && card.parent_task_id !== parentCard.id;
+
 /** The comments still to add: the file's entries the card does not hold yet, counted per text. */
 function missingComments(wanted, have) {
   const left = have.map(comment => normal(comment.body));
@@ -235,10 +238,13 @@ function missingComments(wanted, have) {
  * made first, so every card's text can name every other card. A dry run prints every card and comment it would send.
  * Returns the counts.
  */
-export async function importTickets({ store, root, settings, project: boardKey, dryRun = false, say = console.log }) {
+export async function importTickets({ store, root, settings, project: boardKey, parent, dryRun = false, say = console.log }) {
   const project = importProject(settings, root);
   const { sources } = projectTickets(root, settings);
   const board = await readBoard(store, boardKey);
+  // With a parent named (kit ticket migrate --parent), every imported card sits under it, those an earlier import made too.
+  // It is read first: a parent Orbit cannot show stops the run before any write.
+  const parentCard = parent ? await store.read(parent) : null;
   const { byPath, twice } = importedCards(board.cards, project);
   if (twice.length) throw new OrbitError(`two cards were imported from the same file, so the import stopped: ${twice.join(", ")}; move the extra card to the trash first`);
   const made = new Map([...byPath].map(([path, card]) => [path, { key: card.identifier, url: card.url }]));
@@ -277,6 +283,7 @@ export async function importTickets({ store, root, settings, project: boardKey, 
     const change = {};
     if (existing && normal(existing.title) !== want.title) change.title = want.title;
     if (existing && existing.status_id !== status.id) change.status_id = status.id;
+    if (existing && movesUnder(existing, parentCard)) change.parent_task_id = parentCard.id;
     if (normal(existing ? existing.description : `Imported from: ${source.path} (project ${project})`) !== normal(want.description)) change.description = want.description;
     if (!Object.keys(change).length) { if (existing) counts.unchanged++; continue; }
     await store.replace(key, change);
@@ -287,7 +294,7 @@ export async function importTickets({ store, root, settings, project: boardKey, 
     if (!existing) continue;
     const want = expectedCard(source, { project, ...look });
     const status = await statusOf(source.status);
-    const change = [normal(existing.title) !== want.title && "title", existing.status_id !== status.id && "status_id", normal(existing.description) !== normal(want.description) && "description"].filter(Boolean);
+    const change = [normal(existing.title) !== want.title && "title", existing.status_id !== status.id && "status_id", movesUnder(existing, parentCard) && "parent_task_id", normal(existing.description) !== normal(want.description) && "description"].filter(Boolean);
     if (!change.length) { counts.unchanged++; continue; }
     say(`would update ${existing.identifier} from ${source.path} (${change.join(", ")})`);
     if (change.includes("description")) say("  description:", ...quoteBlock(want.description));
@@ -405,7 +412,7 @@ export async function migrateTickets({ store, root, settings, project: boardKey,
   if (working.length) throw new OrbitError(`a build is running, so the move waits: ${working.map(card => `${card.identifier} (${card.status_name}${card.claimed_by ? `, claimed by ${card.claimed_by}` : ""})`).join(", ")}`);
 
   say(`1. import into ${before.board}${dryRun ? " (dry run)" : ""}`);
-  const imported = await importTickets({ store, root, settings, project: boardKey, dryRun, say: (...lines) => lines.forEach(line => say(`   ${line}`)) });
+  const imported = await importTickets({ store, root, settings, project: boardKey, parent, dryRun, say: (...lines) => lines.forEach(line => say(`   ${line}`)) });
   say(`   ${imported.tickets} tickets: ${imported.created} created, ${imported.updated} updated, ${imported.unchanged} unchanged, ${imported.comments} comments added`);
   let cards;
   if (dryRun) {
