@@ -14,7 +14,7 @@ Run first by a project's live deploy command, and by kit pr --release. Fails unl
 clean (no changed or untracked files outside .scratch/) and HEAD is exactly origin/<release> after a
 fetch (branches.release in ${kitSettingsFile}, the same branch the push guard reads). Pushes nothing.
 --land compares HEAD with origin/<land> instead: kit pr --release checks that the release is cut exactly
-from what landed, before it rebases the cut onto origin/<release>. --waive requires a *-lead owner;
+from what landed, before origin/<release> is merged into the cut. --waive requires a *-lead owner;
 the RESULT line names the reason and what it let through. KIT_RELEASE_CHECK_TIMEOUT: the fetch's limit
 in seconds (default 120).
 `;
@@ -87,8 +87,8 @@ function problems(root, { land }) {
   const counts = git("rev-list", "--left-right", "--count", `HEAD...refs/remotes/origin/${branch}`);
   if (counts.status !== 0) throw new Error(`git rev-list failed: ${counts.stderr.trim()}`);
   const [ahead, behind] = counts.stdout.trim().split(/\s+/).map(Number);
-  // Under --land, a cut whose own commits all landed already (an earlier kit pr --release rebased it onto
-  // origin/<release>) is cut again; git cherry marks each commit past origin/<release> that origin/<land> has with "-".
+  // Under --land, a cut whose own commits all landed already (an earlier kit pr --release merged
+  // origin/<release> into it) is cut again; git cherry marks each commit past origin/<release> that origin/<land> has with "-".
   // A commit that never landed is landed first, so the advice never drops work.
   // A clone without origin/<release> (single-branch, CI) leaves the limit out: release-only commits then show "+",
   // and a failed git cherry counts as not landed, so both give the safe advice.
