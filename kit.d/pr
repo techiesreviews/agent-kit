@@ -906,7 +906,12 @@ async function main(args) {
     if (flags.noMerge || flags.release) {
       // A rebase merge on GitHub would flatten dev's back-merge again and bring the conflict back one step later.
       // The command pins the reviewed head, like the kit's own merges: a push made after the review is refused.
-      if (flags.release) console.log(`merge: gh pr merge ${number} --merge --match-head-commit ${await git("merge", ["rev-parse", "HEAD"])} --repo ${(await repoNames()).target} (a merge commit, never --rebase)`);
+      // The advice never fails a release that is done: if the repo lookup fails, it names GH_REPO as it stands.
+      if (flags.release) {
+        let target = ghEnv.GH_REPO || "<owner/name>";
+        try { target = (await repoNames()).target; } catch { /* the advice keeps GH_REPO */ }
+        console.log(`merge: gh pr merge ${number} --merge --match-head-commit ${head} --repo ${target} (a merge commit, never --rebase)`);
+      }
       kitResult("ok", `opened #${number} ${head.slice(0, 7)}${releaseWaived()}${flakyNote()}`);
       return 0;
     }
