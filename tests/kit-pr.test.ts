@@ -910,7 +910,7 @@ test("a release cut at origin/dev passes the check before kit pr joins it with a
   assert.equal(f.git("show", "HEAD:hotfix.txt"), "hotfix");
 });
 
-test("a release cut from a dev that holds a back-merge of main rebases without flattening it: no conflict, HEAD unchanged (TOOLS-38)", t => {
+test("a release cut from a dev that holds a back-merge of main needs no change: no conflict, HEAD unchanged (TOOLS-38)", t => {
   const f = fixture(t), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check") }, peer = f.peer();
   // main takes a hotfix on the same line dev edits, so replaying dev's own edit onto main conflicts.
   f.gitAt(peer, "checkout", "-q", "main"); writeFileSync(join(peer, "file.txt"), "hotfix\n");
@@ -922,12 +922,26 @@ test("a release cut from a dev that holds a back-merge of main rebases without f
   f.git("checkout", "-q", "-b", "release/cut");
   const cut = f.git("rev-parse", "HEAD"), result = f.run(["--base", "main", "--release", "--no-merge"], real);
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stdout, /^rebase: ok$/m);
+  assert.match(result.stdout, /^merge: ok$/m);
   assert.doesNotMatch(result.stdout, /conflict in/);
   assert.equal(f.git("rev-parse", "HEAD"), cut, "main is already inside the cut, so the rebase leaves it as it is");
   f.git("merge-base", "--is-ancestor", "origin/main", "HEAD"); // throws unless main is inside the release
-  assert.match(result.stdout, /^merge: gh pr merge 73 --merge --repo test\/repo \(a merge commit, never --rebase\)$/m, "the release says how to merge it");
+  assert.match(result.stdout, new RegExp(`^merge: gh pr merge 73 --merge --match-head-commit ${f.git("rev-parse", "HEAD")} --repo test/repo \\(a merge commit, never --rebase\\)$`, "m"), "the release says how to merge it, pinned to the reviewed head");
   assert.match(result.stdout, /RESULT: ok opened #73 [a-f0-9]{7}$/m);
+});
+
+test("a release dry run shows the merge command, and a cut that main already holds is refused as nothing to release", t => {
+  const f = fixture(t), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check") };
+  f.git("checkout", "-q", "dev"); f.commit("Landed change", "landed.txt"); f.git("push", "-q", "origin", "dev");
+  f.git("checkout", "-q", "-b", "release/cut");
+  const plan = f.run(["--base", "main", "--release", "--dry-run"], real);
+  assert.equal(plan.status, 0, plan.stdout + plan.stderr);
+  assert.match(plan.stdout, /^merge: gh pr merge N --merge --match-head-commit <the pushed head> --repo test\/repo \(a merge commit, never --rebase\)$/m);
+  // main takes the whole cut (a release already merged), so there is nothing left to release.
+  f.git("push", "-q", "origin", "release/cut:main");
+  const again = f.run(["--base", "main", "--release", "--no-merge"], real);
+  assert.equal(again.status, 1, again.stdout + again.stderr);
+  assert.match(again.stdout, /RESULT: fail merge: nothing to release: origin\/main already holds this cut$/m);
 });
 
 test("a release cut after main took another hotfix past dev's back-merge ends up on top of that hotfix", t => {
@@ -944,13 +958,13 @@ test("a release cut after main took another hotfix past dev's back-merge ends up
   f.git("push", "-q", "origin", "dev"); f.git("checkout", "-q", "-b", "release/cut");
   const result = f.run(["--base", "main", "--release", "--no-merge"], real);
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stdout, /^rebase: ok$/m);
+  assert.match(result.stdout, /^merge: ok$/m);
   f.git("merge-base", "--is-ancestor", "origin/main", "HEAD"); // the second hotfix is inside the release too
   assert.equal(f.git("show", "HEAD:second.txt"), "second");
   assert.equal(f.git("show", "HEAD:landed.txt"), "Landed change");
 });
 
-test("a release rebase that really conflicts still stops naming the file, and aborts the rebase", t => {
+test("a release merge that really conflicts still stops naming the file, and aborts the merge", t => {
   const f = fixture(t), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check") }, peer = f.peer();
   f.gitAt(peer, "checkout", "-q", "main"); writeFileSync(join(peer, "file.txt"), "hotfix\n");
   f.gitAt(peer, "add", "file.txt"); f.gitAt(peer, "commit", "-q", "-m", "Hotfix on main"); f.gitAt(peer, "push", "-q", "origin", "main");
@@ -958,8 +972,8 @@ test("a release rebase that really conflicts still stops naming the file, and ab
   f.git("checkout", "-q", "-b", "release/cut");
   const result = f.run(["--base", "main", "--release", "--no-merge"], real);
   assert.equal(result.status, 1);
-  assert.match(result.stdout, /RESULT: fail rebase: conflict in file\.txt$/m);
-  assert.equal(f.git("status", "--porcelain"), "", "the rebase was aborted");
+  assert.match(result.stdout, /RESULT: fail merge: conflict in file\.txt$/m);
+  assert.equal(f.git("status", "--porcelain"), "", "the merge was aborted");
 });
 
 test("a rerun after an earlier run merged a hotfixed main into the cut says to cut it again, and the new cut passes", t => {
