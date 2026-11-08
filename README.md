@@ -174,7 +174,7 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
   untracked file outside `.scratch/`) and HEAD is exactly `origin/<release>` after a fetch (`branches.release`,
   the branch the push guard reads). A project's own live deploy command runs it first
   (`scripts/agents/kit release-check && <deploy>`); `kit pr --release` runs `kit release-check --land` before it
-  opens the release PR, so the release is cut from exactly what landed (then rebased onto `origin/<release>`).
+  opens the release PR, so the release is cut from exactly what landed (then `origin/<release>` is merged into it, never replayed: merge the PR with `--merge`).
   It pushes nothing; ignored files (a built `dist/`) do not count. Only a `*-lead` owner may pass it with
   `--waive "<reason>"`, which its `RESULT:` line names with what was let through; `kit pr --release --waive` hands
   its reason on, so one waiver covers both the review findings and the check.
