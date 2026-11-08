@@ -376,6 +376,9 @@ OpenCode settings (default model, global instructions) do not apply to the revie
   `origin/<land>`). A preview deploy from a landing branch that is not live runs no check. Only a
   lead may pass it with `--waive "<reason>"`, which its `RESULT:` line names; `kit pr --release
   --waive` hands the reason on, so one waiver covers both the review findings and the check.
+  The release rebase keeps merge commits (`git rebase --rebase-merges`), so a dev that already holds a
+  back-merge of main is not flattened; merge the release PR with a merge commit (`gh pr merge N --merge`),
+  never `--rebase`, which would rewrite every SHA again.
 - **Done when:** the live project serves the new version and its number is recorded where the
   extras say.
 

@@ -402,7 +402,9 @@ async function main(args) {
 
     async function rebase() {
       await git("fetch", ["fetch", "-q", "origin"]); ok("fetch");
-      const result = await execute("rebase", "git", ["rebase", `origin/${flags.base}`]);
+      // A release keeps the merge commits dev holds (a back-merge of main), so a main already inside the cut leaves it
+      // as it is; a plain rebase would flatten them and replay every old commit onto main (TOOLS-38).
+      const result = await execute("rebase", "git", ["rebase", ...(flags.release ? ["--rebase-merges"] : []), `origin/${flags.base}`]);
       if (result.status !== 0) {
         const files = await git("rebase", ["-c", "core.quotepath=false", "diff", "--name-only", "--diff-filter=U"]);
         const aborted = await execute("rebase", "git", ["rebase", "--abort"]);
