@@ -2098,7 +2098,7 @@ test("claim refuses a done card, one waiting for Lex, one still blocked and a he
   assert.equal(orbit.writes().length, 0);
 });
 
-test("unclaim gives the status and the claim back; close sets Done with a dated note and drops the claim, once", async t => {
+test("unclaim gives the status and the claim back; close sets Done and drops the claim, then comments the landing with its date, once", async t => {
   const { orbit, store, card } = await boardStore(t);
   const task = card({ description: "Text" });
   const { previous } = await store.claim("KIT-1", "kit-1");
@@ -2110,10 +2110,33 @@ test("unclaim gives the status and the claim back; close sets Done with a dated 
   assert.ok(unchanged.unchanged, "a claim someone else holds is left alone");
   await store.close("KIT-1", "Landed: PR https://github.com/acme/tools/pull/7, merge abc1234");
   assert.equal(orbit.statusOf(task), "Done");
-  assert.match(task.description, /^Text\n\n## Notes\n\n- \d{4}-\d{2}-\d{2} \(kit-1\): Landed: PR https:\/\/github\.com\/acme\/tools\/pull\/7, merge abc1234$/);
+  assert.equal(task.description, "Text", "the description gets no Notes section");
+  assert.deepEqual(orbit.comments[task.id].map((item: any) => item.body), [`${today()} Landed: PR https://github.com/acme/tools/pull/7, merge abc1234`]);
   const writes = orbit.writes().length;
   assert.ok((await store.close("KIT-1", "Landed: PR https://github.com/acme/tools/pull/7, merge abc1234")).unchanged);
   assert.equal(orbit.writes().length, writes);
+  // A card an older kit closed already holds the landing as a note in its description: nothing is added.
+  const old = card({ description: "Text\n\n## Notes\n\n- 2026-11-01 (kit-2): Landed: PR #8" }, "Done");
+  assert.ok((await store.close(old.identifier, "Landed: PR #8")).unchanged);
+  assert.equal(orbit.comments[old.id], undefined);
+});
+
+test("a card given back by clear-next-lex can be claimed again; one with an owner, an assignee or a next step still cannot", async t => {
+  const { orbit, store, make, card } = await boardStore(t);
+  const task = card({ description: "Text" });
+  await store.nextLex("KIT-1", "choose");
+  assert.equal(orbit.statusOf(task), "In Progress");
+  await assert.rejects(() => make("lead", "kit-1").claim("KIT-1", "kit-1"), /KIT-1 waits for Lex/);
+  await store.clearNextLex("KIT-1");
+  assert.equal(orbit.statusOf(task), "In Progress");
+  assert.deepEqual(task.assignee_ids, []);
+  const claimed = await make("lead", "kit-1").claim("KIT-1", "kit-1");
+  assert.ok(!claimed.unchanged);
+  assert.equal(task.description, "Claimed by: kit-1\n\nText");
+  await assert.rejects(() => make("lead", "other").claim("KIT-1", "other"), /KIT-1 is already taken by kit-1/);
+  // Someone working on it by hand (an assignee, no claim line) keeps it.
+  const handled = card({ description: "Text", assignee_ids: [member(orbit, "Sam Helper")] }, "In Progress");
+  await assert.rejects(() => make("lead", "kit-2").claim(handled.identifier, "kit-2"), /already taken by someone \(In Progress\)/);
 });
 
 test("close never moves a card to a Publish status in place of a missing Done: it says the board has no Done status", async t => {
@@ -2226,10 +2249,14 @@ test("check lists the cards that break the standard and the rule, for one card, 
   refused(await run(["check", "../../me"]), /card key/i);
 });
 
-test("check says when a board holds more cards than it read", async t => {
-  const { orbit, run } = await fixture(t);
-  for (let index = 0; index < 3; index++) orbit.addTask(orbit.tools, { description: "x" });
-  assert.match(result(ok(await run(["check", "--project", "TOOLS"]))), /3 of 3 cards/);
+test("check says when a board holds more cards than it read, and works from a project that keeps ticket files", async t => {
+  const { orbit, run } = await fixture(t, { tickets: "files" });
+  for (let index = 0; index < 1001; index++) orbit.addTask(orbit.tools, { description: goodCard });
+  const output = ok(await run(["check", "--project", "TOOLS"]));
+  assert.match(result(output), /0 of 1000 cards break the standard; more exist, only the first 1000 were read$/);
+  const small = await fixture(t, { tickets: "files" });
+  small.orbit.addTask(small.orbit.tools, { description: "x" });
+  assert.match(result(ok(await small.run(["check", "--project", "TOOLS"]))), /1 of 1 card breaks the standard$/);
 });
 
 test("next-lex also posts an @Lex comment and moves a Backlog or Todo card to In Progress, and Done or In Progress cards keep their status", async t => {
@@ -2285,6 +2312,17 @@ test("a repeated next-lex posts no second identical @Lex comment, a new --commen
   assert.equal(orbit.comments[half.id], undefined);
   ok(await run(["next-lex", "KIT-2", "choose"]));
   assert.deepEqual(orbit.comments[half.id].map((item: any) => item.body), ["@Lex choose"]);
+});
+
+test("next-lex on a card whose @Lex comment is already there writes the line and the assignment, posts nothing twice and says so", async t => {
+  const { orbit, run } = await fixture(t);
+  const task = orbit.addTask(orbit.tools, { description: "Text" });
+  orbit.comments[task.id] = [{ id: "c1", body: "@Lex go", author_service_account: { name: "fleet" }, created_at: "2026-11-06T10:00:00.000Z" }];
+  const out = ok(await run(["next-lex", "TOOLS-1", "go"]));
+  assert.equal(task.description, "Next step (Lex): go\n\nText");
+  assert.deepEqual(task.assignee_ids, [member(orbit, "Lex")]);
+  assert.equal(orbit.comments[task.id].length, 1);
+  assert.match(out.stdout, /TOOLS-1 already has this @Lex comment\./);
 });
 
 test("next-lex --dry-run prints the card change and the comment and sends nothing; a helper cannot write one", async t => {

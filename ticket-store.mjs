@@ -729,7 +729,7 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       });
       const comments = await postComment(outcome.key, text);
       const dries = [outcome.dry, comments.dry].filter(Boolean);
-      return { ...outcome, assign, commented: Boolean(comments.posted), ...(dries.length ? { dry: dries[0], dries } : {}), unchanged: Boolean(outcome.unchanged) && !comments.posted && !comments.dry };
+      return { ...outcome, assign, commented: Boolean(comments.posted), commentExisted: Boolean(comments.skipped), ...(dries.length ? { dry: dries[0], dries } : {}), unchanged: Boolean(outcome.unchanged) && !comments.posted && !comments.dry };
     },
     /** Takes the line out and Lex (only that member) off the assignees. */
     async clearNextLex(key) {
@@ -792,7 +792,10 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
         if (stage === "done") throw taken(`${task.identifier} is already ${status}, so there is nothing to build`);
         if (stage === "working") {
           if (holder === who) return true;
-          throw taken(`${task.identifier} is already taken by ${holder ?? "someone"} (${status}), so it was not claimed`);
+          // In Progress with no claim line, no assignee and no next step is a card that waited for Lex and was given back
+          // (next-lex moves it to In Progress, clear-next-lex leaves it there): it is free. A next step still stops it below.
+          if (holder || (task.assignee_ids?.length && nextLexReason(task.description) === null)) throw taken(`${task.identifier} is already taken by ${holder ?? "someone"} (${status}), so it was not claimed`);
+          return false;
         }
         return false;
       };
@@ -814,17 +817,25 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       return changeCard("unclaim", key, task => claimedBy(task.description) !== oneLine(owner) ? {}
         : { ...(statusId ? { status_id: statusId } : {}), description: withClaimedBy(task.description, null) });
     },
-    /** Closes a landed card in one write: status Done, a dated note (the PR link and merge SHA), and no claim line. */
-    close(key, text) {
+    /**
+     * Closes a landed card: status Done and no claim line in one write, then the landing (the PR link and merge SHA) as a
+     * dated comment, as the card standard keeps history in comments. A card an older kit closed already holds the text in
+     * its description, and one already commented is not commented twice.
+     */
+    async close(key, text) {
       textOnly("a closing note", text);
-      return changeCard("close", key, async task => {
+      const outcome = await changeCard("close", key, async task => {
         const { stage } = await stageOf(task);
-        const noted = split(task.description).some(line => line.includes(oneLine(text)));
         return {
           ...(stage === "done" ? {} : { status_id: (await statusFor(task.project_id, "done", "completed")).id }),
-          description: withClaimedBy(noted ? task.description : withNote(task.description, amsterdamToday(), who, text), null),
+          description: withClaimedBy(task.description, null),
         };
       });
+      const landing = oneLine(text);
+      const known = split(outcome.task.description).some(line => line.includes(landing))
+        || (await client.comments(outcome.key)).some(item => String(item.body ?? "").includes(landing));
+      if (!known) await sent({ card: outcome.key, action: "comment", fields: ["body"] }, () => client.addComment(outcome.key, `${amsterdamToday()} ${landing}`));
+      return { ...outcome, unchanged: Boolean(outcome.unchanged) && known };
     },
     /**
      * The cards that break the Orbit card standard (cardStandardProblems): one card by key, a board by project, or every
