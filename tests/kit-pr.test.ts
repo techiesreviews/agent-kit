@@ -892,7 +892,7 @@ test("the real release check passes a release cut at origin/dev, fails one with 
   assert.match(readFileSync(join(f.logDir(), "body.md"), "utf8"), /- kit release-check --land: waived by ke-lead \(hotfix tonight\): HEAD [a-f0-9]{7} is 1 commit ahead of origin\/dev/);
 });
 
-test("a release cut at origin/dev passes the check before kit pr rebases it onto a main that has a commit dev lacks", t => {
+test("a release cut at origin/dev passes the check before kit pr joins it with a main that has a commit dev lacks, by one merge", t => {
   const f = fixture(t), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check") }, peer = f.peer();
   f.gitAt(peer, "checkout", "-q", "main"); writeFileSync(join(peer, "hotfix.txt"), "hotfix\n");
   f.gitAt(peer, "add", "hotfix.txt"); f.gitAt(peer, "commit", "-q", "-m", "Hotfix on main"); f.gitAt(peer, "push", "-q", "origin", "main");
@@ -902,9 +902,12 @@ test("a release cut at origin/dev passes the check before kit pr rebases it onto
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, new RegExp(`release-check: ok \\(${cut.slice(0, 7)} is origin/dev, nothing unsaved\\)`));
   assert.match(result.stdout, /RESULT: ok opened #73 [a-f0-9]{7}$/m);
-  // The pushed release is the cut rebased onto origin/main: the hotfix stays and the landed change follows it.
+  // The pushed release is the cut with origin/main merged in: the hotfix and the landed change are both there, and dev's commits keep their SHAs.
   assert.notEqual(f.git("rev-parse", "HEAD"), cut);
-  assert.equal(f.git("log", "--format=%s", "-2"), "Landed change\nHotfix on main");
+  assert.equal(f.git("log", "--format=%s", "-2", "--first-parent"), "Merge origin/main into the release cut\nLanded change");
+  assert.equal(f.git("rev-parse", "HEAD^1"), cut, "the cut itself is the first parent");
+  f.git("merge-base", "--is-ancestor", "origin/main", "HEAD");
+  assert.equal(f.git("show", "HEAD:hotfix.txt"), "hotfix");
 });
 
 test("a release cut from a dev that holds a back-merge of main rebases without flattening it: no conflict, HEAD unchanged (TOOLS-38)", t => {
@@ -922,8 +925,29 @@ test("a release cut from a dev that holds a back-merge of main rebases without f
   assert.match(result.stdout, /^rebase: ok$/m);
   assert.doesNotMatch(result.stdout, /conflict in/);
   assert.equal(f.git("rev-parse", "HEAD"), cut, "main is already inside the cut, so the rebase leaves it as it is");
-  assert.equal(f.git("merge-base", "--is-ancestor", "origin/main", "HEAD") || "ancestor", "ancestor");
+  f.git("merge-base", "--is-ancestor", "origin/main", "HEAD"); // throws unless main is inside the release
+  assert.match(result.stdout, /^merge: gh pr merge 73 --merge --repo test\/repo \(a merge commit, never --rebase\)$/m, "the release says how to merge it");
   assert.match(result.stdout, /RESULT: ok opened #73 [a-f0-9]{7}$/m);
+});
+
+test("a release cut after main took another hotfix past dev's back-merge ends up on top of that hotfix", t => {
+  const f = fixture(t), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check") }, peer = f.peer();
+  const hotfix = (file: string, text: string, subject: string) => {
+    f.gitAt(peer, "checkout", "-q", "main"); writeFileSync(join(peer, file), text);
+    f.gitAt(peer, "add", file); f.gitAt(peer, "commit", "-q", "-m", subject); f.gitAt(peer, "push", "-q", "origin", "main");
+  };
+  hotfix("file.txt", "hotfix\n", "Hotfix one on main");
+  f.git("checkout", "-q", "dev"); f.commit("Dev edit of the same line", "file.txt", "dev\n");
+  f.git("fetch", "-q", "origin"); f.git("merge", "-q", "-s", "ours", "origin/main", "-m", "Back-merge main into dev");
+  f.commit("Landed change", "landed.txt");
+  hotfix("second.txt", "second\n", "Hotfix two on main");
+  f.git("push", "-q", "origin", "dev"); f.git("checkout", "-q", "-b", "release/cut");
+  const result = f.run(["--base", "main", "--release", "--no-merge"], real);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^rebase: ok$/m);
+  f.git("merge-base", "--is-ancestor", "origin/main", "HEAD"); // the second hotfix is inside the release too
+  assert.equal(f.git("show", "HEAD:second.txt"), "second");
+  assert.equal(f.git("show", "HEAD:landed.txt"), "Landed change");
 });
 
 test("a release rebase that really conflicts still stops naming the file, and aborts the rebase", t => {
@@ -938,7 +962,7 @@ test("a release rebase that really conflicts still stops naming the file, and ab
   assert.equal(f.git("status", "--porcelain"), "", "the rebase was aborted");
 });
 
-test("a rerun after an earlier run rebased the cut onto a hotfixed main says to cut it again, and the new cut passes", t => {
+test("a rerun after an earlier run merged a hotfixed main into the cut says to cut it again, and the new cut passes", t => {
   const f = fixture(t), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check") }, peer = f.peer();
   f.gitAt(peer, "checkout", "-q", "main"); writeFileSync(join(peer, "hotfix.txt"), "hotfix\n");
   f.gitAt(peer, "add", "hotfix.txt"); f.gitAt(peer, "commit", "-q", "-m", "Hotfix on main"); f.gitAt(peer, "push", "-q", "origin", "main");
@@ -948,7 +972,7 @@ test("a rerun after an earlier run rebased the cut onto a hotfixed main says to 
   assert.equal(result.status, 1); assert.match(result.stdout, /RESULT: fail review: /);
   result = f.run(["--base", "main", "--release", "--no-merge"], real);
   assert.equal(result.status, 1);
-  assert.match(result.stdout, /^RESULT: fail release-check: HEAD [a-f0-9]{7} and origin\/dev have split \(2 commits ahead, 1 behind\): cut the release again from origin\/dev \(git reset --keep origin\/dev\) and rerun kit pr --release$/m);
+  assert.match(result.stdout, /^RESULT: fail release-check: HEAD [a-f0-9]{7} is 2 commits ahead of origin\/dev: cut the release again from origin\/dev \(git reset --keep origin\/dev\) and rerun kit pr --release$/m);
   f.git("reset", "-q", "--hard", "origin/dev");
   result = f.run(["--base", "main", "--release", "--no-merge"], real);
   assert.equal(result.status, 0, result.stdout + result.stderr);

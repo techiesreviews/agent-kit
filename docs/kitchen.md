@@ -369,16 +369,17 @@ OpenCode settings (default model, global instructions) do not apply to the revie
   branch into the release branch, `branches.release`), merge once CI passes, then the project's
   release steps and first-hour check (extras). A build with a rollout checklist follows it.
 - **Release check:** `kit pr --release` first runs `kit release-check --land` (a clean tree, HEAD
-  exactly `origin/<land>` before its rebase onto `origin/<release>`), and a project's own live
+  exactly `origin/<land>` before `origin/<release>` is merged into it), and a project's own live
   deploy command starts with `scripts/agents/kit release-check` (a clean tree outside `.scratch/`,
   HEAD exactly `origin/<release>` after a fetch), so nothing unsaved and nothing that skipped
-  `kit pr` goes live (a rerun after kit pr rebased the cut says to cut it again from
+  `kit pr` goes live (a rerun after kit pr merged main into the cut says to cut it again from
   `origin/<land>`). A preview deploy from a landing branch that is not live runs no check. Only a
   lead may pass it with `--waive "<reason>"`, which its `RESULT:` line names; `kit pr --release
   --waive` hands the reason on, so one waiver covers both the review findings and the check.
-  The release rebase keeps merge commits (`git rebase --rebase-merges`), so a dev that already holds a
-  back-merge of main is not flattened; merge the release PR with a merge commit (`gh pr merge N --merge`),
-  never `--rebase`, which would rewrite every SHA again.
+  The release joins `origin/<release>` by one merge into the cut (nothing changes when it is already inside),
+  never by replaying dev's commits, so a back-merge of main or a hotfix made on main cannot conflict again;
+  merge the release PR with a merge commit (`gh pr merge N --merge`, which `kit pr --release` prints), never
+  `--rebase`, which would rewrite every SHA and bring the conflict back.
 - **Done when:** the live project serves the new version and its number is recorded where the
   extras say.
 
