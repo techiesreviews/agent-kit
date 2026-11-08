@@ -73,7 +73,7 @@ says for today; never claim a planned item ran.
   (default `files`). With `orbit` the tickets live in Orbit: `kit next` hands out the Todo cards
   whose "Blocked by:" cards are Done, in build waves; `kit next --start` and `kit slice --ticket <KEY>`
   claim the card (status In Progress and a "Claimed by: <owner>" line) and build from its brief;
-  `kit pr` moves the card to Done with a note naming the PR and its merge SHA; `kit status` shows the
+  `kit pr` moves the card to Done with a dated comment naming the PR and its merge SHA; `kit status` shows the
   cards; `kit init --issues` makes a card per open GitHub Issue and closes the Issue with a comment
   naming its card. Statuses go by name (Backlog, Todo, In Progress, Done); a board that keeps its
   stage in labels keeps them. Ticket files stay only for `files` projects, and maps and research
