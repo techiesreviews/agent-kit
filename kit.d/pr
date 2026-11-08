@@ -366,7 +366,7 @@ async function main(args) {
     // A project that lands on its release branch (land and release both main) opens ordinary PRs into it.
     if (release && release !== kitBranch("land", settings) && flags.base === release && !flags.release) throw new Error(`--base ${release} requires --release`);
     if (flags.release && flags.base !== release) throw new Error(`--release requires --base ${release}`);
-    // A release is cut from exactly what landed: nothing unsaved, HEAD exactly origin/<land> before the rebase onto
+    // A release is cut from exactly what landed: nothing unsaved, HEAD exactly origin/<land> before origin/<release> is merged into it
     // origin/<release> (ticket 72).
     // A lead's --waive reaches the check too; its RESULT text, every problem it names, is this step's.
     let releaseCheck = "";
@@ -406,16 +406,19 @@ async function main(args) {
       // main into dev, or a hotfix made straight on main, a replay (even with --rebase-merges) hits old commits whose
       // conflicts dev already resolved (TOOLS-38). With main already inside the cut, nothing changes.
       if (flags.release) {
-        const inside = await execute("rebase", "git", ["merge-base", "--is-ancestor", `origin/${flags.base}`, "HEAD"]);
-        if (inside.status === 0) { ok("rebase"); return; }
-        const merged = await execute("rebase", "git", ["merge", "--no-edit", "-m", `Merge origin/${flags.base} into the release cut`, `origin/${flags.base}`]);
+        // A cut that origin/<release> already holds would be an empty release.
+        const released = await execute("merge", "git", ["merge-base", "--is-ancestor", "HEAD", `origin/${flags.base}`]);
+        if (released.status === 0) throw new Error(`nothing to release: origin/${flags.base} already holds this cut`);
+        const inside = await execute("merge", "git", ["merge-base", "--is-ancestor", `origin/${flags.base}`, "HEAD"]);
+        if (inside.status === 0) { ok("merge"); return; }
+        const merged = await execute("merge", "git", ["merge", "--no-edit", "-m", `Merge origin/${flags.base} into the release cut`, `origin/${flags.base}`]);
         if (merged.status !== 0) {
-          const files = await git("rebase", ["-c", "core.quotepath=false", "diff", "--name-only", "--diff-filter=U"]);
-          const aborted = await execute("rebase", "git", ["merge", "--abort"]);
+          const files = await git("merge", ["-c", "core.quotepath=false", "diff", "--name-only", "--diff-filter=U"]);
+          const aborted = await execute("merge", "git", ["merge", "--abort"]);
           if (files) throw new Error(`conflict in ${files.split(/\r?\n/).join(", ")}${aborted.status ? "; merge --abort failed" : ""}`);
           throw new Error(childMessage(merged, `git merge origin/${flags.base} failed`));
         }
-        ok("rebase");
+        ok("merge");
         return;
       }
       const result = await execute("rebase", "git", ["rebase", `origin/${flags.base}`]);
@@ -684,6 +687,8 @@ async function main(args) {
         console.log(command.map(quote).join(" "));
       if (!flags.noMerge && !flags.release)
         console.log(`gh pr merge N --rebase --delete-branch --repo ${ghEnv.GH_REPO || "<owner/name>"} (or --auto --rebase with a merge queue)`);
+      if (flags.release)
+        console.log(`merge: gh pr merge N --merge --match-head-commit <the pushed head> --repo ${ghEnv.GH_REPO || "<owner/name>"} (a merge commit, never --rebase)`);
       kitResult("ok", `dry-run ${head.slice(0, 7)} ${branch} -> ${flags.base}${releaseWaived()}${flakyNote()}`);
       return 0;
     }
@@ -898,7 +903,8 @@ async function main(args) {
     if (!await reviewHead()) return 1;
     if (flags.noMerge || flags.release) {
       // A rebase merge on GitHub would flatten dev's back-merge again and bring the conflict back one step later.
-      if (flags.release) console.log(`merge: gh pr merge ${number} --merge --repo ${(await repoNames()).target} (a merge commit, never --rebase)`);
+      // The command pins the reviewed head, like the kit's own merges: a push made after the review is refused.
+      if (flags.release) console.log(`merge: gh pr merge ${number} --merge --match-head-commit ${await git("merge", ["rev-parse", "HEAD"])} --repo ${(await repoNames()).target} (a merge commit, never --rebase)`);
       kitResult("ok", `opened #${number} ${head.slice(0, 7)}${releaseWaived()}${flakyNote()}`);
       return 0;
     }

@@ -378,7 +378,7 @@ OpenCode settings (default model, global instructions) do not apply to the revie
   --waive` hands the reason on, so one waiver covers both the review findings and the check.
   The release joins `origin/<release>` by one merge into the cut (nothing changes when it is already inside),
   never by replaying dev's commits, so a back-merge of main or a hotfix made on main cannot conflict again;
-  merge the release PR with a merge commit (`gh pr merge N --merge`, which `kit pr --release` prints), never
+  merge the release PR with a merge commit (`gh pr merge N --merge --match-head-commit <head>`, which `kit pr --release` prints), never
   `--rebase`, which would rewrite every SHA and bring the conflict back.
 - **Done when:** the live project serves the new version and its number is recorded where the
   extras say.
