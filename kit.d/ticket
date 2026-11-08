@@ -209,6 +209,7 @@ function report(name, outcome) {
     say(outcome.assign?.assigned ? `${outcome.key} waits for Lex and is assigned to ${outcome.assign.assigned}.` : `${outcome.key} waits for Lex. ${outcome.assign?.note ?? ""}`.trim());
     if (outcome.fields?.includes("status_id")) say(`${outcome.key} is In Progress.`);
     if (outcome.commented) say(`${outcome.key} has a comment that starts with @Lex.`);
+    else if (outcome.commentExisted) say(`${outcome.key} already has this @Lex comment.`);
   }
   if (name === "clear-next-lex") say(outcome.assign?.unassigned ? `${outcome.key} no longer waits for Lex and is no longer assigned to ${outcome.assign.unassigned}.` : `${outcome.key} no longer waits for Lex.${outcome.assign?.note ? ` ${outcome.assign.note}` : ""}`);
   if (name === "trash") say(`${outcome.key} and its sub-tasks (${outcome.subTasks} directly under it) are in Orbit's trash; members can restore them there for 30 days.`);

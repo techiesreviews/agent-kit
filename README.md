@@ -177,7 +177,8 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
   `kit ticket tidy KEY --dir FOLDER [--dry-run]` posts `comments.txt` (split by a line with only `-----`), sets
   `description.txt` and creates each sub-task of `subtasks.json` (`[{title, description, assignee}]`, assignee `Lex` by
   member name), skipping what is already there, so a run again after a failure finishes the rest and never doubles anything.
-  Projects that keep ticket files (`"tickets": "files"`) are untouched.
+  Projects that keep ticket files (`"tickets": "files"`) keep how `kit next`, `kit slice`, `kit pr` and `kit status` work
+  today; `kit ticket` itself always talks to Orbit, as before.
 
 ## Nothing unsaved goes live
 

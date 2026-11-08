@@ -2,7 +2,7 @@
 
 One short card. History in comments. Parts as sub-tasks. Questions in a desk thread.
 
-## Description (short, about 10 lines at most)
+## Description (short, about 10 lines; the kit warns above 12 lines with text)
 1. First line, only when someone must act: `Next step (Lex): <what>` or `Next step (fleet): <what>`. `kit ticket next-lex` writes and keeps the Lex line; the fleet line is written by hand.
 2. Goal: 1 to 2 lines. What and why. For an idea: the idea, the claim, the source (one line each).
 3. `Done when:` 2 to 4 checks, each checkable.
