@@ -390,7 +390,7 @@ export function migrationChanges({ root, sources, cards, project, parent, tracke
  * then kit pr. It refuses while a ticket is being built: an open AFK ticket with an assignee (kit next's claim) or an
  * imported card In Progress. A dry run checks, prints the import and the changes, and changes nothing.
  */
-export async function migrateTickets({ store, root, settings, project: boardKey, parent, dryRun = false, say = console.log, runPr, now = new Date() }) {
+export async function migrateTickets({ store, root, settings, project: boardKey, parent, moveExisting = false, dryRun = false, say = console.log, runPr, now = new Date() }) {
   const git = (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   const tryGit = (...args) => { try { return git(...args); } catch { return null; } };
   if (settings?.tickets === "orbit") throw new OrbitError('this project is already on Orbit ("tickets": "orbit"), so there is nothing to move');
@@ -412,7 +412,8 @@ export async function migrateTickets({ store, root, settings, project: boardKey,
   if (working.length) throw new OrbitError(`a build is running, so the move waits: ${working.map(card => `${card.identifier} (${card.status_name}${card.claimed_by ? `, claimed by ${card.claimed_by}` : ""})`).join(", ")}`);
 
   say(`1. import into ${before.board}${dryRun ? " (dry run)" : ""}`);
-  const imported = await importTickets({ store, root, settings, project: boardKey, parent, dryRun, say: (...lines) => lines.forEach(line => say(`   ${line}`)) });
+  // Cards an earlier import made move only under a parent typed as --parent, never under one kit.json merely names.
+  const imported = await importTickets({ store, root, settings, project: boardKey, parent: moveExisting ? parent : undefined, dryRun, say: (...lines) => lines.forEach(line => say(`   ${line}`)) });
   say(`   ${imported.tickets} tickets: ${imported.created} created, ${imported.updated} updated, ${imported.unchanged} unchanged, ${imported.comments} comments added`);
   let cards;
   if (dryRun) {

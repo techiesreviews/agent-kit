@@ -307,7 +307,7 @@ async function main() {
         child.once("error", () => done(false));
         child.once("close", status => done(status === 0));
       });
-      const outcome = await migrateTickets({ store, root, settings, project, parent, dryRun, say: sayAll, runPr });
+      const outcome = await migrateTickets({ store, root, settings, project, parent, moveExisting: flags.parent !== undefined, dryRun, say: sayAll, runPr });
       return finish(outcome.status, outcome.message);
     }
   }
