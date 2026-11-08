@@ -663,7 +663,9 @@ async function main(args) {
     step = "body";
     let head = await git("body", ["rev-parse", "HEAD"]);
     const range = `origin/${flags.base}..HEAD`;
-    const subjects = (await git("body", ["log", "--reverse", "--format=%s", range])).split(/\r?\n/).filter(Boolean);
+    // A release's own merge of origin/<release> into the cut is no change worth a title or a summary line.
+    const joined = `Merge origin/${flags.base} into the release cut`;
+    const subjects = (await git("body", ["log", "--reverse", "--format=%s", range])).split(/\r?\n/).filter(subject => subject && !(flags.release && subject === joined));
     const title = flags.ticket ? ticketTitle(resolve(root, flags.ticket)) : "";
     const prTitle = flags.title || title || subjects.at(-1);
     if (!prTitle) throw new Error("no title or commits ahead of base");
