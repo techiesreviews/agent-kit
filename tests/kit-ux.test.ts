@@ -1098,10 +1098,15 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
   modelUsage: { "claude-opus-5-5": { inputTokens: 300, outputTokens: 40 } } }));
 `);
   chmodSync(join(bin, "claude"), 0o755);
-  // The kit puts the folder of the node it runs on first on PATH. Where that folder also holds the real claude
-  // (a machine that keeps both in ~/.local/bin), it would hide the fake: node here too keeps the fake folder first.
+  // The kit puts the folder of the first node on PATH ahead of everything else. A node link in the fake's folder makes
+  // that folder the first one. The decoy folder after it has a node link and a claude that fails, like a machine that
+  // keeps the real claude beside its node: without the link in the fake's folder, the decoy would come first.
   symlinkSync(process.execPath, join(bin, "node"));
-  const output = run(["--features", "F-media-02"], { KIT_UX_AGENT: "", PATH: `${bin}:${env.PATH}`, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "20s" });
+  const decoy = join(root, ".scratch/decoy");
+  put(".scratch/decoy/claude", "#!/bin/sh\nexit 1\n");
+  chmodSync(join(decoy, "claude"), 0o755);
+  symlinkSync(process.execPath, join(decoy, "node"));
+  const output = run(["--features", "F-media-02"], { KIT_UX_AGENT: "", PATH: `${bin}:${decoy}:${env.PATH}`, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "20s" });
   assert.equal(output.status, 0, output.stderr + output.stdout);
   assert.match(output.result, /, 0 fine, 1 looks off, 0 broken, bundle /);
   const call = JSON.parse(readFileSync(join(root, ".scratch/claude-call.json"), "utf8"));
