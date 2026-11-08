@@ -2694,6 +2694,20 @@ test("on Orbit, a landed PR closes its card: Done, a note with the PR link and m
   assert.doesNotMatch(git("log", "--format=%s", "origin/dev..HEAD"), /docs: KIT-1/);
 });
 
+test("on Orbit, a landing comment Orbit refuses after the card is Done leaves the card Done and says only the comment is missing", async t => {
+  const { card, pr, brief, orbit } = await orbitPr(t);
+  const task = card({ title: "Card title", description: "Claimed by: ak-14\n\n## Files\n\n- `feature.txt`\n\n## Done when\n\n- done" }, "In Progress");
+  // The Done write goes through; the landing comment does not.
+  orbit.controls.writeAnswers.push("pass", { status: 500, code: "internal_error", detail: "down" });
+  const output = await pr(["--ticket", brief()]);
+  assert.equal(output.status, 0, output.all);
+  assert.equal(orbit.statusOf(task), "Done");
+  assert.match(output.stdout, /card: KIT-1 Done \(https:\/\/github\.com\/test\/repo\/pull\/73\); the landing comment was not added \(.*\): add it with kit ticket note KIT-1 "Landed in https:\/\/github\.com\/test\/repo\/pull\/73/);
+  assert.doesNotMatch(output.all, /not closed|--status Done/);
+  assert.match(finalLine(output), /^RESULT: ok merged #73 abcdef0/);
+  assert.equal(orbit.comments[task.id], undefined);
+});
+
 test("on Orbit, kit pr --ticket KEY reads the card into its brief and closes it on landing", async t => {
   const { card, pr, orbit, root, body } = await orbitPr(t);
   const task = card({ title: "Straight from the card" }, "In Progress");

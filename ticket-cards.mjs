@@ -135,7 +135,7 @@ export function withReviewFollowups(text, lines) {
 }
 
 /**
- * Closes a landed card: status Done with a note naming the PR and its merge SHA, then its follow-ups (review and UX) as
+ * Closes a landed card: status Done and a dated comment naming the PR and its merge SHA, then its follow-ups (review and UX) as
  * one comment, added once (a rerun on a card already closed adds nothing). The merge already happened, so a failure is
  * returned as words for the caller to show, with the command that closes the card by hand.
  */
@@ -144,12 +144,13 @@ export async function closeLandedCard({ settings, key, pr, sha, followups = [], 
   try {
     const opened = openOrbitTickets({ settings, who });
     redact = opened.redact;
-    const closed = await opened.store.close(key, `Landed in ${pr} (${sha ? `merge commit ${sha}` : "GitHub named no merge commit"})`);
-    let extra = "";
+    const landing = `Landed in ${pr} (${sha ? `merge commit ${sha}` : "GitHub named no merge commit"})`;
+    const closed = await opened.store.close(key, landing);
+    let extra = closed.landingNotAdded ? `; the landing comment was not added (${orbitProblem(closed.landingNotAdded, redact)}): add it with kit ticket note ${key} "${landing}"` : "";
     const lines = [...new Set(followups)];
     if (lines.length && !closed.unchanged) {
       try { await opened.store.comment(key, `Follow-ups from ${pr}:\n${lines.join("\n")}`); }
-      catch (error) { extra = `; its follow-ups were not added (${orbitProblem(error, redact)}): they are in ${pr}`; }
+      catch (error) { extra += `; its follow-ups were not added (${orbitProblem(error, redact)}): they are in ${pr}`; }
     }
     return { closed: true, line: `card: ${key} Done (${pr})${extra}`, suffix: ` (card ${key} Done)` };
   } catch (error) {
