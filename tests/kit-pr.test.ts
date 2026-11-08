@@ -930,6 +930,21 @@ test("a release cut from a dev that holds a back-merge of main needs no change: 
   assert.match(result.stdout, /RESULT: ok opened #73 [a-f0-9]{7}$/m);
 });
 
+test("a release's own merge of main is not its title or a line of its summary", t => {
+  const f = fixture(t), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check") }, peer = f.peer();
+  f.gitAt(peer, "checkout", "-q", "main"); writeFileSync(join(peer, "hotfix.txt"), "hotfix\n");
+  f.gitAt(peer, "add", "hotfix.txt"); f.gitAt(peer, "commit", "-q", "-m", "Hotfix on main"); f.gitAt(peer, "push", "-q", "origin", "main");
+  f.git("checkout", "-q", "dev"); f.commit("Landed change", "landed.txt"); f.git("push", "-q", "origin", "dev");
+  f.git("checkout", "-q", "-b", "release/cut");
+  const result = f.run(["--base", "main", "--release", "--no-merge"], real);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(f.git("log", "-1", "--format=%s"), "Merge origin/main into the release cut", "the merge is in the pushed release");
+  const create = f.ghCalls("create")[0];
+  assert.equal(create.args[create.args.indexOf("--title") + 1], "Landed change", "the title is the newest landed change");
+  assert.doesNotMatch(f.body(), /Merge origin\/main into the release cut/);
+  assert.match(f.body(), /^- Landed change$/m);
+});
+
 test("a release dry run shows the merge command, and a cut that main already holds is refused as nothing to release", t => {
   const f = fixture(t), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check") };
   f.git("checkout", "-q", "dev"); f.commit("Landed change", "landed.txt"); f.git("push", "-q", "origin", "dev");
