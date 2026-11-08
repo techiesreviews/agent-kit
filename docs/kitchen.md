@@ -87,6 +87,9 @@ says for today; never claim a planned item ran.
   report to their lead. Never delete a card for good; the trash, the Publish status or label and
   the "Scheduled in Radaar" tick each need Lex's exact words (`--lex-said`). No date without a
   source. The Orbit token and the Cloudflare pass never go in a chat, a log or a repository.
+  **The card standard** ([`orbit-card-standard.md`](orbit-card-standard.md), `docs/orbit-card-standard.md` in the kit): one short card, history in
+  dated comments, parts as sub-tasks, a question for Lex in a desk thread; `kit ticket check` lists the cards that break it,
+  and `create`, `update`, `note`, `next-lex` and `tidy` keep it.
 - **One house style for every tool:** anything a person sees follows the kit's
   [house style](house-style.md) (`docs/house-style.md` in the kit; `scripts/agents/kit --home`
   prints the folder): quiet screens, instant changes with Undo, the same agent connection

@@ -316,6 +316,7 @@ test("brief KEY: on an Orbit project the brief is built from the card (title, te
   const text = body(output.stdout);
   assert.match(text, /^Kit brief: build the Orbit card KIT-1 in `demo` .*owner `kit-1`\. Build the whole card \(its text and comments are below\)/m);
   assert.match(text, /Read first: the card below with all its comments \(`scripts\/agents\/kit ticket get KIT-1 --comments` reads it fresh\)/);
+  assert.match(text, /Orbit card standard \(`docs\/orbit-card-standard\.md` in the kit; `scripts\/agents\/kit --home` prints the kit's folder\)/);
   assert.match(text, /^## Card KIT-1\nTitle: A settings panel with a colour field\nLink: http:\/\/orbit\.test\/tasks\/1\n\nClaimed by: kit-1\n\nBuilder: claude\n\n## Goal\n\nBuild the panel\./m);
   assert.match(text, /^### Comments\n\n- fleet, 2026-11-06T10:00:00\.000Z:\nLex: keep it small$/m);
   assert.match(text, /kit go slice-kit-1 -- scripts\/agents\/kit slice --ticket KIT-1 --builder claude-opus-5-5/);
