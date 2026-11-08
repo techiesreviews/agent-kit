@@ -833,13 +833,12 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
         };
       });
       const landing = oneLine(text);
-      const known = split(outcome.task.description).some(line => line.includes(landing))
-        || (await client.comments(outcome.key)).some(item => String(item.body ?? "").includes(landing));
-      if (!known && !dryRun) {
-        // The card is Done by now: a comment that fails is reported on its own, so the card is not called open.
-        try { await sent({ card: outcome.key, action: "comment", fields: ["body"] }, () => client.addComment(outcome.key, `${amsterdamToday()} ${landing}`)); }
-        catch (error) { return { ...outcome, unchanged: false, landingNotAdded: error }; }
-      }
+      let known = split(outcome.task.description).some(line => line.includes(landing));
+      // The card is Done by now: a comment (or the look for it) that fails is reported on its own, so the card is not called open.
+      try {
+        known ||= (await client.comments(outcome.key)).some(item => String(item.body ?? "").includes(landing));
+        if (!known && !dryRun) await sent({ card: outcome.key, action: "comment", fields: ["body"] }, () => client.addComment(outcome.key, `${amsterdamToday()} ${landing}`));
+      } catch (error) { return { ...outcome, unchanged: false, landingNotAdded: error }; }
       return { ...outcome, unchanged: Boolean(outcome.unchanged) && known };
     },
     /**

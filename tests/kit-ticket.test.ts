@@ -2139,6 +2139,28 @@ test("a card given back by clear-next-lex can be claimed again; one with an owne
   await assert.rejects(() => make("lead", "kit-2").claim(handled.identifier, "kit-2"), /already taken by someone \(In Progress\)/);
 });
 
+test("close leaves the card Done and hands back the failure when looking for or adding the landing comment fails", async t => {
+  const { orbit, card } = await boardStore(t);
+  const config = { origin: orbit.origin, workspace_id: fakeWorkspace, token: fakeToken, cf_access_client_id: fakeCfId, cf_access_client_secret: fakeCfSecret };
+  const home = mkdtempSync(join(tmpdir(), "kit-close-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const client = orbitClient(config, { timeoutMs: 5_000 });
+  const storeWith = (change: object) => orbitStore({ client: { ...client, ...change }, role: "lead", who: "kit-1", logPath: join(home, "orbit.log"), redact: orbitRedactor(secrets), secrets, defaults: { project: "KIT" } });
+  const unreadable = card({ description: "Claimed by: kit-1\n\nText" }, "In Progress");
+  const read = await storeWith({ comments: async () => { throw new Error("The comments are down"); } }).close(unreadable.identifier, "Landed in PR #5");
+  assert.equal(orbit.statusOf(unreadable), "Done");
+  assert.equal(read.landingNotAdded.message, "The comments are down");
+  assert.ok(!read.unchanged);
+  const unwritable = card({ description: "Claimed by: kit-1\n\nText" }, "In Progress");
+  const wrote = await storeWith({ addComment: async () => { throw new Error("The comment is refused"); } }).close(unwritable.identifier, "Landed in PR #6");
+  assert.equal(orbit.statusOf(unwritable), "Done");
+  assert.equal(wrote.landingNotAdded.message, "The comment is refused");
+  // A card that is Done with the landing already commented, and a dry run, add nothing.
+  const writes = orbit.writes().length;
+  assert.ok((await storeWith({}).close(unreadable.identifier, "Landed in PR #5")).landingNotAdded === undefined);
+  assert.equal(orbit.writes().length, writes + 1, "only the missing landing comment of the first card is added now");
+});
+
 test("close never moves a card to a Publish status in place of a missing Done: it says the board has no Done status", async t => {
   const { orbit, store } = await boardStore(t);
   const task = orbit.addTask(orbit.tools, { status_id: orbit.statusId(orbit.tools, "Edit") });
