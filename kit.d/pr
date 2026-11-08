@@ -366,8 +366,8 @@ async function main(args) {
     // A project that lands on its release branch (land and release both main) opens ordinary PRs into it.
     if (release && release !== kitBranch("land", settings) && flags.base === release && !flags.release) throw new Error(`--base ${release} requires --release`);
     if (flags.release && flags.base !== release) throw new Error(`--release requires --base ${release}`);
-    // A release is cut from exactly what landed: nothing unsaved, HEAD exactly origin/<land> before origin/<release> is merged into it
-    // origin/<release> (ticket 72).
+    // A release is cut from exactly what landed: nothing unsaved, HEAD exactly origin/<land> before origin/<release> is merged
+    // into it (ticket 72).
     // A lead's --waive reaches the check too; its RESULT text, every problem it names, is this step's.
     let releaseCheck = "";
     if (flags.release) {
