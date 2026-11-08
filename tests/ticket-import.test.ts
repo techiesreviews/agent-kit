@@ -296,6 +296,46 @@ test("migrate imports, checks parity, tags and pushes, then sends one commit thr
   refused(await p.run(["migrate"]), /already on Orbit/);
 });
 
+test("migrate --parent moves the cards an earlier import made under the new parent, whatever parent they had (TOOLS-21)", async t => {
+  const p = await project(t, { settings: { orbit: { project: "KIT" } } });
+  ok(await p.run(["import"]));
+  const [first, second, third] = paths.map(p.cardFor);
+  assert.equal(first.parent_task_id ?? null, null, "an earlier import without a parent left the cards at the top");
+  const old = p.card({ title: "Old parent" }, "Backlog"), parent = p.card({ title: "New parent" }, "Backlog");
+  second.parent_task_id = old.id;
+  const output = ok(await p.run(["migrate", "--parent", parent.identifier]));
+  for (const path of paths) assert.equal(p.cardFor(path).parent_task_id, parent.id, path);
+  assert.match(output.stdout, /updated KIT-\d+ from docs\/wayfinder\/alpha\/tickets\/01-first\.md \(parent_task_id\)/);
+  assert.equal(p.orbit.tasks.find(task => task.id === parent.id)!.parent_task_id ?? null, null, "the parent card itself stays where it is");
+  assert.ok(first && third);
+});
+
+test("migrate --parent --dry-run says which cards it would move and sends nothing", async t => {
+  const p = await project(t, { settings: { orbit: { project: "KIT" } } });
+  ok(await p.run(["import"]));
+  const parent = p.card({ title: "New parent" }, "Backlog"), writes = p.orbit.writes().length;
+  const output = ok(await p.run(["migrate", "--parent", parent.identifier, "--dry-run"]));
+  assert.equal(p.orbit.writes().length, writes);
+  assert.match(output.stdout, /would update KIT-\d+ from docs\/wayfinder\/alpha\/tickets\/01-first\.md \(parent_task_id\)/);
+  for (const path of paths) assert.equal(p.cardFor(path).parent_task_id ?? null, null);
+});
+
+test("migrate --parent is safe to run again: cards already under the parent are not written, and a parent that does not exist stops before any write", async t => {
+  const p = await project(t, { settings: { orbit: { project: "KIT" } } });
+  ok(await p.run(["import"]));
+  const parent = p.card({ title: "New parent" }, "Backlog");
+  refused(await p.run(["migrate", "--parent", "KIT-999"], { FAKE_PR_RESULT: "fail" }), /KIT-999|not exist|cannot use/);
+  for (const path of paths) assert.equal(p.cardFor(path).parent_task_id ?? null, null, "a missing parent moved nothing");
+  refused(await p.run(["migrate", "--parent", parent.identifier], { FAKE_PR_RESULT: "fail" }), /kit pr did not land the move/);
+  for (const path of paths) assert.equal(p.cardFor(path).parent_task_id, parent.id);
+  const writes = p.orbit.writes().length;
+  p.git("reset", "-q", "--hard", "origin/dev");
+  const again = ok(await p.run(["migrate", "--parent", parent.identifier]));
+  assert.equal(p.orbit.writes().length, writes, "the second run found every card already under the parent and wrote nothing");
+  assert.match(again.stdout, /4 tickets: 0 created, 0 updated, 4 unchanged/);
+  for (const path of paths) assert.equal(p.cardFor(path).parent_task_id, parent.id);
+});
+
 test("migrate stops at a parity difference before anything is tagged or removed, and says when kit pr did not land", async t => {
   const p = await project(t);
   p.orbit.addTask(p.orbit.kit, { title: "Gone", description: "Imported from: docs/wayfinder/alpha/tickets/09-gone.md (project demo)" });
