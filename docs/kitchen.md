@@ -71,7 +71,7 @@ says for today; never claim a planned item ran.
   project through `scripts/agents/kit ticket` (`--help`), Orbit's public API inside the kit; no other
   tool sits beside it. A project switches with `"tickets": "orbit"` in its `scripts/agents/kit.json`
   (default `files`). With `orbit` the tickets live in Orbit: `kit next` hands out the Todo cards
-  whose "Blocked by:" cards are Done, in build waves; `kit next --start` and `kit slice --ticket <KEY>`
+  whose "Blocked by:" cards are Done (and In Progress cards given back by `clear-next-lex`), in build waves; `kit next --start` and `kit slice --ticket <KEY>`
   claim the card (status In Progress and a "Claimed by: <owner>" line) and build from its brief;
   `kit pr` moves the card to Done with a dated comment naming the PR and its merge SHA; `kit status` shows the
   cards; `kit init --issues` makes a card per open GitHub Issue and closes the Issue with a comment

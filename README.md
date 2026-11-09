@@ -119,7 +119,8 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
   write cards through `ticket-store.mjs` and `ticket-cards.mjs` instead of ticket files. Stage 3 moves a project's
   ticket files to cards (below); removing the file store from the kit comes last, once every project has moved.
 - On Orbit: `kit next` lists the Todo cards (under the parent card when one is set) whose "Blocked by:" cards are Done
-  as `next:`, the rest as `waits:` (In Progress, Backlog, Next step (Lex), blocked), and `wave N:` lines for the build
+  as `next:`, so are In Progress cards given back by `clear-next-lex` (no claim, assignee or Next step (Lex)); the rest are
+  `waits:` (other In Progress, Backlog, Next step (Lex), blocked), and `wave N:` lines for the build
   waves that follow. A claim (`kit next --start`, `kit slice --ticket <KEY>`) is one write: status In Progress and a
   "Claimed by: <owner>" line; a card someone else holds is refused, and a start that fails gives the claim back. The
   slice copies the card once to `.scratch/kit-tickets/<KEY>.md`, the brief its build, review, fix and UX steps read (a
@@ -179,7 +180,7 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
   `description.txt` and creates each sub-task of `subtasks.json` (`[{title, description, assignee}]`, assignee `Lex` by
   member name), skipping what is already there, so a run again after a failure finishes the rest and never doubles anything.
   A card that waited for Lex and was given back by `clear-next-lex` stays In Progress; `kit next` hands it out again and a
-  slice may claim it when it has no claim line, no assignee and no next step. A claim never takes an unassigned card in
+  slice may claim it when it has no claim line, no assignee and no `Next step (Lex):`. A claim never takes an unassigned card in
   another started status (In Review, say). `kit ticket check` leaves sub-tasks with no description alone and does not count
   a `Next step (fleet):` line toward the 12 lines.
   Projects that keep ticket files (`"tickets": "files"`) keep how `kit next`, `kit slice`, `kit pr` and `kit status` work
