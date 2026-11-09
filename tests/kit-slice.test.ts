@@ -1565,6 +1565,21 @@ test("on Orbit, slice --ticket KEY claims the card, writes its brief and hands t
   assert.equal(readFileSync(join(root, ".scratch/agent-brief.md"), "utf8").split("\n")[0], "Ticket: .scratch/kit-tickets/KIT-1.md");
 });
 
+test("on Orbit, slice builds a card whose Done when is the standard's \"Done when:\" line, as a list or on one line", async t => {
+  for (const [done, expected] of [
+    ["Done when:\n- it works\n- it is tested\n\nLinks: none", "- it works\n- it is tested"],
+    ["Done when: it works\nLinks: none", "it works"],
+    ["**Done when:**\n\n1. it works\n\nLinks: none", "1. it works"],
+  ]) {
+    const { card, slice, root } = await orbitSlice(t);
+    const task = card({ description: `Goal: build it.\n\n## Files\n\n- \`file.txt\`\n\n${done}` });
+    const output = await slice();
+    assert.equal(output.status, 0, output.all);
+    assert.equal(task.description.startsWith("Claimed by: ke-04"), true);
+    assert.ok(readFileSync(join(root, ".scratch/agent-brief.md"), "utf8").includes(`## Done when\n${expected}\n\n## Builder contract`), expected);
+  }
+});
+
 test("on Orbit, a rerun checks the card is still its own and resumes from the brief; with Orbit down it goes on and says so", async t => {
   const { card, slice, orbit } = await orbitSlice(t);
   const task = card();
