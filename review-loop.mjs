@@ -218,7 +218,7 @@ export function reviewChain(folder) {
     try { marks = parseMarks(readFileSync(join(current, "result.md"), "utf8")); } catch { /* No report text: no marks. */ }
     const round = record.round ?? 1;
     // A review saved before ids existed gets the ids a new one would have been given.
-    chain.unshift({ round, model: record.model, head: record.head, declined: Array.isArray(record.declined) ? record.declined : [], findings: (record.findings ?? []).map((item, index) => ({ ...item, id: item.id ?? `R${round}-${index + 1}` })), marks });
+    chain.unshift({ round, model: record.model, head: record.head, declined: (Array.isArray(record.declined) ? record.declined : []).filter(entry => entry && typeof entry.text === "string" && entry.text.trim()), findings: (record.findings ?? []).map((item, index) => ({ ...item, id: item.id ?? `R${round}-${index + 1}` })), marks });
     current = record.previous ? join(dirname(current), record.previous) : null;
   }
   return chain;

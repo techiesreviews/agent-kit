@@ -57,7 +57,9 @@ each marked resolved or still open; `kit pr` puts the line "Reviewed with review
 findings ledger in the PR, and an out-of-budget run is reported, never approved. The rule's one source is the "Review loop" section of
 `docs/kitchen.md`; briefs carry it and `kit init` points projects at it.
 
-Known limits (waived follow-ups): a merge from the base puts other people's code in the "changes since the last review" file. While a new head (after a "behind" rebase) is reviewed the PR block says "Verdict: pending", and "not approved" when that review stops the landing; a review with only nits is reused after a rebase with the same patch; the ledger lists the second look's findings as SL-<n> rows. A second look that no model could take is written into the PR block as "second look: skipped (<reason>)". An out-of-budget should lands as a follow-up with a budget report that counts every open item and shows the builder's declined findings with their reasons. A review that leaves an id out is rejected as incomplete: run `kit review` again by hand. A ticket's risk comes from its title, goal and named files only, and the fix brief points at the newest complete review.
+The PR's review block says "Verdict: pending" while a new head (after a "behind" rebase) is reviewed and "not approved" when that review stops the landing or does not finish; a review with only nits is reused after a rebase with the same patch; the ledger lists the second look's findings as SL-<n> rows; an out-of-budget report counts every open item and shows the builder's declined findings with their reasons. A second look that no model could take is written into the PR block as "second look: skipped (<reason>)". An out-of-budget should lands as a follow-up.
+
+Known limits (waived follow-ups): a merge from the base puts other people's code in the "changes since the last review" file. A review that leaves an id out is rejected as incomplete: run `kit review` again by hand. A ticket's risk comes from its title, goal and named files only, and the fix brief points at the newest complete review.
 
 ## Messages to Lex
 
