@@ -27,8 +27,9 @@ unset KIT_API_KEY_FILE KIT_API_CONFIG_DIR ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH
 # --setting-sources with an empty value), and loads no MCP servers (--strict-mcp-config, and no --mcp-config other than an empty server list,
 # {"mcpServers":{}}), no plugins (--plugin-dir, --plugin-url) and no extra settings or agents (--settings, --agents), all of which can
 # start programs of their own. No tool list, an empty one, or anything that may start another program keeps the flag on.
-# Managed (admin-installed) settings can hold hooks too, and neither --bare nor an empty --setting-sources is known to switch them off: a
-# machine with a managed-settings.json or a non-empty managed-settings.d/ folder keeps the flag on (the folder is /etc/claude-code, or
+# Managed (admin-installed) settings can hold hooks too, and neither --bare nor an empty --setting-sources is known to switch them off;
+# a managed-mcp.json names MCP servers that --strict-mcp-config is not known to keep out: a machine with a managed-settings.json, a
+# managed-mcp.json or a non-empty managed-settings.d/ folder keeps the flag on (the folder is /etc/claude-code, or
 # /Library/Application Support/ClaudeCode on macOS; KIT_CLAUDE_MANAGED_DIR names one more, for tests). A machine that has such
 # settings turns the flag on in the tests that expect it off.
 # Fail closed: every doubt keeps the flag on. A tool list is read as claude reads it (variadic: the words after --tools count; commas,
@@ -103,7 +104,7 @@ managed=0
 # The machine's own folders are always looked at; KIT_CLAUDE_MANAGED_DIR (tests) names one more, never instead of them.
 for managed_dir in /etc/claude-code "/Library/Application Support/ClaudeCode" "${KIT_CLAUDE_MANAGED_DIR-}"; do
   [[ -n $managed_dir ]] || continue
-  if [[ -e $managed_dir/managed-settings.json ]]; then managed=1; fi
+  if [[ -e $managed_dir/managed-settings.json || -e $managed_dir/managed-mcp.json ]]; then managed=1; fi
   for entry in "$managed_dir"/managed-settings.d/*; do
     if [[ -e $entry ]]; then managed=1; fi
   done

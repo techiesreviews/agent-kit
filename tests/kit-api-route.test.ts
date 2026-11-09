@@ -37,7 +37,7 @@ console.log(JSON.stringify({ result: "ok", modelUsage: { "claude-haiku-5-5": {} 
 `);
   writeFileSync(join(bin, "package.json"), '{"type":"module"}');
   chmodSync(join(bin, "claude"), 0o755);
-  // An empty folder stands for the machine's managed-settings folder, so a real one on this machine never changes a test.
+  // An empty folder names one more managed-settings folder; a machine with real managed settings still turns the flag on in the tests that expect it off.
   const managed = join(dir, "managed"); mkdirSync(managed);
   const env = { ...kitEnv(), HOME: home, XDG_STATE_HOME: state, KIT_CLAUDE_MANAGED_DIR: managed, PATH: `${bin}:${process.env.PATH}` } as NodeJS.ProcessEnv;
   delete env.KIT_API_KEY_FILE; delete env.KIT_API_CONFIG_DIR;
@@ -427,6 +427,9 @@ test("managed (admin-installed) settings can hold hooks that neither an empty --
   rmSync(join(f.managed, "managed-settings.d", "10-hooks.json"));
   spawnSync(wrapper, ["-p", "--tools", "Read", "--bare", "--strict-mcp-config"], { env, encoding: "utf8" });
   assert.equal(f.callList().at(-1).scrub, "0");
+  // Admin-installed MCP servers are programs claude starts, and --strict-mcp-config is not known to keep them out.
+  writeFileSync(join(f.managed, "managed-mcp.json"), "{}");
+  assert.equal(run(), "1", "a managed-mcp.json keeps it on");
 });
 
 test("the arguments the kit really sends through the wrapper: a review call turns the flag off, a resumed one too, and a build keeps it on", t => {
