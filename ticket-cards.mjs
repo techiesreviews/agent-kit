@@ -69,10 +69,10 @@ export function doneWhen(description) {
 /** True when a card's description has the "## Files" section and a "## Done when" heading or "Done when:" line a slice builds from. */
 export const cardBuildable = description => hasSection(description, "Files") && doneWhen(description) !== "";
 
-/** A card as a ticket file; a card without "## Files" and "## Done when" in its description cannot be built yet. */
+/** A card as a ticket file; a card without "## Files" and a Done when (heading or line) in its description cannot be built yet. */
 export function cardBrief(task, owner = "") {
   if (!cardBuildable(task.description)) {
-    throw new OrbitError(`${task.identifier} cannot be built yet: its description needs a "## Files" and a "## Done when" section`);
+    throw new OrbitError(`${task.identifier} cannot be built yet: its description needs a "## Files" section and a "Done when:" line (or a "## Done when" section)`);
   }
   return `---\ntitle: ${oneLine(task.title)}\norbit: ${task.identifier}\ntype: task (AFK)\nstatus: open\nassignee: ${oneLine(owner)}\n---\n\n`
     + `Orbit card ${task.identifier}${task.url ? `: ${task.url}` : ""}\n\n${String(task.description).replace(/\r\n?/g, "\n").trim()}\n`;

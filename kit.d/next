@@ -488,7 +488,7 @@ async function orbitMain(flags) {
       cardIndex.set(card.identifier, ticket);
       const wait = card.stage === "working" && !cardFree(card) ? card.claimed_by ? "" : `${card.status_name} with no claim recorded` : card.next_lex !== null ? `needs Lex (Next step (Lex): ${card.next_lex})`
         : card.open_blockers.length ? `blocked by ${card.open_blockers.join(", ")}` : card.stage === "waiting" ? `in ${card.status_name}`
-        : !cardBuildable(card.description) ? 'needs "## Files" and "## Done when" in its description' : "";
+        : !cardBuildable(card.description) ? 'needs "## Files" and "Done when" in its description' : "";
       if (wait) { early.push({ unit: { label: card.identifier }, reason: wait }); continue; }
       candidates.push({ first: ticket, ...unitOf([ticket]), readme, names: cardNaming(card) });
     }

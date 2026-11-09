@@ -1618,7 +1618,7 @@ test("on Orbit, slice refuses a card someone else holds, one without Files and D
   assert.equal(taken.status, 1, taken.all);
   assert.match(lastLine(taken), /^RESULT: fail slice brief: KIT-1 is already taken by other \(In Progress\), so it was not claimed$/);
   const empty = await slice("KIT-2");
-  assert.match(lastLine(empty), /^RESULT: fail slice brief: KIT-2 cannot be built yet: its description needs a "## Files" and a "## Done when" section$/);
+  assert.match(lastLine(empty), /^RESULT: fail slice brief: KIT-2 cannot be built yet: its description needs a "## Files" section and a "Done when:" line \(or a "## Done when" section\)$/);
   assert.equal(orbit.statusOf(bare), "Todo");
   orbit.controls.answers.push({ status: 401, code: "unauthorized", detail: "No token, or the token is not correct." });
   const refused = await slice("KIT-3");
