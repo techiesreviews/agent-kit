@@ -2361,6 +2361,16 @@ test("check ignores a sub-task with no description, and still lists one whose de
   assert.equal(orbit.writes().length, 0);
 });
 
+test("check still lists a bare card under the project's default parent, while a bare part under another card is skipped", async t => {
+  const { orbit, run } = await fixture(t, { tickets: "orbit", orbit: { project: "TOOLS", parent: "TOOLS-1" } });
+  const board = orbit.addTask(orbit.tools, { title: "Board parent", description: goodCard });
+  const other = orbit.addTask(orbit.tools, { title: "Other card", description: goodCard });
+  orbit.addTask(orbit.tools, { title: "Bare ticket", parent_task_id: board.id, description: "" });
+  orbit.addTask(orbit.tools, { title: "Bare part", parent_task_id: other.id, description: "" });
+  const json = JSON.parse(ok(await run(["check", "--project", "TOOLS", "--json"])).stdout.split("\nRESULT:")[0]);
+  assert.deepEqual(json.map((card: any) => [card.title, card.rules]), [["Bare ticket", ["no-done-when"]]]);
+});
+
 test("check says when a board holds more cards than it read, and works from a project that keeps ticket files", async t => {
   const { orbit, run } = await fixture(t, { tickets: "files" });
   for (let index = 0; index < 1001; index++) orbit.addTask(orbit.tools, { description: goodCard });

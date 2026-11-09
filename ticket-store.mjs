@@ -864,9 +864,14 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       if (key !== undefined) items = [await client.task(orbitCardKey(key))];
       else ({ items, more } = await client.tasks(all ? {} : { project_id: (await projectFrom(project)).id }, 1000));
       const broken = [];
+      let boardParent;
       for (const task of items) {
-        // A sub-task with no description is a part named by its title, which the standard leaves alone.
-        if (task.parent_task_id && !String(task.description ?? "").trim()) continue;
+        // A sub-task with no description is a part named by its title, which the standard leaves alone. A card under the
+        // project's own parent card (where new cards go by default) is an ordinary card, so it is still checked.
+        if (task.parent_task_id && !String(task.description ?? "").trim()) {
+          boardParent ??= defaults.parent ? await client.task(orbitCardKey(defaults.parent)).then(card => card.id, () => "") : "";
+          if (task.parent_task_id !== boardParent) continue;
+        }
         const problems = cardStandardProblems(task.description);
         if (problems.length) broken.push({ identifier: task.identifier, title: oneLine(task.title), status: await statusName(task), url: task.url, rules: problems.map(item => item.rule), problems: problems.map(item => item.message) });
       }

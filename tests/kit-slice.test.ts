@@ -312,6 +312,15 @@ test("the brief keeps the ticket's claim owner; only an empty assignee: takes th
   }
 });
 
+test("a ticket file may give its Done when as the standard's line instead of a heading", t => {
+  const f = fixture(t), path = join(f.root, f.ticket);
+  writeFileSync(path, readFileSync(path, "utf8").replace("## Done when\n- Required content is present.", "Done when:\n- Required content is present.\n\nLinks: none"));
+  f.git("commit", "-qam", "standard line");
+  f.run([], { FAIL_PHASE: "build" });
+  const brief = readFileSync(join(f.root, ".scratch/agent-brief.md"), "utf8");
+  assert.ok(brief.includes("## Done when\n- Required content is present.\n\n## Builder contract"), brief);
+});
+
 test("kit slice writes the ticket brief, runs phases in order, credits and commits the builder, and lands", t => {
   const f = fixture(t, { project: "kit-slice", branches: { land: "dev" }, checks: { check: "npm run check" }, unit: { files: "tests/*.test.ts" } },
     { "tsconfig.json": "{}\n" }), result = f.run();
@@ -1570,6 +1579,7 @@ test("on Orbit, slice builds a card whose Done when is the standard's \"Done whe
     ["Done when:\n- it works\n- it is tested\n\nLinks: none", "- it works\n- it is tested"],
     ["Done when: it works\nLinks: none", "it works"],
     ["**Done when:**\n\n1. it works\n\nLinks: none", "1. it works"],
+    ["Done when: it works\n\n- tested\n- linted\n\nLinks: none", "it works\n- tested\n- linted"],
   ]) {
     const { card, slice, root } = await orbitSlice(t);
     const task = card({ description: `Goal: build it.\n\n## Files\n\n- \`file.txt\`\n\n${done}` });
