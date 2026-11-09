@@ -173,7 +173,7 @@ export function cardStandardProblems(description) {
   if (own.length > cardStandardLines) problems.push({ rule: "too-long", message: `The description is ${own.length} lines; the standard allows ${cardStandardLines}. Move history to comments and parts to sub-tasks.` });
   if (own.some(line => /^##\s*Notes\b/i.test(line))) problems.push({ rule: "notes", message: 'The description has a "## Notes" section. Put history in comments, one per event.' });
   if (own.some(line => /^[-*+]\s+\[[ xX]\]/.test(line))) problems.push({ rule: "checklist", message: "The description has a checklist (- [ ] or - [x]). Make each part a sub-task." });
-  if (!own.some(line => /^[*_]*Done when:/i.test(line))) problems.push({ rule: "no-done-when", message: 'The description has no "Done when:" line.' });
+  if (!own.some(line => /^[*_]*Done when[*_]*:/i.test(line))) problems.push({ rule: "no-done-when", message: 'The description has no "Done when:" line.' });
   return problems;
 }
 

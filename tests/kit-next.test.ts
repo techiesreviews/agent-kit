@@ -1180,6 +1180,20 @@ test("on Orbit, a start that fails after the claim gives the claim back, so no c
   assert.ok(!first.description.includes("Claimed by"));
 });
 
+test("on Orbit, a start that fails when Orbit also refuses the unclaim says what to undo: the status for a Todo card, only the claim line for one already In Progress", async t => {
+  for (const [status, expected] of [
+    ["Todo", /giving the claim back failed \(.*\): run kit ticket update KIT-1 --status "Todo", then remove the "Claimed by: kit-1" line if it is still there$/],
+    ["In Progress", /giving the claim back failed \(.*\): remove the "Claimed by: kit-1" line from its description in Orbit$/],
+  ] as const) {
+    const { card, orbit, env } = await orbitNext(t);
+    card({ title: "First" }, status);
+    orbit.controls.writeAnswers.push("pass", { status: 403, code: "forbidden", detail: "This token cannot change that card." });
+    const output = await runAsync(process.execPath, [next, "--start"], { cwd: env.KIT_DEV_ROOT, env: { ...env, FAKE_WORKTREE_FAIL: "1" } });
+    assert.equal(output.status, 1, output.all);
+    assert.match(output.stdout.trim().split("\n").at(-1)!, expected);
+  }
+});
+
 test("on Orbit, a card claimed by someone else between the list and the claim moves to waiting", async t => {
   const { card, run, orbit } = await orbitNext(t);
   const first = card({ title: "First" });

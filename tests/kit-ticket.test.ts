@@ -2362,6 +2362,16 @@ test("check ignores a sub-task with no description, and still lists one whose de
   assert.equal(orbit.writes().length, 0);
 });
 
+test("check --all knows only the configured project's default parent: its bare card is listed, another project's bare part is skipped", async t => {
+  const { orbit, run } = await fixture(t, { tickets: "orbit", orbit: { project: "TOOLS", parent: "TOOLS-1" } });
+  const toolsParent = orbit.addTask(orbit.tools, { title: "Tools parent", description: goodCard });
+  const videoParent = orbit.addTask(orbit.video, { title: "Video parent", description: goodCard });
+  orbit.addTask(orbit.tools, { title: "Bare tools card", parent_task_id: toolsParent.id, description: "" });
+  orbit.addTask(orbit.video, { title: "Bare video part", parent_task_id: videoParent.id, description: "" });
+  const json = JSON.parse(ok(await run(["check", "--all", "--json"])).stdout.split("\nRESULT:")[0]);
+  assert.deepEqual(json.map((card: any) => card.title), ["Bare tools card"]);
+});
+
 test("doneWhen reads a heading or the standard's line, with its list or plain lines, and stops at the next label or heading", () => {
   assert.equal(doneWhen("## Files\n\n- a\n\n## Done when\n\n- x\n- y\n\n## Links\n\n- z"), "- x\n- y");
   assert.equal(doneWhen("Goal\n\nDone when:\nit works\nit is tested\nLinks: none"), "it works\nit is tested");

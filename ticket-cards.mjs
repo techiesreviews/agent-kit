@@ -55,9 +55,9 @@ export function doneWhen(description) {
   const text = String(description ?? "").replace(/\r\n?/g, "\n");
   const section = /^## Done when[ \t]*\n([\s\S]*?)(?=^## |$(?![\s\S]))/m.exec(text)?.[1]?.trim();
   if (section) return section;
-  const lines = text.split("\n"), start = lines.findIndex(line => /^[*_]*Done when:/i.test(line.trim()));
+  const lines = text.split("\n"), start = lines.findIndex(line => /^[*_]*Done when[*_]*:/i.test(line.trim()));
   if (start < 0) return "";
-  const found = [/^[*_]*Done when:[*_]*(.*)$/i.exec(lines[start].trim())[1].trim()].filter(Boolean);
+  const found = [/^[*_]*Done when[*_]*:[*_]*(.*)$/i.exec(lines[start].trim())[1].trim()].filter(Boolean);
   let gap = false;
   for (const line of lines.slice(start + 1)) {
     if (!line.trim()) { gap = true; continue; }
