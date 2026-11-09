@@ -2105,6 +2105,9 @@ test("claim refuses an unassigned card in another started status (not In Progres
   assert.equal(orbit.statusOf(scripting), "Script");
   assert.equal(scripting.description, "Text");
   assert.equal(orbit.writes().length, 0);
+  // A claim line still names its holder, whatever the status.
+  const held = orbit.addTask(orbit.video, { status_id: orbit.statusId(orbit.video, "Script"), description: "Claimed by: kit-2\n\nText" });
+  await assert.rejects(() => store.claim(held.identifier, "kit-1"), /VID-2 is already taken by kit-2 \(Script\)/);
   // A card that is In Progress with no claim, no assignee and no next step is still free, as is a Todo one.
   const free = card({ description: "Text" }, "In Progress");
   assert.ok(!(await store.claim(free.identifier, "kit-1")).unchanged);
@@ -2180,6 +2183,10 @@ test("close adds the follow-ups once: a rerun after a failed landing comment doe
   assert.equal(refused.followupsNotAdded.message, "Follow-ups refused");
   assert.equal(refused.landingNotAdded, undefined);
   assert.deepEqual(orbit.comments[other.id].map((item: any) => item.body), [`${today()} Landed in PR #10`]);
+  // A run again then adds the missing follow-ups, once.
+  assert.equal((await storeWith({}).close(other.identifier, "Landed in PR #10", { followups })).followupsNotAdded, undefined);
+  await storeWith({}).close(other.identifier, "Landed in PR #10", { followups });
+  assert.deepEqual(orbit.comments[other.id].map((item: any) => item.body), [`${today()} Landed in PR #10`, followups]);
 });
 
 test("close with a dry run shows the landing comment and the follow-ups it would post, and sends nothing", async t => {
@@ -2198,8 +2205,12 @@ test("close with a dry run shows the landing comment and the follow-ups it would
   const done = card({ description: "Text" }, "Done");
   orbit.comments[done.id] = [{ id: "1", body: `${today()} Landed in PR #9` }];
   const rest = await dry.close(done.identifier, "Landed in PR #9", { followups: "Follow-ups from PR #9:\n- a" });
-  assert.equal(rest.dries, undefined);
-  assert.ok(rest.unchanged);
+  assert.deepEqual((rest.dries as any[]).map(item => item.body.body), ["Follow-ups from PR #9:\n- a"]);
+  assert.ok(!rest.unchanged);
+  orbit.comments[done.id].push({ id: "2", body: "Follow-ups from PR #9:\n- a" });
+  const all = await dry.close(done.identifier, "Landed in PR #9", { followups: "Follow-ups from PR #9:\n- a" });
+  assert.equal(all.dries, undefined);
+  assert.ok(all.unchanged);
 });
 
 test("close leaves the card Done and hands back the failure when looking for or adding the landing comment fails", async t => {

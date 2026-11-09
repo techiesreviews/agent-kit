@@ -788,11 +788,11 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
         if (stage === "done") throw taken(`${task.identifier} is already ${status}, so there is nothing to build`);
         if (stage === "working") {
           if (holder === who) return true;
-          // Only In Progress can be free. Another started status (In Review, say) is a stage somebody owns.
-          if (status.trim().toLowerCase() !== "in progress") throw taken(`${task.identifier} is in ${status}, so it was not claimed`);
           // In Progress with no claim line, no assignee and no next step is a card that waited for Lex and was given back
           // (next-lex moves it to In Progress, clear-next-lex leaves it there): it is free. A next step still stops it below.
           if (holder || (task.assignee_ids?.length && nextLexReason(task.description) === null)) throw taken(`${task.identifier} is already taken by ${holder ?? "someone"} (${status}), so it was not claimed`);
+          // Only In Progress can be free. Another started status (In Review, say) is a stage somebody owns.
+          if (status.trim().toLowerCase() !== "in progress") throw taken(`${task.identifier} is in ${status}, so it was not claimed`);
           return false;
         }
         return false;
@@ -817,7 +817,7 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
     },
     /**
      * Closes a landed card: status Done and no claim line in one write, then the landing (the PR link and merge SHA) as a
-     * dated comment, as the card standard keeps history in comments, then the `followups` comment when something changed. A card
+     * dated comment, as the card standard keeps history in comments, then the `followups` comment. A card
      * an older kit closed already holds the landing text in its description, and a comment the card already has is not added
      * twice, so a run again after a failed comment finishes the rest and never doubles the follow-ups. A dry run says which
      * writes it would make. The card is Done by then: a comment (or the look for it) that fails is returned on its own
@@ -846,11 +846,11 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
         known ||= (await bodiesOf()).some(body => body.includes(landing));
         if (!known) await post(`${amsterdamToday()} ${landing}`);
       } catch (error) { result.landingNotAdded = error; }
-      const unchanged = Boolean(outcome.unchanged) && known;
-      if (extra && !unchanged) {
+      let unchanged = Boolean(outcome.unchanged) && known;
+      if (extra) {
         try {
           refuseSecrets(extra);
-          if (!(await bodiesOf()).some(body => body.trim() === extra)) await post(extra);
+          if (!(await bodiesOf()).some(body => body.trim() === extra)) { await post(extra); unchanged = false; }
         } catch (error) { result.followupsNotAdded = error; }
       }
       return { ...result, unchanged, ...(dries.length ? { dry: dries[0], dries } : {}) };
