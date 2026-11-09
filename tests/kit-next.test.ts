@@ -1180,6 +1180,20 @@ test("on Orbit, a start that fails after the claim gives the claim back, so no c
   assert.ok(!first.description.includes("Claimed by"));
 });
 
+test("on Orbit, a start that fails when Orbit also refuses the unclaim says what to undo: the status for a Todo card, only the claim line for one already In Progress", async t => {
+  for (const [status, expected] of [
+    ["Todo", /giving the claim back failed \(.*\): run kit ticket update KIT-1 --status "Todo", then remove the "Claimed by: kit-1" line if it is still there$/],
+    ["In Progress", /giving the claim back failed \(.*\): remove the "Claimed by: kit-1" line from its description in Orbit$/],
+  ] as const) {
+    const { card, orbit, env } = await orbitNext(t);
+    card({ title: "First" }, status);
+    orbit.controls.writeAnswers.push("pass", { status: 403, code: "forbidden", detail: "This token cannot change that card." });
+    const output = await runAsync(process.execPath, [next, "--start"], { cwd: env.KIT_DEV_ROOT, env: { ...env, FAKE_WORKTREE_FAIL: "1" } });
+    assert.equal(output.status, 1, output.all);
+    assert.match(output.stdout.trim().split("\n").at(-1)!, expected);
+  }
+});
+
 test("on Orbit, a card claimed by someone else between the list and the claim moves to waiting", async t => {
   const { card, run, orbit } = await orbitNext(t);
   const first = card({ title: "First" });
@@ -1220,7 +1234,7 @@ test("on Orbit, a Todo card without Files and Done when waits and is never claim
   const output = await run("--start");
   assert.equal(output.status, 0, output.all);
   assert.deepEqual(outputLines(output), [
-    'waits: KIT-1 needs "## Files" and "## Done when" in its description',
+    'waits: KIT-1 needs "## Files" and "Done when" in its description',
     "waits: KIT-2 blocked by KIT-3 (Todo)",
     "waits: KIT-3 blocked by KIT-2 (Todo)",
     "waits: KIT-4 blocked by VID-9 (not found)",
@@ -1231,13 +1245,61 @@ test("on Orbit, a Todo card without Files and Done when waits and is never claim
   assert.ok(!existsSync(join(root, "kit.log")), "no job started");
 });
 
-test("on Orbit, an In Progress card with no Claimed by line waits as such and is never handed out", async t => {
+test("on Orbit, a Todo card with Files and the standard's \"Done when:\" line is handed out; one with neither form waits", async t => {
+  const { card, run } = await orbitNext(t);
+  card({ title: "Standard", description: "Goal: do it.\n\n## Files\n\n- `a.ts`\n\nDone when:\n- it works\n\nLinks: none" });
+  card({ title: "One line", description: "Goal: do it.\n\n## Files\n\n- `b.ts`\n\nDone when: it works" });
+  card({ title: "Empty line", description: "Goal: do it.\n\n## Files\n\n- `c.ts`\n\nDone when:\n\nLinks: none" });
+  card({ title: "No line", description: "Goal: do it.\n\n## Files\n\n- `d.ts`" });
+  const output = await run();
+  assert.equal(output.status, 0, output.all);
+  assert.deepEqual(outputLines(output), [
+    "next: KIT-1 builder=claude-opus-5-5 owner=kit-1 why=slot 1/5",
+    "next: KIT-2 builder=claude-opus-5-5 owner=kit-2 why=slot 2/5",
+    'waits: KIT-3 needs "## Files" and "Done when" in its description',
+    'waits: KIT-4 needs "## Files" and "Done when" in its description',
+    "RESULT: ok next 2 ready, 2 waiting",
+  ]);
+});
+
+test("on Orbit, an In Progress card with an assignee and no Claimed by line waits as such and is never handed out", async t => {
   const { card, run, orbit } = await orbitNext(t);
-  card({ title: "Moved by hand" }, "In Progress");
+  card({ title: "Moved by hand", assignee_ids: [orbit.members[1].user_id] }, "In Progress");
   const output = await run("--start");
   assert.equal(output.status, 0, output.all);
   assert.deepEqual(outputLines(output), ["waits: KIT-1 In Progress with no claim recorded", "RESULT: ok next 0 ready, 1 waiting, 0 started"]);
   assert.equal(orbit.writes().length, 0);
+});
+
+test("on Orbit, a card given back by clear-next-lex (In Progress, no claim, no assignee, no next step) is handed out again; any other started card is not", async t => {
+  const { card, run, orbit } = await orbitNext(t);
+  const lex = orbit.members[0].user_id;
+  const back = card({ title: "Given back", description: "Next step (Lex): look at it\n\n## Files\n\n- `a.ts`\n\nDone when:\n- done", assignee_ids: [lex] }, "In Progress");
+  // What clear-next-lex does to it.
+  back.description = back.description.replace("Next step (Lex): look at it\n\n", "");
+  back.assignee_ids = [];
+  card({ title: "Still with Lex", description: "Next step (Lex): look at it\n\n## Files\n\n- `b.ts`\n\n## Done when\n\n- done", assignee_ids: [lex] }, "In Progress");
+  card({ title: "Held by hand", assignee_ids: [lex] }, "In Progress");
+  card({ title: "Given back, no sections", description: "Only a goal" }, "In Progress");
+  card({ title: "Given back, blocked", description: "Blocked by: KIT-2\n\n## Files\n\n- `c.ts`\n\nDone when:\n- done" }, "In Progress");
+  const listed = await run();
+  assert.equal(listed.status, 0, listed.all);
+  assert.deepEqual(outputLines(listed), [
+    "next: KIT-1 builder=claude-opus-5-5 owner=kit-1 why=slot 1/5",
+    "waits: KIT-2 In Progress with no claim recorded",
+    "waits: KIT-3 In Progress with no claim recorded",
+    'waits: KIT-4 needs "## Files" and "Done when" in its description',
+    "waits: KIT-5 blocked by KIT-2 (In Progress)",
+    "RESULT: ok next 1 ready, 4 waiting",
+  ]);
+  assert.equal(orbit.writes().length, 0);
+  // --start claims the given-back card (it stays In Progress, now with a Claimed by line) and touches no other.
+  const started = await run("--start");
+  assert.equal(started.status, 0, started.all);
+  assert.match(started.stdout, /^claimed: KIT-1 owner=kit-1 \(Orbit\)$/m);
+  assert.match(back.description, /^Claimed by: kit-1\n/);
+  assert.equal(orbit.statusOf(back), "In Progress");
+  assert.equal(orbit.writes().length, 1);
 });
 
 test("on Orbit, only cards that may start begin a wave: a card behind a Backlog, Lex, unbuildable or other board's card gets no wave", async t => {

@@ -312,6 +312,15 @@ test("the brief keeps the ticket's claim owner; only an empty assignee: takes th
   }
 });
 
+test("a ticket file may give its Done when as the standard's line instead of a heading", t => {
+  const f = fixture(t), path = join(f.root, f.ticket);
+  writeFileSync(path, readFileSync(path, "utf8").replace("## Done when\n- Required content is present.", "Done when:\n- Required content is present.\n\nLinks: none"));
+  f.git("commit", "-qam", "standard line");
+  f.run([], { FAIL_PHASE: "build" });
+  const brief = readFileSync(join(f.root, ".scratch/agent-brief.md"), "utf8");
+  assert.ok(brief.includes("## Done when\n- Required content is present.\n\n## Builder contract"), brief);
+});
+
 test("kit slice writes the ticket brief, runs phases in order, credits and commits the builder, and lands", t => {
   const f = fixture(t, { project: "kit-slice", branches: { land: "dev" }, checks: { check: "npm run check" }, unit: { files: "tests/*.test.ts" } },
     { "tsconfig.json": "{}\n" }), result = f.run();
@@ -1565,6 +1574,22 @@ test("on Orbit, slice --ticket KEY claims the card, writes its brief and hands t
   assert.equal(readFileSync(join(root, ".scratch/agent-brief.md"), "utf8").split("\n")[0], "Ticket: .scratch/kit-tickets/KIT-1.md");
 });
 
+test("on Orbit, slice builds a card whose Done when is the standard's \"Done when:\" line, as a list or on one line", async t => {
+  for (const [done, expected] of [
+    ["Done when:\n- it works\n- it is tested\n\nLinks: none", "- it works\n- it is tested"],
+    ["Done when: it works\nLinks: none", "it works"],
+    ["**Done when:**\n\n1. it works\n\nLinks: none", "1. it works"],
+    ["Done when: it works\n\n- tested\n- linted\n\nLinks: none", "it works\n- tested\n- linted"],
+  ]) {
+    const { card, slice, root } = await orbitSlice(t);
+    const task = card({ description: `Goal: build it.\n\n## Files\n\n- \`file.txt\`\n\n${done}` });
+    const output = await slice();
+    assert.equal(output.status, 0, output.all);
+    assert.equal(task.description.startsWith("Claimed by: ke-04"), true);
+    assert.ok(readFileSync(join(root, ".scratch/agent-brief.md"), "utf8").includes(`## Done when\n${expected}\n\n## Builder contract`), expected);
+  }
+});
+
 test("on Orbit, a rerun checks the card is still its own and resumes from the brief; with Orbit down it goes on and says so", async t => {
   const { card, slice, orbit } = await orbitSlice(t);
   const task = card();
@@ -1603,7 +1628,7 @@ test("on Orbit, slice refuses a card someone else holds, one without Files and D
   assert.equal(taken.status, 1, taken.all);
   assert.match(lastLine(taken), /^RESULT: fail slice brief: KIT-1 is already taken by other \(In Progress\), so it was not claimed$/);
   const empty = await slice("KIT-2");
-  assert.match(lastLine(empty), /^RESULT: fail slice brief: KIT-2 cannot be built yet: its description needs a "## Files" and a "## Done when" section$/);
+  assert.match(lastLine(empty), /^RESULT: fail slice brief: KIT-2 cannot be built yet: its description needs a "## Files" section and a "Done when:" line \(or a "## Done when" section\)$/);
   assert.equal(orbit.statusOf(bare), "Todo");
   orbit.controls.answers.push({ status: 401, code: "unauthorized", detail: "No token, or the token is not correct." });
   const refused = await slice("KIT-3");

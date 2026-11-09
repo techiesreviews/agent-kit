@@ -46,13 +46,37 @@ export const cardBriefArg = key => `.scratch/kit-tickets/${orbitCardKey(key)}.md
 const hasSection = (text, name) => new RegExp(`^## ${name}[ \\t]*$`, "m").test(String(text ?? ""));
 const oneLine = text => String(text ?? "").replace(/\s*[\r\n]+\s*/g, " ").trim();
 
-/** True when a card's description has the "## Files" and "## Done when" sections a slice builds from. */
-export const cardBuildable = description => hasSection(description, "Files") && hasSection(description, "Done when");
+/**
+ * What a description says is done: the text under a "## Done when" heading, else the card standard's "Done when:" line (its
+ * own text, then the lines under it: plain lines that follow directly and list lines, which may sit after blank lines). It
+ * ends at a heading, a "Links:" style line or a plain line after a blank one. Empty when there is none.
+ */
+export function doneWhen(description) {
+  const text = String(description ?? "").replace(/\r\n?/g, "\n");
+  const section = /^## Done when[ \t]*\n([\s\S]*?)(?=^## |$(?![\s\S]))/m.exec(text)?.[1]?.trim();
+  if (section) return section;
+  const lines = text.split("\n"), start = lines.findIndex(line => /^[*_]*Done when[*_]*:/i.test(line.trim()));
+  if (start < 0) return "";
+  const found = [/^[*_]*Done when[*_]*:[*_]*(.*)$/i.exec(lines[start].trim())[1].trim()].filter(Boolean);
+  let gap = false;
+  for (const line of lines.slice(start + 1)) {
+    if (!line.trim()) { gap = true; continue; }
+    const listed = /^(?:[-*+]|\d+[.)])\s|^\s/.test(line);
+    // A plain line counts when it follows directly; after a blank line only list lines do. A heading or a "Links:" style line ends it.
+    if (!listed && (gap || /^#|^[*_]*[A-Za-z][A-Za-z ]{0,30}:/.test(line))) break;
+    gap = false;
+    found.push(line.trimEnd());
+  }
+  return found.join("\n").trim();
+}
 
-/** A card as a ticket file; a card without "## Files" and "## Done when" in its description cannot be built yet. */
+/** True when a card's description has the "## Files" section and a "## Done when" heading or "Done when:" line a slice builds from. */
+export const cardBuildable = description => hasSection(description, "Files") && doneWhen(description) !== "";
+
+/** A card as a ticket file; a card without "## Files" and a Done when (heading or line) in its description cannot be built yet. */
 export function cardBrief(task, owner = "") {
   if (!cardBuildable(task.description)) {
-    throw new OrbitError(`${task.identifier} cannot be built yet: its description needs a "## Files" and a "## Done when" section`);
+    throw new OrbitError(`${task.identifier} cannot be built yet: its description needs a "## Files" section and a "Done when:" line (or a "## Done when" section)`);
   }
   return `---\ntitle: ${oneLine(task.title)}\norbit: ${task.identifier}\ntype: task (AFK)\nstatus: open\nassignee: ${oneLine(owner)}\n---\n\n`
     + `Orbit card ${task.identifier}${task.url ? `: ${task.url}` : ""}\n\n${String(task.description).replace(/\r\n?/g, "\n").trim()}\n`;
@@ -136,7 +160,7 @@ export function withReviewFollowups(text, lines) {
 
 /**
  * Closes a landed card: status Done and a dated comment naming the PR and its merge SHA, then its follow-ups (review and UX) as
- * one comment, added once (a rerun on a card already closed adds nothing). The merge already happened, so a failure is
+ * one comment, added once (a rerun adds only what is missing, never the follow-ups twice). The merge already happened, so a failure is
  * returned as words for the caller to show, with the command that closes the card by hand.
  */
 export async function closeLandedCard({ settings, key, pr, sha, followups = [], who }) {
@@ -145,13 +169,10 @@ export async function closeLandedCard({ settings, key, pr, sha, followups = [], 
     const opened = openOrbitTickets({ settings, who });
     redact = opened.redact;
     const landing = `Landed in ${pr} (${sha ? `merge commit ${sha}` : "GitHub named no merge commit"})`;
-    const closed = await opened.store.close(key, landing);
-    let extra = closed.landingNotAdded ? `; the landing comment was not added (${orbitProblem(closed.landingNotAdded, redact)}): add it with kit ticket note ${key} "${landing}"` : "";
     const lines = [...new Set(followups)];
-    if (lines.length && !closed.unchanged) {
-      try { await opened.store.comment(key, `Follow-ups from ${pr}:\n${lines.join("\n")}`); }
-      catch (error) { extra += `; its follow-ups were not added (${orbitProblem(error, redact)}): they are in ${pr}`; }
-    }
+    const closed = await opened.store.close(key, landing, { followups: lines.length ? `Follow-ups from ${pr}:\n${lines.join("\n")}` : undefined });
+    let extra = closed.landingNotAdded ? `; the landing comment was not added (${orbitProblem(closed.landingNotAdded, redact)}): add it with kit ticket note ${key} "${landing}"` : "";
+    if (closed.followupsNotAdded) extra += `; its follow-ups were not added (${orbitProblem(closed.followupsNotAdded, redact)}): they are in ${pr}`;
     return { closed: true, line: `card: ${key} Done (${pr})${extra}`, suffix: ` (card ${key} Done)` };
   } catch (error) {
     const why = orbitProblem(error, redact);

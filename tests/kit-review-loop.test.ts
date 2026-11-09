@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { NORMAL_ROUNDS, RISKY_ROUNDS, branchRisk, budgetReport, findPreviousReview, isNit, ledgerRows, loopBriefSection, loopStop, parseMarks, prLine, renderLedger, reviewChain, riskyChange, roundLimit, severityWord, stoppingFindings, unmarkedIds, withIds } from "../review-loop.mjs";
+import { NORMAL_ROUNDS, modelsLine, RISKY_ROUNDS, branchRisk, budgetReport, findPreviousReview, isNit, ledgerRows, loopBriefSection, loopStop, parseMarks, prLine, renderLedger, reviewChain, riskyChange, roundLimit, secondLookRows, severityWord, stoppingFindings, unmarkedIds, withIds } from "../review-loop.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { findingsRecord, openFindings } from "../review-findings.mjs";
 
@@ -326,4 +326,109 @@ test("the ledger keeps the severity known so far when a mark names none or the n
   assert.deepEqual(ledgerRows(should), [{ id: "R1-1", severity: "should", outcome: "still open: still drops" }]);
   // The next review leaves the finding unmarked: its first severity and the outcome "not marked".
   assert.deepEqual(ledgerRows([unnamed[0], { round: 2, findings: [], marks: new Map() }]), [{ id: "R1-1", severity: "blocker", outcome: "not marked by the next review" }]);
+});
+
+test("budget report: every open item is counted and listed (blockers first), the builder's declined findings come with their reasons, and long lists are cut with a count", () => {
+  const open = withIds([finding("P1"), finding("P2")], 4);
+  const report = budgetReport({ rounds: 3, limit: 3, open, declined: [{ text: "the save drops a write", reason: "the spec keeps the last write" }, { text: "rename it" }, { text: "  " }] });
+  assert.match(report, /^Review budget used: 3 of 3 fix rounds, 2 open findings\./);
+  assert.deepEqual(report.split("\n").slice(1), ["- R4-1 (blocker): P1 finding with its evidence", "- R4-2 (should): P2 finding with its evidence",
+    "Builder's side (declined, with reasons):", "- the save drops a write — reason: the spec keeps the last write", "- rename it — reason: none given"]);
+  const many = budgetReport({ rounds: 3, limit: 3, open: Array.from({ length: 7 }, () => finding("P2")), declined: Array.from({ length: 6 }, (_, index) => ({ text: `d${index}`, reason: "r" })) });
+  assert.match(many, /^- … and 2 more$/m);
+  assert.match(many, /^- … and 1 more$/m);
+  assert.doesNotMatch(budgetReport({ rounds: 3, limit: 3, open }), /Builder's side/, "no declined finding, no builder's side");
+});
+
+test("second-look rows: ids say second look; the outcome says what the landing did with each finding", () => {
+  const should = finding("P2", { text: "a.ts:1 P2 a should" }), nit = finding("P3", { text: "b.ts:2 P3 a nit" }), blocker = finding("P1", { text: "c.ts:3 P1 a blocker" });
+  assert.deepEqual(secondLookRows([should, nit, blocker], { waived: [blocker] }), [
+    { id: "SL-1", severity: "should", outcome: "open, follow-up for Lex (second look): a.ts:1 P2 a should" },
+    { id: "SL-2", severity: "nit", outcome: "follow-up, nit (second look): b.ts:2 P3 a nit" },
+    { id: "SL-3", severity: "blocker", outcome: "open, waived by the lead (second look): c.ts:3 P1 a blocker" }]);
+  assert.deepEqual(secondLookRows([]), []);
+});
+
+// TOOLS-105, TOOLS-106 and the carried-reason gap of TOOLS-107.
+test("a ticket's risk is read from its whole text (title, goal, Done when, an Orbit card's description), but not its Files list or the follow-ups kit pr adds later", t => {
+  const dir = mkdtempSync(join(tmpdir(), "kit-risk3-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const git = (...args: string[]) => spawnSync("git", ["-C", dir, "-c", "user.name=T", "-c", "user.email=t@t", ...args], { encoding: "utf8" });
+  git("init", "-q", "-b", "main"); writeFileSync(join(dir, "a"), "1\n"); git("add", "."); git("commit", "-qm", "base");
+  const risky = (name: string, text: string) => { writeFileSync(join(dir, name), text); return branchRisk({ root: dir, base: "main", ticket: name, settings: {} }); };
+  // A card brief: no Goal heading, the risk sits in the description and its Done when line.
+  const card = (body: string, title = "Tidy the saver") => `---\ntitle: ${title}\norbit: TOOLS-1\n---\n\nOrbit card TOOLS-1\n\n${body}`;
+  assert.equal(risky("card1.md", card("Make the saver tidier.\nDone when:\n- no data loss under concurrent saves\n\n## Files\n- `src/ui/saver.ts`\n")).risky, true, "Done when");
+  assert.equal(risky("card2.md", card("Next step (fleet): the saver can lose data when two saves race.\n\n## Files\n- `src/ui/saver.ts`\nDone when: it is tidy\n")).risky, true, "the description");
+  assert.equal(risky("file.md", "---\ntitle: Tidy the saver\n---\n\n## Files\n- `src/ui/saver.ts`\n\n## Done when\n- the saver survives a race condition\n").risky, true, "a ticket file's Done when");
+  assert.match(risky("card1.md", card("Done when:\n- no data loss\n")).reasons.join(), /text mentions "data loss"/);
+  assert.equal(risky("calm.md", card("Make the saver tidier.\nDone when:\n- the button is blue\n\n## Files\n- `src/ui/saver.ts`\n")).risky, false);
+  // The Files list is names, not words; and what kit pr writes under "## Done (date)" never counts.
+  assert.equal(risky("files.md", card("Make it blue.\nDone when: blue\n\n## Files\n- the authentication note in docs\n")).risky, false);
+  assert.equal(risky("plain.md", card("Make it blue.\nDone when: blue\n\n## Done\n\n### Follow-ups\n- a finding about authentication\n")).risky, false, "the builder's plain ## Done holds follow-ups too");
+  assert.equal(risky("order.md", card("Make it tidy.\n\n## Files\n- `src/ui/saver.ts`\nDone when: no data loss\n")).risky, true, "a Done when line after the Files list still counts");
+  assert.equal(risky("done.md", card("Make it blue.\nDone when: blue\n\n## Done (2026-11-09)\n\n### Follow-ups\n- a finding about authentication\n")).risky, false);
+});
+
+test("a lead's review answers the builder's rounds of the same branch (another owner's folder), and only that branch's", t => {
+  const dir = mkdtempSync(join(tmpdir(), "kit-prev-owner-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const git = (...args: string[]) => spawnSync("git", ["-C", dir, "-c", "user.name=T", "-c", "user.email=t@t", ...args], { encoding: "utf8" });
+  git("init", "-q", "-b", "main"); writeFileSync(join(dir, "a"), "1\n"); git("add", "."); git("commit", "-qm", "base");
+  const base = git("rev-parse", "HEAD").stdout.trim();
+  git("checkout", "-qb", "feature"); writeFileSync(join(dir, "a"), "2\n"); git("commit", "-qam", "work");
+  const reviewed = git("rev-parse", "HEAD").stdout.trim();
+  const reviews = join(dir, "reviews"), builder = join(reviews, "builder"), lead = join(reviews, "lead");
+  mkdirSync(join(builder, "20261106T100000Z"), { recursive: true }); mkdirSync(lead, { recursive: true });
+  const save = (branch: string | undefined) => {
+    writeFileSync(join(builder, "20261106T100000Z", "refs.txt"), `${reviewed}\n${base}\n`);
+    writeFileSync(join(builder, "20261106T100000Z", "findings.json"), JSON.stringify({ round: 2, ...(branch ? { branch } : {}), model: "m", head: reviewed, findings: withIds([finding("P1")], 2) }));
+  };
+  const options = (branch: string, others: string[]) => ({ head: reviewed, base, root: dir, branch, otherOwners: others });
+  save("feature");
+  const found = findPreviousReview(lead, options("feature", [builder]));
+  assert.equal(found?.round, 2);
+  assert.equal(found?.name, "../builder/20261106T100000Z", "named by a path that reviewChain can follow from the lead's folder");
+  assert.equal(findPreviousReview(lead, options("feature", [])), null, "without other owners nothing changes");
+  assert.equal(findPreviousReview(lead, options("another", [builder])), null, "another branch is never answered");
+  save(undefined);
+  assert.equal(findPreviousReview(lead, options("feature", [builder])), null, "another owner's review must name the branch");
+  // The newest review of the branch answers, whichever owner saved it; on the same timestamp the owner's own wins.
+  const saveAt = (folder: string, name: string, round: number) => {
+    mkdirSync(join(folder, name), { recursive: true });
+    writeFileSync(join(folder, name, "refs.txt"), `${reviewed}\n${base}\n`);
+    writeFileSync(join(folder, name, "findings.json"), JSON.stringify({ round, branch: "feature", model: "m", head: reviewed, findings: withIds([finding("P1")], round) }));
+  };
+  save("feature");
+  saveAt(lead, "20261105T100000Z", 1);
+  assert.equal(findPreviousReview(lead, options("feature", [builder]))?.name, "../builder/20261106T100000Z", "the builder's is newer");
+  saveAt(lead, "20261106T110000Z", 3);
+  assert.equal(findPreviousReview(lead, options("feature", [builder]))?.name, "20261106T110000Z", "the lead's own is newer");
+  saveAt(lead, "20261106T100000Z", 2);
+  assert.equal(findPreviousReview(lead, options("feature", [builder]))?.name, "20261106T110000Z");
+  rmSync(join(lead, "20261106T110000Z"), { recursive: true });
+  assert.equal(findPreviousReview(lead, options("feature", [builder]))?.name, "20261106T100000Z", "on the same timestamp the owner's own wins");
+  for (const name of ["20261105T100000Z", "20261106T100000Z"]) rmSync(join(lead, name), { recursive: true });
+  // The chain follows the link out of the lead's own folder.
+  save("feature");
+  mkdirSync(join(lead, "20261107T100000Z"));
+  writeFileSync(join(lead, "20261107T100000Z", "findings.json"), JSON.stringify({ round: 3, previous: found?.name, model: "m2", head: reviewed, findings: [] }));
+  assert.deepEqual(reviewChain(join(lead, "20261107T100000Z")).map((record: { round: number }) => record.round), [2, 3]);
+});
+
+test("the PR line names every model the rounds used, in order, and says so when none is known", () => {
+  const round = (model?: string) => ({ model, findings: [], marks: new Map() });
+  assert.equal(modelsLine([round("a"), round("a")]), "a");
+  assert.equal(modelsLine([round("a"), round("b"), round("a")]), "a and b");
+  assert.equal(modelsLine([round("a"), round("b"), round("c")]), "a, b and c");
+  assert.equal(modelsLine([round(), round()]), "unknown model");
+  assert.equal(modelsLine([round(), round("b")]), "b");
+  assert.equal(prLine({ rounds: 2, model: modelsLine([round("a"), round("b")]) }), "Reviewed with review-loop: 2 rounds with a and b. Verdict: approved");
+});
+
+test("a long reason on a \"still open\" mark is cut, so the brief line still holds the start of the original finding", () => {
+  const [carried] = openFindings(marksReport(`R1-2: still open (P2): ${"because ".repeat(100)}`), earlier).findings;
+  const section = loopBriefSection({ round: 2, limit: 3, previousHead: "a", currentHead: "b", open: [{ id: "R2-1", ...carried }] });
+  assert.ok(section.includes("file.txt:4 — P2 fault: the retry loses the second write when the first fails."), "the original finding survives a long reason");
+  assert.match(carried.text, /^R1-2 still open: (?:because ){10,}/, "the reason is still there, cut");
 });

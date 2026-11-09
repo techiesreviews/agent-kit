@@ -150,13 +150,22 @@ export function cardStage(status, statuses = []) {
   return "waiting";
 }
 
+/**
+ * True for a card a slice may take although it is In Progress: no claim line, no assignee and no next step, as a card that
+ * waited for Lex and was given back by clear-next-lex. Takes a card as `board` lists it (status_name, claimed_by, next_lex).
+ * A started status other than In Progress (such as In Review) never counts: that card is somebody's stage.
+ */
+export const cardFree = card => card.stage === "working" && String(card.status_name ?? "").trim().toLowerCase() === "in progress"
+  && !card.claimed_by && !card.assignee_ids?.length && card.next_lex === null;
+
 /** How many lines with text a card's own description may have (the kit's own lines do not count). */
 export const cardStandardLines = 12;
-const kitLine = line => line.startsWith(nextLexPrefix) || plannedLine.test(line) || blockedLine.test(line) || claimedLine.test(line);
+const nextFleetLine = /^Next step \(fleet\):/i;
+const kitLine = line => line.startsWith(nextLexPrefix) || nextFleetLine.test(line) || plannedLine.test(line) || blockedLine.test(line) || claimedLine.test(line);
 /**
  * The ways a description breaks the Orbit card standard (docs/orbit-card-standard.md): [{ rule, message }], none when it
- * follows it. Lines without text are not counted, and neither are the lines the kit keeps (Next step, Planned dates,
- * Blocked by, Claimed by).
+ * follows it. Lines without text are not counted, and neither are the lines the kit keeps (Next step (Lex) and Next step
+ * (fleet), Planned dates, Blocked by, Claimed by).
  */
 export function cardStandardProblems(description) {
   const own = split(description).map(line => line.trim()).filter(line => line && !kitLine(line));
@@ -164,7 +173,7 @@ export function cardStandardProblems(description) {
   if (own.length > cardStandardLines) problems.push({ rule: "too-long", message: `The description is ${own.length} lines; the standard allows ${cardStandardLines}. Move history to comments and parts to sub-tasks.` });
   if (own.some(line => /^##\s*Notes\b/i.test(line))) problems.push({ rule: "notes", message: 'The description has a "## Notes" section. Put history in comments, one per event.' });
   if (own.some(line => /^[-*+]\s+\[[ xX]\]/.test(line))) problems.push({ rule: "checklist", message: "The description has a checklist (- [ ] or - [x]). Make each part a sub-task." });
-  if (!own.some(line => /^[*_]*Done when:/i.test(line))) problems.push({ rule: "no-done-when", message: 'The description has no "Done when:" line.' });
+  if (!own.some(line => /^[*_]*Done when[*_]*:/i.test(line))) problems.push({ rule: "no-done-when", message: 'The description has no "Done when:" line.' });
   return problems;
 }
 
@@ -214,19 +223,6 @@ export function withPlannedDates(description, line) {
   const lines = split(description), notes = lines.findIndex(isNotesHeading);
   if (notes >= 0) lines.splice(notes, 0, ...(notes && lines[notes - 1].trim() !== "" ? [""] : []), line, "");
   else lines.push(...(lines.at(-1).trim() === "" ? [] : [""]), line);
-  return lines.join("\n");
-}
-
-/** The description with a dated line added at the end of its Notes section. */
-export function withNote(description, date, who, text) {
-  const line = `- ${date} (${oneLine(who)}): ${oneLine(text)}`;
-  const body = String(description ?? "").replace(/\s+$/, ""), lines = split(body), heading = lines.findIndex(isNotesHeading);
-  if (heading < 0) return `${body ? `${body}\n\n` : ""}${notesHeading}\n\n${line}`;
-  // The end of the Notes section: before the next heading and the blank lines above it.
-  let end = lines.findIndex((item, index) => index > heading && /^#{1,6}\s/.test(item));
-  if (end < 0) end = lines.length;
-  while (end > heading + 1 && lines[end - 1].trim() === "") end--;
-  lines.splice(end, 0, line);
   return lines.join("\n");
 }
 
@@ -795,6 +791,8 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
           // In Progress with no claim line, no assignee and no next step is a card that waited for Lex and was given back
           // (next-lex moves it to In Progress, clear-next-lex leaves it there): it is free. A next step still stops it below.
           if (holder || (task.assignee_ids?.length && nextLexReason(task.description) === null)) throw taken(`${task.identifier} is already taken by ${holder ?? "someone"} (${status}), so it was not claimed`);
+          // Only In Progress can be free. Another started status (In Review, say) is a stage somebody owns.
+          if (status.trim().toLowerCase() !== "in progress") throw taken(`${task.identifier} is in ${status}, so it was not claimed`);
           return false;
         }
         return false;
@@ -819,10 +817,13 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
     },
     /**
      * Closes a landed card: status Done and no claim line in one write, then the landing (the PR link and merge SHA) as a
-     * dated comment, as the card standard keeps history in comments. A card an older kit closed already holds the text in
-     * its description, and one already commented is not commented twice.
+     * dated comment, as the card standard keeps history in comments, then the `followups` comment. A card
+     * an older kit closed already holds the landing text in its description, and a comment the card already has is not added
+     * twice, so a run again after a failed comment finishes the rest and never doubles the follow-ups. A dry run says which
+     * writes it would make. The card is Done by then: a comment (or the look for it) that fails is returned on its own
+     * (`landingNotAdded`, `followupsNotAdded`), so the card is not called open.
      */
-    async close(key, text) {
+    async close(key, text, { followups } = {}) {
       textOnly("a closing note", text);
       refuseSecrets(text);
       const outcome = await changeCard("close", key, async task => {
@@ -832,14 +833,28 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
           description: withClaimedBy(task.description, null),
         };
       });
-      const landing = oneLine(text);
-      let known = split(outcome.task.description).some(line => line.includes(landing));
-      // The card is Done by now: a comment (or the look for it) that fails is reported on its own, so the card is not called open.
+      const landing = oneLine(text), extra = String(followups ?? "").trim(), heading = extra.split("\n", 1)[0];
+      const result = { ...outcome }, dries = outcome.dry ? [outcome.dry] : [];
+      let known = split(outcome.task.description).some(line => line.includes(landing)), bodies;
+      // The card's comments, read once for both texts.
+      const bodiesOf = async () => bodies ??= (await client.comments(outcome.key)).map(item => String(item.body ?? ""));
+      const post = async body => {
+        if (dryRun) dries.push({ method: "POST", path: client.pathOf.comments(outcome.key), body: { body } });
+        else await sent({ card: outcome.key, action: "comment", fields: ["body"] }, () => client.addComment(outcome.key, body));
+      };
       try {
-        known ||= (await client.comments(outcome.key)).some(item => String(item.body ?? "").includes(landing));
-        if (!known && !dryRun) await sent({ card: outcome.key, action: "comment", fields: ["body"] }, () => client.addComment(outcome.key, `${amsterdamToday()} ${landing}`));
-      } catch (error) { return { ...outcome, unchanged: false, landingNotAdded: error }; }
-      return { ...outcome, unchanged: Boolean(outcome.unchanged) && known };
+        known ||= (await bodiesOf()).some(body => body.includes(landing));
+        if (!known) await post(`${amsterdamToday()} ${landing}`);
+      } catch (error) { result.landingNotAdded = error; }
+      let unchanged = Boolean(outcome.unchanged) && known;
+      if (extra) {
+        try {
+          refuseSecrets(extra);
+          // Posted already when a comment opens with the same first line ("Follow-ups from <PR>:"), whatever its list says now.
+          if (!(await bodiesOf()).some(body => body.trim().startsWith(heading))) { await post(extra); unchanged = false; }
+        } catch (error) { result.followupsNotAdded = error; }
+      }
+      return { ...result, unchanged, ...(dries.length ? { dry: dries[0], dries } : {}) };
     },
     /**
      * The cards that break the Orbit card standard (cardStandardProblems): one card by key, a board by project, or every
@@ -850,7 +865,15 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       if (key !== undefined) items = [await client.task(orbitCardKey(key))];
       else ({ items, more } = await client.tasks(all ? {} : { project_id: (await projectFrom(project)).id }, 1000));
       const broken = [];
+      let boardParent;
       for (const task of items) {
+        // A sub-task with no description is a part named by its title, which the standard leaves alone. A card under the
+        // project's own parent card (where new cards go by default) is an ordinary card, so it is still checked.
+        if (task.parent_task_id && !String(task.description ?? "").trim()) {
+          // A parent that no longer exists is no board parent; any other failure to look it up stops the check.
+          boardParent ??= defaults.parent ? await client.task(orbitCardKey(defaults.parent)).then(card => card.id, error => { if (error?.status === 404) return ""; throw error; }) : "";
+          if (task.parent_task_id !== boardParent) continue;
+        }
         const problems = cardStandardProblems(task.description);
         if (problems.length) broken.push({ identifier: task.identifier, title: oneLine(task.title), status: await statusName(task), url: task.url, rules: problems.map(item => item.rule), problems: problems.map(item => item.message) });
       }

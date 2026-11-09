@@ -86,7 +86,7 @@ if (tool === "fake-kit" && action === "review" && args.includes("--second-look")
     .filter(call => call.tool === "fake-kit" && call.args[0] === "review" && call.args.includes("--second-look")).length;
   const folder = join(env.KIT_MAIN_ROOT, ".scratch/reviews", env.ASE_OWNER, "second-" + count);
   mkdirSync(folder, { recursive: true });
-  writeFileSync(join(folder, "result.md"), env.FAKE_SECOND_REVIEW || ${JSON.stringify(cleanReview)});
+  writeFileSync(join(folder, "result.md"), (count > 1 && env.FAKE_SECOND_REBASED_REVIEW) || env.FAKE_SECOND_REVIEW || ${JSON.stringify(cleanReview)});
   writeFileSync(join(folder, "second-look.json"), JSON.stringify({ kind: "code", model: "grok-4.7", ok: true }));
   const { execFileSync } = require("node:child_process");
   const git = (...argv) => execFileSync("git", argv, { encoding: "utf8" }).trim();
@@ -96,6 +96,8 @@ if (tool === "fake-kit" && action === "review" && args.includes("--second-look")
 } else if (tool === "fake-kit" && action === "review") {
   const count = readFileSync(env.FAKE_CALLS, "utf8").trim().split("\\n").map(line => JSON.parse(line))
     .filter(call => call.tool === "fake-kit" && call.args[0] === "review" && !call.args.includes("--second-look")).length;
+  // FAKE_REVIEW_FAIL: Claude's review fails to run (a review that left an id out, say).
+  if (env.FAKE_REVIEW_FAIL) { console.log("RESULT: fail review incomplete evidence none"); process.exit(1); }
   const folder = join(env.KIT_MAIN_ROOT, ".scratch/reviews", env.ASE_OWNER, count === 1 ? "fresh" : "fresh-" + count);
   mkdirSync(folder, { recursive: true });
   const report = (count > 1 && env.FAKE_REBASED_REVIEW) || env.FAKE_REVIEW || ${JSON.stringify(cleanReview)};
@@ -2775,6 +2777,18 @@ test("on Orbit, a queued PR leaves its card open and says the queue closes it; r
   assert.doesNotMatch(nits.git("log", "--format=%s", "origin/dev..HEAD"), /docs: KIT-1/);
 });
 
+test("on Orbit, a follow-ups comment that Orbit refuses leaves the card Done with the landing comment, and the line names the PR", async t => {
+  const f = await orbitPr(t);
+  const task = f.card({}, "In Progress");
+  f.orbit.controls.refuseComments = /^Follow-ups from/;
+  f.saveReview(cleanReview.replace("Spec: none.", "Spec: P3: Cosmetic defect."));
+  const output = await f.pr(["--ticket", f.brief()]);
+  assert.equal(output.status, 0, output.all);
+  assert.equal(f.orbit.statusOf(task), "Done");
+  assert.match(output.stdout, /^card: KIT-1 Done \(https:\/\/github\.com\/test\/repo\/pull\/73\); its follow-ups were not added \(.*\): they are in https:\/\/github\.com\/test\/repo\/pull\/73$/m);
+  assert.deepEqual((f.orbit.comments[task.id] ?? []).map((comment: any) => comment.body.replace(/^\d{4}-\d{2}-\d{2} /, "").slice(0, 9)), ["Landed in"]);
+});
+
 test("on Orbit, an absolute brief path closes its card; a dry run with a KEY writes no brief where a slice would read it", async t => {
   const f = await orbitPr(t);
   const task = f.card({}, "In Progress");
@@ -2811,4 +2825,124 @@ test("on Orbit, a lead's kit pr --ticket KEY on a merge queue says nobody waits 
   assert.match(output.stdout, /^card: KIT-1 stays open: nothing here waits for the queue; run kit ticket update KIT-1 --status Done once #73 lands$/m);
   assert.equal(f.orbit.statusOf(task), "In Progress");
   assert.deepEqual((f.orbit.comments[task.id] ?? []).map((comment: any) => comment.body), ["Follow-ups from https://github.com/test/repo/pull/73:\n- Spec (P3): P3: Cosmetic defect."]);
+});
+
+// TOOLS-100, TOOLS-102, TOOLS-103, TOOLS-104: the PR's review block and the saved reviews it comes from.
+const reviewBodies = (f: ReturnType<typeof fixture>) => f.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body ?? "");
+const savedFindings = (f: ReturnType<typeof fixture>, path: string, record: Record<string, unknown>) =>
+  writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ round: 1, model: "claude-opus-5-5", head: f.git("rev-parse", "HEAD"), findings: [], ...record }));
+
+test("a behind rebase never leaves the old 'approved' on the PR: it says pending while the new head is reviewed and not approved when that review finds a blocker", t => {
+  const f = fixture(t), peer = f.peer();
+  savedFindings(f, f.saveReview(cleanReview), {});
+  const report = "REVIEW_STATUS: complete\nDefects:\n- Spec: a.ts:1 P1 Rebased HEAD has a defect.\n";
+  const result = f.run([], { FAKE_BEHIND: "1", FAKE_ADVANCE: peer, FAKE_ADVANCE_PATCH: "1", FAKE_REVIEW: report });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  const blocks = reviewBodies(f).filter(text => text.includes("<!-- review-loop -->"));
+  assert.match(blocks[0], /Verdict: approved/, "the first head was approved");
+  assert.match(blocks.at(-1)!, /Verdict: not approved \(open findings at the new head/);
+  assert.doesNotMatch(blocks.at(-1)!, /Verdict: approved/);
+  assert.ok(blocks.some(text => /Verdict: pending/.test(text)), "while the new head was reviewed the PR said pending");
+  assert.equal((blocks.at(-1)!.match(/<!-- review-loop -->/g) ?? []).length, 1);
+});
+
+test("a nits-only review is reused after a rebase with the same patch (no new review, the PR block keeps its ledger); a review with a should is not", t => {
+  const nits = "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P3 a small point.\nValidation gaps: none.\n";
+  const f = fixture(t), peer = f.peer();
+  savedFindings(f, f.saveReview(nits), { findings: [{ id: "R1-1", group: "Spec", severity: "P3", kind: "fault", text: "file.txt:1 P3 a small point." }] });
+  const result = f.run([], { FAKE_BEHIND: "1", FAKE_ADVANCE: peer });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(f.calls().filter(claudeReview).length, 0, "no review ran: the nits-only one was reused before and after the rebase");
+  assert.match(result.stdout, /review: reused \(same patch on new base\)/);
+  const block = reviewBodies(f).findLast(text => text.includes("<!-- review-loop -->"))!;
+  assert.match(block, /Verdict: approved/);
+  assert.match(block, /^\| R1-1 \| nit \| open at the end \|$/m);
+  // A saved review with a should is not reused after a rebase: the rebased head is reviewed again.
+  const other = fixture(t), otherPeer = other.peer();
+  other.saveReview("REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P2 a real should.\nValidation gaps: none.\n", "ke-lead");
+  const waived = other.run(["--waive", "Accepted for follow-up"], { ASE_OWNER: "ke-lead", FAKE_BEHIND: "1", FAKE_ADVANCE: otherPeer, FAKE_REVIEW: cleanReview });
+  assert.equal(waived.status, 0, waived.stdout + waived.stderr);
+  assert.equal(other.calls().filter(claudeReview).length, 1, "the rebased head got a fresh review");
+});
+
+test("the ledger holds the second look's findings too, with ids that say they came from it", t => {
+  const base = (waive: boolean) => {
+    const f = fixture(t);
+    savedFindings(f, f.saveReview(cleanReview, waive ? "ke-lead" : undefined), {});
+    return f;
+  };
+  const budget = base(false); budget.rounds(3);
+  const used = budget.run([], { FAKE_SECOND_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P2 a second-look should.\n- Spec: file.txt:2 P3 a second-look nit.\n" });
+  assert.equal(used.status, 0, used.stdout + used.stderr);
+  const block = reviewBodies(budget).findLast(text => text.includes("<!-- review-loop -->"))!;
+  assert.match(block, /^\| SL-1 \| should \| .*second look.*a second-look should\. \|$/m);
+  assert.match(block, /^\| SL-2 \| nit \| .*second look.*a second-look nit\. \|$/m);
+  assert.match(block, /Verdict: not approved \(budget used, 1 open finding left for Lex\)/);
+  assert.doesNotMatch(block, /Findings ledger: none/);
+  const waiver = base(true);
+  const waived = waiver.run(["--waive", "Accepted for follow-up"], { ASE_OWNER: "ke-lead", FAKE_SECOND_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P1 the second look found this.\n" });
+  assert.equal(waived.status, 0, waived.stdout + waived.stderr);
+  const waivedBlock = reviewBodies(waiver).findLast(text => text.includes("<!-- review-loop -->"))!;
+  assert.match(waivedBlock, /^\| SL-1 \| blocker \| open, waived by the lead \(second look\): .*the second look found this\. \|$/m);
+  assert.match(waivedBlock, /Verdict: not approved \(1 open finding waived by the lead\)/);
+});
+
+test("out of budget with a blocker and a should left: the report counts both, lists both, and shows the builder's declined findings with their reasons", t => {
+  const f = fixture(t);
+  f.rounds(3);
+  const path = f.saveReview("REVIEW_STATUS: complete\nDefects:\n- Spec: a.ts:1 P1 Real wrong behaviour.\n- Spec: b.ts:2 P2 Real minor defect.\n");
+  savedFindings(f, path, { round: 4, findings: [
+    { id: "R4-1", group: "Spec", severity: "P1", kind: "fault", text: "a.ts:1 P1 Real wrong behaviour." },
+    { id: "R4-2", group: "Spec", severity: "P2", kind: "fault", text: "b.ts:2 P2 Real minor defect." }],
+  declined: [{ text: "the save drops a write", reason: "the spec keeps the last write", round: 2 }, { text: "rename the helper", reason: "", round: 3 }] });
+  const result = f.run();
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /^Review budget used: 3 of 3 fix rounds, 2 open findings\. Running out of budget is not approval; Lex decides\.$/m);
+  assert.match(result.stdout, /^- R4-1 \(blocker\): /m);
+  assert.match(result.stdout, /^- R4-2 \(should\): /m);
+  assert.match(result.stdout, /^Builder's side \(declined, with reasons\):$/m);
+  assert.match(result.stdout, /^- the save drops a write — reason: the spec keeps the last write$/m);
+  assert.match(result.stdout, /^- rename the helper — reason: none given$/m);
+});
+
+test("after a behind rebase a failed review, a second look that stops it, or a review with no record never leaves 'pending' or 'approved' on the PR", t => {
+  const approved = () => { const f = fixture(t); savedFindings(f, f.saveReview(cleanReview), {}); return f; };
+  const lastBlock = (f: ReturnType<typeof fixture>) => reviewBodies(f).findLast(text => text.includes("<!-- review-loop -->"));
+  // The review of the rebased head fails to run: the PR says it did not finish.
+  const failing = approved();
+  const failed = failing.run([], { FAKE_BEHIND: "1", FAKE_ADVANCE: failing.peer(), FAKE_ADVANCE_PATCH: "1", FAKE_REVIEW_FAIL: "1" });
+  assert.equal(failed.status, 1, failed.stdout + failed.stderr);
+  assert.match(lastBlock(failing)!, /Verdict: not approved \(the review did not finish at the new head [0-9a-f]{7}; see the kit pr run for the error\)/);
+  // Claude's review of the rebased head is clean but the second look finds a blocker.
+  const second = approved();
+  const stopped = second.run([], { FAKE_BEHIND: "1", FAKE_ADVANCE: second.peer(), FAKE_ADVANCE_PATCH: "1", FAKE_SECOND_REBASED_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P1 the second look found this.\n" });
+  assert.equal(stopped.status, 1, stopped.stdout + stopped.stderr);
+  assert.match(lastBlock(second)!, /Verdict: not approved \(open findings at the new head [0-9a-f]{7}/);
+  // The rebased head's review leaves no findings record: the block is taken away, so no stale text stays.
+  const bare = approved();
+  const merged = bare.run([], { FAKE_BEHIND: "1", FAKE_ADVANCE: bare.peer(), FAKE_ADVANCE_PATCH: "1" });
+  assert.equal(merged.status, 0, merged.stdout + merged.stderr);
+  assert.equal(reviewBodies(bare).at(-1)!.includes("<!-- review-loop -->"), false);
+  assert.doesNotMatch(reviewBodies(bare).at(-1)!, /Verdict: (pending|approved)/);
+});
+
+test("a second look's out-of-budget report carries the builder's declined findings from Claude's review", t => {
+  const f = fixture(t);
+  f.rounds(3);
+  savedFindings(f, f.saveReview(cleanReview), { round: 4, declined: [{ text: "the save drops a write", reason: "the spec keeps the last write", round: 2 }] });
+  const result = f.run([], { FAKE_SECOND_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P2 a second-look should.\n" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^- SL-1 \(should\): /m);
+  assert.match(result.stdout, /^- the save drops a write — reason: the spec keeps the last write$/m);
+});
+
+test("the PR line counts a chain of rounds that runs into the builder's folder, and names every model the rounds used", t => {
+  const f = fixture(t);
+  const earlierFolder = join(f.main, ".scratch/reviews/ak-9/20261019T090000Z");
+  mkdirSync(earlierFolder, { recursive: true });
+  writeFileSync(join(earlierFolder, "findings.json"), JSON.stringify({ round: 1, branch: "feature/kit-pr", model: "claude-opus-5-4", head: "0".repeat(40), findings: [] }));
+  savedFindings(f, f.saveReview(cleanReview), { round: 2, model: "claude-opus-5-5", previous: "../ak-9/20261019T090000Z" });
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^Reviewed with review-loop: 2 rounds with claude-opus-5-4 and claude-opus-5-5\. Verdict: approved$/m);
 });

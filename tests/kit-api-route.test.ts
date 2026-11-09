@@ -37,10 +37,12 @@ console.log(JSON.stringify({ result: "ok", modelUsage: { "claude-haiku-5-5": {} 
 `);
   writeFileSync(join(bin, "package.json"), '{"type":"module"}');
   chmodSync(join(bin, "claude"), 0o755);
-  const env = { ...kitEnv(), HOME: home, XDG_STATE_HOME: state, PATH: `${bin}:${process.env.PATH}` } as NodeJS.ProcessEnv;
+  // An empty folder names one more managed-settings folder; a machine with real managed settings still turns the flag on in the tests that expect it off.
+  const managed = join(dir, "managed"); mkdirSync(managed);
+  const env = { ...kitEnv(), HOME: home, XDG_STATE_HOME: state, KIT_CLAUDE_MANAGED_DIR: managed, PATH: `${bin}:${process.env.PATH}` } as NodeJS.ProcessEnv;
   delete env.KIT_API_KEY_FILE; delete env.KIT_API_CONFIG_DIR;
   const callList = () => existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").map(line => JSON.parse(line)) : [];
-  return { dir, bin, home, state, keyFile, env, callList };
+  return { dir, bin, home, state, keyFile, env, callList, managed };
 }
 
 test("the route is off unless KIT_API_KEY_FILE is set: claude runs as before", t => {
@@ -188,6 +190,8 @@ test("the scrub flag goes off only for a call of plain readers whose hooks are o
     ["-p", "--tools", "Read", "--bare", "--mcp-config", "x.json"], ["-p", "--tools", "Read", "--bare", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "x.json"],
     ["-p", "--tools", "Read", "--bare", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{"a":{"command":"x"}}}'],
     ["-p", "--tools", "Read", "--bare", "--strict-mcp-config", "--plugin-dir", "/tmp/p"], ["-p", "--tools", "Read", "--bare", "--strict-mcp-config", "--plugin-url", "https://x/p.zip"],
+    // --setting-sources twice: one empty value does not make the other one's settings go away.
+    ["-p", "--tools", "Read", "--setting-sources", "", "--setting-sources", "user", "--strict-mcp-config"], ["-p", "--tools", "Read", "--setting-sources", "user", "--setting-sources", "", "--strict-mcp-config"],
     ["-p", "--tools", "Read", "--bare", "--strict-mcp-config", "--settings", "s.json"], ["-p", "--tools", "Read", "--bare", "--strict-mcp-config", "--agents", "{}"],
     // No tools at all (kit ask) is not a reader list either: the call runs in a throwaway folder, so the flag stays on.
     ["-p", "--tools", ""], ["-p", "--tools", "", "--bare"], ["-p", "--tools=", "--setting-sources", ""]];
@@ -403,4 +407,37 @@ test("the spend line says worked only for a real success, and a non-refusal exit
   const log = "claude-api-run: the API key file is empty\n";
   assert.match(apiRouteProblem("", log, env, 2), /^problem: API route: the API key file is empty$/);
   assert.equal(apiRouteProblem("", log, env, 1), null);
+});
+
+test("managed (admin-installed) settings can hold hooks that neither an empty --setting-sources nor --bare is known to switch off: with one on the machine the flag stays on", t => {
+  const f = folder(t);
+  const env = { ...f.env, KIT_API_KEY_FILE: f.keyFile };
+  const run = () => { spawnSync(wrapper, reviewArgs, { env, encoding: "utf8" }); return f.callList().at(-1).scrub; };
+  assert.equal(run(), "0", "no managed settings: a plain reader review has the flag off");
+  writeFileSync(join(f.managed, "managed-settings.json"), "{}");
+  assert.equal(run(), "1", "a managed-settings.json keeps it on");
+  rmSync(join(f.managed, "managed-settings.json"));
+  mkdirSync(join(f.managed, "managed-settings.d"));
+  assert.equal(run(), "0", "an empty managed-settings.d is no settings");
+  writeFileSync(join(f.managed, "managed-settings.d", "10-hooks.json"), "{}");
+  assert.equal(run(), "1", "a file in managed-settings.d keeps it on");
+  // Fail closed: --bare does not make the kit trust that managed settings stay out, so the flag stays on for it too.
+  spawnSync(wrapper, ["-p", "--tools", "Read", "--bare", "--strict-mcp-config"], { env, encoding: "utf8" });
+  assert.equal(f.callList().at(-1).scrub, "1");
+  rmSync(join(f.managed, "managed-settings.d", "10-hooks.json"));
+  spawnSync(wrapper, ["-p", "--tools", "Read", "--bare", "--strict-mcp-config"], { env, encoding: "utf8" });
+  assert.equal(f.callList().at(-1).scrub, "0");
+  // Admin-installed MCP servers are programs claude starts, and --strict-mcp-config is not known to keep them out.
+  writeFileSync(join(f.managed, "managed-mcp.json"), "{}");
+  assert.equal(run(), "1", "a managed-mcp.json keeps it on");
+});
+
+test("the arguments the kit really sends through the wrapper: a review call turns the flag off, a resumed one too, and a build keeps it on", t => {
+  const f = folder(t);
+  const env = { ...f.env, KIT_API_KEY_FILE: f.keyFile };
+  const review = claudeAdapter({ kind: "review", model: "claude-opus-5-5", effort: "medium", sessionId: "11111111-2222-3333-4444-555555555555" }, f.dir);
+  const build = claudeAdapter({ kind: "build", model: "claude-opus-5-5", effort: "high", sessionId: "11111111-2222-3333-4444-555555555555" }, f.dir);
+  const calls = [review.args, review.resume("11111111-2222-3333-4444-555555555555"), build.args, build.resume("11111111-2222-3333-4444-555555555555")];
+  for (const args of calls) spawnSync(wrapper, args, { env, encoding: "utf8" });
+  assert.deepEqual(f.callList().map(call => call.scrub), ["0", "0", "1", "1"]);
 });

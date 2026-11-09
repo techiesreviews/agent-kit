@@ -71,7 +71,7 @@ says for today; never claim a planned item ran.
   project through `scripts/agents/kit ticket` (`--help`), Orbit's public API inside the kit; no other
   tool sits beside it. A project switches with `"tickets": "orbit"` in its `scripts/agents/kit.json`
   (default `files`). With `orbit` the tickets live in Orbit: `kit next` hands out the Todo cards
-  whose "Blocked by:" cards are Done, in build waves; `kit next --start` and `kit slice --ticket <KEY>`
+  whose "Blocked by:" cards are Done (and In Progress cards given back by `clear-next-lex`), in build waves; `kit next --start` and `kit slice --ticket <KEY>`
   claim the card (status In Progress and a "Claimed by: <owner>" line) and build from its brief;
   `kit pr` moves the card to Done with a dated comment naming the PR and its merge SHA; `kit status` shows the
   cards; `kit init --issues` makes a card per open GitHub Issue and closes the Issue with a comment
@@ -143,7 +143,11 @@ undoes a newer rule.
 
 The start marker carries this rule's version too (v2, v3 …).
 
-Known limits of the review loop today (waived follow-ups): the PR line and ledger have edge cases (a "behind" rebase can leave an earlier "approved" until the next review finishes; a merge from the base puts other people's code in the "changes since the last review" file; a nits-only review is not reused after a rebase; second-look findings are in the verdict but not the ledger); an out-of-budget should lands as a follow-up with a budget report that shows only the reviewer's side, and "disputed after two replies" is not detected, so the lead tells Lex both sides by hand; a ticket's risk is read from its title, goal and named files only.
+The PR's review block says "Verdict: pending" while a new head (after a "behind" rebase) is reviewed and "not approved" when that review stops the landing or does not finish; a review with only nits is reused after a rebase with the same patch; the ledger lists the second look's findings as SL-<n> rows; an out-of-budget report counts every open item and shows the builder's declined findings with their reasons.
+
+After a merge from the base, the "changes since the last review" file lists only the branch's own commits; a lead who lands a builder's branch answers the builder's rounds (the PR line counts them and names every model); a ticket's risk is read from its title, its whole text and the files it names, never from the follow-ups kit pr adds later.
+
+Known limits of the review loop today (waived follow-ups): "disputed after two replies" is not detected, so the lead tells Lex both sides by hand.
 
 ## Who cooks (pins from 2026-10-22)
 

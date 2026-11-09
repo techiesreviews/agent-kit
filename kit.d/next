@@ -6,6 +6,7 @@ import { basename, isAbsolute, join, normalize, relative, resolve } from "node:p
 import { kitBranch, kitDevRoot, kitHome, kitJobMarkGo, kitOwner, kitResult, kitRoot, kitRulebookPins, kitSettings, kitSliceBranch } from "../kit-lib.mjs";
 import { loadTickets, parseFiles, parseTicket, resolveTickets } from "../tickets.mjs";
 import { cardBuildable, cardNaming, isOrbitFailure, onOrbit, openOrbitTickets, orbitProblem } from "../ticket-cards.mjs";
+import { cardFree } from "../ticket-store.mjs";
 
 // Settings from scripts/agents/kit.json; an unreadable file still lets --help print, with placeholders.
 let settings = null, settingsProblem = "";
@@ -485,9 +486,9 @@ async function orbitMain(flags) {
       if (card.stage === "done") continue;
       const ticket = cardTicket(card, board);
       cardIndex.set(card.identifier, ticket);
-      const wait = card.stage === "working" ? card.claimed_by ? "" : `${card.status_name} with no claim recorded` : card.next_lex !== null ? `needs Lex (Next step (Lex): ${card.next_lex})`
+      const wait = card.stage === "working" && !cardFree(card) ? card.claimed_by ? "" : `${card.status_name} with no claim recorded` : card.next_lex !== null ? `needs Lex (Next step (Lex): ${card.next_lex})`
         : card.open_blockers.length ? `blocked by ${card.open_blockers.join(", ")}` : card.stage === "waiting" ? `in ${card.status_name}`
-        : !cardBuildable(card.description) ? 'needs "## Files" and "## Done when" in its description' : "";
+        : !cardBuildable(card.description) ? 'needs "## Files" and "Done when" in its description' : "";
       if (wait) { early.push({ unit: { label: card.identifier }, reason: wait }); continue; }
       candidates.push({ first: ticket, ...unitOf([ticket]), readme, names: cardNaming(card) });
     }
@@ -518,7 +519,12 @@ async function orbitMain(flags) {
         let back = `; ${key} was already claimed by ${item.owner}, so it was left as it was`;
         if (!claim.unchanged) {
           try { back = (await store.unclaim(key, item.owner, claim.previous)).unchanged ? "; the claim had already moved to another owner" : "; the claim was given back"; }
-          catch (problem) { back = `; giving the claim back failed (${orbitProblem(problem, redact)}): run kit ticket update ${key} --status Todo`; }
+          catch (problem) {
+            // A card that was already In Progress keeps its status, so only the claim line has to go.
+            const was = cards.find(card => card.identifier === key)?.status_name ?? "Todo";
+            const hint = was.trim().toLowerCase() === "in progress" ? `remove the "Claimed by: ${item.owner}" line from its description in Orbit` : `run kit ticket update ${key} --status "${was}", then remove the "Claimed by: ${item.owner}" line if it is still there`;
+            back = `; giving the claim back failed (${orbitProblem(problem, redact)}): ${hint}`;
+          }
         }
         kitResult("fail", `next start ${item.unit.label}: ${error.message}${back}`);
         process.exitCode = 1;

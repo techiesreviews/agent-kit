@@ -6,7 +6,7 @@ import { loadavg, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { completedFixRounds, openFindings, reviewIncomplete, reviewCoversHead, sameReviewPatch } from "../review-findings.mjs";
-import { branchRisk, budgetReport, isNit, ledgerRows, prLine, renderLedger, reviewChain, roundLimit, stoppingFindings } from "../review-loop.mjs";
+import { branchRisk, budgetReport, isNit, ledgerRows, modelsLine, prLine, renderLedger, reviewChain, roundLimit, secondLookRows, stoppingFindings } from "../review-loop.mjs";
 import { projectCommand, spoken } from "../review-brief.mjs";
 import { briefFollowups, cardBriefFor, closeLandedCard, isCardKey, onOrbit, openOrbitTickets, orbitProblem, ticketCardKey, withReviewFollowups } from "../ticket-cards.mjs";
 
@@ -68,7 +68,8 @@ async function savedReview(head, base, patchId, ticket, root, second = false, re
     // A later review loop round that left an earlier id out was marked incomplete when it was saved: never reused.
     if (reviewIncomplete(folder)) continue;
     if (reviewedBase === base && reviewCoversHead(reviewedHead, head, ticket, root)) return { folder, samePatch: false };
-    if (!reviewedHead || !reviewedBase || openFindings(resultMd).findings.length) continue;
+    // A review with nothing but nits ended the loop, so it carries over to the same patch like a clean one (a blocker or a should does not).
+    if (!reviewedHead || !reviewedBase || openFindings(resultMd).findings.some(item => !isNit(item))) continue;
     currentIds ??= [await patchId(base, head), ...(reviewable === head ? [] : [await patchId(base, reviewable)])];
     const reviewedId = await patchId(reviewedBase, reviewedHead);
     if (currentIds.some(id => sameReviewPatch(reviewedId, id))) return { folder, samePatch: true };
@@ -716,7 +717,7 @@ async function main(args) {
     step = "review";
     console.log(`PR #${number}; ${review ? "review running" : `review: skipped (${plan.tier} tier)`}`);
     // The docs tier has no model review; CI still gates the merge.
-    let waived = 0, loopSummary = null, loopLeft = 0, loopBudgetUsed = false, secondLookSkipped = null;
+    let waived = 0, loopSummary = null, loopLeft = 0, loopBudgetUsed = false, secondLookSkipped = null, secondRows = [], loopDeclined = [];
     // `name` is "review" (Claude's) or "second look", whose lines and summary say so.
     async function recordFollowups(findings, name = "review", budgetUsed = true, nitsOnly = true) {
       if (!findings.length) return;
@@ -789,24 +790,46 @@ async function main(args) {
     }
     // Claude's review (none in the docs tier), then the second look on every change; both weigh findings the same way.
     async function reviewHead() {
-      waived = 0; loopSummary = null; loopLeft = 0; loopBudgetUsed = false; secondLookSkipped = null;
+      waived = 0; loopSummary = null; loopLeft = 0; loopBudgetUsed = false; secondLookSkipped = null; secondRows = []; loopDeclined = [];
       const base = await git("review", ["merge-base", `origin/${flags.base}`, "HEAD"]);
-      if (review && !await lookAt(base, false)) return false;
-      if (!await lookAt(base, true)) return false;
+      // A PR that already says "approved" for an earlier head (a "behind" rebase brought a new one) never keeps saying it
+      // while the new head is reviewed, or when that review stops the landing.
+      // The head can move while the looks run (kit pr's own follow-ups commit), so the block names the head as it is then.
+      const stopped = async (why, see) => { await replaceBlock(`Verdict: not approved (${why} at the new head ${head.slice(0, 7)}; ${see})`); };
+      try {
+        await replaceBlock(`Verdict: pending (the new head ${head.slice(0, 7)} is being reviewed)`);
+        if (review && !await lookAt(base, false)) { await stopped("open findings", "see the review comments"); return false; }
+        if (!await lookAt(base, true)) { await stopped("open findings", "see the review comments"); return false; }
+      } catch (error) {
+        // A look that failed to run or to save leaves no "pending" behind either; the run still ends with the failure.
+        await stopped("the review did not finish", "see the kit pr run for the error").catch(() => {});
+        throw error;
+      }
       await recordReviewLoop();
       return true;
+    }
+    // The text between the review-loop markers of a PR that already has them; `text` null takes the block away. Nothing else
+    // is touched, and a PR with no block gets none here (recordReviewLoop writes the first one).
+    async function replaceBlock(text) {
+      const marked = /\n*<!-- review-loop -->[\s\S]*?<!-- \/review-loop -->\n*/;
+      const current = readFileSync(body, "utf8");
+      if (!marked.test(current)) return;
+      const next = current.replace(marked, () => text === null ? "\n" : `\n<!-- review-loop -->\n${text}\n<!-- /review-loop -->\n`);
+      if (next === current) return;
+      writeFileSync(body, next);
+      await gh("review-loop", ["api", "--method", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "-F", `body=@${body}`]);
     }
     // Rule: the PR says how it was reviewed. The block sits between markers, so a later run (a "behind" merge, a new head)
     // replaces it instead of adding a second line and ledger.
     async function recordReviewLoop() {
-      if (!loopSummary) return;
+      if (!loopSummary) { await replaceBlock(null); return; }
       const open = `${loopLeft} open finding${loopLeft === 1 ? "" : "s"}`;
       const verdict = !loopLeft ? "approved" : loopBudgetUsed ? `not approved (budget used, ${open} left for Lex${waived ? ", waived by the lead" : ""})`
         : waived ? `not approved (${open} waived by the lead)` : `not approved (${open} left for Lex: no reason was given for it)`;
       const line = prLine({ ...loopSummary, verdict });
       // A second look that no model could take is said in the PR too, so the PR never reads as fully double-checked.
       const skipped = secondLookSkipped ? `${secondLookSkipped}\n\n` : "";
-      const block = `<!-- review-loop -->\n${line}\n\n${skipped}${loopSummary.ledger}\n<!-- /review-loop -->`;
+      const block = `<!-- review-loop -->\n${line}\n\n${skipped}${renderLedger([...loopSummary.rows, ...secondRows])}\n<!-- /review-loop -->`;
       const current = readFileSync(body, "utf8");
       const next = /<!-- review-loop -->[\s\S]*?<!-- \/review-loop -->/.test(current)
         ? current.replace(/<!-- review-loop -->[\s\S]*?<!-- \/review-loop -->/, () => block) : `${current.replace(/\n*$/, "\n")}\n${block}\n`;
@@ -864,14 +887,19 @@ async function main(args) {
       // Nits alone never block or call for a round; blockers and shoulds do while the budget lasts, then only blockers (nits stop the loop; out of budget is never approval).
       const relaxed = rounds >= limit;
       const blocking = stoppingFindings(findings, rounds, loopRisk.risky);
+      // The review's own record: the ids it gave its findings (a second look's are SL-<n>), and what the builder declined along the chain.
+      const chain = reviewChain(dirname(resultPath));
+      const ids = new Map(findings.map((item, index) => [item, second ? `SL-${index + 1}` : chain.at(-1)?.findings[index]?.id]));
+      // What is left that is not a nit, across both looks: out of budget it is reported for Lex and the PR is never called approved.
+      const left = findings.filter(item => !isNit(item));
       if (findings.length) {
         const ordered = [...blocking, ...findings.filter(item => !blocking.includes(item))];
         for (const finding of ordered.slice(0, 15)) console.log(`${finding.group}: ${shortText(finding.text)}`);
         if (findings.length > 15) console.log(`… and ${findings.length - 15} more`);
-        // Out of budget with findings left is reported for Lex to decide, never taken as approval.
-        if (relaxed && blocking.length) {
-          const saved = second ? [] : reviewChain(dirname(resultPath)).at(-1)?.findings ?? [];
-          console.log(budgetReport({ rounds, limit, open: blocking.map(item => ({ ...item, id: saved[findings.indexOf(item)]?.id })) }));
+        // Out of budget with findings left is reported for Lex to decide, never taken as approval: every open item, blockers first, and the builder's side.
+        if (relaxed && left.length) {
+          const open = [...blocking, ...left.filter(item => !blocking.includes(item))].map(item => ({ ...item, id: ids.get(item) }));
+          console.log(budgetReport({ rounds, limit, open, declined: [...loopDeclined, ...chain.flatMap(record => record.declined)] }));
         }
         if (blocking.length && !flags.waive) {
           kitResult("fail", `pr #${number} ${name} has ${blocking.length} open findings (${resultPath})`);
@@ -881,17 +909,13 @@ async function main(args) {
       }
       const rest = findings.filter(item => !blocking.includes(item));
       if (rest.length) await recordFollowups(rest, name, relaxed, rest.every(isNit));
-      // What is left that is not a nit, across both looks: out of budget it is reported for Lex and the PR is never called approved.
-      const left = findings.filter(item => !isNit(item));
       loopLeft += left.length;
       if (left.length && relaxed) loopBudgetUsed = true;
-      const chain = second ? [] : reviewChain(dirname(resultPath));
-      if (left.length && relaxed && !blocking.length) {
-        const ids = new Map(findings.map((item, index) => [item, chain.length ? chain.at(-1).findings[index]?.id : undefined]));
-        console.log(budgetReport({ rounds, limit, open: left.map(item => ({ ...item, id: ids.get(item) })) }));
-      }
+      // A second look has no rounds to mark its findings, so its rows only say what the landing did with them; the builder's side stays the first look's.
+      if (!second) loopDeclined = chain.flatMap(record => record.declined);
+      if (second) secondRows = secondLookRows(findings, { ids, waived: blocking });
       // The PR line and the ledger come from the first review's own evidence and are written once both looks have passed.
-      if (chain.length) loopSummary = { rounds: chain.length, model: chain.at(-1).model ?? "unknown model", ledger: renderLedger(ledgerRows(chain)) };
+      else if (chain.length) loopSummary = { rounds: chain.length, model: modelsLine(chain), rows: ledgerRows(chain) };
       ok(name);
       return true;
     }
