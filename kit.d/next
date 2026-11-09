@@ -519,7 +519,7 @@ async function orbitMain(flags) {
         let back = `; ${key} was already claimed by ${item.owner}, so it was left as it was`;
         if (!claim.unchanged) {
           try { back = (await store.unclaim(key, item.owner, claim.previous)).unchanged ? "; the claim had already moved to another owner" : "; the claim was given back"; }
-          catch (problem) { back = `; giving the claim back failed (${orbitProblem(problem, redact)}): run kit ticket update ${key} --status Todo`; }
+          catch (problem) { back = `; giving the claim back failed (${orbitProblem(problem, redact)}): run kit ticket update ${key} --status "${cards.find(card => card.identifier === key)?.status_name ?? "Todo"}"`; }
         }
         kitResult("fail", `next start ${item.unit.label}: ${error.message}${back}`);
         process.exitCode = 1;

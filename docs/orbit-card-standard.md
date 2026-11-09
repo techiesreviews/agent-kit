@@ -17,7 +17,7 @@ Nothing else. The kit's own lines (`Planned dates:`, `Blocked by:`, `Claimed by:
 
 ## Sub-tasks (the parts)
 - Every part that can be done, finished or assigned on its own is a sub-task (`--parent KEY`) with its own status.
-- A sub-task is assigned to Lex only when it waits for him. Description: 1 to 2 lines plus `Done when:` (a part with no description at all, only a title, is left alone by `kit ticket check`).
+- A sub-task is assigned to Lex only when it waits for him. Description: 1 to 2 lines plus `Done when:` (a part with no description at all, only a title, is left alone by `kit ticket check`, except a bare card under the project's own parent card).
 - A parent keeps the goal; its sub-tasks show the progress.
 
 ## Fields
@@ -35,6 +35,7 @@ Nothing else. The kit's own lines (`Planned dates:`, `Blocked by:`, `Claimed by:
 ## How the kit helps
 - `kit ticket note KEY text` posts a dated comment. `kit ticket comment KEY text` posts a comment as it is.
 - `kit ticket create` and `kit ticket update` print a warning (the exit code stays 0, nothing is blocked) when a new description is over 12 lines with text, has a `## Notes` section or a checklist line (`- [ ]`, `- [x]`), or has no `Done when:` line. The kit's own lines are not counted.
-- `kit ticket check KEY | --project KEY | --all [--json]` lists every card that breaks the standard and which rule (a sub-task with no description is left alone, and a `Next step (fleet):` line is not counted toward the 12 lines). It changes nothing and any role may run it.
+- `kit ticket check KEY | --project KEY | --all [--json]` lists every card that breaks the standard and which rule (a sub-task with no description is left alone, except a bare card under the project's own parent card, and a `Next step (fleet):` line is not counted toward the 12 lines). It changes nothing and any role may run it.
 - `kit ticket next-lex KEY "reason" [--comment "details"]` sets `Next step (Lex):`, assigns Lex, moves a Backlog or Todo card to In Progress and posts the `@Lex` comment.
 - `kit ticket tidy KEY --dir FOLDER [--dry-run]` moves a long card to the standard: comments first, then the description, then the sub-tasks. A lead runs it; run it again after a failure and it finishes the rest without doubling anything.
+- A card the kit should build (`kit next`, `kit slice`) also needs a `## Files` section; its `Done when:` line may stand in for a `## Done when` heading.

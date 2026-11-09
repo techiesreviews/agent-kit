@@ -833,7 +833,7 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
           description: withClaimedBy(task.description, null),
         };
       });
-      const landing = oneLine(text), extra = String(followups ?? "").trim();
+      const landing = oneLine(text), extra = String(followups ?? "").trim(), heading = extra.split("\n", 1)[0];
       const result = { ...outcome }, dries = outcome.dry ? [outcome.dry] : [];
       let known = split(outcome.task.description).some(line => line.includes(landing)), bodies;
       // The card's comments, read once for both texts.
@@ -850,7 +850,8 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       if (extra) {
         try {
           refuseSecrets(extra);
-          if (!(await bodiesOf()).some(body => body.trim() === extra)) { await post(extra); unchanged = false; }
+          // Posted already when a comment opens with the same first line ("Follow-ups from <PR>:"), whatever its list says now.
+          if (!(await bodiesOf()).some(body => body.trim().startsWith(heading))) { await post(extra); unchanged = false; }
         } catch (error) { result.followupsNotAdded = error; }
       }
       return { ...result, unchanged, ...(dries.length ? { dry: dries[0], dries } : {}) };
@@ -869,7 +870,8 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
         // A sub-task with no description is a part named by its title, which the standard leaves alone. A card under the
         // project's own parent card (where new cards go by default) is an ordinary card, so it is still checked.
         if (task.parent_task_id && !String(task.description ?? "").trim()) {
-          boardParent ??= defaults.parent ? await client.task(orbitCardKey(defaults.parent)).then(card => card.id, () => "") : "";
+          // A parent that no longer exists is no board parent; any other failure to look it up stops the check.
+          boardParent ??= defaults.parent ? await client.task(orbitCardKey(defaults.parent)).then(card => card.id, error => { if (error?.status === 404) return ""; throw error; }) : "";
           if (task.parent_task_id !== boardParent) continue;
         }
         const problems = cardStandardProblems(task.description);

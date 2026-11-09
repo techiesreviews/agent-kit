@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { cardStage, cardStandardProblems, orbitDate, orbitStore, showDate, ticketSettings, withBlockedBy, withPlannedDates, withoutNextLex } from "../ticket-store.mjs";
+import { doneWhen } from "../ticket-cards.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { orbitClient, orbitRedactor, orbitReport } from "../orbit-client.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
@@ -2359,6 +2360,30 @@ test("check ignores a sub-task with no description, and still lists one whose de
   const bare = ok(await run(["check", "TOOLS-2"]));
   assert.match(bare.stdout, /TOOLS-2 follows the standard/);
   assert.equal(orbit.writes().length, 0);
+});
+
+test("doneWhen reads a heading or the standard's line, with its list or plain lines, and stops at the next label or heading", () => {
+  assert.equal(doneWhen("## Files\n\n- a\n\n## Done when\n\n- x\n- y\n\n## Links\n\n- z"), "- x\n- y");
+  assert.equal(doneWhen("Goal\n\nDone when:\nit works\nit is tested\nLinks: none"), "it works\nit is tested");
+  assert.equal(doneWhen("Done when: it works\n\n- tested\n\nLinks: none"), "it works\n- tested");
+  assert.equal(doneWhen("Done when:\n- x\n\nA plain paragraph after a gap."), "- x");
+  assert.equal(doneWhen("Done when:\n- x\n## Notes\n- n"), "- x");
+  assert.equal(doneWhen("Done when:\n\nLinks: none"), "");
+  assert.equal(doneWhen("Goal only"), "");
+  assert.equal(doneWhen(undefined), "");
+});
+
+test("check stops when the default parent cannot be looked up (other than gone), and treats a gone parent as no board parent", async t => {
+  const { orbit, config } = await fixture(t);
+  const home = mkdtempSync(join(tmpdir(), "kit-check-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const client = orbitClient(config, { timeoutMs: 5_000 });
+  const parent = orbit.addTask(orbit.tools, { title: "Parent", description: goodCard });
+  orbit.addTask(orbit.tools, { title: "Bare", parent_task_id: parent.id, description: "" });
+  const storeWith = (task: (key: string) => Promise<any>) => orbitStore({ client: { ...client, task: async (key: string) => key === "TOOLS-99" ? task(key) : client.task(key) }, role: "lead", who: "kit-1", logPath: join(home, "orbit.log"), redact: orbitRedactor(secrets), secrets, defaults: { project: "TOOLS", parent: "TOOLS-99" } });
+  await assert.rejects(() => storeWith(async () => { throw Object.assign(new Error("Orbit is down"), { status: 500 }); }).check({ project: "TOOLS" }), /Orbit is down/);
+  const gone = await storeWith(async () => { throw Object.assign(new Error("gone"), { status: 404 }); }).check({ project: "TOOLS" });
+  assert.deepEqual(gone.broken, []);
 });
 
 test("check still lists a bare card under the project's default parent, while a bare part under another card is skipped", async t => {
