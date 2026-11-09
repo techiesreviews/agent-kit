@@ -937,10 +937,11 @@ function preparePrompt(options, brief, out) {
     let sinceNote = "";
     if (options.since && !commit) {
       const since = join(out, "since-last-review.patch");
-      const gitOut = args => execFileSync("git", ["-C", options.worktree, ...args], { maxBuffer: 64 * 1024 * 1024, encoding: "utf8" });
+      // Raw bytes for the files (a text file need not be UTF-8); only the merge check is read as text.
+      const gitOut = args => execFileSync("git", ["-C", options.worktree, ...args], { maxBuffer: 64 * 1024 * 1024 });
       // After a merge from the base, a plain diff also holds what landed on the base: then only the branch's own commits count (the
       // ones the base does not have), merges left out. A conflict fixed inside a merge commit is not in that list.
-      const merged = gitOut(["rev-list", "--merges", `${options.since}..${head}`]).trim() !== "";
+      const merged = gitOut(["rev-list", "--merges", `${options.since}..${head}`]).toString().trim() !== "";
       if (merged) {
         writeFileSync(since, gitOut(["log", "-p", "--reverse", "--no-merges", "--format=commit %H%n%s%n", `${options.since}..${head}`, `^${base}`]));
         sinceNote = ` Changes since the last review (the branch's own commits since ${options.since}, merges from the base left out): read ${JSON.stringify(since)}.`;
