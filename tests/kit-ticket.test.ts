@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { cardStage, cardStandardProblems, orbitDate, orbitStore, showDate, ticketSettings, withBlockedBy, withNote, withPlannedDates, withoutNextLex } from "../ticket-store.mjs";
+import { cardStage, cardStandardProblems, orbitDate, orbitStore, showDate, ticketSettings, withBlockedBy, withPlannedDates, withoutNextLex } from "../ticket-store.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { orbitClient, orbitRedactor, orbitReport } from "../orbit-client.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
@@ -1340,7 +1340,6 @@ test("the store's line edits leave the rest of a description exactly as it was",
   assert.equal(withPlannedDates("Text\n\n## Notes\n\n- a", "Planned dates: z"), "Text\n\nPlanned dates: z\n\n## Notes\n\n- a");
   assert.equal(withPlannedDates("", "Planned dates: z"), "Planned dates: z");
   assert.equal(withPlannedDates("Text\n## Notes\n\n- a", "Planned dates: z"), "Text\n\nPlanned dates: z\n\n## Notes\n\n- a");
-  assert.equal(withNote("## Notes\n\n- a\n\n## After\n\ntext", "2026-01-01", "me", "b"), "## Notes\n\n- a\n- 2026-01-01 (me): b\n\n## After\n\ntext");
 });
 
 test("a list asks for each board's status names once, however many cards it shows", async t => {
@@ -2098,6 +2097,20 @@ test("claim refuses a done card, one waiting for Lex, one still blocked and a he
   assert.equal(orbit.writes().length, 0);
 });
 
+test("claim refuses an unassigned card in another started status (not In Progress), and leaves it as it was", async t => {
+  const { orbit, store, card } = await boardStore(t);
+  // The video board's Script status is a started one, like In Review on a board that has it.
+  const scripting = orbit.addTask(orbit.video, { status_id: orbit.statusId(orbit.video, "Script"), description: "Text" });
+  await assert.rejects(() => store.claim(scripting.identifier, "kit-1"), /VID-1 is in Script, so it was not claimed/);
+  assert.equal(orbit.statusOf(scripting), "Script");
+  assert.equal(scripting.description, "Text");
+  assert.equal(orbit.writes().length, 0);
+  // A card that is In Progress with no claim, no assignee and no next step is still free, as is a Todo one.
+  const free = card({ description: "Text" }, "In Progress");
+  assert.ok(!(await store.claim(free.identifier, "kit-1")).unchanged);
+  assert.ok(!(await store.claim(card({ description: "Text" }).identifier, "kit-2")).unchanged);
+});
+
 test("unclaim gives the status and the claim back; close sets Done and drops the claim, then comments the landing with its date, once", async t => {
   const { orbit, store, card } = await boardStore(t);
   const task = card({ description: "Text" });
@@ -2137,6 +2150,56 @@ test("a card given back by clear-next-lex can be claimed again; one with an owne
   // Someone working on it by hand (an assignee, no claim line) keeps it.
   const handled = card({ description: "Text", assignee_ids: [member(orbit, "Sam Helper")] }, "In Progress");
   await assert.rejects(() => make("lead", "kit-2").claim(handled.identifier, "kit-2"), /already taken by someone \(In Progress\)/);
+});
+
+test("close adds the follow-ups once: a rerun after a failed landing comment does not post them again", async t => {
+  const { orbit, card } = await boardStore(t);
+  const config = { origin: orbit.origin, workspace_id: fakeWorkspace, token: fakeToken, cf_access_client_id: fakeCfId, cf_access_client_secret: fakeCfSecret };
+  const home = mkdtempSync(join(tmpdir(), "kit-close-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const client = orbitClient(config, { timeoutMs: 5_000 });
+  const storeWith = (change: object, dryRun = false) => orbitStore({ client: { ...client, ...change }, role: "lead", who: "kit-1", logPath: join(home, "orbit.log"), redact: orbitRedactor(secrets), secrets, dryRun, defaults: { project: "KIT" } });
+  const followups = "Follow-ups from PR #9:\n- Spec (P3): P3: Cosmetic defect.";
+  const task = card({ description: "Claimed by: kit-1\n\nText" }, "In Progress");
+  const failing = async (key: string, body: string) => { if (body.includes("Landed in PR #9")) throw new Error("The comment is refused"); return client.addComment(key, body); };
+  const first = await storeWith({ addComment: failing }).close(task.identifier, "Landed in PR #9", { followups });
+  assert.equal(orbit.statusOf(task), "Done");
+  assert.equal(first.landingNotAdded.message, "The comment is refused");
+  assert.equal(first.followupsNotAdded, undefined);
+  assert.deepEqual(orbit.comments[task.id].map((item: any) => item.body), [followups]);
+  const second = await storeWith({}).close(task.identifier, "Landed in PR #9", { followups });
+  assert.equal(second.landingNotAdded, undefined);
+  assert.deepEqual(orbit.comments[task.id].map((item: any) => item.body), [followups, `${today()} Landed in PR #9`], "the landing is added, the follow-ups are not posted twice");
+  // A third run changes nothing.
+  const writes = orbit.writes().length;
+  assert.ok((await storeWith({}).close(task.identifier, "Landed in PR #9", { followups })).unchanged);
+  assert.equal(orbit.writes().length, writes);
+  // A follow-ups comment that fails is reported on its own, with the card Done and the landing in place.
+  const other = card({ description: "Text" }, "In Progress");
+  const refused = await storeWith({ addComment: async (key: string, body: string) => { if (body.startsWith("Follow-ups")) throw new Error("Follow-ups refused"); return client.addComment(key, body); } }).close(other.identifier, "Landed in PR #10", { followups });
+  assert.equal(refused.followupsNotAdded.message, "Follow-ups refused");
+  assert.equal(refused.landingNotAdded, undefined);
+  assert.deepEqual(orbit.comments[other.id].map((item: any) => item.body), [`${today()} Landed in PR #10`]);
+});
+
+test("close with a dry run shows the landing comment and the follow-ups it would post, and sends nothing", async t => {
+  const { orbit, card } = await boardStore(t);
+  const config = { origin: orbit.origin, workspace_id: fakeWorkspace, token: fakeToken, cf_access_client_id: fakeCfId, cf_access_client_secret: fakeCfSecret };
+  const home = mkdtempSync(join(tmpdir(), "kit-close-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const dry = orbitStore({ client: orbitClient(config, { timeoutMs: 5_000 }), role: "lead", who: "kit-1", logPath: join(home, "orbit.log"), redact: orbitRedactor(secrets), secrets, dryRun: true, defaults: { project: "KIT" } });
+  const task = card({ description: "Text" }, "In Progress");
+  const outcome = await dry.close(task.identifier, "Landed in PR #9", { followups: "Follow-ups from PR #9:\n- a" });
+  assert.deepEqual((outcome.dries as any[]).map(item => [item.method, item.body.body ?? item.body.status_id !== undefined]), [["PATCH", true], ["POST", `${today()} Landed in PR #9`], ["POST", "Follow-ups from PR #9:\n- a"]]);
+  assert.equal(outcome.dry.method, "PATCH");
+  assert.equal(orbit.writes().length, 0);
+  assert.equal(orbit.statusOf(task), "In Progress");
+  // A Done card that already has the landing shows only what is still missing.
+  const done = card({ description: "Text" }, "Done");
+  orbit.comments[done.id] = [{ id: "1", body: `${today()} Landed in PR #9` }];
+  const rest = await dry.close(done.identifier, "Landed in PR #9", { followups: "Follow-ups from PR #9:\n- a" });
+  assert.equal(rest.dries, undefined);
+  assert.ok(rest.unchanged);
 });
 
 test("close leaves the card Done and hands back the failure when looking for or adding the landing comment fails", async t => {
@@ -2191,6 +2254,8 @@ test("cardStandardProblems names each broken rule, ignores the lines the kit kee
   const kept = "Next step (Lex): go\nPlanned dates: due 2026-11-30 (source: plan)\nBlocked by: TOOLS-9\nClaimed by: kit-1";
   assert.deepEqual(rules(`${kept}\n\n${twelve}`), []);
   assert.deepEqual(rules(`${kept}\n\n${twelve}\nOne more`), ["too-long"]);
+  // The fleet's next step line is the kit's own too.
+  assert.deepEqual(rules(`Next step (fleet): build it\n\n${twelve}`), []);
   const all = cardStandardProblems(`${filler(13)}\n## Notes\n- [ ] a`).map((item: { rule: string }) => item.rule);
   assert.deepEqual(all, ["too-long", "notes", "checklist", "no-done-when"]);
   for (const item of cardStandardProblems("## Notes")) assert.match(item.message, /^[A-Z].*\.$/);
@@ -2269,6 +2334,20 @@ test("check lists the cards that break the standard and the rule, for one card, 
   }
   refused(await run(["check", "TOOLS-99"]), /does not exist/);
   refused(await run(["check", "../../me"]), /card key/i);
+});
+
+test("check ignores a sub-task with no description, and still lists one whose description breaks the standard", async t => {
+  const { orbit, run } = await fixture(t);
+  const parent = orbit.addTask(orbit.tools, { title: "Parent", description: goodCard });
+  orbit.addTask(orbit.tools, { title: "Bare part", parent_task_id: parent.id, description: "" });
+  orbit.addTask(orbit.tools, { title: "Blank part", parent_task_id: parent.id, description: " \n " });
+  orbit.addTask(orbit.tools, { title: "Wordy part", parent_task_id: parent.id, description: "Just text" });
+  orbit.addTask(orbit.tools, { title: "Bare card", description: "" });
+  const json = JSON.parse(ok(await run(["check", "--project", "TOOLS", "--json"])).stdout.split("\nRESULT:")[0]);
+  assert.deepEqual(json.map((card: any) => card.title).sort(), ["Bare card", "Wordy part"]);
+  const bare = ok(await run(["check", "TOOLS-2"]));
+  assert.match(bare.stdout, /TOOLS-2 follows the standard/);
+  assert.equal(orbit.writes().length, 0);
 });
 
 test("check says when a board holds more cards than it read, and works from a project that keeps ticket files", async t => {

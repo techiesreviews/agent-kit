@@ -123,7 +123,7 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
   waves that follow. A claim (`kit next --start`, `kit slice --ticket <KEY>`) is one write: status In Progress and a
   "Claimed by: <owner>" line; a card someone else holds is refused, and a start that fails gives the claim back. The
   slice copies the card once to `.scratch/kit-tickets/<KEY>.md`, the brief its build, review, fix and UX steps read (a
-  card needs "## Files" and "## Done when"); a rerun resumes from it. When the PR lands, `kit pr` sets the card to Done
+  card needs "## Files" and "## Done when", or the card standard's `Done when:` line in place of that heading); a rerun resumes from it. When the PR lands, `kit pr` sets the card to Done
   and adds a dated comment naming the PR and merge SHA; when that write fails the merge still counts and the RESULT line says so.
   `kit status` shows status name, claim, PR and CI per card. `kit init --issues` makes a card per open GitHub Issue in
   the project and parent (its "GitHub Issue:" line holds the link and number), then closes each Issue with a comment
@@ -177,8 +177,10 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
   `kit ticket tidy KEY --dir FOLDER [--dry-run]` posts `comments.txt` (split by a line with only `-----`), sets
   `description.txt` and creates each sub-task of `subtasks.json` (`[{title, description, assignee}]`, assignee `Lex` by
   member name), skipping what is already there, so a run again after a failure finishes the rest and never doubles anything.
-  A card that waited for Lex and was given back by `clear-next-lex` stays In Progress; a slice may claim it when it has no
-  claim line, no assignee and no next step.
+  A card that waited for Lex and was given back by `clear-next-lex` stays In Progress; `kit next` hands it out again and a
+  slice may claim it when it has no claim line, no assignee and no next step. A claim never takes an unassigned card in
+  another started status (In Review, say). `kit ticket check` leaves sub-tasks with no description alone and does not count
+  a `Next step (fleet):` line toward the 12 lines.
   Projects that keep ticket files (`"tickets": "files"`) keep how `kit next`, `kit slice`, `kit pr` and `kit status` work
   today; `kit ticket` itself always talks to Orbit, as before.
 

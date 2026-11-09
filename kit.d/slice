@@ -9,7 +9,7 @@ import { branchRisk, roundLimit, stoppingFindings } from "../review-loop.mjs";
 import { builderChecks, spoken } from "../review-brief.mjs";
 import { ticketSkillLines } from "../skills.mjs";
 import { visiblePath } from "../pr-tier.mjs";
-import { briefCardKey, briefFollowups, cardBriefFor, closeLandedCard, isCardKey, onOrbit, orbitProblem } from "../ticket-cards.mjs";
+import { briefCardKey, briefFollowups, cardBriefFor, closeLandedCard, doneWhen, isCardKey, onOrbit, orbitProblem } from "../ticket-cards.mjs";
 
 const { kitBranch, kitGhEnv, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, nodeEnv, commitBuilderWork, builderAuthor, kitScore, scoreCost, scoreReview } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
@@ -63,7 +63,7 @@ async function slice(args) {
     const ticket = resolve(root, flags.ticket);
     const source = readFileSync(ticket, "utf8");
     const section = name => new RegExp(`^## ${name}\\s*\\n([\\s\\S]*?)(?=^## |$(?![\\s\\S]))`, "m").exec(source)?.[1]?.trim();
-    const files = section("Files"), done = section("Done when");
+    const files = section("Files"), done = doneWhen(source);
     const title = /^title:\s*(.+)$/m.exec(source)?.[1].trim().replace(/^(["'])(.*)\1$/, "$2");
     if (!title || !files || !done) throw new Error("ticket must have a title, Files and Done when");
     directory = join(root, ".scratch/kit-slice", basename(ticket, ".md"));
