@@ -257,5 +257,5 @@ test("the Review loop rule promises only what happens: an incomplete review is r
   assert.ok(text.includes("rejected as incomplete (`kit review` exits 1 and nothing reuses it): run `kit review` again"));
   assert.ok(!/is run again|and is run again/.test(text.split("## Review loop")[1]?.split("## Who cooks")[0] ?? ""), "no promise that the kit runs it again");
   assert.ok(text.includes("Known limits of the review loop today (waived follow-ups)"));
-  assert.ok(text.includes("shows only the reviewer's side"));
+  assert.ok(text.includes('"disputed after two replies" is not detected'));
 });
