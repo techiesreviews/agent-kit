@@ -27,6 +27,9 @@ unset KIT_API_KEY_FILE KIT_API_CONFIG_DIR ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH
 # --setting-sources with an empty value), and loads no MCP servers (--strict-mcp-config, and no --mcp-config other than an empty server list,
 # {"mcpServers":{}}), no plugins (--plugin-dir, --plugin-url) and no extra settings or agents (--settings, --agents), all of which can
 # start programs of their own. No tool list, an empty one, or anything that may start another program keeps the flag on.
+# Managed (admin-installed) settings can hold hooks too, and neither --bare nor an empty --setting-sources is known to switch them off: a
+# machine with a managed-settings.json or a non-empty managed-settings.d/ folder keeps the flag on (the folder is /etc/claude-code, or
+# /Library/Application Support/ClaudeCode on macOS; KIT_CLAUDE_MANAGED_DIR names another one, for tests).
 # Fail closed: every doubt keeps the flag on. A tool list is read as claude reads it (variadic: the words after --tools count; commas,
 # spaces and line breaks all separate names), and --tools, --bare, --setting-sources, --strict-mcp-config and --mcp-config count only
 # where they are options of this call: not as the value of another option, and not after a bare -- (words after it are the prompt).
@@ -95,5 +98,12 @@ for ((i = 0; i < count; i++)); do
       if [[ -z $value ]]; then sources_empty=1; else sources_other=1; fi ;;
   esac
 done
-if (( tool_lists > 0 && readers && !misplaced && strict_mcp && !loads && (bare || (sources_empty && !sources_other)) )); then scrub=0; fi
+managed=0
+for managed_dir in "${KIT_CLAUDE_MANAGED_DIR:-/etc/claude-code}" "${KIT_CLAUDE_MANAGED_DIR:-/Library/Application Support/ClaudeCode}"; do
+  if [[ -e $managed_dir/managed-settings.json ]]; then managed=1; fi
+  for entry in "$managed_dir"/managed-settings.d/*; do
+    if [[ -e $entry ]]; then managed=1; fi
+  done
+done
+if (( tool_lists > 0 && readers && !misplaced && strict_mcp && !loads && !managed && (bare || (sources_empty && !sources_other)) )); then scrub=0; fi
 ANTHROPIC_API_KEY=$key CLAUDE_CONFIG_DIR=$dir CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=$scrub exec claude "$@"

@@ -81,6 +81,8 @@ export function parseMarks(resultMd) {
 // A carried finding reads `<id> still open: <reason> (original finding: <the first text>)`; the first text is kept once, however
 // many rounds carry it, and cut at 400 characters.
 const ORIGINAL = " (original finding: ";
+// A long reason is cut, so the original finding after it still fits the brief line of a later round (600 characters).
+const cutReason = reason => reason.length > 300 ? `${reason.slice(0, 300).trimEnd()}…` : reason;
 const originalText = item => {
   let text = String(item?.text ?? "");
   if (/^R\d+-\d+ still open/.test(text)) {
@@ -190,7 +192,7 @@ export function openFindings(resultMd, earlier = []) {
     const gap = mark.severity === "GAP";
     // `earlier` (the findings of the review this one answers, with their ids) lets the mark keep the finding's own text.
     const original = originalText(earlier.find(item => item?.id === id));
-    findings.unshift({ group: gap ? "Validation gaps" : "Previous findings", text: `${id} still open: ${mark.reason || "no reason given"}${original ? `${ORIGINAL}${original})` : ""}`, severity: gap ? null : mark.severity, kind: gap ? null : "unsorted" });
+    findings.unshift({ group: gap ? "Validation gaps" : "Previous findings", text: `${id} still open: ${cutReason(mark.reason) || "no reason given"}${original ? `${ORIGINAL}${original})` : ""}`, severity: gap ? null : mark.severity, kind: gap ? null : "unsorted" });
   }
   return readable ? { findings, notes, readable } : {
     findings: [{ group: "Review", text: "review format unreadable", severity: null, kind: "unsorted" }], notes: [], readable: false,

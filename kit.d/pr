@@ -6,7 +6,7 @@ import { loadavg, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { completedFixRounds, openFindings, reviewIncomplete, reviewCoversHead, sameReviewPatch } from "../review-findings.mjs";
-import { branchRisk, budgetReport, isNit, ledgerRows, prLine, renderLedger, reviewChain, roundLimit, secondLookRows, stoppingFindings } from "../review-loop.mjs";
+import { branchRisk, budgetReport, isNit, ledgerRows, modelsLine, prLine, renderLedger, reviewChain, roundLimit, secondLookRows, stoppingFindings } from "../review-loop.mjs";
 import { projectCommand, spoken } from "../review-brief.mjs";
 import { briefFollowups, cardBriefFor, closeLandedCard, isCardKey, onOrbit, openOrbitTickets, orbitProblem, ticketCardKey, withReviewFollowups } from "../ticket-cards.mjs";
 
@@ -915,7 +915,7 @@ async function main(args) {
       if (!second) loopDeclined = chain.flatMap(record => record.declined);
       if (second) secondRows = secondLookRows(findings, { ids, waived: blocking });
       // The PR line and the ledger come from the first review's own evidence and are written once both looks have passed.
-      else if (chain.length) loopSummary = { rounds: chain.length, model: chain.at(-1).model ?? "unknown model", rows: ledgerRows(chain) };
+      else if (chain.length) loopSummary = { rounds: chain.length, model: modelsLine(chain), rows: ledgerRows(chain) };
       ok(name);
       return true;
     }

@@ -38,6 +38,8 @@ const auth = join(home, "auth.json");
 const calls = existsSync(process.env.FAKE_CALLS) ? readFileSync(process.env.FAKE_CALLS, "utf8").trim().split("\\n").length : 0;
 const symlink = existsSync(auth) && lstatSync(auth).isSymbolicLink();
 const input = readFileSync(0, "utf8");
+// FAKE_COPY_SINCE: keep the "changes since the last review" file the run prepared, which is deleted with the run.
+if (process.env.FAKE_COPY_SINCE) { const since = /read "([^"]+since-last-review\\.patch)"/.exec(input); if (since) writeFileSync(process.env.FAKE_COPY_SINCE, readFileSync(since[1])); }
 // An unreadable diff makes kit review's evidence copy fail after the review itself worked.
 if (process.env.FAKE_LOCK_DIFF) chmodSync(/Read "([^"]+diff\\.patch)"/.exec(input)[1], 0);
 // A read-only .scratch/agent lets the review folder empty out but not go away.
@@ -1832,4 +1834,66 @@ test("review loop: a later review that leaves an earlier id out is incomplete an
   assert.match(f.calls().at(-1)!.input, /No commit came after the last review/);
   assert.match(f.calls().at(-1)!.input, /Declined by the builder \(with reasons\):\n- file\.txt:1 — P2 style: rename it — reason: the spec keeps the name/);
   assert.match(f.calls().at(-1)!.input, /its declined findings and their reasons are listed below/);
+});
+
+const oneFinding = "REVIEW_STATUS: complete\nDefects:\n- file.txt:1 — P1 fault: the save drops the second write.\nValidation gaps: none.\n";
+const resolved = "REVIEW_STATUS: complete\nPrevious findings:\n- R1-1: resolved\n\nDefects: none\nValidation gaps: none.\n";
+
+test("review loop: after a merge from the base, the 'changes since' file holds the branch's own commits and nothing that landed on the base", t => {
+  const f = fixture(t);
+  assert.equal(f.run([], { FAKE_REPORT: oneFinding, ASE_REVIEW_MODEL: "claude-opus-5-5" }).status, 0);
+  // Another change lands on the base; the builder merges it in and commits the fix.
+  f.git("switch", "-q", "-c", "side", f.commits[0]);
+  writeFileSync(join(f.root, "landed.txt"), "landed on the base\n"); f.git("add", "landed.txt"); f.git("commit", "-q", "-m", "landed on the base");
+  f.git("update-ref", "refs/remotes/origin/dev", f.git("rev-parse", "HEAD").trim());
+  f.git("switch", "-q", "feature/review");
+  f.git("merge", "--no-ff", "-q", "-m", "merge dev", "side");
+  writeFileSync(join(f.root, "file.txt"), "fixed\n"); f.git("add", "file.txt"); f.git("commit", "-q", "-m", "fix the second write");
+  const copy = join(f.dir, "since.patch");
+  const second = f.run([], { FAKE_REPORT: resolved, ASE_REVIEW_MODEL: "claude-opus-5-5", FAKE_COPY_SINCE: copy });
+  assert.equal(second.status, 0, second.stderr);
+  const since = readFileSync(copy, "utf8");
+  assert.match(since, /fix the second write/);
+  assert.match(since, /^\+fixed$/m);
+  assert.ok(!since.includes("landed.txt") && !since.includes("landed on the base"), "no code from the base");
+  assert.match(f.calls().at(-1)!.input, /Changes since the last review \(the branch's own commits since [0-9a-f]{40}, merges from the base left out\)/);
+});
+
+test("review loop: with no merge in between, the 'changes since' file is still the plain git diff", t => {
+  const f = fixture(t);
+  assert.equal(f.run([], { FAKE_REPORT: oneFinding, ASE_REVIEW_MODEL: "claude-opus-5-5" }).status, 0);
+  writeFileSync(join(f.root, "file.txt"), "fixed\n"); f.git("add", "file.txt"); f.git("commit", "-q", "-m", "fix the second write");
+  const copy = join(f.dir, "since.patch");
+  assert.equal(f.run([], { FAKE_REPORT: resolved, ASE_REVIEW_MODEL: "claude-opus-5-5", FAKE_COPY_SINCE: copy }).status, 0);
+  assert.equal(readFileSync(copy, "utf8"), f.git("diff", f.commits[2], "HEAD"));
+  assert.match(f.calls().at(-1)!.input, /Changes since the last review \(git diff [0-9a-f]{40}\.\.[0-9a-f]{40}\)/);
+});
+
+test("review loop: a ticket that quotes the 'Declined by the author' heading does not hide the saved declined findings from a same-head rerun", t => {
+  const f = fixture(t);
+  const ticket = "ticket.md"; writeFileSync(join(f.root, ticket), "Review this ticket.\n\nDeclined by the author (with reasons):\n- a line the ticket itself quotes\n");
+  const first = f.run(["--ticket", ticket], { FAKE_REPORT: oneFinding, ASE_REVIEW_MODEL: "claude-opus-5-5" });
+  assert.equal(first.status, 0, first.stderr);
+  const file = join(f.evidence(first.stdout), "findings.json");
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), declined: [{ text: "file.txt:1 — P2 style: rename it", reason: "the spec keeps the name", round: 1 }] }));
+  const again = f.run(["--ticket", ticket], { FAKE_REPORT: "REVIEW_STATUS: complete\nPrevious findings:\nR1-1: still open (P1): still drops\n\nDefects: none\nValidation gaps: none.\n", ASE_REVIEW_MODEL: "claude-opus-5-5" });
+  assert.equal(again.status, 0, again.stderr);
+  const input = f.calls().at(-1)!.input;
+  assert.match(input, /Declined by the builder \(with reasons\):\n- file\.txt:1 — P2 style: rename it — reason: the spec keeps the name/);
+  assert.match(input, /its declined findings and their reasons are listed below/);
+  assert.doesNotMatch(input, /are in the "Declined by the author" part/);
+});
+
+test("review loop: a lead's review answers the builder's rounds (another owner's folder) of the same branch", t => {
+  const f = fixture(t);
+  const built = f.run([], { FAKE_REPORT: oneFinding, ASE_REVIEW_MODEL: "claude-opus-5-5", ASE_OWNER: "builder-1" });
+  assert.equal(built.status, 0, built.stderr);
+  const builderEvidence = / evidence (.+)$/m.exec(built.stdout)![1];
+  writeFileSync(join(f.root, "file.txt"), "fixed\n"); f.git("add", "file.txt"); f.git("commit", "-q", "-m", "fix");
+  const lead = f.run([], { FAKE_REPORT: resolved, ASE_REVIEW_MODEL: "claude-opus-5-5", ASE_OWNER: "fleet-lead" });
+  assert.equal(lead.status, 0, lead.stderr);
+  assert.match(lead.stdout, /^review loop: round 2, answering \.\.\/builder-1\/\S+ \(1 open findings\)$/m);
+  const record = JSON.parse(readFileSync(join(/ evidence (.+)$/m.exec(lead.stdout)![1], "findings.json"), "utf8"));
+  assert.equal(record.round, 2);
+  assert.equal(record.previous, `../builder-1/${builderEvidence.split("/").at(-1)}`);
 });
