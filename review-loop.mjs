@@ -3,7 +3,7 @@
 // The pure parts live here so kit review, kit fix, kit slice and kit pr never read the rules differently.
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { blockingFindings, parseMarks } from "./review-findings.mjs";
 export { parseMarks };
 
@@ -46,13 +46,15 @@ export function riskyChange({ paths = [], text = "", settings = {} } = {}) {
 export function branchRisk({ root, base, ticket, settings }) {
   let paths = [];
   try { paths = execFileSync("git", ["-C", root, "diff", "--name-only", `${base}...HEAD`], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).split("\n").filter(Boolean); } catch { /* No base to compare: the ticket decides. */ }
-  // The ticket's title and goal and the files it names: what it is about, not the follow-up notes kit pr writes into it later.
+  // What the ticket says: its title and its whole text (a ticket file's Goal and Done when, an Orbit card's description), and the
+  // files it names. Not the Files list as words, and not the follow-up notes kit pr writes under "## Done (date)" later.
   let text = "", raw = "";
   try { raw = ticket ? readFileSync(resolve(root, ticket), "utf8") : ""; } catch { /* No ticket text. */ }
   const title = /^title:\s*["']?(.+?)["']?\s*$/m.exec(raw)?.[1] ?? "";
-  const goal = /^##\s+Goal\s*\n([\s\S]*?)(?=^##\s|$(?![\s\S]))/m.exec(raw)?.[1] ?? "";
   const files = /^##\s+Files\s*\n([\s\S]*?)(?=^##\s|$(?![\s\S]))/m.exec(raw)?.[1] ?? "";
-  text = `${title}\n${goal.slice(0, 1500)}`;
+  const own = raw.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "").split(/^##\s+Done \(/m)[0]
+    .replace(/^##\s+Files\s*\n[\s\S]*?(?=^##\s|$(?![\s\S]))/m, "");
+  text = `${title}\n${own.slice(0, 4000)}`;
   const named = [...files.matchAll(/`([^`\s]*[./][^`\s]*)`/g)].map(match => match[1]);
   return riskyChange({ paths: [...paths, ...named], text, settings });
 }
@@ -124,7 +126,13 @@ export function loopBriefSection({ round, limit, previousHead, currentHead, open
   ].join("\n\n");
 }
 
-/** The PR line : `Reviewed with review-loop: N rounds with <model>. Verdict: approved`. */
+/** The models a chain of rounds used, in order, each once: "a", "a and b", "a, b and c"; "unknown model" when no round saved one. */
+export function modelsLine(chain) {
+  const models = [...new Set(chain.map(record => record.model).filter(Boolean))];
+  return models.length > 1 ? `${models.slice(0, -1).join(", ")} and ${models.at(-1)}` : models[0] ?? "unknown model";
+}
+
+/** The PR line: `Reviewed with review-loop: N rounds with <model>. Verdict: approved`. */
 export function prLine({ rounds, model, verdict = "approved" }) {
   return `Reviewed with review-loop: ${rounds} round${rounds === 1 ? "" : "s"} with ${model}. Verdict: ${verdict}`;
 }
@@ -235,14 +243,19 @@ export const loopReviewerNote = [
  * same base that still had findings and whose reviewed head is an ancestor of the current head. A second look's folder is never one.
  * Returns { name, round, head, findings, declined } or null (then this is round 1, a full review).
  */
-export function findPreviousReview(parent, { head, base, root, branch }) {
-  if (!existsSync(parent) || !head || !base) return null;
+export function findPreviousReview(parent, { head, base, root, branch, otherOwners = [] }) {
+  if (!head || !base) return null;
   const isAncestor = other => {
     try { execFileSync("git", ["-C", root, "merge-base", "--is-ancestor", other, head], { stdio: "ignore" }); return true; }
     catch { return false; }
   };
-  for (const name of readdirSync(parent).sort().reverse()) {
-    const folder = join(parent, name);
+  // The owner's own folder first; a lead landing a builder's branch also answers the reviews other owners saved for this same branch
+  // (they must name it), and such a review is linked by a path from the owner's folder. Newest first by the timestamp in the name.
+  const candidates = [parent, ...otherOwners].filter(folder => existsSync(folder))
+    .flatMap(folder => readdirSync(folder).map(name => ({ name, folder: join(folder, name), foreign: folder !== parent,
+      link: folder === parent ? name : `${relative(parent, folder)}/${name}` })))
+    .sort((a, b) => b.name.localeCompare(a.name) || Number(a.foreign) - Number(b.foreign));
+  for (const { name, folder, foreign, link } of candidates) {
     if (existsSync(join(folder, "second-look.json")) || !existsSync(join(folder, "findings.json")) || !existsSync(join(folder, "refs.txt"))) continue;
     try {
       const [reviewedHead, reviewedBase] = readFileSync(join(folder, "refs.txt"), "utf8").trim().split("\n");
@@ -252,10 +265,12 @@ export function findPreviousReview(parent, { head, base, root, branch }) {
       // (its old head is gone from the history), which gets the full first review its new code needs.
       const connected = (reviewedBase === base || isAncestor(reviewedBase)) && (reviewedHead === head || isAncestor(reviewedHead));
       if (record.unreadable || record.incomplete || record.round === undefined || !connected || (record.branch && branch && record.branch !== branch)) continue;
+      // Another owner's review counts only when it names this very branch.
+      if (foreign && (!branch || record.branch !== branch)) continue;
       // The newest review of this change decides: when it found nothing, the loop had ended, so no open ids carry over, but the rounds still link.
       // The builder's declined findings kit fix saved on that review (text, reason, round); a malformed entry is dropped.
       const declined = (Array.isArray(record.declined) ? record.declined : []).filter(entry => entry && typeof entry.text === "string" && entry.text.trim());
-      return { name, clean: !record.findings?.length, round: record.round ?? 1, head: reviewedHead, declined, findings: record.findings.map((item, index) => ({ ...item, id: item.id ?? `R${record.round ?? 1}-${index + 1}` })) };
+      return { name: link, clean: !record.findings?.length, round: record.round ?? 1, head: reviewedHead, declined, findings: record.findings.map((item, index) => ({ ...item, id: item.id ?? `R${record.round ?? 1}-${index + 1}` })) };
     } catch { /* An unreadable record is not a previous review. */ }
   }
   return null;
