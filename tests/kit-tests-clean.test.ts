@@ -16,8 +16,9 @@ function entries(directory: string) {
   return existsSync(directory) ? readdirSync(directory).sort() : [];
 }
 
-// ASE_KIT_CLEAN_LIMIT_MS is a test-only seam: the cut-off test below forces a small limit.
-const limit = Number(process.env.ASE_KIT_CLEAN_LIMIT_MS) || 480_000;
+// ASE_KIT_CLEAN_LIMIT_MS is a test-only seam: the cut-off test below forces a small limit. The whole suite takes about
+// 500 s on a CI runner (2026-11-09), so the limit is 720 s: a run cut off there is a real hang, not a slow runner.
+const limit = Number(process.env.ASE_KIT_CLEAN_LIMIT_MS) || 720_000;
 const guardName = "kit and agent unit tests leave no run folders or temporary files";
 
 // Live members of a process group; a zombie is already gone and only waits for its parent.
