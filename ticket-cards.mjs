@@ -48,8 +48,8 @@ const oneLine = text => String(text ?? "").replace(/\s*[\r\n]+\s*/g, " ").trim()
 
 /**
  * What a description says is done: the text under a "## Done when" heading, else the card standard's "Done when:" line (its
- * own text, then the list lines under it, blank lines between them allowed). It ends at the first line that is not part of
- * the list, such as "Links:". Empty when there is none.
+ * own text, then the lines under it: plain lines that follow directly and list lines, which may sit after blank lines). It
+ * ends at a heading, a "Links:" style line or a plain line after a blank one. Empty when there is none.
  */
 export function doneWhen(description) {
   const text = String(description ?? "").replace(/\r\n?/g, "\n");
@@ -58,9 +58,13 @@ export function doneWhen(description) {
   const lines = text.split("\n"), start = lines.findIndex(line => /^[*_]*Done when:/i.test(line.trim()));
   if (start < 0) return "";
   const found = [/^[*_]*Done when:[*_]*(.*)$/i.exec(lines[start].trim())[1].trim()].filter(Boolean);
+  let gap = false;
   for (const line of lines.slice(start + 1)) {
-    if (!line.trim()) continue;
-    if (!/^(?:[-*+]|\d+[.)])\s|^\s/.test(line)) break;
+    if (!line.trim()) { gap = true; continue; }
+    const listed = /^(?:[-*+]|\d+[.)])\s|^\s/.test(line);
+    // A plain line counts when it follows directly; after a blank line only list lines do. A heading or a "Links:" style line ends it.
+    if (!listed && (gap || /^#|^[*_]*[A-Za-z][A-Za-z ]{0,30}:/.test(line))) break;
+    gap = false;
     found.push(line.trimEnd());
   }
   return found.join("\n").trim();

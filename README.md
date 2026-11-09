@@ -181,7 +181,7 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
   member name), skipping what is already there, so a run again after a failure finishes the rest and never doubles anything.
   A card that waited for Lex and was given back by `clear-next-lex` stays In Progress; `kit next` hands it out again and a
   slice may claim it when it has no claim line, no assignee and no `Next step (Lex):`. A claim never takes an unassigned card in
-  another started status (In Review, say). `kit ticket check` leaves sub-tasks with no description alone and does not count
+  another started status (In Review, say). `kit ticket check` leaves sub-tasks with no description alone (not a bare card under the project's own parent card, and with `--all` only that project's parent is known) and does not count
   a `Next step (fleet):` line toward the 12 lines.
   Projects that keep ticket files (`"tickets": "files"`) keep how `kit next`, `kit slice`, `kit pr` and `kit status` work
   today; `kit ticket` itself always talks to Orbit, as before.

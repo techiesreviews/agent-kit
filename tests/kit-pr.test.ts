@@ -2775,6 +2775,18 @@ test("on Orbit, a queued PR leaves its card open and says the queue closes it; r
   assert.doesNotMatch(nits.git("log", "--format=%s", "origin/dev..HEAD"), /docs: KIT-1/);
 });
 
+test("on Orbit, a follow-ups comment that Orbit refuses leaves the card Done with the landing comment, and the line names the PR", async t => {
+  const f = await orbitPr(t);
+  const task = f.card({}, "In Progress");
+  f.orbit.controls.refuseComments = /^Follow-ups from/;
+  f.saveReview(cleanReview.replace("Spec: none.", "Spec: P3: Cosmetic defect."));
+  const output = await f.pr(["--ticket", f.brief()]);
+  assert.equal(output.status, 0, output.all);
+  assert.equal(f.orbit.statusOf(task), "Done");
+  assert.match(output.stdout, /^card: KIT-1 Done \(https:\/\/github\.com\/test\/repo\/pull\/73\); its follow-ups were not added \(.*\): they are in https:\/\/github\.com\/test\/repo\/pull\/73$/m);
+  assert.deepEqual((f.orbit.comments[task.id] ?? []).map((comment: any) => comment.body.replace(/^\d{4}-\d{2}-\d{2} /, "").slice(0, 9)), ["Landed in"]);
+});
+
 test("on Orbit, an absolute brief path closes its card; a dry run with a KEY writes no brief where a slice would read it", async t => {
   const f = await orbitPr(t);
   const task = f.card({}, "In Progress");

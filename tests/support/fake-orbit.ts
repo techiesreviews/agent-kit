@@ -51,6 +51,8 @@ export async function fakeOrbit(t: TestContext, { kitBoard = false }: { kitBoard
     requireOrigin: true,
     // How many reads of the members list fail with a 500 next (the other requests are untouched).
     membersFail: 0,
+    // A comment whose text matches this is refused with a 500 (the other comments are untouched).
+    refuseComments: null as null | RegExp,
   };
 
   const addTask = (project: (typeof projects)[number], fields: FakeTask = {}): FakeTask => {
@@ -168,6 +170,7 @@ export async function fakeOrbit(t: TestContext, { kitBoard = false }: { kitBoard
     if (taskPath[2]) {
       if (request.method === "GET") return page(comments[task.id] ?? []);
       if (request.method === "POST") {
+        if (controls.refuseComments?.test(String(body.body))) return problem(response, 500, "internal_error", "The comment is refused");
         const comment = { id: randomUUID(), task_id: task.id, author_id: null, author_service_account: { id: "1", name: "fleet" }, body: body.body, parent_id: null, version: nextVersion(), created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
         (comments[task.id] ??= []).push(comment);
         return send(response, 201, comment);
