@@ -2912,7 +2912,7 @@ test("after a behind rebase a failed review, a second look that stops it, or a r
   const failing = approved();
   const failed = failing.run([], { FAKE_BEHIND: "1", FAKE_ADVANCE: failing.peer(), FAKE_ADVANCE_PATCH: "1", FAKE_REVIEW_FAIL: "1" });
   assert.equal(failed.status, 1, failed.stdout + failed.stderr);
-  assert.match(lastBlock(failing)!, /Verdict: not approved \(the review did not finish at the new head [0-9a-f]{7}; see the review comments\)/);
+  assert.match(lastBlock(failing)!, /Verdict: not approved \(the review did not finish at the new head [0-9a-f]{7}; see the kit pr run for the error\)/);
   // Claude's review of the rebased head is clean but the second look finds a blocker.
   const second = approved();
   const stopped = second.run([], { FAKE_BEHIND: "1", FAKE_ADVANCE: second.peer(), FAKE_ADVANCE_PATCH: "1", FAKE_SECOND_REBASED_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P1 the second look found this.\n" });
