@@ -2824,3 +2824,71 @@ test("on Orbit, a lead's kit pr --ticket KEY on a merge queue says nobody waits 
   assert.equal(f.orbit.statusOf(task), "In Progress");
   assert.deepEqual((f.orbit.comments[task.id] ?? []).map((comment: any) => comment.body), ["Follow-ups from https://github.com/test/repo/pull/73:\n- Spec (P3): P3: Cosmetic defect."]);
 });
+
+// TOOLS-100, TOOLS-102, TOOLS-103, TOOLS-104: the PR's review block and the saved reviews it comes from.
+const reviewBodies = (f: ReturnType<typeof fixture>) => f.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body ?? "");
+const savedFindings = (f: ReturnType<typeof fixture>, path: string, record: Record<string, unknown>) =>
+  writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ round: 1, model: "claude-opus-5-5", head: f.git("rev-parse", "HEAD"), findings: [], ...record }));
+
+test("a behind rebase never leaves the old 'approved' on the PR: it says pending while the new head is reviewed and not approved when that review finds a blocker", t => {
+  const f = fixture(t), peer = f.peer();
+  savedFindings(f, f.saveReview(cleanReview), {});
+  const report = "REVIEW_STATUS: complete\nDefects:\n- Spec: a.ts:1 P1 Rebased HEAD has a defect.\n";
+  const result = f.run([], { FAKE_BEHIND: "1", FAKE_ADVANCE: peer, FAKE_ADVANCE_PATCH: "1", FAKE_REVIEW: report });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  const blocks = reviewBodies(f).filter(text => text.includes("<!-- review-loop -->"));
+  assert.match(blocks[0], /Verdict: approved/, "the first head was approved");
+  assert.match(blocks.at(-1)!, /Verdict: not approved \(open findings at the new head/);
+  assert.doesNotMatch(blocks.at(-1)!, /Verdict: approved/);
+  assert.ok(blocks.some(text => /Verdict: pending/.test(text)), "while the new head was reviewed the PR said pending");
+  assert.equal((blocks.at(-1)!.match(/<!-- review-loop -->/g) ?? []).length, 1);
+});
+
+test("a nits-only review is reused after a rebase with the same patch: no new review, and the PR still says how it was reviewed", t => {
+  const f = fixture(t), peer = f.peer();
+  const nits = "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P3 a small point.\nValidation gaps: none.\n";
+  const result = f.run([], { FAKE_BEHIND: "1", FAKE_ADVANCE: peer, FAKE_REVIEW: nits });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(f.calls().filter(claudeReview).length, 1, "one review only: the nits-only one was reused");
+  assert.match(result.stdout, /review: reused \(same patch on new base\)/);
+});
+
+test("the ledger holds the second look's findings too, with ids that say they came from it", t => {
+  const base = (waive: boolean) => {
+    const f = fixture(t);
+    savedFindings(f, f.saveReview(cleanReview, waive ? "ke-lead" : undefined), {});
+    return f;
+  };
+  const budget = base(false); budget.rounds(3);
+  const used = budget.run([], { FAKE_SECOND_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P2 a second-look should.\n- Spec: file.txt:2 P3 a second-look nit.\n" });
+  assert.equal(used.status, 0, used.stdout + used.stderr);
+  const block = reviewBodies(budget).findLast(text => text.includes("<!-- review-loop -->"))!;
+  assert.match(block, /^\| SL-1 \| should \| .*second look.*a second-look should\. \|$/m);
+  assert.match(block, /^\| SL-2 \| nit \| .*second look.*a second-look nit\. \|$/m);
+  assert.match(block, /Verdict: not approved \(budget used, 1 open finding left for Lex\)/);
+  assert.doesNotMatch(block, /Findings ledger: none/);
+  const waiver = base(true);
+  const waived = waiver.run(["--waive", "Accepted for follow-up"], { ASE_OWNER: "ke-lead", FAKE_SECOND_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P1 the second look found this.\n" });
+  assert.equal(waived.status, 0, waived.stdout + waived.stderr);
+  const waivedBlock = reviewBodies(waiver).findLast(text => text.includes("<!-- review-loop -->"))!;
+  assert.match(waivedBlock, /^\| SL-1 \| blocker \| open, waived by the lead \(second look\): .*the second look found this\. \|$/m);
+  assert.match(waivedBlock, /Verdict: not approved \(1 open finding waived by the lead\)/);
+});
+
+test("out of budget with a blocker and a should left: the report counts both, lists both, and shows the builder's declined findings with their reasons", t => {
+  const f = fixture(t);
+  f.rounds(3);
+  const path = f.saveReview("REVIEW_STATUS: complete\nDefects:\n- Spec: a.ts:1 P1 Real wrong behaviour.\n- Spec: b.ts:2 P2 Real minor defect.\n");
+  savedFindings(f, path, { round: 4, findings: [
+    { id: "R4-1", group: "Spec", severity: "P1", kind: "fault", text: "a.ts:1 P1 Real wrong behaviour." },
+    { id: "R4-2", group: "Spec", severity: "P2", kind: "fault", text: "b.ts:2 P2 Real minor defect." }],
+  declined: [{ text: "the save drops a write", reason: "the spec keeps the last write", round: 2 }, { text: "rename the helper", reason: "", round: 3 }] });
+  const result = f.run();
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /^Review budget used: 3 of 3 fix rounds, 2 open findings\. Running out of budget is not approval; Lex decides\.$/m);
+  assert.match(result.stdout, /^- R4-1 \(blocker\): /m);
+  assert.match(result.stdout, /^- R4-2 \(should\): /m);
+  assert.match(result.stdout, /^Builder's side \(declined, with reasons\):$/m);
+  assert.match(result.stdout, /^- the save drops a write — reason: the spec keeps the last write$/m);
+  assert.match(result.stdout, /^- rename the helper — reason: none given$/m);
+});

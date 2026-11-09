@@ -143,7 +143,7 @@ undoes a newer rule.
 
 The start marker carries this rule's version too (v2, v3 …).
 
-Known limits of the review loop today (waived follow-ups): the PR line and ledger have edge cases (a "behind" rebase can leave an earlier "approved" until the next review finishes; a merge from the base puts other people's code in the "changes since the last review" file; a nits-only review is not reused after a rebase; second-look findings are in the verdict but not the ledger); an out-of-budget should lands as a follow-up with a budget report that shows only the reviewer's side, and "disputed after two replies" is not detected, so the lead tells Lex both sides by hand; a ticket's risk is read from its title, goal and named files only.
+Known limits of the review loop today (waived follow-ups): a merge from the base puts other people's code in the "changes since the last review" file; "disputed after two replies" is not detected, so the lead tells Lex both sides by hand; a ticket's risk is read from its title, goal and named files only. The PR's review block says "Verdict: pending" while a new head (after a "behind" rebase) is reviewed and "not approved" when that review stops the landing; a review with only nits is reused after a rebase with the same patch; the ledger lists the second look's findings as SL-<n>; and an out-of-budget report counts every open item and shows the builder's declined findings with their reasons.
 
 ## Who cooks (pins from 2026-10-22)
 

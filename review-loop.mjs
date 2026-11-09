@@ -171,10 +171,35 @@ export function renderLedger(rows) {
   return ["Findings ledger:", "", "| id | severity | outcome |", "| --- | --- | --- |", ...rows.map(row => `| ${row.id} | ${row.severity} | ${cell(row.outcome)} |`)].join("\n");
 }
 
-/** The report for a loop that ran out of budget or is stuck: open findings for Lex, never an approval. */
-export function budgetReport({ rounds, limit, open }) {
-  const lines = open.slice(0, 5).map(item => `- ${item.id ? `${item.id} ` : ""}(${severityWord(item)}): ${String(item.text).replace(/\s+/g, " ").slice(0, 160)}`);
-  return [`Review budget used: ${rounds} of ${limit} fix rounds, ${open.length} open finding${open.length === 1 ? "" : "s"}. Running out of budget is not approval; Lex decides.`, ...lines].join("\n");
+/** The most open findings and declined findings a budget report lists; the rest are counted. */
+const REPORT_LINES = 5;
+const oneLine = (text, size) => String(text).replace(/\s+/g, " ").trim().slice(0, size);
+
+/**
+ * The report for a loop that ran out of budget or is stuck: both sides for Lex, never an approval. `open` is every finding
+ * that is still open and not a nit (blockers first), `declined` what the builder declined with its reasons ([{ text, reason }]).
+ */
+export function budgetReport({ rounds, limit, open, declined = [] }) {
+  const lines = open.slice(0, REPORT_LINES).map(item => `- ${item.id ? `${item.id} ` : ""}(${severityWord(item)}): ${oneLine(item.text, 160)}`);
+  if (open.length > REPORT_LINES) lines.push(`- … and ${open.length - REPORT_LINES} more`);
+  const builder = declined.filter(entry => entry && String(entry.text ?? "").trim());
+  const side = builder.length ? ["Builder's side (declined, with reasons):",
+    ...builder.slice(0, REPORT_LINES).map(({ text, reason }) => `- ${oneLine(text, 160)} — reason: ${oneLine(reason ?? "", 160) || "none given"}`),
+    ...(builder.length > REPORT_LINES ? [`- … and ${builder.length - REPORT_LINES} more`] : [])] : [];
+  return [`Review budget used: ${rounds} of ${limit} fix rounds, ${open.length} open finding${open.length === 1 ? "" : "s"}. Running out of budget is not approval; Lex decides.`, ...lines, ...side].join("\n");
+}
+
+/**
+ * Ledger rows for a second look's findings, which have no earlier or later round to mark them: the ids are SL-<n> (second look),
+ * and the outcome says only what the landing did with each one. `waived` is the findings the lead waived to land.
+ */
+export function secondLookRows(findings, { ids = new Map(), waived = [] } = {}) {
+  return findings.map((item, index) => {
+    const text = oneLine(item.text, 120), word = severityWord(item);
+    const outcome = waived.includes(item) ? `open, waived by the lead (second look): ${text}`
+      : word === "nit" ? `follow-up, nit (second look): ${text}` : `open, follow-up for Lex (second look): ${text}`;
+    return { id: ids.get(item) ?? `SL-${index + 1}`, severity: word, outcome };
+  });
 }
 
 /**
@@ -193,7 +218,7 @@ export function reviewChain(folder) {
     try { marks = parseMarks(readFileSync(join(current, "result.md"), "utf8")); } catch { /* No report text: no marks. */ }
     const round = record.round ?? 1;
     // A review saved before ids existed gets the ids a new one would have been given.
-    chain.unshift({ round, model: record.model, head: record.head, findings: (record.findings ?? []).map((item, index) => ({ ...item, id: item.id ?? `R${round}-${index + 1}` })), marks });
+    chain.unshift({ round, model: record.model, head: record.head, declined: Array.isArray(record.declined) ? record.declined : [], findings: (record.findings ?? []).map((item, index) => ({ ...item, id: item.id ?? `R${round}-${index + 1}` })), marks });
     current = record.previous ? join(dirname(current), record.previous) : null;
   }
   return chain;
