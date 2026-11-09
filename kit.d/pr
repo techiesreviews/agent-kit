@@ -717,7 +717,7 @@ async function main(args) {
     step = "review";
     console.log(`PR #${number}; ${review ? "review running" : `review: skipped (${plan.tier} tier)`}`);
     // The docs tier has no model review; CI still gates the merge.
-    let waived = 0, loopSummary = null, loopLeft = 0, loopBudgetUsed = false, secondLookSkipped = null, secondRows = [];
+    let waived = 0, loopSummary = null, loopLeft = 0, loopBudgetUsed = false, secondLookSkipped = null, secondRows = [], loopDeclined = [];
     // `name` is "review" (Claude's) or "second look", whose lines and summary say so.
     async function recordFollowups(findings, name = "review", budgetUsed = true, nitsOnly = true) {
       if (!findings.length) return;
@@ -790,15 +790,21 @@ async function main(args) {
     }
     // Claude's review (none in the docs tier), then the second look on every change; both weigh findings the same way.
     async function reviewHead() {
-      waived = 0; loopSummary = null; loopLeft = 0; loopBudgetUsed = false; secondLookSkipped = null; secondRows = [];
+      waived = 0; loopSummary = null; loopLeft = 0; loopBudgetUsed = false; secondLookSkipped = null; secondRows = []; loopDeclined = [];
       const base = await git("review", ["merge-base", `origin/${flags.base}`, "HEAD"]);
       // A PR that already says "approved" for an earlier head (a "behind" rebase brought a new one) never keeps saying it
       // while the new head is reviewed, or when that review stops the landing.
-      const at = head.slice(0, 7);
-      await replaceBlock(`Verdict: pending (the new head ${at} is being reviewed)`);
-      const stopped = async () => { await replaceBlock(`Verdict: not approved (open findings at the new head ${at}; see the review comments)`); return false; };
-      if (review && !await lookAt(base, false)) return stopped();
-      if (!await lookAt(base, true)) return stopped();
+      await replaceBlock(`Verdict: pending (the new head ${head.slice(0, 7)} is being reviewed)`);
+      // The head can move while the looks run (kit pr's own follow-ups commit), so the block names the head as it is then.
+      const stopped = async why => { await replaceBlock(`Verdict: not approved (${why} at the new head ${head.slice(0, 7)}; see the review comments)`); };
+      try {
+        if (review && !await lookAt(base, false)) { await stopped("open findings"); return false; }
+        if (!await lookAt(base, true)) { await stopped("open findings"); return false; }
+      } catch (error) {
+        // A look that failed to run or to save leaves no "pending" behind either; the run still ends with the failure.
+        await stopped("the review did not finish").catch(() => {});
+        throw error;
+      }
       await recordReviewLoop();
       return true;
     }
@@ -893,7 +899,7 @@ async function main(args) {
         // Out of budget with findings left is reported for Lex to decide, never taken as approval: every open item, blockers first, and the builder's side.
         if (relaxed && left.length) {
           const open = [...blocking, ...left.filter(item => !blocking.includes(item))].map(item => ({ ...item, id: ids.get(item) }));
-          console.log(budgetReport({ rounds, limit, open, declined: chain.flatMap(record => record.declined) }));
+          console.log(budgetReport({ rounds, limit, open, declined: [...loopDeclined, ...chain.flatMap(record => record.declined)] }));
         }
         if (blocking.length && !flags.waive) {
           kitResult("fail", `pr #${number} ${name} has ${blocking.length} open findings (${resultPath})`);
@@ -905,7 +911,8 @@ async function main(args) {
       if (rest.length) await recordFollowups(rest, name, relaxed, rest.every(isNit));
       loopLeft += left.length;
       if (left.length && relaxed) loopBudgetUsed = true;
-      // A second look has no rounds to mark its findings, so its rows only say what the landing did with them.
+      // A second look has no rounds to mark its findings, so its rows only say what the landing did with them; the builder's side stays the first look's.
+      if (!second) loopDeclined = chain.flatMap(record => record.declined);
       if (second) secondRows = secondLookRows(findings, { ids, waived: blocking });
       // The PR line and the ledger come from the first review's own evidence and are written once both looks have passed.
       else if (chain.length) loopSummary = { rounds: chain.length, model: chain.at(-1).model ?? "unknown model", rows: ledgerRows(chain) };
