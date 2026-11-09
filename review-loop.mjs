@@ -53,14 +53,14 @@ export function branchRisk({ root, base, ticket, settings }) {
   try { raw = ticket ? readFileSync(resolve(root, ticket), "utf8") : ""; } catch { /* No ticket text. */ }
   const title = /^title:\s*["']?(.+?)["']?\s*$/m.exec(raw)?.[1] ?? "";
   const files = /^##\s+Files\s*\n([\s\S]*?)(?=^##\s|$(?![\s\S]))/m.exec(raw)?.[1] ?? "";
-  // The body without the front matter, cut at the Done section kit pr writes its follow-ups into (the same heading kit pr finds, dated
+  // The body without the front matter, cut at the Done section kit pr writes its follow-ups into (a heading kit pr matches, dated
   // or not, never "## Done when"), and without the bullet and backtick lines of the Files list (names, not words).
   const body = raw.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "");
   const doneAt = doneHeading().exec(body)?.index ?? body.length;
   let inFiles = false;
   const own = body.slice(0, doneAt).split("\n").filter(line => {
     if (/^##\s/.test(line)) inFiles = /^##\s+Files\s*$/.test(line);
-    return !(inFiles && /^\s*(?:[-*+]\s|`)/.test(line));
+    return !(inFiles && /^\s*(?:[-*+]\s|\d+[.)]\s|`)/.test(line));
   }).join("\n");
   text = `${title}\n${own.slice(0, 4000)}`;
   const named = [...files.matchAll(/`([^`\s]*[./][^`\s]*)`/g)].map(match => match[1]);
