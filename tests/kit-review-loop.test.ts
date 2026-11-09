@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { NORMAL_ROUNDS, RISKY_ROUNDS, branchRisk, budgetReport, findPreviousReview, isNit, ledgerRows, loopBriefSection, loopStop, parseMarks, prLine, renderLedger, reviewChain, riskyChange, roundLimit, severityWord, stoppingFindings, unmarkedIds, withIds } from "../review-loop.mjs";
+import { NORMAL_ROUNDS, RISKY_ROUNDS, branchRisk, budgetReport, findPreviousReview, isNit, ledgerRows, loopBriefSection, loopStop, parseMarks, prLine, renderLedger, reviewChain, riskyChange, roundLimit, secondLookRows, severityWord, stoppingFindings, unmarkedIds, withIds } from "../review-loop.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { findingsRecord, openFindings } from "../review-findings.mjs";
 
@@ -326,4 +326,25 @@ test("the ledger keeps the severity known so far when a mark names none or the n
   assert.deepEqual(ledgerRows(should), [{ id: "R1-1", severity: "should", outcome: "still open: still drops" }]);
   // The next review leaves the finding unmarked: its first severity and the outcome "not marked".
   assert.deepEqual(ledgerRows([unnamed[0], { round: 2, findings: [], marks: new Map() }]), [{ id: "R1-1", severity: "blocker", outcome: "not marked by the next review" }]);
+});
+
+test("budget report: every open item is counted and listed (blockers first), the builder's declined findings come with their reasons, and long lists are cut with a count", () => {
+  const open = withIds([finding("P1"), finding("P2")], 4);
+  const report = budgetReport({ rounds: 3, limit: 3, open, declined: [{ text: "the save drops a write", reason: "the spec keeps the last write" }, { text: "rename it" }, { text: "  " }] });
+  assert.match(report, /^Review budget used: 3 of 3 fix rounds, 2 open findings\./);
+  assert.deepEqual(report.split("\n").slice(1), ["- R4-1 (blocker): P1 finding with its evidence", "- R4-2 (should): P2 finding with its evidence",
+    "Builder's side (declined, with reasons):", "- the save drops a write — reason: the spec keeps the last write", "- rename it — reason: none given"]);
+  const many = budgetReport({ rounds: 3, limit: 3, open: Array.from({ length: 7 }, () => finding("P2")), declined: Array.from({ length: 6 }, (_, index) => ({ text: `d${index}`, reason: "r" })) });
+  assert.match(many, /^- … and 2 more$/m);
+  assert.match(many, /^- … and 1 more$/m);
+  assert.doesNotMatch(budgetReport({ rounds: 3, limit: 3, open }), /Builder's side/, "no declined finding, no builder's side");
+});
+
+test("second-look rows: ids say second look; the outcome says what the landing did with each finding", () => {
+  const should = finding("P2", { text: "a.ts:1 P2 a should" }), nit = finding("P3", { text: "b.ts:2 P3 a nit" }), blocker = finding("P1", { text: "c.ts:3 P1 a blocker" });
+  assert.deepEqual(secondLookRows([should, nit, blocker], { waived: [blocker] }), [
+    { id: "SL-1", severity: "should", outcome: "open, follow-up for Lex (second look): a.ts:1 P2 a should" },
+    { id: "SL-2", severity: "nit", outcome: "follow-up, nit (second look): b.ts:2 P3 a nit" },
+    { id: "SL-3", severity: "blocker", outcome: "open, waived by the lead (second look): c.ts:3 P1 a blocker" }]);
+  assert.deepEqual(secondLookRows([]), []);
 });
