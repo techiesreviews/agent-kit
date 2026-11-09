@@ -794,15 +794,15 @@ async function main(args) {
       const base = await git("review", ["merge-base", `origin/${flags.base}`, "HEAD"]);
       // A PR that already says "approved" for an earlier head (a "behind" rebase brought a new one) never keeps saying it
       // while the new head is reviewed, or when that review stops the landing.
-      await replaceBlock(`Verdict: pending (the new head ${head.slice(0, 7)} is being reviewed)`);
       // The head can move while the looks run (kit pr's own follow-ups commit), so the block names the head as it is then.
-      const stopped = async why => { await replaceBlock(`Verdict: not approved (${why} at the new head ${head.slice(0, 7)}; see the review comments)`); };
+      const stopped = async (why, see) => { await replaceBlock(`Verdict: not approved (${why} at the new head ${head.slice(0, 7)}; ${see})`); };
       try {
-        if (review && !await lookAt(base, false)) { await stopped("open findings"); return false; }
-        if (!await lookAt(base, true)) { await stopped("open findings"); return false; }
+        await replaceBlock(`Verdict: pending (the new head ${head.slice(0, 7)} is being reviewed)`);
+        if (review && !await lookAt(base, false)) { await stopped("open findings", "see the review comments"); return false; }
+        if (!await lookAt(base, true)) { await stopped("open findings", "see the review comments"); return false; }
       } catch (error) {
         // A look that failed to run or to save leaves no "pending" behind either; the run still ends with the failure.
-        await stopped("the review did not finish").catch(() => {});
+        await stopped("the review did not finish", "see the kit pr run for the error").catch(() => {});
         throw error;
       }
       await recordReviewLoop();
