@@ -59,7 +59,9 @@ findings ledger in the PR, and an out-of-budget run is reported, never approved.
 
 The PR's review block says "Verdict: pending" while a new head (after a "behind" rebase) is reviewed and "not approved" when that review stops the landing or does not finish; a review with only nits is reused after a rebase with the same patch; the ledger lists the second look's findings as SL-<n> rows; an out-of-budget report counts every open item and shows the builder's declined findings with their reasons. A second look that no model could take is written into the PR block as "second look: skipped (<reason>)". An out-of-budget should lands as a follow-up.
 
-Known limits (waived follow-ups): a merge from the base puts other people's code in the "changes since the last review" file. A review that leaves an id out is rejected as incomplete: run `kit review` again by hand. A ticket's risk comes from its title, goal and named files only, and the fix brief points at the newest complete review.
+After a merge from the base, the "changes since the last review" file lists only the branch's own commits (merges left out, so a conflict fixed inside a merge commit is not in it). A lead who lands a builder's branch answers the builder's rounds, so the PR line counts them and names every model the rounds used. A ticket's risk comes from its title and its whole text (an Orbit card's description and Done when line too) and the files it names, never from the follow-ups `kit pr` adds later.
+
+Known limits (waived follow-ups): a review that leaves an id out is rejected as incomplete: run `kit review` again by hand. The fix brief points at the newest complete review.
 
 ## Messages to Lex
 
