@@ -2935,3 +2935,14 @@ test("a second look's out-of-budget report carries the builder's declined findin
   assert.match(result.stdout, /^- SL-1 \(should\): /m);
   assert.match(result.stdout, /^- the save drops a write — reason: the spec keeps the last write$/m);
 });
+
+test("the PR line counts a chain of rounds and names every model the rounds used", t => {
+  const f = fixture(t);
+  const earlierFolder = join(f.main, ".scratch/reviews/ak-14/20261019T090000Z");
+  mkdirSync(earlierFolder, { recursive: true });
+  writeFileSync(join(earlierFolder, "findings.json"), JSON.stringify({ round: 1, model: "claude-opus-5-4", head: "0".repeat(40), findings: [] }));
+  savedFindings(f, f.saveReview(cleanReview), { round: 2, model: "claude-opus-5-5", previous: "20261019T090000Z" });
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^Reviewed with review-loop: 2 rounds with claude-opus-5-4 and claude-opus-5-5\. Verdict: approved$/m);
+});

@@ -365,6 +365,8 @@ test("a ticket's risk is read from its whole text (title, goal, Done when, an Or
   assert.equal(risky("calm.md", card("Make the saver tidier.\nDone when:\n- the button is blue\n\n## Files\n- `src/ui/saver.ts`\n")).risky, false);
   // The Files list is names, not words; and what kit pr writes under "## Done (date)" never counts.
   assert.equal(risky("files.md", card("Make it blue.\nDone when: blue\n\n## Files\n- the authentication note in docs\n")).risky, false);
+  assert.equal(risky("plain.md", card("Make it blue.\nDone when: blue\n\n## Done\n\n### Follow-ups\n- a finding about authentication\n")).risky, false, "the builder's plain ## Done holds follow-ups too");
+  assert.equal(risky("order.md", card("Make it tidy.\n\n## Files\n- `src/ui/saver.ts`\nDone when: no data loss\n")).risky, true, "a Done when line after the Files list still counts");
   assert.equal(risky("done.md", card("Make it blue.\nDone when: blue\n\n## Done (2026-11-09)\n\n### Follow-ups\n- a finding about authentication\n")).risky, false);
 });
 
@@ -391,6 +393,22 @@ test("a lead's review answers the builder's rounds of the same branch (another o
   assert.equal(findPreviousReview(lead, options("another", [builder])), null, "another branch is never answered");
   save(undefined);
   assert.equal(findPreviousReview(lead, options("feature", [builder])), null, "another owner's review must name the branch");
+  // The newest review of the branch answers, whichever owner saved it; on the same timestamp the owner's own wins.
+  const saveAt = (folder: string, name: string, round: number) => {
+    mkdirSync(join(folder, name), { recursive: true });
+    writeFileSync(join(folder, name, "refs.txt"), `${reviewed}\n${base}\n`);
+    writeFileSync(join(folder, name, "findings.json"), JSON.stringify({ round, branch: "feature", model: "m", head: reviewed, findings: withIds([finding("P1")], round) }));
+  };
+  save("feature");
+  saveAt(lead, "20261105T100000Z", 1);
+  assert.equal(findPreviousReview(lead, options("feature", [builder]))?.name, "../builder/20261106T100000Z", "the builder's is newer");
+  saveAt(lead, "20261106T110000Z", 3);
+  assert.equal(findPreviousReview(lead, options("feature", [builder]))?.name, "20261106T110000Z", "the lead's own is newer");
+  saveAt(lead, "20261106T100000Z", 2);
+  assert.equal(findPreviousReview(lead, options("feature", [builder]))?.name, "20261106T110000Z");
+  rmSync(join(lead, "20261106T110000Z"), { recursive: true });
+  assert.equal(findPreviousReview(lead, options("feature", [builder]))?.name, "20261106T100000Z", "on the same timestamp the owner's own wins");
+  for (const name of ["20261105T100000Z", "20261106T100000Z"]) rmSync(join(lead, name), { recursive: true });
   // The chain follows the link out of the lead's own folder.
   save("feature");
   mkdirSync(join(lead, "20261107T100000Z"));

@@ -81,7 +81,7 @@ export function parseMarks(resultMd) {
 // A carried finding reads `<id> still open: <reason> (original finding: <the first text>)`; the first text is kept once, however
 // many rounds carry it, and cut at 400 characters.
 const ORIGINAL = " (original finding: ";
-// A long reason is cut, so the original finding after it still fits the brief line of a later round (600 characters).
+// A long reason is cut, so the start of the original finding after it still reaches the brief line of a later round (cut at 600 characters).
 const cutReason = reason => reason.length > 300 ? `${reason.slice(0, 300).trimEnd()}…` : reason;
 const originalText = item => {
   let text = String(item?.text ?? "");
