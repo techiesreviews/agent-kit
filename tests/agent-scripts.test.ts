@@ -1450,6 +1450,47 @@ test("supervise with reap stops the group a finished command left behind, even o
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
+test("only a review call reaps the group its CLI left behind; a build call leaves it alone", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ase-agent-reap-"));
+  const wt = join(dir, "work tree"), bin = join(dir, "bin"), brief = join(dir, "brief.md"), sourceHome = join(dir, "codex-home");
+  mkdirSync(wt); mkdirSync(bin); mkdirSync(sourceHome);
+  const pidFiles: string[] = [];
+  t.after(() => {
+    // The build's leftover never ends by itself: stop it here, then the folder.
+    for (const file of pidFiles) {
+      try { process.kill(-JSON.parse(readFileSync(file, "utf8"))[0], "SIGKILL"); } catch { /* Gone already. */ }
+    }
+    rmSync(dir, { recursive: true, force: true });
+  });
+  reviewRepository(wt);
+  writeFileSync(join(sourceHome, "auth.json"), "{}");
+  writeFileSync(brief, "tiny brief\n");
+  // A CLI that answers, and leaves behind a process that ignores TERM in the call's own group.
+  const fake = `import { spawn } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
+const args = process.argv.slice(2);
+readFileSync(0, "utf8");
+const child = spawn(process.execPath, ["-e", 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'], { stdio: "ignore" });
+child.unref();
+writeFileSync(process.env.ASE_FAKE_PIDS, JSON.stringify([process.pid, child.pid]));
+console.log(JSON.stringify({ result: "REVIEW_STATUS: complete\\nDefects: none\\n", modelUsage: { [args[args.indexOf("--model") + 1]]: {} }, subtype: "success" }));
+`;
+  writeFileSync(join(bin, "package.json"), '{"type":"module"}');
+  writeFileSync(join(bin, "claude"), `#!/usr/bin/env node\n${fake}`); chmodSync(join(bin, "claude"), 0o755);
+  const run = (kind: string) => {
+    const pidFile = join(dir, `${kind}-pids.json`);
+    pidFiles.push(pidFile);
+    const result = spawnSync("bash", [resolve("agent.sh"), kind, wt, brief, "--model", "claude-haiku-5-5", ...(kind === "review" ? ["--base", "origin/dev"] : [])], {
+      encoding: "utf8", timeout: 20_000,
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CODEX_HOME: sourceHome, ASE_FAKE_PIDS: pidFile, ASE_AGENT_CLI: "", ASE_BUILD_MODEL: "", ASE_REVIEW_MODEL: "", ASE_AGENT_TIMEOUT: "10s", KIT_TALK_STYLE: "plain" },
+    });
+    assert.equal(result.status, 0, `${kind}: ${result.stderr}`);
+    return pidFile;
+  };
+  assert.ok(descendantsGone(run("review")), "a review call left something running");
+  assert.equal(descendantsGone(run("build")), false, "a build call stopped the group its CLI left behind");
+});
+
 test("supervise says a command crashed when a signal or an exit above 128 ended it, never when it stopped it or the command only failed", () => {
   const scratch = mkdtempSync(join(tmpdir(), "ase-crashed-"));
   try {

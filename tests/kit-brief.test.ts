@@ -216,6 +216,15 @@ test("brief: a broken second-look table stops no brief; the line then points at 
   }
 });
 
+test("brief: a second look with no readable table names its skills for no one model, never in the Claude reviewer's form", t => {
+  const f = fixture(t);
+  const second = f.run(["docs/tickets/07-panel.md", "--stage", "second-look"], { ASE_SECOND_LOOK: join(f.root, "no-such-second-look.json") });
+  assert.equal(second.status, 0, second.stderr + second.stdout);
+  // The neutral line (an invocation for Claude, a mention for Codex, the kit's words for the rest), not `/emil-ui-review — …`.
+  assert.match(second.stdout, /^- \/emil-ui-review \(Codex: \$emil-ui-review; without skills: /m);
+  assert.doesNotMatch(second.stdout, /^- \/emil-ui-review — /m);
+});
+
 test("brief: pins come from the rulebook (a superseded builder: sol builds on the builder pin; the extras' review pin wins)", t => {
   const f = fixture(t, { rulebookExtras: "docs/extras.md" });
   writeFileSync(join(f.root, "docs/extras.md"), "# Extras\n\n| Role | Model | How |\n| --- | --- | --- |\n| Review, every change | `claude-sonnet-5-5`, medium | here |\n");
