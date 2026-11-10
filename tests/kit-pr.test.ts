@@ -1719,6 +1719,7 @@ test("a docs-only PR whose second look no model can take says so in its review b
   const f = fixture(t, { "docs/guide.md": "# Guide\n", "AGENTS.md": "# Agents\n" }), result = f.run([], { FAKE_SECOND: "skip" });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const block = f.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body ?? "").find(text => text.includes("<!-- review-loop -->"))!;
+  assert.doesNotMatch(block, /Verdict:/);
   assert.match(block, /<!-- review-loop -->\nReview: Claude's review skipped \(docs tier\)\.\n\nsecond look: skipped \(grok-4\.7 out of credit; opencode\/deepseek-v4\.1-flash-free out of credit\)\n<!-- \/review-loop -->/);
 });
 
@@ -1729,6 +1730,7 @@ test("a docs-only PR's review block carries the second look's ledger rows and th
   const block = nit.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body ?? "").findLast(text => text.includes("<!-- review-loop -->"))!;
   assert.match(block, /^Review: Claude's review skipped \(docs tier\)\./m);
   assert.match(block, /^Second look by grok-4\.7 \(Grok\)\.$/m);
+  assert.match(block, /^Review: Claude's review skipped \(docs tier\)\. Verdict: approved$/m);
   assert.match(block, /^\| SL-1 \| nit \| .*a second-look nit\. \|$/m);
   assert.doesNotMatch(block, /Findings ledger: none/);
   const lead = fixture(t, files), waived = lead.run(["--waive", "Accepted for follow-up"], { ASE_OWNER: "ke-lead", FAKE_SECOND_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P1 the second look found this.\n" });
