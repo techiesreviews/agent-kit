@@ -56,9 +56,9 @@ says for today; never claim a planned item ran.
   one; a public repo keeps its landing and release branches. A direct project goes live mid-week, as soon
   as the gates `kit pr` applies to that change pass, without Lex's "ship it" (Lex, 2026-11-05: "yes", his own sites too). For
   his two websites, techies-reviews and lexvd-site, the lead tells Lex in plain words right after each change goes live
-  and keeps the rollback in the ticket or PR (never in the message to Lex): from a branch cut at origin/main, `git revert --no-edit <first commit>^..<last commit>`
-  (the commits `kit pr` printed as "landed:", else found by subject in `git log origin/main`), landed with `kit pr` like any change
-  (it waits for its gates).
+  and keeps the rollback in the ticket or PR (never in the message to Lex): `kit rollback <first commit> [<last commit>]`
+  (the commits `kit pr` printed as "landed:", else found by subject in `git log origin/main`). It cuts a branch at origin/main,
+  runs `git revert --no-edit <first>^..<last>` there and lands it with `kit pr` like any change (it waits for its gates).
 - **Review loop** (Lex, 2026-11-06, after Theo's sol-loop): a review's budget depends on the risk, it stops when only
   nits are left, and the PR carries a findings ledger; the rule is under [Review loop](#review-loop) below.
 - **Tuesday is Lex's only review day** (Lex, 2026-10-27): everything that needs him waits in one
