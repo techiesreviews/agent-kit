@@ -258,10 +258,18 @@ function report({ status, outOfCredit, kept, budget, model, evidence, label, rea
   return status;
 }
 
+// The commits of `head` whose patch is not in `upstream` (git cherry's "+" lines), or null when git fails.
+function cherryPlus(root, upstream, head) {
+  const run = spawnSync("git", ["-C", root, "cherry", upstream, head], { encoding: "utf8" });
+  return run.status === 0 ? run.stdout.split("\n").filter(line => line.startsWith("+ ")).map(line => line.slice(2).trim()) : null;
+}
+
 // The PR's GPT second look that already ran (a mark that came back, for this PR or this branch, under any owner),
 // or null. The cost guard: one GPT second look per PR. A branch match counts unless both name a PR, and only when the
-// look's HEAD (its refs.txt) is part of this HEAD: a branch name that comes back for a new PR gets its own GPT look.
-function gptLookDone(pr, branch, root, head) {
+// look's own work (its HEAD's commits not in origin/<land>, by patch) is all in this HEAD, by commit or by patch, so a
+// rebase keeps it, while an earlier PR on a branch name that comes back (its work already in the base, or never in
+// this branch) leaves the new PR its own GPT look. A look whose refs.txt cannot be read never counts: GPT looks again.
+function gptLookDone(pr, branch, root, head, base) {
   const reviews = join(kitMainRoot(), ".scratch/reviews");
   if (!existsSync(reviews)) return null;
   const folders = readdirSync(reviews, { withFileTypes: true }).filter(entry => entry.isDirectory())
@@ -274,7 +282,9 @@ function gptLookDone(pr, branch, root, head) {
     if (!branch || mark.branch !== branch || (pr && mark.pr)) continue;
     let looked = "";
     try { looked = readFileSync(join(folder, "refs.txt"), "utf8").split(/\r?\n/)[0].trim(); } catch { continue; }
-    if (/^[0-9a-f]{7,64}$/.test(looked) && spawnSync("git", ["-C", root, "merge-base", "--is-ancestor", looked, head]).status === 0) return folder;
+    if (!/^[0-9a-f]{7,64}$/.test(looked)) continue;
+    const own = cherryPlus(root, base, looked), missing = cherryPlus(root, head, looked);
+    if (own?.length && missing && own.every(commit => !missing.includes(commit))) return folder;
   }
   return null;
 }
@@ -317,7 +327,7 @@ async function secondLook(flags) {
       const docsOnly = classify(changes, { settings }).tier === "docs";
       const branch = spawnSync("git", ["-C", root, "branch", "--show-current"], { encoding: "utf8" }).stdout?.trim() ?? "";
       for (const model of pick.order) {
-        const done = lookFamily(model) === "gpt" && !docsOnly && gptLookDone(flags.pr, branch, root, scope.head);
+        const done = lookFamily(model) === "gpt" && !docsOnly && gptLookDone(flags.pr, branch, root, scope.head, `origin/${kitBranch()}`);
         const why = lookFamily(model) !== "gpt" ? null : docsOnly ? "docs-only change" : done ? `one GPT second look per PR, done in ${done}` : null;
         if (why) unused.push({ model, why });
         else models.push(model);
