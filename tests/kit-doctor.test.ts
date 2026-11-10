@@ -1253,16 +1253,18 @@ test("doctor warns once per piece kit init would add today, also when quiet, nev
   const warnings = [`✗ setup: missing since kit ${sha}: AGENTS.md kit --help (the line naming scripts/agents/kit --help); ${fix}`,
     `✗ setup: missing since kit ${sha}: AGENTS.md section "Review loop" (the line naming section "Review loop"); ${fix}`,
     `✗ setup: missing since kit ${sha}: AGENTS.md Messages to Lex (the Messages to Lex section); ${fix}`,
+    `✗ setup: missing since kit ${sha}: CLAUDE.md (the one-line file that loads AGENTS.md); ${fix}`,
     `✗ setup: missing since kit ${sha}: .gitattributes (the line "* text=auto eol=lf"); ${fix}`];
   const passed = "RESULT: ok doctor 11/11 checks passed";
   const run = f.run();
   assert.equal(run.status, 0, run.stdout + run.stderr);
   assert.deepEqual(run.stdout.split("\n").filter(line => line.startsWith("✗ setup: ")), warnings);
-  assert.equal(run.stdout.trimEnd().split("\n").at(-1), `${passed}; warning: 4 setup pieces missing (run scripts/agents/kit init)`);
+  assert.equal(run.stdout.trimEnd().split("\n").at(-1), `${passed}; warning: 5 setup pieces missing (run scripts/agents/kit init)`);
   const quiet = f.run(["--quiet"]);
-  assert.equal(quiet.stdout, `${warnings.join("\n")}\n${passed}; warning: 4 setup pieces missing (run scripts/agents/kit init)\n`);
+  assert.equal(quiet.stdout, `${warnings.join("\n")}\n${passed}; warning: 5 setup pieces missing (run scripts/agents/kit init)\n`);
   // With the pieces added the warnings go.
   writeFileSync(join(f.build, ".gitattributes"), "* text=auto eol=lf\n");
+  writeFileSync(join(f.build, "CLAUDE.md"), "@AGENTS.md\n");
   writeFileSync(join(f.build, "AGENTS.md"), "# Agents\n\nKitchen rulebook: `scripts/agents/kit rulebook`.\nCommands: `scripts/agents/kit --help`.\nReview loop: `scripts/agents/kit rulebook`, section \"Review loop\" (3 fix rounds, 5 only for risk; stop when only nits are left; one reviewer; a findings ledger in the PR).\n\n## Messages to Lex\n- Question first.\n");
   assert.equal(f.run(["--quiet"]).stdout, `${passed}\n`);
   // A Messages to Lex section older than the rulebook's is a warning too, and goes once it is brought up to date.
