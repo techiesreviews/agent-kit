@@ -397,7 +397,7 @@ test("tickets closed before the check started keep their old Done sections", () 
   assert.equal(doneProblems(closedTicket(prose, { date: "" })).length, 0, "an undated heading is an old ticket");
   // A heading with more than the date after "Done" still has its date read.
   const heading = (text: string) => closedTicket(prose).replace("## Done (2026-11-11)", text);
-  for (const [text, count] of [["## Done (2026-10-01, PR #3)", 0], ["## Done — 2026-10-01", 0], ["## Done (2026-11-12, PR #3)", 4], ["## Done criteria", 0]] as const)
+  for (const [text, count] of [["## Done (2026-10-01, PR #3)", 0], ["## Done — 2026-10-01", 0], ["## Done (2026-11-12, PR #3)", 4], ["## Done criteria", 0], ["## Done notes", 0]] as const)
     assert.equal(doneProblems(heading(text)).length, count, text);
   assert.equal(doneProblems(closedTicket(prose, { date: "2026-11-11" })).length, 4);
   assert.equal(doneProblems(closedTicket(prose, { date: "2027-01-02" })).length, 4);
@@ -439,4 +439,11 @@ test("fenced code in a ticket is never read as a heading, an item or a verdict",
   const list = closedTicket(["- Done when 1: met — a", "- Done when 2: met — b", "- Done when 3: met — c"], { doneWhen: ["- First check.", "  ```", "  # note", "  ```", "- Second check.", "- Third check."] });
   assert.deepEqual(doneProblems(list), []);
   assert.deepEqual(doneProblems(closedTicket([...fence, met[0], met[2]])).map(problem => problem.message.slice(0, 40)), ["Closed ticket: Done when item 2 has no e"]);
+});
+
+test("a heading after the Done section ends it, and a Done-like heading after a dated one does not replace it", () => {
+  const met = ["- Done when 1: met — a", "- Done when 2: met — b", "- Done when 3: met — c"];
+  assert.deepEqual(doneProblems(closedTicket([...met, "", "# Notes", "", "- Pending: ask Lex"])), []);
+  assert.deepEqual(doneProblems(closedTicket([...met, "", "## Done notes", "", "- Pending: ask Lex"])), []);
+  assert.equal(doneProblems(closedTicket(["- Done when 1: pending", ...met.slice(1), "", "## Done criteria", "", "Fine."])).length, 1);
 });
