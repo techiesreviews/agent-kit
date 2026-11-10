@@ -190,6 +190,14 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
   Projects that keep ticket files (`"tickets": "files"`) keep how `kit next`, `kit slice`, `kit pr` and `kit status` work
   today; `kit ticket` itself always talks to Orbit, as before.
 
+## Rolling back a direct project
+
+- `kit rollback <first> [<last>]` undoes landed commits in a direct project (`branches.direct`), where `kit pr` refuses to run
+  on main. It fetches origin, cuts `rollback/<first>-<last>` at `origin/<land>`, runs `git revert --no-edit <first>^..<last>`
+  and lands the branch with `kit pr` (its checks, review and merge). `<first>` and `<last>` are the commits `kit pr` printed as
+  `landed:` (`<last>` defaults to `<first>`). It needs a clean tree, both commits on `origin/<land>` with `<first>` not after
+  `<last>`, and no merge commit in the range; a revert that conflicts is undone and the checkout goes back to its branch.
+
 ## Nothing unsaved goes live
 
 - `kit release-check` is the second half of that gate: it fails unless the working tree is clean (no changed or
