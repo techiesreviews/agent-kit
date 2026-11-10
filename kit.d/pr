@@ -717,7 +717,7 @@ async function main(args) {
     step = "review";
     console.log(`PR #${number}; ${review ? "review running" : `review: skipped (${plan.tier} tier)`}`);
     // The docs tier has no model review; CI still gates the merge.
-    let waived = 0, loopSummary = null, loopLeft = 0, loopBudgetUsed = false, secondLookSkipped = null, secondLookModel = null, secondRows = [], loopDeclined = [];
+    let waived = 0, loopSummary = null, loopLeft = 0, loopBudgetUsed = false, secondLookSkipped = null, secondLookModel = null, secondRows = [], loopDeclined = [], nothingToReview = false;
     // `name` is "review" (Claude's) or "second look", whose lines and summary say so.
     async function recordFollowups(findings, name = "review", budgetUsed = true, nitsOnly = true) {
       if (!findings.length) return;
@@ -790,7 +790,7 @@ async function main(args) {
     }
     // Claude's review (none in the docs tier), then the second look on every change; both weigh findings the same way.
     async function reviewHead() {
-      waived = 0; loopSummary = null; loopLeft = 0; loopBudgetUsed = false; secondLookSkipped = null; secondLookModel = null; secondRows = []; loopDeclined = [];
+      waived = 0; loopSummary = null; loopLeft = 0; loopBudgetUsed = false; secondLookSkipped = null; secondLookModel = null; secondRows = []; loopDeclined = []; nothingToReview = false;
       const base = await git("review", ["merge-base", `origin/${flags.base}`, "HEAD"]);
       // A PR that already says "approved" for an earlier head (a "behind" rebase brought a new one) never keeps saying it
       // while the new head is reviewed, or when that review stops the landing.
@@ -822,16 +822,18 @@ async function main(args) {
     // Rule: the PR says how it was reviewed. The block sits between markers, so a later run (a "behind" merge, a new head)
     // replaces it instead of adding a second line and ledger.
     async function recordReviewLoop() {
-      if (!loopSummary) { await replaceBlock(null); return; }
+      if (!loopSummary && !nothingToReview) { await replaceBlock(null); return; }
       const open = `${loopLeft} open finding${loopLeft === 1 ? "" : "s"}`;
       const verdict = !loopLeft ? "approved" : loopBudgetUsed ? `not approved (budget used, ${open} left for Lex${waived ? ", waived by the lead" : ""})`
         : waived ? `not approved (${open} waived by the lead)` : `not approved (${open} left for Lex: no reason was given for it)`;
-      const line = prLine({ ...loopSummary, verdict });
+      // A PR whose diff is empty was never reviewed: it says so in place of a verdict and a ledger.
+      const line = loopSummary ? prLine({ ...loopSummary, verdict }) : `Review: nothing to review (the diff against ${flags.base} is empty).`;
       // A second look that no model could take is said in the PR too, so the PR never reads as fully double-checked.
       const skipped = secondLookSkipped ? `${secondLookSkipped}\n\n` : "";
       // The model that took the second look, in plain words, so the PR says who looked after Claude.
       const looked = secondLookModel ? `Second look by ${secondLookModel} (${lookFamilyWords(secondLookModel)}).\n\n` : "";
-      const block = `<!-- review-loop -->\n${line}\n\n${skipped}${looked}${renderLedger([...loopSummary.rows, ...secondRows])}\n<!-- /review-loop -->`;
+      const block = loopSummary ? `<!-- review-loop -->\n${line}\n\n${skipped}${looked}${renderLedger([...loopSummary.rows, ...secondRows])}\n<!-- /review-loop -->`
+        : `<!-- review-loop -->\n${line}${skipped ? `\n\n${skipped.trimEnd()}` : ""}\n<!-- /review-loop -->`;
       const current = readFileSync(body, "utf8");
       const next = /<!-- review-loop -->[\s\S]*?<!-- \/review-loop -->/.test(current)
         ? current.replace(/<!-- review-loop -->[\s\S]*?<!-- \/review-loop -->/, () => block) : `${current.replace(/\n*$/, "\n")}\n${block}\n`;
@@ -867,6 +869,13 @@ async function main(args) {
         await gh("review", ["pr", "comment", number, "--body-file", comment]);
       } else {
         const result = await execute(second ? "second-look" : "review", kit, [...reviewArgs, number, ...(flags.ticket ? ["--ticket", flags.ticket] : []), ...(second ? ["--second-look"] : [])]);
+        // A diff with no change (a no-code merge) has nothing to review: kit review says so with a skip, and the PR goes on.
+        // Findings need a review, so there are none to weigh; CI still gates the merge.
+        if (!second && result.status === 3 && /^RESULT: skip review nothing to review /m.test(result.text)) {
+          console.log(`review: skipped (nothing to review: ${/^RESULT: skip review nothing to review \((.+)\)$/m.exec(result.text)?.[1] ?? "the diff is empty"})`);
+          nothingToReview = true;
+          return true;
+        }
         // The second look's kind, model and any fallback, as kit review said them.
         if (second) for (const line of result.text.match(/^second look: .+$/gm) ?? []) console.log(line);
         // No model could take the second look: it never blocks on availability.

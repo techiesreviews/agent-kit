@@ -627,6 +627,10 @@ export function opencodeCommands(help, model, worktree) {
   throw new Error(`could not tell how to run this OpenCode read-only: \`opencode run --help\` lists neither --standalone (OpenCode 2) nor --pure (OpenCode 1); it said: ${said}`);
 }
 
+// A system error code in words, so no message carries a bare code: "not found (ENOENT)". An unknown code stays as it is.
+const codeWords = { ENOENT: "not found", EACCES: "not executable", EPERM: "not permitted", ENOMEM: "out of memory", E2BIG: "too many arguments", EMFILE: "too many open files" };
+export const plainCode = code => codeWords[code] ? `${codeWords[code]} (${code})` : String(code);
+
 // A helper that runs `<command> <args…>` in a process group of its own and, at the limit or once the command has
 // exited, kills that whole group, so nothing the command left behind (a wrapper's real binary, OpenCode 2's private
 // server) can hold its output open or outlive the limit. The group goes too when the helper is stopped (SIGTERM,
@@ -667,7 +671,7 @@ function runInGroup(command, args, { cwd, env, timeout, out }) {
     cwd, env: { ...process.env, ...env }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe", ...(out === undefined ? [] : [out])],
     timeout: timeout + 10_000, killSignal: "SIGKILL", maxBuffer: 8 * 1024 * 1024 });
   try { return { ...JSON.parse(helper.stdout), helper }; }
-  catch { return { helper, failed: `${helper.error ? helper.error.code ?? helper.error.message : `exit ${helper.status ?? helper.signal}`}` }; }
+  catch { return { helper, failed: helper.error ? helper.error.code ? plainCode(helper.error.code) : helper.error.message : `exit ${helper.status ?? helper.signal}` }; }
 }
 
 // Reads `opencode run --help` (stdout and stderr together) in the worktree with the review's own environment.
@@ -681,7 +685,7 @@ export function opencodeRunHelp(worktree, env = {}, command = "opencode", timeou
   if (result.failed) return `${result.helper.stdout ?? ""}${result.helper.stderr ?? ""}\n(opencode run --help: the probe failed: ${result.failed})`;
   const said = `${result.out}${result.err}`;
   const why = result.timedOut ? `timed out after ${timeout / 1000}s` : result.stopped ? `was stopped with the review (${result.stopped})`
-    : result.error === "EACCES" ? "could not be run: not executable (EACCES)" : result.error ? `could not be run (${result.error})`
+    : result.error ? `could not be run: ${plainCode(result.error)}`
     : result.signal ? `was stopped (${result.signal})` : result.status ? `failed (exit ${result.status})` : null;
   return why ? `${said}\n(opencode run --help ${why})` : said;
 }
@@ -756,7 +760,7 @@ export function opencodeExport(session, worktree, timeout, open = openSync, args
     const last = String(result.err || "").trim().split("\n").at(-1);
     const why = result.failed ? `its helper failed (${result.failed})` : result.timedOut ? `timed out after ${timeout / 1000}s`
       : result.stopped ? `was stopped with the review (${result.stopped})`
-      : result.error ? `could not be run (${result.error})` : result.signal ? `was stopped (${result.signal})`
+      : result.error ? `could not be run: ${plainCode(result.error)}` : result.signal ? `was stopped (${result.signal})`
       : result.status ? `exit ${result.status}${last ? `: ${last}` : ""}` : null;
     if (why) throw new Error(`OpenCode export for ${session} failed: ${why}`);
     return readFileSync(file, "utf8");
@@ -1005,6 +1009,8 @@ async function invokeAgent(adapter, args, descriptor, context) {
     let silent = false, startTimer, spawned;
     const result = await supervise(limit, adapter.command, args, {
       cwd: options.worktree, input: descriptor, log, capture: adapter.capture,
+      // A review's CLI leaves nothing running: OpenCode 2's private server goes with the call (no hang to the 90-minute limit).
+      reap: options.kind === "review",
       onSpawn: pgid => {
         spawned = Date.now();
         update({ pgid });
@@ -1035,8 +1041,12 @@ async function invokeAgent(adapter, args, descriptor, context) {
       const limitProblem = creditProblem ?? adapter.usageLimit?.(result.stdout ?? "") ??
         (status ? usageLimitProblem(slice, options.cli) ?? usageLimitProblem(result.stdout ?? "", options.cli) : null);
       if (status || limitProblem) {
-        context.cause = limitProblem ?? adapter.errorProblem?.(result.stdout ?? "") ?? `problem: ${adapter.label ?? adapter.command} failed (${status}); see ${logPath}`;
+        // A signal or an exit above 128 that supervise did not cause is a crash, told in words (never a bare status).
+        const crash = result.crashed ? `problem: ${adapter.label ?? adapter.command} crashed (${result.signal ? `killed by signal ${result.signal}` : `exit ${status}`}); see ${logPath}` : null;
+        context.cause = limitProblem ?? adapter.errorProblem?.(result.stdout ?? "") ?? crash ?? `problem: ${adapter.label ?? adapter.command} failed (${status}); see ${logPath}`;
       }
+      // A first call the CLI itself crashed on returned no review: kit review counts that reviewer as unavailable, not as a failed review.
+      if (result.crashed && !previousCalls) update({ crashed: true });
       // A refusal of the first call refunds the review; a completed first call, or one
       // that worked before the limit, already spent it. kit review gives an out-of-credit run back itself.
       if (limitProblem && !creditProblem && !previousCalls &&

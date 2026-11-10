@@ -11,7 +11,7 @@ import { talkStyleLine } from "../brief-lib.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { unitSummary } from "../unit-summary.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
-import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokOutOfCredit, grokResult, inferCli, isoWeek, opencodeAdapter, opencodeCommands, opencodeErrorProblem, opencodeExport, opencodeExportTimeout, opencodeReviewEnv, opencodeRunHelp, opencodeOutOfCredit, opencodeResult, opencodeReviewAgent, opencodeStartTimeout, opencodeReviewConfig, opencodeUsageLimit, outOfCreditProblem, parseAgentArgs, refusedOutright, sessionObserver, releaseReviewBudget, reserveReviewBudget, reviewBase, reviewFamily, usageLimitProblem } from "../agent-run.mjs";
+import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokOutOfCredit, grokResult, inferCli, isoWeek, opencodeAdapter, opencodeCommands, opencodeErrorProblem, opencodeExport, opencodeExportTimeout, opencodeReviewEnv, opencodeRunHelp, opencodeOutOfCredit, opencodeResult, opencodeReviewAgent, opencodeStartTimeout, opencodeReviewConfig, opencodeUsageLimit, outOfCreditProblem, parseAgentArgs, plainCode, refusedOutright, sessionObserver, releaseReviewBudget, reserveReviewBudget, reviewBase, reviewFamily, usageLimitProblem } from "../agent-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { durationMilliseconds } from "../sol-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
@@ -765,7 +765,7 @@ test("an OpenCode export stopped with its review, or left behind by it, takes it
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(bin);
   assert.throws(() => opencodeExport("ses_1", dir, 1000, undefined, ["session", "export", "ses_1"], { PATH: bin }),
-    /^Error: OpenCode export for ses_1 failed: could not be run \(ENOENT\)$/);
+    /^Error: OpenCode export for ses_1 failed: could not be run: not found \(ENOENT\)$/);
   // An export that says far more on stderr than the helper keeps, in control characters (sixfold in JSON), still reads.
   writeFileSync(join(bin, "opencode"), `#!/usr/bin/env node
 process.stderr.write("\\u0001".repeat(300 * 1024));
@@ -1383,4 +1383,90 @@ test("supervisor settles logging and stream failures, kills descendants and clea
       }
     }
   } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+// The review call's supervise (reap: true) stops the whole process group once the command has exited, so nothing it
+// left behind (OpenCode 2's private server) outlives the call or holds the pipes open until the 90-minute limit.
+const reapHarness = `
+  import { openSync, closeSync } from "node:fs";
+  const { supervise } = await import(${JSON.stringify(resolve("sol-run.mjs"))});
+  const [pidFile, mode, reap] = process.argv.slice(1);
+  const jobs = {
+    // A server that ignores TERM, started in the command's group; the command ends at once.
+    leaves: 'const { spawn } = require("node:child_process"); const child = spawn(process.execPath, ["-e", "process.on(\\\\"SIGTERM\\\\", () => {}); setInterval(() => {}, 1000)"], { stdio: "ignore" }); child.unref(); require("node:fs").writeFileSync(process.argv[1], JSON.stringify([process.pid, child.pid]));',
+    // A server that keeps the command's output pipes open after the command is gone.
+    holds: 'const { spawn } = require("node:child_process"); const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"] }); child.unref(); require("node:fs").writeFileSync(process.argv[1], JSON.stringify([process.pid, child.pid]));',
+    killed: 'process.kill(process.pid, "SIGKILL"); setInterval(() => {}, 1000);',
+    aborted: "process.exit(139);",
+    failed: "process.exit(1);",
+    slow: "setInterval(() => {}, 1000);",
+  };
+  const log = openSync("/dev/null", "w");
+  const started = Date.now();
+  try {
+    const result = await supervise(mode === "slow" ? "1s" : "60s", process.execPath, ["-e", jobs[mode], pidFile], { log, capture: true, ...(reap === "yes" ? { reap: true } : {}) });
+    console.log(JSON.stringify({ status: result.status, crashed: result.crashed === true, seconds: (Date.now() - started) / 1000 }));
+  } finally { closeSync(log); }
+`;
+
+function descendantsGone(pidFile: string) {
+  const pids: number[] = JSON.parse(readFileSync(pidFile, "utf8"));
+  return pids.map(pid => {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0] === "Z";
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return true;
+      throw error;
+    }
+  }).every(Boolean);
+}
+
+test("supervise with reap stops the group a finished command left behind, even one that holds the output pipes", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "ase-reap-"));
+  try {
+    for (const mode of ["leaves", "holds"]) {
+      const pidFile = join(scratch, `${mode}.json`);
+      try {
+        const reaped = spawnSync(process.execPath, ["--input-type=module", "-e", reapHarness, pidFile, mode, "yes"], { encoding: "utf8", timeout: 20_000 });
+        assert.equal(reaped.status, 0, `${mode}: ${reaped.stderr}`);
+        const said = JSON.parse(reaped.stdout.trim());
+        assert.equal(said.status, 0, mode);
+        assert.ok(said.seconds < 10, `${mode}: supervise waited ${said.seconds}s for the pipes`);
+        assert.ok(descendantsGone(pidFile), `${mode}: something the command left is still running`);
+      } finally {
+        try { process.kill(-JSON.parse(readFileSync(pidFile, "utf8"))[0], "SIGKILL"); } catch { /* Gone already. */ }
+      }
+    }
+    // Without reap (builds, as before) what the command left is not touched once its output is closed.
+    const pidFile = join(scratch, "plain.json");
+    try {
+      const plain = spawnSync(process.execPath, ["--input-type=module", "-e", reapHarness, pidFile, "leaves", "no"], { encoding: "utf8", timeout: 20_000 });
+      assert.equal(plain.status, 0, plain.stderr);
+      assert.equal(descendantsGone(pidFile), false);
+    } finally {
+      try { process.kill(-JSON.parse(readFileSync(pidFile, "utf8"))[0], "SIGKILL"); } catch { /* Gone already. */ }
+    }
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test("supervise says a command crashed when a signal or an exit above 128 ended it, never when it stopped it or the command only failed", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "ase-crashed-"));
+  try {
+    const crashed = (mode: string) => {
+      const result = spawnSync(process.execPath, ["--input-type=module", "-e", reapHarness, join(scratch, `${mode}.json`), mode, "no"], { encoding: "utf8", timeout: 20_000 });
+      assert.equal(result.status, 0, `${mode}: ${result.stderr}`);
+      return JSON.parse(result.stdout.trim());
+    };
+    assert.deepEqual([crashed("killed").crashed, crashed("killed").status], [true, 1]);
+    assert.deepEqual([crashed("aborted").crashed, crashed("aborted").status], [true, 139]);
+    assert.deepEqual([crashed("failed").crashed, crashed("failed").status], [false, 1]);
+    assert.deepEqual([crashed("slow").crashed, crashed("slow").status], [false, 124]);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test("system error codes in messages come with words, never bare", () => {
+  assert.equal(plainCode("ENOENT"), "not found (ENOENT)");
+  assert.equal(plainCode("EACCES"), "not executable (EACCES)");
+  assert.equal(plainCode("ESOMETHING"), "ESOMETHING");
 });

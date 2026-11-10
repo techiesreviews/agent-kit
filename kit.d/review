@@ -4,7 +4,7 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { inferCli, opencodeModelRuns, parseAgentArgs, releaseReviewBudget, reserveReviewBudget } from "../agent-run.mjs";
+import { inferCli, opencodeModelRuns, parseAgentArgs, plainCode, releaseReviewBudget, reserveReviewBudget } from "../agent-run.mjs";
 import { reviewBrief, reviewScope, ticketReviewBrief } from "../review-brief.mjs";
 import { saveReviewEvidence } from "../review-evidence.mjs";
 import { countsLine, findingsRecord } from "../review-findings.mjs";
@@ -17,6 +17,9 @@ const { kitBranch, kitGhEnv, kitRoot, kitMainRoot, kitOwner, kitResult, kitSetti
 );
 const usage = "Usage: kit review [--base REF | --commit SHA] [--ticket FILE] [--pr N] [--second-look | --second gpt]\nDefault scope: --base origin/<land> (branches.land in scripts/agents/kit.json). Model: ASE_REVIEW_MODEL or claude-opus-5-5: claude-*, grok-*, gpt-* (also o<digit>…, codex…) or opencode/<model>;\n" +
   "any other name is refused before any call (ASE_AGENT_CLI=codex|opencode picks the CLI for it).\n" +
+  "A scope with no change (a no-code merge, an empty diff) has nothing to review: no call, no count, no evidence, and \"RESULT: skip review nothing to review (…)\" with exit 3\n" +
+  "(a second look says \"second look: skipped (nothing to review: …)\"), which kit pr takes as a pass. A reviewer whose CLI crashes (a signal, or an exit above 128) on its first call\n" +
+  "counts as unavailable, not as a failed review: a second look hands over to the next model or is skipped; the main review, with no stand-in, still fails.\n" +
   "--second-look: the review kind from the changed paths (agent, ux, dx, code) picks its models, first choice first, in the kit's second-look.json\n" +
   "(ASE_SECOND_LOOK overrides); the next one takes it when a model cannot run; when none can, it skips with exit 3 and says \"second look: skipped (<reason>)\".\n" +
   "GPT (through Codex, at the table's effort) may review since 2026-11-09; Claude Opus stays the main reviewer. A GPT model in the order is never\n" +
@@ -63,6 +66,17 @@ function evidenceDirectory() {
     try { mkdirSync(directory); return directory; }
     catch (error) { if (error.code !== "EEXIST") throw error; }
   }
+}
+
+// The label of a scope whose diff is empty (a no-code merge), or null when it has changes or cannot be read: a bad ref or
+// settings problem is left to the review itself, which reports it as before.
+function emptyScope(flags) {
+  try {
+    const root = kitRoot();
+    const scope = reviewScope("", { base: flags.base ?? (flags.commit === undefined ? `origin/${kitBranch()}` : undefined), commit: flags.commit }, root);
+    const same = spawnSync("git", ["-C", root, "diff", "--quiet", ...(scope.commit ? [scope.base, scope.head] : [`${scope.base}...${scope.head}`])], { stdio: "ignore" });
+    return same.status === 0 ? scope.label : null;
+  } catch { return null; }
 }
 
 // One review run, printing all but its RESULT line. A second look (`look`: { kind, model, effort }) sets the
@@ -198,21 +212,24 @@ async function reviewOnce(flags, look) {
       // The model could not run: its CLI is missing (a spawn ENOENT) or not logged in (no Codex auth), refused or hit a usage limit, the account
       // is empty, or the provider is down (OpenCode's error event or no session within its start limit, a Grok
       // run whose closing lines are an HTTP 5xx or a connection error, or one that gave no answer before the
-      // timeout: Grok prints its JSON only at the end). Any other failure, including any other one before the CLI started, is a broken run.
-      const missing = status !== 0 && !record.pgid && /^problem: (spawn \S+ ENOENT)$/m.exec(stderr)?.[1];
+      // timeout: Grok prints its JSON only at the end), or the CLI crashed (a signal or an exit above 128) before it answered.
+      // Any other failure, including any other one before the CLI started, is a broken run.
+      const missing = status !== 0 && !record.pgid && /^problem: spawn (\S+) ENOENT$/m.exec(stderr)?.[1];
       const down = !missing && status !== 0 && /^grok failed \(\d+\)/.test(reason) && grokDown(temporary);
       const hung = !missing && status !== 0 && /^grok-/i.test(model) && /^agent exceeded timeout=([^;]+);/.exec(reason)?.[1];
       // OpenCode that opened no session within its start limit on the first call never reached the model;
       // the runner marks it only then, so a silent retry after a call that worked keeps its count.
       const silent = status !== 0 && record.silent === true;
+      // The reviewer's CLI crashed on its first call (a signal, or an exit above 128) and came back with no review.
+      const crashed = status !== 0 && record.crashed === true;
       if (missing || down || hung) {
-        reason = missing ? `CLI missing: ${missing}` : down ? `grok unavailable: ${down}` : `grok unavailable: no answer within ${hung}`;
+        reason = missing ? `CLI missing: ${missing} ${plainCode("ENOENT")}` : down ? `grok unavailable: ${down}` : `grok unavailable: no answer within ${hung}`;
         console.error(`problem: ${reason}`);
       }
-      if (status !== 0 && spawned && (record.refused === true || outOfCredit || missing || down || hung ||
+      if (status !== 0 && spawned && (record.refused === true || outOfCredit || missing || down || hung || crashed ||
         /^\S+ usage limit\b|^OpenCode reported an error: |^opencode unavailable: no session within |^no Codex auth at /.test(reason))) unavailable = true;
       // An outage, like an empty account, returned no review, so its count is given back too.
-      if (budget && (!record.pgid || record.refused === true || outOfCredit || down || silent)) releaseReviewBudget(ledger.path, budget, env);
+      if (budget && (!record.pgid || record.refused === true || outOfCredit || down || silent || crashed)) releaseReviewBudget(ledger.path, budget, env);
     } catch (error) {
       kept = true;
       console.error(`problem: releasing review budget failed: ${error.message}`);
@@ -308,7 +325,13 @@ async function secondLook(flags) {
     const range = scope.commit ? [`${scope.commit}^`, scope.commit] : [`${scope.base}...${scope.head}`];
     const changes = parseChanges(execFileSync("git", ["-C", root, "-c", "core.quotepath=false", "diff", "--name-status", "--no-renames", ...range],
       { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
-    if (!changes.length) throw new Error(`nothing to review: ${scope.label} is empty`);
+    if (!changes.length) {
+      // Nothing changed (a no-code merge): there is nothing for a second look to read, so it is skipped, never failed.
+      const why = `nothing to review: ${scope.label} is empty`;
+      console.log(`second look: skipped (${why})`);
+      console.log(`RESULT: skip second look (${why})`);
+      return 3;
+    }
     // One path for the pick and the check below, so a problem names the file that was read.
     const table = process.env.ASE_SECOND_LOOK || resolve(import.meta.dirname, "../second-look.json");
     pick = secondLookPick(changes, settings, { ticket: flags.ticket && relative(root, resolve(root, flags.ticket)), table });
@@ -371,7 +394,15 @@ async function review(args) {
     kitResult("fail", `${error.message} evidence none`);
     return 2;
   }
-  return flags.secondLook || flags.second ? secondLook(flags) : report(await reviewOnce(flags));
+  if (flags.secondLook || flags.second) return secondLook(flags);
+  // A diff with no change has nothing to review: a skip (exit 3) that names it, so a no-code merge can go through kit pr.
+  const empty = emptyScope(flags);
+  if (empty) {
+    console.log(`nothing to review: ${empty} is empty`);
+    console.log(`RESULT: skip review nothing to review (${empty} is empty)`);
+    return 3;
+  }
+  return report(await reviewOnce(flags));
 }
 
 if (process.argv.length === 3 && ["--help", "-h"].includes(process.argv[2])) process.stdout.write(usage);

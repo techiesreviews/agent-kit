@@ -141,6 +141,8 @@ undoes a newer rule.
 - The PR says: "Reviewed with review-loop: N rounds with <model>. Verdict: approved".
 <!-- review-loop:end -->
 
+A diff with no change (a no-code merge) has nothing to review: `kit review` says `RESULT: skip review nothing to review (…)` (exit 3) and the second look `second look: skipped (nothing to review: …)`; `kit pr` takes both as a pass and the PR says `Review: nothing to review`. A reviewer whose CLI crashes (a signal, or an exit above 128) counts as unavailable, not as a failed review: the second look hands over to the next model or is skipped, and the review's own process group is stopped when its CLI exits, so no OpenCode server outlives it.
+
 The start marker carries this rule's version too (v2, v3 …).
 
 The PR's review block says "Verdict: pending" while a new head (after a "behind" rebase) is reviewed and "not approved" when that review stops the landing or does not finish; a review with only nits is reused after a rebase with the same patch; the ledger lists the second look's findings as SL-<n> rows; an out-of-budget report counts every open item and shows the builder's declined findings with their reasons.

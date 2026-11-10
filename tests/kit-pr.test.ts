@@ -80,6 +80,12 @@ if (tool === "fake-kit" && action === "specs" && env.FAKE_SPECS) {
 }
 // The second look: FAKE_SECOND=skip has no model to take it, =fail fails; FAKE_SECOND_REVIEW is its report (clean by default).
 if (tool === "fake-kit" && action === "review" && args.includes("--second-look")) {
+  // FAKE_EMPTY: the PR's diff against its base is empty, so kit review has nothing to review (a skip, exit 3).
+  if (env.FAKE_EMPTY) {
+    console.log("second look: skipped (nothing to review: git diff base...HEAD is empty)");
+    console.log("RESULT: skip second look (nothing to review: git diff base...HEAD is empty)");
+    process.exit(3);
+  }
   if (env.FAKE_SECOND === "fail") { console.log("RESULT: fail second-look table broken evidence none"); process.exit(1); }
   if (env.FAKE_SECOND === "skip") {
     console.log("second look: skipped (grok-4.7 out of credit; opencode/deepseek-v4.1-flash-free out of credit)");
@@ -100,6 +106,11 @@ if (tool === "fake-kit" && action === "review" && args.includes("--second-look")
 } else if (tool === "fake-kit" && action === "review") {
   const count = readFileSync(env.FAKE_CALLS, "utf8").trim().split("\\n").map(line => JSON.parse(line))
     .filter(call => call.tool === "fake-kit" && call.args[0] === "review" && !call.args.includes("--second-look")).length;
+  if (env.FAKE_EMPTY) {
+    console.log("nothing to review: git diff base...HEAD is empty");
+    console.log("RESULT: skip review nothing to review (git diff base...HEAD is empty)");
+    process.exit(3);
+  }
   // FAKE_REVIEW_FAIL: Claude's review fails to run (a review that left an id out, say).
   if (env.FAKE_REVIEW_FAIL) { console.log("RESULT: fail review incomplete evidence none"); process.exit(1); }
   const folder = join(env.KIT_MAIN_ROOT, ".scratch/reviews", env.ASE_OWNER, count === 1 ? "fresh" : "fresh-" + count);
@@ -2287,6 +2298,16 @@ test("when no model can take the second look the PR still lands and says why", t
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^second look: skipped \(grok-4\.7 out of credit; opencode\/deepseek-v4\.1-flash-free out of credit\)$/m);
   assert.match(result.stdout, /RESULT: ok merged #73/);
+});
+
+test("a no-code PR whose diff is empty lands: kit review skips as nothing to review, and the PR says so", t => {
+  const f = fixture(t), result = f.run([], { FAKE_EMPTY: "1" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^review: skipped \(nothing to review: git diff base\.\.\.HEAD is empty\)$/m);
+  assert.match(result.stdout, /^second look: skipped \(nothing to review: git diff base\.\.\.HEAD is empty\)$/m);
+  assert.match(result.stdout, /RESULT: ok merged #73/);
+  const block = f.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body ?? "").find(text => text.includes("<!-- review-loop -->"))!;
+  assert.match(block, /<!-- review-loop -->\nReview: nothing to review \(the diff against dev is empty\)\.\n\nsecond look: skipped \(nothing to review: git diff base\.\.\.HEAD is empty\)\n<!-- \/review-loop -->/);
 });
 
 test("a skipped second look is written into the PR's review block, so the PR never reads as double-checked", t => {
