@@ -1,9 +1,10 @@
 {
-  "about": "The second look after Claude's review, per review kind: the model to ask, the other family as fallback, and the day the pick was last checked against `grok models` and `opencode models`. Grok or OpenCode only, never an OpenAI model. One table for every project; the lead updates it when new models appear.",
+  "about": "The second look after Claude's review, per review kind: the models to try, first choice first, one per family (gpt-<model> through Codex, grok-<model>, opencode/<model> free only), and the day the pick was last checked against Lex's Codex default, `grok models` and `opencode models`. GPT may review since 2026-11-09 (Lex); Claude Opus stays the main reviewer. GPT is used for code changes only (never a docs-only change) and once per PR; a later look on that PR goes to the next model. `effort` gives a model its effort. One table for every project; the lead updates it when new models appear.",
+  "effort": { "gpt-6.1-sol": "high" },
   "kinds": {
-    "code": { "model": "grok-4.7", "fallback": "opencode/deepseek-v4.1-flash-free", "checked": "2026-10-27" },
-    "ux": { "model": "grok-4.7", "fallback": "opencode/deepseek-v4.1-flash-free", "checked": "2026-10-27" },
-    "dx": { "model": "grok-4.7", "fallback": "opencode/deepseek-v4.1-flash-free", "checked": "2026-10-27" },
-    "agent": { "model": "grok-4.7", "fallback": "opencode/deepseek-v4.1-flash-free", "checked": "2026-10-27" }
+    "code": { "order": ["gpt-6.1-sol", "grok-4.7", "opencode/deepseek-v4.1-flash-free"], "checked": "2026-11-10" },
+    "ux": { "order": ["gpt-6.1-sol", "grok-4.7", "opencode/deepseek-v4.1-flash-free"], "checked": "2026-11-10" },
+    "dx": { "order": ["gpt-6.1-sol", "grok-4.7", "opencode/deepseek-v4.1-flash-free"], "checked": "2026-11-10" },
+    "agent": { "order": ["gpt-6.1-sol", "grok-4.7", "opencode/deepseek-v4.1-flash-free"], "checked": "2026-11-10" }
   }
 }

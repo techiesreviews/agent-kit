@@ -105,30 +105,49 @@ export function reviewKind(changes, settings, { ticket } = {}) {
   return { kind: "code", path: looked[0]?.path ?? null };
 }
 
-// A second look is Grok or a free OpenCode model, never Codex or another OpenAI model.
-const lookFamily = model => typeof model !== "string" ? null : /^grok-\S+$/i.test(model) ? "grok" : /^opencode\/\S+$/.test(model) ? "opencode" : null;
+// A second look is GPT through Codex (allowed since 2026-11-09, Lex), Grok or a free OpenCode model.
+export const lookFamily = model => typeof model !== "string" ? null : /^gpt-\S+$/.test(model) ? "gpt" : /^grok-\S+$/i.test(model) ? "grok" : /^opencode\/\S+$/.test(model) ? "opencode" : null;
 
-/** The second-look table (ASE_SECOND_LOOK, else second-look.json beside this file): per kind { model, fallback, checked }. */
-export function secondLookTable(path = process.env.ASE_SECOND_LOOK || join(import.meta.dirname, "second-look.json")) {
-  let table;
-  try { table = JSON.parse(readFileSync(path, "utf8")); }
+/** The plain words a PR uses for a second look's model family. */
+export function lookFamilyWords(model) {
+  return { gpt: "GPT through Codex", grok: "Grok", opencode: "OpenCode, free" }[lookFamily(model)] ?? "unknown family";
+}
+
+function readLookTable(path) {
+  try { return JSON.parse(readFileSync(path, "utf8")); }
   catch (error) { throw new Error(`second-look table ${path}: ${error.message}`); }
+}
+
+const defaultLookTable = () => process.env.ASE_SECOND_LOOK || join(import.meta.dirname, "second-look.json");
+
+/** The second-look table (ASE_SECOND_LOOK, else second-look.json beside this file): per kind { order, checked }, where
+ * `order` lists 1 to 3 models, one per family, tried first to last; the top-level `effort` gives a model its effort. */
+export function secondLookTable(path = defaultLookTable()) {
+  const table = readLookTable(path);
   for (const kind of reviewKinds) {
     const row = table?.kinds?.[kind], problem = text => new Error(`second-look table ${path} ${kind}: ${text}`);
     if (!row || typeof row !== "object") throw problem("missing");
-    const [first, second] = [lookFamily(row.model), lookFamily(row.fallback)];
-    if (!first || !second) throw problem("model and fallback must be grok-<model> or opencode/<model>");
-    if (first === second) throw problem("the fallback must be the other family");
+    const families = Array.isArray(row.order) ? row.order.map(lookFamily) : [];
+    if (!families.length || families.length > 3 || families.includes(null)) throw problem("the order lists 1 to 3 models, each gpt-<model>, grok-<model> or opencode/<model>");
+    if (new Set(families).size !== families.length) throw problem("each family (gpt, grok, opencode) may appear once in the order");
     if (!/^\d{4}-\d{2}-\d{2}$/.test(row.checked ?? "")) throw problem("checked must be a YYYY-MM-DD date");
   }
+  for (const [model, effort] of Object.entries(table.effort ?? {}))
+    if (typeof effort !== "string" || !/^[a-z][a-z0-9_-]*$/.test(effort)) throw new Error(`second-look table ${path}: the effort for ${model} must be one word such as high`);
   return table.kinds;
 }
 
-/** The second look for a change: its kind, the deciding path, and the table's model and fallback for that kind. */
+/** The effort the second-look table gives a model, or null for the review's default. */
+export function secondLookEffort(model, path = defaultLookTable()) {
+  secondLookTable(path);
+  return readLookTable(path).effort?.[model] ?? null;
+}
+
+/** The second look for a change: its kind, the deciding path, and the table's models for that kind, first choice first. */
 export function secondLookPick(changes, settings, { ticket, table } = {}) {
   const { kind, path: decided } = reviewKind(changes, settings, { ticket });
-  const { model, fallback } = secondLookTable(table)[kind];
-  return { kind, path: decided, model, fallback };
+  const { order } = secondLookTable(table)[kind];
+  return { kind, path: decided, order: [...order] };
 }
 
 // A helper, fake or fixture is matched to unit tests by name: the fixture folder, else the file's stem.

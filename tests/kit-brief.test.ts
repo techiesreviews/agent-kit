@@ -73,7 +73,8 @@ test("brief: the build brief holds the owner, setup, pins, commands, every house
     /scripts\/agents\/kit review --ticket docs\/tickets\/07-panel\.md/,
     /scripts\/agents\/kit pr --ticket docs\/tickets\/07-panel\.md/,
     /Paid skills never go in a repo/,
-    /never an OpenAI model/,
+    /Second look: `gpt-6\.1-sol` \(GPT through Codex\), else `grok-4\.7`, else the free `opencode\/deepseek-v4\.1-flash-free`/,
+    /GPT may review since 2026-11-09; Claude Opus stays the main reviewer/,
     /Once the review loop's budget is used \(3 fix rounds, 5 for a risky change\) only P0\/P1 findings block/,
     /--waive "<reason>"/,
     /No toasts or explainers/,
@@ -149,7 +150,9 @@ test("brief: each stage has its own brief", t => {
   assert.match(second.stdout, /grok-4\.7/);
   assert.match(second.stdout, /opencode\/deepseek-v4\.1-flash-free/);
   assert.match(second.stdout, /second look: skipped \(<reason>\)/);
-  assert.match(second.stdout, /never an OpenAI model/);
+  assert.match(second.stdout, /gpt-6\.1-sol/);
+  assert.match(second.stdout, /GPT may review since 2026-11-09; Claude Opus stays the main reviewer/);
+  assert.doesNotMatch(second.stdout, /never an OpenAI model/);
   const fix = f.run(["docs/tickets/07-panel.md", "--stage", "fix", "--note", "P1 fault: src/ui/panel.css:3 wrong token"]);
   assert.match(fix.stdout, /Fix round/);
   assert.match(fix.stdout, /P1 fault: src\/ui\/panel\.css:3 wrong token/);
@@ -402,7 +405,7 @@ test("brief: every stage carries the Review loop rule from the rulebook, the one
   return import("../kit-lib.mjs").then(({ kitReviewLoopRule }: { kitReviewLoopRule: (home: string) => { rule: string; version: number } }) => {
     const { rule, version } = kitReviewLoopRule(resolve("."));
     assert.ok(readFileSync(resolve("docs/kitchen.md"), "utf8").includes(rule), "the rule is the rulebook's own text");
-    assert.equal(version, 2);
+    assert.equal(version, 3);
     const f = fixture(t);
     for (const stage of ["build", "review", "second-look", "fix"]) {
       const output = f.run(["docs/tickets/07-panel.md", "--stage", stage]);

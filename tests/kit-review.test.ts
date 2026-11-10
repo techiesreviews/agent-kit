@@ -1443,13 +1443,16 @@ test("agent.sh --resume continues the OpenCode session recorded from its first e
   assert.match(readFileSync(join(f.out, "out.md"), "utf8"), /^REVIEW_STATUS: complete/);
 });
 
-// A second-look table with a different model per kind, so each pick shows which row it came from.
-function lookTable(f: ReturnType<typeof fixture>, kinds: Record<string, { model: string; fallback: string }> = {
+// A second-look table with a different model per kind, so each pick shows which row it came from. A { model, fallback }
+// row is written as the two-model order; `extra` adds top-level keys (the effort per model).
+type LookRow = { model: string; fallback: string } | { order: unknown };
+function lookTable(f: ReturnType<typeof fixture>, kinds: Record<string, LookRow> = {
   code: { model: "grok-4.7", fallback: opencodeModel }, ux: { model: "grok-4.6", fallback: opencodeModel },
   dx: { model: "grok-4.5", fallback: opencodeModel }, agent: { model: opencodeModel, fallback: "grok-4.7" },
-}) {
+}, extra: Record<string, unknown> = {}) {
   const path = join(f.dir, "second-look.json");
-  writeFileSync(path, JSON.stringify({ kinds: Object.fromEntries(Object.entries(kinds).map(([kind, row]) => [kind, { ...row, checked: "2026-10-27" }])) }));
+  const order = (row: LookRow) => "order" in row ? row.order : [row.model, row.fallback];
+  writeFileSync(path, JSON.stringify({ ...extra, kinds: Object.fromEntries(Object.entries(kinds).map(([kind, row]) => [kind, { order: order(row), checked: "2026-10-27" }])) }));
   // UX and DX come from the settings' paths.
   writeFileSync(join(f.root, "scripts/agents/kit.json"), JSON.stringify({ project: "kit-review", branches: { land: "dev" }, standards: "CODING_STANDARDS.md",
     paths: { docs: ["^docs/"], visible: ["^src/ui/"] } }));
@@ -1481,7 +1484,7 @@ test("kit review --second-look picks each kind's table model, and a mixed change
     const call = f.calls().at(-1)!;
     assert.equal(call.cli, model.startsWith("opencode/") ? "opencode" : "grok");
     assert.equal(call.args[call.args.indexOf("-m") + 1], model);
-    assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(result.stdout), "second-look.json"), "utf8")), { kind, model, ok: true });
+    assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(result.stdout), "second-look.json"), "utf8")), { kind, model, ok: true, branch: "feature/review" });
   }
 });
 
@@ -1493,7 +1496,7 @@ test("a Grok count at its limit hands the second look to OpenCode; when OpenCode
   assert.equal(handed.status, 0, handed.stdout + handed.stderr);
   assert.match(handed.stdout, /^second look: code \(file\.txt\) grok-4\.7$/m);
   assert.match(handed.stdout, /^second look: opencode\/deepseek-v4\.1-flash-free takes it \(grok-4\.7 grok review budget used up: 1\/1 in \S+; raise ASE_REVIEW_BUDGET_GROK to override\)$/m);
-  assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(handed.stdout), "second-look.json"), "utf8")), { kind: "code", model: opencodeModel, ok: true });
+  assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(handed.stdout), "second-look.json"), "utf8")), { kind: "code", model: opencodeModel, ok: true, branch: "feature/review" });
   assert.deepEqual(f.counts(), { grok: { "kit-review": 1 } });
   const skipped = f.run(["--base", "HEAD~1", "--second-look"], { ...budget, FAKE_MODE: "out-of-credit" });
   assert.equal(skipped.status, 3, skipped.stdout + skipped.stderr);
@@ -1505,10 +1508,10 @@ test("a Grok count at its limit hands the second look to OpenCode; when OpenCode
   // The failed OpenCode run's evidence is marked, so no lookup takes it for Claude's review or a second look that ran.
   const evidence = /^evidence: (.+)$/m.exec(skipped.stdout)?.[1];
   assert.ok(evidence, skipped.stdout);
-  assert.deepEqual(JSON.parse(readFileSync(join(evidence, "second-look.json"), "utf8")), { kind: "code", model: opencodeModel, ok: false });
+  assert.deepEqual(JSON.parse(readFileSync(join(evidence, "second-look.json"), "utf8")), { kind: "code", model: opencodeModel, ok: false, branch: "feature/review" });
 });
 
-test("the second look never reaches Codex: ASE_AGENT_CLI and ASE_REVIEW_MODEL cannot redirect it, and an OpenAI row is refused", (t) => {
+test("ASE_AGENT_CLI and ASE_REVIEW_MODEL cannot redirect the second look, and a broken order is refused", (t) => {
   const f = fixture(t); withOpencode(f);
   const table = lookTable(f);
   const result = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: table, ASE_AGENT_CLI: "codex", ASE_REVIEW_MODEL: "gpt-6.1-sol" });
@@ -1520,12 +1523,23 @@ test("the second look never reaches Codex: ASE_AGENT_CLI and ASE_REVIEW_MODEL ca
   assert.equal(agent.status, 0, agent.stdout + agent.stderr);
   assert.match(agent.stdout, /^second look: agent \(scripts\/agents\/x\.mjs\) opencode\/deepseek-v4\.1-flash-free$/m);
   assert.deepEqual(f.calls().map(call => call.cli), ["grok", "opencode"]);
-  for (const kinds of [{ model: "gpt-6.1-sol", fallback: opencodeModel }, { model: "grok-4.7", fallback: "grok-4.6" }, { model: "opencode/x", fallback: "claude-opus-5-5" }]) {
-    const bad = lookTable(f, { code: kinds, ux: kinds, dx: kinds, agent: kinds });
+  for (const [order, problem] of [
+    [["grok-4.7", "grok-4.6"], "each family (gpt, grok, opencode) may appear once in the order"],
+    [["opencode/x", "claude-opus-5-5"], "the order lists 1 to 3 models, each gpt-<model>, grok-<model> or opencode/<model>"],
+    [[], "the order lists 1 to 3 models, each gpt-<model>, grok-<model> or opencode/<model>"],
+    ["grok-4.7", "the order lists 1 to 3 models, each gpt-<model>, grok-<model> or opencode/<model>"],
+  ] as const) {
+    const row = { order };
+    const bad = lookTable(f, { code: row, ux: row, dx: row, agent: row });
     const refused = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: bad });
     assert.equal(refused.status, 1, refused.stdout + refused.stderr);
-    assert.match(refused.stdout.trim().split("\n").at(-1)!, /^RESULT: fail second-look table .+ agent: (model and fallback must be grok-<model> or opencode\/<model>|the fallback must be the other family) evidence none$/);
+    assert.equal(refused.stdout.trim().split("\n").at(-1), `RESULT: fail second-look table ${bad} agent: ${problem} evidence none`);
   }
+  // An effort is one word per model.
+  const effort = lookTable(f, undefined, { effort: { "gpt-6.1-sol": "very high" } });
+  const badEffort = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: effort });
+  assert.equal(badEffort.status, 1, badEffort.stdout + badEffort.stderr);
+  assert.equal(badEffort.stdout.trim().split("\n").at(-1), `RESULT: fail second-look table ${effort}: the effort for gpt-6.1-sol must be one word such as high evidence none`);
   // A paid OpenCode row is a broken table, named before any review runs, not a failed review with no handover.
   const paid = lookTable(f, { code: { model: "grok-4.7", fallback: opencodeModel }, ux: { model: "grok-4.7", fallback: opencodeModel },
     dx: { model: "grok-4.7", fallback: opencodeModel }, agent: { model: "grok-4.7", fallback: "opencode/big-pickle" } });
@@ -1553,19 +1567,101 @@ test("the feature list a visible change updates leaves the kind to the change; a
   assert.deepEqual(reviewKind(change("docs/agents/features.md"), settings), { kind: "agent", path: "docs/agents/features.md" });
 });
 
-test("the kit's own second-look table has every kind, a Grok or OpenCode model with the other family as fallback, and a checked date", async () => {
+test("the kit's own second-look table has every kind, GPT through Codex first at high effort, then Grok, then a free OpenCode model, and a checked date", async () => {
   // @ts-expect-error The agent helpers are plain JavaScript without declarations.
-  const { reviewKinds, secondLookTable } = await import("../pr-tier.mjs");
-  const table = secondLookTable(resolve("second-look.json"));
+  const { reviewKinds, secondLookTable, secondLookEffort } = await import("../pr-tier.mjs");
+  const path = resolve("second-look.json"), table = secondLookTable(path);
   assert.deepEqual(Object.keys(table).sort(), [...reviewKinds].sort());
   for (const kind of reviewKinds) {
-    const { model, fallback, checked } = table[kind];
-    assert.ok([model, fallback].every(name => /^grok-|^opencode\//.test(name)), kind);
+    const { order, checked } = table[kind];
+    assert.equal(order.length, 3, kind);
+    assert.match(order[0], /^gpt-/, kind);
+    assert.match(order[1], /^grok-/, kind);
+    assert.match(order[2], /^opencode\/.+-free$/, kind);
     // An OpenCode row is a free model: a paid one is refused before it runs.
-    assert.ok([model, fallback].every(name => !name.startsWith("opencode/") || opencodeModelRuns(name)), kind);
-    assert.notEqual(model.split(/[-/]/)[0], fallback.split(/[-/]/)[0], kind);
+    assert.ok(opencodeModelRuns(order[2]), kind);
+    assert.equal(secondLookEffort(order[0], path), "high", kind);
     assert.match(checked, /^\d{4}-\d{2}-\d{2}$/);
   }
+});
+
+const gptOrder = { order: ["gpt-6.1-sol", "grok-4.7", opencodeModel] };
+const gptTable = (f: ReturnType<typeof fixture>) => lookTable(f, { code: gptOrder, ux: gptOrder, dx: gptOrder, agent: gptOrder }, { effort: { "gpt-6.1-sol": "high" } });
+
+test("a GPT row runs Codex read-only at the table's effort, once per PR: a later look on that PR or branch goes to the next model", (t) => {
+  const f = fixture(t); withOpencode(f);
+  const table = gptTable(f);
+  const first = f.run(["--base", "HEAD~1", "--second-look", "--pr", "12"], { ASE_SECOND_LOOK: table });
+  assert.equal(first.status, 0, first.stdout + first.stderr);
+  assert.match(first.stdout, /^second look: code \(file\.txt\) gpt-6\.1-sol$/m);
+  const call = f.calls().at(-1)!;
+  assert.equal(call.cli, "codex");
+  assert.equal(call.args[call.args.indexOf("-m") + 1], "gpt-6.1-sol");
+  assert.ok(call.args.includes("model_reasoning_effort=high"), call.args.join(" "));
+  assert.equal(call.args[call.args.indexOf("-s") + 1], "read-only");
+  // The review runs in its own Codex home, never the user's: only the login is shared.
+  assert.notEqual(call.home, f.home);
+  const firstEvidence = f.evidence(first.stdout);
+  assert.deepEqual(JSON.parse(readFileSync(join(firstEvidence, "second-look.json"), "utf8")), { kind: "code", model: "gpt-6.1-sol", ok: true, branch: "feature/review", pr: "12" });
+  // GPT is counted in the weekly GPT budget like any GPT review.
+  assert.deepEqual(f.counts(), { gpt: { "kit-review": 1 } });
+  commitFiles(f, ["src/y.ts"]);
+  for (const args of [["--pr", "12"], []]) {
+    const again = f.run(["--base", "HEAD~1", "--second-look", ...args], { ASE_SECOND_LOOK: table });
+    assert.equal(again.status, 0, again.stdout + again.stderr);
+    assert.match(again.stdout, new RegExp(`^second look: gpt-6\\.1-sol not used \\(one GPT second look per PR, done in ${firstEvidence.replaceAll(/[.()]/g, "\\$&")}\\)$`, "m"));
+    assert.match(again.stdout, /^second look: code \(src\/y\.ts\) grok-4\.7$/m);
+    assert.equal(f.calls().at(-1)!.cli, "grok");
+  }
+  // Another branch and PR may have its own GPT look.
+  f.git("switch", "-q", "-c", "feature/other");
+  const other = f.run(["--base", "HEAD~1", "--second-look", "--pr", "13"], { ASE_SECOND_LOOK: table });
+  assert.equal(other.status, 0, other.stdout + other.stderr);
+  assert.match(other.stdout, /^second look: code \(src\/y\.ts\) gpt-6\.1-sol$/m);
+  assert.deepEqual(f.calls().map(call => call.cli), ["codex", "grok", "grok", "codex"]);
+});
+
+test("a docs-only change never gets a GPT second look; with GPT alone in the order it is skipped", (t) => {
+  const f = fixture(t); withOpencode(f);
+  const table = gptTable(f);
+  commitFiles(f, ["docs/guide.md"]);
+  const docs = f.run(["--commit", "HEAD", "--second-look"], { ASE_SECOND_LOOK: table });
+  assert.equal(docs.status, 0, docs.stdout + docs.stderr);
+  assert.match(docs.stdout, /^second look: gpt-6\.1-sol not used \(docs-only change\)$/m);
+  assert.match(docs.stdout, /^second look: dx \(docs\/guide\.md\) grok-4\.7$/m);
+  assert.deepEqual(f.calls().map(call => call.cli), ["grok"]);
+  const alone = { order: ["gpt-6.1-sol"] };
+  const only = lookTable(f, { code: alone, ux: alone, dx: alone, agent: alone });
+  const skipped = f.run(["--commit", "HEAD", "--second-look"], { ASE_SECOND_LOOK: only });
+  assert.equal(skipped.status, 3, skipped.stdout + skipped.stderr);
+  assert.equal(skipped.stdout.trim().split("\n").at(-1), "RESULT: skip second look (gpt-6.1-sol not used: docs-only change)");
+  assert.deepEqual(f.calls().map(call => call.cli), ["grok"]);
+});
+
+test("kit review --second gpt asks GPT on purpose, even after the PR's GPT look, with no fallback when GPT cannot run", (t) => {
+  const f = fixture(t); withOpencode(f);
+  const table = gptTable(f);
+  assert.equal(f.run(["--base", "HEAD~1", "--second-look", "--pr", "12"], { ASE_SECOND_LOOK: table }).status, 0);
+  const asked = f.run(["--base", "HEAD~1", "--second", "gpt", "--pr", "12"], { ASE_SECOND_LOOK: table });
+  assert.equal(asked.status, 0, asked.stdout + asked.stderr);
+  assert.match(asked.stdout, /^second look: code \(file\.txt\) gpt-6\.1-sol \(asked with --second gpt\)$/m);
+  assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(asked.stdout), "second-look.json"), "utf8")), { kind: "code", model: "gpt-6.1-sol", ok: true, branch: "feature/review", pr: "12" });
+  assert.deepEqual(f.calls().map(call => call.cli), ["codex", "codex"]);
+  // GPT at its usage limit: skipped, and no other model is asked in its place.
+  const limited = f.run(["--base", "HEAD~1", "--second", "gpt"], { ASE_SECOND_LOOK: table, FAKE_MODE: "usage-limit" });
+  assert.equal(limited.status, 3, limited.stdout + limited.stderr);
+  assert.match(limited.stdout.trim().split("\n").at(-1)!, /^RESULT: skip second look \(gpt-6\.1-sol gpt usage limit until Oct 25th, 2026 3:14 PM\)$/);
+  assert.deepEqual(f.calls().map(call => call.cli), ["codex", "codex", "codex"]);
+  // A kind whose order names no GPT model has nothing to ask.
+  const none = lookTable(f);
+  const missing = f.run(["--base", "HEAD~1", "--second", "gpt"], { ASE_SECOND_LOOK: none });
+  assert.equal(missing.status, 1, missing.stdout + missing.stderr);
+  assert.equal(missing.stdout.trim().split("\n").at(-1), `RESULT: fail --second gpt: second-look table ${none} names no GPT model for code evidence none`);
+  for (const args of [["--second", "grok"], ["--second", "gpt", "--second-look"], ["--second"]]) {
+    const refused = f.run(["--base", "HEAD~1", ...args], { ASE_SECOND_LOOK: table });
+    assert.equal(refused.status, 2, args.join(" ") + refused.stdout + refused.stderr);
+  }
+  assert.equal(f.calls().length, 3);
 });
 
 test("a second look whose model runs but fails is a failed review, with no handover and no skip; a usage limit hands over", (t) => {
@@ -1593,7 +1689,7 @@ test("a second look's evidence folder is marked before its files land, so a fail
   assert.ok(evidence, result.stdout);
   // The answer was copied before the diff failed: the folder holds a complete report, marked as a second look that did not come back.
   assert.ok(existsSync(join(evidence, "result.md")));
-  assert.deepEqual(JSON.parse(readFileSync(join(evidence, "second-look.json"), "utf8")), { kind: "code", model: "grok-4.7", ok: false });
+  assert.deepEqual(JSON.parse(readFileSync(join(evidence, "second-look.json"), "utf8")), { kind: "code", model: "grok-4.7", ok: false, branch: "feature/review" });
 });
 
 test("Grok's own out-of-credit error event skips its review, and hands the second look to OpenCode", (t) => {
@@ -1607,7 +1703,7 @@ test("Grok's own out-of-credit error event skips its review, and hands the secon
   const handed = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: lookTable(f), FAKE_MODE: "out-of-credit-event" });
   assert.equal(handed.status, 0, handed.stdout + handed.stderr);
   assert.match(handed.stdout, /^second look: opencode\/deepseek-v4\.1-flash-free takes it \(grok-4\.7 out of credit\)$/m);
-  assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(handed.stdout), "second-look.json"), "utf8")), { kind: "code", model: opencodeModel, ok: true });
+  assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(handed.stdout), "second-look.json"), "utf8")), { kind: "code", model: opencodeModel, ok: true, branch: "feature/review" });
 });
 
 test("an OpenCode call that names no session within its start limit is down: with Grok out of credit the second look is skipped", (t) => {
@@ -1670,7 +1766,7 @@ test("a Grok call that gives no answer before the timeout hands the second look 
   const hung = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: lookTable(f), FAKE_MODE: "grok-hang", ASE_AGENT_TIMEOUT: "3s" });
   assert.equal(hung.status, 0, hung.stdout + hung.stderr);
   assert.match(hung.stdout, /^second look: opencode\/deepseek-v4\.1-flash-free takes it \(grok-4\.7 grok unavailable: no answer within 3s\)$/m);
-  assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(hung.stdout), "second-look.json"), "utf8")), { kind: "code", model: opencodeModel, ok: true });
+  assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(hung.stdout), "second-look.json"), "utf8")), { kind: "code", model: opencodeModel, ok: true, branch: "feature/review" });
 });
 
 test("a missing Grok CLI or a Grok outage hands the second look to OpenCode", (t) => {
@@ -1684,13 +1780,13 @@ test("a missing Grok CLI or a Grok outage hands the second look to OpenCode", (t
   const missing = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: table, PATH: `${join(f.dir, "bin")}:${nodeBin}:/usr/bin:/bin` });
   assert.equal(missing.status, 0, missing.stdout + missing.stderr);
   assert.match(missing.stdout, /^second look: opencode\/deepseek-v4\.1-flash-free takes it \(grok-4\.7 CLI missing: spawn grok ENOENT\)$/m);
-  assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(missing.stdout), "second-look.json"), "utf8")), { kind: "code", model: opencodeModel, ok: true });
+  assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(missing.stdout), "second-look.json"), "utf8")), { kind: "code", model: opencodeModel, ok: true, branch: "feature/review" });
   writeFileSync(join(f.dir, "bin", "grok"), fake); chmodSync(join(f.dir, "bin", "grok"), 0o755);
   const down = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: table, FAKE_MODE: "outage" });
   assert.equal(down.status, 0, down.stdout + down.stderr);
   assert.match(down.stderr, /^problem: grok unavailable: 503 Service Unavailable$/m);
   assert.match(down.stdout, /^second look: opencode\/deepseek-v4\.1-flash-free takes it \(grok-4\.7 grok unavailable: 503 Service Unavailable\)$/m);
-  assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(down.stdout), "second-look.json"), "utf8")), { kind: "code", model: opencodeModel, ok: true });
+  assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(down.stdout), "second-look.json"), "utf8")), { kind: "code", model: opencodeModel, ok: true, branch: "feature/review" });
   // Neither Grok run came back with a review, so neither keeps its count.
   assert.deepEqual(f.counts(), { grok: { "kit-review": 0 } });
   const traced = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: table, FAKE_MODE: "trace-503" });
