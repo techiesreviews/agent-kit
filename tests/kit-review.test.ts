@@ -1663,6 +1663,25 @@ test("the once-per-PR GPT check: another owner's look counts, a look that did no
   assert.deepEqual(f.calls().map(call => call.cli), ["codex", "codex", "grok", "codex", "codex"]);
 });
 
+test("the slice's GPT look still counts for its PR after kit pr rebases the branch onto a newer base", (t) => {
+  const f = fixture(t); withOpencode(f);
+  const table = gptTable(f);
+  f.git("commit", "-qam", "settings");
+  const slice = f.run(["--base", "origin/dev", "--second-look"], { ASE_SECOND_LOOK: table });
+  assert.equal(slice.status, 0, slice.stdout + slice.stderr);
+  const looked = f.evidence(slice.stdout);
+  // The base moves on, and the branch is rebased onto it: every commit is new, with the same patches.
+  f.git("switch", "-q", "-c", "upstream", f.commits[0]);
+  writeFileSync(join(f.root, "upstream.txt"), "upstream\n");
+  f.git("add", "upstream.txt"); f.git("commit", "-q", "-m", "upstream");
+  f.git("update-ref", "refs/remotes/origin/dev", "HEAD");
+  f.git("switch", "-q", "feature/review"); f.git("rebase", "-q", "origin/dev");
+  const landing = f.run(["--base", "origin/dev", "--second-look", "--pr", "12"], { ASE_SECOND_LOOK: table });
+  assert.equal(landing.status, 0, landing.stdout + landing.stderr);
+  assert.ok(landing.stdout.includes(`second look: gpt-6.1-sol not used (one GPT second look per PR, done in ${looked})`), landing.stdout);
+  assert.deepEqual(f.calls().map(call => call.cli), ["codex", "grok"]);
+});
+
 test("GPT's weekly count used up hands the second look to Grok", (t) => {
   const f = fixture(t); withOpencode(f);
   const table = gptTable(f), budget = { ASE_REVIEW_BUDGET_GPT: "1", ASE_SECOND_LOOK: table };
