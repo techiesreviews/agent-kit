@@ -206,6 +206,16 @@ test("skills map helpers: picks by files and words, lines per family", () => {
   assert.match(talkStyleLine("plain"), /^Write in plain English/);
 });
 
+test("brief: a broken second-look table stops no brief; the line then points at the table", t => {
+  const f = fixture(t);
+  const missing = join(f.root, "no-such-second-look.json");
+  for (const stage of ["build", "second-look"]) {
+    const output = f.run(["docs/tickets/07-panel.md", "--stage", stage], { ASE_SECOND_LOOK: missing });
+    assert.equal(output.status, 0, output.stderr + output.stdout);
+    assert.match(output.stdout, /Second look: the models in the kit's `second-look\.json`, first choice first; GPT may review since 2026-11-09/, stage);
+  }
+});
+
 test("brief: pins come from the rulebook (a superseded builder: sol builds on the builder pin; the extras' review pin wins)", t => {
   const f = fixture(t, { rulebookExtras: "docs/extras.md" });
   writeFileSync(join(f.root, "docs/extras.md"), "# Extras\n\n| Role | Model | How |\n| --- | --- | --- |\n| Review, every change | `claude-sonnet-5-5`, medium | here |\n");

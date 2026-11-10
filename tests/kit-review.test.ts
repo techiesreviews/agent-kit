@@ -1624,10 +1624,12 @@ test("a GPT row runs Codex read-only at the table's effort, once per PR: a later
 test("the once-per-PR GPT check: another owner's look counts, a look that did not come back does not, a new PR on a reused branch name gets its own", (t) => {
   const f = fixture(t); withOpencode(f);
   const table = gptTable(f);
-  const mark = (owner: string, name: string, body: Record<string, unknown>) => {
+  const head = f.git("rev-parse", "HEAD").trim();
+  const mark = (owner: string, name: string, body: Record<string, unknown>, looked = head) => {
     const folder = join(f.main, ".scratch/reviews", owner, name);
     mkdirSync(folder, { recursive: true });
     writeFileSync(join(folder, "second-look.json"), JSON.stringify({ kind: "code", model: "gpt-6.1-sol", branch: "feature/review", ...body }));
+    writeFileSync(join(folder, "refs.txt"), `${looked}\n${f.commits[0]}\n`);
     return folder;
   };
   // A GPT look that did not come back leaves the PR's one GPT look unused.
@@ -1647,7 +1649,18 @@ test("the once-per-PR GPT check: another owner's look counts, a look that did no
   const lead = f.run(["--base", "HEAD~1", "--second-look", "--pr", "12"], { ASE_SECOND_LOOK: table, ASE_OWNER: "fleet-lead" });
   assert.equal(lead.status, 0, lead.stdout + lead.stderr);
   assert.ok(lead.stdout.includes(`second look: gpt-6.1-sol not used (one GPT second look per PR, done in ${builder})`), lead.stdout);
-  assert.deepEqual(f.calls().map(call => call.cli), ["codex", "codex", "grok"]);
+  // A look on the same branch name whose HEAD is not part of this branch came from an earlier PR: GPT looks again.
+  rmSync(join(f.main, ".scratch/reviews"), { recursive: true, force: true });
+  const elsewhere = f.git("commit-tree", "HEAD^{tree}", "-m", "an earlier PR's branch").trim();
+  mark("builder", "20261101T000000Z", { ok: true, pr: "11" }, elsewhere);
+  mark("builder", "20261102T000000Z", { ok: true }, elsewhere);
+  for (const args of [[], ["--pr", "13"]]) {
+    rmSync(join(f.main, ".scratch/reviews/review-owner"), { recursive: true, force: true });
+    const reused = f.run(["--base", "HEAD~1", "--second-look", ...args], { ASE_SECOND_LOOK: table });
+    assert.equal(reused.status, 0, reused.stdout + reused.stderr);
+    assert.match(reused.stdout, /^second look: code \(file\.txt\) gpt-6\.1-sol$/m, args.join(" "));
+  }
+  assert.deepEqual(f.calls().map(call => call.cli), ["codex", "codex", "grok", "codex", "codex"]);
 });
 
 test("GPT's weekly count used up hands the second look to Grok", (t) => {
@@ -1696,9 +1709,13 @@ test("kit review --second gpt asks GPT on purpose, even after the PR's GPT look,
   const missing = f.run(["--base", "HEAD~1", "--second", "gpt"], { ASE_SECOND_LOOK: none });
   assert.equal(missing.status, 1, missing.stdout + missing.stderr);
   assert.equal(missing.stdout.trim().split("\n").at(-1), `RESULT: fail --second gpt: second-look table ${none} names no GPT model for code evidence none`);
-  for (const args of [["--second", "grok"], ["--second", "gpt", "--second-look"], ["--second"]]) {
+  for (const [args, problem] of [
+    [["--second", "grok"], "--second takes gpt, not grok"], [["--second", "gpt", "--second-look"], "--second and --second-look are mutually exclusive"],
+    [["--second"], "--second needs a value: gpt"], [["--second", "--pr", "12"], "--second needs a value: gpt"],
+  ] as const) {
     const refused = f.run(["--base", "HEAD~1", ...args], { ASE_SECOND_LOOK: table });
     assert.equal(refused.status, 2, args.join(" ") + refused.stdout + refused.stderr);
+    assert.match(refused.stderr, new RegExp(`^problem: ${problem}$`, "m"), args.join(" "));
   }
   assert.equal(f.calls().length, 3);
 });
