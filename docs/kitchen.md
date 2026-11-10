@@ -289,7 +289,7 @@ OpenCode settings (default model, global instructions) do not apply to the revie
   or whose item has no evidence line, and `kit pr` runs it whenever the PR changes docs, ticket files included. It reads
   only a `## Done` section dated 2026-11-11 or later (`doneCheckFrom` in `tickets.mjs`) of a ticket whose `## Done when`
   is a list; earlier, undated and missing Done sections are left as they are. A builder whose item is not met writes
-  `Done when <n>: not met — <why>` and leaves the ticket open.
+  `Done when <n>: not met — <why>` and does not close the ticket.
 
 ### 7. Checks
 

@@ -132,7 +132,7 @@ const shorten = text => text.length > 80 ? `${text.slice(0, 77)}...` : text;
 
 /** What stops a ticket from being closed, as { file, line, message } rows (`lines` are the ticket's lines, `end` the
  * frontmatter's closing line). Only a ticket whose `## Done when` is a list, and whose last `## Done` section (a
- * heading starting `## Done`, never `## Done when`) carries an ISO date of `doneCheckFrom` or later, is read; the rest
+ * heading `## Done`, with a dated note after it such as `(2026-11-12)`, never `## Done when`) carries an ISO date of `doneCheckFrom` or later, is read; the rest
  * were written before the check and stay as they are, a ticket with no Done section included. Fenced code is skipped.
  * - `Done when <n>: <verdict> — <evidence>` is the evidence line of the n-th item of the list. The verdict is met,
  *   not met, pending or open, and `met` needs something after it; any other verdict, none, or no proof leaves the
@@ -148,7 +148,7 @@ function doneProblems(lines, end, file) {
     if (fence && mark === fence) { fence = ""; return true; }
     return Boolean(fence);
   });
-  const headings = lines.flatMap((line, index) => index > end && !fenced[index] && /^## /.test(line) ? [{ line, index }] : []);
+  const headings = lines.flatMap((line, index) => index > end && !fenced[index] && /^#{1,2} /.test(line) ? [{ line, index }] : []);
   const section = name => {
     const found = headings.findLast(({ line }) => name.test(line));
     if (!found) return null;
@@ -158,7 +158,7 @@ function doneProblems(lines, end, file) {
   const when = section(/^## Done when[ \t]*$/);
   const items = (when?.lines ?? []).flatMap((line, at) => /^(?:[-*+]|\d+[.)])\s+\S/.test(line) && !fenced[when.first + at] ? [when.first + at + 1] : []);
   if (!items.length) return [];
-  const done = section(/^## Done(?![ \t]+when\b)(?:[ \t].*)?$/i);
+  const done = section(/^## Done(?:[ \t]+[(—–-].*)?[ \t]*$/);
   const date = /\b(\d{4}-\d{2}-\d{2})\b/.exec(done?.heading ?? "")?.[1];
   if (!date || date < doneCheckFrom) return [];
   const write = number => `(write "Done when ${number}: met — <evidence>")`;

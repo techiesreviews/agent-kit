@@ -308,7 +308,7 @@ test("the brief keeps the ticket's claim owner; only an empty assignee: takes th
     assert.equal(existsSync(join(f.root, ".scratch/owner")), false);
     f.run([], { ASE_OWNER: "", FAIL_PHASE: "build" });
     const brief = readFileSync(join(f.root, ".scratch/agent-brief.md"), "utf8");
-    assert.ok(brief.includes(`Otherwise set \`status: closed\`, ${expected}`), brief);
+    assert.ok(brief.includes(`Set \`status: closed\` only when every item is met, ${expected}`), brief);
   }
 });
 
@@ -320,7 +320,7 @@ test("a ticket file may give its Done when as the standard's line instead of a h
   const brief = readFileSync(join(f.root, ".scratch/agent-brief.md"), "utf8");
   assert.ok(brief.includes("## Done when\n- Required content is present.\n\n## Builder contract"), brief);
   assert.ok(brief.includes("one line per Done when item: `Done when <n>: met — <evidence>`"), brief);
-  assert.ok(brief.includes("write `Done when <n>: not met — <why>` and leave `status: open`"), brief);
+  assert.ok(brief.includes("write `Done when <n>: not met — <why>` and do not set `status: closed`"), brief);
 });
 
 test("kit slice writes the ticket brief, runs phases in order, credits and commits the builder, and lands", t => {
