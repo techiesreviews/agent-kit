@@ -20,7 +20,7 @@ const usage = "Usage: kit review [--base REF | --commit SHA] [--ticket FILE] [--
   "--second-look: the review kind from the changed paths (agent, ux, dx, code) picks its models, first choice first, in the kit's second-look.json\n" +
   "(ASE_SECOND_LOOK overrides); the next one takes it when a model cannot run; when none can, it skips with exit 3 and says \"second look: skipped (<reason>)\".\n" +
   "GPT (through Codex, at the table's effort) may review since 2026-11-09; Claude Opus stays the main reviewer. A GPT model in the order is never\n" +
-  "used for a docs-only change, and once per PR (the same --pr N, or the branch when either look named no PR): a later look goes to the next model.\n" +
+  "used for a docs-only change, and once per PR (the same --pr N, or the same branch and history when either look named no PR): a later look goes to the next model.\n" +
   "--second gpt: a GPT second look asked on purpose, for a big or risky change: the kind's GPT model, even when the PR had one, and no other model\n" +
   "in its place (it skips with exit 3 when GPT cannot run). Either way the look is the PR's second look, which kit pr reuses on the same HEAD.\n" +
   "The whole look, fallback included, stops at ASE_SECOND_LOOK_TIMEOUT (25m): then it skips as \"<model> timed out after 25m\";\n" +
@@ -33,7 +33,7 @@ function options(args) {
   for (let i = 0; i < args.length; i += 2) {
     const flag = args[i], value = args[i + 1];
     if (flag === "--second-look" && !values.secondLook) { values.secondLook = true; i--; continue; }
-    if (flag === "--second" && value !== undefined && value !== "gpt") throw new Error(value.startsWith("--") ? "--second needs a value: gpt" : `--second takes gpt, not ${value}`);
+    if (flag === "--second" && value !== "gpt") throw new Error(value === undefined || value.startsWith("--") ? "--second needs a value: gpt" : `--second takes gpt, not ${value}`);
     if (!["--base", "--commit", "--ticket", "--pr", "--second"].includes(flag) || !value || (value.startsWith("--") && !["--base", "--commit"].includes(flag)) || Object.hasOwn(values, flag.slice(2))) {
       throw new Error(`Invalid option: ${flag}`);
     }
@@ -259,8 +259,9 @@ function report({ status, outOfCredit, kept, budget, model, evidence, label, rea
 }
 
 // The PR's GPT second look that already ran (a mark that came back, for this PR or this branch, under any owner),
-// or null. The cost guard: one GPT second look per PR.
-function gptLookDone(pr, branch) {
+// or null. The cost guard: one GPT second look per PR. A branch match counts unless both name a PR, and only when the
+// look's HEAD (its refs.txt) is part of this HEAD: a branch name that comes back for a new PR gets its own GPT look.
+function gptLookDone(pr, branch, root, head) {
   const reviews = join(kitMainRoot(), ".scratch/reviews");
   if (!existsSync(reviews)) return null;
   const folders = readdirSync(reviews, { withFileTypes: true }).filter(entry => entry.isDirectory())
@@ -269,8 +270,11 @@ function gptLookDone(pr, branch) {
     let mark;
     try { mark = JSON.parse(readFileSync(join(folder, "second-look.json"), "utf8")); } catch { continue; }
     if (mark?.ok !== true || lookFamily(mark.model) !== "gpt") continue;
-    // A branch match counts unless both name a PR: a branch name that comes back for a new PR gets its own GPT look.
-    if ((pr && mark.pr === pr) || (branch && mark.branch === branch && (!pr || !mark.pr))) return folder;
+    if (pr && mark.pr === pr) return folder;
+    if (!branch || mark.branch !== branch || (pr && mark.pr)) continue;
+    let looked = "";
+    try { looked = readFileSync(join(folder, "refs.txt"), "utf8").split(/\r?\n/)[0].trim(); } catch { continue; }
+    if (/^[0-9a-f]{7,64}$/.test(looked) && spawnSync("git", ["-C", root, "merge-base", "--is-ancestor", looked, head]).status === 0) return folder;
   }
   return null;
 }
@@ -313,7 +317,7 @@ async function secondLook(flags) {
       const docsOnly = classify(changes, { settings }).tier === "docs";
       const branch = spawnSync("git", ["-C", root, "branch", "--show-current"], { encoding: "utf8" }).stdout?.trim() ?? "";
       for (const model of pick.order) {
-        const done = lookFamily(model) === "gpt" && !docsOnly && gptLookDone(flags.pr, branch);
+        const done = lookFamily(model) === "gpt" && !docsOnly && gptLookDone(flags.pr, branch, root, scope.head);
         const why = lookFamily(model) !== "gpt" ? null : docsOnly ? "docs-only change" : done ? `one GPT second look per PR, done in ${done}` : null;
         if (why) unused.push({ model, why });
         else models.push(model);
