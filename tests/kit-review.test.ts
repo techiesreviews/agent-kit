@@ -54,6 +54,8 @@ if (process.env.FAKE_ROTATE && symlink && cli === "codex") {
 }
 const resumed = args.includes("resume") || args.includes("--resume");
 const mode = process.env.FAKE_MODE || "pass";
+// A reviewer that crashes: the OS ends it with a signal before it answers.
+if (mode === "crash" && (!process.env.FAKE_CRASH_CLI || process.env.FAKE_CRASH_CLI === cli)) process.kill(process.pid, "SIGKILL");
 const report = mode === "empty-pass" && !resumed ? "" : mode === "retry-fail" || mode === "no-session" || (mode === "retry-pass" && !resumed) || mode === "retry-model" || (mode === "retry-usage-limit" && !resumed) || (mode === "retry-out-of-credit" && !resumed) ? "incomplete reply\\n" : process.env.FAKE_REPORT || ${JSON.stringify(complete)};
 const model = mode === "retry-model" && resumed ? "wrong-model" : args[args.indexOf(cli === "claude" ? "--model" : "-m") + 1];
 if (cli === "codex") {
@@ -355,12 +357,19 @@ test("bad refs, empty diffs and absent scopes fail before a CLI is called", (t) 
     assert.ok(result.stderr.includes(ref));
     f.noEvidence(result.stdout);
   }
-  const empty = f.run(["--base", "HEAD"]);
-  assert.equal(empty.status, 1, empty.stderr);
-  assert.ok(empty.stderr.includes(`problem: empty diff for git diff ${f.commits[2]}...HEAD`));
-  const evidence = f.evidence(empty.stdout);
-  assert.equal(readFileSync(join(evidence, "diff.patch"), "utf8"), "");
-  assert.ok(existsSync(join(evidence, "refs.txt")));
+  // An empty diff is nothing to review, not a failure: a skip with exit 3, no call, no evidence folder, so a no-code merge can go on.
+  for (const front of [false, true]) {
+    const empty = f.run(["--base", "HEAD"], {}, front);
+    assert.equal(empty.status, 3, empty.stderr);
+    assert.ok(empty.stdout.includes(`nothing to review: git diff ${f.commits[2]}...HEAD is empty`), empty.stdout);
+    assert.equal(empty.stdout.trim().split("\n").at(-1), `RESULT: skip review nothing to review (git diff ${f.commits[2]}...HEAD is empty)`);
+    assert.doesNotMatch(empty.stderr, /problem:/);
+    assert.equal(existsSync(join(f.main, ".scratch/reviews")), false);
+  }
+  f.git("commit", "--allow-empty", "-m", "no code");
+  const noCode = f.run(["--commit", "HEAD"]);
+  assert.equal(noCode.status, 3, noCode.stdout + noCode.stderr);
+  assert.match(noCode.stdout.trim().split("\n").at(-1)!, /^RESULT: skip review nothing to review \(git diff .* is empty\)$/);
   writeFileSync(f.brief, "No scope\n");
   const missing = f.runAgent();
   assert.equal(missing.status, 2);
@@ -652,10 +661,10 @@ test("kit review counts outside reviews per week, refuses at the budget and neve
   const claude = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: "claude-haiku-5-5", ASE_REVIEW_BUDGET_GPT: "0" });
   assert.equal(claude.status, 0, claude.stderr);
   assert.doesNotMatch(claude.stdout, /^budget:/m);
-  // An empty diff never reaches the model, so its reservation is returned.
+  // An empty diff never reaches the model, so nothing is reserved for it.
   const empty = f.run(["--base", "HEAD"], { ASE_REVIEW_MODEL: "gpt-6.1-sol", ASE_REVIEW_BUDGET_GPT: "2" });
-  assert.equal(empty.status, 1);
-  assert.match(empty.stderr, /empty diff/);
+  assert.equal(empty.status, 3);
+  assert.match(empty.stdout, /nothing to review/);
   assert.deepEqual(f.counts(), { gpt: { "kit-review": 1 } });
   assert.equal(f.calls().length, 2);
 });
@@ -1030,6 +1039,8 @@ const mode = process.env.FAKE_MODE || "pass";
 // A provider that is down: no event at all, as on 2026-10-27.
 if (process.env.FAKE_OPENCODE_SILENT || (mode === "retry-silent" && resumed)) await new Promise(done => setTimeout(done, 30_000));
 emit("step_start", { part: { type: "step-start", messageID: "m0" } });
+// A reviewer that crashes: the OS ends it with a signal.
+if (mode === "crash" && (!process.env.FAKE_CRASH_CLI || process.env.FAKE_CRASH_CLI === "opencode")) process.kill(process.pid, "SIGKILL");
 if (mode === "error-502" || mode === "error-502-exit1") {
   emit("error", { error: { name: "APIError", data: { message: "Bad gateway", statusCode: 502 } } });
   process.exit(mode === "error-502" ? 0 : 1);
@@ -1888,7 +1899,7 @@ test("a missing Grok CLI or a Grok outage hands the second look to OpenCode", (t
   symlinkSync(process.execPath, join(nodeBin, "node"));
   const missing = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: table, PATH: `${join(f.dir, "bin")}:${nodeBin}:/usr/bin:/bin` });
   assert.equal(missing.status, 0, missing.stdout + missing.stderr);
-  assert.match(missing.stdout, /^second look: opencode\/deepseek-v4\.1-flash-free takes it \(grok-4\.7 CLI missing: spawn grok ENOENT\)$/m);
+  assert.match(missing.stdout, /^second look: opencode\/deepseek-v4\.1-flash-free takes it \(grok-4\.7 CLI missing: grok not found \(ENOENT\)\)$/m);
   assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(missing.stdout), "second-look.json"), "utf8")), { kind: "code", model: opencodeModel, ok: true, branch: "feature/review" });
   writeFileSync(join(f.dir, "bin", "grok"), fake); chmodSync(join(f.dir, "bin", "grok"), 0o755);
   const down = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: table, FAKE_MODE: "outage" });
@@ -1903,6 +1914,44 @@ test("a missing Grok CLI or a Grok outage hands the second look to OpenCode", (t
   assert.doesNotMatch(traced.stdout, / takes it /);
   assert.doesNotMatch(traced.stderr, /grok unavailable/);
   assert.match(traced.stdout.trim().split("\n").at(-1)!, /^RESULT: fail grok failed \(1\)/);
+});
+
+test("a second look on an empty diff is skipped as nothing to review, with no call, no count and no evidence", (t) => {
+  const f = fixture(t); withOpencode(f);
+  const table = lookTable(f);
+  for (const args of [["--second-look"], ["--second", "gpt"]]) {
+    const result = f.run(["--base", "HEAD", ...args], { ASE_SECOND_LOOK: table, ASE_REVIEW_BUDGET_GROK: "1" });
+    assert.equal(result.status, 3, result.stdout + result.stderr);
+    assert.doesNotMatch(result.stderr, /problem:/);
+    assert.ok(result.stdout.includes(`second look: skipped (nothing to review: git diff ${f.commits[2]}...HEAD is empty)`), result.stdout);
+    assert.equal(result.stdout.trim().split("\n").at(-1), `RESULT: skip second look (nothing to review: git diff ${f.commits[2]}...HEAD is empty)`);
+  }
+  assert.equal(f.calls().length, 0);
+  assert.equal(existsSync(join(f.main, ".scratch/reviews")), false);
+  assert.equal(existsSync(f.ledger), false);
+});
+
+test("a second look whose reviewer crashes counts as unavailable: the next model takes it, else it is skipped, and no count is kept", (t) => {
+  const f = fixture(t); withOpencode(f);
+  const table = lookTable(f);
+  const budget = { ASE_SECOND_LOOK: table, ASE_REVIEW_BUDGET_GROK: "3", FAKE_MODE: "crash" };
+  const handed = f.run(["--base", "HEAD~1", "--second-look"], { ...budget, FAKE_CRASH_CLI: "grok" });
+  assert.equal(handed.status, 0, handed.stdout + handed.stderr);
+  assert.match(handed.stderr, /^problem: grok crashed \(killed by signal SIGKILL\); see /m);
+  assert.match(handed.stdout, /^second look: opencode\/deepseek-v4\.1-flash-free takes it \(grok-4\.7 grok crashed \(killed by signal SIGKILL\); see .*\)$/m);
+  assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(handed.stdout), "second-look.json"), "utf8")), { kind: "code", model: opencodeModel, ok: true, branch: "feature/review" });
+  // No review came back from the crashed run, so its count is given back.
+  assert.deepEqual(f.counts(), { grok: { "kit-review": 0 } });
+  // Both crash: nothing could look, so the look is skipped, never failed.
+  const skipped = f.run(["--base", "HEAD~1", "--second-look"], budget);
+  assert.equal(skipped.status, 3, skipped.stdout + skipped.stderr);
+  assert.match(skipped.stdout.trim().split("\n").at(-1)!, /^RESULT: skip second look \(grok-4\.7 grok crashed .*; opencode\/deepseek-v4\.1-flash-free opencode crashed .*\)$/);
+  assert.doesNotMatch(skipped.stdout, /^RESULT: fail/m);
+  assert.deepEqual(f.counts(), { grok: { "kit-review": 0 } });
+  // The main review has no stand-in: a crash there still fails it.
+  const main = f.run(["--base", "HEAD~1"], { FAKE_MODE: "crash" });
+  assert.equal(main.status, 1, main.stdout + main.stderr);
+  assert.match(main.stdout.trim().split("\n").at(-1)!, /^RESULT: fail claude crashed \(killed by signal SIGKILL\)/);
 });
 
 test("kit review --second-look --pr posts a comment that names the second look's kind and model", (t) => {
