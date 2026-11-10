@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 // @ts-expect-error The script is plain JavaScript without declarations.
-import { loadFeedback, loadTickets, parseFeedback, parseFiles, parseTicket, resolveTickets } from "../tickets.mjs";
+import { loadFeedback, loadTickets, newlyClosed, parseFeedback, parseFiles, parseTicket, resolveTickets } from "../tickets.mjs";
 
 const fixtures = "tests/fixtures/agent-tickets";
 
@@ -446,4 +446,75 @@ test("a heading after the Done section ends it, and a Done-like heading after a 
   assert.deepEqual(doneProblems(closedTicket([...met, "", "# Notes", "", "- Pending: ask Lex"])), []);
   assert.deepEqual(doneProblems(closedTicket([...met, "", "## Done notes", "", "- Pending: ask Lex"])), []);
   assert.equal(doneProblems(closedTicket(["- Done when 1: pending", ...met.slice(1), "", "## Done criteria", "", "Fine."])).length, 1);
+});
+
+const strictProblems = (source: string) => parseTicket(source, "01-x.md", "alpha").ticket.strictDoneProblems as { file: string; line: number; message: string }[];
+
+test("the strict reading has no date cutoff and refuses a missing or undated Done, and the plain one still leaves them", () => {
+  const met = ["- Done when 1: met — a", "- Done when 2: met — b", "- Done when 3: met — c"];
+  // An undated Done holding an unmet line: the plain check leaves it, the strict one names the line and the missing date.
+  const undated = closedTicket(["- Done when 1: met — a", "- Done when 2: not met — x", met[2]], { date: "" });
+  assert.deepEqual(doneProblems(undated), []);
+  assert.deepEqual(strictProblems(undated), [
+    { file: "01-x.md", line: 15, message: 'Closed ticket: its ## Done has no date (write "## Done (YYYY-MM-DD)")' },
+    { file: "01-x.md", line: 18, message: 'Closed ticket, but its Done section says "not met": - Done when 2: not met — x' },
+  ]);
+  // No Done section at all: one problem, on the Done when heading.
+  assert.deepEqual(doneProblems(closedTicket([])), []);
+  assert.deepEqual(strictProblems(closedTicket([])), [{ file: "01-x.md", line: 9, message: 'Closed ticket: it has no ## Done section, so no Done when item has an evidence line (write "Done when <n>: met — <evidence>")' }]);
+  // An old date does not exempt it, and a good ticket passes both ways.
+  assert.equal(strictProblems(closedTicket(["Done."], { date: "2026-10-01" })).length, 3);
+  assert.deepEqual(strictProblems(closedTicket(met, { date: "2026-10-01" })), []);
+  assert.deepEqual(strictProblems(closedTicket(met)), []);
+  // A later Done heading with no date does not hide the dated one: its unmet line is still read, by both readings.
+  const followUp = closedTicket(["- Done when 1: met — a", "- Done when 2: pending", met[2], "", "## Done (follow-up)", "", "Later notes."]);
+  for (const read of [doneProblems, strictProblems]) assert.deepEqual(read(followUp).map(problem => problem.message.slice(0, 40)), ['Closed ticket, but its Done section says']);
+  // Nothing to prove for a ticket that is not closed or lists no checks.
+  assert.deepEqual(strictProblems(closedTicket([], { status: "open" })), []);
+  assert.deepEqual(strictProblems("---\nstatus: closed\n---\n\n## Resolution\n\nDecided.\n"), []);
+});
+
+test("newlyClosed names the tickets that are closed now and were not closed at the merge base, new ones included", t => {
+  const cwd = mkdtempSync(join(tmpdir(), "agent-tickets-since-"));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const env = repoEnv({ GIT_AUTHOR_NAME: "Kit test", GIT_AUTHOR_EMAIL: "kit@example.com", GIT_COMMITTER_NAME: "Kit test", GIT_COMMITTER_EMAIL: "kit@example.com" });
+  const git = (...args: string[]) => {
+    const run = spawnSync("git", args, { cwd, env, encoding: "utf8", timeout: 5_000 });
+    assert.equal(run.status, 0, run.stderr);
+    return run.stdout.trim();
+  };
+  git("init", "-q", "--initial-branch=dev");
+  writeSettings(cwd);
+  const dir = "docs/wayfinder/alpha/build/tickets";
+  mkdirSync(join(cwd, dir), { recursive: true });
+  const old = closedTicket(["Done."], { date: "2026-10-01" });
+  writeFileSync(join(cwd, `${dir}/01-old.md`), old);
+  writeFileSync(join(cwd, `${dir}/02-will-close.md`), closedTicket([], { status: "open" }));
+  writeFileSync(join(cwd, `${dir}/03-will-stay-open.md`), closedTicket([], { status: "open" }));
+  git("add", "."); git("commit", "-qm", "base");
+  git("switch", "-qc", "feature");
+  writeFileSync(join(cwd, `${dir}/01-old.md`), `${old}\n\nA follow-up line.\n`);
+  writeFileSync(join(cwd, `${dir}/02-will-close.md`), closedTicket(["- Done when 1: met — a", "- Done when 2: met — b", "- Done when 3: met — c"], { date: "" }));
+  writeFileSync(join(cwd, `${dir}/04-new-closed.md`), closedTicket([]));
+  writeFileSync(join(cwd, `${dir}/05-new-open.md`), closedTicket([], { status: "open" }));
+  git("add", "."); git("commit", "-qm", "feature");
+  const loaded = loadTickets("docs/wayfinder", undefined, { ref: "HEAD", cwd });
+  assert.deepEqual([...newlyClosed(loaded.tickets, "dev", { cwd })].sort(), [`${dir}/02-will-close.md`, `${dir}/04-new-closed.md`]);
+  assert.throws(() => newlyClosed(loaded.tickets, "missing-ref", { cwd }), /Invalid ref: missing-ref/);
+
+  const script = resolve("tickets.mjs");
+  const run = (...args: string[]) => spawnSync(process.execPath, [script, ...args], { cwd, env, encoding: "utf8", timeout: 5_000 });
+  const plain = run("check");
+  assert.equal(plain.status, 0, plain.stderr);
+  const strict = run("check", "--closed-since", "dev");
+  assert.equal(strict.status, 1);
+  assert.equal(strict.stdout, "");
+  const lines = strict.stderr.trim().split("\n");
+  assert.equal(lines.length, 2, strict.stderr);
+  assert.ok(lines[0].startsWith(`${dir}/02-will-close.md:15: Closed ticket: its ## Done has no date`), lines[0]);
+  assert.ok(lines[1].startsWith(`${dir}/04-new-closed.md:9: Closed ticket: it has no ## Done section`), lines[1]);
+  assert.match(run("check", "--closed-since", "missing-ref").stderr, /Invalid ref: missing-ref/);
+  assert.equal(run("check", "--closed-since").status, 2);
+  assert.equal(run("frontier", "--closed-since", "dev").status, 2);
+  assert.match(run("check", "--closed-since", "dev", "--closed-since", "dev").stderr, /Usage:.*--closed-since <ref>/);
 });

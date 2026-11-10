@@ -1694,7 +1694,7 @@ test("a docs-only PR runs only doc guards, skips Claude's review but not the sec
   assert.equal(result.status, 0, result.stderr); assert.match(result.stdout, /RESULT: ok merged #73/);
   assert.match(result.stdout, /^tier: docs \(2 files, all docs\)$/m); assert.match(result.stdout, /review: skipped \(docs tier\)/);
   const calls = f.calls();
-  assert.deepEqual(calls.filter(call => call.tool === "tickets.mjs").map(call => call.args), [["check"]]);
+  assert.deepEqual(calls.filter(call => call.tool === "tickets.mjs").map(call => call.args), [["check", "--closed-since", "origin/dev"]]);
   assert.deepEqual(calls.filter(call => call.tool === "unit.sh").map(call => call.args), [["tests/code-map.test.ts"]]);
   assert.equal(calls.some(call => call.tool === "npm"), false);
   assert.equal(calls.some(call => claudeReview(call) || (call.tool === "fake-kit" && call.args[0] === "specs")), false);
@@ -1719,8 +1719,8 @@ test("a code PR that also changes a ticket file runs the ticket check, and a cod
   const docs = fixture(t, { "src/app.ts": "export {};\n", "docs/wayfinder/m/tickets/01-x.md": "---\nstatus: closed\n---\n" });
   const withTicket = docs.run(["--no-merge"]);
   assert.equal(withTicket.status, 0, withTicket.stderr); assert.match(withTicket.stdout, /^tier: full \(2 files, src\/app\.ts is code\)$/m);
-  assert.deepEqual(docs.calls().filter(call => call.tool === "tickets.mjs").map(call => call.args), [["check"]]);
-  assert.match(docs.body(), /- node \S*tickets\.mjs check: ok/);
+  assert.deepEqual(docs.calls().filter(call => call.tool === "tickets.mjs").map(call => call.args), [["check", "--closed-since", "origin/dev"]]);
+  assert.match(docs.body(), /- node \S*tickets\.mjs check --closed-since origin\/dev: ok/);
   const code = fixture(t, { "src/app.ts": "export {};\n" });
   assert.equal(code.run(["--no-merge"]).status, 0);
   assert.deepEqual(code.calls().filter(call => call.tool === "tickets.mjs"), []);
@@ -1747,8 +1747,8 @@ test("a docs-tier PR with a KIT_HOME outside the project runs that home's ticket
   const result = f.run(["--no-merge"], { KIT_HOME: home });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /^tier: docs /m);
-  assert.deepEqual(f.calls().filter(call => call.tool === "tickets.mjs").map(call => [call.script, call.args]), [[join(home, "tickets.mjs"), ["check"]]]);
-  assert.ok(f.body().includes(`- node ${join(home, "tickets.mjs")} check: ok`), f.body());
+  assert.deepEqual(f.calls().filter(call => call.tool === "tickets.mjs").map(call => [call.script, call.args]), [[join(home, "tickets.mjs"), ["check", "--closed-since", "origin/dev"]]]);
+  assert.ok(f.body().includes(`- node ${join(home, "tickets.mjs")} check --closed-since origin/dev: ok`), f.body());
 });
 
 test("a CSS-only PR runs the colour check and specs, keeps the review and reminds about shots", t => {

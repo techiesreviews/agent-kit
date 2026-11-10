@@ -609,7 +609,7 @@ async function main(args) {
     const commands = {
       check: () => parse(checks.check), unit: () => parse(checks.test), lint: () => parse(checks.lint),
       "kit-clean": () => extra.flatMap(parse),
-      colours: () => parse(checks.css), tickets: () => [["node", [shared("tickets.mjs"), "check"]]],
+      colours: () => parse(checks.css), tickets: () => [["node", [shared("tickets.mjs"), "check", "--closed-since", `origin/${flags.base}`]]],
       "unit-files": () => {
         const files = focusedUnitFiles(changes, plan, sources(), settings);
         return files.length ? [[shared("unit.sh"), files]] : [];

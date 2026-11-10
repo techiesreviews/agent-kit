@@ -286,9 +286,11 @@ OpenCode settings (default model, global instructions) do not apply to the revie
 - **Closing a ticket:** `status: closed` needs a `## Done (YYYY-MM-DD)` with one evidence line per `## Done when`
   item, `Done when <n>: met — <evidence>` (the verdicts are met, not met, pending and open; only met with proof
   counts). `tickets.mjs check` refuses a closed ticket whose Done says "not met", "pending" or "open" as a check's verdict,
-  or whose item has no evidence line, and `kit pr` runs it whenever the PR changes docs, ticket files included. It reads
-  only a `## Done` section dated 2026-11-11 or later (`doneCheckFrom` in `tickets.mjs`) of a ticket whose `## Done when`
-  is a list; earlier, undated and missing Done sections are left as they are. A builder whose item is not met writes
+  or whose item has no evidence line. The lint over every ticket reads only a `## Done` section dated 2026-11-11 or
+  later (`doneCheckFrom` in `tickets.mjs`) of a ticket whose `## Done when` is a list, so older, undated and missing
+  Done sections stay as they are. `kit pr` runs `tickets.mjs check --closed-since origin/<land>` whenever the PR changes
+  docs, ticket files included: a ticket that is closed now and was not closed at the merge base (or is new) is read
+  strictly, with no date cutoff, and a missing or undated `## Done` fails too. A builder whose item is not met writes
   `Done when <n>: not met — <why>` and does not close the ticket.
 
 ### 7. Checks
