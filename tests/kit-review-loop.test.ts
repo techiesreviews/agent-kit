@@ -432,3 +432,18 @@ test("a long reason on a \"still open\" mark is cut, so the brief line still hol
   assert.ok(section.includes("file.txt:4 — P2 fault: the retry loses the second write when the first fails."), "the original finding survives a long reason");
   assert.match(carried.text, /^R1-2 still open: (?:because ){10,}/, "the reason is still there, cut");
 });
+
+test("a card brief's risk stops at its \"### Review follow-ups\": review notes added later never raise the limit from 3 to 5", t => {
+  const dir = mkdtempSync(join(tmpdir(), "kit-risk4-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const git = (...args: string[]) => spawnSync("git", ["-C", dir, "-c", "user.name=T", "-c", "user.email=t@t", ...args], { encoding: "utf8" });
+  git("init", "-q", "-b", "main"); writeFileSync(join(dir, "a"), "1\n"); git("add", "."); git("commit", "-qm", "base");
+  const risky = (name: string, text: string) => { writeFileSync(join(dir, name), text); return branchRisk({ root: dir, base: "main", ticket: name, settings: {} }); };
+  const card = (body: string) => `---\ntitle: Tidy the saver\norbit: TOOLS-1\n---\n\nOrbit card TOOLS-1\n\nMake the saver tidier.\nDone when:\n- the button is blue\n${body}`;
+  const notes = "\n### Review follow-ups\n\n- Spec (P3): P3: a cosmetic point about authentication, data loss and a race condition.\n";
+  assert.equal(risky("calm.md", card(notes)).risky, false, "review notes under the brief never count");
+  assert.equal(risky("both.md", card(`${notes}\n### UX follow-ups\n\n- UX (looks off): F-1 S1: a hint about security\n`)).risky, false);
+  // What comes before the notes still counts, and so does a card with no notes.
+  assert.equal(risky("before.md", `${card("")}- no data loss under concurrent saves\n${notes}`).risky, true, "the card's own Done when, above the notes");
+  assert.equal(risky("none.md", card("- no data loss\n")).risky, true);
+});

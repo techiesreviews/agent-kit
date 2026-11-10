@@ -441,3 +441,14 @@ test("the arguments the kit really sends through the wrapper: a review call turn
   for (const args of calls) spawnSync(wrapper, args, { env, encoding: "utf8" });
   assert.deepEqual(f.callList().map(call => call.scrub), ["0", "0", "1", "1"]);
 });
+
+test("a managed-mcp.json keeps the flag on even with --bare, whatever else makes the call look safe", t => {
+  const f = folder(t);
+  const env = { ...f.env, KIT_API_KEY_FILE: f.keyFile };
+  const bare = ["-p", "--tools", "Read", "--bare", "--strict-mcp-config"];
+  spawnSync(wrapper, bare, { env, encoding: "utf8" });
+  assert.equal(f.callList().at(-1).scrub, "0", "no managed MCP file: a bare plain reader call has the flag off");
+  writeFileSync(join(f.managed, "managed-mcp.json"), "{}");
+  spawnSync(wrapper, bare, { env, encoding: "utf8" });
+  assert.equal(f.callList().at(-1).scrub, "1", "--bare is not known to keep admin-installed MCP servers out");
+});

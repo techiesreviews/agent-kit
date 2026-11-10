@@ -28,8 +28,11 @@ const held = name => existsSync(join(env.XDG_STATE_HOME, "agent-kit", name + ".l
 const bodyIndex = args.indexOf("--body-file");
 const bodyField = args.find(arg => arg.startsWith("body=@"));
 const bodyPath = bodyIndex >= 0 ? args[bodyIndex + 1] : bodyField?.slice("body=@".length);
+// FAKE_FAIL_PENDING: saving the PR block that says "Verdict: pending" fails, as a gh api call that cannot be made does; the call is
+// logged as failed, so a test can tell what reached the PR from what was only tried.
+const failPending = tool === "gh" && env.FAKE_FAIL_PENDING && bodyPath && readFileSync(bodyPath, "utf8").includes("Verdict: pending");
 // repo: the GH_REPO a call was told, when it was told one.
-appendFileSync(env.FAKE_CALLS, JSON.stringify({ tool, script: process.argv[1], args, ...(bodyPath ? { body: readFileSync(bodyPath, "utf8") } : {}),
+appendFileSync(env.FAKE_CALLS, JSON.stringify({ tool, script: process.argv[1], args, ...(failPending ? { failed: true } : {}), ...(bodyPath ? { body: readFileSync(bodyPath, "utf8") } : {}),
   ...(env.GH_REPO ? { repo: env.GH_REPO } : {}), ...(env.GH_HOST ? { host: env.GH_HOST } : {}),
   ...(tool === "fake-kit" && args[0] === "specs" ? { full: held("browser-run"), quiet: held("quiet"), holder: env.KIT_QUIET_HOLDER || "" } : {}) }) + "\\n");
 const scripts = { "unit.sh": "unit", "tickets.mjs": "tickets", "check-colours.mjs": "colours" };
@@ -41,6 +44,7 @@ if (tool === "fake-kit" && action === "release-check" && env.FAKE_RELEASE_CHECK)
   const run = require("node:child_process").spawnSync(env.FAKE_RELEASE_CHECK, args.slice(1), { stdio: "inherit" });
   process.exit(run.status ?? 1);
 }
+if (failPending) { console.error("api unavailable"); process.exit(1); }
 if (env.FAKE_FAIL === action) {
   for (let i = 1; i <= 35; i++) console.error("failure line " + i);
   if (env.FAKE_FAIL_TEXT) console.error(env.FAKE_FAIL_TEXT);
@@ -2950,6 +2954,19 @@ test("after a behind rebase a failed review, a second look that stops it, or a r
   assert.equal(merged.status, 0, merged.stdout + merged.stderr);
   assert.equal(reviewBodies(bare).at(-1)!.includes("<!-- review-loop -->"), false);
   assert.doesNotMatch(reviewBodies(bare).at(-1)!, /Verdict: (pending|approved)/);
+});
+
+test("a failed 'Verdict: pending' update stops the run and never leaves the old 'approved' on the PR", t => {
+  const f = fixture(t);
+  savedFindings(f, f.saveReview(cleanReview), {});
+  const result = f.run([], { FAKE_BEHIND: "1", FAKE_ADVANCE: f.peer(), FAKE_ADVANCE_PATCH: "1", FAKE_FAIL_PENDING: "1" });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.ok(f.apiCalls().some(call => call.failed), "the pending update was tried and failed");
+  const blocks = f.apiCalls().filter(call => call.args[1] === "--method" && !call.failed).map(call => call.body ?? "").filter(text => text.includes("<!-- review-loop -->"));
+  assert.match(blocks[0], /Verdict: approved/, "the first head was approved");
+  assert.equal(blocks.some(text => /Verdict: pending/.test(text)), false, "the pending update never reached the PR");
+  assert.match(blocks.at(-1)!, /Verdict: not approved \(the review did not finish at the new head [0-9a-f]{7}; see the kit pr run for the error\)/);
+  assert.equal(f.calls().filter(claudeReview).length, 0, "the rebased head was not reviewed after the failed update");
 });
 
 test("a second look's out-of-budget report carries the builder's declined findings from Claude's review", t => {
