@@ -73,7 +73,9 @@ function main(args) {
     const branch = `rollback/${names}`;
     if (git("rev-parse", "--verify", "--quiet", `refs/heads/${branch}`).status === 0) throw new Refused(`branch ${branch} already exists; delete it or finish it with kit pr`);
 
-    const original = git("symbolic-ref", "--quiet", "--short", "HEAD").stdout.trim() || must("git rev-parse", "rev-parse", "HEAD");
+    // The checkout's own branch, or the commit it is detached at.
+    const named = git("symbolic-ref", "--quiet", "--short", "HEAD").stdout.trim();
+    const original = named || must("git rev-parse", "rev-parse", "HEAD");
     must("branch", "switch", "-c", branch, target);
     console.log(`branch: ${branch} (cut at ${target})`);
     const reverted = git("revert", "--no-edit", `${first}^..${last}`);
@@ -81,7 +83,7 @@ function main(args) {
       const files = git("-c", "core.quotepath=false", "diff", "--name-only", "--diff-filter=U").stdout.trim().split("\n").filter(Boolean);
       const reason = files.length ? `conflict in ${files.join(", ")}` : kitHideUserInfo(reverted.stderr.trim().split(/\r?\n/).at(-1) || `git revert exited ${reverted.status}`);
       const aborted = git("revert", "--abort");
-      const back = git("switch", "-q", original), removed = back.status === 0 ? git("branch", "-D", branch) : back;
+      const back = git("switch", "-q", ...(named ? [] : ["--detach"]), original), removed = back.status === 0 ? git("branch", "-D", branch) : back;
       const undone = aborted.status === 0 && back.status === 0 && removed.status === 0;
       throw new Refused(`revert ${reason}${undone ? "; nothing was changed" : `; could not undo it, check branch ${branch} by hand`}`);
     }
@@ -109,10 +111,11 @@ function landWithPr(root, branch, title) {
       pending = lines.pop();
       lines.forEach(line);
     });
-    const forward = signal => () => child.kill(signal);
-    process.once("SIGINT", forward("SIGINT")); process.once("SIGTERM", forward("SIGTERM"));
+    const interrupt = () => child.kill("SIGINT"), terminate = () => child.kill("SIGTERM");
+    process.once("SIGINT", interrupt); process.once("SIGTERM", terminate);
     child.once("error", error => { result = `fail kit pr could not start: ${error.message}`; });
     child.once("close", code => {
+      process.removeListener("SIGINT", interrupt); process.removeListener("SIGTERM", terminate);
       if (pending) line(pending);
       const failed = code !== 0 || result.startsWith("fail ");
       if (!failed) kitResult("ok", `rollback ${result.replace(/^ok /, "")}`);

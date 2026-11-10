@@ -239,3 +239,66 @@ test("a second run for the same range is refused while its branch is still there
   assert.equal(again.status, 1);
   assert.match(lastLine(again.stdout), /^RESULT: fail rollback branch rollback\/.* already exists/);
 });
+
+test("a conflict after some reverts went through undoes those too", t => {
+  const f = fixture(t);
+  // Newest first: the other file's revert goes through, then the page's conflicts with the edit that landed after the range.
+  const first = f.land("first edit", "page.html", "<p>one</p>\n");
+  const last = f.land("other file");
+  f.land("later edit", "page.html", "<p>three</p>\n");
+  const result = f.run([first, last]);
+  assert.equal(result.status, 1);
+  assert.match(lastLine(result.stdout), /^RESULT: fail rollback revert .*conflict in page\.html; nothing was changed/);
+  assert.equal(f.git("branch", "--show-current"), "main");
+  assert.equal(f.git("status", "--porcelain"), "");
+  assert.equal(f.git("branch", "--list", "rollback/*"), "");
+  assert.equal(existsSync(join(f.root, "other-file.txt")), true);
+  assert.equal(f.calledWith().length, 0);
+});
+
+test("a conflict from a detached HEAD goes back to that commit, with no branch left", t => {
+  const f = fixture(t);
+  const first = f.land("first edit", "page.html", "<p>one</p>\n");
+  f.land("second edit", "page.html", "<p>two</p>\n");
+  f.git("switch", "-q", "--detach", "origin/main");
+  const head = f.git("rev-parse", "HEAD");
+  const result = f.run([first]);
+  assert.equal(result.status, 1);
+  assert.match(lastLine(result.stdout), /^RESULT: fail rollback revert .*conflict in page\.html; nothing was changed/);
+  assert.equal(f.git("branch", "--show-current"), "");
+  assert.equal(f.git("rev-parse", "HEAD"), head);
+  assert.equal(f.git("branch", "--list", "rollback/*"), "");
+  assert.equal(f.git("status", "--porcelain"), "");
+});
+
+test("a kit pr that cannot start fails in words and names the branch", t => {
+  const f = fixture(t);
+  const sha = f.land("a change");
+  const result = f.run([sha], { KIT_ROLLBACK_KIT: join(f.dir, "no-such-kit") });
+  assert.equal(result.status, 1);
+  assert.equal(results(result.stdout).length, 1);
+  assert.match(lastLine(result.stdout), /^RESULT: fail rollback kit pr could not start: .*no-such-kit/);
+  assert.match(lastLine(result.stdout), new RegExp(`rollback/${sha}-${sha}`));
+});
+
+test("files under .scratch/ are not unsaved files", t => {
+  const f = fixture(t);
+  const sha = f.land("a change");
+  mkdirSync(join(f.root, ".scratch"), { recursive: true });
+  writeFileSync(join(f.root, ".scratch/note.txt"), "kit log\n");
+  const result = f.run([sha]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(f.calledWith().length, 1);
+});
+
+test("an origin that cannot be fetched stops it before anything changes", t => {
+  const f = fixture(t);
+  const sha = f.land("a change");
+  f.git("remote", "set-url", "origin", join(f.dir, "nowhere.git"));
+  const result = f.run([sha]);
+  assert.equal(result.status, 1);
+  assert.match(lastLine(result.stdout), /^RESULT: fail rollback fetch: /);
+  assert.equal(f.git("branch", "--show-current"), "main");
+  assert.equal(f.git("branch", "--list", "rollback/*"), "");
+  assert.equal(f.calledWith().length, 0);
+});
