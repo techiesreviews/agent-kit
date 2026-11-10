@@ -177,9 +177,11 @@ export function focusedUnitFiles(changes, plan, sources, settings) {
 
 /** Ordered local steps for a tier; `review` says whether the Sol review runs. */
 export function checkSteps(plan) {
+  // Ticket files are docs: any PR that changes one runs the ticket check, which refuses a closed ticket whose Done is not met.
+  const tickets = plan.docs ? ["tickets"] : [];
   const steps = {
-    full: ["check", "unit", ...(plan.cleanGuard ? ["kit-clean"] : []), "lint", "specs"],
-    tests: ["check", "unit-files", "lint", "specs"],
+    full: ["check", "unit", ...(plan.cleanGuard ? ["kit-clean"] : []), "lint", ...tickets, "specs"],
+    tests: ["check", "unit-files", "lint", ...tickets, "specs"],
     css: ["colours", ...(plan.docs ? ["tickets", "unit-files"] : []), "specs"],
     docs: ["tickets", "unit-files"],
   }[plan.tier];

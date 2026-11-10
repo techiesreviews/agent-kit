@@ -319,6 +319,7 @@ test("a ticket file may give its Done when as the standard's line instead of a h
   f.run([], { FAIL_PHASE: "build" });
   const brief = readFileSync(join(f.root, ".scratch/agent-brief.md"), "utf8");
   assert.ok(brief.includes("## Done when\n- Required content is present.\n\n## Builder contract"), brief);
+  assert.ok(brief.includes("one line per Done when item: `Done when <n>: met — <evidence>`"), brief);
 });
 
 test("kit slice writes the ticket brief, runs phases in order, credits and commits the builder, and lands", t => {

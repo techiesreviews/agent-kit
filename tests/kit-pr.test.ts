@@ -1665,12 +1665,15 @@ test("each path reaches a tier and the highest present wins", () => asEditor(() 
   assert.deepEqual(parseChanges("M\tdocs/a.md\nD\tsrc/b.css\n"), [{ status: "M", path: "docs/a.md" }, { status: "D", path: "src/b.css" }]);
 }));
 
-test("tier steps: docs skips unit, specs and review; full keeps today's set", () => {
+test("tier steps: docs skips unit, specs and review; full keeps today's set and checks tickets when docs changed", () => {
   assert.deepEqual(checkSteps({ tier: "docs", docs: true }), { steps: ["tickets", "unit-files"], review: false });
   assert.deepEqual(checkSteps({ tier: "css", docs: false }), { steps: ["colours", "specs"], review: true });
   assert.deepEqual(checkSteps({ tier: "css", docs: true }), { steps: ["colours", "tickets", "unit-files", "specs"], review: true });
   assert.deepEqual(checkSteps({ tier: "tests", docs: false }), { steps: ["check", "unit-files", "lint", "specs"], review: true });
-  assert.deepEqual(checkSteps({ tier: "full", docs: true }), { steps: ["check", "unit", "lint", "specs"], review: true });
+  assert.deepEqual(checkSteps({ tier: "tests", docs: true }), { steps: ["check", "unit-files", "lint", "tickets", "specs"], review: true });
+  assert.deepEqual(checkSteps({ tier: "full", docs: false }), { steps: ["check", "unit", "lint", "specs"], review: true });
+  assert.deepEqual(checkSteps({ tier: "full", docs: true }), { steps: ["check", "unit", "lint", "tickets", "specs"], review: true });
+  assert.deepEqual(checkSteps({ tier: "full", docs: true, cleanGuard: true }).steps, ["check", "unit", "kit-clean", "lint", "tickets", "specs"]);
 });
 
 test("focused unit files: changed tests, tests naming a changed helper or fixture, and docs guards", () => asEditor(() => {
@@ -1710,6 +1713,17 @@ test("a tests-only PR runs check, the affected unit files, lint, specs and the r
   assert.deepEqual(calls.filter(call => call.tool === "unit.sh").map(call => call.args), [["tests/a.test.ts", "tests/b.test.ts"]]);
   for (const name of ["specs", "review"]) assert.ok(calls.some(call => call.tool === "fake-kit" && call.args[0] === name), name);
   assert.ok(f.body().includes("- scripts/agents/unit.sh tests/a.test.ts tests/b.test.ts: ok"));
+});
+
+test("a code PR that also changes a ticket file runs the ticket check, and a code-only PR does not", t => {
+  const docs = fixture(t, { "src/app.ts": "export {};\n", "docs/wayfinder/m/tickets/01-x.md": "---\nstatus: closed\n---\n" });
+  const withTicket = docs.run(["--no-merge"]);
+  assert.equal(withTicket.status, 0, withTicket.stderr); assert.match(withTicket.stdout, /^tier: full \(2 files, src\/app\.ts is code\)$/m);
+  assert.deepEqual(docs.calls().filter(call => call.tool === "tickets.mjs").map(call => call.args), [["check"]]);
+  assert.match(docs.body(), /- node \S*tickets\.mjs check: ok/);
+  const code = fixture(t, { "src/app.ts": "export {};\n" });
+  assert.equal(code.run(["--no-merge"]).status, 0);
+  assert.deepEqual(code.calls().filter(call => call.tool === "tickets.mjs"), []);
 });
 
 test("a KIT_HOME outside the project runs its own unit.sh by absolute path, as the PR body says", t => {
