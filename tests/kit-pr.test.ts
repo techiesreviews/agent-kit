@@ -28,8 +28,11 @@ const held = name => existsSync(join(env.XDG_STATE_HOME, "agent-kit", name + ".l
 const bodyIndex = args.indexOf("--body-file");
 const bodyField = args.find(arg => arg.startsWith("body=@"));
 const bodyPath = bodyIndex >= 0 ? args[bodyIndex + 1] : bodyField?.slice("body=@".length);
+// FAKE_FAIL_PENDING: saving the PR block that says "Verdict: pending" fails, as a gh api call that cannot be made does; the call is
+// logged as failed, so a test can tell what reached the PR from what was only tried.
+const failPending = tool === "gh" && env.FAKE_FAIL_PENDING && bodyPath && readFileSync(bodyPath, "utf8").includes("Verdict: pending");
 // repo: the GH_REPO a call was told, when it was told one.
-appendFileSync(env.FAKE_CALLS, JSON.stringify({ tool, script: process.argv[1], args, ...(bodyPath ? { body: readFileSync(bodyPath, "utf8") } : {}),
+appendFileSync(env.FAKE_CALLS, JSON.stringify({ tool, script: process.argv[1], args, ...(failPending ? { failed: true } : {}), ...(bodyPath ? { body: readFileSync(bodyPath, "utf8") } : {}),
   ...(env.GH_REPO ? { repo: env.GH_REPO } : {}), ...(env.GH_HOST ? { host: env.GH_HOST } : {}),
   ...(tool === "fake-kit" && args[0] === "specs" ? { full: held("browser-run"), quiet: held("quiet"), holder: env.KIT_QUIET_HOLDER || "" } : {}) }) + "\\n");
 const scripts = { "unit.sh": "unit", "tickets.mjs": "tickets", "check-colours.mjs": "colours" };
@@ -41,6 +44,7 @@ if (tool === "fake-kit" && action === "release-check" && env.FAKE_RELEASE_CHECK)
   const run = require("node:child_process").spawnSync(env.FAKE_RELEASE_CHECK, args.slice(1), { stdio: "inherit" });
   process.exit(run.status ?? 1);
 }
+if (failPending) { console.error("api unavailable"); process.exit(1); }
 if (env.FAKE_FAIL === action) {
   for (let i = 1; i <= 35; i++) console.error("failure line " + i);
   if (env.FAKE_FAIL_TEXT) console.error(env.FAKE_FAIL_TEXT);
@@ -76,6 +80,12 @@ if (tool === "fake-kit" && action === "specs" && env.FAKE_SPECS) {
 }
 // The second look: FAKE_SECOND=skip has no model to take it, =fail fails; FAKE_SECOND_REVIEW is its report (clean by default).
 if (tool === "fake-kit" && action === "review" && args.includes("--second-look")) {
+  // FAKE_EMPTY: the PR's diff against its base is empty, so kit review has nothing to review (a skip, exit 3).
+  if (env.FAKE_EMPTY) {
+    console.log("second look: skipped (nothing to review: git diff base...HEAD is empty)");
+    console.log("RESULT: skip second look (nothing to review: git diff base...HEAD is empty)");
+    process.exit(3);
+  }
   if (env.FAKE_SECOND === "fail") { console.log("RESULT: fail second-look table broken evidence none"); process.exit(1); }
   if (env.FAKE_SECOND === "skip") {
     console.log("second look: skipped (grok-4.7 out of credit; opencode/deepseek-v4.1-flash-free out of credit)");
@@ -87,15 +97,20 @@ if (tool === "fake-kit" && action === "review" && args.includes("--second-look")
   const folder = join(env.KIT_MAIN_ROOT, ".scratch/reviews", env.ASE_OWNER, "second-" + count);
   mkdirSync(folder, { recursive: true });
   writeFileSync(join(folder, "result.md"), (count > 1 && env.FAKE_SECOND_REBASED_REVIEW) || env.FAKE_SECOND_REVIEW || ${JSON.stringify(cleanReview)});
-  writeFileSync(join(folder, "second-look.json"), JSON.stringify({ kind: "code", model: "grok-4.7", ok: true }));
+  writeFileSync(join(folder, "second-look.json"), JSON.stringify({ kind: "code", model: env.FAKE_SECOND_MODEL || "grok-4.7", ok: true }));
   const { execFileSync } = require("node:child_process");
   const git = (...argv) => execFileSync("git", argv, { encoding: "utf8" }).trim();
   writeFileSync(join(folder, "refs.txt"), git("rev-parse", "HEAD") + "\\n" + git("merge-base", "origin/" + (env.FAKE_BASE || "dev"), "HEAD") + "\\n");
-  console.log("second look: code (feature.txt) grok-4.7");
+  console.log("second look: code (feature.txt) " + (env.FAKE_SECOND_MODEL || "grok-4.7"));
   console.log("RESULT: ok review git diff base...HEAD evidence " + folder);
 } else if (tool === "fake-kit" && action === "review") {
   const count = readFileSync(env.FAKE_CALLS, "utf8").trim().split("\\n").map(line => JSON.parse(line))
     .filter(call => call.tool === "fake-kit" && call.args[0] === "review" && !call.args.includes("--second-look")).length;
+  if (env.FAKE_EMPTY) {
+    console.log("nothing to review: git diff base...HEAD is empty");
+    console.log("RESULT: skip review nothing to review (git diff base...HEAD is empty)");
+    process.exit(3);
+  }
   // FAKE_REVIEW_FAIL: Claude's review fails to run (a review that left an id out, say).
   if (env.FAKE_REVIEW_FAIL) { console.log("RESULT: fail review incomplete evidence none"); process.exit(1); }
   const folder = join(env.KIT_MAIN_ROOT, ".scratch/reviews", env.ASE_OWNER, count === 1 ? "fresh" : "fresh-" + count);
@@ -2255,13 +2270,13 @@ execFileSync("git", ["add", "--", "file.txt"]);
 
 const table = JSON.parse(readFileSync("second-look.json", "utf8")).kinds;
 
-test("dry-run names the second look's kind, its deciding path, its model and fallback, and its command", t => {
+test("dry-run names the second look's kind, its deciding path, its models in order, and its command", t => {
   // A visible change carries its feature-list line in a changed ticket: UX still comes before that DX path.
   const done = '---\ntitle: "Ticket title"\n---\n\n## Done\n\nFeature list: no change (test)\n';
   for (const [file, kind, extra] of [["docs/guide.md", "dx"], ["docs/agents/runner.md", "agent"], ["src/ui/panel.ts", "ux", { "ticket.md": done }], ["src/x.ts", "code"]] as const) {
     const f = fixture(t, { [file]: "x\n", ...extra }), result = f.run(["--dry-run", "--ticket", "ticket.md"]);
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stdout, new RegExp(`^second look: ${kind} \\(${file.replaceAll(".", "\\.")}\\) ${table[kind].model.replaceAll(".", "\\.")}, else ${table[kind].fallback.replaceAll(".", "\\.")}$`, "m"), file);
+    assert.match(result.stdout, new RegExp(`^second look: ${kind} \\(${file.replaceAll(".", "\\.")}\\) ${table[kind].order.join(", else ").replaceAll(".", "\\.")}$`, "m"), file);
     assert.match(result.stdout, /^\S+ 'review' '--base' 'origin\/dev' '--pr' 'N' '--ticket' 'ticket\.md' '--second-look'$/m, file);
   }
 });
@@ -2283,6 +2298,16 @@ test("when no model can take the second look the PR still lands and says why", t
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^second look: skipped \(grok-4\.7 out of credit; opencode\/deepseek-v4\.1-flash-free out of credit\)$/m);
   assert.match(result.stdout, /RESULT: ok merged #73/);
+});
+
+test("a no-code PR whose diff is empty lands: kit review skips as nothing to review, and the PR says so", t => {
+  const f = fixture(t), result = f.run([], { FAKE_EMPTY: "1" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^review: skipped \(nothing to review: git diff base\.\.\.HEAD is empty\)$/m);
+  assert.match(result.stdout, /^second look: skipped \(nothing to review: git diff base\.\.\.HEAD is empty\)$/m);
+  assert.match(result.stdout, /RESULT: ok merged #73/);
+  const block = f.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body ?? "").find(text => text.includes("<!-- review-loop -->"))!;
+  assert.match(block, /<!-- review-loop -->\nReview: nothing to review \(the diff against dev is empty\)\.\n\nsecond look: skipped \(nothing to review: git diff base\.\.\.HEAD is empty\)\n<!-- \/review-loop -->/);
 });
 
 test("a skipped second look is written into the PR's review block, so the PR never reads as double-checked", t => {
@@ -2587,7 +2612,33 @@ test("the PR says how it was reviewed: the line and the findings ledger from the
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /^Reviewed with review-loop: 1 round with claude-opus-5-5\. Verdict: approved$/m);
   const patch = f.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body).find(text => text?.includes("Reviewed with review-loop"));
-  assert.ok(patch?.includes("Reviewed with review-loop: 1 round with claude-opus-5-5. Verdict: approved\n\nFindings ledger: none."), patch);
+  assert.ok(patch?.includes("Reviewed with review-loop: 1 round with claude-opus-5-5. Verdict: approved\n\nSecond look by grok-4.7 (Grok).\n\nFindings ledger: none."), patch);
+});
+
+test("the PR names the model that took the second look in plain words: GPT through Codex", t => {
+  const f = fixture(t);
+  const path = f.saveReview(cleanReview);
+  writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ round: 1, model: "claude-opus-5-5", head: f.git("rev-parse", "HEAD"), findings: [] }));
+  const result = f.run([], { FAKE_SECOND_MODEL: "gpt-6.1-sol" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^second look: code \(feature\.txt\) gpt-6\.1-sol$/m);
+  const block = f.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body ?? "").find(text => text.includes("<!-- review-loop -->"))!;
+  assert.match(block, /Verdict: approved\n\nSecond look by gpt-6\.1-sol \(GPT through Codex\)\.\n\nFindings ledger: none\./);
+});
+
+test("a reused second look names its own model in the PR", t => {
+  const f = fixture(t), folder = join(f.main, ".scratch/reviews/ak-14/20261019T110000Z");
+  const path = f.saveReview(cleanReview);
+  writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ round: 1, model: "claude-opus-5-5", head: f.git("rev-parse", "HEAD"), findings: [] }));
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "refs.txt"), `${f.head}\n${f.git("merge-base", "origin/dev", "HEAD")}\n`);
+  writeFileSync(join(folder, "result.md"), cleanReview);
+  writeFileSync(join(folder, "second-look.json"), JSON.stringify({ kind: "code", model: "gpt-6.1-sol", ok: true }));
+  const result = f.run(["--no-merge"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(result.stdout.includes(`second look: reused (${folder})`), result.stdout);
+  const block = f.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body ?? "").find(text => text.includes("<!-- review-loop -->"))!;
+  assert.match(block, /Second look by gpt-6\.1-sol \(GPT through Codex\)\./);
 });
 
 test("a later review that marks an earlier id \"still open\" and finds nothing new does not land and is never approved", t => {
@@ -2623,7 +2674,7 @@ test("the PR's review block is replaced between markers on a later run, never ad
   const bodies = f.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body ?? "");
   const block = bodies.find(text => text.includes("<!-- review-loop -->"))!;
   assert.equal((block.match(/<!-- review-loop -->/g) ?? []).length, 1);
-  assert.match(block, /<!-- review-loop -->\nReviewed with review-loop: 1 round with claude-opus-5-5\. Verdict: approved\n\nFindings ledger: none\.\n<!-- \/review-loop -->/);
+  assert.match(block, /<!-- review-loop -->\nReviewed with review-loop: 1 round with claude-opus-5-5\. Verdict: approved\n\nSecond look by grok-4\.7 \(Grok\)\.\n\nFindings ledger: none\.\n<!-- \/review-loop -->/);
 });
 
 test("the PR's verdict counts the second look too: a second-look P2 after the budget is used, or a second-look P1 under --waive, is never approved", t => {
@@ -2924,6 +2975,19 @@ test("after a behind rebase a failed review, a second look that stops it, or a r
   assert.equal(merged.status, 0, merged.stdout + merged.stderr);
   assert.equal(reviewBodies(bare).at(-1)!.includes("<!-- review-loop -->"), false);
   assert.doesNotMatch(reviewBodies(bare).at(-1)!, /Verdict: (pending|approved)/);
+});
+
+test("a failed 'Verdict: pending' update stops the run and never leaves the old 'approved' on the PR", t => {
+  const f = fixture(t);
+  savedFindings(f, f.saveReview(cleanReview), {});
+  const result = f.run([], { FAKE_BEHIND: "1", FAKE_ADVANCE: f.peer(), FAKE_ADVANCE_PATCH: "1", FAKE_FAIL_PENDING: "1" });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.ok(f.apiCalls().some(call => call.failed), "the pending update was tried and failed");
+  const blocks = f.apiCalls().filter(call => call.args[1] === "--method" && !call.failed).map(call => call.body ?? "").filter(text => text.includes("<!-- review-loop -->"));
+  assert.match(blocks[0], /Verdict: approved/, "the first head was approved");
+  assert.equal(blocks.some(text => /Verdict: pending/.test(text)), false, "the pending update never reached the PR");
+  assert.match(blocks.at(-1)!, /Verdict: not approved \(the review did not finish at the new head [0-9a-f]{7}; see the kit pr run for the error\)/);
+  assert.equal(f.calls().filter(claudeReview).length, 0, "the rebased head was not reviewed after the failed update");
 });
 
 test("a second look's out-of-budget report carries the builder's declined findings from Claude's review", t => {

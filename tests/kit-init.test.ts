@@ -91,8 +91,8 @@ test("a fresh npm repo gets a full setup that passes doctor, is listed in projec
   const { main, work } = f.repo("site", { "package.json": JSON.stringify({ scripts: { check: "tsc", test: "node --test", lint: "eslint ." } }) });
   const run = f.init(work);
   assert.equal(run.status, 0, run.stdout + run.stderr);
-  assert.match(result(run), /^RESULT: ok init wrote 11 files, listed the project; doctor (\d+)\/\1 checks passed$/);
-  assert.deepEqual(written(run), [".claude/settings.json", ".codex/hooks.json", ".gitattributes", "AGENTS.md", "docs/agents/kitchen-extras.md", "docs/agents/kitchen.md",
+  assert.match(result(run), /^RESULT: ok init wrote 12 files, listed the project; doctor (\d+)\/\1 checks passed$/);
+  assert.deepEqual(written(run), [".claude/settings.json", ".codex/hooks.json", ".gitattributes", "AGENTS.md", "CLAUDE.md", "docs/agents/kitchen-extras.md", "docs/agents/kitchen.md",
     "docs/wayfinder/README.md", "scripts/agents/hooks/run.sh", "scripts/agents/kit", "scripts/agents/kit.json", "scripts/agents/project.d/.gitkeep"]);
   assert.match(run.stdout, /^note: checks guessed from package\.json: check=npm run check, test=npm test, lint=npm run lint; confirm them in scripts\/agents\/kit\.json$/m);
   assert.match(run.stdout, /^✓ hooks live: bash-guard rejects the probe/m);
@@ -163,14 +163,14 @@ test("a repo with no package.json gets a light setup that passes doctor and writ
   const light = f.repo("plain", { "index.html": "<p>hi</p>\n" }, ["main"]);
   const run = f.init(light.work, ["--light"]);
   assert.equal(run.status, 0, run.stdout + run.stderr);
-  assert.match(result(run), /^RESULT: ok init wrote 7 files, listed the project; doctor (\d+)\/\1 checks passed$/);
+  assert.match(result(run), /^RESULT: ok init wrote 8 files, listed the project; doctor (\d+)\/\1 checks passed$/);
   assert.match(run.stdout, /^note: checks: none guessed \(no package\.json\); add "checks" to scripts\/agents\/kit\.json$/m);
   assert.deepEqual(JSON.parse(readFileSync(join(light.work, "scripts/agents/kit.json"), "utf8")), { project: "plain", mainRoot: light.main, branches: { land: "main" } });
   const full = f.repo("plain-full", { "index.html": "<p>hi</p>\n" }, ["main"]);
   const fullRun = f.init(full.work);
   assert.equal(fullRun.status, 0, fullRun.stdout + fullRun.stderr);
   const lightFiles = written(run), fullFiles = written(fullRun);
-  assert.deepEqual(lightFiles, [".claude/settings.json", ".codex/hooks.json", ".gitattributes", "AGENTS.md", "scripts/agents/hooks/run.sh", "scripts/agents/kit", "scripts/agents/kit.json"]);
+  assert.deepEqual(lightFiles, [".claude/settings.json", ".codex/hooks.json", ".gitattributes", "AGENTS.md", "CLAUDE.md", "scripts/agents/hooks/run.sh", "scripts/agents/kit", "scripts/agents/kit.json"]);
   assert.ok(lightFiles.every((path) => fullFiles.includes(path)) && fullFiles.length > lightFiles.length, fullFiles.join(" "));
   for (const path of ["docs", "scripts/agents/project.d"]) assert.equal(existsSync(join(light.work, path)), false, path);
   assert.deepEqual(f.projects(), { plain: { root: light.main }, "plain-full": { root: full.main } });
@@ -372,7 +372,7 @@ test("with no usual landing branch kit init asks for --land and writes nothing; 
   const main = join(f.directory, "trunk");
   const landed = f.init(main, ["--light", "--land", "trunk"]);
   assert.equal(landed.status, 0, landed.stdout + landed.stderr);
-  assert.equal(result(landed), "RESULT: ok init wrote 7 files, listed the project; doctor ok but for place (the main checkout; see the note)");
+  assert.equal(result(landed), "RESULT: ok init wrote 8 files, listed the project; doctor ok but for place (the main checkout; see the note)");
   assert.match(landed.stdout, /^note: place: this is the main checkout, where kit doctor stops builds; build in a worktree \(git worktree add -b <branch> \.\.\/trunk-<branch> trunk\), or add "allowMainCheckout": true to scripts\/agents\/kit\.json to build here$/m);
   assert.doesNotMatch(landed.stdout, /^✗ place/m);
   assert.deepEqual(JSON.parse(readFileSync(join(main, "scripts/agents/kit.json"), "utf8")).branches, { land: "trunk" });
@@ -426,11 +426,11 @@ test("an existing kit.json is kept byte for byte with notes (--full on one that 
   const { main, work } = f.repo("mine-folder", { "scripts/agents/kit.json": settings });
   const run = f.init(work, ["--land", "dev", "--full"]);
   assert.equal(run.status, 1, run.stdout + run.stderr);
-  assert.equal(result(run), "RESULT: fail init wrote 10 files, listed the project; doctor 1 failed: exit 3");
+  assert.equal(result(run), "RESULT: fail init wrote 11 files, listed the project; doctor 1 failed: exit 3");
   assert.equal(readFileSync(join(work, "scripts/agents/kit.json"), "utf8"), settings);
   assert.match(run.stdout, /^note: --land ignored: scripts\/agents\/kit\.json already names "branches"$/m);
   assert.match(run.stdout, /^note: add to scripts\/agents\/kit\.json \(kit init never edits it\): "commands": "scripts\/agents\/project\.d", "maps": "docs\/wayfinder", "rulebookExtras": "docs\/agents\/kitchen-extras\.md"$/m);
-  assert.equal(written(run).length, 10);
+  assert.equal(written(run).length, 11);
   for (const path of written(run)) assert.ok(existsSync(join(work, path)), path);
   assert.deepEqual(f.projects(), { mine: { root: main } });
 });
@@ -514,7 +514,7 @@ test("the stubs go where an existing kit.json points, and allowMainCheckout lets
   const { main } = f.repo("own-paths", { "scripts/agents/kit.json": JSON.stringify(settings) });
   const run = f.init(main);
   assert.equal(run.status, 0, run.stdout + run.stderr);
-  assert.match(result(run), /^RESULT: ok init wrote 10 files, listed the project; doctor (\d+)\/\1 checks passed$/);
+  assert.match(result(run), /^RESULT: ok init wrote 11 files, listed the project; doctor (\d+)\/\1 checks passed$/);
   assert.doesNotMatch(run.stdout, /^note: (place|add to)/m);
   assert.match(run.stdout, /^✓ place: .+ \(main checkout; allowMainCheckout\)$/m);
   for (const path of ["tools/kit/.gitkeep", "plans/README.md", "docs/kitchen.local.md", "docs/agents/kitchen.md"]) assert.ok(written(run).includes(path), path);
@@ -1415,7 +1415,7 @@ test("an existing project's settings are never edited: --check names the exact c
   const gh = visibilityGh(f, "PRIVATE");
   const old = withOrigin(f, "old", { "scripts/agents/kit.json": settings({ land: "dev", release: "main" }) });
   const check = gh.init(old.work, ["--check"]);
-  assert.match(check.stdout, /^note: private GitHub repo acme\/tools: to land directly on main set "branches": \{ "land": "main", "release": "main", "direct": true \} in scripts\/agents\/kit\.json \(kit init never edits it\)$/m, check.stdout);
+  assert.match(check.stdout, /^note: private GitHub repo acme\/tools: to land directly on main set "branches": \{ "land": "main", "release": "main", "direct": true \} in scripts\/agents\/kit\.json \(kit init never edits it\); if the settings name a "devRoot", move its checkout to main too$/m, check.stdout);
   assert.equal(JSON.parse(readFileSync(join(old.work, "scripts/agents/kit.json"), "utf8")).branches.direct, undefined);
   // Already direct, or "direct": false on purpose: nothing to say.
   for (const [name, branches] of [["done", directSettings], ["no", { land: "dev", release: "main", direct: false }]] as const) {
@@ -1559,6 +1559,8 @@ test("the note for an existing private project keeps its live branch, whatever i
   const trunk = withOrigin(f, "trunkrel", { "scripts/agents/kit.json": settings({ land: "next", release: "trunk" }) }, ["trunk", "next"]);
   const run = gh.init(trunk.work, ["--check"]);
   assert.match(run.stdout, /to land directly on trunk set "branches": \{ "land": "trunk", "release": "trunk", "direct": true \}/, run.stdout);
+  // The checkout of the settings' devRoot has to follow the live branch too.
+  assert.match(run.stdout, /; if the settings name a "devRoot", move its checkout to trunk too/, run.stdout);
   assert.doesNotMatch(run.stdout, /land directly on main/);
   const g = fixture(t);
   const split = visibilityGh(g, "PRIVATE");
@@ -1650,6 +1652,89 @@ test("a dev whose changes already sit on main under other SHAs (a release or reb
   assert.doesNotMatch(run.stdout, /commits? main lacks/);
 });
 
+test("kit init writes a one-line CLAUDE.md holding @AGENTS.md when it is missing, keeps one that is there, and --check names it", (t) => {
+  const f = fixture(t);
+  const { work } = f.repo("claudemd", { "scripts/agents/kit.json": settingsOf(), "AGENTS.md": base });
+  const check = f.init(work, ["--check"]);
+  assert.match(check.stdout, /^missing: CLAUDE\.md \(the one-line file that loads AGENTS\.md\)$/m, check.stdout);
+  const run = f.init(work, ["--light"]);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.ok(written(run).includes("CLAUDE.md"), run.stdout);
+  assert.equal(readFileSync(join(work, "CLAUDE.md"), "utf8"), "@AGENTS.md\n");
+  assert.doesNotMatch(f.init(work, ["--check"]).stdout, /CLAUDE\.md/);
+  // A CLAUDE.md the project wrote is never touched, and a rerun writes nothing more.
+  const g = fixture(t);
+  const own = g.repo("ownclaude", { "scripts/agents/kit.json": settingsOf(), "AGENTS.md": base, "CLAUDE.md": "My own notes\n" });
+  const second = g.init(own.work, ["--light"]);
+  assert.equal(readFileSync(join(own.work, "CLAUDE.md"), "utf8"), "My own notes\n");
+  assert.ok(!written(second).includes("CLAUDE.md"));
+  assert.match(second.stdout, /kept \(already there\): .*CLAUDE\.md/);
+  // init.skip keeps it out.
+  const h = fixture(t);
+  const skipped = h.repo("skipclaude", { "scripts/agents/kit.json": settingsOf({ init: { skip: ["CLAUDE.md"] } }), "AGENTS.md": base });
+  h.init(skipped.work, ["--light"]);
+  assert.equal(existsSync(join(skipped.work, "CLAUDE.md")), false);
+});
+
+test("a dev squash-merged into main (one new commit holding several) is not ahead of main; one with work after the squash still is", (t) => {
+  const f = fixture(t);
+  const gh = visibilityGh(f, "PRIVATE");
+  const repo = withOrigin(f, "squashed", { "index.html": "<p>hi</p>\n" });
+  const commit = (cwd: string, file: string, text: string, message: string) => {
+    writeFileSync(join(cwd, file), text);
+    f.git(cwd, "add", file);
+    f.git(cwd, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", message);
+  };
+  commit(repo.work, "a.txt", "one\n", "first");
+  commit(repo.work, "b.txt", "two\n", "second");
+  f.git(repo.main, "branch", "-f", "dev", "build/one");
+  // GitHub's squash merge: main gets one new commit holding both, and then moves on.
+  f.git(repo.main, "merge", "--squash", "dev");
+  f.git(repo.main, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "squash of dev");
+  writeFileSync(join(repo.main, "later.txt"), "main moved on\n");
+  f.git(repo.main, "add", "later.txt");
+  f.git(repo.main, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "main moved on");
+  const run = gh.init(repo.work, ["--light"]);
+  assert.deepEqual(JSON.parse(readFileSync(join(repo.work, "scripts/agents/kit.json"), "utf8")).branches, directSettings, run.stdout);
+  assert.doesNotMatch(run.stdout, /commits? main lacks/);
+  // New work on dev after the squash is still ahead of main.
+  const g = fixture(t);
+  const after = visibilityGh(g, "PRIVATE");
+  const again = withOrigin(g, "squashedmore", { "index.html": "<p>hi</p>\n" });
+  commit(again.work, "a.txt", "one\n", "first");
+  g.git(again.main, "branch", "-f", "dev", "build/one");
+  g.git(again.main, "merge", "--squash", "dev");
+  g.git(again.main, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "squash of dev");
+  commit(again.work, "c.txt", "new work\n", "after the squash");
+  g.git(again.main, "branch", "-f", "dev", "build/one");
+  assert.match(after.init(again.work, ["--light"]).stdout, /but dev has \d+ commits? main lacks/);
+});
+
+test("the squash-merge check also holds for an existing project's note, and a conflict with main keeps the count", (t) => {
+  const f = fixture(t);
+  const gh = visibilityGh(f, "PRIVATE");
+  const settings = JSON.stringify({ project: "tools", branches: { land: "dev", release: "main" } });
+  const repo = withOrigin(f, "squashold", { "scripts/agents/kit.json": settings, "a.txt": "base\n" });
+  const commit = (cwd: string, file: string, text: string, message: string) => {
+    writeFileSync(join(cwd, file), text);
+    f.git(cwd, "add", file);
+    f.git(cwd, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", message);
+  };
+  commit(repo.work, "b.txt", "one\n", "first");
+  commit(repo.work, "b.txt", "two\n", "second");
+  f.git(repo.main, "branch", "-f", "dev", "build/one");
+  f.git(repo.main, "merge", "--squash", "dev");
+  f.git(repo.main, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "squash of dev");
+  const squashed = gh.init(repo.work, ["--check"]).stdout;
+  assert.match(squashed, /to land directly on main set /);
+  assert.doesNotMatch(squashed, /merge dev into main first/, squashed);
+  // The same line changed on both sides after the squash: merging would conflict, so dev still counts as ahead.
+  commit(repo.work, "b.txt", "three on dev\n", "dev again");
+  f.git(repo.main, "branch", "-f", "dev", "build/one");
+  commit(repo.main, "b.txt", "three on main\n", "main differs");
+  assert.match(gh.init(repo.work, ["--check"]).stdout, /merge dev into main first, it has \d+ commits? main lacks/);
+});
+
 test("a dev merged into a local main that origin's main lacks is not direct; a public repo already set to direct gets a note; no checks and no CI is said", (t) => {
   const f = fixture(t);
   const gh = visibilityGh(f, "PRIVATE");
@@ -1694,6 +1779,25 @@ test("a checks setting with only keys that do not gate a merge still gets the no
   const gh = visibilityGh(f, "PRIVATE");
   const repo = withOrigin(f, "doctoronly", { "scripts/agents/kit.json": JSON.stringify({ project: "tools", branches: directSettings, checks: { doctor: "scripts/agents/kit doctor" } }) });
   assert.match(gh.init(repo.work, ["--check"]).stdout, /has no "checks"/);
+});
+
+test("the no-checks note also counts a specs command and paths.unitTests, which gate a change too", (t) => {
+  const f = fixture(t);
+  const gh = visibilityGh(f, "PRIVATE");
+  const unitTests = withOrigin(f, "unittests", { "scripts/agents/kit.json": JSON.stringify({ project: "tools", branches: directSettings, paths: { unitTests: ["tests/"] } }) });
+  assert.doesNotMatch(gh.init(unitTests.work, ["--check"]).stdout, /no "checks"/);
+  const g = fixture(t);
+  const specs = visibilityGh(g, "PRIVATE");
+  const withSpecs = withOrigin(g, "specscmd", { "scripts/agents/kit.json": JSON.stringify({ project: "tools", branches: directSettings, commands: "scripts/agents/project.d" }),
+    "scripts/agents/project.d/specs": "#!/bin/sh\necho specs\n" });
+  chmodSync(join(withSpecs.work, "scripts/agents/project.d/specs"), 0o755);
+  assert.doesNotMatch(specs.init(withSpecs.work, ["--check"]).stdout, /no "checks"/);
+  // A commands folder with no specs command, and an empty paths.unitTests, still get the note.
+  const h = fixture(t);
+  const neither = visibilityGh(h, "PRIVATE");
+  const bare = withOrigin(h, "neither", { "scripts/agents/kit.json": JSON.stringify({ project: "tools", branches: directSettings, commands: "scripts/agents/project.d", paths: { unitTests: [] } }),
+    "scripts/agents/project.d/.gitkeep": "" });
+  assert.match(neither.init(bare.work, ["--check"]).stdout, /has no "checks"/);
 });
 
 test("the direct note says only what ran: no comparison with --land, the real branch names otherwise", (t) => {

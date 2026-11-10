@@ -48,7 +48,7 @@ export function branchRisk({ root, base, ticket, settings }) {
   let paths = [];
   try { paths = execFileSync("git", ["-C", root, "diff", "--name-only", `${base}...HEAD`], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).split("\n").filter(Boolean); } catch { /* No base to compare: the ticket decides. */ }
   // What the ticket says: its title and its whole text (a ticket file's Goal and Done when, an Orbit card's description), and the
-  // files it names. Not the Files list as words, and not the follow-up notes kit pr writes under "## Done (date)" later.
+  // files it names. Not the Files list as words, and not the follow-up notes kit pr writes under "## Done (date)" or "### Review follow-ups" later.
   let text = "", raw = "";
   try { raw = ticket ? readFileSync(resolve(root, ticket), "utf8") : ""; } catch { /* No ticket text. */ }
   const title = /^title:\s*["']?(.+?)["']?\s*$/m.exec(raw)?.[1] ?? "";
@@ -56,7 +56,9 @@ export function branchRisk({ root, base, ticket, settings }) {
   // The body without the front matter, cut at the Done section kit pr writes its follow-ups into (a heading kit pr matches, dated
   // or not, never "## Done when"), and without the bullet and backtick lines of the Files list (names, not words).
   const body = raw.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "");
-  const doneAt = doneHeading().exec(body)?.index ?? body.length;
+  // A card brief has no Done section: kit pr adds the notes of a review at its end under "### Review follow-ups", and those
+  // never count either, or notes added to a card later would raise the limit from 3 rounds to 5.
+  const doneAt = Math.min(doneHeading().exec(body)?.index ?? body.length, /^### Review follow-ups[ \t]*\r?$/m.exec(body)?.index ?? body.length);
   let inFiles = false;
   const own = body.slice(0, doneAt).split("\n").filter(line => {
     if (/^##\s/.test(line)) inFiles = /^##\s+Files\s*$/.test(line);

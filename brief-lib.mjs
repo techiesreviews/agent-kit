@@ -6,6 +6,7 @@ import { builderChecks, plainEnglish, reviewFormat, ticketReviewBrief } from "./
 import { kitMessagesToLexRule, kitReviewLoopRule, kitRulebookPins, kitSliceBranch, kitStateDir } from "./kit-lib.mjs";
 import { map, modelFamily, pickSkills, readTicket, skillLine } from "./skills.mjs";
 import { cardNaming } from "./ticket-cards.mjs";
+import { lookFamily, lookFamilyWords, secondLookTable } from "./pr-tier.mjs";
 
 export { map, modelFamily, pickSkills, readTicket, skillLine, skillSettingsProblems } from "./skills.mjs";
 
@@ -69,7 +70,11 @@ export function builderModel(builder, pin) {
   return !builder || ["claude", "sol"].includes(builder) ? pin : builder.split(/[\s,]/)[0];
 }
 
-const SECOND_LOOK = { first: "grok-4.7", fallback: "opencode/deepseek-v4.1-flash-free" };
+// The second look's models, first choice first: the code row of the kit's second-look table.
+// A broken table stops no brief: the line then points at the table (kit review names what is wrong with it).
+const lookOrder = () => { try { return secondLookTable().code.order; } catch { return null; } };
+const lookModels = order => !order ? "the models in the kit's `second-look.json`, first choice first" : order.map(model => lookFamily(model) === "opencode" ? `the free \`${model}\`` : `\`${model}\`${lookFamily(model) === "gpt" ? ` (${lookFamilyWords(model)})` : ""}`).join(", else ");
+const reviewersRule = "GPT may review since 2026-11-09; Claude Opus stays the main reviewer";
 
 /**
  * The whole brief for one stage of a ticket, ending with its marker line. Inputs: the project's top folder, its
@@ -86,7 +91,8 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
   const named = card ? cardNaming({ identifier: ticket, title: card.title }) : null;
   const branch = named?.branch ?? kitSliceBranch(owner, slug);
   const builder = builderModel(info.builder, pins.builder);
-  const target = model || (stage === "review" ? review : stage === "second-look" ? SECOND_LOOK.first : builder);
+  const order = lookOrder();
+  const target = model || (stage === "review" ? review : stage === "second-look" ? order?.[0] ?? review : builder);
   const reviewing = stage === "review" || stage === "second-look";
   // kit next's owner is <prefix>-<NN> (a map ticket's <NN> starts with m) and its job slice-<prefix><NN>:
   // al-01 runs as slice-al01, site-fonts-01 as slice-site-fonts01. Another owner keeps its name.
@@ -139,13 +145,13 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
     } catch { scope = `Review this build slice in read-only mode. Make no changes.\n${range}\nSpec axis: ${task ? "the task in the note below" : card ? `the card ${ticket} below, with its comments` : `read ${ticket}, including the linked spec and deciding tickets`}.`; }
     out.push("", scope);
     if (stage === "second-look") section("Second look", [
-      `Model: \`${SECOND_LOOK.first}\`, else the free \`${SECOND_LOOK.fallback}\`; never an OpenAI model. Headless: \`ASE_REVIEW_MODEL=${SECOND_LOOK.first} scripts/agents/kit review --second-look${task || card ? "" : ` --ticket ${ticket}`}\`.`,
-      "When neither model can run, say `second look: skipped (<reason>)` and stop.",
+      `Model: ${lookModels(order)}; ${reviewersRule}. Headless: \`scripts/agents/kit review --second-look${task || card ? "" : ` --ticket ${ticket}`}\`.`,
+      "When no model can run, say `second look: skipped (<reason>)` and stop.",
     ]);
   }
   section("House rules", [
     "Paid skills never go in a repo: name a skill, never copy its text (`skill-guard.mjs` runs in `kit pr`).",
-    `Second look: \`${SECOND_LOOK.first}\`, else the free \`${SECOND_LOOK.fallback}\`; never an OpenAI model; \`second look: skipped (<reason>)\` when neither can run.`,
+    `Second look: ${lookModels(order)}; ${reviewersRule}; GPT never for a docs-only change, and once per PR; \`second look: skipped (<reason>)\` when none can run.`,
     `Once the review loop's budget is used (3 fix rounds, 5 for a risky change) only P0/P1 findings block; P2/P3 go to the lead, who may land with \`ASE_OWNER=<lead> scripts/agents/kit pr … --waive "<reason>"\`; say so in ${task || card ? "your report" : "the ticket's Done"}.`,
     "Anything a person sees: No toasts or explainers; show state on the control itself. Reuse the theme tokens and components.",
     "House rules beat skill advice: where a skill suggests something a house rule forbids (a toast, say), the house rule wins.",

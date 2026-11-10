@@ -14,7 +14,7 @@ only a small launcher and its own settings; the kit itself lives here, once.
 - `kit init` (run once, from the machine copy: `~/.local/share/agent-kit/current/kit init`) writes the project's
   `scripts/agents/kit.json` settings, the launcher `scripts/agents/kit`, the hook launcher
   `scripts/agents/hooks/run.sh`, the hook entries in `.claude/settings.json` and `.codex/hooks.json`, and the
-  line `* text=auto eol=lf` in `.gitattributes`. It writes only what is missing (and updates the kit's own marked "Messages to Lex" section when the rulebook's version is higher), so it can run again: when the kit
+  line `* text=auto eol=lf` in `.gitattributes`, and a one-line `CLAUDE.md` (`@AGENTS.md`) so a direct Claude session loads `AGENTS.md`. It writes only what is missing (and updates the kit's own marked "Messages to Lex" section when the rulebook's version is higher), so it can run again: when the kit
   adds a piece later, `kit doctor` warns about it in every project set up before, `kit init` adds it, and
   `kit init --all` lands it in every project the machine lists, each through its own `kit pr`. A project keeps a
   piece out on purpose by naming it in `"init": { "skip": [...] }` in its settings (`kit init --check` prints the names).
@@ -57,7 +57,7 @@ each marked resolved or still open; `kit pr` puts the line "Reviewed with review
 findings ledger in the PR, and an out-of-budget run is reported, never approved. The rule's one source is the "Review loop" section of
 `docs/kitchen.md`; briefs carry it and `kit init` points projects at it.
 
-The PR's review block says "Verdict: pending" while a new head (after a "behind" rebase) is reviewed and "not approved" when that review stops the landing or does not finish; a review with only nits is reused after a rebase with the same patch; the ledger lists the second look's findings as SL-<n> rows; an out-of-budget report counts every open item and shows the builder's declined findings with their reasons. A second look that no model could take is written into the PR block as "second look: skipped (<reason>)". An out-of-budget should lands as a follow-up.
+The PR's review block says "Verdict: pending" while a new head (after a "behind" rebase) is reviewed and "not approved" when that review stops the landing or does not finish; a review with only nits is reused after a rebase with the same patch; the ledger lists the second look's findings as SL-<n> rows; an out-of-budget report counts every open item and shows the builder's declined findings with their reasons. A second look that no model could take is written into the PR block as "second look: skipped (<reason>)"; one that ran is named there in plain words, such as "Second look by gpt-6.1-sol (GPT through Codex).". An out-of-budget should lands as a follow-up.
 
 After a merge from the base, the "changes since the last review" file lists only the branch's own commits (merges left out, so a conflict fixed inside a merge commit is not in it). A lead who lands a builder's branch answers the builder's rounds, so the PR line counts them and names every model the rounds used. A ticket's risk comes from its title and its whole text (an Orbit card's description and Done when line too) and the files it names, never from the follow-ups `kit pr` adds later.
 
@@ -189,6 +189,14 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
   a `Next step (fleet):` line toward the 12 lines.
   Projects that keep ticket files (`"tickets": "files"`) keep how `kit next`, `kit slice`, `kit pr` and `kit status` work
   today; `kit ticket` itself always talks to Orbit, as before.
+
+## Rolling back a direct project
+
+- `kit rollback <first> [<last>]` undoes landed commits in a direct project (`branches.direct`), where `kit pr` refuses to run
+  on main. It fetches origin, cuts `rollback/<first>-<last>` at `origin/<land>`, runs `git revert --no-edit <first>^..<last>`
+  and lands the branch with `kit pr` (its checks, review and merge). `<first>` and `<last>` are the commits `kit pr` printed as
+  `landed:` (`<last>` defaults to `<first>`). It needs a clean tree, both commits on `origin/<land>` with `<first>` not after
+  `<last>`, and no merge commit in the range; a revert that conflicts is undone and the checkout goes back to its branch.
 
 ## Nothing unsaved goes live
 

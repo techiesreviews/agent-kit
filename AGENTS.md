@@ -3,6 +3,7 @@
 Kitchen rulebook: `scripts/agents/kit rulebook` (stations, who decides, builder and reviewer pins).
 Agent commands: `scripts/agents/kit --help`; `scripts/agents/kit <command> --help` for one.
 Review loop: `scripts/agents/kit rulebook`, section "Review loop" (3 fix rounds, 5 only for risk; stop when only nits are left; one reviewer; a findings ledger in the PR).
+Reviewers: GPT may review since 2026-11-09 (Lex): the second look tries GPT through Codex first, and `kit review --second gpt` asks it on purpose; Claude Opus stays the main reviewer.
 
 ## This repo is the kit
 

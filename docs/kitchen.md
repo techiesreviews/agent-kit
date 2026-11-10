@@ -56,9 +56,9 @@ says for today; never claim a planned item ran.
   one; a public repo keeps its landing and release branches. A direct project goes live mid-week, as soon
   as the gates `kit pr` applies to that change pass, without Lex's "ship it" (Lex, 2026-11-05: "yes", his own sites too). For
   his two websites, techies-reviews and lexvd-site, the lead tells Lex in plain words right after each change goes live
-  and keeps the rollback in the ticket or PR (never in the message to Lex): from a branch cut at origin/main, `git revert --no-edit <first commit>^..<last commit>`
-  (the commits `kit pr` printed as "landed:", else found by subject in `git log origin/main`), landed with `kit pr` like any change
-  (it waits for its gates).
+  and keeps the rollback in the ticket or PR (never in the message to Lex): `kit rollback <first commit> [<last commit>]`
+  (the commits `kit pr` printed as "landed:", else found by subject in `git log origin/main`). It cuts a branch at origin/main,
+  runs `git revert --no-edit <first>^..<last>` there and lands it with `kit pr` like any change (it waits for its gates).
 - **Review loop** (Lex, 2026-11-06, after Theo's sol-loop): a review's budget depends on the risk, it stops when only
   nits are left, and the PR carries a findings ledger; the rule is under [Review loop](#review-loop) below.
 - **Tuesday is Lex's only review day** (Lex, 2026-10-27): everything that needs him waits in one
@@ -130,16 +130,18 @@ undoes a newer rule.
 
 ## Review loop
 
-<!-- review-loop:start v2 -->
+<!-- review-loop:start v3 -->
 - Budget: 3 fix rounds; 5 only for security, permissions, auth, data loss, or state and concurrency, and only while a blocker or a should stays open with its evidence. The kit decides it from the changed paths and the ticket's words (`paths.risky` in the settings adds project patterns), never from a fixed number.
 - Stop early: a round that returns only nits (a rare path, a small cost, a comment, doc or format-only point, or a missing test) ends the loop. Declined nits need no new round.
 - Round 1 reviews everything. Later rounds review only the code changed since the last review and the open finding ids; the reviewer marks every old id `resolved` or `still open (<severity>): <reason>`, and a review that leaves one out is rejected as incomplete (`kit review` exits 1 and nothing reuses it): run `kit review` again. A "still open" id counts as an open finding.
-- One reviewer at a time: Claude Opus through `kit review` (read-only, never the builder), and it starts no subagents. `kit pr` then runs the second look, its model picked from [`second-look.json`](../second-look.json) (Grok, else the free OpenCode model; never OpenAI or Sol); when no such model can run, the PR says `second look: skipped (<reason>)`, never a silent swap.
+- One reviewer at a time: Claude Opus through `kit review` (read-only, never the builder), and it starts no subagents. GPT may review since 2026-11-09; Claude Opus stays the main reviewer. `kit pr` then runs the second look, its models in order from [`second-look.json`](../second-look.json) (GPT through Codex first, else Grok, else the free OpenCode model; GPT never for a docs-only change, and once per PR), and the PR names the model that looked; when no model can run, the PR says `second look: skipped (<reason>)`, never a silent swap. For a big or risky change, `kit review --second gpt` asks GPT on purpose.
 - The builder checks each finding and its severity itself (blocker, should or nit), downgrades the rare-path ones, fixes with the smallest change, and declines with evidence.
 - The ledger (id, severity, outcome) comes from what the reviews wrote and is shown in the PR, never guessed.
 - Stuck (disputed after two replies) or out of budget: give both sides in 2-3 lines for Lex to decide; running out of budget is never approval.
 - The PR says: "Reviewed with review-loop: N rounds with <model>. Verdict: approved".
 <!-- review-loop:end -->
+
+A diff with no change (a no-code merge) has nothing to review: `kit review` says `RESULT: skip review nothing to review (…)` (exit 3) and the second look `second look: skipped (nothing to review: …)`; `kit pr` takes both as a pass and the PR says `Review: nothing to review`. A reviewer whose CLI crashes (a signal, or an exit above 128) counts as unavailable, not as a failed review: the second look hands over to the next model or is skipped, and the review's own process group is stopped when its CLI exits, so no OpenCode server outlives it.
 
 The start marker carries this rule's version too (v2, v3 …).
 
@@ -164,9 +166,8 @@ every change" rows here (a row with the same role in the project's extras wins).
 | Builder, tiny fully specified fix | free OpenCode model | T3 `delegate_task`, only once T3 lists a verified zero-cost model |
 | Builder, small chore beside the queue | free OpenCode model | [Small chores](#small-chores-on-free-models); a short Claude check before merging |
 | Review, every change | `claude-opus-5-5`, medium | default (`kit review`), fresh read-only session |
-| Second opinion: final version of a big, delicate slice, once | off since 2026-10-26: no OpenAI reviews (Lex); use Grok | was `ASE_REVIEW_MODEL=gpt-6.1-sol kit review --ticket <t>` |
-| Second opinion: routine, and the weekly sample of 2–3 Claude-approved slices | off since 2026-10-26: no OpenAI reviews (Lex); use Grok | was `ASE_REVIEW_MODEL=gpt-6-luna kit review` |
-| Second look, every change, after Claude's review | per review kind (code, UX, DX, agent) from the table [`second-look.json`](../second-look.json): `grok-4.7`, else the free `opencode/deepseek-v4.1-flash-free` | `kit slice` and `kit pr` run it (`kit review --second-look`); its findings block and get fix rounds like Claude's. Kind from the changed paths: agent setup first, then UX (`paths.visible`), then DX (build, scripts, docs), else code. Grok out of credit or its weekly count used up: OpenCode takes it; neither can run, or the whole look passes 25 minutes (`ASE_SECOND_LOOK_TIMEOUT`; a fallback with under a minute left is not started): the change lands with `second look: skipped (<reason>)`, such as `<model> timed out after 25m` or `<model> not started: under a minute left of 25m`. Never an OpenAI model. The lead updates the table when new models appear |
+| Second opinion: a big or risky change, on purpose | `gpt-6.1-sol`, high, through Codex (GPT may review since 2026-11-09, Lex) | `kit review --second gpt [--pr N]`: the kind's GPT model from [`second-look.json`](../second-look.json), even when the PR already had its GPT look (never for a docs-only change), and no other model in its place; it is the PR's second look, which `kit pr` reuses on the same HEAD |
+| Second look, every change, after Claude's review | per review kind (code, UX, DX, agent), first choice first, from the table [`second-look.json`](../second-look.json): `gpt-6.1-sol` through Codex at high effort, else `grok-4.7`, else the free `opencode/deepseek-v4.1-flash-free` | `kit slice` and `kit pr` run it (`kit review --second-look`); its findings block and get fix rounds like Claude's, and the PR says which model looked ("Second look by gpt-6.1-sol (GPT through Codex)."). Kind from the changed paths: agent setup first, then UX (`paths.visible`), then DX (build, scripts, docs), else code. Cost guard: GPT never for a docs-only change, and once per PR (the same `--pr N`, or the branch when either look named no PR and the earlier look's changes are all in this one, so a rebase keeps it); a later look on that PR goes to the next model. A model out of credit, at a usage limit, with its weekly count used up or without a Codex login: the next one takes it; none can run, or the whole look passes 25 minutes (`ASE_SECOND_LOOK_TIMEOUT`; a fallback with under a minute left is not started): the change lands with `second look: skipped (<reason>)`, such as `<model> timed out after 25m` or `<model> not started: under a minute left of 25m`. GPT may review since 2026-11-09 (Lex); Claude Opus stays the main reviewer. The lead updates the table when new models appear |
 | UX and design review | `claude-opus-5-5`, medium | see Review |
 
 Sol never builds. `kit review` counts GPT and Grok reviews per week for the whole computer (one count
@@ -371,8 +372,8 @@ OpenCode settings (default model, global instructions) do not apply to the revie
 
 - **Use:** only after Lex's written "ship it" (given on Tuesday). The exception is a direct project
   (`branches.direct`): it has no release step and needs no "ship it", its merge into main is the release as
-  soon as checks and review pass, and the project's steps follow it (the house rule says what the lead
-  tells Lex). Otherwise `kit pr --release` (the landing
+  soon as the project's `checks` pass for a code-size change (docs and CSS changes run lighter steps) and the
+  review passes, and the project's steps follow it (the house rule says what the lead tells Lex). Otherwise `kit pr --release` (the landing
   branch into the release branch, `branches.release`), merge once CI passes, then the project's
   release steps and first-hour check (extras). A build with a rollout checklist follows it.
 - **Release check:** `kit pr --release` first runs `kit release-check --land` (a clean tree, HEAD

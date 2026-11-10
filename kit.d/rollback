@@ -1,0 +1,129 @@
+#!/usr/bin/env node
+// kit: undo landed commits on a direct project: revert them on a branch cut at origin/main, land it with kit pr
+import { spawn, spawnSync } from "node:child_process";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+
+const { kitBranch, kitHideUserInfo, kitResult, kitRoot, kitSettings, kitSettingsFile, nodeEnv } = await import(
+  pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
+);
+const usage = `Usage: kit rollback <first> [<last>]
+Undoes landed commits in a direct project (branches.direct in ${kitSettingsFile}), where kit pr refuses to run on main.
+<first> and <last> are the first and last commit to undo (the "landed:" lines kit pr printed; <last> defaults to <first>).
+In one command it fetches origin, cuts the branch rollback/<first>-<last> at origin/<land>, runs
+git revert --no-edit <first>^..<last> there, and lands that branch with kit pr (its checks, review and merge).
+Needs a clean working tree, both commits on origin/<land> with <first> not after <last>, and no merge commit in the range.
+A revert that conflicts is undone and the checkout goes back to its branch (or the commit it was detached at). KIT_ROLLBACK_KIT: the kit that runs kit pr (tests).
+`;
+
+class UsageError extends Error {}
+class Refused extends Error {}
+
+function options(args) {
+  const commits = [];
+  for (const arg of args) {
+    if (!arg.trim() || arg.startsWith("-")) throw new UsageError(`unknown option or empty commit: ${arg}`);
+    commits.push(arg);
+  }
+  if (commits.length < 1 || commits.length > 2) throw new UsageError("name the first commit to undo, and the last if it is more than one");
+  return { first: commits[0], last: commits[1] ?? commits[0] };
+}
+
+function main(args) {
+  let flags;
+  try { flags = options(args); }
+  catch (error) {
+    process.stderr.write(usage);
+    kitResult("fail", `rollback invalid arguments: ${error.message}`);
+    return 2;
+  }
+  const root = resolve(kitRoot()), env = { ...nodeEnv(), LC_ALL: "C", GIT_TERMINAL_PROMPT: "0" };
+  const git = (...argv) => spawnSync("git", ["-C", root, ...argv], { encoding: "utf8", env, timeout: 120_000 });
+  const must = (what, ...argv) => {
+    const done = git(...argv);
+    if (done.status !== 0) throw new Refused(`${what}: ${kitHideUserInfo(done.error?.message || done.stderr.trim().split(/\r?\n/).at(-1) || `git exited ${done.status}`)}`);
+    return done.stdout.trim();
+  };
+  const commitOf = name => {
+    const done = git("rev-parse", "--verify", "--quiet", `${name}^{commit}`);
+    if (done.status !== 0) throw new Refused(`${name} is no commit in this project`);
+    return done.stdout.trim();
+  };
+  try {
+    const settings = kitSettings(root);
+    if (settings.branches?.direct !== true) throw new Refused(`only a direct project (branches.direct in ${kitSettingsFile}) rolls back with this command; other projects roll back through a revert PR into ${kitBranch("land", settings) ?? "the land branch"}`);
+    const land = kitBranch("land", settings);
+    if (git("remote", "get-url", "origin").status !== 0) throw new Refused("no origin remote");
+    // Not trimmed: a changed file's line starts with a space.
+    const listed = git("-c", "core.quotepath=false", "status", "--porcelain=v1", "--untracked-files=all", "--no-renames");
+    if (listed.status !== 0) throw new Refused(`git status: ${kitHideUserInfo(listed.error?.message || listed.stderr.trim().split(/\r?\n/).at(-1) || `git exited ${listed.status}`)}`);
+    const status = listed.stdout.split("\n").filter(line => line && !line.slice(3).startsWith(".scratch/")).map(line => line.slice(3));
+    if (status.length) throw new Refused(`unsaved files (${status.slice(0, 5).join(", ")}${status.length > 5 ? ` and ${status.length - 5} more` : ""}); commit or remove them first`);
+    must("fetch", "fetch", "-q", "origin", land);
+    const target = `origin/${land}`;
+    const first = commitOf(flags.first), last = commitOf(flags.last);
+    for (const [name, sha] of [[flags.first, first], [flags.last, last]])
+      if (git("merge-base", "--is-ancestor", sha, target).status !== 0) throw new Refused(`${name} is not on ${target}`);
+    if (git("merge-base", "--is-ancestor", first, last).status !== 0) throw new Refused(`${flags.first} is not before ${flags.last} on ${target}`);
+    if (git("rev-parse", "--verify", "--quiet", `${first}^`).status !== 0) throw new Refused(`${flags.first} has no parent, so there is nothing to revert it onto`);
+    const merges = must("git rev-list", "rev-list", "--merges", `${first}^..${last}`);
+    if (merges) throw new Refused(`the range holds a merge commit (${merges.split("\n")[0].slice(0, 7)}); revert it by hand, choosing a side`);
+    const subjects = must("git log", "log", "--reverse", "--format=%s", `${first}^..${last}`).split("\n");
+    const names = `${first.slice(0, 7)}-${last.slice(0, 7)}`;
+    const branch = `rollback/${names}`;
+    if (git("rev-parse", "--verify", "--quiet", `refs/heads/${branch}`).status === 0) throw new Refused(`branch ${branch} already exists; delete it or finish it with kit pr`);
+
+    // The checkout's own branch, or the commit it is detached at.
+    const named = git("symbolic-ref", "--quiet", "--short", "HEAD").stdout.trim();
+    const original = named || must("git rev-parse", "rev-parse", "HEAD");
+    must("branch", "switch", "-c", branch, target);
+    console.log(`branch: ${branch} (cut at ${target})`);
+    const reverted = git("revert", "--no-edit", `${first}^..${last}`);
+    if (reverted.status !== 0) {
+      const files = git("-c", "core.quotepath=false", "diff", "--name-only", "--diff-filter=U").stdout.trim().split("\n").filter(Boolean);
+      const reason = files.length ? `conflict in ${files.join(", ")}` : kitHideUserInfo(reverted.stderr.trim().split(/\r?\n/).at(-1) || `git revert exited ${reverted.status}`);
+      const aborted = git("revert", "--abort");
+      const back = git("switch", "-q", ...(named ? [] : ["--detach"]), original), removed = back.status === 0 ? git("branch", "-D", branch) : back;
+      const undone = aborted.status === 0 && back.status === 0 && removed.status === 0;
+      throw new Refused(`revert ${reason}${undone ? "; nothing was changed" : `; could not undo it, check branch ${branch} by hand`}`);
+    }
+    console.log(`revert: ok (${subjects.length} commit${subjects.length === 1 ? "" : "s"}, newest first)`);
+    return landWithPr(root, branch, subjects.length === 1 ? `Roll back: ${subjects[0]}` : `Roll back ${subjects.length} commits (${first.slice(0, 7)}..${last.slice(0, 7)})`);
+  } catch (error) {
+    kitResult("fail", `rollback ${error.message}`);
+    return 1;
+  }
+}
+
+/** Lands the branch with kit pr: its output is passed on line by line, its RESULT line becomes this command's own. */
+function landWithPr(root, branch, title) {
+  const kit = process.env.KIT_ROLLBACK_KIT || resolve(import.meta.dirname, "../kit");
+  return new Promise(accept => {
+    const child = spawn(kit, ["pr", "--title", title], { cwd: root, env: process.env, stdio: ["ignore", "pipe", "inherit"] });
+    let result = "", pending = "";
+    const line = text => {
+      if (text.startsWith("RESULT: ")) result = text.slice("RESULT: ".length);
+      else console.log(text);
+    };
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", chunk => {
+      const lines = (pending + chunk).split("\n");
+      pending = lines.pop();
+      lines.forEach(line);
+    });
+    const interrupt = () => child.kill("SIGINT"), terminate = () => child.kill("SIGTERM");
+    process.once("SIGINT", interrupt); process.once("SIGTERM", terminate);
+    child.once("error", error => { result = `fail kit pr could not start: ${error.message}`; });
+    child.once("close", code => {
+      process.removeListener("SIGINT", interrupt); process.removeListener("SIGTERM", terminate);
+      if (pending) line(pending);
+      const failed = code !== 0 || result.startsWith("fail ");
+      if (!failed) kitResult("ok", `rollback ${result.replace(/^ok /, "")}`);
+      else kitResult("fail", `rollback ${result.replace(/^fail /, "") || `kit pr exited ${code}`}; the branch ${branch} holds the reverts, finish it with kit pr`);
+      accept(failed ? 1 : 0);
+    });
+  });
+}
+
+if (process.argv.length === 3 && ["--help", "-h"].includes(process.argv[2])) process.stdout.write(usage);
+else process.exitCode = await main(process.argv.slice(2));

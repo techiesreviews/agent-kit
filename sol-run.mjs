@@ -12,7 +12,11 @@ export function durationMilliseconds(duration) {
   return milliseconds;
 }
 
-export function supervise(duration, command, args, { cwd, input = 0, log, capture = false, onSpawn, onOutput } = {}) {
+// reap: stop the command's whole process group once the command itself has exited (a moment later when its output is
+// still open), so a server it left behind (OpenCode 2's private one) neither outlives the call nor holds the pipes
+// open until the limit. The result's `crashed` is true when a signal or an exit above 128 ended the command on its own,
+// never when supervise stopped it (limit, signal, failed pipe).
+export function supervise(duration, command, args, { cwd, input = 0, log, capture = false, reap = false, onSpawn, onOutput } = {}) {
   const milliseconds = durationMilliseconds(duration);
   return new Promise(resolve => {
     // detached makes the child's PID its process-group ID on Linux. Unlike some
@@ -20,12 +24,16 @@ export function supervise(duration, command, args, { cwd, input = 0, log, captur
     const child = spawn(command, args, { cwd, detached: true, stdio: log === undefined ? "inherit" : [input, "pipe", "pipe"] });
     let stdout = "";
     let result;
-    function stop(code) {
-      result ??= code;
+    function reapGroup() {
       if (!child.pid) return;
       try { process.kill(-child.pid, "SIGKILL"); } catch (error) {
         if (error.code !== "ESRCH") console.error(`problem: cannot kill agent process group: ${error.message}`);
       }
+    }
+    // Stopping fixes the result; reaping the group leaves the command's own ending to decide it.
+    function stop(code) {
+      result ??= code;
+      reapGroup();
     }
     function fail(error) {
       console.error(`problem: ${error.message}`);
@@ -58,11 +66,18 @@ export function supervise(duration, command, args, { cwd, input = 0, log, captur
     process.once("SIGTERM", terminate);
     process.once("SIGHUP", hangup);
     child.once("error", fail);
+    // Something the command left may still hold its output: the group goes a moment after the command, as the helper's does.
+    let reaper;
+    if (reap) child.once("exit", () => { reaper = setTimeout(reapGroup, 500); });
     child.once("spawn", () => {
       try { onSpawn?.(child.pid); } catch (error) { fail(error); }
     });
     child.once("close", (code, signal) => {
       clearTimeout(timer);
+      clearTimeout(reaper);
+      // The group's id could in theory have been handed to a new group after the command left nothing behind; PIDs
+      // are given out in order, so that needs the counter to wrap within this moment. Judged and accepted.
+      if (reap) reapGroup();
       process.removeListener("SIGINT", interrupt);
       process.removeListener("SIGTERM", terminate);
       process.removeListener("SIGHUP", hangup);
@@ -71,7 +86,8 @@ export function supervise(duration, command, args, { cwd, input = 0, log, captur
       child.stderr?.removeListener("data", recordStderr);
       child.stdout?.removeListener("error", fail);
       child.stderr?.removeListener("error", fail);
-      resolve({ status: result ?? code ?? ({ SIGHUP: 129, SIGINT: 130, SIGTERM: 143 }[signal] ?? 1), stdout });
+      resolve({ status: result ?? code ?? ({ SIGHUP: 129, SIGINT: 130, SIGTERM: 143 }[signal] ?? 1), stdout,
+        signal, crashed: result === undefined && (signal !== null || code > 128) });
     });
   });
 }
