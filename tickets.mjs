@@ -131,9 +131,10 @@ const listMarker = /^\s*(?:[-*+]|\d+[.)])\s+/;
 const shorten = text => text.length > 80 ? `${text.slice(0, 77)}...` : text;
 
 /** What stops a ticket from being closed, as { file, line, message } rows (`lines` are the ticket's lines, `end` the
- * frontmatter's closing line). Only a ticket whose `## Done when` is a list, and whose last `## Done` section (a
- * heading `## Done`, with a dated note after it such as `(2026-11-12)`, never `## Done when`) carries an ISO date of `doneCheckFrom` or later, is read; the rest
- * were written before the check and stay as they are, a ticket with no Done section included. Fenced code is skipped.
+ * frontmatter's closing line). Only a ticket whose `## Done when` is a list, and whose last `## Done` section carries
+ * an ISO date of `doneCheckFrom` or later in its heading (`## Done (2026-11-12)`, `## Done: 2026-11-12`; never
+ * `## Done when`, `## Done notes`), is read. The rest were written before the check and stay as they are, a ticket
+ * with no dated Done section included. Fenced code is skipped.
  * - `Done when <n>: <verdict> — <evidence>` is the evidence line of the n-th item of the list. The verdict is met,
  *   not met, pending or open, and `met` needs something after it; any other verdict, none, or no proof leaves the
  *   item without evidence.
@@ -158,7 +159,7 @@ function doneProblems(lines, end, file) {
   const when = section(/^## Done when[ \t]*$/);
   const items = (when?.lines ?? []).flatMap((line, at) => /^(?:[-*+]|\d+[.)])\s+\S/.test(line) && !fenced[when.first + at] ? [when.first + at + 1] : []);
   if (!items.length) return [];
-  const done = section(/^## Done(?:[ \t]+[(—–-].*)?[ \t]*$/);
+  const done = section(/^## done(?:[ \t]*[(—–:-].*|[ \t]+\d{4}-\d{2}-\d{2}.*)?[ \t]*$/i);
   const date = /\b(\d{4}-\d{2}-\d{2})\b/.exec(done?.heading ?? "")?.[1];
   if (!date || date < doneCheckFrom) return [];
   const write = number => `(write "Done when ${number}: met — <evidence>")`;

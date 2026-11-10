@@ -397,7 +397,7 @@ test("tickets closed before the check started keep their old Done sections", () 
   assert.equal(doneProblems(closedTicket(prose, { date: "" })).length, 0, "an undated heading is an old ticket");
   // A heading with more than the date after "Done" still has its date read.
   const heading = (text: string) => closedTicket(prose).replace("## Done (2026-11-11)", text);
-  for (const [text, count] of [["## Done (2026-10-01, PR #3)", 0], ["## Done — 2026-10-01", 0], ["## Done (2026-11-12, PR #3)", 4], ["## Done criteria", 0], ["## Done notes", 0]] as const)
+  for (const [text, count] of [["## Done (2026-10-01, PR #3)", 0], ["## Done — 2026-10-01", 0], ["## Done (2026-11-12, PR #3)", 4], ["## Done: 2026-11-12", 4], ["## Done 2026-11-12", 4], ["## DONE (2026-11-12)", 4], ["## Done when", 0], ["## Done criteria", 0], ["## Done notes", 0]] as const)
     assert.equal(doneProblems(heading(text)).length, count, text);
   assert.equal(doneProblems(closedTicket(prose, { date: "2026-11-11" })).length, 4);
   assert.equal(doneProblems(closedTicket(prose, { date: "2027-01-02" })).length, 4);
