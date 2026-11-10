@@ -1621,6 +1621,45 @@ test("a GPT row runs Codex read-only at the table's effort, once per PR: a later
   assert.deepEqual(f.calls().map(call => call.cli), ["codex", "grok", "grok", "codex"]);
 });
 
+test("the once-per-PR GPT check: another owner's look counts, a look that did not come back does not, a new PR on a reused branch name gets its own", (t) => {
+  const f = fixture(t); withOpencode(f);
+  const table = gptTable(f);
+  const mark = (owner: string, name: string, body: Record<string, unknown>) => {
+    const folder = join(f.main, ".scratch/reviews", owner, name);
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "second-look.json"), JSON.stringify({ kind: "code", model: "gpt-6.1-sol", branch: "feature/review", ...body }));
+    return folder;
+  };
+  // A GPT look that did not come back leaves the PR's one GPT look unused.
+  mark("review-owner", "20261101T000000Z", { ok: false, pr: "12" });
+  const failed = f.run(["--base", "HEAD~1", "--second-look", "--pr", "12"], { ASE_SECOND_LOOK: table });
+  assert.equal(failed.status, 0, failed.stdout + failed.stderr);
+  assert.match(failed.stdout, /^second look: code \(file\.txt\) gpt-6\.1-sol$/m);
+  // A look on the same branch for an earlier PR does not count for a new PR.
+  rmSync(join(f.main, ".scratch/reviews"), { recursive: true, force: true });
+  mark("builder", "20261101T000000Z", { ok: true, pr: "11" });
+  const renamed = f.run(["--base", "HEAD~1", "--second-look", "--pr", "13"], { ASE_SECOND_LOOK: table });
+  assert.equal(renamed.status, 0, renamed.stdout + renamed.stderr);
+  assert.match(renamed.stdout, /^second look: code \(file\.txt\) gpt-6\.1-sol$/m);
+  // A lead landing a builder's PR: the builder's GPT look (another owner's folder, no PR yet) counts.
+  rmSync(join(f.main, ".scratch/reviews"), { recursive: true, force: true });
+  const builder = mark("builder", "20261101T000000Z", { ok: true });
+  const lead = f.run(["--base", "HEAD~1", "--second-look", "--pr", "12"], { ASE_SECOND_LOOK: table, ASE_OWNER: "fleet-lead" });
+  assert.equal(lead.status, 0, lead.stdout + lead.stderr);
+  assert.ok(lead.stdout.includes(`second look: gpt-6.1-sol not used (one GPT second look per PR, done in ${builder})`), lead.stdout);
+  assert.deepEqual(f.calls().map(call => call.cli), ["codex", "codex", "grok"]);
+});
+
+test("GPT's weekly count used up hands the second look to Grok", (t) => {
+  const f = fixture(t); withOpencode(f);
+  const table = gptTable(f), budget = { ASE_REVIEW_BUDGET_GPT: "1", ASE_SECOND_LOOK: table };
+  assert.equal(f.run(["--base", "HEAD~1"], { ...budget, ASE_REVIEW_MODEL: "gpt-6.1-sol" }).status, 0);
+  const handed = f.run(["--base", "HEAD~1", "--second-look"], budget);
+  assert.equal(handed.status, 0, handed.stdout + handed.stderr);
+  assert.match(handed.stdout, /^second look: grok-4\.7 takes it \(gpt-6\.1-sol gpt review budget used up: 1\/1 in \S+; raise ASE_REVIEW_BUDGET_GPT to override\)$/m);
+  assert.deepEqual(f.calls().map(call => call.cli), ["codex", "grok"]);
+});
+
 test("a docs-only change never gets a GPT second look; with GPT alone in the order it is skipped", (t) => {
   const f = fixture(t); withOpencode(f);
   const table = gptTable(f);

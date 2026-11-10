@@ -71,8 +71,9 @@ export function builderModel(builder, pin) {
 }
 
 // The second look's models, first choice first: the code row of the kit's second-look table.
-const lookOrder = () => secondLookTable().code.order;
-const lookModels = order => order.map(model => lookFamily(model) === "opencode" ? `the free \`${model}\`` : `\`${model}\`${lookFamily(model) === "gpt" ? ` (${lookFamilyWords(model)})` : ""}`).join(", else ");
+// A broken table stops no brief: the line then points at the table (kit review names what is wrong with it).
+const lookOrder = () => { try { return secondLookTable().code.order; } catch { return null; } };
+const lookModels = order => !order ? "the models in the kit's `second-look.json`, first choice first" : order.map(model => lookFamily(model) === "opencode" ? `the free \`${model}\`` : `\`${model}\`${lookFamily(model) === "gpt" ? ` (${lookFamilyWords(model)})` : ""}`).join(", else ");
 const reviewersRule = "GPT may review since 2026-11-09; Claude Opus stays the main reviewer";
 
 /**
@@ -91,7 +92,7 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
   const branch = named?.branch ?? kitSliceBranch(owner, slug);
   const builder = builderModel(info.builder, pins.builder);
   const order = lookOrder();
-  const target = model || (stage === "review" ? review : stage === "second-look" ? order[0] : builder);
+  const target = model || (stage === "review" ? review : stage === "second-look" ? order?.[0] ?? review : builder);
   const reviewing = stage === "review" || stage === "second-look";
   // kit next's owner is <prefix>-<NN> (a map ticket's <NN> starts with m) and its job slice-<prefix><NN>:
   // al-01 runs as slice-al01, site-fonts-01 as slice-site-fonts01. Another owner keeps its name.
@@ -150,7 +151,7 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
   }
   section("House rules", [
     "Paid skills never go in a repo: name a skill, never copy its text (`skill-guard.mjs` runs in `kit pr`).",
-    `Second look: ${lookModels(order)}; ${reviewersRule}; GPT only for code changes, once per PR; \`second look: skipped (<reason>)\` when none can run.`,
+    `Second look: ${lookModels(order)}; ${reviewersRule}; GPT never for a docs-only change, and once per PR; \`second look: skipped (<reason>)\` when none can run.`,
     `Once the review loop's budget is used (3 fix rounds, 5 for a risky change) only P0/P1 findings block; P2/P3 go to the lead, who may land with \`ASE_OWNER=<lead> scripts/agents/kit pr … --waive "<reason>"\`; say so in ${task || card ? "your report" : "the ticket's Done"}.`,
     "Anything a person sees: No toasts or explainers; show state on the control itself. Reuse the theme tokens and components.",
     "House rules beat skill advice: where a skill suggests something a house rule forbids (a toast, say), the house rule wins.",
