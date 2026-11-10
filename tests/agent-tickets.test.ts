@@ -330,3 +330,98 @@ test("check validates build feedback logs and names file:line for a bad date, ki
   writeFileSync(join(cwd, file), `${head}- 2026-10-23 · fault · folder link · after release: no · fix: [t](tickets)\n`);
   assert.equal(run("check").stderr, `${file}:7: Fix link not found: tickets\n`, "a folder is not a fix");
 });
+
+/** A ticket with a Done when list of three items and the given Done section (heading date `date`, default after the check starts). */
+function closedTicket(done: string[], { date = "2026-11-11", status = "closed", doneWhen = ["- First check.", "- Second check.", "- Third check."] } = {}) {
+  const sections = ["---", `status: ${status}`, "---", "", "## Goal", "", "Do it.", "", "## Done when", "", ...doneWhen];
+  if (done.length) sections.push("", `## Done${date ? ` (${date})` : ""}`, "", ...done);
+  return sections.join("\n");
+}
+const doneProblems = (source: string) => parseTicket(source, "01-x.md", "alpha").ticket.doneProblems as { file: string; line: number; message: string }[];
+
+test("a closed ticket is refused when its Done section says not met, pending or open for a check", () => {
+  const source = closedTicket([
+    "- Done when 1: met — `kit unit --affected` RESULT: ok",
+    "- **Done when 2:** Not met — the spec needs a second browser",
+    "- Done when item 3: pending, the lead adds it after the merge",
+  ]);
+  assert.deepEqual(doneProblems(source), [
+    { file: "01-x.md", line: 18, message: 'Closed ticket, but its Done section says "not met": - **Done when 2:** Not met — the spec needs a second browser' },
+    { file: "01-x.md", line: 19, message: 'Closed ticket, but its Done section says "pending": - Done when item 3: pending, the lead adds it after the merge' },
+  ]);
+  // The word "open" counts when it is a check's verdict, and "Not met" or "Pending" count as the start of a list item.
+  assert.match(doneProblems(closedTicket(["- Done when 1: met — a", "- Done when 2: met — b", "- Done when 3: open"]))[0].message, /says "open"/);
+  assert.match(doneProblems(closedTicket(["- Done when 1: met — a", "- Done when 2: met — b", "- Done when 3: met — c", "- Pending, for the lead after merge: the score"]))[0].message, /says "pending"/);
+  assert.match(doneProblems(closedTicket(["- Done when 1: met — a", "- Done when 2: met — b", "- Done when 3: met — c", "1. not met: the size check"]))[0].message, /says "not met"/);
+});
+
+test("words that only look like a verdict are left alone: a note that starts with Open, a wrapped line, a ticket that is not closed", () => {
+  const met = ["- Done when 1: met — a", "- Done when 2: met — b", "- Done when 3: met — c"];
+  assert.deepEqual(doneProblems(closedTicket([...met, "- Open: redo re-creates the files later.", "- Open for Lex: which colour.", "- Opening the file now works.",
+    "- The save is shown while the copy is", "pending load, then it settles.", "  pending commands end on reload.", "", "### Follow-ups", "", "- Not part of this slice."])), []);
+  assert.deepEqual(doneProblems(closedTicket(["- Done when 1: pending", "- Done when 2: not met"], { status: "open" })), []);
+  // Only the last Done section counts, and a heading `## Done when` is not one.
+  const earlier = `${closedTicket(["- Done when 1: pending"])}\n\n## Done (2026-11-12)\n\n${met.join("\n")}\n`;
+  assert.deepEqual(doneProblems(earlier), []);
+});
+
+test("a closed ticket needs an evidence line for every Done when item", () => {
+  const met = (n: number, text = "`kit unit --affected` RESULT: ok") => `- Done when ${n}: met — ${text}`;
+  assert.deepEqual(doneProblems(closedTicket([met(1), met(2), met(3)])), []);
+  assert.deepEqual(doneProblems(closedTicket([met(1), met(3)])), [
+    { file: "01-x.md", line: 12, message: 'Closed ticket: Done when item 2 has no evidence line in its Done section (write "Done when 2: met — <evidence>")' },
+  ]);
+  // A verdict with no proof after it, or a line that gives no verdict, is not evidence.
+  for (const line of ["- Done when 2: met", "- Done when 2: met —", "- Done when 2: met — ", "- Done when 2: it works", "- Done when 2:"]) {
+    assert.equal(doneProblems(closedTicket([met(1), line, met(3)])).length, 1, line);
+  }
+  // Bold, numbering, "item" and the separators people type are all fine.
+  assert.deepEqual(doneProblems(closedTicket(["1. **Done when 1:** met - RESULT: ok", "* Done when item 2: Met (PR #84)", "Done when #3: met: tests/a.test.ts"])), []);
+  // A numbered Done when list and a wrapped item count once each.
+  const numbered = closedTicket([met(1), met(2)], { doneWhen: ["1. First check", "   continues here.", "2. Second check"] });
+  assert.deepEqual(doneProblems(numbered), []);
+  // Each item names its own line in the ticket.
+  const none = closedTicket(["Everything works."]);
+  assert.deepEqual(doneProblems(none).map(problem => problem.line), [11, 12, 13]);
+  // No Done section at all, and an empty Done section, are refused for a ticket that lists checks.
+  assert.deepEqual(doneProblems(closedTicket([])).map(problem => problem.line), [11, 12, 13]);
+  assert.match(doneProblems(closedTicket([]))[0].message, /no ## Done section/);
+  // Nothing to prove without a Done when list.
+  assert.deepEqual(doneProblems("---\nstatus: closed\n---\n\n## Resolution\n\nDecided.\n"), []);
+  assert.deepEqual(doneProblems(closedTicket([], { status: "open" })), []);
+});
+
+test("tickets closed before the check started keep their old Done sections", () => {
+  const prose = ["Everything works.", "- Pending, for the lead after merge: the score."];
+  assert.equal(doneProblems(closedTicket(prose, { date: "2026-11-10" })).length, 0);
+  assert.equal(doneProblems(closedTicket(prose, { date: "2026-10-31" })).length, 0);
+  assert.equal(doneProblems(closedTicket(prose, { date: "" })).length, 0, "an undated heading is an old ticket");
+  assert.equal(doneProblems(closedTicket(prose, { date: "2026-11-11" })).length, 4);
+  assert.equal(doneProblems(closedTicket(prose, { date: "2027-01-02" })).length, 4);
+});
+
+test("check refuses a closed ticket with file:line, and its other output stays as it was", t => {
+  const cwd = mkdtempSync(join(tmpdir(), "agent-tickets-done-"));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const env = repoEnv();
+  assert.equal(spawnSync("git", ["init", "-q"], { cwd, env }).status, 0);
+  writeSettings(cwd);
+  const dir = join(cwd, "docs/wayfinder/alpha/build/tickets");
+  mkdirSync(dir, { recursive: true });
+  const good = ["- Done when 1: met — RESULT: ok", "- Done when 2: met — PR #1", "- Done when 3: met — RESULT: ok"];
+  writeFileSync(join(dir, "01-good.md"), closedTicket(good));
+  writeFileSync(join(dir, "02-old.md"), closedTicket(["Done."], { date: "2026-11-09" }));
+  const script = resolve("tickets.mjs");
+  const run = () => spawnSync(process.execPath, [script, "check"], { cwd, env, encoding: "utf8", timeout: 5_000 });
+  assert.equal(run().status, 0, run().stderr);
+  assert.equal(run().stdout, "Tickets checked: 2\n");
+  const file = "docs/wayfinder/alpha/build/tickets/03-bad.md";
+  writeFileSync(join(cwd, file), closedTicket([good[0], "- Done when 2: pending", good[2]]));
+  const bad = run();
+  assert.equal(bad.status, 1);
+  assert.equal(bad.stdout, "");
+  assert.equal(bad.stderr, `${file}:18: Closed ticket, but its Done section says "pending": - Done when 2: pending\n`);
+  // The same ticket reopened passes, and frontier still lists nothing for a closed one.
+  writeFileSync(join(cwd, file), closedTicket([good[0], "- Done when 2: pending", good[2]], { status: "open" }));
+  assert.equal(run().status, 0);
+});

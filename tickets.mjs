@@ -5,6 +5,11 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { kitSettings, kitSettingsFile } from "./kit-lib.mjs";
 
+// Tickets whose last `## Done (date)` is dated on or after this day are checked when closed: nothing in the Done section
+// may say a check is not met, pending or open, and every Done when item needs an evidence line (see doneProblems).
+// Older tickets, and Done sections with no date, were written before the check and stay as they are.
+export const doneCheckFrom = "2026-11-11";
+
 const statuses = new Set(["open", "closed", "needs-triage", "needs-info", "ready-for-agent", "ready-for-human", "wontfix"]);
 
 // Ticket frontmatter uses scalar fields and inline or block lists. Reject
@@ -58,7 +63,7 @@ function dependencySlug(value) {
 export function parseTicket(source, file, map) {
   const lines = source.replace(/^\uFEFF/, "").split(/\r?\n/);
   const problems = [];
-  const ticket = { file, map, slug: basename(file, ".md"), title: "", type: "", builder: "", assignee: "", status: "", group: "", runs_alone: false, blocked_by: [], files: parseFiles(source), lines: {}, valid: true };
+  const ticket = { file, map, slug: basename(file, ".md"), title: "", type: "", builder: "", assignee: "", status: "", group: "", runs_alone: false, blocked_by: [], files: parseFiles(source), lines: {}, doneProblems: [], valid: true };
   const problem = (line, message) => { ticket.valid = false; problems.push({ file, line, message }); };
   const end = lines.findIndex((line, i) => i > 0 && line === "---");
   if (lines[0] !== "---" || end < 0) {
@@ -118,7 +123,55 @@ export function parseTicket(source, file, map) {
     } catch (error) { problem(errorLine, error.message); }
   }
   if (!statuses.has(ticket.status)) problem(ticket.lines.status ?? 1, `Invalid status: ${ticket.status || "(missing)"}`);
+  if (ticket.status === "closed") ticket.doneProblems = doneProblems(lines, end, file);
   return { ticket, problems };
+}
+
+const listMarker = /^\s*(?:[-*+]|\d+[.)])\s+/;
+const shorten = text => text.length > 80 ? `${text.slice(0, 77)}...` : text;
+
+/** What stops a ticket from being closed, as { file, line, message } rows (`lines` are the ticket's lines, `end` the
+ * frontmatter's closing line). A ticket with no `## Done when` list has nothing to prove. One with a list is held to
+ * its last `## Done` section when that is dated `doneCheckFrom` or later, or missing:
+ * - `Done when <n>: <verdict> — <evidence>` is the evidence line of the n-th item of the list. The verdict is met,
+ *   not met, pending or open, and `met` needs something after it; any other verdict, none, or no proof leaves the
+ *   item without evidence.
+ * - "not met", "pending" or "open" as a check's verdict, or a list item that starts with "Not met" or "Pending", says
+ *   a check is unmet. A list item starting with "Open" is only a verdict in the first form: "Open for Lex: …" is a
+ *   note. Wrapped lines of an item are not read. */
+function doneProblems(lines, end, file) {
+  const headings = lines.flatMap((line, index) => index > end && /^#{1,2} /.test(line) ? [{ line, index }] : []);
+  const section = name => {
+    const found = headings.findLast(({ line }) => name.test(line));
+    if (!found) return null;
+    const next = headings.find(({ index }) => index > found.index);
+    return { heading: found.line, first: found.index + 1, lines: lines.slice(found.index + 1, next ? next.index : lines.length) };
+  };
+  const when = section(/^## Done when[ \t]*$/);
+  const items = (when?.lines ?? []).flatMap((line, at) => /^(?:[-*+]|\d+[.)])\s+\S/.test(line) ? [when.first + at + 1] : []);
+  if (!items.length) return [];
+  const done = section(/^## Done(?:[ \t]+\(\d{4}-\d{2}-\d{2}\))?[ \t]*$/);
+  const date = /\((\d{4}-\d{2}-\d{2})\)/.exec(done?.heading ?? "")?.[1];
+  if (done && (!date || date < doneCheckFrom)) return [];
+  const write = number => `(write "Done when ${number}: met — <evidence>")`;
+  if (!done) return items.map((line, at) => ({ file, line, message: `Closed ticket: Done when item ${at + 1} has no evidence line, the ticket has no ## Done section ${write(at + 1)}` }));
+  const problems = [], proved = new Set(), unmet = new Set();
+  const says = (line, raw, word) => problems.push({ file, line, message: `Closed ticket, but its Done section says "${word.toLowerCase()}": ${shorten(raw.trim())}` });
+  done.lines.forEach((raw, at) => {
+    const text = raw.trim().replace(listMarker, "").replaceAll("**", "");
+    const check = /^Done when\s+(?:item\s+)?#?(\d+)\s*[:—–-]\s*(.*)$/i.exec(text);
+    const verdict = check && /^(met|not met|pending|open)\b[\s:.,;()—–-]*(.*)$/i.exec(check[2]);
+    if (verdict && verdict[1].toLowerCase() !== "met") { unmet.add(+check[1]); says(done.first + at + 1, raw, verdict[1]); }
+    else if (verdict && verdict[2].trim()) proved.add(+check[1]);
+    else if (!check && listMarker.test(raw)) {
+      const word = /^(not met|pending)\b/i.exec(text)?.[1];
+      if (word) says(done.first + at + 1, raw, word);
+    }
+  });
+  items.forEach((line, at) => {
+    if (!proved.has(at + 1) && !unmet.has(at + 1)) problems.push({ file, line, message: `Closed ticket: Done when item ${at + 1} has no evidence line in its Done section ${write(at + 1)}` });
+  });
+  return problems;
 }
 
 const globChars = /[*?[\]{}<>]/;
@@ -316,7 +369,8 @@ function main(args) {
     const loaded = loadTickets(maps, map, { ref });
     const resolved = resolveTickets(loaded.tickets);
     const feedback = command === "check" ? loadFeedback(maps, { ref }) : { files: [], entries: [], problems: [] };
-    const problems = [...loaded.problems, ...resolved.problems, ...feedback.problems];
+    const closed = command === "check" ? loaded.tickets.flatMap(ticket => ticket.doneProblems) : [];
+    const problems = [...loaded.problems, ...resolved.problems, ...closed, ...feedback.problems];
     for (const problem of problems) console.error(`${problem.file}:${problem.line}: ${problem.message}`);
     if (problems.length) { process.exitCode = 1; return; }
     if (command === "check") {
