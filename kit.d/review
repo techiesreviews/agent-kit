@@ -9,16 +9,20 @@ import { reviewBrief, reviewScope, ticketReviewBrief } from "../review-brief.mjs
 import { saveReviewEvidence } from "../review-evidence.mjs";
 import { countsLine, findingsRecord } from "../review-findings.mjs";
 import { branchRisk, findPreviousReview, loopBriefSection, loopReviewerNote, parseMarks, roundLimit, unmarkedIds } from "../review-loop.mjs";
-import { parseChanges, reviewKinds, secondLookPick, secondLookTable } from "../pr-tier.mjs";
+import { classify, lookFamily, parseChanges, reviewKinds, secondLookEffort, secondLookPick, secondLookTable } from "../pr-tier.mjs";
 import { durationMilliseconds } from "../sol-run.mjs";
 
 const { kitBranch, kitGhEnv, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, kitStateDir, nodeEnv, kitScore, scoreReview } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const usage = "Usage: kit review [--base REF | --commit SHA] [--ticket FILE] [--pr N] [--second-look]\nDefault scope: --base origin/<land> (branches.land in scripts/agents/kit.json). Model: ASE_REVIEW_MODEL or claude-opus-5-5: claude-*, grok-*, gpt-* (also o<digit>…, codex…) or opencode/<model>;\n" +
+const usage = "Usage: kit review [--base REF | --commit SHA] [--ticket FILE] [--pr N] [--second-look | --second gpt]\nDefault scope: --base origin/<land> (branches.land in scripts/agents/kit.json). Model: ASE_REVIEW_MODEL or claude-opus-5-5: claude-*, grok-*, gpt-* (also o<digit>…, codex…) or opencode/<model>;\n" +
   "any other name is refused before any call (ASE_AGENT_CLI=codex|opencode picks the CLI for it).\n" +
-  "--second-look: the review kind from the changed paths (agent, ux, dx, code) picks its model in the kit's second-look.json (ASE_SECOND_LOOK overrides);\n" +
-  "the other family takes it when that model cannot run; when neither can, it skips with exit 3 and says \"second look: skipped (<reason>)\".\n" +
+  "--second-look: the review kind from the changed paths (agent, ux, dx, code) picks its models, first choice first, in the kit's second-look.json\n" +
+  "(ASE_SECOND_LOOK overrides); the next one takes it when a model cannot run; when none can, it skips with exit 3 and says \"second look: skipped (<reason>)\".\n" +
+  "GPT (through Codex, at the table's effort) may review since 2026-11-09; Claude Opus stays the main reviewer. A GPT model in the order is used\n" +
+  "for code changes only, never a docs-only change, and once per PR (--pr N, else the branch): a later look on that PR goes to the next model.\n" +
+  "--second gpt: a GPT second look asked on purpose, for a big or risky change: the kind's GPT model, even when the PR had one, and no other model\n" +
+  "in its place (it skips with exit 3 when GPT cannot run). Either way the look is the PR's second look, which kit pr reuses on the same HEAD.\n" +
   "The whole look, fallback included, stops at ASE_SECOND_LOOK_TIMEOUT (25m): then it skips as \"<model> timed out after 25m\";\n" +
   "a fallback with under a minute left is not started (\"<model> not started: under a minute left of 25m\").\n" +
   "Weekly budgets for the whole computer: ASE_REVIEW_BUDGET_GPT (12), ASE_REVIEW_BUDGET_GROK (8); not counted: Claude and OpenCode's -free models.\n" +
@@ -29,12 +33,14 @@ function options(args) {
   for (let i = 0; i < args.length; i += 2) {
     const flag = args[i], value = args[i + 1];
     if (flag === "--second-look" && !values.secondLook) { values.secondLook = true; i--; continue; }
-    if (!["--base", "--commit", "--ticket", "--pr"].includes(flag) || !value || (value.startsWith("--") && !["--base", "--commit"].includes(flag)) || Object.hasOwn(values, flag.slice(2))) {
+    if (flag === "--second" && value !== undefined && value !== "gpt") throw new Error(`--second takes gpt, not ${value}`);
+    if (!["--base", "--commit", "--ticket", "--pr", "--second"].includes(flag) || !value || (value.startsWith("--") && !["--base", "--commit"].includes(flag)) || Object.hasOwn(values, flag.slice(2))) {
       throw new Error(`Invalid option: ${flag}`);
     }
     values[flag.slice(2)] = value;
   }
   if (values.base !== undefined && values.commit !== undefined) throw new Error("--base and --commit are mutually exclusive");
+  if (values.second !== undefined && values.secondLook) throw new Error("--second and --second-look are mutually exclusive");
   if (values.pr !== undefined && (!/^[1-9][0-9]*$/.test(values.pr) || !Number.isSafeInteger(Number(values.pr)))) throw new Error("--pr must be a positive integer");
   return values;
 }
@@ -59,10 +65,11 @@ function evidenceDirectory() {
   }
 }
 
-// One review run, printing all but its RESULT line. A second look (`look`: { kind, model }) sets the
-// model and its CLI, so no ASE_AGENT_CLI can send it to Codex, and marks its evidence folder.
+// One review run, printing all but its RESULT line. A second look (`look`: { kind, model, effort }) sets the
+// model, its CLI and any effort, so no ASE_AGENT_CLI can redirect it, and marks its evidence folder with the
+// branch and PR it looked at (one GPT second look per PR is told from these marks).
 async function reviewOnce(flags, look) {
-  let evidence = "none", temporary, status = 1, reason = "review failed", label, budget, env, model, effort, reviewedHead;
+  let evidence = "none", temporary, status = 1, reason = "review failed", label, budget, env, model, effort, reviewedHead, branchName = "";
   let previous = null, round = 1, loopMeta = {}, sinceHead = null, ledger, outOfCredit = false, kept = false, spawned = false, unavailable = false, stderr = "", timedOut = false;
   const ticket = flags.ticket;
   try {
@@ -80,7 +87,7 @@ async function reviewOnce(flags, look) {
     temporary = mkdtempSync(join(artifacts, "kit-review-"));
     const briefPath = join(temporary, "brief.md");
     const resolved = scope.commit ? { commit: scope.commit } : { base: scope.base };
-    const agentArgs = ["review", root, briefPath, ...(scope.commit ? ["--commit", scope.commit] : ["--base", scope.base]), "--out", temporary];
+    const agentArgs = ["review", root, briefPath, ...(scope.commit ? ["--commit", scope.commit] : ["--base", scope.base]), "--out", temporary, ...(look?.effort ? ["--effort", look.effort] : [])];
     // The runner prepares "the changes since the last review" for a later round (set once that round is known, below).
     let cli;
     ({ model, effort, cli } = parseAgentArgs(agentArgs, env));
@@ -93,7 +100,7 @@ async function reviewOnce(flags, look) {
     let brief = flags.ticket ? ticketReviewBrief(flags.ticket, resolved, root, undefined, true, model) : reviewBrief("", "", resolved, root, [], true, model, changed());
     // Review loop: round 1 is a full review; a later round reviews only what changed since the last reviewed head and the open ids.
     // A second look or a --commit review is never a loop round.
-    const branchName = spawnSync("git", ["-C", root, "branch", "--show-current"], { encoding: "utf8" }).stdout.trim();
+    branchName = spawnSync("git", ["-C", root, "branch", "--show-current"], { encoding: "utf8" }).stdout.trim();
     const reviewsRoot = join(kitMainRoot(), ".scratch/reviews"), owner = kitOwner();
     // Other owners' folders too: a lead landing a builder's branch answers the builder's rounds (they must name this branch).
     const otherOwners = existsSync(reviewsRoot) ? readdirSync(reviewsRoot, { withFileTypes: true }).filter(entry => entry.isDirectory() && entry.name !== owner).map(entry => join(reviewsRoot, entry.name)) : [];
@@ -213,7 +220,8 @@ async function reviewOnce(flags, look) {
     try {
       // A second look's folder is marked as soon as it exists, before any review file is copied in, so no
       // lookup ever takes it for Claude's review; `ok` turns true below only for a run that came back.
-      const mark = ok => writeFileSync(join(evidence, "second-look.json"), `${JSON.stringify({ kind: look.kind, model, ok })}\n`);
+      const mark = ok => writeFileSync(join(evidence, "second-look.json"),
+        `${JSON.stringify({ kind: look.kind, model, ok, ...(branchName ? { branch: branchName } : {}), ...(flags.pr ? { pr: flags.pr } : {}) })}\n`);
       const { record, cleanup } = saveReviewEvidence(temporary, () => {
         evidence = evidenceDirectory();
         if (look) mark(false);
@@ -250,11 +258,30 @@ function report({ status, outOfCredit, kept, budget, model, evidence, label, rea
   return status;
 }
 
-// The second look after Claude's review: the change's kind picks its model in the table, the other family takes
-// over when that one cannot run (a used-up count, no credit, a usage limit, a CLI that is missing or down), and when
-// neither can, it is skipped. Any other failure, such as an incomplete answer or a failed save or PR comment, fails.
+// The PR's GPT second look that already ran (a mark that came back, for this PR or this branch, under any owner),
+// or null. The cost guard: one GPT second look per PR.
+function gptLookDone(pr, branch) {
+  const reviews = join(kitMainRoot(), ".scratch/reviews");
+  if (!existsSync(reviews)) return null;
+  const folders = readdirSync(reviews, { withFileTypes: true }).filter(entry => entry.isDirectory())
+    .flatMap(owner => readdirSync(join(reviews, owner.name), { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => join(reviews, owner.name, entry.name)));
+  for (const folder of folders.sort().reverse()) {
+    let mark;
+    try { mark = JSON.parse(readFileSync(join(folder, "second-look.json"), "utf8")); } catch { continue; }
+    if (mark?.ok !== true || lookFamily(mark.model) !== "gpt") continue;
+    if ((pr && mark.pr === pr) || (branch && mark.branch === branch)) return folder;
+  }
+  return null;
+}
+
+// The second look after Claude's review: the change's kind picks its models in the table, first choice first; the next
+// takes over when one cannot run (a used-up count, no credit, a usage limit, a CLI that is missing or down), and when
+// none can, it is skipped. Any other failure, such as an incomplete answer or a failed save or PR comment, fails.
+// A GPT model is passed over for a docs-only change or when the PR already had its GPT look; `--second gpt` asks
+// the kind's GPT model alone, on purpose.
 async function secondLook(flags) {
   let pick, deadline;
+  const models = [], unused = [], asked = flags.second === "gpt";
   // One limit for the whole look, fallback included (ASE_SECOND_LOOK_TIMEOUT, default 25m): a reviewer that opened
   // a session but never finishes is stopped, and the look is skipped as timed out so the slice or PR goes on.
   const limit = process.env.ASE_SECOND_LOOK_TIMEOUT || "25m";
@@ -262,40 +289,57 @@ async function secondLook(flags) {
     try { deadline = Date.now() + durationMilliseconds(limit); }
     catch { throw new Error(`ASE_SECOND_LOOK_TIMEOUT must be a duration such as 25m (got ${limit})`); }
     if (flags.base === undefined && flags.commit === undefined) flags.base = `origin/${kitBranch()}`;
-    const root = kitRoot(), scope = reviewScope("", flags, root);
+    const root = kitRoot(), scope = reviewScope("", flags, root), settings = kitSettings(root);
     const range = scope.commit ? [`${scope.commit}^`, scope.commit] : [`${scope.base}...${scope.head}`];
     const changes = parseChanges(execFileSync("git", ["-C", root, "-c", "core.quotepath=false", "diff", "--name-status", "--no-renames", ...range],
       { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
     if (!changes.length) throw new Error(`nothing to review: ${scope.label} is empty`);
     // One path for the pick and the check below, so a problem names the file that was read.
     const table = process.env.ASE_SECOND_LOOK || resolve(import.meta.dirname, "../second-look.json");
-    pick = secondLookPick(changes, kitSettings(root), { ticket: flags.ticket && relative(root, resolve(root, flags.ticket)), table });
+    pick = secondLookPick(changes, settings, { ticket: flags.ticket && relative(root, resolve(root, flags.ticket)), table });
     // A paid OpenCode row would be refused when its turn came, before any handover: every kind's row is checked
     // now, so the table is named as broken whichever kind this change picks.
     const rows = secondLookTable(table);
     for (const kind of reviewKinds) {
-      const paid = [rows[kind].model, rows[kind].fallback].find(model => /^opencode\//.test(model) && !opencodeModelRuns(model));
+      const paid = rows[kind].order.find(model => /^opencode\//.test(model) && !opencodeModelRuns(model));
       if (paid) throw new Error(`second-look table ${table} ${kind}: ${paid} is a paid OpenCode model; a second look on OpenCode must be a -free model`);
     }
+    if (asked) {
+      const gpt = pick.order.find(model => lookFamily(model) === "gpt");
+      if (!gpt) throw new Error(`--second gpt: second-look table ${table} names no GPT model for ${pick.kind}`);
+      models.push(gpt);
+    } else {
+      const docsOnly = classify(changes, { settings }).tier === "docs";
+      const branch = spawnSync("git", ["-C", root, "branch", "--show-current"], { encoding: "utf8" }).stdout?.trim() ?? "";
+      for (const model of pick.order) {
+        const done = lookFamily(model) === "gpt" && !docsOnly && gptLookDone(flags.pr, branch);
+        const why = lookFamily(model) !== "gpt" ? null : docsOnly ? "docs-only change" : done ? `one GPT second look per PR, done in ${done}` : null;
+        if (why) unused.push({ model, why });
+        else models.push(model);
+      }
+    }
+    pick.effort = Object.fromEntries(models.map(model => [model, secondLookEffort(model, table)]));
   } catch (error) {
     console.error(`problem: ${error.message}`);
     kitResult("fail", `${error.message} evidence none`);
     return 1;
   }
-  console.log(`second look: ${pick.kind} (${pick.path}) ${pick.model}`);
-  const missed = [];
+  for (const { model, why } of unused) console.log(`second look: ${model} not used (${why})`);
+  const missed = unused.map(({ model, why }) => `${model} not used: ${why}`), tried = [];
+  if (models.length) console.log(`second look: ${pick.kind} (${pick.path}) ${models[0]}${asked ? " (asked with --second gpt)" : ""}`);
   const label = /^\d+$/.test(limit) ? `${limit}s` : limit;
-  for (const model of [pick.model, pick.fallback]) {
+  for (const model of models) {
     // A fallback needs a minute left to start: with less it would reserve a count for a review the limit stops.
-    if (missed.length && deadline - Date.now() < 60_000) { missed.push(`${model} not started: under a minute left of ${label}`); break; }
-    if (missed.length) console.log(`second look: ${model} takes it (${missed.at(-1)})`);
-    const result = await reviewOnce(flags, { kind: pick.kind, model, deadline, limit: label });
+    if (tried.length && deadline - Date.now() < 60_000) { tried.push(`${model} not started: under a minute left of ${label}`); break; }
+    if (tried.length) console.log(`second look: ${model} takes it (${tried.at(-1)})`);
+    const result = await reviewOnce(flags, { kind: pick.kind, model, effort: pick.effort[model], deadline, limit: label });
     if (result.status === 0 && !result.outOfCredit) return report(result);
     if (!result.unavailable && !result.timedOut) return report(result);
     if (result.evidence !== "none") console.log(`evidence: ${result.evidence}`);
-    missed.push(`${model} ${result.outOfCredit ? "out of credit" : result.reason}`.replace(/\s+/g, " "));
+    tried.push(`${model} ${result.outOfCredit ? "out of credit" : result.reason}`.replace(/\s+/g, " "));
     if (result.timedOut) break;
   }
+  missed.push(...tried);
   console.log(`second look: skipped (${missed.join("; ")})`);
   console.log(`RESULT: skip second look (${missed.join("; ")})`);
   return 3;
@@ -310,7 +354,7 @@ async function review(args) {
     kitResult("fail", `${error.message} evidence none`);
     return 2;
   }
-  return flags.secondLook ? secondLook(flags) : report(await reviewOnce(flags));
+  return flags.secondLook || flags.second ? secondLook(flags) : report(await reviewOnce(flags));
 }
 
 if (process.argv.length === 3 && ["--help", "-h"].includes(process.argv[2])) process.stdout.write(usage);

@@ -87,11 +87,11 @@ if (tool === "fake-kit" && action === "review" && args.includes("--second-look")
   const folder = join(env.KIT_MAIN_ROOT, ".scratch/reviews", env.ASE_OWNER, "second-" + count);
   mkdirSync(folder, { recursive: true });
   writeFileSync(join(folder, "result.md"), (count > 1 && env.FAKE_SECOND_REBASED_REVIEW) || env.FAKE_SECOND_REVIEW || ${JSON.stringify(cleanReview)});
-  writeFileSync(join(folder, "second-look.json"), JSON.stringify({ kind: "code", model: "grok-4.7", ok: true }));
+  writeFileSync(join(folder, "second-look.json"), JSON.stringify({ kind: "code", model: env.FAKE_SECOND_MODEL || "grok-4.7", ok: true }));
   const { execFileSync } = require("node:child_process");
   const git = (...argv) => execFileSync("git", argv, { encoding: "utf8" }).trim();
   writeFileSync(join(folder, "refs.txt"), git("rev-parse", "HEAD") + "\\n" + git("merge-base", "origin/" + (env.FAKE_BASE || "dev"), "HEAD") + "\\n");
-  console.log("second look: code (feature.txt) grok-4.7");
+  console.log("second look: code (feature.txt) " + (env.FAKE_SECOND_MODEL || "grok-4.7"));
   console.log("RESULT: ok review git diff base...HEAD evidence " + folder);
 } else if (tool === "fake-kit" && action === "review") {
   const count = readFileSync(env.FAKE_CALLS, "utf8").trim().split("\\n").map(line => JSON.parse(line))
@@ -2255,13 +2255,13 @@ execFileSync("git", ["add", "--", "file.txt"]);
 
 const table = JSON.parse(readFileSync("second-look.json", "utf8")).kinds;
 
-test("dry-run names the second look's kind, its deciding path, its model and fallback, and its command", t => {
+test("dry-run names the second look's kind, its deciding path, its models in order, and its command", t => {
   // A visible change carries its feature-list line in a changed ticket: UX still comes before that DX path.
   const done = '---\ntitle: "Ticket title"\n---\n\n## Done\n\nFeature list: no change (test)\n';
   for (const [file, kind, extra] of [["docs/guide.md", "dx"], ["docs/agents/runner.md", "agent"], ["src/ui/panel.ts", "ux", { "ticket.md": done }], ["src/x.ts", "code"]] as const) {
     const f = fixture(t, { [file]: "x\n", ...extra }), result = f.run(["--dry-run", "--ticket", "ticket.md"]);
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stdout, new RegExp(`^second look: ${kind} \\(${file.replaceAll(".", "\\.")}\\) ${table[kind].model.replaceAll(".", "\\.")}, else ${table[kind].fallback.replaceAll(".", "\\.")}$`, "m"), file);
+    assert.match(result.stdout, new RegExp(`^second look: ${kind} \\(${file.replaceAll(".", "\\.")}\\) ${table[kind].order.join(", else ").replaceAll(".", "\\.")}$`, "m"), file);
     assert.match(result.stdout, /^\S+ 'review' '--base' 'origin\/dev' '--pr' 'N' '--ticket' 'ticket\.md' '--second-look'$/m, file);
   }
 });
@@ -2587,7 +2587,33 @@ test("the PR says how it was reviewed: the line and the findings ledger from the
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /^Reviewed with review-loop: 1 round with claude-opus-5-5\. Verdict: approved$/m);
   const patch = f.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body).find(text => text?.includes("Reviewed with review-loop"));
-  assert.ok(patch?.includes("Reviewed with review-loop: 1 round with claude-opus-5-5. Verdict: approved\n\nFindings ledger: none."), patch);
+  assert.ok(patch?.includes("Reviewed with review-loop: 1 round with claude-opus-5-5. Verdict: approved\n\nSecond look by grok-4.7 (Grok).\n\nFindings ledger: none."), patch);
+});
+
+test("the PR names the model that took the second look in plain words: GPT through Codex", t => {
+  const f = fixture(t);
+  const path = f.saveReview(cleanReview);
+  writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ round: 1, model: "claude-opus-5-5", head: f.git("rev-parse", "HEAD"), findings: [] }));
+  const result = f.run([], { FAKE_SECOND_MODEL: "gpt-6.1-sol" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^second look: code \(feature\.txt\) gpt-6\.1-sol$/m);
+  const block = f.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body ?? "").find(text => text.includes("<!-- review-loop -->"))!;
+  assert.match(block, /Verdict: approved\n\nSecond look by gpt-6\.1-sol \(GPT through Codex\)\.\n\nFindings ledger: none\./);
+});
+
+test("a reused second look names its own model in the PR", t => {
+  const f = fixture(t), folder = join(f.main, ".scratch/reviews/ak-14/20261019T110000Z");
+  const path = f.saveReview(cleanReview);
+  writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ round: 1, model: "claude-opus-5-5", head: f.git("rev-parse", "HEAD"), findings: [] }));
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "refs.txt"), `${f.head}\n${f.git("merge-base", "origin/dev", "HEAD")}\n`);
+  writeFileSync(join(folder, "result.md"), cleanReview);
+  writeFileSync(join(folder, "second-look.json"), JSON.stringify({ kind: "code", model: "gpt-6.1-sol", ok: true }));
+  const result = f.run(["--no-merge"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(result.stdout.includes(`second look: reused (${folder})`), result.stdout);
+  const block = f.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body ?? "").find(text => text.includes("<!-- review-loop -->"))!;
+  assert.match(block, /Second look by gpt-6\.1-sol \(GPT through Codex\)\./);
 });
 
 test("a later review that marks an earlier id \"still open\" and finds nothing new does not land and is never approved", t => {
@@ -2623,7 +2649,7 @@ test("the PR's review block is replaced between markers on a later run, never ad
   const bodies = f.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body ?? "");
   const block = bodies.find(text => text.includes("<!-- review-loop -->"))!;
   assert.equal((block.match(/<!-- review-loop -->/g) ?? []).length, 1);
-  assert.match(block, /<!-- review-loop -->\nReviewed with review-loop: 1 round with claude-opus-5-5\. Verdict: approved\n\nFindings ledger: none\.\n<!-- \/review-loop -->/);
+  assert.match(block, /<!-- review-loop -->\nReviewed with review-loop: 1 round with claude-opus-5-5\. Verdict: approved\n\nSecond look by grok-4\.7 \(Grok\)\.\n\nFindings ledger: none\.\n<!-- \/review-loop -->/);
 });
 
 test("the PR's verdict counts the second look too: a second-look P2 after the budget is used, or a second-look P1 under --waive, is never approved", t => {
