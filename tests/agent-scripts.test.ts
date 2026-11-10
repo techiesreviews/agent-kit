@@ -1458,15 +1458,17 @@ test("supervise says a command crashed when a signal or an exit above 128 ended 
       assert.equal(result.status, 0, `${mode}: ${result.stderr}`);
       return JSON.parse(result.stdout.trim());
     };
-    assert.deepEqual([crashed("killed").crashed, crashed("killed").status], [true, 1]);
-    assert.deepEqual([crashed("aborted").crashed, crashed("aborted").status], [true, 139]);
-    assert.deepEqual([crashed("failed").crashed, crashed("failed").status], [false, 1]);
-    assert.deepEqual([crashed("slow").crashed, crashed("slow").status], [false, 124]);
+    for (const [mode, crash, status] of [["killed", true, 1], ["aborted", true, 139], ["failed", false, 1], ["slow", false, 124]] as const) {
+      const said = crashed(mode);
+      assert.deepEqual([said.crashed, said.status], [crash, status], mode);
+    }
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
 test("system error codes in messages come with words, never bare", () => {
   assert.equal(plainCode("ENOENT"), "not found (ENOENT)");
   assert.equal(plainCode("EACCES"), "not executable (EACCES)");
+  assert.equal(plainCode("ETIMEDOUT"), "timed out (ETIMEDOUT)");
+  assert.equal(plainCode("ENOBUFS"), "too much output (ENOBUFS)");
   assert.equal(plainCode("ESOMETHING"), "ESOMETHING");
 });
