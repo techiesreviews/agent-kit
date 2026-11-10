@@ -14,7 +14,7 @@ only a small launcher and its own settings; the kit itself lives here, once.
 - `kit init` (run once, from the machine copy: `~/.local/share/agent-kit/current/kit init`) writes the project's
   `scripts/agents/kit.json` settings, the launcher `scripts/agents/kit`, the hook launcher
   `scripts/agents/hooks/run.sh`, the hook entries in `.claude/settings.json` and `.codex/hooks.json`, and the
-  line `* text=auto eol=lf` in `.gitattributes`. It writes only what is missing (and updates the kit's own marked "Messages to Lex" section when the rulebook's version is higher), so it can run again: when the kit
+  line `* text=auto eol=lf` in `.gitattributes`, and a one-line `CLAUDE.md` (`@AGENTS.md`) so a direct Claude session loads `AGENTS.md`. It writes only what is missing (and updates the kit's own marked "Messages to Lex" section when the rulebook's version is higher), so it can run again: when the kit
   adds a piece later, `kit doctor` warns about it in every project set up before, `kit init` adds it, and
   `kit init --all` lands it in every project the machine lists, each through its own `kit pr`. A project keeps a
   piece out on purpose by naming it in `"init": { "skip": [...] }` in its settings (`kit init --check` prints the names).

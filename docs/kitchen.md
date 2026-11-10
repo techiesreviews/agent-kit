@@ -372,8 +372,8 @@ OpenCode settings (default model, global instructions) do not apply to the revie
 
 - **Use:** only after Lex's written "ship it" (given on Tuesday). The exception is a direct project
   (`branches.direct`): it has no release step and needs no "ship it", its merge into main is the release as
-  soon as the project's `checks` pass for a code-size change (docs and CSS changes run lighter steps) and the review passes, and the project's steps follow it (the house rule says what the lead
-  tells Lex). Otherwise `kit pr --release` (the landing
+  soon as the project's `checks` pass for a code-size change (docs and CSS changes run lighter steps) and the
+  review passes, and the project's steps follow it (the house rule says what the lead tells Lex). Otherwise `kit pr --release` (the landing
   branch into the release branch, `branches.release`), merge once CI passes, then the project's
   release steps and first-hour check (extras). A build with a rollout checklist follows it.
 - **Release check:** `kit pr --release` first runs `kit release-check --land` (a clean tree, HEAD
