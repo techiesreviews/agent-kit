@@ -1458,7 +1458,10 @@ test("only a review call reaps the group its CLI left behind; a build call leave
   t.after(() => {
     // The build's leftover never ends by itself: stop it here, then the folder.
     for (const file of pidFiles) {
-      try { process.kill(-JSON.parse(readFileSync(file, "utf8"))[0], "SIGKILL"); } catch { /* Gone already. */ }
+      // The CLI's group, and the leftover itself as a second net should the CLI ever not lead its own group.
+      for (const [pid, group] of [[0, true], [1, false]] as const) {
+        try { process.kill(group ? -JSON.parse(readFileSync(file, "utf8"))[pid] : JSON.parse(readFileSync(file, "utf8"))[pid], "SIGKILL"); } catch { /* Gone already. */ }
+      }
     }
     rmSync(dir, { recursive: true, force: true });
   });

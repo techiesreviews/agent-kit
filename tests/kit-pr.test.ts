@@ -1722,6 +1722,39 @@ test("a docs-only PR whose second look no model can take says so in its review b
   assert.match(block, /<!-- review-loop -->\nReview: Claude's review skipped \(docs tier\)\.\n\nsecond look: skipped \(grok-4\.7 out of credit; opencode\/deepseek-v4\.1-flash-free out of credit\)\n<!-- \/review-loop -->/);
 });
 
+test("a docs-only PR's review block carries the second look's ledger rows and the verdict when it found something", t => {
+  const files = { "docs/guide.md": "# Guide\n", "AGENTS.md": "# Agents\n" };
+  const nit = fixture(t, files), merged = nit.run([], { FAKE_SECOND_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:2 P3 a second-look nit.\n" });
+  assert.equal(merged.status, 0, merged.stdout + merged.stderr);
+  const block = nit.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body ?? "").findLast(text => text.includes("<!-- review-loop -->"))!;
+  assert.match(block, /^Review: Claude's review skipped \(docs tier\)\./m);
+  assert.match(block, /^Second look by grok-4\.7 \(Grok\)\.$/m);
+  assert.match(block, /^\| SL-1 \| nit \| .*a second-look nit\. \|$/m);
+  assert.doesNotMatch(block, /Findings ledger: none/);
+  const lead = fixture(t, files), waived = lead.run(["--waive", "Accepted for follow-up"], { ASE_OWNER: "ke-lead", FAKE_SECOND_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P1 the second look found this.\n" });
+  assert.equal(waived.status, 0, waived.stdout + waived.stderr);
+  const waivedBlock = lead.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body ?? "").findLast(text => text.includes("<!-- review-loop -->"))!;
+  assert.match(waivedBlock, /Verdict: not approved \(1 open finding waived by the lead\)/);
+  assert.match(waivedBlock, /^\| SL-1 \| blocker \| open, waived by the lead \(second look\): .*the second look found this\. \|$/m);
+});
+
+test("dry-run on a docs-only change leaves GPT out of the second look's order even with --full", t => {
+  const f = fixture(t, { "docs/guide.md": "# Guide\n" }), result = f.run(["--dry-run", "--full"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^second look: dx \(docs\/guide\.md\) grok-4\.7, else opencode\/deepseek-v4\.1-flash-free$/m);
+  assert.doesNotMatch(result.stdout, /^second look: .*gpt-/m);
+});
+
+test("dry-run on a docs-only change whose row lists only GPT says there is no model, never a bare line", t => {
+  const f = fixture(t, { "docs/guide.md": "# Guide\n" });
+  const only = join(f.dir, "gpt-only.json");
+  const row = { order: ["gpt-6.1-sol"], checked: "2026-11-10" };
+  writeFileSync(only, JSON.stringify({ kinds: { code: row, ux: row, dx: row, agent: row } }));
+  const result = f.run(["--dry-run"], { ASE_SECOND_LOOK: only });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^second look: dx \(docs\/guide\.md\) no model \(GPT never looks at a docs-only change\)$/m);
+});
+
 test("a tests-only PR runs check, the affected unit files, lint, specs and the review", t => {
   const f = fixture(t, { "tests/a.test.ts": "// changed\n", "tests/fakes/thing.ts": "export {};\n" }), result = f.run(["--no-merge"]);
   assert.equal(result.status, 0, result.stderr); assert.match(result.stdout, /^tier: tests \(2 files, all tests\)$/m);
