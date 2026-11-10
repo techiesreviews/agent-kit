@@ -376,10 +376,13 @@ export function newlyClosed(tickets, since, { cwd = process.cwd() } = {}) {
   let base;
   try { base = git(["merge-base", since, "HEAD"]).trim(); }
   catch (error) { throw new Error(`Invalid ref: ${since} (${String(error.stderr || error.message).trim().split("\n")[0]})`); }
+  // A ticket moved to another folder is the one it was: read the old path.
+  const moved = new Map(git(["-c", "core.quotepath=false", "diff", "-M", "--name-status", base, "HEAD"]).split("\n")
+    .map(line => line.split("\t")).filter(([status]) => status.startsWith("R")).map(([, from, to]) => [to, from]));
   const closed = new Set();
   for (const ticket of tickets.filter(({ status }) => status === "closed")) {
     let before = "";
-    try { before = parseTicket(git(["show", `${base}:${ticket.file}`]), ticket.file, ticket.map).ticket.status; } catch { /* new at HEAD */ }
+    try { before = parseTicket(git(["show", `${base}:${moved.get(ticket.file) ?? ticket.file}`]), ticket.file, ticket.map).ticket.status; } catch { /* new at HEAD */ }
     if (before !== "closed") closed.add(ticket.file);
   }
   return closed;
@@ -395,6 +398,7 @@ function main(args) {
     else if (command === "frontier" && map === undefined && /^[\w-]+$/.test(arg) && !arg.startsWith("-")) map = arg;
     else invalid = true;
   }
+  if (ref !== undefined && since !== undefined) invalid = true;
   if (!["check", "frontier"].includes(command) || invalid) {
     console.error("Usage: tickets.mjs frontier [map] [--ref <ref>] | check [--ref <ref>] [--closed-since <ref>]");
     process.exitCode = 2;

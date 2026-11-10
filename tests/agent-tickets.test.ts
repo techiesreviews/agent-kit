@@ -497,9 +497,14 @@ test("newlyClosed names the tickets that are closed now and were not closed at t
   writeFileSync(join(cwd, `${dir}/02-will-close.md`), closedTicket(["- Done when 1: met — a", "- Done when 2: met — b", "- Done when 3: met — c"], { date: "" }));
   writeFileSync(join(cwd, `${dir}/04-new-closed.md`), closedTicket([]));
   writeFileSync(join(cwd, `${dir}/05-new-open.md`), closedTicket([], { status: "open" }));
+  // A closed ticket moved to another folder, edited a little, is the same ticket and was closed before.
+  mkdirSync(join(cwd, "docs/wayfinder/alpha/tickets"), { recursive: true });
+  git("mv", `${dir}/01-old.md`, "docs/wayfinder/alpha/tickets/01-old.md");
+  writeFileSync(join(cwd, "docs/wayfinder/alpha/tickets/01-old.md"), `${old}\n\nMoved.\n`);
   git("add", "."); git("commit", "-qm", "feature");
   const loaded = loadTickets("docs/wayfinder", undefined, { ref: "HEAD", cwd });
   assert.deepEqual([...newlyClosed(loaded.tickets, "dev", { cwd })].sort(), [`${dir}/02-will-close.md`, `${dir}/04-new-closed.md`]);
+  assert.equal(loaded.tickets.some((ticket: { file: string }) => ticket.file === "docs/wayfinder/alpha/tickets/01-old.md"), true);
   assert.throws(() => newlyClosed(loaded.tickets, "missing-ref", { cwd }), /Invalid ref: missing-ref/);
 
   const script = resolve("tickets.mjs");
@@ -516,5 +521,6 @@ test("newlyClosed names the tickets that are closed now and were not closed at t
   assert.match(run("check", "--closed-since", "missing-ref").stderr, /Invalid ref: missing-ref/);
   assert.equal(run("check", "--closed-since").status, 2);
   assert.equal(run("frontier", "--closed-since", "dev").status, 2);
+  assert.equal(run("check", "--ref", "HEAD", "--closed-since", "dev").status, 2, "the two ways of choosing a version do not mix");
   assert.match(run("check", "--closed-since", "dev", "--closed-since", "dev").stderr, /Usage:.*--closed-since <ref>/);
 });

@@ -290,7 +290,7 @@ OpenCode settings (default model, global instructions) do not apply to the revie
   later (`doneCheckFrom` in `tickets.mjs`) of a ticket whose `## Done when` is a list, so older, undated and missing
   Done sections stay as they are. `kit pr` runs `tickets.mjs check --closed-since origin/<land>` whenever the PR changes
   docs, ticket files included: a ticket that is closed now and was not closed at the merge base (or is new) is read
-  strictly, with no date cutoff, and a missing or undated `## Done` fails too. A builder whose item is not met writes
+  strictly, with no date cutoff, and a missing or undated `## Done` fails too (a release runs the plain check). A builder whose item is not met writes
   `Done when <n>: not met — <why>` and does not close the ticket.
 
 ### 7. Checks

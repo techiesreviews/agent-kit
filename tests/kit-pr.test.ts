@@ -859,6 +859,13 @@ test("release into main opens but never waits or merges", t => {
   assert.ok(f.ghCalls("create")[0].args.includes("main"));
 });
 
+test("a release runs the plain ticket check: what it carries already passed when each PR landed on dev", t => {
+  const f = fixture(t, { "docs/wayfinder/m/tickets/01-x.md": "---\nstatus: closed\n---\n" });
+  const result = f.run(["--base", "main", "--release"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(f.calls().filter(call => call.tool === "tickets.mjs").map(call => call.args), [["check"]]);
+});
+
 test("a release runs kit release-check --land first, a dry run too; only releases run it", t => {
   const f = fixture(t);
   for (const args of [["--base", "main", "--release", "--dry-run"], ["--base", "main", "--release"]]) {
