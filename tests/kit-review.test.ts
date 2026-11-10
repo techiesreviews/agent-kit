@@ -56,6 +56,8 @@ const resumed = args.includes("resume") || args.includes("--resume");
 const mode = process.env.FAKE_MODE || "pass";
 // A reviewer that crashes: the OS ends it with a signal before it answers.
 if (mode === "crash" && (!process.env.FAKE_CRASH_CLI || process.env.FAKE_CRASH_CLI === cli)) process.kill(process.pid, "SIGKILL");
+// A reviewer that exits with the status a shell reports for a crash (128 plus the signal).
+if (mode === "crash-exit" && (!process.env.FAKE_CRASH_CLI || process.env.FAKE_CRASH_CLI === cli)) process.exit(139);
 const report = mode === "empty-pass" && !resumed ? "" : mode === "retry-fail" || mode === "no-session" || (mode === "retry-pass" && !resumed) || mode === "retry-model" || (mode === "retry-usage-limit" && !resumed) || (mode === "retry-out-of-credit" && !resumed) ? "incomplete reply\\n" : process.env.FAKE_REPORT || ${JSON.stringify(complete)};
 const model = mode === "retry-model" && resumed ? "wrong-model" : args[args.indexOf(cli === "claude" ? "--model" : "-m") + 1];
 if (cli === "codex") {
@@ -349,7 +351,7 @@ test("single-commit scope reviews that commit even when it is not HEAD; brief sc
   assert.equal(readFileSync(join(f.out, "refs.txt"), "utf8"), `${f.commits[1]}\n${f.commits[0]}\n`);
 });
 
-test("bad refs, empty diffs and absent scopes fail before a CLI is called", (t) => {
+test("bad refs and absent scopes fail, and an empty diff is skipped, before a CLI is called", (t) => {
   const f = fixture(t);
   for (const ref of ["not-a-ref", "--output=x", "HEAD;echo bad"]) {
     const result = f.run(["--base", ref]);
@@ -1039,6 +1041,13 @@ const mode = process.env.FAKE_MODE || "pass";
 // A provider that is down: no event at all, as on 2026-10-27.
 if (process.env.FAKE_OPENCODE_SILENT || (mode === "retry-silent" && resumed)) await new Promise(done => setTimeout(done, 30_000));
 emit("step_start", { part: { type: "step-start", messageID: "m0" } });
+// A private server the call leaves behind, holding the call's output open, as OpenCode 2's could: it records its pid.
+if (process.env.FAKE_RUN_CHILD) {
+  const { spawn } = await import("node:child_process");
+  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], { stdio: ["ignore", "inherit", "inherit"] });
+  child.unref();
+  appendFileSync(process.env.FAKE_CALLS + ".run-child", child.pid + "\\n");
+}
 // A reviewer that crashes: the OS ends it with a signal.
 if (mode === "crash" && (!process.env.FAKE_CRASH_CLI || process.env.FAKE_CRASH_CLI === "opencode")) process.kill(process.pid, "SIGKILL");
 if (mode === "error-502" || mode === "error-502-exit1") {
@@ -1406,6 +1415,20 @@ test("an OpenCode export that leaves a child holding its output ends on time, an
     for (let i = 0; i < 50 && !gone(); i++) spawnSync("sleep", ["0.05"]);
     assert.ok(gone(), `${mode}: the export's child ${pid} is still running`);
   }
+});
+
+test("a review call stops what its CLI left running when the CLI exits, so no review waits for the time limit", (t) => {
+  const f = fixture(t);
+  withOpencode(f);
+  const started = Date.now();
+  // The child holds the call's output open for 30 s; the fixture's own limit is 10 s, so a review that waited for it would fail.
+  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_RUN_CHILD: "1" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(Date.now() - started < 9_000, `the review took ${Date.now() - started} ms`);
+  const pid = Number(readFileSync(join(f.dir, "calls.jsonl.run-child"), "utf8").trim());
+  const gone = () => { try { process.kill(pid, 0); return false; } catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; } };
+  for (let i = 0; i < 50 && !gone(); i++) spawnSync("sleep", ["0.05"]);
+  assert.ok(gone(), `the call's child ${pid} is still running`);
 });
 
 test("a large OpenCode export is read whole, not cut where a pipe would stop", (t) => {
@@ -1941,6 +1964,11 @@ test("a second look whose reviewer crashes counts as unavailable: the next model
   assert.match(handed.stdout, /^second look: opencode\/deepseek-v4\.1-flash-free takes it \(grok-4\.7 grok crashed \(killed by signal SIGKILL\); see .*\)$/m);
   assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(handed.stdout), "second-look.json"), "utf8")), { kind: "code", model: opencodeModel, ok: true, branch: "feature/review" });
   // No review came back from the crashed run, so its count is given back.
+  assert.deepEqual(f.counts(), { grok: { "kit-review": 0 } });
+  // An exit above 128, the status a shell reports for a crash, counts the same.
+  const exited = f.run(["--base", "HEAD~1", "--second-look"], { ...budget, FAKE_MODE: "crash-exit", FAKE_CRASH_CLI: "grok" });
+  assert.equal(exited.status, 0, exited.stdout + exited.stderr);
+  assert.match(exited.stdout, /^second look: opencode\/deepseek-v4\.1-flash-free takes it \(grok-4\.7 grok crashed \(exit 139\); see /m);
   assert.deepEqual(f.counts(), { grok: { "kit-review": 0 } });
   // Both crash: nothing could look, so the look is skipped, never failed.
   const skipped = f.run(["--base", "HEAD~1", "--second-look"], budget);

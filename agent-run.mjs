@@ -628,7 +628,8 @@ export function opencodeCommands(help, model, worktree) {
 }
 
 // A system error code in words, so no message carries a bare code: "not found (ENOENT)". An unknown code stays as it is.
-const codeWords = { ENOENT: "not found", EACCES: "not executable", EPERM: "not permitted", ENOMEM: "out of memory", E2BIG: "too many arguments", EMFILE: "too many open files" };
+const codeWords = { ENOENT: "not found", EACCES: "not executable", EPERM: "not permitted", ENOMEM: "out of memory", E2BIG: "argument list too long", EMFILE: "too many open files",
+  ETIMEDOUT: "timed out", ENOBUFS: "too much output" };
 export const plainCode = code => codeWords[code] ? `${codeWords[code]} (${code})` : String(code);
 
 // A helper that runs `<command> <args…>` in a process group of its own and, at the limit or once the command has

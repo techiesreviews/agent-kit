@@ -75,6 +75,8 @@ export function supervise(duration, command, args, { cwd, input = 0, log, captur
     child.once("close", (code, signal) => {
       clearTimeout(timer);
       clearTimeout(reaper);
+      // The group's id could in theory have been handed to a new group after the command left nothing behind; PIDs
+      // are given out in order, so that needs the counter to wrap within this moment. Judged and accepted.
       if (reap) reapGroup();
       process.removeListener("SIGINT", interrupt);
       process.removeListener("SIGTERM", terminate);
