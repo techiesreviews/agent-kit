@@ -609,8 +609,9 @@ async function main(args) {
     const commands = {
       check: () => parse(checks.check), unit: () => parse(checks.test), lint: () => parse(checks.lint),
       "kit-clean": () => extra.flatMap(parse),
-      colours: () => parse(checks.css), // A release carries what each PR already passed on its way into the land branch, so it runs the plain check.
-      tickets: () => [["node", [shared("tickets.mjs"), "check", ...(flags.release ? [] : ["--closed-since", `origin/${flags.base}`])]]],
+      colours: () => parse(checks.css),
+      // A release carries what each PR already passed on its way into the land branch, so it runs the plain check.
+            tickets: () => [["node", [shared("tickets.mjs"), "check", ...(flags.release ? [] : ["--closed-since", `origin/${flags.base}`])]]],
       "unit-files": () => {
         const files = focusedUnitFiles(changes, plan, sources(), settings);
         return files.length ? [[shared("unit.sh"), files]] : [];
