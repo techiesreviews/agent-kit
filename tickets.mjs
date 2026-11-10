@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Usage: tickets.mjs frontier [map] [--ref <ref>] | check [--ref <ref>] [--closed-since <ref>]; inspect ticket dependencies and build feedback logs.
+// Usage: tickets.mjs frontier [map] [--ref <ref>] | check [--ref <ref> | --closed-since <ref>]; inspect ticket dependencies and build feedback logs.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
@@ -400,7 +400,7 @@ function main(args) {
   }
   if (ref !== undefined && since !== undefined) invalid = true;
   if (!["check", "frontier"].includes(command) || invalid) {
-    console.error("Usage: tickets.mjs frontier [map] [--ref <ref>] | check [--ref <ref>] [--closed-since <ref>]");
+    console.error("Usage: tickets.mjs frontier [map] [--ref <ref>] | check [--ref <ref> | --closed-since <ref>]");
     process.exitCode = 2;
     return;
   }

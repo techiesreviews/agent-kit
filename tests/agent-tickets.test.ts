@@ -491,6 +491,7 @@ test("newlyClosed names the tickets that are closed now and were not closed at t
   writeFileSync(join(cwd, `${dir}/01-old.md`), old);
   writeFileSync(join(cwd, `${dir}/02-will-close.md`), closedTicket([], { status: "open" }));
   writeFileSync(join(cwd, `${dir}/03-will-stay-open.md`), closedTicket([], { status: "open" }));
+  writeFileSync(join(cwd, `${dir}/06-moves-and-closes.md`), closedTicket([], { status: "open" }));
   git("add", "."); git("commit", "-qm", "base");
   git("switch", "-qc", "feature");
   writeFileSync(join(cwd, `${dir}/01-old.md`), `${old}\n\nA follow-up line.\n`);
@@ -501,9 +502,12 @@ test("newlyClosed names the tickets that are closed now and were not closed at t
   mkdirSync(join(cwd, "docs/wayfinder/alpha/tickets"), { recursive: true });
   git("mv", `${dir}/01-old.md`, "docs/wayfinder/alpha/tickets/01-old.md");
   writeFileSync(join(cwd, "docs/wayfinder/alpha/tickets/01-old.md"), `${old}\n\nMoved.\n`);
+  // A ticket that was open, moved and closed, is a new close under its new path.
+  git("mv", `${dir}/06-moves-and-closes.md`, "docs/wayfinder/alpha/tickets/06-moves-and-closes.md");
+  writeFileSync(join(cwd, "docs/wayfinder/alpha/tickets/06-moves-and-closes.md"), closedTicket([]));
   git("add", "."); git("commit", "-qm", "feature");
   const loaded = loadTickets("docs/wayfinder", undefined, { ref: "HEAD", cwd });
-  assert.deepEqual([...newlyClosed(loaded.tickets, "dev", { cwd })].sort(), [`${dir}/02-will-close.md`, `${dir}/04-new-closed.md`]);
+  assert.deepEqual([...newlyClosed(loaded.tickets, "dev", { cwd })].sort(), ["docs/wayfinder/alpha/tickets/06-moves-and-closes.md", `${dir}/02-will-close.md`, `${dir}/04-new-closed.md`].sort());
   assert.equal(loaded.tickets.some((ticket: { file: string }) => ticket.file === "docs/wayfinder/alpha/tickets/01-old.md"), true);
   assert.throws(() => newlyClosed(loaded.tickets, "missing-ref", { cwd }), /Invalid ref: missing-ref/);
 
