@@ -223,6 +223,9 @@ test("brief: a second look with no readable table names its skills for no one mo
   // The neutral line (an invocation for Claude, a mention for Codex, the kit's words for the rest), not `/emil-ui-review — …`.
   assert.match(second.stdout, /^- \/emil-ui-review \(Codex: \$emil-ui-review; without skills: /m);
   assert.doesNotMatch(second.stdout, /^- \/emil-ui-review — /m);
+  // The brief points at the table, and never names the main reviewer's pin as the second look's model.
+  assert.match(second.stdout, /^- Model: the models in the kit's `second-look\.json`, first choice first/m);
+  assert.doesNotMatch(second.stdout, /ASE_REVIEW_MODEL|claude-opus/);
 });
 
 test("brief: pins come from the rulebook (a superseded builder: sol builds on the builder pin; the extras' review pin wins)", t => {

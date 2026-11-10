@@ -683,9 +683,10 @@ async function main(args) {
     if (flags.dryRun) {
       const look = secondLookPick(changes, settings, { ticket: flags.ticket && relative(root, resolve(root, flags.ticket)) });
       console.log(`branch: ${branch}\nbase: ${flags.base}\nHEAD: ${head}\ntitle: ${prTitle}\nbody: ${body}`);
-      // GPT never looks at a docs-only change (kit review passes it over), so the plan does not name it for one.
-      const order = plan.tier === "docs" ? look.order.filter(model => lookFamily(model) !== "gpt") : look.order;
-      console.log(`second look: ${look.kind} (${look.path}) ${order.join(", else ")}`);
+      // GPT never looks at a docs-only change (kit review passes it over), so the plan does not name it for one. Docs-only is
+      // worked out as kit review does (without --full, which changes the checks and not what the second look sees).
+      const order = classify(changes, { settings }).tier === "docs" ? look.order.filter(model => lookFamily(model) !== "gpt") : look.order;
+      console.log(`second look: ${look.kind} (${look.path}) ${order.length ? order.join(", else ") : "no model (GPT never looks at a docs-only change)"}`);
       const reviewCommand = extra => [kit, ...reviewArgs, "N", ...(flags.ticket ? ["--ticket", flags.ticket] : []), ...extra];
       // The plan names the repo gh is told, so a command copied from it never lands in another remote's repo.
       const named = ghEnv.GH_REPO ? ["--repo", ghEnv.GH_REPO] : [];
@@ -833,14 +834,16 @@ async function main(args) {
       const verdict = !loopLeft ? "approved" : loopBudgetUsed ? `not approved (budget used, ${open} left for Lex${waived ? ", waived by the lead" : ""})`
         : waived ? `not approved (${open} waived by the lead)` : `not approved (${open} left for Lex: no reason was given for it)`;
       // A PR whose diff is empty was never reviewed: it says so in place of a verdict and a ledger.
+      // A tier with no Claude review still shows what its second look found: the verdict and the ledger rows.
       const line = loopSummary ? prLine({ ...loopSummary, verdict })
-        : skippedTier ? `Review: Claude's review skipped (${plan.tier} tier).` : `Review: nothing to review (the diff against ${flags.base} is empty).`;
+        : skippedTier ? `Review: Claude's review skipped (${plan.tier} tier).${secondRows.length ? ` Verdict: ${verdict}` : ""}`
+        : `Review: nothing to review (the diff against ${flags.base} is empty).`;
       // A second look that no model could take is said in the PR too, so the PR never reads as fully double-checked.
       const skipped = secondLookSkipped ? `${secondLookSkipped}\n\n` : "";
       // The model that took the second look, in plain words, so the PR says who looked after Claude.
       const looked = secondLookModel ? `Second look by ${secondLookModel} (${lookFamilyWords(secondLookModel)}).\n\n` : "";
       const block = loopSummary ? `<!-- review-loop -->\n${line}\n\n${skipped}${looked}${renderLedger([...loopSummary.rows, ...secondRows])}\n<!-- /review-loop -->`
-        : `<!-- review-loop -->\n${line}${skipped || looked ? `\n\n${(skipped + looked).trimEnd()}` : ""}\n<!-- /review-loop -->`;
+        : `<!-- review-loop -->\n${line}${skipped || looked ? `\n\n${(skipped + looked).trimEnd()}` : ""}${skippedTier && secondRows.length ? `\n\n${renderLedger(secondRows)}` : ""}\n<!-- /review-loop -->`;
       const current = readFileSync(body, "utf8");
       const next = /<!-- review-loop -->[\s\S]*?<!-- \/review-loop -->/.test(current)
         ? current.replace(/<!-- review-loop -->[\s\S]*?<!-- \/review-loop -->/, () => block) : `${current.replace(/\n*$/, "\n")}\n${block}\n`;
