@@ -19,8 +19,8 @@ const usage = "Usage: kit review [--base REF | --commit SHA] [--ticket FILE] [--
   "any other name is refused before any call (ASE_AGENT_CLI=codex|opencode picks the CLI for it).\n" +
   "--second-look: the review kind from the changed paths (agent, ux, dx, code) picks its models, first choice first, in the kit's second-look.json\n" +
   "(ASE_SECOND_LOOK overrides); the next one takes it when a model cannot run; when none can, it skips with exit 3 and says \"second look: skipped (<reason>)\".\n" +
-  "GPT (through Codex, at the table's effort) may review since 2026-11-09; Claude Opus stays the main reviewer. A GPT model in the order is used\n" +
-  "for code changes only, never a docs-only change, and once per PR (--pr N, else the branch): a later look on that PR goes to the next model.\n" +
+  "GPT (through Codex, at the table's effort) may review since 2026-11-09; Claude Opus stays the main reviewer. A GPT model in the order is never\n" +
+  "used for a docs-only change, and once per PR (the same --pr N, or the branch when either look named no PR): a later look goes to the next model.\n" +
   "--second gpt: a GPT second look asked on purpose, for a big or risky change: the kind's GPT model, even when the PR had one, and no other model\n" +
   "in its place (it skips with exit 3 when GPT cannot run). Either way the look is the PR's second look, which kit pr reuses on the same HEAD.\n" +
   "The whole look, fallback included, stops at ASE_SECOND_LOOK_TIMEOUT (25m): then it skips as \"<model> timed out after 25m\";\n" +
@@ -33,7 +33,7 @@ function options(args) {
   for (let i = 0; i < args.length; i += 2) {
     const flag = args[i], value = args[i + 1];
     if (flag === "--second-look" && !values.secondLook) { values.secondLook = true; i--; continue; }
-    if (flag === "--second" && value !== undefined && value !== "gpt") throw new Error(`--second takes gpt, not ${value}`);
+    if (flag === "--second" && value !== undefined && value !== "gpt") throw new Error(value.startsWith("--") ? "--second needs a value: gpt" : `--second takes gpt, not ${value}`);
     if (!["--base", "--commit", "--ticket", "--pr", "--second"].includes(flag) || !value || (value.startsWith("--") && !["--base", "--commit"].includes(flag)) || Object.hasOwn(values, flag.slice(2))) {
       throw new Error(`Invalid option: ${flag}`);
     }
@@ -269,7 +269,8 @@ function gptLookDone(pr, branch) {
     let mark;
     try { mark = JSON.parse(readFileSync(join(folder, "second-look.json"), "utf8")); } catch { continue; }
     if (mark?.ok !== true || lookFamily(mark.model) !== "gpt") continue;
-    if ((pr && mark.pr === pr) || (branch && mark.branch === branch)) return folder;
+    // A branch match counts unless both name a PR: a branch name that comes back for a new PR gets its own GPT look.
+    if ((pr && mark.pr === pr) || (branch && mark.branch === branch && (!pr || !mark.pr))) return folder;
   }
   return null;
 }

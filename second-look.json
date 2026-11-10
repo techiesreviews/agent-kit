@@ -1,5 +1,5 @@
 {
-  "about": "The second look after Claude's review, per review kind: the models to try, first choice first, one per family (gpt-<model> through Codex, grok-<model>, opencode/<model> free only), and the day the pick was last checked against Lex's Codex default, `grok models` and `opencode models`. GPT may review since 2026-11-09 (Lex); Claude Opus stays the main reviewer. GPT is used for code changes only (never a docs-only change) and once per PR; a later look on that PR goes to the next model. `effort` gives a model its effort. One table for every project; the lead updates it when new models appear.",
+  "about": "The second look after Claude's review, per review kind: the models to try, first choice first, one per family (gpt-<model> through Codex, grok-<model>, opencode/<model> free only), and the day the pick was last checked against Lex's Codex default, `grok models` and `opencode models`. GPT may review since 2026-11-09 (Lex); Claude Opus stays the main reviewer. GPT is never used for a docs-only change, and once per PR; a later look on that PR goes to the next model. `effort` gives a model its effort. One table for every project; the lead updates it when new models appear.",
   "effort": { "gpt-6.1-sol": "high" },
   "kinds": {
     "code": { "order": ["gpt-6.1-sol", "grok-4.7", "opencode/deepseek-v4.1-flash-free"], "checked": "2026-11-10" },
