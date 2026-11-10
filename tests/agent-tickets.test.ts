@@ -519,9 +519,10 @@ test("newlyClosed names the tickets that are closed now and were not closed at t
   assert.equal(strict.status, 1);
   assert.equal(strict.stdout, "");
   const lines = strict.stderr.trim().split("\n");
-  assert.equal(lines.length, 2, strict.stderr);
+  assert.equal(lines.length, 3, strict.stderr);
   assert.ok(lines[0].startsWith(`${dir}/02-will-close.md:15: Closed ticket: its ## Done has no date`), lines[0]);
   assert.ok(lines[1].startsWith(`${dir}/04-new-closed.md:9: Closed ticket: it has no ## Done section`), lines[1]);
+  assert.ok(lines[2].startsWith("docs/wayfinder/alpha/tickets/06-moves-and-closes.md:9: Closed ticket: it has no ## Done section"), lines[2]);
   assert.match(run("check", "--closed-since", "missing-ref").stderr, /Invalid ref: missing-ref/);
   assert.equal(run("check", "--closed-since").status, 2);
   assert.equal(run("frontier", "--closed-since", "dev").status, 2);
