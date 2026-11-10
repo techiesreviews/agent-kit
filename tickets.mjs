@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Usage: tickets.mjs frontier [map] [--ref <ref>] | check [--ref <ref>]; inspect ticket dependencies and build feedback logs.
+// Usage: tickets.mjs frontier [map] [--ref <ref>] | check [--ref <ref>] [--closed-since <ref>]; inspect ticket dependencies and build feedback logs.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
@@ -63,7 +63,7 @@ function dependencySlug(value) {
 export function parseTicket(source, file, map) {
   const lines = source.replace(/^\uFEFF/, "").split(/\r?\n/);
   const problems = [];
-  const ticket = { file, map, slug: basename(file, ".md"), title: "", type: "", builder: "", assignee: "", status: "", group: "", runs_alone: false, blocked_by: [], files: parseFiles(source), lines: {}, doneProblems: [], valid: true };
+  const ticket = { file, map, slug: basename(file, ".md"), title: "", type: "", builder: "", assignee: "", status: "", group: "", runs_alone: false, blocked_by: [], files: parseFiles(source), lines: {}, doneProblems: [], strictDoneProblems: [], valid: true };
   const problem = (line, message) => { ticket.valid = false; problems.push({ file, line, message }); };
   const end = lines.findIndex((line, i) => i > 0 && line === "---");
   if (lines[0] !== "---" || end < 0) {
@@ -123,7 +123,10 @@ export function parseTicket(source, file, map) {
     } catch (error) { problem(errorLine, error.message); }
   }
   if (!statuses.has(ticket.status)) problem(ticket.lines.status ?? 1, `Invalid status: ${ticket.status || "(missing)"}`);
-  if (ticket.status === "closed") ticket.doneProblems = doneProblems(lines, end, file);
+  if (ticket.status === "closed") {
+    ticket.doneProblems = doneProblems(lines, end, file);
+    ticket.strictDoneProblems = doneProblems(lines, end, file, true);
+  }
   return { ticket, problems };
 }
 
@@ -134,14 +137,17 @@ const shorten = text => text.length > 80 ? `${text.slice(0, 77)}...` : text;
  * frontmatter's closing line). Only a ticket whose `## Done when` is a list, and whose last `## Done` section carries
  * an ISO date of `doneCheckFrom` or later in its heading (`## Done (2026-11-12)`, `## Done: 2026-11-12`; never
  * `## Done when`, `## Done notes`), is read. The rest were written before the check and stay as they are, a ticket
- * with no dated Done section included. Fenced code is skipped.
+ * with no dated Done section included. `strict` reads every closed ticket as if there were no cutoff, and also refuses
+ * one with no `## Done` section or none with a date (a PR that closes a ticket is held to it, see newlyClosed). The
+ * Done section is the last Done heading that has a date, so a later undated "## Done (follow-up)" does not hide it.
+ * Fenced code is skipped.
  * - `Done when <n>: <verdict> — <evidence>` is the evidence line of the n-th item of the list. The verdict is met,
  *   not met, pending or open, and `met` needs something after it; any other verdict, none, or no proof leaves the
  *   item without evidence.
  * - "not met", "pending" or "open" as a check's verdict, or a list item that starts with "Not met" or "Pending", says
  *   a check is unmet. A list item starting with "Open" is only a verdict in the first form: "Open for Lex: …" is a
  *   note. Wrapped lines of an item are not read. */
-function doneProblems(lines, end, file) {
+function doneProblems(lines, end, file, strict = false) {
   let fence = "";
   const fenced = lines.map(line => {
     const mark = /^\s*(```|~~~)/.exec(line)?.[1];
@@ -150,20 +156,25 @@ function doneProblems(lines, end, file) {
     return Boolean(fence);
   });
   const headings = lines.flatMap((line, index) => index > end && !fenced[index] && /^#{1,2} /.test(line) ? [{ line, index }] : []);
-  const section = name => {
-    const found = headings.findLast(({ line }) => name.test(line));
-    if (!found) return null;
+  const sectionAt = found => {
     const next = headings.find(({ index }) => index > found.index);
     return { heading: found.line, first: found.index + 1, lines: lines.slice(found.index + 1, next ? next.index : lines.length) };
+  };
+  const section = (name, wanted = () => true) => {
+    const found = headings.findLast(({ line }) => name.test(line) && wanted(line));
+    return found ? sectionAt(found) : null;
   };
   const when = section(/^## Done when[ \t]*$/);
   const items = (when?.lines ?? []).flatMap((line, at) => /^(?:[-*+]|\d+[.)])\s+\S/.test(line) && !fenced[when.first + at] ? [when.first + at + 1] : []);
   if (!items.length) return [];
-  const done = section(/^## done(?:[ \t]*[(—–:-].*|[ \t]+\d{4}-\d{2}-\d{2}.*)?[ \t]*$/i);
+  const doneHeading = /^## done(?:[ \t]*[(—–:-].*|[ \t]+\d{4}-\d{2}-\d{2}.*)?[ \t]*$/i;
+  const done = section(doneHeading, line => /\b\d{4}-\d{2}-\d{2}\b/.test(line)) ?? (strict ? section(doneHeading) : null);
   const date = /\b(\d{4}-\d{2}-\d{2})\b/.exec(done?.heading ?? "")?.[1];
-  if (!date || date < doneCheckFrom) return [];
+  if (!strict && (!date || date < doneCheckFrom)) return [];
   const write = number => `(write "Done when ${number}: met — <evidence>")`;
-  const problems = [], proved = new Set(), unmet = new Set();
+  if (!done) return [{ file, line: when.first, message: `Closed ticket: it has no ## Done section, so no Done when item has an evidence line ${write("<n>")}` }];
+  const problems = date ? [] : [{ file, line: done.first, message: 'Closed ticket: its ## Done has no date (write "## Done (YYYY-MM-DD)")' }];
+  const proved = new Set(), unmet = new Set();
   const says = (line, raw, word) => problems.push({ file, line, message: `Closed ticket, but its Done section says "${word.toLowerCase()}": ${shorten(raw.trim())}` });
   done.lines.forEach((raw, at) => {
     if (fenced[done.first + at]) return;
@@ -358,17 +369,34 @@ export function loadFeedback(root, { ref, cwd = process.cwd() } = {}) {
   return { files, entries, problems };
 }
 
+/** The files of the closed tickets that were not closed at the merge base of `since` and HEAD, or did not exist there:
+ * the tickets a PR closes. `kit pr` holds them to the strict reading of their Done section, whatever its date. */
+export function newlyClosed(tickets, since, { cwd = process.cwd() } = {}) {
+  const git = args => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+  let base;
+  try { base = git(["merge-base", since, "HEAD"]).trim(); }
+  catch (error) { throw new Error(`Invalid ref: ${since} (${String(error.stderr || error.message).trim().split("\n")[0]})`); }
+  const closed = new Set();
+  for (const ticket of tickets.filter(({ status }) => status === "closed")) {
+    let before = "";
+    try { before = parseTicket(git(["show", `${base}:${ticket.file}`]), ticket.file, ticket.map).ticket.status; } catch { /* new at HEAD */ }
+    if (before !== "closed") closed.add(ticket.file);
+  }
+  return closed;
+}
+
 function main(args) {
   const [command, ...rest] = args;
-  let map, ref, invalid = false;
+  let map, ref, since, invalid = false;
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i];
     if (arg === "--ref" && ref === undefined && rest[i + 1] && !rest[i + 1].startsWith("-")) ref = rest[++i];
+    else if (arg === "--closed-since" && command === "check" && since === undefined && rest[i + 1] && !rest[i + 1].startsWith("-")) since = rest[++i];
     else if (command === "frontier" && map === undefined && /^[\w-]+$/.test(arg) && !arg.startsWith("-")) map = arg;
     else invalid = true;
   }
   if (!["check", "frontier"].includes(command) || invalid) {
-    console.error("Usage: tickets.mjs frontier [map] [--ref <ref>] | check [--ref <ref>]");
+    console.error("Usage: tickets.mjs frontier [map] [--ref <ref>] | check [--ref <ref>] [--closed-since <ref>]");
     process.exitCode = 2;
     return;
   }
@@ -378,7 +406,9 @@ function main(args) {
     const loaded = loadTickets(maps, map, { ref });
     const resolved = resolveTickets(loaded.tickets);
     const feedback = command === "check" ? loadFeedback(maps, { ref }) : { files: [], entries: [], problems: [] };
-    const closed = command === "check" ? loaded.tickets.flatMap(ticket => ticket.doneProblems) : [];
+    // With --closed-since <ref>, a ticket closed since that point's merge base with HEAD is read strictly.
+    const strict = command === "check" && since !== undefined ? newlyClosed(loaded.tickets, since) : new Set();
+    const closed = command === "check" ? loaded.tickets.flatMap(ticket => strict.has(ticket.file) ? ticket.strictDoneProblems : ticket.doneProblems) : [];
     const problems = [...loaded.problems, ...resolved.problems, ...closed, ...feedback.problems];
     for (const problem of problems) console.error(`${problem.file}:${problem.line}: ${problem.message}`);
     if (problems.length) { process.exitCode = 1; return; }
