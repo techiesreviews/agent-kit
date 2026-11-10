@@ -212,6 +212,13 @@ test("the rulebook lets a direct project go live mid-week without \"ship it\", a
     assert.ok(text.includes(words), `the rulebook lacks: ${words}`);
 });
 
+test("station 12's direct-project line says which steps a docs-only or CSS change skips, as station 11 does", () => {
+  const text = read(shared).replace(/\n\s+/g, " ");
+  const station = text.slice(text.indexOf("### 12. Release"), text.indexOf("**Release check:**"));
+  assert.ok(station.includes("its merge into main is the release as soon as the project's `checks` pass for a code-size change (docs and CSS changes run lighter steps) and the review passes"), station);
+  assert.ok(!station.includes("as soon as checks and review pass"), "station 12 still says only 'checks and review pass'");
+});
+
 test("the documented rollback works on commits landed by rebase: it puts main back to its earlier tree", () => {
   const dir = mkdtempSync(join(tmpdir(), "kit-rollback-"));
   try {

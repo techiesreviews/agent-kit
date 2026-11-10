@@ -6,6 +6,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const { orbitBringsSecret } = await import(pathToFileURL(resolve(import.meta.dirname, "../orbit-client.mjs")).href);
+const { projectCommand } = await import(pathToFileURL(resolve(import.meta.dirname, "../review-brief.mjs")).href);
 const { onOrbit, openOrbitTickets, orbitProblem } = await import(pathToFileURL(resolve(import.meta.dirname, "../ticket-cards.mjs")).href);
 const { kitGhRepo, kitHideUserInfo, kitHome, kitMessagesToLexRule, kitOwner, kitProjects, kitRepoPrivate, kitRegisterProject, kitResult, kitRoot, kitSettingsFile, kitSettingsProblems, kitStateDir } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
@@ -27,6 +28,8 @@ before the project has a launcher). It writes only what is missing and never del
                             "Messages to Lex" section (the shared rulebook's rule between
                             markers; one with an older version than the rulebook's is updated in
                             place, a heading without markers is the project's own and stays)
+  CLAUDE.md                 the one line "@AGENTS.md", so a direct Claude session loads AGENTS.md too (a CLAUDE.md the
+                            project has is never touched)
   (branches.direct)         a new project in a PRIVATE GitHub repo (gh repo view --json visibility) is set to land
                             straight on main: branches land and release main, direct true; when gh cannot tell, nothing
                             is set and a note says so. An existing project's settings are never edited: a note (also
@@ -144,7 +147,13 @@ const commitsAhead = (from, to) => {
   if (!a.length || !b.length) return 0;
   // Against origin's `to` when it has one (what is live), else the local branch; the most any copy of `from` holds.
   const target = b.find((ref) => ref.startsWith("refs/remotes/")) ?? b[0];
-  return Math.max(...a.map((x) => Number(git("rev-list", "--count", "--cherry-pick", "--right-only", `${target}...${x}`) ?? 0) || 0));
+  return Math.max(...a.map((x) => alreadyIn(target, x) ? 0 : Number(git("rev-list", "--count", "--cherry-pick", "--right-only", `${target}...${x}`) ?? 0) || 0));
+};
+// A squash merge writes one new commit for many, so no commit of `from` matches by patch. When merging `from` into `to`
+// would change nothing (git merge-tree's result tree is `to`'s own tree), everything on `from` is in `to` already.
+const alreadyIn = (to, from) => {
+  const merged = git("merge-tree", "--write-tree", to, from);
+  return merged !== null && merged.split("\n")[0] === git("rev-parse", `${to}^{tree}`);
 };
 
 // The settings file: kept as it is when there, else filled from git and package.json.
@@ -166,8 +175,10 @@ if (existsSync(at(kitSettingsFile))) {
   // A private repo can land straight on main; the settings file is never edited, so the note names the change.
   if (!options.pieces && !process.env.KIT_INIT_NO_VISIBILITY && settings.branches.direct !== false && !(Array.isArray(settings.init?.skip) && settings.init.skip.some((entry) => ["direct", kitSettingsFile].includes(entry)))) {
     const asked = kitRepoPrivate(root);
-    // Only these checks gate an ordinary change in kit pr (extra and css run for special changes only).
-    const noChecks = !["check", "test", "lint"].some((key) => settings.checks?.[key]);
+    // Only these gate an ordinary change in kit pr (extra and css run for special changes only): the three checks, the
+    // browser specs (a project command) and the unit test files (paths.unitTests).
+    const noChecks = !["check", "test", "lint"].some((key) => settings.checks?.[key]) && !settings.paths?.unitTests?.length &&
+      !projectCommand("specs", root, settings);
     if (settings.branches.direct === true) {
       // Already direct: a repo that turns out public, or one with no checks, needs a word.
       if (noChecks) visibilityNote(`${kitSettingsFile} lands directly on ${settings.branches.land} and has no "checks": unless a CI workflow runs on pull requests, a change goes live after the review alone; add "checks"`);
@@ -180,6 +191,7 @@ if (existsSync(at(kitSettingsFile))) {
         ? `private GitHub repo ${asked.repo}, but its release branch ${live} is not here or on origin: branches.direct is not set (create it or fix "release" in ${kitSettingsFile} yourself first)`
         : live && branchExists(live)
         ? `private GitHub repo ${asked.repo}: to land directly on ${live} set "branches": { "land": "${live}", "release": "${live}", "direct": true } in ${kitSettingsFile} (kit init never edits it)` +
+          `; if the settings name a "devRoot", move its checkout to ${live} too` +
           (behind ? `; merge ${settings.branches.land} into ${live} first, it has ${behind} commit${behind === 1 ? "" : "s"} ${live} lacks` : "")
         : `private GitHub repo ${asked.repo}, but there is no main or master branch here to land on directly: branches.direct is not set (create that branch, then set "branches" in ${kitSettingsFile} yourself)`);
     }
@@ -397,6 +409,11 @@ else if (missingLines.length || lexAdd || lexUpdate) {
     .map((list, index) => list.length ? `${index ? "updated" : "added"} ${list.join(" and ")}` : "").filter(Boolean).join("; ");
   writes.push(agents === null ? { path: "AGENTS.md", text: `${text}\n` } : { path: "AGENTS.md", text: `${text.replace(/(\r?\n)*$/, "")}${eol}`, before: agents, said: `(${said})` });
 }
+
+// CLAUDE.md: Claude Code reads CLAUDE.md, not AGENTS.md, so a project without one does not show AGENTS.md (the Messages to
+// Lex rule among it) in a direct Claude session. The one line imports it. A CLAUDE.md the project has stays as it is.
+if (existsSync(at("CLAUDE.md"))) kept.push("CLAUDE.md");
+else if (piece("CLAUDE.md", "CLAUDE.md", "the one-line file that loads AGENTS.md")) writes.push({ path: "CLAUDE.md", text: "@AGENTS.md\n" });
 
 // .gitattributes: LF endings in every checkout, so a Windows clone cannot break tests that read files. The line goes
 // at the top, so the project's own lines after it (*.png binary) still win for their files.
