@@ -1710,6 +1710,31 @@ test("a dev squash-merged into main (one new commit holding several) is not ahea
   assert.match(after.init(again.work, ["--light"]).stdout, /but dev has \d+ commits? main lacks/);
 });
 
+test("the squash-merge check also holds for an existing project's note, and a conflict with main keeps the count", (t) => {
+  const f = fixture(t);
+  const gh = visibilityGh(f, "PRIVATE");
+  const settings = JSON.stringify({ project: "tools", branches: { land: "dev", release: "main" } });
+  const repo = withOrigin(f, "squashold", { "scripts/agents/kit.json": settings, "a.txt": "base\n" });
+  const commit = (cwd: string, file: string, text: string, message: string) => {
+    writeFileSync(join(cwd, file), text);
+    f.git(cwd, "add", file);
+    f.git(cwd, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", message);
+  };
+  commit(repo.work, "b.txt", "one\n", "first");
+  commit(repo.work, "b.txt", "two\n", "second");
+  f.git(repo.main, "branch", "-f", "dev", "build/one");
+  f.git(repo.main, "merge", "--squash", "dev");
+  f.git(repo.main, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "squash of dev");
+  const squashed = gh.init(repo.work, ["--check"]).stdout;
+  assert.match(squashed, /to land directly on main set /);
+  assert.doesNotMatch(squashed, /merge dev into main first/, squashed);
+  // The same line changed on both sides after the squash: merging would conflict, so dev still counts as ahead.
+  commit(repo.work, "b.txt", "three on dev\n", "dev again");
+  f.git(repo.main, "branch", "-f", "dev", "build/one");
+  commit(repo.main, "b.txt", "three on main\n", "main differs");
+  assert.match(gh.init(repo.work, ["--check"]).stdout, /merge dev into main first, it has \d+ commits? main lacks/);
+});
+
 test("a dev merged into a local main that origin's main lacks is not direct; a public repo already set to direct gets a note; no checks and no CI is said", (t) => {
   const f = fixture(t);
   const gh = visibilityGh(f, "PRIVATE");

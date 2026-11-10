@@ -151,6 +151,7 @@ const commitsAhead = (from, to) => {
 };
 // A squash merge writes one new commit for many, so no commit of `from` matches by patch. When merging `from` into `to`
 // would change nothing (git merge-tree's result tree is `to`'s own tree), everything on `from` is in `to` already.
+// A conflict, or a git older than 2.38 (no --write-tree), gives no tree: the commit count stands, the safe side.
 const alreadyIn = (to, from) => {
   const merged = git("merge-tree", "--write-tree", to, from);
   return merged !== null && merged.split("\n")[0] === git("rev-parse", `${to}^{tree}`);
