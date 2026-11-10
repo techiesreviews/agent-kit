@@ -21,8 +21,8 @@ const usage = "Usage: kit review [--base REF | --commit SHA] [--ticket FILE] [--
   "(ASE_SECOND_LOOK overrides); the next one takes it when a model cannot run; when none can, it skips with exit 3 and says \"second look: skipped (<reason>)\".\n" +
   "GPT (through Codex, at the table's effort) may review since 2026-11-09; Claude Opus stays the main reviewer. A GPT model in the order is never\n" +
   "used for a docs-only change, and once per PR (the same --pr N, or the same branch and history when either look named no PR): a later look goes to the next model.\n" +
-  "--second gpt: a GPT second look asked on purpose, for a big or risky change: the kind's GPT model, even when the PR had one, and no other model\n" +
-  "in its place (it skips with exit 3 when GPT cannot run). Either way the look is the PR's second look, which kit pr reuses on the same HEAD.\n" +
+  "--second gpt: a GPT second look asked on purpose, for a big or risky change: the kind's GPT model, even when the PR had one (never for a docs-only\n" +
+  "change), and no other model in its place (it skips with exit 3 when GPT cannot run, a missing Codex login included). Either way the look is the PR's second look, which kit pr reuses on the same HEAD.\n" +
   "The whole look, fallback included, stops at ASE_SECOND_LOOK_TIMEOUT (25m): then it skips as \"<model> timed out after 25m\";\n" +
   "a fallback with under a minute left is not started (\"<model> not started: under a minute left of 25m\").\n" +
   "Weekly budgets for the whole computer: ASE_REVIEW_BUDGET_GPT (12), ASE_REVIEW_BUDGET_GROK (8); not counted: Claude and OpenCode's -free models.\n" +
@@ -195,7 +195,7 @@ async function reviewOnce(flags, look) {
       // and even when saving its evidence fails below: no review came back either way.
       const run = temporary && join(temporary, "status.json");
       const record = run && existsSync(run) ? JSON.parse(readFileSync(run, "utf8")) : {};
-      // The model could not run: its CLI is missing (a spawn ENOENT), refused or hit a usage limit, the account
+      // The model could not run: its CLI is missing (a spawn ENOENT) or not logged in (no Codex auth), refused or hit a usage limit, the account
       // is empty, or the provider is down (OpenCode's error event or no session within its start limit, a Grok
       // run whose closing lines are an HTTP 5xx or a connection error, or one that gave no answer before the
       // timeout: Grok prints its JSON only at the end). Any other failure, including one before the CLI started, is a broken run.
@@ -210,7 +210,7 @@ async function reviewOnce(flags, look) {
         console.error(`problem: ${reason}`);
       }
       if (status !== 0 && spawned && (record.refused === true || outOfCredit || missing || down || hung ||
-        /^\S+ usage limit\b|^OpenCode reported an error: |^opencode unavailable: no session within /.test(reason))) unavailable = true;
+        /^\S+ usage limit\b|^OpenCode reported an error: |^opencode unavailable: no session within |^no Codex auth at /.test(reason))) unavailable = true;
       // An outage, like an empty account, returned no review, so its count is given back too.
       if (budget && (!record.pgid || record.refused === true || outOfCredit || down || silent)) releaseReviewBudget(ledger.path, budget, env);
     } catch (error) {
@@ -319,12 +319,14 @@ async function secondLook(flags) {
       const paid = rows[kind].order.find(model => /^opencode\//.test(model) && !opencodeModelRuns(model));
       if (paid) throw new Error(`second-look table ${table} ${kind}: ${paid} is a paid OpenCode model; a second look on OpenCode must be a -free model`);
     }
+    const docsOnly = classify(changes, { settings }).tier === "docs";
     if (asked) {
       const gpt = pick.order.find(model => lookFamily(model) === "gpt");
       if (!gpt) throw new Error(`--second gpt: second-look table ${table} names no GPT model for ${pick.kind}`);
-      models.push(gpt);
+      // Asked on purpose, GPT still never looks at a docs-only change.
+      if (docsOnly) unused.push({ model: gpt, why: "docs-only change" });
+      else models.push(gpt);
     } else {
-      const docsOnly = classify(changes, { settings }).tier === "docs";
       const branch = spawnSync("git", ["-C", root, "branch", "--show-current"], { encoding: "utf8" }).stdout?.trim() ?? "";
       for (const model of pick.order) {
         const done = lookFamily(model) === "gpt" && !docsOnly && gptLookDone(flags.pr, branch, root, scope.head, `origin/${kitBranch()}`);

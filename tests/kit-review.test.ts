@@ -1682,6 +1682,21 @@ test("the slice's GPT look still counts for its PR after kit pr rebases the bran
   assert.deepEqual(f.calls().map(call => call.cli), ["codex", "grok"]);
 });
 
+test("no Codex login: the second look hands GPT's turn to Grok, and --second gpt skips with no other model", (t) => {
+  const f = fixture(t); withOpencode(f);
+  const table = gptTable(f), empty = join(f.dir, "no-codex-login");
+  mkdirSync(empty);
+  const handed = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: table, CODEX_HOME: empty });
+  assert.equal(handed.status, 0, handed.stdout + handed.stderr);
+  assert.match(handed.stdout, /^second look: grok-4\.7 takes it \(gpt-6\.1-sol no Codex auth at .+\)$/m);
+  const asked = f.run(["--base", "HEAD~1", "--second", "gpt"], { ASE_SECOND_LOOK: table, CODEX_HOME: empty });
+  assert.equal(asked.status, 3, asked.stdout + asked.stderr);
+  assert.match(asked.stdout.trim().split("\n").at(-1)!, /^RESULT: skip second look \(gpt-6\.1-sol no Codex auth at .+\)$/);
+  assert.deepEqual(f.calls().map(call => call.cli), ["grok"]);
+  // No count is kept for a review that never started.
+  assert.equal(existsSync(f.ledger) ? f.counts()?.gpt?.["kit-review"] ?? 0 : 0, 0);
+});
+
 test("GPT's weekly count used up hands the second look to Grok", (t) => {
   const f = fixture(t); withOpencode(f);
   const table = gptTable(f), budget = { ASE_REVIEW_BUDGET_GPT: "1", ASE_SECOND_LOOK: table };
@@ -1706,6 +1721,10 @@ test("a docs-only change never gets a GPT second look; with GPT alone in the ord
   const skipped = f.run(["--commit", "HEAD", "--second-look"], { ASE_SECOND_LOOK: only });
   assert.equal(skipped.status, 3, skipped.stdout + skipped.stderr);
   assert.equal(skipped.stdout.trim().split("\n").at(-1), "RESULT: skip second look (gpt-6.1-sol not used: docs-only change)");
+  // Asked on purpose, GPT still never looks at a docs-only change.
+  const asked = f.run(["--commit", "HEAD", "--second", "gpt"], { ASE_SECOND_LOOK: table });
+  assert.equal(asked.status, 3, asked.stdout + asked.stderr);
+  assert.equal(asked.stdout.trim().split("\n").at(-1), "RESULT: skip second look (gpt-6.1-sol not used: docs-only change)");
   assert.deepEqual(f.calls().map(call => call.cli), ["grok"]);
 });
 
