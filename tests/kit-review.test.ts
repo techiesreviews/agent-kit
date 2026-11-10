@@ -1663,6 +1663,21 @@ test("the once-per-PR GPT check: another owner's look counts, a look that did no
   assert.deepEqual(f.calls().map(call => call.cli), ["codex", "codex", "grok", "codex", "codex"]);
 });
 
+test("an earlier PR's GPT look on a branch name that comes back does not count once its work is in the base", (t) => {
+  const f = fixture(t); withOpencode(f);
+  const table = gptTable(f);
+  f.git("commit", "-qam", "settings");
+  const earlier = f.run(["--base", "origin/dev", "--second-look"], { ASE_SECOND_LOOK: table });
+  assert.equal(earlier.status, 0, earlier.stdout + earlier.stderr);
+  // The earlier PR landed: its work is in the base, and the same branch name goes on with new work.
+  f.git("update-ref", "refs/remotes/origin/dev", "HEAD");
+  commitFiles(f, ["src/next.ts"]);
+  const next = f.run(["--base", "origin/dev", "--second-look", "--pr", "13"], { ASE_SECOND_LOOK: table });
+  assert.equal(next.status, 0, next.stdout + next.stderr);
+  assert.doesNotMatch(next.stdout, /one GPT second look per PR/);
+  assert.deepEqual(f.calls().map(call => call.cli), ["codex", "codex"]);
+});
+
 test("the slice's GPT look still counts for its PR after kit pr rebases the branch onto a newer base", (t) => {
   const f = fixture(t); withOpencode(f);
   const table = gptTable(f);
