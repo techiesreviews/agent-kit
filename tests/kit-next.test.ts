@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -1300,6 +1301,22 @@ test("on Orbit, a card given back by clear-next-lex (In Progress, no claim, no a
   assert.match(back.description, /^Claimed by: kit-1\n/);
   assert.equal(orbit.statusOf(back), "In Progress");
   assert.equal(orbit.writes().length, 1);
+});
+
+test("on Orbit, a card in a started status other than In Progress (In Review) waits as that status and is never handed out or claimed", async t => {
+  const { card, run, orbit } = await orbitNext(t);
+  // The KIT board of the fake has no In Review; add the started status a real board has.
+  const statuses = orbit.statuses.get(orbit.kit.id)!;
+  statuses.push({ id: randomUUID(), project_id: orbit.kit.id, name: "In Review", description: "", color: "gray", category: "started", position: statuses.length, version: 1 });
+  const reviewing = card({ title: "Being reviewed", description: "## Goal\n\nDo it.\n\n## Files\n\n- `a.ts`\n\nDone when:\n- done" }, "In Review");
+  const listed = await run();
+  assert.equal(listed.status, 0, listed.all);
+  assert.deepEqual(outputLines(listed), ["waits: KIT-1 In Review with no claim recorded", "RESULT: ok next 0 ready, 1 waiting"]);
+  const started = await run("--start");
+  assert.equal(started.status, 0, started.all);
+  assert.deepEqual(outputLines(started), ["waits: KIT-1 In Review with no claim recorded", "RESULT: ok next 0 ready, 1 waiting, 0 started"]);
+  assert.equal(orbit.statusOf(reviewing), "In Review");
+  assert.equal(orbit.writes().length, 0);
 });
 
 test("on Orbit, only cards that may start begin a wave: a card behind a Backlog, Lex, unbuildable or other board's card gets no wave", async t => {
