@@ -58,7 +58,9 @@ const mode = process.env.FAKE_MODE || "pass";
 if (mode === "crash" && (!process.env.FAKE_CRASH_CLI || process.env.FAKE_CRASH_CLI === cli)) process.kill(process.pid, "SIGKILL");
 // A reviewer that exits with the status a shell reports for a crash (128 plus the signal).
 if (mode === "crash-exit" && (!process.env.FAKE_CRASH_CLI || process.env.FAKE_CRASH_CLI === cli)) process.exit(139);
-const report = mode === "empty-pass" && !resumed ? "" : mode === "retry-fail" || mode === "no-session" || (mode === "retry-pass" && !resumed) || mode === "retry-model" || (mode === "retry-usage-limit" && !resumed) || (mode === "retry-out-of-credit" && !resumed) ? "incomplete reply\\n" : process.env.FAKE_REPORT || ${JSON.stringify(complete)};
+// A reviewer whose first call answers badly and whose resumed call then crashes: the review was already used.
+if (mode === "retry-crash" && resumed) process.kill(process.pid, "SIGKILL");
+const report = mode === "empty-pass" && !resumed ? "" : mode === "retry-fail" || (mode === "retry-crash" && !resumed) || mode === "no-session" || (mode === "retry-pass" && !resumed) || mode === "retry-model" || (mode === "retry-usage-limit" && !resumed) || (mode === "retry-out-of-credit" && !resumed) ? "incomplete reply\\n" : process.env.FAKE_REPORT || ${JSON.stringify(complete)};
 const model = mode === "retry-model" && resumed ? "wrong-model" : args[args.indexOf(cli === "claude" ? "--model" : "-m") + 1];
 if (cli === "codex") {
   if (!(process.env.FAKE_NO_RETRY_MODEL && resumed)) console.error("model: " + model);
@@ -1980,6 +1982,17 @@ test("a second look whose reviewer crashes counts as unavailable: the next model
   const main = f.run(["--base", "HEAD~1"], { FAKE_MODE: "crash" });
   assert.equal(main.status, 1, main.stdout + main.stderr);
   assert.match(main.stdout.trim().split("\n").at(-1)!, /^RESULT: fail claude crashed \(killed by signal SIGKILL\)/);
+});
+
+test("a crash on a later call, after the first call used the review, is a failed second look, not a handover", (t) => {
+  const f = fixture(t); withOpencode(f);
+  const result = f.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: lookTable(f), ASE_REVIEW_BUDGET_GROK: "3", FAKE_MODE: "retry-crash", FAKE_CRASH_CLI: "grok" });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout.trim().split("\n").at(-1)!, /^RESULT: fail /);
+  assert.doesNotMatch(result.stdout, /takes it/);
+  assert.doesNotMatch(result.stdout, /^RESULT: skip/m);
+  // The first call reached the model and spent the count, so the crash gives nothing back.
+  assert.deepEqual(f.counts(), { grok: { "kit-review": 1 } });
 });
 
 test("kit review --second-look --pr posts a comment that names the second look's kind and model", (t) => {

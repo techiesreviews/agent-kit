@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -16,10 +16,18 @@ const { appendFileSync } = require("node:fs");
 appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd(),
   branch: require("node:child_process").execFileSync("git", ["branch", "--show-current"], { encoding: "utf8" }).trim() }) + "\\n");
 console.log("guards: ok");
+// FAKE_PR=wait: it waits for a signal, writes its name to FAKE_MARKER and ends with exit 1 (FAKE_READY says it is waiting).
+if (process.env.FAKE_PR === "wait") {
+  for (const name of ["SIGINT", "SIGTERM"]) process.on(name, () => { require("node:fs").writeFileSync(process.env.FAKE_MARKER, name); process.exit(1); });
+  require("node:fs").writeFileSync(process.env.FAKE_READY, "ready");
+  // A signal that never comes must not leave this behind: it ends by itself.
+  setTimeout(() => process.exit(3), 8000);
+} else {
 console.log("RESULT: ok an inner result that must not be the last");
 if (process.env.FAKE_PR === "fail") { console.log("RESULT: fail ci: checks failed"); process.exit(1); }
 console.log("landed: abc1234 something");
 console.log("RESULT: ok merged #7 abcdef0");
+}
 `;
 
 // A direct project: origin (a bare folder) holds main with a base commit and three landings, checked out at main.
@@ -149,6 +157,30 @@ test("a kit pr that fails leaves the branch with its reverts and says so", t => 
   assert.equal(f.git("branch", "--show-current"), `rollback/${sha}-${sha}`);
   assert.equal(f.git("log", "--format=%s", "origin/main..HEAD"), `Revert "a change"`);
 });
+
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  test(`${signal} sent to kit rollback reaches the kit pr child, and the run still ends with a RESULT line naming the branch`, async t => {
+    const f = fixture(t);
+    const sha = f.land("a change");
+    const marker = join(f.dir, "marker"), ready = join(f.dir, "ready");
+    const child = spawn(rollback, [sha], { cwd: f.root, env: { ...f.env, FAKE_PR: "wait", FAKE_MARKER: marker, FAKE_READY: ready }, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    child.stdout.setEncoding("utf8"); child.stdout.on("data", chunk => { stdout += chunk; });
+    child.stderr.resume();
+    // A hung run is stopped by the test, never left behind.
+    const hung = setTimeout(() => child.kill("SIGKILL"), 15_000);
+    try {
+      for (let waited = 0; !existsSync(ready) && child.exitCode === null && waited < 100; waited++) await new Promise(done => setTimeout(done, 100));
+      assert.ok(existsSync(ready), "the stand-in kit pr never started");
+      child.kill(signal);
+      const code = await new Promise<number | null>(done => child.once("exit", done));
+      assert.equal(readFileSync(marker, "utf8"), signal);
+      assert.equal(code, 1);
+      assert.equal(results(stdout).length, 1);
+      assert.match(lastLine(stdout), new RegExp(`^RESULT: fail rollback kit pr exited 1; the branch rollback/${sha}-${sha} holds the reverts`));
+    } finally { clearTimeout(hung); child.kill("SIGKILL"); }
+  });
+}
 
 test("only a direct project: a project with a release step is refused before anything changes", t => {
   const f = fixture(t, { land: "dev", release: "main" });

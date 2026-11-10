@@ -1710,6 +1710,16 @@ test("a docs-only PR runs only doc guards, skips Claude's review but not the sec
   assert.ok(calls.some(call => call.tool === "fake-kit" && call.args[0] === "wait"));
   assert.match(f.body(), /Tier: docs \(2 files, all docs\)/);
   assert.match(f.body(), /skipped for the docs tier \(CI still runs check, unit tests, lint and browser tests\): npm run check, npm test \(all unit tests\), npm run lint, kit specs --affected, kit review/);
+  // The PR text names the second look's model, and says plainly that Claude's review did not run.
+  const block = f.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body ?? "").find(text => text.includes("<!-- review-loop -->"))!;
+  assert.match(block, /<!-- review-loop -->\nReview: Claude's review skipped \(docs tier\)\.\n\nSecond look by grok-4\.7 \(Grok\)\.\n<!-- \/review-loop -->/);
+});
+
+test("a docs-only PR whose second look no model can take says so in its review block", t => {
+  const f = fixture(t, { "docs/guide.md": "# Guide\n", "AGENTS.md": "# Agents\n" }), result = f.run([], { FAKE_SECOND: "skip" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const block = f.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body ?? "").find(text => text.includes("<!-- review-loop -->"))!;
+  assert.match(block, /<!-- review-loop -->\nReview: Claude's review skipped \(docs tier\)\.\n\nsecond look: skipped \(grok-4\.7 out of credit; opencode\/deepseek-v4\.1-flash-free out of credit\)\n<!-- \/review-loop -->/);
 });
 
 test("a tests-only PR runs check, the affected unit files, lint, specs and the review", t => {
@@ -2297,7 +2307,10 @@ test("dry-run names the second look's kind, its deciding path, its models in ord
   for (const [file, kind, extra] of [["docs/guide.md", "dx"], ["docs/agents/runner.md", "agent"], ["src/ui/panel.ts", "ux", { "ticket.md": done }], ["src/x.ts", "code"]] as const) {
     const f = fixture(t, { [file]: "x\n", ...extra }), result = f.run(["--dry-run", "--ticket", "ticket.md"]);
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stdout, new RegExp(`^second look: ${kind} \\(${file.replaceAll(".", "\\.")}\\) ${table[kind].order.join(", else ").replaceAll(".", "\\.")}$`, "m"), file);
+    // GPT never looks at a docs-only change, so a docs-only plan leaves it out of the order it prints.
+    const order = /^docs\//.test(file) ? table[kind].order.filter((model: string) => !model.startsWith("gpt-")) : table[kind].order;
+    assert.match(result.stdout, new RegExp(`^second look: ${kind} \\(${file.replaceAll(".", "\\.")}\\) ${order.join(", else ").replaceAll(".", "\\.")}$`, "m"), file);
+    if (/^docs\//.test(file)) assert.doesNotMatch(result.stdout, /^second look: .*gpt-/m, file);
     assert.match(result.stdout, /^\S+ 'review' '--base' 'origin\/dev' '--pr' 'N' '--ticket' 'ticket\.md' '--second-look'$/m, file);
   }
 });

@@ -176,10 +176,10 @@ if (existsSync(at(kitSettingsFile))) {
   // A private repo can land straight on main; the settings file is never edited, so the note names the change.
   if (!options.pieces && !process.env.KIT_INIT_NO_VISIBILITY && settings.branches.direct !== false && !(Array.isArray(settings.init?.skip) && settings.init.skip.some((entry) => ["direct", kitSettingsFile].includes(entry)))) {
     const asked = kitRepoPrivate(root);
-    // Only these gate an ordinary change in kit pr (extra and css run for special changes only): the three checks, the
-    // browser specs (a project command) and the unit test files (paths.unitTests).
-    const noChecks = !["check", "test", "lint"].some((key) => settings.checks?.[key]) && !settings.paths?.unitTests?.length &&
-      !projectCommand("specs", root, settings);
+    // Only these gate an ordinary change in kit pr (extra and css run for special changes only): the three checks and the
+    // browser specs (a project command). Unit test files (paths.unitTests) alone do not count: a project that names them
+    // but has no checks still gets the note.
+    const noChecks = !["check", "test", "lint"].some((key) => settings.checks?.[key]) && !projectCommand("specs", root, settings);
     if (settings.branches.direct === true) {
       // Already direct: a repo that turns out public, or one with no checks, needs a word.
       if (noChecks) visibilityNote(`${kitSettingsFile} lands directly on ${settings.branches.land} and has no "checks": unless a CI workflow runs on pull requests, a change goes live after the review alone; add "checks"`);
