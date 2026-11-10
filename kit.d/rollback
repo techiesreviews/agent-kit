@@ -13,7 +13,7 @@ Undoes landed commits in a direct project (branches.direct in ${kitSettingsFile}
 In one command it fetches origin, cuts the branch rollback/<first>-<last> at origin/<land>, runs
 git revert --no-edit <first>^..<last> there, and lands that branch with kit pr (its checks, review and merge).
 Needs a clean working tree, both commits on origin/<land> with <first> not after <last>, and no merge commit in the range.
-A revert that conflicts is undone and the checkout goes back to its branch. KIT_ROLLBACK_KIT: the kit that runs kit pr (tests).
+A revert that conflicts is undone and the checkout goes back to its branch (or the commit it was detached at). KIT_ROLLBACK_KIT: the kit that runs kit pr (tests).
 `;
 
 class UsageError extends Error {}
