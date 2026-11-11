@@ -144,14 +144,16 @@ const shorten = text => text.length > 80 ? `${text.slice(0, 77)}...` : text;
  * with no dated Done section included. `strict` reads every closed ticket as if there were no cutoff, and also refuses
  * one with no `## Done` section or none with a date (a PR that closes a ticket is held to it, see newlyClosed). The
  * Done section is the last Done heading that has a date, so a later undated "## Done (follow-up)" does not hide it.
- * Fenced code is skipped.
+ * Fenced code is skipped. `open` is the reading of a ticket not landed yet (see unmetDoneProblems): strict, with no date
+ * problem, and the rows start with "Ticket" instead of "Closed ticket".
  * - `Done when <n>: <verdict> — <evidence>` is the evidence line of the n-th item of the list. The verdict is met,
  *   not met, pending or open, and `met` needs something after it; any other verdict, none, or no proof leaves the
  *   item without evidence.
  * - "not met", "pending" or "open" as a check's verdict, or a list item that starts with "Not met" or "Pending", says
  *   a check is unmet. A list item starting with "Open" is only a verdict in the first form: "Open for Lex: …" is a
  *   note. Wrapped lines of an item are not read. */
-function doneProblems(lines, end, file, strict = false) {
+function doneProblems(lines, end, file, strict = false, open = false) {
+  const who = open ? "Ticket" : "Closed ticket";
   // A fence opens with three or more backticks or tildes (a backtick fence's info text has no backtick) and closes with
   // the same character, at least as many times, and nothing after it; a shorter or different line inside is text.
   let fence = null;
@@ -198,10 +200,10 @@ function doneProblems(lines, end, file, strict = false) {
   const date = /\b(\d{4}-\d{2}-\d{2})\b/.exec(done?.heading ?? "")?.[1];
   if (!strict && (!date || date < doneCheckFrom)) return [];
   const write = number => `(write "Done when ${number}: met — <evidence>")`;
-  if (!done) return [{ file, line: when.first, message: `Closed ticket: it has no ## Done section, so no Done when item has an evidence line ${write("<n>")}` }];
-  const problems = date ? [] : [{ file, line: done.first, message: 'Closed ticket: its ## Done has no date (write "## Done (YYYY-MM-DD)")' }];
+  if (!done) return [{ file, line: when.first, message: `${who}: it has no ## Done section, so no Done when item has an evidence line ${write("<n>")}` }];
+  const problems = date || open ? [] : [{ file, line: done.first, message: 'Closed ticket: its ## Done has no date (write "## Done (YYYY-MM-DD)")' }];
   const proved = new Set(), unmet = new Set();
-  const says = (line, raw, word) => problems.push({ file, line, message: `Closed ticket, but its Done section says "${word.toLowerCase()}": ${shorten(raw.trim())}` });
+  const says = (line, raw, word) => problems.push({ file, line, message: `${who}, but its Done section says "${word.toLowerCase()}": ${shorten(raw.trim())}` });
   done.lines.forEach((raw, at) => {
     if (fenced[done.first + at]) return;
     const text = raw.trim().replace(listMarker, "").replaceAll("**", "");
@@ -215,9 +217,20 @@ function doneProblems(lines, end, file, strict = false) {
     }
   });
   items.forEach((line, at) => {
-    if (!proved.has(at + 1) && !unmet.has(at + 1)) problems.push({ file, line, message: `Closed ticket: Done when item ${at + 1} has no evidence line in its Done section ${write(at + 1)}` });
+    if (!proved.has(at + 1) && !unmet.has(at + 1)) problems.push({ file, line, message: `${who}: Done when item ${at + 1} has no evidence line in its Done section ${write(at + 1)}` });
   });
   return problems;
+}
+
+/** What stops a ticket that is not landed yet from being called done, as { file, line, message } rows: the strict reading
+ * of doneProblems for any status, with no date cutoff. Any Done when item whose evidence line says not met, pending or open,
+ * or has none, is a row; a ticket with no `## Done when` list has none. `standardLine` is the Done when text of a ticket
+ * that gives it as the card standard's "Done when:" line (its list lines) instead of a heading: it is read as that heading. */
+export function unmetDoneProblems(source, file = "ticket", standardLine = "") {
+  let lines = source.replace(/^\uFEFF/, "").split(/\r?\n/);
+  const end = lines[0] === "---" ? lines.findIndex((line, i) => i > 0 && line === "---") : -1;
+  if (standardLine.trim() && !lines.some(line => /^## Done when[ \t]*$/.test(line))) lines = [...lines, "", "## Done when", "", ...standardLine.split(/\r?\n/)];
+  return doneProblems(lines, end, file, true, true);
 }
 
 const globChars = /[*?[\]{}<>]/;

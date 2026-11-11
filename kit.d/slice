@@ -9,12 +9,13 @@ import { branchRisk, roundLimit, stoppingFindings } from "../review-loop.mjs";
 import { builderChecks, spoken } from "../review-brief.mjs";
 import { ticketSkillLines } from "../skills.mjs";
 import { visiblePath } from "../pr-tier.mjs";
+import { unmetDoneProblems } from "../tickets.mjs";
 import { briefCardKey, briefFollowups, cardBriefFor, closeLandedCard, doneWhen, isCardKey, onOrbit, orbitProblem } from "../ticket-cards.mjs";
 
 const { kitBranch, kitGhEnv, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, nodeEnv, commitBuilderWork, builderAuthor, kitScore, scoreCost, scoreReview } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const usage = "Usage: kit slice --ticket FILE|KEY --builder MODEL [--effort high] [--rounds N] [--no-pr]\nResume saved phases under .scratch/kit-slice/<ticket-slug>/.\nOn Orbit (\"tickets\": \"orbit\"), --ticket KEY claims the card (In Progress, \"Claimed by: <owner>\", ORBIT_ROLE=lead) and copies it once to\n.scratch/kit-tickets/KEY.md, the brief every step reads; a rerun resumes from that brief. kit pr closes the card when it lands.\nAfter the code review and its fix rounds, kit ux checks touched features: broken or looks off gets one kit fix --note round;\nstill broken stops (decide: ux broken <feature>), looks off lands with UX follow-ups in the ticket.\nLast, a second look (kit review --second-look) gets the same fix rounds, then looks again at the new HEAD;\nwhen no model can take it, the slice goes on and says why.\nQueued PRs are awaited for up to 2h; reruns resume the wait.\nOverrides: ASE_SLICE_AGENT, ASE_SLICE_KIT, ASE_SLICE_GH; ASE_SLICE_MERGE_TIMEOUT_MS, ASE_SLICE_MERGE_POLL_MS.\n";
+const usage = "Usage: kit slice --ticket FILE|KEY --builder MODEL [--effort high] [--rounds N] [--no-pr]\nResume saved phases under .scratch/kit-slice/<ticket-slug>/.\nOn Orbit (\"tickets\": \"orbit\"), --ticket KEY claims the card (In Progress, \"Claimed by: <owner>\", ORBIT_ROLE=lead) and copies it once to\n.scratch/kit-tickets/KEY.md, the brief every step reads; a rerun resumes from that brief. kit pr closes the card when it lands.\nOnce the build is committed the ticket is read: a Done when item not met, pending, open or without a \"Done when <n>: met — <evidence>\" line stops the slice (done-when) before the review.\nAfter the code review and its fix rounds, kit ux checks touched features: broken or looks off gets one kit fix --note round;\nstill broken stops (decide: ux broken <feature>), looks off lands with UX follow-ups in the ticket.\nLast, a second look (kit review --second-look) gets the same fix rounds, then looks again at the new HEAD;\nwhen no model can take it, the slice goes on and says why.\nQueued PRs are awaited for up to 2h; reruns resume the wait.\nOverrides: ASE_SLICE_AGENT, ASE_SLICE_KIT, ASE_SLICE_GH; ASE_SLICE_MERGE_TIMEOUT_MS, ASE_SLICE_MERGE_POLL_MS.\n";
 
 function options(args) {
   const flags = { effort: "high", rounds: undefined, noPr: false };
@@ -372,6 +373,19 @@ async function slice(args) {
     }
     // Once committed, the taken commits are an ordinary build and must not steer a later rerun.
     if (state.taken || state.switchedBuild) { delete state.taken; delete state.switchedBuild; save(); }
+    // The ticket, read once the build is committed: a Done when item the builder left not met, pending or open, or gave
+    // no "Done when <n>: met — <evidence>" line, stops the slice here (before the review's cost), so it never lands.
+    // A rerun reads the ticket again, after the lead or a new build has fixed it.
+    begin("done-when");
+    if (!state.finished.includes(phase)) {
+      const problems = unmetDoneProblems(readFileSync(ticket, "utf8"), flags.ticket, done);
+      if (problems.length) {
+        writeFileSync(log, problems.map(problem => problem.message).join("\n") + "\n");
+        const first = problems[0].message.replace(/^Ticket(?:: |, but )/, "");
+        throw new Error(`a Done when item is not met, so the slice does not land: ${first}${problems.length > 1 ? ` (and ${problems.length - 1} more; see ${log})` : ""}`);
+      }
+      complete();
+    }
     begin("review");
     if (!state.finished.includes(phase)) {
       const head = state.head;

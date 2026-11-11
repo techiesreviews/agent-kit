@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 // @ts-expect-error The script is plain JavaScript without declarations.
-import { loadFeedback, loadTickets, newlyClosed, parseFeedback, parseFiles, parseTicket, resolveTickets } from "../tickets.mjs";
+import { loadFeedback, loadTickets, newlyClosed, parseFeedback, parseFiles, parseTicket, resolveTickets, unmetDoneProblems } from "../tickets.mjs";
 
 const fixtures = "tests/fixtures/agent-tickets";
 
@@ -593,4 +593,30 @@ test("newlyClosed names the tickets that are closed now and were not closed at t
   assert.equal(run("frontier", "--closed-since", "dev").status, 2);
   assert.equal(run("check", "--ref", "HEAD", "--closed-since", "dev").status, 2, "the two ways of choosing a version do not mix");
   assert.match(run("check", "--closed-since", "dev", "--closed-since", "dev").stderr, /Usage:.*--closed-since <ref>/);
+});
+
+test("unmetDoneProblems reads a ticket of any status like a closed one, with no date cutoff and no date problem", () => {
+  const met = (n: number) => `- Done when ${n}: met — proof ${n}`;
+  const messages = (source: string, line = "") => unmetDoneProblems(source, "01-x.md", line).map(row => row.message);
+  assert.deepEqual(messages(closedTicket([met(1), met(2), met(3)], { status: "open" })), []);
+  assert.deepEqual(messages(closedTicket([met(1), met(2), met(3)], { status: "closed", date: "" })), [], "an undated Done is no problem here");
+  assert.deepEqual(messages(closedTicket([met(1), met(2), met(3)], { date: "2020-01-01" })), [], "an old date is read all the same");
+  assert.deepEqual(messages(closedTicket([met(1), "- Done when 2: not met — no browser", "- Done when 3: open"], { status: "open", date: "2020-01-01" })), [
+    'Ticket, but its Done section says "not met": - Done when 2: not met — no browser',
+    'Ticket, but its Done section says "open": - Done when 3: open',
+  ]);
+  assert.deepEqual(messages(closedTicket([met(1), met(3)], { status: "open" })), ['Ticket: Done when item 2 has no evidence line in its Done section (write "Done when 2: met — <evidence>")']);
+  assert.match(messages(closedTicket([], { status: "open" }))[0], /^Ticket: it has no ## Done section/);
+  assert.deepEqual(messages("---\nstatus: open\n---\n\n## Goal\n\nNo list here.\n"), []);
+});
+
+test("unmetDoneProblems reads the card standard's Done when line as the Done when list", () => {
+  const card = (done: string[]) => ["---", "status: open", "---", "", "Goal: do it.", "", "Done when:", "- First check.", "- Second check.", "", "Links: none", "", ...done].join("\n");
+  const line = "- First check.\n- Second check.";
+  assert.deepEqual(unmetDoneProblems(card(["## Done (2026-11-12)", "", "- Done when 1: met — a", "- Done when 2: met — b"]), "b.md", line), []);
+  assert.deepEqual(unmetDoneProblems(card(["## Done (2026-11-12)", "", "- Done when 1: met — a", "- Done when 2: pending"]), "b.md", line).map(row => row.message), ['Ticket, but its Done section says "pending": - Done when 2: pending']);
+  assert.match(unmetDoneProblems(card([]), "b.md", line)[0].message, /^Ticket: it has no ## Done section/);
+  // Without the line the heading is missing and nothing is read; a one-line Done when has no list to check.
+  assert.deepEqual(unmetDoneProblems(card([]), "b.md"), []);
+  assert.deepEqual(unmetDoneProblems(card([]), "b.md", "it works"), []);
 });
