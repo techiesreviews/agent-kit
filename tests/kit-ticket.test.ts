@@ -533,12 +533,61 @@ test("Publish and the Scheduled in Radaar tick need Lex's words, wherever they c
   assert.equal(orbit.statusOf(task), "Edit");
 });
 
+test("repeat sets how a card repeats, get shows it, and --stop ends it", async t => {
+  const { orbit, run, log } = await fixture(t);
+  const task = orbit.addTask(orbit.tools, { title: "Weekly board drive" });
+  ok(await run(["repeat", "TOOLS-1", "--every", "week", "--on", "thu,MON"]));
+  assert.deepEqual(task.recurrence, { frequency: "weekly", interval: 1, weekdays: ["mon", "thu"], base: "due" });
+  assert.match(log(), /action=repeat fields=recurrence/);
+  assert.match(ok(await run(["get", "TOOLS-1"])).stdout, /^Repeats: every week on Mon, Thu \(counted from the due date\)$/m);
+  assert.deepEqual(JSON.parse(ok(await run(["get", "TOOLS-1", "--json"])).stdout.split("\nRESULT:")[0]).recurrence, task.recurrence);
+
+  ok(await run(["repeat", "TOOLS-1", "--every", "2 months", "--from", "completion"]));
+  assert.deepEqual(task.recurrence, { frequency: "monthly", interval: 2, weekdays: [], base: "completion" });
+  assert.match(ok(await run(["get", "TOOLS-1"])).stdout, /^Repeats: every 2 months \(counted from the day it is done\)$/m);
+  assert.match(result(ok(await run(["repeat", "TOOLS-1", "--every", "2 months", "--from", "completion"]))), /already as asked/);
+  ok(await run(["repeat", "TOOLS-1", "--every", "1 day"]));
+  assert.deepEqual(task.recurrence, { frequency: "daily", interval: 1, weekdays: [], base: "due" });
+  ok(await run(["repeat", "TOOLS-1", "--every", "3 years"]));
+  assert.equal(task.recurrence.frequency, "yearly");
+
+  ok(await run(["repeat", "TOOLS-1", "--stop"]));
+  assert.equal(task.recurrence, null);
+  assert.doesNotMatch(ok(await run(["get", "TOOLS-1"])).stdout, /Repeats:/);
+  assert.match(result(ok(await run(["repeat", "TOOLS-1", "--stop"]))), /already as asked/);
+
+  const writes = orbit.writes().length;
+  refused(await run(["repeat", "TOOLS-1"]), /--every|--stop/);
+  refused(await run(["repeat", "TOOLS-1", "--every", "week", "--stop"]), /--stop/);
+  refused(await run(["repeat", "TOOLS-1", "--every", "fortnight"]), /day, week, month or year/);
+  refused(await run(["repeat", "TOOLS-1", "--every", "0 days"]), /1 to 365/);
+  refused(await run(["repeat", "TOOLS-1", "--every", "366 days"]), /1 to 365/);
+  refused(await run(["repeat", "TOOLS-1", "--every", "month", "--on", "mon"]), /--on/);
+  refused(await run(["repeat", "TOOLS-1", "--every", "week", "--on", "mon", "--from", "completion"]), /--on/);
+  refused(await run(["repeat", "TOOLS-1", "--every", "week", "--on", "someday"]), /mon, tue, wed, thu, fri, sat or sun/);
+  refused(await run(["repeat", "TOOLS-1", "--every", "week", "--from", "later"]), /due or completion/);
+  refused(await run(["repeat", "TOOLS-1", "--stop", "--on", "mon"]), /--stop/);
+  assert.equal(orbit.writes().length, writes);
+});
+
+test("repeat on an Orbit that has no repeating tasks yet says so and sends nothing; get shows no repeat line", async t => {
+  const { orbit, run, log } = await fixture(t);
+  orbit.controls.recurrence = false;
+  orbit.addTask(orbit.tools);
+  assert.doesNotMatch(ok(await run(["get", "TOOLS-1"])).stdout, /Repeats:/);
+  refused(await run(["repeat", "TOOLS-1", "--every", "week"]), /does not have repeating tasks yet/);
+  refused(await run(["repeat", "TOOLS-1", "--stop"]), /does not have repeating tasks yet/);
+  refused(await run(["repeat", "TOOLS-1", "--every", "week", "--dry-run"]), /does not have repeating tasks yet/);
+  assert.equal(orbit.writes().length, 0);
+  assert.equal(log(), "");
+});
+
 test("writes need ORBIT_ROLE=lead; reads work for anyone", async t => {
   const { orbit, run, log } = await fixture(t);
   orbit.addTask(orbit.tools);
   for (const role of [{ ORBIT_ROLE: "" }, { ORBIT_ROLE: "helper" }]) {
     for (const args of [["create", "--title", "x"], ["update", "TOOLS-1", "--title", "x"], ["dates", "TOOLS-1", "--due", "2026-11-30", "--source", "s"], ["note", "TOOLS-1", "x"],
-      ["comment", "TOOLS-1", "x"], ["next-lex", "TOOLS-1", "x"], ["clear-next-lex", "TOOLS-1"], ["trash", "TOOLS-1", "--lex-said", "x"]]) {
+      ["comment", "TOOLS-1", "x"], ["next-lex", "TOOLS-1", "x"], ["clear-next-lex", "TOOLS-1"], ["trash", "TOOLS-1", "--lex-said", "x"], ["repeat", "TOOLS-1", "--every", "week"]]) {
       refused(await run(args, role), /ORBIT_ROLE=lead/);
     }
     ok(await run(["get", "TOOLS-1"], role));
@@ -564,6 +613,7 @@ test("--dry-run on every write prints the exact change, sends nothing and logs n
   assert.match(ok(await run(["comment", "TOOLS-1", "hello", "--dry-run"])).stdout, /POST .*comments[\s\S]*"body": "hello"/);
   assert.match(ok(await run(["next-lex", "TOOLS-1", "go", "--dry-run"])).stdout, /Next step \(Lex\): go/);
   ok(await run(["clear-next-lex", "TOOLS-1", "--dry-run"]));
+  assert.match(ok(await run(["repeat", "TOOLS-1", "--every", "2 weeks", "--dry-run"], { ORBIT_ROLE: "" })).stdout, /PATCH .*\/tasks\/TOOLS-1[\s\S]*"recurrence": \{[\s\S]*"frequency": "weekly"[\s\S]*"interval": 2/);
   const trash = ok(await run(["trash", "TOOLS-1", "--lex-said", "x", "--dry-run"]));
   assert.match(trash.stdout, /DELETE .*\/tasks\/TOOLS-1\?expected_version=/);
   assert.equal(orbit.writes().length, 0);
@@ -1301,7 +1351,7 @@ test("setup's help is numbered plain steps with no jargon; kit ticket help names
   assert.ok(!/\b(stdin|TTY|JSON|env|chmod|OAuth|CLI|header)\b/i.test(help.stdout), help.stdout);
   const main = await run(["--help"]);
   assert.equal(main.status, 0);
-  for (const name of ["labels", "create", "get", "list", "update", "dates", "note", "comment", "sub-tasks", "members", "next-lex", "clear-next-lex", "trash", "setup", "check", "tidy"]) assert.match(main.stdout, new RegExp(`\\b${name}\\b`));
+  for (const name of ["labels", "create", "get", "list", "update", "dates", "note", "comment", "sub-tasks", "members", "next-lex", "clear-next-lex", "trash", "setup", "check", "tidy", "repeat"]) assert.match(main.stdout, new RegExp(`\\b${name}\\b`));
   assert.match(main.stdout, /orbit-card-standard/);
   refused(await run([]), /Usage/);
   refused(await run(["nonsense"]), /nonsense/);
