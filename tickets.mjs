@@ -137,6 +137,24 @@ const listMarker = /^\s*(?:[-*+]|\d+[.)])\s+/;
 const expandTabs = text => [...text].reduce((out, char) => out + (char === "\t" ? " ".repeat(4 - out.length % 4) : char), "");
 const shorten = text => text.length > 80 ? `${text.slice(0, 77)}...` : text;
 
+/** For each line, whether it is inside fenced code (the fence lines included). A fence opens with three or more backticks or
+ * tildes (a backtick fence's info text has no backtick) and closes with the same character, at least as many times, and
+ * nothing after it; a shorter or different line inside is text. */
+export function fencedLines(lines) {
+  let fence = null;
+  return lines.map(line => {
+    if (fence) {
+      const close = /^\s*(`{3,}|~{3,})\s*$/.exec(line)?.[1];
+      if (close && close[0] === fence.char && close.length >= fence.size) fence = null;
+      return true;
+    }
+    const open = /^\s*(`{3,}|~{3,})(.*)$/.exec(line);
+    if (!open || (open[1][0] === "`" && open[2].includes("`"))) return false;
+    fence = { char: open[1][0], size: open[1].length };
+    return true;
+  });
+}
+
 /** What stops a ticket from being closed, as { file, line, message } rows (`lines` are the ticket's lines, `end` the
  * frontmatter's closing line). Only a ticket whose `## Done when` is a list, and whose last `## Done` section carries
  * an ISO date of `doneCheckFrom` or later in its heading (`## Done (2026-11-12)`, `## Done: 2026-11-12`; never
@@ -154,20 +172,7 @@ const shorten = text => text.length > 80 ? `${text.slice(0, 77)}...` : text;
  *   note. Wrapped lines of an item are not read. */
 function doneProblems(lines, end, file, strict = false, open = false, fallback = []) {
   const who = open ? "Ticket" : "Closed ticket";
-  // A fence opens with three or more backticks or tildes (a backtick fence's info text has no backtick) and closes with
-  // the same character, at least as many times, and nothing after it; a shorter or different line inside is text.
-  let fence = null;
-  let fenced = lines.map(line => {
-    if (fence) {
-      const close = /^\s*(`{3,}|~{3,})\s*$/.exec(line)?.[1];
-      if (close && close[0] === fence.char && close.length >= fence.size) fence = null;
-      return true;
-    }
-    const open = /^\s*(`{3,}|~{3,})(.*)$/.exec(line);
-    if (!open || (open[1][0] === "`" && open[2].includes("`"))) return false;
-    fence = { char: open[1][0], size: open[1].length };
-    return true;
-  });
+  let fenced = fencedLines(lines);
   // `fallback` is the Done when list of a ticket that has no `## Done when` heading outside fenced code (the card standard's
   // "Done when:" line): read as that section, put after the last line, so the rows' line numbers are not the file's.
   if (fallback.length && !lines.some((line, index) => !fenced[index] && /^## Done when[ \t]*$/.test(line))) {
@@ -201,6 +206,8 @@ function doneProblems(lines, end, file, strict = false, open = false, fallback =
     column = marker[1].length + marker[2].length + (marker[3].length > 4 ? 1 : marker[3].length);
     items.push(when.first + at + 1);
   });
+  // A Done when with no list (one line, a paragraph) is one item in the open reading, so a verdict on it counts.
+  if (!items.length && open && when?.lines.some(line => line.trim())) items.push(when.first + 1);
   if (!items.length) return [];
   const doneHeading = /^## done(?:[ \t]*[(—–:-].*|[ \t]+\d{4}-\d{2}-\d{2}.*)?[ \t]*$/i;
   const done = section(doneHeading, line => /\b\d{4}-\d{2}-\d{2}\b/.test(line)) ?? (strict ? section(doneHeading) : null);

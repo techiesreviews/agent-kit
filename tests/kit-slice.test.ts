@@ -418,6 +418,31 @@ test("an item added to the Done when list after the first reading needs its evid
   }
 });
 
+test("a fenced \"## Done when\" example does not stand for the real Done when line, and a one-line Done when is one item", t => {
+  const f = fixture(t), path = join(f.root, f.ticket);
+  writeFileSync(path, readFileSync(path, "utf8").replace("## Done when\n- Required content is present.\n",
+    "```\n## Done when\n- an example\n```\n\nDone when:\n- Required content is present.\n- Second item.\n\nLinks: none\n"));
+  f.git("commit", "-qam", "fenced example");
+  const result = f.run([], { BUILD_DONE: "first" });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout.trim().split("\n").at(-1)!, /^RESULT: fail slice done-when: .*Done when item 2 has no evidence line/);
+  assert.deepEqual(f.calls().map(call => call.phase), ["build"]);
+  const brief = readFileSync(join(f.root, ".scratch/agent-brief.md"), "utf8");
+  assert.ok(brief.includes("## Done when\n- Required content is present.\n- Second item.\n\n## Builder contract"), brief);
+  const one = fixture(t), file = join(one.root, one.ticket);
+  writeFileSync(file, readFileSync(file, "utf8").replace("## Done when\n- Required content is present.\n", "Done when: it works\n"));
+  one.git("commit", "-qam", "one line");
+  const unmet = one.run([], { BUILD_DONE: "not-met" });
+  assert.equal(unmet.status, 1, unmet.stdout + unmet.stderr);
+  assert.match(unmet.stdout.trim().split("\n").at(-1)!, /^RESULT: fail slice done-when: .*says "not met"/);
+});
+
+test("--no-pr reviews without the pre-landing reading: a fix round's unmet item does not fail it", t => {
+  const f = fixture(t), result = f.run(["--no-pr"], { CLEAN_AT: "1", FIX_UNMET: "1" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout.trim().split("\n").at(-1)!, /^RESULT: ok slice .* reviewed /);
+});
+
 test("a ticket edited after the first reading is read again before landing, a resumed run included", t => {
   const f = fixture(t), failed = f.run([], { CLEAN_AT: "1", FAIL_PHASE: "fix" });
   assert.equal(failed.status, 1, failed.stdout + failed.stderr);
@@ -1728,6 +1753,16 @@ test("on Orbit, a card left unmet in its brief fails the slice and stays claimed
     assert.deepEqual(calls().map(call => call.phase), ["build"]);
     assert.equal(orbit.statusOf(task), "In Progress", "the card is not closed");
   }
+});
+
+test("on Orbit, a card whose Done when is one line fails the slice when its brief says not met", async t => {
+  const { card, slice, orbit, calls } = await orbitSlice(t);
+  const task = card({ description: "Goal: build it.\n\n## Files\n\n- `file.txt`\n\nDone when: it works\n\nLinks: none" });
+  const output = await slice("KIT-1", { BUILD_DONE: "not-met" });
+  assert.equal(output.status, 1, output.all);
+  assert.match(lastLine(output), /^RESULT: fail slice done-when: .*says "not met"/);
+  assert.deepEqual(calls().map(call => call.phase), ["build"]);
+  assert.equal(orbit.statusOf(task), "In Progress");
 });
 
 test("on Orbit, a rerun checks the card is still its own and resumes from the brief; with Orbit down it goes on and says so", async t => {
