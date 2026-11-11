@@ -626,7 +626,11 @@ test("unmetDoneProblems reads the card standard's Done when line as the Done whe
   // A Done when with no list (one line) is one item in this reading, so a verdict on it counts.
   assert.deepEqual(unmetDoneProblems(card(["## Done (2026-11-12)", "", "- Done when 1: not met — b"]), "b.md", "it works").map(row => row.message), ['Ticket, but its Done section says "not met": - Done when 1: not met — b']);
   assert.deepEqual(unmetDoneProblems(card(["## Done (2026-11-12)", "", "- Done when 1: met — b"]), "b.md", "it works"), []);
-  // Without the line the heading is missing and nothing is read; a one-line Done when has no list to check.
+  // Without the line the heading is missing and nothing is read; a one-line Done when is one item and needs a Done section.
   assert.deepEqual(unmetDoneProblems(card([]), "b.md"), []);
   assert.match(unmetDoneProblems(card([]), "b.md", "it works")[0].message, /^Ticket: it has no ## Done section/);
+  // A Done when written as a paragraph under the heading is one item as well.
+  const paragraph = "---\nstatus: open\n---\n\n## Done when\n\nIt works.\n";
+  assert.match(unmetDoneProblems(paragraph, "x.md")[0].message, /^Ticket: it has no ## Done section/);
+  assert.deepEqual(unmetDoneProblems(`${paragraph}\n## Done (2026-11-12)\n\n- Done when 1: met — shown\n`, "x.md"), []);
 });

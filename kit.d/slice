@@ -376,7 +376,7 @@ async function slice(args) {
     // The ticket, read once the build is committed and again right before kit pr lands it (a fix round or the lead may have
     // changed it since): a Done when item the builder left not met, pending or open, or gave no "Done when <n>: met —
     // <evidence>" line, stops the slice (before the review's cost the first time), so it never lands.
-    // A rerun reads the ticket again, after the lead or a new build has fixed it.
+    // A rerun reads the ticket again, after the lead has fixed it with a commit (a card's brief: an edit).
     const checkDone = () => {
       // The Done when list is taken from the ticket as it is now: a build or a fix round may have added an item to it.
       const text = readFileSync(ticket, "utf8"), problems = unmetDoneProblems(text, flags.ticket, doneWhen(text));
