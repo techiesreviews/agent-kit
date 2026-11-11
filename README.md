@@ -153,7 +153,11 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
   Orbit does not list is refused, and the kit never makes a label (the public API has no way to). Adding a label with the
   word publish in its name (any letter case) needs `--lex-said`, like a move to a Publish status.
 - Orbit's public API has no task relations, so blockers are a `Blocked by: KEY-n, KEY-m` line in the description
-  (`--blocked-by`). Its docs: `docs/public-api.md` in github.com/coollabsio/orbit.
+  (`--blocked-by`). Its docs: `docs/public-api.md` in github.com/coollabsio/orbit; which parts the kit uses and which it
+  leaves out, and why: [docs/public-api.md](docs/public-api.md).
+- `kit ticket repeat <KEY> --every [N ]day|week|month|year [--on mon,thu] [--from due|completion]` makes a card repeat
+  (Orbit's `recurrence`): closing it makes Orbit create the next one. `--stop` ends it, `get` shows a "Repeats:" line,
+  and an Orbit without repeating tasks yet gets nothing sent.
 - How a project moves (`ticket-import.mjs`; a lead, `ORBIT_ROLE=lead`, in the project, from a fresh branch:
   `git switch -c tickets-to-orbit origin/<land>`): `kit ticket migrate [--project KEY] [--parent KEY-n] [--dry-run]`
   runs every step in order and stops at the first problem. (1) It refuses while a build runs (an open AFK ticket with an

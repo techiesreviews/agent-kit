@@ -1,6 +1,7 @@
 // The kit's Orbit client: the saved setup (a private file outside every repository), the redaction every message and log
 // line passes through, and the calls to Orbit's public API (<origin>/api/public/v1, github.com/coollabsio/orbit
-// docs/public-api.md). Card rules (who may write, Lex's words, dates) live in ticket-store.mjs; this file knows only Orbit.
+// docs/public-api.md; what the kit uses of it: docs/public-api.md here). Card rules (who may write, Lex's words, dates)
+// live in ticket-store.mjs; this file knows only Orbit.
 import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";

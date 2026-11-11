@@ -5,6 +5,8 @@ import type { TestContext } from "node:test";
 
 // A small local stand-in for Orbit's public API, written from github.com/coollabsio/orbit docs/public-api.md: the same
 // paths, problem documents, version checks and date rules. It holds made-up data and a made-up token only.
+// Repeating tasks (`recurrence` on a task and in PATCH) come from Orbit's OpenAPI file (packages/api/src/generated/openapi.json,
+// TaskRecurrence) and apps/server/src/repositories/task_recurrences.rs, which those docs do not describe yet.
 // Two things it takes because those docs say Orbit does, on GET /tasks: "assignee_id (a user ID, or none for tasks
 // without an assignee)" and "parent_task_id (only the direct sub-issues of this task, as a UUID or an identifier such as ENG-12...)".
 export type FakeRequest = { method: string; path: string; query: URLSearchParams; headers: IncomingMessage["headers"]; body: any };
@@ -53,6 +55,8 @@ export async function fakeOrbit(t: TestContext, { kitBoard = false }: { kitBoard
     membersFail: 0,
     // A comment whose text matches this is refused with a 500 (the other comments are untouched).
     refuseComments: null as null | RegExp,
+    // false: an Orbit from before repeating tasks; its tasks have no recurrence field and a PATCH with one is refused.
+    recurrence: true,
   };
 
   const addTask = (project: (typeof projects)[number], fields: FakeTask = {}): FakeTask => {
@@ -63,7 +67,18 @@ export async function fakeOrbit(t: TestContext, { kitBoard = false }: { kitBoard
     tasks.push(task);
     return task;
   };
-  const show = ({ trashed: _trashed, ...task }: FakeTask) => task;
+  const show = ({ trashed: _trashed, recurrence, ...task }: FakeTask) => controls.recurrence ? { ...task, recurrence: recurrence ?? null } : task;
+  // As TaskRecurrence::rule checks it: the four fields only, interval 1 to 365, weekdays only for a weekly rule from the due date.
+  const wrongRecurrence = (rule: any) => {
+    if (rule === null) return null;
+    if (!rule || typeof rule !== "object" || Object.keys(rule).some(key => !["frequency", "interval", "weekdays", "base"].includes(key))) return "invalid";
+    if (!["daily", "weekly", "monthly", "yearly"].includes(rule.frequency) || !["due", "completion"].includes(rule.base)) return "invalid";
+    if (!Number.isInteger(rule.interval) || rule.interval < 1 || rule.interval > 365) return "invalid";
+    const days = rule.weekdays ?? [];
+    if (!Array.isArray(days) || days.some((day: unknown) => !["mon", "tue", "wed", "thu", "fri", "sat", "sun"].includes(String(day)))) return "invalid";
+    if (days.length && !(rule.frequency === "weekly" && rule.base === "due")) return "invalid";
+    return null;
+  };
   const find = (key: string) => tasks.find(task => !task.trashed && (task.id === key || task.identifier.toLowerCase() === key.toLowerCase()));
 
   const send = (response: ServerResponse, status: number, body?: unknown, headers: Record<string, string> = {}) => {
@@ -188,9 +203,10 @@ export async function fakeOrbit(t: TestContext, { kitBoard = false }: { kitBoard
       if (controls.conflicts > 0) return conflict();
       if (body?.expected_version !== task.version) return problem(response, 409, "conflict", "The resource changed after you read it.", { conflict: { current_version: task.version } });
       const { expected_version: _version, ...fields } = body;
-      const known = new Set(["title", "description", "status_id", "priority", "assignee_ids", "label_ids", "due_start_at", "due_at", "parent_task_id"]);
+      const known = new Set(["title", "description", "status_id", "priority", "assignee_ids", "label_ids", "due_start_at", "due_at", "parent_task_id", ...(controls.recurrence ? ["recurrence"] : [])]);
       const unknown = Object.keys(fields).find(key => !known.has(key));
       if (unknown) return problem(response, 400, "invalid_request", `Unknown field ${unknown}`);
+      if ("recurrence" in fields && wrongRecurrence(fields.recurrence)) return problem(response, 422, "validation_failed", "A value is not valid", { errors: { recurrence: ["invalid"] } });
       if (wrongLabel(task.project_id, fields.label_ids)) return problem(response, 422, "validation_failed", "Unknown label", { errors: { label_ids: ["unknown"] } });
       if (wrongAssignee(fields.assignee_ids)) return problem(response, 422, "validation_failed", "Unknown assignee", { errors: { assignee_ids: ["unknown"] } });
       const after = { ...task, ...fields };
