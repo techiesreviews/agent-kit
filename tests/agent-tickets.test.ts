@@ -413,6 +413,8 @@ test("a Done when list indented by one to three spaces is read, and its nested i
   const one = ["- Done when 1: met — a"];
   assert.equal(doneProblems(closedTicket(one, { doneWhen: ["-\tFirst check.", "-\tSecond check."] })).length, 1);
   assert.equal(doneProblems(closedTicket(one, { doneWhen: ["-    First check.", "    - wrapped text"] })).length, 0);
+  assert.equal(doneProblems(closedTicket(one, { doneWhen: ["-\t\tFirst check.", "  - Part of the first check."] })).length, 0);
+  assert.equal(doneProblems(closedTicket(one, { doneWhen: ["\t- not a list item, code", "- First check."] })).length, 0);
   assert.equal(doneProblems(closedTicket(one, { doneWhen: ["10. First check.", "   - Second check."] })).length, 1);
   // Siblings that start at different indents are still two items.
   const mixed = closedTicket(["- Done when 1: met — a"], { doneWhen: ["  - First check.", "- Second check."] });
