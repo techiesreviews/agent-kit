@@ -198,3 +198,22 @@ test("go: a call never waits past its limit, and the limit is capped at 9 minute
   assert.match(capped.stdout, /waits 9m per call/);
   writeFileSync(release, "");
 });
+
+test("go: starts and ends a job under the file lock (Windows) without ever running flock", t => {
+  const f = fixture(t, { KIT_BG_LOCK: "file" });
+  // A flock that says busy and leaves a trace, first on PATH (the fixture's bin folder holds the fake systemd-run).
+  const flock = join(f.root, ".bin/flock");
+  writeFileSync(flock, `#!/bin/sh\necho used >> "${join(f.root, "flock-used")}"\nexit 1\n`);
+  chmodSync(flock, 0o755);
+  const release = join(f.root, "release");
+  const started = f.run("win-job", "--", ...job(release));
+  assert.equal(started.status, 75, started.stdout + started.stderr);
+  assert.match(last(started), /^RUNNING: win-job /);
+  writeFileSync(release, "");
+  let done = f.run("win-job");
+  for (let i = 0; i < 20 && done.status === 75; i++) done = f.run("win-job");
+  assert.equal(done.status, 3, done.stdout);
+  assert.equal(last(done), "RESULT: fail job done");
+  assert.equal(existsSync(join(f.root, "flock-used")), false, "the file lock must not run flock");
+  assert.deepEqual(readdirSync(join(f.root, ".scratch/kit-jobs")).filter(name => name.endsWith(".lock")), []);
+});

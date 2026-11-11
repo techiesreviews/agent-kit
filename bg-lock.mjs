@@ -58,9 +58,10 @@ async function fileLock(path, name) {
       if (error.code !== "EEXIST") throw error;
       const found = stale(path);
       if (!found.stale) break;
-      // Only the content that was judged stale is removed (the window between this read and the removal is a few
-      // instructions; the job's own records still refuse a second start of a running name).
-      try { if (found.text === null || readFileSync(path, "utf8") === found.text) rmSync(path, { force: true }); }
+      // Only the content that was judged stale is removed, and a file that is already gone is not removed again (a
+      // third process may have made its own lock there). A short window remains between this read and the removal;
+      // the job's own records still refuse a second start of a running name.
+      try { if (found.text !== null && readFileSync(path, "utf8") === found.text) rmSync(path, { force: true }); }
       catch (error) { if (error.code !== "ENOENT") throw error; }
       continue;
     }
