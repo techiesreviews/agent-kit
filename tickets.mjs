@@ -133,6 +133,8 @@ export function parseTicket(source, file, map) {
 }
 
 const listMarker = /^\s*(?:[-*+]|\d+[.)])\s+/;
+// A line's leading text with each tab widened to the next multiple of four columns.
+const expandTabs = text => [...text].reduce((out, char) => out + (char === "\t" ? " ".repeat(4 - out.length % 4) : char), "");
 const shorten = text => text.length > 80 ? `${text.slice(0, 77)}...` : text;
 
 /** What stops a ticket from being closed, as { file, line, message } rows (`lines` are the ticket's lines, `end` the
@@ -179,8 +181,11 @@ function doneProblems(lines, end, file, strict = false) {
   // space under "- ") is that item's sibling.
   let column = null;
   const items = [];
-  (when?.lines ?? []).forEach((line, at) => {
-    const marker = fenced[when.first + at] ? null : /^( *)([-*+]|\d+[.)])([ \t]+)\S/.exec(line);
+  (when?.lines ?? []).forEach((raw, at) => {
+    // Tabs are worth the spaces up to the next multiple of four, as Markdown counts them.
+    const start = /^[ \t]*(?:[-*+]|\d+[.)])?[ \t]*/;
+    const line = expandTabs(start.exec(raw)[0]) + raw.replace(start, "");
+    const marker = fenced[when.first + at] ? null : /^( *)([-*+]|\d+[.)])( +)\S/.exec(line);
     // Four or more spaces in that do not reach the item's text are its wrapped text, not a new item.
     if (!marker || (marker[1].length > 3 && (column === null || marker[1].length < column))) return;
     if (column !== null && marker[1].length >= column) return;
