@@ -619,6 +619,10 @@ test("unmetDoneProblems reads the card standard's Done when line as the Done whe
   // A first item on the "Done when:" line itself, with a list under it, is the first item of the list.
   const first = unmetDoneProblems(card(["## Done (2026-11-12)", "", "- Done when 1: met — a"]).replace("- First check.\n- Second check.", "- Second check."), "b.md", "First check.\n- Second check.");
   assert.deepEqual(first.map(row => row.message), ['Ticket: Done when item 2 has no evidence line in its Done section (write "Done when 2: met — <evidence>")']);
+  // A "## Done when" example inside fenced code is no heading: the line's list is still the one read.
+  const fenced = card(["```", "## Done when", "- an example", "```", "", "## Done (2026-11-12)", "", "- Done when 1: met — a", "- Done when 2: not met — b", "- Done when 3: pending"]);
+  assert.deepEqual(unmetDoneProblems(fenced, "b.md", line).map(row => row.message), [
+    'Ticket, but its Done section says "not met": - Done when 2: not met — b', 'Ticket, but its Done section says "pending": - Done when 3: pending']);
   // Without the line the heading is missing and nothing is read; a one-line Done when has no list to check.
   assert.deepEqual(unmetDoneProblems(card([]), "b.md"), []);
   assert.deepEqual(unmetDoneProblems(card([]), "b.md", "it works"), []);

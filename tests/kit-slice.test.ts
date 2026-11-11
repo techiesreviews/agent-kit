@@ -98,13 +98,13 @@ call("build");
 await hold("build");
 if (!process.env.NO_BUILD_CHANGES) writeFileSync("file.txt", "built\\n");
 // The builder's Done section in the ticket (the brief tells it to): met lines for the first six items, so any ticket's list is
-// covered. BUILD_DONE changes it: "not-met", "pending" and "open" give item 1 that verdict ("pending-all": items 1 and 2), "gap" leaves item 1 out, "none"
+// covered. BUILD_DONE changes it: "not-met", "pending" and "open" give item 1 that verdict ("pending-all": items 1 and 2), "gap" leaves item 1 out, "first" writes item 1 only, "none"
 // writes no Done section ("keep": the ticket already has one). BUILD_CLOSE=1 also sets status: closed.
 if (!process.env.NO_BUILD_CHANGES && !["none", "keep"].includes(process.env.BUILD_DONE)) {
   const file = process.env.KIT_BUILDER_TICKET, verdict = process.env.BUILD_DONE || "";
   const line = n => verdict === "not-met" && n === 1 ? "Done when 1: not met — the spec was not run" : verdict === "pending-all" && n <= 2 ? "Done when " + n + ": pending" : verdict === "pending" && n === 1 ? "Done when 1: pending, after the merge"
     : verdict === "open" && n === 1 ? "Done when 1: open" : "Done when " + n + ": met — fake evidence " + n;
-  const lines = [1, 2, 3, 4, 5, 6].filter(n => !(verdict === "gap" && n === 1)).map(n => "- " + line(n));
+  const lines = [1, 2, 3, 4, 5, 6].filter(n => !(verdict === "gap" && n === 1) && !(verdict === "first" && n > 1)).map(n => "- " + line(n));
   let text = readFileSync(file, "utf8") + "\\n## Done (2026-11-12)\\n\\n" + lines.join("\\n") + "\\n";
   if (process.env.BUILD_CLOSE) text = text.replace(/^status: .*$/m, "status: closed");
   writeFileSync(file, text);
@@ -197,6 +197,8 @@ if (phase === "review") {
   writeFileSync(join(fixes, "round-" + round() + ".md"), "Completed fix brief");
   writeFileSync("file.txt", "fix round " + round() + "\\n");
   // FIX_UNMET: the fix round leaves Done when item 1 not met in the ticket's Done section.
+  // FIX_ADD_ITEM: the fix round adds a second item to the ticket's Done when list, with no evidence line.
+  if (process.env.FIX_ADD_ITEM) { const ticketFile = args[args.indexOf("--ticket") + 1]; writeFileSync(ticketFile, readFileSync(ticketFile, "utf8").replace("- Required content is present.\\n", "- Required content is present.\\n- Added during the fix.\\n")); }
   if (process.env.FIX_UNMET) appendFileSync(args[args.indexOf("--ticket") + 1], "- Done when 1: not met — found in review\\n");
   git("add", "-A"); git("commit", "-m", "Review fixes round " + round());
   rmSync(pending, { force: true });
@@ -400,6 +402,20 @@ test("a fix round that leaves an item not met stops the slice before kit pr", t 
   assert.match(result.stdout.trim().split("\n").at(-1)!, /^RESULT: fail slice done-when: .*says "not met": - Done when 1: not met — found in review/);
   assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "fix"], "never reached kit pr");
   assert.equal(existsSync(join(f.root, ".scratch/merged")), false);
+});
+
+test("an item added to the Done when list after the first reading needs its evidence line too, as a heading list or the standard's line", t => {
+  for (const standard of [false, true]) {
+    const f = fixture(t), path = join(f.root, f.ticket);
+    if (standard) {
+      writeFileSync(path, readFileSync(path, "utf8").replace("## Done when\n- Required content is present.\n", "Done when:\n- Required content is present.\n\nLinks: none\n"));
+      f.git("commit", "-qam", "standard line");
+    }
+    const result = f.run([], { CLEAN_AT: "1", BUILD_DONE: "first", FIX_ADD_ITEM: "1" });
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout.trim().split("\n").at(-1)!, /^RESULT: fail slice done-when: .*Done when item 2 has no evidence line/, `standard ${standard}`);
+    assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "fix"], "never reached kit pr");
+  }
 });
 
 test("a ticket edited after the first reading is read again before landing, a resumed run included", t => {

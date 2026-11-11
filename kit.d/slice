@@ -378,7 +378,8 @@ async function slice(args) {
     // <evidence>" line, stops the slice (before the review's cost the first time), so it never lands.
     // A rerun reads the ticket again, after the lead or a new build has fixed it.
     const checkDone = () => {
-      const problems = unmetDoneProblems(readFileSync(ticket, "utf8"), flags.ticket, done);
+      // The Done when list is taken from the ticket as it is now: a build or a fix round may have added an item to it.
+      const text = readFileSync(ticket, "utf8"), problems = unmetDoneProblems(text, flags.ticket, doneWhen(text));
       if (!problems.length) return;
       writeFileSync(log, problems.map(problem => problem.message).join("\n") + "\n");
       const first = problems[0].message.replace(/^Ticket(?:: |, but )/, "");
