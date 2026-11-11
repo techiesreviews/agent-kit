@@ -400,6 +400,11 @@ test("a Done when list indented by one to three spaces is read, and its nested i
   // Items nested under a top-level item belong to it.
   const nested = closedTicket(["- Done when 1: met — a", "- Done when 2: met — b"], { doneWhen: ["- First check:", "  - its first part", "  - its second part", "- Second check."] });
   assert.deepEqual(doneProblems(nested), []);
+  const numbered = closedTicket(["- Done when 1: met — a", "- Done when 2: met — b"], { doneWhen: ["1. First check:", "   - its part", "2. Second check."] });
+  assert.deepEqual(doneProblems(numbered), []);
+  // Siblings that start at different indents are still two items.
+  const mixed = closedTicket(["- Done when 1: met — a"], { doneWhen: ["  - First check.", "- Second check."] });
+  assert.deepEqual(doneProblems(mixed).map(problem => problem.message), ['Closed ticket: Done when item 2 has no evidence line in its Done section (write "Done when 2: met — <evidence>")']);
 });
 
 test("tickets closed before the check started keep their old Done sections", () => {
