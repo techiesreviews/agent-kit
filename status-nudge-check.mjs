@@ -4,9 +4,9 @@
 // Standalone on purpose: plain Node, no imports from this repo, so a project can call it by the kit's absolute path
 // (`node "$(scripts/agents/kit --home)/status-nudge-check.mjs" <file>`).
 // A finished helper is a user turn whose first line is "Delegated task <id> (<title>) [completed|failed|interrupted]".
-// Its reply is the last text the assistant wrote before the next real user turn (tool results do not end a turn); the
+// Meta entries and side chains are skipped. Its reply is the last text the assistant wrote before the next real user turn (tool results do not end a turn); the
 // reply has the status when its last few non-empty lines carry all three labels, "Done:", "Running:" and "Next:"
-// (any case, bold or bulleted). A finished helper whose turn ended with no text has no reply and is not counted.
+// (any case, bold or bulleted; a dash needs a space on each side). A finished helper whose turn ended with no text has no reply and is not counted.
 import { readFileSync } from "node:fs";
 
 const tail = 8;
@@ -26,7 +26,8 @@ function isToolResult(content) {
 
 export function hasStatus(reply) {
   const lines = reply.split("\n").map((line) => line.trim()).filter(Boolean).slice(-tail).join("\n").toLowerCase();
-  return labels.every((label) => new RegExp(`(?:^|[^a-z])${label}\\s*(?:\\*\\*|__)?\\s*[:=\\u2013\\u2014-]`).test(lines));
+  // A label ends in a colon, or in a dash with a space on each side ("next-step" is a word, not a label).
+  return labels.every((label) => new RegExp(`(?:^|[^a-z])${label}(?:\\*\\*|__)?\\s*:|(?:^|[^a-z])${label}(?:\\*\\*|__)?\\s+[\\u2013\\u2014-]\\s`).test(lines));
 }
 
 export function scan(source) {
@@ -46,7 +47,7 @@ export function scan(source) {
       bad += 1;
       return;
     }
-    if (!entry || entry.isSidechain || (entry.type !== "user" && entry.type !== "assistant")) return;
+    if (!entry || entry.isSidechain || entry.isMeta || (entry.type !== "user" && entry.type !== "assistant")) return;
     const content = entry.message?.content;
     if (entry.type === "user") {
       if (isToolResult(content)) return;
