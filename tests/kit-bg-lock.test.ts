@@ -2,10 +2,9 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { bgLockKind, bgLock } from "../bg-lock.mjs";
-
 
 function folder(t: TestContext) {
   const root = mkdtempSync(join(tmpdir(), "kit-bg-lock-"));
