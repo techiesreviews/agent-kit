@@ -75,9 +75,10 @@ export function classify(changes, { full = false, settings } = {}) {
   const count = `${changes.length} file${changes.length === 1 ? "" : "s"}`;
   const { kit } = rules(settings);
   const cleanGuard = changes.some(({ path }) => matches(kit, path)) ? { cleanGuard: true } : {};
-  if (full) return { tier: "full", reason: `${count}, --full`, docs: false, ...cleanGuard };
-  if (!changes.length) return { tier: "full", reason: "no changed files", docs: false };
+  if (!changes.length) return { tier: "full", reason: full ? `${count}, --full` : "no changed files", docs: false };
   const tiers = changes.map(change => pathTier(change, settings));
+  // --full keeps whether docs changed, so a ticket the PR closes still gets the ticket check.
+  if (full) return { tier: "full", reason: `${count}, --full`, docs: tiers.includes("docs"), ...cleanGuard };
   const tier = order[Math.max(...tiers.map(name => order.indexOf(name)))];
   const present = order.filter(name => tiers.includes(name));
   const why = tier === "full" ? `${changes[tiers.indexOf("full")].path} is code`

@@ -167,7 +167,10 @@ function doneProblems(lines, end, file, strict = false) {
     return found ? sectionAt(found) : null;
   };
   const when = section(/^## Done when[ \t]*$/);
-  const items = (when?.lines ?? []).flatMap((line, at) => /^(?:[-*+]|\d+[.)])\s+\S/.test(line) && !fenced[when.first + at] ? [when.first + at + 1] : []);
+  // The list's items are the lines at its first item's indent (up to three spaces, as Markdown allows); deeper ones are nested.
+  const marked = (when?.lines ?? []).map((line, at) => fenced[when.first + at] ? null : /^( {0,3})(?:[-*+]|\d+[.)])\s+\S/.exec(line)?.[1] ?? null);
+  const indent = marked.find(found => found !== null);
+  const items = marked.flatMap((found, at) => found !== null && found === indent ? [when.first + at + 1] : []);
   if (!items.length) return [];
   const doneHeading = /^## done(?:[ \t]*[(—–:-].*|[ \t]+\d{4}-\d{2}-\d{2}.*)?[ \t]*$/i;
   const done = section(doneHeading, line => /\b\d{4}-\d{2}-\d{2}\b/.test(line)) ?? (strict ? section(doneHeading) : null);

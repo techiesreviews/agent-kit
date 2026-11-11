@@ -390,6 +390,18 @@ test("a closed ticket needs an evidence line for every Done when item", () => {
   assert.deepEqual(doneProblems(closedTicket([], { status: "open" })), []);
 });
 
+test("a Done when list indented by one to three spaces is read, and its nested items are not items", () => {
+  for (const indent of [" ", "  ", "   "]) {
+    const doneWhen = ["- First check.", "- Second check.", "- Third check."].map(item => indent + item);
+    assert.deepEqual(doneProblems(closedTicket(["- Done when 1: met — a", "- Done when 3: met — c"], { doneWhen })).map(problem => problem.message),
+      ['Closed ticket: Done when item 2 has no evidence line in its Done section (write "Done when 2: met — <evidence>")'], JSON.stringify(indent));
+    assert.match(doneProblems(closedTicket(["- Done when 1: not met — saving still fails", "- Done when 2: met — b", "- Done when 3: met — c"], { doneWhen }))[0].message, /says "not met"/);
+  }
+  // Items nested under a top-level item belong to it.
+  const nested = closedTicket(["- Done when 1: met — a", "- Done when 2: met — b"], { doneWhen: ["- First check:", "  - its first part", "  - its second part", "- Second check."] });
+  assert.deepEqual(doneProblems(nested), []);
+});
+
 test("tickets closed before the check started keep their old Done sections", () => {
   const prose = ["Everything works.", "- Pending, for the lead after merge: the score."];
   // The check starts the day after release 5 reached main (2026-11-11): a ticket closed that day by a kit that did not
