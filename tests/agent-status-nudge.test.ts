@@ -32,6 +32,7 @@ test("status-nudge adds the two-line status reminder for a finished, failed or i
     assert.match(context, /Done:/);
     assert.match(context, /Running:/);
     assert.match(context, /Next:/);
+    assert.match(context, /If Lex must answer or do something, say that first/);
     assert.doesNotMatch(output.stdout, /"decision"|"block"|"continue"|"stopReason"/);
   }
 });
@@ -69,6 +70,7 @@ test("status-nudge exits 0 even when jq is missing", () => {
     input: JSON.stringify(prompt(finished("completed"))), encoding: "utf8", env: { ...kitEnv(), PATH: "/nonexistent" },
   });
   assert.equal(output.status, 0);
+  assert.equal(output.stdout, "");
 });
 
 // A fixture transcript, one JSON line per entry, as Claude writes them.
@@ -153,6 +155,48 @@ test("status-nudge-check reads string and block content, skips side chains, queu
   assert.match(output.stdout, /Block form/);
   assert.doesNotMatch(output.stdout, /Queued copy|Side chain|No reply at all|welcome/);
   assert.match(output.stdout, /RESULT: ok status check: 1 reply after a finished helper, 1 without/);
+});
+
+test("status-nudge-check ignores meta entries and keeps the turn open for the reply", (t) => {
+  const path = transcript(t, [
+    user(finished("completed", "Meta between")),
+    user("<system-reminder>\nA reminder the harness added.\n</system-reminder>", { isMeta: true }),
+    reply(text(goodStatus)),
+  ]);
+  const output = scan(path);
+  assert.match(output.stdout, /RESULT: ok status check: 1 reply after a finished helper, 0 without the two-line status\n$/);
+});
+
+test("status-nudge-check does not take hyphenated words for labels", (t) => {
+  const path = transcript(t, [
+    user(finished("completed", "Words")), reply(text("The done-ness check, a next-step note and a still-running job.")),
+    user(finished("completed", "Dashes")), reply(text("Done - fixed\nRunning - none\nNext \u2014 you test it")),
+  ]);
+  const output = scan(path);
+  assert.match(output.stdout, /1 without/);
+  assert.match(output.stdout, /Words/);
+  assert.doesNotMatch(output.stdout, /Dashes/);
+});
+
+// The hook and the checker open a helper on the same first lines.
+test("status-nudge and status-nudge-check agree on which prompts are a finished helper", (t) => {
+  const cases: [string, boolean][] = [
+    ["Delegated task node:x (Fix it) [completed]:\nok", true],
+    ["Delegated task node:x [failed]:\nit broke", true],
+    ["Delegated task node:x (Title (with parens)) [interrupted]:", true],
+    ["\n  Delegated task node:x (Leading blank) [completed]:\nok", true],
+    ["Delegated task node:x went fine [completed]", false],
+    ["Delegated task node:x (Fix it) [cancelled]:", false],
+    ["Delegated task node:x (Fix it) is running", false],
+    ["Please see Delegated task node:x (Fix it) [completed]:", false],
+  ];
+  for (const [first, expected] of cases) {
+    const nudged = hook(prompt(first)).stdout !== "";
+    const path = transcript(t, [user(first), reply(text("Plain reply."))]);
+    const counted = /RESULT: ok status check: 1 reply/.test(scan(path).stdout);
+    assert.equal(nudged, expected, `hook: ${JSON.stringify(first)}`);
+    assert.equal(counted, expected, `check: ${JSON.stringify(first)}`);
+  }
 });
 
 test("status-nudge-check says so when no helper finished, tolerates a bad line, and fails on a missing file", (t) => {
