@@ -150,12 +150,19 @@ const shorten = text => text.length > 80 ? `${text.slice(0, 77)}...` : text;
  *   a check is unmet. A list item starting with "Open" is only a verdict in the first form: "Open for Lex: …" is a
  *   note. Wrapped lines of an item are not read. */
 function doneProblems(lines, end, file, strict = false) {
-  let fence = "";
+  // A fence opens with three or more backticks or tildes (a backtick fence's info text has no backtick) and closes with
+  // the same character, at least as many times, and nothing after it; a shorter or different line inside is text.
+  let fence = null;
   const fenced = lines.map(line => {
-    const mark = /^\s*(```|~~~)/.exec(line)?.[1];
-    if (!fence && mark) { fence = mark; return true; }
-    if (fence && mark === fence) { fence = ""; return true; }
-    return Boolean(fence);
+    if (fence) {
+      const close = /^\s*(`{3,}|~{3,})\s*$/.exec(line)?.[1];
+      if (close && close[0] === fence.char && close.length >= fence.size) fence = null;
+      return true;
+    }
+    const open = /^\s*(`{3,}|~{3,})(.*)$/.exec(line);
+    if (!open || (open[1][0] === "`" && open[2].includes("`"))) return false;
+    fence = { char: open[1][0], size: open[1].length };
+    return true;
   });
   const headings = lines.flatMap((line, index) => index > end && !fenced[index] && /^#{1,2} /.test(line) ? [{ line, index }] : []);
   const sectionAt = found => {
@@ -167,10 +174,18 @@ function doneProblems(lines, end, file, strict = false) {
     return found ? sectionAt(found) : null;
   };
   const when = section(/^## Done when[ \t]*$/);
-  // The list's items are the lines no deeper than its first item's indent (up to three spaces, as Markdown allows); deeper ones are nested.
-  const marked = (when?.lines ?? []).map((line, at) => fenced[when.first + at] ? null : /^( {0,3})(?:[-*+]|\d+[.)])\s+\S/.exec(line)?.[1] ?? null);
-  const indent = marked.find(found => found !== null);
-  const items = marked.flatMap((found, at) => found !== null && found.length <= indent.length ? [when.first + at + 1] : []);
+  // The list's items are its marker lines that are not nested. The first item starts up to three spaces in, as Markdown
+  // allows; a later marker line is nested only when indented to the text of the item above it, so one indented less (a
+  // space under "- ") is that item's sibling.
+  let column = null;
+  const items = [];
+  (when?.lines ?? []).forEach((line, at) => {
+    const marker = fenced[when.first + at] ? null : /^( *)([-*+]|\d+[.)])( +)\S/.exec(line);
+    if (!marker || (column === null && marker[1].length > 3)) return;
+    if (column !== null && marker[1].length >= column) return;
+    column = marker[1].length + marker[2].length + (marker[3].length > 4 ? 1 : marker[3].length);
+    items.push(when.first + at + 1);
+  });
   if (!items.length) return [];
   const doneHeading = /^## done(?:[ \t]*[(—–:-].*|[ \t]+\d{4}-\d{2}-\d{2}.*)?[ \t]*$/i;
   const done = section(doneHeading, line => /\b\d{4}-\d{2}-\d{2}\b/.test(line)) ?? (strict ? section(doneHeading) : null);
