@@ -1668,7 +1668,10 @@ test("each path reaches a tier and the highest present wins", () => asEditor(() 
   assert.equal(classify(rows("fixtures/actual-starter/AGENTS.md")).tier, "tests");
   assert.equal(classify([{ status: "D", path: "src/old.css" }]).tier, "full");
   assert.equal(classify([]).tier, "full");
-  assert.deepEqual(classify(rows("docs/a.md"), { full: true }), { tier: "full", reason: "1 file, --full", docs: false });
+  // --full keeps whether docs changed, so a ticket the PR closes is still checked.
+  assert.deepEqual(classify(rows("docs/a.md"), { full: true }), { tier: "full", reason: "1 file, --full", docs: true });
+  assert.deepEqual(classify(rows("src/main.ts"), { full: true }), { tier: "full", reason: "1 file, --full", docs: false });
+  assert.ok(checkSteps(classify(rows("docs/work/x/tickets/1-a.md", "src/main.ts"), { full: true })).steps.includes("tickets"));
   assert.deepEqual(parseChanges("M\tdocs/a.md\nD\tsrc/b.css\n"), [{ status: "M", path: "docs/a.md" }, { status: "D", path: "src/b.css" }]);
 }));
 
