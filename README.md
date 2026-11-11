@@ -105,6 +105,14 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
   `RUNNING: <job> (…). Run again: scripts/agents/kit go <job>` and exit 75; once the job ends it prints the job's
   RESULT line and exits with the job's code (1 for a job's own 75, or for a job whose RESULT line says fail
   although it exited 0).
+- `kit bg` and `kit go` take one lock per job name while they start or stop it. Linux and macOS use `flock`.
+  Windows has no `flock`, so there the lock is a file, `<worktree>/.scratch/kit-jobs/.<name>.lock`, made in one
+  step with the create-only flag and holding `<pid> <token>`. A second start or stop of the same name is refused
+  at once with `bg <name> is busy; retry after its current operation` (the lock is never waited for). The file is
+  removed when the command ends; the file of a process that died, or one older than a minute, is taken over, so a
+  killed launcher never blocks a name. `KIT_BG_LOCK=file` or `flock` picks the lock by hand (tests). Only the lock
+  is Windows-safe: starting the job itself (a new session, its process group, the user systemd scope, the process
+  records read from `/proc`) is still the Linux way.
 - Two hooks back this up. `brief-guard` (Claude `PreToolUse` on `mcp__t3-code__delegate_task` and `Agent|Task`)
   refuses a brief without the marker; research, review-only and question tasks start with
   `kit-brief: none (<reason>)`, and the read-only agent types (Explore, Plan) pass. `stop-guard` (Claude and Codex
