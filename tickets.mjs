@@ -225,11 +225,18 @@ function doneProblems(lines, end, file, strict = false, open = false) {
 /** What stops a ticket that is not landed yet from being called done, as { file, line, message } rows: the strict reading
  * of doneProblems for any status, with no date cutoff. Any Done when item whose evidence line says not met, pending or open,
  * or has none, is a row; a ticket with no `## Done when` list has none. `standardLine` is the Done when text of a ticket
- * that gives it as the card standard's "Done when:" line (its list lines) instead of a heading: it is read as that heading. */
+ * that gives it as the card standard's "Done when:" line (its list lines) instead of a heading: it is read as that heading,
+ * a first item on the line itself counting as the list's first. */
 export function unmetDoneProblems(source, file = "ticket", standardLine = "") {
   let lines = source.replace(/^\uFEFF/, "").split(/\r?\n/);
   const end = lines[0] === "---" ? lines.findIndex((line, i) => i > 0 && line === "---") : -1;
-  if (standardLine.trim() && !lines.some(line => /^## Done when[ \t]*$/.test(line))) lines = [...lines, "", "## Done when", "", ...standardLine.split(/\r?\n/)];
+  // The line numbers of the rows are then not the file's: only the messages tell the problem.
+  if (standardLine.trim() && !lines.some(line => /^## Done when[ \t]*$/.test(line))) {
+    // A first item on the "Done when:" line itself, with a list under it, is the list's first item.
+    const text = standardLine.split(/\r?\n/);
+    if (!listMarker.test(text[0]) && text.slice(1).some(line => listMarker.test(line))) text[0] = `- ${text[0]}`;
+    lines = [...lines, "", "## Done when", "", ...text];
+  }
   return doneProblems(lines, end, file, true, true);
 }
 
