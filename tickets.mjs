@@ -156,7 +156,7 @@ export function fencedLines(lines) {
 }
 
 /** What stops a ticket from being closed, as { file, line, message } rows (`lines` are the ticket's lines, `end` the
- * frontmatter's closing line). Only a ticket whose `## Done when` is a list, and whose last `## Done` section carries
+ * frontmatter's closing line). Only a ticket whose `## Done when` is a list (in the `open` reading a paragraph is one item), and whose last `## Done` section carries
  * an ISO date of `doneCheckFrom` or later in its heading (`## Done (2026-11-12)`, `## Done: 2026-11-12`; never
  * `## Done when`, `## Done notes`), is read. The rest were written before the check and stay as they are, a ticket
  * with no dated Done section included. `strict` reads every closed ticket as if there were no cutoff, and also refuses
@@ -238,7 +238,8 @@ function doneProblems(lines, end, file, strict = false, open = false, fallback =
 
 /** What stops a ticket that is not landed yet from being called done, as { file, line, message } rows: the strict reading
  * of doneProblems for any status, with no date cutoff. Any Done when item whose evidence line says not met, pending or open,
- * or has none, is a row; a ticket with no `## Done when` list has none. `standardLine` is the Done when text of a ticket
+ * or has none, is a row; a ticket with no `## Done when` has none, and a Done when written as a paragraph is one item (the reading of a ticket being
+ * closed, newlyClosed, still reads lists only). `standardLine` is the Done when text of a ticket
  * that gives it as the card standard's "Done when:" line (its list lines) instead of a heading: it is read as that heading,
  * a first item on the line itself counting as the list's first. */
 export function unmetDoneProblems(source, file = "ticket", standardLine = "") {

@@ -2449,6 +2449,9 @@ test("check --all knows only the configured project's default parent: its bare c
 
 test("doneWhen reads a heading or the standard's line, with its list or plain lines, and stops at the next label or heading", () => {
   assert.equal(doneWhen("## Files\n\n- a\n\n## Done when\n\n- x\n- y\n\n## Links\n\n- z"), "- x\n- y");
+  // Fenced code is neither a heading nor a "Done when:" line.
+  assert.equal(doneWhen("```\n## Done when\n- example\n```\n\nDone when:\n- real\n\nLinks: none"), "- real");
+  assert.equal(doneWhen("```\nDone when: example\n```\n\nDone when:\n- real\n\nLinks: none"), "- real");
   assert.equal(doneWhen("Goal\n\nDone when:\nit works\nit is tested\nLinks: none"), "it works\nit is tested");
   assert.equal(doneWhen("Done when: it works\n\n- tested\n\nLinks: none"), "it works\n- tested");
   assert.equal(doneWhen("Done when:\n- x\n\nA plain paragraph after a gap."), "- x");
