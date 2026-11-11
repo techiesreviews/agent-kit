@@ -152,12 +152,12 @@ const shorten = text => text.length > 80 ? `${text.slice(0, 77)}...` : text;
  * - "not met", "pending" or "open" as a check's verdict, or a list item that starts with "Not met" or "Pending", says
  *   a check is unmet. A list item starting with "Open" is only a verdict in the first form: "Open for Lex: …" is a
  *   note. Wrapped lines of an item are not read. */
-function doneProblems(lines, end, file, strict = false, open = false) {
+function doneProblems(lines, end, file, strict = false, open = false, fallback = []) {
   const who = open ? "Ticket" : "Closed ticket";
   // A fence opens with three or more backticks or tildes (a backtick fence's info text has no backtick) and closes with
   // the same character, at least as many times, and nothing after it; a shorter or different line inside is text.
   let fence = null;
-  const fenced = lines.map(line => {
+  let fenced = lines.map(line => {
     if (fence) {
       const close = /^\s*(`{3,}|~{3,})\s*$/.exec(line)?.[1];
       if (close && close[0] === fence.char && close.length >= fence.size) fence = null;
@@ -168,6 +168,13 @@ function doneProblems(lines, end, file, strict = false, open = false) {
     fence = { char: open[1][0], size: open[1].length };
     return true;
   });
+  // `fallback` is the Done when list of a ticket that has no `## Done when` heading outside fenced code (the card standard's
+  // "Done when:" line): read as that section, put after the last line, so the rows' line numbers are not the file's.
+  if (fallback.length && !lines.some((line, index) => !fenced[index] && /^## Done when[ \t]*$/.test(line))) {
+    const added = ["", "## Done when", "", ...fallback];
+    lines = [...lines, ...added];
+    fenced = [...fenced, ...added.map(() => false)];
+  }
   const headings = lines.flatMap((line, index) => index > end && !fenced[index] && /^#{1,2} /.test(line) ? [{ line, index }] : []);
   const sectionAt = found => {
     const next = headings.find(({ index }) => index > found.index);
@@ -228,16 +235,12 @@ function doneProblems(lines, end, file, strict = false, open = false) {
  * that gives it as the card standard's "Done when:" line (its list lines) instead of a heading: it is read as that heading,
  * a first item on the line itself counting as the list's first. */
 export function unmetDoneProblems(source, file = "ticket", standardLine = "") {
-  let lines = source.replace(/^\uFEFF/, "").split(/\r?\n/);
+  const lines = source.replace(/^\uFEFF/, "").split(/\r?\n/);
   const end = lines[0] === "---" ? lines.findIndex((line, i) => i > 0 && line === "---") : -1;
-  // The line numbers of the rows are then not the file's: only the messages tell the problem.
-  if (standardLine.trim() && !lines.some(line => /^## Done when[ \t]*$/.test(line))) {
-    // A first item on the "Done when:" line itself, with a list under it, is the list's first item.
-    const text = standardLine.split(/\r?\n/);
-    if (!listMarker.test(text[0]) && text.slice(1).some(line => listMarker.test(line))) text[0] = `- ${text[0]}`;
-    lines = [...lines, "", "## Done when", "", ...text];
-  }
-  return doneProblems(lines, end, file, true, true);
+  const text = standardLine.trim() ? standardLine.split(/\r?\n/) : [];
+  // A first item on the "Done when:" line itself, with a list under it, is the list's first item.
+  if (text.length && !listMarker.test(text[0]) && text.slice(1).some(line => listMarker.test(line))) text[0] = `- ${text[0]}`;
+  return doneProblems(lines, end, file, true, true, text);
 }
 
 const globChars = /[*?[\]{}<>]/;
