@@ -730,7 +730,7 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
         const now = task.recurrence ? { frequency: task.recurrence.frequency, interval: task.recurrence.interval, weekdays: weekdays.filter(day => (task.recurrence.weekdays ?? []).includes(day)), base: task.recurrence.base } : null;
         // The same rule in Orbit's own field order is no change.
         return { recurrence: same(now, rule) ? task.recurrence : rule };
-      });
+      }, { replaces: ["recurrence"] });
     },
     /** A dated comment (the card standard keeps history in comments, never in the description). */
     note(key, text) {
