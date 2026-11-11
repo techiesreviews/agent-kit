@@ -196,6 +196,8 @@ if (phase === "review") {
   mkdirSync(fixes, { recursive: true });
   writeFileSync(join(fixes, "round-" + round() + ".md"), "Completed fix brief");
   writeFileSync("file.txt", "fix round " + round() + "\\n");
+  // FIX_UNMET: the fix round leaves Done when item 1 not met in the ticket's Done section.
+  if (process.env.FIX_UNMET) appendFileSync(args[args.indexOf("--ticket") + 1], "- Done when 1: not met — found in review\\n");
   git("add", "-A"); git("commit", "-m", "Review fixes round " + round());
   rmSync(pending, { force: true });
   const { folder, open } = evidence();
@@ -218,7 +220,8 @@ if (phase === "review") {
     if (process.env.ADD_FOLLOWUPS) {
       const ticket = args[args.indexOf("--ticket") + 1];
       if (!readFileSync(ticket, "utf8").includes("### Follow-ups")) {
-        appendFileSync(ticket, "\\n## Done (2026-10-19)\\n\\n### Follow-ups\\n\\n- Spec (P2): Minor issue\\n");
+        // Like the real kit pr: the list joins the ticket's Done section (made when missing).
+        appendFileSync(ticket, (readFileSync(ticket, "utf8").includes("## Done (") ? "" : "\\n## Done (2026-10-19)\\n") + "\\n### Follow-ups\\n\\n- Spec (P2): Minor issue\\n");
         git("add", "--", ticket); git("commit", "-m", "docs: ticket follow-ups from review");
       }
       if (process.env.FAIL_AFTER_FOLLOWUPS) { console.log("RESULT: fail ci: deliberate failure"); process.exit(1); }
@@ -339,7 +342,7 @@ test("a ticket left open with a Done when item not met, pending or open stops th
   for (const [verdict, word] of [["not-met", "not met"], ["pending", "pending"], ["open", "open"]]) {
     const f = fixture(t), result = f.run([], { BUILD_DONE: verdict });
     assert.equal(result.status, 1, result.stdout + result.stderr);
-    assert.match(result.stdout.trim().split("\n").at(-1)!, new RegExp(`^RESULT: fail slice done-when: a Done when item is not met, so the slice does not land: its Done section says "${word}": - Done when 1: `));
+    assert.match(result.stdout.trim().split("\n").at(-1)!, new RegExp(`^RESULT: fail slice done-when: a Done when item is not shown as met, so the slice does not land: its Done section says "${word}": - Done when 1: `));
     assert.ok(result.stdout.includes("slice: done-when fail"), result.stdout);
     assert.deepEqual(f.calls().map(call => call.phase), ["build"], "no review, no PR, no merge");
     assert.equal(existsSync(join(f.root, ".scratch/merged")), false);
@@ -354,7 +357,7 @@ test("a ticket whose Done section misses an item's evidence line, or has no Done
     ["none", "it has no ## Done section, so no Done when item has an evidence line"]]) {
     const f = fixture(t), result = f.run([], { BUILD_DONE: verdict });
     assert.equal(result.status, 1, result.stdout + result.stderr);
-    assert.ok(result.stdout.trim().split("\n").at(-1)!.startsWith(`RESULT: fail slice done-when: a Done when item is not met, so the slice does not land: ${reason}`), result.stdout);
+    assert.ok(result.stdout.trim().split("\n").at(-1)!.startsWith(`RESULT: fail slice done-when: a Done when item is not shown as met, so the slice does not land: ${reason}`), result.stdout);
     assert.deepEqual(f.calls().map(call => call.phase), ["build"]);
   }
 });
@@ -389,6 +392,27 @@ test("a rerun reads the ticket again: once the item is met the slice goes on fro
   assert.equal(again.status, 0, again.stdout + again.stderr);
   assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "pr"]);
   assert.ok(again.stdout.includes("slice: done-when ok"), again.stdout);
+});
+
+test("a fix round that leaves an item not met stops the slice before kit pr", t => {
+  const f = fixture(t), result = f.run([], { CLEAN_AT: "1", FIX_UNMET: "1" });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout.trim().split("\n").at(-1)!, /^RESULT: fail slice done-when: .*says "not met": - Done when 1: not met — found in review/);
+  assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "fix"], "never reached kit pr");
+  assert.equal(existsSync(join(f.root, ".scratch/merged")), false);
+});
+
+test("a ticket edited after the first reading is read again before landing, a resumed run included", t => {
+  const f = fixture(t), failed = f.run([], { CLEAN_AT: "1", FAIL_PHASE: "fix" });
+  assert.equal(failed.status, 1, failed.stdout + failed.stderr);
+  assert.ok(f.state().finished.includes("done-when"));
+  const path = join(f.root, f.ticket);
+  writeFileSync(path, readFileSync(path, "utf8").replace("Done when 1: met — fake evidence 1", "Done when 1: not met — the lead found a gap"));
+  f.git("commit", "-qam", "ticket edit after the first reading");
+  const again = f.run([], { CLEAN_AT: "1" });
+  assert.equal(again.status, 1, again.stdout + again.stderr);
+  assert.match(again.stdout.trim().split("\n").at(-1)!, /^RESULT: fail slice done-when: .*says "not met": - Done when 1: not met — the lead found a gap/);
+  assert.equal(f.calls().filter(call => call.phase === "pr").length, 0);
 });
 
 test("a ticket the builder closed with every item met, or left open with every item met, lands", t => {
@@ -1684,7 +1708,7 @@ test("on Orbit, a card left unmet in its brief fails the slice and stays claimed
     const task = card({ description: "Goal: build it.\n\n## Files\n\n- `file.txt`\n\nDone when:\n- it works\n- it is tested\n\nLinks: none" });
     const output = await slice("KIT-1", { BUILD_DONE: verdict });
     assert.equal(output.status, 1, output.all);
-    assert.match(lastLine(output), /^RESULT: fail slice done-when: a Done when item is not met, so the slice does not land: /);
+    assert.match(lastLine(output), /^RESULT: fail slice done-when: a Done when item is not shown as met, so the slice does not land: /);
     assert.deepEqual(calls().map(call => call.phase), ["build"]);
     assert.equal(orbit.statusOf(task), "In Progress", "the card is not closed");
   }

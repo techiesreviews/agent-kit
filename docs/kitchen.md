@@ -293,11 +293,12 @@ OpenCode settings (default model, global instructions) do not apply to the revie
   docs, ticket files included: a ticket that is closed now and was not closed at the merge base (or is new) is read
   strictly, with no date cutoff, and a missing or undated `## Done` fails too (a release runs the plain check). A
   builder whose item is not met writes `Done when <n>: not met — <why>` and does not close the ticket.
-- **Open ticket, unmet item:** `kit slice` reads the ticket again once the build is committed (its `done-when` step) and stops
-  with `RESULT: fail slice done-when: …` before the review when any Done when item says not met, pending or open, or
-  has no `Done when <n>: met — <evidence>` line, whatever the ticket's status, so a slice never lands with an item undone.
-  The same reader serves a card's brief, where the Done when list may be the card standard's `Done when:` line. A rerun reads the
-  ticket again after the lead or a new build has fixed it.
+- **Open ticket, unmet item:** `kit slice` reads the ticket once the build is committed (its `done-when` step) and again right
+  before `kit pr` lands it. It stops with `RESULT: fail slice done-when: …` when any Done when item says not met, pending or open,
+  or has no `Done when <n>: met — <evidence>` line, whatever the ticket's status, so a slice never lands with an item undone
+  (the first reading comes before the review, so a build left unfinished costs no review). The same reader serves a card's brief,
+  where the Done when list may be the card standard's `Done when:` line. A rerun reads the ticket again after the lead or a new
+  build has fixed it.
 
 ### 7. Checks
 
