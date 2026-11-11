@@ -180,8 +180,9 @@ function doneProblems(lines, end, file, strict = false) {
   let column = null;
   const items = [];
   (when?.lines ?? []).forEach((line, at) => {
-    const marker = fenced[when.first + at] ? null : /^( *)([-*+]|\d+[.)])( +)\S/.exec(line);
-    if (!marker || (column === null && marker[1].length > 3)) return;
+    const marker = fenced[when.first + at] ? null : /^( *)([-*+]|\d+[.)])([ \t]+)\S/.exec(line);
+    // Four or more spaces in that do not reach the item's text are its wrapped text, not a new item.
+    if (!marker || (marker[1].length > 3 && (column === null || marker[1].length < column))) return;
     if (column !== null && marker[1].length >= column) return;
     column = marker[1].length + marker[2].length + (marker[3].length > 4 ? 1 : marker[3].length);
     items.push(when.first + at + 1);

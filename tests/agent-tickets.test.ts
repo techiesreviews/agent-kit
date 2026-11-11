@@ -409,6 +409,11 @@ test("a Done when list indented by one to three spaces is read, and its nested i
     const problems = doneProblems(closedTicket(evidence, { doneWhen: [...doneWhen] })).map(problem => problem.message);
     assert.deepEqual(problems, count === 3 ? ['Closed ticket: Done when item 3 has no evidence line in its Done section (write "Done when 3: met — <evidence>")'] : [], JSON.stringify(doneWhen));
   }
+  // A tab after the marker counts, a wide marker counts at its full width, and four spaces that do not reach an item's text are its wrapped text.
+  const one = ["- Done when 1: met — a"];
+  assert.equal(doneProblems(closedTicket(one, { doneWhen: ["-\tFirst check.", "-\tSecond check."] })).length, 1);
+  assert.equal(doneProblems(closedTicket(one, { doneWhen: ["-    First check.", "    - wrapped text"] })).length, 0);
+  assert.equal(doneProblems(closedTicket(one, { doneWhen: ["10. First check.", "   - Second check."] })).length, 1);
   // Siblings that start at different indents are still two items.
   const mixed = closedTicket(["- Done when 1: met — a"], { doneWhen: ["  - First check.", "- Second check."] });
   assert.deepEqual(doneProblems(mixed).map(problem => problem.message), ['Closed ticket: Done when item 2 has no evidence line in its Done section (write "Done when 2: met — <evidence>")']);
@@ -484,6 +489,8 @@ test("a fence closes only with a fence of the same kind, at least as long, and n
   assert.deepEqual(messages([...met, "```", "- Done when 2: met — in the fence", "``` js", "- Done when 2: met — still in the fence", "```"]), missing);
   assert.deepEqual(messages([...met, "~~~~", "- Done when 2: met — in the fence", "~~~", "```", "~~~~", "- Done when 2: met — after it"]).length, 0);
   assert.deepEqual(messages([...met, "```js", "- Done when 2: met — in the fence", "```", "- Done when 2: pending"]).length, 1);
+  // A tilde fence may have backticks in its info text.
+  assert.deepEqual(messages([...met, "~~~ a`b", "- Done when 2: met — in the fence", "~~~"]), missing);
   // A line that opens with backticks and has backticks after them is code in a line, not a fence.
   assert.deepEqual(messages([...met, "```inline``` and more", "- Done when 2: met — b"]), []);
   // An unclosed fence runs to the end, as Markdown reads it.
