@@ -576,6 +576,22 @@ test("repeat sets how a card repeats, get shows it, and --stop ends it", async t
   assert.equal(orbit.writes().length, writes);
 });
 
+test("a retry after a version conflict never overwrites a repeat someone else set or stopped meanwhile", async t => {
+  const { orbit, run } = await fixture(t);
+  const task = orbit.addTask(orbit.tools);
+  const theirs = { frequency: "monthly", interval: 1, weekdays: [], base: "completion" };
+  orbit.controls.conflicts = 1;
+  orbit.controls.concurrentEdit = card => { card.recurrence = theirs; };
+  refused(await run(["repeat", "TOOLS-1", "--every", "week"]), /recurrence/);
+  assert.deepEqual(task.recurrence, theirs);
+  orbit.controls.conflicts = 1;
+  orbit.controls.concurrentEdit = card => { card.recurrence = null; };
+  refused(await run(["repeat", "TOOLS-1", "--stop"]), /recurrence/);
+  assert.equal(task.recurrence, null);
+  // Each run sent its one PATCH, which Orbit refused as stale, and no second one.
+  assert.equal(orbit.writes().filter(write => write.method === "PATCH").length, 2);
+});
+
 test("repeat on an Orbit that has no repeating tasks yet says so and sends nothing; get shows no repeat line", async t => {
   const { orbit, run, log } = await fixture(t);
   orbit.controls.recurrence = false;
