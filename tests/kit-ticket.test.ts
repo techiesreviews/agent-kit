@@ -551,6 +551,12 @@ test("repeat sets how a card repeats, get shows it, and --stop ends it", async t
   ok(await run(["repeat", "TOOLS-1", "--every", "3 years"]));
   assert.equal(task.recurrence.frequency, "yearly");
 
+  // A rule Orbit holds in another order, or with more fields, is the same rule: nothing is sent.
+  task.recurrence = { frequency: "weekly", interval: 1, weekdays: ["thu", "mon"], base: "due", next_due_at: "2026-11-20T22:59:00.000Z" };
+  const before = orbit.writes().length;
+  assert.match(result(ok(await run(["repeat", "TOOLS-1", "--every", "week", "--on", "mon,thu"]))), /already as asked/);
+  assert.equal(orbit.writes().length, before);
+
   ok(await run(["repeat", "TOOLS-1", "--stop"]));
   assert.equal(task.recurrence, null);
   assert.doesNotMatch(ok(await run(["get", "TOOLS-1"])).stdout, /Repeats:/);

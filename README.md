@@ -115,7 +115,7 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
 ## Tickets are moving to Orbit (in stages)
 
 - Tickets are moving from markdown files to Orbit cards, one project at a time. Stage 1 is here: the Orbit client and
-  `kit ticket` (`kit ticket --help`): create, get, list, update, dates, note, comment, sub-tasks, members, next-lex and
+  `kit ticket` (`kit ticket --help`): create, get, list, update, dates, repeat, note, comment, sub-tasks, members, next-lex and
   clear-next-lex, trash, setup. `--assignee NAME|ID|none` on create and update assigns by member name; `next-lex` also assigns the member called Lex and `clear-next-lex` takes only him off. It reaches every board the token covers, from any project folder or with `--project`.
 - A project's `scripts/agents/kit.json` says which store it uses: `"tickets": "files"` (the default) or `"orbit"`, and
   `"orbit": { "project": "TOOLS", "parent": "TOOLS-10" }` names its board and the card new tickets go under (parent is
