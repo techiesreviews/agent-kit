@@ -186,11 +186,14 @@ test("status-nudge-check wants the labels in status positions, not mentioned in 
     user(finished("completed", "Footer")), reply(text("Done: fixed.\nRunning: none; Next: test it.")),
     user(finished("completed", "Inline")), reply(text("Done: fixed. Running: none. Next: test it.")),
     user(finished("completed", "Quoted")), reply(text("> **Done:** fixed\n> **Running:** none\n> **Next:** test it")),
+    user(finished("completed", "Emoji")), reply(text("\u2705 Done: x\n\u2705 Running: y\n\u27a1\ufe0f Next: z")),
+    user(finished("completed", "Numbered")), reply(text("1) Done: x\n2) Running: y\n3. Next: z")),
+    user(finished("completed", "Hook wording")), reply(text("Line 1 - Done: x.\nLine 2 - Running: y; Next: z.")),
   ]);
   const output = scan(path);
   assert.match(output.stdout, /1 without/);
   assert.match(output.stdout, /Mention/);
-  assert.doesNotMatch(output.stdout, /Footer|Inline|Quoted/);
+  assert.doesNotMatch(output.stdout, /Footer|Inline|Quoted|Emoji|Numbered|Hook wording/);
 });
 
 test("status-nudge-check does not judge a reply the person interrupted", (t) => {
@@ -198,6 +201,8 @@ test("status-nudge-check does not judge a reply the person interrupted", (t) => 
     user(finished("completed", "Cut")), reply(text("Working on it")),
     user([text("[Request interrupted by user]")]),
     user("carry on"), reply(text("Fine.")),
+    user(finished("completed", "Cut by tool")), reply(text("Checking"), toolUse), toolResult,
+    user([text("[Request interrupted by user for tool use]")]), user("go on"), reply(text("Fine.")),
   ]);
   assert.match(scan(path).stdout, /RESULT: ok status check: 0 replies after a finished helper, 0 without the two-line status\n$/);
 });
