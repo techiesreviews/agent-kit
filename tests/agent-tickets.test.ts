@@ -332,7 +332,7 @@ test("check validates build feedback logs and names file:line for a bad date, ki
 });
 
 /** A ticket with a Done when list of three items and the given Done section (heading date `date`, default after the check starts). */
-function closedTicket(done: string[], { date = "2026-11-11", status = "closed", doneWhen = ["- First check.", "- Second check.", "- Third check."] } = {}) {
+function closedTicket(done: string[], { date = "2026-11-12", status = "closed", doneWhen = ["- First check.", "- Second check.", "- Third check."] } = {}) {
   const sections = ["---", `status: ${status}`, "---", "", "## Goal", "", "Do it.", "", "## Done when", "", ...doneWhen];
   if (done.length) sections.push("", `## Done${date ? ` (${date})` : ""}`, "", ...done);
   return sections.join("\n");
@@ -392,14 +392,17 @@ test("a closed ticket needs an evidence line for every Done when item", () => {
 
 test("tickets closed before the check started keep their old Done sections", () => {
   const prose = ["Everything works.", "- Pending, for the lead after merge: the score."];
+  // The check starts the day after release 5 reached main (2026-11-11): a ticket closed that day by a kit that did not
+  // read Done sections yet keeps its prose Done section.
+  assert.equal(doneProblems(closedTicket(prose, { date: "2026-11-11" })).length, 0);
   assert.equal(doneProblems(closedTicket(prose, { date: "2026-11-10" })).length, 0);
   assert.equal(doneProblems(closedTicket(prose, { date: "2026-10-31" })).length, 0);
   assert.equal(doneProblems(closedTicket(prose, { date: "" })).length, 0, "an undated heading is an old ticket");
   // A heading with more than the date after "Done" still has its date read.
-  const heading = (text: string) => closedTicket(prose).replace("## Done (2026-11-11)", text);
+  const heading = (text: string) => closedTicket(prose).replace("## Done (2026-11-12)", text);
   for (const [text, count] of [["## Done (2026-10-01, PR #3)", 0], ["## Done — 2026-10-01", 0], ["## Done (2026-11-12, PR #3)", 4], ["## Done: 2026-11-12", 4], ["## Done 2026-11-12", 4], ["## DONE (2026-11-12)", 4], ["## Done when", 0], ["## Done criteria", 0], ["## Done notes", 0]] as const)
     assert.equal(doneProblems(heading(text)).length, count, text);
-  assert.equal(doneProblems(closedTicket(prose, { date: "2026-11-11" })).length, 4);
+  assert.equal(doneProblems(closedTicket(prose, { date: "2026-11-12" })).length, 4);
   assert.equal(doneProblems(closedTicket(prose, { date: "2027-01-02" })).length, 4);
 });
 
