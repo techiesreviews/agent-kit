@@ -27,7 +27,8 @@ with read-only calls, against the running Orbit with the kit's own token.
 `repeat` writes the task's `recurrence` field: `{frequency, interval, weekdays, base}`, with `frequency` `daily`,
 `weekly`, `monthly` or `yearly`, `interval` 1 to 365, `weekdays` (`mon` to `sun`) only for a weekly rule counted from
 the due date, and `base` `due` or `completion`; `null` stops it. Orbit takes it in `PATCH` only (not when it creates a
-task), and closing a repeating task makes Orbit create the next one. `get` shows it as a "Repeats:" line. An Orbit
+task), and closing a repeating task (completed or cancelled) makes Orbit create the next one. A card
+without a due date counts from the moment the repeat is set. `get` shows it as a "Repeats:" line. An Orbit
 from before repeating tasks has no `recurrence` field on its tasks; `repeat` then says Orbit needs an update and sends
 nothing. On 2026-11-11 the running Orbit did not have it yet (its source added it that day).
 
