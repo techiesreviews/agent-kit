@@ -7,8 +7,10 @@ import { kitSettings, kitSettingsFile } from "./kit-lib.mjs";
 
 // Tickets whose last `## Done (date)` is dated on or after this day are checked when closed: nothing in the Done section
 // may say a check is not met, pending or open, and every Done when item needs an evidence line (see doneProblems).
-// Older tickets, and Done sections with no date, were written before the check and stay as they are.
-export const doneCheckFrom = "2026-11-11";
+// Older tickets, and Done sections with no date, were written before the check and stay as they are. The check reached
+// main on 2026-11-11, so it starts the day after: a ticket closed that day by a kit that did not read Done sections yet
+// is left alone.
+export const doneCheckFrom = "2026-11-12";
 
 const statuses = new Set(["open", "closed", "needs-triage", "needs-info", "ready-for-agent", "ready-for-human", "wontfix"]);
 
