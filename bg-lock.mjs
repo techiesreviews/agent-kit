@@ -6,7 +6,8 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 
 // A lock file older than this is taken over even when its pid is alive: a pid can be reused. A start or stop holds
-// the lock for a few seconds at most (a start waits 5s for its job's records, a stop 2s for its group to end).
+// the lock for a few seconds at most (a start waits 5s for its job's records, a stop 2s for its group to end), so
+// this is a wide margin: a live holder is never taken over.
 const STALE_MS = 5 * 60 * 1000;
 // A taking-over holds its guard file for a moment; one older than this was left by a taker that died.
 const RECOVER_STALE_MS = 30 * 1000;
@@ -59,13 +60,15 @@ function isStale({ text, age }) {
  * under it, and removed only if it is still the stale one. false when another taker is recovering it right now.
  */
 function recover(path, found, between) {
-  const guard = `${path}.recover`;
-  try { writeFileSync(guard, `${process.pid}\n`, { flag: "wx" }); }
+  const guard = `${path}.recover`, mine = `${process.pid} ${randomUUID()}\n`;
+  // Removes the guard only while it still holds the given text, never one another taker made since.
+  const drop = text => { try { if (readFileSync(guard, "utf8") === text) rmSync(guard, { force: true }); } catch (error) { if (error.code !== "ENOENT") throw error; } };
+  try { writeFileSync(guard, mine, { flag: "wx" }); }
   catch (error) {
     if (error.code !== "EEXIST") throw error;
     // A taker that died mid-recovery leaves its guard: an old one is cleared, and the next attempt recovers.
     const held = look(guard);
-    if (held && held.age > RECOVER_STALE_MS) rmSync(guard, { force: true });
+    if (held && held.age > RECOVER_STALE_MS) drop(held.text);
     return false;
   }
   try {
@@ -73,7 +76,7 @@ function recover(path, found, between) {
     const now = look(path);
     if (now && now.text === found.text) rmSync(path, { force: true });
     return true;
-  } finally { rmSync(guard, { force: true }); }
+  } finally { drop(mine); }
 }
 
 async function fileLock(path, name, { between } = {}) {

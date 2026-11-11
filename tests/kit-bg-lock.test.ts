@@ -150,20 +150,47 @@ test("processes racing for a stale lock: one holds it, the others are refused", 
   const root = folder(t);
   const path = join(root, ".job.lock");
   const code = `import { bgLock } from ${JSON.stringify(new URL("../bg-lock.mjs", import.meta.url).href)};
-try { const lock = await bgLock(process.argv[2], "job", { platform: "win32" }); console.log("won"); await new Promise(r => setTimeout(r, 1500)); await lock.release(); }
+try { const lock = await bgLock(process.argv[2], "job", { platform: "win32" }); console.log("won"); await new Promise(r => process.stdin.resume().on("close", r)); await lock.release(); }
 catch (error) { console.log(/is busy/.test(error.message) ? "busy" : error.message); }`;
   const script = join(root, "taker.mjs");
   writeFileSync(script, code);
   for (let round = 0; round < 3; round++) {
     writeFileSync(path, `${deadPid()} dead-token\n`);
-    const results = await Promise.all(Array.from({ length: 6 }, () => new Promise<string>((accept, reject) => {
-      const child = spawn(process.execPath, [script, path], { stdio: ["ignore", "pipe", "inherit"] });
+    // A taker that wins holds the lock until its stdin closes, which is after every taker has answered.
+    const takers = Array.from({ length: 6 }, () => {
+      const child = spawn(process.execPath, [script, path], { stdio: ["pipe", "pipe", "inherit"] });
       let out = "";
-      child.stdout.on("data", chunk => { out += chunk; });
-      child.on("error", reject).on("close", () => accept(out.trim()));
-    })));
-    assert.deepEqual(results.filter(result => result === "won").length, 1, results.join(","));
+      const closed = new Promise(accept => child.once("close", accept));
+      const answer = new Promise<string>((accept, reject) => {
+        child.stdout.on("data", chunk => { out += chunk; if (out.includes("\n")) accept(out.trim()); });
+        child.on("error", reject).on("close", () => accept(out.trim()));
+      });
+      return { child, answer, closed };
+    });
+    const results = await Promise.all(takers.map(taker => taker.answer));
+    for (const { child } of takers) child.stdin.end();
+    await Promise.all(takers.map(taker => taker.closed));
+    assert.equal(results.filter(result => result === "won").length, 1, results.join(","));
     assert.deepEqual(results.filter(result => result !== "won" && result !== "busy"), []);
     assert.equal(existsSync(path), false);
   }
+});
+
+test("a stale lock that is gone by the second read, inside the guard, is taken", async t => {
+  const root = folder(t);
+  const path = join(root, ".job.lock");
+  writeFileSync(path, `${deadPid()} dead-token\n`);
+  const lock = await bgLock(path, "job", { platform: "win32", between: () => rmSync(path) });
+  assert.match(readFileSync(path, "utf8"), new RegExp(`^${process.pid} `));
+  assert.equal(existsSync(`${path}.recover`), false);
+  await lock.release();
+});
+
+test("a guard another taker made since is never removed by a taker that is done", async t => {
+  const root = folder(t);
+  const path = join(root, ".job.lock");
+  writeFileSync(path, `${deadPid()} dead-token\n`);
+  const lock = await bgLock(path, "job", { platform: "win32", between: () => writeFileSync(`${path}.recover`, "9 someone-else\n") });
+  assert.equal(readFileSync(`${path}.recover`, "utf8"), "9 someone-else\n");
+  await lock.release();
 });
