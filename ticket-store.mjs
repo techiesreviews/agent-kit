@@ -57,6 +57,41 @@ export function showDate(iso, edge) {
   return when.second === "00" && minutes === (edge === "start" ? "00:00" : "23:59") ? `${when.year}-${when.month}-${when.day}` : new Date(iso).toISOString();
 }
 
+const units = { day: "daily", week: "weekly", month: "monthly", year: "yearly" };
+const weekdays = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+
+/**
+ * Orbit's repeat rule (TaskRecurrence) from kit words: `every` is "[N ]day|week|month|year" (N from 1 to 365), `on` a
+ * comma list of weekdays (a weekly rule counted from the due date only, as Orbit allows), `from` due (default) or completion.
+ */
+export function repeatRule({ every, on, from } = {}) {
+  const found = /^(?:(\d+)\s*)?(day|week|month|year)s?$/i.exec(String(every ?? "").trim());
+  if (!found) throw new OrbitError("--every takes a day, week, month or year, with a number before it for more (like --every \"2 weeks\")");
+  const interval = found[1] === undefined ? 1 : Number(found[1]);
+  if (!Number.isInteger(interval) || interval < 1 || interval > 365) throw new OrbitError("--every takes a number from 1 to 365");
+  const base = from === undefined ? "due" : String(from).trim().toLowerCase();
+  if (!["due", "completion"].includes(base)) throw new OrbitError("--from takes due or completion");
+  const frequency = units[found[2].toLowerCase()];
+  let days = [];
+  if (on !== undefined) {
+    if (frequency !== "weekly" || base !== "due") throw new OrbitError("--on (weekdays) works only with --every week counted from the due date");
+    const named = String(on).split(",").map(day => day.trim().toLowerCase()).filter(Boolean);
+    const wrong = named.find(day => !weekdays.includes(day));
+    if (wrong !== undefined || !named.length) throw new OrbitError("--on takes weekdays: mon, tue, wed, thu, fri, sat or sun, split by commas");
+    days = weekdays.filter(day => named.includes(day));
+  }
+  return { frequency, interval, weekdays: days, base };
+}
+
+/** A repeat rule as a person reads it, like "every 2 weeks on Mon, Thu (counted from the due date)"; "" for none. */
+export function showRepeat(rule) {
+  if (!rule || typeof rule !== "object") return "";
+  const unit = Object.keys(units).find(name => units[name] === rule.frequency) ?? String(rule.frequency);
+  const every = rule.interval === 1 ? `every ${unit}` : `every ${rule.interval} ${unit}s`;
+  const days = rule.weekdays?.length ? ` on ${rule.weekdays.map(day => day.charAt(0).toUpperCase() + day.slice(1)).join(", ")}` : "";
+  return `${every}${days} (counted from ${rule.base === "completion" ? "the day it is done" : "the due date"})`;
+}
+
 const oneLine = text => String(text ?? "").replace(/\s*[\r\n]+\s*/g, " ").trim();
 const nextLexPrefix = "Next step (Lex):";
 const blockedLine = /^Blocked by:\s*(.*)$/i;
@@ -681,6 +716,21 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
         const when = [startAt && `start ${showDate(startAt, "start")}`, `due ${showDate(dueAt, "due")}`].filter(Boolean).join(", ");
         return { description: withPlannedDates(task.description, `Planned dates: ${when} (source: ${named})`), due_start_at: startAt ?? null, due_at: dueAt };
       }, { replaces: [(clear || start !== undefined) && "due_start_at", (clear || due !== undefined) && "due_at"].filter(Boolean) });
+    },
+    /**
+     * How the card repeats (Orbit's recurrence; closing a repeating card makes Orbit create the next one), or `stop`
+     * to end it. An Orbit whose cards have no recurrence field does not have repeating tasks yet, and nothing is sent.
+     */
+    repeat(key, { every, on, from, stop }) {
+      if (stop && (every !== undefined || on !== undefined || from !== undefined)) throw new OrbitError("--stop ends the repeat; use it without --every, --on or --from");
+      if (!stop && every === undefined) throw new OrbitError("say how often: --every week (or day, month, year), or --stop to end the repeat");
+      const rule = stop ? null : repeatRule({ every, on, from });
+      return changeCard("repeat", key, task => {
+        if (!Object.hasOwn(task, "recurrence")) throw new OrbitError("this Orbit does not have repeating tasks yet (its cards have no recurrence field), so nothing was sent; Orbit needs an update first");
+        const now = task.recurrence ? { frequency: task.recurrence.frequency, interval: task.recurrence.interval, weekdays: weekdays.filter(day => (task.recurrence.weekdays ?? []).includes(day)), base: task.recurrence.base } : null;
+        // The same rule in Orbit's own field order is no change.
+        return { recurrence: same(now, rule) ? task.recurrence : rule };
+      }, { replaces: ["recurrence"] });
     },
     /** A dated comment (the card standard keeps history in comments, never in the description). */
     note(key, text) {

@@ -859,6 +859,13 @@ test("release into main opens but never waits or merges", t => {
   assert.ok(f.ghCalls("create")[0].args.includes("main"));
 });
 
+test("a release runs the plain ticket check: what it carries already passed when each PR landed on dev", t => {
+  const f = fixture(t, { "docs/wayfinder/m/tickets/01-x.md": "---\nstatus: closed\n---\n" });
+  const result = f.run(["--base", "main", "--release"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(f.calls().filter(call => call.tool === "tickets.mjs").map(call => call.args), [["check"]]);
+});
+
 test("a release runs kit release-check --land first, a dry run too; only releases run it", t => {
   const f = fixture(t);
   for (const args of [["--base", "main", "--release", "--dry-run"], ["--base", "main", "--release"]]) {
@@ -1661,16 +1668,23 @@ test("each path reaches a tier and the highest present wins", () => asEditor(() 
   assert.equal(classify(rows("fixtures/actual-starter/AGENTS.md")).tier, "tests");
   assert.equal(classify([{ status: "D", path: "src/old.css" }]).tier, "full");
   assert.equal(classify([]).tier, "full");
-  assert.deepEqual(classify(rows("docs/a.md"), { full: true }), { tier: "full", reason: "1 file, --full", docs: false });
+  // --full keeps whether docs changed, so a ticket the PR closes is still checked.
+  assert.deepEqual(classify(rows("docs/a.md"), { full: true }), { tier: "full", reason: "1 file, --full", docs: true });
+  assert.deepEqual(classify(rows("src/main.ts"), { full: true }), { tier: "full", reason: "1 file, --full", docs: false });
+  assert.deepEqual(classify([], { full: true }), { tier: "full", reason: "0 files, --full", docs: false });
+  assert.ok(checkSteps(classify(rows("docs/work/x/tickets/1-a.md", "src/main.ts"), { full: true })).steps.includes("tickets"));
   assert.deepEqual(parseChanges("M\tdocs/a.md\nD\tsrc/b.css\n"), [{ status: "M", path: "docs/a.md" }, { status: "D", path: "src/b.css" }]);
 }));
 
-test("tier steps: docs skips unit, specs and review; full keeps today's set", () => {
+test("tier steps: docs skips unit, specs and review; full keeps today's set and checks tickets when docs changed", () => {
   assert.deepEqual(checkSteps({ tier: "docs", docs: true }), { steps: ["tickets", "unit-files"], review: false });
   assert.deepEqual(checkSteps({ tier: "css", docs: false }), { steps: ["colours", "specs"], review: true });
   assert.deepEqual(checkSteps({ tier: "css", docs: true }), { steps: ["colours", "tickets", "unit-files", "specs"], review: true });
   assert.deepEqual(checkSteps({ tier: "tests", docs: false }), { steps: ["check", "unit-files", "lint", "specs"], review: true });
-  assert.deepEqual(checkSteps({ tier: "full", docs: true }), { steps: ["check", "unit", "lint", "specs"], review: true });
+  assert.deepEqual(checkSteps({ tier: "tests", docs: true }), { steps: ["check", "unit-files", "lint", "tickets", "specs"], review: true });
+  assert.deepEqual(checkSteps({ tier: "full", docs: false }), { steps: ["check", "unit", "lint", "specs"], review: true });
+  assert.deepEqual(checkSteps({ tier: "full", docs: true }), { steps: ["check", "unit", "lint", "tickets", "specs"], review: true });
+  assert.deepEqual(checkSteps({ tier: "full", docs: true, cleanGuard: true }).steps, ["check", "unit", "kit-clean", "lint", "tickets", "specs"]);
 });
 
 test("focused unit files: changed tests, tests naming a changed helper or fixture, and docs guards", () => asEditor(() => {
@@ -1691,7 +1705,7 @@ test("a docs-only PR runs only doc guards, skips Claude's review but not the sec
   assert.equal(result.status, 0, result.stderr); assert.match(result.stdout, /RESULT: ok merged #73/);
   assert.match(result.stdout, /^tier: docs \(2 files, all docs\)$/m); assert.match(result.stdout, /review: skipped \(docs tier\)/);
   const calls = f.calls();
-  assert.deepEqual(calls.filter(call => call.tool === "tickets.mjs").map(call => call.args), [["check"]]);
+  assert.deepEqual(calls.filter(call => call.tool === "tickets.mjs").map(call => call.args), [["check", "--closed-since", "origin/dev"]]);
   assert.deepEqual(calls.filter(call => call.tool === "unit.sh").map(call => call.args), [["tests/code-map.test.ts"]]);
   assert.equal(calls.some(call => call.tool === "npm"), false);
   assert.equal(calls.some(call => claudeReview(call) || (call.tool === "fake-kit" && call.args[0] === "specs")), false);
@@ -1700,6 +1714,51 @@ test("a docs-only PR runs only doc guards, skips Claude's review but not the sec
   assert.ok(calls.some(call => call.tool === "fake-kit" && call.args[0] === "wait"));
   assert.match(f.body(), /Tier: docs \(2 files, all docs\)/);
   assert.match(f.body(), /skipped for the docs tier \(CI still runs check, unit tests, lint and browser tests\): npm run check, npm test \(all unit tests\), npm run lint, kit specs --affected, kit review/);
+  // The PR text names the second look's model, and says plainly that Claude's review did not run.
+  const block = f.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body ?? "").find(text => text.includes("<!-- review-loop -->"))!;
+  assert.match(block, /<!-- review-loop -->\nReview: Claude's review skipped \(docs tier\)\.\n\nSecond look by grok-4\.7 \(Grok\)\.\n<!-- \/review-loop -->/);
+});
+
+test("a docs-only PR whose second look no model can take says so in its review block", t => {
+  const f = fixture(t, { "docs/guide.md": "# Guide\n", "AGENTS.md": "# Agents\n" }), result = f.run([], { FAKE_SECOND: "skip" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const block = f.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body ?? "").find(text => text.includes("<!-- review-loop -->"))!;
+  assert.doesNotMatch(block, /Verdict:/);
+  assert.match(block, /<!-- review-loop -->\nReview: Claude's review skipped \(docs tier\)\.\n\nsecond look: skipped \(grok-4\.7 out of credit; opencode\/deepseek-v4\.1-flash-free out of credit\)\n<!-- \/review-loop -->/);
+});
+
+test("a docs-only PR's review block carries the second look's ledger rows and the verdict when it found something", t => {
+  const files = { "docs/guide.md": "# Guide\n", "AGENTS.md": "# Agents\n" };
+  const nit = fixture(t, files), merged = nit.run([], { FAKE_SECOND_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:2 P3 a second-look nit.\n" });
+  assert.equal(merged.status, 0, merged.stdout + merged.stderr);
+  const block = nit.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body ?? "").findLast(text => text.includes("<!-- review-loop -->"))!;
+  assert.match(block, /^Review: Claude's review skipped \(docs tier\)\./m);
+  assert.match(block, /^Second look by grok-4\.7 \(Grok\)\.$/m);
+  assert.match(block, /^Review: Claude's review skipped \(docs tier\)\. Verdict: approved$/m);
+  assert.match(block, /^\| SL-1 \| nit \| .*a second-look nit\. \|$/m);
+  assert.doesNotMatch(block, /Findings ledger: none/);
+  const lead = fixture(t, files), waived = lead.run(["--waive", "Accepted for follow-up"], { ASE_OWNER: "ke-lead", FAKE_SECOND_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P1 the second look found this.\n" });
+  assert.equal(waived.status, 0, waived.stdout + waived.stderr);
+  const waivedBlock = lead.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body ?? "").findLast(text => text.includes("<!-- review-loop -->"))!;
+  assert.match(waivedBlock, /Verdict: not approved \(1 open finding waived by the lead\)/);
+  assert.match(waivedBlock, /^\| SL-1 \| blocker \| open, waived by the lead \(second look\): .*the second look found this\. \|$/m);
+});
+
+test("dry-run on a docs-only change leaves GPT out of the second look's order even with --full", t => {
+  const f = fixture(t, { "docs/guide.md": "# Guide\n" }), result = f.run(["--dry-run", "--full"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^second look: dx \(docs\/guide\.md\) grok-4\.7, else opencode\/deepseek-v4\.1-flash-free$/m);
+  assert.doesNotMatch(result.stdout, /^second look: .*gpt-/m);
+});
+
+test("dry-run on a docs-only change whose row lists only GPT says there is no model, never a bare line", t => {
+  const f = fixture(t, { "docs/guide.md": "# Guide\n" });
+  const only = join(f.dir, "gpt-only.json");
+  const row = { order: ["gpt-6.1-sol"], checked: "2026-11-10" };
+  writeFileSync(only, JSON.stringify({ kinds: { code: row, ux: row, dx: row, agent: row } }));
+  const result = f.run(["--dry-run"], { ASE_SECOND_LOOK: only });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^second look: dx \(docs\/guide\.md\) no model \(GPT never looks at a docs-only change\)$/m);
 });
 
 test("a tests-only PR runs check, the affected unit files, lint, specs and the review", t => {
@@ -1710,6 +1769,17 @@ test("a tests-only PR runs check, the affected unit files, lint, specs and the r
   assert.deepEqual(calls.filter(call => call.tool === "unit.sh").map(call => call.args), [["tests/a.test.ts", "tests/b.test.ts"]]);
   for (const name of ["specs", "review"]) assert.ok(calls.some(call => call.tool === "fake-kit" && call.args[0] === name), name);
   assert.ok(f.body().includes("- scripts/agents/unit.sh tests/a.test.ts tests/b.test.ts: ok"));
+});
+
+test("a code PR that also changes a ticket file runs the ticket check, and a code-only PR does not", t => {
+  const docs = fixture(t, { "src/app.ts": "export {};\n", "docs/wayfinder/m/tickets/01-x.md": "---\nstatus: closed\n---\n" });
+  const withTicket = docs.run(["--no-merge"]);
+  assert.equal(withTicket.status, 0, withTicket.stderr); assert.match(withTicket.stdout, /^tier: full \(2 files, src\/app\.ts is code\)$/m);
+  assert.deepEqual(docs.calls().filter(call => call.tool === "tickets.mjs").map(call => call.args), [["check", "--closed-since", "origin/dev"]]);
+  assert.match(docs.body(), /- node \S*tickets\.mjs check --closed-since origin\/dev: ok/);
+  const code = fixture(t, { "src/app.ts": "export {};\n" });
+  assert.equal(code.run(["--no-merge"]).status, 0);
+  assert.deepEqual(code.calls().filter(call => call.tool === "tickets.mjs"), []);
 });
 
 test("a KIT_HOME outside the project runs its own unit.sh by absolute path, as the PR body says", t => {
@@ -1733,8 +1803,8 @@ test("a docs-tier PR with a KIT_HOME outside the project runs that home's ticket
   const result = f.run(["--no-merge"], { KIT_HOME: home });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /^tier: docs /m);
-  assert.deepEqual(f.calls().filter(call => call.tool === "tickets.mjs").map(call => [call.script, call.args]), [[join(home, "tickets.mjs"), ["check"]]]);
-  assert.ok(f.body().includes(`- node ${join(home, "tickets.mjs")} check: ok`), f.body());
+  assert.deepEqual(f.calls().filter(call => call.tool === "tickets.mjs").map(call => [call.script, call.args]), [[join(home, "tickets.mjs"), ["check", "--closed-since", "origin/dev"]]]);
+  assert.ok(f.body().includes(`- node ${join(home, "tickets.mjs")} check --closed-since origin/dev: ok`), f.body());
 });
 
 test("a CSS-only PR runs the colour check and specs, keeps the review and reminds about shots", t => {
@@ -2276,7 +2346,10 @@ test("dry-run names the second look's kind, its deciding path, its models in ord
   for (const [file, kind, extra] of [["docs/guide.md", "dx"], ["docs/agents/runner.md", "agent"], ["src/ui/panel.ts", "ux", { "ticket.md": done }], ["src/x.ts", "code"]] as const) {
     const f = fixture(t, { [file]: "x\n", ...extra }), result = f.run(["--dry-run", "--ticket", "ticket.md"]);
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stdout, new RegExp(`^second look: ${kind} \\(${file.replaceAll(".", "\\.")}\\) ${table[kind].order.join(", else ").replaceAll(".", "\\.")}$`, "m"), file);
+    // GPT never looks at a docs-only change, so a docs-only plan leaves it out of the order it prints.
+    const order = /^docs\//.test(file) ? table[kind].order.filter((model: string) => !model.startsWith("gpt-")) : table[kind].order;
+    assert.match(result.stdout, new RegExp(`^second look: ${kind} \\(${file.replaceAll(".", "\\.")}\\) ${order.join(", else ").replaceAll(".", "\\.")}$`, "m"), file);
+    if (/^docs\//.test(file)) assert.doesNotMatch(result.stdout, /^second look: .*gpt-/m, file);
     assert.match(result.stdout, /^\S+ 'review' '--base' 'origin\/dev' '--pr' 'N' '--ticket' 'ticket\.md' '--second-look'$/m, file);
   }
 });

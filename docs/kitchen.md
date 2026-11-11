@@ -283,6 +283,15 @@ OpenCode settings (default model, global instructions) do not apply to the revie
   and the approved mock-up.
 - **Decides:** the builder, inside the ticket's Files; anything outside them stops the slice.
 - **Done when:** the builder's commits and the ticket's `## Done` are on the slice branch.
+- **Closing a ticket:** `status: closed` needs a `## Done (YYYY-MM-DD)` with one evidence line per `## Done when`
+  item, `Done when <n>: met — <evidence>` (the verdicts are met, not met, pending and open; only met with proof
+  counts). `tickets.mjs check` refuses a closed ticket whose Done says "not met", "pending" or "open" as a check's verdict,
+  or whose item has no evidence line. The lint over every ticket reads only a `## Done` section dated 2026-11-12 or
+  later (`doneCheckFrom` in `tickets.mjs`) of a ticket whose `## Done when` is a list, so older, undated and missing
+  Done sections stay as they are. `kit pr` runs `tickets.mjs check --closed-since origin/<land>` whenever the PR changes
+  docs, ticket files included: a ticket that is closed now and was not closed at the merge base (or is new) is read
+  strictly, with no date cutoff, and a missing or undated `## Done` fails too (a release runs the plain check). A
+  builder whose item is not met writes `Done when <n>: not met — <why>` and does not close the ticket.
 
 ### 7. Checks
 

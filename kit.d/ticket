@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-// kit: tickets on the Orbit board: create, read, update, dates, notes, comments, sub-tasks, next-lex, check, tidy, trash, setup, import, parity, migrate
+// kit: tickets on the Orbit board: create, read, update, dates, repeats, notes, comments, sub-tasks, next-lex, check, tidy, trash, setup, import, parity, migrate
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { kitOwner, kitResult, kitRoot, kitSettings } from "../kit-lib.mjs";
 import { OrbitError, OrbitSetupProblem, orbitCardRedactor, orbitClient, orbitLogPath, orbitRedactor, orbitSecrets, readOrbitConfig } from "../orbit-client.mjs";
 import { orbitSetup } from "../orbit-setup.mjs";
-import { orbitStore, readTidyFolder, showDate, ticketSettings } from "../ticket-store.mjs";
+import { orbitStore, readTidyFolder, showDate, showRepeat, ticketSettings } from "../ticket-store.mjs";
 import { importTickets, migrateTickets, ticketParity } from "../ticket-import.mjs";
 
 const usage = `Usage: kit ticket <command> [options]
@@ -15,7 +15,7 @@ The card standard (one short card, history in comments, parts as sub-tasks): doc
 (scripts/agents/kit --home prints the kit's folder). create and update warn when a description breaks it (exit code stays 0).
 
 Read (anyone):
-  get <KEY> [--comments] [--json]                  one card, with its status, assignee_ids, next step and blockers
+  get <KEY> [--comments] [--json]                  one card, with its status, assignee_ids, next step, blockers and repeat
   list [--project KEY|all] [--status NAME] [--parent KEY] [--assignee NAME|ID|none] [--q TEXT] [--limit N] [--json]
   sub-tasks <KEY> [--json]                         the card's direct sub-tasks
   labels [--project KEY]                           the label names a board has
@@ -29,6 +29,10 @@ Write (leads only: ORBIT_ROLE=lead; every write takes --dry-run, which prints th
          [--parent KEY|none] [--blocked-by KEY,KEY|none] [--label NAME,NAME | --clear-labels] [--assignee NAME|ID|none] [--lex-said "<his exact words>"]
   dates <KEY> [--start DATE] [--due DATE] --source "<where the date comes from>"   or   dates <KEY> --clear
          A new description keeps the card's "Next step", "Blocked by" and "Planned dates" lines unless it has its own.
+  repeat <KEY> --every [N ]day|week|month|year [--on mon,thu] [--from due|completion]   or   repeat <KEY> --stop
+         makes the card repeat: closing it (Done or Cancelled) makes Orbit create the next one with the next due date.
+         --from due (the default) keeps a fixed calendar from the due date; completion counts from the day it is done.
+         --on picks weekdays, for --every week from the due date only. N is 1 to 365. --stop ends the repeat.
   note <KEY> "<text>"                              a comment that starts with today's date (the description is not touched)
   comment <KEY> "<text>"                           a comment on the card
   next-lex <KEY> "<reason>" [--comment "<details>"]
@@ -114,6 +118,7 @@ const commands = {
   create: { args: [], flags: ["dry-run", "no-parent"], values: cardOptions },
   update: { args: ["card key"], flags: ["dry-run", "clear-description", "clear-labels"], values: cardOptions.filter(name => name !== "project") },
   dates: { args: ["card key"], flags: ["dry-run", "clear"], values: ["start", "due", "source"] },
+  repeat: { args: ["card key"], flags: ["dry-run", "stop"], values: ["every", "on", "from"] },
   note: { args: ["card key", "text"], flags: ["dry-run"], values: [] },
   comment: { args: ["card key", "text"], flags: ["dry-run"], values: [] },
   "next-lex": { args: ["card key", "reason"], flags: ["dry-run"], values: ["comment"] },
@@ -226,6 +231,7 @@ async function show(store, key, { json, comments }) {
   if (task.label_names.length) say(`Labels: ${task.label_names.join(", ")}`);
   if (task.next_lex !== null) say(`Next step (Lex): ${task.next_lex}`);
   if (task.blocked_by.length) say(`Blocked by: ${task.blocked_by.join(", ")}`);
+  if (task.recurrence) say(`Repeats: ${showRepeat(task.recurrence)}`);
   if (task.due_at) say(`Dates: ${[task.due_start_at && `start ${showDate(task.due_start_at, "start")}`, `due ${showDate(task.due_at, "due")}`].filter(Boolean).join(", ")}`);
   if (task.parent_task_id) say(`Parent: ${task.parent_key ?? `${task.parent_task_id} (this token cannot read it)`}`);
   say(`Version: ${task.version}`);
@@ -299,6 +305,7 @@ async function main() {
     }
     case "update": return report(name, await store.update(key, { title: flags.title, description: description(flags), clearDescription: flags["clear-description"], status: flags.status, priority: flags.priority, parent: flags.parent, blocked: flags["blocked-by"], label: flags.label, assignee: flags.assignee, clearLabels: flags["clear-labels"], lexSaid: flags["lex-said"] }));
     case "dates": return report(name, await store.dates(key, { start: flags.start, due: flags.due, source: flags.source, clear: flags.clear }));
+    case "repeat": return report(name, await store.repeat(key, { every: flags.every, on: flags.on, from: flags.from, stop: flags.stop }));
     case "note": return report(name, await store.note(key, wording));
     case "check": {
       const chosen = [key !== undefined, flags.project !== undefined, Boolean(flags.all)].filter(Boolean).length;

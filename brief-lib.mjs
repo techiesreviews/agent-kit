@@ -92,7 +92,9 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
   const branch = named?.branch ?? kitSliceBranch(owner, slug);
   const builder = builderModel(info.builder, pins.builder);
   const order = lookOrder();
-  const target = model || (stage === "review" ? review : stage === "second-look" ? order?.[0] ?? review : builder);
+  // A second look with no readable table has no model to name: null keeps its skill lines neutral (modelFamily) and never
+  // borrows the main reviewer's model. Only the build stage prints the target as a pin.
+  const target = model || (stage === "review" ? review : stage === "second-look" ? order?.[0] ?? null : builder);
   const reviewing = stage === "review" || stage === "second-look";
   // kit next's owner is <prefix>-<NN> (a map ticket's <NN> starts with m) and its job slice-<prefix><NN>:
   // al-01 runs as slice-al01, site-fonts-01 as slice-site-fonts01. Another owner keeps its name.

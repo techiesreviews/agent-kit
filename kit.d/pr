@@ -14,7 +14,7 @@ const { kitBranch, kitGhEnv, kitHideUserInfo, kitHidingLog, kitHome, kitMachineL
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const { failedSpecs, isTiming, listedSpecs, nothingSelected, timingList, wholeReport } = await import(pathToFileURL(resolve(import.meta.dirname, "../browser-runs.mjs")).href);
-const { checkSteps, classify, doneHeading, featureListGuard, featureListProblem, focusedUnitFiles, lookFamilyWords, parseChanges, secondLookPick, unitTestFile } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
+const { checkSteps, classify, doneHeading, featureListGuard, featureListProblem, focusedUnitFiles, lookFamily, lookFamilyWords, parseChanges, secondLookPick, unitTestFile } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
 const usage = 'Usage: kit pr [--base <land>] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release] [--full] [--waive "<reason>"]\nBranches come from scripts/agents/kit.json: --base defaults to branches.land; --release needs --base branches.release and first runs kit release-check --land (nothing unsaved, HEAD exactly origin/<land>).\n--waive requires a *-lead owner; records the reason for merging with open findings or without a feature-list update;\nwith --release it also passes the release check, which names the reason (kit pr still needs a clean tree).\nAfter the Claude review (none in the docs tier), every change gets a second look (kit review --second-look), whose findings block the same way;\nwhen no model can take it, the PR lands and says "second look: skipped (<reason>)".\nOn Orbit ("tickets": "orbit"), --ticket takes a card KEY or its brief (.scratch/kit-tickets/KEY.md, which kit slice writes); when the PR\nlands the card goes to Done with a dated comment naming the PR and its merge SHA (ORBIT_ROLE=lead); a card that cannot be closed is named on the RESULT line.\n';
 const kit = process.env.KIT_PR_KIT || resolve(import.meta.dirname, "../kit");
 
@@ -609,7 +609,9 @@ async function main(args) {
     const commands = {
       check: () => parse(checks.check), unit: () => parse(checks.test), lint: () => parse(checks.lint),
       "kit-clean": () => extra.flatMap(parse),
-      colours: () => parse(checks.css), tickets: () => [["node", [shared("tickets.mjs"), "check"]]],
+      colours: () => parse(checks.css),
+      // A release carries what each PR already passed on its way into the land branch, so it runs the plain check.
+            tickets: () => [["node", [shared("tickets.mjs"), "check", ...(flags.release ? [] : ["--closed-since", `origin/${flags.base}`])]]],
       "unit-files": () => {
         const files = focusedUnitFiles(changes, plan, sources(), settings);
         return files.length ? [[shared("unit.sh"), files]] : [];
@@ -681,7 +683,10 @@ async function main(args) {
     if (flags.dryRun) {
       const look = secondLookPick(changes, settings, { ticket: flags.ticket && relative(root, resolve(root, flags.ticket)) });
       console.log(`branch: ${branch}\nbase: ${flags.base}\nHEAD: ${head}\ntitle: ${prTitle}\nbody: ${body}`);
-      console.log(`second look: ${look.kind} (${look.path}) ${look.order.join(", else ")}`);
+      // GPT never looks at a docs-only change (kit review passes it over), so the plan does not name it for one. Docs-only is
+      // worked out as kit review does (without --full, which changes the checks and not what the second look sees).
+      const order = classify(changes, { settings }).tier === "docs" ? look.order.filter(model => lookFamily(model) !== "gpt") : look.order;
+      console.log(`second look: ${look.kind} (${look.path}) ${order.length ? order.join(", else ") : "no model (GPT never looks at a docs-only change)"}`);
       const reviewCommand = extra => [kit, ...reviewArgs, "N", ...(flags.ticket ? ["--ticket", flags.ticket] : []), ...extra];
       // The plan names the repo gh is told, so a command copied from it never lands in another remote's repo.
       const named = ghEnv.GH_REPO ? ["--repo", ghEnv.GH_REPO] : [];
@@ -822,18 +827,23 @@ async function main(args) {
     // Rule: the PR says how it was reviewed. The block sits between markers, so a later run (a "behind" merge, a new head)
     // replaces it instead of adding a second line and ledger.
     async function recordReviewLoop() {
-      if (!loopSummary && !nothingToReview) { await replaceBlock(null); return; }
+      // A tier with no Claude review (docs) still says what the second look did; with nothing to say, no block.
+      const skippedTier = !review && !loopSummary && !nothingToReview && Boolean(secondLookModel || secondLookSkipped);
+      if (!loopSummary && !nothingToReview && !skippedTier) { await replaceBlock(null); return; }
       const open = `${loopLeft} open finding${loopLeft === 1 ? "" : "s"}`;
       const verdict = !loopLeft ? "approved" : loopBudgetUsed ? `not approved (budget used, ${open} left for Lex${waived ? ", waived by the lead" : ""})`
         : waived ? `not approved (${open} waived by the lead)` : `not approved (${open} left for Lex: no reason was given for it)`;
       // A PR whose diff is empty was never reviewed: it says so in place of a verdict and a ledger.
-      const line = loopSummary ? prLine({ ...loopSummary, verdict }) : `Review: nothing to review (the diff against ${flags.base} is empty).`;
+      // A tier with no Claude review still shows what its second look found: the verdict and the ledger rows.
+      const line = loopSummary ? prLine({ ...loopSummary, verdict })
+        : skippedTier ? `Review: Claude's review skipped (${plan.tier} tier).${secondRows.length ? ` Verdict: ${verdict}` : ""}`
+        : `Review: nothing to review (the diff against ${flags.base} is empty).`;
       // A second look that no model could take is said in the PR too, so the PR never reads as fully double-checked.
       const skipped = secondLookSkipped ? `${secondLookSkipped}\n\n` : "";
       // The model that took the second look, in plain words, so the PR says who looked after Claude.
       const looked = secondLookModel ? `Second look by ${secondLookModel} (${lookFamilyWords(secondLookModel)}).\n\n` : "";
       const block = loopSummary ? `<!-- review-loop -->\n${line}\n\n${skipped}${looked}${renderLedger([...loopSummary.rows, ...secondRows])}\n<!-- /review-loop -->`
-        : `<!-- review-loop -->\n${line}${skipped ? `\n\n${skipped.trimEnd()}` : ""}\n<!-- /review-loop -->`;
+        : `<!-- review-loop -->\n${line}${skipped || looked ? `\n\n${(skipped + looked).trimEnd()}` : ""}${skippedTier && secondRows.length ? `\n\n${renderLedger(secondRows)}` : ""}\n<!-- /review-loop -->`;
       const current = readFileSync(body, "utf8");
       const next = /<!-- review-loop -->[\s\S]*?<!-- \/review-loop -->/.test(current)
         ? current.replace(/<!-- review-loop -->[\s\S]*?<!-- \/review-loop -->/, () => block) : `${current.replace(/\n*$/, "\n")}\n${block}\n`;

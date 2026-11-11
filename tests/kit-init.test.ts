@@ -1781,18 +1781,19 @@ test("a checks setting with only keys that do not gate a merge still gets the no
   assert.match(gh.init(repo.work, ["--check"]).stdout, /has no "checks"/);
 });
 
-test("the no-checks note also counts a specs command and paths.unitTests, which gate a change too", (t) => {
+test("the no-checks note counts a specs command, but paths.unitTests alone does not silence it", (t) => {
   const f = fixture(t);
   const gh = visibilityGh(f, "PRIVATE");
+  // Unit test files with no checks and no specs command: the note stays, so a direct project is never told it is covered.
   const unitTests = withOrigin(f, "unittests", { "scripts/agents/kit.json": JSON.stringify({ project: "tools", branches: directSettings, paths: { unitTests: ["tests/"] } }) });
-  assert.doesNotMatch(gh.init(unitTests.work, ["--check"]).stdout, /no "checks"/);
+  assert.match(gh.init(unitTests.work, ["--check"]).stdout, /has no "checks"/);
   const g = fixture(t);
   const specs = visibilityGh(g, "PRIVATE");
   const withSpecs = withOrigin(g, "specscmd", { "scripts/agents/kit.json": JSON.stringify({ project: "tools", branches: directSettings, commands: "scripts/agents/project.d" }),
     "scripts/agents/project.d/specs": "#!/bin/sh\necho specs\n" });
   chmodSync(join(withSpecs.work, "scripts/agents/project.d/specs"), 0o755);
   assert.doesNotMatch(specs.init(withSpecs.work, ["--check"]).stdout, /no "checks"/);
-  // A commands folder with no specs command, and an empty paths.unitTests, still get the note.
+  // A commands folder with no specs command, and an empty paths.unitTests, get the note too.
   const h = fixture(t);
   const neither = visibilityGh(h, "PRIVATE");
   const bare = withOrigin(h, "neither", { "scripts/agents/kit.json": JSON.stringify({ project: "tools", branches: directSettings, commands: "scripts/agents/project.d", paths: { unitTests: [] } }),
