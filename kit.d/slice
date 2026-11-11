@@ -380,7 +380,7 @@ async function slice(args) {
     const checkDone = () => {
       // The Done when list is taken from the ticket as it is now: a build or a fix round may have added an item to it.
       const text = readFileSync(ticket, "utf8"), problems = unmetDoneProblems(text, flags.ticket, doneWhen(text));
-      if (!problems.length) return;
+      if (!problems.length) { writeFileSync(log, "every Done when item is shown as met\n"); return; }
       writeFileSync(log, problems.map(problem => problem.message).join("\n") + "\n");
       const first = problems[0].message.replace(/^Ticket(?:: |, but )/, "");
       throw new Error(`a Done when item is not shown as met, so the slice does not land: ${first}${problems.length > 1 ? ` (and ${problems.length - 1} more; see ${log})` : ""}`);
@@ -566,7 +566,8 @@ async function slice(args) {
         Object.assign(state.secondLook, { answering: true, round: state.rounds }); save();
       }
     }
-    // The last read of the ticket before landing, which a queued PR (already read) does not need.
+    // The last read of the ticket before landing, which a queued PR (already read) and --no-pr do not need. A pass here prints
+    // nothing and is no scoreboard phase: only the first reading is the phase; a failure ends the slice as done-when.
     if (!flags.noPr && !state.finished.includes("pr") && !state.queued) { begin("done-when"); checkDone(); }
     begin("pr");
     if (!flags.noPr && !state.finished.includes(phase)) {

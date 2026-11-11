@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { OrbitError, OrbitSetupProblem, orbitCardKey, orbitClient, orbitLogPath, orbitRedactor, orbitSecrets, readOrbitConfig } from "./orbit-client.mjs";
 import { orbitStore, ticketSettings } from "./ticket-store.mjs";
 import { kitSliceBranch } from "./kit-lib.mjs";
+import { fencedLines } from "./tickets.mjs";
 
 const keyShape = /^[A-Za-z][A-Za-z0-9_]*-[0-9]+$/;
 /** True for a card key such as TOOLS-10 (never a path: a ticket file always has a slash or .md). */
@@ -53,9 +54,15 @@ const oneLine = text => String(text ?? "").replace(/\s*[\r\n]+\s*/g, " ").trim()
  */
 export function doneWhen(description) {
   const text = String(description ?? "").replace(/\r\n?/g, "\n");
-  const section = /^## Done when[ \t]*\n([\s\S]*?)(?=^## |$(?![\s\S]))/m.exec(text)?.[1]?.trim();
-  if (section) return section;
-  const lines = text.split("\n"), start = lines.findIndex(line => /^[*_]*Done when[*_]*:/i.test(line.trim()));
+  const lines = text.split("\n"), fenced = fencedLines(lines);
+  // Fenced code is no heading and no "Done when:" line: an example in a code block never stands for the real list.
+  const heading = lines.findIndex((line, index) => !fenced[index] && /^## Done when[ \t]*$/.test(line));
+  if (heading >= 0) {
+    const next = lines.findIndex((line, index) => index > heading && !fenced[index] && line.startsWith("## "));
+    const section = lines.slice(heading + 1, next < 0 ? undefined : next).join("\n").trim();
+    if (section) return section;
+  }
+  const start = lines.findIndex((line, index) => !fenced[index] && /^[*_]*Done when[*_]*:/i.test(line.trim()));
   if (start < 0) return "";
   const found = [/^[*_]*Done when[*_]*:[*_]*(.*)$/i.exec(lines[start].trim())[1].trim()].filter(Boolean);
   let gap = false;

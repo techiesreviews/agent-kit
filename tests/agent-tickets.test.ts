@@ -623,7 +623,10 @@ test("unmetDoneProblems reads the card standard's Done when line as the Done whe
   const fenced = card(["```", "## Done when", "- an example", "```", "", "## Done (2026-11-12)", "", "- Done when 1: met — a", "- Done when 2: not met — b", "- Done when 3: pending"]);
   assert.deepEqual(unmetDoneProblems(fenced, "b.md", line).map(row => row.message), [
     'Ticket, but its Done section says "not met": - Done when 2: not met — b', 'Ticket, but its Done section says "pending": - Done when 3: pending']);
+  // A Done when with no list (one line) is one item in this reading, so a verdict on it counts.
+  assert.deepEqual(unmetDoneProblems(card(["## Done (2026-11-12)", "", "- Done when 1: not met — b"]), "b.md", "it works").map(row => row.message), ['Ticket, but its Done section says "not met": - Done when 1: not met — b']);
+  assert.deepEqual(unmetDoneProblems(card(["## Done (2026-11-12)", "", "- Done when 1: met — b"]), "b.md", "it works"), []);
   // Without the line the heading is missing and nothing is read; a one-line Done when has no list to check.
   assert.deepEqual(unmetDoneProblems(card([]), "b.md"), []);
-  assert.deepEqual(unmetDoneProblems(card([]), "b.md", "it works"), []);
+  assert.match(unmetDoneProblems(card([]), "b.md", "it works")[0].message, /^Ticket: it has no ## Done section/);
 });

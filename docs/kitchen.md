@@ -297,8 +297,8 @@ OpenCode settings (default model, global instructions) do not apply to the revie
   before `kit pr` lands it. It stops with `RESULT: fail slice done-when: …` when any Done when item says not met, pending or open,
   or has no `Done when <n>: met — <evidence>` line, whatever the ticket's status, so a slice never lands with an item undone
   (the first reading comes before the review, so a build left unfinished costs no review). The same reader serves a card's brief,
-  where the Done when list may be the card standard's `Done when:` line. A rerun reads the ticket again after the lead or a new
-  build has fixed it.
+  where the Done when list may be the card standard's `Done when:` line; a Done when with no list counts as one item. A
+  rerun reads the ticket again, after the lead has fixed it with a commit (a card's brief: an edit).
 
 ### 7. Checks
 
