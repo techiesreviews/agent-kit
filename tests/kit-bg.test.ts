@@ -356,6 +356,8 @@ test("bg takes over the file lock a killed launcher left, and refuses one a live
   const stopped = run("--stop", "dead");
   // The lock was taken over (not busy); with no job of that name the stop fails on the missing records instead.
   assert.doesNotMatch(stopped.stdout, /is busy/);
+  assert.equal(stopped.status, 1);
+  assert.match(stopped.stdout, /RESULT: fail missing or invalid job records/);
   assert.deepEqual(locks(f), []);
   writeFileSync(lock, `${process.pid} held-now\n`);
   const refused = run("dead", "--", "true");
