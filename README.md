@@ -109,8 +109,9 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
   Windows has no `flock`, so there the lock is a file, `<worktree>/.scratch/kit-jobs/.<name>.lock`, made in one
   step with the create-only flag and holding `<pid> <token>`. A second start or stop of the same name is refused
   at once with `bg <name> is busy; retry after its current operation` (the lock is never waited for). The file is
-  removed when the command ends; the file of a process that died, or one older than a minute, is taken over, so a
-  killed launcher never blocks a name. `KIT_BG_LOCK=file` or `flock` picks the lock by hand (tests). Only the lock
+  removed when the command ends; the file of a process that died, or one older than five minutes (a reused pid), is
+  taken over, one taker at a time (under a `.<name>.lock.recover` guard file), so a killed launcher never blocks a
+  name. `KIT_BG_LOCK=file` or `flock` picks the lock by hand (tests). Only the lock
   is Windows-safe: starting the job itself (a new session, its process group, the user systemd scope, the process
   records read from `/proc`) is still the Linux way.
 - Two hooks back this up. `brief-guard` (Claude `PreToolUse` on `mcp__t3-code__delegate_task` and `Agent|Task`)
