@@ -180,6 +180,19 @@ test("status-nudge-check does not take hyphenated words for labels", (t) => {
   assert.match(scan(tight).stdout, /1 without[\s\S]*Tight|Tight[\s\S]*1 without/);
 });
 
+test("status-nudge-check wants the labels in status positions, not mentioned in a sentence", (t) => {
+  const path = transcript(t, [
+    user(finished("completed", "Mention")), reply(text("The helper added the labels `Done:`, `Running:` and `Next:`. Tests pass.")),
+    user(finished("completed", "Footer")), reply(text("Done: fixed.\nRunning: none; Next: test it.")),
+    user(finished("completed", "Inline")), reply(text("Done: fixed. Running: none. Next: test it.")),
+    user(finished("completed", "Quoted")), reply(text("> **Done:** fixed\n> **Running:** none\n> **Next:** test it")),
+  ]);
+  const output = scan(path);
+  assert.match(output.stdout, /1 without/);
+  assert.match(output.stdout, /Mention/);
+  assert.doesNotMatch(output.stdout, /Footer|Inline|Quoted/);
+});
+
 test("status-nudge-check does not judge a reply the person interrupted", (t) => {
   const path = transcript(t, [
     user(finished("completed", "Cut")), reply(text("Working on it")),
