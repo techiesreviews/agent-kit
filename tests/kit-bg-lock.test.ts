@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -119,4 +119,51 @@ test("a release never removes a lock another process took over", async t => {
 test("the file lock reports an unwritable lock folder, not a busy job", async t => {
   const root = folder(t);
   await assert.rejects(bgLock(join(root, "missing", ".job.lock"), "job", { platform: "win32" }), /ENOENT/);
+});
+
+test("a taker that finds a stale lock replaced by another taker's never removes the new lock", async t => {
+  const root = folder(t);
+  const path = join(root, ".job.lock");
+  writeFileSync(path, `${deadPid()} dead-token\n`);
+  // Between this taker judging the lock stale and removing it, another taker took the lock over.
+  const between = () => { rmSync(path); writeFileSync(path, `${process.pid} the-new-holder\n`); };
+  await assert.rejects(bgLock(path, "job", { platform: "win32", between }), /is busy/);
+  assert.equal(readFileSync(path, "utf8"), `${process.pid} the-new-holder\n`);
+  assert.equal(existsSync(`${path}.recover`), false, "the take-over guard is let go");
+});
+
+test("a take-over in progress refuses the other takers, and a guard left by a dead taker is cleared", async t => {
+  const root = folder(t);
+  const path = join(root, ".job.lock");
+  writeFileSync(path, `${deadPid()} dead-token\n`);
+  writeFileSync(`${path}.recover`, "1\n");
+  await assert.rejects(bgLock(path, "job", { platform: "win32" }), /is busy/);
+  assert.match(readFileSync(path, "utf8"), /dead-token/, "the stale lock is left to the taker that holds the guard");
+  const old = new Date(Date.now() - 10 * 60 * 1000);
+  utimesSync(`${path}.recover`, old, old);
+  await assert.rejects(bgLock(path, "job", { platform: "win32" }), /is busy/);
+  assert.equal(existsSync(`${path}.recover`), false);
+  await (await bgLock(path, "job", { platform: "win32" })).release();
+});
+
+test("processes racing for a stale lock: one holds it, the others are refused", async t => {
+  const root = folder(t);
+  const path = join(root, ".job.lock");
+  const code = `import { bgLock } from ${JSON.stringify(new URL("../bg-lock.mjs", import.meta.url).href)};
+try { const lock = await bgLock(process.argv[2], "job", { platform: "win32" }); console.log("won"); await new Promise(r => setTimeout(r, 1500)); await lock.release(); }
+catch (error) { console.log(/is busy/.test(error.message) ? "busy" : error.message); }`;
+  const script = join(root, "taker.mjs");
+  writeFileSync(script, code);
+  for (let round = 0; round < 3; round++) {
+    writeFileSync(path, `${deadPid()} dead-token\n`);
+    const results = await Promise.all(Array.from({ length: 6 }, () => new Promise<string>((accept, reject) => {
+      const child = spawn(process.execPath, [script, path], { stdio: ["ignore", "pipe", "inherit"] });
+      let out = "";
+      child.stdout.on("data", chunk => { out += chunk; });
+      child.on("error", reject).on("close", () => accept(out.trim()));
+    })));
+    assert.deepEqual(results.filter(result => result === "won").length, 1, results.join(","));
+    assert.deepEqual(results.filter(result => result !== "won" && result !== "busy"), []);
+    assert.equal(existsSync(path), false);
+  }
 });

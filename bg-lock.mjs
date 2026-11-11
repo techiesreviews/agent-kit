@@ -7,7 +7,9 @@ import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 
 // A lock file older than this is taken over even when its pid is alive: a pid can be reused. A start or stop holds
 // the lock for a few seconds at most (a start waits 5s for its job's records, a stop 2s for its group to end).
-const STALE_MS = 60 * 1000;
+const STALE_MS = 5 * 60 * 1000;
+// A taking-over holds its guard file for a moment; one older than this was left by a taker that died.
+const RECOVER_STALE_MS = 30 * 1000;
 
 /**
  * "flock" or "file". Windows gets the file lock, every other platform flock. KIT_BG_LOCK=file or flock picks one by
@@ -39,30 +41,51 @@ function pidAlive(pid) {
   catch (error) { return error.code === "EPERM"; }
 }
 
-/** A held lock file is stale when its process is gone or it is older than STALE_MS; an empty or unreadable one only by age. */
-function stale(path) {
-  let text, age;
-  try { text = readFileSync(path, "utf8"); age = Date.now() - statSync(path).mtimeMs; }
-  catch (error) { if (error.code === "ENOENT") return { text: null, stale: true }; throw error; }
-  const pid = Number(/^(\d+) /.exec(text)?.[1]);
-  const gone = Number.isSafeInteger(pid) && pid > 0 && !pidAlive(pid);
-  return { text, stale: gone || age > STALE_MS };
+/** The file's text and age; null when it is gone. */
+function look(path) {
+  try { return { text: readFileSync(path, "utf8"), age: Date.now() - statSync(path).mtimeMs }; }
+  catch (error) { if (error.code === "ENOENT") return null; throw error; }
 }
 
-async function fileLock(path, name) {
+/** A held lock file is stale when its process is gone (the only time its holder cannot release it) or it is older than STALE_MS. */
+function isStale({ text, age }) {
+  const pid = Number(/^(\d+) /.exec(text)?.[1]);
+  return (Number.isSafeInteger(pid) && pid > 0 && !pidAlive(pid)) || age > STALE_MS;
+}
+
+/**
+ * Take over the stale lock file `found` describes, exclusively: the removal runs under a second lock file,
+ * `<lock>.recover`, so two takers never both remove a lock and then each make their own. The lock is read again
+ * under it, and removed only if it is still the stale one. false when another taker is recovering it right now.
+ */
+function recover(path, found, between) {
+  const guard = `${path}.recover`;
+  try { writeFileSync(guard, `${process.pid}\n`, { flag: "wx" }); }
+  catch (error) {
+    if (error.code !== "EEXIST") throw error;
+    // A taker that died mid-recovery leaves its guard: an old one is cleared, and the next attempt recovers.
+    const held = look(guard);
+    if (held && held.age > RECOVER_STALE_MS) rmSync(guard, { force: true });
+    return false;
+  }
+  try {
+    between?.();
+    const now = look(path);
+    if (now && now.text === found.text) rmSync(path, { force: true });
+    return true;
+  } finally { rmSync(guard, { force: true }); }
+}
+
+async function fileLock(path, name, { between } = {}) {
   const token = `${process.pid} ${randomUUID()}\n`;
-  // Two tries: the second one follows taking over a stale lock. The lock is never waited for, like flock --nonblock.
-  for (let attempt = 0; attempt < 2; attempt++) {
+  // The lock is never waited for, like flock --nonblock: it is made, or refused as busy. A few tries cover a lock
+  // released or taken over while this one looks at it.
+  for (let attempt = 0; attempt < 3; attempt++) {
     try { writeFileSync(path, token, { flag: "wx" }); }
     catch (error) {
       if (error.code !== "EEXIST") throw error;
-      const found = stale(path);
-      if (!found.stale) break;
-      // Only the content that was judged stale is removed, and a file that is already gone is not removed again (a
-      // third process may have made its own lock there). A short window remains between this read and the removal;
-      // the job's own records still refuse a second start of a running name.
-      try { if (found.text !== null && readFileSync(path, "utf8") === found.text) rmSync(path, { force: true }); }
-      catch (error) { if (error.code !== "ENOENT") throw error; }
+      const found = look(path);
+      if (found && (!isStale(found) || !recover(path, found, between))) break;
       continue;
     }
     // Only a lock still holding this token is removed, never one another process took over.
@@ -78,9 +101,10 @@ async function fileLock(path, name) {
  * Take the lock of one job name, without waiting: { kind, release }. A held lock throws "bg <name> is busy; retry
  * after its current operation". The flock lock is released when release() resolves or the launcher ends, however it
  * ends. The file lock is a file holding `<pid> <token>`, released by removing it; the file of a process that died
- * is taken over, so a killed launcher never blocks the name.
+ * is taken over, so a killed launcher never blocks the name. `between` is a test seam: it runs once a taker has
+ * judged a lock stale and holds the take-over guard, before the lock is read again.
  */
-export async function bgLock(path, name, { platform = process.platform, env = process.env } = {}) {
+export async function bgLock(path, name, { platform = process.platform, env = process.env, between } = {}) {
   const kind = bgLockKind(platform, env);
-  return { kind, release: kind === "file" ? await fileLock(path, name) : await flockLock(path, name) };
+  return { kind, release: kind === "file" ? await fileLock(path, name, { between }) : await flockLock(path, name) };
 }

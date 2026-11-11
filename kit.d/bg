@@ -19,7 +19,7 @@ time limit (seconds, or with s, m or h; default 6h; 0 for none); a job it ends s
 systemd (CI, containers, root; or KIT_BG_SCOPE=off) the job starts without a scope and ends with the session.
 Stop sends SIGTERM to that group, then SIGKILL after a 2s grace period.
 One start or stop of a name at a time: flock on Linux and macOS; on Windows (no flock) a lock file,
-.scratch/kit-jobs/.<name>.lock, that a dead or a minute-old holder loses (KIT_BG_LOCK=file or flock picks by hand).`;
+.scratch/kit-jobs/.<name>.lock, that a dead or a five-minute-old holder loses (KIT_BG_LOCK=file or flock picks by hand).`;
 const args = process.argv.slice(2);
 const quote = value => `'${value.replace(/'/g, "'\\''")}'`;
 
