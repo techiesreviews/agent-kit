@@ -27,11 +27,11 @@ function isToolResult(content) {
 
 export function hasStatus(reply) {
   const lines = reply.split("\n").map((line) => line.trim()).filter(Boolean).slice(-tail).join("\n").toLowerCase();
-  // A label stands at the start of a line (after a bullet, quote or bold marker) or after "; ", ". " or "| " on a
-  // line, and ends in a colon or in a dash with a space on each side: a sentence that only mentions the words, or
-  // "next-step", is not a label.
-  const start = "(?:^|[;.|]\\s*)[>*_#\\s-]*";
-  return labels.every((label) => new RegExp(`${start}${label}(?:\\*\\*|__)?(?:\\s*:|\\s+[\\u2013\\u2014-]\\s)`, "m").test(lines));
+  // A label stands at the start of a line or after "; ", ". " or "| ", behind nothing but marks (a bullet, quote, bold
+  // or emoji) or a number ("1)", "Line 2 -"), and ends in a colon or in a dash with a space on each side. A sentence
+  // that only mentions the words, or "next-step", is not a label.
+  const start = "(?:^|[;.|]\\s*)(?:line\\s*\\d+\\s*[-:\\u2013\\u2014.)]*\\s*|\\d+[.)]\\s*)?[^\\p{L}\\p{N}\\n]*";
+  return labels.every((label) => new RegExp(`${start}${label}(?:\\*\\*|__)?(?:\\s*:|\\s+[\\u2013\\u2014-]\\s)`, "mu").test(lines));
 }
 
 export function scan(source) {
