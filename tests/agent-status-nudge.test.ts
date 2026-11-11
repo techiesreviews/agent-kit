@@ -169,13 +169,24 @@ test("status-nudge-check ignores meta entries and keeps the turn open for the re
 
 test("status-nudge-check does not take hyphenated words for labels", (t) => {
   const path = transcript(t, [
-    user(finished("completed", "Words")), reply(text("The done-ness check, a next-step note and a still-running job.")),
+    user(finished("completed", "Words")), reply(text("The done-ness check, a next-step note and a running-total job.")),
     user(finished("completed", "Dashes")), reply(text("Done - fixed\nRunning - none\nNext \u2014 you test it")),
   ]);
   const output = scan(path);
   assert.match(output.stdout, /1 without/);
   assert.match(output.stdout, /Words/);
   assert.doesNotMatch(output.stdout, /Dashes/);
+  const tight = transcript(t, [user(finished("completed", "Tight")), reply(text("Done\u2014fixed\nRunning\u2014none\nNext\u2014you test it"))]);
+  assert.match(scan(tight).stdout, /1 without[\s\S]*Tight|Tight[\s\S]*1 without/);
+});
+
+test("status-nudge-check does not judge a reply the person interrupted", (t) => {
+  const path = transcript(t, [
+    user(finished("completed", "Cut")), reply(text("Working on it")),
+    user([text("[Request interrupted by user]")]),
+    user("carry on"), reply(text("Fine.")),
+  ]);
+  assert.match(scan(path).stdout, /RESULT: ok status check: 0 replies after a finished helper, 0 without the two-line status\n$/);
 });
 
 // The hook and the checker open a helper on the same first lines.

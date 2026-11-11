@@ -4,9 +4,10 @@
 // Standalone on purpose: plain Node, no imports from this repo, so a project can call it by the kit's absolute path
 // (`node "$(scripts/agents/kit --home)/status-nudge-check.mjs" <file>`).
 // A finished helper is a user turn whose first line is "Delegated task <id> (<title>) [completed|failed|interrupted]".
-// Meta entries and side chains are skipped. Its reply is the last text the assistant wrote before the next real user turn (tool results do not end a turn); the
-// reply has the status when its last few non-empty lines carry all three labels, "Done:", "Running:" and "Next:"
-// (any case, bold or bulleted; a dash needs a space on each side). A finished helper whose turn ended with no text has no reply and is not counted.
+// Meta entries and side chains are skipped. Its reply is the last text the assistant wrote before the next real user
+// turn (tool results do not end a turn). The reply has the status when its last few non-empty lines carry all three
+// labels, "Done:", "Running:" and "Next:" (any case, bold or bulleted; a dash needs a space on each side). A helper
+// whose turn ended with no text, or that the person interrupted, has no reply to judge and is not counted.
 import { readFileSync } from "node:fs";
 
 const tail = 8;
@@ -51,8 +52,13 @@ export function scan(source) {
     const content = entry.message?.content;
     if (entry.type === "user") {
       if (isToolResult(content)) return;
-      close();
       const first = textOf(content).trimStart().split("\n")[0];
+      // The person stopped the turn, so its reply is cut short and not judged.
+      if (first.startsWith("[Request interrupted by user")) {
+        open = null;
+        return;
+      }
+      close();
       const match = finishedLine.exec(first);
       if (match) open = { line: index + 1, time: entry.timestamp ?? "", title: match[1] ?? "", state: match[2] };
       return;

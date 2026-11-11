@@ -123,10 +123,11 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
 - `status-nudge` is a third, opt-in hook: `kit init` never writes it. A project turns it on by adding
   `scripts/agents/hooks/run.sh status-nudge` under Claude `UserPromptSubmit` in its own `.claude/settings.json`. For a
   prompt that is a finished helper's result (first line `Delegated task <id> (<title>) [completed|failed|interrupted]`)
-  it adds context asking the lead to say first anything Lex must answer or do, and to end its reply with the two-line status (Done; then Running and Next). It only adds
-  context: it never blocks, never loops, and stays silent for every other prompt. `node status-nudge-check.mjs
-  <transcript.jsonl>` (run it by the kit's folder, `kit --home`) lists the replies after a finished helper that lack
-  the status, for the weekly learning review; it ends with one RESULT line of counts.
+  it adds context asking the lead to say first anything Lex must answer or do, and to end its reply with the
+  two-line status (Done; then Running and Next). It only adds context: it never blocks, never loops, and stays
+  silent for every other prompt. `node status-nudge-check.mjs <transcript.jsonl>` (run it by the kit's folder,
+  `kit --home`) lists the replies after a finished helper that lack the status, for the weekly learning review; it
+  ends with one RESULT line of counts.
 
 ## Tickets are moving to Orbit (in stages)
 
