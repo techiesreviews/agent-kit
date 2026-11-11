@@ -550,6 +550,9 @@ test("repeat sets how a card repeats, get shows it, and --stop ends it", async t
   assert.deepEqual(task.recurrence, { frequency: "daily", interval: 1, weekdays: [], base: "due" });
   ok(await run(["repeat", "TOOLS-1", "--every", "3 years"]));
   assert.equal(task.recurrence.frequency, "yearly");
+  ok(await run(["repeat", "TOOLS-1", "--every", "2 weeks", "--on", "mon,thu"]));
+  assert.deepEqual(task.recurrence, { frequency: "weekly", interval: 2, weekdays: ["mon", "thu"], base: "due" });
+  assert.match(ok(await run(["get", "TOOLS-1"])).stdout, /^Repeats: every 2 weeks on Mon, Thu \(counted from the due date\)$/m);
 
   // A rule Orbit holds in another order, or with more fields, is the same rule: nothing is sent.
   task.recurrence = { frequency: "weekly", interval: 1, weekdays: ["thu", "mon"], base: "due", next_due_at: "2026-11-20T22:59:00.000Z" };

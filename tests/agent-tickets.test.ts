@@ -402,6 +402,13 @@ test("a Done when list indented by one to three spaces is read, and its nested i
   assert.deepEqual(doneProblems(nested), []);
   const numbered = closedTicket(["- Done when 1: met — a", "- Done when 2: met — b"], { doneWhen: ["1. First check:", "   - its part", "2. Second check."] });
   assert.deepEqual(doneProblems(numbered), []);
+  // A line indented less than the text of the item above it is that item's sibling, not nested under it (Markdown reads it so).
+  for (const [doneWhen, count] of [[["- First check.", " - Second check.", "- Third check."], 3], [["- First check.", " - Second check."], 2], [["1. First check.", "  - Second check.", "2. Third check."], 3],
+    [["-   First check.", "  - Second check.", "    - nested under the second"], 2], [["- First check.", "  - nested under the first", " - Second check."], 2]] as const) {
+    const evidence = ["- Done when 1: met — a", "- Done when 2: met — b"];
+    const problems = doneProblems(closedTicket(evidence, { doneWhen: [...doneWhen] })).map(problem => problem.message);
+    assert.deepEqual(problems, count === 3 ? ['Closed ticket: Done when item 3 has no evidence line in its Done section (write "Done when 3: met — <evidence>")'] : [], JSON.stringify(doneWhen));
+  }
   // Siblings that start at different indents are still two items.
   const mixed = closedTicket(["- Done when 1: met — a"], { doneWhen: ["  - First check.", "- Second check."] });
   assert.deepEqual(doneProblems(mixed).map(problem => problem.message), ['Closed ticket: Done when item 2 has no evidence line in its Done section (write "Done when 2: met — <evidence>")']);
@@ -461,6 +468,28 @@ test("fenced code in a ticket is never read as a heading, an item or a verdict",
   assert.deepEqual(doneProblems(closedTicket([...fence, met[0], met[2]])).map(problem => problem.message.slice(0, 40)), ["Closed ticket: Done when item 2 has no e"]);
 });
 
+test("a fence closes only with a fence of the same kind, at least as long, and nothing after it", () => {
+  const met = ["- Done when 1: met — a", "- Done when 3: met — c"];
+  const missing = ['Closed ticket: Done when item 2 has no evidence line in its Done section (write "Done when 2: met — <evidence>")'];
+  const messages = (done: string[]) => doneProblems(closedTicket(done)).map(problem => problem.message);
+  // A four-backtick fence holds a three-backtick one: the inner line does not close it, so what is inside is never read.
+  const wrapped = ["````", "```", "- Done when 2: met — a pasted line", "```", "## Done (2026-12-01)", "- Done when 1: not met — pasted", "````"];
+  assert.deepEqual(messages([...met, ...wrapped]), missing);
+  assert.deepEqual(messages([...wrapped, ...met]), missing);
+  // The fence ends at its own closing line, so an unmet verdict after it still counts.
+  assert.match(messages([...met, "- Done when 2: met — b", ...wrapped, "- Done when 2: not met — after the fence"])[0], /says "not met"/);
+  // A longer closing fence closes; a shorter one, or one with words after it, or another character, does not.
+  assert.deepEqual(messages([...met, "```", "- Done when 2: met — in the fence", "`````", "- Done when 2: not met — after"]).length, 1);
+  assert.deepEqual(messages([...met, "````", "- Done when 2: met — in the fence", "```", "- Done when 2: met — still in the fence", "````"]), missing);
+  assert.deepEqual(messages([...met, "```", "- Done when 2: met — in the fence", "``` js", "- Done when 2: met — still in the fence", "```"]), missing);
+  assert.deepEqual(messages([...met, "~~~~", "- Done when 2: met — in the fence", "~~~", "```", "~~~~", "- Done when 2: met — after it"]).length, 0);
+  assert.deepEqual(messages([...met, "```js", "- Done when 2: met — in the fence", "```", "- Done when 2: pending"]).length, 1);
+  // A line that opens with backticks and has backticks after them is code in a line, not a fence.
+  assert.deepEqual(messages([...met, "```inline``` and more", "- Done when 2: met — b"]), []);
+  // An unclosed fence runs to the end, as Markdown reads it.
+  assert.deepEqual(messages(["- Done when 1: met — a", "- Done when 3: met — c", "````", "- Done when 2: met — never closed"]), missing);
+});
+
 test("a heading after the Done section ends it, and a Done-like heading after a dated one does not replace it", () => {
   const met = ["- Done when 1: met — a", "- Done when 2: met — b", "- Done when 3: met — c"];
   assert.deepEqual(doneProblems(closedTicket([...met, "", "# Notes", "", "- Pending: ask Lex"])), []);
@@ -512,12 +541,18 @@ test("newlyClosed names the tickets that are closed now and were not closed at t
   writeFileSync(join(cwd, `${dir}/02-will-close.md`), closedTicket([], { status: "open" }));
   writeFileSync(join(cwd, `${dir}/03-will-stay-open.md`), closedTicket([], { status: "open" }));
   writeFileSync(join(cwd, `${dir}/06-moves-and-closes.md`), closedTicket([], { status: "open" }));
+  // Closed at the base with a prose Done section dated before the check: edited on the branch, it is not a new close and keeps the date cutoff.
+  const before = closedTicket(["Everything works."], { date: "2026-10-01" });
+  writeFileSync(join(cwd, `${dir}/07-closed-before.md`), before);
   git("add", "."); git("commit", "-qm", "base");
   git("switch", "-qc", "feature");
   writeFileSync(join(cwd, `${dir}/01-old.md`), `${old}\n\nA follow-up line.\n`);
   writeFileSync(join(cwd, `${dir}/02-will-close.md`), closedTicket(["- Done when 1: met — a", "- Done when 2: met — b", "- Done when 3: met — c"], { date: "" }));
   writeFileSync(join(cwd, `${dir}/04-new-closed.md`), closedTicket([]));
   writeFileSync(join(cwd, `${dir}/05-new-open.md`), closedTicket([], { status: "open" }));
+  writeFileSync(join(cwd, `${dir}/07-closed-before.md`), `${before}\n\nA follow-up line.\n`);
+  // A ticket closed now with a prose Done section dated before the check is a new close: the cutoff does not spare it.
+  writeFileSync(join(cwd, `${dir}/08-new-old-dated.md`), closedTicket(["Everything works."], { date: "2026-10-01" }));
   // A closed ticket moved to another folder, edited a little, is the same ticket and was closed before.
   mkdirSync(join(cwd, "docs/wayfinder/alpha/tickets"), { recursive: true });
   git("mv", `${dir}/01-old.md`, "docs/wayfinder/alpha/tickets/01-old.md");
@@ -527,7 +562,7 @@ test("newlyClosed names the tickets that are closed now and were not closed at t
   writeFileSync(join(cwd, "docs/wayfinder/alpha/tickets/06-moves-and-closes.md"), closedTicket([]));
   git("add", "."); git("commit", "-qm", "feature");
   const loaded = loadTickets("docs/wayfinder", undefined, { ref: "HEAD", cwd });
-  assert.deepEqual([...newlyClosed(loaded.tickets, "dev", { cwd })].sort(), ["docs/wayfinder/alpha/tickets/06-moves-and-closes.md", `${dir}/02-will-close.md`, `${dir}/04-new-closed.md`].sort());
+  assert.deepEqual([...newlyClosed(loaded.tickets, "dev", { cwd })].sort(), ["docs/wayfinder/alpha/tickets/06-moves-and-closes.md", `${dir}/02-will-close.md`, `${dir}/04-new-closed.md`, `${dir}/08-new-old-dated.md`].sort());
   assert.equal(loaded.tickets.some((ticket: { file: string }) => ticket.file === "docs/wayfinder/alpha/tickets/01-old.md"), true);
   assert.throws(() => newlyClosed(loaded.tickets, "missing-ref", { cwd }), /Invalid ref: missing-ref/);
 
@@ -539,7 +574,9 @@ test("newlyClosed names the tickets that are closed now and were not closed at t
   assert.equal(strict.status, 1);
   assert.equal(strict.stdout, "");
   const lines = strict.stderr.trim().split("\n");
-  assert.equal(lines.length, 3, strict.stderr);
+  assert.equal(lines.length, 6, strict.stderr);
+  assert.equal(lines.filter(line => line.startsWith(`${dir}/08-new-old-dated.md:`)).length, 3, strict.stderr);
+  assert.equal(strict.stderr.includes("07-closed-before"), false, strict.stderr);
   for (const start of [`${dir}/02-will-close.md:15: Closed ticket: its ## Done has no date`, `${dir}/04-new-closed.md:9: Closed ticket: it has no ## Done section`,
     "docs/wayfinder/alpha/tickets/06-moves-and-closes.md:9: Closed ticket: it has no ## Done section"]) assert.ok(lines.some(line => line.startsWith(start)), start);
   assert.match(run("check", "--closed-since", "missing-ref").stderr, /Invalid ref: missing-ref/);

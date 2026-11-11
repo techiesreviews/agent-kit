@@ -611,7 +611,7 @@ async function main(args) {
       "kit-clean": () => extra.flatMap(parse),
       colours: () => parse(checks.css),
       // A release carries what each PR already passed on its way into the land branch, so it runs the plain check.
-            tickets: () => [["node", [shared("tickets.mjs"), "check", ...(flags.release ? [] : ["--closed-since", `origin/${flags.base}`])]]],
+      tickets: () => [["node", [shared("tickets.mjs"), "check", ...(flags.release ? [] : ["--closed-since", `origin/${flags.base}`])]]],
       "unit-files": () => {
         const files = focusedUnitFiles(changes, plan, sources(), settings);
         return files.length ? [[shared("unit.sh"), files]] : [];
@@ -836,7 +836,7 @@ async function main(args) {
       // A PR whose diff is empty was never reviewed: it says so in place of a verdict and a ledger.
       // A tier with no Claude review still shows what its second look found: the verdict and the ledger rows.
       const line = loopSummary ? prLine({ ...loopSummary, verdict })
-        : skippedTier ? `Review: Claude's review skipped (${plan.tier} tier).${secondRows.length ? ` Verdict: ${verdict}` : ""}`
+        : skippedTier ? `Review: Claude's review skipped (${plan.tier} tier).${secondRows.length ? ` Verdict: ${verdict}.` : ""}`
         : `Review: nothing to review (the diff against ${flags.base} is empty).`;
       // A second look that no model could take is said in the PR too, so the PR never reads as fully double-checked.
       const skipped = secondLookSkipped ? `${secondLookSkipped}\n\n` : "";
