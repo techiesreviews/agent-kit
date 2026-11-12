@@ -1775,7 +1775,7 @@ test("OpenCode at its usage limit hands the second look back to GPT, though GPT 
   assert.equal(fallback.status, 0, fallback.stdout + fallback.stderr);
   assert.ok(fallback.stdout.includes(`second look: gpt-6.1-sol not used (one GPT second look per PR, done in ${firstEvidence})`), fallback.stdout);
   assert.match(fallback.stdout, /^second look: code \(file\.txt\) opencode\/deepseek-v4\.1-flash-free$/m);
-  assert.match(fallback.stdout, /^second look: gpt-6\.1-sol takes it again \(opencode\/deepseek-v4\.1-flash-free opencode usage limit: Rate limit exceeded\. Please try again later\.; GPT looked once already on this PR\)$/m);
+  assert.match(fallback.stdout, /^second look: gpt-6\.1-sol takes it again \(opencode\/deepseek-v4\.1-flash-free opencode usage limit: Rate limit exceeded\. Please try again later\.; GPT looked once already on this PR or branch\)$/m);
   assert.deepEqual(f.calls().map(call => call.cli), ["codex", "opencode", "codex"]);
   // It is the PR's second look: the mark names GPT and the look is counted like any GPT review.
   assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(fallback.stdout), "second-look.json"), "utf8")), { kind: "code", model: "gpt-6.1-sol", ok: true, branch: "feature/review", pr: "12" });
@@ -1809,9 +1809,46 @@ test("OpenCode that hangs past the look's time limit hands the second look back 
   const fallback = f.run(["--base", "HEAD~1", "--second-look", "--pr", "12"], { ASE_SECOND_LOOK: table, ASE_REVIEW_BUDGET_GPT: "999", FAKE_OPENCODE_MODE: "hang", ASE_AGENT_TIMEOUT: "20s", ASE_SECOND_LOOK_TIMEOUT: "2s" });
   assert.equal(fallback.status, 0, fallback.stdout + fallback.stderr);
   assert.ok(Date.now() - started < 15_000, "OpenCode stopped at the look's limit, with its processes gone");
-  assert.match(fallback.stdout, /^second look: gpt-6\.1-sol takes it again \(opencode\/deepseek-v4\.1-flash-free timed out after 2s; GPT looked once already on this PR\)$/m);
+  assert.match(fallback.stdout, /^second look: gpt-6\.1-sol takes it again \(opencode\/deepseek-v4\.1-flash-free timed out after 2s; GPT looked once already on this PR or branch\)$/m);
   assert.deepEqual(f.calls().map(call => call.cli), ["codex", "opencode", "codex"]);
   assert.equal(JSON.parse(readFileSync(join(f.evidence(fallback.stdout), "second-look.json"), "utf8")).model, "gpt-6.1-sol");
+});
+
+test("OpenCode that fails for a reason of its own (not an outage) also hands the second look back to GPT, found by branch when no PR is named", (t) => {
+  const f = fixture(t); withOpencode(f);
+  const table = lookTable(f, { code: gptThenOpencode, ux: gptThenOpencode, dx: gptThenOpencode, agent: gptThenOpencode }, { effort: { "gpt-6.1-sol": "high" } });
+  const budget = { ASE_SECOND_LOOK: table, ASE_REVIEW_BUDGET_GPT: "999" };
+  assert.equal(f.run(["--base", "HEAD~1", "--second-look"], budget).status, 0);
+  // An answer that stays incomplete after its retry is a failed review, not an outage; with GPT able to look again it goes on to GPT.
+  const fallback = f.run(["--base", "HEAD~1", "--second-look"], { ...budget, FAKE_OPENCODE_MODE: "retry-fail" });
+  assert.equal(fallback.status, 0, fallback.stdout + fallback.stderr);
+  assert.match(fallback.stdout, /^second look: gpt-6\.1-sol takes it again \(opencode\/deepseek-v4\.1-flash-free .+; GPT looked once already on this PR or branch\)$/m);
+  assert.deepEqual(f.calls().map(call => call.cli), ["codex", "opencode", "opencode", "codex"]);
+  assert.equal(JSON.parse(readFileSync(join(f.evidence(fallback.stdout), "second-look.json"), "utf8")).model, "gpt-6.1-sol");
+  // GPT's repeat that fails for a real reason is a failed review, never reported as a skip.
+  const broken = f.run(["--base", "HEAD~1", "--second-look"], { ...budget, FAKE_OPENCODE_MODE: "usage-limit", FAKE_MODE: "retry-fail" });
+  assert.equal(broken.status, 1, broken.stdout + broken.stderr);
+  assert.doesNotMatch(broken.stdout, /second look: skipped|^RESULT: skip /m);
+  assert.match(broken.stdout.trim().split("\n").at(-1)!, /^RESULT: fail /);
+  // With no earlier GPT look to repeat, OpenCode's own failure still fails the look and GPT is not asked.
+  const lone = fixture(t); withOpencode(lone);
+  const loneTable = lookTable(lone, { code: { order: [opencodeModel] }, ux: { order: [opencodeModel] }, dx: { order: [opencodeModel] }, agent: { order: [opencodeModel] } });
+  const failed = lone.run(["--base", "HEAD~1", "--second-look"], { ASE_SECOND_LOOK: loneTable, ASE_REVIEW_BUDGET_GPT: "999", FAKE_OPENCODE_MODE: "retry-fail" });
+  assert.equal(failed.status, 1, failed.stdout + failed.stderr);
+  assert.deepEqual(lone.calls().map(call => call.cli), ["opencode", "opencode"]);
+});
+
+test("GPT is not asked again when OpenCode never started for lack of time", (t) => {
+  const f = fixture(t); withOpencode(f);
+  const table = gptTable(f), budget = { ASE_SECOND_LOOK: table, ASE_REVIEW_BUDGET_GPT: "999" };
+  const first = f.run(["--base", "HEAD~1", "--second-look", "--pr", "12"], budget);
+  assert.equal(first.status, 0, first.stdout + first.stderr);
+  // A 30s look leaves under a minute for any fallback, so OpenCode is not started and nothing says it failed.
+  const short = f.run(["--base", "HEAD~1", "--second-look", "--pr", "12"], { ...budget, FAKE_MODE: "out-of-credit-event", ASE_SECOND_LOOK_TIMEOUT: "30s" });
+  assert.equal(short.status, 3, short.stdout + short.stderr);
+  assert.doesNotMatch(short.stdout, /takes it again/);
+  assert.match(short.stdout.trim().split("\n").at(-1)!, /^RESULT: skip second look \(gpt-6\.1-sol not used: one GPT second look per PR, done in .+; grok-4\.7 out of credit; opencode\/deepseek-v4\.1-flash-free not started: under a minute left of 30s\)$/);
+  assert.deepEqual(f.calls().map(call => call.cli), ["codex", "grok"]);
 });
 
 test("when GPT's weekly count is used up too, the OpenCode failure ends the second look as skipped, with the reason in plain words", (t) => {
