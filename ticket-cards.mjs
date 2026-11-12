@@ -50,15 +50,16 @@ const oneLine = text => String(text ?? "").replace(/\s*[\r\n]+\s*/g, " ").trim()
 /**
  * What a description says is done: the text under a "## Done when" heading, else the card standard's "Done when:" line (its
  * own text, then the lines under it: plain lines that follow directly and list lines, which may sit after blank lines). It
- * ends at a heading, a "Links:" style line or a plain line after a blank one. Fenced code is skipped, and a heading whose
- * section is only fenced code counts as no heading. Empty when there is none.
+ * ends at a heading, a "Links:" style line or a plain line after a blank one. Fenced code is skipped, a heading whose
+ * section is only fenced code counts as no heading, and of several filled headings the last is read. Empty when there is none.
  */
 export function doneWhen(description) {
   const text = String(description ?? "").replace(/\r\n?/g, "\n");
   const lines = text.split("\n"), fenced = fencedLines(lines);
   // Fenced code is no heading and no "Done when:" line: an example in a code block never stands for the real list.
-  const heading = lines.findIndex((line, index) => !fenced[index] && /^## Done when[ \t]*$/.test(line));
-  if (heading >= 0) {
+  // The last filled heading is read, as the closing check reads the last one (and falls back to this list when it is empty).
+  const headings = lines.flatMap((line, index) => !fenced[index] && /^## Done when[ \t]*$/.test(line) ? [index] : []);
+  for (const heading of headings.reverse()) {
     const next = lines.findIndex((line, index) => index > heading && !fenced[index] && line.startsWith("## "));
     const section = lines.slice(heading + 1, next < 0 ? undefined : next);
     // A section that is only fenced code is empty: an example never stands for the real list. Only blank lines are
@@ -79,7 +80,8 @@ export function doneWhen(description) {
     gap = false;
     found.push(line.trimEnd());
   }
-  return found.join("\n").trim();
+  // An indented list keeps its first item's indent (found holds no blank lines).
+  return found.join("\n").trimEnd();
 }
 
 /** True when a card's description has the "## Files" section and a "## Done when" heading or "Done when:" line a slice builds from. */
