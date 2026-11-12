@@ -3,7 +3,7 @@
 // "create, fail if it exists" flag, which Node does the same way on every platform.
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { linkSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 
 // A lock file older than this is taken over even when its pid is alive: a pid can be reused. A start or stop holds
 // the lock for a few seconds at most (a start waits 5s for its job's records, a stop 2s for its group to end), so
@@ -55,23 +55,40 @@ function isStale({ text, age }) {
 }
 
 /**
+ * Remove the file at `path` only when it is still the one `stale` approves: it is first moved to a name of its own,
+ * one step that only one caller wins, and then judged. A newer file moved by mistake is linked back (never over a
+ * file made since). `clearing` is a test seam: it runs just before the move.
+ */
+function removeIfStale(path, stale, clearing) {
+  clearing?.(path);
+  const moved = `${path}.${randomUUID()}`;
+  try { renameSync(path, moved); }
+  catch (error) { if (error.code === "ENOENT") return; throw error; }
+  try {
+    const taken = look(moved);
+    if (taken && !stale(taken)) {
+      try { linkSync(moved, path); } catch (error) { if (error.code !== "EEXIST") throw error; }
+    }
+  } finally { rmSync(moved, { force: true }); }
+}
+
+/**
  * Remove the guard `held` describes, left by a taker that died mid-recovery. The right to remove it is one step: a
  * file named after that guard's own text, made with the create-only flag, so one cleaner at a time acts on it. Each
  * guard holds a fresh token, so its text never comes back: a cleaner that is late finds another text and leaves that
- * newer guard alone. `clearing` is a test seam: it runs once the guard is judged old, before anything is removed.
+ * newer guard alone.
  */
 function clearOldGuard(guard, held, clearing) {
-  clearing?.();
   const right = `${guard}.${createHash("sha256").update(held.text).digest("hex").slice(0, 16)}`;
   try { writeFileSync(right, "", { flag: "wx" }); }
   catch (error) {
     if (error.code !== "EEXIST") throw error;
     // A cleaner that died here leaves its file: an old one is removed, and a later attempt clears the guard.
     const left = look(right);
-    if (left && left.age > RECOVER_STALE_MS) rmSync(right, { force: true });
+    if (left && left.age > RECOVER_STALE_MS) removeIfStale(right, ({ age }) => age > RECOVER_STALE_MS, clearing);
     return;
   }
-  try { if (look(guard)?.text === held.text) rmSync(guard, { force: true }); }
+  try { removeIfStale(guard, ({ text }) => text === held.text, clearing); }
   finally { rmSync(right, { force: true }); }
 }
 
@@ -128,8 +145,8 @@ async function fileLock(path, name, { between, clearing } = {}) {
  * after its current operation". The flock lock is released when release() resolves or the launcher ends, however it
  * ends. The file lock is a file holding `<pid> <token>`, released by removing it; the file of a process that died
  * is taken over, so a killed launcher never blocks the name. `between` and `clearing` are test seams: `between` runs
- * once a taker has judged a lock stale and holds the take-over guard, before the lock is read again; `clearing` runs
- * once a taker has judged a dead taker's guard old, before it is removed.
+ * once a taker has judged a lock stale and holds the take-over guard, before the lock is read again; `clearing(file)`
+ * runs just before a dead taker's old guard, or a dead cleaner's old clearing file, is moved away to be removed.
  */
 export async function bgLock(path, name, { platform = process.platform, env = process.env, between, clearing } = {}) {
   const kind = bgLockKind(platform, env);
