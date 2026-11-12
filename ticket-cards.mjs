@@ -61,8 +61,9 @@ export function doneWhen(description) {
   if (heading >= 0) {
     const next = lines.findIndex((line, index) => index > heading && !fenced[index] && line.startsWith("## "));
     const section = lines.slice(heading + 1, next < 0 ? undefined : next);
-    // A section that is only fenced code is empty: an example never stands for the real list.
-    if (section.some((line, at) => line.trim() && !fenced[heading + 1 + at])) return section.join("\n").trim();
+    // A section that is only fenced code is empty: an example never stands for the real list. Only blank lines are
+    // trimmed, so an indented list keeps its first item's indent.
+    if (section.some((line, at) => line.trim() && !fenced[heading + 1 + at])) return section.join("\n").replace(/^(?:[ \t]*\n)+|\s+$/g, "");
   }
   const start = lines.findIndex((line, index) => !fenced[index] && /^[*_]*Done when[*_]*:/i.test(line.trim()));
   if (start < 0) return "";

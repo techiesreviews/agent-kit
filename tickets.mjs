@@ -174,8 +174,8 @@ function doneProblems(lines, end, file, strict = false, open = false, fallback =
   const who = open ? "Ticket" : "Closed ticket";
   let fenced = fencedLines(lines);
   const headingsIn = () => lines.flatMap((line, index) => index > end && !fenced[index] && /^#{1,2} /.test(line) ? [{ line, index }] : []);
-  // `fallback` is the Done when list the slice read (doneWhen): the card standard's "Done when:" line, or the first
-  // filled heading. When the last `## Done when` heading outside fenced code, the one read below, is missing or empty
+  // `fallback` is the Done when list the slice read (doneWhen): the first heading's list when it is filled, else the
+  // card standard's "Done when:" line. When the last `## Done when` heading outside fenced code, the one read below, is missing or empty
   // (blank or fenced lines only), the list is read as that section, put after the last line, so the rows' line numbers
   // are not the file's. Its own fenced lines stay fenced.
   if (fallback.length) {
