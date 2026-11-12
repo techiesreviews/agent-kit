@@ -1838,6 +1838,22 @@ test("OpenCode that fails for a reason of its own (not an outage) also hands the
   assert.deepEqual(lone.calls().map(call => call.cli), ["opencode", "opencode"]);
 });
 
+test("OpenCode failing for its own reason with GPT's count used up is a skip; a failed PR comment stops the look instead of going to GPT", (t) => {
+  const f = fixture(t); withOpencode(f);
+  const { table } = gptAlreadyLooked(f, { ASE_REVIEW_BUDGET_GPT: "1" });
+  const skipped = f.run(["--base", "HEAD~1", "--second-look", "--pr", "12"], { ASE_SECOND_LOOK: table, ASE_REVIEW_BUDGET_GPT: "1", FAKE_OPENCODE_MODE: "retry-fail" });
+  assert.equal(skipped.status, 3, skipped.stdout + skipped.stderr);
+  assert.match(skipped.stdout.trim().split("\n").at(-1)!, /^RESULT: skip second look \(opencode\/deepseek-v4\.1-flash-free .+; gpt-6\.1-sol gpt review budget used up: 1\/1 in \S+; raise ASE_REVIEW_BUDGET_GPT to override\)$/);
+  assert.deepEqual(f.calls().map(call => call.cli), ["codex", "opencode", "opencode"]);
+  // OpenCode's review came back but posting it to the PR failed: that is kit's own failure, which GPT would meet too.
+  const g = fixture(t); withOpencode(g);
+  const { table: again } = gptAlreadyLooked(g, { ASE_REVIEW_BUDGET_GPT: "999" });
+  const stopped = g.run(["--base", "HEAD~1", "--second-look", "--pr", "12"], { ASE_SECOND_LOOK: again, ASE_REVIEW_BUDGET_GPT: "999", FAKE_GH_EXIT: "1" });
+  assert.equal(stopped.status, 1, stopped.stdout + stopped.stderr);
+  assert.match(stopped.stdout.trim().split("\n").at(-1)!, /^RESULT: fail gh pr comment failed/);
+  assert.doesNotMatch(stopped.stdout, /takes it again/);
+});
+
 test("GPT is not asked again when OpenCode never started for lack of time", (t) => {
   const f = fixture(t); withOpencode(f);
   const table = gptTable(f), budget = { ASE_SECOND_LOOK: table, ASE_REVIEW_BUDGET_GPT: "999" };
