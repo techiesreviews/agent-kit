@@ -173,14 +173,20 @@ export function fencedLines(lines) {
 function doneProblems(lines, end, file, strict = false, open = false, fallback = []) {
   const who = open ? "Ticket" : "Closed ticket";
   let fenced = fencedLines(lines);
-  // `fallback` is the Done when list of a ticket that has no `## Done when` heading outside fenced code (the card standard's
-  // "Done when:" line): read as that section, put after the last line, so the rows' line numbers are not the file's.
-  if (fallback.length && !lines.some((line, index) => !fenced[index] && /^## Done when[ \t]*$/.test(line))) {
-    const added = ["", "## Done when", "", ...fallback];
-    lines = [...lines, ...added];
-    fenced = [...fenced, ...added.map(() => false)];
+  const headingsIn = () => lines.flatMap((line, index) => index > end && !fenced[index] && /^#{1,2} /.test(line) ? [{ line, index }] : []);
+  // `fallback` is the Done when list of a ticket that gives it as the card standard's "Done when:" line: with no
+  // `## Done when` heading outside fenced code, or only empty ones (blank or fenced lines), it is read as that section,
+  // put after the last line, so the rows' line numbers are not the file's. Its own fenced lines stay fenced.
+  if (fallback.length) {
+    const found = headingsIn(), filled = found.some(({ line, index }, at) => /^## Done when[ \t]*$/.test(line)
+      && lines.slice(index + 1, found[at + 1]?.index ?? lines.length).some((text, step) => text.trim() && !fenced[index + 1 + step]));
+    if (!filled) {
+      const added = ["", "## Done when", "", ...fallback];
+      lines = [...lines, ...added];
+      fenced = [...fenced, ...fencedLines(added)];
+    }
   }
-  const headings = lines.flatMap((line, index) => index > end && !fenced[index] && /^#{1,2} /.test(line) ? [{ line, index }] : []);
+  const headings = headingsIn();
   const sectionAt = found => {
     const next = headings.find(({ index }) => index > found.index);
     return { heading: found.line, first: found.index + 1, lines: lines.slice(found.index + 1, next ? next.index : lines.length) };
