@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 // @ts-expect-error The script is plain JavaScript without declarations.
+import { doneWhen } from "../ticket-cards.mjs";
 import { loadFeedback, loadTickets, newlyClosed, parseFeedback, parseFiles, parseTicket, resolveTickets, unmetDoneProblems } from "../tickets.mjs";
 
 const fixtures = "tests/fixtures/agent-tickets";
@@ -648,6 +649,10 @@ test("unmetDoneProblems reads the Done when list when the last ## Done when head
   const ticket = ["---", "status: open", "---", "", "## Done when", "- a", "- b", "", "## Done when", "", "## Done (2026-11-12)", "", "- Done when 1: met — x"].join("\n");
   // The slice passes what doneWhen reads: the first heading's list.
   assert.deepEqual(unmetDoneProblems(ticket, "x.md", "- a\n- b").map(row => row.message),
+    ['Ticket: Done when item 2 has no evidence line in its Done section (write "Done when 2: met — <evidence>")']);
+  // An indented list keeps the first item's indent, so its second item is no nested line.
+  const indented = ticket.replace("- a\n- b", "  - a\n  - b");
+  assert.deepEqual(unmetDoneProblems(indented, "x.md", doneWhen(indented)).map(row => row.message),
     ['Ticket: Done when item 2 has no evidence line in its Done section (write "Done when 2: met — <evidence>")']);
 });
 
