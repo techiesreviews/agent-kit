@@ -24,7 +24,9 @@ const usage = "Usage: kit review [--base REF | --commit SHA] [--ticket FILE] [--
   "(ASE_SECOND_LOOK overrides); the next one takes it when a model cannot run; when none can, it skips with exit 3 and says \"second look: skipped (<reason>)\".\n" +
   "GPT (through Codex, at the table's effort) may review since 2026-11-09; Claude Opus stays the main reviewer. A GPT model in the order is never\n" +
   "used for a docs-only change, and once per PR (the same --pr N, or the same branch and history when either look named no PR): a later look goes to the next model.\n" +
-  "One exception (Lex, 2026-11-12): when the free OpenCode model fails (for a reason of its own, not a failed save), times out or hits its limit, GPT looks again even if it looked once, within ASE_REVIEW_BUDGET_GPT and with a time limit of its own (never for a docs-only change); it says \"second look: <gpt model> takes it again (…)\".\n" +
+  "One exception (Lex, 2026-11-12): when the free OpenCode model fails (for a reason of its own, not a failed save), times out or hits its limit,\n" +
+  "GPT looks again even if it looked once, within ASE_REVIEW_BUDGET_GPT and with a time limit of its own (never for a docs-only change);\n" +
+  "it says \"second look: <gpt model> takes it again (…)\".\n" +
   "--second gpt: a GPT second look asked on purpose, for a big or risky change: the kind's GPT model, even when the PR had one (never for a docs-only\n" +
   "change), and no other model in its place (it skips with exit 3 when GPT cannot run, a missing Codex login included). Either way the look is the PR's second look, which kit pr reuses on the same HEAD.\n" +
   "The whole look, fallback included, stops at ASE_SECOND_LOOK_TIMEOUT (25m; GPT taking it again after OpenCode fails gets its own 25m): then it skips as \"<model> timed out after 25m\";\n" +
@@ -309,7 +311,8 @@ function gptLookDone(pr, branch, root, head, base) {
 
 // The second look after Claude's review: the change's kind picks its models in the table, first choice first; the next
 // takes over when one cannot run (a used-up count, no credit, a usage limit, a CLI that is missing or down), and when
-// none can, it is skipped. Any other failure, such as an incomplete answer or a failed save or PR comment, fails.
+// none can, it is skipped. Any other failure, such as an incomplete answer or a failed save or PR comment, fails; the one exception
+// is the free OpenCode model, whose own failure goes to GPT when GPT may look again (see below), so it can then end as a skip.
 // A GPT model is passed over for a docs-only change or when the PR already had its GPT look; `--second gpt` asks
 // the kind's GPT model alone, on purpose.
 async function secondLook(flags) {
@@ -375,8 +378,8 @@ async function secondLook(flags) {
   let opencodeFailed = null, repeated = false;
   const attempt = (model, look) => reviewOnce(flags, { kind: pick.kind, model, effort: pick.effort[model], ...look });
   // Whether the look is over for this model: it came back, or failed in a way that is a real failure, not an outage.
-  // A failure of kit's own work after the review ran (saving its evidence, the PR comment), which another model would meet too.
-  const ownFailure = /^(saving evidence failed|gh pr comment failed|releasing review budget failed)/;
+  // A failure of kit's own work after the review ran (saving its evidence, the PR comment, which reviewOnce reports as the reason), which another model would meet too.
+  const ownFailure = /^(saving evidence failed|gh pr comment failed)/;
   const ended = result => (result.status === 0 && !result.outOfCredit) || (!result.unavailable && !result.timedOut);
   for (const model of models) {
     // A fallback needs a minute left to start: with less it would reserve a count for a review the limit stops.
