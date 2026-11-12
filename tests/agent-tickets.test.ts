@@ -644,6 +644,13 @@ test("unmetDoneProblems reads the Done when line when the ## Done when heading i
   assert.deepEqual(unmetDoneProblems(ticket(["## Done (2026-11-12)", "", "- Done when 1: met — a", "- Done when 2: met — b"]), "x.md", line), []);
 });
 
+test("unmetDoneProblems reads the Done when list when the last ## Done when heading is empty and an earlier one is filled", () => {
+  const ticket = ["---", "status: open", "---", "", "## Done when", "- a", "- b", "", "## Done when", "", "## Done (2026-11-12)", "", "- Done when 1: met — x"].join("\n");
+  // The slice passes what doneWhen reads: the first heading's list.
+  assert.deepEqual(unmetDoneProblems(ticket, "x.md", "- a\n- b").map(row => row.message),
+    ['Ticket: Done when item 2 has no evidence line in its Done section (write "Done when 2: met — <evidence>")']);
+});
+
 test("unmetDoneProblems skips fenced sample bullets in the Done when line's list", () => {
   const ticket = ["---", "status: open", "---", "", "Done when:", "- it works", "```", "- a sample", "```", "", "## Done (2026-11-12)", "", "- Done when 1: met — shown"].join("\n");
   assert.deepEqual(unmetDoneProblems(ticket, "x.md", "- it works\n```\n- a sample\n```"), []);
