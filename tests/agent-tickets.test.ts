@@ -657,11 +657,24 @@ test("unmetDoneProblems reads the Done when list when the last ## Done when head
     ['Ticket: Done when item 2 has no evidence line in its Done section (write "Done when 2: met — <evidence>")']);
 });
 
-test("unmetDoneProblems keeps a fenced example that opens the fallback list fenced, so the real items after it are read", () => {
+test("unmetDoneProblems skips a fenced example at the top of a filled heading, and of the Done when line's list", () => {
   const ticket = ["---", "status: open", "---", "", "## Done when", "```", "- an example", "```", "- a", "- b", "- c", "", "## Done when", "",
     "## Done (2026-11-12)", "", "- Done when 1: met — x", "- Done when 2: met — y"].join("\n");
   assert.deepEqual(unmetDoneProblems(ticket, "x.md", doneWhen(ticket)).map(row => row.message),
     ['Ticket: Done when item 3 has no evidence line in its Done section (write "Done when 3: met — <evidence>")']);
+  // The line's list (no filled heading) may open with a fence too: it stays a fence, and only the real items count.
+  const line = ["---", "status: open", "---", "", "## Done (2026-11-12)", "", "- Done when 1: met — x"].join("\n");
+  assert.deepEqual(unmetDoneProblems(line, "x.md", "```\n- an example\n```\n- a\n- b").map(row => row.message),
+    ['Ticket: Done when item 2 has no evidence line in its Done section (write "Done when 2: met — <evidence>")']);
+});
+
+test("a level-one heading ends the Done when section for the slice's reading and the closing check alike", () => {
+  const ticket = (body: string[]) => ["---", "status: open", "---", "", "## Done when", ...body, "", "## Done (2026-11-12)", "", "- Done when 1: met — x"].join("\n");
+  for (const body of [["- a", "# Notes", "- b"], ["", "# Notes", "- a", "- b"]]) {
+    const text = ticket(body);
+    assert.equal(doneWhen(text), body[0] === "- a" ? "- a" : "", body.join("|"));
+  }
+  assert.deepEqual(unmetDoneProblems(ticket(["- a", "# Notes", "- b"]), "x.md", doneWhen(ticket(["- a", "# Notes", "- b"]))), []);
 });
 
 test("unmetDoneProblems needs evidence for every item of an indented list under the Done when line", () => {
