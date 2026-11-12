@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { OrbitError, OrbitSetupProblem, orbitCardKey, orbitClient, orbitLogPath, orbitRedactor, orbitSecrets, readOrbitConfig } from "./orbit-client.mjs";
 import { orbitStore, ticketSettings } from "./ticket-store.mjs";
 import { kitSliceBranch } from "./kit-lib.mjs";
+import { fencedLines } from "./tickets.mjs";
 
 const keyShape = /^[A-Za-z][A-Za-z0-9_]*-[0-9]+$/;
 /** True for a card key such as TOOLS-10 (never a path: a ticket file always has a slash or .md). */
@@ -49,17 +50,31 @@ const oneLine = text => String(text ?? "").replace(/\s*[\r\n]+\s*/g, " ").trim()
 /**
  * What a description says is done: the text under a "## Done when" heading, else the card standard's "Done when:" line (its
  * own text, then the lines under it: plain lines that follow directly and list lines, which may sit after blank lines). It
- * ends at a heading, a "Links:" style line or a plain line after a blank one. Empty when there is none.
+ * ends at a heading, a "Links:" style line or a plain line after a blank one. Fenced code under the line is skipped; a
+ * heading's section is returned whole, fenced examples included (the closing check reads it again and skips them), but
+ * one that is only fenced code counts as no heading, and of several filled headings the last is read. Empty when there is none.
  */
 export function doneWhen(description) {
   const text = String(description ?? "").replace(/\r\n?/g, "\n");
-  const section = /^## Done when[ \t]*\n([\s\S]*?)(?=^## |$(?![\s\S]))/m.exec(text)?.[1]?.trim();
-  if (section) return section;
-  const lines = text.split("\n"), start = lines.findIndex(line => /^[*_]*Done when[*_]*:/i.test(line.trim()));
+  const lines = text.split("\n"), fenced = fencedLines(lines);
+  // Fenced code is no heading and no "Done when:" line: an example in a code block never stands for the real list.
+  // The last filled heading is read, as the closing check reads the last one (and falls back to this list when it is empty).
+  const headings = lines.flatMap((line, index) => !fenced[index] && /^## Done when[ \t]*$/.test(line) ? [index] : []);
+  for (const heading of headings.reverse()) {
+    // Any level-one or level-two heading ends it, as in the closing check (doneProblems).
+    const next = lines.findIndex((line, index) => index > heading && !fenced[index] && /^#{1,2} /.test(line));
+    const section = lines.slice(heading + 1, next < 0 ? undefined : next);
+    // A section that is only fenced code is empty: an example never stands for the real list. Only blank lines are
+    // trimmed, so an indented list keeps its first item's indent.
+    if (section.some((line, at) => line.trim() && !fenced[heading + 1 + at])) return section.join("\n").replace(/^(?:[ \t]*\n)+|\s+$/g, "");
+  }
+  const start = lines.findIndex((line, index) => !fenced[index] && /^[*_]*Done when[*_]*:/i.test(line.trim()));
   if (start < 0) return "";
   const found = [/^[*_]*Done when[*_]*:[*_]*(.*)$/i.exec(lines[start].trim())[1].trim()].filter(Boolean);
   let gap = false;
-  for (const line of lines.slice(start + 1)) {
+  for (const [at, line] of lines.slice(start + 1).entries()) {
+    // Fenced code under the line is an example, never an item; it leaves the blank-line gap as it was.
+    if (fenced[start + 1 + at]) continue;
     if (!line.trim()) { gap = true; continue; }
     const listed = /^(?:[-*+]|\d+[.)])\s|^\s/.test(line);
     // A plain line counts when it follows directly; after a blank line only list lines do. A heading or a "Links:" style line ends it.
@@ -67,7 +82,8 @@ export function doneWhen(description) {
     gap = false;
     found.push(line.trimEnd());
   }
-  return found.join("\n").trim();
+  // An indented list keeps its first item's indent (found holds no blank lines).
+  return found.join("\n").trimEnd();
 }
 
 /** True when a card's description has the "## Files" section and a "## Done when" heading or "Done when:" line a slice builds from. */

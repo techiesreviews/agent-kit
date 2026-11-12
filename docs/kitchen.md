@@ -276,7 +276,8 @@ OpenCode settings (default model, global instructions) do not apply to the revie
   starts the slice in its own systemd scope and waits at most 9 minutes per call (give the call a
   10-minute tool time limit: Claude's Bash `timeout: 600000`); on its `RUNNING:`
   line (exit 75) run `scripts/agents/kit go slice-<prefix><NN>` again (the job `kit next` prints, such as `slice-ke84`), in the foreground, until the slice's
-  RESULT line. A long `kit pr` or spec run goes the same way. Order of steps, manual fallback and
+  RESULT line. A long `kit pr` or spec run goes the same way. The per-name lock of `kit go` and `kit bg` is `flock`
+  on Linux and macOS and a lock file on Windows (see the README's `kit go` entry). Order of steps, manual fallback and
   ticket Done: the project's runner guide (`docs/agents/runner.md`).
 - **Skills:** the brief names the skills the [skills map](#skills-map) picks for the ticket's files.
 - **Visible work:** the builder follows the [house style](house-style.md), the project's UX rulebook
@@ -292,6 +293,12 @@ OpenCode settings (default model, global instructions) do not apply to the revie
   docs, ticket files included: a ticket that is closed now and was not closed at the merge base (or is new) is read
   strictly, with no date cutoff, and a missing or undated `## Done` fails too (a release runs the plain check). A
   builder whose item is not met writes `Done when <n>: not met — <why>` and does not close the ticket.
+- **Open ticket, unmet item:** `kit slice` reads the ticket once the build is committed (its `done-when` step) and again right
+  before `kit pr` lands it. It stops with `RESULT: fail slice done-when: …` when any Done when item says not met, pending or open,
+  or has no `Done when <n>: met — <evidence>` line, whatever the ticket's status, so a slice never lands with an item undone
+  (the first reading comes before the review, so a build left unfinished costs no review). The same reader serves a card's brief,
+  where the Done when list may be the card standard's `Done when:` line; a Done when with no list counts as one item. A
+  rerun reads the ticket again, after the lead has fixed it with a commit (a card's brief: an edit).
 
 ### 7. Checks
 

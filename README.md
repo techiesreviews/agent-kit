@@ -105,12 +105,29 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
   `RUNNING: <job> (…). Run again: scripts/agents/kit go <job>` and exit 75; once the job ends it prints the job's
   RESULT line and exits with the job's code (1 for a job's own 75, or for a job whose RESULT line says fail
   although it exited 0).
+- `kit bg` and `kit go` take one lock per job name while they start or stop it. Linux and macOS use `flock`.
+  Windows has no `flock`, so there the lock is a file, `<worktree>/.scratch/kit-jobs/.<name>.lock`, made in one
+  step with the create-only flag and holding `<pid> <token>`. A second start or stop of the same name is refused
+  at once with `bg <name> is busy; retry after its current operation` (the lock is never waited for). The file is
+  removed when the command ends; the file of a process that died, or one older than five minutes (a reused pid), is
+  taken over, one taker at a time (under a `.<name>.lock.recover` guard file), so a killed launcher never blocks a
+  name. `KIT_BG_LOCK=file` or `flock` picks the lock by hand (tests). Only the lock
+  is Windows-safe: starting the job itself (a new session, its process group, the user systemd scope, the process
+  records read from `/proc`) is still the Linux way.
 - Two hooks back this up. `brief-guard` (Claude `PreToolUse` on `mcp__t3-code__delegate_task` and `Agent|Task`)
   refuses a brief without the marker; research, review-only and question tasks start with
   `kit-brief: none (<reason>)`, and the read-only agent types (Explore, Plan) pass. `stop-guard` (Claude and Codex
   `Stop`) refuses to end a turn while a `kit go` job of the worktree, or a `kit-*` systemd unit working in it, still
   runs; it lets the turn end for a job past its time limit, after six refusals in a row, or with
   `KIT_ALLOW_STOP=1`.
+- `status-nudge` is a third, opt-in hook: `kit init` never writes it. A project turns it on by adding
+  `scripts/agents/hooks/run.sh status-nudge` under Claude `UserPromptSubmit` in its own `.claude/settings.json`. For a
+  prompt that is a finished helper's result (first line `Delegated task <id> (<title>) [completed|failed|interrupted]`)
+  it adds context asking the lead to say first anything Lex must answer or do, and to end its reply with the
+  two-line status (Done; then Running and Next). It only adds context: it never blocks, never loops, and stays
+  silent for every other prompt. `node status-nudge-check.mjs <transcript.jsonl>` (run it by the kit's folder,
+  `kit --home`) lists the replies after a finished helper that lack the status, for the weekly learning review; it
+  ends with one RESULT line of counts.
 
 ## Tickets are moving to Orbit (in stages)
 
@@ -232,7 +249,7 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
 | --- | --- |
 | `kit`, `kit-lib.sh`, `kit-lib.mjs` | the front door and the shared library |
 | `kit.d/` | one file per shared command, each with a `# kit:` summary line |
-| `hooks/` | the guard hooks (`bash-guard`, `agent-cap`, `session-env`, `brief-guard`, `stop-guard`) and their `run.sh` |
+| `hooks/` | the guard hooks (`bash-guard`, `agent-cap`, `session-env`, `brief-guard`, `stop-guard`, and the opt-in `status-nudge`) and their `run.sh` |
 | `context-card.mjs`, `worktree.sh`, `tickets.mjs`, `unit.sh`, `review-findings.mjs`, `second-look.json`, … | helpers beside `kit` that commands and a project's forwarders run through `kit --home` |
 | `orbit-client.mjs`, `ticket-store.mjs`, `orbit-setup.mjs`, `ticket-import.mjs` | the Orbit API client and its secrets file, the ticket store's rules and guards, `kit ticket setup`, and moving a project's ticket files to cards |
 | `skills.json`, `skills.mjs`, `brief-lib.mjs` | the skills map (names and the kit's own one-line fallbacks, never a skill's text), and the brief `kit brief` writes |

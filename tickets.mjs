@@ -133,31 +133,59 @@ export function parseTicket(source, file, map) {
 }
 
 const listMarker = /^\s*(?:[-*+]|\d+[.)])\s+/;
+// A line's leading text with each tab widened to the next multiple of four columns.
+const expandTabs = text => [...text].reduce((out, char) => out + (char === "\t" ? " ".repeat(4 - out.length % 4) : char), "");
 const shorten = text => text.length > 80 ? `${text.slice(0, 77)}...` : text;
 
+/** For each line, whether it is inside fenced code (the fence lines included). A fence opens with three or more backticks or
+ * tildes (a backtick fence's info text has no backtick) and closes with the same character, at least as many times, and
+ * nothing after it; a shorter or different line inside is text. */
+export function fencedLines(lines) {
+  let fence = null;
+  return lines.map(line => {
+    if (fence) {
+      const close = /^\s*(`{3,}|~{3,})\s*$/.exec(line)?.[1];
+      if (close && close[0] === fence.char && close.length >= fence.size) fence = null;
+      return true;
+    }
+    const open = /^\s*(`{3,}|~{3,})(.*)$/.exec(line);
+    if (!open || (open[1][0] === "`" && open[2].includes("`"))) return false;
+    fence = { char: open[1][0], size: open[1].length };
+    return true;
+  });
+}
+
 /** What stops a ticket from being closed, as { file, line, message } rows (`lines` are the ticket's lines, `end` the
- * frontmatter's closing line). Only a ticket whose `## Done when` is a list, and whose last `## Done` section carries
+ * frontmatter's closing line). Only a ticket whose `## Done when` is a list (in the `open` reading a paragraph is one item), and whose last `## Done` section carries
  * an ISO date of `doneCheckFrom` or later in its heading (`## Done (2026-11-12)`, `## Done: 2026-11-12`; never
  * `## Done when`, `## Done notes`), is read. The rest were written before the check and stay as they are, a ticket
  * with no dated Done section included. `strict` reads every closed ticket as if there were no cutoff, and also refuses
  * one with no `## Done` section or none with a date (a PR that closes a ticket is held to it, see newlyClosed). The
  * Done section is the last Done heading that has a date, so a later undated "## Done (follow-up)" does not hide it.
- * Fenced code is skipped.
+ * Fenced code is skipped. `open` is the reading of a ticket not landed yet (see unmetDoneProblems): strict, with no date
+ * problem, and the rows start with "Ticket" instead of "Closed ticket".
  * - `Done when <n>: <verdict> — <evidence>` is the evidence line of the n-th item of the list. The verdict is met,
  *   not met, pending or open, and `met` needs something after it; any other verdict, none, or no proof leaves the
  *   item without evidence.
  * - "not met", "pending" or "open" as a check's verdict, or a list item that starts with "Not met" or "Pending", says
  *   a check is unmet. A list item starting with "Open" is only a verdict in the first form: "Open for Lex: …" is a
  *   note. Wrapped lines of an item are not read. */
-function doneProblems(lines, end, file, strict = false) {
-  let fence = "";
-  const fenced = lines.map(line => {
-    const mark = /^\s*(```|~~~)/.exec(line)?.[1];
-    if (!fence && mark) { fence = mark; return true; }
-    if (fence && mark === fence) { fence = ""; return true; }
-    return Boolean(fence);
-  });
-  const headings = lines.flatMap((line, index) => index > end && !fenced[index] && /^#{1,2} /.test(line) ? [{ line, index }] : []);
+function doneProblems(lines, end, file, strict = false, open = false, fallback = []) {
+  const who = open ? "Ticket" : "Closed ticket";
+  let fenced = fencedLines(lines);
+  const headingsIn = () => lines.flatMap((line, index) => index > end && !fenced[index] && /^#{1,2} /.test(line) ? [{ line, index }] : []);
+  // The `## Done when` headings outside fenced code whose section has a line that is neither blank nor fenced; the
+  // last of them is read, as doneWhen reads it.
+  const filledIn = found => found.filter(({ line, index }, at) => /^## Done when[ \t]*$/.test(line)
+    && lines.slice(index + 1, found[at + 1]?.index ?? lines.length).some((text, step) => text.trim() && !fenced[index + 1 + step]));
+  // `fallback` is the list of the card standard's "Done when:" line (doneWhen of a ticket with no filled heading): it is
+  // read as that section, put after the last line, so the rows' line numbers are not the file's. Its own fenced lines stay fenced.
+  if (fallback.length && !filledIn(headingsIn()).length) {
+    const added = ["", "## Done when", "", ...fallback];
+    lines = [...lines, ...added];
+    fenced = [...fenced, ...fencedLines(added)];
+  }
+  const headings = headingsIn();
   const sectionAt = found => {
     const next = headings.find(({ index }) => index > found.index);
     return { heading: found.line, first: found.index + 1, lines: lines.slice(found.index + 1, next ? next.index : lines.length) };
@@ -166,21 +194,36 @@ function doneProblems(lines, end, file, strict = false) {
     const found = headings.findLast(({ line }) => name.test(line) && wanted(line));
     return found ? sectionAt(found) : null;
   };
-  const when = section(/^## Done when[ \t]*$/);
-  // The list's items are the lines no deeper than its first item's indent (up to three spaces, as Markdown allows); deeper ones are nested.
-  const marked = (when?.lines ?? []).map((line, at) => fenced[when.first + at] ? null : /^( {0,3})(?:[-*+]|\d+[.)])\s+\S/.exec(line)?.[1] ?? null);
-  const indent = marked.find(found => found !== null);
-  const items = marked.flatMap((found, at) => found !== null && found.length <= indent.length ? [when.first + at + 1] : []);
+  const lastFilled = filledIn(headings).at(-1);
+  const when = lastFilled ? sectionAt(lastFilled) : null;
+  // The list's items are its marker lines that are not nested. The first item starts up to three spaces in, as Markdown
+  // allows; a later marker line is nested only when indented to the text of the item above it, so one indented less (a
+  // space under "- ") is that item's sibling.
+  let column = null;
+  const items = [];
+  (when?.lines ?? []).forEach((raw, at) => {
+    // Tabs are worth the spaces up to the next multiple of four, as Markdown counts them.
+    const start = /^[ \t]*(?:[-*+]|\d+[.)])?[ \t]*/;
+    const line = expandTabs(start.exec(raw)[0]) + raw.replace(start, "");
+    const marker = fenced[when.first + at] ? null : /^( *)([-*+]|\d+[.)])( +)\S/.exec(line);
+    // Four or more spaces in that do not reach the item's text are its wrapped text, not a new item.
+    if (!marker || (marker[1].length > 3 && (column === null || marker[1].length < column))) return;
+    if (column !== null && marker[1].length >= column) return;
+    column = marker[1].length + marker[2].length + (marker[3].length > 4 ? 1 : marker[3].length);
+    items.push(when.first + at + 1);
+  });
+  // A Done when with no list (one line, a paragraph) is one item in the open reading, so a verdict on it counts.
+  if (!items.length && open && when?.lines.some(line => line.trim())) items.push(when.first + 1);
   if (!items.length) return [];
   const doneHeading = /^## done(?:[ \t]*[(—–:-].*|[ \t]+\d{4}-\d{2}-\d{2}.*)?[ \t]*$/i;
   const done = section(doneHeading, line => /\b\d{4}-\d{2}-\d{2}\b/.test(line)) ?? (strict ? section(doneHeading) : null);
   const date = /\b(\d{4}-\d{2}-\d{2})\b/.exec(done?.heading ?? "")?.[1];
   if (!strict && (!date || date < doneCheckFrom)) return [];
   const write = number => `(write "Done when ${number}: met — <evidence>")`;
-  if (!done) return [{ file, line: when.first, message: `Closed ticket: it has no ## Done section, so no Done when item has an evidence line ${write("<n>")}` }];
-  const problems = date ? [] : [{ file, line: done.first, message: 'Closed ticket: its ## Done has no date (write "## Done (YYYY-MM-DD)")' }];
+  if (!done) return [{ file, line: when.first, message: `${who}: it has no ## Done section, so no Done when item has an evidence line ${write("<n>")}` }];
+  const problems = date || open ? [] : [{ file, line: done.first, message: 'Closed ticket: its ## Done has no date (write "## Done (YYYY-MM-DD)")' }];
   const proved = new Set(), unmet = new Set();
-  const says = (line, raw, word) => problems.push({ file, line, message: `Closed ticket, but its Done section says "${word.toLowerCase()}": ${shorten(raw.trim())}` });
+  const says = (line, raw, word) => problems.push({ file, line, message: `${who}, but its Done section says "${word.toLowerCase()}": ${shorten(raw.trim())}` });
   done.lines.forEach((raw, at) => {
     if (fenced[done.first + at]) return;
     const text = raw.trim().replace(listMarker, "").replaceAll("**", "");
@@ -194,9 +237,25 @@ function doneProblems(lines, end, file, strict = false) {
     }
   });
   items.forEach((line, at) => {
-    if (!proved.has(at + 1) && !unmet.has(at + 1)) problems.push({ file, line, message: `Closed ticket: Done when item ${at + 1} has no evidence line in its Done section ${write(at + 1)}` });
+    if (!proved.has(at + 1) && !unmet.has(at + 1)) problems.push({ file, line, message: `${who}: Done when item ${at + 1} has no evidence line in its Done section ${write(at + 1)}` });
   });
   return problems;
+}
+
+/** What stops a ticket that is not landed yet from being called done, as { file, line, message } rows: the strict reading
+ * of doneProblems for any status, with no date cutoff. Any Done when item whose evidence line says not met, pending or open,
+ * or has none, is a row; a ticket with no `## Done when` has none, and a Done when written as a paragraph is one item (the reading of a ticket being
+ * closed, newlyClosed, still reads lists only). `standardLine` is the Done when list the slice read (doneWhen of the
+ * ticket). It is read only when no `## Done when` heading has content, so it is then the card standard's "Done when:"
+ * line (its list lines): read as that heading, a first item on the line itself counting as the list's first. */
+export function unmetDoneProblems(source, file = "ticket", standardLine = "") {
+  const lines = source.replace(/^\uFEFF/, "").split(/\r?\n/);
+  const end = lines[0] === "---" ? lines.findIndex((line, i) => i > 0 && line === "---") : -1;
+  const text = standardLine.trim() ? standardLine.split(/\r?\n/) : [];
+  // A first item on the "Done when:" line itself, with a list under it, is the list's first item; a fence that opens
+  // the list is no item and stays a fence.
+  if (text.length && !listMarker.test(text[0]) && !fencedLines(text)[0] && text.slice(1).some(line => listMarker.test(line))) text[0] = `- ${text[0]}`;
+  return doneProblems(lines, end, file, true, true, text);
 }
 
 const globChars = /[*?[\]{}<>]/;

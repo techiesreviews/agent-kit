@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 // @ts-expect-error The script is plain JavaScript without declarations.
-import { loadFeedback, loadTickets, newlyClosed, parseFeedback, parseFiles, parseTicket, resolveTickets } from "../tickets.mjs";
+import { doneWhen } from "../ticket-cards.mjs";
+// @ts-expect-error The script is plain JavaScript without declarations.
+import { loadFeedback, loadTickets, newlyClosed, parseFeedback, parseFiles, parseTicket, resolveTickets, unmetDoneProblems } from "../tickets.mjs";
 
 const fixtures = "tests/fixtures/agent-tickets";
 
@@ -402,6 +404,20 @@ test("a Done when list indented by one to three spaces is read, and its nested i
   assert.deepEqual(doneProblems(nested), []);
   const numbered = closedTicket(["- Done when 1: met — a", "- Done when 2: met — b"], { doneWhen: ["1. First check:", "   - its part", "2. Second check."] });
   assert.deepEqual(doneProblems(numbered), []);
+  // A line indented less than the text of the item above it is that item's sibling, not nested under it (Markdown reads it so).
+  for (const [doneWhen, count] of [[["- First check.", " - Second check.", "- Third check."], 3], [["- First check.", " - Second check."], 2], [["1. First check.", "  - Second check.", "2. Third check."], 3],
+    [["-   First check.", "  - Second check.", "    - nested under the second"], 2], [["- First check.", "  - nested under the first", " - Second check."], 2]] as const) {
+    const evidence = ["- Done when 1: met — a", "- Done when 2: met — b"];
+    const problems = doneProblems(closedTicket(evidence, { doneWhen: [...doneWhen] })).map(problem => problem.message);
+    assert.deepEqual(problems, count === 3 ? ['Closed ticket: Done when item 3 has no evidence line in its Done section (write "Done when 3: met — <evidence>")'] : [], JSON.stringify(doneWhen));
+  }
+  // A tab after the marker counts, a wide marker counts at its full width, and four spaces that do not reach an item's text are its wrapped text.
+  const one = ["- Done when 1: met — a"];
+  assert.equal(doneProblems(closedTicket(one, { doneWhen: ["-\tFirst check.", "-\tSecond check."] })).length, 1);
+  assert.equal(doneProblems(closedTicket(one, { doneWhen: ["-    First check.", "    - wrapped text"] })).length, 0);
+  assert.equal(doneProblems(closedTicket(one, { doneWhen: ["-\t\tFirst check.", "  - Part of the first check."] })).length, 0);
+  assert.equal(doneProblems(closedTicket(one, { doneWhen: ["\t- not a list item, code", "- First check."] })).length, 0);
+  assert.equal(doneProblems(closedTicket(one, { doneWhen: ["10. First check.", "   - Second check."] })).length, 1);
   // Siblings that start at different indents are still two items.
   const mixed = closedTicket(["- Done when 1: met — a"], { doneWhen: ["  - First check.", "- Second check."] });
   assert.deepEqual(doneProblems(mixed).map(problem => problem.message), ['Closed ticket: Done when item 2 has no evidence line in its Done section (write "Done when 2: met — <evidence>")']);
@@ -461,6 +477,30 @@ test("fenced code in a ticket is never read as a heading, an item or a verdict",
   assert.deepEqual(doneProblems(closedTicket([...fence, met[0], met[2]])).map(problem => problem.message.slice(0, 40)), ["Closed ticket: Done when item 2 has no e"]);
 });
 
+test("a fence closes only with a fence of the same kind, at least as long, and nothing after it", () => {
+  const met = ["- Done when 1: met — a", "- Done when 3: met — c"];
+  const missing = ['Closed ticket: Done when item 2 has no evidence line in its Done section (write "Done when 2: met — <evidence>")'];
+  const messages = (done: string[]) => doneProblems(closedTicket(done)).map(problem => problem.message);
+  // A four-backtick fence holds a three-backtick one: the inner line does not close it, so what is inside is never read.
+  const wrapped = ["````", "```", "- Done when 2: met — a pasted line", "```", "## Done (2026-12-01)", "- Done when 1: not met — pasted", "````"];
+  assert.deepEqual(messages([...met, ...wrapped]), missing);
+  assert.deepEqual(messages([...wrapped, ...met]), missing);
+  // The fence ends at its own closing line, so an unmet verdict after it still counts.
+  assert.match(messages([...met, "- Done when 2: met — b", ...wrapped, "- Done when 2: not met — after the fence"])[0], /says "not met"/);
+  // A longer closing fence closes; a shorter one, or one with words after it, or another character, does not.
+  assert.deepEqual(messages([...met, "```", "- Done when 2: met — in the fence", "`````", "- Done when 2: not met — after"]).length, 1);
+  assert.deepEqual(messages([...met, "````", "- Done when 2: met — in the fence", "```", "- Done when 2: met — still in the fence", "````"]), missing);
+  assert.deepEqual(messages([...met, "```", "- Done when 2: met — in the fence", "``` js", "- Done when 2: met — still in the fence", "```"]), missing);
+  assert.deepEqual(messages([...met, "~~~~", "- Done when 2: met — in the fence", "~~~", "```", "~~~~", "- Done when 2: met — after it"]).length, 0);
+  assert.deepEqual(messages([...met, "```js", "- Done when 2: met — in the fence", "```", "- Done when 2: pending"]).length, 1);
+  // A tilde fence may have backticks in its info text.
+  assert.deepEqual(messages([...met, "~~~ a`b", "- Done when 2: met — in the fence", "~~~"]), missing);
+  // A line that opens with backticks and has backticks after them is code in a line, not a fence.
+  assert.deepEqual(messages([...met, "```inline``` and more", "- Done when 2: met — b"]), []);
+  // An unclosed fence runs to the end, as Markdown reads it.
+  assert.deepEqual(messages(["- Done when 1: met — a", "- Done when 3: met — c", "````", "- Done when 2: met — never closed"]), missing);
+});
+
 test("a heading after the Done section ends it, and a Done-like heading after a dated one does not replace it", () => {
   const met = ["- Done when 1: met — a", "- Done when 2: met — b", "- Done when 3: met — c"];
   assert.deepEqual(doneProblems(closedTicket([...met, "", "# Notes", "", "- Pending: ask Lex"])), []);
@@ -512,12 +552,18 @@ test("newlyClosed names the tickets that are closed now and were not closed at t
   writeFileSync(join(cwd, `${dir}/02-will-close.md`), closedTicket([], { status: "open" }));
   writeFileSync(join(cwd, `${dir}/03-will-stay-open.md`), closedTicket([], { status: "open" }));
   writeFileSync(join(cwd, `${dir}/06-moves-and-closes.md`), closedTicket([], { status: "open" }));
+  // Closed at the base with a prose Done section dated before the check: edited on the branch, it is not a new close and keeps the date cutoff.
+  const before = closedTicket(["Everything works."], { date: "2026-10-01" });
+  writeFileSync(join(cwd, `${dir}/07-closed-before.md`), before);
   git("add", "."); git("commit", "-qm", "base");
   git("switch", "-qc", "feature");
   writeFileSync(join(cwd, `${dir}/01-old.md`), `${old}\n\nA follow-up line.\n`);
   writeFileSync(join(cwd, `${dir}/02-will-close.md`), closedTicket(["- Done when 1: met — a", "- Done when 2: met — b", "- Done when 3: met — c"], { date: "" }));
   writeFileSync(join(cwd, `${dir}/04-new-closed.md`), closedTicket([]));
   writeFileSync(join(cwd, `${dir}/05-new-open.md`), closedTicket([], { status: "open" }));
+  writeFileSync(join(cwd, `${dir}/07-closed-before.md`), `${before}\n\nA follow-up line.\n`);
+  // A ticket closed now with a prose Done section dated before the check is a new close: the cutoff does not spare it.
+  writeFileSync(join(cwd, `${dir}/08-new-old-dated.md`), closedTicket(["Everything works."], { date: "2026-10-01" }));
   // A closed ticket moved to another folder, edited a little, is the same ticket and was closed before.
   mkdirSync(join(cwd, "docs/wayfinder/alpha/tickets"), { recursive: true });
   git("mv", `${dir}/01-old.md`, "docs/wayfinder/alpha/tickets/01-old.md");
@@ -527,7 +573,7 @@ test("newlyClosed names the tickets that are closed now and were not closed at t
   writeFileSync(join(cwd, "docs/wayfinder/alpha/tickets/06-moves-and-closes.md"), closedTicket([]));
   git("add", "."); git("commit", "-qm", "feature");
   const loaded = loadTickets("docs/wayfinder", undefined, { ref: "HEAD", cwd });
-  assert.deepEqual([...newlyClosed(loaded.tickets, "dev", { cwd })].sort(), ["docs/wayfinder/alpha/tickets/06-moves-and-closes.md", `${dir}/02-will-close.md`, `${dir}/04-new-closed.md`].sort());
+  assert.deepEqual([...newlyClosed(loaded.tickets, "dev", { cwd })].sort(), ["docs/wayfinder/alpha/tickets/06-moves-and-closes.md", `${dir}/02-will-close.md`, `${dir}/04-new-closed.md`, `${dir}/08-new-old-dated.md`].sort());
   assert.equal(loaded.tickets.some((ticket: { file: string }) => ticket.file === "docs/wayfinder/alpha/tickets/01-old.md"), true);
   assert.throws(() => newlyClosed(loaded.tickets, "missing-ref", { cwd }), /Invalid ref: missing-ref/);
 
@@ -539,7 +585,9 @@ test("newlyClosed names the tickets that are closed now and were not closed at t
   assert.equal(strict.status, 1);
   assert.equal(strict.stdout, "");
   const lines = strict.stderr.trim().split("\n");
-  assert.equal(lines.length, 3, strict.stderr);
+  assert.equal(lines.length, 6, strict.stderr);
+  assert.equal(lines.filter(line => line.startsWith(`${dir}/08-new-old-dated.md:`)).length, 3, strict.stderr);
+  assert.equal(strict.stderr.includes("07-closed-before"), false, strict.stderr);
   for (const start of [`${dir}/02-will-close.md:15: Closed ticket: its ## Done has no date`, `${dir}/04-new-closed.md:9: Closed ticket: it has no ## Done section`,
     "docs/wayfinder/alpha/tickets/06-moves-and-closes.md:9: Closed ticket: it has no ## Done section"]) assert.ok(lines.some(line => line.startsWith(start)), start);
   assert.match(run("check", "--closed-since", "missing-ref").stderr, /Invalid ref: missing-ref/);
@@ -547,4 +595,105 @@ test("newlyClosed names the tickets that are closed now and were not closed at t
   assert.equal(run("frontier", "--closed-since", "dev").status, 2);
   assert.equal(run("check", "--ref", "HEAD", "--closed-since", "dev").status, 2, "the two ways of choosing a version do not mix");
   assert.match(run("check", "--closed-since", "dev", "--closed-since", "dev").stderr, /Usage:.*--closed-since <ref>/);
+});
+
+test("unmetDoneProblems reads a ticket of any status like a closed one, with no date cutoff and no date problem", () => {
+  const met = (n: number) => `- Done when ${n}: met — proof ${n}`;
+  const messages = (source: string, line = "") => unmetDoneProblems(source, "01-x.md", line).map(row => row.message);
+  assert.deepEqual(messages(closedTicket([met(1), met(2), met(3)], { status: "open" })), []);
+  assert.deepEqual(messages(closedTicket([met(1), met(2), met(3)], { status: "closed", date: "" })), [], "an undated Done is no problem here");
+  assert.deepEqual(messages(closedTicket([met(1), met(2), met(3)], { date: "2020-01-01" })), [], "an old date is read all the same");
+  assert.deepEqual(messages(closedTicket([met(1), "- Done when 2: not met — no browser", "- Done when 3: open"], { status: "open", date: "2020-01-01" })), [
+    'Ticket, but its Done section says "not met": - Done when 2: not met — no browser',
+    'Ticket, but its Done section says "open": - Done when 3: open',
+  ]);
+  assert.deepEqual(messages(closedTicket([met(1), met(3)], { status: "open" })), ['Ticket: Done when item 2 has no evidence line in its Done section (write "Done when 2: met — <evidence>")']);
+  assert.match(messages(closedTicket([], { status: "open" }))[0], /^Ticket: it has no ## Done section/);
+  assert.deepEqual(messages("---\nstatus: open\n---\n\n## Goal\n\nNo list here.\n"), []);
+});
+
+test("unmetDoneProblems reads the card standard's Done when line as the Done when list", () => {
+  const card = (done: string[]) => ["---", "status: open", "---", "", "Goal: do it.", "", "Done when:", "- First check.", "- Second check.", "", "Links: none", "", ...done].join("\n");
+  const line = "- First check.\n- Second check.";
+  assert.deepEqual(unmetDoneProblems(card(["## Done (2026-11-12)", "", "- Done when 1: met — a", "- Done when 2: met — b"]), "b.md", line), []);
+  assert.deepEqual(unmetDoneProblems(card(["## Done (2026-11-12)", "", "- Done when 1: met — a", "- Done when 2: pending"]), "b.md", line).map(row => row.message), ['Ticket, but its Done section says "pending": - Done when 2: pending']);
+  assert.match(unmetDoneProblems(card([]), "b.md", line)[0].message, /^Ticket: it has no ## Done section/);
+  // A first item on the "Done when:" line itself, with a list under it, is the first item of the list.
+  const first = unmetDoneProblems(card(["## Done (2026-11-12)", "", "- Done when 1: met — a"]).replace("- First check.\n- Second check.", "- Second check."), "b.md", "First check.\n- Second check.");
+  assert.deepEqual(first.map(row => row.message), ['Ticket: Done when item 2 has no evidence line in its Done section (write "Done when 2: met — <evidence>")']);
+  // A "## Done when" example inside fenced code is no heading: the line's list is still the one read.
+  const fenced = card(["```", "## Done when", "- an example", "```", "", "## Done (2026-11-12)", "", "- Done when 1: met — a", "- Done when 2: not met — b", "- Done when 3: pending"]);
+  assert.deepEqual(unmetDoneProblems(fenced, "b.md", line).map(row => row.message), [
+    'Ticket, but its Done section says "not met": - Done when 2: not met — b', 'Ticket, but its Done section says "pending": - Done when 3: pending']);
+  // A Done when with no list (one line) is one item in this reading, so a verdict on it counts.
+  assert.deepEqual(unmetDoneProblems(card(["## Done (2026-11-12)", "", "- Done when 1: not met — b"]), "b.md", "it works").map(row => row.message), ['Ticket, but its Done section says "not met": - Done when 1: not met — b']);
+  assert.deepEqual(unmetDoneProblems(card(["## Done (2026-11-12)", "", "- Done when 1: met — b"]), "b.md", "it works"), []);
+  // Without the line the heading is missing and nothing is read; a one-line Done when is one item and needs a Done section.
+  assert.deepEqual(unmetDoneProblems(card([]), "b.md"), []);
+  assert.match(unmetDoneProblems(card([]), "b.md", "it works")[0].message, /^Ticket: it has no ## Done section/);
+  // A Done when written as a paragraph under the heading is one item as well.
+  const paragraph = "---\nstatus: open\n---\n\n## Done when\n\nIt works.\n";
+  assert.match(unmetDoneProblems(paragraph, "x.md")[0].message, /^Ticket: it has no ## Done section/);
+  assert.deepEqual(unmetDoneProblems(`${paragraph}\n## Done (2026-11-12)\n\n- Done when 1: met — shown\n`, "x.md"), []);
+});
+
+test("unmetDoneProblems reads the Done when line when the ## Done when heading is empty", () => {
+  const ticket = (done: string[]) => ["---", "status: open", "---", "", "## Done when", "", "## Files", "- `file.txt`", "", "Done when:", "- it works", "- it is tested", "", ...done].join("\n");
+  const line = "- it works\n- it is tested";
+  assert.match(unmetDoneProblems(ticket([]), "x.md", line)[0]?.message ?? "", /^Ticket: it has no ## Done section/);
+  assert.deepEqual(unmetDoneProblems(ticket(["## Done (2026-11-12)", "", "- Done when 1: met — a"]), "x.md", line).map(row => row.message),
+    ['Ticket: Done when item 2 has no evidence line in its Done section (write "Done when 2: met — <evidence>")']);
+  assert.deepEqual(unmetDoneProblems(ticket(["## Done (2026-11-12)", "", "- Done when 1: met — a", "- Done when 2: met — b"]), "x.md", line), []);
+});
+
+test("unmetDoneProblems reads the Done when list when the last ## Done when heading is empty and an earlier one is filled", () => {
+  const ticket = ["---", "status: open", "---", "", "## Done when", "- a", "- b", "", "## Done when", "", "## Done (2026-11-12)", "", "- Done when 1: met — x"].join("\n");
+  // The slice passes what doneWhen reads: the first heading's list.
+  assert.deepEqual(unmetDoneProblems(ticket, "x.md", "- a\n- b").map(row => row.message),
+    ['Ticket: Done when item 2 has no evidence line in its Done section (write "Done when 2: met — <evidence>")']);
+  // An indented list keeps the first item's indent, so its second item is no nested line.
+  const indented = ticket.replace("- a\n- b", "  - a\n  - b");
+  assert.deepEqual(unmetDoneProblems(indented, "x.md", doneWhen(indented)).map(row => row.message),
+    ['Ticket: Done when item 2 has no evidence line in its Done section (write "Done when 2: met — <evidence>")']);
+});
+
+test("unmetDoneProblems skips a fenced example at the top of a filled heading, and of the Done when line's list", () => {
+  const ticket = ["---", "status: open", "---", "", "## Done when", "```", "- an example", "```", "- a", "- b", "- c", "", "## Done when", "",
+    "## Done (2026-11-12)", "", "- Done when 1: met — x", "- Done when 2: met — y"].join("\n");
+  assert.deepEqual(unmetDoneProblems(ticket, "x.md", doneWhen(ticket)).map(row => row.message),
+    ['Ticket: Done when item 3 has no evidence line in its Done section (write "Done when 3: met — <evidence>")']);
+  // The line's list (no filled heading) may open with a fence too: it stays a fence, and only the real items count.
+  const line = ["---", "status: open", "---", "", "## Done (2026-11-12)", "", "- Done when 1: met — x"].join("\n");
+  assert.deepEqual(unmetDoneProblems(line, "x.md", "```\n- an example\n```\n- a\n- b").map(row => row.message),
+    ['Ticket: Done when item 2 has no evidence line in its Done section (write "Done when 2: met — <evidence>")']);
+});
+
+test("a level-one heading ends the Done when section for the slice's reading and the closing check alike", () => {
+  const ticket = (body: string[]) => ["---", "status: open", "---", "", "## Done when", ...body, "", "## Done (2026-11-12)", "", "- Done when 1: met — x"].join("\n");
+  for (const body of [["- a", "# Notes", "- b"], ["", "# Notes", "- a", "- b"]]) {
+    const text = ticket(body);
+    assert.equal(doneWhen(text), body[0] === "- a" ? "- a" : "", body.join("|"));
+  }
+  assert.deepEqual(unmetDoneProblems(ticket(["- a", "# Notes", "- b"]), "x.md", doneWhen(ticket(["- a", "# Notes", "- b"]))), []);
+});
+
+test("unmetDoneProblems needs evidence for every item of an indented list under the Done when line", () => {
+  const ticket = ["---", "status: open", "---", "", "Done when:", "  - a", "  - b", "", "Links: none", "", "## Done (2026-11-12)", "", "- Done when 1: met — x"].join("\n");
+  assert.deepEqual(unmetDoneProblems(ticket, "x.md", doneWhen(ticket)).map(row => row.message),
+    ['Ticket: Done when item 2 has no evidence line in its Done section (write "Done when 2: met — <evidence>")']);
+});
+
+test("unmetDoneProblems reads an earlier filled heading with the heading's own item rules when the last one is empty", () => {
+  const ticket = (list: string[], done: string[]) => ["---", "status: open", "---", "", "## Done when", "", "Both checks hold.", "", ...list, "", "## Done when", "",
+    "## Done (2026-11-12)", "", ...done].join("\n");
+  const indented = ticket(["  - a", "  - b"], ["- Done when 1: met — x"]);
+  assert.deepEqual(unmetDoneProblems(indented, "x.md", doneWhen(indented)).map(row => row.message),
+    ['Ticket: Done when item 2 has no evidence line in its Done section (write "Done when 2: met — <evidence>")']);
+  const flush = ticket(["- a", "- b"], ["- Done when 1: met — x", "- Done when 2: met — y"]);
+  assert.deepEqual(unmetDoneProblems(flush, "x.md", doneWhen(flush)), []);
+});
+
+test("unmetDoneProblems skips fenced sample bullets in the Done when line's list", () => {
+  const ticket = ["---", "status: open", "---", "", "Done when:", "- it works", "```", "- a sample", "```", "", "## Done (2026-11-12)", "", "- Done when 1: met — shown"].join("\n");
+  assert.deepEqual(unmetDoneProblems(ticket, "x.md", "- it works\n```\n- a sample\n```"), []);
 });

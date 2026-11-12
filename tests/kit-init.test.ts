@@ -120,6 +120,12 @@ test("a fresh npm repo gets a full setup that passes doctor, is listed in projec
   for (const path of [".claude/settings.json", ".codex/hooks.json"]) {
     assert.deepEqual(JSON.parse(readFileSync(join(work, path), "utf8")).hooks, JSON.parse(readFileSync(path, "utf8")).hooks, path);
   }
+  // status-nudge is opt-in: a project adds it to its own settings, so init never writes it.
+  for (const path of [".claude/settings.json", ".codex/hooks.json"]) {
+    const text = readFileSync(join(work, path), "utf8");
+    assert.doesNotMatch(text, /status-nudge/, path);
+    assert.equal(JSON.parse(text).hooks.UserPromptSubmit, undefined, path);
+  }
   // Through the project's own launcher the setup runs the machine kit, and the rulebook prints its extras.
   const rulebook = spawnSync(join(work, "scripts/agents/kit"), ["rulebook"], { cwd: work, env: f.env, encoding: "utf8", timeout: 30_000 });
   assert.equal(result(rulebook), "RESULT: ok rulebook shared and docs/agents/kitchen-extras.md", rulebook.stdout + rulebook.stderr);

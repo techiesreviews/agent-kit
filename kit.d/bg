@@ -6,6 +6,7 @@ import { constants } from "node:os";
 import { Socket } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { bgLock } from "../bg-lock.mjs";
 import { kitJob, kitJobDirectory, kitJobExit, kitJobGroup, kitJobMembers, kitJobProcess, kitJobRecord, kitJobRunning, kitResult, kitRoot } from "../kit-lib.mjs";
 
 const usage = `Usage: kit bg <name> [--cwd DIR] [--max D] -- <command…>
@@ -16,7 +17,9 @@ Jobs use setsid + nohup, their own process group, and stdin /dev/null, inside th
 (systemd-run --user --scope), so the end of a turn or an app restart does not stop them. --max is the scope's
 time limit (seconds, or with s, m or h; default 6h; 0 for none); a job it ends shows exit 143. Without a user
 systemd (CI, containers, root; or KIT_BG_SCOPE=off) the job starts without a scope and ends with the session.
-Stop sends SIGTERM to that group, then SIGKILL after a 2s grace period.`;
+Stop sends SIGTERM to that group, then SIGKILL after a 2s grace period.
+One start or stop of a name at a time: flock on Linux and macOS; on Windows (no flock) a lock file,
+.scratch/kit-jobs/.<name>.lock, that a dead or a five-minute-old holder loses (KIT_BG_LOCK=file or flock picks by hand).`;
 const args = process.argv.slice(2);
 const quote = value => `'${value.replace(/'/g, "'\\''")}'`;
 
@@ -106,20 +109,6 @@ function scopeWorks() {
   if (process.env.KIT_BG_SCOPE === "off") return false;
   const probe = spawnSync("systemd-run", ["--user", "--scope", "--quiet", "--collect", "true"], { stdio: "ignore", timeout: 5000 });
   return probe.status === 0;
-}
-
-async function lockJob(path, name) {
-  // flock releases on pipe EOF even if the launcher is killed during startup.
-  // Keep the lock in a separate process so detached jobs cannot inherit it.
-  const child = spawn("flock", ["--nonblock", path, "/bin/sh", "-c", "printf 'locked\\n'; read -r release || :"], { stdio: ["pipe", "pipe", "ignore"] });
-  const closed = new Promise(resolve => child.once("close", resolve));
-  child.stdin.on("error", () => {});
-  await new Promise((resolve, reject) => {
-    child.once("error", reject);
-    child.stdout.once("data", resolve);
-    child.once("close", () => reject(new Error(`bg ${name} is busy; retry after its current operation`)));
-  });
-  return async () => { child.stdin.end(); await closed; };
 }
 
 function list() {
@@ -234,7 +223,7 @@ else {
       const directory = kitJobDirectory(config.name);
       mkdirSync(dirname(directory), { recursive: true });
       const path = join(dirname(directory), `.${config.name}.lock`);
-      unlock = await lockJob(path, config.name);
+      unlock = (await bgLock(path, config.name)).release;
       if (config.kind === "start") await start(config, directory);
       else await stop(config.name, directory);
     }

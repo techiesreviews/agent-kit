@@ -311,6 +311,71 @@ test("bg concurrent starts reserve a name once", async t => {
   assert.deepEqual((await Promise.all([launch(), launch()])).sort(), [0, 1]);
 });
 
+// A flock that always says busy and leaves a trace: a start under the file lock must never run it.
+function fakeFlock(f: ReturnType<typeof fixture>) {
+  const bin = join(f.root, ".fake-bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "flock"), `#!/bin/sh\necho used >> "${join(f.root, "flock-used")}"\nexit 1\n`);
+  chmodSync(join(bin, "flock"), 0o755);
+  return { used: join(f.root, "flock-used"), env: { ...f.env, KIT_BG_LOCK: "file", PATH: `${bin}:${process.env.PATH}` } };
+}
+const locks = (f: ReturnType<typeof fixture>) => readdirSync(join(f.root, ".scratch/kit-jobs")).filter(name => name.endsWith(".lock"));
+
+test("bg starts and stops a job under the file lock (Windows) with no flock, and flock stays the lock on Linux", t => {
+  const f = fixture(t);
+  const flock = fakeFlock(f);
+  const run = (...args: string[]) => spawnSync(kit, ["bg", ...args], { env: flock.env, encoding: "utf8" });
+  const release = join(f.root, "release");
+  const started = run("win", "--", process.execPath, "-e", held, release);
+  assert.equal(started.status, 0, started.stderr + started.stdout);
+  assert.match(started.stdout, /RESULT: ok bg win pid \d+/);
+  assert.equal(existsSync(flock.used), false, "the file lock must not run flock");
+  assert.deepEqual(locks(f), [], "nothing is left held between runs");
+  const again = run("win", "--", process.execPath, "-e", held, release);
+  assert.equal(again.status, 1);
+  assert.match(again.stdout, /bg win already running/);
+  const stopped = run("--stop", "win");
+  assert.equal(stopped.status, 0, stopped.stderr + stopped.stdout);
+  assert.match(stopped.stdout, /RESULT: ok bg stop win/);
+  assert.deepEqual(locks(f), []);
+  // The default on Linux is unchanged: the same fake, as flock, makes a start fail as busy.
+  const busy = spawnSync(kit, ["bg", "other", "--", "true"], { env: { ...flock.env, KIT_BG_LOCK: "" }, encoding: "utf8" });
+  assert.equal(busy.status, 1);
+  assert.match(busy.stdout, /bg other is busy/);
+  assert.ok(existsSync(flock.used));
+});
+
+test("bg takes over the file lock a killed launcher left, and refuses one a live launcher holds", t => {
+  const f = fixture(t);
+  const flock = fakeFlock(f);
+  const run = (...args: string[]) => spawnSync(kit, ["bg", ...args], { env: flock.env, encoding: "utf8" });
+  mkdirSync(join(f.root, ".scratch/kit-jobs"), { recursive: true });
+  const lock = join(f.root, ".scratch/kit-jobs/.dead.lock");
+  const gone = spawnSync(process.execPath, ["-e", ""]).pid;
+  writeFileSync(lock, `${gone} left-behind\n`);
+  const stopped = run("--stop", "dead");
+  // The lock was taken over (not busy); with no job of that name the stop fails on the missing records instead.
+  assert.doesNotMatch(stopped.stdout, /is busy/);
+  assert.equal(stopped.status, 1);
+  assert.match(stopped.stdout, /RESULT: fail missing or invalid job records/);
+  assert.deepEqual(locks(f), []);
+  writeFileSync(lock, `${process.pid} held-now\n`);
+  const refused = run("dead", "--", "true");
+  assert.equal(refused.status, 1);
+  assert.match(refused.stdout, /bg dead is busy; retry after its current operation/);
+  assert.equal(readFileSync(lock, "utf8"), `${process.pid} held-now\n`);
+});
+
+test("bg concurrent starts reserve a name once under the file lock", async t => {
+  const f = fixture(t);
+  const env = { ...f.env, KIT_BG_LOCK: "file" };
+  const launch = () => new Promise<number | null>((resolve, reject) => {
+    const child = spawn(kit, ["bg", "race", "--", process.execPath, "-e", held, join(f.root, "release")], { env, stdio: "ignore" });
+    child.on("error", reject).on("close", resolve);
+  });
+  assert.deepEqual((await Promise.all([launch(), launch()])).sort(), [0, 1]);
+});
+
 for (const kind of ["--wrapper", "--command"]) test(`bg ${kind} cancels a launch handoff interrupted by TERM`, async t => {
   const f = fixture(t);
   const ready = join(f.root, "ready");

@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { cardStage, cardStandardProblems, orbitDate, orbitStore, showDate, ticketSettings, withBlockedBy, withPlannedDates, withoutNextLex } from "../ticket-store.mjs";
-import { doneWhen } from "../ticket-cards.mjs";
+import { cardBuildable, doneWhen } from "../ticket-cards.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { orbitClient, orbitRedactor, orbitReport } from "../orbit-client.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
@@ -550,6 +550,9 @@ test("repeat sets how a card repeats, get shows it, and --stop ends it", async t
   assert.deepEqual(task.recurrence, { frequency: "daily", interval: 1, weekdays: [], base: "due" });
   ok(await run(["repeat", "TOOLS-1", "--every", "3 years"]));
   assert.equal(task.recurrence.frequency, "yearly");
+  ok(await run(["repeat", "TOOLS-1", "--every", "2 weeks", "--on", "mon,thu"]));
+  assert.deepEqual(task.recurrence, { frequency: "weekly", interval: 2, weekdays: ["mon", "thu"], base: "due" });
+  assert.match(ok(await run(["get", "TOOLS-1"])).stdout, /^Repeats: every 2 weeks on Mon, Thu \(counted from the due date\)$/m);
 
   // A rule Orbit holds in another order, or with more fields, is the same rule: nothing is sent.
   task.recurrence = { frequency: "weekly", interval: 1, weekdays: ["thu", "mon"], base: "due", next_due_at: "2026-11-20T22:59:00.000Z" };
@@ -2446,6 +2449,9 @@ test("check --all knows only the configured project's default parent: its bare c
 
 test("doneWhen reads a heading or the standard's line, with its list or plain lines, and stops at the next label or heading", () => {
   assert.equal(doneWhen("## Files\n\n- a\n\n## Done when\n\n- x\n- y\n\n## Links\n\n- z"), "- x\n- y");
+  // Fenced code is neither a heading nor a "Done when:" line.
+  assert.equal(doneWhen("```\n## Done when\n- example\n```\n\nDone when:\n- real\n\nLinks: none"), "- real");
+  assert.equal(doneWhen("```\nDone when: example\n```\n\nDone when:\n- real\n\nLinks: none"), "- real");
   assert.equal(doneWhen("Goal\n\nDone when:\nit works\nit is tested\nLinks: none"), "it works\nit is tested");
   assert.equal(doneWhen("Done when: it works\n\n- tested\n\nLinks: none"), "it works\n- tested");
   assert.equal(doneWhen("Done when:\n- x\n\nA plain paragraph after a gap."), "- x");
@@ -2453,6 +2459,23 @@ test("doneWhen reads a heading or the standard's line, with its list or plain li
   assert.equal(doneWhen("Done when:\n\nLinks: none"), "");
   assert.equal(doneWhen("Goal only"), "");
   assert.equal(doneWhen(undefined), "");
+});
+
+test("doneWhen skips fenced code under the Done when line and under the heading, so an example is never an item", () => {
+  // A fenced example right after the line is no item, alone or after a real one.
+  assert.equal(doneWhen("Done when:\n```\n- an example\n```"), "");
+  assert.equal(doneWhen("Done when:\n- real\n```\n- an example\n```\n- second real\n\nLinks: none"), "- real\n- second real");
+  // A heading whose section is only fenced code is empty: the card cannot be built, and a later line is read instead.
+  assert.equal(doneWhen("## Done when\n\n```\n- an example\n```\n\n## Links\n"), "");
+  assert.equal(cardBuildable("## Files\n\n- `a.txt`\n\n## Done when\n\n```\n- an example\n```\n"), false);
+  assert.equal(doneWhen("## Done when\n\n```\n- an example\n```\n\n## Notes\n\nDone when:\n- real\n"), "- real");
+});
+
+test("doneWhen reads the last filled heading, the one the closing check reads, and keeps an indented list's indent", () => {
+  assert.equal(doneWhen("## Done when\n\n## Notes\n\n## Done when\n\n- a\n- b\n"), "- a\n- b");
+  assert.equal(doneWhen("## Done when\n\n- first\n\n## Done when\n\n- a\n- b\n"), "- a\n- b");
+  assert.equal(doneWhen("## Done when\n\n- a\n- b\n\n## Done when\n\n## Links\n"), "- a\n- b");
+  assert.equal(doneWhen("Done when:\n  - a\n  - b\n\nLinks: none"), "  - a\n  - b");
 });
 
 test("check stops when the default parent cannot be looked up (other than gone), and treats a gone parent as no board parent", async t => {
