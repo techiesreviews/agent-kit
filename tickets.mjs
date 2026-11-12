@@ -174,8 +174,8 @@ function doneProblems(lines, end, file, strict = false, open = false, fallback =
   const who = open ? "Ticket" : "Closed ticket";
   let fenced = fencedLines(lines);
   const headingsIn = () => lines.flatMap((line, index) => index > end && !fenced[index] && /^#{1,2} /.test(line) ? [{ line, index }] : []);
-  // `fallback` is the Done when list the slice read (doneWhen): the first heading's list when it is filled, else the
-  // card standard's "Done when:" line. When the last `## Done when` heading outside fenced code, the one read below, is missing or empty
+  // `fallback` is the Done when list the slice read (doneWhen): the last filled heading's list, else the card
+  // standard's "Done when:" line. When the last `## Done when` heading outside fenced code, the one read below, is missing or empty
   // (blank or fenced lines only), the list is read as that section, put after the last line, so the rows' line numbers
   // are not the file's. Its own fenced lines stay fenced.
   if (fallback.length) {
@@ -247,9 +247,10 @@ function doneProblems(lines, end, file, strict = false, open = false, fallback =
 /** What stops a ticket that is not landed yet from being called done, as { file, line, message } rows: the strict reading
  * of doneProblems for any status, with no date cutoff. Any Done when item whose evidence line says not met, pending or open,
  * or has none, is a row; a ticket with no `## Done when` has none, and a Done when written as a paragraph is one item (the reading of a ticket being
- * closed, newlyClosed, still reads lists only). `standardLine` is the Done when text of a ticket
- * that gives it as the card standard's "Done when:" line (its list lines) instead of a heading: it is read as that heading,
- * a first item on the line itself counting as the list's first. */
+ * closed, newlyClosed, still reads lists only). `standardLine` is the Done when list the slice read (doneWhen of the
+ * ticket): the card standard's "Done when:" line (its list lines), or a filled heading's list. It is read as the
+ * heading when the ticket's last `## Done when` heading is missing or empty, a first item on the line itself counting
+ * as the list's first. */
 export function unmetDoneProblems(source, file = "ticket", standardLine = "") {
   const lines = source.replace(/^\uFEFF/, "").split(/\r?\n/);
   const end = lines[0] === "---" ? lines.findIndex((line, i) => i > 0 && line === "---") : -1;

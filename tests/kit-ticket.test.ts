@@ -2471,6 +2471,13 @@ test("doneWhen skips fenced code under the Done when line and under the heading,
   assert.equal(doneWhen("## Done when\n\n```\n- an example\n```\n\n## Notes\n\nDone when:\n- real\n"), "- real");
 });
 
+test("doneWhen reads the last filled heading, the one the closing check reads, and keeps an indented list's indent", () => {
+  assert.equal(doneWhen("## Done when\n\n## Notes\n\n## Done when\n\n- a\n- b\n"), "- a\n- b");
+  assert.equal(doneWhen("## Done when\n\n- first\n\n## Done when\n\n- a\n- b\n"), "- a\n- b");
+  assert.equal(doneWhen("## Done when\n\n- a\n- b\n\n## Done when\n\n## Links\n"), "- a\n- b");
+  assert.equal(doneWhen("Done when:\n  - a\n  - b\n\nLinks: none"), "  - a\n  - b");
+});
+
 test("check stops when the default parent cannot be looked up (other than gone), and treats a gone parent as no board parent", async t => {
   const { orbit, config } = await fixture(t);
   const home = mkdtempSync(join(tmpdir(), "kit-check-"));

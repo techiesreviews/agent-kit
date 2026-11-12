@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 // @ts-expect-error The script is plain JavaScript without declarations.
 import { doneWhen } from "../ticket-cards.mjs";
+// @ts-expect-error The script is plain JavaScript without declarations.
 import { loadFeedback, loadTickets, newlyClosed, parseFeedback, parseFiles, parseTicket, resolveTickets, unmetDoneProblems } from "../tickets.mjs";
 
 const fixtures = "tests/fixtures/agent-tickets";
@@ -661,6 +662,12 @@ test("unmetDoneProblems keeps a fenced example that opens the fallback list fenc
     "## Done (2026-11-12)", "", "- Done when 1: met — x", "- Done when 2: met — y"].join("\n");
   assert.deepEqual(unmetDoneProblems(ticket, "x.md", doneWhen(ticket)).map(row => row.message),
     ['Ticket: Done when item 3 has no evidence line in its Done section (write "Done when 3: met — <evidence>")']);
+});
+
+test("unmetDoneProblems needs evidence for every item of an indented list under the Done when line", () => {
+  const ticket = ["---", "status: open", "---", "", "Done when:", "  - a", "  - b", "", "Links: none", "", "## Done (2026-11-12)", "", "- Done when 1: met — x"].join("\n");
+  assert.deepEqual(unmetDoneProblems(ticket, "x.md", doneWhen(ticket)).map(row => row.message),
+    ['Ticket: Done when item 2 has no evidence line in its Done section (write "Done when 2: met — <evidence>")']);
 });
 
 test("unmetDoneProblems skips fenced sample bullets in the Done when line's list", () => {
