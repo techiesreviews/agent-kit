@@ -1039,7 +1039,7 @@ appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ cli: "opencode", args, i
   noProject: process.env.OPENCODE_DISABLE_PROJECT_CONFIG, noClaude: process.env.OPENCODE_DISABLE_CLAUDE_CODE,
   configFile: process.env.OPENCODE_CONFIG, configDir: process.env.OPENCODE_CONFIG_DIR }) + "\\n");
 const emit = (type, extra = {}) => console.log(JSON.stringify({ type, timestamp: Date.now(), sessionID: "ses_fake", ...extra }));
-const mode = process.env.FAKE_MODE || "pass";
+const mode = process.env.FAKE_OPENCODE_MODE || process.env.FAKE_MODE || "pass";
 // A provider that is down: no event at all, as on 2026-10-27.
 if (process.env.FAKE_OPENCODE_SILENT || (mode === "retry-silent" && resumed)) await new Promise(done => setTimeout(done, 30_000));
 emit("step_start", { part: { type: "step-start", messageID: "m0" } });
@@ -1756,6 +1756,94 @@ test("GPT's weekly count used up hands the second look to Grok", (t) => {
   assert.equal(handed.status, 0, handed.stdout + handed.stderr);
   assert.match(handed.stdout, /^second look: grok-4\.7 takes it \(gpt-6\.1-sol gpt review budget used up: 1\/1 in \S+; raise ASE_REVIEW_BUDGET_GPT to override\)$/m);
   assert.deepEqual(f.calls().map(call => call.cli), ["codex", "grok"]);
+});
+
+// GPT looked once on PR 12 already; its row is passed over, so the free OpenCode model is the last one in the order.
+const gptThenOpencode = { order: ["gpt-6.1-sol", opencodeModel] };
+function gptAlreadyLooked(f: ReturnType<typeof fixture>, extra: NodeJS.ProcessEnv = {}) {
+  const table = lookTable(f, { code: gptThenOpencode, ux: gptThenOpencode, dx: gptThenOpencode, agent: gptThenOpencode }, { effort: { "gpt-6.1-sol": "high" } });
+  const first = f.run(["--base", "HEAD~1", "--second-look", "--pr", "12"], { ASE_SECOND_LOOK: table, ...extra });
+  assert.equal(first.status, 0, first.stdout + first.stderr);
+  assert.match(first.stdout, /^second look: code \(file\.txt\) gpt-6\.1-sol$/m);
+  return { table, firstEvidence: f.evidence(first.stdout) };
+}
+
+test("OpenCode at its usage limit hands the second look back to GPT, though GPT already looked once on the PR", (t) => {
+  const f = fixture(t); withOpencode(f);
+  const { table, firstEvidence } = gptAlreadyLooked(f, { ASE_REVIEW_BUDGET_GPT: "999" });
+  const fallback = f.run(["--base", "HEAD~1", "--second-look", "--pr", "12"], { ASE_SECOND_LOOK: table, ASE_REVIEW_BUDGET_GPT: "999", FAKE_OPENCODE_MODE: "usage-limit" });
+  assert.equal(fallback.status, 0, fallback.stdout + fallback.stderr);
+  assert.ok(fallback.stdout.includes(`second look: gpt-6.1-sol not used (one GPT second look per PR, done in ${firstEvidence})`), fallback.stdout);
+  assert.match(fallback.stdout, /^second look: code \(file\.txt\) opencode\/deepseek-v4\.1-flash-free$/m);
+  assert.match(fallback.stdout, /^second look: gpt-6\.1-sol takes it again \(opencode\/deepseek-v4\.1-flash-free opencode usage limit: Rate limit exceeded\. Please try again later\.; GPT looked once already on this PR\)$/m);
+  assert.deepEqual(f.calls().map(call => call.cli), ["codex", "opencode", "codex"]);
+  // It is the PR's second look: the mark names GPT and the look is counted like any GPT review.
+  assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(fallback.stdout), "second-look.json"), "utf8")), { kind: "code", model: "gpt-6.1-sol", ok: true, branch: "feature/review", pr: "12" });
+  assert.deepEqual(f.counts(), { gpt: { "kit-review": 2 } });
+  const call = f.calls().at(-1)!;
+  assert.ok(call.args.includes("model_reasoning_effort=high"), call.args.join(" "));
+  assert.equal(call.args[call.args.indexOf("-s") + 1], "read-only");
+});
+
+test("a Grok that is out of credit, then an OpenCode at its limit, ends on GPT; a working OpenCode never does", (t) => {
+  const f = fixture(t); withOpencode(f);
+  const { firstEvidence } = gptAlreadyLooked(f, { ASE_REVIEW_BUDGET_GPT: "999" });
+  const table = gptTable(f), budget = { ASE_SECOND_LOOK: table, ASE_REVIEW_BUDGET_GPT: "999" };
+  const fallback = f.run(["--base", "HEAD~1", "--second-look", "--pr", "12"], { ...budget, FAKE_MODE: "out-of-credit-event", FAKE_OPENCODE_MODE: "usage-limit" });
+  assert.equal(fallback.status, 0, fallback.stdout + fallback.stderr);
+  assert.match(fallback.stdout, /^second look: opencode\/deepseek-v4\.1-flash-free takes it \(grok-4\.7 out of credit\)$/m);
+  assert.match(fallback.stdout, /^second look: gpt-6\.1-sol takes it again \(opencode\/deepseek-v4\.1-flash-free opencode usage limit: /m);
+  assert.deepEqual(f.calls().map(call => call.cli), ["codex", "grok", "opencode", "codex"]);
+  assert.ok(firstEvidence);
+  // OpenCode works (Grok does not): the look stays with OpenCode, and GPT is not asked a second time.
+  const works = f.run(["--base", "HEAD~1", "--second-look", "--pr", "12"], { ...budget, FAKE_MODE: "out-of-credit-event" });
+  assert.equal(works.status, 0, works.stdout + works.stderr);
+  assert.doesNotMatch(works.stdout, /takes it again/);
+  assert.deepEqual(f.calls().map(call => call.cli).slice(4), ["grok", "opencode"]);
+});
+
+test("OpenCode that hangs past the look's time limit hands the second look back to GPT, which gets its own time", (t) => {
+  const f = fixture(t); withOpencode(f);
+  const { table } = gptAlreadyLooked(f, { ASE_REVIEW_BUDGET_GPT: "999" });
+  const started = Date.now();
+  const fallback = f.run(["--base", "HEAD~1", "--second-look", "--pr", "12"], { ASE_SECOND_LOOK: table, ASE_REVIEW_BUDGET_GPT: "999", FAKE_OPENCODE_MODE: "hang", ASE_AGENT_TIMEOUT: "20s", ASE_SECOND_LOOK_TIMEOUT: "2s" });
+  assert.equal(fallback.status, 0, fallback.stdout + fallback.stderr);
+  assert.ok(Date.now() - started < 15_000, "OpenCode stopped at the look's limit, with its processes gone");
+  assert.match(fallback.stdout, /^second look: gpt-6\.1-sol takes it again \(opencode\/deepseek-v4\.1-flash-free timed out after 2s; GPT looked once already on this PR\)$/m);
+  assert.deepEqual(f.calls().map(call => call.cli), ["codex", "opencode", "codex"]);
+  assert.equal(JSON.parse(readFileSync(join(f.evidence(fallback.stdout), "second-look.json"), "utf8")).model, "gpt-6.1-sol");
+});
+
+test("when GPT's weekly count is used up too, the OpenCode failure ends the second look as skipped, with the reason in plain words", (t) => {
+  const f = fixture(t); withOpencode(f);
+  const { table } = gptAlreadyLooked(f, { ASE_REVIEW_BUDGET_GPT: "1" });
+  const skipped = f.run(["--base", "HEAD~1", "--second-look", "--pr", "12"], { ASE_SECOND_LOOK: table, ASE_REVIEW_BUDGET_GPT: "1", FAKE_OPENCODE_MODE: "usage-limit" });
+  assert.equal(skipped.status, 3, skipped.stdout + skipped.stderr);
+  const last = skipped.stdout.trim().split("\n").at(-1)!;
+  assert.match(last, /^RESULT: skip second look \(opencode\/deepseek-v4\.1-flash-free opencode usage limit: Rate limit exceeded\. Please try again later\.; gpt-6\.1-sol gpt review budget used up: 1\/1 in \S+; raise ASE_REVIEW_BUDGET_GPT to override\)$/);
+  assert.doesNotMatch(last, /not used/, "GPT was asked, so it is not named as left unused");
+  assert.match(skipped.stdout, /^second look: skipped \(opencode\/deepseek-v4\.1-flash-free opencode usage limit/m);
+  // Only the first look reached Codex: the refused second ask made no call.
+  assert.deepEqual(f.calls().map(call => call.cli), ["codex", "opencode"]);
+  assert.deepEqual(f.counts(), { gpt: { "kit-review": 1 } });
+});
+
+test("GPT is not asked again for a docs-only change, nor when GPT's first look never came back", (t) => {
+  const f = fixture(t); withOpencode(f);
+  const table = lookTable(f, { code: gptThenOpencode, ux: gptThenOpencode, dx: gptThenOpencode, agent: gptThenOpencode });
+  commitFiles(f, ["docs/guide.md"]);
+  const docs = f.run(["--commit", "HEAD", "--second-look", "--pr", "12"], { ASE_SECOND_LOOK: table, ASE_REVIEW_BUDGET_GPT: "999", FAKE_OPENCODE_MODE: "usage-limit" });
+  assert.equal(docs.status, 3, docs.stdout + docs.stderr);
+  assert.doesNotMatch(docs.stdout, /takes it again/);
+  assert.match(docs.stdout.trim().split("\n").at(-1)!, /^RESULT: skip second look \(gpt-6\.1-sol not used: docs-only change; opencode\/deepseek-v4\.1-flash-free opencode usage limit: /);
+  assert.deepEqual(f.calls().map(call => call.cli), ["opencode"]);
+  // No earlier GPT look on this PR: GPT went first, so it is not repeated after OpenCode.
+  const fresh = fixture(t); withOpencode(fresh);
+  const freshTable = lookTable(fresh, { code: gptThenOpencode, ux: gptThenOpencode, dx: gptThenOpencode, agent: gptThenOpencode });
+  const gone = fresh.run(["--base", "HEAD~1", "--second-look", "--pr", "12"], { ASE_SECOND_LOOK: freshTable, ASE_REVIEW_BUDGET_GPT: "999", FAKE_MODE: "usage-limit" });
+  assert.equal(gone.status, 3, gone.stdout + gone.stderr);
+  assert.doesNotMatch(gone.stdout, /takes it again/);
+  assert.deepEqual(fresh.calls().map(call => call.cli), ["codex", "opencode"]);
 });
 
 test("a docs-only change never gets a GPT second look; with GPT alone in the order it is skipped", (t) => {
