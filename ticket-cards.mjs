@@ -50,8 +50,9 @@ const oneLine = text => String(text ?? "").replace(/\s*[\r\n]+\s*/g, " ").trim()
 /**
  * What a description says is done: the text under a "## Done when" heading, else the card standard's "Done when:" line (its
  * own text, then the lines under it: plain lines that follow directly and list lines, which may sit after blank lines). It
- * ends at a heading, a "Links:" style line or a plain line after a blank one. Fenced code is skipped, a heading whose
- * section is only fenced code counts as no heading, and of several filled headings the last is read. Empty when there is none.
+ * ends at a heading, a "Links:" style line or a plain line after a blank one. Fenced code under the line is skipped; a
+ * heading's section is returned whole, fenced examples included (the closing check reads it again and skips them), but
+ * one that is only fenced code counts as no heading, and of several filled headings the last is read. Empty when there is none.
  */
 export function doneWhen(description) {
   const text = String(description ?? "").replace(/\r\n?/g, "\n");
@@ -60,7 +61,8 @@ export function doneWhen(description) {
   // The last filled heading is read, as the closing check reads the last one (and falls back to this list when it is empty).
   const headings = lines.flatMap((line, index) => !fenced[index] && /^## Done when[ \t]*$/.test(line) ? [index] : []);
   for (const heading of headings.reverse()) {
-    const next = lines.findIndex((line, index) => index > heading && !fenced[index] && line.startsWith("## "));
+    // Any level-one or level-two heading ends it, as in the closing check (doneProblems).
+    const next = lines.findIndex((line, index) => index > heading && !fenced[index] && /^#{1,2} /.test(line));
     const section = lines.slice(heading + 1, next < 0 ? undefined : next);
     // A section that is only fenced code is empty: an example never stands for the real list. Only blank lines are
     // trimmed, so an indented list keeps its first item's indent.

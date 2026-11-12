@@ -67,7 +67,12 @@ function removeIfStale(path, stale, clearing) {
   try {
     const taken = look(moved);
     if (taken && !stale(taken)) {
-      try { linkSync(moved, path); } catch (error) { if (error.code !== "EEXIST") throw error; }
+      // A file system without hard links (FAT, some shares) moves it back instead, while the name is still free.
+      try { linkSync(moved, path); }
+      catch (error) {
+        if (error.code === "EEXIST") return;
+        if (look(path) === null) renameSync(moved, path);
+      }
     }
   } finally { rmSync(moved, { force: true }); }
 }
