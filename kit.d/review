@@ -24,10 +24,10 @@ const usage = "Usage: kit review [--base REF | --commit SHA] [--ticket FILE] [--
   "(ASE_SECOND_LOOK overrides); the next one takes it when a model cannot run; when none can, it skips with exit 3 and says \"second look: skipped (<reason>)\".\n" +
   "GPT (through Codex, at the table's effort) may review since 2026-11-09; Claude Opus stays the main reviewer. A GPT model in the order is never\n" +
   "used for a docs-only change, and once per PR (the same --pr N, or the same branch and history when either look named no PR): a later look goes to the next model.\n" +
-  "One exception (Lex, 2026-11-12): when the free OpenCode model fails, times out or hits its limit, GPT looks again even if it looked once, within ASE_REVIEW_BUDGET_GPT and with a time limit of its own (never for a docs-only change); it says \"second look: <gpt model> takes it again (…)\".\n" +
+  "One exception (Lex, 2026-11-12): when the free OpenCode model fails (for a reason of its own, not a failed save), times out or hits its limit, GPT looks again even if it looked once, within ASE_REVIEW_BUDGET_GPT and with a time limit of its own (never for a docs-only change); it says \"second look: <gpt model> takes it again (…)\".\n" +
   "--second gpt: a GPT second look asked on purpose, for a big or risky change: the kind's GPT model, even when the PR had one (never for a docs-only\n" +
   "change), and no other model in its place (it skips with exit 3 when GPT cannot run, a missing Codex login included). Either way the look is the PR's second look, which kit pr reuses on the same HEAD.\n" +
-  "The whole look, fallback included, stops at ASE_SECOND_LOOK_TIMEOUT (25m): then it skips as \"<model> timed out after 25m\";\n" +
+  "The whole look, fallback included, stops at ASE_SECOND_LOOK_TIMEOUT (25m; GPT taking it again after OpenCode fails gets its own 25m): then it skips as \"<model> timed out after 25m\";\n" +
   "a fallback with under a minute left is not started (\"<model> not started: under a minute left of 25m\").\n" +
   "Weekly budgets for the whole computer: ASE_REVIEW_BUDGET_GPT (12), ASE_REVIEW_BUDGET_GROK (8); not counted: Claude and OpenCode's -free models.\n" +
   "On OpenCode, openai/… counts as GPT and xai/… as Grok; any other paid OpenCode model is refused.\n";
@@ -359,10 +359,10 @@ async function secondLook(flags) {
         const why = lookFamily(model) !== "gpt" ? null : docsOnly ? "docs-only change" : done ? `one GPT second look per PR, done in ${done}` : null;
         if (why) unused.push({ model, why });
         else models.push(model);
-        if (done && !docsOnly) again = { model, why };
+        if (done) again = model;
       }
     }
-    pick.effort = Object.fromEntries([...models, ...(again ? [again.model] : [])].map(model => [model, secondLookEffort(model, table)]));
+    pick.effort = Object.fromEntries([...models, ...(again ? [again] : [])].map(model => [model, secondLookEffort(model, table)]));
   } catch (error) {
     console.error(`problem: ${error.message}`);
     kitResult("fail", `${error.message} evidence none`);
@@ -375,30 +375,34 @@ async function secondLook(flags) {
   let opencodeFailed = null, repeated = false;
   const attempt = (model, look) => reviewOnce(flags, { kind: pick.kind, model, effort: pick.effort[model], ...look });
   // Whether the look is over for this model: it came back, or failed in a way that is a real failure, not an outage.
+  // A failure of kit's own work after the review ran (saving its evidence, the PR comment), which another model would meet too.
+  const ownFailure = /^(saving evidence failed|gh pr comment failed|releasing review budget failed)/;
   const ended = result => (result.status === 0 && !result.outOfCredit) || (!result.unavailable && !result.timedOut);
   for (const model of models) {
     // A fallback needs a minute left to start: with less it would reserve a count for a review the limit stops.
     if (tried.length && deadline - Date.now() < 60_000) { tried.push(`${model} not started: under a minute left of ${label}`); break; }
     if (tried.length) console.log(`second look: ${model} takes it (${tried.at(-1)})`);
     const result = await attempt(model, { deadline, limit: label });
-    if (ended(result)) return report(result);
+    // OpenCode that fails for any reason of its own (not a failed save of its evidence or PR comment) goes to GPT when GPT may look again.
+    const gaveUp = again && lookFamily(model) === "opencode" && result.status !== 0 && !ownFailure.test(result.reason);
+    if (ended(result) && !gaveUp) return report(result);
     if (result.evidence !== "none") console.log(`evidence: ${result.evidence}`);
     tried.push(`${model} ${result.outOfCredit ? "out of credit" : result.reason}`.replace(/\s+/g, " "));
     if (lookFamily(model) === "opencode") opencodeFailed = tried.at(-1);
-    if (result.timedOut) break;
+    if (result.timedOut || gaveUp) break;
   }
-  // Lex (2026-11-12): when the free OpenCode model fails, times out or hits its limit, GPT looks again, even though it looked
+  // Lex (2026-11-12): when the free OpenCode model fails (for a reason of its own), times out or hits its limit, GPT looks again, even though it looked
   // once on this PR already (within the weekly GPT count). It gets a whole time limit of its own: OpenCode may have used the first.
   if (again && opencodeFailed) {
     repeated = true;
-    console.log(`second look: ${again.model} takes it again (${opencodeFailed}; GPT looked once already on this PR)`);
-    const result = await attempt(again.model, { deadline: Date.now() + durationMilliseconds(limit), limit: label });
+    console.log(`second look: ${again} takes it again (${opencodeFailed}; GPT looked once already on this PR or branch)`);
+    const result = await attempt(again, { deadline: Date.now() + durationMilliseconds(limit), limit: label });
     if (ended(result)) return report(result);
     if (result.evidence !== "none") console.log(`evidence: ${result.evidence}`);
-    tried.push(`${again.model} ${result.outOfCredit ? "out of credit" : result.reason}`.replace(/\s+/g, " "));
+    tried.push(`${again} ${result.outOfCredit ? "out of credit" : result.reason}`.replace(/\s+/g, " "));
   }
   // GPT that was asked again is named by what happened, not as left unused.
-  const missed = [...notUsed.filter(entry => !(repeated && entry.model === again.model)).map(entry => entry.text), ...tried];
+  const missed = [...notUsed.filter(entry => !(repeated && entry.model === again)).map(entry => entry.text), ...tried];
   console.log(`second look: skipped (${missed.join("; ")})`);
   console.log(`RESULT: skip second look (${missed.join("; ")})`);
   return 3;
