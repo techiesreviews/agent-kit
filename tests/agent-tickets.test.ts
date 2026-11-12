@@ -634,3 +634,17 @@ test("unmetDoneProblems reads the card standard's Done when line as the Done whe
   assert.match(unmetDoneProblems(paragraph, "x.md")[0].message, /^Ticket: it has no ## Done section/);
   assert.deepEqual(unmetDoneProblems(`${paragraph}\n## Done (2026-11-12)\n\n- Done when 1: met — shown\n`, "x.md"), []);
 });
+
+test("unmetDoneProblems reads the Done when line when the ## Done when heading is empty", () => {
+  const ticket = (done: string[]) => ["---", "status: open", "---", "", "## Done when", "", "## Files", "- `file.txt`", "", "Done when:", "- it works", "- it is tested", "", ...done].join("\n");
+  const line = "- it works\n- it is tested";
+  assert.match(unmetDoneProblems(ticket([]), "x.md", line)[0]?.message ?? "", /^Ticket: it has no ## Done section/);
+  assert.deepEqual(unmetDoneProblems(ticket(["## Done (2026-11-12)", "", "- Done when 1: met — a"]), "x.md", line).map(row => row.message),
+    ['Ticket: Done when item 2 has no evidence line in its Done section (write "Done when 2: met — <evidence>")']);
+  assert.deepEqual(unmetDoneProblems(ticket(["## Done (2026-11-12)", "", "- Done when 1: met — a", "- Done when 2: met — b"]), "x.md", line), []);
+});
+
+test("unmetDoneProblems skips fenced sample bullets in the Done when line's list", () => {
+  const ticket = ["---", "status: open", "---", "", "Done when:", "- it works", "```", "- a sample", "```", "", "## Done (2026-11-12)", "", "- Done when 1: met — shown"].join("\n");
+  assert.deepEqual(unmetDoneProblems(ticket, "x.md", "- it works\n```\n- a sample\n```"), []);
+});

@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { cardStage, cardStandardProblems, orbitDate, orbitStore, showDate, ticketSettings, withBlockedBy, withPlannedDates, withoutNextLex } from "../ticket-store.mjs";
-import { doneWhen } from "../ticket-cards.mjs";
+import { cardBuildable, doneWhen } from "../ticket-cards.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { orbitClient, orbitRedactor, orbitReport } from "../orbit-client.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
@@ -2459,6 +2459,16 @@ test("doneWhen reads a heading or the standard's line, with its list or plain li
   assert.equal(doneWhen("Done when:\n\nLinks: none"), "");
   assert.equal(doneWhen("Goal only"), "");
   assert.equal(doneWhen(undefined), "");
+});
+
+test("doneWhen skips fenced code under the Done when line and under the heading, so an example is never an item", () => {
+  // A fenced example right after the line is no item, alone or after a real one.
+  assert.equal(doneWhen("Done when:\n```\n- an example\n```"), "");
+  assert.equal(doneWhen("Done when:\n- real\n```\n- an example\n```\n- second real\n\nLinks: none"), "- real\n- second real");
+  // A heading whose section is only fenced code is empty: the card cannot be built, and a later line is read instead.
+  assert.equal(doneWhen("## Done when\n\n```\n- an example\n```\n\n## Links\n"), "");
+  assert.equal(cardBuildable("## Files\n\n- `a.txt`\n\n## Done when\n\n```\n- an example\n```\n"), false);
+  assert.equal(doneWhen("## Done when\n\n```\n- an example\n```\n\n## Notes\n\nDone when:\n- real\n"), "- real");
 });
 
 test("check stops when the default parent cannot be looked up (other than gone), and treats a gone parent as no board parent", async t => {

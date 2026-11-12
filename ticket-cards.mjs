@@ -50,7 +50,8 @@ const oneLine = text => String(text ?? "").replace(/\s*[\r\n]+\s*/g, " ").trim()
 /**
  * What a description says is done: the text under a "## Done when" heading, else the card standard's "Done when:" line (its
  * own text, then the lines under it: plain lines that follow directly and list lines, which may sit after blank lines). It
- * ends at a heading, a "Links:" style line or a plain line after a blank one. Empty when there is none.
+ * ends at a heading, a "Links:" style line or a plain line after a blank one. Fenced code is skipped, and a heading whose
+ * section is only fenced code counts as no heading. Empty when there is none.
  */
 export function doneWhen(description) {
   const text = String(description ?? "").replace(/\r\n?/g, "\n");
@@ -59,14 +60,17 @@ export function doneWhen(description) {
   const heading = lines.findIndex((line, index) => !fenced[index] && /^## Done when[ \t]*$/.test(line));
   if (heading >= 0) {
     const next = lines.findIndex((line, index) => index > heading && !fenced[index] && line.startsWith("## "));
-    const section = lines.slice(heading + 1, next < 0 ? undefined : next).join("\n").trim();
-    if (section) return section;
+    const section = lines.slice(heading + 1, next < 0 ? undefined : next);
+    // A section that is only fenced code is empty: an example never stands for the real list.
+    if (section.some((line, at) => line.trim() && !fenced[heading + 1 + at])) return section.join("\n").trim();
   }
   const start = lines.findIndex((line, index) => !fenced[index] && /^[*_]*Done when[*_]*:/i.test(line.trim()));
   if (start < 0) return "";
   const found = [/^[*_]*Done when[*_]*:[*_]*(.*)$/i.exec(lines[start].trim())[1].trim()].filter(Boolean);
   let gap = false;
-  for (const line of lines.slice(start + 1)) {
+  for (const [at, line] of lines.slice(start + 1).entries()) {
+    // Fenced code under the line is an example, never an item; it leaves the blank-line gap as it was.
+    if (fenced[start + 1 + at]) continue;
     if (!line.trim()) { gap = true; continue; }
     const listed = /^(?:[-*+]|\d+[.)])\s|^\s/.test(line);
     // A plain line counts when it follows directly; after a blank line only list lines do. A heading or a "Links:" style line ends it.

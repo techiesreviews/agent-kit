@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -193,4 +194,40 @@ test("a guard another taker made since is never removed by a taker that is done"
   const lock = await bgLock(path, "job", { platform: "win32", between: () => writeFileSync(`${path}.recover`, "9 someone-else\n") });
   assert.equal(readFileSync(`${path}.recover`, "utf8"), "9 someone-else\n");
   await lock.release();
+});
+
+test("a cleaner that judged a dead taker's guard old never removes the guard of a take-over that started since", async t => {
+  const root = folder(t);
+  const path = join(root, ".job.lock"), guard = `${path}.recover`;
+  writeFileSync(path, `${deadPid()} dead-token\n`);
+  writeFileSync(guard, "1 dead-taker\n");
+  const old = new Date(Date.now() - 10 * 60 * 1000);
+  utimesSync(guard, old, old);
+  // While this cleaner is paused, another cleaner removed the old guard and a new take-over holds its own guard.
+  const clearing = () => { rmSync(guard); writeFileSync(guard, `${process.pid} the-new-taker\n`); };
+  await assert.rejects(bgLock(path, "job", { platform: "win32", clearing }), /is busy/);
+  assert.equal(readFileSync(guard, "utf8"), `${process.pid} the-new-taker\n`, "the new take-over keeps its guard");
+  assert.match(readFileSync(path, "utf8"), /dead-token/, "the stale lock is left to the new take-over");
+  assert.deepEqual(readdirSync(root).sort(), [".job.lock", ".job.lock.recover"], "no clearing file is left behind");
+});
+
+test("a cleaner that died while clearing an old guard never blocks the name", async t => {
+  const root = folder(t);
+  const path = join(root, ".job.lock"), guard = `${path}.recover`;
+  writeFileSync(path, `${deadPid()} dead-token\n`);
+  writeFileSync(guard, "1 dead-taker\n");
+  const old = new Date(Date.now() - 10 * 60 * 1000);
+  utimesSync(guard, old, old);
+  // The file a cleaner that died left: the one a cleaner makes for this guard's text.
+  const left = `${guard}.${createHash("sha256").update("1 dead-taker\n").digest("hex").slice(0, 16)}`;
+  writeFileSync(left, "");
+  await assert.rejects(bgLock(path, "job", { platform: "win32" }), /is busy/);
+  assert.equal(readFileSync(guard, "utf8"), "1 dead-taker\n", "a fresh clearing file holds the guard");
+  utimesSync(left, old, old);
+  await assert.rejects(bgLock(path, "job", { platform: "win32" }), /is busy/);
+  assert.equal(existsSync(left), false, "an old clearing file is removed");
+  await assert.rejects(bgLock(path, "job", { platform: "win32" }), /is busy/);
+  assert.equal(existsSync(guard), false, "then the old guard is cleared");
+  await (await bgLock(path, "job", { platform: "win32" })).release();
+  assert.deepEqual(readdirSync(root), []);
 });

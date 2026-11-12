@@ -437,6 +437,23 @@ test("a fenced \"## Done when\" example does not stand for the real Done when li
   assert.match(unmet.stdout.trim().split("\n").at(-1)!, /^RESULT: fail slice done-when: .*says "not met"/);
 });
 
+test("an empty \"## Done when\" heading does not hide a later Done when line, and a fenced sample under the line is no item", t => {
+  const f = fixture(t), path = join(f.root, f.ticket);
+  writeFileSync(path, readFileSync(path, "utf8").replace("## Done when\n- Required content is present.\n",
+    "## Done when\n\n## Notes\n\nDone when:\n- Required content is present.\n- Second item.\n\nLinks: none\n"));
+  f.git("commit", "-qam", "empty heading");
+  const result = f.run([], { BUILD_DONE: "first" });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout.trim().split("\n").at(-1)!, /^RESULT: fail slice done-when: .*Done when item 2 has no evidence line/);
+  assert.deepEqual(f.calls().map(call => call.phase), ["build"]);
+  const sample = fixture(t), file = join(sample.root, sample.ticket);
+  writeFileSync(file, readFileSync(file, "utf8").replace("## Done when\n- Required content is present.\n",
+    "Done when:\n- Required content is present.\n```\n- a sample\n```\n\nLinks: none\n"));
+  sample.git("commit", "-qam", "fenced sample");
+  const landed = sample.run([], { BUILD_DONE: "first" });
+  assert.ok(landed.stdout.includes("slice: done-when ok"), landed.stdout + landed.stderr);
+});
+
 test("--no-pr reviews without the pre-landing reading: a fix round's unmet item does not fail it", t => {
   const f = fixture(t), result = f.run(["--no-pr"], { CLEAN_AT: "1", FIX_UNMET: "1" });
   assert.equal(result.status, 0, result.stdout + result.stderr);
