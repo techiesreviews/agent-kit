@@ -656,6 +656,13 @@ test("unmetDoneProblems reads the Done when list when the last ## Done when head
     ['Ticket: Done when item 2 has no evidence line in its Done section (write "Done when 2: met — <evidence>")']);
 });
 
+test("unmetDoneProblems keeps a fenced example that opens the fallback list fenced, so the real items after it are read", () => {
+  const ticket = ["---", "status: open", "---", "", "## Done when", "```", "- an example", "```", "- a", "- b", "- c", "", "## Done when", "",
+    "## Done (2026-11-12)", "", "- Done when 1: met — x", "- Done when 2: met — y"].join("\n");
+  assert.deepEqual(unmetDoneProblems(ticket, "x.md", doneWhen(ticket)).map(row => row.message),
+    ['Ticket: Done when item 3 has no evidence line in its Done section (write "Done when 3: met — <evidence>")']);
+});
+
 test("unmetDoneProblems skips fenced sample bullets in the Done when line's list", () => {
   const ticket = ["---", "status: open", "---", "", "Done when:", "- it works", "```", "- a sample", "```", "", "## Done (2026-11-12)", "", "- Done when 1: met — shown"].join("\n");
   assert.deepEqual(unmetDoneProblems(ticket, "x.md", "- it works\n```\n- a sample\n```"), []);

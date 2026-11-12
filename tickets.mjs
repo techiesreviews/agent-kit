@@ -254,8 +254,9 @@ export function unmetDoneProblems(source, file = "ticket", standardLine = "") {
   const lines = source.replace(/^\uFEFF/, "").split(/\r?\n/);
   const end = lines[0] === "---" ? lines.findIndex((line, i) => i > 0 && line === "---") : -1;
   const text = standardLine.trim() ? standardLine.split(/\r?\n/) : [];
-  // A first item on the "Done when:" line itself, with a list under it, is the list's first item.
-  if (text.length && !listMarker.test(text[0]) && text.slice(1).some(line => listMarker.test(line))) text[0] = `- ${text[0]}`;
+  // A first item on the "Done when:" line itself, with a list under it, is the list's first item; a fence that opens
+  // the list is no item and stays a fence.
+  if (text.length && !listMarker.test(text[0]) && !fencedLines(text)[0] && text.slice(1).some(line => listMarker.test(line))) text[0] = `- ${text[0]}`;
   return doneProblems(lines, end, file, true, true, text);
 }
 
