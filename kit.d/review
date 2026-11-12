@@ -386,13 +386,13 @@ async function secondLook(flags) {
     if (tried.length && deadline - Date.now() < 60_000) { tried.push(`${model} not started: under a minute left of ${label}`); break; }
     if (tried.length) console.log(`second look: ${model} takes it (${tried.at(-1)})`);
     const result = await attempt(model, { deadline, limit: label });
-    // OpenCode that fails for any reason of its own (not a failed save of its evidence or PR comment) goes to GPT when GPT may look again.
+    // OpenCode that fails for any reason of its own (not a failed save of its evidence or PR comment) goes on to the next model, and GPT looks again only when none of them took it.
     const gaveUp = again && lookFamily(model) === "opencode" && result.status !== 0 && !ownFailure.test(result.reason);
     if (ended(result) && !gaveUp) return report(result);
     if (result.evidence !== "none") console.log(`evidence: ${result.evidence}`);
     tried.push(`${model} ${result.outOfCredit ? "out of credit" : result.reason}`.replace(/\s+/g, " "));
     if (lookFamily(model) === "opencode") opencodeFailed = tried.at(-1);
-    if (result.timedOut || gaveUp) break;
+    if (result.timedOut) break;
   }
   // Lex (2026-11-12): when the free OpenCode model fails (for a reason of its own), times out or hits its limit, GPT looks again, even though it looked
   // once on this PR already (within the weekly GPT count). It gets a whole time limit of its own: OpenCode may have used the first.

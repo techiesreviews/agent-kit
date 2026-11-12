@@ -1854,6 +1854,20 @@ test("OpenCode failing for its own reason with GPT's count used up is a skip; a 
   assert.doesNotMatch(stopped.stdout, /takes it again/);
 });
 
+test("GPT looks again only after every other model in the order was tried: with OpenCode before Grok, a working Grok takes it", (t) => {
+  const f = fixture(t); withOpencode(f);
+  const order = { order: ["gpt-6.1-sol", opencodeModel, "grok-4.7"] };
+  const table = lookTable(f, { code: order, ux: order, dx: order, agent: order }, { effort: { "gpt-6.1-sol": "high" } });
+  const budget = { ASE_SECOND_LOOK: table, ASE_REVIEW_BUDGET_GPT: "1" };
+  assert.equal(f.run(["--base", "HEAD~1", "--second-look", "--pr", "12"], budget).status, 0);
+  const handed = f.run(["--base", "HEAD~1", "--second-look", "--pr", "12"], { ...budget, FAKE_OPENCODE_MODE: "usage-limit" });
+  assert.equal(handed.status, 0, handed.stdout + handed.stderr);
+  assert.match(handed.stdout, /^second look: grok-4\.7 takes it \(opencode\/deepseek-v4\.1-flash-free opencode usage limit: /m);
+  assert.doesNotMatch(handed.stdout, /takes it again/);
+  assert.deepEqual(f.calls().map(call => call.cli), ["codex", "opencode", "grok"]);
+  assert.equal(JSON.parse(readFileSync(join(f.evidence(handed.stdout), "second-look.json"), "utf8")).model, "grok-4.7");
+});
+
 test("GPT is not asked again when OpenCode never started for lack of time", (t) => {
   const f = fixture(t); withOpencode(f);
   const table = gptTable(f), budget = { ASE_SECOND_LOOK: table, ASE_REVIEW_BUDGET_GPT: "999" };
