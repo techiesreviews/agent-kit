@@ -203,8 +203,8 @@ test("a cleaner that judged a dead taker's guard old never removes the guard of 
   writeFileSync(guard, "1 dead-taker\n");
   const old = new Date(Date.now() - 10 * 60 * 1000);
   utimesSync(guard, old, old);
-  // While this cleaner is paused, another cleaner removed the old guard and a new take-over holds its own guard.
-  const clearing = () => { rmSync(guard); writeFileSync(guard, `${process.pid} the-new-taker\n`); };
+  // While this cleaner is about to remove it, the old guard went and a new take-over holds its own guard.
+  const clearing = (file: string) => { if (file === guard) { rmSync(guard); writeFileSync(guard, `${process.pid} the-new-taker\n`); } };
   await assert.rejects(bgLock(path, "job", { platform: "win32", clearing }), /is busy/);
   assert.equal(readFileSync(guard, "utf8"), `${process.pid} the-new-taker\n`, "the new take-over keeps its guard");
   assert.match(readFileSync(path, "utf8"), /dead-token/, "the stale lock is left to the new take-over");
@@ -230,4 +230,22 @@ test("a cleaner that died while clearing an old guard never blocks the name", as
   assert.equal(existsSync(guard), false, "then the old guard is cleared");
   await (await bgLock(path, "job", { platform: "win32" })).release();
   assert.deepEqual(readdirSync(root), []);
+});
+
+test("a cleaner about to remove a dead cleaner's old clearing file never removes a fresh one made since", async t => {
+  const root = folder(t);
+  const path = join(root, ".job.lock"), guard = `${path}.recover`;
+  const right = `${guard}.${createHash("sha256").update("1 dead-taker\n").digest("hex").slice(0, 16)}`;
+  writeFileSync(path, `${deadPid()} dead-token\n`);
+  writeFileSync(guard, "1 dead-taker\n");
+  writeFileSync(right, "");
+  const old = new Date(Date.now() - 10 * 60 * 1000);
+  utimesSync(guard, old, old);
+  utimesSync(right, old, old);
+  // Another cleaner removed the old clearing file and holds a fresh one while this cleaner is about to remove it.
+  const clearing = (file: string) => { if (file === right) { rmSync(right); writeFileSync(right, "other cleaner\n"); } };
+  await assert.rejects(bgLock(path, "job", { platform: "win32", clearing }), /is busy/);
+  assert.equal(readFileSync(right, "utf8"), "other cleaner\n", "the other cleaner keeps its clearing file");
+  assert.equal(readFileSync(guard, "utf8"), "1 dead-taker\n", "the guard is left to the other cleaner");
+  assert.deepEqual(readdirSync(root).sort(), [".job.lock", ".job.lock.recover", right.slice(root.length + 1)].sort());
 });

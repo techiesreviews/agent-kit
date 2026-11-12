@@ -670,6 +670,16 @@ test("unmetDoneProblems needs evidence for every item of an indented list under 
     ['Ticket: Done when item 2 has no evidence line in its Done section (write "Done when 2: met — <evidence>")']);
 });
 
+test("unmetDoneProblems reads an earlier filled heading with the heading's own item rules when the last one is empty", () => {
+  const ticket = (list: string[], done: string[]) => ["---", "status: open", "---", "", "## Done when", "", "Both checks hold.", "", ...list, "", "## Done when", "",
+    "## Done (2026-11-12)", "", ...done].join("\n");
+  const indented = ticket(["  - a", "  - b"], ["- Done when 1: met — x"]);
+  assert.deepEqual(unmetDoneProblems(indented, "x.md", doneWhen(indented)).map(row => row.message),
+    ['Ticket: Done when item 2 has no evidence line in its Done section (write "Done when 2: met — <evidence>")']);
+  const flush = ticket(["- a", "- b"], ["- Done when 1: met — x", "- Done when 2: met — y"]);
+  assert.deepEqual(unmetDoneProblems(flush, "x.md", doneWhen(flush)), []);
+});
+
 test("unmetDoneProblems skips fenced sample bullets in the Done when line's list", () => {
   const ticket = ["---", "status: open", "---", "", "Done when:", "- it works", "```", "- a sample", "```", "", "## Done (2026-11-12)", "", "- Done when 1: met — shown"].join("\n");
   assert.deepEqual(unmetDoneProblems(ticket, "x.md", "- it works\n```\n- a sample\n```"), []);

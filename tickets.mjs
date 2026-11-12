@@ -174,19 +174,16 @@ function doneProblems(lines, end, file, strict = false, open = false, fallback =
   const who = open ? "Ticket" : "Closed ticket";
   let fenced = fencedLines(lines);
   const headingsIn = () => lines.flatMap((line, index) => index > end && !fenced[index] && /^#{1,2} /.test(line) ? [{ line, index }] : []);
-  // `fallback` is the Done when list the slice read (doneWhen): the last filled heading's list, else the card
-  // standard's "Done when:" line. When the last `## Done when` heading outside fenced code, the one read below, is missing or empty
-  // (blank or fenced lines only), the list is read as that section, put after the last line, so the rows' line numbers
-  // are not the file's. Its own fenced lines stay fenced.
-  if (fallback.length) {
-    const found = headingsIn(), at = found.findLastIndex(({ line }) => /^## Done when[ \t]*$/.test(line));
-    const filled = at >= 0 && lines.slice(found[at].index + 1, found[at + 1]?.index ?? lines.length)
-      .some((text, step) => text.trim() && !fenced[found[at].index + 1 + step]);
-    if (!filled) {
-      const added = ["", "## Done when", "", ...fallback];
-      lines = [...lines, ...added];
-      fenced = [...fenced, ...fencedLines(added)];
-    }
+  // The `## Done when` headings outside fenced code whose section has a line that is neither blank nor fenced; the
+  // last of them is read, as doneWhen reads it.
+  const filledIn = found => found.filter(({ line, index }, at) => /^## Done when[ \t]*$/.test(line)
+    && lines.slice(index + 1, found[at + 1]?.index ?? lines.length).some((text, step) => text.trim() && !fenced[index + 1 + step]));
+  // `fallback` is the list of the card standard's "Done when:" line (doneWhen of a ticket with no filled heading): it is
+  // read as that section, put after the last line, so the rows' line numbers are not the file's. Its own fenced lines stay fenced.
+  if (fallback.length && !filledIn(headingsIn()).length) {
+    const added = ["", "## Done when", "", ...fallback];
+    lines = [...lines, ...added];
+    fenced = [...fenced, ...fencedLines(added)];
   }
   const headings = headingsIn();
   const sectionAt = found => {
@@ -197,7 +194,8 @@ function doneProblems(lines, end, file, strict = false, open = false, fallback =
     const found = headings.findLast(({ line }) => name.test(line) && wanted(line));
     return found ? sectionAt(found) : null;
   };
-  const when = section(/^## Done when[ \t]*$/);
+  const lastFilled = filledIn(headings).at(-1);
+  const when = lastFilled ? sectionAt(lastFilled) : null;
   // The list's items are its marker lines that are not nested. The first item starts up to three spaces in, as Markdown
   // allows; a later marker line is nested only when indented to the text of the item above it, so one indented less (a
   // space under "- ") is that item's sibling.
@@ -248,9 +246,8 @@ function doneProblems(lines, end, file, strict = false, open = false, fallback =
  * of doneProblems for any status, with no date cutoff. Any Done when item whose evidence line says not met, pending or open,
  * or has none, is a row; a ticket with no `## Done when` has none, and a Done when written as a paragraph is one item (the reading of a ticket being
  * closed, newlyClosed, still reads lists only). `standardLine` is the Done when list the slice read (doneWhen of the
- * ticket): the card standard's "Done when:" line (its list lines), or a filled heading's list. It is read as the
- * heading when the ticket's last `## Done when` heading is missing or empty, a first item on the line itself counting
- * as the list's first. */
+ * ticket). It is read only when no `## Done when` heading has content, so it is then the card standard's "Done when:"
+ * line (its list lines): read as that heading, a first item on the line itself counting as the list's first. */
 export function unmetDoneProblems(source, file = "ticket", standardLine = "") {
   const lines = source.replace(/^\uFEFF/, "").split(/\r?\n/);
   const end = lines[0] === "---" ? lines.findIndex((line, i) => i > 0 && line === "---") : -1;
