@@ -3213,3 +3213,25 @@ test("the second look's new finding at a rebased head is refused as new, and a s
   assert.equal(unnamed.status, 1, unnamed.stdout + unnamed.stderr);
   assert.match(unnamed.stdout, /^The --waive reason does not name 2 open findings above P3:$/m);
 });
+
+test("a finding carried into a later round is waived by the id the ledger keeps for it, or by its newest id", t => {
+  for (const named of ["R1-1", "R3-1"]) {
+    const f = fixture(t);
+    const path = f.saveReview("REVIEW_STATUS: complete\nPrevious findings:\nR2-1: still open (P1): the save still drops the second write\n\nDefects: none\nValidation gaps: none.\n", "ke-lead");
+    const folder = dirname(path), earlier = join(dirname(folder), "20261019T090000Z"), middle = join(dirname(folder), "20261019T095000Z");
+    mkdirSync(earlier, { recursive: true }); mkdirSync(middle, { recursive: true });
+    writeFileSync(join(earlier, "findings.json"), JSON.stringify({ round: 1, model: "claude-opus-5-5", head: "0".repeat(40), findings: [{ id: "R1-1", group: "Spec", severity: "P1", kind: "fault", text: "a.ts:1 P1 the save drops the second write" }] }));
+    writeFileSync(join(middle, "findings.json"), JSON.stringify({ round: 2, model: "claude-opus-5-5", previous: "20261019T090000Z", head: "0".repeat(40), findings: [{ id: "R2-1", group: "Previous findings", severity: "P1", kind: "unsorted", text: "R1-1 still open: x (original finding: a.ts:1 P1 the save drops the second write)" }] }));
+    writeFileSync(join(folder, "findings.json"), JSON.stringify({ round: 3, model: "claude-opus-5-5", previous: "20261019T095000Z", head: f.git("rev-parse", "HEAD"), findings: [{ id: "R3-1", group: "Previous findings", severity: "P1", kind: "unsorted", text: "R2-1 still open: the save still drops the second write" }] }));
+    f.rounds(3);
+    const result = f.run(["--waive", `${named}: Lex accepted it.`], lead);
+    assert.equal(result.status, 0, `${named}: ${result.stdout}${result.stderr}`);
+    const refused = fixture(t);
+    const refusedPath = refused.saveReview("REVIEW_STATUS: complete\nPrevious findings:\nR2-1: still open (P1): the save still drops the second write\n\nDefects: none\nValidation gaps: none.\n", "ke-lead");
+    writeFileSync(join(dirname(refusedPath), "findings.json"), JSON.stringify({ round: 3, model: "claude-opus-5-5", head: refused.git("rev-parse", "HEAD"), findings: [{ id: "R3-1", group: "Previous findings", severity: "P1", kind: "unsorted", text: "R2-1 still open: the save still drops the second write" }] }));
+    refused.rounds(3);
+    const other = refused.run(["--waive", "R9-9: Lex accepted something else."], lead);
+    assert.equal(other.status, 1, other.stdout + other.stderr);
+    assert.match(other.stdout, /^- R3-1 \(the ledger's R2-1\) \(P1\): /m);
+  }
+});
