@@ -76,6 +76,26 @@ async function savedReview(head, base, patchId, ticket, root, second = false, re
   }
 }
 
+// The findings above P3 of the reviews this owner saved for `commit` before this run, as "<id>\n<text>": what the lead could have
+// seen before a rebase changed the head. The ids are the ones a lookAt run gives the same findings (findings.json, else its position).
+function seenAt(commit) {
+  const seen = new Set(), parent = join(kitMainRoot(), ".scratch/reviews", kitOwner());
+  if (!existsSync(parent)) return seen;
+  for (const entry of readdirSync(parent, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const folder = join(parent, entry.name);
+    try {
+      if (readFileSync(join(folder, "refs.txt"), "utf8").split(/\r?\n/)[0] !== commit) continue;
+      const second = Boolean(secondLookMark(folder));
+      const saved = existsSync(join(folder, "findings.json")) ? JSON.parse(readFileSync(join(folder, "findings.json"), "utf8")).findings : null;
+      openFindings(readFileSync(join(folder, "result.md"), "utf8")).findings.forEach((item, index) => {
+        if (!isNit(item)) seen.add(`${second ? `SL-${index + 1}` : saved?.[index]?.id ?? `review-${index + 1}`}\n${item.text}`);
+      });
+    } catch { /* Not a readable review: it shows the lead nothing. */ }
+  }
+  return seen;
+}
+
 /** `checks.extra` as a list of commands: a string is a one-item list, anything else but a list of non-blank strings fails. */
 function extraChecks(extra) {
   const command = item => typeof item === "string" && item.trim() !== "";
@@ -727,7 +747,7 @@ async function main(args) {
     step = "review";
     console.log(`PR #${number}; ${review ? "review running" : `review: skipped (${plan.tier} tier)`}`);
     // The docs tier has no model review; CI still gates the merge.
-    let waived = 0, waivedFindings = [], waivedBefore = new Set(), reviewedHeads = startRebased ? 1 : 0, loopSummary = null, loopLeft = 0, loopBudgetUsed = false, secondLookSkipped = null, secondLookModel = null, secondRows = [], loopDeclined = [], nothingToReview = false;
+    let waived = 0, waivedFindings = [], seenFindings = seenAt(startHead), reviewedHeads = startRebased ? 1 : 0, loopSummary = null, loopLeft = 0, loopBudgetUsed = false, secondLookSkipped = null, secondLookModel = null, secondRows = [], loopDeclined = [], nothingToReview = false;
     // `name` is "review" (Claude's) or "second look", whose lines and summary say so.
     async function recordFollowups(findings, name = "review", budgetUsed = true, nitsOnly = true) {
       if (!findings.length) return;
@@ -960,7 +980,7 @@ async function main(args) {
           kitResult("fail", `pr #${number} ${name} ${why} (${resultPath})`);
           return false;
         };
-        const novel = reviewedHeads > 1 && !saved ? waivable.filter(item => !waivedBefore.has(`${item.id}\n${item.text}`)) : [];
+        const novel = reviewedHeads > 1 && !saved ? waivable.filter(item => !seenFindings.has(`${item.id}\n${item.text}`)) : [];
         if (novel.length) return refuse(waiverRefusal({ mode: "new", open: novel }), `has ${findingsWord(novel.length)} that ${novel.length === 1 ? "is" : "are"} new at the new head`);
         if (waivable.length) {
           // The mode is worked out from every waived finding so far, so a second look cannot fall back to counting when the first one was named.
@@ -970,7 +990,7 @@ async function main(args) {
           if (check.mode === "count" && soFar.length > check.count)
             return refuse(waiverRefusal({ mode: "count", count: check.count, open: soFar }), "has more open findings than the waiver counts");
           waivedFindings.push(...waivable);
-          for (const item of waivable) waivedBefore.add(`${item.id}\n${item.text}`);
+          for (const item of waivable) seenFindings.add(`${item.id}\n${item.text}`);
         }
         waived += blocking.length;
       }
