@@ -159,6 +159,18 @@ test("kit rulebook prints the house rules from the 2026-10-30 retros under House
     assert.ok(house.replace(/\n\s+/g, " ").includes(words), `the board rule lacks ${words}`);
 });
 
+test("kit rulebook: builds run as T3 helper threads, LexTop work goes through T3's environment link, and reviews run at high", t => {
+  const run = rulebook(t, project);
+  assert.equal(run.status, 0, run.stderr);
+  const house = (run.stdout.split("\n## House rules\n")[1]?.split("\n## ")[0] ?? "").replace(/\n\s+/g, " ");
+  const rule = house.split("- **Builds run as T3 helper threads**")[1]?.split("\n- **")[0] ?? "";
+  assert.ok(rule, "House rules lack \"Builds run as T3 helper threads\"");
+  for (const words of ["`delegate_task`", "`isolation: \"worktree\"`", "LexTop", "environment link", "`target.environmentId`", "Codex alone", "LexTop alone"])
+    assert.ok(rule.includes(words), `the T3 rule lacks ${words}`);
+  // Main reviews run Opus at high effort (Lex, 2026-11-13).
+  assert.match(run.stdout, /^\| Review, every change \| `claude-opus-5-5`, high \|/m);
+});
+
 test("the shared rulebook names no editor-only fact and links only inside the kit", () => {
   const text = read(shared);
   for (const fact of ["src/main.ts", "npm run", "kit preview", "kit shots", "kit specs", "kit size", "features.md", "deploy:techies",

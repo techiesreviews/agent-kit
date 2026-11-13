@@ -40,6 +40,12 @@ says for today; never claim a planned item ran.
   retyped, so a rule changes once, in the kit. The `brief-guard` hook refuses a `delegate_task` or
   `Agent` brief without its `kit-brief:` marker line; a research, review-only or question task starts
   with `kit-brief: none (<reason>)`.
+- **Builds run as T3 helper threads** (Lex, 2026-11-13): in a T3 session every build runs as its own
+  helper thread, a `delegate_task` with `isolation: "worktree"` and the `kit brief` output as its task,
+  and work on LexTop goes through T3's environment link (`t3_environment_links`, then `delegate_task`
+  with `target.environmentId`) when the link is there, so its result comes back to the lead. The kit
+  keeps its own path for Codex alone (no T3: `kit next --start`, `kit go`) and LexTop alone (no link:
+  the kit in LexTop's own shell). Either way the work itself still runs through the kit.
 - **Finish the job in the turn** (Lex, 2026-10-31): a short check runs in the foreground; a long job
   runs as `scripts/agents/kit go <job> -- <command>`, and its `Run again: scripts/agents/kit go <job>`
   line is run again in the foreground until the job's RESULT line. The `stop-guard` hook refuses a
@@ -165,7 +171,7 @@ every change" rows here (a row with the same role in the project's extras wins).
 | Builder, every slice | `claude-opus-5-5`, high | `kit slice --builder claude-opus-5-5`; `builder: sol` lines in tickets are superseded |
 | Builder, tiny fully specified fix | free OpenCode model | T3 `delegate_task`, only once T3 lists a verified zero-cost model |
 | Builder, small chore beside the queue | free OpenCode model | [Small chores](#small-chores-on-free-models); a short Claude check before merging |
-| Review, every change | `claude-opus-5-5`, medium | default (`kit review`), fresh read-only session |
+| Review, every change | `claude-opus-5-5`, high | default (`kit review`, Lex 2026-11-13; `ASE_REVIEW_EFFORT` overrides the effort), fresh read-only session |
 | Second opinion: a big or risky change, on purpose | `gpt-6.1-sol`, high, through Codex (GPT may review since 2026-11-09, Lex) | `kit review --second gpt [--pr N]`: the kind's GPT model from [`second-look.json`](../second-look.json), even when the PR already had its GPT look (never for a docs-only change), and no other model in its place; it is the PR's second look, which `kit pr` reuses on the same HEAD |
 | Second look, every change, after Claude's review | per review kind (code, UX, DX, agent), first choice first, from the table [`second-look.json`](../second-look.json): `gpt-6.1-sol` through Codex at high effort, else `grok-4.7`, else the free `opencode/deepseek-v4.1-flash-free` | `kit slice` and `kit pr` run it (`kit review --second-look`); its findings block and get fix rounds like Claude's, and the PR says which model looked ("Second look by gpt-6.1-sol (GPT through Codex)."). Kind from the changed paths: agent setup first, then UX (`paths.visible`), then DX (build, scripts, docs), else code. Cost guard: GPT never for a docs-only change, and once per PR (the same `--pr N`, or the branch when either look named no PR and the earlier look's changes are all in this one, so a rebase keeps it); a later look on that PR goes to the next model, with one exception (Lex, 2026-11-12): when the free OpenCode model fails (for a reason of its own, not a failed save), times out or hits its limit, GPT looks again, with its own 25 minutes and within `ASE_REVIEW_BUDGET_GPT` (never for a docs-only change); it is then the PR's second look, its findings count like any other, and the PR names GPT as the model that looked. A model out of credit, at a usage limit, with its weekly count used up or without a Codex login: the next one takes it; none can run, or the whole look passes 25 minutes (`ASE_SECOND_LOOK_TIMEOUT`, except that GPT taking it again after OpenCode fails gets its own 25 minutes; a fallback with under a minute left is not started): the change lands with `second look: skipped (<reason>)`, such as `<model> timed out after 25m` or `<model> not started: under a minute left of 25m`. GPT may review since 2026-11-09 (Lex); Claude Opus stays the main reviewer. The lead updates the table when new models appear |
 | UX and design review | `claude-opus-5-5`, medium | see Review |

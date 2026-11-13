@@ -158,6 +158,8 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
     "Anything a person sees: No toasts or explainers; show state on the control itself. Reuse the theme tokens and components.",
     "House rules beat skill advice: where a skill suggests something a house rule forbids (a toast, say), the house rule wins.",
     "Commits use the repo's or the machine's set git identity; never borrow another person's name.",
+    // Lex, 2026-11-13: a builder may push back on a review point instead of changing the code for it.
+    ...(reviewing ? [] : ["If a review point is not worth fixing, say so with the reason instead of changing the code."]),
   ]);
   // The rule is the shared rulebook's (docs/kitchen.md of the kit that runs), not the project's.
   out.push("", "## Messages to Lex", `This covers messages meant for Lex. The Report section's format still applies in full (RESULT lines, PR URL, SHAs, finding locations). This copy is v${messages.version}; a project's own or newer \"Messages to Lex\" section in AGENTS.md wins over it.`, messages.rule);

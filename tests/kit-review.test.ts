@@ -181,6 +181,7 @@ test("kit review help states default scope; invalid flags exit 2 with one RESULT
     assert.equal(help.status, 0, help.stderr);
     assert.match(help.stdout, /Default scope: --base origin\/<land> \(branches\.land in scripts\/agents\/kit\.json\)/);
     assert.match(help.stdout, /ASE_REVIEW_MODEL or claude-opus-5-5/);
+    assert.match(help.stdout, /^Effort: high \(ASE_REVIEW_EFFORT overrides it\); a second look takes the table's effort for its model, else medium/m);
     assert.doesNotMatch(help.stdout, /RESULT:/);
   }
   for (const args of [["--wat"], ["--base"], ["--base", "HEAD", "--commit", "HEAD"], ["--pr", "0"], ["--pr", "1.2"], ["--pr", "-1"], ["--base", "HEAD", "--base", "HEAD^"]]) {
@@ -217,7 +218,7 @@ test("kit review writes findings.json with kinds and counts, or unreadable for a
   assert.match(result.stdout, /^findings 4: ticket 1, style 1, unsorted 1, gap 1; P1 1, P2 1, P3 1, gap 1$/m);
   const evidence = f.evidence(result.stdout);
   assert.deepEqual(JSON.parse(readFileSync(join(evidence, "findings.json"), "utf8")), {
-    model: "claude-opus-5-5", effort: "medium", scope: `git diff ${f.commits[1]}^..${f.commits[1]}`, head: f.commits[1],
+    model: "claude-opus-5-5", effort: "high", scope: `git diff ${f.commits[1]}^..${f.commits[1]}`, head: f.commits[1],
     findings: [
       { group: "Spec", severity: "P1", kind: "ticket", text: "file.txt:1 — P1 ticket: the ticket asks for counts." },
       { group: "Standards", severity: "P3", kind: "style", text: "file.txt:1 — P3 style: rename it." },
@@ -227,6 +228,12 @@ test("kit review writes findings.json with kinds and counts, or unreadable for a
     counts: { kind: { fault: 0, ticket: 1, race: 0, style: 1, unsorted: 1, gap: 1 }, severity: { P0: 0, P1: 1, P2: 1, P3: 1, none: 0, gap: 1 } },
     notes: 0,
   });
+  // ASE_REVIEW_EFFORT reaches the reviewer's CLI and the record.
+  const effort = f.run(["--commit", "HEAD^"], { FAKE_REPORT: report, ASE_REVIEW_EFFORT: "xhigh" });
+  assert.equal(effort.status, 0, effort.stderr);
+  const effortCall = f.calls().at(-1)!;
+  assert.equal(effortCall.args[effortCall.args.indexOf("--effort") + 1], "xhigh");
+  assert.equal(JSON.parse(readFileSync(join(f.evidence(effort.stdout), "findings.json"), "utf8")).effort, "xhigh");
   const noted = f.run([], { FAKE_REPORT: "REVIEW_STATUS: complete\nDefects:\nStandards:\nNo section of CODING_STANDARDS.md applies to this change.\nValidation gaps: none.\n" });
   assert.equal(noted.status, 0, noted.stderr);
   assert.match(noted.stdout, /^findings 0$/m);
@@ -240,7 +247,7 @@ test("kit review writes findings.json with kinds and counts, or unreadable for a
   assert.match(unreadableRecord.previous, /^\d{8}T\d{6}Z/);
   delete unreadableRecord.previous;
   assert.deepEqual(unreadableRecord, {
-    model: "claude-opus-5-5", effort: "medium", scope: `git diff ${f.commits[0]}...HEAD`, head: f.commits[2], round: 2, branch: "feature/review", unreadable: true,
+    model: "claude-opus-5-5", effort: "high", scope: `git diff ${f.commits[0]}...HEAD`, head: f.commits[2], round: 2, branch: "feature/review", unreadable: true,
   });
 });
 
@@ -1520,6 +1527,15 @@ test("kit review --second-look picks each kind's table model, and a mixed change
     const call = f.calls().at(-1)!;
     assert.equal(call.cli, model.startsWith("opencode/") ? "opencode" : "grok");
     assert.equal(call.args[call.args.indexOf("-m") + 1], model);
+    // A second look with no effort in the table runs Grok at medium, not the main review's high (ASE_REVIEW_EFFORT is for the main review).
+    if (call.cli === "grok") assert.equal(call.args[call.args.indexOf("--reasoning-effort") + 1], "medium");
+    if (call.cli === "grok" && kind === "code") {
+      // ASE_REVIEW_EFFORT is the main review's: a second look keeps its own effort.
+      const again = f.run(["--commit", "HEAD", "--second-look"], { ASE_SECOND_LOOK: table, ASE_REVIEW_EFFORT: "xhigh" }, true);
+      assert.equal(again.status, 0, again.stdout + again.stderr);
+      const look = f.calls().at(-1)!;
+      assert.equal(look.args[look.args.indexOf("--reasoning-effort") + 1], "medium");
+    }
     assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(result.stdout), "second-look.json"), "utf8")), { kind, model, ok: true, branch: "feature/review" });
   }
 });
