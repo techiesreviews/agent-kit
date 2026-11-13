@@ -6,7 +6,7 @@ import { loadavg, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { completedFixRounds, openFindings, reviewIncomplete, reviewCoversHead, sameReviewPatch } from "../review-findings.mjs";
-import { branchRisk, budgetReport, isNit, ledgerRows, modelsLine, prLine, renderLedger, reviewChain, roundLimit, secondLookRows, stoppingFindings } from "../review-loop.mjs";
+import { branchRisk, budgetReport, isNit, ledgerRows, modelsLine, prLine, renderLedger, reviewChain, roundLimit, secondLookRows, stoppingFindings, waiverCheck, waiverRefusal } from "../review-loop.mjs";
 import { projectCommand, spoken } from "../review-brief.mjs";
 import { briefFollowups, cardBriefFor, closeLandedCard, isCardKey, onOrbit, openOrbitTickets, orbitProblem, ticketCardKey, withReviewFollowups } from "../ticket-cards.mjs";
 
@@ -15,7 +15,7 @@ const { kitBranch, kitGhEnv, kitHideUserInfo, kitHidingLog, kitHome, kitMachineL
 );
 const { failedSpecs, isTiming, listedSpecs, nothingSelected, timingList, wholeReport } = await import(pathToFileURL(resolve(import.meta.dirname, "../browser-runs.mjs")).href);
 const { checkSteps, classify, doneHeading, featureListGuard, featureListProblem, focusedUnitFiles, lookFamily, lookFamilyWords, parseChanges, secondLookPick, unitTestFile } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
-const usage = 'Usage: kit pr [--base <land>] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release] [--full] [--waive "<reason>"]\nBranches come from scripts/agents/kit.json: --base defaults to branches.land; --release needs --base branches.release and first runs kit release-check --land (nothing unsaved, HEAD exactly origin/<land>).\n--waive requires a *-lead owner; records the reason for merging with open findings or without a feature-list update;\nwith --release it also passes the release check, which names the reason (kit pr still needs a clean tree).\nAfter the Claude review (none in the docs tier), every change gets a second look (kit review --second-look), whose findings block the same way;\nwhen no model can take it, the PR lands and says "second look: skipped (<reason>)".\nOn Orbit ("tickets": "orbit"), --ticket takes a card KEY or its brief (.scratch/kit-tickets/KEY.md, which kit slice writes); when the PR\nlands the card goes to Done with a dated comment naming the PR and its merge SHA (ORBIT_ROLE=lead); a card that cannot be closed is named on the RESULT line.\n';
+const usage = 'Usage: kit pr [--base <land>] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release] [--full] [--waive "<reason>"]\nBranches come from scripts/agents/kit.json: --base defaults to branches.land; --release needs --base branches.release and first runs kit release-check --land (nothing unsaved, HEAD exactly origin/<land>).\n--waive requires a *-lead owner; records the reason for merging with open findings or without a feature-list update;\na waiver for open findings above P3 must name each one by id in its text (--waive \"R1-2, SL-1: <reason>\") or start with the number of them (--waive \"2 findings: <reason>\", which must match both looks together);\na finding it leaves out, such as a new P2 a fresh review raises after a rebase, stops kit pr with a plain reason that lists it; P3 findings, test gaps and docs wording need no names;\nwith --release it also passes the release check, which names the reason (kit pr still needs a clean tree).\nAfter the Claude review (none in the docs tier), every change gets a second look (kit review --second-look), whose findings block the same way;\nwhen no model can take it, the PR lands and says "second look: skipped (<reason>)".\nOn Orbit ("tickets": "orbit"), --ticket takes a card KEY or its brief (.scratch/kit-tickets/KEY.md, which kit slice writes); when the PR\nlands the card goes to Done with a dated comment naming the PR and its merge SHA (ORBIT_ROLE=lead); a card that cannot be closed is named on the RESULT line.\n';
 const kit = process.env.KIT_PR_KIT || resolve(import.meta.dirname, "../kit");
 
 function options(args) {
@@ -722,7 +722,7 @@ async function main(args) {
     step = "review";
     console.log(`PR #${number}; ${review ? "review running" : `review: skipped (${plan.tier} tier)`}`);
     // The docs tier has no model review; CI still gates the merge.
-    let waived = 0, loopSummary = null, loopLeft = 0, loopBudgetUsed = false, secondLookSkipped = null, secondLookModel = null, secondRows = [], loopDeclined = [], nothingToReview = false;
+    let waived = 0, waivedFindings = [], loopSummary = null, loopLeft = 0, loopBudgetUsed = false, secondLookSkipped = null, secondLookModel = null, secondRows = [], loopDeclined = [], nothingToReview = false;
     // `name` is "review" (Claude's) or "second look", whose lines and summary say so.
     async function recordFollowups(findings, name = "review", budgetUsed = true, nitsOnly = true) {
       if (!findings.length) return;
@@ -795,7 +795,7 @@ async function main(args) {
     }
     // Claude's review (none in the docs tier), then the second look on every change; both weigh findings the same way.
     async function reviewHead() {
-      waived = 0; loopSummary = null; loopLeft = 0; loopBudgetUsed = false; secondLookSkipped = null; secondLookModel = null; secondRows = []; loopDeclined = []; nothingToReview = false;
+      waived = 0; waivedFindings = []; loopSummary = null; loopLeft = 0; loopBudgetUsed = false; secondLookSkipped = null; secondLookModel = null; secondRows = []; loopDeclined = []; nothingToReview = false;
       const base = await git("review", ["merge-base", `origin/${flags.base}`, "HEAD"]);
       // A PR that already says "approved" for an earlier head (a "behind" rebase brought a new one) never keeps saying it
       // while the new head is reviewed, or when that review stops the landing.
@@ -805,6 +805,15 @@ async function main(args) {
         await replaceBlock(`Verdict: pending (the new head ${head.slice(0, 7)} is being reviewed)`);
         if (review && !await lookAt(base, false)) { await stopped("open findings", "see the review comments"); return false; }
         if (!await lookAt(base, true)) { await stopped("open findings", "see the review comments"); return false; }
+        // Once both looks have run, the waiver is checked against every finding it lets through, so a count covers both looks
+        // and a reason that names some ids covers them all.
+        const all = waivedFindings.length ? waiverCheck(flags.waive, waivedFindings) : null;
+        if (all && (all.unnamed.length || (all.mode === "count" && all.count !== waivedFindings.length))) {
+          console.log(waiverRefusal({ mode: all.mode, count: all.count, open: all.unnamed.length ? all.unnamed : waivedFindings }));
+          kitResult("fail", `pr #${number} the waiver does not match the ${waivedFindings.length} open findings it would let through`);
+          await stopped("open findings", "see the review comments");
+          return false;
+        }
       } catch (error) {
         // A look that failed to run or to save leaves no "pending" behind either; the run still ends with the failure.
         await stopped("the review did not finish", "see the kit pr run for the error").catch(() => {});
@@ -927,6 +936,19 @@ async function main(args) {
         if (blocking.length && !flags.waive) {
           kitResult("fail", `pr #${number} ${name} has ${blocking.length} open findings (${resultPath})`);
           return false;
+        }
+        // A waiver lets through only the findings it names (or counts): one given for another finding never covers a new one,
+        // such as what a fresh review raises after a rebase. Every blocking finding is above P3.
+        const waivable = blocking.map(item => ({ id: ids.get(item) ?? (second ? `SL-${findings.indexOf(item) + 1}` : `review-${findings.indexOf(item) + 1}`),
+          severity: item.severity ?? "", text: item.text }));
+        if (waivable.length) {
+          const check = waiverCheck(flags.waive, waivable);
+          if (check.unnamed.length) {
+            console.log(waiverRefusal({ mode: check.mode, open: check.unnamed }));
+            kitResult("fail", `pr #${number} ${name} has ${check.unnamed.length} open findings the waiver does not name (${resultPath})`);
+            return false;
+          }
+          waivedFindings.push(...waivable);
         }
         waived += blocking.length;
       }

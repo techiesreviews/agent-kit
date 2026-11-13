@@ -221,6 +221,32 @@ export function secondLookRows(findings, { ids = new Map(), waived = [] } = {}) 
 }
 
 /**
+ * How a lead's --waive reason names the findings it waives (TOOLS-225). `open` is [{ id }]: the findings the waiver would let
+ * through, all above P3 (P3s, validation gaps and nits never need a waiver, so they are never named). The reason names them
+ * by id anywhere in its text ("R1-2 and SL-1: ..."), or starts with a count ("3 findings: ..."); ids win when it has both.
+ * Returns the mode and what is left unnamed: "ids" leaves the ids the text does not name, "count" leaves nothing here (the
+ * count is compared with every waived finding of both looks once they have run), "none" leaves all of them.
+ */
+export function waiverCheck(reason, open) {
+  const text = String(reason ?? "");
+  const named = id => new RegExp(`(?<![\\w-])${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`, "i").test(text);
+  if (open.some(item => named(item.id))) return { mode: "ids", unnamed: open.filter(item => !named(item.id)) };
+  const count = /^\s*(\d+)\s+(?:open\s+)?findings?\b/i.exec(text);
+  if (count) return { mode: "count", count: Number(count[1]), unnamed: [] };
+  return { mode: "none", unnamed: open };
+}
+
+/** The plain refusal for waived findings the reason does not name, or whose count it gets wrong; `open` is [{ id, severity, text }]. */
+export function waiverRefusal({ mode, count, open }) {
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  const lines = open.slice(0, 15).map(item => `- ${item.id} (${item.severity || "no severity"}): ${oneLine(item.text, 160)}`);
+  if (open.length > 15) lines.push(`- … and ${open.length - 15} more`);
+  const head = mode === "count" ? `The --waive reason says ${plural(count, "finding")}, but ${plural(open.length, "open finding")} above P3 would be waived:`
+    : `The --waive reason does not name ${plural(open.length, "open finding")} above P3:`;
+  return [head, ...lines, 'Name each id in --waive, or start it with the number of findings: --waive "R1-1, SL-1: <reason>" or --waive "2 findings: <reason>". P3 findings, test gaps and docs wording need no names.'].join("\n");
+}
+
+/**
  * The chain of review records ending at a review's evidence folder, oldest first, from the findings.json each review saved
  * (`round`, `previous` = the earlier folder's name, `findings` with ids) and each result.md's marks.
  */
