@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { NORMAL_ROUNDS, modelsLine, RISKY_ROUNDS, branchRisk, budgetReport, findPreviousReview, isNit, ledgerRows, loopBriefSection, loopStop, parseMarks, prLine, renderLedger, reviewChain, riskyChange, roundLimit, secondLookRows, severityWord, stoppingFindings, unmarkedIds, withIds } from "../review-loop.mjs";
+import { NORMAL_ROUNDS, modelsLine, RISKY_ROUNDS, branchRisk, budgetReport, findPreviousReview, isNit, ledgerRows, loopBriefSection, loopStop, parseMarks, prLine, renderLedger, reviewChain, riskyChange, roundLimit, secondLookRows, severityWord, stoppingFindings, unmarkedIds, waiverCheck, waiverRefusal, withIds } from "../review-loop.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { findingsRecord, openFindings } from "../review-findings.mjs";
 
@@ -446,4 +446,39 @@ test("a card brief's risk stops at its \"### Review follow-ups\": review notes a
   // What comes before the notes still counts, and so does a card with no notes.
   assert.equal(risky("before.md", `${card("")}- no data loss under concurrent saves\n${notes}`).risky, true, "the card's own Done when, above the notes");
   assert.equal(risky("none.md", card("- no data loss\n")).risky, true);
+});
+
+test("waiver: names by id anywhere in the text, or by a leading count; ids win; a bare reason names nothing", () => {
+  const open = [{ id: "R1-1" }, { id: "R1-10" }, { id: "SL-1" }];
+  assert.deepEqual(waiverCheck("R1-1 and SL-1: accepted", open), { mode: "ids", unnamed: [{ id: "R1-10" }] });
+  assert.deepEqual(waiverCheck("accepted (r1-10, R1-1, SL-1)", open), { mode: "ids", unnamed: [] });
+  // An id is a whole token: R1-1 is not named by R1-10, and SL-1 is not named by XSL-1.
+  assert.deepEqual(waiverCheck("R1-10: accepted", [{ id: "R1-1" }, { id: "R1-10" }]), { mode: "ids", unnamed: [{ id: "R1-1" }] });
+  assert.deepEqual(waiverCheck("XSL-1: accepted", [{ id: "SL-1" }]), { mode: "none", unnamed: [{ id: "SL-1" }] });
+  assert.deepEqual(waiverCheck("3 findings: accepted", open), { mode: "count", count: 3, unnamed: [] });
+  assert.deepEqual(waiverCheck("1 open finding: accepted", open), { mode: "count", count: 1, unnamed: [] });
+  assert.deepEqual(waiverCheck("3 findings: R1-1 is the one", open), { mode: "ids", unnamed: [{ id: "R1-10" }, { id: "SL-1" }] });
+  assert.equal(waiverCheck("accepted, there were 3 findings", open).mode, "none");
+  assert.deepEqual(waiverCheck("Lex accepted it", open).unnamed, open);
+  assert.deepEqual(waiverCheck(undefined, open).unnamed, open);
+});
+
+test("waiver: the refusal lists each finding with its id and severity, and says how to name them", () => {
+  const open = [{ id: "R1-1", severity: "P2", text: "a.ts:1   P2 the first\ndefect" }, { id: "SL-1", severity: "", text: "b.ts:2 no severity" }];
+  const text = waiverRefusal({ mode: "none", open });
+  assert.match(text, /^The --waive reason does not name 2 open findings above P3:$/m);
+  assert.match(text, /^- R1-1 \(P2\): a\.ts:1 P2 the first defect$/m);
+  assert.match(text, /^- SL-1 \(no severity\): b\.ts:2 no severity$/m);
+  assert.match(text, /Name each id in --waive, or start it with the number of findings/);
+  assert.match(waiverRefusal({ mode: "ids", open: [open[0]] }), /^The --waive reason does not name 1 open finding above P3:$/m);
+  assert.match(waiverRefusal({ mode: "count", count: 1, open }), /^The --waive reason says 1 finding, but 2 open findings above P3 would be waived:$/m);
+  const many = Array.from({ length: 20 }, (_, index) => ({ id: `R1-${index + 1}`, severity: "P2", text: "x" }));
+  assert.match(waiverRefusal({ mode: "none", open: many }), /^- … and 5 more$/m);
+});
+
+test("waiver: a carried finding is named by its newest id or by an id the ledger keeps for it", () => {
+  const open = [{ id: "R3-1", aliases: ["R2-1", "R1-1"], text: "x" }, { id: "SL-1", text: "y" }];
+  assert.deepEqual(waiverCheck("R1-1 and SL-1", open).unnamed, []);
+  assert.deepEqual(waiverCheck("R3-1", open).unnamed.map((item: { id: string }) => item.id), ["SL-1"]);
+  assert.match(waiverRefusal({ mode: "ids", open: [open[0]] }), /^- R3-1 \(the ledger's R1-1\) \(no severity\): x$/m);
 });

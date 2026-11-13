@@ -328,7 +328,7 @@ OpenCode settings (default model, global instructions) do not apply to the revie
 ### 9. Land
 
 - **Use:** `kit pr --ticket <t>` (`kit slice` does it); a lead's own change runs `kit pr` too. T3
-  `link_pull_request` for every PR. Lead-only `--waive "<reason>"`. A project with a feature list
+  `link_pull_request` for every PR. Lead-only `--waive "<reason>"`: for the findings that stop the landing (above P3; once the fix rounds are used up, only P0 and P1) it must name each by id (`--waive "R1-2, SL-1: <reason>"`, ids anywhere in the text) or start with the number of them (`--waive "2 findings: <reason>"`, which must match both looks together). A finding it leaves out stops `kit pr` with a plain reason that lists it, and so does one that is new at a head a rebase brought, at the start of the run too (a waiver given for the old findings never covers it, by id or by count: the lead sees it and runs `kit pr` again); P3 findings, test gaps and docs wording need no names, and the waiver text stays in the PR. A project with a feature list
   (`featureList` in the settings) stops a visible change unless it updated the list or its Done says
   `Feature list: no change (<reason>)`.
 - **Browser runs on a busy machine:** `kit pr`'s browser step runs one at a time per machine (it waits,
