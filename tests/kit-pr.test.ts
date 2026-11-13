@@ -3235,3 +3235,18 @@ test("a finding carried into a later round is waived by the id the ledger keeps 
     assert.match(other.stdout, /^- R3-1 \(the ledger's R2-1\) \(P1\): /m);
   }
 });
+
+test("a rebase at the start counts too: a waiver given for the old head never covers a different finding the fresh review raises", t => {
+  for (const waive of ["review-1: Lex accepted it.", "1 finding: Lex accepted it."]) {
+    const f = fixture(t), peer = f.peer();
+    writeFileSync(join(peer, "upstream.txt"), "upstream\n");
+    f.gitAt(peer, "add", "."); f.gitAt(peer, "commit", "-m", "advance upstream"); f.gitAt(peer, "push", "origin", "dev");
+    const result = f.run(["--waive", waive], { ...lead, FAKE_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: b.ts:1 P2 A new defect at the rebased head.\n" });
+    assert.equal(result.status, 1, `${waive}: ${result.stdout}${result.stderr}`);
+    assert.match(result.stdout, /^The --waive reason was given for the findings of an earlier head; 1 open finding above P3 is new at the new head:$/m);
+    assert.equal(f.ghCalls("merge").length, 0);
+  }
+  // Without a rebase at the start, the same waiver lands.
+  const plain = fixture(t), landed = plain.run(["--waive", "review-1: Lex accepted it."], { ...lead, FAKE_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: b.ts:1 P2 A defect.\n" });
+  assert.equal(landed.status, 0, landed.stdout + landed.stderr);
+});
