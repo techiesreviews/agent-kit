@@ -41,11 +41,11 @@ test("kit ask is retired: any call prints one plain line pointing to a subscript
   assert.ok(!existsSync(join(f.state, "agent-kit/api-spend.log")), "no spend was logged");
 });
 
-test("kit ask --help says the same plain line and succeeds", t => {
+test("kit ask --help gives the usage line every command has, then the same plain pointer, and succeeds", t => {
   const f = folder(t);
   for (const flag of ["--help", "-h"]) {
     const run = f.ask([flag]);
     assert.equal(run.status, 0, run.stdout + run.stderr);
-    assert.equal(run.stdout, `${retired.replace(/^RESULT: fail ask /, "kit ask is ")}\n`);
+    assert.equal(run.stdout, `Usage: kit ask (retired)\n${retired.replace(/^RESULT: fail ask /, "kit ask is ")}\n`);
   }
 });

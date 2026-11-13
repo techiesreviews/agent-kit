@@ -6,6 +6,6 @@ import { kitResult } from "../kit-lib.mjs";
 
 const pointer = "retired: it spent paid API credit (off since 2026-11-11). Write with a subscription helper instead: a T3 delegate_task to Sonnet or Opus; for a script, its brief names youtube/AGENTS.md and the \"Current script and prompter playbook\" in youtube/shared/taste/scripts.md";
 const args = process.argv.slice(2);
-if (args.includes("--help") || args.includes("-h")) { process.stdout.write(`kit ask is ${pointer}\n`); process.exit(0); }
+if (args.includes("--help") || args.includes("-h")) { process.stdout.write(`Usage: kit ask (retired)\nkit ask is ${pointer}\n`); process.exit(0); }
 kitResult("fail", `ask ${pointer}`);
 process.exit(1);
