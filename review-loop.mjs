@@ -241,9 +241,11 @@ export function waiverRefusal({ mode, count, open }) {
   const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
   const lines = open.slice(0, 15).map(item => `- ${item.id} (${item.severity || "no severity"}): ${oneLine(item.text, 160)}`);
   if (open.length > 15) lines.push(`- … and ${open.length - 15} more`);
-  const head = mode === "count" ? `The --waive reason says ${plural(count, "finding")}, but ${plural(open.length, "open finding")} above P3 would be waived:`
+  const head = mode === "new" ? `The --waive reason was given for the findings of an earlier head; ${plural(open.length, "open finding")} above P3 ${open.length === 1 ? "is" : "are"} new at the new head:`
+    : mode === "count" ? `The --waive reason says ${plural(count, "finding")}, but ${plural(open.length, "open finding")} above P3 would be waived:`
     : `The --waive reason does not name ${plural(open.length, "open finding")} above P3:`;
-  return [head, ...lines, 'Name each id in --waive, or start it with the number of findings: --waive "R1-1, SL-1: <reason>" or --waive "2 findings: <reason>". P3 findings, test gaps and docs wording need no names.'].join("\n");
+  const how = mode === "new" ? "Run kit pr again with a --waive that names these findings." : 'Name each id in --waive, or start it with the number of findings: --waive "R1-1, SL-1: <reason>" or --waive "2 findings: <reason>". P3 findings, test gaps and docs wording need no names.';
+  return [head, ...lines, how].join("\n");
 }
 
 /**
