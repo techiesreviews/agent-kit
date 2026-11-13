@@ -158,6 +158,10 @@ test("brief: each stage has its own brief", t => {
   assert.match(fix.stdout, /P1 fault: src\/ui\/panel\.css:3 wrong token/);
   assert.match(fix.stdout, /declined/);
   assert.match(fix.stdout, /kit-brief: \S+ docs\/tickets\/07-panel\.md fix$/m);
+  // Builders may push back on a review point (Lex, 2026-11-13); reviewers get no such line.
+  const pushBack = "If a review point is not worth fixing, say so with the reason instead of changing the code.";
+  for (const brief of [fix.stdout, f.run(["docs/tickets/07-panel.md"]).stdout]) assert.ok(brief.includes(pushBack), brief);
+  for (const brief of [review.stdout, second.stdout]) assert.ok(!brief.includes(pushBack), brief);
 });
 
 test("brief: the skills map picks the UI set from the ticket's files, names skills per model and honours kit.json skills", t => {

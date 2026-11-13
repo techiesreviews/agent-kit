@@ -65,7 +65,9 @@ export function parseAgentArgs(args, env = {}) {
   if (!["build", "review"].includes(kind) || !worktree || !brief) {
     throw new Error("Usage: agent.sh build|review <worktree> <brief> [--model M] [--cli codex|claude|grok|opencode] [--effort E] [--base REF | --commit SHA] [--out DIR]; agent.sh --resume <out-dir> [--brief FILE]");
   }
-  const options = { kind, worktree, brief, model: env[kind === "build" ? "ASE_BUILD_MODEL" : "ASE_REVIEW_MODEL"] || "claude-opus-5-5", effort: "medium" };
+  // Reviews run at high effort by default (Lex, 2026-11-13), ASE_REVIEW_EFFORT overriding it; builds at medium.
+  const options = { kind, worktree, brief, model: env[kind === "build" ? "ASE_BUILD_MODEL" : "ASE_REVIEW_MODEL"] || "claude-opus-5-5",
+    effort: kind === "review" ? env.ASE_REVIEW_EFFORT || "high" : "medium" };
   let cli = env.ASE_AGENT_CLI || "";
   const seen = new Set();
   for (let i = 0; i < flags.length; i += 2) {
