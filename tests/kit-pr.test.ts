@@ -1257,7 +1257,7 @@ test("lead waiver merges saved or fresh findings, comments and patches the body 
   for (const source of ["saved", "fresh"]) {
     const f = fixture(t);
     if (source === "saved") f.saveReview(report, "ke-lead");
-    const reason = 'Accepted for follow-up: "ticket 02".';
+    const reason = '1 finding accepted for follow-up: "ticket 02".';
     const result = f.run(["--waive", reason], { ASE_OWNER: "ke-lead", FAKE_REVIEW: report, FAKE_EXISTING: "1" });
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /RESULT: ok merged #73/);
@@ -1287,15 +1287,15 @@ test("waiver uses kitOwner's worktree fallback", t => {
   const f = fixture(t);
   mkdirSync(join(f.root, ".scratch"), { recursive: true });
   writeFileSync(join(f.root, ".scratch/owner"), "2026-10-19T10:00:00Z ke-lead feature/kit-pr origin/dev\n");
-  const result = f.run(["--waive", "Follow up later"], { ASE_OWNER: "", FAKE_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: a.ts:1 A defect.\n" });
+  const result = f.run(["--waive", "1 finding: Follow up later"], { ASE_OWNER: "", FAKE_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: a.ts:1 A defect.\n" });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(f.ghCalls("comment").at(-1)?.body, "Merged with 1 waived findings: Follow up later");
+  assert.equal(f.ghCalls("comment").at(-1)?.body, "Merged with 1 waived findings: 1 finding: Follow up later");
 });
 
 test("waiver does not claim a merge for no-merge, release, clean reviews or failed CI", t => {
   for (const mode of ["no-merge", "release", "clean", "ci-failure"]) {
     const f = fixture(t);
-    const args = ["--waive", "Follow up later", ...(mode === "no-merge" ? ["--no-merge"] : mode === "release" ? ["--release", "--base", "main"] : [])];
+    const args = ["--waive", "1 finding: Follow up later", ...(mode === "no-merge" ? ["--no-merge"] : mode === "release" ? ["--release", "--base", "main"] : [])];
     const result = f.run(args, { ASE_OWNER: "ke-lead", FAKE_REVIEW: mode === "clean" ? cleanReview : "REVIEW_STATUS: complete\nDefects:\n- Spec: a.ts:1 A defect.\n", FAKE_FAIL: mode === "ci-failure" ? "wait" : "" });
     assert.equal(result.status, mode === "ci-failure" ? 1 : 0, result.stderr);
     assert.equal(f.ghCalls("comment").length, 0);
@@ -1325,9 +1325,9 @@ test("the scoreboard record gets the PR, tier, CI result, merge SHA and time, an
   assert.deepEqual(landed, { pr: 73, tier: "full", ci: "pass", sha: "abcdef0123456789abcdef0123456789abcdef01", waived: null });
   assert.ok(Date.parse(at));
   const report = "REVIEW_STATUS: complete\nDefects:\n- Spec: a.ts:1 A defect.\n- Standards: none.\nValidation gaps: none.\nOptional nits: none.\n";
-  const lead = fixture(t), waived = lead.run(["--waive", "Accepted for ticket 02."], { ASE_OWNER: "ke-lead", FAKE_REVIEW: report });
+  const lead = fixture(t), waived = lead.run(["--waive", "1 finding: accepted for ticket 02."], { ASE_OWNER: "ke-lead", FAKE_REVIEW: report });
   assert.equal(waived.status, 0, waived.stderr);
-  assert.equal(JSON.parse(readFileSync(join(lead.main, ".scratch/scoreboard/_untracked/feature%2Fkit-pr.json"), "utf8")).landed.waived, "Accepted for ticket 02.");
+  assert.equal(JSON.parse(readFileSync(join(lead.main, ".scratch/scoreboard/_untracked/feature%2Fkit-pr.json"), "utf8")).landed.waived, "1 finding: accepted for ticket 02.");
   const failed = fixture(t), ci = failed.run([], { FAKE_FAIL: "wait" });
   assert.equal(ci.status, 1);
   const { landed: failedLanding } = JSON.parse(readFileSync(join(failed.main, ".scratch/scoreboard/_untracked/feature%2Fkit-pr.json"), "utf8"));
@@ -1737,7 +1737,7 @@ test("a docs-only PR's review block carries the second look's ledger rows and th
   assert.match(block, /^Review: Claude's review skipped \(docs tier\)\. Verdict: approved\.$/m);
   assert.match(block, /^\| SL-1 \| nit \| .*a second-look nit\. \|$/m);
   assert.doesNotMatch(block, /Findings ledger: none/);
-  const lead = fixture(t, files), waived = lead.run(["--waive", "Accepted for follow-up"], { ASE_OWNER: "ke-lead", FAKE_SECOND_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P1 the second look found this.\n" });
+  const lead = fixture(t, files), waived = lead.run(["--waive", "SL-1: accepted for follow-up"], { ASE_OWNER: "ke-lead", FAKE_SECOND_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P1 the second look found this.\n" });
   assert.equal(waived.status, 0, waived.stdout + waived.stderr);
   const waivedBlock = lead.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body ?? "").findLast(text => text.includes("<!-- review-loop -->"))!;
   assert.match(waivedBlock, /Verdict: not approved \(1 open finding waived by the lead\)/);
@@ -1885,10 +1885,10 @@ test("a feature-list waiver at merge goes in a PR comment, the body and the scor
   const record = join(f.main, ".scratch/scoreboard/_untracked/feature%2Fkit-pr.json");
   assert.equal(JSON.parse(readFileSync(record, "utf8")).landed.waived, "Lead accepts");
   const both = fixture(t, css), report = "REVIEW_STATUS: complete\nDefects:\n- Spec: a.ts:1 A defect.\n";
-  const merged = both.run(["--waive", "Lead accepts"], { ASE_OWNER: "ke-lead", FAKE_REVIEW: report, FAKE_QUEUE: "1" });
+  const merged = both.run(["--waive", "1 finding: Lead accepts"], { ASE_OWNER: "ke-lead", FAKE_REVIEW: report, FAKE_QUEUE: "1" });
   assert.equal(merged.status, 0, merged.stdout + merged.stderr); assert.match(merged.stdout, /RESULT: ok queued #73/);
-  assert.equal(both.ghCalls("comment").at(-1)?.body, "Merged with 1 waived findings and without a feature-list update: Lead accepts");
-  assert.equal(JSON.parse(readFileSync(join(both.main, ".scratch/scoreboard/_untracked/feature%2Fkit-pr.json"), "utf8")).landed.waived, "Lead accepts");
+  assert.equal(both.ghCalls("comment").at(-1)?.body, "Merged with 1 waived findings and without a feature-list update: 1 finding: Lead accepts");
+  assert.equal(JSON.parse(readFileSync(join(both.main, ".scratch/scoreboard/_untracked/feature%2Fkit-pr.json"), "utf8")).landed.waived, "1 finding: Lead accepts");
 });
 
 test("a release with a missing --ticket skips the guard's read and fails at the body step", t => {
@@ -2031,12 +2031,12 @@ test("ticket-only coverage excludes any other changed path", t => {
 test("waiver and non-blocking follow-ups are recorded separately after three rounds", t => {
   const f = fixture(t); f.rounds(3);
   const report = minorReview.replace("Standards: none.", "Standards: P1: Serious defect.");
-  const result = f.run(["--waive", "Lead accepts risk"], { ASE_OWNER: "ke-lead", FAKE_REVIEW: report });
+  const result = f.run(["--waive", "1 finding: Lead accepts risk"], { ASE_OWNER: "ke-lead", FAKE_REVIEW: report });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.equal(f.ghCalls("comment").at(-1)?.body, "Merged with 1 waived findings: Lead accepts risk");
+  assert.equal(f.ghCalls("comment").at(-1)?.body, "Merged with 1 waived findings: 1 finding: Lead accepts risk");
   const body = f.apiCalls().at(-1)?.body || "";
   assert.match(body, /Follow-ups \(non-blocking after 3 fix rounds\):/);
-  assert.match(body, /merged with 1 waived findings: Lead accepts risk/);
+  assert.match(body, /merged with 1 waived findings: 1 finding: Lead accepts risk/);
 });
 
 
@@ -2760,7 +2760,7 @@ test("the PR's verdict counts the second look too: a second-look P2 after the bu
   assert.equal(used.status, 0, used.stdout + used.stderr);
   assert.match(used.stdout, /^Reviewed with review-loop: 1 round with claude-opus-5-5\. Verdict: not approved \(budget used, 1 open finding left for Lex\)$/m);
   const waiver = fixture(t); withEvidence(waiver, "ke-lead");
-  const waived = waiver.run(["--waive", "Accepted for follow-up"], { ASE_OWNER: "ke-lead", FAKE_SECOND_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P1 the second look found this.\n" });
+  const waived = waiver.run(["--waive", "SL-1: accepted for follow-up"], { ASE_OWNER: "ke-lead", FAKE_SECOND_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P1 the second look found this.\n" });
   assert.equal(waived.status, 0, waived.stdout + waived.stderr);
   assert.match(waived.stdout, /^Reviewed with review-loop: 1 round with claude-opus-5-5\. Verdict: not approved \(1 open finding waived by the lead\)$/m);
   assert.doesNotMatch(waived.stdout, /Verdict: approved/);
@@ -2984,7 +2984,7 @@ test("a nits-only review is reused after a rebase with the same patch (no new re
   // A saved review with a should is not reused after a rebase: the rebased head is reviewed again.
   const other = fixture(t), otherPeer = other.peer();
   other.saveReview("REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P2 a real should.\nValidation gaps: none.\n", "ke-lead");
-  const waived = other.run(["--waive", "Accepted for follow-up"], { ASE_OWNER: "ke-lead", FAKE_BEHIND: "1", FAKE_ADVANCE: otherPeer, FAKE_REVIEW: cleanReview });
+  const waived = other.run(["--waive", "review-1: accepted for follow-up"], { ASE_OWNER: "ke-lead", FAKE_BEHIND: "1", FAKE_ADVANCE: otherPeer, FAKE_REVIEW: cleanReview });
   assert.equal(waived.status, 0, waived.stdout + waived.stderr);
   assert.equal(other.calls().filter(claudeReview).length, 1, "the rebased head got a fresh review");
 });
@@ -3004,7 +3004,7 @@ test("the ledger holds the second look's findings too, with ids that say they ca
   assert.match(block, /Verdict: not approved \(budget used, 1 open finding left for Lex\)/);
   assert.doesNotMatch(block, /Findings ledger: none/);
   const waiver = base(true);
-  const waived = waiver.run(["--waive", "Accepted for follow-up"], { ASE_OWNER: "ke-lead", FAKE_SECOND_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P1 the second look found this.\n" });
+  const waived = waiver.run(["--waive", "SL-1: accepted for follow-up"], { ASE_OWNER: "ke-lead", FAKE_SECOND_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P1 the second look found this.\n" });
   assert.equal(waived.status, 0, waived.stdout + waived.stderr);
   const waivedBlock = reviewBodies(waiver).findLast(text => text.includes("<!-- review-loop -->"))!;
   assert.match(waivedBlock, /^\| SL-1 \| blocker \| open, waived by the lead \(second look\): .*the second look found this\. \|$/m);
@@ -3082,4 +3082,73 @@ test("the PR line counts a chain of rounds that runs into the builder's folder, 
   const result = f.run();
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /^Reviewed with review-loop: 2 rounds with claude-opus-5-4 and claude-opus-5-5\. Verdict: approved$/m);
+});
+
+// A waiver names what it waives (TOOLS-225): on 2026-11-13 one bare --waive let five new P2s through after a rebase.
+const twoFindings = "REVIEW_STATUS: complete\nDefects:\n- Spec: a.ts:1 P2 The first defect.\n- Standards: b.ts:2 P1 The second defect.\n";
+const lead = { ASE_OWNER: "ke-lead" };
+
+test("a waiver that names every open finding above P3 by id lands, and its text stays in the PR", t => {
+  const f = fixture(t), reason = "review-1 and review-2: Lex accepted both for the old export.";
+  const result = f.run(["--waive", reason], { ...lead, FAKE_REVIEW: twoFindings, FAKE_SECOND_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P2 the second look found this.\n" });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  // The second look's SL-1 is not named: the run stops there, and says which finding it is.
+  assert.match(result.stdout, /^The --waive reason does not name 1 open finding above P3:$/m);
+  assert.match(result.stdout, /^- SL-1 \(P2\): .*the second look found this\.$/m);
+  assert.equal(f.ghCalls("merge").length, 0);
+  const named = fixture(t), landed = named.run(["--waive", `${reason} SL-1 too.`], { ...lead, FAKE_REVIEW: twoFindings, FAKE_SECOND_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P2 the second look found this.\n" });
+  assert.equal(landed.status, 0, landed.stdout + landed.stderr);
+  assert.equal(named.ghCalls("merge").length, 1);
+  assert.equal(named.ghCalls("comment").at(-1)?.body, `Merged with 3 waived findings: ${reason} SL-1 too.`);
+  assert.ok((named.apiCalls().at(-1)?.body ?? "").endsWith(`\nmerged with 3 waived findings: ${reason} SL-1 too.\n`));
+});
+
+test("a bare waiver, or one that names only some ids, refuses and lists the open findings it leaves out", t => {
+  for (const [reason, left] of [["Lex accepted it.", ["review-1", "review-2"]], ["review-2: Lex accepted this one.", ["review-1"]]] as const) {
+    const f = fixture(t), result = f.run(["--waive", reason], { ...lead, FAKE_REVIEW: twoFindings });
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, new RegExp(`^The --waive reason does not name ${left.length} open finding${left.length === 1 ? "" : "s"} above P3:$`, "m"));
+    for (const id of left) assert.match(result.stdout, new RegExp(`^- ${id} \\(P[12]\\): `, "m"));
+    assert.match(result.stdout, /Name each id in --waive, or start it with the number of findings/);
+    assert.match(result.stdout, /^RESULT: fail pr #73 review has 1?\d open findings the waiver does not name/m);
+    assert.equal(f.ghCalls("merge").length, 0);
+    assert.equal(f.ghCalls("comment").length, 0);
+  }
+});
+
+test("a waiver after a rebase cannot cover the new P2s the fresh review raises", t => {
+  const f = fixture(t), peer = f.peer();
+  savedFindings(f, f.saveReview("REVIEW_STATUS: complete\nDefects:\n- Spec: a.ts:1 P1 The old defect.\n", "ke-lead"), { findings: [{ id: "R1-1", severity: "P1", text: "The old defect." }] });
+  const rebased = "REVIEW_STATUS: complete\nDefects:\n- Spec: a.ts:1 P2 New one.\n- Spec: b.ts:1 P2 New two.\n- Spec: c.ts:1 P2 New three.\n";
+  const result = f.run(["--waive", "R1-1: Lex accepted the old defect."], { ...lead, FAKE_BEHIND: "1", FAKE_ADVANCE: peer, FAKE_ADVANCE_PATCH: "1", FAKE_REVIEW: rebased });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /^The --waive reason does not name 3 open findings above P3:$/m);
+  // The first merge attempt was the "behind" one that sent the PR back to review; nothing landed after it.
+  assert.equal(f.ghCalls("merge").length, 1);
+  assert.doesNotMatch(result.stdout, /RESULT: ok/);
+});
+
+test("a count waiver lands only when the count matches the open findings above P3", t => {
+  // Two in Claude's review plus one in the second look: three in all.
+  const second = "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P2 the second look found this.\n";
+  for (const [count, says] of [["3 findings", 3], ["1 finding", 1], ["2 findings", 2], ["4 findings", 4]] as const) {
+    const f = fixture(t), result = f.run(["--waive", `${count}: Lex accepted them.`], { ...lead, FAKE_REVIEW: twoFindings, FAKE_SECOND_REVIEW: second });
+    if (says === 3) {
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      assert.equal(f.ghCalls("merge").length, 1);
+      continue;
+    }
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, new RegExp(`^The --waive reason says ${says} finding${says === 1 ? "" : "s"}, but 3 open findings above P3 would be waived:$`, "m"));
+    assert.match(result.stdout, /^- review-1 \(P2\): /m);
+    assert.match(result.stdout, /^- SL-1 \(P2\): /m);
+    assert.equal(f.ghCalls("merge").length, 0);
+  }
+});
+
+test("a group waiver for P3 findings, validation gaps and nits needs no names", t => {
+  const report = "REVIEW_STATUS: complete\nDefects:\n- Spec: a.ts:1 P3 A small point.\n- Standards: none.\nValidation gaps: Add coverage.\nOptional nits: Rename a variable.\n";
+  const f = fixture(t), result = f.run(["--waive", "Lex accepted the small points."], { ...lead, FAKE_REVIEW: report, FAKE_SECOND_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P3 a second-look nit.\n" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(f.ghCalls("merge").length, 1);
 });

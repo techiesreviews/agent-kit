@@ -229,6 +229,8 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
   It pushes nothing; ignored files (a built `dist/`) do not count. Only a `*-lead` owner may pass it with
   `--waive "<reason>"`, which its `RESULT:` line names with what was let through; `kit pr --release --waive` hands
   its reason on, so one waiver covers both the review findings and the check.
+  Findings above P3 are waived only by id or by count: `kit pr --waive "R1-2, SL-1: <reason>"` or `--waive "2 findings: <reason>"`;
+  a finding the waiver does not name stops `kit pr` with a plain reason that lists it (P3 findings, test gaps and docs wording need no names).
 
 ## Changing the kit
 
