@@ -244,7 +244,7 @@ export function waiverRefusal({ mode, count, open }) {
   const head = mode === "new" ? `The --waive reason was given for the findings of an earlier head; ${plural(open.length, "open finding")} above P3 ${open.length === 1 ? "is" : "are"} new at the new head:`
     : mode === "count" ? `The --waive reason says ${plural(count, "finding")}, but ${plural(open.length, "open finding")} above P3 would be waived:`
     : `The --waive reason does not name ${plural(open.length, "open finding")} above P3:`;
-  const how = mode === "new" ? "Run kit pr again with a --waive that names these findings." : 'Name each id in --waive, or start it with the number of findings: --waive "R1-1, SL-1: <reason>" or --waive "2 findings: <reason>". P3 findings, test gaps and docs wording need no names.';
+  const how = mode === "new" ? "Run kit pr again with a --waive that names every open finding above P3 at this head (these are ones the earlier waiver did not cover, or that a fresh review worded differently)." : 'Name each id in --waive, or start it with the number of findings: --waive "R1-1, SL-1: <reason>" or --waive "2 findings: <reason>". P3 findings, test gaps and docs wording need no names.';
   return [head, ...lines, how].join("\n");
 }
 
