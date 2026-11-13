@@ -43,6 +43,12 @@ test("agent options preserve defaults, infer Claude aliases, and respect explici
   assert.equal(options.effort, "high");
   assert.equal(parseAgentArgs(["build", ".", "brief"], { ASE_AGENT_CLI: "claude" }).cli, "claude");
   assert.equal(parseAgentArgs(["build", ".", "brief", "--effort", "ultra"]).effort, "ultra");
+  // Reviews run at high effort by default (Lex, 2026-11-13); ASE_REVIEW_EFFORT overrides it, and --effort beats both. Builds keep medium.
+  assert.equal(parseAgentArgs(["review", ".", "brief"]).effort, "high");
+  assert.equal(parseAgentArgs(["review", ".", "brief"], { ASE_REVIEW_EFFORT: "xhigh" }).effort, "xhigh");
+  assert.equal(parseAgentArgs(["review", ".", "brief", "--effort", "low"], { ASE_REVIEW_EFFORT: "xhigh" }).effort, "low");
+  assert.equal(parseAgentArgs(["build", ".", "brief"], { ASE_REVIEW_EFFORT: "xhigh" }).effort, "medium");
+  assert.throws(() => parseAgentArgs(["review", ".", "brief"], { ASE_REVIEW_EFFORT: "bad level" }), /Invalid effort/);
   for (const flags of [["--model"], ["--cli", "gemini"], ["--effort", "bad level"], ["--unknown", "x"], ["--model", "a", "--model", "b"]]) {
     assert.throws(() => parseAgentArgs(["build", ".", "brief", ...flags]));
   }

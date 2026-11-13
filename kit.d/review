@@ -17,6 +17,7 @@ const { kitBranch, kitGhEnv, kitRoot, kitMainRoot, kitOwner, kitResult, kitSetti
 );
 const usage = "Usage: kit review [--base REF | --commit SHA] [--ticket FILE] [--pr N] [--second-look | --second gpt]\nDefault scope: --base origin/<land> (branches.land in scripts/agents/kit.json). Model: ASE_REVIEW_MODEL or claude-opus-5-5: claude-*, grok-*, gpt-* (also o<digit>…, codex…) or opencode/<model>;\n" +
   "any other name is refused before any call (ASE_AGENT_CLI=codex|opencode picks the CLI for it).\n" +
+  "Effort: high (ASE_REVIEW_EFFORT overrides it); a second look takes the table's effort for its model, else medium; OpenCode takes none.\n" +
   "A scope with no change (a no-code merge, an empty diff) has nothing to review: no call, no count, no evidence, and a skip \"nothing to review (…)\" with exit 3\n" +
   "(a second look says \"second look: skipped (nothing to review: …)\"), which kit pr takes as a pass. A reviewer whose CLI crashes (a signal, or an exit above 128) on its first call\n" +
   "counts as unavailable, not as a failed review: a second look hands over to the next model or is skipped; the main review, with no stand-in, still fails.\n" +
@@ -104,7 +105,8 @@ async function reviewOnce(flags, look) {
     temporary = mkdtempSync(join(artifacts, "kit-review-"));
     const briefPath = join(temporary, "brief.md");
     const resolved = scope.commit ? { commit: scope.commit } : { base: scope.base };
-    const agentArgs = ["review", root, briefPath, ...(scope.commit ? ["--commit", scope.commit] : ["--base", scope.base]), "--out", temporary, ...(look?.effort ? ["--effort", look.effort] : [])];
+    const agentArgs = ["review", root, briefPath, ...(scope.commit ? ["--commit", scope.commit] : ["--base", scope.base]), "--out", temporary, ...(look ? ["--effort", look.effort ?? "medium"] : [])];
+    // A second look runs at the table's effort for its model, else medium; only the main review takes the high default.
     // The runner prepares "the changes since the last review" for a later round (set once that round is known, below).
     let cli;
     ({ model, effort, cli } = parseAgentArgs(agentArgs, env));
