@@ -4,7 +4,7 @@
 // subscription. The command stays only so an old note or habit gets a plain pointer instead of "unknown command".
 import { kitResult } from "../kit-lib.mjs";
 
-const pointer = "retired: it spent paid API credit (off since 2026-11-11). Write with a subscription helper instead: a T3 delegate_task to Sonnet or Opus; for a script, its brief names youtube/AGENTS.md and the \"Current script and prompter playbook\" in youtube/shared/taste/scripts.md";
+const pointer = "retired: it spent paid API credit, which ran out on 2026-11-11. Write with a subscription helper instead: a T3 delegate_task to Sonnet or Opus; for a script, its brief names youtube/AGENTS.md and the \"Current script and prompter playbook\" in youtube/shared/taste/scripts.md";
 const args = process.argv.slice(2);
 if (args.includes("--help") || args.includes("-h")) { process.stdout.write(`Usage: kit ask (retired)\nkit ask is ${pointer}\n`); process.exit(0); }
 kitResult("fail", `ask ${pointer}`);

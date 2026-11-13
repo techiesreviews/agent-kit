@@ -228,6 +228,12 @@ test("kit review writes findings.json with kinds and counts, or unreadable for a
     counts: { kind: { fault: 0, ticket: 1, race: 0, style: 1, unsorted: 1, gap: 1 }, severity: { P0: 0, P1: 1, P2: 1, P3: 1, none: 0, gap: 1 } },
     notes: 0,
   });
+  // ASE_REVIEW_EFFORT reaches the reviewer's CLI and the record.
+  const effort = f.run(["--commit", "HEAD^"], { FAKE_REPORT: report, ASE_REVIEW_EFFORT: "xhigh" });
+  assert.equal(effort.status, 0, effort.stderr);
+  const effortCall = f.calls().at(-1)!;
+  assert.equal(effortCall.args[effortCall.args.indexOf("--effort") + 1], "xhigh");
+  assert.equal(JSON.parse(readFileSync(join(f.evidence(effort.stdout), "findings.json"), "utf8")).effort, "xhigh");
   const noted = f.run([], { FAKE_REPORT: "REVIEW_STATUS: complete\nDefects:\nStandards:\nNo section of CODING_STANDARDS.md applies to this change.\nValidation gaps: none.\n" });
   assert.equal(noted.status, 0, noted.stderr);
   assert.match(noted.stdout, /^findings 0$/m);
@@ -1523,6 +1529,13 @@ test("kit review --second-look picks each kind's table model, and a mixed change
     assert.equal(call.args[call.args.indexOf("-m") + 1], model);
     // A second look with no effort in the table runs Grok at medium, not the main review's high (ASE_REVIEW_EFFORT is for the main review).
     if (call.cli === "grok") assert.equal(call.args[call.args.indexOf("--reasoning-effort") + 1], "medium");
+    if (call.cli === "grok" && kind === "code") {
+      // ASE_REVIEW_EFFORT is the main review's: a second look keeps its own effort.
+      const again = f.run(["--commit", "HEAD", "--second-look"], { ASE_SECOND_LOOK: table, ASE_REVIEW_EFFORT: "xhigh" }, true);
+      assert.equal(again.status, 0, again.stdout + again.stderr);
+      const look = f.calls().at(-1)!;
+      assert.equal(look.args[look.args.indexOf("--reasoning-effort") + 1], "medium");
+    }
     assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(result.stdout), "second-look.json"), "utf8")), { kind, model, ok: true, branch: "feature/review" });
   }
 });
