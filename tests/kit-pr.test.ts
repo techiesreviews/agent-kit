@@ -3273,3 +3273,24 @@ test("a rebase in the middle of the run that makes a fresh review word the same 
   assert.match(result.stdout, /^- review-1 \(P2\): a\.ts:2 P2 The defect\.$/m);
   assert.equal(f.ghCalls("merge").length, 1);
 });
+
+test("a rebase at the start still lets the lead's waiver cover a finding of the review saved for the old head, when the fresh review raises it unchanged", t => {
+  const text = "a.ts:1 P2 The defect Lex saw.", report = `REVIEW_STATUS: complete\nDefects:\n- Spec: ${text}\n`;
+  for (const waive of ["review-1: Lex accepted it.", "1 finding: Lex accepted it."]) {
+    const f = fixture(t), peer = f.peer();
+    f.saveReview(report, "ke-lead");
+    writeFileSync(join(peer, "upstream.txt"), "upstream\n");
+    f.gitAt(peer, "add", "."); f.gitAt(peer, "commit", "-m", "advance upstream"); f.gitAt(peer, "push", "origin", "dev");
+    const result = f.run(["--waive", waive], { ...lead, FAKE_REVIEW: report });
+    assert.equal(result.status, 0, `${waive}: ${result.stdout}${result.stderr}`);
+    assert.doesNotMatch(result.stdout, /new at this head/);
+    // A different finding at the rebased head is still refused.
+    const other = fixture(t), otherPeer = other.peer();
+    other.saveReview(report, "ke-lead");
+    writeFileSync(join(otherPeer, "upstream.txt"), "upstream\n");
+    other.gitAt(otherPeer, "add", "."); other.gitAt(otherPeer, "commit", "-m", "advance upstream"); other.gitAt(otherPeer, "push", "origin", "dev");
+    const refused = other.run(["--waive", waive], { ...lead, FAKE_REVIEW: report.replace("The defect Lex saw.", "A new defect.") });
+    assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+    assert.match(refused.stdout, /new at this head:$/m);
+  }
+});
