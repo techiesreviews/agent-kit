@@ -22,7 +22,7 @@ delete process.env.KIT_API_KEY_FILE; delete process.env.KIT_API_CONFIG_DIR;
 test("agent options preserve defaults, infer Claude aliases, and respect explicit overrides", () => {
   for (const kind of ["build", "review"]) {
     assert.deepEqual(parseAgentArgs([kind, "/work tree", "brief.md"]), {
-      kind, worktree: "/work tree", brief: "brief.md", model: "claude-opus-5-5", cli: "claude", effort: "medium",
+      kind, worktree: "/work tree", brief: "brief.md", model: "claude-opus-5-5", cli: "claude", effort: kind === "review" ? "high" : "medium",
     });
   }
   for (const [kind, variable] of [["review", "ASE_REVIEW_MODEL"], ["build", "ASE_BUILD_MODEL"]]) {
@@ -209,7 +209,7 @@ test("OpenCode runs free models uncounted, counts openai/… as GPT and xai/… 
 
 test("Grok adapter runs reviews only, read-only and headless, and resumes its own session", () => {
   for (const model of ["grok-4.7", "grok-4.6"]) assert.equal(inferCli(model), "grok");
-  const options = parseAgentArgs(["review", "/work tree", "brief"], { ASE_REVIEW_MODEL: "grok-4.7" });
+  const options = parseAgentArgs(["review", "/work tree", "brief"], { ASE_REVIEW_MODEL: "grok-4.7", ASE_REVIEW_EFFORT: "medium" });
   assert.equal(options.cli, "grok");
   const call = agentInvocation({ ...options, sessionId: "id-1" }, "/shared git", "/out file.md");
   assert.equal(call.command, "grok");
