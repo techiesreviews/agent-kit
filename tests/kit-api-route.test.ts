@@ -193,7 +193,7 @@ test("the scrub flag goes off only for a call of plain readers whose hooks are o
     // --setting-sources twice: one empty value does not make the other one's settings go away.
     ["-p", "--tools", "Read", "--setting-sources", "", "--setting-sources", "user", "--strict-mcp-config"], ["-p", "--tools", "Read", "--setting-sources", "user", "--setting-sources", "", "--strict-mcp-config"],
     ["-p", "--tools", "Read", "--bare", "--strict-mcp-config", "--settings", "s.json"], ["-p", "--tools", "Read", "--bare", "--strict-mcp-config", "--agents", "{}"],
-    // No tools at all (kit ask) is not a reader list either: the call runs in a throwaway folder, so the flag stays on.
+    // No tools at all (as the retired kit ask ran) is not a reader list either: the call runs in a throwaway folder, so the flag stays on.
     ["-p", "--tools", ""], ["-p", "--tools", "", "--bare"], ["-p", "--tools=", "--setting-sources", ""]];
   for (const args of keeps) spawnSync(wrapper, args, { env, encoding: "utf8" });
   assert.deepEqual(f.callList().map(call => call.scrub), [...offs.map(() => "0"), ...keeps.map(() => "1")]);
@@ -253,7 +253,7 @@ test("a hook Claude starts never sees the key, whatever the call's tools or sett
   const f = folder(t);
   const hooks = hookClaude(f);
   const env = { ...f.env, KIT_API_KEY_FILE: f.keyFile };
-  // A call with no tools (kit ask), a build, a review's own arguments, and calls that name no tools or hide hooks nowhere.
+  // A call with no tools (as the retired kit ask ran), a build, a review's own arguments, and calls that name no tools or hide hooks nowhere.
   const calls = [["-p", "--model", "m", "--output-format", "json", "--tools", ""], ["-p", "--allowedTools", "Bash"], reviewArgs, ["-p", "--tools", "Read,Grep,Glob"], ["-p"]];
   for (const args of calls) assert.equal(spawnSync(wrapper, args, { env, encoding: "utf8" }).status, 0);
   const ran = hooks();

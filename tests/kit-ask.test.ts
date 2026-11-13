@@ -9,7 +9,7 @@ import { kitEnv } from "./support/kit-env.ts";
 // kit ask is retired (Lex, 2026-11-13, TOOLS-228): it spent paid API credit, which ran out on 2026-11-11. The command
 // stays only to print one plain line pointing to a subscription helper; it never calls Claude or reads a key.
 const kit = resolve("kit");
-const retired = "RESULT: fail ask retired: it spent paid API credit (off since 2026-11-11). Write with a subscription helper instead: a T3 delegate_task to Sonnet or Opus; for a script, its brief names youtube/AGENTS.md and the \"Current script and prompter playbook\" in youtube/shared/taste/scripts.md";
+const retired = "RESULT: fail ask retired: it spent paid API credit, which ran out on 2026-11-11. Write with a subscription helper instead: a T3 delegate_task to Sonnet or Opus; for a script, its brief names youtube/AGENTS.md and the \"Current script and prompter playbook\" in youtube/shared/taste/scripts.md";
 
 function folder(t: TestContext) {
   const dir = mkdtempSync(join(tmpdir(), "kit-ask-"));
