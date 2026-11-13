@@ -475,3 +475,10 @@ test("waiver: the refusal lists each finding with its id and severity, and says 
   const many = Array.from({ length: 20 }, (_, index) => ({ id: `R1-${index + 1}`, severity: "P2", text: "x" }));
   assert.match(waiverRefusal({ mode: "none", open: many }), /^- … and 5 more$/m);
 });
+
+test("waiver: a carried finding is named by its newest id or by an id the ledger keeps for it", () => {
+  const open = [{ id: "R3-1", aliases: ["R2-1", "R1-1"], text: "x" }, { id: "SL-1", text: "y" }];
+  assert.deepEqual(waiverCheck("R1-1 and SL-1", open).unnamed, []);
+  assert.deepEqual(waiverCheck("R3-1", open).unnamed.map((item: { id: string }) => item.id), ["SL-1"]);
+  assert.match(waiverRefusal({ mode: "ids", open: [open[0]] }), /^- R3-1 \(the ledger's R1-1\) \(no severity\): x$/m);
+});

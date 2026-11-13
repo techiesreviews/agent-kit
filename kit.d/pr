@@ -940,8 +940,15 @@ async function main(args) {
         }
         // A waiver lets through only the findings it names (or counts), as the lead saw them: a rebase brings a new head and a fresh
         // review, and a waiver given for the old findings never covers a finding that is new there, by id or by count.
+        // A finding carried into this round ("R1-1 still open") is also named by the id the ledger keeps, back to its first round.
+        const earlier = chain.flatMap(record => record.findings);
+        const carriedFrom = item => {
+          const out = [];
+          for (let text = String(item.text ?? ""), found; out.length < 10 && (found = /^(R\d+-\d+) still open/.exec(text)); text = String(earlier.find(entry => entry.id === found[1])?.text ?? "")) out.push(found[1]);
+          return out;
+        };
         const waivable = blocking.map(item => ({ id: ids.get(item) ?? (second ? `SL-${findings.indexOf(item) + 1}` : `review-${findings.indexOf(item) + 1}`),
-          severity: item.severity ?? "", text: item.text }));
+          aliases: carriedFrom(item), severity: item.severity ?? "", text: item.text }));
         const refuse = (text, why) => {
           console.log(text);
           kitResult("fail", `pr #${number} ${name} ${why} (${resultPath})`);

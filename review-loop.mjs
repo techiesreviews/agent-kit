@@ -230,7 +230,9 @@ export function secondLookRows(findings, { ids = new Map(), waived = [] } = {}) 
 export function waiverCheck(reason, open) {
   const text = String(reason ?? "");
   const named = id => new RegExp(`(?<![\\w-])${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`, "i").test(text);
-  if (open.some(item => named(item.id))) return { mode: "ids", unnamed: open.filter(item => !named(item.id)) };
+  // A finding carried into a later round is named by its new id or by the id the ledger keeps for it (`aliases`).
+  const isNamed = item => [item.id, ...(item.aliases ?? [])].some(named);
+  if (open.some(isNamed)) return { mode: "ids", unnamed: open.filter(item => !isNamed(item)) };
   const count = /^\s*(\d+)\s+(?:open\s+)?findings?\b/i.exec(text);
   if (count) return { mode: "count", count: Number(count[1]), unnamed: [] };
   return { mode: "none", unnamed: open };
@@ -239,7 +241,7 @@ export function waiverCheck(reason, open) {
 /** The plain refusal for waived findings the reason does not name, or whose count it gets wrong; `open` is [{ id, severity, text }]. */
 export function waiverRefusal({ mode, count, open }) {
   const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
-  const lines = open.slice(0, 15).map(item => `- ${item.id} (${item.severity || "no severity"}): ${oneLine(item.text, 160)}`);
+  const lines = open.slice(0, 15).map(item => `- ${item.id}${item.aliases?.length ? ` (the ledger's ${item.aliases.at(-1)})` : ""} (${item.severity || "no severity"}): ${oneLine(item.text, 160)}`);
   if (open.length > 15) lines.push(`- … and ${open.length - 15} more`);
   const head = mode === "new" ? `The --waive reason was given for the findings of an earlier head; ${plural(open.length, "open finding")} above P3 ${open.length === 1 ? "is" : "are"} new at the new head:`
     : mode === "count" ? `The --waive reason says ${plural(count, "finding")}, but ${plural(open.length, "open finding")} above P3 would be waived:`
