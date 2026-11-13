@@ -3123,7 +3123,7 @@ test("a waiver after a rebase cannot cover the new P2s the fresh review raises",
   const result = f.run(["--waive", "R1-1: Lex accepted the old defect."], { ...lead, FAKE_BEHIND: "1", FAKE_ADVANCE: peer, FAKE_ADVANCE_PATCH: "1", FAKE_REVIEW: rebased });
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stdout, /^The --waive reason was given for the findings of an earlier head; 3 open findings above P3 are new at the new head:$/m);
-  assert.match(result.stdout, /^Run kit pr again with a --waive that names these findings\.$/m);
+  assert.match(result.stdout, /^Run kit pr again with a --waive that names every open finding above P3 at this head /m);
   // The first merge attempt was the "behind" one that sent the PR back to review; nothing landed after it.
   assert.equal(f.ghCalls("merge").length, 1);
   assert.doesNotMatch(result.stdout, /RESULT: ok/);
@@ -3191,4 +3191,25 @@ test("once the fix rounds are used up only the P1 needs a name: the P2 goes to f
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.equal(f.ghCalls("comment").some(call => /Follow-ups \(non-blocking after 3 fix rounds\):[\s\S]*The should\./.test(call.body ?? "")), true);
   assert.equal(f.ghCalls("comment").at(-1)?.body, "Merged with 1 waived findings: 1 finding: Lex accepted the serious one.");
+});
+
+test("a waived finding that a fresh review raises again unchanged after a rebase still lands under the same waiver", t => {
+  const f = fixture(t), peer = f.peer();
+  const result = f.run(["--waive", "review-1: Lex accepted it."], { ...lead, FAKE_BEHIND: "1", FAKE_ADVANCE: peer, FAKE_ADVANCE_PATCH: "1", FAKE_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: a.ts:1 P2 Same defect.\n" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(f.ghCalls("merge").length, 2);
+  assert.doesNotMatch(result.stdout, /new at the new head/);
+});
+
+test("the second look's new finding at a rebased head is refused as new, and a second look left unnamed after a named first look reads as unnamed, not as a count", t => {
+  const f = fixture(t), peer = f.peer(), review = "REVIEW_STATUS: complete\nDefects:\n- Spec: a.ts:1 P2 The first defect.\n";
+  const result = f.run(["--waive", "review-1: Lex accepted it."], { ...lead, FAKE_BEHIND: "1", FAKE_ADVANCE: peer, FAKE_ADVANCE_PATCH: "1", FAKE_REVIEW: review, FAKE_SECOND_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P3 a nit.\n", FAKE_SECOND_REBASED_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P2 a different second-look defect.\n" });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /^- SL-1 \(P2\): .*a different second-look defect\.$/m);
+  assert.match(result.stdout, /^RESULT: fail pr #73 second look has 1 open findings that are new at the new head/m);
+  assert.equal(f.ghCalls("merge").length, 1);
+  const named = fixture(t), second = "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P2 one.\n- Spec: file.txt:2 P2 two.\n";
+  const unnamed = named.run(["--waive", "review-1: Lex accepted it."], { ...lead, FAKE_REVIEW: review, FAKE_SECOND_REVIEW: second });
+  assert.equal(unnamed.status, 1, unnamed.stdout + unnamed.stderr);
+  assert.match(unnamed.stdout, /^The --waive reason does not name 2 open findings above P3:$/m);
 });

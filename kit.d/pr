@@ -950,11 +950,12 @@ async function main(args) {
         const novel = reviewedHeads > 1 ? waivable.filter(item => !waivedBefore.has(`${item.id}\n${item.text}`)) : [];
         if (novel.length) return refuse(waiverRefusal({ mode: "new", open: novel }), `has ${novel.length} open findings that are new at the new head`);
         if (waivable.length) {
-          const check = waiverCheck(flags.waive, waivable);
+          // The mode is worked out from every waived finding so far, so a second look cannot fall back to counting when the first one was named.
+          const soFar = [...waivedFindings, ...waivable], check = waiverCheck(flags.waive, soFar);
           if (check.unnamed.length) return refuse(waiverRefusal({ mode: check.mode, open: check.unnamed }), `has ${check.unnamed.length} open findings the waiver does not name`);
           // A count already too small is refused before the next look starts.
-          if (check.mode === "count" && waivedFindings.length + waivable.length > check.count)
-            return refuse(waiverRefusal({ mode: "count", count: check.count, open: [...waivedFindings, ...waivable] }), "has more open findings than the waiver counts");
+          if (check.mode === "count" && soFar.length > check.count)
+            return refuse(waiverRefusal({ mode: "count", count: check.count, open: soFar }), "has more open findings than the waiver counts");
           waivedFindings.push(...waivable);
           for (const item of waivable) waivedBefore.add(`${item.id}\n${item.text}`);
         }
