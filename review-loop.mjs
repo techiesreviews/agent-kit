@@ -243,7 +243,7 @@ export function waiverRefusal({ mode, count, open }) {
   const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
   const lines = open.slice(0, 15).map(item => `- ${item.id}${item.aliases?.length ? ` (the ledger's ${item.aliases.at(-1)})` : ""} (${item.severity || "no severity"}): ${oneLine(item.text, 160)}`);
   if (open.length > 15) lines.push(`- … and ${open.length - 15} more`);
-  const head = mode === "new" ? `The --waive reason was given for the findings of an earlier head; ${plural(open.length, "open finding")} above P3 ${open.length === 1 ? "is" : "are"} new at the new head:`
+  const head = mode === "new" ? `A rebase brought a new head, so kit pr cannot tell that the --waive reason was meant for what is open now; ${plural(open.length, "open finding")} above P3 ${open.length === 1 ? "is" : "are"} new at this head:`
     : mode === "count" ? `The --waive reason says ${plural(count, "finding")}, but ${plural(open.length, "open finding")} above P3 would be waived:`
     : `The --waive reason does not name ${plural(open.length, "open finding")} above P3:`;
   const how = mode === "new" ? "Run kit pr again with a --waive that names every open finding above P3 at this head (these are ones the earlier waiver did not cover, or that a fresh review worded differently)." : 'Name each id in --waive, or start it with the number of findings: --waive "R1-1, SL-1: <reason>" or --waive "2 findings: <reason>". P3 findings, test gaps and docs wording need no names.';

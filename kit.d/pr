@@ -89,6 +89,7 @@ const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
 // Short form of a finding for the console, PR body and PR comment; the ticket keeps the full text.
 // The cut counts graphemes, so it never splits an emoji, flag or accented letter.
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+const findingsWord = count => `${count} open finding${count === 1 ? "" : "s"}`;
 const shortText = text => {
   const characters = Array.from(graphemes.segment(text), part => part.segment);
   return characters.length > 160 ? `${characters.slice(0, 160).join("").trimEnd()}…` : text;
@@ -815,7 +816,7 @@ async function main(args) {
         const all = waivedFindings.length ? waiverCheck(flags.waive, waivedFindings) : null;
         if (all && (all.unnamed.length || (all.mode === "count" && all.count !== waivedFindings.length))) {
           console.log(waiverRefusal({ mode: all.mode, count: all.count, open: all.unnamed.length ? all.unnamed : waivedFindings }));
-          kitResult("fail", `pr #${number} the waiver does not match the ${waivedFindings.length} open findings it would let through`);
+          kitResult("fail", `pr #${number} the waiver does not match the ${findingsWord(waivedFindings.length)} it would let through`);
           await stopped("open findings", "see the review comments");
           return false;
         }
@@ -960,11 +961,11 @@ async function main(args) {
           return false;
         };
         const novel = reviewedHeads > 1 && !saved ? waivable.filter(item => !waivedBefore.has(`${item.id}\n${item.text}`)) : [];
-        if (novel.length) return refuse(waiverRefusal({ mode: "new", open: novel }), `has ${novel.length} open findings that are new at the new head`);
+        if (novel.length) return refuse(waiverRefusal({ mode: "new", open: novel }), `has ${findingsWord(novel.length)} that ${novel.length === 1 ? "is" : "are"} new at the new head`);
         if (waivable.length) {
           // The mode is worked out from every waived finding so far, so a second look cannot fall back to counting when the first one was named.
           const soFar = [...waivedFindings, ...waivable], check = waiverCheck(flags.waive, soFar);
-          if (check.unnamed.length) return refuse(waiverRefusal({ mode: check.mode, open: check.unnamed }), `has ${check.unnamed.length} open findings the waiver does not name`);
+          if (check.unnamed.length) return refuse(waiverRefusal({ mode: check.mode, open: check.unnamed }), `has ${findingsWord(check.unnamed.length)} the waiver does not name`);
           // A count already too small is refused before the next look starts.
           if (check.mode === "count" && soFar.length > check.count)
             return refuse(waiverRefusal({ mode: "count", count: check.count, open: soFar }), "has more open findings than the waiver counts");
