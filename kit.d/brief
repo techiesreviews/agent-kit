@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // kit: print the brief for a delegated child (build, review, second look or fix) from the ticket and the rules
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { composeBrief, kitVersion, nextTalkStyle, readTicket, skillSettingsProblems, STAGES } from "../brief-lib.mjs";
 import { kitHome, kitMessagesToLexRule, kitOwner, kitResult, kitReviewLoopRule, kitRoot, kitRulebookPins, kitSettings } from "../kit-lib.mjs";
@@ -136,13 +136,16 @@ try {
   const brief = composeBrief({ messages, reviewLoop, root, settings, ticket, text, stage: options.stage, owner, note: options.note, model: options.model, style, pins, version: kitVersion(kitHome()), task: options.task?.trim(), card });
   const file = join(".scratch/kit-briefs", `${basename(ticket).replace(/^task:/, "task-").replace(/\.md$/i, "")}-${options.stage}.md`);
   mkdirSync(join(root, ".scratch/kit-briefs"), { recursive: true });
-  writeFileSync(join(root, file), `${brief}\n`);
-  // Claimed last, once the brief is written, so no later step can fail and leave the card held for a brief nobody has.
+  // The brief is written to a file of its own, claimed, then moved into place: no later step can fail and leave the card
+  // held for a brief nobody has, and a brief whose claim loses never touches the copy of the one that won.
   // A files project hands out its ticket files, not cards, so only an Orbit project's kit next could start the card twice.
+  const saved = join(root, file), temporary = `${saved}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${brief}\n`);
   if (onCard && free && options.stage === "build" && onOrbit(settings)) {
     try { await claimCard(settings, ticket, owner); }
-    catch (error) { rmSync(join(root, file), { force: true }); throw error; }
+    catch (error) { rmSync(temporary, { force: true }); throw error; }
   }
+  renameSync(temporary, saved);
   console.log(brief);
   kitResult("ok", `brief ${ticket} ${options.stage} (talk ${style}) ${file}`);
 } catch (error) {
