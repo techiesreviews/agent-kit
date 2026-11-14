@@ -188,7 +188,7 @@ than picking new values.
 ## How rules are added
 
 - A correction Lex gives in two or more projects, or one that applies to every tool, becomes a rule
-  here after Lex has seen it (`kit learn` marks it covered once it is). One that belongs to one
+  here after Lex has seen it (`kit sweep --learn` marks it covered once it is). One that belongs to one
   project goes in that project's UX rulebook.
 - A new rule takes the next `HS` number and has its why and its check. Extend a rule rather than
   adding a near-copy.

@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Kit flow chart</title>
+<style>
+:root{
+  /* Fallbacks for a plain browser; in T3 the theme's own colours win. */
+  --f-card:#ffffff; --f-sunk:#f3ece7; --f-fg:#1d1a2b; --f-mut:#5d5870; --f-line:#e3d9d2;
+  --f-lead:#2a5bd7; --f-helper:#1b7f45;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --f-card:#17143a; --f-sunk:#110e31; --f-fg:#ecebf7; --f-mut:#aaa6c6; --f-line:#2e2a5a;
+    --f-lead:#8fa9ff; --f-helper:#6fd09a;
+  }
+}
+:root{
+  --k-card:var(--card,var(--f-card)); --sunk:var(--secondary,var(--f-sunk));
+  --fg:var(--foreground,var(--f-fg)); --mut:var(--muted-foreground,var(--f-mut)); --line:var(--border,var(--f-line));
+  --lex:#e0522a; --lex-soft:color-mix(in srgb,#e0522a 14%,transparent);
+  --lead:var(--info,var(--f-lead)); --helper:var(--success,var(--f-helper)); --auto:var(--mut);
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--background,var(--f-card));color:var(--fg);font-family:var(--font-sans,Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif);font-size:15px;line-height:1.45;overflow-x:clip;-webkit-font-smoothing:antialiased}
+main{max-width:1180px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:26px;line-height:1.15;margin:4px 0 6px;letter-spacing:-.01em;text-wrap:balance}
+h2{font-size:19px;margin:0 0 4px;letter-spacing:-.005em}
+h3{font-size:15px;line-height:1.25;margin:0}
+p{margin:0}
+code{font-family:var(--font-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);font-size:.9em;overflow-wrap:anywhere}
+.eyebrow{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--mut)}
+.lede,.sub{color:var(--mut);max-width:72ch;text-wrap:pretty}
+.sub{margin-bottom:14px}
+section{margin-top:34px}
+
+.legend{display:flex;flex-wrap:wrap;gap:8px 18px;margin-top:16px;font-size:13px;color:var(--mut)}
+.legend span{display:inline-flex;align-items:center;gap:7px}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;flex:none;background:var(--auto)}
+.dot.lex{background:var(--lex)} .dot.lead{background:var(--lead)} .dot.helper{background:var(--helper)}
+
+/* The road: one row on a wide screen, wrapping on smaller ones; arrows follow the reading order. */
+.road{list-style:none;margin:0;padding:0;display:grid;gap:24px;grid-template-columns:repeat(auto-fit,minmax(min(100%,138px),1fr));counter-reset:step}
+.step{position:relative;display:flex;flex-direction:column;gap:6px;background:var(--k-card);border:1.5px solid var(--line);border-radius:12px;padding:12px;min-width:0}
+.step.new{border-color:var(--lex);background:linear-gradient(var(--lex-soft),var(--lex-soft)),var(--k-card)}
+.step.go{box-shadow:inset 4px 0 0 var(--lex)}
+.step .n{font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--mut);font-variant-numeric:tabular-nums}
+.step p{font-size:13px;color:var(--mut)}
+.step .who{display:flex;align-items:center;gap:6px;margin-top:auto;padding-top:4px;font-size:12px;font-weight:600}
+.tag{align-self:flex-start;font-size:11px;font-weight:700;line-height:1;padding:4px 7px;border-radius:999px;background:var(--lex-soft);border:1px solid var(--lex);color:var(--fg)}
+.step:not(:last-child)::after{content:"→";position:absolute;right:-19px;top:50%;transform:translateY(-50%);font-weight:700;color:var(--mut)}
+@media (max-width:479.98px){
+  .step:not(:last-child)::after{content:"↓";right:auto;left:50%;top:auto;bottom:-22px;transform:translateX(-50%)}
+}
+
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:12px}
+.card{background:var(--k-card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;min-width:0}
+.card h3{margin-bottom:6px}
+.card ul{margin:0;padding-left:18px;font-size:13.5px}
+.card li+li{margin-top:4px}
+.card .count{font-size:28px;font-weight:700;line-height:1.1;font-variant-numeric:tabular-nums}
+.muted{color:var(--mut)}
+</style>
+</head>
+<body>
+<main>
+  <p class="eyebrow">Agent Kit · after the trim, release 1 (TOOLS-235)</p>
+  <h1>How a card gets built</h1>
+  <p class="lede">Six steps and a grill. Every card gets the grill; anything Lex sees or clicks also gets a prototype he tries first. Each step has one owner.</p>
+  <div class="legend" aria-label="Who does the step">
+    <span><i class="dot lex"></i>Lex</span>
+    <span><i class="dot lead"></i>The lead session</span>
+    <span><i class="dot helper"></i>A helper thread</span>
+    <span><i class="dot"></i>Runs by itself</span>
+  </div>
+
+  <section aria-labelledby="road">
+    <h2 id="road">The road</h2>
+    <p class="sub">Read left to right. The two steps with an orange edge are new: the grill, and the prototype for anything on screen.</p>
+    <ol class="road">
+      <li class="step">
+        <span class="n">1</span>
+        <h3>Card</h3>
+        <p>A goal and a “Done when” list on the board (<code>kit ticket</code>).</p>
+        <span class="who"><i class="dot lead"></i>Lex or the lead</span>
+      </li>
+      <li class="step new">
+        <span class="n">2</span>
+        <h3>Grill</h3>
+        <span class="tag">Every card</span>
+        <p>A question round for Lex in its own thread, before any helper starts. Bug fixes too.</p>
+        <span class="who"><i class="dot lex"></i>Lex answers</span>
+      </li>
+      <li class="step new">
+        <span class="n">3</span>
+        <h3>Prototype</h3>
+        <span class="tag">Only for screens</span>
+        <p>A clickable prototype Lex tries first. Bug fixes and behind-the-scenes work skip it.</p>
+        <span class="who"><i class="dot lex"></i>Lex tries it</span>
+      </li>
+      <li class="step">
+        <span class="n">4</span>
+        <h3>Build and prove</h3>
+        <p>A helper builds from <code>kit brief</code> and writes one proof line per “Done when” item: what it really tried.</p>
+        <span class="who"><i class="dot helper"></i>Helper</span>
+      </li>
+      <li class="step">
+        <span class="n">5</span>
+        <h3>Land</h3>
+        <p><code>kit pr</code>: checks, the Opus review, the second look, merge. Private sites are live here.</p>
+        <span class="who"><i class="dot helper"></i>Helper</span>
+      </li>
+      <li class="step">
+        <span class="n">6</span>
+        <h3>Lex tries it</h3>
+        <p>A desk with the preview link, the prototype beside it, what to click and what to see.</p>
+        <span class="who"><i class="dot lex"></i>Lex</span>
+      </li>
+      <li class="step go">
+        <span class="n">7</span>
+        <h3>His go</h3>
+        <p><code>kit pr --release</code> puts a public tool live, only after his go.</p>
+        <span class="who"><i class="dot lex"></i>Lex decides</span>
+      </li>
+    </ol>
+  </section>
+
+  <section aria-labelledby="around">
+    <h2 id="around">Around the road, not on it</h2>
+    <div class="cards">
+      <div class="card"><h3>Board drive</h3><p class="muted">Every 2 hours: reads the board, restarts stalled work, opens desks.</p></div>
+      <div class="card"><h3>Weekly sweep</h3><p class="muted"><code>kit sweep</code> and <code>kit sweep --learn</code>: the week’s numbers and Lex’s repeated corrections.</p></div>
+      <div class="card"><h3>Kit update</h3><p class="muted">Brings the kit to every machine every 15 minutes.</p></div>
+      <div class="card"><h3>Guards</h3><p class="muted">Brief guard, no raw push to live, skill guard, named waivers, second look, release check.</p></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="changed">
+    <h2 id="changed">What release 1 changed</h2>
+    <div class="cards">
+      <div class="card">
+        <h3>Commands in the help</h3>
+        <p class="count">28 → 22</p>
+        <p class="muted">Every command that talks to the board, GitHub or another model stays.</p>
+      </div>
+      <div class="card">
+        <h3>Cut</h3>
+        <ul>
+          <li><code>kit ask</code>: already retired.</li>
+          <li><code>kit status</code>: the board list and T3 show it; the sweep lists flaky tests.</li>
+          <li><code>kit feedback</code>: corrections go to the chat memory.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Merged</h3>
+        <ul>
+          <li><code>kit learn</code> is now <code>kit sweep --learn</code>.</li>
+          <li><code>kit version</code> is shown by <code>kit doctor</code>.</li>
+          <li><code>kit card</code> shows by itself when a session starts.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Rules</h3>
+        <ul>
+          <li>Proof lines in every helper’s report and pull request.</li>
+          <li>Dropped: the Tuesday-only review day and its pack, the UX confidence ladder, the talk-style trial.</li>
+          <li>Next, in release 2: the unused factory commands and a shorter rulebook.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+</main>
+</body>
+</html>
