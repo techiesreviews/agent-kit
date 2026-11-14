@@ -88,32 +88,45 @@ test("brief: the build brief holds the owner, setup, pins, commands, every house
     /`timeout: 600000`/,
     /fix every ✗ that is not marked optional/,
     /Last line: PR <full URL>, head <SHA>, checks and reviews <state>/,
-    // The exact slice line, with the job name kit next gives the owner's slice.
-    /`scripts\/agents\/kit go slice-ke99 -- scripts\/agents\/kit slice --ticket docs\/tickets\/07-panel\.md --builder claude-opus-5-5`/,
     /the project's runner guide \(`docs\/agents\/runner\.md`\)/,
+    // TOOLS-235: the grill comes before any build, and anything Lex sees follows the prototype he tried.
+    /^## Grill and prototype$/m,
+    /Grill first: the question round with Lex in its own thread comes before any build/,
+    /never guess an answer for Lex/,
+    /Anything Lex sees or clicks follows the prototype he tried/,
+    /a bug fix or work behind the scenes has no prototype, but still has its grill/,
+    /Lex tries the result next to the prototype/,
+    // The proof lines: one per Done when item, what was really tried on the real thing, also in the PR text.
+    /^Proof: for each "Done when" item, one line: `Done when <n>: met — <what you really tried on the real thing>`/m,
+    /checks passing is not proof on its own/,
+    /A bug fix shows its failing test first/,
+    /Put the same lines in the PR text\./,
   ]) assert.match(text, expected);
+  // TOOLS-235: the brief no longer points at kit slice; the builder builds and lands with kit review and kit pr.
+  assert.doesNotMatch(text, /kit slice|Manual fallback|kit go slice-/);
   // The same text is kept where the lead can read it.
   assert.equal(readFileSync(join(f.root, ".scratch/kit-briefs/07-panel-build.md"), "utf8"), `${text}\n`);
 });
 
-test("brief: the talk style alternates en and wenyan, KIT_TALK_STYLE forces one, plain turns it off", t => {
+test("brief: the talk style is short English (the trial is over), KIT_TALK_STYLE=plain turns it off", t => {
   const f = fixture(t);
-  const first = f.run(["docs/tickets/07-panel.md"]), second = f.run(["docs/tickets/07-panel.md"]), third = f.run(["docs/tickets/07-panel.md"]);
-  assert.match(first.stdout, /Talk style: very short English/);
-  assert.match(second.stdout, /Talk style: Classical Chinese \(wenyan\)/);
-  assert.match(third.stdout, /Talk style: very short English/);
-  for (const output of [first, second]) assert.match(output.stdout, /plain full English/);
-  const forced = f.run(["docs/tickets/07-panel.md"], { KIT_TALK_STYLE: "wenyan" });
-  assert.match(forced.stdout, /Talk style: Classical Chinese/);
-  assert.match(forced.stdout, /\(talk wenyan\)/);
+  const first = f.run(["docs/tickets/07-panel.md"]), second = f.run(["docs/tickets/07-panel.md"]);
+  for (const output of [first, second]) {
+    assert.match(output.stdout, /Talk style: very short English/);
+    assert.match(output.stdout, /plain full English/);
+    assert.doesNotMatch(output.stdout, /wenyan|Classical Chinese/);
+    assert.match(output.stdout, /\(talk en\)/);
+  }
+  // No counter is kept any more.
+  assert.equal(existsSync(join(f.state, "agent-kit/talk-style.json")), false);
   const plain = f.run(["docs/tickets/07-panel.md"], { KIT_TALK_STYLE: "plain" });
   assert.doesNotMatch(plain.stdout, /Talk style:/);
   assert.match(plain.stdout, /Write in plain English/);
-  const bad = f.run(["docs/tickets/07-panel.md"], { KIT_TALK_STYLE: "loud" });
-  assert.equal(bad.status, 1);
-  assert.match(bad.stdout, /RESULT: fail .*KIT_TALK_STYLE/);
-  // A forced style does not move the counter: the next start takes wenyan, after en, en (forced ones skipped).
-  assert.match(f.run(["docs/tickets/07-panel.md"]).stdout, /Talk style: Classical Chinese/);
+  for (const style of ["wenyan", "loud"]) {
+    const bad = f.run(["docs/tickets/07-panel.md"], { KIT_TALK_STYLE: style });
+    assert.equal(bad.status, 1, style);
+    assert.match(bad.stdout, /RESULT: fail brief KIT_TALK_STYLE must be en or plain/);
+  }
 });
 
 test("brief: --note, --owner and --repo; a missing ticket, a bad stage and a bad option fail", t => {
@@ -253,33 +266,13 @@ test("brief: a review brief's scope is the slice branch, not the lead's checkout
   assert.equal(review.stdout.match(/^Scope: /gm)!.length, 1);
 });
 
-test("brief: briefs started at the same moment still alternate, and leave no lock behind", async t => {
-  const f = fixture(t);
-  const { KIT_TALK_STYLE: _style, ...env } = { ...kitEnv(), KIT_ROOT: f.root, XDG_STATE_HOME: f.state };
-  const once = () => new Promise<string>(accept => {
-    const child = spawn(kit, ["brief", "docs/tickets/07-panel.md"], { cwd: f.root, env, stdio: ["ignore", "pipe", "ignore"] });
-    let out = "";
-    child.stdout.on("data", chunk => { out += chunk; });
-    child.on("close", () => accept(out));
-  });
-  const outputs = await Promise.all(Array.from({ length: 6 }, once));
-  const styles = outputs.map(out => /\(talk (\w+)\)/.exec(out)?.[1]).sort();
-  assert.deepEqual(styles, ["en", "en", "en", "wenyan", "wenyan", "wenyan"]);
-  assert.equal(existsSync(join(f.state, "agent-kit/talk-style.json.lock")), false);
-});
-
-test("brief: a group ticket is refused (kit next runs a group as one job), and job names match kit next's", t => {
+test("brief: a group ticket is refused (kit next runs a group as one job)", t => {
   const f = fixture(t);
   const path = join(f.root, "docs/tickets/07-panel.md");
   writeFileSync(path, readFileSync(path, "utf8").replace("builder: claude", "builder: claude\ngroup: fonts"));
   const refused = f.run(["docs/tickets/07-panel.md"]);
   assert.equal(refused.status, 1);
   assert.match(refused.stdout, /RESULT: fail brief docs\/tickets\/07-panel\.md is in group fonts: kit next --start runs a group as one job/);
-  writeFileSync(path, readFileSync(path, "utf8").replace("group: fonts\n", ""));
-  // kit next's names: al-01 runs as slice-al01; a group owner al-g-fonts as slice-alg-fonts.
-  assert.match(f.run(["docs/tickets/07-panel.md", "--owner", "al-01"]).stdout, /kit go slice-al01 -- /);
-  assert.match(f.run(["docs/tickets/07-panel.md", "--owner", "site-fonts-01"]).stdout, /kit go slice-site-fonts01 -- /);
-  assert.match(f.run(["docs/tickets/07-panel.md", "--owner", "al-m03"]).stdout, /kit go slice-alm03 -- /);
 });
 
 test("brief: a fix brief switches to the pushed slice branch; a ticket with no assignee and no --owner is refused", t => {
@@ -331,7 +324,7 @@ test("brief --task: a project without ticket files gets a brief for a named task
   }
 });
 
-test("brief KEY: on an Orbit project the brief is built from the card (title, text, comments); a files project still wants a ticket file", async t => {
+test("brief KEY: on an Orbit project the brief is built from the card (title, text, comments); a files project reads the card too", async t => {
   const o = await orbitProject(t);
   const f = fixture(t, orbitSettings);
   const card = o.card({ title: "A settings panel with a colour field", description: "Claimed by: kit-1\n\nBuilder: claude\n\n## Goal\n\nBuild the panel.\n\n## Files\n\n- `src/ui/panel.css`\n\n## Done when\n\n- It works.\n" }, "In Progress");
@@ -348,7 +341,6 @@ test("brief KEY: on an Orbit project the brief is built from the card (title, te
   assert.match(text, /Orbit card standard \(`docs\/orbit-card-standard\.md` in the kit; `scripts\/agents\/kit --home` prints the kit's folder\)/);
   assert.match(text, /^## Card KIT-1\nTitle: A settings panel with a colour field\nLink: http:\/\/orbit\.test\/tasks\/1\n\nClaimed by: kit-1\n\nBuilder: claude\n\n## Goal\n\nBuild the panel\./m);
   assert.match(text, /^### Comments\n\n- fleet, 2026-11-06T10:00:00\.000Z:\nLex: keep it small$/m);
-  assert.match(text, /kit go slice-kit-1 -- scripts\/agents\/kit slice --ticket KIT-1 --builder claude-opus-5-5/);
   assert.match(text, /git switch -c build\/kit-1-a-settings-panel-with-a-colour origin\/dev/);
   assert.doesNotMatch(text, /ticket's (Done|focused)|parts of the ticket/);
   assert.match(text, /`scripts\/agents\/kit review` and `scripts\/agents\/kit pr --ticket KIT-1`/);
@@ -376,10 +368,36 @@ test("brief KEY: on an Orbit project the brief is built from the card (title, te
   assert.equal(missing.status, 1);
   assert.match(missing.stdout, /RESULT: fail brief card KIT-99 could not be read: .*does not exist/);
 
+  // TOOLS-235: a project that keeps ticket files reads a card key from Orbit too, so the lead never copies a card by hand.
   const files = fixture(t);
   const plain = await runAsync(kit, ["brief", "KIT-1"], { cwd: files.root, env: { ...env, KIT_ROOT: files.root } });
-  assert.equal(plain.status, 1);
-  assert.match(plain.stdout, /RESULT: fail brief no ticket at KIT-1/);
+  assert.equal(plain.status, 0, plain.all);
+  assert.match(plain.stdout, /^Kit brief: build the Orbit card KIT-1 in `demo`/m);
+  // A ticket file at that very path still wins.
+  writeFileSync(join(files.root, "KIT-1"), ticketText("- `src/x.ts`"));
+  const file = await runAsync(kit, ["brief", "KIT-1"], { cwd: files.root, env: { ...env, KIT_ROOT: files.root } });
+  assert.match(file.stdout, /^Kit brief: build `KIT-1` in `demo`/m);
+  // A missing card in a files project says the card could not be read.
+  const absent = await runAsync(kit, ["brief", "KIT-98"], { cwd: files.root, env: { ...env, KIT_ROOT: files.root } });
+  assert.equal(absent.status, 1);
+  assert.match(absent.stdout, /RESULT: fail brief card KIT-98 could not be read/);
+});
+
+test("brief: a card or ticket with no Done when list gets a warning, since its proof lines need one", async t => {
+  const f = fixture(t);
+  const path = join(f.root, "docs/tickets/07-panel.md");
+  assert.doesNotMatch(f.run(["docs/tickets/07-panel.md"]).stderr, /Done when/);
+  writeFileSync(path, readFileSync(path, "utf8").replace(/## Done when[\s\S]*$/, ""));
+  const bare = f.run(["docs/tickets/07-panel.md"]);
+  assert.equal(bare.status, 0, bare.stdout);
+  assert.match(bare.stderr, /^warning: docs\/tickets\/07-panel\.md has no "Done when" list; the proof lines need one \(the card standard's "Done when:" line\)$/m);
+  // The card standard's one-line form counts.
+  writeFileSync(path, `${readFileSync(path, "utf8")}\nDone when: it works; Lex tried it.\n`);
+  assert.doesNotMatch(f.run(["docs/tickets/07-panel.md"]).stderr, /Done when/);
+  // A task has no list to check: its proof lines follow the note.
+  const task = f.run(["--task", "Fix it", "--owner", "cf-1", "--note", "Make the login button work."]);
+  assert.doesNotMatch(task.stderr, /Done when/);
+  assert.match(task.stdout, /^Proof: for each thing the note asks for, one line: `<what> — met: <what you really tried on the real thing>`/m);
 });
 
 test("brief: every stage carries the Messages to Lex rule from the rulebook, the one source, with its example", t => {
@@ -411,19 +429,8 @@ test("brief: a rulebook without the Messages to Lex rule fails with a RESULT lin
   assert.doesNotMatch(output.stdout, /kit-brief: /);
 });
 
-test("brief: a rulebook without the rule leaves the talk-style counter where it was", t => {
-  const f = fixture(t);
-  const home = mkdtempSync(join(tmpdir(), "kit-brief-home-"));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
-  cpSync(resolve("."), home, { recursive: true, filter: kitFiles });
-  const rulebook = join(home, "docs/kitchen.md");
-  writeFileSync(rulebook, readFileSync(rulebook, "utf8").replace(/<!-- messages-to-lex:(start v\d+|end) -->\n?/g, ""));
-  assert.equal(f.run(["docs/tickets/07-panel.md"], { KIT_HOME: home }).status, 1);
-  assert.ok(!existsSync(join(f.state, "agent-kit/talk-style.json")), "a failed brief moved the counter");
-});
-
 test("brief: the talk-style line tells a headless builder where the Messages to Lex rule is", () => {
-  for (const style of ["en", "wenyan", "plain"]) assert.match(talkStyleLine(style), /Messages for Lex follow the Messages to Lex rule \(`scripts\/agents\/kit rulebook`, section "Messages to Lex"\): short bullets in plain English/, style);
+  for (const style of ["en", "plain"]) assert.match(talkStyleLine(style), /Messages for Lex follow the Messages to Lex rule \(`scripts\/agents\/kit rulebook`, section "Messages to Lex"\): short bullets in plain English/, style);
 });
 
 test("brief: every stage carries the Review loop rule from the rulebook, the one source", t => {
