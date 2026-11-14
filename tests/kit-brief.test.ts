@@ -409,8 +409,9 @@ test("brief KEY: on an Orbit project a lead's build brief claims a Todo or Backl
   assert.match(todo.description, /^Claimed by: kit-1\n/);
   // A Backlog card is claimed too; review, second-look and fix briefs never claim.
   const backlog = o.card({ title: "Backlog card" }, "Backlog");
-  assert.equal((await run({}, "KIT-2", "--owner", "kit-2", "--stage", "review")).status, 0);
+  for (const stage of ["review", "second-look", "fix"]) assert.equal((await run({}, "KIT-2", "--owner", "kit-2", "--stage", stage)).status, 0);
   assert.equal(o.orbit.statusOf(backlog), "Backlog");
+  assert.doesNotMatch(backlog.description, /Claimed by/);
   assert.equal((await run({}, "KIT-2", "--owner", "kit-2")).status, 0);
   assert.equal(o.orbit.statusOf(backlog), "In Progress");
   // A blocked card is refused, as kit slice refuses it, and no brief file is written.
@@ -420,11 +421,31 @@ test("brief KEY: on an Orbit project a lead's build brief claims a Todo or Backl
   assert.match(refused.stdout, /RESULT: fail brief KIT-3 is blocked by KIT-1 \(In Progress\), so it was not claimed/);
   assert.equal(o.orbit.statusOf(blocked), "Todo");
   assert.ok(!existsSync(join(f.root, ".scratch/kit-briefs/KIT-3-build.md")));
+  // A card waiting for Lex is refused too.
+  const lex = o.card({ title: "Waits", description: "Next step (Lex): try it\n\n## Goal\n\nx\n\n## Done when\n\n- done\n" });
+  const waiting = await run({}, "KIT-4", "--owner", "kit-4");
+  assert.equal(waiting.status, 1, waiting.all);
+  assert.match(waiting.stdout, /RESULT: fail brief KIT-4 waits for Lex \(Next step \(Lex\): try it\), so it was not claimed/);
+  assert.equal(o.orbit.statusOf(lex), "Todo");
+  // An In Progress card given back after Lex (no claim, no assignee, no next step) is free, so it is claimed.
+  const back = o.card({ title: "Back from Lex" }, "In Progress");
+  assert.equal((await run({}, "KIT-5", "--owner", "kit-5")).status, 0);
+  assert.match(back.description, /^Claimed by: kit-5\n/);
+  // A step that fails before the claim leaves the card as it was.
+  const early = o.card({ title: "Early failure" });
+  const bogus = await run({ KIT_TALK_STYLE: "bogus" }, "KIT-6", "--owner", "kit-6");
+  assert.equal(bogus.status, 1, bogus.all);
+  assert.equal(o.orbit.statusOf(early), "Todo");
+  assert.doesNotMatch(early.description, /Claimed by/);
+  // A files project hands out ticket files, so a card key read there is never claimed.
+  const files = fixture(t);
+  assert.equal((await runAsync(kit, ["brief", "KIT-6", "--owner", "kit-6"], { cwd: files.root, env: { ...env, KIT_ROOT: files.root } })).status, 0);
+  assert.equal(o.orbit.statusOf(early), "Todo");
   // Someone who is not a lead gets the brief and a warning; the card stays as it was.
   const helper = o.card({ title: "Helper" });
-  const warned = await run({ ORBIT_ROLE: "" }, "KIT-4", "--owner", "kit-4");
+  const warned = await run({ ORBIT_ROLE: "" }, "KIT-7", "--owner", "kit-7");
   assert.equal(warned.status, 0, warned.all);
-  assert.match(warned.stderr, /^warning: KIT-4 is not claimed \(only a lead writes to Orbit: ORBIT_ROLE=lead\); until it is, kit next may start it too$/m);
+  assert.match(warned.stderr, /^warning: KIT-7 is not claimed \(only a lead writes to Orbit: ORBIT_ROLE=lead\); until it is, kit next may start it too$/m);
   assert.equal(o.orbit.statusOf(helper), "Todo");
   assert.doesNotMatch(helper.description, /Claimed by/);
 });
