@@ -467,11 +467,21 @@ test("brief KEY: on an Orbit project a lead's build brief claims a Todo or Backl
   assert.equal(o.orbit.statusOf(stuck), "Todo");
   assert.doesNotMatch(stuck.description, /Claimed by/);
   assert.deepEqual(readdirSync(join(f.root, ".scratch/kit-briefs")).filter(name => name.endsWith(".tmp")), []);
+  // A claim whose outcome is unknown (Orbit failed to answer) says so, and running the brief again writes it.
+  const unknown = o.card({ title: "Unknown" });
+  o.orbit.controls.conflicts = 50;
+  const failed = await run({}, "KIT-10", "--owner", "kit-10");
+  o.orbit.controls.conflicts = 0;
+  assert.equal(failed.status, 1, failed.all);
+  assert.match(failed.stdout, /RESULT: fail brief card KIT-10 could not be claimed: .*; it may be claimed anyway, so run kit brief again: a card that shows "Claimed by: kit-10" then gets its brief/);
+  assert.ok(!existsSync(join(f.root, ".scratch/kit-briefs/KIT-10-build.md")));
+  assert.equal((await run({}, "KIT-10", "--owner", "kit-10")).status, 0);
+  assert.match(unknown.description, /^Claimed by: kit-10\n/);
   // Someone who is not a lead gets the brief and a warning; the card stays as it was.
   const helper = o.card({ title: "Helper" });
-  const warned = await run({ ORBIT_ROLE: "" }, "KIT-10", "--owner", "kit-10");
+  const warned = await run({ ORBIT_ROLE: "" }, "KIT-11", "--owner", "kit-11");
   assert.equal(warned.status, 0, warned.all);
-  assert.match(warned.stderr, /^warning: KIT-10 is not claimed \(only a lead writes to Orbit: ORBIT_ROLE=lead\); until it is, kit next may start it too$/m);
+  assert.match(warned.stderr, /^warning: KIT-11 is not claimed \(only a lead writes to Orbit: ORBIT_ROLE=lead\); until it is, kit next may start it too$/m);
   assert.equal(o.orbit.statusOf(helper), "Todo");
   assert.doesNotMatch(helper.description, /Claimed by/);
 });

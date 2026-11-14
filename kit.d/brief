@@ -99,7 +99,9 @@ async function claimCard(settings, key, owner) {
     };
   } catch (error) {
     if (error?.taken) throw new Error(error.message);
-    if (isOrbitFailure(error)) throw new Error(`card ${key} could not be claimed: ${orbitProblem(error, redact)}`);
+    // Orbit may have saved the claim and lost only its reply, so the outcome is unknown: running the brief again settles it
+    // (a card that now shows the claim is In Progress, so the brief is written without claiming it again).
+    if (isOrbitFailure(error)) throw new Error(`card ${key} could not be claimed: ${orbitProblem(error, redact)}; it may be claimed anyway, so run kit brief again: a card that shows "Claimed by: ${owner}" then gets its brief`);
     throw error;
   }
 }
