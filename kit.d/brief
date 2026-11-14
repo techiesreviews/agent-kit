@@ -22,8 +22,9 @@ words for models without skills.
 The ticket may be an Orbit card KEY such as KIT-12, in any project (a ticket file at that very path wins): the brief
 holds the card's title, text and comments in place of a ticket file's, and --owner defaults to its "Claimed by:" owner
 (else its "Assignee:" line). On an Orbit project a build brief claims a card nobody holds (Todo, Backlog, or In Progress
-with no claim, assignee or next step) for the owner: In Progress and "Claimed by:", as kit slice does. A blocked card, or
-one waiting for Lex, is refused. That needs ORBIT_ROLE=lead, else a warning.
+with no claim, assignee or next step) for the owner: In Progress and "Claimed by:", as kit slice does. A Todo or Backlog
+card that is blocked or waits for Lex is refused; any other card is left as it is. That needs ORBIT_ROLE=lead, else a
+warning.
 --task is for a job with no ticket file or card: the note holds the task, the marker names it task:<slug>, and the
 brief lands it with kit pr --title.
 A build brief carries the grill and prototype step and asks for proof lines: per "Done when" item, what was really
@@ -75,8 +76,8 @@ async function readCard(settings, key) {
 /**
  * A build brief takes a card nobody holds (Todo, Backlog, or In Progress given back after Lex), as kit slice did before
  * TOOLS-235 dropped its line from the brief: In Progress and "Claimed by: <owner>" in one write, so kit next never starts a
- * second builder on the same card. A card waiting for Lex or still blocked is refused. Only a lead writes to Orbit; anyone
- * else is warned.
+ * second builder on the same card. A Todo or Backlog card waiting for Lex or still blocked is refused (next-lex moves a card
+ * it marks to In Progress, which the brief leaves alone). Only a lead writes to Orbit; anyone else is warned.
  */
 async function claimCard(settings, key, owner) {
   if (process.env.ORBIT_ROLE !== "lead") {
