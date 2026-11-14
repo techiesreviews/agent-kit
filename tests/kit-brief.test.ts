@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -458,11 +458,20 @@ test("brief KEY: on an Orbit project a lead's build brief claims a Todo or Backl
   assert.match(lost.stdout, /RESULT: fail brief KIT-8 is already taken by kit-won/);
   assert.match(race.description, /^Claimed by: kit-won\n/);
   assert.equal(readFileSync(winner, "utf8"), "the winner's brief\n");
+  // A brief that cannot be saved after its claim gives the claim back and leaves no file of its own behind.
+  const stuck = o.card({ title: "Stuck" });
+  mkdirSync(join(f.root, ".scratch/kit-briefs/KIT-9-build.md/x"), { recursive: true });
+  const unsaved = await run({}, "KIT-9", "--owner", "kit-9");
+  assert.equal(unsaved.status, 1, unsaved.all);
+  assert.match(unsaved.stdout, /RESULT: fail brief the brief could not be saved as \.scratch\/kit-briefs\/KIT-9-build\.md \(.*\); the claim was given back/);
+  assert.equal(o.orbit.statusOf(stuck), "Todo");
+  assert.doesNotMatch(stuck.description, /Claimed by/);
+  assert.deepEqual(readdirSync(join(f.root, ".scratch/kit-briefs")).filter(name => name.endsWith(".tmp")), []);
   // Someone who is not a lead gets the brief and a warning; the card stays as it was.
   const helper = o.card({ title: "Helper" });
-  const warned = await run({ ORBIT_ROLE: "" }, "KIT-9", "--owner", "kit-9");
+  const warned = await run({ ORBIT_ROLE: "" }, "KIT-10", "--owner", "kit-10");
   assert.equal(warned.status, 0, warned.all);
-  assert.match(warned.stderr, /^warning: KIT-9 is not claimed \(only a lead writes to Orbit: ORBIT_ROLE=lead\); until it is, kit next may start it too$/m);
+  assert.match(warned.stderr, /^warning: KIT-10 is not claimed \(only a lead writes to Orbit: ORBIT_ROLE=lead\); until it is, kit next may start it too$/m);
   assert.equal(o.orbit.statusOf(helper), "Todo");
   assert.doesNotMatch(helper.description, /Claimed by/);
 });
