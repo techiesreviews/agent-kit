@@ -529,6 +529,17 @@ test("brief KEY: on an Orbit project a lead's build brief claims a Todo or Backl
   assert.match(warned.stderr, /^warning: KIT-14 is not claimed \(only a lead writes to Orbit: ORBIT_ROLE=lead\); until it is, kit next may start it too$/m);
   assert.equal(o.orbit.statusOf(helper), "Todo");
   assert.doesNotMatch(helper.description, /Claimed by/);
+  // Only Todo, Backlog and a free In Progress card are claimed: a card in any other status the board keeps (Ideas, say)
+  // gets its brief and stays as it is.
+  const board = o.orbit.statuses.get(o.orbit.kit.id)!;
+  board.push({ ...board[0], id: "ideas-status", name: "Ideas", position: board.length });
+  const idea = o.card({ title: "Idea" }, "Ideas");
+  const left = await run({}, "KIT-15", "--owner", "kit-15");
+  assert.equal(left.status, 0, left.all);
+  assert.ok(existsSync(join(f.root, ".scratch/kit-briefs/KIT-15-build.md")));
+  assert.equal(o.orbit.statusOf(idea), "Ideas");
+  assert.doesNotMatch(idea.description, /Claimed by/);
+  assert.doesNotMatch(left.stderr, /claimed KIT-15/);
 });
 
 test("brief: a card or ticket with no Done when list gets a warning, since its proof lines need one", async t => {
