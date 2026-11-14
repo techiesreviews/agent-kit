@@ -542,6 +542,25 @@ test("brief KEY: on an Orbit project a lead's build brief claims a Todo or Backl
   assert.doesNotMatch(left.stderr, /claimed KIT-15/);
 });
 
+test("brief KEY: on a board with no Todo status a lead's build brief claims every card not yet started, since kit next hands those out", async t => {
+  const o = await orbitProject(t);
+  const f = fixture(t, orbitSettings);
+  const { KIT_TALK_STYLE: _style, ASE_REVIEW_MODEL: _review, ASE_OWNER: _owner, ...base } = kitEnv();
+  const env = { ...base, ...o.env, KIT_ROOT: f.root, XDG_STATE_HOME: f.state, KIT_TALK_STYLE: "plain" };
+  const board = o.orbit.statuses.get(o.orbit.kit.id)!;
+  const todo = board.find(status => status.name === "Todo")!;
+  Object.assign(todo, { name: "Ideas" });
+  const idea = o.card({ title: "Idea" }, "Ideas");
+  // kit next hands the card out, so a brief that left it unclaimed would let kit next start a second builder on it.
+  const next = await runAsync(kit, ["next"], { cwd: f.root, env });
+  assert.match(next.stdout, /^next: KIT-1 /m, next.all);
+  const built = await runAsync(kit, ["brief", "KIT-1", "--owner", "kit-1"], { cwd: f.root, env });
+  assert.equal(built.status, 0, built.all);
+  assert.equal(o.orbit.statusOf(idea), "In Progress");
+  assert.match(idea.description, /^Claimed by: kit-1\n/);
+  assert.match(built.stderr, /^claimed KIT-1 for kit-1: In Progress with "Claimed by: kit-1"$/m);
+});
+
 test("brief: a card or ticket with no Done when list gets a warning, since its proof lines need one", async t => {
   const f = fixture(t);
   const path = join(f.root, "docs/tickets/07-panel.md");
