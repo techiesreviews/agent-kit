@@ -787,13 +787,9 @@ Run focused unit files for the change (scripts/agents/kit unit --affected; if un
 Final report: at most 15 lines; changed files, behavior, validation and unresolved risks.
 `;
 
-/** The build contract with the talk style for this start (ticket 83): the next in turn, or KIT_TALK_STYLE's. */
+/** The build contract with the talk style for this start: short English, or plain with KIT_TALK_STYLE=plain. */
 export function buildContractWithStyle(env = process.env) {
-  if (env.KIT_TALK_STYLE && !["en", "wenyan", "plain"].includes(env.KIT_TALK_STYLE)) throw new Error(`KIT_TALK_STYLE must be en, wenyan or plain, not ${env.KIT_TALK_STYLE}`);
-  let style;
-  // A counter that cannot be read or moved does not stop a build: it runs plain and says so.
-  try { style = nextTalkStyle(env); } catch (error) { style = "plain"; console.error(`note: talk style plain (${error.message})`); }
-  return `${buildContract}${talkStyleLine(style)}\n`;
+  return `${buildContract}${talkStyleLine(nextTalkStyle(env))}\n`;
 }
 
 function writeStatus(path, status, changes = {}) {

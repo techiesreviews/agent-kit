@@ -18,12 +18,14 @@ everything above the RESULT line to delegate_task. A copy is kept in .scratch/ki
 project's top folder (default: this one); the ticket path is read from there. --model names the child's model
 (default: the stage's pin), which picks how skills are named: /name for Claude, $name for Codex, the kit's own
 words for models without skills.
-On an Orbit project ("tickets": "orbit") the ticket is a card KEY such as KIT-12: the brief holds the card's title, text
-and comments in place of a ticket file's, and --owner defaults to its "Claimed by:" owner (else its "Assignee:" line).
---task is for a project that keeps no ticket file for the job (its work is in GitHub Issues, say): the note holds
-the task, the marker names it task:<slug>, and the brief lands it with kit pr --title in place of kit slice.
-Talk style: each brief takes the next of en and wenyan in turn (a counter in the kit's state folder);
-KIT_TALK_STYLE=en|wenyan|plain forces one, and plain turns it off. Review briefs stay plain English.`;
+The ticket may be an Orbit card KEY such as KIT-12, in any project (a ticket file at that very path wins): the brief
+holds the card's title, text and comments in place of a ticket file's, and --owner defaults to its "Claimed by:" owner
+(else its "Assignee:" line).
+--task is for a job with no ticket file or card: the note holds the task, the marker names it task:<slug>, and the
+brief lands it with kit pr --title.
+A build brief carries the grill and prototype step and asks for proof lines: per "Done when" item, what was really
+tried on the real thing. A card or ticket without a "Done when" list gets a warning on stderr.
+Talk style: short English; KIT_TALK_STYLE=plain turns it off. Review briefs stay plain English.`;
 
 function parse(args) {
   const options = { stage: "build" };
@@ -73,7 +75,9 @@ try {
   const options = parse(args);
   const root = realpathSync(resolve(options.repo ?? kitRoot()));
   let ticket, text, card;
-  const onCard = options.task === undefined && isCardKey(options.ticket) && onOrbit(kitSettings(root));
+  // A card key reads the card on an Orbit project, and in a files project too unless a ticket file sits at that path.
+  const onCard = options.task === undefined && isCardKey(options.ticket)
+    && (onOrbit(kitSettings(root)) || !existsSync(isAbsolute(options.ticket) ? options.ticket : join(root, options.ticket)));
   if (onCard) ({ key: ticket, text, card } = await readCard(kitSettings(root), options.ticket));
   else if (options.task !== undefined) {
     // A task with no ticket file: its title stands in for the ticket's, the note for its body.
@@ -88,15 +92,18 @@ try {
   const settings = kitSettings(root);
   const problems = skillSettingsProblems(settings);
   if (problems.length) throw new Error(problems.join("; "));
-  // A group runs as one kit next job; checked before the talk-style counter moves, as are the pins.
+  // A group runs as one kit next job.
   const { group } = readTicket(text);
   if (group) throw new Error(`${ticket} is in group ${group}: kit next --start runs a group as one job; kit brief writes briefs for single tickets`);
+  // The proof lines go per Done when item (TOOLS-235): a list under "## Done when", or the card standard's "Done when:" line.
+  if (options.task === undefined && !/^(?:#{1,6}[ \t]*Done when\b|Done when:)/im.test(text))
+    console.error(`warning: ${ticket} has no "Done when" list; the proof lines need one (the card standard's "Done when:" line)`);
   const pins = kitRulebookPins(root, settings);
   const messages = kitMessagesToLexRule(), reviewLoop = kitReviewLoopRule();
   // The child's owner is the claim's: a brief written before the claim would hand it the lead's own owner.
   const owner = options.owner || readTicket(text).assignee;
   if (!owner) throw new Error(`${ticket} has no assignee; claim it first or pass --owner`);
-  // Review briefs carry no talk style (their findings go to GitHub), so they leave the counter alone.
+  // Review briefs carry no talk style: their findings go to GitHub.
   const style = options.stage === "review" || options.stage === "second-look" ? "plain" : nextTalkStyle();
   const brief = composeBrief({ messages, reviewLoop, root, settings, ticket, text, stage: options.stage, owner, note: options.note, model: options.model, style, pins, version: kitVersion(kitHome()), task: options.task?.trim(), card });
   const file = join(".scratch/kit-briefs", `${basename(ticket).replace(/^task:/, "task-").replace(/\.md$/i, "")}-${options.stage}.md`);
