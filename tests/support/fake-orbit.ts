@@ -43,8 +43,8 @@ export async function fakeOrbit(t: TestContext, { kitBoard = false }: { kitBoard
     // How many task writes answer 409 next; each one first runs `concurrentEdit`, as a person editing the card would.
     conflicts: 0,
     concurrentEdit: undefined as undefined | ((task: FakeTask) => void),
-    // Answers for the next requests, oldest first: a 429, a Cloudflare redirect or page, or a problem.
-    answers: [] as ("redirect" | "cloudflare-page" | "login-page-200" | "gateway-page" | "hang" | { retryAfter?: string } | { status: number; code: string; detail: string; errors?: any })[],
+    // Answers for the next requests, oldest first: a 429, a Cloudflare redirect or page, a dropped connection, or a problem.
+    answers: [] as ("redirect" | "cloudflare-page" | "login-page-200" | "gateway-page" | "hang" | "drop" | { retryAfter?: string } | { status: number; code: string; detail: string; errors?: any })[],
     // Answers for the next task writes only (after the reads went through): a problem, a dropped connection, or "pass" to let one write go through.
     writeAnswers: [] as ("pass" | "drop" | "saved-then-502" | "page-200" | { retryAfter: string } | { status: number; code: string; detail: string })[],
     me: { token: { id: randomUUID(), name: "fleet", scopes: ["tasks:write"], project_ids: projects.map(project => project.id), expires_at: "2027-02-04T00:00:00.000Z" } } as Record<string, any>,
@@ -106,6 +106,7 @@ export async function fakeOrbit(t: TestContext, { kitBoard = false }: { kitBoard
     if (answer === "redirect") { response.writeHead(302, { location: "https://login.example.test/cdn-cgi/access/login" }); return response.end(); }
     if (answer === "cloudflare-page") { response.writeHead(403, { "content-type": "text/html" }); return response.end(`<html>Forbidden ${fakeToken}</html>`); }
     if (answer === "hang") return;
+    if (answer === "drop") return request.socket.destroy();
     if (answer === "gateway-page") { response.writeHead(502, { "content-type": "text/html" }); return response.end("<html>Bad gateway</html>"); }
     if (answer === "login-page-200") { response.writeHead(200, { "content-type": "text/html" }); return response.end("<html>Sign in</html>"); }
     if (answer && "status" in answer) return problem(response, answer.status, answer.code, answer.detail, answer.errors ? { errors: answer.errors } : {});
@@ -158,6 +159,11 @@ export async function fakeOrbit(t: TestContext, { kitBoard = false }: { kitBoard
       if (planned === "saved-then-502") {
         // The change reached Orbit, and only the answer was lost on the way back.
         if (rest === "/tasks") addTask(projects.find(item => item.id === body.project_id)!, { title: body.title, status_id: body.status_id });
+        const changed = request.method === "PATCH" ? find(decodeURIComponent(/^\/tasks\/([^/]+)$/.exec(rest)?.[1] ?? "")) : undefined;
+        if (changed) {
+          const { expected_version: _version, ...fields } = body;
+          Object.assign(changed, fields, { version: nextVersion(), updated_at: new Date().toISOString() });
+        }
         response.writeHead(502, { "content-type": "text/html" });
         return response.end("<html>Bad gateway</html>");
       }
