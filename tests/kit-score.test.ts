@@ -58,7 +58,7 @@ test("test repositories start no background git cleanup after a commit or a push
   // (a maintenance.auto or an init.templateDir) cannot hide one.
   const home = join(dir, "home");
   mkdirSync(home);
-  const quiet = { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+  const quiet = { ...kitEnv(), HOME: home, XDG_CONFIG_HOME: join(home, ".config"), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
   const traced = (name: string, init: (repo: string, origin: string) => void) => {
     const repo = join(dir, name), origin = join(dir, `${name}.git`), trace = join(dir, `${name}.trace`);
     init(repo, origin);
