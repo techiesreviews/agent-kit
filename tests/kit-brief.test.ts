@@ -387,6 +387,48 @@ test("brief KEY: on an Orbit project the brief is built from the card (title, te
   assert.match(absent.stdout, /RESULT: fail brief card KIT-98 could not be read/);
 });
 
+test("brief KEY: on an Orbit project a lead's build brief claims a Todo or Backlog card, as kit slice did, and refuses a card it may not take", async t => {
+  const o = await orbitProject(t);
+  const f = fixture(t, orbitSettings);
+  const { KIT_TALK_STYLE: _style, ASE_REVIEW_MODEL: _review, ASE_OWNER: _owner, ...base } = kitEnv();
+  const env = { ...base, ...o.env, KIT_ROOT: f.root, XDG_STATE_HOME: f.state, KIT_TALK_STYLE: "plain" };
+  const run = (extra: NodeJS.ProcessEnv, ...args: string[]) => runAsync(kit, ["brief", ...args], { cwd: f.root, env: { ...env, ...extra } });
+  const todo = o.card({ title: "Todo card" });
+  const built = await run({}, "KIT-1", "--owner", "kit-1");
+  assert.equal(built.status, 0, built.all);
+  assert.equal(o.orbit.statusOf(todo), "In Progress");
+  assert.match(todo.description, /^Claimed by: kit-1\n\n## Goal/);
+  assert.match(built.stderr, /^claimed KIT-1 for kit-1: In Progress with "Claimed by: kit-1"$/m);
+  // The same owner again (a brief written twice) changes nothing.
+  const again = await run({}, "KIT-1", "--owner", "kit-1");
+  assert.equal(again.status, 0, again.all);
+  assert.doesNotMatch(again.stderr, /claimed KIT-1/);
+  // An In Progress card is someone's already (a claim, or the lead's own move): the brief leaves it alone.
+  const other = await run({}, "KIT-1", "--owner", "kit-9");
+  assert.equal(other.status, 0, other.all);
+  assert.match(todo.description, /^Claimed by: kit-1\n/);
+  // A Backlog card is claimed too; review, second-look and fix briefs never claim.
+  const backlog = o.card({ title: "Backlog card" }, "Backlog");
+  assert.equal((await run({}, "KIT-2", "--owner", "kit-2", "--stage", "review")).status, 0);
+  assert.equal(o.orbit.statusOf(backlog), "Backlog");
+  assert.equal((await run({}, "KIT-2", "--owner", "kit-2")).status, 0);
+  assert.equal(o.orbit.statusOf(backlog), "In Progress");
+  // A blocked card is refused, as kit slice refuses it, and no brief file is written.
+  const blocked = o.card({ title: "Blocked", description: "Blocked by: KIT-1\n\n## Goal\n\nx\n\n## Done when\n\n- done\n" });
+  const refused = await run({}, "KIT-3", "--owner", "kit-3");
+  assert.equal(refused.status, 1, refused.all);
+  assert.match(refused.stdout, /RESULT: fail brief KIT-3 is blocked by KIT-1 \(In Progress\), so it was not claimed/);
+  assert.equal(o.orbit.statusOf(blocked), "Todo");
+  assert.ok(!existsSync(join(f.root, ".scratch/kit-briefs/KIT-3-build.md")));
+  // Someone who is not a lead gets the brief and a warning; the card stays as it was.
+  const helper = o.card({ title: "Helper" });
+  const warned = await run({ ORBIT_ROLE: "" }, "KIT-4", "--owner", "kit-4");
+  assert.equal(warned.status, 0, warned.all);
+  assert.match(warned.stderr, /^warning: KIT-4 is not claimed \(only a lead writes to Orbit: ORBIT_ROLE=lead\); until it is, kit next may start it too$/m);
+  assert.equal(o.orbit.statusOf(helper), "Todo");
+  assert.doesNotMatch(helper.description, /Claimed by/);
+});
+
 test("brief: a card or ticket with no Done when list gets a warning, since its proof lines need one", async t => {
   const f = fixture(t);
   const path = join(f.root, "docs/tickets/07-panel.md");
