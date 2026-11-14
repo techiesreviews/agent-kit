@@ -413,3 +413,12 @@ test("kit sweep --learn needs a readable settings file, even with --project", (t
   assert.match(result.stdout, /^RESULT: fail learn no scripts\/agents\/kit\.json; /m);
   assert.equal(existsSync(join(dir, ".scratch")), false);
 });
+
+test("kit sweep --learn --help prints the learning usage, and kit sweep --help names --learn", () => {
+  const learnHelp = spawnSync("bash", [kit, "sweep", "--learn", "--help"], { encoding: "utf8", env: kitEnv() });
+  assert.equal(learnHelp.status, 0, learnHelp.stderr);
+  assert.match(learnHelp.stdout, /^Usage: kit sweep --learn \[--since 14d\|Nd\|YYYY-MM-DD\] \[--project <slug>\]\n/);
+  const help = spawnSync("bash", [kit, "sweep", "--help"], { encoding: "utf8", env: kitEnv() });
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /^Usage: kit sweep \[--since 7d\|Nd\|YYYY-MM-DD\]\n {7}kit sweep --learn /);
+});

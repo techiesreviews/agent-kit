@@ -100,6 +100,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
 - `kit learn` is now `kit sweep --learn` (same `--since` and `--project`; its code is `learn.mjs`).
 - `kit card` was merged into the session-start hook, which shows the card; `node "$(kit --home)/context-card.mjs"`
   prints it.
+- The UX confidence ladder was dropped from the rulebook, but `kit score --html` still draws its section until the build
+  page itself is decided after 30 Nov (the trim plan); it no longer moves, since nothing writes feedback logs now.
 - `kit version` stays as an inside helper: `kit doctor` shows the kit's commit and age, and the doctor's kit home check
   still runs it. A file in `kit.d/` whose header says `# kit-inside: <summary>` runs by name and stays out of the list.
 
