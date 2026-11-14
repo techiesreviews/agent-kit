@@ -441,11 +441,28 @@ test("brief KEY: on an Orbit project a lead's build brief claims a Todo or Backl
   const files = fixture(t);
   assert.equal((await runAsync(kit, ["brief", "KIT-6", "--owner", "kit-6"], { cwd: files.root, env: { ...env, KIT_ROOT: files.root } })).status, 0);
   assert.equal(o.orbit.statusOf(early), "Todo");
+  // A card next-lex marked sits In Progress with Lex assigned: the brief leaves it as it is.
+  const asked = o.card({ title: "Asked Lex", description: "Next step (Lex): try it\n\n## Done when\n\n- done\n", assignee_ids: ["lex"] }, "In Progress");
+  assert.equal((await run({}, "KIT-7", "--owner", "kit-7")).status, 0);
+  assert.equal(o.orbit.statusOf(asked), "In Progress");
+  assert.doesNotMatch(asked.description, /Claimed by/);
+  // Two briefs at once for one card: the one whose claim loses fails and leaves the winner's saved brief alone.
+  const race = o.card({ title: "Race" });
+  const winner = join(f.root, ".scratch/kit-briefs/KIT-8-build.md");
+  writeFileSync(winner, "the winner's brief\n");
+  o.orbit.controls.conflicts = 1;
+  o.orbit.controls.concurrentEdit = task => { task.status_id = o.orbit.statusId(o.orbit.kit, "In Progress"); task.description = `Claimed by: kit-won\n\n${task.description}`; };
+  const lost = await run({}, "KIT-8", "--owner", "kit-lost");
+  o.orbit.controls.concurrentEdit = undefined;
+  assert.equal(lost.status, 1, lost.all);
+  assert.match(lost.stdout, /RESULT: fail brief KIT-8 is already taken by kit-won/);
+  assert.match(race.description, /^Claimed by: kit-won\n/);
+  assert.equal(readFileSync(winner, "utf8"), "the winner's brief\n");
   // Someone who is not a lead gets the brief and a warning; the card stays as it was.
   const helper = o.card({ title: "Helper" });
-  const warned = await run({ ORBIT_ROLE: "" }, "KIT-7", "--owner", "kit-7");
+  const warned = await run({ ORBIT_ROLE: "" }, "KIT-9", "--owner", "kit-9");
   assert.equal(warned.status, 0, warned.all);
-  assert.match(warned.stderr, /^warning: KIT-7 is not claimed \(only a lead writes to Orbit: ORBIT_ROLE=lead\); until it is, kit next may start it too$/m);
+  assert.match(warned.stderr, /^warning: KIT-9 is not claimed \(only a lead writes to Orbit: ORBIT_ROLE=lead\); until it is, kit next may start it too$/m);
   assert.equal(o.orbit.statusOf(helper), "Todo");
   assert.doesNotMatch(helper.description, /Claimed by/);
 });
