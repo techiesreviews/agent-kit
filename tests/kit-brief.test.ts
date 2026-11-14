@@ -402,11 +402,15 @@ test("brief KEY: on an Orbit project a lead's build brief claims a Todo or Backl
   // The same owner again (a brief written twice) changes nothing.
   const again = await run({}, "KIT-1", "--owner", "kit-1");
   assert.equal(again.status, 0, again.all);
-  assert.doesNotMatch(again.stderr, /claimed KIT-1/);
-  // An In Progress card is someone's already (a claim, or the lead's own move): the brief leaves it alone.
+  assert.doesNotMatch(again.stderr, /claimed KIT-1|warning: KIT-1/);
+  // An In Progress card is someone's already (a claim, or the lead's own move): the brief leaves it alone, and says so
+  // when it is written for another owner, as kit slice's claim refused such a card.
   const other = await run({}, "KIT-1", "--owner", "kit-9");
   assert.equal(other.status, 0, other.all);
   assert.match(todo.description, /^Claimed by: kit-1\n/);
+  assert.match(other.stderr, /^warning: KIT-1 is left as it is, not claimed for kit-9: kit-1 holds it \(In Progress\); make sure no second builder starts on it$/m);
+  // Review, second-look and fix briefs are for a card somebody builds, so they never warn.
+  assert.doesNotMatch((await run({}, "KIT-1", "--owner", "kit-9", "--stage", "review")).stderr, /warning: KIT-1/);
   // A Backlog card is claimed too; review, second-look and fix briefs never claim.
   const backlog = o.card({ title: "Backlog card" }, "Backlog");
   for (const stage of ["review", "second-look", "fix"]) assert.equal((await run({}, "KIT-2", "--owner", "kit-2", "--stage", stage)).status, 0);
@@ -443,9 +447,11 @@ test("brief KEY: on an Orbit project a lead's build brief claims a Todo or Backl
   assert.equal(o.orbit.statusOf(early), "Todo");
   // A card next-lex marked sits In Progress with Lex assigned: the brief leaves it as it is.
   const asked = o.card({ title: "Asked Lex", description: "Next step (Lex): try it\n\n## Done when\n\n- done\n", assignee_ids: ["lex"] }, "In Progress");
-  assert.equal((await run({}, "KIT-7", "--owner", "kit-7")).status, 0);
+  const waits = await run({}, "KIT-7", "--owner", "kit-7");
+  assert.equal(waits.status, 0, waits.all);
   assert.equal(o.orbit.statusOf(asked), "In Progress");
   assert.doesNotMatch(asked.description, /Claimed by/);
+  assert.match(waits.stderr, /^warning: KIT-7 is left as it is, not claimed for kit-7: it waits for Lex \(Next step \(Lex\): try it\); make sure no second builder starts on it$/m);
   // Two briefs at once for one card: the one whose claim loses fails and leaves the winner's saved brief alone.
   const race = o.card({ title: "Race" });
   const winner = join(f.root, ".scratch/kit-briefs/KIT-8-build.md");
@@ -540,6 +546,13 @@ test("brief KEY: on an Orbit project a lead's build brief claims a Todo or Backl
   assert.equal(o.orbit.statusOf(idea), "Ideas");
   assert.doesNotMatch(idea.description, /Claimed by/);
   assert.doesNotMatch(left.stderr, /claimed KIT-15/);
+  assert.match(left.stderr, /^warning: KIT-15 is left as it is, not claimed for kit-15: it is in Ideas; make sure no second builder starts on it$/m);
+  // A card that is already Done has nothing to build, which the brief says too.
+  const done = o.card({ title: "Landed" }, "Done");
+  const landed = await run({}, "KIT-16", "--owner", "kit-16");
+  assert.equal(landed.status, 0, landed.all);
+  assert.equal(o.orbit.statusOf(done), "Done");
+  assert.match(landed.stderr, /^warning: KIT-16 is left as it is, not claimed for kit-16: it is already Done, so there is nothing to build$/m);
 });
 
 test("brief KEY: on a board with no Todo status a lead's build brief claims every card not yet started, since kit next hands those out", async t => {
