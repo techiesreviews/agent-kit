@@ -65,7 +65,10 @@ async function readCard(settings, key) {
     const one = value => String(value ?? "").replace(/\s*[\r\n]+\s*/g, " ").trim();
     const owner = task.claimed_by || line("Assignee");
     const text = `---\ntitle: ${JSON.stringify(one(task.title))}\norbit: ${task.identifier}\nbuilder: ${one(line("Builder"))}\nassignee: ${one(owner)}\n---\n\n${String(task.description ?? "").replace(/\r\n?/g, "\n")}\n`;
-    return { key: task.identifier, free: task.stage === "ready" || task.stage === "waiting" || cardFree(task), text, card: { title: one(task.title), url: task.url, description: task.description,
+    // Free to claim: what kit next hands out (Todo, and In Progress given back after Lex) and Backlog. A card in any other
+    // status the board keeps (Ideas, Publish) is not the brief's to move.
+    const free = task.stage === "ready" || String(task.status_name ?? "").trim().toLowerCase() === "backlog" || cardFree(task);
+    return { key: task.identifier, free, text, card: { title: one(task.title), url: task.url, description: task.description,
       comments: comments.map(note => ({ who: note.author_service_account?.name ?? note.author_id ?? "someone", when: note.created_at, body: note.body })) } };
   } catch (error) {
     if (isOrbitFailure(error)) throw new Error(`card ${key} could not be read: ${orbitProblem(error, redact)}`);
