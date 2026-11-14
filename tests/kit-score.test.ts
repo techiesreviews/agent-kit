@@ -54,11 +54,15 @@ test("test repositories start no background git cleanup after a commit or a push
   // The plain repository's cleanup may still be writing in it: retries outlast it.
   t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 10 }));
   // A commit and a push into a bare origin, traced: GIT_TRACE logs every git command they start, the origin's
-  // receive-pack and anything it starts included. No global or system settings, so this machine's own cannot hide one.
+  // receive-pack and anything it starts included. An empty home and no system settings, so this machine's own settings
+  // (a maintenance.auto or an init.templateDir) cannot hide one.
+  const home = join(dir, "home");
+  mkdirSync(home);
+  const quiet = { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
   const traced = (name: string, init: (repo: string, origin: string) => void) => {
     const repo = join(dir, name), origin = join(dir, `${name}.git`), trace = join(dir, `${name}.trace`);
     init(repo, origin);
-    const env = { ...process.env, GIT_TRACE: trace, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+    const env = { ...quiet, GIT_TRACE: trace };
     const git = (...args: string[]) => {
       const result = spawnSync("git", ["-C", repo, "-c", "user.name=a", "-c", "user.email=a@example.test", ...args], { encoding: "utf8", env });
       assert.equal(result.status, 0, result.stderr);
@@ -69,10 +73,11 @@ test("test repositories start no background git cleanup after a commit or a push
     assert.match(started, /receive-pack/);
     return started;
   };
-  // A plain repository starts it, so the trace would show it; a test repository does not. A git before 2.29 starts
-  // `gc --auto` instead, which gc.auto=0 makes a no-op, so the test repository is checked for `maintenance run` only.
+  // A plain repository starts it, so the trace would show it; a test repository does not. Git 2.28 (no git
+  // maintenance yet) starts `gc --auto` instead, which gc.auto=0 makes a no-op, so the test repository is checked for
+  // `maintenance run` only.
   const plain = traced("plain", (repo, origin) => {
-    for (const args of [["init", "-q", "-b", "dev", repo], ["init", "-q", "--bare", origin]]) assert.equal(spawnSync("git", args).status, 0);
+    for (const args of [["init", "-q", "-b", "dev", repo], ["init", "-q", "--bare", origin]]) assert.equal(spawnSync("git", args, { env: quiet }).status, 0);
   });
   assert.match(plain, /maintenance run|gc --auto/);
   assert.doesNotMatch(traced("quiet", (repo, origin) => { testRepo(repo, "-b", "dev"); testRepo(origin, "--bare"); }), /maintenance run/);
