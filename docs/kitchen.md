@@ -34,7 +34,7 @@ step's detail.
 3. **Prototype, for anything he sees or clicks.** A clickable prototype he tries before the build (the
    `prototype` skill, or an HTML page shown with T3 `html_render`), linked from the card. A bug fix or
    work behind the scenes skips this step, never the grill.
-4. **Build and prove.** The lead runs `kit brief <KEY>` (on an Orbit project it claims a Todo card) and gives it to a
+4. **Build and prove.** The lead runs `kit brief <KEY>` (on an Orbit project it claims the card) and gives it to a
    T3 helper in its own worktree.
    The helper builds, runs the quick checks and writes one proof line per "Done when" item, what it
    really tried on the real thing (`Done when <n>: met — <proof>`: the test that failed first, the command
