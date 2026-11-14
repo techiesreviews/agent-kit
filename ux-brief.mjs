@@ -44,7 +44,7 @@ export function parseRules(markdown) {
   return new Map([...markdown.matchAll(/^- \*\*((?:HS|[SLBU])\d+)\*\* (.+)$/gm)].map(match => [match[1], match[2]]));
 }
 
-/** HS ids a project's UX rulebook restates, which replace those house rules; kit ux and kit learn share it. */
+/** HS ids a project's UX rulebook restates, which replace those house rules; kit ux and kit sweep --learn share it. */
 export function replacedIds(rulebook) {
   return new Set([...parseRules(rulebook).keys()].filter(id => id.startsWith("HS")));
 }

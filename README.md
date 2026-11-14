@@ -85,21 +85,34 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
 - **Known limits (follow-ups):** the spend total misses a run whose runner was killed outright (no line is written); `kit doctor` shows the total only while the route is on and healthy; a config folder that exists but cannot be written gets the CLI's own error, not a plain refusal; a Claude started from a builder's shell on the route cannot sign in to the subscription (its `CLAUDE_CONFIG_DIR` still points at the API folder).
 - **Check it:** `kit doctor` says whether the route is on or off, the key file's mode, and the total spent; every run adds a line (time, command, model, tokens, cost) to `~/.local/state/agent-kit/api-spend.log`.
 
-### `kit ask` is retired
+### Cut and merged commands (TOOLS-235, release 1)
 
-`kit ask` ran one headless Claude call on this API route, with a script mode that added Lex's script rules. Lex retired
-it on 2026-11-13, since the credit ran out on 2026-11-11. It now only prints one plain line: write with a subscription
-helper instead, a T3 `delegate_task` to Sonnet or Opus, whose brief names `youtube/AGENTS.md` and the "Current script
-and prompter playbook" in `youtube/shared/taste/scripts.md` for a script.
+Lex approved the kit trim on 2026-11-14. Its first release cut three commands and merged three, so `kit --help` lists
+22 shared commands instead of 28. Each old name still answers, with one plain line saying where its job went and a
+`RESULT: fail <name> cut|retired|moved` line (exit 2):
+
+- `kit ask` (retired 2026-11-13: its API credit ran out): write with a subscription helper, a T3 `delegate_task` to
+  Sonnet or Opus.
+- `kit status`: `kit ticket list` shows the cards, T3 the linked pull requests and their checks; the weekly
+  `kit sweep` bundle lists spec files `kit pr` forgave as flaky 3 or more times in 7 days.
+- `kit feedback`: Lex's corrections go to the chat memory, which the weekly learning reads. Old feedback logs are still
+  read.
+- `kit learn` is now `kit sweep --learn` (same `--since` and `--project`; its code is `learn.mjs`).
+- `kit card` was merged into the session-start hook, which shows the card; `node "$(kit --home)/context-card.mjs"`
+  prints it.
+- `kit version` stays as an inside helper: `kit doctor` shows the kit's commit and age, and the doctor's kit home check
+  still runs it. A file in `kit.d/` whose header says `# kit-inside: <summary>` runs by name and stays out of the list.
 
 ## The factory: generated briefs, long jobs that wait
 
 - `kit brief <ticket> [--stage build|review|second-look|fix] [--note "<text>"]` prints the whole brief for a
   delegated child from the ticket, the project's settings and the rules: owner, worktree setup, pins, commands and
   evidence, the house rules, the wait rule, the skills for the ticket's files (the skills map, `skills.json`), the
-  talk style and the report's last line. It ends with a marker line, `kit-brief: <kit version> <ticket> <stage>`.
-  A lead passes it to `delegate_task`; a rule changes once, here. A project without ticket files uses
-  `kit brief --task "<title>" --owner <id> --note "<the task>"`.
+  talk style (short English) and the report's last line. A build brief also carries the grill and prototype step and
+  asks for proof lines: per "Done when" item, what the builder really tried on the real thing, in its report and the
+  PR text. It ends with a marker line, `kit-brief: <kit version> <ticket> <stage>`.
+  A lead passes it to `delegate_task`; a rule changes once, here. The ticket may be an Orbit card key in any project.
+  A job with no ticket file or card uses `kit brief --task "<title>" --owner <id> --note "<the task>"`.
 - `kit go <job> -- <command>` starts a long job (a slice, a long `kit pr`, specs) with `kit bg`, in its own user
   systemd scope, and waits in the foreground for at most 9 minutes per call. While the job runs it ends with
   `RUNNING: <job> (…). Run again: scripts/agents/kit go <job>` and exit 75; once the job ends it prints the job's
@@ -136,7 +149,7 @@ and prompter playbook" in `youtube/shared/taste/scripts.md` for a script.
   clear-next-lex, trash, setup. `--assignee NAME|ID|none` on create and update assigns by member name; `next-lex` also assigns the member called Lex and `clear-next-lex` takes only him off. It reaches every board the token covers, from any project folder or with `--project`.
 - A project's `scripts/agents/kit.json` says which store it uses: `"tickets": "files"` (the default) or `"orbit"`, and
   `"orbit": { "project": "TOOLS", "parent": "TOOLS-10" }` names its board and the card new tickets go under (parent is
-  optional). Stage 2: with `"orbit"`, `kit next`, `kit slice`, `kit pr`, `kit status` and `kit init --issues` read and
+  optional). Stage 2: with `"orbit"`, `kit next`, `kit slice`, `kit pr` and `kit init --issues` read and
   write cards through `ticket-store.mjs` and `ticket-cards.mjs` instead of ticket files. Stage 3 moves a project's
   ticket files to cards (below); removing the file store from the kit comes last, once every project has moved.
 - On Orbit: `kit next` lists the Todo cards (under the parent card when one is set) whose "Blocked by:" cards are Done
@@ -148,7 +161,7 @@ and prompter playbook" in `youtube/shared/taste/scripts.md` for a script.
   card needs "## Files" and "## Done when", or the card standard's `Done when:` line in place of that heading); a rerun
   resumes from it. When the PR lands, `kit pr` sets the card to Done
   and adds a dated comment naming the PR and merge SHA; when that write fails the merge still counts and the RESULT line says so.
-  `kit status` shows status name, claim, PR and CI per card. `kit init --issues` makes a card per open GitHub Issue in
+  `kit init --issues` makes a card per open GitHub Issue in
   the project and parent (its "GitHub Issue:" line holds the link and number), then closes each Issue with a comment
   naming its card; a rerun finds the cards it made, and an Issue whose text holds a secret stays open.
 - The rules are built in: reads work for anyone; writes need `ORBIT_ROLE=lead`, read the latest version first and retry
@@ -208,7 +221,7 @@ and prompter playbook" in `youtube/shared/taste/scripts.md` for a script.
   slice may claim it when it has no claim line, no assignee and no `Next step (Lex):`. A claim never takes an unassigned card in
   another started status (In Review, say). `kit ticket check` leaves sub-tasks with no description alone, except a bare card under the project's own parent card (with `--all` only that project's parent is known), and does not count
   a `Next step (fleet):` line toward the 12 lines.
-  Projects that keep ticket files (`"tickets": "files"`) keep how `kit next`, `kit slice`, `kit pr` and `kit status` work
+  Projects that keep ticket files (`"tickets": "files"`) keep how `kit next`, `kit slice` and `kit pr` work
   today; `kit ticket` itself always talks to Orbit, as before.
 
 ## Rolling back a direct project
@@ -250,14 +263,14 @@ and prompter playbook" in `youtube/shared/taste/scripts.md` for a script.
 | Path | What |
 | --- | --- |
 | `kit`, `kit-lib.sh`, `kit-lib.mjs` | the front door and the shared library |
-| `kit.d/` | one file per shared command, each with a `# kit:` summary line |
+| `kit.d/` | one file per shared command, each with a `# kit:` summary line (an inside helper such as `version` says `# kit-inside:` and stays out of the list) |
 | `hooks/` | the guard hooks (`bash-guard`, `agent-cap`, `session-env`, `brief-guard`, `stop-guard`, and the opt-in `status-nudge`) and their `run.sh` |
-| `context-card.mjs`, `worktree.sh`, `tickets.mjs`, `unit.sh`, `review-findings.mjs`, `second-look.json`, … | helpers beside `kit` that commands and a project's forwarders run through `kit --home` |
+| `context-card.mjs`, `learn.mjs`, `worktree.sh`, `tickets.mjs`, `unit.sh`, `review-findings.mjs`, `second-look.json`, … | helpers beside `kit` that commands and a project's forwarders run through `kit --home` |
 | `orbit-client.mjs`, `ticket-store.mjs`, `orbit-setup.mjs`, `ticket-import.mjs` | the Orbit API client and its secrets file, the ticket store's rules and guards, `kit ticket setup`, and moving a project's ticket files to cards |
 | `skills.json`, `skills.mjs`, `brief-lib.mjs` | the skills map (names and the kit's own one-line fallbacks, never a skill's text), and the brief `kit brief` writes |
 | `launcher/` | the two launchers `kit init` copies into a project |
 | `systemd/` | the update timer and service `kit update --install-timer` writes into `~/.config/systemd/user/` |
-| `docs/` | the shared kitchen rulebook and the template for a project's extras |
+| `docs/` | the shared kitchen rulebook, the template for a project's extras, and the flow chart (`flow-chart.html`) |
 | `skill-guard.mjs` | keeps paid skills out of every repo (below) |
 | `tests/` | one test file per command or helper |
 

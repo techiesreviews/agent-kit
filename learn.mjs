@@ -1,19 +1,19 @@
-#!/usr/bin/env node
-// kit: group Lex's repeated corrections for the chat-learning routine; reads only, writes one bundle
+// kit sweep --learn (was kit learn until TOOLS-235): group Lex's repeated corrections for the chat-learning routine;
+// reads only, writes one bundle.
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { feedbackHeading, feedbackKinds, parseFeedbackLine } from "../tickets.mjs";
-import { replacedIds } from "../ux-brief.mjs";
-import { composeBundle } from "./ux";
+import { feedbackHeading, feedbackKinds, parseFeedbackLine } from "./tickets.mjs";
+import { replacedIds } from "./ux-brief.mjs";
+import { composeBundle } from "./kit.d/ux";
 
 const { kitHome, kitRoot, kitMainRoot, kitResult, kitSettings } = await import(
-  pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
+  pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "kit-lib.mjs")).href
 );
 
 export const bundleLimit = 40_000;
-const usage = `Usage: kit learn [--since 14d|Nd|YYYY-MM-DD] [--project <slug>]
+export const learnUsage = `Usage: kit sweep --learn [--since 14d|Nd|YYYY-MM-DD] [--project <slug>]
 Reads, never writes, the chat project's corrections list <memory>/corrections/<slug>.md (memory is
 KIT_CHAT_MEMORY or CHAT_MEMORY_DIR, else ~/Projects/chat/memory; the slug comes from project-notes/README.md's project
 map by this repo's workspace, else "project" in scripts/agents/kit.json) and this checkout's <maps>/*/build/feedback.md
@@ -66,7 +66,7 @@ export function sinceDate(since, now = Date.now()) {
   return localDate(new Date(today.getFullYear(), today.getMonth(), today.getDate() - Number(days[1])));
 }
 
-// CHAT_MEMORY_DIR is the name kit card reads for the same folder.
+// CHAT_MEMORY_DIR is the name the context card reads for the same folder.
 export const memoryRoot = () => process.env.KIT_CHAT_MEMORY || process.env.CHAT_MEMORY_DIR || join(homedir(), "Projects/chat/memory");
 
 const real = path => { try { return realpathSync(path); } catch { return resolve(path); } };
@@ -121,7 +121,7 @@ export function parseCorrections(text, file) {
 }
 
 /**
- * Lines of a build feedback log under its `## Feedback` heading, as kit feedback writes them. Only the
+ * Lines of a build feedback log under its `## Feedback` heading, as kit feedback wrote them until TOOLS-235. Only the
  * date and kind must hold for learning; a bad `after release:` or fix link is the ticket checker's business.
  */
 export function parseFeedbackLog(text, file) {
@@ -261,7 +261,7 @@ export function groupLines(group, root, blocks) {
   const cover = coveredBy(group, blocks.filter(block => !block.house)) ?? coveredBy(group, blocks.filter(block => block.house));
   const sources = [...new Set(group.members.map(member => member.source))];
   const dates = [...new Set([...group.members.map(member => member.date), ...group.outside])].sort().reverse();
-  // kit feedback often records a chat correction the day after, so a day apart counts too.
+  // A feedback log line often recorded a chat correction the day after, so a day apart counts too.
   const dayApart = (a, b) => Math.abs(Date.parse(a) - Date.parse(b)) <= day;
   const crossDay = group.members.some(a => group.members.some(b => a.origin !== b.origin && dayApart(a.date, b.date) && a.kind === b.kind));
   return [
@@ -273,10 +273,10 @@ export function groupLines(group, root, blocks) {
   ];
 }
 
-function learn(args) {
+export function learn(args) {
   let flags;
   try { flags = parseArgs(args); }
-  catch (error) { process.stderr.write(usage); kitResult("fail", `learn ${error.message}`); return 2; }
+  catch (error) { process.stderr.write(learnUsage); kitResult("fail", `learn ${error.message}`); return 2; }
   try {
     const root = resolve(kitRoot()), main = resolve(kitMainRoot()), memory = memoryRoot(), now = Date.now(), since = sinceDate(flags.since, now);
     const readme = join(memory, "project-notes/README.md");
@@ -336,9 +336,4 @@ function learn(args) {
     kitResult("fail", `learn ${error.message.split("\n", 1)[0]}`);
     return 1;
   }
-}
-
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  if (process.argv.length === 3 && ["--help", "-h"].includes(process.argv[2])) process.stdout.write(usage);
-  else process.exitCode = learn(process.argv.slice(2));
 }

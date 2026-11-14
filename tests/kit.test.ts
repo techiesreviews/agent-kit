@@ -87,6 +87,8 @@ test("kit lists executable commands by name and reads only the first 15 summary 
   command(directory, ".hidden", "# kit: hidden");
   mkdirSync(join(directory, "directory"));
   command(directory, "bare", `${"# padding\n".repeat(14)}# kit: too late`);
+  // An inside helper runs by name but stays out of the list (kit version since TOOLS-235).
+  command(directory, "inner", "# kit-inside: an inside helper\necho 'RESULT: ok inner ran'");
   const expected = "Usage: kit <command> [args]\n\nCommands:\n"
     + "  alpha       first command # kit: later marker\n"
     + "  alpha-beta  middle command\n"
@@ -99,6 +101,8 @@ test("kit lists executable commands by name and reads only the first 15 summary 
     assert.equal(result.stdout, expected);
     assert.deepEqual(results(result.stdout), []);
   }
+  const inner = run(["inner"], { KIT_COMMANDS_DIR: directory });
+  assert.equal(inner.stdout, "RESULT: ok inner ran\n");
 });
 
 test("kit reads the shared folder and the project's own, lists them in two groups and keeps shared names", (t) => {
@@ -190,19 +194,8 @@ test("the shared kit runs from a copy named by KIT_HOME for a project with only 
   const version = front("version");
   assert.equal(version.status, 0, version.stdout + version.stderr);
   assert.match(version.stdout, /^commit none\nkit copy outside git\nproject [0-9a-f]{7,}\nowner .+\nnode v\d+\.\d+\.\d+\nRESULT: ok version none node v\d+/);
-  const status = front("status");
-  assert.equal(status.status, 0, status.stdout + status.stderr);
-  assert.match(status.stdout, /\nRESULT: ok status /);
-  // kit card runs the copy's context-card.mjs for this project's notes.
+  // The context card hook runs the copy's context-card.mjs (kit card was merged into it, TOOLS-235).
   assert.ok(existsSync(join(home, "context-card.mjs")), "the copy has context-card.mjs");
-  const memory = join(temp(t), "memory");
-  mkdirSync(join(memory, "project-notes"), { recursive: true });
-  writeFileSync(join(memory, "project-notes/README.md"), `| Slug | Workspace |\n| --- | --- |\n| x | \`${realpathSync(root)}\` |\n`);
-  writeFileSync(join(memory, "project-notes/x.md"), "# X\n\n## Current thinking\nKit home thinking.\n");
-  env.CHAT_MEMORY_DIR = memory;
-  const card = front("card");
-  assert.equal(card.status, 0, card.stdout + card.stderr);
-  assert.equal(card.stdout, "Context card: X\nCurrent thinking:\nKit home thinking.\nMore: ask for the full note.\nRESULT: ok card 4 lines\n");
   // Every shared command loads from the copy: a helper reached by its place in this repo would fail here.
   const shared = readdirSync(join(home, "kit.d")).filter((name) => !/^[._]/.test(name) && statSync(join(home, "kit.d", name)).mode & 0o111);
   for (const name of ["unit", "review", "next"]) assert.ok(shared.includes(name), name);
@@ -635,13 +628,13 @@ test("kitHidingLog hides a token split across chunks and on a last line with no 
   assert.equal(written.join("").includes("token-0000"), false);
 });
 
-test("the real kit exposes an executable version stub and emits its final RESULT", () => {
+test("the real kit keeps version as an inside helper (kit doctor shows it), unlisted, that still runs and emits its final RESULT", () => {
   assert.equal(statSync(kit).mode & 0o111, 0o111);
   assert.equal(statSync(resolve("kit.d/version")).mode & 0o111, 0o111);
   assert.equal(statSync(library).mode & 0o111, 0);
   const list = run();
   assert.equal(list.status, 0, list.stderr);
-  assert.match(list.stdout, /  version +show the kit's commit, owner and Node version/);
+  assert.doesNotMatch(list.stdout, /^  version /m);
   const help = run(["version", "--help"]);
   assert.equal(help.status, 0, help.stderr);
   assert.match(help.stdout, /^Usage: kit version\n/);
@@ -704,6 +697,33 @@ function kitEnvLeaks(file: string, source: string) {
   return found;
 }
 
+// TOOLS-235 (Lex, 2026-11-14): the trim's release 1 cut three commands and merged three into others.
+const trimmed: [string, RegExp][] = [
+  ["ask", /^kit ask was retired on 2026-11-13: .*T3 delegate_task to Sonnet or Opus/],
+  ["status", /^kit status was cut on 2026-11-14 \(TOOLS-235\): .*scripts\/agents\/kit ticket list.*kit sweep lists flaky spec files/],
+  ["feedback", /^kit feedback was cut on 2026-11-14 \(TOOLS-235\): .*chat memory/],
+  ["learn", /^kit learn is now kit sweep --learn \(TOOLS-235\)/],
+  ["card", /^kit card was merged into the session-start hook \(TOOLS-235\): .*context-card\.mjs/],
+];
+
+test("the real kit lists 22 shared commands: the cut and merged ones are gone, and each old name gets a plain pointer", () => {
+  const list = run();
+  assert.equal(list.status, 0, list.stderr);
+  const names = [...list.stdout.matchAll(/^  (\S+) /gm)].map(match => match[1]);
+  assert.equal(names.length, 22, names.join(" "));
+  for (const [name, pointer] of trimmed) {
+    assert.ok(!names.includes(name), `${name} is still listed`);
+    assert.equal(existsSync(resolve("kit.d", name)), false, `kit.d/${name} is still there`);
+    const called = run([name, "--since", "7d"]);
+    assert.equal(called.status, 2, `${name}: ${called.stdout}${called.stderr}`);
+    const lines = called.stdout.trimEnd().split("\n");
+    assert.match(lines[0], pointer, name);
+    assert.match(lines.at(-1)!, new RegExp(`^RESULT: fail ${name} (cut|retired|moved)`), name);
+    // The pointer is the whole answer: no command list after it.
+    assert.doesNotMatch(called.stderr, /Shared commands:/, name);
+  }
+});
+
 test("kit test fixtures start without the kit's home names, so a person's KIT_HOME never reaches them", () => {
   const found = globSync("tests/kit*.test.ts").sort().flatMap(file => kitEnvLeaks(file, readFileSync(file, "utf8")));
   assert.deepEqual(found, [], "use kitEnv() for these fixtures");
@@ -732,7 +752,7 @@ test("the KIT_HOME guard finds commands under any name, a half-cleaned env and a
 test("while kit pr runs spec files alone it holds the machine's quiet lock and no kit job starts; its own calls and read-only commands go on", (t) => {
   const directory = temp(t), state = join(directory, "state"), lock = join(state, "agent-kit/quiet.lock");
   command(directory, "job", "# kit: a job\necho 'RESULT: ok job ran'");
-  command(directory, "status", "# kit: a command that only reads\necho 'RESULT: ok status read'");
+  command(directory, "wait", "# kit: a command that only waits\necho 'RESULT: ok wait read'");
   const env = { KIT_COMMANDS_DIR: directory, XDG_STATE_HOME: state };
   const quick = (args: string[], extra: NodeJS.ProcessEnv = {}) => {
     const result = run(args, { ...env, ...extra });
@@ -753,7 +773,7 @@ test("while kit pr runs spec files alone it holds the machine's quiet lock and n
   writeFileSync(lock, `${holder.pid} ke-60\n`);
   // A holder that ended is a zombie (Z) until this test reaps it.
   const state0 = () => readFileSync(`/proc/${holder.pid}/stat`, "utf8").replace(/^.*\) /s, "").split(" ")[0];
-  for (const [args, extra] of [[["job"], { KIT_QUIET_HOLDER: String(holder.pid) }], [["job", "--help"], {}], [["status"], {}]] as const) {
+  for (const [args, extra] of [[["job"], { KIT_QUIET_HOLDER: String(holder.pid) }], [["job", "--help"], {}], [["wait"], {}]] as const) {
     quick([...args], extra);
     assert.notEqual(state0(), "Z", `${args.join(" ")} ran while the lone run was still going`);
   }

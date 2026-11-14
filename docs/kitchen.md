@@ -17,6 +17,38 @@ steps and history. **Where the extras differ, they win.** Below, "the landing br
 Items marked **planned** are decided but not built. Until a planned item lands, do what the station
 says for today; never claim a planned item ran.
 
+<a id="ux-confidence-ladder"></a>
+
+## The road: six steps and the grill
+
+Lex, 2026-11-14 (TOOLS-235): every card takes the same road, each step with one owner. The
+[flow chart](flow-chart.html) (`docs/flow-chart.html` in the kit) draws it; the stations below hold each
+step's detail.
+
+1. **Card.** The idea is a card on the board with a goal and a "Done when" list (Lex or the lead,
+   `kit ticket`).
+2. **Grill.** Before any helper starts, the lead opens a question round for Lex in its own desk thread
+   (the `grilling` skill): what the card must do, what it must not, how he will know it works. His
+   answers go on the card as a dated comment. Every card has one, bug fixes and work behind the scenes
+   included; a question the helper finds later goes back to the lead, never guessed.
+3. **Prototype, for anything he sees or clicks.** A clickable prototype he tries before the build (the
+   `prototype` skill, or an HTML page shown with T3 `html_render`), linked from the card. A bug fix or
+   work behind the scenes skips this step, never the grill.
+4. **Build and prove.** The lead runs `kit brief <KEY>` and gives it to a T3 helper in its own worktree.
+   The helper builds, runs the quick checks and writes one proof line per "Done when" item, what it
+   really tried on the real thing (`Done when <n>: met — <proof>`: the test that failed first, the command
+   and what it printed, what it clicked on the preview), in its report and the PR text. Checks passing is
+   not proof on its own; a bug fix shows its failing test first.
+5. **Land.** `kit pr`: the checks, the Opus review, the second look, GitHub's checks, merge. A direct
+   project is live here.
+6. **Lex tries it.** A desk thread with the preview link, the prototype beside it, what to click and what
+   to see.
+7. **His go.** `kit pr --release` puts a public tool live, only after his go (a direct project has no
+   release step).
+
+Around the road, not on it: the Board drive schedule, the weekly sweep, the kit's update timer and the
+guards. Lex tries every visible change himself; the UX confidence ladder was dropped on 2026-11-14.
+
 ## House rules
 
 - **Agent Kit for every coding step, every model:** `scripts/agents/kit`, `kit doctor` first. A kit
@@ -31,10 +63,11 @@ says for today; never claim a planned item ran.
 - **Plain English** (Lex, 2026-10-30): every ticket, doc, code comment, commit message, PR text,
   and review finding is in plain English, since Lex reads them; a message to Lex follows [Messages to
   Lex](#messages-to-lex) (caveman bullets in plain words). Talk between agents
-  (a brief, a child's report to its lead) follows the talk style `kit brief` sets: short English or
-  Classical Chinese in turn during the 7-day trial from 2026-10-31 (`KIT_TALK_STYLE=en|wenyan|plain`
-  forces one), never in anything a person reads. The lead ends the trial by hand after its verdict
-  (due 2026-11-07, ticket 83), with a kit change to the chosen style.
+  (a brief, a child's report to its lead) is the short English `kit brief` sets (`KIT_TALK_STYLE=plain`
+  turns it off), never in anything a person reads; the Classical Chinese trial ended on 2026-11-14.
+- **Every card takes [the road](#the-road-six-steps-and-the-grill)** (Lex, 2026-11-14): a grill for Lex in
+  its own desk thread before any helper starts, a prototype he tries first for anything he sees or clicks,
+  and proof lines per "Done when" item in every helper's report and PR.
 - **Briefs come from the kit** (Lex, 2026-10-31): every child's brief is the output of
   `scripts/agents/kit brief <ticket> [--stage build|review|second-look|fix] [--note "<text>"]`, never
   retyped, so a rule changes once, in the kit. The `brief-guard` hook refuses a `delegate_task` or
@@ -67,9 +100,10 @@ says for today; never claim a planned item ran.
   runs `git revert --no-edit <first>^..<last>` there and lands it with `kit pr` like any change (it waits for its gates).
 - **Review loop** (Lex, 2026-11-06, after Theo's sol-loop): a review's budget depends on the risk, it stops when only
   nits are left, and the PR carries a findings ledger; the rule is under [Review loop](#review-loop) below.
-- **Tuesday is Lex's only review day** (Lex, 2026-10-27): everything that needs him waits in one
-  [Tuesday pack](#tuesday-review); between Tuesdays the work keeps moving. Budget: his $200/month
-  Claude subscription and the free workers, never more.
+- **Lex answers in desk threads, any day** (Lex, 2026-11-14; the Tuesday-only review day and its pack
+  were dropped): each question or thing to try goes to him in its own desk thread, and the work keeps
+  moving meanwhile ([What waits for Lex](#what-waits-for-lex)). Budget: his $200/month Claude
+  subscription and the free workers, never more.
 - **Everything is a file on the landing branch:** maps, tickets, Lex's feedback and decisions
   (the project's issue tracker guide, `docs/agents/issue-tracker.md`). A change Lex asks for always
   has a ticket that opens with "Lex (YYYY-MM-DD): …", including lead fixes.
@@ -79,7 +113,7 @@ says for today; never claim a planned item ran.
   (default `files`). With `orbit` the tickets live in Orbit: `kit next` hands out the Todo cards
   whose "Blocked by:" cards are Done (and In Progress cards given back by `clear-next-lex`), in build waves; `kit next --start` and `kit slice --ticket <KEY>`
   claim the card (status In Progress and a "Claimed by: <owner>" line) and build from its brief;
-  `kit pr` moves the card to Done with a dated comment naming the PR and its merge SHA; `kit status` shows the
+  `kit pr` moves the card to Done with a dated comment naming the PR and its merge SHA; `kit ticket list` shows the
   cards; `kit init --issues` makes a card per open GitHub Issue and closes the Issue with a comment
   naming its card. Statuses go by name (Backlog, Todo, In Progress, Done); a board that keeps its
   stage in labels keeps them. Ticket files stay only for `files` projects, and maps and research
@@ -193,9 +227,9 @@ OpenCode settings (default model, global instructions) do not apply to the revie
 
 ### 1. Idea
 
-- **Use:** Lex's T3 chat; `kit status` and `node "$(scripts/agents/kit --home)/tickets.mjs" frontier` for what is
+- **Use:** Lex's T3 chat; `kit ticket list` and `node "$(scripts/agents/kit --home)/tickets.mjs" frontier` for what is
   already open; the context card (about 30 lines read fresh from Lex's central memory, printed at
-  session start and by `kit card`).
+  session start).
 - **Decides:** Lex, whether it is worth doing; the lead proposes where it goes.
 - **Done when:** the idea has a home on the landing branch: a new map, a ticket in an existing map
   or build, or a tech-debt issue.
@@ -205,8 +239,9 @@ OpenCode settings (default model, global instructions) do not apply to the revie
 - **Use:** skills `wayfinder` (map and tickets), `research` (AFK, on a `research/*` branch),
   `grilling` (Lex in the loop), `prototype`, `teach` when Lex wants a concept explained. Files and
   claiming: the project's issue tracker guide.
-- **Decides:** Lex answers grilling questions in the Tuesday pack; between Tuesdays an easy-to-undo
-  one takes its recommended answer and is listed there ([Tuesday review](#tuesday-review)). Research answers facts.
+- **Decides:** Lex answers grilling questions in their desk thread (the road's grill); meanwhile an
+  easy-to-undo one may take its recommended answer, named in that thread ([What waits for
+  Lex](#what-waits-for-lex)). Research answers facts.
 - **Evidence:** each ticket's `## Resolution (date)` and one line in the map's Decisions so far.
 - **Done when:** every ticket the build depends on is closed, and Not yet specified holds only what
   the build can do without.
@@ -220,11 +255,12 @@ OpenCode settings (default model, global instructions) do not apply to the revie
 - **Show and tell** (Lex, 2026-10-27): a mock-up of something that already exists has a Today / After
   switch, with today's real screen against the change, plus demo buttons that play each step with the
   feedback shown in place.
-- **Mock-ups ahead:** the week before, the lead prepares mock-ups for the next visible changes in the
-  queue (the running build's next stage, then the next build), so Lex approves them in one batch in
-  the Tuesday pack and no slice waits for sign-off.
-- **Decides:** Lex clicks through and approves, on Tuesday.
-- **Done when:** Lex approved it and the ticket links it. Changes with nothing visible skip this station.
+- **Mock-ups ahead:** the lead prepares mock-ups for the next visible changes in the queue (the running
+  build's next stage, then the next build), so Lex can try them in their desk threads and no build waits
+  for sign-off.
+- **Decides:** Lex clicks through and approves, in the mock-up's desk thread.
+- **Done when:** Lex approved it and the ticket links it. Changes with nothing visible skip this station
+  (never the grill).
 
 ### 4. Tickets
 
@@ -273,7 +309,7 @@ OpenCode settings (default model, global instructions) do not apply to the revie
   their map, nothing from a build whose README still says `**Not started:**`; the build's other
   rules stay with the lead.
 - **Done when:** every frontier ticket the limits allow is claimed and running. A ticket waiting on
-  a hard-to-undo choice goes into the Tuesday pack, and its build's other tickets keep running.
+  a hard-to-undo choice goes to Lex in its own desk thread, and its build's other tickets keep running.
 
 ### 6. Build
 
@@ -289,6 +325,8 @@ OpenCode settings (default model, global instructions) do not apply to the revie
 - **Visible work:** the builder follows the [house style](house-style.md), the project's UX rulebook
   and the approved mock-up.
 - **Decides:** the builder, inside the ticket's Files; anything outside them stops the slice.
+- **Proof:** the builder's report and PR text carry one proof line per Done when item, what it really
+  tried on the real thing (step 4 of [the road](#the-road-six-steps-and-the-grill)).
 - **Done when:** the builder's commits and the ticket's `## Done` are on the slice branch.
 - **Closing a ticket:** `status: closed` needs a `## Done (YYYY-MM-DD)` with one evidence line per `## Done when`
   item, `Done when <n>: met — <evidence>` (the verdicts are met, not met, pending and open; only met with proof
@@ -344,13 +382,13 @@ OpenCode settings (default model, global instructions) do not apply to the revie
   run that did not report every file it ran is never forgiven. The settings' `timing` spec files run
   after the rest, each alone; with a `timing` list the selection is listed first, and a change that
   selects nothing takes no lock. While a spec file runs alone (timing file or rerun) no new kit job
-  starts (`waiting for <owner>'s lone browser run`), except `wait`, `status`, `heartbeat`, `version`,
-  `card`, `rulebook` and help; jobs already running carry on. The locks need `flock` (`kit doctor`
+  starts (`waiting for <owner>'s lone browser run`), except `wait`, `heartbeat`, `version`,
+  `rulebook` and help; jobs already running carry on. The locks need `flock` (`kit doctor`
   says when it is missing; the runs then go unlocked). What `kit pr` reads from the project's specs command:
   `--list` prints one `<file> [<groups>] …` line per selected file, or ends `RESULT: ok specs none
   affected` (or `0 selected`); a run prints `✓ <file> (…)` or `✗ <file>: <test> — <error>` per file and
   ends `RESULT: fail specs N of M failed` when any failed.
-  `kit status` names a file flaky 3 or more times in 7 days: give it a fix ticket.
+  The weekly `kit sweep` bundle names a file flaky 3 or more times in 7 days: give it a fix ticket.
 - **Never:** a raw `git push` to the release branch (or a landing branch that is also the release
   branch, as on a live site); the Bash hook refuses it and names `kit pr`.
 - **Done when:** the PR is merged into the landing branch and its number is in the ticket's `landed:`.
@@ -359,40 +397,37 @@ OpenCode settings (default model, global instructions) do not apply to the revie
 
 - **Use:** the lead runs the project's after-merge step (a preview deploy where the project has one;
   extras). Then a two-line plain note to Lex (see [Messages to Lex](#messages-to-lex)): what was done, and whether he would notice anything;
-  a screenshot contact sheet through `html_render` only when something visible changed. Every
-  correction from Lex gets one line in the build's feedback log: `kit feedback <map> --kind K
-  "<text>"` (the issue tracker guide's build files); fill its fix with `--fix-for` once the ticket
-  or PR exists.
+  a screenshot contact sheet through `html_render` only when something visible changed. Lex's
+  corrections go to the chat memory, which the weekly learning reads (`kit feedback` and its build
+  feedback logs were cut on 2026-11-14).
 - **Scoreboard:** the kit records builder, time, review rounds, findings by kind, cost where known
   and landing per piece; `kit score <map>` prints it and `kit score <map> --snapshot` writes
   `build/scoreboard.json` for the lead to commit at the end of a build.
 - **Build page:** at each milestone and at the end, the lead runs `kit score <map> --html` and shows
   the page it prints with T3 `html_render`: where the build is, what reviews caught, what Lex
-  corrected, the ladder and builders, in plain words.
+  corrected and the builders, in plain words.
 - **Done when:** the after-merge step's `RESULT:` line is ok and the note is sent.
 
 ### 11. Lex's end check
 
-- **Releases wait for Tuesday, work doesn't** (a direct project has no release to wait for): when a build's (or stage's) frontier is empty, its end
-  check goes into the next Tuesday pack, and the next stage or the next build in the queue starts at
+- **Releases wait for Lex's go, work doesn't** (a direct project has no release to wait for): when a build's (or stage's) frontier is empty, its end
+  check goes to Lex in a desk thread, and the next stage or the next build in the queue starts at
   once on the landing branch. A gate line in a build README saying "after X's release" means "after
   X's frontier is empty" for starting work; X's release itself still waits for Lex.
-- **Use:** the lead tells Lex the change is ready to try (in the Tuesday pack; where to try it:
-  extras), with a plain what-to-test list (what a user could notice, where to look, what to try).
+- **Use:** the lead tells Lex the change is ready to try (in a desk thread, with the prototype beside it;
+  where to try it: extras), with a plain what-to-test list (what a user could notice, where to look, what to try).
   First the lead runs the project's whole user-level check on the landing branch, where it has one
   (extras), and sends its summary with that list. In a direct project the landing branch is live: a user-level check the
   project wants before going live belongs in its `checks` (which `kit pr` runs for code-size changes; docs and CSS changes run lighter steps, so a check that must guard those needs a CI workflow on pull requests); otherwise the lead runs it right
   after the merge, rolls the change back if it fails, and the note to Lex follows (see the Done-when line).
-- **Decides:** Lex. Each correction becomes a ticket in the build (station 4) and one feedback log
-  line (`kit feedback <map> --kind K --fix <ticket> "<text>"`, committed with the ticket); the
-  log is what the ladder counts. A problem he finds after release adds `--after-release`.
+- **Decides:** Lex. Each correction becomes a card, or a ticket in the build (station 4).
 - **Done when:** Lex says "ship it". A direct project (`branches.direct`) is the exception: the release does not wait
-  for Tuesday (other hard-to-undo items still do) and needs no Tuesday pack entry; the project's `checks` are the gate, and Lex hears about the change
+  for his go (other hard-to-undo items still do); the project's `checks` are the gate, and Lex hears about the change
   afterwards (the house rule says how for his two websites).
 
 ### 12. Release
 
-- **Use:** only after Lex's written "ship it" (given on Tuesday). The exception is a direct project
+- **Use:** only after Lex's written "ship it". The exception is a direct project
   (`branches.direct`): it has no release step and needs no "ship it", its merge into main is the release as
   soon as the project's `checks` pass for a code-size change (docs and CSS changes run lighter steps) and the
   review passes, and the project's steps follow it (the house rule says what the lead tells Lex). Otherwise `kit pr --release` (the landing
@@ -444,21 +479,10 @@ release brief (**planned**). A project adds or removes
 names with `"skills": { "add": [...], "remove": [...] }` in `scripts/agents/kit.json`. A skill
 missing on a machine is a `kit doctor` note (`skills map`), never a failure.
 
-## UX confidence ladder
-
-**Rung 1 today: Lex checks everything before release.** Rung 2: Lex checks a sample, the UX
-reviewer checks everything. Rung 3: changes with nothing visible release on their own once every
-check passes; visible ones wait for Lex. Rung 4: small visible changes release on their own, bigger
-ones wait.
-
-Up one rung after 5 builds in a row with no UX correction from Lex; down one rung whenever Lex
-finds a UX problem after release. The lead brings each move to Lex. Rungs 2–4 need the planned UX
-review and checking tool.
-
 ## Weekly routines
 
-Scheduled with T3 `schedule_task` at a fixed time (Europe/Amsterdam), on Tuesday morning before Lex
-reviews (Lex, 2026-10-27; was Monday); both results go into that day's Tuesday pack.
+Scheduled with T3 `schedule_task` at a fixed time (Europe/Amsterdam), on Tuesday morning (Lex,
+2026-10-27; was Monday); each result goes to Lex in a desk thread.
 
 - **Sweep, Tuesdays 07:00:** the project's `docs/agents/routines/sweep.md`. `kit sweep` gathers the
   week's numbers into a small bundle; the session applies `improve-codebase-architecture` (list
@@ -466,38 +490,33 @@ reviews (Lex, 2026-10-27; was Monday); both results go into that day's Tuesday p
   lists bad patterns and changes nothing; Lex gets the top 3, each with a recommended fix, and picks
   which become tickets.
 - **Chat learning, even ISO weeks, right after the Tuesday sweep (same scheduled run):** the
-  project's `docs/agents/routines/learning.md`. `kit learn` groups the corrections the chat
-  project's sync collects in `~/Projects/chat/memory/` with the build feedback logs; the session
+  project's `docs/agents/routines/learning.md`. `kit sweep --learn` (was `kit learn`) groups the corrections the chat
+  project's sync collects in `~/Projects/chat/memory/` with any build feedback logs still on file; the session
   applies `retro` and writes `docs/work/learning/YYYY-MM-DD.md` through `kit pr`. Each correction
   Lex gave more than once gets one proposed automatic check (hook, lint rule or kit check; the
   project's `docs/agents/guardrails.md`) or UX rulebook line, or a [house style](house-style.md)
   rule when the same correction comes from two or more projects; nothing is added until Lex picks.
 
-## Tuesday review
+<a id="tuesday-review"></a>
 
-Lex reviews only on Tuesdays (Lex, 2026-10-27). The lead keeps one pack per Tuesday and agents
-keep working on everything that doesn't need him.
+## What waits for Lex
 
-- **The pack:** `docs/work/tuesday/YYYY-MM-DD.md`, filled during the week, plus one visual page
-  served online (mock-ups, the build order with ready dates). It is written in plain words, and each question has a ➡️
-  recommended answer; ⚠️ marks the hard-to-undo ones; one round of questions. It holds, in order:
-  releases ready for his go-ahead (end checks), mock-ups to approve, hard-to-undo questions, the
-  easy-to-undo defaults taken since last Tuesday (so he can reverse them), the sweep's top 3, and
-  the ready-date guesses.
-- **Easy-to-undo defaults:** mid-week, an easy-to-undo choice takes its recommended answer at once, and
-  the pack lists it. Easy to undo: anything that lands on the landing branch (or a preview of it)
-  and can be changed by a later slice (not in a direct project, whose landing branch is live). Grilling answers and mock-up choices count when the work
-  they steer is still unreleased.
-- **Hard to undo, waits for Tuesday:** going live (release, and every move up the ladder; a direct
-  project goes live on its own merge, see the house rule); public
-  repos, packages or GitHub Issues; anything that costs money; deleting what cannot be recovered;
-  changes to visitors' sites (a direct project's own site excepted: it goes live on its merge, see the house rule); his settings, keys and secrets (T3 `request_secret`, never chat); a
-  change in builder routing; which sweep findings become tickets; new checks or rulebook lines from
-  chat learning.
-- **Ready-date guesses:** each build README carries one line, `**Ready (guess):**`, with the date it
-  should go live. The lead updates it when a build or stage lands, never with live time tracking.
-- **Questions in their own thread:** an urgent question that can't wait for Tuesday (a hard-to-undo
-  choice blocking every slot) still gets its own T3 thread. Everything else goes into the pack.
+Lex answers in desk threads, any day (Lex, 2026-11-14; the Tuesday-only review day of 2026-10-27 and its
+Tuesday pack were dropped). Agents keep working on everything that does not need him.
+
+- **Easy-to-undo defaults:** an easy-to-undo choice takes its recommended answer at once, and the lead
+  names it in that card's desk thread so he can reverse it. Easy to undo: anything that lands on the
+  landing branch (or a preview of it) and can be changed by a later slice (not in a direct project, whose
+  landing branch is live). Grilling answers and mock-up choices count when the work they steer is still
+  unreleased.
+- **Hard to undo, waits for his word:** going live (release; a direct project goes live on its own merge,
+  see the house rule); public repos, packages or GitHub Issues; anything that costs money; deleting what
+  cannot be recovered; changes to visitors' sites (a direct project's own site excepted: it goes live on
+  its merge, see the house rule); his settings, keys and secrets (T3 `request_secret`, never chat); a
+  change in builder routing; which sweep findings become tickets; new checks or rulebook lines from chat
+  learning.
+- **Questions in their own thread:** each question for Lex gets its own desk thread, written in plain
+  words with a ➡️ recommended answer; ⚠️ marks the hard-to-undo ones.
 
 ## Small chores on free models
 
@@ -513,4 +532,4 @@ example splitting a file that grows into a god file, or a DX friction ticket.
   Claude; a failed check goes back to the free worker or is dropped). That review is the chore's only
   Claude use.
 - **Evidence:** the chore's ticket under `docs/work/` with its `## Done`, merged through `kit pr`,
-  and one line in the next Tuesday pack.
+  and one line in the lead's next note to Lex.
