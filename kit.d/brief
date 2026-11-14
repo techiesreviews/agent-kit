@@ -93,16 +93,22 @@ async function claimCard(settings, key, owner) {
     const claim = await opened.store.claim(key, owner);
     if (claim.unchanged) return none;
     console.error(`claimed ${key} for ${owner}: In Progress with "Claimed by: ${owner}"`);
+    // Named now, while Orbit answers: what the card needs by hand if giving the claim back fails later.
+    const before = await opened.store.statusName({ project_id: claim.task.project_id, status_id: claim.previous });
+    const undo = `take that line off the card${before.trim().toLowerCase() === "in progress" ? "" : ` and set its status back to ${before}`}`;
     return async () => {
       try { await opened.store.unclaim(key, owner, claim.previous); return "; the claim was given back"; }
-      catch (error) { return `; giving the claim back failed (${isOrbitFailure(error) ? orbitProblem(error, redact) : error.message}): take the "Claimed by: ${owner}" line off ${key} and set its status back`; }
+      catch (error) { return `; giving the claim back failed (${isOrbitFailure(error) ? orbitProblem(error, redact) : error.message}): ${key} is still In Progress with "Claimed by: ${owner}", so ${undo}`; }
     };
   } catch (error) {
     if (error?.taken) throw new Error(error.message);
-    // Orbit may have saved the claim and lost only its reply, so the outcome is unknown: running the brief again settles it
-    // (a card that now shows the claim is In Progress, so the brief is written without claiming it again).
-    if (isOrbitFailure(error)) throw new Error(`card ${key} could not be claimed: ${orbitProblem(error, redact)}; it may be claimed anyway, so run kit brief again: a card that shows "Claimed by: ${owner}" then gets its brief`);
-    throw error;
+    if (!isOrbitFailure(error)) throw error;
+    // Only the claim's own write left with no answer (a dropped connection, a timeout, a gateway's error page) can be saved
+    // with its reply lost: running the brief again settles it (a card that now shows the claim is In Progress, so its brief
+    // is written without a second claim). A refused write (a stale version, a token that may not change the card) and a
+    // failed read saved nothing, and their own message says what to do.
+    const unknown = error.write && error.noAnswer;
+    throw new Error(`card ${key} could not be claimed: ${orbitProblem(error, redact)}${unknown ? `; it may be claimed anyway, so run kit brief again: a card that shows "Claimed by: ${owner}" then gets its brief` : ""}`);
   }
 }
 

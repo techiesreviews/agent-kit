@@ -467,21 +467,66 @@ test("brief KEY: on an Orbit project a lead's build brief claims a Todo or Backl
   assert.equal(o.orbit.statusOf(stuck), "Todo");
   assert.doesNotMatch(stuck.description, /Claimed by/);
   assert.deepEqual(readdirSync(join(f.root, ".scratch/kit-briefs")).filter(name => name.endsWith(".tmp")), []);
-  // A claim whose outcome is unknown (Orbit failed to answer) says so, and running the brief again writes it.
+  // A claim whose outcome is unknown (Orbit saved it and only its answer was lost) says so, and running the brief again
+  // writes the brief for the card that now shows the claim, without claiming it a second time.
   const unknown = o.card({ title: "Unknown" });
-  o.orbit.controls.conflicts = 50;
+  o.orbit.controls.writeAnswers.push("saved-then-502");
   const failed = await run({}, "KIT-10", "--owner", "kit-10");
-  o.orbit.controls.conflicts = 0;
   assert.equal(failed.status, 1, failed.all);
-  assert.match(failed.stdout, /RESULT: fail brief card KIT-10 could not be claimed: .*; it may be claimed anyway, so run kit brief again: a card that shows "Claimed by: kit-10" then gets its brief/);
-  assert.ok(!existsSync(join(f.root, ".scratch/kit-briefs/KIT-10-build.md")));
-  assert.equal((await run({}, "KIT-10", "--owner", "kit-10")).status, 0);
+  assert.match(failed.stdout, /RESULT: fail brief card KIT-10 could not be claimed: .*may or may not have gone through.*; it may be claimed anyway, so run kit brief again: a card that shows "Claimed by: kit-10" then gets its brief/);
+  assert.equal(o.orbit.statusOf(unknown), "In Progress");
   assert.match(unknown.description, /^Claimed by: kit-10\n/);
+  assert.deepEqual(readdirSync(join(f.root, ".scratch/kit-briefs")).filter(name => name.startsWith("KIT-10-build.md")), []);
+  const settled = await run({}, "KIT-10", "--owner", "kit-10");
+  assert.equal(settled.status, 0, settled.all);
+  assert.ok(existsSync(join(f.root, ".scratch/kit-briefs/KIT-10-build.md")));
+  assert.doesNotMatch(settled.stderr, /claimed KIT-10 for/);
+  // A claim Orbit refused saved nothing, so its message never says the card may be claimed anyway: a card that keeps
+  // changing while saving, a change the token may not make, and a read that failed.
+  const busy = o.card({ title: "Busy" });
+  o.orbit.controls.conflicts = 50;
+  const stale = await run({}, "KIT-11", "--owner", "kit-11");
+  o.orbit.controls.conflicts = 0;
+  assert.equal(stale.status, 1, stale.all);
+  assert.match(stale.stdout, /RESULT: fail brief card KIT-11 could not be claimed: KIT-11 changed again while saving, so nothing was saved; read the card and try again$/m);
+  o.orbit.controls.writeAnswers.push({ status: 403, code: "forbidden", detail: "This token cannot change the card" });
+  const forbidden = await run({}, "KIT-11", "--owner", "kit-11");
+  assert.equal(forbidden.status, 1, forbidden.all);
+  assert.match(forbidden.stdout, /RESULT: fail brief card KIT-11 could not be claimed: Orbit refused: This token cannot change the card \[forbidden\]\.$/m);
+  // A read that got no answer sent no claim either: here the card changed while saving, and reading it again failed.
+  o.orbit.controls.conflicts = 1;
+  o.orbit.controls.concurrentEdit = () => { o.orbit.controls.answers.push("drop"); };
+  const unread = await run({}, "KIT-11", "--owner", "kit-11");
+  o.orbit.controls.concurrentEdit = undefined;
+  assert.equal(unread.status, 1, unread.all);
+  assert.match(unread.stdout, /RESULT: fail brief card KIT-11 could not be claimed: could not reach Orbit\.$/m);
+  for (const refusal of [stale, forbidden, unread]) assert.doesNotMatch(refusal.all, /may be claimed anyway|run kit brief again/);
+  assert.equal(o.orbit.statusOf(busy), "Todo");
+  assert.doesNotMatch(busy.description, /Claimed by/);
+  // A brief that cannot be saved whose claim cannot be given back either says what is left on the card and how to undo it:
+  // the claim line and the status the card had.
+  const held = o.card({ title: "Held" });
+  mkdirSync(join(f.root, ".scratch/kit-briefs/KIT-12-build.md/x"), { recursive: true });
+  o.orbit.controls.writeAnswers.push("pass", { status: 500, code: "internal_error", detail: "down" });
+  const kept = await run({}, "KIT-12", "--owner", "kit-12");
+  assert.equal(kept.status, 1, kept.all);
+  assert.match(kept.stdout, /RESULT: fail brief the brief could not be saved as \.scratch\/kit-briefs\/KIT-12-build\.md \(.*\); giving the claim back failed \(Orbit refused: down \[internal_error\]\.\): KIT-12 is still In Progress with "Claimed by: kit-12", so take that line off the card and set its status back to Todo$/m);
+  assert.equal(o.orbit.statusOf(held), "In Progress");
+  assert.match(held.description, /^Claimed by: kit-12\n/);
+  // A card that was In Progress before its claim has no status to set back: only the line comes off.
+  const free = o.card({ title: "Free" }, "In Progress");
+  mkdirSync(join(f.root, ".scratch/kit-briefs/KIT-13-build.md/x"), { recursive: true });
+  o.orbit.controls.writeAnswers.push("pass", { status: 500, code: "internal_error", detail: "down" });
+  const lineOnly = await run({}, "KIT-13", "--owner", "kit-13");
+  assert.equal(lineOnly.status, 1, lineOnly.all);
+  assert.match(lineOnly.stdout, /giving the claim back failed \(.*\): KIT-13 is still In Progress with "Claimed by: kit-13", so take that line off the card$/m);
+  assert.match(free.description, /^Claimed by: kit-13\n/);
+  assert.deepEqual(readdirSync(join(f.root, ".scratch/kit-briefs")).filter(name => name.endsWith(".tmp")), []);
   // Someone who is not a lead gets the brief and a warning; the card stays as it was.
   const helper = o.card({ title: "Helper" });
-  const warned = await run({ ORBIT_ROLE: "" }, "KIT-11", "--owner", "kit-11");
+  const warned = await run({ ORBIT_ROLE: "" }, "KIT-14", "--owner", "kit-14");
   assert.equal(warned.status, 0, warned.all);
-  assert.match(warned.stderr, /^warning: KIT-11 is not claimed \(only a lead writes to Orbit: ORBIT_ROLE=lead\); until it is, kit next may start it too$/m);
+  assert.match(warned.stderr, /^warning: KIT-14 is not claimed \(only a lead writes to Orbit: ORBIT_ROLE=lead\); until it is, kit next may start it too$/m);
   assert.equal(o.orbit.statusOf(helper), "Todo");
   assert.doesNotMatch(helper.description, /Claimed by/);
 });

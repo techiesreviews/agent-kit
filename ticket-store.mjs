@@ -448,6 +448,8 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
     try { answer = await send(); }
     catch (error) {
       if (!(retries && error?.staleVersion)) logFailure({ ...entry, card: entry.card ?? "new", result: `fail:${error?.code ?? error?.status ?? "error"}` });
+      // A read can fail with no answer too, and sent nothing: `write` tells a caller the failure is this write's own.
+      if (error instanceof OrbitError) error.write = true;
       throw error;
     }
     const card = entry.card ?? answer?.identifier;
