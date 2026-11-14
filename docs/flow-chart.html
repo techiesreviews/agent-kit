@@ -8,7 +8,7 @@
 <style>
 :root{
   /* Fallbacks for a plain browser; in T3 the theme's own colours win. Orange marks Lex, indigo the lead. */
-  --f-bg:#ffffff; --f-sunk:#f5f1ee; --f-fg:#1d1a2b; --f-mut:#5d5870; --f-accent:#e0522a; --f-indigo:#4b4fc4;
+  --f-bg:#ffffff; --f-sunk:#f5f1ee; --f-fg:#1d1a2b; --f-mut:#5d5870; --f-accent:#c12200; --f-indigo:#4b4fc4;
 }
 @media (prefers-color-scheme: dark){
   :root{ --f-bg:#110e31; --f-sunk:#1c1844; --f-fg:#ecebf7; --f-mut:#aaa6c6; --f-accent:#ff7a4d; --f-indigo:#9ea3ff; }
@@ -44,7 +44,7 @@ section{margin-top:32px}
 .step .n{font-size:12px;font-weight:700;color:var(--mut);font-variant-numeric:tabular-nums}
 .step p{font-size:13px;color:var(--mut)}
 .step .who{display:flex;align-items:center;gap:6px;margin-top:auto;padding-top:4px;font-size:12px;font-weight:600}
-.tag{align-self:flex-start;font-size:12px;font-weight:600;color:var(--lex)}
+.tag{align-self:flex-start;font-size:12px;font-weight:600;color:var(--fg)}
 .step:not(:last-child)::after{content:"↓"/"";position:absolute;left:50%;bottom:-20px;transform:translateX(-50%);font-weight:700;color:var(--mut)}
 @media (min-width:1100px){
   .road{grid-template-columns:repeat(7,minmax(0,1fr))}
