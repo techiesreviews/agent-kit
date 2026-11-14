@@ -210,8 +210,9 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
 - `kit brief <KEY>` on an Orbit project builds the brief from the card: its title, text and comments, in place of a
   ticket file's. A build brief run by a lead (`ORBIT_ROLE=lead`) claims a card nobody holds for its owner (In Progress and
   "Claimed by:", as `kit slice` does), so `kit next` never starts a second builder on it; a Todo or Backlog card that is
-  blocked or waits for Lex is refused, and any other card is left as it is (on a board with no Todo status, every status
-  not yet started counts as Todo, as it does for `kit next`).
+  blocked or waits for Lex is refused, and any other card is left as it is, with a warning that says why (someone else
+  holds it, it waits for Lex, it is Done or in another status; on a board with no Todo status, every status not yet
+  started counts as Todo, as it does for `kit next`).
 - The card standard (`docs/orbit-card-standard.md`: one short card, history in comments, parts as sub-tasks, questions in a
   desk thread) is kept by the tickets tool, not by guesswork: `kit ticket note KEY text` posts a dated comment (the
   description is not touched); `create` and `update` print a warning, and still exit 0, when a new description is over 12
