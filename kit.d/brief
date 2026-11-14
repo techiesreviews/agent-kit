@@ -78,18 +78,25 @@ async function readCard(settings, key) {
  * TOOLS-235 dropped its line from the brief: In Progress and "Claimed by: <owner>" in one write, so kit next never starts a
  * second builder on the same card. A Todo or Backlog card waiting for Lex or still blocked is refused (next-lex moves a card
  * it marks to In Progress, which the brief leaves alone). Only a lead writes to Orbit; anyone else is warned.
+ * Returns what gives a new claim back (the status the card had, no "Claimed by" line), for a step after it that fails.
  */
 async function claimCard(settings, key, owner) {
+  const none = async () => "";
   if (process.env.ORBIT_ROLE !== "lead") {
     console.error(`warning: ${key} is not claimed (only a lead writes to Orbit: ORBIT_ROLE=lead); until it is, kit next may start it too`);
-    return;
+    return none;
   }
   let redact;
   try {
     const opened = openOrbitTickets({ settings, who: kitOwner() });
     redact = opened.redact;
     const claim = await opened.store.claim(key, owner);
-    if (!claim.unchanged) console.error(`claimed ${key} for ${owner}: In Progress with "Claimed by: ${owner}"`);
+    if (claim.unchanged) return none;
+    console.error(`claimed ${key} for ${owner}: In Progress with "Claimed by: ${owner}"`);
+    return async () => {
+      try { await opened.store.unclaim(key, owner, claim.previous); return "; the claim was given back"; }
+      catch (error) { return `; giving the claim back failed (${isOrbitFailure(error) ? orbitProblem(error, redact) : error.message}): take the "Claimed by: ${owner}" line off ${key} and set its status back`; }
+    };
   } catch (error) {
     if (error?.taken) throw new Error(error.message);
     if (isOrbitFailure(error)) throw new Error(`card ${key} could not be claimed: ${orbitProblem(error, redact)}`);
@@ -141,11 +148,16 @@ try {
   // A files project hands out its ticket files, not cards, so only an Orbit project's kit next could start the card twice.
   const saved = join(root, file), temporary = `${saved}.${process.pid}.tmp`;
   writeFileSync(temporary, `${brief}\n`);
+  let giveBack = async () => "";
   if (onCard && free && options.stage === "build" && onOrbit(settings)) {
-    try { await claimCard(settings, ticket, owner); }
+    try { giveBack = await claimCard(settings, ticket, owner); }
     catch (error) { rmSync(temporary, { force: true }); throw error; }
   }
-  renameSync(temporary, saved);
+  try { renameSync(temporary, saved); }
+  catch (error) {
+    rmSync(temporary, { force: true });
+    throw new Error(`the brief could not be saved as ${file} (${error.message})${await giveBack()}`);
+  }
   console.log(brief);
   kitResult("ok", `brief ${ticket} ${options.stage} (talk ${style}) ${file}`);
 } catch (error) {
