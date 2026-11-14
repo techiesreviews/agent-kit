@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { composeBrief, kitVersion, nextTalkStyle, readTicket, skillSettingsProblems, STAGES } from "../brief-lib.mjs";
 import { kitHome, kitMessagesToLexRule, kitOwner, kitResult, kitReviewLoopRule, kitRoot, kitRulebookPins, kitSettings } from "../kit-lib.mjs";
-import { isCardKey, isOrbitFailure, onOrbit, openOrbitTickets, orbitProblem } from "../ticket-cards.mjs";
+import { doneWhen, isCardKey, isOrbitFailure, onOrbit, openOrbitTickets, orbitProblem } from "../ticket-cards.mjs";
 
 const usage = `Usage: kit brief <ticket> [--stage build|review|second-look|fix] [--owner ID] [--repo PATH] [--model M] [--note "<text>"]
        kit brief --task "<title>" --owner ID --note "<what to do>" [--stage …] [--repo PATH] [--model M]
@@ -96,7 +96,7 @@ try {
   const { group } = readTicket(text);
   if (group) throw new Error(`${ticket} is in group ${group}: kit next --start runs a group as one job; kit brief writes briefs for single tickets`);
   // The proof lines go per Done when item (TOOLS-235): a list under "## Done when", or the card standard's "Done when:" line.
-  if (options.task === undefined && !/^(?:#{1,6}[ \t]*Done when\b|Done when:)/im.test(text))
+  if (options.task === undefined && !doneWhen(text))
     console.error(`warning: ${ticket} has no "Done when" list; the proof lines need one (the card standard's "Done when:" line)`);
   const pins = kitRulebookPins(root, settings);
   const messages = kitMessagesToLexRule(), reviewLoop = kitReviewLoopRule();

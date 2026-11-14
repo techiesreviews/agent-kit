@@ -392,11 +392,16 @@ test("brief: a card or ticket with no Done when list gets a warning, since its p
   const path = join(f.root, "docs/tickets/07-panel.md");
   assert.doesNotMatch(f.run(["docs/tickets/07-panel.md"]).stderr, /Done when/);
   writeFileSync(path, readFileSync(path, "utf8").replace(/## Done when[\s\S]*$/, ""));
-  const bare = f.run(["docs/tickets/07-panel.md"]);
-  assert.equal(bare.status, 0, bare.stdout);
-  assert.match(bare.stderr, /^warning: docs\/tickets\/07-panel\.md has no "Done when" list; the proof lines need one \(the card standard's "Done when:" line\)$/m);
-  // The card standard's one-line form counts.
-  writeFileSync(path, `${readFileSync(path, "utf8")}\nDone when: it works; Lex tried it.\n`);
+  const none = f.run(["docs/tickets/07-panel.md"]);
+  assert.equal(none.status, 0, none.stdout);
+  assert.match(none.stderr, /^warning: docs\/tickets\/07-panel\.md has no "Done when" list; the proof lines need one \(the card standard's "Done when:" line\)$/m);
+  // An empty heading has no items, so it warns too; the card standard's line, bold or plain, counts.
+  const bare = readFileSync(path, "utf8");
+  writeFileSync(path, `${bare}\n## Done when\n\n## Notes\n\nx\n`);
+  assert.match(f.run(["docs/tickets/07-panel.md"]).stderr, /has no "Done when" list/);
+  writeFileSync(path, `${bare}\n**Done when:** it works; Lex tried it.\n`);
+  assert.doesNotMatch(f.run(["docs/tickets/07-panel.md"]).stderr, /Done when/);
+  writeFileSync(path, `${bare}\nDone when: it works; Lex tried it.\n`);
   assert.doesNotMatch(f.run(["docs/tickets/07-panel.md"]).stderr, /Done when/);
   // A task has no list to check: its proof lines follow the note.
   const task = f.run(["--task", "Fix it", "--owner", "cf-1", "--note", "Make the login button work."]);
