@@ -49,6 +49,35 @@ function testRepo(repo: string, ...init: string[]) {
   for (const [key, value] of [["maintenance.auto", "false"], ["gc.auto", "0"], ["receive.autoGc", "false"]]) git("-C", repo, "config", key, value);
 }
 
+test("test repositories start no background git cleanup after a commit or a push", t => {
+  const dir = mkdtempSync(join(tmpdir(), "kit-score-repo-"));
+  // The plain repository's cleanup may still be writing in it: retries outlast it.
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 10 }));
+  // A commit and a push into a bare origin, traced: GIT_TRACE logs every git command they start, the origin's
+  // receive-pack and anything it starts included. No global or system settings, so this machine's own cannot hide one.
+  const traced = (name: string, init: (repo: string, origin: string) => void) => {
+    const repo = join(dir, name), origin = join(dir, `${name}.git`), trace = join(dir, `${name}.trace`);
+    init(repo, origin);
+    const env = { ...process.env, GIT_TRACE: trace, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+    const git = (...args: string[]) => {
+      const result = spawnSync("git", ["-C", repo, "-c", "user.name=a", "-c", "user.email=a@example.test", ...args], { encoding: "utf8", env });
+      assert.equal(result.status, 0, result.stderr);
+    };
+    writeFileSync(join(repo, "file.txt"), "base\n");
+    git("add", "-A"); git("commit", "-q", "-m", "base"); git("remote", "add", "origin", origin); git("push", "-q", "origin", "dev");
+    const started = readFileSync(trace, "utf8");
+    assert.match(started, /receive-pack/);
+    return started;
+  };
+  // A plain repository starts it, so the trace would show it; a test repository does not. A git before 2.29 starts
+  // `gc --auto` instead, which gc.auto=0 makes a no-op, so the test repository is checked for `maintenance run` only.
+  const plain = traced("plain", (repo, origin) => {
+    for (const args of [["init", "-q", "-b", "dev", repo], ["init", "-q", "--bare", origin]]) assert.equal(spawnSync("git", args).status, 0);
+  });
+  assert.match(plain, /maintenance run|gc --auto/);
+  assert.doesNotMatch(traced("quiet", (repo, origin) => { testRepo(repo, "-b", "dev"); testRepo(origin, "--bare"); }), /maintenance run/);
+});
+
 function settings(root: string) {
   mkdirSync(join(root, "scripts/agents"), { recursive: true });
   writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify({ project: "kit-score", branches: { land: "dev" }, maps: "docs/wayfinder" }));
@@ -481,23 +510,6 @@ test("the builder advice appears only once a kind has ten pieces, and the ladder
 interface ProjectGroup { pieces: number; rounds: number; findings: Counts; landed: number }
 type ProjectScore = { project: string; root: string | null; problem: string }
   | { project: string; root: string; builders: Record<string, ProjectGroup>; total: ProjectGroup & { corrections: number | null }; correctionsProblem?: string };
-
-test("test repositories start no background git cleanup after a commit or a push", t => {
-  const dir = mkdtempSync(join(tmpdir(), "kit-score-repo-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const repo = join(dir, "repo"), origin = join(dir, "origin.git"), trace = join(dir, "trace");
-  testRepo(repo, "-b", "dev"); testRepo(origin, "--bare");
-  // GIT_TRACE logs every git command each of these starts, the origin's receive-pack and anything it starts included.
-  const git = (...args: string[]) => {
-    const result = spawnSync("git", ["-C", repo, "-c", "user.name=a", "-c", "user.email=a@example.test", ...args], { encoding: "utf8", env: { ...process.env, GIT_TRACE: trace } });
-    assert.equal(result.status, 0, result.stderr);
-  };
-  writeFileSync(join(repo, "file.txt"), "base\n");
-  git("add", "-A"); git("commit", "-q", "-m", "base"); git("remote", "add", "origin", origin); git("push", "-q", "origin", "dev");
-  const started = readFileSync(trace, "utf8");
-  assert.match(started, /receive-pack/);
-  assert.doesNotMatch(started, /maintenance run|gc --auto/);
-});
 
 // Every file under a folder with its bytes and modified time, to prove a run left them as they were.
 function snapshot(dir: string): Map<string, string> {
