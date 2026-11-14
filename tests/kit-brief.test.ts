@@ -344,6 +344,7 @@ test("brief KEY: on an Orbit project the brief is built from the card (title, te
   assert.match(text, /git switch -c build\/kit-1-a-settings-panel-with-a-colour origin\/dev/);
   assert.doesNotMatch(text, /ticket's (Done|focused)|parts of the ticket/);
   assert.match(text, /`scripts\/agents\/kit review` and `scripts\/agents\/kit pr --ticket KIT-1`/);
+  assert.match(text, /its answers are in the card's comments\./);
   // The card's Files pick the skills, as a ticket file's do.
   assert.match(text, /good-css/);
   assert.match(output.stdout.trimEnd().split("\n").at(-2)!, /^kit-brief: \S+ KIT-1 build$/);
@@ -373,6 +374,9 @@ test("brief KEY: on an Orbit project the brief is built from the card (title, te
   const plain = await runAsync(kit, ["brief", "KIT-1"], { cwd: files.root, env: { ...env, KIT_ROOT: files.root } });
   assert.equal(plain.status, 0, plain.all);
   assert.match(plain.stdout, /^Kit brief: build the Orbit card KIT-1 in `demo`/m);
+  // kit pr reads a card key as a card only on an Orbit project, so here the card lands by its title.
+  assert.match(plain.stdout, /`scripts\/agents\/kit review` and `scripts\/agents\/kit pr --title 'A settings panel with a colour field \(KIT-1\)'` into `dev`/);
+  assert.doesNotMatch(plain.stdout, /--ticket KIT-1/);
   // A ticket file at that very path still wins.
   writeFileSync(join(files.root, "KIT-1"), ticketText("- `src/x.ts`"));
   const file = await runAsync(kit, ["brief", "KIT-1"], { cwd: files.root, env: { ...env, KIT_ROOT: files.root } });
@@ -397,7 +401,10 @@ test("brief: a card or ticket with no Done when list gets a warning, since its p
   // A task has no list to check: its proof lines follow the note.
   const task = f.run(["--task", "Fix it", "--owner", "cf-1", "--note", "Make the login button work."]);
   assert.doesNotMatch(task.stderr, /Done when/);
-  assert.match(task.stdout, /^Proof: for each thing the note asks for, one line: `<what> — met: <what you really tried on the real thing>`/m);
+  assert.match(task.stdout, /^Proof: for each thing the note asks for, one line: `<what>: met — <what you really tried on the real thing>`/m);
+  // The grill's answers are where each source keeps them.
+  assert.match(task.stdout, /its answers are in the note below\./);
+  assert.match(f.run(["docs/tickets/07-panel.md"]).stdout, /its answers are in the ticket's `## Resolution` sections\./);
 });
 
 test("brief: every stage carries the Messages to Lex rule from the rulebook, the one source, with its example", t => {

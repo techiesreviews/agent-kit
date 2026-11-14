@@ -5,7 +5,7 @@ import { basename, join } from "node:path";
 import { builderChecks, plainEnglish, reviewFormat, ticketReviewBrief } from "./review-brief.mjs";
 import { kitMessagesToLexRule, kitReviewLoopRule, kitRulebookPins, kitSliceBranch } from "./kit-lib.mjs";
 import { map, modelFamily, pickSkills, readTicket, skillLine } from "./skills.mjs";
-import { cardNaming } from "./ticket-cards.mjs";
+import { cardNaming, onOrbit } from "./ticket-cards.mjs";
 import { lookFamily, lookFamilyWords, secondLookTable } from "./pr-tier.mjs";
 
 export { map, modelFamily, pickSkills, readTicket, skillLine, skillSettingsProblems } from "./skills.mjs";
@@ -94,7 +94,8 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
         `Build it, then \`scripts/agents/kit review\` and \`scripts/agents/kit pr --title ${shellQuote(task)}\` into \`${land}\` (checks for the change's tier, the second look, CI, merge), each under \`kit go\`. Link the PR with T3 \`link_pull_request\`.`,
         "Report every RESULT line, the PR URL and the merge SHA.",
       ] : stage === "build" ? [
-        `Build it, then \`scripts/agents/kit review${card ? "" : ` --ticket ${ticket}`}\` and \`scripts/agents/kit pr --ticket ${ticket}\` into \`${land}\` (checks for the change's tier, the second look, CI, merge), each under \`kit go\`. Link the PR with T3 \`link_pull_request\`.`,
+        // kit pr reads a card key as a card only on an Orbit project; elsewhere a card lands by its title.
+        `Build it, then \`scripts/agents/kit review${card ? "" : ` --ticket ${ticket}`}\` and \`scripts/agents/kit pr ${card && !onOrbit(settings) ? `--title ${shellQuote(`${card.title} (${ticket})`)}` : `--ticket ${ticket}`}\` into \`${land}\` (checks for the change's tier, the second look, CI, merge), each under \`kit go\`. Link the PR with T3 \`link_pull_request\`.`,
         `The ${card ? "card's" : "ticket's"} own "Kit commands and evidence" section adds to this. Report every RESULT line, the PR URL and the merge SHA.`,
       ] : [
         `For each finding you decline, give it with its reason in your report: \`scripts/agents/kit review${task || card ? "" : ` --ticket ${ticket}`}\` reads declined findings with their reasons.`,
@@ -119,7 +120,7 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
   // TOOLS-235 (Lex, 2026-11-14): every card starts with a grill for Lex in its own thread, and anything he sees or clicks
   // gets a prototype he tries first; bug fixes and work behind the scenes skip the prototype, not the grill.
   if (stage === "build") section("Grill and prototype", [
-    `Grill first: the question round with Lex in its own thread comes before any build; its answers are in ${task ? "the note below" : card ? "the card's comments" : "the ticket's comments"}. A question still open, or a choice you would have to guess, goes back to the lead: never guess an answer for Lex.`,
+    `Grill first: the question round with Lex in its own thread comes before any build; its answers are in ${task ? "the note below" : card ? "the card's comments" : "the ticket's `## Resolution` sections"}. A question still open, or a choice you would have to guess, goes back to the lead: never guess an answer for Lex.`,
     "Anything Lex sees or clicks follows the prototype he tried and approved (linked from the card); a bug fix or work behind the scenes has no prototype, but still has its grill. Once it lands, Lex tries the result next to the prototype.",
   ]);
   section("House rules", [
@@ -159,7 +160,7 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
   if (reviewing) out.push(reviewFormat.trimEnd());
   else if (stage === "fix") out.push("Report each finding as fixed or declined (with the reason), the RESULT lines, and the new head.", "Last line: FIXED <n>, DECLINED <n>, head <SHA>.");
   else out.push(task
-    ? "Proof: for each thing the note asks for, one line: `<what> — met: <what you really tried on the real thing>` (the test that failed first and now passes, a command and what it printed, what you clicked on the preview and saw), or `<what> — not met: <why>`; checks passing is not proof on its own. A bug fix shows its failing test first. Put the same lines in the PR text."
+    ? "Proof: for each thing the note asks for, one line: `<what>: met — <what you really tried on the real thing>` (the test that failed first and now passes, a command and what it printed, what you clicked on the preview and saw), or `<what>: not met — <why>`; checks passing is not proof on its own. A bug fix shows its failing test first. Put the same lines in the PR text."
     : "Proof: for each \"Done when\" item, one line: `Done when <n>: met — <what you really tried on the real thing>` (the test that failed first and now passes, a command and what it printed, what you clicked on the preview and saw), or `Done when <n>: not met — <why>`; checks passing is not proof on its own. A bug fix shows its failing test first. Put the same lines in the PR text.",
   "Report the proof lines, the RESULT lines, the PR URL and the merge SHA.", "Last line: PR <full URL>, head <SHA>, checks and reviews <state>.");
   out.push("", `kit-brief: ${version} ${ticket} ${stage}`);
