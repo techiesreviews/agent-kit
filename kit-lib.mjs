@@ -1,6 +1,6 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { accessSync, closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, delimiter, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { findingsRecord } from "./review-findings.mjs";
 
@@ -444,6 +444,89 @@ export function kitWinProcesses(pid) {
     throw new Error(`cannot read the process list (powershell.exe Get-CimInstance Win32_Process): ${read.error?.message ?? (oneLine(read.stderr ?? "").trim() || `exit ${read.status}`)}`);
   // The powershell.exe reading the list is in it, as a child of the caller: it is never a job's process.
   return kitWinProcessList(read.stdout).filter(entry => entry.pid !== read.pid);
+}
+
+/**
+ * How a Windows job's command starts. Windows starts only a program file itself (an .exe or .com; Node refuses a .cmd
+ * or .bat without a shell), so the command's first word is looked up as Windows does (a word with a folder from the
+ * job's folder, a bare name on PATH; in each folder .com, .exe, .bat, .cmd, then the name as it is): a .cmd or .bat
+ * runs through cmd.exe /d /s /c with each argument escaped for cmd, and any other file that is not a program (a shell
+ * script, with or without a #! line) runs through Git Bash's bash.exe, its words handed over in the environment, never
+ * on a command line. A program, or a word not found, starts as given, as before. Gives { program, args, options } for
+ * spawn; throws a plain message when the job needs a bash that is not there, or a cmd.exe argument it cannot carry.
+ */
+export function kitWinLaunch(command, { cwd = process.cwd(), env = process.env } = {}) {
+  const direct = { program: command[0], args: command.slice(1), options: {} };
+  const file = winFind(command[0], cwd, env);
+  const extension = file ? extname(file).toLowerCase() : "";
+  if (!file || [".exe", ".com"].includes(extension)) return direct;
+  if ([".cmd", ".bat"].includes(extension)) return winCmd(file, command.slice(1), env);
+  const head = winHead(file);
+  // A program by its first bytes: Windows' MZ, or ELF for a stubbed Windows run on Linux (KIT_BG_PLATFORM=win32).
+  if (head.startsWith("MZ") || head.startsWith("\x7fELF")) return direct;
+  return winBash(file, command.slice(1), head.startsWith("#!"), env);
+}
+
+const winExtensions = [".com", ".exe", ".bat", ".cmd"];
+const winPath = env => (env.PATH ?? env.Path ?? "").split(delimiter).filter(Boolean);
+function winFile(path) {
+  try { return statSync(path).isFile(); } catch { return false; }
+}
+function winFind(word, cwd, env) {
+  if (!word) return null;
+  const names = winExtensions.includes(extname(word).toLowerCase()) ? [word] : [...winExtensions.map(extension => word + extension), word];
+  const folders = /[\\/]/.test(word) || isAbsolute(word) ? [cwd] : winPath(env);
+  for (const folder of folders) for (const name of names) if (winFile(resolve(folder, name))) return resolve(folder, name);
+  return null;
+}
+function winHead(file) {
+  const fd = openSync(file, "r");
+  try {
+    const bytes = Buffer.alloc(4);
+    return bytes.toString("latin1", 0, readSync(fd, bytes, 0, 4, 0));
+  } finally { closeSync(fd); }
+}
+
+/**
+ * Git Bash's bash.exe: on PATH, else beside the git.exe on PATH (Git for Windows puts <Git>\cmd there), else where Git
+ * for Windows installs it. WSL's bash.exe (in the Windows folder, or the Store's WindowsApps alias) runs Linux, not Git
+ * Bash, and is passed over. Null when there is none.
+ */
+export function kitWinBash(env = process.env) {
+  const windowsFolders = [env.SystemRoot, env.windir].filter(Boolean).map(folder => `${resolve(folder).toLowerCase()}${sep}`);
+  const wsl = file => windowsFolders.some(folder => file.toLowerCase().startsWith(folder)) || /[\\/]windowsapps[\\/]/i.test(file);
+  const nextToGit = winPath(env).map(folder => join(folder, "git.exe")).filter(winFile).map(git => resolve(dirname(git), "..", "bin", "bash.exe"));
+  const installed = [env.ProgramW6432, env.ProgramFiles, env["ProgramFiles(x86)"]].filter(Boolean).map(folder => join(folder, "Git", "bin", "bash.exe"));
+  if (env.LOCALAPPDATA) installed.push(join(env.LOCALAPPDATA, "Programs", "Git", "bin", "bash.exe"));
+  return [...winPath(env).map(folder => join(folder, "bash.exe")), ...nextToGit, ...installed].find(file => !wsl(file) && winFile(file)) ?? null;
+}
+
+// Git Bash reads a Windows command line its own way (it globs bare words and takes ' as a quote), so a job's words
+// reach it in KIT_BG_ARG_<n> (KIT_BG_ARGC of them), which this fixed script reads into its words and clears before it
+// runs them: a file with a #! line by exec (Git Bash follows the #! line), one without as a bash script.
+const winBashWords = 'kit_words=(); for ((kit_i = 0; kit_i < KIT_BG_ARGC; kit_i++)); do kit_name=KIT_BG_ARG_$kit_i; kit_words+=("${!kit_name}"); unset "$kit_name"; done; unset KIT_BG_ARGC;';
+function winBash(file, args, shebang, env) {
+  const bash = kitWinBash(env);
+  if (!bash) throw new Error(`${file} is a shell script, and Windows runs one only through Git Bash, but no bash.exe was found (not on PATH, not beside git.exe, not where Git for Windows installs it); install Git for Windows or put its bin folder on PATH`);
+  const words = [file.replaceAll("\\", "/"), ...args];
+  const handed = Object.fromEntries(words.map((word, index) => [`KIT_BG_ARG_${index}`, word]));
+  const run = `${winBashWords} exec ${shebang ? "" : '"$BASH" '}"\${kit_words[@]}"`;
+  return { program: bash, args: ["-c", run], options: { env: { ...env, KIT_BG_ARGC: String(words.length), ...handed } } };
+}
+
+// cmd.exe's special characters, each escaped with ^ (the way cross-spawn runs a .cmd: every argument quoted for the
+// program's own reading, then every special character escaped, quotes too, so cmd sees no quoted part and no operator).
+const cmdSpecial = /([()\][%!^"`<>&|;, *?])/g;
+function winCmd(file, args, env) {
+  if (args.some(arg => /[\r\n]/.test(arg))) throw new Error(`${file} is a .cmd or .bat job, and cmd.exe cannot take an argument with a line break (it ends the command there)`);
+  // An npm shim in node_modules\.bin hands its arguments (%*) to cmd once more: they are escaped twice.
+  const twice = /node_modules[\\/]\.bin[\\/][^\\/]+\.cmd$/i.test(file);
+  const quoted = args.map(arg => {
+    const once = `"${arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, "$1$1")}"`.replace(cmdSpecial, "^$1");
+    return twice ? once.replace(cmdSpecial, "^$1") : once;
+  });
+  const line = [file.replace(cmdSpecial, "^$1"), ...quoted].join(" ");
+  return { program: env.ComSpec ?? env.COMSPEC ?? "cmd.exe", args: ["/d", "/s", "/c", `"${line}"`], options: { windowsVerbatimArguments: true } };
 }
 
 /**
