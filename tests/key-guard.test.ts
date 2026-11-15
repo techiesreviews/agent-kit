@@ -73,6 +73,11 @@ test("the locked paths hold the Orbit, GitHub and Cloudflare keys, Claude's MCP 
   // OpenCode's settings under a moved config folder are hidden from the other CLIs, not from OpenCode.
   assert.ok(lockedPaths("claude", { HOME: "/h", XDG_CONFIG_HOME: "/custom" }).includes("/custom/opencode/opencode.jsonc"));
   assert.ok(!lockedPaths("opencode", { HOME: "/h", XDG_CONFIG_HOME: "/custom" }).includes("/custom/opencode/opencode.json"));
+  // OpenCode 2's database and its journals, wherever they are; Claude's moved config folder.
+  const moved = lockedPaths("grok", { HOME: "/h", XDG_DATA_HOME: "/data", OPENCODE_DB: "/db/oc.db", CLAUDE_CONFIG_DIR: "/cc" });
+  for (const path of ["/h/.local/share/opencode", "/data/opencode", "/db/oc.db", "/db/oc.db-wal", "/cc/.claude.json", "/cc/.credentials.json"]) assert.ok(moved.includes(path), path);
+  const ownClaude = lockedPaths("claude", { HOME: "/h", CLAUDE_CONFIG_DIR: "/cc" });
+  assert.ok(ownClaude.includes("/cc/.claude.json") && !ownClaude.includes("/cc/.credentials.json"), "Claude keeps its own login, never its MCP config");
   assert.ok(lockedPaths("claude", { HOME: "/h", KIT_API_KEY_FILE: "/keys/api" }, { apiRoute: true }).includes("/keys/api"));
   assert.ok(lockedPaths("claude", { HOME: "/h" }, { apiRoute: true }).includes("/h/.claude/.credentials.json"), "the API route signs in with its key");
 });
@@ -249,12 +254,16 @@ test("a link inside a key folder locks what it points at, through both paths; a 
   assert.ok(deeper.paths.includes(join(vault, "token")), deeper.paths.join(" "));
   const vaultRead = spawnSync("bwrap", [...bwrapArgs(deeper.paths), "--", "cat", join(vault, "token")], { encoding: "utf8" });
   assert.ok(!vaultRead.stdout.includes(dummy));
+  // A folder too wide to search is refused rather than half searched.
+  const wide = join(dir, "wide"); mkdirSync(wide);
+  for (let i = 0; i <= 2000; i++) writeFileSync(join(wide, `f${i}`), "");
+  assert.match(linkTargets([wide], { keep: [home] }).unsafe[0], /wide \(too large to search for links\)$/);
   // A link to /usr or to a folder holding HOME cannot be hidden without breaking the run: refused, in words.
   symlinkSync("/usr", join(home, ".config/gh/usr"));
   symlinkSync(dir, join(home, ".config/gh/up"));
   assert.deepEqual(linkTargets([join(home, ".config/gh")], { keep: [home] }).unsafe.sort(), [`${join(home, ".config/gh/up")} -> ${dir}`, `${join(home, ".config/gh/usr")} -> /usr`].sort());
   assert.throws(() => keyGuard({ cli: "claude", kind: "build", common: join(dir, "repo/.git"), env: { HOME: home, PATH: process.env.PATH } }),
-    /cannot lock the key files for this build: a link inside a key folder points at a folder the lock cannot hide \(.*\); move the keys into a folder of their own/);
+    /cannot lock the key files for this build: a key folder links to a folder the lock cannot hide, or cannot be searched for links \(.*\); move the keys into a folder of their own/);
 });
 
 test("kit doctor's note says whether the lock is on, off or cannot start", t => {
