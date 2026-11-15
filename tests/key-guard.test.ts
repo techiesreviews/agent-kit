@@ -203,7 +203,7 @@ writeFileSync(process.env.FAKE_SEEN, JSON.stringify({ key: process.env.ANTHROPIC
 
 test("PROOF: Codex's own sandbox with the kit's profile cannot read a dummy key file and can write the worktree", { skip: !bwrapUsable ? noBwrap : spawnSync("sh", ["-c", "command -v codex"]).status !== 0 && "codex is not installed" }, t => {
   const { dir, home, files } = keyHome(t);
-  const root = join(dir, "work"); mkdirSync(root);
+  const root = join(dir, "work"), codexTmp = join(dir, "tmp"); mkdirSync(root); mkdirSync(codexTmp);
   // kit review's Codex home links auth.json to the real login: the link's target is what gets hidden.
   const reviewHome = join(dir, "codex-home"); mkdirSync(reviewHome);
   symlinkSync(files.codexAuth, join(reviewHome, "auth.json"));
@@ -219,7 +219,8 @@ test("PROOF: Codex's own sandbox with the kit's profile cannot read a dummy key 
   const profile = codexProfile("build", join(dir, "common"), paths);
   const run = spawnSync("codex", ["sandbox", ...profile, "--", "sh", "-c", `cat ${JSON.stringify(files.orbit)}; echo rc=$?; cat ${JSON.stringify(join(reviewHome, "auth.json"))}; cat ${JSON.stringify(join(runtime, "xauth"))}; cat ${JSON.stringify(join(ghElsewhere, "hosts.yml"))}; touch built && echo built-ok`],
     // Its own temporary HOME and CODEX_HOME: the test never touches the real ~/.codex.
-    { cwd: root, encoding: "utf8", timeout: 60_000, env: { ...process.env, HOME: home, CODEX_HOME: reviewHome } });
+    // Codex keeps sandbox state in TMPDIR: the test's own folder, removed with it.
+    { cwd: root, encoding: "utf8", timeout: 60_000, env: { ...process.env, HOME: home, CODEX_HOME: reviewHome, TMPDIR: codexTmp } });
   const said = run.stdout + run.stderr;
   assert.ok(!said.includes(dummy), "the dummy key was readable");
   assert.match(said, /Permission denied/); assert.match(said, /rc=1/); assert.match(said, /built-ok/);
