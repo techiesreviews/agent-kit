@@ -1150,6 +1150,10 @@ test("kit ux saves its result for the branch, with the visible files as it check
   assert.equal(run([], { FAKE_AGENT_FAIL: "1" }).status, 1);
   assert.deepEqual([saved().ok, saved().unfinished, saved().partial], [false, true, null]);
   assert.match(saved().summary, /scripted findings, the review did not finish$/);
+  // An unfinished result is no verdict, so a later half run for the same change replaces it, and --not-visible fits.
+  assert.equal(run(["--no-review"]).status, 0);
+  assert.deepEqual([saved().ok, saved().partial], [true, "--no-review"]);
+  assert.equal(uxGuard({ branch: "build/sf-1-panel", files: saved().files, record: saved(), notVisible: "same look", featureList: saved().list }).ok, true);
   assert.equal(run([], { FAKE_VERDICTS: JSON.stringify({ "F-media-02": "broken" }) }).status, 1);
   assert.deepEqual([saved().ok, saved().unfinished], [false, false]);
   // A run that does not finish never replaces a verdict for the same change either: broken stays broken.
