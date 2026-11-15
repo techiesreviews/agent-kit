@@ -5,7 +5,7 @@ import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, 
 import { basename, dirname, join, matchesGlob, normalize, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { citedRules, parseRules, parseUxResult, replacedIds, uxBrief, uxCounts, uxReport } from "../ux-brief.mjs";
-import { changedPaths, coverageHash, parseFeatures, saveUxResult, touchedFeatures, visibleFiles } from "../ux-gate.mjs";
+import { changedPaths, coverageHash, parseFeatures, sameFiles, saveUxResult, touchedFeatures, visibleFiles } from "../ux-gate.mjs";
 
 const { kitHome, kitRoot, kitMainRoot, kitOwner, kitResult, kitScore, kitSettingsFile, scoreCost } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
@@ -16,7 +16,8 @@ const usage = `Usage: kit ux [--base REF] [--features F-…,…] [--all] [--no-r
        kit ux --help
 Touched features: the diff against the merge-base with --base (default origin/<land>,
 branches.land in scripts/agents/kit.json), plus uncommitted and untracked files (a renamed
-file under both its names), matched against each feature's Files globs in docs/agents/features.md. --features names them
+file under both its names), matched against each feature's Files globs in
+docs/agents/features.md. --features names them
 instead; --all takes every feature.
 Tries: each feature's Steps file through the project's own kit shots (in the folder "commands"
 names in scripts/agents/kit.json) --steps at 1280 px (and 390 px when Phone: yes), light and
@@ -41,7 +42,8 @@ Result for kit pr: each run saves its result for the branch under <main root>/.s
 files (paths.visible in scripts/agents/kit.json) as it checked them and the listed features that cover the change. kit
 pr lands a visible change only with a result that passed for those files and those features as they are then (a list
 edit about other features changes nothing); one made with --no-review or --features is partial: it does not count, and
-it never replaces a whole run's result for the same change.
+it never replaces a whole run's result for the same change. No result is saved when HEAD or a visible file moved
+during the run.
 When no listed feature covers any changed file, nothing is tried: a note names the visible file, and kit pr says
 "UX check: nothing to try".
 KIT_UX_SHOTS and KIT_UX_AGENT: executables replacing the project's kit shots and agent.sh, same arguments (tests).
@@ -568,6 +570,11 @@ async function main() {
     const visible = visibleFiles(root, flags.base, settings), list = coverageHash(root, flags.base);
     const saveResult = (ok, summary, more = {}) => {
       if (startBranch === "detached") return;
+      // As for the scoreboard: what was shot and judged must be the tree the result names.
+      if (git("rev-parse", "HEAD").trim() !== startHead || (git("branch", "--show-current").trim() || "detached") !== startBranch || !sameFiles(visibleFiles(root, flags.base, settings), visible)) {
+        console.log("note: HEAD or a visible file moved during kit ux, so no result is saved for kit pr; run kit ux again");
+        return;
+      }
       const kept = saveUxResult(kitMainRoot(), { branch: startBranch, head: startHead, files: visible, list, ok, summary, partial: null, ...more });
       if (kept) console.log(`note: the result saved for kit pr stays the whole run's (${kept.ok === true ? "passed" : "did not pass"}, kit ux at ${String(kept.head ?? "").slice(0, 7)}); a run with ${more.partial} does not replace it`);
     };
@@ -728,7 +735,9 @@ async function main() {
     // The saved summary goes in a PR's text, so it names no folder of this machine.
     const summary = [`${tried.length} features tried, ${findingLines.length} scripted findings`, ...counts,
       ...failed.slice(0, failed.length - (review?.problem ? 1 : 0)), ...review?.problem ? ["the review did not finish"] : []].join(", ");
-    saveResult(!failed.length, summary, { partial: flags.noReview ? "--no-review" : flags.features.length ? "--features" : null, bundle: out });
+    // A run that failed without calling a feature broken (a screens run, the reviewer) is no verdict on the change.
+    saveResult(!failed.length, summary, { partial: flags.noReview ? "--no-review" : flags.features.length ? "--features" : null, bundle: out,
+      ...failed.length ? { unfinished: !brokenIds.length } : {} });
     kitResult(failed.length ? "fail" : "ok", [`ux ${tried.length} features tried, ${findingLines.length} scripted findings`, ...counts, `bundle ${out}`, ...failed].join(", "));
     return failed.length ? 1 : 0;
   } catch (error) {

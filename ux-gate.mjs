@@ -82,8 +82,8 @@ export function coverageHash(root, base) {
 
 /**
  * Saves kit ux's result for a branch: { branch, head, files, list, ok, summary, partial, bundle }, where `list` is the
- * hash of the features that covered the change (coverageHash), and `nothing: true` when none did, so nothing was
- * tried. The newest one counts, except that a partial run leaves a whole run's result for the same change in place:
+ * hash of the features that covered the change (coverageHash), `nothing: true` when none did, so nothing was tried, and
+ * `unfinished: true` when the run failed without calling any feature broken (the reviewer did not finish, say). The newest one counts, except that a partial run leaves a whole run's result for the same change in place:
  * that result is then returned, and null when the new one was saved.
  */
 export function saveUxResult(mainRoot, record) {
@@ -97,7 +97,8 @@ export function saveUxResult(mainRoot, record) {
   renameSync(temporary, file);
   return null;
 }
-const sameFiles = (a, b) => Object.keys(a).length === Object.keys(b).length && Object.keys(a).every(path => a[path] === b[path]);
+/** Whether two visible changes (visibleFiles) are the same paths with the same text. */
+export const sameFiles = (a, b) => Object.keys(a).length === Object.keys(b).length && Object.keys(a).every(path => a[path] === b[path]);
 
 /** The result kit ux last saved for a branch; null when there is none, or it cannot be read. */
 export function readUxResult(mainRoot, branch) {
@@ -123,10 +124,10 @@ export function uxGuard({ branch, files, record, notVisible, featureList }) {
   // for it after kit ux ran was never tried).
   const file = mine && [...new Set([...paths, ...Object.keys(mine.files)])].sort().find(path => files[path] !== mine.files[path]);
   const moved = file ? `${file} changed` : mine && featureList && (mine.list ?? null) !== featureList ? `the features in ${uxFeatureList} that cover the change are not the ones kit ux tried at ${at}` : null;
-  // kit ux tried exactly this change and it did not pass, in a whole run or a partial one: a person does see it, so no
-  // reason makes it "not visible".
+  // kit ux tried exactly this change and called a feature broken, in a whole run or a partial one: a person does see
+  // it, so no reason makes it "not visible". A run that did not finish (the reviewer was down, say) is no such verdict.
   const failed = mine && !moved && mine.ok !== true;
-  if (notVisible && failed) return { ok: false, line: `UX check: failed (kit ux at ${at}: ${mine.summary})`,
+  if (notVisible && failed && !mine.unfinished) return { ok: false, line: `UX check: failed (kit ux at ${at}: ${mine.summary})`,
     problem: "kit ux tried this change and it did not pass, so --not-visible does not fit it; fix what kit ux found and run `scripts/agents/kit ux` again" };
   if (notVisible) return { ok: true, line: `UX check: not visible (${notVisible.replace(/\s*[\r\n]+\s*/g, " ").trim()}); ${paths[0]} is a visible path` };
   if (!featureList) return { ok: true, line: `UX check: skipped (no ${uxFeatureList}, so kit ux has nothing to try); ${paths[0]} is visible` };
@@ -138,7 +139,7 @@ export function uxGuard({ branch, files, record, notVisible, featureList }) {
   if (mine.partial) return { ok: false, line: `UX check: partial; kit ux ran with ${mine.partial}`,
     problem: `kit ux ran with ${mine.partial}, so it did not check the whole change; run \`scripts/agents/kit ux\` without it` };
   if (failed) return { ok: false, line: `UX check: failed (kit ux at ${at}: ${mine.summary})`,
-    problem: "kit ux did not pass for this change; fix what it found and run `scripts/agents/kit ux` again" };
+    problem: mine.unfinished ? "kit ux did not finish for this change; run `scripts/agents/kit ux` again" : "kit ux did not pass for this change; fix what it found and run `scripts/agents/kit ux` again" };
   // No feature in the list covers the changed files, so kit ux tried and reviewed nothing: it lands, as it did in kit
   // slice, but the PR never calls that "ok".
   if (mine.nothing) return { ok: true, line: `UX check: nothing to try (kit ux at ${at}: no feature in ${uxFeatureList} covers ${paths[0]})` };

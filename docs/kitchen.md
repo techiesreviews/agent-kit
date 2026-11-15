@@ -368,8 +368,8 @@ OpenCode settings (default model, global instructions) do not apply to the revie
   change as they are then, and puts a `UX check:` line in the PR text; a later change to a visible
   file or to one of those features, a rebase's too, needs `kit ux` again (a list edit about other
   features does not). A change that matches those paths but shows a person nothing new lands with
-  `kit pr --not-visible "<reason>"` (refused when `kit ux` tried that very change and it did not
-  pass); `--waive` does not cover the UX check. A project with no feature list for `kit ux`
+  `kit pr --not-visible "<reason>"` (refused when `kit ux` tried that very change and called a
+  feature broken); `--waive` does not cover the UX check. A project with no feature list for `kit ux`
   (`docs/agents/features.md`) gets `UX check: skipped`, and a change no listed feature covers gets
   `UX check: nothing to try`, never "ok". `kit slice` keeps its own UX step after the code review:
   broken gets one fix round and stops the slice only if still broken, looks off gets one fix round
