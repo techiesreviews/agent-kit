@@ -177,8 +177,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   cannot be read fails the command (`kit bg --list` shows the job as `unknown (…)`), never reads as an ended job;
   only when it keeps failing while a job that has finished waits for its leftover processes does the job give up
   after ten tries and record its own exit status, and its log says so.
-  `kit go` looks once a second there (a process list takes about 0.4s). `KIT_BG_PLATFORM=win32` picks the Windows
-  way by hand (tests, with fake `powershell.exe`, `taskkill`, `bash.exe` and `cmd.exe`). A job's command is started
+  `kit go` looks once a second there (a process list takes about 0.4s). `KIT_BG_PLATFORM=win32` picks the Windows way
+  by hand (tests, with fake `powershell.exe`, `taskkill`, `bash.exe` and `cmd.exe`). A job's command is started
   without a shell, as on Linux, unless it is a `.cmd`, `.bat` or shell script: Windows starts only a program itself
   (an `.exe` or `.com`; Node refuses a `.cmd` or `.bat` without a shell), so its first word is looked up as Windows
   does (a word with a folder in the job's folder; a bare name in the job's folder, then on `PATH`, as Node looks): a
@@ -186,16 +186,16 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   an extension of its own first as it is. A `.cmd` or `.bat` runs through `cmd.exe /d /s /c` (`ComSpec`), each
   argument quoted and every cmd special character escaped with `^` (cross-spawn's way), so each argument stays in its
   quotes when the batch file reads it again (`%1`, or `%*` handed on); an argument with a `"` of its own, which would
-  end those quotes early, or with a line break, is refused. Any other file that is not a program (a shell script such as `scripts/agents/kit`,
-  with or without a `#!` line) runs through Git Bash's `bash.exe`: on `PATH`, else beside the `git.exe` on `PATH`,
-  else under `ProgramW6432`, `ProgramFiles`, `ProgramFiles(x86)` or `LOCALAPPDATA\Programs` in `Git\bin`, never
-  WSL's `bash.exe` in the Windows folder or `WindowsApps`. Git Bash would glob bare words of a command line and take
-  `'` as a quote, so the words reach it in `KIT_BG_ARGC` and `KIT_BG_ARG_<n>`, which a fixed script reads and clears
-  before it runs them (by `exec` for a file with a `#!` line, which Git Bash follows; as a bash script for one
-  without); as in any Git Bash, a program it starts that is not Git Bash's own gets path-like words in Windows form.
-  Without Git Bash such a job does not start: `kit bg` fails with a plain message and records nothing. A Windows
-  program with no extension at all is refused too (Node adds `.com` or `.exe` to such a name). A program, or a word not found,
-  starts as given, as before.
+  end those quotes early, or with a line break, is refused. Any other file that is not a program (a shell script such
+  as `scripts/agents/kit`, with or without a `#!` line) runs through Git Bash's `bash.exe`: on `PATH`, else beside the
+  `git.exe` on `PATH`, else under `ProgramW6432`, `ProgramFiles`, `ProgramFiles(x86)` or `LOCALAPPDATA\Programs` in
+  `Git\bin`, never WSL's `bash.exe` in the Windows folder or `WindowsApps`. Git Bash would glob bare words of a
+  command line and take `'` as a quote, so the words reach it in `KIT_BG_ARGC` and `KIT_BG_ARG_<n>`, which a fixed
+  script reads and clears before it runs them (by `exec` for a file with a `#!` line, which Git Bash follows; as a
+  bash script for one without); as in any Git Bash, a program it starts that is not Git Bash's own gets path-like
+  words in Windows form. Without Git Bash such a job does not start: `kit bg` fails with a plain message and records
+  nothing. A Windows program with no extension at all is refused too (Node adds `.com` or `.exe` to such a name). A
+  program, or a word not found, starts as given, as before.
 - Two hooks back this up. `brief-guard` (Claude `PreToolUse` on `mcp__t3-code__delegate_task` and `Agent|Task`)
   refuses a brief without the marker; research, review-only and question tasks start with
   `kit-brief: none (<reason>)`, and the read-only agent types (Explore, Plan) pass. `stop-guard` (Claude and Codex
