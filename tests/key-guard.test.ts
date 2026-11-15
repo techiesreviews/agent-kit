@@ -65,6 +65,9 @@ test("the locked paths hold the Orbit, GitHub and Cloudflare keys, Claude's MCP 
   assert.ok(!claude.includes("/h/.claude/.credentials.json"), "Claude must still sign in");
   const codex = lockedPaths("codex", { HOME: "/h", CODEX_HOME: "/review-home" });
   for (const path of ["/h/.claude/.credentials.json", "/h/.codex/auth.json", "/h/.codex/config.toml", "/review-home/auth.json"]) assert.ok(codex.includes(path), path);
+  assert.ok(lockedPaths("codex", { HOME: "/h", CODEX_HOME: join(tmpdir(), "ase-codex-home-x") }).includes(join(tmpdir(), "ase-codex-home-x")), "kit review's Codex home is hidden whole");
+  assert.ok(!lockedPaths("codex", { HOME: "/h", CODEX_HOME: "/h/.codex" }).includes("/h/.codex"), "the user's own Codex home is not (its programs live there)");
+  assert.ok(lockedPaths("claude", { HOME: "/h", GH_CONFIG_DIR: "/gh-elsewhere", KUBECONFIG: "/k/config" }).includes("/gh-elsewhere"));
   assert.ok(lockedPaths("claude", { HOME: "/h", KIT_API_KEY_FILE: "/keys/api" }, { apiRoute: true }).includes("/keys/api"));
   assert.ok(lockedPaths("claude", { HOME: "/h" }, { apiRoute: true }).includes("/h/.claude/.credentials.json"), "the API route signs in with its key");
 });
@@ -194,13 +197,17 @@ test("PROOF: Codex's own sandbox with the kit's profile cannot read a dummy key 
   // kit review's Codex home links auth.json to the real login: the link's target is what gets hidden.
   const reviewHome = join(dir, "codex-home"); mkdirSync(reviewHome);
   symlinkSync(files.codexAuth, join(reviewHome, "auth.json"));
+  // A GitHub folder named by GH_CONFIG_DIR, outside HOME.
+  const ghElsewhere = join(dir, "gh-elsewhere"); mkdirSync(ghElsewhere); writeFileSync(join(ghElsewhere, "hosts.yml"), `${dummy}\n`);
   // The display's cookie sits inside the runtime folder, which is hidden whole: listed once.
   const runtime = join(dir, "run"); mkdirSync(runtime); writeFileSync(join(runtime, "xauth"), `${dummy}\n`);
-  const paths = codexPaths(lockedPaths("codex", { HOME: home, CODEX_HOME: reviewHome, XDG_RUNTIME_DIR: runtime, XAUTHORITY: join(runtime, "xauth") }));
-  assert.ok(!paths.includes(join(reviewHome, "auth.json")) && paths.includes(files.codexAuth));
+  const paths = codexPaths(lockedPaths("codex", { HOME: home, CODEX_HOME: reviewHome, XDG_RUNTIME_DIR: runtime, XAUTHORITY: join(runtime, "xauth"), GH_CONFIG_DIR: ghElsewhere }));
+  assert.ok(paths.includes(reviewHome) && paths.includes(files.codexAuth) && paths.includes(ghElsewhere));
+  // Codex swaps the link for a refreshed file mid-run: the folder's mask covers it too.
+  rmSync(join(reviewHome, "auth.json")); writeFileSync(join(reviewHome, "auth.json"), `${dummy}\n`);
   assert.ok(paths.includes(runtime) && !paths.includes(join(runtime, "xauth")));
   const profile = codexProfile("build", join(dir, "common"), paths);
-  const run = spawnSync("codex", ["sandbox", ...profile, "--", "sh", "-c", `cat ${JSON.stringify(files.orbit)}; echo rc=$?; cat ${JSON.stringify(join(reviewHome, "auth.json"))}; cat ${JSON.stringify(join(runtime, "xauth"))}; touch built && echo built-ok`],
+  const run = spawnSync("codex", ["sandbox", ...profile, "--", "sh", "-c", `cat ${JSON.stringify(files.orbit)}; echo rc=$?; cat ${JSON.stringify(join(reviewHome, "auth.json"))}; cat ${JSON.stringify(join(runtime, "xauth"))}; cat ${JSON.stringify(join(ghElsewhere, "hosts.yml"))}; touch built && echo built-ok`],
     // Its own temporary HOME and CODEX_HOME: the test never touches the real ~/.codex.
     { cwd: root, encoding: "utf8", timeout: 60_000, env: { ...process.env, HOME: home, CODEX_HOME: reviewHome } });
   const said = run.stdout + run.stderr;
