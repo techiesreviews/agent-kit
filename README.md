@@ -255,9 +255,10 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   sockets and the display are dropped; each CLI keeps only its own sign-in. Known limits: a CLI's own login stays
   readable to it (Claude's `~/.claude/.credentials.json`, Grok's `~/.grok/auth.json`; Codex hides its own), loopback
   services and abstract sockets stay reachable, and a helper thread T3 starts (`delegate_task`) is not started by the kit
-  and is outside the lock. At start-up the lock tries, from inside bubblewrap, to read through `/proc` and to reach the X
-  display without its cookie; where either works (a setuid bwrap, a display that lets the user in by name) it refuses
-  to run and says why. A build on the API route is refused under the lock (its Claude sandbox cannot start inside it).
+  and is outside the lock. At start-up the lock tries, from inside bubblewrap, to read through `/proc` (where that works,
+  as with a setuid bwrap, it refuses to run) and to reach the X display without its cookie: a display that lets the user
+  in by name (some desktops set `xhost +si:localuser` at every start) stays reachable, which `kit doctor` and the run's
+  log say as a warning while the lock stays on. A build on the API route is refused under the lock (its Claude sandbox cannot start inside it).
   `ASE_KEY_GUARD=off` runs without the lock and writes a warning in the run's log.
 - Keyed steps happen only in the lead's own process, never inside a locked run. Already the lead's: `git push`, `kit pr`
   (push, PR, merge, card close) and `kit pr --release` (the build contract leaves a builder's changes unstaged). Moved to

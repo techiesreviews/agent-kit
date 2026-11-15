@@ -201,10 +201,11 @@ function onPath(command, env) {
 }
 
 // The lock holds only if a process inside it cannot read through another process's root folder in /proc, where
-// nothing is masked (a setuid bwrap makes no user namespace and lets that read through), and cannot reach the display
-// without its cookie (a display that lets the user in by name, xhost +si:localuser, would let it type into any window).
-// The probe runs inside bubblewrap as an agent would, and says "inside" first: only a probe that ran and found both shut
-// counts as safe; a probe that could not run is a problem too.
+// nothing is masked (a setuid bwrap makes no user namespace and lets that read through): the probe runs inside bubblewrap
+// as an agent would and says "inside" first, and only a probe that ran and found /proc shut lets the lock on. It also
+// asks the X display for a cookie-less connection: a display that lets the user in by name (xhost +si:localuser, which
+// some desktops set at every start) would let an agent type into any window. That has no lasting fix on such desktops,
+// and turning the lock off would hand back the keys, so it is a warning (kit doctor, the run's log), never a refusal.
 const probeScript = `
 const { readFileSync } = require("node:fs");
 const { connect } = require("node:net");
@@ -215,17 +216,21 @@ try { readFileSync("/proc/" + pid + "/root" + marker); console.log("proc-open");
 const ask = name => new Promise(done => {
   const socket = connect({ path: "\\0/tmp/.X11-unix/" + name });
   const end = open => { socket.destroy(); done(open); };
-  socket.setTimeout(2000, () => end(false));
-  socket.on("error", () => end(false));
+  socket.setTimeout(3000, () => end("unknown"));
+  socket.on("error", () => end("shut"));
   socket.on("connect", () => socket.write(Buffer.from([0x6c, 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0])));
-  socket.on("data", data => end(data[0] === 1));
+  socket.on("data", data => end(data[0] === 1 ? "open" : "shut"));
 });
 (async () => {
-  for (const name of displays) if (await ask(name)) console.log("display-open " + name);
+  for (const name of displays) {
+    const state = await ask(name);
+    if (state !== "shut") console.log("display-" + state + " " + name);
+  }
   console.log("done");
 })();
 `;
-function escapeProblem(env) {
+// {problem, warning}: problem stops the lock, warning is said beside it.
+function probeLock(env) {
   const dir = mkdtempSync(join(tmpdir(), "ase-key-probe-"));
   try {
     const marker = join(dir, "marker");
@@ -236,30 +241,39 @@ function escapeProblem(env) {
     const result = spawnSync("bwrap", ["--dev-bind", "/", "/", "--tmpfs", dir, ...masks, "--", process.execPath, "-e", probeScript, String(process.pid), marker, ...displays],
       { env, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", timeout: 20_000 });
     const said = String(result.stdout ?? "");
-    if (said.includes("proc-open")) return "a program inside bubblewrap can still read other programs' files through /proc here (a setuid bwrap makes no user namespace); install the distribution's plain bubblewrap";
-    const open = said.match(/^display-open (\S+)$/m)?.[1];
-    if (open) return `the display (${open}) lets programs in without its cookie, so a locked agent could type into any window; on this desktop remove the by-name entry (xhost -si:localuser:$USER)`;
+    if (said.includes("proc-open")) return { problem: "a program inside bubblewrap can still read other programs' files through /proc here (a setuid bwrap makes no user namespace); install the distribution's plain bubblewrap" };
     if (!said.startsWith("inside") || !said.includes("done")) {
-      const why = result.error ? result.error.message : String(result.stderr ?? "").trim().split("\n").at(-1) || `exit ${result.status}`;
-      return `could not check that the lock holds inside bubblewrap (${why}); run bwrap --dev-bind / / -- true to see why`;
+      const why = result.error ? result.error.message : String(result.stderr ?? "").trim().split("\n").at(-1) || "it printed nothing";
+      return { problem: `the start-up check inside bubblewrap gave no answer (${why}); try again, and if it stays, check that Node runs there: bwrap --dev-bind / / -- node -e 1` };
     }
-    return null;
+    const open = said.match(/^display-open (\S+)$/m)?.[1], unknown = said.match(/^display-unknown (\S+)$/m)?.[1];
+    const warning = open ? `the X display ${open} lets programs in without its cookie, so a locked agent could type into an open window; close terminals on that display while agents run`
+      : unknown ? `the X display ${unknown} did not answer the start-up check, so it may let programs in without its cookie` : null;
+    return { problem: null, warning };
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
-let probed;
-/** Whether bubblewrap runs here; checked once per process. bwrap is looked up on PATH. */
+let probed, displayWarning = null;
+/** Whether bubblewrap runs and holds here: null, or the problem in plain words. Checked once per process; bwrap is looked up on PATH. */
 export function bwrapWorks(env = process.env) {
   if (probed === undefined) {
+    displayWarning = null;
     const result = spawnSync("bwrap", ["--dev-bind", "/", "/", "--", "true"], { env, stdio: ["ignore", "ignore", "pipe"], encoding: "utf8", timeout: 15_000 });
     const said = String(result.stderr ?? result.error?.message ?? "").trim().split("\n").at(-1) || `exit ${result.status}`;
     // The usual refusal: the system does not let ordinary users make the namespaces a sandbox needs.
     const blocked = /namespace|uid map|Operation not permitted|Permission denied/i.test(said);
-    probed = result.status === 0 ? escapeProblem(env) : result.error?.code === "ENOENT" ? "bubblewrap (bwrap) is not installed; install it (apt install bubblewrap)"
+    if (result.status === 0) ({ problem: probed, warning: displayWarning } = probeLock(env));
+    else probed = result.error?.code === "ENOENT" ? "bubblewrap (bwrap) is not installed; install it (apt install bubblewrap)"
       : blocked ? `the system blocks the sandboxes bubblewrap makes (${said}); give /usr/bin/bwrap an AppArmor profile that allows user namespaces (Ubuntu's bubblewrap package brings one), or on Ubuntu allow them until the next restart with sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`
       : `bubblewrap (bwrap) cannot start here (${said}); run bwrap --dev-bind / / -- true to see why`;
   }
   return probed;
+}
+
+/** A display the lock cannot shut (see probeLock), or null; known after bwrapWorks. */
+export function keyGuardWarning(env = process.env) {
+  bwrapWorks(env);
+  return displayWarning;
 }
 
 /**
@@ -285,22 +299,25 @@ export function keyGuard({ cli, kind, common, env = process.env, apiRoute = fals
   const outer = bwrapArgs(paths);
   // A CLI that is not installed is started as it is, so the run still fails as a missing CLI (spawn ENOENT), which kit
   // review counts as an unavailable reviewer; nothing runs, so there is nothing to lock.
-  if (!apiRoute) return { env: scrub, bwrap: true, wrap: (command, args) => onPath(command, env) ? ["bwrap", [...outer, "--", command, ...args]] : [command, args], close() {} };
+  const warning = keyGuardWarning(env);
+  if (!apiRoute) return { env: scrub, bwrap: true, warning, wrap: (command, args) => onPath(command, env) ? ["bwrap", [...outer, "--", command, ...args]] : [command, args], close() {} };
   // The API route's wrapper reads its key file first, outside the lock, then runs claude through this script.
   const dir = mkdtempSync(join(tmpdir(), "ase-key-guard-"));
   const script = join(dir, "guard");
   const quote = value => `'${value.replaceAll("'", `'\\''`)}'`;
   writeFileSync(script, `#!/bin/sh\nexec bwrap ${outer.map(quote).join(" ")} -- "$@"\n`);
   chmodSync(script, 0o700);
-  return { env: { ...scrub, KIT_CLAUDE_GUARD: script }, bwrap: true, wrap: (command, args) => [command, args], claudeGuard: script,
+  return { env: { ...scrub, KIT_CLAUDE_GUARD: script }, bwrap: true, warning, wrap: (command, args) => [command, args], claudeGuard: script,
     close() { rmSync(dir, { recursive: true, force: true }); } };
 }
 
-/** kit doctor's note: {state: on|off|problem, text}. Never throws; the lock's state in plain words. */
+/** kit doctor's note: {state: on|warning|off|problem, text}. Never throws; the lock's state in plain words. */
 export function keyGuardReport(env = process.env) {
   if (!keyGuardOn(env)) return { state: "off", text: "off (ASE_KEY_GUARD=off): agents the kit starts can read the key files" };
   const problem = bwrapWorks(env);
-  return problem ? { state: "problem", text: problem }
+  if (problem) return { state: "problem", text: problem };
+  const warning = keyGuardWarning(env);
+  return warning ? { state: "warning", text: `on, but ${warning}` }
     : { state: "on", text: "on (bubblewrap runs; agents the kit starts cannot read the key files)" };
 }
 

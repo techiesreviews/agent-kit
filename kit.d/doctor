@@ -548,6 +548,8 @@ if [[ $quiet == false ]]; then
     case $guard_state in
       problem) api_warning="${api_warning:+$api_warning; }key lock cannot start (see the ✗ key lock line)"
          printf '✗ key lock: %s (the kit'"'"'s Claude, Grok and OpenCode runs stop until it works); fix: the step named above, or set ASE_KEY_GUARD=off to run agents without the lock\n' "$guard_text" ;;
+      warning) api_warning="${api_warning:+$api_warning; }key lock has a gap (see the ✗ key lock line)"
+         printf '✗ key lock: %s (the lock stays on)\n' "$guard_text" ;;
       *) printf 'key lock: %s\n' "$guard_text" ;;
     esac
   fi
