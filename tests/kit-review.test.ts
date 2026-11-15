@@ -424,7 +424,8 @@ for (const model of ["gpt-6.1-sol", "claude-opus-5-5"]) for (const mode of ["ret
     assert.ok(calls[1].args.includes(model.startsWith("claude") ? "--resume" : "resume"));
     if (!model.startsWith("claude")) {
       assert.deepEqual(calls[1].args.slice(0, 2), ["exec", "resume"]);
-      assert.ok(calls[1].args.includes('sandbox_mode="read-only"'));
+      // The key lock's read-only permissions profile (key-guard.mjs) holds the resumed review, as it held the first call.
+      assert.ok(calls[1].args.includes('default_permissions="kit-review"') && calls[1].args.includes("permissions.kit-review.network={enabled=false}"));
       for (const flag of ["-C", "-s", "--ephemeral"]) assert.ok(!calls[1].args.includes(flag));
     }
     const evidence = f.evidence(result.stdout);
@@ -1650,7 +1651,7 @@ test("a GPT row runs Codex read-only at the table's effort, once per PR: a later
   assert.equal(call.cli, "codex");
   assert.equal(call.args[call.args.indexOf("-m") + 1], "gpt-6.1-sol");
   assert.ok(call.args.includes("model_reasoning_effort=high"), call.args.join(" "));
-  assert.equal(call.args[call.args.indexOf("-s") + 1], "read-only");
+  assert.ok(call.args.includes('default_permissions="kit-review"'), call.args.join(" "));
   // The review runs in its own Codex home, never the user's: only the login is shared.
   assert.notEqual(call.home, f.home);
   const firstEvidence = f.evidence(first.stdout);
@@ -1798,7 +1799,7 @@ test("OpenCode at its usage limit hands the second look back to GPT, though GPT 
   assert.deepEqual(f.counts(), { gpt: { "kit-review": 2 } });
   const call = f.calls().at(-1)!;
   assert.ok(call.args.includes("model_reasoning_effort=high"), call.args.join(" "));
-  assert.equal(call.args[call.args.indexOf("-s") + 1], "read-only");
+  assert.ok(call.args.includes('default_permissions="kit-review"'), call.args.join(" "));
 });
 
 test("a Grok that is out of credit, then an OpenCode at its limit, ends on GPT; a working OpenCode never does", (t) => {
@@ -2156,10 +2157,11 @@ test("a second look whose reviewer crashes counts as unavailable: the next model
   assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(handed.stdout), "second-look.json"), "utf8")), { kind: "code", model: opencodeModel, ok: true, branch: "feature/review" });
   // No review came back from the crashed run, so its count is given back.
   assert.deepEqual(f.counts(), { grok: { "kit-review": 0 } });
-  // An exit above 128, the status a shell reports for a crash, counts the same.
+  // An exit above 128, the status a shell reports for a crash, counts the same. Inside the key lock bwrap reports a
+  // killed CLI the same way, so the run names the signal that number stands for.
   const exited = f.run(["--base", "HEAD~1", "--second-look"], { ...budget, FAKE_MODE: "crash-exit", FAKE_CRASH_CLI: "grok" });
   assert.equal(exited.status, 0, exited.stdout + exited.stderr);
-  assert.match(exited.stdout, /^second look: opencode\/deepseek-v4\.1-flash-free takes it \(grok-4\.7 grok crashed \(exit 139\); see /m);
+  assert.match(exited.stdout, /^second look: opencode\/deepseek-v4\.1-flash-free takes it \(grok-4\.7 grok crashed \((exit 139|killed by signal SIGSEGV)\); see /m);
   assert.deepEqual(f.counts(), { grok: { "kit-review": 0 } });
   // Both crash: nothing could look, so the look is skipped, never failed.
   const skipped = f.run(["--base", "HEAD~1", "--second-look"], budget);
