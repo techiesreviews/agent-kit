@@ -1116,18 +1116,50 @@ test("kit ux saves its result for the branch, with the visible files as it check
   // The same files once committed give the same hashes, so the result stays the one for this change.
   git("add", "."); git("commit", "--quiet", "-m", "work");
   assert.deepEqual(visibleFiles(root, "origin/dev", { paths: { visible: ["^src/"] } }), record.files);
-  // A broken verdict is saved as a result that did not pass; --no-review and --features as partial ones.
+  // A broken verdict is saved as a result that did not pass.
   const broken = run([], { FAKE_VERDICTS: JSON.stringify({ "F-media-02": "broken" }) });
   assert.equal(broken.status, 1);
   assert.deepEqual([saved().ok, saved().partial], [false, null]);
   assert.match(saved().summary, /, 1 broken, broken: F-media-02$/);
   assert.doesNotMatch(saved().summary, /bundle /);
+  // A run without the review, or of named features only, never replaces a whole run's result for the same change: the
+  // broken verdict stays, so kit pr --not-visible cannot land what the reviewer called broken.
+  for (const partial of [["--no-review"], ["--features", "F-media-02"]]) {
+    const part = run(partial);
+    assert.equal(part.status, 0, part.stdout + part.stderr);
+    assert.match(part.stdout, new RegExp(`^note: the result saved for kit pr stays the whole run's \\(did not pass, kit ux at ${git("rev-parse", "--short=7", "HEAD")}\\); a run with ${partial[0]} does not replace it$`, "m"));
+    assert.deepEqual([saved().ok, saved().partial], [false, null]);
+  }
+  const talked = uxGuard({ branch: "build/sf-1-panel", files: saved().files, record: saved(), notVisible: "nobody will notice", featureList: saved().list });
+  assert.deepEqual([talked.ok, talked.problem], [false, "kit ux tried this change and it did not pass, so --not-visible does not fit it; fix what kit ux found and run `scripts/agents/kit ux` again"]);
+  // A whole run that passes replaces it, and stays too when a partial run follows.
+  assert.equal(run(["--all"]).status, 0);
+  assert.deepEqual([saved().ok, saved().partial], [true, null]);
+  assert.match(run(["--no-review"]).stdout, /^note: the result saved for kit pr stays the whole run's \(passed, kit ux at /m);
+  assert.deepEqual([saved().ok, saved().partial], [true, null]);
+  // For another change (a visible file edited since) a partial run is the newest result, and it is marked partial.
+  put("src/new-panel.ts", "export const panel = 1;\n");
   assert.equal(run(["--no-review"]).status, 0);
   assert.deepEqual([saved().ok, saved().partial], [true, "--no-review"]);
   assert.equal(run(["--features", "F-media-02"]).status, 0);
   assert.deepEqual([saved().ok, saved().partial], [true, "--features"]);
-  assert.equal(run(["--all"]).status, 0);
-  assert.deepEqual([saved().ok, saved().partial], [true, null]);
+});
+
+test("kit ux tries a feature whose file the change renames away, and saves that feature as covering it", t => {
+  const { root, put, run, git } = fixture(t);
+  put("scripts/agents/kit.json", JSON.stringify({ project: "x", branches: { land: "dev" }, checks: { css: editorColours }, paths: { visible: ["^src/"] } }));
+  git("add", "."); git("commit", "--quiet", "-m", "settings"); git("update-ref", "refs/remotes/origin/dev", "HEAD");
+  // F-media-02 lists only the old path; the new one is in no feature. Git reports this as one rename to the new path.
+  mkdirSync(join(root, "src/elsewhere"), { recursive: true });
+  git("mv", "src/page-builder/media-library-filter.ts", "src/elsewhere/filter.ts");
+  assert.equal(git("diff", "--name-only", "HEAD"), "src/elsewhere/filter.ts");
+  const output = run();
+  assert.equal(output.status, 0, output.stdout + output.stderr);
+  assert.match(output.stdout, /^features: F-media-02$/m);
+  const record = readUxResult(root, "build/sf-1-panel");
+  assert.deepEqual([record.ok, record.nothing, Object.keys(record.files)], [true, undefined, ["src/elsewhere/filter.ts", "src/page-builder/media-library-filter.ts"]]);
+  assert.equal(record.files["src/page-builder/media-library-filter.ts"], "gone");
+  assert.equal(record.list, coverageHash(root, "origin/dev"));
 });
 
 test("kit ux --no-review packs the bundle without a reviewer", t => {
