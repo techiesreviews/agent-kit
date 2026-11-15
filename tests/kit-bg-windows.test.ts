@@ -68,7 +68,9 @@ process.exit(status);
 // or ends a quoted part, and an operator (& | < > ( )) outside one fails, as it would split the command there; the
 // first word ends at a space no caret escaped, and the program splits the rest the Windows C runtime way. With
 // `again`, the rest goes through cmd's carets, quotes and operators once more, as a batch file that hands on %* puts
-// it (what %* gives is not expanded again). Plain JavaScript: the fake cmd.exe runs it.
+// it (what %* gives is not expanded again). cmdBatch gives what the batch file itself reads, %~1 and on: its line
+// split at a space, tab, comma, semicolon or equals sign outside quotes, each word without its surrounding quotes.
+// Plain JavaScript: the fake cmd.exe runs it.
 const cmdReading = String.raw`function cmdRun(line, env, again) {
   if (line[0] !== '"' || line[line.length - 1] !== '"') throw new Error("the line is not in quotes: " + line);
   function percent(text) {
@@ -113,14 +115,26 @@ const cmdReading = String.raw`function cmdRun(line, env, again) {
     if (word !== null) out.push(word);
     return out;
   }
+  function params(s) {
+    var out = [], word = null, quoted = false;
+    for (var i = 0; i < s.length; i++) {
+      var c = s[i];
+      if (!quoted && " \t,;=".indexOf(c) >= 0) { if (word !== null) out.push(word); word = null; continue; }
+      if (c === '"') quoted = !quoted;
+      word = (word === null ? "" : word) + c;
+    }
+    if (word !== null) out.push(word);
+    return out.map(function (each) { return each.length > 1 && each[0] === '"' && each[each.length - 1] === '"' ? each.slice(1, -1) : each; });
+  }
   var chars = pass(percent(line.slice(1, -1)));
   var end = 0;
   while (end < chars.length && !(chars[end][0] === " " && !chars[end][1])) end++;
   var rest = text(chars.slice(end + 1));
+  if (again === "batch") return [text(chars.slice(0, end))].concat(params(rest));
   if (again) rest = text(pass(rest));
   return [text(chars.slice(0, end))].concat(words(rest));
 }`;
-const cmdRun = new Function(`${cmdReading}; return cmdRun;`)() as (line: string, env: Record<string, string>, again?: boolean) => string[];
+const cmdRun = new Function(`${cmdReading}; return cmdRun;`)() as (line: string, env: Record<string, string>, again?: boolean | "batch") => string[];
 // The fake cmd.exe writes the words its line gives the program into win.log.cmd (one JSON list per run) and ends like a job.
 const fakeCmd = `#!${process.execPath}
 const fs = require("fs");
@@ -593,6 +607,14 @@ test("on Windows a job's first word picks how it starts: a program itself, a .cm
   assert.deepEqual(kitWinLaunch(["tool2"], { cwd: root, env: { PATH: [join(root, "early"), join(root, "late")].join(":") } }).program, "tool2");
   file("gradlew.bat", "@echo off\r\n");
   assert.deepEqual(cmdRun(launch("gradlew", "build").args[3], {}), [join(root, "gradlew.bat"), "build"]);
+  // A relative PATH folder is the job's, not the runner's.
+  file("rel/tools/job.cmd", "@echo off\r\n");
+  file("rel/git/bin/bash.exe", "MZ");
+  file("rel/run", "#!/bin/sh\n");
+  const relative = { PATH: "tools:git/bin" };
+  assert.deepEqual(cmdRun(kitWinLaunch(["job"], { cwd: join(root, "rel"), env: relative }).args[3], {}), [join(root, "rel/tools/job.cmd")]);
+  assert.equal(kitWinLaunch(["job"], { cwd: root, env: relative }).program, "job");
+  assert.equal(kitWinLaunch(["./run"], { cwd: join(root, "rel"), env: relative }).program, join(root, "rel/git/bin/bash.exe"));
   file("npm.cmd", "@echo off\r\n");
   assert.deepEqual(cmdRun(launch("npm", "ci").args[3], {}), [join(root, "npm.cmd"), "ci"]);
   file("run.bat", "@echo off\r\n");
@@ -648,16 +670,20 @@ test("a .cmd job's arguments reach its program unchanged, and none reaches cmd a
   const { root, file } = layout(t);
   const job = file("my tools & more (x86)/job.cmd", '@if /i "%~1"=="--help" (echo help) else node x.js %*\r\n');
   const env = { PATH: "", HOME: "C:\\Users\\lex", PATH_: "x" };
-  const nasty = ["plain", "two words", "a&b|c>d<e", "%HOME%", "100%", "%%", "caret^", "!bang!", "trail\\", "back\\slash",
-    "", "(x)", "semi;colon,comma=eq", "star*?", "back`tick", "C:\\Program Files\\x\\", "^&^|"];
+  const nasty = ["plain", "two words", "a&b|c>d<e", "%HOME%", "100%", "%%", "caret^", "!bang!", "back\\slash", "\\\\server\\share",
+    "", "(x)", "semi;colon,comma=eq", "star*?", "back`tick", "C:\\Program Files\\x", "^&^|"];
   const line = (list: string[]) => kitWinLaunch([job, ...list], { cwd: root, env }).args[3];
   // Read once (%1, where %~1 takes off just the quotes) or handed on with %* (read again), each word arrives unchanged.
   assert.deepEqual(cmdRun(line(nasty), env), [job, ...nasty]);
   assert.deepEqual(cmdRun(line(nasty), env, true), [job, ...nasty]);
+  assert.deepEqual(cmdRun(line(nasty), env, "batch"), [job, ...nasty]);
   assert.deepEqual(cmdRun(line(["--help"]), env), [job, "--help"]);
   // A quote of the argument's own would end its quoted part when the batch file reads it again: refused.
   for (const quote of ['say "hi"', 'back\\"slash', 'a"&b', '"'])
     assert.throws(() => kitWinLaunch([job, "fine", quote], { cwd: root, env }), /cmd\.exe cannot hand it an argument with a double quote safely/);
+  // A last backslash reads differently to the batch file and to a program it calls: refused.
+  for (const trail of ["C:\\work\\", "\\", "two\\\\"])
+    assert.throws(() => kitWinLaunch([job, trail], { cwd: root, env }), /ends with a backslash .*leave the last backslash off/);
   assert.throws(() => kitWinLaunch([job, "line\nbreak"], { cwd: root, env }), /cmd\.exe cannot take an argument with a line break/);
   assert.throws(() => kitWinLaunch([job, "line\rbreak"], { cwd: root, env }), /line break/);
 });
@@ -694,7 +720,7 @@ test("bg on Windows runs a .cmd job through cmd.exe /d /s /c, its words unchange
   const folder = join(f.root, "my tools & more");
   mkdirSync(folder);
   writeFileSync(join(folder, "job.cmd"), '@node "%~dp0\\job.js" %*\r\n');
-  const words = ["two words", "a&b|c", "%PATH%", "100%", "caret^", "trail\\", ""];
+  const words = ["two words", "a&b|c", "%PATH%", "100%", "caret^", "C:\\work\\x", ""];
   f.env.FAKE_CMD_EXIT = "5";
   ok(f.bg("win-cmd", "--", join(folder, "job"), ...words));
   const directory = f.directory("win-cmd");
