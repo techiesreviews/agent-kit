@@ -417,7 +417,7 @@ async function reviewBundle({ root, out, git, mergeBase, features, images, rules
     if (status) return failed(status, run, out);
     let parsed = parseUxResult(answer, ids);
     // A feature the answer gave no verdict is asked for once more, in a fresh run; the verdicts given stand. One still
-    // missing after that is "no verdict": reported and counted, but it breaks nothing, so a slice goes on.
+    // missing after that is "no verdict": reported and counted, but it breaks nothing, so a landing goes on.
     if (parsed.missing) {
       console.log(`review: no verdict for ${parsed.missing.join(", ")}; asking the reviewer once more`);
       writeFileSync(brief, `${text}\nYour earlier answer gave no verdict for ${parsed.missing.join(", ")}. Give exactly one verdict line for every feature to judge.\n`);
@@ -581,7 +581,7 @@ async function main() {
     };
     if (!selected.length) {
       saveResult(true, "no listed feature touched", { nothing: true });
-      // The RESULT words are the ones kit slice reads; a visible file no feature covers is said on a line of its own.
+      // The RESULT words are the ones kit pr's UX gate reads; a visible file no feature covers is said on a line of its own.
       const seen = Object.keys(visible);
       if (seen.length) console.log(`note: ${seen[0]}${seen.length > 1 ? ` and ${seen.length - 1} more` : ""} ${seen.length > 1 ? "are visible paths" : "is a visible path"}, but no listed feature covers the change, so nothing was tried`);
       kitResult("ok", "ux nothing visible touched");
@@ -722,7 +722,7 @@ async function main() {
     // Let a signal that arrived during the synchronous work above reach its handler first.
     await new Promise(resolve => setImmediate(resolve));
     stopIfInterrupted();
-    // A failed screens run with no broken try leaves nothing a fix round answers: the slice stops on it anyway.
+    // A failed screens run with no broken try leaves nothing a fix round answers: kit pr stops on it anyway.
     const skipReview = screensFailed.length > 0 && !broken.length;
     if (!flags.noReview && skipReview) console.log("review: skipped, a screens run failed");
     const review = flags.noReview || skipReview ? undefined : await reviewBundle({ root, out, git, mergeBase, features: selected, images: kept.map(image => image.name),

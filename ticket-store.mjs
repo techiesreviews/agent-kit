@@ -1,5 +1,5 @@
-// The kit's ticket store on Orbit: the card rules and guards every ticket action passes, and the seam kit next, slice,
-// pr, status and init --issues use when a project is on Orbit. `ticketSettings` says which store a project uses
+// The kit's ticket store on Orbit: the card rules and guards every ticket action passes, and the seam kit brief,
+// pr and init --issues use when a project is on Orbit. `ticketSettings` says which store a project uses
 // (scripts/agents/kit.json: "tickets": "files"|"orbit", default files, and "orbit": { "project": "<KEY>", "parent":
 // "<KEY-n>" }); `orbitStore` is the Orbit side. The markdown side stays in tickets.mjs.
 import { appendFileSync, chmodSync, closeSync, mkdirSync, openSync, readFileSync, statSync } from "node:fs";

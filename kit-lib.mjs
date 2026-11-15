@@ -562,7 +562,7 @@ export function kitMessagesToLex(home = kitHome()) {
   return kitMessagesToLexRule(home).rule;
 }
 
-/** A slice's branch: build/<owner>-<ticket slug without its number> (kit next and kit brief name it alike). */
+/** A slice's branch: build/<owner>-<ticket slug without its number> (kit brief names it so). */
 export function kitSliceBranch(owner, slug) {
   return `build/${owner}-${slug.replace(/\.md$/i, "").replace(/^\d+-/, "")}`;
 }

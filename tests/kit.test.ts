@@ -729,6 +729,15 @@ test("the real kit lists 18 shared commands: the cut and merged ones are gone, a
   }
 });
 
+test("no command's help sends anyone to the cut commands (kit slice, fix, next, heartbeat, status)", () => {
+  const list = run();
+  for (const name of [...list.stdout.matchAll(/^  (\S+) /gm)].map(match => match[1])) {
+    const help = run([name, "--help"]);
+    assert.equal(help.status, 0, `${name}: ${help.stderr}`);
+    assert.doesNotMatch(help.stdout, /kit (?:slice|fix|next|heartbeat|status)\b|kit next's|\bnext, slice\b|a slice claims/, `kit ${name} --help`);
+  }
+});
+
 test("kit test fixtures start without the kit's home names, so a person's KIT_HOME never reaches them", () => {
   const found = globSync("tests/kit*.test.ts").sort().flatMap(file => kitEnvLeaks(file, readFileSync(file, "utf8")));
   assert.deepEqual(found, [], "use kitEnv() for these fixtures");

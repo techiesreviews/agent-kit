@@ -1,6 +1,6 @@
 // The review loop (Lex, 2026-11-06; after Theo's sol-loop): the budget as a function of risk, the early stop on nits,
 // finding ids and the ledger, and the PR line. The rule text is the "Review loop" section of docs/kitchen.md.
-// The pure parts live here so kit review, kit fix, kit slice and kit pr never read the rules differently.
+// The pure parts live here so kit review and kit pr never read the rules differently.
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
@@ -41,7 +41,7 @@ export function riskyChange({ paths = [], text = "", settings = {} } = {}) {
 }
 
 /**
- * One risk function for every command (kit review, kit pr, kit slice): the paths changed against `base` (a ref), the files a
+ * One risk function for every command (kit review, kit pr): the paths changed against `base` (a ref), the files a
  * ticket names in backticks, and the ticket's words. `ticket` is the ticket file's path or null.
  */
 export function branchRisk({ root, base, ticket, settings }) {
