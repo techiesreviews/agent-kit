@@ -20,9 +20,8 @@
 //
 // Known limits, said plainly: an agent's own CLI must read its own login (Claude's ~/.claude/.credentials.json,
 // Grok's ~/.grok/auth.json), so its tools can too; Codex hides its own login from its commands. Services on the
-// machine's loopback network and abstract sockets stay reachable: the display's X socket among them, which the hidden
-// cookie keeps shut only where the display asks for one (a display set to let the user in without one, xhost
-// +si:localuser, stays open).
+// machine's loopback network and abstract sockets stay reachable. The display's X socket is one of them: the hidden
+// cookie keeps it shut, and the start-up probe refuses to lock on a display that lets the user in without one.
 // ASE_KEY_GUARD=off runs without the lock and says so in the run's log.
 import { spawnSync } from "node:child_process";
 import { accessSync, chmodSync, constants, lstatSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -202,17 +201,49 @@ function onPath(command, env) {
 }
 
 // The lock holds only if a process inside it cannot read through another process's root folder in /proc, where
-// nothing is masked. A setuid bwrap makes no user namespace and lets that read through: then the lock refuses to run.
+// nothing is masked (a setuid bwrap makes no user namespace and lets that read through), and cannot reach the display
+// without its cookie (a display that lets the user in by name, xhost +si:localuser, would let it type into any window).
+// The probe runs inside bubblewrap as an agent would, and says "inside" first: only a probe that ran and found both shut
+// counts as safe; a probe that could not run is a problem too.
+const probeScript = `
+const { readFileSync } = require("node:fs");
+const { connect } = require("node:net");
+const [pid, marker, ...displays] = process.argv.slice(1);
+console.log("inside");
+try { readFileSync("/proc/" + pid + "/root" + marker); console.log("proc-open"); } catch {}
+// An X11 setup request with no cookie on the display's abstract socket: answer 1 means it let us in.
+const ask = name => new Promise(done => {
+  const socket = connect({ path: "\\0/tmp/.X11-unix/" + name });
+  const end = open => { socket.destroy(); done(open); };
+  socket.setTimeout(2000, () => end(false));
+  socket.on("error", () => end(false));
+  socket.on("connect", () => socket.write(Buffer.from([0x6c, 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0])));
+  socket.on("data", data => end(data[0] === 1));
+});
+(async () => {
+  for (const name of displays) if (await ask(name)) console.log("display-open " + name);
+  console.log("done");
+})();
+`;
 function escapeProblem(env) {
   const dir = mkdtempSync(join(tmpdir(), "ase-key-probe-"));
   try {
     const marker = join(dir, "marker");
     writeFileSync(marker, "reachable\n");
-    const result = spawnSync("bwrap", ["--dev-bind", "/", "/", "--tmpfs", dir, "--", "sh", "-c", 'cat "/proc/$1/root$2"', "sh", String(process.pid), marker],
-      { env, stdio: ["ignore", "pipe", "ignore"], encoding: "utf8", timeout: 15_000 });
-    return String(result.stdout ?? "").includes("reachable")
-      ? "a program inside bubblewrap can still read other programs' files through /proc here (a setuid bwrap makes no user namespace); install the distribution's plain bubblewrap"
-      : null;
+    let displays = [];
+    try { displays = readdirSync("/tmp/.X11-unix").filter(name => /^X\d+$/.test(name)); } catch { /* No X display here. */ }
+    const masks = displays.length ? ["--tmpfs", "/tmp/.X11-unix"] : [];
+    const result = spawnSync("bwrap", ["--dev-bind", "/", "/", "--tmpfs", dir, ...masks, "--", process.execPath, "-e", probeScript, String(process.pid), marker, ...displays],
+      { env, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", timeout: 20_000 });
+    const said = String(result.stdout ?? "");
+    if (said.includes("proc-open")) return "a program inside bubblewrap can still read other programs' files through /proc here (a setuid bwrap makes no user namespace); install the distribution's plain bubblewrap";
+    const open = said.match(/^display-open (\S+)$/m)?.[1];
+    if (open) return `the display (${open}) lets programs in without its cookie, so a locked agent could type into any window; on this desktop remove the by-name entry (xhost -si:localuser:$USER)`;
+    if (!said.startsWith("inside") || !said.includes("done")) {
+      const why = result.error ? result.error.message : String(result.stderr ?? "").trim().split("\n").at(-1) || `exit ${result.status}`;
+      return `could not check that the lock holds inside bubblewrap (${why}); run bwrap --dev-bind / / -- true to see why`;
+    }
+    return null;
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
@@ -225,8 +256,8 @@ export function bwrapWorks(env = process.env) {
     // The usual refusal: the system does not let ordinary users make the namespaces a sandbox needs.
     const blocked = /namespace|uid map|Operation not permitted|Permission denied/i.test(said);
     probed = result.status === 0 ? escapeProblem(env) : result.error?.code === "ENOENT" ? "bubblewrap (bwrap) is not installed; install it (apt install bubblewrap)"
-      : blocked ? `the system blocks the sandboxes bubblewrap makes (${said}); allow them with sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0, or give /usr/bin/bwrap an AppArmor profile that allows user namespaces`
-      : `bubblewrap (bwrap) cannot start here: ${said}`;
+      : blocked ? `the system blocks the sandboxes bubblewrap makes (${said}); give /usr/bin/bwrap an AppArmor profile that allows user namespaces (Ubuntu's bubblewrap package brings one), or on Ubuntu allow them until the next restart with sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`
+      : `bubblewrap (bwrap) cannot start here (${said}); run bwrap --dev-bind / / -- true to see why`;
   }
   return probed;
 }
