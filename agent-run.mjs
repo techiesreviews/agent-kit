@@ -1049,7 +1049,7 @@ async function invokeAgent(adapter, args, descriptor, context) {
       if (status || limitProblem) {
         // A signal or an exit above 128 that supervise did not cause is a crash, told in words (never a bare status).
         // Inside the key lock bwrap stands between: a CLI killed by a signal comes back as bwrap's exit 128 + its number.
-        const signal = result.signal ?? (command !== adapter.command && status > 128 ? Object.keys(constants.signals).find(name => constants.signals[name] === status - 128) : null);
+        const signal = result.signal ?? (guard.bwrap && status > 128 ? Object.keys(constants.signals).find(name => constants.signals[name] === status - 128) : null);
         const crash = result.crashed ? `problem: ${adapter.label ?? adapter.command} crashed (${signal ? `killed by signal ${signal}` : `exit ${status}`}); see ${logPath}` : null;
         context.cause = limitProblem ?? adapter.errorProblem?.(result.stdout ?? "") ?? crash ?? `problem: ${adapter.label ?? adapter.command} failed (${status}); see ${logPath}`;
       }
@@ -1109,7 +1109,7 @@ async function executeRun(options, out, previous, update, brief) {
       options.codexHome = reviewHome.home;
     }
     // The key lock (TOOLS-285): set up before the CLI starts; a lock that cannot be set up stops the run.
-    guard = keyGuard({ cli: options.cli, kind: options.kind, common, apiRoute: options.cli === "claude" && apiRoute(process.env).on,
+    guard = keyGuard({ cli: options.cli, kind: options.kind, common, model: options.model, apiRoute: options.cli === "claude" && apiRoute(process.env).on,
       env: options.codexHome ? { ...process.env, CODEX_HOME: options.codexHome } : process.env });
     if (guard.off) appendFileSync(log, "warning: key files are not locked for this run (ASE_KEY_GUARD=off)\n");
     if (guard.codex) options.codexProfile = guard.codex;

@@ -2158,10 +2158,10 @@ test("a second look whose reviewer crashes counts as unavailable: the next model
   // No review came back from the crashed run, so its count is given back.
   assert.deepEqual(f.counts(), { grok: { "kit-review": 0 } });
   // An exit above 128, the status a shell reports for a crash, counts the same. Inside the key lock bwrap reports a
-  // killed CLI the same way, so the run names the signal that number stands for.
+  // killed CLI that way too, so the run names the signal the number stands for (139: SIGSEGV).
   const exited = f.run(["--base", "HEAD~1", "--second-look"], { ...budget, FAKE_MODE: "crash-exit", FAKE_CRASH_CLI: "grok" });
   assert.equal(exited.status, 0, exited.stdout + exited.stderr);
-  assert.match(exited.stdout, /^second look: opencode\/deepseek-v4\.1-flash-free takes it \(grok-4\.7 grok crashed \((exit 139|killed by signal SIGSEGV)\); see /m);
+  assert.match(exited.stdout, /^second look: opencode\/deepseek-v4\.1-flash-free takes it \(grok-4\.7 grok crashed \(killed by signal SIGSEGV\); see /m);
   assert.deepEqual(f.counts(), { grok: { "kit-review": 0 } });
   // Both crash: nothing could look, so the look is skipped, never failed.
   const skipped = f.run(["--base", "HEAD~1", "--second-look"], budget);
