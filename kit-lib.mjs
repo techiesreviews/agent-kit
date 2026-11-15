@@ -449,9 +449,9 @@ export function kitWinProcesses(pid) {
 /**
  * How a Windows job's command starts. Windows starts only a program file itself (an .exe or .com; Node refuses a .cmd
  * or .bat without a shell), so the command's first word is looked up as Windows does (a word with a folder in the
- * job's folder; a bare name in the job's folder, then on PATH, as Node looks), first as name.com, .exe, .bat or .cmd
- * in each of those folders, then as the name itself: a .cmd or .bat runs through cmd.exe /d /s /c with each argument
- * escaped for cmd, and any other file that is not a program (a shell script, with or without a #! line) runs through
+ * job's folder; a bare name in the job's folder, then on PATH, as Node looks): a bare name first as name.com, .exe,
+ * .bat or .cmd in each of those folders, then as the name itself; a name with an extension of its own first as it is.
+ * A .cmd or .bat runs through cmd.exe /d /s /c with each argument escaped for cmd, and any other file that is not a program (a shell script, with or without a #! line) runs through
  * Git Bash's bash.exe, its words handed over in the environment, never on a command line. A program, or a word not
  * found, starts as given, as before. Gives { program, args, options } for spawn; throws a plain message for a job it
  * cannot start safely (a shell script with no Git Bash, a cmd.exe argument it cannot carry, a program with no extension).

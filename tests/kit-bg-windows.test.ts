@@ -585,6 +585,8 @@ test("on Windows a job's first word picks how it starts: a program itself, a .cm
   file("job.sh", "#!/bin/sh\n");
   file("job.sh.cmd", "@echo off\r\n");
   assert.equal(launch("./job.sh").program, bash);
+  file("only.sh.cmd", "@echo off\r\n");
+  assert.deepEqual(cmdRun(launch("./only.sh", "x").args[3], {}), [join(root, "only.sh.cmd"), "x"]);
   // Programs and .cmd files come first in every folder, a bare script only after; the job's folder before PATH, as Node looks.
   file("early/tool2", "#!/bin/sh\n");
   file("late/tool2.exe", "MZ");
