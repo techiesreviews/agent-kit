@@ -89,7 +89,8 @@ export function classify(changes, { full = false, settings } = {}) {
 // Prose files every project treats as docs, on top of its own `paths.docs`, for the one question of whether GPT may
 // take the second look (a project with no `paths.docs` had its docs-only PRs looked at by GPT as code). The checks
 // and Claude's review still go by the tier, so a prose file that is no docs tier keeps the full checks.
-const proseFile = /\.(?:md|mdx|markdown|rst|adoc)$/i;
+// Not .mdx: it can import components and run code.
+const proseFile = /\.(?:md|markdown|rst|adoc)$/i;
 
 /** Whether every changed path is docs for GPT's second look: the docs tier (`paths.docs`), or a prose file the
  * project's `paths.tests` and `paths.css` leave as code. */

@@ -1781,6 +1781,9 @@ test("docs-only for GPT: paths.docs, else a prose file that paths.tests and path
   assert.equal(docsOnly(change("styles/notes.md"), { paths: { css: ["^styles/"] } }), false);
   assert.equal(docsOnly([{ status: "D", path: "styles/notes.md" }], { paths: { css: ["^styles/"] } }), false);
   assert.equal(docsOnly([], tested), false);
+  assert.equal(docsOnly(change("NOTES.MD", "guide.rst", "spec.adoc", "README.markdown"), tested), true);
+  // An .mdx file can import components and run code: no docs unless paths.docs says so.
+  assert.equal(docsOnly(change("docs/page.mdx"), tested), false);
   // On top of the project's own paths.docs: a prose file outside it still counts.
   const own = { paths: { docs: ["^docs/"] } };
   assert.equal(docsOnly(change("docs/guide.txt", "notes/x.md"), own), true);
