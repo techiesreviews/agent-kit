@@ -46,6 +46,8 @@ if (tool === "fake-kit" && action === "release-check" && env.FAKE_RELEASE_CHECK)
   process.exit(run.status ?? 1);
 }
 if (failPending) { console.error("api unavailable"); process.exit(1); }
+// FAKE_FAIL_BODY: a gh call whose body matches this pattern fails, as a comment GitHub refuses does.
+if (tool === "gh" && env.FAKE_FAIL_BODY && bodyPath && new RegExp(env.FAKE_FAIL_BODY).test(readFileSync(bodyPath, "utf8"))) { console.error("comment refused"); process.exit(1); }
 if (env.FAKE_FAIL === action) {
   for (let i = 1; i <= 35; i++) console.error("failure line " + i);
   if (env.FAKE_FAIL_TEXT) console.error(env.FAKE_FAIL_TEXT);
@@ -3197,6 +3199,21 @@ test("on Orbit, a queued PR whose follow-ups Orbit refuses posts them all, the b
   assert.ok(fallback, "the UX follow-up reaches a PR comment");
   assert.match(fallback!, /^Follow-ups for card KIT-1 \(Orbit did not take them\):\n- Spec \(P3\): P3: Cosmetic defect\.\n- UX \(looks off\): F-1 S1: a hint line/);
   assert.match(output.stdout, /^card: KIT-1 stays open: .*; run kit ticket update KIT-1 --status Done once #73 lands \(its follow-ups were not added: .*; they are in a PR comment\)$/m);
+});
+
+test("on Orbit, a queued PR whose follow-ups neither Orbit nor GitHub takes keeps them in a file the line names", async t => {
+  const f = await orbitPr(t);
+  f.card({}, "In Progress");
+  const brief = f.brief();
+  writeFileSync(join(f.root, brief), `${readFileSync(join(f.root, brief), "utf8")}\n## Done (2026-11-07)\n\n### UX follow-ups\n\n- UX (looks off): F-1 S1: a hint line\n`);
+  f.orbit.controls.refuseComments = /^Follow-ups from/;
+  f.saveReview(cleanReview.replace("Spec: none.", "Spec: P3: Cosmetic defect."));
+  const output = await f.pr(["--ticket", brief], { FAKE_QUEUE: "1", FAKE_FAIL_BODY: "^Follow-ups for card" });
+  assert.equal(output.status, 0, output.all);
+  assert.match(finalLine(output), /^RESULT: ok queued #73 /);
+  const kept = /they are only in (\S+\/card-followups\.md)\)$/m.exec(output.stdout)?.[1];
+  assert.ok(kept, output.stdout);
+  assert.match(readFileSync(kept!, "utf8"), /- Spec \(P3\): P3: Cosmetic defect\.\n- UX \(looks off\): F-1 S1: a hint line/);
 });
 
 test("on Orbit, a queued PR no longer writes its review follow-ups into the brief: no slice reads them there any more", async t => {

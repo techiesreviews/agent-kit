@@ -192,6 +192,9 @@ test("brief: each stage has its own brief", t => {
   assert.match(fix.stdout, /Fix round/);
   assert.match(fix.stdout, /P1 fault: src\/ui\/panel\.css:3 wrong token/);
   assert.match(fix.stdout, /declined/);
+  // kit fix, which handed declined findings to kit review, was cut (TOOLS-235): a decline goes in the report and the PR text.
+  assert.doesNotMatch(fix.stdout, /reads declined findings/);
+  assert.match(fix.stdout, /For each finding you decline, give it with its reason in your report and the PR text: the next review does not see it yet/);
   assert.match(fix.stdout, /kit-brief: \S+ docs\/tickets\/07-panel\.md fix$/m);
   // Builders may push back on a review point (Lex, 2026-11-13); reviewers get no such line.
   const pushBack = "If a review point is not worth fixing, say so with the reason instead of changing the code.";

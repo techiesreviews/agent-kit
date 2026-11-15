@@ -103,7 +103,8 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
         // There kit pr moves no card to Done, and only a lead writes the board: the builder's report hands it over.
         ...(card && !onOrbit(settings) ? [`\`kit pr\` does not close the card in this project (it keeps ticket files): put this line in your report: "Lead: close ${ticket} (Done, with a dated note naming the PR and its merge SHA)".`] : []),
       ] : [
-        `For each finding you decline, give it with its reason in your report: \`scripts/agents/kit review${task || card ? "" : ` --ticket ${ticket}`}\` reads declined findings with their reasons.`,
+        // kit fix, which handed declined findings to kit review, was cut (TOOLS-235): nothing passes them on yet.
+        "For each finding you decline, give it with its reason in your report and the PR text: the next review does not see it yet, so it may report the finding again; answer it the same way, and the lead waives it by id.",
         task ? "The findings are in the newest complete review's `findings.json` under the main checkout's `.scratch/reviews/<owner>/` (a record marked `incomplete: true` is not one) (the note below holds the task)."
           : "The findings are in the note below, else in the newest complete review's `findings.json` under the main checkout's `.scratch/reviews/<owner>/` (a record marked `incomplete: true` is not one).",
       ]),
@@ -132,7 +133,7 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
     "Paid skills never go in a repo: name a skill, never copy its text (`skill-guard.mjs` runs in `kit pr`).",
     `Second look: ${lookModels(order)}; ${reviewersRule}; GPT never for a docs-only change, and once per PR, except as the last resort after the free OpenCode model fails; \`second look: skipped (<reason>)\` when none can run.`,
     // kit fix, which saved the rounds kit pr counts, was cut (TOOLS-235): until a helper's own rounds are counted, the brief says so.
-    `\`kit pr\` does not count your own fix rounds yet: a blocker or should keeps blocking until it is fixed or the lead waives it by id. P3 findings and test gaps never block. Fix with the smallest change, or decline with evidence; once you have used 3 fix rounds (5 for a risky change), hand what is left to the lead with both sides, who may land with \`ASE_OWNER=<lead> scripts/agents/kit pr … --waive "<id>: <reason>"\`; say so in ${task || card ? "your report" : "the ticket's Done"}.`,
+    `\`kit pr\` does not count your own fix rounds yet: a blocker or should keeps blocking until it is fixed or the lead waives it by id. P3 findings and test gaps never block. Fix with the smallest change, or decline with evidence in your report and the PR text (the next review does not see a decline yet); once you have used 3 fix rounds (5 for a risky change), hand what is left to the lead with both sides, who may land with \`ASE_OWNER=<lead> scripts/agents/kit pr … --waive "<id>: <reason>"\`; say so in ${task || card ? "your report" : "the ticket's Done"}.`,
     "Anything a person sees: No toasts or explainers; show state on the control itself. Reuse the theme tokens and components.",
     "House rules beat skill advice: where a skill suggests something a house rule forbids (a toast, say), the house rule wins.",
     "Commits use the repo's or the machine's set git identity; never borrow another person's name.",
