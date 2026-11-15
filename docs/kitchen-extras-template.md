@@ -12,7 +12,7 @@ file wins.
   `"release"` set to it in `scripts/agents/kit.json`, or an agent's raw `git push` to it is not stopped.
 - **Checks:** the commands in `checks` (`check`, `lint`, `test`) and when each runs.
 - **Own check commands** (the `commands` folder): which to run for which change.
-- **Shared file:** the one file two slices may share (`sharedFile`), or none.
+- **Shared file:** the file the weekly sweep watches for growth (`sharedFile`), or none.
 - **Docs the shared rulebook names:** where this project keeps its runner guide, issue tracker
   guide, UX rulebook and routines, or that it has none.
 
@@ -38,5 +38,5 @@ file wins.
 ## Other
 
 - Anything else only this project does: out-of-bounds folders, sibling projects, its history links.
-- **Pins:** a `| Builder, every slice |` or `| Review, every change |` row here (same columns as the
-  shared Who cooks table) replaces that pin for this project; `kit next` reads it.
+- **Pins:** a `| Builder, every build |` or `| Review, every change |` row here (same columns as the
+  shared Who cooks table) replaces that pin for this project; `kit brief` reads it.

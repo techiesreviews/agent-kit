@@ -17,7 +17,7 @@ with read-only calls, against the running Orbit with the kit's own token.
 | `GET /workspaces/{ws}/projects/{id}/statuses` | status names (`--status`, `list`, the card's stage) |
 | `GET /workspaces/{ws}/projects/{id}/labels` | label names (`--label`, `labels`) |
 | `GET /workspaces/{ws}/members` | assignees by name (`--assignee`, `members`, `next-lex`) |
-| `GET /workspaces/{ws}/tasks` | `list`, `sub-tasks`, `check`, `kit next`, `import`, `parity` |
+| `GET /workspaces/{ws}/tasks` | `list`, `sub-tasks`, `check`, `import`, `parity` |
 | `GET /workspaces/{ws}/tasks/{task}` | every read and every write (each write reads the latest version first) |
 | `POST /workspaces/{ws}/tasks` | `create`, `import`, `tidy` (sub-tasks), `kit init --issues` |
 | `PATCH /workspaces/{ws}/tasks/{task}` | `update`, `dates`, `repeat`, `next-lex`, `clear-next-lex`, claims, `kit pr` (Done) |

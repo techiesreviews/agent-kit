@@ -22,6 +22,8 @@ function goJobs(root) {
     const directory = join(folder, entry.name);
     if (!existsSync(join(directory, "go"))) return [];
     let job;
+    // A process list that cannot be read (Windows: PowerShell failed) lets the turn end: the hook never holds a turn
+    // on a broken tool, as it never does on unreadable records.
     try { job = kitJob(directory); if (!kitJobRunning(job)) return []; } catch { return []; }
     const started = Date.parse(kitJobRecord(directory, "started") ?? ""), max = Number(kitJobRecord(directory, "max") ?? 0);
     const age = Number.isFinite(started) ? Date.now() - started : 0;

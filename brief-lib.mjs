@@ -53,11 +53,11 @@ const reviewersRule = "GPT may review since 2026-11-09; Claude Opus stays the ma
  */
 export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = kitReviewLoopRule(), root, settings, ticket, text, stage, owner, note, model, style, version, task, card, pins = kitRulebookPins(root, settings), review = process.env.ASE_REVIEW_MODEL || pins.reviewer }) {
   const info = readTicket(text);
-  // kit next runs a group's tickets as one job (kit next --run-group) on the group's own branch.
-  if (info.group) throw new Error(`${ticket} is in group ${info.group}: kit next --start runs a group as one job; kit brief writes briefs for single tickets`);
+  // A group ran as one kit next job; kit next was cut (TOOLS-235), so the lead briefs its tickets one by one or as a task.
+  if (info.group) throw new Error(`${ticket} is in group ${info.group}: kit brief writes a brief for one ticket; brief the group's tickets one at a time (take the group: line off each), or the whole group as one --task`);
   const land = settings.branches?.land ?? "main";
   const slug = task ? ticket.replace(/^task:/, "") : basename(ticket).replace(/\.md$/i, "");
-  // A card's branch and job are kit next's for it (cardNaming), whoever the brief's owner is.
+  // A card's branch and job come from the card (cardNaming), whoever the brief's owner is.
   const named = card ? cardNaming({ identifier: ticket, title: card.title }) : null;
   const branch = named?.branch ?? kitSliceBranch(owner, slug);
   const builder = builderModel(info.builder, pins.builder);
@@ -73,14 +73,14 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
   const section = (title, lines) => { if (lines.length) out.push("", `## ${title}`, ...lines.map(line => `- ${line}`)); };
   const project = settings.project ?? basename(root);
   if (stage === "build") out.push(`Kit brief: build ${what} in \`${project}\` (${root}), owner \`${owner}\`. Build the whole ${task ? "task (it is in the note below; the project keeps no ticket file for it)" : card ? "card (its text and comments are below)" : "ticket"}, from setup to a merged PR, with Agent Kit.`);
-  if (stage === "fix") out.push(`Kit brief: fix round for ${what} in \`${project}\` (${root}), owner \`${owner}\`. Fix round: fix each open finding in one commit on the slice branch \`${branch}\`.`);
+  if (stage === "fix") out.push(`Kit brief: fix round for ${what} in \`${project}\` (${root}), owner \`${owner}\`. Fix round: fix each open finding in one commit on the build branch \`${branch}\`.`);
   if (reviewing) out.push(`Kit brief: ${stage === "review" ? "review" : "second look"} of ${what} in \`${project}\` (${root}), branch \`${branch}\`. You are the reviewer: read-only. Make no changes, no commits and no PR.`);
   const readFirst = task ? "the note below" : card ? `the card below with all its comments (\`scripts/agents/kit ticket get ${ticket} --comments\` reads it fresh), the docs it links, the Orbit card standard (\`docs/orbit-card-standard.md\` in the kit; \`scripts/agents/kit --home\` prints the kit's folder) for any card you write or report on` : "the ticket with all its Comments, the build README beside it, the docs it links";
   out.push(`Read first: ${readFirst}, and AGENTS.md; ${reviewing ? "" : "the project's runner guide (`docs/agents/runner.md`) for the order of steps; "}\`scripts/agents/kit rulebook\` holds the house rules in full.`);
   if (!reviewing) {
     section("Setup", [
       stage === "fix"
-        ? `The slice branch holds the work: \`git fetch -q origin && git switch ${branch}\` (it tracks \`origin/${branch}\`). Use \`git -C\` or \`cd … || exit 1\`.`
+        ? `The build branch holds the work: \`git fetch -q origin && git switch ${branch}\` (it tracks \`origin/${branch}\`). Use \`git -C\` or \`cd … || exit 1\`.`
         : `In a T3 child thread your checkout is the worktree: \`git fetch -q origin && git switch -c ${branch} origin/${land}\`. Elsewhere: \`ASE_OWNER=${owner} scripts/agents/worktree.sh ${branch} origin/${land}\`. Use \`git -C\` or \`cd … || exit 1\`.`,
       `Pins: builder \`${target}\`; reviews \`ASE_REVIEW_MODEL=${review}\`; commands run with \`ASE_OWNER=${owner}\`.`,
     ]);
@@ -103,13 +103,14 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
         // There kit pr moves no card to Done, and only a lead writes the board: the builder's report hands it over.
         ...(card && !onOrbit(settings) ? [`\`kit pr\` does not close the card in this project (it keeps ticket files): put this line in your report: "Lead: close ${ticket} (Done, with a dated note naming the PR and its merge SHA)".`] : []),
       ] : [
-        `For each finding you decline, give it with its reason in your report: \`scripts/agents/kit review${task || card ? "" : ` --ticket ${ticket}`}\` reads declined findings with their reasons.`,
+        // kit fix, which handed declined findings to kit review, was cut (TOOLS-235): nothing passes them on yet.
+        "For each finding you decline, give it with its reason in your report and the PR text: the next review does not see it yet, so it may report the finding again; answer it the same way, and the lead waives it by id.",
         task ? "The findings are in the newest complete review's `findings.json` under the main checkout's `.scratch/reviews/<owner>/` (a record marked `incomplete: true` is not one) (the note below holds the task)."
           : "The findings are in the note below, else in the newest complete review's `findings.json` under the main checkout's `.scratch/reviews/<owner>/` (a record marked `incomplete: true` is not one).",
       ]),
     ]);
   } else {
-    // The slice branch, not the lead's checkout, is what is reviewed.
+    // The build branch, not the lead's checkout, is what is reviewed.
     const range = `Scope: git diff origin/${land}...origin/${branch} (\`git fetch -q origin\` first).`;
     let scope;
     try {
@@ -131,7 +132,8 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
   section("House rules", [
     "Paid skills never go in a repo: name a skill, never copy its text (`skill-guard.mjs` runs in `kit pr`).",
     `Second look: ${lookModels(order)}; ${reviewersRule}; GPT never for a docs-only change, and once per PR, except as the last resort after the free OpenCode model fails; \`second look: skipped (<reason>)\` when none can run.`,
-    `Once the review loop's budget is used (3 fix rounds, 5 for a risky change) only P0/P1 findings block; P2/P3 go to the lead, who may land with \`ASE_OWNER=<lead> scripts/agents/kit pr … --waive "<reason>"\`; say so in ${task || card ? "your report" : "the ticket's Done"}.`,
+    // kit fix, which saved the rounds kit pr counts, was cut (TOOLS-235): until a helper's own rounds are counted, the brief says so.
+    `\`kit pr\` does not count your own fix rounds yet: a blocker or should keeps blocking until it is fixed or the lead waives it by id. P3 findings and test gaps never block. Fix with the smallest change, or decline with evidence in your report and the PR text (the next review does not see a decline yet); once you have used 3 fix rounds (5 for a risky change), hand what is left to the lead with both sides, who may land with \`ASE_OWNER=<lead> scripts/agents/kit pr … --waive "<id>: <reason>"\`; say so in ${task || card ? "your report" : "the ticket's Done"}.`,
     "Anything a person sees: No toasts or explainers; show state on the control itself. Reuse the theme tokens and components.",
     "House rules beat skill advice: where a skill suggests something a house rule forbids (a toast, say), the house rule wins.",
     "Commits use the repo's or the machine's set git identity; never borrow another person's name.",
@@ -144,7 +146,7 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
   out.push("", "## Review loop", reviewLoop.rule);
   if (!reviewing) section("Waiting", [
     "Finish the whole job in this turn. A short check runs in the foreground.",
-    "A long job (a slice, a long `kit pr`, specs) runs as `scripts/agents/kit go <job> -- <command>`: it starts the job in its own systemd scope and waits at most 9 minutes per call.",
+    "A long job (a long `kit pr`, specs, a build) runs as `scripts/agents/kit go <job> -- <command>`: it starts the job in its own systemd scope and waits at most 9 minutes per call.",
     "Give every `kit go` call a tool time limit of 10 minutes (Claude's Bash tool: `timeout: 600000`; its default of 2 minutes cuts the wait short; Codex: a 600-second limit on the shell call).",
     "While the job runs, `kit go` ends with `RUNNING: <job> (…). Run again: scripts/agents/kit go <job>` and exit 75: run that line again at once, in the foreground, until it prints the job's RESULT line.",
     "Never wait in the background, never post progress between waits, and never end your turn while a job of yours runs (the Stop hook refuses it).",

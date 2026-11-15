@@ -1,6 +1,6 @@
 // The review loop (Lex, 2026-11-06; after Theo's sol-loop): the budget as a function of risk, the early stop on nits,
 // finding ids and the ledger, and the PR line. The rule text is the "Review loop" section of docs/kitchen.md.
-// The pure parts live here so kit review, kit fix, kit slice and kit pr never read the rules differently.
+// The pure parts live here so kit review and kit pr never read the rules differently.
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
@@ -41,7 +41,7 @@ export function riskyChange({ paths = [], text = "", settings = {} } = {}) {
 }
 
 /**
- * One risk function for every command (kit review, kit pr, kit slice): the paths changed against `base` (a ref), the files a
+ * One risk function for every command (kit review, kit pr): the paths changed against `base` (a ref), the files a
  * ticket names in backticks, and the ticket's words. `ticket` is the ticket file's path or null.
  */
 export function branchRisk({ root, base, ticket, settings }) {
@@ -121,7 +121,7 @@ export function loopBriefSection({ round, limit, previousHead, currentHead, open
   const label = item => item.group === "Validation gaps" ? "validation gap" : `${item.severity ?? "no severity"}${item.kind && item.kind !== "unsorted" ? ` ${item.kind}` : ""}`;
   // A carried finding keeps its original text after the reviewer's reason, so it gets more room.
   const list = open.map(item => `- ${item.id} (${label(item)}): ${String(item.text).slice(0, isCarried(item) ? 600 : 200)}`).join("\n");
-  // Only what is really in the brief is pointed at: the builder's declined findings listed below, the ones kit fix put in the brief, or none.
+  // Only what is really in the brief is pointed at: the builder's declined findings listed below, the ones handed over in ASE_REVIEW_DECLINED (the cut kit fix set it), or none.
   const listed = declined.length > 0;
   const scope = previousHead === currentHead
     ? `No commit came after the last review (${listed ? "the builder answered or declined: its declined findings and their reasons are listed below" : declinedInBrief ? 'the builder answered or declined: its declined findings and their reasons are in the "Declined by the author" part of this brief' : "no declined finding was recorded, so the builder fixed nothing or its answer was not saved"}): check each finding below against ${listed || declinedInBrief ? "that answer" : "the code"}; there is no new code to read.`
@@ -308,7 +308,7 @@ export function findPreviousReview(parent, { head, base, root, branch, otherOwne
       // Another owner's review counts only when it names this very branch.
       if (foreign && (!branch || record.branch !== branch)) continue;
       // The newest review of this change decides: when it found nothing, the loop had ended, so no open ids carry over, but the rounds still link.
-      // The builder's declined findings kit fix saved on that review (text, reason, round); a malformed entry is dropped.
+      // The builder's declined findings saved on that review (text, reason, round; the cut kit fix saved them); a malformed entry is dropped.
       const declined = (Array.isArray(record.declined) ? record.declined : []).filter(entry => entry && typeof entry.text === "string" && entry.text.trim());
       return { name: link, clean: !record.findings?.length, round: record.round ?? 1, head: reviewedHead, declined, findings: record.findings.map((item, index) => ({ ...item, id: item.id ?? `R${record.round ?? 1}-${index + 1}` })) };
     } catch { /* An unreadable record is not a previous review. */ }

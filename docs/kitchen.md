@@ -1,29 +1,22 @@
 # The kitchen
 
-How work moves from idea to release in every project of Lex's: one recipe every session and every
-model follows. Lex calls it the kitchen (Poteto's cooking metaphor): **Lex is head chef**, the lead
-session runs the pass, builders and reviewers are line cooks, Agent Kit and the skills are the
-knives. Each **station** below names its tools, who decides, the **evidence** it leaves and when it
-is **done**. The project's own docs stay the detailed source for their station; this page decides
-the order.
+How work moves from idea to release in every project of Lex's: one road every session and every model
+follows. **Lex is head chef**, the lead session runs the pass, helpers build and reviewers check, Agent Kit
+and the skills are the knives.
 
-This is the shared rulebook; it travels with the kit. `scripts/agents/kit rulebook` prints it
-followed by the project's extras (the file `rulebookExtras` names in `scripts/agents/kit.json`):
-the project's landing and release branches, checks, own commands, shared file, previews, release
-steps and history. **Where the extras differ, they win.** Below, "the landing branch" is
-`branches.land` in the settings file, "the project's checks" are its `checks` commands, and
-"`<land>`" stands for the landing branch's name.
-
-Items marked **planned** are decided but not built. Until a planned item lands, do what the station
-says for today; never claim a planned item ran.
+This is the shared rulebook; it travels with the kit. `scripts/agents/kit rulebook` prints it followed by
+the project's extras (the file `rulebookExtras` names in `scripts/agents/kit.json`): the project's landing
+and release branches, checks, own commands, previews, release steps and history. **Where the extras
+differ, they win.** Below, "the landing branch" is `branches.land` in the settings file, "the project's
+checks" are its `checks` commands, and "`<land>`" stands for the landing branch's name.
 
 <a id="ux-confidence-ladder"></a>
 
 ## The road: six steps and the grill
 
 Lex, 2026-11-14 (TOOLS-235): every card takes the same road, each step with one owner. The
-[flow chart](flow-chart.html) (`docs/flow-chart.html` in the kit) draws it; the stations below hold each
-step's detail.
+[flow chart](flow-chart.html) (`docs/flow-chart.html` in the kit) draws it; [the steps in
+detail](#the-steps-in-detail) below hold what each step uses and when it is done.
 
 1. **Card.** The idea is a card on the board with a goal and a "Done when" list (Lex or the lead,
    `kit ticket`).
@@ -48,15 +41,19 @@ step's detail.
 7. **His go.** `kit pr --release` puts a public tool live, only after his go (a direct project has no
    release step).
 
-Around the road, not on it: the Board drive schedule, the weekly sweep, the kit's update timer and the
-guards. Lex tries every visible change himself; the UX confidence ladder was dropped on 2026-11-14.
+Around the road, not on it: the Board drive schedule (every 2 hours it reads the board with `kit ticket`,
+checks the helper threads, restarts stalled work and opens desks), the weekly sweep, the kit's update timer
+and the guards. Lex tries every visible change himself; the UX confidence ladder was dropped on 2026-11-14.
+The old factory (`kit slice`, `kit fix`, `kit next`, `kit heartbeat`) was cut on 2026-11-15: each name now
+says where its job went.
 
 ## House rules
 
 - **Agent Kit for every coding step, every model:** `scripts/agents/kit`, `kit doctor` first. A kit
   command that cannot run is reported in the result; it is never skipped silently.
-- **One job, one worktree:** `scripts/agents/worktree.sh` from `origin/<land>`; `git -C` or
-  `cd … || exit 1`; work in progress is a commit on your own branch.
+- **One job, one worktree:** `git worktree add -b <branch> ../<project>-<branch> origin/<land>` (or the
+  project's `scripts/agents/worktree.sh` where it has one); `git -C` or `cd … || exit 1`; work in progress is
+  a commit on your own branch.
 - **Lex in plain words:** questions are plain choices about what changes for him, each with a
   recommended answer. Technical questions go to him too, explained plainly, with file paths only where
   he must act on them. What a message to him holds and how it reads: [Messages to
@@ -78,9 +75,10 @@ guards. Lex tries every visible change himself; the UX confidence ladder was dro
 - **Builds run as T3 helper threads** (Lex, 2026-11-13): in a T3 session every build runs as its own
   helper thread, a `delegate_task` with `isolation: "worktree"` and the `kit brief` output as its task,
   and work on LexTop goes through T3's environment link (`t3_environment_links`, then `delegate_task`
-  with `target.environmentId`) when the link is there, so its result comes back to the lead. The kit
-  keeps its own path for Codex alone (no T3: `kit next --start`, `kit go`) and LexTop alone (no link:
-  the kit in LexTop's own shell). Either way the work itself still runs through the kit.
+  with `target.environmentId`) when the link is there, so its result comes back to the lead. Codex alone
+  (no T3) builds in its own session from the same `kit brief` and lands with `kit pr`, a long step under
+  `kit go`; LexTop alone (no link) runs the kit in LexTop's own shell. Either way the work itself still
+  runs through the kit.
 - **Finish the job in the turn** (Lex, 2026-10-31): a short check runs in the foreground; a long job
   runs as `scripts/agents/kit go <job> -- <command>`, and its `Run again: scripts/agents/kit go <job>`
   line is run again in the foreground until the job's RESULT line. The `stop-guard` hook refuses a
@@ -91,8 +89,7 @@ guards. Lex tries every visible change himself; the UX confidence ladder was dro
 - **Private repos land directly on main** (Lex, 2026-11-05): a project in a private GitHub repo sets
   `"branches": { "land": "main", "release": "main", "direct": true }`; its PRs then go straight into main
   as ordinary PRs through the same gates as any `kit pr` (checks and review by the change's size, the second look when a
-  model can take it), with no raw pushes and no `--release` step (one known exception: `kit next --start` still pushes its
-  docs-only ticket-claim commit straight to main).
+  model can take it), with no raw pushes and no `--release` step.
   `kit init` sets it up for a new private repo and `kit init --check` names the change for an existing
   one; a public repo keeps its landing and release branches. A direct project goes live mid-week, as soon
   as the gates `kit pr` applies to that change pass, without Lex's "ship it" (Lex, 2026-11-05: "yes", his own sites too). For
@@ -106,32 +103,16 @@ guards. Lex tries every visible change himself; the UX confidence ladder was dro
   were dropped): each question or thing to try goes to him in its own desk thread, and the work keeps
   moving meanwhile ([What waits for Lex](#what-waits-for-lex)). Budget: his $200/month Claude
   subscription and the free workers, never more.
-- **Everything is a file on the landing branch:** maps, tickets, Lex's feedback and decisions
-  (the project's issue tracker guide, `docs/agents/issue-tracker.md`). A change Lex asks for always
-  has a ticket that opens with "Lex (YYYY-MM-DD): …", including lead fixes.
-- **Tickets are moving to Orbit, in stages** (Lex, 2026-11-06): the fleet manages every card in every
-  project through `scripts/agents/kit ticket` (`--help`), Orbit's public API inside the kit; no other
-  tool sits beside it. A project switches with `"tickets": "orbit"` in its `scripts/agents/kit.json`
-  (default `files`). With `orbit` the tickets live in Orbit: `kit next` hands out the Todo cards
-  whose "Blocked by:" cards are Done (and In Progress cards given back by `clear-next-lex`), in build waves; `kit next --start` and `kit slice --ticket <KEY>`
-  claim the card (status In Progress and a "Claimed by: <owner>" line) and build from its brief;
-  `kit pr` moves the card to Done with a dated comment naming the PR and its merge SHA; `kit ticket list` shows the
-  cards; `kit init --issues` makes a card per open GitHub Issue and closes the Issue with a comment
-  naming its card. Statuses go by name (Backlog, Todo, In Progress, Done); a board that keeps its
-  stage in labels keeps them. Ticket files stay only for `files` projects, and maps and research
-  notes stay documents. **A project moves** with `scripts/agents/kit ticket migrate` from a fresh
-  branch (a lead; `--dry-run` first): it refuses while a build runs, imports every ticket file as
-  a card (status, text, comments, blockers and links kept; a rerun makes no duplicates), stops on
-  any difference `kit ticket parity` finds, tags the commit that still holds the files
-  (`tickets-in-files-YYYYMMDD`, pushed), and lands one PR through `kit pr` that removes the
-  ticket files, sets `"tickets": "orbit"` and points doc links at the cards. No further OK is
-  needed. **The Orbit rule:** only leads write (`ORBIT_ROLE=lead`); helpers read and
-  report to their lead. Never delete a card for good; the trash, the Publish status or label and
-  the "Scheduled in Radaar" tick each need Lex's exact words (`--lex-said`). No date without a
-  source. The Orbit token and the Cloudflare pass never go in a chat, a log or a repository.
-  **The card standard** ([`orbit-card-standard.md`](orbit-card-standard.md), `docs/orbit-card-standard.md` in the kit): one short card, history in
-  dated comments, parts as sub-tasks, a question for Lex in a desk thread; `kit ticket check` lists the cards that break it,
-  and `create`, `update`, `note`, `next-lex` and `tidy` keep it.
+- **Cards live on Orbit** (Lex, 2026-11-06): every card in every project goes through `scripts/agents/kit ticket`
+  (`--help`), Orbit's public API inside the kit. With `"tickets": "orbit"` in `scripts/agents/kit.json`, `kit brief`
+  claims the card and `kit pr` moves it to Done with a dated comment naming the PR and its merge SHA; a project still on
+  `files` (the default) keeps ticket files on the landing branch until `kit ticket migrate` moves it. **The Orbit
+  rule:** only leads write (`ORBIT_ROLE=lead`); helpers read and report to their lead. Never delete a card for good; the
+  trash, the Publish status or label and the "Scheduled in Radaar" tick each need Lex's exact words (`--lex-said`). No
+  date without a source. The Orbit token and the Cloudflare pass never go in a chat, a log or a repository. **The card
+  standard** ([`orbit-card-standard.md`](orbit-card-standard.md), `docs/orbit-card-standard.md` in the kit): one short
+  card, history in dated comments, parts as sub-tasks, a question for Lex in a desk thread; `kit ticket check` lists the
+  cards that break it.
 - **One house style for every tool:** anything a person sees follows the kit's
   [house style](house-style.md) (`docs/house-style.md` in the kit; `scripts/agents/kit --home`
   prints the folder): quiet screens, instant changes with Undo, the same agent connection
@@ -164,7 +145,7 @@ guards. Lex tries every visible change himself; the UX confidence ladder was dro
 - Example: "Keep the old export button or remove it?" / "Both do the same." / "Recommend: remove it."
 <!-- messages-to-lex:end -->
 
-The two-line status notes (the after-merge note, `kit heartbeat`) keep their two-line shape (done, then running/next); when the lead passes them on, anything he must answer or do goes first.
+The two-line status notes (the after-merge note, the Board drive's check-in) keep their two-line shape (done, then running/next); when the lead passes them on, anything he must answer or do goes first.
 
 The start marker carries the rule's version. Raise it (v2, v3 …) whenever the text changes: `kit init` brings a
 project's copy up to date only when the rulebook's version is higher, so a machine with an older kit never
@@ -183,263 +164,188 @@ undoes a newer rule.
 - The PR says: "Reviewed with review-loop: N rounds with <model>. Verdict: approved".
 <!-- review-loop:end -->
 
-A diff with no change (a no-code merge) has nothing to review: `kit review` says `RESULT: skip review nothing to review (…)` (exit 3) and the second look `second look: skipped (nothing to review: …)`; `kit pr` takes both as a pass and the PR says `Review: nothing to review`. A reviewer whose CLI crashes (a signal, or an exit above 128) counts as unavailable, not as a failed review: the second look hands over to the next model or is skipped, and the review's own process group is stopped when its CLI exits, so no OpenCode server outlives it.
-
 The start marker carries this rule's version too (v2, v3 …).
 
-The PR's review block says "Verdict: pending" while a new head (after a "behind" rebase) is reviewed and "not approved" when that review stops the landing or does not finish; a review with only nits is reused after a rebase with the same patch; the ledger lists the second look's findings as SL-<n> rows; an out-of-budget report counts every open item and shows the builder's declined findings with their reasons.
+Known gap since the factory cut (2026-11-15): `kit pr` counts only fix rounds saved before the cut, so a helper's own
+rounds are not counted yet; its blockers and shoulds keep blocking until fixed or waived by name. Nor does anything
+hand a helper's declined findings to the next review: a decline goes, with its reason, in the helper's report and the PR
+text, and the lead waives a declined finding by id.
 
-After a merge from the base, the "changes since the last review" file lists only the branch's own commits; a lead who lands a builder's branch answers the builder's rounds (the PR line counts them and names every model); a ticket's risk is read from its title, its whole text and the files it names, never from the follow-ups kit pr adds later.
+A diff with no change has nothing to review and a reviewer whose CLI crashes counts as unavailable (`kit review --help`);
+what the PR's review block says after a rebase, and how a lead answers a builder's rounds: the README's Review loop
+section.
 
-Known limits of the review loop today (waived follow-ups): "disputed after two replies" is not detected, so the lead tells Lex both sides by hand.
+Known limits of the review loop today (waived follow-ups): "disputed after two replies" is not detected, so the lead
+tells Lex both sides by hand.
 
 ## Who cooks (pins from 2026-10-22)
 
-`kit review` and `kit fix` default to these pins (`kit review --help`, `kit fix --help`), so a
-review needs `ASE_REVIEW_MODEL` only for the second opinions below; `kit slice` still needs
-`--builder`. `kit next` reads its builder and reviewer from the "Builder, every slice" and "Review,
-every change" rows here (a row with the same role in the project's extras wins). The shared
-`lex-coding` skill holds the same table for all of Lex's projects.
+`kit review` defaults to these pins (`kit review --help`), so a review needs `ASE_REVIEW_MODEL` only for the second
+opinions below. `kit brief` names the builder and reviewer from the "Builder, every build" and "Review, every change"
+rows here (a row with the same role in the project's extras wins). The shared `lex-coding` skill holds the same table
+for all of Lex's projects.
+
+<a id="small-chores-on-free-models"></a>
 
 | Role | Model | How |
 | --- | --- | --- |
-| Lead | the selected model | runs the stations; never builds and reviews the same change |
-| Builder, every slice | `claude-opus-5-5`, high | `kit slice --builder claude-opus-5-5`; `builder: sol` lines in tickets are superseded |
-| Builder, tiny fully specified fix | free OpenCode model | T3 `delegate_task`, only once T3 lists a verified zero-cost model |
-| Builder, small chore beside the queue | free OpenCode model | [Small chores](#small-chores-on-free-models); a short Claude check before merging |
+| Lead | the selected model | runs the road; never builds and reviews the same change |
+| Builder, every build | `claude-opus-5-5`, high | a T3 helper thread with the `kit brief` output (Lex, 2026-11-13: Opus builds everything; the free-model chores were dropped) |
 | Review, every change | `claude-opus-5-5`, high | default (`kit review`, Lex 2026-11-13; `ASE_REVIEW_EFFORT` overrides the effort), fresh read-only session |
 | Second opinion: a big or risky change, on purpose | `gpt-6.1-sol`, high, through Codex (GPT may review since 2026-11-09, Lex) | `kit review --second gpt [--pr N]`: the kind's GPT model from [`second-look.json`](../second-look.json), even when the PR already had its GPT look (never for a docs-only change), and no other model in its place; it is the PR's second look, which `kit pr` reuses on the same HEAD |
-| Second look, every change, after Claude's review | per review kind (code, UX, DX, agent), first choice first, from the table [`second-look.json`](../second-look.json): `gpt-6.1-sol` through Codex at high effort, else `grok-4.7`, else the free `opencode/deepseek-v4.1-flash-free` | `kit slice` and `kit pr` run it (`kit review --second-look`); its findings block and get fix rounds like Claude's, and the PR says which model looked ("Second look by gpt-6.1-sol (GPT through Codex)."). Kind from the changed paths: agent setup first, then UX (`paths.visible`), then DX (build, scripts, docs), else code. Cost guard: GPT never for a docs-only change, and once per PR (the same `--pr N`, or the branch when either look named no PR and the earlier look's changes are all in this one, so a rebase keeps it); a later look on that PR goes to the next model, with one exception (Lex, 2026-11-12): when the free OpenCode model fails (for a reason of its own, not a failed save), times out or hits its limit, GPT looks again, with its own 25 minutes and within `ASE_REVIEW_BUDGET_GPT` (never for a docs-only change); it is then the PR's second look, its findings count like any other, and the PR names GPT as the model that looked. A model out of credit, at a usage limit, with its weekly count used up or without a Codex login: the next one takes it; none can run, or the whole look passes 25 minutes (`ASE_SECOND_LOOK_TIMEOUT`, except that GPT taking it again after OpenCode fails gets its own 25 minutes; a fallback with under a minute left is not started): the change lands with `second look: skipped (<reason>)`, such as `<model> timed out after 25m` or `<model> not started: under a minute left of 25m`. GPT may review since 2026-11-09 (Lex); Claude Opus stays the main reviewer. The lead updates the table when new models appear |
-| UX and design review | `claude-opus-5-5`, medium | see Review |
+| Second look, every change, after Claude's review | per review kind (code, UX, DX, agent), first choice first, from [`second-look.json`](../second-look.json): `gpt-6.1-sol` through Codex at high effort, else `grok-4.7`, else the free `opencode/deepseek-v4.1-flash-free` | `kit pr` runs it (`kit review --second-look`); its findings block and get fix rounds like Claude's, and the PR says which model looked. Cost guard: GPT never for a docs-only change and once per PR, except as the last resort after the free OpenCode model fails (Lex, 2026-11-12); a model that cannot run hands over to the next; none can, or 25 minutes pass (`ASE_SECOND_LOOK_TIMEOUT`): `second look: skipped (<reason>)`. The whole order and its limits: `kit review --help`. The lead updates the table when new models appear |
+| UX and design review | `claude-opus-5-5`, medium | `kit ux` (step 4) |
 
-Sol never builds. `kit review` counts GPT and Grok reviews per week for the whole computer (one count
-whatever project asks; the Tuesday sweep shows the week's Grok use by project) and refuses at the limit;
-on a usage-limit `problem:` line, tell Lex the reset time and carry on with Claude.
+Sol never builds. `kit review` counts GPT and Grok reviews per week for the whole computer and refuses at the limit; on
+a usage-limit `problem:` line, tell Lex the reset time and carry on with Claude.
 
-The OpenCode second look reads only: it may read, search and list files, nothing else. The kit
-works with OpenCode 1 and 2 (before each OpenCode review it reads `opencode run --help` to tell them
-apart, usually well under a second, about 30 seconds at most if the CLI hangs; it stops in plain
-words when the help names neither). OpenCode 2 has no switch to turn plugins off, so there the kit
-turns the branch's own OpenCode settings off and gives each review an empty settings folder of its
-own, and drops a settings file or folder named in `OPENCODE_CONFIG` or `OPENCODE_CONFIG_DIR`: no
-plugin from the branch under review or from `~/.config/opencode` loads, and the machine's
-OpenCode settings (default model, global instructions) do not apply to the review either.
+The OpenCode second look reads only; how the kit keeps the branch's and the machine's OpenCode settings out of it:
+the README's Review loop section.
 
-## Stations
+<a id="stations"></a>
 
-### 1. Idea
+## The steps in detail
 
-- **Use:** Lex's T3 chat; `kit ticket list` and `node "$(scripts/agents/kit --home)/tickets.mjs" frontier` for what is
-  already open; the context card (about 30 lines read fresh from Lex's central memory, printed at
-  session start).
-- **Decides:** Lex, whether it is worth doing; the lead proposes where it goes.
-- **Done when:** the idea has a home on the landing branch: a new map, a ticket in an existing map
-  or build, or a tech-debt issue.
+The twelve old stations folded into these steps (2026-11-15); an old station's link lands on its step.
 
-### 2. Map and questions
+<a id="1-idea"></a>
+<a id="4-tickets"></a>
 
-- **Use:** skills `wayfinder` (map and tickets), `research` (AFK, on a `research/*` branch),
-  `grilling` (Lex in the loop), `prototype`, `teach` when Lex wants a concept explained. Files and
-  claiming: the project's issue tracker guide.
-- **Decides:** Lex answers grilling questions in their desk thread (the road's grill); meanwhile an
-  easy-to-undo one may take its recommended answer, named in that thread ([What waits for
-  Lex](#what-waits-for-lex)). Research answers facts.
-- **Evidence:** each ticket's `## Resolution (date)` and one line in the map's Decisions so far.
-- **Done when:** every ticket the build depends on is closed, and Not yet specified holds only what
-  the build can do without.
+### 1. Card
 
-### 3. Mock-up (before any visible build)
+- **Use:** `kit ticket` (`list` for what is already open, `create` with the source named); the context card at session
+  start (about 30 lines read fresh from Lex's central memory). A project on ticket files keeps a map with its tickets
+  (skills `wayfinder` and `to-tickets`; `node "$(scripts/agents/kit --home)/tickets.mjs" check` must pass), and
+  A change Lex asks for always has a card (or ticket) that opens with "Lex (YYYY-MM-DD): …", lead fixes included.
+  `triage` sorts new problems (Lex's feedback, sweep findings, failing tests) into cards or tickets.
+- **Decides:** Lex, whether it is worth doing; the lead proposes where it goes. Choices Lex should see are marked
+  "Check with Lex".
+- **Done when:** the card has a goal and a "Done when" list (`kit ticket check` names a card without one, and
+  `kit brief` warns).
 
-- **Use today:** a clickable mock-up (`prototype` skill: a `prototype/<slug>` branch, or an HTML
-  page shown with T3 `html_render`), plus screenshots of today's screens with the project's own tool
-  (extras). Visible tickets and mock-ups follow the [house style](house-style.md) and the project's
-  UX rulebook (`docs/agents/ux-rulebook.md`).
-- **Show and tell** (Lex, 2026-10-27): a mock-up of something that already exists has a Today / After
-  switch, with today's real screen against the change, plus demo buttons that play each step with the
-  feedback shown in place.
-- **Mock-ups ahead:** the lead prepares mock-ups for the next visible changes in the queue (the running
-  build's next stage, then the next build), so Lex can try them in their desk threads and no build waits
-  for sign-off.
-- **Decides:** Lex clicks through and approves, in the mock-up's desk thread.
-- **Done when:** Lex approved it and the ticket links it. Changes with nothing visible skip this station
-  (never the grill).
+<a id="2-map-and-questions"></a>
 
-### 4. Tickets
+### 2. Grill
 
-- **Use:** `to-tickets`; a build folder with a README holding rules, gates and waves; one slice per
-  ticket with size, Files, Done when, kit commands and the evidence its builder reports; a visible
-  ticket follows the house style and the UX rulebook. `triage` sorts new problems (Lex's feedback,
-  sweep findings, failing tests) before hand-out: when two or more new tickets share a cause and
-  touch the same files, give each `group: <slug>` and list the group in one row of the build README;
-  `kit next` then hands the whole group to one builder. Tickets that only sit in the same area stay
-  apart.
-- **Decides:** the lead; choices Lex should see are marked "Check with Lex".
-- **Done when:** `node "$(scripts/agents/kit --home)/tickets.mjs" check` passes and the frontier shows the first wave.
+- **Use:** the `grilling` skill with Lex in the card's own desk thread; `research` (AFK, on a `research/*` branch)
+  for facts; `teach` when Lex wants a concept explained.
+- **Decides:** Lex answers; meanwhile an easy-to-undo question may take its recommended answer, named in that thread
+  ([What waits for Lex](#what-waits-for-lex)).
+- **Evidence:** his answers as a dated comment on the card (a ticket file: its `## Resolution (date)`).
+- **Done when:** every question the build depends on is answered.
 
-### 5. Hand-out
+<a id="3-mock-up-before-any-visible-build"></a>
 
-- **Use:** `scripts/agents/kit next [map…]` picks the tickets and builders by fixed rules.
-  The lead claims each `next:` ticket on the landing branch (assignee, commit, push) and starts it as
-  **its own T3 thread**: one `delegate_task` per ticket (or group) with `isolation: "worktree"`,
-  `mode: "async"`, the ticket's builder as `target`, and as `task` the whole output of
-  `scripts/agents/kit brief <ticket path> [--note "<text>"]` above its RESULT line. A group's tickets
-  run as one job through `kit next --start`, which `kit brief` points to. A project that keeps no
-  ticket files (its work is in GitHub Issues) uses `kit brief --task "<title>" --owner <id> --note
-  "<the task>"`. Where the landing
-  branch is also the release branch, a raw claim push is refused: claim with a docs-tier `kit pr`.
-  The brief names the owner, setup, pins, commands, evidence, house rules, the Messages to Lex rule, wait rule, skills, talk
-  style and the report's last line (PR <full URL>, head <SHA>, checks and reviews <state>).
+### 3. Prototype
 
-  The child thread runs the slice from setup to `kit pr`, links only its own PR and settles when T3 sees it merged.
-  Delegated (`opencode/…`) tickets go the same way with their free model.
-- **The lead's thread is the overview** (Lex, 2026-10-26): pinned (`t3_thread_organize pin`), no PR
-  links, no long jobs of its own. It follows each child's `next` notice, relays what matters to Lex,
-  asks his decisions and keeps the map. Building, checks and landing live in the child threads: a
-  long job in the lead's own worktree would hold its turn (the Stop hook) and keep it from the
-  overview.
-- **Heartbeat** (while a build runs): the lead creates a T3 `schedule_task` every 30 minutes, bound
-  to the lead's thread, with this prompt: "In the landing-branch worktree (`devRoot` in the settings) run
-  `scripts/agents/kit heartbeat <map> --start` and post its `done:` and `running/next:` lines to
-  Lex. On a `stuck:` line read that job's log tail and decide: `kit fix --note`, a helper agent, or
-  tell Lex. On `claimed with no job` read that slice's log and rerun it or tell Lex; a delegated
-  (`opencode/…`) ticket has no slice log, so check its T3 `delegate_task` instead. After a
-  `merged:` line run the project's after-merge step (extras), and the scoreboard page at
-  milestones. On `RESULT: … stop` delete this schedule (`delete_scheduled_task`) and tell Lex."
-  After an app restart: `kit bg --list`, then `kit heartbeat <map>`. The heartbeat never deploys.
-- **Limits** (`kit next` applies them): at most 5 slices at once, at most 2 in the project's shared
-  file (`sharedFile` in the settings), no other shared file, `runs_alone: true` tickets alone in
-  their map, nothing from a build whose README still says `**Not started:**`; the build's other
-  rules stay with the lead.
-- **Done when:** every frontier ticket the limits allow is claimed and running. A ticket waiting on
-  a hard-to-undo choice goes to Lex in its own desk thread, and its build's other tickets keep running.
+- **Use:** a clickable prototype (`prototype` skill: a `prototype/<slug>` branch, or an HTML page shown with T3
+  `html_render`), plus screenshots of today's screens with the project's own tool (extras). It follows the
+  [house style](house-style.md) and the project's UX rulebook (`docs/agents/ux-rulebook.md`).
+- **Show and tell** (Lex, 2026-10-27): a prototype of something that already exists has a Today / After switch, with
+  today's real screen against the change, plus demo buttons that play each step with the feedback shown in place.
+- **Prototypes ahead:** the lead prepares prototypes for the next visible cards in the queue, so Lex can try them in
+  their desk threads and no build waits for sign-off.
+- **Decides:** Lex clicks through and approves, in the prototype's desk thread.
+- **Done when:** Lex approved it and the card links it. Changes with nothing visible skip this step (never the grill).
 
-### 6. Build
+<a id="5-hand-out"></a>
+<a id="6-build"></a>
+<a id="7-checks"></a>
 
-- **Use:** `scripts/agents/kit go slice-<prefix><NN> -- scripts/agents/kit slice --ticket <t> --builder claude-opus-5-5`
-  (the kit's default reviewer is Claude; set `ASE_REVIEW_MODEL` only for a second opinion). `kit go`
-  starts the slice in its own systemd scope and waits at most 9 minutes per call (give the call a
-  10-minute tool time limit: Claude's Bash `timeout: 600000`); on its `RUNNING:`
-  line (exit 75) run `scripts/agents/kit go slice-<prefix><NN>` again (the job `kit next` prints, such as `slice-ke84`), in the foreground, until the slice's
-  RESULT line. A long `kit pr` or spec run goes the same way. The per-name lock of `kit go` and `kit bg` is `flock`
-  on Linux and macOS and a lock file on Windows (see the README's `kit go` entry). Order of steps, manual fallback and
-  ticket Done: the project's runner guide (`docs/agents/runner.md`).
-- **Skills:** the brief names the skills the [skills map](#skills-map) picks for the ticket's files.
-- **Visible work:** the builder follows the [house style](house-style.md), the project's UX rulebook
-  and the approved mock-up.
-- **Decides:** the builder, inside the ticket's Files; anything outside them stops the slice.
-- **Proof:** the builder's report and PR text carry one proof line per Done when item, what it really
-  tried on the real thing (step 4 of [the road](#the-road-six-steps-and-the-grill)).
-- **Done when:** the builder's commits and the ticket's `## Done` are on the slice branch.
-- **Closing a ticket:** `status: closed` needs a `## Done (YYYY-MM-DD)` with one evidence line per `## Done when`
-  item, `Done when <n>: met — <evidence>` (the verdicts are met, not met, pending and open; only met with proof
-  counts). `tickets.mjs check` refuses a closed ticket whose Done says "not met", "pending" or "open" as a check's verdict,
-  or whose item has no evidence line. The lint over every ticket reads only a `## Done` section dated 2026-11-12 or
-  later (`doneCheckFrom` in `tickets.mjs`) of a ticket whose `## Done when` is a list, so older, undated and missing
-  Done sections stay as they are. `kit pr` runs `tickets.mjs check --closed-since origin/<land>` whenever the PR changes
-  docs, ticket files included: a ticket that is closed now and was not closed at the merge base (or is new) is read
-  strictly, with no date cutoff, and a missing or undated `## Done` fails too (a release runs the plain check). A
-  builder whose item is not met writes `Done when <n>: not met — <why>` and does not close the ticket.
-- **Open ticket, unmet item:** `kit slice` reads the ticket once the build is committed (its `done-when` step) and again right
-  before `kit pr` lands it. It stops with `RESULT: fail slice done-when: …` when any Done when item says not met, pending or open,
-  or has no `Done when <n>: met — <evidence>` line, whatever the ticket's status, so a slice never lands with an item undone
-  (the first reading comes before the review, so a build left unfinished costs no review). The same reader serves a card's brief,
-  where the Done when list may be the card standard's `Done when:` line; a Done when with no list counts as one item. A
-  rerun reads the ticket again, after the lead has fixed it with a commit (a card's brief: an edit).
+### 4. Build and prove
 
-### 7. Checks
+- **Hand-out:** the lead starts each card as **its own T3 thread**: one `delegate_task` with `isolation: "worktree"`,
+  the pinned builder as `target`, and as `task` the whole output of `scripts/agents/kit brief <KEY> [--note "<text>"]`
+  above its RESULT line (a project without cards: `kit brief --task "<title>" --owner <id> --note "<the task>"`). The
+  brief names the owner, setup, pins, commands, evidence, house rules, the Messages to Lex rule, wait rule, skills, talk
+  style and the report's last line (PR <full URL>, head <SHA>, checks and reviews <state>). The `agent-cap` hook caps the
+  subagents inside one Claude session (5 by default); nothing counts T3 helper threads, so the lead keeps the number of
+  builds running at once in hand.
+- **The lead's thread is the overview** (Lex, 2026-10-26): pinned (`t3_thread_organize pin`), no PR links, no long jobs
+  of its own. It follows each child's `next` notice, relays what matters to Lex and asks his decisions. Building, checks
+  and landing live in the child threads.
+- **Long jobs:** a long `kit pr` or spec run goes through `kit go` ([Finish the job in the turn](#house-rules)): give
+  each call a 10-minute tool time limit (Claude's Bash `timeout: 600000`) and run it again on its `RUNNING:` line
+  (exit 75) until the job's RESULT line; how its lock and its Windows jobs work: the README's `kit go` entry. Order of
+  steps and the manual fallback: the project's runner guide (`docs/agents/runner.md`).
+- **Skills:** the brief names the skills the [skills map](#skills-map) picks for the card's files.
+- **Visible work:** the builder follows the [house style](house-style.md), the project's UX rulebook and the approved
+  prototype.
+- **Checks:** `kit unit --affected` and the project's checks (`checks` in the settings: `check` when types move,
+  `lint`, `test`) while building, plus the project's own check commands for the change (extras); T3 `preview_*` tools
+  to try a change by hand. A visible change also gets the project's user-level check and the screenshots its extras
+  name. A visible change (one matching `paths.visible`) gets `kit ux` once it is built and the
+  feature list is updated: the builder fixes what it calls broken or looks off, or says why not.
+- **Decides:** the builder, inside the card's scope; anything outside it goes back to the lead.
+- **Proof:** one proof line per Done when item in the report and the PR text (step 4 of
+  [the road](#the-road-six-steps-and-the-grill)).
+- **Closing a ticket file:** `status: closed` needs a `## Done (YYYY-MM-DD)` with one line per `## Done when` item,
+  `Done when <n>: met — <evidence>` (a builder whose item is not met writes `not met — <why>` and leaves it open);
+  `tickets.mjs check` and `kit pr` refuse a ticket closed without them.
+- **Done when:** every check's `RESULT:` line is ok and quoted in the report, and each Done when item has its proof.
 
-- **Use:** `kit unit --affected`, the project's checks (`checks` in the settings: `check` when
-  types move, `lint`, `test`) and the project's own check commands for the change (extras). T3
-  `preview_*` tools to try a change by hand. A visible change (one matching `paths.visible`) gets
-  the project's user-level check and screenshots (extras).
-- **Done when:** every check's `RESULT:` line is ok and quoted in the report; a visible change has
-  the screenshots the extras name.
+<a id="8-review"></a>
+<a id="9-land"></a>
 
-### 8. Review
+### 5. Land
 
-- **Use:** `kit review` (inside `kit slice` and `kit pr`), Claude on every change, up to 3 `kit fix`
-  rounds; severities and blocking: the runner guide's Review and close. Second opinions per the pins
-  above. A visible change also gets the Opus UX review, `kit ux`, against the house style, the UX
-  rulebook and the approved mock-up (Lex, 2026-11-14: every screen change gets the automatic UX check
-  before it lands). The builder runs it once the change is built and the feature list is updated (the
-  build brief says so) and fixes what it calls broken or looks off, or says why not. `kit pr` is the
-  gate: it lands a visible change (`paths.visible`) only with the result `kit ux` saved for the
-  branch, passed, with the review, for the visible files and the listed features that cover the
-  change as they are then, and puts a `UX check:` line in the PR text; a later change to a visible
-  file or to one of those features, a rebase's too, needs `kit ux` again (a list edit about other
-  features does not). A change that matches those paths but shows a person nothing new lands with
-  `kit pr --not-visible "<reason>"` (refused when `kit ux` tried that very change and it did not
-  pass; a run whose reviewer did not finish is no such verdict); `--waive` does not cover the UX
-  check. A project with no feature list for `kit ux` (`kit ux --help` names the file) gets
-  `UX check: skipped`, and a change no listed feature covers gets `UX check: nothing to try`, never
-  "ok". `kit slice` keeps its own UX step after the code review: broken gets one fix round and stops
-  the slice only if still broken, looks off gets one fix round and then lands with UX follow-ups in
-  the ticket; when `kit pr` refuses the result, the slice's next run checks the UX again first. A
-  feature the reviewer gives no verdict is asked for once more; still none, it is "no verdict":
-  counted, never failing.
-- **Decides:** the lead weighs each finding; a rejected finding is written down with its reason.
-- **Evidence:** the main root's `.scratch/reviews/<owner>/<time>/`, with `findings.json` listing each
-  finding's kind (real fault, mismatch with the ticket, timing/race, style) and the builder's declined
-  findings with reasons; decisions in the ticket's Done.
-- **Done when:** the `kit pr` gate has nothing blocking.
+- **Use:** `kit pr` (`--ticket <KEY or file>` for a card or ticket); a lead's own change runs `kit pr` too. T3
+  `link_pull_request` for every PR. It runs the checks, `kit review` (Claude on every change, the
+  [review loop](#review-loop)) and the second look; severities and blocking: the runner guide's Review and close.
+- **UX gate** (Lex, 2026-11-14: every screen change gets the automatic UX check before it lands): `kit pr` lands a
+  visible change (`paths.visible`) only with a passed result `kit ux` saved for the branch as it is now, and puts a
+  `UX check:` line in the PR text; a later change to a visible file or to one of the features covering it needs `kit ux`
+  again. A change that matches those paths but shows a person nothing new lands with `kit pr --not-visible "<reason>"`
+  (refused when `kit ux` tried that very change and it did not pass); `--waive` does not cover the UX check. No feature
+  list gives `UX check: skipped`, a change no listed feature covers `UX check: nothing to try`, never "ok"
+  (`kit ux --help`).
+- **Waivers** (lead only): `--waive "<reason>"` for the findings that stop the landing (above P3; once the fix rounds
+  are used up, only P0 and P1) names each by id (`--waive "R1-2, SL-1: <reason>"`) or starts with their number
+  (`--waive "2 findings: <reason>"`); a finding it leaves out, or one new at a head a rebase brought, stops `kit pr`
+  with a plain reason. P3 findings, test gaps and docs wording need no names; the waiver text stays in the PR. A project
+  with a feature list (`featureList` in the settings) stops a visible change unless it updated the list or its Done
+  says `Feature list: no change (<reason>)`.
+- **Browser runs on a busy machine:** `kit pr`'s browser step runs one at a time per machine; a failed spec file the
+  change did not touch is rerun once alone and, passing alone, lands as `flaky under load: <file>` (the weekly
+  `kit sweep` names a file flaky 3 or more times in 7 days: give it a fix card). The locks, timing files and what
+  `kit pr` reads from the project's specs command: the README's Browser runs section.
+- **Evidence:** the main root's `.scratch/reviews/<owner>/<time>/`, with `findings.json` listing each finding's kind
+  (real fault, mismatch with the ticket, timing/race, style); a helper's declined findings and their reasons are in its
+  report and the PR text.
+- **Never:** a raw `git push` to the release branch (or a landing branch that is also the release branch, as on a live
+  site); the Bash hook refuses it and names `kit pr`.
+- **Done when:** the PR is merged into the landing branch; on Orbit `kit pr` moves the card to Done with the PR and its
+  merge SHA (a PR the merge queue takes leaves the card open: close it with `kit ticket update <KEY> --status Done` once
+  it lands).
 
-### 9. Land
+<a id="10-after-a-merge-note-scoreboard"></a>
+<a id="11-lexs-end-check"></a>
 
-- **Use:** `kit pr --ticket <t>` (`kit slice` does it); a lead's own change runs `kit pr` too. T3
-  `link_pull_request` for every PR. Lead-only `--waive "<reason>"`: for the findings that stop the landing (above P3; once the fix rounds are used up, only P0 and P1) it must name each by id (`--waive "R1-2, SL-1: <reason>"`, ids anywhere in the text) or start with the number of them (`--waive "2 findings: <reason>"`, which must match both looks together). A finding it leaves out stops `kit pr` with a plain reason that lists it, and so does one that is new at a head a rebase brought, at the start of the run too (a waiver given for the old findings never covers it, by id or by count: the lead sees it and runs `kit pr` again); P3 findings, test gaps and docs wording need no names, and the waiver text stays in the PR. A project with a feature list
-  (`featureList` in the settings) stops a visible change unless it updated the list or its Done says
-  `Feature list: no change (<reason>)`.
-- **Browser runs on a busy machine:** `kit pr`'s browser step runs one at a time per machine (it waits,
-  saying `waiting for <owner>'s full browser run`). A failed spec file the change did not touch is
-  rerun once alone: passing alone, it lands as `flaky under load: <file>` on the `RESULT:` line and in
-  `flaky.jsonl` in the kit's state folder; a file the change touched must pass in the full run, and a
-  run that did not report every file it ran is never forgiven. The settings' `timing` spec files run
-  after the rest, each alone; with a `timing` list the selection is listed first, and a change that
-  selects nothing takes no lock. While a spec file runs alone (timing file or rerun) no new kit job
-  starts (`waiting for <owner>'s lone browser run`), except `wait`, `heartbeat`, `version`,
-  `rulebook` and help; jobs already running carry on. The locks need `flock` (`kit doctor`
-  says when it is missing; the runs then go unlocked). What `kit pr` reads from the project's specs command:
-  `--list` prints one `<file> [<groups>] …` line per selected file, or ends `RESULT: ok specs none
-  affected` (or `0 selected`); a run prints `✓ <file> (…)` or `✗ <file>: <test> — <error>` per file and
-  ends `RESULT: fail specs N of M failed` when any failed.
-  The weekly `kit sweep` bundle names a file flaky 3 or more times in 7 days: give it a fix ticket.
-- **Never:** a raw `git push` to the release branch (or a landing branch that is also the release
-  branch, as on a live site); the Bash hook refuses it and names `kit pr`.
-- **Done when:** the PR is merged into the landing branch and its number is in the ticket's `landed:`.
+### 6. Lex tries it
 
-### 10. After a merge: note, scoreboard
-
-- **Use:** the lead runs the project's after-merge step (a preview deploy where the project has one;
-  extras). Then a two-line plain note to Lex (see [Messages to Lex](#messages-to-lex)): what was done, and whether he would notice anything;
-  a screenshot contact sheet through `html_render` only when something visible changed. Lex's
-  corrections go to the chat memory, which the weekly learning reads (`kit feedback` and its build
-  feedback logs were cut on 2026-11-14).
-- **Scoreboard:** the kit records builder, time, review rounds, findings by kind, cost where known
-  and landing per piece; `kit score <map>` prints it and `kit score <map> --snapshot` writes
-  `build/scoreboard.json` for the lead to commit at the end of a build.
-- **Build page:** at each milestone and at the end, the lead runs `kit score <map> --html` and shows
-  the page it prints with T3 `html_render`: where the build is, what reviews caught, what Lex
-  corrected and the builders, in plain words.
-- **Done when:** the after-merge step's `RESULT:` line is ok and the note is sent.
-
-### 11. Lex's end check
-
-- **Releases wait for Lex's go, work doesn't** (a direct project has no release to wait for): when a build's (or stage's) frontier is empty, its end
-  check goes to Lex in a desk thread, and the next stage or the next build in the queue starts at
-  once on the landing branch. A gate line in a build README saying "after X's release" means "after
-  X's frontier is empty" for starting work; X's release itself still waits for Lex.
-- **Use:** the lead tells Lex the change is ready to try (in a desk thread, with the prototype beside it;
-  where to try it: extras), with a plain what-to-test list (what a user could notice, where to look, what to try).
-  First the lead runs the project's whole user-level check on the landing branch, where it has one
-  (extras), and sends its summary with that list. In a direct project the landing branch is live: a user-level check the
-  project wants before going live belongs in its `checks` (which `kit pr` runs for code-size changes; docs and CSS changes run lighter steps, so a check that must guard those needs a CI workflow on pull requests); otherwise the lead runs it right
-  after the merge, rolls the change back if it fails, and the note to Lex follows (see the Done-when line).
-- **Decides:** Lex. Each correction becomes a card, or a ticket in the build (station 4).
+- **After a merge:** the lead runs the project's after-merge step (a preview deploy where the project has one;
+  extras), then a two-line plain note to Lex (see [Messages to Lex](#messages-to-lex)): what was done, and whether he
+  would notice anything; a screenshot contact sheet through `html_render` only when something visible changed. Lex's
+  corrections go to the chat memory, which the weekly learning reads.
+- **Scoreboard:** `kit score [map]` prints what the kit recorded per piece (builder, time, review rounds, findings by
+  kind, cost where known, landing); `--html` makes the build page the lead shows with T3 `html_render`.
+- **The desk:** the lead tells Lex the change is ready to try in a desk thread, with the prototype beside it (where to
+  try it: extras) and a plain what-to-test list (what a user could notice, where to look, what to try). First the lead
+  runs the project's whole user-level check on the landing branch, where it has one (extras), and sends its summary
+  with that list. In a direct project the landing branch is live: a user-level check the project wants before going
+  live belongs in its `checks` (which `kit pr` runs for code-size changes; docs and CSS changes run lighter steps, so a
+  check that must guard those needs a CI workflow on pull requests); otherwise the lead runs it right after the merge,
+  rolls the change back if it fails, and the note to Lex follows.
+- **Releases wait for Lex's go, work doesn't** (a direct project has no release to wait for): the next card starts at
+  once on the landing branch.
+- **Decides:** Lex. Each correction becomes a card.
 - **Done when:** Lex says "ship it". A direct project (`branches.direct`) is the exception: the release does not wait
-  for his go (other hard-to-undo items still do); the project's `checks` are the gate, and Lex hears about the change
-  afterwards (the house rule says how for his two websites).
+  for his go (other hard-to-undo items still do); the project's `checks` are the gate, and Lex hears about the change afterwards (the house rule says how for his two
+  websites).
 
-### 12. Release
+<a id="12-release"></a>
+
+### 7. His go
 
 - **Use:** only after Lex's written "ship it". The exception is a direct project
   (`branches.direct`): it has no release step and needs no "ship it", its merge into main is the release as
@@ -455,43 +361,31 @@ OpenCode settings (default model, global instructions) do not apply to the revie
   `origin/<land>`). A preview deploy from a landing branch that is not live runs no check. Only a
   lead may pass it with `--waive "<reason>"`, which its `RESULT:` line names; `kit pr --release
   --waive` hands the reason on, so one waiver covers both the review findings and the check.
-  The release joins `origin/<release>` by one merge into the cut (nothing changes when it is already inside),
-  never by replaying dev's commits, so a back-merge of main or a hotfix made on main cannot conflict again;
-  merge the release PR with a merge commit (`gh pr merge N --merge --match-head-commit <head>`, which `kit pr --release` prints), never
-  `--rebase`, which would rewrite every SHA and bring the conflict back.
+  The release joins `origin/<release>` by one merge into the cut; merge the release PR with a merge commit (the
+  `gh pr merge N --merge --match-head-commit <head>` line `kit pr --release` prints), never `--rebase`.
 - **Done when:** the live project serves the new version and its number is recorded where the
   extras say.
 
 ## Skills map
 
 The kit names skills, never copies them (paid skills stay on the machine): `skills.json` in the kit
-maps a job to skill names, each with the kit's own one-line fallback. `kit brief`, `kit slice`'s
-build brief and `kit review`'s brief use it. Claude gets `/name`, Codex `$name`, and a model without
-skills (OpenCode, Grok) the fallback line. **House rules beat skill advice:** where a skill suggests
-what a house rule forbids (a toast, say, against "no toasts, feedback in place"), the house rule wins.
+maps a job to skill names, each with the kit's own one-line fallback. `kit brief` and `kit review`'s brief use it.
+Claude gets `/name`, Codex `$name`, and a model without skills (OpenCode, Grok) the fallback line. **House rules beat
+skill advice:** where a skill suggests what a house rule forbids (a toast, say, against "no toasts, feedback in
+place"), the house rule wins.
 
-| Job | Skills |
-| --- | --- |
-| Talk style (the style line) | caveman |
-| Any UI build or styling (CSS, UI and component files, or styling words in the ticket's title and Files) | good-css, emil-design-foundations, emil-ui-polish |
-| Forms, inputs and buttons | emil-forms-and-inputs |
-| Type | emil-typography |
-| Colour and tokens | emil-color |
-| Menus, popovers, panels and dialogs | emil-surfaces |
-| Touch and accessibility | emil-touch-and-accessibility |
-| Phone layouts | emil-mobile-native |
-| Motion | emil-animations, animate |
-| Speed | emil-performance |
-| Component APIs | emil-component-design |
-| The design system docs | emil-design-system-docs |
-| Marketing pages | emil-marketing-pages |
-| UI review (`kit review` on a UI diff; **planned** for `kit ux`) | emil-ui-review, emil-unslop-design, break-ui |
-| Before a release (**planned**: no release brief yet) | emil-prep-for-prod |
+- **Talk style** (the style line): caveman.
+- **Any UI build or styling** (CSS, UI and component files, or styling words in the card): good-css,
+  emil-design-foundations, emil-ui-polish; by topic, only when the change touches UI: forms, inputs and buttons
+  (emil-forms-and-inputs), type (emil-typography), colour and tokens (emil-color), menus, popovers, panels and dialogs
+  (emil-surfaces), touch and accessibility (emil-touch-and-accessibility), phone layouts (emil-mobile-native), motion
+  (emil-animations, animate), speed (emil-performance), component APIs (emil-component-design), the design system docs
+  (emil-design-system-docs), marketing pages (emil-marketing-pages).
+- **UI review** (`kit review` on a UI diff; **planned** for `kit ux`): emil-ui-review, emil-unslop-design, break-ui.
+- **Before a release** (**planned**: no release brief yet, so never claim it ran): emil-prep-for-prod.
 
-The rows from forms to UI review apply only when the slice touches UI; the release row is for a
-release brief (**planned**). A project adds or removes
-names with `"skills": { "add": [...], "remove": [...] }` in `scripts/agents/kit.json`. A skill
-missing on a machine is a `kit doctor` note (`skills map`), never a failure.
+A project adds or removes names with `"skills": { "add": [...], "remove": [...] }` in `scripts/agents/kit.json`. A
+skill missing on a machine is a `kit doctor` note (`skills map`), never a failure.
 
 ## Weekly routines
 
@@ -502,7 +396,7 @@ Scheduled with T3 `schedule_task` at a fixed time (Europe/Amsterdam), on Tuesday
   week's numbers into a small bundle; the session applies `improve-codebase-architecture` (list
   only) plus guardrail candidates and writes `docs/work/sweeps/YYYY-MM-DD.md` through `kit pr`. It
   lists bad patterns and changes nothing; Lex gets the top 3, each with a recommended fix, and picks
-  which become tickets.
+  which become cards.
 - **Chat learning, even ISO weeks, right after the Tuesday sweep (same scheduled run):** the
   project's `docs/agents/routines/learning.md`. `kit sweep --learn` (was `kit learn`) groups the corrections the chat
   project's sync collects in `~/Projects/chat/memory/` with any build feedback logs still on file; the session
@@ -520,30 +414,14 @@ Tuesday pack were dropped). Agents keep working on everything that does not need
 
 - **Easy-to-undo defaults:** an easy-to-undo choice takes its recommended answer at once, and the lead
   names it in that card's desk thread so he can reverse it. Easy to undo: anything that lands on the
-  landing branch (or a preview of it) and can be changed by a later slice (not in a direct project, whose
-  landing branch is live). Grilling answers and mock-up choices count when the work they steer is still
+  landing branch (or a preview of it) and can be changed by a later card (not in a direct project, whose
+  landing branch is live). Grilling answers and prototype choices count when the work they steer is still
   unreleased.
 - **Hard to undo, waits for his word:** going live (release; a direct project goes live on its own merge,
   see the house rule); public repos, packages or GitHub Issues; anything that costs money; deleting what
   cannot be recovered; changes to visitors' sites (a direct project's own site excepted: it goes live on
   its merge, see the house rule); his settings, keys and secrets (T3 `request_secret`, never chat); a
-  change in builder routing; which sweep findings become tickets; new checks or rulebook lines from chat
+  change in builder routing; which sweep findings become cards; new checks or rulebook lines from chat
   learning.
 - **Questions in their own thread:** each question for Lex gets its own desk thread, written in plain
   words with a ➡️ recommended answer; ⚠️ marks the hard-to-undo ones.
-
-## Small chores on free models
-
-Low-risk tidying runs beside the main queue on the free OpenCode workers (Lex, 2026-10-27), for
-example splitting a file that grows into a god file, or a DX friction ticket.
-
-- **Fit:** fully specified, no visible change, with tests that pin the behaviour, and none of the
-  running build's files (`kit next`'s shared-file rule decides). It runs only when a slot is free;
-  main-queue slices come first.
-- **Build:** a free OpenCode model through T3 `delegate_task` (as in the pins), then Agent Kit's
-  `kit unit --affected` and the project's checks.
-- **Check before merging:** one short Claude review (`kit review`, one round, no fix rounds on
-  Claude; a failed check goes back to the free worker or is dropped). That review is the chore's only
-  Claude use.
-- **Evidence:** the chore's ticket under `docs/work/` with its `## Done`, merged through `kit pr`,
-  and one line in the lead's next note to Lex.

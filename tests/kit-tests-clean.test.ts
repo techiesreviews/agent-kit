@@ -108,7 +108,7 @@ test(guardName, { timeout: limit + 60_000 }, async t => {
     (/^tests\/kit.*\.test\.ts$/.test(file) ||
       /\bkit\b|\b(?:agent|sol|review)\.sh\b|agent-run\.mjs/.test(readFileSync(file, "utf8"))),
   ).sort();
-  for (const file of ["kit-fix", "kit-slice", "agent-resume", "agent-scripts", "kit-doctor"]) {
+  for (const file of ["kit-pr", "kit-review", "agent-resume", "agent-scripts", "kit-doctor"]) {
     assert.ok(files.includes(`tests/${file}.test.ts`), `guard must run ${file}`);
   }
   const temporary = mkdtempSync(join(tmpdir(), "kit-tests-clean-"));
@@ -279,7 +279,7 @@ test("the PR full tier runs the clean guard only for agent scripts or kit tests"
   // An editor-like project's settings (a copy of the Native Site Editor's): its kit plumbing is scripts/agents/ and kit tests.
   const settings = JSON.parse(readFileSync("tests/fixtures/editor-kit.json", "utf8"));
   const steps = (paths: string[], full = false) => checkSteps(classify(paths.map(path => ({ status: "M", path })), { full, settings })).steps;
-  for (const path of ["scripts/agents/kit.d/slice", "scripts/agents/pr-tier.mjs", "tests/kit-wait.test.ts"]) {
+  for (const path of ["scripts/agents/kit.d/pr", "scripts/agents/pr-tier.mjs", "tests/kit-wait.test.ts"]) {
     assert.deepEqual(steps([path, "package.json"]), ["check", "unit", "kit-clean", "lint", "specs"]);
     assert.ok(steps([path], true).includes("kit-clean"));
   }

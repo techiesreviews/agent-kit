@@ -7,7 +7,7 @@ import { Socket } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { bgLock } from "../bg-lock.mjs";
-import { kitJob, kitJobDirectory, kitJobExit, kitJobGroup, kitJobMembers, kitJobProcess, kitJobRecord, kitJobRunning, kitResult, kitRoot } from "../kit-lib.mjs";
+import { kitJob, kitJobDirectory, kitJobExit, kitJobGroup, kitJobMembers, kitJobPins, kitJobPlatform, kitJobProcess, kitJobRecord, kitJobRunning, kitJobSame, kitJobTree, kitResult, kitRoot, kitWinProcesses } from "../kit-lib.mjs";
 
 const usage = `Usage: kit bg <name> [--cwd DIR] [--max D] -- <command…>
        kit bg --list
@@ -19,14 +19,20 @@ time limit (seconds, or with s, m or h; default 6h; 0 for none); a job it ends s
 systemd (CI, containers, root; or KIT_BG_SCOPE=off) the job starts without a scope and ends with the session.
 Stop sends SIGTERM to that group, then SIGKILL after a 2s grace period.
 One start or stop of a name at a time: flock on Linux and macOS; on Windows (no flock) a lock file,
-.scratch/kit-jobs/.<name>.lock, that a dead or a five-minute-old holder loses (KIT_BG_LOCK=file or flock picks by hand).`;
+.scratch/kit-jobs/.<name>.lock, that a dead or a five-minute-old holder loses (KIT_BG_LOCK=file or flock picks by hand).
+On Windows (no setsid, process groups, /proc or systemd) the job is a hidden, detached process tree that ends with the
+session; its processes are read with Get-CimInstance, --max is a timer in its wrapper, and stop ends the whole tree at
+once (taskkill /T /F, no grace period) and records exit 143.`;
+const windows = kitJobPlatform() === "win32";
+// One CIM process list takes about 0.4s on Windows: its waits look less often.
+const poll = windows ? 1000 : 25;
 const args = process.argv.slice(2);
 const quote = value => `'${value.replace(/'/g, "'\\''")}'`;
 
 // Do not let a detached child start work until its parent has durably pinned it.
 // Pipe EOF without the handoff also cancels a child whose parent died mid-launch.
-function gatedSpawn(command, argv, stdio, record) {
-  const child = spawn(command, argv, { stdio: [...stdio, "pipe"] });
+function gatedSpawn(command, argv, stdio, record, options = {}) {
+  const child = spawn(command, argv, { stdio: [...stdio, "pipe"], windowsHide: true, ...options });
   const gate = child.stdio[3];
   gate.on("error", () => {});
   child.on("error", () => {});
@@ -55,30 +61,88 @@ async function wrapper(kind, directory, cwd, command) {
   for await (const chunk of gate) handoff += chunk;
   if (terminated) { process.exitCode = 143; return; }
   if (handoff !== "launch\n") return;
-  const pgid = kitJobProcess(process.pid).pgid;
+  const self = kitJobProcess(process.pid);
+  const { pgid, started } = self;
   let child;
-  if (kind === "--command") child = spawn(command[0], command.slice(1), { cwd, stdio: "inherit" });
-  else {
-    writeFileSync(join(directory, "identity"), readFileSync(`/proc/${process.pid}/stat`, "utf8"));
-    writeFileSync(join(directory, "pgid"), `${process.pid}\n`);
-    const started = kitJobProcess(process.pid).started;
+  if (kind === "--command") {
+    child = spawn(command[0], command.slice(1), { cwd, stdio: "inherit", windowsHide: true });
+    // Windows: pin the work itself, so it stays the job's (waited for, stopped, timed) if this process ends first.
+    // Node ends a process's children with it there (its job object, as the work is not detached: detached, it would
+    // have no console, and each console program it starts would open a window), so this covers a work that broke
+    // away from that job. A pin that cannot be read costs only that: the work runs on, and its status stands.
+    let work = null;
+    try { work = windows && child.pid ? kitJobProcess(child.pid) : null; }
+    catch (error) { console.error(`kit bg: could not pin the job's command: ${error.message}`); }
+    if (work) {
+      writeFileSync(join(directory, "work.tmp"), JSON.stringify({ pid: child.pid, started: work.started }));
+      renameSync(join(directory, "work.tmp"), join(directory, "work"));
+    }
+  } else {
+    if (windows) writeFileSync(join(directory, "identity"), JSON.stringify({ pid: process.pid, started }));
+    else {
+      writeFileSync(join(directory, "identity"), readFileSync(`/proc/${process.pid}/stat`, "utf8"));
+      writeFileSync(join(directory, "pgid"), `${process.pid}\n`);
+    }
     child = gatedSpawn(process.execPath, [process.argv[1], "--command", directory, cwd, ...command], ["ignore", "inherit", "inherit"], member => {
       writeFileSync(join(directory, "members"), JSON.stringify({ started, members: [member] }));
       writeFileSync(join(directory, "pid.tmp"), `${process.pid}\n`);
       renameSync(join(directory, "pid.tmp"), join(directory, "pid"));
     });
   }
+  const max = Number(kitJobRecord(directory, "max") ?? 0), since = Date.parse(kitJobRecord(directory, "started") ?? "");
+  // On Windows the command process waits for its own tree; the wrapper for the job's, from all its pins (the work
+  // too, should the command process end first), leaving itself out.
+  const tree = () => kitJobTree(kitWinProcesses(), kind === "--wrapper" ? kitJobPins({ directory, pid: process.pid, started }) : [{ pid: process.pid, started }])
+    .filter(member => member.pid !== process.pid);
+  // Windows has no scope: the wrapper's own timer is the time limit, and ends the job's tree as kit bg --stop does
+  // (the top of the tree, below the wrapper), until that tree has ended. It kills only by a list it could read:
+  // while none reads it looks again, never by a pid that may have ended since.
+  let limited = false, timer;
+  const end = () => {
+    let members;
+    try { members = tree(); } catch { timer = setTimeout(end, poll); return; }
+    const pids = new Set(members.map(member => member.pid));
+    const tops = members.filter(member => !pids.has(member.ppid)).map(member => member.pid);
+    if (!tops.length) return;
+    limited = true;
+    spawnSync("taskkill", [...tops.flatMap(pid => ["/PID", String(pid)]), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+    // A taskkill that failed (or a process started since) is met by the next look, until the tree has ended.
+    timer = setTimeout(end, poll);
+  };
+  const limit = () => {
+    const left = since + max * 1000 - Date.now();
+    // setTimeout holds at most about 24 days: a longer limit waits in steps.
+    timer = left > 2e9 ? setTimeout(limit, 2e9) : setTimeout(end, Math.max(0, left));
+  };
+  if (windows && kind === "--wrapper" && max > 0 && Number.isFinite(since)) limit();
   const status = await childStatus(child);
   // Recheck the original group after every await and before terminal records.
   // The supervisor excludes the leader to avoid waiting on each other.
-  while (kitJobGroup(pgid).some(member => member.pid !== pgid && member.pid !== process.pid)) await delay(25);
+  const others = () => windows ? tree().length > 0 : kitJobGroup(pgid).some(member => member.pid !== pgid && member.pid !== process.pid);
+  // On Windows a list that cannot be read (PowerShell failed) is looked at again; after ten failures in a row, once
+  // no pinned process is alive (process.kill(pid, 0) needs no list), the job's own status stands, and the log says why
+  // its leftover processes were not waited for. While a pin may still run (the work, should the command process have
+  // died), the wrapper keeps looking, and its time limit with it.
+  const pinned = () => (kind === "--wrapper" ? kitJobPins({ directory, pid: process.pid, started }) : []).some(({ pid }) => {
+    if (pid === process.pid) return false;
+    try { process.kill(pid, 0); return true; } catch (error) { return error.code === "EPERM"; }
+  });
+  for (let failures = 0; ;) {
+    try { if (!others()) break; failures = 0; }
+    catch (error) {
+      if (!windows) throw error;
+      if (++failures === 1) console.error(`kit bg: ${error.message}; looking again`);
+      if (failures >= 10 && !pinned()) { console.error(`kit bg: gave up waiting for the job's leftover processes after ${failures} failed process lists`); break; }
+    }
+    await delay(poll);
+  }
+  clearTimeout(timer);
   if (kind === "--command") { process.exitCode = status; return; }
   // A TERM once the job's own time limit has passed is the scope's RuntimeMaxSec: the log says so.
-  const max = Number(kitJobRecord(directory, "max") ?? 0), started = Date.parse(kitJobRecord(directory, "started") ?? "");
-  if (terminated && max > 0 && existsSync(join(directory, "scope")) && Date.now() - started >= max * 1000 - 1000)
+  if (limited || (terminated && max > 0 && existsSync(join(directory, "scope")) && Date.now() - since >= max * 1000 - 1000))
     appendFileSync(join(directory, "log"), `kit bg: the time limit (${max}s) ended this job\n`);
   writeFileSync(join(directory, "ended"), `${new Date().toISOString()}\n`);
-  writeFileSync(join(directory, "exit.tmp"), `${terminated ? 143 : status}\n`);
+  writeFileSync(join(directory, "exit.tmp"), `${terminated || limited ? 143 : status}\n`);
   renameSync(join(directory, "exit.tmp"), join(directory, "exit"));
 }
 
@@ -106,7 +170,7 @@ function parse() {
 
 // Whether a user systemd can start a scope here: probed once per start, with a short time limit.
 function scopeWorks() {
-  if (process.env.KIT_BG_SCOPE === "off") return false;
+  if (process.env.KIT_BG_SCOPE === "off" || windows) return false;
   const probe = spawnSync("systemd-run", ["--user", "--scope", "--quiet", "--collect", "true"], { stdio: "ignore", timeout: 5000 });
   return probe.status === 0;
 }
@@ -116,12 +180,13 @@ function list() {
   const entries = existsSync(root) ? readdirSync(root, { withFileTypes: true }) : [];
   for (const entry of entries.filter(entry => entry.isDirectory() && /^[a-z0-9]/.test(entry.name)).sort((a, b) => a.name.localeCompare(b.name))) {
     const directory = kitJobDirectory(entry.name);
-    let state = "died";
-    try {
-      const job = kitJob(directory);
+    let state = "died", job = null;
+    try { job = kitJob(directory); } catch { /* An incomplete record is a died job. */ }
+    // A process list that cannot be read (Windows: PowerShell failed) is unknown, never died.
+    if (job) try {
       const status = kitJobExit(job);
       state = kitJobRunning(job) ? "running" : status !== null ? `exit ${status}` : "died";
-    } catch { /* An incomplete record is a died job. */ }
+    } catch (error) { state = `unknown (${error.message.replace(/\s+/g, " ")})`; }
     const started = Date.parse(kitJobRecord(directory, "started"));
     const age = Number.isFinite(started) ? `${Math.max(0, Math.floor((Date.now() - started) / 1000))}s` : "unknown";
     console.log(`${entry.name}\t${state}\t${age}\t${join(directory, "log")}`);
@@ -152,7 +217,9 @@ async function start(config, directory) {
   const log = join(directory, "log");
   // The scope keeps the launcher's pid, open files (the fd 3 handshake) and environment: systemd-run execs in place.
   const scope = scopeWorks();
-  const launcher = ["setsid", "nohup", process.execPath, process.argv[1], "--wrapper", directory, config.cwd, ...config.command];
+  const wrapper = [process.execPath, process.argv[1], "--wrapper", directory, config.cwd, ...config.command];
+  // Windows: a detached, hidden process stands in for setsid and nohup (and stdin stays closed).
+  const launcher = windows ? wrapper : ["setsid", "nohup", ...wrapper];
   const [program, ...argv] = scope ? ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--description", `kit bg ${config.name} (${resolve(kitRoot())})`,
     ...(config.max ? ["-p", `RuntimeMaxSec=${config.max}`] : []), ...launcher] : launcher;
   const fd = openSync(log, "w");
@@ -163,12 +230,13 @@ async function start(config, directory) {
       launched = launch;
       writeFileSync(join(directory, "launch.tmp"), JSON.stringify(launch));
       renameSync(join(directory, "launch.tmp"), join(directory, "launch"));
-    });
+    }, windows ? { detached: true } : {});
   } finally { closeSync(fd); }
   let failure;
   child.on("error", error => { failure = error; });
   child.unref();
-  const deadline = Date.now() + 5000;
+  // On Windows the launch reads three CIM process lists (about 0.4s each) before the pid is recorded.
+  const deadline = Date.now() + (windows ? 15000 : 5000);
   while (!existsSync(join(directory, "pid"))) {
     if (failure) throw failure;
     if (child.exitCode !== null || child.signalCode !== null || Date.now() >= deadline)
@@ -190,13 +258,11 @@ async function stop(name, directory) {
     kitResult("ok", `bg stop ${name} not running`);
     return;
   }
+  if (windows) return stopTree(name, job);
   // Keep the original start-time proofs through grace and escalation.
   // Never escalate against a reused process group.
   const members = kitJobMembers(job);
-  const alive = () => members.some(({ pid, started }) => {
-    const current = kitJobProcess(pid);
-    return current?.pgid === job.pgid && current.session === job.pgid && current.started === started;
-  });
+  const alive = () => members.some(({ pid, started }) => kitJobSame(kitJobProcess(pid), job, started));
   const signal = value => {
     if (!alive()) return false;
     try { process.kill(-job.pgid, value); return true; }
@@ -208,6 +274,28 @@ async function stop(name, directory) {
   const escalated = signal("SIGKILL");
   console.log(`${name}: stopped pid ${job.pid}, process group ${job.pgid} (${escalated ? "SIGTERM, SIGKILL" : "SIGTERM"})`);
   kitResult("ok", `bg stop ${name} pgid ${job.pgid}`);
+}
+
+// Windows has no graceful stop: taskkill /T /F ends the job's whole tree at once, so the wrapper writes no records,
+// and stop writes "ended" and exit 143 itself unless the job had just ended. Only the top of the tree goes to taskkill
+// (the wrapper, or the processes left below it when it died): /T reaches the rest, so a short-lived process that
+// ended since the list was read passes on a reused pid only when both pinned processes (the wrapper and its command
+// process) have died.
+async function stopTree(name, job) {
+  const members = kitJobMembers(job);
+  const pids = new Set(members.map(member => member.pid));
+  const tops = members.filter(member => !pids.has(member.ppid)).map(member => member.pid);
+  const kill = spawnSync("taskkill", [...tops.flatMap(pid => ["/PID", String(pid)]), "/T", "/F"], { encoding: "utf8", windowsHide: true });
+  const deadline = Date.now() + 5000;
+  while (kitJobRunning(job) && Date.now() < deadline) await delay(poll);
+  if (kitJobRunning(job)) throw new Error(`bg ${name} still runs after taskkill: ${`${kill.stderr ?? ""}${kill.stdout ?? ""}`.trim().split(/\r?\n/).at(-1) || `exit ${kill.status}`}`);
+  if (kitJobExit(job) === null) {
+    writeFileSync(join(job.directory, "ended"), `${new Date().toISOString()}\n`);
+    writeFileSync(join(job.directory, "exit.tmp"), "143\n");
+    renameSync(join(job.directory, "exit.tmp"), join(job.directory, "exit"));
+  }
+  console.log(`${name}: stopped pid ${job.pid} (taskkill /T /F)`);
+  kitResult("ok", `bg stop ${name} pid ${job.pid}`);
 }
 
 if (args[0] === "--wrapper" || args[0] === "--command") {
@@ -223,7 +311,7 @@ else {
       const directory = kitJobDirectory(config.name);
       mkdirSync(dirname(directory), { recursive: true });
       const path = join(dirname(directory), `.${config.name}.lock`);
-      unlock = (await bgLock(path, config.name)).release;
+      unlock = (await bgLock(path, config.name, { platform: kitJobPlatform() })).release;
       if (config.kind === "start") await start(config, directory);
       else await stop(config.name, directory);
     }

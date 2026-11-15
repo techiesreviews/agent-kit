@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { kitJob, kitJobDirectory, kitJobExit, kitJobMarkGo, kitJobRecord, kitJobRunning, kitResult, kitRoot } from "../kit-lib.mjs";
+import { kitJob, kitJobDirectory, kitJobExit, kitJobMarkGo, kitJobPlatform, kitJobRecord, kitJobRunning, kitResult, kitRoot } from "../kit-lib.mjs";
 
 // Under the 10-minute limit of one agent tool call. KIT_GO_WAIT_MS (tests) can only shorten it.
 const LIMIT = 9 * 60 * 1000;
@@ -14,7 +14,8 @@ const span = ms => ms % 60000 === 0 ? `${ms / 60000}m` : ms % 1000 === 0 ? `${ms
 const usage = `Usage: kit go <job> [--max D] -- <command…>
        kit go <job>
 Starts the job with kit bg (its own user systemd scope, so a turn end or an app restart does not stop it; --max is
-its time limit, default 6h, 0 for none), then waits for it in the foreground: at most 9 minutes per call, under the
+its time limit, default 6h, 0 for none; on Windows a hidden detached process that ends with the session, its time
+limit a timer), then waits for it in the foreground: at most 9 minutes per call, under the
 10-minute limit of one tool call; this call waits ${span(wait)} per call. Run it with a tool time limit of 10
 minutes (Claude's Bash tool: timeout 600000; its 2-minute default cuts the wait short).
 While the job runs, the last line is "RUNNING: <job> (<elapsed>, step <step>). Run again: scripts/agents/kit go <job>"
@@ -77,14 +78,16 @@ async function main() {
       kitJobMarkGo(directory);
     }
   }
-  // A job in another worktree (kit next's wait line sets KIT_ROOT) is waited for again the same way.
+  // A job in another worktree (KIT_ROOT names it) is waited for again the same way.
   const top = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
   const again = `${resolve(kitRoot()) !== (top.status === 0 ? top.stdout.trim() : process.cwd()) ? `KIT_ROOT=${kitRoot()} ` : ""}scripts/agents/kit go ${name}`;
   if (!existsSync(join(directory, "pid"))) throw new Error(`${name}: no such job in ${dirname(directory)}; start it with scripts/agents/kit go ${name} -- <command>`);
   const record = job(directory);
   if (!record) throw new Error(`${name}: its records are incomplete (${directory})`);
   const deadline = Date.now() + wait;
-  while (kitJobRunning(record) && Date.now() < deadline) await delay(Math.min(200, Math.max(10, deadline - Date.now())));
+  // On Windows each look reads one CIM process list (about 0.4s): once a second is enough.
+  const every = kitJobPlatform() === "win32" ? 1000 : 200;
+  while (kitJobRunning(record) && Date.now() < deadline) await delay(Math.min(every, Math.max(10, deadline - Date.now())));
   const lines = logLines(directory);
   if (kitJobRunning(record)) {
     const since = Date.parse(kitJobRecord(directory, "started") ?? "");
@@ -106,7 +109,8 @@ async function main() {
   const limit = lines.findLast(line => line.startsWith("kit bg: the time limit"));
   const why = limit && code === 143 ? `: ${limit.replace(/^kit bg: /, "")}` : "";
   // Exit 75 means "still running" from kit go, so a job's own 75 is passed on as 1.
-  if (code === 75) { if (result) console.log(`job: ${result}`); kitResult("fail", `go ${name} exit 75 (the job's own code; kit go gives 1 for it); see ${join(directory, "log")}`); return 1; }
+  // So is a Windows exit code above 255: a shell keeps its low 8 bits, which could read as 75 or 0.
+  if (code === 75 || code > 255) { if (result) console.log(`job: ${result}`); kitResult("fail", `go ${name} exit ${code} (the job's own code; kit go gives 1 for it); see ${join(directory, "log")}`); return 1; }
   // The scope's time limit ended it: that is the result, whatever an earlier step's RESULT line said.
   if (why) { if (result) console.log(`job: ${result}`); kitResult("fail", `go ${name} exit ${code}${why}; see ${join(directory, "log")}`); return code; }
   // A job whose RESULT line says fail exits non-zero through kit go, even if the job itself exited 0.

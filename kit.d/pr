@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { completedFixRounds, openFindings, reviewIncomplete, reviewCoversHead, sameReviewPatch } from "../review-findings.mjs";
 import { branchRisk, budgetReport, isNit, ledgerRows, modelsLine, prLine, renderLedger, reviewChain, roundLimit, secondLookRows, stoppingFindings, waiverCheck, waiverRefusal } from "../review-loop.mjs";
 import { projectCommand, spoken } from "../review-brief.mjs";
-import { briefFollowups, cardBriefFor, closeLandedCard, isCardKey, onOrbit, openOrbitTickets, orbitProblem, ticketCardKey, withReviewFollowups } from "../ticket-cards.mjs";
+import { briefFollowups, cardBriefFor, closeLandedCard, isCardKey, onOrbit, openOrbitTickets, orbitProblem, ticketCardKey } from "../ticket-cards.mjs";
 
 const { kitBranch, kitGhEnv, kitHideUserInfo, kitHidingLog, kitHome, kitMachineLock, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, kitStateDir, nodeEnv, kitScore } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
@@ -16,7 +16,7 @@ const { kitBranch, kitGhEnv, kitHideUserInfo, kitHidingLog, kitHome, kitMachineL
 const { failedSpecs, isTiming, listedSpecs, nothingSelected, timingList, wholeReport } = await import(pathToFileURL(resolve(import.meta.dirname, "../browser-runs.mjs")).href);
 const { checkSteps, classify, doneHeading, featureListGuard, featureListProblem, focusedUnitFiles, lookFamily, lookFamilyWords, parseChanges, secondLookPick, unitTestFile } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
 const { coverageHash, readUxResult, uxGuard, visibleFiles } = await import(pathToFileURL(resolve(import.meta.dirname, "../ux-gate.mjs")).href);
-const usage = 'Usage: kit pr [--base <land>] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release] [--full] [--waive "<reason>"] [--not-visible "<reason>"]\nBranches come from scripts/agents/kit.json: --base defaults to branches.land; --release needs --base branches.release and first runs kit release-check --land (nothing unsaved, HEAD exactly origin/<land>).\n--waive requires a *-lead owner; records the reason for merging with open findings or without a feature-list update;\na waiver for the findings that stop the landing (above P3; once the fix rounds are used up, P0 and P1) must name each one by id in its text (--waive \"R1-2, SL-1: <reason>\") or start with the number of them (--waive \"2 findings: <reason>\", which must match both looks together);\na finding it leaves out stops kit pr with a plain reason that lists it, and so does one that is new at a head a rebase brought, at the start of the run too (the lead sees it and runs kit pr again); P3 findings, test gaps and docs wording need no names;\nwith --release it also passes the release check, which names the reason (kit pr still needs a clean tree).\nA visible change (paths.visible) lands only with a fresh kit ux result: one that passed, with the review, for the visible files and the listed features that cover the change as they are now (kit ux saves it for the branch; a later change to a visible file or to one of those features, a rebase\'s too, needs kit ux again; a list edit about other features does not).\n--not-visible "<reason>" lands a change that matches those paths but shows a person nothing new, with the reason in the PR text (refused when kit ux tried this very change and it did not pass, and with --release; a run whose reviewer did not finish is no such verdict); --waive does not cover the UX check.\nWhen no feature in the list covers the changed files, kit ux has nothing to try and the PR says "UX check: nothing to try".\nA project with no feature list for kit ux (docs/agents/features.md) says "UX check: skipped"; a release carries what each PR already passed.\nAfter the Claude review (none in the docs tier), every change gets a second look (kit review --second-look), whose findings block the same way;\nwhen no model can take it, the PR lands and says "second look: skipped (<reason>)".\nOn Orbit ("tickets": "orbit"), --ticket takes a card KEY or its brief (.scratch/kit-tickets/KEY.md, which kit slice writes); when the PR\nlands the card goes to Done with a dated comment naming the PR and its merge SHA (ORBIT_ROLE=lead); a card that cannot be closed is named on the RESULT line.\n';
+const usage = 'Usage: kit pr [--base <land>] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release] [--full] [--waive "<reason>"] [--not-visible "<reason>"]\nBranches come from scripts/agents/kit.json: --base defaults to branches.land; --release needs --base branches.release and first runs kit release-check --land (nothing unsaved, HEAD exactly origin/<land>).\n--waive requires a *-lead owner; records the reason for merging with open findings or without a feature-list update;\na waiver for the findings that stop the landing (above P3; once the fix rounds are used up, P0 and P1) must name each one by id in its text (--waive \"R1-2, SL-1: <reason>\") or start with the number of them (--waive \"2 findings: <reason>\", which must match both looks together);\na finding it leaves out stops kit pr with a plain reason that lists it, and so does one that is new at a head a rebase brought, at the start of the run too (the lead sees it and runs kit pr again); P3 findings, test gaps and docs wording need no names;\nwith --release it also passes the release check, which names the reason (kit pr still needs a clean tree).\nA visible change (paths.visible) lands only with a fresh kit ux result: one that passed, with the review, for the visible files and the listed features that cover the change as they are now (kit ux saves it for the branch; a later change to a visible file or to one of those features, a rebase\'s too, needs kit ux again; a list edit about other features does not).\n--not-visible "<reason>" lands a change that matches those paths but shows a person nothing new, with the reason in the PR text (refused when kit ux tried this very change and it did not pass, and with --release; a run whose reviewer did not finish is no such verdict); --waive does not cover the UX check.\nWhen no feature in the list covers the changed files, kit ux has nothing to try and the PR says "UX check: nothing to try".\nA project with no feature list for kit ux (docs/agents/features.md) says "UX check: skipped"; a release carries what each PR already passed.\nAfter the Claude review (none in the docs tier), every change gets a second look (kit review --second-look), whose findings block the same way;\nwhen no model can take it, the PR lands and says "second look: skipped (<reason>)".\nOn Orbit ("tickets": "orbit"), --ticket takes a card KEY or a saved brief of it (.scratch/kit-tickets/KEY.md); when the PR\nlands the card goes to Done with a dated comment naming the PR and its merge SHA (ORBIT_ROLE=lead); a card that cannot be closed is named on the RESULT line.\nA PR a merge queue takes leaves the card open, its follow-ups on the card, and says to close it once the PR lands.\n';
 const kit = process.env.KIT_PR_KIT || resolve(import.meta.dirname, "../kit");
 
 function options(args) {
@@ -373,8 +373,7 @@ async function main(args) {
     if (flags.ticket && onOrbit(settings)) {
       if (isCardKey(flags.ticket)) {
         fromKey = true;
-        // The brief stays in this run's own folder: kit pr claims nothing, so a later kit slice here must not take it
-        // for a resumed slice's brief.
+        // The brief stays in this run's own folder: kit pr claims nothing, and its brief is no worktree's saved one.
         try { flags.ticket = relative(root, (await cardBriefFor({ root, key: flags.ticket, settings, who: kitOwner(), folder: directory })).path); }
         catch (error) { throw new Error(orbitProblem(error)); }
       }
@@ -954,6 +953,8 @@ async function main(args) {
       try { resultMd = readFileSync(resultPath, "utf8"); }
       catch { /* Missing or unreadable evidence fails closed through openFindings. */ }
       const { findings } = openFindings(resultMd);
+      // The fix rounds the cut kit fix saved for this branch. Nothing writes them since TOOLS-235, so a helper's own fix rounds
+      // are not counted yet (a follow-up): its blockers and shoulds keep blocking until fixed or waived by name.
       const rounds = completedFixRounds(join(kitMainRoot(), ".scratch/kit-fix", encodeURIComponent(branch)),
         join(root, ".scratch/kit-fix", encodeURIComponent(branch)));
       const limit = roundLimit(loopRisk.risky);
@@ -1090,26 +1091,30 @@ async function main(args) {
       await gh("merge", ["pr", "merge", number, "--auto", "--rebase", "--match-head-commit", head, "--repo", target]); ok("merge");
       await recordWaiver();
       land({ queued: true, waived: waivedAny() });
-      // The card closes when the queue lands the PR: kit slice, which waits for it, closes it then. A lead's own
-      // kit pr --ticket KEY has no slice behind it, so it says so and puts the follow-ups on the card now.
-      let queuedWords = card ? `; card ${card} closes when the queue lands it` : "";
-      if (card && fromKey) {
+      // Nothing here waits for the queue (kit slice, which did, was cut in TOOLS-235): the card stays open, the line says
+      // who closes it, and its follow-ups (the brief's UX ones too) go on the card now, since no later step reads the brief.
+      let queuedWords = "";
+      if (card) {
+        let ux = [];
+        if (!fromKey) try { ux = briefFollowups(readFileSync(resolve(root, flags.ticket), "utf8")); } catch { /* No brief left: no follow-ups kept in it. */ }
+        const followups = [...new Set([...cardFollowups, ...ux])];
         let where = "";
-        if (cardFollowups.length) {
+        if (followups.length) {
           let redact;
           try {
             const opened = openOrbitTickets({ settings, who: kitOwner() });
             redact = opened.redact;
-            await opened.store.comment(card, `Follow-ups from https://${target.split("/").length === 3 ? target.split("/")[0] : "github.com"}/${repo}/pull/${number}:\n${[...new Set(cardFollowups)].join("\n")}`);
-          } catch (error) { where = ` (its follow-ups were not added: ${orbitProblem(error, redact)}; they are in the PR comment)`; }
+            await opened.store.comment(card, `Follow-ups from https://${target.split("/").length === 3 ? target.split("/")[0] : "github.com"}/${repo}/pull/${number}:\n${followups.join("\n")}`);
+          } catch (error) {
+            // The brief's UX follow-ups are in no PR comment yet, so all of them go there now, and the line names where they are.
+            const problem = orbitProblem(error, redact), file = join(directory, "card-followups.md");
+            writeFileSync(file, `Follow-ups for card ${card} (Orbit did not take them):\n${followups.join("\n")}\n`);
+            try { await gh("follow-ups", ["pr", "comment", number, "--body-file", file]); where = ` (its follow-ups were not added: ${problem}; they are in a PR comment)`; }
+            catch { where = ` (its follow-ups were not added: ${problem}; they are only in ${file})`; }
+          }
         }
         console.log(`card: ${card} stays open: nothing here waits for the queue; run kit ticket update ${card} --status Done once #${number} lands${where}`);
         queuedWords = `; card ${card} stays open: close it once #${number} lands`;
-      } else if (card) {
-        // The review follow-ups wait in the brief, where kit slice reads them when it closes the card.
-        try { writeFileSync(resolve(root, flags.ticket), withReviewFollowups(readFileSync(resolve(root, flags.ticket), "utf8"), cardFollowups)); }
-        catch { console.log(`card: ${card} follow-ups stay in the PR comment only (the brief could not be written)`); }
-        console.log(`card: ${card} stays open until the queue lands #${number}; kit slice closes it then, else run kit ticket update ${card} --status Done`);
       }
       kitResult("ok", `queued #${number} ${head.slice(0, 7)}${queuedWords}${flakyNote()}`);
       return 0;

@@ -98,7 +98,7 @@ command_file=''
 for index in "${!names[@]}"; do
   if [[ ${names[index]} == "$command" ]]; then command_file=${files[index]}; break; fi
 done
-# Commands the trim cut or merged (TOOLS-235, Lex 2026-11-14) answer with where the job went, not "unknown command".
+# Commands the trim cut or merged (TOOLS-235, Lex 2026-11-14; release 2 on 2026-11-15) answer with where the job went, not "unknown command".
 if [[ -z $command_file && -z ${KIT_COMMANDS_DIR:-} ]]; then
   moved=''
   case $command in
@@ -106,6 +106,10 @@ if [[ -z $command_file && -z ${KIT_COMMANDS_DIR:-} ]]; then
     status) moved='cut kit status was cut on 2026-11-14 (TOOLS-235): scripts/agents/kit ticket list shows the cards, T3 shows the linked pull requests and their checks, and the weekly kit sweep lists flaky spec files' ;;
     feedback) moved='cut kit feedback was cut on 2026-11-14 (TOOLS-235): Lex'"'"'s corrections go to the chat memory, which the weekly learning (kit sweep --learn) reads' ;;
     learn) moved='moved kit learn is now kit sweep --learn (TOOLS-235), with the same --since and --project' ;;
+    slice) moved='cut kit slice was cut on 2026-11-15 (TOOLS-235): a build runs as a T3 helper thread (delegate_task with isolation "worktree") with scripts/agents/kit brief <KEY> as its task; the helper builds, proves each Done when item and lands with scripts/agents/kit pr' ;;
+    fix) moved='cut kit fix was cut on 2026-11-15 (TOOLS-235): the helper fixes its own review findings in its own thread and runs kit pr again; for a new helper, scripts/agents/kit brief <KEY> --stage fix writes its brief' ;;
+    next) moved='cut kit next was cut on 2026-11-15 (TOOLS-235): the Board drive schedule picks the next cards by Lex'"'"'s priorities; scripts/agents/kit ticket list shows them' ;;
+    heartbeat) moved='cut kit heartbeat was cut on 2026-11-15 (TOOLS-235): the Board drive schedule (a T3 schedule_task every 2 hours) checks the helper threads and restarts stalled work' ;;
     card) moved='moved kit card was merged into the session-start hook (TOOLS-235): the card shows when a session starts; node "$(scripts/agents/kit --home)/context-card.mjs" prints it' ;;
   esac
   if [[ -n $moved ]]; then
@@ -170,7 +174,7 @@ trap 'interrupted HUP 1' HUP
 # While kit pr runs spec files alone (ticket ke-88) no other kit job starts; help and the commands that only read or
 # wait go on.
 case $command in
-  wait|heartbeat|version|rulebook) ;;
+  wait|version|rulebook) ;;
   *) [[ $enforce_result == false ]] || kit_quiet_wait ;;
 esac
 

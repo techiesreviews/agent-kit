@@ -409,17 +409,101 @@ function processIdentity(text) {
   return { state: fields[0], pgid: Number(fields[2]), session: Number(fields[3]), started: fields[19] };
 }
 
-/** Read Linux process identity, treating zombies and concurrently removed /proc files as dead. */
+/**
+ * "win32" on Windows, else this machine's platform. Windows has no setsid, process groups, /proc or systemd, so its
+ * jobs are a process tree read with Get-CimInstance and ended with taskkill. KIT_BG_PLATFORM=win32 picks that way
+ * by hand (tests, with fake powershell.exe and taskkill); any other value is ignored.
+ */
+export function kitJobPlatform(env = process.env) {
+  return env.KIT_BG_PLATFORM === "win32" ? "win32" : process.platform;
+}
+
+/**
+ * Get-CimInstance's "<pid> <parent pid> <start as file time> <name>" lines, one per process; any other line is
+ * skipped, and so is conhost.exe: the hidden console host Windows starts as a child of each console process (the
+ * job's node processes too) is never a job's work, and a wait for a process's children would never end with it.
+ */
+export function kitWinProcessList(text) {
+  return text.split(/\r?\n/).flatMap(line => {
+    const found = /^(\d+) (\d+) (\d+) (.+)$/.exec(line.replace(/^﻿/, "").trim());
+    return found && found[4].toLowerCase() !== "conhost.exe" ? [{ pid: Number(found[1]), ppid: Number(found[2]), started: found[3] }] : [];
+  });
+}
+
+/**
+ * Windows processes in ONE Get-CimInstance Win32_Process call (pid, parent pid, CreationDate as a file time, name), all of
+ * them or the one pid. Its start time is never mixed with Get-Process's, which reads it another way. A list that
+ * cannot be read throws: a job is never taken for ended because PowerShell failed.
+ */
+export function kitWinProcesses(pid) {
+  const query = pid === undefined ? "Get-CimInstance Win32_Process" : `Get-CimInstance Win32_Process -Filter 'ProcessId=${Number(pid)}'`;
+  const script = `${query} | ForEach-Object { if ($_.CreationDate) { '{0} {1} {2} {3}' -f $_.ProcessId, $_.ParentProcessId, $_.CreationDate.ToFileTimeUtc(), $_.Name } }`;
+  // A list takes about 0.4s; a hung WMI must not keep kit go past one tool call's 10 minutes.
+  const read = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", windowsHide: true, timeout: 15000 });
+  if (read.error || read.status !== 0)
+    throw new Error(`cannot read the process list (powershell.exe Get-CimInstance Win32_Process): ${read.error?.message ?? (oneLine(read.stderr ?? "").trim() || `exit ${read.status}`)}`);
+  // The powershell.exe reading the list is in it, as a child of the caller: it is never a job's process.
+  return kitWinProcessList(read.stdout).filter(entry => entry.pid !== read.pid);
+}
+
+/**
+ * A Windows job's live processes in one snapshot: each root pinned by { pid, started } while it runs, and every
+ * descendant of a live one, walked by parent pid. Windows never re-parents a process, and pids are reused, so a child
+ * counts only when it started at or after its parent. A process whose parent has ended (and is not a root) is no
+ * longer followed, as with taskkill /T: its parent pid may since have been another process's, so it cannot be told
+ * apart from that process's child.
+ */
+export function kitJobTree(processes, roots) {
+  const found = new Map();
+  const queue = [...roots];
+  const byPid = new Map(processes.map(entry => [entry.pid, entry]));
+  for (let node; (node = queue.shift());) {
+    const holder = byPid.get(node.pid);
+    if (holder?.started !== node.started || found.has(node.pid)) continue;
+    found.set(node.pid, holder);
+    for (const entry of processes)
+      if (entry.ppid === node.pid && entry.pid !== node.pid && BigInt(entry.started) >= BigInt(node.started)) queue.push(entry);
+  }
+  return [...found.values()];
+}
+
+/** Whether a process read now is the job's pinned process still: its start time, and on Linux its group and session. */
+export function kitJobSame(current, job, started, platform = kitJobPlatform()) {
+  if (!current || current.started !== started) return false;
+  return platform === "win32" || (current.pgid === job.pgid && current.session === job.pgid);
+}
+
+/**
+ * Read a process's identity: on Linux { state, pgid, session, started } from /proc, treating zombies and concurrently
+ * removed /proc files as dead; on Windows { ppid, started }, alive by process.kill(pid, 0), its start from CIM.
+ */
 export function kitJobProcess(pid) {
+  if (kitJobPlatform() === "win32") {
+    if (!Number.isSafeInteger(Number(pid)) || Number(pid) <= 0) return null;
+    try { process.kill(Number(pid), 0); }
+    catch (error) { if (error.code === "ESRCH") return null; if (error.code !== "EPERM") throw error; }
+    const found = kitWinProcesses(pid).find(entry => entry.pid === Number(pid));
+    return found ? { ppid: found.ppid, started: found.started } : null;
+  }
   try {
     const identity = processIdentity(readFileSync(`/proc/${pid}/stat`, "utf8"));
     return ["Z", "X"].includes(identity.state) ? null : identity;
   } catch (error) { if (["ENOENT", "ESRCH"].includes(error.code)) return null; throw error; }
 }
 
-/** Pin a job to its original session leader, so stale records never target reused PIDs. */
+/**
+ * Pin a job to its original session leader (on Windows, its wrapper process and start time, kept as JSON in the
+ * identity record), so stale records never target reused PIDs.
+ */
 export function kitJob(directory) {
   const pid = Number(kitJobRecord(directory, "pid"));
+  if (kitJobPlatform() === "win32") {
+    let identity = null;
+    try { identity = JSON.parse(kitJobRecord(directory, "identity") ?? "null"); } catch { /* Not a Windows identity. */ }
+    if (!Number.isSafeInteger(pid) || pid <= 1 || identity?.pid !== pid || !/^\d+$/.test(identity?.started ?? ""))
+      throw new Error(`missing or invalid job records: ${directory}`);
+    return { directory, pid, started: identity.started };
+  }
   const pgid = Number(kitJobRecord(directory, "pgid"));
   const identity = processIdentity(kitJobRecord(directory, "identity"));
   if (!Number.isSafeInteger(pid) || pid <= 1 || pgid !== pid || !identity ||
@@ -439,12 +523,14 @@ export function kitRulebookPins(root = kitRoot(), settings = kitSettings(root)) 
     let text;
     try { text = readFileSync(file, "utf8"); }
     catch (error) { throw new Error(`cannot read the ${label} ${file}: ${error.code ?? error.message}`); }
-    for (const [, role, model] of text.matchAll(/^\| (Builder, every slice|Review, every change) \| `([^`]+)`/gm)) rows.set(role, model);
+    // "Builder, every slice" is the row's name from before the factory cut (TOOLS-235); an extras row may still use it.
+    for (const [, role, model] of text.matchAll(/^\| (Builder, every (?:build|slice)|Review, every change) \| `([^`]+)`/gm))
+      rows.set(role.startsWith("Builder") ? "builder" : "reviewer", model);
   };
   read(join(kitHome(), "docs/kitchen.md"), "shared rulebook");
   if (settings?.rulebookExtras) read(resolve(root, settings.rulebookExtras), "rulebook extras");
-  const builder = rows.get("Builder, every slice"), reviewer = rows.get("Review, every change");
-  if (!builder || !reviewer) throw new Error(`the rulebook has no ${builder ? "Review, every change" : "Builder, every slice"} pin`);
+  const builder = rows.get("builder"), reviewer = rows.get("reviewer");
+  if (!builder || !reviewer) throw new Error(`the rulebook has no ${builder ? "Review, every change" : "Builder, every build"} pin`);
   return { builder, reviewer };
 }
 
@@ -476,7 +562,7 @@ export function kitMessagesToLex(home = kitHome()) {
   return kitMessagesToLexRule(home).rule;
 }
 
-/** A slice's branch: build/<owner>-<ticket slug without its number> (kit next and kit brief name it alike). */
+/** A slice's branch: build/<owner>-<ticket slug without its number> (kit brief names it so). */
 export function kitSliceBranch(owner, slug) {
   return `build/${owner}-${slug.replace(/\.md$/i, "").replace(/^\d+-/, "")}`;
 }
@@ -497,27 +583,40 @@ export function kitJobGroup(pgid) {
     .filter(member => member.pgid === pgid && member.session === pgid);
 }
 
-/** Require an original, start-time-pinned member before trusting the group's current membership. */
-export function kitJobMembers(job) {
-  const leader = kitJobProcess(job.pid);
-  if (leader && leader.started !== job.started) return [];
+/**
+ * The start-time pins of a job: its leader, and the members it recorded while its leader was that same process; on
+ * Windows also the job's command (the work record its command process writes), so the work is still the job's after
+ * the process that started it has ended.
+ */
+export function kitJobPins(job) {
   let pins = [{ pid: job.pid, started: job.started }];
   const record = kitJobRecord(job.directory, "members");
   if (record !== null) {
     const saved = JSON.parse(record);
     if (saved.started === job.started) pins = pins.concat(saved.members);
   }
-  const verified = pins.some(({ pid, started }) => {
-    const current = kitJobProcess(pid);
-    return current?.pgid === job.pgid && current.session === job.pgid && current.started === started;
-  });
+  const work = kitJobPlatform() === "win32" ? kitJobRecord(job.directory, "work") : null;
+  return work === null ? pins : pins.concat(JSON.parse(work));
+}
+
+/**
+ * Require an original, start-time-pinned member before trusting the group's current membership. On Windows the job
+ * is the process tree below its pins, in one CIM snapshot.
+ */
+export function kitJobMembers(job) {
+  if (kitJobPlatform() === "win32") return kitJobTree(kitWinProcesses(), kitJobPins(job));
+  const leader = kitJobProcess(job.pid);
+  if (leader && leader.started !== job.started) return [];
+  const verified = kitJobPins(job).some(({ pid, started }) => kitJobSame(kitJobProcess(pid), job, started));
   return verified ? kitJobGroup(job.pgid) : [];
 }
 
+/** A job's exit status: 0 to 255, or on Windows any 32-bit exit code (exception codes such as 3221225477 too). */
 export function kitJobExit(job) {
   const value = kitJobRecord(job.directory, "exit");
   if (value === null) return null;
-  if (!/^\d+$/.test(value) || Number(value) > 255) throw new Error(`invalid job exit status: ${value}`);
+  const most = kitJobPlatform() === "win32" ? 4294967295 : 255;
+  if (!/^\d+$/.test(value) || Number(value) > most) throw new Error(`invalid job exit status: ${value}`);
   return Number(value);
 }
 

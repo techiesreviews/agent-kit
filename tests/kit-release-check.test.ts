@@ -324,8 +324,8 @@ test("the check pushes nothing, whatever it finds", t => {
   assert.equal(f.refs(), before);
 });
 
-test("the rulebook's Release station and the extras template show the check as the deploy's first step", () => {
-  const station = /### 12\. Release\n([\s\S]*?)\n## /.exec(readFileSync("docs/kitchen.md", "utf8"))?.[1] ?? "";
+test("the rulebook's release step and the extras template show the check as the deploy's first step", () => {
+  const station = /### 7\. His go\n([\s\S]*?)\n## /.exec(readFileSync("docs/kitchen.md", "utf8"))?.[1] ?? "";
   assert.match(station, /kit pr --release` first runs `kit release-check --land`/);
   assert.match(station, /`scripts\/agents\/kit release-check`/);
   const release = /## Release\n([\s\S]*?)\n## /.exec(readFileSync("docs/kitchen-extras-template.md", "utf8"))?.[1] ?? "";

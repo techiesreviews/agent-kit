@@ -1,7 +1,6 @@
-// Tickets as Orbit cards for kit next, slice, pr, status and init --issues, when scripts/agents/kit.json says
-// "tickets": "orbit". A card a slice builds is copied once into a local brief, .scratch/kit-tickets/<KEY>.md, shaped like
-// a ticket file (title, the card's Files and Done when), so the build, review, fix and UX steps read it as they read a
-// ticket; only the lead's own kit commands write the board (ORBIT_ROLE=lead), and the agents they start never do.
+// Tickets as Orbit cards for kit brief, pr and init --issues, when scripts/agents/kit.json says "tickets": "orbit".
+// kit pr copies a card into a brief shaped like a ticket file (title, the card's text), so its review reads it as it
+// reads a ticket; only the lead's own kit commands write the board (ORBIT_ROLE=lead), and the agents they start never do.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { OrbitError, OrbitSetupProblem, orbitCardKey, orbitClient, orbitLogPath, orbitRedactor, orbitSecrets, readOrbitConfig } from "./orbit-client.mjs";
@@ -12,7 +11,7 @@ import { fencedLines } from "./tickets.mjs";
 const keyShape = /^[A-Za-z][A-Za-z0-9_]*-[0-9]+$/;
 /** True for a card key such as TOOLS-10 (never a path: a ticket file always has a slash or .md). */
 export const isCardKey = value => keyShape.test(String(value ?? "").trim());
-/** A card's slice names, the same in kit next and kit brief: owner kit-12, job slice-kit-12, branch build/kit-12-<first words of the title>. */
+/** A card's build names, the same in every kit brief: owner kit-12, job slice-kit-12, branch build/kit-12-<first words of the title>. */
 export function cardNaming(card) {
   const owner = String(card.identifier).toLowerCase();
   const words = String(card.title ?? "").toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").split("-").slice(0, 6).join("-");
@@ -44,7 +43,6 @@ export const cardBriefPath = (root, key) => join(root, ".scratch/kit-tickets", `
 /** The brief's path as kit commands pass it on (relative to the worktree). */
 export const cardBriefArg = key => `.scratch/kit-tickets/${orbitCardKey(key)}.md`;
 
-const hasSection = (text, name) => new RegExp(`^## ${name}[ \\t]*$`, "m").test(String(text ?? ""));
 const oneLine = text => String(text ?? "").replace(/\s*[\r\n]+\s*/g, " ").trim();
 
 /**
@@ -86,14 +84,11 @@ export function doneWhen(description) {
   return found.join("\n").trimEnd();
 }
 
-/** True when a card's description has the "## Files" section and a "## Done when" heading or "Done when:" line a slice builds from. */
-export const cardBuildable = description => hasSection(description, "Files") && doneWhen(description) !== "";
-
-/** A card as a ticket file; a card without "## Files" and a Done when (heading or line) in its description cannot be built yet. */
+/**
+ * A card as a ticket file, whatever shape its description has: kit slice, which needed "## Files" for its builder's
+ * scope, was cut (TOOLS-235), and a card in the card standard's short shape has none.
+ */
 export function cardBrief(task, owner = "") {
-  if (!cardBuildable(task.description)) {
-    throw new OrbitError(`${task.identifier} cannot be built yet: its description needs a "## Files" section and a "Done when:" line (or a "## Done when" section)`);
-  }
   return `---\ntitle: ${oneLine(task.title)}\norbit: ${task.identifier}\ntype: task (AFK)\nstatus: open\nassignee: ${oneLine(owner)}\n---\n\n`
     + `Orbit card ${task.identifier}${task.url ? `: ${task.url}` : ""}\n\n${String(task.description).replace(/\r\n?/g, "\n").trim()}\n`;
 }
@@ -113,67 +108,26 @@ export function ticketCardKey(root, ticket) {
 }
 
 /**
- * The brief for a card in this worktree, made from the card when it is not there yet. With `owner` the card is claimed
- * first (status In Progress, "Claimed by: owner"), and the claim is given back when the brief cannot be written, so a
- * failure never leaves a half-claimed card. A brief already there is a resumed slice: with `owner`, the card is read once
- * to check it is still that owner's (or done); someone else's card stops it, and an Orbit it cannot read lets it go on
- * from the saved brief with a `note` saying so.
+ * The brief for a card, read only: made from the card when it is not there yet (in `folder`, else the worktree's
+ * .scratch/kit-tickets), the saved one when it is. It claims nothing: a lead's `kit brief <KEY>` claims the card
+ * (kit slice, which also claimed here, was cut in TOOLS-235).
  */
-export async function cardBriefFor({ root, key, settings, owner, who = owner, folder }) {
+export async function cardBriefFor({ root, key, settings, who, folder }) {
   const path = folder ? join(folder, `${orbitCardKey(key)}.md`) : cardBriefPath(root, key);
-  if (existsSync(path)) {
-    const resumed = { path, arg: cardBriefArg(key), key: orbitCardKey(key), resumed: true };
-    if (!owner) return resumed;
-    let task, redact;
-    try {
-      const opened = openOrbitTickets({ settings, who });
-      redact = opened.redact;
-      task = await opened.store.read(key);
-    } catch (error) {
-      return { ...resumed, note: `card: ${resumed.key} could not be checked on Orbit (${orbitProblem(error, redact)}); going on from the saved brief` };
-    }
-    // Its own: the owner now, or the one the brief recorded when it claimed the card.
-    let recorded = "";
-    try { recorded = /^assignee:[ \t]*(.*?)\s*$/m.exec(readFileSync(path, "utf8"))?.[1] ?? ""; } catch { /* Read above; gone now is no owner. */ }
-    const own = [oneLine(owner), recorded].filter(Boolean);
-    if (task.stage === "done" || (task.stage === "working" && own.includes(task.claimed_by))) return resumed;
-    const holder = task.stage === "working" ? task.claimed_by ?? "nobody" : "nobody";
-    throw new OrbitError(`${resumed.key} is now held by ${holder} (${task.status_name}), so this slice's saved brief is stale; remove .scratch/kit-tickets/${resumed.key}.md and .scratch/kit-slice/${resumed.key} to start over`);
-  }
+  if (existsSync(path)) return { path, arg: cardBriefArg(key), key: orbitCardKey(key), resumed: true };
   const { store } = openOrbitTickets({ settings, who });
   const task = await store.read(key);
-  const text = cardBrief(task, owner);
-  const claim = owner ? await store.claim(task.identifier, owner) : null;
-  try {
-    mkdirSync(folder ?? join(root, ".scratch/kit-tickets"), { recursive: true });
-    writeFileSync(path, text);
-  } catch (error) {
-    let back = "";
-    if (claim && !claim.unchanged) {
-      try { await store.unclaim(task.identifier, owner, claim.previous); }
-      catch (problem) { back = `; giving the claim back failed too (${orbitProblem(problem)}): run kit ticket update ${task.identifier} --status Todo`; }
-    }
-    throw new OrbitError(`the brief ${path} could not be written (${error?.code ?? "error"}), so ${task.identifier} was not claimed${back}`);
-  }
-  return { path, arg: cardBriefArg(key), key: task.identifier, claimed: Boolean(claim && !claim.unchanged) };
+  mkdirSync(folder ?? join(root, ".scratch/kit-tickets"), { recursive: true });
+  writeFileSync(path, cardBrief(task));
+  return { path, arg: cardBriefArg(key), key: task.identifier };
 }
 
 const followupList = name => new RegExp(`^### ${name} follow-ups[ \\t]*\\r?\\n([\\s\\S]*?)(?=^#{1,3} |$(?![\\s\\S]))`, "m");
-/** The follow-up lines kept in a card's brief: "### Review follow-ups" (kit pr, for a queued PR) and "### UX follow-ups" (kit slice). */
+/** The follow-up lines kept in a card's brief: "### Review follow-ups" and "### UX follow-ups" (both written by the cut kit slice and older kit pr runs). */
 export function briefFollowups(text) {
   return ["Review", "UX"].flatMap(name => (followupList(name).exec(String(text ?? ""))?.[1] ?? "").split(/\r?\n/))
     .map(line => line.trimEnd()).filter(line => line.startsWith("- "));
 }
-/** The brief with these review follow-ups added at its end under "### Review follow-ups", each line once. */
-export function withReviewFollowups(text, lines) {
-  const kept = new Set(briefFollowups(text)), missing = [...new Set(lines)].filter(line => !kept.has(line));
-  if (!missing.length) return text;
-  const list = followupList("Review").exec(text);
-  if (!list) return `${String(text).trimEnd()}\n\n### Review follow-ups\n\n${missing.join("\n")}\n`;
-  const end = list.index + list[0].trimEnd().length;
-  return `${text.slice(0, end)}\n${missing.join("\n")}${text.slice(end)}`;
-}
-
 /**
  * Closes a landed card: status Done and a dated comment naming the PR and its merge SHA, then its follow-ups (review and UX) as
  * one comment, added once (a rerun adds only what is missing, never the follow-ups twice). The merge already happened, so a failure is

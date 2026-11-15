@@ -62,7 +62,7 @@ test("brief: the build brief holds the owner, setup, pins, commands, every house
   const text = body(output.stdout);
   for (const expected of [
     /owner `ke-99`/,
-    // The branch kit next gives the same slice (kitSliceBranch): the owner, then the slug without its number.
+    // The build branch (kitSliceBranch): the owner, then the slug without its number.
     /git fetch -q origin && git switch -c build\/ke-99-panel origin\/dev/,
     /ASE_OWNER=ke-99 scripts\/agents\/worktree\.sh build\/ke-99-panel origin\/dev/,
     /builder `claude-opus-5-5`/,
@@ -75,8 +75,10 @@ test("brief: the build brief holds the owner, setup, pins, commands, every house
     /Paid skills never go in a repo/,
     /Second look: `gpt-6\.1-sol` \(GPT through Codex\), else `grok-4\.7`, else the free `opencode\/deepseek-v4\.1-flash-free`/,
     /GPT may review since 2026-11-09; Claude Opus stays the main reviewer/,
-    /Once the review loop's budget is used \(3 fix rounds, 5 for a risky change\) only P0\/P1 findings block/,
-    /--waive "<reason>"/,
+    // kit pr does not count a helper's own fix rounds since kit fix was cut (TOOLS-235): the brief says so, never "only P0/P1 block".
+    /`kit pr` does not count your own fix rounds yet: a blocker or should keeps blocking until it is fixed or the lead waives it by id/,
+    /once you have used 3 fix rounds \(5 for a risky change\), hand what is left to the lead with both sides/,
+    /--waive "<id>: <reason>"/,
     /No toasts or explainers/,
     /theme tokens/,
     /House rules beat skill advice/,
@@ -108,6 +110,7 @@ test("brief: the build brief holds the owner, setup, pins, commands, every house
     /lands with `scripts\/agents\/kit pr … --not-visible "<reason>"`/,
     /In a project with no feature list \(`docs\/agents\/features\.md`\) `kit ux` has nothing to try: say so in the report\./,
   ]) assert.match(text, expected);
+  assert.doesNotMatch(text, /only P0\/P1 findings block/, "the brief promises no budget kit pr does not apply");
   // The project has no shots command of its own, so the brief names none.
   assert.doesNotMatch(text, /kit shots/);
   // TOOLS-235: the brief no longer points at kit slice; the builder builds and lands with kit review and kit pr.
@@ -189,6 +192,9 @@ test("brief: each stage has its own brief", t => {
   assert.match(fix.stdout, /Fix round/);
   assert.match(fix.stdout, /P1 fault: src\/ui\/panel\.css:3 wrong token/);
   assert.match(fix.stdout, /declined/);
+  // kit fix, which handed declined findings to kit review, was cut (TOOLS-235): a decline goes in the report and the PR text.
+  assert.doesNotMatch(fix.stdout, /reads declined findings/);
+  assert.match(fix.stdout, /For each finding you decline, give it with its reason in your report and the PR text: the next review does not see it yet/);
   assert.match(fix.stdout, /kit-brief: \S+ docs\/tickets\/07-panel\.md fix$/m);
   // Builders may push back on a review point (Lex, 2026-11-13); reviewers get no such line.
   const pushBack = "If a review point is not worth fixing, say so with the reason instead of changing the code.";
@@ -285,13 +291,13 @@ test("brief: a review brief's scope is the slice branch, not the lead's checkout
   assert.equal(review.stdout.match(/^Scope: /gm)!.length, 1);
 });
 
-test("brief: a group ticket is refused (kit next runs a group as one job)", t => {
+test("brief: a group ticket is refused with what to do instead (kit next, which ran a group as one job, was cut)", t => {
   const f = fixture(t);
   const path = join(f.root, "docs/tickets/07-panel.md");
   writeFileSync(path, readFileSync(path, "utf8").replace("builder: claude", "builder: claude\ngroup: fonts"));
   const refused = f.run(["docs/tickets/07-panel.md"]);
   assert.equal(refused.status, 1);
-  assert.match(refused.stdout, /RESULT: fail brief docs\/tickets\/07-panel\.md is in group fonts: kit next --start runs a group as one job/);
+  assert.match(refused.stdout, /RESULT: fail brief docs\/tickets\/07-panel\.md is in group fonts: kit brief writes a brief for one ticket; brief the group's tickets one at a time \(take the group: line off each\), or the whole group as one --task$/m);
 });
 
 test("brief: a fix brief switches to the pushed slice branch; a ticket with no assignee and no --owner is refused", t => {
@@ -561,7 +567,7 @@ test("brief KEY: on an Orbit project a lead's build brief claims a Todo or Backl
   const helper = o.card({ title: "Helper" });
   const warned = await run({ ORBIT_ROLE: "" }, "KIT-14", "--owner", "kit-14");
   assert.equal(warned.status, 0, warned.all);
-  assert.match(warned.stderr, /^warning: KIT-14 is not claimed \(only a lead writes to Orbit: ORBIT_ROLE=lead\); until it is, kit next may start it too$/m);
+  assert.match(warned.stderr, /^warning: KIT-14 is not claimed \(only a lead writes to Orbit: ORBIT_ROLE=lead\); until it is, another helper may start it too$/m);
   assert.equal(o.orbit.statusOf(helper), "Todo");
   assert.doesNotMatch(helper.description, /Claimed by/);
   // Only Todo, Backlog and a free In Progress card are claimed: a card in any other status the board keeps (Ideas, say)
@@ -626,7 +632,7 @@ test("brief KEY: on an Orbit project a lead's build brief claims a Todo or Backl
   assert.doesNotMatch(mine.stderr, /warning: KIT-20|claimed KIT-20/);
 });
 
-test("brief KEY: on a board with no Todo status a lead's build brief claims every card not yet started, since kit next hands those out", async t => {
+test("brief KEY: on a board with no Todo status a lead's build brief claims every card not yet started", async t => {
   const o = await orbitProject(t);
   const f = fixture(t, orbitSettings);
   const { KIT_TALK_STYLE: _style, ASE_REVIEW_MODEL: _review, ASE_OWNER: _owner, ...base } = kitEnv();
@@ -635,9 +641,7 @@ test("brief KEY: on a board with no Todo status a lead's build brief claims ever
   const todo = board.find(status => status.name === "Todo")!;
   Object.assign(todo, { name: "Ideas" });
   const idea = o.card({ title: "Idea" }, "Ideas");
-  // kit next hands the card out, so a brief that left it unclaimed would let kit next start a second builder on it.
-  const next = await runAsync(kit, ["next"], { cwd: f.root, env });
-  assert.match(next.stdout, /^next: KIT-1 /m, next.all);
+  // The card is up for building, so a brief that left it unclaimed would let a second helper start on it.
   const built = await runAsync(kit, ["brief", "KIT-1", "--owner", "kit-1"], { cwd: f.root, env });
   assert.equal(built.status, 0, built.all);
   assert.equal(o.orbit.statusOf(idea), "In Progress");

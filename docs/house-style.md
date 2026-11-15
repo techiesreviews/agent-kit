@@ -5,8 +5,8 @@ again and again across the Native Site Editor (editor.techies.tools), the script
 (script.techies.tools), the prompter (prompter.techies.tools), the techies.tools site and the Techies
 Reviews website (techies.review). It travels with the kit, so a new project starts with it.
 
-Read it when making a mock-up, writing a visible ticket, building one and reviewing one (kitchen
-stations 3, 4, 6 and 8). `kit ux` gives these rules to the UX reviewer together with the project's own
+Read it when making a mock-up, writing a visible ticket, building one and reviewing one (the road's
+steps 3, 4 and 5). `kit ux` gives these rules to the UX reviewer together with the project's own
 UX rulebook (`docs/agents/ux-rulebook.md`). **The project's rulebook adds detail and wins where it
 differs**: the reviewer is told so, and a project replaces a house rule by writing the same id in its
 own rulebook (`- **HS9** Not here: the tool reopens the last script.`). A ticket may break a rule
