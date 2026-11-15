@@ -97,6 +97,8 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
         // kit pr reads a card key as a card only on an Orbit project; elsewhere a card lands by its title.
         `Build it, then \`scripts/agents/kit review${card ? "" : ` --ticket ${ticket}`}\` and \`scripts/agents/kit pr ${card && !onOrbit(settings) ? `--title ${shellQuote(`${card.title} (${ticket})`)}` : `--ticket ${ticket}`}\` into \`${land}\` (checks for the change's tier, the second look, CI, merge), each under \`kit go\`. Link the PR with T3 \`link_pull_request\`.`,
         `The ${card ? "card's" : "ticket's"} own "Kit commands and evidence" section adds to this. Report every RESULT line, the PR URL and the merge SHA.`,
+        // There kit pr moves no card to Done, and only a lead writes the board: the builder's report hands it over.
+        ...(card && !onOrbit(settings) ? [`\`kit pr\` does not close the card in this project (it keeps ticket files): put this line in your report: "Lead: close ${ticket} (Done, with a dated note naming the PR and its merge SHA)".`] : []),
       ] : [
         `For each finding you decline, give it with its reason in your report: \`scripts/agents/kit review${task || card ? "" : ` --ticket ${ticket}`}\` reads declined findings with their reasons.`,
         task ? "The findings are in the newest complete review's `findings.json` under the main checkout's `.scratch/reviews/<owner>/` (a record marked `incomplete: true` is not one) (the note below holds the task)."

@@ -377,6 +377,9 @@ test("brief KEY: on an Orbit project the brief is built from the card (title, te
   // kit pr reads a card key as a card only on an Orbit project, so here the card lands by its title.
   assert.match(plain.stdout, /`scripts\/agents\/kit review` and `scripts\/agents\/kit pr --title 'A settings panel with a colour field \(KIT-1\)'` into `dev`/);
   assert.doesNotMatch(plain.stdout, /--ticket KIT-1/);
+  // So nothing closes the card when the PR lands: the brief has the builder hand that to the lead, who writes the board.
+  assert.match(plain.stdout, /^- `kit pr` does not close the card in this project \(it keeps ticket files\): put this line in your report: "Lead: close KIT-1 \(Done, with a dated note naming the PR and its merge SHA\)"\.$/m);
+  assert.doesNotMatch(text, /does not close the card/);
   // A ticket file at that very path still wins.
   writeFileSync(join(files.root, "KIT-1"), ticketText("- `src/x.ts`"));
   const file = await runAsync(kit, ["brief", "KIT-1"], { cwd: files.root, env: { ...env, KIT_ROOT: files.root } });
@@ -452,6 +455,13 @@ test("brief KEY: on an Orbit project a lead's build brief claims a Todo or Backl
   assert.equal(o.orbit.statusOf(asked), "In Progress");
   assert.doesNotMatch(asked.description, /Claimed by/);
   assert.match(waits.stderr, /^warning: KIT-7 is left as it is, not claimed for kit-7: it waits for Lex \(Next step \(Lex\): try it\); make sure no second builder starts on it$/m);
+  // The same card once Lex answered, with someone still assigned and no claim line: left as it is too.
+  asked.description = "## Done when\n\n- done\n";
+  const assigned = await run({}, "KIT-7", "--owner", "kit-7");
+  assert.equal(assigned.status, 0, assigned.all);
+  assert.equal(o.orbit.statusOf(asked), "In Progress");
+  assert.doesNotMatch(asked.description, /Claimed by/);
+  assert.match(assigned.stderr, /^warning: KIT-7 is left as it is, not claimed for kit-7: someone is assigned to it \(In Progress\); make sure no second builder starts on it$/m);
   // Two briefs at once for one card: the one whose claim loses fails and leaves the winner's saved brief alone.
   const race = o.card({ title: "Race" });
   const winner = join(f.root, ".scratch/kit-briefs/KIT-8-build.md");

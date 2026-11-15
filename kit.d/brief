@@ -26,7 +26,8 @@ claims a card nobody holds (Todo, Backlog, or In Progress with no claim, assigne
 Progress and "Claimed by:", as kit slice does. A Todo or Backlog card that is blocked or waits for Lex is refused. Any
 other card is left as it is, with a warning that says why (someone else holds it, it waits for Lex, it is Done or in
 another status); the owner's own card gets none. On a board with no Todo status, every status not yet started counts
-as Todo, as it does for kit next, which hands those cards out.
+as Todo, as it does for kit next, which hands those cards out. In a project that keeps ticket files the kit neither
+claims nor closes the card: the build brief has the builder ask the lead to close it after the merge.
 --task is for a job with no ticket file or card: the note holds the task, the marker names it task:<slug>, and the
 brief lands it with kit pr --title.
 A build brief carries the grill and prototype step and asks for proof lines: per "Done when" item, what was really
