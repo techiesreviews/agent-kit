@@ -21,7 +21,8 @@
 // Known limits, said plainly: an agent's own CLI must read its own login (Claude's ~/.claude/.credentials.json,
 // Grok's ~/.grok/auth.json), so its tools can too; Codex hides its own login from its commands. Services on the
 // machine's loopback network and abstract sockets stay reachable. The display's X socket is one of them: the hidden
-// cookie keeps it shut, and the start-up probe refuses to lock on a display that lets the user in without one.
+// cookie keeps it shut where the display asks for one; where it lets the user in without one, the start-up probe says
+// so as a warning (kit doctor, the run's log) and the lock stays on.
 // ASE_KEY_GUARD=off runs without the lock and says so in the run's log.
 import { spawnSync } from "node:child_process";
 import { accessSync, chmodSync, constants, lstatSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -247,8 +248,8 @@ function probeLock(env) {
       return { problem: `the start-up check inside bubblewrap gave no answer (${why}); try again, and if it stays, check that Node runs there: bwrap --dev-bind / / -- node -e 1` };
     }
     const open = said.match(/^display-open (\S+)$/m)?.[1], unknown = said.match(/^display-unknown (\S+)$/m)?.[1];
-    const warning = open ? `the X display ${open} lets programs in without its cookie, so a locked agent could type into an open window; close terminals on that display while agents run`
-      : unknown ? `the X display ${unknown} did not answer the start-up check, so it may let programs in without its cookie` : null;
+    const warning = open ? `the X display ${open} lets programs in without its cookie, so a locked agent could read the clipboard, watch keys typed into X windows and type into them; do not copy or type keys while agents run, and where the desktop allows it remove the by-name entry (xhost -si:localuser:$USER)`
+      : unknown ? `the X display ${unknown} did not answer the start-up check, so it may let programs in without its cookie (then a locked agent could read the clipboard); do not copy or type keys while agents run` : null;
     return { problem: null, warning };
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
@@ -290,7 +291,8 @@ export function keyGuard({ cli, kind, common, env = process.env, apiRoute = fals
   const locked = lockedPaths(cli, env, { apiRoute });
   const paths = withLinkTargets(locked, ["/tmp", "/run", env.XDG_RUNTIME_DIR].filter(Boolean));
   const scrub = scrubbedEnv(cli, env, { apiRoute, model });
-  if (cli === "codex") return { env: scrub, codex: codexProfile(kind, common, existingPaths(paths)), wrap: (command, args) => [command, args], close() {} };
+  // Codex's own sandbox shares the network too, so the display warning (when bubblewrap can check it) applies to it.
+  if (cli === "codex") return { env: scrub, codex: codexProfile(kind, common, existingPaths(paths)), warning: keyGuardWarning(env), wrap: (command, args) => [command, args], close() {} };
   const problem = bwrapWorks(env);
   if (problem) throw new Error(`cannot lock the key files for this ${kind}: ${problem}; or set ASE_KEY_GUARD=off to run without the lock`);
   // With the API route the wrapper turns on Claude's own command sandbox (bubblewrap too), which cannot start inside

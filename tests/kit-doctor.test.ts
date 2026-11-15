@@ -1370,7 +1370,7 @@ test("the key lock note: on with a working bubblewrap, a ✗ note and a RESULT w
   executable(join(bin, "bwrap"), 'case "$*" in *" -e "*) echo inside; echo "display-open X0"; echo done ;; esac; exit 0');
   const display = f.run([], f.build, { PATH: `${bin}:${process.env.PATH}` });
   assert.equal(display.status, 0, display.stdout + display.stderr);
-  assert.match(display.stdout, /^✗ key lock: on, but the X display X0 lets programs in without its cookie, so a locked agent could type into an open window; close terminals on that display while agents run \(the lock stays on\)$/m);
+  assert.match(display.stdout, /^✗ key lock: on, but the X display X0 lets programs in without its cookie, so a locked agent could read the clipboard, watch keys typed into X windows and type into them; do not copy or type keys while agents run, .*\(the lock stays on\)$/m);
   assert.match(display.stdout.trimEnd().split("\n").at(-1)!, /; warning: key lock has a gap \(see the ✗ key lock line\)$/);
 });
 
