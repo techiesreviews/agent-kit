@@ -1779,6 +1779,7 @@ test("docs-only for GPT: paths.docs, else a prose file that paths.tests and path
   assert.equal(docsOnly(change("docs/a.md"), tested), true);
   assert.equal(docsOnly(change("tests/README.md"), tested), false);
   assert.equal(docsOnly(change("styles/notes.md"), { paths: { css: ["^styles/"] } }), false);
+  assert.equal(docsOnly([{ status: "D", path: "styles/notes.md" }], { paths: { css: ["^styles/"] } }), false);
   assert.equal(docsOnly([], tested), false);
   // On top of the project's own paths.docs: a prose file outside it still counts.
   const own = { paths: { docs: ["^docs/"] } };

@@ -94,8 +94,10 @@ const proseFile = /\.(?:md|mdx|markdown|rst|adoc)$/i;
 /** Whether every changed path is docs for GPT's second look: the docs tier (`paths.docs`), or a prose file the
  * project's `paths.tests` and `paths.css` leave as code. */
 export const docsOnly = (changes, settings) => changes.length > 0 && changes.every(change => {
-  const tier = pathTier(change, settings);
-  return tier === "docs" || (tier === "full" && proseFile.test(change.path));
+  const { tests, css } = rules(settings);
+  if (pathTier(change, settings) === "docs") return true;
+  // Checked by pattern, not tier: a deleted file under paths.css counts as code in the tier, but is still no docs.
+  return proseFile.test(change.path) && !matches(tests, change.path) && !matches(css, change.path);
 });
 
 export const reviewKinds = ["agent", "ux", "dx", "code"];
