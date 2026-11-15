@@ -128,9 +128,20 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   at once with `bg <name> is busy; retry after its current operation` (the lock is never waited for). The file is
   removed when the command ends; the file of a process that died, or one older than five minutes (a reused pid), is
   taken over, one taker at a time (under a `.<name>.lock.recover` guard file), so a killed launcher never blocks a
-  name. `KIT_BG_LOCK=file` or `flock` picks the lock by hand (tests). Only the lock
-  is Windows-safe: starting the job itself (a new session, its process group, the user systemd scope, the process
-  records read from `/proc`) is still the Linux way.
+  name. `KIT_BG_LOCK=file` or `flock` picks the lock by hand (tests).
+- On Windows (no `setsid`, process groups, `/proc` or systemd) `kit bg` starts the job as a hidden, detached
+  process tree: the wrapper is spawned with `detached` and `windowsHide`, gets the same launch handoff on fd 3, and
+  ends with the session (the start prints the same note as a machine without a user systemd). A process is alive by
+  `process.kill(pid, 0)`; its parent and start time come from one `Get-CimInstance Win32_Process` call (the start as
+  a file time, never mixed with `Get-Process`), and the job's identity record is `{ "pid", "started" }` as JSON. The
+  job is its wrapper's process tree, walked by parent pid in one process list; a child counts only when it started
+  at or after its parent, since Windows reuses pids and never re-parents, and a process whose parent has ended is no
+  longer followed (as with `taskkill /T`). `--max` is a timer in the wrapper. `kit bg --stop` ends the whole tree at
+  once with `taskkill /PID <pid> /T /F` (Windows has no graceful stop) and records `ended` and exit 143 itself.
+  `kit go` looks once a second there (a process list takes about 0.4s). `KIT_BG_PLATFORM=win32` picks the Windows
+  way by hand (tests, with fake `powershell.exe` and `taskkill`). A job's command is started without a shell, as on
+  Linux, so on Windows it must be a program Windows can start directly (`node …`, an `.exe`), not a `.cmd` or a
+  shell script.
 - Two hooks back this up. `brief-guard` (Claude `PreToolUse` on `mcp__t3-code__delegate_task` and `Agent|Task`)
   refuses a brief without the marker; research, review-only and question tasks start with
   `kit-brief: none (<reason>)`, and the read-only agent types (Explore, Plan) pass. `stop-guard` (Claude and Codex

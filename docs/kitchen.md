@@ -321,7 +321,8 @@ OpenCode settings (default model, global instructions) do not apply to the revie
   10-minute tool time limit: Claude's Bash `timeout: 600000`); on its `RUNNING:`
   line (exit 75) run `scripts/agents/kit go slice-<prefix><NN>` again (the job `kit next` prints, such as `slice-ke84`), in the foreground, until the slice's
   RESULT line. A long `kit pr` or spec run goes the same way. The per-name lock of `kit go` and `kit bg` is `flock`
-  on Linux and macOS and a lock file on Windows (see the README's `kit go` entry). Order of steps, manual fallback and
+  on Linux and macOS and a lock file on Windows, where the job is a hidden detached process tree that ends with the
+  session (see the README's `kit go` entry). Order of steps, manual fallback and
   ticket Done: the project's runner guide (`docs/agents/runner.md`).
 - **Skills:** the brief names the skills the [skills map](#skills-map) picks for the ticket's files.
 - **Visible work:** the builder follows the [house style](house-style.md), the project's UX rulebook
