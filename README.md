@@ -113,7 +113,9 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   talk style (short English) and the report's last line. A build brief also carries the grill and prototype step and
   asks for proof lines: per "Done when" item, what the builder really tried on the real thing, in its report and the
   PR text. It ends with a marker line, `kit-brief: <kit version> <ticket> <stage>`.
-  A lead passes it to `delegate_task`; a rule changes once, here. The ticket may be an Orbit card key in any project.
+  A lead passes it to `delegate_task`; a rule changes once, here. The ticket may be an Orbit card key in any project; in
+  one that keeps ticket files the kit neither claims nor closes the card, so the build brief has the builder ask the lead
+  to close it after the merge.
   A job with no ticket file or card uses `kit brief --task "<title>" --owner <id> --note "<the task>"`.
 - `kit go <job> -- <command>` starts a long job (a slice, a long `kit pr`, specs) with `kit bg`, in its own user
   systemd scope, and waits in the foreground for at most 9 minutes per call. While the job runs it ends with
