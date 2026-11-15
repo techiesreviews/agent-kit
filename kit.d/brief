@@ -23,12 +23,11 @@ The ticket may be an Orbit card KEY such as KIT-12, in any project (a ticket fil
 holds the card's title, text and comments in place of a ticket file's, and --owner defaults to its "Claimed by:" owner
 (else its "Assignee:" line). On an Orbit project a lead's build brief (ORBIT_ROLE=lead; anyone else gets a warning)
 claims a card nobody holds (Todo, Backlog, or In Progress with no claim, assignee or next step) for the owner: In
-Progress and "Claimed by:", as kit slice does. A Todo or Backlog card that is blocked or waits for Lex is refused. Any
+Progress and "Claimed by:". A Todo or Backlog card that is blocked or waits for Lex is refused. Any
 other card is left as it is, with a warning that says why (someone else holds it, it waits for Lex, it is Done or in
 another status); the owner's own card gets none. The claim reads the card again right before its write, so a card
 moved meanwhile to a status the brief does not take (Ideas, say) is left as it is too, with a warning that it changed
-and why; one that someone else took, or that is Done by then, fails the brief. On a board with no Todo status, every status not yet started counts as Todo, as it does for kit next,
-which hands those cards out. In a project that keeps ticket files the kit neither claims nor closes the card: the
+and why; one that someone else took, or that is Done by then, fails the brief. On a board with no Todo status, every status not yet started counts as Todo. In a project that keeps ticket files the kit neither claims nor closes the card: the
 build brief has the builder ask the lead to close it after the merge.
 --task is for a job with no ticket file or card: the note holds the task, the marker names it task:<slug>, and the
 brief lands it with kit pr --title.
@@ -60,9 +59,8 @@ function parse(args) {
 
 const oneLine = value => String(value ?? "").replace(/\s*[\r\n]+\s*/g, " ").trim();
 /**
- * Free to claim: what kit next hands out (stage "ready": Todo, or every unstarted status on a board with no Todo; and
- * In Progress given back after Lex) and Backlog. A claim narrower than kit next's hand-out would let kit next start a
- * second builder on the card. Any other status a board with Todo keeps (Ideas, say) is not the brief's to move.
+ * Free to claim: a card up for building (stage "ready": Todo, or every unstarted status on a board with no Todo; and
+ * In Progress given back after Lex) and Backlog. A claim narrower than that would let a second helper start on the card. Any other status a board with Todo keeps (Ideas, say) is not the brief's to move.
  * Asked of the card as the brief first reads it, and again by the claim of the card as it is right before its write.
  */
 const cardOpen = task => task.stage === "ready" || String(task.status_name ?? "").trim().toLowerCase() === "backlog" || cardFree(task);
@@ -96,9 +94,8 @@ async function readCard(settings, key) {
 }
 
 /**
- * A build brief takes a card nobody holds (Todo, Backlog, or In Progress given back after Lex), as kit slice did before
- * TOOLS-235 dropped its line from the brief: In Progress and "Claimed by: <owner>" in one write, so kit next never starts a
- * second builder on the same card. A Todo or Backlog card waiting for Lex or still blocked is refused (next-lex moves a card
+ * A build brief takes a card nobody holds (Todo, Backlog, or In Progress given back after Lex): In Progress and
+ * "Claimed by: <owner>" in one write, so no second helper starts on the same card. A Todo or Backlog card waiting for Lex or still blocked is refused (next-lex moves a card
  * it marks to In Progress, which the brief leaves alone). Only a lead writes to Orbit; anyone else is warned.
  * A card that stopped being free after the brief read it is not claimed: the claim asks again right before its write.
  * Returns what gives a new claim back (the status the card had, no "Claimed by" line), for a step after it that fails.
@@ -106,7 +103,7 @@ async function readCard(settings, key) {
 async function claimCard(settings, key, owner) {
   const none = async () => "";
   if (process.env.ORBIT_ROLE !== "lead") {
-    console.error(`warning: ${key} is not claimed (only a lead writes to Orbit: ORBIT_ROLE=lead); until it is, kit next may start it too`);
+    console.error(`warning: ${key} is not claimed (only a lead writes to Orbit: ORBIT_ROLE=lead); until it is, another helper may start it too`);
     return none;
   }
   let redact;
@@ -162,9 +159,9 @@ try {
   const settings = kitSettings(root);
   const problems = skillSettingsProblems(settings);
   if (problems.length) throw new Error(problems.join("; "));
-  // A group runs as one kit next job.
+  // A group ran as one kit next job; kit next was cut (TOOLS-235), so the lead briefs its tickets one by one or as a task.
   const { group } = readTicket(text);
-  if (group) throw new Error(`${ticket} is in group ${group}: kit next --start runs a group as one job; kit brief writes briefs for single tickets`);
+  if (group) throw new Error(`${ticket} is in group ${group}: kit brief writes a brief for one ticket; brief the group's tickets one at a time (take the group: line off each), or the whole group as one --task`);
   // The proof lines go per Done when item (TOOLS-235): a list under "## Done when", or the card standard's "Done when:" line.
   if (options.task === undefined && !doneWhen(text))
     console.error(`warning: ${ticket} has no "Done when" list; the proof lines need one (the card standard's "Done when:" line)`);
@@ -180,7 +177,6 @@ try {
   mkdirSync(join(root, ".scratch/kit-briefs"), { recursive: true });
   // The brief is written to a file of its own, claimed, then moved into place: no later step can fail and leave the card
   // held for a brief nobody has, and a brief whose claim loses never touches the copy of the one that won.
-  // A files project hands out its ticket files, not cards, so only an Orbit project's kit next could start the card twice.
   const saved = join(root, file), temporary = `${saved}.${process.pid}.tmp`;
   writeFileSync(temporary, `${brief}\n`);
   let giveBack = async () => "";
@@ -188,7 +184,7 @@ try {
     if (free) {
       try { giveBack = await claimCard(settings, ticket, owner); }
       catch (error) { rmSync(temporary, { force: true }); throw error; }
-    // kit slice's claim refused a card that is held, done or not up for building; the brief still comes (a builder that
+    // The claim refuses a card that is held, done or not up for building; the brief still comes (a builder that
     // stopped is started again this way), with the reason said, so a second builder is never started unnoticed.
     } else if (left(owner)) console.error(`warning: ${ticket} is left as it is, not claimed for ${owner}: ${left(owner)}`);
   }

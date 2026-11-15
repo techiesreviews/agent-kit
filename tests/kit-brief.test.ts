@@ -285,13 +285,13 @@ test("brief: a review brief's scope is the slice branch, not the lead's checkout
   assert.equal(review.stdout.match(/^Scope: /gm)!.length, 1);
 });
 
-test("brief: a group ticket is refused (kit next runs a group as one job)", t => {
+test("brief: a group ticket is refused with what to do instead (kit next, which ran a group as one job, was cut)", t => {
   const f = fixture(t);
   const path = join(f.root, "docs/tickets/07-panel.md");
   writeFileSync(path, readFileSync(path, "utf8").replace("builder: claude", "builder: claude\ngroup: fonts"));
   const refused = f.run(["docs/tickets/07-panel.md"]);
   assert.equal(refused.status, 1);
-  assert.match(refused.stdout, /RESULT: fail brief docs\/tickets\/07-panel\.md is in group fonts: kit next --start runs a group as one job/);
+  assert.match(refused.stdout, /RESULT: fail brief docs\/tickets\/07-panel\.md is in group fonts: kit brief writes a brief for one ticket; brief the group's tickets one at a time \(take the group: line off each\), or the whole group as one --task$/m);
 });
 
 test("brief: a fix brief switches to the pushed slice branch; a ticket with no assignee and no --owner is refused", t => {
@@ -561,7 +561,7 @@ test("brief KEY: on an Orbit project a lead's build brief claims a Todo or Backl
   const helper = o.card({ title: "Helper" });
   const warned = await run({ ORBIT_ROLE: "" }, "KIT-14", "--owner", "kit-14");
   assert.equal(warned.status, 0, warned.all);
-  assert.match(warned.stderr, /^warning: KIT-14 is not claimed \(only a lead writes to Orbit: ORBIT_ROLE=lead\); until it is, kit next may start it too$/m);
+  assert.match(warned.stderr, /^warning: KIT-14 is not claimed \(only a lead writes to Orbit: ORBIT_ROLE=lead\); until it is, another helper may start it too$/m);
   assert.equal(o.orbit.statusOf(helper), "Todo");
   assert.doesNotMatch(helper.description, /Claimed by/);
   // Only Todo, Backlog and a free In Progress card are claimed: a card in any other status the board keeps (Ideas, say)
