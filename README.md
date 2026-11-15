@@ -135,7 +135,9 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   `process.kill(pid, 0)`; its parent and start time come from one `Get-CimInstance Win32_Process` call (the start as
   a file time, never mixed with `Get-Process`), and the job's identity record is `{ "pid", "started" }` as JSON. The
   job is the process tree below its pinned processes (the wrapper, its command process, and the command itself, kept
-  in a `work` record), walked by parent pid in one process list; a child counts only when it started at or after its
+  in a `work` record; Node ends a process's non-detached children with it on Windows, so the work ends with its
+  command process unless it broke away from Node's job object, and the inner processes stay attached so they keep a
+  hidden console and a console program they start opens no window), walked by parent pid in one process list; a child counts only when it started at or after its
   parent, since Windows reuses pids and never re-parents, and a process whose parent has ended (and is not pinned) is
   no longer followed (as with `taskkill /T`); the hidden `conhost.exe` each console process gets is not counted.
   `--max` is a timer in the wrapper that holds until the job's whole tree has ended. An exit record keeps any 32-bit

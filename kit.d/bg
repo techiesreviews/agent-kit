@@ -67,7 +67,9 @@ async function wrapper(kind, directory, cwd, command) {
   if (kind === "--command") {
     child = spawn(command[0], command.slice(1), { cwd, stdio: "inherit", windowsHide: true });
     // Windows: pin the work itself, so it stays the job's (waited for, stopped, timed) if this process ends first.
-    // A pin that cannot be read costs only that: the work runs on, and its status stands.
+    // Node ends a process's children with it there (its job object, as the work is not detached: detached, it would
+    // have no console, and each console program it starts would open a window), so this covers a work that broke
+    // away from that job. A pin that cannot be read costs only that: the work runs on, and its status stands.
     let work = null;
     try { work = windows && child.pid ? kitJobProcess(child.pid) : null; }
     catch (error) { console.error(`kit bg: could not pin the job's command: ${error.message}`); }
