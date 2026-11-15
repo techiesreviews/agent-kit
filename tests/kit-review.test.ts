@@ -2152,16 +2152,16 @@ test("a second look whose reviewer crashes counts as unavailable: the next model
   const budget = { ASE_SECOND_LOOK: table, ASE_REVIEW_BUDGET_GROK: "3", FAKE_MODE: "crash" };
   const handed = f.run(["--base", "HEAD~1", "--second-look"], { ...budget, FAKE_CRASH_CLI: "grok" });
   assert.equal(handed.status, 0, handed.stdout + handed.stderr);
-  assert.match(handed.stderr, /^problem: grok crashed \(killed by signal SIGKILL\); see /m);
-  assert.match(handed.stdout, /^second look: opencode\/deepseek-v4\.1-flash-free takes it \(grok-4\.7 grok crashed \(killed by signal SIGKILL\); see .*\)$/m);
+  assert.match(handed.stderr, /^problem: grok crashed \(exit 137, which bwrap gives for signal SIGKILL\); see /m);
+  assert.match(handed.stdout, /^second look: opencode\/deepseek-v4\.1-flash-free takes it \(grok-4\.7 grok crashed \(exit 137, which bwrap gives for signal SIGKILL\); see .*\)$/m);
   assert.deepEqual(JSON.parse(readFileSync(join(f.evidence(handed.stdout), "second-look.json"), "utf8")), { kind: "code", model: opencodeModel, ok: true, branch: "feature/review" });
   // No review came back from the crashed run, so its count is given back.
   assert.deepEqual(f.counts(), { grok: { "kit-review": 0 } });
   // An exit above 128, the status a shell reports for a crash, counts the same. Inside the key lock bwrap reports a
-  // killed CLI that way too, so the run names the signal the number stands for (139: SIGSEGV).
+  // killed CLI with such an exit too, so the words name the signal the number stands for (139: SIGSEGV) beside it.
   const exited = f.run(["--base", "HEAD~1", "--second-look"], { ...budget, FAKE_MODE: "crash-exit", FAKE_CRASH_CLI: "grok" });
   assert.equal(exited.status, 0, exited.stdout + exited.stderr);
-  assert.match(exited.stdout, /^second look: opencode\/deepseek-v4\.1-flash-free takes it \(grok-4\.7 grok crashed \(killed by signal SIGSEGV\); see /m);
+  assert.match(exited.stdout, /^second look: opencode\/deepseek-v4\.1-flash-free takes it \(grok-4\.7 grok crashed \(exit 139, which bwrap gives for signal SIGSEGV\); see /m);
   assert.deepEqual(f.counts(), { grok: { "kit-review": 0 } });
   // Both crash: nothing could look, so the look is skipped, never failed.
   const skipped = f.run(["--base", "HEAD~1", "--second-look"], budget);
@@ -2172,7 +2172,7 @@ test("a second look whose reviewer crashes counts as unavailable: the next model
   // The main review has no stand-in: a crash there still fails it.
   const main = f.run(["--base", "HEAD~1"], { FAKE_MODE: "crash" });
   assert.equal(main.status, 1, main.stdout + main.stderr);
-  assert.match(main.stdout.trim().split("\n").at(-1)!, /^RESULT: fail claude crashed \(killed by signal SIGKILL\)/);
+  assert.match(main.stdout.trim().split("\n").at(-1)!, /^RESULT: fail claude crashed \(exit 137, which bwrap gives for signal SIGKILL\)/);
 });
 
 test("a crash on a later call, after the first call used the review, is a failed second look, not a handover", (t) => {

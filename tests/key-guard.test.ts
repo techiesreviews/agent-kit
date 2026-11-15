@@ -96,7 +96,7 @@ test("the lock is on unless ASE_KEY_GUARD=off; without bubblewrap a Claude run i
   t.after(() => { rmSync(empty, { recursive: true, force: true }); resetBwrapProbe(); });
   resetBwrapProbe();
   assert.throws(() => keyGuard({ cli: "claude", kind: "build", common: "/c", env: { HOME: "/h", PATH: empty } }),
-    /cannot lock the key files for this build: bubblewrap \(bwrap\) is not installed; install bubblewrap, or set ASE_KEY_GUARD=off/);
+    /cannot lock the key files for this build: bubblewrap \(bwrap\) is not installed; install it \(apt install bubblewrap\); or set ASE_KEY_GUARD=off/);
   resetBwrapProbe();
   if (!bwrapUsable) return;
   assert.throws(() => keyGuard({ cli: "claude", kind: "build", common: "/c", env: { HOME: "/h", PATH: process.env.PATH }, apiRoute: true }),
@@ -215,7 +215,7 @@ test("a link inside a key folder locks the file it points at; a folder it points
   symlinkSync(join(dotfiles, "hosts.yml"), join(home, ".config/gh/linked.yml"));
   symlinkSync("/usr", join(home, ".config/gh/usr"));
   symlinkSync(join(dir, "gone"), join(home, ".config/gh/dangling"));
-  const paths = withLinkTargets([join(home, ".config/gh"), "/run/elsewhere"], home);
+  const paths = withLinkTargets([join(home, ".config/gh"), "/run/elsewhere"], ["/run"]);
   assert.deepEqual(paths, [join(home, ".config/gh"), "/run/elsewhere", join(dotfiles, "hosts.yml")]);
 });
 
@@ -224,7 +224,12 @@ test("kit doctor's note says whether the lock is on, off or cannot start", t => 
   const empty = mkdtempSync(join(tmpdir(), "kit-no-bwrap-"));
   t.after(() => { rmSync(empty, { recursive: true, force: true }); resetBwrapProbe(); });
   resetBwrapProbe();
-  assert.deepEqual(keyGuardReport({ PATH: empty }), { state: "problem", text: "bubblewrap (bwrap) is not installed" });
+  assert.deepEqual(keyGuardReport({ PATH: empty }), { state: "problem", text: "bubblewrap (bwrap) is not installed; install it (apt install bubblewrap)" });
+  // A bwrap that runs the command without any sandbox (as a setuid bwrap lets /proc through): the lock refuses.
+  writeFileSync(join(empty, "bwrap"), '#!/bin/sh\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n');
+  chmodSync(join(empty, "bwrap"), 0o755);
+  resetBwrapProbe();
+  assert.match(keyGuardReport({ PATH: `${empty}:${process.env.PATH}` }).text, /^a program inside bubblewrap can still read other programs' files through \/proc here/);
   resetBwrapProbe();
   if (bwrapUsable) assert.equal(keyGuardReport({ PATH: process.env.PATH }).state, "on");
 });
@@ -236,7 +241,7 @@ test("PROOF: a Grok review cannot read the dummy key files either", { skip: noBw
   writeFileSync(join(bin, "grok"), `#!/usr/bin/env node
 import { readFileSync, writeFileSync } from "node:fs";
 const tryRead = file => { try { return readFileSync(file, "utf8"); } catch (error) { return "refused " + error.code; } };
-writeFileSync(process.env.FAKE_SEEN, JSON.stringify(Object.fromEntries(Object.entries(JSON.parse(process.env.FAKE_TRIES)).map(([name, file]) => [name, tryRead(file)]))));
+writeFileSync(process.env.FAKE_SEEN, JSON.stringify({ token: process.env.GH_TOKEN ?? "", ...Object.fromEntries(Object.entries(JSON.parse(process.env.FAKE_TRIES)).map(([name, file]) => [name, tryRead(file)])) }));
 const args = process.argv.slice(2);
 process.stdout.write(JSON.stringify({ sessionId: "g-1", text: "REVIEW_STATUS: complete\\nDefects\\nNone.", modelUsage: { [args[args.indexOf("-m") + 1]]: {} } }));
 `);
@@ -247,11 +252,12 @@ process.stdout.write(JSON.stringify({ sessionId: "g-1", text: "REVIEW_STATUS: co
   git("init", "-q", "-b", "test"); git("commit", "-q", "--allow-empty", "-m", "base");
   writeFileSync(join(root, "file.txt"), "change\n"); git("add", "file.txt"); git("commit", "-q", "-m", "change");
   const seenFile = join(dir, "seen.json");
-  const env = { ...kitEnv(), HOME: home, PATH: `${bin}:${process.env.PATH}`, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "60s", FAKE_SEEN: seenFile, FAKE_TRIES: JSON.stringify(files) } as NodeJS.ProcessEnv;
+  const env = { ...kitEnv(), HOME: home, PATH: `${bin}:${process.env.PATH}`, GH_TOKEN: dummy, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "60s", FAKE_SEEN: seenFile, FAKE_TRIES: JSON.stringify(files) } as NodeJS.ProcessEnv;
   delete env.ASE_KEY_GUARD;
   const run = spawnSync(process.execPath, [resolve("agent-run.mjs"), "review", root, brief, "--out", out, "--cli", "grok", "--model", "grok-4.7", "--base", "HEAD~1"],
     { cwd: root, env, encoding: "utf8", timeout: 60_000 });
   assert.equal(run.status, 0, run.stdout + run.stderr + readFileSync(join(out, "run.log"), "utf8"));
   const seen = JSON.parse(readFileSync(seenFile, "utf8"));
   for (const name of ["orbit", "gh", "wrangler", "claudeJson", "codexAuth", "claudeLogin"]) assert.match(seen[name], /^refused (ENOENT|EACCES)$/, name);
+  assert.equal(seen.token, "", "the token variable is gone");
 });

@@ -1348,6 +1348,22 @@ test("doctor never asks GitHub whether the repo is private (its setup check runs
   assert.match(asked, /repo view acme\/tools --json visibility/, control.stdout + control.stderr);
 });
 
+test("the key lock note: on with a working bubblewrap, a ✗ note and a RESULT warning when the system blocks it", (t) => {
+  const f = fixture(t);
+  const bin = join(f.directory, "fake-bwrap");
+  mkdirSync(bin);
+  // A bwrap that runs nothing and works, then one the system refuses as Ubuntu's AppArmor rule does.
+  executable(join(bin, "bwrap"), "exit 0");
+  const on = f.run([], f.build, { PATH: `${bin}:${process.env.PATH}` });
+  assert.equal(on.status, 0, on.stdout + on.stderr);
+  assert.match(on.stdout, /^key lock: on \(bubblewrap runs; agents the kit starts cannot read the key files\)$/m);
+  executable(join(bin, "bwrap"), 'echo "bwrap: setting up uid map: Permission denied" >&2; exit 1');
+  const blocked = f.run([], f.build, { PATH: `${bin}:${process.env.PATH}` });
+  assert.equal(blocked.status, 0, blocked.stdout + blocked.stderr);
+  assert.match(blocked.stdout, /^✗ key lock: the system blocks the sandboxes bubblewrap makes \(bwrap: setting up uid map: Permission denied\); allow them with sudo sysctl -w kernel\.apparmor_restrict_unprivileged_userns=0, or give \/usr\/bin\/bwrap an AppArmor profile that allows user namespaces \(the kit's Claude, Grok and OpenCode runs stop until it works\); fix: the step named above, or set ASE_KEY_GUARD=off/m);
+  assert.match(blocked.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: ok doctor 11\/11 checks passed; warning: key lock cannot start \(see the ✗ key lock line\)$/);
+});
+
 test("a broken API route is a doctor warning on the RESULT line, never a failure", (t) => {
   const f = fixture(t);
   const bad = join(f.directory, "open-key");

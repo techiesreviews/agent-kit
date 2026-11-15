@@ -547,7 +547,7 @@ if [[ $quiet == false ]]; then
     guard_state=${guard_report%%$'\t'*} guard_text=${guard_report#*$'\t'}
     case $guard_state in
       problem) api_warning="${api_warning:+$api_warning; }key lock cannot start (see the ✗ key lock line)"
-         printf '✗ key lock: %s (the kit'"'"'s Claude, Grok and OpenCode runs stop until it works); fix: install bubblewrap (apt install bubblewrap), or set ASE_KEY_GUARD=off to run agents without the lock\n' "$guard_text" ;;
+         printf '✗ key lock: %s (the kit'"'"'s Claude, Grok and OpenCode runs stop until it works); fix: the step named above, or set ASE_KEY_GUARD=off to run agents without the lock\n' "$guard_text" ;;
       *) printf 'key lock: %s\n' "$guard_text" ;;
     esac
   fi
