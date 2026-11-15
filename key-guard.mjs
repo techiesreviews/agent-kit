@@ -115,7 +115,13 @@ export function lockedPaths(cli, env = process.env, { apiRoute = false } = {}) {
   // Tools that keep their keys where a variable says (gh's GH_CONFIG_DIR among them, which the kit itself sets).
   // KUBECONFIG holds a list of files.
   for (const name of keyFolderVariables) for (const path of String(env[name] ?? "").split(name === "KUBECONFIG" ? ":" : "\0")) if (path.startsWith("/")) paths.push(path);
-  if (env.XDG_CONFIG_HOME && resolve(env.XDG_CONFIG_HOME) !== join(base, ".config")) paths.push(...configKeyNames.map(name => join(env.XDG_CONFIG_HOME, name)));
+  if (env.XDG_CONFIG_HOME && resolve(env.XDG_CONFIG_HOME) !== join(base, ".config")) {
+    paths.push(...configKeyNames.map(name => join(env.XDG_CONFIG_HOME, name)));
+    // The CLIs' own settings there too (OpenCode's), but the run's own.
+    for (const [other, list] of Object.entries(cliKeyPaths)) {
+      if (other !== cli) paths.push(...list.filter(path => path.startsWith(".config/")).map(path => join(env.XDG_CONFIG_HOME, path.slice(".config/".length))));
+    }
+  }
   // The API key file, for every CLI: the API route's wrapper reads it before claude starts inside the lock.
   if (env.KIT_API_KEY_FILE?.startsWith("/")) paths.push(env.KIT_API_KEY_FILE);
   // The display's cookie wherever the session keeps it (older SDDM: /tmp/xauth_…).
@@ -138,7 +144,8 @@ export function existingPaths(paths) {
 /**
  * The paths plus what their links point at, and the folder targets the lock must not hide. A link inside a key folder
  * (a dotfiles setup: ~/.config/gh/hosts.yml -> ~/dotfiles/gh/hosts.yml, or .config/.wrangler/config -> a dotfiles
- * folder) names a file or folder the folder's mask does not cover, so its target is locked too, up to four levels down.
+ * folder) names a file or folder the folder's mask does not cover, so its target is locked too, and a linked folder is
+ * searched the same way, up to eight levels down.
  * A folder target that holds one of `keep` (HOME, the worktree's Git folder) or is a system folder cannot be hidden
  * without breaking the run: it is returned in `unsafe`. Folders in `skip` (the runtime folder, terminal and X sockets:
  * sockets, not keys) are not walked.
@@ -147,27 +154,34 @@ export function existingPaths(paths) {
 export function linkTargets(paths, { skip = [], keep = [] } = {}) {
   const found = [...paths], unsafe = [];
   const system = ["/", "/usr", "/etc", "/bin", "/sbin", "/lib", "/lib64", "/opt", "/var", "/home", "/tmp", "/run", "/proc", "/sys", "/dev", "/nix", "/snap"];
-  const target = link => {
+  const seen = new Set();
+  const target = (link, depth) => {
     let real;
     try { real = realpathSync(link); } catch { return; /* A dangling link points nowhere. */ }
     if (statSync(real).isFile()) found.push(real);
     else if (system.includes(real) || keep.some(path => inside(path, real))) unsafe.push(`${link} -> ${real}`);
-    else found.push(real);
+    else { found.push(real); walk(real, depth + 1); }
   };
+  // Each real folder is searched once, so links that point back end the search.
   const walk = (folder, depth) => {
     let entries;
-    try { entries = readdirSync(folder, { withFileTypes: true }); } catch { return; }
+    try {
+      const real = realpathSync(folder);
+      if (seen.has(real)) return;
+      seen.add(real);
+      entries = readdirSync(folder, { withFileTypes: true });
+    } catch { return; }
     for (const entry of entries.slice(0, 2000)) {
       const path = join(folder, entry.name);
-      if (entry.isSymbolicLink()) target(path);
-      else if (entry.isDirectory() && depth < 4) walk(path, depth + 1);
+      if (entry.isSymbolicLink()) { if (depth < 8) target(path, depth); }
+      else if (entry.isDirectory() && depth < 8) walk(path, depth + 1);
     }
   };
   for (const path of paths) {
     if (skip.some(folder => inside(path, folder))) continue;
     try {
       const info = lstatSync(path);
-      if (info.isSymbolicLink()) target(path);
+      if (info.isSymbolicLink()) target(path, 0);
       else if (info.isDirectory()) walk(path, 1);
     } catch { /* Not there. */ }
   }
