@@ -109,7 +109,8 @@ async function main() {
   const limit = lines.findLast(line => line.startsWith("kit bg: the time limit"));
   const why = limit && code === 143 ? `: ${limit.replace(/^kit bg: /, "")}` : "";
   // Exit 75 means "still running" from kit go, so a job's own 75 is passed on as 1.
-  if (code === 75) { if (result) console.log(`job: ${result}`); kitResult("fail", `go ${name} exit 75 (the job's own code; kit go gives 1 for it); see ${join(directory, "log")}`); return 1; }
+  // So is a Windows exit code above 255: a shell keeps its low 8 bits, which could read as 75 or 0.
+  if (code === 75 || code > 255) { if (result) console.log(`job: ${result}`); kitResult("fail", `go ${name} exit ${code} (the job's own code; kit go gives 1 for it); see ${join(directory, "log")}`); return 1; }
   // The scope's time limit ended it: that is the result, whatever an earlier step's RESULT line said.
   if (why) { if (result) console.log(`job: ${result}`); kitResult("fail", `go ${name} exit ${code}${why}; see ${join(directory, "log")}`); return code; }
   // A job whose RESULT line says fail exits non-zero through kit go, even if the job itself exited 0.

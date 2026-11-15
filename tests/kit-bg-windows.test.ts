@@ -20,6 +20,9 @@ fs.appendFileSync(process.env.FAKE_WIN_LOG, "powershell " + script + "\\n");
 if (fs.existsSync(process.env.FAKE_WIN_LOG + ".broken")) { console.error("Get-CimInstance : The RPC server is unavailable."); process.exit(1); }
 if (!script.startsWith("Get-CimInstance Win32_Process") || !script.includes("$_.CreationDate.ToFileTimeUtc(), $_.Name")) process.exit(2);
 const only = /-Filter 'ProcessId=(\\d+)'/.exec(script)?.[1];
+// A job's command (not kit bg's own processes) whose command line holds this marker cannot be looked up on its own.
+try { const line = only ? fs.readFileSync("/proc/" + only + "/cmdline", "utf8") : "";
+  if (line.includes("fail-pin-marker") && !line.includes("--wrapper") && !line.includes("--command")) { console.error("Get-CimInstance : Access denied."); process.exit(1); } } catch {}
 const lines = [];
 for (const pid of only ? [only] : fs.readdirSync("/proc").filter(name => /^\\d+$/.test(name))) {
   try {
@@ -362,7 +365,7 @@ test("a Windows job whose command process died alone is still waited for, and it
   const f = fixture(t);
   const ready = join(f.root, "ready");
   const never = join(f.root, "never");
-  ok(f.bg("win-lost", "--max", "4", "--", process.execPath, "-e", `require("fs").writeFileSync(${JSON.stringify(ready)}, String(process.pid)); ${holdUntil(never)}`));
+  ok(f.bg("win-lost", "--max", "8", "--", process.execPath, "-e", `require("fs").writeFileSync(${JSON.stringify(ready)}, String(process.pid)); ${holdUntil(never)}`));
   await until(() => existsSync(ready));
   const work = Number(readFileSync(ready, "utf8"));
   t.after(() => { if (live(work)) process.kill(work, "SIGKILL"); });
@@ -376,8 +379,56 @@ test("a Windows job whose command process died alone is still waited for, and it
   assert.ok(live(work));
   assert.equal(existsSync(join(directory, "exit")), false, "the wrapper must not record an end while the work runs");
   assert.match(f.bg("--list").stdout, /^win-lost\trunning\t/m);
+  await until(() => existsSync(join(directory, "exit")), 20000);
+  assert.ok(!live(work));
+  assert.equal(readFileSync(join(directory, "exit"), "utf8").trim(), "143");
+  assert.match(readFileSync(join(directory, "log"), "utf8"), /^kit bg: the time limit \(8s\) ended this job$/m);
+});
+
+test("a Windows job whose command cannot be pinned keeps its own exit status and says so in its log", async t => {
+  const f = fixture(t);
+  ok(f.bg("win-pin-fail", "--", process.execPath, "-e", 'setTimeout(() => { console.log("RESULT: ok pinned or not"); process.exit(0); }, 1500)', "fail-pin-marker"));
+  const directory = f.directory("win-pin-fail");
+  await until(() => existsSync(join(directory, "exit")), 20000);
+  assert.equal(readFileSync(join(directory, "exit"), "utf8").trim(), "0");
+  assert.equal(existsSync(join(directory, "work")), false);
+  assert.match(readFileSync(join(directory, "log"), "utf8"), /^kit bg: could not pin the job's command: cannot read the process list .*Access denied\.$/m);
+});
+
+test("a Windows time limit that meets an unreadable process list looks again, never kills by a stale pid, and ends the work", async t => {
+  const f = fixture(t);
+  const ready = join(f.root, "ready");
+  const never = join(f.root, "never");
+  const broken = join(f.root, "win.log.broken");
+  t.after(() => rmSync(broken, { force: true }));
+  ok(f.bg("win-limit-broken", "--max", "6", "--", process.execPath, "-e", `require("fs").writeFileSync(${JSON.stringify(ready)}, String(process.pid)); ${holdUntil(never)}`));
+  await until(() => existsSync(ready));
+  const work = Number(readFileSync(ready, "utf8"));
+  t.after(() => { if (live(work)) process.kill(work, "SIGKILL"); });
+  const directory = f.directory("win-limit-broken");
+  await until(() => existsSync(join(directory, "work")));
+  const command = JSON.parse(readFileSync(join(directory, "members"), "utf8")).members[0].pid;
+  process.kill(command, "SIGKILL");
+  await until(() => !live(command));
+  writeFileSync(broken, "");
+  const since = Date.parse(readFileSync(join(directory, "started"), "utf8").trim());
+  await delay(Math.max(0, since + 8000 - Date.now()));
+  assert.ok(live(work), "the limit waits for a list it can read");
+  assert.doesNotMatch(f.log(), new RegExp(`^taskkill /PID ${command} `, "m"));
+  rmSync(broken);
   await until(() => existsSync(join(directory, "exit")), 15000);
   assert.ok(!live(work));
   assert.equal(readFileSync(join(directory, "exit"), "utf8").trim(), "143");
-  assert.match(readFileSync(join(directory, "log"), "utf8"), /^kit bg: the time limit \(4s\) ended this job$/m);
+  assert.match(f.log(), new RegExp(`^taskkill /PID ${work} /T /F$`, "m"));
+});
+
+test("go on Windows gives 1 for a job's own exit code above 255, so a shell never reads it as 75 or 0", async t => {
+  const f = fixture(t);
+  let done = f.go("win-big", "--", process.execPath, "-e", "process.exit(0)");
+  for (let i = 0; i < 40 && done.status === 75; i++) done = f.go("win-big");
+  assert.equal(done.status, 0, done.stdout);
+  writeFileSync(join(f.directory("win-big"), "exit"), "3221225477\n");
+  const big = f.go("win-big");
+  assert.equal(big.status, 1, big.stdout);
+  assert.match(last(big), /^RESULT: fail go win-big exit 3221225477 \(the job's own code; kit go gives 1 for it\); see /);
 });

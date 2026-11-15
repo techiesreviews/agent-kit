@@ -67,7 +67,10 @@ async function wrapper(kind, directory, cwd, command) {
   if (kind === "--command") {
     child = spawn(command[0], command.slice(1), { cwd, stdio: "inherit", windowsHide: true });
     // Windows: pin the work itself, so it stays the job's (waited for, stopped, timed) if this process ends first.
-    const work = windows && child.pid ? kitJobProcess(child.pid) : null;
+    // A pin that cannot be read costs only that: the work runs on, and its status stands.
+    let work = null;
+    try { work = windows && child.pid ? kitJobProcess(child.pid) : null; }
+    catch (error) { console.error(`kit bg: could not pin the job's command: ${error.message}`); }
     if (work) {
       writeFileSync(join(directory, "work.tmp"), JSON.stringify({ pid: child.pid, started: work.started }));
       renameSync(join(directory, "work.tmp"), join(directory, "work"));
@@ -90,19 +93,22 @@ async function wrapper(kind, directory, cwd, command) {
   const tree = () => kitJobTree(kitWinProcesses(), kind === "--wrapper" ? kitJobPins({ directory, pid: process.pid, started }) : [{ pid: process.pid, started }])
     .filter(member => member.pid !== process.pid);
   // Windows has no scope: the wrapper's own timer is the time limit, and ends the job's tree as kit bg --stop does
-  // (the top of the tree, below the wrapper), until that tree has ended.
+  // (the top of the tree, below the wrapper), until that tree has ended. It kills only by a list it could read:
+  // while none reads it looks again, never by a pid that may have ended since.
   let limited = false, timer;
+  const end = () => {
+    let members;
+    try { members = tree(); } catch { timer = setTimeout(end, poll); return; }
+    const pids = new Set(members.map(member => member.pid));
+    const tops = members.filter(member => !pids.has(member.ppid)).map(member => member.pid);
+    if (!tops.length) return;
+    limited = true;
+    spawnSync("taskkill", [...tops.flatMap(pid => ["/PID", String(pid)]), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+  };
   const limit = () => {
     const left = since + max * 1000 - Date.now();
     // setTimeout holds at most about 24 days: a longer limit waits in steps.
-    timer = left > 2e9 ? setTimeout(limit, 2e9) : setTimeout(() => {
-      limited = true;
-      let members = [];
-      try { members = tree(); } catch { members = [{ pid: child.pid, ppid: process.pid }]; }
-      const pids = new Set(members.map(member => member.pid));
-      const tops = members.filter(member => !pids.has(member.ppid)).map(member => member.pid);
-      if (tops.length) spawnSync("taskkill", [...tops.flatMap(pid => ["/PID", String(pid)]), "/T", "/F"], { stdio: "ignore", windowsHide: true });
-    }, Math.max(0, left));
+    timer = left > 2e9 ? setTimeout(limit, 2e9) : setTimeout(end, Math.max(0, left));
   };
   if (windows && kind === "--wrapper" && max > 0 && Number.isFinite(since)) limit();
   const status = await childStatus(child);
