@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test, { type TestContext } from "node:test";
-import { kitJob, kitJobPlatform, kitJobSame, kitJobTree, kitWinProcessList } from "../kit-lib.mjs";
+import { kitJob, kitJobExit, kitJobPlatform, kitJobSame, kitJobTree, kitWinProcessList } from "../kit-lib.mjs";
 import { kitEnv } from "./support/kit-env.ts";
 
 const kit = resolve("kit");
@@ -133,9 +133,13 @@ test("a Windows job's tree walks children by parent pid, never adopting a proces
   // The wrapper has ended: its pinned --command process still holds the job's tree.
   const ended = list.filter(entry => entry.pid !== 100);
   assert.deepEqual(pids(kitJobTree(ended, [{ pid: 100, started: t(10) }, { pid: 200, started: t(11) }])), [200, 300, 301]);
-  // The wrapper's pid now belongs to a newer process: its children are not the job's, the old wrapper's are.
+  // A pinned process that has ended passes nothing on: its children cannot be told from those of a later holder of
+  // its pid that has ended too, so only live pins hold the tree.
+  assert.deepEqual(pids(kitJobTree(ended, [{ pid: 100, started: t(10) }])), []);
   const reused = [...ended, { pid: 100, ppid: 1, started: t(50) }, { pid: 600, ppid: 100, started: t(51) }];
-  assert.deepEqual(pids(kitJobTree(reused, [{ pid: 100, started: t(10) }])), [200, 300, 301]);
+  assert.deepEqual(pids(kitJobTree(reused, [{ pid: 100, started: t(10) }])), []);
+  const gone = [...ended, { pid: 700, ppid: 100, started: t(60) }]; // a child of a later, ended holder of pid 100
+  assert.deepEqual(pids(kitJobTree(gone, [{ pid: 100, started: t(10) }, { pid: 200, started: t(11) }])), [200, 300, 301]);
   // A pinned process whose pid was reused is not the job's.
   assert.deepEqual(pids(kitJobTree([{ pid: 200, ppid: 9, started: t(99) }], [{ pid: 200, started: t(11) }])), []);
   assert.deepEqual(kitJobTree([], [{ pid: 100, started: t(10) }]), []);
@@ -334,4 +338,46 @@ test("a Windows job whose process list keeps failing while it waits for leftover
   assert.equal(readFileSync(join(directory, "exit"), "utf8").trim(), "6");
   assert.ok(existsSync(join(directory, "ended")));
   assert.match(readFileSync(join(directory, "log"), "utf8"), /^kit bg: gave up waiting for the job's leftover processes after 10 failed process lists$/m);
+});
+
+test("a Windows job's exit record keeps a Windows exit status above 255; Linux still refuses one", t => {
+  const directory = mkdtempSync(join(tmpdir(), "kit-bg-win-exit-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const saved = process.env.KIT_BG_PLATFORM;
+  t.after(() => { if (saved === undefined) delete process.env.KIT_BG_PLATFORM; else process.env.KIT_BG_PLATFORM = saved; });
+  const job = { directory, pid: 4321, started: "1" };
+  writeFileSync(join(directory, "exit"), "3221225477\n");
+  process.env.KIT_BG_PLATFORM = "win32";
+  assert.equal(kitJobExit(job), 3221225477);
+  writeFileSync(join(directory, "exit"), "4294967296\n");
+  assert.throws(() => kitJobExit(job), /invalid job exit status/);
+  if (process.platform !== "win32") {
+    delete process.env.KIT_BG_PLATFORM;
+    writeFileSync(join(directory, "exit"), "300\n");
+    assert.throws(() => kitJobExit(job), /invalid job exit status/);
+  }
+});
+
+test("a Windows job whose command process died alone is still waited for, and its time limit still ends the work", async t => {
+  const f = fixture(t);
+  const ready = join(f.root, "ready");
+  const never = join(f.root, "never");
+  ok(f.bg("win-lost", "--max", "4", "--", process.execPath, "-e", `require("fs").writeFileSync(${JSON.stringify(ready)}, String(process.pid)); ${holdUntil(never)}`));
+  await until(() => existsSync(ready));
+  const work = Number(readFileSync(ready, "utf8"));
+  t.after(() => { if (live(work)) process.kill(work, "SIGKILL"); });
+  const directory = f.directory("win-lost");
+  await until(() => existsSync(join(directory, "work")));
+  assert.equal(JSON.parse(readFileSync(join(directory, "work"), "utf8")).pid, work);
+  const command = JSON.parse(readFileSync(join(directory, "members"), "utf8")).members[0].pid;
+  process.kill(command, "SIGKILL");
+  await until(() => !live(command));
+  await delay(1500);
+  assert.ok(live(work));
+  assert.equal(existsSync(join(directory, "exit")), false, "the wrapper must not record an end while the work runs");
+  assert.match(f.bg("--list").stdout, /^win-lost\trunning\t/m);
+  await until(() => existsSync(join(directory, "exit")), 15000);
+  assert.ok(!live(work));
+  assert.equal(readFileSync(join(directory, "exit"), "utf8").trim(), "143");
+  assert.match(readFileSync(join(directory, "log"), "utf8"), /^kit bg: the time limit \(4s\) ended this job$/m);
 });

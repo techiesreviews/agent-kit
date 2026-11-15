@@ -7,7 +7,7 @@ import { Socket } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { bgLock } from "../bg-lock.mjs";
-import { kitJob, kitJobDirectory, kitJobExit, kitJobGroup, kitJobMembers, kitJobPlatform, kitJobProcess, kitJobRecord, kitJobRunning, kitJobSame, kitJobTree, kitResult, kitRoot, kitWinProcesses } from "../kit-lib.mjs";
+import { kitJob, kitJobDirectory, kitJobExit, kitJobGroup, kitJobMembers, kitJobPins, kitJobPlatform, kitJobProcess, kitJobRecord, kitJobRunning, kitJobSame, kitJobTree, kitResult, kitRoot, kitWinProcesses } from "../kit-lib.mjs";
 
 const usage = `Usage: kit bg <name> [--cwd DIR] [--max D] -- <command…>
        kit bg --list
@@ -64,8 +64,15 @@ async function wrapper(kind, directory, cwd, command) {
   const self = kitJobProcess(process.pid);
   const { pgid, started } = self;
   let child;
-  if (kind === "--command") child = spawn(command[0], command.slice(1), { cwd, stdio: "inherit", windowsHide: true });
-  else {
+  if (kind === "--command") {
+    child = spawn(command[0], command.slice(1), { cwd, stdio: "inherit", windowsHide: true });
+    // Windows: pin the work itself, so it stays the job's (waited for, stopped, timed) if this process ends first.
+    const work = windows && child.pid ? kitJobProcess(child.pid) : null;
+    if (work) {
+      writeFileSync(join(directory, "work.tmp"), JSON.stringify({ pid: child.pid, started: work.started }));
+      renameSync(join(directory, "work.tmp"), join(directory, "work"));
+    }
+  } else {
     if (windows) writeFileSync(join(directory, "identity"), JSON.stringify({ pid: process.pid, started }));
     else {
       writeFileSync(join(directory, "identity"), readFileSync(`/proc/${process.pid}/stat`, "utf8"));
@@ -78,23 +85,30 @@ async function wrapper(kind, directory, cwd, command) {
     });
   }
   const max = Number(kitJobRecord(directory, "max") ?? 0), since = Date.parse(kitJobRecord(directory, "started") ?? "");
-  // Windows has no scope: the wrapper's own timer is the time limit, and ends the job's tree as kit bg --stop does.
+  // On Windows the command process waits for its own tree; the wrapper for the job's, from all its pins (the work
+  // too, should the command process end first), leaving itself out.
+  const tree = () => kitJobTree(kitWinProcesses(), kind === "--wrapper" ? kitJobPins({ directory, pid: process.pid, started }) : [{ pid: process.pid, started }])
+    .filter(member => member.pid !== process.pid);
+  // Windows has no scope: the wrapper's own timer is the time limit, and ends the job's tree as kit bg --stop does
+  // (the top of the tree, below the wrapper), until that tree has ended.
   let limited = false, timer;
   const limit = () => {
     const left = since + max * 1000 - Date.now();
     // setTimeout holds at most about 24 days: a longer limit waits in steps.
     timer = left > 2e9 ? setTimeout(limit, 2e9) : setTimeout(() => {
       limited = true;
-      spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+      let members = [];
+      try { members = tree(); } catch { members = [{ pid: child.pid, ppid: process.pid }]; }
+      const pids = new Set(members.map(member => member.pid));
+      const tops = members.filter(member => !pids.has(member.ppid)).map(member => member.pid);
+      if (tops.length) spawnSync("taskkill", [...tops.flatMap(pid => ["/PID", String(pid)]), "/T", "/F"], { stdio: "ignore", windowsHide: true });
     }, Math.max(0, left));
   };
   if (windows && kind === "--wrapper" && max > 0 && Number.isFinite(since)) limit();
   const status = await childStatus(child);
-  clearTimeout(timer);
   // Recheck the original group after every await and before terminal records.
-  // The supervisor excludes the leader to avoid waiting on each other. On Windows each waits for its own tree.
-  const others = () => windows ? kitJobTree(kitWinProcesses(), [{ pid: process.pid, started }]).some(member => member.pid !== process.pid)
-    : kitJobGroup(pgid).some(member => member.pid !== pgid && member.pid !== process.pid);
+  // The supervisor excludes the leader to avoid waiting on each other.
+  const others = () => windows ? tree().length > 0 : kitJobGroup(pgid).some(member => member.pid !== pgid && member.pid !== process.pid);
   // On Windows a list that cannot be read (PowerShell failed) is looked at again; after ten failures in a row the
   // job's own status stands, and the log says why its leftover processes were not waited for.
   for (let failures = 0; ;) {
@@ -106,6 +120,7 @@ async function wrapper(kind, directory, cwd, command) {
     }
     await delay(poll);
   }
+  clearTimeout(timer);
   if (kind === "--command") { process.exitCode = status; return; }
   // A TERM once the job's own time limit has passed is the scope's RuntimeMaxSec: the log says so.
   if (limited || (terminated && max > 0 && existsSync(join(directory, "scope")) && Date.now() - since >= max * 1000 - 1000))
