@@ -153,30 +153,30 @@ export function existingPaths(paths) {
 }
 
 /**
- * The paths plus what their links point at, and the folder targets the lock must not hide. A link inside a key folder
- * (a dotfiles setup: ~/.config/gh/hosts.yml -> ~/dotfiles/gh/hosts.yml, or .config/.wrangler/config -> a dotfiles
- * folder) names a file or folder the folder's mask does not cover, so its target is locked too, and a linked folder is
- * searched the same way; a folder more than eight levels down or with more than 2000 entries is returned in `unsafe`.
- * A folder target that holds one of `keep` (HOME, the worktree's Git folder) or is a system folder cannot be hidden
- * without breaking the run: it is returned in `unsafe`. Folders in `skip` (the runtime folder, terminal and X sockets:
- * sockets, not keys) are not walked.
- * Links inside a target are not followed, so a loop of links ends.
+ * The paths plus what their links point at, and what the lock cannot hide. A link inside a key folder (a dotfiles setup:
+ * ~/.config/gh/hosts.yml -> ~/dotfiles/gh/hosts.yml, or .config/.wrangler/config -> a dotfiles folder) names a file or
+ * folder the folder's mask does not cover, so its target is locked too, and a linked folder is searched the same way.
+ * Each real folder is searched once, so a loop of links ends. A folder target that holds one of `keep` (HOME, the
+ * worktree, its Git folder) or lies in a system folder cannot be hidden without breaking the run: it is returned in
+ * `unsafe`. A search past `limit` entries in all stops and says so in `tooLarge` (the folder it stopped in), since a
+ * search cut short could miss a link. Folders in `skip` (the runtime folder, terminal and X sockets: sockets, not keys)
+ * are not searched.
  */
-export function linkTargets(paths, { skip = [], keep = [] } = {}) {
+export function linkTargets(paths, { skip = [], keep = [], limit = 200_000 } = {}) {
   const found = [...paths], unsafe = [];
-  // A search cut short could miss a link: past these limits the run is refused instead.
-  const depthLimit = 8, widthLimit = 2000;
-  const system = ["/", "/usr", "/etc", "/bin", "/sbin", "/lib", "/lib64", "/opt", "/var", "/home", "/tmp", "/run", "/proc", "/sys", "/dev", "/nix", "/snap"];
+  let tooLarge = null, count = 0;
+  const roots = ["/", "/var", "/home", "/tmp", "/run", "/proc", "/sys", "/dev", "/nix", "/snap"];
+  const system = ["/usr", "/etc", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/opt", "/boot", "/proc", "/sys", "/dev"];
   const seen = new Set();
-  const target = (link, depth) => {
+  const target = link => {
     let real;
     try { real = realpathSync(link); } catch { return; /* A dangling link points nowhere. */ }
     if (statSync(real).isFile()) found.push(real);
-    else if (system.includes(real) || keep.some(path => inside(path, real))) unsafe.push(`${link} -> ${real}`);
-    else { found.push(real); walk(real, depth + 1); }
+    else if (roots.includes(real) || system.some(folder => inside(real, folder)) || keep.some(path => inside(path, real))) unsafe.push(`${link} -> ${real}`);
+    else { found.push(real); walk(real); }
   };
-  // Each real folder is searched once, so links that point back end the search.
-  const walk = (folder, depth) => {
+  const walk = folder => {
+    if (tooLarge) return;
     let entries;
     try {
       const real = realpathSync(folder);
@@ -184,25 +184,23 @@ export function linkTargets(paths, { skip = [], keep = [] } = {}) {
       seen.add(real);
       entries = readdirSync(folder, { withFileTypes: true });
     } catch { return; }
-    if (depth > depthLimit || entries.length > widthLimit) {
-      unsafe.push(`${folder} (too ${depth > depthLimit ? "deep" : "large"} to search for links)`);
-      return;
-    }
+    count += entries.length;
+    if (count > limit) { tooLarge = folder; return; }
     for (const entry of entries) {
       const path = join(folder, entry.name);
-      if (entry.isSymbolicLink()) target(path, depth);
-      else if (entry.isDirectory()) walk(path, depth + 1);
+      if (entry.isSymbolicLink()) target(path);
+      else if (entry.isDirectory()) walk(path);
     }
   };
   for (const path of paths) {
     if (skip.some(folder => inside(path, folder))) continue;
     try {
       const info = lstatSync(path);
-      if (info.isSymbolicLink()) target(path, 0);
-      else if (info.isDirectory()) walk(path, 1);
+      if (info.isSymbolicLink()) target(path);
+      else if (info.isDirectory()) walk(path);
     } catch { /* Not there. */ }
   }
-  return { paths: [...new Set(found)], unsafe };
+  return { paths: [...new Set(found)], unsafe, tooLarge };
 }
 
 /**
@@ -352,13 +350,14 @@ export function keyGuardWarning(env = process.env) {
  *  - claudeGuard: for the API route, a script the wrapper runs claude through once it has read its key;
  *  - bwrap: true when bubblewrap stands between the runner and the CLI (it reports a killed CLI as exit 128 + signal).
  */
-export function keyGuard({ cli, kind, common, env = process.env, apiRoute = false, model = "" }) {
+export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRoute = false, model = "" }) {
   if (!keyGuardOn(env)) return { off: true, env: {}, wrap: (command, args) => [command, args], close() {} };
   const uid = typeof process.getuid === "function" ? process.getuid() : -1;
   const sockets = [env.XDG_RUNTIME_DIR || `/run/user/${uid}`, `/tmp/tmux-${uid}`, "/run/screen", "/tmp/.X11-unix"];
-  const { paths, unsafe } = linkTargets(lockedPaths(cli, env, { apiRoute }), { skip: sockets,
-    keep: [home(env), common].filter(Boolean).map(path => resolve(path)) });
-  if (unsafe.length) throw new Error(`cannot lock the key files for this ${kind}: a key folder links to a folder the lock cannot hide, or cannot be searched for links (${unsafe.join(", ")}); move the keys into a folder of their own, or set ASE_KEY_GUARD=off to run without the lock`);
+  const { paths, unsafe, tooLarge } = linkTargets(lockedPaths(cli, env, { apiRoute }), { skip: sockets,
+    keep: [home(env), worktree, common].filter(Boolean).map(path => resolve(path)) });
+  if (unsafe.length) throw new Error(`cannot lock the key files for this ${kind}: a key folder links to a folder the lock cannot hide (${unsafe.join(", ")}); move the keys into a folder of their own, or set ASE_KEY_GUARD=off to run without the lock`);
+  if (tooLarge) throw new Error(`cannot lock the key files for this ${kind}: the key folders hold more than 200000 entries, too many to search for links (it stopped in ${tooLarge}); clear old files there, or set ASE_KEY_GUARD=off to run without the lock`);
   const scrub = scrubbedEnv(cli, env, { apiRoute, model });
   // Codex's own sandbox shares the network too, so the display warning (when bubblewrap can check it) applies to it.
   if (cli === "codex") return { env: scrub, codex: codexProfile(kind, common, codexPaths(paths)), warning: keyGuardWarning(env), wrap: (command, args) => [command, args], close() {} };

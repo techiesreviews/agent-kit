@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -255,16 +255,24 @@ test("a link inside a key folder locks what it points at, through both paths; a 
   assert.ok(deeper.paths.includes(join(vault, "token")), deeper.paths.join(" "));
   const vaultRead = spawnSync("bwrap", [...bwrapArgs(deeper.paths), "--", "cat", join(vault, "token")], { encoding: "utf8" });
   assert.ok(!vaultRead.stdout.includes(dummy));
-  // A folder too wide to search is refused rather than half searched.
+  // A big folder with no links is searched whole and is fine; past the limit in all the search stops and says where.
   const wide = join(dir, "wide"); mkdirSync(wide);
-  for (let i = 0; i <= 2000; i++) writeFileSync(join(wide, `f${i}`), "");
-  assert.match(linkTargets([wide], { keep: [home] }).unsafe[0], /wide \(too large to search for links\)$/);
+  for (let i = 0; i < 2500; i++) mkdirSync(join(wide, `d${i}`));
+  assert.deepEqual(linkTargets([wide], { keep: [home] }), { paths: [wide], unsafe: [], tooLarge: null });
+  assert.equal(linkTargets([wide], { keep: [home], limit: 1000 }).tooLarge, wide);
+  // A link to the worktree, or into a system folder, cannot be hidden either.
+  const worktree = join(dir, "worktree"); mkdirSync(worktree);
+  symlinkSync(worktree, join(home, ".config/fleet/w"));
+  symlinkSync("/etc/ssl", join(home, ".config/fleet/ssl"));
+  assert.deepEqual(linkTargets([join(home, ".config/fleet")], { keep: [home, worktree] }).unsafe.sort(),
+    [`${join(home, ".config/fleet/ssl")} -> ${realpathSync("/etc/ssl")}`, `${join(home, ".config/fleet/w")} -> ${worktree}`].sort());
+  rmSync(join(home, ".config/fleet/w")); rmSync(join(home, ".config/fleet/ssl"));
   // A link to /usr or to a folder holding HOME cannot be hidden without breaking the run: refused, in words.
   symlinkSync("/usr", join(home, ".config/gh/usr"));
   symlinkSync(dir, join(home, ".config/gh/up"));
   assert.deepEqual(linkTargets([join(home, ".config/gh")], { keep: [home] }).unsafe.sort(), [`${join(home, ".config/gh/up")} -> ${dir}`, `${join(home, ".config/gh/usr")} -> /usr`].sort());
   assert.throws(() => keyGuard({ cli: "claude", kind: "build", common: join(dir, "repo/.git"), env: { HOME: home, PATH: process.env.PATH } }),
-    /cannot lock the key files for this build: a key folder links to a folder the lock cannot hide, or cannot be searched for links \(.*\); move the keys into a folder of their own/);
+    /cannot lock the key files for this build: a key folder links to a folder the lock cannot hide \(.*\); move the keys into a folder of their own/);
 });
 
 test("kit doctor's note says whether the lock is on, off or cannot start", t => {
