@@ -131,7 +131,8 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
   section("House rules", [
     "Paid skills never go in a repo: name a skill, never copy its text (`skill-guard.mjs` runs in `kit pr`).",
     `Second look: ${lookModels(order)}; ${reviewersRule}; GPT never for a docs-only change, and once per PR, except as the last resort after the free OpenCode model fails; \`second look: skipped (<reason>)\` when none can run.`,
-    `Once the review loop's budget is used (3 fix rounds, 5 for a risky change) only P0/P1 findings block; P2/P3 go to the lead, who may land with \`ASE_OWNER=<lead> scripts/agents/kit pr … --waive "<reason>"\`; say so in ${task || card ? "your report" : "the ticket's Done"}.`,
+    // kit fix, which saved the rounds kit pr counts, was cut (TOOLS-235): until a helper's own rounds are counted, the brief says so.
+    `\`kit pr\` does not count your own fix rounds yet: a blocker or should keeps blocking until it is fixed or the lead waives it by id. P3 findings and test gaps never block. Fix with the smallest change, or decline with evidence; once you have used 3 fix rounds (5 for a risky change), hand what is left to the lead with both sides, who may land with \`ASE_OWNER=<lead> scripts/agents/kit pr … --waive "<id>: <reason>"\`; say so in ${task || card ? "your report" : "the ticket's Done"}.`,
     "Anything a person sees: No toasts or explainers; show state on the control itself. Reuse the theme tokens and components.",
     "House rules beat skill advice: where a skill suggests something a house rule forbids (a toast, say), the house rule wins.",
     "Commits use the repo's or the machine's set git identity; never borrow another person's name.",

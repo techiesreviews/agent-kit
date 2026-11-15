@@ -167,9 +167,11 @@ undoes a newer rule.
 The start marker carries this rule's version too (v2, v3 …).
 
 Known gap since the factory cut (2026-11-15): `kit pr` counts only fix rounds saved before the cut, so a helper's own
-rounds are not counted yet; its blockers and shoulds keep blocking until fixed or waived by name. A diff with no change has nothing to review
-and a reviewer whose CLI crashes counts as unavailable (`kit review --help`); what the PR's review block says after a
-rebase, and how a lead answers a builder's rounds: the README's Review loop section.
+rounds are not counted yet; its blockers and shoulds keep blocking until fixed or waived by name.
+
+A diff with no change has nothing to review and a reviewer whose CLI crashes counts as unavailable (`kit review --help`);
+what the PR's review block says after a rebase, and how a lead answers a builder's rounds: the README's Review loop
+section.
 
 Known limits of the review loop today (waived follow-ups): "disputed after two replies" is not detected, so the lead
 tells Lex both sides by hand.

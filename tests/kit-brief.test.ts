@@ -62,7 +62,7 @@ test("brief: the build brief holds the owner, setup, pins, commands, every house
   const text = body(output.stdout);
   for (const expected of [
     /owner `ke-99`/,
-    // The branch kit next gives the same slice (kitSliceBranch): the owner, then the slug without its number.
+    // The build branch (kitSliceBranch): the owner, then the slug without its number.
     /git fetch -q origin && git switch -c build\/ke-99-panel origin\/dev/,
     /ASE_OWNER=ke-99 scripts\/agents\/worktree\.sh build\/ke-99-panel origin\/dev/,
     /builder `claude-opus-5-5`/,
@@ -75,8 +75,10 @@ test("brief: the build brief holds the owner, setup, pins, commands, every house
     /Paid skills never go in a repo/,
     /Second look: `gpt-6\.1-sol` \(GPT through Codex\), else `grok-4\.7`, else the free `opencode\/deepseek-v4\.1-flash-free`/,
     /GPT may review since 2026-11-09; Claude Opus stays the main reviewer/,
-    /Once the review loop's budget is used \(3 fix rounds, 5 for a risky change\) only P0\/P1 findings block/,
-    /--waive "<reason>"/,
+    // kit pr does not count a helper's own fix rounds since kit fix was cut (TOOLS-235): the brief says so, never "only P0/P1 block".
+    /`kit pr` does not count your own fix rounds yet: a blocker or should keeps blocking until it is fixed or the lead waives it by id/,
+    /once you have used 3 fix rounds \(5 for a risky change\), hand what is left to the lead with both sides/,
+    /--waive "<id>: <reason>"/,
     /No toasts or explainers/,
     /theme tokens/,
     /House rules beat skill advice/,
@@ -108,6 +110,7 @@ test("brief: the build brief holds the owner, setup, pins, commands, every house
     /lands with `scripts\/agents\/kit pr … --not-visible "<reason>"`/,
     /In a project with no feature list \(`docs\/agents\/features\.md`\) `kit ux` has nothing to try: say so in the report\./,
   ]) assert.match(text, expected);
+  assert.doesNotMatch(text, /only P0\/P1 findings block/, "the brief promises no budget kit pr does not apply");
   // The project has no shots command of its own, so the brief names none.
   assert.doesNotMatch(text, /kit shots/);
   // TOOLS-235: the brief no longer points at kit slice; the builder builds and lands with kit review and kit pr.
