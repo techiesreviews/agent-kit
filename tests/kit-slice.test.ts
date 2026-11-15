@@ -210,6 +210,8 @@ if (phase === "review") {
   const stale = join(process.env.KIT_MAIN_ROOT, ".scratch/pr-ux-stale");
   if (process.env.PR_UX_STALE && !existsSync(stale)) {
     writeFileSync(stale, "1");
+    // PR_UX_STALE=moved: as kit pr's rebase does, HEAD moves before the refusal.
+    if (process.env.PR_UX_STALE === "moved") { writeFileSync("rebased.txt", "from the base\\n"); git("add", "rebased.txt"); git("commit", "-m", "Rebased onto the base"); }
     console.log("RESULT: fail ux: the visible change is not the one kit ux checked (file.txt changed since it ran at 0123456); run \`scripts/agents/kit ux\` again");
     process.exit(1);
   }
@@ -1667,6 +1669,13 @@ test("a kit pr that refuses an out-of-date kit ux result sends the next run thro
   const again = f.run([], { FAKE_UX: "none", PR_UX_STALE: "1" });
   assert.equal(again.status, 0, again.stdout + again.stderr);
   assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "ux", "pr", "ux", "pr"]);
+  // The real case: kit pr's rebase moved HEAD before it refused. The next run checks the UX on the new HEAD, then lands.
+  const moved = fixture(t, { project: "kit-slice", branches: { land: "dev" }, paths: { visible: ["^file\\.txt$"] } });
+  assert.equal(moved.run([], { FAKE_UX: "none", PR_UX_STALE: "moved" }).status, 1);
+  const landed = moved.run([], { FAKE_UX: "none", PR_UX_STALE: "moved" });
+  assert.equal(landed.status, 0, landed.stdout + landed.stderr);
+  assert.deepEqual(moved.calls().map(call => call.phase).slice(-2), ["ux", "pr"]);
+  assert.equal(moved.calls().filter(call => call.phase === "ux").length, 2);
 });
 
 test("a visible second-look fix gets the UX gate again even when the fresh look is skipped", t => {

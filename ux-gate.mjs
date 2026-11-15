@@ -83,15 +83,18 @@ export function coverageHash(root, base) {
 /**
  * Saves kit ux's result for a branch: { branch, head, files, list, ok, summary, partial, bundle }, where `list` is the
  * hash of the features that covered the change (coverageHash), `nothing: true` when none did, so nothing was tried, and
- * `unfinished: true` when the run failed without calling any feature broken (the reviewer did not finish, say). The newest one counts, except that a partial run leaves a whole run's result for the same change in place:
- * that result is then returned, and null when the new one was saved.
+ * `unfinished: true` when the run failed only because its reviewer did not finish. The newest one counts, except that a
+ * half run (partial or unfinished) leaves a verdict for the same change in place: that result is then returned, and
+ * null when the new one was saved.
  */
 export function saveUxResult(mainRoot, record) {
   const file = resultFile(mainRoot, record.branch), temporary = `${file}.${process.pid}.tmp`;
-  // A run without the review, or of named features only, says nothing about what a whole run found: the whole run's
-  // result for the very same change stays, pass or fail, so a partial run never wipes a broken verdict.
-  const before = record.partial ? readUxResult(mainRoot, record.branch) : null;
-  if (before && !before.partial && (before.list ?? null) === (record.list ?? null) && sameFiles(before.files, record.files)) return before;
+  // Only a whole run that finishes speaks for a change. A run without the review, of named features only, or one that
+  // did not finish leaves in place, for the very same change, a whole finished result (pass or fail) and any result
+  // that did not pass on what it tried: so no later half run wipes a verdict.
+  const before = record.partial || record.unfinished ? readUxResult(mainRoot, record.branch) : null;
+  const verdict = before && !before.unfinished && (!before.partial || before.ok !== true);
+  if (verdict && (before.list ?? null) === (record.list ?? null) && sameFiles(before.files, record.files)) return before;
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(temporary, `${JSON.stringify({ ...record, at: new Date().toISOString() }, null, 2)}\n`);
   renameSync(temporary, file);
@@ -124,8 +127,9 @@ export function uxGuard({ branch, files, record, notVisible, featureList }) {
   // for it after kit ux ran was never tried).
   const file = mine && [...new Set([...paths, ...Object.keys(mine.files)])].sort().find(path => files[path] !== mine.files[path]);
   const moved = file ? `${file} changed` : mine && featureList && (mine.list ?? null) !== featureList ? `the features in ${uxFeatureList} that cover the change are not the ones kit ux tried at ${at}` : null;
-  // kit ux tried exactly this change and called a feature broken, in a whole run or a partial one: a person does see
-  // it, so no reason makes it "not visible". A run that did not finish (the reviewer was down, say) is no such verdict.
+  // kit ux tried exactly this change and it did not pass (a feature called broken, a screen that failed), in a whole
+  // run or a partial one: a person does see it, so no reason makes it "not visible". A run whose reviewer did not
+  // finish is no such verdict.
   const failed = mine && !moved && mine.ok !== true;
   if (notVisible && failed && !mine.unfinished) return { ok: false, line: `UX check: failed (kit ux at ${at}: ${mine.summary})`,
     problem: "kit ux tried this change and it did not pass, so --not-visible does not fit it; fix what kit ux found and run `scripts/agents/kit ux` again" };
@@ -138,7 +142,7 @@ export function uxGuard({ branch, files, record, notVisible, featureList }) {
   if (moved) return { ok: false, line: `UX check: out of date; ${moved}`, problem: `${moved}; run \`scripts/agents/kit ux\` again` };
   if (mine.partial) return { ok: false, line: `UX check: partial; kit ux ran with ${mine.partial}`,
     problem: `kit ux ran with ${mine.partial}, so it did not check the whole change; run \`scripts/agents/kit ux\` without it` };
-  if (failed) return { ok: false, line: `UX check: failed (kit ux at ${at}: ${mine.summary})`,
+  if (failed) return { ok: false, line: `UX check: ${mine.unfinished ? "did not finish" : "failed"} (kit ux at ${at}: ${mine.summary})`,
     problem: mine.unfinished ? "kit ux did not finish for this change; run `scripts/agents/kit ux` again" : "kit ux did not pass for this change; fix what it found and run `scripts/agents/kit ux` again" };
   // No feature in the list covers the changed files, so kit ux tried and reviewed nothing: it lands, as it did in kit
   // slice, but the PR never calls that "ok".
