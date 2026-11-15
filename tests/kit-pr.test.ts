@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { checkSteps, classify, featureListGuard, focusedUnitFiles, parseChanges, visiblePath } from "../pr-tier.mjs";
-import { saveUxResult, uxGuard, visibleFiles } from "../ux-gate.mjs";
+import { featureListHash, saveUxResult, uxGuard, visibleFiles } from "../ux-gate.mjs";
 import { sameReviewPatch } from "../review-findings.mjs";
 import { forEachAwait } from "./support/await-race.ts";
 import { kitEnv } from "./support/kit-env.ts";
@@ -1873,8 +1873,8 @@ test("a visible change proceeds with a features.md change, a Done line or a lead
 
 test("the UX guard: a visible change needs a kit ux result for the files as they are now, or a reason it is not visible", () => {
   const files = { "src/ui/menu.ts": "aaa", "src/styles/app.css": "bbb" };
-  const record = { branch: "feature/x", head: "0123456789abcdef", files, ok: true, summary: "2 features tried, 0 scripted findings, 2 fine, 0 looks off, 0 broken", partial: null };
-  const guard = (extra: Record<string, unknown> = {}) => uxGuard({ branch: "feature/x", files, record, featureList: true, ...extra });
+  const record = { branch: "feature/x", head: "0123456789abcdef", files, list: "fff", ok: true, summary: "2 features tried, 0 scripted findings, 2 fine, 0 looks off, 0 broken", partial: null };
+  const guard = (extra: Record<string, unknown> = {}) => uxGuard({ branch: "feature/x", files, record, featureList: "fff", ...extra });
   assert.deepEqual(guard(), { ok: true, line: "UX check: ok (kit ux at 0123456: 2 features tried, 0 scripted findings, 2 fine, 0 looks off, 0 broken)" });
   // Nothing a person sees changed: no line, whatever else is given.
   assert.deepEqual(guard({ files: {}, record: null, notVisible: "reason" }), { ok: true });
@@ -1890,6 +1890,12 @@ test("the UX guard: a visible change needs a kit ux result for the files as they
     const stale = guard({ files: now });
     assert.deepEqual([stale.ok, stale.line], [false, `UX check: out of date; ${path} changed since kit ux ran at 0123456`]);
     assert.match(stale.problem, /^the visible change is not the one kit ux checked \(.* changed since it ran at 0123456\); run `scripts\/agents\/kit ux` again$/);
+  }
+  // The feature list changed since kit ux read it (a feature added for the new screen, say): out of date too, also for
+  // a result that had nothing to try, and for one saved before the list was kept.
+  for (const old of [record, { ...record, summary: "no listed feature touched", nothing: true }, { ...record, list: undefined }]) {
+    const relisted = guard({ record: old, featureList: "eee" });
+    assert.deepEqual([relisted.ok, relisted.line], [false, "UX check: out of date; docs/agents/features.md changed since kit ux ran at 0123456"]);
   }
   // A result that did not pass, or that left the review or some features out, is no pass.
   const failed = guard({ record: { ...record, ok: false, summary: "1 features tried, 0 scripted findings, 0 fine, 0 looks off, 1 broken, broken: F-media-02" } });
@@ -1909,18 +1915,21 @@ test("the UX guard: a visible change needs a kit ux result for the files as they
   const seen = guard({ record: { ...record, ok: false, summary: "1 broken, broken: F-media-02" }, notVisible: "token rename only" });
   assert.deepEqual([seen.ok, seen.line], [false, "UX check: failed (kit ux at 0123456: 1 broken, broken: F-media-02)"]);
   assert.equal(seen.problem, "kit ux tried this change and it did not pass, so --not-visible does not fit it; fix what kit ux found and run `scripts/agents/kit ux` again");
+  // A partial run that failed tried it too.
+  const part = guard({ record: { ...record, ok: false, partial: "--no-review", summary: "1 broken, broken: F-media-02" }, notVisible: "token rename only" });
+  assert.deepEqual([part.ok, part.problem], [false, seen.problem]);
   // No listed feature covers the change, so kit ux tried nothing: it lands, and the line never says ok.
   assert.deepEqual(guard({ record: { ...record, summary: "no listed feature touched", nothing: true } }),
     { ok: true, line: "UX check: nothing to try (kit ux at 0123456: no feature in docs/agents/features.md covers src/styles/app.css)" });
   // A project with no feature list has nothing kit ux can try: said, never refused.
-  assert.deepEqual(guard({ record: null, featureList: false }), { ok: true, line: "UX check: skipped (no docs/agents/features.md, so kit ux has nothing to try); src/styles/app.css is visible" });
+  assert.deepEqual(guard({ record: null, featureList: null }), { ok: true, line: "UX check: skipped (no docs/agents/features.md, so kit ux has nothing to try); src/styles/app.css is visible" });
 });
 
 const visibleChange = { "src/styles/app.css": "a { color: var(--ink); }\n", "docs/agents/features.md": "# Feature list\n" };
 /** Saves a kit ux result for the fixture's branch as kit ux would, for the visible files as they are now. */
 function uxResult(f: ReturnType<typeof fixture>, fields: Record<string, unknown> = {}) {
   const settings = JSON.parse(readFileSync(join(f.root, "scripts/agents/kit.json"), "utf8"));
-  saveUxResult(f.main, { branch: "feature/kit-pr", head: f.git("rev-parse", "HEAD"), files: visibleFiles(f.root, "origin/dev", settings), ok: true,
+  saveUxResult(f.main, { branch: "feature/kit-pr", head: f.git("rev-parse", "HEAD"), files: visibleFiles(f.root, "origin/dev", settings), list: featureListHash(f.root), ok: true,
     summary: "1 features tried, 0 scripted findings, 1 fine, 0 looks off, 0 broken", partial: null, ...fields });
 }
 
@@ -1957,6 +1966,16 @@ test("a visible change lands with a fresh kit ux result or a reason it is not vi
   // A commit that changes nothing a person sees keeps the result fresh.
   checked.commit("Notes", "docs/notes.md", "notes\n");
   assert.equal(checked.run(["--no-merge"]).status, 0);
+  // A result with nothing to try goes out of date once the feature list gains a feature that covers the change.
+  uxResult(checked, { summary: "no listed feature touched", nothing: true });
+  const untried = checked.run(["--no-merge"]);
+  assert.equal(untried.status, 0, untried.stdout + untried.stderr);
+  assert.match(untried.stdout, /^UX check: nothing to try \(kit ux at [0-9a-f]{7}: no feature in docs\/agents\/features\.md covers src\/styles\/app\.css\)$/m);
+  checked.commit("List the sheet", "docs/agents/features.md", "# Feature list\n\n### F-style-01 Sheet\n- Files: `src/styles/app.css`\n");
+  const listed = checked.run(["--no-merge"]);
+  assert.equal(listed.status, 1);
+  assert.match(listed.stdout, /^UX check: out of date; docs\/agents\/features\.md changed since kit ux ran at [0-9a-f]{7}$/m);
+  assert.match(listed.stdout, /RESULT: fail ux: the visible change is not the one kit ux checked \(docs\/agents\/features\.md changed since it ran at [0-9a-f]{7}\); run `scripts\/agents\/kit ux` again$/m);
   // Marked not visible: any owner may say so, with a reason; without one the option is refused.
   const marked = fixture(t, visibleChange);
   const reasoned = marked.run(["--no-merge", "--not-visible", "token rename only"]);

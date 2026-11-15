@@ -26,9 +26,16 @@ export function visibleFiles(root, base, settings) {
   return Object.fromEntries(paths.map(path => [path, kept.includes(path) ? hashes[kept.indexOf(path)] : "gone"]));
 }
 
+/** The hash of the feature list kit ux reads, as it is now in the checkout; null when the project has none. */
+export function featureListHash(root) {
+  if (!statSync(join(root, uxFeatureList), { throwIfNoEntry: false })?.isFile()) return null;
+  return execFileSync("git", ["-C", root, "hash-object", "--", uxFeatureList], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+}
+
 /**
- * Saves kit ux's result for a branch: { branch, head, files, ok, summary, partial, bundle }, and `nothing: true` when no
- * listed feature covered the change, so nothing was tried. The newest one counts.
+ * Saves kit ux's result for a branch: { branch, head, files, list, ok, summary, partial, bundle }, where `list` is the
+ * feature list's hash as it was read, and `nothing: true` when no listed feature covered the change, so nothing was
+ * tried. The newest one counts.
  */
 export function saveUxResult(mainRoot, record) {
   const file = resultFile(mainRoot, record.branch), temporary = `${file}.${process.pid}.tmp`;
@@ -49,16 +56,20 @@ export function readUxResult(mainRoot, branch) {
  * The UX guard for a PR: { ok, line, problem } where `line` is the PR body note (none when nothing visible changed)
  * and `problem` says what to do when it is refused. `files` is the PR's visible change (visibleFiles), `record` the
  * result kit ux saved for the branch, `notVisible` the reason given with `kit pr --not-visible`, and `featureList`
- * whether the project has the feature list kit ux reads.
+ * the hash of the feature list kit ux reads as it is now (featureListHash), null when the project has none.
  */
 export function uxGuard({ branch, files, record, notVisible, featureList }) {
   const paths = Object.keys(files).sort();
   if (!paths.length) return { ok: true };
   const mine = record && record.branch === branch ? record : null;
   const at = String(mine?.head ?? "").slice(0, 7) || "an unknown commit";
-  const moved = mine && [...new Set([...paths, ...Object.keys(mine.files)])].sort().find(path => files[path] !== mine.files[path]);
-  // kit ux tried exactly this change and it did not pass: a person does see it, so no reason makes it "not visible".
-  const failed = mine && !moved && !mine.partial && mine.ok !== true;
+  // What kit ux read is what lands: the visible files, and the feature list that says which features cover them (a
+  // feature added to the list after kit ux ran was never tried).
+  const moved = mine && ([...new Set([...paths, ...Object.keys(mine.files)])].sort().find(path => files[path] !== mine.files[path])
+    ?? (featureList && (mine.list ?? null) !== featureList ? uxFeatureList : undefined));
+  // kit ux tried exactly this change and it did not pass, in a whole run or a partial one: a person does see it, so no
+  // reason makes it "not visible".
+  const failed = mine && !moved && mine.ok !== true;
   if (notVisible && failed) return { ok: false, line: `UX check: failed (kit ux at ${at}: ${mine.summary})`,
     problem: "kit ux tried this change and it did not pass, so --not-visible does not fit it; fix what kit ux found and run `scripts/agents/kit ux` again" };
   if (notVisible) return { ok: true, line: `UX check: not visible (${notVisible.replace(/\s*[\r\n]+\s*/g, " ").trim()}); ${paths[0]} is a visible path` };
