@@ -1,6 +1,6 @@
 # Agent Kit
 
-The shared kitchen every one of Lex's projects runs: one set of agent commands (`kit doctor`, `kit slice`,
+The shared kitchen every one of Lex's projects runs: one set of agent commands (`kit doctor`, `kit brief`,
 `kit review`, `kit pr`, …), the guard hooks for Claude and Codex, and the kitchen rulebook. Each project keeps
 only a small launcher and its own settings; the kit itself lives here, once.
 
@@ -41,12 +41,12 @@ only a small launcher and its own settings; the kit itself lives here, once.
   branch too: `"branches": { "land": "main", "release": "main" }`.
 - Only agents' shells are guarded: the hook runs in Claude and Codex sessions, so a person's own terminal, CI and the
   Native Site Editor's saves (through the GitHub API) are untouched. The kit's own pushes run inside kit commands
-  (`kit next`'s claim commit to the landing branch and `kit pr`'s PR branch, from Node; `kit pr`'s merge goes through
+  (`kit pr`'s PR branch, from Node; `kit pr`'s merge goes through
   `gh`), which the hook never sees. That is the allowance for the kit's steps: a step that must push a guarded
   branch belongs in a kit command, never in a raw `git push`.
 - What changes for a lead: docs and ticket commits pushed straight to the landing branch keep working where it is not
   the release branch (the Native Site Editor's `dev`). Where the two are one branch (this repo, a live site), they
-  land through `kit pr` (docs tier), or `kit next --start`, which claims and starts the slice itself.
+  land through `kit pr` (docs tier).
 
 ## Review loop
 
@@ -61,7 +61,25 @@ The PR's review block says "Verdict: pending" while a new head (after a "behind"
 
 After a merge from the base, the "changes since the last review" file lists only the branch's own commits (merges left out, so a conflict fixed inside a merge commit is not in it). A lead who lands a builder's branch answers the builder's rounds, so the PR line counts them and names every model the rounds used. A ticket's risk comes from its title and its whole text (an Orbit card's description and Done when line too) and the files it names, never from the follow-ups `kit pr` adds later.
 
+The fix rounds are `kit review`'s own: a review answering round N follows N − 1 fix rounds, which `kit pr` counts for the budget (a branch whose rounds the cut `kit fix` saved under `.scratch/kit-fix` keeps that count).
+
 Known limits (waived follow-ups): a review that leaves an id out is rejected as incomplete: run `kit review` again by hand. The fix brief points at the newest complete review.
+
+The OpenCode second look reads only: it may read, search and list files, nothing else. The kit works with OpenCode 1 and 2 (before each OpenCode review it reads `opencode run --help` to tell them apart, usually well under a second, about 30 seconds at most if the CLI hangs; it stops in plain words when the help names neither). OpenCode 2 has no switch to turn plugins off, so there the kit turns the branch's own OpenCode settings off and gives each review an empty settings folder of its own, and drops a settings file or folder named in `OPENCODE_CONFIG` or `OPENCODE_CONFIG_DIR`: no plugin from the branch under review or from `~/.config/opencode` loads, and the machine's OpenCode settings (default model, global instructions) do not apply to the review either.
+
+## Browser runs
+
+`kit pr`'s browser step runs one at a time per machine (it waits, saying `waiting for <owner>'s full browser run`). A
+failed spec file the change did not touch is rerun once alone: passing alone, it lands as `flaky under load: <file>` on
+the `RESULT:` line and in `flaky.jsonl` in the kit's state folder; a file the change touched must pass in the full run,
+and a run that did not report every file it ran is never forgiven. The settings' `timing` spec files run after the
+rest, each alone; with a `timing` list the selection is listed first, and a change that selects nothing takes no lock.
+While a spec file runs alone (timing file or rerun) no new kit job starts (`waiting for <owner>'s lone browser run`),
+except `wait`, `version`, `rulebook` and help; jobs already running carry on. The locks need `flock` (`kit doctor` says
+when it is missing; the runs then go unlocked). What `kit pr` reads from the project's specs command: `--list` prints
+one `<file> [<groups>] …` line per selected file, or ends `RESULT: ok specs none affected` (or `0 selected`); a run
+prints `✓ <file> (…)` or `✗ <file>: <test> — <error>` per file and ends `RESULT: fail specs N of M failed` when any
+failed. The weekly `kit sweep` bundle names a file flaky 3 or more times in 7 days.
 
 ## Messages to Lex
 
@@ -77,7 +95,7 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
 ## Spending API credit on the kit's own Claude calls (opt-in, off by default)
 
 - **Turn on:** put your API key alone on one line in a file, run `chmod 600` on it, and start the kit with `KIT_API_KEY_FILE=<that file>` in the environment (optional: `KIT_API_CONFIG_DIR`, default `~/.claude-api`).
-- **What it covers:** the kit's headless Claude calls (`kit review`, `kit fix`, `kit slice` builders, `kit ux`). Interactive sessions are not touched; Anthropic's credit does not cover them.
+- **What it covers:** the kit's headless Claude calls (`kit review`, `kit ux`). Interactive sessions are not touched; Anthropic's credit does not cover them.
 - **Jobs systemd starts for you** do not see your shell's variables: run `systemctl --user import-environment KIT_API_KEY_FILE KIT_API_CONFIG_DIR` first (leave out the second if you use the default), or export them in the shell that starts the kit; to turn the route off for those jobs, run `systemctl --user unset-environment KIT_API_KEY_FILE KIT_API_CONFIG_DIR` as well.
 - **Turn off:** unset `KIT_API_KEY_FILE`. The kit then uses the subscription as before.
 - **Safety:** only the child process that runs `claude` passes the key on (the kit itself reads the key file's first line just to see it is not blank, and never keeps, prints or logs it, or puts it on a command line), and Claude Code is told to keep it out of everything else it starts (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`): the shell commands a builder runs, hooks from settings or plugins, nested kit calls. The flag is on for every call except one kind: a call with a tool list of plain readers only (`Read`, `Grep`, `Glob`) that starts no hooks (`--bare`, or `--setting-sources` with an empty value) and no other program (`--strict-mcp-config` with no MCP servers, no `--plugin-dir`, `--plugin-url`, `--settings` or `--agents`), such as a review, because the flag makes claude leave empty `.env`, `.npmrc`, `yarn.lock` files in the folder it runs in. A call with no tools, an empty list, a list over several lines with anything else in it, or a `--tools`, `--bare`, `--setting-sources`, `--strict-mcp-config` or `--mcp-config` that is not an option of the call (the value of another option, or after `--`) keeps the flag on. A machine with managed (admin-installed) settings (a `managed-settings.json`, a `managed-mcp.json`, or a filled `managed-settings.d/` folder, in `/etc/claude-code`, or in `/Library/Application Support/ClaudeCode` on macOS) keeps the flag on for every call, because those settings can hold hooks that neither `--bare` nor an empty `--setting-sources` is known to switch off, and MCP servers that `--strict-mcp-config` is not known to keep out. The key file and the config folder must be absolute paths, the key file with mode 600; otherwise the call stops with a plain message. What this does not stop: a process of yours with the same user name can still read the Claude process's own environment, since Claude has to hold the key to use it.
@@ -85,7 +103,7 @@ warns, `kit init` (in the project) or `kit init --all` (every listed project, ea
 - **Known limits (follow-ups):** the spend total misses a run whose runner was killed outright (no line is written); `kit doctor` shows the total only while the route is on and healthy; a config folder that exists but cannot be written gets the CLI's own error, not a plain refusal; a Claude started from a builder's shell on the route cannot sign in to the subscription (its `CLAUDE_CONFIG_DIR` still points at the API folder).
 - **Check it:** `kit doctor` says whether the route is on or off, the key file's mode, and the total spent; every run adds a line (time, command, model, tokens, cost) to `~/.local/state/agent-kit/api-spend.log`.
 
-### Cut and merged commands (TOOLS-235, release 1)
+### Cut and merged commands (TOOLS-235, releases 1 and 2)
 
 Lex approved the kit trim on 2026-11-14. Its first release cut three commands and merged three, so `kit --help` lists
 22 shared commands instead of 28. Each old name still answers, with one plain line saying where its job went and a
@@ -102,10 +120,20 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   prints it.
 - The UX confidence ladder was dropped from the rulebook, but `kit score --html` still draws its section until the build
   page itself is decided after 30 Nov (the trim plan); it no longer moves, since nothing writes feedback logs now.
+- Release 2 (2026-11-15) cut the old factory, so `kit --help` lists 18 shared commands:
+  - `kit slice`: a build runs as a T3 helper thread (`delegate_task` with `isolation: "worktree"`) with
+    `kit brief <KEY>` as its task; the helper builds, proves each Done when item and lands with `kit pr`.
+  - `kit fix`: the helper fixes its own review findings in its own thread and runs `kit pr` again;
+    `kit brief <KEY> --stage fix` writes a new helper's brief.
+  - `kit next`: the Board drive schedule picks the next cards; `kit ticket list` shows them. A ticket in a `group:`
+    is briefed one at a time, or the whole group as one `kit brief --task`.
+  - `kit heartbeat`: the Board drive schedule (a T3 `schedule_task` every 2 hours) checks the helper threads.
+  - `kit pr` on a merge queue leaves the card open and says to close it once the PR lands, with its follow-ups on the
+    card at once (no slice waits for the queue any more).
 - `kit version` stays as an inside helper: `kit doctor` shows the kit's commit and age, and the doctor's kit home check
   still runs it. A file in `kit.d/` whose header says `# kit-inside: <summary>` runs by name and stays out of the list.
 
-## The factory: generated briefs, long jobs that wait
+## Generated briefs, long jobs that wait
 
 - `kit brief <ticket> [--stage build|review|second-look|fix] [--note "<text>"]` prints the whole brief for a
   delegated child from the ticket, the project's settings and the rules: owner, worktree setup, pins, commands and
@@ -117,7 +145,7 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   one that keeps ticket files the kit neither claims nor closes the card, so the build brief has the builder ask the lead
   to close it after the merge.
   A job with no ticket file or card uses `kit brief --task "<title>" --owner <id> --note "<the task>"`.
-- `kit go <job> -- <command>` starts a long job (a slice, a long `kit pr`, specs) with `kit bg`, in its own user
+- `kit go <job> -- <command>` starts a long job (a long `kit pr`, specs, a build) with `kit bg`, in its own user
   systemd scope, and waits in the foreground for at most 9 minutes per call. While the job runs it ends with
   `RUNNING: <job> (…). Run again: scripts/agents/kit go <job>` and exit 75; once the job ends it prints the job's
   RESULT line and exits with the job's code (1 for a job's own 75, or for a job whose RESULT line says fail
@@ -175,17 +203,10 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   clear-next-lex, trash, setup. `--assignee NAME|ID|none` on create and update assigns by member name; `next-lex` also assigns the member called Lex and `clear-next-lex` takes only him off. It reaches every board the token covers, from any project folder or with `--project`.
 - A project's `scripts/agents/kit.json` says which store it uses: `"tickets": "files"` (the default) or `"orbit"`, and
   `"orbit": { "project": "TOOLS", "parent": "TOOLS-10" }` names its board and the card new tickets go under (parent is
-  optional). Stage 2: with `"orbit"`, `kit next`, `kit slice`, `kit pr` and `kit init --issues` read and
+  optional). Stage 2: with `"orbit"`, `kit brief`, `kit pr` and `kit init --issues` read and
   write cards through `ticket-store.mjs` and `ticket-cards.mjs` instead of ticket files. Stage 3 moves a project's
   ticket files to cards (below); removing the file store from the kit comes last, once every project has moved.
-- On Orbit: `kit next` lists the Todo cards (under the parent card when one is set) whose "Blocked by:" cards are Done
-  as `next:`, so are In Progress cards given back by `clear-next-lex` (no claim, assignee or Next step (Lex)); the rest are
-  `waits:` (other In Progress, Backlog, Next step (Lex), blocked), and `wave N:` lines for the build
-  waves that follow. A claim (`kit next --start`, `kit slice --ticket <KEY>`) is one write: status In Progress and a
-  "Claimed by: <owner>" line; a card someone else holds is refused, and a start that fails gives the claim back. The
-  slice copies the card once to `.scratch/kit-tickets/<KEY>.md`, the brief its build, review, fix and UX steps read (a
-  card needs "## Files" and "## Done when", or the card standard's `Done when:` line in place of that heading); a rerun
-  resumes from it. When the PR lands, `kit pr` sets the card to Done
+- On Orbit: a lead's `kit brief <KEY>` claims the card (below); when the PR lands, `kit pr` sets the card to Done
   and adds a dated comment naming the PR and merge SHA; when that write fails the merge still counts and the RESULT line says so.
   `kit init --issues` makes a card per open GitHub Issue in
   the project and parent (its "GitHub Issue:" line holds the link and number), then closes each Issue with a comment
@@ -217,7 +238,7 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
 - How a project moves (`ticket-import.mjs`; a lead, `ORBIT_ROLE=lead`, in the project, from a fresh branch:
   `git switch -c tickets-to-orbit origin/<land>`): `kit ticket migrate [--project KEY] [--parent KEY-n] [--dry-run]`
   runs every step in order and stops at the first problem. (1) It refuses while a build runs (an open AFK ticket with an
-  assignee, kit next's claim, or an imported card In Progress); run it again once the build lands. (2) `kit ticket import` makes one card per ticket file
+  assignee, a claimed card, or an imported card In Progress); run it again once the build lands. (2) `kit ticket import` makes one card per ticket file
   (every map's `tickets/` and `build/tickets/`, as `tickets.mjs` reads them) under the parent card (a board other than
   kit.json's gets none unless `--parent` names one, and migrate then drops kit.json's old parent; a typed `migrate --parent KEY` also moves cards an earlier import made under that parent, whatever parent they had, and the parent card itself stays where it is): the first line
   "Imported from: <path> (project <name>)" names the file, so a rerun finds the card and makes no second one; then the
@@ -233,10 +254,10 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   `import --dry-run` and `migrate --dry-run` print every card, comment and change and send nothing.
 - `kit brief <KEY>` on an Orbit project builds the brief from the card: its title, text and comments, in place of a
   ticket file's. A build brief run by a lead (`ORBIT_ROLE=lead`) claims a card nobody holds for its owner (In Progress and
-  "Claimed by:", as `kit slice` does), so `kit next` never starts a second builder on it; a Todo or Backlog card that is
+  "Claimed by:"), so no second helper starts on it; a Todo or Backlog card that is
   blocked or waits for Lex is refused, and any other card is left as it is, with a warning that says why (someone else
   holds it, it waits for Lex, it is Done or in another status; on a board with no Todo status, every status not yet
-  started counts as Todo, as it does for `kit next`).
+  started counts as Todo).
 - The card standard (`docs/orbit-card-standard.md`: one short card, history in comments, parts as sub-tasks, questions in a
   desk thread) is kept by the tickets tool, not by guesswork: `kit ticket note KEY text` posts a dated comment (the
   description is not touched); `create` and `update` print a warning, and still exit 0, when a new description is over 12
@@ -247,12 +268,10 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   `kit ticket tidy KEY --dir FOLDER [--dry-run]` posts `comments.txt` (split by a line with only `-----`), sets
   `description.txt` and creates each sub-task of `subtasks.json` (`[{title, description, assignee}]`, assignee `Lex` by
   member name), skipping what is already there, so a run again after a failure finishes the rest and never doubles anything.
-  A card that waited for Lex and was given back by `clear-next-lex` stays In Progress; `kit next` hands it out again and a
-  slice may claim it when it has no claim line, no assignee and no `Next step (Lex):`. A claim never takes an unassigned card in
+  A card that waited for Lex and was given back by `clear-next-lex` stays In Progress; a build brief may claim it again when it has no claim line, no assignee and no `Next step (Lex):`. A claim never takes an unassigned card in
   another started status (In Review, say). `kit ticket check` leaves sub-tasks with no description alone, except a bare card under the project's own parent card (with `--all` only that project's parent is known), and does not count
   a `Next step (fleet):` line toward the 12 lines.
-  Projects that keep ticket files (`"tickets": "files"`) keep how `kit next`, `kit slice` and `kit pr` work
-  today; `kit ticket` itself always talks to Orbit, as before.
+  Projects that keep ticket files (`"tickets": "files"`) keep how `kit brief` and `kit pr` work today; `kit ticket` itself always talks to Orbit, as before.
 
 ## Rolling back a direct project
 

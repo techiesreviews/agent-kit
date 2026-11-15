@@ -523,12 +523,14 @@ export function kitRulebookPins(root = kitRoot(), settings = kitSettings(root)) 
     let text;
     try { text = readFileSync(file, "utf8"); }
     catch (error) { throw new Error(`cannot read the ${label} ${file}: ${error.code ?? error.message}`); }
-    for (const [, role, model] of text.matchAll(/^\| (Builder, every slice|Review, every change) \| `([^`]+)`/gm)) rows.set(role, model);
+    // "Builder, every slice" is the row's name from before the factory cut (TOOLS-235); an extras row may still use it.
+    for (const [, role, model] of text.matchAll(/^\| (Builder, every (?:build|slice)|Review, every change) \| `([^`]+)`/gm))
+      rows.set(role.startsWith("Builder") ? "builder" : "reviewer", model);
   };
   read(join(kitHome(), "docs/kitchen.md"), "shared rulebook");
   if (settings?.rulebookExtras) read(resolve(root, settings.rulebookExtras), "rulebook extras");
-  const builder = rows.get("Builder, every slice"), reviewer = rows.get("Review, every change");
-  if (!builder || !reviewer) throw new Error(`the rulebook has no ${builder ? "Review, every change" : "Builder, every slice"} pin`);
+  const builder = rows.get("builder"), reviewer = rows.get("reviewer");
+  if (!builder || !reviewer) throw new Error(`the rulebook has no ${builder ? "Review, every change" : "Builder, every build"} pin`);
   return { builder, reviewer };
 }
 
