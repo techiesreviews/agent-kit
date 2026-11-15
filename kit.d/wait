@@ -15,7 +15,9 @@ const usage = `Usage: kit wait pid <pid> [--timeout D]
 Durations: seconds (bare number or s), minutes (m), hours (h). Default timeout: 30m.
 Output without --until finishes when every process seen writing the file has exited and its size
 stayed unchanged for the quiet period (default 5s); a writer never seen holding the file is covered
-only by the quiet period. CI branch: branches.ci in scripts/agents/kit.json, else branches.land.`;
+only by the quiet period. CI branch: branches.ci in scripts/agents/kit.json, else branches.land.
+--sha takes a full or short SHA (7+ characters); a short one is expanded through this project's git, else GitHub,
+and one neither knows fails at once.`;
 const args = process.argv.slice(2);
 const execute = promisify(execFile);
 const controller = new AbortController();
@@ -205,7 +207,26 @@ async function wait(config) {
     }
     return (await gh(["api", `repos/{owner}/{repo}/commits/${encodeURIComponent(branch)}`, "--jq", ".sha"])).trim();
   };
+  // GitHub's run filter matches only a full SHA, so a short one would wait out the whole timeout (TOOLS-245):
+  // expand it through the project's git first, else GitHub, and stop at once when neither knows it.
+  const fullSha = async (sha) => {
+    const local = await execute("git", ["-C", kitRoot(), "rev-parse", "--verify", "--quiet", `${sha}^{commit}`]).then(({ stdout }) => stdout.trim(), () => "");
+    // A branch or tag named like the SHA resolves to its own commit, here and on GitHub: only a matching prefix counts.
+    const matching = full => full.toLowerCase().startsWith(sha.toLowerCase());
+    if (matching(local)) return local;
+    let remote;
+    try { remote = (await gh(["api", `repos/{owner}/{repo}/commits/${sha}`, "--jq", ".sha"])).trim(); }
+    catch (error) {
+      if (Date.now() >= deadline) throw error;
+      const why = (error.stderr?.trim() || error.message).split(/\r?\n/)[0];
+      throw new Error(/No commit found|HTTP 422/.test(why) ? `no commit ${sha} in this repo or on GitHub (${why}); pass the full SHA`
+        : `could not expand ${sha} through GitHub (${why}); pass the full SHA`);
+    }
+    if (!matching(remote)) throw new Error(`no commit ${sha} in this repo or on GitHub (GitHub answered for a branch or tag of that name, ${remote.slice(0, 7)}); pass the full SHA`);
+    return remote;
+  };
   try {
+    if (head && head.length < 40) head = await fullSha(head);
     // Pin the log before verifying identity; name reuse cannot redirect later async reads.
     if (job) jobLog = openSync(`${job.directory}/log`, "r");
     while (!interrupted) {
@@ -236,10 +257,9 @@ async function wait(config) {
         } else size = null;
       } else {
         if (options.sha && !branchResolved) {
-          const runs = JSON.parse(await gh(["run", "list", "--commit", options.sha, "--limit", "1", "--json", "headBranch"]));
+          const runs = JSON.parse(await gh(["run", "list", "--commit", head, "--limit", "1", "--json", "headBranch"]));
           if (runs.length) {
             branch = runs[0].headBranch;
-            if (head.length < 40) head = (await gh(["api", `repos/{owner}/{repo}/commits/${head}`, "--jq", ".sha"])).trim();
             branchResolved = true;
           }
         }

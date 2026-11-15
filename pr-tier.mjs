@@ -86,6 +86,21 @@ export function classify(changes, { full = false, settings } = {}) {
   return { tier, reason: `${count}, ${why}`, docs: tiers.includes("docs"), ...cleanGuard };
 }
 
+// Prose files every project treats as docs, on top of its own `paths.docs`, for the one question of whether GPT may
+// take the second look (a project with no `paths.docs` had its docs-only PRs looked at by GPT as code). The checks
+// and Claude's review still go by the tier, so a prose file that is no docs tier keeps the full checks.
+// Not .mdx: it can import components and run code.
+const proseFile = /\.(?:md|markdown|rst|adoc)$/i;
+
+/** Whether every changed path is docs for GPT's second look: the docs tier (`paths.docs`), or a prose file the
+ * project's `paths.tests` and `paths.css` leave as code. */
+export const docsOnly = (changes, settings) => changes.length > 0 && changes.every(change => {
+  const { tests, css } = rules(settings);
+  if (pathTier(change, settings) === "docs") return true;
+  // Checked by pattern, not tier: a deleted file under paths.css counts as code in the tier, but is still no docs.
+  return proseFile.test(change.path) && !matches(tests, change.path) && !matches(css, change.path);
+});
+
 export const reviewKinds = ["agent", "ux", "dx", "code"];
 
 // A ticket file (the `--ticket` one or any `tickets/<name>.md`) rides along with every slice, so it says nothing about the change.

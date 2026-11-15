@@ -177,10 +177,31 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   cannot be read fails the command (`kit bg --list` shows the job as `unknown (…)`), never reads as an ended job;
   only when it keeps failing while a job that has finished waits for its leftover processes does the job give up
   after ten tries and record its own exit status, and its log says so.
-  `kit go` looks once a second there (a process list takes about 0.4s). `KIT_BG_PLATFORM=win32` picks the Windows
-  way by hand (tests, with fake `powershell.exe` and `taskkill`). A job's command is started without a shell, as on
-  Linux, so on Windows it must be a program Windows can start directly (`node …`, an `.exe`), not a `.cmd` or a
-  shell script.
+  `kit go` looks once a second there (a process list takes about 0.4s). `KIT_BG_PLATFORM=win32` picks the Windows way
+  by hand (tests, with fake `powershell.exe`, `taskkill`, `bash.exe` and `cmd.exe`). A job's command is started
+  without a shell, as on Linux, unless it is a `.cmd`, `.bat` or shell script: Windows starts only a program itself
+  (an `.exe` or `.com`; Node refuses a `.cmd` or `.bat` without a shell), so its first word is looked up as Windows
+  does (a word with a folder in the job's folder; a bare name in the job's folder, then on `PATH`, a `PATH` folder in
+  quotes (which may hold a `;`) without them, a relative one taken from the job's folder, as Node looks): a bare name
+  first as `.com`, `.exe`, `.bat` or `.cmd` in each of those folders, then as the name itself; a name that already has
+  an extension (`job.sh`) in each folder in turn, first exactly as written, then with `.com`, `.exe`, `.bat` or `.cmd`
+  added. A `.cmd` or `.bat` runs through `cmd.exe /d /s /c` (`ComSpec`, else `System32\cmd.exe` in the Windows
+  folder), each argument quoted and every cmd special character escaped with `^` (cross-spawn's way), so each argument
+  stays in its quotes when the batch file reads it again (`%1`, or `%*` handed on); an argument with a `"` of its own,
+  which would end those quotes early, one that ends with a backslash, which the batch file and a program it calls
+  cannot both read as given, or one with a line break, is refused, and so is a `.cmd` or `.bat` job whose folder is a
+  network share (`\\server\share`), where cmd.exe cannot work. Any other file that is not a program and is a shell
+  script (one with a `#!` line, such as `scripts/agents/kit`, or one without whose name has no extension or ends in
+  `.sh` or `.bash`) runs through Git Bash's `bash.exe`: on `PATH`, else beside the `git.exe` on `PATH`, else under
+  `ProgramW6432`, `ProgramFiles`, `ProgramFiles(x86)` or `LOCALAPPDATA\Programs` in `Git\bin`, never WSL's `bash.exe`
+  in the Windows folder or `WindowsApps`. Git Bash would glob bare words of a command line and take `'` as a quote, so
+  the words reach it in `KIT_BG_ARGC` and `KIT_BG_ARG_<n>`, which a fixed script reads and clears before it runs them
+  (by `exec` for a file with a `#!` line, which Git Bash follows; as a bash script for one without); as in any Git
+  Bash, a program it starts that is not Git Bash's own gets path-like words in Windows form. Without Git Bash such a
+  job does not start: `kit bg` fails with a plain message and records nothing. A file without a `#!` line and with
+  another extension (`.ps1`, `.py`, `.js`) is refused, to be started through its own program, and a Windows program
+  with no extension at all is refused too (Node adds `.com` or `.exe` to such a name). A program, or a word not found,
+  starts as given, as before.
 - Two hooks back this up. `brief-guard` (Claude `PreToolUse` on `mcp__t3-code__delegate_task` and `Agent|Task`)
   refuses a brief without the marker; research, review-only and question tasks start with
   `kit-brief: none (<reason>)`, and the read-only agent types (Explore, Plan) pass. `stop-guard` (Claude and Codex

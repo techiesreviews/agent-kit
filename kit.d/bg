@@ -7,7 +7,7 @@ import { Socket } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { bgLock } from "../bg-lock.mjs";
-import { kitJob, kitJobDirectory, kitJobExit, kitJobGroup, kitJobMembers, kitJobPins, kitJobPlatform, kitJobProcess, kitJobRecord, kitJobRunning, kitJobSame, kitJobTree, kitResult, kitRoot, kitWinProcesses } from "../kit-lib.mjs";
+import { kitJob, kitJobDirectory, kitJobExit, kitJobGroup, kitJobMembers, kitJobPins, kitJobPlatform, kitJobProcess, kitJobRecord, kitJobRunning, kitJobSame, kitJobTree, kitResult, kitRoot, kitWinLaunch, kitWinProcesses } from "../kit-lib.mjs";
 
 const usage = `Usage: kit bg <name> [--cwd DIR] [--max D] -- <command…>
        kit bg --list
@@ -22,7 +22,9 @@ One start or stop of a name at a time: flock on Linux and macOS; on Windows (no 
 .scratch/kit-jobs/.<name>.lock, that a dead or a five-minute-old holder loses (KIT_BG_LOCK=file or flock picks by hand).
 On Windows (no setsid, process groups, /proc or systemd) the job is a hidden, detached process tree that ends with the
 session; its processes are read with Get-CimInstance, --max is a timer in its wrapper, and stop ends the whole tree at
-once (taskkill /T /F, no grace period) and records exit 143.`;
+once (taskkill /T /F, no grace period) and records exit 143. There a .cmd or .bat job runs through cmd.exe /d /s /c,
+and a shell script (any file that is not a program) through Git Bash's bash.exe, found on PATH, beside git.exe or
+where Git for Windows installs it; without it such a job does not start.`;
 const windows = kitJobPlatform() === "win32";
 // One CIM process list takes about 0.4s on Windows: its waits look less often.
 const poll = windows ? 1000 : 25;
@@ -65,7 +67,9 @@ async function wrapper(kind, directory, cwd, command) {
   const { pgid, started } = self;
   let child;
   if (kind === "--command") {
-    child = spawn(command[0], command.slice(1), { cwd, stdio: "inherit", windowsHide: true });
+    // Windows starts only a program itself: a .cmd or .bat goes through cmd.exe, a shell script through Git Bash.
+    const launch = windows ? kitWinLaunch(command, { cwd }) : { program: command[0], args: command.slice(1), options: {} };
+    child = spawn(launch.program, launch.args, { cwd, stdio: "inherit", windowsHide: true, ...launch.options });
     // Windows: pin the work itself, so it stays the job's (waited for, stopped, timed) if this process ends first.
     // Node ends a process's children with it there (its job object, as the work is not detached: detached, it would
     // have no console, and each console program it starts would open a window), so this covers a work that broke
@@ -195,6 +199,8 @@ function list() {
 }
 
 async function start(config, directory) {
+  // A job Windows cannot start (a shell script with no Git Bash on this machine) fails here, before any record changes.
+  if (windows) kitWinLaunch(config.command, { cwd: config.cwd });
   if (existsSync(directory)) {
     if (existsSync(join(directory, "pid"))) {
       const job = kitJob(directory);

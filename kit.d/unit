@@ -37,7 +37,8 @@ function unitFiles(root) {
   return file => tests.some(test => test(file));
 }
 // The import scan: the project's own scripts/agents/specs-affected.mjs when it has one, else plain import,
-// export-from and require lines in any file; read only for --affected.
+// export-from and require lines in any file; read only for --affected. A part the file does not export keeps
+// the default (some projects' file serves kit specs only, with no graphFile or importsOf).
 let graphFile = /^/, importsOf = text => [...text.matchAll(/\b(?:import|export)\s+(?:[^;"'`]*?\s+from\s*)?["']([^"']+)["']|\b(?:import|require)\s*\(\s*["']([^"']+)["']\s*\)/g)]
   .map(match => match[1] ?? match[2]);
 const moduleFile = file => graphFile.test(file) && sourceFile(file);
@@ -110,7 +111,14 @@ async function main(args) {
     const root = resolve(kitRoot());
     if (flags.affected) {
       const scan = join(root, "scripts/agents/specs-affected.mjs");
-      if (existsSync(scan)) ({ graphFile, importsOf } = await import(pathToFileURL(scan).href));
+      if (existsSync(scan)) {
+        const own = await import(pathToFileURL(scan).href);
+        const problem = name => new Error(`scripts/agents/specs-affected.mjs: ${name}`);
+        if (own.graphFile !== undefined && !(own.graphFile instanceof RegExp)) throw problem("graphFile must be a regular expression");
+        if (own.importsOf !== undefined && typeof own.importsOf !== "function") throw problem("importsOf must be a function");
+        graphFile = own.graphFile ?? graphFile;
+        importsOf = own.importsOf ?? importsOf;
+      }
     }
     let selected;
     if (flags.files.length) {

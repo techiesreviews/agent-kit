@@ -261,6 +261,31 @@ test("a unit.files pattern matching nothing and a broken import scan fail withou
   assert.equal(f.executed(), 0);
 });
 
+test("--affected falls back to the plain import scan for each part a project's specs-affected.mjs does not export", t => {
+  // techies-prompter's specs-affected.mjs serves kit specs only (suite map, no graphFile or importsOf); kit unit crashed on it.
+  const f = fixture(t);
+  rmSync(join(f.root, "scripts/agents/specs-affected.mjs"));
+  f.put("scripts/agents/specs-affected.mjs", "export const REACHES = {};\nexport const suitesFor = () => [];\n");
+  f.put("src/leaf.ts", "export const value = 2;\n");
+  const listed = f.run("--affected", "--list");
+  result(listed, 0, /^RESULT: ok unit 1 selected \(list only\)$/);
+  assert.match(listed.stdout, /^tests\/hops\.test\.ts — via tests\/support\/bridge\.ts/m);
+  // A project scan that exports only importsOf keeps it and takes the default graph for the rest.
+  rmSync(join(f.root, "scripts/agents/specs-affected.mjs"));
+  f.put("scripts/agents/specs-affected.mjs", "export const importsOf = () => [];\n");
+  const own = f.run("--affected", "--list");
+  result(own, 0, /^RESULT: ok unit none affected$/);
+  // A part that is there but of the wrong kind is the project's mistake: named, not guessed around.
+  rmSync(join(f.root, "scripts/agents/specs-affected.mjs"));
+  f.put("scripts/agents/specs-affected.mjs", "export const graphFile = \"src/\";\n");
+  const wrong = f.run("--affected", "--list");
+  result(wrong, 1, /^RESULT: fail unit scripts\/agents\/specs-affected\.mjs: graphFile must be a regular expression$/);
+  rmSync(join(f.root, "scripts/agents/specs-affected.mjs"));
+  f.put("scripts/agents/specs-affected.mjs", "export const importsOf = 1;\n");
+  const notFunction = f.run("--affected", "--list");
+  result(notFunction, 1, /^RESULT: fail unit scripts\/agents\/specs-affected\.mjs: importsOf must be a function$/);
+});
+
 test("unit.sh with no files runs only the tests its unit.files pattern matches", t => {
   const f = fixture(t);
   f.put("scripts/agents/kit.json", JSON.stringify({ project: "kit-unit", branches: { land: "dev" },
