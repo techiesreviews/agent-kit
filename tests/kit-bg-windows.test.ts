@@ -165,7 +165,7 @@ function fixture(t: TestContext) {
   for (const name of forbidden) writeFileSync(join(bin, name), `#!/bin/sh\necho "${name} $*" >> "${log}"\nexit 1\n`);
   for (const name of readdirSync(bin)) chmodSync(join(bin, name), 0o755);
   const { KIT_BG_SCOPE: _scope, KIT_BG_LOCK: _lock, ...base } = kitEnv();
-  const env: NodeJS.ProcessEnv = { ...base, KIT_ROOT: root, KIT_BG_PLATFORM: "win32", KIT_GO_WAIT_MS: "300", FAKE_WIN_LOG: log, PATH: `${bin}:${process.env.PATH}` };
+  const env: NodeJS.ProcessEnv = { ...base, KIT_ROOT: root, KIT_BG_PLATFORM: "win32", KIT_GO_WAIT_MS: "300", FAKE_WIN_LOG: log, ComSpec: join(bin, "cmd.exe"), PATH: `${bin}:${process.env.PATH}` };
   const bg = (...args: string[]) => spawnSync(kit, ["bg", ...args], { cwd: root, env, encoding: "utf8" });
   const go = (...args: string[]) => spawnSync(kit, ["go", ...args], { cwd: root, env, encoding: "utf8" });
   t.after(() => {
@@ -588,7 +588,9 @@ test("on Windows a job's first word picks how it starts: a program itself, a .cm
   assert.throws(() => launch("noext"), /noext is a Windows program without \.exe, which Node cannot start; give it the \.exe extension/);
   // In one PATH folder the .cmd comes before the bare script, as Windows looks.
   const npm = launch("npm", "install");
-  assert.equal(npm.program, "cmd.exe");
+  // Without ComSpec, Windows' own cmd.exe, never a bare name the job's folder could hold.
+  assert.equal(npm.program, join("C:\\Windows", "System32", "cmd.exe"));
+  assert.equal(kitWinLaunch(["npm"], { cwd: root, env: { ...env, SystemRoot: "D:\\Win" } }).program, join("D:\\Win", "System32", "cmd.exe"));
   assert.deepEqual(npm.args.slice(0, 3), ["/d", "/s", "/c"]);
   assert.deepEqual(npm.options, { windowsVerbatimArguments: true });
   assert.deepEqual(cmdRun(npm.args[3], {}, true), [join(root, "tools/npm.cmd"), "install"]);
@@ -599,6 +601,25 @@ test("on Windows a job's first word picks how it starts: a program itself, a .cm
   file("job.sh", "#!/bin/sh\n");
   file("job.sh.cmd", "@echo off\r\n");
   assert.equal(launch("./job.sh").program, bash);
+  // Folder by folder for a name with an extension, as Node looks: the job's foo.v1.exe before a later PATH script foo.v1.
+  file("foo.v1.exe", "MZ");
+  file("tools/foo.v1", "#!/bin/sh\n");
+  assert.equal(launch("foo.v1").program, "foo.v1");
+  // Without a #! line only a file named as a shell script goes to Git Bash; with one, any file does.
+  file("build.ps1", "Write-Host hi\r\n");
+  file("tool.py", "print('hi')\n");
+  file("x.bash", "echo hi\n");
+  for (const name of ["./build.ps1", "./tool.py"])
+    assert.throws(() => launch(name), /is not a program, a \.cmd or \.bat, or a shell script \(it has no #! line\); start it through its own program/);
+  assert.equal(launch("./x.bash").program, bash);
+  file("tool2.py", "#!/usr/bin/env python3\nprint('hi')\n");
+  assert.equal(launch("./tool2.py").program, bash);
+  // A PATH folder in quotes, with spaces, is still searched, for the job and for Git Bash.
+  file("With Spaces/quoted.cmd", "@echo off\r\n");
+  file("Git Spaces/bin/bash.exe", "MZ");
+  const quoted = { PATH: `"${join(root, "With Spaces")}":"${join(root, "Git Spaces/bin")}"` };
+  assert.deepEqual(cmdRun(kitWinLaunch(["quoted"], { cwd: root, env: quoted }).args[3], {}), [join(root, "With Spaces/quoted.cmd")]);
+  assert.equal(kitWinBash(quoted, root), join(root, "Git Spaces/bin/bash.exe"));
   file("only.sh.cmd", "@echo off\r\n");
   assert.deepEqual(cmdRun(launch("./only.sh", "x").args[3], {}), [join(root, "only.sh.cmd"), "x"]);
   // Programs and .cmd files come first in every folder, a bare script only after; the job's folder before PATH, as Node looks.
@@ -627,6 +648,9 @@ test("on Windows a job's first word picks how it starts: a program itself, a .cm
   assert.equal(kit.args.length, 2);
   assert.equal(kit.args[0], "-c");
   assert.match(kit.args[1], / exec "\$\{kit_words\[@\]\}"$/);
+  // Node quotes it for the Windows command line (a " as \"), which Git Bash reads back; no backslash or ' of its own,
+  // which Git Bash would read its own way.
+  assert.doesNotMatch(kit.args[1], /[\\']/);
   const handed = kit.options.env as NodeJS.ProcessEnv;
   assert.deepEqual([handed.KIT_BG_ARGC, handed.KIT_BG_ARG_0, handed.KIT_BG_ARG_1, handed.KIT_BG_ARG_2, handed.KIT_BG_ARG_3], ["3", join(root, "scripts/agents/kit"), "go", "two words", undefined]);
   assert.equal(handed.PATH, env.PATH);

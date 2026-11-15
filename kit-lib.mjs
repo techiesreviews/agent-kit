@@ -450,11 +450,13 @@ export function kitWinProcesses(pid) {
  * How a Windows job's command starts. Windows starts only a program file itself (an .exe or .com; Node refuses a .cmd
  * or .bat without a shell), so the command's first word is looked up as Windows does (a word with a folder in the
  * job's folder; a bare name in the job's folder, then on PATH, as Node looks): a bare name first as name.com, .exe,
- * .bat or .cmd in each of those folders, then as the name itself; a name with an extension of its own first as it is.
+ * .bat or .cmd in each of those folders, then as the name itself; a name with an extension of its own folder by
+ * folder, as it is first.
  * A .cmd or .bat runs through cmd.exe /d /s /c with each argument escaped for cmd, and any other file that is not a program (a shell script, with or without a #! line) runs through
  * Git Bash's bash.exe, its words handed over in the environment, never on a command line. A program, or a word not
  * found, starts as given, as before. Gives { program, args, options } for spawn; throws a plain message for a job it
- * cannot start safely (a shell script with no Git Bash, a cmd.exe argument it cannot carry, a program with no extension).
+ * cannot start safely (a shell script with no Git Bash, a cmd.exe argument it cannot carry, a program with no extension,
+ * a file without a #! line that is not named as a shell script).
  */
 export function kitWinLaunch(command, { cwd = process.cwd(), env = process.env } = {}) {
   const direct = { program: command[0], args: command.slice(1), options: {} };
@@ -469,12 +471,16 @@ export function kitWinLaunch(command, { cwd = process.cwd(), env = process.env }
   // never starts this file, even by its full path.
   if (head.startsWith("MZ") && extension) return direct;
   if (head.startsWith("MZ")) throw new Error(`${file} is a Windows program without .exe, which Node cannot start; give it the .exe extension`);
+  // Without a #! line only a file named as a shell script is one; bash would read a .ps1, .py or .js as commands.
+  if (!head.startsWith("#!") && !["", ".sh", ".bash"].includes(extension))
+    throw new Error(`${file} is not a program, a .cmd or .bat, or a shell script (it has no #! line); start it through its own program, such as powershell -File, python or node`);
   return winBash(file, command.slice(1), head.startsWith("#!"), env, cwd);
 }
 
 const winExtensions = [".com", ".exe", ".bat", ".cmd"];
-// PATH's folders; a relative one is taken from the job's folder, as Node takes it from the child's.
-const winPath = (env, cwd) => (env.PATH ?? env.Path ?? "").split(delimiter).filter(Boolean).map(folder => resolve(cwd, folder));
+// PATH's folders, without the quotes a folder may have there; a relative one is taken from the job's folder, as Node
+// takes it from the child's.
+const winPath = (env, cwd) => (env.PATH ?? env.Path ?? "").split(delimiter).map(folder => folder.replaceAll('"', "")).filter(Boolean).map(folder => resolve(cwd, folder));
 function winFile(path) {
   try { return statSync(path).isFile(); } catch { return false; }
 }
@@ -482,11 +488,13 @@ function winFind(word, cwd, env) {
   if (!word) return null;
   const folders = /[\\/]/.test(word) || isAbsolute(word) ? [cwd] : [cwd, ...winPath(env, cwd)];
   // A bare name: programs and .cmd files first, in every folder, as Windows looks, and a file by that name (a script)
-  // only after. A name with an extension: that file first, as Node looks, then with a program's or .cmd's extension.
+  // only after. A name with an extension: folder by folder, that file first, then with a program's or .cmd's
+  // extension, as Node looks.
   const extension = extname(word).toLowerCase(), named = winExtensions.map(each => word + each);
-  const rounds = winExtensions.includes(extension) ? [[word]] : extension ? [[word], named] : [named, [word]];
-  for (const names of rounds) for (const folder of folders) for (const name of names) if (winFile(resolve(folder, name))) return resolve(folder, name);
-  return null;
+  const found = names => folders.flatMap(folder => names.map(name => resolve(folder, name))).find(winFile) ?? null;
+  if (winExtensions.includes(extension)) return found([word]);
+  if (extension) return folders.map(folder => [word, ...named].map(name => resolve(folder, name)).find(winFile)).find(Boolean) ?? null;
+  return found(named) ?? found([word]);
 }
 function winHead(file) {
   const fd = openSync(file, "r");
@@ -536,7 +544,9 @@ function winCmd(file, args, env) {
   if (args.some(arg => arg.endsWith("\\"))) throw new Error(`${file} is a .cmd or .bat job, and cmd.exe cannot hand it an argument that ends with a backslash so that the batch file and a program it calls read it the same; leave the last backslash off`);
   const quoted = args.map(arg => `"${arg}"`.replace(cmdSpecial, "^$1"));
   const line = [file.replace(cmdSpecial, "^$1"), ...quoted].join(" ");
-  return { program: env.ComSpec ?? env.COMSPEC ?? "cmd.exe", args: ["/d", "/s", "/c", `"${line}"`], options: { windowsVerbatimArguments: true } };
+  // Windows' own cmd.exe when ComSpec is not set: a bare name would be looked for in the job's folder first.
+  const comspec = env.ComSpec ?? env.COMSPEC ?? join(env.SystemRoot ?? env.windir ?? "C:\\Windows", "System32", "cmd.exe");
+  return { program: comspec, args: ["/d", "/s", "/c", `"${line}"`], options: { windowsVerbatimArguments: true } };
 }
 
 /**
