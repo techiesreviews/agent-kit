@@ -1111,7 +1111,7 @@ async function executeRun(options, out, previous, update, brief) {
       options.codexHome = reviewHome.home;
     }
     // The key lock (TOOLS-285): set up before the CLI starts; a lock that cannot be set up stops the run.
-    guard = keyGuard({ cli: options.cli, kind: options.kind, common, model: options.model, apiRoute: options.cli === "claude" && apiRoute(process.env).on,
+    guard = keyGuard({ cli: options.cli, kind: options.kind, common, worktree: options.worktree, model: options.model, apiRoute: options.cli === "claude" && apiRoute(process.env).on,
       env: options.codexHome ? { ...process.env, CODEX_HOME: options.codexHome } : process.env });
     if (guard.off) appendFileSync(log, "warning: key files are not locked for this run (ASE_KEY_GUARD=off)\n");
     if (guard.warning) appendFileSync(log, `warning: key lock: ${guard.warning}\n`);
