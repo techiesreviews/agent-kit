@@ -1048,9 +1048,11 @@ async function invokeAgent(adapter, args, descriptor, context) {
         (status ? usageLimitProblem(slice, options.cli) ?? usageLimitProblem(result.stdout ?? "", options.cli) : null);
       if (status || limitProblem) {
         // A signal or an exit above 128 that supervise did not cause is a crash, told in words (never a bare status).
-        // Inside the key lock bwrap stands between: a CLI killed by a signal comes back as bwrap's exit 128 + its number.
-        const signal = result.signal ?? (guard.bwrap && status > 128 ? Object.keys(constants.signals).find(name => constants.signals[name] === status - 128) : null);
-        const crash = result.crashed ? `problem: ${adapter.label ?? adapter.command} crashed (${signal ? `killed by signal ${signal}` : `exit ${status}`}); see ${logPath}` : null;
+        // Inside the key lock bwrap stands between: a CLI killed by a signal comes back as bwrap's exit 128 + its number,
+        // which a CLI's own exit with that number cannot be told from, so the words name both.
+        const bwrapSignal = !result.signal && guard.bwrap && status > 128 ? Object.keys(constants.signals).find(name => constants.signals[name] === status - 128) : null;
+        const how = result.signal ? `killed by signal ${result.signal}` : bwrapSignal ? `exit ${status}, which bwrap gives for signal ${bwrapSignal}` : `exit ${status}`;
+        const crash = result.crashed ? `problem: ${adapter.label ?? adapter.command} crashed (${how}); see ${logPath}` : null;
         context.cause = limitProblem ?? adapter.errorProblem?.(result.stdout ?? "") ?? crash ?? `problem: ${adapter.label ?? adapter.command} failed (${status}); see ${logPath}`;
       }
       // A first call the CLI itself crashed on returned no review: kit review counts that reviewer as unavailable, not as a failed review.

@@ -12,13 +12,17 @@
 //   with a permissions profile of its own instead: the whole disk readable but the key paths, write access as before.
 // - Every CLI gets an environment without tokens, passwords, agent sockets or the desktop bus.
 //
-// Inside bubblewrap an agent still sees the machine's process list, but the kernel refuses it another process's
-// environment, open files and root folder (/proc/<pid>/environ, fd, root: it runs in a user namespace of its own), and
-// the kit's own locks keep working with real process ids.
+// Inside bubblewrap an agent still sees the machine's process list, so the kit's own locks keep working with real
+// process ids. The kernel refuses it another process's environment, open files and root folder (/proc/<pid>/environ,
+// fd, root): unprivileged bwrap puts it in a user namespace of its own, and reading a process in another namespace takes
+// a capability there (the kernel's ptrace access check). bwrapWorks tries exactly that read at start-up and refuses to
+// lock where it works (a setuid bwrap, which makes no user namespace).
 //
 // Known limits, said plainly: an agent's own CLI must read its own login (Claude's ~/.claude/.credentials.json,
 // Grok's ~/.grok/auth.json), so its tools can too; Codex hides its own login from its commands. Services on the
-// machine's loopback network and abstract sockets stay reachable (the display's needs the cookie, which is hidden).
+// machine's loopback network and abstract sockets stay reachable: the display's X socket among them, which the hidden
+// cookie keeps shut only where the display asks for one (a display set to let the user in without one, xhost
+// +si:localuser, stays open).
 // ASE_KEY_GUARD=off runs without the lock and says so in the run's log.
 import { spawnSync } from "node:child_process";
 import { accessSync, chmodSync, constants, lstatSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -103,6 +107,8 @@ export function lockedPaths(cli, env = process.env, { apiRoute = false } = {}) {
   if (env.CODEX_HOME) paths.push(join(env.CODEX_HOME, "auth.json"), join(env.CODEX_HOME, "config.toml"));
   if (env.XDG_CONFIG_HOME && resolve(env.XDG_CONFIG_HOME) !== join(base, ".config")) paths.push(...configKeyNames.map(name => join(env.XDG_CONFIG_HOME, name)));
   if (cli === "claude" && apiRoute && env.KIT_API_KEY_FILE?.startsWith("/")) paths.push(env.KIT_API_KEY_FILE);
+  // The display's cookie wherever the session keeps it (older SDDM: /tmp/xauth_…).
+  if (env.XAUTHORITY?.startsWith("/")) paths.push(env.XAUTHORITY);
   for (const extra of String(env.KIT_KEY_PATHS ?? "").split(process.platform === "win32" ? ";" : ":")) {
     if (extra.startsWith("/")) paths.push(extra);
   }
@@ -119,11 +125,12 @@ export function existingPaths(paths) {
 }
 
 /**
- * The paths plus the files their links point at, for the paths under base (HOME). A link inside a key folder (a dotfiles
- * setup: ~/.config/gh/hosts.yml -> ~/dotfiles/gh/hosts.yml) names a file the folder's mask does not cover. Only file
- * targets are added (a folder target such as /usr is never masked), up to four levels down.
+ * The paths plus the files their links point at. A link inside a key folder (a dotfiles setup:
+ * ~/.config/gh/hosts.yml -> ~/dotfiles/gh/hosts.yml) names a file the folder's mask does not cover. Only file targets
+ * are added (a folder target such as /usr or HOME is never masked), up to four levels down; the runtime folder and /tmp
+ * (sockets, not keys) are not walked.
  */
-export function withLinkTargets(paths, base) {
+export function withLinkTargets(paths, skip = []) {
   const found = [...paths];
   const target = link => { try { const real = realpathSync(link); if (statSync(real).isFile()) found.push(real); } catch { /* A dangling link points nowhere. */ } };
   const walk = (folder, depth) => {
@@ -136,7 +143,7 @@ export function withLinkTargets(paths, base) {
     }
   };
   for (const path of paths) {
-    if (!inside(path, base)) continue;
+    if (skip.some(folder => inside(path, folder))) continue;
     try {
       const info = lstatSync(path);
       if (info.isSymbolicLink()) target(path);
@@ -194,6 +201,21 @@ function onPath(command, env) {
   return String(env.PATH ?? "").split(":").some(folder => folder && executable(join(folder, command)));
 }
 
+// The lock holds only if a process inside it cannot read through another process's root folder in /proc, where
+// nothing is masked. A setuid bwrap makes no user namespace and lets that read through: then the lock refuses to run.
+function escapeProblem(env) {
+  const dir = mkdtempSync(join(tmpdir(), "ase-key-probe-"));
+  try {
+    const marker = join(dir, "marker");
+    writeFileSync(marker, "reachable\n");
+    const result = spawnSync("bwrap", ["--dev-bind", "/", "/", "--tmpfs", dir, "--", "sh", "-c", 'cat "/proc/$1/root$2"', "sh", String(process.pid), marker],
+      { env, stdio: ["ignore", "pipe", "ignore"], encoding: "utf8", timeout: 15_000 });
+    return String(result.stdout ?? "").includes("reachable")
+      ? "a program inside bubblewrap can still read other programs' files through /proc here (a setuid bwrap makes no user namespace); install the distribution's plain bubblewrap"
+      : null;
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+
 let probed;
 /** Whether bubblewrap runs here; checked once per process. bwrap is looked up on PATH. */
 export function bwrapWorks(env = process.env) {
@@ -202,8 +224,8 @@ export function bwrapWorks(env = process.env) {
     const said = String(result.stderr ?? result.error?.message ?? "").trim().split("\n").at(-1) || `exit ${result.status}`;
     // The usual refusal: the system does not let ordinary users make the namespaces a sandbox needs.
     const blocked = /namespace|uid map|Operation not permitted|Permission denied/i.test(said);
-    probed = result.status === 0 ? null : result.error?.code === "ENOENT" ? "bubblewrap (bwrap) is not installed"
-      : blocked ? `the system blocks the sandboxes bubblewrap makes (${said}); on Ubuntu install the bubblewrap package, whose AppArmor profile allows it, or ask the machine's owner to allow unprivileged user namespaces (sysctl kernel.apparmor_restrict_unprivileged_userns)`
+    probed = result.status === 0 ? escapeProblem(env) : result.error?.code === "ENOENT" ? "bubblewrap (bwrap) is not installed; install it (apt install bubblewrap)"
+      : blocked ? `the system blocks the sandboxes bubblewrap makes (${said}); allow them with sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0, or give /usr/bin/bwrap an AppArmor profile that allows user namespaces`
       : `bubblewrap (bwrap) cannot start here: ${said}`;
   }
   return probed;
@@ -220,11 +242,12 @@ export function bwrapWorks(env = process.env) {
  */
 export function keyGuard({ cli, kind, common, env = process.env, apiRoute = false, model = "" }) {
   if (!keyGuardOn(env)) return { off: true, env: {}, wrap: (command, args) => [command, args], close() {} };
-  const paths = withLinkTargets(lockedPaths(cli, env, { apiRoute }), home(env));
+  const locked = lockedPaths(cli, env, { apiRoute });
+  const paths = withLinkTargets(locked, ["/tmp", "/run", env.XDG_RUNTIME_DIR].filter(Boolean));
   const scrub = scrubbedEnv(cli, env, { apiRoute, model });
   if (cli === "codex") return { env: scrub, codex: codexProfile(kind, common, existingPaths(paths)), wrap: (command, args) => [command, args], close() {} };
   const problem = bwrapWorks(env);
-  if (problem) throw new Error(`cannot lock the key files for this ${kind}: ${problem}; install bubblewrap, or set ASE_KEY_GUARD=off to run without the lock`);
+  if (problem) throw new Error(`cannot lock the key files for this ${kind}: ${problem}; or set ASE_KEY_GUARD=off to run without the lock`);
   // With the API route the wrapper turns on Claude's own command sandbox (bubblewrap too), which cannot start inside
   // this one: a build would lose its shell. Reviews there use only Read, Grep and Glob, with that sandbox off.
   if (apiRoute && kind === "build") throw new Error("cannot lock the key files for a build on the API route: its Claude sandbox cannot start inside the lock; build on the subscription (unset KIT_API_KEY_FILE), or set ASE_KEY_GUARD=off to run without the lock");
