@@ -23,8 +23,8 @@ One start or stop of a name at a time: flock on Linux and macOS; on Windows (no 
 On Windows (no setsid, process groups, /proc or systemd) the job is a hidden, detached process tree that ends with the
 session; its processes are read with Get-CimInstance, --max is a timer in its wrapper, and stop ends the whole tree at
 once (taskkill /T /F, no grace period) and records exit 143. There a .cmd or .bat job runs through cmd.exe /d /s /c,
-and a shell script (any file that is not a program) through Git Bash's bash.exe, found on PATH or where Git for
-Windows installs it; without it such a job does not start.`;
+and a shell script (any file that is not a program) through Git Bash's bash.exe, found on PATH, beside git.exe or
+where Git for Windows installs it; without it such a job does not start.`;
 const windows = kitJobPlatform() === "win32";
 // One CIM process list takes about 0.4s on Windows: its waits look less often.
 const poll = windows ? 1000 : 25;

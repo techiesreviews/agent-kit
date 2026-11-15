@@ -448,12 +448,13 @@ export function kitWinProcesses(pid) {
 
 /**
  * How a Windows job's command starts. Windows starts only a program file itself (an .exe or .com; Node refuses a .cmd
- * or .bat without a shell), so the command's first word is looked up as Windows does (a word with a folder from the
- * job's folder, a bare name on PATH; in each folder .com, .exe, .bat, .cmd, then the name as it is): a .cmd or .bat
- * runs through cmd.exe /d /s /c with each argument escaped for cmd, and any other file that is not a program (a shell
- * script, with or without a #! line) runs through Git Bash's bash.exe, its words handed over in the environment, never
- * on a command line. A program, or a word not found, starts as given, as before. Gives { program, args, options } for
- * spawn; throws a plain message when the job needs a bash that is not there, or a cmd.exe argument it cannot carry.
+ * or .bat without a shell), so the command's first word is looked up as Windows does (a word with a folder in the
+ * job's folder; a bare name in the job's folder, then on PATH, as Node looks), first as name.com, .exe, .bat or .cmd
+ * in each of those folders, then as the name itself: a .cmd or .bat runs through cmd.exe /d /s /c with each argument
+ * escaped for cmd, and any other file that is not a program (a shell script, with or without a #! line) runs through
+ * Git Bash's bash.exe, its words handed over in the environment, never on a command line. A program, or a word not
+ * found, starts as given, as before. Gives { program, args, options } for spawn; throws a plain message for a job it
+ * cannot start safely (a shell script with no Git Bash, a cmd.exe argument it cannot carry, a program without .exe).
  */
 export function kitWinLaunch(command, { cwd = process.cwd(), env = process.env } = {}) {
   const direct = { program: command[0], args: command.slice(1), options: {} };
@@ -462,8 +463,10 @@ export function kitWinLaunch(command, { cwd = process.cwd(), env = process.env }
   if (!file || [".exe", ".com"].includes(extension)) return direct;
   if ([".cmd", ".bat"].includes(extension)) return winCmd(file, command.slice(1), env);
   const head = winHead(file);
-  // A program by its first bytes: Windows' MZ, or ELF for a stubbed Windows run on Linux (KIT_BG_PLATFORM=win32).
-  if (head.startsWith("MZ") || head.startsWith("\x7fELF")) return direct;
+  // ELF: a Linux program, for a stubbed Windows run on Linux (KIT_BG_PLATFORM=win32).
+  if (head.startsWith("\x7fELF")) return direct;
+  // Node on Windows adds .com or .exe to a name without one, so it never starts this file, even by its full path.
+  if (head.startsWith("MZ")) throw new Error(`${file} is a Windows program without .exe, which Node cannot start; give it the .exe extension`);
   return winBash(file, command.slice(1), head.startsWith("#!"), env);
 }
 
@@ -474,9 +477,10 @@ function winFile(path) {
 }
 function winFind(word, cwd, env) {
   if (!word) return null;
-  const names = winExtensions.includes(extname(word).toLowerCase()) ? [word] : [...winExtensions.map(extension => word + extension), word];
-  const folders = /[\\/]/.test(word) || isAbsolute(word) ? [cwd] : winPath(env);
-  for (const folder of folders) for (const name of names) if (winFile(resolve(folder, name))) return resolve(folder, name);
+  const folders = /[\\/]/.test(word) || isAbsolute(word) ? [cwd] : [cwd, ...winPath(env)];
+  // Programs and .cmd files first, in every folder, as Windows looks; a file by its bare name (a script) only after.
+  const rounds = winExtensions.includes(extname(word).toLowerCase()) ? [[word]] : [winExtensions.map(extension => word + extension), [word]];
+  for (const names of rounds) for (const folder of folders) for (const name of names) if (winFile(resolve(folder, name))) return resolve(folder, name);
   return null;
 }
 function winHead(file) {
@@ -519,8 +523,11 @@ function winBash(file, args, shebang, env) {
 const cmdSpecial = /([()\][%!^"`<>&|;, *?])/g;
 function winCmd(file, args, env) {
   if (args.some(arg => /[\r\n]/.test(arg))) throw new Error(`${file} is a .cmd or .bat job, and cmd.exe cannot take an argument with a line break (it ends the command there)`);
-  // An npm shim in node_modules\.bin hands its arguments (%*) to cmd once more: they are escaped twice.
-  const twice = /node_modules[\\/]\.bin[\\/][^\\/]+\.cmd$/i.test(file);
+  // A batch file that hands its arguments on with %* (npm.cmd, npx.cmd, every npm shim) puts them through cmd once
+  // more: they are escaped twice. One that reads them one by one (%1) gets them as escaped once, in their quotes,
+  // where a " of their own would end the quoted part early and let what follows run as a command: it is refused.
+  const twice = readFileSync(file, "latin1").includes("%*");
+  if (!twice && args.some(arg => arg.includes('"'))) throw new Error(`${file} is a .cmd or .bat job that reads its arguments one by one, and cmd.exe cannot hand it an argument with a double quote safely`);
   const quoted = args.map(arg => {
     const once = `"${arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, "$1$1")}"`.replace(cmdSpecial, "^$1");
     return twice ? once.replace(cmdSpecial, "^$1") : once;
