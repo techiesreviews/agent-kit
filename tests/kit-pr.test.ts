@@ -1764,6 +1764,15 @@ test("dry-run on a docs-only change whose row lists only GPT says there is no mo
   assert.match(result.stdout, /^second look: dx \(docs\/guide\.md\) no model \(GPT never looks at a docs-only change\)$/m);
 });
 
+test("dry-run on a prose-only change in a project with no paths.docs leaves GPT out; its checks stay those of code", t => {
+  const settings = { project: "techies-playground", branches: { land: "dev" } };
+  const f = fixture(t, { "docs/changes/2026-11-15-note.md": "# Note\n" }, {}, { settings }), result = f.run(["--dry-run"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^tier: full /m);
+  assert.match(result.stdout, /^second look: code \(docs\/changes\/2026-11-15-note\.md\) grok-4\.7, else opencode\/deepseek-v4\.1-flash-free$/m);
+  assert.doesNotMatch(result.stdout, /^second look: .*gpt-/m);
+});
+
 test("a tests-only PR runs check, the affected unit files, lint, specs and the review", t => {
   const f = fixture(t, { "tests/a.test.ts": "// changed\n", "tests/fakes/thing.ts": "export {};\n" }), result = f.run(["--no-merge"]);
   assert.equal(result.status, 0, result.stderr); assert.match(result.stdout, /^tier: tests \(2 files, all tests\)$/m);
