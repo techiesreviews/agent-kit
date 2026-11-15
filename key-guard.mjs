@@ -104,9 +104,16 @@ function home(env) {
  */
 export function lockedPaths(cli, env = process.env, { apiRoute = false, cwd = process.cwd() } = {}) {
   const base = home(env);
-  // A path a variable names, absolute or relative to the folder the agent runs in (the worktree); "" for none.
-  const named = value => value ? resolve(cwd, value) : "";
-  const paths = homeKeyPaths.map(path => join(base, path));
+  const paths = [];
+  // A path a variable names: a relative one is read both from the folder the agent runs in (the worktree, as its own
+  // tools would) and from the lead's (as the lead's tools find it). Returns the first reading; both are locked.
+  const named = value => {
+    if (!value) return "";
+    const readings = [...new Set([resolve(cwd, value), resolve(process.cwd(), value)])];
+    paths.push(...readings.slice(1));
+    return readings[0];
+  };
+  paths.push(...homeKeyPaths.map(path => join(base, path)));
   for (const [other, list] of Object.entries(cliKeyPaths)) {
     // Codex's own login and config are hidden from its commands (its profile); the API route signs Claude in with a key.
     if (other !== cli || cli === "codex" || (cli === "claude" && apiRoute)) paths.push(...list.map(path => join(base, path)));
@@ -163,12 +170,12 @@ export function existingPaths(paths) {
  * folder the folder's mask does not cover, so its target is locked too, and a linked folder is searched the same way.
  * Each real folder is searched once, so a loop of links ends. A folder target that holds one of `keep` (HOME, the
  * worktree, its Git folder) or lies in a system folder cannot be hidden without breaking the run: it is returned in
- * `unsafe`. A search past `limit` entries in all stops and says so in `tooLarge` (the key path it was searching), since a
+ * `unsafe`; a folder that cannot be listed (it could hide a link) in `unlisted`. A search past `limit` entries in all stops and says so in `tooLarge` (the key path it was searching), since a
  * search cut short could miss a link. Folders in `skip` (the runtime folder, terminal and X sockets: sockets, not keys)
  * are not searched.
  */
 export function linkTargets(paths, { skip = [], keep = [], limit = 200_000 } = {}) {
-  const found = [...paths], unsafe = [];
+  const found = [...paths], unsafe = [], unlisted = [];
   let tooLarge = null, count = 0, searching = null;
   const roots = ["/", "/var", "/home", "/tmp", "/run", "/proc", "/sys", "/dev", "/nix", "/snap"];
   const system = ["/usr", "/etc", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/opt", "/boot", "/proc", "/sys", "/dev"];
@@ -191,7 +198,7 @@ export function linkTargets(paths, { skip = [], keep = [], limit = 200_000 } = {
     seen.add(real);
     // A folder that cannot be listed could hide a link: the search is not complete, so the run is refused.
     try { entries = readdirSync(folder, { withFileTypes: true }); }
-    catch (error) { if (error.code !== "ENOENT") unsafe.push(`${folder} (cannot be listed: ${error.code})`); return; }
+    catch (error) { if (error.code !== "ENOENT") unlisted.push(`${folder} (${error.code})`); return; }
     count += entries.length;
     if (count > limit) { tooLarge = searching; return; }
     for (const entry of entries) {
@@ -209,7 +216,7 @@ export function linkTargets(paths, { skip = [], keep = [], limit = 200_000 } = {
       else if (info.isDirectory()) walk(path);
     } catch { /* Not there. */ }
   }
-  return { paths: [...new Set(found)], unsafe, tooLarge };
+  return { paths: [...new Set(found)], unsafe, unlisted, tooLarge };
 }
 
 /**
@@ -363,10 +370,11 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
   if (!keyGuardOn(env)) return { off: true, env: {}, wrap: (command, args) => [command, args], close() {} };
   const uid = typeof process.getuid === "function" ? process.getuid() : -1;
   const sockets = [env.XDG_RUNTIME_DIR || `/run/user/${uid}`, `/tmp/tmux-${uid}`, "/run/screen", "/tmp/.X11-unix"];
-  const { paths, unsafe, tooLarge } = linkTargets(lockedPaths(cli, env, { apiRoute, cwd: worktree }), { skip: sockets,
+  const { paths, unsafe, unlisted, tooLarge } = linkTargets(lockedPaths(cli, env, { apiRoute, cwd: worktree }), { skip: sockets,
     // Compared with the links' real targets, so through any link on the way (~/Projects -> /data/Projects).
     keep: [home(env), worktree, common].filter(Boolean).map(path => { try { return realpathSync(path); } catch { return resolve(path); } }) });
-  if (unsafe.length) throw new Error(`cannot lock the key files for this ${kind}: a key folder links to a folder the lock cannot hide, or cannot be searched (${unsafe.join(", ")}); move the keys into a folder of their own, or set ASE_KEY_GUARD=off to run without the lock`);
+  if (unsafe.length) throw new Error(`cannot lock the key files for this ${kind}: a key folder links to a folder the lock cannot hide (${unsafe.join(", ")}); move the keys into a folder of their own, or set ASE_KEY_GUARD=off to run without the lock`);
+  if (unlisted.length) throw new Error(`cannot lock the key files for this ${kind}: ${unlisted.join(", ")} cannot be read to look for links; give it back to your user (sudo chown -R $USER <folder>) or remove it, or set ASE_KEY_GUARD=off to run without the lock`);
   if (tooLarge) throw new Error(`cannot lock the key files for this ${kind}: ${tooLarge} holds too many files to search for links (over 200000 in the key folders); clear old files there, or set ASE_KEY_GUARD=off to run without the lock`);
   const scrub = scrubbedEnv(cli, env, { apiRoute, model });
   // Codex's own sandbox shares the network too, so the display warning (when bubblewrap can check it) applies to it.
