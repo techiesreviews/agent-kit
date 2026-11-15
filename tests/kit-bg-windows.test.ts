@@ -435,6 +435,32 @@ test("go on Windows gives 1 for a job's own exit code above 255, so a shell neve
   assert.match(last(big), /^RESULT: fail go win-big exit 3221225477 \(the job's own code; kit go gives 1 for it\); see /);
 });
 
+test("a Windows wrapper whose command process died never gives up on the list while the work runs, so its time limit holds", async t => {
+  const f = fixture(t);
+  const ready = join(f.root, "ready");
+  const never = join(f.root, "never");
+  const broken = join(f.root, "win.log.broken");
+  t.after(() => rmSync(broken, { force: true }));
+  ok(f.bg("win-no-give-up", "--max", "16", "--", process.execPath, "-e", `require("fs").writeFileSync(${JSON.stringify(ready)}, String(process.pid)); ${holdUntil(never)}`));
+  await until(() => existsSync(ready));
+  const work = Number(readFileSync(ready, "utf8"));
+  t.after(() => { if (live(work)) process.kill(work, "SIGKILL"); });
+  const directory = f.directory("win-no-give-up");
+  await until(() => existsSync(join(directory, "work")));
+  const command = JSON.parse(readFileSync(join(directory, "members"), "utf8")).members[0].pid;
+  writeFileSync(broken, "");
+  process.kill(command, "SIGKILL");
+  await until(() => !live(command));
+  await delay(13000);
+  assert.ok(live(work));
+  assert.equal(existsSync(join(directory, "exit")), false, "the wrapper gave up while the work runs");
+  assert.doesNotMatch(readFileSync(join(directory, "log"), "utf8"), /gave up/);
+  rmSync(broken);
+  await until(() => existsSync(join(directory, "exit")), 20000);
+  assert.ok(!live(work));
+  assert.equal(readFileSync(join(directory, "exit"), "utf8").trim(), "143");
+});
+
 test("a Windows time limit whose taskkill fails tries again until the job's tree has ended", async t => {
   const f = fixture(t);
   writeFileSync(join(f.root, "win.log.taskkill-fails"), "");

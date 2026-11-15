@@ -117,14 +117,20 @@ async function wrapper(kind, directory, cwd, command) {
   // Recheck the original group after every await and before terminal records.
   // The supervisor excludes the leader to avoid waiting on each other.
   const others = () => windows ? tree().length > 0 : kitJobGroup(pgid).some(member => member.pid !== pgid && member.pid !== process.pid);
-  // On Windows a list that cannot be read (PowerShell failed) is looked at again; after ten failures in a row the
-  // job's own status stands, and the log says why its leftover processes were not waited for.
+  // On Windows a list that cannot be read (PowerShell failed) is looked at again; after ten failures in a row, once
+  // no pinned process is alive (process.kill(pid, 0) needs no list), the job's own status stands, and the log says why
+  // its leftover processes were not waited for. While a pin may still run (the work, should the command process have
+  // died), the wrapper keeps looking, and its time limit with it.
+  const pinned = () => (kind === "--wrapper" ? kitJobPins({ directory, pid: process.pid, started }) : []).some(({ pid }) => {
+    if (pid === process.pid) return false;
+    try { process.kill(pid, 0); return true; } catch (error) { return error.code === "EPERM"; }
+  });
   for (let failures = 0; ;) {
     try { if (!others()) break; failures = 0; }
     catch (error) {
       if (!windows) throw error;
       if (++failures === 1) console.error(`kit bg: ${error.message}; looking again`);
-      if (failures === 10) { console.error("kit bg: gave up waiting for the job's leftover processes after 10 failed process lists"); break; }
+      if (failures >= 10 && !pinned()) { console.error(`kit bg: gave up waiting for the job's leftover processes after ${failures} failed process lists`); break; }
     }
     await delay(poll);
   }
