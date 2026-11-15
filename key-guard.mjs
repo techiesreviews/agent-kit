@@ -153,6 +153,17 @@ export function withLinkTargets(paths, skip = []) {
   return [...new Set(found)];
 }
 
+/**
+ * The paths for Codex's profile: those there now, each link replaced by the file it points at. Codex's sandbox cannot
+ * mask a link itself (kit review's Codex home links auth.json to the real login; masking the link stopped the review
+ * before it started), and a dangling link points at nothing to hide.
+ */
+export function codexPaths(paths) {
+  return [...new Set(existingPaths(paths).flatMap(path => {
+    try { return lstatSync(path).isSymbolicLink() ? [realpathSync(path)] : [path]; } catch { return []; }
+  }))];
+}
+
 // A path and the ones inside it: a masked folder hides what is inside, so only the outermost is mounted.
 function inside(path, folder) {
   return path === folder || path.startsWith(folder.endsWith(sep) ? folder : folder + sep);
@@ -292,7 +303,7 @@ export function keyGuard({ cli, kind, common, env = process.env, apiRoute = fals
   const paths = withLinkTargets(locked, ["/tmp", "/run", env.XDG_RUNTIME_DIR].filter(Boolean));
   const scrub = scrubbedEnv(cli, env, { apiRoute, model });
   // Codex's own sandbox shares the network too, so the display warning (when bubblewrap can check it) applies to it.
-  if (cli === "codex") return { env: scrub, codex: codexProfile(kind, common, existingPaths(paths)), warning: keyGuardWarning(env), wrap: (command, args) => [command, args], close() {} };
+  if (cli === "codex") return { env: scrub, codex: codexProfile(kind, common, codexPaths(paths)), warning: keyGuardWarning(env), wrap: (command, args) => [command, args], close() {} };
   const problem = bwrapWorks(env);
   if (problem) throw new Error(`cannot lock the key files for this ${kind}: ${problem}; or set ASE_KEY_GUARD=off to run without the lock`);
   // With the API route the wrapper turns on Claude's own command sandbox (bubblewrap too), which cannot start inside
