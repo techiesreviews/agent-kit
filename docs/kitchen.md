@@ -370,7 +370,7 @@ OpenCode settings (default model, global instructions) do not apply to the revie
   features does not). A change that matches those paths but shows a person nothing new lands with
   `kit pr --not-visible "<reason>"` (refused when `kit ux` tried that very change and it did not
   pass; a run whose reviewer did not finish is no such verdict); `--waive` does not cover the UX
-  check. A project with no feature list for `kit ux` (`docs/agents/features.md`) gets
+  check. A project with no feature list for `kit ux` (`kit ux --help` names the file) gets
   `UX check: skipped`, and a change no listed feature covers gets `UX check: nothing to try`, never
   "ok". `kit slice` keeps its own UX step after the code review: broken gets one fix round and stops
   the slice only if still broken, looks off gets one fix round and then lands with UX follow-ups in
