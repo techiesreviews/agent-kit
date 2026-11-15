@@ -4,7 +4,7 @@ import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtemp
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
-import { checkSteps, classify, featureListGuard, focusedUnitFiles, parseChanges, visiblePath } from "../pr-tier.mjs";
+import { checkSteps, classify, docsOnly, featureListGuard, focusedUnitFiles, parseChanges, visiblePath } from "../pr-tier.mjs";
 import { coverageHash, saveUxResult, uxGuard, visibleFiles } from "../ux-gate.mjs";
 import { sameReviewPatch } from "../review-findings.mjs";
 import { forEachAwait } from "./support/await-race.ts";
@@ -1771,6 +1771,19 @@ test("dry-run on a prose-only change in a project with no paths.docs leaves GPT 
   assert.match(result.stdout, /^tier: full /m);
   assert.match(result.stdout, /^second look: code \(docs\/changes\/2026-11-15-note\.md\) grok-4\.7, else opencode\/deepseek-v4\.1-flash-free$/m);
   assert.doesNotMatch(result.stdout, /^second look: .*gpt-/m);
+});
+
+test("docs-only for GPT: paths.docs, else a prose file that paths.tests and paths.css leave as code, even beside a paths.docs", () => {
+  const change = (...paths: string[]) => paths.map(path => ({ status: "M", path }));
+  const tested = { paths: { tests: ["^tests/"] } };
+  assert.equal(docsOnly(change("docs/a.md"), tested), true);
+  assert.equal(docsOnly(change("tests/README.md"), tested), false);
+  assert.equal(docsOnly(change("styles/notes.md"), { paths: { css: ["^styles/"] } }), false);
+  assert.equal(docsOnly([], tested), false);
+  // On top of the project's own paths.docs: a prose file outside it still counts.
+  const own = { paths: { docs: ["^docs/"] } };
+  assert.equal(docsOnly(change("docs/guide.txt", "notes/x.md"), own), true);
+  assert.equal(docsOnly(change("notes/x.md", "src/x.ts"), own), false);
 });
 
 test("a tests-only PR runs check, the affected unit files, lint, specs and the review", t => {
