@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { checkSteps, classify, featureListGuard, focusedUnitFiles, parseChanges, visiblePath } from "../pr-tier.mjs";
-import { featureListHash, saveUxResult, uxGuard, visibleFiles } from "../ux-gate.mjs";
+import { coverageHash, saveUxResult, uxGuard, visibleFiles } from "../ux-gate.mjs";
 import { sameReviewPatch } from "../review-findings.mjs";
 import { forEachAwait } from "./support/await-race.ts";
 import { kitEnv } from "./support/kit-env.ts";
@@ -1891,11 +1891,12 @@ test("the UX guard: a visible change needs a kit ux result for the files as they
     assert.deepEqual([stale.ok, stale.line], [false, `UX check: out of date; ${path} changed since kit ux ran at 0123456`]);
     assert.match(stale.problem, /^the visible change is not the one kit ux checked \(.* changed since it ran at 0123456\); run `scripts\/agents\/kit ux` again$/);
   }
-  // The feature list changed since kit ux read it (a feature added for the new screen, say): out of date too, also for
-  // a result that had nothing to try, and for one saved before the list was kept.
+  // The listed features that cover the change are not the ones kit ux tried (one added for the new screen, say): out
+  // of date too, also for a result that had nothing to try, and for one saved without them.
   for (const old of [record, { ...record, summary: "no listed feature touched", nothing: true }, { ...record, list: undefined }]) {
     const relisted = guard({ record: old, featureList: "eee" });
-    assert.deepEqual([relisted.ok, relisted.line], [false, "UX check: out of date; docs/agents/features.md changed since kit ux ran at 0123456"]);
+    assert.deepEqual([relisted.ok, relisted.line], [false, "UX check: out of date; the features in docs/agents/features.md that cover the change are not the ones it tried (kit ux ran at 0123456)"]);
+    assert.equal(relisted.problem, "the features in docs/agents/features.md that cover the change are not the ones it tried (kit ux ran at 0123456); run `scripts/agents/kit ux` again");
   }
   // A result that did not pass, or that left the review or some features out, is no pass.
   const failed = guard({ record: { ...record, ok: false, summary: "1 features tried, 0 scripted findings, 0 fine, 0 looks off, 1 broken, broken: F-media-02" } });
@@ -1929,7 +1930,7 @@ const visibleChange = { "src/styles/app.css": "a { color: var(--ink); }\n", "doc
 /** Saves a kit ux result for the fixture's branch as kit ux would, for the visible files as they are now. */
 function uxResult(f: ReturnType<typeof fixture>, fields: Record<string, unknown> = {}) {
   const settings = JSON.parse(readFileSync(join(f.root, "scripts/agents/kit.json"), "utf8"));
-  saveUxResult(f.main, { branch: "feature/kit-pr", head: f.git("rev-parse", "HEAD"), files: visibleFiles(f.root, "origin/dev", settings), list: featureListHash(f.root), ok: true,
+  saveUxResult(f.main, { branch: "feature/kit-pr", head: f.git("rev-parse", "HEAD"), files: visibleFiles(f.root, "origin/dev", settings), list: coverageHash(f.root, "origin/dev"), ok: true,
     summary: "1 features tried, 0 scripted findings, 1 fine, 0 looks off, 0 broken", partial: null, ...fields });
 }
 
@@ -1971,11 +1972,11 @@ test("a visible change lands with a fresh kit ux result or a reason it is not vi
   const untried = checked.run(["--no-merge"]);
   assert.equal(untried.status, 0, untried.stdout + untried.stderr);
   assert.match(untried.stdout, /^UX check: nothing to try \(kit ux at [0-9a-f]{7}: no feature in docs\/agents\/features\.md covers src\/styles\/app\.css\)$/m);
-  checked.commit("List the sheet", "docs/agents/features.md", "# Feature list\n\n### F-style-01 Sheet\n- Files: `src/styles/app.css`\n");
+  checked.commit("List the sheet", "docs/agents/features.md", "# Feature list\n\n### F-style-01 Sheet\n- Try: Open it.\n- Good: Calm.\n- Files: `src/styles/app.css`\n");
   const listed = checked.run(["--no-merge"]);
   assert.equal(listed.status, 1);
-  assert.match(listed.stdout, /^UX check: out of date; docs\/agents\/features\.md changed since kit ux ran at [0-9a-f]{7}$/m);
-  assert.match(listed.stdout, /RESULT: fail ux: the visible change is not the one kit ux checked \(docs\/agents\/features\.md changed since it ran at [0-9a-f]{7}\); run `scripts\/agents\/kit ux` again$/m);
+  assert.match(listed.stdout, /^UX check: out of date; the features in docs\/agents\/features\.md that cover the change are not the ones it tried \(kit ux ran at [0-9a-f]{7}\)$/m);
+  assert.match(listed.stdout, /RESULT: fail ux: the features in docs\/agents\/features\.md that cover the change are not the ones it tried \(kit ux ran at [0-9a-f]{7}\); run `scripts\/agents\/kit ux` again$/m);
   // Marked not visible: any owner may say so, with a reason; without one the option is refused.
   const marked = fixture(t, visibleChange);
   const reasoned = marked.run(["--no-merge", "--not-visible", "token rename only"]);
@@ -1995,6 +1996,35 @@ test("a visible change lands with a fresh kit ux result or a reason it is not vi
   assert.doesNotMatch(cut.stdout + release.body(), /UX check:/);
   const both = release.run(["--release", "--base", "main", "--not-visible", "same look"]);
   assert.equal(both.status, 2); assert.match(both.stdout, /RESULT: fail invalid arguments: --not-visible has no use with --release: a release carries what each PR already passed/);
+});
+
+test("a rebase that brings a feature-list edit about other features keeps the kit ux result; one that covers the change does not", t => {
+  const entry = (id: string, file: string) => `### ${id} Name\n- Try: Open it.\n- Good: Calm.\n- Files: \`${file}\`\n\n`;
+  const list = (top: string, end: string) => `# Feature list\n\n${top}${entry("F-base-01", "src/base.ts")}\n\n\n\n\n## Notes\n\n${end}\n`;
+  for (const [added, covers] of [[entry("F-other-01", "src/other.ts"), false], [entry("F-style-01", "src/styles/*.css"), true]] as const) {
+    const f = fixture(t), peer = f.peer();
+    // The base holds the feature list; the branch changes a stylesheet and a line at the list's end, and kit ux checks that.
+    mkdirSync(join(peer, "docs/agents"), { recursive: true });
+    writeFileSync(join(peer, "docs/agents/features.md"), list("", "End."));
+    f.gitAt(peer, "add", "."); f.gitAt(peer, "commit", "-qm", "base list"); f.gitAt(peer, "push", "-q", "origin", "dev");
+    f.git("fetch", "-q", "origin"); f.git("rebase", "-q", "origin/dev");
+    mkdirSync(join(f.root, "src/styles"), { recursive: true });
+    f.commit("Sheet", "src/styles/app.css", "a { color: var(--ink); }\n");
+    f.commit("List note", "docs/agents/features.md", list("", "End of the list."));
+    uxResult(f);
+    // Another visible PR lands first and edits the list at its top; kit pr's own rebase brings that edit in.
+    writeFileSync(join(peer, "docs/agents/features.md"), list(added, "End."));
+    f.gitAt(peer, "commit", "-qam", "another PR's feature"); f.gitAt(peer, "push", "-q", "origin", "dev");
+    const result = f.run(["--no-merge"]);
+    assert.equal(readFileSync(join(f.root, "docs/agents/features.md"), "utf8"), list(added, "End of the list."));
+    if (covers) {
+      assert.equal(result.status, 1, result.stdout);
+      assert.match(result.stdout, /^UX check: out of date; the features in docs\/agents\/features\.md that cover the change are not the ones it tried \(kit ux ran at [0-9a-f]{7}\)$/m);
+    } else {
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      assert.match(result.stdout, /^UX check: ok \(kit ux at [0-9a-f]{7}: /m);
+    }
+  }
 });
 
 test("a visible file the branch deletes counts as checked once kit ux saw it gone, and a failed result is not talked away", t => {

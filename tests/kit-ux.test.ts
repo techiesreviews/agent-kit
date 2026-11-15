@@ -7,7 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
 import { kitEnv } from "./support/kit-env.ts";
-import { readUxResult, uxGuard, visibleFiles } from "../ux-gate.mjs";
+import { coverageHash, readUxResult, uxGuard, visibleFiles } from "../ux-gate.mjs";
 
 const script = resolve("kit.d/ux"), kit = resolve("kit");
 // Node loads this extensionless executable as ESM; a URL keeps tsx from resolving it as TS.
@@ -1079,8 +1079,12 @@ test("kit ux saves its result for the branch, with the visible files as it check
   const untried = run();
   assert.equal(untried.result, "RESULT: ok ux nothing visible touched");
   assert.match(untried.stdout, /^note: src\/new-panel\.ts is a visible path, but no listed feature covers the change, so nothing was tried$/m);
+  put("src/other-panel.ts", "export {};\n");
+  assert.match(run().stdout, /^note: src\/new-panel\.ts and 1 more are visible paths, but no listed feature covers the change, so nothing was tried$/m);
+  rmSync(join(root, "src/other-panel.ts"));
+  assert.equal(run().status, 0);
   const bare = saved();
-  assert.equal(bare.list, git("hash-object", "docs/agents/features.md"));
+  assert.equal(bare.list, coverageHash(root, "origin/dev"));
   assert.deepEqual([bare.nothing, bare.files], [true, { "src/new-panel.ts": git("hash-object", "src/new-panel.ts") }]);
   assert.deepEqual(uxGuard({ branch: "build/sf-1-panel", files: bare.files, record: bare, featureList: bare.list }),
     { ok: true, line: `UX check: nothing to try (kit ux at ${git("rev-parse", "--short=7", "HEAD")}: no feature in docs/agents/features.md covers src/new-panel.ts)` });
@@ -1095,6 +1099,16 @@ test("kit ux saves its result for the branch, with the visible files as it check
   assert.equal(record.partial, null);
   assert.deepEqual(record.files, Object.fromEntries(["src/new-panel.ts", "src/page-builder/media-library-filter.ts", "src/page-builder/media-picker.css"].map(path => [path, git("hash-object", path)])));
   assert.ok(record.bundle.startsWith(join(root, ".scratch/ux/ux-test/")), record.bundle);
+  // The features that cover the change are on the result: another hash than with nothing covered, and it moves when
+  // one of those features is edited, not when the list gains a feature about other files.
+  assert.equal(record.list, coverageHash(root, "origin/dev"));
+  assert.notEqual(record.list, bare.list);
+  const listText = readFileSync(join(root, "docs/agents/features.md"), "utf8");
+  put("docs/agents/features.md", `${listText}\n### F-other-09 Other\n- Try: Open it.\n- Good: Calm.\n- Files: \`src/other/*.ts\`\n`);
+  assert.equal(coverageHash(root, "origin/dev"), record.list);
+  put("docs/agents/features.md", listText.replace("### F-media-02 ", "### F-media-02 Renamed "));
+  assert.notEqual(coverageHash(root, "origin/dev"), record.list);
+  put("docs/agents/features.md", listText);
   // The same files once committed give the same hashes, so the result stays the one for this change.
   git("add", "."); git("commit", "--quiet", "-m", "work");
   assert.deepEqual(visibleFiles(root, "origin/dev", { paths: { visible: ["^src/"] } }), record.files);

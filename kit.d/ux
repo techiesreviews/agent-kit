@@ -5,7 +5,7 @@ import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, 
 import { basename, dirname, join, matchesGlob, normalize, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { citedRules, parseRules, parseUxResult, replacedIds, uxBrief, uxCounts, uxReport } from "../ux-brief.mjs";
-import { featureListHash, saveUxResult, visibleFiles } from "../ux-gate.mjs";
+import { coverageHash, parseFeatures, saveUxResult, touchedFeatures, visibleFiles } from "../ux-gate.mjs";
 
 const { kitHome, kitRoot, kitMainRoot, kitOwner, kitResult, kitScore, kitSettingsFile, scoreCost } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
@@ -38,10 +38,11 @@ they disagree, and a project entry with an HS id replaces that house rule. Saved
 ux.md (one line per feature, the rules broken), ux.json and the reviewer's run.log; counts go to the
 piece's scoreboard record as ux. --no-review skips it.
 Result for kit pr: each run saves its result for the branch under <main root>/.scratch/ux-results/, with the visible
-files (paths.visible in scripts/agents/kit.json) and the feature list as it read them. kit pr lands a visible change
-only with a result that passed for those files and that list as they are then; one made with --no-review or
---features is partial and does not count. When no listed feature covers any changed file, nothing is tried: a note
-names the visible file, and kit pr says "UX check: nothing to try".
+files (paths.visible in scripts/agents/kit.json) as it checked them and the listed features that cover the change. kit
+pr lands a visible change only with a result that passed for those files and those features as they are then (a list
+edit about other features changes nothing); one made with --no-review or --features is partial and does not count.
+When no listed feature covers any changed file, nothing is tried: a note names the visible file, and kit pr says
+"UX check: nothing to try".
 KIT_UX_SHOTS and KIT_UX_AGENT: executables replacing the project's kit shots and agent.sh, same arguments (tests).
 RESULT: ok ux <n> features tried, <m> scripted findings, <f> fine, <o> looks off, <b> broken, bundle <dir>.
 A failed try or a broken verdict fails with broken: <feature,…>; a failed screens run adds
@@ -92,27 +93,7 @@ export function parseArgs(args) {
   return flags;
 }
 
-const backticked = value => [...(value ?? "").matchAll(/`([^`]+)`/g)].map(match => match[1]);
-
-/** Feature entries of docs/agents/features.md, outside code fences. */
-export function parseFeatures(markdown) {
-  const features = [];
-  let current, fenced = false;
-  for (const line of markdown.split("\n")) {
-    if (line.startsWith("```")) { fenced = !fenced; current = undefined; continue; }
-    if (fenced) continue;
-    const heading = /^### (F-[a-z]+-\d{2}) (\S.*)$/.exec(line);
-    if (heading) { current = { id: heading[1], name: heading[2], fields: {} }; features.push(current); continue; }
-    if (line.startsWith("#")) { current = undefined; continue; }
-    const field = current && /^- ([A-Za-z]+): (\S.*)$/.exec(line);
-    if (field) current.fields[field[1]] = field[2];
-  }
-  return features.map(({ id, name, fields }) => ({
-    id, name, try: fields.Try ?? "", good: fields.Good ?? "", files: backticked(fields.Files),
-    phone: fields.Phone === "yes", steps: backticked(fields.Steps)[0] ?? null,
-  }));
-}
-
+export { parseFeatures, touchedFeatures };
 export { parseRules };
 
 /**
@@ -136,14 +117,6 @@ export function loadRules(root, home = kitHome()) {
   return rules;
 }
 
-
-/** Features whose Files globs match a changed path, each with the paths that matched. */
-export function touchedFeatures(features, changed) {
-  return features.flatMap(feature => {
-    const matched = changed.filter(path => feature.files.some(glob => matchesGlob(path, glob)));
-    return matched.length ? [{ ...feature, matched }] : [];
-  });
-}
 
 export function selectFeatures(features, changed, { all = false, features: ids = [] } = {}) {
   if (all) return features;
@@ -590,14 +563,15 @@ async function main() {
     const selected = selectFeatures(features, changed, flags);
     // What kit pr reads before it lands a visible change: this run's result for the branch, with the visible files as
     // they are now. A run without the review, or of named features only, did not check the whole change.
-    const visible = visibleFiles(root, flags.base, settings), list = featureListHash(root);
+    const visible = visibleFiles(root, flags.base, settings), list = coverageHash(root, flags.base);
     const saveResult = (ok, summary, more = {}) => {
       if (startBranch !== "detached") saveUxResult(kitMainRoot(), { branch: startBranch, head: startHead, files: visible, list, ok, summary, partial: null, ...more });
     };
     if (!selected.length) {
       saveResult(true, "no listed feature touched", { nothing: true });
       // The RESULT words are the ones kit slice reads; a visible file no feature covers is said on a line of its own.
-      if (Object.keys(visible).length) console.log(`note: ${Object.keys(visible)[0]} is a visible path, but no listed feature covers the change, so nothing was tried`);
+      const seen = Object.keys(visible);
+      if (seen.length) console.log(`note: ${seen[0]}${seen.length > 1 ? ` and ${seen.length - 1} more` : ""} ${seen.length > 1 ? "are visible paths" : "is a visible path"}, but no listed feature covers the change, so nothing was tried`);
       kitResult("ok", "ux nothing visible touched");
       return 0;
     }
