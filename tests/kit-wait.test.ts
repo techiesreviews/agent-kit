@@ -660,7 +660,7 @@ test("ci abbreviated SHA expands and stays pinned when branch head differs", asy
 
 test("ci short SHA expands through the project's own git first, without asking GitHub", async (t) => {
   const fixture = fakeGh(t, "local");
-  const git = (...args: string[]) => spawnSync("git", ["-C", fixture.project, ...args], { encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
+  const git = (...args: string[]) => spawnSync("git", ["-C", fixture.project, ...args], { encoding: "utf8", env: { ...kitEnv(), GIT_CONFIG_GLOBAL: "/dev/null" } });
   for (const args of [["init", "-q"], ["remote", "add", "origin", "https://github.com/acme/site.git"],
     ["-c", "user.name=t", "-c", "user.email=t@example.test", "commit", "-q", "--allow-empty", "-m", "one"]])
     assert.equal(git(...args).status, 0);
