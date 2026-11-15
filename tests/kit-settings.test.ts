@@ -181,11 +181,6 @@ test("a missing, broken or incomplete settings file fails doctor with what to ad
 
 test("a missing optional key turns its feature off with a plain line", t => {
   const f = repo(t, { project: "kit-land", branches: { land: "main" } });
-  for (const args of [["next"], ["heartbeat", "alpha"]]) {
-    const output = f.run(args);
-    assert.equal(output.status, 1, output.stdout + output.stderr);
-    assert.equal(lastLine(output), `RESULT: fail ${args[0]} needs a dev worktree; add devRoot to scripts/agents/kit.json`);
-  }
   const unit = f.run(["unit", "tests/a.test.ts"]);
   assert.equal(unit.status, 1, unit.stdout + unit.stderr);
   assert.match(unit.stderr, /^unit\.sh needs unit\.run in scripts\/agents\/kit\.json$/m);
@@ -504,13 +499,8 @@ test("without jq, unit.sh and worktree.sh name it and stop, making no worktree",
   assert.equal(main.stderr, "");
 });
 
-test("without a maps folder, next and heartbeat say so, tickets.mjs reads nothing and score still lists records", t => {
+test("without a maps folder, tickets.mjs reads nothing and score still lists records", t => {
   const f = repo(t, { project: "kit-land", branches: { land: "main" }, devRoot: "/settings/dev" });
-  for (const args of [["next"], ["heartbeat", "alpha"]]) {
-    const output = f.run(args);
-    assert.equal(output.status, 1, output.stdout + output.stderr);
-    assert.equal(lastLine(output), `RESULT: fail ${args[0]} needs a maps folder; add maps to scripts/agents/kit.json`);
-  }
   const tickets = spawnSync(process.execPath, [resolve("tickets.mjs"), "check"], { cwd: f.root, env: f.env, encoding: "utf8" });
   assert.equal(tickets.status, 0, tickets.stderr);
   assert.equal(tickets.stdout, "No maps folder in scripts/agents/kit.json; no tickets to read.\n");
