@@ -448,27 +448,21 @@ export function kitWinProcesses(pid) {
 
 /**
  * A Windows job's live processes in one snapshot: each root pinned by { pid, started } while it runs, and every
- * descendant, walked by parent pid. Windows never re-parents a process, and pids are reused, so a child counts only
- * when it started at or after its parent; a root whose pid a newer process now holds keeps only children older than
- * that holder. A process whose parent has ended (and is not a root) is no longer followed, as with taskkill /T.
+ * descendant of a live one, walked by parent pid. Windows never re-parents a process, and pids are reused, so a child
+ * counts only when it started at or after its parent. A process whose parent has ended (and is not a root) is no
+ * longer followed, as with taskkill /T: its parent pid may since have been another process's, so it cannot be told
+ * apart from that process's child.
  */
 export function kitJobTree(processes, roots) {
   const found = new Map();
-  const queued = new Set();
   const queue = [...roots];
   const byPid = new Map(processes.map(entry => [entry.pid, entry]));
   for (let node; (node = queue.shift());) {
     const holder = byPid.get(node.pid);
-    const same = holder?.started === node.started;
-    if (same) found.set(node.pid, holder);
-    const from = BigInt(node.started), below = holder && !same ? BigInt(holder.started) : null;
-    for (const entry of processes) {
-      if (entry.ppid !== node.pid || entry.pid === node.pid || queued.has(entry.pid)) continue;
-      const started = BigInt(entry.started);
-      if (started < from || (below !== null && started >= below)) continue;
-      queued.add(entry.pid);
-      queue.push({ pid: entry.pid, started: entry.started });
-    }
+    if (holder?.started !== node.started || found.has(node.pid)) continue;
+    found.set(node.pid, holder);
+    for (const entry of processes)
+      if (entry.ppid === node.pid && entry.pid !== node.pid && BigInt(entry.started) >= BigInt(node.started)) queue.push(entry);
   }
   return [...found.values()];
 }
@@ -587,13 +581,20 @@ export function kitJobGroup(pgid) {
     .filter(member => member.pgid === pgid && member.session === pgid);
 }
 
-/** The start-time pins of a job: its leader, and the members it recorded while its leader was that same process. */
-function kitJobPins(job) {
-  const pins = [{ pid: job.pid, started: job.started }];
+/**
+ * The start-time pins of a job: its leader, and the members it recorded while its leader was that same process; on
+ * Windows also the job's command (the work record its command process writes), so the work is still the job's after
+ * the process that started it has ended.
+ */
+export function kitJobPins(job) {
+  let pins = [{ pid: job.pid, started: job.started }];
   const record = kitJobRecord(job.directory, "members");
-  if (record === null) return pins;
-  const saved = JSON.parse(record);
-  return saved.started === job.started ? pins.concat(saved.members) : pins;
+  if (record !== null) {
+    const saved = JSON.parse(record);
+    if (saved.started === job.started) pins = pins.concat(saved.members);
+  }
+  const work = kitJobPlatform() === "win32" ? kitJobRecord(job.directory, "work") : null;
+  return work === null ? pins : pins.concat(JSON.parse(work));
 }
 
 /**
@@ -608,10 +609,12 @@ export function kitJobMembers(job) {
   return verified ? kitJobGroup(job.pgid) : [];
 }
 
+/** A job's exit status: 0 to 255, or on Windows any 32-bit exit code (exception codes such as 3221225477 too). */
 export function kitJobExit(job) {
   const value = kitJobRecord(job.directory, "exit");
   if (value === null) return null;
-  if (!/^\d+$/.test(value) || Number(value) > 255) throw new Error(`invalid job exit status: ${value}`);
+  const most = kitJobPlatform() === "win32" ? 4294967295 : 255;
+  if (!/^\d+$/.test(value) || Number(value) > most) throw new Error(`invalid job exit status: ${value}`);
   return Number(value);
 }
 
