@@ -167,7 +167,9 @@ undoes a newer rule.
 The start marker carries this rule's version too (v2, v3 …).
 
 Known gap since the factory cut (2026-11-15): `kit pr` counts only fix rounds saved before the cut, so a helper's own
-rounds are not counted yet; its blockers and shoulds keep blocking until fixed or waived by name.
+rounds are not counted yet; its blockers and shoulds keep blocking until fixed or waived by name. Nor does anything
+hand a helper's declined findings to the next review: a decline goes, with its reason, in the helper's report and the PR
+text, and the lead waives a declined finding by id.
 
 A diff with no change has nothing to review and a reviewer whose CLI crashes counts as unavailable (`kit review --help`);
 what the PR's review block says after a rebase, and how a lead answers a builder's rounds: the README's Review loop
@@ -194,9 +196,8 @@ for all of Lex's projects.
 | Second look, every change, after Claude's review | per review kind (code, UX, DX, agent), first choice first, from [`second-look.json`](../second-look.json): `gpt-6.1-sol` through Codex at high effort, else `grok-4.7`, else the free `opencode/deepseek-v4.1-flash-free` | `kit pr` runs it (`kit review --second-look`); its findings block and get fix rounds like Claude's, and the PR says which model looked. Cost guard: GPT never for a docs-only change and once per PR, except as the last resort after the free OpenCode model fails (Lex, 2026-11-12); a model that cannot run hands over to the next; none can, or 25 minutes pass (`ASE_SECOND_LOOK_TIMEOUT`): `second look: skipped (<reason>)`. The whole order and its limits: `kit review --help`. The lead updates the table when new models appear |
 | UX and design review | `claude-opus-5-5`, medium | `kit ux` (step 4) |
 
-Sol never builds. `kit review` counts GPT and Grok reviews per week for the whole computer (one count
-whatever project asks; the Tuesday sweep shows the week's Grok use by project) and refuses at the limit;
-on a usage-limit `problem:` line, tell Lex the reset time and carry on with Claude.
+Sol never builds. `kit review` counts GPT and Grok reviews per week for the whole computer and refuses at the limit; on
+a usage-limit `problem:` line, tell Lex the reset time and carry on with Claude.
 
 The OpenCode second look reads only; how the kit keeps the branch's and the machine's OpenCode settings out of it:
 the README's Review loop section.
@@ -205,8 +206,7 @@ the README's Review loop section.
 
 ## The steps in detail
 
-The twelve stations of before 2026-11-15 folded into the road's steps; each old station's link lands on the step that
-holds its job now.
+The twelve old stations folded into these steps (2026-11-15); an old station's link lands on its step.
 
 <a id="1-idea"></a>
 <a id="4-tickets"></a>
@@ -216,6 +216,7 @@ holds its job now.
 - **Use:** `kit ticket` (`list` for what is already open, `create` with the source named); the context card at session
   start (about 30 lines read fresh from Lex's central memory). A project on ticket files keeps a map with its tickets
   (skills `wayfinder` and `to-tickets`; `node "$(scripts/agents/kit --home)/tickets.mjs" check` must pass), and
+  A change Lex asks for always has a card (or ticket) that opens with "Lex (YYYY-MM-DD): …", lead fixes included.
   `triage` sorts new problems (Lex's feedback, sweep findings, failing tests) into cards or tickets.
 - **Decides:** Lex, whether it is worth doing; the lead proposes where it goes. Choices Lex should see are marked
   "Check with Lex".
@@ -272,7 +273,8 @@ holds its job now.
   prototype.
 - **Checks:** `kit unit --affected` and the project's checks (`checks` in the settings: `check` when types move,
   `lint`, `test`) while building, plus the project's own check commands for the change (extras); T3 `preview_*` tools
-  to try a change by hand. A visible change (one matching `paths.visible`) gets `kit ux` once it is built and the
+  to try a change by hand. A visible change also gets the project's user-level check and the screenshots its extras
+  name. A visible change (one matching `paths.visible`) gets `kit ux` once it is built and the
   feature list is updated: the builder fixes what it calls broken or looks off, or says why not.
 - **Decides:** the builder, inside the card's scope; anything outside it goes back to the lead.
 - **Proof:** one proof line per Done when item in the report and the PR text (step 4 of
@@ -308,7 +310,8 @@ holds its job now.
   `kit sweep` names a file flaky 3 or more times in 7 days: give it a fix card). The locks, timing files and what
   `kit pr` reads from the project's specs command: the README's Browser runs section.
 - **Evidence:** the main root's `.scratch/reviews/<owner>/<time>/`, with `findings.json` listing each finding's kind
-  (real fault, mismatch with the ticket, timing/race, style) and the builder's declined findings with reasons.
+  (real fault, mismatch with the ticket, timing/race, style); a helper's declined findings and their reasons are in its
+  report and the PR text.
 - **Never:** a raw `git push` to the release branch (or a landing branch that is also the release branch, as on a live
   site); the Bash hook refuses it and names `kit pr`.
 - **Done when:** the PR is merged into the landing branch; on Orbit `kit pr` moves the card to Done with the PR and its

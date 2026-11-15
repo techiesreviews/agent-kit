@@ -208,7 +208,7 @@ test("the Messages to Lex rule's text changes only with a new version (projects 
   assert.equal(createHash("sha256").update(rule).digest("hex"), hashes[version], `the rule's text changed but version v${version} did not`);
 });
 
-test("the Messages to Lex rule wins over the whole rulebook, names the status-note exception, and step 10 points to it", () => {
+test("the Messages to Lex rule wins over the whole rulebook, names the status-note exception, and step 6 points to it", () => {
   const text = read(shared).replace(/\n\s+/g, " ");
   for (const words of ["wins over every other line of this rulebook for what a message to him holds and how it reads",
     "The two-line status notes (the after-merge note, the Board drive's check-in) keep their two-line shape (done, then running/next); when the lead passes them on, anything he must answer or do goes first",
@@ -228,7 +228,7 @@ test("the release step's direct-project line says which steps a docs-only or CSS
   const text = read(shared).replace(/\n\s+/g, " ");
   const station = text.slice(text.indexOf("### 7. His go"), text.indexOf("**Release check:**"));
   assert.ok(station.includes("its merge into main is the release as soon as the project's `checks` pass for a code-size change (docs and CSS changes run lighter steps) and the review passes"), station);
-  assert.ok(!station.includes("as soon as checks and review pass"), "station 12 still says only 'checks and review pass'");
+  assert.ok(!station.includes("as soon as checks and review pass"), "step 7 still says only 'checks and review pass'");
 });
 
 test("the documented rollback works on commits landed by rebase: it puts main back to its earlier tree", () => {
