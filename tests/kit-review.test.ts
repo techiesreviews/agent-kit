@@ -1950,6 +1950,24 @@ test("a docs-only change never gets a GPT second look; with GPT alone in the ord
   assert.deepEqual(f.calls().map(call => call.cli), ["grok"]);
 });
 
+test("a prose-only change counts as docs-only for GPT even when the project sets no paths.docs; code beside it still gets GPT", (t) => {
+  // techies-playground sets no paths.docs, and its docs-only PR #34 (docs/changes/*.md) got a GPT second look as code.
+  const f = fixture(t); withOpencode(f);
+  const table = gptTable(f);
+  writeFileSync(join(f.root, "scripts/agents/kit.json"), JSON.stringify({ project: "techies-playground", branches: { land: "dev" }, standards: "CODING_STANDARDS.md" }));
+  f.git("add", "scripts/agents/kit.json"); f.git("commit", "-m", "no paths.docs");
+  commitFiles(f, ["docs/changes/2026-11-15-note.md", "README.markdown"]);
+  const docs = f.run(["--commit", "HEAD", "--second-look"], { ASE_SECOND_LOOK: table, ASE_REVIEW_BUDGET_GPT: "999" });
+  assert.equal(docs.status, 0, docs.stdout + docs.stderr);
+  assert.match(docs.stdout, /^second look: gpt-6\.1-sol not used \(docs-only change\)$/m);
+  assert.deepEqual(f.calls().map(call => call.cli), ["grok"]);
+  commitFiles(f, ["docs/changes/2026-11-16-note.md", "src/app.js"]);
+  const code = f.run(["--commit", "HEAD", "--second-look"], { ASE_SECOND_LOOK: table, ASE_REVIEW_BUDGET_GPT: "999" });
+  assert.equal(code.status, 0, code.stdout + code.stderr);
+  assert.doesNotMatch(code.stdout, /docs-only/);
+  assert.deepEqual(f.calls().map(call => call.cli), ["grok", "codex"]);
+});
+
 test("kit review --second gpt asks GPT on purpose, even after the PR's GPT look, with no fallback when GPT cannot run", (t) => {
   const f = fixture(t); withOpencode(f);
   const table = gptTable(f);
