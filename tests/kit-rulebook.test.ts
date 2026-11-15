@@ -180,8 +180,8 @@ test("the shared rulebook names no editor-only fact and links only inside the ki
     if (/^https?:/.test(target)) continue;
     assert.ok(resolve(dirname(shared), target).startsWith(`${resolve(".")}/`), `${target} leaves the kit`);
   }
-  // kit next reads these two rows; their first backticked word is the model.
-  assert.match(text, /^\| Builder, every slice \| `claude-[^`]+`/m);
+  // kit brief reads these two rows; their first backticked word is the model.
+  assert.match(text, /^\| Builder, every build \| `claude-[^`]+`/m);
   assert.match(text, /^\| Review, every change \| `claude-[^`]+`/m);
 });
 
@@ -211,7 +211,7 @@ test("the Messages to Lex rule's text changes only with a new version (projects 
 test("the Messages to Lex rule wins over the whole rulebook, names the status-note exception, and step 10 points to it", () => {
   const text = read(shared).replace(/\n\s+/g, " ");
   for (const words of ["wins over every other line of this rulebook for what a message to him holds and how it reads",
-    "The two-line status notes (the after-merge note, `kit heartbeat`) keep their two-line shape (done, then running/next); when the lead passes them on, anything he must answer or do goes first",
+    "The two-line status notes (the after-merge note, the Board drive's check-in) keep their two-line shape (done, then running/next); when the lead passes them on, anything he must answer or do goes first",
     "a two-line plain note to Lex (see [Messages to Lex](#messages-to-lex))"])
     assert.ok(text.includes(words), `the rulebook lacks: ${words}`);
 });
@@ -219,14 +219,14 @@ test("the Messages to Lex rule wins over the whole rulebook, names the status-no
 test("the rulebook lets a direct project go live mid-week without \"ship it\", and says what the lead tells Lex about his two sites", () => {
   const text = read(shared).replace(/\n\s+/g, " ");
   for (const words of ["goes live mid-week, as soon as the gates `kit pr` applies to that change pass, without Lex's \"ship it\"", "techies-reviews and lexvd-site, the lead tells Lex in plain words right after each change goes live",
-    "`kit rollback <first commit> [<last commit>]`", "cuts a branch at origin/main, runs `git revert --no-edit <first>^..<last>` there and lands it with `kit pr`", "the project's `checks` are the gate", "A direct project (`branches.direct`) is the exception: the release does not wait for his go", "a direct project's own site excepted", "(a direct project has no release to wait for)", "through the same gates as any `kit pr`", "`kit next --start` still pushes its docs-only ticket-claim commit straight to main", "belongs in its `checks` (which `kit pr` runs for code-size changes; docs and CSS changes run lighter steps, so a check that must guard those needs a CI workflow on pull requests); otherwise the lead runs it right after the merge, rolls the change back if it fails", "The exception is a direct project (`branches.direct`): it has no release step and needs no \"ship it\"",
+    "`kit rollback <first commit> [<last commit>]`", "cuts a branch at origin/main, runs `git revert --no-edit <first>^..<last>` there and lands it with `kit pr`", "the project's `checks` are the gate", "A direct project (`branches.direct`) is the exception: the release does not wait for his go", "a direct project's own site excepted", "(a direct project has no release to wait for)", "through the same gates as any `kit pr`", "belongs in its `checks` (which `kit pr` runs for code-size changes; docs and CSS changes run lighter steps, so a check that must guard those needs a CI workflow on pull requests); otherwise the lead runs it right after the merge, rolls the change back if it fails", "The exception is a direct project (`branches.direct`): it has no release step and needs no \"ship it\"",
     "a direct project goes live on its own merge", "not in a direct project, whose landing branch is live"])
     assert.ok(text.includes(words), `the rulebook lacks: ${words}`);
 });
 
-test("station 12's direct-project line says which steps a docs-only or CSS change skips, as station 11 does", () => {
+test("the release step's direct-project line says which steps a docs-only or CSS change skips, as step 6 does", () => {
   const text = read(shared).replace(/\n\s+/g, " ");
-  const station = text.slice(text.indexOf("### 12. Release"), text.indexOf("**Release check:**"));
+  const station = text.slice(text.indexOf("### 7. His go"), text.indexOf("**Release check:**"));
   assert.ok(station.includes("its merge into main is the release as soon as the project's `checks` pass for a code-size change (docs and CSS changes run lighter steps) and the review passes"), station);
   assert.ok(!station.includes("as soon as checks and review pass"), "station 12 still says only 'checks and review pass'");
 });
@@ -279,4 +279,43 @@ test("the Review loop rule promises only what happens: an incomplete review is r
   assert.ok(!/is run again|and is run again/.test(text.split("## Review loop")[1]?.split("## Who cooks")[0] ?? ""), "no promise that the kit runs it again");
   assert.ok(text.includes("Known limits of the review loop today (waived follow-ups)"));
   assert.ok(text.includes('"disputed after two replies" is not detected'));
+});
+
+// Trim release 2 (TOOLS-235, Lex 2026-11-14): the twelve stations folded into the road's steps. Other projects link into
+// this file by heading and their gates check those links against the kit (AGENTS.md), so every anchor the rulebook had
+// before the trim still resolves.
+const anchorsBeforeTrim = ["the-kitchen", "the-road-six-steps-and-the-grill", "house-rules", "messages-to-lex", "review-loop",
+  "who-cooks-pins-from-2026-10-22", "stations", "1-idea", "2-map-and-questions", "3-mock-up-before-any-visible-build", "4-tickets",
+  "5-hand-out", "6-build", "7-checks", "8-review", "9-land", "10-after-a-merge-note-scoreboard", "11-lexs-end-check", "12-release",
+  "skills-map", "weekly-routines", "tuesday-review", "what-waits-for-lex", "small-chores-on-free-models", "ux-confidence-ladder"];
+
+test("the shorter rulebook keeps every heading anchor other projects link to, and names the road's seven steps in detail", () => {
+  const text = read(shared), found = anchors(text);
+  for (const anchor of anchorsBeforeTrim) assert.ok(found.includes(anchor), `the rulebook lost #${anchor}`);
+  const steps = [...text.matchAll(/^### (\d+)\. (.+)$/gm)].map(([, number, name]) => `${number}. ${name}`);
+  assert.deepEqual(steps, ["1. Card", "2. Grill", "3. Prototype", "4. Build and prove", "5. Land", "6. Lex tries it", "7. His go"]);
+  // Before the trim: 550 lines, 7786 words. The road, its steps and pointers to the README and --help keep it about a third shorter.
+  const lines = text.split("\n").length, words = text.split(/\s+/).filter(Boolean).length;
+  assert.ok(lines < 430 && words < 5600, `the rulebook has ${lines} lines and ${words} words; the trim keeps it under 430 and 5600`);
+});
+
+test("the rulebook sends no one to the cut factory: kit slice, fix, next and heartbeat appear only where it says they were cut", () => {
+  const lines = read(shared).split("\n").filter(line => /kit (slice|fix|next|heartbeat)\b|kit next --start/.test(line));
+  assert.deepEqual(lines.filter(line => !/was cut on 2026-11-15/.test(line)), []);
+  assert.equal(lines.length, 1, lines.join("\n"));
+});
+
+test("a project's extras row with the old builder name still sets the builder pin", t => {
+  const root = mkdtempSync(join(tmpdir(), "kit-rulebook-pins-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, "extras.md"), "| Builder, every slice | `claude-sonnet-5-5`, high | old row name |\n");
+  const pins = (extras?: string) => spawnSync(process.execPath, ["--input-type=module", "-e",
+    `import { kitRulebookPins } from ${JSON.stringify(resolve("kit-lib.mjs"))}; console.log(JSON.stringify(kitRulebookPins(${JSON.stringify(root)}, ${JSON.stringify(extras ? { rulebookExtras: extras } : {})})));`],
+  { env: kitEnv(), encoding: "utf8" });
+  const shared = pins();
+  assert.equal(shared.status, 0, shared.stderr);
+  assert.deepEqual(JSON.parse(shared.stdout), { builder: "claude-opus-5-5", reviewer: "claude-opus-5-5" });
+  const old = pins("extras.md");
+  assert.equal(old.status, 0, old.stderr);
+  assert.deepEqual(JSON.parse(old.stdout), { builder: "claude-sonnet-5-5", reviewer: "claude-opus-5-5" });
 });
