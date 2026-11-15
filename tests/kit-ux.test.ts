@@ -1108,6 +1108,10 @@ test("kit ux saves its result for the branch, with the visible files as it check
   assert.equal(coverageHash(root, "origin/dev"), record.list);
   put("docs/agents/features.md", listText.replace("### F-media-02 ", "### F-media-02 Renamed "));
   assert.notEqual(coverageHash(root, "origin/dev"), record.list);
+  // Two covering entries that swap places in the list are the same features.
+  const [first, second] = ["F-media-01", "F-media-02"].map(id => new RegExp(`### ${id} [\\s\\S]*?\\n(?=### |$)`).exec(listText)![0]);
+  put("docs/agents/features.md", listText.replace(first, "").replace(second, `${second}${first}`));
+  assert.equal(coverageHash(root, "origin/dev"), record.list);
   put("docs/agents/features.md", listText);
   // The same files once committed give the same hashes, so the result stays the one for this change.
   git("add", "."); git("commit", "--quiet", "-m", "work");

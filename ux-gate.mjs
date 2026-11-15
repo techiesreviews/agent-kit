@@ -61,7 +61,6 @@ export function touchedFeatures(features, changed) {
   });
 }
 
-
 /**
  * One hash over the listed features that cover the change (those whose Files globs match a changed path), each with
  * its whole entry; null when the project has no feature list. It moves when a feature that covers the change is added,
@@ -71,7 +70,9 @@ export function coverageHash(root, base) {
   let list;
   try { list = readFileSync(join(root, uxFeatureList), "utf8"); }
   catch (error) { if (error.code === "ENOENT") return null; throw error; }
-  const covering = touchedFeatures(parseFeatures(list), changedPaths(root, base)).map(({ matched: _matched, ...feature }) => feature);
+  // By id, so two covering entries that only swap places in the list change nothing.
+  const covering = touchedFeatures(parseFeatures(list), changedPaths(root, base)).map(({ matched: _matched, ...feature }) => feature)
+    .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   return createHash("sha256").update(JSON.stringify(covering)).digest("hex");
 }
 
@@ -110,7 +111,7 @@ export function uxGuard({ branch, files, record, notVisible, featureList }) {
   // What kit ux read is what lands: the visible files, and the listed features that cover the change (a feature added
   // for it after kit ux ran was never tried).
   const file = mine && [...new Set([...paths, ...Object.keys(mine.files)])].sort().find(path => files[path] !== mine.files[path]);
-  const moved = file ? `${file} changed` : mine && featureList && (mine.list ?? null) !== featureList ? `the features in ${uxFeatureList} that cover the change are not the ones it tried` : null;
+  const moved = file ? `${file} changed` : mine && featureList && (mine.list ?? null) !== featureList ? `the features in ${uxFeatureList} that cover the change are not the ones kit ux tried at ${at}` : null;
   // kit ux tried exactly this change and it did not pass, in a whole run or a partial one: a person does see it, so no
   // reason makes it "not visible".
   const failed = mine && !moved && mine.ok !== true;
@@ -122,8 +123,7 @@ export function uxGuard({ branch, files, record, notVisible, featureList }) {
     problem: 'visible change without a kit ux result; run `scripts/agents/kit ux`, or pass --not-visible "<reason>" when the change shows a person nothing new' };
   if (file) return { ok: false, line: `UX check: out of date; ${file} changed since kit ux ran at ${at}`,
     problem: `the visible change is not the one kit ux checked (${file} changed since it ran at ${at}); run \`scripts/agents/kit ux\` again` };
-  if (moved) return { ok: false, line: `UX check: out of date; ${moved} (kit ux ran at ${at})`,
-    problem: `${moved} (kit ux ran at ${at}); run \`scripts/agents/kit ux\` again` };
+  if (moved) return { ok: false, line: `UX check: out of date; ${moved}`, problem: `${moved}; run \`scripts/agents/kit ux\` again` };
   if (mine.partial) return { ok: false, line: `UX check: partial; kit ux ran with ${mine.partial}`,
     problem: `kit ux ran with ${mine.partial}, so it did not check the whole change; run \`scripts/agents/kit ux\` without it` };
   if (failed) return { ok: false, line: `UX check: failed (kit ux at ${at}: ${mine.summary})`,
