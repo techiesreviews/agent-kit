@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test, { type TestContext } from "node:test";
 import { kitJob, kitJobExit, kitJobPlatform, kitJobSame, kitJobTree, kitWinBash, kitWinLaunch, kitWinProcessList } from "../kit-lib.mjs";
@@ -120,14 +120,17 @@ const cmdReading = String.raw`function cmdRun(line, env, twice) {
   return [text(chars.slice(0, end))].concat(words(rest));
 }`;
 const cmdRun = new Function(`${cmdReading}; return cmdRun;`)() as (line: string, env: Record<string, string>, twice?: boolean) => string[];
-// The fake cmd.exe writes the words its line gives into win.log.cmd (one JSON list per run) and ends like a job.
+// The fake cmd.exe writes the words its line gives the program into win.log.cmd (one JSON list per run) and ends like a job.
 const fakeCmd = `#!${process.execPath}
 const fs = require("fs");
 ${cmdReading}
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.FAKE_WIN_LOG, "cmd.exe " + args.slice(0, 3).join(" ") + "\\n");
 if (args.length !== 4 || args.slice(0, 3).join(" ") !== "/d /s /c") process.exit(2);
-fs.appendFileSync(process.env.FAKE_WIN_LOG + ".cmd", JSON.stringify(cmdRun(args[3], process.env)) + "\\n");
+// A batch file that hands on %* puts its arguments through cmd once more.
+const words = cmdRun(args[3], process.env, false);
+const twice = fs.readFileSync(words[0], "latin1").includes("%*");
+fs.appendFileSync(process.env.FAKE_WIN_LOG + ".cmd", JSON.stringify(twice ? cmdRun(args[3], process.env, true) : words) + "\\n");
 console.log("RESULT: ok cmd job");
 process.exit(Number(process.env.FAKE_CMD_EXIT ?? 0));
 `;
@@ -561,18 +564,26 @@ test("on Windows a job's first word picks how it starts: a program itself, a .cm
   const env = { PATH: [join(root, "tools"), join(root, "git/bin")].join(":") };
   file("tools/tool.exe", "MZ\x90\x00");
   file("tools/npm", "#!/bin/sh\nexec node npm-cli.js \"$@\"\n");
-  file("tools/npm.cmd", "@echo off\r\n");
+  file("tools/npm.cmd", '@"%~dp0\\node.exe" "%~dp0\\node_modules\\npm\\bin\\npm-cli.js" %*\r\n');
   file("tools/noext", "MZ\x90\x00");
   const launch = (...command: string[]) => kitWinLaunch(command, { cwd: root, env });
   // Programs, and a word not found, start as given (Node finds them).
-  for (const command of [["tool", "a"], ["tool.exe", "a"], ["noext", "a"], [process.execPath, "-e", "1"], ["missing-tool", "a"]])
+  for (const command of [["tool", "a"], ["tool.exe", "a"], [process.execPath, "-e", "1"], ["missing-tool", "a"]])
     assert.deepEqual(launch(...command), { program: command[0], args: command.slice(1), options: {} });
+  // Node adds .com or .exe to a name without one, so a Windows program without .exe cannot start: it says so.
+  assert.throws(() => launch("noext"), /noext is a Windows program without \.exe, which Node cannot start; give it the \.exe extension/);
   // In one PATH folder the .cmd comes before the bare script, as Windows looks.
   const npm = launch("npm", "install");
   assert.equal(npm.program, "cmd.exe");
   assert.deepEqual(npm.args.slice(0, 3), ["/d", "/s", "/c"]);
   assert.deepEqual(npm.options, { windowsVerbatimArguments: true });
-  assert.deepEqual(cmdRun(npm.args[3], {}), [join(root, "tools/npm.cmd"), "install"]);
+  assert.deepEqual(cmdRun(npm.args[3], {}, true), [join(root, "tools/npm.cmd"), "install"]);
+  // Programs and .cmd files come first in every folder, a bare script only after; the job's folder before PATH, as Node looks.
+  file("early/tool2", "#!/bin/sh\n");
+  file("late/tool2.exe", "MZ");
+  assert.deepEqual(kitWinLaunch(["tool2"], { cwd: root, env: { PATH: [join(root, "early"), join(root, "late")].join(":") } }).program, "tool2");
+  file("gradlew.bat", "@echo off\r\n");
+  assert.deepEqual(cmdRun(launch("gradlew", "build").args[3], {}), [join(root, "gradlew.bat"), "build"]);
   file("run.bat", "@echo off\r\n");
   assert.deepEqual(cmdRun(launch("./run.bat", "x").args[3], {}), [join(root, "run.bat"), "x"]);
   assert.equal(kitWinLaunch(["./run.bat"], { cwd: root, env: { ...env, ComSpec: "C:\\Windows\\system32\\cmd.exe" } }).program, "C:\\Windows\\system32\\cmd.exe");
@@ -605,6 +616,12 @@ test("Git Bash is found on PATH, beside git.exe or where Git for Windows install
   assert.equal(kitWinBash({ PATH: `${wslPath}:${join(git, "..")}`, SystemRoot: windowsFolder }), besideGit);
   const programFiles = file("Program Files/Git/bin/bash.exe", "MZ");
   assert.equal(kitWinBash({ PATH: wslPath, SystemRoot: windowsFolder, ProgramFiles: join(root, "Program Files") }), programFiles);
+  // The Windows folder by windir alone still marks WSL's bash.exe.
+  assert.equal(kitWinBash({ PATH: join(windowsFolder, "System32"), windir: windowsFolder }), null);
+  const w6432 = file("PF64/Git/bin/bash.exe", "MZ");
+  const x86 = file("PF86/Git/bin/bash.exe", "MZ");
+  assert.equal(kitWinBash({ PATH: "", ProgramW6432: join(root, "PF64"), ProgramFiles: join(root, "none"), "ProgramFiles(x86)": join(root, "PF86") }), w6432);
+  assert.equal(kitWinBash({ PATH: "", ProgramFiles: join(root, "none"), "ProgramFiles(x86)": join(root, "PF86") }), x86);
   const local = file("Local/Programs/Git/bin/bash.exe", "MZ");
   assert.equal(kitWinBash({ PATH: "", LOCALAPPDATA: join(root, "Local") }), local);
   const onPath = file("msys/usr/bin/bash.exe", "MZ");
@@ -618,15 +635,20 @@ test("Git Bash is found on PATH, beside git.exe or where Git for Windows install
 
 test("a .cmd job's arguments reach its program unchanged, and none reaches cmd as an operator or a variable", t => {
   const { root, file } = layout(t);
-  const job = file("my tools & more (x86)/job.cmd", "@echo off\r\n");
-  const shim = file("node_modules/.bin/tsx.cmd", "@echo off\r\n");
+  const job = file("my tools & more (x86)/job.cmd", "@echo off\r\necho %1 %2\r\n");
+  const shim = file("AppData/Roaming/npm/tsx.cmd", '@"%~dp0\\node.exe" "%~dp0\\node_modules\\tsx\\dist\\cli.mjs" %*\r\n');
   const env = { PATH: "", HOME: "C:\\Users\\lex", PATH_: "x" };
-  const nasty = ["plain", "two words", 'say "hi"', "a&b|c>d<e", "%HOME%", "100%", "%%", "caret^", "!bang!", "trail\\", 'back\\"slash',
+  const nasty = ["plain", "two words", "a&b|c>d<e", "%HOME%", "100%", "%%", "caret^", "!bang!", "trail\\", "back\\slash",
     "", "(x)", "semi;colon,comma=eq", "star*?", "back`tick", "C:\\Program Files\\x\\", "^&^|"];
-  const words = (path: string, twice = false) => cmdRun(kitWinLaunch([path, ...nasty], { cwd: root, env }).args[3], env, twice);
-  assert.deepEqual(words(job), [job, ...nasty]);
-  // An npm shim hands %* to cmd once more: escaped twice, its words still arrive unchanged.
-  assert.deepEqual(words(shim, true), [shim, ...nasty]);
+  const quotes = ['say "hi"', 'back\\"slash', 'a"&b', 'a"|b"', '"'];
+  const words = (path: string, list: string[], twice = false) => cmdRun(kitWinLaunch([path, ...list], { cwd: root, env }).args[3], env, twice);
+  assert.deepEqual(words(job, nasty), [job, ...nasty]);
+  // A batch file that hands on %* (as every npm shim does) puts its words through cmd once more: escaped twice, they
+  // still arrive unchanged, quotes too.
+  assert.deepEqual(words(shim, [...nasty, ...quotes], true), [shim, ...nasty, ...quotes]);
+  // One that reads them one by one (%1) cannot take a quote of their own safely.
+  for (const quote of quotes)
+    assert.throws(() => kitWinLaunch([job, "fine", quote], { cwd: root, env }), /reads its arguments one by one, and cmd\.exe cannot hand it an argument with a double quote safely/);
   assert.throws(() => kitWinLaunch([job, "line\nbreak"], { cwd: root, env }), /cmd\.exe cannot take an argument with a line break/);
   assert.throws(() => kitWinLaunch([job, "line\rbreak"], { cwd: root, env }), /line break/);
 });
@@ -662,8 +684,8 @@ test("bg on Windows runs a .cmd job through cmd.exe /d /s /c, its words unchange
   const f = fixture(t);
   const folder = join(f.root, "my tools & more");
   mkdirSync(folder);
-  writeFileSync(join(folder, "job.cmd"), "@echo off\r\n");
-  const words = ["two words", 'say "hi"', "a&b|c", "%PATH%", "trail\\", ""];
+  writeFileSync(join(folder, "job.cmd"), '@node "%~dp0\\job.js" %*\r\n');
+  const words = ["two words", 'say "hi"', "a&b|c", 'a"&b', "%PATH%", "trail\\", ""];
   f.env.FAKE_CMD_EXIT = "5";
   ok(f.bg("win-cmd", "--", join(folder, "job"), ...words));
   const directory = f.directory("win-cmd");
@@ -677,6 +699,9 @@ test("bg on Windows runs a .cmd job through cmd.exe /d /s /c, its words unchange
 test("bg and go on Windows refuse a shell script job plainly when Git Bash is missing, and start nothing", t => {
   const f = fixture(t);
   rmSync(join(f.root, ".bin/bash.exe"));
+  // Only the fake tools, node and the system's own folders: no Windows PATH or Git for Windows folders of this machine.
+  for (const name of ["ProgramW6432", "ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"]) delete f.env[name];
+  f.env.PATH = [join(f.root, ".bin"), dirname(process.execPath), "/usr/bin", "/bin"].join(":");
   writeFileSync(join(f.root, "job.sh"), "#!/bin/sh\nexit 0\n");
   const output = f.bg("win-nobash", "--", "./job.sh");
   assert.equal(output.status, 1);
