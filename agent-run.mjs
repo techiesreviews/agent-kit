@@ -15,7 +15,8 @@ import { dirname, join, resolve } from "node:path";
 import { durationMilliseconds, supervise } from "./sol-run.mjs";
 import { reviewComplete, reviewFormat, reviewScope } from "./review-brief.mjs";
 import { nextTalkStyle, talkStyleLine } from "./brief-lib.mjs";
-import { apiRouteProblem, apiWrapperRefused, claudeCommand, recordApiSpend } from "./api-route.mjs";
+import { apiRoute, apiRouteProblem, apiWrapperRefused, claudeCommand, recordApiSpend } from "./api-route.mjs";
+import { keyGuard } from "./key-guard.mjs";
 
 const adapters = { codex: codexAdapter, claude: claudeAdapter, grok: grokAdapter, opencode: opencodeAdapter };
 const reviewOnly = { grok: "Grok", opencode: "OpenCode" };
@@ -551,16 +552,20 @@ export function releaseReviewBudget(path, { family, week, project }, env = proce
   }, env);
 }
 
+// With the key lock (options.codexProfile, from key-guard.mjs) a permissions profile replaces the sandbox mode: the same
+// writes and network as before, and the key paths unreadable to Codex's commands.
 export function codexAdapter(options, common, output) {
-  const { kind, worktree, model, effort } = options;
+  const { kind, worktree, model, effort, codexProfile } = options;
+  const sandbox = codexProfile ?? ["-s", kind === "build" ? "workspace-write" : "read-only",
+    ...(kind === "build" ? ["-c", "sandbox_workspace_write.network_access=true", "--add-dir", common] : [])];
+  const resumeSandbox = codexProfile ?? ["-c", `sandbox_mode="${kind === "build" ? "workspace-write" : "read-only"}"`,
+    ...(kind === "build" ? ["-c", "sandbox_workspace_write.network_access=true", "-c", `sandbox_workspace_write.writable_roots=[${JSON.stringify(common)}]`] : [])];
   return {
     command: "codex", capture: false,
     env: options.codexHome ? { CODEX_HOME: options.codexHome } : {},
-    args: ["exec", "-m", model, "-c", `model_reasoning_effort=${effort}`, "-s", kind === "build" ? "workspace-write" : "read-only",
-      ...(kind === "build" ? ["-c", "sandbox_workspace_write.network_access=true", "--add-dir", common] : []),
+    args: ["exec", "-m", model, "-c", `model_reasoning_effort=${effort}`, ...sandbox,
       "--dangerously-bypass-hook-trust", "-C", worktree, "-o", output, "-"],
-    resume: session => ["exec", "resume", "-m", model, "-c", `model_reasoning_effort=${effort}`, "-c", `sandbox_mode="${kind === "build" ? "workspace-write" : "read-only"}"`,
-      ...(kind === "build" ? ["-c", "sandbox_workspace_write.network_access=true", "-c", `sandbox_workspace_write.writable_roots=[${JSON.stringify(common)}]`] : []),
+    resume: session => ["exec", "resume", "-m", model, "-c", `model_reasoning_effort=${effort}`, ...resumeSandbox,
       "--dangerously-bypass-hook-trust", "-o", output, session, "-"],
     session: (_stdout, log) => [...log.matchAll(/^session id: (\S+)\s*$/gm)].at(-1)?.[1],
     finish: (_stdout, log) => {
@@ -990,13 +995,15 @@ export function sessionObserver(adapter, update) {
 }
 
 async function invokeAgent(adapter, args, descriptor, context) {
-  const { options, limit, logPath, log, output, messages, update } = context;
+  const { options, limit, logPath, log, output, messages, update, guard } = context;
   const previousCalls = context.calls;
   context.calls = previousCalls + 1;
   // The kit waits for the agents it starts itself, so their own turn ends freely: the Stop hook (stop-guard)
   // would otherwise hold a slice's builder for the very kit go job that runs it.
   // An undefined value removes that variable for the call.
-  const extra = { KIT_ALLOW_STOP: "1", ...adapter.env };
+  // The key lock drops secret-bearing variables (key-guard.mjs); the adapter's own come after, so a CLI keeps what it needs.
+  const extra = { ...guard.env, KIT_ALLOW_STOP: "1", ...adapter.env };
+  const [command, commandArgs] = guard.wrap(adapter.command, args);
   const previous = Object.fromEntries(Object.keys(extra).map(key => [key, process.env[key]]));
   try {
     for (const [key, value] of Object.entries(extra)) {
@@ -1006,7 +1013,7 @@ async function invokeAgent(adapter, args, descriptor, context) {
     const previousLog = readFileSync(logPath, "utf8").length;
     // A CLI with a start limit that names no session within it is stopped as unavailable.
     let silent = false, startTimer, spawned;
-    const result = await supervise(limit, adapter.command, args, {
+    const result = await supervise(limit, command, commandArgs, {
       cwd: options.worktree, input: descriptor, log, capture: adapter.capture,
       // A review's CLI leaves nothing running: OpenCode 2's private server goes with the call (no hang to the 90-minute limit).
       reap: options.kind === "review",
@@ -1088,7 +1095,7 @@ async function executeRun(options, out, previous, update, brief) {
   // A resumed Codex report must not truncate the earlier final report.
   const output = previous ? join(out, `resume-${process.pid}-${randomUUID()}.md`) : reportPath;
   const prompt = prepared.prompt + (!previous && options.kind === "build" ? buildContractWithStyle() : "");
-  let input, log, reviewHome;
+  let input, log, reviewHome, guard;
   try {
     writeFileSync(inputPath, prompt);
     rmSync(output, { force: true });
@@ -1099,6 +1106,11 @@ async function executeRun(options, out, previous, update, brief) {
       reviewHome = makeCodexReviewHome();
       options.codexHome = reviewHome.home;
     }
+    // The key lock (TOOLS-285): set up before the CLI starts; a lock that cannot be set up stops the run.
+    guard = keyGuard({ cli: options.cli, kind: options.kind, common, apiRoute: options.cli === "claude" && apiRoute(process.env).on,
+      env: options.codexHome ? { ...process.env, CODEX_HOME: options.codexHome } : process.env });
+    if (guard.off) appendFileSync(log, "warning: key files are not locked for this run (ASE_KEY_GUARD=off)\n");
+    if (guard.codex) options.codexProfile = guard.codex;
     const adapter = agentInvocation(options, common, output);
     // A resumed run's first call is not the review's first call, so it never refunds.
     // The worktree as the run found it: a first call that left it changed did some work, however soon it failed.
@@ -1107,7 +1119,7 @@ async function executeRun(options, out, previous, update, brief) {
     const tree = () => head()
       + execFileSync("git", ["-C", options.worktree, "status", "--porcelain", "--untracked-files=all"], { encoding: "utf8" });
     const startTree = tree();
-    const context = { options, limit, logPath, log, output, messages, update, prompt, startTree, tree, calls: previous ? 1 : 0 };
+    const context = { options, limit, logPath, log, output, messages, update, prompt, startTree, tree, guard, calls: previous ? 1 : 0 };
     const invoke = (args, descriptor) => invokeAgent(adapter, args, descriptor, context);
     const complete = () => existsSync(output) && reviewComplete(readFileSync(output, "utf8"));
     const result = await invoke(previous ? adapter.resume(previous.session) : adapter.args, input);
@@ -1149,6 +1161,7 @@ async function executeRun(options, out, previous, update, brief) {
     rmSync(inputPath, { force: true });
     if (previous) rmSync(output, { force: true });
     if (reviewHome) closeCodexReviewHome(reviewHome);
+    guard?.close();
   }
 }
 

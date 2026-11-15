@@ -110,4 +110,7 @@ for managed_dir in /etc/claude-code "/Library/Application Support/ClaudeCode" "$
   done
 done
 if (( tool_lists > 0 && readers && !misplaced && strict_mcp && !loads && !managed && (bare || (sources_empty && !sources_other)) )); then scrub=0; fi
-ANTHROPIC_API_KEY=$key CLAUDE_CONFIG_DIR=$dir CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=$scrub exec claude "$@"
+# KIT_CLAUDE_GUARD names the kit's key lock (key-guard.mjs) for an agent run: claude starts inside it, after the key file was read here.
+guard=${KIT_CLAUDE_GUARD-}
+unset KIT_CLAUDE_GUARD
+ANTHROPIC_API_KEY=$key CLAUDE_CONFIG_DIR=$dir CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=$scrub exec ${guard:+"$guard"} claude "$@"

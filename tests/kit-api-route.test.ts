@@ -18,6 +18,9 @@ delete process.env.KIT_API_KEY_FILE; delete process.env.KIT_API_CONFIG_DIR;
 const wrapper = resolve("claude-api-run.sh");
 const kit = resolve("kit");
 const secret = "sk-ant-test-0123456789-not-a-real-key";
+// The key lock refuses a build on the API route (its Claude sandbox cannot start inside the lock; tests/key-guard.test.ts):
+// the runs below are about the route's key and spend line, so they run without it.
+const unlockedBuild = { ASE_KEY_GUARD: "off" };
 
 function folder(t: TestContext) {
   const dir = mkdtempSync(join(tmpdir(), "kit-api-route-"));
@@ -147,7 +150,7 @@ test("a real kit run through agent-run.mjs sends the key to claude only inside t
   mkdirSync(root); mkdirSync(out); writeFileSync(brief, "Review this.\n");
   const git = (...args: string[]) => { const run = spawnSync("git", ["-C", root, ...args], { encoding: "utf8" }); assert.equal(run.status, 0, run.stderr); };
   git("init", "-b", "test"); git("-c", "user.name=T", "-c", "user.email=t@t", "commit", "--allow-empty", "-m", "base");
-  const env = { ...f.env, KIT_API_KEY_FILE: f.keyFile, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "20s", ASE_BUILD_MODEL: "", KIT_TALK_STYLE: "plain" };
+  const env = { ...f.env, KIT_API_KEY_FILE: f.keyFile, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "20s", ASE_BUILD_MODEL: "", KIT_TALK_STYLE: "plain", ...unlockedBuild };
   const child = spawn(process.execPath, [resolve("agent-run.mjs"), "build", root, brief, "--out", out, "--cli", "claude", "--model", "claude-haiku-5-5"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "", stderr = "";
   child.stdout.on("data", chunk => { stdout += chunk; }); child.stderr.on("data", chunk => { stderr += chunk; });
@@ -373,7 +376,7 @@ test("a call the wrapper refuses is marked refused in the run's status, so kit r
   mkdirSync(root); mkdirSync(out); writeFileSync(brief, "Review this.\n");
   const git = (...args: string[]) => { const run = spawnSync("git", ["-C", root, ...args], { encoding: "utf8" }); assert.equal(run.status, 0, run.stderr); };
   git("init", "-b", "test"); git("-c", "user.name=T", "-c", "user.email=t@t", "commit", "--allow-empty", "-m", "base");
-  const env = { ...f.env, KIT_API_KEY_FILE: open, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "20s", ASE_BUILD_MODEL: "", KIT_TALK_STYLE: "plain" };
+  const env = { ...f.env, KIT_API_KEY_FILE: open, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "20s", ASE_BUILD_MODEL: "", KIT_TALK_STYLE: "plain", ...unlockedBuild };
   const run = spawnSync(process.execPath, [resolve("agent-run.mjs"), "build", root, brief, "--out", out, "--cli", "claude", "--model", "claude-haiku-5-5"], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
   assert.notEqual(run.status, 0);
   assert.match(run.stdout + run.stderr, /problem: API route: the API key file can be read by others \(mode 644\); run chmod 600 on it/);
@@ -388,7 +391,7 @@ test("only a failed claude call with the wrapper's refusal is marked refused: a 
   mkdirSync(root); mkdirSync(out); writeFileSync(brief, "Build this.\n");
   const git = (...args: string[]) => { const run = spawnSync("git", ["-C", root, ...args], { encoding: "utf8" }); assert.equal(run.status, 0, run.stderr); };
   git("init", "-b", "test"); git("-c", "user.name=T", "-c", "user.email=t@t", "commit", "--allow-empty", "-m", "base");
-  const env = { ...f.env, KIT_API_KEY_FILE: f.keyFile, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "20s", ASE_BUILD_MODEL: "", KIT_TALK_STYLE: "plain" };
+  const env = { ...f.env, KIT_API_KEY_FILE: f.keyFile, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "20s", ASE_BUILD_MODEL: "", KIT_TALK_STYLE: "plain", ...unlockedBuild };
   const run = spawnSync(process.execPath, [resolve("agent-run.mjs"), "build", root, brief, "--out", out, "--cli", "claude", "--model", "claude-haiku-5-5"], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
   assert.equal(run.status, 0, run.stdout + run.stderr);
   assert.notEqual(JSON.parse(readFileSync(join(out, "status.json"), "utf8")).refused, true);
