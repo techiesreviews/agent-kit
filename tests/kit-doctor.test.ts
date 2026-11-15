@@ -1365,7 +1365,13 @@ test("the key lock note: on with a working bubblewrap, a ✗ note and a RESULT w
   // A bwrap that starts but whose probe never reports back: the lock cannot be checked, so it is not on.
   executable(join(bin, "bwrap"), "exit 0");
   const unchecked = f.run([], f.build, { PATH: `${bin}:${process.env.PATH}` });
-  assert.match(unchecked.stdout, /^✗ key lock: could not check that the lock holds inside bubblewrap \(exit 0\); run bwrap --dev-bind \/ \/ -- true to see why /m);
+  assert.match(unchecked.stdout, /^✗ key lock: the start-up check inside bubblewrap gave no answer \(it printed nothing\); try again, and if it stays, check that Node runs there: bwrap --dev-bind \/ \/ -- node -e 1 /m);
+  // A display that lets programs in without its cookie: a ✗ note and a RESULT warning, the lock still on.
+  executable(join(bin, "bwrap"), 'case "$*" in *" -e "*) echo inside; echo "display-open X0"; echo done ;; esac; exit 0');
+  const display = f.run([], f.build, { PATH: `${bin}:${process.env.PATH}` });
+  assert.equal(display.status, 0, display.stdout + display.stderr);
+  assert.match(display.stdout, /^✗ key lock: on, but the X display X0 lets programs in without its cookie, so a locked agent could type into an open window; close terminals on that display while agents run \(the lock stays on\)$/m);
+  assert.match(display.stdout.trimEnd().split("\n").at(-1)!, /; warning: key lock has a gap \(see the ✗ key lock line\)$/);
 });
 
 test("a broken API route is a doctor warning on the RESULT line, never a failure", (t) => {

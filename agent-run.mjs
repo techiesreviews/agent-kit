@@ -1114,6 +1114,7 @@ async function executeRun(options, out, previous, update, brief) {
     guard = keyGuard({ cli: options.cli, kind: options.kind, common, model: options.model, apiRoute: options.cli === "claude" && apiRoute(process.env).on,
       env: options.codexHome ? { ...process.env, CODEX_HOME: options.codexHome } : process.env });
     if (guard.off) appendFileSync(log, "warning: key files are not locked for this run (ASE_KEY_GUARD=off)\n");
+    if (guard.warning) appendFileSync(log, `warning: key lock: ${guard.warning}\n`);
     if (guard.codex) options.codexProfile = guard.codex;
     const adapter = agentInvocation(options, common, output);
     // A resumed run's first call is not the review's first call, so it never refunds.
