@@ -78,7 +78,7 @@ async function main() {
       kitJobMarkGo(directory);
     }
   }
-  // A job in another worktree (kit next's wait line sets KIT_ROOT) is waited for again the same way.
+  // A job in another worktree (KIT_ROOT names it) is waited for again the same way.
   const top = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
   const again = `${resolve(kitRoot()) !== (top.status === 0 ? top.stdout.trim() : process.cwd()) ? `KIT_ROOT=${kitRoot()} ` : ""}scripts/agents/kit go ${name}`;
   if (!existsSync(join(directory, "pid"))) throw new Error(`${name}: no such job in ${dirname(directory)}; start it with scripts/agents/kit go ${name} -- <command>`);

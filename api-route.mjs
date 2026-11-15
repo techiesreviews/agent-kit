@@ -1,4 +1,4 @@
-// The opt-in API credit route: the kit's headless Claude calls (kit review, kit fix, kit slice builders, kit ux) can
+// The opt-in API credit route: the kit's headless Claude calls (kit review, kit ux) can
 // run on an Anthropic API key instead of the subscription. It is off unless KIT_API_KEY_FILE names a file (absolute
 // path, mode 600, one line, the key). Only the child process (claude-api-run.sh) passes the key on to claude; this file
 // reads the key file's first line only to see that it is not blank, and never keeps, returns, prints or logs it, nor puts it

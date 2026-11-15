@@ -61,7 +61,7 @@ The PR's review block says "Verdict: pending" while a new head (after a "behind"
 
 After a merge from the base, the "changes since the last review" file lists only the branch's own commits (merges left out, so a conflict fixed inside a merge commit is not in it). A lead who lands a builder's branch answers the builder's rounds, so the PR line counts them and names every model the rounds used. A ticket's risk comes from its title and its whole text (an Orbit card's description and Done when line too) and the files it names, never from the follow-ups `kit pr` adds later.
 
-The fix rounds are `kit review`'s own: a review answering round N follows N − 1 fix rounds, which `kit pr` counts for the budget (a branch whose rounds the cut `kit fix` saved under `.scratch/kit-fix` keeps that count).
+`kit pr` counts the fix rounds the cut `kit fix` saved for the branch (`.scratch/kit-fix`). Nothing writes them since 2026-11-15, so a helper's own fix rounds are not counted yet (a follow-up): its blockers and shoulds keep blocking until fixed or waived by name.
 
 Known limits (waived follow-ups): a review that leaves an id out is rejected as incomplete: run `kit review` again by hand. The fix brief points at the newest complete review.
 

@@ -2956,25 +2956,6 @@ test("out of budget with a should (P2) left lands as a follow-up for Lex but the
   assert.doesNotMatch(result.stdout, /Verdict: approved/);
 });
 
-// kit fix, which saved the fix rounds under .scratch/kit-fix, was cut (TOOLS-235): the rounds are kit review's own, the round its
-// newest review answered minus one, so a helper that fixes in its own thread still reaches the budget.
-test("the fix rounds come from kit review's own round when no kit fix folder is there: a should after round 4 lands as a follow-up", t => {
-  const f = fixture(t);
-  const path = f.saveReview(cleanReview.replace("Spec: none.", "Spec: P2: Real minor defect."));
-  writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ round: 4, model: "claude-opus-5-5", head: f.git("rev-parse", "HEAD"), findings: [{ id: "R4-1", group: "Spec", severity: "P2", kind: "unsorted", text: "P2: Real minor defect." }] }));
-  const result = f.run();
-  assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stdout, /^Review budget used: 3 of 3 fix rounds, 1 open finding\. Running out of budget is not approval; Lex decides\.$/m);
-  assert.match(result.stdout, /review: 1 follow-ups after 3 fix rounds \(non-blocking\)/);
-  // Round 3 has had two fix rounds: the should still blocks there.
-  const early = fixture(t);
-  const earlyPath = early.saveReview(cleanReview.replace("Spec: none.", "Spec: P2: Real minor defect."));
-  writeFileSync(join(dirname(earlyPath), "findings.json"), JSON.stringify({ round: 3, model: "claude-opus-5-5", head: early.git("rev-parse", "HEAD"), findings: [{ id: "R3-1", group: "Spec", severity: "P2", kind: "unsorted", text: "P2: Real minor defect." }] }));
-  const blocked = early.run();
-  assert.equal(blocked.status, 1, blocked.stdout + blocked.stderr);
-  assert.match(blocked.stdout, /RESULT: fail pr #73 review has 1 open findings/);
-});
-
 test("the PR's review block is replaced between markers on a later run, never added twice", t => {
   const f = fixture(t);
   const path = f.saveReview(cleanReview);

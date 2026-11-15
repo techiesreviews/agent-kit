@@ -27,7 +27,7 @@ export function importedFrom(description) {
 
 /**
  * The board status a ticket's file status maps to, by name first (statusFor): closed is Done, wontfix Cancelled (else
- * Done), an open "task (AFK)" Todo (kit next may start it), and every other open or waiting ticket Backlog, as kit next
+ * Done), an open "task (AFK)" Todo (up for building), and every other open or waiting ticket Backlog, as the cut kit next
  * on files never starts those either.
  */
 export function wantedStatus(ticket) {
@@ -387,7 +387,7 @@ export function migrationChanges({ root, sources, cards, project, parent, tracke
 /**
  * The whole move for one project, in order: checks, import, parity (stops on any difference), the tag (pushed, so the
  * files stay readable from git history), one commit (ticket files removed, kit.json on Orbit, doc links to the cards),
- * then kit pr. It refuses while a ticket is being built: an open AFK ticket with an assignee (kit next's claim) or an
+ * then kit pr. It refuses while a ticket is being built: an open AFK ticket with an assignee (a claim) or an
  * imported card In Progress. A dry run checks, prints the import and the changes, and changes nothing.
  */
 export async function migrateTickets({ store, root, settings, project: boardKey, parent, moveExisting = false, dryRun = false, say = console.log, runPr, now = new Date() }) {

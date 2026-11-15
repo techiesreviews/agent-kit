@@ -166,8 +166,8 @@ undoes a newer rule.
 
 The start marker carries this rule's version too (v2, v3 …).
 
-The fix rounds are counted from `kit review`'s own record: a review that answers round N follows N − 1 fix rounds (a
-builder fixes in its own thread and runs `kit review` or `kit pr` again). A diff with no change has nothing to review
+Known gap since the factory cut (2026-11-15): `kit pr` counts only fix rounds saved before the cut, so a helper's own
+rounds are not counted yet; its blockers and shoulds keep blocking until fixed or waived by name. A diff with no change has nothing to review
 and a reviewer whose CLI crashes counts as unavailable (`kit review --help`); what the PR's review block says after a
 rebase, and how a lead answers a builder's rounds: the README's Review loop section.
 
@@ -255,8 +255,9 @@ holds its job now.
   the pinned builder as `target`, and as `task` the whole output of `scripts/agents/kit brief <KEY> [--note "<text>"]`
   above its RESULT line (a project without cards: `kit brief --task "<title>" --owner <id> --note "<the task>"`). The
   brief names the owner, setup, pins, commands, evidence, house rules, the Messages to Lex rule, wait rule, skills, talk
-  style and the report's last line (PR <full URL>, head <SHA>, checks and reviews <state>). The `agent-cap` hook allows
-  at most 5 sub-helpers at once.
+  style and the report's last line (PR <full URL>, head <SHA>, checks and reviews <state>). The `agent-cap` hook caps the
+  subagents inside one Claude session (5 by default); nothing counts T3 helper threads, so the lead keeps the number of
+  builds running at once in hand.
 - **The lead's thread is the overview** (Lex, 2026-10-26): pinned (`t3_thread_organize pin`), no PR links, no long jobs
   of its own. It follows each child's `next` notice, relays what matters to Lex and asks his decisions. Building, checks
   and landing live in the child threads.

@@ -1,7 +1,6 @@
-// Tickets as Orbit cards for kit next, slice, pr, status and init --issues, when scripts/agents/kit.json says
-// "tickets": "orbit". A card a slice builds is copied once into a local brief, .scratch/kit-tickets/<KEY>.md, shaped like
-// a ticket file (title, the card's Files and Done when), so the build, review, fix and UX steps read it as they read a
-// ticket; only the lead's own kit commands write the board (ORBIT_ROLE=lead), and the agents they start never do.
+// Tickets as Orbit cards for kit brief, pr and init --issues, when scripts/agents/kit.json says "tickets": "orbit".
+// kit pr copies a card into a brief shaped like a ticket file (title, the card's text), so its review reads it as it
+// reads a ticket; only the lead's own kit commands write the board (ORBIT_ROLE=lead), and the agents they start never do.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { OrbitError, OrbitSetupProblem, orbitCardKey, orbitClient, orbitLogPath, orbitRedactor, orbitSecrets, readOrbitConfig } from "./orbit-client.mjs";
@@ -12,7 +11,7 @@ import { fencedLines } from "./tickets.mjs";
 const keyShape = /^[A-Za-z][A-Za-z0-9_]*-[0-9]+$/;
 /** True for a card key such as TOOLS-10 (never a path: a ticket file always has a slash or .md). */
 export const isCardKey = value => keyShape.test(String(value ?? "").trim());
-/** A card's slice names, the same in kit next and kit brief: owner kit-12, job slice-kit-12, branch build/kit-12-<first words of the title>. */
+/** A card's build names, the same in every kit brief: owner kit-12, job slice-kit-12, branch build/kit-12-<first words of the title>. */
 export function cardNaming(card) {
   const owner = String(card.identifier).toLowerCase();
   const words = String(card.title ?? "").toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").split("-").slice(0, 6).join("-");
