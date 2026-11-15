@@ -26,7 +26,10 @@ export function visibleFiles(root, base, settings) {
   return Object.fromEntries(paths.map(path => [path, kept.includes(path) ? hashes[kept.indexOf(path)] : "gone"]));
 }
 
-/** Saves kit ux's result for a branch: { branch, head, files, ok, summary, partial, bundle }. The newest one counts. */
+/**
+ * Saves kit ux's result for a branch: { branch, head, files, ok, summary, partial, bundle }, and `nothing: true` when no
+ * listed feature covered the change, so nothing was tried. The newest one counts.
+ */
 export function saveUxResult(mainRoot, record) {
   const file = resultFile(mainRoot, record.branch), temporary = `${file}.${process.pid}.tmp`;
   mkdirSync(dirname(file), { recursive: true });
@@ -51,17 +54,25 @@ export function readUxResult(mainRoot, branch) {
 export function uxGuard({ branch, files, record, notVisible, featureList }) {
   const paths = Object.keys(files).sort();
   if (!paths.length) return { ok: true };
+  const mine = record && record.branch === branch ? record : null;
+  const at = String(mine?.head ?? "").slice(0, 7) || "an unknown commit";
+  const moved = mine && [...new Set([...paths, ...Object.keys(mine.files)])].sort().find(path => files[path] !== mine.files[path]);
+  // kit ux tried exactly this change and it did not pass: a person does see it, so no reason makes it "not visible".
+  const failed = mine && !moved && !mine.partial && mine.ok !== true;
+  if (notVisible && failed) return { ok: false, line: `UX check: failed (kit ux at ${at}: ${mine.summary})`,
+    problem: "kit ux tried this change and it did not pass, so --not-visible does not fit it; fix what kit ux found and run `scripts/agents/kit ux` again" };
   if (notVisible) return { ok: true, line: `UX check: not visible (${notVisible.replace(/\s*[\r\n]+\s*/g, " ").trim()}); ${paths[0]} is a visible path` };
   if (!featureList) return { ok: true, line: `UX check: skipped (no ${uxFeatureList}, so kit ux has nothing to try); ${paths[0]} is visible` };
-  if (!record || record.branch !== branch) return { ok: false, line: `UX check: missing; ${paths[0]} is visible`,
+  if (!mine) return { ok: false, line: `UX check: missing; ${paths[0]} is visible`,
     problem: 'visible change without a kit ux result; run `scripts/agents/kit ux`, or pass --not-visible "<reason>" when the change shows a person nothing new' };
-  const at = String(record.head ?? "").slice(0, 7) || "an unknown commit";
-  const moved = [...new Set([...paths, ...Object.keys(record.files)])].sort().find(path => files[path] !== record.files[path]);
   if (moved) return { ok: false, line: `UX check: out of date; ${moved} changed since kit ux ran at ${at}`,
     problem: `the visible change is not the one kit ux checked (${moved} changed since it ran at ${at}); run \`scripts/agents/kit ux\` again` };
-  if (record.partial) return { ok: false, line: `UX check: partial; kit ux ran with ${record.partial}`,
-    problem: `kit ux ran with ${record.partial}, so it did not check the whole change; run \`scripts/agents/kit ux\` without it` };
-  if (record.ok !== true) return { ok: false, line: `UX check: failed (kit ux at ${at}: ${record.summary})`,
+  if (mine.partial) return { ok: false, line: `UX check: partial; kit ux ran with ${mine.partial}`,
+    problem: `kit ux ran with ${mine.partial}, so it did not check the whole change; run \`scripts/agents/kit ux\` without it` };
+  if (failed) return { ok: false, line: `UX check: failed (kit ux at ${at}: ${mine.summary})`,
     problem: "kit ux did not pass for this change; fix what it found and run `scripts/agents/kit ux` again" };
-  return { ok: true, line: `UX check: ok (kit ux at ${at}: ${record.summary})` };
+  // No feature in the list covers the changed files, so kit ux tried and reviewed nothing: it lands, as it did in kit
+  // slice, but the PR never calls that "ok".
+  if (mine.nothing) return { ok: true, line: `UX check: nothing to try (kit ux at ${at}: no feature in ${uxFeatureList} covers ${paths[0]})` };
+  return { ok: true, line: `UX check: ok (kit ux at ${at}: ${mine.summary})` };
 }

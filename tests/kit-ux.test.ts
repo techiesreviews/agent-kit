@@ -7,7 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
 import { kitEnv } from "./support/kit-env.ts";
-import { readUxResult, visibleFiles } from "../ux-gate.mjs";
+import { readUxResult, uxGuard, visibleFiles } from "../ux-gate.mjs";
 
 const script = resolve("kit.d/ux"), kit = resolve("kit");
 // Node loads this extensionless executable as ESM; a URL keeps tsx from resolving it as TS.
@@ -1070,15 +1070,22 @@ test("kit ux saves its result for the branch, with the visible files as it check
   put("docs/notes.md", "changed\n");
   assert.equal(run().status, 0);
   const none = saved();
-  assert.deepEqual([none.branch, none.head, none.ok, none.summary, none.partial, none.files], ["build/sf-1-panel", git("rev-parse", "HEAD"), true, "no listed feature touched", null, {}]);
+  assert.deepEqual([none.branch, none.head, none.ok, none.summary, none.partial, none.nothing, none.files], ["build/sf-1-panel", git("rev-parse", "HEAD"), true, "no listed feature touched", null, true, {}]);
+  // A visible file no listed feature covers: nothing is tried, the file is still on the result, and kit pr's line for
+  // it never says ok.
+  put("src/new-panel.ts", "export {};\n");
+  assert.equal(run().result, "RESULT: ok ux nothing visible touched");
+  const bare = saved();
+  assert.deepEqual([bare.nothing, bare.files], [true, { "src/new-panel.ts": git("hash-object", "src/new-panel.ts") }]);
+  assert.deepEqual(uxGuard({ branch: "build/sf-1-panel", files: bare.files, record: bare, featureList: true }),
+    { ok: true, line: `UX check: nothing to try (kit ux at ${git("rev-parse", "--short=7", "HEAD")}: no feature in docs/agents/features.md covers src/new-panel.ts)` });
   // A visible change, saved or not: each visible file with the hash of its text as checked.
   put("src/page-builder/media-picker.css", ".a { gap: var(--space); }\n.b { gap: 0; }\n");
   put("src/page-builder/media-library-filter.ts", "export const filter = 1;\n");
-  put("src/new-panel.ts", "export {};\n");
   const passed = run([], { FAKE_VERDICTS: JSON.stringify({ "F-media-02": "looks off" }) });
   assert.equal(passed.status, 0, passed.stderr + passed.stdout);
   const record = saved();
-  assert.equal(record.ok, true);
+  assert.deepEqual([record.ok, record.nothing], [true, undefined]);
   assert.match(record.summary, /^1 features tried, \d+ scripted findings, 1 fine, 1 looks off, 0 broken$/);
   assert.equal(record.partial, null);
   assert.deepEqual(record.files, Object.fromEntries(["src/new-panel.ts", "src/page-builder/media-library-filter.ts", "src/page-builder/media-picker.css"].map(path => [path, git("hash-object", path)])));

@@ -1900,8 +1900,18 @@ test("the UX guard: a visible change needs a kit ux result for the files as they
     assert.deepEqual([part.ok, part.line], [false, `UX check: partial; kit ux ran with ${partial}`]);
     assert.match(part.problem, new RegExp(`^kit ux ran with ${partial}, so it did not check the whole change; run \`scripts/agents/kit ux\` without it$`));
   }
-  // Marked not visible with a reason: lands with the reason, whatever the result says.
-  assert.deepEqual(guard({ record: null, notVisible: "token rename\nonly" }), { ok: true, line: "UX check: not visible (token rename only); src/styles/app.css is a visible path" });
+  // Marked not visible with a reason: lands with the reason, with no result, an older one or a partial one.
+  const marked = { ok: true, line: "UX check: not visible (token rename only); src/styles/app.css is a visible path" };
+  assert.deepEqual(guard({ record: null, notVisible: "token rename\nonly" }), marked);
+  assert.deepEqual(guard({ files: { ...files, "src/ui/menu.ts": "ccc" }, record: { ...record, ok: false }, notVisible: "token rename only" }), marked);
+  assert.deepEqual(guard({ record: { ...record, partial: "--no-review" }, notVisible: "token rename only" }), marked);
+  // But kit ux tried this very change and it did not pass: a person sees it, so no reason lands it.
+  const seen = guard({ record: { ...record, ok: false, summary: "1 broken, broken: F-media-02" }, notVisible: "token rename only" });
+  assert.deepEqual([seen.ok, seen.line], [false, "UX check: failed (kit ux at 0123456: 1 broken, broken: F-media-02)"]);
+  assert.equal(seen.problem, "kit ux tried this change and it did not pass, so --not-visible does not fit it; fix what kit ux found and run `scripts/agents/kit ux` again");
+  // No listed feature covers the change, so kit ux tried nothing: it lands, and the line never says ok.
+  assert.deepEqual(guard({ record: { ...record, summary: "no listed feature touched", nothing: true } }),
+    { ok: true, line: "UX check: nothing to try (kit ux at 0123456: no feature in docs/agents/features.md covers src/styles/app.css)" });
   // A project with no feature list has nothing kit ux can try: said, never refused.
   assert.deepEqual(guard({ record: null, featureList: false }), { ok: true, line: "UX check: skipped (no docs/agents/features.md, so kit ux has nothing to try); src/styles/app.css is visible" });
 });
@@ -1959,11 +1969,35 @@ test("a visible change lands with a fresh kit ux result or a reason it is not vi
   const skipped = plain.run(["--no-merge"]);
   assert.equal(skipped.status, 0, skipped.stdout + skipped.stderr);
   assert.ok(plain.body().includes("UX check: skipped (no docs/agents/features.md, so kit ux has nothing to try); src/styles/app.css is visible\n"), plain.body());
-  // A release carries what each PR already passed on its way into dev.
+  // A release carries what each PR already passed on its way into dev, so the option has no use there.
   const release = fixture(t, visibleChange);
   const cut = release.run(["--release", "--base", "main"]);
   assert.equal(cut.status, 0, cut.stdout + cut.stderr);
   assert.doesNotMatch(cut.stdout + release.body(), /UX check:/);
+  const both = release.run(["--release", "--base", "main", "--not-visible", "same look"]);
+  assert.equal(both.status, 2); assert.match(both.stdout, /RESULT: fail invalid arguments: --not-visible has no use with --release: a release carries what each PR already passed/);
+});
+
+test("a visible file the branch deletes counts as checked once kit ux saw it gone, and a failed result is not talked away", t => {
+  const f = fixture(t), peer = f.peer();
+  mkdirSync(join(peer, "src/styles"), { recursive: true });
+  writeFileSync(join(peer, "src/styles/app.css"), "a { color: var(--ink); }\n");
+  f.gitAt(peer, "add", "."); f.gitAt(peer, "commit", "-qm", "base sheet"); f.gitAt(peer, "push", "-q", "origin", "dev");
+  f.git("fetch", "-q", "origin"); f.git("rebase", "-q", "origin/dev");
+  mkdirSync(join(f.root, "docs/agents"), { recursive: true });
+  f.commit("Feature list", "docs/agents/features.md", "# Feature list\n");
+  f.git("rm", "-q", "src/styles/app.css"); f.git("commit", "-qm", "Drop the sheet");
+  uxResult(f);
+  const gone = f.run(["--no-merge"]);
+  assert.equal(gone.status, 0, gone.stdout + gone.stderr);
+  assert.ok(f.body().includes("UX check: ok (kit ux at "), f.body());
+  // kit ux tried this very change and called it broken: --not-visible is refused, before any check or push.
+  uxResult(f, { ok: false, summary: "1 features tried, 0 scripted findings, 0 fine, 0 looks off, 1 broken, broken: F-media-02" });
+  const calls = f.calls().length;
+  const refused = f.run(["--no-merge", "--not-visible", "nobody will notice"]);
+  assert.equal(refused.status, 1);
+  assert.match(refused.stdout, /RESULT: fail ux: kit ux tried this change and it did not pass, so --not-visible does not fit it; fix what kit ux found and run `scripts\/agents\/kit ux` again$/m);
+  assert.equal(f.calls().slice(calls).some(call => call.tool === "gh" || call.tool === "npm"), false);
 });
 
 test("a behind retry whose rebase changes a visible file kit ux checked stops before the new head is pushed", t => {
