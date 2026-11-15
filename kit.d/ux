@@ -5,6 +5,7 @@ import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, 
 import { basename, dirname, join, matchesGlob, normalize, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { citedRules, parseRules, parseUxResult, replacedIds, uxBrief, uxCounts, uxReport } from "../ux-brief.mjs";
+import { saveUxResult, visibleFiles } from "../ux-gate.mjs";
 
 const { kitHome, kitRoot, kitMainRoot, kitOwner, kitResult, kitScore, kitSettingsFile, scoreCost } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
@@ -36,6 +37,9 @@ docs/agents/ux-rulebook.md, either of which may be missing; the brief says proje
 they disagree, and a project entry with an HS id replaces that house rule. Saved beside bundle.md:
 ux.md (one line per feature, the rules broken), ux.json and the reviewer's run.log; counts go to the
 piece's scoreboard record as ux. --no-review skips it.
+Result for kit pr: each run saves its result for the branch under <main root>/.scratch/ux-results/, with the visible
+files (paths.visible in scripts/agents/kit.json) as it checked them. kit pr lands a visible change only with a result
+that passed for those files as they are then; one made with --no-review or --features is partial and does not count.
 KIT_UX_SHOTS and KIT_UX_AGENT: executables replacing the project's kit shots and agent.sh, same arguments (tests).
 RESULT: ok ux <n> features tried, <m> scripted findings, <f> fine, <o> looks off, <b> broken, bundle <dir>.
 A failed try or a broken verdict fails with broken: <feature,…>; a failed screens run adds
@@ -582,7 +586,13 @@ async function main() {
     const changed = [...new Set([...git("-c", "core.quotePath=false", "diff", "--name-only", mergeBase).split("\n").filter(Boolean), ...untracked])];
     const features = parseFeatures(readFileSync(join(root, "docs/agents/features.md"), "utf8"));
     const selected = selectFeatures(features, changed, flags);
-    if (!selected.length) { kitResult("ok", "ux nothing visible touched"); return 0; }
+    // What kit pr reads before it lands a visible change: this run's result for the branch, with the visible files as
+    // they are now. A run without the review, or of named features only, did not check the whole change.
+    const visible = visibleFiles(root, flags.base, settings);
+    const saveResult = (ok, summary, more = {}) => {
+      if (startBranch !== "detached") saveUxResult(kitMainRoot(), { branch: startBranch, head: startHead, files: visible, ok, summary, partial: null, ...more });
+    };
+    if (!selected.length) { saveResult(true, "no listed feature touched"); kitResult("ok", "ux nothing visible touched"); return 0; }
     // Only a try takes screenshots, so a project without its own shots is asked for one only then, before any folder is made.
     const shots = selected.some(feature => feature.steps || screensFor(feature).length) ? projectShots(root, settings) : undefined;
 
@@ -729,6 +739,10 @@ async function main() {
     const brokenIds = [...new Set([...broken.map(feature => feature.id), ...review?.broken ?? []])];
     const failed = [...brokenIds.length ? [`broken: ${brokenIds.join(", ")}`] : [], ...screensFailed.length ? [`screens failed: ${screensFailed.join(", ")}`] : [], ...review?.problem ? [review.problem] : []];
     const counts = review?.counts ? [`${review.counts.fine} fine, ${review.counts.off} looks off, ${review.counts.broken} broken${review.counts.none ? `, ${review.counts.none} no verdict` : ""}`] : [];
+    // The saved summary goes in a PR's text, so it names no folder of this machine.
+    const summary = [`${tried.length} features tried, ${findingLines.length} scripted findings`, ...counts,
+      ...failed.slice(0, failed.length - (review?.problem ? 1 : 0)), ...review?.problem ? ["the review did not finish"] : []].join(", ");
+    saveResult(!failed.length, summary, { partial: flags.noReview ? "--no-review" : flags.features.length ? "--features" : null, bundle: out });
     kitResult(failed.length ? "fail" : "ok", [`ux ${tried.length} features tried, ${findingLines.length} scripted findings`, ...counts, `bundle ${out}`, ...failed].join(", "));
     return failed.length ? 1 : 0;
   } catch (error) {

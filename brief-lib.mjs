@@ -2,7 +2,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { basename, join } from "node:path";
-import { builderChecks, plainEnglish, reviewFormat, ticketReviewBrief } from "./review-brief.mjs";
+import { builderChecks, plainEnglish, projectCommand, reviewFormat, ticketReviewBrief } from "./review-brief.mjs";
 import { kitMessagesToLexRule, kitReviewLoopRule, kitRulebookPins, kitSliceBranch } from "./kit-lib.mjs";
 import { map, modelFamily, pickSkills, readTicket, skillLine } from "./skills.mjs";
 import { cardNaming, onOrbit } from "./ticket-cards.mjs";
@@ -90,6 +90,9 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
       "Agent Kit is required: `scripts/agents/kit doctor` first; fix every ✗ that is not marked optional (a missing optional reviewer or skill is only a note). A kit command that cannot run is said in the report, never skipped silently or claimed.",
       "Tests first: each new test fails before the change.",
       `While building: ${[unit && "`scripts/agents/kit unit --affected`", check && `\`${check}\` ${when}`, lint && `\`${lint}\``, task ? "the task's focused checks" : card ? "the card's focused checks" : "the ticket's focused checks"].filter(Boolean).join(", ")}.`,
+      // TOOLS-235 item G (Lex, 2026-11-14): every screen change gets the automatic UX check before it lands, as kit slice
+      // gave it. kit pr holds the builder to it (ux-gate.mjs); kit shots is named only where the project has it.
+      `UX check: a change to what a person sees gets \`scripts/agents/kit ux\` once it is built${projectCommand("shots", root, settings) ? ", with `scripts/agents/kit shots` for the screenshots you report" : ""}: fix what it calls broken or looks off, or say why not, and run it again after any later visible change. \`kit pr\` refuses to land a visible change (\`paths.visible\`) without a fresh \`kit ux\` result; a change that matches those paths but shows a person nothing new lands with \`scripts/agents/kit pr … --not-visible "<reason>"\`. In a project with no feature list (\`docs/agents/features.md\`) \`kit ux\` has nothing to try: say so in the report.`,
       ...(stage === "build" && task ? [
         `Build it, then \`scripts/agents/kit review\` and \`scripts/agents/kit pr --title ${shellQuote(task)}\` into \`${land}\` (checks for the change's tier, the second look, CI, merge), each under \`kit go\`. Link the PR with T3 \`link_pull_request\`.`,
         "Report every RESULT line, the PR URL and the merge SHA.",

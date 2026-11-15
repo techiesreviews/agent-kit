@@ -39,9 +39,10 @@ step's detail.
    The helper builds, runs the quick checks and writes one proof line per "Done when" item, what it
    really tried on the real thing (`Done when <n>: met — <proof>`: the test that failed first, the command
    and what it printed, what it clicked on the preview), in its report and the PR text. Checks passing is
-   not proof on its own; a bug fix shows its failing test first.
-5. **Land.** `kit pr`: the checks, the Opus review, the second look, GitHub's checks, merge. A direct
-   project is live here.
+   not proof on its own; a bug fix shows its failing test first. A change to what a person sees gets
+   `kit ux`, the automatic UX check, before it lands.
+5. **Land.** `kit pr`: the checks, the UX check's result for a visible change, the Opus review, the
+   second look, GitHub's checks, merge. A direct project is live here.
 6. **Lex tries it.** A desk thread with the preview link, the prototype beside it, what to click and what
    to see.
 7. **His go.** `kit pr --release` puts a public tool live, only after his go (a direct project has no
@@ -358,12 +359,19 @@ OpenCode settings (default model, global instructions) do not apply to the revie
 
 - **Use:** `kit review` (inside `kit slice` and `kit pr`), Claude on every change, up to 3 `kit fix`
   rounds; severities and blocking: the runner guide's Review and close. Second opinions per the pins
-  above. A visible change also gets the Opus UX review (the gate after the code review in
-  `kit slice`; the extras name its command) against the house style, the UX rulebook and the
-  approved mock-up: broken gets one fix round and stops the slice only if still broken, looks off
-  gets one fix round and then lands with UX follow-ups in the ticket. A feature the reviewer gives no
-  verdict is asked for once more; still none, it is "no verdict": counted, named on the slice's ux line,
-  and it lands without a fix round or a follow-up.
+  above. A visible change also gets the Opus UX review, `kit ux`, against the house style, the UX
+  rulebook and the approved mock-up (Lex, 2026-11-14: every screen change gets the automatic UX check
+  before it lands). The builder runs it once the change is built (the build brief says so) and fixes
+  what it calls broken or looks off, or says why not. `kit pr` is the gate: it lands a visible change
+  (`paths.visible`) only with the result `kit ux` saved for the branch, passed, with the review, for
+  the visible files as they are then, and puts a `UX check:` line in the PR text; a later change to a
+  visible file, a rebase's too, needs `kit ux` again. A change that matches those paths but shows a
+  person nothing new lands with `kit pr --not-visible "<reason>"`; `--waive` does not cover the UX
+  check. A project with no feature list for `kit ux` (`docs/agents/features.md`) gets
+  `UX check: skipped`. `kit slice` keeps its own UX step after the code review: broken gets one fix
+  round and stops the slice only if still broken, looks off gets one fix round and then lands with UX
+  follow-ups in the ticket. A feature the reviewer gives no verdict is asked for once more; still
+  none, it is "no verdict": counted, never failing.
 - **Decides:** the lead weighs each finding; a rejected finding is written down with its reason.
 - **Evidence:** the main root's `.scratch/reviews/<owner>/<time>/`, with `findings.json` listing each
   finding's kind (real fault, mismatch with the ticket, timing/race, style) and the builder's declined
