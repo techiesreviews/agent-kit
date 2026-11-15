@@ -1948,10 +1948,14 @@ test("a visible change without a fresh kit ux result stops before checks, push o
   const stale = f.run();
   assert.equal(stale.status, 1);
   assert.match(stale.stdout, /RESULT: fail ux: the visible change is not the one kit ux checked \(src\/styles\/app\.css changed since it ran at [0-9a-f]{7}\); run `scripts\/agents\/kit ux` again$/m);
-  uxResult(f, { ok: false, summary: "1 features tried, 0 scripted findings, 0 fine, 0 looks off, 1 broken, broken: F-media-02" });
-  assert.match(f.run().stdout, /RESULT: fail ux: kit ux did not pass for this change; fix what it found and run `scripts\/agents\/kit ux` again$/m);
   uxResult(f, { partial: "--no-review" });
   assert.match(f.run().stdout, /RESULT: fail ux: kit ux ran with --no-review, so it did not check the whole change; run `scripts\/agents\/kit ux` without it$/m);
+  uxResult(f, { ok: false, summary: "1 features tried, 0 scripted findings, 0 fine, 0 looks off, 1 broken, broken: F-media-02" });
+  assert.match(f.run().stdout, /RESULT: fail ux: kit ux did not pass for this change; fix what it found and run `scripts\/agents\/kit ux` again$/m);
+  // A partial run after that leaves the whole run's failed result in place, so --not-visible cannot land it.
+  uxResult(f, { partial: "--no-review" });
+  assert.match(f.run().stdout, /RESULT: fail ux: kit ux did not pass for this change; fix what it found and run `scripts\/agents\/kit ux` again$/m);
+  assert.match(f.run(["--not-visible", "nobody will notice"]).stdout, /RESULT: fail ux: kit ux tried this change and it did not pass, so --not-visible does not fit it; /);
   assert.equal(f.calls().some(call => call.tool === "gh"), false);
 });
 

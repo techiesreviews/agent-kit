@@ -12,11 +12,15 @@ export const uxFeatureList = "docs/agents/features.md";
 const resultFile = (mainRoot, branch) => join(mainRoot, ".scratch/ux-results", `${encodeURIComponent(branch)}.json`);
 
 const gitIn = root => (args, input) => execFileSync("git", ["-C", root, "-c", "core.quotePath=false", ...args], { encoding: "utf8", input, maxBuffer: 256 * 1024 * 1024, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
-/** Every path that differs from the merge-base with `base`, unsaved and untracked files included, sorted. */
-function changedPaths(root, base) {
+/**
+ * Every path that differs from the merge-base with `base`, then the untracked files, unsaved changes included. A rename counts
+ * under both its names, so a feature that lists only the old path is touched too. kit ux picks its features from this
+ * list and kit pr works out the covering features from it, so both always mean the same change.
+ */
+export function changedPaths(root, base) {
   const git = gitIn(root), mergeBase = git(["merge-base", "HEAD", base]).trim();
   const changed = [...git(["diff", "--name-only", "--no-renames", "-z", mergeBase]).split("\0"), ...git(["ls-files", "--others", "--exclude-standard", "-z"]).split("\0")];
-  return [...new Set(changed)].filter(Boolean).sort();
+  return [...new Set(changed)].filter(Boolean);
 }
 
 /**
@@ -26,7 +30,7 @@ function changedPaths(root, base) {
  * visible file changes.
  */
 export function visibleFiles(root, base, settings) {
-  const paths = changedPaths(root, base).filter(path => visiblePath(path, settings));
+  const paths = changedPaths(root, base).filter(path => visiblePath(path, settings)).sort();
   const kept = paths.filter(path => statSync(join(root, path), { throwIfNoEntry: false })?.isFile());
   const hashes = kept.length ? gitIn(root)(["hash-object", "--stdin-paths"], `${kept.join("\n")}\n`).trim().split("\n") : [];
   return Object.fromEntries(paths.map(path => [path, kept.includes(path) ? hashes[kept.indexOf(path)] : "gone"]));
@@ -79,14 +83,21 @@ export function coverageHash(root, base) {
 /**
  * Saves kit ux's result for a branch: { branch, head, files, list, ok, summary, partial, bundle }, where `list` is the
  * hash of the features that covered the change (coverageHash), and `nothing: true` when none did, so nothing was
- * tried. The newest one counts.
+ * tried. The newest one counts, except that a partial run leaves a whole run's result for the same change in place:
+ * that result is then returned, and null when the new one was saved.
  */
 export function saveUxResult(mainRoot, record) {
   const file = resultFile(mainRoot, record.branch), temporary = `${file}.${process.pid}.tmp`;
+  // A run without the review, or of named features only, says nothing about what a whole run found: the whole run's
+  // result for the very same change stays, pass or fail, so a partial run never wipes a broken verdict.
+  const before = record.partial ? readUxResult(mainRoot, record.branch) : null;
+  if (before && !before.partial && (before.list ?? null) === (record.list ?? null) && sameFiles(before.files, record.files)) return before;
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(temporary, `${JSON.stringify({ ...record, at: new Date().toISOString() }, null, 2)}\n`);
   renameSync(temporary, file);
+  return null;
 }
+const sameFiles = (a, b) => Object.keys(a).length === Object.keys(b).length && Object.keys(a).every(path => a[path] === b[path]);
 
 /** The result kit ux last saved for a branch; null when there is none, or it cannot be read. */
 export function readUxResult(mainRoot, branch) {
