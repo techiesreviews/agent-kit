@@ -17,6 +17,7 @@ const fakePowershell = `#!${process.execPath}
 const fs = require("fs");
 const script = process.argv.at(-1);
 fs.appendFileSync(process.env.FAKE_WIN_LOG, "powershell " + script + "\\n");
+if (fs.existsSync(process.env.FAKE_WIN_LOG + ".broken")) { console.error("Get-CimInstance : The RPC server is unavailable."); process.exit(1); }
 if (!script.startsWith("Get-CimInstance Win32_Process") || !script.includes("$_.CreationDate.ToFileTimeUtc(), $_.Name")) process.exit(2);
 const only = /-Filter 'ProcessId=(\\d+)'/.exec(script)?.[1];
 const lines = [];
@@ -25,7 +26,11 @@ for (const pid of only ? [only] : fs.readdirSync("/proc").filter(name => /^\\d+$
     const stat = fs.readFileSync("/proc/" + pid + "/stat", "utf8");
     const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
     // Windows lists no zombies.
-    if (!["Z", "X"].includes(fields[0])) lines.push(pid + " " + fields[1] + " " + fields[19] + " " + stat.slice(stat.indexOf("(") + 1, stat.lastIndexOf(")")));
+    const name = stat.slice(stat.indexOf("(") + 1, stat.lastIndexOf(")"));
+    if (["Z", "X"].includes(fields[0])) continue;
+    lines.push(pid + " " + fields[1] + " " + fields[19] + " " + name);
+    // Windows starts a hidden console host as a child of each console process: a made-up one for each node.
+    if (!only && process.env.FAKE_CONHOST && name === "node") lines.push((Number(pid) + 4000000) + " " + pid + " " + fields[19] + " conhost.exe");
   } catch {}
 }
 process.stdout.write(lines.map(line => line + "\\r\\n").join(""));
@@ -236,4 +241,58 @@ test("go on Windows: --max is a timer in the job's wrapper that ends its tree an
   assert.equal(readFileSync(join(f.directory("win-max"), "exit"), "utf8").trim(), "143");
   assert.match(f.log(), /^taskkill \/PID \d+ \/T \/F$/m);
   assert.deepEqual(linuxTools(f.log()), []);
+});
+
+test("a Windows job ends on its own although each of its node processes has a console host child", async t => {
+  const f = fixture(t);
+  f.env.FAKE_CONHOST = "1";
+  const release = join(f.root, "release");
+  ok(f.bg("win-conhost", "--", process.execPath, "-e", holdUntil(release)));
+  writeFileSync(release, "");
+  await until(() => existsSync(join(f.directory("win-conhost"), "exit")));
+  assert.equal(readFileSync(join(f.directory("win-conhost"), "exit"), "utf8").trim(), "4");
+  assert.ok(existsSync(join(f.directory("win-conhost"), "ended")));
+});
+
+test("bg stop on Windows ends a job whose wrapper died while its command runs, and kills only the top of its tree", async t => {
+  const f = fixture(t);
+  const ready = join(f.root, "descendant");
+  const leaf = 'require("fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000);';
+  const parent = `require("child_process").spawn(process.execPath, ["-e", ${JSON.stringify(leaf)}, process.argv[1]], { stdio: "ignore" }); setInterval(() => {}, 1000);`;
+  ok(f.bg("win-orphan", "--", process.execPath, "-e", parent, ready));
+  await until(() => existsSync(ready));
+  const descendant = Number(readFileSync(ready, "utf8"));
+  t.after(() => { if (live(descendant)) process.kill(descendant, "SIGKILL"); });
+  const directory = f.directory("win-orphan");
+  const pid = Number(readFileSync(join(directory, "pid"), "utf8"));
+  const command = JSON.parse(readFileSync(join(directory, "members"), "utf8")).members[0].pid;
+  process.kill(pid, "SIGKILL");
+  await until(() => !live(pid));
+  assert.match(f.bg("--list").stdout, /^win-orphan\trunning\t/m);
+  const output = f.bg("--stop", "win-orphan");
+  ok(output);
+  assert.match(f.log(), new RegExp(`^taskkill /PID ${command} /T /F$`, "m"), "only the top of the tree, the pinned command process, goes to taskkill");
+  assert.ok(!live(command) && !live(descendant));
+  assert.equal(readFileSync(join(directory, "exit"), "utf8").trim(), "143");
+});
+
+test("a Windows process list that cannot be read never makes a job look ended", async t => {
+  const f = fixture(t);
+  const never = join(f.root, "never");
+  const ready = join(f.root, "ready");
+  ok(f.bg("win-broken", "--", process.execPath, "-e", `require("fs").writeFileSync(${JSON.stringify(ready)}, ""); ${holdUntil(never)}`));
+  const directory = f.directory("win-broken");
+  await until(() => existsSync(ready));
+  writeFileSync(join(f.root, "win.log.broken"), "");
+  const list = f.bg("--list");
+  assert.match(list.stdout, /^win-broken\tunknown \(cannot read the process list .*The RPC server is unavailable\.\)\t/m);
+  const go = f.go("win-broken");
+  assert.equal(go.status, 1, go.stdout);
+  assert.match(last(go), /^RESULT: fail go cannot read the process list /);
+  const stop = f.bg("--stop", "win-broken");
+  assert.equal(stop.status, 1, stop.stdout);
+  assert.match(last(stop), /^RESULT: fail cannot read the process list /);
+  assert.equal(existsSync(join(directory, "exit")), false);
+  rmSync(join(f.root, "win.log.broken"));
+  assert.match(f.bg("--list").stdout, /^win-broken\trunning\t/m);
 });

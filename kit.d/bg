@@ -139,12 +139,13 @@ function list() {
   const entries = existsSync(root) ? readdirSync(root, { withFileTypes: true }) : [];
   for (const entry of entries.filter(entry => entry.isDirectory() && /^[a-z0-9]/.test(entry.name)).sort((a, b) => a.name.localeCompare(b.name))) {
     const directory = kitJobDirectory(entry.name);
-    let state = "died";
-    try {
-      const job = kitJob(directory);
+    let state = "died", job = null;
+    try { job = kitJob(directory); } catch { /* An incomplete record is a died job. */ }
+    // A process list that cannot be read (Windows: PowerShell failed) is unknown, never died.
+    if (job) try {
       const status = kitJobExit(job);
       state = kitJobRunning(job) ? "running" : status !== null ? `exit ${status}` : "died";
-    } catch { /* An incomplete record is a died job. */ }
+    } catch (error) { state = `unknown (${error.message.replace(/\s+/g, " ")})`; }
     const started = Date.parse(kitJobRecord(directory, "started"));
     const age = Number.isFinite(started) ? `${Math.max(0, Math.floor((Date.now() - started) / 1000))}s` : "unknown";
     console.log(`${entry.name}\t${state}\t${age}\t${join(directory, "log")}`);
@@ -234,11 +235,15 @@ async function stop(name, directory) {
   kitResult("ok", `bg stop ${name} pgid ${job.pgid}`);
 }
 
-// Windows has no graceful stop: taskkill /T /F ends the job's whole tree (its live processes, wrapper first) at once,
-// so the wrapper writes no records, and stop writes "ended" and exit 143 itself unless the job had just ended.
+// Windows has no graceful stop: taskkill /T /F ends the job's whole tree at once, so the wrapper writes no records,
+// and stop writes "ended" and exit 143 itself unless the job had just ended. Only the top of the tree goes to taskkill
+// (the wrapper, or the processes left below it when it died): /T reaches the rest, and a short-lived process that
+// ended since the list was read can never pass on a reused pid.
 async function stopTree(name, job) {
-  const pids = kitJobMembers(job).map(member => member.pid);
-  const kill = spawnSync("taskkill", [...pids.flatMap(pid => ["/PID", String(pid)]), "/T", "/F"], { encoding: "utf8", windowsHide: true });
+  const members = kitJobMembers(job);
+  const pids = new Set(members.map(member => member.pid));
+  const tops = members.filter(member => !pids.has(member.ppid)).map(member => member.pid);
+  const kill = spawnSync("taskkill", [...tops.flatMap(pid => ["/PID", String(pid)]), "/T", "/F"], { encoding: "utf8", windowsHide: true });
   const deadline = Date.now() + 5000;
   while (kitJobRunning(job) && Date.now() < deadline) await delay(poll);
   if (kitJobRunning(job)) throw new Error(`bg ${name} still runs after taskkill: ${`${kill.stderr ?? ""}${kill.stdout ?? ""}`.trim().split(/\r?\n/).at(-1) || `exit ${kill.status}`}`);

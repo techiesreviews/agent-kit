@@ -438,7 +438,8 @@ export function kitWinProcessList(text) {
 export function kitWinProcesses(pid) {
   const query = pid === undefined ? "Get-CimInstance Win32_Process" : `Get-CimInstance Win32_Process -Filter 'ProcessId=${Number(pid)}'`;
   const script = `${query} | ForEach-Object { if ($_.CreationDate) { '{0} {1} {2} {3}' -f $_.ProcessId, $_.ParentProcessId, $_.CreationDate.ToFileTimeUtc(), $_.Name } }`;
-  const read = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", windowsHide: true, timeout: 60000 });
+  // A list takes about 0.4s; a hung WMI must not keep kit go past one tool call's 10 minutes.
+  const read = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", windowsHide: true, timeout: 15000 });
   if (read.error || read.status !== 0)
     throw new Error(`cannot read the process list (powershell.exe Get-CimInstance Win32_Process): ${read.error?.message ?? (oneLine(read.stderr ?? "").trim() || `exit ${read.status}`)}`);
   // The powershell.exe reading the list is in it, as a child of the caller: it is never a job's process.
@@ -484,6 +485,7 @@ export function kitJobSame(current, job, started, platform = kitJobPlatform()) {
  */
 export function kitJobProcess(pid) {
   if (kitJobPlatform() === "win32") {
+    if (!Number.isSafeInteger(Number(pid)) || Number(pid) <= 0) return null;
     try { process.kill(Number(pid), 0); }
     catch (error) { if (error.code === "ESRCH") return null; if (error.code !== "EPERM") throw error; }
     const found = kitWinProcesses(pid).find(entry => entry.pid === Number(pid));
