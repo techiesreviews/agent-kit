@@ -25,7 +25,7 @@ const usage = "Usage: kit review [--base REF | --commit SHA] [--ticket FILE] [--
   "(ASE_SECOND_LOOK overrides); the next one takes it when a model cannot run; when none can, it skips with exit 3 and says \"second look: skipped (<reason>)\".\n" +
   "GPT (through Codex, at the table's effort) may review since 2026-11-09; Claude Opus stays the main reviewer. A GPT model in the order is never\n" +
   "used for a docs-only change, and once per PR (the same --pr N, or the same branch and history when either look named no PR): a later look goes to the next model.\n" +
-  "Docs-only for GPT: every changed file is in paths.docs, or is a .md, .mdx, .markdown, .rst or .adoc file that paths.tests and paths.css leave out.\n" +
+  "Docs-only for GPT: every changed file is in paths.docs, or is a .md, .markdown, .rst or .adoc file that paths.tests and paths.css leave out.\n" +
   "One exception (Lex, 2026-11-12): when the free OpenCode model fails (for a reason of its own, not a failed save), times out or hits its limit,\n" +
   "GPT looks again even if it looked once, within ASE_REVIEW_BUDGET_GPT and with a time limit of its own (never for a docs-only change);\n" +
   "it says \"second look: <gpt model> takes it again (…)\".\n" +

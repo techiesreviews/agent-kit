@@ -441,6 +441,7 @@ case "$1 $2" in
   'api repos/{owner}/{repo}/commits/abcdef0') echo "$old" ;;
   'api repos/{owner}/{repo}/commits/abcdef9') echo 'gh: No commit found for SHA: abcdef9 (HTTP 422)' >&2; exit 1 ;;
   'api repos/{owner}/{repo}/commits/abcdef7') echo "$old" ;;
+  'api repos/{owner}/{repo}/commits/abcdef6') sleep 5; echo "$old" ;;
   'api repos/{owner}/{repo}/commits/abcdef8') echo 'gh: Bad credentials (HTTP 401)' >&2; exit 1 ;;
   'pr view')
     [[ $3 == 42 && $4 == --json && $5 == headRefName,headRefOid ]]
@@ -686,6 +687,13 @@ test("ci short SHA that neither git nor GitHub knows fails at once with a plain 
   // GitHub's commit lookup also takes a branch name: an answer that does not start with the short SHA is no match.
   const named = await run(t, ["ci", "--sha", "abcdef7", "--timeout", "30s"], fixture.env);
   result(named, 1, /fail no commit abcdef7 in this repo or on GitHub \(GitHub answered for a branch or tag of that name, abcdef0\); pass the full SHA$/);
+  assert.doesNotMatch(fixture.calls(), /run list/);
+});
+
+test("ci short SHA whose GitHub lookup outlasts the timeout reports the time-out, not a missing commit", async (t) => {
+  const fixture = fakeGh(t, "green");
+  const output = await run(t, ["ci", "--sha", "abcdef6", "--timeout", "0.5s"], fixture.env);
+  result(output, 1, /fail ci abcdef6 abcdef6 timed out after 0\.5s$/);
   assert.doesNotMatch(fixture.calls(), /run list/);
 });
 
