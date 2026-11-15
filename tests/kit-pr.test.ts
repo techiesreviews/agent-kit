@@ -3076,9 +3076,19 @@ test("on Orbit, kit pr --ticket KEY reads the card into its brief and closes it 
   const output = await pr(["--ticket", "KIT-1"]);
   assert.equal(output.status, 0, output.all);
   assert.equal(finalLine(output), "RESULT: ok merged #73 abcdef0 (card KIT-1 Done)");
-  // The brief stays in kit pr's own run folder: a slice in this worktree never takes it for its own resumed brief.
+  // The brief stays in kit pr's own run folder, never the worktree's saved briefs.
   assert.ok(!existsSync(join(root, ".scratch/kit-tickets/KIT-1.md")));
   assert.match(body(), /^Ticket: Straight from the card \(/m);
+  assert.equal(orbit.statusOf(task), "Done");
+});
+
+test("on Orbit, kit pr --ticket KEY lands a card in the card standard's short shape: no Files section is asked for any more", async t => {
+  // Only kit slice's builder needed "## Files" for its scope; it was cut (TOOLS-235), and a standard card has none.
+  const { card, pr, orbit } = await orbitPr(t);
+  const task = card({ title: "Short card", description: "Make the export button work.\n\nDone when: the export saves a file.\n\nLinks: none" }, "In Progress");
+  const output = await pr(["--ticket", "KIT-1"]);
+  assert.equal(output.status, 0, output.all);
+  assert.equal(finalLine(output), "RESULT: ok merged #73 abcdef0 (card KIT-1 Done)");
   assert.equal(orbit.statusOf(task), "Done");
 });
 

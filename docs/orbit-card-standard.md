@@ -38,4 +38,4 @@ Nothing else. The kit's own lines (`Planned dates:`, `Blocked by:`, `Claimed by:
 - `kit ticket check KEY | --project KEY | --all [--json]` lists every card that breaks the standard and which rule (a sub-task with no description is left alone, except a bare card under the project's own parent card, and a `Next step (fleet):` line is not counted toward the 12 lines). It changes nothing and any role may run it.
 - `kit ticket next-lex KEY "reason" [--comment "details"]` sets `Next step (Lex):`, assigns Lex, moves a Backlog or Todo card to In Progress and posts the `@Lex` comment.
 - `kit ticket tidy KEY --dir FOLDER [--dry-run]` moves a long card to the standard: comments first, then the description, then the sub-tasks. A lead runs it; run it again after a failure and it finishes the rest without doubling anything.
-- A card the kit should build (`kit next`, `kit slice`) also needs a `## Files` section; its `Done when:` line may stand in for a `## Done when` heading.
+- A card's `Done when:` line may stand in for a `## Done when` heading; `kit brief` warns when a card has neither.
