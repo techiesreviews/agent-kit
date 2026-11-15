@@ -324,11 +324,13 @@ test("a Windows job whose process list keeps failing while it waits for leftover
   const broken = join(f.root, "win.log.broken");
   t.after(() => rmSync(broken, { force: true }));
   const leftover = join(f.root, "leftover");
-  t.after(() => { try { process.kill(Number(readFileSync(leftover, "utf8")), "SIGKILL"); } catch {} });
-  const code = `const child = require("child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore" }); require("fs").writeFileSync(${JSON.stringify(leftover)}, String(child.pid)); require("fs").writeFileSync(${JSON.stringify(broken)}, ""); process.exit(6);`;
+  const code = `const child = require("child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "ignore" }); require("fs").writeFileSync(${JSON.stringify(leftover)}, String(child.pid)); require("fs").writeFileSync(${JSON.stringify(broken)}, String(Date.now())); process.exit(6);`;
   ok(f.bg("win-gives-up", "--", process.execPath, "-e", code));
   const directory = f.directory("win-gives-up");
-  await until(() => existsSync(join(directory, "exit")), 40000);
+  try { await until(() => existsSync(join(directory, "exit")), 40000); }
+  finally { try { process.kill(Number(readFileSync(leftover, "utf8")), "SIGKILL"); } catch { /* It has ended. */ } }
+  // Ten looks a second apart: the give-up comes at least nine seconds after the list broke.
+  assert.ok(Date.now() - Number(readFileSync(broken, "utf8")) >= 9000, "the wrapper gave up before ten tries");
   assert.equal(readFileSync(join(directory, "exit"), "utf8").trim(), "6");
   assert.ok(existsSync(join(directory, "ended")));
   assert.match(readFileSync(join(directory, "log"), "utf8"), /^kit bg: gave up waiting for the job's leftover processes after 10 failed process lists$/m);
