@@ -139,7 +139,9 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   parent, since Windows reuses pids and never re-parents, and a process whose parent has ended (and is not pinned) is
   no longer followed (as with `taskkill /T`); the hidden `conhost.exe` each console process gets is not counted.
   `--max` is a timer in the wrapper that holds until the job's whole tree has ended. An exit record keeps any 32-bit
-  Windows exit code. `kit bg --stop` ends the whole tree at
+  Windows exit code; `kit go` gives 1 for one above 255 (a shell keeps only its low 8 bits). The time limit and the
+  command's pin read the process list too: a limit that meets an unreadable list looks again a second later, and a
+  command that cannot be pinned runs on unpinned, with a line in its log. `kit bg --stop` ends the whole tree at
   once with `taskkill /PID <pid> /T /F` (Windows has no graceful stop) and records `ended` and exit 143 itself; only
   the top of the tree goes to taskkill (the wrapper, or what is left below it when it died). A process list that
   cannot be read fails the command (`kit bg --list` shows the job as `unknown (…)`), never reads as an ended job;
