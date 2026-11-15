@@ -2956,6 +2956,21 @@ test("out of budget with a should (P2) left lands as a follow-up for Lex but the
   assert.doesNotMatch(result.stdout, /Verdict: approved/);
 });
 
+// kit fix, which saved the fix rounds kit pr counts, was cut (TOOLS-235): with no saved rounds a helper's later review
+// still counts 0 of them, so a should keeps blocking (no budget report) until the lead waives it by id (a known gap).
+test("with no rounds saved by the cut kit fix, a should at review round 4 still blocks until the lead waives it by id", t => {
+  const f = fixture(t);
+  const path = f.saveReview(cleanReview.replace("Spec: none.", "Spec: P2: Real minor defect."));
+  writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ round: 4, model: "claude-opus-5-5", head: f.git("rev-parse", "HEAD"), findings: [{ id: "R4-1", group: "Spec", severity: "P2", kind: "unsorted", text: "P2: Real minor defect." }] }));
+  const blocked = f.run();
+  assert.equal(blocked.status, 1, blocked.stdout + blocked.stderr);
+  assert.match(blocked.stdout, /RESULT: fail pr #73 review has 1 open findings/);
+  assert.doesNotMatch(blocked.stdout, /Review budget used/);
+  const waived = f.run(["--waive", "R4-1: Lex accepted the minor defect."], { ASE_OWNER: "ke-lead" });
+  assert.equal(waived.status, 0, waived.stdout + waived.stderr);
+  assert.match(waived.stdout.trim().split("\n").at(-1)!, /^RESULT: ok merged #73 /);
+});
+
 test("the PR's review block is replaced between markers on a later run, never added twice", t => {
   const f = fixture(t);
   const path = f.saveReview(cleanReview);
