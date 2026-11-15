@@ -626,6 +626,10 @@ test("on Windows a job's first word picks how it starts: a program itself, a .cm
   const odd = { PATH: `${join(root, "none")}:"${join(root, "odd:name")}":"${join(root, "git:odd/bin")}"` };
   assert.deepEqual(cmdRun(kitWinLaunch(["odd"], { cwd: root, env: odd }).args[3], {}), [join(root, "odd:name/odd.cmd")]);
   assert.equal(kitWinBash(odd, root), join(root, "git:odd/bin/bash.exe"));
+  // A stray quote that is never closed hides no folder after it.
+  const stray = { PATH: `"${join(root, "none")}:${join(root, "With Spaces")}:${join(root, "Git Spaces/bin")}` };
+  assert.deepEqual(cmdRun(kitWinLaunch(["quoted"], { cwd: root, env: stray }).args[3], {}), [join(root, "With Spaces/quoted.cmd")]);
+  assert.equal(kitWinBash(stray, root), join(root, "Git Spaces/bin/bash.exe"));
   file("only.sh.cmd", "@echo off\r\n");
   assert.deepEqual(cmdRun(launch("./only.sh", "x").args[3], {}), [join(root, "only.sh.cmd"), "x"]);
   // Programs and .cmd files come first in every folder, a bare script only after; the job's folder before PATH, as Node looks.

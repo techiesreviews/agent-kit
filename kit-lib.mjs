@@ -479,16 +479,19 @@ export function kitWinLaunch(command, { cwd = process.cwd(), env = process.env }
 
 const winExtensions = [".com", ".exe", ".bat", ".cmd"];
 // PATH's folders: split at each separator outside quotes (a folder in quotes may hold one), its quotes taken off; a
-// relative one is taken from the job's folder, as Node takes it from the child's.
+// stray quote that is never closed hides nothing: then every separator splits. A relative folder is taken from the
+// job's folder, as Node takes it from the child's.
 function winPath(env, cwd) {
+  const path = env.PATH ?? env.Path ?? "";
   const folders = [""];
   let quoted = false;
-  for (const char of env.PATH ?? env.Path ?? "") {
+  for (const char of path) {
     if (char === '"') quoted = !quoted;
     else if (char === delimiter && !quoted) folders.push("");
     else folders[folders.length - 1] += char;
   }
-  return folders.filter(Boolean).map(folder => resolve(cwd, folder));
+  const split = quoted ? path.split(delimiter).map(folder => folder.replaceAll('"', "")) : folders;
+  return split.filter(Boolean).map(folder => resolve(cwd, folder));
 }
 function winFile(path) {
   try { return statSync(path).isFile(); } catch { return false; }
