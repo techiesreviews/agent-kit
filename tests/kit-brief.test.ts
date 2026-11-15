@@ -563,6 +563,19 @@ test("brief KEY: on an Orbit project a lead's build brief claims a Todo or Backl
   assert.equal(landed.status, 0, landed.all);
   assert.equal(o.orbit.statusOf(done), "Done");
   assert.match(landed.stderr, /^warning: KIT-16 is left as it is, not claimed for kit-16: it is already Done, so there is nothing to build$/m);
+  // A card moved out of Todo while its brief was being written (to Ideas here) is no longer free: the claim reads it again
+  // right before its write, so the card stays where it was moved, and the brief says why it holds no claim.
+  const moved = o.card({ title: "Moved" });
+  o.orbit.controls.conflicts = 1;
+  o.orbit.controls.concurrentEdit = task => { task.status_id = "ideas-status"; };
+  const skipped = await run({}, "KIT-17", "--owner", "kit-17");
+  o.orbit.controls.concurrentEdit = undefined;
+  assert.equal(skipped.status, 0, skipped.all);
+  assert.ok(existsSync(join(f.root, ".scratch/kit-briefs/KIT-17-build.md")));
+  assert.equal(o.orbit.statusOf(moved), "Ideas");
+  assert.doesNotMatch(moved.description, /Claimed by/);
+  assert.doesNotMatch(skipped.stderr, /claimed KIT-17/);
+  assert.match(skipped.stderr, /^warning: KIT-17 changed while its brief was written and is left as it is, not claimed for kit-17: it is in Ideas; make sure no second builder starts on it$/m);
 });
 
 test("brief KEY: on a board with no Todo status a lead's build brief claims every card not yet started, since kit next hands those out", async t => {
