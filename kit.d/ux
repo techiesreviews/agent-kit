@@ -41,9 +41,10 @@ piece's scoreboard record as ux. --no-review skips it.
 Result for kit pr: each run saves its result for the branch under <main root>/.scratch/ux-results/, with the visible
 files (paths.visible in scripts/agents/kit.json) as it checked them and the listed features that cover the change. kit
 pr lands a visible change only with a result that passed for those files and those features as they are then (a list
-edit about other features changes nothing); one made with --no-review or --features is partial: it does not count, and
-it never replaces a whole run's result for the same change. No result is saved when HEAD or a visible file moved
-during the run.
+edit about other features changes nothing); one made with --no-review or --features is partial and does not count.
+Only a whole run that finishes speaks for a change: a partial run, or one whose reviewer did not finish, never
+replaces a whole finished result or one that did not pass for the same change. No result is saved when HEAD or a
+visible file moved during the run.
 When no listed feature covers any changed file, nothing is tried: a note names the visible file, and kit pr says
 "UX check: nothing to try".
 KIT_UX_SHOTS and KIT_UX_AGENT: executables replacing the project's kit shots and agent.sh, same arguments (tests).
@@ -576,7 +577,7 @@ async function main() {
         return;
       }
       const kept = saveUxResult(kitMainRoot(), { branch: startBranch, head: startHead, files: visible, list, ok, summary, partial: null, ...more });
-      if (kept) console.log(`note: the result saved for kit pr stays the whole run's (${kept.ok === true ? "passed" : "did not pass"}, kit ux at ${String(kept.head ?? "").slice(0, 7)}); a run with ${more.partial} does not replace it`);
+      if (kept) console.log(`note: the result saved for kit pr stays the earlier one (${kept.ok === true ? "passed" : "did not pass"}, kit ux at ${String(kept.head ?? "").slice(0, 7)}); a run ${more.partial ? `with ${more.partial}` : "that did not finish"} does not replace it`);
     };
     if (!selected.length) {
       saveResult(true, "no listed feature touched", { nothing: true });
@@ -735,9 +736,10 @@ async function main() {
     // The saved summary goes in a PR's text, so it names no folder of this machine.
     const summary = [`${tried.length} features tried, ${findingLines.length} scripted findings`, ...counts,
       ...failed.slice(0, failed.length - (review?.problem ? 1 : 0)), ...review?.problem ? ["the review did not finish"] : []].join(", ");
-    // A run that failed without calling a feature broken (a screens run, the reviewer) is no verdict on the change.
+    // A run that failed only because its reviewer did not finish is no verdict on the change; a feature called broken
+    // or a screen that failed is one.
     saveResult(!failed.length, summary, { partial: flags.noReview ? "--no-review" : flags.features.length ? "--features" : null, bundle: out,
-      ...failed.length ? { unfinished: !brokenIds.length } : {} });
+      ...failed.length ? { unfinished: !brokenIds.length && !screensFailed.length } : {} });
     kitResult(failed.length ? "fail" : "ok", [`ux ${tried.length} features tried, ${findingLines.length} scripted findings`, ...counts, `bundle ${out}`, ...failed].join(", "));
     return failed.length ? 1 : 0;
   } catch (error) {

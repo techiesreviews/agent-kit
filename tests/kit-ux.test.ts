@@ -816,7 +816,7 @@ test("kit ux with --features tries only those, and a failed try names the featur
 });
 
 test("kit ux fails a screens run that exits non-zero even when every shot passed", t => {
-  const { run, agentCalls } = fixture(t);
+  const { root, run, agentCalls } = fixture(t);
   const output = run(["--features", "F-media-02"], { FAIL_EXIT_ONLY: "1" });
   assert.equal(output.status, 1);
   assert.match(output.result, /^RESULT: fail ux 0 features tried, 1 scripted findings, bundle \S+, screens failed: media-gallery$/);
@@ -824,6 +824,9 @@ test("kit ux fails a screens run that exits non-zero even when every shot passed
   assert.deepEqual(agentCalls(), [], "no paid review when nothing a fix round answers broke");
   const bundle = /bundle (\S+),/.exec(output.result)![1];
   assert.match(readFileSync(join(bundle, "bundle.md"), "utf8"), /- F-media-02 Feature F-media-02: untried \(screens media-gallery; a screen failed\)/);
+  // A screen that failed is a result that did not pass, not a run that merely did not finish.
+  const record = readUxResult(root, "build/sf-1-panel");
+  assert.deepEqual([record.ok, record.unfinished], [false, false]);
 });
 
 test("kit ux stops at a signal: no further try starts and one fail RESULT is printed", async t => {
@@ -1127,7 +1130,7 @@ test("kit ux saves its result for the branch, with the visible files as it check
   for (const partial of [["--no-review"], ["--features", "F-media-02"]]) {
     const part = run(partial);
     assert.equal(part.status, 0, part.stdout + part.stderr);
-    assert.match(part.stdout, new RegExp(`^note: the result saved for kit pr stays the whole run's \\(did not pass, kit ux at ${git("rev-parse", "--short=7", "HEAD")}\\); a run with ${partial[0]} does not replace it$`, "m"));
+    assert.match(part.stdout, new RegExp(`^note: the result saved for kit pr stays the earlier one \\(did not pass, kit ux at ${git("rev-parse", "--short=7", "HEAD")}\\); a run with ${partial[0]} does not replace it$`, "m"));
     assert.deepEqual([saved().ok, saved().partial], [false, null]);
   }
   const talked = uxGuard({ branch: "build/sf-1-panel", files: saved().files, record: saved(), notVisible: "nobody will notice", featureList: saved().list });
@@ -1135,7 +1138,7 @@ test("kit ux saves its result for the branch, with the visible files as it check
   // A whole run that passes replaces it, and stays too when a partial run follows.
   assert.equal(run(["--all"]).status, 0);
   assert.deepEqual([saved().ok, saved().partial], [true, null]);
-  assert.match(run(["--no-review"]).stdout, /^note: the result saved for kit pr stays the whole run's \(passed, kit ux at /m);
+  assert.match(run(["--no-review"]).stdout, /^note: the result saved for kit pr stays the earlier one \(passed, kit ux at /m);
   assert.deepEqual([saved().ok, saved().partial], [true, null]);
   // For another change (a visible file edited since) a partial run is the newest result, and it is marked partial.
   put("src/new-panel.ts", "export const panel = 1;\n");
@@ -1149,6 +1152,21 @@ test("kit ux saves its result for the branch, with the visible files as it check
   assert.match(saved().summary, /scripted findings, the review did not finish$/);
   assert.equal(run([], { FAKE_VERDICTS: JSON.stringify({ "F-media-02": "broken" }) }).status, 1);
   assert.deepEqual([saved().ok, saved().unfinished], [false, false]);
+  // A run that does not finish never replaces a verdict for the same change either: broken stays broken.
+  const down = run([], { FAKE_AGENT_FAIL: "1" });
+  assert.match(down.stdout, /^note: the result saved for kit pr stays the earlier one \(did not pass, kit ux at [0-9a-f]{7}\); a run that did not finish does not replace it$/m);
+  assert.deepEqual([saved().ok, saved().unfinished], [false, false]);
+  assert.equal(uxGuard({ branch: "build/sf-1-panel", files: saved().files, record: saved(), notVisible: "nobody will notice", featureList: saved().list }).ok, false);
+  // A partial run that called a feature broken is a verdict too: a later partial pass for the same change leaves it.
+  put("src/new-panel.ts", "export const panel = 2;\n");
+  assert.equal(run(["--features", "F-media-02"], { FAKE_VERDICTS: JSON.stringify({ "F-media-02": "broken" }) }).status, 1);
+  assert.deepEqual([saved().ok, saved().partial, saved().unfinished], [false, "--features", false]);
+  assert.equal(run(["--no-review"]).status, 0);
+  assert.deepEqual([saved().ok, saved().partial], [false, "--features"]);
+  assert.equal(uxGuard({ branch: "build/sf-1-panel", files: saved().files, record: saved(), notVisible: "nobody will notice", featureList: saved().list }).ok, false);
+  // Only a whole run that finishes replaces it.
+  assert.equal(run().status, 0);
+  assert.deepEqual([saved().ok, saved().partial], [true, null]);
 });
 
 test("kit ux tries a feature whose file the change renames away, and saves that feature as covering it", t => {

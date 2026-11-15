@@ -1922,7 +1922,7 @@ test("the UX guard: a visible change needs a kit ux result for the files as they
   // A run that failed without calling a feature broken (the reviewer did not finish, a screens run failed) is no
   // verdict on the change: it is refused as it is, but a change that shows a person nothing new may still say so.
   const down = { ...record, ok: false, unfinished: true, summary: "1 features tried, 0 scripted findings, the review did not finish" };
-  assert.deepEqual(guard({ record: down }), { ok: false, line: "UX check: failed (kit ux at 0123456: 1 features tried, 0 scripted findings, the review did not finish)",
+  assert.deepEqual(guard({ record: down }), { ok: false, line: "UX check: did not finish (kit ux at 0123456: 1 features tried, 0 scripted findings, the review did not finish)",
     problem: "kit ux did not finish for this change; run `scripts/agents/kit ux` again" });
   assert.deepEqual(guard({ record: down, notVisible: "token rename only" }), marked);
   // No listed feature covers the change, so kit ux tried nothing: it lands, and the line never says ok.
