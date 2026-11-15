@@ -450,13 +450,13 @@ export function kitWinProcesses(pid) {
  * How a Windows job's command starts. Windows starts only a program file itself (an .exe or .com; Node refuses a .cmd
  * or .bat without a shell), so the command's first word is looked up as Windows does (a word with a folder in the
  * job's folder; a bare name in the job's folder, then on PATH, as Node looks): a bare name first as name.com, .exe,
- * .bat or .cmd in each of those folders, then as the name itself; a name that has its own extension, one folder at a
- * time, as it is before with an added extension. A .cmd or .bat runs through cmd.exe /d /s /c with each argument
+ * .bat or .cmd in each of those folders, then as the name itself; a name that already has an extension (job.sh) in
+ * each folder in turn, first exactly as written, then with .com, .exe, .bat or .cmd added. A .cmd or .bat runs through cmd.exe /d /s /c with each argument
  * escaped for cmd; a shell script (a file with a #! line, or one without whose name has no extension or ends in .sh or
  * .bash) runs through Git Bash's bash.exe, its words handed over in the environment, never on a command line. A
  * program, or a word not found, starts as given, as before. Gives { program, args, options } for spawn; throws a plain
  * message for a job it cannot start safely (a shell script with no Git Bash, a cmd.exe argument it cannot carry, a
- * .cmd job in a network folder, a program with no extension, any other file without a #! line).
+ * .cmd or .bat job in a network folder, a program with no extension, any other file without a #! line).
  */
 export function kitWinLaunch(command, { cwd = process.cwd(), env = process.env } = {}) {
   const direct = { program: command[0], args: command.slice(1), options: {} };
@@ -478,9 +478,18 @@ export function kitWinLaunch(command, { cwd = process.cwd(), env = process.env }
 }
 
 const winExtensions = [".com", ".exe", ".bat", ".cmd"];
-// PATH's folders, without the quotes a folder may have there; a relative one is taken from the job's folder, as Node
-// takes it from the child's.
-const winPath = (env, cwd) => (env.PATH ?? env.Path ?? "").split(delimiter).map(folder => folder.replaceAll('"', "")).filter(Boolean).map(folder => resolve(cwd, folder));
+// PATH's folders: split at each separator outside quotes (a folder in quotes may hold one), its quotes taken off; a
+// relative one is taken from the job's folder, as Node takes it from the child's.
+function winPath(env, cwd) {
+  const folders = [""];
+  let quoted = false;
+  for (const char of env.PATH ?? env.Path ?? "") {
+    if (char === '"') quoted = !quoted;
+    else if (char === delimiter && !quoted) folders.push("");
+    else folders[folders.length - 1] += char;
+  }
+  return folders.filter(Boolean).map(folder => resolve(cwd, folder));
+}
 function winFile(path) {
   try { return statSync(path).isFile(); } catch { return false; }
 }

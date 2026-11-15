@@ -620,6 +620,12 @@ test("on Windows a job's first word picks how it starts: a program itself, a .cm
   const quoted = { PATH: `"${join(root, "With Spaces")}":"${join(root, "Git Spaces/bin")}"` };
   assert.deepEqual(cmdRun(kitWinLaunch(["quoted"], { cwd: root, env: quoted }).args[3], {}), [join(root, "With Spaces/quoted.cmd")]);
   assert.equal(kitWinBash(quoted, root), join(root, "Git Spaces/bin/bash.exe"));
+  // A folder in quotes may hold the PATH separator itself (here ":", on Windows ";").
+  file("odd:name/odd.cmd", "@echo off\r\n");
+  file("git:odd/bin/bash.exe", "MZ");
+  const odd = { PATH: `${join(root, "none")}:"${join(root, "odd:name")}":"${join(root, "git:odd/bin")}"` };
+  assert.deepEqual(cmdRun(kitWinLaunch(["odd"], { cwd: root, env: odd }).args[3], {}), [join(root, "odd:name/odd.cmd")]);
+  assert.equal(kitWinBash(odd, root), join(root, "git:odd/bin/bash.exe"));
   file("only.sh.cmd", "@echo off\r\n");
   assert.deepEqual(cmdRun(launch("./only.sh", "x").args[3], {}), [join(root, "only.sh.cmd"), "x"]);
   // Programs and .cmd files come first in every folder, a bare script only after; the job's folder before PATH, as Node looks.
@@ -706,8 +712,9 @@ test("a .cmd job's arguments reach its program unchanged, and none reaches cmd a
   for (const quote of ['say "hi"', 'back\\"slash', 'a"&b', '"'])
     assert.throws(() => kitWinLaunch([job, "fine", quote], { cwd: root, env }), /cmd\.exe cannot hand it an argument with a double quote safely/);
   // cmd.exe cannot work in a network folder: a .cmd job there is refused; a program or a full path elsewhere still starts.
-  for (const share of ["\\\\server\\share\\project", "//server/share/project"])
-    assert.throws(() => kitWinLaunch([job, "x"], { cwd: share, env }), /cmd\.exe cannot work in a network folder .*give the share a drive letter/);
+  const bat = file("run.bat", "@echo off\r\n");
+  for (const share of ["\\\\server\\share\\project", "//server/share/project"]) for (const batch of [job, bat])
+    assert.throws(() => kitWinLaunch([batch, "x"], { cwd: share, env }), /cmd\.exe cannot work in a network folder .*give the share a drive letter/);
   assert.equal(kitWinLaunch([process.execPath], { cwd: "\\\\server\\share", env }).program, process.execPath);
   // A last backslash reads differently to the batch file and to a program it calls: refused.
   for (const trail of ["C:\\work\\", "\\", "two\\\\"])
