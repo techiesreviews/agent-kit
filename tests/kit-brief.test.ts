@@ -101,11 +101,30 @@ test("brief: the build brief holds the owner, setup, pins, commands, every house
     /checks passing is not proof on its own/,
     /A bug fix shows its failing test first/,
     /Put the same lines in the PR text\./,
+    // TOOLS-235 (item G): every screen change gets the automatic UX check before it lands, as kit slice gave it.
+    /^- UX check: a change to what a person sees gets `scripts\/agents\/kit ux` once it is built/m,
+    /fix what it calls broken or looks off, or say why not, and run it again after any later visible change/,
+    /`kit pr` refuses to land a visible change \(`paths\.visible`\) without a fresh `kit ux` result/,
+    /lands with `scripts\/agents\/kit pr … --not-visible "<reason>"`/,
+    /In a project with no feature list \(`docs\/agents\/features\.md`\) `kit ux` has nothing to try: say so in the report\./,
   ]) assert.match(text, expected);
+  // The project has no shots command of its own, so the brief names none.
+  assert.doesNotMatch(text, /kit shots/);
   // TOOLS-235: the brief no longer points at kit slice; the builder builds and lands with kit review and kit pr.
   assert.doesNotMatch(text, /kit slice|Manual fallback|kit go slice-/);
   // The same text is kept where the lead can read it.
   assert.equal(readFileSync(join(f.root, ".scratch/kit-briefs/07-panel-build.md"), "utf8"), `${text}\n`);
+});
+
+test("brief: the UX check line names kit shots where the project has it, and is in the fix brief and a task's brief too, never in a review brief", t => {
+  const f = fixture(t, { commands: "scripts/agents/project.d" });
+  mkdirSync(join(f.root, "scripts/agents/project.d"), { recursive: true });
+  writeFileSync(join(f.root, "scripts/agents/project.d/shots"), "#!/bin/sh\n# kit: screenshots\n", { mode: 0o755 });
+  const build = body(f.run(["docs/tickets/07-panel.md"]).stdout);
+  assert.match(build, /^- UX check: a change to what a person sees gets `scripts\/agents\/kit ux` once it is built, with `scripts\/agents\/kit shots` for the screenshots you report: /m);
+  assert.match(body(f.run(["docs/tickets/07-panel.md", "--stage", "fix"]).stdout), /^- UX check: a change to what a person sees gets `scripts\/agents\/kit ux`/m);
+  assert.match(body(f.run(["--task", "Proof", "--owner", "ke-lead", "--note", "Do it."]).stdout), /^- UX check: a change to what a person sees gets `scripts\/agents\/kit ux`/m);
+  for (const stage of ["review", "second-look"]) assert.doesNotMatch(body(f.run(["docs/tickets/07-panel.md", "--stage", stage]).stdout), /UX check:/);
 });
 
 test("brief: the talk style is short English (the trial is over), KIT_TALK_STYLE=plain turns it off", t => {

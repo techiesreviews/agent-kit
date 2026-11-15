@@ -7,6 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
 import { kitEnv } from "./support/kit-env.ts";
+import { readUxResult, visibleFiles } from "../ux-gate.mjs";
 
 const script = resolve("kit.d/ux"), kit = resolve("kit");
 // Node loads this extensionless executable as ESM; a URL keeps tsx from resolving it as TS.
@@ -1057,6 +1058,46 @@ test("kit ux fails a broken verdict, an unreadable answer and a failed reviewer 
   const named = /, review failed: claude failed \(1\); see (\S+run\.log)$/.exec(failed.result);
   assert.ok(named, failed.result);
   assert.ok(named[1].startsWith(`${/bundle (\S+),/.exec(failed.result)![1]}/`) && existsSync(named[1]), "the log the RESULT names sits beside the bundle");
+});
+
+test("kit ux saves its result for the branch, with the visible files as it checked them, for kit pr to read", t => {
+  const { root, put, run, git } = fixture(t);
+  put("scripts/agents/kit.json", JSON.stringify({ project: "x", branches: { land: "dev" }, checks: { css: editorColours }, paths: { visible: ["^src/"] } }));
+  git("add", "."); git("commit", "--quiet", "-m", "settings"); git("update-ref", "refs/remotes/origin/dev", "HEAD");
+  const saved = () => readUxResult(root, "build/sf-1-panel");
+  assert.equal(saved(), null);
+  // A change no listed feature covers: the result says so, and holds no visible file.
+  put("docs/notes.md", "changed\n");
+  assert.equal(run().status, 0);
+  const none = saved();
+  assert.deepEqual([none.branch, none.head, none.ok, none.summary, none.partial, none.files], ["build/sf-1-panel", git("rev-parse", "HEAD"), true, "no listed feature touched", null, {}]);
+  // A visible change, saved or not: each visible file with the hash of its text as checked.
+  put("src/page-builder/media-picker.css", ".a { gap: var(--space); }\n.b { gap: 0; }\n");
+  put("src/page-builder/media-library-filter.ts", "export const filter = 1;\n");
+  put("src/new-panel.ts", "export {};\n");
+  const passed = run([], { FAKE_VERDICTS: JSON.stringify({ "F-media-02": "looks off" }) });
+  assert.equal(passed.status, 0, passed.stderr + passed.stdout);
+  const record = saved();
+  assert.equal(record.ok, true);
+  assert.match(record.summary, /^1 features tried, \d+ scripted findings, 1 fine, 1 looks off, 0 broken$/);
+  assert.equal(record.partial, null);
+  assert.deepEqual(record.files, Object.fromEntries(["src/new-panel.ts", "src/page-builder/media-library-filter.ts", "src/page-builder/media-picker.css"].map(path => [path, git("hash-object", path)])));
+  assert.ok(record.bundle.startsWith(join(root, ".scratch/ux/ux-test/")), record.bundle);
+  // The same files once committed give the same hashes, so the result stays the one for this change.
+  git("add", "."); git("commit", "--quiet", "-m", "work");
+  assert.deepEqual(visibleFiles(root, "origin/dev", { paths: { visible: ["^src/"] } }), record.files);
+  // A broken verdict is saved as a result that did not pass; --no-review and --features as partial ones.
+  const broken = run([], { FAKE_VERDICTS: JSON.stringify({ "F-media-02": "broken" }) });
+  assert.equal(broken.status, 1);
+  assert.deepEqual([saved().ok, saved().partial], [false, null]);
+  assert.match(saved().summary, /, 1 broken, broken: F-media-02$/);
+  assert.doesNotMatch(saved().summary, /bundle /);
+  assert.equal(run(["--no-review"]).status, 0);
+  assert.deepEqual([saved().ok, saved().partial], [true, "--no-review"]);
+  assert.equal(run(["--features", "F-media-02"]).status, 0);
+  assert.deepEqual([saved().ok, saved().partial], [true, "--features"]);
+  assert.equal(run(["--all"]).status, 0);
+  assert.deepEqual([saved().ok, saved().partial], [true, null]);
 });
 
 test("kit ux --no-review packs the bundle without a reviewer", t => {
