@@ -418,22 +418,26 @@ export function kitJobPlatform(env = process.env) {
   return env.KIT_BG_PLATFORM === "win32" ? "win32" : process.platform;
 }
 
-/** Get-CimInstance's "<pid> <parent pid> <start as file time>" lines, one per process; any other line is skipped. */
+/**
+ * Get-CimInstance's "<pid> <parent pid> <start as file time> <name>" lines, one per process; any other line is
+ * skipped, and so is conhost.exe: the hidden console host Windows starts as a child of each console process (the
+ * job's node processes too) is never a job's work, and a wait for a process's children would never end with it.
+ */
 export function kitWinProcessList(text) {
   return text.split(/\r?\n/).flatMap(line => {
-    const found = /^(\d+) (\d+) (\d+)$/.exec(line.replace(/^﻿/, "").trim());
-    return found ? [{ pid: Number(found[1]), ppid: Number(found[2]), started: found[3] }] : [];
+    const found = /^(\d+) (\d+) (\d+) (.+)$/.exec(line.replace(/^﻿/, "").trim());
+    return found && found[4].toLowerCase() !== "conhost.exe" ? [{ pid: Number(found[1]), ppid: Number(found[2]), started: found[3] }] : [];
   });
 }
 
 /**
- * Windows processes in ONE Get-CimInstance Win32_Process call (pid, parent pid, CreationDate as a file time), all of
+ * Windows processes in ONE Get-CimInstance Win32_Process call (pid, parent pid, CreationDate as a file time, name), all of
  * them or the one pid. Its start time is never mixed with Get-Process's, which reads it another way. A list that
  * cannot be read throws: a job is never taken for ended because PowerShell failed.
  */
 export function kitWinProcesses(pid) {
   const query = pid === undefined ? "Get-CimInstance Win32_Process" : `Get-CimInstance Win32_Process -Filter 'ProcessId=${Number(pid)}'`;
-  const script = `${query} | ForEach-Object { if ($_.CreationDate) { '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, $_.CreationDate.ToFileTimeUtc() } }`;
+  const script = `${query} | ForEach-Object { if ($_.CreationDate) { '{0} {1} {2} {3}' -f $_.ProcessId, $_.ParentProcessId, $_.CreationDate.ToFileTimeUtc(), $_.Name } }`;
   const read = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", windowsHide: true, timeout: 60000 });
   if (read.error || read.status !== 0)
     throw new Error(`cannot read the process list (powershell.exe Get-CimInstance Win32_Process): ${read.error?.message ?? (oneLine(read.stderr ?? "").trim() || `exit ${read.status}`)}`);

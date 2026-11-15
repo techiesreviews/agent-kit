@@ -17,7 +17,7 @@ const fakePowershell = `#!${process.execPath}
 const fs = require("fs");
 const script = process.argv.at(-1);
 fs.appendFileSync(process.env.FAKE_WIN_LOG, "powershell " + script + "\\n");
-if (!script.startsWith("Get-CimInstance Win32_Process") || !script.includes("$_.CreationDate.ToFileTimeUtc()")) process.exit(2);
+if (!script.startsWith("Get-CimInstance Win32_Process") || !script.includes("$_.CreationDate.ToFileTimeUtc(), $_.Name")) process.exit(2);
 const only = /-Filter 'ProcessId=(\\d+)'/.exec(script)?.[1];
 const lines = [];
 for (const pid of only ? [only] : fs.readdirSync("/proc").filter(name => /^\\d+$/.test(name))) {
@@ -25,7 +25,7 @@ for (const pid of only ? [only] : fs.readdirSync("/proc").filter(name => /^\\d+$
     const stat = fs.readFileSync("/proc/" + pid + "/stat", "utf8");
     const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
     // Windows lists no zombies.
-    if (!["Z", "X"].includes(fields[0])) lines.push(pid + " " + fields[1] + " " + fields[19]);
+    if (!["Z", "X"].includes(fields[0])) lines.push(pid + " " + fields[1] + " " + fields[19] + " " + stat.slice(stat.indexOf("(") + 1, stat.lastIndexOf(")")));
   } catch {}
 }
 process.stdout.write(lines.map(line => line + "\\r\\n").join(""));
@@ -97,8 +97,9 @@ test("the job platform is this machine's, and KIT_BG_PLATFORM=win32 picks the Wi
   assert.equal(kitJobPlatform({ KIT_BG_PLATFORM: "nonsense" }), process.platform);
 });
 
-test("the Windows process list reads one Get-CimInstance line per process and skips anything else", () => {
-  assert.deepEqual(kitWinProcessList("﻿4 0 133761234567890123\r\n\r\n812 4 133761234567890999\r\nWARNING: something\r\n 9 812 133761234567891000 \r\n"), [
+test("the Windows process list reads one Get-CimInstance line per process and skips conhost.exe and anything else", () => {
+  assert.deepEqual(kitWinProcessList("﻿4 0 133761234567890123 System\r\n\r\n812 4 133761234567890999 node.exe\r\nWARNING: something\r\n" +
+    "813 812 133761234567891000 conhost.exe\r\n814 812 133761234567891000 ConHost.exe\r\n7 4 133761234567890124\r\n 9 812 133761234567891000 Code Helper.exe \r\n"), [
     { pid: 4, ppid: 0, started: "133761234567890123" },
     { pid: 812, ppid: 4, started: "133761234567890999" },
     { pid: 9, ppid: 812, started: "133761234567891000" },
