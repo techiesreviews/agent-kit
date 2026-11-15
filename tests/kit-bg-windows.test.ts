@@ -363,6 +363,7 @@ test("a Windows job's exit record keeps a Windows exit status above 255; Linux s
   }
 });
 
+// On real Windows Node's job object ends the work with its command process; these cover a work that broke away.
 test("a Windows job whose command process died alone is still waited for, and its time limit still ends the work", async t => {
   const f = fixture(t);
   const ready = join(f.root, "ready");
