@@ -108,7 +108,7 @@ test(guardName, { timeout: limit + 60_000 }, async t => {
     (/^tests\/kit.*\.test\.ts$/.test(file) ||
       /\bkit\b|\b(?:agent|sol|review)\.sh\b|agent-run\.mjs/.test(readFileSync(file, "utf8"))),
   ).sort();
-  for (const file of ["kit-fix", "kit-slice", "agent-resume", "agent-scripts", "kit-doctor"]) {
+  for (const file of ["kit-pr", "kit-review", "agent-resume", "agent-scripts", "kit-doctor"]) {
     assert.ok(files.includes(`tests/${file}.test.ts`), `guard must run ${file}`);
   }
   const temporary = mkdtempSync(join(tmpdir(), "kit-tests-clean-"));
