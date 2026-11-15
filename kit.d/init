@@ -338,7 +338,7 @@ if (full) {
   const extrasLink = relative(at("docs/agents"), at(extrasFile));
   const pointer = `# The kitchen
 
-Run \`scripts/agents/kit rulebook\`: it prints the kitchen rulebook, every station from idea to
+Run \`scripts/agents/kit rulebook\`: it prints the kitchen rulebook, the road from card to
 release, who decides, and the builder and reviewer pins. It has two parts:
 
 - **The shared rulebook,** the same for every project, with the kit (\`docs/kitchen.md\` in the Agent Kit).
@@ -362,7 +362,7 @@ board's orchestrator: write it there, or ask the orchestrator to, and go on with
 
 One folder per map, \`${mapsDir}/<map>/\`: its tickets in \`tickets/\` and its build's in
 \`build/tickets/\` (\`maps\` in \`scripts/agents/kit.json\`). Run \`scripts/agents/kit rulebook\` for how a
-map goes from idea to tickets, and \`scripts/agents/kit next <map>\` to hand its work out.
+map goes from idea to tickets, and \`scripts/agents/kit brief <ticket>\` to start a helper on one.
 `;
   if (existsSync(at(`${mapsDir}/README.md`))) kept.push(`${mapsDir}/README.md`);
   else if (piece(`${mapsDir}/README.md`, `${mapsDir}/README.md`, "the maps README")) writes.push({ path: `${mapsDir}/README.md`, text: readme });
@@ -376,7 +376,7 @@ if (stubsWritten.length) notes.push(`add to ${kitSettingsFile} (kit init never e
 // shared rulebook's rule between markers; a section with the markers is the kit's own and is brought up to date
 // only when the rulebook's rule has a higher version, a heading without markers is the project's own words and stays.
 const agentLines = [
-  ["scripts/agents/kit rulebook", "Kitchen rulebook: `scripts/agents/kit rulebook` (stations, who decides, builder and reviewer pins).", "the rulebook line"],
+  ["scripts/agents/kit rulebook", "Kitchen rulebook: `scripts/agents/kit rulebook` (the road, who decides, builder and reviewer pins).", "the rulebook line"],
   ["scripts/agents/kit --help", "Agent commands: `scripts/agents/kit --help`; `scripts/agents/kit <command> --help` for one.", "the commands line"],
   // The review loop's rule stays in the shared rulebook (one source); the project's file points to it.
   ["section \"Review loop\"", "Review loop: `scripts/agents/kit rulebook`, section \"Review loop\" (3 fix rounds, 5 only for risk; stop when only nits are left; one reviewer; a findings ledger in the PR).", "the review loop line"],
