@@ -158,20 +158,23 @@ export function existingPaths(paths) {
  * folder the folder's mask does not cover, so its target is locked too, and a linked folder is searched the same way.
  * Each real folder is searched once, so a loop of links ends. A folder target that holds one of `keep` (HOME, the
  * worktree, its Git folder) or lies in a system folder cannot be hidden without breaking the run: it is returned in
- * `unsafe`. A search past `limit` entries in all stops and says so in `tooLarge` (the folder it stopped in), since a
+ * `unsafe`. A search past `limit` entries in all stops and says so in `tooLarge` (the key path it was searching), since a
  * search cut short could miss a link. Folders in `skip` (the runtime folder, terminal and X sockets: sockets, not keys)
  * are not searched.
  */
 export function linkTargets(paths, { skip = [], keep = [], limit = 200_000 } = {}) {
   const found = [...paths], unsafe = [];
-  let tooLarge = null, count = 0;
+  let tooLarge = null, count = 0, searching = null;
   const roots = ["/", "/var", "/home", "/tmp", "/run", "/proc", "/sys", "/dev", "/nix", "/snap"];
   const system = ["/usr", "/etc", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/opt", "/boot", "/proc", "/sys", "/dev"];
   const seen = new Set();
   const target = link => {
     let real;
     try { real = realpathSync(link); } catch { return; /* A dangling link points nowhere. */ }
-    if (statSync(real).isFile()) found.push(real);
+    const info = statSync(real);
+    // A device (known_hosts -> /dev/null) holds no key, and masking it would break the run.
+    if (info.isCharacterDevice() || info.isBlockDevice()) return;
+    if (!info.isDirectory()) found.push(real);
     else if (roots.includes(real) || system.some(folder => inside(real, folder)) || keep.some(path => inside(path, real))) unsafe.push(`${link} -> ${real}`);
     else { found.push(real); walk(real); }
   };
@@ -185,7 +188,7 @@ export function linkTargets(paths, { skip = [], keep = [], limit = 200_000 } = {
       entries = readdirSync(folder, { withFileTypes: true });
     } catch { return; }
     count += entries.length;
-    if (count > limit) { tooLarge = folder; return; }
+    if (count > limit) { tooLarge = searching; return; }
     for (const entry of entries) {
       const path = join(folder, entry.name);
       if (entry.isSymbolicLink()) target(path);
@@ -194,6 +197,7 @@ export function linkTargets(paths, { skip = [], keep = [], limit = 200_000 } = {
   };
   for (const path of paths) {
     if (skip.some(folder => inside(path, folder))) continue;
+    searching = path;
     try {
       const info = lstatSync(path);
       if (info.isSymbolicLink()) target(path);
@@ -355,9 +359,10 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
   const uid = typeof process.getuid === "function" ? process.getuid() : -1;
   const sockets = [env.XDG_RUNTIME_DIR || `/run/user/${uid}`, `/tmp/tmux-${uid}`, "/run/screen", "/tmp/.X11-unix"];
   const { paths, unsafe, tooLarge } = linkTargets(lockedPaths(cli, env, { apiRoute }), { skip: sockets,
-    keep: [home(env), worktree, common].filter(Boolean).map(path => resolve(path)) });
+    // Compared with the links' real targets, so through any link on the way (~/Projects -> /data/Projects).
+    keep: [home(env), worktree, common].filter(Boolean).map(path => { try { return realpathSync(path); } catch { return resolve(path); } }) });
   if (unsafe.length) throw new Error(`cannot lock the key files for this ${kind}: a key folder links to a folder the lock cannot hide (${unsafe.join(", ")}); move the keys into a folder of their own, or set ASE_KEY_GUARD=off to run without the lock`);
-  if (tooLarge) throw new Error(`cannot lock the key files for this ${kind}: the key folders hold more than 200000 entries, too many to search for links (it stopped in ${tooLarge}); clear old files there, or set ASE_KEY_GUARD=off to run without the lock`);
+  if (tooLarge) throw new Error(`cannot lock the key files for this ${kind}: ${tooLarge} holds too many files to search for links (over 200000 in the key folders); clear old files there, or set ASE_KEY_GUARD=off to run without the lock`);
   const scrub = scrubbedEnv(cli, env, { apiRoute, model });
   // Codex's own sandbox shares the network too, so the display warning (when bubblewrap can check it) applies to it.
   if (cli === "codex") return { env: scrub, codex: codexProfile(kind, common, codexPaths(paths)), warning: keyGuardWarning(env), wrap: (command, args) => [command, args], close() {} };

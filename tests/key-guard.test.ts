@@ -267,6 +267,9 @@ test("a link inside a key folder locks what it points at, through both paths; a 
   assert.deepEqual(linkTargets([join(home, ".config/fleet")], { keep: [home, worktree] }).unsafe.sort(),
     [`${join(home, ".config/fleet/ssl")} -> ${realpathSync("/etc/ssl")}`, `${join(home, ".config/fleet/w")} -> ${worktree}`].sort());
   rmSync(join(home, ".config/fleet/w")); rmSync(join(home, ".config/fleet/ssl"));
+  // A link to a device (known_hosts -> /dev/null) is neither locked nor refused.
+  symlinkSync("/dev/null", join(home, ".config/fleet/known_hosts"));
+  assert.deepEqual(linkTargets([join(home, ".config/fleet")], { keep: [home] }), { paths: [join(home, ".config/fleet")], unsafe: [], tooLarge: null });
   // A link to /usr or to a folder holding HOME cannot be hidden without breaking the run: refused, in words.
   symlinkSync("/usr", join(home, ".config/gh/usr"));
   symlinkSync(dir, join(home, ".config/gh/up"));
