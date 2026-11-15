@@ -450,20 +450,20 @@ export function kitWinProcesses(pid) {
  * How a Windows job's command starts. Windows starts only a program file itself (an .exe or .com; Node refuses a .cmd
  * or .bat without a shell), so the command's first word is looked up as Windows does (a word with a folder in the
  * job's folder; a bare name in the job's folder, then on PATH, as Node looks): a bare name first as name.com, .exe,
- * .bat or .cmd in each of those folders, then as the name itself; a name with an extension of its own folder by
- * folder, as it is first.
- * A .cmd or .bat runs through cmd.exe /d /s /c with each argument escaped for cmd, and any other file that is not a program (a shell script, with or without a #! line) runs through
- * Git Bash's bash.exe, its words handed over in the environment, never on a command line. A program, or a word not
- * found, starts as given, as before. Gives { program, args, options } for spawn; throws a plain message for a job it
- * cannot start safely (a shell script with no Git Bash, a cmd.exe argument it cannot carry, a program with no extension,
- * a file without a #! line that is not named as a shell script).
+ * .bat or .cmd in each of those folders, then as the name itself; a name that has its own extension, one folder at a
+ * time, as it is before with an added extension. A .cmd or .bat runs through cmd.exe /d /s /c with each argument
+ * escaped for cmd; a shell script (a file with a #! line, or one without whose name has no extension or ends in .sh or
+ * .bash) runs through Git Bash's bash.exe, its words handed over in the environment, never on a command line. A
+ * program, or a word not found, starts as given, as before. Gives { program, args, options } for spawn; throws a plain
+ * message for a job it cannot start safely (a shell script with no Git Bash, a cmd.exe argument it cannot carry, a
+ * .cmd job in a network folder, a program with no extension, any other file without a #! line).
  */
 export function kitWinLaunch(command, { cwd = process.cwd(), env = process.env } = {}) {
   const direct = { program: command[0], args: command.slice(1), options: {} };
   const file = winFind(command[0], cwd, env);
   const extension = file ? extname(file).toLowerCase() : "";
   if (!file || [".exe", ".com"].includes(extension)) return direct;
-  if ([".cmd", ".bat"].includes(extension)) return winCmd(file, command.slice(1), env);
+  if ([".cmd", ".bat"].includes(extension)) return winCmd(file, command.slice(1), env, cwd);
   const head = winHead(file);
   // ELF: a Linux program, for a stubbed Windows run on Linux (KIT_BG_PLATFORM=win32).
   if (head.startsWith("\x7fELF")) return direct;
@@ -534,7 +534,9 @@ function winBash(file, args, shebang, env, cwd) {
 // cmd.exe's special characters, each escaped with ^ (the way cross-spawn runs a .cmd: every argument quoted for the
 // program's own reading, then every special character escaped, quotes too, so cmd sees no quoted part and no operator).
 const cmdSpecial = /([()\][%!^"`<>&|;, *?])/g;
-function winCmd(file, args, env) {
+function winCmd(file, args, env, cwd) {
+  // cmd.exe cannot work in a network folder (\\server\share): it would start in the Windows folder instead.
+  if (/^[\\/]{2}/.test(cwd)) throw new Error(`${file} is a .cmd or .bat job, and cmd.exe cannot work in a network folder (${cwd}); give the share a drive letter (net use) and start the job there`);
   if (args.some(arg => /[\r\n]/.test(arg))) throw new Error(`${file} is a .cmd or .bat job, and cmd.exe cannot take an argument with a line break (it ends the command there)`);
   // The batch file reads each argument in its quotes again (%1, or %* handed on): a " of the argument's own would end
   // that quoted part early and let what follows run as a command, so it is refused; without one, each stays quoted.
