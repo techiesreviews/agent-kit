@@ -47,7 +47,8 @@ export const cliKeyPaths = {
   claude: [".claude/.credentials.json"],
   codex: [".codex/auth.json", ".codex/config.toml"],
   grok: [".grok/auth.json", ".grok/config.toml"],
-  opencode: [".local/share/opencode/auth.json", ".config/opencode/opencode.json", ".config/opencode/opencode.jsonc"],
+  // OpenCode 2 keeps its keys in opencode.db (with its journals) beside the older auth.json: the whole data folder.
+  opencode: [".local/share/opencode", ".config/opencode/opencode.json", ".config/opencode/opencode.jsonc"],
 };
 
 // Variables naming a tool's key file or folder.
@@ -109,6 +110,16 @@ export function lockedPaths(cli, env = process.env, { apiRoute = false } = {}) {
     if (other !== cli || cli === "codex" || (cli === "claude" && apiRoute)) paths.push(...list.map(path => join(base, path)));
   }
   if (env.CODEX_HOME) paths.push(join(env.CODEX_HOME, "auth.json"), join(env.CODEX_HOME, "config.toml"));
+  // Claude's moved config folder: its MCP config for every CLI, its login for the others.
+  if (env.CLAUDE_CONFIG_DIR?.startsWith("/")) {
+    paths.push(join(env.CLAUDE_CONFIG_DIR, ".claude.json"));
+    if (cli !== "claude" || apiRoute) paths.push(join(env.CLAUDE_CONFIG_DIR, ".credentials.json"));
+  }
+  // OpenCode's data folder where XDG_DATA_HOME moves it, and a database OPENCODE_DB names (with its journals).
+  if (cli !== "opencode") {
+    if (env.XDG_DATA_HOME?.startsWith("/")) paths.push(join(env.XDG_DATA_HOME, "opencode"));
+    if (env.OPENCODE_DB?.startsWith("/")) paths.push(...["", "-wal", "-shm", "-journal"].map(end => env.OPENCODE_DB + end));
+  }
   // kit review's own Codex home (a temporary folder whose auth.json links the real login, which Codex may swap for a
   // refreshed file mid-run) is hidden whole from its commands: the link and whatever replaces it.
   if (cli === "codex" && env.CODEX_HOME && resolve(env.CODEX_HOME) !== join(base, ".codex") && inside(resolve(env.CODEX_HOME), resolve(tmpdir()))) paths.push(env.CODEX_HOME);
@@ -145,7 +156,7 @@ export function existingPaths(paths) {
  * The paths plus what their links point at, and the folder targets the lock must not hide. A link inside a key folder
  * (a dotfiles setup: ~/.config/gh/hosts.yml -> ~/dotfiles/gh/hosts.yml, or .config/.wrangler/config -> a dotfiles
  * folder) names a file or folder the folder's mask does not cover, so its target is locked too, and a linked folder is
- * searched the same way, up to eight levels down.
+ * searched the same way; a folder more than eight levels down or with more than 2000 entries is returned in `unsafe`.
  * A folder target that holds one of `keep` (HOME, the worktree's Git folder) or is a system folder cannot be hidden
  * without breaking the run: it is returned in `unsafe`. Folders in `skip` (the runtime folder, terminal and X sockets:
  * sockets, not keys) are not walked.
@@ -153,6 +164,8 @@ export function existingPaths(paths) {
  */
 export function linkTargets(paths, { skip = [], keep = [] } = {}) {
   const found = [...paths], unsafe = [];
+  // A search cut short could miss a link: past these limits the run is refused instead.
+  const depthLimit = 8, widthLimit = 2000;
   const system = ["/", "/usr", "/etc", "/bin", "/sbin", "/lib", "/lib64", "/opt", "/var", "/home", "/tmp", "/run", "/proc", "/sys", "/dev", "/nix", "/snap"];
   const seen = new Set();
   const target = (link, depth) => {
@@ -171,10 +184,14 @@ export function linkTargets(paths, { skip = [], keep = [] } = {}) {
       seen.add(real);
       entries = readdirSync(folder, { withFileTypes: true });
     } catch { return; }
-    for (const entry of entries.slice(0, 2000)) {
+    if (depth > depthLimit || entries.length > widthLimit) {
+      unsafe.push(`${folder} (too ${depth > depthLimit ? "deep" : "large"} to search for links)`);
+      return;
+    }
+    for (const entry of entries) {
       const path = join(folder, entry.name);
-      if (entry.isSymbolicLink()) { if (depth < 8) target(path, depth); }
-      else if (entry.isDirectory() && depth < 8) walk(path, depth + 1);
+      if (entry.isSymbolicLink()) target(path, depth);
+      else if (entry.isDirectory()) walk(path, depth + 1);
     }
   };
   for (const path of paths) {
@@ -341,7 +358,7 @@ export function keyGuard({ cli, kind, common, env = process.env, apiRoute = fals
   const sockets = [env.XDG_RUNTIME_DIR || `/run/user/${uid}`, `/tmp/tmux-${uid}`, "/run/screen", "/tmp/.X11-unix"];
   const { paths, unsafe } = linkTargets(lockedPaths(cli, env, { apiRoute }), { skip: sockets,
     keep: [home(env), common].filter(Boolean).map(path => resolve(path)) });
-  if (unsafe.length) throw new Error(`cannot lock the key files for this ${kind}: a link inside a key folder points at a folder the lock cannot hide (${unsafe.join(", ")}); move the keys into a folder of their own, or set ASE_KEY_GUARD=off to run without the lock`);
+  if (unsafe.length) throw new Error(`cannot lock the key files for this ${kind}: a key folder links to a folder the lock cannot hide, or cannot be searched for links (${unsafe.join(", ")}); move the keys into a folder of their own, or set ASE_KEY_GUARD=off to run without the lock`);
   const scrub = scrubbedEnv(cli, env, { apiRoute, model });
   // Codex's own sandbox shares the network too, so the display warning (when bubblewrap can check it) applies to it.
   if (cli === "codex") return { env: scrub, codex: codexProfile(kind, common, codexPaths(paths)), warning: keyGuardWarning(env), wrap: (command, args) => [command, args], close() {} };
