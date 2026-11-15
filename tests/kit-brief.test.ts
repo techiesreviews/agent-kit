@@ -103,7 +103,7 @@ test("brief: the build brief holds the owner, setup, pins, commands, every house
     /Put the same lines in the PR text\./,
     // TOOLS-235 (item G): every screen change gets the automatic UX check before it lands, as kit slice gave it.
     /^- UX check: a change to what a person sees gets `scripts\/agents\/kit ux` once it is built/m,
-    /fix what it calls broken or looks off, or say why not, and run it again after any later visible change or feature-list edit \(so update the feature list first\)\./,
+    /fix what it calls broken or looks off, or say why not, and run it again after any later visible change or edit to the change's features in the feature list \(so update the feature list first\)\./,
     /`kit pr` refuses to land a visible change \(`paths\.visible`\) without a fresh `kit ux` result/,
     /lands with `scripts\/agents\/kit pr … --not-visible "<reason>"`/,
     /In a project with no feature list \(`docs\/agents\/features\.md`\) `kit ux` has nothing to try: say so in the report\./,
