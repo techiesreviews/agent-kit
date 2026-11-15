@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { bwrapArgs, bwrapWorks, codexPaths, codexProfile, existingPaths, keyGuard, keyGuardReport, lockedPaths, resetBwrapProbe, scrubbedEnv, withLinkTargets } from "../key-guard.mjs";
+import { bwrapArgs, bwrapWorks, codexPaths, codexProfile, existingPaths, keyGuard, keyGuardReport, linkTargets, lockedPaths, resetBwrapProbe, scrubbedEnv } from "../key-guard.mjs";
 import { kitEnv } from "./support/kit-env.ts";
 
 // The key lock (TOOLS-285): agents the kit starts cannot read the machine's key files. Every key here is a made-up
@@ -67,7 +67,9 @@ test("the locked paths hold the Orbit, GitHub and Cloudflare keys, Claude's MCP 
   for (const path of ["/h/.claude/.credentials.json", "/h/.codex/auth.json", "/h/.codex/config.toml", "/review-home/auth.json"]) assert.ok(codex.includes(path), path);
   assert.ok(lockedPaths("codex", { HOME: "/h", CODEX_HOME: join(tmpdir(), "ase-codex-home-x") }).includes(join(tmpdir(), "ase-codex-home-x")), "kit review's Codex home is hidden whole");
   assert.ok(!lockedPaths("codex", { HOME: "/h", CODEX_HOME: "/h/.codex" }).includes("/h/.codex"), "the user's own Codex home is not (its programs live there)");
-  assert.ok(lockedPaths("claude", { HOME: "/h", GH_CONFIG_DIR: "/gh-elsewhere", KUBECONFIG: "/k/config" }).includes("/gh-elsewhere"));
+  const named = lockedPaths("grok", { HOME: "/h", GH_CONFIG_DIR: "/gh-elsewhere", KUBECONFIG: "/keys/work:/keys/personal", KIT_API_KEY_FILE: "/keys/api" });
+  for (const path of ["/gh-elsewhere", "/keys/work", "/keys/personal", "/keys/api"]) assert.ok(named.includes(path), path);
+  assert.ok(lockedPaths("codex", { HOME: "/h", KIT_API_KEY_FILE: "/keys/api" }).includes("/keys/api"));
   assert.ok(lockedPaths("claude", { HOME: "/h", KIT_API_KEY_FILE: "/keys/api" }, { apiRoute: true }).includes("/keys/api"));
   assert.ok(lockedPaths("claude", { HOME: "/h" }, { apiRoute: true }).includes("/h/.claude/.credentials.json"), "the API route signs in with its key");
 });
@@ -223,15 +225,25 @@ test("a CLI that is not installed is started as it is, so the run still fails as
   assert.equal(command, "bwrap"); assert.deepEqual(args.slice(-4), ["--", "sh", "-c", "true"]);
 });
 
-test("a link inside a key folder locks the file it points at; a folder it points at is never masked", t => {
+test("a link inside a key folder locks what it points at, through both paths; a folder that holds HOME or a system folder is refused", { skip: noBwrap }, t => {
   const { dir, home } = keyHome(t);
-  const dotfiles = join(dir, "dotfiles"); mkdirSync(dotfiles);
+  const dotfiles = join(dir, "dotfiles"); mkdirSync(join(dotfiles, "wrangler"), { recursive: true });
   writeFileSync(join(dotfiles, "hosts.yml"), `${dummy}\n`);
+  writeFileSync(join(dotfiles, "wrangler/default.toml"), `${dummy}\n`);
   symlinkSync(join(dotfiles, "hosts.yml"), join(home, ".config/gh/linked.yml"));
-  symlinkSync("/usr", join(home, ".config/gh/usr"));
+  symlinkSync(join(dotfiles, "wrangler"), join(home, ".config/.wrangler/linked"));
   symlinkSync(join(dir, "gone"), join(home, ".config/gh/dangling"));
-  const paths = withLinkTargets([join(home, ".config/gh"), "/run/elsewhere"], ["/run"]);
-  assert.deepEqual(paths, [join(home, ".config/gh"), "/run/elsewhere", join(dotfiles, "hosts.yml")]);
+  const { paths, unsafe } = linkTargets([join(home, ".config/gh"), join(home, ".config/.wrangler"), "/run/elsewhere"], { skip: ["/run"], keep: [home] });
+  assert.deepEqual(paths, [join(home, ".config/gh"), join(home, ".config/.wrangler"), "/run/elsewhere", join(dotfiles, "hosts.yml"), join(dotfiles, "wrangler")]);
+  assert.deepEqual(unsafe, []);
+  const read = spawnSync("bwrap", [...bwrapArgs(paths), "--", "sh", "-c", `cat ${join(dotfiles, "hosts.yml")} ${join(dotfiles, "wrangler/default.toml")} ${join(home, ".config/.wrangler/linked/default.toml")} 2>&1`], { encoding: "utf8" });
+  assert.ok(!read.stdout.includes(dummy), read.stdout);
+  // A link to /usr or to a folder holding HOME cannot be hidden without breaking the run: refused, in words.
+  symlinkSync("/usr", join(home, ".config/gh/usr"));
+  symlinkSync(dir, join(home, ".config/gh/up"));
+  assert.deepEqual(linkTargets([join(home, ".config/gh")], { keep: [home] }).unsafe.sort(), [`${join(home, ".config/gh/up")} -> ${dir}`, `${join(home, ".config/gh/usr")} -> /usr`].sort());
+  assert.throws(() => keyGuard({ cli: "claude", kind: "build", common: join(dir, "repo/.git"), env: { HOME: home, PATH: process.env.PATH } }),
+    /cannot lock the key files for this build: a link inside a key folder points at a folder the lock cannot hide \(.*\); move the keys into a folder of their own/);
 });
 
 test("kit doctor's note says whether the lock is on, off or cannot start", t => {

@@ -247,9 +247,11 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
 - **The key lock** (`key-guard.mjs`, TOOLS-285, Lex 2026-11-15): an agent the kit starts through `agent-run.mjs` (a
   `kit go` build, a `kit review` or `kit ux` reviewer, a second look) cannot read the machine's key files:
   `~/.config/fleet` (the Orbit secrets), `~/.config/gh`, the Cloudflare/wrangler folders, `~/.ssh`, `~/.netrc`, `~/.npmrc`,
-  cloud logins, `~/.claude.json` (it holds MCP Authorization headers), `~/.Xauthority`, the other CLIs' logins, files that
-  links inside those folders point to, and the desktop's runtime folder (keyring, session bus, agent sockets);
-  `KIT_KEY_PATHS` adds more (absolute, `:`-separated). Claude, Grok and OpenCode run inside bubblewrap (`bwrap`, required:
+  cloud logins, `~/.claude.json` (it holds MCP Authorization headers), `~/.Xauthority`, the API route's key file, the
+  other CLIs' logins, folders and files that variables name (`GH_CONFIG_DIR`, `KUBECONFIG`, `GNUPGHOME` …), what links
+  inside those folders point to (a link to a folder holding HOME or the worktree, or to a system folder, stops the run:
+  the lock cannot hide it), and the desktop's runtime folder (keyring, session bus, agent sockets); `KIT_KEY_PATHS` adds
+  more (absolute, `:`-separated). Claude, Grok and OpenCode run inside bubblewrap (`bwrap`, required:
   without it such a run stops and says so; `kit doctor` shows a `key lock:` line); Codex, whose own sandbox cannot start
   inside another, gets a permissions profile with the same paths unreadable. Variables holding tokens, passwords, agent
   sockets and the display are dropped; each CLI keeps only its own sign-in. Known limits: a CLI's own login stays
