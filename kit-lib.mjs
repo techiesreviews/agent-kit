@@ -469,17 +469,18 @@ export function kitWinLaunch(command, { cwd = process.cwd(), env = process.env }
   // never starts this file, even by its full path.
   if (head.startsWith("MZ") && extension) return direct;
   if (head.startsWith("MZ")) throw new Error(`${file} is a Windows program without .exe, which Node cannot start; give it the .exe extension`);
-  return winBash(file, command.slice(1), head.startsWith("#!"), env);
+  return winBash(file, command.slice(1), head.startsWith("#!"), env, cwd);
 }
 
 const winExtensions = [".com", ".exe", ".bat", ".cmd"];
-const winPath = env => (env.PATH ?? env.Path ?? "").split(delimiter).filter(Boolean);
+// PATH's folders; a relative one is taken from the job's folder, as Node takes it from the child's.
+const winPath = (env, cwd) => (env.PATH ?? env.Path ?? "").split(delimiter).filter(Boolean).map(folder => resolve(cwd, folder));
 function winFile(path) {
   try { return statSync(path).isFile(); } catch { return false; }
 }
 function winFind(word, cwd, env) {
   if (!word) return null;
-  const folders = /[\\/]/.test(word) || isAbsolute(word) ? [cwd] : [cwd, ...winPath(env)];
+  const folders = /[\\/]/.test(word) || isAbsolute(word) ? [cwd] : [cwd, ...winPath(env, cwd)];
   // A bare name: programs and .cmd files first, in every folder, as Windows looks, and a file by that name (a script)
   // only after. A name with an extension: that file first, as Node looks, then with a program's or .cmd's extension.
   const extension = extname(word).toLowerCase(), named = winExtensions.map(each => word + each);
@@ -500,21 +501,21 @@ function winHead(file) {
  * for Windows installs it. WSL's bash.exe (in the Windows folder, or the Store's WindowsApps alias) runs Linux, not Git
  * Bash, and is passed over. Null when there is none.
  */
-export function kitWinBash(env = process.env) {
+export function kitWinBash(env = process.env, cwd = process.cwd()) {
   const windowsFolders = [env.SystemRoot, env.windir].filter(Boolean).map(folder => `${resolve(folder).toLowerCase()}${sep}`);
   const wsl = file => windowsFolders.some(folder => file.toLowerCase().startsWith(folder)) || /[\\/]windowsapps[\\/]/i.test(file);
-  const nextToGit = winPath(env).map(folder => join(folder, "git.exe")).filter(winFile).map(git => resolve(dirname(git), "..", "bin", "bash.exe"));
+  const nextToGit = winPath(env, cwd).map(folder => join(folder, "git.exe")).filter(winFile).map(git => resolve(dirname(git), "..", "bin", "bash.exe"));
   const installed = [env.ProgramW6432, env.ProgramFiles, env["ProgramFiles(x86)"]].filter(Boolean).map(folder => join(folder, "Git", "bin", "bash.exe"));
   if (env.LOCALAPPDATA) installed.push(join(env.LOCALAPPDATA, "Programs", "Git", "bin", "bash.exe"));
-  return [...winPath(env).map(folder => join(folder, "bash.exe")), ...nextToGit, ...installed].find(file => !wsl(file) && winFile(file)) ?? null;
+  return [...winPath(env, cwd).map(folder => join(folder, "bash.exe")), ...nextToGit, ...installed].find(file => !wsl(file) && winFile(file)) ?? null;
 }
 
 // Git Bash reads a Windows command line its own way (it globs bare words and takes ' as a quote), so a job's words
 // reach it in KIT_BG_ARG_<n> (KIT_BG_ARGC of them), which this fixed script reads into its words and clears before it
 // runs them: a file with a #! line by exec (Git Bash follows the #! line), one without as a bash script.
 const winBashWords = 'kit_words=(); for ((kit_i = 0; kit_i < KIT_BG_ARGC; kit_i++)); do kit_name=KIT_BG_ARG_$kit_i; kit_words+=("${!kit_name}"); unset "$kit_name"; done; unset KIT_BG_ARGC;';
-function winBash(file, args, shebang, env) {
-  const bash = kitWinBash(env);
+function winBash(file, args, shebang, env, cwd) {
+  const bash = kitWinBash(env, cwd);
   if (!bash) throw new Error(`${file} is a shell script, and Windows runs one only through Git Bash, but no bash.exe was found (not on PATH, not beside git.exe, not where Git for Windows installs it); install Git for Windows or put its bin folder on PATH`);
   const words = [file.replaceAll("\\", "/"), ...args];
   const handed = Object.fromEntries(words.map((word, index) => [`KIT_BG_ARG_${index}`, word]));
@@ -530,7 +531,10 @@ function winCmd(file, args, env) {
   // The batch file reads each argument in its quotes again (%1, or %* handed on): a " of the argument's own would end
   // that quoted part early and let what follows run as a command, so it is refused; without one, each stays quoted.
   if (args.some(arg => arg.includes('"'))) throw new Error(`${file} is a .cmd or .bat job, and cmd.exe cannot hand it an argument with a double quote safely (the batch file reads its arguments again)`);
-  const quoted = args.map(arg => `"${arg.replace(/(\\*)$/, "$1$1")}"`.replace(cmdSpecial, "^$1"));
+  // In its quotes a last backslash reads as one to the batch file (%~1) but escapes the closing quote for a program it
+  // hands the argument to; doubled, the program reads one and the batch file two. No way serves both: it is refused.
+  if (args.some(arg => arg.endsWith("\\"))) throw new Error(`${file} is a .cmd or .bat job, and cmd.exe cannot hand it an argument that ends with a backslash so that the batch file and a program it calls read it the same; leave the last backslash off`);
+  const quoted = args.map(arg => `"${arg}"`.replace(cmdSpecial, "^$1"));
   const line = [file.replace(cmdSpecial, "^$1"), ...quoted].join(" ");
   return { program: env.ComSpec ?? env.COMSPEC ?? "cmd.exe", args: ["/d", "/s", "/c", `"${line}"`], options: { windowsVerbatimArguments: true } };
 }
