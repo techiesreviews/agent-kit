@@ -1105,7 +1105,13 @@ async function main(args) {
             const opened = openOrbitTickets({ settings, who: kitOwner() });
             redact = opened.redact;
             await opened.store.comment(card, `Follow-ups from https://${target.split("/").length === 3 ? target.split("/")[0] : "github.com"}/${repo}/pull/${number}:\n${followups.join("\n")}`);
-          } catch (error) { where = ` (its follow-ups were not added: ${orbitProblem(error, redact)}; they are in the PR comment)`; }
+          } catch (error) {
+            // The brief's UX follow-ups are in no PR comment yet, so all of them go there now, and the line names where they are.
+            const problem = orbitProblem(error, redact), file = join(directory, "card-followups.md");
+            writeFileSync(file, `Follow-ups for card ${card} (Orbit did not take them):\n${followups.join("\n")}\n`);
+            try { await gh("follow-ups", ["pr", "comment", number, "--body-file", file]); where = ` (its follow-ups were not added: ${problem}; they are in a PR comment)`; }
+            catch { where = ` (its follow-ups were not added: ${problem}; they are only in ${file})`; }
+          }
         }
         console.log(`card: ${card} stays open: nothing here waits for the queue; run kit ticket update ${card} --status Done once #${number} lands${where}`);
         queuedWords = `; card ${card} stays open: close it once #${number} lands`;
