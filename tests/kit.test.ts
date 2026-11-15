@@ -198,7 +198,7 @@ test("the shared kit runs from a copy named by KIT_HOME for a project with only 
   assert.ok(existsSync(join(home, "context-card.mjs")), "the copy has context-card.mjs");
   // Every shared command loads from the copy: a helper reached by its place in this repo would fail here.
   const shared = readdirSync(join(home, "kit.d")).filter((name) => !/^[._]/.test(name) && statSync(join(home, "kit.d", name)).mode & 0o111);
-  for (const name of ["unit", "review", "next"]) assert.ok(shared.includes(name), name);
+  for (const name of ["unit", "review", "pr"]) assert.ok(shared.includes(name), name);
   for (const name of shared) {
     const help = front(name, "--help");
     assert.equal(help.status, 0, `${name}: ${help.stdout}${help.stderr}`);
@@ -697,20 +697,25 @@ function kitEnvLeaks(file: string, source: string) {
   return found;
 }
 
-// TOOLS-235 (Lex, 2026-11-14): the trim's release 1 cut three commands and merged three into others.
+// TOOLS-235 (Lex, 2026-11-14): the trim's release 1 cut three commands and merged three into others; release 2 cut the
+// old factory (slice, fix, next, heartbeat), whose jobs went to T3 helper threads and the Board drive schedule.
 const trimmed: [string, RegExp][] = [
   ["ask", /^kit ask was retired on 2026-11-13: .*T3 delegate_task to Sonnet or Opus/],
   ["status", /^kit status was cut on 2026-11-14 \(TOOLS-235\): .*scripts\/agents\/kit ticket list.*kit sweep lists flaky spec files/],
   ["feedback", /^kit feedback was cut on 2026-11-14 \(TOOLS-235\): .*chat memory/],
   ["learn", /^kit learn is now kit sweep --learn \(TOOLS-235\)/],
   ["card", /^kit card was merged into the session-start hook \(TOOLS-235\): .*context-card\.mjs/],
+  ["slice", /^kit slice was cut on 2026-11-15 \(TOOLS-235\): .*T3 helper thread.*kit brief <KEY>.*kit pr/],
+  ["fix", /^kit fix was cut on 2026-11-15 \(TOOLS-235\): .*own thread.*kit brief <KEY> --stage fix/],
+  ["next", /^kit next was cut on 2026-11-15 \(TOOLS-235\): .*Board drive.*kit ticket list/],
+  ["heartbeat", /^kit heartbeat was cut on 2026-11-15 \(TOOLS-235\): .*Board drive.*schedule_task/],
 ];
 
-test("the real kit lists 22 shared commands: the cut and merged ones are gone, and each old name gets a plain pointer", () => {
+test("the real kit lists 18 shared commands: the cut and merged ones are gone, and each old name gets a plain pointer", () => {
   const list = run();
   assert.equal(list.status, 0, list.stderr);
   const names = [...list.stdout.matchAll(/^  (\S+) /gm)].map(match => match[1]);
-  assert.equal(names.length, 22, names.join(" "));
+  assert.equal(names.length, 18, names.join(" "));
   for (const [name, pointer] of trimmed) {
     assert.ok(!names.includes(name), `${name} is still listed`);
     assert.equal(existsSync(resolve("kit.d", name)), false, `kit.d/${name} is still there`);
