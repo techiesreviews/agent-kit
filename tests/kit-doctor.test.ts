@@ -81,7 +81,7 @@ function failure(result: ReturnType<typeof spawnSync<string>>, name: string) {
   const lines = result.stdout.trimEnd().split("\n");
   assert.equal(lines.filter(line => line.startsWith("RESULT: ")).length, 1);
   // The kit note shows whenever the kit's own version runs; the PR target, skills and API route notes always show.
-  assert.equal(lines.filter(line => !line.startsWith("✓ kit: ") && !line.startsWith("✗ PR target: ") && !/^[✓✗] skills map: /.test(line) && !line.startsWith("api route: ")).length, 13, result.stdout);
+  assert.equal(lines.filter(line => !line.startsWith("✓ kit: ") && !line.startsWith("✗ PR target: ") && !/^[✓✗] skills map: /.test(line) && !line.startsWith("api route: ") && !/^(✗ )?key lock: /.test(line)).length, 13, result.stdout);
   assert.ok(lines.some(line => line.startsWith(`✗ ${name}: `) && line.includes("; fix: ")), result.stdout);
   assert.equal(lines.at(-1), `RESULT: fail doctor 1 failed: ${name}`);
   assert.equal(result.stderr, "");
@@ -114,8 +114,10 @@ test("doctor checks all eleven conditions quickly, notes Grok, and quiet success
   assert.match(lines[14], /^✗ skills map: 20 of 20 skills it names are not on this machine: caveman, good-css, .*, emil-prep-for-prod \(optional; briefs give the kit's own line instead\); fix: /);
   // The opt-in API credit route is off here: one note, not a counted check.
   assert.equal(lines[15], "api route: off (headless Claude calls use the subscription; KIT_API_KEY_FILE turns the API route on)");
-  assert.equal(lines.length, 17);
-  assert.equal(lines[16], "RESULT: ok doctor 11/11 checks passed");
+  // The key lock: one note, on where bubblewrap runs, else a ✗ note (never a counted check).
+  assert.match(lines[16], /^(key lock: on \(bubblewrap runs; agents the kit starts cannot read the key files\)|✗ key lock: .*)$/);
+  assert.equal(lines.length, 18);
+  assert.match(lines[17], /^RESULT: ok doctor 11\/11 checks passed(; warning: key lock cannot start \(see the ✗ key lock line\))?$/);
   assert.equal(result.stderr, "");
   const quiet = f.run(["--quiet"]);
   assert.equal(quiet.status, 0, quiet.stderr);

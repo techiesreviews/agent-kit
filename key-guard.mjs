@@ -1,7 +1,8 @@
-// The key lock (TOOLS-285): an agent the kit starts (a builder or a reviewer) cannot read the machine's key files.
-// Briefs carry card text, community ideas included, so a crafted card must not be able to steer a helper into reading
-// the Orbit, GitHub, Cloudflare or other keys and sending them out. Keyed steps (push, PR, merge, release, board writes)
-// run in the lead's own process: kit pr, kit release and kit ticket, never inside an agent run.
+// The key lock (TOOLS-285): an agent the kit starts through agent-run.mjs (a kit go build, a kit review or kit ux
+// reviewer, a second look) cannot read the machine's key files. Briefs carry card text, community ideas included, so a
+// crafted card must not be able to steer such an agent into reading the Orbit, GitHub, Cloudflare or other keys and
+// sending them out. Keyed steps (push, PR, merge, release, board reads and writes, deploys) run in the lead's own
+// process. A helper thread T3 starts (delegate_task) is not started by the kit and is outside this lock.
 //
 // How each CLI is locked:
 // - Claude, Grok and OpenCode run inside bubblewrap (bwrap): the whole file system as it is, with every key folder
@@ -11,11 +12,16 @@
 //   with a permissions profile of its own instead: the whole disk readable but the key paths, write access as before.
 // - Every CLI gets an environment without tokens, passwords, agent sockets or the desktop bus.
 //
+// Inside bubblewrap an agent still sees the machine's process list, but the kernel refuses it another process's
+// environment, open files and root folder (/proc/<pid>/environ, fd, root: it runs in a user namespace of its own), and
+// the kit's own locks keep working with real process ids.
+//
 // Known limits, said plainly: an agent's own CLI must read its own login (Claude's ~/.claude/.credentials.json,
 // Grok's ~/.grok/auth.json), so its tools can too; Codex hides its own login from its commands. Services on the
-// machine's loopback network stay reachable. ASE_KEY_GUARD=off runs without the lock and says so in the run's log.
+// machine's loopback network and abstract sockets stay reachable (the display's needs the cookie, which is hidden).
+// ASE_KEY_GUARD=off runs without the lock and says so in the run's log.
 import { spawnSync } from "node:child_process";
-import { accessSync, chmodSync, constants, lstatSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, lstatSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
@@ -25,6 +31,8 @@ export const homeKeyPaths = [
   ".cloudflared", ".config/radaar", ".config/anthropic", ".config/gcloud", ".config/op", ".netrc", ".git-credentials",
   ".config/git/credentials", ".npmrc", ".pypirc", ".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker/config.json",
   ".password-store", ".local/share/keyrings", ".vault-token", ".terraform.d/credentials.tfrc.json",
+  // The display's cookie: with it a program could type into the lead's terminal, outside the lock.
+  ".Xauthority",
   // Lex's Claude config holds MCP servers' Authorization headers (Orbit's among them); Claude runs fine without it.
   ".claude.json", ".claude/.claude.json",
 ];
@@ -45,7 +53,8 @@ const configKeyNames = ["fleet", "orbit.env", "gh", "hub", "glab-cli", ".wrangle
 // GIT_AUTHOR_NAME keeps (AUTHOR is not AUTH).
 const secretName = /(^|_)(TOKENS?|SECRETS?|PASSWORDS?|PASSWD|PASSPHRASE|API_?KEYS?|ACCESS_KEY|PRIVATE_KEY|CREDENTIALS?|AUTH|COOKIES?)($|_)/i;
 // Sockets and handles that lead to keys or to programs outside the lock.
-const handleNames = ["SSH_AUTH_SOCK", "GPG_AGENT_INFO", "DBUS_SESSION_BUS_ADDRESS", "XAUTHORITY", "GNOME_KEYRING_CONTROL", "GNOME_KEYRING_PID"];
+const handleNames = ["SSH_AUTH_SOCK", "GPG_AGENT_INFO", "DBUS_SESSION_BUS_ADDRESS", "XAUTHORITY", "DISPLAY", "WAYLAND_DISPLAY",
+  "GNOME_KEYRING_CONTROL", "GNOME_KEYRING_PID"];
 // The CLI's own sign-in, kept for that CLI only.
 const ownLogin = {
   claude: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"],
@@ -59,9 +68,14 @@ export function keyGuardOn(env = process.env) {
   return String(env.ASE_KEY_GUARD ?? "").toLowerCase() !== "off";
 }
 
-/** The variables an agent run must not get, as {name: undefined} (undefined removes a variable for the call). */
-export function scrubbedEnv(cli, env = process.env, { apiRoute = false } = {}) {
+/**
+ * The variables an agent run must not get, as {name: undefined} (undefined removes a variable for the call). OpenCode
+ * also keeps the key of the provider its model names (openrouter/… keeps OPENROUTER_API_KEY).
+ */
+export function scrubbedEnv(cli, env = process.env, { apiRoute = false, model = "" } = {}) {
   const keep = new Set(ownLogin[cli] ?? []);
+  const provider = cli === "opencode" ? /^([a-z0-9][a-z0-9-]*)\//i.exec(model)?.[1] : null;
+  if (provider) keep.add(`${provider.replaceAll("-", "_").toUpperCase()}_API_KEY`);
   // The API route's wrapper reads the key file itself and drops the variable before claude starts.
   if (cli === "claude" && apiRoute) keep.add("KIT_API_KEY_FILE");
   return Object.fromEntries(Object.keys(env)
@@ -102,6 +116,34 @@ export function lockedPaths(cli, env = process.env, { apiRoute = false } = {}) {
 /** The paths that exist now (a dangling link counts). Codex's sandbox refuses to start on a missing one whose folder is missing too. */
 export function existingPaths(paths) {
   return paths.filter(path => { try { lstatSync(path); return true; } catch { return false; } });
+}
+
+/**
+ * The paths plus the files their links point at, for the paths under base (HOME). A link inside a key folder (a dotfiles
+ * setup: ~/.config/gh/hosts.yml -> ~/dotfiles/gh/hosts.yml) names a file the folder's mask does not cover. Only file
+ * targets are added (a folder target such as /usr is never masked), up to four levels down.
+ */
+export function withLinkTargets(paths, base) {
+  const found = [...paths];
+  const target = link => { try { const real = realpathSync(link); if (statSync(real).isFile()) found.push(real); } catch { /* A dangling link points nowhere. */ } };
+  const walk = (folder, depth) => {
+    let entries;
+    try { entries = readdirSync(folder, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries.slice(0, 2000)) {
+      const path = join(folder, entry.name);
+      if (entry.isSymbolicLink()) target(path);
+      else if (entry.isDirectory() && depth < 4) walk(path, depth + 1);
+    }
+  };
+  for (const path of paths) {
+    if (!inside(path, base)) continue;
+    try {
+      const info = lstatSync(path);
+      if (info.isSymbolicLink()) target(path);
+      else if (info.isDirectory()) walk(path, 1);
+    } catch { /* Not there. */ }
+  }
+  return [...new Set(found)];
 }
 
 // A path and the ones inside it: a masked folder hides what is inside, so only the outermost is mounted.
@@ -157,8 +199,12 @@ let probed;
 export function bwrapWorks(env = process.env) {
   if (probed === undefined) {
     const result = spawnSync("bwrap", ["--dev-bind", "/", "/", "--", "true"], { env, stdio: ["ignore", "ignore", "pipe"], encoding: "utf8", timeout: 15_000 });
+    const said = String(result.stderr ?? result.error?.message ?? "").trim().split("\n").at(-1) || `exit ${result.status}`;
+    // The usual refusal: the system does not let ordinary users make the namespaces a sandbox needs.
+    const blocked = /namespace|uid map|Operation not permitted|Permission denied/i.test(said);
     probed = result.status === 0 ? null : result.error?.code === "ENOENT" ? "bubblewrap (bwrap) is not installed"
-      : `bubblewrap (bwrap) cannot start here: ${String(result.stderr ?? result.error?.message ?? "").trim().split("\n").at(-1) || `exit ${result.status}`}`;
+      : blocked ? `the system blocks the sandboxes bubblewrap makes (${said}); on Ubuntu install the bubblewrap package, whose AppArmor profile allows it, or ask the machine's owner to allow unprivileged user namespaces (sysctl kernel.apparmor_restrict_unprivileged_userns)`
+      : `bubblewrap (bwrap) cannot start here: ${said}`;
   }
   return probed;
 }
@@ -169,12 +215,13 @@ export function bwrapWorks(env = process.env) {
  *  - env: variables to drop for the call;
  *  - wrap(command, args): the command and arguments that run it inside the lock (Claude, Grok, OpenCode);
  *  - codex: Codex's -c profile options;
- *  - claudeGuard: for the API route, a script the wrapper runs claude through once it has read its key.
+ *  - claudeGuard: for the API route, a script the wrapper runs claude through once it has read its key;
+ *  - bwrap: true when bubblewrap stands between the runner and the CLI (it reports a killed CLI as exit 128 + signal).
  */
-export function keyGuard({ cli, kind, common, env = process.env, apiRoute = false }) {
+export function keyGuard({ cli, kind, common, env = process.env, apiRoute = false, model = "" }) {
   if (!keyGuardOn(env)) return { off: true, env: {}, wrap: (command, args) => [command, args], close() {} };
-  const paths = lockedPaths(cli, env, { apiRoute });
-  const scrub = scrubbedEnv(cli, env, { apiRoute });
+  const paths = withLinkTargets(lockedPaths(cli, env, { apiRoute }), home(env));
+  const scrub = scrubbedEnv(cli, env, { apiRoute, model });
   if (cli === "codex") return { env: scrub, codex: codexProfile(kind, common, existingPaths(paths)), wrap: (command, args) => [command, args], close() {} };
   const problem = bwrapWorks(env);
   if (problem) throw new Error(`cannot lock the key files for this ${kind}: ${problem}; install bubblewrap, or set ASE_KEY_GUARD=off to run without the lock`);
@@ -184,15 +231,23 @@ export function keyGuard({ cli, kind, common, env = process.env, apiRoute = fals
   const outer = bwrapArgs(paths);
   // A CLI that is not installed is started as it is, so the run still fails as a missing CLI (spawn ENOENT), which kit
   // review counts as an unavailable reviewer; nothing runs, so there is nothing to lock.
-  if (!apiRoute) return { env: scrub, wrap: (command, args) => onPath(command, env) ? ["bwrap", [...outer, "--", command, ...args]] : [command, args], close() {} };
+  if (!apiRoute) return { env: scrub, bwrap: true, wrap: (command, args) => onPath(command, env) ? ["bwrap", [...outer, "--", command, ...args]] : [command, args], close() {} };
   // The API route's wrapper reads its key file first, outside the lock, then runs claude through this script.
   const dir = mkdtempSync(join(tmpdir(), "ase-key-guard-"));
   const script = join(dir, "guard");
   const quote = value => `'${value.replaceAll("'", `'\\''`)}'`;
   writeFileSync(script, `#!/bin/sh\nexec bwrap ${outer.map(quote).join(" ")} -- "$@"\n`);
   chmodSync(script, 0o700);
-  return { env: { ...scrub, KIT_CLAUDE_GUARD: script }, wrap: (command, args) => [command, args], claudeGuard: script,
+  return { env: { ...scrub, KIT_CLAUDE_GUARD: script }, bwrap: true, wrap: (command, args) => [command, args], claudeGuard: script,
     close() { rmSync(dir, { recursive: true, force: true }); } };
+}
+
+/** kit doctor's note: {state: on|off|problem, text}. Never throws; the lock's state in plain words. */
+export function keyGuardReport(env = process.env) {
+  if (!keyGuardOn(env)) return { state: "off", text: "off (ASE_KEY_GUARD=off): agents the kit starts can read the key files" };
+  const problem = bwrapWorks(env);
+  return problem ? { state: "problem", text: problem }
+    : { state: "on", text: "on (bubblewrap runs; agents the kit starts cannot read the key files)" };
 }
 
 /** For tests: forget the bubblewrap probe. */

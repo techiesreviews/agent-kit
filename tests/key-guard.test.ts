@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { bwrapArgs, bwrapWorks, codexProfile, existingPaths, keyGuard, lockedPaths, resetBwrapProbe, scrubbedEnv } from "../key-guard.mjs";
+import { bwrapArgs, bwrapWorks, codexProfile, existingPaths, keyGuard, keyGuardReport, lockedPaths, resetBwrapProbe, scrubbedEnv, withLinkTargets } from "../key-guard.mjs";
 import { kitEnv } from "./support/kit-env.ts";
 
 // The key lock (TOOLS-285): agents the kit starts cannot read the machine's key files. Every key here is a made-up
@@ -49,6 +49,9 @@ test("secret-bearing variables are dropped; a CLI keeps only its own sign-in; or
   const codex = scrubbedEnv("codex", env);
   assert.ok(Object.hasOwn(codex, "ANTHROPIC_API_KEY") && !Object.hasOwn(codex, "OPENAI_API_KEY"));
   assert.ok(!Object.hasOwn(scrubbedEnv("claude", env, { apiRoute: true }), "KIT_API_KEY_FILE"), "the API route's wrapper still finds its key file");
+  // The display and its cookie lead outside the lock; an OpenCode model keeps its own provider's key, no other.
+  const desk = { DISPLAY: ":0", WAYLAND_DISPLAY: "wayland-0", OPENROUTER_API_KEY: "x", DEEPSEEK_API_KEY: "x" };
+  assert.deepEqual(Object.keys(scrubbedEnv("opencode", desk, { model: "openrouter/some-model:free" })).sort(), ["DEEPSEEK_API_KEY", "DISPLAY", "WAYLAND_DISPLAY"]);
 });
 
 test("the locked paths hold the Orbit, GitHub and Cloudflare keys, Claude's MCP config, the other CLIs' logins and the desktop's sockets", () => {
@@ -105,7 +108,7 @@ test("the lock is on unless ASE_KEY_GUARD=off; without bubblewrap a Claude run i
 function fakeClaude(bin: string) {
   writeFileSync(join(bin, "claude"), `#!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 const tries = JSON.parse(process.env.FAKE_TRIES);
 const seen = {};
 for (const [name, file] of Object.entries(tries)) {
@@ -113,6 +116,15 @@ for (const [name, file] of Object.entries(tries)) {
   catch (error) { seen[name] = "refused: " + String(error.stderr).trim(); }
 }
 seen.token = execFileSync("sh", ["-c", "printf %s \\"$GH_TOKEN\\""], { encoding: "utf8" });
+// Through /proc: every ancestor's environment (the runner's still holds GH_TOKEN) and its root folder, where the key
+// files are not masked. The kernel refuses both across the sandbox's user namespace.
+seen.proc = [];
+for (let pid = process.ppid, depth = 0; pid > 1 && depth < 8; depth++) {
+  for (const file of ["/proc/" + pid + "/environ", "/proc/" + pid + "/root" + tries.orbit]) {
+    try { seen.proc.push(file + ": " + readFileSync(file, "latin1")); } catch (error) { seen.proc.push(file + ": refused " + error.code); }
+  }
+  try { pid = Number(readFileSync("/proc/" + pid + "/stat", "utf8").split(") ")[1].split(" ")[1]); } catch { break; }
+}
 writeFileSync("built.txt", "a normal build step\\n");
 writeFileSync(process.env.FAKE_SEEN, JSON.stringify(seen));
 const args = process.argv.slice(2);
@@ -143,6 +155,8 @@ test("PROOF: a Claude build cannot read dummy key files in its HOME nor the toke
     assert.match(seen[name], /^refused: cat: .*(No such file or directory|Permission denied)$/, name);
   }
   assert.equal(seen.token, "", "the token variable is gone");
+  assert.ok(seen.proc.length >= 2, "the fake walked its ancestors");
+  for (const line of seen.proc) assert.ok(!line.includes(dummy), `readable through /proc: ${line.split(":")[0]}`);
   // Claude's own login stays readable to Claude (it must sign in): the known limit.
   assert.ok(seen.claudeLogin.includes(dummy));
   assert.equal(readFileSync(join(root, "built.txt"), "utf8"), "a normal build step\n");
@@ -174,7 +188,7 @@ writeFileSync(process.env.FAKE_SEEN, JSON.stringify({ key: process.env.ANTHROPIC
   assert.ok(!existsSync(guard.claudeGuard), "the run's guard script is removed");
 });
 
-test("PROOF: Codex's own sandbox with the kit's profile cannot read a dummy key file and can write the worktree", { skip: !bwrapUsable ? noBwrap : spawnSync("codex", ["--version"]).status !== 0 && "codex is not installed" }, t => {
+test("PROOF: Codex's own sandbox with the kit's profile cannot read a dummy key file and can write the worktree", { skip: !bwrapUsable ? noBwrap : spawnSync("sh", ["-c", "command -v codex"]).status !== 0 && "codex is not installed" }, t => {
   const { dir, home, files } = keyHome(t);
   const root = join(dir, "work"); mkdirSync(root); mkdirSync(join(dir, "codex-home"));
   const profile = codexProfile("build", join(dir, "common"), existingPaths(lockedPaths("codex", { HOME: home })));
@@ -192,4 +206,52 @@ test("a CLI that is not installed is started as it is, so the run still fails as
   const present = keyGuard({ cli: "claude", kind: "review", common: "/c", env: { HOME: "/h", PATH: process.env.PATH } });
   const [command, args] = present.wrap("sh", ["-c", "true"]);
   assert.equal(command, "bwrap"); assert.deepEqual(args.slice(-4), ["--", "sh", "-c", "true"]);
+});
+
+test("a link inside a key folder locks the file it points at; a folder it points at is never masked", t => {
+  const { dir, home } = keyHome(t);
+  const dotfiles = join(dir, "dotfiles"); mkdirSync(dotfiles);
+  writeFileSync(join(dotfiles, "hosts.yml"), `${dummy}\n`);
+  symlinkSync(join(dotfiles, "hosts.yml"), join(home, ".config/gh/linked.yml"));
+  symlinkSync("/usr", join(home, ".config/gh/usr"));
+  symlinkSync(join(dir, "gone"), join(home, ".config/gh/dangling"));
+  const paths = withLinkTargets([join(home, ".config/gh"), "/run/elsewhere"], home);
+  assert.deepEqual(paths, [join(home, ".config/gh"), "/run/elsewhere", join(dotfiles, "hosts.yml")]);
+});
+
+test("kit doctor's note says whether the lock is on, off or cannot start", t => {
+  assert.equal(keyGuardReport({ ASE_KEY_GUARD: "off" }).state, "off");
+  const empty = mkdtempSync(join(tmpdir(), "kit-no-bwrap-"));
+  t.after(() => { rmSync(empty, { recursive: true, force: true }); resetBwrapProbe(); });
+  resetBwrapProbe();
+  assert.deepEqual(keyGuardReport({ PATH: empty }), { state: "problem", text: "bubblewrap (bwrap) is not installed" });
+  resetBwrapProbe();
+  if (bwrapUsable) assert.equal(keyGuardReport({ PATH: process.env.PATH }).state, "on");
+});
+
+test("PROOF: a Grok review cannot read the dummy key files either", { skip: noBwrap }, t => {
+  const { dir, home, files } = keyHome(t);
+  const bin = join(dir, "bin"), root = join(dir, "work"), out = join(dir, "out"), brief = join(dir, "brief.md");
+  for (const path of [bin, root, out]) mkdirSync(path);
+  writeFileSync(join(bin, "grok"), `#!/usr/bin/env node
+import { readFileSync, writeFileSync } from "node:fs";
+const tryRead = file => { try { return readFileSync(file, "utf8"); } catch (error) { return "refused " + error.code; } };
+writeFileSync(process.env.FAKE_SEEN, JSON.stringify(Object.fromEntries(Object.entries(JSON.parse(process.env.FAKE_TRIES)).map(([name, file]) => [name, tryRead(file)]))));
+const args = process.argv.slice(2);
+process.stdout.write(JSON.stringify({ sessionId: "g-1", text: "REVIEW_STATUS: complete\\nDefects\\nNone.", modelUsage: { [args[args.indexOf("-m") + 1]]: {} } }));
+`);
+  chmodSync(join(bin, "grok"), 0o755);
+  writeFileSync(join(bin, "package.json"), '{"type":"module"}');
+  writeFileSync(brief, "Review this.\n");
+  const git = (...args: string[]) => assert.equal(spawnSync("git", ["-C", root, "-c", "user.name=T", "-c", "user.email=t@t", ...args], { encoding: "utf8" }).status, 0);
+  git("init", "-q", "-b", "test"); git("commit", "-q", "--allow-empty", "-m", "base");
+  writeFileSync(join(root, "file.txt"), "change\n"); git("add", "file.txt"); git("commit", "-q", "-m", "change");
+  const seenFile = join(dir, "seen.json");
+  const env = { ...kitEnv(), HOME: home, PATH: `${bin}:${process.env.PATH}`, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "60s", FAKE_SEEN: seenFile, FAKE_TRIES: JSON.stringify(files) } as NodeJS.ProcessEnv;
+  delete env.ASE_KEY_GUARD;
+  const run = spawnSync(process.execPath, [resolve("agent-run.mjs"), "review", root, brief, "--out", out, "--cli", "grok", "--model", "grok-4.7", "--base", "HEAD~1"],
+    { cwd: root, env, encoding: "utf8", timeout: 60_000 });
+  assert.equal(run.status, 0, run.stdout + run.stderr + readFileSync(join(out, "run.log"), "utf8"));
+  const seen = JSON.parse(readFileSync(seenFile, "utf8"));
+  for (const name of ["orbit", "gh", "wrangler", "claudeJson", "codexAuth", "claudeLogin"]) assert.match(seen[name], /^refused (ENOENT|EACCES)$/, name);
 });

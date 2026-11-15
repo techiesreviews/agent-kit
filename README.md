@@ -244,19 +244,22 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   after a yes. `kit ticket setup --help` gives the steps.
 - Only leads write, so an agent the kit starts never inherits `ORBIT_ROLE` (`agent-run.mjs`): a lead sets it in
   its own shell for its own `kit ticket` calls.
-- **The key lock** (`key-guard.mjs`, TOOLS-285, Lex 2026-11-15): an agent the kit starts (builder or reviewer) cannot read
-  the machine's key files: `~/.config/fleet` (the Orbit secrets), `~/.config/gh`, the Cloudflare/wrangler folders, `~/.ssh`,
-  `~/.netrc`, `~/.npmrc`, cloud logins, `~/.claude.json` (it holds MCP Authorization headers), the other CLIs' logins and
-  the desktop's runtime folder (keyring, session bus, agent sockets); `KIT_KEY_PATHS` adds more (absolute, `:`-separated).
-  Claude, Grok and OpenCode run inside bubblewrap (`bwrap`, required: without it such a run stops and says so); Codex,
-  whose own sandbox cannot start inside another, gets a permissions profile with the same paths unreadable. Variables
-  holding tokens, passwords and agent sockets are dropped; each CLI keeps only its own sign-in. Known limits: a CLI's
-  own login stays readable to it (Claude's `~/.claude/.credentials.json`, Grok's `~/.grok/auth.json`; Codex hides its
-  own), and loopback services stay reachable. A build on the API route is refused under the lock (its Claude sandbox
-  cannot start inside it). `ASE_KEY_GUARD=off` runs without the lock and writes a warning in the run's log.
-- Keyed steps happen only in the lead's own process, never inside an agent run. Already the lead's: `git push`, `kit pr`
+- **The key lock** (`key-guard.mjs`, TOOLS-285, Lex 2026-11-15): an agent the kit starts through `agent-run.mjs` (a
+  `kit go` build, a `kit review` or `kit ux` reviewer, a second look) cannot read the machine's key files:
+  `~/.config/fleet` (the Orbit secrets), `~/.config/gh`, the Cloudflare/wrangler folders, `~/.ssh`, `~/.netrc`, `~/.npmrc`,
+  cloud logins, `~/.claude.json` (it holds MCP Authorization headers), `~/.Xauthority`, the other CLIs' logins, the files
+  links inside those folders point at, and the desktop's runtime folder (keyring, session bus, agent sockets);
+  `KIT_KEY_PATHS` adds more (absolute, `:`-separated). Claude, Grok and OpenCode run inside bubblewrap (`bwrap`, required:
+  without it such a run stops and says so; `kit doctor` shows a `key lock:` line); Codex, whose own sandbox cannot start
+  inside another, gets a permissions profile with the same paths unreadable. Variables holding tokens, passwords, agent
+  sockets and the display are dropped; each CLI keeps only its own sign-in. Known limits: a CLI's own login stays
+  readable to it (Claude's `~/.claude/.credentials.json`, Grok's `~/.grok/auth.json`; Codex hides its own), loopback
+  services and abstract sockets stay reachable, and a helper thread T3 starts (`delegate_task`) is not started by the kit
+  and is outside the lock. A build on the API route is refused under the lock (its Claude sandbox cannot start inside it).
+  `ASE_KEY_GUARD=off` runs without the lock and writes a warning in the run's log.
+- Keyed steps happen only in the lead's own process, never inside a locked run. Already the lead's: `git push`, `kit pr`
   (push, PR, merge, card close) and `kit pr --release` (the build contract leaves a builder's changes unstaged). Moved to
-  the lead by the lock: reading Orbit cards (`kit ticket get|list`, which need the token too), GitHub calls (`gh`,
+  the lead for locked runs: reading Orbit cards (`kit ticket get|list`, which need the token too), GitHub calls (`gh`,
   `kit wait ci`, a fetch from a private remote), Cloudflare deploys (`kit preview`, `wrangler`) and installs that need a
   registry token from `~/.npmrc`. A brief carries what the builder needs from the card.
 - `kit doctor` on a project with `"tickets": "orbit"` names its board and asks Orbit once, with a short limit: connected,

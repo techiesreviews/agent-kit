@@ -539,6 +539,20 @@ if [[ -n ${KIT_API_KEY_FILE:-} || $quiet == false ]]; then
   fi
 fi
 
+# The key lock (key-guard.mjs): a note outside --quiet, never a counted check. Without bubblewrap the kit's Claude, Grok and
+# OpenCode runs stop, so a missing or blocked bwrap is a warning on the RESULT line.
+if [[ $quiet == false ]]; then
+  guard_library=$(dirname -- "${KIT_LIB_MJS:-$(dirname -- "${KIT_LIB:-$(dirname -- "${BASH_SOURCE[0]}")/../kit-lib.sh}")/kit-lib.mjs}")/key-guard.mjs
+  if node=$(kit_node_find) && guard_report=$("$node" --input-type=module -e 'const r = (await import(process.argv[1])).keyGuardReport(); console.log(r.state + "\t" + r.text);' "$(realpath -m -- "$guard_library")" 2>/dev/null); then
+    guard_state=${guard_report%%$'\t'*} guard_text=${guard_report#*$'\t'}
+    case $guard_state in
+      problem) api_warning="${api_warning:+$api_warning; }key lock cannot start (see the ✗ key lock line)"
+         printf '✗ key lock: %s (the kit'"'"'s Claude, Grok and OpenCode runs stop until it works); fix: install bubblewrap (apt install bubblewrap), or set ASE_KEY_GUARD=off to run agents without the lock\n' "$guard_text" ;;
+      *) printf 'key lock: %s\n' "$guard_text" ;;
+    esac
+  fi
+fi
+
 # A project on the Orbit ticket store shows what Orbit really answers, asked once (a project on the default files store
 # says nothing). Only a note, never a counted check: this line never fails doctor, and doctor --quiet stays off the network.
 if [[ $quiet == false && $(kit_setting .tickets 2>/dev/null) == orbit ]]; then

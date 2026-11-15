@@ -162,6 +162,7 @@ test("a real kit run through agent-run.mjs sends the key to claude only inside t
   assert.ok(!(stdout + stderr).includes(secret));
   const log = readFileSync(apiSpendLog(env), "utf8");
   const line = JSON.parse(log.trim().split("\n").at(-1)!);
+  assert.match(readFileSync(join(out, "run.log"), "utf8"), /^warning: key files are not locked for this run \(ASE_KEY_GUARD=off\)$/m);
   assert.equal(line.model, "claude-haiku-5-5"); assert.equal(line.command, "build claude"); assert.equal(line.input_tokens, 120); assert.equal(line.cost_usd, 0.0123); assert.equal(line.ok, true);
   assert.ok(!log.includes(secret));
   for (const file of ["run.log", "out.md", "status.json"]) assert.ok(!readFileSync(join(out, file), "utf8").includes(secret), file);
