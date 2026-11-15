@@ -104,6 +104,8 @@ async function wrapper(kind, directory, cwd, command) {
     if (!tops.length) return;
     limited = true;
     spawnSync("taskkill", [...tops.flatMap(pid => ["/PID", String(pid)]), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+    // A taskkill that failed (or a process started since) is met by the next look, until the tree has ended.
+    timer = setTimeout(end, poll);
   };
   const limit = () => {
     const left = since + max * 1000 - Date.now();

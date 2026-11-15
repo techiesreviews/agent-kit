@@ -47,6 +47,8 @@ const fakeTaskkill = `#!${process.execPath}
 const fs = require("fs");
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.FAKE_WIN_LOG, "taskkill " + args.join(" ") + "\\n");
+// One failed taskkill on request: it kills nothing.
+if (fs.existsSync(process.env.FAKE_WIN_LOG + ".taskkill-fails")) { fs.rmSync(process.env.FAKE_WIN_LOG + ".taskkill-fails"); console.error("ERROR: Access is denied."); process.exit(1); }
 const table = fs.readdirSync("/proc").filter(name => /^\\d+$/.test(name)).flatMap(pid => {
   try { const stat = fs.readFileSync("/proc/" + pid + "/stat", "utf8"); return [[Number(pid), Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1])]]; }
   catch { return []; }
@@ -431,4 +433,16 @@ test("go on Windows gives 1 for a job's own exit code above 255, so a shell neve
   const big = f.go("win-big");
   assert.equal(big.status, 1, big.stdout);
   assert.match(last(big), /^RESULT: fail go win-big exit 3221225477 \(the job's own code; kit go gives 1 for it\); see /);
+});
+
+test("a Windows time limit whose taskkill fails tries again until the job's tree has ended", async t => {
+  const f = fixture(t);
+  writeFileSync(join(f.root, "win.log.taskkill-fails"), "");
+  const never = join(f.root, "never");
+  ok(f.bg("win-kill-again", "--max", "3", "--", process.execPath, "-e", holdUntil(never)));
+  const directory = f.directory("win-kill-again");
+  await until(() => existsSync(join(directory, "exit")), 20000);
+  assert.equal(readFileSync(join(directory, "exit"), "utf8").trim(), "143");
+  assert.equal(existsSync(join(f.root, "win.log.taskkill-fails")), false, "the first taskkill failed");
+  assert.equal(f.log().split("\n").filter(line => line.startsWith("taskkill ")).length, 2);
 });
