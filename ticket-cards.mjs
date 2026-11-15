@@ -159,21 +159,11 @@ export async function cardBriefFor({ root, key, settings, owner, who = owner, fo
 }
 
 const followupList = name => new RegExp(`^### ${name} follow-ups[ \\t]*\\r?\\n([\\s\\S]*?)(?=^#{1,3} |$(?![\\s\\S]))`, "m");
-/** The follow-up lines kept in a card's brief: "### Review follow-ups" (kit pr, for a queued PR) and "### UX follow-ups" (kit slice). */
+/** The follow-up lines kept in a card's brief: "### Review follow-ups" and "### UX follow-ups" (both written by the cut kit slice and older kit pr runs). */
 export function briefFollowups(text) {
   return ["Review", "UX"].flatMap(name => (followupList(name).exec(String(text ?? ""))?.[1] ?? "").split(/\r?\n/))
     .map(line => line.trimEnd()).filter(line => line.startsWith("- "));
 }
-/** The brief with these review follow-ups added at its end under "### Review follow-ups", each line once. */
-export function withReviewFollowups(text, lines) {
-  const kept = new Set(briefFollowups(text)), missing = [...new Set(lines)].filter(line => !kept.has(line));
-  if (!missing.length) return text;
-  const list = followupList("Review").exec(text);
-  if (!list) return `${String(text).trimEnd()}\n\n### Review follow-ups\n\n${missing.join("\n")}\n`;
-  const end = list.index + list[0].trimEnd().length;
-  return `${text.slice(0, end)}\n${missing.join("\n")}${text.slice(end)}`;
-}
-
 /**
  * Closes a landed card: status Done and a dated comment naming the PR and its merge SHA, then its follow-ups (review and UX) as
  * one comment, added once (a rerun adds only what is missing, never the follow-ups twice). The merge already happened, so a failure is
