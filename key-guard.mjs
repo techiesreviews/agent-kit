@@ -50,6 +50,10 @@ export const cliKeyPaths = {
   opencode: [".local/share/opencode/auth.json", ".config/opencode/opencode.json", ".config/opencode/opencode.jsonc"],
 };
 
+// Variables naming a tool's key file or folder.
+const keyFolderVariables = ["GH_CONFIG_DIR", "GNUPGHOME", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "DOCKER_CONFIG", "KUBECONFIG",
+  "CLOUDSDK_CONFIG", "NPM_CONFIG_USERCONFIG", "WRANGLER_HOME", "PASSWORD_STORE_DIR", "NETRC"];
+
 // Under XDG_CONFIG_HOME when it is set somewhere else than ~/.config.
 const configKeyNames = ["fleet", "orbit.env", "gh", "hub", "glab-cli", ".wrangler", "radaar", "anthropic", "gcloud", "op", "git/credentials"];
 
@@ -105,6 +109,11 @@ export function lockedPaths(cli, env = process.env, { apiRoute = false } = {}) {
     if (other !== cli || cli === "codex" || (cli === "claude" && apiRoute)) paths.push(...list.map(path => join(base, path)));
   }
   if (env.CODEX_HOME) paths.push(join(env.CODEX_HOME, "auth.json"), join(env.CODEX_HOME, "config.toml"));
+  // kit review's own Codex home (a temporary folder whose auth.json links the real login, which Codex may swap for a
+  // refreshed file mid-run) is hidden whole from its commands: the link and whatever replaces it.
+  if (cli === "codex" && env.CODEX_HOME && resolve(env.CODEX_HOME) !== join(base, ".codex") && inside(resolve(env.CODEX_HOME), resolve(tmpdir()))) paths.push(env.CODEX_HOME);
+  // Tools that keep their keys where a variable says (gh's GH_CONFIG_DIR among them, which the kit itself sets).
+  for (const name of keyFolderVariables) if (env[name]?.startsWith("/")) paths.push(env[name]);
   if (env.XDG_CONFIG_HOME && resolve(env.XDG_CONFIG_HOME) !== join(base, ".config")) paths.push(...configKeyNames.map(name => join(env.XDG_CONFIG_HOME, name)));
   if (cli === "claude" && apiRoute && env.KIT_API_KEY_FILE?.startsWith("/")) paths.push(env.KIT_API_KEY_FILE);
   // The display's cookie wherever the session keeps it (older SDDM: /tmp/xauth_…).
