@@ -140,7 +140,9 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   counted. `--max` is a timer in the wrapper. `kit bg --stop` ends the whole tree at
   once with `taskkill /PID <pid> /T /F` (Windows has no graceful stop) and records `ended` and exit 143 itself; only
   the top of the tree goes to taskkill (the wrapper, or what is left below it when it died). A process list that
-  cannot be read fails the command (`kit bg --list` shows the job as `unknown (…)`), never reads as an ended job.
+  cannot be read fails the command (`kit bg --list` shows the job as `unknown (…)`), never reads as an ended job;
+  only when it keeps failing while a job that has finished waits for its leftover processes does the job give up
+  after ten tries and record its own exit status, and its log says so.
   `kit go` looks once a second there (a process list takes about 0.4s). `KIT_BG_PLATFORM=win32` picks the Windows
   way by hand (tests, with fake `powershell.exe` and `taskkill`). A job's command is started without a shell, as on
   Linux, so on Windows it must be a program Windows can start directly (`node …`, an `.exe`), not a `.cmd` or a
