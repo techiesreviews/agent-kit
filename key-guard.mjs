@@ -15,7 +15,7 @@
 // Grok's ~/.grok/auth.json), so its tools can too; Codex hides its own login from its commands. Services on the
 // machine's loopback network stay reachable. ASE_KEY_GUARD=off runs without the lock and says so in the run's log.
 import { spawnSync } from "node:child_process";
-import { chmodSync, lstatSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, lstatSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
@@ -145,6 +145,13 @@ export function codexProfile(kind, common, paths) {
     "-c", `permissions.${name}.network={enabled=${kind === "build"}}`];
 }
 
+// Whether command names an executable file: a path as it is, a bare name in a folder of PATH.
+function onPath(command, env) {
+  const executable = file => { try { accessSync(file, constants.X_OK); return statSync(file).isFile(); } catch { return false; } };
+  if (command.includes("/")) return executable(command);
+  return String(env.PATH ?? "").split(":").some(folder => folder && executable(join(folder, command)));
+}
+
 let probed;
 /** Whether bubblewrap runs here; checked once per process. bwrap is looked up on PATH. */
 export function bwrapWorks(env = process.env) {
@@ -175,7 +182,9 @@ export function keyGuard({ cli, kind, common, env = process.env, apiRoute = fals
   // this one: a build would lose its shell. Reviews there use only Read, Grep and Glob, with that sandbox off.
   if (apiRoute && kind === "build") throw new Error("cannot lock the key files for a build on the API route: its Claude sandbox cannot start inside the lock; build on the subscription (unset KIT_API_KEY_FILE), or set ASE_KEY_GUARD=off to run without the lock");
   const outer = bwrapArgs(paths);
-  if (!apiRoute) return { env: scrub, wrap: (command, args) => ["bwrap", [...outer, "--", command, ...args]], close() {} };
+  // A CLI that is not installed is started as it is, so the run still fails as a missing CLI (spawn ENOENT), which kit
+  // review counts as an unavailable reviewer; nothing runs, so there is nothing to lock.
+  if (!apiRoute) return { env: scrub, wrap: (command, args) => onPath(command, env) ? ["bwrap", [...outer, "--", command, ...args]] : [command, args], close() {} };
   // The API route's wrapper reads its key file first, outside the lock, then runs claude through this script.
   const dir = mkdtempSync(join(tmpdir(), "ase-key-guard-"));
   const script = join(dir, "guard");

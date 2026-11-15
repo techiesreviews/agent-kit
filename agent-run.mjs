@@ -10,7 +10,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { constants, homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { durationMilliseconds, supervise } from "./sol-run.mjs";
 import { reviewComplete, reviewFormat, reviewScope } from "./review-brief.mjs";
@@ -1048,7 +1048,9 @@ async function invokeAgent(adapter, args, descriptor, context) {
         (status ? usageLimitProblem(slice, options.cli) ?? usageLimitProblem(result.stdout ?? "", options.cli) : null);
       if (status || limitProblem) {
         // A signal or an exit above 128 that supervise did not cause is a crash, told in words (never a bare status).
-        const crash = result.crashed ? `problem: ${adapter.label ?? adapter.command} crashed (${result.signal ? `killed by signal ${result.signal}` : `exit ${status}`}); see ${logPath}` : null;
+        // Inside the key lock bwrap stands between: a CLI killed by a signal comes back as bwrap's exit 128 + its number.
+        const signal = result.signal ?? (command !== adapter.command && status > 128 ? Object.keys(constants.signals).find(name => constants.signals[name] === status - 128) : null);
+        const crash = result.crashed ? `problem: ${adapter.label ?? adapter.command} crashed (${signal ? `killed by signal ${signal}` : `exit ${status}`}); see ${logPath}` : null;
         context.cause = limitProblem ?? adapter.errorProblem?.(result.stdout ?? "") ?? crash ?? `problem: ${adapter.label ?? adapter.command} failed (${status}); see ${logPath}`;
       }
       // A first call the CLI itself crashed on returned no review: kit review counts that reviewer as unavailable, not as a failed review.

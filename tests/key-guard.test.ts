@@ -176,11 +176,20 @@ writeFileSync(process.env.FAKE_SEEN, JSON.stringify({ key: process.env.ANTHROPIC
 
 test("PROOF: Codex's own sandbox with the kit's profile cannot read a dummy key file and can write the worktree", { skip: !bwrapUsable ? noBwrap : spawnSync("codex", ["--version"]).status !== 0 && "codex is not installed" }, t => {
   const { dir, home, files } = keyHome(t);
-  const root = join(dir, "work"); mkdirSync(root);
+  const root = join(dir, "work"); mkdirSync(root); mkdirSync(join(dir, "codex-home"));
   const profile = codexProfile("build", join(dir, "common"), existingPaths(lockedPaths("codex", { HOME: home })));
   const run = spawnSync("codex", ["sandbox", ...profile, "--", "sh", "-c", `cat ${JSON.stringify(files.orbit)}; echo rc=$?; touch built && echo built-ok`],
-    { cwd: root, encoding: "utf8", timeout: 60_000 });
+    // Its own temporary HOME and CODEX_HOME: the test never touches the real ~/.codex.
+    { cwd: root, encoding: "utf8", timeout: 60_000, env: { ...process.env, HOME: home, CODEX_HOME: join(dir, "codex-home") } });
   const said = run.stdout + run.stderr;
   assert.ok(!said.includes(dummy), "the dummy key was readable");
   assert.match(said, /Permission denied/); assert.match(said, /rc=1/); assert.match(said, /built-ok/);
+});
+
+test("a CLI that is not installed is started as it is, so the run still fails as a missing CLI", { skip: noBwrap }, () => {
+  const guard = keyGuard({ cli: "grok", kind: "review", common: "/c", env: { HOME: "/h", PATH: "/nonexistent-folder" } });
+  assert.deepEqual(guard.wrap("grok", ["-m", "x"]), ["grok", ["-m", "x"]]);
+  const present = keyGuard({ cli: "claude", kind: "review", common: "/c", env: { HOME: "/h", PATH: process.env.PATH } });
+  const [command, args] = present.wrap("sh", ["-c", "true"]);
+  assert.equal(command, "bwrap"); assert.deepEqual(args.slice(-4), ["--", "sh", "-c", "true"]);
 });

@@ -217,7 +217,7 @@ for (const cli of ["codex", "claude"]) test(`dead ${cli} build resumes with save
     assert.deepEqual(call.args, ["exec", "resume", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=high", ...profile,
       "--dangerously-bypass-hook-trust", "-o", temporary, session, "-"]);
     assert.deepEqual([profile[0], profile[1], profile[2], profile[4], profile[5]], ["-c", 'default_permissions="kit-build"', "-c", "-c", "permissions.kit-build.network={enabled=true}"]);
-    assert.ok(profile[3].includes(`${JSON.stringify(common)}="write"`) && profile[3].includes('/.config/gh"="none"'), profile[3]);
+    assert.ok(profile[3].includes(`${JSON.stringify(common)}="write"`) && profile[3].includes('":root"="read"'), profile[3]);
     assert.equal(existsSync(temporary), false);
   } else {
     assert.deepEqual(call.args, ["-p", "--model", "claude-opus-5-5", "--effort", "high", "--permission-mode", "acceptEdits",
