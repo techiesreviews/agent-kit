@@ -211,15 +211,19 @@ async function wait(config) {
   // expand it through the project's git first, else GitHub, and stop at once when neither knows it.
   const fullSha = async (sha) => {
     const local = await execute("git", ["-C", kitRoot(), "rev-parse", "--verify", "--quiet", `${sha}^{commit}`]).then(({ stdout }) => stdout.trim(), () => "");
-    // A branch or tag named like the SHA would resolve to its own commit: only a matching prefix counts.
-    if (local.toLowerCase().startsWith(sha.toLowerCase())) return local;
-    try { return (await gh(["api", `repos/{owner}/{repo}/commits/${sha}`, "--jq", ".sha"])).trim(); }
+    // A branch or tag named like the SHA resolves to its own commit, here and on GitHub: only a matching prefix counts.
+    const matching = full => full.toLowerCase().startsWith(sha.toLowerCase());
+    if (matching(local)) return local;
+    let remote;
+    try { remote = (await gh(["api", `repos/{owner}/{repo}/commits/${sha}`, "--jq", ".sha"])).trim(); }
     catch (error) {
       if (Date.now() >= deadline) throw error;
       const why = (error.stderr?.trim() || error.message).split(/\r?\n/)[0];
       throw new Error(/No commit found|HTTP 422/.test(why) ? `no commit ${sha} in this repo or on GitHub (${why}); pass the full SHA`
         : `could not expand ${sha} through GitHub (${why}); pass the full SHA`);
     }
+    if (!matching(remote)) throw new Error(`no commit ${sha} in this repo or on GitHub (GitHub answered for a branch or tag of that name, ${remote.slice(0, 7)}); pass the full SHA`);
+    return remote;
   };
   try {
     if (head && head.length < 40) head = await fullSha(head);
