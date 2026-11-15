@@ -154,14 +154,17 @@ export function withLinkTargets(paths, skip = []) {
 }
 
 /**
- * The paths for Codex's profile: those there now, each link replaced by the file it points at. Codex's sandbox cannot
+ * The paths for Codex's profile: those there now, each link replaced by the file it points at, none inside another. Codex's sandbox cannot
  * mask a link itself (kit review's Codex home links auth.json to the real login; masking the link stopped the review
  * before it started), and a dangling link points at nothing to hide.
  */
 export function codexPaths(paths) {
-  return [...new Set(existingPaths(paths).flatMap(path => {
+  const found = [...new Set(existingPaths(paths).flatMap(path => {
     try { return lstatSync(path).isSymbolicLink() ? [realpathSync(path)] : [path]; } catch { return []; }
   }))];
+  // A path inside another one on the list is hidden with it; Codex's sandbox fails on it (the display's cookie inside the
+  // runtime folder stopped a review before it started).
+  return found.filter(path => !found.some(other => other !== path && inside(path, other)));
 }
 
 // A path and the ones inside it: a masked folder hides what is inside, so only the outermost is mounted.

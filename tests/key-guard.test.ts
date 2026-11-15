@@ -194,10 +194,13 @@ test("PROOF: Codex's own sandbox with the kit's profile cannot read a dummy key 
   // kit review's Codex home links auth.json to the real login: the link's target is what gets hidden.
   const reviewHome = join(dir, "codex-home"); mkdirSync(reviewHome);
   symlinkSync(files.codexAuth, join(reviewHome, "auth.json"));
-  const paths = codexPaths(lockedPaths("codex", { HOME: home, CODEX_HOME: reviewHome }));
+  // The display's cookie sits inside the runtime folder, which is hidden whole: listed once.
+  const runtime = join(dir, "run"); mkdirSync(runtime); writeFileSync(join(runtime, "xauth"), `${dummy}\n`);
+  const paths = codexPaths(lockedPaths("codex", { HOME: home, CODEX_HOME: reviewHome, XDG_RUNTIME_DIR: runtime, XAUTHORITY: join(runtime, "xauth") }));
   assert.ok(!paths.includes(join(reviewHome, "auth.json")) && paths.includes(files.codexAuth));
+  assert.ok(paths.includes(runtime) && !paths.includes(join(runtime, "xauth")));
   const profile = codexProfile("build", join(dir, "common"), paths);
-  const run = spawnSync("codex", ["sandbox", ...profile, "--", "sh", "-c", `cat ${JSON.stringify(files.orbit)}; echo rc=$?; cat ${JSON.stringify(join(reviewHome, "auth.json"))}; touch built && echo built-ok`],
+  const run = spawnSync("codex", ["sandbox", ...profile, "--", "sh", "-c", `cat ${JSON.stringify(files.orbit)}; echo rc=$?; cat ${JSON.stringify(join(reviewHome, "auth.json"))}; cat ${JSON.stringify(join(runtime, "xauth"))}; touch built && echo built-ok`],
     // Its own temporary HOME and CODEX_HOME: the test never touches the real ~/.codex.
     { cwd: root, encoding: "utf8", timeout: 60_000, env: { ...process.env, HOME: home, CODEX_HOME: reviewHome } });
   const said = run.stdout + run.stderr;
