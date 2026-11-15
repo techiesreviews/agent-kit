@@ -70,6 +70,9 @@ test("the locked paths hold the Orbit, GitHub and Cloudflare keys, Claude's MCP 
   const named = lockedPaths("grok", { HOME: "/h", GH_CONFIG_DIR: "/gh-elsewhere", KUBECONFIG: "/keys/work:/keys/personal", KIT_API_KEY_FILE: "/keys/api" });
   for (const path of ["/gh-elsewhere", "/keys/work", "/keys/personal", "/keys/api"]) assert.ok(named.includes(path), path);
   assert.ok(lockedPaths("codex", { HOME: "/h", KIT_API_KEY_FILE: "/keys/api" }).includes("/keys/api"));
+  // OpenCode's settings under a moved config folder are hidden from the other CLIs, not from OpenCode.
+  assert.ok(lockedPaths("claude", { HOME: "/h", XDG_CONFIG_HOME: "/custom" }).includes("/custom/opencode/opencode.jsonc"));
+  assert.ok(!lockedPaths("opencode", { HOME: "/h", XDG_CONFIG_HOME: "/custom" }).includes("/custom/opencode/opencode.json"));
   assert.ok(lockedPaths("claude", { HOME: "/h", KIT_API_KEY_FILE: "/keys/api" }, { apiRoute: true }).includes("/keys/api"));
   assert.ok(lockedPaths("claude", { HOME: "/h" }, { apiRoute: true }).includes("/h/.claude/.credentials.json"), "the API route signs in with its key");
 });
@@ -238,6 +241,14 @@ test("a link inside a key folder locks what it points at, through both paths; a 
   assert.deepEqual(unsafe, []);
   const read = spawnSync("bwrap", [...bwrapArgs(paths), "--", "sh", "-c", `cat ${join(dotfiles, "hosts.yml")} ${join(dotfiles, "wrangler/default.toml")} ${join(home, ".config/.wrangler/linked/default.toml")} 2>&1`], { encoding: "utf8" });
   assert.ok(!read.stdout.includes(dummy), read.stdout);
+  // A linked folder is searched too: a link inside it leads further (with a loop back, which ends the search).
+  const vault = join(dir, "vault"); mkdirSync(vault); writeFileSync(join(vault, "token"), `${dummy}\n`);
+  symlinkSync(join(vault, "token"), join(dotfiles, "wrangler/token"));
+  symlinkSync(join(home, ".config/.wrangler"), join(dotfiles, "wrangler/back"));
+  const deeper = linkTargets([join(home, ".config/.wrangler")], { keep: [home] });
+  assert.ok(deeper.paths.includes(join(vault, "token")), deeper.paths.join(" "));
+  const vaultRead = spawnSync("bwrap", [...bwrapArgs(deeper.paths), "--", "cat", join(vault, "token")], { encoding: "utf8" });
+  assert.ok(!vaultRead.stdout.includes(dummy));
   // A link to /usr or to a folder holding HOME cannot be hidden without breaking the run: refused, in words.
   symlinkSync("/usr", join(home, ".config/gh/usr"));
   symlinkSync(dir, join(home, ".config/gh/up"));
