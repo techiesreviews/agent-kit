@@ -136,7 +136,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   a file time, never mixed with `Get-Process`), and the job's identity record is `{ "pid", "started" }` as JSON. The
   job is its wrapper's process tree, walked by parent pid in one process list; a child counts only when it started
   at or after its parent, since Windows reuses pids and never re-parents, and a process whose parent has ended is no
-  longer followed (as with `taskkill /T`). `--max` is a timer in the wrapper. `kit bg --stop` ends the whole tree at
+  longer followed (as with `taskkill /T`); the hidden `conhost.exe` each console process gets is not
+  counted. `--max` is a timer in the wrapper. `kit bg --stop` ends the whole tree at
   once with `taskkill /PID <pid> /T /F` (Windows has no graceful stop) and records `ended` and exit 143 itself.
   `kit go` looks once a second there (a process list takes about 0.4s). `KIT_BG_PLATFORM=win32` picks the Windows
   way by hand (tests, with fake `powershell.exe` and `taskkill`). A job's command is started without a shell, as on
