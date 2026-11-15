@@ -26,11 +26,16 @@ for (const pid of only ? [only] : fs.readdirSync("/proc").filter(name => /^\\d+$
     const stat = fs.readFileSync("/proc/" + pid + "/stat", "utf8");
     const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
     // Windows lists no zombies.
-    const name = stat.slice(stat.indexOf("(") + 1, stat.lastIndexOf(")"));
+    // The program's file name, as Win32_Process's Name (Node renames its main thread, so the stat name is no help).
+    let name = stat.slice(stat.indexOf("(") + 1, stat.lastIndexOf(")"));
+    try { name = require("path").basename(fs.readlinkSync("/proc/" + pid + "/exe")); } catch {}
     if (["Z", "X"].includes(fields[0])) continue;
     lines.push(pid + " " + fields[1] + " " + fields[19] + " " + name);
     // Windows starts a hidden console host as a child of each console process: a made-up one for each node.
-    if (!only && process.env.FAKE_CONHOST && name === "node") lines.push((Number(pid) + 4000000) + " " + pid + " " + fields[19] + " conhost.exe");
+    if (!only && process.env.FAKE_CONHOST && name === "node") {
+      lines.push((Number(pid) + 4000000) + " " + pid + " " + fields[19] + " conhost.exe");
+      fs.appendFileSync(process.env.FAKE_WIN_LOG, "conhost added under " + pid + "\\n");
+    }
   } catch {}
 }
 process.stdout.write(lines.map(line => line + "\\r\\n").join(""));
@@ -251,6 +256,8 @@ test("a Windows job ends on its own although each of its node processes has a co
   writeFileSync(release, "");
   await until(() => existsSync(join(f.directory("win-conhost"), "exit")));
   assert.equal(readFileSync(join(f.directory("win-conhost"), "exit"), "utf8").trim(), "4");
+  const wrapper = readFileSync(join(f.directory("win-conhost"), "pid"), "utf8").trim();
+  assert.match(f.log(), new RegExp(`^conhost added under ${wrapper}$`, "m"), "the fake list gave the job's wrapper a console host");
   assert.ok(existsSync(join(f.directory("win-conhost"), "ended")));
 });
 
@@ -295,4 +302,17 @@ test("a Windows process list that cannot be read never makes a job look ended", 
   assert.equal(existsSync(join(directory, "exit")), false);
   rmSync(join(f.root, "win.log.broken"));
   assert.match(f.bg("--list").stdout, /^win-broken\trunning\t/m);
+});
+
+test("a Windows job whose process list fails for a moment while it waits for leftovers still records its own status", async t => {
+  const f = fixture(t);
+  const broken = join(f.root, "win.log.broken");
+  // The job breaks the list as it ends and a leftover child mends it a few seconds later.
+  const leftover = `setTimeout(() => require("fs").rmSync(${JSON.stringify(broken)}, { force: true }), 2500);`;
+  const code = `require("child_process").spawn(process.execPath, ["-e", ${JSON.stringify(leftover)}], { stdio: "ignore" }); require("fs").writeFileSync(${JSON.stringify(broken)}, ""); process.exit(5);`;
+  ok(f.bg("win-flaky", "--", process.execPath, "-e", code));
+  const directory = f.directory("win-flaky");
+  await until(() => existsSync(join(directory, "exit")), 20000);
+  assert.equal(readFileSync(join(directory, "exit"), "utf8").trim(), "5");
+  assert.match(readFileSync(join(directory, "log"), "utf8"), /^kit bg: cannot read the process list .*; looking again$/m);
 });
