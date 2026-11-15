@@ -113,9 +113,11 @@ export function lockedPaths(cli, env = process.env, { apiRoute = false } = {}) {
   // refreshed file mid-run) is hidden whole from its commands: the link and whatever replaces it.
   if (cli === "codex" && env.CODEX_HOME && resolve(env.CODEX_HOME) !== join(base, ".codex") && inside(resolve(env.CODEX_HOME), resolve(tmpdir()))) paths.push(env.CODEX_HOME);
   // Tools that keep their keys where a variable says (gh's GH_CONFIG_DIR among them, which the kit itself sets).
-  for (const name of keyFolderVariables) if (env[name]?.startsWith("/")) paths.push(env[name]);
+  // KUBECONFIG holds a list of files.
+  for (const name of keyFolderVariables) for (const path of String(env[name] ?? "").split(name === "KUBECONFIG" ? ":" : "\0")) if (path.startsWith("/")) paths.push(path);
   if (env.XDG_CONFIG_HOME && resolve(env.XDG_CONFIG_HOME) !== join(base, ".config")) paths.push(...configKeyNames.map(name => join(env.XDG_CONFIG_HOME, name)));
-  if (cli === "claude" && apiRoute && env.KIT_API_KEY_FILE?.startsWith("/")) paths.push(env.KIT_API_KEY_FILE);
+  // The API key file, for every CLI: the API route's wrapper reads it before claude starts inside the lock.
+  if (env.KIT_API_KEY_FILE?.startsWith("/")) paths.push(env.KIT_API_KEY_FILE);
   // The display's cookie wherever the session keeps it (older SDDM: /tmp/xauth_…).
   if (env.XAUTHORITY?.startsWith("/")) paths.push(env.XAUTHORITY);
   for (const extra of String(env.KIT_KEY_PATHS ?? "").split(process.platform === "win32" ? ";" : ":")) {
@@ -134,14 +136,24 @@ export function existingPaths(paths) {
 }
 
 /**
- * The paths plus the files their links point at. A link inside a key folder (a dotfiles setup:
- * ~/.config/gh/hosts.yml -> ~/dotfiles/gh/hosts.yml) names a file the folder's mask does not cover. Only file targets
- * are added (a folder target such as /usr or HOME is never masked), up to four levels down; the runtime folder and /tmp
- * (sockets, not keys) are not walked.
+ * The paths plus what their links point at, and the folder targets the lock must not hide. A link inside a key folder
+ * (a dotfiles setup: ~/.config/gh/hosts.yml -> ~/dotfiles/gh/hosts.yml, or .config/.wrangler/config -> a dotfiles
+ * folder) names a file or folder the folder's mask does not cover, so its target is locked too, up to four levels down.
+ * A folder target that holds one of `keep` (HOME, the worktree's Git folder) or is a system folder cannot be hidden
+ * without breaking the run: it is returned in `unsafe`. Folders in `skip` (the runtime folder, terminal and X sockets:
+ * sockets, not keys) are not walked.
+ * Links inside a target are not followed, so a loop of links ends.
  */
-export function withLinkTargets(paths, skip = []) {
-  const found = [...paths];
-  const target = link => { try { const real = realpathSync(link); if (statSync(real).isFile()) found.push(real); } catch { /* A dangling link points nowhere. */ } };
+export function linkTargets(paths, { skip = [], keep = [] } = {}) {
+  const found = [...paths], unsafe = [];
+  const system = ["/", "/usr", "/etc", "/bin", "/sbin", "/lib", "/lib64", "/opt", "/var", "/home", "/tmp", "/run", "/proc", "/sys", "/dev", "/nix", "/snap"];
+  const target = link => {
+    let real;
+    try { real = realpathSync(link); } catch { return; /* A dangling link points nowhere. */ }
+    if (statSync(real).isFile()) found.push(real);
+    else if (system.includes(real) || keep.some(path => inside(path, real))) unsafe.push(`${link} -> ${real}`);
+    else found.push(real);
+  };
   const walk = (folder, depth) => {
     let entries;
     try { entries = readdirSync(folder, { withFileTypes: true }); } catch { return; }
@@ -159,7 +171,7 @@ export function withLinkTargets(paths, skip = []) {
       else if (info.isDirectory()) walk(path, 1);
     } catch { /* Not there. */ }
   }
-  return [...new Set(found)];
+  return { paths: [...new Set(found)], unsafe };
 }
 
 /**
@@ -311,8 +323,11 @@ export function keyGuardWarning(env = process.env) {
  */
 export function keyGuard({ cli, kind, common, env = process.env, apiRoute = false, model = "" }) {
   if (!keyGuardOn(env)) return { off: true, env: {}, wrap: (command, args) => [command, args], close() {} };
-  const locked = lockedPaths(cli, env, { apiRoute });
-  const paths = withLinkTargets(locked, ["/tmp", "/run", env.XDG_RUNTIME_DIR].filter(Boolean));
+  const uid = typeof process.getuid === "function" ? process.getuid() : -1;
+  const sockets = [env.XDG_RUNTIME_DIR || `/run/user/${uid}`, `/tmp/tmux-${uid}`, "/run/screen", "/tmp/.X11-unix"];
+  const { paths, unsafe } = linkTargets(lockedPaths(cli, env, { apiRoute }), { skip: sockets,
+    keep: [home(env), common].filter(Boolean).map(path => resolve(path)) });
+  if (unsafe.length) throw new Error(`cannot lock the key files for this ${kind}: a link inside a key folder points at a folder the lock cannot hide (${unsafe.join(", ")}); move the keys into a folder of their own, or set ASE_KEY_GUARD=off to run without the lock`);
   const scrub = scrubbedEnv(cli, env, { apiRoute, model });
   // Codex's own sandbox shares the network too, so the display warning (when bubblewrap can check it) applies to it.
   if (cli === "codex") return { env: scrub, codex: codexProfile(kind, common, codexPaths(paths)), warning: keyGuardWarning(env), wrap: (command, args) => [command, args], close() {} };
