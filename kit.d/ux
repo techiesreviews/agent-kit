@@ -43,7 +43,7 @@ files (paths.visible in scripts/agents/kit.json) as it checked them and the list
 pr lands a visible change only with a result that passed for those files and those features as they are then (a list
 edit about other features changes nothing); one made with --no-review or --features is partial and does not count.
 Only a whole run that finishes speaks for a change: a partial run, or one whose reviewer did not finish, never
-replaces a whole finished result or one that did not pass for the same change. No result is saved when HEAD or a
+replaces a whole finished result or a finished one that did not pass for the same change. No result is saved when HEAD or a
 visible file moved during the run.
 When no listed feature covers any changed file, nothing is tried: a note names the visible file, and kit pr says
 "UX check: nothing to try".
