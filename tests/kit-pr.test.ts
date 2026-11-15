@@ -2956,6 +2956,25 @@ test("out of budget with a should (P2) left lands as a follow-up for Lex but the
   assert.doesNotMatch(result.stdout, /Verdict: approved/);
 });
 
+// kit fix, which saved the fix rounds under .scratch/kit-fix, was cut (TOOLS-235): the rounds are kit review's own, the round its
+// newest review answered minus one, so a helper that fixes in its own thread still reaches the budget.
+test("the fix rounds come from kit review's own round when no kit fix folder is there: a should after round 4 lands as a follow-up", t => {
+  const f = fixture(t);
+  const path = f.saveReview(cleanReview.replace("Spec: none.", "Spec: P2: Real minor defect."));
+  writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ round: 4, model: "claude-opus-5-5", head: f.git("rev-parse", "HEAD"), findings: [{ id: "R4-1", group: "Spec", severity: "P2", kind: "unsorted", text: "P2: Real minor defect." }] }));
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^Review budget used: 3 of 3 fix rounds, 1 open finding\. Running out of budget is not approval; Lex decides\.$/m);
+  assert.match(result.stdout, /review: 1 follow-ups after 3 fix rounds \(non-blocking\)/);
+  // Round 3 has had two fix rounds: the should still blocks there.
+  const early = fixture(t);
+  const earlyPath = early.saveReview(cleanReview.replace("Spec: none.", "Spec: P2: Real minor defect."));
+  writeFileSync(join(dirname(earlyPath), "findings.json"), JSON.stringify({ round: 3, model: "claude-opus-5-5", head: early.git("rev-parse", "HEAD"), findings: [{ id: "R3-1", group: "Spec", severity: "P2", kind: "unsorted", text: "P2: Real minor defect." }] }));
+  const blocked = early.run();
+  assert.equal(blocked.status, 1, blocked.stdout + blocked.stderr);
+  assert.match(blocked.stdout, /RESULT: fail pr #73 review has 1 open findings/);
+});
+
 test("the PR's review block is replaced between markers on a later run, never added twice", t => {
   const f = fixture(t);
   const path = f.saveReview(cleanReview);
@@ -3092,15 +3111,27 @@ test("on Orbit, an unmerged PR (--no-merge) leaves its card as it is", async t =
   assert.equal(orbit.writes().length, 0);
 });
 
-test("on Orbit, a queued PR leaves its card open and says the queue closes it; review follow-ups go on the card as one comment", async t => {
+test("on Orbit, a queued PR leaves its card open and says to close it once it lands; review follow-ups go on the card as one comment", async t => {
   const queued = await orbitPr(t);
   const open = queued.card({}, "In Progress");
   const output = await queued.pr(["--ticket", queued.brief()], { FAKE_QUEUE: "1" });
   assert.equal(output.status, 0, output.all);
-  assert.match(finalLine(output), /^RESULT: ok queued #73 [0-9a-f]{7}; card KIT-1 closes when the queue lands it$/);
-  assert.match(output.stdout, /^card: KIT-1 stays open until the queue lands #73; kit slice closes it then, else run kit ticket update KIT-1 --status Done$/m);
+  // Nothing waits for the queue since kit slice was cut (TOOLS-235): the line says who closes the card.
+  assert.match(finalLine(output), /^RESULT: ok queued #73 [0-9a-f]{7}; card KIT-1 stays open: close it once #73 lands$/);
+  assert.match(output.stdout, /^card: KIT-1 stays open: nothing here waits for the queue; run kit ticket update KIT-1 --status Done once #73 lands$/m);
   assert.equal(queued.orbit.statusOf(open), "In Progress");
   assert.equal(queued.orbit.writes().length, 0);
+  // A queued brief's review and UX follow-ups go on the card now, as one comment, since no later step reads the brief.
+  const later = await orbitPr(t);
+  const waiting = later.card({}, "In Progress");
+  const laterBrief = later.brief();
+  writeFileSync(join(later.root, laterBrief), `${readFileSync(join(later.root, laterBrief), "utf8")}\n## Done (2026-11-07)\n\n### UX follow-ups\n\n- UX (looks off): F-1 S1: a hint line\n`);
+  later.saveReview(cleanReview.replace("Spec: none.", "Spec: P3: Cosmetic defect."));
+  const queuedLater = await later.pr(["--ticket", laterBrief], { FAKE_QUEUE: "1" });
+  assert.equal(queuedLater.status, 0, queuedLater.all);
+  assert.equal(later.orbit.statusOf(waiting), "In Progress");
+  assert.deepEqual((later.orbit.comments[waiting.id] ?? []).map((comment: any) => comment.body),
+    ["Follow-ups from https://github.com/test/repo/pull/73:\n- Spec (P3): P3: Cosmetic defect.\n- UX (looks off): F-1 S1: a hint line"]);
 
   const nits = await orbitPr(t);
   const task = nits.card({}, "In Progress");
@@ -3146,14 +3177,15 @@ test("on Orbit, an absolute brief path closes its card; a dry run with a KEY wri
   assert.equal(dry.orbit.writes().length, 0);
 });
 
-test("on Orbit, a queued PR keeps its review follow-ups in the brief for the slice that closes the card", async t => {
+test("on Orbit, a queued PR no longer writes its review follow-ups into the brief: no slice reads them there any more", async t => {
   const f = await orbitPr(t);
   f.card({}, "In Progress");
   const brief = f.brief();
+  const before = readFileSync(join(f.root, brief), "utf8");
   f.saveReview(cleanReview.replace("Spec: none.", "Spec: P3: Cosmetic defect."));
   const output = await f.pr(["--ticket", brief], { FAKE_QUEUE: "1" });
   assert.equal(output.status, 0, output.all);
-  assert.match(readFileSync(join(f.root, brief), "utf8"), /\n### Review follow-ups\n\n- Spec \(P3\): P3: Cosmetic defect\.\n$/);
+  assert.equal(readFileSync(join(f.root, brief), "utf8"), before);
 });
 
 test("on Orbit, a lead's kit pr --ticket KEY on a merge queue says nobody waits to close the card and puts its follow-ups on it now", async t => {

@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { completedFixRounds, openFindings, reviewIncomplete, reviewCoversHead, sameReviewPatch } from "../review-findings.mjs";
 import { branchRisk, budgetReport, isNit, ledgerRows, modelsLine, prLine, renderLedger, reviewChain, roundLimit, secondLookRows, stoppingFindings, waiverCheck, waiverRefusal } from "../review-loop.mjs";
 import { projectCommand, spoken } from "../review-brief.mjs";
-import { briefFollowups, cardBriefFor, closeLandedCard, isCardKey, onOrbit, openOrbitTickets, orbitProblem, ticketCardKey, withReviewFollowups } from "../ticket-cards.mjs";
+import { briefFollowups, cardBriefFor, closeLandedCard, isCardKey, onOrbit, openOrbitTickets, orbitProblem, ticketCardKey } from "../ticket-cards.mjs";
 
 const { kitBranch, kitGhEnv, kitHideUserInfo, kitHidingLog, kitHome, kitMachineLock, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, kitStateDir, nodeEnv, kitScore } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
@@ -373,8 +373,7 @@ async function main(args) {
     if (flags.ticket && onOrbit(settings)) {
       if (isCardKey(flags.ticket)) {
         fromKey = true;
-        // The brief stays in this run's own folder: kit pr claims nothing, so a later kit slice here must not take it
-        // for a resumed slice's brief.
+        // The brief stays in this run's own folder: kit pr claims nothing, and its brief is no worktree's saved one.
         try { flags.ticket = relative(root, (await cardBriefFor({ root, key: flags.ticket, settings, who: kitOwner(), folder: directory })).path); }
         catch (error) { throw new Error(orbitProblem(error)); }
       }
@@ -762,7 +761,7 @@ async function main(args) {
     step = "review";
     console.log(`PR #${number}; ${review ? "review running" : `review: skipped (${plan.tier} tier)`}`);
     // The docs tier has no model review; CI still gates the merge.
-    let waived = 0, waivedFindings = [], seenFindings = seenAt(startHead), reviewedHeads = startRebased ? 1 : 0, loopSummary = null, loopLeft = 0, loopBudgetUsed = false, secondLookSkipped = null, secondLookModel = null, secondRows = [], loopDeclined = [], nothingToReview = false;
+    let waived = 0, waivedFindings = [], seenFindings = seenAt(startHead), reviewedHeads = startRebased ? 1 : 0, loopSummary = null, loopLeft = 0, loopBudgetUsed = false, loopFixRounds = 0, secondLookSkipped = null, secondLookModel = null, secondRows = [], loopDeclined = [], nothingToReview = false;
     // `name` is "review" (Claude's) or "second look", whose lines and summary say so.
     async function recordFollowups(findings, name = "review", budgetUsed = true, nitsOnly = true) {
       if (!findings.length) return;
@@ -836,7 +835,7 @@ async function main(args) {
     // Claude's review (none in the docs tier), then the second look on every change; both weigh findings the same way.
     async function reviewHead() {
       reviewedHeads++;
-      waived = 0; waivedFindings = []; loopSummary = null; loopLeft = 0; loopBudgetUsed = false; secondLookSkipped = null; secondLookModel = null; secondRows = []; loopDeclined = []; nothingToReview = false;
+      waived = 0; waivedFindings = []; loopSummary = null; loopLeft = 0; loopBudgetUsed = false; loopFixRounds = 0; secondLookSkipped = null; secondLookModel = null; secondRows = []; loopDeclined = []; nothingToReview = false;
       const base = await git("review", ["merge-base", `origin/${flags.base}`, "HEAD"]);
       // A PR that already says "approved" for an earlier head (a "behind" rebase brought a new one) never keeps saying it
       // while the new head is reviewed, or when that review stops the landing.
@@ -954,14 +953,17 @@ async function main(args) {
       try { resultMd = readFileSync(resultPath, "utf8"); }
       catch { /* Missing or unreadable evidence fails closed through openFindings. */ }
       const { findings } = openFindings(resultMd);
-      const rounds = completedFixRounds(join(kitMainRoot(), ".scratch/kit-fix", encodeURIComponent(branch)),
-        join(root, ".scratch/kit-fix", encodeURIComponent(branch)));
+      // The review's own record: the ids it gave its findings (a second look's are SL-<n>), and what the builder declined along the chain.
+      const chain = reviewChain(dirname(resultPath));
+      // The fix rounds are kit review's own: a review answering round N follows N - 1 of them (a helper fixes in its own
+      // thread). A branch whose rounds the cut kit fix saved keeps that count. A second look counts the first look's.
+      const rounds = second ? loopFixRounds : Math.max((chain.at(-1)?.round ?? 1) - 1,
+        completedFixRounds(join(kitMainRoot(), ".scratch/kit-fix", encodeURIComponent(branch)), join(root, ".scratch/kit-fix", encodeURIComponent(branch))));
+      if (!second) loopFixRounds = rounds;
       const limit = roundLimit(loopRisk.risky);
       // Nits alone never block or call for a round; blockers and shoulds do while the budget lasts, then only blockers (nits stop the loop; out of budget is never approval).
       const relaxed = rounds >= limit;
       const blocking = stoppingFindings(findings, rounds, loopRisk.risky);
-      // The review's own record: the ids it gave its findings (a second look's are SL-<n>), and what the builder declined along the chain.
-      const chain = reviewChain(dirname(resultPath));
       const ids = new Map(findings.map((item, index) => [item, second ? `SL-${index + 1}` : chain.at(-1)?.findings[index]?.id]));
       // What is left that is not a nit, across both looks: out of budget it is reported for Lex and the PR is never called approved.
       const left = findings.filter(item => !isNit(item));
@@ -1090,26 +1092,24 @@ async function main(args) {
       await gh("merge", ["pr", "merge", number, "--auto", "--rebase", "--match-head-commit", head, "--repo", target]); ok("merge");
       await recordWaiver();
       land({ queued: true, waived: waivedAny() });
-      // The card closes when the queue lands the PR: kit slice, which waits for it, closes it then. A lead's own
-      // kit pr --ticket KEY has no slice behind it, so it says so and puts the follow-ups on the card now.
-      let queuedWords = card ? `; card ${card} closes when the queue lands it` : "";
-      if (card && fromKey) {
+      // Nothing here waits for the queue (kit slice, which did, was cut in TOOLS-235): the card stays open, the line says
+      // who closes it, and its follow-ups (the brief's UX ones too) go on the card now, since no later step reads the brief.
+      let queuedWords = "";
+      if (card) {
+        let ux = [];
+        if (!fromKey) try { ux = briefFollowups(readFileSync(resolve(root, flags.ticket), "utf8")); } catch { /* No brief left: no follow-ups kept in it. */ }
+        const followups = [...new Set([...cardFollowups, ...ux])];
         let where = "";
-        if (cardFollowups.length) {
+        if (followups.length) {
           let redact;
           try {
             const opened = openOrbitTickets({ settings, who: kitOwner() });
             redact = opened.redact;
-            await opened.store.comment(card, `Follow-ups from https://${target.split("/").length === 3 ? target.split("/")[0] : "github.com"}/${repo}/pull/${number}:\n${[...new Set(cardFollowups)].join("\n")}`);
+            await opened.store.comment(card, `Follow-ups from https://${target.split("/").length === 3 ? target.split("/")[0] : "github.com"}/${repo}/pull/${number}:\n${followups.join("\n")}`);
           } catch (error) { where = ` (its follow-ups were not added: ${orbitProblem(error, redact)}; they are in the PR comment)`; }
         }
         console.log(`card: ${card} stays open: nothing here waits for the queue; run kit ticket update ${card} --status Done once #${number} lands${where}`);
         queuedWords = `; card ${card} stays open: close it once #${number} lands`;
-      } else if (card) {
-        // The review follow-ups wait in the brief, where kit slice reads them when it closes the card.
-        try { writeFileSync(resolve(root, flags.ticket), withReviewFollowups(readFileSync(resolve(root, flags.ticket), "utf8"), cardFollowups)); }
-        catch { console.log(`card: ${card} follow-ups stay in the PR comment only (the brief could not be written)`); }
-        console.log(`card: ${card} stays open until the queue lands #${number}; kit slice closes it then, else run kit ticket update ${card} --status Done`);
       }
       kitResult("ok", `queued #${number} ${head.slice(0, 7)}${queuedWords}${flakyNote()}`);
       return 0;
