@@ -95,11 +95,12 @@ async function wrapper(kind, directory, cwd, command) {
   // The supervisor excludes the leader to avoid waiting on each other. On Windows each waits for its own tree.
   const others = () => windows ? kitJobTree(kitWinProcesses(), [{ pid: process.pid, started }]).some(member => member.pid !== process.pid)
     : kitJobGroup(pgid).some(member => member.pid !== pgid && member.pid !== process.pid);
-  // A list that cannot be read (Windows: PowerShell failed) is looked at again; after ten failures in a row the job's
-  // own status stands, and the log says why its leftover processes were not waited for.
+  // On Windows a list that cannot be read (PowerShell failed) is looked at again; after ten failures in a row the
+  // job's own status stands, and the log says why its leftover processes were not waited for.
   for (let failures = 0; ;) {
     try { if (!others()) break; failures = 0; }
     catch (error) {
+      if (!windows) throw error;
       if (++failures === 1) console.error(`kit bg: ${error.message}; looking again`);
       if (failures === 10) { console.error("kit bg: gave up waiting for the job's leftover processes after 10 failed process lists"); break; }
     }
@@ -247,7 +248,8 @@ async function stop(name, directory) {
 // Windows has no graceful stop: taskkill /T /F ends the job's whole tree at once, so the wrapper writes no records,
 // and stop writes "ended" and exit 143 itself unless the job had just ended. Only the top of the tree goes to taskkill
 // (the wrapper, or the processes left below it when it died): /T reaches the rest, so a short-lived process that
-// ended since the list was read passes on a reused pid only when both pinned processes have died.
+// ended since the list was read passes on a reused pid only when both pinned processes (the wrapper and its command
+// process) have died.
 async function stopTree(name, job) {
   const members = kitJobMembers(job);
   const pids = new Set(members.map(member => member.pid));

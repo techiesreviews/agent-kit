@@ -314,5 +314,22 @@ test("a Windows job whose process list fails for a moment while it waits for lef
   const directory = f.directory("win-flaky");
   await until(() => existsSync(join(directory, "exit")), 20000);
   assert.equal(readFileSync(join(directory, "exit"), "utf8").trim(), "5");
-  assert.match(readFileSync(join(directory, "log"), "utf8"), /^kit bg: cannot read the process list .*; looking again$/m);
+  const log = readFileSync(join(directory, "log"), "utf8");
+  assert.match(log, /^kit bg: cannot read the process list .*; looking again$/m);
+  assert.doesNotMatch(log, /gave up/);
+});
+
+test("a Windows job whose process list keeps failing while it waits for leftovers gives up after ten tries with its own status", async t => {
+  const f = fixture(t);
+  const broken = join(f.root, "win.log.broken");
+  t.after(() => rmSync(broken, { force: true }));
+  const leftover = join(f.root, "leftover");
+  t.after(() => { try { process.kill(Number(readFileSync(leftover, "utf8")), "SIGKILL"); } catch {} });
+  const code = `const child = require("child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore" }); require("fs").writeFileSync(${JSON.stringify(leftover)}, String(child.pid)); require("fs").writeFileSync(${JSON.stringify(broken)}, ""); process.exit(6);`;
+  ok(f.bg("win-gives-up", "--", process.execPath, "-e", code));
+  const directory = f.directory("win-gives-up");
+  await until(() => existsSync(join(directory, "exit")), 40000);
+  assert.equal(readFileSync(join(directory, "exit"), "utf8").trim(), "6");
+  assert.ok(existsSync(join(directory, "ended")));
+  assert.match(readFileSync(join(directory, "log"), "utf8"), /^kit bg: gave up waiting for the job's leftover processes after 10 failed process lists$/m);
 });
