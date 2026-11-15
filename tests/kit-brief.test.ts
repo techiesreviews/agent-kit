@@ -605,6 +605,25 @@ test("brief KEY: on an Orbit project a lead's build brief claims a Todo or Backl
   assert.equal(o.orbit.statusOf(shifted), "In Progress");
   assert.match(shifted.description, /^Claimed by: kit-18\n/);
   assert.doesNotMatch(taken.stderr, /changed while its brief was written/);
+  // A card that was closed meanwhile has nothing to build: the brief fails and none is written.
+  const closed = o.card({ title: "Closed" });
+  o.orbit.controls.conflicts = 1;
+  o.orbit.controls.concurrentEdit = task => { task.status_id = o.orbit.statusId(o.orbit.kit, "Done"); };
+  const gone = await run({}, "KIT-19", "--owner", "kit-19");
+  o.orbit.controls.concurrentEdit = undefined;
+  assert.equal(gone.status, 1, gone.all);
+  assert.match(gone.stdout, /RESULT: fail brief KIT-19 is already Done, so there is nothing to build/);
+  assert.ok(!existsSync(join(f.root, ".scratch/kit-briefs/KIT-19-build.md")));
+  assert.equal(o.orbit.statusOf(closed), "Done");
+  // A card moved to Ideas that carries the owner's own claim line by then has no reason to give: no half warning.
+  const own = o.card({ title: "Own" });
+  o.orbit.controls.conflicts = 1;
+  o.orbit.controls.concurrentEdit = task => { task.status_id = "ideas-status"; task.description = `Claimed by: kit-20\n\n${task.description}`; };
+  const mine = await run({}, "KIT-20", "--owner", "kit-20");
+  o.orbit.controls.concurrentEdit = undefined;
+  assert.equal(mine.status, 0, mine.all);
+  assert.equal(o.orbit.statusOf(own), "Ideas");
+  assert.doesNotMatch(mine.stderr, /warning: KIT-20|claimed KIT-20/);
 });
 
 test("brief KEY: on a board with no Todo status a lead's build brief claims every card not yet started, since kit next hands those out", async t => {

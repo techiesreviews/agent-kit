@@ -26,8 +26,8 @@ claims a card nobody holds (Todo, Backlog, or In Progress with no claim, assigne
 Progress and "Claimed by:", as kit slice does. A Todo or Backlog card that is blocked or waits for Lex is refused. Any
 other card is left as it is, with a warning that says why (someone else holds it, it waits for Lex, it is Done or in
 another status); the owner's own card gets none. The claim reads the card again right before its write, so a card
-that stopped being free after the brief read it (moved to Ideas, say) is left as it is too, with a warning that it
-changed and why. On a board with no Todo status, every status not yet started counts as Todo, as it does for kit next,
+moved meanwhile to a status the brief does not take (Ideas, say) is left as it is too, with a warning that it changed
+and why; one that someone else took, or that is Done by then, fails the brief. On a board with no Todo status, every status not yet started counts as Todo, as it does for kit next,
 which hands those cards out. In a project that keeps ticket files the kit neither claims nor closes the card: the
 build brief has the builder ask the lead to close it after the merge.
 --task is for a job with no ticket file or card: the note holds the task, the marker names it task:<slug>, and the
@@ -116,7 +116,8 @@ async function claimCard(settings, key, owner) {
     // The brief's first read may be old by now: the claim puts the same test to the card as it is right before its write,
     // so a card moved in between (Todo to Ideas, say) keeps its place and the brief says why it holds no claim.
     const claim = await opened.store.claim(key, owner, { free: cardOpen });
-    if (claim.left) console.error(`warning: ${key} changed while its brief was written and is left as it is, not claimed for ${owner}: ${whyLeft(claim.left, owner)}`);
+    const why = claim.left ? whyLeft(claim.left, owner) : "";
+    if (why) console.error(`warning: ${key} changed while its brief was written and is left as it is, not claimed for ${owner}: ${why}`);
     if (claim.unchanged) return none;
     console.error(`claimed ${key} for ${owner}: In Progress with "Claimed by: ${owner}"`);
     // Named now, while Orbit answers: what the card needs by hand if giving the claim back fails later.

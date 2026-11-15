@@ -1143,6 +1143,12 @@ test("kit ux saves its result for the branch, with the visible files as it check
   assert.deepEqual([saved().ok, saved().partial], [true, "--no-review"]);
   assert.equal(run(["--features", "F-media-02"]).status, 0);
   assert.deepEqual([saved().ok, saved().partial], [true, "--features"]);
+  // A run whose reviewer did not finish failed without calling any feature broken: saved as unfinished, no verdict.
+  assert.equal(run([], { FAKE_AGENT_FAIL: "1" }).status, 1);
+  assert.deepEqual([saved().ok, saved().unfinished, saved().partial], [false, true, null]);
+  assert.match(saved().summary, /scripted findings, the review did not finish$/);
+  assert.equal(run([], { FAKE_VERDICTS: JSON.stringify({ "F-media-02": "broken" }) }).status, 1);
+  assert.deepEqual([saved().ok, saved().unfinished], [false, false]);
 });
 
 test("kit ux tries a feature whose file the change renames away, and saves that feature as covering it", t => {
@@ -1238,4 +1244,7 @@ test("kit ux leaves the scoreboard alone when HEAD moved during its run", t => {
   assert.equal(output.status, 0, output.stderr + output.stdout);
   assert.match(output.stderr, /^problem: HEAD moved during kit ux; scoreboard not updated$/m);
   assert.equal(existsSync(join(root, ".scratch/scoreboard/_untracked/1-panel.json")), false);
+  // Nor is a result saved for kit pr: what was shot and judged may not be the tree the result would name.
+  assert.match(output.stdout, /^note: HEAD or a visible file moved during kit ux, so no result is saved for kit pr; run kit ux again$/m);
+  assert.equal(readUxResult(root, "build/sf-1-panel"), null);
 });

@@ -206,6 +206,13 @@ if (phase === "review") {
   console.log(open ? "RESULT: fail fix 1 open findings (" + folder + "/result.md)" : "RESULT: ok fix clean");
   process.exitCode = open ? 1 : 0;
 } else if (phase === "pr") {
+  // PR_UX_STALE: kit pr's own rebase made the kit ux result out of date, once.
+  const stale = join(process.env.KIT_MAIN_ROOT, ".scratch/pr-ux-stale");
+  if (process.env.PR_UX_STALE && !existsSync(stale)) {
+    writeFileSync(stale, "1");
+    console.log("RESULT: fail ux: the visible change is not the one kit ux checked (file.txt changed since it ran at 0123456); run \`scripts/agents/kit ux\` again");
+    process.exit(1);
+  }
   // PR_NEEDS_SECOND: like the real kit pr, a second look must cover HEAD (else it takes a new one, here with a finding).
   const look = join(process.env.KIT_MAIN_ROOT, ".scratch/reviews/ke-04", "second-" + String(round()).padStart(3, "0"));
   if (process.env.PR_NEEDS_SECOND && !(existsSync(join(look, "refs.txt")) && readFileSync(join(look, "refs.txt"), "utf8").trim() === git("rev-parse", "HEAD"))) {
@@ -1649,6 +1656,17 @@ test("a second-look fix that reaches a visible path gets the UX gate again befor
     assert.deepEqual(f.calls().map(call => call.phase),
       ["build", "review", "ux", "second", "fix", "second", ...(visible ? ["ux"] : []), "pr"], String(visible));
   }
+});
+
+test("a kit pr that refuses an out-of-date kit ux result sends the next run through the UX gate again before kit pr", t => {
+  const f = fixture(t, { project: "kit-slice", branches: { land: "dev" }, paths: { visible: ["^file\\.txt$"] } });
+  const refused = f.run([], { FAKE_UX: "none", PR_UX_STALE: "1" });
+  assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+  assert.match(refused.stdout, /^slice: pr fail$/m);
+  assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "ux", "pr"]);
+  const again = f.run([], { FAKE_UX: "none", PR_UX_STALE: "1" });
+  assert.equal(again.status, 0, again.stdout + again.stderr);
+  assert.deepEqual(f.calls().map(call => call.phase), ["build", "review", "ux", "pr", "ux", "pr"]);
 });
 
 test("a visible second-look fix gets the UX gate again even when the fresh look is skipped", t => {
