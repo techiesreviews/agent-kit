@@ -439,18 +439,22 @@ case "$1 $2" in
     if [[ $WAIT_MODE == error ]]; then printf 'fixture gh failure\\nsecond error line\\n' >&2; exit 1; fi
     if [[ $WAIT_MODE == pinned || ( ( $WAIT_MODE == superseded || $WAIT_MODE == moved ) && $count -gt 1 ) ]]; then echo "$new"; else echo "$old"; fi ;;
   'api repos/{owner}/{repo}/commits/abcdef0') echo "$old" ;;
+  'api repos/{owner}/{repo}/commits/abcdef9') echo 'gh: No commit found for SHA: abcdef9 (HTTP 422)' >&2; exit 1 ;;
   'pr view')
     [[ $3 == 42 && $4 == --json && $5 == headRefName,headRefOid ]]
     echo '{"headRefName":"feature/work","headRefOid":"${head}"}' ;;
   'workflow list') echo '[{"id":1,"name":"Checks","state":"active"}]' ;;
   'run list')
     if [[ $* == *'--json headBranch'* ]]; then
+      # Like GitHub, the commit filter matches only a full 40-character SHA: a short one finds no runs.
+      [[ $* =~ --commit\\ [0-9a-f]{40}( |$) ]] || { echo '[]'; exit; }
       count=$((count + 1)); printf '%s\\n' "$count" > "$WAIT_FIXTURE/count"
       if [[ $WAIT_MODE == no-runs || ( $WAIT_MODE == sha-empty && $count -eq 1 ) ]]; then echo '[]'; else echo '[{"headBranch":"dev"}]'; fi
       exit
     fi
     sha=$old
     [[ $* != *"--commit $new"* ]] || sha=$new
+    if [[ $WAIT_MODE == local && $* =~ --commit\\ ([0-9a-f]{40}) ]]; then sha=\${BASH_REMATCH[1]}; fi
     status=completed; conclusion=success
     [[ $WAIT_MODE != failed ]] || conclusion=failure
     [[ $WAIT_MODE != cancelled ]] || conclusion=cancelled
@@ -652,6 +656,28 @@ test("ci abbreviated SHA expands and stays pinned when branch head differs", asy
   result(output, 0, /ci abcdef0 abcdef0 green/);
   assert.match(fixture.calls(), /commits\/abcdef0 --jq .sha/);
   assert.doesNotMatch(output.stdout, /superseded/);
+});
+
+test("ci short SHA expands through the project's own git first, without asking GitHub", async (t) => {
+  const fixture = fakeGh(t, "local");
+  const git = (...args: string[]) => spawnSync("git", ["-C", fixture.project, ...args], { encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
+  for (const args of [["init", "-q"], ["remote", "add", "origin", "https://github.com/acme/site.git"],
+    ["-c", "user.name=t", "-c", "user.email=t@example.test", "commit", "-q", "--allow-empty", "-m", "one"]])
+    assert.equal(git(...args).status, 0);
+  const full = git("rev-parse", "HEAD").stdout.trim();
+  const output = await run(t, ["ci", "--sha", full.slice(0, 9), "--timeout", "2"], fixture.env);
+  result(output, 0, new RegExp(`ci ${full.slice(0, 9)} ${full.slice(0, 7)} green`));
+  assert.match(fixture.calls(), new RegExp(`run list --commit ${full} `));
+  assert.doesNotMatch(fixture.calls(), /api repos\/\{owner\}\/\{repo\}\/commits\//);
+});
+
+test("ci short SHA that neither git nor GitHub knows fails at once with a plain reason", async (t) => {
+  const fixture = fakeGh(t, "green");
+  const started = Date.now();
+  const output = await run(t, ["ci", "--sha", "abcdef9", "--timeout", "30s"], fixture.env);
+  result(output, 1, /fail no commit abcdef9 in this repo or on GitHub \(gh: No commit found for SHA: abcdef9 \(HTTP 422\)\); pass the full SHA$/);
+  assert.ok(Date.now() - started < 10000);
+  assert.doesNotMatch(fixture.calls(), /run list/);
 });
 
 test("ci SHA with no runs waits until its deadline", async (t) => {
