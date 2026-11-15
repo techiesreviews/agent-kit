@@ -2160,6 +2160,35 @@ test("a second helper claiming the same card is refused, also when both read it 
   assert.equal(task.description, "Claimed by: kit-1");
 });
 
+test("claim with a free test reads the card again right before its write: a card that stopped being free is left as it was", async t => {
+  const { orbit, store, card } = await boardStore(t);
+  const board = orbit.statuses.get(orbit.kit.id)!;
+  board.push({ ...board[0], id: "ideas-status", name: "Ideas", position: board.length });
+  const free = (now: any) => now.stage === "ready";
+  // The card is moved from Todo to Ideas between the claim's read and its write: Orbit answers 409, and the fresh read is
+  // put to the caller's test again, so the card keeps the status it was moved to and gets no claim line.
+  const moved = card({ description: "Text" });
+  orbit.controls.conflicts = 1;
+  orbit.controls.concurrentEdit = edited => { edited.status_id = "ideas-status"; };
+  const left = await store.claim("KIT-1", "kit-1", { free });
+  orbit.controls.concurrentEdit = undefined;
+  assert.ok(left.unchanged);
+  assert.equal(left.previous, null);
+  assert.deepEqual([left.left.status_name, left.left.stage, left.left.claimed_by, left.left.next_lex], ["Ideas", "waiting", null, null]);
+  assert.equal(orbit.statusOf(moved), "Ideas");
+  assert.equal(moved.description, "Text");
+  assert.equal(orbit.writes().length, 1, "only the write Orbit refused");
+  // A card that passes the test is claimed as ever, and without a test the claim takes any card not yet started.
+  const todo = card({ description: "Text" });
+  const claimed = await store.claim("KIT-2", "kit-2", { free });
+  assert.ok(!claimed.unchanged);
+  assert.equal(claimed.left, undefined);
+  assert.equal(orbit.statusOf(todo), "In Progress");
+  const idea = card({ description: "Text" }, "Ideas");
+  assert.ok(!(await store.claim("KIT-3", "kit-3")).unchanged);
+  assert.equal(orbit.statusOf(idea), "In Progress");
+});
+
 test("claim refuses a done card, one waiting for Lex, one still blocked and a helper without the lead role", async t => {
   const { orbit, store, make, card } = await boardStore(t);
   card({}, "Done");
