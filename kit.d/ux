@@ -40,6 +40,7 @@ piece's scoreboard record as ux. --no-review skips it.
 Result for kit pr: each run saves its result for the branch under <main root>/.scratch/ux-results/, with the visible
 files (paths.visible in scripts/agents/kit.json) as it checked them. kit pr lands a visible change only with a result
 that passed for those files as they are then; one made with --no-review or --features is partial and does not count.
+When no listed feature covers a changed visible file, nothing is tried and kit pr says "UX check: nothing to try".
 KIT_UX_SHOTS and KIT_UX_AGENT: executables replacing the project's kit shots and agent.sh, same arguments (tests).
 RESULT: ok ux <n> features tried, <m> scripted findings, <f> fine, <o> looks off, <b> broken, bundle <dir>.
 A failed try or a broken verdict fails with broken: <feature,…>; a failed screens run adds
@@ -592,7 +593,7 @@ async function main() {
     const saveResult = (ok, summary, more = {}) => {
       if (startBranch !== "detached") saveUxResult(kitMainRoot(), { branch: startBranch, head: startHead, files: visible, ok, summary, partial: null, ...more });
     };
-    if (!selected.length) { saveResult(true, "no listed feature touched"); kitResult("ok", "ux nothing visible touched"); return 0; }
+    if (!selected.length) { saveResult(true, "no listed feature touched", { nothing: true }); kitResult("ok", "ux nothing visible touched"); return 0; }
     // Only a try takes screenshots, so a project without its own shots is asked for one only then, before any folder is made.
     const shots = selected.some(feature => feature.steps || screensFor(feature).length) ? projectShots(root, settings) : undefined;
 

@@ -25,10 +25,11 @@ holds the card's title, text and comments in place of a ticket file's, and --own
 claims a card nobody holds (Todo, Backlog, or In Progress with no claim, assignee or next step) for the owner: In
 Progress and "Claimed by:", as kit slice does. A Todo or Backlog card that is blocked or waits for Lex is refused. Any
 other card is left as it is, with a warning that says why (someone else holds it, it waits for Lex, it is Done or in
-another status); the owner's own card gets none. The claim reads the card again right before its write, so a card that
-changed after the brief read it (moved to Ideas, say) is left as it is too, with the same warning. On a board with no Todo status, every status not yet started counts
-as Todo, as it does for kit next, which hands those cards out. In a project that keeps ticket files the kit neither
-claims nor closes the card: the build brief has the builder ask the lead to close it after the merge.
+another status); the owner's own card gets none. The claim reads the card again right before its write, so a card
+that stopped being free after the brief read it (moved to Ideas, say) is left as it is too, with a warning that it
+changed and why. On a board with no Todo status, every status not yet started counts as Todo, as it does for kit next,
+which hands those cards out. In a project that keeps ticket files the kit neither claims nor closes the card: the
+build brief has the builder ask the lead to close it after the merge.
 --task is for a job with no ticket file or card: the note holds the task, the marker names it task:<slug>, and the
 brief lands it with kit pr --title.
 A build brief carries the grill and prototype step and asks for proof lines: per "Done when" item, what was really
@@ -84,10 +85,9 @@ async function readCard(settings, key) {
     const task = await opened.store.read(key);
     const comments = await opened.store.comments(task.identifier);
     const line = name => new RegExp(`^${name}:[ \\t]*(.*?)\\s*$`, "m").exec(task.description ?? "")?.[1] ?? "";
-    const one = oneLine;
     const owner = task.claimed_by || line("Assignee");
-    const text = `---\ntitle: ${JSON.stringify(one(task.title))}\norbit: ${task.identifier}\nbuilder: ${one(line("Builder"))}\nassignee: ${one(owner)}\n---\n\n${String(task.description ?? "").replace(/\r\n?/g, "\n")}\n`;
-    return { key: task.identifier, free: cardOpen(task), left: owner => whyLeft(task, owner), text, card: { title: one(task.title), url: task.url, description: task.description,
+    const text = `---\ntitle: ${JSON.stringify(oneLine(task.title))}\norbit: ${task.identifier}\nbuilder: ${oneLine(line("Builder"))}\nassignee: ${oneLine(owner)}\n---\n\n${String(task.description ?? "").replace(/\r\n?/g, "\n")}\n`;
+    return { key: task.identifier, free: cardOpen(task), left: owner => whyLeft(task, owner), text, card: { title: oneLine(task.title), url: task.url, description: task.description,
       comments: comments.map(note => ({ who: note.author_service_account?.name ?? note.author_id ?? "someone", when: note.created_at, body: note.body })) } };
   } catch (error) {
     if (isOrbitFailure(error)) throw new Error(`card ${key} could not be read: ${orbitProblem(error, redact)}`);
