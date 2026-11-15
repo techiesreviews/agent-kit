@@ -1069,16 +1069,16 @@ process.exitCode = Number(process.env.ASE_FAKE_EXIT || 0);
     assert.match(readFileSync(join(out, "run.log"), "utf8"), new RegExp(model));
     assert.deepEqual(readFileSync(brief, "utf8"), "tiny brief\n");
   }
-  // The build contract carries the talk style for the start (ticket 83) in place of the plain-English line.
-  assert.equal(invoke("agent.sh", ["build", wt, brief, "--model", "claude-haiku-5-5"], { KIT_TALK_STYLE: "wenyan" }).status, 0);
+  // The build contract carries the talk style (short English since TOOLS-235) in place of the plain-English line.
+  assert.equal(invoke("agent.sh", ["build", wt, brief, "--model", "claude-haiku-5-5"], { KIT_TALK_STYLE: "en" }).status, 0);
   const styled: { input: string } = JSON.parse(readFileSync(capture, "utf8"));
-  assert.equal(styled.input, "tiny brief\n" + buildContract + talkStyleLine("wenyan") + "\n");
+  assert.equal(styled.input, "tiny brief\n" + buildContract + talkStyleLine("en") + "\n");
   assert.ok(!styled.input.includes(plainEnglish));
   // kit fix reads the fixer's "Declined:" list, so the styled line keeps those keywords in English.
   // A mistyped style stops the build with the plain reason, as kit brief does.
-  const mistyped = invoke("agent.sh", ["build", wt, brief, "--model", "claude-haiku-5-5"], { KIT_TALK_STYLE: "wen" });
+  const mistyped = invoke("agent.sh", ["build", wt, brief, "--model", "claude-haiku-5-5"], { KIT_TALK_STYLE: "wenyan" });
   assert.notEqual(mistyped.status, 0);
-  assert.match(mistyped.stdout + mistyped.stderr, /KIT_TALK_STYLE must be en, wenyan or plain, not wen/);
+  assert.match(mistyped.stdout + mistyped.stderr, /KIT_TALK_STYLE must be en or plain, not wenyan/);
   assert.match(styled.input, /report keywords the kit reads \(Declined:, RESULT:, REVIEW_STATUS:\) with each declined finding's reason/);
   const defaultBuild = invoke("agent.sh", ["build", wt, brief]);
   assert.equal(defaultBuild.status, 0, defaultBuild.stderr);

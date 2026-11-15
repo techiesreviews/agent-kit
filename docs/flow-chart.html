@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Kit flow chart</title>
+<style>
+:root{
+  /* Fallbacks for a plain browser; in T3 the theme's own colours win. Orange marks Lex, indigo the lead. */
+  --f-bg:#ffffff; --f-sunk:#f5f1ee; --f-fg:#1d1a2b; --f-mut:#5d5870; --f-accent:#c12200; --f-indigo:#4b4fc4;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --f-bg:#110e31; --f-sunk:#1c1844; --f-fg:#ecebf7; --f-mut:#aaa6c6; --f-accent:#ff7a4d; --f-indigo:#9ea3ff; }
+}
+:root{
+  --bg:var(--background,var(--f-bg)); --sunk:var(--secondary,var(--f-sunk));
+  --fg:var(--foreground,var(--f-fg)); --mut:var(--muted-foreground,var(--f-mut));
+  --lex:var(--primary,var(--f-accent)); --lex-soft:color-mix(in srgb,var(--lex) 14%,var(--sunk));
+  --lead:var(--f-indigo);
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font-sans,Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif);font-size:15px;line-height:1.45;-webkit-font-smoothing:antialiased}
+main{max-width:1180px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:26px;line-height:1.15;margin:4px 0 6px;letter-spacing:-.01em;text-wrap:balance}
+h2{font-size:19px;margin:0 0 4px}
+h3{font-size:15px;line-height:1.25;margin:0}
+p{margin:0}
+.kicker{font-size:13px;font-weight:600;color:var(--mut)}
+.lede,.sub{color:var(--mut);max-width:72ch;text-wrap:pretty}
+.sub{margin-bottom:14px}
+section{margin-top:32px}
+
+.legend{display:flex;flex-wrap:wrap;gap:8px 18px;margin-top:14px;font-size:13px;color:var(--mut)}
+.legend span{display:inline-flex;align-items:center;gap:7px}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;flex:none;background:var(--mut)}
+.dot.lex{background:var(--lex)} .dot.lead{background:var(--lead)}
+
+/* The road: one row of seven on a wide screen, else one column read top to bottom. */
+.road{list-style:none;margin:0;padding:0;display:grid;gap:22px;grid-template-columns:minmax(0,1fr)}
+.step{position:relative;display:flex;flex-direction:column;gap:6px;background:var(--sunk);border-radius:12px;padding:12px;min-width:0}
+.step.new{background:var(--lex-soft)}
+.step .n{font-size:12px;font-weight:700;color:var(--mut);font-variant-numeric:tabular-nums}
+.step p{font-size:13px;color:var(--mut)}
+.step .who{display:flex;align-items:center;gap:6px;margin-top:auto;padding-top:4px;font-size:12px;font-weight:600}
+.tag{align-self:flex-start;font-size:12px;font-weight:600;color:var(--fg)}
+.step:not(:last-child)::after{content:"↓"/"";position:absolute;left:50%;bottom:-20px;transform:translateX(-50%);font-weight:700;color:var(--mut)}
+@media (min-width:1100px){
+  .road{grid-template-columns:repeat(7,minmax(0,1fr))}
+  .step:not(:last-child)::after{content:"→"/"";left:auto;right:-17px;bottom:auto;top:50%;transform:translateY(-50%)}
+}
+
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:12px}
+.card{background:var(--sunk);border-radius:12px;padding:12px 14px;min-width:0}
+.card h3{margin-bottom:6px}
+.card p,.card ul{font-size:13.5px;color:var(--mut)}
+.card ul{margin:0;padding-left:18px}
+.card li+li{margin-top:4px}
+</style>
+</head>
+<body>
+<main>
+  <p class="kicker">Agent Kit, after the trim (release 1)</p>
+  <h1>How a card gets built</h1>
+  <p class="lede">Six steps and a grill. Every card gets the grill; anything Lex sees or clicks also gets a prototype he tries first.</p>
+  <div class="legend">
+    <span><i class="dot lex"></i>Lex</span>
+    <span><i class="dot lead"></i>The lead session</span>
+    <span><i class="dot"></i>A helper, or the kit by itself</span>
+  </div>
+
+  <section aria-labelledby="road">
+    <h2 id="road">The road</h2>
+    <p class="sub">The two orange cards are new: the grill, and the prototype for anything on screen.</p>
+    <ol class="road">
+      <li class="step">
+        <span class="n">1</span>
+        <h3>Card</h3>
+        <p>The idea goes on the board, with a goal and a “Done when” list.</p>
+        <span class="who"><i class="dot lead"></i>Lex or the lead</span>
+      </li>
+      <li class="step new">
+        <span class="n">2</span>
+        <h3>Grill</h3>
+        <span class="tag">Every card</span>
+        <p>A round of questions for Lex in its own thread, before any helper starts. Bug fixes too.</p>
+        <span class="who"><i class="dot lex"></i>Lex answers</span>
+      </li>
+      <li class="step new">
+        <span class="n">3</span>
+        <h3>Prototype</h3>
+        <span class="tag">Only for screens</span>
+        <p>A clickable prototype Lex tries first. Bug fixes and behind-the-scenes work skip it.</p>
+        <span class="who"><i class="dot lex"></i>Lex tries it</span>
+      </li>
+      <li class="step">
+        <span class="n">4</span>
+        <h3>Build and prove</h3>
+        <p>A helper builds it and writes what it really tried for each “Done when” item.</p>
+        <span class="who"><i class="dot"></i>Helper</span>
+      </li>
+      <li class="step">
+        <span class="n">5</span>
+        <h3>Land</h3>
+        <p>Checks, a UX check on every screen change, two reviews, merge. Lex’s private sites are live at this point.</p>
+        <span class="who"><i class="dot"></i>Helper</span>
+      </li>
+      <li class="step">
+        <span class="n">6</span>
+        <h3>Lex tries it</h3>
+        <p>A thread with the test link, the prototype beside it, what to click and what to see.</p>
+        <span class="who"><i class="dot lex"></i>Lex</span>
+      </li>
+      <li class="step">
+        <span class="n">7</span>
+        <h3>His go</h3>
+        <p>A public tool goes live only after Lex says go.</p>
+        <span class="who"><i class="dot lex"></i>Lex decides</span>
+      </li>
+    </ol>
+  </section>
+
+  <section aria-labelledby="around">
+    <h2 id="around">Around the road, not on it</h2>
+    <div class="cards">
+      <div class="card"><h3>Board check</h3><p>Every 2 hours: reads the board, restarts stalled work, opens threads for Lex.</p></div>
+      <div class="card"><h3>Weekly sweep</h3><p>The week’s numbers, and the corrections Lex gave more than once.</p></div>
+      <div class="card"><h3>Kit update</h3><p>Brings the kit to every computer every 15 minutes.</p></div>
+      <div class="card"><h3>Safety rails</h3><p>No helper without a brief, no direct push to a live site, no paid skills in a repo, a second review, a check before going live.</p></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="changed">
+    <h2 id="changed">What release 1 changed</h2>
+    <div class="cards">
+      <div class="card">
+        <h3>Fewer kit commands: 28 → 22</h3>
+        <p>Every command that talks to the board, GitHub or another model stays.</p>
+      </div>
+      <div class="card">
+        <h3>Cut</h3>
+        <ul>
+          <li>The old writing command (already retired).</li>
+          <li>The status table: the board and T3 show it; the weekly sweep lists shaky tests.</li>
+          <li>The corrections log: corrections go to the chat memory.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Merged</h3>
+        <ul>
+          <li>The learning summary is part of the weekly sweep.</li>
+          <li>The kit’s version shows in its health check.</li>
+          <li>The context card shows by itself when a session starts.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Rules</h3>
+        <ul>
+          <li>Every helper says what it really tried, per “Done when” item.</li>
+          <li>Dropped: the Tuesday-only review day, the UX confidence ladder, the talk-style trial.</li>
+          <li>Next, in release 2: the unused build factory, a shorter rulebook; the build page after 30 Nov.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+</main>
+</body>
+</html>

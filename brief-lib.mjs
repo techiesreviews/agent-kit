@@ -1,11 +1,11 @@
-// The factory's shared parts: the talk style, and the brief kit brief prints (skills from skills.mjs).
+// The shared parts of a brief: the talk style, and the brief kit brief prints (skills from skills.mjs).
 import { execFileSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { basename, join } from "node:path";
-import { builderChecks, plainEnglish, reviewFormat, ticketReviewBrief } from "./review-brief.mjs";
-import { kitMessagesToLexRule, kitReviewLoopRule, kitRulebookPins, kitSliceBranch, kitStateDir } from "./kit-lib.mjs";
+import { builderChecks, plainEnglish, projectCommand, reviewFormat, ticketReviewBrief } from "./review-brief.mjs";
+import { kitMessagesToLexRule, kitReviewLoopRule, kitRulebookPins, kitSliceBranch } from "./kit-lib.mjs";
 import { map, modelFamily, pickSkills, readTicket, skillLine } from "./skills.mjs";
-import { cardNaming } from "./ticket-cards.mjs";
+import { cardNaming, onOrbit } from "./ticket-cards.mjs";
 import { lookFamily, lookFamilyWords, secondLookTable } from "./pr-tier.mjs";
 
 export { map, modelFamily, pickSkills, readTicket, skillLine, skillSettingsProblems } from "./skills.mjs";
@@ -15,47 +15,17 @@ export const STAGES = ["build", "review", "second-look", "fix"];
 const shellQuote = value => `'${value.replace(/'/g, "'\\''")}'`;
 
 const peopleText = "Everything written to a file or GitHub (code, comments, docs, tickets, commits, PR text) stays plain full English, and so do the report keywords the kit reads (Declined:, RESULT:, REVIEW_STATUS:) with each declined finding's reason. Messages for Lex follow the Messages to Lex rule (`scripts/agents/kit rulebook`, section \"Messages to Lex\"): short bullets in plain English (caveman style, no jargon).";
-/** The talk-style line (ticket 83): en, wenyan, or plain (the house rule's plain English line). */
+/** The talk-style line: short English (the trial of ticket 83 ended with TOOLS-235), or plain (the house rule's plain English line). */
 export function talkStyleLine(style) {
   if (style === "en") return `Talk style: very short English for your messages and report to the agent that started you (Claude: /${map.talk} ultra): drop articles and filler; keep paths, commands, numbers and quoted rules exact. ${peopleText}`;
-  if (style === "wenyan") return `Talk style: Classical Chinese (wenyan), terse, for your messages and report to the agent that started you (Claude: /${map.talk} wenyan-ultra); leave paths, commands, code, numbers and quoted rules exactly as written. ${peopleText}`;
   return `${plainEnglish}\nMessages for Lex follow the Messages to Lex rule (\`scripts/agents/kit rulebook\`, section \"Messages to Lex\"): short bullets in plain English (caveman style, no jargon).`;
 }
 
-/**
- * The style for the next agent start: KIT_TALK_STYLE (en, wenyan or plain) when set, which leaves the counter
- * alone; else the counter in the kit's state folder, which alternates en and wenyan from en.
- */
+/** The style for the next agent start: short English, or plain when KIT_TALK_STYLE=plain. */
 export function nextTalkStyle(env = process.env) {
   const forced = env.KIT_TALK_STYLE;
-  if (forced) {
-    if (!["en", "wenyan", "plain"].includes(forced)) throw new Error(`KIT_TALK_STYLE must be en, wenyan or plain, not ${forced}`);
-    return forced;
-  }
-  const state = kitStateDir(env), file = join(state, "talk-style.json"), lock = `${file}.lock`;
-  mkdirSync(state, { recursive: true });
-  // One start at a time reads and moves the counter, so two at once never take the same style.
-  let held;
-  for (const deadline = Date.now() + 3000; held === undefined;) {
-    try { held = openSync(lock, "wx"); }
-    catch (error) {
-      if (error.code !== "EEXIST") throw error;
-      // A lock left by a start that died is taken over after 10 seconds; past the deadline the start goes on without it.
-      try { if (Date.now() - statSync(lock).mtimeMs > 10_000) rmSync(lock, { force: true }); } catch { /* It went away. */ }
-      if (Date.now() > deadline) held = null;
-      else Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
-    }
-  }
-  try {
-    let next = "en";
-    try { next = JSON.parse(readFileSync(file, "utf8")).next === "wenyan" ? "wenyan" : "en"; } catch { /* No counter yet: en first. */ }
-    const temporary = `${file}.${process.pid}.tmp`;
-    writeFileSync(temporary, `${JSON.stringify({ next: next === "en" ? "wenyan" : "en" })}\n`);
-    renameSync(temporary, file);
-    return next;
-  } finally {
-    if (held) { closeSync(held); rmSync(lock, { force: true }); }
-  }
+  if (forced && !["en", "plain"].includes(forced)) throw new Error(`KIT_TALK_STYLE must be en or plain, not ${forced}`);
+  return forced || "en";
 }
 
 /** The kit's short commit: a machine copy's folder name, else its checkout's HEAD; "unknown" outside both. */
@@ -96,10 +66,6 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
   // borrows the main reviewer's model. Only the build stage prints the target as a pin.
   const target = model || (stage === "review" ? review : stage === "second-look" ? order?.[0] ?? null : builder);
   const reviewing = stage === "review" || stage === "second-look";
-  // kit next's owner is <prefix>-<NN> (a map ticket's <NN> starts with m) and its job slice-<prefix><NN>:
-  // al-01 runs as slice-al01, site-fonts-01 as slice-site-fonts01. Another owner keeps its name.
-  const job = named ? named.job : `slice-${owner.toLowerCase().replace(/-(m?\d+)$/, "$1").replace(/[^a-z0-9._-]/g, "")}`;
-  const sliceLine = `scripts/agents/kit go ${job} -- scripts/agents/kit slice --ticket ${ticket} --builder ${target}`;
   const skills = pickSkills({ files: info.files, words: `${info.title}\n${info.filesText}${task ? `\n${note ?? ""}` : ""}`, stage, settings });
   // What the brief is about: a ticket file, an Orbit card (its text is in the brief), or a task the note holds.
   const what = task ? `the task "${task}"` : card ? `the Orbit card ${ticket}` : `\`${ticket}\``;
@@ -124,13 +90,18 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
       "Agent Kit is required: `scripts/agents/kit doctor` first; fix every ✗ that is not marked optional (a missing optional reviewer or skill is only a note). A kit command that cannot run is said in the report, never skipped silently or claimed.",
       "Tests first: each new test fails before the change.",
       `While building: ${[unit && "`scripts/agents/kit unit --affected`", check && `\`${check}\` ${when}`, lint && `\`${lint}\``, task ? "the task's focused checks" : card ? "the card's focused checks" : "the ticket's focused checks"].filter(Boolean).join(", ")}.`,
+      // TOOLS-235 item G (Lex, 2026-11-14): every screen change gets the automatic UX check before it lands, as kit slice
+      // gave it. kit pr holds the builder to it (ux-gate.mjs); kit shots is named only where the project has it.
+      `UX check: a change to what a person sees gets \`scripts/agents/kit ux\` once it is built${projectCommand("shots", root, settings) ? ", with `scripts/agents/kit shots` for the screenshots you report" : ""}: fix what it calls broken or looks off, or say why not, and run it again after any later visible change or edit to the change's features in the feature list (so update the feature list first). \`kit pr\` refuses to land a visible change (\`paths.visible\`) without a fresh \`kit ux\` result; a change that matches those paths but shows a person nothing new lands with \`scripts/agents/kit pr … --not-visible "<reason>"\`. In a project with no feature list (\`docs/agents/features.md\`) \`kit ux\` has nothing to try: say so in the report.`,
       ...(stage === "build" && task ? [
         `Build it, then \`scripts/agents/kit review\` and \`scripts/agents/kit pr --title ${shellQuote(task)}\` into \`${land}\` (checks for the change's tier, the second look, CI, merge), each under \`kit go\`. Link the PR with T3 \`link_pull_request\`.`,
         "Report every RESULT line, the PR URL and the merge SHA.",
       ] : stage === "build" ? [
-        `Default: the slice builds, reviews, runs the fix rounds and the second look, and lands with \`kit pr\`: \`${sliceLine}\`; then \`scripts/agents/kit go ${job}\` again while it prints RUNNING.`,
-        `Manual fallback (the runner guide's): build it yourself, then \`scripts/agents/kit review${card ? "" : ` --ticket ${ticket}`}\` and \`scripts/agents/kit pr --ticket ${ticket}\` into \`${land}\` (checks for the change's tier, the second look, CI, merge), each under \`kit go\`. Link the PR with T3 \`link_pull_request\`.`,
+        // kit pr reads a card key as a card only on an Orbit project; elsewhere a card lands by its title.
+        `Build it, then \`scripts/agents/kit review${card ? "" : ` --ticket ${ticket}`}\` and \`scripts/agents/kit pr ${card && !onOrbit(settings) ? `--title ${shellQuote(`${card.title} (${ticket})`)}` : `--ticket ${ticket}`}\` into \`${land}\` (checks for the change's tier, the second look, CI, merge), each under \`kit go\`. Link the PR with T3 \`link_pull_request\`.`,
         `The ${card ? "card's" : "ticket's"} own "Kit commands and evidence" section adds to this. Report every RESULT line, the PR URL and the merge SHA.`,
+        // There kit pr moves no card to Done, and only a lead writes the board: the builder's report hands it over.
+        ...(card && !onOrbit(settings) ? [`\`kit pr\` does not close the card in this project (it keeps ticket files): put this line in your report: "Lead: close ${ticket} (Done, with a dated note naming the PR and its merge SHA)".`] : []),
       ] : [
         `For each finding you decline, give it with its reason in your report: \`scripts/agents/kit review${task || card ? "" : ` --ticket ${ticket}`}\` reads declined findings with their reasons.`,
         task ? "The findings are in the newest complete review's `findings.json` under the main checkout's `.scratch/reviews/<owner>/` (a record marked `incomplete: true` is not one) (the note below holds the task)."
@@ -151,6 +122,12 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
       "When no model can run, say `second look: skipped (<reason>)` and stop.",
     ]);
   }
+  // TOOLS-235 (Lex, 2026-11-14): every card starts with a grill for Lex in its own thread, and anything he sees or clicks
+  // gets a prototype he tries first; bug fixes and work behind the scenes skip the prototype, not the grill.
+  if (stage === "build") section("Grill and prototype", [
+    `Grill first: the question round with Lex in its own thread comes before any build; its answers are in ${task ? "the note below" : card ? "the card's comments" : "the ticket's `## Resolution` sections"}. A question still open, or a choice you would have to guess, goes back to the lead: never guess an answer for Lex.`,
+    "Anything Lex sees or clicks follows the prototype he tried and approved (linked from the card); a bug fix or work behind the scenes has no prototype, but still has its grill. Once it lands, Lex tries the result next to the prototype.",
+  ]);
   section("House rules", [
     "Paid skills never go in a repo: name a skill, never copy its text (`skill-guard.mjs` runs in `kit pr`).",
     `Second look: ${lookModels(order)}; ${reviewersRule}; GPT never for a docs-only change, and once per PR, except as the last resort after the free OpenCode model fails; \`second look: skipped (<reason>)\` when none can run.`,
@@ -187,7 +164,10 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
   out.push("", "## Report");
   if (reviewing) out.push(reviewFormat.trimEnd());
   else if (stage === "fix") out.push("Report each finding as fixed or declined (with the reason), the RESULT lines, and the new head.", "Last line: FIXED <n>, DECLINED <n>, head <SHA>.");
-  else out.push("Report the RESULT lines, the PR URL and the merge SHA.", "Last line: PR <full URL>, head <SHA>, checks and reviews <state>.");
+  else out.push(task
+    ? "Proof: for each thing the note asks for, one line: `<what>: met — <what you really tried on the real thing>` (the test that failed first and now passes, a command and what it printed, what you clicked on the preview and saw), or `<what>: not met — <why>`; checks passing is not proof on its own. A bug fix shows its failing test first. Put the same lines in the PR text."
+    : "Proof: for each \"Done when\" item, one line: `Done when <n>: met — <what you really tried on the real thing>` (the test that failed first and now passes, a command and what it printed, what you clicked on the preview and saw), or `Done when <n>: not met — <why>`; checks passing is not proof on its own. A bug fix shows its failing test first. Put the same lines in the PR text.",
+  "Report the proof lines, the RESULT lines, the PR URL and the merge SHA.", "Last line: PR <full URL>, head <SHA>, checks and reviews <state>.");
   out.push("", `kit-brief: ${version} ${ticket} ${stage}`);
   return out.join("\n");
 }

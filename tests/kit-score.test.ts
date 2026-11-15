@@ -36,6 +36,53 @@ const claudeResult = JSON.stringify({ type: "result", result: "Done.", total_cos
   modelUsage: { "claude-opus-5-5": { inputTokens: 14, outputTokens: 5786, cacheReadInputTokens: 245282, cacheCreationInputTokens: 50640, costUSD: 0.5697 },
     "claude-haiku-5-5": { inputTokens: 2341, outputTokens: 16, costUSD: 0.0003 } } });
 
+// A test repository whose git commands start no background cleanup. After a commit, or a push into it, git starts
+// `git maintenance run --auto --detach`, which goes on after the command returns: it creates and removes
+// objects/maintenance.lock and may pack objects, so a test listing or comparing the folder could see a file vanish under
+// it (agent-kit PR #102's CI). gc.auto covers a git that runs `gc --auto` instead; receive.autoGc covers a push.
+function testRepo(repo: string, ...init: string[]) {
+  const git = (...args: string[]) => {
+    const result = spawnSync("git", args, { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+  };
+  git("init", "-q", ...init, repo);
+  for (const [key, value] of [["maintenance.auto", "false"], ["gc.auto", "0"], ["receive.autoGc", "false"]]) git("-C", repo, "config", key, value);
+}
+
+test("test repositories start no background git cleanup after a commit or a push", t => {
+  const dir = mkdtempSync(join(tmpdir(), "kit-score-repo-"));
+  // The plain repository's cleanup may still be writing in it: retries outlast it.
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 10 }));
+  // A commit and a push into a bare origin, traced: GIT_TRACE logs every git command they start, the origin's
+  // receive-pack and anything it starts included. An empty home and no system settings, so this machine's own settings
+  // (a maintenance.auto or an init.templateDir) cannot hide one.
+  const home = join(dir, "home");
+  mkdirSync(home);
+  const quiet = { ...kitEnv(), HOME: home, XDG_CONFIG_HOME: join(home, ".config"), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+  const traced = (name: string, init: (repo: string, origin: string) => void) => {
+    const repo = join(dir, name), origin = join(dir, `${name}.git`), trace = join(dir, `${name}.trace`);
+    init(repo, origin);
+    const env = { ...quiet, GIT_TRACE: trace };
+    const git = (...args: string[]) => {
+      const result = spawnSync("git", ["-C", repo, "-c", "user.name=a", "-c", "user.email=a@example.test", ...args], { encoding: "utf8", env });
+      assert.equal(result.status, 0, result.stderr);
+    };
+    writeFileSync(join(repo, "file.txt"), "base\n");
+    git("add", "-A"); git("commit", "-q", "-m", "base"); git("remote", "add", "origin", origin); git("push", "-q", "origin", "dev");
+    const started = readFileSync(trace, "utf8");
+    assert.match(started, /receive-pack/);
+    return started;
+  };
+  // A plain repository starts it, so the trace would show it; a test repository does not. Git 2.28 (no git
+  // maintenance yet) starts `gc --auto` instead, which gc.auto=0 makes a no-op, so the test repository is checked for
+  // `maintenance run` only.
+  const plain = traced("plain", (repo, origin) => {
+    for (const args of [["init", "-q", "-b", "dev", repo], ["init", "-q", "--bare", origin]]) assert.equal(spawnSync("git", args, { env: quiet }).status, 0);
+  });
+  assert.match(plain, /maintenance run|gc --auto/);
+  assert.doesNotMatch(traced("quiet", (repo, origin) => { testRepo(repo, "-b", "dev"); testRepo(origin, "--bare"); }), /maintenance run/);
+});
+
 function settings(root: string) {
   mkdirSync(join(root, "scripts/agents"), { recursive: true });
   writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify({ project: "kit-score", branches: { land: "dev" }, maps: "docs/wayfinder" }));
@@ -315,7 +362,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: ${JSON.
     assert.equal(result.status, 0, result.stderr);
   };
   const ticket = "docs/wayfinder/demo/build/tickets/01-x.md";
-  git("init", "-b", "build/x-01"); git("config", "user.name", "Test"); git("config", "user.email", "test@example.com");
+  testRepo(f.root, "-b", "build/x-01"); git("config", "user.name", "Test"); git("config", "user.email", "test@example.com");
   writeFileSync(join(f.root, "file.txt"), "base\n"); git("add", "-A"); git("commit", "-m", "base");
   writeFileSync(join(f.root, ticket), "---\ntitle: X\ntype: task\n---\n\n## Files\n- `file.txt`\n\n## Done when\n- Works.\n");
   writeFileSync(join(f.root, "file.txt"), "changed\n"); git("add", "-A"); git("commit", "-m", "change");
@@ -496,9 +543,9 @@ test("kit score --all prints one table across the projects in projects.json, rea
     const result = spawnSync("git", ["-C", repo, "-c", "user.name=a", "-c", "user.email=a@example.test", ...args], { encoding: "utf8" });
     assert.equal(result.status, 0, result.stderr);
   };
-  git(alpha, "init", "-q", "-b", "dev"); git(alpha, "add", "-A"); git(alpha, "commit", "-q", "-m", "base");
+  testRepo(alpha, "-b", "dev"); git(alpha, "add", "-A"); git(alpha, "commit", "-q", "-m", "base");
   // origin/dev wins over the local dev: origin has 3 lines, the local branch 2.
-  git(dir, "init", "-q", "--bare", "origin.git"); git(alpha, "remote", "add", "origin", join(dir, "origin.git"));
+  testRepo(join(dir, "origin.git"), "--bare"); git(alpha, "remote", "add", "origin", join(dir, "origin.git"));
   writeFileSync(join(alpha, "maps/one/build/feedback.md"), feedback(3));
   git(alpha, "commit", "-q", "-am", "third"); git(alpha, "push", "-q", "origin", "dev"); git(alpha, "reset", "-q", "--hard", "HEAD~1");
   git(alpha, "checkout", "-q", "-b", "old");
@@ -517,7 +564,7 @@ test("kit score --all prints one table across the projects in projects.json, rea
   writeFileSync(join(gamma, "scripts/agents/kit.json"), JSON.stringify({ project: "gamma", branches: { land: "dev" }, maps: "maps" }));
   mkdirSync(join(gamma, "maps/three/build"), { recursive: true });
   writeFileSync(join(gamma, "maps/three/build/feedback.md"), feedback(4));
-  git(join(dir, "mono"), "init", "-q", "-b", "dev"); git(join(dir, "mono"), "add", "-A"); git(join(dir, "mono"), "commit", "-q", "-m", "base");
+  testRepo(join(dir, "mono"), "-b", "dev"); git(join(dir, "mono"), "add", "-A"); git(join(dir, "mono"), "commit", "-q", "-m", "base");
   mkdirSync(join(gamma, ".scratch/scoreboard/three"), { recursive: true });
   writeFileSync(join(gamma, ".scratch/scoreboard/three/01-d.json"), record("claude-opus-5-5", 1, {}));
   settings(here);

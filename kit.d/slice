@@ -575,6 +575,12 @@ async function slice(args) {
       else {
         assertHead(state.head);
         const result = await execute(kit, ["pr", "--ticket", flags.ticket]);
+        // kit pr refused the kit ux result (its own rebase changed a visible file or a covering feature, say): the next
+        // run goes through the UX gate again before kit pr, with a fresh check rather than the saved report.
+        if (/^RESULT: fail ux: /m.test(result.output)) {
+          state.finished = state.finished.filter(name => name !== "ux");
+          delete state.uxReport; delete state.uxAgain;
+        }
         state.pr = /#(\d+)/.exec(result.output)?.[1] || state.pr; save();
         const output = requireSuccess(result);
         // kit pr may add words after the SHA (a card closed or not, a flaky spec file): only the number and SHA count.

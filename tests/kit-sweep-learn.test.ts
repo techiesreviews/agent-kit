@@ -6,8 +6,10 @@ import { join, resolve } from "node:path";
 import test, { after, type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
 import { kitEnv } from "./support/kit-env.ts";
+import { kitFiles } from "./support/kit-files.ts";
 
-const script = resolve("kit.d/learn"), kit = resolve("kit");
+// kit learn became kit sweep --learn (TOOLS-235); its code is the helper learn.mjs beside kit.
+const script = resolve("learn.mjs"), kit = resolve("kit");
 const fixtures = resolve("tests/fixtures/kit-learn"), memory = join(fixtures, "memory");
 // The project's settings name its corrections slug and maps folder; each checkout here gets them.
 const settingsIn = (root: string, settings: object = {}) => {
@@ -23,7 +25,6 @@ settingsIn(repo);
 type Entry = { date: string; kind: string; text: string; repeats?: string; source: string; file: string; line: number };
 type Group = { members: (Entry & { words: Set<string> })[]; outside: string[]; times: number; kinds: string[] };
 type Block = { file: string; line: number; id?: string; text: string; words: Set<string>; house?: boolean };
-// Node loads this extensionless executable as ESM; a URL keeps tsx from resolving it as TS.
 const learn: {
   parseArgs(args: string[]): { since: string; project?: string };
   parseCorrections(text: string, file: string): { entries: Entry[]; problems: { file: string; line: number; message: string }[] };
@@ -55,7 +56,7 @@ function run(env: Record<string, string>, args: string[] = []) {
   // A test names the memory folder itself, or none to read the default under HOME.
   delete base.KIT_CHAT_MEMORY;
   delete base.CHAT_MEMORY_DIR;
-  return spawnSync("bash", [kit, "learn", ...args], { encoding: "utf8", timeout: 20_000, env: { ...base, ...env } });
+  return spawnSync("bash", [kit, "sweep", "--learn", ...args], { encoding: "utf8", timeout: 20_000, env: { ...base, ...env } });
 }
 
 const pad = (number: number) => String(number).padStart(2, "0");
@@ -235,11 +236,11 @@ test("the real house style gives one block per HS rule, each at its own rule lin
   assert.ok(blocks.every(block => block.line > firstSection));
 });
 
-test("kit learn reads the house style from KIT_HOME and counts only its numbered rules", (t) => {
+test("kit sweep --learn reads the house style from KIT_HOME and counts only its numbered rules", (t) => {
   const dir = temp(t), home = join(dir, "kit"), main = join(dir, "main");
   mkdirSync(join(home, "docs"), { recursive: true });
   // A copy, not links: a command only runs when the file Node starts is the module itself.
-  for (const name of ["kit", "kit.d", "kit-lib.sh", "kit-lib.mjs", "tickets.mjs", "ux-brief.mjs", "review-findings.mjs"]) cpSync(resolve(name), join(home, name), { recursive: true });
+  cpSync(resolve("."), home, { recursive: true, filter: kitFiles });
   writeFileSync(join(home, "docs/house-style.md"), [
     "# House style", "", "A project replaces a rule by restating it (`- **HS1** Status lines at each milestone of a long build.`).", "",
     "- **HS1** Dragging a card never snaps it back to its old place on drop.", "",
@@ -262,7 +263,7 @@ test("kit learn reads the house style from KIT_HOME and counts only its numbered
   assert.doesNotMatch(bundleOf(own.stdout), /kit docs\/house-style\.md:5 \(HS1\)/);
   // A machine copy runs without KIT_HOME: the kit's own folder is its home.
   const { KIT_HOME: _unset, ...noHome } = { ...kitEnv(), ASE_SKIP_DOCTOR: "1", KIT_ROOT: repo, KIT_CHAT_MEMORY: memory, KIT_MAIN_ROOT: main, HOME: dir };
-  const copy = spawnSync("bash", [join(home, "kit"), "learn", "--since", "2026-10-01", "--project", "demo"], { encoding: "utf8", timeout: 20_000, env: noHome });
+  const copy = spawnSync("bash", [join(home, "kit"), "sweep", "--learn", "--since", "2026-10-01", "--project", "demo"], { encoding: "utf8", timeout: 20_000, env: noHome });
   assert.equal(copy.status, 0, copy.stderr);
   assert.match(bundleOf(copy.stdout), /chat: Drag\n {2}- covered\?: kit docs\/house-style\.md:5 \(HS1\)/);
   // A kit without a house style still runs, on the project's rules alone.
@@ -405,10 +406,19 @@ test("the slug defaults to project and the build logs come from the maps folder,
   assert.doesNotMatch(chatOnly, /feedback: demo/);
 });
 
-test("kit learn needs a readable settings file, even with --project", (t) => {
+test("kit sweep --learn needs a readable settings file, even with --project", (t) => {
   const dir = temp(t);
   const result = run({ KIT_CHAT_MEMORY: memory, KIT_ROOT: dir, KIT_MAIN_ROOT: dir, HOME: dir }, ["--project", "demo"]);
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stdout, /^RESULT: fail learn no scripts\/agents\/kit\.json; /m);
   assert.equal(existsSync(join(dir, ".scratch")), false);
+});
+
+test("kit sweep --learn --help prints the learning usage, and kit sweep --help names --learn", () => {
+  const learnHelp = spawnSync("bash", [kit, "sweep", "--learn", "--help"], { encoding: "utf8", env: kitEnv() });
+  assert.equal(learnHelp.status, 0, learnHelp.stderr);
+  assert.match(learnHelp.stdout, /^Usage: kit sweep --learn \[--since 14d\|Nd\|YYYY-MM-DD\] \[--project <slug>\]\n/);
+  const help = spawnSync("bash", [kit, "sweep", "--help"], { encoding: "utf8", env: kitEnv() });
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /^Usage: kit sweep \[--since 7d\|Nd\|YYYY-MM-DD\]\n {7}kit sweep --learn /);
 });

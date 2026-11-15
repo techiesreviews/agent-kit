@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // kit: print the brief for a delegated child (build, review, second look or fix) from the ticket and the rules
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { composeBrief, kitVersion, nextTalkStyle, readTicket, skillSettingsProblems, STAGES } from "../brief-lib.mjs";
 import { kitHome, kitMessagesToLexRule, kitOwner, kitResult, kitReviewLoopRule, kitRoot, kitRulebookPins, kitSettings } from "../kit-lib.mjs";
-import { isCardKey, isOrbitFailure, onOrbit, openOrbitTickets, orbitProblem } from "../ticket-cards.mjs";
+import { doneWhen, isCardKey, isOrbitFailure, onOrbit, openOrbitTickets, orbitProblem } from "../ticket-cards.mjs";
+import { cardFree } from "../ticket-store.mjs";
 
 const usage = `Usage: kit brief <ticket> [--stage build|review|second-look|fix] [--owner ID] [--repo PATH] [--model M] [--note "<text>"]
        kit brief --task "<title>" --owner ID --note "<what to do>" [--stage …] [--repo PATH] [--model M]
@@ -18,12 +19,22 @@ everything above the RESULT line to delegate_task. A copy is kept in .scratch/ki
 project's top folder (default: this one); the ticket path is read from there. --model names the child's model
 (default: the stage's pin), which picks how skills are named: /name for Claude, $name for Codex, the kit's own
 words for models without skills.
-On an Orbit project ("tickets": "orbit") the ticket is a card KEY such as KIT-12: the brief holds the card's title, text
-and comments in place of a ticket file's, and --owner defaults to its "Claimed by:" owner (else its "Assignee:" line).
---task is for a project that keeps no ticket file for the job (its work is in GitHub Issues, say): the note holds
-the task, the marker names it task:<slug>, and the brief lands it with kit pr --title in place of kit slice.
-Talk style: each brief takes the next of en and wenyan in turn (a counter in the kit's state folder);
-KIT_TALK_STYLE=en|wenyan|plain forces one, and plain turns it off. Review briefs stay plain English.`;
+The ticket may be an Orbit card KEY such as KIT-12, in any project (a ticket file at that very path wins): the brief
+holds the card's title, text and comments in place of a ticket file's, and --owner defaults to its "Claimed by:" owner
+(else its "Assignee:" line). On an Orbit project a lead's build brief (ORBIT_ROLE=lead; anyone else gets a warning)
+claims a card nobody holds (Todo, Backlog, or In Progress with no claim, assignee or next step) for the owner: In
+Progress and "Claimed by:", as kit slice does. A Todo or Backlog card that is blocked or waits for Lex is refused. Any
+other card is left as it is, with a warning that says why (someone else holds it, it waits for Lex, it is Done or in
+another status); the owner's own card gets none. The claim reads the card again right before its write, so a card
+moved meanwhile to a status the brief does not take (Ideas, say) is left as it is too, with a warning that it changed
+and why; one that someone else took, or that is Done by then, fails the brief. On a board with no Todo status, every status not yet started counts as Todo, as it does for kit next,
+which hands those cards out. In a project that keeps ticket files the kit neither claims nor closes the card: the
+build brief has the builder ask the lead to close it after the merge.
+--task is for a job with no ticket file or card: the note holds the task, the marker names it task:<slug>, and the
+brief lands it with kit pr --title.
+A build brief carries the grill and prototype step and asks for proof lines: per "Done when" item, what was really
+tried on the real thing. A card or ticket without a "Done when" list gets a warning on stderr.
+Talk style: short English; KIT_TALK_STYLE=plain turns it off. Review briefs stay plain English.`;
 
 function parse(args) {
   const options = { stage: "build" };
@@ -47,6 +58,24 @@ function parse(args) {
   return { ...options, ticket: rest[0] };
 }
 
+const oneLine = value => String(value ?? "").replace(/\s*[\r\n]+\s*/g, " ").trim();
+/**
+ * Free to claim: what kit next hands out (stage "ready": Todo, or every unstarted status on a board with no Todo; and
+ * In Progress given back after Lex) and Backlog. A claim narrower than kit next's hand-out would let kit next start a
+ * second builder on the card. Any other status a board with Todo keeps (Ideas, say) is not the brief's to move.
+ * Asked of the card as the brief first reads it, and again by the claim of the card as it is right before its write.
+ */
+const cardOpen = task => task.stage === "ready" || String(task.status_name ?? "").trim().toLowerCase() === "backlog" || cardFree(task);
+/** Why a card that is not free is left as it is, for the owner the brief is written for; "" for the owner's own card. */
+function whyLeft(task, owner) {
+  if (task.stage === "done") return `it is already ${task.status_name}, so there is nothing to build`;
+  if (task.claimed_by && task.claimed_by === oneLine(owner)) return "";
+  const why = task.claimed_by ? `${task.claimed_by} holds it (${task.status_name})`
+    : task.next_lex !== null ? `it waits for Lex (Next step (Lex): ${task.next_lex})`
+    : task.assignee_ids?.length ? `someone is assigned to it (${task.status_name})` : `it is in ${task.status_name}`;
+  return `${why}; make sure no second builder starts on it`;
+}
+
 /** A card as the ticket text the brief reads (title, builder, assignee, Files), and the card itself for the brief. */
 async function readCard(settings, key) {
   let redact;
@@ -56,14 +85,57 @@ async function readCard(settings, key) {
     const task = await opened.store.read(key);
     const comments = await opened.store.comments(task.identifier);
     const line = name => new RegExp(`^${name}:[ \\t]*(.*?)\\s*$`, "m").exec(task.description ?? "")?.[1] ?? "";
-    const one = value => String(value ?? "").replace(/\s*[\r\n]+\s*/g, " ").trim();
     const owner = task.claimed_by || line("Assignee");
-    const text = `---\ntitle: ${JSON.stringify(one(task.title))}\norbit: ${task.identifier}\nbuilder: ${one(line("Builder"))}\nassignee: ${one(owner)}\n---\n\n${String(task.description ?? "").replace(/\r\n?/g, "\n")}\n`;
-    return { key: task.identifier, text, card: { title: one(task.title), url: task.url, description: task.description,
+    const text = `---\ntitle: ${JSON.stringify(oneLine(task.title))}\norbit: ${task.identifier}\nbuilder: ${oneLine(line("Builder"))}\nassignee: ${oneLine(owner)}\n---\n\n${String(task.description ?? "").replace(/\r\n?/g, "\n")}\n`;
+    return { key: task.identifier, free: cardOpen(task), left: owner => whyLeft(task, owner), text, card: { title: oneLine(task.title), url: task.url, description: task.description,
       comments: comments.map(note => ({ who: note.author_service_account?.name ?? note.author_id ?? "someone", when: note.created_at, body: note.body })) } };
   } catch (error) {
     if (isOrbitFailure(error)) throw new Error(`card ${key} could not be read: ${orbitProblem(error, redact)}`);
     throw error;
+  }
+}
+
+/**
+ * A build brief takes a card nobody holds (Todo, Backlog, or In Progress given back after Lex), as kit slice did before
+ * TOOLS-235 dropped its line from the brief: In Progress and "Claimed by: <owner>" in one write, so kit next never starts a
+ * second builder on the same card. A Todo or Backlog card waiting for Lex or still blocked is refused (next-lex moves a card
+ * it marks to In Progress, which the brief leaves alone). Only a lead writes to Orbit; anyone else is warned.
+ * A card that stopped being free after the brief read it is not claimed: the claim asks again right before its write.
+ * Returns what gives a new claim back (the status the card had, no "Claimed by" line), for a step after it that fails.
+ */
+async function claimCard(settings, key, owner) {
+  const none = async () => "";
+  if (process.env.ORBIT_ROLE !== "lead") {
+    console.error(`warning: ${key} is not claimed (only a lead writes to Orbit: ORBIT_ROLE=lead); until it is, kit next may start it too`);
+    return none;
+  }
+  let redact;
+  try {
+    const opened = openOrbitTickets({ settings, who: kitOwner() });
+    redact = opened.redact;
+    // The brief's first read may be old by now: the claim puts the same test to the card as it is right before its write,
+    // so a card moved in between (Todo to Ideas, say) keeps its place and the brief says why it holds no claim.
+    const claim = await opened.store.claim(key, owner, { free: cardOpen });
+    const why = claim.left ? whyLeft(claim.left, owner) : "";
+    if (why) console.error(`warning: ${key} changed while its brief was written and is left as it is, not claimed for ${owner}: ${why}`);
+    if (claim.unchanged) return none;
+    console.error(`claimed ${key} for ${owner}: In Progress with "Claimed by: ${owner}"`);
+    // Named now, while Orbit answers: what the card needs by hand if giving the claim back fails later.
+    const before = await opened.store.statusName({ project_id: claim.task.project_id, status_id: claim.previous });
+    const undo = `take that line off the card${before.trim().toLowerCase() === "in progress" ? "" : ` and set its status back to ${before}`}`;
+    return async () => {
+      try { await opened.store.unclaim(key, owner, claim.previous); return "; the claim was given back"; }
+      catch (error) { return `; giving the claim back failed (${isOrbitFailure(error) ? orbitProblem(error, redact) : error.message}): ${key} is still In Progress with "Claimed by: ${owner}", so ${undo}`; }
+    };
+  } catch (error) {
+    if (error?.taken) throw new Error(error.message);
+    if (!isOrbitFailure(error)) throw error;
+    // Only the claim's own write left with no answer (a dropped connection, a timeout, a gateway's error page) can be saved
+    // with its reply lost: running the brief again settles it (a card that now shows the claim is In Progress, so its brief
+    // is written without a second claim). A refused write (a stale version, a token that may not change the card) and a
+    // failed read saved nothing, and their own message says what to do.
+    const unknown = error.write && error.noAnswer;
+    throw new Error(`card ${key} could not be claimed: ${orbitProblem(error, redact)}${unknown ? `; it may be claimed anyway, so run kit brief again: a card that shows "Claimed by: ${owner}" then gets its brief` : ""}`);
   }
 }
 
@@ -72,9 +144,11 @@ if (args.includes("--help") || args.includes("-h")) { console.log(usage); proces
 try {
   const options = parse(args);
   const root = realpathSync(resolve(options.repo ?? kitRoot()));
-  let ticket, text, card;
-  const onCard = options.task === undefined && isCardKey(options.ticket) && onOrbit(kitSettings(root));
-  if (onCard) ({ key: ticket, text, card } = await readCard(kitSettings(root), options.ticket));
+  let ticket, text, card, free = false, left = () => "";
+  // A card key reads the card on an Orbit project, and in a files project too unless a ticket file sits at that path.
+  const onCard = options.task === undefined && isCardKey(options.ticket)
+    && (onOrbit(kitSettings(root)) || !existsSync(isAbsolute(options.ticket) ? options.ticket : join(root, options.ticket)));
+  if (onCard) ({ key: ticket, free, left, text, card } = await readCard(kitSettings(root), options.ticket));
   else if (options.task !== undefined) {
     // A task with no ticket file: its title stands in for the ticket's, the note for its body.
     ticket = `task:${options.task.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 60).replace(/^-+|-+$/g, "") || "task"}`;
@@ -88,20 +162,41 @@ try {
   const settings = kitSettings(root);
   const problems = skillSettingsProblems(settings);
   if (problems.length) throw new Error(problems.join("; "));
-  // A group runs as one kit next job; checked before the talk-style counter moves, as are the pins.
+  // A group runs as one kit next job.
   const { group } = readTicket(text);
   if (group) throw new Error(`${ticket} is in group ${group}: kit next --start runs a group as one job; kit brief writes briefs for single tickets`);
+  // The proof lines go per Done when item (TOOLS-235): a list under "## Done when", or the card standard's "Done when:" line.
+  if (options.task === undefined && !doneWhen(text))
+    console.error(`warning: ${ticket} has no "Done when" list; the proof lines need one (the card standard's "Done when:" line)`);
   const pins = kitRulebookPins(root, settings);
   const messages = kitMessagesToLexRule(), reviewLoop = kitReviewLoopRule();
   // The child's owner is the claim's: a brief written before the claim would hand it the lead's own owner.
   const owner = options.owner || readTicket(text).assignee;
   if (!owner) throw new Error(`${ticket} has no assignee; claim it first or pass --owner`);
-  // Review briefs carry no talk style (their findings go to GitHub), so they leave the counter alone.
+  // Review briefs carry no talk style: their findings go to GitHub.
   const style = options.stage === "review" || options.stage === "second-look" ? "plain" : nextTalkStyle();
   const brief = composeBrief({ messages, reviewLoop, root, settings, ticket, text, stage: options.stage, owner, note: options.note, model: options.model, style, pins, version: kitVersion(kitHome()), task: options.task?.trim(), card });
   const file = join(".scratch/kit-briefs", `${basename(ticket).replace(/^task:/, "task-").replace(/\.md$/i, "")}-${options.stage}.md`);
   mkdirSync(join(root, ".scratch/kit-briefs"), { recursive: true });
-  writeFileSync(join(root, file), `${brief}\n`);
+  // The brief is written to a file of its own, claimed, then moved into place: no later step can fail and leave the card
+  // held for a brief nobody has, and a brief whose claim loses never touches the copy of the one that won.
+  // A files project hands out its ticket files, not cards, so only an Orbit project's kit next could start the card twice.
+  const saved = join(root, file), temporary = `${saved}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${brief}\n`);
+  let giveBack = async () => "";
+  if (onCard && options.stage === "build" && onOrbit(settings)) {
+    if (free) {
+      try { giveBack = await claimCard(settings, ticket, owner); }
+      catch (error) { rmSync(temporary, { force: true }); throw error; }
+    // kit slice's claim refused a card that is held, done or not up for building; the brief still comes (a builder that
+    // stopped is started again this way), with the reason said, so a second builder is never started unnoticed.
+    } else if (left(owner)) console.error(`warning: ${ticket} is left as it is, not claimed for ${owner}: ${left(owner)}`);
+  }
+  try { renameSync(temporary, saved); }
+  catch (error) {
+    rmSync(temporary, { force: true });
+    throw new Error(`the brief could not be saved as ${file} (${error.message})${await giveBack()}`);
+  }
   console.log(brief);
   kitResult("ok", `brief ${ticket} ${options.stage} (talk ${style}) ${file}`);
 } catch (error) {

@@ -24,6 +24,7 @@ type Sweep = {
   correctionsSection(root: string, then: string, head: string, maps: string | null): Section;
   staleDebtSection(root: string, now: number, techDebt: string | null): Section;
   grokSection(env: NodeJS.ProcessEnv, now: number, main: string | null, project: string | null): Section;
+  flakySection(env: NodeJS.ProcessEnv, now: number, project: string | null): Section | null;
   runDoctor(root: string, env: NodeJS.ProcessEnv, seconds?: number): { status: number | null; output: string; error?: string };
   doctorProblem(run: { status: number | null; output: string; error?: string }): string;
   kitProblemsSection(env: NodeJS.ProcessEnv, own: { project: string; root: string } | null,
@@ -490,4 +491,24 @@ test("the sweep leaves a registered project's origin ref where it was", t => {
   assert.notEqual(before, git(origin, "rev-parse", "dev"));
   bundleOf(run(repo).stdout);
   assert.equal(git(project, "rev-parse", "refs/remotes/origin/dev"), before);
+});
+
+test("the sweep lists spec files kit pr forgave as flaky 3 or more times in 7 days (kit status did until TOOLS-235)", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "kit-sweep-flaky-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const env = { HOME: dir, XDG_STATE_HOME: join(dir, "state") };
+  const now = Date.parse("2026-11-14T12:00:00Z");
+  // No log on this machine: no section.
+  assert.equal(sweep.flakySection(env, now, "editor"), null);
+  mkdirSync(join(dir, "state/agent-kit"), { recursive: true });
+  const line = (file: string, project: string, daysAgo: number) => JSON.stringify({ time: new Date(now - daysAgo * day).toISOString(), project, file });
+  writeFileSync(join(dir, "state/agent-kit/flaky.jsonl"), [
+    line("tests/a.spec.ts", "editor", 1), line("tests/a.spec.ts", "editor", 2), line("tests/a.spec.ts", "editor", 3),
+    line("tests/b.spec.ts", "editor", 1), line("tests/b.spec.ts", "editor", 2),
+    line("tests/c.spec.ts", "other", 1), line("tests/c.spec.ts", "other", 1), line("tests/c.spec.ts", "other", 1),
+    line("tests/d.spec.ts", "editor", 9), line("tests/d.spec.ts", "editor", 9), line("tests/d.spec.ts", "editor", 9), "torn",
+  ].join("\n"));
+  assert.deepEqual(sweep.flakySection(env, now, "editor"), { title: "Spec files flaky under load", priority: 6,
+    lines: ["- tests/a.spec.ts: 3 times in 7 days (give it a fix ticket)"] });
+  assert.equal(sweep.flakySection(env, now, "quiet"), null);
 });

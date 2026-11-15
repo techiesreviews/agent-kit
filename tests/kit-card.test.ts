@@ -7,7 +7,6 @@ import test from "node:test";
 import { kitEnv } from "./support/kit-env.ts";
 
 const script = resolve("context-card.mjs");
-const kit = resolve("kit");
 const hooks = resolve("hooks");
 const noNotes = "context card: no notes for this project yet\n";
 
@@ -193,26 +192,4 @@ test("hook mode reads the payload cwd and prints SessionStart context through ru
   });
   assert.ok(Date.now() - started < 2000, `took ${Date.now() - started} ms`);
   assert.deepEqual([late.status, late.stdout, late.stderr], [0, "", ""]);
-});
-
-test("kit card prints the card for the kit root with a RESULT line", (t) => {
-  const f = fixture(t);
-  writeFileSync(join(f.memory, "project-notes/README.md"), `| Slug | Workspace |\n| --- | --- |\n| site | \`${resolve(".")}\` |\n`);
-  const result = spawnSync("/bin/bash", [kit, "card"], { cwd: f.home, env: { ...f.env, KIT_ROOT: resolve(".") }, encoding: "utf8" });
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /^Context card: Site \(updated 2026-10-24\)\n[\s\S]*\nRESULT: ok card 14 lines\n$/);
-  rmSync(join(f.memory, "project-notes/site.md"));
-  const empty = spawnSync("/bin/bash", [kit, "card"], { cwd: f.home, env: { ...f.env, KIT_ROOT: resolve(".") }, encoding: "utf8" });
-  assert.equal(empty.stdout, `${noNotes}RESULT: ok card no notes\n`);
-  // The card script comes from the shared kit; a KIT_HOME without it fails with one line.
-  const broken = spawnSync("/bin/bash", [resolve("kit.d/card")], { cwd: f.home, env: { ...f.env, KIT_ROOT: resolve("."), KIT_HOME: f.home }, encoding: "utf8" });
-  assert.equal(broken.status, 1);
-  assert.equal(broken.stdout, "RESULT: fail card script failed\n");
-  // Through the front door: a person's KIT_HOME without the card script reaches the card.
-  const home = join(f.home, "kit-home");
-  mkdirSync(home);
-  for (const name of ["kit.d", "kit-lib.sh", "kit-lib.mjs"]) symlinkSync(resolve(name), join(home, name));
-  const front = spawnSync("/bin/bash", [kit, "card"], { cwd: f.home, env: { ...f.env, KIT_ROOT: resolve("."), KIT_HOME: home }, encoding: "utf8" });
-  assert.equal(front.status, 1);
-  assert.equal(front.stdout, "RESULT: fail card script failed\n");
 });

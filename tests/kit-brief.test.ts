@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -88,32 +88,64 @@ test("brief: the build brief holds the owner, setup, pins, commands, every house
     /`timeout: 600000`/,
     /fix every ✗ that is not marked optional/,
     /Last line: PR <full URL>, head <SHA>, checks and reviews <state>/,
-    // The exact slice line, with the job name kit next gives the owner's slice.
-    /`scripts\/agents\/kit go slice-ke99 -- scripts\/agents\/kit slice --ticket docs\/tickets\/07-panel\.md --builder claude-opus-5-5`/,
     /the project's runner guide \(`docs\/agents\/runner\.md`\)/,
+    // TOOLS-235: the grill comes before any build, and anything Lex sees follows the prototype he tried.
+    /^## Grill and prototype$/m,
+    /Grill first: the question round with Lex in its own thread comes before any build/,
+    /never guess an answer for Lex/,
+    /Anything Lex sees or clicks follows the prototype he tried/,
+    /a bug fix or work behind the scenes has no prototype, but still has its grill/,
+    /Lex tries the result next to the prototype/,
+    // The proof lines: one per Done when item, what was really tried on the real thing, also in the PR text.
+    /^Proof: for each "Done when" item, one line: `Done when <n>: met — <what you really tried on the real thing>`/m,
+    /checks passing is not proof on its own/,
+    /A bug fix shows its failing test first/,
+    /Put the same lines in the PR text\./,
+    // TOOLS-235 (item G): every screen change gets the automatic UX check before it lands, as kit slice gave it.
+    /^- UX check: a change to what a person sees gets `scripts\/agents\/kit ux` once it is built/m,
+    /fix what it calls broken or looks off, or say why not, and run it again after any later visible change or edit to the change's features in the feature list \(so update the feature list first\)\./,
+    /`kit pr` refuses to land a visible change \(`paths\.visible`\) without a fresh `kit ux` result/,
+    /lands with `scripts\/agents\/kit pr … --not-visible "<reason>"`/,
+    /In a project with no feature list \(`docs\/agents\/features\.md`\) `kit ux` has nothing to try: say so in the report\./,
   ]) assert.match(text, expected);
+  // The project has no shots command of its own, so the brief names none.
+  assert.doesNotMatch(text, /kit shots/);
+  // TOOLS-235: the brief no longer points at kit slice; the builder builds and lands with kit review and kit pr.
+  assert.doesNotMatch(text, /kit slice|Manual fallback|kit go slice-/);
   // The same text is kept where the lead can read it.
   assert.equal(readFileSync(join(f.root, ".scratch/kit-briefs/07-panel-build.md"), "utf8"), `${text}\n`);
 });
 
-test("brief: the talk style alternates en and wenyan, KIT_TALK_STYLE forces one, plain turns it off", t => {
+test("brief: the UX check line names kit shots where the project has it, and is in the fix brief and a task's brief too, never in a review brief", t => {
+  const f = fixture(t, { commands: "scripts/agents/project.d" });
+  mkdirSync(join(f.root, "scripts/agents/project.d"), { recursive: true });
+  writeFileSync(join(f.root, "scripts/agents/project.d/shots"), "#!/bin/sh\n# kit: screenshots\n", { mode: 0o755 });
+  const build = body(f.run(["docs/tickets/07-panel.md"]).stdout);
+  assert.match(build, /^- UX check: a change to what a person sees gets `scripts\/agents\/kit ux` once it is built, with `scripts\/agents\/kit shots` for the screenshots you report: /m);
+  assert.match(body(f.run(["docs/tickets/07-panel.md", "--stage", "fix"]).stdout), /^- UX check: a change to what a person sees gets `scripts\/agents\/kit ux`/m);
+  assert.match(body(f.run(["--task", "Proof", "--owner", "ke-lead", "--note", "Do it."]).stdout), /^- UX check: a change to what a person sees gets `scripts\/agents\/kit ux`/m);
+  for (const stage of ["review", "second-look"]) assert.doesNotMatch(body(f.run(["docs/tickets/07-panel.md", "--stage", stage]).stdout), /UX check:/);
+});
+
+test("brief: the talk style is short English (the trial is over), KIT_TALK_STYLE=plain turns it off", t => {
   const f = fixture(t);
-  const first = f.run(["docs/tickets/07-panel.md"]), second = f.run(["docs/tickets/07-panel.md"]), third = f.run(["docs/tickets/07-panel.md"]);
-  assert.match(first.stdout, /Talk style: very short English/);
-  assert.match(second.stdout, /Talk style: Classical Chinese \(wenyan\)/);
-  assert.match(third.stdout, /Talk style: very short English/);
-  for (const output of [first, second]) assert.match(output.stdout, /plain full English/);
-  const forced = f.run(["docs/tickets/07-panel.md"], { KIT_TALK_STYLE: "wenyan" });
-  assert.match(forced.stdout, /Talk style: Classical Chinese/);
-  assert.match(forced.stdout, /\(talk wenyan\)/);
+  const first = f.run(["docs/tickets/07-panel.md"]), second = f.run(["docs/tickets/07-panel.md"]);
+  for (const output of [first, second]) {
+    assert.match(output.stdout, /Talk style: very short English/);
+    assert.match(output.stdout, /plain full English/);
+    assert.doesNotMatch(output.stdout, /wenyan|Classical Chinese/);
+    assert.match(output.stdout, /\(talk en\)/);
+  }
+  // No counter is kept any more.
+  assert.equal(existsSync(join(f.state, "agent-kit/talk-style.json")), false);
   const plain = f.run(["docs/tickets/07-panel.md"], { KIT_TALK_STYLE: "plain" });
   assert.doesNotMatch(plain.stdout, /Talk style:/);
   assert.match(plain.stdout, /Write in plain English/);
-  const bad = f.run(["docs/tickets/07-panel.md"], { KIT_TALK_STYLE: "loud" });
-  assert.equal(bad.status, 1);
-  assert.match(bad.stdout, /RESULT: fail .*KIT_TALK_STYLE/);
-  // A forced style does not move the counter: the next start takes wenyan, after en, en (forced ones skipped).
-  assert.match(f.run(["docs/tickets/07-panel.md"]).stdout, /Talk style: Classical Chinese/);
+  for (const style of ["wenyan", "loud"]) {
+    const bad = f.run(["docs/tickets/07-panel.md"], { KIT_TALK_STYLE: style });
+    assert.equal(bad.status, 1, style);
+    assert.match(bad.stdout, /RESULT: fail brief KIT_TALK_STYLE must be en or plain/);
+  }
 });
 
 test("brief: --note, --owner and --repo; a missing ticket, a bad stage and a bad option fail", t => {
@@ -253,33 +285,13 @@ test("brief: a review brief's scope is the slice branch, not the lead's checkout
   assert.equal(review.stdout.match(/^Scope: /gm)!.length, 1);
 });
 
-test("brief: briefs started at the same moment still alternate, and leave no lock behind", async t => {
-  const f = fixture(t);
-  const { KIT_TALK_STYLE: _style, ...env } = { ...kitEnv(), KIT_ROOT: f.root, XDG_STATE_HOME: f.state };
-  const once = () => new Promise<string>(accept => {
-    const child = spawn(kit, ["brief", "docs/tickets/07-panel.md"], { cwd: f.root, env, stdio: ["ignore", "pipe", "ignore"] });
-    let out = "";
-    child.stdout.on("data", chunk => { out += chunk; });
-    child.on("close", () => accept(out));
-  });
-  const outputs = await Promise.all(Array.from({ length: 6 }, once));
-  const styles = outputs.map(out => /\(talk (\w+)\)/.exec(out)?.[1]).sort();
-  assert.deepEqual(styles, ["en", "en", "en", "wenyan", "wenyan", "wenyan"]);
-  assert.equal(existsSync(join(f.state, "agent-kit/talk-style.json.lock")), false);
-});
-
-test("brief: a group ticket is refused (kit next runs a group as one job), and job names match kit next's", t => {
+test("brief: a group ticket is refused (kit next runs a group as one job)", t => {
   const f = fixture(t);
   const path = join(f.root, "docs/tickets/07-panel.md");
   writeFileSync(path, readFileSync(path, "utf8").replace("builder: claude", "builder: claude\ngroup: fonts"));
   const refused = f.run(["docs/tickets/07-panel.md"]);
   assert.equal(refused.status, 1);
   assert.match(refused.stdout, /RESULT: fail brief docs\/tickets\/07-panel\.md is in group fonts: kit next --start runs a group as one job/);
-  writeFileSync(path, readFileSync(path, "utf8").replace("group: fonts\n", ""));
-  // kit next's names: al-01 runs as slice-al01; a group owner al-g-fonts as slice-alg-fonts.
-  assert.match(f.run(["docs/tickets/07-panel.md", "--owner", "al-01"]).stdout, /kit go slice-al01 -- /);
-  assert.match(f.run(["docs/tickets/07-panel.md", "--owner", "site-fonts-01"]).stdout, /kit go slice-site-fonts01 -- /);
-  assert.match(f.run(["docs/tickets/07-panel.md", "--owner", "al-m03"]).stdout, /kit go slice-alm03 -- /);
 });
 
 test("brief: a fix brief switches to the pushed slice branch; a ticket with no assignee and no --owner is refused", t => {
@@ -331,7 +343,7 @@ test("brief --task: a project without ticket files gets a brief for a named task
   }
 });
 
-test("brief KEY: on an Orbit project the brief is built from the card (title, text, comments); a files project still wants a ticket file", async t => {
+test("brief KEY: on an Orbit project the brief is built from the card (title, text, comments); a files project reads the card too", async t => {
   const o = await orbitProject(t);
   const f = fixture(t, orbitSettings);
   const card = o.card({ title: "A settings panel with a colour field", description: "Claimed by: kit-1\n\nBuilder: claude\n\n## Goal\n\nBuild the panel.\n\n## Files\n\n- `src/ui/panel.css`\n\n## Done when\n\n- It works.\n" }, "In Progress");
@@ -348,10 +360,10 @@ test("brief KEY: on an Orbit project the brief is built from the card (title, te
   assert.match(text, /Orbit card standard \(`docs\/orbit-card-standard\.md` in the kit; `scripts\/agents\/kit --home` prints the kit's folder\)/);
   assert.match(text, /^## Card KIT-1\nTitle: A settings panel with a colour field\nLink: http:\/\/orbit\.test\/tasks\/1\n\nClaimed by: kit-1\n\nBuilder: claude\n\n## Goal\n\nBuild the panel\./m);
   assert.match(text, /^### Comments\n\n- fleet, 2026-11-06T10:00:00\.000Z:\nLex: keep it small$/m);
-  assert.match(text, /kit go slice-kit-1 -- scripts\/agents\/kit slice --ticket KIT-1 --builder claude-opus-5-5/);
   assert.match(text, /git switch -c build\/kit-1-a-settings-panel-with-a-colour origin\/dev/);
   assert.doesNotMatch(text, /ticket's (Done|focused)|parts of the ticket/);
   assert.match(text, /`scripts\/agents\/kit review` and `scripts\/agents\/kit pr --ticket KIT-1`/);
+  assert.match(text, /its answers are in the card's comments\./);
   // The card's Files pick the skills, as a ticket file's do.
   assert.match(text, /good-css/);
   assert.match(output.stdout.trimEnd().split("\n").at(-2)!, /^kit-brief: \S+ KIT-1 build$/);
@@ -376,10 +388,286 @@ test("brief KEY: on an Orbit project the brief is built from the card (title, te
   assert.equal(missing.status, 1);
   assert.match(missing.stdout, /RESULT: fail brief card KIT-99 could not be read: .*does not exist/);
 
+  // TOOLS-235: a project that keeps ticket files reads a card key from Orbit too, so the lead never copies a card by hand.
   const files = fixture(t);
   const plain = await runAsync(kit, ["brief", "KIT-1"], { cwd: files.root, env: { ...env, KIT_ROOT: files.root } });
-  assert.equal(plain.status, 1);
-  assert.match(plain.stdout, /RESULT: fail brief no ticket at KIT-1/);
+  assert.equal(plain.status, 0, plain.all);
+  assert.match(plain.stdout, /^Kit brief: build the Orbit card KIT-1 in `demo`/m);
+  // kit pr reads a card key as a card only on an Orbit project, so here the card lands by its title.
+  assert.match(plain.stdout, /`scripts\/agents\/kit review` and `scripts\/agents\/kit pr --title 'A settings panel with a colour field \(KIT-1\)'` into `dev`/);
+  assert.doesNotMatch(plain.stdout, /--ticket KIT-1/);
+  // So nothing closes the card when the PR lands: the brief has the builder hand that to the lead, who writes the board.
+  assert.match(plain.stdout, /^- `kit pr` does not close the card in this project \(it keeps ticket files\): put this line in your report: "Lead: close KIT-1 \(Done, with a dated note naming the PR and its merge SHA\)"\.$/m);
+  assert.doesNotMatch(text, /does not close the card/);
+  // A ticket file at that very path still wins.
+  writeFileSync(join(files.root, "KIT-1"), ticketText("- `src/x.ts`"));
+  const file = await runAsync(kit, ["brief", "KIT-1"], { cwd: files.root, env: { ...env, KIT_ROOT: files.root } });
+  assert.match(file.stdout, /^Kit brief: build `KIT-1` in `demo`/m);
+  // A missing card in a files project says the card could not be read.
+  const absent = await runAsync(kit, ["brief", "KIT-98"], { cwd: files.root, env: { ...env, KIT_ROOT: files.root } });
+  assert.equal(absent.status, 1);
+  assert.match(absent.stdout, /RESULT: fail brief card KIT-98 could not be read/);
+});
+
+test("brief KEY: on an Orbit project a lead's build brief claims a Todo or Backlog card, as kit slice did, and refuses a card it may not take", async t => {
+  const o = await orbitProject(t);
+  const f = fixture(t, orbitSettings);
+  const { KIT_TALK_STYLE: _style, ASE_REVIEW_MODEL: _review, ASE_OWNER: _owner, ...base } = kitEnv();
+  const env = { ...base, ...o.env, KIT_ROOT: f.root, XDG_STATE_HOME: f.state, KIT_TALK_STYLE: "plain" };
+  const run = (extra: NodeJS.ProcessEnv, ...args: string[]) => runAsync(kit, ["brief", ...args], { cwd: f.root, env: { ...env, ...extra } });
+  const todo = o.card({ title: "Todo card" });
+  const built = await run({}, "KIT-1", "--owner", "kit-1");
+  assert.equal(built.status, 0, built.all);
+  assert.equal(o.orbit.statusOf(todo), "In Progress");
+  assert.match(todo.description, /^Claimed by: kit-1\n\n## Goal/);
+  assert.match(built.stderr, /^claimed KIT-1 for kit-1: In Progress with "Claimed by: kit-1"$/m);
+  // The same owner again (a brief written twice) changes nothing.
+  const again = await run({}, "KIT-1", "--owner", "kit-1");
+  assert.equal(again.status, 0, again.all);
+  assert.doesNotMatch(again.stderr, /claimed KIT-1|warning: KIT-1/);
+  // An In Progress card is someone's already (a claim, or the lead's own move): the brief leaves it alone, and says so
+  // when it is written for another owner, as kit slice's claim refused such a card.
+  const other = await run({}, "KIT-1", "--owner", "kit-9");
+  assert.equal(other.status, 0, other.all);
+  assert.match(todo.description, /^Claimed by: kit-1\n/);
+  assert.match(other.stderr, /^warning: KIT-1 is left as it is, not claimed for kit-9: kit-1 holds it \(In Progress\); make sure no second builder starts on it$/m);
+  // Review, second-look and fix briefs are for a card somebody builds, so they never warn.
+  assert.doesNotMatch((await run({}, "KIT-1", "--owner", "kit-9", "--stage", "review")).stderr, /warning: KIT-1/);
+  // A Backlog card is claimed too; review, second-look and fix briefs never claim.
+  const backlog = o.card({ title: "Backlog card" }, "Backlog");
+  for (const stage of ["review", "second-look", "fix"]) assert.equal((await run({}, "KIT-2", "--owner", "kit-2", "--stage", stage)).status, 0);
+  assert.equal(o.orbit.statusOf(backlog), "Backlog");
+  assert.doesNotMatch(backlog.description, /Claimed by/);
+  assert.equal((await run({}, "KIT-2", "--owner", "kit-2")).status, 0);
+  assert.equal(o.orbit.statusOf(backlog), "In Progress");
+  // A blocked card is refused, as kit slice refuses it, and no brief file is written.
+  const blocked = o.card({ title: "Blocked", description: "Blocked by: KIT-1\n\n## Goal\n\nx\n\n## Done when\n\n- done\n" });
+  const refused = await run({}, "KIT-3", "--owner", "kit-3");
+  assert.equal(refused.status, 1, refused.all);
+  assert.match(refused.stdout, /RESULT: fail brief KIT-3 is blocked by KIT-1 \(In Progress\), so it was not claimed/);
+  assert.equal(o.orbit.statusOf(blocked), "Todo");
+  assert.ok(!existsSync(join(f.root, ".scratch/kit-briefs/KIT-3-build.md")));
+  // A card waiting for Lex is refused too.
+  const lex = o.card({ title: "Waits", description: "Next step (Lex): try it\n\n## Goal\n\nx\n\n## Done when\n\n- done\n" });
+  const waiting = await run({}, "KIT-4", "--owner", "kit-4");
+  assert.equal(waiting.status, 1, waiting.all);
+  assert.match(waiting.stdout, /RESULT: fail brief KIT-4 waits for Lex \(Next step \(Lex\): try it\), so it was not claimed/);
+  assert.equal(o.orbit.statusOf(lex), "Todo");
+  // An In Progress card given back after Lex (no claim, no assignee, no next step) is free, so it is claimed.
+  const back = o.card({ title: "Back from Lex" }, "In Progress");
+  assert.equal((await run({}, "KIT-5", "--owner", "kit-5")).status, 0);
+  assert.match(back.description, /^Claimed by: kit-5\n/);
+  // A step that fails before the claim leaves the card as it was.
+  const early = o.card({ title: "Early failure" });
+  const bogus = await run({ KIT_TALK_STYLE: "bogus" }, "KIT-6", "--owner", "kit-6");
+  assert.equal(bogus.status, 1, bogus.all);
+  assert.equal(o.orbit.statusOf(early), "Todo");
+  assert.doesNotMatch(early.description, /Claimed by/);
+  // A files project hands out ticket files, so a card key read there is never claimed.
+  const files = fixture(t);
+  assert.equal((await runAsync(kit, ["brief", "KIT-6", "--owner", "kit-6"], { cwd: files.root, env: { ...env, KIT_ROOT: files.root } })).status, 0);
+  assert.equal(o.orbit.statusOf(early), "Todo");
+  // A card next-lex marked sits In Progress with Lex assigned: the brief leaves it as it is.
+  const asked = o.card({ title: "Asked Lex", description: "Next step (Lex): try it\n\n## Done when\n\n- done\n", assignee_ids: ["lex"] }, "In Progress");
+  const waits = await run({}, "KIT-7", "--owner", "kit-7");
+  assert.equal(waits.status, 0, waits.all);
+  assert.equal(o.orbit.statusOf(asked), "In Progress");
+  assert.doesNotMatch(asked.description, /Claimed by/);
+  assert.match(waits.stderr, /^warning: KIT-7 is left as it is, not claimed for kit-7: it waits for Lex \(Next step \(Lex\): try it\); make sure no second builder starts on it$/m);
+  // The same card once Lex answered, with someone still assigned and no claim line: left as it is too.
+  asked.description = "## Done when\n\n- done\n";
+  const assigned = await run({}, "KIT-7", "--owner", "kit-7");
+  assert.equal(assigned.status, 0, assigned.all);
+  assert.equal(o.orbit.statusOf(asked), "In Progress");
+  assert.doesNotMatch(asked.description, /Claimed by/);
+  assert.match(assigned.stderr, /^warning: KIT-7 is left as it is, not claimed for kit-7: someone is assigned to it \(In Progress\); make sure no second builder starts on it$/m);
+  // Two briefs at once for one card: the one whose claim loses fails and leaves the winner's saved brief alone.
+  const race = o.card({ title: "Race" });
+  const winner = join(f.root, ".scratch/kit-briefs/KIT-8-build.md");
+  writeFileSync(winner, "the winner's brief\n");
+  o.orbit.controls.conflicts = 1;
+  o.orbit.controls.concurrentEdit = task => { task.status_id = o.orbit.statusId(o.orbit.kit, "In Progress"); task.description = `Claimed by: kit-won\n\n${task.description}`; };
+  const lost = await run({}, "KIT-8", "--owner", "kit-lost");
+  o.orbit.controls.concurrentEdit = undefined;
+  assert.equal(lost.status, 1, lost.all);
+  assert.match(lost.stdout, /RESULT: fail brief KIT-8 is already taken by kit-won/);
+  assert.match(race.description, /^Claimed by: kit-won\n/);
+  assert.equal(readFileSync(winner, "utf8"), "the winner's brief\n");
+  // A brief that cannot be saved after its claim gives the claim back and leaves no file of its own behind.
+  const stuck = o.card({ title: "Stuck" });
+  mkdirSync(join(f.root, ".scratch/kit-briefs/KIT-9-build.md/x"), { recursive: true });
+  const unsaved = await run({}, "KIT-9", "--owner", "kit-9");
+  assert.equal(unsaved.status, 1, unsaved.all);
+  assert.match(unsaved.stdout, /RESULT: fail brief the brief could not be saved as \.scratch\/kit-briefs\/KIT-9-build\.md \(.*\); the claim was given back/);
+  assert.equal(o.orbit.statusOf(stuck), "Todo");
+  assert.doesNotMatch(stuck.description, /Claimed by/);
+  assert.deepEqual(readdirSync(join(f.root, ".scratch/kit-briefs")).filter(name => name.endsWith(".tmp")), []);
+  // A claim whose outcome is unknown (Orbit saved it and only its answer was lost) says so, and running the brief again
+  // writes the brief for the card that now shows the claim, without claiming it a second time.
+  const unknown = o.card({ title: "Unknown" });
+  o.orbit.controls.writeAnswers.push("saved-then-502");
+  const failed = await run({}, "KIT-10", "--owner", "kit-10");
+  assert.equal(failed.status, 1, failed.all);
+  assert.match(failed.stdout, /RESULT: fail brief card KIT-10 could not be claimed: .*may or may not have gone through.*; it may be claimed anyway, so run kit brief again: a card that shows "Claimed by: kit-10" then gets its brief/);
+  assert.equal(o.orbit.statusOf(unknown), "In Progress");
+  assert.match(unknown.description, /^Claimed by: kit-10\n/);
+  assert.deepEqual(readdirSync(join(f.root, ".scratch/kit-briefs")).filter(name => name.startsWith("KIT-10-build.md")), []);
+  const settled = await run({}, "KIT-10", "--owner", "kit-10");
+  assert.equal(settled.status, 0, settled.all);
+  assert.ok(existsSync(join(f.root, ".scratch/kit-briefs/KIT-10-build.md")));
+  assert.doesNotMatch(settled.stderr, /claimed KIT-10 for/);
+  // A claim Orbit refused saved nothing, so its message never says the card may be claimed anyway: a card that keeps
+  // changing while saving, a change the token may not make, and a read that failed.
+  const busy = o.card({ title: "Busy" });
+  o.orbit.controls.conflicts = 50;
+  const stale = await run({}, "KIT-11", "--owner", "kit-11");
+  o.orbit.controls.conflicts = 0;
+  assert.equal(stale.status, 1, stale.all);
+  assert.match(stale.stdout, /RESULT: fail brief card KIT-11 could not be claimed: KIT-11 changed again while saving, so nothing was saved; read the card and try again$/m);
+  o.orbit.controls.writeAnswers.push({ status: 403, code: "forbidden", detail: "This token cannot change the card" });
+  const forbidden = await run({}, "KIT-11", "--owner", "kit-11");
+  assert.equal(forbidden.status, 1, forbidden.all);
+  assert.match(forbidden.stdout, /RESULT: fail brief card KIT-11 could not be claimed: Orbit refused: This token cannot change the card \[forbidden\]\.$/m);
+  // A read that got no answer sent no claim either: here the card changed while saving, and reading it again failed.
+  o.orbit.controls.conflicts = 1;
+  o.orbit.controls.concurrentEdit = () => { o.orbit.controls.answers.push("drop"); };
+  const unread = await run({}, "KIT-11", "--owner", "kit-11");
+  o.orbit.controls.concurrentEdit = undefined;
+  assert.equal(unread.status, 1, unread.all);
+  assert.match(unread.stdout, /RESULT: fail brief card KIT-11 could not be claimed: could not reach Orbit\.$/m);
+  for (const refusal of [stale, forbidden, unread]) assert.doesNotMatch(refusal.all, /may be claimed anyway|run kit brief again/);
+  assert.equal(o.orbit.statusOf(busy), "Todo");
+  assert.doesNotMatch(busy.description, /Claimed by/);
+  // A brief that cannot be saved whose claim cannot be given back either says what is left on the card and how to undo it:
+  // the claim line and the status the card had.
+  const held = o.card({ title: "Held" });
+  mkdirSync(join(f.root, ".scratch/kit-briefs/KIT-12-build.md/x"), { recursive: true });
+  o.orbit.controls.writeAnswers.push("pass", { status: 500, code: "internal_error", detail: "down" });
+  const kept = await run({}, "KIT-12", "--owner", "kit-12");
+  assert.equal(kept.status, 1, kept.all);
+  assert.match(kept.stdout, /RESULT: fail brief the brief could not be saved as \.scratch\/kit-briefs\/KIT-12-build\.md \(.*\); giving the claim back failed \(Orbit refused: down \[internal_error\]\.\): KIT-12 is still In Progress with "Claimed by: kit-12", so take that line off the card and set its status back to Todo$/m);
+  assert.equal(o.orbit.statusOf(held), "In Progress");
+  assert.match(held.description, /^Claimed by: kit-12\n/);
+  // A card that was In Progress before its claim has no status to set back: only the line comes off.
+  const free = o.card({ title: "Free" }, "In Progress");
+  mkdirSync(join(f.root, ".scratch/kit-briefs/KIT-13-build.md/x"), { recursive: true });
+  o.orbit.controls.writeAnswers.push("pass", { status: 500, code: "internal_error", detail: "down" });
+  const lineOnly = await run({}, "KIT-13", "--owner", "kit-13");
+  assert.equal(lineOnly.status, 1, lineOnly.all);
+  assert.match(lineOnly.stdout, /giving the claim back failed \(.*\): KIT-13 is still In Progress with "Claimed by: kit-13", so take that line off the card$/m);
+  assert.match(free.description, /^Claimed by: kit-13\n/);
+  assert.deepEqual(readdirSync(join(f.root, ".scratch/kit-briefs")).filter(name => name.endsWith(".tmp")), []);
+  // Someone who is not a lead gets the brief and a warning; the card stays as it was.
+  const helper = o.card({ title: "Helper" });
+  const warned = await run({ ORBIT_ROLE: "" }, "KIT-14", "--owner", "kit-14");
+  assert.equal(warned.status, 0, warned.all);
+  assert.match(warned.stderr, /^warning: KIT-14 is not claimed \(only a lead writes to Orbit: ORBIT_ROLE=lead\); until it is, kit next may start it too$/m);
+  assert.equal(o.orbit.statusOf(helper), "Todo");
+  assert.doesNotMatch(helper.description, /Claimed by/);
+  // Only Todo, Backlog and a free In Progress card are claimed: a card in any other status the board keeps (Ideas, say)
+  // gets its brief and stays as it is.
+  const board = o.orbit.statuses.get(o.orbit.kit.id)!;
+  board.push({ ...board[0], id: "ideas-status", name: "Ideas", position: board.length });
+  const idea = o.card({ title: "Idea" }, "Ideas");
+  const left = await run({}, "KIT-15", "--owner", "kit-15");
+  assert.equal(left.status, 0, left.all);
+  assert.ok(existsSync(join(f.root, ".scratch/kit-briefs/KIT-15-build.md")));
+  assert.equal(o.orbit.statusOf(idea), "Ideas");
+  assert.doesNotMatch(idea.description, /Claimed by/);
+  assert.doesNotMatch(left.stderr, /claimed KIT-15/);
+  assert.match(left.stderr, /^warning: KIT-15 is left as it is, not claimed for kit-15: it is in Ideas; make sure no second builder starts on it$/m);
+  // A card that is already Done has nothing to build, which the brief says too.
+  const done = o.card({ title: "Landed" }, "Done");
+  const landed = await run({}, "KIT-16", "--owner", "kit-16");
+  assert.equal(landed.status, 0, landed.all);
+  assert.equal(o.orbit.statusOf(done), "Done");
+  assert.match(landed.stderr, /^warning: KIT-16 is left as it is, not claimed for kit-16: it is already Done, so there is nothing to build$/m);
+  // A card moved out of Todo while its brief was being written (to Ideas here) is no longer free: the claim reads it again
+  // right before its write, so the card stays where it was moved, and the brief says why it holds no claim.
+  const moved = o.card({ title: "Moved" });
+  o.orbit.controls.conflicts = 1;
+  o.orbit.controls.concurrentEdit = task => { task.status_id = "ideas-status"; };
+  const skipped = await run({}, "KIT-17", "--owner", "kit-17");
+  o.orbit.controls.concurrentEdit = undefined;
+  assert.equal(skipped.status, 0, skipped.all);
+  assert.ok(existsSync(join(f.root, ".scratch/kit-briefs/KIT-17-build.md")));
+  assert.equal(o.orbit.statusOf(moved), "Ideas");
+  assert.doesNotMatch(moved.description, /Claimed by/);
+  assert.doesNotMatch(skipped.stderr, /claimed KIT-17/);
+  assert.match(skipped.stderr, /^warning: KIT-17 changed while its brief was written and is left as it is, not claimed for kit-17: it is in Ideas; make sure no second builder starts on it$/m);
+  // A card moved between two free statuses meanwhile (Todo to Backlog) is still free, so it is claimed, with no warning.
+  const shifted = o.card({ title: "Shifted" });
+  o.orbit.controls.conflicts = 1;
+  o.orbit.controls.concurrentEdit = task => { task.status_id = o.orbit.statusId(o.orbit.kit, "Backlog"); };
+  const taken = await run({}, "KIT-18", "--owner", "kit-18");
+  o.orbit.controls.concurrentEdit = undefined;
+  assert.equal(taken.status, 0, taken.all);
+  assert.equal(o.orbit.statusOf(shifted), "In Progress");
+  assert.match(shifted.description, /^Claimed by: kit-18\n/);
+  assert.doesNotMatch(taken.stderr, /changed while its brief was written/);
+  // A card that was closed meanwhile has nothing to build: the brief fails and none is written.
+  const closed = o.card({ title: "Closed" });
+  o.orbit.controls.conflicts = 1;
+  o.orbit.controls.concurrentEdit = task => { task.status_id = o.orbit.statusId(o.orbit.kit, "Done"); };
+  const gone = await run({}, "KIT-19", "--owner", "kit-19");
+  o.orbit.controls.concurrentEdit = undefined;
+  assert.equal(gone.status, 1, gone.all);
+  assert.match(gone.stdout, /RESULT: fail brief KIT-19 is already Done, so there is nothing to build/);
+  assert.ok(!existsSync(join(f.root, ".scratch/kit-briefs/KIT-19-build.md")));
+  assert.equal(o.orbit.statusOf(closed), "Done");
+  // A card moved to Ideas that carries the owner's own claim line by then has no reason to give: no half warning.
+  const own = o.card({ title: "Own" });
+  o.orbit.controls.conflicts = 1;
+  o.orbit.controls.concurrentEdit = task => { task.status_id = "ideas-status"; task.description = `Claimed by: kit-20\n\n${task.description}`; };
+  const mine = await run({}, "KIT-20", "--owner", "kit-20");
+  o.orbit.controls.concurrentEdit = undefined;
+  assert.equal(mine.status, 0, mine.all);
+  assert.equal(o.orbit.statusOf(own), "Ideas");
+  assert.doesNotMatch(mine.stderr, /warning: KIT-20|claimed KIT-20/);
+});
+
+test("brief KEY: on a board with no Todo status a lead's build brief claims every card not yet started, since kit next hands those out", async t => {
+  const o = await orbitProject(t);
+  const f = fixture(t, orbitSettings);
+  const { KIT_TALK_STYLE: _style, ASE_REVIEW_MODEL: _review, ASE_OWNER: _owner, ...base } = kitEnv();
+  const env = { ...base, ...o.env, KIT_ROOT: f.root, XDG_STATE_HOME: f.state, KIT_TALK_STYLE: "plain" };
+  const board = o.orbit.statuses.get(o.orbit.kit.id)!;
+  const todo = board.find(status => status.name === "Todo")!;
+  Object.assign(todo, { name: "Ideas" });
+  const idea = o.card({ title: "Idea" }, "Ideas");
+  // kit next hands the card out, so a brief that left it unclaimed would let kit next start a second builder on it.
+  const next = await runAsync(kit, ["next"], { cwd: f.root, env });
+  assert.match(next.stdout, /^next: KIT-1 /m, next.all);
+  const built = await runAsync(kit, ["brief", "KIT-1", "--owner", "kit-1"], { cwd: f.root, env });
+  assert.equal(built.status, 0, built.all);
+  assert.equal(o.orbit.statusOf(idea), "In Progress");
+  assert.match(idea.description, /^Claimed by: kit-1\n/);
+  assert.match(built.stderr, /^claimed KIT-1 for kit-1: In Progress with "Claimed by: kit-1"$/m);
+});
+
+test("brief: a card or ticket with no Done when list gets a warning, since its proof lines need one", async t => {
+  const f = fixture(t);
+  const path = join(f.root, "docs/tickets/07-panel.md");
+  assert.doesNotMatch(f.run(["docs/tickets/07-panel.md"]).stderr, /Done when/);
+  writeFileSync(path, readFileSync(path, "utf8").replace(/## Done when[\s\S]*$/, ""));
+  const none = f.run(["docs/tickets/07-panel.md"]);
+  assert.equal(none.status, 0, none.stdout);
+  assert.match(none.stderr, /^warning: docs\/tickets\/07-panel\.md has no "Done when" list; the proof lines need one \(the card standard's "Done when:" line\)$/m);
+  // An empty heading has no items, so it warns too; the card standard's line, bold or plain, counts.
+  const bare = readFileSync(path, "utf8");
+  writeFileSync(path, `${bare}\n## Done when\n\n## Notes\n\nx\n`);
+  assert.match(f.run(["docs/tickets/07-panel.md"]).stderr, /has no "Done when" list/);
+  writeFileSync(path, `${bare}\n**Done when:** it works; Lex tried it.\n`);
+  assert.doesNotMatch(f.run(["docs/tickets/07-panel.md"]).stderr, /Done when/);
+  writeFileSync(path, `${bare}\nDone when: it works; Lex tried it.\n`);
+  assert.doesNotMatch(f.run(["docs/tickets/07-panel.md"]).stderr, /Done when/);
+  // A task has no list to check: its proof lines follow the note.
+  const task = f.run(["--task", "Fix it", "--owner", "cf-1", "--note", "Make the login button work."]);
+  assert.doesNotMatch(task.stderr, /Done when/);
+  assert.match(task.stdout, /^Proof: for each thing the note asks for, one line: `<what>: met — <what you really tried on the real thing>`/m);
+  // The grill's answers are where each source keeps them.
+  assert.match(task.stdout, /its answers are in the note below\./);
+  assert.match(f.run(["docs/tickets/07-panel.md"]).stdout, /its answers are in the ticket's `## Resolution` sections\./);
 });
 
 test("brief: every stage carries the Messages to Lex rule from the rulebook, the one source, with its example", t => {
@@ -411,19 +699,8 @@ test("brief: a rulebook without the Messages to Lex rule fails with a RESULT lin
   assert.doesNotMatch(output.stdout, /kit-brief: /);
 });
 
-test("brief: a rulebook without the rule leaves the talk-style counter where it was", t => {
-  const f = fixture(t);
-  const home = mkdtempSync(join(tmpdir(), "kit-brief-home-"));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
-  cpSync(resolve("."), home, { recursive: true, filter: kitFiles });
-  const rulebook = join(home, "docs/kitchen.md");
-  writeFileSync(rulebook, readFileSync(rulebook, "utf8").replace(/<!-- messages-to-lex:(start v\d+|end) -->\n?/g, ""));
-  assert.equal(f.run(["docs/tickets/07-panel.md"], { KIT_HOME: home }).status, 1);
-  assert.ok(!existsSync(join(f.state, "agent-kit/talk-style.json")), "a failed brief moved the counter");
-});
-
 test("brief: the talk-style line tells a headless builder where the Messages to Lex rule is", () => {
-  for (const style of ["en", "wenyan", "plain"]) assert.match(talkStyleLine(style), /Messages for Lex follow the Messages to Lex rule \(`scripts\/agents\/kit rulebook`, section "Messages to Lex"\): short bullets in plain English/, style);
+  for (const style of ["en", "plain"]) assert.match(talkStyleLine(style), /Messages for Lex follow the Messages to Lex rule \(`scripts\/agents\/kit rulebook`, section "Messages to Lex"\): short bullets in plain English/, style);
 });
 
 test("brief: every stage carries the Review loop rule from the rulebook, the one source", t => {

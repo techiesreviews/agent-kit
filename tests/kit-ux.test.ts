@@ -7,6 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
 import { kitEnv } from "./support/kit-env.ts";
+import { coverageHash, readUxResult, uxGuard, visibleFiles } from "../ux-gate.mjs";
 
 const script = resolve("kit.d/ux"), kit = resolve("kit");
 // Node loads this extensionless executable as ESM; a URL keeps tsx from resolving it as TS.
@@ -815,7 +816,7 @@ test("kit ux with --features tries only those, and a failed try names the featur
 });
 
 test("kit ux fails a screens run that exits non-zero even when every shot passed", t => {
-  const { run, agentCalls } = fixture(t);
+  const { root, run, agentCalls } = fixture(t);
   const output = run(["--features", "F-media-02"], { FAIL_EXIT_ONLY: "1" });
   assert.equal(output.status, 1);
   assert.match(output.result, /^RESULT: fail ux 0 features tried, 1 scripted findings, bundle \S+, screens failed: media-gallery$/);
@@ -823,6 +824,9 @@ test("kit ux fails a screens run that exits non-zero even when every shot passed
   assert.deepEqual(agentCalls(), [], "no paid review when nothing a fix round answers broke");
   const bundle = /bundle (\S+),/.exec(output.result)![1];
   assert.match(readFileSync(join(bundle, "bundle.md"), "utf8"), /- F-media-02 Feature F-media-02: untried \(screens media-gallery; a screen failed\)/);
+  // A screen that failed is a result that did not pass, not a run that merely did not finish.
+  const record = readUxResult(root, "build/sf-1-panel");
+  assert.deepEqual([record.ok, record.unfinished], [false, false]);
 });
 
 test("kit ux stops at a signal: no further try starts and one fail RESULT is printed", async t => {
@@ -1059,6 +1063,133 @@ test("kit ux fails a broken verdict, an unreadable answer and a failed reviewer 
   assert.ok(named[1].startsWith(`${/bundle (\S+),/.exec(failed.result)![1]}/`) && existsSync(named[1]), "the log the RESULT names sits beside the bundle");
 });
 
+test("kit ux saves its result for the branch, with the visible files as it checked them, for kit pr to read", t => {
+  const { root, put, run, git } = fixture(t);
+  put("scripts/agents/kit.json", JSON.stringify({ project: "x", branches: { land: "dev" }, checks: { css: editorColours }, paths: { visible: ["^src/"] } }));
+  git("add", "."); git("commit", "--quiet", "-m", "settings"); git("update-ref", "refs/remotes/origin/dev", "HEAD");
+  const saved = () => readUxResult(root, "build/sf-1-panel");
+  assert.equal(saved(), null);
+  // A change no listed feature covers: the result says so, and holds no visible file.
+  put("docs/notes.md", "changed\n");
+  const quiet = run();
+  assert.equal(quiet.status, 0);
+  assert.doesNotMatch(quiet.stdout, /^note: /m);
+  const none = saved();
+  assert.deepEqual([none.branch, none.head, none.ok, none.summary, none.partial, none.nothing, none.files], ["build/sf-1-panel", git("rev-parse", "HEAD"), true, "no listed feature touched", null, true, {}]);
+  // A visible file no listed feature covers: nothing is tried, the file is still on the result, and kit pr's line for
+  // it never says ok.
+  put("src/new-panel.ts", "export {};\n");
+  const untried = run();
+  assert.equal(untried.result, "RESULT: ok ux nothing visible touched");
+  assert.match(untried.stdout, /^note: src\/new-panel\.ts is a visible path, but no listed feature covers the change, so nothing was tried$/m);
+  put("src/other-panel.ts", "export {};\n");
+  assert.match(run().stdout, /^note: src\/new-panel\.ts and 1 more are visible paths, but no listed feature covers the change, so nothing was tried$/m);
+  rmSync(join(root, "src/other-panel.ts"));
+  assert.equal(run().status, 0);
+  const bare = saved();
+  assert.equal(bare.list, coverageHash(root, "origin/dev"));
+  assert.deepEqual([bare.nothing, bare.files], [true, { "src/new-panel.ts": git("hash-object", "src/new-panel.ts") }]);
+  assert.deepEqual(uxGuard({ branch: "build/sf-1-panel", files: bare.files, record: bare, featureList: bare.list }),
+    { ok: true, line: `UX check: nothing to try (kit ux at ${git("rev-parse", "--short=7", "HEAD")}: no feature in docs/agents/features.md covers src/new-panel.ts)` });
+  // A visible change, saved or not: each visible file with the hash of its text as checked.
+  put("src/page-builder/media-picker.css", ".a { gap: var(--space); }\n.b { gap: 0; }\n");
+  put("src/page-builder/media-library-filter.ts", "export const filter = 1;\n");
+  const passed = run([], { FAKE_VERDICTS: JSON.stringify({ "F-media-02": "looks off" }) });
+  assert.equal(passed.status, 0, passed.stderr + passed.stdout);
+  const record = saved();
+  assert.deepEqual([record.ok, record.nothing], [true, undefined]);
+  assert.match(record.summary, /^1 features tried, \d+ scripted findings, 1 fine, 1 looks off, 0 broken$/);
+  assert.equal(record.partial, null);
+  assert.deepEqual(record.files, Object.fromEntries(["src/new-panel.ts", "src/page-builder/media-library-filter.ts", "src/page-builder/media-picker.css"].map(path => [path, git("hash-object", path)])));
+  assert.ok(record.bundle.startsWith(join(root, ".scratch/ux/ux-test/")), record.bundle);
+  // The features that cover the change are on the result: another hash than with nothing covered, and it moves when
+  // one of those features is edited, not when the list gains a feature about other files.
+  assert.equal(record.list, coverageHash(root, "origin/dev"));
+  assert.notEqual(record.list, bare.list);
+  const listText = readFileSync(join(root, "docs/agents/features.md"), "utf8");
+  put("docs/agents/features.md", `${listText}\n### F-other-09 Other\n- Try: Open it.\n- Good: Calm.\n- Files: \`src/other/*.ts\`\n`);
+  assert.equal(coverageHash(root, "origin/dev"), record.list);
+  put("docs/agents/features.md", listText.replace("### F-media-02 ", "### F-media-02 Renamed "));
+  assert.notEqual(coverageHash(root, "origin/dev"), record.list);
+  // Two covering entries that swap places in the list are the same features.
+  const [first, second] = ["F-media-01", "F-media-02"].map(id => new RegExp(`### ${id} [\\s\\S]*?\\n(?=### |$)`).exec(listText)![0]);
+  put("docs/agents/features.md", listText.replace(first, "").replace(second, `${second}${first}`));
+  assert.equal(coverageHash(root, "origin/dev"), record.list);
+  put("docs/agents/features.md", listText);
+  // The same files once committed give the same hashes, so the result stays the one for this change.
+  git("add", "."); git("commit", "--quiet", "-m", "work");
+  assert.deepEqual(visibleFiles(root, "origin/dev", { paths: { visible: ["^src/"] } }), record.files);
+  // A broken verdict is saved as a result that did not pass.
+  const broken = run([], { FAKE_VERDICTS: JSON.stringify({ "F-media-02": "broken" }) });
+  assert.equal(broken.status, 1);
+  assert.deepEqual([saved().ok, saved().partial], [false, null]);
+  assert.match(saved().summary, /, 1 broken, broken: F-media-02$/);
+  assert.doesNotMatch(saved().summary, /bundle /);
+  // A run without the review, or of named features only, never replaces a whole run's result for the same change: the
+  // broken verdict stays, so kit pr --not-visible cannot land what the reviewer called broken.
+  for (const partial of [["--no-review"], ["--features", "F-media-02"]]) {
+    const part = run(partial);
+    assert.equal(part.status, 0, part.stdout + part.stderr);
+    assert.match(part.stdout, new RegExp(`^note: the result saved for kit pr stays the earlier one \\(did not pass, kit ux at ${git("rev-parse", "--short=7", "HEAD")}\\); a run with ${partial[0]} does not replace it$`, "m"));
+    assert.deepEqual([saved().ok, saved().partial], [false, null]);
+  }
+  const talked = uxGuard({ branch: "build/sf-1-panel", files: saved().files, record: saved(), notVisible: "nobody will notice", featureList: saved().list });
+  assert.deepEqual([talked.ok, talked.problem], [false, "kit ux tried this change and it did not pass, so --not-visible does not fit it; fix what kit ux found and run `scripts/agents/kit ux` again"]);
+  // A whole run that passes replaces it, and stays too when a partial run follows.
+  assert.equal(run(["--all"]).status, 0);
+  assert.deepEqual([saved().ok, saved().partial], [true, null]);
+  assert.match(run(["--no-review"]).stdout, /^note: the result saved for kit pr stays the earlier one \(passed, kit ux at /m);
+  assert.deepEqual([saved().ok, saved().partial], [true, null]);
+  // For another change (a visible file edited since) a partial run is the newest result, and it is marked partial.
+  put("src/new-panel.ts", "export const panel = 1;\n");
+  assert.equal(run(["--no-review"]).status, 0);
+  assert.deepEqual([saved().ok, saved().partial], [true, "--no-review"]);
+  assert.equal(run(["--features", "F-media-02"]).status, 0);
+  assert.deepEqual([saved().ok, saved().partial], [true, "--features"]);
+  // A run whose reviewer did not finish failed without calling any feature broken: saved as unfinished, no verdict.
+  assert.equal(run([], { FAKE_AGENT_FAIL: "1" }).status, 1);
+  assert.deepEqual([saved().ok, saved().unfinished, saved().partial], [false, true, null]);
+  assert.match(saved().summary, /scripted findings, the review did not finish$/);
+  // An unfinished result is no verdict, so a later half run for the same change replaces it, and --not-visible fits.
+  assert.equal(run(["--no-review"]).status, 0);
+  assert.deepEqual([saved().ok, saved().partial], [true, "--no-review"]);
+  assert.equal(uxGuard({ branch: "build/sf-1-panel", files: saved().files, record: saved(), notVisible: "same look", featureList: saved().list }).ok, true);
+  assert.equal(run([], { FAKE_VERDICTS: JSON.stringify({ "F-media-02": "broken" }) }).status, 1);
+  assert.deepEqual([saved().ok, saved().unfinished], [false, false]);
+  // A run that does not finish never replaces a verdict for the same change either: broken stays broken.
+  const down = run([], { FAKE_AGENT_FAIL: "1" });
+  assert.match(down.stdout, /^note: the result saved for kit pr stays the earlier one \(did not pass, kit ux at [0-9a-f]{7}\); a run that did not finish does not replace it$/m);
+  assert.deepEqual([saved().ok, saved().unfinished], [false, false]);
+  assert.equal(uxGuard({ branch: "build/sf-1-panel", files: saved().files, record: saved(), notVisible: "nobody will notice", featureList: saved().list }).ok, false);
+  // A partial run that called a feature broken is a verdict too: a later partial pass for the same change leaves it.
+  put("src/new-panel.ts", "export const panel = 2;\n");
+  assert.equal(run(["--features", "F-media-02"], { FAKE_VERDICTS: JSON.stringify({ "F-media-02": "broken" }) }).status, 1);
+  assert.deepEqual([saved().ok, saved().partial, saved().unfinished], [false, "--features", false]);
+  assert.equal(run(["--no-review"]).status, 0);
+  assert.deepEqual([saved().ok, saved().partial], [false, "--features"]);
+  assert.equal(uxGuard({ branch: "build/sf-1-panel", files: saved().files, record: saved(), notVisible: "nobody will notice", featureList: saved().list }).ok, false);
+  // Only a whole run that finishes replaces it.
+  assert.equal(run().status, 0);
+  assert.deepEqual([saved().ok, saved().partial], [true, null]);
+});
+
+test("kit ux tries a feature whose file the change renames away, and saves that feature as covering it", t => {
+  const { root, put, run, git } = fixture(t);
+  put("scripts/agents/kit.json", JSON.stringify({ project: "x", branches: { land: "dev" }, checks: { css: editorColours }, paths: { visible: ["^src/"] } }));
+  git("add", "."); git("commit", "--quiet", "-m", "settings"); git("update-ref", "refs/remotes/origin/dev", "HEAD");
+  // F-media-02 lists only the old path; the new one is in no feature. Git reports this as one rename to the new path.
+  mkdirSync(join(root, "src/elsewhere"), { recursive: true });
+  git("mv", "src/page-builder/media-library-filter.ts", "src/elsewhere/filter.ts");
+  assert.equal(git("diff", "--name-only", "HEAD"), "src/elsewhere/filter.ts");
+  const output = run();
+  assert.equal(output.status, 0, output.stdout + output.stderr);
+  assert.match(output.stdout, /^features: F-media-02$/m);
+  const record = readUxResult(root, "build/sf-1-panel");
+  assert.deepEqual([record.ok, record.nothing, Object.keys(record.files)], [true, undefined, ["src/elsewhere/filter.ts", "src/page-builder/media-library-filter.ts"]]);
+  assert.equal(record.files["src/page-builder/media-library-filter.ts"], "gone");
+  assert.equal(record.list, coverageHash(root, "origin/dev"));
+});
+
 test("kit ux --no-review packs the bundle without a reviewer", t => {
   const { run, agentCalls } = fixture(t);
   const output = run(["--features", "F-media-02", "--no-review"]);
@@ -1135,4 +1266,7 @@ test("kit ux leaves the scoreboard alone when HEAD moved during its run", t => {
   assert.equal(output.status, 0, output.stderr + output.stdout);
   assert.match(output.stderr, /^problem: HEAD moved during kit ux; scoreboard not updated$/m);
   assert.equal(existsSync(join(root, ".scratch/scoreboard/_untracked/1-panel.json")), false);
+  // Nor is a result saved for kit pr: what was shot and judged may not be the tree the result would name.
+  assert.match(output.stdout, /^note: HEAD or a visible file moved during kit ux, so no result is saved for kit pr; run kit ux again$/m);
+  assert.equal(readUxResult(root, "build/sf-1-panel"), null);
 });

@@ -34,7 +34,7 @@ else
   fi
 fi
 
-names=() files=() summaries=() groups=()
+names=() files=() summaries=() groups=() inside=()
 declare -A shared=()
 width=0
 for group in "${!folders[@]}"; do
@@ -43,10 +43,12 @@ for group in "${!folders[@]}"; do
     base=${file##*/}
     [[ -f $file && -x $file && $base != [._]* ]] || continue
     name=${base%.*}
-    summary=''
+    summary='' helper=false
     count=0
     while IFS= read -r line || [[ -n $line ]]; do
       count=$((count + 1))
+      # An inside helper (# kit-inside: …) runs by name and stays out of the list: kit version, which kit doctor shows.
+      if [[ $line == '# kit-inside: '* || $line == '// kit-inside: '* ]]; then helper=true; break; fi
       if [[ $line == *'# kit: '* || $line == *'// kit: '* ]]; then
         [[ $line =~ (#\ kit:\ |//\ kit:\ ) ]]
         summary=${line#*"${BASH_REMATCH[0]}"}
@@ -64,10 +66,11 @@ for group in "${!folders[@]}"; do
       files[position]=${files[position-1]}
       summaries[position]=${summaries[position-1]}
       groups[position]=${groups[position-1]}
+      inside[position]=${inside[position-1]}
       position=$((position - 1))
     done
-    names[position]=$name files[position]=$file summaries[position]=$summary groups[position]=$group
-    (( ${#name} <= width )) || width=${#name}
+    names[position]=$name files[position]=$file summaries[position]=$summary groups[position]=$group inside[position]=$helper
+    [[ $helper == true ]] || (( ${#name} <= width )) || width=${#name}
   done
 done
 
@@ -75,6 +78,7 @@ list_commands() {
   local index group=-1
   printf 'Usage: kit <command> [args]\n'
   for index in "${!names[@]}"; do
+    [[ ${inside[index]} == false ]] || continue
     if (( groups[index] != group )); then
       group=${groups[index]}
       printf '\n%s:\n' "${headings[group]}"
@@ -94,6 +98,22 @@ command_file=''
 for index in "${!names[@]}"; do
   if [[ ${names[index]} == "$command" ]]; then command_file=${files[index]}; break; fi
 done
+# Commands the trim cut or merged (TOOLS-235, Lex 2026-11-14) answer with where the job went, not "unknown command".
+if [[ -z $command_file && -z ${KIT_COMMANDS_DIR:-} ]]; then
+  moved=''
+  case $command in
+    ask) moved='retired kit ask was retired on 2026-11-13: it spent paid API credit, which ran out on 2026-11-11. Write with a subscription helper instead: a T3 delegate_task to Sonnet or Opus' ;;
+    status) moved='cut kit status was cut on 2026-11-14 (TOOLS-235): scripts/agents/kit ticket list shows the cards, T3 shows the linked pull requests and their checks, and the weekly kit sweep lists flaky spec files' ;;
+    feedback) moved='cut kit feedback was cut on 2026-11-14 (TOOLS-235): Lex'"'"'s corrections go to the chat memory, which the weekly learning (kit sweep --learn) reads' ;;
+    learn) moved='moved kit learn is now kit sweep --learn (TOOLS-235), with the same --since and --project' ;;
+    card) moved='moved kit card was merged into the session-start hook (TOOLS-235): the card shows when a session starts; node "$(scripts/agents/kit --home)/context-card.mjs" prints it' ;;
+  esac
+  if [[ -n $moved ]]; then
+    printf '%s\n' "${moved#* }"
+    kit_result fail "$command ${moved%% *}"
+    exit 2
+  fi
+fi
 if [[ -z $command_file ]]; then
   # A broken settings file, or no jq to read it, hides the project folder; say so instead of only "unknown".
   unreadable='' settings_file=$(kit_settings_file)
@@ -150,7 +170,7 @@ trap 'interrupted HUP 1' HUP
 # While kit pr runs spec files alone (ticket ke-88) no other kit job starts; help and the commands that only read or
 # wait go on.
 case $command in
-  wait|status|heartbeat|version|card|rulebook) ;;
+  wait|heartbeat|version|rulebook) ;;
   *) [[ $enforce_result == false ]] || kit_quiet_wait ;;
 esac
 

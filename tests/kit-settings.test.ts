@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
-import { execFile, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { promisify } from "node:util";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
 import { kitDevRoot, kitMainRoot, kitMaps, kitSettings, kitSettingsProblems, scoreMap } from "../kit-lib.mjs";
@@ -183,10 +181,6 @@ test("a missing, broken or incomplete settings file fails doctor with what to ad
 
 test("a missing optional key turns its feature off with a plain line", t => {
   const f = repo(t, { project: "kit-land", branches: { land: "main" } });
-  const status = f.run(["status", "--no-fetch"]);
-  assert.equal(status.status, 0, status.stdout + status.stderr);
-  assert.doesNotMatch(status.stdout, /^preview:/m);
-  assert.match(status.stdout, /^tickets: none \(no maps folder in scripts\/agents\/kit\.json\)$/m);
   for (const args of [["next"], ["heartbeat", "alpha"]]) {
     const output = f.run(args);
     assert.equal(output.status, 1, output.stdout + output.stderr);
@@ -204,7 +198,7 @@ test("a missing optional key turns its feature off with a plain line", t => {
   assert.equal(featureListGuard(rows, { settings: { ...settings, featureList: "FEATURES.md", paths: { visible: ["^src/ui/"] } } }).ok, false);
 });
 
-test("environment overrides still win over the settings file", async t => {
+test("environment overrides still win over the settings file", t => {
   const root = temp(t);
   settingsFile(root, { project: "x", branches: { land: "main" }, mainRoot: "/settings/main", devRoot: "/settings/dev" });
   const saved = { root: process.env.KIT_ROOT, main: process.env.KIT_MAIN_ROOT, dev: process.env.KIT_DEV_ROOT };
@@ -221,14 +215,6 @@ test("environment overrides still win over the settings file", async t => {
   assert.equal(kitMainRoot(), "/env/main");
   assert.equal(kitDevRoot(kitSettings(root)), "/env/dev");
   assert.equal(bash("kit_main_root; kit_dev_root", { KIT_ROOT: root, KIT_MAIN_ROOT: "/env/main", KIT_DEV_ROOT: "/env/dev" }).stdout, "/env/main\n/env/dev\n");
-  // KIT_PREVIEW_URL beats an unreachable preview address in the file.
-  const f = repo(t, { project: "kit-land", branches: { land: "main" }, preview: "http://127.0.0.1:9/settings" });
-  const server = createServer((_request, response) => response.end('<script src="/assets/index-env123.js"></script>'));
-  await new Promise<void>(accept => server.listen(0, "127.0.0.1", accept));
-  t.after(() => server.close());
-  const { port } = server.address() as { port: number };
-  const { stdout } = await promisify(execFile)(kit, ["status", "--no-fetch"], { cwd: f.root, env: { ...f.env, KIT_PREVIEW_URL: `http://127.0.0.1:${port}/` }, encoding: "utf8" });
-  assert.match(stdout, /^preview: index-env123\.js$/m);
 });
 
 test("the playwright setting reaches project commands as KIT_PLAYWRIGHT_MODULE, unless the variable is set", t => {
@@ -278,7 +264,7 @@ test("the playwright setting reaches project commands as KIT_PLAYWRIGHT_MODULE, 
   assert.ok(checked.stdout.split("\n").includes(`✓ playwright: ${b}/vendor/b`), checked.stdout + checked.stderr);
 });
 
-test("land: main reaches review, unit --affected, pr --dry-run, status and wait ci", t => {
+test("land: main reaches review, unit --affected, pr --dry-run and wait ci", t => {
   const f = repo(t, { project: "kit-land", branches: { land: "main" } });
   // An invalid model stops the review after it states its scope, before any CLI runs.
   const review = f.run(["review"], { ASE_REVIEW_MODEL: "-invalid" });
@@ -300,11 +286,6 @@ test("land: main reaches review, unit --affected, pr --dry-run, status and wait 
   assert.match(pr.stdout, /^check: skipped \(no checks\.check in scripts\/agents\/kit\.json\)$/m);
   assert.match(lastLine(pr)!, /^RESULT: ok dry-run [0-9a-f]{7} feature\/x -> main$/);
   assert.match(f.called(), /^kit specs --affected --base origin\/main$/m);
-  const status = f.run(["status", "--no-fetch"]);
-  assert.equal(status.status, 0, status.stdout + status.stderr);
-  assert.match(status.stdout, /^ref origin\/main [0-9a-f]{7} {2}main CI: -$/m);
-  assert.match(f.called(), /^gh pr list --state all --base main /m);
-  assert.match(f.called(), /^gh run list --branch main /m);
   const ci = f.run(["wait", "ci", "--timeout", "10s"], { KIT_WAIT_POLL_MS: "50" });
   assert.equal(ci.status, 0, ci.stdout + ci.stderr);
   assert.match(lastLine(ci)!, /^RESULT: ok ci main abcdef0 green /);

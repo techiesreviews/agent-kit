@@ -448,6 +448,8 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
     try { answer = await send(); }
     catch (error) {
       if (!(retries && error?.staleVersion)) logFailure({ ...entry, card: entry.card ?? "new", result: `fail:${error?.code ?? error?.status ?? "error"}` });
+      // A read can fail with no answer too, and sent nothing: `write` tells a caller the failure is this write's own.
+      if (error instanceof OrbitError) error.write = true;
       throw error;
     }
     const card = entry.card ?? answer?.identifier;
@@ -827,8 +829,12 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
      * Claims a card for a slice in one write: status In Progress and a "Claimed by: owner" line. A card the same owner
      * already holds is no change (a resumed slice needs no lead); one held by anyone else, done, waiting for Lex or still
      * blocked is refused. Two claims at once: Orbit takes the first, and the second, read again, is refused as taken.
+     * `free` is the caller's own test of a card it may take (the card as `read` gives it: status_name, stage, claimed_by,
+     * next_lex): it is put to the card as read right before the write, which Orbit refuses if the card changed since. A
+     * card that fails it is left as it is and comes back as `left`, so a card moved between the caller's read and this
+     * write (Todo to Ideas, say) is never claimed on what the caller read first.
      */
-    async claim(rawKey, owner) {
+    async claim(rawKey, owner, { free } = {}) {
       const key = orbitCardKey(rawKey), who = oneLine(owner);
       if (!who) throw new OrbitError("a claim needs an owner");
       // A card someone else holds, done, waiting for Lex or blocked: no failure of Orbit's, the card is just not free.
@@ -849,16 +855,21 @@ export function orbitStore({ client, role, who, logPath, redact, secrets = [], d
       };
       const first = await client.task(key);
       if (await held(first)) return { key: first.identifier, action: "claim", task: first, unchanged: true, previous: null };
-      let previous = null;
+      let previous = null, left = null;
       const outcome = await changeCard("claim", key, async task => {
+        left = null;
         if (await held(task)) return {};
+        if (free) {
+          const now = { ...task, status_name: await statusName(task), stage: (await stageOf(task)).stage, claimed_by: claimedBy(task.description), next_lex: nextLexReason(task.description) };
+          if (!free(now)) { left = now; return {}; }
+        }
         if (nextLexReason(task.description) !== null) throw taken(`${task.identifier} waits for Lex (Next step (Lex): ${nextLexReason(task.description)}), so it was not claimed`);
         const open = await openBlockers(task);
         if (open.length) throw taken(`${task.identifier} is blocked by ${open.join(", ")}, so it was not claimed`);
         previous = task.status_id;
         return { status_id: (await statusFor(task.project_id, "in progress", "started")).id, description: withClaimedBy(task.description, who) };
       });
-      return { ...outcome, previous: outcome.unchanged ? null : previous };
+      return { ...outcome, previous: outcome.unchanged ? null : previous, ...(left ? { left } : {}) };
     },
     /** Gives a claim back: the status it had and no "Claimed by" line. A card someone else holds now is left alone. */
     unclaim(key, owner, statusId) {

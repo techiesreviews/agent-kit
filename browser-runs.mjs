@@ -1,8 +1,8 @@
 // Full browser runs on a busy machine (ticket ke-88): kit pr reads the project's `kit specs` output to rerun a
-// failed file alone, splits off the settings' `timing` files to run last and alone, and kit status names the files
+// failed file alone, splits off the settings' `timing` files to run last and alone, and kit sweep names the files
 // that keep passing only alone (`<kit state>/flaky.jsonl`).
 
-/** Days kit status looks back in flaky.jsonl, and how many flaky runs in that time ask for a fix. */
+/** Days kit sweep looks back in flaky.jsonl, and how many flaky runs in that time ask for a fix. */
 export const FLAKY_DAYS = 7, FLAKY_REPORT_AT = 3;
 
 /** The files `kit specs … --list` selected: each selection line starts `<file> [<groups>]`. */
