@@ -70,6 +70,9 @@ test("the locked paths hold the Orbit, GitHub and Cloudflare keys, Claude's MCP 
   const named = lockedPaths("grok", { HOME: "/h", GH_CONFIG_DIR: "/gh-elsewhere", KUBECONFIG: "/keys/work:/keys/personal", KIT_API_KEY_FILE: "/keys/api" });
   for (const path of ["/gh-elsewhere", "/keys/work", "/keys/personal", "/keys/api"]) assert.ok(named.includes(path), path);
   assert.ok(lockedPaths("codex", { HOME: "/h", KIT_API_KEY_FILE: "/keys/api" }).includes("/keys/api"));
+  // Relative names count from the worktree; agent sockets are locked where they are.
+  const relative = lockedPaths("claude", { HOME: "/h", NPM_CONFIG_USERCONFIG: "../private/npmrc", SSH_AUTH_SOCK: "/tmp/ssh-x/agent.1", DBUS_SESSION_BUS_ADDRESS: "unix:path=/tmp/dbus-x,guid=1" }, { cwd: "/w/tree" });
+  for (const path of ["/w/private/npmrc", "/tmp/ssh-x/agent.1", "/tmp/dbus-x"]) assert.ok(relative.includes(path), path);
   // OpenCode's settings under a moved config folder are hidden from the other CLIs, not from OpenCode.
   assert.ok(lockedPaths("claude", { HOME: "/h", XDG_CONFIG_HOME: "/custom" }).includes("/custom/opencode/opencode.jsonc"));
   assert.ok(!lockedPaths("opencode", { HOME: "/h", XDG_CONFIG_HOME: "/custom" }).includes("/custom/opencode/opencode.json"));
@@ -267,6 +270,11 @@ test("a link inside a key folder locks what it points at, through both paths; a 
   assert.deepEqual(linkTargets([join(home, ".config/fleet")], { keep: [home, worktree] }).unsafe.sort(),
     [`${join(home, ".config/fleet/ssl")} -> ${realpathSync("/etc/ssl")}`, `${join(home, ".config/fleet/w")} -> ${worktree}`].sort());
   rmSync(join(home, ".config/fleet/w")); rmSync(join(home, ".config/fleet/ssl"));
+  // A key folder that cannot be listed could hide a link: refused.
+  const shut = join(home, ".config/fleet/shut"); mkdirSync(shut); chmodSync(shut, 0o111);
+  t.after(() => { if (existsSync(shut)) chmodSync(shut, 0o755); });
+  assert.match(linkTargets([join(home, ".config/fleet")], { keep: [home] }).unsafe[0], /shut \(cannot be listed: EACCES\)$/);
+  chmodSync(shut, 0o755); rmSync(shut, { recursive: true });
   // A link to a device (known_hosts -> /dev/null) is neither locked nor refused.
   symlinkSync("/dev/null", join(home, ".config/fleet/known_hosts"));
   assert.deepEqual(linkTargets([join(home, ".config/fleet")], { keep: [home] }), { paths: [join(home, ".config/fleet")], unsafe: [], tooLarge: null });
@@ -275,7 +283,7 @@ test("a link inside a key folder locks what it points at, through both paths; a 
   symlinkSync(dir, join(home, ".config/gh/up"));
   assert.deepEqual(linkTargets([join(home, ".config/gh")], { keep: [home] }).unsafe.sort(), [`${join(home, ".config/gh/up")} -> ${dir}`, `${join(home, ".config/gh/usr")} -> /usr`].sort());
   assert.throws(() => keyGuard({ cli: "claude", kind: "build", common: join(dir, "repo/.git"), env: { HOME: home, PATH: process.env.PATH } }),
-    /cannot lock the key files for this build: a key folder links to a folder the lock cannot hide \(.*\); move the keys into a folder of their own/);
+    /cannot lock the key files for this build: a key folder links to a folder the lock cannot hide, or cannot be searched \(.*\); move the keys into a folder of their own/);
 });
 
 test("kit doctor's note says whether the lock is on, off or cannot start", t => {

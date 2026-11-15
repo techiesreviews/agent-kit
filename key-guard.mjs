@@ -102,8 +102,10 @@ function home(env) {
  * (agent sockets, the keyring, the session bus, systemd's user manager) and terminal and X sockets in /tmp.
  * Missing paths are included; existingPaths keeps the ones there now.
  */
-export function lockedPaths(cli, env = process.env, { apiRoute = false } = {}) {
+export function lockedPaths(cli, env = process.env, { apiRoute = false, cwd = process.cwd() } = {}) {
   const base = home(env);
+  // A path a variable names, absolute or relative to the folder the agent runs in (the worktree); "" for none.
+  const named = value => value ? resolve(cwd, value) : "";
   const paths = homeKeyPaths.map(path => join(base, path));
   for (const [other, list] of Object.entries(cliKeyPaths)) {
     // Codex's own login and config are hidden from its commands (its profile); the API route signs Claude in with a key.
@@ -111,21 +113,24 @@ export function lockedPaths(cli, env = process.env, { apiRoute = false } = {}) {
   }
   if (env.CODEX_HOME) paths.push(join(env.CODEX_HOME, "auth.json"), join(env.CODEX_HOME, "config.toml"));
   // Claude's moved config folder: its MCP config for every CLI, its login for the others.
-  if (env.CLAUDE_CONFIG_DIR?.startsWith("/")) {
-    paths.push(join(env.CLAUDE_CONFIG_DIR, ".claude.json"));
-    if (cli !== "claude" || apiRoute) paths.push(join(env.CLAUDE_CONFIG_DIR, ".credentials.json"));
+  if (env.CLAUDE_CONFIG_DIR) {
+    paths.push(join(named(env.CLAUDE_CONFIG_DIR), ".claude.json"));
+    if (cli !== "claude" || apiRoute) paths.push(join(named(env.CLAUDE_CONFIG_DIR), ".credentials.json"));
   }
   // OpenCode's data folder where XDG_DATA_HOME moves it, and a database OPENCODE_DB names (with its journals).
   if (cli !== "opencode") {
-    if (env.XDG_DATA_HOME?.startsWith("/")) paths.push(join(env.XDG_DATA_HOME, "opencode"));
-    if (env.OPENCODE_DB?.startsWith("/")) paths.push(...["", "-wal", "-shm", "-journal"].map(end => env.OPENCODE_DB + end));
+    if (env.XDG_DATA_HOME) paths.push(join(named(env.XDG_DATA_HOME), "opencode"));
+    if (env.OPENCODE_DB) paths.push(...["", "-wal", "-shm", "-journal"].map(end => named(env.OPENCODE_DB) + end));
   }
   // kit review's own Codex home (a temporary folder whose auth.json links the real login, which Codex may swap for a
   // refreshed file mid-run) is hidden whole from its commands: the link and whatever replaces it.
   if (cli === "codex" && env.CODEX_HOME && resolve(env.CODEX_HOME) !== join(base, ".codex") && inside(resolve(env.CODEX_HOME), resolve(tmpdir()))) paths.push(env.CODEX_HOME);
   // Tools that keep their keys where a variable says (gh's GH_CONFIG_DIR among them, which the kit itself sets).
   // KUBECONFIG holds a list of files.
-  for (const name of keyFolderVariables) for (const path of String(env[name] ?? "").split(name === "KUBECONFIG" ? ":" : "\0")) if (path.startsWith("/")) paths.push(path);
+  for (const name of keyFolderVariables) for (const path of String(env[name] ?? "").split(name === "KUBECONFIG" ? ":" : "\0")) if (path) paths.push(named(path));
+  // Agent sockets wherever they are: dropping the variable hides the name, not the socket.
+  if (env.SSH_AUTH_SOCK) paths.push(named(env.SSH_AUTH_SOCK));
+  for (const [, path] of String(env.DBUS_SESSION_BUS_ADDRESS ?? "").matchAll(/(?:^|[,;:])path=([^,;]+)/g)) paths.push(named(path));
   if (env.XDG_CONFIG_HOME && resolve(env.XDG_CONFIG_HOME) !== join(base, ".config")) {
     paths.push(...configKeyNames.map(name => join(env.XDG_CONFIG_HOME, name)));
     // The CLIs' own settings there too (OpenCode's), but the run's own.
@@ -134,9 +139,9 @@ export function lockedPaths(cli, env = process.env, { apiRoute = false } = {}) {
     }
   }
   // The API key file, for every CLI: the API route's wrapper reads it before claude starts inside the lock.
-  if (env.KIT_API_KEY_FILE?.startsWith("/")) paths.push(env.KIT_API_KEY_FILE);
+  if (env.KIT_API_KEY_FILE) paths.push(named(env.KIT_API_KEY_FILE));
   // The display's cookie wherever the session keeps it (older SDDM: /tmp/xauth_…).
-  if (env.XAUTHORITY?.startsWith("/")) paths.push(env.XAUTHORITY);
+  if (env.XAUTHORITY) paths.push(named(env.XAUTHORITY));
   for (const extra of String(env.KIT_KEY_PATHS ?? "").split(process.platform === "win32" ? ";" : ":")) {
     if (extra.startsWith("/")) paths.push(extra);
   }
@@ -180,13 +185,13 @@ export function linkTargets(paths, { skip = [], keep = [], limit = 200_000 } = {
   };
   const walk = folder => {
     if (tooLarge) return;
-    let entries;
-    try {
-      const real = realpathSync(folder);
-      if (seen.has(real)) return;
-      seen.add(real);
-      entries = readdirSync(folder, { withFileTypes: true });
-    } catch { return; }
+    let entries, real;
+    try { real = realpathSync(folder); } catch { return; /* Gone. */ }
+    if (seen.has(real)) return;
+    seen.add(real);
+    // A folder that cannot be listed could hide a link: the search is not complete, so the run is refused.
+    try { entries = readdirSync(folder, { withFileTypes: true }); }
+    catch (error) { if (error.code !== "ENOENT") unsafe.push(`${folder} (cannot be listed: ${error.code})`); return; }
     count += entries.length;
     if (count > limit) { tooLarge = searching; return; }
     for (const entry of entries) {
@@ -358,10 +363,10 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
   if (!keyGuardOn(env)) return { off: true, env: {}, wrap: (command, args) => [command, args], close() {} };
   const uid = typeof process.getuid === "function" ? process.getuid() : -1;
   const sockets = [env.XDG_RUNTIME_DIR || `/run/user/${uid}`, `/tmp/tmux-${uid}`, "/run/screen", "/tmp/.X11-unix"];
-  const { paths, unsafe, tooLarge } = linkTargets(lockedPaths(cli, env, { apiRoute }), { skip: sockets,
+  const { paths, unsafe, tooLarge } = linkTargets(lockedPaths(cli, env, { apiRoute, cwd: worktree }), { skip: sockets,
     // Compared with the links' real targets, so through any link on the way (~/Projects -> /data/Projects).
     keep: [home(env), worktree, common].filter(Boolean).map(path => { try { return realpathSync(path); } catch { return resolve(path); } }) });
-  if (unsafe.length) throw new Error(`cannot lock the key files for this ${kind}: a key folder links to a folder the lock cannot hide (${unsafe.join(", ")}); move the keys into a folder of their own, or set ASE_KEY_GUARD=off to run without the lock`);
+  if (unsafe.length) throw new Error(`cannot lock the key files for this ${kind}: a key folder links to a folder the lock cannot hide, or cannot be searched (${unsafe.join(", ")}); move the keys into a folder of their own, or set ASE_KEY_GUARD=off to run without the lock`);
   if (tooLarge) throw new Error(`cannot lock the key files for this ${kind}: ${tooLarge} holds too many files to search for links (over 200000 in the key folders); clear old files there, or set ASE_KEY_GUARD=off to run without the lock`);
   const scrub = scrubbedEnv(cli, env, { apiRoute, model });
   // Codex's own sandbox shares the network too, so the display warning (when bubblewrap can check it) applies to it.
