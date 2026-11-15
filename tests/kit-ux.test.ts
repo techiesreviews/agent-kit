@@ -1068,16 +1068,21 @@ test("kit ux saves its result for the branch, with the visible files as it check
   assert.equal(saved(), null);
   // A change no listed feature covers: the result says so, and holds no visible file.
   put("docs/notes.md", "changed\n");
-  assert.equal(run().status, 0);
+  const quiet = run();
+  assert.equal(quiet.status, 0);
+  assert.doesNotMatch(quiet.stdout, /^note: /m);
   const none = saved();
   assert.deepEqual([none.branch, none.head, none.ok, none.summary, none.partial, none.nothing, none.files], ["build/sf-1-panel", git("rev-parse", "HEAD"), true, "no listed feature touched", null, true, {}]);
   // A visible file no listed feature covers: nothing is tried, the file is still on the result, and kit pr's line for
   // it never says ok.
   put("src/new-panel.ts", "export {};\n");
-  assert.equal(run().result, "RESULT: ok ux nothing visible touched");
+  const untried = run();
+  assert.equal(untried.result, "RESULT: ok ux nothing visible touched");
+  assert.match(untried.stdout, /^note: src\/new-panel\.ts is a visible path, but no listed feature covers the change, so nothing was tried$/m);
   const bare = saved();
+  assert.equal(bare.list, git("hash-object", "docs/agents/features.md"));
   assert.deepEqual([bare.nothing, bare.files], [true, { "src/new-panel.ts": git("hash-object", "src/new-panel.ts") }]);
-  assert.deepEqual(uxGuard({ branch: "build/sf-1-panel", files: bare.files, record: bare, featureList: true }),
+  assert.deepEqual(uxGuard({ branch: "build/sf-1-panel", files: bare.files, record: bare, featureList: bare.list }),
     { ok: true, line: `UX check: nothing to try (kit ux at ${git("rev-parse", "--short=7", "HEAD")}: no feature in docs/agents/features.md covers src/new-panel.ts)` });
   // A visible change, saved or not: each visible file with the hash of its text as checked.
   put("src/page-builder/media-picker.css", ".a { gap: var(--space); }\n.b { gap: 0; }\n");
