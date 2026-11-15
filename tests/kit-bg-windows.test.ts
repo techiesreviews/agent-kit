@@ -705,6 +705,10 @@ test("a .cmd job's arguments reach its program unchanged, and none reaches cmd a
   // A quote of the argument's own would end its quoted part when the batch file reads it again: refused.
   for (const quote of ['say "hi"', 'back\\"slash', 'a"&b', '"'])
     assert.throws(() => kitWinLaunch([job, "fine", quote], { cwd: root, env }), /cmd\.exe cannot hand it an argument with a double quote safely/);
+  // cmd.exe cannot work in a network folder: a .cmd job there is refused; a program or a full path elsewhere still starts.
+  for (const share of ["\\\\server\\share\\project", "//server/share/project"])
+    assert.throws(() => kitWinLaunch([job, "x"], { cwd: share, env }), /cmd\.exe cannot work in a network folder .*give the share a drive letter/);
+  assert.equal(kitWinLaunch([process.execPath], { cwd: "\\\\server\\share", env }).program, process.execPath);
   // A last backslash reads differently to the batch file and to a program it calls: refused.
   for (const trail of ["C:\\work\\", "\\", "two\\\\"])
     assert.throws(() => kitWinLaunch([job, trail], { cwd: root, env }), /ends with a backslash .*leave the last backslash off/);

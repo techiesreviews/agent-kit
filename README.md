@@ -183,15 +183,16 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   (an `.exe` or `.com`; Node refuses a `.cmd` or `.bat` without a shell), so its first word is looked up as Windows
   does (a word with a folder in the job's folder; a bare name in the job's folder, then on `PATH`, a `PATH` folder
   without its quotes, a relative one taken from the job's folder, as Node looks): a bare name first as `.com`, `.exe`,
-  `.bat` or `.cmd` in each of those folders, then as the name itself; a name with an extension of its own folder by
-  folder, as it is first. A `.cmd` or `.bat` runs through `cmd.exe /d /s /c` (`ComSpec`, else `System32\cmd.exe` in
-  the Windows folder), each argument quoted and every cmd special character escaped with `^` (cross-spawn's way), so
-  each argument stays in its quotes when the batch file reads it again (`%1`, or `%*` handed on); an argument with a
-  `"` of its own, which would end those quotes early, one that ends with a backslash, which the batch file and a
-  program it calls cannot both read as given, or one with a line break, is refused. Any other file that is not a
-  program and is a shell script (one with a `#!` line, such as `scripts/agents/kit`, or one without whose name has no
-  extension or ends in `.sh` or `.bash`) runs through Git Bash's `bash.exe`: on `PATH`, else beside the `git.exe` on
-  `PATH`, else under `ProgramW6432`, `ProgramFiles`, `ProgramFiles(x86)` or `LOCALAPPDATA\Programs` in `Git\bin`,
+  `.bat` or `.cmd` in each of those folders, then as the name itself; a name that has its own extension, one folder at
+  a time, as it is before with an added extension. A `.cmd` or `.bat` runs through `cmd.exe /d /s /c` (`ComSpec`, else
+  `System32\cmd.exe` in the Windows folder), each argument quoted and every cmd special character escaped with `^`
+  (cross-spawn's way), so each argument stays in its quotes when the batch file reads it again (`%1`, or `%*` handed
+  on); an argument with a `"` of its own, which would end those quotes early, one that ends with a backslash, which
+  the batch file and a program it calls cannot both read as given, or one with a line break, is refused, and so is a
+  `.cmd` job whose folder is a network share (`\\server\share`), where cmd.exe cannot work. Any other file that is not
+  a program and is a shell script (one with a `#!` line, such as `scripts/agents/kit`, or one without whose name has
+  no extension or ends in `.sh` or `.bash`) runs through Git Bash's `bash.exe`: on `PATH`, else beside the `git.exe`
+  on `PATH`, else under `ProgramW6432`, `ProgramFiles`, `ProgramFiles(x86)` or `LOCALAPPDATA\Programs` in `Git\bin`,
   never WSL's `bash.exe` in the Windows folder or `WindowsApps`. Git Bash would glob bare words of a command line and
   take `'` as a quote, so the words reach it in `KIT_BG_ARGC` and `KIT_BG_ARG_<n>`, which a fixed script reads and
   clears before it runs them (by `exec` for a file with a `#!` line, which Git Bash follows; as a bash script for one
