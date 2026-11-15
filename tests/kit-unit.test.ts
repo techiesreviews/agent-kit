@@ -280,6 +280,10 @@ test("--affected falls back to the plain import scan for each part a project's s
   f.put("scripts/agents/specs-affected.mjs", "export const graphFile = \"src/\";\n");
   const wrong = f.run("--affected", "--list");
   result(wrong, 1, /^RESULT: fail unit scripts\/agents\/specs-affected\.mjs: graphFile must be a regular expression$/);
+  rmSync(join(f.root, "scripts/agents/specs-affected.mjs"));
+  f.put("scripts/agents/specs-affected.mjs", "export const importsOf = 1;\n");
+  const notFunction = f.run("--affected", "--list");
+  result(notFunction, 1, /^RESULT: fail unit scripts\/agents\/specs-affected\.mjs: importsOf must be a function$/);
 });
 
 test("unit.sh with no files runs only the tests its unit.files pattern matches", t => {

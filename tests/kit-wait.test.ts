@@ -440,6 +440,7 @@ case "$1 $2" in
     if [[ $WAIT_MODE == pinned || ( ( $WAIT_MODE == superseded || $WAIT_MODE == moved ) && $count -gt 1 ) ]]; then echo "$new"; else echo "$old"; fi ;;
   'api repos/{owner}/{repo}/commits/abcdef0') echo "$old" ;;
   'api repos/{owner}/{repo}/commits/abcdef9') echo 'gh: No commit found for SHA: abcdef9 (HTTP 422)' >&2; exit 1 ;;
+  'api repos/{owner}/{repo}/commits/abcdef8') echo 'gh: Bad credentials (HTTP 401)' >&2; exit 1 ;;
   'pr view')
     [[ $3 == 42 && $4 == --json && $5 == headRefName,headRefOid ]]
     echo '{"headRefName":"feature/work","headRefOid":"${head}"}' ;;
@@ -678,6 +679,21 @@ test("ci short SHA that neither git nor GitHub knows fails at once with a plain 
   result(output, 1, /fail no commit abcdef9 in this repo or on GitHub \(gh: No commit found for SHA: abcdef9 \(HTTP 422\)\); pass the full SHA$/);
   assert.ok(Date.now() - started < 10000);
   assert.doesNotMatch(fixture.calls(), /run list/);
+  // Any other GitHub failure says it could not ask, not that the commit is missing.
+  const login = await run(t, ["ci", "--sha", "abcdef8", "--timeout", "30s"], fixture.env);
+  result(login, 1, /fail could not expand abcdef8 through GitHub \(gh: Bad credentials \(HTTP 401\)\); pass the full SHA$/);
+  assert.doesNotMatch(fixture.calls(), /run list/);
+});
+
+test("ci short SHA that is also a local branch name goes by the commit, not the branch", async (t) => {
+  const fixture = fakeGh(t, "pinned");
+  const git = (...args: string[]) => spawnSync("git", ["-C", fixture.project, ...args], { encoding: "utf8", env: { ...kitEnv(), GIT_CONFIG_GLOBAL: "/dev/null" } });
+  for (const args of [["init", "-q"], ["remote", "add", "origin", "https://github.com/acme/site.git"],
+    ["-c", "user.name=t", "-c", "user.email=t@example.test", "commit", "-q", "--allow-empty", "-m", "one"], ["branch", "abcdef0"]])
+    assert.equal(git(...args).status, 0);
+  const output = await run(t, ["ci", "--sha", "abcdef0", "--timeout", "2"], fixture.env);
+  result(output, 0, /ci abcdef0 abcdef0 green/);
+  assert.match(fixture.calls(), /commits\/abcdef0 --jq .sha/);
 });
 
 test("ci SHA with no runs waits until its deadline", async (t) => {
