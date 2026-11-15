@@ -440,6 +440,7 @@ case "$1 $2" in
     if [[ $WAIT_MODE == pinned || ( ( $WAIT_MODE == superseded || $WAIT_MODE == moved ) && $count -gt 1 ) ]]; then echo "$new"; else echo "$old"; fi ;;
   'api repos/{owner}/{repo}/commits/abcdef0') echo "$old" ;;
   'api repos/{owner}/{repo}/commits/abcdef9') echo 'gh: No commit found for SHA: abcdef9 (HTTP 422)' >&2; exit 1 ;;
+  'api repos/{owner}/{repo}/commits/abcdef7') echo "$old" ;;
   'api repos/{owner}/{repo}/commits/abcdef8') echo 'gh: Bad credentials (HTTP 401)' >&2; exit 1 ;;
   'pr view')
     [[ $3 == 42 && $4 == --json && $5 == headRefName,headRefOid ]]
@@ -682,6 +683,9 @@ test("ci short SHA that neither git nor GitHub knows fails at once with a plain 
   // Any other GitHub failure says it could not ask, not that the commit is missing.
   const login = await run(t, ["ci", "--sha", "abcdef8", "--timeout", "30s"], fixture.env);
   result(login, 1, /fail could not expand abcdef8 through GitHub \(gh: Bad credentials \(HTTP 401\)\); pass the full SHA$/);
+  // GitHub's commit lookup also takes a branch name: an answer that does not start with the short SHA is no match.
+  const named = await run(t, ["ci", "--sha", "abcdef7", "--timeout", "30s"], fixture.env);
+  result(named, 1, /fail no commit abcdef7 in this repo or on GitHub \(GitHub answered for a branch or tag of that name, abcdef0\); pass the full SHA$/);
   assert.doesNotMatch(fixture.calls(), /run list/);
 });
 
