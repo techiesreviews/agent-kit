@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { bwrapArgs, bwrapWorks, codexProfile, existingPaths, keyGuard, keyGuardReport, lockedPaths, resetBwrapProbe, scrubbedEnv, withLinkTargets } from "../key-guard.mjs";
+import { bwrapArgs, bwrapWorks, codexPaths, codexProfile, existingPaths, keyGuard, keyGuardReport, lockedPaths, resetBwrapProbe, scrubbedEnv, withLinkTargets } from "../key-guard.mjs";
 import { kitEnv } from "./support/kit-env.ts";
 
 // The key lock (TOOLS-285): agents the kit starts cannot read the machine's key files. Every key here is a made-up
@@ -190,11 +190,16 @@ writeFileSync(process.env.FAKE_SEEN, JSON.stringify({ key: process.env.ANTHROPIC
 
 test("PROOF: Codex's own sandbox with the kit's profile cannot read a dummy key file and can write the worktree", { skip: !bwrapUsable ? noBwrap : spawnSync("sh", ["-c", "command -v codex"]).status !== 0 && "codex is not installed" }, t => {
   const { dir, home, files } = keyHome(t);
-  const root = join(dir, "work"); mkdirSync(root); mkdirSync(join(dir, "codex-home"));
-  const profile = codexProfile("build", join(dir, "common"), existingPaths(lockedPaths("codex", { HOME: home })));
-  const run = spawnSync("codex", ["sandbox", ...profile, "--", "sh", "-c", `cat ${JSON.stringify(files.orbit)}; echo rc=$?; touch built && echo built-ok`],
+  const root = join(dir, "work"); mkdirSync(root);
+  // kit review's Codex home links auth.json to the real login: the link's target is what gets hidden.
+  const reviewHome = join(dir, "codex-home"); mkdirSync(reviewHome);
+  symlinkSync(files.codexAuth, join(reviewHome, "auth.json"));
+  const paths = codexPaths(lockedPaths("codex", { HOME: home, CODEX_HOME: reviewHome }));
+  assert.ok(!paths.includes(join(reviewHome, "auth.json")) && paths.includes(files.codexAuth));
+  const profile = codexProfile("build", join(dir, "common"), paths);
+  const run = spawnSync("codex", ["sandbox", ...profile, "--", "sh", "-c", `cat ${JSON.stringify(files.orbit)}; echo rc=$?; cat ${JSON.stringify(join(reviewHome, "auth.json"))}; touch built && echo built-ok`],
     // Its own temporary HOME and CODEX_HOME: the test never touches the real ~/.codex.
-    { cwd: root, encoding: "utf8", timeout: 60_000, env: { ...process.env, HOME: home, CODEX_HOME: join(dir, "codex-home") } });
+    { cwd: root, encoding: "utf8", timeout: 60_000, env: { ...process.env, HOME: home, CODEX_HOME: reviewHome } });
   const said = run.stdout + run.stderr;
   assert.ok(!said.includes(dummy), "the dummy key was readable");
   assert.match(said, /Permission denied/); assert.match(said, /rc=1/); assert.match(said, /built-ok/);
