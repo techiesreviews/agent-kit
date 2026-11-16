@@ -1102,6 +1102,15 @@ test("git safety: every program the repository's own Git settings name is set em
     if (before) git("config", name, before); else git("config", "--unset", name);
   }
   assert.equal(gitSafety({ worktree: root, env, network: true }).problem, null);
+  // A URL with a scheme git does not have itself would start git-remote-<scheme> from PATH: the transports allowed are git's own.
+  const helperBin = join(dir, "helper-bin"), helperNote = join(dir, "helper.txt");
+  mkdirSync(helperBin);
+  writeFileSync(join(helperBin, "git-remote-leak"), `#!/bin/sh\necho ran > ${JSON.stringify(helperNote)}\n`); chmodSync(join(helperBin, "git-remote-leak"), 0o755);
+  const custom = spawnSync("git", ["-C", root, "ls-remote", "leak://example.com/a"], { encoding: "utf8",
+    env: { ...env, ...gitSafety({ worktree: root, env, network: true }).env, PATH: `${helperBin}:${process.env.PATH}` } as NodeJS.ProcessEnv });
+  assert.notEqual(custom.status, 0);
+  assert.match(custom.stderr, /transport 'leak' not allowed/);
+  assert.ok(!existsSync(helperNote), "the remote helper did not start");
   // Which calls reach the network, and which remotes are folders here.
   assert.deepEqual(["fetch", "push", "status", "-c", "x=y"].map(sub => gitNetworkCall([sub])), [true, true, false, false, false]);
   assert.equal(gitNetworkCall(["-C", "/x", "-c", "a=b", "push", "origin"]), true);
@@ -1211,6 +1220,10 @@ test("kit pr's lock for its checks leaves a mark only a process inside it sees, 
   // A token that does not match the mark is no mark; outside the lock there is none, whatever the variable says.
   assert.equal(inside({ KIT_OUTER_LOCK: "made-up" }).outer, false);
   assert.equal(outerLock({ ...env, KIT_OUTER_LOCK: lock.env.KIT_OUTER_LOCK }), false);
-  writeFileSync(join(runtime, "kit-outer-lock"), String(lock.env.KIT_OUTER_LOCK));
-  assert.equal(outerLock({ ...env, KIT_OUTER_LOCK: lock.env.KIT_OUTER_LOCK }), false, "outside a user namespace a planted mark counts for nothing");
+  // Outside a user namespace a planted mark counts for nothing (where this test itself runs in one, a toolbox or a
+  // sandbox, that part cannot be told here).
+  if (/^\s*0\s+0\s+4294967295\s*$/.test(readFileSync("/proc/self/uid_map", "utf8"))) {
+    writeFileSync(join(runtime, "kit-outer-lock"), String(lock.env.KIT_OUTER_LOCK));
+    assert.equal(outerLock({ ...env, KIT_OUTER_LOCK: lock.env.KIT_OUTER_LOCK }), false, "outside a user namespace a planted mark counts for nothing");
+  }
 });

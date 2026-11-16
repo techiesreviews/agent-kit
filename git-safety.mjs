@@ -18,7 +18,8 @@
 // settings for the receive-pack of a folder remote, which runs that folder's own hooks, so kit pr pushes to a folder
 // remote inside the key lock (it needs no credentials). A remote helper the repository's config picks
 // (remote.<name>.vcs, a URL of the form <helper>::<address>, as a remote's URL or a rewrite's) is git-remote-<helper>
-// found on PATH, so a fetch or push refuses it too.
+// found on PATH, so a fetch or push refuses it too; and every call allows only the transports git has itself (file,
+// git, http, https, ssh), so a URL with a scheme of its own (leak://…) starts no helper either.
 // The settings ride in GIT_CONFIG_COUNT/KEY/VALUE, so the git programs a call starts itself (gh's own git calls) get
 // them too.
 import { execFileSync } from "node:child_process";
@@ -67,7 +68,8 @@ const carried = new Set(["user.name", "user.email", "core.excludesfile", "core.a
 // Switched off for every call, whatever any config says.
 const fixed = [["core.hooksPath", "/dev/null"], ["core.fsmonitor", "false"], ["commit.gpgSign", "false"], ["tag.gpgSign", "false"], ["push.gpgSign", "false"],
   ["log.showSignature", "false"], ["merge.verifySignatures", "false"], ["gc.auto", "0"], ["maintenance.auto", "false"],
-  ["fetch.recurseSubmodules", "false"], ["submodule.recurse", "false"], ["push.recurseSubmodules", "no"], ["protocol.ext.allow", "never"]];
+  ["fetch.recurseSubmodules", "false"], ["submodule.recurse", "false"], ["push.recurseSubmodules", "no"], ["protocol.ext.allow", "never"],
+  ["protocol.allow", "never"], ...["file", "git", "http", "https", "ssh"].map(name => [`protocol.${name}.allow`, "always"])];
 const ownScope = scope => scope === "local" || scope === "worktree";
 const realOr = path => { try { return realpathSync(path); } catch { return resolve(path); } };
 

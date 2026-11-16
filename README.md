@@ -301,16 +301,18 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     not matched. A call without the network reads no global or system Git config (a build can write `~/.gitconfig`); the
     user's name and e-mail, the excludes file and the line-ending settings come along. A fetch or push keeps the global
     config (its credential helper) and is refused while the repository's own config holds `http.*` or `credential.*`
-    settings; `kit pr` pushes to a folder remote (whose hooks git runs without these settings) inside the key lock.
-    `safe.directory` names only the worktree and its Git folder. The runner's own git calls also run inside the lock
-    where bubblewrap runs. The runner finds the Git folder from the worktree's files before its first git, so that git
-    is never one a link on PATH leads into the worktree or a linked worktree's shared Git folder for (those files are
-    the worktree's own: a build that rewrote its `.git` file to name another folder takes the real one out of that
-    lookup). `ASE_KEY_GUARD=off` turns these settings off with the lock. Settings a project uses on purpose are switched
-    off too: hooks such as a pre-push check do not run in `kit pr`, and Git LFS (set up in the global config, which `kit
-    pr` does not read) does not run there at all, so `kit pr` stops before its rebase when the branch's or the land
-    branch's `.gitattributes`, or the repository's own attributes file, names `filter=lfs` (land such a change with
-    `ASE_KEY_GUARD=off`).
+    settings. Every call allows only the transports git has itself (file, git, http, https, ssh), and a fetch or push
+    also refuses a remote helper the repository's config names (`remote.<name>.vcs`, a `<helper>::` URL or rewrite), so
+    no `git-remote-<name>` from PATH starts. `kit pr` pushes to a folder remote (whose hooks git runs without these
+    settings) inside the key lock. `safe.directory` names only the worktree and its Git folder. The runner's own git
+    calls also run inside the lock where bubblewrap runs. The runner finds the Git folder from the worktree's files
+    before its first git, so that git is never one a link on PATH leads into the worktree or a linked worktree's shared
+    Git folder for (those files are the worktree's own: a build that rewrote its `.git` file to name another folder
+    takes the real one out of that lookup). `ASE_KEY_GUARD=off` turns these settings off with the lock. Settings a
+    project uses on purpose are switched off too: hooks such as a pre-push check do not run in `kit pr`, and Git LFS
+    (set up in the global config, which `kit pr` does not read) does not run there at all, so `kit pr` stops before its
+    rebase when the branch's or the land branch's `.gitattributes`, or the repository's own attributes file, names
+    `filter=lfs` (land such a change with `ASE_KEY_GUARD=off`).
   - **`kit pr`'s checks.** The project's check, unit, lint, colour, tickets and spec commands come from the worktree's
     own settings and run the build's code, so they run inside the key lock (every CLI's login hidden too, the token
     variables dropped). A check may start the key lock itself (the kit's own tests do), and many systems block a sandbox
