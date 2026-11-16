@@ -25,7 +25,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
+import { BlockList, isIP } from "node:net";
 import { hostname, networkInterfaces } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { sshCommand } from "./key-guard.mjs";
@@ -92,23 +92,27 @@ export function folderRemote(url) {
   return colon < 0 || (slash >= 0 && slash < colon) || /^[a-z]:[\\/]/i.test(url);
 }
 
-// The host a remote URL names (scheme://[user@]host[:port]/…, or the scp form [user@]host:path), lower case, without
-// IPv6 brackets or a trailing dot; "" where it names none.
+// The host a remote URL names (scheme://[user@]host[:port]/…, or the scp form [user@]host:path, a host in brackets in
+// either), lower case, without the brackets, an IPv6 zone or a trailing dot; "" where it names none.
 const remoteHost = url => (/^[a-z][a-z0-9+.-]*:\/\/(?:[^/@]*@)?(\[[^\]]*\]|[^/:?#]*)/i.exec(url)?.[1]
-  ?? /^(?:[^/@:]*@)?([^/:]+):/.exec(url)?.[1] ?? "").replace(/^\[|\]$/g, "").replace(/\.$/, "").toLowerCase();
-// Whether an address (as the resolver gives it) is this machine: loopback, unspecified, or one of its own interfaces.
+  ?? /^(?:[^/@:]*@)?(\[[^\]]*\]|[^/:]+):/.exec(url)?.[1] ?? "").replace(/^\[|\]$/g, "").replace(/%.*$/, "").replace(/\.$/, "").toLowerCase();
+// Whether an address (a literal, or one the resolver gives) is this machine: loopback, unspecified, or one of its own
+// interfaces, compared as parsed addresses (any IPv6 spelling, IPv4 mapped into IPv6 too).
 function ownAddress(address) {
-  const plain = address.toLowerCase().replace(/^::ffff:(?=\d+\.)/, "");
-  if (/^127\./.test(plain) || plain === "0.0.0.0" || plain === "::1" || plain === "::") return true;
-  return Object.values(networkInterfaces()).flat().some(entry => entry && entry.address.toLowerCase() === plain);
+  const here = new BlockList();
+  here.addSubnet("127.0.0.0", 8, "ipv4"); here.addAddress("0.0.0.0", "ipv4"); here.addAddress("::1", "ipv6"); here.addAddress("::", "ipv6");
+  for (const entry of Object.values(networkInterfaces()).flat()) if (entry) try { here.addAddress(entry.address.replace(/%.*$/, ""), entry.family === "IPv6" || entry.family === 6 ? "ipv6" : "ipv4"); } catch { /* Not an address BlockList takes. */ }
+  const plain = address.replace(/%.*$/, "");
+  try { return here.check(plain, isIP(plain) === 6 ? "ipv6" : "ipv4"); } catch { return false; }
 }
 
 /**
  * Whether a remote URL that is not a folder (folderRemote) still reaches this machine itself (TOOLS-320), where a push
  * runs that repository's hooks as this user, outside any lock: its host is localhost (or a name under .localhost) or
  * this machine's own name, or any address the resolver gives for it (127.1, 0x7f000001, a name that points at
- * 127.0.0.1) is loopback or one of this machine's own interfaces. A host that does not resolve is not counted; a name
- * an ssh config maps here, and a name whose answer changes between this check and the push, cannot be told.
+ * 127.0.0.1) is loopback or one of this machine's own interfaces. A host that does not resolve, or does not answer
+ * within 5 seconds, is not counted; a name an ssh config maps here, and a name whose answer changes between this check
+ * and the push, cannot be told.
  */
 export async function loopbackRemote(url) {
   const host = remoteHost(url), own = hostname().toLowerCase();
