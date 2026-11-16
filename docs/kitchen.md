@@ -364,6 +364,8 @@ The twelve old stations folded into these steps (2026-11-15); an old station's l
   --waive` hands the reason on, so one waiver covers both the review findings and the check.
   The release joins `origin/<release>` by one merge into the cut; merge the release PR with a merge commit (the
   `gh pr merge N --merge --match-head-commit <head>` line `kit pr --release` prints), never `--rebase`.
+  A re-cut from the same `origin/<land>` is the same commit, so its reviews and waivers carry over; after the landing
+  branch moved, the new cut is a later review round on what changed, within the same fix-round budget.
 - **Done when:** the live project serves the new version and its number is recorded where the
   extras say.
 

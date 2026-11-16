@@ -14,6 +14,7 @@ import { constants, homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { durationMilliseconds, supervise } from "./sol-run.mjs";
 import { reviewComplete, reviewFormat, reviewScope } from "./review-brief.mjs";
+import { releaseCutSubject } from "./review-loop.mjs";
 import { nextTalkStyle, talkStyleLine } from "./brief-lib.mjs";
 import { apiRoute, apiRouteProblem, apiWrapperRefused, claudeCommand, recordApiSpend } from "./api-route.mjs";
 import { keyGuard, keyGuardOn, runPath, runProgram } from "./key-guard.mjs";
@@ -963,7 +964,13 @@ function preparePrompt(options, brief, out, gitOut) {
       // After a merge from the base, a plain diff also holds what landed on the base: then only the branch's own commits count (the
       // ones the base does not have), merges left out. A conflict fixed inside a merge commit is not in that list.
       const merged = gitOut(["rev-list", "--merges", `${options.since}..${head}`]).toString().trim() !== "";
-      if (merged) {
+      // A release re-cut (TOOLS-310) is a new merge of a newer dev: the plain diff from the earlier cut holds what dev changed
+      // since then and the merge itself (its conflict fixes), which the list of dev's own commits would leave out.
+      const recut = releaseCutSubject.test(gitOut(["show", "-s", unsigned, "--format=%s", head]).toString().trim());
+      if (recut) {
+        writeFileSync(since, gitOut(["diff", ...plain, options.since, head]));
+        sinceNote = ` Changes since the last review (the earlier release cut ${options.since} to this one, git diff: what dev changed since then and the merge itself): read ${JSON.stringify(since)}.`;
+      } else if (merged) {
         writeFileSync(since, gitOut(["log", "-p", ...plain, unsigned, "--reverse", "--no-merges", "--format=commit %H%n%s%n", `${options.since}..${head}`, `^${base}`]));
         sinceNote = ` Changes since the last review (the branch's own commits since ${options.since}, merges from the base left out): read ${JSON.stringify(since)}.`;
       } else {

@@ -544,3 +544,52 @@ test("a waiver given as several reasons: ids anywhere in any of them, and counts
   // One reason works as before.
   assert.deepEqual(waiverCheck("2 findings: both", open), { mode: "count", count: 2, unnamed: [] });
 });
+
+// A fake release branch (TOOLS-310): dev and main, and kit pr's own cut, dev with origin/main merged in by "Merge origin/main into the release cut".
+function releaseRepo(t: { after: (fn: () => void) => void }) {
+  const dir = mkdtempSync(join(tmpdir(), "kit-recut-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const git = (...args: string[]) => spawnSync("git", ["-C", dir, "-c", "user.name=T", "-c", "user.email=t@t", ...args], { encoding: "utf8" }).stdout.trim();
+  git("init", "-q", "-b", "main"); writeFileSync(join(dir, "a"), "1\n"); git("add", "."); git("commit", "-qm", "base");
+  git("checkout", "-qb", "dev"); writeFileSync(join(dir, "d"), "dev 1\n"); git("add", "."); git("commit", "-qm", "landed one");
+  git("checkout", "-q", "main"); writeFileSync(join(dir, "h"), "hotfix\n"); git("add", "."); git("commit", "-qm", "hotfix");
+  const main = git("rev-parse", "HEAD");
+  const cut = () => { git("checkout", "-q", "--detach", "dev"); git("merge", "-q", "--no-edit", "-m", "Merge origin/main into the release cut", main); return git("rev-parse", "HEAD"); };
+  const first = cut();
+  git("checkout", "-q", "dev"); writeFileSync(join(dir, "d"), "dev 2\n"); git("commit", "-qam", "landed two");
+  const second = cut();
+  // A merge that is not kit's release cut, with the same parents: never an earlier cut.
+  git("checkout", "-q", "--detach", "dev~1"); git("merge", "-q", "--no-edit", "-m", "Some other merge", main);
+  const other = git("rev-parse", "HEAD");
+  return { dir, git, main, first, second, other };
+}
+
+test("a re-cut after dev changed answers the review of the earlier release cut: a later round on what changed, not round 1 again (TOOLS-310)", t => {
+  const { dir, main, first, second, other } = releaseRepo(t);
+  const parent = join(dir, "reviews"), folder = join(parent, "20261116T100000Z"); mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "refs.txt"), `${first}\n${main}\n`);
+  writeFileSync(join(folder, "findings.json"), JSON.stringify({ round: 1, branch: "release/cut", model: "m", head: first, findings: withIds([finding("P2")], 1) }));
+  const previous = findPreviousReview(parent, { head: second, base: main, root: dir, branch: "release/cut" });
+  assert.equal(previous?.head, first, "the earlier cut is the review this round answers");
+  assert.equal(previous?.round, 1);
+  // Only kit's own cut counts: a merge of the same parents under another subject is no earlier cut.
+  writeFileSync(join(folder, "refs.txt"), `${other}\n${main}\n`);
+  assert.equal(findPreviousReview(parent, { head: second, base: main, root: dir, branch: "release/cut" }), null);
+});
+
+test("the fix rounds count across re-cuts of one release: second looks at an earlier cut count, a later cut does not (TOOLS-310)", t => {
+  const { dir, first, second, other } = releaseRepo(t);
+  const reviews = join(dir, ".scratch/reviews");
+  const look = (name: string, head: string) => {
+    const folder = join(reviews, "lead", name); mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "refs.txt"), `${head}\nbase\n`);
+    writeFileSync(join(folder, "result.md"), "REVIEW_STATUS: complete\nDefects:\n- Spec: d:1 P2 a should.\n");
+    writeFileSync(join(folder, "second-look.json"), JSON.stringify({ ok: true, branch: "release/cut" }));
+  };
+  look("1", first); look("2", other);
+  const found = earlierSecondLooks(reviews, { branch: "release/cut", head: second, root: dir });
+  assert.deepEqual(found.map((item: { head: string }) => item.head), [first]);
+  assert.equal(fixRoundsDone([{ head: first, findings: [finding("P2")] }, { head: second, findings: [finding("P2")] }], found), 1, "the earlier cut is one fix round");
+  // A later cut is never an earlier one of an older cut.
+  assert.deepEqual(earlierSecondLooks(reviews, { branch: "release/cut", head: first, root: dir }), []);
+});
