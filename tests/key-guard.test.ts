@@ -1111,6 +1111,13 @@ test("git safety: every program the repository's own Git settings name is set em
   assert.notEqual(custom.status, 0);
   assert.match(custom.stderr, /transport 'leak' not allowed/);
   assert.ok(!existsSync(helperNote), "the remote helper did not start");
+  // Not even where the repository's own config allows that transport by name.
+  git("config", "protocol.leak.allow", "always");
+  const allowed = spawnSync("git", ["-C", root, "ls-remote", "leak://example.com/a"], { encoding: "utf8",
+    env: { ...env, ...gitSafety({ worktree: root, env, network: true }).env, PATH: `${helperBin}:${process.env.PATH}` } as NodeJS.ProcessEnv });
+  assert.match(allowed.stderr, /transport 'leak' not allowed/);
+  assert.ok(!existsSync(helperNote), "the remote helper did not start");
+  git("config", "--unset", "protocol.leak.allow");
   // Which calls reach the network, and which remotes are folders here.
   assert.deepEqual(["fetch", "push", "status", "-c", "x=y"].map(sub => gitNetworkCall([sub])), [true, true, false, false, false]);
   assert.equal(gitNetworkCall(["-C", "/x", "-c", "a=b", "push", "origin"]), true);

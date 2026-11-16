@@ -65,11 +65,14 @@ const programSection = /^(alias|pager|trace2)$/;
 const networkSection = /^(http|credential)$/;
 // Settings from the global and system config that a call without the network keeps: who commits, and how files look.
 const carried = new Set(["user.name", "user.email", "core.excludesfile", "core.autocrlf", "core.eol", "core.safecrlf", "core.precomposeunicode", "core.longpaths", "core.symlinks"]);
+// The transports git has itself; the file transport keeps git's own default (only a person's own command, not a
+// submodule's).
+const ownTransports = ["file", "git", "http", "https", "ssh"];
 // Switched off for every call, whatever any config says.
 const fixed = [["core.hooksPath", "/dev/null"], ["core.fsmonitor", "false"], ["commit.gpgSign", "false"], ["tag.gpgSign", "false"], ["push.gpgSign", "false"],
   ["log.showSignature", "false"], ["merge.verifySignatures", "false"], ["gc.auto", "0"], ["maintenance.auto", "false"],
   ["fetch.recurseSubmodules", "false"], ["submodule.recurse", "false"], ["push.recurseSubmodules", "no"], ["protocol.ext.allow", "never"],
-  ["protocol.allow", "never"], ...["file", "git", "http", "https", "ssh"].map(name => [`protocol.${name}.allow`, "always"])];
+  ["protocol.allow", "never"], ["protocol.file.allow", "user"], ...ownTransports.filter(name => name !== "file").map(name => [`protocol.${name}.allow`, "always"])];
 const ownScope = scope => scope === "local" || scope === "worktree";
 const realOr = path => { try { return realpathSync(path); } catch { return resolve(path); } };
 
@@ -125,6 +128,10 @@ export function gitSafety({ worktree, env = process.env, network = false, git = 
     if (network && (networkSection.test(section) || (section === "remote" && (name === "vcs" || ((name === "url" || name === "pushurl") && helper.test(value))))
       || (section === "url" && helper.test(subsection)))) steering.add(key);
     if ((programName.test(name) || programSection.test(section)) && !emptied.has(key)) { emptied.add(key); pairs.push([key, ""]); }
+    // A transport the repository's config allows by name (protocol.<name>.allow) wins over protocol.allow=never: any
+    // but git's own is set to never again, after it.
+    const transport = /^protocol\.(.+)\.allow$/i.exec(key)?.[1];
+    if (transport && !ownTransports.includes(transport.toLowerCase()) && !emptied.has(key)) { emptied.add(key); pairs.push([key, "never"]); }
     const required = `${key.slice(0, key.lastIndexOf("."))}.required`;
     if (section === "filter" && !emptied.has(required)) { emptied.add(required); pairs.push([required, "false"]); }
   }
