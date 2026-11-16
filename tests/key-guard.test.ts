@@ -1137,7 +1137,7 @@ test("TOOLS-320: a remote on this machine itself is told by its name or by every
     ["https://dev.localhost/a.git", true], [`ssh://${hostname()}/a`, true], ["ssh://127.1/a", true], ["ssh://0x7f000001/a", true], ["ssh://[::ffff:127.0.0.1]/a", true],
     ["ssh://0.0.0.0/a", true], ["git@[::1]:a.git", true], ["[127.0.0.1]:a.git", true], ["git@[2001:db8::1]:a.git", false],
     ["git@x@localhost:a.git", true], ["ssh://a@b@localhost/a", true], ["ssh://a@b@127.0.0.1/a", true], ["ssh://%6cocalhost/a", true],
-    ["ssh://%31%32%37.0.0.1/a", true], ["ssh://[::1%25lo]/a", true], ["%6cocalhost:a.git", false], ["ssh://[0:0:0:0:0:0:0:1]/a", true], ["ssh://[0::1]/a", true], ["ssh://[::ffff:7f00:1]/a", true], ...(own ? [[`ssh://${own}/a`, true]] : []), ["git@github.invalid:a/b.git", false], ["https://192.0.2.1/a", false], ["ssh://h.invalid/x", false]] as const)
+    ["ssh://%31%32%37.0.0.1/a", true], ["ssh://%6cocalhost/a%zz.git", true], ["ssh://%6cocalhost/caf%e9.git", true], ["ssh://%6cocalhost/100%", true], ["ssh://[::1%25lo]/a", true], ["%6cocalhost:a.git", false], ["ssh://[0:0:0:0:0:0:0:1]/a", true], ["ssh://[0::1]/a", true], ["ssh://[::ffff:7f00:1]/a", true], ...(own ? [[`ssh://${own}/a`, true]] : []), ["git@github.invalid:a/b.git", false], ["https://192.0.2.1/a", false], ["ssh://h.invalid/x", false]] as const)
     assert.equal(await loopbackRemote(url), here, url);
 });
 
@@ -1253,8 +1253,8 @@ test("TOOLS-320: a fetch or push starts git's ssh by its full path, from GIT_SSH
   assert.equal(safety({ ...base, PATH: `${bin}:/usr/bin:/bin` }).env.GIT_SSH_VARIANT, undefined, "the command starts with ssh: git tells its kind");
   assert.equal(safety({ ...base, GIT_SSH_VARIANT: "simple" }).env.GIT_SSH_VARIANT, undefined, "the lead's own kind stays");
   assert.equal(safety({ ...base, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "ssh.variant", GIT_CONFIG_VALUE_0: "simple" }).env.GIT_SSH_VARIANT, undefined);
-  // A PATH among the lead's own words does not bring the link's folder back.
-  assert.equal(safety({ ...base, GIT_SSH_COMMAND: `PATH=${links}:${bin} ssh` }).env.GIT_SSH_COMMAND, `PATH=${links}:${bin} ${clean}${join(bin, "ssh")}`);
+  // A PATH among the lead's own words would bring the link's folder back, even where the call's own PATH is clean.
+  assert.match(String(safety({ ...base, PATH: `${bin}:/usr/bin:/bin`, GIT_SSH_COMMAND: `PATH=${links} timeout 30 ssh` }).env.GIT_SSH_COMMAND), /cannot be told: it sets PATH itself/);
   assert.match(lsRemote(base), /^lead's ssh .*example\.invalid/);
   // The repository's own core.sshCommand is the build's: it is not taken.
   git("config", "core.sshCommand", "ssh -o Repo=1");

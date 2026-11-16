@@ -308,8 +308,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     repository's is set empty), else `GIT_SSH`, else `ssh`, with the command's other words kept, and where a PATH folder
     holds a link into the worktree or the Git folder the command's PATH leaves that folder out, for a program it starts
     by name in turn (`timeout 30 ssh`, a wrapper script). A command whose program cannot be told (shell syntax beyond
-    words and quotes, an expansion, `env`), or an ssh PATH holds only as such a link, is swapped for one that says so
-    and fails, so only a call to an ssh remote stops. `kit pr` pushes to a folder remote (whose hooks git runs without
+    words and quotes, an expansion, `env`, a `PATH=` of its own), or an ssh PATH holds only as such a link, is swapped
+    for one that says so and fails, so only a call to an ssh remote stops. `kit pr` pushes to a folder remote (whose hooks git runs without
     these settings) inside the key lock. It weighs every push address the remote lists, rewrites applied (TOOLS-320):
     a folder beside other addresses (which need the credentials the lock hides), or an address on this machine itself
     (localhost, the machine's own name, or a host any of whose addresses is loopback or one of the machine's own, whose

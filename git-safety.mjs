@@ -97,8 +97,8 @@ export function folderRemote(url) {
 // read it: a scheme:// URL is percent-decoded first, and the user part ends at the last @ before the host.
 function remoteHost(url) {
   const scheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(url);
-  let text = url;
-  if (scheme) try { text = decodeURIComponent(url); } catch { /* Not valid percent codes: git reads them as they are. */ }
+  // Each valid %XX on its own, as git's url_decode does; a broken one stays as it is.
+  const text = scheme ? url.replace(/%([0-9a-f]{2})/gi, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16))) : url;
   const host = scheme ? /^[a-z][a-z0-9+.-]*:\/\/(?:[^/]*@)?(\[[^\]]*\]|[^/:?#]*)/i.exec(text)?.[1] : /^(?:[^/:]*@)?(\[[^\]]*\]|[^/:@]+):/.exec(text)?.[1];
   return (host ?? "").replace(/^\[|\]$/g, "").replace(/%.*$/, "").replace(/\.$/, "").toLowerCase();
 }
