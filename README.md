@@ -299,8 +299,10 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   never starts in the kit's name; the run's own PATH leaves those folders out, and a CLI only they hold counts as
   missing. A link in a PATH folder elsewhere that leads into the worktree or the Git folder (an `npm link`, a
   dotfiles `bin`) is passed over too, though its folder stays on PATH: the next one on PATH starts, by its full path
-  (Codex, which runs without bubblewrap, and the runner's first git as well), and where PATH holds no other the run
-  stops and says so instead of starting the link by its bare name. Only the names the kit itself starts are looked up
+  (Codex, which runs without bubblewrap, as well), and where PATH holds no other the run
+  stops and says so instead of starting the link by its bare name. The runner's first git, which finds the Git folder,
+  is looked up the same way for a link into the worktree; one into a linked worktree's separate Git folder still runs
+  for that one call and is refused after it (TOOLS-303). Only the names the kit itself starts are looked up
   that way: the link's folder stays on the run's PATH, so what a started program finds there by a bare name (the
   `node` of a `#!/usr/bin/env node` launcher, the commands of the API route's wrapper) can still be such a link
   (TOOLS-303). A PATH folder elsewhere that a build can write (under HOME) is not covered.
