@@ -72,6 +72,15 @@ export function branchRisk({ root, base, ticket, settings }) {
 /** The fix-round limit for a change: 3, or 5 for a risky one (rounds past 3 still need an open blocker or should). */
 export const roundLimit = risky => (risky ? RISKY_ROUNDS : NORMAL_ROUNDS);
 
+/**
+ * The fix rounds a branch has used, from its chain of review records (reviewChain): review round N comes after N - 1 fix
+ * rounds, so it is the last record's round minus one. No record, or a round that is not a whole number above 0, counts 0.
+ */
+export function fixRoundsDone(chain) {
+  const round = chain.at(-1)?.round;
+  return Number.isInteger(round) && round > 0 ? round - 1 : 0;
+}
+
 /** blocker (P0, P1), should (P2) or nit (P3, a validation gap); an unread severity counts as a blocker, never as a nit. */
 export function severityWord(item) {
   if (item.group === "Validation gaps") return "nit";
@@ -224,17 +233,20 @@ export function secondLookRows(findings, { ids = new Map(), waived = [] } = {}) 
  * How a lead's --waive reason names the findings it waives (TOOLS-225). `open` is [{ id }]: the findings the waiver would let
  * through, all above P3 (P3s, validation gaps and nits never need a waiver, so they are never named). The reason names them
  * by id anywhere in its text ("R1-2 and SL-1: ..."), or starts with a count ("3 findings: ..."); ids win when it has both.
+ * `reason` may be a list (several --waive values): ids count in any of them, and the counts the values start with add up.
  * Returns the mode and what is left unnamed: "ids" leaves the ids the text does not name, "count" leaves nothing here (the
  * count is compared with every waived finding of both looks once they have run), "none" leaves all of them.
  */
 export function waiverCheck(reason, open) {
-  const text = String(reason ?? "");
+  // Several --waive values are one waiver: ids may sit in any of them, and the counts they start with add up.
+  const reasons = (Array.isArray(reason) ? reason : [reason]).map(item => String(item ?? ""));
+  const text = reasons.join("\n");
   const named = id => new RegExp(`(?<![\\w-])${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`, "i").test(text);
   // A finding carried into a later round is named by its new id or by the id the ledger keeps for it (`aliases`).
   const isNamed = item => [item.id, ...(item.aliases ?? [])].some(named);
   if (open.some(isNamed)) return { mode: "ids", unnamed: open.filter(item => !isNamed(item)) };
-  const count = /^\s*(\d+)\s+(?:open\s+)?findings?\b/i.exec(text);
-  if (count) return { mode: "count", count: Number(count[1]), unnamed: [] };
+  const counts = reasons.map(item => /^\s*(\d+)\s+(?:open\s+)?findings?\b/i.exec(item)).filter(Boolean);
+  if (counts.length) return { mode: "count", count: counts.reduce((sum, match) => sum + Number(match[1]), 0), unnamed: [] };
   return { mode: "none", unnamed: open };
 }
 

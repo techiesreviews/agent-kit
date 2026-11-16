@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { NORMAL_ROUNDS, modelsLine, RISKY_ROUNDS, branchRisk, budgetReport, findPreviousReview, isNit, ledgerRows, loopBriefSection, loopStop, parseMarks, prLine, renderLedger, reviewChain, riskyChange, roundLimit, secondLookRows, severityWord, stoppingFindings, unmarkedIds, waiverCheck, waiverRefusal, withIds } from "../review-loop.mjs";
+import { NORMAL_ROUNDS, fixRoundsDone, modelsLine, RISKY_ROUNDS, branchRisk, budgetReport, findPreviousReview, isNit, ledgerRows, loopBriefSection, loopStop, parseMarks, prLine, renderLedger, reviewChain, riskyChange, roundLimit, secondLookRows, severityWord, stoppingFindings, unmarkedIds, waiverCheck, waiverRefusal, withIds } from "../review-loop.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { findingsRecord, openFindings } from "../review-findings.mjs";
 
@@ -481,4 +481,23 @@ test("waiver: a carried finding is named by its newest id or by an id the ledger
   assert.deepEqual(waiverCheck("R1-1 and SL-1", open).unnamed, []);
   assert.deepEqual(waiverCheck("R3-1", open).unnamed.map((item: { id: string }) => item.id), ["SL-1"]);
   assert.match(waiverRefusal({ mode: "ids", open: [open[0]] }), /^- R3-1 \(the ledger's R1-1\) \(no severity\): x$/m);
+});
+
+// TOOLS-287: the fix rounds come from the review records: review round N comes after N - 1 fix rounds.
+test("fix rounds done: the last review's round minus one, never below 0; no record or an unread round is 0", () => {
+  assert.equal(fixRoundsDone([]), 0);
+  assert.equal(fixRoundsDone([{ round: 1 }]), 0);
+  assert.equal(fixRoundsDone([{ round: 1 }, { round: 2 }, { round: 3 }, { round: 4 }]), 3);
+  assert.equal(fixRoundsDone([{ round: 6 }]), 5);
+  for (const round of [undefined, 0, -2, 2.5, "4", null]) assert.equal(fixRoundsDone([{ round }]), 0, String(round));
+});
+
+test("a waiver given as several reasons: ids anywhere in any of them, and counts that start each one add up", () => {
+  const open = [{ id: "R1-1" }, { id: "SL-1" }];
+  assert.deepEqual(waiverCheck(["R1-1: fine", "SL-1: also fine"], open), { mode: "ids", unnamed: [] });
+  assert.deepEqual(waiverCheck(["R1-1: fine", "nothing named"], open), { mode: "ids", unnamed: [{ id: "SL-1" }] });
+  assert.deepEqual(waiverCheck(["1 finding: one", "2 findings: two"], open), { mode: "count", count: 3, unnamed: [] });
+  assert.deepEqual(waiverCheck(["no names", "none here"], open), { mode: "none", unnamed: open });
+  // One reason works as before.
+  assert.deepEqual(waiverCheck("2 findings: both", open), { mode: "count", count: 2, unnamed: [] });
 });

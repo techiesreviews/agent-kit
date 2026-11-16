@@ -301,7 +301,7 @@ test("help and argument errors, including the kit front door", t => {
     const result = f.run([arg]); assert.equal(result.status, 0); assert.match(result.stdout, /Usage: kit pr/); assert.match(result.stdout, /--waive/); assert.doesNotMatch(result.stdout, /RESULT:/);
   }
   for (const args of [["--wat"], ["--base"], ["--title"], ["--ticket", "--no-merge"], ["--base", "dev", "--base", "main"],
-    ["--waive"], ["--waive", " "], ["--waive", "reason", "--waive", "again"]]) {
+    ["--waive"], ["--waive", " "], ["--waive", "reason", "--waive", " "]]) {
     const result = f.run(args, {}, true); assert.equal(result.status, 2); assert.match(result.stderr, /Usage:/); assert.match(result.stdout, /RESULT: fail invalid arguments: /);
   }
   assert.deepEqual(f.calls(), []);
@@ -2984,19 +2984,104 @@ test("out of budget with a should (P2) left lands as a follow-up for Lex but the
   assert.doesNotMatch(result.stdout, /Verdict: approved/);
 });
 
-// kit fix, which saved the fix rounds kit pr counts, was cut (TOOLS-235): with no saved rounds a helper's later review
-// still counts 0 of them, so a should keeps blocking (no budget report) until the lead waives it by id (a known gap).
-test("with no rounds saved by the cut kit fix, a should at review round 4 still blocks until the lead waives it by id", t => {
+// TOOLS-287: kit pr counts the fix rounds from the review records themselves (review round N comes after N - 1 fix rounds),
+// since the cut kit fix no longer saves them: 3 fix rounds (5 for a risky change), then only blockers block.
+const reviewAtRound = (f: ReturnType<typeof fixture>, round: number, severity?: string, owner?: string) => {
+  const text = severity ? `${severity}: Real finding.` : "";
+  const path = f.saveReview(severity ? cleanReview.replace("Spec: none.", `Spec: ${text}`) : cleanReview, owner);
+  writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ round, model: "claude-opus-5-5", head: f.git("rev-parse", "HEAD"),
+    findings: severity ? [{ id: `R${round}-1`, group: "Spec", severity, kind: "unsorted", text }] : [] }));
+};
+
+test("3 fix rounds recorded by the reviews (review round 4): an open should lands as a follow-up, listed for Lex, never approved", t => {
   const f = fixture(t);
-  const path = f.saveReview(cleanReview.replace("Spec: none.", "Spec: P2: Real minor defect."));
-  writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ round: 4, model: "claude-opus-5-5", head: f.git("rev-parse", "HEAD"), findings: [{ id: "R4-1", group: "Spec", severity: "P2", kind: "unsorted", text: "P2: Real minor defect." }] }));
-  const blocked = f.run();
+  reviewAtRound(f, 4, "P2");
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^Review budget used: 3 of 3 fix rounds, 1 open finding\. Running out of budget is not approval; Lex decides\.$/m);
+  assert.match(result.stdout, /^- R4-1 \(should\): P2: Real finding\.$/m);
+  assert.match(result.stdout, /review: 1 follow-ups after 3 fix rounds \(non-blocking\)/);
+  assert.match(result.stdout, /Verdict: not approved \(budget used, 1 open finding left for Lex\)$/m);
+  assert.match(result.stdout.trim().split("\n").at(-1)!, /^RESULT: ok merged #73 /);
+  // Before the budget is used (review round 3, 2 fix rounds) the same should still blocks.
+  const early = fixture(t);
+  reviewAtRound(early, 3, "P2");
+  const blocked = early.run();
   assert.equal(blocked.status, 1, blocked.stdout + blocked.stderr);
   assert.match(blocked.stdout, /RESULT: fail pr #73 review has 1 open findings/);
   assert.doesNotMatch(blocked.stdout, /Review budget used/);
-  const waived = f.run(["--waive", "R4-1: Lex accepted the minor defect."], { ASE_OWNER: "ke-lead" });
-  assert.equal(waived.status, 0, waived.stdout + waived.stderr);
-  assert.match(waived.stdout.trim().split("\n").at(-1)!, /^RESULT: ok merged #73 /);
+});
+
+test("after the 3 fix rounds the reviews recorded, a P0 or P1 still blocks", t => {
+  for (const severity of ["P0", "P1"]) {
+    const f = fixture(t);
+    reviewAtRound(f, 4, severity);
+    const result = f.run();
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, /^Review budget used: 3 of 3 fix rounds, 1 open finding\./m);
+    assert.match(result.stdout, /RESULT: fail pr #73 review has 1 open findings/);
+    assert.equal(f.ghCalls("merge").length, 0);
+  }
+});
+
+test("a risky change gets 5 fix rounds from the review records: a should at review round 4 blocks, at round 6 it lands", t => {
+  const four = fixture(t, { "src/auth/login.ts": "export const login = 1;\n" });
+  reviewAtRound(four, 4, "P2");
+  const blocked = four.run();
+  assert.equal(blocked.status, 1, blocked.stdout + blocked.stderr);
+  assert.match(blocked.stdout, /^review loop: risky change \(path src\/auth\/login\.ts\): up to 5 fix rounds$/m);
+  assert.match(blocked.stdout, /RESULT: fail pr #73 review has 1 open findings/);
+  const six = fixture(t, { "src/auth/login.ts": "export const login = 1;\n" });
+  reviewAtRound(six, 6, "P2");
+  const landed = six.run();
+  assert.equal(landed.status, 0, landed.stdout + landed.stderr);
+  assert.match(landed.stdout, /^Review budget used: 5 of 5 fix rounds, 1 open finding\./m);
+  assert.match(landed.stdout, /review: 1 follow-ups after 5 fix rounds \(non-blocking\)/);
+});
+
+test("the second look follows the same budget: once the reviews recorded 3 fix rounds its should lands, its P1 still blocks", t => {
+  const should = "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P2 a second-look should.\n";
+  const used = fixture(t);
+  reviewAtRound(used, 4);
+  const landed = used.run([], { FAKE_SECOND_REVIEW: should });
+  assert.equal(landed.status, 0, landed.stdout + landed.stderr);
+  assert.match(landed.stdout, /^second look: 1 follow-ups after 3 fix rounds \(non-blocking\)$/m);
+  assert.match(landed.stdout, /^- SL-1 \(should\): /m);
+  assert.match(landed.stdout, /Verdict: not approved \(budget used, 1 open finding left for Lex\)$/m);
+  const blocker = fixture(t);
+  reviewAtRound(blocker, 4);
+  const stopped = blocker.run([], { FAKE_SECOND_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P1 a second-look blocker.\n" });
+  assert.equal(stopped.status, 1, stopped.stdout + stopped.stderr);
+  assert.match(stopped.stdout, /RESULT: fail pr #73 second look has 1 open findings/);
+  // Within the budget (review round 2) the second look's should still blocks.
+  const early = fixture(t);
+  reviewAtRound(early, 2);
+  const held = early.run([], { FAKE_SECOND_REVIEW: should });
+  assert.equal(held.status, 1, held.stdout + held.stderr);
+  assert.match(held.stdout, /RESULT: fail pr #73 second look has 1 open findings/);
+});
+
+test("kit pr takes several --waive values: each may name its own findings, and together they cover both looks", t => {
+  const f = fixture(t);
+  reviewAtRound(f, 1, "P2", "ke-lead");
+  const result = f.run(["--waive", "R1-1: Lex accepted the minor defect.", "--waive", "SL-1: accepted for follow-up"],
+    { ASE_OWNER: "ke-lead", FAKE_SECOND_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P1 the second look found this.\n" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout.trim().split("\n").at(-1)!, /^RESULT: ok merged #73 /);
+  assert.match(result.stdout, /Verdict: not approved \(2 open findings waived by the lead\)$/m);
+  // One --waive that names only one of the two still stops the landing.
+  const g = fixture(t);
+  reviewAtRound(g, 1, "P2", "ke-lead");
+  const refused = g.run(["--waive", "R1-1: Lex accepted the minor defect."],
+    { ASE_OWNER: "ke-lead", FAKE_SECOND_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P1 the second look found this.\n" });
+  assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+  assert.match(refused.stdout, /the waiver does not name/);
+  // Counts add up across the values.
+  const h = fixture(t);
+  reviewAtRound(h, 1, "P2", "ke-lead");
+  const counted = h.run(["--waive", "1 finding: the review's", "--waive", "1 finding: the second look's"],
+    { ASE_OWNER: "ke-lead", FAKE_SECOND_REVIEW: "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P1 the second look found this.\n" });
+  assert.equal(counted.status, 0, counted.stdout + counted.stderr);
 });
 
 test("the PR's review block is replaced between markers on a later run, never added twice", t => {
