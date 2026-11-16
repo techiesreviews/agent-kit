@@ -1131,9 +1131,14 @@ async function executeRun(options, out, previous, update, brief) {
     // A resumed run's first call is not the review's first call, so it never refunds.
     // The worktree as the run found it: a first call that left it changed did some work, however soon it failed.
     // A repository with no commit yet has no HEAD; its tree alone shows any work.
-    const head = () => { try { return execFileSync("git", ["-C", options.worktree, "rev-parse", "-q", "--verify", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }); } catch { return ""; } };
-    const tree = () => head()
-      + execFileSync("git", ["-C", options.worktree, "status", "--porcelain", "--untracked-files=all"], { encoding: "utf8" });
+    // The runner's own git calls in the worktree run inside the key lock, without the dropped variables: a build can
+    // change the repository's Git settings, and git status runs what they name (core.fsmonitor, a filter).
+    const worktreeGit = (args, stdio) => {
+      const [command, full] = guard.helper("git", ["-C", options.worktree, ...args]);
+      return execFileSync(command, full, { encoding: "utf8", env: { ...process.env, ...guard.env }, ...(stdio ? { stdio } : {}) });
+    };
+    const head = () => { try { return worktreeGit(["rev-parse", "-q", "--verify", "HEAD"], ["ignore", "pipe", "ignore"]); } catch { return ""; } };
+    const tree = () => head() + worktreeGit(["status", "--porcelain", "--untracked-files=all"]);
     const startTree = tree();
     const context = { options, limit, logPath, log, output, messages, update, prompt, startTree, tree, guard, calls: previous ? 1 : 0 };
     const invoke = (args, descriptor) => invokeAgent(adapter, args, descriptor, context);
@@ -1167,7 +1172,7 @@ async function executeRun(options, out, previous, update, brief) {
       messages.push(`problem: no final report; see ${logPath}`);
       status ||= 1;
     }
-    const gitStatus = execFileSync("git", ["-C", options.worktree, "status", "--short"], { encoding: "utf8" });
+    const gitStatus = worktreeGit(["status", "--short"]);
     // Callers read the last problem line; the CLI's failure explains the rest.
     if (context.cause) messages.push(context.cause);
     return { status, messages, report, gitStatus };

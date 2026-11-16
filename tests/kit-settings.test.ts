@@ -10,6 +10,8 @@ import { kitDevRoot, kitMainRoot, kitMaps, kitSettings, kitSettingsProblems, sco
 import { optionsFor } from "../deps-check.mjs";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
 import { classify, featureListGuard } from "../pr-tier.mjs";
+// The test environment (a temporary HOME, no lock settings from the shell): this file starts agent runs or kit doctor.
+import "./support/kit-env.ts";
 
 const kit = resolve("kit");
 const doctor = resolve("kit.d/doctor");

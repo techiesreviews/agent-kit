@@ -251,7 +251,7 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   rclone, cargo, RubyGems, Kaggle, DigitalOcean, Fly, Netlify, Vercel, Hugging Face; a store that is not on it goes in
   `KIT_KEY_PATHS`), `~/.claude.json` (it holds MCP Authorization headers), `~/.Xauthority`, the API route's key file, the
   other CLIs' logins, Claude's `settings.json` for the other CLIs (it can hold a token), a git config with a token in a
-  URL and a shell start-up file that sets a token, folders and
+  URL and a shell start-up file that sets a token (with the files they pull in, however long the chain), folders and
   files that variables name (`GH_CONFIG_DIR`, `KUBECONFIG`, `GNUPGHOME` …), what links
   inside those folders point to (a link to a folder holding HOME or the worktree, or to a system folder, stops the run:
   the lock cannot hide it; so do a key folder that cannot be listed and key folders too large to search, over 200000
@@ -284,6 +284,15 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   that is installed but cannot start (the system blocks it, the `/proc` check fails). `kit doctor`'s `key lock:` line searches the key folders as a
   run in that worktree would, so it says "on" only where a run would really start: a key folder that cannot be listed,
   is too large or links to a folder the lock cannot hide shows there first.
+- **What the key lock does not do.** It keeps an agent the kit starts from reading the key files while it runs; it does
+  not confine what the agent writes. A build writes wherever the user can (the worktree, the repository's Git folder
+  and settings, files under HOME), and what it leaves runs later with whoever starts it: `kit pr` runs the builder's
+  tests in the lead's process, and the lead's own git commands read the repository's Git settings and hooks. Two
+  such paths are shut: the runner's own `git status` in the worktree runs inside the lock, without the dropped
+  variables (a Git setting a build left, `core.fsmonitor` say, cannot use it to reach the keys), and a CLI starts inside
+  the lock by its full path, found as the run will find it (a program left in the worktree never starts unlocked in a
+  CLI's name). For the rest the lead's guard is the review before anything a build wrote is run (`kit review` is
+  read-only); confining a build's writes, and running `kit pr`'s checks inside the lock, are not built yet.
 - Keyed steps happen only in the lead's own process, never inside a locked run. Already the lead's: `git push`, `kit pr`
   (push, PR, merge, card close) and `kit pr --release` (the build contract leaves a builder's changes unstaged). Moved to
   the lead for locked runs: reading Orbit cards (`kit ticket get|list`, which need the token too), GitHub calls (`gh`,

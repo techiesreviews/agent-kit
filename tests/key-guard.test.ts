@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -143,7 +143,17 @@ test("a git config with a token in a URL and a shell start-up file that sets a t
   writeFileSync(join(home, ".git-private"), '[url "https://x:ghp_y@github.com/"]\n\tinsteadOf = https://github.com/\n');
   mkdirSync(join(home, ".ssh"), { recursive: true });
   writeFileSync(join(home, ".ssh/config"), "Host gh\n  IdentityFile ~/vault/id_ed25519\n");
+  // A chain of any length is followed to its end, and a loop ends: .bash_login -> one.sh -> two.sh -> three.sh -> keys.sh.
+  writeFileSync(join(home, ".bash_login"), "source ~/chain/one.sh\n");
+  mkdirSync(join(home, "chain"));
+  for (const [name, next] of [["one", "two"], ["two", "three"], ["three", "keys"]]) writeFileSync(join(home, `chain/${name}.sh`), `. ~/chain/${next}.sh\n`);
+  writeFileSync(join(home, "chain/keys.sh"), `source ~/chain/one.sh\nexport ORBIT_TOKEN=${dummy}\n`);
+  writeFileSync(join(home, ".git-private"), '[url "https://x:ghp_y@github.com/"]\n\tinsteadOf = https://github.com/\n[include]\n\tpath = chain/a.inc\n');
+  for (const [name, next] of [["a", "b"], ["b", "c"]]) writeFileSync(join(home, `chain/${name}.inc`), `[include]\n\tpath = ${next}.inc\n`);
+  writeFileSync(join(home, "chain/c.inc"), `[http]\n\textraheader = Authorization: Bearer ${dummy}\n`);
   const paths = lockedPaths("claude", { HOME: home });
+  for (const file of ["chain/keys.sh", "chain/c.inc"]) assert.ok(paths.includes(join(home, file)), file);
+  for (const file of ["chain/one.sh", "chain/three.sh", "chain/a.inc"]) assert.ok(!paths.includes(join(home, file)), file);
   for (const file of [".bash_aliases", ".secrets.sh", ".git-private", "keys/deploy", "vault/id_ed25519"]) assert.ok(paths.includes(join(home, file)), file);
   for (const file of [".gitconfig", ".bashrc", ".config/fish/config.fish", ".zshrc", ".bash_profile", ".config/fish/conf.d/secrets.fish", ".config/fish/fish_variables"]) assert.ok(paths.includes(join(home, file)), file);
   for (const file of [".profile", ".config/git/config"]) assert.ok(!paths.includes(join(home, file)), file);
@@ -233,6 +243,8 @@ for (let pid = process.ppid, depth = 0; pid > 1 && depth < 8; depth++) {
   try { pid = Number(readFileSync("/proc/" + pid + "/stat", "utf8").split(") ")[1].split(" ")[1]); } catch { break; }
 }
 writeFileSync("built.txt", "a normal build step\\n");
+// A builder told to leave something behind: a Git setting that makes every later git status run a script of its choice.
+if (process.env.FAKE_HOOK) execFileSync("git", ["config", "core.fsmonitor", process.env.FAKE_HOOK]);
 writeFileSync(process.env.FAKE_SEEN, JSON.stringify(seen));
 const args = process.argv.slice(2);
 process.stdout.write(JSON.stringify({ result: "built", session_id: "s-1", modelUsage: { [args[args.indexOf("--model") + 1]]: {} } }));
@@ -250,12 +262,19 @@ test("PROOF: a Claude build cannot read dummy key files in its HOME nor the toke
   const git = (...args: string[]) => assert.equal(spawnSync("git", ["-C", root, ...args], { encoding: "utf8" }).status, 0);
   git("init", "-q", "-b", "test"); git("-c", "user.name=T", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base");
   const seenFile = join(dir, "seen.json");
+  // The script the builder plants: whoever runs git status in the worktree next runs it, and it notes what it could read.
+  const hook = join(dir, "hook.sh"), hooked = join(dir, "hooked.txt");
+  writeFileSync(hook, `#!/bin/sh\n{ cat ${JSON.stringify(files.orbit)} 2>&1; printf 'token=%s.\\n' "$GH_TOKEN"; } > ${JSON.stringify(hooked)}\n`); chmodSync(hook, 0o755);
   const env = { ...homeEnv(home), PATH: `${bin}:${process.env.PATH}`, GH_TOKEN: dummy, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "60s", KIT_TALK_STYLE: "plain",
-    FAKE_SEEN: seenFile, FAKE_TRIES: JSON.stringify(files) } as NodeJS.ProcessEnv;
+    FAKE_SEEN: seenFile, FAKE_TRIES: JSON.stringify(files), FAKE_HOOK: hook } as NodeJS.ProcessEnv;
   delete env.ASE_KEY_GUARD;
   const run = spawnSync(process.execPath, [resolve("agent-run.mjs"), "build", root, brief, "--out", out, "--cli", "claude", "--model", "claude-opus-5-5"],
     { cwd: root, env, encoding: "utf8", timeout: 60_000 });
   assert.equal(run.status, 0, run.stdout + run.stderr);
+  // The runner's own git status after the build ran the planted script, inside the lock: no key file, no token.
+  const left = readFileSync(hooked, "utf8");
+  assert.ok(!left.includes(dummy), `the runner ran the builder's script outside the lock: ${left}`);
+  assert.match(left, /(No such file or directory|Permission denied)\ntoken=\.\n$/);
   const seen = JSON.parse(readFileSync(seenFile, "utf8"));
   for (const name of ["orbit", "gh", "wrangler", "claudeJson", "codexAuth"]) {
     assert.ok(!seen[name].includes(dummy), `${name} was readable`);
@@ -356,12 +375,39 @@ test("PROOF: Codex's own sandbox with the kit's profile cannot read a dummy key 
   assert.match(said, /Permission denied/); assert.match(said, /rc=1/); assert.match(said, /built-ok/);
 });
 
-test("a CLI that is not installed is started as it is, so the run still fails as a missing CLI", { skip: noBwrap }, () => {
+test("a CLI that is not installed is started as it is, so the run still fails as a missing CLI; one that is there runs inside the lock by its full path, found as the run will find it", { skip: noBwrap }, t => {
   const guard = keyGuard({ cli: "grok", kind: "review", common: "/c", env: { HOME: "/h", PATH: "/nonexistent-folder" } });
   assert.deepEqual(guard.wrap("grok", ["-m", "x"]), ["grok", ["-m", "x"]]);
   const present = keyGuard({ cli: "claude", kind: "review", common: "/c", env: { HOME: "/h", PATH: process.env.PATH } });
   const [command, args] = present.wrap("sh", ["-c", "true"]);
-  assert.equal(command, "bwrap"); assert.deepEqual(args.slice(-4), ["--", "sh", "-c", "true"]);
+  assert.equal(command, "bwrap"); assert.deepEqual(args.slice(-2), ["-c", "true"]);
+  assert.equal(args.at(-4), "--"); assert.match(args.at(-3), /^\/.*\/sh$/);
+  // The run starts in the worktree, so a PATH folder that is not a full path, or an empty one, means a folder there:
+  // a CLI found only that way (one a builder could have left) is no missing CLI, and never starts outside the lock.
+  const { dir } = keyHome(t);
+  const worktree = join(dir, "work"); mkdirSync(join(worktree, "bin"), { recursive: true });
+  for (const file of [join(worktree, "bin/claude"), join(worktree, "grok")]) { writeFileSync(file, "#!/bin/sh\necho planted\n"); chmodSync(file, 0o755); }
+  for (const [cli, path, file] of [["claude", "bin:/usr/bin:/bin", "bin/claude"], ["grok", "/usr/bin::/bin", "grok"], ["grok", "/usr/bin:/bin:", "grok"], ["grok", ".:/usr/bin", "grok"]]) {
+    const inWorktree = keyGuard({ cli, kind: "review", common: "/c", worktree, env: { HOME: "/h", PATH: path } });
+    const [started, startedArgs] = inWorktree.wrap(cli, ["-p"]);
+    assert.equal(started, "bwrap", `${cli} with PATH=${path}`); assert.deepEqual(startedArgs.slice(-3), ["--", join(worktree, file), "-p"]);
+  }
+  // The runner's own helpers that read what an agent left (git status in the worktree) start the same way.
+  const [helper, helperArgs] = present.helper("git", ["status"]);
+  assert.equal(helper, "bwrap"); assert.equal(helperArgs.at(-3), "--"); assert.match(helperArgs.at(-2), /^\/.*\/git$/);
+  assert.deepEqual(keyGuard({ cli: "claude", kind: "build", common: "/c", env: { ASE_KEY_GUARD: "off" } }).helper("git", ["status"]), ["git", ["status"]]);
+  const codex = keyGuard({ cli: "codex", kind: "build", common: "/c", env: { HOME: "/h", PATH: process.env.PATH } });
+  assert.deepEqual(codex.wrap("codex", ["exec"]), ["codex", ["exec"]]);
+  assert.equal(codex.helper("git", ["status"])[0], "bwrap");
+});
+
+test("every test file that starts an agent run or kit doctor loads the test environment, so none of them searches the real HOME", () => {
+  const starts = /agent-run\.mjs|agent\.sh|review\.sh|sol\.sh|"doctor"|kit\.d\/doctor/;
+  const missing = readdirSync("tests").filter(name => name.endsWith(".test.ts")).filter(name => {
+    const text = readFileSync(join("tests", name), "utf8");
+    return starts.test(text) && !/from "\.\/support\/kit-env\.ts"|import "\.\/support\/kit-env\.ts"/.test(text);
+  });
+  assert.deepEqual(missing, []);
 });
 
 test("a link inside a key folder locks what it points at, through both paths; a folder that holds HOME or a system folder is refused", { skip: noBwrap }, t => {
