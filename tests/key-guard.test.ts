@@ -15,6 +15,14 @@ const dummy = "dummy-key-0123456789-not-real";
 const bwrapUsable = bwrapWorks() === null;
 const noBwrap = bwrapUsable ? false : `bubblewrap cannot run here: ${bwrapWorks()}`;
 
+// The test helper's environment with every home folder in the temporary HOME, so the lock's scan never reads the real ones.
+function homeEnv(home: string) {
+  const env = { ...kitEnv(), HOME: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_CACHE_HOME: join(home, ".cache"),
+    XDG_DATA_HOME: join(home, ".local/share"), XDG_STATE_HOME: join(home, ".local/state") } as NodeJS.ProcessEnv;
+  for (const name of ["CODEX_HOME", "CLAUDE_CONFIG_DIR", "GROK_HOME", "GH_CONFIG_DIR", "ZDOTDIR", "GIT_CONFIG_GLOBAL"]) delete env[name];
+  return env;
+}
+
 // A temporary HOME with dummy key files where the real ones live.
 function keyHome(t: TestContext) {
   const dir = mkdtempSync(join(tmpdir(), "kit-key-guard-"));
@@ -106,7 +114,16 @@ test("a git config with a token in a URL and a shell start-up file that sets a t
   writeFileSync(join(home, ".zshrc"), 'set --global --export GPG_PASSPHRASE x\n');
   mkdirSync(join(home, ".config/git"), { recursive: true });
   writeFileSync(join(home, ".config/git/config"), '[url "ssh://git@github.com/"]\n\tinsteadOf = https://github.com/\n');
+  // A token only in a file pulled in, and keys named by IdentityFile or sshCommand -i outside ~/.ssh.
+  writeFileSync(join(home, ".bash_aliases"), `export GH_TOKEN=${dummy}\n`);
+  writeFileSync(join(home, ".zprofile"), "source ~/.secrets.sh\n");
+  writeFileSync(join(home, ".secrets.sh"), `ORBIT_TOKEN=${dummy}\n`);
+  writeFileSync(join(home, ".config/git/config"), '[url "ssh://git@github.com/"]\n\tinsteadOf = https://github.com/\n[include]\n\tpath = ~/.git-private\n[core]\n\tsshCommand = ssh -i ~/keys/deploy\n');
+  writeFileSync(join(home, ".git-private"), '[url "https://x:ghp_y@github.com/"]\n\tinsteadOf = https://github.com/\n');
+  mkdirSync(join(home, ".ssh"), { recursive: true });
+  writeFileSync(join(home, ".ssh/config"), "Host gh\n  IdentityFile ~/vault/id_ed25519\n");
   const paths = lockedPaths("claude", { HOME: home });
+  for (const file of [".bash_aliases", ".secrets.sh", ".git-private", "keys/deploy", "vault/id_ed25519"]) assert.ok(paths.includes(join(home, file)), file);
   for (const file of [".gitconfig", ".bashrc", ".config/fish/config.fish", ".zshrc", ".bash_profile", ".config/fish/conf.d/secrets.fish", ".config/fish/fish_variables"]) assert.ok(paths.includes(join(home, file)), file);
   for (const file of [".profile", ".config/git/config"]) assert.ok(!paths.includes(join(home, file)), file);
 });
@@ -185,7 +202,7 @@ test("PROOF: a Claude build cannot read dummy key files in its HOME nor the toke
   const git = (...args: string[]) => assert.equal(spawnSync("git", ["-C", root, ...args], { encoding: "utf8" }).status, 0);
   git("init", "-q", "-b", "test"); git("-c", "user.name=T", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base");
   const seenFile = join(dir, "seen.json");
-  const env = { ...kitEnv(), HOME: home, PATH: `${bin}:${process.env.PATH}`, GH_TOKEN: dummy, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "60s", KIT_TALK_STYLE: "plain",
+  const env = { ...homeEnv(home), PATH: `${bin}:${process.env.PATH}`, GH_TOKEN: dummy, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "60s", KIT_TALK_STYLE: "plain",
     FAKE_SEEN: seenFile, FAKE_TRIES: JSON.stringify(files) } as NodeJS.ProcessEnv;
   delete env.ASE_KEY_GUARD;
   const run = spawnSync(process.execPath, [resolve("agent-run.mjs"), "build", root, brief, "--out", out, "--cli", "claude", "--model", "claude-opus-5-5"],
@@ -218,7 +235,7 @@ writeFileSync(process.env.FAKE_SEEN, JSON.stringify({ key: process.env.ANTHROPIC
 `);
   chmodSync(join(bin, "claude"), 0o755);
   writeFileSync(join(bin, "package.json"), '{"type":"module"}');
-  const env = { ...kitEnv(), HOME: home, PATH: `${bin}:${process.env.PATH}`, KIT_API_KEY_FILE: keyFile } as NodeJS.ProcessEnv;
+  const env = { ...homeEnv(home), PATH: `${bin}:${process.env.PATH}`, KIT_API_KEY_FILE: keyFile } as NodeJS.ProcessEnv;
   const guard = keyGuard({ cli: "claude", kind: "review", common: "/c", env, apiRoute: true });
   t.after(() => guard.close());
   const seenFile = join(dir, "seen.json");
@@ -349,7 +366,7 @@ process.stdout.write(JSON.stringify({ sessionId: "g-1", text: "REVIEW_STATUS: co
   git("init", "-q", "-b", "test"); git("commit", "-q", "--allow-empty", "-m", "base");
   writeFileSync(join(root, "file.txt"), "change\n"); git("add", "file.txt"); git("commit", "-q", "-m", "change");
   const seenFile = join(dir, "seen.json");
-  const env = { ...kitEnv(), HOME: home, PATH: `${bin}:${process.env.PATH}`, GH_TOKEN: dummy, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "60s", FAKE_SEEN: seenFile, FAKE_TRIES: JSON.stringify(files) } as NodeJS.ProcessEnv;
+  const env = { ...homeEnv(home), PATH: `${bin}:${process.env.PATH}`, GH_TOKEN: dummy, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "60s", FAKE_SEEN: seenFile, FAKE_TRIES: JSON.stringify(files) } as NodeJS.ProcessEnv;
   delete env.ASE_KEY_GUARD;
   const run = spawnSync(process.execPath, [resolve("agent-run.mjs"), "review", root, brief, "--out", out, "--cli", "grok", "--model", "grok-4.7", "--base", "HEAD~1"],
     { cwd: root, env, encoding: "utf8", timeout: 60_000 });

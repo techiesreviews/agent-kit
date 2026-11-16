@@ -27,7 +27,7 @@
 import { spawnSync } from "node:child_process";
 import { accessSync, chmodSync, constants, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 
 // Key files and folders under HOME, whichever CLI runs.
 export const homeKeyPaths = [
@@ -54,7 +54,7 @@ export const cliKeyPaths = {
 // Files a tool needs that may also hold a key: a git config with a token in a remote's URL, a shell start-up file that
 // sets a token. Each is locked only when it holds one, since git and the shell read them on every run.
 const keyedConfigs = [".gitconfig", ".config/git/config"];
-const shellStartups = [".bashrc", ".bash_profile", ".bash_login", ".profile", ".zshenv", ".zshrc", ".zprofile", ".config/fish/config.fish"];
+const shellStartups = [".bashrc", ".bash_aliases", ".bash_profile", ".bash_login", ".profile", ".zshenv", ".zshrc", ".zprofile", ".config/fish/config.fish"];
 // A git config that holds a key: a URL with a user part on http(s) (a token as the user) or a password on ssh and git
 // (a user there is a login name: ssh://git@…, Gerrit's ssh://lex@…), an Authorization extra header, or a credential
 // helper written inline with a password.
@@ -72,6 +72,21 @@ const setsSecret = text => [
 ].some(name => secretName.test(name) && !pointer(name));
 function holds(file, test) {
   try { return statSync(file).isFile() && test(readFileSync(file, "utf8")); } catch { return false; }
+}
+function text(file) {
+  try { return statSync(file).isFile() ? readFileSync(file, "utf8") : ""; } catch { return ""; }
+}
+// A path as a config file writes it: ~ and $HOME are the home, a relative one counts from `from`.
+const expand = (path, base, from) => resolve(from, path.replace(/^["']|["']$/g, "").replace(/^~(?=\/|$)/, base).replace(/^\$(HOME|\{HOME\})(?=\/|$)/, base));
+// The files a set of config files pull in, two levels down: `source`/`.` for shell files, include paths for git.
+function pulledIn(files, pattern, base) {
+  const all = [...files], seen = new Set(files);
+  let level = files;
+  for (let depth = 0; depth < 2; depth++) {
+    level = level.flatMap(file => [...text(file).matchAll(pattern)].map(match => expand(match[1], base, dirname(file)))).filter(file => !seen.has(file));
+    for (const file of level) { seen.add(file); all.push(file); }
+  }
+  return all;
 }
 
 // Variables naming a tool's key file or folder.
@@ -146,7 +161,12 @@ export function lockedPaths(cli, env = process.env, { apiRoute = false, cwd = pr
   });
   const startups = [...shellStartups.map(path => join(base, path)), ...fishFiles,
     ...named(env.ZDOTDIR).flatMap(folder => [".zshenv", ".zshrc", ".zprofile"].map(name => join(folder, name)))];
-  paths.push(...gitConfigs.filter(file => holds(file, keyedUrl)), ...startups.filter(file => holds(file, setsSecret)));
+  // Files they pull in count the same: a git include (include.path, includeIf), a shell `source` or `.`.
+  const allGit = pulledIn(gitConfigs, /^\s*path\s*=\s*(\S+)/gm, base);
+  paths.push(...allGit.filter(file => holds(file, keyedUrl)), ...pulledIn(startups, /^\s*(?:source|\.)\s+(\S+)/gm, base).filter(file => holds(file, setsSecret)));
+  // Private keys named by git's sshCommand -i or ssh's IdentityFile, wherever they sit.
+  for (const file of allGit) for (const [, key] of text(file).matchAll(/sshCommand\s*=.*\s-i\s*(\S+)/gm)) paths.push(expand(key, base, base));
+  for (const [, key] of text(join(base, ".ssh/config")).matchAll(/^\s*IdentityFile\s+(\S+)/gim)) paths.push(expand(key, base, base));
   for (const [other, list] of Object.entries(cliKeyPaths)) {
     // Codex's own login and config are hidden from its commands (its profile); the API route signs Claude in with a key.
     if (other !== cli || cli === "codex" || (cli === "claude" && apiRoute)) paths.push(...list.map(path => join(base, path)));
