@@ -95,9 +95,11 @@ export function fixRoundsDone(chain, secondLooks = []) {
  * reviewed head is an ancestor of `head` and not `head` itself. kit pr passes the head Claude's review saw, which a review
  * reused after a rebase with the same patch keeps, so the count survives that rebase until the next commit (then, like Claude's
  * rounds, it starts again); a rebase that changes the patch, or one in the docs tier (no Claude review), starts it again at once.
+ * A look whose head is already in `base` (the merge base with the land branch) belongs to work that landed before, such as an
+ * earlier branch of the same name, and counts no round for this one.
  * Returns [{ head, findings }] with the findings its result.md left open; a result.md kit cannot read counts no round.
  */
-export function earlierSecondLooks(reviewsRoot, { branch, head, root }) {
+export function earlierSecondLooks(reviewsRoot, { branch, head, root, base }) {
   if (!branch || !head || !existsSync(reviewsRoot)) return [];
   const looks = [];
   for (const owner of readdirSync(reviewsRoot, { withFileTypes: true }).filter(entry => entry.isDirectory())) {
@@ -108,7 +110,11 @@ export function earlierSecondLooks(reviewsRoot, { branch, head, root }) {
         if (mark?.ok !== true || mark.branch !== branch) continue;
         const looked = readFileSync(join(folder, "refs.txt"), "utf8").split(/\r?\n/)[0].trim();
         if (!/^[0-9a-f]{7,64}$/.test(looked) || looked === head) continue;
-        execFileSync("git", ["-C", root, "merge-base", "--is-ancestor", looked, head], { stdio: "ignore" });
+        const isAncestor = of => {
+          try { execFileSync("git", ["-C", root, "merge-base", "--is-ancestor", looked, of], { stdio: "ignore" }); return true; }
+          catch { return false; }
+        };
+        if (!isAncestor(head) || (base && isAncestor(base))) continue;
         // A report kit cannot read stands for a blocker when it is weighed, but it is no review that asked for a fix.
         const report = openFindings(readFileSync(join(folder, "result.md"), "utf8"));
         if (report.readable) looks.push({ head: looked, findings: report.findings });

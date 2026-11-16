@@ -3061,6 +3061,20 @@ test("the branch's earlier second looks count as fix rounds: Claude clean every 
   assert.match(held.stdout, /RESULT: fail pr #73 second look has 1 open findings/);
 });
 
+test("second looks of an earlier branch of the same name, already in the base, count no round for new work", t => {
+  const f = fixture(t);
+  // The earlier branch's three looked-at heads landed in dev; the new work starts from there.
+  const old = [f.git("rev-parse", "HEAD~1"), f.git("rev-parse", "HEAD"), f.commit("Third change")];
+  f.git("push", "-q", "origin", "HEAD:dev");
+  earlierLooks(f, old);
+  f.commit("New work");
+  reviewAtRound(f, 1);
+  const held = f.run([], { FAKE_SECOND_REVIEW: secondShould });
+  assert.equal(held.status, 1, held.stdout + held.stderr);
+  assert.match(held.stdout, /RESULT: fail pr #73 second look has 1 open findings/);
+  assert.doesNotMatch(held.stdout, /Review budget used/);
+});
+
 test("the second looks' rounds survive the rebase kit pr starts with when the patch stays the same", t => {
   const f = fixture(t);
   earlierLooks(f, [f.git("rev-parse", "HEAD~1"), f.git("rev-parse", "HEAD"), f.commit("Third change")]);
