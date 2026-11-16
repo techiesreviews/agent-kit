@@ -97,10 +97,13 @@ test("a git config with a token in a URL and a shell start-up file that sets a t
   writeFileSync(join(home, ".bashrc"), `export GH_TOKEN=${dummy}\n`);
   mkdirSync(join(home, ".config/fish"), { recursive: true });
   writeFileSync(join(home, ".config/fish/config.fish"), `set -gx ORBIT_TOKEN ${dummy}\n`);
-  writeFileSync(join(home, ".profile"), "export PATH=$HOME/bin:$PATH\n");
+  writeFileSync(join(home, ".profile"), "export PATH=$HOME/bin:$PATH\nexport LD_LIBRARY_PATH=/opt/lib\nexport TOKENIZERS_PARALLELISM=false\n");
+  writeFileSync(join(home, ".zshrc"), 'set --global --export GPG_PASSPHRASE x\n');
+  mkdirSync(join(home, ".config/git"), { recursive: true });
+  writeFileSync(join(home, ".config/git/config"), '[url "ssh://git@github.com/"]\n\tinsteadOf = https://github.com/\n');
   const paths = lockedPaths("claude", { HOME: home });
-  for (const file of [".gitconfig", ".bashrc", ".config/fish/config.fish"]) assert.ok(paths.includes(join(home, file)), file);
-  assert.ok(!paths.includes(join(home, ".profile")));
+  for (const file of [".gitconfig", ".bashrc", ".config/fish/config.fish", ".zshrc"]) assert.ok(paths.includes(join(home, file)), file);
+  for (const file of [".profile", ".config/git/config"]) assert.ok(!paths.includes(join(home, file)), file);
 });
 
 test("bwrap swaps key folders for empty ones and key files for /dev/null, skips missing paths and paths inside a masked folder", t => {
