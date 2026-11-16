@@ -310,7 +310,7 @@ async function main(args) {
     console.log(`logs: ${directory}`);
 
     // Keep child RESULT lines in logs, so the command has exactly one final RESULT.
-    async function execute(name, command, argv, input) {
+    async function execute(name, command, argv, input, extraEnv) {
       step = name;
       const log = join(directory, `${name}.log`);
       const fd = openSync(log, "a");
@@ -320,7 +320,7 @@ async function main(args) {
       const logged = kitHidingLog(text => appendFileSync(fd, text));
       try {
         status = await new Promise(accept => {
-          const child = spawn(command, argv, { cwd: root, env: command === "gh" ? ghEnv : env, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
+          const child = spawn(command, argv, { cwd: root, env: { ...(command === "gh" ? ghEnv : env), ...extraEnv }, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
           if (child.stdin) {
             child.stdin.on("error", () => { /* An early child exit is handled by its status. */ });
             child.stdin.end(input);
@@ -437,7 +437,13 @@ async function main(args) {
         if (released.status === 0) throw new Error(`nothing to release: origin/${flags.base} already holds this cut`);
         const inside = await execute("merge", "git", ["merge-base", "--is-ancestor", `origin/${flags.base}`, "HEAD"]);
         if (inside.status === 0) { ok("merge"); return; }
-        const merged = await execute("merge", "git", ["merge", "--no-edit", "-m", `Merge origin/${flags.base} into the release cut`, `origin/${flags.base}`]);
+        // The same dev and main always make the same cut (TOOLS-310): the merge is dated by its newer parent, not by the clock, so a
+        // re-cut from an unchanged dev is the very commit its reviews, second look and waivers were given for.
+        const dates = (await git("merge", ["show", "-s", "--no-show-signature", "--format=%ct", "HEAD", `origin/${flags.base}`])).split(/\s+/).map(Number);
+        if (dates.length !== 2 || !dates.every(Number.isSafeInteger)) throw new Error("could not read the dates of the release cut's parents");
+        const when = `@${Math.max(...dates)} +0000`;
+        const merged = await execute("merge", "git", ["merge", "--no-edit", "-m", `Merge origin/${flags.base} into the release cut`, `origin/${flags.base}`],
+          undefined, { GIT_AUTHOR_DATE: when, GIT_COMMITTER_DATE: when });
         if (merged.status !== 0) {
           const files = await git("merge", ["-c", "core.quotepath=false", "diff", "--name-only", "--diff-filter=U"]);
           const aborted = await execute("merge", "git", ["merge", "--abort"]);
@@ -967,7 +973,7 @@ async function main(args) {
         join(root, ".scratch/kit-fix", encodeURIComponent(branch)));
       const claude = second ? [] : chain;
       const rounds = loopRounds ?? Math.max(legacyRounds, fixRoundsDone(claude,
-        earlierSecondLooks(join(kitMainRoot(), ".scratch/reviews"), { branch, head: claude.at(-1)?.head ?? head, root }), commit => isAncestorOf(root, commit, base)));
+        earlierSecondLooks(join(kitMainRoot(), ".scratch/reviews"), { branch, head: claude.at(-1)?.head ?? head, root, base }), commit => isAncestorOf(root, commit, base)));
       loopRounds = rounds;
       const limit = roundLimit(loopRisk.risky);
       // Nits alone never block or call for a round; blockers and shoulds do while the budget lasts, then only blockers (nits stop the loop; out of budget is never approval).

@@ -3799,3 +3799,33 @@ test("a rebase at the start still lets the lead's waiver cover a finding of the 
     assert.match(refused.stdout, /new at this head:$/m);
   }
 });
+
+test("a release re-cut from an unchanged dev is the same cut: its saved review is reused and the lead's waiver lands it (TOOLS-310)", t => {
+  const f = fixture(t), peer = f.peer(), owner = { ASE_OWNER: "ke-lead", FAKE_BASE: "main" };
+  f.gitAt(peer, "checkout", "-q", "main"); writeFileSync(join(peer, "hotfix.txt"), "hotfix\n"); f.gitAt(peer, "add", "hotfix.txt");
+  // main's hotfix is the newer parent of the cut (dated after dev's change, which the real clock dates).
+  assert.equal(spawnSync("git", ["commit", "-q", "-m", "Hotfix on main"], { cwd: peer, env: { ...f.env, GIT_COMMITTER_DATE: "2030-01-01T00:00:00Z" } }).status, 0);
+  f.gitAt(peer, "push", "-q", "origin", "main");
+  f.git("checkout", "-q", "dev"); f.commit("Landed change", "landed.txt"); f.git("push", "-q", "origin", "dev");
+  f.git("checkout", "-q", "-b", "release/cut");
+  // A machine that shows signatures in git log still gets the parents' dates.
+  f.git("config", "log.showSignature", "true");
+  const review = "REVIEW_STATUS: complete\nDefects:\n- Spec: landed.txt:1 P1 The release defect.\n";
+  // The first cut: the review finds a blocker, so the release stops for the lead.
+  const first = f.run(["--base", "main", "--release"], { ...owner, FAKE_REVIEW: review, GIT_AUTHOR_DATE: "2026-11-16T10:00:00Z", GIT_COMMITTER_DATE: "2026-11-16T10:00:00Z" });
+  assert.equal(first.status, 1, first.stdout + first.stderr);
+  assert.match(first.stdout, /^RESULT: fail pr #73 review has 1 open findings/m);
+  const cut = f.git("rev-parse", "HEAD");
+  // The cut is dated by its newer parent, never by the clock of the run.
+  assert.equal(f.git("show", "-s", "--format=%ct", cut), f.git("show", "-s", "--format=%ct", "origin/main"));
+  assert.notEqual(f.git("show", "-s", "--format=%ct", cut), f.git("show", "-s", "--format=%ct", `${cut}^1`));
+  // The re-cut, an hour later, from the same dev: the date of the run never changes the cut.
+  f.git("reset", "-q", "--hard", "origin/dev");
+  const second = f.run(["--base", "main", "--release", "--waive", "review-1: Lex accepted it for this release."],
+    { ...owner, FAKE_REVIEW: review, GIT_AUTHOR_DATE: "2026-11-16T11:00:00Z", GIT_COMMITTER_DATE: "2026-11-16T11:00:00Z" });
+  assert.equal(second.status, 0, second.stdout + second.stderr);
+  assert.equal(f.git("rev-parse", "HEAD"), cut, "the same dev and main make the same release cut");
+  assert.equal(f.calls().filter(claudeReview).length, 1, "the saved review is reused, not run again");
+  assert.doesNotMatch(second.stdout, /new at the new head/);
+  assert.match(second.stdout, new RegExp(`RESULT: ok opened #73 ${cut.slice(0, 7)}$`, "m"));
+});

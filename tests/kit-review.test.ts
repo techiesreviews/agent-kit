@@ -2402,3 +2402,33 @@ test("review loop: a lead's review answers the builder's rounds (another owner's
   assert.equal(record.round, 2);
   assert.equal(record.previous, `../builder-1/${builderEvidence.split("/").at(-1)}`);
 });
+
+test("review loop: a re-cut release after dev changed is a later round on what dev changed and on the merge itself (TOOLS-310)", t => {
+  const f = fixture(t);
+  // main has a hotfix on the line dev edits; kit pr's cut is dev with origin/main merged in, the conflict resolved in the merge.
+  f.git("switch", "-q", "-c", "main", f.commits[0]);
+  writeFileSync(join(f.root, "file.txt"), "hotfix\n"); f.git("commit", "-q", "-am", "hotfix on main");
+  f.git("update-ref", "refs/remotes/origin/main", f.git("rev-parse", "HEAD").trim());
+  const cut = (resolution: string) => {
+    f.git("switch", "-q", "-C", "release/cut", "feature/review");
+    spawnSync("git", ["-C", f.root, "merge", "-q", "--no-edit", "origin/main"], { encoding: "utf8" });
+    writeFileSync(join(f.root, "file.txt"), `${resolution}\n`); f.git("add", "file.txt");
+    f.git("commit", "-q", "-m", "Merge origin/main into the release cut");
+    return f.git("rev-parse", "HEAD").trim();
+  };
+  const first = cut("resolved once");
+  assert.equal(f.run(["--base", "origin/main"], { FAKE_REPORT: oneFinding, ASE_REVIEW_MODEL: "claude-opus-5-5" }).status, 0);
+  // dev takes another change; the re-cut makes a new merge commit whose resolution differs too.
+  f.git("switch", "-q", "feature/review");
+  writeFileSync(join(f.root, "other.txt"), "landed on dev later\n"); f.git("add", "other.txt"); f.git("commit", "-q", "-m", "landed on dev later");
+  const second = cut("resolved twice");
+  const copy = join(f.dir, "since.patch");
+  const run = f.run(["--base", "origin/main"], { FAKE_REPORT: resolved, ASE_REVIEW_MODEL: "claude-opus-5-5", FAKE_COPY_SINCE: copy });
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /^review loop: round 2, answering /m);
+  const since = readFileSync(copy, "utf8");
+  assert.equal(since, f.git("diff", first, second));
+  assert.match(since, /^\+landed on dev later$/m, "what dev changed since the reviewed cut");
+  assert.match(since, /^\+resolved twice$/m, "the merge itself");
+  assert.match(f.calls().at(-1)!.input, new RegExp(`Changes since the last review \\(the earlier release cut ${first} to this one, git diff: what dev changed since then and the merge itself\\)`));
+});
