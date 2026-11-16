@@ -671,6 +671,8 @@ export function sshCommand(env = process.env, { worktree, common, configured } =
     // As sh reads them: an unquoted NAME=value before the program sets a variable.
     const word = words.find(({ start, end }) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(shell.slice(start, end)));
     if (!word || !word.plain) return unknown("its program is not a plain word");
+    // A PATH of its own would bring back folders a link into the worktree sits in, for what the program starts by name.
+    if (words.some(({ start, end }) => start < word.start && /^PATH=/.test(shell.slice(start, end)))) return unknown("it sets PATH itself");
     program = word.value; before = shell.slice(0, word.start); after = shell.slice(word.end);
   }
   try {
@@ -689,7 +691,6 @@ export function sshCommand(env = process.env, { worktree, common, configured } =
     const start = interpreted(file, [], env, shut, problem => { throw new Error(problem); }).flat();
     const folders = cleanFolders(env, shut).join(delimiter);
     const path = folders === String(env.PATH ?? systemPath) ? "" : `PATH=${shellQuote(folders)} `;
-    // After the lead's own NAME=value words, so a PATH among them does not bring the link's folder back.
     const command = `${before}${path}${start.map(shellQuote).join(" ")}${after}`;
     const kind = ["ssh", "plink", "putty", "tortoiseplink"].find(name => basename(file).toLowerCase() === name);
     return { command, problem: null, variant: kind && !command.startsWith(shellQuote(file)) ? kind : null };
