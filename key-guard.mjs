@@ -440,6 +440,7 @@ function probeLock(env) {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
+const lockAsked = "this system has no bubblewrap (it is Linux only), and ASE_KEY_GUARD=on asks for the lock or no run; unset it to start Claude, Grok and OpenCode unwrapped";
 let probed, displayWarning = null, absent = false;
 /** Whether bubblewrap runs and holds here: null, or the problem in plain words. Checked once per process; bwrap is looked up on PATH. */
 export function bwrapWorks(env = process.env) {
@@ -451,7 +452,8 @@ export function bwrapWorks(env = process.env) {
     const blocked = /namespace|uid map|Operation not permitted|Permission denied/i.test(said);
     absent = result.error?.code === "ENOENT";
     if (result.status === 0) ({ problem: probed, warning: displayWarning } = probeLock(env));
-    else probed = absent ? "bubblewrap (bwrap) is not installed; install it (apt install bubblewrap)"
+    // Linux installs it with one command; another system has none, and only ASE_KEY_GUARD=on makes that a problem.
+    else probed = absent ? process.platform === "linux" ? "bubblewrap (bwrap) is not installed; install it (apt install bubblewrap)" : lockAsked
       : blocked ? `the system blocks the sandboxes bubblewrap makes (${said}); give /usr/bin/bwrap an AppArmor profile that allows user namespaces (Ubuntu's bubblewrap package brings one), or on Ubuntu allow them until the next restart with sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`
       : `bubblewrap (bwrap) cannot start here (${said}); run bwrap --dev-bind / / -- true to see why`;
   }
@@ -466,7 +468,7 @@ export function keyGuardWarning(env = process.env) {
 
 // A system that has no bubblewrap (macOS, Windows; on Linux it installs with one command, so a missing one stops the
 // run), and no ASE_KEY_GUARD=on asking for the lock or no run: Claude, Grok and OpenCode run without the wrapper.
-const noBwrap = "off on this machine (no bubblewrap); builders can read key files (token variables are still dropped, and Codex keeps its own profile)";
+const unwrappedNote = "off on this machine (no bubblewrap); builders can read key files (token variables are still dropped, and Codex keeps its own profile)";
 function runsUnwrapped(env) {
   bwrapWorks(env);
   return absent && process.platform !== "linux" && !lockRequired(env);
@@ -507,7 +509,7 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
   // A system without bubblewrap: Claude, Grok and OpenCode start as they are, with the token variables dropped, and the
   // run's log says so. Nothing is searched for them, so no key folder can stop the run. Codex goes on below: its own
   // profile needs no bubblewrap.
-  if (cli !== "codex" && runsUnwrapped(env)) return { ...unlocked, env: scrub, missing: true, warning: [noBwrap, keyPathsWarning(env)].filter(Boolean).join("; ") };
+  if (cli !== "codex" && runsUnwrapped(env)) return { ...unlocked, env: scrub, missing: true, warning: unwrappedNote };
   const { paths, problem: refusal, glue } = searchedPaths(cli, env, { apiRoute, worktree, common });
   if (refusal) throw new Error(`cannot lock the key files for this ${kind}: ${refusal}${glue} set ASE_KEY_GUARD=off to run without the lock`);
   // Codex's own sandbox shares the network too, so the display warning (when bubblewrap can check it) applies to it.
@@ -515,7 +517,7 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
     let display = Boolean(env.DISPLAY);
     try { display ||= readdirSync("/tmp/.X11-unix").some(name => /^X\d+$/.test(name)); } catch { /* No X display here. */ }
     const unchecked = display ? bwrapWorks(env) : null;
-    const gap = !display ? null : unchecked ? `the X display could not be checked (${unchecked}), so it may let programs in without its cookie; do not copy or type keys while agents run` : displayWarning;
+    const gap = !display ? null : unchecked ? `the X display could not be checked (${absent && process.platform !== "linux" ? "this system has no bubblewrap" : unchecked}), so it may let programs in without its cookie; do not copy or type keys while agents run` : displayWarning;
     const warning = [gap, keyPathsWarning(env)].filter(Boolean).join("; ") || null;
     return { env: scrub, codex: codexProfile(kind, common, codexPaths(paths)), warning, wrap: (command, args) => [command, args], close() {} };
   }
@@ -546,16 +548,17 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
  * kit doctor's note: {state, text}, the lock's state in plain words. States: on; warning (on, with a gap); off
  * (ASE_KEY_GUARD=off); missing (a system without bubblewrap: Claude, Grok and OpenCode run unwrapped); problem
  * (bubblewrap cannot start: their runs stop); refused (a key folder cannot be searched or hidden: the runs that lock it
- * stop). The key folders are searched as a run in `worktree` would search them, for every CLI at once, so "on" is said
- * only where a run would really start.
+ * stop). The key folders are searched as a run in `worktree` would search them (for every CLI at once; for Codex alone
+ * where the others run unwrapped), so "on" or "missing" is said only where a run would really start.
  */
 export function keyGuardReport(env = process.env, { worktree = process.cwd(), common } = {}) {
   if (!keyGuardOn(env)) return { state: "off", text: "off (ASE_KEY_GUARD=off): agents the kit starts can read the key files" };
-  if (runsUnwrapped(env)) return { state: "missing", text: noBwrap };
-  const problem = bwrapWorks(env);
-  if (problem) return { state: "problem", text: problem };
-  const refusal = searchedPaths("", env, { worktree, common }).problem;
+  // Unwrapped runs search nothing; a Codex run there still does, for its profile.
+  const unwrapped = runsUnwrapped(env), problem = bwrapWorks(env);
+  if (problem && !unwrapped) return { state: "problem", text: problem };
+  const refusal = searchedPaths(unwrapped ? "codex" : "", env, { worktree, common }).problem;
   if (refusal) return { state: "refused", text: refusal };
+  if (unwrapped) return { state: "missing", text: unwrappedNote };
   const warning = keyGuardWarning(env);
   return warning ? { state: "warning", text: `on, but ${warning}` }
     : { state: "on", text: `on (bubblewrap runs; agents the kit starts cannot read the key files${env.KIT_API_KEY_FILE ? "; a Claude build on the API route is refused under the lock" : ""})` };

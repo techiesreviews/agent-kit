@@ -279,9 +279,9 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   runs start unwrapped and can read the key files, and say so in one line, in the run's log and in `kit doctor`:
   `key lock: off on this machine (no bubblewrap); builders can read key files (token variables are still dropped, and
   Codex keeps its own profile)`. Those two parts need no bubblewrap, so they stay. `ASE_KEY_GUARD=on` stops such a run
-  instead (for a machine that must never run unwrapped). On Linux nothing changed: a missing bubblewrap stops the run
-  with its install step (`apt install bubblewrap`; WSL counts as Linux), and so does one that is installed but cannot
-  start (the system blocks it, the `/proc` check fails). `kit doctor`'s `key lock:` line searches the key folders as a
+  instead (for a machine that must never run unwrapped). On Linux nothing changed: a missing bubblewrap stops the kit's
+  Claude, Grok and OpenCode runs with its install step (`apt install bubblewrap`; WSL counts as Linux), and so does one
+  that is installed but cannot start (the system blocks it, the `/proc` check fails). `kit doctor`'s `key lock:` line searches the key folders as a
   run in that worktree would, so it says "on" only where a run would really start: a key folder that cannot be listed,
   is too large or links to a folder the lock cannot hide shows there first.
 - Keyed steps happen only in the lead's own process, never inside a locked run. Already the lead's: `git push`, `kit pr`

@@ -15,9 +15,10 @@ export function pathWithoutBwrap(dir: string) {
   return bin;
 }
 
-// For a child process: every Node it starts says it runs on macOS, where bubblewrap does not exist.
-const preload = resolve(import.meta.dirname, "../fixtures/as-macos.mjs");
-export const onMacos = { NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${preload}`.trim() };
+// For a child process: every Node it starts says it runs on macOS, where bubblewrap does not exist, or on Linux,
+// whatever the host is.
+const preload = (name: string) => ({ NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${resolve(import.meta.dirname, `../fixtures/${name}.mjs`)}`.trim() });
+export const onMacos = preload("as-macos"), onLinux = preload("as-linux");
 
 /** Runs `body` while this process says it runs on `platform`. */
 export function asPlatform<T>(platform: NodeJS.Platform, body: () => T): T {
