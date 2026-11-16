@@ -361,10 +361,11 @@ function inside(path, folder) {
  * it is refused. A path inside an already masked folder is left out. With `writable` (a list), the file system is
  * read-only but for those folders.
  */
-export function bwrapArgs(paths, { writable = null } = {}) {
-  // Read-only: the whole file system read-only with devices as they are, and writes only to the folders named.
-  const args = writable === null ? ["--dev-bind", "/", "/"] : ["--ro-bind", "/", "/", "--dev-bind", "/dev", "/dev",
-    ...existingPaths(writable).flatMap(path => ["--bind", path, path])];
+export function bwrapArgs(paths, { writable = null, readOnly = [] } = {}) {
+  // Read-only: the whole file system read-only with devices as they are, and writes only to the folders named. The
+  // `readOnly` folders come next, before the masks, so a key path inside one stays hidden.
+  const args = [...(writable === null ? ["--dev-bind", "/", "/"] : ["--ro-bind", "/", "/", "--dev-bind", "/dev", "/dev",
+    ...existingPaths(writable).flatMap(path => ["--bind", path, path])]), ...existingPaths(readOnly).flatMap(path => ["--ro-bind", path, path])];
   const masked = [];
   for (const path of [...paths].sort((a, b) => a.length - b.length)) {
     if (masked.some(folder => inside(path, folder))) continue;
@@ -391,7 +392,6 @@ export function kitFolders(env = process.env, { worktree, common } = {}) {
     .filter(folder => !shut.some(root => inside(folder, root) || inside(root, folder)));
   return [...new Set(folders)].filter((folder, _, all) => !all.some(other => other !== folder && inside(folder, other)));
 }
-const readOnlyArgs = paths => existingPaths(paths).flatMap(path => ["--ro-bind", path, path]);
 
 // A key folder that could not be listed, in words with a step that fits why: the user's own folder without read
 // permission, another user's folder (an earlier sudo run), or anything else.
@@ -629,45 +629,68 @@ function shellWords(line) {
 }
 const shellQuote = word => /^[A-Za-z0-9_/.,:+@%=-]+$/.test(word) ? word : `'${word.replaceAll("'", `'\\''`)}'`;
 
+// The run's PATH folders (runFolders) without any that holds a link into the worktree or the Git folder, by any name:
+// git's ssh command gets these, so a program that starts another by its bare name (timeout, sshpass, a wrapper script)
+// finds none there either. The system's own folders stand in where none is left.
+function cleanFolders(env, shut) {
+  const folders = runFolders(env, shut).filter(folder => {
+    let entries = [];
+    try { entries = readdirSync(folder, { withFileTypes: true }); } catch { return true; }
+    return !entries.some(entry => entry.isSymbolicLink() && shut.some(root => inside(real(join(folder, entry.name)), root)));
+  });
+  return folders.length ? folders : systemPath.split(delimiter);
+}
+
 /**
- * git's ssh for a fetch or push on `worktree` (TOOLS-320), as the GIT_SSH_COMMAND that call gets: {command, problem}.
- * git takes GIT_SSH_COMMAND, else core.sshCommand (`configured`: its value from the lead's own config and environment,
- * never the repository's, which gitSafety sets empty), else GIT_SSH (one program, no shell), else ssh, and starts a bare
- * name from PATH, where a link someone made into the worktree or the Git folder stays. So the program is found here as
- * the kit finds its own (lookup, and a script's interpreter, interpreted) and the command names it by its full path,
- * with the line's other words as they were. `problem` in plain words where PATH holds the program only as such a link,
- * the program is inside, or which program runs cannot be told (shell syntax beyond words and quotes, an expansion, env,
- * a name no PATH folder holds). With nothing set and no ssh on PATH, both are null: no ssh can start.
+ * git's ssh for a fetch or push on `worktree` (TOOLS-320), as the GIT_SSH_COMMAND that call gets: {command, problem,
+ * variant}. git takes GIT_SSH_COMMAND, else core.sshCommand (`configured`: its value from the lead's own config and
+ * environment, never the repository's, which gitSafety sets empty), else GIT_SSH (one program, no shell), else ssh, and
+ * starts a bare name from PATH, where a link someone made into the worktree or the Git folder stays. So the program is
+ * found here as the kit finds its own (lookup, and a script's interpreter, interpreted), the command names it by its
+ * full path with the line's other words as they were, and where a PATH folder holds such a link the command sets PATH
+ * to the folders that hold none (cleanFolders), for any program it starts by name in turn. `problem` in plain words
+ * where PATH holds the program only as such a link, the program is inside, or which program runs cannot be told (shell
+ * syntax beyond words and quotes, an expansion, env, a name no PATH folder holds); `command` is then one that says so
+ * and fails, so only a call that really starts ssh stops. `variant` is the kind of ssh git would have told from the
+ * program's name, where the command no longer starts with it (GIT_SSH_VARIANT). With nothing set and no ssh on PATH,
+ * command is null: no ssh can start.
  */
 export function sshCommand(env = process.env, { worktree, common, configured } = {}) {
   const shut = buildFolders(worktree, common);
   const shell = env.GIT_SSH_COMMAND || configured || null;
   const given = shell ?? (env.GIT_SSH || null);
-  const unknown = why => ({ command: null, problem: `git's ssh command (${given}) cannot be told: ${why}; set it to a plain command line (a program and its words), or set ASE_KEY_GUARD=off to run without the lock` });
+  // A command that prints why and fails, for git to start in place of ssh (the ssh kind spares it git's probe).
+  const refused = problem => ({ command: `printf '%s\\n' ${shellQuote(`kit: ${problem}`)} >&2; false`, problem, variant: "ssh" });
+  const unknown = why => refused(`git's ssh command (${given}) cannot be told: ${why}; set it to a plain command line (a program and its words), or set ASE_KEY_GUARD=off to run without the lock`);
   let program = given ?? "ssh", before = "", after = "";
   if (shell !== null) {
     const words = shellWords(shell);
     if (!words) return unknown("it uses shell syntax beyond words and quotes");
-    const word = words.find(({ value }) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(value));
+    // As sh reads them: an unquoted NAME=value before the program sets a variable.
+    const word = words.find(({ start, end }) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(shell.slice(start, end)));
     if (!word || !word.plain) return unknown("its program is not a plain word");
     program = word.value; before = shell.slice(0, word.start); after = shell.slice(word.end);
   }
   try {
     let file;
     if (program.includes("/")) {
-      if (shut.some(root => inside(real(program), root))) return { command: null, problem: `git's ssh (${program}) is inside the worktree or its Git folder, where a build can change it; set GIT_SSH_COMMAND to one outside them, or set ASE_KEY_GUARD=off to run without the lock` };
+      if (shut.some(root => inside(real(program), root))) return refused(`git's ssh (${program}) is inside the worktree or its Git folder, where a build can change it; set GIT_SSH_COMMAND to one outside them, or set ASE_KEY_GUARD=off to run without the lock`);
       file = resolve(program);
     } else {
       const found = lookup(program, env, shut);
-      if (!found.file && found.refused) return { command: null, problem: linkRefusal(program, found.refused) };
-      if (!found.file) return given === null ? { command: null, problem: null } : unknown(`no PATH folder holds ${program}`);
+      if (!found.file && found.refused) return refused(linkRefusal(program, found.refused));
+      if (!found.file) return given === null ? { command: null, problem: null, variant: null } : unknown(`no PATH folder holds ${program}`);
       file = found.file;
     }
     // env would look its program up by name again.
     if (basename(file) === "env") return unknown("env looks its program up on PATH");
     const start = interpreted(file, [], env, shut, problem => { throw new Error(problem); }).flat();
-    return { command: `${before}${start.map(shellQuote).join(" ")}${after}`, problem: null };
-  } catch (error) { return { command: null, problem: error.message }; }
+    const folders = cleanFolders(env, shut).join(delimiter);
+    const path = folders === String(env.PATH ?? systemPath) ? "" : `PATH=${shellQuote(folders)} `;
+    const command = `${path}${before}${start.map(shellQuote).join(" ")}${after}`;
+    const kind = ["ssh", "plink", "putty", "tortoiseplink"].find(name => basename(file).toLowerCase() === name);
+    return { command, problem: null, variant: kind && !command.startsWith(shellQuote(file)) ? kind : null };
+  } catch (error) { return refused(error.message); }
 }
 
 /**
@@ -866,9 +889,8 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
   // Grok's own read-only sandbox cannot start inside this one (agent-run turns it off), so a Grok review gets a read-only
   // lock instead: it writes only its own state folder and the temp folders.
   // The machine's kit stays read-only to the run (kitFolders).
-  const outer = [...bwrapArgs(paths, cli === "grok" && kind === "review"
-    ? { writable: [join(home(env), ".grok"), env.GROK_HOME, tmpdir(), "/tmp", env.XDG_RUNTIME_DIR].filter(Boolean).map(path => resolve(path)) } : {}),
-    ...readOnlyArgs(kitFolders(env, { worktree, common }))];
+  const outer = bwrapArgs(paths, { readOnly: kitFolders(env, { worktree, common }), ...(cli === "grok" && kind === "review"
+    ? { writable: [join(home(env), ".grok"), env.GROK_HOME, tmpdir(), "/tmp", env.XDG_RUNTIME_DIR].filter(Boolean).map(path => resolve(path)) } : {}) });
   const warning = keyGuardWarning(env, shut);
   if (!apiRoute) return { env: scrub, bwrap: true, warning, wrap: inside(outer), helper: inside(outer), close() {} };
   // The API route's wrapper reads its key file first, outside the lock, then runs claude through this script: `<script>
@@ -940,7 +962,7 @@ export function checkLock({ worktree, common, env = process.env, readOnly = [] }
   if (problem) refuse(`${problem}; or set ASE_KEY_GUARD=off to run without the lock`);
   const { paths, problem: refusal, glue } = searchedPaths("", env, { worktree, common });
   if (refusal) refuse(`${refusal}${glue} set ASE_KEY_GUARD=off to run without the lock`);
-  const outer = [...bwrapArgs(paths), ...readOnlyArgs([...readOnly, ...kitFolders(env, { worktree, common })])];
+  const outer = bwrapArgs(paths, { readOnly: [...readOnly, ...kitFolders(env, { worktree, common })] });
   const mark = outerMark(env, outer);
   // The command starts inside, found there on the run's PATH: whatever it is, it runs locked.
   return { env: { ...scrub, ...mark.env }, wrap: (command, args) => [bwrap, [...outer, ...mark.args, "--", command, ...args]], note: null, warning: keyGuardWarning(env, shut),

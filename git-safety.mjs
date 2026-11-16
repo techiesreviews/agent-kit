@@ -109,8 +109,10 @@ export function gitNetworkCall(args) {
 export function gitSafety({ worktree, env = process.env, network = false, git = "git", common = gitCommonDir(worktree) }) {
   // `git` may also be [program, ...arguments before git's own] (a git script started by its interpreter's full path).
   const [program, ...before] = [git].flat();
+  // The caller's own settings from the environment stay in the read (command scope: the lead's core.sshCommand).
+  const count = Number.parseInt(env.GIT_CONFIG_COUNT ?? "", 10) || 0;
   const list = execFileSync(program, [...before, "-C", worktree, "config", "--list", "--show-scope", "-z"], {
-    env: { ...env, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.hooksPath", GIT_CONFIG_VALUE_0: "/dev/null" },
+    env: { ...env, GIT_CONFIG_COUNT: String(count + 1), [`GIT_CONFIG_KEY_${count}`]: "core.hooksPath", [`GIT_CONFIG_VALUE_${count}`]: "/dev/null" },
     encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 16 * 1024 * 1024 }).split("\0");
   const settings = [];
   for (let i = 0; i + 1 < list.length; i += 2) {
@@ -152,14 +154,14 @@ export function gitSafety({ worktree, env = process.env, network = false, git = 
   const start = Number.parseInt(env.GIT_CONFIG_COUNT ?? "", 10) || 0;
   pairs.forEach(([key, value], index) => { extra[`GIT_CONFIG_KEY_${start + index}`] = key; extra[`GIT_CONFIG_VALUE_${start + index}`] = value; });
   extra.GIT_CONFIG_COUNT = String(start + pairs.length);
-  // git's ssh, by its full path (sshCommand): never a bare name a link on PATH leads into the worktree for.
-  let sshProblem = null;
+  // git's ssh, by its full path (sshCommand): never a bare name a link on PATH leads into the worktree for. Where it
+  // cannot be found that way, the command git gets says why and fails, so only a call to an ssh remote stops.
   if (network) {
     const configured = settings.filter(entry => !ownScope(entry.scope) && entry.key.toLowerCase() === "core.sshcommand").at(-1)?.value;
     const ssh = sshCommand(env, { worktree, common, configured });
     if (ssh.command) extra.GIT_SSH_COMMAND = ssh.command;
-    sshProblem = ssh.problem;
+    if (ssh.variant && !env.GIT_SSH_VARIANT) extra.GIT_SSH_VARIANT = ssh.variant;
   }
-  const steered = steering.size ? `the repository's own Git config holds ${[...steering].join(", ")}, which could send the credentials of a fetch or push elsewhere or start a remote helper (a build may have written ${steering.size === 1 ? "it" : "them"}); remove ${steering.size === 1 ? "it" : "them"} with git config --unset-all <name> and run it again` : null;
-  return { env: extra, problem: [steered, sshProblem].filter(Boolean).join("; ") || null };
+  const problem = steering.size ? `the repository's own Git config holds ${[...steering].join(", ")}, which could send the credentials of a fetch or push elsewhere or start a remote helper (a build may have written ${steering.size === 1 ? "it" : "them"}); remove ${steering.size === 1 ? "it" : "them"} with git config --unset-all <name> and run it again` : null;
+  return { env: extra, problem };
 }

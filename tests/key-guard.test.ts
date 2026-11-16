@@ -1200,6 +1200,10 @@ test("TOOLS-320: env -S first lines are read as env reads them: assignments, quo
   assert.throws(() => start(script("expand", "#!/usr/bin/env -S MODE=${HOME} node")), /starts with env -S MODE=\$\{HOME\} node, so which program it runs cannot be told/);
   assert.throws(() => start(script("option", "#!/usr/bin/env -S MODE=1 -i node")), /so which program it runs cannot be told/);
   assert.throws(() => start(script("open-quote", `#!/usr/bin/env -S "node`)), /so which program it runs cannot be told/);
+  assert.throws(() => start(script("stop", "#!/usr/bin/env -S node \\c --flag")), /so which program it runs cannot be told/);
+  // With NAME=value words env itself starts the program: one inside the worktree is refused.
+  writeFileSync(join(worktree, "env"), "#!/bin/sh\nexec /usr/bin/env \"$@\"\n"); chmodSync(join(worktree, "env"), 0o755);
+  assert.throws(() => start(script("env-in-worktree", `#!${join(worktree, "env")} -S MODE=1 node`)), /starts with \S+\/work\/env, inside the worktree or its Git folder/);
   const linksOnly = { PATH: links };
   assert.throws(() => startCommand(assigned, [], linksOnly, { worktree, kind: "test" }), /node on PATH is \S+\/links\/node, a link into the worktree/);
   assert.ok(!existsSync(noted), "the planted node never started");
@@ -1228,25 +1232,44 @@ test("TOOLS-320: a fetch or push starts git's ssh by its full path, from GIT_SSH
     spawnSync("git", ["-C", root, "ls-remote", "ssh://example.invalid/repo.git"], { env: { ...env, ...safe.env }, encoding: "utf8" });
     return existsSync(noted) ? readFileSync(noted, "utf8") : "";
   };
-  assert.equal(safety(base).env.GIT_SSH_COMMAND, join(bin, "ssh"));
+  // The link's folder leaves the command's PATH too, for anything ssh starts by name.
+  const clean = `PATH=${bin}:/usr/bin:/bin `;
+  assert.equal(safety(base).env.GIT_SSH_COMMAND, `${clean}${join(bin, "ssh")}`);
+  assert.equal(safety(base).env.GIT_SSH_VARIANT, "ssh");
+  assert.equal(safety({ ...base, PATH: `${bin}:/usr/bin:/bin` }).env.GIT_SSH_COMMAND, join(bin, "ssh"));
   assert.match(lsRemote(base), /^lead's ssh .*example\.invalid/);
   // The repository's own core.sshCommand is the build's: it is not taken.
   git("config", "core.sshCommand", "ssh -o Repo=1");
-  assert.equal(safety(base).env.GIT_SSH_COMMAND, join(bin, "ssh"));
+  assert.equal(safety(base).env.GIT_SSH_COMMAND, `${clean}${join(bin, "ssh")}`);
   git("config", "--unset", "core.sshCommand");
   // The lead's own command keeps its options and assignments; a bare name in it is found the same way.
-  assert.equal(safety({ ...base, GIT_SSH_COMMAND: "ssh -o BatchMode=yes -i ~/.ssh/id" }).env.GIT_SSH_COMMAND, `${join(bin, "ssh")} -o BatchMode=yes -i ~/.ssh/id`);
+  assert.equal(safety({ ...base, GIT_SSH_COMMAND: "ssh -o BatchMode=yes -i ~/.ssh/id" }).env.GIT_SSH_COMMAND, `${clean}${join(bin, "ssh")} -o BatchMode=yes -i ~/.ssh/id`);
   assert.match(lsRemote({ ...base, GIT_SSH_COMMAND: "X=1 ssh -o BatchMode=yes" }), /^lead's ssh -o BatchMode=yes /);
   assert.match(lsRemote({ ...base, GIT_SSH: "ssh" }), /^lead's ssh /);
   writeFileSync(join(home, ".gitconfig"), "[core]\n\tsshCommand = ssh -o Global=1\n");
   assert.match(lsRemote(base), /^lead's ssh -o Global=1 /);
   rmSync(join(home, ".gitconfig"));
-  // Without another ssh on PATH, or with a command whose program cannot be told, the fetch or push is refused.
-  const linksOnly = { ...base, PATH: links };
-  assert.match(String(safety(linksOnly).problem), /ssh on PATH is \S+\/links\/ssh, a link into the worktree or its Git folder/);
-  assert.match(String(safety({ ...base, GIT_SSH_COMMAND: "ssh -o x=1; ssh" }).problem), /git's ssh command \(ssh -o x=1; ssh\) cannot be told/);
-  assert.match(String(safety({ ...base, GIT_SSH_COMMAND: join(root, "tools/ssh") }).problem), /inside the worktree or its Git folder/);
-  assert.match(String(safety({ ...base, GIT_SSH_COMMAND: "env ssh" }).problem), /git's ssh command \(env ssh\) cannot be told/);
+  // The lead's command from the environment's own settings (command scope) is found too.
+  assert.match(lsRemote({ ...base, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.sshCommand", GIT_CONFIG_VALUE_0: "ssh -o Cmd=1" }), /^lead's ssh -o Cmd=1 /);
+  // A program that starts ssh by its bare name in turn (timeout) gets PATH without the folder that holds the link.
+  const wrapped = safety({ ...base, GIT_SSH_COMMAND: "timeout 30 ssh" }).env;
+  assert.match(String(wrapped.GIT_SSH_COMMAND), new RegExp(`^PATH=${bin}:/usr/bin:/bin /\\S+/timeout 30 ssh$`));
+  assert.match(lsRemote({ ...base, GIT_SSH_COMMAND: "timeout 30 ssh" }), /^lead's ssh /);
+  // Without another ssh on PATH, or with a command whose program cannot be told, git's ssh says why and fails: only a
+  // call that starts ssh stops, and the planted one never starts.
+  const refusedWith = (env: NodeJS.ProcessEnv) => {
+    const safe = safety(env);
+    assert.equal(safe.problem, null);
+    const run = spawnSync(realGit, ["-C", root, "ls-remote", "ssh://example.invalid/repo.git"], { env: { ...env, ...safe.env }, encoding: "utf8" });
+    assert.notEqual(run.status, 0);
+    return run.stderr;
+  };
+  assert.match(refusedWith({ ...base, PATH: links }), /^kit: ssh on PATH is \S+\/links\/ssh, a link into the worktree or its Git folder/m);
+  assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: "ssh -o x=1; ssh" }), /^kit: git's ssh command \(ssh -o x=1; ssh\) cannot be told/m);
+  assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: join(root, "tools/ssh") }), /^kit: git's ssh \(\S+\) is inside the worktree or its Git folder/m);
+  assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: "env ssh" }), /^kit: git's ssh command \(env ssh\) cannot be told/m);
+  // A quoted NAME=value is a program name to sh, not a setting.
+  assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: "'X=1' ssh" }), /cannot be told: no PATH folder holds X=1/);
   // A call without the network starts no ssh: nothing changes.
   assert.equal(gitSafety({ worktree: root, env: base }).env.GIT_SSH_COMMAND, undefined);
   assert.ok(!(existsSync(noted) && readFileSync(noted, "utf8").includes("planted")), "the planted ssh never started");
@@ -1257,8 +1280,11 @@ test("TOOLS-320: the machine's kit copy is read-only to a locked build and to ki
   const worktree = join(dir, "work"), copy = join(home, ".local/share/agent-kit/abc123");
   mkdirSync(worktree); mkdirSync(join(copy, "kit.d"), { recursive: true });
   writeFileSync(join(copy, "kit.d/pr"), "the kit\n");
-  const env = homeEnv(home);
-  const write = `try { require("node:fs").appendFileSync(${JSON.stringify(join(copy, "kit.d/pr"))}, "changed\\n"); console.log("wrote"); } catch (error) { console.log(error.code); }`;
+  // A key file kept in the kit's folder stays hidden although the folder is mounted read-only.
+  const secret = join(home, ".local/share/agent-kit/secret.txt");
+  writeFileSync(secret, `${dummy}\n`, { mode: 0o600 });
+  const env = { ...homeEnv(home), KIT_KEY_PATHS: secret } as NodeJS.ProcessEnv;
+  const write = `try { console.log(require("node:fs").readFileSync(${JSON.stringify(secret)}, "utf8").includes(${JSON.stringify(dummy)}) ? "read the key" : "no key"); } catch { console.log("no key"); } try { require("node:fs").appendFileSync(${JSON.stringify(join(copy, "kit.d/pr"))}, "changed\\n"); console.log("wrote"); } catch (error) { console.log(error.code); }`;
   const tryWrite = (wrap: (command: string, args: string[]) => [string, string[]], extra: Record<string, string | undefined>) => {
     const [command, args] = wrap(process.execPath, ["-e", write]);
     const run = spawnSync(command, args, { env: { ...env, ...Object.fromEntries(Object.entries(extra).filter(([, value]) => value !== undefined)) } as NodeJS.ProcessEnv, encoding: "utf8" });
@@ -1267,15 +1293,17 @@ test("TOOLS-320: the machine's kit copy is read-only to a locked build and to ki
   };
   const checks = checkLock({ worktree, env });
   t.after(() => checks.close?.());
-  assert.equal(tryWrite(checks.wrap, checks.env), "EROFS");
+  assert.equal(tryWrite(checks.wrap, checks.env), "no key\nEROFS");
   const build = keyGuard({ cli: "claude", kind: "build", worktree, env });
-  assert.equal(tryWrite(build.helper, build.env), "EROFS");
+  assert.equal(tryWrite(build.helper, build.env), "no key\nEROFS");
   assert.equal(readFileSync(join(copy, "kit.d/pr"), "utf8"), "the kit\n");
   const folders = kitFolders(env, { worktree });
   assert.ok(folders.includes(realpathSync(join(home, ".local/share/agent-kit"))), String(folders));
   assert.ok(folders.includes(realpathSync(resolve("."))), "the copy this kit runs from");
   // Inside the kit's own checkout (a build of the kit itself) it is the worktree, the build's to write.
   assert.ok(!kitFolders(env, { worktree: resolve(".") }).includes(realpathSync(resolve("."))));
+  // Nor one that holds the worktree, which would make the worktree read-only too.
+  assert.ok(!kitFolders(env, { worktree: copy }).includes(realpathSync(join(home, ".local/share/agent-kit"))));
 });
 
 test("PROOF: after a Claude build the runner's own git status runs inside the lock: a git it starts reads no key", { skip: noBwrap }, t => {
