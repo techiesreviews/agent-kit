@@ -3979,9 +3979,11 @@ test("a gh that changes kit pr's program links stops kit pr at its next start", 
 });
 
 // TOOLS-320: git's ssh for kit pr's fetch and push is found as kit pr finds its own programs: an ssh PATH holds only as a
-// link into the worktree (a person's link to a script a build can change) is never started, and kit pr stops instead.
-test("kit pr refuses a fetch or push whose ssh PATH holds only as a link into the worktree", t => {
+// link into the worktree (a person's link to a script a build can change) is never started; a push to an ssh remote
+// stops and says why.
+test("kit pr's push to an ssh remote never starts an ssh PATH holds only as a link into the worktree", t => {
   const f = fixture(t);
+  f.git("config", "remote.origin.pushurl", "ssh://example.invalid/repo.git");
   const links = join(f.dir, "links"), planted = join(f.root, "tools/ssh");
   mkdirSync(links); mkdirSync(dirname(planted));
   writeFileSync(planted, `#!/bin/sh\necho planted >> ${JSON.stringify(join(f.dir, "planted.txt"))}\n`, { mode: 0o755 });
@@ -3989,6 +3991,8 @@ test("kit pr refuses a fetch or push whose ssh PATH holds only as a link into th
   symlinkSync(planted, join(links, "ssh"));
   const result = f.run([], { PATH: `${f.bin}:${links}:${pathWithout(f.dir, ["ssh"], "no-ssh-bin")}` });
   assert.equal(result.status, 1, result.stdout + result.stderr);
-  assert.match(result.stdout, /^RESULT: fail \S+: ssh on PATH is \S+\/links\/ssh, a link into the worktree or its Git folder/m);
+  assert.match(result.stdout, /^RESULT: fail push: /m);
+  const logs = /^logs: (.+)$/m.exec(result.stdout)![1];
+  assert.match(readFileSync(join(logs, "push.log"), "utf8"), /kit: ssh on PATH is \S+\/links\/ssh, a link into the worktree or its Git folder/);
   assert.ok(!existsSync(join(f.dir, "planted.txt")), "the planted ssh never started");
 });

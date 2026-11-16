@@ -305,10 +305,12 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     also refuses a remote helper the repository's config names (`remote.<name>.vcs`, a `<helper>::` URL or rewrite), so
     no `git-remote-<name>` from PATH starts. A fetch or push starts git's ssh by its full path (TOOLS-320), found as the
     programs below are: the lead's `GIT_SSH_COMMAND`, else `core.sshCommand` from the lead's own config (the
-    repository's is set empty), else `GIT_SSH`, else `ssh`, with the command's other words kept; a command whose program
-    cannot be told (shell syntax beyond words and quotes, an expansion, `env`) or an ssh PATH holds only as a link into
-    the worktree stops the call. `kit pr` pushes to a folder remote (whose hooks git runs without these
-    settings) inside the key lock. `safe.directory` names only the worktree and its Git folder. The runner's own git
+    repository's is set empty), else `GIT_SSH`, else `ssh`, with the command's other words kept, and where a PATH folder
+    holds a link into the worktree or the Git folder the command's PATH leaves that folder out, for a program it starts
+    by name in turn (`timeout 30 ssh`, a wrapper script). A command whose program cannot be told (shell syntax beyond
+    words and quotes, an expansion, `env`), or an ssh PATH holds only as such a link, is swapped for one that says so
+    and fails, so only a call to an ssh remote stops. `kit pr` pushes to a folder remote (whose hooks git runs without
+    these settings) inside the key lock. `safe.directory` names only the worktree and its Git folder. The runner's own git
     calls also run inside the lock where bubblewrap runs. The runner finds the Git folder from the worktree's files
     before its first git, so that git is never one a link on PATH leads into the worktree or a linked worktree's shared
     Git folder for (those files are the worktree's own: a build that rewrote its `.git` file to name another folder
@@ -344,8 +346,9 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     system's folders (`command -p`).
   - **The machine's kit.** A locked build or review and `kit pr`'s locked checks see the kit copy that runs them and
     `${XDG_DATA_HOME:-~/.local/share}/agent-kit` (every copy `kit update` keeps, its `current` link and clone)
-    read-only, so they cannot change the kit `kit pr` and the runner then run with the keys (TOOLS-320). A kit inside the
-    worktree (a build of the kit itself with `KIT_HOME` at its worktree) is the build's own code and stays writable.
+    read-only, so they cannot change the kit `kit pr` and the runner then run with the keys (TOOLS-320); a key path
+    inside them stays hidden. A kit inside the worktree or its Git folder (a build of the kit itself with `KIT_HOME` at
+    its worktree) is the build's own code and stays writable, and so does a kit folder that holds either.
   - **Start-up files.** `BASH_ENV` and `ENV` (the file every non-interactive bash or sh reads first) are dropped for a
     run and for everything `kit pr` starts (not with `ASE_KEY_GUARD=off`), and the file they name is locked like any
     start-up file when it sets a token.
@@ -353,9 +356,10 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   a build wrote under HOME: `~/.gitconfig`, `~/.bashrc`, a PATH folder there), a Node kept under HOME (an nvm Node),
   which a build or a check can change and `kit pr` then runs, the machine's kit copy where builds and checks run
   unlocked (no bubblewrap, or `ASE_KEY_GUARD=off`; Codex's own sandbox keeps it read-only), a `kit pr` started through
-  `npm run` (its own `#!/usr/bin/env node` is found before `kit pr` can look), a fetch or push reading a global Git config a build wrote, and what ssh itself starts
-  from a config under HOME a build wrote (`~/.ssh/config`'s `ProxyCommand`, `Match exec`). For those the lead's guard is
-  the review before anything a build wrote is run (`kit review` is read-only).
+  `npm run` (its own `#!/usr/bin/env node` is found before `kit pr` can look), a fetch or push reading a global Git
+  config a build wrote, and what ssh itself starts from a config under HOME a build wrote (`~/.ssh/config`'s
+  `ProxyCommand`, `Match exec`). For those the lead's guard is the review before anything a build wrote is run (`kit
+  review` is read-only).
 - Keyed steps happen only in the lead's own process, never inside a locked run. Already the lead's: `git push`, `kit pr`
   (push, PR, merge, card close) and `kit pr --release` (the build contract leaves a builder's changes unstaged). Moved to
   the lead for locked runs: reading Orbit cards (`kit ticket get|list`, which need the token too), GitHub calls (`gh`,
