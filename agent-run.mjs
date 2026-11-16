@@ -1118,7 +1118,9 @@ async function executeRun(options, out, previous, update, brief) {
   // That first git starts by its full path, never one a link on PATH leads into the worktree or its Git folder for
   // (runProgram refuses a git PATH holds only that way). The Git folder is read from the worktree's own files first
   // (gitCommonDir), so a git that leads into a linked worktree's separate Git folder never runs either (TOOLS-303), and
-  // the call runs with no hook or program the repository's Git settings name (gitSafety).
+  // the call runs with no hook or program the repository's Git settings name (gitSafety). Those files are the
+  // worktree's own: a build that rewrote its .git file to name another folder takes the real Git folder out of that
+  // lookup (README, "What the key lock does not do").
   let firstGit = "git", safety = {};
   const known = gitCommonDir(options.worktree) ?? undefined;
   if (keyGuardOn(process.env)) {

@@ -352,14 +352,18 @@ async function main(args) {
     // Git settings even inside the lock). env above keeps the lead's own, so a fetch or push still reads the global config.
     const gitVariable = /^GIT_CONFIG_(COUNT|GLOBAL|NOSYSTEM|KEY_\d+|VALUE_\d+)$/;
     const ownGitVariables = Object.fromEntries(Object.entries(process.env).filter(([key]) => gitVariable.test(key)));
-    const shieldProcess = () => {
-      if (!guarded) return;
-      // The checks run with the private folder read-only; a link that no longer leads where it did stops kit pr all the same.
+    // The checks see the private folder read-only, but another build running meanwhile may write it: a link that no
+    // longer leads where it did stops kit pr, checked before every program it starts and after every check.
+    const checkLinks = () => {
       for (const [name, target] of Object.entries(linked)) {
         let now = null;
         try { now = readlinkSync(join(programs, name)); } catch { /* Gone. */ }
         if (now !== target) throw new Error(`kit pr's own link to ${name} (${join(programs, name)}) was changed while it ran; run kit pr again`);
       }
+    };
+    const shieldProcess = () => {
+      if (!guarded) return;
+      checkLinks();
       for (const key of Object.keys(process.env)) if (gitVariable.test(key) && !Object.hasOwn(ownGitVariables, key)) delete process.env[key];
       Object.assign(process.env, ownGitVariables, safety(env));
     };
@@ -390,10 +394,11 @@ async function main(args) {
     // Keep child RESULT lines in logs, so the command has exactly one final RESULT.
     async function execute(name, command, argv, input, extraEnv) {
       step = name;
+      if (guarded) checkLinks();
       // A check runs locked, a git call by its full path, and everything else with gitSafety's settings: kit review's
       // and gh's own git calls, and kit release-check's fetch (with the network).
       // node is this process's own, never a bare name PATH may resolve to a link into the worktree.
-      let program = command === "node" ? process.execPath : command, args = argv, childEnv = { ...(command === "gh" ? ghEnv : env), ...extraEnv };
+      let program = command === "node" ? process.execPath : command === "gh" && linked.gh ? linked.gh : command, args = argv, childEnv = { ...(command === "gh" ? ghEnv : env), ...extraEnv };
       if (command === "git") {
         program = gitBin;
         const network = gitNetworkCall(argv);
@@ -534,7 +539,6 @@ async function main(args) {
         if (grep.status === 0) found.push(...grep.text.trim().split(/\r?\n/).filter(Boolean));
       }
       try { if (common && lfs.test(readFileSync(join(common, "info/attributes"), "utf8"))) found.push(".git/info/attributes"); } catch { /* None. */ }
-      step = "lfs";
       if (found.length) throw new Error(`this repository uses Git LFS (filter=lfs in ${[...new Set(found)].join(", ")}); kit pr does not read your global Git config, where Git LFS is set up, so a rebase would leave pointer files in place of the files; land it with ASE_KEY_GUARD=off`);
     }
 
