@@ -93,9 +93,15 @@ export function folderRemote(url) {
 }
 
 // The host a remote URL names (scheme://[user@]host[:port]/…, or the scp form [user@]host:path, a host in brackets in
-// either), lower case, without the brackets, an IPv6 zone or a trailing dot; "" where it names none.
-const remoteHost = url => (/^[a-z][a-z0-9+.-]*:\/\/(?:[^/@]*@)?(\[[^\]]*\]|[^/:?#]*)/i.exec(url)?.[1]
-  ?? /^(?:[^/@:]*@)?(\[[^\]]*\]|[^/:]+):/.exec(url)?.[1] ?? "").replace(/^\[|\]$/g, "").replace(/%.*$/, "").replace(/\.$/, "").toLowerCase();
+// either), lower case, without the brackets, an IPv6 zone or a trailing dot; "" where it names none. As git and ssh
+// read it: a scheme:// URL is percent-decoded first, and the user part ends at the last @ before the host.
+function remoteHost(url) {
+  const scheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(url);
+  let text = url;
+  if (scheme) try { text = decodeURIComponent(url); } catch { /* Not valid percent codes: git reads them as they are. */ }
+  const host = scheme ? /^[a-z][a-z0-9+.-]*:\/\/(?:[^/]*@)?(\[[^\]]*\]|[^/:?#]*)/i.exec(text)?.[1] : /^(?:[^/:]*@)?(\[[^\]]*\]|[^/:@]+):/.exec(text)?.[1];
+  return (host ?? "").replace(/^\[|\]$/g, "").replace(/%.*$/, "").replace(/\.$/, "").toLowerCase();
+}
 // Whether an address (a literal, or one the resolver gives) is this machine: loopback, unspecified, or one of its own
 // interfaces, compared as parsed addresses (any IPv6 spelling, IPv4 mapped into IPv6 too).
 function ownAddress(address) {

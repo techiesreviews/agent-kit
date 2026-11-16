@@ -4049,6 +4049,12 @@ test("kit pr refuses a push whose remote lists a folder after another push addre
   const resolved = f.run();
   assert.equal(resolved.status, 1, resolved.stdout + resolved.stderr);
   assert.match(resolved.stdout, /^RESULT: fail push: origin pushes to this machine itself \(ssh:\/\/127\.1\/srv\/repo\.git\)/m);
+  // A user name with @ in it: ssh takes the host after the last one.
+  f.git("config", "--unset-all", "remote.origin.pushurl");
+  f.git("config", "--add", "remote.origin.pushurl", "ssh://a@b@localhost/srv/repo.git");
+  const user = f.run();
+  assert.equal(user.status, 1, user.stdout + user.stderr);
+  assert.match(user.stdout, /^RESULT: fail push: origin pushes to this machine itself \(ssh:\/\/(a@b@)?localhost\/srv\/repo\.git\)/m);
   // Every address a folder: the push runs inside the key lock, as before.
   f.git("config", "--unset-all", "remote.origin.pushurl");
   f.git("config", "--add", "remote.origin.pushurl", f.origin);
