@@ -105,14 +105,9 @@ function home(env) {
 export function lockedPaths(cli, env = process.env, { apiRoute = false, cwd = process.cwd() } = {}) {
   const base = home(env);
   const paths = [];
-  // A path a variable names: a relative one is read both from the folder the agent runs in (the worktree, as its own
-  // tools would) and from the lead's (as the lead's tools find it). Returns the first reading; both are locked.
-  const named = value => {
-    if (!value) return "";
-    const readings = [...new Set([resolve(cwd, value), resolve(process.cwd(), value)])];
-    paths.push(...readings.slice(1));
-    return readings[0];
-  };
+  // Every reading of a path a variable names: a relative one is read both from the folder the agent runs in (the
+  // worktree, as its own tools would) and from the lead's (as the lead's tools find it); none for an empty one.
+  const named = value => value ? [...new Set([resolve(cwd, value), resolve(process.cwd(), value)])] : [];
   paths.push(...homeKeyPaths.map(path => join(base, path)));
   for (const [other, list] of Object.entries(cliKeyPaths)) {
     // Codex's own login and config are hidden from its commands (its profile); the API route signs Claude in with a key.
@@ -120,24 +115,24 @@ export function lockedPaths(cli, env = process.env, { apiRoute = false, cwd = pr
   }
   if (env.CODEX_HOME) paths.push(join(env.CODEX_HOME, "auth.json"), join(env.CODEX_HOME, "config.toml"));
   // Claude's moved config folder: its MCP config for every CLI, its login for the others.
-  if (env.CLAUDE_CONFIG_DIR) {
-    paths.push(join(named(env.CLAUDE_CONFIG_DIR), ".claude.json"));
-    if (cli !== "claude" || apiRoute) paths.push(join(named(env.CLAUDE_CONFIG_DIR), ".credentials.json"));
+  for (const folder of named(env.CLAUDE_CONFIG_DIR)) {
+    paths.push(join(folder, ".claude.json"));
+    if (cli !== "claude" || apiRoute) paths.push(join(folder, ".credentials.json"));
   }
   // OpenCode's data folder where XDG_DATA_HOME moves it, and a database OPENCODE_DB names (with its journals).
   if (cli !== "opencode") {
-    if (env.XDG_DATA_HOME) paths.push(join(named(env.XDG_DATA_HOME), "opencode"));
-    if (env.OPENCODE_DB) paths.push(...["", "-wal", "-shm", "-journal"].map(end => named(env.OPENCODE_DB) + end));
+    paths.push(...named(env.XDG_DATA_HOME).map(folder => join(folder, "opencode")));
+    paths.push(...named(env.OPENCODE_DB).flatMap(db => ["", "-wal", "-shm", "-journal"].map(end => db + end)));
   }
   // kit review's own Codex home (a temporary folder whose auth.json links the real login, which Codex may swap for a
   // refreshed file mid-run) is hidden whole from its commands: the link and whatever replaces it.
   if (cli === "codex" && env.CODEX_HOME && resolve(env.CODEX_HOME) !== join(base, ".codex") && inside(resolve(env.CODEX_HOME), resolve(tmpdir()))) paths.push(env.CODEX_HOME);
   // Tools that keep their keys where a variable says (gh's GH_CONFIG_DIR among them, which the kit itself sets).
   // KUBECONFIG holds a list of files.
-  for (const name of keyFolderVariables) for (const path of String(env[name] ?? "").split(name === "KUBECONFIG" ? ":" : "\0")) if (path) paths.push(named(path));
+  for (const name of keyFolderVariables) for (const path of String(env[name] ?? "").split(name === "KUBECONFIG" ? ":" : "\0")) paths.push(...named(path));
   // Agent sockets wherever they are: dropping the variable hides the name, not the socket.
-  if (env.SSH_AUTH_SOCK) paths.push(named(env.SSH_AUTH_SOCK));
-  for (const [, path] of String(env.DBUS_SESSION_BUS_ADDRESS ?? "").matchAll(/(?:^|[,;:])path=([^,;]+)/g)) paths.push(named(path));
+  paths.push(...named(env.SSH_AUTH_SOCK));
+  for (const [, path] of String(env.DBUS_SESSION_BUS_ADDRESS ?? "").matchAll(/(?:^|[,;:])path=([^,;]+)/g)) paths.push(...named(path));
   if (env.XDG_CONFIG_HOME && resolve(env.XDG_CONFIG_HOME) !== join(base, ".config")) {
     paths.push(...configKeyNames.map(name => join(env.XDG_CONFIG_HOME, name)));
     // The CLIs' own settings there too (OpenCode's), but the run's own.
@@ -146,9 +141,9 @@ export function lockedPaths(cli, env = process.env, { apiRoute = false, cwd = pr
     }
   }
   // The API key file, for every CLI: the API route's wrapper reads it before claude starts inside the lock.
-  if (env.KIT_API_KEY_FILE) paths.push(named(env.KIT_API_KEY_FILE));
+  paths.push(...named(env.KIT_API_KEY_FILE));
   // The display's cookie wherever the session keeps it (older SDDM: /tmp/xauth_…).
-  if (env.XAUTHORITY) paths.push(named(env.XAUTHORITY));
+  paths.push(...named(env.XAUTHORITY));
   for (const extra of String(env.KIT_KEY_PATHS ?? "").split(process.platform === "win32" ? ";" : ":")) {
     if (extra.startsWith("/")) paths.push(extra);
   }
@@ -198,7 +193,7 @@ export function linkTargets(paths, { skip = [], keep = [], limit = 200_000 } = {
     seen.add(real);
     // A folder that cannot be listed could hide a link: the search is not complete, so the run is refused.
     try { entries = readdirSync(folder, { withFileTypes: true }); }
-    catch (error) { if (error.code !== "ENOENT") unlisted.push(`${folder} (${error.code})`); return; }
+    catch (error) { if (error.code !== "ENOENT") unlisted.push({ folder, code: error.code }); return; }
     count += entries.length;
     if (count > limit) { tooLarge = searching; return; }
     for (const entry of entries) {
@@ -255,6 +250,19 @@ export function bwrapArgs(paths) {
     else args.push("--ro-bind", "/dev/null", path);
   }
   return args;
+}
+
+// A key folder that could not be listed, in words with a step that fits why: the user's own folder without read
+// permission, another user's folder (an earlier sudo run), or anything else.
+function listingProblem({ folder, code }) {
+  const quoted = `'${folder.replaceAll("'", `'\\''`)}'`;
+  let owner = null;
+  try { owner = statSync(folder).uid; } catch { /* Gone since. */ }
+  const own = typeof process.getuid === "function" && owner === process.getuid();
+  const step = code === "EACCES" && own ? `allow reading it: chmod u+rx ${quoted}`
+    : code === "EACCES" && owner !== null ? `give it back to your user: sudo chown -R "$USER" ${quoted}`
+    : "check the folder, then try again";
+  return `${folder} cannot be read to look for links (${code}); ${step}`;
 }
 
 // TOML strings for Codex's -c values: JSON strings are valid TOML basic strings.
@@ -374,7 +382,7 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
     // Compared with the links' real targets, so through any link on the way (~/Projects -> /data/Projects).
     keep: [home(env), worktree, common].filter(Boolean).map(path => { try { return realpathSync(path); } catch { return resolve(path); } }) });
   if (unsafe.length) throw new Error(`cannot lock the key files for this ${kind}: a key folder links to a folder the lock cannot hide (${unsafe.join(", ")}); move the keys into a folder of their own, or set ASE_KEY_GUARD=off to run without the lock`);
-  if (unlisted.length) throw new Error(`cannot lock the key files for this ${kind}: ${unlisted.join(", ")} cannot be read to look for links; give it back to your user (sudo chown -R $USER <folder>) or remove it, or set ASE_KEY_GUARD=off to run without the lock`);
+  if (unlisted.length) throw new Error(`cannot lock the key files for this ${kind}: ${unlisted.map(listingProblem).join("; ")}; or set ASE_KEY_GUARD=off to run without the lock`);
   if (tooLarge) throw new Error(`cannot lock the key files for this ${kind}: ${tooLarge} holds too many files to search for links (over 200000 in the key folders); clear old files there, or set ASE_KEY_GUARD=off to run without the lock`);
   const scrub = scrubbedEnv(cli, env, { apiRoute, model });
   // Codex's own sandbox shares the network too, so the display warning (when bubblewrap can check it) applies to it.

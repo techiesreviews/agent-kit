@@ -73,6 +73,9 @@ test("the locked paths hold the Orbit, GitHub and Cloudflare keys, Claude's MCP 
   // Relative names count from the worktree; agent sockets are locked where they are.
   const relative = lockedPaths("claude", { HOME: "/h", NPM_CONFIG_USERCONFIG: "../private/npmrc", SSH_AUTH_SOCK: "/tmp/ssh-x/agent.1", DBUS_SESSION_BUS_ADDRESS: "unix:path=/tmp/dbus-x,guid=1" }, { cwd: "/w/tree" });
   for (const path of ["/w/private/npmrc", resolve(process.cwd(), "../private/npmrc"), "/tmp/ssh-x/agent.1", "/tmp/dbus-x"]) assert.ok(relative.includes(path), path);
+  // Paths built from a relative name get both readings too; a cookie in /tmp is locked where it is.
+  const built = lockedPaths("grok", { HOME: "/h", OPENCODE_DB: "oc.db", XAUTHORITY: "/tmp/xauth_abc" }, { cwd: "/w/tree" });
+  for (const path of ["/w/tree/oc.db-wal", resolve(process.cwd(), "oc.db-wal"), "/tmp/xauth_abc"]) assert.ok(built.includes(path), path);
   // OpenCode's settings under a moved config folder are hidden from the other CLIs, not from OpenCode.
   assert.ok(lockedPaths("claude", { HOME: "/h", XDG_CONFIG_HOME: "/custom" }).includes("/custom/opencode/opencode.jsonc"));
   assert.ok(!lockedPaths("opencode", { HOME: "/h", XDG_CONFIG_HOME: "/custom" }).includes("/custom/opencode/opencode.json"));
@@ -273,9 +276,9 @@ test("a link inside a key folder locks what it points at, through both paths; a 
   // A key folder that cannot be listed could hide a link: refused.
   const shut = join(home, ".config/fleet/shut"); mkdirSync(shut); chmodSync(shut, 0o111);
   t.after(() => { if (existsSync(shut)) chmodSync(shut, 0o755); });
-  assert.deepEqual(linkTargets([join(home, ".config/fleet")], { keep: [home] }).unlisted, [`${shut} (EACCES)`]);
+  assert.deepEqual(linkTargets([join(home, ".config/fleet")], { keep: [home] }).unlisted, [{ folder: shut, code: "EACCES" }]);
   assert.throws(() => keyGuard({ cli: "claude", kind: "review", common: "/c", env: { HOME: home, PATH: process.env.PATH } }),
-    /cannot lock the key files for this review: .*shut \(EACCES\) cannot be read to look for links; give it back to your user/);
+    new RegExp(`cannot lock the key files for this review: ${shut} cannot be read to look for links \\(EACCES\\); allow reading it: chmod u\\+rx '${shut}'; or set ASE_KEY_GUARD=off`));
   chmodSync(shut, 0o755); rmSync(shut, { recursive: true });
   // A link to a device (known_hosts -> /dev/null) is neither locked nor refused.
   symlinkSync("/dev/null", join(home, ".config/fleet/known_hosts"));
