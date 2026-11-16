@@ -818,6 +818,21 @@ test("PROOF: a claude, a codex and a git that a link in a PATH folder outside th
   assert.notEqual(stopped.status, 0, stopped.stdout + stopped.stderr);
   const refusal = /^problem: cannot lock the key files for this build: git on PATH is \S+\/git-link\/git, a link into the worktree or its Git folder /m;
   assert.match(stopped.stderr, refusal); assert.match(readFileSync(join(stoppedOut, "run.log"), "utf8"), refusal);
+  // A review resolves its scope (the base and the head) with git too, before it reads the diff: that git is the real
+  // one as well, though the linked one comes first on PATH.
+  writeFileSync(join(bin, "grok"), `#!/usr/bin/env node
+const args = process.argv.slice(2);
+process.stdout.write(JSON.stringify({ sessionId: "g-1", text: "REVIEW_STATUS: complete\\nDefects\\nNone.", modelUsage: { [args[args.indexOf("-m") + 1]]: {} } }));
+`);
+  chmodSync(join(bin, "grok"), 0o755);
+  writeFileSync(join(root, "file.txt"), "change\n");
+  git("add", "file.txt"); git("-c", "user.name=T", "-c", "user.email=t@t", "commit", "-q", "-m", "change");
+  const reviewOut = join(dir, "out-review"); mkdirSync(reviewOut);
+  const review = spawnSync(process.execPath, [resolve("agent-run.mjs"), "review", root, brief, "--out", reviewOut, "--cli", "grok", "--model", "grok-4.7", "--base", "HEAD~1"],
+    { cwd: root, env: { ...env, PATH: `${gitLink}:${bin}:${pathWithout(dir, ["claude", "codex", "grok"], "review-bin")}` }, encoding: "utf8", timeout: 60_000 });
+  assert.ok(!existsSync(noted), `a review: the planted git started: ${existsSync(noted) ? readFileSync(noted, "utf8") : ""}`);
+  assert.equal(review.status, 0, review.stdout + review.stderr);
+  assert.match(readFileSync(join(reviewOut, "diff.patch"), "utf8"), /^\+change$/m);
 });
 
 test("PROOF: a review's own git diff and git log run no program a build's Git settings name (an outside diff tool, a text converter, a signature checker) with the keys", { skip: noBwrap }, t => {

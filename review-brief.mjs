@@ -77,14 +77,15 @@ ${plainEnglish}
 The very first line must be REVIEW_STATUS: complete. No preamble or markdown fence.
 `;
 
-export function resolveCommit(ref, worktree = process.cwd()) {
+// git(args, options) runs git in the worktree and returns what it printed. The agent runner passes its own, which
+// starts git by its full path inside the key lock (agent-run.mjs); elsewhere it is the caller's own git.
+export function resolveCommit(ref, worktree = process.cwd(), git = (args, options) => execFileSync("git", ["-C", worktree, ...args], options)) {
   try {
-    return execFileSync("git", ["-C", worktree, "rev-parse", "--verify", "--quiet", "--end-of-options", `${ref}^{commit}`],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return String(git(["rev-parse", "--verify", "--quiet", "--end-of-options", `${ref}^{commit}`], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })).trim();
   } catch { throw new Error(`cannot resolve commit ref ${ref}`); }
 }
 
-export function reviewScope(brief, { base, commit } = {}, worktree = process.cwd()) {
+export function reviewScope(brief, { base, commit } = {}, worktree = process.cwd(), git = undefined) {
   if (base !== undefined && commit !== undefined) throw new Error("--base and --commit are mutually exclusive");
   if (base === undefined && commit === undefined) {
     const single = /\bgit diff (\S+)\^\.\.\1(?=[\s).,;]|$)/.exec(brief);
@@ -93,12 +94,12 @@ export function reviewScope(brief, { base, commit } = {}, worktree = process.cwd
   }
   if (base === undefined && commit === undefined) throw new Error("brief has no review scope; pass --base REF or --commit SHA");
   if (commit !== undefined) {
-    const head = resolveCommit(commit, worktree);
-    const parent = resolveCommit(`${head}^`, worktree);
+    const head = resolveCommit(commit, worktree, git);
+    const parent = resolveCommit(`${head}^`, worktree, git);
     return { head, base: parent, commit: head, label: `git diff ${head}^..${head}` };
   }
-  const resolved = resolveCommit(base, worktree);
-  return { head: resolveCommit("HEAD", worktree), base: resolved, label: `git diff ${resolved}...HEAD` };
+  const resolved = resolveCommit(base, worktree, git);
+  return { head: resolveCommit("HEAD", worktree, git), base: resolved, label: `git diff ${resolved}...HEAD` };
 }
 
 export function reviewComplete(result) {
