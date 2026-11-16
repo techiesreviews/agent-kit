@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -33,11 +33,30 @@ function testNode() {
   return nodeOnly = folder;
 }
 process.env.PATH = `${testNode()}${process.env.PATH ? `:${process.env.PATH}` : ""}`;
+// HOME and the XDG config, cache and data folders are one temporary folder per test process as well. The key lock
+// (key-guard.mjs) searches the key folders under HOME before every agent run, so a fixture with the real HOME would
+// list the developer's own key folders and read their git config and shell start-up files, and a dotfiles link there
+// could refuse the run. Fixtures build their environment from process.env or kitEnv(), so this process's own HOME is
+// swapped once, when this file is first loaded; the names that move a CLI's or git's own folders go with it. A fixture
+// may still set its own.
+function testHome() {
+  const folder = mkdtempSync(join(tmpdir(), "kit-test-home-"));
+  for (const name of [".config", ".cache", ".local/share"]) mkdirSync(join(folder, name), { recursive: true });
+  process.once("exit", () => rmSync(folder, { recursive: true, force: true }));
+  return folder;
+}
+export const testHomeFolder = testHome();
+Object.assign(process.env, { HOME: testHomeFolder, XDG_CONFIG_HOME: join(testHomeFolder, ".config"), XDG_CACHE_HOME: join(testHomeFolder, ".cache"),
+  XDG_DATA_HOME: join(testHomeFolder, ".local/share") });
+// ASE_KEY_GUARD and KIT_KEY_PATHS from the shell that started the tests would change what the lock does in every
+// fixture (off: no lock is tested at all; a path: one more folder to search), so they are dropped; a test of either
+// sets it itself.
+for (const name of ["ASE_KEY_GUARD", "KIT_KEY_PATHS", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "GROK_HOME", "ZDOTDIR", "GIT_CONFIG_GLOBAL"]) delete process.env[name];
 // KIT_SKILL_HOME names a folder that never exists, so kit doctor's skills map note reads no real skill folder.
 const noSkills = resolve(import.meta.dirname, "../fixtures/no-skill-home");
 // KIT_TALK_STYLE=plain keeps briefs in plain English, and KIT_BG_SCOPE=off keeps kit bg jobs out of the user's
 // systemd; the tests of those two unset them.
 export function kitEnv(): NodeJS.ProcessEnv {
-  const { KIT_HOME: _home, KIT_HOME_DEFAULT: _default, GH_REPO: _repo, GH_HOST: _host, KIT_API_KEY_FILE: _key, KIT_API_CONFIG_DIR: _config, ...env } = process.env;
+  const { KIT_HOME: _home, KIT_HOME_DEFAULT: _default, GH_REPO: _repo, GH_HOST: _host, KIT_API_KEY_FILE: _key, KIT_API_CONFIG_DIR: _config, ASE_KEY_GUARD: _guard, KIT_KEY_PATHS: _paths, ...env } = process.env;
   return { ...env, KIT_SKILL_DIRS: "", GH_CONFIG_DIR: ghConfig, XDG_STATE_HOME: testState(), KIT_TALK_STYLE: "plain", KIT_BG_SCOPE: "off", KIT_SKILL_HOME: noSkills };
 }

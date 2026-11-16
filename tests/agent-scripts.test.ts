@@ -16,6 +16,8 @@ import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokOu
 import { durationMilliseconds } from "../sol-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { kitStateDir } from "../kit-lib.mjs";
+// The test environment (a temporary HOME, no lock settings from the shell): this file starts agent runs or kit doctor.
+import "./support/kit-env.ts";
 // The opt-in API route is read from the environment: these tests run with it off, whatever the shell exports.
 delete process.env.KIT_API_KEY_FILE; delete process.env.KIT_API_CONFIG_DIR;
 
@@ -899,7 +901,8 @@ process.exitCode = 1;
   assert.match(readFileSync(join(out, "out.md"), "utf8"), /^REVIEW_STATUS: complete\nDefects: none/);
   const recorded: { args: string[]; input: string } = JSON.parse(readFileSync(capture, "utf8"));
   assert.ok(recorded.input.startsWith("tiny brief\n") && recorded.input.includes("Review scope: git diff"));
-  assert.equal(recorded.args[recorded.args.indexOf("--sandbox") + 1], "read-only");
+  // Inside the key lock Grok's own sandbox (bubblewrap) cannot start: off, the read-only tool list and the lock hold.
+  assert.equal(recorded.args[recorded.args.indexOf("--sandbox") + 1], "off");
   const status = JSON.parse(readFileSync(join(out, "status.json"), "utf8"));
   assert.equal(status.cli, "grok");
   assert.equal(status.session, recorded.args[recorded.args.indexOf("-s") + 1]);
@@ -926,7 +929,7 @@ process.exitCode = 1;
       const again: { args: string[] } = JSON.parse(readFileSync(capture, "utf8"));
       assert.equal(again.args[again.args.indexOf("--resume") + 1], session);
       assert.ok(!again.args.includes("-s"));
-      assert.equal(again.args[again.args.indexOf("--sandbox") + 1], "read-only");
+      assert.equal(again.args[again.args.indexOf("--sandbox") + 1], "off");
       assert.match(readFileSync(join(stopped, "out.md"), "utf8"), /REVIEW_STATUS: complete/);
     }
   }
@@ -1291,6 +1294,8 @@ test("build contract directs focused units and type checks and leaves the full t
   assert.match(buildContract, /scripts\/agents\/unit.sh <files>/);
   assert.match(buildContract, /npm run check when types moved/);
   assert.match(buildContract, /kit pr runs the tier's full set/);
+  // TOOLS-285: a build the kit starts runs inside the key lock, so the contract names the keyed steps as the lead's.
+  assert.match(buildContract, /^Keyed steps are the lead's, whatever the brief above says: no `kit ticket get\|list`, `gh`, `kit wait ci`, `kit pr`, `kit preview` or `wrangler`, no fetch from or push to a private remote, no install that needs a registry token\. Work from the text in the brief, and name each step you left as `Lead: <step>` in the report\.$/m);
   assert.doesNotMatch(buildContract, /npm test/);
 });
 

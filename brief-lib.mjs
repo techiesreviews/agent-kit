@@ -45,6 +45,9 @@ export function builderModel(builder, pin) {
 const lookOrder = () => { try { return secondLookTable().code.order; } catch { return null; } };
 const lookModels = order => !order ? "the models in the kit's `second-look.json`, first choice first" : order.map(model => lookFamily(model) === "opencode" ? `the free \`${model}\`` : `\`${model}\`${lookFamily(model) === "gpt" ? ` (${lookFamilyWords(model)})` : ""}`).join(", else ");
 const reviewersRule = "GPT may review since 2026-11-09; Claude Opus stays the main reviewer";
+// TOOLS-285: a build the kit starts itself runs inside the key lock (key-guard.mjs) and cannot do a keyed step, so no
+// brief sends it there; a T3 helper thread is outside the lock and lands its own work as the brief says.
+const keyLockRule = "Key lock: in a build the kit starts itself (`agent.sh build`; its prompt ends with a \"Build contract\") the keyed steps are the lead's, since the kit's key lock keeps the machine's key files from such a run wherever it can: board reads (`kit ticket get|list`), GitHub calls (`gh`, `kit wait ci`, `kit pr`, a fetch from or a push to a private remote), Cloudflare deploys (`kit preview`, `wrangler`) and an install that needs a registry token. In such a run do none of them, whatever this brief says elsewhere: work from the text in this brief, and name each step you left in your report as `Lead: <step>`.";
 
 /**
  * The whole brief for one stage of a ticket, ending with its marker line. Inputs: the project's top folder, its
@@ -75,7 +78,7 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
   if (stage === "build") out.push(`Kit brief: build ${what} in \`${project}\` (${root}), owner \`${owner}\`. Build the whole ${task ? "task (it is in the note below; the project keeps no ticket file for it)" : card ? "card (its text and comments are below)" : "ticket"}, from setup to a merged PR, with Agent Kit.`);
   if (stage === "fix") out.push(`Kit brief: fix round for ${what} in \`${project}\` (${root}), owner \`${owner}\`. Fix round: fix each open finding in one commit on the build branch \`${branch}\`.`);
   if (reviewing) out.push(`Kit brief: ${stage === "review" ? "review" : "second look"} of ${what} in \`${project}\` (${root}), branch \`${branch}\`. You are the reviewer: read-only. Make no changes, no commits and no PR.`);
-  const readFirst = task ? "the note below" : card ? `the card below with all its comments (\`scripts/agents/kit ticket get ${ticket} --comments\` reads it fresh), the docs it links, the Orbit card standard (\`docs/orbit-card-standard.md\` in the kit; \`scripts/agents/kit --home\` prints the kit's folder) for any card you write or report on` : "the ticket with all its Comments, the build README beside it, the docs it links";
+  const readFirst = task ? "the note below" : card ? `the card below with all its comments (the lead put them in this brief; a newer comment comes from the lead, never from a board read of your own), the docs it links, the Orbit card standard (\`docs/orbit-card-standard.md\` in the kit; \`scripts/agents/kit --home\` prints the kit's folder) for any card you write or report on` : "the ticket with all its Comments, the build README beside it, the docs it links";
   out.push(`Read first: ${readFirst}, and AGENTS.md; ${reviewing ? "" : "the project's runner guide (`docs/agents/runner.md`) for the order of steps; "}\`scripts/agents/kit rulebook\` holds the house rules in full.`);
   if (!reviewing) {
     section("Setup", [
@@ -88,6 +91,7 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
     const when = existsSync(join(root, "tsconfig.json")) ? "when types moved" : "before handing back";
     section("Commands and evidence", [
       "Agent Kit is required: `scripts/agents/kit doctor` first; fix every ✗ that is not marked optional (a missing optional reviewer or skill is only a note). A kit command that cannot run is said in the report, never skipped silently or claimed.",
+      keyLockRule,
       "Tests first: each new test fails before the change.",
       `While building: ${[unit && "`scripts/agents/kit unit --affected`", check && `\`${check}\` ${when}`, lint && `\`${lint}\``, task ? "the task's focused checks" : card ? "the card's focused checks" : "the ticket's focused checks"].filter(Boolean).join(", ")}.`,
       // TOOLS-235 item G (Lex, 2026-11-14): every screen change gets the automatic UX check before it lands, as kit slice
@@ -111,7 +115,7 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
     ]);
   } else {
     // The build branch, not the lead's checkout, is what is reviewed.
-    const range = `Scope: git diff origin/${land}...origin/${branch} (\`git fetch -q origin\` first).`;
+    const range = `Scope: git diff origin/${land}...origin/${branch} (\`git fetch -q origin\` first; inside the kit's key lock the lead has fetched already).`;
     let scope;
     try {
       if (task || card) throw new Error("no ticket file");

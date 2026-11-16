@@ -4,6 +4,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
+// The test environment (a temporary HOME, no lock settings from the shell): this file starts agent runs or kit doctor.
+import "./support/kit-env.ts";
 
 // The opt-in API route is read from the environment: these tests run with it off, whatever the shell exports.
 delete process.env.KIT_API_KEY_FILE; delete process.env.KIT_API_CONFIG_DIR;
@@ -212,10 +214,12 @@ for (const cli of ["codex", "claude"]) test(`dead ${cli} build resumes with save
     const common = f.git("rev-parse", "--path-format=absolute", "--git-common-dir");
     const temporary = call.args[call.args.indexOf("-o") + 1];
     assert.ok(temporary.startsWith(f.out + "/")); assert.notEqual(temporary, join(f.out, "out.md"));
-    assert.deepEqual(call.args, ["exec", "resume", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=high",
-      "-c", 'sandbox_mode="workspace-write"', "-c", "sandbox_workspace_write.network_access=true",
-      "-c", `sandbox_workspace_write.writable_roots=[${JSON.stringify(common)}]`,
+    // The key lock's permissions profile (key-guard.mjs) takes the sandbox mode's place: same writes, key paths unreadable.
+    const profile = call.args.slice(6, 12);
+    assert.deepEqual(call.args, ["exec", "resume", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=high", ...profile,
       "--dangerously-bypass-hook-trust", "-o", temporary, session, "-"]);
+    assert.deepEqual([profile[0], profile[1], profile[2], profile[4], profile[5]], ["-c", 'default_permissions="kit-build"', "-c", "-c", "permissions.kit-build.network={enabled=true}"]);
+    assert.ok(profile[3].includes(`${JSON.stringify(common)}="write"`) && profile[3].includes('":root"="read"'), profile[3]);
     assert.equal(existsSync(temporary), false);
   } else {
     assert.deepEqual(call.args, ["-p", "--model", "claude-opus-5-5", "--effort", "high", "--permission-mode", "acceptEdits",

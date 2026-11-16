@@ -4,6 +4,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterFixRounds, blockingFindings, completedFixRounds, countsLine, findingsRecord, openFindings } from "../review-findings.mjs";
+// The test environment (a temporary HOME, no lock settings from the shell): this file starts agent runs or kit doctor.
+import "./support/kit-env.ts";
 
 const review = (body: string) => `REVIEW_STATUS: complete\n\n${body}\n`;
 const finding = (group: string, text: string, severity: string | null = null, kind: string | null = group === "Validation gaps" ? null : "unsorted") =>

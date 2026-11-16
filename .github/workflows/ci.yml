@@ -27,6 +27,14 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # The key lock (key-guard.mjs) runs agents inside bubblewrap; Ubuntu's AppArmor rule against unprivileged user
+      # namespaces would stop it on the runner, so it is lifted there (an ephemeral machine).
+      - name: Bubblewrap for the key lock
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          bwrap --dev-bind / / -- true
       # Paid skills never go public: CI has no local skill folders, so it checks tracked paths only.
       - name: Skill guard
         run: node skill-guard.mjs --paths-only
@@ -60,6 +68,12 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: editor/package-lock.json
+      - name: Bubblewrap for the key lock
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          bwrap --dev-bind / / -- true
       - run: npm ci
         working-directory: editor
       # One editor unit test (owner setup) drives a headless browser.
