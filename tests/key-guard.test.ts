@@ -50,8 +50,9 @@ test("secret-bearing variables are dropped; a CLI keeps only its own sign-in; or
   assert.ok(Object.hasOwn(codex, "ANTHROPIC_API_KEY") && !Object.hasOwn(codex, "OPENAI_API_KEY"));
   assert.ok(!Object.hasOwn(scrubbedEnv("claude", env, { apiRoute: true }), "KIT_API_KEY_FILE"), "the API route's wrapper still finds its key file");
   // The display and its cookie lead outside the lock; an OpenCode model keeps its own provider's key, no other.
-  const urls = scrubbedEnv("claude", { GITHUB_PAT: "x", DATABASE_URL: "postgres://app:hunter2@db/x", HTTPS_PROXY: "http://proxy:3128", REPO_URL: "https://github.com/x/y" });
-  assert.deepEqual(Object.keys(urls).sort(), ["DATABASE_URL", "GITHUB_PAT"]);
+  const urls = scrubbedEnv("claude", { GITHUB_PAT: "x", DATABASE_URL: "postgres://app:hunter2@db/x", CLONE_URL: "https://ghp_abc@github.com/x/y",
+    HTTPS_PROXY: "http://user:pass@proxy:3128", https_proxy: "http://user:pass@proxy:3128", REPO_URL: "https://github.com/x/y", NPM_CONFIG_REGISTRY: "http://localhost:4873/@scope/" });
+  assert.deepEqual(Object.keys(urls).sort(), ["CLONE_URL", "DATABASE_URL", "GITHUB_PAT"]);
   const desk = { DISPLAY: ":0", WAYLAND_DISPLAY: "wayland-0", OPENROUTER_API_KEY: "x", DEEPSEEK_API_KEY: "x" };
   assert.deepEqual(Object.keys(scrubbedEnv("opencode", desk, { model: "openrouter/some-model:free" })).sort(), ["DEEPSEEK_API_KEY", "DISPLAY", "WAYLAND_DISPLAY"]);
 });

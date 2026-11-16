@@ -554,7 +554,7 @@ if [[ $quiet == false ]]; then
     esac
   else
     api_warning="${api_warning:+$api_warning; }key lock not checked (see the ✗ key lock line)"
-    printf '✗ key lock: doctor could not read the lock'"'"'s state (Node >=24 or key-guard.mjs missing); fix: install Node 24\n'
+    printf '✗ key lock: doctor could not read the lock'"'"'s state (Node >=24 or key-guard.mjs missing); fix: install Node 24, or run scripts/agents/kit update if key-guard.mjs is missing\n'
   fi
 fi
 
