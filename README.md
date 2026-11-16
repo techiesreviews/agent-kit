@@ -251,7 +251,9 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   rclone, cargo, RubyGems, Kaggle, DigitalOcean, Fly, Netlify, Vercel, Hugging Face; a store that is not on it goes in
   `KIT_KEY_PATHS`), `~/.claude.json` (it holds MCP Authorization headers), `~/.Xauthority`, the API route's key file, the
   other CLIs' logins, Claude's `settings.json` for the other CLIs (it can hold a token), a git config with a token in a
-  URL and a shell start-up file that sets a token (with the files they pull in, however long the chain), folders and
+  URL and a shell start-up file that sets a token (quoted, `+=` and default forms too: `export "GH_TOKEN=…"`,
+  `GH_TOKEN+=…`, `${GH_TOKEN:=…}`; with the files they pull in, however long the chain: a shell file's relative
+  `source ./x.env` is read from the folders a shell runs in, HOME, the worktree and the lead's folder), folders and
   files that variables name (`GH_CONFIG_DIR`, `KUBECONFIG`, `GNUPGHOME` …), what links
   inside those folders point to (a link to a folder holding HOME or the worktree, or to a system folder, stops the run:
   the lock cannot hide it; so do a key folder that cannot be listed and key folders too large to search, over 200000
@@ -288,13 +290,18 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   not confine what the agent writes. A build writes wherever the user can (the worktree, the repository's Git folder
   and settings, files under HOME), and what it leaves runs later with whoever starts it: `kit pr` runs the builder's
   tests in the lead's process, and the lead's own git commands read the repository's Git settings and hooks. Two
-  such paths are shut where bubblewrap runs: the runner's own `git status` in the worktree runs inside the lock,
-  without the dropped variables (a Git setting a build left, `core.fsmonitor` or a filter, cannot use it to reach the
-  keys), and a CLI starts inside the lock by its full path, found as the run will find it, through a bubblewrap found
-  only in PATH's full-path folders (a program left in the worktree never starts unlocked in a CLI's or bwrap's name).
-  Where bubblewrap does not run (macOS, Windows, a Linux where it is missing or blocked) the runner's `git status`
-  after a Codex run is not wrapped: `core.fsmonitor` is switched off for that call, a filter a build named still
-  runs unlocked. For the rest the lead's guard is the review before anything a build wrote is run (`kit review` is
+  such paths are shut where bubblewrap runs: the runner's own git calls in the worktree run inside the lock,
+  without the dropped variables (its `git status`, and a review's `git diff` and `git log`: a Git setting a build
+  left, `core.fsmonitor`, a filter, `diff.external`, a text converter or a signature checker, cannot use them to reach
+  the keys), and a CLI starts inside the lock by its full path through a bubblewrap by its full path, both found only
+  in PATH's full-path folders outside the worktree and the repository's Git folder (links followed), the two places a
+  build is meant to write. npm puts `<worktree>/node_modules/.bin` on PATH as a full path, so a `bwrap`, a CLI or a `git` left there
+  never starts in the kit's name; the run's own PATH leaves those folders out, and a CLI only they hold counts as
+  missing. A PATH folder elsewhere that a build can write (under HOME) is not covered.
+  Where bubblewrap does not run (macOS, Windows, a Linux where it is missing or blocked) the runner's git calls
+  for a Codex run are not wrapped: `core.fsmonitor` is switched off for them, and a review's `git diff` and `git log`
+  start no diff tool, text converter or signature checker; a filter a build named still runs unlocked in `git
+  status`. For the rest the lead's guard is the review before anything a build wrote is run (`kit review` is
   read-only); confining a build's writes, and running `kit pr`'s checks inside the lock, are not built yet.
 - Keyed steps happen only in the lead's own process, never inside a locked run. Already the lead's: `git push`, `kit pr`
   (push, PR, merge, card close) and `kit pr --release` (the build contract leaves a builder's changes unstaged). Moved to
