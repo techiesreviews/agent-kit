@@ -529,6 +529,9 @@ test("earlier second looks of a branch: only marked ones that came back, for thi
   assert.deepEqual(found.map((item: { head: string }) => item.head).sort(), [heads[0], heads[1]].sort());
   assert.equal(found[0].findings[0].severity, "P2");
   assert.deepEqual(earlierSecondLooks(join(dir, "missing"), { branch: "main", head: heads[2], root: dir }), []);
+  // Looks at heads already in the base (work that landed before, such as an earlier branch of the same name) count no round.
+  assert.deepEqual(earlierSecondLooks(reviews, { branch: "main", head: heads[2], root: dir, base: heads[0] }).map((item: { head: string }) => item.head), [heads[1]]);
+  assert.deepEqual(earlierSecondLooks(reviews, { branch: "main", head: heads[2], root: dir, base: heads[1] }), []);
 });
 
 test("a waiver given as several reasons: ids anywhere in any of them, and counts that start each one add up", () => {
