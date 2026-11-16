@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { NORMAL_ROUNDS, fixRoundsDone, modelsLine, RISKY_ROUNDS, branchRisk, budgetReport, findPreviousReview, isNit, ledgerRows, loopBriefSection, loopStop, parseMarks, prLine, renderLedger, reviewChain, riskyChange, roundLimit, secondLookRows, severityWord, stoppingFindings, unmarkedIds, waiverCheck, waiverRefusal, withIds } from "../review-loop.mjs";
+import { NORMAL_ROUNDS, earlierSecondLooks, fixRoundsDone, modelsLine, RISKY_ROUNDS, branchRisk, budgetReport, findPreviousReview, isNit, ledgerRows, loopBriefSection, loopStop, parseMarks, prLine, renderLedger, reviewChain, riskyChange, roundLimit, secondLookRows, severityWord, stoppingFindings, unmarkedIds, waiverCheck, waiverRefusal, withIds } from "../review-loop.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { findingsRecord, openFindings } from "../review-findings.mjs";
 
@@ -483,13 +483,44 @@ test("waiver: a carried finding is named by its newest id or by an id the ledger
   assert.match(waiverRefusal({ mode: "ids", open: [open[0]] }), /^- R3-1 \(the ledger's R1-1\) \(no severity\): x$/m);
 });
 
-// TOOLS-287: the fix rounds come from the review records: review round N comes after N - 1 fix rounds.
-test("fix rounds done: the last review's round minus one, never below 0; no record or an unread round is 0", () => {
+// TOOLS-287: the fix rounds come from the review records: every earlier review that left a finding above a nit.
+test("fix rounds done: earlier reviews with a finding above a nit, Claude's rounds and second looks, one per head", () => {
+  const should = [finding("P2")], record = (head: string, findings: unknown[]) => ({ head, findings });
   assert.equal(fixRoundsDone([]), 0);
-  assert.equal(fixRoundsDone([{ round: 1 }]), 0);
-  assert.equal(fixRoundsDone([{ round: 1 }, { round: 2 }, { round: 3 }, { round: 4 }]), 3);
-  assert.equal(fixRoundsDone([{ round: 6 }]), 5);
-  for (const round of [undefined, 0, -2, 2.5, "4", null]) assert.equal(fixRoundsDone([{ round }]), 0, String(round));
+  assert.equal(fixRoundsDone([record("a", should)]), 0, "the review being weighed is no fix round yet");
+  assert.equal(fixRoundsDone([record("a", should), record("b", [finding("P1")]), record("c", should), record("d", should)]), 3);
+  // A clean or nits-only round called for no fix.
+  assert.equal(fixRoundsDone([record("a", []), record("b", [finding("P3"), gap]), record("c", []), record("d", should)]), 0);
+  // Earlier second looks count, once per head, and not again where Claude's round at that head already counted.
+  assert.equal(fixRoundsDone([record("c", [])], [record("a", should), record("a", should), record("b", should)]), 2);
+  assert.equal(fixRoundsDone([record("a", should), record("c", [])], [record("a", should), record("b", [finding("P3")])]), 1);
+});
+
+test("earlier second looks of a branch: only marked ones that came back, for this branch, at heads before the current one", t => {
+  const dir = mkdtempSync(join(tmpdir(), "kit-looks-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const git = (...args: string[]) => spawnSync("git", ["-C", dir, ...args], { encoding: "utf8" }).stdout.trim();
+  git("init", "-q"); git("config", "user.email", "k@example.com"); git("config", "user.name", "K");
+  const heads = ["one", "two", "three"].map(name => { writeFileSync(join(dir, "f.txt"), name); git("add", "."); git("commit", "-qm", name); return git("rev-parse", "HEAD"); });
+  git("checkout", "-q", "-b", "side", heads[0]); writeFileSync(join(dir, "f.txt"), "side"); git("commit", "-qam", "side");
+  const sideHead = git("rev-parse", "HEAD");
+  const reviews = join(dir, ".scratch/reviews");
+  const look = (owner: string, name: string, head: string, mark: Record<string, unknown>) => {
+    const folder = join(reviews, owner, name); mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "refs.txt"), `${head}\nbase\n`);
+    writeFileSync(join(folder, "result.md"), "REVIEW_STATUS: complete\nDefects:\n- Spec: f.txt:1 P2 a should.\n");
+    writeFileSync(join(folder, "second-look.json"), JSON.stringify(mark));
+  };
+  look("a", "1", heads[0], { ok: true, branch: "main" });
+  look("b", "2", heads[1], { ok: true, branch: "main" });
+  look("a", "3", heads[2], { ok: true, branch: "main" });
+  look("a", "4", heads[1], { ok: false, branch: "main" });
+  look("a", "5", heads[1], { ok: true, branch: "other" });
+  look("a", "6", sideHead, { ok: true, branch: "main" });
+  const found = earlierSecondLooks(reviews, { branch: "main", head: heads[2], root: dir });
+  assert.deepEqual(found.map((item: { head: string }) => item.head).sort(), [heads[0], heads[1]].sort());
+  assert.equal(found[0].findings[0].severity, "P2");
+  assert.deepEqual(earlierSecondLooks(join(dir, "missing"), { branch: "main", head: heads[2], root: dir }), []);
 });
 
 test("a waiver given as several reasons: ids anywhere in any of them, and counts that start each one add up", () => {
