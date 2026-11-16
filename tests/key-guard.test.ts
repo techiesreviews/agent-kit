@@ -1122,6 +1122,7 @@ test("a script's interpreter is found by its full path: env with -S passes its o
   assert.throws(() => start(script("ignore", "#!/usr/bin/env -i node")), /^Error: cannot lock the key files for this test: \S+\/ignore starts with env -i node, so which program it runs cannot be told$/);
   const planted = join(worktree, "node"); writeFileSync(planted, "#!/bin/sh\n"); chmodSync(planted, 0o755);
   assert.throws(() => start(script("inside", `#!${planted}`)), /starts with \S+\/work\/node, inside the worktree or its Git folder/);
+  assert.throws(() => start(script("env-inside", `#!/usr/bin/env ${planted}`)), /starts with env \S+\/work\/node, inside the worktree or its Git folder/);
   // A full-path interpreter that is itself a script is followed; a chain of five is refused.
   const shim = script("shim", "#!/usr/bin/env node");
   const viaShim = script("via-shim", `#!${shim} --flag`);
