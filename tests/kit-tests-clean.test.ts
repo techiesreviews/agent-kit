@@ -16,9 +16,11 @@ function entries(directory: string) {
   return existsSync(directory) ? readdirSync(directory).sort() : [];
 }
 
-// ASE_KIT_CLEAN_LIMIT_MS is a test-only seam: the cut-off test below forces a small limit. The whole suite takes about
-// 500 s on a CI runner (2026-11-09), so the limit is 720 s: a run cut off there is a real hang, not a slow runner.
-const limit = Number(process.env.ASE_KIT_CLEAN_LIMIT_MS) || 720_000;
+// ASE_KIT_CLEAN_LIMIT_MS is a test-only seam: the cut-off test below forces a small limit. The whole suite took about
+// 500 s on a CI runner (2026-11-09); it grew with #123 and #125 (dev's CI ran past the old 720 s limit, 12m24s on
+// 2026-11-16), so the limit is 1200 s: a run cut off there is a real hang, not a slow runner. The CI job sets no
+// timeout-minutes, so GitHub's default (360 minutes) stays well above it.
+const limit = Number(process.env.ASE_KIT_CLEAN_LIMIT_MS) || 1_200_000;
 const guardName = "kit and agent unit tests leave no run folders or temporary files";
 
 // Live members of a process group; a zombie is already gone and only waits for its parent.
