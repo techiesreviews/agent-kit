@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { outerLock } from "../../key-guard.mjs";
+import { bwrapWorks, outerLock } from "../../key-guard.mjs";
 
 // This test process's environment without the kit's own home names. The kit run that started the tests exports
 // KIT_HOME, and KIT_HOME_DEFAULT when its front door filled that in: a fixture inheriting a person's KIT_HOME would
@@ -65,5 +65,5 @@ export function kitEnv(): NodeJS.ProcessEnv {
 
 // Inside kit pr's lock for its checks (TOOLS-303) on a system that blocks a sandbox inside another, the kit's runs start
 // no sandbox of their own (the outer lock hides the key files): a test of what bubblewrap itself does skips there, with
-// this reason, and runs everywhere else.
-export const insideKitPrLock: string | false = outerLock() ? "inside kit pr's lock for its checks, where the kit's runs start no sandbox of their own" : false;
+// this reason, and runs everywhere else (inside that lock too, where one sandbox can start inside another).
+export const insideKitPrLock: string | false = outerLock() && bwrapWorks() !== null ? "inside kit pr's lock for its checks, where the kit's runs start no sandbox of their own" : false;
