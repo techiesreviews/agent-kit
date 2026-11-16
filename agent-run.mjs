@@ -17,7 +17,7 @@ import { reviewComplete, reviewFormat, reviewScope } from "./review-brief.mjs";
 import { earlierReleaseCut } from "./review-loop.mjs";
 import { nextTalkStyle, talkStyleLine } from "./brief-lib.mjs";
 import { apiRoute, apiRouteProblem, apiWrapperRefused, claudeCommand, recordApiSpend } from "./api-route.mjs";
-import { keyGuard, keyGuardOn, runPath, runProgram } from "./key-guard.mjs";
+import { keyGuard, keyGuardOn, runPath, runProgram, startCommand } from "./key-guard.mjs";
 import { gitCommonDir, gitSafety } from "./git-safety.mjs";
 
 const adapters = { codex: codexAdapter, claude: claudeAdapter, grok: grokAdapter, opencode: opencodeAdapter };
@@ -1121,13 +1121,15 @@ async function executeRun(options, out, previous, update, brief) {
   // the call runs with no hook or program the repository's Git settings name (gitSafety). Those files are the
   // worktree's own: a build that rewrote its .git file to name another folder takes the real Git folder out of that
   // lookup (README, "What the key lock does not do").
-  let firstGit = "git", safety = {};
+  // firstGit: [program, arguments before git's own], a git script started by its interpreter's full path.
+  let firstGit = ["git"], safety = {};
   const known = gitCommonDir(options.worktree) ?? undefined;
   if (keyGuardOn(process.env)) {
     const path = runPath(process.env, { worktree: options.worktree, common: known });
     if (path !== undefined) process.env.PATH = path;
     try {
-      firstGit = runProgram("git", process.env, { worktree: options.worktree, common: known, kind: options.kind });
+      const found = runProgram("git", process.env, { worktree: options.worktree, common: known, kind: options.kind });
+      firstGit = startCommand(found, [], process.env, { worktree: options.worktree, common: known, kind: options.kind }).flat();
       safety = gitSafety({ worktree: options.worktree, git: firstGit, common: known }).env;
     } catch (error) {
       // The run's log, not open yet, says why the run stopped, as for the lock's other refusals.
@@ -1135,7 +1137,7 @@ async function executeRun(options, out, previous, update, brief) {
       throw error;
     }
   }
-  const common = execFileSync(firstGit, ["-C", options.worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8", env: { ...process.env, ...safety } }).trim();
+  const common = execFileSync(firstGit[0], [...firstGit.slice(1), "-C", options.worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8", env: { ...process.env, ...safety } }).trim();
   const reportPath = join(out, "out.md"), logPath = join(out, "run.log"), inputPath = join(out, `brief-${process.pid}.md`);
   // A resumed Codex report must not truncate the earlier final report.
   const output = previous ? join(out, `resume-${process.pid}-${randomUUID()}.md`) : reportPath;

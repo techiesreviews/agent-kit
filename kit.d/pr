@@ -320,6 +320,8 @@ async function main(args) {
     // PATH through a private folder of links; KIT_NODE is this very Node.
     const guarded = keyGuardOn(process.env);
     const top = gitTop(process.env.KIT_ROOT || process.cwd());
+    // The start-up files they name are still locked for the checks (checkLock reads these).
+    const startupFiles = { BASH_ENV: process.env.BASH_ENV, ENV: process.env.ENV };
     if (guarded && top) {
       delete process.env.BASH_ENV; delete process.env.ENV;
       const topCommon = gitCommonDir(top) ?? undefined;
@@ -337,13 +339,16 @@ async function main(args) {
       process.env.KIT_NODE = process.execPath;
     }
     const root = resolve(kitRoot()), common = gitCommonDir(root) ?? undefined;
-    // The real git, never the link in the private folder: kit pr starts it by that path.
+    // The real git, never the link in the private folder: kit pr starts it by that path, and a git script by its
+    // interpreter's full path (gitStart: [program, arguments before git's own]).
     const gitBin = guarded ? linked.git ?? runProgram("git", process.env, { worktree: root, common, kind: "kit pr" }) : "git";
+    const gitStart = guarded ? startCommand(gitBin, [], process.env, { worktree: root, common, kind: "kit pr" }).flat() : [gitBin];
+    const gitArgs = args => [gitStart[0], [...gitStart.slice(1), ...args]];
     const env = nodeEnv(), ghEnv = kitGhEnv(env, root);
     // The variables one call gets on top of its own: gitSafety's (a git call's network or not, as its arguments say).
     const safety = (environment, network = false) => {
       if (!guarded) return {};
-      const { env: safe, problem } = gitSafety({ worktree: root, env: environment, network, git: gitBin, common });
+      const { env: safe, problem } = gitSafety({ worktree: root, env: environment, network, git: gitStart, common });
       if (problem) throw new Error(problem);
       return safe;
     };
@@ -369,7 +374,7 @@ async function main(args) {
       Object.assign(process.env, ownGitVariables, safety(env));
     };
     shieldProcess();
-    const gitSync = (args, environment = env) => execFileSync(gitBin, ["-C", root, ...args],
+    const gitSync = (args, environment = env) => execFileSync(...gitArgs(["-C", root, ...args]),
       { cwd: root, env: { ...environment, ...safety(environment, gitNetworkCall(args)) }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
     // The URL a fetch or push goes to, rewrites applied: its remote's (origin when it names none), or the URL it names.
     const remoteUrl = argv => {
@@ -382,7 +387,7 @@ async function main(args) {
     const lockNotes = [];
     const checksLock = () => {
       if (checksLocked) return checksLocked;
-      checksLocked = checkLock({ worktree: root, common, env, readOnly: programs ? [programs] : [] });
+      checksLocked = checkLock({ worktree: root, common, env: { ...env, ...startupFiles }, readOnly: programs ? [programs] : [] });
       if (checksLocked.note) { console.log(`checks: ${checksLocked.note}`); lockNotes.push(`- checks: ${checksLocked.note}`); }
       return checksLocked;
     };
@@ -401,7 +406,7 @@ async function main(args) {
       // node is this process's own, never a bare name PATH may resolve to a link into the worktree.
       let program = command === "node" ? process.execPath : command === "gh" && linked.gh ? linked.gh : command, args = argv, childEnv = { ...(command === "gh" ? ghEnv : env), ...extraEnv };
       if (command === "git") {
-        program = gitBin;
+        [program, args] = gitArgs(argv);
         const network = gitNetworkCall(argv);
         Object.assign(childEnv, safety(childEnv, network));
         // A push to a folder remote runs that folder's own hooks with this call's variables (git clears the settings

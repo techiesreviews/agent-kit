@@ -1092,6 +1092,15 @@ test("git safety: every program the repository's own Git settings name is set em
   git("config", "http.proxy", "http://127.0.0.1:1"); git("config", "credential.helper", "x");
   assert.match(gitSafety({ worktree: root, env, network: true }).problem, /^the repository's own Git config holds http\.proxy, credential\.helper, which could send the credentials of a fetch or push elsewhere/);
   assert.equal(gitSafety({ worktree: root, env }).problem, null, "a call without the network uses neither");
+  git("config", "--unset", "http.proxy"); git("config", "--unset", "credential.helper");
+  // A remote helper the repository's config picks (git-remote-<name>, found on PATH) is refused for a fetch or push too.
+  for (const [name, value] of [["remote.origin.vcs", "leak"], ["remote.origin.url", "leak::https://example.com/a"], ["remote.origin.pushurl", "leak::x"], ["url.leak::x.insteadOf", "https://github.com/"]]) {
+    const before = spawnSync("git", ["-C", root, "config", "--get", name], { encoding: "utf8" }).stdout.trim();
+    git("config", name, value);
+    assert.match(String(gitSafety({ worktree: root, env, network: true }).problem), new RegExp(`holds ${name.replace(/[.]/g, "\\.")}, which could send .* or start a remote helper`, "i"), name);
+    if (before) git("config", name, before); else git("config", "--unset", name);
+  }
+  assert.equal(gitSafety({ worktree: root, env, network: true }).problem, null);
   // Which calls reach the network, and which remotes are folders here.
   assert.deepEqual(["fetch", "push", "status", "-c", "x=y"].map(sub => gitNetworkCall([sub])), [true, true, false, false, false]);
   assert.equal(gitNetworkCall(["-C", "/x", "-c", "a=b", "push", "origin"]), true);
@@ -1156,4 +1165,26 @@ test("PROOF: after a Claude build the runner's own git status runs inside the lo
   const left = readFileSync(noted, "utf8");
   assert.ok(!left.includes(dummy), `the runner's git status read a key: ${left}`);
   assert.match(left, /(No such file or directory|Permission denied)\ntoken=\.\n/);
+});
+
+test("PROOF: a git that is a #!/usr/bin/env node script never starts a node a link on PATH leads into the worktree for, in the runner's first git and its config reads", { skip: noBwrap }, t => {
+  const { dir, home, files } = keyHome(t);
+  const bin = join(dir, "bin"), gitBin = join(dir, "git-bin"), links = join(dir, "links"), root = join(dir, "work"), out = join(dir, "out"), brief = join(dir, "brief.md"), noted = join(dir, "planted.txt");
+  for (const path of [bin, gitBin, links, root, out]) mkdirSync(path);
+  fakeClaude(bin);
+  writeFileSync(brief, "Build this.\n");
+  const git = (...args: string[]) => assert.equal(spawnSync("git", ["-C", root, ...args], { encoding: "utf8" }).status, 0);
+  git("init", "-q", "-b", "test"); git("-c", "user.name=T", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base");
+  const real = (name: string) => String(process.env.PATH).split(":").filter(folder => folder.startsWith("/")).map(folder => join(folder, name)).find(file => existsSync(file))!;
+  // The lead's git is a Node wrapper outside the worktree; an earlier build left a node in it, and a person linked to it.
+  writeFileSync(join(gitBin, "git"), `#!/usr/bin/env node\nconst r = require("node:child_process").spawnSync(${JSON.stringify(real("git"))}, process.argv.slice(2), { stdio: "inherit" });\nprocess.exit(r.status ?? 1);\n`);
+  chmodSync(join(gitBin, "git"), 0o755);
+  plantedProgram(join(root, "tools/node"), noted, files.orbit, `exec ${real("node")} "$@"`);
+  symlinkSync(join(root, "tools/node"), join(links, "node"));
+  const env = { ...homeEnv(home), PATH: `${links}:${gitBin}:${bin}:${process.env.PATH}`, GH_TOKEN: dummy, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "60s", KIT_TALK_STYLE: "plain",
+    FAKE_SEEN: join(dir, "seen.json"), FAKE_TRIES: JSON.stringify(files) } as NodeJS.ProcessEnv;
+  delete env.ASE_KEY_GUARD;
+  const run = spawnSync(process.execPath, [resolve("agent-run.mjs"), "build", root, brief, "--out", out, "--cli", "claude", "--model", "claude-opus-5-5"], { cwd: root, env, encoding: "utf8", timeout: 60_000 });
+  assert.ok(!existsSync(noted), `the planted node started: ${existsSync(noted) ? readFileSync(noted, "utf8") : ""}`);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
 });

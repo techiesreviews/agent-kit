@@ -16,7 +16,9 @@
 // send the credentials elsewhere (a proxy, a certificate, a helper). A URL rewrite (url.*.insteadOf) leads only to
 // another host, which gets no credentials meant for this one, or to a folder on this machine: git clears these
 // settings for the receive-pack of a folder remote, which runs that folder's own hooks, so kit pr pushes to a folder
-// remote inside the key lock (it needs no credentials).
+// remote inside the key lock (it needs no credentials). A remote helper the repository's config picks
+// (remote.<name>.vcs, a URL of the form <helper>::<address>, as a remote's URL or a rewrite's) is git-remote-<helper>
+// found on PATH, so a fetch or push refuses it too.
 // The settings ride in GIT_CONFIG_COUNT/KEY/VALUE, so the git programs a call starts itself (gh's own git calls) get
 // them too.
 import { execFileSync } from "node:child_process";
@@ -95,11 +97,13 @@ export function gitNetworkCall(args) {
  * The variables for one git call (or a program that runs git, such as gh) on `worktree`: {env, problem}. `env` holds the
  * settings above as GIT_CONFIG_COUNT/KEY/VALUE (after any the environment already has), and for a call without the
  * network GIT_CONFIG_GLOBAL=/dev/null and GIT_CONFIG_NOSYSTEM=1. `problem` (network calls only) names repository
- * settings that would steer the credentials, in plain words with the step that fixes it. `git` is the program that reads
- * the config (a full path; reading starts nothing).
+ * settings that would steer the credentials or pick a remote helper, in plain words with the step that fixes it. `git`
+ * is the program that reads the config (a full path; reading starts nothing).
  */
 export function gitSafety({ worktree, env = process.env, network = false, git = "git", common = gitCommonDir(worktree) }) {
-  const list = execFileSync(git, ["-C", worktree, "config", "--list", "--show-scope", "-z"], {
+  // `git` may also be [program, ...arguments before git's own] (a git script started by its interpreter's full path).
+  const [program, ...before] = [git].flat();
+  const list = execFileSync(program, [...before, "-C", worktree, "config", "--list", "--show-scope", "-z"], {
     env: { ...env, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.hooksPath", GIT_CONFIG_VALUE_0: "/dev/null" },
     encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 16 * 1024 * 1024 }).split("\0");
   const settings = [];
@@ -109,12 +113,15 @@ export function gitSafety({ worktree, env = process.env, network = false, git = 
   }
   const pairs = [];
   const emptied = new Set(), steering = new Set();
+  const helper = /^[A-Za-z0-9][A-Za-z0-9+.-]*::/;
   // Only the repository's own settings are the build's: without the network the global and system config are not read
   // at all, and those from the environment (command scope) are the lead's.
-  for (const { scope, key } of settings) {
+  for (const { scope, key, value } of settings) {
     if (!ownScope(scope)) continue;
     const section = key.split(".")[0].toLowerCase(), name = key.split(".").at(-1).toLowerCase();
-    if (network && networkSection.test(section)) steering.add(key);
+    const subsection = key.slice(key.indexOf(".") + 1, key.lastIndexOf("."));
+    if (network && (networkSection.test(section) || (section === "remote" && (name === "vcs" || ((name === "url" || name === "pushurl") && helper.test(value))))
+      || (section === "url" && helper.test(subsection)))) steering.add(key);
     if ((programName.test(name) || programSection.test(section)) && !emptied.has(key)) { emptied.add(key); pairs.push([key, ""]); }
     const required = `${key.slice(0, key.lastIndexOf("."))}.required`;
     if (section === "filter" && !emptied.has(required)) { emptied.add(required); pairs.push([required, "false"]); }
@@ -135,6 +142,6 @@ export function gitSafety({ worktree, env = process.env, network = false, git = 
   const start = Number.parseInt(env.GIT_CONFIG_COUNT ?? "", 10) || 0;
   pairs.forEach(([key, value], index) => { extra[`GIT_CONFIG_KEY_${start + index}`] = key; extra[`GIT_CONFIG_VALUE_${start + index}`] = value; });
   extra.GIT_CONFIG_COUNT = String(start + pairs.length);
-  const problem = steering.size ? `the repository's own Git config holds ${[...steering].join(", ")}, which could send the credentials of a fetch or push elsewhere (a build may have written ${steering.size === 1 ? "it" : "them"}); remove ${steering.size === 1 ? "it" : "them"} with git config --unset-all <name> and run it again` : null;
+  const problem = steering.size ? `the repository's own Git config holds ${[...steering].join(", ")}, which could send the credentials of a fetch or push elsewhere or start a remote helper (a build may have written ${steering.size === 1 ? "it" : "them"}); remove ${steering.size === 1 ? "it" : "them"} with git config --unset-all <name> and run it again` : null;
   return { env: extra, problem };
 }
