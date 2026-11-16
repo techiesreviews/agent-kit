@@ -364,7 +364,12 @@ test("PROOF: Codex's own sandbox with the kit's profile cannot read a dummy key 
   // Codex swaps the link for a refreshed file mid-run: the folder's mask covers it too.
   rmSync(join(reviewHome, "auth.json")); writeFileSync(join(reviewHome, "auth.json"), `${dummy}\n`);
   assert.ok(paths.includes(runtime) && !paths.includes(join(runtime, "xauth")));
-  const profile = codexProfile("build", join(dir, "common"), paths);
+  // Codex shields the .git folder of every folder it may write, and makes an empty one there for a moment where none
+  // is. In /tmp itself that would put every other test's temporary folder inside what looks like a Git work tree (the
+  // Orbit setup check of a test file running at the same time refuses that), so this proof leaves /tmp itself out: its
+  // own folders, the worktree and TMPDIR, stay writable.
+  const profile = codexProfile("build", join(dir, "common"), paths).map((option: string) => option.replace('":slash_tmp"="write",', ""));
+  assert.ok(!profile.join(" ").includes("slash_tmp"));
   const run = spawnSync("codex", ["sandbox", ...profile, "--", "sh", "-c", `cat ${JSON.stringify(files.orbit)}; echo rc=$?; cat ${JSON.stringify(join(reviewHome, "auth.json"))}; cat ${JSON.stringify(join(runtime, "xauth"))}; cat ${JSON.stringify(join(ghElsewhere, "hosts.yml"))}; touch built && echo built-ok`],
     // Its own temporary HOME and CODEX_HOME: the test never touches the real ~/.codex.
     // Codex keeps sandbox state in TMPDIR: the test's own folder, removed with it.
