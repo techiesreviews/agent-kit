@@ -1106,12 +1106,18 @@ async function executeRun(options, out, previous, update, brief) {
   // inside the worktree, where a build can leave one (npm puts <worktree>/node_modules/.bin on PATH as a full path):
   // such folders leave this process's PATH before its first git call; the lock's own PATH leaves out the Git folder too.
   // That first git starts by its full path, never one a link on PATH leads into the worktree for (runProgram refuses
-  // a git PATH holds only that way).
+  // a git PATH holds only that way). The Git folder is what this call finds out, so a git that leads into a linked
+  // worktree's separate Git folder is refused only by the lock below, after it ran here (SL-2, TOOLS-303).
   let firstGit = "git";
   if (keyGuardOn(process.env)) {
     const path = runPath(process.env, { worktree: options.worktree });
     if (path !== undefined) process.env.PATH = path;
-    firstGit = runProgram("git", process.env, { worktree: options.worktree });
+    try { firstGit = runProgram("git", process.env, { worktree: options.worktree, kind: options.kind }); }
+    catch (error) {
+      // The run's log, not open yet, says why the run stopped, as for the lock's other refusals.
+      (previous ? appendFileSync : writeFileSync)(join(out, "run.log"), `problem: ${error.message}\n`);
+      throw error;
+    }
   }
   const common = execFileSync(firstGit, ["-C", options.worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim();
   const reportPath = join(out, "out.md"), logPath = join(out, "run.log"), inputPath = join(out, `brief-${process.pid}.md`);

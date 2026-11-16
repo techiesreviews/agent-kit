@@ -446,19 +446,21 @@ const linkRefusal = (name, file) => `${name} on PATH is ${file}, a link into the
 /**
  * The program the runner starts for a bare name (its own git) in a run in `worktree`: its full path from the run's
  * PATH folders, never one that leads into the worktree or the Git folder; the bare name where no folder holds one (the
- * start then fails as a missing program). Throws in plain words where PATH holds only one that leads inside.
+ * start then fails as a missing program). Throws in plain words, as the lock's other refusals do for this `kind` of
+ * run, where PATH holds only one that leads inside.
  */
-export function runProgram(name, env = process.env, { worktree, common } = {}) {
+export function runProgram(name, env = process.env, { worktree, common, kind = "run" } = {}) {
   const { file, refused } = lookup(name, env, buildFolders(worktree, common));
-  if (!file && refused) throw new Error(linkRefusal(name, refused));
+  if (!file && refused) throw new Error(`cannot lock the key files for this ${kind}: ${linkRefusal(name, refused)}`);
   return file ?? name;
 }
 
 /**
  * PATH for a run in `worktree`, or undefined when PATH needs no change (or is not set): its folders in their order,
  * without the ones inside the worktree or the Git folder. A program started by a bare name then (whatever the CLI
- * itself starts; the kit's own starts go by full path, see lookup) is not found there either. A PATH with nothing left would mean the
- * current folder to execvp, so the system's own folders stand in, as for no PATH at all.
+ * itself starts; the kit's own starts go by full path, see lookup) is not found there either. A PATH with nothing
+ * left would mean the current folder to execvp, so the system's own folders stand in, as for no PATH at all. A folder
+ * elsewhere that holds a link into the worktree stays: only the names the kit itself starts are looked up past it.
  */
 export function runPath(env = process.env, { worktree, common } = {}) {
   if (env.PATH === undefined) return undefined;
