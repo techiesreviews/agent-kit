@@ -325,7 +325,10 @@ async function main(args) {
       const topCommon = gitCommonDir(top) ?? undefined;
       const path = runPath(process.env, { worktree: top, common: topCommon });
       if (path !== undefined) process.env.PATH = path;
-      programs = mkdtempSync(join(tmpdir(), "kit-pr-programs-"));
+      // In the desktop's runtime folder, which every locked build sees as an empty folder of its own (key-guard.mjs
+      // masks it), so a build running meanwhile cannot change these links; the temp folder where there is none.
+      const runtime = process.env.XDG_RUNTIME_DIR;
+      programs = mkdtempSync(join(runtime && isAbsolute(runtime) && existsSync(runtime) ? runtime : tmpdir(), "kit-pr-programs-"));
       process.once("exit", () => rmSync(programs, { recursive: true, force: true }));
       linked.node = process.execPath;
       for (const name of ["git", "gh", "bash", "sh"]) {
@@ -352,8 +355,9 @@ async function main(args) {
     // Git settings even inside the lock). env above keeps the lead's own, so a fetch or push still reads the global config.
     const gitVariable = /^GIT_CONFIG_(COUNT|GLOBAL|NOSYSTEM|KEY_\d+|VALUE_\d+)$/;
     const ownGitVariables = Object.fromEntries(Object.entries(process.env).filter(([key]) => gitVariable.test(key)));
-    // The checks see the private folder read-only, but another build running meanwhile may write it: a link that no
-    // longer leads where it did stops kit pr, checked before every program it starts and after every check.
+    // The checks see the private folder read-only and a locked build not at all, but an unlocked one (no bubblewrap,
+    // ASE_KEY_GUARD=off elsewhere) may write it: a link that no longer leads where it did stops kit pr, checked before
+    // every program it starts and after every check.
     const checkLinks = () => {
       for (const [name, target] of Object.entries(linked)) {
         let now = null;
