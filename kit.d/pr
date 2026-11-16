@@ -407,11 +407,13 @@ async function main(args) {
     async function execute(name, command, argv, input, extraEnv) {
       step = name;
       if (guarded) checkLinks();
-      // A check runs locked, a git call by its full path, and everything else with gitSafety's settings: kit review's
-      // and gh's own git calls, and kit release-check's fetch (with the network).
+      // A check runs locked whatever its command (a project's check may be a git command too), a git call by its full
+      // path, and everything else with gitSafety's settings: kit review's and gh's own git calls, and kit
+      // release-check's fetch (with the network).
       // node is this process's own, never a bare name PATH may resolve to a link into the worktree.
       let program = command === "node" ? process.execPath : command === "gh" && linked.gh ? linked.gh : command, args = argv, childEnv = { ...(command === "gh" ? ghEnv : env), ...extraEnv };
-      if (command === "git") {
+      if (checkNames.has(name)) { const lock = checksLock(); [program, args] = lock.wrap(program, argv); Object.assign(childEnv, lock.env); }
+      else if (command === "git") {
         [program, args] = gitArgs(argv);
         const network = gitNetworkCall(argv);
         Object.assign(childEnv, safety(childEnv, network));
@@ -419,7 +421,6 @@ async function main(args) {
         // above for it); it needs no credentials, so it runs inside the key lock.
         if (network && guarded && folderRemote(remoteUrl(argv))) { const lock = pushLocked ??= lockFor(); [program, args] = lock.wrap(gitBin, argv); Object.assign(childEnv, lock.env); }
       }
-      else if (checkNames.has(name)) { const lock = checksLock(); [program, args] = lock.wrap(program, argv); Object.assign(childEnv, lock.env); }
       else {
         Object.assign(childEnv, safety(childEnv, name === "release-check"));
         if (guarded) [program, args] = startCommand(program, argv, childEnv, { worktree: root, common, kind: "kit pr" });

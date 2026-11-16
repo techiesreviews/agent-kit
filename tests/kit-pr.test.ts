@@ -3842,7 +3842,8 @@ test("a release re-cut from an unchanged dev is the same cut: its saved review i
 const noBwrap = bwrapWorks() === null ? false : `bubblewrap cannot run here: ${bwrapWorks()}`;
 test("PROOF: kit pr runs no hook, Git filter, diff tool, merge driver, PATH tool or BASH_ENV file a build left with the keys, and runs the checks inside the key lock", { skip: noBwrap }, t => {
   const dummy = "dummy-key-0123456789-not-real";
-  const f = fixture(t, undefined, { checks: { check: "sh scripts/leak.sh", test: "npm test", lint: "bash -c true" } }), peer = f.peer();
+  // The lint check is a git command whose alias runs the build's script: a check whatever program it names.
+  const f = fixture(t, undefined, { checks: { check: "sh scripts/leak.sh", test: "npm test", lint: "git -c alias.leak=!scripts/leak-git.sh leak", extra: ["bash -c true"] } }), peer = f.peer();
   const home = join(f.dir, "home"), keyFile = join(home, ".config/fleet/orbit.json"), noted = join(f.dir, "noted.txt");
   mkdirSync(dirname(keyFile), { recursive: true }); writeFileSync(keyFile, `${dummy}\n`, { mode: 0o600 });
   // Each planted thing notes who it is, the key file as it reads it and the token variable, then does its job.
@@ -3860,7 +3861,8 @@ cat ${JSON.stringify(join(home, ".bash_env"))} ${JSON.stringify(join(home, ".shi
 exit 0
 `);
   writeFileSync(join(f.root, ".gitattributes"), "* filter=leak diff=leak merge=leak\n");
-  f.git("add", "scripts/leak.sh", ".gitattributes"); f.git("commit", "-qm", "Build change");
+  writeFileSync(join(f.root, "scripts/leak-git.sh"), `#!/bin/sh\n${note("a check through git")}\n`, { mode: 0o755 });
+  f.git("add", "scripts/leak.sh", "scripts/leak-git.sh", ".gitattributes"); f.git("commit", "-qm", "Build change");
   f.commit("Close ticket", "ticket.md", shaTicket("1111111", "2222222"));
   // Upstream moved on, so kit pr rebases (a checkout, rewritten commits) before it pushes.
   writeFileSync(join(peer, "upstream.txt"), "upstream\n");
@@ -3905,6 +3907,7 @@ exit 0
   assert.match(left, /^saw .*\/kit-pr-programs-[^/]+\/git$/m);
   // The check ran (inside the lock), and the folder remote's hook ran inside it too.
   assert.match(left, /^the project's check\n.*(No such file or directory|Permission denied)\ntoken=\.$/m);
+  assert.match(left, /^a check through git\n.*(No such file or directory|Permission denied)\ntoken=\.$/m);
   assert.match(left, /^the folder remote's pre-receive\n.*(No such file or directory|Permission denied)\ntoken=\.$/m);
   for (const who of ["hook ", "a program the Git settings name", "PATH tool git", "PATH tool gh", "PATH tool node", "BASH_ENV", "a program the check swapped in"])
     assert.ok(!left.includes(who), `${who.trim()} ran: ${left}`);
