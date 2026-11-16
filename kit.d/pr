@@ -16,8 +16,12 @@ const { kitBranch, kitGhEnv, kitHideUserInfo, kitHidingLog, kitHome, kitMachineL
 const { failedSpecs, isTiming, listedSpecs, nothingSelected, timingList, wholeReport } = await import(pathToFileURL(resolve(import.meta.dirname, "../browser-runs.mjs")).href);
 const { checkSteps, classify, docsOnly, doneHeading, featureListGuard, featureListProblem, focusedUnitFiles, lookFamily, lookFamilyWords, parseChanges, secondLookPick, unitTestFile } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
 const { coverageHash, readUxResult, uxGuard, visibleFiles } = await import(pathToFileURL(resolve(import.meta.dirname, "../ux-gate.mjs")).href);
+const { checkLock, keyGuardOn, runPath, runProgram, startCommand } = await import(pathToFileURL(resolve(import.meta.dirname, "../key-guard.mjs")).href);
+const { folderRemote, gitCommonDir, gitNetworkCall, gitSafety, gitTop } = await import(pathToFileURL(resolve(import.meta.dirname, "../git-safety.mjs")).href);
 const usage = 'Usage: kit pr [--base <land>] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release] [--full] [--waive "<reason>"] [--not-visible "<reason>"]\nBranches come from scripts/agents/kit.json: --base defaults to branches.land; --release needs --base branches.release and first runs kit release-check --land (nothing unsaved, HEAD exactly origin/<land>).\n--waive requires a *-lead owner and may be given more than once (ids count in any reason, counts add up; once any reason names an id, the counts are not read); records the reason for merging with open findings or without a feature-list update;\na waiver for the findings that stop the landing (above P3; once the fix rounds are used up, P0 and P1) must name each one by id in its text (--waive \"R1-2, SL-1: <reason>\") or start with the number of them (--waive \"2 findings: <reason>\", which must match both looks together);\na finding it leaves out stops kit pr with a plain reason that lists it, and so does one that is new at a head a rebase brought, at the start of the run too (the lead sees it and runs kit pr again); P3 findings, test gaps and docs wording need no names;\nwith --release it also passes the release check, which names the reason (kit pr still needs a clean tree).\nA visible change (paths.visible) lands only with a fresh kit ux result: one that passed, with the review, for the visible files and the listed features that cover the change as they are now (kit ux saves it for the branch; a later change to a visible file or to one of those features, a rebase\'s too, needs kit ux again; a list edit about other features does not).\n--not-visible "<reason>" lands a change that matches those paths but shows a person nothing new, with the reason in the PR text (refused when kit ux tried this very change and it did not pass, and with --release; a run whose reviewer did not finish is no such verdict); --waive does not cover the UX check.\nWhen no feature in the list covers the changed files, kit ux has nothing to try and the PR says "UX check: nothing to try".\nA project with no feature list for kit ux (docs/agents/features.md) says "UX check: skipped"; a release carries what each PR already passed.\nAfter the Claude review (none in the docs tier), every change gets a second look (kit review --second-look), whose findings block the same way;\nwhen no model can take it, the PR lands and says "second look: skipped (<reason>)".\nOn Orbit ("tickets": "orbit"), --ticket takes a card KEY or a saved brief of it (.scratch/kit-tickets/KEY.md); when the PR\nlands the card goes to Done with a dated comment naming the PR and its merge SHA (ORBIT_ROLE=lead); a card that cannot be closed is named on the RESULT line.\nA PR a merge queue takes leaves the card open, its follow-ups on the card, and says to close it once the PR lands.\n';
 const kit = process.env.KIT_PR_KIT || resolve(import.meta.dirname, "../kit");
+// The steps that run the project's own commands, the build's code: inside the key lock (checkLock).
+const checkNames = new Set(["check", "unit", "lint", "kit-clean", "colours", "tickets", "specs"]);
 
 function options(args) {
   const flags = {}, waives = [];
@@ -245,10 +249,10 @@ function commitsBySubject(text, subjects) {
   return text.slice(0, start) + done.slice(0, label) + ` ${list}${after}` + done.slice(stop) + rest.slice(doneEnd);
 }
 
-// Isolate both HEAD and the index: concurrent work must never enter a follow-up commit.
-function commitFollowups({ root, branch, head, ticket, content, env, message = ownSubjects(ticket)[0] }) {
-  const run = (args, environment = env) => execFileSync("git", ["-C", root, ...args],
-    { cwd: root, env: environment, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+// Isolate both HEAD and the index: concurrent work must never enter a follow-up commit. `git(args, env)` runs one git
+// call in the worktree with the build's Git settings switched off (main's gitSync).
+function commitFollowups({ root, branch, head, ticket, content, env, git, message = ownSubjects(ticket)[0] }) {
+  const run = (args, environment = env) => git(args, environment);
   const file = resolve(root, ticket), path = relative(root, file);
   const assertScope = (expected = head) => {
     if (run(["branch", "--show-current"]) !== branch || run(["rev-parse", "HEAD"]) !== expected)
@@ -302,7 +306,57 @@ async function main(args) {
   try {
     // Every gh call is told origin's repo (GH_REPO, GH_HOST); the kit commands that call gh work it out themselves,
     // and the project's own checks run without it.
-    const root = resolve(kitRoot()), env = nodeEnv(), ghEnv = kitGhEnv(env, root);
+    // What a build left must not run here with the keys (TOOLS-303). Under the key lock the PATH folders inside the
+    // worktree or its Git folder leave PATH before the first git (npm puts <worktree>/node_modules/.bin there), the
+    // start-up file a bash child would read first (BASH_ENV, sh's ENV) is dropped, git starts by its full path found
+    // outside both, and every git call (gh's and the kit commands' too) gets gitSafety's settings: no hook, no filter,
+    // diff tool or other program the repository's Git settings name, no global or system config without the network.
+    // The project's checks (check, unit, lint, specs...), the build's own code, run inside the key lock (checkLock).
+    const guarded = keyGuardOn(process.env);
+    delete process.env.BASH_ENV; delete process.env.ENV;
+    const top = gitTop(process.env.KIT_ROOT || process.cwd());
+    if (guarded && top) {
+      const path = runPath(process.env, { worktree: top, common: gitCommonDir(top) ?? undefined });
+      if (path !== undefined) process.env.PATH = path;
+    }
+    const root = resolve(kitRoot()), common = gitCommonDir(root) ?? undefined;
+    const gitBin = guarded ? runProgram("git", process.env, { worktree: root, common, kind: "kit pr" }) : "git";
+    const env = nodeEnv(), ghEnv = kitGhEnv(env, root);
+    // The variables one call gets on top of its own: gitSafety's (a git call's network or not, as its arguments say).
+    const safety = (environment, network = false) => {
+      if (!guarded) return {};
+      const { env: safe, problem } = gitSafety({ worktree: root, env: environment, network, git: gitBin, common });
+      if (problem) throw new Error(problem);
+      return safe;
+    };
+    // The kit's own helpers in this process (kit-lib, the review and UX gates) run git by its bare name with this
+    // process's variables: they get the settings too, read again after every check (the build's code, which may write the
+    // Git settings even inside the lock). env above keeps the lead's own, so a fetch or push still reads the global config.
+    const gitVariable = /^GIT_CONFIG_(COUNT|GLOBAL|NOSYSTEM|KEY_\d+|VALUE_\d+)$/;
+    const ownGitVariables = Object.fromEntries(Object.entries(process.env).filter(([key]) => gitVariable.test(key)));
+    const shieldProcess = () => {
+      if (!guarded) return;
+      for (const key of Object.keys(process.env)) if (gitVariable.test(key) && !Object.hasOwn(ownGitVariables, key)) delete process.env[key];
+      Object.assign(process.env, ownGitVariables, safety(env));
+    };
+    shieldProcess();
+    const gitSync = (args, environment = env) => execFileSync(gitBin, ["-C", root, ...args],
+      { cwd: root, env: { ...environment, ...safety(environment, gitNetworkCall(args)) }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    // The URL a fetch or push goes to, rewrites applied: its remote's (origin when it names none), or the URL it names.
+    const remoteUrl = argv => {
+      const at = argv.findIndex(arg => !arg.startsWith("-"));
+      const remote = argv.slice(at + 1).find(arg => !arg.startsWith("-")) ?? "origin";
+      try { return gitSync(["remote", "get-url", ...(argv[at] === "push" ? ["--push"] : []), remote]); } catch { return remote; }
+    };
+    // The checks' lock, made when the first check starts; a note says where they run unlocked.
+    let checksLocked;
+    const lockNotes = [];
+    const checksLock = () => {
+      if (checksLocked) return checksLocked;
+      checksLocked = checkLock({ worktree: root, common, env });
+      if (checksLocked.note) { console.log(`checks: ${checksLocked.note}`); lockNotes.push(`- checks: ${checksLocked.note}`); }
+      return checksLocked;
+    };
     // Spec files that failed in a full run and passed alone (ticket ke-88), named on the RESULT line.
     const flaky = [], flakyNote = () => flaky.length ? ` (flaky under load: ${flaky.join(", ")})` : "";
     directory = join(root, ".scratch/pr", `${new Date().toISOString().replace(/[-:]/g, "")}-${process.pid}`);
@@ -312,6 +366,23 @@ async function main(args) {
     // Keep child RESULT lines in logs, so the command has exactly one final RESULT.
     async function execute(name, command, argv, input, extraEnv) {
       step = name;
+      // A check runs locked, a git call by its full path, and everything else with gitSafety's settings: kit review's
+      // and gh's own git calls, and kit release-check's fetch (with the network).
+      // node is this process's own, never a bare name PATH may resolve to a link into the worktree.
+      let program = command === "node" ? process.execPath : command, args = argv, childEnv = { ...(command === "gh" ? ghEnv : env), ...extraEnv };
+      if (command === "git") {
+        program = gitBin;
+        const network = gitNetworkCall(argv);
+        Object.assign(childEnv, safety(childEnv, network));
+        // A push to a folder remote runs that folder's own hooks with this call's variables (git clears the settings
+        // above for it); it needs no credentials, so it runs inside the key lock.
+        if (network && guarded && folderRemote(remoteUrl(argv))) { const lock = checksLock(); [program, args] = lock.wrap(gitBin, argv); Object.assign(childEnv, lock.env); }
+      }
+      else if (checkNames.has(name)) { const lock = checksLock(); [program, args] = lock.wrap(program, argv); Object.assign(childEnv, lock.env); }
+      else {
+        Object.assign(childEnv, safety(childEnv, name === "release-check"));
+        if (guarded) [program, args] = startCommand(program, argv, childEnv, { worktree: root, common, kind: "kit pr" });
+      }
       const log = join(directory, `${name}.log`);
       const fd = openSync(log, "a");
       let stdout = "", stderr = "", failure;
@@ -320,7 +391,7 @@ async function main(args) {
       const logged = kitHidingLog(text => appendFileSync(fd, text));
       try {
         status = await new Promise(accept => {
-          const child = spawn(command, argv, { cwd: root, env: { ...(command === "gh" ? ghEnv : env), ...extraEnv }, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
+          const child = spawn(program, args, { cwd: root, env: childEnv, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
           if (child.stdin) {
             child.stdin.on("error", () => { /* An early child exit is handled by its status. */ });
             child.stdin.end(input);
@@ -342,6 +413,7 @@ async function main(args) {
       } finally {
         logged.end();
         closeSync(fd);
+        if (checkNames.has(name)) shieldProcess();
       }
       return { status, stderr, text: stdout, failure };
     }
@@ -468,8 +540,7 @@ async function main(args) {
     const own = flags.ticket ? ownSubjects(flags.ticket) : [];
     // The PR's subjects up to `commit`, oldest first; one of kit's own ticket commits on top carries the line as "this commit".
     const subjectsTo = (commit, carrier) => {
-      const subjects = execFileSync("git", ["-C", root, "log", "--reverse", "--format=%s", `origin/${flags.base}..${commit}`],
-        { cwd: root, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).split(/\r?\n/).filter(Boolean);
+      const subjects = gitSync(["log", "--reverse", "--format=%s", `origin/${flags.base}..${commit}`]).split(/\r?\n/).filter(Boolean);
       return carrier && own.includes(subjects.at(-1)) ? subjects.slice(0, -1) : subjects;
     };
     // After each rebase and before the push, the ticket's Done "Commits:" line names the commits by subject:
@@ -478,8 +549,7 @@ async function main(args) {
     function nameCommits() {
       if (!flags.ticket || card || flags.release || flags.dryRun) return;
       step = "commits";
-      const current = args => execFileSync("git", ["-C", root, ...args],
-        { cwd: root, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+      const current = args => gitSync(args);
       const captured = current(["rev-parse", "HEAD"]);
       // A ticket edited or a branch switched during the fetch and rebase must never enter kit's commit.
       const assertScope = () => {
@@ -495,7 +565,7 @@ async function main(args) {
       assertScope();
       writeFileSync(file, updated);
       // A refused commit leaves the ticket as it was, so a rerun is not stopped by kit's own change.
-      try { commitFollowups({ root, branch, head: captured, ticket: flags.ticket, content: updated, env, message: own[1] }); }
+      try { commitFollowups({ root, branch, head: captured, ticket: flags.ticket, content: updated, env, git: gitSync, message: own[1] }); }
       catch (error) {
         if (current(["rev-parse", "HEAD"]) === captured && readFileSync(file, "utf8") === updated) writeFileSync(file, original);
         throw error;
@@ -510,9 +580,9 @@ async function main(args) {
     nameCommits();
     // Paid skills never go in a repo (Lex, 2026-10-29): no tracked SKILL.md or skills/ path and, on a machine with
     // local skill folders, no changed line from a skill's text (skill-guard.mjs; it never prints that text).
-    const guarded = await run("skills", "node", [resolve(import.meta.dirname, "../skill-guard.mjs"), "--base", `origin/${flags.base}`]);
+    const skillsChecked = await run("skills", "node", [resolve(import.meta.dirname, "../skill-guard.mjs"), "--base", `origin/${flags.base}`]);
     // Every note: the line check's, and which own skills (skillGuard.allow) passed the path check.
-    const guardNote = guarded.split(/\r?\n/).filter(line => line.startsWith("skill-guard: ")).map(line => line.slice("skill-guard: ".length)).join("; ");
+    const guardNote = skillsChecked.split(/\r?\n/).filter(line => line.startsWith("skill-guard: ")).map(line => line.slice("skill-guard: ".length)).join("; ");
     ok("skills");
 
     // The browser specs (ticket ke-88), as lines for the PR body. One full run per machine at a time (the full-run
@@ -697,6 +767,7 @@ async function main(args) {
         tests.push(`- ${[command[0], ...command[1]].join(" ")}: ok`);
       }
     }
+    tests.push(...lockNotes);
     const skipped = Object.entries({ check: checks.check, unit: checks.test && `${checks.test} (all unit tests)`, lint: checks.lint, specs: hasSpecs && "kit specs --affected" })
       .filter(([id, label]) => label && !steps.includes(id)).map(([, label]) => label).concat(review ? [] : ["kit review"]);
     // A repo without GitHub workflows has no CI to fall back on; it is read again after every rebase.
@@ -796,8 +867,7 @@ async function main(args) {
       }
       if (card) cardFollowups.push(...fullLines);
       if (!flags.ticket || card) return;
-      const current = args => execFileSync("git", ["-C", root, ...args],
-        { cwd: root, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+      const current = args => gitSync(args);
       // Recheck the captured proof after network awaits, immediately before writing.
       if (current(["branch", "--show-current"]) !== branch || current(["rev-parse", "HEAD"]) !== reviewedHead ||
           current(["status", "--porcelain"])) throw new Error("worktree changed before recording follow-ups");
@@ -838,7 +908,7 @@ async function main(args) {
       // The follow-ups commit carries the Done "Commits:" line as "this commit", naming every commit before it.
       const updated = commitsBySubject(followed, subjectsTo(reviewedHead, false));
       writeFileSync(file, updated);
-      head = commitFollowups({ root, branch, head: reviewedHead, ticket: flags.ticket, content: updated, env });
+      head = commitFollowups({ root, branch, head: reviewedHead, ticket: flags.ticket, content: updated, env, git: gitSync });
       await push();
     }
     // Claude's review (none in the docs tier), then the second look on every change; both weigh findings the same way.

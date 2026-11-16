@@ -9,6 +9,8 @@ import { coverageHash, saveUxResult, uxGuard, visibleFiles } from "../ux-gate.mj
 import { sameReviewPatch } from "../review-findings.mjs";
 import { forEachAwait } from "./support/await-race.ts";
 import { kitEnv } from "./support/kit-env.ts";
+// @ts-expect-error The kit's helpers are plain JavaScript without declarations.
+import { bwrapWorks } from "../key-guard.mjs";
 import { orbitProject, orbitSecretsForTests, orbitSettings, runAsync, type Run } from "./support/orbit-project.ts";
 import type { ScoreRecord } from "./kit-score.test.ts";
 
@@ -293,6 +295,22 @@ function fixture(t: TestContext, changes?: Record<string, string>, override: Rec
     if (pending) writeFileSync(join(folder, "pending.json"), JSON.stringify({ round: pending }));
   };
   return { dir, root, main, origin, bin, env, git, gitAt, head, commit, run, start, calls, ghCalls, apiCalls, body, logDir, peer, saveReview, rounds };
+}
+
+// kit pr runs git with hooks off (TOOLS-303), so a test that needs something to happen around one git call puts a git
+// of its own first on PATH (outside the worktree, where kit pr takes it): `before` and `after` run as shell commands
+// around the real git when the call's subcommand is `subcommand`; a non-zero `before` stops the call with its status.
+function gitAround(bin: string, subcommand: string, { before = "", after = "" }: { before?: string; after?: string }) {
+  const realGit = spawnSync("bash", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+  writeFileSync(join(bin, "git"), `#!/usr/bin/env node
+const { spawnSync } = require("node:child_process");
+const args = process.argv.slice(2), sub = args.find((arg, i) => !arg.startsWith("-") && args[i - 1] !== "-C" && args[i - 1] !== "-c");
+const shell = command => command ? spawnSync("sh", ["-c", command], { stdio: "inherit" }).status : 0;
+if (sub === ${JSON.stringify(subcommand)}) { const status = shell(${JSON.stringify(before)}); if (status) process.exit(status); }
+const result = spawnSync(${JSON.stringify(realGit)}, args, { stdio: "inherit" });
+if (sub === ${JSON.stringify(subcommand)} && result.status === 0) shell(${JSON.stringify(after)});
+process.exit(result.status ?? 1);
+`); chmodSync(join(bin, "git"), 0o755);
 }
 
 test("help and argument errors, including the kit front door", t => {
@@ -1485,8 +1503,7 @@ test("a ticket edited during the rebase stops kit pr before it names commits, an
   f.commit("Close ticket", "ticket.md", shaTicket("1111111", "2222222"));
   writeFileSync(join(peer, "upstream.txt"), "upstream\n");
   f.gitAt(peer, "add", "upstream.txt"); f.gitAt(peer, "commit", "-qm", "advance upstream"); f.gitAt(peer, "push", "-q", "origin", "dev");
-  const hook = join(f.root, ".git/hooks/post-rewrite");
-  writeFileSync(hook, "#!/bin/sh\necho 'Edited during the rebase.' >> ticket.md\n"); chmodSync(hook, 0o755);
+  gitAround(f.bin, "rebase", { after: `echo 'Edited during the rebase.' >> ${JSON.stringify(join(f.root, "ticket.md"))}` });
   const result = f.run(["--ticket", "ticket.md"]);
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stdout, /^RESULT: fail commits: worktree changed before naming commits$/m);
@@ -1608,8 +1625,7 @@ test("a commit with kit's subject that changes more than the ticket is not left 
 test("a refused subjects commit fails at its step and leaves the ticket as it was", t => {
   const f = fixture(t);
   const head = f.commit("Close ticket", "ticket.md", shaTicket("1111111", "2222222"));
-  const hook = join(f.root, ".git/hooks/commit-msg");
-  writeFileSync(hook, "#!/bin/sh\necho 'message refused' >&2\nexit 1\n"); chmodSync(hook, 0o755);
+  gitAround(f.bin, "commit", { before: "echo 'message refused' >&2; exit 1" });
   const result = f.run(["--ticket", "ticket.md"]);
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stdout, /^RESULT: fail commits: git commit failed: .*message refused/m);
@@ -2463,7 +2479,7 @@ async function waitForFile(path: string) {
   }
 }
 
-for (const phase of ["stage-before", "stage-after", "pre-commit"]) for (const change of ["branch", "HEAD", "unrelated edit"])
+for (const phase of ["stage-before", "stage-after", "commit-before"]) for (const change of ["branch", "HEAD", "unrelated edit"])
   test(`follow-up publication ${change === "unrelated edit" ? "preserves" : "refuses"} ${change} changes during ${phase}`, async t => {
     const count = await forEachAwait(race => {
       const f = fixture(t);
@@ -2480,12 +2496,7 @@ async function hold() {
   });
 }
 `;
-      if (phase === "pre-commit") {
-        const hooks = join(f.root, ".git/test-hooks"); mkdirSync(hooks);
-        f.git("config", "core.hooksPath", hooks);
-        const hook = join(hooks, "pre-commit");
-        writeFileSync(hook, `#!/usr/bin/env node\n${hold}\nhold();\n`); chmodSync(hook, 0o755);
-      } else {
+      {
         const wrapper = join(f.bin, "git");
         writeFileSync(wrapper, `#!/usr/bin/env node
 ${hold}
@@ -2494,6 +2505,7 @@ const args = process.argv.slice(2);
 const staging = args.includes("add");
 (async () => {
   if (staging && process.env.FAKE_HOLD_PHASE === "stage-before") await hold();
+  if (args.includes("commit") && process.env.FAKE_HOLD_PHASE === "commit-before") await hold();
   const result = spawnSync(${JSON.stringify(realGit)}, args, { stdio: "inherit" });
   if (staging && process.env.FAKE_HOLD_PHASE === "stage-after") await hold();
   process.exitCode = result.status ?? 1;
@@ -2562,17 +2574,11 @@ for (const eol of ["\n", "\r\n"]) test(`follow-ups create a dated Done section w
 });
 
 
-test("a hook cannot publish non-ticket paths from the private follow-up index", t => {
+test("a concurrent git add cannot publish non-ticket paths from the private follow-up index", t => {
   const f = fixture(t); f.rounds(3); f.saveReview(minorReview);
-  const hooks = join(f.root, ".git/test-hooks"); mkdirSync(hooks);
-  f.git("config", "core.hooksPath", hooks);
-  const hook = join(hooks, "pre-commit");
-  writeFileSync(hook, `#!/usr/bin/env node
-const { writeFileSync } = require("node:fs");
-const { execFileSync } = require("node:child_process");
-writeFileSync("file.txt", "hook's unrelated edit\\n");
-execFileSync("git", ["add", "--", "file.txt"]);
-`); chmodSync(hook, 0o755);
+  // Just before the follow-ups commit, something stages another file in the index that commit uses.
+  const realGit = spawnSync("bash", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+  gitAround(f.bin, "commit", { before: `printf "hook's unrelated edit\\n" > file.txt && ${realGit} add -- file.txt` });
   const result = f.run(["--ticket", "ticket.md"]);
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stdout, /RESULT: fail follow-ups: follow-ups commit changed files outside the captured ticket update/);
@@ -3828,4 +3834,60 @@ test("a release re-cut from an unchanged dev is the same cut: its saved review i
   assert.equal(f.calls().filter(claudeReview).length, 1, "the saved review is reused, not run again");
   assert.doesNotMatch(second.stdout, /new at the new head/);
   assert.match(second.stdout, new RegExp(`RESULT: ok opened #73 ${cut.slice(0, 7)}$`, "m"));
+});
+
+// TOOLS-303: a locked build may write the repository's Git settings and hooks, a program in a PATH folder inside the
+// worktree, a BASH_ENV file and the project's own checks; kit pr runs in the lead's process, with the keys.
+const noBwrap = bwrapWorks() === null ? false : `bubblewrap cannot run here: ${bwrapWorks()}`;
+test("PROOF: kit pr runs no hook, Git filter, diff tool, merge driver, PATH tool or BASH_ENV file a build left with the keys, and runs the checks inside the key lock", { skip: noBwrap }, t => {
+  const dummy = "dummy-key-0123456789-not-real";
+  const f = fixture(t, undefined, { checks: { check: "sh scripts/leak.sh", test: "npm test", lint: "bash -c true" } }), peer = f.peer();
+  const home = join(f.dir, "home"), keyFile = join(home, ".config/fleet/orbit.json"), noted = join(f.dir, "noted.txt");
+  mkdirSync(dirname(keyFile), { recursive: true }); writeFileSync(keyFile, `${dummy}\n`, { mode: 0o600 });
+  // Each planted thing notes who it is, the key file as it reads it and the token variable, then does its job.
+  const note = (who: string) => `{ echo ${JSON.stringify(who)}; cat ${JSON.stringify(keyFile)} 2>&1; printf 'token=%s.\\n' "$GH_TOKEN"; } >> ${JSON.stringify(noted)}`;
+  const script = (file: string, who: string, then = "") => {
+    mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, `#!/bin/sh\n${note(who)}\n${then}\n`); chmodSync(file, 0o755);
+  };
+  // The build's own change: a check that reads the keys, attributes that name a filter, a diff tool and a merge driver for
+  // every file, and a ticket for kit pr to name commits in (a commit kit pr makes itself).
+  writeFileSync(join(f.root, "scripts/leak.sh"), `${note("the project's check")}\n`);
+  writeFileSync(join(f.root, ".gitattributes"), "* filter=leak diff=leak merge=leak\n");
+  f.git("add", "scripts/leak.sh", ".gitattributes"); f.git("commit", "-qm", "Build change");
+  f.commit("Close ticket", "ticket.md", shaTicket("1111111", "2222222"));
+  // Upstream moved on, so kit pr rebases (a checkout, rewritten commits) before it pushes.
+  writeFileSync(join(peer, "upstream.txt"), "upstream\n");
+  f.gitAt(peer, "add", "upstream.txt"); f.gitAt(peer, "commit", "-qm", "advance upstream"); f.gitAt(peer, "push", "-q", "origin", "dev");
+  // What the build left behind: hooks, Git settings that name programs, programs in node_modules/.bin, a BASH_ENV file,
+  // and a hook in the folder the push goes to.
+  const leak = join(f.dir, "leak.sh");
+  script(leak, "a program the Git settings name", "cat");
+  for (const name of ["pre-commit", "commit-msg", "post-commit", "post-checkout", "post-rewrite", "reference-transaction", "pre-rebase", "pre-push", "post-index-change", "pre-auto-gc"])
+    script(join(f.root, ".git/hooks", name), `hook ${name}`, "cat > /dev/null; exit 0");
+  script(join(f.origin, "hooks/pre-receive"), "the folder remote's pre-receive", "cat > /dev/null; exit 0");
+  for (const [name, value] of [["filter.leak.clean", leak], ["filter.leak.smudge", leak], ["diff.leak.textconv", leak], ["diff.leak.command", leak], ["diff.external", leak],
+    ["merge.leak.driver", `${leak} %A`], ["core.fsmonitor", leak], ["core.pager", leak], ["alias.st", `!${leak}`]]) f.git("config", name, value);
+  const realOf = (name: string) => String(f.env.PATH).split(":").filter(folder => folder.startsWith("/")).map(folder => join(folder, name)).find(file => existsSync(file))!;
+  const tools = join(f.root, "node_modules/.bin");
+  for (const name of ["git", "gh", "node", "npm", "bash", "sh"]) script(join(tools, name), `PATH tool ${name}`, `exec ${realOf(name)} "$@"`);
+  appendFileSync(join(f.root, ".git/info/exclude"), "node_modules/\n");
+  const startup = join(home, ".bash_env");
+  writeFileSync(startup, `${note("BASH_ENV")}\n`);
+  const env = { HOME: home, GH_TOKEN: dummy, BASH_ENV: startup, PATH: `${tools}:${f.env.PATH}` } as NodeJS.ProcessEnv;
+  // Without kit pr's care they are live: a plain git status in the worktree starts the build's programs.
+  spawnSync("git", ["-C", f.root, "status"], { env: { ...f.env, ...env }, encoding: "utf8" });
+  assert.ok(readFileSync(noted, "utf8").includes(dummy), "the planted settings are live");
+  rmSync(noted);
+  // kit pr as the lead starts it: by this Node (the PATH tool node would otherwise start kit pr itself).
+  const result = spawnSync(process.execPath, [resolve("kit.d/pr"), "--ticket", "ticket.md"], { cwd: f.root, env: { ...f.env, ...env }, encoding: "utf8", timeout: 60_000 });
+  const left = existsSync(noted) ? readFileSync(noted, "utf8") : "";
+  assert.ok(!left.includes(dummy), `kit pr ran what the build left with the keys:\n${left}`);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^RESULT: ok merged #73/m);
+  // The check ran (inside the lock), and the folder remote's hook ran inside it too.
+  assert.match(left, /^the project's check\n.*(No such file or directory|Permission denied)\ntoken=\.$/m);
+  assert.match(left, /^the folder remote's pre-receive\n.*(No such file or directory|Permission denied)\ntoken=\.$/m);
+  for (const who of ["hook ", "a program the Git settings name", "PATH tool git", "PATH tool gh", "PATH tool node", "BASH_ENV"]) assert.ok(!left.includes(who), `${who.trim()} ran: ${left}`);
+  // The work landed: rebased on the new upstream, with kit pr's own commit naming the commits.
+  assert.equal(f.gitAt(f.origin, "log", "-1", "--format=%s", "refs/heads/feature/kit-pr"), "docs: ticket commits by subject");
 });
