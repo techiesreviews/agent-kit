@@ -595,8 +595,8 @@ export function grokAdapter(options) {
   const { kind, worktree, model, effort } = options;
   if (kind !== "review") throw new Error("Grok runs reviews only");
   // The read-only sandbox and a read-only tool list keep the reviewer from editing. Inside the key lock (bubblewrap)
-  // Grok's own sandbox, bubblewrap too, cannot start, so it is off there (options.grokSandbox): the tool list, which
-  // has no shell and no writing tool, keeps the reviewer read-only, and the lock keeps the key files out of reach.
+  // Grok's own sandbox, bubblewrap too, cannot start, so it is off there (options.grokSandbox): the lock itself is then
+  // read-only for a Grok review (key-guard.mjs), beside the tool list that has no shell and no writing tool.
   const args = ["--prompt-file", "/dev/stdin", "-m", model.toLowerCase(), "--reasoning-effort", effort, "--output-format", "json",
     "--sandbox", options.grokSandbox ?? "read-only", "--tools", "read_file,grep,list_dir", "--no-subagents", "--disable-web-search", "--cwd", worktree];
   return {
