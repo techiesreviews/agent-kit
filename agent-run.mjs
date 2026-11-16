@@ -18,6 +18,7 @@ import { earlierReleaseCut } from "./review-loop.mjs";
 import { nextTalkStyle, talkStyleLine } from "./brief-lib.mjs";
 import { apiRoute, apiRouteProblem, apiWrapperRefused, claudeCommand, recordApiSpend } from "./api-route.mjs";
 import { keyGuard, keyGuardOn, runPath, runProgram } from "./key-guard.mjs";
+import { gitCommonDir, gitSafety } from "./git-safety.mjs";
 
 const adapters = { codex: codexAdapter, claude: claudeAdapter, grok: grokAdapter, opencode: opencodeAdapter };
 const reviewOnly = { grok: "Grok", opencode: "OpenCode" };
@@ -1114,21 +1115,25 @@ async function executeRun(options, out, previous, update, brief) {
   // Under the key lock the runner's own programs (git here, bubblewrap and the CLI below) never come from a PATH folder
   // inside the worktree, where a build can leave one (npm puts <worktree>/node_modules/.bin on PATH as a full path):
   // such folders leave this process's PATH before its first git call; the lock's own PATH leaves out the Git folder too.
-  // That first git starts by its full path, never one a link on PATH leads into the worktree for (runProgram refuses
-  // a git PATH holds only that way). The Git folder is what this call finds out, so a git that leads into a linked
-  // worktree's separate Git folder is refused only by the lock below, after it ran here (SL-2, TOOLS-303).
-  let firstGit = "git";
+  // That first git starts by its full path, never one a link on PATH leads into the worktree or its Git folder for
+  // (runProgram refuses a git PATH holds only that way). The Git folder is read from the worktree's own files first
+  // (gitCommonDir), so a git that leads into a linked worktree's separate Git folder never runs either (TOOLS-303), and
+  // the call runs with no hook or program the repository's Git settings name (gitSafety).
+  let firstGit = "git", safety = {};
+  const known = gitCommonDir(options.worktree) ?? undefined;
   if (keyGuardOn(process.env)) {
-    const path = runPath(process.env, { worktree: options.worktree });
+    const path = runPath(process.env, { worktree: options.worktree, common: known });
     if (path !== undefined) process.env.PATH = path;
-    try { firstGit = runProgram("git", process.env, { worktree: options.worktree, kind: options.kind }); }
-    catch (error) {
+    try {
+      firstGit = runProgram("git", process.env, { worktree: options.worktree, common: known, kind: options.kind });
+      safety = gitSafety({ worktree: options.worktree, git: firstGit, common: known }).env;
+    } catch (error) {
       // The run's log, not open yet, says why the run stopped, as for the lock's other refusals.
       (previous ? appendFileSync : writeFileSync)(join(out, "run.log"), `problem: ${error.message}\n`);
       throw error;
     }
   }
-  const common = execFileSync(firstGit, ["-C", options.worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim();
+  const common = execFileSync(firstGit, ["-C", options.worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8", env: { ...process.env, ...safety } }).trim();
   const reportPath = join(out, "out.md"), logPath = join(out, "run.log"), inputPath = join(out, `brief-${process.pid}.md`);
   // A resumed Codex report must not truncate the earlier final report.
   const output = previous ? join(out, `resume-${process.pid}-${randomUUID()}.md`) : reportPath;
@@ -1158,11 +1163,13 @@ async function executeRun(options, out, previous, update, brief) {
     if (guard.bwrap && options.cli === "grok") options.grokSandbox = "off";
     // The runner's own git calls in the worktree run inside the key lock, without the dropped variables: a build can
     // change the repository's Git settings, and git runs what they name (core.fsmonitor and a filter for git status, a
-    // diff tool for git diff). Where the helper cannot wrap (a Codex run without bubblewrap) the monitor at least is
-    // switched off for the call, and preparePrompt switches off what its own calls could start.
+    // diff tool for git diff). Each call also gets gitSafety's settings, read again before it, so where the helper
+    // cannot wrap (a Codex run without bubblewrap) no hook or program the settings name starts either (TOOLS-303), and
+    // preparePrompt switches off what its own calls could start.
     const lockedGit = (args, more = {}) => {
       const [command, full] = guard.helper("git", ["-c", "core.fsmonitor=false", "-C", options.worktree, ...args]);
-      return execFileSync(command, full, { env: { ...process.env, ...guard.env }, maxBuffer: 64 * 1024 * 1024, ...more });
+      const safe = keyGuardOn(process.env) ? gitSafety({ worktree: options.worktree, git: firstGit, common }).env : {};
+      return execFileSync(command, full, { env: { ...process.env, ...guard.env, ...safe }, maxBuffer: 64 * 1024 * 1024, ...more });
     };
     const worktreeGit = (args, stdio) => lockedGit(args, { encoding: "utf8", ...(stdio ? { stdio } : {}) });
     // A review's diff and commit list are read here, inside the lock, before the prompt that names them is written.

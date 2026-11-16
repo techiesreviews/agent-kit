@@ -288,29 +288,40 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   key folder that cannot be listed, is too large or links to a folder the lock cannot hide shows there first.
 - **What the key lock does not do.** It keeps an agent the kit starts from reading the key files while it runs; it does
   not confine what the agent writes. A build writes wherever the user can (the worktree, the repository's Git folder
-  and settings, files under HOME), and what it leaves runs later with whoever starts it: `kit pr` runs the builder's
-  tests in the lead's process, and the lead's own git commands read the repository's Git settings and hooks. Two
-  such paths are shut where bubblewrap runs: the runner's own git calls in the worktree run inside the lock,
-  without the dropped variables (its `git status`, and a review's `git diff` and `git log`: a Git setting a build
-  left, `core.fsmonitor`, a filter, `diff.external`, a text converter or a signature checker, cannot use them to reach
-  the keys), and a CLI starts inside the lock by its full path through a bubblewrap by its full path, both found only
-  in PATH's full-path folders outside the worktree and the repository's Git folder (links followed), the two places a
-  build is meant to write. npm puts `<worktree>/node_modules/.bin` on PATH as a full path, so a `bwrap`, a CLI or a `git` left there
-  never starts in the kit's name; the run's own PATH leaves those folders out, and a CLI only they hold counts as
-  missing. A link in a PATH folder elsewhere that leads into the worktree or the Git folder (an `npm link`, a
-  dotfiles `bin`) is passed over too, though its folder stays on PATH: the next one on PATH starts, by its full path
-  (Codex, which runs without bubblewrap, as well), and where PATH holds no other the run
-  stops and says so instead of starting the link by its bare name. The runner's first git, which finds the Git folder,
-  is looked up the same way for a link into the worktree; one into a linked worktree's separate Git folder still runs
-  for that one call and is refused after it (TOOLS-303). Only the names the kit itself starts are looked up
-  that way: the link's folder stays on the run's PATH, so what a started program finds there by a bare name (the
-  `node` of a `#!/usr/bin/env node` launcher, the commands of the API route's wrapper) can still be such a link
-  (TOOLS-303). A PATH folder elsewhere that a build can write (under HOME) is not covered.
-  Where bubblewrap does not run (macOS, Windows, a Linux where it is missing or blocked) the runner's git calls
-  for a Codex run are not wrapped: `core.fsmonitor` is switched off for them, and a review's `git diff` and `git log`
-  start no diff tool, text converter or signature checker; a filter a build named still runs unlocked in `git
-  status`. For the rest the lead's guard is the review before anything a build wrote is run (`kit review` is
-  read-only); confining a build's writes, and running `kit pr`'s checks inside the lock, are not built yet.
+  and settings, files under HOME), and what it leaves runs later with whoever starts it. The kit's own later steps are
+  covered (TOOLS-303):
+  - **Git calls.** Every git call the runner and `kit pr` make on a build's worktree (`kit pr`'s own, the kit's helpers
+    in its process, and those of the programs it starts: `kit review`, `gh`) runs with `git-safety.mjs`'s settings: no
+    hooks (`core.hooksPath=/dev/null`), no file system monitor, no signing or signature checks, no automatic
+    maintenance or submodule recursion, and every setting in the repository's own config that names a program (a
+    filter's clean, smudge or process, `diff.external`, a diff command or text converter, a merge driver, an editor, a
+    pager, an ssh command, a credential helper, an alias) set empty, which starts nothing. A call without the network
+    reads no global or system Git config (a build can write `~/.gitconfig`); the user's name and e-mail, the excludes
+    file and the line-ending settings come along. A fetch or push keeps the global config (its credential helper) and is
+    refused while the repository's own config holds `http.*` or `credential.*` settings; `kit pr` pushes to a folder
+    remote (whose hooks git runs without these settings) inside the key lock. `safe.directory` names only the worktree
+    and its Git folder. The runner's own git calls also run inside the lock where bubblewrap runs. The runner finds the
+    Git folder from the worktree's files before its first git, so that git is never one a link on PATH leads into the
+    worktree or a linked worktree's shared Git folder for. `ASE_KEY_GUARD=off` turns these settings off with the lock.
+    Settings a project uses on purpose are switched off too: a Git LFS filter in the repository's own config does not
+    run in `kit pr` (configure LFS globally), and hooks such as a pre-push check do not run there.
+  - **`kit pr`'s checks.** The project's check, unit, lint, colour, tickets and spec commands come from the worktree's
+    own settings and run the build's code, so they run inside the key lock (every CLI's login hidden too, the token
+    variables dropped). Where bubblewrap does not exist (macOS, Windows) or `ASE_KEY_GUARD=off`, they run as before and
+    the PR's test lines say `checks: not locked (…)`.
+  - **Programs by name.** The runner and `kit pr` start git, `gh`, bubblewrap and a CLI by their full path, found only in
+    PATH's full-path folders outside the worktree and the repository's Git folder (links followed), and a script's
+    interpreter the same way: a `#!/usr/bin/env node` CLI, or the API route's `#!/usr/bin/env bash` wrapper, starts the
+    interpreter by its full path, never a link someone made into the worktree (an `npm link`, a dotfiles `bin`). The run's
+    PATH leaves those folders out, so `<worktree>/node_modules/.bin` (which npm puts on PATH) supplies none of them; a
+    link elsewhere stays on PATH, and the next program on PATH starts in its place, or the run stops and says so. The API
+    route's wrapper, which reads the key outside the lock, takes its own tools from the system's folders (`command -p`).
+  - **Start-up files.** `BASH_ENV` and `ENV` (the file every non-interactive bash or sh reads first) are dropped for a
+    run and for everything `kit pr` starts, and the file they name is locked like any start-up file when it sets a token.
+  What is still not covered: the lead's own commands outside the kit (a git or a shell the lead runs by hand reads what a
+  build wrote under HOME: `~/.gitconfig`, `~/.bashrc`, a PATH folder there), a `kit pr` started through `npm run` (its
+  own `#!/usr/bin/env node` is found before `kit pr` can look), and a fetch or push reading a global Git config a build
+  wrote. For those the lead's guard is the review before anything a build wrote is run (`kit review` is read-only).
 - Keyed steps happen only in the lead's own process, never inside a locked run. Already the lead's: `git push`, `kit pr`
   (push, PR, merge, card close) and `kit pr --release` (the build contract leaves a builder's changes unstaged). Moved to
   the lead for locked runs: reading Orbit cards (`kit ticket get|list`, which need the token too), GitHub calls (`gh`,
