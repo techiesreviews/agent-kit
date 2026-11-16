@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { kitFiles } from "./support/kit-files.ts";
-import { kitEnv } from "./support/kit-env.ts";
+import { insideKitPrLock, kitEnv } from "./support/kit-env.ts";
 import { onLinux, onMacos, pathWithoutBwrap } from "./support/no-bwrap.ts";
 
 const repo = resolve(".");
@@ -116,7 +116,7 @@ test("doctor checks all eleven conditions quickly, notes Grok, and quiet success
   // The opt-in API credit route is off here: one note, not a counted check.
   assert.equal(lines[15], "api route: off (headless Claude calls use the subscription; KIT_API_KEY_FILE turns the API route on)");
   // The key lock: one note, on where bubblewrap runs, else a ✗ note (never a counted check).
-  assert.match(lines[16], /^(key lock: on \(bubblewrap runs; agents the kit starts cannot read the key files\)|✗ key lock: .*)$/);
+  assert.match(lines[16], /^(key lock: on \(bubblewrap runs; agents the kit starts cannot read the key files\)|key lock: on \(inside kit pr's key lock for its checks: .*\)|✗ key lock: .*)$/);
   assert.equal(lines.length, 18);
   assert.match(lines[17], /^RESULT: ok doctor 11\/11 checks passed(; warning: key lock (cannot start|has a gap|is off) \(see the ✗ key lock line\))?$/);
   assert.equal(result.stderr, "");
@@ -1349,7 +1349,7 @@ test("doctor never asks GitHub whether the repo is private (its setup check runs
   assert.match(asked, /repo view acme\/tools --json visibility/, control.stdout + control.stderr);
 });
 
-test("the key lock note: on with a working bubblewrap, a ✗ note and a RESULT warning when the system blocks it", (t) => {
+test("the key lock note: on with a working bubblewrap, a ✗ note and a RESULT warning when the system blocks it", { skip: insideKitPrLock }, (t) => {
   const f = fixture(t);
   const bin = join(f.directory, "fake-bwrap");
   mkdirSync(bin);
@@ -1380,7 +1380,7 @@ test("the key lock note: on with a working bubblewrap, a ✗ note and a RESULT w
   assert.match(entry.stdout.trimEnd().split("\n").at(-1)!, /; warning: key lock has a gap \(see the ✗ key lock line\)$/);
 });
 
-test("the key lock note is truthful: off on a system without bubblewrap, a stop on Linux, and never on where a key folder would stop a run", (t) => {
+test("the key lock note is truthful: off on a system without bubblewrap, a stop on Linux, and never on where a key folder would stop a run", { skip: insideKitPrLock }, (t) => {
   const f = fixture(t);
   const home = join(f.directory, "home"), bin = join(f.directory, "fake-bwrap");
   for (const folder of [join(home, ".config/gh"), bin]) mkdirSync(folder, { recursive: true });
