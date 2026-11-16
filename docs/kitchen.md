@@ -166,10 +166,11 @@ undoes a newer rule.
 
 The start marker carries this rule's version too (v2, v3 …).
 
-Known gap since the factory cut (2026-11-15): `kit pr` counts only fix rounds saved before the cut, so a helper's own
-rounds are not counted yet; its blockers and shoulds keep blocking until fixed or waived by name. Nor does anything
-hand a helper's declined findings to the next review: a decline goes, with its reason, in the helper's report and the PR
-text, and the lead waives a declined finding by id.
+`kit pr` counts the fix rounds from the review records (each earlier head at which a review, Claude's or a second
+look, left a finding above a nit), and the second look follows the same budget: once it is used, only blockers block
+(TOOLS-287). Known gap since the factory cut (2026-11-15): nothing hands a helper's declined findings to the next
+review: a decline goes, with its reason, in the helper's report and the PR text, and the lead waives a declined
+finding by id.
 
 A diff with no change has nothing to review and a reviewer whose CLI crashes counts as unavailable (`kit review --help`);
 what the PR's review block says after a rebase, and how a lead answers a builder's rounds: the README's Review loop

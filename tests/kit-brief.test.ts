@@ -75,8 +75,8 @@ test("brief: the build brief holds the owner, setup, pins, commands, every house
     /Paid skills never go in a repo/,
     /Second look: `gpt-6\.1-sol` \(GPT through Codex\), else `grok-4\.7`, else the free `opencode\/deepseek-v4\.1-flash-free`/,
     /GPT may review since 2026-11-09; Claude Opus stays the main reviewer/,
-    // kit pr does not count a helper's own fix rounds since kit fix was cut (TOOLS-235): the brief says so, never "only P0/P1 block".
-    /`kit pr` does not count your own fix rounds yet: a blocker or should keeps blocking until it is fixed or the lead waives it by id/,
+    // kit pr counts a helper's fix rounds from its reviews (TOOLS-287): the budget, then only blockers block.
+    /`kit pr` counts your fix rounds from your reviews \(each earlier review, Claude's or a second look, that left a finding above a nit\): within the budget a blocker or should blocks; once it is used only blockers \(P0, P1\) block, for Claude's review and the second look alike/,
     /once you have used 3 fix rounds \(5 for a risky change\), hand what is left to the lead with both sides/,
     /--waive "<id>: <reason>"/,
     /No toasts or explainers/,

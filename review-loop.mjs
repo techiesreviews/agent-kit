@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { doneHeading } from "./pr-tier.mjs";
-import { blockingFindings, parseMarks } from "./review-findings.mjs";
+import { blockingFindings, openFindings, parseMarks } from "./review-findings.mjs";
 export { parseMarks };
 
 /** Rounds of fixing a normal change gets, and the most a risky change gets while a blocker or should stays open. */
@@ -71,6 +71,60 @@ export function branchRisk({ root, base, ticket, settings }) {
 
 /** The fix-round limit for a change: 3, or 5 for a risky one (rounds past 3 still need an open blocker or should). */
 export const roundLimit = risky => (risky ? RISKY_ROUNDS : NORMAL_ROUNDS);
+
+/**
+ * The fix rounds a branch has used (TOOLS-287): every earlier head at which a review left a finding above a nit, answered by
+ * a later commit. `chain` is Claude's chain of review records (reviewChain), the last one the review being weighed;
+ * `secondLooks` are the branch's earlier second looks ([{ head, findings }], see earlierSecondLooks). A clean or nits-only
+ * review called for no fix, so it counts none; reviews at the same head (both looks, or a round after a decline) are one
+ * round, and one at the head being weighed is none. An old record that saved no head counts one round by itself.
+ * `landed(head)` says a head is already in the land branch (work that landed before, such as an earlier branch of the same
+ * name): a review there counts no round for this change.
+ */
+export function fixRoundsDone(chain, secondLooks = [], landed = () => false) {
+  const above = record => (record.findings ?? []).some(item => !isNit(item));
+  const current = chain.at(-1)?.head, heads = new Set();
+  let headless = 0;
+  for (const record of [...chain.slice(0, -1), ...secondLooks].filter(above)) {
+    if (!record.head) headless++;
+    else if (record.head !== current && !landed(record.head)) heads.add(record.head);
+  }
+  return heads.size + headless;
+}
+
+/** Whether `commit` is an ancestor of `of` (or the same commit) in the repo at `root`; a git failure says no. */
+export function isAncestorOf(root, commit, of) {
+  try { execFileSync("git", ["-C", root, "merge-base", "--is-ancestor", commit, of], { stdio: "ignore" }); return true; }
+  catch { return false; }
+}
+
+/**
+ * The branch's earlier second looks that came back, under any owner in `reviewsRoot`: each one marked for `branch` whose
+ * reviewed head is an ancestor of `head` and not `head` itself. kit pr passes the head Claude's review saw, which a review
+ * reused after a rebase with the same patch keeps, so the count survives that rebase until the next commit (then, like Claude's
+ * rounds, it starts again); a rebase that changes the patch, or one in the docs tier (no Claude review), starts it again at once.
+ * Returns [{ head, findings }] with the findings its result.md left open; a result.md kit cannot read counts no round.
+ */
+export function earlierSecondLooks(reviewsRoot, { branch, head, root }) {
+  if (!branch || !head || !existsSync(reviewsRoot)) return [];
+  const looks = [];
+  for (const owner of readdirSync(reviewsRoot, { withFileTypes: true }).filter(entry => entry.isDirectory())) {
+    for (const entry of readdirSync(join(reviewsRoot, owner.name), { withFileTypes: true }).filter(item => item.isDirectory())) {
+      const folder = join(reviewsRoot, owner.name, entry.name);
+      try {
+        const mark = JSON.parse(readFileSync(join(folder, "second-look.json"), "utf8"));
+        if (mark?.ok !== true || mark.branch !== branch) continue;
+        const looked = readFileSync(join(folder, "refs.txt"), "utf8").split(/\r?\n/)[0].trim();
+        if (!/^[0-9a-f]{7,64}$/.test(looked) || looked === head) continue;
+        if (!isAncestorOf(root, looked, head)) continue;
+        // A report kit cannot read stands for a blocker when it is weighed, but it is no review that asked for a fix.
+        const report = openFindings(readFileSync(join(folder, "result.md"), "utf8"));
+        if (report.readable) looks.push({ head: looked, findings: report.findings });
+      } catch { /* Not a second look of this branch's history, or unreadable: it counts no round. */ }
+    }
+  }
+  return looks;
+}
 
 /** blocker (P0, P1), should (P2) or nit (P3, a validation gap); an unread severity counts as a blocker, never as a nit. */
 export function severityWord(item) {
@@ -224,17 +278,20 @@ export function secondLookRows(findings, { ids = new Map(), waived = [] } = {}) 
  * How a lead's --waive reason names the findings it waives (TOOLS-225). `open` is [{ id }]: the findings the waiver would let
  * through, all above P3 (P3s, validation gaps and nits never need a waiver, so they are never named). The reason names them
  * by id anywhere in its text ("R1-2 and SL-1: ..."), or starts with a count ("3 findings: ..."); ids win when it has both.
+ * `reason` may be a list (several --waive values): ids count in any of them, and the counts the values start with add up.
  * Returns the mode and what is left unnamed: "ids" leaves the ids the text does not name, "count" leaves nothing here (the
  * count is compared with every waived finding of both looks once they have run), "none" leaves all of them.
  */
 export function waiverCheck(reason, open) {
-  const text = String(reason ?? "");
+  // Several --waive values are one waiver: ids may sit in any of them, and the counts they start with add up.
+  const reasons = (Array.isArray(reason) ? reason : [reason]).map(item => String(item ?? ""));
+  const text = reasons.join("\n");
   const named = id => new RegExp(`(?<![\\w-])${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`, "i").test(text);
   // A finding carried into a later round is named by its new id or by the id the ledger keeps for it (`aliases`).
   const isNamed = item => [item.id, ...(item.aliases ?? [])].some(named);
   if (open.some(isNamed)) return { mode: "ids", unnamed: open.filter(item => !isNamed(item)) };
-  const count = /^\s*(\d+)\s+(?:open\s+)?findings?\b/i.exec(text);
-  if (count) return { mode: "count", count: Number(count[1]), unnamed: [] };
+  const counts = reasons.map(item => /^\s*(\d+)\s+(?:open\s+)?findings?\b/i.exec(item)).filter(Boolean);
+  if (counts.length) return { mode: "count", count: counts.reduce((sum, match) => sum + Number(match[1]), 0), unnamed: [] };
   return { mode: "none", unnamed: open };
 }
 
