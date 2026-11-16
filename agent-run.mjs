@@ -594,9 +594,11 @@ export function claudeAdapter(options, common) {
 export function grokAdapter(options) {
   const { kind, worktree, model, effort } = options;
   if (kind !== "review") throw new Error("Grok runs reviews only");
-  // The read-only sandbox and a read-only tool list keep the reviewer from editing.
+  // The read-only sandbox and a read-only tool list keep the reviewer from editing. Inside the key lock (bubblewrap)
+  // Grok's own sandbox, bubblewrap too, cannot start, so it is off there (options.grokSandbox): the tool list, which
+  // has no shell and no writing tool, keeps the reviewer read-only, and the lock keeps the key files out of reach.
   const args = ["--prompt-file", "/dev/stdin", "-m", model.toLowerCase(), "--reasoning-effort", effort, "--output-format", "json",
-    "--sandbox", "read-only", "--tools", "read_file,grep,list_dir", "--no-subagents", "--disable-web-search", "--cwd", worktree];
+    "--sandbox", options.grokSandbox ?? "read-only", "--tools", "read_file,grep,list_dir", "--no-subagents", "--disable-web-search", "--cwd", worktree];
   return {
     command: "grok", capture: true,
     args: [...args, ...(options.sessionId ? ["-s", options.sessionId] : [])],
@@ -1116,6 +1118,7 @@ async function executeRun(options, out, previous, update, brief) {
     if (guard.off) appendFileSync(log, "warning: key files are not locked for this run (ASE_KEY_GUARD=off)\n");
     if (guard.warning) appendFileSync(log, `warning: key lock: ${guard.warning}\n`);
     if (guard.codex) options.codexProfile = guard.codex;
+    if (guard.bwrap && options.cli === "grok") options.grokSandbox = "off";
     const adapter = agentInvocation(options, common, output);
     // A resumed run's first call is not the review's first call, so it never refunds.
     // The worktree as the run found it: a first call that left it changed did some work, however soon it failed.
