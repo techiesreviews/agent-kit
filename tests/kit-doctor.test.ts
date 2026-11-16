@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { kitFiles } from "./support/kit-files.ts";
 import { kitEnv } from "./support/kit-env.ts";
-import { onMacos, pathWithoutBwrap } from "./support/no-bwrap.ts";
+import { onLinux, onMacos, pathWithoutBwrap } from "./support/no-bwrap.ts";
 
 const repo = resolve(".");
 const kit = join(repo, "kit");
@@ -1390,11 +1390,11 @@ test("the key lock note is truthful: off on a system without bubblewrap, a stop 
   assert.equal(missing.status, 0, missing.stdout + missing.stderr);
   assert.match(missing.stdout, /^✗ key lock: off on this machine \(no bubblewrap\); builders can read key files \(token variables are still dropped, and Codex keeps its own profile\); fix: none on a system without bubblewrap \(it is Linux only\); ASE_KEY_GUARD=on stops those runs instead of starting them unwrapped$/m);
   assert.match(missing.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: ok doctor 11\/11 checks passed; warning: key lock is off \(see the ✗ key lock line\)$/);
-  // ASE_KEY_GUARD=on there, or no bubblewrap on Linux: the runs stop, and the note says that instead.
-  const stops = /^✗ key lock: bubblewrap \(bwrap\) is not installed; install it \(apt install bubblewrap\) \(the kit's Claude, Grok and OpenCode runs stop until it works\); fix: the step named above, or set ASE_KEY_GUARD=off/m;
-  assert.match(f.run([], f.build, { HOME: home, PATH: none, ...onMacos, ASE_KEY_GUARD: "on" }).stdout, stops);
-  const linux = f.run([], f.build, { HOME: home, PATH: none });
-  assert.match(linux.stdout, stops);
+  // ASE_KEY_GUARD=on there, or no bubblewrap on Linux: the runs stop, and the note says that instead, with a step that exists there.
+  assert.match(f.run([], f.build, { HOME: home, PATH: none, ...onMacos, ASE_KEY_GUARD: "on" }).stdout,
+    /^✗ key lock: this system has no bubblewrap \(it is Linux only\), and ASE_KEY_GUARD=on asks for the lock or no run; unset it to start Claude, Grok and OpenCode unwrapped \(the kit's Claude, Grok and OpenCode runs stop until it works\); fix: the step named above, or set ASE_KEY_GUARD=off/m);
+  const linux = f.run([], f.build, { HOME: home, PATH: none, ...onLinux });
+  assert.match(linux.stdout, /^✗ key lock: bubblewrap \(bwrap\) is not installed; install it \(apt install bubblewrap\) \(the kit's Claude, Grok and OpenCode runs stop until it works\); fix: the step named above, or set ASE_KEY_GUARD=off/m);
   assert.match(linux.stdout.trimEnd().split("\n").at(-1)!, /; warning: key lock cannot start \(see the ✗ key lock line\)$/);
   // A key folder that links to the worktree, or to the repository's Git folder, would stop the runs that lock it:
   // doctor finds it and does not say "on".
