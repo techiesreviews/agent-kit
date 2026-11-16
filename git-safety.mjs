@@ -24,6 +24,7 @@
 // them too.
 import { execFileSync } from "node:child_process";
 import { readFileSync, realpathSync, statSync } from "node:fs";
+import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { sshCommand } from "./key-guard.mjs";
 
@@ -87,6 +88,19 @@ export function folderRemote(url) {
   // host:path, with the colon before any slash; a Windows drive letter (C:\…) is a folder.
   const colon = url.indexOf(":"), slash = url.search(/[\\/]/);
   return colon < 0 || (slash >= 0 && slash < colon) || /^[a-z]:[\\/]/i.test(url);
+}
+
+/**
+ * Whether a remote URL that is not a folder (folderRemote) still reaches this machine itself (TOOLS-320): its host is
+ * localhost (or a name under .localhost), a loopback address (127.x, ::1, 0.0.0.0) or this machine's own name. A push
+ * there runs that repository's hooks as this user, outside any lock. A name an ssh config maps here cannot be told.
+ */
+export function loopbackRemote(url) {
+  const host = (/^[a-z][a-z0-9+.-]*:\/\/(?:[^/@]*@)?(\[[^\]]*\]|[^/:?#]*)/i.exec(url)?.[1]
+    ?? /^(?:[^/@:]*@)?([^/:]+):/.exec(url)?.[1] ?? "").replace(/^\[|\]$/g, "").replace(/\.$/, "").toLowerCase();
+  const own = hostname().toLowerCase();
+  return /^(localhost|localhost\.localdomain|ip6-localhost|ip6-loopback|::1|0\.0\.0\.0|127(\.\d+){3})$/.test(host) || host.endsWith(".localhost")
+    || (host !== "" && (host === own || host === own.split(".")[0]));
 }
 
 /** Whether a git command line reaches the network with the user's credentials: its subcommand, past git's own options. */

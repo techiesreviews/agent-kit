@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir, userInfo } from "node:os";
+import { hostname, tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { bwrapArgs, bwrapWorks, checkLock, codexPaths, kitFolders, codexProfile, existingPaths, keyGuard, keyGuardReport, keyPathsWarning, linkTargets, lockedPaths, outerLock, resetBwrapProbe, runProgram, scrubbedEnv, startCommand } from "../key-guard.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { folderRemote, gitCommonDir, gitNetworkCall, gitSafety } from "../git-safety.mjs";
+import { folderRemote, gitCommonDir, gitNetworkCall, gitSafety, loopbackRemote } from "../git-safety.mjs";
 import { kitEnv, testHomeFolder } from "./support/kit-env.ts";
 import { asPlatform, onLinux, onMacos, pathWithout, pathWithoutBwrap } from "./support/no-bwrap.ts";
 
@@ -1123,6 +1123,10 @@ test("git safety: every program the repository's own Git settings name is set em
   assert.equal(gitNetworkCall(["-C", "/x", "-c", "a=b", "push", "origin"]), true);
   for (const [url, folder] of [["/tmp/a.git", true], ["file:///a", true], ["../a", true], ["https://github.com/a/b", false], ["git@github.com:a/b.git", false], ["ssh://h/x", false]] as const)
     assert.equal(folderRemote(url), folder, url);
+  // Addresses on this machine itself, by any transport (TOOLS-320).
+  for (const [url, here] of [["ssh://git@localhost/srv/a.git", true], ["localhost:a.git", true], ["git@127.0.0.1:a.git", true], ["ssh://[::1]:22/a", true],
+    ["https://dev.localhost/a.git", true], [`ssh://${hostname()}/a`, true], ["git@github.com:a/b.git", false], ["https://github.com/a/b", false], ["ssh://h/x", false]] as const)
+    assert.equal(loopbackRemote(url), here, url);
   // The Git folder of a linked worktree, from its files.
   git("-c", "user.name=T", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base");
   git("worktree", "add", "-q", "-b", "linked", join(dir, "linked"));

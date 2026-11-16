@@ -17,7 +17,7 @@ const { failedSpecs, isTiming, listedSpecs, nothingSelected, timingList, wholeRe
 const { checkSteps, classify, docsOnly, doneHeading, featureListGuard, featureListProblem, focusedUnitFiles, lookFamily, lookFamilyWords, parseChanges, secondLookPick, unitTestFile } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
 const { coverageHash, readUxResult, uxGuard, visibleFiles } = await import(pathToFileURL(resolve(import.meta.dirname, "../ux-gate.mjs")).href);
 const { checkLock, keyGuardOn, runPath, runProgram, startCommand } = await import(pathToFileURL(resolve(import.meta.dirname, "../key-guard.mjs")).href);
-const { folderRemote, gitCommonDir, gitNetworkCall, gitSafety, gitTop } = await import(pathToFileURL(resolve(import.meta.dirname, "../git-safety.mjs")).href);
+const { folderRemote, gitCommonDir, gitNetworkCall, gitSafety, gitTop, loopbackRemote } = await import(pathToFileURL(resolve(import.meta.dirname, "../git-safety.mjs")).href);
 const usage = 'Usage: kit pr [--base <land>] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release] [--full] [--waive "<reason>"] [--not-visible "<reason>"]\nBranches come from scripts/agents/kit.json: --base defaults to branches.land; --release needs --base branches.release and first runs kit release-check --land (nothing unsaved, HEAD exactly origin/<land>).\n--waive requires a *-lead owner and may be given more than once (ids count in any reason, counts add up; once any reason names an id, the counts are not read); records the reason for merging with open findings or without a feature-list update;\na waiver for the findings that stop the landing (above P3; once the fix rounds are used up, P0 and P1) must name each one by id in its text (--waive \"R1-2, SL-1: <reason>\") or start with the number of them (--waive \"2 findings: <reason>\", which must match both looks together);\na finding it leaves out stops kit pr with a plain reason that lists it, and so does one that is new at a head a rebase brought, at the start of the run too (the lead sees it and runs kit pr again); P3 findings, test gaps and docs wording need no names;\nwith --release it also passes the release check, which names the reason (kit pr still needs a clean tree).\nA visible change (paths.visible) lands only with a fresh kit ux result: one that passed, with the review, for the visible files and the listed features that cover the change as they are now (kit ux saves it for the branch; a later change to a visible file or to one of those features, a rebase\'s too, needs kit ux again; a list edit about other features does not).\n--not-visible "<reason>" lands a change that matches those paths but shows a person nothing new, with the reason in the PR text (refused when kit ux tried this very change and it did not pass, and with --release; a run whose reviewer did not finish is no such verdict); --waive does not cover the UX check.\nWhen no feature in the list covers the changed files, kit ux has nothing to try and the PR says "UX check: nothing to try".\nA project with no feature list for kit ux (docs/agents/features.md) says "UX check: skipped"; a release carries what each PR already passed.\nAfter the Claude review (none in the docs tier), every change gets a second look (kit review --second-look), whose findings block the same way;\nwhen no model can take it, the PR lands and says "second look: skipped (<reason>)".\nOn Orbit ("tickets": "orbit"), --ticket takes a card KEY or a saved brief of it (.scratch/kit-tickets/KEY.md); when the PR\nlands the card goes to Done with a dated comment naming the PR and its merge SHA (ORBIT_ROLE=lead); a card that cannot be closed is named on the RESULT line.\nA PR a merge queue takes leaves the card open, its follow-ups on the card, and says to close it once the PR lands.\n';
 const kit = process.env.KIT_PR_KIT || resolve(import.meta.dirname, "../kit");
 // main's private folder of program links (name: target), removed when the process ends.
@@ -376,11 +376,20 @@ async function main(args) {
     shieldProcess();
     const gitSync = (args, environment = env) => execFileSync(...gitArgs(["-C", root, ...args]),
       { cwd: root, env: { ...environment, ...safety(environment, gitNetworkCall(args)) }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
-    // The URL a fetch or push goes to, rewrites applied: its remote's (origin when it names none), or the URL it names.
-    const remoteUrl = argv => {
+    // Whether a fetch or push runs inside the key lock: when every address it goes to is a folder on this machine, whose
+    // hooks git runs without the settings above. The addresses are its remote's (origin when it names none), rewrites
+    // applied, or the URL it names; a push goes to every push URL the remote lists (TOOLS-320). A push to a folder beside
+    // other addresses (those need the credentials, which the lock hides), or to this machine itself (its hooks run
+    // outside any lock), stops.
+    const lockedRemote = argv => {
       const at = argv.findIndex((arg, i) => !arg.startsWith("-") && argv[i - 1] !== "-c" && argv[i - 1] !== "-C");
-      const remote = argv.slice(at + 1).find(arg => !arg.startsWith("-")) ?? "origin";
-      try { return gitSync(["remote", "get-url", ...(argv[at] === "push" ? ["--push"] : []), remote]); } catch { return remote; }
+      const remote = argv.slice(at + 1).find(arg => !arg.startsWith("-")) ?? "origin", push = argv[at] === "push";
+      let urls;
+      try { urls = gitSync(["remote", "get-url", ...(push ? ["--push", "--all"] : []), remote]).split("\n").filter(Boolean); } catch { urls = [remote]; }
+      const folders = urls.filter(folderRemote), others = urls.filter(url => !folderRemote(url)), here = others.filter(loopbackRemote);
+      if (push && here.length) throw new Error(`${remote} pushes to this machine itself (${here.join(", ")}), whose hooks would run outside the key lock; push to another address, or set ASE_KEY_GUARD=off to run without the lock`);
+      if (push && folders.length && others.length) throw new Error(`${remote} pushes to a folder on this machine (${folders.join(", ")}) beside other addresses (${others.join(", ")}), and that folder's hooks would run with the keys; keep one push address (git config --unset-all remote.${remote}.pushurl), or set ASE_KEY_GUARD=off to run without the lock`);
+      return folders.length > 0;
     };
     // The checks' lock, made when the first check starts; a note says where they run unlocked. A push to a folder remote
     // takes the plain lock (it starts no sandbox of its own).
@@ -419,7 +428,7 @@ async function main(args) {
         Object.assign(childEnv, safety(childEnv, network));
         // A push to a folder remote runs that folder's own hooks with this call's variables (git clears the settings
         // above for it); it needs no credentials, so it runs inside the key lock.
-        if (network && guarded && folderRemote(remoteUrl(argv))) { const lock = pushLocked ??= lockFor(); [program, args] = lock.wrap(gitBin, argv); Object.assign(childEnv, lock.env); }
+        if (network && guarded && lockedRemote(argv)) { const lock = pushLocked ??= lockFor(); [program, args] = lock.wrap(gitBin, argv); Object.assign(childEnv, lock.env); }
       }
       else {
         Object.assign(childEnv, safety(childEnv, name === "release-check"));
