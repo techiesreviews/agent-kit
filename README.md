@@ -247,15 +247,19 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
 - **The key lock** (`key-guard.mjs`, TOOLS-285, Lex 2026-11-15): an agent the kit starts through `agent-run.mjs` (a
   `kit go` build, a `kit review` or `kit ux` reviewer, a second look) cannot read the machine's key files:
   `~/.config/fleet` (the Orbit secrets), `~/.config/gh`, the Cloudflare/wrangler folders, `~/.ssh`, `~/.netrc`, `~/.npmrc`,
-  cloud logins, `~/.claude.json` (it holds MCP Authorization headers), `~/.Xauthority`, the API route's key file, the
-  other CLIs' logins, a git config with a token in a URL and a shell start-up file that sets a token, folders and
+  cloud and registry logins (the list is `homeKeyPaths` in `key-guard.mjs`: AWS, Azure, gcloud, kube, Docker, Podman,
+  rclone, cargo, RubyGems, Kaggle, DigitalOcean, Fly, Netlify, Vercel, Hugging Face; a store that is not on it goes in
+  `KIT_KEY_PATHS`), `~/.claude.json` (it holds MCP Authorization headers), `~/.Xauthority`, the API route's key file, the
+  other CLIs' logins, Claude's `settings.json` for the other CLIs (it can hold a token), a git config with a token in a
+  URL and a shell start-up file that sets a token, folders and
   files that variables name (`GH_CONFIG_DIR`, `KUBECONFIG`, `GNUPGHOME` …), what links
   inside those folders point to (a link to a folder holding HOME or the worktree, or to a system folder, stops the run:
   the lock cannot hide it; so do a key folder that cannot be listed and key folders too large to search, over 200000
   entries), the SSH agent and session-bus sockets where their variables point, and the desktop's runtime folder
   (keyring, session bus, agent sockets); a relative name counts from both the worktree and the lead's folder.
-  `KIT_KEY_PATHS` adds more (absolute, `:`-separated). Claude, Grok and OpenCode run inside bubblewrap (`bwrap`, required:
-  without it such a run stops and says so; `kit doctor` shows a `key lock:` line; Grok's own sandbox cannot start inside
+  `KIT_KEY_PATHS` adds more (full paths, separated by the system's path separator; an entry that is not a full path is
+  not locked, and the run's log and `kit doctor` say so). Claude, Grok and OpenCode run inside bubblewrap (`bwrap`, which
+  exists on Linux only; Grok's own sandbox cannot start inside
   it, so Grok runs with `--sandbox off` there and the lock itself is read-only for a Grok review, but its own state
   folder and the temp folders); Codex, whose own
   sandbox cannot start inside another, gets a permissions profile with the same paths unreadable. Variables holding tokens, passwords, agent
@@ -270,11 +274,21 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   in by name (some desktops set `xhost +si:localuser` at every start) stays reachable, which `kit doctor` and the run's
   log say as a warning while the lock stays on. A build on the API route is refused under the lock (its Claude sandbox cannot start inside it).
   `ASE_KEY_GUARD=off` runs without the lock and writes a warning in the run's log.
+- **Where the key lock is off.** On a machine without bubblewrap (macOS, Windows, a Linux where it is not installed) the
+  kit's runs go on unlocked, every CLI as before the lock, and say so in one line, in the run's log and in `kit doctor`:
+  `key lock: off on this machine (no bubblewrap); builders can read key files`. `ASE_KEY_GUARD=on` stops such a run
+  instead (for a machine that must never run unlocked). A bubblewrap that is installed but cannot start (the system
+  blocks it, the `/proc` check fails) still stops the kit's Claude, Grok and OpenCode runs. `kit doctor`'s `key lock:`
+  line searches the key folders as a run in that worktree would, so it says "on" only where a run would really start:
+  a key folder that cannot be listed, is too large or links to a folder the lock cannot hide shows there first.
 - Keyed steps happen only in the lead's own process, never inside a locked run. Already the lead's: `git push`, `kit pr`
   (push, PR, merge, card close) and `kit pr --release` (the build contract leaves a builder's changes unstaged). Moved to
   the lead for locked runs: reading Orbit cards (`kit ticket get|list`, which need the token too), GitHub calls (`gh`,
   `kit wait ci`, a fetch from a private remote), Cloudflare deploys (`kit preview`, `wrangler`) and installs that need a
-  registry token from `~/.npmrc`. A brief carries what the builder needs from the card.
+  registry token from `~/.npmrc`. A brief carries what the builder needs from the card: `kit brief` puts the card's text
+  and comments in it and sends no builder to the board, and its "Key lock" line, like the build contract every
+  kit-started build gets, names these steps as the lead's (the builder reports each one it left as `Lead: <step>`). A T3
+  helper thread is outside the lock (card TOOLS-302) and still lands its own work with `kit pr`, as its brief says.
 - `kit doctor` on a project with `"tickets": "orbit"` names its board and asks Orbit once, with a short limit: connected,
   token refused or expired, Cloudflare blocked it, Orbit not answering, setup file needs attention, or not set up, with
   the days left when the saved file records the token's expiry. The line never fails doctor, and `kit doctor --quiet` makes no call.

@@ -23,11 +23,13 @@
 // machine's loopback network and abstract sockets stay reachable. The display's X socket is one of them: the hidden
 // cookie keeps it shut where the display asks for one; where it lets the user in without one, the start-up probe says
 // so as a warning (kit doctor, the run's log) and the lock stays on.
-// ASE_KEY_GUARD=off runs without the lock and says so in the run's log.
+// ASE_KEY_GUARD=off runs without the lock and says so in the run's log. Bubblewrap exists on Linux only: on a machine
+// without it (macOS, Windows, a Linux where it is not installed) the kit's runs go on unlocked, as before the lock,
+// and say so in one line (the run's log, kit doctor); ASE_KEY_GUARD=on stops such a run instead.
 import { spawnSync } from "node:child_process";
 import { accessSync, chmodSync, constants, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve, sep } from "node:path";
+import { delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
 // Key files and folders under HOME, whichever CLI runs.
 export const homeKeyPaths = [
@@ -35,6 +37,11 @@ export const homeKeyPaths = [
   ".cloudflared", ".config/radaar", ".config/anthropic", ".config/gcloud", ".config/op", ".netrc", ".git-credentials",
   ".config/git/credentials", ".npmrc", ".pypirc", ".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker/config.json",
   ".password-store", ".local/share/keyrings", ".vault-token", ".terraform.d/credentials.tfrc.json",
+  // More registry and cloud logins, each one token file: Podman's (Docker's twin), rclone, cargo, RubyGems, Kaggle,
+  // DigitalOcean, Fly, Netlify, Vercel, Hugging Face. A store not listed here goes in KIT_KEY_PATHS.
+  ".config/containers/auth.json", ".config/rclone/rclone.conf", ".cargo/credentials.toml", ".cargo/credentials", ".gem/credentials",
+  ".kaggle/kaggle.json", ".config/doctl/config.yaml", ".fly/config.yml", ".config/netlify/config.json",
+  ".local/share/com.vercel.cli/auth.json", ".cache/huggingface/token",
   // The display's cookie: with it a program could type into the lead's terminal, outside the lock.
   ".Xauthority",
   // Lex's Claude config holds MCP servers' Authorization headers (Orbit's among them); Claude runs fine without it.
@@ -50,6 +57,9 @@ export const cliKeyPaths = {
   // OpenCode 2 keeps its keys in opencode.db (with its journals) beside the older auth.json: the whole data folder.
   opencode: [".local/share/opencode", ".config/opencode/opencode.json", ".config/opencode/opencode.jsonc"],
 };
+// Claude's own settings can hold a token too (an `env` value such as ANTHROPIC_AUTH_TOKEN, an apiKeyHelper): hidden
+// from the other CLIs' runs, never from Claude's own (its hooks and permissions are there), on the API route as well.
+const claudeSettings = "settings.json";
 
 // Files a tool needs that may also hold a key: a git config with a token in a remote's URL, a shell start-up file that
 // sets a token. Each is locked only when it holds one, since git and the shell read them on every run.
@@ -94,7 +104,8 @@ const keyFolderVariables = ["GOOGLE_APPLICATION_CREDENTIALS", "GH_CONFIG_DIR", "
   "CLOUDSDK_CONFIG", "NPM_CONFIG_USERCONFIG", "WRANGLER_HOME", "PASSWORD_STORE_DIR", "NETRC"];
 
 // Under XDG_CONFIG_HOME when it is set somewhere else than ~/.config.
-const configKeyNames = ["fleet", "orbit.env", "gh", "hub", "glab-cli", ".wrangler", "radaar", "anthropic", "gcloud", "op", "git/credentials"];
+const configKeyNames = ["fleet", "orbit.env", "gh", "hub", "glab-cli", ".wrangler", "radaar", "anthropic", "gcloud", "op", "git/credentials",
+  "containers/auth.json", "rclone/rclone.conf", "doctl/config.yaml", "netlify/config.json"];
 
 // Names of variables that carry a secret: TOKEN, SECRET, PASSWORD, API_KEY … as a whole word between underscores.
 // GIT_AUTHOR_NAME keeps (AUTHOR is not AUTH).
@@ -119,6 +130,24 @@ export function keyGuardOn(env = process.env) {
   return String(env.ASE_KEY_GUARD ?? "").toLowerCase() !== "off";
 }
 
+// ASE_KEY_GUARD=on asks for the lock or no run: a machine without bubblewrap then stops the run instead of running it unlocked.
+const lockRequired = env => String(env.ASE_KEY_GUARD ?? "").toLowerCase() === "on";
+
+// The entries of KIT_KEY_PATHS, separated by the system's path separator.
+const extraKeyPaths = env => String(env.KIT_KEY_PATHS ?? "").split(delimiter).filter(Boolean);
+
+/**
+ * KIT_KEY_PATHS entries that are not full paths, in plain words, or null. Such an entry is not locked (a relative one
+ * could mean several folders), so the lock says so (the run's log, kit doctor) where it used to skip it silently.
+ */
+export function keyPathsWarning(env = process.env) {
+  const bad = extraKeyPaths(env).filter(path => !isAbsolute(path));
+  if (!bad.length) return null;
+  const names = bad.map(path => `'${path}'`).join(", ");
+  return bad.length === 1 ? `KIT_KEY_PATHS entry ${names} is not a full path, so it is not locked; write it from / on`
+    : `KIT_KEY_PATHS entries ${names} are not full paths, so they are not locked; write them from / on`;
+}
+
 /**
  * The variables an agent run must not get, as {name: undefined} (undefined removes a variable for the call). OpenCode
  * also keeps the key of the provider its model names (openrouter/… keeps OPENROUTER_API_KEY).
@@ -140,7 +169,7 @@ function home(env) {
 
 /**
  * Every path the run must not read, absolute and without duplicates: the key list, the other CLIs' logins, extra
- * paths from KIT_KEY_PATHS (separated by the system's path separator, absolute only), the desktop's runtime folder
+ * paths from KIT_KEY_PATHS (separated by the system's path separator, full paths only: keyPathsWarning names the rest), the desktop's runtime folder
  * (agent sockets, the keyring, the session bus, systemd's user manager) and terminal and X sockets in /tmp.
  * Missing paths are included; existingPaths keeps the ones there now.
  */
@@ -171,11 +200,13 @@ export function lockedPaths(cli, env = process.env, { apiRoute = false, cwd = pr
     // Codex's own login and config are hidden from its commands (its profile); the API route signs Claude in with a key.
     if (other !== cli || cli === "codex" || (cli === "claude" && apiRoute)) paths.push(...list.map(path => join(base, path)));
   }
+  if (cli !== "claude") paths.push(join(base, ".claude", claudeSettings));
   if (env.CODEX_HOME) paths.push(join(env.CODEX_HOME, "auth.json"), join(env.CODEX_HOME, "config.toml"));
-  // Claude's moved config folder: its MCP config for every CLI, its login for the others.
+  // Claude's moved config folder: its MCP config for every CLI, its login and settings for the others.
   for (const folder of named(env.CLAUDE_CONFIG_DIR)) {
     paths.push(join(folder, ".claude.json"));
     if (cli !== "claude" || apiRoute) paths.push(join(folder, ".credentials.json"));
+    if (cli !== "claude") paths.push(join(folder, claudeSettings));
   }
   // OpenCode's data folder where XDG_DATA_HOME moves it, and a database OPENCODE_DB names (with its journals).
   if (cli !== "opencode") {
@@ -187,7 +218,7 @@ export function lockedPaths(cli, env = process.env, { apiRoute = false, cwd = pr
   if (cli === "codex" && env.CODEX_HOME && resolve(env.CODEX_HOME) !== join(base, ".codex") && inside(resolve(env.CODEX_HOME), resolve(tmpdir()))) paths.push(env.CODEX_HOME);
   // Tools that keep their keys where a variable says (gh's GH_CONFIG_DIR among them, which the kit itself sets).
   // KUBECONFIG holds a list of files.
-  for (const name of keyFolderVariables) for (const path of String(env[name] ?? "").split(name === "KUBECONFIG" ? ":" : "\0")) paths.push(...named(path));
+  for (const name of keyFolderVariables) for (const path of String(env[name] ?? "").split(name === "KUBECONFIG" ? delimiter : "\0")) paths.push(...named(path));
   // Agent sockets wherever they are: dropping the variable hides the name, not the socket.
   paths.push(...named(env.SSH_AUTH_SOCK));
   for (const [, path] of String(env.DBUS_SESSION_BUS_ADDRESS ?? "").matchAll(/(?:^|[,;:])path=([^,;]+)/g)) paths.push(...named(path));
@@ -202,9 +233,7 @@ export function lockedPaths(cli, env = process.env, { apiRoute = false, cwd = pr
   paths.push(...named(env.KIT_API_KEY_FILE));
   // The display's cookie wherever the session keeps it (older SDDM: /tmp/xauth_…).
   paths.push(...named(env.XAUTHORITY));
-  for (const extra of String(env.KIT_KEY_PATHS ?? "").split(process.platform === "win32" ? ";" : ":")) {
-    if (extra.startsWith("/")) paths.push(extra);
-  }
+  paths.push(...extraKeyPaths(env).filter(path => isAbsolute(path)));
   const uid = typeof process.getuid === "function" ? process.getuid() : null;
   const runtime = env.XDG_RUNTIME_DIR || (uid === null ? "" : `/run/user/${uid}`);
   if (runtime.startsWith("/")) paths.push(runtime);
@@ -225,7 +254,7 @@ export function existingPaths(paths) {
  * worktree, its Git folder) or lies in a system folder cannot be hidden without breaking the run: it is returned in
  * `unsafe`; a folder that cannot be listed (it could hide a link) in `unlisted`. A search past `limit` entries in all stops and says so in `tooLarge` (the key path it was searching), since a
  * search cut short could miss a link. Folders in `skip` (the runtime folder, terminal and X sockets: sockets, not keys)
- * are not searched.
+ * are not searched, nor is a link that leads into one (it is masked whole already).
  */
 export function linkTargets(paths, { skip = [], keep = [], limit = 200_000 } = {}) {
   const found = [...paths], unsafe = [], unlisted = [];
@@ -234,9 +263,10 @@ export function linkTargets(paths, { skip = [], keep = [], limit = 200_000 } = {
   const system = ["/usr", "/etc", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/opt", "/boot", "/proc", "/sys", "/dev"];
   const seen = new Set();
   const target = link => {
-    let real;
-    try { real = realpathSync(link); } catch { return; /* A dangling link points nowhere. */ }
-    const info = statSync(real);
+    let real, info;
+    // A dangling link points nowhere; so does a target that went away, or that this user cannot reach, between the two reads.
+    try { real = realpathSync(link); info = statSync(real); } catch { return; }
+    if (skip.some(folder => inside(real, folder))) return;
     // A device (known_hosts -> /dev/null) holds no key, and masking it would break the run.
     if (info.isCharacterDevice() || info.isBlockDevice()) return;
     if (!info.isDirectory()) found.push(real);
@@ -408,7 +438,7 @@ function probeLock(env) {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
-let probed, displayWarning = null;
+let probed, displayWarning = null, absent = false;
 /** Whether bubblewrap runs and holds here: null, or the problem in plain words. Checked once per process; bwrap is looked up on PATH. */
 export function bwrapWorks(env = process.env) {
   if (probed === undefined) {
@@ -417,23 +447,49 @@ export function bwrapWorks(env = process.env) {
     const said = String(result.stderr ?? result.error?.message ?? "").trim().split("\n").at(-1) || `exit ${result.status}`;
     // The usual refusal: the system does not let ordinary users make the namespaces a sandbox needs.
     const blocked = /namespace|uid map|Operation not permitted|Permission denied/i.test(said);
+    absent = result.error?.code === "ENOENT";
     if (result.status === 0) ({ problem: probed, warning: displayWarning } = probeLock(env));
-    else probed = result.error?.code === "ENOENT" ? "bubblewrap (bwrap) is not installed; install it (apt install bubblewrap)"
+    else probed = absent ? "bubblewrap (bwrap) is not installed; install it (apt install bubblewrap)"
       : blocked ? `the system blocks the sandboxes bubblewrap makes (${said}); give /usr/bin/bwrap an AppArmor profile that allows user namespaces (Ubuntu's bubblewrap package brings one), or on Ubuntu allow them until the next restart with sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`
       : `bubblewrap (bwrap) cannot start here (${said}); run bwrap --dev-bind / / -- true to see why`;
   }
   return probed;
 }
 
-/** A display the lock cannot shut (see probeLock), or null; known after bwrapWorks. */
+/** What the lock does not cover, in one sentence, or null: a display it cannot shut (see probeLock), KIT_KEY_PATHS entries it does not lock. */
 export function keyGuardWarning(env = process.env) {
   bwrapWorks(env);
-  return displayWarning;
+  return [displayWarning, keyPathsWarning(env)].filter(Boolean).join("; ") || null;
+}
+
+// No bubblewrap on this machine, and no ASE_KEY_GUARD=on asking for the lock or no run: the kit's runs go on unlocked.
+const noBwrap = "off on this machine (no bubblewrap); builders can read key files";
+function runsUnlocked(env) {
+  bwrapWorks(env);
+  return absent && !lockRequired(env);
 }
 
 /**
- * The lock for one agent run, or {off: true} with ASE_KEY_GUARD=off. Throws in plain words when the lock is on and
- * cannot be set up (no bubblewrap for a CLI that needs it). `close()` removes the run's private folder.
+ * The key paths for a run with what their links point at, or why they cannot be locked: {paths, problem, glue}, the
+ * problem in plain words with its step (glue joins the "set ASE_KEY_GUARD=off" that follows it). `cli` "" stands for
+ * every CLI at once (kit doctor's check).
+ */
+function searchedPaths(cli, env, { apiRoute = false, worktree, common } = {}) {
+  const uid = typeof process.getuid === "function" ? process.getuid() : -1;
+  const sockets = [env.XDG_RUNTIME_DIR || `/run/user/${uid}`, `/tmp/tmux-${uid}`, "/run/screen", "/tmp/.X11-unix"];
+  const { paths, unsafe, unlisted, tooLarge } = linkTargets(lockedPaths(cli, env, { apiRoute, cwd: worktree }), { skip: sockets,
+    // Compared with the links' real targets, so through any link on the way (~/Projects -> /data/Projects).
+    keep: [home(env), worktree, common].filter(Boolean).map(path => { try { return realpathSync(path); } catch { return resolve(path); } }) });
+  if (unsafe.length) return { paths, problem: `a key folder links to a folder the lock cannot hide (${unsafe.join(", ")}); move the keys into a folder of their own`, glue: ", or" };
+  if (unlisted.length) return { paths, problem: unlisted.map(listingProblem).join("; "), glue: "; or" };
+  if (tooLarge) return { paths, problem: `${tooLarge} holds too many files to search for links (over 200000 in the key folders); clear old files there`, glue: ", or" };
+  return { paths, problem: null };
+}
+
+/**
+ * The lock for one agent run, or {off: true} with ASE_KEY_GUARD=off and (with `missing` and the `warning` for the run's
+ * log) on a machine without bubblewrap. Throws in plain words when the lock is on and cannot be set up (a bubblewrap
+ * that cannot start, a key folder it cannot search; no bubblewrap under ASE_KEY_GUARD=on). `close()` removes the run's private folder.
  *  - env: variables to drop for the call;
  *  - wrap(command, args): the command and arguments that run it inside the lock (Claude, Grok, OpenCode);
  *  - codex: Codex's -c profile options;
@@ -441,22 +497,21 @@ export function keyGuardWarning(env = process.env) {
  *  - bwrap: true when bubblewrap stands between the runner and the CLI (it reports a killed CLI as exit 128 + signal).
  */
 export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRoute = false, model = "" }) {
-  if (!keyGuardOn(env)) return { off: true, env: {}, wrap: (command, args) => [command, args], close() {} };
-  const uid = typeof process.getuid === "function" ? process.getuid() : -1;
-  const sockets = [env.XDG_RUNTIME_DIR || `/run/user/${uid}`, `/tmp/tmux-${uid}`, "/run/screen", "/tmp/.X11-unix"];
-  const { paths, unsafe, unlisted, tooLarge } = linkTargets(lockedPaths(cli, env, { apiRoute, cwd: worktree }), { skip: sockets,
-    // Compared with the links' real targets, so through any link on the way (~/Projects -> /data/Projects).
-    keep: [home(env), worktree, common].filter(Boolean).map(path => { try { return realpathSync(path); } catch { return resolve(path); } }) });
-  if (unsafe.length) throw new Error(`cannot lock the key files for this ${kind}: a key folder links to a folder the lock cannot hide (${unsafe.join(", ")}); move the keys into a folder of their own, or set ASE_KEY_GUARD=off to run without the lock`);
-  if (unlisted.length) throw new Error(`cannot lock the key files for this ${kind}: ${unlisted.map(listingProblem).join("; ")}; or set ASE_KEY_GUARD=off to run without the lock`);
-  if (tooLarge) throw new Error(`cannot lock the key files for this ${kind}: ${tooLarge} holds too many files to search for links (over 200000 in the key folders); clear old files there, or set ASE_KEY_GUARD=off to run without the lock`);
+  const unlocked = { off: true, env: {}, wrap: (command, args) => [command, args], close() {} };
+  if (!keyGuardOn(env)) return unlocked;
+  // A machine without bubblewrap: every CLI runs as it did before the lock (nothing is searched, so nothing can stop
+  // the run), and the run's log says so.
+  if (runsUnlocked(env)) return { ...unlocked, missing: true, warning: noBwrap };
+  const { paths, problem: refusal, glue } = searchedPaths(cli, env, { apiRoute, worktree, common });
+  if (refusal) throw new Error(`cannot lock the key files for this ${kind}: ${refusal}${glue} set ASE_KEY_GUARD=off to run without the lock`);
   const scrub = scrubbedEnv(cli, env, { apiRoute, model });
   // Codex's own sandbox shares the network too, so the display warning (when bubblewrap can check it) applies to it.
   if (cli === "codex") {
     let display = Boolean(env.DISPLAY);
     try { display ||= readdirSync("/tmp/.X11-unix").some(name => /^X\d+$/.test(name)); } catch { /* No X display here. */ }
     const unchecked = display ? bwrapWorks(env) : null;
-    const warning = !display ? null : unchecked ? `the X display could not be checked (${unchecked}), so it may let programs in without its cookie; do not copy or type keys while agents run` : keyGuardWarning(env);
+    const gap = !display ? null : unchecked ? `the X display could not be checked (${unchecked}), so it may let programs in without its cookie; do not copy or type keys while agents run` : displayWarning;
+    const warning = [gap, keyPathsWarning(env)].filter(Boolean).join("; ") || null;
     return { env: scrub, codex: codexProfile(kind, common, codexPaths(paths)), warning, wrap: (command, args) => [command, args], close() {} };
   }
   const problem = bwrapWorks(env);
@@ -482,17 +537,29 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
     close() { rmSync(dir, { recursive: true, force: true }); } };
 }
 
-/** kit doctor's note: {state: on|warning|off|problem, text}. Never throws; the lock's state in plain words. */
-export function keyGuardReport(env = process.env) {
+/**
+ * kit doctor's note: {state, text}, the lock's state in plain words. Never throws. States: on; warning (on, with a gap);
+ * off (ASE_KEY_GUARD=off); missing (no bubblewrap here, runs go on unlocked); problem (bubblewrap cannot start: the
+ * Claude, Grok and OpenCode runs stop); refused (a key folder cannot be searched or hidden: every run stops). The key
+ * folders are searched as a run in `worktree` would search them, for every CLI at once, so "on" is said only where a
+ * run would really start.
+ */
+export function keyGuardReport(env = process.env, { worktree = process.cwd(), common } = {}) {
   if (!keyGuardOn(env)) return { state: "off", text: "off (ASE_KEY_GUARD=off): agents the kit starts can read the key files" };
+  if (runsUnlocked(env)) return { state: "missing", text: noBwrap };
   const problem = bwrapWorks(env);
   if (problem) return { state: "problem", text: problem };
+  let refusal;
+  try { refusal = searchedPaths("", env, { worktree, common }).problem; }
+  catch (error) { refusal = `the key folders could not be searched (${error.message})`; }
+  if (refusal) return { state: "refused", text: refusal };
   const warning = keyGuardWarning(env);
   return warning ? { state: "warning", text: `on, but ${warning}` }
-    : { state: "on", text: "on (bubblewrap runs; agents the kit starts cannot read the key files)" };
+    : { state: "on", text: `on (bubblewrap runs; agents the kit starts cannot read the key files${env.KIT_API_KEY_FILE ? "; a Claude build on the API route is refused under the lock" : ""})` };
 }
 
 /** For tests: forget the bubblewrap probe. */
 export function resetBwrapProbe() {
   probed = undefined;
+  absent = false;
 }
