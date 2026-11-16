@@ -50,6 +50,8 @@ test("secret-bearing variables are dropped; a CLI keeps only its own sign-in; or
   assert.ok(Object.hasOwn(codex, "ANTHROPIC_API_KEY") && !Object.hasOwn(codex, "OPENAI_API_KEY"));
   assert.ok(!Object.hasOwn(scrubbedEnv("claude", env, { apiRoute: true }), "KIT_API_KEY_FILE"), "the API route's wrapper still finds its key file");
   // The display and its cookie lead outside the lock; an OpenCode model keeps its own provider's key, no other.
+  const urls = scrubbedEnv("claude", { GITHUB_PAT: "x", DATABASE_URL: "postgres://app:hunter2@db/x", HTTPS_PROXY: "http://proxy:3128", REPO_URL: "https://github.com/x/y" });
+  assert.deepEqual(Object.keys(urls).sort(), ["DATABASE_URL", "GITHUB_PAT"]);
   const desk = { DISPLAY: ":0", WAYLAND_DISPLAY: "wayland-0", OPENROUTER_API_KEY: "x", DEEPSEEK_API_KEY: "x" };
   assert.deepEqual(Object.keys(scrubbedEnv("opencode", desk, { model: "openrouter/some-model:free" })).sort(), ["DEEPSEEK_API_KEY", "DISPLAY", "WAYLAND_DISPLAY"]);
 });
@@ -226,7 +228,8 @@ test("PROOF: Codex's own sandbox with the kit's profile cannot read a dummy key 
   const run = spawnSync("codex", ["sandbox", ...profile, "--", "sh", "-c", `cat ${JSON.stringify(files.orbit)}; echo rc=$?; cat ${JSON.stringify(join(reviewHome, "auth.json"))}; cat ${JSON.stringify(join(runtime, "xauth"))}; cat ${JSON.stringify(join(ghElsewhere, "hosts.yml"))}; touch built && echo built-ok`],
     // Its own temporary HOME and CODEX_HOME: the test never touches the real ~/.codex.
     // Codex keeps sandbox state in TMPDIR: the test's own folder, removed with it.
-    { cwd: root, encoding: "utf8", timeout: 60_000, env: { ...process.env, HOME: home, CODEX_HOME: reviewHome, TMPDIR: codexTmp } });
+    { cwd: root, encoding: "utf8", timeout: 60_000, env: { ...kitEnv(), HOME: home, CODEX_HOME: reviewHome, TMPDIR: codexTmp,
+      XDG_CONFIG_HOME: join(home, ".config"), XDG_CACHE_HOME: join(home, ".cache"), XDG_DATA_HOME: join(home, ".local/share"), XDG_STATE_HOME: join(home, ".local/state") } });
   const said = run.stdout + run.stderr;
   assert.ok(!said.includes(dummy), "the dummy key was readable");
   assert.match(said, /Permission denied/); assert.match(said, /rc=1/); assert.match(said, /built-ok/);
@@ -303,7 +306,8 @@ test("kit doctor's note says whether the lock is on, off or cannot start", t => 
   resetBwrapProbe();
   assert.match(keyGuardReport({ PATH: `${empty}:${process.env.PATH}` }).text, /^a program inside bubblewrap can still read other programs' files through \/proc here/);
   resetBwrapProbe();
-  if (bwrapUsable) assert.equal(keyGuardReport({ PATH: process.env.PATH }).state, "on");
+  // On a desktop whose display lets the user in by name the lock is on with a warning.
+  if (bwrapUsable) assert.match(keyGuardReport({ PATH: process.env.PATH }).state, /^(on|warning)$/);
 });
 
 test("PROOF: a Grok review cannot read the dummy key files either", { skip: noBwrap }, t => {

@@ -60,7 +60,9 @@ const configKeyNames = ["fleet", "orbit.env", "gh", "hub", "glab-cli", ".wrangle
 
 // Names of variables that carry a secret: TOKEN, SECRET, PASSWORD, API_KEY … as a whole word between underscores.
 // GIT_AUTHOR_NAME keeps (AUTHOR is not AUTH).
-const secretName = /(^|_)(TOKENS?|SECRETS?|PASSWORDS?|PASSWD|PASSPHRASE|API_?KEYS?|ACCESS_KEY|PRIVATE_KEY|CREDENTIALS?|AUTH|COOKIES?)($|_)/i;
+const secretName = /(^|_)(TOKENS?|SECRETS?|PASSWORDS?|PASSWD|PASSPHRASE|API_?KEYS?|ACCESS_KEY|PRIVATE_KEY|CREDENTIALS?|AUTH|COOKIES?|PAT)($|_)/i;
+// A value that carries a password in a URL (DATABASE_URL, HTTPS_PROXY = scheme://user:password@host).
+const urlPassword = /[a-z][a-z0-9+.-]*:\/\/[^/\s:@]*:[^@\s]+@/i;
 // Sockets and handles that lead to keys or to programs outside the lock.
 const handleNames = ["SSH_AUTH_SOCK", "GPG_AGENT_INFO", "DBUS_SESSION_BUS_ADDRESS", "XAUTHORITY", "DISPLAY", "WAYLAND_DISPLAY",
   "GNOME_KEYRING_CONTROL", "GNOME_KEYRING_PID"];
@@ -88,7 +90,7 @@ export function scrubbedEnv(cli, env = process.env, { apiRoute = false, model = 
   // The API route's wrapper reads the key file itself and drops the variable before claude starts.
   if (cli === "claude" && apiRoute) keep.add("KIT_API_KEY_FILE");
   return Object.fromEntries(Object.keys(env)
-    .filter(name => !keep.has(name) && (secretName.test(name) || handleNames.includes(name)))
+    .filter(name => !keep.has(name) && (secretName.test(name) || handleNames.includes(name) || urlPassword.test(String(env[name] ?? ""))))
     .map(name => [name, undefined]));
 }
 
@@ -198,8 +200,13 @@ export function linkTargets(paths, { skip = [], keep = [], limit = 200_000 } = {
     if (count > limit) { tooLarge = searching; return; }
     for (const entry of entries) {
       const path = join(folder, entry.name);
-      if (entry.isSymbolicLink()) target(path);
-      else if (entry.isDirectory()) walk(path);
+      // A disk that reports no entry types (some network homes) gets an lstat, so no link is missed.
+      let link = entry.isSymbolicLink(), dir = entry.isDirectory();
+      if (!link && !dir && !entry.isFile()) {
+        try { const info = lstatSync(path); link = info.isSymbolicLink(); dir = info.isDirectory(); } catch { /* Gone. */ }
+      }
+      if (link) target(path);
+      else if (dir) walk(path);
     }
   };
   for (const path of paths) {
