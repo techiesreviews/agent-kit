@@ -4030,8 +4030,15 @@ test("kit pr refuses a push whose remote lists a folder after another push addre
   assert.equal(rewritten.status, 1, rewritten.stdout + rewritten.stderr);
   assert.match(rewritten.stdout, /^RESULT: fail push: origin pushes to a folder on this machine/m);
   assert.ok(!existsSync(noted), "the folder's hook never ran");
-  // An address on this machine itself, by ssh or any other transport.
+  // The same from url entries alone (git pushes to each where no pushurl is set); the advice names both keys.
   f.git("config", "--unset-all", "remote.origin.pushurl");
+  f.git("config", "--add", "remote.origin.url", `ssh://example.invalid${mirror}`);
+  const urls = f.run();
+  assert.equal(urls.status, 1, urls.stdout + urls.stderr);
+  assert.match(urls.stdout, /^RESULT: fail push: origin pushes to a folder on this machine .* keep one push address in remote\.origin\.pushurl or remote\.origin\.url/m);
+  assert.ok(!existsSync(noted), "the folder's hook never ran");
+  f.git("config", "--unset", "remote.origin.url", "ssh://");
+  // An address on this machine itself, by ssh or any other transport.
   f.git("config", "--add", "remote.origin.pushurl", "ssh://git@localhost/srv/repo.git");
   const loopback = f.run();
   assert.equal(loopback.status, 1, loopback.stdout + loopback.stderr);
