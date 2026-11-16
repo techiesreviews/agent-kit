@@ -6,7 +6,7 @@ import { loadavg, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { completedFixRounds, openFindings, reviewIncomplete, reviewCoversHead, sameReviewPatch } from "../review-findings.mjs";
-import { branchRisk, budgetReport, earlierSecondLooks, fixRoundsDone, isNit, ledgerRows, modelsLine, prLine, renderLedger, reviewChain, roundLimit, secondLookRows, stoppingFindings, waiverCheck, waiverRefusal } from "../review-loop.mjs";
+import { branchRisk, budgetReport, earlierSecondLooks, fixRoundsDone, isAncestorOf, isNit, ledgerRows, modelsLine, prLine, renderLedger, reviewChain, roundLimit, secondLookRows, stoppingFindings, waiverCheck, waiverRefusal } from "../review-loop.mjs";
 import { projectCommand, spoken } from "../review-brief.mjs";
 import { briefFollowups, cardBriefFor, closeLandedCard, isCardKey, onOrbit, openOrbitTickets, orbitProblem, ticketCardKey } from "../ticket-cards.mjs";
 
@@ -961,13 +961,13 @@ async function main(args) {
       // The fix rounds used (TOOLS-287), from the review records: the earlier heads at which Claude's rounds or the branch's second
       // looks left a finding above a nit. Both looks share the budget, so the second look takes the count Claude's review of this
       // head worked out (the docs tier, with no Claude review, counts its second looks alone). The second looks are found from the
-      // head Claude's review saw, which a review reused after a same-patch rebase keeps. Rounds the cut kit fix saved for the
-      // branch (.scratch/kit-fix) still count.
+      // head Claude's review saw, which a review reused after a same-patch rebase keeps. A review at a head already in the base
+      // (an earlier branch of the same name that landed) counts none. Rounds the cut kit fix saved for the branch (.scratch/kit-fix) still count.
       const legacyRounds = completedFixRounds(join(kitMainRoot(), ".scratch/kit-fix", encodeURIComponent(branch)),
         join(root, ".scratch/kit-fix", encodeURIComponent(branch)));
       const claude = second ? [] : chain;
       const rounds = loopRounds ?? Math.max(legacyRounds, fixRoundsDone(claude,
-        earlierSecondLooks(join(kitMainRoot(), ".scratch/reviews"), { branch, head: claude.at(-1)?.head ?? head, root, base })));
+        earlierSecondLooks(join(kitMainRoot(), ".scratch/reviews"), { branch, head: claude.at(-1)?.head ?? head, root }), commit => isAncestorOf(root, commit, base)));
       loopRounds = rounds;
       const limit = roundLimit(loopRisk.risky);
       // Nits alone never block or call for a round; blockers and shoulds do while the budget lasts, then only blockers (nits stop the loop; out of budget is never approval).

@@ -3075,6 +3075,23 @@ test("second looks of an earlier branch of the same name, already in the base, c
   assert.doesNotMatch(held.stdout, /Review budget used/);
 });
 
+test("Claude's rounds of an earlier branch of the same name, already in the base, count no round for new work", t => {
+  const f = fixture(t);
+  // The earlier branch's three reviewed heads landed in dev, each with a should; the new work's round 4 links to them.
+  const old = [f.git("rev-parse", "HEAD~1"), f.git("rev-parse", "HEAD"), f.commit("Third change")];
+  f.git("push", "-q", "origin", "HEAD:dev");
+  f.commit("New work");
+  reviewAtRound(f, 4, "P2");
+  old.forEach((looked, index) => {
+    const path = join(f.main, ".scratch/reviews/ak-14", `20261019T0900${String(index + 1).padStart(2, "0")}Z`, "findings.json");
+    writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), head: looked }));
+  });
+  const held = f.run();
+  assert.equal(held.status, 1, held.stdout + held.stderr);
+  assert.match(held.stdout, /RESULT: fail pr #73 review has 1 open findings/);
+  assert.doesNotMatch(held.stdout, /Review budget used/);
+});
+
 test("the second looks' rounds survive the rebase kit pr starts with when the patch stays the same", t => {
   const f = fixture(t);
   earlierLooks(f, [f.git("rev-parse", "HEAD~1"), f.git("rev-parse", "HEAD"), f.commit("Third change")]);

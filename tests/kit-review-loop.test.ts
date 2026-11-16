@@ -499,6 +499,9 @@ test("fix rounds done: earlier reviews with a finding above a nit, Claude's roun
   assert.equal(fixRoundsDone([record("a", should), record("a", should), record("b", should)]), 1);
   // An old record that saved no head counts one round by itself.
   assert.equal(fixRoundsDone([{ findings: should }, { findings: should }, record("c", should)]), 2);
+  // Reviews at heads that already landed (an earlier branch of the same name) count none, Claude's and second looks alike.
+  const landed = (head: string) => ["a", "b"].includes(head);
+  assert.equal(fixRoundsDone([record("a", should), record("b", should), record("c", should), record("d", should)], [record("b", should), record("e", should)], landed), 2);
 });
 
 test("earlier second looks of a branch: only marked ones that came back, for this branch, at heads before the current one", t => {
@@ -529,9 +532,7 @@ test("earlier second looks of a branch: only marked ones that came back, for thi
   assert.deepEqual(found.map((item: { head: string }) => item.head).sort(), [heads[0], heads[1]].sort());
   assert.equal(found[0].findings[0].severity, "P2");
   assert.deepEqual(earlierSecondLooks(join(dir, "missing"), { branch: "main", head: heads[2], root: dir }), []);
-  // Looks at heads already in the base (work that landed before, such as an earlier branch of the same name) count no round.
-  assert.deepEqual(earlierSecondLooks(reviews, { branch: "main", head: heads[2], root: dir, base: heads[0] }).map((item: { head: string }) => item.head), [heads[1]]);
-  assert.deepEqual(earlierSecondLooks(reviews, { branch: "main", head: heads[2], root: dir, base: heads[1] }), []);
+
 });
 
 test("a waiver given as several reasons: ids anywhere in any of them, and counts that start each one add up", () => {

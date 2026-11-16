@@ -78,16 +78,24 @@ export const roundLimit = risky => (risky ? RISKY_ROUNDS : NORMAL_ROUNDS);
  * `secondLooks` are the branch's earlier second looks ([{ head, findings }], see earlierSecondLooks). A clean or nits-only
  * review called for no fix, so it counts none; reviews at the same head (both looks, or a round after a decline) are one
  * round, and one at the head being weighed is none. An old record that saved no head counts one round by itself.
+ * `landed(head)` says a head is already in the land branch (work that landed before, such as an earlier branch of the same
+ * name): a review there counts no round for this change.
  */
-export function fixRoundsDone(chain, secondLooks = []) {
+export function fixRoundsDone(chain, secondLooks = [], landed = () => false) {
   const above = record => (record.findings ?? []).some(item => !isNit(item));
   const current = chain.at(-1)?.head, heads = new Set();
   let headless = 0;
   for (const record of [...chain.slice(0, -1), ...secondLooks].filter(above)) {
     if (!record.head) headless++;
-    else if (record.head !== current) heads.add(record.head);
+    else if (record.head !== current && !landed(record.head)) heads.add(record.head);
   }
   return heads.size + headless;
+}
+
+/** Whether `commit` is an ancestor of `of` (or the same commit) in the repo at `root`; a git failure says no. */
+export function isAncestorOf(root, commit, of) {
+  try { execFileSync("git", ["-C", root, "merge-base", "--is-ancestor", commit, of], { stdio: "ignore" }); return true; }
+  catch { return false; }
 }
 
 /**
@@ -95,11 +103,9 @@ export function fixRoundsDone(chain, secondLooks = []) {
  * reviewed head is an ancestor of `head` and not `head` itself. kit pr passes the head Claude's review saw, which a review
  * reused after a rebase with the same patch keeps, so the count survives that rebase until the next commit (then, like Claude's
  * rounds, it starts again); a rebase that changes the patch, or one in the docs tier (no Claude review), starts it again at once.
- * A look whose head is already in `base` (the merge base with the land branch) belongs to work that landed before, such as an
- * earlier branch of the same name, and counts no round for this one.
  * Returns [{ head, findings }] with the findings its result.md left open; a result.md kit cannot read counts no round.
  */
-export function earlierSecondLooks(reviewsRoot, { branch, head, root, base }) {
+export function earlierSecondLooks(reviewsRoot, { branch, head, root }) {
   if (!branch || !head || !existsSync(reviewsRoot)) return [];
   const looks = [];
   for (const owner of readdirSync(reviewsRoot, { withFileTypes: true }).filter(entry => entry.isDirectory())) {
@@ -110,11 +116,7 @@ export function earlierSecondLooks(reviewsRoot, { branch, head, root, base }) {
         if (mark?.ok !== true || mark.branch !== branch) continue;
         const looked = readFileSync(join(folder, "refs.txt"), "utf8").split(/\r?\n/)[0].trim();
         if (!/^[0-9a-f]{7,64}$/.test(looked) || looked === head) continue;
-        const isAncestor = of => {
-          try { execFileSync("git", ["-C", root, "merge-base", "--is-ancestor", looked, of], { stdio: "ignore" }); return true; }
-          catch { return false; }
-        };
-        if (!isAncestor(head) || (base && isAncestor(base))) continue;
+        if (!isAncestorOf(root, looked, head)) continue;
         // A report kit cannot read stands for a blocker when it is weighed, but it is no review that asked for a fix.
         const report = openFindings(readFileSync(join(folder, "result.md"), "utf8"));
         if (report.readable) looks.push({ head: looked, findings: report.findings });
