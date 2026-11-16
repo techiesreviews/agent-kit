@@ -61,8 +61,10 @@ const configKeyNames = ["fleet", "orbit.env", "gh", "hub", "glab-cli", ".wrangle
 // Names of variables that carry a secret: TOKEN, SECRET, PASSWORD, API_KEY … as a whole word between underscores.
 // GIT_AUTHOR_NAME keeps (AUTHOR is not AUTH).
 const secretName = /(^|_)(TOKENS?|SECRETS?|PASSWORDS?|PASSWD|PASSPHRASE|API_?KEYS?|ACCESS_KEY|PRIVATE_KEY|CREDENTIALS?|AUTH|COOKIES?|PAT)($|_)/i;
-// A value that carries a password in a URL (DATABASE_URL, HTTPS_PROXY = scheme://user:password@host).
-const urlPassword = /[a-z][a-z0-9+.-]*:\/\/[^/\s:@]*:[^@\s]+@/i;
+// A value that carries a secret in a URL's user part (DATABASE_URL=postgres://app:password@db, or a token as the user:
+// https://ghp_…@github.com). Proxy variables keep theirs: the CLI needs the proxy to reach its own service at all.
+const urlPassword = /[a-z][a-z0-9+.-]*:\/\/[^/\s@]+@/i;
+const proxyName = /^(https?|all|ftp|no)_proxy$/i;
 // Sockets and handles that lead to keys or to programs outside the lock.
 const handleNames = ["SSH_AUTH_SOCK", "GPG_AGENT_INFO", "DBUS_SESSION_BUS_ADDRESS", "XAUTHORITY", "DISPLAY", "WAYLAND_DISPLAY",
   "GNOME_KEYRING_CONTROL", "GNOME_KEYRING_PID"];
@@ -90,7 +92,7 @@ export function scrubbedEnv(cli, env = process.env, { apiRoute = false, model = 
   // The API route's wrapper reads the key file itself and drops the variable before claude starts.
   if (cli === "claude" && apiRoute) keep.add("KIT_API_KEY_FILE");
   return Object.fromEntries(Object.keys(env)
-    .filter(name => !keep.has(name) && (secretName.test(name) || handleNames.includes(name) || urlPassword.test(String(env[name] ?? ""))))
+    .filter(name => !keep.has(name) && (secretName.test(name) || handleNames.includes(name) || (!proxyName.test(name) && urlPassword.test(String(env[name] ?? "")))))
     .map(name => [name, undefined]));
 }
 
