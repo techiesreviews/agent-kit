@@ -3083,6 +3083,7 @@ test("the docs tier, with no Claude review, counts its earlier second looks alon
   f.commit("Docs 4", "docs/guide.md", "# Guide 4\n");
   const landed = f.run([], { FAKE_SECOND_REVIEW: secondShould });
   assert.equal(landed.status, 0, landed.stdout + landed.stderr);
+  assert.match(landed.stdout, /review: skipped \(docs tier\)/);
   assert.match(landed.stdout, /^second look: 1 follow-ups after 3 fix rounds \(non-blocking\)$/m);
 });
 
