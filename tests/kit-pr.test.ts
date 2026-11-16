@@ -3995,4 +3995,9 @@ test("kit pr's push to an ssh remote never starts an ssh PATH holds only as a li
   const logs = /^logs: (.+)$/m.exec(result.stdout)![1];
   assert.match(readFileSync(join(logs, "push.log"), "utf8"), /kit: ssh on PATH is \S+\/links\/ssh, a link into the worktree or its Git folder/);
   assert.ok(!existsSync(join(f.dir, "planted.txt")), "the planted ssh never started");
+  // A push that starts no ssh (the folder remote) goes through all the same.
+  f.git("config", "--unset", "remote.origin.pushurl");
+  const folder = f.run([], { PATH: `${f.bin}:${links}:${join(f.dir, "no-ssh-bin")}` });
+  assert.equal(folder.status, 0, folder.stdout + folder.stderr);
+  assert.ok(!existsSync(join(f.dir, "planted.txt")), "the planted ssh never started");
 });

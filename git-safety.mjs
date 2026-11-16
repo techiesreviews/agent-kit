@@ -157,10 +157,11 @@ export function gitSafety({ worktree, env = process.env, network = false, git = 
   // git's ssh, by its full path (sshCommand): never a bare name a link on PATH leads into the worktree for. Where it
   // cannot be found that way, the command git gets says why and fails, so only a call to an ssh remote stops.
   if (network) {
-    const configured = settings.filter(entry => !ownScope(entry.scope) && entry.key.toLowerCase() === "core.sshcommand").at(-1)?.value;
-    const ssh = sshCommand(env, { worktree, common, configured });
+    const lead = name => settings.filter(entry => !ownScope(entry.scope) && entry.key.toLowerCase() === name).at(-1)?.value;
+    const ssh = sshCommand(env, { worktree, common, configured: lead("core.sshcommand") });
     if (ssh.command) extra.GIT_SSH_COMMAND = ssh.command;
-    if (ssh.variant && !env.GIT_SSH_VARIANT) extra.GIT_SSH_VARIANT = ssh.variant;
+    // The lead's own choice of ssh kind (the variable, or ssh.variant in their config) stays.
+    if (ssh.variant && !env.GIT_SSH_VARIANT && lead("ssh.variant") === undefined) extra.GIT_SSH_VARIANT = ssh.variant;
   }
   const problem = steering.size ? `the repository's own Git config holds ${[...steering].join(", ")}, which could send the credentials of a fetch or push elsewhere or start a remote helper (a build may have written ${steering.size === 1 ? "it" : "them"}); remove ${steering.size === 1 ? "it" : "them"} with git config --unset-all <name> and run it again` : null;
   return { env: extra, problem };
