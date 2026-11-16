@@ -688,8 +688,9 @@ function runInGroup(command, args, { cwd, env, timeout, out }) {
 // Help prints and exits without starting a server or reaching a model, so it has its own short limit, apart
 // from ASE_OPENCODE_START_TIMEOUT_MS. A CLI that cannot start (missing, or no such folder) gives null; one that
 // fails, is stopped or hangs gives what it printed and why it stopped, which opencodeCommands then refuses.
-export function opencodeRunHelp(worktree, env = {}, command = "opencode", timeout = 30_000) {
-  const result = runInGroup(command, ["run", "--help"], { cwd: worktree, env, timeout });
+// wrap is the key lock's (key-guard.mjs): the probe starts OpenCode too, so it starts inside the lock like the run.
+export function opencodeRunHelp(worktree, env = {}, command = "opencode", timeout = 30_000, wrap = (file, args) => [file, args]) {
+  const result = runInGroup(...wrap(command, ["run", "--help"]), { cwd: worktree, env, timeout });
   // The helper itself cannot start in a missing folder: the CLI could not either.
   if (result.helper.error?.code === "ENOENT" || result.error === "ENOENT") return null;
   if (result.failed) return `${result.helper.stdout ?? ""}${result.helper.stderr ?? ""}\n(opencode run --help: the probe failed: ${result.failed})`;
@@ -715,14 +716,17 @@ export function opencodeReviewEnv(version, output) {
     : opencodeEnv;
 }
 
-// help(worktree, env) returns `opencode run --help`; tests pass their own.
+// help(worktree, env) returns `opencode run --help`; tests pass their own. The help probe and the export start
+// OpenCode outside the supervised call, so they take the key lock themselves (options.keyLock: the variables to drop and
+// the lock's wrapper), like the run.
 export function opencodeAdapter(options, _common, output, help = opencodeRunHelp) {
   const { kind, worktree, model } = options;
   if (kind !== "review") throw new Error("OpenCode runs reviews only");
+  const lock = options.keyLock ?? { env: {}, helper: (file, args) => [file, args] };
   const timeout = opencodeExportTimeout(), startTimeout = opencodeStartTimeout();
   // Effort is not passed: OpenCode's --variant names differ by provider.
   // The probe gets OpenCode 2's environment whichever OpenCode answers: OpenCode 1's help does not read it.
-  const commands = opencodeCommands(help(worktree, opencodeReviewEnv(2, output)), model, worktree), args = commands.run;
+  const commands = opencodeCommands(help(worktree, { ...lock.env, ...opencodeReviewEnv(2, output) }, "opencode", undefined, lock.helper), model, worktree), args = commands.run;
   const env = opencodeReviewEnv(commands.version, output);
   return {
     // Each event is one line and the first names the session, so the runner reads it line by line.
@@ -735,7 +739,7 @@ export function opencodeAdapter(options, _common, output, help = opencodeRunHelp
     usageLimit: stdout => opencodeUsageLimit(stdout),
     outOfCredit: (stdout, log, status) => opencodeOutOfCredit(stdout) ?? (status ? outOfCreditProblem(log, "opencode") : null),
     errorProblem: stdout => opencodeErrorProblem(stdout),
-    finish: (stdout, _log, status) => opencodeResult(stdout, model, session => opencodeExport(session, worktree, timeout, openSync, commands.export(session), env), Boolean(status)),
+    finish: (stdout, _log, status) => opencodeResult(stdout, model, session => opencodeExport(session, worktree, timeout, openSync, commands.export(session), { ...lock.env, ...env }, lock.helper), Boolean(status)),
   };
 }
 
@@ -760,13 +764,13 @@ export function opencodeStartTimeout(env = process.env) {
 // OpenCode exits before a pipe drains, cutting a large export at 192 KiB, so it writes to a file.
 // open is openSync; tests pass one that fails. args are the export's arguments (opencodeCommands) and env the
 // run's own (opencodeReviewEnv), since the export starts OpenCode again. It runs in a process group of its own
-// (runInGroup): OpenCode 2's export starts a private server, which the limit stops with it.
-export function opencodeExport(session, worktree, timeout, open = openSync, args = ["export", "--pure", session], env = {}) {
+// (runInGroup): OpenCode 2's export starts a private server, which the limit stops with it. wrap is the key lock's.
+export function opencodeExport(session, worktree, timeout, open = openSync, args = ["export", "--pure", session], env = {}, wrap = (file, list) => [file, list]) {
   const dir = mkdtempSync(join(tmpdir(), "ase-opencode-export-")), file = join(dir, "export.json");
   let out;
   try {
     out = open(file, "w");
-    const result = runInGroup("opencode", args, { cwd: worktree, env, timeout, out });
+    const result = runInGroup(...wrap("opencode", args), { cwd: worktree, env, timeout, out });
     const last = String(result.err || "").trim().split("\n").at(-1);
     const why = result.failed ? `its helper failed (${result.failed})` : result.timedOut ? `timed out after ${timeout / 1000}s`
       : result.stopped ? `was stopped with the review (${result.stopped})`
@@ -1126,6 +1130,7 @@ async function executeRun(options, out, previous, update, brief) {
     if (guard.off && !guard.missing) appendFileSync(log, "warning: key files are not locked for this run (ASE_KEY_GUARD=off)\n");
     if (guard.warning) appendFileSync(log, `warning: key lock: ${guard.warning}\n`);
     if (guard.codex) options.codexProfile = guard.codex;
+    options.keyLock = { env: guard.env, helper: guard.helper };
     if (guard.bwrap && options.cli === "grok") options.grokSandbox = "off";
     const adapter = agentInvocation(options, common, output);
     // A resumed run's first call is not the review's first call, so it never refunds.

@@ -88,6 +88,10 @@ function holds(file, test) {
 function text(file) {
   try { return statSync(file).isFile() ? readFileSync(file, "utf8") : ""; } catch { return ""; }
 }
+// A shell file pulling in another: `source` or `.` as a command of its own, at the start of a line or after what can
+// stand before a command (a test with && or ||, a ;, then, do, else, an opening brace or bracket). The path ends at a
+// blank or at what ends a command; quotes are taken off by expand.
+const sourced = /(?:^|&&|\|\||[;({]|\b(?:then|do|else))\s*(?:source|\.)\s+("[^"\n]*"|'[^'\n]*'|[^\s;&|)}]+)/gm;
 // A path as a config file writes it: ~ and $HOME are the home, a relative one counts from `from`.
 const expand = (path, base, from) => resolve(from, path.replace(/^["']|["']$/g, "").replace(/^~(?=\/|$)/, base).replace(/^\$(HOME|\{HOME\})(?=\/|$)/, base));
 // The files a set of config files pull in, however long the chain: `source`/`.` for shell files, include paths for
@@ -196,7 +200,7 @@ export function lockedPaths(cli, env = process.env, { apiRoute = false, cwd = pr
     ...named(env.ZDOTDIR).flatMap(folder => [".zshenv", ".zshrc", ".zprofile"].map(name => join(folder, name)))];
   // Files they pull in count the same: a git include (include.path, includeIf), a shell `source` or `.`.
   const allGit = pulledIn(gitConfigs, /^\s*path\s*=\s*(\S+)/gm, base);
-  paths.push(...allGit.filter(file => holds(file, keyedUrl)), ...pulledIn(startups, /^\s*(?:source|\.)\s+(\S+)/gm, base).filter(file => holds(file, setsSecret)));
+  paths.push(...allGit.filter(file => holds(file, keyedUrl)), ...pulledIn(startups, sourced, base).filter(file => holds(file, setsSecret)));
   // Private keys named by git's sshCommand -i or ssh's IdentityFile, wherever they sit.
   for (const file of allGit) for (const [, key] of text(file).matchAll(/sshCommand\s*=.*\s-i\s*(\S+)/gm)) paths.push(expand(key, base, base));
   for (const [, key] of text(join(base, ".ssh/config")).matchAll(/^\s*IdentityFile\s+(\S+)/gim)) paths.push(expand(key, base, base));
