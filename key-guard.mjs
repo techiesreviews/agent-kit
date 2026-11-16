@@ -55,19 +55,27 @@ export const cliKeyPaths = {
 // sets a token. Each is locked only when it holds one, since git and the shell read them on every run.
 const keyedConfigs = [".gitconfig", ".config/git/config"];
 const shellStartups = [".bashrc", ".bash_profile", ".bash_login", ".profile", ".zshenv", ".zshrc", ".zprofile", ".config/fish/config.fish"];
-// A URL with a user part: on http(s) any (a token as the user), on ssh and git only a password or a user other than git
-// (ssh://git@github.com is the usual harmless remote).
+// A git config that holds a key: a URL with a user part on http(s) (a token as the user) or a password on ssh and git
+// (a user there is a login name: ssh://git@…, Gerrit's ssh://lex@…), an Authorization extra header, or a credential
+// helper written inline with a password.
 const keyedUrl = text => [...text.matchAll(/([a-z][a-z0-9+.-]*):\/\/([^/\s@]+)@/gi)]
-  .some(([, scheme, user]) => !/^(ssh|git)$/i.test(scheme) || user.includes(":") || user !== "git");
-// A start-up line that sets a variable whose name the secret list (secretName) drops.
-const setsSecret = text => [...text.matchAll(/^\s*(?:export\s+|declare\s+-\S+\s+|typeset\s+-\S+\s+|readonly\s+|set\s+(?:-\S+\s+)*)?([A-Za-z_]\w*)(?:=|\s+\S)/gm)]
-  .some(([, name]) => secretName.test(name));
+  .some(([, scheme, user]) => !/^(ssh|git)$/i.test(scheme) || user.includes(":"))
+  || /^\s*extraheader\s*=.*authorization/im.test(text) || /^\s*helper\s*=.*password=/im.test(text);
+// A start-up file that sets a variable the secret list (secretName) drops: every NAME= on a line, commented or not,
+// fish's `set … NAME value` and its universal SETUVAR NAME:value. Names that only point somewhere (SSH_AUTH_SOCK,
+// PASSWORD_STORE_DIR, …_FILE, …_PATH) are no secret, so they do not lock the file.
+const pointer = name => handleNames.includes(name) || keyFolderVariables.includes(name) || /_(SOCK|FILE|DIR|PATH|HOME)$/i.test(name);
+const setsSecret = text => [
+  ...[...text.matchAll(/(?:^|[\s;#])([A-Za-z_]\w*)=/gm)].map(match => match[1]),
+  ...[...text.matchAll(/^\s*set\s+(?:-\S+\s+)*([A-Za-z_]\w*)\s+\S/gm)].map(match => match[1]),
+  ...[...text.matchAll(/^SETUVAR\s+(?:--\S+\s+)*([A-Za-z_]\w*):/gm)].map(match => match[1]),
+].some(name => secretName.test(name) && !pointer(name));
 function holds(file, test) {
   try { return statSync(file).isFile() && test(readFileSync(file, "utf8")); } catch { return false; }
 }
 
 // Variables naming a tool's key file or folder.
-const keyFolderVariables = ["GH_CONFIG_DIR", "GNUPGHOME", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "DOCKER_CONFIG", "KUBECONFIG",
+const keyFolderVariables = ["GOOGLE_APPLICATION_CREDENTIALS", "GH_CONFIG_DIR", "GNUPGHOME", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "DOCKER_CONFIG", "KUBECONFIG",
   "CLOUDSDK_CONFIG", "NPM_CONFIG_USERCONFIG", "WRANGLER_HOME", "PASSWORD_STORE_DIR", "NETRC"];
 
 // Under XDG_CONFIG_HOME when it is set somewhere else than ~/.config.
@@ -130,7 +138,14 @@ export function lockedPaths(cli, env = process.env, { apiRoute = false, cwd = pr
   paths.push(...homeKeyPaths.map(path => join(base, path)));
   const gitConfigs = [...keyedConfigs.map(path => join(base, path)), ...named(env.GIT_CONFIG_GLOBAL),
     ...named(env.XDG_CONFIG_HOME).map(folder => join(folder, "git/config"))];
-  const startups = [...shellStartups.map(path => join(base, path)), ...named(env.ZDOTDIR).flatMap(folder => [".zshenv", ".zshrc", ".zprofile"].map(name => join(folder, name)))];
+  const fishFolders = [join(base, ".config/fish"), ...named(env.XDG_CONFIG_HOME).map(folder => join(folder, "fish"))];
+  const fishFiles = fishFolders.flatMap(folder => {
+    let parts = [];
+    try { parts = readdirSync(join(folder, "conf.d")).filter(name => name.endsWith(".fish")).map(name => join(folder, "conf.d", name)); } catch { /* None. */ }
+    return [join(folder, "config.fish"), join(folder, "fish_variables"), ...parts];
+  });
+  const startups = [...shellStartups.map(path => join(base, path)), ...fishFiles,
+    ...named(env.ZDOTDIR).flatMap(folder => [".zshenv", ".zshrc", ".zprofile"].map(name => join(folder, name)))];
   paths.push(...gitConfigs.filter(file => holds(file, keyedUrl)), ...startups.filter(file => holds(file, setsSecret)));
   for (const [other, list] of Object.entries(cliKeyPaths)) {
     // Codex's own login and config are hidden from its commands (its profile); the API route signs Claude in with a key.
