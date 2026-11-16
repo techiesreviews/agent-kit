@@ -281,17 +281,20 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   Codex keeps its own profile)`. Those two parts need no bubblewrap, so they stay. `ASE_KEY_GUARD=on` stops such a run
   instead (for a machine that must never run unwrapped). On Linux nothing changed: a missing bubblewrap stops the kit's
   Claude, Grok and OpenCode runs with its install step (`apt install bubblewrap`; WSL counts as Linux), and so does one
-  that is installed but cannot start (the system blocks it, the `/proc` check fails). `kit doctor`'s `key lock:` line searches the key folders as a
-  run in that worktree would, so it says "on" only where a run would really start: a key folder that cannot be listed,
-  is too large or links to a folder the lock cannot hide shows there first.
+  that is installed but cannot start (the system blocks it, the `/proc` check fails). `kit doctor`'s `key lock:` line
+  searches the key folders as a run in that worktree would, so it says "on" only where a run would really start: a
+  key folder that cannot be listed, is too large or links to a folder the lock cannot hide shows there first.
 - **What the key lock does not do.** It keeps an agent the kit starts from reading the key files while it runs; it does
   not confine what the agent writes. A build writes wherever the user can (the worktree, the repository's Git folder
   and settings, files under HOME), and what it leaves runs later with whoever starts it: `kit pr` runs the builder's
   tests in the lead's process, and the lead's own git commands read the repository's Git settings and hooks. Two
-  such paths are shut: the runner's own `git status` in the worktree runs inside the lock, without the dropped
-  variables (a Git setting a build left, `core.fsmonitor` say, cannot use it to reach the keys), and a CLI starts inside
-  the lock by its full path, found as the run will find it (a program left in the worktree never starts unlocked in a
-  CLI's name). For the rest the lead's guard is the review before anything a build wrote is run (`kit review` is
+  such paths are shut where bubblewrap runs: the runner's own `git status` in the worktree runs inside the lock,
+  without the dropped variables (a Git setting a build left, `core.fsmonitor` or a filter, cannot use it to reach the
+  keys), and a CLI starts inside the lock by its full path, found as the run will find it, through a bubblewrap found
+  only in PATH's full-path folders (a program left in the worktree never starts unlocked in a CLI's or bwrap's name).
+  Where bubblewrap does not run (macOS, Windows, a Linux where it is missing or blocked) the runner's `git status`
+  after a Codex run is not wrapped: `core.fsmonitor` is switched off for that call, a filter a build named still
+  runs unlocked. For the rest the lead's guard is the review before anything a build wrote is run (`kit review` is
   read-only); confining a build's writes, and running `kit pr`'s checks inside the lock, are not built yet.
 - Keyed steps happen only in the lead's own process, never inside a locked run. Already the lead's: `git push`, `kit pr`
   (push, PR, merge, card close) and `kit pr --release` (the build contract leaves a builder's changes unstaged). Moved to

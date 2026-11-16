@@ -1132,9 +1132,10 @@ async function executeRun(options, out, previous, update, brief) {
     // The worktree as the run found it: a first call that left it changed did some work, however soon it failed.
     // A repository with no commit yet has no HEAD; its tree alone shows any work.
     // The runner's own git calls in the worktree run inside the key lock, without the dropped variables: a build can
-    // change the repository's Git settings, and git status runs what they name (core.fsmonitor, a filter).
+    // change the repository's Git settings, and git status runs what they name (core.fsmonitor, a filter). Where the
+    // helper cannot wrap (a Codex run without bubblewrap) the monitor at least is switched off for the call.
     const worktreeGit = (args, stdio) => {
-      const [command, full] = guard.helper("git", ["-C", options.worktree, ...args]);
+      const [command, full] = guard.helper("git", ["-c", "core.fsmonitor=false", "-C", options.worktree, ...args]);
       return execFileSync(command, full, { encoding: "utf8", env: { ...process.env, ...guard.env }, ...(stdio ? { stdio } : {}) });
     };
     const head = () => { try { return worktreeGit(["rev-parse", "-q", "--verify", "HEAD"], ["ignore", "pipe", "ignore"]); } catch { return ""; } };
