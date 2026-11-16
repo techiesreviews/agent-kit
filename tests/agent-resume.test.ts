@@ -4,6 +4,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
+// The test environment (a temporary HOME, no lock settings from the shell): this file starts agent runs or kit doctor.
+import "./support/kit-env.ts";
 
 // The opt-in API route is read from the environment: these tests run with it off, whatever the shell exports.
 delete process.env.KIT_API_KEY_FILE; delete process.env.KIT_API_CONFIG_DIR;

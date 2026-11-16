@@ -4,6 +4,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
+// The test environment (a temporary HOME, no lock settings from the shell): this file starts agent runs or kit doctor.
+import "./support/kit-env.ts";
 
 const hooks = resolve("hooks");
 // agent-cap reads the project's hook settings for brief-guard (tests/agent-hooks-factory.test.ts covers that);
