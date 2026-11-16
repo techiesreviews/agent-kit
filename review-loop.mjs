@@ -105,30 +105,35 @@ export const releaseCutSubject = /^Merge origin\/\S+ into the release cut$/;
  * Whether `commit` is an earlier cut of the same release as `head` (TOOLS-310): kit pr's own release-cut merge, not `head`
  * itself, whose every parent (the dev it was cut from and the release branch it joined) is in `head`'s history. A re-cut after
  * dev moved on makes a new merge commit that never holds the old one, yet it answers the old cut's reviews and counts its rounds.
- * A merge of another subject, a later cut, or a git failure says no.
+ * With `base` (the release branch this cut joins), a cut whose dev is already in it belongs to a release that went out, not to
+ * this one. `git(args)` runs git and throws on a failure (the review runner passes its locked git); a merge of another subject,
+ * a later cut, or a git failure says no.
  */
-export function earlierReleaseCut(root, commit, head) {
+export function earlierReleaseCut(root, commit, head, { base, git } = {}) {
   if (!commit || !head || commit === head) return false;
+  const run = git ?? (args => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }));
+  const contains = (ancestor, of) => { try { run(["merge-base", "--is-ancestor", ancestor, of]); return true; } catch { return false; } };
   let parents;
   try {
-    const [line, subject] = execFileSync("git", ["-C", root, "show", "-s", "--format=%P%n%s", commit], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).split("\n");
+    const [line, subject] = run(["show", "-s", "--no-show-signature", "--format=%P%n%s", commit]).toString().split("\n");
     if (!releaseCutSubject.test(subject ?? "")) return false;
     parents = line.split(" ").filter(Boolean);
   } catch { return false; }
-  return parents.length > 1 && parents.every(parent => isAncestorOf(root, parent, head));
+  if (parents.length < 2 || (base && contains(parents[0], base))) return false;
+  return parents.every(parent => contains(parent, head));
 }
 
-/** Whether `commit` is in `head`'s history (or is `head`), counting an earlier cut of the same release as part of it. */
-export const inHistory = (root, commit, head) => isAncestorOf(root, commit, head) || earlierReleaseCut(root, commit, head);
+/** Whether `commit` is in `head`'s history (or is `head`), counting an earlier cut of the same release (see earlierReleaseCut) as part of it. */
+export const inHistory = (root, commit, head, base) => isAncestorOf(root, commit, head) || earlierReleaseCut(root, commit, head, { base });
 
 /**
  * The branch's earlier second looks that came back, under any owner in `reviewsRoot`: each one marked for `branch` whose
- * reviewed head is an ancestor of `head` (or an earlier cut of the same release) and not `head` itself. kit pr passes the head Claude's review saw, which a review
+ * reviewed head is an ancestor of `head` (or an earlier cut of the same release, given `base`) and not `head` itself. kit pr passes the head Claude's review saw, which a review
  * reused after a rebase with the same patch keeps, so the count survives that rebase until the next commit (then, like Claude's
  * rounds, it starts again); a rebase that changes the patch, or one in the docs tier (no Claude review), starts it again at once.
  * Returns [{ head, findings }] with the findings its result.md left open; a result.md kit cannot read counts no round.
  */
-export function earlierSecondLooks(reviewsRoot, { branch, head, root }) {
+export function earlierSecondLooks(reviewsRoot, { branch, head, root, base }) {
   if (!branch || !head || !existsSync(reviewsRoot)) return [];
   const looks = [];
   for (const owner of readdirSync(reviewsRoot, { withFileTypes: true }).filter(entry => entry.isDirectory())) {
@@ -139,7 +144,7 @@ export function earlierSecondLooks(reviewsRoot, { branch, head, root }) {
         if (mark?.ok !== true || mark.branch !== branch) continue;
         const looked = readFileSync(join(folder, "refs.txt"), "utf8").split(/\r?\n/)[0].trim();
         if (!/^[0-9a-f]{7,64}$/.test(looked) || looked === head) continue;
-        if (!inHistory(root, looked, head)) continue;
+        if (!inHistory(root, looked, head, base)) continue;
         // A report kit cannot read stands for a blocker when it is weighed, but it is no review that asked for a fix.
         const report = openFindings(readFileSync(join(folder, "result.md"), "utf8"));
         if (report.readable) looks.push({ head: looked, findings: report.findings });
@@ -360,7 +365,8 @@ export const loopReviewerNote = [
 
 /**
  * The earlier review this one answers (later rounds): in `parent` (the owner's folder under .scratch/reviews) the newest review of the
- * same base that still had findings and whose reviewed head is an ancestor of the current head (or an earlier cut of the same release). A second look's folder is never one.
+ * same base that still had findings and whose reviewed head is an ancestor of the current head, or an earlier cut of the
+ * same release. A second look's folder is never one.
  * Returns { name, round, head, findings, declined } or null (then this is round 1, a full review).
  */
 export function findPreviousReview(parent, { head, base, root, branch, otherOwners = [] }) {
@@ -384,7 +390,7 @@ export function findPreviousReview(parent, { head, base, root, branch, otherOwne
       // The same branch's own history only: a branch cut from a reviewed head starts at round 1, and so does a rebased one
       // (its old head is gone from the history), which gets the full first review its new code needs.
       // An earlier cut of the same release counts as this history too (TOOLS-310): a re-cut answers its review.
-      const connected = (reviewedBase === base || isAncestor(reviewedBase)) && (reviewedHead === head || isAncestor(reviewedHead) || earlierReleaseCut(root, reviewedHead, head));
+      const connected = (reviewedBase === base || isAncestor(reviewedBase)) && (reviewedHead === head || isAncestor(reviewedHead) || earlierReleaseCut(root, reviewedHead, head, { base }));
       if (record.unreadable || record.incomplete || record.round === undefined || !connected || (record.branch && branch && record.branch !== branch)) continue;
       // Another owner's review counts only when it names this very branch.
       if (foreign && (!branch || record.branch !== branch)) continue;

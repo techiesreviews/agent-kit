@@ -593,3 +593,22 @@ test("the fix rounds count across re-cuts of one release: second looks at an ear
   // A later cut is never an earlier one of an older cut.
   assert.deepEqual(earlierSecondLooks(reviews, { branch: "release/cut", head: first, root: dir }), []);
 });
+
+test("a cut of a release that went out is never an earlier cut of the next release: its looks and review stay with it (TOOLS-310)", t => {
+  const { dir, git, first, second } = releaseRepo(t);
+  // The second cut lands on main; the next release is cut from a newer dev, with the new main merged in.
+  git("checkout", "-q", "main"); git("merge", "-q", "--ff-only", second);
+  const released = git("rev-parse", "HEAD");
+  git("checkout", "-q", "dev"); writeFileSync(join(dir, "d"), "dev 3\n"); git("commit", "-qam", "landed three");
+  git("checkout", "-q", "--detach", "dev"); git("merge", "-q", "--no-edit", "-m", "Merge origin/main into the release cut", released);
+  const next = git("rev-parse", "HEAD");
+  const reviews = join(dir, ".scratch/reviews"), folder = join(reviews, "lead", "1"); mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "refs.txt"), `${first}\nbase\n`);
+  writeFileSync(join(folder, "result.md"), "REVIEW_STATUS: complete\nDefects:\n- Spec: d:1 P2 a should.\n");
+  writeFileSync(join(folder, "second-look.json"), JSON.stringify({ ok: true, branch: "release/cut" }));
+  assert.deepEqual(earlierSecondLooks(reviews, { branch: "release/cut", head: next, root: dir, base: released }), []);
+  const parent = join(dir, "reviews"), claude = join(parent, "20261116T100000Z"); mkdirSync(claude, { recursive: true });
+  writeFileSync(join(claude, "refs.txt"), `${first}\n${released}\n`);
+  writeFileSync(join(claude, "findings.json"), JSON.stringify({ round: 1, branch: "release/cut", model: "m", head: first, findings: withIds([finding("P2")], 1) }));
+  assert.equal(findPreviousReview(parent, { head: next, base: released, root: dir, branch: "release/cut" }), null);
+});

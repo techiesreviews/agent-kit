@@ -3812,6 +3812,8 @@ test("a release re-cut from an unchanged dev is the same cut: its saved review i
   assert.equal(first.status, 1, first.stdout + first.stderr);
   assert.match(first.stdout, /^RESULT: fail pr #73 review has 1 open findings/m);
   const cut = f.git("rev-parse", "HEAD");
+  // The cut is dated by its newer parent, never by the clock of the run.
+  assert.equal(f.git("show", "-s", "--format=%ct", cut), String(Math.max(...[`${cut}^1`, `${cut}^2`].map(parent => Number(f.git("show", "-s", "--format=%ct", parent))))));
   // The re-cut, an hour later, from the same dev: the date of the run never changes the cut.
   f.git("reset", "-q", "--hard", "origin/dev");
   const second = f.run(["--base", "main", "--release", "--waive", "review-1: Lex accepted it for this release."],

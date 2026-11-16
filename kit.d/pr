@@ -972,7 +972,7 @@ async function main(args) {
         join(root, ".scratch/kit-fix", encodeURIComponent(branch)));
       const claude = second ? [] : chain;
       const rounds = loopRounds ?? Math.max(legacyRounds, fixRoundsDone(claude,
-        earlierSecondLooks(join(kitMainRoot(), ".scratch/reviews"), { branch, head: claude.at(-1)?.head ?? head, root }), commit => isAncestorOf(root, commit, base)));
+        earlierSecondLooks(join(kitMainRoot(), ".scratch/reviews"), { branch, head: claude.at(-1)?.head ?? head, root, base }), commit => isAncestorOf(root, commit, base)));
       loopRounds = rounds;
       const limit = roundLimit(loopRisk.risky);
       // Nits alone never block or call for a round; blockers and shoulds do while the budget lasts, then only blockers (nits stop the loop; out of budget is never approval).
