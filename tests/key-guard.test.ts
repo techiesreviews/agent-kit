@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { hostname, tmpdir, userInfo } from "node:os";
-import { join, resolve } from "node:path";
+import { hostname, networkInterfaces, tmpdir, userInfo } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { bwrapArgs, bwrapWorks, checkLock, codexPaths, kitFolders, codexProfile, existingPaths, keyGuard, keyGuardReport, keyPathsWarning, linkTargets, lockedPaths, outerLock, resetBwrapProbe, runProgram, scrubbedEnv, startCommand } from "../key-guard.mjs";
@@ -1123,16 +1123,20 @@ test("git safety: every program the repository's own Git settings name is set em
   assert.equal(gitNetworkCall(["-C", "/x", "-c", "a=b", "push", "origin"]), true);
   for (const [url, folder] of [["/tmp/a.git", true], ["file:///a", true], ["../a", true], ["https://github.com/a/b", false], ["git@github.com:a/b.git", false], ["ssh://h/x", false]] as const)
     assert.equal(folderRemote(url), folder, url);
-  // Addresses on this machine itself, by any transport (TOOLS-320).
-  for (const [url, here] of [["ssh://git@localhost/srv/a.git", true], ["localhost:a.git", true], ["git@127.0.0.1:a.git", true], ["ssh://[::1]:22/a", true],
-    ["https://dev.localhost/a.git", true], [`ssh://${hostname()}/a`, true], ["git@github.com:a/b.git", false], ["https://github.com/a/b", false], ["ssh://h/x", false]] as const)
-    assert.equal(loopbackRemote(url), here, url);
   // The Git folder of a linked worktree, from its files.
   git("-c", "user.name=T", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base");
   git("worktree", "add", "-q", "-b", "linked", join(dir, "linked"));
   assert.equal(gitCommonDir(join(dir, "linked")), join(root, ".git"));
   assert.equal(gitCommonDir(root), join(root, ".git"));
   assert.equal(gitCommonDir(dir), null);
+});
+
+test("TOOLS-320: a remote on this machine itself is told by its name or by every address it resolves to", async () => {
+  const own = Object.values(networkInterfaces()).flat().find(entry => entry && entry.family === "IPv4" && !entry.internal)?.address;
+  for (const [url, here] of [["ssh://git@localhost/srv/a.git", true], ["localhost:a.git", true], ["git@127.0.0.1:a.git", true], ["ssh://[::1]:22/a", true],
+    ["https://dev.localhost/a.git", true], [`ssh://${hostname()}/a`, true], ["ssh://127.1/a", true], ["ssh://0x7f000001/a", true], ["ssh://[::ffff:127.0.0.1]/a", true],
+    ["ssh://0.0.0.0/a", true], ...(own ? [[`ssh://${own}/a`, true]] : []), ["git@github.invalid:a/b.git", false], ["https://192.0.2.1/a", false], ["ssh://h.invalid/x", false]] as const)
+    assert.equal(await loopbackRemote(url), here, url);
 });
 
 test("a script's interpreter is found by its full path: env with -S passes its options, another env option, a full path into the worktree and a chain past four levels are refused", t => {
@@ -1205,6 +1209,9 @@ test("TOOLS-320: env -S first lines are read as env reads them: assignments, quo
   assert.throws(() => start(script("option", "#!/usr/bin/env -S MODE=1 -i node")), /so which program it runs cannot be told/);
   assert.throws(() => start(script("open-quote", `#!/usr/bin/env -S "node`)), /so which program it runs cannot be told/);
   assert.throws(() => start(script("stop", "#!/usr/bin/env -S node \\c --flag")), /so which program it runs cannot be told/);
+  // A program whose full path holds = would read as one more setting to env.
+  mkdirSync(join(dir, "a=b")); symlinkSync(process.execPath, join(dir, "a=b/node"));
+  assert.throws(() => start(script("equals", `#!/usr/bin/env -S MODE=1 ${join(dir, "a=b/node")}`)), /so which program it runs cannot be told/);
   // With NAME=value words env itself starts the program: one inside the worktree is refused.
   writeFileSync(join(worktree, "env"), "#!/bin/sh\nexec /usr/bin/env \"$@\"\n"); chmodSync(join(worktree, "env"), 0o755);
   assert.throws(() => start(script("env-in-worktree", `#!${join(worktree, "env")} -S MODE=1 node`)), /starts with \S+\/work\/env, inside the worktree or its Git folder/);
@@ -1280,9 +1287,28 @@ test("TOOLS-320: a fetch or push starts git's ssh by its full path, from GIT_SSH
   assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: "env ssh" }), /^kit: git's ssh command \(env ssh\) cannot be told/m);
   // A quoted NAME=value is a program name to sh, not a setting.
   assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: "'X=1' ssh" }), /cannot be told: no PATH folder holds X=1/);
+  // An ssh that is a #!/usr/bin/env script starts by its interpreter's full path, and git keeps treating it as ssh.
+  const scripted = join(dir, "scripted"); mkdirSync(scripted);
+  writeFileSync(join(scripted, "ssh"), `#!/usr/bin/env sh\necho "scripted ssh $*" >> ${JSON.stringify(noted)}\nexit 1\n`); chmodSync(join(scripted, "ssh"), 0o755);
+  const shell = ["/usr/bin/sh", "/bin/sh"].find(file => existsSync(file))!;
+  const viaScript = { ...base, PATH: `${links}:${scripted}:${dirname(shell)}` };
+  assert.equal(safety(viaScript).env.GIT_SSH_COMMAND, `PATH=${scripted}:${dirname(shell)} ${shell} ${join(scripted, "ssh")}`);
+  assert.equal(safety(viaScript).env.GIT_SSH_VARIANT, "ssh");
+  assert.match(lsRemote(viaScript), /^scripted ssh .*example\.invalid/);
   // A call without the network starts no ssh: nothing changes.
   assert.equal(gitSafety({ worktree: root, env: base }).env.GIT_SSH_COMMAND, undefined);
   assert.ok(!(existsSync(noted) && readFileSync(noted, "utf8").includes("planted")), "the planted ssh never started");
+});
+
+test("TOOLS-320: bubblewrap mounts the kit's folders before the key masks and kit pr's own folders after them", t => {
+  const dir = mkdtempSync(join(tmpdir(), "kit-bwrap-order-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const masked = join(dir, "runtime"), kit = join(dir, "kit"), links = join(masked, "links");
+  mkdirSync(links, { recursive: true }); mkdirSync(kit);
+  const args: string[] = bwrapArgs([masked], { readOnly: [kit], readOnlyAfter: [links] });
+  const at = (...words: string[]) => args.findIndex((arg, index) => words.every((word, offset) => args[index + offset] === word));
+  assert.ok(at("--ro-bind", kit, kit) < at("--tmpfs", masked), args.join(" "));
+  assert.ok(at("--ro-bind", links, links) > at("--tmpfs", masked), args.join(" "));
 });
 
 test("TOOLS-320: the machine's kit copy is read-only to a locked build and to kit pr's locked checks", { skip: noBwrap }, t => {

@@ -24,7 +24,9 @@
 // them too.
 import { execFileSync } from "node:child_process";
 import { readFileSync, realpathSync, statSync } from "node:fs";
-import { hostname } from "node:os";
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
+import { hostname, networkInterfaces } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { sshCommand } from "./key-guard.mjs";
 
@@ -90,17 +92,33 @@ export function folderRemote(url) {
   return colon < 0 || (slash >= 0 && slash < colon) || /^[a-z]:[\\/]/i.test(url);
 }
 
+// The host a remote URL names (scheme://[user@]host[:port]/…, or the scp form [user@]host:path), lower case, without
+// IPv6 brackets or a trailing dot; "" where it names none.
+const remoteHost = url => (/^[a-z][a-z0-9+.-]*:\/\/(?:[^/@]*@)?(\[[^\]]*\]|[^/:?#]*)/i.exec(url)?.[1]
+  ?? /^(?:[^/@:]*@)?([^/:]+):/.exec(url)?.[1] ?? "").replace(/^\[|\]$/g, "").replace(/\.$/, "").toLowerCase();
+// Whether an address (as the resolver gives it) is this machine: loopback, unspecified, or one of its own interfaces.
+function ownAddress(address) {
+  const plain = address.toLowerCase().replace(/^::ffff:(?=\d+\.)/, "");
+  if (/^127\./.test(plain) || plain === "0.0.0.0" || plain === "::1" || plain === "::") return true;
+  return Object.values(networkInterfaces()).flat().some(entry => entry && entry.address.toLowerCase() === plain);
+}
+
 /**
- * Whether a remote URL that is not a folder (folderRemote) still reaches this machine itself (TOOLS-320): its host is
- * localhost (or a name under .localhost), a loopback address (127.x, ::1, 0.0.0.0) or this machine's own name. A push
- * there runs that repository's hooks as this user, outside any lock. A name an ssh config maps here cannot be told.
+ * Whether a remote URL that is not a folder (folderRemote) still reaches this machine itself (TOOLS-320), where a push
+ * runs that repository's hooks as this user, outside any lock: its host is localhost (or a name under .localhost) or
+ * this machine's own name, or any address the resolver gives for it (127.1, 0x7f000001, a name that points at
+ * 127.0.0.1) is loopback or one of this machine's own interfaces. A host that does not resolve is not counted; a name
+ * an ssh config maps here, and a name whose answer changes between this check and the push, cannot be told.
  */
-export function loopbackRemote(url) {
-  const host = (/^[a-z][a-z0-9+.-]*:\/\/(?:[^/@]*@)?(\[[^\]]*\]|[^/:?#]*)/i.exec(url)?.[1]
-    ?? /^(?:[^/@:]*@)?([^/:]+):/.exec(url)?.[1] ?? "").replace(/^\[|\]$/g, "").replace(/\.$/, "").toLowerCase();
-  const own = hostname().toLowerCase();
-  return /^(localhost|localhost\.localdomain|ip6-localhost|ip6-loopback|::1|0\.0\.0\.0|127(\.\d+){3})$/.test(host) || host.endsWith(".localhost")
-    || (host !== "" && (host === own || host === own.split(".")[0]));
+export async function loopbackRemote(url) {
+  const host = remoteHost(url), own = hostname().toLowerCase();
+  if (!host) return false;
+  if (/^(localhost|localhost\.localdomain|ip6-localhost|ip6-loopback)$/.test(host) || host.endsWith(".localhost") || host === own || host === own.split(".")[0]) return true;
+  if (isIP(host)) return ownAddress(host);
+  let timer;
+  const answers = await Promise.race([lookup(host, { all: true }).catch(() => []), new Promise(done => { timer = setTimeout(() => done([]), 5000); })]);
+  clearTimeout(timer);
+  return answers.some(({ address }) => ownAddress(address));
 }
 
 /** Whether a git command line reaches the network with the user's credentials: its subcommand, past git's own options. */
