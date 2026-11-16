@@ -1237,6 +1237,11 @@ test("TOOLS-320: a fetch or push starts git's ssh by its full path, from GIT_SSH
   assert.equal(safety(base).env.GIT_SSH_COMMAND, `${clean}${join(bin, "ssh")}`);
   assert.equal(safety(base).env.GIT_SSH_VARIANT, "ssh");
   assert.equal(safety({ ...base, PATH: `${bin}:/usr/bin:/bin` }).env.GIT_SSH_COMMAND, join(bin, "ssh"));
+  assert.equal(safety({ ...base, PATH: `${bin}:/usr/bin:/bin` }).env.GIT_SSH_VARIANT, undefined, "the command starts with ssh: git tells its kind");
+  assert.equal(safety({ ...base, GIT_SSH_VARIANT: "simple" }).env.GIT_SSH_VARIANT, undefined, "the lead's own kind stays");
+  assert.equal(safety({ ...base, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "ssh.variant", GIT_CONFIG_VALUE_0: "simple" }).env.GIT_SSH_VARIANT, undefined);
+  // A PATH among the lead's own words does not bring the link's folder back.
+  assert.equal(safety({ ...base, GIT_SSH_COMMAND: `PATH=${links}:${bin} ssh` }).env.GIT_SSH_COMMAND, `PATH=${links}:${bin} ${clean}${join(bin, "ssh")}`);
   assert.match(lsRemote(base), /^lead's ssh .*example\.invalid/);
   // The repository's own core.sshCommand is the build's: it is not taken.
   git("config", "core.sshCommand", "ssh -o Repo=1");
@@ -1251,6 +1256,7 @@ test("TOOLS-320: a fetch or push starts git's ssh by its full path, from GIT_SSH
   rmSync(join(home, ".gitconfig"));
   // The lead's command from the environment's own settings (command scope) is found too.
   assert.match(lsRemote({ ...base, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.sshCommand", GIT_CONFIG_VALUE_0: "ssh -o Cmd=1" }), /^lead's ssh -o Cmd=1 /);
+  assert.match(lsRemote({ ...base, GIT_CONFIG_PARAMETERS: "'core.sshCommand'='ssh -o Param=1'" }), /^lead's ssh -o Param=1 /);
   // A program that starts ssh by its bare name in turn (timeout) gets PATH without the folder that holds the link.
   const wrapped = safety({ ...base, GIT_SSH_COMMAND: "timeout 30 ssh" }).env;
   assert.match(String(wrapped.GIT_SSH_COMMAND), new RegExp(`^PATH=${bin}:/usr/bin:/bin /\\S+/timeout 30 ssh$`));

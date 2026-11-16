@@ -361,9 +361,10 @@ function inside(path, folder) {
  * it is refused. A path inside an already masked folder is left out. With `writable` (a list), the file system is
  * read-only but for those folders.
  */
-export function bwrapArgs(paths, { writable = null, readOnly = [] } = {}) {
+export function bwrapArgs(paths, { writable = null, readOnly = [], readOnlyAfter = [] } = {}) {
   // Read-only: the whole file system read-only with devices as they are, and writes only to the folders named. The
-  // `readOnly` folders come next, before the masks, so a key path inside one stays hidden.
+  // `readOnly` folders come next, before the masks, so a key path inside one stays hidden; `readOnlyAfter` after them,
+  // so a folder inside a masked one (kit pr's links in a temp folder under the runtime folder) is still there.
   const args = [...(writable === null ? ["--dev-bind", "/", "/"] : ["--ro-bind", "/", "/", "--dev-bind", "/dev", "/dev",
     ...existingPaths(writable).flatMap(path => ["--bind", path, path])]), ...existingPaths(readOnly).flatMap(path => ["--ro-bind", path, path])];
   const masked = [];
@@ -375,6 +376,7 @@ export function bwrapArgs(paths, { writable = null, readOnly = [] } = {}) {
     if (kind === "dir") { args.push("--tmpfs", path); masked.push(path); }
     else args.push("--ro-bind", "/dev/null", path);
   }
+  args.push(...existingPaths(readOnlyAfter).flatMap(path => ["--ro-bind", path, path]));
   return args;
 }
 
@@ -687,7 +689,8 @@ export function sshCommand(env = process.env, { worktree, common, configured } =
     const start = interpreted(file, [], env, shut, problem => { throw new Error(problem); }).flat();
     const folders = cleanFolders(env, shut).join(delimiter);
     const path = folders === String(env.PATH ?? systemPath) ? "" : `PATH=${shellQuote(folders)} `;
-    const command = `${path}${before}${start.map(shellQuote).join(" ")}${after}`;
+    // After the lead's own NAME=value words, so a PATH among them does not bring the link's folder back.
+    const command = `${before}${path}${start.map(shellQuote).join(" ")}${after}`;
     const kind = ["ssh", "plink", "putty", "tortoiseplink"].find(name => basename(file).toLowerCase() === name);
     return { command, problem: null, variant: kind && !command.startsWith(shellQuote(file)) ? kind : null };
   } catch (error) { return refused(error.message); }
@@ -962,7 +965,7 @@ export function checkLock({ worktree, common, env = process.env, readOnly = [] }
   if (problem) refuse(`${problem}; or set ASE_KEY_GUARD=off to run without the lock`);
   const { paths, problem: refusal, glue } = searchedPaths("", env, { worktree, common });
   if (refusal) refuse(`${refusal}${glue} set ASE_KEY_GUARD=off to run without the lock`);
-  const outer = bwrapArgs(paths, { readOnly: [...readOnly, ...kitFolders(env, { worktree, common })] });
+  const outer = bwrapArgs(paths, { readOnly: kitFolders(env, { worktree, common }), readOnlyAfter: readOnly });
   const mark = outerMark(env, outer);
   // The command starts inside, found there on the run's PATH: whatever it is, it runs locked.
   return { env: { ...scrub, ...mark.env }, wrap: (command, args) => [bwrap, [...outer, ...mark.args, "--", command, ...args]], note: null, warning: keyGuardWarning(env, shut),
