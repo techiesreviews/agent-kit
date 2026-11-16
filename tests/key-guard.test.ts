@@ -430,7 +430,7 @@ test("PROOF: Codex's own sandbox with the kit's profile cannot read a dummy key 
   assert.match(said, /Permission denied/); assert.match(said, /rc=1/); assert.match(said, /built-ok/);
 });
 
-test("a CLI that is not installed is started as it is, so the run still fails as a missing CLI; one that is there runs inside the lock by its full path, found as the run will find it", { skip: noBwrap }, t => {
+test("a CLI that is not installed is started as it is, so the run still fails as a missing CLI; one that is there runs inside the lock by its full path, and one only the worktree holds counts as missing", { skip: noBwrap }, t => {
   const guard = keyGuard({ cli: "grok", kind: "review", common: "/c", env: { HOME: "/h", PATH: "/nonexistent-folder" } });
   assert.deepEqual(guard.wrap("grok", ["-m", "x"]), ["grok", ["-m", "x"]]);
   const present = keyGuard({ cli: "claude", kind: "review", common: "/c", env: { HOME: "/h", PATH: process.env.PATH } });
@@ -440,14 +440,15 @@ test("a CLI that is not installed is started as it is, so the run still fails as
   assert.equal(command, bwrapFile); assert.deepEqual(args.slice(-2), ["-c", "true"]);
   assert.equal(args.at(-4), "--"); assert.match(args.at(-3), /^\/.*\/sh$/);
   // The run starts in the worktree, so a PATH folder that is not a full path, or an empty one, means a folder there:
-  // a CLI found only that way (one a builder could have left) is no missing CLI, and never starts outside the lock.
+  // a CLI found only that way (one a builder could have left) counts as missing, and the run's PATH names no such
+  // folder, so it starts neither inside the lock nor outside it.
   const { dir } = keyHome(t);
   const worktree = join(dir, "work"); mkdirSync(join(worktree, "bin"), { recursive: true });
   for (const file of [join(worktree, "bin/claude"), join(worktree, "grok")]) { writeFileSync(file, "#!/bin/sh\necho planted\n"); chmodSync(file, 0o755); }
-  for (const [cli, path, file] of [["claude", "bin:/usr/bin:/bin", "bin/claude"], ["grok", "/usr/bin::/bin", "grok"], ["grok", "/usr/bin:/bin:", "grok"], ["grok", ".:/usr/bin", "grok"]]) {
+  for (const [cli, path, left] of [["claude", "bin:/usr/bin:/bin", "/usr/bin:/bin"], ["grok", "/usr/bin::/bin", "/usr/bin:/bin"], ["grok", "/usr/bin:/bin:", "/usr/bin:/bin"], ["grok", ".:/usr/bin", "/usr/bin"]]) {
     const inWorktree = keyGuard({ cli, kind: "review", common: "/c", worktree, env: { HOME: "/h", PATH: path } });
-    const [started, startedArgs] = inWorktree.wrap(cli, ["-p"]);
-    assert.equal(started, bwrapFile, `${cli} with PATH=${path}`); assert.deepEqual(startedArgs.slice(-3), ["--", join(worktree, file), "-p"]);
+    assert.deepEqual(inWorktree.wrap(cli, ["-p"]), [cli, ["-p"]], `${cli} with PATH=${path}`);
+    assert.equal(inWorktree.env.PATH, left, `PATH=${path}`);
   }
   // A bwrap left in the worktree is never the one that starts, whatever PATH says; with no PATH the system's folders count.
   writeFileSync(join(worktree, "bwrap"), "#!/bin/sh\necho planted\n"); chmodSync(join(worktree, "bwrap"), 0o755);
@@ -635,4 +636,153 @@ process.stdout.write(JSON.stringify({ sessionId: "g-1", text: "REVIEW_STATUS: co
   rmSync(join(process.cwd(), ".key-guard-ro-probe"), { force: true });
   assert.match(ro.stdout, /Read-only file system/); assert.match(ro.stdout, /tmp-ok/);
   assert.equal(seen.token, "", "the token variable is gone");
+});
+
+// A program left where a build can write, which notes what it could read (a dummy key file, the token variable) and
+// then acts as the real one.
+function plantedProgram(file: string, noted: string, keyFile: string, then: string) {
+  mkdirSync(resolve(file, ".."), { recursive: true });
+  writeFileSync(file, `#!/bin/sh\n{ echo ${JSON.stringify(file)}; cat ${JSON.stringify(keyFile)} 2>&1; printf 'token=%s.\\n' "$GH_TOKEN"; } >> ${JSON.stringify(noted)}\n${then}\n`);
+  chmodSync(file, 0o755);
+}
+
+test("a PATH folder inside the worktree or its Git folder supplies neither bubblewrap nor a CLI, written as a full path or not, and the run's PATH leaves it out", { skip: noBwrap }, t => {
+  const { dir } = keyHome(t);
+  t.after(resetBwrapProbe);
+  const bwrapFile = String(process.env.PATH).split(":").filter(folder => folder.startsWith("/")).map(folder => join(folder, "bwrap")).find(file => existsSync(file));
+  const worktree = join(dir, "work"), common = join(dir, "repo.git"), outside = join(dir, "bin"), linked = join(dir, "linked");
+  // npm puts <worktree>/node_modules/.bin on PATH as a full path; a build can write there, and in the Git folder.
+  const inWorktree = join(worktree, "node_modules/.bin"), inGit = join(common, "bin");
+  for (const folder of [inWorktree, inGit, join(worktree, "bin"), worktree, outside]) {
+    mkdirSync(folder, { recursive: true });
+    for (const name of ["bwrap", "claude", "codex", "git"]) { writeFileSync(join(folder, name), "#!/bin/sh\necho planted\n"); chmodSync(join(folder, name), 0o755); }
+  }
+  rmSync(join(outside, "bwrap"));
+  // A link into the worktree is the worktree too.
+  symlinkSync(inWorktree, linked);
+  const system = "/usr/bin:/bin";
+  const path = [inWorktree, inGit, linked, "bin", "", ".", outside, system].join(":");
+  const lock = (cli: string, kind: string, env: NodeJS.ProcessEnv = { HOME: "/h", PATH: path }) => { resetBwrapProbe(); return keyGuard({ cli, kind, common, worktree, env }); };
+  const guard = lock("claude", "review");
+  const [command, args] = guard.wrap("claude", ["-p"]);
+  assert.equal(command, bwrapFile, "bubblewrap is the system's own");
+  assert.deepEqual(args.slice(-3), ["--", join(outside, "claude"), "-p"]);
+  assert.deepEqual(guard.helper("git", ["status"])[1].slice(-3), ["--", join(outside, "git"), "status"]);
+  // The run itself, and whatever it starts by a bare name (Codex, which locks its own commands), gets a PATH without them.
+  assert.equal(guard.env.PATH, `${outside}:${system}`);
+  assert.equal(lock("codex", "build").env.PATH, `${outside}:${system}`);
+  // A CLI found only in such a folder counts as missing: it starts by its bare name with that PATH, so nothing is found.
+  rmSync(join(outside, "claude"));
+  const missing = lock("claude", "review");
+  assert.deepEqual(missing.wrap("claude", ["-p"]), ["claude", ["-p"]]);
+  assert.ok(!String(missing.env.PATH).split(":").some(folder => existsSync(join(folder, "claude"))), "no folder left on PATH holds the planted claude");
+  // A PATH with nothing left would mean the current folder: the system's own folders stand in, as for no PATH at all.
+  assert.equal(lock("codex", "build", { HOME: "/h", PATH: `${inWorktree}::bin` }).env.PATH, "/bin:/usr/bin");
+  // A PATH with no such folder stays as it is.
+  assert.ok(!Object.hasOwn(lock("claude", "review", { HOME: "/h", PATH: system }).env, "PATH"));
+});
+
+test("PROOF: a bwrap, a CLI and a git planted in a full-path PATH folder inside the worktree or its Git folder never start, for a Claude and a Codex build", { skip: noBwrap }, t => {
+  const { dir, home, files } = keyHome(t);
+  const bin = join(dir, "bin"), root = join(dir, "work"), brief = join(dir, "brief.md"), noted = join(dir, "planted.txt"), seenFile = join(dir, "seen.json");
+  for (const path of [bin, root]) mkdirSync(path);
+  fakeClaude(bin);
+  writeFileSync(join(bin, "codex"), `#!/usr/bin/env node
+import { writeFileSync } from "node:fs";
+const args = process.argv.slice(2);
+console.error("model: " + args[args.indexOf("-m") + 1]); console.error("session id: s-1");
+writeFileSync(args[args.indexOf("-o") + 1], "built by the real codex\\n");
+`);
+  chmodSync(join(bin, "codex"), 0o755);
+  writeFileSync(brief, "Build this.\n");
+  const git = (...args: string[]) => assert.equal(spawnSync("git", ["-C", root, ...args], { encoding: "utf8" }).status, 0);
+  git("init", "-q", "-b", "test"); git("-c", "user.name=T", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base");
+  const real = (name: string) => String(process.env.PATH).split(":").filter(folder => folder.startsWith("/")).map(folder => join(folder, name)).find(file => existsSync(file))!;
+  // What an earlier build left: each one notes what it can read, then acts as the real program so the run goes on.
+  const folders = [join(root, "node_modules/.bin"), join(root, ".git/planted")];
+  for (const folder of folders) {
+    plantedProgram(join(folder, "bwrap"), noted, files.orbit, `exec ${real("bwrap")} "$@"`);
+    plantedProgram(join(folder, "git"), noted, files.orbit, `exec ${real("git")} "$@"`);
+    plantedProgram(join(folder, "claude"), noted, files.orbit, `exec ${join(bin, "claude")} "$@"`);
+    plantedProgram(join(folder, "codex"), noted, files.orbit, `exec ${join(bin, "codex")} "$@"`);
+  }
+  const env = { ...homeEnv(home), PATH: `${folders.join(":")}:${bin}:${process.env.PATH}`, GH_TOKEN: dummy, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "60s", KIT_TALK_STYLE: "plain",
+    FAKE_SEEN: seenFile, FAKE_TRIES: JSON.stringify(files) } as NodeJS.ProcessEnv;
+  delete env.ASE_KEY_GUARD;
+  for (const [cli, model] of [["claude", "claude-opus-5-5"], ["codex", "gpt-6.1-sol"]]) {
+    const out = join(dir, `out-${cli}`); mkdirSync(out);
+    const run = spawnSync(process.execPath, [resolve("agent-run.mjs"), "build", root, brief, "--out", out, "--cli", cli, "--model", model], { cwd: root, env, encoding: "utf8", timeout: 60_000 });
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.ok(!existsSync(noted), `${cli}: a planted program started: ${existsSync(noted) ? readFileSync(noted, "utf8") : ""}`);
+  }
+  // The real ones did the work.
+  assert.equal(readFileSync(join(root, "built.txt"), "utf8"), "a normal build step\n");
+  assert.equal(readFileSync(join(dir, "out-codex/out.md"), "utf8"), "built by the real codex\n");
+});
+
+test("PROOF: a review's own git diff and git log run no program a build's Git settings name (an outside diff tool, a text converter, a signature checker) with the keys", { skip: noBwrap }, t => {
+  const { dir, home, files } = keyHome(t);
+  const bin = join(dir, "bin"), root = join(dir, "work"), out = join(dir, "out"), brief = join(dir, "brief.md");
+  for (const path of [bin, root, out]) mkdirSync(path);
+  writeFileSync(join(bin, "grok"), `#!/usr/bin/env node
+const args = process.argv.slice(2);
+process.stdout.write(JSON.stringify({ sessionId: "g-1", text: "REVIEW_STATUS: complete\\nDefects\\nNone.", modelUsage: { [args[args.indexOf("-m") + 1]]: {} } }));
+`);
+  chmodSync(join(bin, "grok"), 0o755); writeFileSync(join(bin, "package.json"), '{"type":"module"}');
+  writeFileSync(brief, "Review this.\n");
+  const git = (args: string[], input?: string) => {
+    const result = spawnSync("git", ["-C", root, "-c", "user.name=T", "-c", "user.email=t@t", ...args], { encoding: "utf8", input });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  git(["init", "-q", "-b", "test"]); git(["commit", "-q", "--allow-empty", "-m", "base"]);
+  writeFileSync(join(root, "file.txt"), "change\n"); writeFileSync(join(root, ".gitattributes"), "*.txt diff=leak\n");
+  git(["add", "."]); git(["commit", "-q", "-m", "change"]);
+  // A commit that carries a signature, so git log would start the signature checker the settings name.
+  const signed = git(["hash-object", "-t", "commit", "-w", "--stdin"],
+    `tree ${git(["rev-parse", "HEAD^{tree}"])}\nparent ${git(["rev-parse", "HEAD"])}\nauthor T <t@t> 1 +0000\ncommitter T <t@t> 1 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n made-up\n -----END PGP SIGNATURE-----\n\nsigned\n`);
+  git(["update-ref", "HEAD", signed]);
+  // What an earlier build left in the repository's Git settings: every program git diff and git log can be told to start.
+  const { hook, hooked } = plantedScript(dir, files.orbit);
+  for (const [name, value] of [["diff.external", hook], ["diff.leak.textconv", hook], ["diff.leak.command", hook], ["log.showSignature", "true"], ["gpg.program", hook]]) git(["config", name, value]);
+  // Without the kit's care each of them starts: the proof that the settings above are live.
+  spawnSync("git", ["-C", root, "diff", "HEAD~2...HEAD"], { encoding: "utf8", env: { ...homeEnv(home), GH_TOKEN: dummy } });
+  assert.ok(readFileSync(hooked, "utf8").includes(dummy), "the planted settings are live");
+  rmSync(hooked);
+  const env = { ...homeEnv(home), PATH: `${bin}:${process.env.PATH}`, GH_TOKEN: dummy, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "60s" } as NodeJS.ProcessEnv;
+  delete env.ASE_KEY_GUARD;
+  const run = spawnSync(process.execPath, [resolve("agent-run.mjs"), "review", root, brief, "--out", out, "--cli", "grok", "--model", "grok-4.7", "--base", "HEAD~2"],
+    { cwd: root, env, encoding: "utf8", timeout: 60_000 });
+  const left = existsSync(hooked) ? readFileSync(hooked, "utf8") : "";
+  assert.ok(!left.includes(dummy), `the runner ran the build's program with the keys: ${left}`);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  // The reviewer still gets the plain diff and the commit list.
+  assert.match(readFileSync(join(out, "diff.patch"), "utf8"), /^\+change$/m);
+  assert.match(readFileSync(join(out, "commits.log"), "utf8"), /^[0-9a-f]+ signed\n[0-9a-f]+ change\n$/);
+});
+
+test("a start-up file that sets a token in quotes, with += or as a default is locked; a file pulled in by a relative path is read from the shell's folder", t => {
+  const { dir, home } = keyHome(t);
+  const worktree = join(dir, "work"); mkdirSync(worktree);
+  mkdirSync(join(home, "forms")); mkdirSync(join(home, "plain")); mkdirSync(join(home, "sub"));
+  const sets = [`export "GH_TOKEN=${dummy}"`, `export 'GH_TOKEN=${dummy}'`, `export GH_TOKEN+=${dummy}`, `GH_TOKEN+="${dummy}"`, `export "GH_TOKEN"=${dummy}`,
+    `declare -x "ORBIT_TOKEN+=${dummy}"`, `: "\${GH_TOKEN:=${dummy}}"`, `echo "\${GH_TOKEN=${dummy}}"`, `eval "CF_API_TOKEN=${dummy}"`, `alias lab='glab --token=${dummy}'`];
+  const reads = ['[ "$GH_TOKEN" = x ] && echo set', 'echo "$GH_TOKEN=shown"', 'echo "${GH_TOKEN:-none}"', "export PATH+=:/opt/bin", 'export "EDITOR=vi"', 'export SSH_AUTH_SOCK+="/run/agent"',
+    "export GH_TOKEN_FILE+=x"];
+  sets.forEach((line, index) => writeFileSync(join(home, `forms/${index}.sh`), `${line}\n`));
+  reads.forEach((line, index) => writeFileSync(join(home, `plain/${index}.sh`), `${line}\n`));
+  writeFileSync(join(home, ".bashrc"), [...sets.map((_, index) => `source ~/forms/${index}.sh`), ...reads.map((_, index) => `source ~/plain/${index}.sh`), "source ~/sub/rc.sh", ""].join("\n"));
+  // fish: a quoted name, and a set that follows another command on its line.
+  mkdirSync(join(home, ".config/fish/conf.d"), { recursive: true });
+  writeFileSync(join(home, ".config/fish/config.fish"), `set -gx "GH_TOKEN" ${dummy}\n`);
+  writeFileSync(join(home, ".config/fish/conf.d/after.fish"), `status is-login; and set -gx ORBIT_TOKEN ${dummy}\n`);
+  // A shell reads a relative path from the folder it runs in, not from the folder of the file that names it: HOME for
+  // a login shell, the worktree for a shell the agent starts there.
+  writeFileSync(join(home, "sub/rc.sh"), "source ./shell.env\n. named.env\n");
+  for (const folder of [home, worktree]) for (const name of ["shell.env", "named.env"]) writeFileSync(join(folder, name), `GH_TOKEN=${dummy}\n`);
+  const paths = lockedPaths("claude", { HOME: home }, { cwd: worktree });
+  sets.forEach((line, index) => assert.ok(paths.includes(join(home, `forms/${index}.sh`)), line));
+  reads.forEach((line, index) => assert.ok(!paths.includes(join(home, `plain/${index}.sh`)), line));
+  for (const file of [".config/fish/config.fish", ".config/fish/conf.d/after.fish", "shell.env", "named.env"]) assert.ok(paths.includes(join(home, file)), file);
+  for (const name of ["shell.env", "named.env"]) assert.ok(paths.includes(join(worktree, name)), `the worktree's ${name}`);
 });

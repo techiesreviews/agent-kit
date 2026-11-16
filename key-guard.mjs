@@ -31,7 +31,7 @@
 import { spawnSync } from "node:child_process";
 import { accessSync, chmodSync, constants, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
 // Key files and folders under HOME, whichever CLI runs.
 export const homeKeyPaths = [
@@ -73,13 +73,16 @@ const shellStartups = [".bashrc", ".bash_aliases", ".bash_profile", ".bash_login
 const keyedUrl = text => [...text.matchAll(/([a-z][a-z0-9+.-]*):\/\/([^/\s@]+)@/gi)]
   .some(([, scheme, user]) => !/^(ssh|git)$/i.test(scheme) || user.includes(":"))
   || /^\s*extraheader\s*=.*authorization/im.test(text) || /^\s*helper\s*=.*password=/im.test(text);
-// A start-up file that sets a variable the secret list (secretName) drops: every NAME= on a line, commented or not,
-// fish's `set … NAME value` and its universal SETUVAR NAME:value. Names that only point somewhere (SSH_AUTH_SOCK,
+// A start-up file that sets a variable the secret list (secretName) drops: every NAME= in it, commented or not,
+// fish's `set … NAME value` and its universal SETUVAR NAME:value. The name may stand in quotes (export "NAME=value",
+// export "NAME"=value), the = may add or give a default (NAME+=value, ${NAME:=value}), and anything may stand before
+// the name but a letter or a $ (which reads the variable): an option that carries a token (--token=…) counts too.
+// fish's set may follow another command on its line. Names that only point somewhere (SSH_AUTH_SOCK,
 // PASSWORD_STORE_DIR, …_FILE, …_PATH) are no secret, so they do not lock the file.
 const pointer = name => handleNames.includes(name) || keyFolderVariables.includes(name) || /_(SOCK|FILE|DIR|PATH|HOME)$/i.test(name);
 const setsSecret = text => [
-  ...[...text.matchAll(/(?:^|[\s;#])([A-Za-z_]\w*)=/gm)].map(match => match[1]),
-  ...[...text.matchAll(/^\s*set\s+(?:-\S+\s+)*([A-Za-z_]\w*)\s+\S/gm)].map(match => match[1]),
+  ...[...text.matchAll(/(?<![\w$])["']?([A-Za-z_]\w*)["']?(?:\[[^\]\n]*\])?[+:]?=/g)].map(match => match[1]),
+  ...[...text.matchAll(/(?<![\w$-])set[ \t]+(?:-\S+[ \t]+)*["']?([A-Za-z_]\w*)["']?[ \t]+\S/g)].map(match => match[1]),
   ...[...text.matchAll(/^SETUVAR\s+(?:--\S+\s+)*([A-Za-z_]\w*):/gm)].map(match => match[1]),
 ].some(name => secretName.test(name) && !pointer(name));
 function holds(file, test) {
@@ -95,13 +98,17 @@ const sourced = /(?:^|&&|\|\||[;({]|\b(?:then|do|else))\s*(?:source|\.)\s+("[^"\
 // A path as a config file writes it: ~ and $HOME are the home, a relative one counts from `from`.
 const expand = (path, base, from) => resolve(from, path.replace(/^["']|["']$/g, "").replace(/^~(?=\/|$)/, base).replace(/^\$(HOME|\{HOME\})(?=\/|$)/, base));
 // The files a set of config files pull in, however long the chain: `source`/`.` for shell files, include paths for
-// git. Each file is read once, so a loop ends, and a chain ends where a file names nothing new that exists.
-function pulledIn(files, pattern, base) {
+// git. Each file is read once, so a loop ends, and a chain ends where a file names nothing new that exists. A relative
+// path counts from every folder `from` gives for the file that names it: that file's own folder for git; for a shell
+// the folders it may run in (see lockedPaths), since a shell reads `source ./x.env` from where it runs.
+function pulledIn(files, pattern, base, from = file => [dirname(file)]) {
   const all = [...new Set(files)];
   for (let next = 0; next < all.length; next++) {
     for (const match of text(all[next]).matchAll(pattern)) {
-      const file = expand(match[1], base, dirname(all[next]));
-      if (!all.includes(file)) all.push(file);
+      for (const folder of from(all[next])) {
+        const file = expand(match[1], base, folder);
+        if (!all.includes(file)) all.push(file);
+      }
     }
   }
   return all;
@@ -200,7 +207,11 @@ export function lockedPaths(cli, env = process.env, { apiRoute = false, cwd = pr
     ...named(env.ZDOTDIR).flatMap(folder => [".zshenv", ".zshrc", ".zprofile"].map(name => join(folder, name)))];
   // Files they pull in count the same: a git include (include.path, includeIf), a shell `source` or `.`.
   const allGit = pulledIn(gitConfigs, /^\s*path\s*=\s*(\S+)/gm, base);
-  paths.push(...allGit.filter(file => holds(file, keyedUrl)), ...pulledIn(startups, sourced, base).filter(file => holds(file, setsSecret)));
+  // A shell reads a relative `source ./x.env` from the folder it runs in, whichever file names it: HOME for a login
+  // shell, the worktree for a shell the agent starts there, the lead's own folder; the naming file's folder stays as
+  // one more reading (a start-up file that changes into its own folder first).
+  const shellFolders = file => [...new Set([base, resolve(cwd), process.cwd(), dirname(file)])];
+  paths.push(...allGit.filter(file => holds(file, keyedUrl)), ...pulledIn(startups, sourced, base, shellFolders).filter(file => holds(file, setsSecret)));
   // Private keys named by git's sshCommand -i or ssh's IdentityFile, wherever they sit.
   for (const file of allGit) for (const [, key] of text(file).matchAll(/sshCommand\s*=.*\s-i\s*(\S+)/gm)) paths.push(expand(key, base, base));
   for (const [, key] of text(join(base, ".ssh/config")).matchAll(/^\s*IdentityFile\s+(\S+)/gim)) paths.push(expand(key, base, base));
@@ -386,18 +397,45 @@ export function codexProfile(kind, common, paths) {
     "-c", `permissions.${name}.network={enabled=${kind === "build"}}`];
 }
 
-// The executable file command names, as the run will find it, or null: a path as it is, a bare name through PATH. The
-// run starts in `cwd` (the worktree), so a path or PATH folder that is not a full path counts from there, an empty PATH
-// entry is that folder itself, and no PATH at all means the system's own folders (as execvp reads it).
+// Where the kit takes the programs it starts itself from (bubblewrap, a CLI, git): PATH's folders, but never one
+// inside the worktree or the repository's Git folder. A build writes both, so a program left there (a bwrap in
+// <worktree>/node_modules/.bin, which npm puts on PATH as a full path) must never be the lock, nor start outside it.
+// A PATH entry that is not a full path, or an empty one, is the folder the run starts in, the worktree again. Links
+// are followed first, so a folder or a program elsewhere that links into either counts as inside. No PATH at all
+// means the system's own folders (as execvp reads it). A PATH folder elsewhere that a build can write (under HOME) is
+// not covered: the lock does not confine a build's writes (README, "What the key lock does not do").
+const systemPath = "/bin:/usr/bin";
 const executable = file => { try { accessSync(file, constants.X_OK); return statSync(file).isFile(); } catch { return false; } };
-const pathFolders = env => (env.PATH === undefined ? "/bin:/usr/bin" : String(env.PATH)).split(delimiter);
-function executableFor(command, env, cwd = process.cwd()) {
-  const folders = command.includes("/") ? [""] : pathFolders(env);
-  return folders.map(folder => resolve(cwd, folder, command)).find(executable) ?? null;
+const pathFolders = env => (env.PATH === undefined ? systemPath : String(env.PATH)).split(delimiter);
+// A path with every link in it followed, as far as it exists: a folder that is not there yet is read through the
+// links of the folders above it, so making it later moves it nowhere else.
+function real(path) {
+  const rest = [];
+  for (let at = resolve(path); ; at = dirname(at)) {
+    try { return join(realpathSync(at), ...rest); }
+    catch { if (dirname(at) === at) return resolve(path); rest.unshift(basename(at)); }
+  }
 }
-// bubblewrap's own file, or null: only PATH folders that are full paths count. The run starts in the worktree, where a
-// relative or empty PATH entry would mean a folder a build can write, and a bwrap left there must never be the lock.
-const bwrapFor = env => pathFolders(env).filter(folder => isAbsolute(folder)).map(folder => join(folder, "bwrap")).find(executable) ?? null;
+// The two folders a build is meant to write, for the comparison: the worktree and the Git folder, links followed.
+const buildFolders = (worktree, common) => [worktree, common].filter(Boolean).map(real);
+const trustedFolders = (env, shut) => pathFolders(env).filter(folder => isAbsolute(folder) && !shut.some(root => inside(real(folder), root)));
+// The executable file a bare name stands for, from those folders only, or null.
+const programFor = (name, env, shut) => trustedFolders(env, shut).map(folder => join(folder, name))
+  .find(file => executable(file) && !shut.some(root => inside(real(file), root))) ?? null;
+// The executable file command names, or null: a path as it is (from `cwd`, where the run starts), a bare name as above.
+const executableFor = (command, env, cwd, shut) => command.includes("/") ? [resolve(cwd, command)].find(executable) ?? null : programFor(command, env, shut);
+
+/**
+ * PATH for a run in `worktree`, or undefined when PATH needs no change (or is not set): its folders in their order,
+ * without the ones inside the worktree or the Git folder. A program started by a bare name then (Codex, which locks its own commands; the
+ * runner's own git; whatever the CLI itself starts) is not found there either. A PATH with nothing left would mean the
+ * current folder to execvp, so the system's own folders stand in, as for no PATH at all.
+ */
+export function runPath(env = process.env, { worktree, common } = {}) {
+  if (env.PATH === undefined) return undefined;
+  const path = trustedFolders(env, buildFolders(worktree, common)).join(delimiter) || systemPath;
+  return path === String(env.PATH) ? undefined : path;
+}
 
 // The lock holds only if a process inside it cannot read through another process's root folder in /proc, where
 // nothing is masked (a setuid bwrap makes no user namespace and lets that read through): the probe runs inside bubblewrap
@@ -454,11 +492,14 @@ function probeLock(env) {
 
 const lockAsked = "this system has no bubblewrap (it is Linux only), and ASE_KEY_GUARD=on asks for the lock or no run; unset it to start Claude, Grok and OpenCode unwrapped";
 let probed, displayWarning = null, absent = false, bwrap = null;
-/** Whether bubblewrap runs and holds here: null, or the problem in plain words. Checked once per process; bwrap is looked up in PATH's full-path folders. */
-export function bwrapWorks(env = process.env) {
+/**
+ * Whether bubblewrap runs and holds here: null, or the problem in plain words. Checked once per process; bwrap is
+ * looked up in PATH's full-path folders outside `shut` (the worktree and the Git folder, see buildFolders).
+ */
+export function bwrapWorks(env = process.env, shut = []) {
   if (probed === undefined) {
     displayWarning = null;
-    bwrap = bwrapFor(env);
+    bwrap = programFor("bwrap", env, shut);
     absent = bwrap === null;
     // Linux installs it with one command; another system has none, and only ASE_KEY_GUARD=on makes that a problem.
     if (absent) probed = process.platform === "linux" ? "bubblewrap (bwrap) is not installed; install it (apt install bubblewrap)" : lockAsked;
@@ -476,16 +517,16 @@ export function bwrapWorks(env = process.env) {
 }
 
 /** What the lock does not cover, in one sentence, or null: a display it cannot shut (see probeLock), KIT_KEY_PATHS entries it does not lock. */
-export function keyGuardWarning(env = process.env) {
-  bwrapWorks(env);
+export function keyGuardWarning(env = process.env, shut = []) {
+  bwrapWorks(env, shut);
   return [displayWarning, keyPathsWarning(env)].filter(Boolean).join("; ") || null;
 }
 
 // A system that has no bubblewrap (macOS, Windows; on Linux it installs with one command, so a missing one stops the
 // run), and no ASE_KEY_GUARD=on asking for the lock or no run: Claude, Grok and OpenCode run without the wrapper.
 const unwrappedNote = "off on this machine (no bubblewrap); builders can read key files (token variables are still dropped, and Codex keeps its own profile)";
-function runsUnwrapped(env) {
-  bwrapWorks(env);
+function runsUnwrapped(env, shut) {
+  bwrapWorks(env, shut);
   return absent && process.platform !== "linux" && !lockRequired(env);
 }
 
@@ -511,7 +552,7 @@ function searchedPaths(cli, env, { apiRoute = false, worktree, common } = {}) {
  * `warning` for the run's log) for Claude, Grok and OpenCode on a system without bubblewrap. Throws in plain words when
  * the lock is on and cannot be set up (a bubblewrap that cannot start or is missing on Linux, a key folder it cannot
  * search; no bubblewrap under ASE_KEY_GUARD=on). `close()` removes the run's private folder.
- *  - env: variables to drop for the call;
+ *  - env: variables to drop for the call, and PATH without the worktree's and the Git folder's folders where it names one (runPath);
  *  - wrap(command, args): the command and arguments that run it inside the lock (Claude, Grok, OpenCode);
  *  - helper(command, args): the same for a program the runner itself starts on what the agent left (git status in the
  *    worktree, whose Git settings a build can change), for every CLI where bubblewrap runs; started with `env` dropped too;
@@ -522,32 +563,35 @@ function searchedPaths(cli, env, { apiRoute = false, worktree, common } = {}) {
 export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRoute = false, model = "" }) {
   const plain = (command, args) => [command, args];
   const unlocked = { off: true, env: {}, wrap: plain, helper: plain, close() {} };
-  // Inside bubblewrap (by its own full path, see bwrapFor) with these arguments, by the program's full path as the run will find it. A program that is not
-  // there is started as it is, so the run still fails as a missing CLI (spawn ENOENT), which kit review counts as an
-  // unavailable reviewer; nothing runs, so there is nothing to lock.
+  const shut = buildFolders(worktree, common);
+  // Inside bubblewrap (by its own full path) with these arguments, by the program's full path; both come only from PATH
+  // folders outside the worktree and the Git folder (see programFor). A program that is not there is started as it is, with the run's PATH
+  // (`env` below), so the run still fails as a missing CLI (spawn ENOENT), which kit review counts as an unavailable
+  // reviewer; nothing runs, so there is nothing to lock.
   const inside = (outer, lock = bwrap) => (command, args) => {
-    const file = executableFor(command, env, worktree);
+    const file = executableFor(command, env, worktree ?? process.cwd(), shut);
     return file ? [lock, [...outer, "--", file, ...args]] : [command, args];
   };
   if (!keyGuardOn(env)) return unlocked;
-  const scrub = scrubbedEnv(cli, env, { apiRoute, model });
+  const path = runPath(env, { worktree, common });
+  const scrub = { ...scrubbedEnv(cli, env, { apiRoute, model }), ...(path === undefined ? {} : { PATH: path }) };
   // A system without bubblewrap: Claude, Grok and OpenCode start as they are, with the token variables dropped, and the
   // run's log says so. Nothing is searched for them, so no key folder can stop the run. Codex goes on below: its own
   // profile needs no bubblewrap.
-  if (cli !== "codex" && runsUnwrapped(env)) return { ...unlocked, env: scrub, missing: true, warning: unwrappedNote };
+  if (cli !== "codex" && runsUnwrapped(env, shut)) return { ...unlocked, env: scrub, missing: true, warning: unwrappedNote };
   const { paths, problem: refusal, glue } = searchedPaths(cli, env, { apiRoute, worktree, common });
   if (refusal) throw new Error(`cannot lock the key files for this ${kind}: ${refusal}${glue} set ASE_KEY_GUARD=off to run without the lock`);
   // Codex's own sandbox shares the network too, so the display warning (when bubblewrap can check it) applies to it.
   if (cli === "codex") {
     let display = Boolean(env.DISPLAY);
     try { display ||= readdirSync("/tmp/.X11-unix").some(name => /^X\d+$/.test(name)); } catch { /* No X display here. */ }
-    const unchecked = display ? bwrapWorks(env) : null;
+    const unchecked = display ? bwrapWorks(env, shut) : null;
     const gap = !display ? null : unchecked ? `the X display could not be checked (${absent && process.platform !== "linux" ? "this system has no bubblewrap" : unchecked}), so it may let programs in without its cookie; do not copy or type keys while agents run` : displayWarning;
     const warning = [gap, keyPathsWarning(env)].filter(Boolean).join("; ") || null;
     // Codex locks its own commands; the runner's helpers go through bubblewrap where it runs.
-    return { env: scrub, codex: codexProfile(kind, common, codexPaths(paths)), warning, wrap: plain, helper: bwrapWorks(env) === null ? inside(bwrapArgs(paths)) : plain, close() {} };
+    return { env: scrub, codex: codexProfile(kind, common, codexPaths(paths)), warning, wrap: plain, helper: bwrapWorks(env, shut) === null ? inside(bwrapArgs(paths)) : plain, close() {} };
   }
-  const problem = bwrapWorks(env);
+  const problem = bwrapWorks(env, shut);
   if (problem) throw new Error(`cannot lock the key files for this ${kind}: ${problem}; or set ASE_KEY_GUARD=off to run without the lock`);
   // With the API route the wrapper turns on Claude's own command sandbox (bubblewrap too), which cannot start inside
   // this one: a build would lose its shell. Reviews there use only Read, Grep and Glob, with that sandbox off.
@@ -556,7 +600,7 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
   // lock instead: it writes only its own state folder and the temp folders.
   const outer = bwrapArgs(paths, cli === "grok" && kind === "review"
     ? { writable: [join(home(env), ".grok"), env.GROK_HOME, tmpdir(), "/tmp", env.XDG_RUNTIME_DIR].filter(Boolean).map(path => resolve(path)) } : {});
-  const warning = keyGuardWarning(env);
+  const warning = keyGuardWarning(env, shut);
   if (!apiRoute) return { env: scrub, bwrap: true, warning, wrap: inside(outer), helper: inside(outer), close() {} };
   // The API route's wrapper reads its key file first, outside the lock, then runs claude through this script.
   const dir = mkdtempSync(join(tmpdir(), "ase-key-guard-"));
@@ -578,12 +622,13 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
 export function keyGuardReport(env = process.env, { worktree = process.cwd(), common } = {}) {
   if (!keyGuardOn(env)) return { state: "off", text: "off (ASE_KEY_GUARD=off): agents the kit starts can read the key files" };
   // Unwrapped runs search nothing; a Codex run there still does, for its profile.
-  const unwrapped = runsUnwrapped(env), problem = bwrapWorks(env);
+  const shut = buildFolders(worktree, common);
+  const unwrapped = runsUnwrapped(env, shut), problem = bwrapWorks(env, shut);
   if (problem && !unwrapped) return { state: "problem", text: problem };
   const refusal = searchedPaths(unwrapped ? "codex" : "", env, { worktree, common }).problem;
   if (refusal) return { state: "refused", text: refusal };
   if (unwrapped) return { state: "missing", text: unwrappedNote };
-  const warning = keyGuardWarning(env);
+  const warning = keyGuardWarning(env, shut);
   return warning ? { state: "warning", text: `on, but ${warning}` }
     : { state: "on", text: `on (bubblewrap runs; agents the kit starts cannot read the key files${env.KIT_API_KEY_FILE ? "; a Claude build on the API route is refused under the lock" : ""})` };
 }

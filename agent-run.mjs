@@ -16,7 +16,7 @@ import { durationMilliseconds, supervise } from "./sol-run.mjs";
 import { reviewComplete, reviewFormat, reviewScope } from "./review-brief.mjs";
 import { nextTalkStyle, talkStyleLine } from "./brief-lib.mjs";
 import { apiRoute, apiRouteProblem, apiWrapperRefused, claudeCommand, recordApiSpend } from "./api-route.mjs";
-import { keyGuard } from "./key-guard.mjs";
+import { keyGuard, keyGuardOn, runPath } from "./key-guard.mjs";
 
 const adapters = { codex: codexAdapter, claude: claudeAdapter, grok: grokAdapter, opencode: opencodeAdapter };
 const reviewOnly = { grok: "Grok", opencode: "OpenCode" };
@@ -938,30 +938,34 @@ async function resumeRun(out, brief) {
   }
 }
 
-function preparePrompt(options, brief, out) {
+// gitOut(args) runs git in the worktree and returns its output as raw bytes (a text file need not be UTF-8). The
+// repository's Git settings are a build's to change, and git diff and git log start what they name: an outside diff
+// tool (diff.external, a driver's command), a text converter (textconv), a signature checker (gpg.program with
+// log.showSignature). So executeRun passes a gitOut that runs inside the key lock, and each call here also switches
+// those three off, for a run the lock cannot wrap (a Codex review without bubblewrap).
+function preparePrompt(options, brief, out, gitOut) {
   let prompt = brief;
   if (options.kind === "review") {
     const scope = reviewScope(brief, options, options.worktree);
     const { base, head, label, commit } = scope;
     const diff = join(out, "diff.patch"), commits = join(out, "commits.log"), refs = join(out, "refs.txt");
-    const patch = execFileSync("git", ["-C", options.worktree, "diff", ...(commit ? [base, head] : [`${base}...${head}`])], { maxBuffer: 64 * 1024 * 1024 });
+    const plain = ["--no-ext-diff", "--no-textconv"], unsigned = "--no-show-signature";
+    const patch = gitOut(["diff", ...plain, ...(commit ? [base, head] : [`${base}...${head}`])]);
     writeFileSync(diff, patch);
-    writeFileSync(commits, execFileSync("git", ["-C", options.worktree, "log", "--oneline", `${base}..${head}`]));
+    writeFileSync(commits, gitOut(["log", unsigned, "--oneline", `${base}..${head}`]));
     writeFileSync(refs, `${head}\n${base}\n`);
     // A later review-loop round also gets the changes since the last reviewed head as a prepared file (the reviewer runs no git).
     let sinceNote = "";
     if (options.since && !commit) {
       const since = join(out, "since-last-review.patch");
-      // Raw bytes for the files (a text file need not be UTF-8); only the merge check is read as text.
-      const gitOut = args => execFileSync("git", ["-C", options.worktree, ...args], { maxBuffer: 64 * 1024 * 1024 });
       // After a merge from the base, a plain diff also holds what landed on the base: then only the branch's own commits count (the
       // ones the base does not have), merges left out. A conflict fixed inside a merge commit is not in that list.
       const merged = gitOut(["rev-list", "--merges", `${options.since}..${head}`]).toString().trim() !== "";
       if (merged) {
-        writeFileSync(since, gitOut(["log", "-p", "--reverse", "--no-merges", "--format=commit %H%n%s%n", `${options.since}..${head}`, `^${base}`]));
+        writeFileSync(since, gitOut(["log", "-p", ...plain, unsigned, "--reverse", "--no-merges", "--format=commit %H%n%s%n", `${options.since}..${head}`, `^${base}`]));
         sinceNote = ` Changes since the last review (the branch's own commits since ${options.since}, merges from the base left out): read ${JSON.stringify(since)}.`;
       } else {
-        writeFileSync(since, gitOut(["diff", options.since, head]));
+        writeFileSync(since, gitOut(["diff", ...plain, options.since, head]));
         sinceNote = ` Changes since the last review (git diff ${options.since}..${head}): read ${JSON.stringify(since)}.`;
       }
     }
@@ -1098,19 +1102,20 @@ async function executeRun(options, out, previous, update, brief) {
   const messages = [];
   const limit = process.env.ASE_AGENT_TIMEOUT || process.env.SOL_TIMEOUT || "90m";
   durationMilliseconds(limit);
+  // Under the key lock the runner's own programs (git here, bubblewrap and the CLI below) never come from a PATH folder
+  // inside the worktree, where a build can leave one (npm puts <worktree>/node_modules/.bin on PATH as a full path):
+  // such folders leave this process's PATH before its first git call; the lock's own PATH leaves out the Git folder too.
+  if (keyGuardOn(process.env)) {
+    const path = runPath(process.env, { worktree: options.worktree });
+    if (path !== undefined) process.env.PATH = path;
+  }
   const common = execFileSync("git", ["-C", options.worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim();
-  const prepared = previous ? { prompt: options.resumePrompt ?? "Continue where you stopped; the brief is unchanged." }
-    : preparePrompt(options, brief, out);
-  if (prepared.problem) return { status: 1, messages: [prepared.problem] };
   const reportPath = join(out, "out.md"), logPath = join(out, "run.log"), inputPath = join(out, `brief-${process.pid}.md`);
   // A resumed Codex report must not truncate the earlier final report.
   const output = previous ? join(out, `resume-${process.pid}-${randomUUID()}.md`) : reportPath;
-  const prompt = prepared.prompt + (!previous && options.kind === "build" ? buildContractWithStyle() : "");
   let input, log, reviewHome, guard;
   try {
-    writeFileSync(inputPath, prompt);
     rmSync(output, { force: true });
-    input = openSync(inputPath, "r");
     log = openSync(logPath, previous ? "a" : "w");
     if (previous) appendFileSync(log, `\n--- resume ${new Date().toISOString()} ---\n`);
     if (options.kind === "review" && options.cli === "codex") {
@@ -1132,17 +1137,26 @@ async function executeRun(options, out, previous, update, brief) {
     if (guard.codex) options.codexProfile = guard.codex;
     options.keyLock = { env: guard.env, helper: guard.helper };
     if (guard.bwrap && options.cli === "grok") options.grokSandbox = "off";
+    // The runner's own git calls in the worktree run inside the key lock, without the dropped variables: a build can
+    // change the repository's Git settings, and git runs what they name (core.fsmonitor and a filter for git status, a
+    // diff tool for git diff). Where the helper cannot wrap (a Codex run without bubblewrap) the monitor at least is
+    // switched off for the call, and preparePrompt switches off what its own calls could start.
+    const lockedGit = (args, more = {}) => {
+      const [command, full] = guard.helper("git", ["-c", "core.fsmonitor=false", "-C", options.worktree, ...args]);
+      return execFileSync(command, full, { env: { ...process.env, ...guard.env }, maxBuffer: 64 * 1024 * 1024, ...more });
+    };
+    const worktreeGit = (args, stdio) => lockedGit(args, { encoding: "utf8", ...(stdio ? { stdio } : {}) });
+    // A review's diff and commit list are read here, inside the lock, before the prompt that names them is written.
+    const prepared = previous ? { prompt: options.resumePrompt ?? "Continue where you stopped; the brief is unchanged." }
+      : preparePrompt(options, brief, out, lockedGit);
+    if (prepared.problem) return { status: 1, messages: [prepared.problem] };
+    const prompt = prepared.prompt + (!previous && options.kind === "build" ? buildContractWithStyle() : "");
+    writeFileSync(inputPath, prompt);
+    input = openSync(inputPath, "r");
     const adapter = agentInvocation(options, common, output);
     // A resumed run's first call is not the review's first call, so it never refunds.
     // The worktree as the run found it: a first call that left it changed did some work, however soon it failed.
     // A repository with no commit yet has no HEAD; its tree alone shows any work.
-    // The runner's own git calls in the worktree run inside the key lock, without the dropped variables: a build can
-    // change the repository's Git settings, and git status runs what they name (core.fsmonitor, a filter). Where the
-    // helper cannot wrap (a Codex run without bubblewrap) the monitor at least is switched off for the call.
-    const worktreeGit = (args, stdio) => {
-      const [command, full] = guard.helper("git", ["-c", "core.fsmonitor=false", "-C", options.worktree, ...args]);
-      return execFileSync(command, full, { encoding: "utf8", env: { ...process.env, ...guard.env }, ...(stdio ? { stdio } : {}) });
-    };
     const head = () => { try { return worktreeGit(["rev-parse", "-q", "--verify", "HEAD"], ["ignore", "pipe", "ignore"]); } catch { return ""; } };
     const tree = () => head() + worktreeGit(["status", "--porcelain", "--untracked-files=all"]);
     const startTree = tree();

@@ -1217,8 +1217,12 @@ test("the real agent.sh review path hands a read-only Claude the bundle copy and
   put("src/page-builder/media-library-filter.ts", "export const filter = 2;\n");
   git("commit", "--quiet", "-am", "work");
   // The fake claude answers only when it can read the bundle the brief names, and records its arguments and prompt.
-  const bin = join(root, ".scratch/bin");
-  put(".scratch/bin/claude", `#!${process.execPath}
+  // Its folder is outside the worktree: under the key lock a CLI in a PATH folder inside it never starts (key-guard.mjs).
+  const tools = mkdtempSync(join(tmpdir(), "kit-ux-tools-"));
+  t.after(() => rmSync(tools, { recursive: true, force: true }));
+  const bin = join(tools, "bin"), decoy = join(tools, "decoy");
+  mkdirSync(bin); mkdirSync(decoy);
+  writeFileSync(join(bin, "claude"), `#!${process.execPath}
 const { existsSync, readFileSync, writeFileSync } = require("node:fs");
 const prompt = readFileSync(0, "utf8"), args = process.argv.slice(2);
 writeFileSync(${JSON.stringify(join(root, ".scratch/claude-call.json"))}, JSON.stringify({ args, prompt }));
@@ -1233,8 +1237,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
   // that folder the first one. The decoy folder after it has a node link and a claude that fails, like a machine that
   // keeps the real claude beside its node: without the link in the fake's folder, the decoy would come first.
   symlinkSync(process.execPath, join(bin, "node"));
-  const decoy = join(root, ".scratch/decoy");
-  put(".scratch/decoy/claude", "#!/bin/sh\nexit 1\n");
+  writeFileSync(join(decoy, "claude"), "#!/bin/sh\nexit 1\n");
   chmodSync(join(decoy, "claude"), 0o755);
   symlinkSync(process.execPath, join(decoy, "node"));
   const output = run(["--features", "F-media-02"], { KIT_UX_AGENT: "", PATH: `${bin}:${decoy}:${env.PATH}`, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "20s" });
