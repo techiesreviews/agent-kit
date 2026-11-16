@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { kitEnv } from "./support/kit-env.ts";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { NORMAL_ROUNDS, earlierSecondLooks, fixRoundsDone, modelsLine, RISKY_ROUNDS, branchRisk, budgetReport, findPreviousReview, isNit, ledgerRows, loopBriefSection, loopStop, parseMarks, prLine, renderLedger, reviewChain, riskyChange, roundLimit, secondLookRows, severityWord, stoppingFindings, unmarkedIds, waiverCheck, waiverRefusal, withIds } from "../review-loop.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
@@ -549,7 +550,9 @@ test("a waiver given as several reasons: ids anywhere in any of them, and counts
 function releaseRepo(t: { after: (fn: () => void) => void }) {
   const dir = mkdtempSync(join(tmpdir(), "kit-recut-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const git = (...args: string[]) => spawnSync("git", ["-C", dir, "-c", "user.name=T", "-c", "user.email=t@t", ...args], { encoding: "utf8" }).stdout.trim();
+  // A temporary HOME and XDG folders (kitEnv), and no machine git config: no signing or hooks of the person running the tests.
+  const env = { ...kitEnv(), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
+  const git = (...args: string[]) => spawnSync("git", ["-C", dir, "-c", "user.name=T", "-c", "user.email=t@t", ...args], { encoding: "utf8", env }).stdout.trim();
   git("init", "-q", "-b", "main"); writeFileSync(join(dir, "a"), "1\n"); git("add", "."); git("commit", "-qm", "base");
   git("checkout", "-qb", "dev"); writeFileSync(join(dir, "d"), "dev 1\n"); git("add", "."); git("commit", "-qm", "landed one");
   git("checkout", "-q", "main"); writeFileSync(join(dir, "h"), "hotfix\n"); git("add", "."); git("commit", "-qm", "hotfix");
