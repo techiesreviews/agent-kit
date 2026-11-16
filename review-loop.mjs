@@ -93,8 +93,8 @@ export function fixRoundsDone(chain, secondLooks = []) {
 /**
  * The branch's earlier second looks that came back, under any owner in `reviewsRoot`: each one marked for `branch` whose
  * reviewed head is an ancestor of `head` and not `head` itself. kit pr passes the head Claude's review saw, which a review
- * reused after a rebase with the same patch keeps, so the count survives that rebase; a rebase that changes the patch, or one
- * in the docs tier (no Claude review), starts it again. Returns [{ head, findings }] with the findings its result.md left open.
+ * reused after a rebase with the same patch keeps, so the count survives that rebase until the next commit (then, like Claude's
+ * rounds, it starts again); a rebase that changes the patch, or one in the docs tier (no Claude review), starts it again at once. Returns [{ head, findings }] with the findings its result.md left open.
  */
 export function earlierSecondLooks(reviewsRoot, { branch, head, root }) {
   if (!branch || !head || !existsSync(reviewsRoot)) return [];
