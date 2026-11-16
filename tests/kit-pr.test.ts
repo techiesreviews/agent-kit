@@ -3856,6 +3856,7 @@ test("PROOF: kit pr runs no hook, Git filter, diff tool, merge driver, PATH tool
   const swapped = `#!/bin/sh\n${note("a program the check swapped in")}\nexec ${spawnSync("bash", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim()} "$@"\n`;
   writeFileSync(join(f.root, "scripts/leak.sh"), `${note("the project's check")}
 for f in "$TMPDIR"/kit-pr-programs-*/git; do [ -L "$f" ] && echo "saw $f" >> ${JSON.stringify(noted)}; rm -f "$f" 2>/dev/null; printf '%s' ${JSON.stringify(swapped)} > "$f" 2>/dev/null && chmod +x "$f"; done
+cat ${JSON.stringify(join(home, ".bash_env"))} ${JSON.stringify(join(home, ".shinit"))} >> ${JSON.stringify(noted)} 2>&1
 exit 0
 `);
   writeFileSync(join(f.root, ".gitattributes"), "* filter=leak diff=leak merge=leak\n");
@@ -3882,12 +3883,14 @@ exit 0
     symlinkSync(join(tools, name), join(links, name));
   }
   appendFileSync(join(f.root, ".git/info/exclude"), "node_modules/\n");
-  const startup = join(home, ".bash_env");
-  writeFileSync(startup, `${note("BASH_ENV")}\n`);
+  // The start-up files BASH_ENV and ENV name, each setting a token: bash would run the first; the check reads both.
+  const startup = join(home, ".bash_env"), shStartup = join(home, ".shinit");
+  writeFileSync(startup, `export ORBIT_TOKEN=${dummy}\n${note("BASH_ENV")}\n`);
+  writeFileSync(shStartup, `export GH_TOKEN=${dummy}\n`);
   // A temporary folder of this test's own (kit pr keeps its program links there), so the check reaches only this kit
   // pr's links, never another one's.
   const tmp = join(f.dir, "tmp"); mkdirSync(tmp);
-  const env = { HOME: home, GH_TOKEN: dummy, BASH_ENV: startup, PATH: `${tools}:${links}:${f.env.PATH}`, TMPDIR: tmp } as NodeJS.ProcessEnv;
+  const env = { HOME: home, GH_TOKEN: dummy, BASH_ENV: startup, ENV: shStartup, PATH: `${tools}:${links}:${f.env.PATH}`, TMPDIR: tmp } as NodeJS.ProcessEnv;
   // Without kit pr's care they are live: a plain git status in the worktree starts the build's programs.
   spawnSync("git", ["-C", f.root, "status"], { env: { ...f.env, ...env }, encoding: "utf8" });
   assert.ok(readFileSync(noted, "utf8").includes(dummy), "the planted settings are live");
