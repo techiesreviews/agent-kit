@@ -483,7 +483,10 @@ function interpreted(file, args, env, shut, refuse, depth = 0) {
   else if (words.length > 1) words.splice(0, words.length, rest);
   if (!words.length || words[0].startsWith("-")) refuse(`${file} starts with env ${rest}, so which program it runs cannot be told`);
   const [name, ...options] = words;
-  if (name.includes("/")) return interpreted(resolve(name), [...options, file, ...args], env, shut, refuse, depth + 1);
+  if (name.includes("/")) {
+    if (shut.some(root => inside(real(name), root))) refuse(`${file} starts with env ${name}, inside the worktree or its Git folder, where a build can change it`);
+    return interpreted(resolve(name), [...options, file, ...args], env, shut, refuse, depth + 1);
+  }
   const { file: found, refused } = lookup(name, env, shut);
   if (!found && refused) refuse(linkRefusal(name, refused));
   return found ? interpreted(found, [...options, file, ...args], env, shut, refuse, depth + 1) : [file, args];
@@ -740,9 +743,10 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
  * too), and env drops the token variables and the start-up file variables and leaves the worktree's and the Git
  * folder's folders off PATH. With ASE_KEY_GUARD=off, or on a system without bubblewrap (macOS, Windows), the checks run
  * as before and `note` says so in one line. Throws in plain words where the lock is on and cannot be set up, as a run's
- * lock does.
+ * lock does. `readOnly` names folders the lead's process relies on after the checks (kit pr's own program links): the
+ * checks see them but cannot change them.
  */
-export function checkLock({ worktree, common, env = process.env }) {
+export function checkLock({ worktree, common, env = process.env, readOnly = [] }) {
   const plain = (command, args) => [command, args];
   if (!keyGuardOn(env)) return { env: {}, wrap: plain, note: "not locked (ASE_KEY_GUARD=off)" };
   const shut = buildFolders(worktree, common);
@@ -754,7 +758,7 @@ export function checkLock({ worktree, common, env = process.env }) {
   if (problem) refuse(`${problem}; or set ASE_KEY_GUARD=off to run without the lock`);
   const { paths, problem: refusal, glue } = searchedPaths("", env, { worktree, common });
   if (refusal) refuse(`${refusal}${glue} set ASE_KEY_GUARD=off to run without the lock`);
-  const outer = bwrapArgs(paths);
+  const outer = [...bwrapArgs(paths), ...existingPaths(readOnly).flatMap(path => ["--ro-bind", path, path])];
   // The command starts inside, found there on the run's PATH: whatever it is, it runs locked.
   return { env: scrub, wrap: (command, args) => [bwrap, [...outer, "--", command, ...args]], note: null, warning: keyGuardWarning(env, shut) };
 }

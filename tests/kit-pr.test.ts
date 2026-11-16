@@ -3852,7 +3852,12 @@ test("PROOF: kit pr runs no hook, Git filter, diff tool, merge driver, PATH tool
   };
   // The build's own change: a check that reads the keys, attributes that name a filter, a diff tool and a merge driver for
   // every file, and a ticket for kit pr to name commits in (a commit kit pr makes itself).
-  writeFileSync(join(f.root, "scripts/leak.sh"), `${note("the project's check")}\n`);
+  // The check also tries to swap kit pr's own program links for scripts of its own.
+  const swapped = `#!/bin/sh\n${note("a program the check swapped in")}\nexec ${spawnSync("bash", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim()} "$@"\n`;
+  writeFileSync(join(f.root, "scripts/leak.sh"), `${note("the project's check")}
+for f in "\${TMPDIR:-/tmp}"/kit-pr-programs-*/git; do rm -f "$f" 2>/dev/null; printf '%s' ${JSON.stringify(swapped)} > "$f" 2>/dev/null && chmod +x "$f"; done
+exit 0
+`);
   writeFileSync(join(f.root, ".gitattributes"), "* filter=leak diff=leak merge=leak\n");
   f.git("add", "scripts/leak.sh", ".gitattributes"); f.git("commit", "-qm", "Build change");
   f.commit("Close ticket", "ticket.md", shaTicket("1111111", "2222222"));
@@ -3893,7 +3898,8 @@ test("PROOF: kit pr runs no hook, Git filter, diff tool, merge driver, PATH tool
   // The check ran (inside the lock), and the folder remote's hook ran inside it too.
   assert.match(left, /^the project's check\n.*(No such file or directory|Permission denied)\ntoken=\.$/m);
   assert.match(left, /^the folder remote's pre-receive\n.*(No such file or directory|Permission denied)\ntoken=\.$/m);
-  for (const who of ["hook ", "a program the Git settings name", "PATH tool git", "PATH tool gh", "PATH tool node", "BASH_ENV"]) assert.ok(!left.includes(who), `${who.trim()} ran: ${left}`);
+  for (const who of ["hook ", "a program the Git settings name", "PATH tool git", "PATH tool gh", "PATH tool node", "BASH_ENV", "a program the check swapped in"])
+    assert.ok(!left.includes(who), `${who.trim()} ran: ${left}`);
   // The work landed: rebased on the new upstream, with kit pr's own commit naming the commits.
   assert.equal(f.gitAt(f.origin, "log", "-1", "--format=%s", "refs/heads/feature/kit-pr"), "docs: ticket commits by subject");
 });
@@ -3905,13 +3911,22 @@ test("kit pr refuses a fetch while the repository's own Git config holds http or
   assert.equal(steered.status, 1, steered.stdout + steered.stderr);
   assert.match(steered.stdout, /^RESULT: fail fetch: the repository's own Git config holds http\.proxy, which could send the credentials of a fetch or push elsewhere/m);
   f.git("config", "--unset", "http.proxy");
-  // Git LFS's filter would not run, so a rebase would leave pointer files: kit pr stops before it.
-  writeFileSync(join(f.root, ".gitattributes"), "*.bin filter=lfs diff=lfs merge=lfs -text\n");
-  f.git("add", ".gitattributes"); f.git("commit", "-qm", "Track binaries with LFS");
+  // Git LFS's filter would not run, so a rebase would leave pointer files: kit pr stops before it, for attributes in a
+  // folder of the branch, and for the land branch's own once it took up LFS.
+  mkdirSync(join(f.root, "assets"));
+  writeFileSync(join(f.root, "assets/.gitattributes"), "*.bin filter=lfs diff=lfs merge=lfs -text\n");
+  f.git("add", "assets/.gitattributes"); f.git("commit", "-qm", "Track binaries with LFS");
   const lfs = f.run();
   assert.equal(lfs.status, 1, lfs.stdout + lfs.stderr);
-  assert.match(lfs.stdout, /^RESULT: fail guards: this repository uses Git LFS \(filter=lfs in \.gitattributes\)/m);
+  assert.match(lfs.stdout, /^RESULT: fail lfs: this repository uses Git LFS \(filter=lfs in HEAD:assets\/\.gitattributes\); kit pr does not read your global Git config, where Git LFS is set up/m);
   assert.equal(f.calls().some(call => call.tool === "gh"), false);
+  f.git("reset", "-q", "--hard", "HEAD~1");
+  const peer = f.peer();
+  writeFileSync(join(peer, ".gitattributes"), "*.psd filter=lfs -text\n");
+  f.gitAt(peer, "add", ".gitattributes"); f.gitAt(peer, "commit", "-qm", "LFS on dev"); f.gitAt(peer, "push", "-q", "origin", "dev");
+  const landLfs = f.run();
+  assert.equal(landLfs.status, 1, landLfs.stdout + landLfs.stderr);
+  assert.match(landLfs.stdout, /^RESULT: fail lfs: this repository uses Git LFS \(filter=lfs in origin\/dev:\.gitattributes\)/m);
   // With the lock off, LFS is the project's own business again, and the checks say they ran unlocked.
   const off = f.run([], { ASE_KEY_GUARD: "off" });
   assert.equal(off.status, 0, off.stdout + off.stderr);
