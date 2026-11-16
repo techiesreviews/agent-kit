@@ -2984,13 +2984,21 @@ test("out of budget with a should (P2) left lands as a follow-up for Lex but the
   assert.doesNotMatch(result.stdout, /Verdict: approved/);
 });
 
-// TOOLS-287: kit pr counts the fix rounds from the review records themselves (review round N comes after N - 1 fix rounds),
-// since the cut kit fix no longer saves them: 3 fix rounds (5 for a risky change), then only blockers block.
-const reviewAtRound = (f: ReturnType<typeof fixture>, round: number, severity?: string, owner?: string) => {
-  const text = severity ? `${severity}: Real finding.` : "";
-  const path = f.saveReview(severity ? cleanReview.replace("Spec: none.", `Spec: ${text}`) : cleanReview, owner);
-  writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ round, model: "claude-opus-5-5", head: f.git("rev-parse", "HEAD"),
-    findings: severity ? [{ id: `R${round}-1`, group: "Spec", severity, kind: "unsorted", text }] : [] }));
+// TOOLS-287: kit pr counts the fix rounds from the review records themselves, since the cut kit fix no longer saves them:
+// every earlier review that left a finding above a nit (Claude's rounds and the branch's second looks). 3 fix rounds (5 for a
+// risky change), then only blockers block.
+// The review being weighed is round `round`, linked by `previous` to rounds 1 … round - 1, each of which left a finding of
+// severity `earlier` (none when null: a clean round).
+const reviewAtRound = (f: ReturnType<typeof fixture>, round: number, severity?: string, owner = f.env.ASE_OWNER!, earlier: string | null = "P2") => {
+  const record = (n: number, level?: string | null) => ({ round: n, model: "claude-opus-5-5", ...(n > 1 ? { previous: `20261019T0900${String(n - 1).padStart(2, "0")}Z` } : {}),
+    findings: level ? [{ id: `R${n}-1`, group: "Spec", severity: level, kind: "unsorted", text: `${level}: Real finding.` }] : [] });
+  for (let n = 1; n < round; n++) {
+    const folder = join(f.main, ".scratch/reviews", owner, `20261019T0900${String(n).padStart(2, "0")}Z`);
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "findings.json"), JSON.stringify(record(n, earlier)));
+  }
+  const path = f.saveReview(severity ? cleanReview.replace("Spec: none.", `Spec: ${severity}: Real finding.`) : cleanReview, owner);
+  writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ ...record(round, severity), head: f.git("rev-parse", "HEAD") }));
 };
 
 test("3 fix rounds recorded by the reviews (review round 4): an open should lands as a follow-up, listed for Lex, never approved", t => {
@@ -3010,6 +3018,52 @@ test("3 fix rounds recorded by the reviews (review round 4): an open should land
   assert.equal(blocked.status, 1, blocked.stdout + blocked.stderr);
   assert.match(blocked.stdout, /RESULT: fail pr #73 review has 1 open findings/);
   assert.doesNotMatch(blocked.stdout, /Review budget used/);
+});
+
+test("a clean or nits-only earlier review called for no fix: review round 4 after three clean rounds still blocks on a should", t => {
+  for (const earlier of [null, "P3"]) {
+    const f = fixture(t);
+    reviewAtRound(f, 4, "P2", undefined, earlier);
+    const result = f.run();
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, /RESULT: fail pr #73 review has 1 open findings/);
+    assert.doesNotMatch(result.stdout, /Review budget used/);
+  }
+});
+
+test("the branch's earlier second looks count as fix rounds: Claude clean every time, three second looks with a should, then the fourth's should lands", t => {
+  const f = fixture(t);
+  // Three earlier heads, each with a second look that found a should, then the head kit pr lands.
+  const heads = [f.git("rev-parse", "HEAD~1"), f.git("rev-parse", "HEAD"), f.commit("Third change")];
+  f.commit("Fourth change");
+  heads.forEach((looked, index) => {
+    const folder = join(f.main, ".scratch/reviews/ak-14", `20261019T08000${index}Z`);
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "refs.txt"), `${looked}\n${f.git("merge-base", "origin/dev", "HEAD")}\n`);
+    writeFileSync(join(folder, "result.md"), `REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P2 an earlier second-look should ${index}.\n`);
+    writeFileSync(join(folder, "second-look.json"), JSON.stringify({ kind: "code", model: "grok-4.7", ok: true, branch: "feature/kit-pr" }));
+  });
+  reviewAtRound(f, 1);
+  const should = "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P2 a new second-look should.\n";
+  const landed = f.run([], { FAKE_SECOND_REVIEW: should });
+  assert.equal(landed.status, 0, landed.stdout + landed.stderr);
+  assert.match(landed.stdout, /^Review budget used: 3 of 3 fix rounds, 1 open finding\./m);
+  assert.match(landed.stdout, /^second look: 1 follow-ups after 3 fix rounds \(non-blocking\)$/m);
+  // Another branch's second looks, or ones not marked as come back, count for nothing.
+  const g = fixture(t);
+  const other = [g.git("rev-parse", "HEAD~1"), g.git("rev-parse", "HEAD"), g.commit("Third change")];
+  g.commit("Fourth change");
+  other.forEach((looked, index) => {
+    const folder = join(g.main, ".scratch/reviews/ak-14", `20261019T08000${index}Z`);
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "refs.txt"), `${looked}\n${g.git("merge-base", "origin/dev", "HEAD")}\n`);
+    writeFileSync(join(folder, "result.md"), "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P2 an earlier should.\n");
+    writeFileSync(join(folder, "second-look.json"), JSON.stringify({ kind: "code", model: "grok-4.7", ok: index !== 0, branch: index === 1 ? "feature/other" : "feature/kit-pr" }));
+  });
+  reviewAtRound(g, 1);
+  const held = g.run([], { FAKE_SECOND_REVIEW: should });
+  assert.equal(held.status, 1, held.stdout + held.stderr);
+  assert.match(held.stdout, /RESULT: fail pr #73 second look has 1 open findings/);
 });
 
 test("after the 3 fix rounds the reviews recorded, a P0 or P1 still blocks", t => {

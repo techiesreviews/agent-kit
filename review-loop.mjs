@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { doneHeading } from "./pr-tier.mjs";
-import { blockingFindings, parseMarks } from "./review-findings.mjs";
+import { blockingFindings, openFindings, parseMarks } from "./review-findings.mjs";
 export { parseMarks };
 
 /** Rounds of fixing a normal change gets, and the most a risky change gets while a blocker or should stays open. */
@@ -73,12 +73,42 @@ export function branchRisk({ root, base, ticket, settings }) {
 export const roundLimit = risky => (risky ? RISKY_ROUNDS : NORMAL_ROUNDS);
 
 /**
- * The fix rounds a branch has used, from its chain of review records (reviewChain): review round N comes after N - 1 fix
- * rounds, so it is the last record's round minus one. No record, or a round that is not a whole number above 0, counts 0.
+ * The fix rounds a branch has used (TOOLS-287): every earlier review that left a finding above a nit and was answered by a
+ * later one. `chain` is Claude's chain of review records (reviewChain), the last one the review being weighed; `secondLooks`
+ * are the branch's earlier second looks ([{ head, findings }], at heads before the current one, see earlierSecondLooks).
+ * A clean or nits-only review called for no fix, so it counts none; a second look at a head that Claude's review there
+ * already counted is the same round.
  */
-export function fixRoundsDone(chain) {
-  const round = chain.at(-1)?.round;
-  return Number.isInteger(round) && round > 0 ? round - 1 : 0;
+export function fixRoundsDone(chain, secondLooks = []) {
+  const above = record => (record.findings ?? []).some(item => !isNit(item));
+  const rounds = chain.slice(0, -1).filter(above);
+  const counted = new Set(rounds.map(record => record.head).filter(Boolean));
+  const looked = new Set(secondLooks.filter(look => look.head && !counted.has(look.head) && above(look)).map(look => look.head));
+  return rounds.length + looked.size;
+}
+
+/**
+ * The branch's earlier second looks that came back, under any owner in `reviewsRoot`: each one marked for `branch` whose
+ * reviewed head is an ancestor of `head` and not `head` itself (a rebase leaves the old heads out, so the count starts
+ * again, as Claude's rounds do). Returns [{ head, findings }] with the findings its result.md left open.
+ */
+export function earlierSecondLooks(reviewsRoot, { branch, head, root }) {
+  if (!branch || !head || !existsSync(reviewsRoot)) return [];
+  const looks = [];
+  for (const owner of readdirSync(reviewsRoot, { withFileTypes: true }).filter(entry => entry.isDirectory())) {
+    for (const entry of readdirSync(join(reviewsRoot, owner.name), { withFileTypes: true }).filter(item => item.isDirectory())) {
+      const folder = join(reviewsRoot, owner.name, entry.name);
+      try {
+        const mark = JSON.parse(readFileSync(join(folder, "second-look.json"), "utf8"));
+        if (mark?.ok !== true || mark.branch !== branch) continue;
+        const looked = readFileSync(join(folder, "refs.txt"), "utf8").split(/\r?\n/)[0].trim();
+        if (!/^[0-9a-f]{7,64}$/.test(looked) || looked === head) continue;
+        execFileSync("git", ["-C", root, "merge-base", "--is-ancestor", looked, head], { stdio: "ignore" });
+        looks.push({ head: looked, findings: openFindings(readFileSync(join(folder, "result.md"), "utf8")).findings });
+      } catch { /* Not a second look of this branch's history, or unreadable: it counts no round. */ }
+    }
+  }
+  return looks;
 }
 
 /** blocker (P0, P1), should (P2) or nit (P3, a validation gap); an unread severity counts as a blocker, never as a nit. */
