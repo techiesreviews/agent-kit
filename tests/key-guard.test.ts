@@ -151,7 +151,14 @@ test("a git config with a token in a URL and a shell start-up file that sets a t
   writeFileSync(join(home, ".git-private"), '[url "https://x:ghp_y@github.com/"]\n\tinsteadOf = https://github.com/\n[include]\n\tpath = chain/a.inc\n');
   for (const [name, next] of [["a", "b"], ["b", "c"]]) writeFileSync(join(home, `chain/${name}.inc`), `[include]\n\tpath = ${next}.inc\n`);
   writeFileSync(join(home, "chain/c.inc"), `[http]\n\textraheader = Authorization: Bearer ${dummy}\n`);
+  // A source that is not the first word of its line is followed too: after a test, in an if, after another command.
+  writeFileSync(join(home, ".zshenv"), '[ -f "$HOME/guarded/a.sh" ] && source "$HOME/guarded/a.sh"\nif [ -r ~/guarded/b.sh ]; then . ~/guarded/b.sh; fi\nexport EDITOR=vi; source ~/guarded/c.sh || true\ntest -f ~/guarded/d.sh && { . ~/guarded/d.sh; }\n');
+  mkdirSync(join(home, "guarded"));
+  for (const name of ["a", "b", "c", "d"]) writeFileSync(join(home, `guarded/${name}.sh`), `export GH_TOKEN=${dummy}\n`);
+  writeFileSync(join(home, "guarded/plain.sh"), "export EDITOR=vi\n");
   const paths = lockedPaths("claude", { HOME: home });
+  for (const name of ["a", "b", "c", "d"]) assert.ok(paths.includes(join(home, `guarded/${name}.sh`)), `guarded/${name}.sh`);
+  assert.ok(!paths.includes(join(home, ".zshenv")) && !paths.includes(join(home, "guarded/plain.sh")));
   for (const file of ["chain/keys.sh", "chain/c.inc"]) assert.ok(paths.includes(join(home, file)), file);
   for (const file of ["chain/one.sh", "chain/three.sh", "chain/a.inc"]) assert.ok(!paths.includes(join(home, file)), file);
   for (const file of [".bash_aliases", ".secrets.sh", ".git-private", "keys/deploy", "vault/id_ed25519"]) assert.ok(paths.includes(join(home, file)), file);

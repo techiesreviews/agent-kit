@@ -1006,6 +1006,11 @@ import { appendFileSync, existsSync, fstatSync, readFileSync, writeSync } from "
 const args = process.argv.slice(2);
 const answers = process.env.FAKE_CALLS + ".answers";
 const v1 = process.env.FAKE_OPENCODE_VERSION === "1";
+// The key lock (TOOLS-285): what each call could read, the help probe and the export included: a dummy key file and the token variable.
+if (process.env.FAKE_LOCK_PROBE) {
+  let key; try { key = readFileSync(process.env.FAKE_KEY, "utf8").trim(); } catch (error) { key = "refused " + error.code; }
+  appendFileSync(process.env.FAKE_LOCK_PROBE, JSON.stringify({ call: args.includes("--help") ? "help" : args.includes("export") ? "export" : args[0], token: process.env.GH_TOKEN ?? "", key }) + "\\n");
+}
 if (args.includes("--help")) {
   if (process.env.FAKE_OPENCODE_VERSION === "broken") { console.error("Error: unknown command run"); process.exit(2); }
   console.log(v1 ? "opencode run [message..]\\n  --pure  run without external plugins\\n  --dir  directory to run in" : "USAGE\\n  opencode run [flags]\\nGLOBAL FLAGS\\n  --standalone  Run with a private server instead of the background service");
@@ -1107,6 +1112,20 @@ function withOpencode(f: ReturnType<typeof fixture>) {
 }
 
 const opencodeModel = "opencode/deepseek-v4.1-flash-free";
+
+test("an OpenCode review's help probe, its run and its export all start inside the key lock, without the token variables", (t) => {
+  const f = fixture(t);
+  withOpencode(f);
+  const keys = join(f.dir, "keys"), probe = join(f.dir, "lock-probe.jsonl");
+  mkdirSync(keys); writeFileSync(join(keys, "token"), "dummy-key-not-real\n");
+  const report = "REVIEW_STATUS: complete\nSpec defects: none.\nStandards defects: none.\nValidation gaps: none.\nOptional nits: none.\n";
+  const result = f.run(["--base", "HEAD~1"], { ASE_REVIEW_MODEL: opencodeModel, FAKE_REPORT: report, GH_TOKEN: "dummy-token-not-real", KIT_KEY_PATHS: keys,
+    FAKE_KEY: join(keys, "token"), FAKE_LOCK_PROBE: probe });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const seen: { call: string; token: string; key: string }[] = readFileSync(probe, "utf8").trim().split("\n").map(line => JSON.parse(line));
+  assert.deepEqual([...new Set(seen.map(call => call.call))].sort(), ["export", "help", "run"]);
+  for (const call of seen) assert.deepEqual({ token: call.token, key: call.key }, { token: "", key: "refused ENOENT" }, call.call);
+});
 
 test("kit review runs opencode/<model> read-only, saves findings with severities and leaves the Grok count alone", (t) => {
   const f = fixture(t);
