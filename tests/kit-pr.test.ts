@@ -3031,39 +3031,59 @@ test("a clean or nits-only earlier review called for no fix: review round 4 afte
   }
 });
 
+// Earlier second looks of this branch at `heads`, each marked as come back (`marks` changes a look's mark) with a should.
+const earlierLooks = (f: ReturnType<typeof fixture>, heads: string[], marks: Record<string, unknown>[] = []) => heads.forEach((looked, index) => {
+  const folder = join(f.main, ".scratch/reviews/ak-14", `20261019T08000${index}Z`);
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "refs.txt"), `${looked}\n${f.git("merge-base", "origin/dev", "HEAD")}\n`);
+  writeFileSync(join(folder, "result.md"), `REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P2 an earlier second-look should ${index}.\n`);
+  writeFileSync(join(folder, "second-look.json"), JSON.stringify({ kind: "code", model: "grok-4.7", ok: true, branch: "feature/kit-pr", ...marks[index] }));
+});
+const secondShould = "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P2 a new second-look should.\n";
+
 test("the branch's earlier second looks count as fix rounds: Claude clean every time, three second looks with a should, then the fourth's should lands", t => {
   const f = fixture(t);
   // Three earlier heads, each with a second look that found a should, then the head kit pr lands.
-  const heads = [f.git("rev-parse", "HEAD~1"), f.git("rev-parse", "HEAD"), f.commit("Third change")];
+  earlierLooks(f, [f.git("rev-parse", "HEAD~1"), f.git("rev-parse", "HEAD"), f.commit("Third change")]);
   f.commit("Fourth change");
-  heads.forEach((looked, index) => {
-    const folder = join(f.main, ".scratch/reviews/ak-14", `20261019T08000${index}Z`);
-    mkdirSync(folder, { recursive: true });
-    writeFileSync(join(folder, "refs.txt"), `${looked}\n${f.git("merge-base", "origin/dev", "HEAD")}\n`);
-    writeFileSync(join(folder, "result.md"), `REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P2 an earlier second-look should ${index}.\n`);
-    writeFileSync(join(folder, "second-look.json"), JSON.stringify({ kind: "code", model: "grok-4.7", ok: true, branch: "feature/kit-pr" }));
-  });
   reviewAtRound(f, 1);
-  const should = "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P2 a new second-look should.\n";
-  const landed = f.run([], { FAKE_SECOND_REVIEW: should });
+  const landed = f.run([], { FAKE_SECOND_REVIEW: secondShould });
   assert.equal(landed.status, 0, landed.stdout + landed.stderr);
   assert.match(landed.stdout, /^Review budget used: 3 of 3 fix rounds, 1 open finding\./m);
   assert.match(landed.stdout, /^second look: 1 follow-ups after 3 fix rounds \(non-blocking\)$/m);
   // Another branch's second looks, or ones not marked as come back, count for nothing.
   const g = fixture(t);
-  const other = [g.git("rev-parse", "HEAD~1"), g.git("rev-parse", "HEAD"), g.commit("Third change")];
+  earlierLooks(g, [g.git("rev-parse", "HEAD~1"), g.git("rev-parse", "HEAD"), g.commit("Third change")], [{ ok: false }, { branch: "feature/other" }]);
   g.commit("Fourth change");
-  other.forEach((looked, index) => {
-    const folder = join(g.main, ".scratch/reviews/ak-14", `20261019T08000${index}Z`);
-    mkdirSync(folder, { recursive: true });
-    writeFileSync(join(folder, "refs.txt"), `${looked}\n${g.git("merge-base", "origin/dev", "HEAD")}\n`);
-    writeFileSync(join(folder, "result.md"), "REVIEW_STATUS: complete\nDefects:\n- Spec: file.txt:1 P2 an earlier should.\n");
-    writeFileSync(join(folder, "second-look.json"), JSON.stringify({ kind: "code", model: "grok-4.7", ok: index !== 0, branch: index === 1 ? "feature/other" : "feature/kit-pr" }));
-  });
   reviewAtRound(g, 1);
-  const held = g.run([], { FAKE_SECOND_REVIEW: should });
+  const held = g.run([], { FAKE_SECOND_REVIEW: secondShould });
   assert.equal(held.status, 1, held.stdout + held.stderr);
   assert.match(held.stdout, /RESULT: fail pr #73 second look has 1 open findings/);
+});
+
+test("the second looks' rounds survive the rebase kit pr starts with when the patch stays the same", t => {
+  const f = fixture(t);
+  earlierLooks(f, [f.git("rev-parse", "HEAD~1"), f.git("rev-parse", "HEAD"), f.commit("Third change")]);
+  f.commit("Fourth change");
+  reviewAtRound(f, 1);
+  const peer = f.peer();
+  writeFileSync(join(peer, "upstream.txt"), "moved base\n");
+  f.gitAt(peer, "add", "."); f.gitAt(peer, "commit", "-m", "base moved"); f.gitAt(peer, "push", "origin", "dev");
+  const landed = f.run([], { FAKE_SECOND_REVIEW: secondShould });
+  assert.equal(landed.status, 0, landed.stdout + landed.stderr);
+  assert.match(landed.stdout, /review: reused \(same patch on new base\)/);
+  assert.match(landed.stdout, /^second look: 1 follow-ups after 3 fix rounds \(non-blocking\)$/m);
+});
+
+test("the docs tier, with no Claude review, counts its earlier second looks alone", t => {
+  const f = fixture(t, { "docs/guide.md": "# Guide\n" });
+  const heads = [f.git("rev-parse", "HEAD")];
+  for (const n of [2, 3]) heads.push(f.commit(`Docs ${n}`, "docs/guide.md", `# Guide ${n}\n`));
+  earlierLooks(f, heads);
+  f.commit("Docs 4", "docs/guide.md", "# Guide 4\n");
+  const landed = f.run([], { FAKE_SECOND_REVIEW: secondShould });
+  assert.equal(landed.status, 0, landed.stdout + landed.stderr);
+  assert.match(landed.stdout, /^second look: 1 follow-ups after 3 fix rounds \(non-blocking\)$/m);
 });
 
 test("after the 3 fix rounds the reviews recorded, a P0 or P1 still blocks", t => {

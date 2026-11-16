@@ -494,6 +494,11 @@ test("fix rounds done: earlier reviews with a finding above a nit, Claude's roun
   // Earlier second looks count, once per head, and not again where Claude's round at that head already counted.
   assert.equal(fixRoundsDone([record("c", [])], [record("a", should), record("a", should), record("b", should)]), 2);
   assert.equal(fixRoundsDone([record("a", should), record("c", [])], [record("a", should), record("b", [finding("P3")])]), 1);
+  // Two rounds at one head (a decline, or a lead's round at the builder's last head) are one round; one at the head being weighed is none.
+  assert.equal(fixRoundsDone([record("a", should), record("b", should), record("c", should), record("c", should)]), 2);
+  assert.equal(fixRoundsDone([record("a", should), record("a", should), record("b", should)]), 1);
+  // An old record that saved no head counts one round by itself.
+  assert.equal(fixRoundsDone([{ findings: should }, { findings: should }, record("c", should)]), 2);
 });
 
 test("earlier second looks of a branch: only marked ones that came back, for this branch, at heads before the current one", t => {

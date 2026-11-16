@@ -958,14 +958,16 @@ async function main(args) {
       const { findings } = openFindings(resultMd);
       // The review's own record: the ids it gave its findings (a second look's are SL-<n>), and what the builder declined along the chain.
       const chain = reviewChain(dirname(resultPath));
-      // The fix rounds used (TOOLS-287), from the review records: Claude's earlier rounds and the branch's earlier second looks
-      // that left a finding above a nit. Both looks share the budget, so the second look takes the count Claude's review of this
-      // head worked out (the docs tier, with no Claude review, counts its second looks alone). Rounds the cut kit fix saved for
-      // the branch (.scratch/kit-fix) still count.
+      // The fix rounds used (TOOLS-287), from the review records: the earlier heads at which Claude's rounds or the branch's second
+      // looks left a finding above a nit. Both looks share the budget, so the second look takes the count Claude's review of this
+      // head worked out (the docs tier, with no Claude review, counts its second looks alone). The second looks are found from the
+      // head Claude's review saw, which a review reused after a same-patch rebase keeps. Rounds the cut kit fix saved for the
+      // branch (.scratch/kit-fix) still count.
       const legacyRounds = completedFixRounds(join(kitMainRoot(), ".scratch/kit-fix", encodeURIComponent(branch)),
         join(root, ".scratch/kit-fix", encodeURIComponent(branch)));
-      const rounds = loopRounds ?? Math.max(legacyRounds, fixRoundsDone(second ? [] : chain,
-        earlierSecondLooks(join(kitMainRoot(), ".scratch/reviews"), { branch, head, root })));
+      const claude = second ? [] : chain;
+      const rounds = loopRounds ?? Math.max(legacyRounds, fixRoundsDone(claude,
+        earlierSecondLooks(join(kitMainRoot(), ".scratch/reviews"), { branch, head: claude.at(-1)?.head ?? head, root })));
       loopRounds = rounds;
       const limit = roundLimit(loopRisk.risky);
       // Nits alone never block or call for a round; blockers and shoulds do while the budget lasts, then only blockers (nits stop the loop; out of budget is never approval).

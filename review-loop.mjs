@@ -73,24 +73,28 @@ export function branchRisk({ root, base, ticket, settings }) {
 export const roundLimit = risky => (risky ? RISKY_ROUNDS : NORMAL_ROUNDS);
 
 /**
- * The fix rounds a branch has used (TOOLS-287): every earlier review that left a finding above a nit and was answered by a
- * later one. `chain` is Claude's chain of review records (reviewChain), the last one the review being weighed; `secondLooks`
- * are the branch's earlier second looks ([{ head, findings }], at heads before the current one, see earlierSecondLooks).
- * A clean or nits-only review called for no fix, so it counts none; a second look at a head that Claude's review there
- * already counted is the same round.
+ * The fix rounds a branch has used (TOOLS-287): every earlier head at which a review left a finding above a nit, answered by
+ * a later commit. `chain` is Claude's chain of review records (reviewChain), the last one the review being weighed;
+ * `secondLooks` are the branch's earlier second looks ([{ head, findings }], see earlierSecondLooks). A clean or nits-only
+ * review called for no fix, so it counts none; reviews at the same head (both looks, or a round after a decline) are one
+ * round, and one at the head being weighed is none. An old record that saved no head counts one round by itself.
  */
 export function fixRoundsDone(chain, secondLooks = []) {
   const above = record => (record.findings ?? []).some(item => !isNit(item));
-  const rounds = chain.slice(0, -1).filter(above);
-  const counted = new Set(rounds.map(record => record.head).filter(Boolean));
-  const looked = new Set(secondLooks.filter(look => look.head && !counted.has(look.head) && above(look)).map(look => look.head));
-  return rounds.length + looked.size;
+  const current = chain.at(-1)?.head, heads = new Set();
+  let headless = 0;
+  for (const record of [...chain.slice(0, -1), ...secondLooks].filter(above)) {
+    if (!record.head) headless++;
+    else if (record.head !== current) heads.add(record.head);
+  }
+  return heads.size + headless;
 }
 
 /**
  * The branch's earlier second looks that came back, under any owner in `reviewsRoot`: each one marked for `branch` whose
- * reviewed head is an ancestor of `head` and not `head` itself (a rebase leaves the old heads out, so the count starts
- * again, as Claude's rounds do). Returns [{ head, findings }] with the findings its result.md left open.
+ * reviewed head is an ancestor of `head` and not `head` itself. kit pr passes the head Claude's review saw, which a review
+ * reused after a rebase with the same patch keeps, so the count survives that rebase; a rebase that changes the patch, or one
+ * in the docs tier (no Claude review), starts it again. Returns [{ head, findings }] with the findings its result.md left open.
  */
 export function earlierSecondLooks(reviewsRoot, { branch, head, root }) {
   if (!branch || !head || !existsSync(reviewsRoot)) return [];
