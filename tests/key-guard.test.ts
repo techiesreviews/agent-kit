@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { bwrapArgs, bwrapWorks, codexPaths, codexProfile, existingPaths, keyGuard, keyGuardReport, keyPathsWarning, linkTargets, lockedPaths, resetBwrapProbe, scrubbedEnv } from "../key-guard.mjs";
 import { kitEnv, testHomeFolder } from "./support/kit-env.ts";
+import { asPlatform, onMacos, pathWithoutBwrap } from "./support/no-bwrap.ts";
 
 // The key lock (TOOLS-285): agents the kit starts cannot read the machine's key files. Every key here is a made-up
 // dummy in a temporary HOME; no test reads a real key file.
@@ -164,7 +165,7 @@ test("Codex gets a permissions profile: the key paths unreadable, a build writin
     "-c", "permissions.kit-review.network={enabled=false}"]);
 });
 
-test("the lock is on unless ASE_KEY_GUARD=off; without bubblewrap a run goes on unlocked and says so, ASE_KEY_GUARD=on refuses it; an API-route build is refused", t => {
+test("the lock is on unless ASE_KEY_GUARD=off; without bubblewrap a Linux run is refused in plain words, a macOS or Windows one starts unwrapped and says so; an API-route build is refused", t => {
   const off = keyGuard({ cli: "claude", kind: "build", common: "/c", env: { ASE_KEY_GUARD: "off" } });
   assert.equal(off.off, true);
   assert.deepEqual(off.wrap("claude", ["-p"]), ["claude", ["-p"]]);
@@ -173,27 +174,34 @@ test("the lock is on unless ASE_KEY_GUARD=off; without bubblewrap a run goes on 
   assert.ok(Object.hasOwn(codex.env, "GH_TOKEN"));
   const empty = mkdtempSync(join(tmpdir(), "kit-no-bwrap-"));
   t.after(() => { rmSync(empty, { recursive: true, force: true }); resetBwrapProbe(); });
-  resetBwrapProbe();
-  // No bubblewrap on this machine (macOS, Windows, a Linux without the package): the run goes on as before the lock,
-  // for every CLI, and the guard carries the line for the run's log. Nothing is searched, so no key folder can stop it.
+  const fresh = <T>(body: () => T) => { resetBwrapProbe(); try { return body(); } finally { resetBwrapProbe(); } };
+  // Linux has bubblewrap one command away, so a missing one stops the run with that command.
+  const refused = /cannot lock the key files for this build: bubblewrap \(bwrap\) is not installed; install it \(apt install bubblewrap\); or set ASE_KEY_GUARD=off/;
+  fresh(() => assert.throws(() => keyGuard({ cli: "claude", kind: "build", common: "/c", env: { HOME: "/h", PATH: empty } }), refused));
+  // macOS and Windows have none: Claude, Grok and OpenCode start as they are, with the token variables dropped and the
+  // line for the run's log. Nothing is searched for them, so no key folder can stop the run.
   const shut = join(empty, "home/.config/fleet/shut"); mkdirSync(shut, { recursive: true }); chmodSync(shut, 0o111);
-  for (const cli of ["claude", "grok", "opencode", "codex"]) {
-    const open = keyGuard({ cli, kind: "review", common: "/c", env: { HOME: join(empty, "home"), PATH: empty, GH_TOKEN: "x" } });
-    assert.deepEqual({ off: open.off, missing: open.missing, env: open.env, codex: open.codex, bwrap: open.bwrap }, { off: true, missing: true, env: {}, codex: undefined, bwrap: undefined }, cli);
+  for (const platform of ["darwin", "win32"] as const) for (const cli of ["claude", "grok", "opencode"]) {
+    const open = fresh(() => asPlatform(platform, () => keyGuard({ cli, kind: "review", common: "/c", env: { HOME: join(empty, "home"), PATH: empty, GH_TOKEN: "x", KIT_KEY_PATHS: "rel" } })));
+    assert.deepEqual({ off: open.off, missing: open.missing, token: Object.hasOwn(open.env, "GH_TOKEN") && open.env.GH_TOKEN, codex: open.codex, bwrap: open.bwrap },
+      { off: true, missing: true, token: undefined, codex: undefined, bwrap: undefined }, `${platform} ${cli}`);
+    assert.equal(open.warning, "off on this machine (no bubblewrap); builders can read key files (token variables are still dropped, and Codex keeps its own profile); KIT_KEY_PATHS entry 'rel' is not a full path, so it is not locked; write it from / on");
     assert.deepEqual(open.wrap(cli, ["-p"]), [cli, ["-p"]]);
   }
-  chmodSync(shut, 0o755);
-  // ASE_KEY_GUARD=on asks for the lock or nothing: such a run stops.
-  assert.throws(() => keyGuard({ cli: "claude", kind: "build", common: "/c", env: { HOME: "/h", PATH: empty, ASE_KEY_GUARD: "on" } }),
-    /cannot lock the key files for this build: bubblewrap \(bwrap\) is not installed; install it \(apt install bubblewrap\); or set ASE_KEY_GUARD=off/);
-  assert.equal(keyGuard({ cli: "codex", kind: "build", common: "/c", env: { HOME: "/h", PATH: empty, ASE_KEY_GUARD: "ON" } }).codex[1], 'default_permissions="kit-build"');
-  // A bubblewrap that is there but cannot start is no missing one: the run still stops, with the step that fixes it.
+  chmodSync(shut, 0o755); rmSync(join(empty, "home"), { recursive: true });
+  // Codex's own profile needs no bubblewrap: it holds there too, with the variables dropped and its own warnings.
+  const mac = fresh(() => asPlatform("darwin", () => keyGuard({ cli: "codex", kind: "build", common: "/c", env: { HOME: "/h", PATH: empty, GH_TOKEN: "x", KIT_KEY_PATHS: "rel" } })));
+  assert.equal(mac.codex[1], 'default_permissions="kit-build"'); assert.ok(Object.hasOwn(mac.env, "GH_TOKEN") && !mac.off && !mac.missing);
+  assert.match(mac.warning, /(^|; )KIT_KEY_PATHS entry 'rel' is not a full path, so it is not locked; write it from \/ on$/);
+  const shown = fresh(() => keyGuard({ cli: "codex", kind: "build", common: "/c", env: { HOME: "/h", PATH: empty, DISPLAY: ":0", KIT_KEY_PATHS: "rel" } }));
+  assert.match(shown.warning, /^the X display could not be checked \(bubblewrap \(bwrap\) is not installed; .*; KIT_KEY_PATHS entry 'rel' is not a full path, so it is not locked; write it from \/ on$/);
+  // ASE_KEY_GUARD=on asks for the lock or no run: such a run stops there as well.
+  fresh(() => asPlatform("darwin", () => assert.throws(() => keyGuard({ cli: "claude", kind: "build", common: "/c", env: { HOME: "/h", PATH: empty, ASE_KEY_GUARD: "ON" } }), refused)));
+  // A bubblewrap that is there but cannot start is no missing one: the run stops on every system, with the step that fixes it.
   writeFileSync(join(empty, "bwrap"), '#!/bin/sh\necho "bwrap: setting up uid map: Permission denied" >&2\nexit 1\n'); chmodSync(join(empty, "bwrap"), 0o755);
-  resetBwrapProbe();
-  assert.throws(() => keyGuard({ cli: "claude", kind: "build", common: "/c", env: { HOME: "/h", PATH: empty } }),
-    /cannot lock the key files for this build: the system blocks the sandboxes bubblewrap makes/);
+  fresh(() => asPlatform("darwin", () => assert.throws(() => keyGuard({ cli: "claude", kind: "build", common: "/c", env: { HOME: "/h", PATH: empty } }),
+    /cannot lock the key files for this build: the system blocks the sandboxes bubblewrap makes/)));
   rmSync(join(empty, "bwrap"));
-  resetBwrapProbe();
   if (!bwrapUsable) return;
   assert.throws(() => keyGuard({ cli: "claude", kind: "build", common: "/c", env: { HOME: "/h", PATH: process.env.PATH }, apiRoute: true }),
     /cannot lock the key files for a build on the API route/);
@@ -261,21 +269,10 @@ test("PROOF: a Claude build cannot read dummy key files in its HOME nor the toke
   for (const file of Object.values(files)) assert.equal(readFileSync(file, "utf8"), `${dummy}\n`);
 });
 
-// PATH as it is but without bubblewrap: every program of every PATH folder linked into one folder, bwrap left out.
-function pathWithoutBwrap(dir: string) {
-  const bin = join(dir, "no-bwrap-bin"); mkdirSync(bin);
-  for (const folder of String(process.env.PATH).split(":").filter(Boolean)) {
-    let names: string[] = [];
-    try { names = readdirSync(folder); } catch { continue; }
-    for (const name of names) if (name !== "bwrap") try { symlinkSync(join(folder, name), join(bin, name)); } catch { /* An earlier folder's program wins. */ }
-  }
-  return bin;
-}
-
-test("PROOF: on a machine without bubblewrap a Claude build still runs, unlocked, and its log says so in one line; ASE_KEY_GUARD=on stops it", t => {
+test("PROOF: without bubblewrap a Claude build on macOS still runs, unwrapped and without the token variable, and its log says so in one line; on Linux, or with ASE_KEY_GUARD=on, it stops", t => {
   const { dir, home, files } = keyHome(t);
-  const bin = join(dir, "bin"), root = join(dir, "work"), out = join(dir, "out"), strictOut = join(dir, "out-strict"), brief = join(dir, "brief.md");
-  for (const path of [bin, root, out, strictOut]) mkdirSync(path);
+  const bin = join(dir, "bin"), root = join(dir, "work"), brief = join(dir, "brief.md");
+  for (const path of [bin, root]) mkdirSync(path);
   fakeClaude(bin);
   writeFileSync(brief, "Build this.\n");
   const git = (...args: string[]) => assert.equal(spawnSync("git", ["-C", root, ...args], { encoding: "utf8" }).status, 0);
@@ -283,21 +280,27 @@ test("PROOF: on a machine without bubblewrap a Claude build still runs, unlocked
   const seenFile = join(dir, "seen.json");
   const env = { ...homeEnv(home), PATH: `${bin}:${pathWithoutBwrap(dir)}`, GH_TOKEN: dummy, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "60s", KIT_TALK_STYLE: "plain",
     FAKE_SEEN: seenFile, FAKE_TRIES: JSON.stringify(files) } as NodeJS.ProcessEnv;
-  const start = (folder: string, extra: NodeJS.ProcessEnv = {}) => spawnSync(process.execPath, [resolve("agent-run.mjs"), "build", root, brief, "--out", folder, "--cli", "claude", "--model", "claude-opus-5-5"],
-    { cwd: root, env: { ...env, ...extra }, encoding: "utf8", timeout: 60_000 });
-  const run = start(out);
-  assert.equal(run.status, 0, run.stdout + run.stderr);
-  const lines = readFileSync(join(out, "run.log"), "utf8").split("\n").filter(line => /key lock|key files/.test(line));
-  assert.deepEqual(lines, ["warning: key lock: off on this machine (no bubblewrap); builders can read key files"]);
-  // As before the lock: the build reads what the user can read, and keeps its variables.
+  const start = (name: string, extra: NodeJS.ProcessEnv = {}) => {
+    const out = join(dir, name); mkdirSync(out);
+    const run = spawnSync(process.execPath, [resolve("agent-run.mjs"), "build", root, brief, "--out", out, "--cli", "claude", "--model", "claude-opus-5-5"],
+      { cwd: root, env: { ...env, ...extra }, encoding: "utf8", timeout: 60_000 });
+    return { run, log: readFileSync(join(out, "run.log"), "utf8") };
+  };
+  const mac = start("out-mac", onMacos);
+  assert.equal(mac.run.status, 0, mac.run.stdout + mac.run.stderr);
+  assert.deepEqual(mac.log.split("\n").filter(line => /key lock|key files/.test(line)),
+    ["warning: key lock: off on this machine (no bubblewrap); builders can read key files (token variables are still dropped, and Codex keeps its own profile)"]);
+  // The build reads what the user can read, as before the lock, but the token variable is gone.
   const seen = JSON.parse(readFileSync(seenFile, "utf8"));
-  assert.ok(seen.orbit.includes(dummy)); assert.equal(seen.token, dummy);
+  assert.ok(seen.orbit.includes(dummy)); assert.equal(seen.token, "");
   assert.equal(readFileSync(join(root, "built.txt"), "utf8"), "a normal build step\n");
   rmSync(seenFile);
-  const strict = start(strictOut, { ASE_KEY_GUARD: "on" });
-  assert.notEqual(strict.status, 0, strict.stdout + strict.stderr);
-  assert.match(strict.stdout + strict.stderr, /cannot lock the key files for this build: bubblewrap \(bwrap\) is not installed; install it \(apt install bubblewrap\); or set ASE_KEY_GUARD=off/);
-  assert.match(readFileSync(join(strictOut, "run.log"), "utf8"), /^problem: cannot lock the key files for this build: bubblewrap \(bwrap\) is not installed/m);
+  const refused = /cannot lock the key files for this build: bubblewrap \(bwrap\) is not installed; install it \(apt install bubblewrap\); or set ASE_KEY_GUARD=off/;
+  for (const stopped of [start("out-linux"), start("out-strict", { ...onMacos, ASE_KEY_GUARD: "on" })]) {
+    assert.notEqual(stopped.run.status, 0, stopped.run.stdout + stopped.run.stderr);
+    assert.match(stopped.run.stdout + stopped.run.stderr, refused);
+    assert.match(stopped.log, /^problem: cannot lock the key files for this build: bubblewrap \(bwrap\) is not installed/m);
+  }
   assert.ok(!existsSync(seenFile), "the CLI never started");
 });
 
@@ -398,11 +401,6 @@ test("a link inside a key folder locks what it points at, through both paths; a 
   assert.throws(() => keyGuard({ cli: "claude", kind: "review", common: "/c", env: { HOME: home, PATH: process.env.PATH } }),
     new RegExp(`cannot lock the key files for this review: ${shut} cannot be read to look for links \\(EACCES\\); allow reading it: chmod u\\+rx '${shut}'; or set ASE_KEY_GUARD=off`));
   chmodSync(shut, 0o755); rmSync(shut, { recursive: true });
-  // A link into a folder the search skips (the runtime folder, masked whole already) is neither searched nor refused.
-  const runtime = join(dir, "runtime"); mkdirSync(join(runtime, "gnupg"), { recursive: true });
-  symlinkSync(join(runtime, "gnupg"), join(home, ".config/fleet/agent")); symlinkSync(runtime, join(home, ".config/fleet/run"));
-  assert.deepEqual(linkTargets([join(home, ".config/fleet")], { keep: [home], skip: [runtime] }), { paths: [join(home, ".config/fleet")], unsafe: [], unlisted: [], tooLarge: null });
-  rmSync(join(home, ".config/fleet/agent")); rmSync(join(home, ".config/fleet/run"));
   // A link to a device (known_hosts -> /dev/null) is neither locked nor refused.
   symlinkSync("/dev/null", join(home, ".config/fleet/known_hosts"));
   assert.deepEqual(linkTargets([join(home, ".config/fleet")], { keep: [home] }), { paths: [join(home, ".config/fleet")], unsafe: [], unlisted: [], tooLarge: null });
@@ -414,38 +412,60 @@ test("a link inside a key folder locks what it points at, through both paths; a 
     /cannot lock the key files for this build: a key folder links to a folder the lock cannot hide \(.*\); move the keys into a folder of their own/);
 });
 
+test("a link from a key folder into a folder the search skips is neither searched nor refused", t => {
+  const { dir, home } = keyHome(t);
+  // The runtime folder is masked whole already; a link to it, or to a folder inside it, adds nothing to hide.
+  const runtime = join(dir, "runtime"); mkdirSync(join(runtime, "gnupg"), { recursive: true });
+  symlinkSync(join(runtime, "gnupg"), join(home, ".config/fleet/agent")); symlinkSync(runtime, join(home, ".config/fleet/run"));
+  assert.deepEqual(linkTargets([join(home, ".config/fleet")], { keep: [home], skip: [runtime] }), { paths: [join(home, ".config/fleet")], unsafe: [], unlisted: [], tooLarge: null });
+  // Without the skip the same links are followed.
+  assert.ok(linkTargets([join(home, ".config/fleet")], { keep: [home] }).paths.includes(runtime));
+});
+
 test("kit doctor's note says whether the lock is on, off or cannot start", t => {
   assert.equal(keyGuardReport({ ASE_KEY_GUARD: "off" }).state, "off");
   const empty = mkdtempSync(join(tmpdir(), "kit-no-bwrap-"));
   t.after(() => { rmSync(empty, { recursive: true, force: true }); resetBwrapProbe(); });
-  resetBwrapProbe();
-  // No bubblewrap: the lock is off on this machine and the note says so; ASE_KEY_GUARD=on turns that into a stop.
-  assert.deepEqual(keyGuardReport({ PATH: empty }), { state: "missing", text: "off on this machine (no bubblewrap); builders can read key files" });
-  assert.deepEqual(keyGuardReport({ PATH: empty, ASE_KEY_GUARD: "on" }), { state: "problem", text: "bubblewrap (bwrap) is not installed; install it (apt install bubblewrap)" });
+  // No bubblewrap: on Linux the runs stop (it installs with one command); on macOS and Windows they start unwrapped,
+  // which the note says, and ASE_KEY_GUARD=on turns that into a stop.
+  const missing = { state: "problem", text: "bubblewrap (bwrap) is not installed; install it (apt install bubblewrap)" };
+  const fresh = <T>(body: () => T) => { resetBwrapProbe(); try { return body(); } finally { resetBwrapProbe(); } };
+  assert.deepEqual(fresh(() => keyGuardReport({ PATH: empty })), missing);
+  for (const platform of ["darwin", "win32"] as const) {
+    assert.deepEqual(fresh(() => asPlatform(platform, () => keyGuardReport({ PATH: empty }))),
+      { state: "missing", text: "off on this machine (no bubblewrap); builders can read key files (token variables are still dropped, and Codex keeps its own profile)" });
+  }
+  assert.deepEqual(fresh(() => asPlatform("darwin", () => keyGuardReport({ PATH: empty, ASE_KEY_GUARD: "on" }))), missing);
   // A bwrap that runs the command without any sandbox (as a setuid bwrap lets /proc through): the lock refuses.
   writeFileSync(join(empty, "bwrap"), '#!/bin/sh\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n');
   chmodSync(join(empty, "bwrap"), 0o755);
-  resetBwrapProbe();
-  assert.match(keyGuardReport({ PATH: `${empty}:${process.env.PATH}` }).text, /^a program inside bubblewrap can still read other programs' files through \/proc here/);
-  resetBwrapProbe();
+  assert.match(fresh(() => keyGuardReport({ PATH: `${empty}:${process.env.PATH}` })).text, /^a program inside bubblewrap can still read other programs' files through \/proc here/);
   // On a desktop whose display lets the user in by name the lock is on with a warning.
-  if (!bwrapUsable) return;
+  if (bwrapUsable) assert.match(keyGuardReport({ PATH: process.env.PATH }).state, /^(on|warning)$/);
+  // From here a bwrap whose start-up check found /proc and the display shut: the note depends on the key folders alone.
+  writeFileSync(join(empty, "bwrap"), '#!/bin/sh\ncase "$*" in *" -e "*) echo inside; echo done ;; esac\nexit 0\n');
+  resetBwrapProbe();
   const { dir, home } = keyHome(t);
-  const env = { HOME: home, PATH: process.env.PATH };
-  const worktree = join(dir, "work"); mkdirSync(worktree);
-  assert.match(keyGuardReport(env, { worktree }).state, /^(on|warning)$/);
+  const env = { HOME: home, PATH: `${empty}:${process.env.PATH}` };
+  const worktree = join(dir, "work"), common = join(dir, "repo.git"); mkdirSync(worktree); mkdirSync(common);
+  const on = "on (bubblewrap runs; agents the kit starts cannot read the key files)";
+  assert.deepEqual(keyGuardReport(env, { worktree, common }), { state: "on", text: on });
   // A KIT_KEY_PATHS entry that is not locked is a gap the note names; a build on the API route is named as refused.
-  const gap = keyGuardReport({ ...env, KIT_KEY_PATHS: "keys" }, { worktree });
-  assert.equal(gap.state, "warning"); assert.match(gap.text, /^on, but .*KIT_KEY_PATHS entry 'keys' is not a full path, so it is not locked; write it from \/ on$/);
-  const route = keyGuardReport({ ...env, KIT_API_KEY_FILE: join(dir, "api-key") }, { worktree });
-  if (route.state === "on") assert.equal(route.text, "on (bubblewrap runs; agents the kit starts cannot read the key files; a Claude build on the API route is refused under the lock)");
-  // What would stop every run stops the note from saying "on": a key folder that cannot be listed, a link the lock cannot hide.
+  assert.deepEqual(keyGuardReport({ ...env, KIT_KEY_PATHS: "keys" }, { worktree, common }), { state: "warning", text: "on, but KIT_KEY_PATHS entry 'keys' is not a full path, so it is not locked; write it from / on" });
+  assert.deepEqual(keyGuardReport({ ...env, KIT_API_KEY_FILE: join(dir, "api-key") }, { worktree, common }),
+    { state: "on", text: "on (bubblewrap runs; agents the kit starts cannot read the key files; a Claude build on the API route is refused under the lock)" });
+  // What would stop a run stops the note from saying "on": a key folder that cannot be listed, a link to the worktree
+  // or to the repository's Git folder, which the lock cannot hide.
   const shut = join(home, ".config/fleet/shut"); mkdirSync(shut); chmodSync(shut, 0o111);
   t.after(() => { if (existsSync(shut)) chmodSync(shut, 0o755); });
-  assert.deepEqual(keyGuardReport(env, { worktree }), { state: "refused", text: `${shut} cannot be read to look for links (EACCES); allow reading it: chmod u+rx '${shut}'` });
+  assert.deepEqual(keyGuardReport(env, { worktree, common }), { state: "refused", text: `${shut} cannot be read to look for links (EACCES); allow reading it: chmod u+rx '${shut}'` });
   chmodSync(shut, 0o755); rmSync(shut, { recursive: true });
-  symlinkSync(worktree, join(home, ".config/gh/w"));
-  assert.deepEqual(keyGuardReport(env, { worktree }), { state: "refused", text: `a key folder links to a folder the lock cannot hide (${join(home, ".config/gh/w")} -> ${worktree}); move the keys into a folder of their own` });
+  for (const kept of [worktree, common]) {
+    symlinkSync(kept, join(home, ".config/gh/w"));
+    assert.deepEqual(keyGuardReport(env, { worktree, common }), { state: "refused", text: `a key folder links to a folder the lock cannot hide (${join(home, ".config/gh/w")} -> ${kept}); move the keys into a folder of their own` });
+    rmSync(join(home, ".config/gh/w"));
+  }
+  assert.deepEqual(keyGuardReport(env, { worktree, common }), { state: "on", text: on });
 });
 
 test("the test environment has a temporary HOME and no lock settings from the shell that started the tests", () => {

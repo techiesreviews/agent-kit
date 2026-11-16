@@ -47,7 +47,7 @@ const lookModels = order => !order ? "the models in the kit's `second-look.json`
 const reviewersRule = "GPT may review since 2026-11-09; Claude Opus stays the main reviewer";
 // TOOLS-285: a build the kit starts itself runs inside the key lock (key-guard.mjs) and cannot do a keyed step, so no
 // brief sends it there; a T3 helper thread is outside the lock and lands its own work as the brief says.
-const keyLockRule = "Key lock: a build the kit starts itself (`agent.sh build`; its prompt ends with a \"Build contract\") cannot read the machine's key files, so there the keyed steps are the lead's: board reads (`kit ticket get|list`), GitHub calls (`gh`, `kit wait ci`, `kit pr`, a fetch from or a push to a private remote), Cloudflare deploys (`kit preview`, `wrangler`) and an install that needs a registry token. In such a run do none of them, whatever this brief says elsewhere: work from the text in this brief, and name each step you left in your report as `Lead: <step>`.";
+const keyLockRule = "Key lock: in a build the kit starts itself (`agent.sh build`; its prompt ends with a \"Build contract\") the keyed steps are the lead's, since the kit's key lock keeps the machine's key files from such a run wherever it can: board reads (`kit ticket get|list`), GitHub calls (`gh`, `kit wait ci`, `kit pr`, a fetch from or a push to a private remote), Cloudflare deploys (`kit preview`, `wrangler`) and an install that needs a registry token. In such a run do none of them, whatever this brief says elsewhere: work from the text in this brief, and name each step you left in your report as `Lead: <step>`.";
 
 /**
  * The whole brief for one stage of a ticket, ending with its marker line. Inputs: the project's top folder, its

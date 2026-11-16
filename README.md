@@ -274,13 +274,16 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   in by name (some desktops set `xhost +si:localuser` at every start) stays reachable, which `kit doctor` and the run's
   log say as a warning while the lock stays on. A build on the API route is refused under the lock (its Claude sandbox cannot start inside it).
   `ASE_KEY_GUARD=off` runs without the lock and writes a warning in the run's log.
-- **Where the key lock is off.** On a machine without bubblewrap (macOS, Windows, a Linux where it is not installed) the
-  kit's runs go on unlocked, every CLI as before the lock, and say so in one line, in the run's log and in `kit doctor`:
-  `key lock: off on this machine (no bubblewrap); builders can read key files`. `ASE_KEY_GUARD=on` stops such a run
-  instead (for a machine that must never run unlocked). A bubblewrap that is installed but cannot start (the system
-  blocks it, the `/proc` check fails) still stops the kit's Claude, Grok and OpenCode runs. `kit doctor`'s `key lock:`
-  line searches the key folders as a run in that worktree would, so it says "on" only where a run would really start:
-  a key folder that cannot be listed, is too large or links to a folder the lock cannot hide shows there first.
+- **Where the key lock is off** (TOOLS-285 fix round, the lead's decision of 2026-11-16: Lex's Windows laptop must keep
+  working). Bubblewrap exists on Linux only. On a system without it (macOS, Windows) the kit's Claude, Grok and OpenCode
+  runs start unwrapped and can read the key files, and say so in one line, in the run's log and in `kit doctor`:
+  `key lock: off on this machine (no bubblewrap); builders can read key files (token variables are still dropped, and
+  Codex keeps its own profile)`. Those two parts need no bubblewrap, so they stay. `ASE_KEY_GUARD=on` stops such a run
+  instead (for a machine that must never run unwrapped). On Linux nothing changed: a missing bubblewrap stops the run
+  with its install step (`apt install bubblewrap`; WSL counts as Linux), and so does one that is installed but cannot
+  start (the system blocks it, the `/proc` check fails). `kit doctor`'s `key lock:` line searches the key folders as a
+  run in that worktree would, so it says "on" only where a run would really start: a key folder that cannot be listed,
+  is too large or links to a folder the lock cannot hide shows there first.
 - Keyed steps happen only in the lead's own process, never inside a locked run. Already the lead's: `git push`, `kit pr`
   (push, PR, merge, card close) and `kit pr --release` (the build contract leaves a builder's changes unstaged). Moved to
   the lead for locked runs: reading Orbit cards (`kit ticket get|list`, which need the token too), GitHub calls (`gh`,
