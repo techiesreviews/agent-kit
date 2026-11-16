@@ -109,7 +109,14 @@ test("brief: the build brief holds the owner, setup, pins, commands, every house
     /`kit pr` refuses to land a visible change \(`paths\.visible`\) without a fresh `kit ux` result/,
     /lands with `scripts\/agents\/kit pr … --not-visible "<reason>"`/,
     /In a project with no feature list \(`docs\/agents\/features\.md`\) `kit ux` has nothing to try: say so in the report\./,
+    // TOOLS-285: a builder the kit starts itself runs inside the key lock, where the keyed steps are the lead's.
+    /^- Key lock: a build the kit starts itself \(`agent\.sh build`; its prompt ends with a "Build contract"\) cannot read the machine's key files, so there the keyed steps are the lead's: board reads \(`kit ticket get\|list`\), GitHub calls \(`gh`, `kit wait ci`, `kit pr`, a fetch from or a push to a private remote\), Cloudflare deploys \(`kit preview`, `wrangler`\) and an install that needs a registry token\. In such a run do none of them, whatever this brief says elsewhere: work from the text in this brief, and name each step you left in your report as `Lead: <step>`\.$/m,
   ]) assert.match(text, expected);
+  // The fix brief carries the same line; a review brief changes nothing and names the lead's fetch.
+  assert.match(body(f.run(["docs/tickets/07-panel.md", "--stage", "fix"]).stdout), /^- Key lock: a build the kit starts itself /m);
+  const reviewText = body(f.run(["docs/tickets/07-panel.md", "--stage", "review"]).stdout);
+  assert.doesNotMatch(reviewText, /Key lock:/);
+  assert.match(reviewText, /\(`git fetch -q origin` first; inside the kit's key lock the lead has fetched already\)/);
   assert.doesNotMatch(text, /only P0\/P1 findings block/, "the brief promises no budget kit pr does not apply");
   // The project has no shots command of its own, so the brief names none.
   assert.doesNotMatch(text, /kit shots/);
@@ -362,7 +369,9 @@ test("brief KEY: on an Orbit project the brief is built from the card (title, te
   for (const secret of orbitSecretsForTests) assert.ok(!output.all.includes(secret));
   const text = body(output.stdout);
   assert.match(text, /^Kit brief: build the Orbit card KIT-1 in `demo` .*owner `kit-1`\. Build the whole card \(its text and comments are below\)/m);
-  assert.match(text, /Read first: the card below with all its comments \(`scripts\/agents\/kit ticket get KIT-1 --comments` reads it fresh\)/);
+  // The card's text is in the brief: a builder inside the key lock cannot read the board, so no brief sends one there.
+  assert.match(text, /Read first: the card below with all its comments \(the lead put them in this brief; a newer comment comes from the lead, never from a board read of your own\)/);
+  assert.doesNotMatch(text, /kit ticket get KIT-1|reads it fresh/);
   assert.match(text, /Orbit card standard \(`docs\/orbit-card-standard\.md` in the kit; `scripts\/agents\/kit --home` prints the kit's folder\)/);
   assert.match(text, /^## Card KIT-1\nTitle: A settings panel with a colour field\nLink: http:\/\/orbit\.test\/tasks\/1\n\nClaimed by: kit-1\n\nBuilder: claude\n\n## Goal\n\nBuild the panel\./m);
   assert.match(text, /^### Comments\n\n- fleet, 2026-11-06T10:00:00\.000Z:\nLex: keep it small$/m);

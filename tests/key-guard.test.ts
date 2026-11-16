@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { bwrapArgs, bwrapWorks, codexPaths, codexProfile, existingPaths, keyGuard, keyGuardReport, linkTargets, lockedPaths, resetBwrapProbe, scrubbedEnv } from "../key-guard.mjs";
-import { kitEnv } from "./support/kit-env.ts";
+import { bwrapArgs, bwrapWorks, codexPaths, codexProfile, existingPaths, keyGuard, keyGuardReport, keyPathsWarning, linkTargets, lockedPaths, resetBwrapProbe, scrubbedEnv } from "../key-guard.mjs";
+import { kitEnv, testHomeFolder } from "./support/kit-env.ts";
 
 // The key lock (TOOLS-285): agents the kit starts cannot read the machine's key files. Every key here is a made-up
 // dummy in a temporary HOME; no test reads a real key file.
@@ -73,7 +73,27 @@ test("the locked paths hold the Orbit, GitHub and Cloudflare keys, Claude's MCP 
     assert.ok(claude.includes(path), path);
   }
   assert.ok(!claude.some((path: string) => path.includes("relative")));
+  // An entry that is not a full path is not locked, and the lock says so (the run's log, kit doctor) instead of skipping it silently.
+  assert.equal(keyPathsWarning(env), "KIT_KEY_PATHS entry 'relative/skipped' is not a full path, so it is not locked; write it from / on");
+  assert.equal(keyPathsWarning({ KIT_KEY_PATHS: "~/keys:/extra/one::two" }), "KIT_KEY_PATHS entries '~/keys', 'two' are not full paths, so they are not locked; write them from / on");
+  assert.equal(keyPathsWarning({ KIT_KEY_PATHS: "/extra/one:/extra/two" }), null);
+  assert.equal(keyPathsWarning({}), null);
   assert.ok(!claude.includes("/h/.claude/.credentials.json"), "Claude must still sign in");
+  // Registry and cloud logins beside Docker's: Podman's, and the other stores that hold one token file.
+  for (const path of ["/h/.docker/config.json", "/h/.config/containers/auth.json", "/cfg/containers/auth.json", "/h/.netrc", "/h/.git-credentials", "/h/.config/rclone/rclone.conf",
+    "/cfg/rclone/rclone.conf", "/h/.cargo/credentials.toml", "/h/.gem/credentials", "/h/.kaggle/kaggle.json", "/h/.config/doctl/config.yaml", "/h/.fly/config.yml",
+    "/h/.config/netlify/config.json", "/h/.local/share/com.vercel.cli/auth.json", "/h/.cache/huggingface/token"]) {
+    assert.ok(claude.includes(path), path);
+  }
+  // Claude's own settings can hold a token (env, apiKeyHelper): hidden from the other CLIs, never from Claude, API route or not.
+  for (const cli of ["codex", "grok", "opencode"]) {
+    const other = lockedPaths(cli, { HOME: "/h", CLAUDE_CONFIG_DIR: "/cc" });
+    for (const path of ["/h/.claude/settings.json", "/cc/settings.json"]) assert.ok(other.includes(path), `${cli} ${path}`);
+  }
+  for (const options of [{}, { apiRoute: true }]) {
+    const own = lockedPaths("claude", { HOME: "/h", CLAUDE_CONFIG_DIR: "/cc" }, options);
+    for (const path of ["/h/.claude/settings.json", "/cc/settings.json"]) assert.ok(!own.includes(path), path);
+  }
   const codex = lockedPaths("codex", { HOME: "/h", CODEX_HOME: "/review-home" });
   for (const path of ["/h/.claude/.credentials.json", "/h/.codex/auth.json", "/h/.codex/config.toml", "/review-home/auth.json"]) assert.ok(codex.includes(path), path);
   assert.ok(lockedPaths("codex", { HOME: "/h", CODEX_HOME: join(tmpdir(), "ase-codex-home-x") }).includes(join(tmpdir(), "ase-codex-home-x")), "kit review's Codex home is hidden whole");
@@ -144,7 +164,7 @@ test("Codex gets a permissions profile: the key paths unreadable, a build writin
     "-c", "permissions.kit-review.network={enabled=false}"]);
 });
 
-test("the lock is on unless ASE_KEY_GUARD=off; without bubblewrap a Claude run is refused in plain words; an API-route build is refused", t => {
+test("the lock is on unless ASE_KEY_GUARD=off; without bubblewrap a run goes on unlocked and says so, ASE_KEY_GUARD=on refuses it; an API-route build is refused", t => {
   const off = keyGuard({ cli: "claude", kind: "build", common: "/c", env: { ASE_KEY_GUARD: "off" } });
   assert.equal(off.off, true);
   assert.deepEqual(off.wrap("claude", ["-p"]), ["claude", ["-p"]]);
@@ -154,8 +174,25 @@ test("the lock is on unless ASE_KEY_GUARD=off; without bubblewrap a Claude run i
   const empty = mkdtempSync(join(tmpdir(), "kit-no-bwrap-"));
   t.after(() => { rmSync(empty, { recursive: true, force: true }); resetBwrapProbe(); });
   resetBwrapProbe();
-  assert.throws(() => keyGuard({ cli: "claude", kind: "build", common: "/c", env: { HOME: "/h", PATH: empty } }),
+  // No bubblewrap on this machine (macOS, Windows, a Linux without the package): the run goes on as before the lock,
+  // for every CLI, and the guard carries the line for the run's log. Nothing is searched, so no key folder can stop it.
+  const shut = join(empty, "home/.config/fleet/shut"); mkdirSync(shut, { recursive: true }); chmodSync(shut, 0o111);
+  for (const cli of ["claude", "grok", "opencode", "codex"]) {
+    const open = keyGuard({ cli, kind: "review", common: "/c", env: { HOME: join(empty, "home"), PATH: empty, GH_TOKEN: "x" } });
+    assert.deepEqual({ off: open.off, missing: open.missing, env: open.env, codex: open.codex, bwrap: open.bwrap }, { off: true, missing: true, env: {}, codex: undefined, bwrap: undefined }, cli);
+    assert.deepEqual(open.wrap(cli, ["-p"]), [cli, ["-p"]]);
+  }
+  chmodSync(shut, 0o755);
+  // ASE_KEY_GUARD=on asks for the lock or nothing: such a run stops.
+  assert.throws(() => keyGuard({ cli: "claude", kind: "build", common: "/c", env: { HOME: "/h", PATH: empty, ASE_KEY_GUARD: "on" } }),
     /cannot lock the key files for this build: bubblewrap \(bwrap\) is not installed; install it \(apt install bubblewrap\); or set ASE_KEY_GUARD=off/);
+  assert.equal(keyGuard({ cli: "codex", kind: "build", common: "/c", env: { HOME: "/h", PATH: empty, ASE_KEY_GUARD: "ON" } }).codex[1], 'default_permissions="kit-build"');
+  // A bubblewrap that is there but cannot start is no missing one: the run still stops, with the step that fixes it.
+  writeFileSync(join(empty, "bwrap"), '#!/bin/sh\necho "bwrap: setting up uid map: Permission denied" >&2\nexit 1\n'); chmodSync(join(empty, "bwrap"), 0o755);
+  resetBwrapProbe();
+  assert.throws(() => keyGuard({ cli: "claude", kind: "build", common: "/c", env: { HOME: "/h", PATH: empty } }),
+    /cannot lock the key files for this build: the system blocks the sandboxes bubblewrap makes/);
+  rmSync(join(empty, "bwrap"));
   resetBwrapProbe();
   if (!bwrapUsable) return;
   assert.throws(() => keyGuard({ cli: "claude", kind: "build", common: "/c", env: { HOME: "/h", PATH: process.env.PATH }, apiRoute: true }),
@@ -222,6 +259,46 @@ test("PROOF: a Claude build cannot read dummy key files in its HOME nor the toke
   assert.match(run.stdout, /built/);
   // Outside the run nothing changed: the dummy files are still there and still hold their dummy.
   for (const file of Object.values(files)) assert.equal(readFileSync(file, "utf8"), `${dummy}\n`);
+});
+
+// PATH as it is but without bubblewrap: every program of every PATH folder linked into one folder, bwrap left out.
+function pathWithoutBwrap(dir: string) {
+  const bin = join(dir, "no-bwrap-bin"); mkdirSync(bin);
+  for (const folder of String(process.env.PATH).split(":").filter(Boolean)) {
+    let names: string[] = [];
+    try { names = readdirSync(folder); } catch { continue; }
+    for (const name of names) if (name !== "bwrap") try { symlinkSync(join(folder, name), join(bin, name)); } catch { /* An earlier folder's program wins. */ }
+  }
+  return bin;
+}
+
+test("PROOF: on a machine without bubblewrap a Claude build still runs, unlocked, and its log says so in one line; ASE_KEY_GUARD=on stops it", t => {
+  const { dir, home, files } = keyHome(t);
+  const bin = join(dir, "bin"), root = join(dir, "work"), out = join(dir, "out"), strictOut = join(dir, "out-strict"), brief = join(dir, "brief.md");
+  for (const path of [bin, root, out, strictOut]) mkdirSync(path);
+  fakeClaude(bin);
+  writeFileSync(brief, "Build this.\n");
+  const git = (...args: string[]) => assert.equal(spawnSync("git", ["-C", root, ...args], { encoding: "utf8" }).status, 0);
+  git("init", "-q", "-b", "test"); git("-c", "user.name=T", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base");
+  const seenFile = join(dir, "seen.json");
+  const env = { ...homeEnv(home), PATH: `${bin}:${pathWithoutBwrap(dir)}`, GH_TOKEN: dummy, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "60s", KIT_TALK_STYLE: "plain",
+    FAKE_SEEN: seenFile, FAKE_TRIES: JSON.stringify(files) } as NodeJS.ProcessEnv;
+  const start = (folder: string, extra: NodeJS.ProcessEnv = {}) => spawnSync(process.execPath, [resolve("agent-run.mjs"), "build", root, brief, "--out", folder, "--cli", "claude", "--model", "claude-opus-5-5"],
+    { cwd: root, env: { ...env, ...extra }, encoding: "utf8", timeout: 60_000 });
+  const run = start(out);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  const lines = readFileSync(join(out, "run.log"), "utf8").split("\n").filter(line => /key lock|key files/.test(line));
+  assert.deepEqual(lines, ["warning: key lock: off on this machine (no bubblewrap); builders can read key files"]);
+  // As before the lock: the build reads what the user can read, and keeps its variables.
+  const seen = JSON.parse(readFileSync(seenFile, "utf8"));
+  assert.ok(seen.orbit.includes(dummy)); assert.equal(seen.token, dummy);
+  assert.equal(readFileSync(join(root, "built.txt"), "utf8"), "a normal build step\n");
+  rmSync(seenFile);
+  const strict = start(strictOut, { ASE_KEY_GUARD: "on" });
+  assert.notEqual(strict.status, 0, strict.stdout + strict.stderr);
+  assert.match(strict.stdout + strict.stderr, /cannot lock the key files for this build: bubblewrap \(bwrap\) is not installed; install it \(apt install bubblewrap\); or set ASE_KEY_GUARD=off/);
+  assert.match(readFileSync(join(strictOut, "run.log"), "utf8"), /^problem: cannot lock the key files for this build: bubblewrap \(bwrap\) is not installed/m);
+  assert.ok(!existsSync(seenFile), "the CLI never started");
 });
 
 test("PROOF: on the API route a review's claude starts inside the lock after the wrapper read its key", { skip: noBwrap }, t => {
@@ -321,6 +398,11 @@ test("a link inside a key folder locks what it points at, through both paths; a 
   assert.throws(() => keyGuard({ cli: "claude", kind: "review", common: "/c", env: { HOME: home, PATH: process.env.PATH } }),
     new RegExp(`cannot lock the key files for this review: ${shut} cannot be read to look for links \\(EACCES\\); allow reading it: chmod u\\+rx '${shut}'; or set ASE_KEY_GUARD=off`));
   chmodSync(shut, 0o755); rmSync(shut, { recursive: true });
+  // A link into a folder the search skips (the runtime folder, masked whole already) is neither searched nor refused.
+  const runtime = join(dir, "runtime"); mkdirSync(join(runtime, "gnupg"), { recursive: true });
+  symlinkSync(join(runtime, "gnupg"), join(home, ".config/fleet/agent")); symlinkSync(runtime, join(home, ".config/fleet/run"));
+  assert.deepEqual(linkTargets([join(home, ".config/fleet")], { keep: [home], skip: [runtime] }), { paths: [join(home, ".config/fleet")], unsafe: [], unlisted: [], tooLarge: null });
+  rmSync(join(home, ".config/fleet/agent")); rmSync(join(home, ".config/fleet/run"));
   // A link to a device (known_hosts -> /dev/null) is neither locked nor refused.
   symlinkSync("/dev/null", join(home, ".config/fleet/known_hosts"));
   assert.deepEqual(linkTargets([join(home, ".config/fleet")], { keep: [home] }), { paths: [join(home, ".config/fleet")], unsafe: [], unlisted: [], tooLarge: null });
@@ -337,7 +419,9 @@ test("kit doctor's note says whether the lock is on, off or cannot start", t => 
   const empty = mkdtempSync(join(tmpdir(), "kit-no-bwrap-"));
   t.after(() => { rmSync(empty, { recursive: true, force: true }); resetBwrapProbe(); });
   resetBwrapProbe();
-  assert.deepEqual(keyGuardReport({ PATH: empty }), { state: "problem", text: "bubblewrap (bwrap) is not installed; install it (apt install bubblewrap)" });
+  // No bubblewrap: the lock is off on this machine and the note says so; ASE_KEY_GUARD=on turns that into a stop.
+  assert.deepEqual(keyGuardReport({ PATH: empty }), { state: "missing", text: "off on this machine (no bubblewrap); builders can read key files" });
+  assert.deepEqual(keyGuardReport({ PATH: empty, ASE_KEY_GUARD: "on" }), { state: "problem", text: "bubblewrap (bwrap) is not installed; install it (apt install bubblewrap)" });
   // A bwrap that runs the command without any sandbox (as a setuid bwrap lets /proc through): the lock refuses.
   writeFileSync(join(empty, "bwrap"), '#!/bin/sh\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n');
   chmodSync(join(empty, "bwrap"), 0o755);
@@ -345,7 +429,37 @@ test("kit doctor's note says whether the lock is on, off or cannot start", t => 
   assert.match(keyGuardReport({ PATH: `${empty}:${process.env.PATH}` }).text, /^a program inside bubblewrap can still read other programs' files through \/proc here/);
   resetBwrapProbe();
   // On a desktop whose display lets the user in by name the lock is on with a warning.
-  if (bwrapUsable) assert.match(keyGuardReport({ PATH: process.env.PATH }).state, /^(on|warning)$/);
+  if (!bwrapUsable) return;
+  const { dir, home } = keyHome(t);
+  const env = { HOME: home, PATH: process.env.PATH };
+  const worktree = join(dir, "work"); mkdirSync(worktree);
+  assert.match(keyGuardReport(env, { worktree }).state, /^(on|warning)$/);
+  // A KIT_KEY_PATHS entry that is not locked is a gap the note names; a build on the API route is named as refused.
+  const gap = keyGuardReport({ ...env, KIT_KEY_PATHS: "keys" }, { worktree });
+  assert.equal(gap.state, "warning"); assert.match(gap.text, /^on, but .*KIT_KEY_PATHS entry 'keys' is not a full path, so it is not locked; write it from \/ on$/);
+  const route = keyGuardReport({ ...env, KIT_API_KEY_FILE: join(dir, "api-key") }, { worktree });
+  if (route.state === "on") assert.equal(route.text, "on (bubblewrap runs; agents the kit starts cannot read the key files; a Claude build on the API route is refused under the lock)");
+  // What would stop every run stops the note from saying "on": a key folder that cannot be listed, a link the lock cannot hide.
+  const shut = join(home, ".config/fleet/shut"); mkdirSync(shut); chmodSync(shut, 0o111);
+  t.after(() => { if (existsSync(shut)) chmodSync(shut, 0o755); });
+  assert.deepEqual(keyGuardReport(env, { worktree }), { state: "refused", text: `${shut} cannot be read to look for links (EACCES); allow reading it: chmod u+rx '${shut}'` });
+  chmodSync(shut, 0o755); rmSync(shut, { recursive: true });
+  symlinkSync(worktree, join(home, ".config/gh/w"));
+  assert.deepEqual(keyGuardReport(env, { worktree }), { state: "refused", text: `a key folder links to a folder the lock cannot hide (${join(home, ".config/gh/w")} -> ${worktree}); move the keys into a folder of their own` });
+});
+
+test("the test environment has a temporary HOME and no lock settings from the shell that started the tests", () => {
+  const real = userInfo().homedir;
+  for (const env of [process.env, kitEnv()]) {
+    assert.equal(env.HOME, testHomeFolder);
+    assert.ok(testHomeFolder.startsWith(tmpdir()) && testHomeFolder !== real);
+    for (const name of ["XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME"]) assert.ok(env[name]!.startsWith(`${testHomeFolder}/`), name);
+    for (const name of ["ASE_KEY_GUARD", "KIT_KEY_PATHS", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "GIT_CONFIG_GLOBAL"]) assert.equal(env[name], undefined, name);
+  }
+  // A developer's shell that sets them later changes no fixture either.
+  process.env.ASE_KEY_GUARD = "off"; process.env.KIT_KEY_PATHS = "/somewhere";
+  try { assert.deepEqual([kitEnv().ASE_KEY_GUARD, kitEnv().KIT_KEY_PATHS], [undefined, undefined]); }
+  finally { delete process.env.ASE_KEY_GUARD; delete process.env.KIT_KEY_PATHS; }
 });
 
 test("PROOF: a Grok review cannot read the dummy key files either", { skip: noBwrap }, t => {
