@@ -385,11 +385,15 @@ export function codexProfile(kind, common, paths) {
 // The executable file command names, as the run will find it, or null: a path as it is, a bare name through PATH. The
 // run starts in `cwd` (the worktree), so a path or PATH folder that is not a full path counts from there, an empty PATH
 // entry is that folder itself, and no PATH at all means the system's own folders (as execvp reads it).
+const executable = file => { try { accessSync(file, constants.X_OK); return statSync(file).isFile(); } catch { return false; } };
+const pathFolders = env => (env.PATH === undefined ? "/bin:/usr/bin" : String(env.PATH)).split(delimiter);
 function executableFor(command, env, cwd = process.cwd()) {
-  const executable = file => { try { accessSync(file, constants.X_OK); return statSync(file).isFile(); } catch { return false; } };
-  const folders = command.includes("/") ? [""] : (env.PATH === undefined ? "/bin:/usr/bin" : String(env.PATH)).split(delimiter);
+  const folders = command.includes("/") ? [""] : pathFolders(env);
   return folders.map(folder => resolve(cwd, folder, command)).find(executable) ?? null;
 }
+// bubblewrap's own file, or null: only PATH folders that are full paths count. The run starts in the worktree, where a
+// relative or empty PATH entry would mean a folder a build can write, and a bwrap left there must never be the lock.
+const bwrapFor = env => pathFolders(env).filter(folder => isAbsolute(folder)).map(folder => join(folder, "bwrap")).find(executable) ?? null;
 
 // The lock holds only if a process inside it cannot read through another process's root folder in /proc, where
 // nothing is masked (a setuid bwrap makes no user namespace and lets that read through): the probe runs inside bubblewrap
@@ -429,7 +433,7 @@ function probeLock(env) {
     let displays = [];
     try { displays = readdirSync("/tmp/.X11-unix").filter(name => /^X\d+$/.test(name)); } catch { /* No X display here. */ }
     const masks = displays.length ? ["--tmpfs", "/tmp/.X11-unix"] : [];
-    const result = spawnSync("bwrap", ["--dev-bind", "/", "/", "--tmpfs", dir, ...masks, "--", process.execPath, "-e", probeScript, String(process.pid), marker, ...displays],
+    const result = spawnSync(bwrap, ["--dev-bind", "/", "/", "--tmpfs", dir, ...masks, "--", process.execPath, "-e", probeScript, String(process.pid), marker, ...displays],
       { env, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", timeout: 20_000 });
     const said = String(result.stdout ?? "");
     if (said.includes("proc-open")) return { problem: "a program inside bubblewrap can still read other programs' files through /proc here (a setuid bwrap makes no user namespace); install the distribution's plain bubblewrap" };
@@ -445,21 +449,24 @@ function probeLock(env) {
 }
 
 const lockAsked = "this system has no bubblewrap (it is Linux only), and ASE_KEY_GUARD=on asks for the lock or no run; unset it to start Claude, Grok and OpenCode unwrapped";
-let probed, displayWarning = null, absent = false;
-/** Whether bubblewrap runs and holds here: null, or the problem in plain words. Checked once per process; bwrap is looked up on PATH. */
+let probed, displayWarning = null, absent = false, bwrap = null;
+/** Whether bubblewrap runs and holds here: null, or the problem in plain words. Checked once per process; bwrap is looked up in PATH's full-path folders. */
 export function bwrapWorks(env = process.env) {
   if (probed === undefined) {
     displayWarning = null;
-    const result = spawnSync("bwrap", ["--dev-bind", "/", "/", "--", "true"], { env, stdio: ["ignore", "ignore", "pipe"], encoding: "utf8", timeout: 15_000 });
-    const said = String(result.stderr ?? result.error?.message ?? "").trim().split("\n").at(-1) || `exit ${result.status}`;
-    // The usual refusal: the system does not let ordinary users make the namespaces a sandbox needs.
-    const blocked = /namespace|uid map|Operation not permitted|Permission denied/i.test(said);
-    absent = result.error?.code === "ENOENT";
-    if (result.status === 0) ({ problem: probed, warning: displayWarning } = probeLock(env));
+    bwrap = bwrapFor(env);
+    absent = bwrap === null;
     // Linux installs it with one command; another system has none, and only ASE_KEY_GUARD=on makes that a problem.
-    else probed = absent ? process.platform === "linux" ? "bubblewrap (bwrap) is not installed; install it (apt install bubblewrap)" : lockAsked
-      : blocked ? `the system blocks the sandboxes bubblewrap makes (${said}); give /usr/bin/bwrap an AppArmor profile that allows user namespaces (Ubuntu's bubblewrap package brings one), or on Ubuntu allow them until the next restart with sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`
-      : `bubblewrap (bwrap) cannot start here (${said}); run bwrap --dev-bind / / -- true to see why`;
+    if (absent) probed = process.platform === "linux" ? "bubblewrap (bwrap) is not installed; install it (apt install bubblewrap)" : lockAsked;
+    else {
+      const result = spawnSync(bwrap, ["--dev-bind", "/", "/", "--", "true"], { env, stdio: ["ignore", "ignore", "pipe"], encoding: "utf8", timeout: 15_000 });
+      const said = String(result.stderr ?? result.error?.message ?? "").trim().split("\n").at(-1) || `exit ${result.status}`;
+      // The usual refusal: the system does not let ordinary users make the namespaces a sandbox needs.
+      const blocked = /namespace|uid map|Operation not permitted|Permission denied/i.test(said);
+      if (result.status === 0) ({ problem: probed, warning: displayWarning } = probeLock(env));
+      else probed = blocked ? `the system blocks the sandboxes bubblewrap makes (${said}); give /usr/bin/bwrap an AppArmor profile that allows user namespaces (Ubuntu's bubblewrap package brings one), or on Ubuntu allow them until the next restart with sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`
+        : `bubblewrap (bwrap) cannot start here (${said}); run bwrap --dev-bind / / -- true to see why`;
+    }
   }
   return probed;
 }
@@ -511,12 +518,12 @@ function searchedPaths(cli, env, { apiRoute = false, worktree, common } = {}) {
 export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRoute = false, model = "" }) {
   const plain = (command, args) => [command, args];
   const unlocked = { off: true, env: {}, wrap: plain, helper: plain, close() {} };
-  // Inside bubblewrap with these arguments, by the program's full path as the run will find it. A program that is not
+  // Inside bubblewrap (by its own full path, see bwrapFor) with these arguments, by the program's full path as the run will find it. A program that is not
   // there is started as it is, so the run still fails as a missing CLI (spawn ENOENT), which kit review counts as an
   // unavailable reviewer; nothing runs, so there is nothing to lock.
-  const inside = outer => (command, args) => {
+  const inside = (outer, lock = bwrap) => (command, args) => {
     const file = executableFor(command, env, worktree);
-    return file ? ["bwrap", [...outer, "--", file, ...args]] : [command, args];
+    return file ? [lock, [...outer, "--", file, ...args]] : [command, args];
   };
   if (!keyGuardOn(env)) return unlocked;
   const scrub = scrubbedEnv(cli, env, { apiRoute, model });
@@ -551,7 +558,7 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
   const dir = mkdtempSync(join(tmpdir(), "ase-key-guard-"));
   const script = join(dir, "guard");
   const quote = value => `'${value.replaceAll("'", `'\\''`)}'`;
-  writeFileSync(script, `#!/bin/sh\nexec bwrap ${outer.map(quote).join(" ")} -- "$@"\n`);
+  writeFileSync(script, `#!/bin/sh\nexec ${quote(bwrap)} ${outer.map(quote).join(" ")} -- "$@"\n`);
   chmodSync(script, 0o700);
   return { env: { ...scrub, KIT_CLAUDE_GUARD: script }, bwrap: true, warning, wrap: plain, helper: inside(outer), claudeGuard: script,
     close() { rmSync(dir, { recursive: true, force: true }); } };
@@ -581,4 +588,5 @@ export function keyGuardReport(env = process.env, { worktree = process.cwd(), co
 export function resetBwrapProbe() {
   probed = undefined;
   absent = false;
+  bwrap = null;
 }
