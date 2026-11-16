@@ -324,10 +324,11 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     so. `kit pr` puts links to the git, node, gh, bash and sh it found that way in a private folder in the temp folder,
     first on PATH (and `KIT_NODE` is its own Node), so the kit's helpers in its process and the programs it starts
     (`gh`, `kit review`, `kit release-check`) take those too; its own git and gh start by the real path. The checks see
-    that folder read-only. Another build running meanwhile, or one run without the lock, can write it: `kit pr` checks
-    the links before every program it starts and after every check and stops if one changed, but a program it started
-    (`gh` with its token among them) may take a changed one in between. The API route's wrapper, which reads the key
-    outside the lock, takes its own tools from the system's folders (`command -p`).
+    that folder read-only where they run locked; checks that run unlocked (no bubblewrap), another build running
+    meanwhile, or one run without the lock can write it: `kit pr` checks the links before every program it starts and
+    after every check and stops if one changed, but a program it started (`gh` with its token among them) may take a
+    changed one in between. The API route's wrapper, which reads the key outside the lock, takes its own tools from the
+    system's folders (`command -p`).
   - **Start-up files.** `BASH_ENV` and `ENV` (the file every non-interactive bash or sh reads first) are dropped for a
     run and for everything `kit pr` starts (not with `ASE_KEY_GUARD=off`), and the file they name is locked like any
     start-up file when it sets a token.

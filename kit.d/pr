@@ -352,8 +352,9 @@ async function main(args) {
     // Git settings even inside the lock). env above keeps the lead's own, so a fetch or push still reads the global config.
     const gitVariable = /^GIT_CONFIG_(COUNT|GLOBAL|NOSYSTEM|KEY_\d+|VALUE_\d+)$/;
     const ownGitVariables = Object.fromEntries(Object.entries(process.env).filter(([key]) => gitVariable.test(key)));
-    // The checks see the private folder read-only, but another build running meanwhile may write it: a link that no
-    // longer leads where it did stops kit pr, checked before every program it starts and after every check.
+    // Locked checks see the private folder read-only, but checks that run unlocked (no bubblewrap), another build running
+    // meanwhile or one run without the lock may write it: a link that no longer leads where it did stops kit pr,
+    // checked before every program it starts and after every check.
     const checkLinks = () => {
       for (const [name, target] of Object.entries(linked)) {
         let now = null;
