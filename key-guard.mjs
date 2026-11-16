@@ -236,10 +236,13 @@ function inside(path, folder) {
 /**
  * bubblewrap's arguments before "--": the file system as it is (devices included), each existing key folder swapped
  * for an empty one and each existing key file (or socket) for /dev/null, which bwrap mounts without devices so opening
- * it is refused. A path inside an already masked folder is left out.
+ * it is refused. A path inside an already masked folder is left out. With `writable` (a list), the file system is
+ * read-only but for those folders.
  */
-export function bwrapArgs(paths) {
-  const args = ["--dev-bind", "/", "/"];
+export function bwrapArgs(paths, { writable = null } = {}) {
+  // Read-only: the whole file system read-only with devices as they are, and writes only to the folders named.
+  const args = writable === null ? ["--dev-bind", "/", "/"] : ["--ro-bind", "/", "/", "--dev-bind", "/dev", "/dev",
+    ...existingPaths(writable).flatMap(path => ["--bind", path, path])];
   const masked = [];
   for (const path of [...paths].sort((a, b) => a.length - b.length)) {
     if (masked.some(folder => inside(path, folder))) continue;
@@ -392,7 +395,10 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
   // With the API route the wrapper turns on Claude's own command sandbox (bubblewrap too), which cannot start inside
   // this one: a build would lose its shell. Reviews there use only Read, Grep and Glob, with that sandbox off.
   if (apiRoute && kind === "build") throw new Error("cannot lock the key files for a build on the API route: its Claude sandbox cannot start inside the lock; build on the subscription (unset KIT_API_KEY_FILE), or set ASE_KEY_GUARD=off to run without the lock");
-  const outer = bwrapArgs(paths);
+  // Grok's own read-only sandbox cannot start inside this one (agent-run turns it off), so a Grok review gets a read-only
+  // lock instead: it writes only its own state folder and the temp folders.
+  const outer = bwrapArgs(paths, cli === "grok" && kind === "review"
+    ? { writable: [join(home(env), ".grok"), env.GROK_HOME, tmpdir(), "/tmp", env.XDG_RUNTIME_DIR].filter(Boolean).map(path => resolve(path)) } : {});
   // A CLI that is not installed is started as it is, so the run still fails as a missing CLI (spawn ENOENT), which kit
   // review counts as an unavailable reviewer; nothing runs, so there is nothing to lock.
   const warning = keyGuardWarning(env);

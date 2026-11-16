@@ -331,5 +331,9 @@ process.stdout.write(JSON.stringify({ sessionId: "g-1", text: "REVIEW_STATUS: co
   assert.equal(run.status, 0, run.stdout + run.stderr + readFileSync(join(out, "run.log"), "utf8"));
   const seen = JSON.parse(readFileSync(seenFile, "utf8"));
   for (const name of ["orbit", "gh", "wrangler", "claudeJson", "codexAuth", "claudeLogin"]) assert.match(seen[name], /^refused (ENOENT|EACCES)$/, name);
+  // The lock is read-only for a Grok review: writing outside its state and temp folders is refused.
+  const ro = spawnSync("bwrap", [...bwrapArgs([], { writable: [tmpdir()] }), "--", "sh", "-c", `touch ${JSON.stringify(join(process.cwd(), ".key-guard-ro-probe"))} 2>&1; touch ${JSON.stringify(join(dir, "y"))} && echo tmp-ok`], { encoding: "utf8" });
+  rmSync(join(process.cwd(), ".key-guard-ro-probe"), { force: true });
+  assert.match(ro.stdout, /Read-only file system/); assert.match(ro.stdout, /tmp-ok/);
   assert.equal(seen.token, "", "the token variable is gone");
 });
