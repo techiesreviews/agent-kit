@@ -5,7 +5,7 @@ import { tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { bwrapArgs, bwrapWorks, codexPaths, codexProfile, existingPaths, keyGuard, keyGuardReport, keyPathsWarning, linkTargets, lockedPaths, resetBwrapProbe, runProgram, scrubbedEnv } from "../key-guard.mjs";
+import { bwrapArgs, bwrapWorks, codexPaths, codexProfile, existingPaths, keyGuard, keyGuardReport, keyPathsWarning, linkTargets, lockedPaths, resetBwrapProbe, runProgram, scrubbedEnv, startCommand } from "../key-guard.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { folderRemote, gitCommonDir, gitNetworkCall, gitSafety } from "../git-safety.mjs";
 import { kitEnv, testHomeFolder } from "./support/kit-env.ts";
@@ -1058,7 +1058,8 @@ test("git safety: every program the repository's own Git settings name is set em
   git("init", "-q", "-b", "test");
   writeFileSync(join(home, ".gitconfig"), "[user]\n\tname = Lead\n\temail = lead@example.com\n[core]\n\tpager = global-pager\n[credential]\n\thelper = store\n");
   for (const [name, value] of [["filter.Leak.clean", "x"], ["filter.Leak.process", "x"], ["diff.leak.textconv", "x"], ["merge.leak.driver", "x"], ["core.sshCommand", "x"],
-    ["alias.st", "!x"], ["remote.origin.receivepack", "x"], ["core.hooksPath", "/elsewhere"], ["remote.origin.url", "/tmp/origin.git"]]) git("config", name, value);
+    ["alias.st", "!x"], ["remote.origin.receivepack", "x"], ["core.alternateRefsCommand", "x"], ["interactive.diffFilter", "x"], ["trace2.eventTarget", "/tmp/x"],
+    ["core.hooksPath", "/elsewhere"], ["remote.origin.url", "/tmp/origin.git"]]) git("config", name, value);
   const settings = (env: Record<string, string | undefined>) => {
     const pairs: string[][] = [];
     for (let i = 0; i < Number(env.GIT_CONFIG_COUNT); i++) pairs.push([String(env[`GIT_CONFIG_KEY_${i}`]), String(env[`GIT_CONFIG_VALUE_${i}`])]);
@@ -1072,7 +1073,8 @@ test("git safety: every program the repository's own Git settings name is set em
   assert.equal(local.env.GIT_CONFIG_KEY_0, undefined);
   const pairs = settings({ ...env, ...local.env });
   assert.deepEqual(pairs[0], ["color.ui", "never"]);
-  for (const name of ["filter.Leak.clean", "filter.Leak.process", "diff.leak.textconv", "merge.leak.driver", "core.sshcommand", "alias.st", "remote.origin.receivepack"])
+  for (const name of ["filter.Leak.clean", "filter.Leak.process", "diff.leak.textconv", "merge.leak.driver", "core.sshcommand", "alias.st", "remote.origin.receivepack",
+    "core.alternaterefscommand", "interactive.difffilter", "trace2.eventtarget"])
     assert.ok(pairs.some(([key, value]) => key.toLowerCase() === name.toLowerCase() && value === ""), `${name} is set empty`);
   assert.ok(pairs.some(([key, value]) => key === "filter.Leak.required" && value === "false"));
   // core.hooksPath=/dev/null comes last, after anything the repository names.
@@ -1101,4 +1103,56 @@ test("git safety: every program the repository's own Git settings name is set em
   assert.equal(gitCommonDir(join(dir, "linked")), join(root, ".git"));
   assert.equal(gitCommonDir(root), join(root, ".git"));
   assert.equal(gitCommonDir(dir), null);
+});
+
+test("a script's interpreter is found by its full path: env with -S passes its options, another env option, a full path into the worktree and a chain past four levels are refused", t => {
+  const dir = mkdtempSync(join(tmpdir(), "kit-interpreter-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const worktree = join(dir, "work"), bin = join(dir, "bin");
+  for (const folder of [worktree, bin]) mkdirSync(folder);
+  const node = join(bin, "node");
+  symlinkSync(process.execPath, node);
+  const script = (name: string, line: string) => { const file = join(dir, name); writeFileSync(file, `${line}\nrest\n`); chmodSync(file, 0o755); return file; };
+  const env = { PATH: `${bin}:/usr/bin:/bin` };
+  const start = (file: string) => startCommand(file, ["a"], env, { worktree, kind: "test" });
+  const plain = script("plain", "#!/usr/bin/env node");
+  assert.deepEqual(start(plain), [node, [plain, "a"]]);
+  const split = script("split", "#!/usr/bin/env -S node --no-warnings");
+  assert.deepEqual(start(split), [node, ["--no-warnings", split, "a"]]);
+  assert.throws(() => start(script("ignore", "#!/usr/bin/env -i node")), /^Error: cannot lock the key files for this test: \S+\/ignore starts with env -i node, so which program it runs cannot be told$/);
+  const planted = join(worktree, "node"); writeFileSync(planted, "#!/bin/sh\n"); chmodSync(planted, 0o755);
+  assert.throws(() => start(script("inside", `#!${planted}`)), /starts with \S+\/work\/node, inside the worktree or its Git folder/);
+  // A full-path interpreter that is itself a script is followed; a chain of five is refused.
+  const shim = script("shim", "#!/usr/bin/env node");
+  const viaShim = script("via-shim", `#!${shim} --flag`);
+  assert.deepEqual(start(viaShim), [node, [shim, "--flag", viaShim, "a"]]);
+  let last = script("level-0", "#!/usr/bin/env node");
+  for (let level = 1; level <= 5; level++) last = script(`level-${level}`, `#!${last}`);
+  assert.throws(() => start(last), /a script whose interpreter is a script four levels deep/);
+  // A binary, or a script whose interpreter no folder holds, starts as it is.
+  assert.deepEqual(start(process.execPath), [process.execPath, ["a"]]);
+  const missing = script("missing", "#!/usr/bin/env no-such-interpreter");
+  assert.deepEqual(start(missing), [missing, ["a"]]);
+});
+
+test("PROOF: after a Claude build the runner's own git status runs inside the lock: a git it starts reads no key", { skip: noBwrap }, t => {
+  const { dir, home, files } = keyHome(t);
+  const bin = join(dir, "bin"), gitBin = join(dir, "git-bin"), root = join(dir, "work"), out = join(dir, "out"), brief = join(dir, "brief.md"), noted = join(dir, "noted.txt");
+  for (const path of [bin, gitBin, root, out]) mkdirSync(path);
+  fakeClaude(bin);
+  writeFileSync(brief, "Build this.\n");
+  const git = (...args: string[]) => assert.equal(spawnSync("git", ["-C", root, ...args], { encoding: "utf8" }).status, 0);
+  git("init", "-q", "-b", "test"); git("-c", "user.name=T", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base");
+  // The lead's own git, a wrapper outside the worktree: on git status it notes what it can read, then acts as git.
+  const realGit = String(process.env.PATH).split(":").filter(folder => folder.startsWith("/")).map(folder => join(folder, "git")).find(file => existsSync(file))!;
+  writeFileSync(join(gitBin, "git"), `#!/bin/sh\ncase " $* " in *" status "*) { cat ${JSON.stringify(files.orbit)} 2>&1; printf 'token=%s.\\n' "$GH_TOKEN"; } >> ${JSON.stringify(noted)};; esac\nexec ${realGit} "$@"\n`);
+  chmodSync(join(gitBin, "git"), 0o755);
+  const env = { ...homeEnv(home), PATH: `${gitBin}:${bin}:${process.env.PATH}`, GH_TOKEN: dummy, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "60s", KIT_TALK_STYLE: "plain",
+    FAKE_SEEN: join(dir, "seen.json"), FAKE_TRIES: JSON.stringify(files) } as NodeJS.ProcessEnv;
+  delete env.ASE_KEY_GUARD;
+  const run = spawnSync(process.execPath, [resolve("agent-run.mjs"), "build", root, brief, "--out", out, "--cli", "claude", "--model", "claude-opus-5-5"], { cwd: root, env, encoding: "utf8", timeout: 60_000 });
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  const left = readFileSync(noted, "utf8");
+  assert.ok(!left.includes(dummy), `the runner's git status read a key: ${left}`);
+  assert.match(left, /(No such file or directory|Permission denied)\ntoken=\.\n/);
 });

@@ -456,22 +456,27 @@ const linkRefusal = (name, file) => `${name} on PATH is ${file}, a link into the
 // where a link a person made into the worktree or the Git folder stays (only the names the kit starts are looked up past
 // it). So the kit reads that line itself and starts the interpreter by the full path it finds the way it finds its own
 // programs (lookup), with the script as its argument (TOOLS-303): Codex and the API route's wrapper start outside
-// bubblewrap. The interpreter may be a script too (an asdf or volta shim), so this goes on a few levels. A first line
-// that names a full path inside the worktree or the Git folder, an env option other than -S, or a name PATH holds only
-// as such a link is refused through `refuse`; a name no PATH folder holds is left to start as it is (and fail).
+// bubblewrap. The interpreter may be a script too (an asdf or volta shim, or one a full path names), so this goes on
+// for four levels, as the kernel does, and refuses past them. A first line that names a full path inside the worktree
+// or the Git folder, an env option other than -S, or a name PATH holds only as such a link is refused through
+// `refuse`; a name no PATH folder holds is left to start as it is (and fail).
 function interpreted(file, args, env, shut, refuse, depth = 0) {
   let head = "";
   try {
     const fd = openSync(file, "r");
     try { const buffer = Buffer.alloc(512); head = buffer.subarray(0, readSync(fd, buffer, 0, 512, 0)).toString("utf8"); } finally { closeSync(fd); }
   } catch { return [file, args]; }
-  if (!head.startsWith("#!") || depth > 4) return [file, args];
+  if (!head.startsWith("#!")) return [file, args];
+  if (depth >= 4) refuse(`${file} is a script whose interpreter is a script four levels deep`);
   const line = head.slice(2).split("\n")[0].trim();
   const [interpreter] = line.split(/[ \t]+/, 1), rest = line.slice(interpreter.length).trim();
   if (!interpreter) return [file, args];
   if (basename(interpreter) !== "env") {
     if (shut.some(root => inside(real(interpreter), root))) refuse(`${file} starts with ${interpreter}, inside the worktree or its Git folder, where a build can change it`);
-    return [file, args];
+    // A binary interpreter the kernel starts itself; one that is a script again is followed (the kernel passes what
+    // follows the interpreter as one argument, before the script).
+    const next = interpreted(interpreter, [...(rest ? [rest] : []), file, ...args], env, shut, refuse, depth + 1);
+    return next[0] === interpreter ? [file, args] : next;
   }
   const words = rest.split(/[ \t]+/).filter(Boolean);
   if (words[0] === "-S") words.shift();

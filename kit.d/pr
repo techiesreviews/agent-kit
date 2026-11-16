@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // kit: open a PR into the land branch, attach the review, merge when checks pass
 import { execFileSync, spawn } from "node:child_process";
-import { appendFileSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { loadavg, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -20,6 +20,8 @@ const { checkLock, keyGuardOn, runPath, runProgram, startCommand } = await impor
 const { folderRemote, gitCommonDir, gitNetworkCall, gitSafety, gitTop } = await import(pathToFileURL(resolve(import.meta.dirname, "../git-safety.mjs")).href);
 const usage = 'Usage: kit pr [--base <land>] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release] [--full] [--waive "<reason>"] [--not-visible "<reason>"]\nBranches come from scripts/agents/kit.json: --base defaults to branches.land; --release needs --base branches.release and first runs kit release-check --land (nothing unsaved, HEAD exactly origin/<land>).\n--waive requires a *-lead owner and may be given more than once (ids count in any reason, counts add up; once any reason names an id, the counts are not read); records the reason for merging with open findings or without a feature-list update;\na waiver for the findings that stop the landing (above P3; once the fix rounds are used up, P0 and P1) must name each one by id in its text (--waive \"R1-2, SL-1: <reason>\") or start with the number of them (--waive \"2 findings: <reason>\", which must match both looks together);\na finding it leaves out stops kit pr with a plain reason that lists it, and so does one that is new at a head a rebase brought, at the start of the run too (the lead sees it and runs kit pr again); P3 findings, test gaps and docs wording need no names;\nwith --release it also passes the release check, which names the reason (kit pr still needs a clean tree).\nA visible change (paths.visible) lands only with a fresh kit ux result: one that passed, with the review, for the visible files and the listed features that cover the change as they are now (kit ux saves it for the branch; a later change to a visible file or to one of those features, a rebase\'s too, needs kit ux again; a list edit about other features does not).\n--not-visible "<reason>" lands a change that matches those paths but shows a person nothing new, with the reason in the PR text (refused when kit ux tried this very change and it did not pass, and with --release; a run whose reviewer did not finish is no such verdict); --waive does not cover the UX check.\nWhen no feature in the list covers the changed files, kit ux has nothing to try and the PR says "UX check: nothing to try".\nA project with no feature list for kit ux (docs/agents/features.md) says "UX check: skipped"; a release carries what each PR already passed.\nAfter the Claude review (none in the docs tier), every change gets a second look (kit review --second-look), whose findings block the same way;\nwhen no model can take it, the PR lands and says "second look: skipped (<reason>)".\nOn Orbit ("tickets": "orbit"), --ticket takes a card KEY or a saved brief of it (.scratch/kit-tickets/KEY.md); when the PR\nlands the card goes to Done with a dated comment naming the PR and its merge SHA (ORBIT_ROLE=lead); a card that cannot be closed is named on the RESULT line.\nA PR a merge queue takes leaves the card open, its follow-ups on the card, and says to close it once the PR lands.\n';
 const kit = process.env.KIT_PR_KIT || resolve(import.meta.dirname, "../kit");
+// main's private folder of program links, removed when it ends.
+let programs;
 // The steps that run the project's own commands, the build's code: inside the key lock (checkLock).
 const checkNames = new Set(["check", "unit", "lint", "kit-clean", "colours", "tickets", "specs"]);
 
@@ -312,12 +314,24 @@ async function main(args) {
     // outside both, and every git call (gh's and the kit commands' too) gets gitSafety's settings: no hook, no filter,
     // diff tool or other program the repository's Git settings name, no global or system config without the network.
     // The project's checks (check, unit, lint, specs...), the build's own code, run inside the key lock (checkLock).
+    // The programs this process and the kit commands it starts find by their bare names (git, node, gh, bash, sh) are
+    // found once, past any link a PATH folder elsewhere holds into the worktree or its Git folder, and stand first on
+    // PATH through a private folder of links; KIT_NODE is this very Node.
     const guarded = keyGuardOn(process.env);
-    delete process.env.BASH_ENV; delete process.env.ENV;
     const top = gitTop(process.env.KIT_ROOT || process.cwd());
     if (guarded && top) {
-      const path = runPath(process.env, { worktree: top, common: gitCommonDir(top) ?? undefined });
+      delete process.env.BASH_ENV; delete process.env.ENV;
+      const topCommon = gitCommonDir(top) ?? undefined;
+      const path = runPath(process.env, { worktree: top, common: topCommon });
       if (path !== undefined) process.env.PATH = path;
+      programs = mkdtempSync(join(tmpdir(), "kit-pr-programs-"));
+      symlinkSync(process.execPath, join(programs, "node"));
+      for (const name of ["git", "gh", "bash", "sh"]) {
+        const found = runProgram(name, process.env, { worktree: top, common: topCommon, kind: "kit pr" });
+        if (found.includes("/")) symlinkSync(found, join(programs, name));
+      }
+      process.env.PATH = `${programs}${process.env.PATH ? `:${process.env.PATH}` : ""}`;
+      process.env.KIT_NODE = process.execPath;
     }
     const root = resolve(kitRoot()), common = gitCommonDir(root) ?? undefined;
     const gitBin = guarded ? runProgram("git", process.env, { worktree: root, common, kind: "kit pr" }) : "git";
@@ -344,7 +358,7 @@ async function main(args) {
       { cwd: root, env: { ...environment, ...safety(environment, gitNetworkCall(args)) }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
     // The URL a fetch or push goes to, rewrites applied: its remote's (origin when it names none), or the URL it names.
     const remoteUrl = argv => {
-      const at = argv.findIndex(arg => !arg.startsWith("-"));
+      const at = argv.findIndex((arg, i) => !arg.startsWith("-") && argv[i - 1] !== "-c" && argv[i - 1] !== "-C");
       const remote = argv.slice(at + 1).find(arg => !arg.startsWith("-")) ?? "origin";
       try { return gitSync(["remote", "get-url", ...(argv[at] === "push" ? ["--push"] : []), remote]); } catch { return remote; }
     };
@@ -480,6 +494,13 @@ async function main(args) {
     const checks = settings.checks ?? {}, extra = extraChecks(checks.extra);
     await git("guards", ["check-ref-format", `refs/heads/${flags.base}`]);
     if (await git("guards", ["status", "--porcelain"])) throw new Error("uncommitted changes");
+    // Git LFS's filter is one of the programs a repository's Git settings name, which do not run here with the keys
+    // (TOOLS-303): a rebase or checkout would leave pointer files in place of the files.
+    if (guarded) {
+      const lfs = (await git("guards", ["ls-files", "-z", "--", ":(glob)**/.gitattributes"])).split("\0").filter(Boolean)
+        .find(path => { try { return /(^|\s)filter=lfs(\s|$)/m.test(readFileSync(join(root, path), "utf8")); } catch { return false; } });
+      if (lfs) throw new Error(`this repository uses Git LFS (filter=lfs in ${lfs}), whose filter kit pr does not run (no program a repository's Git settings name runs with the keys), so a rebase would leave pointer files in place of the files; land it with ASE_KEY_GUARD=off`);
+    }
     // A project with no remote (research 02: astro-live-builder, tidy) has nowhere to open a PR.
     // Only git's "No such remote" (exit 2) means that; other failures surface at the fetch.
     if ((await execute("guards", "git", ["remote", "get-url", "origin"])).status === 2) {
@@ -1255,4 +1276,8 @@ async function main(args) {
 }
 
 if (process.argv.length === 3 && ["--help", "-h"].includes(process.argv[2])) process.stdout.write(usage);
-else process.exitCode = await main(process.argv.slice(2));
+else {
+  process.exitCode = await main(process.argv.slice(2));
+  // The private folder of program links (TOOLS-303) goes when kit pr ends, however main ends.
+  if (programs) rmSync(programs, { recursive: true, force: true });
+}
