@@ -119,7 +119,8 @@ export function earlierReleaseCut(root, commit, head, { base, git } = {}) {
     if (!releaseCutSubject.test(subject ?? "")) return false;
     parents = line.split(" ").filter(Boolean);
   } catch { return false; }
-  if (parents.length < 2 || (base && contains(parents[0], base))) return false;
+  // A cut already in head's history is head's own past, not one a re-cut replaced.
+  if (parents.length < 2 || (base && contains(parents[0], base)) || contains(commit, head)) return false;
   return parents.every(parent => contains(parent, head));
 }
 
