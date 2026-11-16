@@ -310,9 +310,11 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     by name in turn (`timeout 30 ssh`, a wrapper script). A command whose program cannot be told (shell syntax beyond
     words and quotes, an expansion, `env`), or an ssh PATH holds only as such a link, is swapped for one that says so
     and fails, so only a call to an ssh remote stops. `kit pr` pushes to a folder remote (whose hooks git runs without
-    these settings) inside the key lock. `safe.directory` names only the worktree and its Git folder. The runner's own git
-    calls also run inside the lock where bubblewrap runs. The runner finds the Git folder from the worktree's files
-    before its first git, so that git is never one a link on PATH leads into the worktree or a linked worktree's shared
+    these settings) inside the key lock. It weighs every push address the remote lists, rewrites applied (TOOLS-320):
+    a folder beside other addresses (which need the credentials the lock hides), or an address on this machine itself
+    (localhost, a loopback address or the machine's own name, whose hooks run outside any lock), stops the push.
+    `safe.directory` names only the worktree and its Git folder. The runner's own git calls also run inside the lock
+    where bubblewrap runs. The runner finds the Git folder from the worktree's files before its first git, so that git is never one a link on PATH leads into the worktree or a linked worktree's shared
     Git folder for (those files are the worktree's own: a build that rewrote its `.git` file to name another folder
     takes the real one out of that lookup). `ASE_KEY_GUARD=off` turns these settings off with the lock. Settings a
     project uses on purpose are switched off too: hooks such as a pre-push check do not run in `kit pr`, and Git LFS
@@ -358,7 +360,7 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   unlocked (no bubblewrap, or `ASE_KEY_GUARD=off`; Codex's own sandbox keeps it read-only), a `kit pr` started through
   `npm run` (its own `#!/usr/bin/env node` is found before `kit pr` can look), a fetch or push reading a global Git
   config a build wrote, and what ssh itself starts from a config under HOME a build wrote (`~/.ssh/config`'s
-  `ProxyCommand`, `Match exec`). For those the lead's guard is the review before anything a build wrote is run (`kit
+  `ProxyCommand`, `Match exec`, or a host name it maps to this machine). For those the lead's guard is the review before anything a build wrote is run (`kit
   review` is read-only).
 - Keyed steps happen only in the lead's own process, never inside a locked run. Already the lead's: `git push`, `kit pr`
   (push, PR, merge, card close) and `kit pr --release` (the build contract leaves a builder's changes unstaged). Moved to
