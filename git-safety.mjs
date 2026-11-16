@@ -25,6 +25,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { sshCommand } from "./key-guard.mjs";
 
 /** The worktree's top folder, the nearest one from `start` up that holds .git, found without running git; or null. */
 export function gitTop(start) {
@@ -151,6 +152,14 @@ export function gitSafety({ worktree, env = process.env, network = false, git = 
   const start = Number.parseInt(env.GIT_CONFIG_COUNT ?? "", 10) || 0;
   pairs.forEach(([key, value], index) => { extra[`GIT_CONFIG_KEY_${start + index}`] = key; extra[`GIT_CONFIG_VALUE_${start + index}`] = value; });
   extra.GIT_CONFIG_COUNT = String(start + pairs.length);
-  const problem = steering.size ? `the repository's own Git config holds ${[...steering].join(", ")}, which could send the credentials of a fetch or push elsewhere or start a remote helper (a build may have written ${steering.size === 1 ? "it" : "them"}); remove ${steering.size === 1 ? "it" : "them"} with git config --unset-all <name> and run it again` : null;
-  return { env: extra, problem };
+  // git's ssh, by its full path (sshCommand): never a bare name a link on PATH leads into the worktree for.
+  let sshProblem = null;
+  if (network) {
+    const configured = settings.filter(entry => !ownScope(entry.scope) && entry.key.toLowerCase() === "core.sshcommand").at(-1)?.value;
+    const ssh = sshCommand(env, { worktree, common, configured });
+    if (ssh.command) extra.GIT_SSH_COMMAND = ssh.command;
+    sshProblem = ssh.problem;
+  }
+  const steered = steering.size ? `the repository's own Git config holds ${[...steering].join(", ")}, which could send the credentials of a fetch or push elsewhere or start a remote helper (a build may have written ${steering.size === 1 ? "it" : "them"}); remove ${steering.size === 1 ? "it" : "them"} with git config --unset-all <name> and run it again` : null;
+  return { env: extra, problem: [steered, sshProblem].filter(Boolean).join("; ") || null };
 }

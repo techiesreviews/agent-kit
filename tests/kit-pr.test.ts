@@ -9,7 +9,7 @@ import { coverageHash, saveUxResult, uxGuard, visibleFiles } from "../ux-gate.mj
 import { sameReviewPatch } from "../review-findings.mjs";
 import { forEachAwait } from "./support/await-race.ts";
 import { kitEnv } from "./support/kit-env.ts";
-import { onMacos, pathWithoutBwrap } from "./support/no-bwrap.ts";
+import { onMacos, pathWithout, pathWithoutBwrap } from "./support/no-bwrap.ts";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { bwrapWorks } from "../key-guard.mjs";
 import { orbitProject, orbitSecretsForTests, orbitSettings, runAsync, type Run } from "./support/orbit-project.ts";
@@ -47,6 +47,11 @@ if (tool === "fake-kit" && action === "release-check" && env.FAKE_RELEASE_CHECK_
 if (tool === "fake-kit" && action === "release-check" && env.FAKE_RELEASE_CHECK) {
   const run = require("node:child_process").spawnSync(env.FAKE_RELEASE_CHECK, args.slice(1), { stdio: "inherit" });
   process.exit(run.status ?? 1);
+}
+// FAKE_GH_SWAP: gh (which kit pr starts outside the lock) swaps kit pr's own git link in TMPDIR for another program.
+if (tool === "gh" && env.FAKE_GH_SWAP) for (const name of require("node:fs").readdirSync(env.TMPDIR).filter(name => name.startsWith("kit-pr-programs-"))) {
+  const link = join(env.TMPDIR, name, "git");
+  require("node:fs").rmSync(link, { force: true }); require("node:fs").symlinkSync("/bin/true", link);
 }
 if (failPending) { console.error("api unavailable"); process.exit(1); }
 // FAKE_FAIL_BODY: a gh call whose body matches this pattern fails, as a comment GitHub refuses does.
@@ -3960,4 +3965,30 @@ test("on a system without bubblewrap kit pr's checks run unlocked and the PR say
   assert.equal(swapped.status, 1, swapped.stdout + swapped.stderr);
   assert.match(swapped.stdout, /^RESULT: fail check: kit pr's own link to git \(\S+\/kit-pr-programs-[^/]+\/git\) was changed while it ran; run kit pr again$/m);
   assert.deepEqual(readdirSync(tmp).filter(name => name.startsWith("kit-pr-programs-")), [], "the folder goes when kit pr ends");
+});
+
+// TOOLS-320: a program kit pr starts outside the lock (gh, after the checks) that changes kit pr's own program links stops
+// the very next start (the check before every start, not only the one after each check).
+test("a gh that changes kit pr's program links stops kit pr at its next start", t => {
+  const f = fixture(t);
+  const tmp = join(f.dir, "tmp"); mkdirSync(tmp);
+  const result = f.run([], { TMPDIR: tmp, FAKE_GH_SWAP: "1" });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /^RESULT: fail open: kit pr's own link to git \(\S+\/kit-pr-programs-[^/]+\/git\) was changed while it ran; run kit pr again$/m);
+  assert.equal(f.calls().filter(call => call.tool === "gh").length, 1, "nothing started after the gh that changed the link");
+});
+
+// TOOLS-320: git's ssh for kit pr's fetch and push is found as kit pr finds its own programs: an ssh PATH holds only as a
+// link into the worktree (a person's link to a script a build can change) is never started, and kit pr stops instead.
+test("kit pr refuses a fetch or push whose ssh PATH holds only as a link into the worktree", t => {
+  const f = fixture(t);
+  const links = join(f.dir, "links"), planted = join(f.root, "tools/ssh");
+  mkdirSync(links); mkdirSync(dirname(planted));
+  writeFileSync(planted, `#!/bin/sh\necho planted >> ${JSON.stringify(join(f.dir, "planted.txt"))}\n`, { mode: 0o755 });
+  appendFileSync(join(f.root, ".git/info/exclude"), "tools/\n");
+  symlinkSync(planted, join(links, "ssh"));
+  const result = f.run([], { PATH: `${f.bin}:${links}:${pathWithout(f.dir, ["ssh"], "no-ssh-bin")}` });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /^RESULT: fail \S+: ssh on PATH is \S+\/links\/ssh, a link into the worktree or its Git folder/m);
+  assert.ok(!existsSync(join(f.dir, "planted.txt")), "the planted ssh never started");
 });
