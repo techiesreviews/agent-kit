@@ -942,11 +942,13 @@ async function resumeRun(out, brief) {
 // repository's Git settings are a build's to change, and git diff and git log start what they name: an outside diff
 // tool (diff.external, a driver's command), a text converter (textconv), a signature checker (gpg.program with
 // log.showSignature). So executeRun passes a gitOut that runs inside the key lock, and each call here also switches
-// those three off, for a run the lock cannot wrap (a Codex review without bubblewrap).
+// those three off, for a run the lock cannot wrap (a Codex review without bubblewrap). The scope's own git (the base
+// and the head it resolves) goes through gitOut too: by its bare name it would take a git that a link on PATH leads
+// into the worktree for, outside the lock.
 function preparePrompt(options, brief, out, gitOut) {
   let prompt = brief;
   if (options.kind === "review") {
-    const scope = reviewScope(brief, options, options.worktree);
+    const scope = reviewScope(brief, options, options.worktree, gitOut);
     const { base, head, label, commit } = scope;
     const diff = join(out, "diff.patch"), commits = join(out, "commits.log"), refs = join(out, "refs.txt");
     const plain = ["--no-ext-diff", "--no-textconv"], unsigned = "--no-show-signature";
