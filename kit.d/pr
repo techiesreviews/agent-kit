@@ -439,8 +439,9 @@ async function main(args) {
         if (inside.status === 0) { ok("merge"); return; }
         // The same dev and main always make the same cut (TOOLS-310): the merge is dated by its newer parent, not by the clock, so a
         // re-cut from an unchanged dev is the very commit its reviews, second look and waivers were given for.
-        const dated = Math.max(...(await git("merge", ["show", "-s", "--format=%ct", "HEAD", `origin/${flags.base}`])).split(/\s+/).map(Number));
-        const when = `@${dated} +0000`;
+        const dates = (await git("merge", ["show", "-s", "--no-show-signature", "--format=%ct", "HEAD", `origin/${flags.base}`])).split(/\s+/).map(Number);
+        if (dates.length !== 2 || !dates.every(Number.isSafeInteger)) throw new Error("could not read the dates of the release cut's parents");
+        const when = `@${Math.max(...dates)} +0000`;
         const merged = await execute("merge", "git", ["merge", "--no-edit", "-m", `Merge origin/${flags.base} into the release cut`, `origin/${flags.base}`],
           undefined, { GIT_AUTHOR_DATE: when, GIT_COMMITTER_DATE: when });
         if (merged.status !== 0) {

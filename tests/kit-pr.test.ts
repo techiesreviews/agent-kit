@@ -3808,6 +3808,8 @@ test("a release re-cut from an unchanged dev is the same cut: its saved review i
   f.gitAt(peer, "push", "-q", "origin", "main");
   f.git("checkout", "-q", "dev"); f.commit("Landed change", "landed.txt"); f.git("push", "-q", "origin", "dev");
   f.git("checkout", "-q", "-b", "release/cut");
+  // A machine that shows signatures in git log still gets the parents' dates.
+  f.git("config", "log.showSignature", "true");
   const review = "REVIEW_STATUS: complete\nDefects:\n- Spec: landed.txt:1 P1 The release defect.\n";
   // The first cut: the review finds a blocker, so the release stops for the lead.
   const first = f.run(["--base", "main", "--release"], { ...owner, FAKE_REVIEW: review, GIT_AUTHOR_DATE: "2026-11-16T10:00:00Z", GIT_COMMITTER_DATE: "2026-11-16T10:00:00Z" });
