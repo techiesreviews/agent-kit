@@ -522,6 +522,9 @@ test("earlier second looks of a branch: only marked ones that came back, for thi
   look("a", "4", heads[1], { ok: false, branch: "main" });
   look("a", "5", heads[1], { ok: true, branch: "other" });
   look("a", "6", sideHead, { ok: true, branch: "main" });
+  // A report kit cannot read (no REVIEW_STATUS) is no review that asked for a fix, even marked as come back.
+  look("a", "7", heads[1], { ok: true, branch: "main" });
+  writeFileSync(join(reviews, "a", "7", "result.md"), "the model wrote something else\n");
   const found = earlierSecondLooks(reviews, { branch: "main", head: heads[2], root: dir });
   assert.deepEqual(found.map((item: { head: string }) => item.head).sort(), [heads[0], heads[1]].sort());
   assert.equal(found[0].findings[0].severity, "P2");
