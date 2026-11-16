@@ -117,7 +117,7 @@ test("doctor checks all eleven conditions quickly, notes Grok, and quiet success
   // The key lock: one note, on where bubblewrap runs, else a ✗ note (never a counted check).
   assert.match(lines[16], /^(key lock: on \(bubblewrap runs; agents the kit starts cannot read the key files\)|✗ key lock: .*)$/);
   assert.equal(lines.length, 18);
-  assert.match(lines[17], /^RESULT: ok doctor 11\/11 checks passed(; warning: key lock cannot start \(see the ✗ key lock line\))?$/);
+  assert.match(lines[17], /^RESULT: ok doctor 11\/11 checks passed(; warning: key lock (cannot start|has a gap) \(see the ✗ key lock line\))?$/);
   assert.equal(result.stderr, "");
   const quiet = f.run(["--quiet"]);
   assert.equal(quiet.status, 0, quiet.stderr);

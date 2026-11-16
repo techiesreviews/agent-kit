@@ -552,6 +552,9 @@ if [[ $quiet == false ]]; then
          printf '✗ key lock: %s (the lock stays on)\n' "$guard_text" ;;
       *) printf 'key lock: %s\n' "$guard_text" ;;
     esac
+  else
+    api_warning="${api_warning:+$api_warning; }key lock not checked (see the ✗ key lock line)"
+    printf '✗ key lock: doctor could not read the lock'"'"'s state (Node >=24 or key-guard.mjs missing); fix: install Node 24\n'
   fi
 fi
 
