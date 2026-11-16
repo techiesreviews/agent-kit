@@ -97,12 +97,17 @@ test("a git config with a token in a URL and a shell start-up file that sets a t
   writeFileSync(join(home, ".bashrc"), `export GH_TOKEN=${dummy}\n`);
   mkdirSync(join(home, ".config/fish"), { recursive: true });
   writeFileSync(join(home, ".config/fish/config.fish"), `set -gx ORBIT_TOKEN ${dummy}\n`);
-  writeFileSync(join(home, ".profile"), "export PATH=$HOME/bin:$PATH\nexport LD_LIBRARY_PATH=/opt/lib\nexport TOKENIZERS_PARALLELISM=false\n");
+  writeFileSync(join(home, ".profile"), 'export PATH=$HOME/bin:$PATH\nexport LD_LIBRARY_PATH=/opt/lib\nexport TOKENIZERS_PARALLELISM=false\nexport SSH_AUTH_SOCK="$XDG_RUNTIME_DIR/ssh-agent.socket"\nexport PASSWORD_STORE_DIR=~/.pass\nexport GOOGLE_APPLICATION_CREDENTIALS=~/key.json\n');
+  // Every NAME= on a line counts, a commented one too; fish's universal variables and conf.d files are read.
+  writeFileSync(join(home, ".bash_profile"), "# export GH_TOKEN=old\n");
+  mkdirSync(join(home, ".config/fish/conf.d"), { recursive: true });
+  writeFileSync(join(home, ".config/fish/conf.d/secrets.fish"), "set -gx CF_API_TOKEN x\n");
+  writeFileSync(join(home, ".config/fish/fish_variables"), "SETUVAR --export GH_TOKEN:x\n");
   writeFileSync(join(home, ".zshrc"), 'set --global --export GPG_PASSPHRASE x\n');
   mkdirSync(join(home, ".config/git"), { recursive: true });
   writeFileSync(join(home, ".config/git/config"), '[url "ssh://git@github.com/"]\n\tinsteadOf = https://github.com/\n');
   const paths = lockedPaths("claude", { HOME: home });
-  for (const file of [".gitconfig", ".bashrc", ".config/fish/config.fish", ".zshrc"]) assert.ok(paths.includes(join(home, file)), file);
+  for (const file of [".gitconfig", ".bashrc", ".config/fish/config.fish", ".zshrc", ".bash_profile", ".config/fish/conf.d/secrets.fish", ".config/fish/fish_variables"]) assert.ok(paths.includes(join(home, file)), file);
   for (const file of [".profile", ".config/git/config"]) assert.ok(!paths.includes(join(home, file)), file);
 });
 
