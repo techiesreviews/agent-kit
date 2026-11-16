@@ -5,12 +5,17 @@ import { join, resolve } from "node:path";
 
 /** A PATH folder under `dir` holding every program of this process's PATH but bwrap (an earlier folder's program wins). */
 export function pathWithoutBwrap(dir: string) {
-  const bin = join(dir, "no-bwrap-bin");
+  return pathWithout(dir, ["bwrap"], "no-bwrap-bin");
+}
+
+/** The same without the programs named `left`, in the folder `name` under `dir`: a machine where those are not installed. */
+export function pathWithout(dir: string, left: string[], name: string) {
+  const bin = join(dir, name);
   mkdirSync(bin);
   for (const folder of String(process.env.PATH).split(":").filter(Boolean)) {
     let names: string[] = [];
     try { names = readdirSync(folder); } catch { continue; }
-    for (const name of names) if (name !== "bwrap") try { symlinkSync(join(folder, name), join(bin, name)); } catch { /* An earlier folder's program wins. */ }
+    for (const program of names) if (!left.includes(program)) try { symlinkSync(join(folder, program), join(bin, program)); } catch { /* An earlier folder's program wins. */ }
   }
   return bin;
 }
