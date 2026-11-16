@@ -254,8 +254,9 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   entries), the SSH agent and session-bus sockets where their variables point, and the desktop's runtime folder
   (keyring, session bus, agent sockets); a relative name counts from both the worktree and the lead's folder.
   `KIT_KEY_PATHS` adds more (absolute, `:`-separated). Claude, Grok and OpenCode run inside bubblewrap (`bwrap`, required:
-  without it such a run stops and says so; `kit doctor` shows a `key lock:` line); Codex, whose own sandbox cannot start
-  inside another, gets a permissions profile with the same paths unreadable. Variables holding tokens, passwords, agent
+  without it such a run stops and says so; `kit doctor` shows a `key lock:` line; Grok's own sandbox cannot start inside
+  it, so Grok runs with `--sandbox off` there and its read-only tool list keeps it from writing); Codex, whose own
+  sandbox cannot start inside another, gets a permissions profile with the same paths unreadable. Variables holding tokens, passwords, agent
   sockets and the display are dropped; each CLI keeps only its own sign-in. Known limits: a CLI's own login stays
   readable to it (Claude's `~/.claude/.credentials.json`, Grok's `~/.grok/auth.json`; Codex hides its own), loopback
   services and abstract sockets stay reachable, and a helper thread T3 starts (`delegate_task`) is not started by the kit
