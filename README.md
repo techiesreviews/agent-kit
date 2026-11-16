@@ -391,9 +391,10 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   a finding the waiver does not name, or one that is new at a head a rebase brought (at the start of the run too), stops `kit pr` with a plain reason that lists it (P3 findings, test gaps and docs wording need no names).
 - Re-cutting a release (TOOLS-310): reset the release branch to `origin/<land>` and run `kit pr --release` again. The
   merge of `origin/<release>` into the cut is dated by its newer parent, not by the clock, so the same dev and the same
-  release branch always make the same commit: its saved review and second look are reused and a lead's waiver for their
-  findings is taken. There is no need to force `GIT_AUTHOR_DATE` or `GIT_COMMITTER_DATE` any more (a merge signed by
-  `commit.gpgSign` is the one exception: a signature never repeats). After dev changed, the new cut answers the
+  release branch always make the same commit, run by the same git identity (`user.name` and `user.email` are part of
+  it, so a re-cut by another lead or machine set-up is a new commit): its saved review and second look are reused and a
+  lead's waiver for their findings is taken. There is no need to force `GIT_AUTHOR_DATE` or `GIT_COMMITTER_DATE` any
+  more (a merge signed by `commit.gpgSign` never repeats either: a signature differs each time). After dev changed, the new cut answers the
   earlier cut's review as a later round: the reviewer reads the plain diff from the earlier cut (what dev changed since
   then and the merge itself), and the fix rounds of every cut of the release count against one budget.
 
