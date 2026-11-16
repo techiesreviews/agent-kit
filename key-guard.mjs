@@ -402,8 +402,9 @@ export function codexProfile(kind, common, paths) {
 // <worktree>/node_modules/.bin, which npm puts on PATH as a full path) must never be the lock, nor start outside it.
 // A PATH entry that is not a full path, or an empty one, is the folder the run starts in, the worktree again. Links
 // are followed first, so a folder or a program elsewhere that links into either counts as inside. No PATH at all
-// means the system's own folders (as execvp reads it). A PATH folder elsewhere that a build can write (under HOME) is
-// not covered: the lock does not confine a build's writes (README, "What the key lock does not do").
+// means the system's own folders (as execvp reads it), and so does a PATH with no folder left. A PATH folder elsewhere
+// that a build can write (under HOME) is not covered: the lock does not confine a build's writes (README, "What the
+// key lock does not do").
 const systemPath = "/bin:/usr/bin";
 const executable = file => { try { accessSync(file, constants.X_OK); return statSync(file).isFile(); } catch { return false; } };
 const pathFolders = env => (env.PATH === undefined ? systemPath : String(env.PATH)).split(delimiter);
@@ -419,21 +420,49 @@ function real(path) {
 // The two folders a build is meant to write, for the comparison: the worktree and the Git folder, links followed.
 const buildFolders = (worktree, common) => [worktree, common].filter(Boolean).map(real);
 const trustedFolders = (env, shut) => pathFolders(env).filter(folder => isAbsolute(folder) && !shut.some(root => inside(real(folder), root)));
+// The folders of the run's own PATH (runPath): the trusted ones, or the system's own when none is left.
+const runFolders = (env, shut) => { const folders = trustedFolders(env, shut); return folders.length ? folders : systemPath.split(delimiter); };
+// What a bare name stands for in those folders: `file`, the first executable there that does not lead into the
+// worktree or the Git folder, or null; and `refused`, the first one before it that does. Such a one sits in a folder
+// that stays on the run's PATH (a link someone made from a folder of their own to a program in the worktree, which a
+// build can swap), so the bare name would start it, outside the lock: with no `file` to start in its place, the name
+// is not started at all (linkRefusal). With neither, no folder holds an executable by that name, and starting the
+// bare name with the run's PATH finds none either.
+function lookup(name, env, shut) {
+  let refused = null;
+  for (const folder of runFolders(env, shut)) {
+    const file = join(folder, name);
+    if (!executable(file)) continue;
+    if (!shut.some(root => inside(real(file), root))) return { file, refused };
+    refused ??= file;
+  }
+  return { file: null, refused };
+}
 // The executable file a bare name stands for, from those folders only, or null.
-const programFor = (name, env, shut) => trustedFolders(env, shut).map(folder => join(folder, name))
-  .find(file => executable(file) && !shut.some(root => inside(real(file), root))) ?? null;
-// The executable file command names, or null: a path as it is (from `cwd`, where the run starts), a bare name as above.
-const executableFor = (command, env, cwd, shut) => command.includes("/") ? [resolve(cwd, command)].find(executable) ?? null : programFor(command, env, shut);
+const programFor = (name, env, shut) => lookup(name, env, shut).file;
+// Why a program found only through such a link is not started, with the step that fixes it.
+const linkRefusal = (name, file) => `${name} on PATH is ${file}, a link into the worktree or its Git folder (${real(file)}), where a build can change it, so it is not started; put a ${name} from outside them on PATH, or set ASE_KEY_GUARD=off to run without the lock`;
+
+/**
+ * The program the runner starts for a bare name (its own git) in a run in `worktree`: its full path from the run's
+ * PATH folders, never one that leads into the worktree or the Git folder; the bare name where no folder holds one (the
+ * start then fails as a missing program). Throws in plain words where PATH holds only one that leads inside.
+ */
+export function runProgram(name, env = process.env, { worktree, common } = {}) {
+  const { file, refused } = lookup(name, env, buildFolders(worktree, common));
+  if (!file && refused) throw new Error(linkRefusal(name, refused));
+  return file ?? name;
+}
 
 /**
  * PATH for a run in `worktree`, or undefined when PATH needs no change (or is not set): its folders in their order,
- * without the ones inside the worktree or the Git folder. A program started by a bare name then (Codex, which locks its own commands; the
- * runner's own git; whatever the CLI itself starts) is not found there either. A PATH with nothing left would mean the
+ * without the ones inside the worktree or the Git folder. A program started by a bare name then (whatever the CLI
+ * itself starts; the kit's own starts go by full path, see lookup) is not found there either. A PATH with nothing left would mean the
  * current folder to execvp, so the system's own folders stand in, as for no PATH at all.
  */
 export function runPath(env = process.env, { worktree, common } = {}) {
   if (env.PATH === undefined) return undefined;
-  const path = trustedFolders(env, buildFolders(worktree, common)).join(delimiter) || systemPath;
+  const path = runFolders(env, buildFolders(worktree, common)).join(delimiter);
   return path === String(env.PATH) ? undefined : path;
 }
 
@@ -553,9 +582,11 @@ function searchedPaths(cli, env, { apiRoute = false, worktree, common } = {}) {
  * the lock is on and cannot be set up (a bubblewrap that cannot start or is missing on Linux, a key folder it cannot
  * search; no bubblewrap under ASE_KEY_GUARD=on). `close()` removes the run's private folder.
  *  - env: variables to drop for the call, and PATH without the worktree's and the Git folder's folders where it names one (runPath);
- *  - wrap(command, args): the command and arguments that run it inside the lock (Claude, Grok, OpenCode);
+ *  - wrap(command, args): the command and arguments that run it inside the lock (Claude, Grok, OpenCode), or by its
+ *    full path (Codex, which locks its own commands);
  *  - helper(command, args): the same for a program the runner itself starts on what the agent left (git status in the
- *    worktree, whose Git settings a build can change), for every CLI where bubblewrap runs; started with `env` dropped too;
+ *    worktree, whose Git settings a build can change), for every CLI where bubblewrap runs; started with `env` dropped too.
+ *    Both throw, like the lock itself, for a program PATH holds only as a link into the worktree or the Git folder;
  *  - codex: Codex's -c profile options;
  *  - claudeGuard: for the API route, a script the wrapper runs claude through once it has read its key;
  *  - bwrap: true when bubblewrap stands between the runner and the CLI (it reports a killed CLI as exit 128 + signal).
@@ -564,14 +595,25 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
   const plain = (command, args) => [command, args];
   const unlocked = { off: true, env: {}, wrap: plain, helper: plain, close() {} };
   const shut = buildFolders(worktree, common);
-  // Inside bubblewrap (by its own full path) with these arguments, by the program's full path; both come only from PATH
-  // folders outside the worktree and the Git folder (see programFor). A program that is not there is started as it is, with the run's PATH
-  // (`env` below), so the run still fails as a missing CLI (spawn ENOENT), which kit review counts as an unavailable
-  // reviewer; nothing runs, so there is nothing to lock.
+  const refuse = problem => { throw new Error(`cannot lock the key files for this ${kind}: ${problem}`); };
+  // The executable file a command names, or null: a path as it is (from the worktree, where the run starts); a bare
+  // name from the run's PATH folders, never one that leads into the worktree or the Git folder (see lookup). Where
+  // PATH holds the name only as such a link, the bare name would start it outside the lock, so the run is refused.
+  const program = command => {
+    if (command.includes("/")) return [resolve(worktree ?? process.cwd(), command)].find(executable) ?? null;
+    const { file, refused } = lookup(command, env, shut);
+    return file ?? (refused ? refuse(linkRefusal(command, refused)) : null);
+  };
+  // Inside bubblewrap (by its own full path) with these arguments, by the program's full path. A program no PATH
+  // folder holds is started as it is, with the run's PATH (`env` below), so the run still fails as a missing CLI (spawn
+  // ENOENT), which kit review counts as an unavailable reviewer; nothing runs, so there is nothing to lock.
   const inside = (outer, lock = bwrap) => (command, args) => {
-    const file = executableFor(command, env, worktree ?? process.cwd(), shut);
+    const file = program(command);
     return file ? [lock, [...outer, "--", file, ...args]] : [command, args];
   };
+  // Without bubblewrap before it (Codex, which locks its own commands; its runner's helpers where bubblewrap cannot
+  // run): by the program's full path all the same, since the bare name would take a link before it on PATH.
+  const direct = (command, args) => [program(command) ?? command, args];
   if (!keyGuardOn(env)) return unlocked;
   const path = runPath(env, { worktree, common });
   const scrub = { ...scrubbedEnv(cli, env, { apiRoute, model }), ...(path === undefined ? {} : { PATH: path }) };
@@ -579,6 +621,9 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
   // run's log says so. Nothing is searched for them, so no key folder can stop the run. Codex goes on below: its own
   // profile needs no bubblewrap.
   if (cli !== "codex" && runsUnwrapped(env, shut)) return { ...unlocked, env: scrub, missing: true, warning: unwrappedNote };
+  // The run's own two programs are looked up now, so a run that could only start one through a link stops here, with
+  // the reason in its log, before anything starts.
+  for (const name of [cli, "git"]) program(name);
   const { paths, problem: refusal, glue } = searchedPaths(cli, env, { apiRoute, worktree, common });
   if (refusal) throw new Error(`cannot lock the key files for this ${kind}: ${refusal}${glue} set ASE_KEY_GUARD=off to run without the lock`);
   // Codex's own sandbox shares the network too, so the display warning (when bubblewrap can check it) applies to it.
@@ -589,7 +634,7 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
     const gap = !display ? null : unchecked ? `the X display could not be checked (${absent && process.platform !== "linux" ? "this system has no bubblewrap" : unchecked}), so it may let programs in without its cookie; do not copy or type keys while agents run` : displayWarning;
     const warning = [gap, keyPathsWarning(env)].filter(Boolean).join("; ") || null;
     // Codex locks its own commands; the runner's helpers go through bubblewrap where it runs.
-    return { env: scrub, codex: codexProfile(kind, common, codexPaths(paths)), warning, wrap: plain, helper: bwrapWorks(env, shut) === null ? inside(bwrapArgs(paths)) : plain, close() {} };
+    return { env: scrub, codex: codexProfile(kind, common, codexPaths(paths)), warning, wrap: direct, helper: bwrapWorks(env, shut) === null ? inside(bwrapArgs(paths)) : direct, close() {} };
   }
   const problem = bwrapWorks(env, shut);
   if (problem) throw new Error(`cannot lock the key files for this ${kind}: ${problem}; or set ASE_KEY_GUARD=off to run without the lock`);
@@ -602,11 +647,14 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
     ? { writable: [join(home(env), ".grok"), env.GROK_HOME, tmpdir(), "/tmp", env.XDG_RUNTIME_DIR].filter(Boolean).map(path => resolve(path)) } : {});
   const warning = keyGuardWarning(env, shut);
   if (!apiRoute) return { env: scrub, bwrap: true, warning, wrap: inside(outer), helper: inside(outer), close() {} };
-  // The API route's wrapper reads its key file first, outside the lock, then runs claude through this script.
+  // The API route's wrapper reads its key file first, outside the lock, then runs claude through this script: `<script>
+  // claude <arguments>`. Inside the lock the bare name would take a link before the real claude on PATH, so the script
+  // starts claude by the full path found here (where PATH holds none, the wrapper has stopped before it gets this far).
   const dir = mkdtempSync(join(tmpdir(), "ase-key-guard-"));
   const script = join(dir, "guard");
   const quote = value => `'${value.replaceAll("'", `'\\''`)}'`;
-  writeFileSync(script, `#!/bin/sh\nexec ${quote(bwrap)} ${outer.map(quote).join(" ")} -- "$@"\n`);
+  const claude = program("claude");
+  writeFileSync(script, `#!/bin/sh\n${claude ? `[ "$1" = claude ] && { shift; set -- ${quote(claude)} "$@"; }\n` : ""}exec ${quote(bwrap)} ${outer.map(quote).join(" ")} -- "$@"\n`);
   chmodSync(script, 0o700);
   return { env: { ...scrub, KIT_CLAUDE_GUARD: script }, bwrap: true, warning, wrap: plain, helper: inside(outer), claudeGuard: script,
     close() { rmSync(dir, { recursive: true, force: true }); } };

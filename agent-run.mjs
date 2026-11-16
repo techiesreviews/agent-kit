@@ -16,7 +16,7 @@ import { durationMilliseconds, supervise } from "./sol-run.mjs";
 import { reviewComplete, reviewFormat, reviewScope } from "./review-brief.mjs";
 import { nextTalkStyle, talkStyleLine } from "./brief-lib.mjs";
 import { apiRoute, apiRouteProblem, apiWrapperRefused, claudeCommand, recordApiSpend } from "./api-route.mjs";
-import { keyGuard, keyGuardOn, runPath } from "./key-guard.mjs";
+import { keyGuard, keyGuardOn, runPath, runProgram } from "./key-guard.mjs";
 
 const adapters = { codex: codexAdapter, claude: claudeAdapter, grok: grokAdapter, opencode: opencodeAdapter };
 const reviewOnly = { grok: "Grok", opencode: "OpenCode" };
@@ -1105,11 +1105,15 @@ async function executeRun(options, out, previous, update, brief) {
   // Under the key lock the runner's own programs (git here, bubblewrap and the CLI below) never come from a PATH folder
   // inside the worktree, where a build can leave one (npm puts <worktree>/node_modules/.bin on PATH as a full path):
   // such folders leave this process's PATH before its first git call; the lock's own PATH leaves out the Git folder too.
+  // That first git starts by its full path, never one a link on PATH leads into the worktree for (runProgram refuses
+  // a git PATH holds only that way).
+  let firstGit = "git";
   if (keyGuardOn(process.env)) {
     const path = runPath(process.env, { worktree: options.worktree });
     if (path !== undefined) process.env.PATH = path;
+    firstGit = runProgram("git", process.env, { worktree: options.worktree });
   }
-  const common = execFileSync("git", ["-C", options.worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim();
+  const common = execFileSync(firstGit, ["-C", options.worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim();
   const reportPath = join(out, "out.md"), logPath = join(out, "run.log"), inputPath = join(out, `brief-${process.pid}.md`);
   // A resumed Codex report must not truncate the earlier final report.
   const output = previous ? join(out, `resume-${process.pid}-${randomUUID()}.md`) : reportPath;

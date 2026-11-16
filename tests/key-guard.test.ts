@@ -5,9 +5,9 @@ import { tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { bwrapArgs, bwrapWorks, codexPaths, codexProfile, existingPaths, keyGuard, keyGuardReport, keyPathsWarning, linkTargets, lockedPaths, resetBwrapProbe, scrubbedEnv } from "../key-guard.mjs";
+import { bwrapArgs, bwrapWorks, codexPaths, codexProfile, existingPaths, keyGuard, keyGuardReport, keyPathsWarning, linkTargets, lockedPaths, resetBwrapProbe, runProgram, scrubbedEnv } from "../key-guard.mjs";
 import { kitEnv, testHomeFolder } from "./support/kit-env.ts";
-import { asPlatform, onLinux, onMacos, pathWithoutBwrap } from "./support/no-bwrap.ts";
+import { asPlatform, onLinux, onMacos, pathWithout, pathWithoutBwrap } from "./support/no-bwrap.ts";
 
 // The key lock (TOOLS-285): agents the kit starts cannot read the machine's key files. Every key here is a made-up
 // dummy in a temporary HOME; no test reads a real key file.
@@ -462,8 +462,10 @@ test("a CLI that is not installed is started as it is, so the run still fails as
   const [helper, helperArgs] = present.helper("git", ["status"]);
   assert.equal(helper, bwrapFile); assert.equal(helperArgs.at(-3), "--"); assert.match(helperArgs.at(-2), /^\/.*\/git$/);
   assert.deepEqual(keyGuard({ cli: "claude", kind: "build", common: "/c", env: { ASE_KEY_GUARD: "off" } }).helper("git", ["status"]), ["git", ["status"]]);
+  // Codex locks its own commands, so no bubblewrap stands before it; it starts by its full path all the same, where PATH holds one.
   const codex = keyGuard({ cli: "codex", kind: "build", common: "/c", env: { HOME: "/h", PATH: process.env.PATH } });
-  assert.deepEqual(codex.wrap("codex", ["exec"]), ["codex", ["exec"]]);
+  const codexFile = String(process.env.PATH).split(":").filter(folder => folder.startsWith("/")).map(folder => join(folder, "codex")).find(file => existsSync(file));
+  assert.deepEqual(codex.wrap("codex", ["exec"]), [codexFile ?? "codex", ["exec"]]);
   assert.equal(codex.helper("git", ["status"])[0], bwrapFile);
 });
 
@@ -646,6 +648,17 @@ function plantedProgram(file: string, noted: string, keyFile: string, then: stri
   chmodSync(file, 0o755);
 }
 
+// A Codex that writes its report and says which model and session it ran.
+function fakeCodex(bin: string) {
+  writeFileSync(join(bin, "codex"), `#!/usr/bin/env node
+import { writeFileSync } from "node:fs";
+const args = process.argv.slice(2);
+console.error("model: " + args[args.indexOf("-m") + 1]); console.error("session id: s-1");
+writeFileSync(args[args.indexOf("-o") + 1], "built by the real codex\\n");
+`);
+  chmodSync(join(bin, "codex"), 0o755);
+}
+
 test("a PATH folder inside the worktree or its Git folder supplies neither bubblewrap nor a CLI, written as a full path or not, and the run's PATH leaves it out", { skip: noBwrap }, t => {
   const { dir } = keyHome(t);
   t.after(resetBwrapProbe);
@@ -686,14 +699,7 @@ test("PROOF: a bwrap, a CLI and a git planted in a full-path PATH folder inside 
   const { dir, home, files } = keyHome(t);
   const bin = join(dir, "bin"), root = join(dir, "work"), brief = join(dir, "brief.md"), noted = join(dir, "planted.txt"), seenFile = join(dir, "seen.json");
   for (const path of [bin, root]) mkdirSync(path);
-  fakeClaude(bin);
-  writeFileSync(join(bin, "codex"), `#!/usr/bin/env node
-import { writeFileSync } from "node:fs";
-const args = process.argv.slice(2);
-console.error("model: " + args[args.indexOf("-m") + 1]); console.error("session id: s-1");
-writeFileSync(args[args.indexOf("-o") + 1], "built by the real codex\\n");
-`);
-  chmodSync(join(bin, "codex"), 0o755);
+  fakeClaude(bin); fakeCodex(bin);
   writeFileSync(brief, "Build this.\n");
   const git = (...args: string[]) => assert.equal(spawnSync("git", ["-C", root, ...args], { encoding: "utf8" }).status, 0);
   git("init", "-q", "-b", "test"); git("-c", "user.name=T", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base");
@@ -718,6 +724,99 @@ writeFileSync(args[args.indexOf("-o") + 1], "built by the real codex\\n");
   // The real ones did the work.
   assert.equal(readFileSync(join(root, "built.txt"), "utf8"), "a normal build step\n");
   assert.equal(readFileSync(join(dir, "out-codex/out.md"), "utf8"), "built by the real codex\n");
+});
+
+// SL-1: the folder is outside the worktree, so it stays on the run's PATH; only the program it names is inside.
+test("a CLI or a git that a link in a PATH folder outside the worktree leads into it, or into the Git folder, never starts by its bare name: the next one on PATH starts by its full path, and with none the lock refuses", { skip: noBwrap }, t => {
+  const { dir } = keyHome(t);
+  t.after(resetBwrapProbe);
+  const worktree = join(dir, "work"), common = join(dir, "repo.git"), links = join(dir, "links"), gitLink = join(dir, "git-link"), bin = join(dir, "bin"), gitBin = join(dir, "git-bin"), only = join(dir, "only");
+  for (const folder of [links, gitLink, bin, gitBin, only]) mkdirSync(folder);
+  const program = (file: string, says: string) => { mkdirSync(resolve(file, ".."), { recursive: true }); writeFileSync(file, `#!/bin/sh\necho ${says}\n`); chmodSync(file, 0o755); };
+  // What a build can write: the worktree, and the Git folder (Grok's link leads there).
+  for (const name of ["claude", "codex", "grok", "git"]) {
+    const planted = join(name === "grok" ? common : worktree, "tools", name);
+    program(planted, "planted"); symlinkSync(planted, join(name === "git" ? gitLink : links, name));
+    program(join(name === "git" ? gitBin : bin, name), "real");
+  }
+  // Bubblewrap and what its start-up check runs, alone, so no CLI or git of this machine is on the PATHs below.
+  const machine = (name: string) => String(process.env.PATH).split(":").filter(folder => folder.startsWith("/")).map(folder => join(folder, name)).find(file => existsSync(file))!;
+  for (const name of ["bwrap", "true"]) symlinkSync(machine(name), join(only, name));
+  const lock = (cli: string, kind: string, path: string) => { resetBwrapProbe(); return keyGuard({ cli, kind, common, worktree, env: { HOME: "/h", PATH: path } }); };
+  // Only the link on PATH: the lock refuses in plain words before anything starts, whichever CLI it is.
+  for (const [cli, kind, inside] of [["claude", "build", worktree], ["codex", "build", worktree], ["grok", "review", common]]) {
+    assert.throws(() => lock(cli, kind, `${links}:${only}`), { message: `cannot lock the key files for this ${kind}: ${cli} on PATH is ${join(links, cli)}, a link into the worktree or its Git folder (${join(inside, "tools", cli)}), where a build can change it, so it is not started; put a ${cli} from outside them on PATH, or set ASE_KEY_GUARD=off to run without the lock` }, cli);
+  }
+  // The runner's own git the same way.
+  assert.throws(() => lock("claude", "build", `${gitLink}:${bin}:${only}`), /^Error: cannot lock the key files for this build: git on PATH is .*\/git-link\/git, a link into the worktree or its Git folder \(.*\/work\/tools\/git\)/);
+  assert.throws(() => runProgram("git", { PATH: `${gitLink}:${only}` }, { worktree }), /^Error: git on PATH is .*\/git-link\/git, a link into the worktree or its Git folder .*, or set ASE_KEY_GUARD=off to run without the lock$/);
+  // A real one further on PATH is the one that starts, by its full path: inside bubblewrap, and for Codex (which
+  // locks its own commands) directly. The bare name would have found the link first.
+  const path = `${links}:${gitLink}:${bin}:${gitBin}:${only}`;
+  const claude = lock("claude", "build", path);
+  assert.deepEqual(claude.wrap("claude", ["-p"]).flat().slice(-3), ["--", join(bin, "claude"), "-p"]);
+  assert.deepEqual(claude.helper("git", ["status"]).flat().slice(-3), ["--", join(gitBin, "git"), "status"]);
+  const codex = lock("codex", "build", path);
+  assert.deepEqual(codex.wrap("codex", ["exec"]), [join(bin, "codex"), ["exec"]]);
+  assert.deepEqual(codex.helper("git", ["status"]).flat().slice(-3), ["--", join(gitBin, "git"), "status"]);
+  assert.equal(runProgram("git", { PATH: path }, { worktree }), join(gitBin, "git"));
+  // On the API route the wrapper starts `<guard script> claude …` once it has read its key: the script starts the real
+  // claude by its full path too, where the bare name inside the lock would have found the link first.
+  const api = (() => { resetBwrapProbe(); return keyGuard({ cli: "claude", kind: "review", common, worktree, apiRoute: true, env: { HOME: "/h", PATH: path } }); })();
+  t.after(() => api.close());
+  const viaScript = spawnSync(api.claudeGuard, ["claude", "-p"], { encoding: "utf8", env: { PATH: path } });
+  assert.equal(viaScript.stdout, "real\n", viaScript.stderr);
+  // A program no folder holds stays a bare name, so its start fails as a missing program.
+  assert.equal(runProgram("git", { PATH: only }, { worktree }), "git");
+  // The link put there after the lock was set up (a later helper call): refused at that call.
+  const late = lock("claude", "build", `${links}:${bin}:${gitBin}:${only}`);
+  rmSync(join(gitBin, "git")); symlinkSync(join(worktree, "tools/git"), join(links, "git"));
+  assert.throws(() => late.helper("git", ["status"]), /cannot lock the key files for this build: git on PATH is /);
+});
+
+test("PROOF: a claude, a codex and a git that a link in a PATH folder outside the worktree leads into it never start, for a Claude and a Codex build: the run takes the next one on PATH, or stops and says so", { skip: noBwrap }, t => {
+  const { dir, home, files } = keyHome(t);
+  const bin = join(dir, "bin"), links = join(dir, "links"), gitLink = join(dir, "git-link"), root = join(dir, "work"), brief = join(dir, "brief.md"), noted = join(dir, "planted.txt"), seenFile = join(dir, "seen.json");
+  for (const path of [bin, links, gitLink, root]) mkdirSync(path);
+  fakeClaude(bin); fakeCodex(bin);
+  writeFileSync(brief, "Build this.\n");
+  const git = (...args: string[]) => assert.equal(spawnSync("git", ["-C", root, ...args], { encoding: "utf8" }).status, 0);
+  git("init", "-q", "-b", "test"); git("-c", "user.name=T", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base");
+  const realGit = String(process.env.PATH).split(":").filter(folder => folder.startsWith("/")).map(folder => join(folder, "git")).find(file => existsSync(file))!;
+  // What an earlier build left in the worktree, each noting what it can read before it acts as the real program, and
+  // the links a person made to them from folders of their own on PATH (an npm link, a dotfiles bin).
+  plantedProgram(join(root, "tools/claude"), noted, files.orbit, `exec ${join(bin, "claude")} "$@"`);
+  plantedProgram(join(root, "tools/codex"), noted, files.orbit, `exec ${join(bin, "codex")} "$@"`);
+  plantedProgram(join(root, "tools/git"), noted, files.orbit, `exec ${realGit} "$@"`);
+  for (const name of ["claude", "codex"]) symlinkSync(join(root, "tools", name), join(links, name));
+  symlinkSync(join(root, "tools/git"), join(gitLink, "git"));
+  // This machine's programs without its own claude and codex, so the link is the only one where the test says so.
+  const rest = pathWithout(dir, ["claude", "codex"], "rest-bin");
+  const env = { ...homeEnv(home), GH_TOKEN: dummy, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "60s", KIT_TALK_STYLE: "plain", FAKE_SEEN: seenFile, FAKE_TRIES: JSON.stringify(files) } as NodeJS.ProcessEnv;
+  delete env.ASE_KEY_GUARD;
+  let runs = 0;
+  const build = (cli: string, model: string, path: string) => {
+    const out = join(dir, `out-${runs++}`); mkdirSync(out);
+    const run = spawnSync(process.execPath, [resolve("agent-run.mjs"), "build", root, brief, "--out", out, "--cli", cli, "--model", model], { cwd: root, env: { ...env, PATH: path }, encoding: "utf8", timeout: 60_000 });
+    assert.ok(!existsSync(noted), `${cli} with PATH=${path}: a planted program started: ${existsSync(noted) ? readFileSync(noted, "utf8") : ""}`);
+    return { run, out };
+  };
+  for (const [cli, model] of [["claude", "claude-opus-5-5"], ["codex", "gpt-6.1-sol"]]) {
+    // Only the link on PATH: the run stops before the CLI starts, and says why.
+    const { run: alone } = build(cli, model, `${links}:${rest}`);
+    assert.notEqual(alone.status, 0, alone.stdout + alone.stderr);
+    assert.match(alone.stderr, new RegExp(`^problem: cannot lock the key files for this build: ${cli} on PATH is \\S+/links/${cli}, a link into the worktree or its Git folder \\(\\S+/work/tools/${cli}\\)`, "m"));
+    // A real one further on PATH is the one that starts; so is the real git, though the linked one comes first.
+    const { run: next, out } = build(cli, model, `${links}:${gitLink}:${bin}:${rest}`);
+    assert.equal(next.status, 0, next.stdout + next.stderr);
+    if (cli === "codex") assert.equal(readFileSync(join(out, "out.md"), "utf8"), "built by the real codex\n");
+  }
+  assert.equal(readFileSync(join(root, "built.txt"), "utf8"), "a normal build step\n");
+  // The linked git alone (no other git on PATH): the run stops at its first git call.
+  const noGit = pathWithout(dir, ["claude", "codex", "git"], "no-git-bin");
+  const { run: stopped } = build("claude", "claude-opus-5-5", `${gitLink}:${bin}:${noGit}`);
+  assert.notEqual(stopped.status, 0, stopped.stdout + stopped.stderr);
+  assert.match(stopped.stderr, /^problem: git on PATH is \S+\/git-link\/git, a link into the worktree or its Git folder /m);
 });
 
 test("PROOF: a review's own git diff and git log run no program a build's Git settings name (an outside diff tool, a text converter, a signature checker) with the keys", { skip: noBwrap }, t => {
