@@ -25,7 +25,7 @@
 // so as a warning (kit doctor, the run's log) and the lock stays on.
 // ASE_KEY_GUARD=off runs without the lock and says so in the run's log.
 import { spawnSync } from "node:child_process";
-import { accessSync, chmodSync, constants, lstatSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
@@ -50,6 +50,16 @@ export const cliKeyPaths = {
   // OpenCode 2 keeps its keys in opencode.db (with its journals) beside the older auth.json: the whole data folder.
   opencode: [".local/share/opencode", ".config/opencode/opencode.json", ".config/opencode/opencode.jsonc"],
 };
+
+// Files a tool needs that may also hold a key: a git config with a token in a remote's URL, a shell start-up file that
+// sets a token. Each is locked only when it holds one, since git and the shell read them on every run.
+const keyedConfigs = [".gitconfig", ".config/git/config"];
+const shellStartups = [".bashrc", ".bash_profile", ".bash_login", ".profile", ".zshenv", ".zshrc", ".zprofile", ".config/fish/config.fish"];
+const urlUser = /[a-z][a-z0-9+.-]*:\/\/[^/\s@]+@/i;
+const secretAssignment = /^\s*(?:export\s+|set\s+(?:-\w+\s+)*)?\w*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|_PAT)\w*(?:\s*=|\s+\S)/im;
+function holds(file, pattern) {
+  try { return statSync(file).isFile() && pattern.test(readFileSync(file, "utf8")); } catch { return false; }
+}
 
 // Variables naming a tool's key file or folder.
 const keyFolderVariables = ["GH_CONFIG_DIR", "GNUPGHOME", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "DOCKER_CONFIG", "KUBECONFIG",
@@ -113,6 +123,8 @@ export function lockedPaths(cli, env = process.env, { apiRoute = false, cwd = pr
   // worktree, as its own tools would) and from the lead's (as the lead's tools find it); none for an empty one.
   const named = value => value ? [...new Set([resolve(cwd, value), resolve(process.cwd(), value)])] : [];
   paths.push(...homeKeyPaths.map(path => join(base, path)));
+  paths.push(...keyedConfigs.map(path => join(base, path)).filter(file => holds(file, urlUser)));
+  paths.push(...shellStartups.map(path => join(base, path)).filter(file => holds(file, secretAssignment)));
   for (const [other, list] of Object.entries(cliKeyPaths)) {
     // Codex's own login and config are hidden from its commands (its profile); the API route signs Claude in with a key.
     if (other !== cli || cli === "codex" || (cli === "claude" && apiRoute)) paths.push(...list.map(path => join(base, path)));
@@ -398,7 +410,11 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
   if (tooLarge) throw new Error(`cannot lock the key files for this ${kind}: ${tooLarge} holds too many files to search for links (over 200000 in the key folders); clear old files there, or set ASE_KEY_GUARD=off to run without the lock`);
   const scrub = scrubbedEnv(cli, env, { apiRoute, model });
   // Codex's own sandbox shares the network too, so the display warning (when bubblewrap can check it) applies to it.
-  if (cli === "codex") return { env: scrub, codex: codexProfile(kind, common, codexPaths(paths)), warning: keyGuardWarning(env), wrap: (command, args) => [command, args], close() {} };
+  if (cli === "codex") {
+    const unchecked = bwrapWorks(env);
+    const warning = unchecked ? `the X display could not be checked (${unchecked}), so it may let programs in without its cookie; do not copy or type keys while agents run` : keyGuardWarning(env);
+    return { env: scrub, codex: codexProfile(kind, common, codexPaths(paths)), warning, wrap: (command, args) => [command, args], close() {} };
+  }
   const problem = bwrapWorks(env);
   if (problem) throw new Error(`cannot lock the key files for this ${kind}: ${problem}; or set ASE_KEY_GUARD=off to run without the lock`);
   // With the API route the wrapper turns on Claude's own command sandbox (bubblewrap too), which cannot start inside

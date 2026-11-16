@@ -91,6 +91,18 @@ test("the locked paths hold the Orbit, GitHub and Cloudflare keys, Claude's MCP 
   assert.ok(lockedPaths("claude", { HOME: "/h" }, { apiRoute: true }).includes("/h/.claude/.credentials.json"), "the API route signs in with its key");
 });
 
+test("a git config with a token in a URL and a shell start-up file that sets a token are locked; plain ones are not", t => {
+  const { home } = keyHome(t);
+  writeFileSync(join(home, ".gitconfig"), `[url "https://ghp_${dummy}@github.com/"]\n\tinsteadOf = https://github.com/\n`);
+  writeFileSync(join(home, ".bashrc"), `export GH_TOKEN=${dummy}\n`);
+  mkdirSync(join(home, ".config/fish"), { recursive: true });
+  writeFileSync(join(home, ".config/fish/config.fish"), `set -gx ORBIT_TOKEN ${dummy}\n`);
+  writeFileSync(join(home, ".profile"), "export PATH=$HOME/bin:$PATH\n");
+  const paths = lockedPaths("claude", { HOME: home });
+  for (const file of [".gitconfig", ".bashrc", ".config/fish/config.fish"]) assert.ok(paths.includes(join(home, file)), file);
+  assert.ok(!paths.includes(join(home, ".profile")));
+});
+
 test("bwrap swaps key folders for empty ones and key files for /dev/null, skips missing paths and paths inside a masked folder", t => {
   const { home, files } = keyHome(t);
   const args = bwrapArgs([join(home, ".config/gh"), files.gh, files.claudeJson, join(home, "missing"), join(home, ".config/fleet")]);

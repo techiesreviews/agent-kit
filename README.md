@@ -248,7 +248,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   `kit go` build, a `kit review` or `kit ux` reviewer, a second look) cannot read the machine's key files:
   `~/.config/fleet` (the Orbit secrets), `~/.config/gh`, the Cloudflare/wrangler folders, `~/.ssh`, `~/.netrc`, `~/.npmrc`,
   cloud logins, `~/.claude.json` (it holds MCP Authorization headers), `~/.Xauthority`, the API route's key file, the
-  other CLIs' logins, folders and files that variables name (`GH_CONFIG_DIR`, `KUBECONFIG`, `GNUPGHOME` …), what links
+  other CLIs' logins, a git config with a token in a URL and a shell start-up file that sets a token, folders and
+  files that variables name (`GH_CONFIG_DIR`, `KUBECONFIG`, `GNUPGHOME` …), what links
   inside those folders point to (a link to a folder holding HOME or the worktree, or to a system folder, stops the run:
   the lock cannot hide it; so do a key folder that cannot be listed and key folders too large to search, over 200000
   entries), the SSH agent and session-bus sockets where their variables point, and the desktop's runtime folder
@@ -259,7 +260,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   folder and the temp folders); Codex, whose own
   sandbox cannot start inside another, gets a permissions profile with the same paths unreadable. Variables holding tokens, passwords, agent
   sockets and the display are dropped; each CLI keeps only its own sign-in. Known limits: a CLI's own login stays
-  readable to it (Claude's `~/.claude/.credentials.json`, Grok's `~/.grok/auth.json`; Codex hides its own), loopback
+  readable to it (Claude's `~/.claude/.credentials.json`, Grok's `~/.grok/auth.json`, OpenCode's data folder, whose
+  `opencode.db` holds every provider key saved there; Codex hides its own), loopback
   services and abstract sockets stay reachable, proxy variables (`HTTPS_PROXY` …) are kept with any password in them
   (the CLI needs them to reach its service), and a helper thread T3 starts (`delegate_task`) is not started by the kit
   and is outside the lock. At start-up the lock tries, from inside bubblewrap, to read through `/proc` (where that works,
