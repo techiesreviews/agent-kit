@@ -10,7 +10,7 @@ import { codexReviewConfig, isoWeek, makeCodexReviewHome, opencodeModelRuns } fr
 import { builderChecks, plainEnglish, reviewBrief, reviewFormat, ticketReviewBrief } from "../review-brief.mjs";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
 import { saveReviewEvidence } from "../review-evidence.mjs";
-import { kitEnv } from "./support/kit-env.ts";
+import { insideKitPrLock, kitEnv } from "./support/kit-env.ts";
 
 const kit = resolve("kit");
 const review = resolve("kit.d/review");
@@ -1113,7 +1113,7 @@ function withOpencode(f: ReturnType<typeof fixture>) {
 
 const opencodeModel = "opencode/deepseek-v4.1-flash-free";
 
-test("an OpenCode review's help probe, its run and its export all start inside the key lock, without the token variables", (t) => {
+test("an OpenCode review's help probe, its run and its export all start inside the key lock, without the token variables", { skip: insideKitPrLock }, (t) => {
   const f = fixture(t);
   withOpencode(f);
   const keys = join(f.dir, "keys"), probe = join(f.dir, "lock-probe.jsonl");
@@ -2165,7 +2165,7 @@ test("a second look on an empty diff is skipped as nothing to review, with no ca
   assert.equal(existsSync(f.ledger), false);
 });
 
-test("a second look whose reviewer crashes counts as unavailable: the next model takes it, else it is skipped, and no count is kept", (t) => {
+test("a second look whose reviewer crashes counts as unavailable: the next model takes it, else it is skipped, and no count is kept", { skip: insideKitPrLock }, (t) => {
   const f = fixture(t); withOpencode(f);
   const table = lookTable(f);
   const budget = { ASE_SECOND_LOOK: table, ASE_REVIEW_BUDGET_GROK: "3", FAKE_MODE: "crash" };

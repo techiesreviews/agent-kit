@@ -17,7 +17,7 @@ import { durationMilliseconds } from "../sol-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { kitStateDir } from "../kit-lib.mjs";
 // The test environment (a temporary HOME, no lock settings from the shell): this file starts agent runs or kit doctor.
-import "./support/kit-env.ts";
+import { insideKitPrLock } from "./support/kit-env.ts";
 // The opt-in API route is read from the environment: these tests run with it off, whatever the shell exports.
 delete process.env.KIT_API_KEY_FILE; delete process.env.KIT_API_CONFIG_DIR;
 
@@ -848,7 +848,7 @@ test("only a usage limit that is all the call printed counts as an outright refu
   assert.equal(refusedOutright("opencode", "", ""), false);
 });
 
-test("Grok reviews and Codex usage limits run through the shared shell entry using fake CLIs", (t) => {
+test("Grok reviews and Codex usage limits run through the shared shell entry using fake CLIs", { skip: insideKitPrLock }, (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ase-agent-grok-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const wt = join(dir, "work tree"), bin = join(dir, "bin"), brief = join(dir, "brief.md");

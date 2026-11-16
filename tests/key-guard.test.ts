@@ -5,7 +5,7 @@ import { tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { bwrapArgs, bwrapWorks, codexPaths, codexProfile, existingPaths, keyGuard, keyGuardReport, keyPathsWarning, linkTargets, lockedPaths, resetBwrapProbe, runProgram, scrubbedEnv, startCommand } from "../key-guard.mjs";
+import { bwrapArgs, bwrapWorks, checkLock, codexPaths, codexProfile, existingPaths, keyGuard, keyGuardReport, keyPathsWarning, linkTargets, lockedPaths, outerLock, resetBwrapProbe, runProgram, scrubbedEnv, startCommand } from "../key-guard.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { folderRemote, gitCommonDir, gitNetworkCall, gitSafety } from "../git-safety.mjs";
 import { kitEnv, testHomeFolder } from "./support/kit-env.ts";
@@ -22,7 +22,8 @@ const noBwrap = bwrapUsable ? false : `bubblewrap cannot run here: ${bwrapWorks(
 function homeEnv(home: string) {
   const env = { ...kitEnv(), HOME: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_CACHE_HOME: join(home, ".cache"),
     XDG_DATA_HOME: join(home, ".local/share"), XDG_STATE_HOME: join(home, ".local/state") } as NodeJS.ProcessEnv;
-  for (const name of ["CODEX_HOME", "CLAUDE_CONFIG_DIR", "GROK_HOME", "GH_CONFIG_DIR", "ZDOTDIR", "GIT_CONFIG_GLOBAL"]) delete env[name];
+  // KIT_OUTER_LOCK too: these tests are of a machine's own lock, not of one inside kit pr's lock for its checks.
+  for (const name of ["CODEX_HOME", "CLAUDE_CONFIG_DIR", "GROK_HOME", "GH_CONFIG_DIR", "ZDOTDIR", "GIT_CONFIG_GLOBAL", "KIT_OUTER_LOCK"]) delete env[name];
   return env;
 }
 
@@ -1187,4 +1188,29 @@ test("PROOF: a git that is a #!/usr/bin/env node script never starts a node a li
   const run = spawnSync(process.execPath, [resolve("agent-run.mjs"), "build", root, brief, "--out", out, "--cli", "claude", "--model", "claude-opus-5-5"], { cwd: root, env, encoding: "utf8", timeout: 60_000 });
   assert.ok(!existsSync(noted), `the planted node started: ${existsSync(noted) ? readFileSync(noted, "utf8") : ""}`);
   assert.equal(run.status, 0, run.stdout + run.stderr);
+});
+
+test("kit pr's lock for its checks leaves a mark only a process inside it sees, so a run there starts no sandbox of its own", { skip: noBwrap }, t => {
+  const { dir, home, files } = keyHome(t);
+  const worktree = join(dir, "work"), runtime = join(dir, "runtime");
+  mkdirSync(worktree); mkdirSync(runtime, { mode: 0o700 });
+  const env = { ...homeEnv(home), XDG_RUNTIME_DIR: runtime } as NodeJS.ProcessEnv;
+  const lock = checkLock({ worktree, env });
+  t.after(() => lock.close?.());
+  assert.equal(lock.note, null);
+  assert.match(String(lock.env.KIT_OUTER_LOCK), /^[0-9a-f-]{36}$/);
+  const probe = `import(${JSON.stringify(resolve("key-guard.mjs"))}).then(m => { let key; try { key = require("node:fs").readFileSync(${JSON.stringify(files.orbit)}, "utf8"); } catch (error) { key = error.code; } console.log(JSON.stringify({ outer: m.outerLock(), key })); })`;
+  const inside = (extra: NodeJS.ProcessEnv = {}) => {
+    const [command, args] = lock.wrap(process.execPath, ["-e", probe]);
+    const run = spawnSync(command, args, { env: { ...env, ...Object.fromEntries(Object.entries(lock.env).filter(([, value]) => value !== undefined)), ...extra }, encoding: "utf8" });
+    assert.equal(run.status, 0, run.stderr);
+    return JSON.parse(run.stdout);
+  };
+  // Inside: the mark matches and the key files are hidden.
+  assert.deepEqual(inside(), { outer: true, key: "ENOENT" });
+  // A token that does not match the mark is no mark; outside the lock there is none, whatever the variable says.
+  assert.equal(inside({ KIT_OUTER_LOCK: "made-up" }).outer, false);
+  assert.equal(outerLock({ ...env, KIT_OUTER_LOCK: lock.env.KIT_OUTER_LOCK }), false);
+  writeFileSync(join(runtime, "kit-outer-lock"), String(lock.env.KIT_OUTER_LOCK));
+  assert.equal(outerLock({ ...env, KIT_OUTER_LOCK: lock.env.KIT_OUTER_LOCK }), false, "outside a user namespace a planted mark counts for nothing");
 });

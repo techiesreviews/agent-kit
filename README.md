@@ -313,8 +313,13 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     `ASE_KEY_GUARD=off`).
   - **`kit pr`'s checks.** The project's check, unit, lint, colour, tickets and spec commands come from the worktree's
     own settings and run the build's code, so they run inside the key lock (every CLI's login hidden too, the token
-    variables dropped). Where bubblewrap does not exist (macOS, Windows) or `ASE_KEY_GUARD=off`, they run as before and
-    the PR's test lines say `checks: not locked (…)`.
+    variables dropped). A check may start the key lock itself (the kit's own tests do), and many systems block a sandbox
+    inside another (Ubuntu's `kernel.apparmor_restrict_unprivileged_userns=1`), so this lock leaves a mark only a
+    process inside it sees (a random token in the runtime folder it masks, matched by `KIT_OUTER_LOCK`, in a user
+    namespace of its own): a kit run there that cannot start bubblewrap starts without it and says so in its log, since
+    the outer lock already hides the key files; the kit's tests of bubblewrap itself skip there. Where bubblewrap does
+    not exist (macOS, Windows) or `ASE_KEY_GUARD=off`, the checks run as before and the PR's test lines say `checks: not
+    locked (…)`.
   - **Programs by name.** The runner and `kit pr` start git, `gh`, bubblewrap and a CLI by their full path, found only
     in PATH's full-path folders outside the worktree and the repository's Git folder (links followed), and a script's
     interpreter the same way: a `#!/usr/bin/env node` CLI, or the API route's `#!/usr/bin/env bash` wrapper, starts the

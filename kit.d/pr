@@ -382,12 +382,18 @@ async function main(args) {
       const remote = argv.slice(at + 1).find(arg => !arg.startsWith("-")) ?? "origin";
       try { return gitSync(["remote", "get-url", ...(argv[at] === "push" ? ["--push"] : []), remote]); } catch { return remote; }
     };
-    // The checks' lock, made when the first check starts; a note says where they run unlocked.
-    let checksLocked;
+    // The checks' lock, made when the first check starts; a note says where they run unlocked. A push to a folder remote
+    // takes the plain lock (it starts no sandbox of its own).
+    let checksLocked, pushLocked;
     const lockNotes = [];
+    const lockFor = () => {
+      const lock = checkLock({ worktree: root, common, env: { ...env, ...startupFiles }, readOnly: programs ? [programs] : [] });
+      if (lock.close) process.once("exit", lock.close);
+      return lock;
+    };
     const checksLock = () => {
       if (checksLocked) return checksLocked;
-      checksLocked = checkLock({ worktree: root, common, env: { ...env, ...startupFiles }, readOnly: programs ? [programs] : [] });
+      checksLocked = lockFor();
       if (checksLocked.note) { console.log(`checks: ${checksLocked.note}`); lockNotes.push(`- checks: ${checksLocked.note}`); }
       return checksLocked;
     };
@@ -411,7 +417,7 @@ async function main(args) {
         Object.assign(childEnv, safety(childEnv, network));
         // A push to a folder remote runs that folder's own hooks with this call's variables (git clears the settings
         // above for it); it needs no credentials, so it runs inside the key lock.
-        if (network && guarded && folderRemote(remoteUrl(argv))) { const lock = checksLock(); [program, args] = lock.wrap(gitBin, argv); Object.assign(childEnv, lock.env); }
+        if (network && guarded && folderRemote(remoteUrl(argv))) { const lock = pushLocked ??= lockFor(); [program, args] = lock.wrap(gitBin, argv); Object.assign(childEnv, lock.env); }
       }
       else if (checkNames.has(name)) { const lock = checksLock(); [program, args] = lock.wrap(program, argv); Object.assign(childEnv, lock.env); }
       else {

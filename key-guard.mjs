@@ -29,6 +29,7 @@
 // needs bubblewrap. ASE_KEY_GUARD=on stops such a run instead. On Linux a missing bubblewrap stops the run, as a broken
 // one does: it installs with one command.
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { accessSync, chmodSync, closeSync, constants, lstatSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
@@ -696,6 +697,7 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
   // run's log says so. Nothing is searched for them, so no key folder can stop the run. Codex goes on below: its own
   // profile needs no bubblewrap.
   if (cli !== "codex" && runsUnwrapped(env, shut)) return { ...unlocked, env: scrub, missing: true, warning: unwrappedNote };
+  if (cli !== "codex" && bwrapWorks(env, shut) && outerLock(env)) return { ...unlocked, env: scrub, missing: true, warning: outerNote };
   // The run's own two programs are looked up now, so a run that could only start one through a link stops here, with
   // the reason in its log, before anything starts.
   for (const name of [cli, "git"]) program(name);
@@ -736,6 +738,34 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
     close() { rmSync(dir, { recursive: true, force: true }); } };
 }
 
+// The mark of kit pr's lock for its checks: a file holding a random token in the desktop's runtime folder, which the lock
+// masks with an empty folder of its own, so only a process inside that lock sees it there, and the same token in
+// KIT_OUTER_LOCK. Outside the lock the runtime folder is the real one, which no locked build can write.
+const markName = "kit-outer-lock";
+const runtimeFolder = env => env.XDG_RUNTIME_DIR || (typeof process.getuid === "function" ? `/run/user/${process.getuid()}` : "");
+function outerMark(env, outer) {
+  const runtime = runtimeFolder(env);
+  // Only where the lock masks an existing runtime folder; without one, a run inside starts its own sandbox as before.
+  if (!runtime.startsWith("/") || !outer.some((arg, index) => arg === "--tmpfs" && outer[index + 1] === resolve(runtime))) return { env: {}, args: [], close() {} };
+  const token = randomUUID(), dir = mkdtempSync(join(tmpdir(), "ase-outer-lock-")), file = join(dir, markName);
+  writeFileSync(file, token);
+  return { env: { KIT_OUTER_LOCK: token }, args: ["--ro-bind", file, join(resolve(runtime), markName)], close() { rmSync(dir, { recursive: true, force: true }); } };
+}
+/**
+ * Whether this process runs inside kit pr's lock for its checks: KIT_OUTER_LOCK matches the mark that lock placed in the
+ * runtime folder, and the process is in a user namespace of its own (bubblewrap's). Then the machine's key files are
+ * hidden already, and a run here that cannot start a sandbox of its own (a system that blocks one inside another)
+ * starts without it, saying so in its log.
+ */
+export function outerLock(env = process.env) {
+  if (!env.KIT_OUTER_LOCK || process.platform !== "linux") return false;
+  try {
+    if (readFileSync(join(resolve(runtimeFolder(env)), markName), "utf8") !== env.KIT_OUTER_LOCK) return false;
+    return !/^\s*0\s+0\s+4294967295\s*$/.test(readFileSync("/proc/self/uid_map", "utf8"));
+  } catch { return false; }
+}
+const outerNote = "inside kit pr's key lock for its checks: that lock hides the key files, and this run starts no sandbox of its own (one cannot start inside another here)";
+
 /**
  * The lock for the checks kit pr runs on what a build left (TOOLS-303): the project's check, unit, lint and spec
  * commands come from the worktree's own settings and run the build's code, in the lead's process, where the keys are.
@@ -744,7 +774,10 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
  * folder's folders off PATH. With ASE_KEY_GUARD=off, or on a system without bubblewrap (macOS, Windows), the checks run
  * as before and `note` says so in one line. Throws in plain words where the lock is on and cannot be set up, as a run's
  * lock does. `readOnly` names folders the lead's process relies on after the checks (kit pr's own program links): the
- * checks see them but cannot change them.
+ * checks see them but cannot change them. A check may start the key lock itself (the kit's own tests do), and many
+ * systems block a sandbox inside another (Ubuntu's kernel.apparmor_restrict_unprivileged_userns=1), so the lock leaves
+ * a mark only it can place (outerLock): a run inside it starts no sandbox of its own, since this one already hides the
+ * key files.
  */
 export function checkLock({ worktree, common, env = process.env, readOnly = [] }) {
   const plain = (command, args) => [command, args];
@@ -753,14 +786,18 @@ export function checkLock({ worktree, common, env = process.env, readOnly = [] }
   const path = runPath(env, { worktree, common });
   const scrub = { ...scrubbedEnv("", env), ...(path === undefined ? {} : { PATH: path }) };
   if (runsUnwrapped(env, shut)) return { env: scrub, wrap: plain, note: "not locked (no bubblewrap on this machine; token variables are still dropped)" };
+  // Inside kit pr's own lock for its checks the checks are locked already: no second sandbox, and nothing to note.
+  if (bwrapWorks(env, shut) && outerLock(env)) return { env: scrub, wrap: plain, note: null };
   const refuse = problem => { throw new Error(`cannot lock the key files for kit pr's checks: ${problem}`); };
   const problem = bwrapWorks(env, shut);
   if (problem) refuse(`${problem}; or set ASE_KEY_GUARD=off to run without the lock`);
   const { paths, problem: refusal, glue } = searchedPaths("", env, { worktree, common });
   if (refusal) refuse(`${refusal}${glue} set ASE_KEY_GUARD=off to run without the lock`);
   const outer = [...bwrapArgs(paths), ...existingPaths(readOnly).flatMap(path => ["--ro-bind", path, path])];
+  const mark = outerMark(env, outer);
   // The command starts inside, found there on the run's PATH: whatever it is, it runs locked.
-  return { env: scrub, wrap: (command, args) => [bwrap, [...outer, "--", command, ...args]], note: null, warning: keyGuardWarning(env, shut) };
+  return { env: { ...scrub, ...mark.env }, wrap: (command, args) => [bwrap, [...outer, ...mark.args, "--", command, ...args]], note: null, warning: keyGuardWarning(env, shut),
+    close: mark.close };
 }
 
 /**
@@ -775,6 +812,7 @@ export function keyGuardReport(env = process.env, { worktree = process.cwd(), co
   // Unwrapped runs search nothing; a Codex run there still does, for its profile.
   const shut = buildFolders(worktree, common);
   const unwrapped = runsUnwrapped(env, shut), problem = bwrapWorks(env, shut);
+  if (problem && !unwrapped && outerLock(env)) return { state: "on", text: `on (${outerNote})` };
   if (problem && !unwrapped) return { state: "problem", text: problem };
   const refusal = searchedPaths(unwrapped ? "codex" : "", env, { worktree, common }).problem;
   if (refusal) return { state: "refused", text: refusal };
