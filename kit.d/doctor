@@ -540,8 +540,9 @@ if [[ -n ${KIT_API_KEY_FILE:-} || $quiet == false ]]; then
 fi
 
 # The key lock (key-guard.mjs): a note outside --quiet, never a counted check. The note says what a run in this worktree
-# would meet: a machine without bubblewrap runs agents unlocked, a bwrap that cannot start stops the kit's Claude, Grok
-# and OpenCode runs, a key folder the lock cannot search or hide stops every run. Each is a warning on the RESULT line.
+# would meet: a system without bubblewrap (macOS, Windows) runs Claude, Grok and OpenCode unwrapped, a bwrap that cannot
+# start (or is missing on Linux) stops their runs, a key folder the lock cannot search or hide stops the runs that lock
+# it. Each is a warning on the RESULT line.
 if [[ $quiet == false ]]; then
   guard_common=$(git -C "$root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || guard_common=''
   guard_library=$(dirname -- "${KIT_LIB_MJS:-$(dirname -- "${KIT_LIB:-$(dirname -- "${BASH_SOURCE[0]}")/../kit-lib.sh}")/kit-lib.mjs}")/key-guard.mjs
@@ -551,9 +552,9 @@ if [[ $quiet == false ]]; then
       problem) api_warning="${api_warning:+$api_warning; }key lock cannot start (see the ✗ key lock line)"
          printf '✗ key lock: %s (the kit'"'"'s Claude, Grok and OpenCode runs stop until it works); fix: the step named above, or set ASE_KEY_GUARD=off to run agents without the lock\n' "$guard_text" ;;
       refused) api_warning="${api_warning:+$api_warning; }key lock cannot start (see the ✗ key lock line)"
-         printf '✗ key lock: %s (the kit'"'"'s agent runs stop until it is fixed); fix: the step named above, or set ASE_KEY_GUARD=off to run agents without the lock\n' "$guard_text" ;;
+         printf '✗ key lock: %s (the kit'"'"'s runs that lock it stop until it is fixed); fix: the step named above, or set ASE_KEY_GUARD=off to run agents without the lock\n' "$guard_text" ;;
       missing) api_warning="${api_warning:+$api_warning; }key lock is off (see the ✗ key lock line)"
-         printf '✗ key lock: %s; fix: install bubblewrap where the system has it (Linux: apt install bubblewrap); ASE_KEY_GUARD=on stops the kit'"'"'s runs instead of running them unlocked\n' "$guard_text" ;;
+         printf '✗ key lock: %s; fix: none on a system without bubblewrap (it is Linux only); ASE_KEY_GUARD=on stops those runs instead of starting them unwrapped\n' "$guard_text" ;;
       warning) api_warning="${api_warning:+$api_warning; }key lock has a gap (see the ✗ key lock line)"
          printf '✗ key lock: %s (the lock stays on)\n' "$guard_text" ;;
       *) printf 'key lock: %s\n' "$guard_text" ;;

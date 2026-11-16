@@ -110,10 +110,10 @@ test("brief: the build brief holds the owner, setup, pins, commands, every house
     /lands with `scripts\/agents\/kit pr … --not-visible "<reason>"`/,
     /In a project with no feature list \(`docs\/agents\/features\.md`\) `kit ux` has nothing to try: say so in the report\./,
     // TOOLS-285: a builder the kit starts itself runs inside the key lock, where the keyed steps are the lead's.
-    /^- Key lock: a build the kit starts itself \(`agent\.sh build`; its prompt ends with a "Build contract"\) cannot read the machine's key files, so there the keyed steps are the lead's: board reads \(`kit ticket get\|list`\), GitHub calls \(`gh`, `kit wait ci`, `kit pr`, a fetch from or a push to a private remote\), Cloudflare deploys \(`kit preview`, `wrangler`\) and an install that needs a registry token\. In such a run do none of them, whatever this brief says elsewhere: work from the text in this brief, and name each step you left in your report as `Lead: <step>`\.$/m,
+    /^- Key lock: in a build the kit starts itself \(`agent\.sh build`; its prompt ends with a "Build contract"\) the keyed steps are the lead's, since the kit's key lock keeps the machine's key files from such a run wherever it can: board reads \(`kit ticket get\|list`\), GitHub calls \(`gh`, `kit wait ci`, `kit pr`, a fetch from or a push to a private remote\), Cloudflare deploys \(`kit preview`, `wrangler`\) and an install that needs a registry token\. In such a run do none of them, whatever this brief says elsewhere: work from the text in this brief, and name each step you left in your report as `Lead: <step>`\.$/m,
   ]) assert.match(text, expected);
   // The fix brief carries the same line; a review brief changes nothing and names the lead's fetch.
-  assert.match(body(f.run(["docs/tickets/07-panel.md", "--stage", "fix"]).stdout), /^- Key lock: a build the kit starts itself /m);
+  assert.match(body(f.run(["docs/tickets/07-panel.md", "--stage", "fix"]).stdout), /^- Key lock: in a build the kit starts itself /m);
   const reviewText = body(f.run(["docs/tickets/07-panel.md", "--stage", "review"]).stdout);
   assert.doesNotMatch(reviewText, /Key lock:/);
   assert.match(reviewText, /\(`git fetch -q origin` first; inside the kit's key lock the lead has fetched already\)/);

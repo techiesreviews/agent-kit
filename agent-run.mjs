@@ -790,7 +790,7 @@ export function agentInvocation(options, common, output) {
 export const buildContract = `
 ## Build contract
 Leave changes unstaged. Do not commit, push, deploy, spawn agents or use git stash.
-Keyed steps are the lead's, whatever the brief above says (the kit's key lock hides the machine's key files from a run it starts): no \`kit ticket get|list\`, \`gh\`, \`kit wait ci\`, \`kit pr\`, \`kit preview\` or \`wrangler\`, no fetch from or push to a private remote, no install that needs a registry token. Work from the text in the brief, and name each step you left as \`Lead: <step>\` in the report.
+Keyed steps are the lead's, whatever the brief above says: no \`kit ticket get|list\`, \`gh\`, \`kit wait ci\`, \`kit pr\`, \`kit preview\` or \`wrangler\`, no fetch from or push to a private remote, no install that needs a registry token. Work from the text in the brief, and name each step you left as \`Lead: <step>\` in the report.
 Run focused unit files for the change (scripts/agents/kit unit --affected; if unavailable, scripts/agents/unit.sh <files>), npm run check when types moved, npm run lint and the ticket's touched specs. kit pr runs the tier's full set.
 Final report: at most 15 lines; changed files, behavior, validation and unresolved risks.
 `;
@@ -1122,7 +1122,7 @@ async function executeRun(options, out, previous, update, brief) {
       appendFileSync(log, `problem: ${error.message}\n`);
       throw error;
     }
-    // Unlocked on purpose (ASE_KEY_GUARD=off), or because this machine has no bubblewrap (the guard's own line says so).
+    // Unlocked on purpose (ASE_KEY_GUARD=off), or unwrapped because this system has no bubblewrap (the guard's own line says so).
     if (guard.off && !guard.missing) appendFileSync(log, "warning: key files are not locked for this run (ASE_KEY_GUARD=off)\n");
     if (guard.warning) appendFileSync(log, `warning: key lock: ${guard.warning}\n`);
     if (guard.codex) options.codexProfile = guard.codex;

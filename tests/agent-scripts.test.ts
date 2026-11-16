@@ -1293,7 +1293,7 @@ test("build contract directs focused units and type checks and leaves the full t
   assert.match(buildContract, /npm run check when types moved/);
   assert.match(buildContract, /kit pr runs the tier's full set/);
   // TOOLS-285: a build the kit starts runs inside the key lock, so the contract names the keyed steps as the lead's.
-  assert.match(buildContract, /^Keyed steps are the lead's, whatever the brief above says \(the kit's key lock hides the machine's key files from a run it starts\): no `kit ticket get\|list`, `gh`, `kit wait ci`, `kit pr`, `kit preview` or `wrangler`, no fetch from or push to a private remote, no install that needs a registry token\. Work from the text in the brief, and name each step you left as `Lead: <step>` in the report\.$/m);
+  assert.match(buildContract, /^Keyed steps are the lead's, whatever the brief above says: no `kit ticket get\|list`, `gh`, `kit wait ci`, `kit pr`, `kit preview` or `wrangler`, no fetch from or push to a private remote, no install that needs a registry token\. Work from the text in the brief, and name each step you left as `Lead: <step>` in the report\.$/m);
   assert.doesNotMatch(buildContract, /npm test/);
 });
 

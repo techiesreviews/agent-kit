@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { kitFiles } from "./support/kit-files.ts";
 import { kitEnv } from "./support/kit-env.ts";
+import { onMacos, pathWithoutBwrap } from "./support/no-bwrap.ts";
 
 const repo = resolve(".");
 const kit = join(repo, "kit");
@@ -1379,35 +1380,36 @@ test("the key lock note: on with a working bubblewrap, a ✗ note and a RESULT w
   assert.match(entry.stdout.trimEnd().split("\n").at(-1)!, /; warning: key lock has a gap \(see the ✗ key lock line\)$/);
 });
 
-test("the key lock note is truthful: off on a machine without bubblewrap, and never on where a key folder would stop every run", (t) => {
+test("the key lock note is truthful: off on a system without bubblewrap, a stop on Linux, and never on where a key folder would stop a run", (t) => {
   const f = fixture(t);
-  const home = join(f.directory, "home"), bin = join(f.directory, "fake-bwrap"), none = join(f.directory, "no-bwrap");
-  for (const folder of [join(home, ".config/gh"), bin, none]) mkdirSync(folder, { recursive: true });
-  // Doctor's own tools without bubblewrap: every program of every PATH folder linked into one folder, bwrap left out.
-  for (const folder of String(process.env.PATH).split(":").filter(Boolean)) {
-    let names: string[] = [];
-    try { names = readdirSync(folder); } catch { continue; }
-    for (const name of names) if (name !== "bwrap") try { symlinkSync(join(folder, name), join(none, name)); } catch { /* An earlier folder's program wins. */ }
-  }
-  // No bubblewrap (macOS, Windows): the kit's runs go on unlocked, and doctor says so in one loud line.
-  const missing = f.run([], f.build, { HOME: home, PATH: none });
+  const home = join(f.directory, "home"), bin = join(f.directory, "fake-bwrap");
+  for (const folder of [join(home, ".config/gh"), bin]) mkdirSync(folder, { recursive: true });
+  const none = pathWithoutBwrap(f.directory);
+  // No bubblewrap on macOS or Windows: Claude, Grok and OpenCode run unwrapped, and doctor says so in one loud line.
+  const missing = f.run([], f.build, { HOME: home, PATH: none, ...onMacos });
   assert.equal(missing.status, 0, missing.stdout + missing.stderr);
-  assert.match(missing.stdout, /^✗ key lock: off on this machine \(no bubblewrap\); builders can read key files; fix: install bubblewrap where the system has it \(Linux: apt install bubblewrap\); ASE_KEY_GUARD=on stops the kit's runs instead of running them unlocked$/m);
+  assert.match(missing.stdout, /^✗ key lock: off on this machine \(no bubblewrap\); builders can read key files \(token variables are still dropped, and Codex keeps its own profile\); fix: none on a system without bubblewrap \(it is Linux only\); ASE_KEY_GUARD=on stops those runs instead of starting them unwrapped$/m);
   assert.match(missing.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: ok doctor 11\/11 checks passed; warning: key lock is off \(see the ✗ key lock line\)$/);
-  // ASE_KEY_GUARD=on there: the runs stop, and the note says that instead.
-  const strict = f.run([], f.build, { HOME: home, PATH: none, ASE_KEY_GUARD: "on" });
-  assert.match(strict.stdout, /^✗ key lock: bubblewrap \(bwrap\) is not installed; install it \(apt install bubblewrap\) \(the kit's Claude, Grok and OpenCode runs stop until it works\); fix: the step named above, or set ASE_KEY_GUARD=off/m);
-  // A key folder that links to the worktree would stop every run: doctor finds it and does not say "on".
+  // ASE_KEY_GUARD=on there, or no bubblewrap on Linux: the runs stop, and the note says that instead.
+  const stops = /^✗ key lock: bubblewrap \(bwrap\) is not installed; install it \(apt install bubblewrap\) \(the kit's Claude, Grok and OpenCode runs stop until it works\); fix: the step named above, or set ASE_KEY_GUARD=off/m;
+  assert.match(f.run([], f.build, { HOME: home, PATH: none, ...onMacos, ASE_KEY_GUARD: "on" }).stdout, stops);
+  const linux = f.run([], f.build, { HOME: home, PATH: none });
+  assert.match(linux.stdout, stops);
+  assert.match(linux.stdout.trimEnd().split("\n").at(-1)!, /; warning: key lock cannot start \(see the ✗ key lock line\)$/);
+  // A key folder that links to the worktree, or to the repository's Git folder, would stop the runs that lock it:
+  // doctor finds it and does not say "on".
   executable(join(bin, "bwrap"), 'case "$*" in *" -e "*) echo inside; echo done ;; esac; exit 0');
-  symlinkSync(f.build, join(home, ".config/gh/w"));
-  const refused = f.run([], f.build, { HOME: home, PATH: `${bin}:${process.env.PATH}` });
-  assert.equal(refused.status, 0, refused.stdout + refused.stderr);
-  assert.doesNotMatch(refused.stdout, /^key lock: on/m);
-  assert.match(refused.stdout, new RegExp(`^✗ key lock: a key folder links to a folder the lock cannot hide \\(${join(home, ".config/gh/w")} -> ${f.build}\\); move the keys into a folder of their own \\(the kit's agent runs stop until it is fixed\\); fix: the step named above, or set ASE_KEY_GUARD=off to run agents without the lock$`, "m"));
-  assert.match(refused.stdout.trimEnd().split("\n").at(-1)!, /; warning: key lock cannot start \(see the ✗ key lock line\)$/);
-  rmSync(join(home, ".config/gh/w"));
-  const fine = f.run([], f.build, { HOME: home, PATH: `${bin}:${process.env.PATH}` });
-  assert.match(fine.stdout, /^key lock: on \(bubblewrap runs; agents the kit starts cannot read the key files\)$/m);
+  const locked = { HOME: home, PATH: `${bin}:${process.env.PATH}` };
+  for (const kept of [f.build, join(f.main, ".git")]) {
+    symlinkSync(kept, join(home, ".config/gh/w"));
+    const refused = f.run([], f.build, locked);
+    assert.equal(refused.status, 0, refused.stdout + refused.stderr);
+    assert.doesNotMatch(refused.stdout, /^key lock: on/m);
+    assert.ok(refused.stdout.split("\n").includes(`✗ key lock: a key folder links to a folder the lock cannot hide (${join(home, ".config/gh/w")} -> ${kept}); move the keys into a folder of their own (the kit's runs that lock it stop until it is fixed); fix: the step named above, or set ASE_KEY_GUARD=off to run agents without the lock`), refused.stdout);
+    assert.match(refused.stdout.trimEnd().split("\n").at(-1)!, /; warning: key lock cannot start \(see the ✗ key lock line\)$/);
+    rmSync(join(home, ".config/gh/w"));
+  }
+  assert.match(f.run([], f.build, locked).stdout, /^key lock: on \(bubblewrap runs; agents the kit starts cannot read the key files\)$/m);
 });
 
 test("a broken API route is a doctor warning on the RESULT line, never a failure", (t) => {

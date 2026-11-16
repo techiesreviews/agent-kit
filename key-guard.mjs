@@ -23,9 +23,11 @@
 // machine's loopback network and abstract sockets stay reachable. The display's X socket is one of them: the hidden
 // cookie keeps it shut where the display asks for one; where it lets the user in without one, the start-up probe says
 // so as a warning (kit doctor, the run's log) and the lock stays on.
-// ASE_KEY_GUARD=off runs without the lock and says so in the run's log. Bubblewrap exists on Linux only: on a machine
-// without it (macOS, Windows, a Linux where it is not installed) the kit's runs go on unlocked, as before the lock,
-// and say so in one line (the run's log, kit doctor); ASE_KEY_GUARD=on stops such a run instead.
+// ASE_KEY_GUARD=off runs without the lock and says so in the run's log. Bubblewrap exists on Linux only: on another
+// system (macOS, Windows) Claude, Grok and OpenCode run without it and can read the key files, which the run's log and
+// kit doctor say in one line; the token variables are still dropped and Codex keeps its own profile, neither of which
+// needs bubblewrap. ASE_KEY_GUARD=on stops such a run instead. On Linux a missing bubblewrap stops the run, as a broken
+// one does: it installs with one command.
 import { spawnSync } from "node:child_process";
 import { accessSync, chmodSync, constants, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -130,7 +132,7 @@ export function keyGuardOn(env = process.env) {
   return String(env.ASE_KEY_GUARD ?? "").toLowerCase() !== "off";
 }
 
-// ASE_KEY_GUARD=on asks for the lock or no run: a machine without bubblewrap then stops the run instead of running it unlocked.
+// ASE_KEY_GUARD=on asks for the lock or no run: a system without bubblewrap then stops the run instead of running it unwrapped.
 const lockRequired = env => String(env.ASE_KEY_GUARD ?? "").toLowerCase() === "on";
 
 // The entries of KIT_KEY_PATHS, separated by the system's path separator.
@@ -462,11 +464,12 @@ export function keyGuardWarning(env = process.env) {
   return [displayWarning, keyPathsWarning(env)].filter(Boolean).join("; ") || null;
 }
 
-// No bubblewrap on this machine, and no ASE_KEY_GUARD=on asking for the lock or no run: the kit's runs go on unlocked.
-const noBwrap = "off on this machine (no bubblewrap); builders can read key files";
-function runsUnlocked(env) {
+// A system that has no bubblewrap (macOS, Windows; on Linux it installs with one command, so a missing one stops the
+// run), and no ASE_KEY_GUARD=on asking for the lock or no run: Claude, Grok and OpenCode run without the wrapper.
+const noBwrap = "off on this machine (no bubblewrap); builders can read key files (token variables are still dropped, and Codex keeps its own profile)";
+function runsUnwrapped(env) {
   bwrapWorks(env);
-  return absent && !lockRequired(env);
+  return absent && process.platform !== "linux" && !lockRequired(env);
 }
 
 /**
@@ -487,9 +490,10 @@ function searchedPaths(cli, env, { apiRoute = false, worktree, common } = {}) {
 }
 
 /**
- * The lock for one agent run, or {off: true} with ASE_KEY_GUARD=off and (with `missing` and the `warning` for the run's
- * log) on a machine without bubblewrap. Throws in plain words when the lock is on and cannot be set up (a bubblewrap
- * that cannot start, a key folder it cannot search; no bubblewrap under ASE_KEY_GUARD=on). `close()` removes the run's private folder.
+ * The lock for one agent run, or {off: true} with ASE_KEY_GUARD=off and (with `missing`, the dropped variables and the
+ * `warning` for the run's log) for Claude, Grok and OpenCode on a system without bubblewrap. Throws in plain words when
+ * the lock is on and cannot be set up (a bubblewrap that cannot start or is missing on Linux, a key folder it cannot
+ * search; no bubblewrap under ASE_KEY_GUARD=on). `close()` removes the run's private folder.
  *  - env: variables to drop for the call;
  *  - wrap(command, args): the command and arguments that run it inside the lock (Claude, Grok, OpenCode);
  *  - codex: Codex's -c profile options;
@@ -499,12 +503,13 @@ function searchedPaths(cli, env, { apiRoute = false, worktree, common } = {}) {
 export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRoute = false, model = "" }) {
   const unlocked = { off: true, env: {}, wrap: (command, args) => [command, args], close() {} };
   if (!keyGuardOn(env)) return unlocked;
-  // A machine without bubblewrap: every CLI runs as it did before the lock (nothing is searched, so nothing can stop
-  // the run), and the run's log says so.
-  if (runsUnlocked(env)) return { ...unlocked, missing: true, warning: noBwrap };
+  const scrub = scrubbedEnv(cli, env, { apiRoute, model });
+  // A system without bubblewrap: Claude, Grok and OpenCode start as they are, with the token variables dropped, and the
+  // run's log says so. Nothing is searched for them, so no key folder can stop the run. Codex goes on below: its own
+  // profile needs no bubblewrap.
+  if (cli !== "codex" && runsUnwrapped(env)) return { ...unlocked, env: scrub, missing: true, warning: [noBwrap, keyPathsWarning(env)].filter(Boolean).join("; ") };
   const { paths, problem: refusal, glue } = searchedPaths(cli, env, { apiRoute, worktree, common });
   if (refusal) throw new Error(`cannot lock the key files for this ${kind}: ${refusal}${glue} set ASE_KEY_GUARD=off to run without the lock`);
-  const scrub = scrubbedEnv(cli, env, { apiRoute, model });
   // Codex's own sandbox shares the network too, so the display warning (when bubblewrap can check it) applies to it.
   if (cli === "codex") {
     let display = Boolean(env.DISPLAY);
@@ -538,20 +543,18 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
 }
 
 /**
- * kit doctor's note: {state, text}, the lock's state in plain words. Never throws. States: on; warning (on, with a gap);
- * off (ASE_KEY_GUARD=off); missing (no bubblewrap here, runs go on unlocked); problem (bubblewrap cannot start: the
- * Claude, Grok and OpenCode runs stop); refused (a key folder cannot be searched or hidden: every run stops). The key
- * folders are searched as a run in `worktree` would search them, for every CLI at once, so "on" is said only where a
- * run would really start.
+ * kit doctor's note: {state, text}, the lock's state in plain words. States: on; warning (on, with a gap); off
+ * (ASE_KEY_GUARD=off); missing (a system without bubblewrap: Claude, Grok and OpenCode run unwrapped); problem
+ * (bubblewrap cannot start: their runs stop); refused (a key folder cannot be searched or hidden: the runs that lock it
+ * stop). The key folders are searched as a run in `worktree` would search them, for every CLI at once, so "on" is said
+ * only where a run would really start.
  */
 export function keyGuardReport(env = process.env, { worktree = process.cwd(), common } = {}) {
   if (!keyGuardOn(env)) return { state: "off", text: "off (ASE_KEY_GUARD=off): agents the kit starts can read the key files" };
-  if (runsUnlocked(env)) return { state: "missing", text: noBwrap };
+  if (runsUnwrapped(env)) return { state: "missing", text: noBwrap };
   const problem = bwrapWorks(env);
   if (problem) return { state: "problem", text: problem };
-  let refusal;
-  try { refusal = searchedPaths("", env, { worktree, common }).problem; }
-  catch (error) { refusal = `the key folders could not be searched (${error.message})`; }
+  const refusal = searchedPaths("", env, { worktree, common }).problem;
   if (refusal) return { state: "refused", text: refusal };
   const warning = keyGuardWarning(env);
   return warning ? { state: "warning", text: `on, but ${warning}` }
