@@ -29,7 +29,8 @@
 // needs bubblewrap. ASE_KEY_GUARD=on stops such a run instead. On Linux a missing bubblewrap stops the run, as a broken
 // one does: it installs with one command.
 import { spawnSync } from "node:child_process";
-import { accessSync, chmodSync, constants, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { accessSync, chmodSync, closeSync, constants, lstatSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
@@ -96,7 +97,10 @@ function text(file) {
 // blank or at what ends a command; quotes are taken off by expand.
 const sourced = /(?:^|&&|\|\||[;({]|\b(?:then|do|else))\s*(?:source|\.)\s+("[^"\n]*"|'[^'\n]*'|[^\s;&|)}]+)/gm;
 // A path as a config file writes it: ~ and $HOME are the home, a relative one counts from `from`.
-const expand = (path, base, from) => resolve(from, path.replace(/^["']|["']$/g, "").replace(/^~(?=\/|$)/, base).replace(/^\$(HOME|\{HOME\})(?=\/|$)/, base));
+const expand = (path, base, from) => resolve(from, (/^"[\s\S]*"$/.test(path) ? path.slice(1, -1).replace(/\\(.)/g, "$1") : path.replace(/^["']|["']$/g, "")).replace(/^~(?=\/|$)/, base).replace(/^\$(HOME|\{HOME\})(?=\/|$)/, base));
+// A git include (include.path, includeIf's path): the whole value as git reads it, so a path with a space counts in
+// full (SL-1, TOOLS-303): a quoted value up to its closing quote, a bare one up to a comment or the line's end.
+const gitIncludePath = /^[ \t]*path[ \t]*=[ \t]*("(?:[^"\\\n]|\\.)*"|[^\n#;]*[^\s#;])/gim;
 // The files a set of config files pull in, however long the chain: `source`/`.` for shell files, include paths for
 // git. Each file is read once, so a loop ends, and a chain ends where a file names nothing new that exists. A relative
 // path counts from every folder `from` gives for the file that names it: that file's own folder for git; for a shell
@@ -129,6 +133,9 @@ const secretName = /(^|_)(TOKENS?|SECRETS?|PASSWORDS?|PASSWD|PASSPHRASE|API_?KEY
 // https://ghp_…@github.com). Proxy variables keep theirs: the CLI needs the proxy to reach its own service at all.
 const urlPassword = /[a-z][a-z0-9+.-]*:\/\/[^/\s@]+@/i;
 const proxyName = /^(https?|all|ftp|no)_proxy$/i;
+// Variables naming a start-up file a shell reads before its script: dropped for a run, as a file the lead's shell may
+// have set a token in, or a build may have written (TOOLS-303); the file itself is locked like the others when it sets one.
+const startupVariables = ["BASH_ENV", "ENV"];
 // Sockets and handles that lead to keys or to programs outside the lock.
 const handleNames = ["SSH_AUTH_SOCK", "GPG_AGENT_INFO", "DBUS_SESSION_BUS_ADDRESS", "XAUTHORITY", "DISPLAY", "WAYLAND_DISPLAY",
   "GNOME_KEYRING_CONTROL", "GNOME_KEYRING_PID"];
@@ -174,7 +181,7 @@ export function scrubbedEnv(cli, env = process.env, { apiRoute = false, model = 
   // The API route's wrapper reads the key file itself and drops the variable before claude starts.
   if (cli === "claude" && apiRoute) keep.add("KIT_API_KEY_FILE");
   return Object.fromEntries(Object.keys(env)
-    .filter(name => !keep.has(name) && (secretName.test(name) || handleNames.includes(name) || (!proxyName.test(name) && urlPassword.test(String(env[name] ?? "")))))
+    .filter(name => !keep.has(name) && (secretName.test(name) || handleNames.includes(name) || startupVariables.includes(name) || (!proxyName.test(name) && urlPassword.test(String(env[name] ?? "")))))
     .map(name => [name, undefined]));
 }
 
@@ -204,9 +211,11 @@ export function lockedPaths(cli, env = process.env, { apiRoute = false, cwd = pr
     return [join(folder, "config.fish"), join(folder, "fish_variables"), ...parts];
   });
   const startups = [...shellStartups.map(path => join(base, path)), ...fishFiles,
-    ...named(env.ZDOTDIR).flatMap(folder => [".zshenv", ".zshrc", ".zprofile"].map(name => join(folder, name)))];
+    ...named(env.ZDOTDIR).flatMap(folder => [".zshenv", ".zshrc", ".zprofile"].map(name => join(folder, name))),
+    // The file every non-interactive bash (BASH_ENV) or sh (ENV) reads first (TOOLS-303).
+    ...startupVariables.flatMap(name => named(env[name]))];
   // Files they pull in count the same: a git include (include.path, includeIf), a shell `source` or `.`.
-  const allGit = pulledIn(gitConfigs, /^\s*path\s*=\s*(\S+)/gm, base);
+  const allGit = pulledIn(gitConfigs, gitIncludePath, base);
   // A shell reads a relative `source ./x.env` from the folder it runs in, whichever file names it: HOME for a login
   // shell, the worktree for a shell the agent starts there, the lead's own folder; the naming file's folder stays as
   // one more reading (a start-up file that changes into its own folder first).
@@ -220,7 +229,8 @@ export function lockedPaths(cli, env = process.env, { apiRoute = false, cwd = pr
     if (other !== cli || cli === "codex" || (cli === "claude" && apiRoute)) paths.push(...list.map(path => join(base, path)));
   }
   if (cli !== "claude") paths.push(join(base, ".claude", claudeSettings));
-  if (env.CODEX_HOME) paths.push(join(env.CODEX_HOME, "auth.json"), join(env.CODEX_HOME, "config.toml"));
+  // A relative CODEX_HOME is read from both folders, as any variable's path (SL-2, TOOLS-303).
+  for (const folder of named(env.CODEX_HOME)) paths.push(join(folder, "auth.json"), join(folder, "config.toml"));
   // Claude's moved config folder: its MCP config for every CLI, its login and settings for the others.
   for (const folder of named(env.CLAUDE_CONFIG_DIR)) {
     paths.push(join(folder, ".claude.json"));
@@ -443,6 +453,46 @@ const programFor = (name, env, shut) => lookup(name, env, shut).file;
 // Why a program found only through such a link is not started, with the step that fixes it.
 const linkRefusal = (name, file) => `${name} on PATH is ${file}, a link into the worktree or its Git folder (${real(file)}), where a build can change it, so it is not started; put a ${name} from outside them on PATH, or set ASE_KEY_GUARD=off to run without the lock`;
 
+// A script's first line names its interpreter, and `#!/usr/bin/env node` has env look node up by its bare name on PATH,
+// where a link a person made into the worktree or the Git folder stays (only the names the kit starts are looked up past
+// it). So the kit reads that line itself and starts the interpreter by the full path it finds the way it finds its own
+// programs (lookup), with the script as its argument (TOOLS-303): Codex and the API route's wrapper start outside
+// bubblewrap. The interpreter may be a script too (an asdf or volta shim, or one a full path names), so this goes on
+// for four levels, as the kernel does, and refuses past them. A first line that names a full path inside the worktree
+// or the Git folder, an env option other than -S, or a name PATH holds only as such a link is refused through
+// `refuse`; a name no PATH folder holds is left to start as it is (and fail).
+function interpreted(file, args, env, shut, refuse, depth = 0) {
+  let head = "";
+  try {
+    const fd = openSync(file, "r");
+    try { const buffer = Buffer.alloc(512); head = buffer.subarray(0, readSync(fd, buffer, 0, 512, 0)).toString("utf8"); } finally { closeSync(fd); }
+  } catch { return [file, args]; }
+  if (!head.startsWith("#!")) return [file, args];
+  if (depth >= 4) refuse(`${file} is a script whose interpreter is a script four levels deep`);
+  const line = head.slice(2).split("\n")[0].trim();
+  const [interpreter] = line.split(/[ \t]+/, 1), rest = line.slice(interpreter.length).trim();
+  if (!interpreter) return [file, args];
+  if (basename(interpreter) !== "env") {
+    if (shut.some(root => inside(real(interpreter), root))) refuse(`${file} starts with ${interpreter}, inside the worktree or its Git folder, where a build can change it`);
+    // A binary interpreter the kernel starts itself; one that is a script again is followed (the kernel passes what
+    // follows the interpreter as one argument, before the script).
+    const next = interpreted(interpreter, [...(rest ? [rest] : []), file, ...args], env, shut, refuse, depth + 1);
+    return next[0] === interpreter ? [file, args] : next;
+  }
+  const words = rest.split(/[ \t]+/).filter(Boolean);
+  if (words[0] === "-S") words.shift();
+  else if (words.length > 1) words.splice(0, words.length, rest);
+  if (!words.length || words[0].startsWith("-")) refuse(`${file} starts with env ${rest}, so which program it runs cannot be told`);
+  const [name, ...options] = words;
+  if (name.includes("/")) {
+    if (shut.some(root => inside(real(name), root))) refuse(`${file} starts with env ${name}, inside the worktree or its Git folder, where a build can change it`);
+    return interpreted(resolve(name), [...options, file, ...args], env, shut, refuse, depth + 1);
+  }
+  const { file: found, refused } = lookup(name, env, shut);
+  if (!found && refused) refuse(linkRefusal(name, refused));
+  return found ? interpreted(found, [...options, file, ...args], env, shut, refuse, depth + 1) : [file, args];
+}
+
 /**
  * The program the runner starts for a bare name (its own git) in a run in `worktree`: its full path from the run's
  * PATH folders, never one that leads into the worktree or the Git folder; the bare name where no folder holds one (the
@@ -453,6 +503,26 @@ export function runProgram(name, env = process.env, { worktree, common, kind = "
   const { file, refused } = lookup(name, env, buildFolders(worktree, common));
   if (!file && refused) throw new Error(`cannot lock the key files for this ${kind}: ${linkRefusal(name, refused)}`);
   return file ?? name;
+}
+
+/**
+ * How the lead's own process starts a program on a worktree a build wrote (kit pr's gh and kit commands): [command,
+ * args] with the program's full path from the run's PATH folders (never one that leads into the worktree or the Git
+ * folder) and a script's interpreter found the same way (interpreted). Throws in plain words where PATH holds the
+ * program or its interpreter only as such a link, or a script's first line points inside; a program no folder holds is
+ * left as it is.
+ */
+export function startCommand(command, args, env = process.env, { worktree, common, kind = "run" } = {}) {
+  const shut = buildFolders(worktree, common);
+  const refuse = problem => { throw new Error(`cannot lock the key files for this ${kind}: ${problem}`); };
+  let file = command;
+  if (!command.includes("/")) {
+    const found = lookup(command, env, shut);
+    if (!found.file && found.refused) refuse(linkRefusal(command, found.refused));
+    if (!found.file) return [command, args];
+    file = found.file;
+  }
+  return interpreted(file, args, env, shut, refuse);
 }
 
 /**
@@ -611,11 +681,15 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
   // ENOENT), which kit review counts as an unavailable reviewer; nothing runs, so there is nothing to lock.
   const inside = (outer, lock = bwrap) => (command, args) => {
     const file = program(command);
-    return file ? [lock, [...outer, "--", file, ...args]] : [command, args];
+    return file ? [lock, [...outer, "--", ...interpreted(file, args, env, shut, refuse).flat()]] : [command, args];
   };
   // Without bubblewrap before it (Codex, which locks its own commands; its runner's helpers where bubblewrap cannot
-  // run): by the program's full path all the same, since the bare name would take a link before it on PATH.
-  const direct = (command, args) => [program(command) ?? command, args];
+  // run; the API route's wrapper): by the program's full path all the same, since the bare name would take a link
+  // before it on PATH, and so is a script's interpreter.
+  const direct = (command, args) => {
+    const file = program(command);
+    return file ? interpreted(file, args, env, shut, refuse) : [command, args];
+  };
   if (!keyGuardOn(env)) return unlocked;
   const path = runPath(env, { worktree, common });
   const scrub = { ...scrubbedEnv(cli, env, { apiRoute, model }), ...(path === undefined ? {} : { PATH: path }) };
@@ -623,6 +697,7 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
   // run's log says so. Nothing is searched for them, so no key folder can stop the run. Codex goes on below: its own
   // profile needs no bubblewrap.
   if (cli !== "codex" && runsUnwrapped(env, shut)) return { ...unlocked, env: scrub, missing: true, warning: unwrappedNote };
+  if (cli !== "codex" && bwrapWorks(env, shut) && outerLock(env)) return { ...unlocked, env: scrub, missing: true, warning: outerNote };
   // The run's own two programs are looked up now, so a run that could only start one through a link stops here, with
   // the reason in its log, before anything starts.
   for (const name of [cli, "git"]) program(name);
@@ -655,11 +730,74 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
   const dir = mkdtempSync(join(tmpdir(), "ase-key-guard-"));
   const script = join(dir, "guard");
   const quote = value => `'${value.replaceAll("'", `'\\''`)}'`;
-  const claude = program("claude");
-  writeFileSync(script, `#!/bin/sh\n${claude ? `[ "$1" = claude ] && { shift; set -- ${quote(claude)} "$@"; }\n` : ""}exec ${quote(bwrap)} ${outer.map(quote).join(" ")} -- "$@"\n`);
+  // Its interpreter too (`#!/usr/bin/env node`), found the same way.
+  const claude = program("claude"), start = claude ? interpreted(claude, [], env, shut, refuse).flat() : [];
+  writeFileSync(script, `#!/bin/sh\n${claude ? `[ "$1" = claude ] && { shift; set -- ${start.map(quote).join(" ")} "$@"; }\n` : ""}exec ${quote(bwrap)} ${outer.map(quote).join(" ")} -- "$@"\n`);
   chmodSync(script, 0o700);
-  return { env: { ...scrub, KIT_CLAUDE_GUARD: script }, bwrap: true, warning, wrap: plain, helper: inside(outer), claudeGuard: script,
+  return { env: { ...scrub, KIT_CLAUDE_GUARD: script }, bwrap: true, warning, wrap: direct, helper: inside(outer), claudeGuard: script,
     close() { rmSync(dir, { recursive: true, force: true }); } };
+}
+
+// The mark of kit pr's lock for its checks: a file holding a random token in the desktop's runtime folder, which the lock
+// masks with an empty folder of its own, so only a process inside that lock sees it there, and the same token in
+// KIT_OUTER_LOCK. Outside the lock the runtime folder is the real one, which no locked build can write.
+const markName = "kit-outer-lock";
+const runtimeFolder = env => env.XDG_RUNTIME_DIR || (typeof process.getuid === "function" ? `/run/user/${process.getuid()}` : "");
+function outerMark(env, outer) {
+  const runtime = runtimeFolder(env);
+  // Only where the lock masks an existing runtime folder; without one, a run inside starts its own sandbox as before.
+  if (!runtime.startsWith("/") || !outer.some((arg, index) => arg === "--tmpfs" && outer[index + 1] === resolve(runtime))) return { env: {}, args: [], close() {} };
+  const token = randomUUID(), dir = mkdtempSync(join(tmpdir(), "ase-outer-lock-")), file = join(dir, markName);
+  writeFileSync(file, token);
+  return { env: { KIT_OUTER_LOCK: token }, args: ["--ro-bind", file, join(resolve(runtime), markName)], close() { rmSync(dir, { recursive: true, force: true }); } };
+}
+/**
+ * Whether this process runs inside kit pr's lock for its checks: KIT_OUTER_LOCK matches the mark that lock placed in the
+ * runtime folder, and the process is in a user namespace of its own (bubblewrap's). Then the machine's key files are
+ * hidden already, and a run here that cannot start a sandbox of its own (a system that blocks one inside another)
+ * starts without it, saying so in its log.
+ */
+export function outerLock(env = process.env) {
+  if (!env.KIT_OUTER_LOCK || process.platform !== "linux") return false;
+  try {
+    if (readFileSync(join(resolve(runtimeFolder(env)), markName), "utf8") !== env.KIT_OUTER_LOCK) return false;
+    return !/^\s*0\s+0\s+4294967295\s*$/.test(readFileSync("/proc/self/uid_map", "utf8"));
+  } catch { return false; }
+}
+const outerNote = "inside kit pr's key lock for its checks: that lock hides the key files, and this run starts no sandbox of its own (one cannot start inside another here)";
+
+/**
+ * The lock for the checks kit pr runs on what a build left (TOOLS-303): the project's check, unit, lint and spec
+ * commands come from the worktree's own settings and run the build's code, in the lead's process, where the keys are.
+ * {env, wrap, note}: wrap(command, args) starts a command inside bubblewrap with every key path hidden (every CLI's login
+ * too), and env drops the token variables and the start-up file variables and leaves the worktree's and the Git
+ * folder's folders off PATH. With ASE_KEY_GUARD=off, or on a system without bubblewrap (macOS, Windows), the checks run
+ * as before and `note` says so in one line. Throws in plain words where the lock is on and cannot be set up, as a run's
+ * lock does. `readOnly` names folders the lead's process relies on after the checks (kit pr's own program links): the
+ * checks see them but cannot change them. A check may start the key lock itself (the kit's own tests do), and many
+ * systems block a sandbox inside another (Ubuntu's kernel.apparmor_restrict_unprivileged_userns=1), so the lock leaves
+ * a mark only it can place (outerLock): a run inside it starts no sandbox of its own, since this one already hides the
+ * key files.
+ */
+export function checkLock({ worktree, common, env = process.env, readOnly = [] }) {
+  const plain = (command, args) => [command, args];
+  if (!keyGuardOn(env)) return { env: {}, wrap: plain, note: "not locked (ASE_KEY_GUARD=off)" };
+  const shut = buildFolders(worktree, common);
+  const path = runPath(env, { worktree, common });
+  const scrub = { ...scrubbedEnv("", env), ...(path === undefined ? {} : { PATH: path }) };
+  if (runsUnwrapped(env, shut)) return { env: scrub, wrap: plain, note: "not locked (no bubblewrap on this machine; token variables are still dropped)" };
+  // Inside kit pr's own lock for its checks the checks are locked already: no second sandbox, and nothing to note.
+  if (bwrapWorks(env, shut) && outerLock(env)) return { env: scrub, wrap: plain, note: null };
+  const refuse = problem => { throw new Error(`cannot lock the key files for kit pr's checks: ${problem}`); };
+  const problem = bwrapWorks(env, shut);
+  if (problem) refuse(`${problem}; or set ASE_KEY_GUARD=off to run without the lock`);
+  const { paths, problem: refusal, glue } = searchedPaths("", env, { worktree, common });
+  if (refusal) refuse(`${refusal}${glue} set ASE_KEY_GUARD=off to run without the lock`);
+  const outer = [...bwrapArgs(paths), ...existingPaths(readOnly).flatMap(path => ["--ro-bind", path, path])];
+  const mark = outerMark(env, outer);
+  // The command starts inside, found there on the run's PATH: whatever it is, it runs locked.
+  return { env: { ...scrub, ...mark.env }, wrap: (command, args) => [bwrap, [...outer, ...mark.args, "--", command, ...args]], note: null, warning: keyGuardWarning(env, shut),
+    close: mark.close };
 }
 
 /**
@@ -674,6 +812,7 @@ export function keyGuardReport(env = process.env, { worktree = process.cwd(), co
   // Unwrapped runs search nothing; a Codex run there still does, for its profile.
   const shut = buildFolders(worktree, common);
   const unwrapped = runsUnwrapped(env, shut), problem = bwrapWorks(env, shut);
+  if (problem && !unwrapped && outerLock(env)) return { state: "on", text: `on (${outerNote})` };
   if (problem && !unwrapped) return { state: "problem", text: problem };
   const refusal = searchedPaths(unwrapped ? "codex" : "", env, { worktree, common }).problem;
   if (refusal) return { state: "refused", text: refusal };
