@@ -51,10 +51,13 @@ export function gitCommonDir(worktree) {
   try { return resolve(gitDir, readFileSync(join(gitDir, "commondir"), "utf8").trim()); } catch { return gitDir; }
 }
 
-// The last part of a setting's name that names a program git starts.
-const programName = /^(clean|smudge|process|textconv|command|cmd|driver|external|program|helper|sshcommand|gitproxy|askpass|editor|pager|receivepack|uploadpack|packobjectshook)$/;
-// Sections whose every entry names something git runs: aliases (a ! alias is a shell command) and per-command pagers.
-const programSection = /^(alias|pager)$/;
+// The ending of a setting's last name part that names a program git starts (core.alternateRefsCommand, gpg.program,
+// interactive.diffFilter, remote.<name>.receivepack, uploadpack.packObjectsHook, core.gitProxy...): matched by its
+// ending, so a longer name with the same ending is caught too.
+const programName = /(command|cmd|program|helper|driver|textconv|editor|pager|askpass|proxy|pack|hook|filter|clean|smudge|process|external)$/;
+// Sections whose every entry names something git runs or writes to: aliases (a ! alias is a shell command), per-command
+// pagers, and trace targets (a file or socket that would get what a call does).
+const programSection = /^(alias|pager|trace2)$/;
 // Sections a fetch or push with the user's credentials must not take from the repository's own config.
 const networkSection = /^(http|credential)$/;
 // Settings from the global and system config that a call without the network keeps: who commits, and how files look.
@@ -83,7 +86,7 @@ export function gitNetworkCall(args) {
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "-C" || args[i] === "-c") { i++; continue; }
     if (args[i].startsWith("-")) continue;
-    return ["fetch", "push", "pull", "ls-remote", "clone", "remote-update"].includes(args[i]);
+    return ["fetch", "push", "pull", "ls-remote", "clone"].includes(args[i]);
   }
   return false;
 }

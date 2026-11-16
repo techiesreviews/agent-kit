@@ -8,7 +8,8 @@ if [[ $file != /* ]]; then echo "claude-api-run: KIT_API_KEY_FILE must be an abs
 if [[ ! -f $file || ! -r $file ]]; then echo "claude-api-run: the API key file named by KIT_API_KEY_FILE cannot be read" >&2; exit 2; fi
 # The key is read here, outside the key lock: its tools come from the system's own folders (command -p), never from a PATH
 # folder where a link may lead into a worktree a build wrote (TOOLS-303).
-mode=$(command -p stat -L -c '%a' -- "$file" 2>/dev/null || command -p stat -L -f '%Lp' -- "$file")
+mode=$(command -p stat -L -c '%a' -- "$file" 2>/dev/null || command -p stat -L -f '%Lp' -- "$file" 2>/dev/null) || mode=''
+if [[ ! $mode =~ ^[0-7]+$ ]]; then echo "claude-api-run: the API key file's permissions cannot be read (no stat in the system's folders, /bin or /usr/bin)" >&2; exit 2; fi
 if (( 8#$mode & 8#077 )); then echo "claude-api-run: the API key file can be read by others (mode $mode); run chmod 600 on it" >&2; exit 2; fi
 key=''
 IFS= read -r key < "$file" || [[ -n $key ]] || :

@@ -303,8 +303,9 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     and its Git folder. The runner's own git calls also run inside the lock where bubblewrap runs. The runner finds the
     Git folder from the worktree's files before its first git, so that git is never one a link on PATH leads into the
     worktree or a linked worktree's shared Git folder for. `ASE_KEY_GUARD=off` turns these settings off with the lock.
-    Settings a project uses on purpose are switched off too: a Git LFS filter in the repository's own config does not
-    run in `kit pr` (configure LFS globally), and hooks such as a pre-push check do not run there.
+    Settings a project uses on purpose are switched off too: hooks such as a pre-push check do not run in `kit pr`, and
+    Git LFS does not run there at all, so `kit pr` stops on a repository whose `.gitattributes` names `filter=lfs`
+    (land such a change with `ASE_KEY_GUARD=off`).
   - **`kit pr`'s checks.** The project's check, unit, lint, colour, tickets and spec commands come from the worktree's
     own settings and run the build's code, so they run inside the key lock (every CLI's login hidden too, the token
     variables dropped). Where bubblewrap does not exist (macOS, Windows) or `ASE_KEY_GUARD=off`, they run as before and
@@ -314,10 +315,13 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     interpreter the same way: a `#!/usr/bin/env node` CLI, or the API route's `#!/usr/bin/env bash` wrapper, starts the
     interpreter by its full path, never a link someone made into the worktree (an `npm link`, a dotfiles `bin`). The run's
     PATH leaves those folders out, so `<worktree>/node_modules/.bin` (which npm puts on PATH) supplies none of them; a
-    link elsewhere stays on PATH, and the next program on PATH starts in its place, or the run stops and says so. The API
-    route's wrapper, which reads the key outside the lock, takes its own tools from the system's folders (`command -p`).
+    link elsewhere stays on PATH, and the next program on PATH starts in its place, or the run stops and says so. `kit pr`
+    puts links to the git, node, gh, bash and sh it found that way in a private folder first on PATH (and `KIT_NODE` is
+    its own Node), so the kit's helpers in its process and the kit commands it starts take those too. The API route's
+    wrapper, which reads the key outside the lock, takes its own tools from the system's folders (`command -p`).
   - **Start-up files.** `BASH_ENV` and `ENV` (the file every non-interactive bash or sh reads first) are dropped for a
-    run and for everything `kit pr` starts, and the file they name is locked like any start-up file when it sets a token.
+    run and for everything `kit pr` starts (not with `ASE_KEY_GUARD=off`), and the file they name is locked like any
+    start-up file when it sets a token.
   What is still not covered: the lead's own commands outside the kit (a git or a shell the lead runs by hand reads what a
   build wrote under HOME: `~/.gitconfig`, `~/.bashrc`, a PATH folder there), a `kit pr` started through `npm run` (its
   own `#!/usr/bin/env node` is found before `kit pr` can look), and a fetch or push reading a global Git config a build

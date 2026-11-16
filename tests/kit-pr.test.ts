@@ -9,6 +9,7 @@ import { coverageHash, saveUxResult, uxGuard, visibleFiles } from "../ux-gate.mj
 import { sameReviewPatch } from "../review-findings.mjs";
 import { forEachAwait } from "./support/await-race.ts";
 import { kitEnv } from "./support/kit-env.ts";
+import { onMacos, pathWithoutBwrap } from "./support/no-bwrap.ts";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { bwrapWorks } from "../key-guard.mjs";
 import { orbitProject, orbitSecretsForTests, orbitSettings, runAsync, type Run } from "./support/orbit-project.ts";
@@ -3868,12 +3869,17 @@ test("PROOF: kit pr runs no hook, Git filter, diff tool, merge driver, PATH tool
   for (const [name, value] of [["filter.leak.clean", leak], ["filter.leak.smudge", leak], ["diff.leak.textconv", leak], ["diff.leak.command", leak], ["diff.external", leak],
     ["merge.leak.driver", `${leak} %A`], ["core.fsmonitor", leak], ["core.pager", leak], ["alias.st", `!${leak}`]]) f.git("config", name, value);
   const realOf = (name: string) => String(f.env.PATH).split(":").filter(folder => folder.startsWith("/")).map(folder => join(folder, name)).find(file => existsSync(file))!;
-  const tools = join(f.root, "node_modules/.bin");
-  for (const name of ["git", "gh", "node", "npm", "bash", "sh"]) script(join(tools, name), `PATH tool ${name}`, `exec ${realOf(name)} "$@"`);
+  const tools = join(f.root, "node_modules/.bin"), links = join(f.dir, "links");
+  mkdirSync(links);
+  for (const name of ["git", "gh", "node", "npm", "bash", "sh"]) {
+    script(join(tools, name), `PATH tool ${name}`, `exec ${realOf(name)} "$@"`);
+    // And a link a person made to it from a folder of their own on PATH (an npm link, a dotfiles bin).
+    symlinkSync(join(tools, name), join(links, name));
+  }
   appendFileSync(join(f.root, ".git/info/exclude"), "node_modules/\n");
   const startup = join(home, ".bash_env");
   writeFileSync(startup, `${note("BASH_ENV")}\n`);
-  const env = { HOME: home, GH_TOKEN: dummy, BASH_ENV: startup, PATH: `${tools}:${f.env.PATH}` } as NodeJS.ProcessEnv;
+  const env = { HOME: home, GH_TOKEN: dummy, BASH_ENV: startup, PATH: `${tools}:${links}:${f.env.PATH}` } as NodeJS.ProcessEnv;
   // Without kit pr's care they are live: a plain git status in the worktree starts the build's programs.
   spawnSync("git", ["-C", f.root, "status"], { env: { ...f.env, ...env }, encoding: "utf8" });
   assert.ok(readFileSync(noted, "utf8").includes(dummy), "the planted settings are live");
@@ -3890,4 +3896,32 @@ test("PROOF: kit pr runs no hook, Git filter, diff tool, merge driver, PATH tool
   for (const who of ["hook ", "a program the Git settings name", "PATH tool git", "PATH tool gh", "PATH tool node", "BASH_ENV"]) assert.ok(!left.includes(who), `${who.trim()} ran: ${left}`);
   // The work landed: rebased on the new upstream, with kit pr's own commit naming the commits.
   assert.equal(f.gitAt(f.origin, "log", "-1", "--format=%s", "refs/heads/feature/kit-pr"), "docs: ticket commits by subject");
+});
+
+test("kit pr refuses a fetch while the repository's own Git config holds http or credential settings, stops on Git LFS, and says where its checks run unlocked", t => {
+  const f = fixture(t);
+  f.git("config", "http.proxy", "http://127.0.0.1:1");
+  const steered = f.run();
+  assert.equal(steered.status, 1, steered.stdout + steered.stderr);
+  assert.match(steered.stdout, /^RESULT: fail fetch: the repository's own Git config holds http\.proxy, which could send the credentials of a fetch or push elsewhere/m);
+  f.git("config", "--unset", "http.proxy");
+  // Git LFS's filter would not run, so a rebase would leave pointer files: kit pr stops before it.
+  writeFileSync(join(f.root, ".gitattributes"), "*.bin filter=lfs diff=lfs merge=lfs -text\n");
+  f.git("add", ".gitattributes"); f.git("commit", "-qm", "Track binaries with LFS");
+  const lfs = f.run();
+  assert.equal(lfs.status, 1, lfs.stdout + lfs.stderr);
+  assert.match(lfs.stdout, /^RESULT: fail guards: this repository uses Git LFS \(filter=lfs in \.gitattributes\)/m);
+  assert.equal(f.calls().some(call => call.tool === "gh"), false);
+  // With the lock off, LFS is the project's own business again, and the checks say they ran unlocked.
+  const off = f.run([], { ASE_KEY_GUARD: "off" });
+  assert.equal(off.status, 0, off.stdout + off.stderr);
+  assert.match(off.stdout, /^checks: not locked \(ASE_KEY_GUARD=off\)$/m);
+  assert.match(f.body(), /^- checks: not locked \(ASE_KEY_GUARD=off\)$/m);
+});
+
+test("on a system without bubblewrap kit pr's checks run unlocked and the PR says so", t => {
+  const f = fixture(t);
+  const result = f.run([], { PATH: `${f.bin}:${pathWithoutBwrap(f.dir)}`, ...onMacos });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(f.body(), /^- checks: not locked \(no bubblewrap on this machine; token variables are still dropped\)$/m);
 });
