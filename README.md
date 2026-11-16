@@ -321,11 +321,10 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     interpreter by its full path, never a link someone made into the worktree (an `npm link`, a dotfiles `bin`). The
     run's PATH leaves those folders out, so `<worktree>/node_modules/.bin` (which npm puts on PATH) supplies none of
     them; a link elsewhere stays on PATH, and the next program on PATH starts in its place, or the run stops and says
-    so. `kit pr` puts links to the git, node, gh, bash and sh it found that way in a private folder first on PATH (and
-    `KIT_NODE` is its own Node), so the kit's helpers in its process and the programs it starts (`gh`, `kit review`,
-    `kit release-check`) take those too; its own git and gh start by the real path. That folder sits in the desktop's
-    runtime folder, which every locked build sees as an empty folder of its own; the checks see it read-only. Where
-    there is no runtime folder it sits in the temp folder, which a build running meanwhile can write: `kit pr` checks
+    so. `kit pr` puts links to the git, node, gh, bash and sh it found that way in a private folder in the temp folder,
+    first on PATH (and `KIT_NODE` is its own Node), so the kit's helpers in its process and the programs it starts
+    (`gh`, `kit review`, `kit release-check`) take those too; its own git and gh start by the real path. The checks see
+    that folder read-only. Another build running meanwhile, or one run without the lock, can write it: `kit pr` checks
     the links before every program it starts and after every check and stops if one changed, but a program it started
     (`gh` with its token among them) may take a changed one in between. The API route's wrapper, which reads the key
     outside the lock, takes its own tools from the system's folders (`command -p`).

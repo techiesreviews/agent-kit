@@ -3855,7 +3855,7 @@ test("PROOF: kit pr runs no hook, Git filter, diff tool, merge driver, PATH tool
   // The check also tries to swap kit pr's own program links for scripts of its own.
   const swapped = `#!/bin/sh\n${note("a program the check swapped in")}\nexec ${spawnSync("bash", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim()} "$@"\n`;
   writeFileSync(join(f.root, "scripts/leak.sh"), `${note("the project's check")}
-for f in "$XDG_RUNTIME_DIR"/kit-pr-programs-*/git; do [ -L "$f" ] && echo "saw $f" >> ${JSON.stringify(noted)}; rm -f "$f" 2>/dev/null; printf '%s' ${JSON.stringify(swapped)} > "$f" 2>/dev/null && chmod +x "$f"; done
+for f in "$TMPDIR"/kit-pr-programs-*/git; do [ -L "$f" ] && echo "saw $f" >> ${JSON.stringify(noted)}; rm -f "$f" 2>/dev/null; printf '%s' ${JSON.stringify(swapped)} > "$f" 2>/dev/null && chmod +x "$f"; done
 exit 0
 `);
   writeFileSync(join(f.root, ".gitattributes"), "* filter=leak diff=leak merge=leak\n");
@@ -3884,10 +3884,10 @@ exit 0
   appendFileSync(join(f.root, ".git/info/exclude"), "node_modules/\n");
   const startup = join(home, ".bash_env");
   writeFileSync(startup, `${note("BASH_ENV")}\n`);
-  // A runtime folder of this test's own (kit pr keeps its program links there), so the check reaches only this kit pr's
-  // links, never another one's. The lock hides the runtime folder from the check but this kit pr's links, read-only.
-  const runtime = join(f.dir, "runtime"); mkdirSync(runtime, { mode: 0o700 });
-  const env = { HOME: home, GH_TOKEN: dummy, BASH_ENV: startup, PATH: `${tools}:${links}:${f.env.PATH}`, XDG_RUNTIME_DIR: runtime } as NodeJS.ProcessEnv;
+  // A temporary folder of this test's own (kit pr keeps its program links there), so the check reaches only this kit
+  // pr's links, never another one's.
+  const tmp = join(f.dir, "tmp"); mkdirSync(tmp);
+  const env = { HOME: home, GH_TOKEN: dummy, BASH_ENV: startup, PATH: `${tools}:${links}:${f.env.PATH}`, TMPDIR: tmp } as NodeJS.ProcessEnv;
   // Without kit pr's care they are live: a plain git status in the worktree starts the build's programs.
   spawnSync("git", ["-C", f.root, "status"], { env: { ...f.env, ...env }, encoding: "utf8" });
   assert.ok(readFileSync(noted, "utf8").includes(dummy), "the planted settings are live");
@@ -3947,10 +3947,10 @@ test("on a system without bubblewrap kit pr's checks run unlocked and the PR say
   assert.match(f.body(), /^- checks: not locked \(no bubblewrap on this machine; token variables are still dropped\)$/m);
   // An unlocked check can write kit pr's own links: the next start stops kit pr instead of taking what it left.
   const g = fixture(t, undefined, { checks: { check: "sh scripts/swap.sh", test: "npm test", lint: "npm run lint" } });
-  writeFileSync(join(g.root, "scripts/swap.sh"), 'for f in "$XDG_RUNTIME_DIR"/kit-pr-programs-*/git; do ln -sf /bin/true "$f"; done\n');
+  writeFileSync(join(g.root, "scripts/swap.sh"), 'for f in "$TMPDIR"/kit-pr-programs-*/git; do ln -sf /bin/true "$f"; done\n');
   g.git("add", "scripts/swap.sh"); g.git("commit", "-qm", "Swap");
-  const tmp = join(g.dir, "runtime"); mkdirSync(tmp, { mode: 0o700 });
-  const swapped = g.run([], { ...unlocked, PATH: `${g.bin}:${pathWithoutBwrap(g.dir)}`, XDG_RUNTIME_DIR: tmp });
+  const tmp = join(g.dir, "tmp"); mkdirSync(tmp);
+  const swapped = g.run([], { ...unlocked, PATH: `${g.bin}:${pathWithoutBwrap(g.dir)}`, TMPDIR: tmp });
   assert.equal(swapped.status, 1, swapped.stdout + swapped.stderr);
   assert.match(swapped.stdout, /^RESULT: fail check: kit pr's own link to git \(\S+\/kit-pr-programs-[^/]+\/git\) was changed while it ran; run kit pr again$/m);
   assert.deepEqual(readdirSync(tmp).filter(name => name.startsWith("kit-pr-programs-")), [], "the folder goes when kit pr ends");
