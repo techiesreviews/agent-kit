@@ -98,9 +98,32 @@ export function isAncestorOf(root, commit, of) {
   catch { return false; }
 }
 
+/** The subject of kit pr's own merge of the release branch into a release cut (kit pr --release). */
+export const releaseCutSubject = /^Merge origin\/\S+ into the release cut$/;
+
+/**
+ * Whether `commit` is an earlier cut of the same release as `head` (TOOLS-310): kit pr's own release-cut merge, not `head`
+ * itself, whose every parent (the dev it was cut from and the release branch it joined) is in `head`'s history. A re-cut after
+ * dev moved on makes a new merge commit that never holds the old one, yet it answers the old cut's reviews and counts its rounds.
+ * A merge of another subject, a later cut, or a git failure says no.
+ */
+export function earlierReleaseCut(root, commit, head) {
+  if (!commit || !head || commit === head) return false;
+  let parents;
+  try {
+    const [line, subject] = execFileSync("git", ["-C", root, "show", "-s", "--format=%P%n%s", commit], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).split("\n");
+    if (!releaseCutSubject.test(subject ?? "")) return false;
+    parents = line.split(" ").filter(Boolean);
+  } catch { return false; }
+  return parents.length > 1 && parents.every(parent => isAncestorOf(root, parent, head));
+}
+
+/** Whether `commit` is in `head`'s history (or is `head`), counting an earlier cut of the same release as part of it. */
+export const inHistory = (root, commit, head) => isAncestorOf(root, commit, head) || earlierReleaseCut(root, commit, head);
+
 /**
  * The branch's earlier second looks that came back, under any owner in `reviewsRoot`: each one marked for `branch` whose
- * reviewed head is an ancestor of `head` and not `head` itself. kit pr passes the head Claude's review saw, which a review
+ * reviewed head is an ancestor of `head` (or an earlier cut of the same release) and not `head` itself. kit pr passes the head Claude's review saw, which a review
  * reused after a rebase with the same patch keeps, so the count survives that rebase until the next commit (then, like Claude's
  * rounds, it starts again); a rebase that changes the patch, or one in the docs tier (no Claude review), starts it again at once.
  * Returns [{ head, findings }] with the findings its result.md left open; a result.md kit cannot read counts no round.
@@ -116,7 +139,7 @@ export function earlierSecondLooks(reviewsRoot, { branch, head, root }) {
         if (mark?.ok !== true || mark.branch !== branch) continue;
         const looked = readFileSync(join(folder, "refs.txt"), "utf8").split(/\r?\n/)[0].trim();
         if (!/^[0-9a-f]{7,64}$/.test(looked) || looked === head) continue;
-        if (!isAncestorOf(root, looked, head)) continue;
+        if (!inHistory(root, looked, head)) continue;
         // A report kit cannot read stands for a blocker when it is weighed, but it is no review that asked for a fix.
         const report = openFindings(readFileSync(join(folder, "result.md"), "utf8"));
         if (report.readable) looks.push({ head: looked, findings: report.findings });
@@ -337,7 +360,7 @@ export const loopReviewerNote = [
 
 /**
  * The earlier review this one answers (later rounds): in `parent` (the owner's folder under .scratch/reviews) the newest review of the
- * same base that still had findings and whose reviewed head is an ancestor of the current head. A second look's folder is never one.
+ * same base that still had findings and whose reviewed head is an ancestor of the current head (or an earlier cut of the same release). A second look's folder is never one.
  * Returns { name, round, head, findings, declined } or null (then this is round 1, a full review).
  */
 export function findPreviousReview(parent, { head, base, root, branch, otherOwners = [] }) {
@@ -360,7 +383,8 @@ export function findPreviousReview(parent, { head, base, root, branch, otherOwne
       // The base may have moved on (another PR landed): the earlier base only has to be part of this branch's history.
       // The same branch's own history only: a branch cut from a reviewed head starts at round 1, and so does a rebased one
       // (its old head is gone from the history), which gets the full first review its new code needs.
-      const connected = (reviewedBase === base || isAncestor(reviewedBase)) && (reviewedHead === head || isAncestor(reviewedHead));
+      // An earlier cut of the same release counts as this history too (TOOLS-310): a re-cut answers its review.
+      const connected = (reviewedBase === base || isAncestor(reviewedBase)) && (reviewedHead === head || isAncestor(reviewedHead) || earlierReleaseCut(root, reviewedHead, head));
       if (record.unreadable || record.incomplete || record.round === undefined || !connected || (record.branch && branch && record.branch !== branch)) continue;
       // Another owner's review counts only when it names this very branch.
       if (foreign && (!branch || record.branch !== branch)) continue;
