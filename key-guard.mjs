@@ -55,10 +55,15 @@ export const cliKeyPaths = {
 // sets a token. Each is locked only when it holds one, since git and the shell read them on every run.
 const keyedConfigs = [".gitconfig", ".config/git/config"];
 const shellStartups = [".bashrc", ".bash_profile", ".bash_login", ".profile", ".zshenv", ".zshrc", ".zprofile", ".config/fish/config.fish"];
-const urlUser = /[a-z][a-z0-9+.-]*:\/\/[^/\s@]+@/i;
-const secretAssignment = /^\s*(?:export\s+|set\s+(?:-\w+\s+)*)?\w*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|_PAT)\w*(?:\s*=|\s+\S)/im;
-function holds(file, pattern) {
-  try { return statSync(file).isFile() && pattern.test(readFileSync(file, "utf8")); } catch { return false; }
+// A URL with a user part: on http(s) any (a token as the user), on ssh and git only a password or a user other than git
+// (ssh://git@github.com is the usual harmless remote).
+const keyedUrl = text => [...text.matchAll(/([a-z][a-z0-9+.-]*):\/\/([^/\s@]+)@/gi)]
+  .some(([, scheme, user]) => !/^(ssh|git)$/i.test(scheme) || user.includes(":") || user !== "git");
+// A start-up line that sets a variable whose name the secret list (secretName) drops.
+const setsSecret = text => [...text.matchAll(/^\s*(?:export\s+|declare\s+-\S+\s+|typeset\s+-\S+\s+|readonly\s+|set\s+(?:-\S+\s+)*)?([A-Za-z_]\w*)(?:=|\s+\S)/gm)]
+  .some(([, name]) => secretName.test(name));
+function holds(file, test) {
+  try { return statSync(file).isFile() && test(readFileSync(file, "utf8")); } catch { return false; }
 }
 
 // Variables naming a tool's key file or folder.
@@ -123,8 +128,10 @@ export function lockedPaths(cli, env = process.env, { apiRoute = false, cwd = pr
   // worktree, as its own tools would) and from the lead's (as the lead's tools find it); none for an empty one.
   const named = value => value ? [...new Set([resolve(cwd, value), resolve(process.cwd(), value)])] : [];
   paths.push(...homeKeyPaths.map(path => join(base, path)));
-  paths.push(...keyedConfigs.map(path => join(base, path)).filter(file => holds(file, urlUser)));
-  paths.push(...shellStartups.map(path => join(base, path)).filter(file => holds(file, secretAssignment)));
+  const gitConfigs = [...keyedConfigs.map(path => join(base, path)), ...named(env.GIT_CONFIG_GLOBAL),
+    ...named(env.XDG_CONFIG_HOME).map(folder => join(folder, "git/config"))];
+  const startups = [...shellStartups.map(path => join(base, path)), ...named(env.ZDOTDIR).flatMap(folder => [".zshenv", ".zshrc", ".zprofile"].map(name => join(folder, name)))];
+  paths.push(...gitConfigs.filter(file => holds(file, keyedUrl)), ...startups.filter(file => holds(file, setsSecret)));
   for (const [other, list] of Object.entries(cliKeyPaths)) {
     // Codex's own login and config are hidden from its commands (its profile); the API route signs Claude in with a key.
     if (other !== cli || cli === "codex" || (cli === "claude" && apiRoute)) paths.push(...list.map(path => join(base, path)));
@@ -411,8 +418,10 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
   const scrub = scrubbedEnv(cli, env, { apiRoute, model });
   // Codex's own sandbox shares the network too, so the display warning (when bubblewrap can check it) applies to it.
   if (cli === "codex") {
-    const unchecked = bwrapWorks(env);
-    const warning = unchecked ? `the X display could not be checked (${unchecked}), so it may let programs in without its cookie; do not copy or type keys while agents run` : keyGuardWarning(env);
+    let display = Boolean(env.DISPLAY);
+    try { display ||= readdirSync("/tmp/.X11-unix").some(name => /^X\d+$/.test(name)); } catch { /* No X display here. */ }
+    const unchecked = display ? bwrapWorks(env) : null;
+    const warning = !display ? null : unchecked ? `the X display could not be checked (${unchecked}), so it may let programs in without its cookie; do not copy or type keys while agents run` : keyGuardWarning(env);
     return { env: scrub, codex: codexProfile(kind, common, codexPaths(paths)), warning, wrap: (command, args) => [command, args], close() {} };
   }
   const problem = bwrapWorks(env);

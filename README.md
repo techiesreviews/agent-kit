@@ -262,7 +262,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   sockets and the display are dropped; each CLI keeps only its own sign-in. Known limits: a CLI's own login stays
   readable to it (Claude's `~/.claude/.credentials.json`, Grok's `~/.grok/auth.json`, OpenCode's data folder, whose
   `opencode.db` holds every provider key saved there; Codex hides its own), loopback
-  services and abstract sockets stay reachable, proxy variables (`HTTPS_PROXY` …) are kept with any password in them
+  services and abstract sockets stay reachable, the repository's own Git config stays readable (git needs it; keep
+  tokens out of remote URLs), proxy variables (`HTTPS_PROXY` …) are kept with any password in them
   (the CLI needs them to reach its service), and a helper thread T3 starts (`delegate_task`) is not started by the kit
   and is outside the lock. At start-up the lock tries, from inside bubblewrap, to read through `/proc` (where that works,
   as with a setuid bwrap, it refuses to run) and to reach the X display without its cookie: a display that lets the user
