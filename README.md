@@ -356,15 +356,15 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   - **Start-up files.** `BASH_ENV` and `ENV` (the file every non-interactive bash or sh reads first) are dropped for a
     run and for everything `kit pr` starts (not with `ASE_KEY_GUARD=off`), and the file they name is locked like any
     start-up file when it sets a token.
-  What is still not covered: the lead's own commands outside the kit (a git or a shell the lead runs by hand reads what a
-  build wrote under HOME: `~/.gitconfig`, `~/.bashrc`, a PATH folder there), a Node kept under HOME (an nvm Node), which
-  a build or a check can change and `kit pr` then runs, the machine's kit copy where builds and checks run unlocked (no
-  bubblewrap, or `ASE_KEY_GUARD=off`; Codex's own sandbox keeps it read-only), a `kit pr` started through `npm run` (its
-  own `#!/usr/bin/env node` is found before `kit pr` can look), a fetch or push reading a global Git config a build
-  wrote, and what ssh itself starts from a config under HOME a build wrote (`~/.ssh/config`'s `ProxyCommand`, `Match
-  exec`, or a host name it maps to this machine), and a push host whose address changes between `kit pr`'s check and
-  the push. For those the lead's guard is the review before anything a build wrote
-  is run (`kit review` is read-only).
+  What is still not covered: the lead's own commands outside the kit (a git or a shell the lead runs by hand reads what
+  a build wrote under HOME: `~/.gitconfig`, `~/.bashrc`, a PATH folder there), a Node kept under HOME (an nvm Node),
+  which a build or a check can change and `kit pr` then runs, the machine's kit copy where builds and checks run
+  unlocked (no bubblewrap, or `ASE_KEY_GUARD=off`; Codex's own sandbox keeps it read-only), a `kit pr` started through
+  `npm run` (its own `#!/usr/bin/env node` is found before `kit pr` can look), a fetch or push reading a global Git
+  config a build wrote, and what ssh itself starts from a config under HOME a build wrote (`~/.ssh/config`'s
+  `ProxyCommand`, `Match exec`, or a host name it maps to this machine), and a push host whose address changes between
+  `kit pr`'s check and the push. For those the lead's guard is the review before anything a build wrote is run (`kit
+  review` is read-only).
 - Keyed steps happen only in the lead's own process, never inside a locked run. Already the lead's: `git push`, `kit pr`
   (push, PR, merge, card close) and `kit pr --release` (the build contract leaves a builder's changes unstaged). Moved to
   the lead for locked runs: reading Orbit cards (`kit ticket get|list`, which need the token too), GitHub calls (`gh`,

@@ -1135,7 +1135,8 @@ test("TOOLS-320: a remote on this machine itself is told by its name or by every
   const own = Object.values(networkInterfaces()).flat().find(entry => entry && entry.family === "IPv4" && !entry.internal)?.address;
   for (const [url, here] of [["ssh://git@localhost/srv/a.git", true], ["localhost:a.git", true], ["git@127.0.0.1:a.git", true], ["ssh://[::1]:22/a", true],
     ["https://dev.localhost/a.git", true], [`ssh://${hostname()}/a`, true], ["ssh://127.1/a", true], ["ssh://0x7f000001/a", true], ["ssh://[::ffff:127.0.0.1]/a", true],
-    ["ssh://0.0.0.0/a", true], ...(own ? [[`ssh://${own}/a`, true]] : []), ["git@github.invalid:a/b.git", false], ["https://192.0.2.1/a", false], ["ssh://h.invalid/x", false]] as const)
+    ["ssh://0.0.0.0/a", true], ["git@[::1]:a.git", true], ["[127.0.0.1]:a.git", true], ["git@[2001:db8::1]:a.git", false],
+    ["ssh://[0:0:0:0:0:0:0:1]/a", true], ["ssh://[0::1]/a", true], ["ssh://[::ffff:7f00:1]/a", true], ...(own ? [[`ssh://${own}/a`, true]] : []), ["git@github.invalid:a/b.git", false], ["https://192.0.2.1/a", false], ["ssh://h.invalid/x", false]] as const)
     assert.equal(await loopbackRemote(url), here, url);
 });
 

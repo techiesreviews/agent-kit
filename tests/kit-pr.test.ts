@@ -4043,6 +4043,12 @@ test("kit pr refuses a push whose remote lists a folder after another push addre
   const loopback = f.run();
   assert.equal(loopback.status, 1, loopback.stdout + loopback.stderr);
   assert.match(loopback.stdout, /^RESULT: fail push: origin pushes to this machine itself \(ssh:\/\/(git@)?localhost\/srv\/repo\.git\)/m);
+  // One only its address tells.
+  f.git("config", "--unset-all", "remote.origin.pushurl");
+  f.git("config", "--add", "remote.origin.pushurl", "ssh://127.1/srv/repo.git");
+  const resolved = f.run();
+  assert.equal(resolved.status, 1, resolved.stdout + resolved.stderr);
+  assert.match(resolved.stdout, /^RESULT: fail push: origin pushes to this machine itself \(ssh:\/\/127\.1\/srv\/repo\.git\)/m);
   // Every address a folder: the push runs inside the key lock, as before.
   f.git("config", "--unset-all", "remote.origin.pushurl");
   f.git("config", "--add", "remote.origin.pushurl", f.origin);
