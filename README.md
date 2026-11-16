@@ -305,7 +305,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     remote (whose hooks git runs without these settings) inside the key lock. `safe.directory` names only the worktree
     and its Git folder. The runner's own git calls also run inside the lock where bubblewrap runs. The runner finds the
     Git folder from the worktree's files before its first git, so that git is never one a link on PATH leads into the
-    worktree or a linked worktree's shared Git folder for. `ASE_KEY_GUARD=off` turns these settings off with the lock.
+    worktree or a linked worktree's shared Git folder for (those files are the worktree's own: a build that rewrote its
+    `.git` file to name another folder takes the real one out of that lookup). `ASE_KEY_GUARD=off` turns these settings off with the lock.
     Settings a project uses on purpose are switched off too: hooks such as a pre-push check do not run in `kit pr`, and
     Git LFS (set up in the global config, which `kit pr` does not read) does not run there at all, so `kit pr` stops
     before its rebase when the branch's or the land branch's `.gitattributes`, or the repository's own attributes file,
@@ -322,7 +323,9 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     link elsewhere stays on PATH, and the next program on PATH starts in its place, or the run stops and says so. `kit pr`
     puts links to the git, node, gh, bash and sh it found that way in a private folder first on PATH (and `KIT_NODE` is
     its own Node), so the kit's helpers in its process and the kit commands it starts take those too; its git starts by
-    the real path. The checks see that folder read-only, and `kit pr` stops if a link in it changed. The API route's
+    the real path. The checks see that folder read-only, and `kit pr` stops if a link in it changed, checked before every
+    program it starts (another build running meanwhile can write it; the kit's helpers in its process may still take a
+    changed git between two such checks). The API route's
     wrapper, which reads the key outside the lock, takes its own tools from the system's folders (`command -p`).
   - **Start-up files.** `BASH_ENV` and `ENV` (the file every non-interactive bash or sh reads first) are dropped for a
     run and for everything `kit pr` starts (not with `ASE_KEY_GUARD=off`), and the file they name is locked like any

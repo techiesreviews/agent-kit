@@ -3855,7 +3855,7 @@ test("PROOF: kit pr runs no hook, Git filter, diff tool, merge driver, PATH tool
   // The check also tries to swap kit pr's own program links for scripts of its own.
   const swapped = `#!/bin/sh\n${note("a program the check swapped in")}\nexec ${spawnSync("bash", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim()} "$@"\n`;
   writeFileSync(join(f.root, "scripts/leak.sh"), `${note("the project's check")}
-for f in "\${TMPDIR:-/tmp}"/kit-pr-programs-*/git; do rm -f "$f" 2>/dev/null; printf '%s' ${JSON.stringify(swapped)} > "$f" 2>/dev/null && chmod +x "$f"; done
+for f in "$TMPDIR"/kit-pr-programs-*/git; do [ -L "$f" ] && echo "saw $f" >> ${JSON.stringify(noted)}; rm -f "$f" 2>/dev/null; printf '%s' ${JSON.stringify(swapped)} > "$f" 2>/dev/null && chmod +x "$f"; done
 exit 0
 `);
   writeFileSync(join(f.root, ".gitattributes"), "* filter=leak diff=leak merge=leak\n");
@@ -3884,7 +3884,9 @@ exit 0
   appendFileSync(join(f.root, ".git/info/exclude"), "node_modules/\n");
   const startup = join(home, ".bash_env");
   writeFileSync(startup, `${note("BASH_ENV")}\n`);
-  const env = { HOME: home, GH_TOKEN: dummy, BASH_ENV: startup, PATH: `${tools}:${links}:${f.env.PATH}` } as NodeJS.ProcessEnv;
+  // A temporary folder of this test's own, so the check reaches only this kit pr's program links, never another one's.
+  const tmp = join(f.dir, "tmp"); mkdirSync(tmp);
+  const env = { HOME: home, GH_TOKEN: dummy, BASH_ENV: startup, PATH: `${tools}:${links}:${f.env.PATH}`, TMPDIR: tmp } as NodeJS.ProcessEnv;
   // Without kit pr's care they are live: a plain git status in the worktree starts the build's programs.
   spawnSync("git", ["-C", f.root, "status"], { env: { ...f.env, ...env }, encoding: "utf8" });
   assert.ok(readFileSync(noted, "utf8").includes(dummy), "the planted settings are live");
@@ -3895,6 +3897,8 @@ exit 0
   assert.ok(!left.includes(dummy), `kit pr ran what the build left with the keys:\n${left}`);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /^RESULT: ok merged #73/m);
+  // The check found kit pr's program links and could not change them.
+  assert.match(left, /^saw .*\/kit-pr-programs-[^/]+\/git$/m);
   // The check ran (inside the lock), and the folder remote's hook ran inside it too.
   assert.match(left, /^the project's check\n.*(No such file or directory|Permission denied)\ntoken=\.$/m);
   assert.match(left, /^the folder remote's pre-receive\n.*(No such file or directory|Permission denied)\ntoken=\.$/m);
@@ -3934,9 +3938,19 @@ test("kit pr refuses a fetch while the repository's own Git config holds http or
   assert.match(f.body(), /^- checks: not locked \(ASE_KEY_GUARD=off\)$/m);
 });
 
-test("on a system without bubblewrap kit pr's checks run unlocked and the PR says so", t => {
+test("on a system without bubblewrap kit pr's checks run unlocked and the PR says so; a check that changes kit pr's program links stops it", t => {
   const f = fixture(t);
-  const result = f.run([], { PATH: `${f.bin}:${pathWithoutBwrap(f.dir)}`, ...onMacos });
+  const unlocked = { PATH: `${f.bin}:${pathWithoutBwrap(f.dir)}`, ...onMacos };
+  const result = f.run([], unlocked);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(f.body(), /^- checks: not locked \(no bubblewrap on this machine; token variables are still dropped\)$/m);
+  // An unlocked check can write kit pr's own links: the next start stops kit pr instead of taking what it left.
+  const g = fixture(t, undefined, { checks: { check: "sh scripts/swap.sh", test: "npm test", lint: "npm run lint" } });
+  writeFileSync(join(g.root, "scripts/swap.sh"), 'for f in "$TMPDIR"/kit-pr-programs-*/git; do ln -sf /bin/true "$f"; done\n');
+  g.git("add", "scripts/swap.sh"); g.git("commit", "-qm", "Swap");
+  const tmp = join(g.dir, "tmp"); mkdirSync(tmp);
+  const swapped = g.run([], { PATH: `${g.bin}:${pathWithoutBwrap(g.dir)}`, ...onMacos, TMPDIR: tmp });
+  assert.equal(swapped.status, 1, swapped.stdout + swapped.stderr);
+  assert.match(swapped.stdout, /^RESULT: fail check: kit pr's own link to git \(\S+\/kit-pr-programs-[^/]+\/git\) was changed while it ran; run kit pr again$/m);
+  assert.deepEqual(readdirSync(tmp).filter(name => name.startsWith("kit-pr-programs-")), [], "the folder goes when kit pr ends");
 });
