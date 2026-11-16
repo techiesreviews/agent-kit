@@ -734,7 +734,7 @@ test("a CLI or a git that a link in a PATH folder outside the worktree leads int
   for (const folder of [links, gitLink, bin, gitBin, only]) mkdirSync(folder);
   const program = (file: string, says: string) => { mkdirSync(resolve(file, ".."), { recursive: true }); writeFileSync(file, `#!/bin/sh\necho ${says}\n`); chmodSync(file, 0o755); };
   // What a build can write: the worktree, and the Git folder (Grok's link leads there).
-  for (const name of ["claude", "codex", "grok", "git"]) {
+  for (const name of ["claude", "codex", "grok", "opencode", "git"]) {
     const planted = join(name === "grok" ? common : worktree, "tools", name);
     program(planted, "planted"); symlinkSync(planted, join(name === "git" ? gitLink : links, name));
     program(join(name === "git" ? gitBin : bin, name), "real");
@@ -744,12 +744,12 @@ test("a CLI or a git that a link in a PATH folder outside the worktree leads int
   for (const name of ["bwrap", "true"]) symlinkSync(machine(name), join(only, name));
   const lock = (cli: string, kind: string, path: string) => { resetBwrapProbe(); return keyGuard({ cli, kind, common, worktree, env: { HOME: "/h", PATH: path } }); };
   // Only the link on PATH: the lock refuses in plain words before anything starts, whichever CLI it is.
-  for (const [cli, kind, inside] of [["claude", "build", worktree], ["codex", "build", worktree], ["grok", "review", common]]) {
+  for (const [cli, kind, inside] of [["claude", "build", worktree], ["codex", "build", worktree], ["opencode", "review", worktree], ["grok", "review", common]]) {
     assert.throws(() => lock(cli, kind, `${links}:${only}`), { message: `cannot lock the key files for this ${kind}: ${cli} on PATH is ${join(links, cli)}, a link into the worktree or its Git folder (${join(inside, "tools", cli)}), where a build can change it, so it is not started; put a ${cli} from outside them on PATH, or set ASE_KEY_GUARD=off to run without the lock` }, cli);
   }
   // The runner's own git the same way.
   assert.throws(() => lock("claude", "build", `${gitLink}:${bin}:${only}`), /^Error: cannot lock the key files for this build: git on PATH is .*\/git-link\/git, a link into the worktree or its Git folder \(.*\/work\/tools\/git\)/);
-  assert.throws(() => runProgram("git", { PATH: `${gitLink}:${only}` }, { worktree }), /^Error: git on PATH is .*\/git-link\/git, a link into the worktree or its Git folder .*, or set ASE_KEY_GUARD=off to run without the lock$/);
+  assert.throws(() => runProgram("git", { PATH: `${gitLink}:${only}` }, { worktree }), /^Error: cannot lock the key files for this run: git on PATH is .*\/git-link\/git, a link into the worktree or its Git folder .*, or set ASE_KEY_GUARD=off to run without the lock$/);
   // A real one further on PATH is the one that starts, by its full path: inside bubblewrap, and for Codex (which
   // locks its own commands) directly. The bare name would have found the link first.
   const path = `${links}:${gitLink}:${bin}:${gitBin}:${only}`;
@@ -812,11 +812,12 @@ test("PROOF: a claude, a codex and a git that a link in a PATH folder outside th
     if (cli === "codex") assert.equal(readFileSync(join(out, "out.md"), "utf8"), "built by the real codex\n");
   }
   assert.equal(readFileSync(join(root, "built.txt"), "utf8"), "a normal build step\n");
-  // The linked git alone (no other git on PATH): the run stops at its first git call.
+  // The linked git alone (no other git on PATH): the run stops at its first git call, in the same words, and its log says so.
   const noGit = pathWithout(dir, ["claude", "codex", "git"], "no-git-bin");
-  const { run: stopped } = build("claude", "claude-opus-5-5", `${gitLink}:${bin}:${noGit}`);
+  const { run: stopped, out: stoppedOut } = build("claude", "claude-opus-5-5", `${gitLink}:${bin}:${noGit}`);
   assert.notEqual(stopped.status, 0, stopped.stdout + stopped.stderr);
-  assert.match(stopped.stderr, /^problem: git on PATH is \S+\/git-link\/git, a link into the worktree or its Git folder /m);
+  const refusal = /^problem: cannot lock the key files for this build: git on PATH is \S+\/git-link\/git, a link into the worktree or its Git folder /m;
+  assert.match(stopped.stderr, refusal); assert.match(readFileSync(join(stoppedOut, "run.log"), "utf8"), refusal);
 });
 
 test("PROOF: a review's own git diff and git log run no program a build's Git settings name (an outside diff tool, a text converter, a signature checker) with the keys", { skip: noBwrap }, t => {
