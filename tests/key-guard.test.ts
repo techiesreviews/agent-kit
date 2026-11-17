@@ -1361,7 +1361,14 @@ test("TOOLS-326: an ssh wrapper whose #!/usr/bin/env -S line sets PATH never sta
     assert.throws(() => startCommand(file, [], base, { worktree: root, kind: "test" }), /, which sets PATH itself/, file);
     assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: file }), /, which sets PATH itself/m, file);
   }
-  assert.throws(() => startCommand(wrapper("ssh-env-env", "env"), [], base, { worktree: root, kind: "test" }), /, which starts env again, and that env would look its program up by name/);
+  // A link to env by another name is env again, whose own -S string could set PATH out of sight.
+  const renamed = join(wrappers, "ssh-renamed-env");
+  writeFileSync(renamed, `#!/usr/bin/env -S ${join(bin, "e")} -S "X=1 PATH=${links}:${bin}:${dirname(shell)}" sh\nexec ssh "$@"\n`); chmodSync(renamed, 0o755);
+  for (const file of [wrapper("ssh-env-env", "env"), renamed]) {
+    assert.throws(() => startCommand(file, [], base, { worktree: root, kind: "test" }), /, which starts env again, and that env would look its program up by name/, file);
+    assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: file }), /^kit: \S+ starts with env -S .*, which starts env again/m, file);
+    assert.match(refusedWith({ ...base, GIT_SSH: file }), /^kit: \S+ starts with env -S .*, which starts env again/m, file);
+  }
   // An option among the -S words is env's, never a setting the PATH check passes over.
   const optionInside = wrapper("ssh-option-path", `--split-string=PATH=${links}:${bin}:${dirname(shell)}`);
   assert.throws(() => startCommand(optionInside, [], base, { worktree: root, kind: "test" }), /starts with env -S --split-string=PATH=\S+ sh, so which program it runs cannot be told/);

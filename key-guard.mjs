@@ -524,8 +524,9 @@ function interpreted(file, args, env, shut, refuse, depth = 0) {
     if (!program) return [file, args];
     found = program;
   }
-  // An env started by env would look its own program up by name, and could set PATH first.
-  if (basename(found) === "env") refuse(`${file} starts with env ${rest}, which starts env again, and that env would look its program up by name; start the program from that line directly, or set ASE_KEY_GUARD=off to run without the lock`);
+  // An env started by env would look its own program up by name, and could set PATH first (a link to it by another
+  // name too, whose -S words this line holds as one).
+  if (basename(found) === "env" || basename(real(found)) === "env") refuse(`${file} starts with env ${rest}, which starts env again, and that env would look its program up by name; start the program from that line directly, or set ASE_KEY_GUARD=off to run without the lock`);
   const [command, commandArgs] = interpreted(found, [...options, file, ...args], env, shut, refuse, depth + 1);
   if (!assignments.length) return [command, commandArgs];
   // env sets them and starts the program by the full path it is given (one with = in it would read as one more).
