@@ -337,7 +337,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     interpreter the same way: a `#!/usr/bin/env node` CLI, or the API route's `#!/usr/bin/env bash` wrapper, starts the
     interpreter by its full path, never a link someone made into the worktree (an `npm link`, a dotfiles `bin`). A
     `#!/usr/bin/env -S MODE=review node` first line is split as env splits it (quotes, escapes, `NAME=value` words, which
-    env still sets), and one env would expand (`${NAME}`) or that holds another env option is refused (TOOLS-320). The
+    env still sets), and one env would expand (`${NAME}`) or that holds another env option is refused (TOOLS-320), as
+    is one with a `PATH=` of its own (TOOLS-326). The
     run's PATH leaves those folders out, so `<worktree>/node_modules/.bin` (which npm puts on PATH) supplies none of
     them; a link elsewhere stays on PATH, and the next program on PATH starts in its place, or the run stops and says
     so. `kit pr` puts links to the git, node, gh, bash and sh it found that way in a private folder in the temp folder,
