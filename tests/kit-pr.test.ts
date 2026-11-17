@@ -1102,6 +1102,19 @@ test("a release through a merge queue asks for --auto --merge, and a landed comm
   assert.equal(opened.status, 0, opened.stdout + opened.stderr);
   assert.doesNotMatch(opened.stdout, /gh pr merge 73/);
   assert.match(opened.stdout, /^merge: not by hand: the merge queue on main lands by squash, and a release must land as a merge commit: set the queue to merge commits, then run kit pr again$/m);
+  // A queue lookup that fails stops a release or a sync, and gives no hand-merge advice; an ordinary PR still lands as before.
+  for (const args of [["--base", "main", "--release"], ["--base", "main", "--release", "--no-merge"]]) {
+    const unseen = fixture(t), run = unseen.run(args, { FAKE_QUEUE_ERROR: "1" });
+    assert.equal(run.status, args.includes("--no-merge") ? 0 : 1, run.stdout + run.stderr);
+    assert.equal(unseen.ghCalls("merge").length, 0);
+    assert.doesNotMatch(run.stdout, /gh pr merge 73/);
+    assert.match(run.stdout, /could not read whether main has a merge queue, and a release must land as a merge commit: run kit pr again once GitHub answers/);
+  }
+  // A queued release names the release check's waiver on its RESULT line, as a merged one does.
+  const waived = fixture(t), queuedWaived = waived.run(["--base", "main", "--release", "--waive", "hotfix tonight"],
+    { ASE_OWNER: "ke-lead", FAKE_RELEASE_CHECK: resolve("kit.d/release-check"), FAKE_QUEUE: "1" });
+  assert.equal(queuedWaived.status, 0, queuedWaived.stdout + queuedWaived.stderr);
+  assert.match(queuedWaived.stdout, /RESULT: ok queued #73 [a-f0-9]{7} \(release-check waived: hotfix tonight\)$/m);
   const fine = fixture(t), merged = fine.run(["--base", "main", "--release", "--no-merge"], { FAKE_QUEUE: "1" });
   assert.match(merged.stdout, /^merge: gh pr merge 73 --merge --match-head-commit [a-f0-9]{40} --repo test\/repo \(a merge commit, never --rebase\)$/m);
   const sync = fixture(t);
@@ -1110,6 +1123,13 @@ test("a release through a merge queue asks for --auto --merge, and a landed comm
   const squashed = sync.run(["--sync-main"], { FAKE_EMPTY: "1", FAKE_QUEUE: "1", FAKE_QUEUE_METHOD: "SQUASH" });
   assert.equal(squashed.status, 1, squashed.stdout + squashed.stderr);
   assert.match(squashed.stdout, /^RESULT: fail merge: the merge queue on dev lands by squash, and a sync must land as a merge commit: /m);
+  assert.equal(sync.ghCalls("merge").length, 0);
+  const advised = sync.run(["--sync-main", "--no-merge"], { FAKE_EMPTY: "1", FAKE_QUEUE: "1", FAKE_QUEUE_METHOD: "REBASE", FAKE_EXISTING: "1" });
+  assert.equal(advised.status, 0, advised.stdout + advised.stderr);
+  assert.match(advised.stdout, /^merge: not by hand: the merge queue on dev lands by rebase, and a sync must land as a merge commit: /m);
+  const unseenSync = sync.run(["--sync-main"], { FAKE_EMPTY: "1", FAKE_QUEUE_ERROR: "1", FAKE_EXISTING: "1" });
+  assert.equal(unseenSync.status, 1, unseenSync.stdout + unseenSync.stderr);
+  assert.match(unseenSync.stdout, /^RESULT: fail merge: could not read whether dev has a merge queue, and a sync must land as a merge commit: /m);
   assert.equal(sync.ghCalls("merge").length, 0);
   const f = fixture(t);
   f.git("checkout", "-q", "dev"); f.commit("Landed change", "landed.txt"); f.git("push", "-q", "origin", "dev");

@@ -1231,9 +1231,11 @@ async function main(args) {
       ok(name);
       return true;
     }
-    // The base branch's merge queue: its id ("" when there is none, or the lookup fails, as before), and how it lands.
+    // The base branch's merge queue: its id, "" when there is none, null when the lookup fails (an ordinary PR then lands as if
+    // there were none, as before; a release or a sync stops, since a queue it cannot see might squash it).
     const queueId = ({ owner, name }) => execute("merge", "gh", ["api", "graphql", "-f", "query=query($o:String!,$n:String!,$b:String!){repository(owner:$o,name:$n){mergeQueue(branch:$b){id}}}",
-      "-F", `o=${owner}`, "-F", `n=${name}`, "-F", `b=${flags.base}`, "--jq", '.data.repository.mergeQueue.id // ""']).then(found => found.status === 0 ? found.text.trim() : "");
+      "-F", `o=${owner}`, "-F", `n=${name}`, "-F", `b=${flags.base}`, "--jq", '.data.repository.mergeQueue.id // ""']).then(found => found.status === 0 ? found.text.trim() : null);
+    const unseenQueue = () => `could not read whether ${flags.base} has a merge queue, and a ${flags.release ? "release" : "sync"} must land as a merge commit: run kit pr again once GitHub answers`;
     // A merge queue lands by its own method, whatever gh asks, and gh adds a PR to a required queue whatever method it names:
     // a release or a sync goes in only when the queue makes merge commits, so a queue set to squash or rebase never copies a
     // release or flattens a sync (TOOLS-325). The words why not, or "" when it does; a lookup that fails is a why not.
@@ -1257,7 +1259,11 @@ async function main(args) {
       // The advice never fails a release that is done: if the repo lookup fails, it names GH_REPO as it stands.
       if (joins) {
         let target = ghEnv.GH_REPO || "<owner/name>", refusal = "";
-        try { const names = await repoNames(); target = names.target; if (await queueId(names)) refusal = await queueRefusal(names); } catch { /* the advice keeps GH_REPO */ }
+        try {
+          const names = await repoNames(), queue = await queueId(names);
+          target = names.target;
+          refusal = queue === null ? unseenQueue() : queue ? await queueRefusal(names) : "";
+        } catch { /* the advice keeps GH_REPO */ }
         console.log(refusal ? `merge: not by hand: ${refusal}` : `merge: gh pr merge ${number} --merge --match-head-commit ${head} --repo ${target} (a merge commit, never --rebase)`);
       }
       kitResult("ok", `opened #${number} ${head.slice(0, 7)}${releaseWaived()}${flakyNote()}`);
@@ -1316,7 +1322,9 @@ async function main(args) {
     }
     // The repo is named, so the merge's --repo matches GH_REPO exactly; gh answers with the repo's current name.
     const { repo, owner, name, target } = await repoNames();
-    if (await queueId({ owner, name })) {
+    const queue = await queueId({ owner, name });
+    if (joins && queue === null) throw new Error(unseenQueue());
+    if (queue) {
       const refusal = joins ? await queueRefusal({ owner, name }) : "";
       if (refusal) throw new Error(refusal);
       await gh("merge", ["pr", "merge", number, "--auto", method, "--match-head-commit", head, "--repo", target]); ok("merge");
@@ -1347,7 +1355,7 @@ async function main(args) {
         console.log(`card: ${card} stays open: nothing here waits for the queue; run kit ticket update ${card} --status Done once #${number} lands${where}`);
         queuedWords = `; card ${card} stays open: close it once #${number} lands`;
       }
-      kitResult("ok", `queued #${number} ${head.slice(0, 7)}${queuedWords}${flakyNote()}`);
+      kitResult("ok", `queued #${number} ${head.slice(0, 7)}${queuedWords}${releaseWaived()}${flakyNote()}`);
       return 0;
     }
     // A repo without GitHub workflows has no checks to wait for: it lands once the review passes.
