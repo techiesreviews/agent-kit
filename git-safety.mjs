@@ -92,13 +92,16 @@ export function folderRemote(url) {
   return colon < 0 || (slash >= 0 && slash < colon) || /^[a-z]:[\\/]/i.test(url);
 }
 
-// The host a remote URL names (scheme://[user@]host[:port]/…, or the scp form [user@]host:path, a host in brackets in
-// either), lower case, without the brackets, an IPv6 zone or a trailing dot; "" where it names none. As git and ssh
-// read it: a scheme:// URL is percent-decoded first, and the user part ends at the last @ before the host.
-function remoteHost(url) {
+/**
+ * The host a remote URL names (scheme://[user@]host[:port]/…, or the scp form [user@]host:path, a host in brackets in
+ * either), lower case, without the brackets, an IPv6 zone or a trailing dot; "" where it names none. As git and ssh
+ * read it: a scheme:// URL is percent-decoded first, and the user part ends at the last @ before the host.
+ */
+export function remoteHost(url) {
   const scheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(url);
-  // Each valid %XX on its own, as git's url_decode does; a broken one stays as it is.
-  const text = scheme ? url.replace(/%([0-9a-f]{2})/gi, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16))) : url;
+  // Each valid %XX on its own, as git's url_decode does; a broken one stays as it is. The bytes are what git passes on,
+  // so a run of them reads as UTF-8 (TOOLS-326), as the resolver gets them.
+  const text = scheme ? url.replace(/(?:%[0-9a-f]{2})+/gi, run => Buffer.from(run.replaceAll("%", ""), "hex").toString("utf8")) : url;
   const host = scheme ? /^[a-z][a-z0-9+.-]*:\/\/(?:[^/]*@)?(\[[^\]]*\]|[^/:?#]*)/i.exec(text)?.[1] : /^(?:[^/:]*@)?(\[[^\]]*\]|[^/:@]+):/.exec(text)?.[1];
   return (host ?? "").replace(/^\[|\]$/g, "").replace(/%.*$/, "").replace(/\.$/, "").toLowerCase();
 }
