@@ -463,8 +463,8 @@ two split, the next release conflicted, and a "sync main into dev" PR had to be 
   cut, opens the PR and, once CI passes, lands it with `gh pr merge --merge --match-head-commit <head>`: a merge
   commit, never a rebase, squash or cherry-pick. `--no-merge` only opens it and prints that merge command. The line
   `landed: <sha> merges <head> into main (a merge commit)` says what landed.
-- A main that already holds copies of dev's commits: when main's files are dev's files at some commit of dev's
-  history, the cut's merge keeps dev's files (`git merge -s ours`, said as `merge: origin/main's files are dev's at
+- A main that already holds copies of dev's commits: when main holds commits outside dev's history (merges left
+  out) but its files are dev's files at some commit of dev's history, the cut's merge keeps dev's files (`git merge -s ours`, said as `merge: origin/main's files are dev's at
   <sha>, so the cut keeps dev's files`). Main then holds nothing dev lacks, and a plain merge would only conflict or
   bring back what dev changed since. When main holds a change dev lacks (a hotfix made on main), the merge stays a
   plain one, so that change is never dropped; a real conflict stops the run and names its files, as before.
@@ -472,8 +472,9 @@ two split, the next release conflicted, and a "sync main into dev" PR had to be 
   `origin/main` into the branch (keeping dev's files under the same rule), refuses unless the merge changes no file
   on dev (`the sync would change <files> on dev: main holds changes dev lacks; land them on dev with an ordinary kit
   pr first`), and lands it as a merge commit, never rebased (an ordinary `kit pr` rebases, which flattens such a merge
-  away). A branch cut from an older dev, or kit's own sync on an older dev or main, is made again on the newest of
-  both; a branch with work of its own is refused. The empty diff has nothing to review, so the review and the second
+  away). Kit always makes the merge itself (a hand-made one could keep dev's files over a change main holds), dated by
+  its parents, so a rerun on the same dev and main makes the same commit and one on a newer dev or main makes it again
+  there; a branch with work of its own is refused, with advice to cut a new branch at `origin/dev`. The empty diff has nothing to review, so the review and the second
   look say so, and CI still gates the merge. It needs `branches.release` apart from `branches.land`.
 - `kit release-check` (on its own and inside `kit pr --release`) warns, without failing, when `origin/main` holds
   commits outside dev's history, merges left out: `warning: origin/main has N commits outside dev's history (<sha>

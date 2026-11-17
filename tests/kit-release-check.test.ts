@@ -367,3 +367,12 @@ test("no warning when main's only commits outside dev are merges, or when land a
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.doesNotMatch(result.stdout, /warning:/);
 });
+
+test("no warning, and still a pass, when the other branch cannot be fetched", t => {
+  const f = fixture(t);
+  f.gitAt(f.origin, "branch", "-D", "dev");
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.doesNotMatch(result.stdout, /warning:/);
+  assert.match(lastLine(result.stdout), /^RESULT: ok release-check [a-f0-9]{7} is origin\/main, nothing unsaved$/);
+});
