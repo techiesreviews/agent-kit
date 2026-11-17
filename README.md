@@ -338,11 +338,11 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     interpreter by its full path, never a link someone made into the worktree (an `npm link`, a dotfiles `bin`). A
     `#!/usr/bin/env -S MODE=review node` first line is split as env splits it (quotes, escapes, `NAME=value` words, which
     env still sets), and one env would expand (`${NAME}`) or that holds another env option is refused (TOOLS-320), as
-    is one with a `PATH=` of its own (TOOLS-326). The run's PATH leaves those folders out, so
-    `<worktree>/node_modules/.bin` (which npm puts on PATH) supplies none of them; a link elsewhere stays on PATH, and
-    the next program on PATH starts in its place, or the run stops and says so. `kit pr` puts links to the git, node,
-    gh, bash and sh it found that way in a private folder in the temp folder,
-    first on PATH (and `KIT_NODE` is its own Node), so the kit's helpers in its process and the programs it starts
+    is one with a `PATH=` of its own or env again as its program (TOOLS-326). The run's PATH leaves those folders out,
+    so `<worktree>/node_modules/.bin` (which npm puts on PATH) supplies none of them; a link elsewhere stays on PATH,
+    and the next program on PATH starts in its place, or the run stops and says so. `kit pr` puts links to the git,
+    node, gh, bash and sh it found that way in a private folder in the temp folder, first on PATH (and `KIT_NODE` is
+    its own Node), so the kit's helpers in its process and the programs it starts
     (`gh`, `kit review`, `kit release-check`) take those too; its own git and gh start by the real path. The checks see
     that folder read-only where they run locked; checks that run unlocked (no bubblewrap), another build running
     meanwhile, or one run without the lock can write it: `kit pr` checks the links before every program it starts and
