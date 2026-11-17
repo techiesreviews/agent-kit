@@ -944,7 +944,7 @@ test("a release cut whose main holds copies of dev's commits keeps dev's files i
   assert.equal(f.git("log", "-1", "--format=%s"), "Merge origin/main into the release cut");
 });
 
-test("a release cut keeps a plain merge when main holds a change dev lacks, even beside copied commits", t => {
+test("a release cut stops when main holds copies of dev's commits and changes of its own beside them", t => {
   const f = fixture(t), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check") }, peer = f.peer();
   f.git("checkout", "-q", "dev"); const first = f.commit("Dev edit", "file.txt", "dev one\n"); f.git("push", "-q", "origin", "dev");
   f.gitAt(peer, "fetch", "-q", "origin"); f.gitAt(peer, "checkout", "-q", "main"); f.gitAt(peer, "cherry-pick", first);
@@ -952,10 +952,29 @@ test("a release cut keeps a plain merge when main holds a change dev lacks, even
   f.gitAt(peer, "push", "-q", "origin", "main");
   f.commit("Landed change", "landed.txt"); f.git("push", "-q", "origin", "dev");
   f.git("checkout", "-q", "-b", "release/cut");
-  const result = f.run(["--base", "main", "--release", "--no-merge"], real);
-  assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.doesNotMatch(result.stdout, /keeps dev's files/);
-  assert.equal(f.git("show", "HEAD:hotfix.txt"), "hotfix", "main's own change is never dropped");
+  const cut = f.git("rev-parse", "HEAD"), result = f.run(["--base", "main", "--release", "--no-merge"], real);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /^RESULT: fail merge: origin\/main holds copies of dev's commits and changes of its own beside them \([a-f0-9]{7} Hotfix on main\): a merge cannot tell a rollback from a hotfix there; make those changes on a new branch cut at origin\/dev, land them with an ordinary kit pr, then run this again$/m);
+  assert.equal(f.git("rev-parse", "HEAD"), cut, "nothing is merged");
+  assert.equal(f.calls().some(call => call.tool === "gh"), false);
+});
+
+test("a rollback of a copied release on main stops both the release and the sync, never kept out", t => {
+  const f = fixture(t), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check") }, peer = f.peer();
+  // dev has A and B; main took copies of both (a rebase merge), then rolled B back; dev moves on with C.
+  f.git("checkout", "-q", "dev"); const a = f.commit("Change A", "a.txt"), b = f.commit("Change B", "b.txt"); f.git("push", "-q", "origin", "dev");
+  f.gitAt(peer, "fetch", "-q", "origin"); f.gitAt(peer, "checkout", "-q", "main"); f.gitAt(peer, "cherry-pick", a, b);
+  f.gitAt(peer, "revert", "--no-edit", "HEAD"); f.gitAt(peer, "push", "-q", "origin", "main");
+  f.commit("Change C", "c.txt"); f.git("push", "-q", "origin", "dev");
+  f.git("checkout", "-q", "-b", "release/cut");
+  const release = f.run(["--base", "main", "--release", "--no-merge"], real);
+  assert.equal(release.status, 1, release.stdout + release.stderr);
+  assert.match(release.stdout, /^RESULT: fail merge: origin\/main holds copies of dev's commits and changes of its own beside them \([a-f0-9]{7} Revert "Change B"\)/m);
+  f.git("checkout", "-q", "-B", "sync/main", "origin/dev");
+  const sync = f.run(["--sync-main"]);
+  assert.equal(sync.status, 1, sync.stdout + sync.stderr);
+  assert.match(sync.stdout, /^RESULT: fail sync: origin\/main holds copies of dev's commits and changes of its own beside them/m);
+  assert.equal(f.git("rev-parse", "HEAD"), f.git("rev-parse", "origin/dev"));
 });
 
 // A proper release in a peer clone: a change lands on dev, and main takes it by a merge commit dev does not hold.
