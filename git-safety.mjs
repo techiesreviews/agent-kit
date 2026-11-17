@@ -24,7 +24,11 @@
 // them too.
 import { execFileSync } from "node:child_process";
 import { readFileSync, realpathSync, statSync } from "node:fs";
+import { lookup } from "node:dns/promises";
+import { BlockList, isIP } from "node:net";
+import { hostname, networkInterfaces } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { sshCommand } from "./key-guard.mjs";
 
 /** The worktree's top folder, the nearest one from `start` up that holds .git, found without running git; or null. */
 export function gitTop(start) {
@@ -88,6 +92,48 @@ export function folderRemote(url) {
   return colon < 0 || (slash >= 0 && slash < colon) || /^[a-z]:[\\/]/i.test(url);
 }
 
+/**
+ * The host a remote URL names (scheme://[user@]host[:port]/…, or the scp form [user@]host:path, a host in brackets in
+ * either), lower case, without the brackets, an IPv6 zone or a trailing dot; "" where it names none. As git and ssh
+ * read it: a scheme:// URL is percent-decoded first, and the user part ends at the last @ before the host.
+ */
+export function remoteHost(url) {
+  const scheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(url);
+  // Each valid %XX on its own, as git's url_decode does; a broken one stays as it is. The bytes are what git passes on,
+  // so a run of them reads as UTF-8 (TOOLS-326).
+  const text = scheme ? url.replace(/(?:%[0-9a-f]{2})+/gi, run => Buffer.from(run.replaceAll("%", ""), "hex").toString("utf8")) : url;
+  const host = scheme ? /^[a-z][a-z0-9+.-]*:\/\/(?:[^/]*@)?(\[[^\]]*\]|[^/:?#]*)/i.exec(text)?.[1] : /^(?:[^/:]*@)?(\[[^\]]*\]|[^/:@]+):/.exec(text)?.[1];
+  return (host ?? "").replace(/^\[|\]$/g, "").replace(/%.*$/, "").replace(/\.$/, "").toLowerCase();
+}
+// Whether an address (a literal, or one the resolver gives) is this machine: loopback, unspecified, or one of its own
+// interfaces, compared as parsed addresses (any IPv6 spelling, IPv4 mapped into IPv6 too).
+function ownAddress(address) {
+  const here = new BlockList();
+  here.addSubnet("127.0.0.0", 8, "ipv4"); here.addAddress("0.0.0.0", "ipv4"); here.addAddress("::1", "ipv6"); here.addAddress("::", "ipv6");
+  for (const entry of Object.values(networkInterfaces()).flat()) if (entry) try { here.addAddress(entry.address.replace(/%.*$/, ""), entry.family === "IPv6" || entry.family === 6 ? "ipv6" : "ipv4"); } catch { /* Not an address BlockList takes. */ }
+  const plain = address.replace(/%.*$/, "");
+  try { return here.check(plain, isIP(plain) === 6 ? "ipv6" : "ipv4"); } catch { return false; }
+}
+
+/**
+ * Whether a remote URL that is not a folder (folderRemote) still reaches this machine itself (TOOLS-320), where a push
+ * runs that repository's hooks as this user, outside any lock: its host is localhost (or a name under .localhost) or
+ * this machine's own name, or any address the resolver gives for it (127.1, 0x7f000001, a name that points at
+ * 127.0.0.1) is loopback or one of this machine's own interfaces. A host that does not resolve, or does not answer
+ * within 5 seconds, is not counted; a name an ssh config maps here, and a name whose answer changes between this check
+ * and the push, cannot be told.
+ */
+export async function loopbackRemote(url) {
+  const host = remoteHost(url), own = hostname().toLowerCase();
+  if (!host) return false;
+  if (/^(localhost|localhost\.localdomain|ip6-localhost|ip6-loopback)$/.test(host) || host.endsWith(".localhost") || host === own || host === own.split(".")[0]) return true;
+  if (isIP(host)) return ownAddress(host);
+  let timer;
+  const answers = await Promise.race([lookup(host, { all: true }).catch(() => []), new Promise(done => { timer = setTimeout(() => done([]), 5000); })]);
+  clearTimeout(timer);
+  return answers.some(({ address }) => ownAddress(address));
+}
+
 /** Whether a git command line reaches the network with the user's credentials: its subcommand, past git's own options. */
 export function gitNetworkCall(args) {
   for (let i = 0; i < args.length; i++) {
@@ -108,8 +154,10 @@ export function gitNetworkCall(args) {
 export function gitSafety({ worktree, env = process.env, network = false, git = "git", common = gitCommonDir(worktree) }) {
   // `git` may also be [program, ...arguments before git's own] (a git script started by its interpreter's full path).
   const [program, ...before] = [git].flat();
+  // The caller's own settings from the environment stay in the read (command scope: the lead's core.sshCommand).
+  const count = Number.parseInt(env.GIT_CONFIG_COUNT ?? "", 10) || 0;
   const list = execFileSync(program, [...before, "-C", worktree, "config", "--list", "--show-scope", "-z"], {
-    env: { ...env, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.hooksPath", GIT_CONFIG_VALUE_0: "/dev/null" },
+    env: { ...env, GIT_CONFIG_COUNT: String(count + 1), [`GIT_CONFIG_KEY_${count}`]: "core.hooksPath", [`GIT_CONFIG_VALUE_${count}`]: "/dev/null" },
     encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 16 * 1024 * 1024 }).split("\0");
   const settings = [];
   for (let i = 0; i + 1 < list.length; i += 2) {
@@ -151,6 +199,15 @@ export function gitSafety({ worktree, env = process.env, network = false, git = 
   const start = Number.parseInt(env.GIT_CONFIG_COUNT ?? "", 10) || 0;
   pairs.forEach(([key, value], index) => { extra[`GIT_CONFIG_KEY_${start + index}`] = key; extra[`GIT_CONFIG_VALUE_${start + index}`] = value; });
   extra.GIT_CONFIG_COUNT = String(start + pairs.length);
+  // git's ssh, by its full path (sshCommand): never a bare name a link on PATH leads into the worktree for. Where it
+  // cannot be found that way, the command git gets says why and fails, so only a call to an ssh remote stops.
+  if (network) {
+    const lead = name => settings.filter(entry => !ownScope(entry.scope) && entry.key.toLowerCase() === name).at(-1)?.value;
+    const ssh = sshCommand(env, { worktree, common, configured: lead("core.sshcommand") });
+    if (ssh.command) extra.GIT_SSH_COMMAND = ssh.command;
+    // The lead's own choice of ssh kind (the variable, or ssh.variant in their config) stays.
+    if (ssh.variant && !env.GIT_SSH_VARIANT && lead("ssh.variant") === undefined) extra.GIT_SSH_VARIANT = ssh.variant;
+  }
   const problem = steering.size ? `the repository's own Git config holds ${[...steering].join(", ")}, which could send the credentials of a fetch or push elsewhere or start a remote helper (a build may have written ${steering.size === 1 ? "it" : "them"}); remove ${steering.size === 1 ? "it" : "them"} with git config --unset-all <name> and run it again` : null;
   return { env: extra, problem };
 }

@@ -9,7 +9,7 @@ import { coverageHash, saveUxResult, uxGuard, visibleFiles } from "../ux-gate.mj
 import { sameReviewPatch } from "../review-findings.mjs";
 import { forEachAwait } from "./support/await-race.ts";
 import { kitEnv } from "./support/kit-env.ts";
-import { onMacos, pathWithoutBwrap } from "./support/no-bwrap.ts";
+import { onMacos, pathWithout, pathWithoutBwrap } from "./support/no-bwrap.ts";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { bwrapWorks } from "../key-guard.mjs";
 import { orbitProject, orbitSecretsForTests, orbitSettings, runAsync, type Run } from "./support/orbit-project.ts";
@@ -47,6 +47,11 @@ if (tool === "fake-kit" && action === "release-check" && env.FAKE_RELEASE_CHECK_
 if (tool === "fake-kit" && action === "release-check" && env.FAKE_RELEASE_CHECK) {
   const run = require("node:child_process").spawnSync(env.FAKE_RELEASE_CHECK, args.slice(1), { stdio: "inherit" });
   process.exit(run.status ?? 1);
+}
+// FAKE_GH_SWAP: gh (which kit pr starts outside the lock) swaps kit pr's own git link in TMPDIR for another program.
+if (tool === "gh" && env.FAKE_GH_SWAP) for (const name of require("node:fs").readdirSync(env.TMPDIR).filter(name => name.startsWith("kit-pr-programs-"))) {
+  const link = join(env.TMPDIR, name, "git");
+  require("node:fs").rmSync(link, { force: true }); require("node:fs").symlinkSync("/bin/true", link);
 }
 if (failPending) { console.error("api unavailable"); process.exit(1); }
 // FAKE_FAIL_BODY: a gh call whose body matches this pattern fails, as a comment GitHub refuses does.
@@ -3960,4 +3965,100 @@ test("on a system without bubblewrap kit pr's checks run unlocked and the PR say
   assert.equal(swapped.status, 1, swapped.stdout + swapped.stderr);
   assert.match(swapped.stdout, /^RESULT: fail check: kit pr's own link to git \(\S+\/kit-pr-programs-[^/]+\/git\) was changed while it ran; run kit pr again$/m);
   assert.deepEqual(readdirSync(tmp).filter(name => name.startsWith("kit-pr-programs-")), [], "the folder goes when kit pr ends");
+});
+
+// TOOLS-320: a program kit pr starts outside the lock (gh, after the checks) that changes kit pr's own program links stops
+// the very next start (the check before every start, not only the one after each check).
+test("a gh that changes kit pr's program links stops kit pr at its next start", t => {
+  const f = fixture(t);
+  const tmp = join(f.dir, "tmp"); mkdirSync(tmp);
+  const result = f.run([], { TMPDIR: tmp, FAKE_GH_SWAP: "1" });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /^RESULT: fail open: kit pr's own link to git \(\S+\/kit-pr-programs-[^/]+\/git\) was changed while it ran; run kit pr again$/m);
+  assert.equal(f.calls().filter(call => call.tool === "gh").length, 1, "nothing started after the gh that changed the link");
+});
+
+// TOOLS-320: git's ssh for kit pr's fetch and push is found as kit pr finds its own programs: an ssh PATH holds only as a
+// link into the worktree (a person's link to a script a build can change) is never started; a push to an ssh remote
+// stops and says why.
+test("kit pr's push to an ssh remote never starts an ssh PATH holds only as a link into the worktree", t => {
+  const f = fixture(t);
+  f.git("config", "remote.origin.pushurl", "ssh://example.invalid/repo.git");
+  const links = join(f.dir, "links"), planted = join(f.root, "tools/ssh");
+  mkdirSync(links); mkdirSync(dirname(planted));
+  writeFileSync(planted, `#!/bin/sh\necho planted >> ${JSON.stringify(join(f.dir, "planted.txt"))}\n`, { mode: 0o755 });
+  appendFileSync(join(f.root, ".git/info/exclude"), "tools/\n");
+  symlinkSync(planted, join(links, "ssh"));
+  const result = f.run([], { PATH: `${f.bin}:${links}:${pathWithout(f.dir, ["ssh"], "no-ssh-bin")}` });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /^RESULT: fail push: /m);
+  const logs = /^logs: (.+)$/m.exec(result.stdout)![1];
+  assert.match(readFileSync(join(logs, "push.log"), "utf8"), /kit: ssh on PATH is \S+\/links\/ssh, a link into the worktree or its Git folder/);
+  assert.ok(!existsSync(join(f.dir, "planted.txt")), "the planted ssh never started");
+  // A push that starts no ssh (the folder remote) goes through all the same.
+  f.git("config", "--unset", "remote.origin.pushurl");
+  const folder = f.run([], { PATH: `${f.bin}:${links}:${join(f.dir, "no-ssh-bin")}` });
+  assert.equal(folder.status, 0, folder.stdout + folder.stderr);
+  assert.ok(!existsSync(join(f.dir, "planted.txt")), "the planted ssh never started");
+});
+
+// TOOLS-320 (A3 release review): git pushes to every push address a remote lists, rewrites applied, so kit pr weighs them
+// all: a folder among them (whose hooks git runs without kit pr's Git settings) is refused unless every one is a folder
+// (then the push runs inside the key lock), and so is an address on this machine itself (localhost), whose hooks run
+// outside any lock.
+test("kit pr refuses a push whose remote lists a folder after another push address, or one on this machine", t => {
+  const f = fixture(t);
+  const noted = join(f.dir, "hook.txt");
+  writeFileSync(join(f.origin, "hooks/pre-receive"), `#!/bin/sh\necho ran >> ${JSON.stringify(noted)}\ncat > /dev/null\n`, { mode: 0o755 });
+  // A build lists an outside address first and the folder second. The outside one is an ssh remote whose ssh (the
+  // lead's, outside the worktree) serves a bare repository here, so its push goes through and git goes on to the next.
+  const mirror = join(f.dir, "mirror.git");
+  f.gitAt(f.dir, "init", "-q", "--bare", mirror);
+  writeFileSync(join(f.bin, "ssh"), '#!/bin/sh\nfor arg; do last=$arg; done\nexec /bin/sh -c "$last"\n', { mode: 0o755 });
+  f.git("config", "--add", "remote.origin.pushurl", `ssh://example.invalid${mirror}`);
+  f.git("config", "--add", "remote.origin.pushurl", f.origin);
+  const mixed = f.run();
+  assert.ok(!existsSync(noted), `the folder's hook ran outside the lock:\n${mixed.stdout}`);
+  assert.equal(mixed.status, 1, mixed.stdout + mixed.stderr);
+  assert.match(mixed.stdout, /^RESULT: fail push: origin pushes to a folder on this machine \(\S+origin\.git\) beside other addresses \(ssh:\/\/example\.invalid\S+mirror\.git\)/m);
+  // The same through a rewrite: the second address only becomes the folder through url.<folder>.insteadOf.
+  f.git("config", "--unset-all", "remote.origin.pushurl");
+  f.git("config", "--add", "remote.origin.pushurl", `ssh://example.invalid${mirror}`);
+  f.git("config", "--add", "remote.origin.pushurl", "https://mirror.invalid/origin.git");
+  f.git("config", `url.${dirname(f.origin)}/.insteadOf`, "https://mirror.invalid/");
+  const rewritten = f.run();
+  assert.equal(rewritten.status, 1, rewritten.stdout + rewritten.stderr);
+  assert.match(rewritten.stdout, /^RESULT: fail push: origin pushes to a folder on this machine/m);
+  assert.ok(!existsSync(noted), "the folder's hook never ran");
+  // The same from url entries alone (git pushes to each where no pushurl is set); the advice names both keys.
+  f.git("config", "--unset-all", "remote.origin.pushurl");
+  f.git("config", "--add", "remote.origin.url", `ssh://example.invalid${mirror}`);
+  const urls = f.run();
+  assert.equal(urls.status, 1, urls.stdout + urls.stderr);
+  assert.match(urls.stdout, /^RESULT: fail push: origin pushes to a folder on this machine .* keep one push address in remote\.origin\.pushurl or remote\.origin\.url/m);
+  assert.ok(!existsSync(noted), "the folder's hook never ran");
+  f.git("config", "--unset", "remote.origin.url", "ssh://");
+  // An address on this machine itself, by ssh or any other transport.
+  f.git("config", "--add", "remote.origin.pushurl", "ssh://git@localhost/srv/repo.git");
+  const loopback = f.run();
+  assert.equal(loopback.status, 1, loopback.stdout + loopback.stderr);
+  assert.match(loopback.stdout, /^RESULT: fail push: origin pushes to this machine itself \(ssh:\/\/(git@)?localhost\/srv\/repo\.git\)/m);
+  // One only its address tells.
+  f.git("config", "--unset-all", "remote.origin.pushurl");
+  f.git("config", "--add", "remote.origin.pushurl", "ssh://127.1/srv/repo.git");
+  const resolved = f.run();
+  assert.equal(resolved.status, 1, resolved.stdout + resolved.stderr);
+  assert.match(resolved.stdout, /^RESULT: fail push: origin pushes to this machine itself \(ssh:\/\/127\.1\/srv\/repo\.git\)/m);
+  // A user name with @ in it: ssh takes the host after the last one.
+  f.git("config", "--unset-all", "remote.origin.pushurl");
+  f.git("config", "--add", "remote.origin.pushurl", "ssh://a@b@localhost/srv/repo.git");
+  const user = f.run();
+  assert.equal(user.status, 1, user.stdout + user.stderr);
+  assert.match(user.stdout, /^RESULT: fail push: origin pushes to this machine itself \(ssh:\/\/(a@b@)?localhost\/srv\/repo\.git\)/m);
+  // Every address a folder: the push runs inside the key lock, as before.
+  f.git("config", "--unset-all", "remote.origin.pushurl");
+  f.git("config", "--add", "remote.origin.pushurl", f.origin);
+  const folders = f.run();
+  assert.equal(folders.status, 0, folders.stdout + folders.stderr);
+  assert.match(readFileSync(noted, "utf8"), /^ran$/m);
 });
