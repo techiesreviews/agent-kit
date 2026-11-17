@@ -1328,6 +1328,13 @@ test("TOOLS-326: an ssh wrapper whose #!/usr/bin/env -S line sets PATH never sta
   };
   const first = wrapper("ssh-path", `PATH=${links}:${bin}:${dirname(shell)}`);
   const second = wrapper("ssh-x-path", `X=1 PATH=${links}:${bin}:${dirname(shell)}`);
+  // env sets a word with = in it whatever its name, so an odd name first hides no PATH after it.
+  const oddName = wrapper("ssh-odd-path", `1X=1 PATH=${links}:${bin}:${dirname(shell)}`);
+  const long = join(wrappers, "ssh-long-path");
+  writeFileSync(long, `#!/usr/bin/env --split-string=PATH=${links}:${bin}:${dirname(shell)} sh\nexec ssh "$@"\n`); chmodSync(long, 0o755);
+  // A wrapper whose interpreter is such a script: the line one level down is read too.
+  const nested = join(wrappers, "ssh-nested");
+  writeFileSync(nested, `#!${first}\nexec ssh "$@"\n`); chmodSync(nested, 0o755);
   const base = { ...process.env, HOME: home, PATH: `${bin}:/usr/bin:/bin`, GIT_CONFIG_GLOBAL: undefined, GIT_CONFIG_NOSYSTEM: undefined, GIT_SSH: undefined, GIT_SSH_COMMAND: undefined, GIT_CONFIG_COUNT: undefined } as NodeJS.ProcessEnv;
   const realGit = String(process.env.PATH).split(":").filter(folder => folder.startsWith("/")).map(folder => join(folder, "git")).find(file => existsSync(file))!;
   const refusedWith = (env: NodeJS.ProcessEnv) => {
@@ -1339,10 +1346,10 @@ test("TOOLS-326: an ssh wrapper whose #!/usr/bin/env -S line sets PATH never sta
     assert.ok(!existsSync(noted), `an ssh started: ${existsSync(noted) ? readFileSync(noted, "utf8") : ""}`);
     return run.stderr;
   };
-  for (const file of [first, second]) {
-    assert.throws(() => startCommand(file, [], base, { worktree: root, kind: "test" }), /starts with env -S .*PATH=.*, which sets PATH itself/);
-    assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: file }), /^kit: \S+ starts with env -S .*, which sets PATH itself/m);
-    assert.match(refusedWith({ ...base, GIT_SSH: file }), /^kit: \S+ starts with env -S .*, which sets PATH itself/m);
+  for (const file of [first, second, oddName, long, nested]) {
+    assert.throws(() => startCommand(file, [], base, { worktree: root, kind: "test" }), /starts with env (-S|--split-string=).*PATH=.*, which sets PATH itself/, file);
+    assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: file }), /^kit: \S+ starts with env \S+.*, which sets PATH itself/m, file);
+    assert.match(refusedWith({ ...base, GIT_SSH: file }), /^kit: \S+ starts with env \S+.*, which sets PATH itself/m, file);
   }
   // In git's ssh command a PATH after another variable sets PATH as much as one first.
   assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: `X=1 PATH=${links} ssh` }), /^kit: git's ssh command \(.*\) cannot be told: it sets PATH itself/m);

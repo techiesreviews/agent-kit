@@ -100,7 +100,7 @@ export function folderRemote(url) {
 export function remoteHost(url) {
   const scheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(url);
   // Each valid %XX on its own, as git's url_decode does; a broken one stays as it is. The bytes are what git passes on,
-  // so a run of them reads as UTF-8 (TOOLS-326), as the resolver gets them.
+  // so a run of them reads as UTF-8 (TOOLS-326).
   const text = scheme ? url.replace(/(?:%[0-9a-f]{2})+/gi, run => Buffer.from(run.replaceAll("%", ""), "hex").toString("utf8")) : url;
   const host = scheme ? /^[a-z][a-z0-9+.-]*:\/\/(?:[^/]*@)?(\[[^\]]*\]|[^/:?#]*)/i.exec(text)?.[1] : /^(?:[^/:]*@)?(\[[^\]]*\]|[^/:@]+):/.exec(text)?.[1];
   return (host ?? "").replace(/^\[|\]$/g, "").replace(/%.*$/, "").replace(/\.$/, "").toLowerCase();
