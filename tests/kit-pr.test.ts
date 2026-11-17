@@ -1024,6 +1024,9 @@ test("kit pr --sync-main makes its merge again on a rerun: the same commit on th
   f.git("checkout", "-q", "dev"); f.git("pull", "-q", "--ff-only", "origin", "dev"); f.git("checkout", "-q", "-b", "sync/main");
   const first = f.run(["--sync-main", "--no-merge"], { FAKE_EMPTY: "1" });
   assert.equal(first.status, 0, first.stdout + first.stderr);
+  // dev has not moved since the release, so main already holds it: the sync is still its own merge commit, never a fast-forward.
+  assert.equal(f.git("rev-parse", "HEAD^1"), f.git("rev-parse", "origin/dev"));
+  assert.equal(f.git("rev-parse", "HEAD^2"), f.git("rev-parse", "origin/main"));
   const head = f.git("rev-parse", "HEAD");
   const again = f.run(["--sync-main", "--no-merge"], { FAKE_EMPTY: "1", FAKE_EXISTING: "1" });
   assert.equal(again.status, 0, again.stdout + again.stderr);
@@ -1047,6 +1050,20 @@ test("kit pr --sync-main remakes a hand-made merge that keeps dev's files over a
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stdout, /^RESULT: fail sync: the sync would change hotfix\.txt on dev: main holds changes dev lacks; /m);
   assert.equal(f.git("rev-parse", "HEAD"), f.git("rev-parse", "origin/dev"));
+  assert.equal(f.calls().some(call => call.tool === "gh"), false);
+});
+
+test("kit pr --sync-main never resets away a hand-made merge that changes dev's files, and names it", t => {
+  const f = fixture(t), peer = f.peer();
+  f.gitAt(peer, "checkout", "-q", "main"); writeFileSync(join(peer, "hotfix.txt"), "hotfix\n");
+  f.gitAt(peer, "add", "hotfix.txt"); f.gitAt(peer, "commit", "-q", "-m", "Hotfix on main"); f.gitAt(peer, "push", "-q", "origin", "main");
+  f.git("checkout", "-q", "dev"); f.git("checkout", "-q", "-b", "sync/main"); f.git("fetch", "-q", "origin");
+  f.git("merge", "-q", "--no-ff", "--no-commit", "origin/main"); writeFileSync(join(f.root, "file.txt"), "fixed by hand\n"); f.git("add", "file.txt");
+  f.git("commit", "-q", "-m", "Hand-made sync with a fix");
+  const merge = f.git("rev-parse", "HEAD"), result = f.run(["--sync-main"]);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, new RegExp(`^RESULT: fail sync: this branch's merge ${merge.slice(0, 7)} changes files on dev: land those on dev with an ordinary kit pr, then cut a new branch at origin/dev and run kit pr --sync-main there$`, "m"));
+  assert.equal(f.git("rev-parse", "HEAD"), merge, "the hand-made merge stays");
   assert.equal(f.calls().some(call => call.tool === "gh"), false);
 });
 

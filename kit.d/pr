@@ -587,8 +587,9 @@ async function main(args) {
       const copied = Boolean(await git(name, ["rev-list", "-n", "1", "--no-merges", ref, "^HEAD"]));
       const tree = copied ? await git(name, ["rev-parse", `${ref}^{tree}`]) : "";
       const kept = copied ? (await git(name, ["log", "--format=%H %T", "HEAD"])).split(/\r?\n/).find(line => line.endsWith(` ${tree}`))?.split(" ")[0] : undefined;
-      const argv = kept ? ["merge", "--no-edit", "-s", "ours", "-m", subject, "-m", `${ref}'s files are already this branch's at ${kept}, so the merge keeps this branch's files.`, ref]
-        : ["merge", "--no-edit", "-m", subject, ref];
+      // Never a fast-forward: a HEAD that ref already holds (dev not moved since a release) still gets its own merge commit.
+      const argv = kept ? ["merge", "--no-edit", "--no-ff", "-s", "ours", "-m", subject, "-m", `${ref}'s files are already this branch's at ${kept}, so the merge keeps this branch's files.`, ref]
+        : ["merge", "--no-edit", "--no-ff", "-m", subject, ref];
       const merged = await execute(name, "git", argv, undefined, { GIT_AUTHOR_DATE: when, GIT_COMMITTER_DATE: when });
       if (merged.status !== 0) {
         const files = await git(name, ["-c", "core.quotepath=false", "diff", "--name-only", "--diff-filter=U"]);
@@ -626,6 +627,11 @@ async function main(args) {
         const syncOf = parents.length === 2 && await isAncestor("sync", parents[0], land) && await isAncestor("sync", parents[1], main);
         if (!syncOf && !await isAncestor("sync", "HEAD", land))
           throw new Error(`a sync branch holds only the merge of ${main}, and this one has work of its own: cut a new branch at ${land} (git switch -c <name> ${land}) and run kit pr --sync-main there`);
+        // A merge kit may make again keeps its first parent's files; one that changes them (conflicts fixed by hand) is work, never reset away.
+        if (syncOf && await git("sync", ["rev-parse", "HEAD^{tree}"]) !== await git("sync", ["rev-parse", `${parents[0]}^{tree}`])) {
+          const short = await git("sync", ["rev-parse", "--short", "HEAD"]);
+          throw new Error(`this branch's merge ${short} changes files on ${flags.base}: land those on ${flags.base} with an ordinary kit pr, then cut a new branch at ${land} and run kit pr --sync-main there`);
+        }
         await git("sync", ["reset", "-q", "--keep", land]);
         try { await joinMerge("sync", main, `Merge ${main} into ${flags.base} (sync, no file changes)`); }
         catch (error) {
