@@ -7,7 +7,7 @@ import test, { type TestContext } from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { bwrapArgs, bwrapWorks, checkLock, codexPaths, kitFolders, codexProfile, existingPaths, keyGuard, keyGuardReport, keyPathsWarning, linkTargets, lockedPaths, outerLock, resetBwrapProbe, runProgram, scrubbedEnv, startCommand } from "../key-guard.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { folderRemote, gitCommonDir, gitNetworkCall, gitSafety, loopbackRemote } from "../git-safety.mjs";
+import { folderRemote, gitCommonDir, gitNetworkCall, gitSafety, loopbackRemote, remoteHost } from "../git-safety.mjs";
 import { kitEnv, testHomeFolder } from "./support/kit-env.ts";
 import { asPlatform, onLinux, onMacos, pathWithout, pathWithoutBwrap } from "./support/no-bwrap.ts";
 
@@ -1137,7 +1137,7 @@ test("TOOLS-320: a remote on this machine itself is told by its name or by every
     ["https://dev.localhost/a.git", true], [`ssh://${hostname()}/a`, true], ["ssh://127.1/a", true], ["ssh://0x7f000001/a", true], ["ssh://[::ffff:127.0.0.1]/a", true],
     ["ssh://0.0.0.0/a", true], ["git@[::1]:a.git", true], ["[127.0.0.1]:a.git", true], ["git@[2001:db8::1]:a.git", false],
     ["git@x@localhost:a.git", true], ["ssh://a@b@localhost/a", true], ["ssh://a@b@127.0.0.1/a", true], ["ssh://%6cocalhost/a", true],
-    ["ssh://%31%32%37.0.0.1/a", true], ["ssh://%6cocalhost/a%zz.git", true], ["ssh://%6cocalhost/caf%e9.git", true], ["ssh://%6cocalhost/100%", true], ["ssh://[::1%25lo]/a", true], ["%6cocalhost:a.git", false], ["ssh://[0:0:0:0:0:0:0:1]/a", true], ["ssh://[0::1]/a", true], ["ssh://[::ffff:7f00:1]/a", true], ...(own ? [[`ssh://${own}/a`, true]] : []), ["git@github.invalid:a/b.git", false], ["https://192.0.2.1/a", false], ["ssh://h.invalid/x", false]] as const)
+    ["ssh://%31%32%37.0.0.1/a", true], ["ssh://%6cocalhost/a%zz.git", true], ["ssh://%6cocalhost/caf%e9.git", true], ["ssh://%6cocalhost/caf%C3%A9.git", true], ["ssh://%6cocalhost/100%", true], ["ssh://[::1%25lo]/a", true], ["%6cocalhost:a.git", false], ["ssh://[0:0:0:0:0:0:0:1]/a", true], ["ssh://[0::1]/a", true], ["ssh://[::ffff:7f00:1]/a", true], ...(own ? [[`ssh://${own}/a`, true]] : []), ["git@github.invalid:a/b.git", false], ["https://192.0.2.1/a", false], ["ssh://h.invalid/x", false]] as const)
     assert.equal(await loopbackRemote(url), here, url);
 });
 
@@ -1300,6 +1300,55 @@ test("TOOLS-320: a fetch or push starts git's ssh by its full path, from GIT_SSH
   // A call without the network starts no ssh: nothing changes.
   assert.equal(gitSafety({ worktree: root, env: base }).env.GIT_SSH_COMMAND, undefined);
   assert.ok(!(existsSync(noted) && readFileSync(noted, "utf8").includes("planted")), "the planted ssh never started");
+});
+
+test("TOOLS-326: a percent-coded host is read as the bytes git passes on, decoded as UTF-8", () => {
+  assert.equal(remoteHost("ssh://caf%C3%A9.example/a"), "café.example");
+  assert.equal(remoteHost("ssh://git@CAF%C3%89.example:22/a"), "café.example");
+  assert.equal(remoteHost("ssh://%6cocalhost/caf%e9.git"), "localhost");
+  assert.equal(remoteHost("ssh://caf%e9.example/a"), "caf\ufffd.example", "a byte that is not UTF-8 stays one character");
+});
+
+test("TOOLS-326: an ssh wrapper whose #!/usr/bin/env -S line sets PATH never starts, and neither does a GIT_SSH_COMMAND that sets PATH after another variable", t => {
+  const dir = mkdtempSync(join(tmpdir(), "kit-git-ssh-path-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const root = join(dir, "work"), home = join(dir, "home"), bin = join(dir, "bin"), links = join(dir, "links"), wrappers = join(dir, "wrappers"), noted = join(dir, "noted.txt");
+  for (const folder of [root, home, bin, links, wrappers]) mkdirSync(folder);
+  assert.equal(spawnSync("git", ["-C", root, "init", "-q", "-b", "test"], { encoding: "utf8", env: { ...process.env, HOME: home } }).status, 0);
+  const fakeSsh = (file: string, who: string) => { writeFileSync(file, `#!/bin/sh\necho "${who} $*" >> ${JSON.stringify(noted)}\nexit 1\n`); chmodSync(file, 0o755); };
+  fakeSsh(join(bin, "ssh"), "lead's ssh");
+  mkdirSync(join(root, "tools")); fakeSsh(join(root, "tools/ssh"), "planted ssh");
+  // A link a person made into the worktree, in a folder that is not on the run's PATH but that the wrapper puts first.
+  symlinkSync(join(root, "tools/ssh"), join(links, "ssh"));
+  const shell = ["/usr/bin/sh", "/bin/sh"].find(file => existsSync(file))!;
+  const wrapper = (name: string, assignments: string) => {
+    const file = join(wrappers, name);
+    writeFileSync(file, `#!/usr/bin/env -S ${assignments} sh\nexec ssh "$@"\n`); chmodSync(file, 0o755);
+    return file;
+  };
+  const first = wrapper("ssh-path", `PATH=${links}:${bin}:${dirname(shell)}`);
+  const second = wrapper("ssh-x-path", `X=1 PATH=${links}:${bin}:${dirname(shell)}`);
+  const base = { ...process.env, HOME: home, PATH: `${bin}:/usr/bin:/bin`, GIT_CONFIG_GLOBAL: undefined, GIT_CONFIG_NOSYSTEM: undefined, GIT_SSH: undefined, GIT_SSH_COMMAND: undefined, GIT_CONFIG_COUNT: undefined } as NodeJS.ProcessEnv;
+  const realGit = String(process.env.PATH).split(":").filter(folder => folder.startsWith("/")).map(folder => join(folder, "git")).find(file => existsSync(file))!;
+  const refusedWith = (env: NodeJS.ProcessEnv) => {
+    rmSync(noted, { force: true });
+    const safe = gitSafety({ worktree: root, env, network: true, git: realGit });
+    assert.equal(safe.problem, null);
+    const run = spawnSync(realGit, ["-C", root, "ls-remote", "ssh://example.invalid/repo.git"], { env: { ...env, ...safe.env }, encoding: "utf8" });
+    assert.notEqual(run.status, 0);
+    assert.ok(!existsSync(noted), `an ssh started: ${existsSync(noted) ? readFileSync(noted, "utf8") : ""}`);
+    return run.stderr;
+  };
+  for (const file of [first, second]) {
+    assert.throws(() => startCommand(file, [], base, { worktree: root, kind: "test" }), /starts with env -S .*PATH=.*, which sets PATH itself/);
+    assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: file }), /^kit: \S+ starts with env -S .*, which sets PATH itself/m);
+    assert.match(refusedWith({ ...base, GIT_SSH: file }), /^kit: \S+ starts with env -S .*, which sets PATH itself/m);
+  }
+  // In git's ssh command a PATH after another variable sets PATH as much as one first.
+  assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: `X=1 PATH=${links} ssh` }), /^kit: git's ssh command \(.*\) cannot be told: it sets PATH itself/m);
+  // Variables other than PATH stay with env, and the wrapper starts by its interpreter's full path.
+  const other = wrapper("ssh-other", "X=1");
+  assert.deepEqual(startCommand(other, [], base, { worktree: root, kind: "test" }), ["/usr/bin/env", ["X=1", shell, other]]);
 });
 
 test("TOOLS-320: bubblewrap mounts the kit's folders before the key masks and kit pr's own folders after them", t => {

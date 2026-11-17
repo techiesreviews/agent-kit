@@ -479,8 +479,8 @@ const linkRefusal = (name, file) => `${name} on PATH is ${file}, a link into the
 // for four levels, as the kernel does, and refuses past them. env -S (TOOLS-320) is read as env reads it (splitWords):
 // NAME=value words before the program stay with env, which then gets the program by its full path. A first line that
 // names a full path inside the worktree or the Git folder, an env option other than -S, -S words env would expand or
-// that cannot be split, or a name PATH holds only as such a link is refused through `refuse`; a name no PATH folder
-// holds is left to start as it is (and fail).
+// that cannot be split, a PATH among those words (TOOLS-326), or a name PATH holds only as such a link is refused
+// through `refuse`; a name no PATH folder holds is left to start as it is (and fail).
 function interpreted(file, args, env, shut, refuse, depth = 0) {
   let head = "";
   try {
@@ -507,6 +507,9 @@ function interpreted(file, args, env, shut, refuse, depth = 0) {
   const assignments = [];
   while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0] ?? "")) assignments.push(words.shift());
   if (!words.length || words[0].startsWith("-")) unknown();
+  // A PATH of its own would let the program start another by name from a folder that holds a link into the worktree
+  // (TOOLS-326): the folders are the line's, not the run's, so none of them was checked.
+  if (assignments.some(word => word.startsWith("PATH="))) refuse(`${file} starts with env ${rest}, which sets PATH itself, so a program it starts by name could lead into the worktree or its Git folder; drop PATH= from that line, or set ASE_KEY_GUARD=off to run without the lock`);
   const [name, ...options] = words;
   let found;
   if (name.includes("/")) {
