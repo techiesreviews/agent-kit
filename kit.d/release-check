@@ -17,6 +17,9 @@ fetch (branches.release in ${kitSettingsFile}, the same branch the push guard re
 from what landed, before origin/<release> is merged into the cut. --waive requires a *-lead owner;
 the RESULT line names the reason and what it let through. KIT_RELEASE_CHECK_TIMEOUT: the fetch's limit
 in seconds (default 120).
+Where land and release are two branches, a warning (never a failure) names the commits origin/<release>
+holds outside origin/<land>'s history, merges left out: copies a rebase or squash merge made, or work made
+straight on <release>; kit pr --sync-main joins them once <land> holds their changes.
 `;
 
 class UsageError extends Error {}
@@ -106,7 +109,25 @@ function problems(root, { land }) {
   if (ahead && behind) found.push({ what: `HEAD ${short} and origin/${branch} have split (${plural(ahead, "commit")} ahead, ${behind} behind)`, advice: land ? update : unlanded });
   else if (ahead) found.push({ what: `HEAD ${short} is ${plural(ahead, "commit")} ahead of origin/${branch}`, advice: unlanded });
   else if (behind) found.push({ what: `HEAD ${short} is ${plural(behind, "commit")} behind origin/${branch}`, advice: update });
-  return { found, passed: `release-check ${short} is origin/${branch}, nothing unsaved` };
+  return { found, passed: `release-check ${short} is origin/${branch}, nothing unsaved`, warnings: one ? [] : outside(root, { landing, release, branch, env, git }) };
+}
+
+/**
+ * The warning for commits origin/<release> holds outside origin/<land>'s history (TOOLS-325): a release that landed as copied
+ * commits (a rebase or squash merge) splits the two, and the next release conflicts. Merges are left out: a release lands on
+ * <release> as a merge commit, which is no split. The branch the check did not fetch is fetched too; a fetch or a git call that
+ * fails leaves the warning out rather than failing the check.
+ */
+function outside(root, { landing, release, branch, env, git }) {
+  const other = branch === landing ? release : landing;
+  if (fetchBranch(root, other, env).status !== 0) return [];
+  const listed = git("log", "--reverse", "--no-merges", "--format=%h %s", `refs/remotes/origin/${release}`, `^refs/remotes/origin/${landing}`);
+  if (listed.status !== 0) return [];
+  const commits = listed.stdout.split(/\r?\n/).filter(Boolean);
+  if (!commits.length) return [];
+  const named = commits.length > 5 ? `${commits.slice(0, 5).join(", ")} and ${commits.length - 5} more` : commits.join(", ");
+  return [`warning: origin/${release} has ${plural(commits.length, "commit")} outside ${landing}'s history (${named}): copied by a rebase or squash merge, ` +
+    `or made straight on ${release}; join them with kit pr --sync-main (it refuses when ${release} holds changes ${landing} lacks: land those on ${landing} first)`];
 }
 
 /**
@@ -138,7 +159,8 @@ function main(args) {
     return 2;
   }
   try {
-    const { found, passed } = problems(resolve(kitRoot()), flags);
+    const { found, passed, warnings = [] } = problems(resolve(kitRoot()), flags);
+    for (const warning of warnings) console.log(kitHideUserInfo(warning));
     if (!found.length) {
       kitResult("ok", flags.waive ? `${passed} (waiver not needed: ${flags.waive})` : passed);
       return 0;

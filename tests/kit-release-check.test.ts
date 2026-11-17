@@ -331,3 +331,39 @@ test("the rulebook's release step and the extras template show the check as the 
   const release = /## Release\n([\s\S]*?)\n## /.exec(readFileSync("docs/kitchen-extras-template.md", "utf8"))?.[1] ?? "";
   assert.match(release, /`scripts\/agents\/kit release-check &&` before the deploy/);
 });
+
+// TOOLS-325: a release that landed on main as copied commits left main outside dev's history; the next release conflicted.
+test("a warning names main's commits outside dev's history, in both modes, and the check still passes", t => {
+  const f = fixture(t), peer = f.peer();
+  // A copy of a dev commit on main (a rebase merge) and a hotfix made straight on main, beside a real merge that is fine.
+  f.gitAt(peer, "checkout", "-q", "dev"); f.commit(peer, "Dev change"); f.gitAt(peer, "push", "-q", "origin", "dev");
+  const change = f.gitAt(peer, "rev-parse", "HEAD");
+  f.gitAt(peer, "checkout", "-q", "main"); f.gitAt(peer, "cherry-pick", "-x", change); f.commit(peer, "Hotfix on main");
+  f.gitAt(peer, "merge", "-q", "--no-ff", "-m", "Release merge", "origin/dev"); f.gitAt(peer, "push", "-q", "origin", "main");
+  const copied = f.gitAt(peer, "rev-parse", "--short", "HEAD^1^"), hotfix = f.gitAt(peer, "rev-parse", "--short", "HEAD^1");
+  const warning = `warning: origin/main has 2 commits outside dev's history (${copied} Dev change, ${hotfix} Hotfix on main): copied by a rebase or squash merge, or made straight on main; join them with kit pr --sync-main (it refuses when main holds changes dev lacks: land those on dev first)`;
+  f.git("fetch", "-q", "origin"); f.git("reset", "-q", "--hard", "origin/main");
+  let result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(result.stdout.split("\n").includes(warning), result.stdout);
+  assert.match(lastLine(result.stdout), /^RESULT: ok release-check [a-f0-9]{7} is origin\/main, nothing unsaved$/);
+  f.git("checkout", "-q", "-B", "release/cut", "origin/dev");
+  result = f.run(["--land"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(result.stdout.split("\n").includes(warning), result.stdout);
+  assert.match(lastLine(result.stdout), /^RESULT: ok release-check [a-f0-9]{7} is origin\/dev, nothing unsaved$/);
+});
+
+test("no warning when main's only commits outside dev are merges, or when land and release are one branch", t => {
+  const f = fixture(t), peer = f.peer();
+  f.gitAt(peer, "checkout", "-q", "dev"); f.commit(peer, "Dev change"); f.gitAt(peer, "push", "-q", "origin", "dev");
+  f.gitAt(peer, "checkout", "-q", "main"); f.gitAt(peer, "merge", "-q", "--no-ff", "-m", "Release merge", "origin/dev"); f.gitAt(peer, "push", "-q", "origin", "main");
+  f.git("fetch", "-q", "origin"); f.git("reset", "-q", "--hard", "origin/main");
+  let result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.doesNotMatch(result.stdout, /warning:/);
+  const one = fixture(t, { land: "main", release: "main" });
+  result = one.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.doesNotMatch(result.stdout, /warning:/);
+});
