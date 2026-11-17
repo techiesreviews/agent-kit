@@ -1010,12 +1010,70 @@ test("kit pr --sync-main guards: not with --release, not without a separate rele
   f.commit("Own work", "own.txt");
   const own = f.run(["--sync-main"]);
   assert.equal(own.status, 1);
-  assert.match(own.stdout, /RESULT: fail sync: a sync branch holds only the merge of origin\/main: cut it at origin\/dev \(git reset --keep origin\/dev\) and run kit pr --sync-main again$/m);
+  assert.match(own.stdout, /RESULT: fail sync: a sync branch holds only the merge of origin\/main, and this one has work of its own: cut a new branch at origin\/dev \(git switch -c <name> origin\/dev\) and run kit pr --sync-main there$/m);
+  assert.equal(f.git("log", "-1", "--format=%s"), "Own work", "the builder's own commit stays");
   const base = f.run(["--sync-main", "--base", "main"]);
   assert.equal(base.status, 1); assert.match(base.stdout, /RESULT: fail guards: --sync-main lands on dev, not main$/m);
   const one = fixture(t, undefined, { branches: { land: "main", release: "main", ci: "main" } });
   const refused = one.run(["--sync-main"], { FAKE_BASE: "main" });
   assert.equal(refused.status, 1); assert.match(refused.stdout, /RESULT: fail guards: --sync-main needs a release branch apart from the land branch/);
+});
+
+test("kit pr --sync-main makes its merge again on a rerun: the same commit on the same dev and main, a new one after dev moved", t => {
+  const f = fixture(t), peer = release(f);
+  f.git("checkout", "-q", "dev"); f.git("pull", "-q", "--ff-only", "origin", "dev"); f.git("checkout", "-q", "-b", "sync/main");
+  const first = f.run(["--sync-main", "--no-merge"], { FAKE_EMPTY: "1" });
+  assert.equal(first.status, 0, first.stdout + first.stderr);
+  const head = f.git("rev-parse", "HEAD");
+  const again = f.run(["--sync-main", "--no-merge"], { FAKE_EMPTY: "1", FAKE_EXISTING: "1" });
+  assert.equal(again.status, 0, again.stdout + again.stderr);
+  assert.equal(f.git("rev-parse", "HEAD"), head, "the same dev and main make the same sync commit");
+  f.gitAt(peer, "checkout", "-q", "dev"); writeFileSync(join(peer, "later.txt"), "later\n");
+  f.gitAt(peer, "add", "later.txt"); f.gitAt(peer, "commit", "-q", "-m", "Later on dev"); f.gitAt(peer, "push", "-q", "origin", "dev");
+  const moved = f.run(["--sync-main", "--no-merge"], { FAKE_EMPTY: "1", FAKE_EXISTING: "1" });
+  assert.equal(moved.status, 0, moved.stdout + moved.stderr);
+  assert.equal(f.git("rev-parse", "HEAD^1"), f.git("rev-parse", "origin/dev"));
+  assert.equal(f.git("rev-parse", "HEAD^2"), f.git("rev-parse", "origin/main"));
+  assert.equal(f.gitAt(f.origin, "rev-parse", "sync/main"), f.git("rev-parse", "HEAD"), "the remade sync replaced kit's own earlier push");
+});
+
+test("kit pr --sync-main remakes a hand-made merge that keeps dev's files over a hotfix on main, and refuses it", t => {
+  const f = fixture(t), peer = f.peer();
+  f.gitAt(peer, "checkout", "-q", "main"); writeFileSync(join(peer, "hotfix.txt"), "hotfix\n");
+  f.gitAt(peer, "add", "hotfix.txt"); f.gitAt(peer, "commit", "-q", "-m", "Hotfix on main"); f.gitAt(peer, "push", "-q", "origin", "main");
+  f.git("checkout", "-q", "dev"); f.git("checkout", "-q", "-b", "sync/main"); f.git("fetch", "-q", "origin");
+  f.git("merge", "-q", "-s", "ours", "-m", "Hand-made sync", "origin/main");
+  const result = f.run(["--sync-main"]);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /^RESULT: fail sync: the sync would change hotfix\.txt on dev: main holds changes dev lacks; /m);
+  assert.equal(f.git("rev-parse", "HEAD"), f.git("rev-parse", "origin/dev"));
+  assert.equal(f.calls().some(call => call.tool === "gh"), false);
+});
+
+test("a sync that is behind when it merges makes its merge again on the moved dev, and merges with --merge both times", t => {
+  const f = fixture(t), peer = release(f);
+  f.gitAt(peer, "checkout", "-q", "dev"); f.gitAt(peer, "pull", "-q", "--ff-only", "origin", "dev");
+  f.git("checkout", "-q", "dev"); f.git("pull", "-q", "--ff-only", "origin", "dev"); f.git("checkout", "-q", "-b", "sync/main");
+  const result = f.run(["--sync-main"], { FAKE_EMPTY: "1", FAKE_BEHIND: "1", FAKE_ADVANCE: peer });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const merges = f.ghCalls("merge");
+  assert.equal(merges.length, 2);
+  for (const merge of merges) { assert.ok(merge.args.includes("--merge")); assert.equal(merge.args.includes("--rebase"), false); }
+  assert.equal(f.git("rev-parse", "HEAD^1"), f.git("rev-parse", "origin/dev"), "the second head is the merge made again on the moved dev");
+  assert.equal(merges[1].args[merges[1].args.indexOf("--match-head-commit") + 1], f.git("rev-parse", "HEAD"));
+});
+
+test("a release through a merge queue asks for --auto --merge, and a landed commit that is no merge of the head is said", t => {
+  const queued = fixture(t), result = queued.run(["--base", "main", "--release"], { FAKE_QUEUE: "1" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const merge = queued.ghCalls("merge")[0].args;
+  assert.ok(merge.includes("--auto") && merge.includes("--merge"), merge.join(" ")); assert.equal(merge.includes("--rebase"), false);
+  const f = fixture(t);
+  f.git("checkout", "-q", "dev"); f.commit("Landed change", "landed.txt"); f.git("push", "-q", "origin", "dev");
+  f.git("checkout", "-q", "-b", "release/cut");
+  const base = f.git("rev-parse", "origin/main"), plain = f.run(["--base", "main", "--release"], { FAKE_RELEASE_CHECK: resolve("kit.d/release-check"), FAKE_MERGED: base });
+  assert.equal(plain.status, 0, plain.stdout + plain.stderr);
+  assert.match(plain.stdout, new RegExp(`^landed: ${base.slice(0, 7)} is no merge commit of [a-f0-9]{7}; check main by hand$`, "m"));
 });
 
 test("kit pr --sync-main makes the merge again on the newest dev when dev moved after the cut", t => {
@@ -1028,6 +1086,7 @@ test("kit pr --sync-main makes the merge again on the newest dev when dev moved 
   assert.equal(f.git("rev-parse", "HEAD^1"), f.git("rev-parse", "origin/dev"));
   assert.equal(f.git("rev-parse", "HEAD^2"), f.git("rev-parse", "origin/main"));
   assert.match(result.stdout, new RegExp(`^merge: gh pr merge 73 --merge --match-head-commit ${f.git("rev-parse", "HEAD")} --repo test/repo \\(a merge commit, never --rebase\\)$`, "m"));
+  assert.equal(f.git("log", "-1", "--format=%b"), "", "after an ordinary release main holds only merges, so the merge stays a plain one");
   assert.match(result.stdout, /RESULT: ok opened #73 [a-f0-9]{7}$/m);
 });
 
