@@ -467,15 +467,16 @@ two split, the next release conflicted, and a "sync main into dev" PR had to be 
   or rebase, one whose method cannot be read, or a lookup that cannot tell whether there is a queue, stops the run
   before anything is queued (gh adds a PR to a required
   queue whatever method it names, so `--no-merge` then prints why, never a `gh pr merge` command to run by hand).
-- A main that already holds copies of dev's commits: when main holds commits outside dev's history (merges left out)
-  but its files are dev's files at a dev commit made since the two last joined, the cut's merge keeps dev's files (`git merge -s
-  ours`, said as `merge: origin/main's files are dev's at <sha>, so the cut keeps dev's files`). Main then holds
-  nothing dev lacks, and a plain merge would only conflict or bring back what dev changed since. When main holds a
-  change dev lacks (a hotfix made on main), the merge stays a plain one, so that change is never dropped; a real
-  conflict stops the run and names its files, as before. A rollback made on main (a revert of a release) puts main's
-  files back to an older dev commit from before the last join, so it is no copy: the release carries it, and a sync
-  refuses it. After an ordinary release main's own commits are only
-  merges, so the merge stays plain too.
+- A main that already holds copies of dev's commits (merges left out, every commit main holds outside dev's history
+  has the same change as one of dev's, by `git log --cherry-mark`), with main's files dev's files at a dev commit made
+  since the two last joined: the cut's merge keeps dev's files (`git merge -s ours`, said as `merge: origin/main's
+  files are dev's at <sha>, so the cut keeps dev's files`). Main then holds nothing dev lacks, and a plain merge would
+  only conflict or bring back what dev changed since. When main's own commits are changes of its own only (a hotfix
+  made on main, a revert of a release merge), the merge stays a plain one, so they are carried; a real conflict stops
+  the run and names its files, as before. When main holds copies and changes of its own together (a rollback of a
+  copied commit looks like a hotfix there, and neither kind of merge keeps it), the run stops and names main's own
+  commits: land those changes on dev from a new branch with an ordinary `kit pr` first. After an ordinary release
+  main's own commits are only merges, so the merge stays plain too.
 - `kit pr --sync-main` lands a "sync main into dev" merge into dev. From a branch cut at `origin/dev` it merges
   `origin/main` into the branch (its own merge commit, never a fast-forward, keeping dev's files under the same rule),
   refuses unless the merge changes no file on dev (`the sync would change <files> on dev: main holds changes dev

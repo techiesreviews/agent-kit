@@ -576,20 +576,30 @@ async function main(args) {
     const joins = Boolean(flags.release || flags.syncMain), method = joins ? "--merge" : "--rebase";
     const isAncestor = async (name, older, newer) => (await execute(name, "git", ["merge-base", "--is-ancestor", older, newer])).status === 0;
     // One merge of `ref` into HEAD, dated by its newer parent, not by the clock, so the same two parents always make the same
-    // commit (TOOLS-310). When ref holds commits outside HEAD's history other than merges (main took copies of dev's commits,
-    // TOOLS-325) but its files are HEAD's at one of HEAD's commits since their last join, the merge keeps HEAD's files: ref holds nothing HEAD lacks,
-    // and a plain merge would only conflict or bring back what dev changed since. It returns that commit then, else nothing.
-    // After an ordinary release (main's only own commits are merges) the merge stays plain. A conflict is aborted and names its files.
+    // commit (TOOLS-310). The commits ref holds outside HEAD's history, merges left out, decide how (TOOLS-325):
+    // - none (an ordinary release left only merges on main), or only changes of ref's own (a hotfix, a revert of a release
+    //   merge): a plain merge, which carries them;
+    // - only copies of HEAD's commits (a rebase or squash merge), with ref's files HEAD's at a commit since their last join:
+    //   the merge keeps HEAD's files, since ref holds nothing HEAD lacks and a plain merge would only conflict or bring back
+    //   what dev changed since; it returns that commit;
+    // - copies and changes of ref's own together: it stops, since a merge cannot tell a rollback of a copy (which neither
+    //   kind of merge keeps) from a hotfix.
+    // A conflict is aborted and names its files.
     async function joinMerge(name, ref, subject) {
       const dates = (await git(name, ["show", "-s", "--no-show-signature", "--format=%ct", "HEAD", ref])).split(/\s+/).map(Number);
       if (dates.length !== 2 || !dates.every(Number.isSafeInteger)) throw new Error(`could not read the dates of the parents of the merge of ${ref}`);
       const when = `@${Math.max(...dates)} +0000`;
-      const copied = Boolean(await git(name, ["rev-list", "-n", "1", "--no-merges", ref, "^HEAD"]));
-      const tree = copied ? await git(name, ["rev-parse", `${ref}^{tree}`]) : "";
-      // Only HEAD's commits since the last join count: a revert made on ref (a rollback of a release) brings ref's files back to an
-      // older commit HEAD holds from before that join, and it must reach the merge, never be kept out.
-      const bases = copied ? (await git(name, ["merge-base", "--all", "HEAD", ref])).split(/\s+/).filter(Boolean) : [];
-      const kept = copied ? (await git(name, ["log", "--format=%H %T", "HEAD", ...bases.map(base => `^${base}`)])).split(/\r?\n/).find(line => line.endsWith(` ${tree}`))?.split(" ")[0] : undefined;
+      // "=" marks a commit with the same change in HEAD's history (a copy), "+" one of ref's own.
+      const marked = (await git(name, ["log", "--reverse", "--right-only", "--cherry-mark", "--no-merges", "--format=%m %h %s", `HEAD...${ref}`])).split(/\r?\n/).filter(Boolean);
+      const copies = marked.filter(line => line.startsWith("= ")), own = marked.filter(line => !line.startsWith("= ")).map(line => line.slice(2));
+      if (copies.length && own.length) {
+        const named = own.length > 5 ? `${own.slice(0, 5).join(", ")} and ${own.length - 5} more` : own.join(", ");
+        throw new Error(`${ref} holds copies of ${flags.base === release ? kitBranch("land", settings) : flags.base}'s commits and changes of its own beside them (${named}): a merge cannot tell a rollback from a hotfix there; make those changes on a new branch cut at origin/${kitBranch("land", settings)}, land them with an ordinary kit pr, then run this again`);
+      }
+      const tree = copies.length ? await git(name, ["rev-parse", `${ref}^{tree}`]) : "";
+      // Only HEAD's commits since the last join count: files that match an older commit are a rollback, never copies.
+      const bases = copies.length ? (await git(name, ["merge-base", "--all", "HEAD", ref])).split(/\s+/).filter(Boolean) : [];
+      const kept = copies.length ? (await git(name, ["log", "--format=%H %T", "HEAD", ...bases.map(base => `^${base}`)])).split(/\r?\n/).find(line => line.endsWith(` ${tree}`))?.split(" ")[0] : undefined;
       // Never a fast-forward: a HEAD that ref already holds (dev not moved since a release) still gets its own merge commit.
       const argv = kept ? ["merge", "--no-edit", "--no-ff", "-s", "ours", "-m", subject, "-m", `${ref}'s files are already this branch's at ${kept}, so the merge keeps this branch's files.`, ref]
         : ["merge", "--no-edit", "--no-ff", "-m", subject, ref];
