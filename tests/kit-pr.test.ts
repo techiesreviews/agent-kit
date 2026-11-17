@@ -1067,7 +1067,7 @@ test("kit pr --sync-main never resets away a hand-made merge that changes dev's 
   f.git("commit", "-q", "-m", "Hand-made sync with a fix");
   const merge = f.git("rev-parse", "HEAD"), result = f.run(["--sync-main"]);
   assert.equal(result.status, 1, result.stdout + result.stderr);
-  assert.match(result.stdout, new RegExp(`^RESULT: fail sync: this branch's merge ${merge.slice(0, 7)} changes files on dev: land those on dev with an ordinary kit pr, then cut a new branch at origin/dev and run kit pr --sync-main there$`, "m"));
+  assert.match(result.stdout, new RegExp(`^RESULT: fail sync: this branch's merge ${merge.slice(0, 7)} changes files on dev: make those changes on a new branch cut at origin/dev and land them with an ordinary kit pr, then cut another branch at origin/dev and run kit pr --sync-main there$`, "m"));
   assert.equal(f.git("rev-parse", "HEAD"), merge, "the hand-made merge stays");
   assert.equal(f.calls().some(call => call.tool === "gh"), false);
 });
@@ -1094,9 +1094,16 @@ test("a release through a merge queue asks for --auto --merge, and a landed comm
   for (const [how, words] of [["SQUASH", "lands by squash"], ["REBASE", "lands by rebase"], ["fail", "did not say how it lands"]]) {
     const refused = fixture(t), stopped = refused.run(["--base", "main", "--release"], { FAKE_QUEUE: "1", FAKE_QUEUE_METHOD: how });
     assert.equal(stopped.status, 1, stopped.stdout + stopped.stderr);
-    assert.match(stopped.stdout, new RegExp(`^RESULT: fail merge: the merge queue on main ${words}, and a release must land as a merge commit: set the queue to merge commits, or merge #73 by hand with gh pr merge 73 --merge$`, "m"));
+    assert.match(stopped.stdout, new RegExp(`^RESULT: fail merge: the merge queue on main ${words}, and a release must land as a merge commit: set the queue to merge commits, then run kit pr again$`, "m"));
     assert.equal(refused.ghCalls("merge").length, 0, "nothing goes into the queue");
   }
+  // --no-merge never advises a hand merge a squashing queue would take; with a queue that makes merge commits it does.
+  const advice = fixture(t), opened = advice.run(["--base", "main", "--release", "--no-merge"], { FAKE_QUEUE: "1", FAKE_QUEUE_METHOD: "SQUASH" });
+  assert.equal(opened.status, 0, opened.stdout + opened.stderr);
+  assert.doesNotMatch(opened.stdout, /gh pr merge 73/);
+  assert.match(opened.stdout, /^merge: not by hand: the merge queue on main lands by squash, and a release must land as a merge commit: set the queue to merge commits, then run kit pr again$/m);
+  const fine = fixture(t), merged = fine.run(["--base", "main", "--release", "--no-merge"], { FAKE_QUEUE: "1" });
+  assert.match(merged.stdout, /^merge: gh pr merge 73 --merge --match-head-commit [a-f0-9]{40} --repo test\/repo \(a merge commit, never --rebase\)$/m);
   const sync = fixture(t);
   release(sync);
   sync.git("checkout", "-q", "dev"); sync.git("pull", "-q", "--ff-only", "origin", "dev"); sync.git("checkout", "-q", "-b", "sync/main");
