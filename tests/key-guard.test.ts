@@ -1335,6 +1335,8 @@ test("TOOLS-326: an ssh wrapper whose #!/usr/bin/env -S line sets PATH never sta
   // A wrapper whose interpreter is such a script: the line one level down is read too.
   const nested = join(wrappers, "ssh-nested");
   writeFileSync(nested, `#!${first}\nexec ssh "$@"\n`); chmodSync(nested, 0o755);
+  const viaEnv = join(wrappers, "ssh-via-env");
+  writeFileSync(viaEnv, `#!/usr/bin/env ${first}\nexec ssh "$@"\n`); chmodSync(viaEnv, 0o755);
   const base = { ...process.env, HOME: home, PATH: `${bin}:/usr/bin:/bin`, GIT_CONFIG_GLOBAL: undefined, GIT_CONFIG_NOSYSTEM: undefined, GIT_SSH: undefined, GIT_SSH_COMMAND: undefined, GIT_CONFIG_COUNT: undefined } as NodeJS.ProcessEnv;
   const realGit = String(process.env.PATH).split(":").filter(folder => folder.startsWith("/")).map(folder => join(folder, "git")).find(file => existsSync(file))!;
   const refusedWith = (env: NodeJS.ProcessEnv) => {
@@ -1346,7 +1348,7 @@ test("TOOLS-326: an ssh wrapper whose #!/usr/bin/env -S line sets PATH never sta
     assert.ok(!existsSync(noted), `an ssh started: ${existsSync(noted) ? readFileSync(noted, "utf8") : ""}`);
     return run.stderr;
   };
-  for (const file of [first, second, oddName, long, nested]) {
+  for (const file of [first, second, oddName, long, nested, viaEnv]) {
     assert.throws(() => startCommand(file, [], base, { worktree: root, kind: "test" }), /starts with env (-S|--split-string=).*PATH=.*, which sets PATH itself/, file);
     assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: file }), /^kit: \S+ starts with env \S+.*, which sets PATH itself/m, file);
     assert.match(refusedWith({ ...base, GIT_SSH: file }), /^kit: \S+ starts with env \S+.*, which sets PATH itself/m, file);
