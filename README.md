@@ -438,7 +438,7 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   untracked file outside `.scratch/`) and HEAD is exactly `origin/<release>` after a fetch (`branches.release`,
   the branch the push guard reads). A project's own live deploy command runs it first
   (`scripts/agents/kit release-check && <deploy>`); `kit pr --release` runs `kit release-check --land` before it
-  opens the release PR, so the release is cut from exactly what landed (then `origin/<release>` is merged into it, never replayed: merge the PR with `--merge`).
+  opens the release PR, so the release is cut from exactly what landed (then `origin/<release>` is merged into it, never replayed; see "Releases" below for how it lands).
   It pushes nothing; ignored files (a built `dist/`) do not count. Only a `*-lead` owner may pass it with
   `--waive "<reason>"`, which its `RESULT:` line names with what was let through; `kit pr --release --waive` hands
   its reason on, so one waiver covers both the review findings and the check.
@@ -452,6 +452,32 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   more (a merge signed by `commit.gpgSign` never repeats either: a signature differs each time). After dev changed, the new cut answers the
   earlier cut's review as a later round: the reviewer reads the plain diff from the earlier cut (what dev changed since
   then and the merge itself), and the fix rounds of every cut of the release count against one budget.
+
+## Releases
+
+Dev and main stay joined: main only ever takes dev by a merge commit, so every commit on main is in dev's history or
+is one of those merges (TOOLS-325). A release once landed on main as copies of dev's commits (a rebase merge), so the
+two split, the next release conflicted, and a "sync main into dev" PR had to be merged by hand.
+
+- `kit pr --release --base main` (after Lex's go) cuts the release from `origin/dev`, merges `origin/main` into the
+  cut, opens the PR and, once CI passes, lands it with `gh pr merge --merge --match-head-commit <head>`: a merge
+  commit, never a rebase, squash or cherry-pick. `--no-merge` only opens it and prints that merge command. The line
+  `landed: <sha> merges <head> into main (a merge commit)` says what landed.
+- A main that already holds copies of dev's commits: when main's files are dev's files at some commit of dev's
+  history, the cut's merge keeps dev's files (`git merge -s ours`, said as `merge: origin/main's files are dev's at
+  <sha>, so the cut keeps dev's files`). Main then holds nothing dev lacks, and a plain merge would only conflict or
+  bring back what dev changed since. When main holds a change dev lacks (a hotfix made on main), the merge stays a
+  plain one, so that change is never dropped; a real conflict stops the run and names its files, as before.
+- `kit pr --sync-main` lands a "sync main into dev" merge into dev. From a branch cut at `origin/dev` it merges
+  `origin/main` into the branch (keeping dev's files under the same rule), refuses unless the merge changes no file
+  on dev (`the sync would change <files> on dev: main holds changes dev lacks; land them on dev with an ordinary kit
+  pr first`), and lands it as a merge commit, never rebased (an ordinary `kit pr` rebases, which flattens such a merge
+  away). A branch cut from an older dev, or kit's own sync on an older dev or main, is made again on the newest of
+  both; a branch with work of its own is refused. The empty diff has nothing to review, so the review and the second
+  look say so, and CI still gates the merge. It needs `branches.release` apart from `branches.land`.
+- `kit release-check` (on its own and inside `kit pr --release`) warns, without failing, when `origin/main` holds
+  commits outside dev's history, merges left out: `warning: origin/main has N commits outside dev's history (<sha>
+  <subject>, …): copied by a rebase or squash merge, or made straight on main; join them with kit pr --sync-main`.
 
 ## Changing the kit
 

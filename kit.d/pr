@@ -18,7 +18,7 @@ const { checkSteps, classify, docsOnly, doneHeading, featureListGuard, featureLi
 const { coverageHash, readUxResult, uxGuard, visibleFiles } = await import(pathToFileURL(resolve(import.meta.dirname, "../ux-gate.mjs")).href);
 const { checkLock, keyGuardOn, runPath, runProgram, startCommand } = await import(pathToFileURL(resolve(import.meta.dirname, "../key-guard.mjs")).href);
 const { folderRemote, gitCommonDir, gitNetworkCall, gitSafety, gitTop, loopbackRemote } = await import(pathToFileURL(resolve(import.meta.dirname, "../git-safety.mjs")).href);
-const usage = 'Usage: kit pr [--base <land>] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release] [--full] [--waive "<reason>"] [--not-visible "<reason>"]\nBranches come from scripts/agents/kit.json: --base defaults to branches.land; --release needs --base branches.release and first runs kit release-check --land (nothing unsaved, HEAD exactly origin/<land>).\n--waive requires a *-lead owner and may be given more than once (ids count in any reason, counts add up; once any reason names an id, the counts are not read); records the reason for merging with open findings or without a feature-list update;\na waiver for the findings that stop the landing (above P3; once the fix rounds are used up, P0 and P1) must name each one by id in its text (--waive \"R1-2, SL-1: <reason>\") or start with the number of them (--waive \"2 findings: <reason>\", which must match both looks together);\na finding it leaves out stops kit pr with a plain reason that lists it, and so does one that is new at a head a rebase brought, at the start of the run too (the lead sees it and runs kit pr again); P3 findings, test gaps and docs wording need no names;\nwith --release it also passes the release check, which names the reason (kit pr still needs a clean tree).\nA visible change (paths.visible) lands only with a fresh kit ux result: one that passed, with the review, for the visible files and the listed features that cover the change as they are now (kit ux saves it for the branch; a later change to a visible file or to one of those features, a rebase\'s too, needs kit ux again; a list edit about other features does not).\n--not-visible "<reason>" lands a change that matches those paths but shows a person nothing new, with the reason in the PR text (refused when kit ux tried this very change and it did not pass, and with --release; a run whose reviewer did not finish is no such verdict); --waive does not cover the UX check.\nWhen no feature in the list covers the changed files, kit ux has nothing to try and the PR says "UX check: nothing to try".\nA project with no feature list for kit ux (docs/agents/features.md) says "UX check: skipped"; a release carries what each PR already passed.\nAfter the Claude review (none in the docs tier), every change gets a second look (kit review --second-look), whose findings block the same way;\nwhen no model can take it, the PR lands and says "second look: skipped (<reason>)".\nOn Orbit ("tickets": "orbit"), --ticket takes a card KEY or a saved brief of it (.scratch/kit-tickets/KEY.md); when the PR\nlands the card goes to Done with a dated comment naming the PR and its merge SHA (ORBIT_ROLE=lead); a card that cannot be closed is named on the RESULT line.\nA PR a merge queue takes leaves the card open, its follow-ups on the card, and says to close it once the PR lands.\n';
+const usage = 'Usage: kit pr [--base <land>] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release | --sync-main] [--full] [--waive "<reason>"] [--not-visible "<reason>"]\nBranches come from scripts/agents/kit.json: --base defaults to branches.land; --release needs --base branches.release and first runs kit release-check --land (nothing unsaved, HEAD exactly origin/<land>).\nA release joins origin/<release> into the cut by one merge (keeping dev\'s files when main\'s files are already dev\'s at some commit, as after copied commits) and lands, once CI passes, as a merge commit: never a rebase or squash (--no-merge only opens it).\n--sync-main, from a branch cut at origin/<land>, merges origin/<release> into it and lands that merge into <land> as a merge commit, never rebased; it refuses when the merge would change any file on <land>.\n--waive requires a *-lead owner and may be given more than once (ids count in any reason, counts add up; once any reason names an id, the counts are not read); records the reason for merging with open findings or without a feature-list update;\na waiver for the findings that stop the landing (above P3; once the fix rounds are used up, P0 and P1) must name each one by id in its text (--waive \"R1-2, SL-1: <reason>\") or start with the number of them (--waive \"2 findings: <reason>\", which must match both looks together);\na finding it leaves out stops kit pr with a plain reason that lists it, and so does one that is new at a head a rebase brought, at the start of the run too (the lead sees it and runs kit pr again); P3 findings, test gaps and docs wording need no names;\nwith --release it also passes the release check, which names the reason (kit pr still needs a clean tree).\nA visible change (paths.visible) lands only with a fresh kit ux result: one that passed, with the review, for the visible files and the listed features that cover the change as they are now (kit ux saves it for the branch; a later change to a visible file or to one of those features, a rebase\'s too, needs kit ux again; a list edit about other features does not).\n--not-visible "<reason>" lands a change that matches those paths but shows a person nothing new, with the reason in the PR text (refused when kit ux tried this very change and it did not pass, and with --release; a run whose reviewer did not finish is no such verdict); --waive does not cover the UX check.\nWhen no feature in the list covers the changed files, kit ux has nothing to try and the PR says "UX check: nothing to try".\nA project with no feature list for kit ux (docs/agents/features.md) says "UX check: skipped"; a release carries what each PR already passed.\nAfter the Claude review (none in the docs tier), every change gets a second look (kit review --second-look), whose findings block the same way;\nwhen no model can take it, the PR lands and says "second look: skipped (<reason>)".\nOn Orbit ("tickets": "orbit"), --ticket takes a card KEY or a saved brief of it (.scratch/kit-tickets/KEY.md); when the PR\nlands the card goes to Done with a dated comment naming the PR and its merge SHA (ORBIT_ROLE=lead); a card that cannot be closed is named on the RESULT line.\nA PR a merge queue takes leaves the card open, its follow-ups on the card, and says to close it once the PR lands.\n';
 const kit = process.env.KIT_PR_KIT || resolve(import.meta.dirname, "../kit");
 // main's private folder of program links (name: target), removed when the process ends.
 let programs;
@@ -31,7 +31,7 @@ function options(args) {
   for (let i = 0; i < args.length; i++) {
     const flag = args[i];
     // --waive may be given more than once (one reason per finding, say); every other option once.
-    if (!["--base", "--title", "--ticket", "--no-merge", "--dry-run", "--release", "--full", "--waive", "--not-visible"].includes(flag) || (flag !== "--waive" && Object.hasOwn(flags, flag)))
+    if (!["--base", "--title", "--ticket", "--no-merge", "--dry-run", "--release", "--sync-main", "--full", "--waive", "--not-visible"].includes(flag) || (flag !== "--waive" && Object.hasOwn(flags, flag)))
       throw new Error(`unknown or duplicate option: ${flag}`);
     if (["--base", "--title", "--ticket", "--waive", "--not-visible"].includes(flag)) {
       const value = args[++i];
@@ -42,9 +42,10 @@ function options(args) {
   }
   if (waives.length && !kitOwner().endsWith("-lead")) throw new Error("--waive requires a *-lead owner");
   if (flags["--not-visible"] && flags["--release"]) throw new Error("--not-visible has no use with --release: a release carries what each PR already passed");
+  if (flags["--sync-main"] && flags["--release"]) throw new Error("--sync-main has no use with --release: a sync lands main into the land branch, a release the other way");
   // `waive` is every reason as one text (the PR, the RESULT line, the release check); `waives` keeps them apart for the waiver check.
   return { base: flags["--base"], title: flags["--title"], ticket: flags["--ticket"], waive: waives.length ? waives.join("; ") : undefined, waives, notVisible: flags["--not-visible"],
-    noMerge: flags["--no-merge"], dryRun: flags["--dry-run"], release: flags["--release"], full: flags["--full"] };
+    noMerge: flags["--no-merge"], dryRun: flags["--dry-run"], release: flags["--release"], syncMain: flags["--sync-main"], full: flags["--full"] };
 }
 
 function ticketTitle(file) {
@@ -514,6 +515,9 @@ async function main(args) {
     });
     if (flags.release && settings.branches.direct === true) throw new Error("--release has no step in a direct project (branches.direct): its PRs land on its one branch as they are");
     if (flags.release && !release) throw new Error("--release needs branches.release in scripts/agents/kit.json");
+    // A sync joins the release branch into the land branch, so a project needs the two apart (TOOLS-325).
+    if (flags.syncMain && (!release || release === kitBranch("land", settings))) throw new Error("--sync-main needs a release branch apart from the land branch (branches.release in scripts/agents/kit.json)");
+    if (flags.syncMain && flags.base !== kitBranch("land", settings)) throw new Error(`--sync-main lands on ${kitBranch("land", settings)}, not ${flags.base}`);
     // A project that lands on its release branch (land and release both main) opens ordinary PRs into it.
     if (release && release !== kitBranch("land", settings) && flags.base === release && !flags.release) throw new Error(`--base ${release} requires --release`);
     if (flags.release && flags.base !== release) throw new Error(`--release requires --base ${release}`);
@@ -527,6 +531,8 @@ async function main(args) {
       if (checked.status !== 0) throw new Error(kitHideUserInfo(line?.replace(/^fail /, "") || childMessage(checked, `${kit} exited ${checked.status}`)));
       releaseCheck = kitHideUserInfo(line?.replace(/^ok (release-check )?/, "") || "ok");
       console.log(`release-check: ok (${releaseCheck})`);
+      // The check's warnings (main holds commits outside dev's history, TOOLS-325) are shown, never a stop.
+      for (const warning of checked.text.split(/\r?\n/).filter(text => text.startsWith("warning: "))) console.log(kitHideUserInfo(warning));
     }
     // A waiver the check used (not "waiver not needed") goes on the final RESULT line.
     const releaseWaived = () => releaseCheck.startsWith("waived by ") ? ` (release-check waived: ${flags.waive})` : "";
@@ -566,6 +572,30 @@ async function main(args) {
       if (found.length) throw new Error(`this repository uses Git LFS (filter=lfs in ${[...new Set(found)].join(", ")}); kit pr does not read your global Git config, where Git LFS is set up, so a rebase would leave pointer files in place of the files; land it with ASE_KEY_GUARD=off`);
     }
 
+    // A release and a sync join two branches: they land as a merge commit, never rebased or squashed (TOOLS-325).
+    const joins = Boolean(flags.release || flags.syncMain), method = joins ? "--merge" : "--rebase";
+    const isAncestor = async (name, older, newer) => (await execute(name, "git", ["merge-base", "--is-ancestor", older, newer])).status === 0;
+    // One merge of `ref` into HEAD, dated by its newer parent, not by the clock, so the same two parents always make the same
+    // commit (TOOLS-310). When ref's files are already HEAD's at one of its commits (main took copies of dev's commits, TOOLS-325),
+    // the merge keeps HEAD's files: ref holds nothing HEAD lacks, and a plain merge would only conflict or bring back what dev
+    // changed since. It returns that commit then, else nothing. A conflict is aborted and names its files.
+    async function joinMerge(name, ref, subject) {
+      const dates = (await git(name, ["show", "-s", "--no-show-signature", "--format=%ct", "HEAD", ref])).split(/\s+/).map(Number);
+      if (dates.length !== 2 || !dates.every(Number.isSafeInteger)) throw new Error(`could not read the dates of the parents of the merge of ${ref}`);
+      const when = `@${Math.max(...dates)} +0000`;
+      const tree = await git(name, ["rev-parse", `${ref}^{tree}`]);
+      const kept = (await git(name, ["log", "--format=%H %T", "HEAD"])).split(/\r?\n/).find(line => line.endsWith(` ${tree}`))?.split(" ")[0];
+      const argv = kept ? ["merge", "--no-edit", "-s", "ours", "-m", subject, "-m", `${ref}'s files are already this branch's at ${kept}, so the merge keeps this branch's files.`, ref]
+        : ["merge", "--no-edit", "-m", subject, ref];
+      const merged = await execute(name, "git", argv, undefined, { GIT_AUTHOR_DATE: when, GIT_COMMITTER_DATE: when });
+      if (merged.status !== 0) {
+        const files = await git(name, ["-c", "core.quotepath=false", "diff", "--name-only", "--diff-filter=U"]);
+        const aborted = await execute(name, "git", ["merge", "--abort"]);
+        if (files) throw new Error(`conflict in ${files.split(/\r?\n/).join(", ")}${aborted.status ? "; merge --abort failed" : ""}`);
+        throw new Error(childMessage(merged, `git merge ${ref} failed`));
+      }
+      return kept;
+    }
     async function rebase() {
       await git("fetch", ["fetch", "-q", "origin"]); ok("fetch");
       await lfsStop();
@@ -574,24 +604,42 @@ async function main(args) {
       // conflicts dev already resolved (TOOLS-38). With main already inside the cut, nothing changes.
       if (flags.release) {
         // A cut that origin/<release> already holds would be an empty release.
-        const released = await execute("merge", "git", ["merge-base", "--is-ancestor", "HEAD", `origin/${flags.base}`]);
-        if (released.status === 0) throw new Error(`nothing to release: origin/${flags.base} already holds this cut`);
-        const inside = await execute("merge", "git", ["merge-base", "--is-ancestor", `origin/${flags.base}`, "HEAD"]);
-        if (inside.status === 0) { ok("merge"); return; }
-        // The same dev and main always make the same cut (TOOLS-310): the merge is dated by its newer parent, not by the clock, so a
-        // re-cut from an unchanged dev is the very commit its reviews, second look and waivers were given for.
-        const dates = (await git("merge", ["show", "-s", "--no-show-signature", "--format=%ct", "HEAD", `origin/${flags.base}`])).split(/\s+/).map(Number);
-        if (dates.length !== 2 || !dates.every(Number.isSafeInteger)) throw new Error("could not read the dates of the release cut's parents");
-        const when = `@${Math.max(...dates)} +0000`;
-        const merged = await execute("merge", "git", ["merge", "--no-edit", "-m", `Merge origin/${flags.base} into the release cut`, `origin/${flags.base}`],
-          undefined, { GIT_AUTHOR_DATE: when, GIT_COMMITTER_DATE: when });
-        if (merged.status !== 0) {
-          const files = await git("merge", ["-c", "core.quotepath=false", "diff", "--name-only", "--diff-filter=U"]);
-          const aborted = await execute("merge", "git", ["merge", "--abort"]);
-          if (files) throw new Error(`conflict in ${files.split(/\r?\n/).join(", ")}${aborted.status ? "; merge --abort failed" : ""}`);
-          throw new Error(childMessage(merged, `git merge origin/${flags.base} failed`));
-        }
+        if (await isAncestor("merge", "HEAD", `origin/${flags.base}`)) throw new Error(`nothing to release: origin/${flags.base} already holds this cut`);
+        if (await isAncestor("merge", `origin/${flags.base}`, "HEAD")) { ok("merge"); return; }
+        const kept = await joinMerge("merge", `origin/${flags.base}`, `Merge origin/${flags.base} into the release cut`);
+        if (kept) console.log(`merge: origin/${flags.base}'s files are ${kitBranch("land", settings)}'s at ${kept.slice(0, 7)}, so the cut keeps ${kitBranch("land", settings)}'s files`);
         ok("merge");
+        return;
+      }
+      // A sync joins origin/<release> into the land branch by one merge that changes no file there, and is never rebased:
+      // a rebase would flatten it away (TOOLS-325). A branch cut earlier, or kit's own sync on an older dev or main, is made again
+      // on the newest of both.
+      if (flags.syncMain) {
+        step = "sync";
+        const main = `origin/${release}`, land = `origin/${flags.base}`;
+        if (await isAncestor("sync", main, land)) throw new Error(`nothing to sync: ${land} already holds ${main}`);
+        const [, ...parents] = (await git("sync", ["rev-list", "--parents", "-n", "1", "HEAD"])).split(/\s+/);
+        const [tipLand, tipMain] = [await git("sync", ["rev-parse", land]), await git("sync", ["rev-parse", main])];
+        const current = parents.length === 2 && parents[0] === tipLand && parents[1] === tipMain;
+        if (!current) {
+          const syncOf = parents.length === 2 && await isAncestor("sync", parents[0], land) && await isAncestor("sync", parents[1], main);
+          if (!syncOf && !await isAncestor("sync", "HEAD", land))
+            throw new Error(`a sync branch holds only the merge of ${main}: cut it at ${land} (git reset --keep ${land}) and run kit pr --sync-main again`);
+          await git("sync", ["reset", "-q", "--keep", land]);
+          try { await joinMerge("sync", main, `Merge ${main} into ${flags.base} (sync, no file changes)`); }
+          catch (error) {
+            throw new Error(/^conflict in /.test(error.message)
+              ? `${error.message}: ${release} holds changes ${flags.base} lacks; land them on ${flags.base} with an ordinary kit pr first, then run kit pr --sync-main again` : error.message);
+          }
+        }
+        const changed = (await git("sync", ["-c", "core.quotepath=false", "diff", "--name-only", land, "HEAD"])).split(/\r?\n/).filter(Boolean);
+        if (changed.length) {
+          // Kit's own merge is taken back, so the branch is left as it was cut.
+          if (!current) await git("sync", ["reset", "-q", "--keep", land]);
+          const named = changed.length > 5 ? `${changed.slice(0, 5).join(", ")} and ${changed.length - 5} more` : changed.join(", ");
+          throw new Error(`the sync would change ${named} on ${flags.base}: ${release} holds changes ${flags.base} lacks; land them on ${flags.base} with an ordinary kit pr first, then run kit pr --sync-main again`);
+        }
+        console.log(`sync: ok (${main} joins ${flags.base}, no file changes)`);
         return;
       }
       const result = await execute("rebase", "git", ["rebase", `origin/${flags.base}`]);
@@ -616,7 +664,7 @@ async function main(args) {
     // the SHAs the builder saw change here and again on landing (reportLanded prints those).
     // Synchronous from the captured HEAD to the commit, so no await sits between the proof and the write.
     function nameCommits() {
-      if (!flags.ticket || card || flags.release || flags.dryRun) return;
+      if (!flags.ticket || card || flags.release || flags.syncMain || flags.dryRun) return;
       step = "commits";
       const current = args => gitSync(args);
       const captured = current(["rev-parse", "HEAD"]);
@@ -881,9 +929,9 @@ async function main(args) {
       if (!named.length) console.log("note: origin is not a GitHub repo and GH_REPO is unset, so a real run stops before opening a PR");
       for (const command of [["git", ...pushArgs()], ["gh", ...createArgs, ...named], ...(review ? [reviewCommand([])] : []), reviewCommand(["--second-look"])])
         console.log(command.map(quote).join(" "));
-      if (!flags.noMerge && !flags.release)
+      if (!flags.noMerge && !joins)
         console.log(`gh pr merge N --rebase --delete-branch --repo ${ghEnv.GH_REPO || "<owner/name>"} (or --auto --rebase with a merge queue)`);
-      if (flags.release)
+      if (joins)
         console.log(`merge: gh pr merge N --merge --match-head-commit <the pushed head> --repo ${ghEnv.GH_REPO || "<owner/name>"} (a merge commit, never --rebase)`);
       kitResult("ok", `dry-run ${head.slice(0, 7)} ${branch} -> ${flags.base}${releaseWaived()}${flakyNote()}`);
       return 0;
@@ -1185,11 +1233,11 @@ async function main(args) {
       return { repo, owner, name, target: ghEnv.GH_REPO?.split("/").length === 3 ? `${ghEnv.GH_REPO.split("/")[0]}/${repo}` : repo };
     }
     if (!await reviewHead()) return 1;
-    if (flags.noMerge || flags.release) {
+    if (flags.noMerge) {
       // A rebase merge on GitHub would flatten dev's back-merge again and bring the conflict back one step later.
       // The command pins the reviewed head, like the kit's own merges: a push made after the review is refused.
       // The advice never fails a release that is done: if the repo lookup fails, it names GH_REPO as it stands.
-      if (flags.release) {
+      if (joins) {
         let target = ghEnv.GH_REPO || "<owner/name>";
         try { target = (await repoNames()).target; } catch { /* the advice keeps GH_REPO */ }
         console.log(`merge: gh pr merge ${number} --merge --match-head-commit ${head} --repo ${target} (a merge commit, never --rebase)`);
@@ -1228,6 +1276,16 @@ async function main(args) {
         });
       } catch (error) { console.log(`landed: not checked (${error.message})`); }
     }
+    // A release or a sync lands as one merge commit whose parents hold the reviewed head: the line says so, or that it is not.
+    async function reportJoined(merge) {
+      if (!merge) { console.log("landed: not checked (GitHub named no merge commit)"); return; }
+      try {
+        await git("landed", ["fetch", "-q", "origin", flags.base]);
+        const parents = (await git("landed", ["rev-list", "--parents", "-n", "1", merge])).split(/\s+/).slice(1);
+        console.log(parents.length > 1 && parents.includes(head) ? `landed: ${merge.slice(0, 7)} merges ${head.slice(0, 7)} into ${flags.base} (a merge commit)`
+          : `landed: ${merge.slice(0, 7)} is no merge commit of ${head.slice(0, 7)}; check ${flags.base} by hand`);
+      } catch (error) { console.log(`landed: not checked (${error.message})`); }
+    }
     // The landed card goes to Done with the PR link and merge SHA. The merge already happened, so a card that cannot be
     // closed (Orbit down, no lead role) is said once, with the command that closes it, and the run still counts.
     async function closeCard(number, sha, host, repo) {
@@ -1243,7 +1301,7 @@ async function main(args) {
     const queue = await execute("merge", "gh", ["api", "graphql", "-f", "query=query($o:String!,$n:String!,$b:String!){repository(owner:$o,name:$n){mergeQueue(branch:$b){id}}}",
       "-F", `o=${owner}`, "-F", `n=${name}`, "-F", `b=${flags.base}`, "--jq", '.data.repository.mergeQueue.id // ""']);
     if (queue.status === 0 && queue.text.trim()) {
-      await gh("merge", ["pr", "merge", number, "--auto", "--rebase", "--match-head-commit", head, "--repo", target]); ok("merge");
+      await gh("merge", ["pr", "merge", number, "--auto", method, "--match-head-commit", head, "--repo", target]); ok("merge");
       await recordWaiver();
       land({ queued: true, waived: waivedAny() });
       // Nothing here waits for the queue (kit slice, which did, was cut in TOOLS-235): the card stays open, the line says
@@ -1285,7 +1343,7 @@ async function main(args) {
         console.log("ci: none (no workflow in .github/workflows runs on pull requests); landing after review");
         land({ ci: "none" });
       }
-      const merged = await execute("merge", "gh", ["pr", "merge", number, "--rebase", "--delete-branch", "--match-head-commit", head, "--repo", target]);
+      const merged = await execute("merge", "gh", ["pr", "merge", number, method, "--delete-branch", "--match-head-commit", head, "--repo", target]);
       if (merged.status === 0) {
         const commit = await execute("merge", "gh", ["pr", "view", number, "--json", "mergeCommit", "--jq", ".mergeCommit.oid"]);
         const mergeCommit = commit.status === 0 && /^[a-f0-9]{40}$/i.test(commit.text.trim()) ? commit.text.trim() : undefined;
@@ -1293,9 +1351,9 @@ async function main(args) {
         ok("merge");
         await recordWaiver();
         land({ sha, at: new Date().toISOString(), waived: waivedAny() });
-        await reportLanded(mergeCommit);
+        await (joins ? reportJoined(mergeCommit) : reportLanded(mergeCommit));
         const closed = await closeCard(number, mergeCommit, target.split("/").length === 3 ? target.split("/")[0] : "github.com", repo);
-        kitResult("ok", `merged #${number} ${sha.slice(0, 7)}${closed}${flakyNote()}`);
+        kitResult("ok", `merged #${number} ${sha.slice(0, 7)}${closed}${releaseWaived()}${flakyNote()}`);
         return 0;
       }
       // --match-head-commit refuses a head we did not push and review: stop rather than merge it.
