@@ -1348,6 +1348,11 @@ test("TOOLS-326: an ssh wrapper whose #!/usr/bin/env -S line sets PATH never sta
     assert.ok(!existsSync(noted), `an ssh started: ${existsSync(noted) ? readFileSync(noted, "utf8") : ""}`);
     return run.stderr;
   };
+  // An option among the -S words is env's, never a setting the PATH check passes over.
+  const optionInside = wrapper("ssh-option-path", `--split-string=PATH=${links}:${bin}:${dirname(shell)}`);
+  assert.throws(() => startCommand(optionInside, [], base, { worktree: root, kind: "test" }), /starts with env -S --split-string=PATH=\S+ sh, so which program it runs cannot be told/);
+  assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: optionInside }), /^kit: \S+ starts with env -S --split-string=PATH=\S+ sh, so which program it runs cannot be told/m);
+  assert.match(refusedWith({ ...base, GIT_SSH: optionInside }), /^kit: \S+ starts with env -S --split-string=PATH=\S+ sh, so which program it runs cannot be told/m);
   for (const file of [first, second, oddName, long, nested, viaEnv]) {
     assert.throws(() => startCommand(file, [], base, { worktree: root, kind: "test" }), /starts with env (-S|--split-string=).*PATH=.*, which sets PATH itself/, file);
     assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: file }), /^kit: \S+ starts with env \S+.*, which sets PATH itself/m, file);
