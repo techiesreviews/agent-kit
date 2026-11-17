@@ -623,14 +623,18 @@ async function main(args) {
         if (await isAncestor("sync", main, land)) throw new Error(`nothing to sync: ${land} already holds ${main}`);
         // The merge is always made here, never taken as it came: a hand-made one may keep dev's files over a change main holds.
         // It is dated by its parents, so the same dev and main make the same commit on a rerun.
-        const [, ...parents] = (await git("sync", ["rev-list", "--parents", "-n", "1", "HEAD"])).split(/\s+/);
-        const syncOf = parents.length === 2 && await isAncestor("sync", parents[0], land) && await isAncestor("sync", parents[1], main);
-        if (!syncOf && !await isAncestor("sync", "HEAD", land))
-          throw new Error(`a sync branch holds only the merge of ${main}, and this one has work of its own: cut a new branch at ${land} (git switch -c <name> ${land}) and run kit pr --sync-main there`);
-        // A merge kit may make again keeps its first parent's files; one that changes them (conflicts fixed by hand) is work, never reset away.
-        if (syncOf && await git("sync", ["rev-parse", "HEAD^{tree}"]) !== await git("sync", ["rev-parse", `${parents[0]}^{tree}`])) {
-          const short = await git("sync", ["rev-parse", "--short", "HEAD"]);
-          throw new Error(`this branch's merge ${short} changes files on ${flags.base}: make those changes on a new branch cut at ${land} and land them with an ordinary kit pr, then cut another branch at ${land} and run kit pr --sync-main there`);
+        // A branch whose HEAD dev already holds is a fresh cut, whatever its tip is (dev may end in a merge of its own). Otherwise
+        // HEAD must be a merge of older dev and main.
+        if (!await isAncestor("sync", "HEAD", land)) {
+          const [, ...parents] = (await git("sync", ["rev-list", "--parents", "-n", "1", "HEAD"])).split(/\s+/);
+          const syncOf = parents.length === 2 && await isAncestor("sync", parents[0], land) && await isAncestor("sync", parents[1], main);
+          if (!syncOf)
+            throw new Error(`a sync branch holds only the merge of ${main}, and this one has work of its own: cut a new branch at ${land} (git switch -c <name> ${land}) and run kit pr --sync-main there`);
+          // A merge kit may make again keeps its first parent's files; one that changes them (conflicts fixed by hand) is work, never reset away.
+          if (await git("sync", ["rev-parse", "HEAD^{tree}"]) !== await git("sync", ["rev-parse", `${parents[0]}^{tree}`])) {
+            const short = await git("sync", ["rev-parse", "--short", "HEAD"]);
+            throw new Error(`this branch's merge ${short} changes files on ${flags.base}: make those changes on a new branch cut at ${land} and land them with an ordinary kit pr, then cut another branch at ${land} and run kit pr --sync-main there`);
+          }
         }
         await git("sync", ["reset", "-q", "--keep", land]);
         try { await joinMerge("sync", main, `Merge ${main} into ${flags.base} (sync, no file changes)`); }

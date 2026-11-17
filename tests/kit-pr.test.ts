@@ -1058,6 +1058,22 @@ test("kit pr --sync-main remakes a hand-made merge that keeps dev's files over a
   assert.equal(f.calls().some(call => call.tool === "gh"), false);
 });
 
+test("kit pr --sync-main takes a fresh branch at origin/dev when dev ends in a merge of its own that main already released", t => {
+  const f = fixture(t), peer = f.peer();
+  // dev lands a side branch by a merge commit (its files differ from its first parent's), and main releases it by a merge.
+  f.git("checkout", "-q", "dev"); f.git("checkout", "-q", "-b", "side"); f.commit("Side work", "side.txt");
+  f.git("checkout", "-q", "dev"); f.commit("Dev work", "dev.txt");
+  f.git("merge", "-q", "--no-ff", "-m", "Merge side into dev", "side"); f.git("push", "-q", "origin", "dev");
+  f.gitAt(peer, "fetch", "-q", "origin"); f.gitAt(peer, "checkout", "-q", "main");
+  f.gitAt(peer, "merge", "-q", "--no-ff", "-m", "Release", "origin/dev"); f.gitAt(peer, "push", "-q", "origin", "main");
+  f.git("checkout", "-q", "-b", "sync/main"); f.git("fetch", "-q", "origin");
+  const result = f.run(["--sync-main", "--no-merge"], { FAKE_EMPTY: "1" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(f.git("rev-parse", "HEAD^1"), f.git("rev-parse", "origin/dev"));
+  assert.equal(f.git("rev-parse", "HEAD^2"), f.git("rev-parse", "origin/main"));
+  assert.equal(f.git("diff", "--name-only", "origin/dev", "HEAD"), "");
+});
+
 test("kit pr --sync-main never resets away a hand-made merge that changes dev's files, and names it", t => {
   const f = fixture(t), peer = f.peer();
   f.gitAt(peer, "checkout", "-q", "main"); writeFileSync(join(peer, "hotfix.txt"), "hotfix\n");
