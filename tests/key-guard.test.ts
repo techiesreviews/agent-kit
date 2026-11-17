@@ -1330,6 +1330,8 @@ test("TOOLS-326: an ssh wrapper whose #!/usr/bin/env -S line sets PATH never sta
   const second = wrapper("ssh-x-path", `X=1 PATH=${links}:${bin}:${dirname(shell)}`);
   // env sets a word with = in it whatever its name, so an odd name first hides no PATH after it.
   const oddName = wrapper("ssh-odd-path", `1X=1 PATH=${links}:${bin}:${dirname(shell)}`);
+  const emptyName = join(wrappers, "ssh-empty-name");
+  writeFileSync(emptyName, `#!/usr/bin/env -S =x /usr/bin/env -S "X=1 PATH=${links}:${bin}:${dirname(shell)}" sh\nexec ssh "$@"\n`); chmodSync(emptyName, 0o755);
   const long = join(wrappers, "ssh-long-path");
   writeFileSync(long, `#!/usr/bin/env --split-string=PATH=${links}:${bin}:${dirname(shell)} sh\nexec ssh "$@"\n`); chmodSync(long, 0o755);
   // A wrapper whose interpreter is such a script: the line one level down is read too.
@@ -1364,7 +1366,7 @@ test("TOOLS-326: an ssh wrapper whose #!/usr/bin/env -S line sets PATH never sta
   // A link to env by another name is env again, whose own -S string could set PATH out of sight.
   const renamed = join(wrappers, "ssh-renamed-env");
   writeFileSync(renamed, `#!/usr/bin/env -S ${join(bin, "e")} -S "X=1 PATH=${links}:${bin}:${dirname(shell)}" sh\nexec ssh "$@"\n`); chmodSync(renamed, 0o755);
-  for (const file of [wrapper("ssh-env-env", "env"), renamed]) {
+  for (const file of [wrapper("ssh-env-env", "env"), renamed, emptyName]) {
     assert.throws(() => startCommand(file, [], base, { worktree: root, kind: "test" }), /, which starts env again, and that env would look its program up by name/, file);
     assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: file }), /^kit: \S+ starts with env -S .*, which starts env again/m, file);
     assert.match(refusedWith({ ...base, GIT_SSH: file }), /^kit: \S+ starts with env -S .*, which starts env again/m, file);
