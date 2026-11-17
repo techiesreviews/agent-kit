@@ -510,8 +510,9 @@ function interpreted(file, args, env, shut, refuse, depth = 0) {
   while (/^[^-][^=]*=/.test(words[0] ?? "")) assignments.push(words.shift());
   if (!words.length || words[0].startsWith("-")) unknown();
   // A PATH of its own would let the program start another by name from a folder that holds a link into the worktree
-  // (TOOLS-326): the folders are the line's, not the run's, so none of them was checked.
-  if (assignments.some(word => word.startsWith("PATH="))) refuse(`${file} starts with env ${rest}, which sets PATH itself, so a program it starts by name could lead into the worktree or its Git folder; drop PATH= from that line, or set ASE_KEY_GUARD=off to run without the lock`);
+  // (TOOLS-326): the folders are the line's, not the run's, so none of them was checked. Any word counts, for an env
+  // the program starts in turn (busybox env, a link to env by another name).
+  if ([...assignments, ...words].some(word => word.startsWith("PATH="))) refuse(`${file} starts with env ${rest}, which sets PATH itself, so a program it starts by name could lead into the worktree or its Git folder; drop PATH= from that line, or set ASE_KEY_GUARD=off to run without the lock`);
   const [name, ...options] = words;
   let found;
   if (name.includes("/")) {
@@ -524,7 +525,7 @@ function interpreted(file, args, env, shut, refuse, depth = 0) {
     found = program;
   }
   // An env started by env would look its own program up by name, and could set PATH first.
-  if (basename(found) === "env") unknown();
+  if (basename(found) === "env") refuse(`${file} starts with env ${rest}, which starts env again, and that env would look its program up by name; start the program from that line directly, or set ASE_KEY_GUARD=off to run without the lock`);
   const [command, commandArgs] = interpreted(found, [...options, file, ...args], env, shut, refuse, depth + 1);
   if (!assignments.length) return [command, commandArgs];
   // env sets them and starts the program by the full path it is given (one with = in it would read as one more).

@@ -1350,10 +1350,18 @@ test("TOOLS-326: an ssh wrapper whose #!/usr/bin/env -S line sets PATH never sta
   };
   // env as the program would read the PATH after it itself, by name or by its full path.
   for (const file of [wrapper("ssh-env-env-path", `env PATH=${links}:${bin}:${dirname(shell)}`), wrapper("ssh-full-env-path", `/usr/bin/env PATH=${links}:${bin}:${dirname(shell)}`)]) {
-    assert.throws(() => startCommand(file, [], base, { worktree: root, kind: "test" }), /so which program it runs cannot be told/, file);
-    assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: file }), /^kit: \S+ starts with env -S .*env PATH=\S+ sh, so which program it runs cannot be told/m, file);
-    assert.match(refusedWith({ ...base, GIT_SSH: file }), /^kit: \S+ starts with env -S .*env PATH=\S+ sh, so which program it runs cannot be told/m, file);
+    assert.throws(() => startCommand(file, [], base, { worktree: root, kind: "test" }), /, which sets PATH itself/, file);
+    assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: file }), /^kit: \S+ starts with env -S .*env PATH=\S+ sh, which sets PATH itself/m, file);
+    assert.match(refusedWith({ ...base, GIT_SSH: file }), /^kit: \S+ starts with env -S .*env PATH=\S+ sh, which sets PATH itself/m, file);
   }
+  // A PATH= after the program counts too, for an env it starts in turn under another name (a link to env, busybox env);
+  // an env again with no PATH would look its program up by name.
+  symlinkSync("/usr/bin/env", join(bin, "e"));
+  for (const file of [wrapper("ssh-linked-env-path", `${join(bin, "e")} PATH=${links}:${bin}:${dirname(shell)}`), wrapper("ssh-later-path", `${shell} -c true PATH=${links}`)]) {
+    assert.throws(() => startCommand(file, [], base, { worktree: root, kind: "test" }), /, which sets PATH itself/, file);
+    assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: file }), /, which sets PATH itself/m, file);
+  }
+  assert.throws(() => startCommand(wrapper("ssh-env-env", "env"), [], base, { worktree: root, kind: "test" }), /, which starts env again, and that env would look its program up by name/);
   // An option among the -S words is env's, never a setting the PATH check passes over.
   const optionInside = wrapper("ssh-option-path", `--split-string=PATH=${links}:${bin}:${dirname(shell)}`);
   assert.throws(() => startCommand(optionInside, [], base, { worktree: root, kind: "test" }), /starts with env -S --split-string=PATH=\S+ sh, so which program it runs cannot be told/);
