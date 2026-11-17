@@ -967,6 +967,25 @@ function release(f: ReturnType<typeof fixture>) {
   return peer;
 }
 
+test("a rollback made on main reaches the release cut, and a sync refuses it, never kept out as dev's files", t => {
+  const f = fixture(t), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check") }, peer = f.peer();
+  // A change is released by a merge, then rolled back on main (git revert -m 1), so main's files are dev's files from before it.
+  f.gitAt(peer, "checkout", "-q", "dev"); writeFileSync(join(peer, "risky.txt"), "risky\n");
+  f.gitAt(peer, "add", "risky.txt"); f.gitAt(peer, "commit", "-q", "-m", "Risky change"); f.gitAt(peer, "push", "-q", "origin", "dev");
+  f.gitAt(peer, "checkout", "-q", "main"); f.gitAt(peer, "merge", "-q", "--no-ff", "-m", "Release", "dev");
+  f.gitAt(peer, "revert", "--no-edit", "-m", "1", "HEAD"); f.gitAt(peer, "push", "-q", "origin", "main");
+  f.git("checkout", "-q", "dev"); f.git("pull", "-q", "--ff-only", "origin", "dev"); f.commit("Landed change", "landed.txt"); f.git("push", "-q", "origin", "dev");
+  f.git("checkout", "-q", "-b", "release/cut");
+  const result = f.run(["--base", "main", "--release", "--no-merge"], real);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.doesNotMatch(result.stdout, /keeps dev's files/);
+  assert.equal(spawnSync("git", ["cat-file", "-e", "HEAD:risky.txt"], { cwd: f.root }).status === 0, false, "the rollback is in the release");
+  f.git("checkout", "-q", "-B", "sync/main", "origin/dev");
+  const sync = f.run(["--sync-main"]);
+  assert.equal(sync.status, 1, sync.stdout + sync.stderr);
+  assert.match(sync.stdout, /^RESULT: fail sync: the sync would change risky\.txt on dev: main holds changes dev lacks; /m);
+});
+
 test("kit pr --sync-main lands a merge of main into dev that changes nothing, as a real merge commit", t => {
   const f = fixture(t), peer = f.peer();
   f.git("checkout", "-q", "dev"); const first = f.commit("Dev edit", "file.txt", "dev one\n"); f.git("push", "-q", "origin", "dev");

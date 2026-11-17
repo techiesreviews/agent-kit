@@ -577,7 +577,7 @@ async function main(args) {
     const isAncestor = async (name, older, newer) => (await execute(name, "git", ["merge-base", "--is-ancestor", older, newer])).status === 0;
     // One merge of `ref` into HEAD, dated by its newer parent, not by the clock, so the same two parents always make the same
     // commit (TOOLS-310). When ref holds commits outside HEAD's history other than merges (main took copies of dev's commits,
-    // TOOLS-325) but its files are HEAD's at one of HEAD's commits, the merge keeps HEAD's files: ref holds nothing HEAD lacks,
+    // TOOLS-325) but its files are HEAD's at one of HEAD's commits since their last join, the merge keeps HEAD's files: ref holds nothing HEAD lacks,
     // and a plain merge would only conflict or bring back what dev changed since. It returns that commit then, else nothing.
     // After an ordinary release (main's only own commits are merges) the merge stays plain. A conflict is aborted and names its files.
     async function joinMerge(name, ref, subject) {
@@ -586,7 +586,10 @@ async function main(args) {
       const when = `@${Math.max(...dates)} +0000`;
       const copied = Boolean(await git(name, ["rev-list", "-n", "1", "--no-merges", ref, "^HEAD"]));
       const tree = copied ? await git(name, ["rev-parse", `${ref}^{tree}`]) : "";
-      const kept = copied ? (await git(name, ["log", "--format=%H %T", "HEAD"])).split(/\r?\n/).find(line => line.endsWith(` ${tree}`))?.split(" ")[0] : undefined;
+      // Only HEAD's commits since the last join count: a revert made on ref (a rollback of a release) brings ref's files back to an
+      // older commit HEAD holds from before that join, and it must reach the merge, never be kept out.
+      const bases = copied ? (await git(name, ["merge-base", "--all", "HEAD", ref])).split(/\s+/).filter(Boolean) : [];
+      const kept = copied ? (await git(name, ["log", "--format=%H %T", "HEAD", ...bases.map(base => `^${base}`)])).split(/\r?\n/).find(line => line.endsWith(` ${tree}`))?.split(" ")[0] : undefined;
       // Never a fast-forward: a HEAD that ref already holds (dev not moved since a release) still gets its own merge commit.
       const argv = kept ? ["merge", "--no-edit", "--no-ff", "-s", "ours", "-m", subject, "-m", `${ref}'s files are already this branch's at ${kept}, so the merge keeps this branch's files.`, ref]
         : ["merge", "--no-edit", "--no-ff", "-m", subject, ref];
