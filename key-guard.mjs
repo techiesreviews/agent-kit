@@ -505,9 +505,9 @@ function interpreted(file, args, env, shut, refuse, depth = 0) {
   const string = rest.startsWith("--split-string=") ? rest.slice("--split-string=".length) : rest.startsWith("-S") ? rest.slice(2) : null;
   const words = string === null ? [rest] : splitWords(string) ?? unknown();
   const assignments = [];
-  // env sets every word with = in it before the program, whatever its name (1X=1 too); a word that starts with - is an
-  // option to it (--split-string=PATH=… among them), refused below.
-  while (/^[^-][^=]*=/.test(words[0] ?? "")) assignments.push(words.shift());
+  // env sets every word with = in it before the program, whatever its name (1X=1 and =x too); a word that starts with -
+  // is an option to it (--split-string=PATH=… among them), refused below.
+  while (words.length && !words[0].startsWith("-") && words[0].includes("=")) assignments.push(words.shift());
   if (!words.length || words[0].startsWith("-")) unknown();
   // A PATH of its own would let the program start another by name from a folder that holds a link into the worktree
   // (TOOLS-326): the folders are the line's, not the run's, so none of them was checked. Any word counts, for an env
