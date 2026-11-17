@@ -1348,6 +1348,12 @@ test("TOOLS-326: an ssh wrapper whose #!/usr/bin/env -S line sets PATH never sta
     assert.ok(!existsSync(noted), `an ssh started: ${existsSync(noted) ? readFileSync(noted, "utf8") : ""}`);
     return run.stderr;
   };
+  // env as the program would read the PATH after it itself, by name or by its full path.
+  for (const file of [wrapper("ssh-env-env-path", `env PATH=${links}:${bin}:${dirname(shell)}`), wrapper("ssh-full-env-path", `/usr/bin/env PATH=${links}:${bin}:${dirname(shell)}`)]) {
+    assert.throws(() => startCommand(file, [], base, { worktree: root, kind: "test" }), /so which program it runs cannot be told/, file);
+    assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: file }), /^kit: \S+ starts with env -S .*env PATH=\S+ sh, so which program it runs cannot be told/m, file);
+    assert.match(refusedWith({ ...base, GIT_SSH: file }), /^kit: \S+ starts with env -S .*env PATH=\S+ sh, so which program it runs cannot be told/m, file);
+  }
   // An option among the -S words is env's, never a setting the PATH check passes over.
   const optionInside = wrapper("ssh-option-path", `--split-string=PATH=${links}:${bin}:${dirname(shell)}`);
   assert.throws(() => startCommand(optionInside, [], base, { worktree: root, kind: "test" }), /starts with env -S --split-string=PATH=\S+ sh, so which program it runs cannot be told/);
@@ -1361,8 +1367,8 @@ test("TOOLS-326: an ssh wrapper whose #!/usr/bin/env -S line sets PATH never sta
   // In git's ssh command a PATH after another variable sets PATH as much as one first.
   assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: `X=1 PATH=${links} ssh` }), /^kit: git's ssh command \(.*\) cannot be told: it sets PATH itself/m);
   // Variables other than PATH stay with env, and the wrapper starts by its interpreter's full path.
-  const other = wrapper("ssh-other", "X=1");
-  assert.deepEqual(startCommand(other, [], base, { worktree: root, kind: "test" }), ["/usr/bin/env", ["X=1", shell, other]]);
+  const other = wrapper("ssh-other", "X=1 PATHX=1 XPATH=2");
+  assert.deepEqual(startCommand(other, [], base, { worktree: root, kind: "test" }), ["/usr/bin/env", ["X=1", "PATHX=1", "XPATH=2", shell, other]]);
 });
 
 test("TOOLS-320: bubblewrap mounts the kit's folders before the key masks and kit pr's own folders after them", t => {

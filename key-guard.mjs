@@ -479,8 +479,8 @@ const linkRefusal = (name, file) => `${name} on PATH is ${file}, a link into the
 // for four levels, as the kernel does, and refuses past them. env -S (TOOLS-320) is read as env reads it (splitWords):
 // NAME=value words before the program stay with env, which then gets the program by its full path. A first line that
 // names a full path inside the worktree or the Git folder, an env option other than -S, -S words env would expand or
-// that cannot be split, a PATH among those words (TOOLS-326), or a name PATH holds only as such a link is refused
-// through `refuse`; a name no PATH folder holds is left to start as it is (and fail).
+// that cannot be split, a PATH among those words or env as the program (TOOLS-326), or a name PATH holds only as such a
+// link is refused through `refuse`; a name no PATH folder holds is left to start as it is (and fail).
 function interpreted(file, args, env, shut, refuse, depth = 0) {
   let head = "";
   try {
@@ -523,6 +523,8 @@ function interpreted(file, args, env, shut, refuse, depth = 0) {
     if (!program) return [file, args];
     found = program;
   }
+  // An env started by env would look its own program up by name, and could set PATH first.
+  if (basename(found) === "env") unknown();
   const [command, commandArgs] = interpreted(found, [...options, file, ...args], env, shut, refuse, depth + 1);
   if (!assignments.length) return [command, commandArgs];
   // env sets them and starts the program by the full path it is given (one with = in it would read as one more).
