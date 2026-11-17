@@ -468,11 +468,13 @@ two split, the next release conflicted, and a "sync main into dev" PR had to be 
   before anything is queued (gh adds a PR to a required
   queue whatever method it names, so `--no-merge` then prints why, never a `gh pr merge` command to run by hand).
 - A main that already holds copies of dev's commits: when main holds commits outside dev's history (merges left out)
-  but its files are dev's files at some commit of dev's history, the cut's merge keeps dev's files (`git merge -s
+  but its files are dev's files at a dev commit made since the two last joined, the cut's merge keeps dev's files (`git merge -s
   ours`, said as `merge: origin/main's files are dev's at <sha>, so the cut keeps dev's files`). Main then holds
   nothing dev lacks, and a plain merge would only conflict or bring back what dev changed since. When main holds a
   change dev lacks (a hotfix made on main), the merge stays a plain one, so that change is never dropped; a real
-  conflict stops the run and names its files, as before. After an ordinary release main's own commits are only
+  conflict stops the run and names its files, as before. A rollback made on main (a revert of a release) puts main's
+  files back to an older dev commit from before the last join, so it is no copy: the release carries it, and a sync
+  refuses it. After an ordinary release main's own commits are only
   merges, so the merge stays plain too.
 - `kit pr --sync-main` lands a "sync main into dev" merge into dev. From a branch cut at `origin/dev` it merges
   `origin/main` into the branch (its own merge commit, never a fast-forward, keeping dev's files under the same rule),
