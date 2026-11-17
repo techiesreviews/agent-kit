@@ -462,7 +462,9 @@ two split, the next release conflicted, and a "sync main into dev" PR had to be 
 - `kit pr --release --base main` (after Lex's go) cuts the release from `origin/dev`, merges `origin/main` into the
   cut, opens the PR and, once CI passes, lands it with `gh pr merge --merge --match-head-commit <head>`: a merge
   commit, never a rebase, squash or cherry-pick. `--no-merge` only opens it and prints that merge command. The line
-  `landed: <sha> merges <head> into main (a merge commit)` says what landed.
+  `landed: <sha> merges <head> into main (a merge commit)` says what landed. A merge queue lands by its own method,
+  whatever gh asks, so a release or a sync goes into one only when the queue makes merge commits; a queue set to squash
+  or rebase, or one whose method cannot be read, stops the run before anything is queued.
 - A main that already holds copies of dev's commits: when main holds commits outside dev's history (merges left out)
   but its files are dev's files at some commit of dev's history, the cut's merge keeps dev's files (`git merge -s
   ours`, said as `merge: origin/main's files are dev's at <sha>, so the cut keeps dev's files`). Main then holds

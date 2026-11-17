@@ -139,6 +139,11 @@ else if (tool === "gh") {
   else if (action === "repo-view") console.log("test/repo");
   else if (action === "api-graphql") {
     if (env.FAKE_QUEUE_ERROR) { console.error("queue unavailable"); process.exit(1); }
+    // FAKE_QUEUE_METHOD: how the queue lands (MERGE by default); "fail" fails the lookup.
+    if (args.some(arg => arg.includes("mergeMethod"))) {
+      if (env.FAKE_QUEUE_METHOD === "fail") { console.error("lookup failed"); process.exit(1); }
+      console.log(env.FAKE_QUEUE_METHOD ?? "MERGE"); process.exit(0);
+    }
     console.log(env.FAKE_QUEUE ? "queue-id" : "");
   } else if (action === "pr-merge") {
     const path = env.FAKE_CALLS + ".merges";
@@ -1085,6 +1090,20 @@ test("a release through a merge queue asks for --auto --merge, and a landed comm
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const merge = queued.ghCalls("merge")[0].args;
   assert.ok(merge.includes("--auto") && merge.includes("--merge"), merge.join(" ")); assert.equal(merge.includes("--rebase"), false);
+  // A queue that squashes or rebases, or one whose method cannot be read, never takes a release or a sync.
+  for (const [how, words] of [["SQUASH", "lands by squash"], ["REBASE", "lands by rebase"], ["fail", "did not say how it lands"]]) {
+    const refused = fixture(t), stopped = refused.run(["--base", "main", "--release"], { FAKE_QUEUE: "1", FAKE_QUEUE_METHOD: how });
+    assert.equal(stopped.status, 1, stopped.stdout + stopped.stderr);
+    assert.match(stopped.stdout, new RegExp(`^RESULT: fail merge: the merge queue on main ${words}, and a release must land as a merge commit: set the queue to merge commits, or merge #73 by hand with gh pr merge 73 --merge$`, "m"));
+    assert.equal(refused.ghCalls("merge").length, 0, "nothing goes into the queue");
+  }
+  const sync = fixture(t);
+  release(sync);
+  sync.git("checkout", "-q", "dev"); sync.git("pull", "-q", "--ff-only", "origin", "dev"); sync.git("checkout", "-q", "-b", "sync/main");
+  const squashed = sync.run(["--sync-main"], { FAKE_EMPTY: "1", FAKE_QUEUE: "1", FAKE_QUEUE_METHOD: "SQUASH" });
+  assert.equal(squashed.status, 1, squashed.stdout + squashed.stderr);
+  assert.match(squashed.stdout, /^RESULT: fail merge: the merge queue on dev lands by squash, and a sync must land as a merge commit: /m);
+  assert.equal(sync.ghCalls("merge").length, 0);
   const f = fixture(t);
   f.git("checkout", "-q", "dev"); f.commit("Landed change", "landed.txt"); f.git("push", "-q", "origin", "dev");
   f.git("checkout", "-q", "-b", "release/cut");
