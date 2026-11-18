@@ -341,7 +341,7 @@ test("a warning names main's commits outside dev's history, in both modes, and t
   f.gitAt(peer, "checkout", "-q", "main"); f.gitAt(peer, "cherry-pick", "-x", change); f.commit(peer, "Hotfix on main");
   f.gitAt(peer, "merge", "-q", "--no-ff", "-m", "Release merge", "origin/dev"); f.gitAt(peer, "push", "-q", "origin", "main");
   const copied = f.gitAt(peer, "rev-parse", "--short", "HEAD^1^"), hotfix = f.gitAt(peer, "rev-parse", "--short", "HEAD^1");
-  const warning = `warning: origin/main has 2 commits outside dev's history (${copied} Dev change, ${hotfix} Hotfix on main): copied by a rebase or squash merge, or made straight on main; join them with kit pr --sync-main (it refuses when main holds changes dev lacks: land those on dev first)`;
+  const warning = `warning: origin/main has 2 commits outside dev's history (${copied} Dev change, ${hotfix} Hotfix on main): copied by a rebase or squash merge, or made straight on main; join them with kit pr --sync-main (where it cannot join them by itself, it says the steps to join them by hand)`;
   f.git("fetch", "-q", "origin"); f.git("reset", "-q", "--hard", "origin/main");
   let result = f.run();
   assert.equal(result.status, 0, result.stdout + result.stderr);
