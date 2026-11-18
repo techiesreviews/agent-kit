@@ -1153,36 +1153,107 @@ test("a later commit on main that undoes a hotfix all but its spaces is no rever
   assert.equal(f.git("rev-parse", "HEAD"), cut);
 });
 
-// SL-1 of review 13 (GPT): git apply only warns when a file's mode differs, so a rollback of a mode alone looked held.
-test("a rollback on main of a file's mode alone, beside copies, stops the release and the sync, never kept out", t => {
-  const kinds: [string, (root: string) => void, (root: string) => void, string][] = [
-    ["an executable bit", root => writeFileSync(join(root, "tool.txt"), "tool\n"), root => chmodSync(join(root, "tool.txt"), 0o755), "100755"],
-    // The link's target is the file's old content, so only the kind of file changes.
-    ["a file turned into a link", root => writeFileSync(join(root, "tool.txt"), "file.txt"), root => { rmSync(join(root, "tool.txt")); symlinkSync("file.txt", join(root, "tool.txt")); }, "120000"],
-  ];
-  for (const [kind, add, change, mode] of kinds) {
-    const f = fixture(t), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check") }, peer = f.peer();
-    // dev adds tool.txt (A), then changes its mode (M); main took copies of both, then rolled M back; dev moves on with C.
-    f.git("checkout", "-q", "dev"); add(f.root); f.git("add", "tool.txt"); f.git("commit", "-q", "-m", "Change A"); const a = f.git("rev-parse", "HEAD");
-    change(f.root); f.git("add", "tool.txt"); f.git("commit", "-q", "-m", "Change M"); const m = f.git("rev-parse", "HEAD"); f.git("push", "-q", "origin", "dev");
+// The whole class (GPT's SL-1 of reviews 13 and 15, and the sweep the lead asked for): main copied a change from dev and then
+// rolled it back. git marks commits as the same change with spaces left out, and git apply only warns about a file's
+// mode, so such a rollback could look like one more copy, or like a change dev's files hold, and be kept out.
+type Fixture = ReturnType<typeof fixture>;
+const put = (f: Fixture, file: string, content: string | Buffer) => { writeFileSync(join(f.root, file), content); f.git("add", file); };
+const pointer = (f: Fixture, commit: string) => { mkdirSync(join(f.root, "sub"), { recursive: true }); f.git("update-index", "--add", "--cacheinfo", `160000,${commit},sub`); };
+// Each kind: the change dev makes first (A), and the change (M) that main copies and then rolls back.
+const rollbackKinds: [string, (f: Fixture) => void, (f: Fixture) => void][] = [
+  ["indentation", f => put(f, "a.py", "def f():\n  return 1\n"), f => put(f, "a.py", "def f():\n    return 1\n")],
+  ["line endings", f => put(f, "a.txt", "one\ntwo\n"), f => put(f, "a.txt", "one\r\ntwo\r\n")],
+  ["a rename", f => put(f, "a.txt", "one\n"), f => { f.git("mv", "a.txt", "b.txt"); }],
+  ["the case of a file's name", f => put(f, "Note.txt", "note\n"), f => { f.git("mv", "Note.txt", "note.txt"); }],
+  ["a binary file", f => put(f, "logo.bin", Buffer.from([0, 1, 2, 3, 255])), f => put(f, "logo.bin", Buffer.from([0, 1, 2, 4, 255]))],
+  ["a submodule's commit", f => pointer(f, "1".repeat(40)), f => pointer(f, "2".repeat(40))],
+  ["an executable bit", f => put(f, "tool.txt", "tool\n"), f => { chmodSync(join(f.root, "tool.txt"), 0o755); f.git("add", "tool.txt"); }],
+  // The link's target is the file's old content, so only the kind of file changes.
+  ["a file turned into a link", f => put(f, "tool.txt", "file.txt"), f => { rmSync(join(f.root, "tool.txt")); symlinkSync("file.txt", join(f.root, "tool.txt")); f.git("add", "tool.txt"); }],
+];
+test("a rollback on main of a change it copied from dev stops the release and the sync, whatever kind of change it is", async t => {
+  for (const [kind, add, change] of rollbackKinds) await t.test(kind, s => {
+    const f = fixture(s), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check") }, peer = f.peer();
+    // dev makes A, then M; main took copies of both, then rolled M back; dev moves on with C.
+    f.git("checkout", "-q", "dev"); add(f); f.git("commit", "-q", "-m", "Change A"); const a = f.git("rev-parse", "HEAD");
+    change(f); f.git("commit", "-q", "-m", "Change M"); const m = f.git("rev-parse", "HEAD"); f.git("push", "-q", "origin", "dev");
     f.gitAt(peer, "fetch", "-q", "origin"); f.gitAt(peer, "checkout", "-q", "main"); f.gitAt(peer, "cherry-pick", a, m);
     f.gitAt(peer, "revert", "--no-edit", "HEAD"); f.gitAt(peer, "push", "-q", "origin", "main");
     f.commit("Change C", "c.txt"); f.git("push", "-q", "origin", "dev"); f.git("fetch", "-q", "origin");
-    assert.equal(f.git("rev-parse", "origin/main^{tree}"), f.git("rev-parse", `${a}^{tree}`), `${kind}: main's files are dev's from before M`);
+    assert.equal(f.git("rev-parse", "origin/main^{tree}"), f.git("rev-parse", `${a}^{tree}`), "main's files are dev's from before M");
+    const files = f.git("ls-files", "-s");
     f.git("checkout", "-q", "-b", "release/cut");
     const cut = f.git("rev-parse", "HEAD"), release = f.run(["--base", "main", "--release", "--no-merge"], real);
-    assert.equal(release.status, 1, kind + release.stdout + release.stderr);
+    assert.equal(release.status, 1, release.stdout + release.stderr);
     const why = `origin/main holds changes dev's files lack (<sha> Revert "Change M") beside commits dev already holds: a merge cannot tell a rollback from a hotfix there; `;
-    assert.equal(resultLine(release.stdout), `RESULT: fail merge: ${why}${byHand("release")}`, kind);
-    assert.equal(f.git("rev-parse", "HEAD"), cut, `${kind}: no merge that keeps M is made`);
+    assert.equal(resultLine(release.stdout), `RESULT: fail merge: ${why}${byHand("release")}`);
+    assert.equal(f.git("rev-parse", "HEAD"), cut, "no merge that keeps M is made");
     f.git("checkout", "-q", "-B", "sync/main", "origin/dev");
     const sync = f.run(["--sync-main"]);
-    assert.equal(sync.status, 1, kind + sync.stdout + sync.stderr);
-    assert.equal(resultLine(sync.stdout), `RESULT: fail sync: ${why}${byHand("sync")}`, kind);
+    assert.equal(sync.status, 1, sync.stdout + sync.stderr);
+    assert.equal(resultLine(sync.stdout), `RESULT: fail sync: ${why}${byHand("sync")}`);
     assert.equal(f.git("rev-parse", "HEAD"), f.git("rev-parse", "origin/dev")); assert.equal(f.git("status", "--porcelain"), "");
-    assert.equal(f.git("ls-files", "-s", "tool.txt").split(" ")[0], mode, `${kind}: the branch keeps its files and modes`);
+    assert.equal(f.git("ls-files", "-s"), files, "the branch keeps its files, their modes and kinds");
     noPr(f);
-  }
+  });
+});
+
+// A rollback made inside a merge commit: no commit of main's own shows it, yet main's files are dev's from before B.
+test("a merge on main that rolls a copied commit back itself stops the release and the sync", t => {
+  const f = fixture(t), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check") }, peer = f.peer();
+  f.git("checkout", "-q", "dev"); const a = f.commit("Change A", "a.txt"), b = f.commit("Change B", "b.txt"); f.git("push", "-q", "origin", "dev");
+  f.gitAt(peer, "fetch", "-q", "origin"); f.gitAt(peer, "checkout", "-q", "main"); f.gitAt(peer, "cherry-pick", a, b);
+  f.gitAt(peer, "merge", "-q", "--no-ff", "--no-commit", a); f.gitAt(peer, "rm", "-q", "b.txt"); f.gitAt(peer, "commit", "-q", "-m", "Merge with B rolled back");
+  f.gitAt(peer, "push", "-q", "origin", "main");
+  f.commit("Change C", "c.txt"); f.git("push", "-q", "origin", "dev");
+  f.git("checkout", "-q", "-b", "release/cut");
+  const cut = f.git("rev-parse", "HEAD"), release = f.run(["--base", "main", "--release", "--no-merge"], real);
+  assert.equal(release.status, 1, release.stdout + release.stderr);
+  const why = "origin/main holds a merge that changes files itself (<sha> Merge with B rolled back) beside commits dev already holds: a merge cannot tell a rollback from a hotfix there; ";
+  assert.equal(resultLine(release.stdout), `RESULT: fail merge: ${why}${byHand("release")}`);
+  assert.equal(f.git("rev-parse", "HEAD"), cut);
+  f.git("checkout", "-q", "-B", "sync/main", "origin/dev");
+  const sync = f.run(["--sync-main"]);
+  assert.equal(sync.status, 1, sync.stdout + sync.stderr);
+  assert.equal(resultLine(sync.stdout), `RESULT: fail sync: ${why}${byHand("sync")}`);
+  assert.equal(f.git("rev-parse", "HEAD"), f.git("rev-parse", "origin/dev")); assert.equal(f.git("show", "HEAD:b.txt"), "Change B");
+  noPr(f);
+});
+
+// The stricter copy rule still knows a copy: the same changes, copied as they are, whatever kind they are.
+test("exact copies on main of a binary file, CRLF lines, a mode and a link still count as copies: the cut keeps dev's files", t => {
+  const f = fixture(t), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check") }, peer = f.peer();
+  f.git("checkout", "-q", "dev");
+  const copied: string[] = [];
+  const land = (subject: string, change: () => void) => { change(); f.git("commit", "-q", "-m", subject); copied.push(f.git("rev-parse", "HEAD")); };
+  land("Add a binary file", () => put(f, "logo.bin", Buffer.from([0, 1, 2, 3, 255])));
+  land("Change the binary file", () => put(f, "logo.bin", Buffer.from([0, 1, 2, 4, 255])));
+  land("Add CRLF lines", () => put(f, "win.txt", "one\r\ntwo\r\n"));
+  land("Make file.txt run", () => { chmodSync(join(f.root, "file.txt"), 0o755); f.git("add", "file.txt"); });
+  land("Add a link", () => { symlinkSync("file.txt", join(f.root, "link.txt")); f.git("add", "link.txt"); });
+  f.git("push", "-q", "origin", "dev");
+  f.gitAt(peer, "fetch", "-q", "origin"); f.gitAt(peer, "checkout", "-q", "main"); f.gitAt(peer, "cherry-pick", ...copied); f.gitAt(peer, "push", "-q", "origin", "main");
+  // dev changes the same files again, so a plain merge of main would conflict.
+  put(f, "logo.bin", Buffer.from([9, 9, 9])); put(f, "win.txt", "one\r\nthree\r\n"); f.git("commit", "-q", "-m", "Dev moves on"); f.git("push", "-q", "origin", "dev");
+  f.git("checkout", "-q", "-b", "release/cut");
+  const cut = f.git("rev-parse", "HEAD"), result = f.run(["--base", "main", "--release", "--no-merge"], real);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, new RegExp(`^merge: origin/main's files are dev's at ${copied.at(-1)!.slice(0, 7)}, so the cut keeps dev's files$`, "m"));
+  assert.equal(f.git("diff", "--name-only", cut, "HEAD"), "");
+});
+
+// An empty commit rolls nothing back, and a copy that is one exactly still counts: the cut keeps dev's files.
+test("an empty commit on main beside an exact copy keeps dev's files", t => {
+  const f = fixture(t), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check") }, peer = f.peer();
+  f.git("checkout", "-q", "dev"); const first = f.commit("Dev edit", "file.txt", "dev one\n"); f.git("push", "-q", "origin", "dev");
+  f.gitAt(peer, "fetch", "-q", "origin"); f.gitAt(peer, "checkout", "-q", "main"); f.gitAt(peer, "cherry-pick", first);
+  f.gitAt(peer, "commit", "-q", "--allow-empty", "-m", "Empty on main"); f.gitAt(peer, "push", "-q", "origin", "main");
+  f.commit("Dev edit again", "file.txt", "dev two\n"); f.git("push", "-q", "origin", "dev");
+  f.git("checkout", "-q", "-b", "release/cut");
+  const cut = f.git("rev-parse", "HEAD"), result = f.run(["--base", "main", "--release", "--no-merge"], real);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, new RegExp(`^merge: origin/main's files are dev's at ${first.slice(0, 7)}, so the cut keeps dev's files$`, "m"));
+  assert.equal(f.git("diff", "--name-only", cut, "HEAD"), "");
 });
 
 // Only a mode the commit itself changes is compared: here main's squash of two dev commits (so no exact copy of either)
