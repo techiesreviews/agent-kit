@@ -1448,10 +1448,12 @@ async function main(args) {
     }
     // The repo is named, so the merge's --repo matches GH_REPO exactly; gh answers with the repo's current name.
     const { repo, owner, name, target } = await repoNames();
-    // Read again: the queue may have changed while the checks and the reviews ran.
-    const queue = await queueId({ owner, name });
-    if (joins && queue === null) throw new Error(unseenQueue());
-    if (queue) {
+    // The base's merge queue as it is now: with none, false. With one the PR goes into it, and the run ends there (true); a
+    // release or a sync goes in only when the queue makes merge commits, and stops when it does not, or cannot be read.
+    async function intoQueue() {
+      const queue = await queueId({ owner, name });
+      if (joins && queue === null) throw new Error(unseenQueue());
+      if (!queue) return false;
       const refusal = joins ? await queueRefusal({ owner, name }) : "";
       if (refusal) throw new Error(refusal);
       await gh("merge", ["pr", "merge", number, "--auto", method, "--match-head-commit", head, "--repo", target]); ok("merge");
@@ -1483,8 +1485,10 @@ async function main(args) {
         queuedWords = `; card ${card} stays open: close it once #${number} lands`;
       }
       kitResult("ok", `queued #${number} ${head.slice(0, 7)}${queuedWords}${releaseWaived()}${flakyNote()}`);
-      return 0;
+      return true;
     }
+    // Read again here: the queue may have changed while the reviews ran.
+    if (await intoQueue()) return 0;
     // A repo without GitHub workflows has no checks to wait for: it lands once the review passes.
     // Each attempt reads the rebased HEAD, so workflows the base gained meanwhile are waited for.
     for (let attempt = 1; attempt <= 3; attempt++) {
@@ -1496,6 +1500,10 @@ async function main(args) {
         console.log("ci: none (no workflow in .github/workflows runs on pull requests); landing after review");
         land({ ci: "none" });
       }
+      // A release or a sync reads the queue once more right before each merge, the first and every retry: gh adds a PR to a
+      // required queue whatever method it names, so a queue turned on, or set to squash or rebase, while the checks ran
+      // would take it and flatten it.
+      if (joins && await intoQueue()) return 0;
       const merged = await execute("merge", "gh", ["pr", "merge", number, method, "--delete-branch", "--match-head-commit", head, "--repo", target]);
       if (merged.status === 0) {
         const commit = await execute("merge", "gh", ["pr", "view", number, "--json", "mergeCommit", "--jq", ".mergeCommit.oid"]);
