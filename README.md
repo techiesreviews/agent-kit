@@ -470,7 +470,7 @@ two split, the next release conflicted, and a "sync main into dev" PR had to be 
 - Kit joins main by itself only when it can prove what the merge does; it never guesses. Merges left out, each commit
   main holds outside dev's history is one of three kinds: a copy (the same change as one of dev's commits, by
   `git log --cherry-mark`: a rebase merge), a commit whose change dev's files already hold (its diff applies in
-  reverse to them, context lines too, and each file has the mode the commit gave it: a squash merge of work dev has not changed since, a hotfix dev took inside
+  reverse to them, context lines too, and each file whose mode it changes has the mode it gave: a squash merge of work dev has not changed since, a hotfix dev took inside
   another commit), or a
   change dev's files lack (a hotfix or rollback made on main, or a squashed copy of work dev has changed since).
   - Only the first two kinds, with main's files dev's files at a dev commit made since dev and main were last joined: the cut's
