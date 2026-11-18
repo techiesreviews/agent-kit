@@ -469,8 +469,9 @@ two split, the next release conflicted, and a "sync main into dev" PR had to be 
   every retry), so one turned on while the checks ran is seen too (gh adds a PR to a required
   queue whatever method it names, so `--no-merge` then prints why, never a `gh pr merge` command to run by hand).
 - Kit joins main by itself only when it can prove what the merge does; it never guesses. Merges left out, each commit
-  main holds outside dev's history is one of three kinds: a copy (the same change as one of dev's commits, by
-  `git log --cherry-mark`: a rebase merge), a commit whose change dev's files already hold (its diff applies in
+  main holds outside dev's history is one of three kinds: a copy (one of dev's commits' change exactly: git marks
+  it with `git log --cherry-mark`, which leaves spaces out, so its `git patch-id --verbatim`, its files' modes
+  and kinds and a binary file's contents must match too: a rebase merge), a commit whose change dev's files already hold (its diff applies in
   reverse to them, context lines too, and each file whose mode it changes has the mode it gave: a squash merge of work dev has not changed since, a hotfix dev took inside
   another commit), or a
   change dev's files lack (a hotfix or rollback made on main, or a squashed copy of work dev has changed since).
@@ -480,8 +481,7 @@ two split, the next release conflicted, and a "sync main into dev" PR had to be 
   - Only changes dev's files lack: the merge is a plain one, and it stands when its files hold every one of those
     commits and it changes no file dev changed since dev and main were last joined, so a hotfix or a rollback made
     on main is carried. A hotfix that a later commit on main undid exactly, spaces and all (its revert, matched with `git patch-id
-    --verbatim`, which needs git 2.39 or newer; an older git pairs nothing, so such a run stops with the join by hand),
-    is left out with that commit
+    --verbatim`), is left out with that commit
     first: main took it back itself.
   - Anything else stops the run, with nothing merged: a change dev's files lack beside the first two kinds (a rollback
     of a copied commit looks like a hotfix there, and no merge keeps it), a conflict, or a merge that would bring back
@@ -496,6 +496,13 @@ two split, the next release conflicted, and a "sync main into dev" PR had to be 
     of main into dev that such a stop names, only once its checks pass, and only until `kit pr --sync-main` can land
     such a merge itself (TOOLS-341, due before the next kit release). `kit pr` cannot land it today: a
     sync makes its merge itself, and an ordinary `kit pr` rebases a merge away.
+  - A rollback on main of a change it copied from dev is never one more copy, whatever it rolls back: indentation,
+    line endings, a rename, the case of a file's name, a binary file, a submodule's commit, an executable bit or a
+    file turned into a link. Each is a change dev's files lack, so beside copies the run stops. So does a merge
+    commit on main that changes files itself (its files are not what `git merge-tree --write-tree` makes of its
+    parents) beside copies or commits dev's files hold: it could roll a copy back with no commit to show it.
+  - These proofs need git 2.39 or newer (`git patch-id --verbatim`; `git merge-tree --write-tree` is from 2.38).
+    On an older git nothing counts as a copy, so such a run stops with the join by hand.
   After an ordinary release main's own commits are only merges, so the merge stays plain.
 - `kit pr --sync-main` lands a "sync main into dev" merge into dev. From a branch cut at `origin/dev` it merges
   `origin/main` into the branch (its own merge commit, never a fast-forward, keeping dev's files under the same rule),
