@@ -18,7 +18,7 @@ const { checkSteps, classify, docsOnly, doneHeading, featureListGuard, featureLi
 const { coverageHash, readUxResult, uxGuard, visibleFiles } = await import(pathToFileURL(resolve(import.meta.dirname, "../ux-gate.mjs")).href);
 const { checkLock, keyGuardOn, runPath, runProgram, startCommand } = await import(pathToFileURL(resolve(import.meta.dirname, "../key-guard.mjs")).href);
 const { folderRemote, gitCommonDir, gitNetworkCall, gitSafety, gitTop, loopbackRemote } = await import(pathToFileURL(resolve(import.meta.dirname, "../git-safety.mjs")).href);
-const usage = 'Usage: kit pr [--base <land>] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release | --sync-main] [--full] [--waive "<reason>"] [--not-visible "<reason>"]\nBranches come from scripts/agents/kit.json: --base defaults to branches.land; --release needs --base branches.release and first runs kit release-check --land (nothing unsaved, HEAD exactly origin/<land>).\nA release joins origin/<release> into the cut by one merge (keeping <land>\'s files when every commit origin/<release> holds outside <land>\'s history is a copy of <land>\'s work or already in its files, and its files are <land>\'s at a commit made since <land> and <release> were last joined) and lands, once CI passes, as a merge commit: never a rebase or squash (--no-merge only opens it).\n--sync-main, from a branch cut at origin/<land>, merges origin/<release> into it and lands that merge into <land> as a merge commit, never rebased; it refuses when the merge would change any file on <land>.\nWhere kit cannot prove what such a merge keeps and drops (a squashed copy of work <land> has changed since, a rollback beside copies, a conflict), a release or a sync stops, with nothing merged, and names the steps to join origin/<release> into <land> by hand (a merge commit landed with gh once its checks pass, its merge command named only when <land> has no merge queue or one that makes merge commits: the one landing outside kit pr, until kit pr --sync-main can land such a merge, TOOLS-341).\n--waive requires a *-lead owner and may be given more than once (ids count in any reason, counts add up; once any reason names an id, the counts are not read); records the reason for merging with open findings or without a feature-list update;\na waiver for the findings that stop the landing (above P3; once the fix rounds are used up, P0 and P1) must name each one by id in its text (--waive \"R1-2, SL-1: <reason>\") or start with the number of them (--waive \"2 findings: <reason>\", which must match both looks together);\na finding it leaves out stops kit pr with a plain reason that lists it, and so does one that is new at a head a rebase brought, at the start of the run too (the lead sees it and runs kit pr again); P3 findings, test gaps and docs wording need no names;\nwith --release it also passes the release check, which names the reason (kit pr still needs a clean tree).\nA visible change (paths.visible) lands only with a fresh kit ux result: one that passed, with the review, for the visible files and the listed features that cover the change as they are now (kit ux saves it for the branch; a later change to a visible file or to one of those features, a rebase\'s too, needs kit ux again; a list edit about other features does not).\n--not-visible "<reason>" lands a change that matches those paths but shows a person nothing new, with the reason in the PR text (refused when kit ux tried this very change and it did not pass, and with --release; a run whose reviewer did not finish is no such verdict); --waive does not cover the UX check.\nWhen no feature in the list covers the changed files, kit ux has nothing to try and the PR says "UX check: nothing to try".\nA project with no feature list for kit ux (docs/agents/features.md) says "UX check: skipped"; a release carries what each PR already passed.\nAfter the Claude review (none in the docs tier), every change gets a second look (kit review --second-look), whose findings block the same way;\nwhen no model can take it, the PR lands and says "second look: skipped (<reason>)".\nOn Orbit ("tickets": "orbit"), --ticket takes a card KEY or a saved brief of it (.scratch/kit-tickets/KEY.md); when the PR\nlands the card goes to Done with a dated comment naming the PR and its merge SHA (ORBIT_ROLE=lead); a card that cannot be closed is named on the RESULT line.\nA PR a merge queue takes leaves the card open, its follow-ups on the card, and says to close it once the PR lands.\n';
+const usage = 'Usage: kit pr [--base <land>] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release | --sync-main] [--full] [--waive "<reason>"] [--not-visible "<reason>"]\nBranches come from scripts/agents/kit.json: --base defaults to branches.land; --release needs --base branches.release and first runs kit release-check --land (nothing unsaved, HEAD exactly origin/<land>).\nA release joins origin/<release> into the cut by one merge (keeping <land>\'s files when every commit origin/<release> holds outside <land>\'s history is a copy of <land>\'s work or already in its files, and its files are <land>\'s at a commit made since <land> and <release> were last joined) and lands, once CI passes, as a merge commit: never a rebase or squash (--no-merge only opens it).\n--sync-main, from a branch cut at origin/<land>, merges origin/<release> into it and lands that merge into <land> as a merge commit, never rebased; it refuses when the merge would change any file on <land>.\nWhere kit cannot prove what such a merge keeps and drops (a squashed copy of work <land> has changed since, a rollback beside copies, a conflict), a release or a sync stops, with nothing merged, and names the steps to join origin/<release> into <land> by hand (a merge commit landed with gh once its checks pass, after <land>\'s merge queue, if it squashes, rebases or cannot be read, is set to merge commits, which the steps say first: the one landing outside kit pr, until kit pr --sync-main can land such a merge, TOOLS-341).\n--waive requires a *-lead owner and may be given more than once (ids count in any reason, counts add up; once any reason names an id, the counts are not read); records the reason for merging with open findings or without a feature-list update;\na waiver for the findings that stop the landing (above P3; once the fix rounds are used up, P0 and P1) must name each one by id in its text (--waive \"R1-2, SL-1: <reason>\") or start with the number of them (--waive \"2 findings: <reason>\", which must match both looks together);\na finding it leaves out stops kit pr with a plain reason that lists it, and so does one that is new at a head a rebase brought, at the start of the run too (the lead sees it and runs kit pr again); P3 findings, test gaps and docs wording need no names;\nwith --release it also passes the release check, which names the reason (kit pr still needs a clean tree).\nA visible change (paths.visible) lands only with a fresh kit ux result: one that passed, with the review, for the visible files and the listed features that cover the change as they are now (kit ux saves it for the branch; a later change to a visible file or to one of those features, a rebase\'s too, needs kit ux again; a list edit about other features does not).\n--not-visible "<reason>" lands a change that matches those paths but shows a person nothing new, with the reason in the PR text (refused when kit ux tried this very change and it did not pass, and with --release; a run whose reviewer did not finish is no such verdict); --waive does not cover the UX check.\nWhen no feature in the list covers the changed files, kit ux has nothing to try and the PR says "UX check: nothing to try".\nA project with no feature list for kit ux (docs/agents/features.md) says "UX check: skipped"; a release carries what each PR already passed.\nAfter the Claude review (none in the docs tier), every change gets a second look (kit review --second-look), whose findings block the same way;\nwhen no model can take it, the PR lands and says "second look: skipped (<reason>)".\nOn Orbit ("tickets": "orbit"), --ticket takes a card KEY or a saved brief of it (.scratch/kit-tickets/KEY.md); when the PR\nlands the card goes to Done with a dated comment naming the PR and its merge SHA (ORBIT_ROLE=lead); a card that cannot be closed is named on the RESULT line.\nA PR a merge queue takes leaves the card open, its follow-ups on the card, and says to close it once the PR lands.\n';
 const kit = process.env.KIT_PR_KIT || resolve(import.meta.dirname, "../kit");
 // main's private folder of program links (name: target), removed when the process ends.
 let programs;
@@ -620,26 +620,26 @@ async function main(args) {
     // ref itself took that change back, so nothing of it is left to weigh.
     // A conflict, or a merge that fails its proof, is taken back and stops with the steps to join the two by hand: after that
     // join ref is inside the land branch's history, so no later run weighs these commits again. That join lands outside kit pr
-    // (the lead's exception of 2026-11-18, AGENTS.md, until TOOLS-341), so the steps wait for its checks, and name the merge
-    // command only when a merge commit can be promised: the land branch has no merge queue, or one that makes merge commits.
-    // A queue that squashes or rebases would flatten the join, and one that cannot be read might; the steps then say what to
-    // set first, and give no command. It returns the commit whose files were kept, and the unheld commits a plain merge carried.
+    // (the lead's exception of 2026-11-18, AGENTS.md, until TOOLS-341), so the steps wait for its checks, and promise the merge
+    // command only when the land branch has no merge queue, or one that makes merge commits. A queue that squashes or rebases
+    // would flatten the join, and one that cannot be read might; the steps then say what to set first, and name the command
+    // for once that is done. It returns the commit whose files were kept, and the unheld commits a plain merge carried.
     const landName = kitBranch("land", settings);
     const few = list => list.length > 5 ? `${list.slice(0, 5).join(", ")} and ${list.length - 5} more` : list.join(", ");
     async function byHand(at, ref) {
-      const flattens = "and a queue that squashes or rebases would flatten this join, so no merge command is given";
-      const unseen = `first make sure ${landName} has no merge queue, or one set to merge commits (kit could not read whether it has one, ${flattens}); then `;
-      let first = "";
+      const flattens = "and a queue that squashes or rebases would flatten this join";
+      const unseen = [`first make sure ${landName} has no merge queue, or one set to merge commits (kit could not read whether it has one, ${flattens}); then `, `once ${landName} has no merge queue or one that makes merge commits`];
+      let first = "", once = "";
       try {
         const names = await repoNames(at), queue = await queueId(names, landName, at);
-        if (queue === null) first = unseen;
+        if (queue === null) [first, once] = unseen;
         else if (queue) {
           const lands = await queueLands(names, landName, at);
-          if (lands !== "MERGE") first = `first set the merge queue on ${landName} to merge commits (it ${lands ? `lands by ${lands.toLowerCase()}` : "did not say how it lands"}, ${flattens}); then `;
+          if (lands !== "MERGE") [first, once] = [`first set the merge queue on ${landName} to merge commits (it ${lands ? `lands by ${lands.toLowerCase()}` : "did not say how it lands"}, ${flattens}); then `, "once the queue makes merge commits"];
         }
-      } catch { first = unseen; }
+      } catch { [first, once] = unseen; }
       return `${first}join ${ref} into ${landName} by hand: git switch -c <name> origin/${landName}, git merge --no-ff ${ref} (keep each change ${landName} should hold, drop what ${landName} already undid), git push -u origin <name>, open its PR into ${landName}, wait for its checks to pass (kit wait ci --pr <N>), `
-        + (first ? "then land it as a merge commit; " : "then land it with gh pr merge <N> --merge (a merge commit: never a squash or rebase, never past a failed check); ")
+        + `then${once ? `, ${once},` : ""} land it with gh pr merge <N> --merge (a merge commit: never a squash or rebase, never past a failed check); `
         + (flags.release ? `then cut the release again at the new origin/${landName}` : "that merge is the sync, so kit pr --sync-main has nothing left to do");
     }
     async function joinMerge(name, ref, subject) {
@@ -656,11 +656,26 @@ async function main(args) {
         return patch.text;
       };
       // Whether the index (HEAD's files: the tree is clean) holds a commit's change: its diff applies to them in reverse, each
-      // hunk with its three lines of context, so a rollback of lines the files still have never counts. A commit with no diff
-      // has nothing to hold.
+      // hunk with its three lines of context, so a rollback of lines the files still have never counts, and every file it
+      // changes has the mode the commit gave it. A commit with no diff has nothing to hold.
+      // The paths of a --raw -z listing, each with its mode on either side.
+      const modesOf = async argv => {
+        const listed = await execute(name, "git", [...argv, "--raw", "-z", "--no-renames"]);
+        if (listed.status !== 0) throw new Error(childMessage(listed, `git ${argv[0]} failed`));
+        const parts = listed.text.split("\0"), found = new Map();
+        for (let at = 0; at + 1 < parts.length; at += 2) { const [from, to] = parts[at].slice(1).split(" "); found.set(parts[at + 1], { from, to }); }
+        return found;
+      };
       const held = async commit => {
         const patch = await patchOf(commit);
-        return !patch.trim() || (await execute(name, "git", ["apply", "-R", "--check", "--cached", "-"], patch)).status === 0;
+        if (!patch.trim()) return true;
+        if ((await execute(name, "git", ["apply", "-R", "--check", "--cached", "-"], patch)).status !== 0) return false;
+        // git apply only warns when a file's mode differs from the patch's (an executable bit, a link where the commit left a
+        // file, a submodule), so each mode the commit sets is compared with the index's: a rollback of a mode alone is not held
+        // while the files still have that mode.
+        const sets = await modesOf(["diff-tree", "--no-commit-id", "--root", "-r", commit.id]), differs = await modesOf(["diff-index", "--cached", commit.id]);
+        for (const [file, { to }] of sets) if (to !== "000000" && differs.has(file) && differs.get(file).to !== to) return false;
+        return true;
       };
       let unheld = [];
       const holds = [];
