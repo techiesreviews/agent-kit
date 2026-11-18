@@ -1158,7 +1158,12 @@ test("a later commit on main that undoes a hotfix all but its spaces is no rever
 // mode, so such a rollback could look like one more copy, or like a change dev's files hold, and be kept out.
 type Fixture = ReturnType<typeof fixture>;
 const put = (f: Fixture, file: string, content: string | Buffer) => { writeFileSync(join(f.root, file), content); f.git("add", file); };
-const pointer = (f: Fixture, commit: string) => { mkdirSync(join(f.root, "sub"), { recursive: true }); f.git("update-index", "--add", "--cacheinfo", `160000,${commit},sub`); };
+// A submodule whose settings tell git's diffs to pass over it (ignore = all), as a project may have them.
+const pointer = (f: Fixture, commit: string, root = f.root) => {
+  mkdirSync(join(root, "sub"), { recursive: true });
+  writeFileSync(join(root, ".gitmodules"), '[submodule "sub"]\n\tpath = sub\n\turl = ./sub\n\tignore = all\n');
+  f.gitAt(root, "add", ".gitmodules"); f.gitAt(root, "update-index", "--add", "--cacheinfo", `160000,${commit},sub`);
+};
 // Each kind: the change dev makes first (A), and the change (M) that main copies and then rolls back.
 const rollbackKinds: [string, (f: Fixture) => void, (f: Fixture) => void][] = [
   ["indentation", f => put(f, "a.py", "def f():\n  return 1\n"), f => put(f, "a.py", "def f():\n    return 1\n")],
@@ -1182,8 +1187,9 @@ test("a rollback on main of a change it copied from dev stops the release and th
     f.commit("Change C", "c.txt"); f.git("push", "-q", "origin", "dev"); f.git("fetch", "-q", "origin");
     assert.equal(f.git("rev-parse", "origin/main^{tree}"), f.git("rev-parse", `${a}^{tree}`), "main's files are dev's from before M");
     const files = f.git("ls-files", "-s");
-    // The repository's own settings may tell git apply to mend or pass over spaces: the weighing counts them all the same.
-    f.git("config", "apply.whitespace", "fix"); f.git("config", "apply.ignoreWhitespace", "change");
+    // The repository's own settings may tell git apply to mend or pass over spaces, and git's diffs to pass over submodules:
+    // the weighing counts them all the same.
+    f.git("config", "apply.whitespace", "fix"); f.git("config", "apply.ignoreWhitespace", "change"); f.git("config", "diff.ignoreSubmodules", "all");
     f.git("checkout", "-q", "-b", "release/cut");
     const cut = f.git("rev-parse", "HEAD"), release = f.run(["--base", "main", "--release", "--no-merge"], real);
     assert.equal(release.status, 1, release.stdout + release.stderr);
@@ -1198,6 +1204,29 @@ test("a rollback on main of a change it copied from dev stops the release and th
     assert.equal(f.git("ls-files", "-s"), files, "the branch keeps its files, their modes and kinds");
     noPr(f);
   });
+});
+
+// Review 18 (GPT): a submodule set to ignore = all, or diff.ignoreSubmodules, hides its changes from git's diffs.
+test("a submodule's new commit on main that dev lacks is a file change the sync refuses, though git's diffs are set to pass over submodules", t => {
+  const f = fixture(t), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check") }, peer = f.peer();
+  // The submodule is released by a merge, then main moves it to another commit.
+  f.gitAt(peer, "checkout", "-q", "dev"); pointer(f, "1".repeat(40), peer); f.gitAt(peer, "commit", "-q", "-m", "Add the submodule"); f.gitAt(peer, "push", "-q", "origin", "dev");
+  f.gitAt(peer, "checkout", "-q", "main"); f.gitAt(peer, "merge", "-q", "--no-ff", "-m", "Release", "dev");
+  pointer(f, "2".repeat(40), peer); f.gitAt(peer, "commit", "-q", "-m", "Move the submodule on main"); f.gitAt(peer, "push", "-q", "origin", "main");
+  const moved = f.gitAt(peer, "rev-parse", "--short", "HEAD");
+  f.git("checkout", "-q", "dev"); f.git("pull", "-q", "--ff-only", "origin", "dev"); f.git("config", "diff.ignoreSubmodules", "all");
+  f.git("checkout", "-q", "-b", "sync/main");
+  const sync = f.run(["--sync-main"]);
+  assert.equal(sync.status, 1, sync.stdout + sync.stderr);
+  assert.equal(sync.stdout.trimEnd().split("\n").at(-1), `RESULT: fail sync: the sync would change sub on dev: main holds changes dev lacks; land them on dev first (git cherry-pick ${moved} on a new branch cut at origin/dev, then an ordinary kit pr), and run kit pr --sync-main again once dev holds them`);
+  assert.equal(f.git("rev-parse", "HEAD"), f.git("rev-parse", "origin/dev"));
+  assert.match(f.git("ls-files", "-s", "sub"), /^160000 1{40} /, "dev's submodule stays where it was");
+  noPr(f);
+  // The release carries main's change, as it does a hotfix.
+  f.commit("Landed change", "landed.txt"); f.git("push", "-q", "origin", "HEAD:dev"); f.git("checkout", "-q", "-B", "release/cut", "origin/dev");
+  const release = f.run(["--base", "main", "--release", "--no-merge"], real);
+  assert.equal(release.status, 0, release.stdout + release.stderr);
+  assert.match(f.git("ls-files", "-s", "sub"), /^160000 2{40} /, "the submodule's commit from main is in the cut");
 });
 
 // A rollback made inside a merge commit: no commit of main's own shows it, yet main's files are dev's from before B.

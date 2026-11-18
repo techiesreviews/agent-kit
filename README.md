@@ -498,7 +498,10 @@ two split, the next release conflicted, and a "sync main into dev" PR had to be 
     sync makes its merge itself, and an ordinary `kit pr` rebases a merge away.
   - A rollback on main of a change it copied from dev is never one more copy, whatever it rolls back: indentation,
     line endings, a rename, the case of a file's name, a binary file, a submodule's commit, an executable bit or a
-    file turned into a link. Each is a change dev's files lack, so beside copies the run stops. So does a merge
+    file turned into a link. Each is a change dev's files lack, so beside copies the run stops. A repository's own
+    settings do not loosen this: spaces count whatever `apply.whitespace` and `apply.ignoreWhitespace` say, and
+    submodules are shown whatever `ignore` in `.gitmodules` or `diff.ignoreSubmodules` says (a sync's "no file
+    changes" is checked by the two trees). So does a merge
     commit on main that changes files itself (its files are not what `git merge-tree --write-tree` makes of its
     parents) beside copies or commits dev's files hold: it could roll a copy back with no commit to show it.
   - These proofs need git 2.39 or newer (`git patch-id --verbatim`; `git merge-tree --write-tree` is from 2.38).
