@@ -502,7 +502,9 @@ two split, the next release conflicted, and a "sync main into dev" PR had to be 
     commit on main that changes files itself (its files are not what `git merge-tree --write-tree` makes of its
     parents) beside copies or commits dev's files hold: it could roll a copy back with no commit to show it.
   - These proofs need git 2.39 or newer (`git patch-id --verbatim`; `git merge-tree --write-tree` is from 2.38).
-    On an older git nothing counts as a copy, so such a run stops with the join by hand.
+    On an older git no commit counts as a copy: each is weighed like any other commit of main's, so one whose change
+    dev's files still hold is kept out as before, and any other stops the run with the join by hand. Before git 2.38
+    any merge commit on main beside such commits stops the run too.
   After an ordinary release main's own commits are only merges, so the merge stays plain.
 - `kit pr --sync-main` lands a "sync main into dev" merge into dev. From a branch cut at `origin/dev` it merges
   `origin/main` into the branch (its own merge commit, never a fast-forward, keeping dev's files under the same rule),
