@@ -148,7 +148,13 @@ else if (tool === "gh") {
       if (env.FAKE_QUEUE_METHOD === "fail") { console.error("lookup failed"); process.exit(1); }
       console.log(env.FAKE_QUEUE_METHOD ?? "MERGE"); process.exit(0);
     }
-    console.log(env.FAKE_QUEUE ? "queue-id" : "");
+    // FAKE_QUEUE_FROM, FAKE_QUEUE_ERROR_FROM: from that queue lookup of the fixture on (the first is 1) there is a queue, or
+    // the lookup fails: a queue someone turns on, or GitHub going quiet, while kit pr runs.
+    const path = env.FAKE_CALLS + ".queues";
+    const count = (existsSync(path) ? Number(readFileSync(path, "utf8")) : 0) + 1;
+    writeFileSync(path, String(count));
+    if (env.FAKE_QUEUE_ERROR_FROM && count >= Number(env.FAKE_QUEUE_ERROR_FROM)) { console.error("queue unavailable"); process.exit(1); }
+    console.log(env.FAKE_QUEUE || (env.FAKE_QUEUE_FROM && count >= Number(env.FAKE_QUEUE_FROM)) ? "queue-id" : "");
   } else if (action === "pr-merge") {
     const path = env.FAKE_CALLS + ".merges";
     const count = existsSync(path) ? Number(readFileSync(path, "utf8")) : 0;
@@ -1238,7 +1244,7 @@ test("the join by hand says to set dev's merge queue to merge commits first when
     noPr(f);
     // The queue asked about is dev's, where the join lands, in a release too.
     const asked = f.calls().filter(call => call.tool === "gh" && call.args[0] === "api" && call.args[1] === "graphql").map(call => call.args.find(arg => arg.startsWith("b=")));
-    assert.ok((asked.length > 0 || queue.FAKE_REPO_ERROR) && asked.every(branch => branch === "b=dev"), asked.join(" "));
+    assert.ok((queue.FAKE_REPO_ERROR ? asked.length === 0 : asked.length > 0) && asked.every(branch => branch === "b=dev"), asked.join(" "));
   }
 });
 
@@ -1621,6 +1627,37 @@ test("a release through a merge queue asks for --auto --merge, and a landed comm
   const base = f.git("rev-parse", "origin/main"), plain = f.run(["--base", "main", "--release"], { FAKE_RELEASE_CHECK: resolve("kit.d/release-check"), FAKE_MERGED: base });
   assert.equal(plain.status, 0, plain.stdout + plain.stderr);
   assert.match(plain.stdout, new RegExp(`^landed: ${base.slice(0, 7)} is no merge commit of [a-f0-9]{7}; check main by hand$`, "m"));
+});
+
+// Review 15 (GPT): the queue is read before the push and before the checks; one turned on while the checks ran is seen too.
+test("a release or a sync reads the merge queue again after its checks and before each merge: a new queue takes it only when it makes merge commits", t => {
+  // A release makes three lookups up to its first merge: before the push, before the checks, after the checks.
+  const waited = (f: ReturnType<typeof fixture>) => f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "wait");
+  const squashing = fixture(t), squashed = squashing.run(["--base", "main", "--release"], { FAKE_QUEUE_FROM: "3", FAKE_QUEUE_METHOD: "SQUASH" });
+  assert.equal(squashed.status, 1, squashed.stdout + squashed.stderr);
+  assert.match(squashed.stdout, /^RESULT: fail merge: the merge queue on main lands by squash, and a release must land as a merge commit: set the queue to merge commits, then run kit pr again$/m);
+  assert.equal(waited(squashing), true, "the queue appeared while the checks ran");
+  assert.equal(squashing.ghCalls("merge").length, 0, "nothing goes into the queue");
+  assert.doesNotMatch(squashed.stdout, /merged #73|queued #73/);
+  const quiet = fixture(t), unread = quiet.run(["--base", "main", "--release"], { FAKE_QUEUE_ERROR_FROM: "3" });
+  assert.equal(unread.status, 1, unread.stdout + unread.stderr);
+  assert.match(unread.stdout, /^RESULT: fail merge: could not read whether main has a merge queue, and a release must land as a merge commit: run kit pr again once GitHub answers$/m);
+  assert.equal(waited(quiet), true); assert.equal(quiet.ghCalls("merge").length, 0);
+  // A new queue that makes merge commits takes the release as any such queue does.
+  const merging = fixture(t), queued = merging.run(["--base", "main", "--release"], { FAKE_QUEUE_FROM: "3" });
+  assert.equal(queued.status, 0, queued.stdout + queued.stderr);
+  assert.equal(merging.ghCalls("merge").length, 1);
+  assert.ok(merging.ghCalls("merge")[0].args.includes("--auto") && merging.ghCalls("merge")[0].args.includes("--merge"));
+  assert.match(queued.stdout, /RESULT: ok queued #73 [a-f0-9]{7}$/m);
+  // The same on a retry: the sync's first merge found dev moved, and the queue appeared before the second (the fourth lookup).
+  const f = fixture(t), peer = release(f);
+  f.gitAt(peer, "checkout", "-q", "dev"); f.gitAt(peer, "pull", "-q", "--ff-only", "origin", "dev");
+  f.git("checkout", "-q", "dev"); f.git("pull", "-q", "--ff-only", "origin", "dev"); f.git("checkout", "-q", "-b", "sync/main");
+  const retried = f.run(["--sync-main"], { FAKE_EMPTY: "1", FAKE_BEHIND: "1", FAKE_ADVANCE: peer, FAKE_QUEUE_FROM: "4", FAKE_QUEUE_METHOD: "REBASE" });
+  assert.equal(retried.status, 1, retried.stdout + retried.stderr);
+  assert.match(retried.stdout, /^RESULT: fail merge: the merge queue on dev lands by rebase, and a sync must land as a merge commit: set the queue to merge commits, then run kit pr again$/m);
+  assert.equal(f.ghCalls("merge").length, 1, "only the first merge, which found dev moved, was asked");
+  assert.doesNotMatch(retried.stdout, /merged #73|queued #73/);
 });
 
 test("kit pr --sync-main makes the merge again on the newest dev when dev moved after the cut", t => {

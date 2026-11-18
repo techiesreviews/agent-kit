@@ -465,7 +465,8 @@ two split, the next release conflicted, and a "sync main into dev" PR had to be 
   `landed: <sha> merges <head> into main (a merge commit)` says what landed. A merge queue lands by its own method,
   whatever gh asks, so a release or a sync goes into one only when the queue makes merge commits; a queue set to squash
   or rebase, one whose method cannot be read, or a lookup that cannot tell whether there is a queue, stops the run
-  before anything is queued (gh adds a PR to a required
+  before anything is queued. The queue is read before the push, and again right before each merge (the first and
+  every retry), so one turned on while the checks ran is seen too (gh adds a PR to a required
   queue whatever method it names, so `--no-merge` then prints why, never a `gh pr merge` command to run by hand).
 - Kit joins main by itself only when it can prove what the merge does; it never guesses. Merges left out, each commit
   main holds outside dev's history is one of three kinds: a copy (the same change as one of dev's commits, by
