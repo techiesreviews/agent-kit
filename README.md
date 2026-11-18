@@ -473,18 +473,24 @@ two split, the next release conflicted, and a "sync main into dev" PR had to be 
   reverse to them, context lines too: a squash merge of work dev has not changed since, a hotfix dev took inside
   another commit), or a
   change dev's files lack (a hotfix or rollback made on main, or a squashed copy of work dev has changed since).
-  - Only the first two kinds, with main's files dev's files at a dev commit made since the two last joined: the cut's
+  - Only the first two kinds, with main's files dev's files at a dev commit made since dev and main were last joined: the cut's
     merge keeps dev's files (`git merge -s ours`, said as `merge: origin/main's files are dev's at <sha>, so the cut
     keeps dev's files`). Where main's files match no such commit, the merge is a plain one and must change no file.
   - Only changes dev's files lack: the merge is a plain one, and it stands when its files hold every one of those
-    commits and it changes no file dev changed since the two last joined, so a hotfix or a rollback made on main is
-    carried.
+    commits and it changes no file dev changed since dev and main were last joined, so a hotfix or a rollback made
+    on main is carried. A hotfix that a later commit on main undid exactly (its revert) is left out with that commit
+    first: main took it back itself.
   - Anything else stops the run, with nothing merged: a change dev's files lack beside the first two kinds (a rollback
     of a copied commit looks like a hotfix there, and no merge keeps it), a conflict, or a merge that would bring back
     what dev changed since. The stop names the commits or files and the steps to join main into dev by hand: `git
     switch -c <name> origin/dev`, `git merge --no-ff origin/main` (keep each change dev should hold, drop what dev
-    already undid), push, and land that PR into dev with `gh pr merge --merge`. Main is then inside dev's history, so
-    the next cut has nothing left to weigh and the stop cannot come back.
+    already undid), push, open its PR into dev, wait for its checks to pass (`kit wait ci --pr <N>`), then land it
+    with `gh pr merge <N> --merge`. Main is then inside dev's history, so the next cut has nothing left to weigh and
+    the stop cannot come back.
+  - That join by hand is the one landing outside `kit pr` (the lead's decision, 2026-11-18): only the hand-made merge
+    of main into dev that such a stop names, only once its checks pass, and only until `kit pr --sync-main` can land
+    such a merge itself (a follow-up to TOOLS-325, due before the next kit release). `kit pr` cannot land it today: a
+    sync makes its merge itself, and an ordinary `kit pr` rebases a merge away.
   After an ordinary release main's own commits are only merges, so the merge stays plain.
 - `kit pr --sync-main` lands a "sync main into dev" merge into dev. From a branch cut at `origin/dev` it merges
   `origin/main` into the branch (its own merge commit, never a fast-forward, keeping dev's files under the same rule),

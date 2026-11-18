@@ -904,7 +904,7 @@ test("a release with --no-merge opens but never waits or merges", t => {
 
 // The steps every "kit cannot join main by itself" stop names (TOOLS-325): a join made by hand, after which main is inside
 // dev's history, so the stop cannot come back.
-const byHand = (run: "release" | "sync") => "join origin/main into dev by hand: git switch -c <name> origin/dev, git merge --no-ff origin/main (keep each change dev should hold, drop what dev already undid), git push -u origin <name>, then open its PR into dev and land it with gh pr merge --merge (a merge commit, never a squash or rebase); "
+const byHand = (run: "release" | "sync") => "join origin/main into dev by hand: git switch -c <name> origin/dev, git merge --no-ff origin/main (keep each change dev should hold, drop what dev already undid), git push -u origin <name>, open its PR into dev, wait for its checks to pass (kit wait ci --pr <N>), then land it with gh pr merge <N> --merge (a merge commit: never a squash or rebase, never past a failed check); "
   + (run === "release" ? "then cut the release again at the new origin/dev" : "that merge is the sync, so kit pr --sync-main has nothing left to do");
 const resultLine = (stdout: string) => stdout.trimEnd().split("\n").at(-1)!.replace(/\b[a-f0-9]{7}\b/g, "<sha>");
 // No stop sends its reader back to the command that just stopped (the sync's cherry-pick advice is the one rerun, and it is tested).
@@ -952,7 +952,7 @@ test("a release cut whose main holds copies of dev's commits keeps dev's files i
   assert.equal(f.git("log", "-1", "--format=%s"), "Merge origin/main into the release cut");
 });
 
-test("a release cut stops when main holds copies of dev's commits and changes of its own beside them", t => {
+test("a release cut stops when main holds changes dev's files lack beside commits dev already holds", t => {
   const f = fixture(t), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check") }, peer = f.peer();
   f.git("checkout", "-q", "dev"); const first = f.commit("Dev edit", "file.txt", "dev one\n"); f.git("push", "-q", "origin", "dev");
   f.gitAt(peer, "fetch", "-q", "origin"); f.gitAt(peer, "checkout", "-q", "main"); f.gitAt(peer, "cherry-pick", first);
@@ -1006,7 +1006,7 @@ test("a squashed release on main that dev has since changed stops the release an
   f.git("checkout", "-q", "-b", "release/cut");
   const cut = f.git("rev-parse", "HEAD"), release = f.run(["--base", "main", "--release", "--no-merge"], real);
   assert.equal(release.status, 1, release.stdout + release.stderr);
-  const why = "a merge of origin/main would change x.txt, which dev changed too since the two last joined, so kit cannot tell a change of origin/main's own (<sha> Release (squashed)) from a copy of work dev has since changed; ";
+  const why = "a merge of origin/main would change x.txt, which dev changed too since dev and main were last joined, so kit cannot tell a change of origin/main's own (<sha> Release (squashed)) from a copy of work dev has since changed; ";
   assert.equal(resultLine(release.stdout), `RESULT: fail merge: ${why}${byHand("release")}`);
   noRerun(release.stdout);
   assert.equal(f.git("rev-parse", "HEAD"), cut, "kit's own merge is taken back");
@@ -1076,6 +1076,24 @@ test("hotfixes on main that change the same lines stop the release with the join
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.equal(resultLine(result.stdout), `RESULT: fail merge: a merge of origin/main would not hold <sha> Hotfix one as made there (a later commit there, or dev's own work, changes the same lines), so kit cannot tell what to keep; ${byHand("release")}`);
   assert.equal(f.git("rev-parse", "HEAD"), cut, "kit's own merge is taken back");
+});
+
+// R11-2: a hotfix main itself undid leaves nothing to weigh; the same revert of work dev holds still stops (the tests above).
+test("a hotfix on main and its revert there join by themselves, in the release and in the sync", t => {
+  const f = fixture(t), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check") }, peer = f.peer();
+  f.gitAt(peer, "checkout", "-q", "main"); writeFileSync(join(peer, "file.txt"), "base\nhotfix\n");
+  f.gitAt(peer, "commit", "-q", "-am", "Hotfix on main"); f.gitAt(peer, "revert", "--no-edit", "HEAD"); f.gitAt(peer, "push", "-q", "origin", "main");
+  f.git("checkout", "-q", "dev"); f.commit("Landed change", "landed.txt"); f.git("push", "-q", "origin", "dev");
+  f.git("checkout", "-q", "-b", "release/cut");
+  const cut = f.git("rev-parse", "HEAD"), release = f.run(["--base", "main", "--release", "--no-merge"], real);
+  assert.equal(release.status, 0, release.stdout + release.stderr);
+  assert.match(release.stdout, /^merge: ok$/m);
+  f.git("merge-base", "--is-ancestor", "origin/main", "HEAD");
+  assert.equal(f.git("diff", "--name-only", cut, "HEAD"), "");
+  f.git("checkout", "-q", "-B", "sync/main", "origin/dev");
+  const sync = f.run(["--sync-main", "--no-merge"], { FAKE_EMPTY: "1" });
+  assert.equal(sync.status, 0, sync.stdout + sync.stderr);
+  assert.match(sync.stdout, /^sync: ok \(origin\/main joins dev, no file changes\)$/m);
 });
 
 // SL-1 for a squash: the squashed commit's work is in dev's files, the rollback beside it is not, and no merge keeps it.
@@ -1241,6 +1259,21 @@ test("kit pr --sync-main refuses a sync that would change dev, and leaves the br
   const again = f.run(["--sync-main", "--no-merge"], { FAKE_EMPTY: "1" });
   assert.equal(again.status, 0, again.stdout + again.stderr);
   assert.match(again.stdout, /^sync: ok \(origin\/main joins dev, no file changes\)$/m);
+});
+
+// R11-5: nothing to cherry-pick when the change sits in a merge commit on main, so the sync names the join by hand.
+test("kit pr --sync-main names the join by hand when a merge on main changes files itself", t => {
+  const f = fixture(t), peer = f.peer();
+  f.git("checkout", "-q", "dev"); f.commit("Landed change", "landed.txt"); f.git("push", "-q", "origin", "dev");
+  f.gitAt(peer, "fetch", "-q", "origin"); f.gitAt(peer, "checkout", "-q", "main"); f.gitAt(peer, "merge", "-q", "--no-ff", "--no-commit", "origin/dev");
+  writeFileSync(join(peer, "hotfix.txt"), "hotfix\n"); f.gitAt(peer, "add", "hotfix.txt"); f.gitAt(peer, "commit", "-q", "-m", "Release with a hotfix inside");
+  f.gitAt(peer, "push", "-q", "origin", "main");
+  f.git("checkout", "-q", "-b", "sync/main");
+  const result = f.run(["--sync-main"]);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.equal(resultLine(result.stdout), `RESULT: fail sync: the sync would change hotfix.txt on dev: main holds changes dev lacks; ${byHand("sync")}`);
+  assert.equal(f.git("rev-parse", "HEAD"), f.git("rev-parse", "origin/dev")); assert.equal(f.git("status", "--porcelain"), "");
+  assert.equal(f.calls().some(call => call.tool === "gh"), false);
 });
 
 // R9-3: a sync whose merge really conflicts.
