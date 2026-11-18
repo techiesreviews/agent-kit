@@ -1182,6 +1182,8 @@ test("a rollback on main of a change it copied from dev stops the release and th
     f.commit("Change C", "c.txt"); f.git("push", "-q", "origin", "dev"); f.git("fetch", "-q", "origin");
     assert.equal(f.git("rev-parse", "origin/main^{tree}"), f.git("rev-parse", `${a}^{tree}`), "main's files are dev's from before M");
     const files = f.git("ls-files", "-s");
+    // The repository's own settings may tell git apply to mend or pass over spaces: the weighing counts them all the same.
+    f.git("config", "apply.whitespace", "fix"); f.git("config", "apply.ignoreWhitespace", "change");
     f.git("checkout", "-q", "-b", "release/cut");
     const cut = f.git("rev-parse", "HEAD"), release = f.run(["--base", "main", "--release", "--no-merge"], real);
     assert.equal(release.status, 1, release.stdout + release.stderr);
@@ -1209,7 +1211,7 @@ test("a merge on main that rolls a copied commit back itself stops the release a
   f.git("checkout", "-q", "-b", "release/cut");
   const cut = f.git("rev-parse", "HEAD"), release = f.run(["--base", "main", "--release", "--no-merge"], real);
   assert.equal(release.status, 1, release.stdout + release.stderr);
-  const why = "origin/main holds a merge that changes files itself (<sha> Merge with B rolled back) beside commits dev already holds: a merge cannot tell a rollback from a hotfix there; ";
+  const why = "origin/main holds a merge that changes files itself (<sha> Merge with B rolled back) beside commits dev already holds: kit cannot see what that merge rolled back; ";
   assert.equal(resultLine(release.stdout), `RESULT: fail merge: ${why}${byHand("release")}`);
   assert.equal(f.git("rev-parse", "HEAD"), cut);
   f.git("checkout", "-q", "-B", "sync/main", "origin/dev");
@@ -1233,8 +1235,11 @@ test("exact copies on main of a binary file, CRLF lines, a mode and a link still
   land("Add a link", () => { symlinkSync("file.txt", join(f.root, "link.txt")); f.git("add", "link.txt"); });
   f.git("push", "-q", "origin", "dev");
   f.gitAt(peer, "fetch", "-q", "origin"); f.gitAt(peer, "checkout", "-q", "main"); f.gitAt(peer, "cherry-pick", ...copied); f.gitAt(peer, "push", "-q", "origin", "main");
-  // dev changes the same files again, so a plain merge of main would conflict.
-  put(f, "logo.bin", Buffer.from([9, 9, 9])); put(f, "win.txt", "one\r\nthree\r\n"); f.git("commit", "-q", "-m", "Dev moves on"); f.git("push", "-q", "origin", "dev");
+  // dev changes each of them again, so none of the copies is in dev's files as it was made, and a plain merge would conflict.
+  put(f, "logo.bin", Buffer.from([9, 9, 9])); put(f, "win.txt", "one\r\nthree\r\n");
+  chmodSync(join(f.root, "file.txt"), 0o644); f.git("add", "file.txt");
+  rmSync(join(f.root, "link.txt")); symlinkSync("ticket.md", join(f.root, "link.txt")); f.git("add", "link.txt");
+  f.git("commit", "-q", "-m", "Dev moves on"); f.git("push", "-q", "origin", "dev");
   f.git("checkout", "-q", "-b", "release/cut");
   const cut = f.git("rev-parse", "HEAD"), result = f.run(["--base", "main", "--release", "--no-merge"], real);
   assert.equal(result.status, 0, result.stdout + result.stderr);

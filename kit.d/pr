@@ -697,8 +697,9 @@ async function main(args) {
       const held = async commit => {
         const patch = await patchOf(commit);
         if (!patch.length) return true;
-        // Spaces count, whatever the repository's own settings say.
-        if ((await execute(name, "git", ["-c", "apply.ignoreWhitespace=no", "apply", "-R", "--check", "--cached", "-"], patch)).status !== 0) return false;
+        // Spaces count, whatever the repository's own settings say: apply.ignoreWhitespace would pass over them, and
+        // apply.whitespace=fix would mend a line's end (a CR too) on both sides before it compares.
+        if ((await execute(name, "git", ["-c", "apply.ignoreWhitespace=no", "apply", "--whitespace=nowarn", "-R", "--check", "--cached", "-"], patch)).status !== 0) return false;
         // git apply only warns when a file's mode differs from the patch's (an executable bit, a link where the commit left a
         // file, a submodule), so each mode the commit changes is compared with the index's: a rollback of a mode alone is not
         // held while the files still have that mode. A file whose mode the commit left alone may have any mode since.
@@ -741,7 +742,7 @@ async function main(args) {
           if (made?.status !== 0 || made.text.split(/\r?\n/)[0] !== await git(name, ["rev-parse", `${id}^{tree}`])) own.push(line.slice(line.indexOf("\t") + 1));
         }
         if (own.length)
-          throw new Error(`${ref} holds a merge that changes files itself (${few(own)}) beside commits ${landName} already holds: a merge cannot tell a rollback from a hotfix there; ${await byHand(name, ref)}`);
+          throw new Error(`${ref} holds a merge that changes files itself (${few(own)}) beside commits ${landName} already holds: kit cannot see what that merge rolled back; ${await byHand(name, ref)}`);
       }
       // Only HEAD's commits since the last join count: files that match an older commit are a rollback, never copies.
       const bases = commits.length ? (await git(name, ["merge-base", "--all", "HEAD", ref])).split(/\s+/).filter(Boolean) : [];
