@@ -18,7 +18,7 @@ const { checkSteps, classify, docsOnly, doneHeading, featureListGuard, featureLi
 const { coverageHash, readUxResult, uxGuard, visibleFiles } = await import(pathToFileURL(resolve(import.meta.dirname, "../ux-gate.mjs")).href);
 const { checkLock, keyGuardOn, runPath, runProgram, startCommand } = await import(pathToFileURL(resolve(import.meta.dirname, "../key-guard.mjs")).href);
 const { folderRemote, gitCommonDir, gitNetworkCall, gitSafety, gitTop, loopbackRemote } = await import(pathToFileURL(resolve(import.meta.dirname, "../git-safety.mjs")).href);
-const usage = 'Usage: kit pr [--base <land>] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release | --sync-main] [--full] [--waive "<reason>"] [--not-visible "<reason>"]\nBranches come from scripts/agents/kit.json: --base defaults to branches.land; --release needs --base branches.release and first runs kit release-check --land (nothing unsaved, HEAD exactly origin/<land>).\nA release joins origin/<release> into the cut by one merge (keeping <land>\'s files when origin/<release> holds commits outside <land>\'s history, as copies, but its files are <land>\'s at some commit) and lands, once CI passes, as a merge commit: never a rebase or squash (--no-merge only opens it).\n--sync-main, from a branch cut at origin/<land>, merges origin/<release> into it and lands that merge into <land> as a merge commit, never rebased; it refuses when the merge would change any file on <land>.\n--waive requires a *-lead owner and may be given more than once (ids count in any reason, counts add up; once any reason names an id, the counts are not read); records the reason for merging with open findings or without a feature-list update;\na waiver for the findings that stop the landing (above P3; once the fix rounds are used up, P0 and P1) must name each one by id in its text (--waive \"R1-2, SL-1: <reason>\") or start with the number of them (--waive \"2 findings: <reason>\", which must match both looks together);\na finding it leaves out stops kit pr with a plain reason that lists it, and so does one that is new at a head a rebase brought, at the start of the run too (the lead sees it and runs kit pr again); P3 findings, test gaps and docs wording need no names;\nwith --release it also passes the release check, which names the reason (kit pr still needs a clean tree).\nA visible change (paths.visible) lands only with a fresh kit ux result: one that passed, with the review, for the visible files and the listed features that cover the change as they are now (kit ux saves it for the branch; a later change to a visible file or to one of those features, a rebase\'s too, needs kit ux again; a list edit about other features does not).\n--not-visible "<reason>" lands a change that matches those paths but shows a person nothing new, with the reason in the PR text (refused when kit ux tried this very change and it did not pass, and with --release; a run whose reviewer did not finish is no such verdict); --waive does not cover the UX check.\nWhen no feature in the list covers the changed files, kit ux has nothing to try and the PR says "UX check: nothing to try".\nA project with no feature list for kit ux (docs/agents/features.md) says "UX check: skipped"; a release carries what each PR already passed.\nAfter the Claude review (none in the docs tier), every change gets a second look (kit review --second-look), whose findings block the same way;\nwhen no model can take it, the PR lands and says "second look: skipped (<reason>)".\nOn Orbit ("tickets": "orbit"), --ticket takes a card KEY or a saved brief of it (.scratch/kit-tickets/KEY.md); when the PR\nlands the card goes to Done with a dated comment naming the PR and its merge SHA (ORBIT_ROLE=lead); a card that cannot be closed is named on the RESULT line.\nA PR a merge queue takes leaves the card open, its follow-ups on the card, and says to close it once the PR lands.\n';
+const usage = 'Usage: kit pr [--base <land>] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release | --sync-main] [--full] [--waive "<reason>"] [--not-visible "<reason>"]\nBranches come from scripts/agents/kit.json: --base defaults to branches.land; --release needs --base branches.release and first runs kit release-check --land (nothing unsaved, HEAD exactly origin/<land>).\nA release joins origin/<release> into the cut by one merge (keeping <land>\'s files when every commit origin/<release> holds outside <land>\'s history is a copy of <land>\'s work or already in its files, and its files are <land>\'s at a commit since the two last joined) and lands, once CI passes, as a merge commit: never a rebase or squash (--no-merge only opens it).\n--sync-main, from a branch cut at origin/<land>, merges origin/<release> into it and lands that merge into <land> as a merge commit, never rebased; it refuses when the merge would change any file on <land>.\nWhere kit cannot prove what such a merge keeps and drops (a squashed copy of work <land> has changed since, a rollback beside copies, a conflict), a release or a sync stops, with nothing merged, and names the steps to join origin/<release> into <land> by hand.\n--waive requires a *-lead owner and may be given more than once (ids count in any reason, counts add up; once any reason names an id, the counts are not read); records the reason for merging with open findings or without a feature-list update;\na waiver for the findings that stop the landing (above P3; once the fix rounds are used up, P0 and P1) must name each one by id in its text (--waive \"R1-2, SL-1: <reason>\") or start with the number of them (--waive \"2 findings: <reason>\", which must match both looks together);\na finding it leaves out stops kit pr with a plain reason that lists it, and so does one that is new at a head a rebase brought, at the start of the run too (the lead sees it and runs kit pr again); P3 findings, test gaps and docs wording need no names;\nwith --release it also passes the release check, which names the reason (kit pr still needs a clean tree).\nA visible change (paths.visible) lands only with a fresh kit ux result: one that passed, with the review, for the visible files and the listed features that cover the change as they are now (kit ux saves it for the branch; a later change to a visible file or to one of those features, a rebase\'s too, needs kit ux again; a list edit about other features does not).\n--not-visible "<reason>" lands a change that matches those paths but shows a person nothing new, with the reason in the PR text (refused when kit ux tried this very change and it did not pass, and with --release; a run whose reviewer did not finish is no such verdict); --waive does not cover the UX check.\nWhen no feature in the list covers the changed files, kit ux has nothing to try and the PR says "UX check: nothing to try".\nA project with no feature list for kit ux (docs/agents/features.md) says "UX check: skipped"; a release carries what each PR already passed.\nAfter the Claude review (none in the docs tier), every change gets a second look (kit review --second-look), whose findings block the same way;\nwhen no model can take it, the PR lands and says "second look: skipped (<reason>)".\nOn Orbit ("tickets": "orbit"), --ticket takes a card KEY or a saved brief of it (.scratch/kit-tickets/KEY.md); when the PR\nlands the card goes to Done with a dated comment naming the PR and its merge SHA (ORBIT_ROLE=lead); a card that cannot be closed is named on the RESULT line.\nA PR a merge queue takes leaves the card open, its follow-ups on the card, and says to close it once the PR lands.\n';
 const kit = process.env.KIT_PR_KIT || resolve(import.meta.dirname, "../kit");
 // main's private folder of program links (name: target), removed when the process ends.
 let programs;
@@ -576,30 +576,52 @@ async function main(args) {
     const joins = Boolean(flags.release || flags.syncMain), method = joins ? "--merge" : "--rebase";
     const isAncestor = async (name, older, newer) => (await execute(name, "git", ["merge-base", "--is-ancestor", older, newer])).status === 0;
     // One merge of `ref` into HEAD, dated by its newer parent, not by the clock, so the same two parents always make the same
-    // commit (TOOLS-310). The commits ref holds outside HEAD's history, merges left out, decide how (TOOLS-325):
-    // - none (an ordinary release left only merges on main), or only changes of ref's own (a hotfix, a revert of a release
-    //   merge): a plain merge, which carries them;
-    // - only copies of HEAD's commits (a rebase or squash merge), with ref's files HEAD's at a commit since their last join:
-    //   the merge keeps HEAD's files, since ref holds nothing HEAD lacks and a plain merge would only conflict or bring back
-    //   what dev changed since; it returns that commit;
-    // - copies and changes of ref's own together: it stops, since a merge cannot tell a rollback of a copy (which neither
-    //   kind of merge keeps) from a hotfix.
-    // A conflict is aborted and names its files.
+    // commit (TOOLS-310). Kit makes it only when it can prove what the merge does, and never guesses (TOOLS-325). Merges left
+    // out, each commit ref holds outside HEAD's history is a copy (the same change as one of HEAD's commits: a rebase merge),
+    // held (its change is in HEAD's files already: a squash of work dev has not changed since, a hotfix dev took inside
+    // another commit) or unheld (a change HEAD's files lack: a hotfix or rollback made on ref, or a squashed copy of work dev
+    // has changed since, which nothing here tells apart):
+    // - none (an ordinary release left only merges on main): a plain merge;
+    // - only copies and held commits, with ref's files HEAD's at a commit since their last join: the merge keeps HEAD's files,
+    //   since ref holds nothing HEAD lacks and a plain merge would only conflict or bring back what dev changed since; where
+    //   ref's files match no such commit, a plain merge that must change no file;
+    // - only unheld commits: a plain merge, which stands when its files hold every one of them (none changed again by a later
+    //   one, or left out beside dev's own work) and it changes no file dev changed since the last join (so it brings back
+    //   nothing dev undid); that carries a hotfix or a rollback made on main;
+    // - unheld commits beside the others: it stops, since a merge cannot tell a rollback of a copy (which neither kind of
+    //   merge keeps) from a hotfix.
+    // A conflict, or a merge that fails its proof, is taken back and stops with the steps to join the two by hand: after that
+    // join ref is inside the land branch's history, so no later run weighs these commits again. It returns the commit whose
+    // files were kept, and the unheld commits a plain merge carried.
+    const landName = kitBranch("land", settings);
+    const few = list => list.length > 5 ? `${list.slice(0, 5).join(", ")} and ${list.length - 5} more` : list.join(", ");
+    const byHand = ref => `join ${ref} into ${landName} by hand: git switch -c <name> origin/${landName}, git merge --no-ff ${ref} (keep each change ${landName} should hold, drop what ${landName} already undid), git push -u origin <name>, then open its PR into ${landName} and land it with gh pr merge --merge (a merge commit, never a squash or rebase); `
+      + (flags.release ? `then cut the release again at the new origin/${landName}` : "that merge is the sync, so kit pr --sync-main has nothing left to do");
     async function joinMerge(name, ref, subject) {
       const dates = (await git(name, ["show", "-s", "--no-show-signature", "--format=%ct", "HEAD", ref])).split(/\s+/).map(Number);
       if (dates.length !== 2 || !dates.every(Number.isSafeInteger)) throw new Error(`could not read the dates of the parents of the merge of ${ref}`);
       const when = `@${Math.max(...dates)} +0000`;
-      // "=" marks a commit with the same change in HEAD's history (a copy), "+" one of ref's own.
-      const marked = (await git(name, ["log", "--reverse", "--right-only", "--cherry-mark", "--no-merges", "--format=%m %h %s", `HEAD...${ref}`])).split(/\r?\n/).filter(Boolean);
-      const copies = marked.filter(line => line.startsWith("= ")), own = marked.filter(line => !line.startsWith("= ")).map(line => line.slice(2));
-      if (copies.length && own.length) {
-        const named = own.length > 5 ? `${own.slice(0, 5).join(", ")} and ${own.length - 5} more` : own.join(", ");
-        throw new Error(`${ref} holds copies of ${flags.base === release ? kitBranch("land", settings) : flags.base}'s commits and changes of its own beside them (${named}): a merge cannot tell a rollback from a hotfix there; make those changes on a new branch cut at origin/${kitBranch("land", settings)}, land them with an ordinary kit pr, then run this again`);
-      }
-      const tree = copies.length ? await git(name, ["rev-parse", `${ref}^{tree}`]) : "";
+      const before = await git(name, ["rev-parse", "HEAD"]);
+      // "=" marks a commit with the same change in HEAD's history (a copy), ">" one of ref's own.
+      const commits = (await git(name, ["log", "--reverse", "--right-only", "--cherry-mark", "--no-merges", "--format=%m %H %h %s", `HEAD...${ref}`])).split(/\r?\n/).filter(Boolean)
+        .map(line => ({ copy: line.startsWith("= "), id: line.split(" ")[1], named: line.split(" ").slice(2).join(" ") }));
+      // Whether the index (HEAD's files: the tree is clean) holds a commit's change: its diff applies to them in reverse, each
+      // hunk with its three lines of context, so a rollback of lines the files still have never counts. A commit with no diff
+      // has nothing to hold.
+      const held = async commit => {
+        const patch = await execute(name, "git", ["diff-tree", "--no-commit-id", "--root", "-r", "-p", "--binary", "--full-index", "--no-renames", "--no-ext-diff", "--no-textconv", commit.id]);
+        if (patch.status !== 0) throw new Error(childMessage(patch, `git diff-tree ${commit.id} failed`));
+        return !patch.text.trim() || (await execute(name, "git", ["apply", "-R", "--check", "--cached", "-"], patch.text)).status === 0;
+      };
+      const unheld = [];
+      for (const commit of commits) if (!commit.copy && !await held(commit)) unheld.push(commit);
+      const names = list => few(list.map(commit => commit.named));
+      if (unheld.length && unheld.length < commits.length)
+        throw new Error(`${ref} holds changes ${landName}'s files lack (${names(unheld)}) beside commits ${landName} already holds: a merge cannot tell a rollback from a hotfix there; ${byHand(ref)}`);
       // Only HEAD's commits since the last join count: files that match an older commit are a rollback, never copies.
-      const bases = copies.length ? (await git(name, ["merge-base", "--all", "HEAD", ref])).split(/\s+/).filter(Boolean) : [];
-      const kept = copies.length ? (await git(name, ["log", "--format=%H %T", "HEAD", ...bases.map(base => `^${base}`)])).split(/\r?\n/).find(line => line.endsWith(` ${tree}`))?.split(" ")[0] : undefined;
+      const bases = commits.length ? (await git(name, ["merge-base", "--all", "HEAD", ref])).split(/\s+/).filter(Boolean) : [];
+      const tree = commits.length && !unheld.length ? await git(name, ["rev-parse", `${ref}^{tree}`]) : "";
+      const kept = tree ? (await git(name, ["log", "--format=%H %T", "HEAD", ...bases.map(base => `^${base}`)])).split(/\r?\n/).find(line => line.endsWith(` ${tree}`))?.split(" ")[0] : undefined;
       // Never a fast-forward: a HEAD that ref already holds (dev not moved since a release) still gets its own merge commit.
       const argv = kept ? ["merge", "--no-edit", "--no-ff", "-s", "ours", "-m", subject, "-m", `${ref}'s files are already this branch's at ${kept}, so the merge keeps this branch's files.`, ref]
         : ["merge", "--no-edit", "--no-ff", "-m", subject, ref];
@@ -607,10 +629,29 @@ async function main(args) {
       if (merged.status !== 0) {
         const files = await git(name, ["-c", "core.quotepath=false", "diff", "--name-only", "--diff-filter=U"]);
         const aborted = await execute(name, "git", ["merge", "--abort"]);
-        if (files) throw new Error(`conflict in ${files.split(/\r?\n/).join(", ")}${aborted.status ? "; merge --abort failed" : ""}`);
+        if (files) throw new Error(`conflict in ${files.split(/\r?\n/).join(", ")}${aborted.status ? "; merge --abort failed" : ""}: kit cannot join ${ref} by itself; ${byHand(ref)}`);
         throw new Error(childMessage(merged, `git merge ${ref} failed`));
       }
-      return kept;
+      if (kept || !commits.length) return { kept, carried: [] };
+      // The plain merge's proof. One that fails it is taken back, so the branch is left as it was.
+      const changed = (await git(name, ["-c", "core.quotepath=false", "diff", "--no-renames", "--name-only", before, "HEAD"])).split(/\r?\n/).filter(Boolean);
+      let why = "";
+      if (!unheld.length) {
+        if (changed.length) why = `${ref} holds only work ${landName} already has, yet a merge of it would change ${few(changed)}, bringing back what ${landName} changed since`;
+      } else {
+        const left = [];
+        for (const commit of unheld) if (!await held(commit)) left.push(commit);
+        // Every file dev's commits since the last join touched, a merge's against each parent.
+        const touched = new Set((await git(name, ["-c", "core.quotepath=false", "log", "-m", "--no-renames", "--format=", "--name-only", before, ...bases.map(base => `^${base}`)])).split(/\r?\n/).filter(Boolean));
+        const both = changed.filter(file => touched.has(file));
+        if (left.length) why = `a merge of ${ref} would not hold ${names(left)} as made there (a later commit there, or ${landName}'s own work, changes the same lines), so kit cannot tell what to keep`;
+        else if (both.length) why = `a merge of ${ref} would change ${few(both)}, which ${landName} changed too since the two last joined, so kit cannot tell a change of ${ref}'s own (${names(unheld)}) from a copy of work ${landName} has since changed`;
+      }
+      if (why) {
+        await git(name, ["reset", "-q", "--keep", before]);
+        throw new Error(`${why}; ${byHand(ref)}`);
+      }
+      return { kept, carried: unheld };
     }
     async function rebase() {
       await git("fetch", ["fetch", "-q", "origin"]); ok("fetch");
@@ -622,7 +663,7 @@ async function main(args) {
         // A cut that origin/<release> already holds would be an empty release.
         if (await isAncestor("merge", "HEAD", `origin/${flags.base}`)) throw new Error(`nothing to release: origin/${flags.base} already holds this cut`);
         if (await isAncestor("merge", `origin/${flags.base}`, "HEAD")) { ok("merge"); return; }
-        const kept = await joinMerge("merge", `origin/${flags.base}`, `Merge origin/${flags.base} into the release cut`);
+        const { kept } = await joinMerge("merge", `origin/${flags.base}`, `Merge origin/${flags.base} into the release cut`);
         if (kept) console.log(`merge: origin/${flags.base}'s files are ${kitBranch("land", settings)}'s at ${kept.slice(0, 7)}, so the cut keeps ${kitBranch("land", settings)}'s files`);
         ok("merge");
         return;
@@ -650,17 +691,16 @@ async function main(args) {
           }
         }
         await git("sync", ["reset", "-q", "--keep", land]);
-        try { await joinMerge("sync", main, `Merge ${main} into ${flags.base} (sync, no file changes)`); }
-        catch (error) {
-          throw new Error(/^conflict in /.test(error.message)
-            ? `${error.message}: ${release} holds changes ${flags.base} lacks; land them on ${flags.base} with an ordinary kit pr first, then run kit pr --sync-main again` : error.message);
-        }
+        const { carried } = await joinMerge("sync", main, `Merge ${main} into ${flags.base} (sync, no file changes)`);
         const changed = (await git("sync", ["-c", "core.quotepath=false", "diff", "--name-only", land, "HEAD"])).split(/\r?\n/).filter(Boolean);
         if (changed.length) {
           // Kit's own merge is taken back, so the branch is left as it was cut.
           await git("sync", ["reset", "-q", "--keep", land]);
-          const named = changed.length > 5 ? `${changed.slice(0, 5).join(", ")} and ${changed.length - 5} more` : changed.join(", ");
-          throw new Error(`the sync would change ${named} on ${flags.base}: ${release} holds changes ${flags.base} lacks; land them on ${flags.base} with an ordinary kit pr first, then run kit pr --sync-main again`);
+          // The commits the merge carried change only files dev has not touched since the last join, so a cherry-pick of them is
+          // an exact copy, which the next sync joins. With none to name (a merge on main that changes files itself), by hand.
+          throw new Error(`the sync would change ${few(changed)} on ${flags.base}: ${release} holds changes ${flags.base} lacks; ` + (carried.length
+            ? `land them on ${flags.base} first (git cherry-pick ${carried.map(commit => commit.named.split(" ")[0]).join(" ")} on a new branch cut at ${land}, then an ordinary kit pr), and run kit pr --sync-main again once ${flags.base} holds them`
+            : byHand(main)));
         }
         console.log(`sync: ok (${main} joins ${flags.base}, no file changes)`);
         return;
