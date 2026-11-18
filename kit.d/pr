@@ -631,6 +631,11 @@ async function main(args) {
     // would flatten the join, and one that cannot be read might; the steps then say what to set first, and name the command
     // for once that is done. It returns the commit whose files were kept, and the unheld commits a plain merge carried.
     const landName = kitBranch("land", settings);
+    // Every diff the join weighs shows submodules too: a project's settings (ignore = all in .gitmodules, diff.ignoreSubmodules)
+    // may tell git to pass over them, which would hide a submodule's commit that main moved or rolled back.
+    const whole = "--ignore-submodules=none";
+    // Whether two commits hold the same files, by their trees: no setting hides a difference there.
+    const sameFiles = async (name, one, other) => await git(name, ["rev-parse", `${one}^{tree}`]) === await git(name, ["rev-parse", `${other}^{tree}`]);
     const few = list => list.length > 5 ? `${list.slice(0, 5).join(", ")} and ${list.length - 5} more` : list.join(", ");
     async function byHand(at, ref) {
       const flattens = "and a queue that squashes or rebases would flatten this join";
@@ -654,10 +659,10 @@ async function main(args) {
       const when = `@${Math.max(...dates)} +0000`;
       const before = await git(name, ["rev-parse", "HEAD"]);
       // "=" marks a commit with the same change in HEAD's history (a copy), ">" one of ref's own.
-      let commits = (await git(name, ["log", "--reverse", "--right-only", "--cherry-mark", "--no-merges", "--format=%m %H %h %s", `HEAD...${ref}`])).split(/\r?\n/).filter(Boolean)
+      let commits = (await git(name, ["log", "--reverse", "--right-only", "--cherry-mark", "--no-merges", whole, "--format=%m %H %h %s", `HEAD...${ref}`])).split(/\r?\n/).filter(Boolean)
         .map(line => ({ copy: line.startsWith("= "), id: line.split(" ")[1], named: line.split(" ").slice(2).join(" ") }));
       const patchOf = async (commit, ...how) => {
-        const patch = await execute(name, "git", ["diff-tree", "--no-commit-id", "--root", "-r", "-p", "--binary", "--full-index", "--no-renames", "--no-ext-diff", "--no-textconv", ...how, commit.id], undefined, undefined, true);
+        const patch = await execute(name, "git", ["diff-tree", "--no-commit-id", "--root", "-r", "-p", "--binary", "--full-index", "--no-renames", "--no-ext-diff", "--no-textconv", whole, ...how, commit.id], undefined, undefined, true);
         if (patch.status !== 0) throw new Error(childMessage(patch, `git diff-tree ${commit.id} failed`));
         return patch.bytes;
       };
@@ -666,7 +671,7 @@ async function main(args) {
       // mode it changes has the mode the commit gave it. A commit with no diff has nothing to hold.
       // The paths of a --raw -z listing, each with its mode and its content's id on either side, and its kind of change.
       const modesOf = async argv => {
-        const listed = await execute(name, "git", [...argv, "--raw", "-z", "--no-renames", "--no-abbrev"]);
+        const listed = await execute(name, "git", [...argv, "--raw", "-z", "--no-renames", "--no-abbrev", whole]);
         if (listed.status !== 0) throw new Error(childMessage(listed, `git ${argv[0]} failed`));
         const parts = listed.text.split("\0"), found = new Map();
         for (let at = 0; at + 1 < parts.length; at += 2) { const [from, to, was, is, kind] = parts[at].slice(1).split(" "); found.set(parts[at + 1], { from, to, was, is, kind }); }
@@ -678,7 +683,7 @@ async function main(args) {
       const exactId = async commit => {
         const id = (await execute(name, "git", ["patch-id", "--verbatim"], await patchOf(commit, "--no-prefix"))).text.trim().split(/\s+/)[0];
         if (!id) return "";
-        const counted = await execute(name, "git", ["diff-tree", "--no-commit-id", "--root", "-r", "--numstat", "-z", "--no-renames", commit.id]);
+        const counted = await execute(name, "git", ["diff-tree", "--no-commit-id", "--root", "-r", "--numstat", "-z", "--no-renames", whole, commit.id]);
         if (counted.status !== 0) throw new Error(childMessage(counted, `git diff-tree ${commit.id} failed`));
         const binary = new Set(counted.text.split("\0").filter(line => line.startsWith("-\t-\t")).map(line => line.slice(4)));
         const paths = [...await modesOf(["diff-tree", "--no-commit-id", "--root", "-r", commit.id])];
@@ -689,7 +694,7 @@ async function main(args) {
       // indentation or of line endings never passes for a copy of the change it undoes.
       if (commits.some(commit => commit.copy)) {
         const exact = new Set();
-        for (const line of (await git(name, ["log", "--left-only", "--cherry-mark", "--no-merges", "--format=%m %H", `HEAD...${ref}`])).split(/\r?\n/))
+        for (const line of (await git(name, ["log", "--left-only", "--cherry-mark", "--no-merges", whole, "--format=%m %H", `HEAD...${ref}`])).split(/\r?\n/))
           if (line.startsWith("= ")) exact.add(await exactId({ id: line.slice(2) }));
         exact.delete("");
         for (const commit of commits) if (commit.copy) commit.copy = exact.has(await exactId(commit));
@@ -760,15 +765,15 @@ async function main(args) {
       }
       if (kept || !commits.length) return { kept, carried: [] };
       // The plain merge's proof. One that fails it is taken back, so the branch is left as it was.
-      const changed = (await git(name, ["-c", "core.quotepath=false", "diff", "--no-renames", "--name-only", before, "HEAD"])).split(/\r?\n/).filter(Boolean);
+      const changed = (await git(name, ["-c", "core.quotepath=false", "diff", "--no-renames", "--name-only", whole, before, "HEAD"])).split(/\r?\n/).filter(Boolean);
       let why = "";
       if (!unheld.length) {
-        if (changed.length) why = `${ref} holds only work ${landName} already has, yet a merge of it would change ${few(changed)}, bringing back what ${landName} changed since`;
+        if (!await sameFiles(name, before, "HEAD")) why = `${ref} holds only work ${landName} already has, yet a merge of it would change ${few(changed) || "files"}, bringing back what ${landName} changed since`;
       } else {
         const left = [];
         for (const commit of unheld) if (!await held(commit)) left.push(commit);
         // Every file dev's commits since the last join touched, a merge's against each parent.
-        const touched = new Set((await git(name, ["-c", "core.quotepath=false", "log", "-m", "--no-renames", "--format=", "--name-only", before, ...bases.map(base => `^${base}`)])).split(/\r?\n/).filter(Boolean));
+        const touched = new Set((await git(name, ["-c", "core.quotepath=false", "log", "-m", "--no-renames", whole, "--format=", "--name-only", before, ...bases.map(base => `^${base}`)])).split(/\r?\n/).filter(Boolean));
         const both = changed.filter(file => touched.has(file));
         if (left.length) why = `a merge of ${ref} would not hold ${names(left)} as made there (a later commit there, or ${landName}'s own work, changes the same lines), so kit cannot tell what to keep`;
         else if (both.length) why = `a merge of ${ref} would change ${few(both)}, which ${landName} changed too since ${landName} and ${release} were last joined, so kit cannot tell a change of ${ref}'s own (${names(unheld)}) from a copy of work ${landName} has since changed`;
@@ -818,13 +823,13 @@ async function main(args) {
         }
         await git("sync", ["reset", "-q", "--keep", land]);
         const { carried } = await joinMerge("sync", main, `Merge ${main} into ${flags.base} (sync, no file changes)`);
-        const changed = (await git("sync", ["-c", "core.quotepath=false", "diff", "--name-only", land, "HEAD"])).split(/\r?\n/).filter(Boolean);
-        if (changed.length) {
+        if (!await sameFiles("sync", land, "HEAD")) {
+          const changed = (await git("sync", ["-c", "core.quotepath=false", "diff", "--name-only", whole, land, "HEAD"])).split(/\r?\n/).filter(Boolean);
           // Kit's own merge is taken back, so the branch is left as it was cut.
           await git("sync", ["reset", "-q", "--keep", land]);
           // The commits the merge carried change only files dev has not touched since the last join, so a cherry-pick of them is
           // an exact copy, which the next sync joins. With none to name (a merge on main that changes files itself), by hand.
-          throw new Error(`the sync would change ${few(changed)} on ${flags.base}: ${release} holds changes ${flags.base} lacks; ` + (carried.length
+          throw new Error(`the sync would change ${few(changed) || "files"} on ${flags.base}: ${release} holds changes ${flags.base} lacks; ` + (carried.length
             ? `land them on ${flags.base} first (git cherry-pick ${carried.map(commit => commit.named.split(" ")[0]).join(" ")} on a new branch cut at ${land}, then an ordinary kit pr), and run kit pr --sync-main again once ${flags.base} holds them`
             : await byHand("sync", main)));
         }
