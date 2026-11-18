@@ -136,7 +136,11 @@ if (tool === "fake-kit" && action === "review" && args.includes("--second-look")
 else if (tool === "gh") {
   if (action === "pr-list") console.log(env.FAKE_EXISTING ? '[{"number":73}]' : "[]");
   else if (action === "pr-create") console.log(env.FAKE_BAD_URL ? "no URL" : "https://github.com/test/repo/pull/73");
-  else if (action === "repo-view") console.log("test/repo");
+  else if (action === "repo-view") {
+    // FAKE_REPO_ERROR: gh cannot name the repo.
+    if (env.FAKE_REPO_ERROR) { console.error("repo unavailable"); process.exit(1); }
+    console.log("test/repo");
+  }
   else if (action === "api-graphql") {
     if (env.FAKE_QUEUE_ERROR) { console.error("queue unavailable"); process.exit(1); }
     // FAKE_QUEUE_METHOD: how the queue lands (MERGE by default); "fail" fails the lookup.
@@ -1175,6 +1179,27 @@ test("a rollback on main of a file's mode alone, beside copies, stops the releas
   }
 });
 
+// Only a mode the commit itself changes is compared: here main's squash of two dev commits (so no exact copy of either)
+// edits file.txt, and dev makes that file executable later.
+test("a squashed edit on main of a file dev later made executable keeps dev's files, in the release and in the sync", t => {
+  const f = fixture(t), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check") }, peer = f.peer();
+  f.git("checkout", "-q", "dev"); f.commit("Change A", "a.txt"); const edit = f.commit("Edit file.txt", "file.txt", "edited\n"); f.git("push", "-q", "origin", "dev");
+  f.gitAt(peer, "fetch", "-q", "origin"); f.gitAt(peer, "checkout", "-q", "main"); f.gitAt(peer, "merge", "-q", "--squash", edit);
+  f.gitAt(peer, "commit", "-q", "-m", "Release (squashed)"); f.gitAt(peer, "push", "-q", "origin", "main");
+  chmodSync(join(f.root, "file.txt"), 0o755); f.git("add", "file.txt"); f.git("commit", "-q", "-m", "Make file.txt run");
+  f.commit("Change C", "c.txt"); f.git("push", "-q", "origin", "dev");
+  f.git("checkout", "-q", "-b", "release/cut");
+  const cut = f.git("rev-parse", "HEAD"), release = f.run(["--base", "main", "--release", "--no-merge"], real);
+  assert.equal(release.status, 0, release.stdout + release.stderr);
+  assert.match(release.stdout, new RegExp(`^merge: origin/main's files are dev's at ${edit.slice(0, 7)}, so the cut keeps dev's files$`, "m"));
+  assert.equal(f.git("diff", "--name-only", cut, "HEAD"), "");
+  assert.equal(f.git("ls-files", "-s", "file.txt").split(" ")[0], "100755");
+  f.git("checkout", "-q", "-B", "sync/main", "origin/dev");
+  const sync = f.run(["--sync-main", "--no-merge"], { FAKE_EMPTY: "1" });
+  assert.equal(sync.status, 0, sync.stdout + sync.stderr);
+  assert.match(sync.stdout, /^sync: ok \(origin\/main joins dev, no file changes\)$/m);
+});
+
 // A copy of a mode change that dev still holds is held, so the cut keeps dev's files as for any copy.
 test("a mode change main copied from dev, with nothing rolled back, keeps dev's files", t => {
   const f = fixture(t), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check") }, peer = f.peer();
@@ -1191,10 +1216,10 @@ test("a mode change main copied from dev, with nothing rolled back, keeps dev's 
 });
 
 // SL-1 of review 12 (GPT): a queue on dev that squashes or rebases would flatten the join made by hand.
-test("the join by hand names its merge command only when dev has no merge queue or one that makes merge commits", t => {
+test("the join by hand says to set dev's merge queue to merge commits first when the queue would flatten the join, or cannot be read", t => {
   const cases: [NodeJS.ProcessEnv, keyof typeof withheld | undefined][] = [[{}, undefined], [{ FAKE_QUEUE: "1" }, undefined],
     [{ FAKE_QUEUE: "1", FAKE_QUEUE_METHOD: "SQUASH" }, "squash"], [{ FAKE_QUEUE: "1", FAKE_QUEUE_METHOD: "REBASE" }, "rebase"],
-    [{ FAKE_QUEUE: "1", FAKE_QUEUE_METHOD: "fail" }, "silent"], [{ FAKE_QUEUE_ERROR: "1" }, "unseen"]];
+    [{ FAKE_QUEUE: "1", FAKE_QUEUE_METHOD: "fail" }, "silent"], [{ FAKE_QUEUE_ERROR: "1" }, "unseen"], [{ FAKE_REPO_ERROR: "1" }, "unseen"]];
   for (const [queue, words] of cases) {
     const f = fixture(t), peer = f.peer();
     f.gitAt(peer, "checkout", "-q", "main"); writeFileSync(join(peer, "file.txt"), "hotfix\n");
@@ -1213,7 +1238,7 @@ test("the join by hand names its merge command only when dev has no merge queue 
     noPr(f);
     // The queue asked about is dev's, where the join lands, in a release too.
     const asked = f.calls().filter(call => call.tool === "gh" && call.args[0] === "api" && call.args[1] === "graphql").map(call => call.args.find(arg => arg.startsWith("b=")));
-    assert.ok(asked.length > 0 && asked.every(branch => branch === "b=dev"), asked.join(" "));
+    assert.ok((asked.length > 0 || queue.FAKE_REPO_ERROR) && asked.every(branch => branch === "b=dev"), asked.join(" "));
   }
 });
 
@@ -1552,7 +1577,10 @@ test("a release through a merge queue asks for --auto --merge, and a landed comm
     const unseen = fixture(t), run = unseen.run(args, { FAKE_QUEUE_ERROR: "1" });
     assert.equal(run.status, args.includes("--no-merge") ? 0 : 1, run.stdout + run.stderr);
     assert.equal(unseen.ghCalls("merge").length, 0);
-    if (!args.includes("--no-merge")) assert.equal(unseen.ghCalls("create").length, 0, "a queue that cannot be read stops the release before it is opened");
+    if (!args.includes("--no-merge")) {
+      assert.equal(unseen.ghCalls("create").length, 0, "a queue that cannot be read stops the release before it is opened");
+      assert.notEqual(spawnSync("git", ["show-ref", "--verify", "-q", "refs/heads/feature/kit-pr"], { cwd: unseen.origin }).status, 0, "and before the branch is pushed");
+    }
     assert.doesNotMatch(run.stdout, /gh pr merge 73/);
     assert.match(run.stdout, /could not read whether main has a merge queue, and a release must land as a merge commit: run kit pr again once GitHub answers/);
   }
@@ -1579,6 +1607,14 @@ test("a release through a merge queue asks for --auto --merge, and a landed comm
   assert.equal(unseenSync.status, 1, unseenSync.stdout + unseenSync.stderr);
   assert.match(unseenSync.stdout, /^RESULT: fail merge: could not read whether dev has a merge queue, and a sync must land as a merge commit: /m);
   assert.equal(sync.ghCalls("merge").length, 0);
+  const blind = fixture(t);
+  release(blind);
+  blind.git("checkout", "-q", "dev"); blind.git("pull", "-q", "--ff-only", "origin", "dev"); blind.git("checkout", "-q", "-b", "sync/main");
+  const blindSync = blind.run(["--sync-main"], { FAKE_EMPTY: "1", FAKE_QUEUE_ERROR: "1" });
+  assert.equal(blindSync.status, 1, blindSync.stdout + blindSync.stderr);
+  assert.match(blindSync.stdout, /^RESULT: fail merge: could not read whether dev has a merge queue, and a sync must land as a merge commit: /m);
+  assert.equal(blind.ghCalls("create").length, 0, "a queue that cannot be read stops the sync before it is opened");
+  assert.notEqual(spawnSync("git", ["show-ref", "--verify", "-q", "refs/heads/sync/main"], { cwd: blind.origin }).status, 0, "and before the branch is pushed");
   const f = fixture(t);
   f.git("checkout", "-q", "dev"); f.commit("Landed change", "landed.txt"); f.git("push", "-q", "origin", "dev");
   f.git("checkout", "-q", "-b", "release/cut");
