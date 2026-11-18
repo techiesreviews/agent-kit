@@ -904,8 +904,19 @@ test("a release with --no-merge opens but never waits or merges", t => {
 
 // The steps every "kit cannot join main by itself" stop names (TOOLS-325): a join made by hand, after which main is inside
 // dev's history, so the stop cannot come back.
-const byHand = (run: "release" | "sync") => "join origin/main into dev by hand: git switch -c <name> origin/dev, git merge --no-ff origin/main (keep each change dev should hold, drop what dev already undid), git push -u origin <name>, open its PR into dev, wait for its checks to pass (kit wait ci --pr <N>), then land it with gh pr merge <N> --merge (a merge commit: never a squash or rebase, never past a failed check); "
+// The merge command is given only when a merge commit can be promised: dev has no merge queue, or one that makes them.
+const withheld = {
+  squash: "first set the merge queue on dev to merge commits (it lands by squash, and a queue that squashes or rebases would flatten this join, so no merge command is given); then ",
+  rebase: "first set the merge queue on dev to merge commits (it lands by rebase, and a queue that squashes or rebases would flatten this join, so no merge command is given); then ",
+  silent: "first set the merge queue on dev to merge commits (it did not say how it lands, and a queue that squashes or rebases would flatten this join, so no merge command is given); then ",
+  unseen: "first make sure dev has no merge queue, or one set to merge commits (kit could not read whether it has one, and a queue that squashes or rebases would flatten this join, so no merge command is given); then ",
+};
+const byHand = (run: "release" | "sync", queue?: keyof typeof withheld) => (queue ? withheld[queue] : "")
+  + "join origin/main into dev by hand: git switch -c <name> origin/dev, git merge --no-ff origin/main (keep each change dev should hold, drop what dev already undid), git push -u origin <name>, open its PR into dev, wait for its checks to pass (kit wait ci --pr <N>), "
+  + (queue ? "then land it as a merge commit; " : "then land it with gh pr merge <N> --merge (a merge commit: never a squash or rebase, never past a failed check); ")
   + (run === "release" ? "then cut the release again at the new origin/dev" : "that merge is the sync, so kit pr --sync-main has nothing left to do");
+// A stop reads dev's queue for its steps, and pushes or opens nothing.
+const noPr = (f: ReturnType<typeof fixture>) => assert.equal(f.calls().some(call => call.tool === "gh" && call.args[0] === "pr"), false, "nothing is opened or merged");
 const resultLine = (stdout: string) => stdout.trimEnd().split("\n").at(-1)!.replace(/\b[a-f0-9]{7}\b/g, "<sha>");
 // No stop sends its reader back to the command that just stopped (the sync's cherry-pick advice is the one rerun, and it is tested).
 const noRerun = (stdout: string) => assert.doesNotMatch(resultLine(stdout), /run this again|run kit pr --sync-main again|run kit pr again/);
@@ -964,7 +975,7 @@ test("a release cut stops when main holds changes dev's files lack beside commit
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.equal(resultLine(result.stdout), `RESULT: fail merge: origin/main holds changes dev's files lack (<sha> Hotfix on main) beside commits dev already holds: a merge cannot tell a rollback from a hotfix there; ${byHand("release")}`);
   assert.equal(f.git("rev-parse", "HEAD"), cut, "nothing is merged");
-  assert.equal(f.calls().some(call => call.tool === "gh"), false);
+  noPr(f);
 });
 
 test("a rollback of a copied release on main stops both the release and the sync, never kept out", t => {
@@ -1012,7 +1023,7 @@ test("a squashed release on main that dev has since changed stops the release an
   assert.equal(f.git("rev-parse", "HEAD"), cut, "kit's own merge is taken back");
   assert.equal(f.git("status", "--porcelain"), "");
   assert.equal(spawnSync("git", ["cat-file", "-e", "HEAD:x.txt"], { cwd: f.root }).status === 0, false, "what dev removed is not brought back");
-  assert.equal(f.calls().some(call => call.tool === "gh"), false);
+  noPr(f);
   f.git("checkout", "-q", "-B", "sync/main", "origin/dev");
   const sync = f.run(["--sync-main"]);
   assert.equal(sync.status, 1, sync.stdout + sync.stderr);
@@ -1094,6 +1105,66 @@ test("a hotfix on main and its revert there join by themselves, in the release a
   const sync = f.run(["--sync-main", "--no-merge"], { FAKE_EMPTY: "1" });
   assert.equal(sync.status, 0, sync.stdout + sync.stderr);
   assert.match(sync.stdout, /^sync: ok \(origin\/main joins dev, no file changes\)$/m);
+});
+
+// R12-4: with the pair left out, what is left on main is a copy, so the cut keeps dev's files.
+test("a hotfix and its revert on main beside a copied commit keep dev's files", t => {
+  const f = fixture(t), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check") }, peer = f.peer();
+  f.git("checkout", "-q", "dev"); const a = f.commit("Change A", "a.txt"); f.git("push", "-q", "origin", "dev");
+  f.gitAt(peer, "fetch", "-q", "origin"); f.gitAt(peer, "checkout", "-q", "main"); f.gitAt(peer, "cherry-pick", a);
+  writeFileSync(join(peer, "file.txt"), "base\nhotfix\n"); f.gitAt(peer, "commit", "-q", "-am", "Hotfix on main"); f.gitAt(peer, "revert", "--no-edit", "HEAD");
+  f.gitAt(peer, "push", "-q", "origin", "main");
+  f.commit("Change C", "c.txt"); f.git("push", "-q", "origin", "dev");
+  f.git("checkout", "-q", "-b", "release/cut");
+  const cut = f.git("rev-parse", "HEAD"), result = f.run(["--base", "main", "--release", "--no-merge"], real);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, new RegExp(`^merge: origin/main's files are dev's at ${a.slice(0, 7)}, so the cut keeps dev's files$`, "m"));
+  assert.equal(f.git("diff", "--name-only", cut, "HEAD"), "");
+});
+
+// R12-2: only an exact revert pairs up. Here the later commit differs from the hotfix's reverse by its spaces alone.
+test("a later commit on main that undoes a hotfix all but its spaces is no revert of it: the run stops", t => {
+  const f = fixture(t), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check") }, peer = f.peer();
+  f.gitAt(peer, "checkout", "-q", "dev"); writeFileSync(join(peer, "ws.txt"), "a b\n");
+  f.gitAt(peer, "add", "ws.txt"); f.gitAt(peer, "commit", "-q", "-m", "Add ws.txt"); f.gitAt(peer, "push", "-q", "origin", "dev");
+  f.gitAt(peer, "checkout", "-q", "main"); f.gitAt(peer, "merge", "-q", "--no-ff", "-m", "Release", "dev");
+  writeFileSync(join(peer, "ws.txt"), "a  b\n"); f.gitAt(peer, "commit", "-q", "-am", "Hotfix one");
+  writeFileSync(join(peer, "ws.txt"), "ab\n"); f.gitAt(peer, "commit", "-q", "-am", "Hotfix two"); f.gitAt(peer, "push", "-q", "origin", "main");
+  // dev's files hold the second commit's result (from a commit with more in it, so no copy of either), and lack the first.
+  f.git("checkout", "-q", "dev"); f.git("pull", "-q", "--ff-only", "origin", "dev");
+  writeFileSync(join(f.root, "ws.txt"), "ab\n"); writeFileSync(join(f.root, "more.txt"), "more\n");
+  f.git("add", "ws.txt", "more.txt"); f.git("commit", "-q", "-m", "Dev's own edit"); f.git("push", "-q", "origin", "dev");
+  f.git("checkout", "-q", "-b", "release/cut");
+  const cut = f.git("rev-parse", "HEAD"), result = f.run(["--base", "main", "--release", "--no-merge"], real);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.equal(resultLine(result.stdout), `RESULT: fail merge: origin/main holds changes dev's files lack (<sha> Hotfix one) beside commits dev already holds: a merge cannot tell a rollback from a hotfix there; ${byHand("release")}`);
+  assert.equal(f.git("rev-parse", "HEAD"), cut);
+});
+
+// SL-1 of review 12 (GPT): a queue on dev that squashes or rebases would flatten the join made by hand.
+test("the join by hand names its merge command only when dev has no merge queue or one that makes merge commits", t => {
+  const cases: [NodeJS.ProcessEnv, keyof typeof withheld | undefined][] = [[{}, undefined], [{ FAKE_QUEUE: "1" }, undefined],
+    [{ FAKE_QUEUE: "1", FAKE_QUEUE_METHOD: "SQUASH" }, "squash"], [{ FAKE_QUEUE: "1", FAKE_QUEUE_METHOD: "REBASE" }, "rebase"],
+    [{ FAKE_QUEUE: "1", FAKE_QUEUE_METHOD: "fail" }, "silent"], [{ FAKE_QUEUE_ERROR: "1" }, "unseen"]];
+  for (const [queue, words] of cases) {
+    const f = fixture(t), peer = f.peer();
+    f.gitAt(peer, "checkout", "-q", "main"); writeFileSync(join(peer, "file.txt"), "hotfix\n");
+    f.gitAt(peer, "commit", "-q", "-am", "Hotfix on main"); f.gitAt(peer, "push", "-q", "origin", "main");
+    f.git("checkout", "-q", "dev"); f.commit("Dev edit of the same line", "file.txt", "dev\n"); f.git("push", "-q", "origin", "dev");
+    f.git("checkout", "-q", "-b", "release/cut");
+    const release = f.run(["--base", "main", "--release"], { ...queue, FAKE_RELEASE_CHECK: resolve("kit.d/release-check") });
+    assert.equal(release.status, 1, release.stdout + release.stderr);
+    assert.equal(resultLine(release.stdout), `RESULT: fail merge: conflict in file.txt: kit cannot join origin/main by itself; ${byHand("release", words)}`);
+    f.git("checkout", "-q", "-B", "sync/main", "origin/dev");
+    const sync = f.run(["--sync-main"], queue);
+    assert.equal(sync.status, 1, sync.stdout + sync.stderr);
+    assert.equal(resultLine(sync.stdout), `RESULT: fail sync: conflict in file.txt: kit cannot join origin/main by itself; ${byHand("sync", words)}`);
+    for (const run of [release, sync]) assert.equal(/gh pr merge/.test(run.stdout), !words, "a merge command only when a merge commit can be promised");
+    noPr(f);
+    // The queue asked about is dev's, where the join lands, in a release too.
+    const asked = f.calls().filter(call => call.tool === "gh" && call.args[0] === "api" && call.args[1] === "graphql").map(call => call.args.find(arg => arg.startsWith("b=")));
+    assert.ok(asked.length > 0 && asked.every(branch => branch === "b=dev"), asked.join(" "));
+  }
 });
 
 // SL-1 for a squash: the squashed commit's work is in dev's files, the rollback beside it is not, and no merge keeps it.
@@ -1273,7 +1344,7 @@ test("kit pr --sync-main names the join by hand when a merge on main changes fil
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.equal(resultLine(result.stdout), `RESULT: fail sync: the sync would change hotfix.txt on dev: main holds changes dev lacks; ${byHand("sync")}`);
   assert.equal(f.git("rev-parse", "HEAD"), f.git("rev-parse", "origin/dev")); assert.equal(f.git("status", "--porcelain"), "");
-  assert.equal(f.calls().some(call => call.tool === "gh"), false);
+  noPr(f);
 });
 
 // R9-3: a sync whose merge really conflicts.
@@ -1288,7 +1359,7 @@ test("kit pr --sync-main stops on a real conflict with the join by hand, and lea
   assert.equal(resultLine(result.stdout), `RESULT: fail sync: conflict in file.txt: kit cannot join origin/main by itself; ${byHand("sync")}`);
   assert.equal(f.git("rev-parse", "HEAD"), f.git("rev-parse", "origin/dev"));
   assert.equal(f.git("status", "--porcelain"), "", "the merge was aborted");
-  assert.equal(f.calls().some(call => call.tool === "gh"), false);
+  noPr(f);
 });
 
 // R9-1, R9-2: a sync through a merge queue that makes merge commits, and a sync's dry run.
@@ -1418,6 +1489,8 @@ test("a release through a merge queue asks for --auto --merge, and a landed comm
     assert.equal(stopped.status, 1, stopped.stdout + stopped.stderr);
     assert.match(stopped.stdout, new RegExp(`^RESULT: fail merge: the merge queue on main ${words}, and a release must land as a merge commit: set the queue to merge commits, then run kit pr again$`, "m"));
     assert.equal(refused.ghCalls("merge").length, 0, "nothing goes into the queue");
+    assert.equal(refused.ghCalls("create").length, 0, "the queue is read before the PR is opened");
+    assert.notEqual(spawnSync("git", ["show-ref", "--verify", "-q", "refs/heads/feature/kit-pr"], { cwd: refused.origin }).status, 0, "and before the branch is pushed");
   }
   // --no-merge never advises a hand merge a squashing queue would take; with a queue that makes merge commits it does.
   const advice = fixture(t), opened = advice.run(["--base", "main", "--release", "--no-merge"], { FAKE_QUEUE: "1", FAKE_QUEUE_METHOD: "SQUASH" });
@@ -1429,6 +1502,7 @@ test("a release through a merge queue asks for --auto --merge, and a landed comm
     const unseen = fixture(t), run = unseen.run(args, { FAKE_QUEUE_ERROR: "1" });
     assert.equal(run.status, args.includes("--no-merge") ? 0 : 1, run.stdout + run.stderr);
     assert.equal(unseen.ghCalls("merge").length, 0);
+    if (!args.includes("--no-merge")) assert.equal(unseen.ghCalls("create").length, 0, "a queue that cannot be read stops the release before it is opened");
     assert.doesNotMatch(run.stdout, /gh pr merge 73/);
     assert.match(run.stdout, /could not read whether main has a merge queue, and a release must land as a merge commit: run kit pr again once GitHub answers/);
   }
@@ -1446,6 +1520,8 @@ test("a release through a merge queue asks for --auto --merge, and a landed comm
   assert.equal(squashed.status, 1, squashed.stdout + squashed.stderr);
   assert.match(squashed.stdout, /^RESULT: fail merge: the merge queue on dev lands by squash, and a sync must land as a merge commit: /m);
   assert.equal(sync.ghCalls("merge").length, 0);
+  assert.equal(sync.ghCalls("create").length, 0, "the queue is read before the PR is opened");
+  assert.notEqual(spawnSync("git", ["show-ref", "--verify", "-q", "refs/heads/sync/main"], { cwd: sync.origin }).status, 0, "and before the branch is pushed");
   const advised = sync.run(["--sync-main", "--no-merge"], { FAKE_EMPTY: "1", FAKE_QUEUE: "1", FAKE_QUEUE_METHOD: "REBASE", FAKE_EXISTING: "1" });
   assert.equal(advised.status, 0, advised.stdout + advised.stderr);
   assert.match(advised.stdout, /^merge: not by hand: the merge queue on dev lands by rebase, and a sync must land as a merge commit: /m);

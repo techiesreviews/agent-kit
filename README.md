@@ -478,18 +478,20 @@ two split, the next release conflicted, and a "sync main into dev" PR had to be 
     keeps dev's files`). Where main's files match no such commit, the merge is a plain one and must change no file.
   - Only changes dev's files lack: the merge is a plain one, and it stands when its files hold every one of those
     commits and it changes no file dev changed since dev and main were last joined, so a hotfix or a rollback made
-    on main is carried. A hotfix that a later commit on main undid exactly (its revert) is left out with that commit
+    on main is carried. A hotfix that a later commit on main undid exactly, spaces and all (its revert), is left out with that commit
     first: main took it back itself.
   - Anything else stops the run, with nothing merged: a change dev's files lack beside the first two kinds (a rollback
     of a copied commit looks like a hotfix there, and no merge keeps it), a conflict, or a merge that would bring back
     what dev changed since. The stop names the commits or files and the steps to join main into dev by hand: `git
     switch -c <name> origin/dev`, `git merge --no-ff origin/main` (keep each change dev should hold, drop what dev
     already undid), push, open its PR into dev, wait for its checks to pass (`kit wait ci --pr <N>`), then land it
-    with `gh pr merge <N> --merge`. Main is then inside dev's history, so the next cut has nothing left to weigh and
+    with `gh pr merge <N> --merge`. The stop reads dev's merge queue first: where the queue squashes or rebases, or
+    cannot be read, it would flatten the join, so the stop names no merge command and says to set the queue to merge
+    commits first. Main is then inside dev's history, so the next cut has nothing left to weigh and
     the stop cannot come back.
   - That join by hand is the one landing outside `kit pr` (the lead's decision, 2026-11-18): only the hand-made merge
     of main into dev that such a stop names, only once its checks pass, and only until `kit pr --sync-main` can land
-    such a merge itself (a follow-up to TOOLS-325, due before the next kit release). `kit pr` cannot land it today: a
+    such a merge itself (TOOLS-341, due before the next kit release). `kit pr` cannot land it today: a
     sync makes its merge itself, and an ordinary `kit pr` rebases a merge away.
   After an ordinary release main's own commits are only merges, so the merge stays plain.
 - `kit pr --sync-main` lands a "sync main into dev" merge into dev. From a branch cut at `origin/dev` it merges
