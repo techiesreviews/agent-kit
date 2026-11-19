@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { kitEnv } from "./support/kit-env.ts";
+import { loadLimit } from "./support/machine-load.ts";
 
 const kit = resolve("kit");
 // A fake systemd-run: records its options, then runs the command after them (as --scope does, in place).
@@ -175,11 +176,15 @@ done
 [[ -z $limit ]] || ( sleep "$limit"; kill -TERM -- "-$$" ) > /dev/null 2>&1 &
 exec "$@"
 `);
-  let done = f.run("step-failed", "--max", "1", "--", process.execPath, "-e", 'console.log("RESULT: fail step one"); setInterval(() => {}, 1000)');
+  // 1 s on a quiet machine; on a busy one the job's node takes longer than that to print its step, so the limit grows
+  // with the load per core (at most 4 s).
+  const limit = loadLimit(1000);
+  const max = Math.ceil(limit.ms / 1000);
+  let done = f.run("step-failed", "--max", String(max), "--", process.execPath, "-e", 'console.log("RESULT: fail step one"); setInterval(() => {}, 1000)');
   for (let i = 0; i < 30 && done.status === 75; i++) done = f.run("step-failed");
   assert.equal(done.status, 143, done.stdout);
-  assert.match(done.stdout, /^job: RESULT: fail step one$/m);
-  assert.match(last(done), /^RESULT: fail go step-failed exit 143: the time limit \(1s\) ended this job/);
+  assert.match(done.stdout, /^job: RESULT: fail step one$/m, limit.note);
+  assert.match(last(done), new RegExp(`^RESULT: fail go step-failed exit 143: the time limit \\(${max}s\\) ended this job`));
 });
 
 test("go: without a user systemd the job starts the old way with a note", t => {
