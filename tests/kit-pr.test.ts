@@ -2317,7 +2317,7 @@ test("a release or a sync with --no-merge, and their dry runs, name kit pr to la
 
 // The words of the kit pr run a release's merge line names, unquoted as a shell would (the hint quotes with '…').
 const rerunWords = (stdout: string) => {
-  const line = stdout.match(/^merge: land it with kit pr (.+) \(a merge commit, never merged by hand\)$/m);
+  const line = stdout.match(/^merge: land it with (?:git reset --keep origin\/dev && )?kit pr (.+) \(a merge commit, never merged by hand\)$/m);
   assert.ok(line, stdout);
   return [...line[1].matchAll(/'((?:[^']|'\\'')*)'|(\S+)/g)].map(word => word[2] ?? word[1].replaceAll("'\\''", "'"));
 };
@@ -2337,6 +2337,28 @@ test("the kit pr line a release with --no-merge prints, run as written, lands th
   assert.equal(merges.length, 1);
   assert.ok(merges[0].args.includes("--merge"), merges[0].args.join(" "));
   assert.equal(merges[0].args[merges[0].args.indexOf("--match-head-commit") + 1], f.git("rev-parse", "HEAD"));
+  assert.match(landed.stdout, /^landed: [a-f0-9]{7} merges [a-f0-9]{7} into main \(a merge commit\)$/m);
+  assert.match(landed.stdout, /RESULT: ok merged #73 [a-f0-9]{7}$/m);
+});
+
+// TOOLS-360 second look: a release that merged a hotfixed main into its cut is ahead of origin/dev, so the line cuts it again first.
+test("the line a release prints after merging a hotfixed main into its cut re-cuts it first, and run as written lands the same PR", t => {
+  const f = fixture(t), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check"), FAKE_BASE: "main" }, peer = f.peer();
+  f.gitAt(peer, "checkout", "-q", "main"); writeFileSync(join(peer, "hotfix.txt"), "hotfix\n");
+  f.gitAt(peer, "add", "hotfix.txt"); f.gitAt(peer, "commit", "-q", "-m", "Hotfix on main"); f.gitAt(peer, "push", "-q", "origin", "main");
+  f.git("checkout", "-q", "dev"); f.commit("Landed change", "landed.txt"); f.git("push", "-q", "origin", "dev");
+  f.git("checkout", "-q", "-b", "release/cut");
+  const opened = f.run(["--base", "main", "--release", "--no-merge"], real);
+  assert.equal(opened.status, 0, opened.stdout + opened.stderr);
+  const cut = f.git("rev-parse", "HEAD");
+  assert.notEqual(cut, f.git("rev-parse", "origin/dev"), "the run merged main into the cut");
+  assert.match(opened.stdout, /^merge: land it with git reset --keep origin\/dev && kit pr --base main --release \(a merge commit, never merged by hand\)$/m);
+  f.git("reset", "-q", "--keep", "origin/dev");
+  const created = f.ghCalls("create").length, landed = f.run(rerunWords(opened.stdout), { ...real, FAKE_EXISTING: "1", FAKE_LAND_MERGE: peer });
+  assert.equal(landed.status, 0, landed.stdout + landed.stderr);
+  assert.equal(f.git("rev-parse", "HEAD"), cut, "the re-cut is the same merge");
+  assert.equal(f.ghCalls("create").length, created, "the open PR is reused, not opened again");
+  assert.equal(f.ghCalls("merge").length, 1);
   assert.match(landed.stdout, /^landed: [a-f0-9]{7} merges [a-f0-9]{7} into main \(a merge commit\)$/m);
   assert.match(landed.stdout, /RESULT: ok merged #73 [a-f0-9]{7}$/m);
 });
