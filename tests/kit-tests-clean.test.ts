@@ -125,7 +125,7 @@ test(guardName, { timeout: limit + 60_000 }, async t => {
   // Tests whose HOME must sit outside every git work tree make it in /dev/shm (tests/support/temp-outside-git.ts): a
   // folder of this suite's own there, checked for leftovers like the TMPDIR, where this process can write one.
   let shared: string | undefined;
-  try { shared = mkdtempSync("/dev/shm/kit-tests-clean-"); } catch { /* No /dev/shm here: those tests use the TMPDIR. */ }
+  try { shared = mkdtempSync(join(process.env.KIT_TEST_SHM || "/dev/shm", "kit-tests-clean-")); } catch { /* No /dev/shm here: those tests use the TMPDIR. */ }
   t.after(() => { if (shared) rmSync(shared, { recursive: true, force: true }); });
   const env = { ...kitEnv(), TMPDIR: temporary, TMP: temporary, TEMP: temporary, XDG_STATE_HOME: state,
     TSX_DISABLE_CACHE: "1", NODE_DISABLE_COMPILE_CACHE: "1", ...(shared && { KIT_TEST_SHM: shared }) };
@@ -161,7 +161,10 @@ test(guardName, { timeout: limit + 60_000 }, async t => {
 test("a guard run cut off at its limit names the time-out and leaves no temp folder", { timeout: 180_000 }, async t => {
   const outer = mkdtempSync(join(tmpdir(), "kit-tests-cutoff-"));
   t.after(() => rmSync(outer, { recursive: true, force: true }));
-  const env = { ...kitEnv(), TMPDIR: outer, TMP: outer, TEMP: outer,
+  // The inner guard's own /dev/shm folder goes here, so the check below sees whether it was removed.
+  const shared = join(outer, "shm");
+  mkdirSync(shared);
+  const env = { ...kitEnv(), TMPDIR: outer, TMP: outer, TEMP: outer, KIT_TEST_SHM: shared,
     TSX_DISABLE_CACHE: "1", NODE_DISABLE_COMPILE_CACHE: "1", ASE_KIT_CLEAN_LIMIT_MS: "8000" };
   delete env.NODE_TEST_CONTEXT;
   const artifacts = join(repo, ".scratch/agent");
@@ -178,7 +181,8 @@ test("a guard run cut off at its limit names the time-out and leaves no temp fol
   assert.deepEqual(result.survivors, []);
   assert.deepEqual(entries(artifacts).filter(name => !before.has(name)), [], `new folders in ${artifacts}`);
   const runtime = `tsx-${process.getuid?.() ?? 0}`;
-  assert.deepEqual(entries(outer).filter(name => name !== runtime || entries(join(outer, name)).length > 0), []);
+  assert.deepEqual(entries(shared), [], "the inner guard's /dev/shm folder is gone");
+  assert.deepEqual(entries(outer).filter(name => name !== "shm" && (name !== runtime || entries(join(outer, name)).length > 0)), []);
 });
 
 // A tiny suite stand-in: `node -e <script>` run through runGroup with its own private TMPDIR.

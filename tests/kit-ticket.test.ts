@@ -75,11 +75,12 @@ function refused(output: Run, pattern: RegExp) { assert.notEqual(output.status, 
 
 // Whether this process can make a folder in /dev/shm (or KIT_TEST_SHM), the first place tempOutsideGit tries (a sandbox
 // may not let it).
+const sharedBase = process.env.KIT_TEST_SHM || "/dev/shm";
 const sharedMemory = (() => {
-  try { rmSync(mkdtempSync(join(process.env.KIT_TEST_SHM || "/dev/shm", "kit-ticket-probe-")), { recursive: true }); return true; } catch { return false; }
+  try { rmSync(mkdtempSync(join(sharedBase, "kit-ticket-probe-")), { recursive: true }); return true; } catch { return false; }
 })();
 
-test("the suite's HOME, with its Orbit setup, is outside every git work tree even when the system temp folder is in one", { skip: !sharedMemory && "/dev/shm cannot be written here" }, async t => {
+test("the suite's HOME, with its Orbit setup, is outside every git work tree even when the system temp folder is in one", { skip: !sharedMemory && `${sharedBase} cannot be written here` }, async t => {
   const scratch = mkdtempSync(join(tmpdir(), "kit-ticket-tmp-"));
   t.after(() => rmSync(scratch, { recursive: true, force: true }));
   mkdirSync(join(scratch, ".git"));
