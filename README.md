@@ -515,7 +515,12 @@ two split, the next release conflicted, and a "sync main into dev" PR had to be 
   stops with the same merge to make by hand. Kit makes its own merge dated by its parents, so a rerun on the same dev
   and main makes the same commit and one on a newer dev or main makes it again there. The empty diff has nothing to
   review, so the review and the second look say so, and CI still gates the merge. A branch with work of its own is
-  refused, with advice to cut a new branch at `origin/dev`. It needs `branches.release` apart from `branches.land`.
+  refused, with advice to cut a new branch at `origin/dev`. Kit's own follow-ups commits on the merge (a run with
+  `--ticket <tracked file>` and `--no-merge` writes the review's notes there) are no such work (TOOLS-352): only
+  one-parent commits with kit's exact message that change the ticket alone, held by neither dev nor main, on a merge.
+  A rerun sets them aside while it weighs the merge or makes it again, then puts them back on it (`sync: kit's own
+  follow-ups commit <sha> from an earlier run stays on the merge`); one that no longer applies on a merge made again
+  is left out, as the PR's comments hold its notes. It needs `branches.release` apart from `branches.land`.
 - A merge of main into dev made by hand (TOOLS-341): when the branch's tip is a merge whose first parent is
   `origin/dev` and whose second is in main's history, `kit pr --sync-main` lands that merge as it was made, never made
   again: at once when it changes dev's files, and, when it keeps them, only once kit's own merge fails. Its diff
