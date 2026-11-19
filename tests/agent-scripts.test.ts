@@ -18,6 +18,7 @@ import { durationMilliseconds } from "../sol-run.mjs";
 import { kitStateDir } from "../kit-lib.mjs";
 // The test environment (a temporary HOME, no lock settings from the shell): this file starts agent runs or kit doctor.
 import { insideKitPrLock } from "./support/kit-env.ts";
+import { loadLimit } from "./support/machine-load.ts";
 // The opt-in API route is read from the environment: these tests run with it off, whatever the shell exports.
 delete process.env.KIT_API_KEY_FILE; delete process.env.KIT_API_CONFIG_DIR;
 
@@ -1439,12 +1440,19 @@ test("supervise with reap stops the group a finished command left behind, even o
     for (const mode of ["leaves", "holds"]) {
       const pidFile = join(scratch, `${mode}.json`);
       try {
-        const reaped = spawnSync(process.execPath, ["--input-type=module", "-e", reapHarness, pidFile, mode, "yes"], { encoding: "utf8", timeout: 20_000 });
+        // Both limits grow with the load per core (at most four times): 40 s still sits well under the 60 s limit a
+        // supervise that waited for the pipes would end at.
+        const quick = loadLimit(10_000);
+        const reaped = spawnSync(process.execPath, ["--input-type=module", "-e", reapHarness, pidFile, mode, "yes"], { encoding: "utf8", timeout: quick.ms + 10_000 });
         assert.equal(reaped.status, 0, `${mode}: ${reaped.stderr}`);
         const said = JSON.parse(reaped.stdout.trim());
         assert.equal(said.status, 0, mode);
-        assert.ok(said.seconds < 10, `${mode}: supervise waited ${said.seconds}s for the pipes`);
-        assert.ok(descendantsGone(pidFile), `${mode}: something the command left is still running`);
+        assert.ok(said.seconds * 1000 < quick.ms, `${mode}: supervise waited ${said.seconds}s for the pipes; ${quick.note}`);
+        // A killed process ends once it gets a core again, which on a busy machine is a moment after the kill. What the
+        // command left never ends by itself (the run without reap below shows it), so a short wait keeps the check.
+        const settle = loadLimit(1000);
+        for (const end = Date.now() + settle.ms; !descendantsGone(pidFile) && Date.now() < end;) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+        assert.ok(descendantsGone(pidFile), `${mode}: something the command left is still running; ${settle.note}`);
       } finally {
         try { process.kill(-JSON.parse(readFileSync(pidFile, "utf8"))[0], "SIGKILL"); } catch { /* Gone already. */ }
       }
