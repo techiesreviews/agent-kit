@@ -1711,6 +1711,34 @@ test("a hand-made merge that changes files and goes behind while CI runs stops a
   assert.equal(f.git("rev-parse", "HEAD"), merge);
 });
 
+// SL-1 of the TOOLS-341 second look: a merge on main that fixed a conflict is weighed by its resolution, not refused outright.
+test("a hand-made merge that takes main's files as they are lands when main holds a merge that fixed a conflict", t => {
+  const f = fixture(t), peer = f.peer();
+  f.gitAt(peer, "checkout", "-q", "main"); writeFileSync(join(peer, "file.txt"), "hotfix\n");
+  f.gitAt(peer, "commit", "-q", "-am", "Hotfix on main"); f.gitAt(peer, "push", "-q", "origin", "main");
+  f.git("checkout", "-q", "dev"); f.commit("Dev edit of the same line", "file.txt", "dev\n"); f.git("push", "-q", "origin", "dev");
+  // A release merges dev into main and fixes the conflict there by hand.
+  f.gitAt(peer, "fetch", "-q", "origin");
+  assert.notEqual(spawnSync("git", ["merge", "-q", "--no-ff", "origin/dev"], { cwd: peer, env: f.env }).status, 0, "the release conflicts");
+  writeFileSync(join(peer, "file.txt"), "resolved\n"); f.gitAt(peer, "add", "file.txt"); f.gitAt(peer, "commit", "-q", "-m", "Release with a fixed conflict");
+  f.gitAt(peer, "push", "-q", "origin", "main");
+  f.git("checkout", "-q", "-b", "sync/main"); f.git("fetch", "-q", "origin");
+  // One that keeps dev's line leaves the fix out, and is refused.
+  f.git("merge", "-q", "-s", "ours", "-m", "Hand-made sync", "origin/main");
+  const dropping = f.run(["--sync-main"]);
+  assert.equal(dropping.status, 1, dropping.stdout + dropping.stderr);
+  assert.match(resultLine(dropping.stdout), /^RESULT: fail sync: the merge <sha> leaves out changes of main's that dev does not hold \(<sha> Hotfix on main, <sha> Release with a fixed conflict \(a merge that changes files itself\)\), /);
+  f.git("reset", "-q", "--hard", "origin/dev"); f.git("merge", "-q", "--no-ff", "-m", "Hand-made sync", "origin/main");
+  assert.equal(f.git("show", "HEAD:file.txt"), "resolved", "the merge takes main's file as it is");
+  f.gitAt(peer, "checkout", "-q", "dev");
+  const merge = f.git("rev-parse", "HEAD"), result = f.run(["--sync-main"], { FAKE_LAND_MERGE: peer });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^sync: ok \(the merge [a-f0-9]{7} joins main at [a-f0-9]{7} into dev as it was made: it changes 1 file on dev, and drops no change of main's that dev does not hold\)$/m);
+  assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args[0] === "wait"), true, "it waits for CI");
+  f.git("fetch", "-q", "origin");
+  assert.equal(f.git("rev-parse", "origin/dev^2"), merge, "the merge lands as it was made");
+});
+
 test("a hand-made merge of an older main lands, and its line names the main commit it joins", t => {
   const f = fixture(t), peer = f.peer();
   f.gitAt(peer, "checkout", "-q", "main");
