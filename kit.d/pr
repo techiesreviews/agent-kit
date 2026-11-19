@@ -1079,6 +1079,9 @@ async function main(args) {
     // a finding a fresh review raises at it.
     const startHead = await git("rebase", ["rev-parse", "HEAD"]);
     if (flags.release) cutStart = startHead;
+    // The head this run's fetch and merge made, once they are done: a dry run's put-back resets only from it, and stopped
+    // before then it resets nothing it did not make.
+    let madeHead = "";
     // A dry run changes nothing: the merge a release or a sync makes for its plan is undone before the run's RESULT line on
     // every way out (the plan printed, a step that fails, an interrupt), so the real run after it starts from the same
     // branch and passes the release check (it makes the same merge again).
@@ -1087,8 +1090,17 @@ async function main(args) {
         process.removeListener("SIGINT", interrupted);
         process.removeListener("SIGTERM", interrupted);
         putCutBack = () => "";
-        try { if (gitSync(["rev-parse", "HEAD"]) !== startHead) gitSync(["reset", "-q", "--keep", startHead]); return ""; }
-        catch (error) { return `could not put the branch back at ${startHead.slice(0, 7)}: run git reset --keep ${startHead} (${kitHideUserInfo(error.stderr?.toString().trim().split(/\r?\n/).at(-1) || error.message)})`; }
+        try {
+          const now = gitSync(["rev-parse", "HEAD"]);
+          let on = "";
+          try { on = gitSync(["symbolic-ref", "--short", "HEAD"]); } catch { /* A detached HEAD is no branch of this run's. */ }
+          if (on === branch && now === startHead) return "";
+          // Someone switched branches or committed while the dry run ran: a reset would rewind their work, so none is made.
+          if (on !== branch || now !== madeHead)
+            return `the branch moved during the dry run (${on || "a detached HEAD"} at ${now.slice(0, 7)}), so nothing was reset: once your work is safe, run git switch ${branch} && git reset --keep ${startHead}`;
+          gitSync(["reset", "-q", "--keep", startHead]);
+          return "";
+        } catch (error) { return `could not put the branch back at ${startHead.slice(0, 7)}: run git reset --keep ${startHead} (${kitHideUserInfo(error.stderr?.toString().trim().split(/\r?\n/).at(-1) || error.message)})`; }
       };
       // A signal while a child runs stops that child (execute) and its step fails into the catch below. Stopped while no
       // child runs (the wait for a machine lock, say), Node would end at once, so the branch is put back here first.
@@ -1103,7 +1115,8 @@ async function main(args) {
       putCutBack = back;
     }
     await rebase();
-    const startRebased = (await git("rebase", ["rev-parse", "HEAD"])) !== startHead;
+    madeHead = await git("rebase", ["rev-parse", "HEAD"]);
+    const startRebased = madeHead !== startHead;
     nameCommits();
     // Paid skills never go in a repo (Lex, 2026-10-29): no tracked SKILL.md or skills/ path and, on a machine with
     // local skill folders, no changed line from a skill's text (skill-guard.mjs; it never prints that text).

@@ -4349,6 +4349,39 @@ test("a release dry run interrupted while it waits for the browser lock puts the
   assert.equal(stdout.trimEnd().split("\n").at(-1), results[0]);
 });
 
+// A release dry run on a hotfixed cut, held in the wait for the browser lock (the plan's merge is on the cut then).
+async function heldDryRun(t: TestContext, f: ReturnType<typeof fixture>) {
+  lockHolder(t, f, "browser-run", "30");
+  const env = { ...f.env, FAKE_RELEASE_CHECK: resolve("kit.d/release-check"), FAKE_SPECS: JSON.stringify({ files: [spec("a")] }) };
+  const child = spawn(pr, ["--base", "main", "--release", "--dry-run"], { cwd: f.root, env, stdio: ["ignore", "pipe", "pipe"] });
+  t.after(() => { child.kill("SIGKILL"); });
+  const out = { stdout: "", stderr: "" };
+  child.stdout.setEncoding("utf8").on("data", chunk => { out.stdout += chunk; });
+  child.stderr.setEncoding("utf8").on("data", chunk => { out.stderr += chunk; });
+  const closed = new Promise<number | null>(accept => child.once("close", status => accept(status)));
+  for (let i = 0; i < 1000 && !out.stdout.includes("specs: waiting for ke-60's full browser run"); i++) await new Promise(accept => setTimeout(accept, 20));
+  assert.match(out.stdout, /^specs: waiting for ke-60's full browser run$/m, out.stdout + out.stderr);
+  return { stop: async () => { child.kill("SIGINT"); return await closed; }, out };
+}
+
+test("a release dry run whose branch was switched while it ran resets nothing and ends with RESULT: fail and the command", async t => {
+  const f = fixture(t), dev = hotfixedCut(f), run = await heldDryRun(t, f), merge = f.git("rev-parse", "HEAD");
+  f.git("checkout", "-q", "-b", "other", dev);
+  assert.equal(await run.stop(), 130, run.out.stdout + run.out.stderr);
+  assert.equal(f.git("rev-parse", "other"), dev, "the other branch is left as it was");
+  assert.equal(f.git("rev-parse", "release/cut"), merge, "the cut is not reset from another branch");
+  assert.match(run.out.stdout, new RegExp(`^RESULT: fail interrupted \\(SIGINT\\); the branch moved during the dry run \\(other at ${dev.slice(0, 7)}\\), so nothing was reset: once your work is safe, run git switch release/cut && git reset --keep ${dev}$`, "m"));
+});
+
+test("a release dry run whose branch got a new commit while it ran resets nothing, so the commit is kept", async t => {
+  const f = fixture(t), dev = hotfixedCut(f), run = await heldDryRun(t, f);
+  f.commit("Work during the dry run", "work.txt");
+  const work = f.git("rev-parse", "HEAD");
+  assert.equal(await run.stop(), 130, run.out.stdout + run.out.stderr);
+  assert.equal(f.git("rev-parse", "HEAD"), work, "the new commit is kept");
+  assert.match(run.out.stdout, new RegExp(`^RESULT: fail interrupted \\(SIGINT\\); the branch moved during the dry run \\(release/cut at ${work.slice(0, 7)}\\), so nothing was reset: once your work is safe, run git switch release/cut && git reset --keep ${dev}$`, "m"));
+});
+
 test("a release dry run whose put-back git refuses ends with RESULT: fail and the command to put it back", t => {
   const f = fixture(t), dev = hotfixedCut(f);
   gitAround(f.bin, "reset", { before: "echo 'reset refused' >&2; exit 1" });
