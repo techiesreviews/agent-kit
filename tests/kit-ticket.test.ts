@@ -73,8 +73,11 @@ const result = (output: Run) => lines(output.stdout).at(-1)!;
 function ok(output: Run) { assert.equal(output.status, 0, output.all); assert.match(result(output), /^RESULT: ok /); return output; }
 function refused(output: Run, pattern: RegExp) { assert.notEqual(output.status, 0, output.all); assert.match(result(output), /^RESULT: fail /); assert.match(output.all, pattern); return output; }
 
-// Whether this process can make a folder in /dev/shm, the first place tempOutsideGit tries (a sandbox may not let it).
-const sharedMemory = (() => { try { rmSync(mkdtempSync("/dev/shm/kit-ticket-probe-"), { recursive: true }); return true; } catch { return false; } })();
+// Whether this process can make a folder in /dev/shm (or KIT_TEST_SHM), the first place tempOutsideGit tries (a sandbox
+// may not let it).
+const sharedMemory = (() => {
+  try { rmSync(mkdtempSync(join(process.env.KIT_TEST_SHM || "/dev/shm", "kit-ticket-probe-")), { recursive: true }); return true; } catch { return false; }
+})();
 
 test("the suite's HOME, with its Orbit setup, is outside every git work tree even when the system temp folder is in one", { skip: !sharedMemory && "/dev/shm cannot be written here" }, async t => {
   const scratch = mkdtempSync(join(tmpdir(), "kit-ticket-tmp-"));
