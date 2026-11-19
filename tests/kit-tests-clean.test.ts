@@ -8,6 +8,7 @@ import test, { type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { checkSteps, classify } from "../pr-tier.mjs";
 import { kitEnv } from "./support/kit-env.ts";
+import { kitCleanLimit } from "./support/machine-load.ts";
 
 const repo = resolve(".");
 const shell = join(repo, "agent.sh");
@@ -18,9 +19,9 @@ function entries(directory: string) {
 
 // ASE_KIT_CLEAN_LIMIT_MS is a test-only seam: the cut-off test below forces a small limit. The whole suite took about
 // 500 s on a CI runner (2026-11-09); it grew with #123 and #125 (dev's CI ran past the old 720 s limit, 12m24s on
-// 2026-11-16), so the limit is 1200 s: a run cut off there is a real hang, not a slow runner. The CI job sets no
-// timeout-minutes, so GitHub's default (360 minutes) stays well above it.
-const limit = Number(process.env.ASE_KIT_CLEAN_LIMIT_MS) || 1_200_000;
+// 2026-11-16), so the limit is 1200 s on a quiet machine, stretched for a busy one (kitCleanLimit): a run cut off there
+// is a real hang, not a slow runner. The CI job sets no timeout-minutes, so GitHub's default (360 minutes) stays well above it.
+const { ms: limit, note: limitNote } = kitCleanLimit();
 const guardName = "kit and agent unit tests leave no run folders or temporary files";
 
 // Live members of a process group; a zombie is already gone and only waits for its parent.
@@ -146,7 +147,7 @@ test(guardName, { timeout: limit + 60_000 }, async t => {
     const failures = result.stdout.match(/^\s*not ok .*(?:\n[ \t]+.*)*/gm)?.join("\n");
     t.diagnostic(failures || (result.stdout + result.stderr).slice(-12_000));
   }
-  assert.ok(!result.cutOff, `kit suite run was cut off after ${result.seconds} s (limit ${limit / 1000} s); ` +
+  assert.ok(!result.cutOff, `kit suite run was cut off after ${result.seconds} s (${limitNote}); ` +
     `removing the temp paths it left: ${leftovers.join(", ") || "none"}`);
   assert.deepEqual(result.survivors, [], `processes still running after SIGKILL: ${result.survivors.join("; ")}`);
   assert.deepEqual(result.leftRunning, [], `processes left running: ${result.leftRunning.join("; ")}`);
@@ -174,7 +175,7 @@ test("a guard run cut off at its limit names the time-out and leaves no temp fol
   const output = result.stdout + result.stderr;
   assert.equal(result.cutOff, false, output.slice(-4000));
   assert.notEqual(result.status, 0, output.slice(-4000));
-  assert.match(result.stdout, /kit suite run was cut off after \d+ s \(limit 8 s\)/, output.slice(-4000));
+  assert.match(result.stdout, /kit suite run was cut off after \d+ s \(limit 8000 ms \(ASE_KIT_CLEAN_LIMIT_MS\)\)/, output.slice(-4000));
   assert.doesNotMatch(result.stdout, /test temp paths left behind/);
   // The outer run would kill what the inner guard left, so only its reports show the inner cleanup held.
   assert.deepEqual(result.leftRunning, [], "processes from the cut-off suite still running");

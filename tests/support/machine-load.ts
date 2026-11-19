@@ -18,3 +18,16 @@ export function loadLimit(ms: number, { load = Math.max(loadavg()[0], runnableNo
   const limit = Math.round(ms * Math.min(4, Math.max(1, (load + 1) / cores)));
   return { ms: limit, note: `limit ${limit} ms: ${ms} ms stretched for load ${load.toFixed(1)} on ${cores} cores` };
 }
+
+/**
+ * The kit-clean guard's limit for the whole kit suite (tests/kit-tests-clean.test.ts): 1200 s on a quiet machine,
+ * stretched for load like the speed checks above (TOOLS-359 follow-up, TOOLS-360): under the editor sweep's load of
+ * about 25 on 16 cores the suite ran past 1200 s although nothing hung. At most four times (80 minutes), so a real hang
+ * still fails long before GitHub's 360-minute job limit. ASE_KIT_CLEAN_LIMIT_MS, the test-only seam the cut-off test
+ * uses, is taken as it is, never stretched, so that test stays exact.
+ */
+export function kitCleanLimit(env: NodeJS.ProcessEnv = process.env, sample?: { load?: number, cores?: number }) {
+  const forced = Number(env.ASE_KIT_CLEAN_LIMIT_MS);
+  if (forced) return { ms: forced, note: `limit ${forced} ms (ASE_KIT_CLEAN_LIMIT_MS)` };
+  return loadLimit(1_200_000, sample);
+}
