@@ -593,7 +593,14 @@ async function main(args) {
     // The rerun keeps every option this run was given (a waiver, the ticket, the title) and drops only --no-merge and
     // --dry-run, so it passes the release check and keeps the PR text as this run did.
     const rerun = args.filter(arg => arg !== "--no-merge" && arg !== "--dry-run").map(arg => /^[\w@%+=:,./-]+$/.test(arg) ? arg : quote(arg));
-    const landHint = `merge: land it with ${["kit", "pr", ...rerun].join(" ")} (a merge commit, never merged by hand)`;
+    // A release whose run merged origin/<release> into the cut is ahead of origin/<land>, which the release check refuses, so
+    // the line cuts it again first: the same dev and release branch make the same merge (README, "Re-cutting a release").
+    let cutMerged = false;
+    const landHint = () => {
+      const land = kitBranch("land", settings);
+      const recut = cutMerged ? `git reset --keep origin/${land} && ` : "";
+      return `merge: land it with ${recut}${["kit", "pr", ...rerun].join(" ")} (a merge commit, never merged by hand)`;
+    };
     const isAncestor = async (name, older, newer) => (await execute(name, "git", ["merge-base", "--is-ancestor", older, newer])).status === 0;
     // A branch's merge queue (the base's, unless named): its id, "" when there is none, null when the lookup fails (an ordinary
     // PR then lands as if there were none, as before; a release or a sync stops, since a queue it cannot see might squash it).
@@ -890,6 +897,7 @@ async function main(args) {
         if (await isAncestor("merge", "HEAD", `origin/${flags.base}`)) throw new Error(`nothing to release: origin/${flags.base} already holds this cut`);
         if (await isAncestor("merge", `origin/${flags.base}`, "HEAD")) { ok("merge"); return; }
         const { kept } = await joinMerge("merge", `origin/${flags.base}`, `Merge origin/${flags.base} into the release cut`);
+        cutMerged = true;
         if (kept) console.log(`merge: origin/${flags.base}'s files are ${kitBranch("land", settings)}'s at ${kept.slice(0, 7)}, so the cut keeps ${kitBranch("land", settings)}'s files`);
         ok("merge");
         return;
@@ -1299,7 +1307,7 @@ async function main(args) {
         console.log(command.map(quote).join(" "));
       if (!flags.noMerge && !joins)
         console.log(`gh pr merge N --rebase --delete-branch --repo ${ghEnv.GH_REPO || "<owner/name>"} (or --auto --rebase with a merge queue)`);
-      if (joins) console.log(flags.noMerge ? landHint : "merge: the real run lands it once CI passes, as a merge commit pinned to the pushed head (never --rebase)");
+      if (joins) console.log(flags.noMerge ? landHint() : "merge: the real run lands it once CI passes, as a merge commit pinned to the pushed head (never --rebase)");
       kitResult("ok", `dry-run ${head.slice(0, 7)} ${branch} -> ${flags.base}${releaseWaived()}${flakyNote()}`);
       return 0;
     }
@@ -1616,7 +1624,7 @@ async function main(args) {
           const names = await repoNames(), queue = await queueId(names);
           refusal = queue === null ? unseenQueue() : queue ? await queueRefusal(names) : "";
         } catch { refusal = unseenQueue(); }
-        console.log(refusal ? `merge: kit pr will not land it here: ${refusal}` : landHint);
+        console.log(refusal ? `merge: kit pr will not land it here: ${refusal}` : landHint());
       }
       kitResult("ok", `opened #${number} ${head.slice(0, 7)}${releaseWaived()}${flakyNote()}`);
       return 0;
