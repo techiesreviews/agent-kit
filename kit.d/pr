@@ -310,7 +310,9 @@ async function main(args) {
     kitResult("fail", `invalid arguments: ${error.message}`);
     return 2;
   }
-  let step = "guards", directory, land, putCutBack;
+  // A release's or a sync's dry run puts the branch back where it started before it says how it ended: putCutBack returns
+  // why it could not, with the command to do it by hand, or "".
+  let step = "guards", directory, land, putCutBack = () => "";
   try {
     // Every gh call is told origin's repo (GH_REPO, GH_HOST); the kit commands that call gh work it out themselves,
     // and the project's own checks run without it.
@@ -428,6 +430,8 @@ async function main(args) {
     mkdirSync(directory, { recursive: true });
     console.log(`logs: ${directory}`);
 
+    // The children execute is running now: a dry run's interrupt handler leaves a signal that comes then to stop the child.
+    let children = 0;
     // Keep child RESULT lines in logs, so the command has exactly one final RESULT.
     // `bytes`: the child's output as it is (a patch may hold bytes that are no UTF-8), in `bytes` and kept out of the log.
     async function execute(name, command, argv, input, extraEnv, bytes = false) {
@@ -458,6 +462,7 @@ async function main(args) {
       let status;
       // Logs get any url's user-info hidden, so a token in a remote's url never reaches .scratch.
       const logged = kitHidingLog(text => appendFileSync(fd, text));
+      children++;
       try {
         status = await new Promise(accept => {
           const child = spawn(program, args, { cwd: root, env: childEnv, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
@@ -483,6 +488,7 @@ async function main(args) {
           });
         });
       } finally {
+        children--;
         logged.end();
         closeSync(fd);
         if (checkNames.has(name)) shieldProcess();
@@ -1073,14 +1079,29 @@ async function main(args) {
     // a finding a fresh review raises at it.
     const startHead = await git("rebase", ["rev-parse", "HEAD"]);
     if (flags.release) cutStart = startHead;
-    // A dry run changes nothing: the merge a release or a sync makes for its plan is undone on every way out (the plan
-    // printed, a step that fails, a check stopped by an interrupt), in the finally below, so the real run after it
-    // starts from the same branch and passes the release check (it makes the same merge again).
-    // A branch that cannot be put back is said, with the command, and never turns the run's own result into a crash.
-    if (flags.dryRun && joins) putCutBack = () => {
-      try { if (gitSync(["rev-parse", "HEAD"]) !== startHead) gitSync(["reset", "-q", "--keep", startHead]); }
-      catch (error) { console.error(`dry-run: could not put the branch back at ${startHead.slice(0, 7)}: run git reset --keep ${startHead} (${kitHideUserInfo(error.stderr?.toString().trim().split(/\r?\n/).at(-1) || error.message)})`); }
-    };
+    // A dry run changes nothing: the merge a release or a sync makes for its plan is undone before the run's RESULT line on
+    // every way out (the plan printed, a step that fails, an interrupt), so the real run after it starts from the same
+    // branch and passes the release check (it makes the same merge again).
+    if (flags.dryRun && joins) {
+      const back = () => {
+        process.removeListener("SIGINT", interrupted);
+        process.removeListener("SIGTERM", interrupted);
+        putCutBack = () => "";
+        try { if (gitSync(["rev-parse", "HEAD"]) !== startHead) gitSync(["reset", "-q", "--keep", startHead]); return ""; }
+        catch (error) { return `could not put the branch back at ${startHead.slice(0, 7)}: run git reset --keep ${startHead} (${kitHideUserInfo(error.stderr?.toString().trim().split(/\r?\n/).at(-1) || error.message)})`; }
+      };
+      // A signal while a child runs stops that child (execute) and its step fails into the catch below. Stopped while no
+      // child runs (the wait for a machine lock, say), Node would end at once, so the branch is put back here first.
+      const interrupted = signal => {
+        if (children) return;
+        const stuck = back();
+        kitResult("fail", `interrupted (${signal})${stuck ? `; ${stuck}` : ""}`);
+        process.exit(signal === "SIGINT" ? 130 : 143);
+      };
+      process.on("SIGINT", interrupted);
+      process.on("SIGTERM", interrupted);
+      putCutBack = back;
+    }
     await rebase();
     const startRebased = (await git("rebase", ["rev-parse", "HEAD"])) !== startHead;
     nameCommits();
@@ -1322,6 +1343,8 @@ async function main(args) {
       if (!flags.noMerge && !joins)
         console.log(`gh pr merge N --rebase --delete-branch --repo ${ghEnv.GH_REPO || "<owner/name>"} (or --auto --rebase with a merge queue)`);
       if (joins) console.log(flags.noMerge ? landHint() : "merge: the real run lands it once CI passes, as a merge commit pinned to the pushed head (never --rebase)");
+      const stuck = putCutBack();
+      if (stuck) { kitResult("fail", `dry-run: ${stuck}`); return 1; }
       kitResult("ok", `dry-run ${head.slice(0, 7)} ${branch} -> ${flags.base}${releaseWaived()}${flakyNote()}`);
       return 0;
     }
@@ -1786,10 +1809,9 @@ async function main(args) {
       const lines = readFileSync(join(directory, `${step}.log`), "utf8").trimEnd().split(/\r?\n/).slice(-30);
       for (const line of lines) console.error(`  ${line}`);
     }
-    kitResult("fail", `${step}: ${error.message}`);
+    const stuck = putCutBack();
+    kitResult("fail", `${step}: ${error.message}${stuck ? `; ${stuck}` : ""}`);
     return 1;
-  } finally {
-    putCutBack?.();
   }
 }
 

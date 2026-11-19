@@ -4316,6 +4316,54 @@ function lockHolder(t: TestContext, f: ReturnType<typeof fixture>, name: string,
   return () => readFileSync(`/proc/${holder.pid}/stat`, "utf8").replace(/^.*\) /s, "").split(" ")[0];
 }
 
+// TOOLS-360 second look: a release dry run makes its plan's merge on the cut and puts it back before its RESULT line,
+// also when it is stopped while no child runs (the wait for the machine's browser lock) or when git refuses the put-back.
+const hotfixedCut = (f: ReturnType<typeof fixture>) => {
+  const peer = f.peer();
+  f.gitAt(peer, "checkout", "-q", "main"); writeFileSync(join(peer, "hotfix.txt"), "hotfix\n");
+  f.gitAt(peer, "add", "hotfix.txt"); f.gitAt(peer, "commit", "-q", "-m", "Hotfix on main"); f.gitAt(peer, "push", "-q", "origin", "main");
+  f.git("checkout", "-q", "dev"); f.commit("Landed change", "landed.txt"); f.git("push", "-q", "origin", "dev");
+  f.git("checkout", "-q", "-b", "release/cut");
+  return f.git("rev-parse", "origin/dev");
+};
+
+test("a release dry run interrupted while it waits for the browser lock puts the cut back, and ends with one RESULT line", async t => {
+  const f = fixture(t), dev = hotfixedCut(f);
+  lockHolder(t, f, "browser-run", "30");
+  const env = { ...f.env, FAKE_RELEASE_CHECK: resolve("kit.d/release-check"), FAKE_SPECS: JSON.stringify({ files: [spec("a")] }) };
+  const child = spawn(pr, ["--base", "main", "--release", "--dry-run"], { cwd: f.root, env, stdio: ["ignore", "pipe", "pipe"] });
+  t.after(() => { child.kill("SIGKILL"); });
+  let stdout = "", stderr = "";
+  child.stdout.setEncoding("utf8").on("data", chunk => { stdout += chunk; });
+  child.stderr.setEncoding("utf8").on("data", chunk => { stderr += chunk; });
+  const closed = new Promise<number | null>(accept => child.once("close", status => accept(status)));
+  for (let i = 0; i < 1000 && !stdout.includes("specs: waiting for ke-60's full browser run"); i++) await new Promise(accept => setTimeout(accept, 20));
+  assert.match(stdout, /^specs: waiting for ke-60's full browser run$/m, stdout + stderr);
+  assert.notEqual(f.git("rev-parse", "HEAD"), dev, "the plan's merge is on the cut while it waits");
+  child.kill("SIGINT");
+  assert.equal(await closed, 130, stdout + stderr);
+  assert.equal(f.git("rev-parse", "HEAD"), dev, "the cut is back where it started");
+  assert.equal(f.git("status", "--porcelain"), "");
+  const results = stdout.split("\n").filter(line => line.startsWith("RESULT: "));
+  assert.deepEqual(results, ["RESULT: fail interrupted (SIGINT)"], stdout);
+  assert.equal(stdout.trimEnd().split("\n").at(-1), results[0]);
+});
+
+test("a release dry run whose put-back git refuses ends with RESULT: fail and the command to put it back", t => {
+  const f = fixture(t), dev = hotfixedCut(f);
+  gitAround(f.bin, "reset", { before: "echo 'reset refused' >&2; exit 1" });
+  const result = f.run(["--base", "main", "--release", "--dry-run"], { FAKE_RELEASE_CHECK: resolve("kit.d/release-check") });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, new RegExp(`^RESULT: fail dry-run: could not put the branch back at ${dev.slice(0, 7)}: run git reset --keep ${dev} \\(reset refused\\)$`, "m"));
+  assert.doesNotMatch(result.stdout, /RESULT: ok/);
+  assert.notEqual(f.git("rev-parse", "HEAD"), dev, "the branch is left where git refused to move it");
+  // A failing step whose put-back git refuses names both.
+  assert.equal(spawnSync("git", ["-C", f.root, "reset", "-q", "--keep", dev], { env: kitEnv() }).status, 0, "the real git puts it back");
+  const failed = f.run(["--base", "main", "--release", "--dry-run"], { FAKE_RELEASE_CHECK: resolve("kit.d/release-check"), FAKE_FAIL: "lint" });
+  assert.equal(failed.status, 1, failed.stdout + failed.stderr);
+  assert.match(failed.stdout, new RegExp(`^RESULT: fail lint: .+; could not put the branch back at ${dev.slice(0, 7)}: run git reset --keep ${dev} \\(reset refused\\)$`, "m"));
+});
+
 test("two full browser runs at once: the second waits for the first, saying whose run it waits for", t => {
   const f = fixture(t), state = lockHolder(t, f, "browser-run", "2");
   const result = f.run(["--ticket", "ticket.md", "--no-merge"], { FAKE_SPECS: JSON.stringify({ files: [spec("a")] }) });
