@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { orbitWorkTreeAround } from "../orbit-client.mjs";
-import { kitCleanLimit, loadLimit } from "./support/machine-load.ts";
+import { kitCleanLimit, loadBesides, loadLimit } from "./support/machine-load.ts";
 import { tempOutsideGit } from "./support/temp-outside-git.ts";
 
 // TOOLS-359 follow-up (TOOLS-360): the kit-clean guard's 1200 s for the whole suite stretches the same way.
@@ -16,6 +16,11 @@ test("the kit-clean limit is 1200 s on a quiet machine, grows with the load per 
   assert.equal(kitCleanLimit({}, { load: 400, cores: 16 }).ms, 4_800_000);
   assert.equal(kitCleanLimit({ ASE_KIT_CLEAN_LIMIT_MS: "8000" }, { load: 400, cores: 16 }).ms, 8000, "the cut-off test's seam is never stretched");
   assert.match(kitCleanLimit({}, { load: 25, cores: 16 }).note, /^limit 1950000 ms: 1200000 ms stretched for load 25\.0 on 16 cores$/);
+  // Read during the run, the suite's own four workers are left out: on a 2-core runner with only them busy it stays 1200 s.
+  assert.equal(loadBesides(4, 4), 0);
+  assert.equal(loadBesides(4, 3), 0);
+  assert.equal(kitCleanLimit({}, { load: loadBesides(4, 4), cores: 2 }).ms, 1_200_000);
+  assert.equal(kitCleanLimit({}, { load: loadBesides(4, 34), cores: 16 }).ms, 2_325_000);
 });
 
 test("a speed limit stays as it is on a quiet machine and grows with the load per core, at most four times", () => {

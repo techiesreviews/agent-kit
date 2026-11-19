@@ -31,3 +31,12 @@ export function kitCleanLimit(env: NodeJS.ProcessEnv = process.env, sample?: { l
   if (forced) return { ms: forced, note: `limit ${forced} ms (ASE_KIT_CLEAN_LIMIT_MS)` };
   return loadLimit(1_200_000, sample);
 }
+
+/**
+ * The load the rest of the machine puts on it while a suite of `own` workers runs: the one-minute average less those
+ * workers, never the runnable-now peak (that counts the suite's own bursts). The kit-clean guard's 1200 s was measured
+ * with the suite's own load in it, so a reading taken during the run must not count that load again.
+ */
+export function loadBesides(own: number, load = loadavg()[0]) {
+  return Math.max(0, load - own);
+}
