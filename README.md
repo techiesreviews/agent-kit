@@ -63,6 +63,8 @@ After a merge from the base, the "changes since the last review" file lists only
 
 `kit pr` counts the fix rounds from the review records (TOOLS-287): each earlier head of the branch at which a review left a finding above a nit, Claude's rounds (the chain of `findings.json` records) and the branch's earlier second looks alike. Reviews at the same head (both looks, or a round after a decline) are one round, and a clean or nits-only review calls for no fix and counts none. Once 3 are used (5 for a risky change), only blockers (P0, P1) block, for both looks, and the shoulds left land as follow-ups for Lex, never as approval. The count survives a rebase that keeps the patch only while the head stays (Claude's review is reused, and the second looks are found from the head it saw); the next commit after it starts the count again, as Claude's review starts again at round 1 once the old head is gone from the history. A rebase that changes the patch starts it again at once, and so does any rebase in the docs tier, which has no Claude review to anchor it. Rounds the cut `kit fix` saved (`.scratch/kit-fix`) still count. A lead may give `--waive` more than once: ids count in any of the reasons, and counts add up (once any reason names an id, the counts are not read). Nor does anything hand a helper's declined findings to the next review any more (`kit fix` set `ASE_REVIEW_DECLINED` and saved them): a decline goes, with its reason, in the helper's report and the PR text, and the lead waives it by id.
 
+A `--ticket` file outside the repo, or one git ignores (a brief `kit brief` wrote into `.scratch`), gets the follow-ups written into it and no commit, and no commit names its commits; the PR body and comment hold the follow-ups as for any ticket (TOOLS-337).
+
 Known limits (waived follow-ups): a review that leaves an id out is rejected as incomplete: run `kit review` again by hand. The fix brief points at the newest complete review.
 
 The OpenCode second look reads only: it may read, search and list files, nothing else. The kit works with OpenCode 1 and 2 (before each OpenCode review it reads `opencode run --help` to tell them apart, usually well under a second, about 30 seconds at most if the CLI hangs; it stops in plain words when the help names neither). OpenCode 2 has no switch to turn plugins off, so there the kit turns the branch's own OpenCode settings off and gives each review an empty settings folder of its own, and drops a settings file or folder named in `OPENCODE_CONFIG` or `OPENCODE_CONFIG_DIR`: no plugin from the branch under review or from `~/.config/opencode` loads, and the machine's OpenCode settings (default model, global instructions) do not apply to the review either.
@@ -550,8 +552,8 @@ two split, the next release conflicted, and a "sync main into dev" PR had to be 
 
 - Work in a worktree (`git worktree add -b <branch> ../agent-kit-<branch> origin/dev`) and land with this repo's
   own `scripts/agents/kit pr`; it opens the PR into `dev`, waits for CI (up to 60 minutes; this repo's CI takes
-  about 30) and merges. `main` only takes `dev`, through `scripts/agents/kit pr --release --base main` from a branch cut at `origin/dev` (`kit pr` refuses to
-  run on `dev` itself); machines keep following `main`.
+  about 30) and merges. `main` only takes `dev`, through `scripts/agents/kit pr --release --base main` from a
+  branch cut at `origin/dev` (`kit pr` refuses to run on `dev` itself); machines keep following `main`.
 - CI runs the kit's tests and lint, then the Native Site Editor's `npm test` and `npm run lint` from its `dev`
   branch against the changed kit. A kit change lands only when both pass, because every project runs the kit
   once it is released to `main`.
