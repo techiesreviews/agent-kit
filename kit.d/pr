@@ -898,8 +898,8 @@ async function main(args) {
         const main = `origin/${release}`, land = `origin/${flags.base}`;
         if (await isAncestor("sync", main, land)) throw new Error(`nothing to sync: ${land} already holds ${main}`);
         // Kit's own follow-ups commits from an earlier run that stopped short of landing (--ticket on a tracked ticket, with
-        // --no-merge or a stop after its reviews) sit on the merge
-        // (TOOLS-352). They are set aside while the merge is weighed or made again as ever, and put back on it after.
+        // --no-merge or a stop after its reviews) sit on the merge (TOOLS-352). They are set aside while the merge is weighed or
+        // made again as ever, and put back on it after.
         const notes = await ownNotes(land, main);
         if (!notes.length) return syncJoin(main, land);
         const top = await git("sync", ["rev-parse", "HEAD"]), merge = await git("sync", ["rev-parse", `${notes[0]}^`]);
@@ -910,22 +910,24 @@ async function main(args) {
           if (await git("sync", ["rev-parse", "HEAD"]) === merge) await git("sync", ["reset", "-q", "--keep", top]);
           throw error;
         }
-        const commits = `kit's own follow-ups commit${notes.length === 1 ? "" : "s"} ${notes.map(note => note.slice(0, 7)).join(", ")} from an earlier run`;
+        const commits = list => `kit's own follow-ups commit${list.length === 1 ? "" : "s"} ${list.map(note => note.slice(0, 7)).join(", ")} from an earlier run`;
         if (await git("sync", ["rev-parse", "HEAD"]) === merge) {
           await git("sync", ["reset", "-q", "--keep", top]);
-          console.log(`sync: ${commits} ${notes.length === 1 ? "stays" : "stay"} on the merge`);
+          console.log(`sync: ${commits(notes)} ${notes.length === 1 ? "stays" : "stay"} on the merge`);
           return;
         }
-        // The merge was made again on a newer dev or main: the notes go on it as they were. Ones that no longer apply are left
-        // out (they are in the PR's comments, and this run's reviews write their follow-ups again).
-        const made = await git("sync", ["rev-parse", "HEAD"]);
-        if ((await execute("sync", "git", ["cherry-pick", ...notes])).status === 0) {
-          console.log(`sync: ${commits} ${notes.length === 1 ? "is" : "are"} put back on the merge made again`);
-          return;
+        // The merge was made again on a newer dev or main: the notes go on it one by one, as they were. One that no longer
+        // applies (or has nothing left to add) is left out: the PR's comments hold it, and this run's reviews write their follow-ups again.
+        const kept = [], left = [];
+        for (const note of notes) {
+          const before = await git("sync", ["rev-parse", "HEAD"]);
+          if ((await execute("sync", "git", ["cherry-pick", note])).status === 0) { kept.push(note); continue; }
+          await execute("sync", "git", ["cherry-pick", "--abort"]);
+          await git("sync", ["reset", "-q", "--keep", before]);
+          left.push(note);
         }
-        await execute("sync", "git", ["cherry-pick", "--abort"]);
-        await git("sync", ["reset", "-q", "--keep", made]);
-        console.log(`sync: ${commits} no longer ${notes.length === 1 ? "applies" : "apply"} on the merge made again, so ${notes.length === 1 ? "it is" : "they are"} left out; the PR's comments hold ${notes.length === 1 ? "its" : "their"} follow-ups`);
+        if (kept.length) console.log(`sync: ${commits(kept)} ${kept.length === 1 ? "is" : "are"} put back on the merge made again`);
+        if (left.length) console.log(`sync: ${commits(left)} no longer ${left.length === 1 ? "applies" : "apply"} on the merge made again, so ${left.length === 1 ? "it is" : "they are"} left out; the PR's comments hold ${left.length === 1 ? "its" : "their"} follow-ups`);
         return;
       }
       const result = await execute("rebase", "git", ["rebase", `origin/${flags.base}`]);
@@ -948,7 +950,7 @@ async function main(args) {
       for (let at = "HEAD"; ;) {
         const [id, ...parents] = (await git("sync", ["rev-list", "--parents", "-n", "1", at])).split(/\s+/);
         if (parents.length !== 1 || await git("sync", ["show", "-s", "--no-show-signature", "--format=%B", id]) !== message) break;
-        const paths = (await git("sync", ["diff", "--name-only", "--no-renames", "-z", parents[0], id, "--"])).split("\0").filter(Boolean);
+        const paths = (await git("sync", ["diff", "--name-only", "--no-renames", whole, "-z", parents[0], id, "--"])).split("\0").filter(Boolean);
         if (paths.length !== 1 || paths[0] !== path || await isAncestor("sync", id, land) || await isAncestor("sync", id, main)) break;
         notes.unshift(id);
         at = parents[0];

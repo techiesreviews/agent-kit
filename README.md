@@ -521,7 +521,7 @@ two split, the next release conflicted, and a "sync main into dev" PR had to be 
   dev does not hold.
   A rerun sets them aside while it weighs the merge or makes it again, then puts them back on it (`sync: kit's own
   follow-ups commit <sha> from an earlier run stays on the merge`); one that no longer applies on a merge made again
-  is left out, as the PR's comments hold its notes. It needs `branches.release` apart from `branches.land`.
+  (each is put back on its own) is left out, as the PR's comments hold its notes. It needs `branches.release` apart from `branches.land`.
 - A merge of main into dev made by hand (TOOLS-341): when the branch's tip is a merge whose first parent is
   `origin/dev` and whose second is in main's history, `kit pr --sync-main` lands that merge as it was made, never made
   again: at once when it changes dev's files, and, when it keeps them, only once kit's own merge fails. Its diff

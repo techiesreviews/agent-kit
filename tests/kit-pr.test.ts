@@ -1778,6 +1778,49 @@ test("kit pr --sync-main puts kit's own follow-ups commit back on the merge when
   assert.equal(f.git("status", "--porcelain"), "");
 });
 
+test("kit pr --sync-main puts kit's own follow-ups commits back one by one on the merge made again, leaving out only one with nothing left to add (TOOLS-352)", t => {
+  const f = fixture(t), peer = release(f);
+  f.git("checkout", "-q", "dev"); f.git("pull", "-q", "--ff-only", "origin", "dev"); f.git("checkout", "-q", "-b", "sync/main");
+  const first = f.run(["--sync-main", "--no-merge"], { FAKE_EMPTY: "1" });
+  assert.equal(first.status, 0, first.stdout + first.stderr);
+  const base = readFileSync(join(f.root, "ticket.md"), "utf8");
+  writeFileSync(join(f.root, "ticket.md"), `${base}One\n`); f.git("add", "ticket.md"); f.git("commit", "-q", ...kitNote);
+  const one = f.git("rev-parse", "HEAD");
+  writeFileSync(join(f.root, "ticket.md"), `${base}One\nTwo\n`); f.git("add", "ticket.md"); f.git("commit", "-q", ...kitNote);
+  const two = f.git("rev-parse", "HEAD");
+  // dev takes the first note's line itself, so that note has nothing left to add on the newest dev.
+  f.gitAt(peer, "checkout", "-q", "dev"); f.gitAt(peer, "pull", "-q", "--ff-only", "origin", "dev");
+  writeFileSync(join(peer, "ticket.md"), `${base}One\n`); f.gitAt(peer, "commit", "-q", "-am", "Ticket line on dev"); f.gitAt(peer, "push", "-q", "origin", "dev");
+  const moved = f.run(["--sync-main", "--ticket", "ticket.md", "--no-merge"], { FAKE_EXISTING: "1" });
+  assert.equal(moved.status, 0, moved.stdout + moved.stderr);
+  assert.match(moved.stdout, new RegExp(`^sync: kit's own follow-ups commit ${two.slice(0, 7)} from an earlier run is put back on the merge made again$`, "m"));
+  assert.match(moved.stdout, new RegExp(`^sync: kit's own follow-ups commit ${one.slice(0, 7)} from an earlier run no longer applies on the merge made again, so it is left out; `, "m"));
+  assert.equal(f.git("rev-parse", "HEAD^^1"), f.git("rev-parse", "origin/dev"));
+  assert.equal(f.git("rev-parse", "HEAD^^2"), f.git("rev-parse", "origin/main"));
+  assert.equal(f.git("log", "-1", "--format=%s"), "docs: ticket follow-ups from review");
+  assert.equal(readFileSync(join(f.root, "ticket.md"), "utf8"), `${base}One\nTwo\n`);
+  assert.equal(f.git("status", "--porcelain"), "");
+});
+
+test("kit pr --sync-main takes no commit as kit's note that also changes a submodule git's diffs are told to ignore (TOOLS-352)", t => {
+  const f = fixture(t), peer = f.peer();
+  f.git("checkout", "-q", "dev");
+  writeFileSync(join(f.root, ".gitmodules"), '[submodule "sub"]\n\tpath = sub\n\turl = ./sub\n\tignore = all\n'); f.git("add", ".gitmodules");
+  f.git("update-index", "--add", "--cacheinfo", `160000,${f.git("rev-parse", "HEAD")},sub`); f.git("commit", "-q", "-m", "Submodule"); f.git("push", "-q", "origin", "dev");
+  f.gitAt(peer, "fetch", "-q", "origin"); f.gitAt(peer, "checkout", "-q", "main"); writeFileSync(join(peer, "hotfix.txt"), "hotfix\n");
+  f.gitAt(peer, "add", "hotfix.txt"); f.gitAt(peer, "commit", "-q", "-m", "Hotfix on main"); f.gitAt(peer, "push", "-q", "origin", "main");
+  f.git("checkout", "-q", "-b", "sync/main"); f.git("fetch", "-q", "origin"); f.git("merge", "-q", "--no-ff", "-m", "Hand-made sync", "origin/main");
+  const merge = f.git("rev-parse", "HEAD");
+  writeFileSync(join(f.root, "ticket.md"), "Note\n"); f.git("add", "ticket.md");
+  f.git("update-index", "--cacheinfo", `160000,${f.git("rev-parse", "origin/main")},sub`); f.git("commit", "-q", ...kitNote);
+  const top = f.git("rev-parse", "HEAD");
+  assert.equal(f.git("diff", "--name-only", merge, top), "ticket.md", "git's own diff hides the submodule");
+  const result = f.run(["--sync-main", "--ticket", "ticket.md", "--no-merge"], { FAKE_REVIEW: gapReview });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /RESULT: fail sync: a sync branch holds only the merge of origin\/main, and this one has work of its own: /);
+  assert.equal(f.git("rev-parse", "HEAD"), top);
+});
+
 test("kit pr --sync-main takes only kit's own follow-ups commit on a merge as kit's: anything else on the branch is work of its own (TOOLS-352)", t => {
   const f = fixture(t);
   release(f);
