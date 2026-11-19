@@ -2317,7 +2317,7 @@ test("a release or a sync with --no-merge, and their dry runs, name kit pr to la
 
 // The words of the kit pr run a release's merge line names, unquoted as a shell would (the hint quotes with '…').
 const rerunWords = (stdout: string) => {
-  const line = stdout.match(/^merge: land it with (?:git reset --keep origin\/dev && )?kit pr (.+) \(a merge commit, never merged by hand\)$/m);
+  const line = stdout.match(/^merge: land it with (?:git reset --keep [a-f0-9]{40} && )?kit pr (.+) \(a merge commit, never merged by hand\)$/m);
   assert.ok(line, stdout);
   return [...line[1].matchAll(/'((?:[^']|'\\'')*)'|(\S+)/g)].map(word => word[2] ?? word[1].replaceAll("'\\''", "'"));
 };
@@ -2348,11 +2348,16 @@ test("the line a release prints after merging a hotfixed main into its cut re-cu
   f.gitAt(peer, "add", "hotfix.txt"); f.gitAt(peer, "commit", "-q", "-m", "Hotfix on main"); f.gitAt(peer, "push", "-q", "origin", "main");
   f.git("checkout", "-q", "dev"); f.commit("Landed change", "landed.txt"); f.git("push", "-q", "origin", "dev");
   f.git("checkout", "-q", "-b", "release/cut");
+  const dev = f.git("rev-parse", "origin/dev"), line = new RegExp(`^merge: land it with git reset --keep ${dev} && kit pr --base main --release \\(a merge commit, never merged by hand\\)$`, "m");
+  const plan = f.run(["--base", "main", "--release", "--dry-run", "--no-merge"], real);
+  assert.equal(plan.status, 0, plan.stdout + plan.stderr);
+  assert.match(plan.stdout, line, "a dry run that merged main into the cut names the re-cut too");
+  f.git("reset", "-q", "--keep", dev);
   const opened = f.run(["--base", "main", "--release", "--no-merge"], real);
   assert.equal(opened.status, 0, opened.stdout + opened.stderr);
   const cut = f.git("rev-parse", "HEAD");
-  assert.notEqual(cut, f.git("rev-parse", "origin/dev"), "the run merged main into the cut");
-  assert.match(opened.stdout, /^merge: land it with git reset --keep origin\/dev && kit pr --base main --release \(a merge commit, never merged by hand\)$/m);
+  assert.notEqual(cut, dev, "the run merged main into the cut");
+  assert.match(opened.stdout, line, "an ordinary cut is cut again at origin/dev");
   f.git("reset", "-q", "--keep", "origin/dev");
   const created = f.ghCalls("create").length, landed = f.run(rerunWords(opened.stdout), { ...real, FAKE_EXISTING: "1", FAKE_LAND_MERGE: peer });
   assert.equal(landed.status, 0, landed.stdout + landed.stderr);
@@ -2361,6 +2366,19 @@ test("the line a release prints after merging a hotfixed main into its cut re-cu
   assert.equal(f.ghCalls("merge").length, 1);
   assert.match(landed.stdout, /^landed: [a-f0-9]{7} merges [a-f0-9]{7} into main \(a merge commit\)$/m);
   assert.match(landed.stdout, /RESULT: ok merged #73 [a-f0-9]{7}$/m);
+});
+
+test("the re-cut a waived release names keeps the cut's own commits past origin/dev", t => {
+  const f = fixture(t), env = { ASE_OWNER: "ke-lead", FAKE_RELEASE_CHECK: resolve("kit.d/release-check") }, peer = f.peer();
+  f.gitAt(peer, "checkout", "-q", "main"); writeFileSync(join(peer, "hotfix.txt"), "hotfix\n");
+  f.gitAt(peer, "add", "hotfix.txt"); f.gitAt(peer, "commit", "-q", "-m", "Hotfix on main"); f.gitAt(peer, "push", "-q", "origin", "main");
+  f.commit("Own commit on the cut", "own.txt");
+  const own = f.git("rev-parse", "HEAD");
+  assert.notEqual(own, f.git("rev-parse", "origin/dev"));
+  const opened = f.run(["--base", "main", "--release", "--no-merge", "--waive", "hotfix tonight"], env);
+  assert.equal(opened.status, 0, opened.stdout + opened.stderr);
+  assert.notEqual(f.git("rev-parse", "HEAD"), own, "the run merged main into the cut");
+  assert.match(opened.stdout, new RegExp(`^merge: land it with git reset --keep ${own} && kit pr --base main --release --waive 'hotfix tonight' \\(`, "m"));
 });
 
 test("the kit pr line a release with --no-merge prints keeps its waiver, title and ticket, so copying it passes the release check", t => {
