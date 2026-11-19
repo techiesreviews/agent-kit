@@ -21,7 +21,15 @@ function entries(directory: string) {
 // 500 s on a CI runner (2026-11-09); it grew with #123 and #125 (dev's CI ran past the old 720 s limit, 12m24s on
 // 2026-11-16), so the limit is 1200 s on a quiet machine, stretched for a busy one (kitCleanLimit): a run cut off there
 // is a real hang, not a slow runner. The CI job sets no timeout-minutes, so GitHub's default (360 minutes) stays well above it.
-const { ms: limit, note: limitNote } = kitCleanLimit();
+// The load is read again while the suite runs, since a sweep that starts after the guard would otherwise cut it off at the
+// quiet machine's limit: the limit only grows, and never past four times (`ceiling`, kitCleanLimit at any load).
+let reached = kitCleanLimit();
+const limitNow = () => {
+  const next = kitCleanLimit();
+  if (next.ms > reached.ms) reached = next;
+  return reached.ms;
+};
+const ceiling = kitCleanLimit(process.env, { load: Number.MAX_SAFE_INTEGER }).ms;
 const guardName = "kit and agent unit tests leave no run folders or temporary files";
 
 // Live members of a process group; a zombie is already gone and only waits for its parent.
@@ -58,7 +66,9 @@ async function waitUntil(done: () => boolean, ms: number) {
 // Resolves once the group and any process using its TMPDIR have exited; only then may the caller remove that
 // temp folder. A run that ends in time but leaves processes behind reports them in `leftRunning`; they are
 // then killed so the folder can still go. `survivors` lists any process that outlived even SIGKILL.
-async function runGroup(args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }, ms: number) {
+// `ms` is the limit, or a function read again every 30 s (and when the limit is reached) whose answer stretches it.
+async function runGroup(args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }, ms: number | (() => number)) {
+  const limitAt = typeof ms === "number" ? () => ms : ms;
   const child = spawn(process.execPath, args, { ...options, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   const pgid = child.pid!, temporary = options.env.TMPDIR!;
   let stdout = "", stderr = "";
@@ -69,11 +79,17 @@ async function runGroup(args: string[], options: { cwd: string; env: NodeJS.Proc
   const started = Date.now();
   let cutOff = false, kill: NodeJS.Timeout | undefined;
   const signalGroup = (signal: NodeJS.Signals) => { try { process.kill(-pgid, signal); } catch { /* group gone */ } };
-  const stop = setTimeout(() => {
+  let deadline = limitAt(), stop: NodeJS.Timeout | undefined;
+  const check = () => {
+    // A machine that got busier while the suite ran stretches the deadline; it never shrinks.
+    deadline = Math.max(deadline, limitAt());
+    const left = deadline - (Date.now() - started);
+    if (left > 0) { stop = setTimeout(check, Math.min(left, 30_000)); return; }
     cutOff = true;
     signalGroup("SIGTERM");
     kill = setTimeout(() => signalGroup("SIGKILL"), 5_000);
-  }, ms);
+  };
+  stop = setTimeout(check, Math.min(deadline, 30_000));
   let status: number | null, signal: NodeJS.Signals | null;
   try {
     [status, signal] = await once(child, "exit") as [number | null, NodeJS.Signals | null];
@@ -103,7 +119,7 @@ async function runGroup(args: string[], options: { cwd: string; env: NodeJS.Proc
   return { status, signal, stdout, stderr, cutOff, leftRunning, survivors, seconds: Math.round((Date.now() - started) / 1000) };
 }
 
-test(guardName, { timeout: limit + 60_000 }, async t => {
+test(guardName, { timeout: ceiling + 60_000 }, async t => {
   // The standalone test:kit-clean script runs this guard. Select all kit tests,
   // runner callers and compatibility wrappers, including future test files.
   const files = globSync("tests/*.test.ts").filter(file =>
@@ -136,7 +152,7 @@ test(guardName, { timeout: limit + 60_000 }, async t => {
   // The kit suite grows with every slice; a run cut off at this limit fails as a time-out, and t.after
   // removes its temp folder (kit-pr-* included) once the whole process group has exited.
   const result = await runGroup(["--import", "tsx", "--test", "--test-reporter=tap", "--test-concurrency=4", ...files],
-    { cwd: repo, env }, limit);
+    { cwd: repo, env }, limitNow);
   const folders = entries(artifacts).filter(name => !before.has(name));
   // The tsx CLI creates an empty IPC directory even with its cache disabled.
   // Permit only that empty runtime directory; all test-created paths must go.
@@ -147,7 +163,7 @@ test(guardName, { timeout: limit + 60_000 }, async t => {
     const failures = result.stdout.match(/^\s*not ok .*(?:\n[ \t]+.*)*/gm)?.join("\n");
     t.diagnostic(failures || (result.stdout + result.stderr).slice(-12_000));
   }
-  assert.ok(!result.cutOff, `kit suite run was cut off after ${result.seconds} s (${limitNote}); ` +
+  assert.ok(!result.cutOff, `kit suite run was cut off after ${result.seconds} s (${reached.note}); ` +
     `removing the temp paths it left: ${leftovers.join(", ") || "none"}`);
   assert.deepEqual(result.survivors, [], `processes still running after SIGKILL: ${result.survivors.join("; ")}`);
   assert.deepEqual(result.leftRunning, [], `processes left running: ${result.leftRunning.join("; ")}`);
@@ -157,6 +173,21 @@ test(guardName, { timeout: limit + 60_000 }, async t => {
   const count = Number(/^# tests (\d+)$/m.exec(result.stdout)?.[1]);
   assert.ok(count >= files.length, `child suite must execute tests from ${files.length} files: ${result.stdout.slice(-2000)}`);
   t.diagnostic(`guard ran ${count} tests from ${files.length} files`);
+});
+
+// TOOLS-360: the limit is read again while the run goes on, so a machine that got busier after the start stretches it.
+test("a run whose limit grows while it runs is not cut off, and one whose limit stays is", { timeout: 60_000 }, async t => {
+  const temporary = mkdtempSync(join(tmpdir(), "kit-tests-stretch-"));
+  t.after(() => rmSync(temporary, { recursive: true, force: true }));
+  const env = { ...process.env, TMPDIR: temporary };
+  const sleep = ["-e", "setTimeout(() => {}, 3000)"];
+  const fixed = await runGroup(sleep, { cwd: repo, env }, 1_000);
+  assert.equal(fixed.cutOff, true, "a limit that stays at 1 s cuts a 3 s run off");
+  let reads = 0;
+  const stretched = await runGroup(sleep, { cwd: repo, env }, () => (++reads === 1 ? 1_000 : 10_000));
+  assert.equal(stretched.cutOff, false, "a limit read as 10 s when 1 s is up lets the run finish");
+  assert.equal(stretched.status, 0);
+  assert.ok(reads >= 2, `the limit was read again (${reads} reads)`);
 });
 
 test("a guard run cut off at its limit names the time-out and leaves no temp folder", { timeout: 180_000 }, async t => {
