@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
@@ -25,7 +24,8 @@ test("a speed limit stays as it is on a quiet machine and grows with the load pe
 });
 
 test("a test's own temp folder is outside every git work tree, even when the system temp folder is inside one", t => {
-  const scratch = mkdtempSync(join(tmpdir(), "temp-outside-git-"));
+  // Its own folder is one outside every work tree too, so a work tree around the system temp folder cannot fail it.
+  const scratch = tempOutsideGit("temp-outside-git-");
   t.after(() => rmSync(scratch, { recursive: true, force: true }));
   // A temp folder that something made a git work tree, as /tmp was for a moment in the kit release's gate (TOOLS-354).
   const repo = join(scratch, "repo"), inRepo = join(repo, "tmp"), clean = join(scratch, "clean");
