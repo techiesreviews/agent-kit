@@ -41,7 +41,9 @@ test("a test's own temp folder is outside every git work tree, even when the sys
   assert.equal(dirname(next), clean);
   assert.equal(existsSync(join(scratch, "missing")), false);
   assert.deepEqual(readdirSync(inRepo), []);
-  assert.throws(() => tempOutsideGit("kit-ticket-", [inRepo]), new RegExp(`no temp folder outside a git work tree: ${inRepo} is inside ${repo}`));
+  // The paths are matched as they are: a "." or "+" in a temp path must not loosen the pattern.
+  const literal = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  assert.throws(() => tempOutsideGit("kit-ticket-", [inRepo]), new RegExp(`no temp folder outside a git work tree: ${literal(inRepo)} is inside ${literal(repo)}`));
   // The default bases: whatever this machine has, the folder is outside every git work tree.
   const real = tempOutsideGit("kit-ticket-");
   t.after(() => rmSync(real, { recursive: true, force: true }));

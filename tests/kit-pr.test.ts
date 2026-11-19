@@ -1572,7 +1572,7 @@ test("kit pr --sync-main goes into a merge queue with --auto --merge, and its dr
   f.git("checkout", "-q", "dev"); f.git("pull", "-q", "--ff-only", "origin", "dev"); f.git("checkout", "-q", "-b", "sync/main");
   const plan = f.run(["--sync-main", "--dry-run"], { FAKE_EMPTY: "1" });
   assert.equal(plan.status, 0, plan.stdout + plan.stderr);
-  assert.match(plan.stdout, /^merge: gh pr merge N --merge --match-head-commit <the pushed head> --repo test\/repo \(a merge commit, never --rebase\)$/m);
+  assert.match(plan.stdout, /^merge: land it with kit pr --sync-main without --no-merge \(a merge commit, never merged by hand\)$/m);
   assert.doesNotMatch(plan.stdout, /^gh pr merge N --rebase/m);
   assert.equal(f.calls().some(call => call.tool === "gh" && call.args[0] === "pr"), false, "a dry run opens nothing");
   const queued = f.run(["--sync-main"], { FAKE_EMPTY: "1", FAKE_QUEUE: "1" });
@@ -2071,7 +2071,7 @@ test("a release through a merge queue asks for --auto --merge, and a landed comm
   assert.equal(queuedWaived.status, 0, queuedWaived.stdout + queuedWaived.stderr);
   assert.match(queuedWaived.stdout, /RESULT: ok queued #73 [a-f0-9]{7} \(release-check waived: hotfix tonight\)$/m);
   const fine = fixture(t), merged = fine.run(["--base", "main", "--release", "--no-merge"], { FAKE_QUEUE: "1" });
-  assert.match(merged.stdout, /^merge: gh pr merge 73 --merge --match-head-commit [a-f0-9]{40} --repo test\/repo \(a merge commit, never --rebase\)$/m);
+  assert.match(merged.stdout, /^merge: land it with kit pr --release --base main without --no-merge \(a merge commit, never merged by hand\)$/m);
   const sync = fixture(t);
   release(sync);
   sync.git("checkout", "-q", "dev"); sync.git("pull", "-q", "--ff-only", "origin", "dev"); sync.git("checkout", "-q", "-b", "sync/main");
@@ -2144,7 +2144,7 @@ test("kit pr --sync-main makes the merge again on the newest dev when dev moved 
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.equal(f.git("rev-parse", "HEAD^1"), f.git("rev-parse", "origin/dev"));
   assert.equal(f.git("rev-parse", "HEAD^2"), f.git("rev-parse", "origin/main"));
-  assert.match(result.stdout, new RegExp(`^merge: gh pr merge 73 --merge --match-head-commit ${f.git("rev-parse", "HEAD")} --repo test/repo \\(a merge commit, never --rebase\\)$`, "m"));
+  assert.match(result.stdout, /^merge: land it with kit pr --sync-main without --no-merge \(a merge commit, never merged by hand\)$/m);
   assert.equal(f.git("log", "-1", "--format=%b"), "", "after an ordinary release main holds only merges, so the merge stays a plain one");
   assert.match(result.stdout, /RESULT: ok opened #73 [a-f0-9]{7}$/m);
 });
@@ -2240,7 +2240,7 @@ test("a release cut from a dev that holds a back-merge of main needs no change: 
   assert.doesNotMatch(result.stdout, /conflict in/);
   assert.equal(f.git("rev-parse", "HEAD"), cut, "main is already inside the cut, so the rebase leaves it as it is");
   f.git("merge-base", "--is-ancestor", "origin/main", "HEAD"); // throws unless main is inside the release
-  assert.match(result.stdout, new RegExp(`^merge: gh pr merge 73 --merge --match-head-commit ${f.git("rev-parse", "HEAD")} --repo test/repo \\(a merge commit, never --rebase\\)$`, "m"), "the release says how to merge it, pinned to the reviewed head");
+  assert.match(result.stdout, /^merge: land it with kit pr --release --base main without --no-merge \(a merge commit, never merged by hand\)$/m, "the release says to land it through kit pr, never by hand");
   assert.match(result.stdout, /RESULT: ok opened #73 [a-f0-9]{7}$/m);
 });
 
@@ -2286,12 +2286,32 @@ test("a release dry run shows the merge command, and a cut that main already hol
   f.git("checkout", "-q", "-b", "release/cut");
   const plan = f.run(["--base", "main", "--release", "--dry-run"], real);
   assert.equal(plan.status, 0, plan.stdout + plan.stderr);
-  assert.match(plan.stdout, /^merge: gh pr merge N --merge --match-head-commit <the pushed head> --repo test\/repo \(a merge commit, never --rebase\)$/m);
+  assert.match(plan.stdout, /^merge: land it with kit pr --release --base main without --no-merge \(a merge commit, never merged by hand\)$/m);
   // main takes the whole cut (a release already merged), so there is nothing left to release.
   f.git("push", "-q", "origin", "release/cut:main");
   const again = f.run(["--base", "main", "--release", "--no-merge"], real);
   assert.equal(again.status, 1, again.stdout + again.stderr);
   assert.match(again.stdout, /RESULT: fail merge: nothing to release: origin\/main already holds this cut$/m);
+});
+
+// TOOLS-360: nothing lands outside kit pr, so a release or a sync never prints a gh pr merge command to run by hand.
+test("a release or a sync with --no-merge, and their dry runs, name kit pr to land them, never a gh pr merge command", t => {
+  const cut = fixture(t);
+  for (const args of [["--base", "main", "--release", "--no-merge"], ["--base", "main", "--release", "--dry-run"]]) {
+    const run = cut.run(args);
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.doesNotMatch(run.stdout, /gh pr merge/, args.join(" "));
+    assert.match(run.stdout, /^merge: land it with kit pr --release --base main without --no-merge \(a merge commit, never merged by hand\)$/m);
+  }
+  const sync = fixture(t);
+  release(sync);
+  sync.git("checkout", "-q", "dev"); sync.git("pull", "-q", "--ff-only", "origin", "dev"); sync.git("checkout", "-q", "-b", "sync/main");
+  for (const args of [["--sync-main", "--dry-run"], ["--sync-main", "--no-merge"]]) {
+    const run = sync.run(args, { FAKE_EMPTY: "1" });
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.doesNotMatch(run.stdout, /gh pr merge/, args.join(" "));
+    assert.match(run.stdout, /^merge: land it with kit pr --sync-main without --no-merge \(a merge commit, never merged by hand\)$/m);
+  }
 });
 
 test("a release cut after main took another hotfix past dev's back-merge ends up on top of that hotfix", t => {
@@ -3515,6 +3535,23 @@ test("follow-ups for a --ticket file outside the repo are written into it, with 
   assert.match(result.stdout, /RESULT: ok merged #73/);
   assert.equal(f.git("rev-parse", "HEAD"), reviewed, "no commit is made for a ticket outside the repo");
   assert.match(readFileSync(brief, "utf8"), /### Follow-ups\n\n- Spec \(P2\): P2: Minor defect.\n- Validation gaps \(gap\): Add coverage./);
+});
+
+// git check-ignore itself fails (exit 128) for a path through a symlinked folder: kit pr cannot tell whether the ticket is
+// a repo file, so it stops and names why instead of guessing, and makes no follow-ups commit.
+test("a --ticket file through a symlinked folder, which git check-ignore cannot judge, stops the run with no commit", t => {
+  const f = fixture(t);
+  const outside = mkdtempSync(join(tmpdir(), "kit-pr-linked-"));
+  t.after(() => rmSync(outside, { recursive: true, force: true }));
+  writeFileSync(join(outside, "ticket.md"), '---\ntitle: "Linked title"\n---\n\n## Done (2026-11-19)\n\nImplemented.\n');
+  symlinkSync(outside, join(f.root, "linked"));
+  f.git("add", "linked"); f.git("commit", "-q", "-m", "Link a folder");
+  f.rounds(3);
+  const reviewed = f.git("rev-parse", "HEAD");
+  const result = f.run(["--ticket", "linked/ticket.md"], { FAKE_REVIEW: minorReview });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /^RESULT: fail .*could not tell whether git ignores linked\/ticket\.md: .+$/m);
+  assert.equal(f.git("rev-parse", "HEAD"), reviewed, "no follow-ups commit is made");
 });
 
 test("a --ticket file git ignores whose Done names its commits gets no commit for them, and the PR goes on", t => {
