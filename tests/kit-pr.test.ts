@@ -1571,9 +1571,11 @@ test("kit pr --sync-main goes into a merge queue with --auto --merge, and its dr
   const f = fixture(t);
   release(f);
   f.git("checkout", "-q", "dev"); f.git("pull", "-q", "--ff-only", "origin", "dev"); f.git("checkout", "-q", "-b", "sync/main");
+  const before = f.git("rev-parse", "HEAD");
   const plan = f.run(["--sync-main", "--dry-run"], { FAKE_EMPTY: "1" });
   assert.equal(plan.status, 0, plan.stdout + plan.stderr);
   assert.match(plan.stdout, /^merge: the real run lands it once CI passes, as a merge commit pinned to the pushed head \(never --rebase\)$/m);
+  assert.equal(f.git("rev-parse", "HEAD"), before, "a sync's dry run puts the branch back where it started");
   assert.doesNotMatch(plan.stdout, /^gh pr merge N --rebase/m);
   assert.equal(f.calls().some(call => call.tool === "gh" && call.args[0] === "pr"), false, "a dry run opens nothing");
   const queued = f.run(["--sync-main"], { FAKE_EMPTY: "1", FAKE_QUEUE: "1" });
@@ -2351,8 +2353,8 @@ test("the line a release prints after merging a hotfixed main into its cut re-cu
   const dev = f.git("rev-parse", "origin/dev"), line = new RegExp(`^merge: land it with git reset --keep ${dev} && kit pr --base main --release \\(a merge commit, never merged by hand\\)$`, "m");
   const plan = f.run(["--base", "main", "--release", "--dry-run", "--no-merge"], real);
   assert.equal(plan.status, 0, plan.stdout + plan.stderr);
-  assert.match(plan.stdout, line, "a dry run that merged main into the cut names the re-cut too");
-  f.git("reset", "-q", "--keep", dev);
+  assert.equal(f.git("rev-parse", "HEAD"), dev, "a dry run puts the cut back where it started");
+  assert.match(plan.stdout, /^merge: land it with kit pr --base main --release \(a merge commit, never merged by hand\)$/m, "so it names no re-cut");
   const opened = f.run(["--base", "main", "--release", "--no-merge"], real);
   assert.equal(opened.status, 0, opened.stdout + opened.stderr);
   const cut = f.git("rev-parse", "HEAD");
@@ -2364,6 +2366,27 @@ test("the line a release prints after merging a hotfixed main into its cut re-cu
   assert.equal(f.git("rev-parse", "HEAD"), cut, "the re-cut is the same merge");
   assert.equal(f.ghCalls("create").length, created, "the open PR is reused, not opened again");
   assert.equal(f.ghCalls("merge").length, 1);
+  assert.match(landed.stdout, /^landed: [a-f0-9]{7} merges [a-f0-9]{7} into main \(a merge commit\)$/m);
+  assert.match(landed.stdout, /RESULT: ok merged #73 [a-f0-9]{7}$/m);
+});
+
+// TOOLS-360 release review: a plain release dry run merged main into the cut and left it there, so the real run that
+// followed stopped at the release check. A dry run changes nothing: the real run after it starts from the same cut.
+test("a release dry run that merges a hotfixed main into the cut puts the cut back, and the real run after it lands", t => {
+  const f = fixture(t), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check"), FAKE_BASE: "main" }, peer = f.peer();
+  f.gitAt(peer, "checkout", "-q", "main"); writeFileSync(join(peer, "hotfix.txt"), "hotfix\n");
+  f.gitAt(peer, "add", "hotfix.txt"); f.gitAt(peer, "commit", "-q", "-m", "Hotfix on main"); f.gitAt(peer, "push", "-q", "origin", "main");
+  f.git("checkout", "-q", "dev"); f.commit("Landed change", "landed.txt"); f.git("push", "-q", "origin", "dev");
+  f.git("checkout", "-q", "-b", "release/cut");
+  const dev = f.git("rev-parse", "origin/dev");
+  const plan = f.run(["--base", "main", "--release", "--dry-run"], real);
+  assert.equal(plan.status, 0, plan.stdout + plan.stderr);
+  assert.match(plan.stdout, /^merge: the real run lands it once CI passes, as a merge commit pinned to the pushed head \(never --rebase\)$/m);
+  assert.equal(f.git("rev-parse", "HEAD"), dev, "the dry run's merge is undone");
+  assert.equal(f.git("status", "--porcelain"), "");
+  const landed = f.run(["--base", "main", "--release"], { ...real, FAKE_LAND_MERGE: peer });
+  assert.equal(landed.status, 0, landed.stdout + landed.stderr);
+  assert.doesNotMatch(landed.stdout, /RESULT: fail release-check/);
   assert.match(landed.stdout, /^landed: [a-f0-9]{7} merges [a-f0-9]{7} into main \(a merge commit\)$/m);
   assert.match(landed.stdout, /RESULT: ok merged #73 [a-f0-9]{7}$/m);
 });
