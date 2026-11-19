@@ -26,8 +26,9 @@ const only = /-Filter 'ProcessId=(\\d+)'/.exec(script)?.[1];
 // A job's command (not kit bg's own processes) whose command line holds this marker cannot be looked up on its own.
 try { const line = only ? fs.readFileSync("/proc/" + only + "/cmdline", "utf8") : "";
   if (line.includes("fail-pin-marker") && !line.includes("--wrapper") && !line.includes("--command")) { console.error("Get-CimInstance : Access denied."); process.exit(1); } } catch {}
-// On request the job ends during kit go's second look (its last, with KIT_GO_WAIT_MS=1: after it read the job's log):
-// this list releases the job, then waits until its exit record is written and its wrapper has ended.
+// On request the job ends during kit go's second and last look (with KIT_GO_WAIT_MS=1), which go took after reading
+// the job's log before TOOLS-373: this list releases the job, then waits until its exit record is written and its
+// wrapper has ended.
 const job = process.env.FAKE_LAST_LOOK_JOB;
 if (job && !only && fs.readFileSync("/proc/" + process.ppid + "/cmdline", "utf8").split("\\0").some(word => word.endsWith("/kit.d/go"))) {
   const count = process.env.FAKE_WIN_LOG + ".looks-" + process.ppid;

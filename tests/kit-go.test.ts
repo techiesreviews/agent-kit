@@ -182,9 +182,9 @@ exec "$@"
   const max = Math.ceil(limit.ms / 1000);
   let done = f.run("step-failed", "--max", String(max), "--", process.execPath, "-e", 'console.log("RESULT: fail step one"); setInterval(() => {}, 1000)');
   for (let i = 0; i < 30 && done.status === 75; i++) done = f.run("step-failed");
-  assert.equal(done.status, 143, done.stdout);
+  assert.equal(done.status, 143, `${done.stdout}${limit.note}`);
   assert.match(done.stdout, /^job: RESULT: fail step one$/m, limit.note);
-  assert.match(last(done), new RegExp(`^RESULT: fail go step-failed exit 143: the time limit \\(${max}s\\) ended this job`));
+  assert.match(last(done), new RegExp(`^RESULT: fail go step-failed exit 143: the time limit \\(${max}s\\) ended this job`), limit.note);
 });
 
 test("go: without a user systemd the job starts the old way with a note", t => {
