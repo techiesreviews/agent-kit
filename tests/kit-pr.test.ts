@@ -914,7 +914,7 @@ test("a release with --no-merge opens but never waits or merges", t => {
 
 // The steps every "kit cannot join main by itself" stop names (TOOLS-325, TOOLS-341): a merge made by hand, which kit pr
 // --sync-main then weighs and lands as it was made, after which main is inside dev's history, so the stop cannot come back.
-const byHand = (run: "release" | "sync") => "make the merge by hand: git switch -c <name> origin/dev, git merge --no-ff origin/main (keep each change of main's that dev lacks, and leave out what dev changed or removed since), "
+const byHand = (run: "release" | "sync") => "make the merge by hand: git switch -c <name> origin/dev, git merge --no-ff origin/main (keep each change of main's that dev lacks, and dev's side wherever dev changed or removed something since), "
   + "then run kit pr --sync-main on that branch: it lands the merge as you made it, through review, the second look and CI, once the merge drops no change of main's that dev does not already hold"
   + (run === "release" ? "; then cut the release again at the new origin/dev" : "");
 // A stop opens and merges no PR.
@@ -1034,6 +1034,13 @@ test("a squashed release on main that dev has since changed stops the release an
   assert.equal(f.git("rev-parse", "HEAD"), f.git("rev-parse", "origin/dev")); assert.equal(f.git("status", "--porcelain"), "");
   // The steps the stop names, as a person follows them: the merge, without what dev already undid, lands through kit pr
   // --sync-main as a merge commit, since the squashed commit takes main's files from dev's at one commit to dev's at a later one.
+  // A plain merge brings back x.txt, which dev removed: main's side drops nothing, so it goes to review like any change,
+  // where that file shows in its diff against dev.
+  f.git("checkout", "-q", "-B", "join-plain", "origin/dev"); f.git("merge", "-q", "--no-ff", "-m", "Join main into dev", "origin/main");
+  const plain = f.run(["--sync-main", "--no-merge"]);
+  assert.equal(plain.status, 0, plain.stdout + plain.stderr);
+  assert.match(plain.stdout, /^sync: ok \(the merge [a-f0-9]{7} joins main at [a-f0-9]{7} into dev as it was made: it changes 1 file on dev, and drops no change of main's that dev does not hold\)$/m);
+  assert.equal(f.calls().filter(call => call.tool === "fake-kit" && call.args[0] === "review" && !call.args.includes("--second-look")).length, 1, "the review sees x.txt come back");
   f.git("checkout", "-q", "-B", "join-main", "origin/dev");
   f.git("merge", "-q", "--no-ff", "--no-commit", "origin/main"); f.git("rm", "-q", "-f", "x.txt"); f.git("commit", "-q", "-m", "Join main into dev");
   const joined = f.run(["--sync-main"], { FAKE_EMPTY: "1", FAKE_LAND_MERGE: peer });
@@ -1724,6 +1731,11 @@ test("kit pr --sync-main lands a hand-made merge when main's own commits sit beh
   f.gitAt(peer, "fetch", "-q", "origin"); f.gitAt(peer, "checkout", "-q", "main"); f.gitAt(peer, "cherry-pick", a);
   f.gitAt(peer, "checkout", "-q", "-b", "cut", "origin/dev"); f.gitAt(peer, "merge", "-q", "-s", "ours", "-m", "Merge origin/main into the release cut", "main");
   f.gitAt(peer, "checkout", "-q", "main"); f.gitAt(peer, "merge", "-q", "--no-ff", "-m", "Release", "cut"); f.gitAt(peer, "push", "-q", "origin", "main");
+  // A later release joins main the same way; by then A is on main through the first join, so the copy is found at the first.
+  f.commit("Change B", "b.txt"); f.git("push", "-q", "origin", "dev");
+  f.gitAt(peer, "fetch", "-q", "origin"); f.gitAt(peer, "checkout", "-q", "-B", "cut", "origin/dev");
+  f.gitAt(peer, "merge", "-q", "-s", "ours", "-m", "Merge origin/main into the release cut", "main");
+  f.gitAt(peer, "checkout", "-q", "main"); f.gitAt(peer, "merge", "-q", "--no-ff", "-m", "Release 2", "cut"); f.gitAt(peer, "push", "-q", "origin", "main");
   // dev changes A's line again: main's copy is no copy of a commit main lacks, and dev's files do not hold it.
   f.commit("Change A again", "file.txt", "a two\n"); f.git("push", "-q", "origin", "dev");
   f.git("checkout", "-q", "-b", "sync/main");
@@ -1742,7 +1754,7 @@ test("kit pr --sync-main lands a hand-made merge when main's own commits sit beh
   f.git("fetch", "-q", "origin"); f.git("reset", "-q", "--hard", "origin/dev"); f.git("merge", "-q", "--no-ff", "-m", "Merge origin/main into dev", "origin/main");
   const merge = f.git("rev-parse", "HEAD"), result = f.run(["--sync-main"], { FAKE_EMPTY: "1", FAKE_LAND_MERGE: peer, FAKE_EXISTING: "1" });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stdout, /^sync: ok \(the merge [a-f0-9]{7} joins main at [a-f0-9]{7} into dev as it was made: it changes no file, and drops no change of main's that dev does not hold; 2 commits were joined already, by a merge on main that kept dev's files\)$/m);
+  assert.match(result.stdout, /^sync: ok \(the merge [a-f0-9]{7} joins main at [a-f0-9]{7} into dev as it was made: it changes no file, and drops no change of main's that dev does not hold; 3 commits were joined already, by a merge on main that kept dev's files\)$/m);
   assert.equal(f.git("rev-parse", "HEAD"), merge);
   f.git("fetch", "-q", "origin"); f.git("merge-base", "--is-ancestor", "origin/main", "origin/dev");
   assert.equal(f.git("show", "origin/dev:file.txt"), "a two");
@@ -1761,6 +1773,24 @@ test("a squash of dev's work and its rollback behind a release join on main are 
   const result = f.run(["--sync-main"]);
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.equal(resultLine(result.stdout), `RESULT: fail sync: the merge <sha> leaves out changes of main's that dev does not hold (<sha> Revert "Side (squashed)"), so kit cannot prove it drops nothing: keep each of them in the merge (git commit --amend once its files hold them), or land them on dev first with an ordinary kit pr and make the merge again, then run kit pr --sync-main again`);
+});
+
+// A release join covers only exact copies: git marks a commit whose change differs from dev's only in its spaces as the same
+// change, and exactId tells them apart, so such a commit is weighed.
+test("a commit behind a release join that copies dev's change with other spaces is weighed, not joined, so a merge that leaves it out is refused", t => {
+  const f = fixture(t), peer = f.peer();
+  f.git("checkout", "-q", "dev"); f.commit("Add tool", "tool.sh", "echo tool\n"); f.git("push", "-q", "origin", "dev");
+  f.gitAt(peer, "fetch", "-q", "origin"); f.gitAt(peer, "checkout", "-q", "main");
+  writeFileSync(join(peer, "tool.sh"), "  echo tool\n"); f.gitAt(peer, "add", "tool.sh"); f.gitAt(peer, "commit", "-q", "-m", "Add tool (indented)");
+  f.gitAt(peer, "checkout", "-q", "-b", "cut", "origin/dev"); f.gitAt(peer, "merge", "-q", "-s", "ours", "-m", "Merge origin/main into the release cut", "main");
+  assert.match(f.gitAt(peer, "log", "--cherry-mark", "--right-only", "--no-merges", "--format=%m %s", "origin/dev...main"), /^= Add tool \(indented\)$/m, "git takes it for the same change");
+  f.gitAt(peer, "checkout", "-q", "main"); f.gitAt(peer, "merge", "-q", "--no-ff", "-m", "Release", "cut"); f.gitAt(peer, "push", "-q", "origin", "main");
+  // dev changes the tool afterwards, so the merge's file is no longer main's and main's commit is weighed against it.
+  f.commit("Dev moves on", "tool.sh", "echo tool two\n"); f.git("push", "-q", "origin", "dev");
+  f.git("checkout", "-q", "-b", "sync/main"); f.git("fetch", "-q", "origin"); f.git("merge", "-q", "--no-ff", "-m", "Merge origin/main into dev", "origin/main");
+  const result = f.run(["--sync-main"]);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.equal(resultLine(result.stdout), `RESULT: fail sync: the merge <sha> leaves out changes of main's that dev does not hold (<sha> Add tool (indented)), so kit cannot prove it drops nothing: keep each of them in the merge (git commit --amend once its files hold them), or land them on dev first with an ordinary kit pr and make the merge again, then run kit pr --sync-main again`);
 });
 
 // SL-1 kept: a rollback on main of a change it copied from dev is never covered by a later release join.

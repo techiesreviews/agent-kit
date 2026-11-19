@@ -636,7 +636,7 @@ async function main(args) {
     const sameFiles = async (name, one, other) => await git(name, ["rev-parse", `${one}^{tree}`]) === await git(name, ["rev-parse", `${other}^{tree}`]);
     const few = list => list.length > 5 ? `${list.slice(0, 5).join(", ")} and ${list.length - 5} more` : list.join(", ");
     // The merge a person makes when kit cannot make it by itself; the sync run on it checks the merge queue as any sync does.
-    const byHand = ref => `make the merge by hand: git switch -c <name> origin/${landName}, git merge --no-ff ${ref} (keep each change of ${release}'s that ${landName} lacks, and leave out what ${landName} changed or removed since), `
+    const byHand = ref => `make the merge by hand: git switch -c <name> origin/${landName}, git merge --no-ff ${ref} (keep each change of ${release}'s that ${landName} lacks, and ${landName}'s side wherever ${landName} changed or removed something since), `
       + `then run kit pr --sync-main on that branch: it lands the merge as you made it, through review, the second look and CI, once the merge drops no change of ${release}'s that ${landName} does not already hold`
       + (flags.release ? `; then cut the release again at the new origin/${landName}` : "");
     // Every git call the weighing makes, in the step `name`.
@@ -825,41 +825,25 @@ async function main(args) {
       const joins = [];
       for (const [id, ...parents] of own) {
         if (parents.length < 2) continue;
-        for (const parent of parents) if (await isAncestor(name, parent, dev) && await sameFiles(name, id, parent)) { joins.push({ id, parent }); break; }
+        const parent = await (async () => { for (const one of parents) if (await isAncestor(name, one, dev) && await sameFiles(name, id, one)) return one; })();
+        if (parent) joins.push({ id, parent, others: parents.filter(one => one !== parent) });
       }
       const settled = new Set(joins.map(join => join.id));
       const { modesOf, exactId, held } = weighing(name);
-      if (joins.length) {
-        // Each commit behind a join, with the join's parents in dev's history.
-        const behind = new Map();
-        for (const { id, parent } of joins)
-          for (const commit of (await git(name, ["rev-list", "--no-merges", id, `^${dev}`])).split(/\r?\n/).filter(Boolean)) behind.set(commit, [...behind.get(commit) ?? [], parent]);
-        // Verbatim patch ids, in one pass each, find the candidates; exactId (modes and binary contents too) decides.
-        const patchIds = async (argv, input) => {
-          const listed = await execute(name, "git", ["log", "-p", "--format=commit %H", "--no-prefix", "--binary", "--full-index", "--no-renames", "--no-ext-diff", "--no-textconv", whole, ...argv], input, undefined, true);
-          if (listed.status !== 0) throw new Error(childMessage(listed, "git log -p failed"));
-          const found = new Map();
-          for (const line of (await execute(name, "git", ["patch-id", "--verbatim"], listed.bytes)).text.split(/\r?\n/).filter(Boolean)) {
-            const [patch, commit] = line.split(" ");
-            found.set(patch, [...found.get(patch) ?? [], commit]);
-          }
-          return found;
-        };
-        if (behind.size) {
-          const twins = await patchIds(["--no-merges", dev]);
-          for (const [patch, commits] of await patchIds(["--stdin", "--no-walk"], [...behind.keys()].join("\n")))
-            for (const commit of commits) {
-              const exact = await exactId({ id: commit });
-              if (!exact) continue;
-              for (const twin of twins.get(patch) ?? []) {
-                if (await exactId({ id: twin }) !== exact) continue;
-                const within = [];
-                for (const parent of behind.get(commit) ?? []) if (await isAncestor(name, twin, parent)) within.push(parent);
-                if (within.length) { settled.add(commit); break; }
-              }
-            }
+      // A join's copies: git marks a commit of the other side "=" when its change is one of the dev parent's own commits
+      // there, spaces left out (git log --cherry-mark, which works the patch ids out itself); exactId decides, as for a copy.
+      // A copy made before an older join is found at that join, where its twin was not yet on main.
+      for (const { parent, others } of joins)
+        for (const other of others) {
+          const marked = side => git(name, ["log", side, "--cherry-mark", "--no-merges", whole, "--format=%m %H", `${parent}...${other}`])
+            .then(text => text.split(/\r?\n/).filter(line => line.startsWith("= ")).map(line => line.slice(2)));
+          const copies = (await marked("--right-only")).filter(commit => !settled.has(commit));
+          if (!copies.length) continue;
+          const twins = new Set();
+          for (const twin of await marked("--left-only")) twins.add(await exactId({ id: twin }));
+          twins.delete("");
+          for (const commit of copies) if (twins.has(await exactId({ id: commit }))) settled.add(commit);
         }
-      }
       const only = new Set((await modesOf(["diff-tree", "--no-commit-id", "-r", "HEAD", ref])).keys());
       const { unheld } = await weigh(name, dev, ref, { skip: settled, only, ranges: dev });
       const dropped = unheld.map(commit => commit.named);
@@ -910,8 +894,10 @@ async function main(args) {
             + `${settled ? `; ${settled} commit${settled === 1 ? " was" : "s were"} joined already, by a merge on ${release} that kept ${flags.base}'s files` : ""})`);
         };
         // A branch whose HEAD dev already holds is a fresh cut, whatever its tip is (dev may end in a merge of its own). Otherwise
-        // HEAD must be a merge of dev and main. One on dev's tip is weighed as made: at once when it changes dev's files, and when
-        // kit's own merge fails otherwise (kit's from an earlier run is made again, the same commit on the same dev and main).
+        // HEAD must be a merge of dev and main, which is never reset away. One on dev's tip is weighed as made: at once when it
+        // changes dev's files, and when kit's own merge fails otherwise (kit's from an earlier run is made again, the same commit
+        // on the same dev and main). One on an older dev that keeps dev's files is made again on the newest dev and main, and
+        // stays when kit cannot make it there; one that changes them stops.
         let made = false, merged = false;
         if (!await isAncestor("sync", "HEAD", land)) {
           merged = true;
@@ -921,7 +907,6 @@ async function main(args) {
             throw new Error(`a sync branch holds only the merge of ${main}, and this one has work of its own: cut a new branch at ${land} (git switch -c <name> ${land}) and run kit pr --sync-main there`);
           const keeps = await sameFiles("sync", "HEAD", parents[0]);
           made = parents[0] === await git("sync", ["rev-parse", land]);
-          // A merge that changes files (conflicts fixed by hand) is never reset away.
           if (!made && !keeps) {
             const short = await git("sync", ["rev-parse", "--short", "HEAD"]);
             throw new Error(`this branch's merge ${short} was made on an older ${flags.base}: make it again on ${land} (git switch -c <name> ${land}, git merge --no-ff ${main}) and run kit pr --sync-main there`);
