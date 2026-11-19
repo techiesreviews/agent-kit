@@ -42,7 +42,11 @@ test("go: starts the job in a scope, says RUNNING with exit 75 while it runs, an
   const release = join(f.root, "release");
   const started = f.run("slice-07", "--", ...job(release));
   assert.equal(started.status, 75, started.stdout + started.stderr);
-  assert.match(last(started), /^RUNNING: slice-07 \(\d+s, step slice: build ok\)\. Run again: scripts\/agents\/kit go slice-07$/);
+  // On a busy machine the job may not have printed its step yet when the first wait ends: then it is "starting".
+  assert.match(last(started), /^RUNNING: slice-07 \(\d+s, step (slice: build ok|starting)\)\. Run again: scripts\/agents\/kit go slice-07$/);
+  let labelled = started;
+  for (let i = 0; i < 40 && !last(labelled).includes("step slice:"); i++) labelled = f.run("slice-07");
+  assert.match(last(labelled), /^RUNNING: slice-07 \(\d+s, step slice: build ok\)\. Run again: scripts\/agents\/kit go slice-07$/);
   const options = readFileSync(join(f.root, "systemd.log"), "utf8");
   assert.match(options, /--user --scope --quiet --collect --description kit bg slice-07 \(.*\) -p RuntimeMaxSec=21600 setsid nohup/);
   assert.ok(existsSync(join(f.root, ".scratch/kit-jobs/slice-07/go")), "the job is marked as a kit go job");

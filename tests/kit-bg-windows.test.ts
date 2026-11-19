@@ -324,7 +324,11 @@ test("go on Windows says RUNNING while the job runs, then ends with its RESULT l
   const release = join(f.root, "release");
   const started = f.go("win-go", "--", process.execPath, "-e", `console.log("step: building"); ${holdUntil(release)}`);
   assert.equal(started.status, 75, started.stdout + started.stderr);
-  assert.match(last(started), /^RUNNING: win-go \(\d+s, step step: building\)\. Run again: scripts\/agents\/kit go win-go$/);
+  // On a busy machine the job may not have printed its step yet when the first wait ends: then it is "starting".
+  assert.match(last(started), /^RUNNING: win-go \(\d+s, step (step: building|starting)\)\. Run again: scripts\/agents\/kit go win-go$/);
+  let labelled = started;
+  for (let i = 0; i < 40 && !last(labelled).includes("step step:"); i++) labelled = f.go("win-go");
+  assert.match(last(labelled), /^RUNNING: win-go \(\d+s, step step: building\)\. Run again: scripts\/agents\/kit go win-go$/);
   writeFileSync(release, "");
   let done = f.go("win-go");
   for (let i = 0; i < 40 && done.status === 75; i++) done = f.go("win-go");

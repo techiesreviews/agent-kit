@@ -8,12 +8,13 @@ import test, { type TestContext } from "node:test";
 import { cardStage, cardStandardProblems, orbitDate, orbitStore, showDate, ticketSettings, withBlockedBy, withPlannedDates, withoutNextLex } from "../ticket-store.mjs";
 import { doneWhen } from "../ticket-cards.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { orbitClient, orbitRedactor, orbitReport } from "../orbit-client.mjs";
+import { orbitClient, orbitRedactor, orbitReport, orbitWorkTreeAround } from "../orbit-client.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { cloudflarePassFrom } from "../orbit-setup.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { kitSettingsProblems } from "../kit-lib.mjs";
 import { kitEnv } from "./support/kit-env.ts";
+import { tempOutsideGit } from "./support/temp-outside-git.ts";
 import { fakeCfId, fakeCfSecret, fakeOrbit, fakeToken, fakeWorkspace } from "./support/fake-orbit.ts";
 
 // kit ticket import, parity and migrate have their own file: tests/ticket-import.test.ts.
@@ -38,7 +39,9 @@ function start(command: string, args: string[], env: NodeJS.ProcessEnv, input = 
 }
 
 async function fixture(t: TestContext, settings: object = { tickets: "orbit", orbit: { project: "TOOLS" } }, { kitBoard = false }: { kitBoard?: boolean } = {}) {
-  const home = mkdtempSync(join(tmpdir(), "kit-ticket-"));
+  // The Orbit setup in this HOME is refused inside a git work tree, which the system temp folder became for a moment
+  // in the kit release's gate (TOOLS-354): the folder is one outside every work tree.
+  const home = tempOutsideGit("kit-ticket-");
   t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const root = join(home, "project");
   mkdirSync(join(root, "scripts/agents"), { recursive: true });
@@ -69,6 +72,21 @@ const lines = (text: string) => text.trimEnd().split("\n");
 const result = (output: Run) => lines(output.stdout).at(-1)!;
 function ok(output: Run) { assert.equal(output.status, 0, output.all); assert.match(result(output), /^RESULT: ok /); return output; }
 function refused(output: Run, pattern: RegExp) { assert.notEqual(output.status, 0, output.all); assert.match(result(output), /^RESULT: fail /); assert.match(output.all, pattern); return output; }
+
+// Whether this process can make a folder in /dev/shm, the first place tempOutsideGit tries (a sandbox may not let it).
+const sharedMemory = (() => { try { rmSync(mkdtempSync("/dev/shm/kit-ticket-probe-"), { recursive: true }); return true; } catch { return false; } })();
+
+test("the suite's HOME, with its Orbit setup, is outside every git work tree even when the system temp folder is in one", { skip: !sharedMemory && "/dev/shm cannot be written here" }, async t => {
+  const scratch = mkdtempSync(join(tmpdir(), "kit-ticket-tmp-"));
+  t.after(() => rmSync(scratch, { recursive: true, force: true }));
+  mkdirSync(join(scratch, ".git"));
+  const saved = process.env.TMPDIR;
+  process.env.TMPDIR = scratch;
+  let f;
+  try { f = await fixture(t); } finally { if (saved === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = saved; }
+  assert.equal(orbitWorkTreeAround(f.configPath), null, f.home);
+  ok(await f.run(["list"]));
+});
 
 test("create makes a card in the project's board with the first open status, and in a named project with --project", async t => {
   const { orbit, run, log } = await fixture(t);

@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { kitFiles } from "./support/kit-files.ts";
 import { insideKitPrLock, kitEnv } from "./support/kit-env.ts";
+import { loadLimit } from "./support/machine-load.ts";
 import { onLinux, onMacos, pathWithoutBwrap } from "./support/no-bwrap.ts";
 
 const repo = resolve(".");
@@ -96,7 +97,8 @@ test("doctor checks all eleven conditions quickly, notes Grok, and quiet success
   const result = f.run();
   const elapsed = performance.now() - start;
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.ok(elapsed < 2000, `doctor took ${elapsed}ms`);
+  const quick = loadLimit(2000);
+  assert.ok(elapsed < quick.ms, `doctor took ${Math.round(elapsed)} ms; ${quick.note}`);
   const lines = result.stdout.trimEnd().split("\n");
   assert.deepEqual(lines.slice(0, 14).map(line => line.split(":")[0]), [
     "✓ settings", "✓ place", "✓ base", "✓ hook config", "✓ hooks live", "✓ node", "✓ node_modules", "✓ conflicts", "✓ commands", "✓ help", "✓ kit home", "✓ kit", "✗ PR target", "✗ grok",
@@ -591,7 +593,8 @@ test("doctor kills a help that ignores SIGTERM and names it as timed out", (t) =
   const result = f.run([], f.build, { KIT_HELP_TIMEOUT: "0.3" });
   const elapsed = performance.now() - start;
   failure(result, "help");
-  assert.ok(elapsed < 4000, `doctor took ${elapsed}ms`);
+  const killed = loadLimit(4000);
+  assert.ok(elapsed < killed.ms, `doctor took ${Math.round(elapsed)} ms; ${killed.note}`);
   assert.ok(result.stdout.includes("✗ help: deaf (timed out); fix:"), result.stdout);
 });
 
