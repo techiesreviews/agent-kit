@@ -179,7 +179,7 @@ test(guardName, { timeout: ceiling + 60_000 }, async t => {
 test("a run whose limit grows while it runs is not cut off, and one whose limit stays is", { timeout: 60_000 }, async t => {
   const temporary = mkdtempSync(join(tmpdir(), "kit-tests-stretch-"));
   t.after(() => rmSync(temporary, { recursive: true, force: true }));
-  const env = { ...process.env, TMPDIR: temporary };
+  const env = { ...kitEnv(), TMPDIR: temporary };
   const sleep = ["-e", "setTimeout(() => {}, 3000)"];
   const fixed = await runGroup(sleep, { cwd: repo, env }, 1_000);
   assert.equal(fixed.cutOff, true, "a limit that stays at 1 s cuts a 3 s run off");
