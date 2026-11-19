@@ -2384,6 +2384,13 @@ test("a release dry run that merges a hotfixed main into the cut puts the cut ba
   assert.match(plan.stdout, /^merge: the real run lands it once CI passes, as a merge commit pinned to the pushed head \(never --rebase\)$/m);
   assert.equal(f.git("rev-parse", "HEAD"), dev, "the dry run's merge is undone");
   assert.equal(f.git("status", "--porcelain"), "");
+  assert.match(plan.stdout, new RegExp(`^HEAD: [a-f0-9]{40} \\(the merge the real run makes; the branch stays at ${dev.slice(0, 7)}\\)$`, "m"));
+  // A dry run that fails after its merge (a check that fails is a common reason to try one) puts the cut back too.
+  const failed = f.run(["--base", "main", "--release", "--dry-run"], { ...real, FAKE_FAIL: "lint" });
+  assert.equal(failed.status, 1, failed.stdout + failed.stderr);
+  assert.match(failed.stdout, /^RESULT: fail lint: /m);
+  assert.equal(f.git("rev-parse", "HEAD"), dev, "a failed dry run's merge is undone");
+  assert.equal(f.git("status", "--porcelain"), "");
   const landed = f.run(["--base", "main", "--release"], { ...real, FAKE_LAND_MERGE: peer });
   assert.equal(landed.status, 0, landed.stdout + landed.stderr);
   assert.doesNotMatch(landed.stdout, /RESULT: fail release-check/);

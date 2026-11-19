@@ -465,10 +465,11 @@ two split, the next release conflicted, and a "sync main into dev" PR had to be 
   cut, opens the PR and, once CI passes, lands it with `gh pr merge --merge --match-head-commit <head>`: a merge
   commit, never a rebase, squash or cherry-pick. `--no-merge` only opens it and names the `kit pr` run that lands it:
   the same options (a waiver, the ticket, the title) without `--no-merge`, never a `gh pr merge` command to run by hand
-  (TOOLS-360). If the run moved the cut (by merging main, or by a follow-ups commit), the line first does a
+  (TOOLS-360). If a real run moved the cut (by merging main, or by a follow-ups commit), the line first does a
   `git reset --keep` back to where the run started: origin/dev in an ordinary release (see "Re-cutting a release"
-  above). A dry run of a release or a sync changes nothing: it undoes the merge it made for its plan, so the real run
-  after it starts from the same cut, and without `--no-merge` it says the real run lands it as a merge commit. The
+  above). A dry run of a release or a sync changes nothing: it undoes the merge it made for its plan on every way out
+  (a step that fails too), so the real run after it starts from the same cut; its `HEAD:` line names the merge the real
+  run makes, and without `--no-merge` it says the real run lands it as a merge commit. The
   line `landed: <sha> merges <head> into main (a merge commit)` says what landed. A merge queue lands by its own method,
   whatever gh asks, so a release or a sync goes into one only when the queue makes merge commits; a queue set to squash
   or rebase, one whose method cannot be read, or a lookup that cannot tell whether there is a queue, stops the run

@@ -310,7 +310,7 @@ async function main(args) {
     kitResult("fail", `invalid arguments: ${error.message}`);
     return 2;
   }
-  let step = "guards", directory, land;
+  let step = "guards", directory, land, putCutBack;
   try {
     // Every gh call is told origin's repo (GH_REPO, GH_HOST); the kit commands that call gh work it out themselves,
     // and the project's own checks run without it.
@@ -602,7 +602,8 @@ async function main(args) {
     // merge (README, "Re-cutting a release"), and the rerun's review writes the follow-ups again.
     let cutStart = "";
     const landHint = () => {
-      const recut = cutStart && gitSync(["rev-parse", "HEAD"]) !== cutStart ? `git reset --keep ${cutStart} && ` : "";
+      // A dry run puts the branch back itself (putCutBack), so its line needs no re-cut.
+      const recut = !flags.dryRun && cutStart && gitSync(["rev-parse", "HEAD"]) !== cutStart ? `git reset --keep ${cutStart} && ` : "";
       return `merge: land it with ${recut}${["kit", "pr", ...rerun].join(" ")} (a merge commit, never merged by hand)`;
     };
     const isAncestor = async (name, older, newer) => (await execute(name, "git", ["merge-base", "--is-ancestor", older, newer])).status === 0;
@@ -1072,6 +1073,14 @@ async function main(args) {
     // a finding a fresh review raises at it.
     const startHead = await git("rebase", ["rev-parse", "HEAD"]);
     if (flags.release) cutStart = startHead;
+    // A dry run changes nothing: the merge a release or a sync makes for its plan is undone on every way out (the plan
+    // printed, a step that fails, a check stopped by an interrupt), in the finally below, so the real run after it
+    // starts from the same branch and passes the release check (it makes the same merge again).
+    // A branch that cannot be put back is said, with the command, and never turns the run's own result into a crash.
+    if (flags.dryRun && joins) putCutBack = () => {
+      try { if (gitSync(["rev-parse", "HEAD"]) !== startHead) gitSync(["reset", "-q", "--keep", startHead]); }
+      catch (error) { console.error(`dry-run: could not put the branch back at ${startHead.slice(0, 7)}: run git reset --keep ${startHead} (${kitHideUserInfo(error.stderr?.toString().trim().split(/\r?\n/).at(-1) || error.message)})`); }
+    };
     await rebase();
     const startRebased = (await git("rebase", ["rev-parse", "HEAD"])) !== startHead;
     nameCommits();
@@ -1297,11 +1306,9 @@ async function main(args) {
     const createArgs = ["pr", "create", "--base", flags.base, "--head", branch, "--title", prTitle, "--body-file", body];
     const reviewArgs = ["review", "--base", `origin/${flags.base}`, "--pr"];
     if (flags.dryRun) {
-      // A dry run changes nothing: the merge a release or a sync made for its plan is undone, so the branch is where it
-      // started and the real run after it passes the release check (it makes the same merge again).
-      if (joins && gitSync(["rev-parse", "HEAD"]) !== startHead) gitSync(["reset", "-q", "--keep", startHead]);
       const look = secondLookPick(changes, settings, { ticket: flags.ticket && relative(root, resolve(root, flags.ticket)) });
-      console.log(`branch: ${branch}\nbase: ${flags.base}\nHEAD: ${head}\ntitle: ${prTitle}\nbody: ${body}`);
+      const kept = joins && head !== startHead ? ` (the merge the real run makes; the branch stays at ${startHead.slice(0, 7)})` : "";
+      console.log(`branch: ${branch}\nbase: ${flags.base}\nHEAD: ${head}${kept}\ntitle: ${prTitle}\nbody: ${body}`);
       // GPT never looks at a docs-only change (kit review passes it over), so the plan does not name it for one. Docs-only is
       // worked out as kit review does.
       const order = docsOnly(changes, settings) ? look.order.filter(model => lookFamily(model) !== "gpt") : look.order;
@@ -1781,6 +1788,8 @@ async function main(args) {
     }
     kitResult("fail", `${step}: ${error.message}`);
     return 1;
+  } finally {
+    putCutBack?.();
   }
 }
 
