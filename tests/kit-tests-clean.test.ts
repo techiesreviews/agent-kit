@@ -8,7 +8,7 @@ import test, { type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { checkSteps, classify } from "../pr-tier.mjs";
 import { kitEnv } from "./support/kit-env.ts";
-import { kitCleanLimit } from "./support/machine-load.ts";
+import { kitCleanLimit, loadBesides } from "./support/machine-load.ts";
 
 const repo = resolve(".");
 const shell = join(repo, "agent.sh");
@@ -22,10 +22,12 @@ function entries(directory: string) {
 // 2026-11-16), so the limit is 1200 s on a quiet machine, stretched for a busy one (kitCleanLimit): a run cut off there
 // is a real hang, not a slow runner. The CI job sets no timeout-minutes, so GitHub's default (360 minutes) stays well above it.
 // The load is read again while the suite runs, since a sweep that starts after the guard would otherwise cut it off at the
-// quiet machine's limit: the limit only grows, and never past four times (`ceiling`, kitCleanLimit at any load).
+// quiet machine's limit: the limit only grows, and never past four times (`ceiling`, kitCleanLimit at any load). The first
+// reading comes before the suite starts; the later ones leave out the suite's own workers (loadBesides).
+const workers = 4;
 let reached = kitCleanLimit();
 const limitNow = () => {
-  const next = kitCleanLimit();
+  const next = kitCleanLimit(process.env, { load: loadBesides(workers) });
   if (next.ms > reached.ms) reached = next;
   return reached.ms;
 };
@@ -151,7 +153,7 @@ test(guardName, { timeout: ceiling + 60_000 }, async t => {
   delete env.ASE_KIT_CLEAN_LIMIT_MS;
   // The kit suite grows with every slice; a run cut off at this limit fails as a time-out, and t.after
   // removes its temp folder (kit-pr-* included) once the whole process group has exited.
-  const result = await runGroup(["--import", "tsx", "--test", "--test-reporter=tap", "--test-concurrency=4", ...files],
+  const result = await runGroup(["--import", "tsx", "--test", "--test-reporter=tap", `--test-concurrency=${workers}`, ...files],
     { cwd: repo, env }, limitNow);
   const folders = entries(artifacts).filter(name => !before.has(name));
   // The tsx CLI creates an empty IPC directory even with its cache disabled.
