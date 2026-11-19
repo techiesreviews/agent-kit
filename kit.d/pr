@@ -294,6 +294,9 @@ function commitFollowups({ root, branch, head, ticket, content, env, git, messag
     assertScope(next);
     // Refresh only this ticket in the real index; preserve concurrent staging of other files.
     run(["restore", "--staged", "--source", next, "--", path]);
+    // restore --staged writes the entry from the tree, with no file details, so git reset --keep (which does not refresh)
+    // would call the ticket changed; a refresh fills them in from the file, which matches. It stages nothing.
+    run(["update-index", "-q", "--refresh"]);
     assertScope(next);
     return next;
   } finally { rmSync(directory, { recursive: true, force: true }); }

@@ -2368,8 +2368,8 @@ test("the line a release prints after merging a hotfixed main into its cut re-cu
   assert.match(landed.stdout, /RESULT: ok merged #73 [a-f0-9]{7}$/m);
 });
 
-test("the re-cut a waived release names keeps the cut's own commits past origin/dev", t => {
-  const f = fixture(t), env = { ASE_OWNER: "ke-lead", FAKE_RELEASE_CHECK: resolve("kit.d/release-check") }, peer = f.peer();
+test("the re-cut a waived release names keeps the cut's own commits past origin/dev, and run as written lands the same PR", t => {
+  const f = fixture(t), env = { ASE_OWNER: "ke-lead", FAKE_RELEASE_CHECK: resolve("kit.d/release-check"), FAKE_BASE: "main" }, peer = f.peer();
   f.gitAt(peer, "checkout", "-q", "main"); writeFileSync(join(peer, "hotfix.txt"), "hotfix\n");
   f.gitAt(peer, "add", "hotfix.txt"); f.gitAt(peer, "commit", "-q", "-m", "Hotfix on main"); f.gitAt(peer, "push", "-q", "origin", "main");
   f.commit("Own commit on the cut", "own.txt");
@@ -2379,6 +2379,29 @@ test("the re-cut a waived release names keeps the cut's own commits past origin/
   assert.equal(opened.status, 0, opened.stdout + opened.stderr);
   assert.notEqual(f.git("rev-parse", "HEAD"), own, "the run merged main into the cut");
   assert.match(opened.stdout, new RegExp(`^merge: land it with git reset --keep ${own} && kit pr --base main --release --waive 'hotfix tonight' \\(`, "m"));
+  // Run as written: the re-cut keeps the cut's own commit and makes the same merge, and kit pr lands the same PR.
+  const head = f.git("rev-parse", "HEAD");
+  f.git("reset", "-q", "--keep", own);
+  const landed = f.run(rerunWords(opened.stdout), { ...env, FAKE_EXISTING: "1", FAKE_LAND_MERGE: peer });
+  assert.equal(landed.status, 0, landed.stdout + landed.stderr);
+  assert.equal(f.git("rev-parse", "HEAD"), head, "the same merge");
+  f.git("merge-base", "--is-ancestor", own, "HEAD"); // throws unless the cut's own commit is in the release
+  assert.match(landed.stdout, /RESULT: ok merged #73 [a-f0-9]{7}/m);
+});
+
+test("the kit pr line a sync with --no-merge prints keeps its waiver and title, and run as written lands the same PR", t => {
+  const f = fixture(t), peer = release(f), env = { ASE_OWNER: "ke-lead", FAKE_EMPTY: "1" };
+  f.git("checkout", "-q", "dev"); f.git("pull", "-q", "--ff-only", "origin", "dev"); f.git("checkout", "-q", "-b", "sync/main");
+  const args = ["--sync-main", "--no-merge", "--waive", "sync tonight", "--title", "Sync main"];
+  const opened = f.run(args, env);
+  assert.equal(opened.status, 0, opened.stdout + opened.stderr);
+  assert.match(opened.stdout, /^merge: land it with kit pr --sync-main --waive 'sync tonight' --title 'Sync main' \(a merge commit, never merged by hand\)$/m);
+  const words = rerunWords(opened.stdout), created = f.ghCalls("create").length;
+  assert.deepEqual(words, args.filter(arg => arg !== "--no-merge"));
+  const landed = f.run(words, { ...env, FAKE_EXISTING: "1", FAKE_LAND_MERGE: peer });
+  assert.equal(landed.status, 0, landed.stdout + landed.stderr);
+  assert.equal(f.ghCalls("create").length, created, "the open PR is reused, not opened again");
+  assert.match(landed.stdout, /RESULT: ok merged #73 [a-f0-9]{7}/m);
 });
 
 test("the kit pr line a release with --no-merge prints keeps its waiver, title and ticket, so copying it passes the release check", t => {
@@ -3601,10 +3624,10 @@ test("a release whose review commits follow-ups to its tracked ticket names the 
   assert.notEqual(f.git("rev-parse", "HEAD"), start, "the follow-ups commit moved the cut");
   assert.match(f.git("show", "HEAD:ticket.md"), /### Follow-ups/);
   assert.match(opened.stdout, new RegExp(`^merge: land it with git reset --keep ${start} && kit pr --base main --release --ticket ticket\\.md \\(a merge commit, never merged by hand\\)$`, "m"));
-  // The commit landed within the same second as kit's write of the ticket, so the index marks it racy; git status refreshes it,
-  // as any later command a person runs would.
-  assert.equal(f.git("status", "--porcelain"), "");
-  f.git("reset", "-q", "--keep", start);
+  // The line as written, at once: its reset first (kit's follow-ups commit leaves the ticket's index entry fresh), then kit pr.
+  const recut = opened.stdout.match(/^merge: land it with git reset --keep ([a-f0-9]{40}) && /m);
+  assert.ok(recut, opened.stdout);
+  f.git("reset", "-q", "--keep", recut[1]);
   const created = f.ghCalls("create").length;
   const landed = f.run(rerunWords(opened.stdout), { ...real, FAKE_REVIEW: nits, FAKE_EXISTING: "1", FAKE_LAND_MERGE: peer });
   assert.equal(landed.status, 0, landed.stdout + landed.stderr);
