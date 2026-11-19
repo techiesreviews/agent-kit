@@ -626,7 +626,7 @@ test("with the playground settings and a CI workflow, pr still waits for CI and 
   const result = f.run([], { FAKE_BASE: "main" }, true);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /^ci: waiting for PR #73 checks$/m);
-  assert.ok(f.calls().some(call => call.tool === "fake-kit" && call.args.join(" ") === "wait ci --pr 73"));
+  assert.ok(f.calls().some(call => call.tool === "fake-kit" && call.args.join(" ") === "wait ci --pr 73 --timeout 60m"));
   assert.equal(JSON.parse(readFileSync(join(f.main, ".scratch/scoreboard/_untracked/feature%2Fkit-pr.json"), "utf8")).landed.ci, "pass");
 });
 
@@ -638,7 +638,7 @@ test("a workflow the base gains during a behind retry is waited for after the re
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const lines = result.stdout.split("\n");
   assert.ok(lines.indexOf("ci: none (no workflow in .github/workflows runs on pull requests); landing after review") < lines.indexOf("ci: waiting for PR #73 checks"), result.stdout);
-  assert.ok(f.calls().some(call => call.tool === "fake-kit" && call.args.join(" ") === "wait ci --pr 73"));
+  assert.ok(f.calls().some(call => call.tool === "fake-kit" && call.args.join(" ") === "wait ci --pr 73 --timeout 60m"));
 });
 
 test("only a workflow that runs for a PR branch is CI to wait for; deploy-only, scheduled and main-only ones land after review", t => {
@@ -674,7 +674,7 @@ test("only a workflow that runs for a PR branch is CI to wait for; deploy-only, 
     const f = fixture(t, { "src/app.js": "export const app = 1;\n" }, {}, { settings: playground, workflows: workflow });
     const result = f.run([], { FAKE_BASE: "main" }, true);
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args.join(" ") === "wait ci --pr 73"), waits, workflow);
+    assert.equal(f.calls().some(call => call.tool === "fake-kit" && call.args.join(" ") === "wait ci --pr 73 --timeout 60m"), waits, workflow);
     const { landed } = JSON.parse(readFileSync(join(f.main, ".scratch/scoreboard/_untracked/feature%2Fkit-pr.json"), "utf8"));
     assert.equal(landed.ci, waits ? "pass" : "none", workflow);
   }
@@ -2418,7 +2418,7 @@ test("no queue waits for CI then merges with --repo, preserving the local branch
     assert.equal(result.status, 0, result.stderr); assert.match(result.stdout, /RESULT: ok merged #73 abcdef0/);
     assert.deepEqual(f.ghCalls("merge")[0].args, ["pr", "merge", "73", "--rebase", "--delete-branch", "--match-head-commit", f.head, "--repo", "test/repo"]);
     const calls = f.calls(), wait = calls.findIndex(call => call.tool === "fake-kit" && call.args[0] === "wait");
-    assert.deepEqual(calls[wait].args, ["wait", "ci", "--pr", "73"]);
+    assert.deepEqual(calls[wait].args, ["wait", "ci", "--pr", "73", "--timeout", "60m"]);
     assert.ok(wait < calls.findIndex(call => call.args[1] === "merge"));
     assert.equal(f.git("branch", "--show-current"), "feature/kit-pr");
     assert.equal(f.gitAt(f.origin, "rev-parse", "refs/heads/feature/kit-pr"), f.head);
@@ -3297,6 +3297,27 @@ for (const rounds of [0, 2]) test(`a review with only nits (a P3 and a validatio
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /review: 2 follow-ups \(nits only\) \(non-blocking\)/);
   assert.equal(f.ghCalls("merge").length, 1);
+});
+
+// TOOLS-337: kit brief writes briefs into the ignored .scratch folder, and kit pr --ticket takes them; a ticket git ignores
+// is no file of the repo, so its follow-ups note is written there and no commit is made for it.
+test("follow-ups for a --ticket file in an ignored folder are written into it, with no commit, and the PR goes on", t => {
+  const f = fixture(t);
+  const brief = ".scratch/briefs/TOOLS-1.md", ticket = '---\ntitle: "Brief title"\n---\n\n## Done (2026-11-19)\n\nImplemented.\n';
+  mkdirSync(join(f.root, ".scratch/briefs"), { recursive: true }); writeFileSync(join(f.root, brief), ticket);
+  f.rounds(3);
+  const reviewed = f.git("rev-parse", "HEAD");
+  const result = f.run(["--ticket", brief], { FAKE_REVIEW: minorReview });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.doesNotMatch(result.stdout, /RESULT: fail/);
+  assert.match(result.stdout, /review: 2 follow-ups after 3 fix rounds \(non-blocking\)/);
+  assert.match(result.stdout, /^follow-ups: \.scratch\/briefs\/TOOLS-1\.md is ignored by git, so its follow-ups note is written there and not committed$/m);
+  assert.match(result.stdout, /RESULT: ok merged #73/);
+  assert.equal(f.git("rev-parse", "HEAD"), reviewed, "no commit is made for an ignored ticket");
+  assert.match(readFileSync(join(f.root, brief), "utf8"), /### Follow-ups\n\n- Spec \(P2\): P2: Minor defect.\n- Validation gaps \(gap\): Add coverage./);
+  const summary = "Follow-ups (non-blocking after 3 fix rounds):\n- Spec (P2): P2: Minor defect.\n- Validation gaps (gap): Add coverage.";
+  assert.equal(f.ghCalls("comment").filter(call => call.body === summary).length, 1, "the PR holds the follow-ups");
+  assert.equal(f.git("ls-files", "--", brief), "", "the brief stays out of the repo");
 });
 
 for (const local of [false, true]) for (const source of ["saved", "fresh"]) test(`three completed rounds merge follow-ups, preserve coverage and avoid duplicates (local=${local}, source=${source})`, t => {
