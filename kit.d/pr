@@ -636,7 +636,7 @@ async function main(args) {
     const sameFiles = async (name, one, other) => await git(name, ["rev-parse", `${one}^{tree}`]) === await git(name, ["rev-parse", `${other}^{tree}`]);
     const few = list => list.length > 5 ? `${list.slice(0, 5).join(", ")} and ${list.length - 5} more` : list.join(", ");
     // The merge a person makes when kit cannot make it by itself; the sync run on it checks the merge queue as any sync does.
-    const byHand = ref => `make the merge by hand: git switch -c <name> origin/${landName}, git merge --no-ff ${ref} (keep each change of ${release}'s that ${landName} lacks), `
+    const byHand = ref => `make the merge by hand: git switch -c <name> origin/${landName}, git merge --no-ff ${ref} (keep each change of ${release}'s that ${landName} lacks, and leave out what ${landName} changed or removed since), `
       + `then run kit pr --sync-main on that branch: it lands the merge as you made it, through review, the second look and CI, once the merge drops no change of ${release}'s that ${landName} does not already hold`
       + (flags.release ? `; then cut the release again at the new origin/${landName}` : "");
     // Every git call the weighing makes, in the step `name`.
@@ -814,25 +814,52 @@ async function main(args) {
     // (one of the land branch's own commits' change exactly, as for kit's own merge), held by the merge's files (a file the
     // merge took as the release branch has it holds every change to it), a range copy (it takes the release branch's files from
     // those of one land branch commit to those of a later one: a squash merge of that work), or a hotfix the release branch
-    // reverted itself. A merge on the release branch that changes files itself must have that change held too. Commits behind a
-    // merge on the release branch whose files are a land branch parent's files (a release cut that kept the land branch's files)
-    // are already joined there: at that merge the release branch held nothing the land branch's history lacks. That holds only
-    // while none of them is a copy of a land branch commit the release branch's history lacks; with one, all of them are weighed.
-    // It returns how many commits such joins covered.
+    // reverted itself. A merge on the release branch that changes files itself must have that change held too. A merge on the
+    // release branch whose files are a parent's in the land branch's history (a release cut that kept the land branch's files)
+    // is a join already made there: at it the release branch held nothing that parent's history lacks, so the exact copies of
+    // that parent's commits behind it (an old rebase merge copied them) are joined too. Anything else behind it is weighed, so
+    // a hotfix, a squash or a rollback there counts as before. It returns how many commits such joins covered.
     async function weighMade(name) {
       const [dev, ref] = (await git(name, ["rev-list", "--parents", "-n", "1", "HEAD"])).split(/\s+/).slice(1);
       const own = (await git(name, ["rev-list", "--parents", ref, `^${dev}`])).split(/\r?\n/).filter(Boolean).map(line => line.split(" "));
-      const joined = [];
+      const joins = [];
       for (const [id, ...parents] of own) {
         if (parents.length < 2) continue;
-        for (const parent of parents) if (await isAncestor(name, parent, dev) && await sameFiles(name, id, parent)) { joined.push(id); break; }
+        for (const parent of parents) if (await isAncestor(name, parent, dev) && await sameFiles(name, id, parent)) { joins.push({ id, parent }); break; }
       }
-      let settled = new Set(joined.length ? (await git(name, ["rev-list", ...joined, `^${dev}`])).split(/\r?\n/).filter(Boolean) : []);
-      if (settled.size) {
-        const copies = (await git(name, ["log", "--right-only", "--cherry-mark", "--no-merges", whole, "--format=%m %H", `${dev}...${ref}`])).split(/\r?\n/);
-        if (copies.some(line => line.startsWith("= ") && settled.has(line.slice(2)))) settled = new Set();
+      const settled = new Set(joins.map(join => join.id));
+      const { modesOf, exactId, held } = weighing(name);
+      if (joins.length) {
+        // Each commit behind a join, with the join's parents in dev's history.
+        const behind = new Map();
+        for (const { id, parent } of joins)
+          for (const commit of (await git(name, ["rev-list", "--no-merges", id, `^${dev}`])).split(/\r?\n/).filter(Boolean)) behind.set(commit, [...behind.get(commit) ?? [], parent]);
+        // Verbatim patch ids, in one pass each, find the candidates; exactId (modes and binary contents too) decides.
+        const patchIds = async (argv, input) => {
+          const listed = await execute(name, "git", ["log", "-p", "--format=commit %H", "--no-prefix", "--binary", "--full-index", "--no-renames", "--no-ext-diff", "--no-textconv", whole, ...argv], input, undefined, true);
+          if (listed.status !== 0) throw new Error(childMessage(listed, "git log -p failed"));
+          const found = new Map();
+          for (const line of (await execute(name, "git", ["patch-id", "--verbatim"], listed.bytes)).text.split(/\r?\n/).filter(Boolean)) {
+            const [patch, commit] = line.split(" ");
+            found.set(patch, [...found.get(patch) ?? [], commit]);
+          }
+          return found;
+        };
+        if (behind.size) {
+          const twins = await patchIds(["--no-merges", dev]);
+          for (const [patch, commits] of await patchIds(["--stdin", "--no-walk"], [...behind.keys()].join("\n")))
+            for (const commit of commits) {
+              const exact = await exactId({ id: commit });
+              if (!exact) continue;
+              for (const twin of twins.get(patch) ?? []) {
+                if (await exactId({ id: twin }) !== exact) continue;
+                const within = [];
+                for (const parent of behind.get(commit) ?? []) if (await isAncestor(name, twin, parent)) within.push(parent);
+                if (within.length) { settled.add(commit); break; }
+              }
+            }
+        }
       }
-      const { modesOf, held } = weighing(name);
       const only = new Set((await modesOf(["diff-tree", "--no-commit-id", "-r", "HEAD", ref])).keys());
       const { unheld } = await weigh(name, dev, ref, { skip: settled, only, ranges: dev });
       const dropped = unheld.map(commit => commit.named);
@@ -885,8 +912,9 @@ async function main(args) {
         // A branch whose HEAD dev already holds is a fresh cut, whatever its tip is (dev may end in a merge of its own). Otherwise
         // HEAD must be a merge of dev and main. One on dev's tip is weighed as made: at once when it changes dev's files, and when
         // kit's own merge fails otherwise (kit's from an earlier run is made again, the same commit on the same dev and main).
-        let made = false;
+        let made = false, merged = false;
         if (!await isAncestor("sync", "HEAD", land)) {
+          merged = true;
           const [, ...parents] = (await git("sync", ["rev-list", "--parents", "-n", "1", "HEAD"])).split(/\s+/);
           const syncOf = parents.length === 2 && await isAncestor("sync", parents[0], land) && await isAncestor("sync", parents[1], main) && !await isAncestor("sync", parents[1], land);
           if (!syncOf)
@@ -915,10 +943,11 @@ async function main(args) {
               : byHand(main)));
           }
         } catch (error) {
-          if (!made) throw error;
-          // Kit cannot join the two by itself: the merge found on the branch is weighed as it was made.
+          if (!merged) throw error;
+          // Kit cannot join the two by itself: the merge found on the branch stays, and one on dev's tip is weighed as it was made.
           await git("sync", ["reset", "-q", "--keep", head]);
-          return landMade();
+          if (made) return landMade();
+          throw new Error(`this branch's merge ${await git("sync", ["rev-parse", "--short", "HEAD"])} was made on an older ${flags.base}, and kit cannot make it again on ${land}: ${error.message}`);
         }
         console.log(`sync: ok (${main} joins ${flags.base}, no file changes)`);
         return;

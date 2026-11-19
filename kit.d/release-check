@@ -19,8 +19,8 @@ the RESULT line names the reason and what it let through. KIT_RELEASE_CHECK_TIME
 in seconds (default 120).
 Where land and release are two branches, a warning (never a failure) names the commits origin/<release>
 holds outside origin/<land>'s history, merges left out: copies a rebase or squash merge made, or work made
-straight on <release>; kit pr --sync-main joins them, or lands a merge of the two made by hand when it
-cannot tell which they are.
+straight on <release>; kit pr --sync-main joins them, or names the merge to make by hand and then lands
+that merge when it cannot tell which they are.
 `;
 
 class UsageError extends Error {}
@@ -128,7 +128,7 @@ function outside(root, { landing, release, branch, env, git }) {
   if (!commits.length) return [];
   const named = commits.length > 5 ? `${commits.slice(0, 5).join(", ")} and ${commits.length - 5} more` : commits.join(", ");
   return [`warning: origin/${release} has ${plural(commits.length, "commit")} outside ${landing}'s history (${named}): copied by a rebase or squash merge, ` +
-    `or made straight on ${release}; join them with kit pr --sync-main (where it cannot join them by itself, it lands a merge of the two made by hand)`];
+    `or made straight on ${release}; join them with kit pr --sync-main (where it cannot join them by itself, it names the merge to make by hand, then lands that merge)`];
 }
 
 /**
