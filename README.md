@@ -527,7 +527,8 @@ two split, the next release conflicted, and a "sync main into dev" PR had to be 
   - a range copy: it takes main's files from dev's files at one commit to dev's files at a later commit (a squash
     merge of that work, made while the two branches held the same files), or
   - a hotfix and its revert, both on main;
-  and each merge on main that changes files itself must have that change held by the merge's files. A merge on main
+  and each merge on main that changes files itself (its files are not what `git merge-tree --write-tree` makes of its
+  parents; a conflict it fixed counts too) must have that change held by the merge's files. A merge on main
   whose files are one of its parents' in dev's history (a release cut that kept dev's files, which main then took) is
   a join made already: at it main held nothing that parent's history lacks, so the exact copies of that parent's
   commits behind it (an old rebase merge copied them) are joined too. Anything else behind it is weighed like any

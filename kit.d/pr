@@ -847,12 +847,13 @@ async function main(args) {
       const only = new Set((await modesOf(["diff-tree", "--no-commit-id", "-r", "HEAD", ref])).keys());
       const { unheld } = await weigh(name, dev, ref, { skip: settled, only, ranges: dev });
       const dropped = unheld.map(commit => commit.named);
-      // A merge's own change: its files against what git makes of its two parents (git merge-tree --write-tree, from git 2.38;
-      // an older git, a conflict there or more than two parents leave it unproven).
+      // A merge's own change: its files against what git makes of its two parents (git merge-tree --write-tree, from git 2.38),
+      // which on a conflict (exit 1) still writes a tree, with the conflict marked in its files: the merge's resolution is then
+      // its own change. An older git, or more than two parents, leave it unproven.
       for (const [id, ...parents] of own) {
         if (parents.length < 2 || settled.has(id)) continue;
         const made = parents.length === 2 ? await execute(name, "git", ["merge-tree", "--write-tree", ...parents]) : undefined;
-        const tree = made?.status === 0 ? made.text.split(/\r?\n/)[0] : "";
+        const tree = [0, 1].includes(made?.status) && /^[0-9a-f]{40,64}$/.test(made.text.split(/\r?\n/)[0]) ? made.text.split(/\r?\n/)[0] : "";
         if (tree && (tree === await git(name, ["rev-parse", `${id}^{tree}`]) || await held({ id, from: tree }, only))) continue;
         dropped.push(`${await git(name, ["show", "-s", "--no-show-signature", "--format=%h %s", id])} (a merge that changes files itself)`);
       }
