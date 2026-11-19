@@ -897,7 +897,8 @@ async function main(args) {
         step = "sync";
         const main = `origin/${release}`, land = `origin/${flags.base}`;
         if (await isAncestor("sync", main, land)) throw new Error(`nothing to sync: ${land} already holds ${main}`);
-        // Kit's own follow-ups commits from an earlier run (--ticket on a tracked ticket with --no-merge) sit on the merge
+        // Kit's own follow-ups commits from an earlier run that stopped short of landing (--ticket on a tracked ticket, with
+        // --no-merge or a stop after its reviews) sit on the merge
         // (TOOLS-352). They are set aside while the merge is weighed or made again as ever, and put back on it after.
         const notes = await ownNotes(land, main);
         if (!notes.length) return syncJoin(main, land);
@@ -938,7 +939,8 @@ async function main(args) {
     }
     // Kit's own follow-ups commits on a sync's merge, oldest first (TOOLS-352): the one-parent commits on top of HEAD that
     // recordFollowups wrote, each with kit's exact message, changing the tracked --ticket file alone, and held by neither dev nor
-    // main; the commit under them must be a merge (syncJoin weighs it as ever). None without such a ticket, or under any other commit.
+    // main; the commit under them must be a merge dev does not hold (syncJoin weighs it as ever). None without such a ticket, or
+    // under any other commit.
     async function ownNotes(land, main) {
       if (!flags.ticket || card || notRepoFile()) return [];
       const path = relative(root, resolve(root, flags.ticket)).split(sep).join("/"), message = `${ownSubjects(flags.ticket)[0]}\n\n${ownTrailer}`;
@@ -953,7 +955,7 @@ async function main(args) {
       }
       if (!notes.length) return notes;
       const under = (await git("sync", ["rev-list", "--parents", "-n", "1", `${notes[0]}^`])).split(/\s+/).slice(1);
-      return under.length === 2 ? notes : [];
+      return under.length === 2 && !await isAncestor("sync", `${notes[0]}^`, land) ? notes : [];
     }
     // A sync joins origin/<release> into the land branch: kit's own merge, or one found on the branch.
     async function syncJoin(main, land) {
