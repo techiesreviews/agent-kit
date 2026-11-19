@@ -362,8 +362,8 @@ The twelve old stations folded into these steps (2026-11-15); an old station's l
   `origin/<land>`). A preview deploy from a landing branch that is not live runs no check. Only a
   lead may pass it with `--waive "<reason>"`, which its `RESULT:` line names; `kit pr --release
   --waive` hands the reason on, so one waiver covers both the review findings and the check.
-  The release joins `origin/<release>` by one merge into the cut; merge the release PR with a merge commit (the
-  `gh pr merge N --merge --match-head-commit <head>` line `kit pr --release` prints), never `--rebase`.
+  The release joins `origin/<release>` by one merge into the cut and lands once CI passes as a merge commit,
+  never a rebase or squash; `kit pr --sync-main` lands a merge of main into dev, kit's or one made by hand (README, "Releases").
 - **Done when:** the live project serves the new version and its number is recorded where the
   extras say.
 

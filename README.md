@@ -63,6 +63,8 @@ After a merge from the base, the "changes since the last review" file lists only
 
 `kit pr` counts the fix rounds from the review records (TOOLS-287): each earlier head of the branch at which a review left a finding above a nit, Claude's rounds (the chain of `findings.json` records) and the branch's earlier second looks alike. Reviews at the same head (both looks, or a round after a decline) are one round, and a clean or nits-only review calls for no fix and counts none. Once 3 are used (5 for a risky change), only blockers (P0, P1) block, for both looks, and the shoulds left land as follow-ups for Lex, never as approval. The count survives a rebase that keeps the patch only while the head stays (Claude's review is reused, and the second looks are found from the head it saw); the next commit after it starts the count again, as Claude's review starts again at round 1 once the old head is gone from the history. A rebase that changes the patch starts it again at once, and so does any rebase in the docs tier, which has no Claude review to anchor it. Rounds the cut `kit fix` saved (`.scratch/kit-fix`) still count. A lead may give `--waive` more than once: ids count in any of the reasons, and counts add up (once any reason names an id, the counts are not read). Nor does anything hand a helper's declined findings to the next review any more (`kit fix` set `ASE_REVIEW_DECLINED` and saved them): a decline goes, with its reason, in the helper's report and the PR text, and the lead waives it by id.
 
+A `--ticket` file outside the repo, or one git ignores (a brief `kit brief` wrote into `.scratch`), gets the follow-ups written into it and no commit, and no commit names its commits; the PR body and comment hold the follow-ups as for any ticket (TOOLS-337).
+
 Known limits (waived follow-ups): a review that leaves an id out is rejected as incomplete: run `kit review` again by hand. The fix brief points at the newest complete review.
 
 The OpenCode second look reads only: it may read, search and list files, nothing else. The kit works with OpenCode 1 and 2 (before each OpenCode review it reads `opencode run --help` to tell them apart, usually well under a second, about 30 seconds at most if the CLI hangs; it stops in plain words when the help names neither). OpenCode 2 has no switch to turn plugins off, so there the kit turns the branch's own OpenCode settings off and gives each review an empty settings folder of its own, and drops a settings file or folder named in `OPENCODE_CONFIG` or `OPENCODE_CONFIG_DIR`: no plugin from the branch under review or from `~/.config/opencode` loads, and the machine's OpenCode settings (default model, global instructions) do not apply to the review either.
@@ -438,7 +440,7 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   untracked file outside `.scratch/`) and HEAD is exactly `origin/<release>` after a fetch (`branches.release`,
   the branch the push guard reads). A project's own live deploy command runs it first
   (`scripts/agents/kit release-check && <deploy>`); `kit pr --release` runs `kit release-check --land` before it
-  opens the release PR, so the release is cut from exactly what landed (then `origin/<release>` is merged into it, never replayed: merge the PR with `--merge`).
+  opens the release PR, so the release is cut from exactly what landed (then `origin/<release>` is merged into it, never replayed; see "Releases" below for how it lands).
   It pushes nothing; ignored files (a built `dist/`) do not count. Only a `*-lead` owner may pass it with
   `--waive "<reason>"`, which its `RESULT:` line names with what was let through; `kit pr --release --waive` hands
   its reason on, so one waiver covers both the review findings and the check.
@@ -453,12 +455,116 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   earlier cut's review as a later round: the reviewer reads the plain diff from the earlier cut (what dev changed since
   then and the merge itself), and the fix rounds of every cut of the release count against one budget.
 
+## Releases
+
+Dev and main stay joined: main only ever takes dev by a merge commit, so every commit on main is in dev's history or
+is one of those merges (TOOLS-325). A release once landed on main as copies of dev's commits (a rebase merge), so the
+two split, the next release conflicted, and a "sync main into dev" PR had to be merged by hand.
+
+- `kit pr --release --base main` (after Lex's go) cuts the release from `origin/dev`, merges `origin/main` into the
+  cut, opens the PR and, once CI passes, lands it with `gh pr merge --merge --match-head-commit <head>`: a merge
+  commit, never a rebase, squash or cherry-pick. `--no-merge` only opens it and names the `kit pr` run that lands it:
+  the same options (a waiver, the ticket, the title) without `--no-merge`, never a `gh pr merge` command to run by hand
+  (TOOLS-360). If the run moved the cut (by merging main, or by a follow-ups commit), the line first does a
+  `git reset --keep` back to where the run started: origin/dev in an ordinary release (see "Re-cutting a release"
+  above). A dry run
+  without `--no-merge` says the real run lands it as a merge commit. The line
+  `landed: <sha> merges <head> into main (a merge commit)` says what landed. A merge queue lands by its own method,
+  whatever gh asks, so a release or a sync goes into one only when the queue makes merge commits; a queue set to squash
+  or rebase, one whose method cannot be read, or a lookup that cannot tell whether there is a queue, stops the run
+  before anything is queued. The queue is read before the push, and again right before each merge (the first and
+  every retry), so one turned on while the checks ran is seen too (gh adds a PR to a required
+  queue whatever method it names, so `--no-merge` then prints why instead).
+- Kit joins main by itself only when it can prove what the merge does; it never guesses. Merges left out, each commit
+  main holds outside dev's history is one of three kinds: a copy (one of dev's commits' change exactly: git marks
+  it with `git log --cherry-mark`, which leaves spaces out, so its `git patch-id --verbatim`, its files' modes
+  and kinds and a binary file's contents must match too: a rebase merge), a commit whose change dev's files already hold (its diff applies in
+  reverse to them, context lines too, and each file whose mode it changes has the mode it gave: a squash merge of work dev has not changed since, a hotfix dev took inside
+  another commit), or a
+  change dev's files lack (a hotfix or rollback made on main, or a squashed copy of work dev has changed since).
+  - Only the first two kinds, with main's files dev's files at a dev commit made since dev and main were last joined: the cut's
+    merge keeps dev's files (`git merge -s ours`, said as `merge: origin/main's files are dev's at <sha>, so the cut
+    keeps dev's files`). Where main's files match no such commit, the merge is a plain one and must change no file.
+  - Only changes dev's files lack: the merge is a plain one, and it stands when its files hold every one of those
+    commits and it changes no file dev changed since dev and main were last joined, so a hotfix or a rollback made
+    on main is carried. A hotfix that a later commit on main undid exactly, spaces and all (its revert, matched with `git patch-id
+    --verbatim`), is left out with that commit
+    first: main took it back itself.
+  - Anything else stops the run, with nothing merged: a change dev's files lack beside the first two kinds (a rollback
+    of a copied commit looks like a hotfix there, and no merge keeps it), a conflict, or a merge that would bring back
+    what dev changed since. The stop names the commits or files and the merge to make by hand: `git switch -c
+    <name> origin/dev`, `git merge --no-ff origin/main` (keep each change of main's that dev lacks, and dev's side
+    wherever dev changed or removed something since), then `kit pr
+    --sync-main` on that branch, which lands the merge as it was made (below). Main is then inside dev's history, so
+    the next cut has nothing left to weigh and the stop cannot come back. Nothing lands outside `kit pr` (TOOLS-341
+    ended the by-hand `gh pr merge` exception of 2026-11-18).
+  - A rollback on main of a change it copied from dev is never one more copy, whatever it rolls back: indentation,
+    line endings, a rename, the case of a file's name, a binary file, a submodule's commit, an executable bit or a
+    file turned into a link. Each is a change dev's files lack, so beside copies the run stops. A repository's own
+    settings do not loosen this: spaces count whatever `apply.whitespace` and `apply.ignoreWhitespace` say, and
+    submodules are shown whatever `ignore` in `.gitmodules` or `diff.ignoreSubmodules` says (a sync's "no file
+    changes" is checked by the two trees). So does a merge
+    commit on main that changes files itself (its files are not what `git merge-tree --write-tree` makes of its
+    parents) beside copies or commits dev's files hold: it could roll a copy back with no commit to show it.
+  - These proofs need git 2.39 or newer (`git patch-id --verbatim`; `git merge-tree --write-tree` is from 2.38).
+    On an older git no commit counts as a copy: each is weighed like any other commit of main's, so one whose change
+    dev's files still hold is kept out as before, and any other stops the run with the join by hand. Before git 2.38
+    any merge commit on main beside such commits stops the run too.
+  After an ordinary release main's own commits are only merges, so the merge stays plain.
+- `kit pr --sync-main` lands a "sync main into dev" merge into dev. From a branch cut at `origin/dev` it merges
+  `origin/main` into the branch (its own merge commit, never a fast-forward, keeping dev's files under the same rule),
+  refuses unless the merge changes no file on dev (`the sync would change <files> on dev: main holds changes dev
+  lacks; land them on dev first (git cherry-pick <shas> on a new branch cut at origin/dev, then an ordinary kit
+  pr)`: such a cherry-pick is an exact copy, so the next sync joins it), and lands it as a merge commit, never
+  rebased (an ordinary `kit pr` rebases, which flattens such a merge away). Where the release would stop, the sync
+  stops with the same merge to make by hand. Kit makes its own merge dated by its parents, so a rerun on the same dev
+  and main makes the same commit and one on a newer dev or main makes it again there. The empty diff has nothing to
+  review, so the review and the second look say so, and CI still gates the merge. A branch with work of its own is
+  refused, with advice to cut a new branch at `origin/dev`. Kit's own follow-ups commits on the merge (a run with
+  `--ticket <tracked file>` that stopped short of landing, `--no-merge` among them, writes the review's notes there) are no such work (TOOLS-352): only
+  one-parent commits with kit's exact message that change the ticket alone, held by neither dev nor main, on a merge
+  dev does not hold.
+  A rerun sets them aside while it weighs the merge or makes it again, then puts them back on it (`sync: kit's own
+  follow-ups commit <sha> from an earlier run stays on the merge`); one that no longer applies on a merge made again
+  (each is put back on its own) is left out, as the PR's comments hold its notes. It needs `branches.release` apart from `branches.land`.
+- A merge of main into dev made by hand (TOOLS-341): when the branch's tip is a merge whose first parent is
+  `origin/dev` and whose second is in main's history, `kit pr --sync-main` lands that merge as it was made, never made
+  again: at once when it changes dev's files, and, when it keeps them, only once kit's own merge fails. Its diff
+  against dev is reviewed like any change, the second look and CI run, and it lands as a merge commit (`sync: ok (the
+  merge <sha> joins main at <sha> into dev as it was made: it changes N files on dev, and drops no change of main's
+  that dev does not hold)`). It lands only when it drops nothing kit cannot prove: merges left out, each commit main
+  holds outside dev's history must be
+  - a copy (one of dev's commits' change exactly, the same rule as above),
+  - held by the merge's files (its diff applies to them in reverse, context and modes as above; a file the merge took
+    exactly as main has it holds every change main made to it),
+  - a range copy: it takes main's files from dev's files at one commit to dev's files at a later commit (a squash
+    merge of that work, made while the two branches held the same files), or
+  - a hotfix and its revert, both on main;
+  and each merge on main that changes files itself (its files are not what `git merge-tree --write-tree` makes of its
+  parents; a conflict it fixed counts too) must have that change held by the merge's files. A merge on main
+  whose files are one of its parents' in dev's history (a release cut that kept dev's files, which main then took) is
+  a join made already: at it main held nothing that parent's history lacks, so the exact copies of that parent's
+  commits behind it (an old rebase merge copied them) are joined too. Anything else behind it is weighed like any
+  other commit, so a hotfix, a squash or a rollback of copied work there still counts. A merge that leaves something
+  out stops with what it leaves out (`the merge <sha> leaves out changes of main's that dev does not hold (<sha>
+  <subject>, …)`) and the way on: keep them in the merge, or land them on dev first with an ordinary `kit pr`. The
+  limit: where dev changed lines near a change of main's, the change no longer applies to the merge's files with its
+  context, so a merge that keeps dev's lines there is refused even when dev took the same fix; such a merge keeps
+  main's lines there and dev's change lands after it with an ordinary `kit pr`. A merge made on an older dev that
+  changes files is refused, with the steps to make it again on `origin/dev`; one that keeps dev's files is made again
+  by kit on the newest dev and main, and where kit cannot make it there, it stays on the branch and the run stops with
+  the steps to make it again.
+- `kit release-check` (on its own and inside `kit pr --release`) warns, without failing, when `origin/main` holds
+  commits outside dev's history, merges left out: `warning: origin/main has N commits outside dev's history (<sha>
+  <subject>, …): copied by a rebase or squash merge, or made straight on main; join them with kit pr --sync-main`
+  (where it cannot join them by itself, it names the merge to make by hand, then lands that merge).
+
 ## Changing the kit
 
 - Work in a worktree (`git worktree add -b <branch> ../agent-kit-<branch> origin/dev`) and land with this repo's
-  own `scripts/agents/kit pr`; it opens the PR into `dev`, waits for CI and merges. `main` only takes `dev`,
-  through `scripts/agents/kit pr --release --base main` from a branch cut at `origin/dev` (`kit pr` refuses to
-  run on `dev` itself); machines keep following `main`.
+  own `scripts/agents/kit pr`; it opens the PR into `dev`, waits for CI (up to 60 minutes; this repo's CI takes
+  about 30) and merges. `main` only takes `dev`, through `scripts/agents/kit pr --release --base main` from a
+  branch cut at `origin/dev` (`kit pr` refuses to run on `dev` itself); machines keep following `main`.
 - CI runs the kit's tests and lint, then the Native Site Editor's `npm test` and `npm run lint` from its `dev`
   branch against the changed kit. A kit change lands only when both pass, because every project runs the kit
   once it is released to `main`.

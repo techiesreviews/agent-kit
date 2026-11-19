@@ -8,6 +8,7 @@ import test, { type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { checkSteps, classify } from "../pr-tier.mjs";
 import { kitEnv } from "./support/kit-env.ts";
+import { kitCleanLimit, loadBesides } from "./support/machine-load.ts";
 
 const repo = resolve(".");
 const shell = join(repo, "agent.sh");
@@ -18,9 +19,19 @@ function entries(directory: string) {
 
 // ASE_KIT_CLEAN_LIMIT_MS is a test-only seam: the cut-off test below forces a small limit. The whole suite took about
 // 500 s on a CI runner (2026-11-09); it grew with #123 and #125 (dev's CI ran past the old 720 s limit, 12m24s on
-// 2026-11-16), so the limit is 1200 s: a run cut off there is a real hang, not a slow runner. The CI job sets no
-// timeout-minutes, so GitHub's default (360 minutes) stays well above it.
-const limit = Number(process.env.ASE_KIT_CLEAN_LIMIT_MS) || 1_200_000;
+// 2026-11-16), so the limit is 1200 s on a quiet machine, stretched for a busy one (kitCleanLimit): a run cut off there
+// is a real hang, not a slow runner. The CI job sets no timeout-minutes, so GitHub's default (360 minutes) stays well above it.
+// The load is read again while the suite runs, since a sweep that starts after the guard would otherwise cut it off at the
+// quiet machine's limit: the limit only grows, and never past four times (`ceiling`, kitCleanLimit at any load). The first
+// reading comes before the suite starts; the later ones leave out the suite's own workers (loadBesides).
+const workers = 4;
+let reached = kitCleanLimit();
+const limitNow = () => {
+  const next = kitCleanLimit(process.env, { load: loadBesides(workers) });
+  if (next.ms > reached.ms) reached = next;
+  return reached.ms;
+};
+const ceiling = kitCleanLimit(process.env, { load: Number.MAX_SAFE_INTEGER }).ms;
 const guardName = "kit and agent unit tests leave no run folders or temporary files";
 
 // Live members of a process group; a zombie is already gone and only waits for its parent.
@@ -57,7 +68,9 @@ async function waitUntil(done: () => boolean, ms: number) {
 // Resolves once the group and any process using its TMPDIR have exited; only then may the caller remove that
 // temp folder. A run that ends in time but leaves processes behind reports them in `leftRunning`; they are
 // then killed so the folder can still go. `survivors` lists any process that outlived even SIGKILL.
-async function runGroup(args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }, ms: number) {
+// `ms` is the limit, or a function read again every 30 s (and when the limit is reached) whose answer stretches it.
+async function runGroup(args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }, ms: number | (() => number)) {
+  const limitAt = typeof ms === "number" ? () => ms : ms;
   const child = spawn(process.execPath, args, { ...options, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   const pgid = child.pid!, temporary = options.env.TMPDIR!;
   let stdout = "", stderr = "";
@@ -68,11 +81,17 @@ async function runGroup(args: string[], options: { cwd: string; env: NodeJS.Proc
   const started = Date.now();
   let cutOff = false, kill: NodeJS.Timeout | undefined;
   const signalGroup = (signal: NodeJS.Signals) => { try { process.kill(-pgid, signal); } catch { /* group gone */ } };
-  const stop = setTimeout(() => {
+  let deadline = limitAt(), stop: NodeJS.Timeout | undefined;
+  const check = () => {
+    // A machine that got busier while the suite ran stretches the deadline; it never shrinks.
+    deadline = Math.max(deadline, limitAt());
+    const left = deadline - (Date.now() - started);
+    if (left > 0) { stop = setTimeout(check, Math.min(left, 30_000)); return; }
     cutOff = true;
     signalGroup("SIGTERM");
     kill = setTimeout(() => signalGroup("SIGKILL"), 5_000);
-  }, ms);
+  };
+  stop = setTimeout(check, Math.min(deadline, 30_000));
   let status: number | null, signal: NodeJS.Signals | null;
   try {
     [status, signal] = await once(child, "exit") as [number | null, NodeJS.Signals | null];
@@ -102,7 +121,7 @@ async function runGroup(args: string[], options: { cwd: string; env: NodeJS.Proc
   return { status, signal, stdout, stderr, cutOff, leftRunning, survivors, seconds: Math.round((Date.now() - started) / 1000) };
 }
 
-test(guardName, { timeout: limit + 60_000 }, async t => {
+test(guardName, { timeout: ceiling + 60_000 }, async t => {
   // The standalone test:kit-clean script runs this guard. Select all kit tests,
   // runner callers and compatibility wrappers, including future test files.
   const files = globSync("tests/*.test.ts").filter(file =>
@@ -122,25 +141,31 @@ test(guardName, { timeout: limit + 60_000 }, async t => {
   // A state folder of its own: a test that writes the kit's state outside its own state folder leaves it here.
   const state = mkdtempSync(join(tmpdir(), "kit-tests-clean-state-"));
   t.after(() => rmSync(state, { recursive: true, force: true }));
+  // Tests whose HOME must sit outside every git work tree make it in /dev/shm (tests/support/temp-outside-git.ts): a
+  // folder of this suite's own there, checked for leftovers like the TMPDIR, where this process can write one.
+  let shared: string | undefined;
+  try { shared = mkdtempSync(join(process.env.KIT_TEST_SHM || "/dev/shm", "kit-tests-clean-")); } catch { /* No /dev/shm here: those tests use the TMPDIR. */ }
+  t.after(() => { if (shared) rmSync(shared, { recursive: true, force: true }); });
   const env = { ...kitEnv(), TMPDIR: temporary, TMP: temporary, TEMP: temporary, XDG_STATE_HOME: state,
-    TSX_DISABLE_CACHE: "1", NODE_DISABLE_COMPILE_CACHE: "1" };
+    TSX_DISABLE_CACHE: "1", NODE_DISABLE_COMPILE_CACHE: "1", ...(shared && { KIT_TEST_SHM: shared }) };
   // Node otherwise treats this as an existing test worker and runs no files.
   delete env.NODE_TEST_CONTEXT;
   delete env.ASE_KIT_CLEAN_LIMIT_MS;
   // The kit suite grows with every slice; a run cut off at this limit fails as a time-out, and t.after
   // removes its temp folder (kit-pr-* included) once the whole process group has exited.
-  const result = await runGroup(["--import", "tsx", "--test", "--test-reporter=tap", "--test-concurrency=4", ...files],
-    { cwd: repo, env }, limit);
+  const result = await runGroup(["--import", "tsx", "--test", "--test-reporter=tap", `--test-concurrency=${workers}`, ...files],
+    { cwd: repo, env }, limitNow);
   const folders = entries(artifacts).filter(name => !before.has(name));
   // The tsx CLI creates an empty IPC directory even with its cache disabled.
   // Permit only that empty runtime directory; all test-created paths must go.
   const runtime = `tsx-${process.getuid?.() ?? 0}`;
-  const leftovers = entries(temporary).filter(name => name !== runtime || entries(join(temporary, name)).length > 0);
+  const leftovers = [...entries(temporary).filter(name => name !== runtime || entries(join(temporary, name)).length > 0),
+    ...(shared ? entries(shared).map(name => join(shared, name)) : [])];
   if (result.status !== 0) {
     const failures = result.stdout.match(/^\s*not ok .*(?:\n[ \t]+.*)*/gm)?.join("\n");
     t.diagnostic(failures || (result.stdout + result.stderr).slice(-12_000));
   }
-  assert.ok(!result.cutOff, `kit suite run was cut off after ${result.seconds} s (limit ${limit / 1000} s); ` +
+  assert.ok(!result.cutOff, `kit suite run was cut off after ${result.seconds} s (${reached.note}); ` +
     `removing the temp paths it left: ${leftovers.join(", ") || "none"}`);
   assert.deepEqual(result.survivors, [], `processes still running after SIGKILL: ${result.survivors.join("; ")}`);
   assert.deepEqual(result.leftRunning, [], `processes left running: ${result.leftRunning.join("; ")}`);
@@ -152,10 +177,28 @@ test(guardName, { timeout: limit + 60_000 }, async t => {
   t.diagnostic(`guard ran ${count} tests from ${files.length} files`);
 });
 
+// TOOLS-360: the limit is read again while the run goes on, so a machine that got busier after the start stretches it.
+test("a run whose limit grows while it runs is not cut off, and one whose limit stays is", { timeout: 60_000 }, async t => {
+  const temporary = mkdtempSync(join(tmpdir(), "kit-tests-stretch-"));
+  t.after(() => rmSync(temporary, { recursive: true, force: true }));
+  const env = { ...kitEnv(), TMPDIR: temporary };
+  const sleep = ["-e", "setTimeout(() => {}, 3000)"];
+  const fixed = await runGroup(sleep, { cwd: repo, env }, 1_000);
+  assert.equal(fixed.cutOff, true, "a limit that stays at 1 s cuts a 3 s run off");
+  let reads = 0;
+  const stretched = await runGroup(sleep, { cwd: repo, env }, () => (++reads === 1 ? 1_000 : 10_000));
+  assert.equal(stretched.cutOff, false, "a limit read as 10 s when 1 s is up lets the run finish");
+  assert.equal(stretched.status, 0);
+  assert.ok(reads >= 2, `the limit was read again (${reads} reads)`);
+});
+
 test("a guard run cut off at its limit names the time-out and leaves no temp folder", { timeout: 180_000 }, async t => {
   const outer = mkdtempSync(join(tmpdir(), "kit-tests-cutoff-"));
   t.after(() => rmSync(outer, { recursive: true, force: true }));
-  const env = { ...kitEnv(), TMPDIR: outer, TMP: outer, TEMP: outer,
+  // The inner guard's own /dev/shm folder goes here, so the check below sees whether it was removed.
+  const shared = join(outer, "shm");
+  mkdirSync(shared);
+  const env = { ...kitEnv(), TMPDIR: outer, TMP: outer, TEMP: outer, KIT_TEST_SHM: shared,
     TSX_DISABLE_CACHE: "1", NODE_DISABLE_COMPILE_CACHE: "1", ASE_KIT_CLEAN_LIMIT_MS: "8000" };
   delete env.NODE_TEST_CONTEXT;
   const artifacts = join(repo, ".scratch/agent");
@@ -165,14 +208,15 @@ test("a guard run cut off at its limit names the time-out and leaves no temp fol
   const output = result.stdout + result.stderr;
   assert.equal(result.cutOff, false, output.slice(-4000));
   assert.notEqual(result.status, 0, output.slice(-4000));
-  assert.match(result.stdout, /kit suite run was cut off after \d+ s \(limit 8 s\)/, output.slice(-4000));
+  assert.match(result.stdout, /kit suite run was cut off after \d+ s \(limit 8000 ms \(ASE_KIT_CLEAN_LIMIT_MS\)\)/, output.slice(-4000));
   assert.doesNotMatch(result.stdout, /test temp paths left behind/);
   // The outer run would kill what the inner guard left, so only its reports show the inner cleanup held.
   assert.deepEqual(result.leftRunning, [], "processes from the cut-off suite still running");
   assert.deepEqual(result.survivors, []);
   assert.deepEqual(entries(artifacts).filter(name => !before.has(name)), [], `new folders in ${artifacts}`);
   const runtime = `tsx-${process.getuid?.() ?? 0}`;
-  assert.deepEqual(entries(outer).filter(name => name !== runtime || entries(join(outer, name)).length > 0), []);
+  assert.deepEqual(entries(shared), [], "the inner guard's /dev/shm folder is gone");
+  assert.deepEqual(entries(outer).filter(name => name !== "shm" && (name !== runtime || entries(join(outer, name)).length > 0)), []);
 });
 
 // A tiny suite stand-in: `node -e <script>` run through runGroup with its own private TMPDIR.
