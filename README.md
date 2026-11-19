@@ -463,13 +463,14 @@ two split, the next release conflicted, and a "sync main into dev" PR had to be 
 
 - `kit pr --release --base main` (after Lex's go) cuts the release from `origin/dev`, merges `origin/main` into the
   cut, opens the PR and, once CI passes, lands it with `gh pr merge --merge --match-head-commit <head>`: a merge
-  commit, never a rebase, squash or cherry-pick. `--no-merge` only opens it and prints that merge command. The line
+  commit, never a rebase, squash or cherry-pick. `--no-merge` only opens it; it and the dry run name the `kit pr` run
+  that lands it, never a `gh pr merge` command to run by hand (TOOLS-360). The line
   `landed: <sha> merges <head> into main (a merge commit)` says what landed. A merge queue lands by its own method,
   whatever gh asks, so a release or a sync goes into one only when the queue makes merge commits; a queue set to squash
   or rebase, one whose method cannot be read, or a lookup that cannot tell whether there is a queue, stops the run
   before anything is queued. The queue is read before the push, and again right before each merge (the first and
   every retry), so one turned on while the checks ran is seen too (gh adds a PR to a required
-  queue whatever method it names, so `--no-merge` then prints why, never a `gh pr merge` command to run by hand).
+  queue whatever method it names, so `--no-merge` then prints why instead).
 - Kit joins main by itself only when it can prove what the merge does; it never guesses. Merges left out, each commit
   main holds outside dev's history is one of three kinds: a copy (one of dev's commits' change exactly: git marks
   it with `git log --cherry-mark`, which leaves spaces out, so its `git patch-id --verbatim`, its files' modes

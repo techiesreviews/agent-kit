@@ -589,6 +589,8 @@ async function main(args) {
 
     // A release and a sync join two branches: they land as a merge commit, never rebased or squashed (TOOLS-325).
     const joins = Boolean(flags.release || flags.syncMain), method = joins ? "--merge" : "--rebase";
+    // Nothing lands outside kit pr (AGENTS.md), so a release or a sync names the kit pr run that lands it, never a gh command.
+    const landHint = `merge: land it with kit pr ${flags.syncMain ? "--sync-main" : `--release --base ${flags.base}`} without --no-merge (a merge commit, never merged by hand)`;
     const isAncestor = async (name, older, newer) => (await execute(name, "git", ["merge-base", "--is-ancestor", older, newer])).status === 0;
     // A branch's merge queue (the base's, unless named): its id, "" when there is none, null when the lookup fails (an ordinary
     // PR then lands as if there were none, as before; a release or a sync stops, since a queue it cannot see might squash it).
@@ -706,7 +708,7 @@ async function main(args) {
     // commits out of the weighing; `only` and `ranges` are a made merge's (weighMade).
     async function weigh(name, left, ref, { skip, only, ranges } = {}) {
       const { patchOf, exactId, held } = weighing(name);
-      // "=" marks a commit with the same change in left's history (a copy), ">" one of ref's own.
+      // "=" marks a commit with the same change in left's history (a copy), "+" one of ref's own.
       let commits = (await git(name, ["log", "--reverse", "--right-only", "--cherry-mark", "--no-merges", whole, "--format=%m %H %h %s", `${left}...${ref}`])).split(/\r?\n/).filter(Boolean)
         .map(line => ({ copy: line.startsWith("= "), id: line.split(" ")[1], named: line.split(" ").slice(2).join(" ") })).filter(commit => !skip?.has(commit.id));
       // git marks a commit "=" when its change is one of left's with the spaces left out. It is a copy only when it is that
@@ -1294,8 +1296,7 @@ async function main(args) {
         console.log(command.map(quote).join(" "));
       if (!flags.noMerge && !joins)
         console.log(`gh pr merge N --rebase --delete-branch --repo ${ghEnv.GH_REPO || "<owner/name>"} (or --auto --rebase with a merge queue)`);
-      if (joins)
-        console.log(`merge: gh pr merge N --merge --match-head-commit <the pushed head> --repo ${ghEnv.GH_REPO || "<owner/name>"} (a merge commit, never --rebase)`);
+      if (joins) console.log(landHint);
       kitResult("ok", `dry-run ${head.slice(0, 7)} ${branch} -> ${flags.base}${releaseWaived()}${flakyNote()}`);
       return 0;
     }
@@ -1604,17 +1605,15 @@ async function main(args) {
     }
     if (!await reviewHead()) return 1;
     if (flags.noMerge) {
-      // A rebase merge on GitHub would flatten dev's back-merge again and bring the conflict back one step later.
-      // The command pins the reviewed head, like the kit's own merges: a push made after the review is refused.
-      // The advice never fails a release that is done: if the repo lookup fails, the queue is unseen, so it gives no command to run by hand.
+      // A queue that would not land it as a merge commit is named now, so the rerun's stop is no surprise.
+      // The advice never fails a release that is done: if the repo lookup fails, the queue is unseen.
       if (joins) {
-        let target = ghEnv.GH_REPO || "<owner/name>", refusal = "";
+        let refusal = "";
         try {
           const names = await repoNames(), queue = await queueId(names);
-          target = names.target;
           refusal = queue === null ? unseenQueue() : queue ? await queueRefusal(names) : "";
         } catch { refusal = unseenQueue(); }
-        console.log(refusal ? `merge: not by hand: ${refusal}` : `merge: gh pr merge ${number} --merge --match-head-commit ${head} --repo ${target} (a merge commit, never --rebase)`);
+        console.log(refusal ? `merge: not by hand: ${refusal}` : landHint);
       }
       kitResult("ok", `opened #${number} ${head.slice(0, 7)}${releaseWaived()}${flakyNote()}`);
       return 0;
