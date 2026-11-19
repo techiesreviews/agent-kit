@@ -549,8 +549,8 @@ two split, the next release conflicted, and a "sync main into dev" PR had to be 
 ## Changing the kit
 
 - Work in a worktree (`git worktree add -b <branch> ../agent-kit-<branch> origin/dev`) and land with this repo's
-  own `scripts/agents/kit pr`; it opens the PR into `dev`, waits for CI and merges. `main` only takes `dev`,
-  through `scripts/agents/kit pr --release --base main` from a branch cut at `origin/dev` (`kit pr` refuses to
+  own `scripts/agents/kit pr`; it opens the PR into `dev`, waits for CI (up to 60 minutes; this repo's CI takes
+  about 30) and merges. `main` only takes `dev`, through `scripts/agents/kit pr --release --base main` from a branch cut at `origin/dev` (`kit pr` refuses to
   run on `dev` itself); machines keep following `main`.
 - CI runs the kit's tests and lint, then the Native Site Editor's `npm test` and `npm run lint` from its `dev`
   branch against the changed kit. A kit change lands only when both pass, because every project runs the kit
