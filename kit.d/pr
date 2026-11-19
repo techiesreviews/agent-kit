@@ -590,7 +590,10 @@ async function main(args) {
     // A release and a sync join two branches: they land as a merge commit, never rebased or squashed (TOOLS-325).
     const joins = Boolean(flags.release || flags.syncMain), method = joins ? "--merge" : "--rebase";
     // Nothing lands outside kit pr (AGENTS.md), so a release or a sync names the kit pr run that lands it, never a gh command.
-    const landHint = `merge: land it with kit pr ${flags.syncMain ? "--sync-main" : `--release --base ${flags.base}`} without --no-merge (a merge commit, never merged by hand)`;
+    // The rerun keeps every option this run was given (a waiver, the ticket, the title) and drops only --no-merge and
+    // --dry-run, so it passes the release check and keeps the PR text as this run did.
+    const rerun = args.filter(arg => arg !== "--no-merge" && arg !== "--dry-run").map(arg => /^[\w@%+=:,./-]+$/.test(arg) ? arg : quote(arg));
+    const landHint = `merge: land it with ${["kit", "pr", ...rerun].join(" ")} (a merge commit, never merged by hand)`;
     const isAncestor = async (name, older, newer) => (await execute(name, "git", ["merge-base", "--is-ancestor", older, newer])).status === 0;
     // A branch's merge queue (the base's, unless named): its id, "" when there is none, null when the lookup fails (an ordinary
     // PR then lands as if there were none, as before; a release or a sync stops, since a queue it cannot see might squash it).
@@ -1296,7 +1299,7 @@ async function main(args) {
         console.log(command.map(quote).join(" "));
       if (!flags.noMerge && !joins)
         console.log(`gh pr merge N --rebase --delete-branch --repo ${ghEnv.GH_REPO || "<owner/name>"} (or --auto --rebase with a merge queue)`);
-      if (joins) console.log(landHint);
+      if (joins) console.log(flags.noMerge ? landHint : "merge: the real run lands it once CI passes, as a merge commit pinned to the pushed head (never --rebase)");
       kitResult("ok", `dry-run ${head.slice(0, 7)} ${branch} -> ${flags.base}${releaseWaived()}${flakyNote()}`);
       return 0;
     }
@@ -1613,7 +1616,7 @@ async function main(args) {
           const names = await repoNames(), queue = await queueId(names);
           refusal = queue === null ? unseenQueue() : queue ? await queueRefusal(names) : "";
         } catch { refusal = unseenQueue(); }
-        console.log(refusal ? `merge: not by hand: ${refusal}` : landHint);
+        console.log(refusal ? `merge: kit pr will not land it here: ${refusal}` : landHint);
       }
       kitResult("ok", `opened #${number} ${head.slice(0, 7)}${releaseWaived()}${flakyNote()}`);
       return 0;
