@@ -3586,6 +3586,34 @@ for (const rounds of [0, 2]) test(`a review with only nits (a P3 and a validatio
   assert.equal(f.ghCalls("merge").length, 1);
 });
 
+// TOOLS-360 second look: a release's review that commits follow-ups to a tracked ticket moves the cut past origin/dev,
+// so the line it prints cuts it again first, and run as written lands the same PR with the follow-ups written again.
+test("a release whose review commits follow-ups to its tracked ticket names the re-cut, and the line run as written lands the same PR", t => {
+  const f = fixture(t), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check"), FAKE_BASE: "main" }, peer = f.peer();
+  const nits = cleanReview.replace("Spec: none.", "Spec: P3: Cosmetic defect.");
+  f.git("checkout", "-q", "dev"); f.commit("Landed change", "landed.txt");
+  f.commit("Close ticket", "ticket.md", '---\ntitle: "Ticket title"\n---\n\n## Done (2026-11-19)\n\nImplemented.\n');
+  f.git("push", "-q", "origin", "dev");
+  f.git("checkout", "-q", "-b", "release/cut");
+  const start = f.git("rev-parse", "HEAD");
+  const opened = f.run(["--base", "main", "--release", "--no-merge", "--ticket", "ticket.md"], { ...real, FAKE_REVIEW: nits });
+  assert.equal(opened.status, 0, opened.stdout + opened.stderr);
+  assert.notEqual(f.git("rev-parse", "HEAD"), start, "the follow-ups commit moved the cut");
+  assert.match(f.git("show", "HEAD:ticket.md"), /### Follow-ups/);
+  assert.match(opened.stdout, new RegExp(`^merge: land it with git reset --keep ${start} && kit pr --base main --release --ticket ticket\\.md \\(a merge commit, never merged by hand\\)$`, "m"));
+  // The commit landed within the same second as kit's write of the ticket, so the index marks it racy; git status refreshes it,
+  // as any later command a person runs would.
+  assert.equal(f.git("status", "--porcelain"), "");
+  f.git("reset", "-q", "--keep", start);
+  const created = f.ghCalls("create").length;
+  const landed = f.run(rerunWords(opened.stdout), { ...real, FAKE_REVIEW: nits, FAKE_EXISTING: "1", FAKE_LAND_MERGE: peer });
+  assert.equal(landed.status, 0, landed.stdout + landed.stderr);
+  assert.doesNotMatch(landed.stdout, /RESULT: fail release-check/);
+  assert.equal(f.ghCalls("create").length, created, "the open PR is reused, not opened again");
+  assert.match(f.git("show", "HEAD:ticket.md"), /### Follow-ups/, "the rerun writes the follow-ups again");
+  assert.match(landed.stdout, /RESULT: ok merged #73 [a-f0-9]{7}$/m);
+});
+
 // TOOLS-337: kit brief writes briefs into the ignored .scratch folder, and kit pr --ticket takes them; a ticket git ignores
 // is no file of the repo, so its follow-ups note is written there and no commit is made for it.
 test("follow-ups for a --ticket file in an ignored folder are written into it, with no commit, and the PR goes on", t => {

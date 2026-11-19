@@ -593,12 +593,13 @@ async function main(args) {
     // The rerun keeps every option this run was given (a waiver, the ticket, the title) and drops only --no-merge and
     // --dry-run, so it passes the release check and keeps the PR text as this run did.
     const rerun = args.filter(arg => arg !== "--no-merge" && arg !== "--dry-run").map(arg => /^[\w@%+=:,./-]+$/.test(arg) ? arg : quote(arg));
-    // A release whose run merged origin/<release> into the cut is ahead of where it started, which the release check refuses,
-    // so the line cuts it again first: back to the cut as this run had it before the merge (origin/<land> in an ordinary run;
-    // a waived cut keeps its own commits), and the same cut and release branch make the same merge (README, "Re-cutting a release").
-    let cutBefore = "";
+    // A release whose run moved the cut (its merge of origin/<release>, or a follow-ups commit to a tracked ticket) is ahead of
+    // where it started, which the release check refuses, so the line cuts it again first: back to the cut as this run started
+    // (origin/<land> in an ordinary run; a waived cut keeps its own commits). The same cut and release branch make the same
+    // merge (README, "Re-cutting a release"), and the rerun's review writes the follow-ups again.
+    let cutStart = "";
     const landHint = () => {
-      const recut = cutBefore ? `git reset --keep ${cutBefore} && ` : "";
+      const recut = cutStart && gitSync(["rev-parse", "HEAD"]) !== cutStart ? `git reset --keep ${cutStart} && ` : "";
       return `merge: land it with ${recut}${["kit", "pr", ...rerun].join(" ")} (a merge commit, never merged by hand)`;
     };
     const isAncestor = async (name, older, newer) => (await execute(name, "git", ["merge-base", "--is-ancestor", older, newer])).status === 0;
@@ -896,9 +897,7 @@ async function main(args) {
         // A cut that origin/<release> already holds would be an empty release.
         if (await isAncestor("merge", "HEAD", `origin/${flags.base}`)) throw new Error(`nothing to release: origin/${flags.base} already holds this cut`);
         if (await isAncestor("merge", `origin/${flags.base}`, "HEAD")) { ok("merge"); return; }
-        const before = await git("merge", ["rev-parse", "HEAD"]);
         const { kept } = await joinMerge("merge", `origin/${flags.base}`, `Merge origin/${flags.base} into the release cut`);
-        cutBefore = before;
         if (kept) console.log(`merge: origin/${flags.base}'s files are ${kitBranch("land", settings)}'s at ${kept.slice(0, 7)}, so the cut keeps ${kitBranch("land", settings)}'s files`);
         ok("merge");
         return;
@@ -1069,6 +1068,7 @@ async function main(args) {
     // A rebase at the start brings a head the lead may not have seen: a waiver given for the findings of the old one never covers
     // a finding a fresh review raises at it.
     const startHead = await git("rebase", ["rev-parse", "HEAD"]);
+    if (flags.release) cutStart = startHead;
     await rebase();
     const startRebased = (await git("rebase", ["rev-parse", "HEAD"])) !== startHead;
     nameCommits();
