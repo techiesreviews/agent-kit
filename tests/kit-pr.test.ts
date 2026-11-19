@@ -914,7 +914,7 @@ test("a release with --no-merge opens but never waits or merges", t => {
 
 // The steps every "kit cannot join main by itself" stop names (TOOLS-325, TOOLS-341): a merge made by hand, which kit pr
 // --sync-main then weighs and lands as it was made, after which main is inside dev's history, so the stop cannot come back.
-const byHand = (run: "release" | "sync") => "make the merge by hand: git switch -c <name> origin/dev, git merge --no-ff origin/main (keep each change of main's that dev lacks), "
+const byHand = (run: "release" | "sync") => "make the merge by hand: git switch -c <name> origin/dev, git merge --no-ff origin/main (keep each change of main's that dev lacks, and leave out what dev changed or removed since), "
   + "then run kit pr --sync-main on that branch: it lands the merge as you made it, through review, the second look and CI, once the merge drops no change of main's that dev does not already hold"
   + (run === "release" ? "; then cut the release again at the new origin/dev" : "");
 // A stop opens and merges no PR.
@@ -1466,6 +1466,12 @@ test("a rollback made on main reaches the release cut, and a sync refuses it, ne
   const sync = f.run(["--sync-main"]);
   assert.equal(sync.status, 1, sync.stdout + sync.stderr);
   assert.match(sync.stdout, /^RESULT: fail sync: the sync would change risky\.txt on dev: main holds changes dev lacks; /m);
+  // A merge by hand that keeps risky.txt leaves the rollback out: main's files go back to dev's at an older commit, which is
+  // no range copy of dev's history, so it is refused.
+  f.git("fetch", "-q", "origin"); f.git("merge", "-q", "-s", "ours", "-m", "Hand-made sync", "origin/main");
+  const made = f.run(["--sync-main"]);
+  assert.equal(made.status, 1, made.stdout + made.stderr);
+  assert.equal(resultLine(made.stdout), `RESULT: fail sync: the merge <sha> leaves out changes of main's that dev does not hold (<sha> Revert "Release"), so kit cannot prove it drops nothing: keep each of them in the merge (git commit --amend once its files hold them), or land them on dev first with an ordinary kit pr and make the merge again, then run kit pr --sync-main again`);
 });
 
 test("kit pr --sync-main lands a merge of main into dev that changes nothing, as a real merge commit", t => {
@@ -1684,6 +1690,32 @@ test("kit pr --sync-main refuses a hand-made merge made on an older dev that cha
   assert.equal(f.calls().some(call => call.tool === "gh"), false);
 });
 
+test("a hand-made merge that changes files and goes behind while CI runs stops as made on an older dev, never merged", t => {
+  const f = fixture(t), peer = f.peer();
+  f.gitAt(peer, "checkout", "-q", "main"); writeFileSync(join(peer, "hotfix.txt"), "hotfix\n");
+  f.gitAt(peer, "add", "hotfix.txt"); f.gitAt(peer, "commit", "-q", "-m", "Hotfix on main"); f.gitAt(peer, "push", "-q", "origin", "main");
+  f.gitAt(peer, "checkout", "-q", "dev");
+  f.git("checkout", "-q", "dev"); f.git("checkout", "-q", "-b", "sync/main"); f.git("fetch", "-q", "origin");
+  f.git("merge", "-q", "--no-ff", "-m", "Hand-made sync", "origin/main");
+  const merge = f.git("rev-parse", "HEAD"), result = f.run(["--sync-main"], { FAKE_BEHIND: "1", FAKE_ADVANCE: peer });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.equal(resultLine(result.stdout), "RESULT: fail sync: this branch's merge <sha> was made on an older dev: make it again on origin/dev (git switch -c <name> origin/dev, git merge --no-ff origin/main) and run kit pr --sync-main there");
+  assert.equal(f.ghCalls("merge").length, 1, "the one merge GitHub refused as behind");
+  assert.equal(f.git("rev-parse", "HEAD"), merge);
+});
+
+test("a hand-made merge of an older main lands, and its line names the main commit it joins", t => {
+  const f = fixture(t), peer = f.peer();
+  f.gitAt(peer, "checkout", "-q", "main");
+  for (const fix of ["one", "two"]) { writeFileSync(join(peer, `${fix}.txt`), `${fix}\n`); f.gitAt(peer, "add", `${fix}.txt`); f.gitAt(peer, "commit", "-q", "-m", `Hotfix ${fix}`); }
+  f.gitAt(peer, "push", "-q", "origin", "main");
+  f.git("checkout", "-q", "dev"); f.git("checkout", "-q", "-b", "sync/main"); f.git("fetch", "-q", "origin");
+  f.git("merge", "-q", "--no-ff", "-m", "Hand-made sync", "origin/main~1");
+  const one = f.git("rev-parse", "--short", "origin/main~1"), result = f.run(["--sync-main", "--no-merge"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, new RegExp(`^sync: ok \\(the merge [a-f0-9]{7} joins main at ${one} into dev as it was made: it changes 1 file on dev, and drops no change of main's that dev does not hold\\)$`, "m"));
+});
+
 // The shape a repo has after releases that copied dev's commits onto main and later ones that joined main into the cut: each
 // copy sits behind a release join that kept dev's files, so main holds nothing dev's history lacks.
 test("kit pr --sync-main lands a hand-made merge when main's own commits sit behind a release join that kept dev's files", t => {
@@ -1699,12 +1731,36 @@ test("kit pr --sync-main lands a hand-made merge when main's own commits sit beh
   assert.equal(own.status, 1, own.stdout + own.stderr);
   assert.equal(resultLine(own.stdout), `RESULT: fail sync: a merge of origin/main would not hold <sha> Change A as made there (a later commit there, or dev's own work, changes the same lines), so kit cannot tell what to keep; ${byHand("sync")}`);
   f.git("fetch", "-q", "origin"); f.git("merge", "-q", "--no-ff", "-m", "Merge origin/main into dev", "origin/main");
-  const merge = f.git("rev-parse", "HEAD"), result = f.run(["--sync-main"], { FAKE_EMPTY: "1", FAKE_LAND_MERGE: peer });
+  // dev moves while CI runs: kit cannot make the merge on the moved dev either, so the merge made by hand stays on the branch.
+  f.gitAt(peer, "checkout", "-q", "dev"); f.gitAt(peer, "pull", "-q", "--ff-only", "origin", "dev");
+  const old = f.git("rev-parse", "HEAD"), behind = f.run(["--sync-main"], { FAKE_EMPTY: "1", FAKE_BEHIND: "1", FAKE_ADVANCE: peer });
+  assert.equal(behind.status, 1, behind.stdout + behind.stderr);
+  assert.equal(resultLine(behind.stdout), `RESULT: fail sync: this branch's merge <sha> was made on an older dev, and kit cannot make it again on origin/dev: a merge of origin/main would not hold <sha> Change A as made there (a later commit there, or dev's own work, changes the same lines), so kit cannot tell what to keep; ${byHand("sync")}`);
+  assert.equal(f.git("rev-parse", "HEAD"), old, "the merge made by hand stays");
+  assert.equal(f.ghCalls("merge").length, 1);
+  // Made again on the moved dev, it lands.
+  f.git("fetch", "-q", "origin"); f.git("reset", "-q", "--hard", "origin/dev"); f.git("merge", "-q", "--no-ff", "-m", "Merge origin/main into dev", "origin/main");
+  const merge = f.git("rev-parse", "HEAD"), result = f.run(["--sync-main"], { FAKE_EMPTY: "1", FAKE_LAND_MERGE: peer, FAKE_EXISTING: "1" });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /^sync: ok \(the merge [a-f0-9]{7} joins main at [a-f0-9]{7} into dev as it was made: it changes no file, and drops no change of main's that dev does not hold; 2 commits were joined already, by a merge on main that kept dev's files\)$/m);
   assert.equal(f.git("rev-parse", "HEAD"), merge);
   f.git("fetch", "-q", "origin"); f.git("merge-base", "--is-ancestor", "origin/main", "origin/dev");
   assert.equal(f.git("show", "origin/dev:file.txt"), "a two");
+});
+
+test("a squash of dev's work and its rollback behind a release join on main are weighed: the hand-made merge that leaves the rollback out is refused", t => {
+  const f = fixture(t), peer = f.peer();
+  f.git("checkout", "-q", "dev"); f.git("checkout", "-q", "-b", "side"); f.commit("Side one", "side.txt", "one\n"); f.commit("Side two", "side2.txt", "two\n"); f.git("push", "-q", "origin", "side");
+  f.gitAt(peer, "fetch", "-q", "origin"); f.gitAt(peer, "checkout", "-q", "main"); f.gitAt(peer, "merge", "-q", "--squash", "origin/side");
+  f.gitAt(peer, "commit", "-q", "-m", "Side (squashed)"); f.gitAt(peer, "revert", "--no-edit", "HEAD");
+  f.gitAt(peer, "checkout", "-q", "-b", "cut", "origin/dev"); f.gitAt(peer, "merge", "-q", "-s", "ours", "-m", "Merge origin/main into the release cut", "main");
+  f.gitAt(peer, "checkout", "-q", "main"); f.gitAt(peer, "merge", "-q", "--no-ff", "-m", "Release", "cut"); f.gitAt(peer, "push", "-q", "origin", "main");
+  f.git("checkout", "-q", "dev"); f.git("merge", "-q", "--no-ff", "-m", "Land side", "side"); f.git("push", "-q", "origin", "dev");
+  f.git("checkout", "-q", "-b", "sync/main"); f.git("fetch", "-q", "origin"); f.git("merge", "-q", "--no-ff", "-m", "Merge origin/main into dev", "origin/main");
+  assert.equal(f.git("diff", "--name-only", "origin/dev", "HEAD"), "", "a plain merge keeps the side work");
+  const result = f.run(["--sync-main"]);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.equal(resultLine(result.stdout), `RESULT: fail sync: the merge <sha> leaves out changes of main's that dev does not hold (<sha> Revert "Side (squashed)"), so kit cannot prove it drops nothing: keep each of them in the merge (git commit --amend once its files hold them), or land them on dev first with an ordinary kit pr and make the merge again, then run kit pr --sync-main again`);
 });
 
 // SL-1 kept: a rollback on main of a change it copied from dev is never covered by a later release join.
