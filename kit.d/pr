@@ -214,6 +214,7 @@ function runsOnPullRequests(text) {
 // Kit's own ticket-only commits: the follow-ups and the Done "Commits:" line. Whichever of them last wrote that
 // line is "this commit" in it; every other commit, kit's own included, is named by subject.
 const ownSubjects = ticket => ["follow-ups from review", "commits by subject"].map(what => `docs: ${basename(ticket, ".md")} ${what}`);
+const ownTrailer = "Co-Authored-By: Agent Kit <noreply@openai.com>";
 
 /** Where a commit list ends: its first `.` or `;` before a space or the end, outside brackets, quotes and code; -1 for none. */
 function listEnd(body) {
@@ -277,7 +278,7 @@ function commitFollowups({ root, branch, head, ticket, content, env, git, messag
     const blob = run(["rev-parse", `:${path}`], indexEnv);
     const detachedEnv = { ...indexEnv, GIT_DIR: gitDir, GIT_WORK_TREE: root };
     let failure;
-    try { run(["commit", "-m", message, "-m", "Co-Authored-By: Agent Kit <noreply@openai.com>"], detachedEnv); }
+    try { run(["commit", "-m", message, "-m", ownTrailer], detachedEnv); }
     catch (error) { failure = error; }
     assertScope();
     if (failure) throw new Error(`git commit failed: ${failure.stderr?.toString().trim() || failure.message}`);
@@ -896,55 +897,34 @@ async function main(args) {
         step = "sync";
         const main = `origin/${release}`, land = `origin/${flags.base}`;
         if (await isAncestor("sync", main, land)) throw new Error(`nothing to sync: ${land} already holds ${main}`);
-        const landMade = async () => {
-          const settled = await weighMade("sync");
-          const short = await git("sync", ["rev-parse", "--short", "HEAD"]), joins = await git("sync", ["rev-parse", "--short", "HEAD^2"]);
-          const changed = (await git("sync", ["-c", "core.quotepath=false", "diff", "--name-only", whole, land, "HEAD"])).split(/\r?\n/).filter(Boolean);
-          console.log(`sync: ok (the merge ${short} joins ${release} at ${joins} into ${flags.base} as it was made: it ${changed.length ? `changes ${changed.length} file${changed.length === 1 ? "" : "s"} on ${flags.base}` : "changes no file"}, and drops no change of ${release}'s that ${flags.base} does not hold`
-            + `${settled ? `; ${settled} commit${settled === 1 ? " was" : "s were"} joined already, by a merge on ${release} that kept ${flags.base}'s files` : ""})`);
-        };
-        // A branch whose HEAD dev already holds is a fresh cut, whatever its tip is (dev may end in a merge of its own). Otherwise
-        // HEAD must be a merge of dev and main, which is never reset away. One on dev's tip is weighed as made: at once when it
-        // changes dev's files, and when kit's own merge fails otherwise (kit's from an earlier run is made again, the same commit
-        // on the same dev and main). One on an older dev that keeps dev's files is made again on the newest dev and main, and
-        // stays when kit cannot make it there; one that changes them stops.
-        let made = false, merged = false;
-        if (!await isAncestor("sync", "HEAD", land)) {
-          merged = true;
-          const [, ...parents] = (await git("sync", ["rev-list", "--parents", "-n", "1", "HEAD"])).split(/\s+/);
-          const syncOf = parents.length === 2 && await isAncestor("sync", parents[0], land) && await isAncestor("sync", parents[1], main) && !await isAncestor("sync", parents[1], land);
-          if (!syncOf)
-            throw new Error(`a sync branch holds only the merge of ${main}, and this one has work of its own: cut a new branch at ${land} (git switch -c <name> ${land}) and run kit pr --sync-main there`);
-          const keeps = await sameFiles("sync", "HEAD", parents[0]);
-          made = parents[0] === await git("sync", ["rev-parse", land]);
-          if (!made && !keeps) {
-            const short = await git("sync", ["rev-parse", "--short", "HEAD"]);
-            throw new Error(`this branch's merge ${short} was made on an older ${flags.base}: make it again on ${land} (git switch -c <name> ${land}, git merge --no-ff ${main}) and run kit pr --sync-main there`);
-          }
-          if (made && !keeps) return landMade();
+        // Kit's own follow-ups commits from an earlier run (--ticket on a tracked ticket with --no-merge) sit on the merge
+        // (TOOLS-352). They are set aside while the merge is weighed or made again as ever, and put back on it after.
+        const notes = await ownNotes(land, main);
+        if (!notes.length) return syncJoin(main, land);
+        const top = await git("sync", ["rev-parse", "HEAD"]), merge = await git("sync", ["rev-parse", `${notes[0]}^`]);
+        await git("sync", ["reset", "-q", "--keep", merge]);
+        try { await syncJoin(main, land); }
+        catch (error) {
+          // Every stop with a merge on the branch leaves that merge there: the notes go back on it, so the branch is as it was.
+          if (await git("sync", ["rev-parse", "HEAD"]) === merge) await git("sync", ["reset", "-q", "--keep", top]);
+          throw error;
         }
-        const head = await git("sync", ["rev-parse", "HEAD"]);
-        await git("sync", ["reset", "-q", "--keep", land]);
-        try {
-          const { carried } = await joinMerge("sync", main, `Merge ${main} into ${flags.base} (sync, no file changes)`);
-          if (!await sameFiles("sync", land, "HEAD")) {
-            const changed = (await git("sync", ["-c", "core.quotepath=false", "diff", "--name-only", whole, land, "HEAD"])).split(/\r?\n/).filter(Boolean);
-            // Kit's own merge is taken back, so the branch is left as it was cut.
-            await git("sync", ["reset", "-q", "--keep", land]);
-            // The commits the merge carried change only files dev has not touched since the last join, so a cherry-pick of them is
-            // an exact copy, which the next sync joins. With none to name (a merge on main that changes files itself), by hand.
-            throw new Error(`the sync would change ${few(changed) || "files"} on ${flags.base}: ${release} holds changes ${flags.base} lacks; ` + (carried.length
-              ? `land them on ${flags.base} first (git cherry-pick ${carried.map(commit => commit.named.split(" ")[0]).join(" ")} on a new branch cut at ${land}, then an ordinary kit pr), and run kit pr --sync-main again once ${flags.base} holds them, or ${byHand(main)}`
-              : byHand(main)));
-          }
-        } catch (error) {
-          if (!merged) throw error;
-          // Kit cannot join the two by itself: the merge found on the branch stays, and one on dev's tip is weighed as it was made.
-          await git("sync", ["reset", "-q", "--keep", head]);
-          if (made) return landMade();
-          throw new Error(`this branch's merge ${await git("sync", ["rev-parse", "--short", "HEAD"])} was made on an older ${flags.base}, and kit cannot make it again on ${land}: ${error.message}`);
+        const commits = `kit's own follow-ups commit${notes.length === 1 ? "" : "s"} ${notes.map(note => note.slice(0, 7)).join(", ")} from an earlier run`;
+        if (await git("sync", ["rev-parse", "HEAD"]) === merge) {
+          await git("sync", ["reset", "-q", "--keep", top]);
+          console.log(`sync: ${commits} ${notes.length === 1 ? "stays" : "stay"} on the merge`);
+          return;
         }
-        console.log(`sync: ok (${main} joins ${flags.base}, no file changes)`);
+        // The merge was made again on a newer dev or main: the notes go on it as they were. Ones that no longer apply are left
+        // out (they are in the PR's comments, and this run's reviews write their follow-ups again).
+        const made = await git("sync", ["rev-parse", "HEAD"]);
+        if ((await execute("sync", "git", ["cherry-pick", ...notes])).status === 0) {
+          console.log(`sync: ${commits} ${notes.length === 1 ? "is" : "are"} put back on the merge made again`);
+          return;
+        }
+        await execute("sync", "git", ["cherry-pick", "--abort"]);
+        await git("sync", ["reset", "-q", "--keep", made]);
+        console.log(`sync: ${commits} no longer ${notes.length === 1 ? "applies" : "apply"} on the merge made again, so ${notes.length === 1 ? "it is" : "they are"} left out; the PR's comments hold ${notes.length === 1 ? "its" : "their"} follow-ups`);
         return;
       }
       const result = await execute("rebase", "git", ["rebase", `origin/${flags.base}`]);
@@ -955,6 +935,77 @@ async function main(args) {
         throw new Error(childMessage(result, "git rebase failed"));
       }
       ok("rebase");
+    }
+    // Kit's own follow-ups commits on a sync's merge, oldest first (TOOLS-352): the one-parent commits on top of HEAD that
+    // recordFollowups wrote, each with kit's exact message, changing the tracked --ticket file alone, and held by neither dev nor
+    // main; the commit under them must be a merge (syncJoin weighs it as ever). None without such a ticket, or under any other commit.
+    async function ownNotes(land, main) {
+      if (!flags.ticket || card || notRepoFile()) return [];
+      const path = relative(root, resolve(root, flags.ticket)).split(sep).join("/"), message = `${ownSubjects(flags.ticket)[0]}\n\n${ownTrailer}`;
+      const notes = [];
+      for (let at = "HEAD"; ;) {
+        const [id, ...parents] = (await git("sync", ["rev-list", "--parents", "-n", "1", at])).split(/\s+/);
+        if (parents.length !== 1 || await git("sync", ["show", "-s", "--no-show-signature", "--format=%B", id]) !== message) break;
+        const paths = (await git("sync", ["diff", "--name-only", "--no-renames", "-z", parents[0], id, "--"])).split("\0").filter(Boolean);
+        if (paths.length !== 1 || paths[0] !== path || await isAncestor("sync", id, land) || await isAncestor("sync", id, main)) break;
+        notes.unshift(id);
+        at = parents[0];
+      }
+      if (!notes.length) return notes;
+      const under = (await git("sync", ["rev-list", "--parents", "-n", "1", `${notes[0]}^`])).split(/\s+/).slice(1);
+      return under.length === 2 ? notes : [];
+    }
+    // A sync joins origin/<release> into the land branch: kit's own merge, or one found on the branch.
+    async function syncJoin(main, land) {
+      const landMade = async () => {
+        const settled = await weighMade("sync");
+        const short = await git("sync", ["rev-parse", "--short", "HEAD"]), joins = await git("sync", ["rev-parse", "--short", "HEAD^2"]);
+        const changed = (await git("sync", ["-c", "core.quotepath=false", "diff", "--name-only", whole, land, "HEAD"])).split(/\r?\n/).filter(Boolean);
+        console.log(`sync: ok (the merge ${short} joins ${release} at ${joins} into ${flags.base} as it was made: it ${changed.length ? `changes ${changed.length} file${changed.length === 1 ? "" : "s"} on ${flags.base}` : "changes no file"}, and drops no change of ${release}'s that ${flags.base} does not hold`
+          + `${settled ? `; ${settled} commit${settled === 1 ? " was" : "s were"} joined already, by a merge on ${release} that kept ${flags.base}'s files` : ""})`);
+      };
+      // A branch whose HEAD dev already holds is a fresh cut, whatever its tip is (dev may end in a merge of its own). Otherwise
+      // HEAD must be a merge of dev and main, which is never reset away. One on dev's tip is weighed as made: at once when it
+      // changes dev's files, and when kit's own merge fails otherwise (kit's from an earlier run is made again, the same commit
+      // on the same dev and main). One on an older dev that keeps dev's files is made again on the newest dev and main, and
+      // stays when kit cannot make it there; one that changes them stops.
+      let made = false, merged = false;
+      if (!await isAncestor("sync", "HEAD", land)) {
+        merged = true;
+        const [, ...parents] = (await git("sync", ["rev-list", "--parents", "-n", "1", "HEAD"])).split(/\s+/);
+        const syncOf = parents.length === 2 && await isAncestor("sync", parents[0], land) && await isAncestor("sync", parents[1], main) && !await isAncestor("sync", parents[1], land);
+        if (!syncOf)
+          throw new Error(`a sync branch holds only the merge of ${main}, and this one has work of its own: cut a new branch at ${land} (git switch -c <name> ${land}) and run kit pr --sync-main there`);
+        const keeps = await sameFiles("sync", "HEAD", parents[0]);
+        made = parents[0] === await git("sync", ["rev-parse", land]);
+        if (!made && !keeps) {
+          const short = await git("sync", ["rev-parse", "--short", "HEAD"]);
+          throw new Error(`this branch's merge ${short} was made on an older ${flags.base}: make it again on ${land} (git switch -c <name> ${land}, git merge --no-ff ${main}) and run kit pr --sync-main there`);
+        }
+        if (made && !keeps) return landMade();
+      }
+      const head = await git("sync", ["rev-parse", "HEAD"]);
+      await git("sync", ["reset", "-q", "--keep", land]);
+      try {
+        const { carried } = await joinMerge("sync", main, `Merge ${main} into ${flags.base} (sync, no file changes)`);
+        if (!await sameFiles("sync", land, "HEAD")) {
+          const changed = (await git("sync", ["-c", "core.quotepath=false", "diff", "--name-only", whole, land, "HEAD"])).split(/\r?\n/).filter(Boolean);
+          // Kit's own merge is taken back, so the branch is left as it was cut.
+          await git("sync", ["reset", "-q", "--keep", land]);
+          // The commits the merge carried change only files dev has not touched since the last join, so a cherry-pick of them is
+          // an exact copy, which the next sync joins. With none to name (a merge on main that changes files itself), by hand.
+          throw new Error(`the sync would change ${few(changed) || "files"} on ${flags.base}: ${release} holds changes ${flags.base} lacks; ` + (carried.length
+            ? `land them on ${flags.base} first (git cherry-pick ${carried.map(commit => commit.named.split(" ")[0]).join(" ")} on a new branch cut at ${land}, then an ordinary kit pr), and run kit pr --sync-main again once ${flags.base} holds them, or ${byHand(main)}`
+            : byHand(main)));
+        }
+      } catch (error) {
+        if (!merged) throw error;
+        // Kit cannot join the two by itself: the merge found on the branch stays, and one on dev's tip is weighed as it was made.
+        await git("sync", ["reset", "-q", "--keep", head]);
+        if (made) return landMade();
+        throw new Error(`this branch's merge ${await git("sync", ["rev-parse", "--short", "HEAD"])} was made on an older ${flags.base}, and kit cannot make it again on ${land}: ${error.message}`);
+      }
+      console.log(`sync: ok (${main} joins ${flags.base}, no file changes)`);
     }
     // Lease every push against what we knew of the PR branch before our own fetch (empty: must not exist),
     // then against our own last push, so a colleague's push to the branch is never overwritten.

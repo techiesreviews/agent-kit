@@ -1682,6 +1682,122 @@ test("kit pr --sync-main lands a hand-made merge that changes dev's files as it 
   assert.match(result.stdout, new RegExp(`^landed: [a-f0-9]{7} merges ${merge.slice(0, 7)} into dev \\(a merge commit\\)$`, "m"));
 });
 
+// TOOLS-352 (#129 SL-1): a sync opened with --ticket on a tracked ticket and --no-merge gets kit's own follow-ups commit on
+// top of its merge; the rerun takes that commit as kit's, never as work of its own, and lands the join with it.
+const gapReview = cleanReview.replace("Validation gaps: none.", "Validation gaps: Add coverage.");
+const kitNote = ["-m", "docs: ticket follow-ups from review", "-m", "Co-Authored-By: Agent Kit <noreply@openai.com>"];
+test("kit pr --sync-main lands a hand-made merge on a rerun with kit's own follow-ups commit from a --no-merge run on top (TOOLS-352)", t => {
+  const f = fixture(t), peer = f.peer();
+  f.gitAt(peer, "checkout", "-q", "main"); writeFileSync(join(peer, "hotfix.txt"), "hotfix\n");
+  f.gitAt(peer, "add", "hotfix.txt"); f.gitAt(peer, "commit", "-q", "-m", "Hotfix on main"); f.gitAt(peer, "push", "-q", "origin", "main");
+  f.git("checkout", "-q", "dev"); f.git("checkout", "-q", "-b", "sync/main"); f.git("fetch", "-q", "origin");
+  f.git("merge", "-q", "--no-ff", "-m", "Hand-made sync", "origin/main");
+  const merge = f.git("rev-parse", "HEAD");
+  const first = f.run(["--sync-main", "--ticket", "ticket.md", "--no-merge"], { FAKE_REVIEW: gapReview });
+  assert.equal(first.status, 0, first.stdout + first.stderr);
+  const note = f.git("rev-parse", "HEAD");
+  assert.equal(f.git("rev-parse", "HEAD^"), merge);
+  assert.equal(f.git("log", "-1", "--format=%s"), "docs: ticket follow-ups from review");
+  assert.equal(f.git("diff", "--name-only", merge, note), "ticket.md");
+  const again = f.run(["--sync-main", "--ticket", "ticket.md"], { FAKE_REVIEW: gapReview, FAKE_EXISTING: "1", FAKE_LAND_MERGE: peer });
+  assert.equal(again.status, 0, again.stdout + again.stderr);
+  assert.doesNotMatch(again.stdout, /work of its own/);
+  assert.match(again.stdout, /^sync: ok \(the merge [a-f0-9]{7} joins main at [a-f0-9]{7} into dev as it was made: it changes 1 file on dev, and drops no change of main's that dev does not hold\)$/m);
+  assert.match(again.stdout, new RegExp(`^sync: kit's own follow-ups commit ${note.slice(0, 7)} from an earlier run stays on the merge$`, "m"));
+  assert.equal(f.git("rev-parse", "HEAD"), note, "kit's follow-ups commit stays as it was, on the merge as it was made");
+  const merges = f.ghCalls("merge");
+  assert.equal(merges.length, 1);
+  assert.equal(merges[0].args[merges[0].args.indexOf("--match-head-commit") + 1], note);
+  f.git("fetch", "-q", "origin");
+  assert.equal(f.git("rev-parse", "origin/dev^2"), note, "dev takes the join by a merge commit");
+  f.git("merge-base", "--is-ancestor", "origin/main", "origin/dev");
+  assert.match(again.stdout, /RESULT: ok merged #73 [a-f0-9]{7}$/m);
+});
+
+test("kit pr --sync-main makes its merge again under kit's own follow-ups commit: the same commits on the same dev and main, the note put on a new merge after dev moved (TOOLS-352)", t => {
+  const f = fixture(t), peer = release(f);
+  f.git("checkout", "-q", "dev"); f.git("pull", "-q", "--ff-only", "origin", "dev"); f.git("checkout", "-q", "-b", "sync/main");
+  const first = f.run(["--sync-main", "--ticket", "ticket.md", "--no-merge"], { FAKE_REVIEW: gapReview });
+  assert.equal(first.status, 0, first.stdout + first.stderr);
+  const note = f.git("rev-parse", "HEAD"), merge = f.git("rev-parse", "HEAD^"), ticket = readFileSync(join(f.root, "ticket.md"), "utf8");
+  assert.equal(f.git("log", "-1", "--format=%s"), "docs: ticket follow-ups from review");
+  assert.equal(f.git("rev-parse", "HEAD^^2"), f.git("rev-parse", "origin/main"));
+  const again = f.run(["--sync-main", "--ticket", "ticket.md", "--no-merge"], { FAKE_REVIEW: gapReview, FAKE_EXISTING: "1" });
+  assert.equal(again.status, 0, again.stdout + again.stderr);
+  assert.match(again.stdout, /^sync: ok \(origin\/main joins dev, no file changes\)$/m);
+  assert.equal(f.git("rev-parse", "HEAD"), note, "the same dev and main make the same merge, and kit's note stays on it");
+  f.gitAt(peer, "checkout", "-q", "dev"); writeFileSync(join(peer, "later.txt"), "later\n");
+  f.gitAt(peer, "add", "later.txt"); f.gitAt(peer, "commit", "-q", "-m", "Later on dev"); f.gitAt(peer, "push", "-q", "origin", "dev");
+  const moved = f.run(["--sync-main", "--ticket", "ticket.md", "--no-merge"], { FAKE_REVIEW: gapReview, FAKE_EXISTING: "1" });
+  assert.equal(moved.status, 0, moved.stdout + moved.stderr);
+  assert.match(moved.stdout, /^sync: kit's own follow-ups commit [a-f0-9]{7} from an earlier run is put back on the merge made again$/m);
+  assert.notEqual(f.git("rev-parse", "HEAD^"), merge);
+  assert.equal(f.git("rev-parse", "HEAD^^1"), f.git("rev-parse", "origin/dev"));
+  assert.equal(f.git("rev-parse", "HEAD^^2"), f.git("rev-parse", "origin/main"));
+  assert.equal(f.git("log", "-1", "--format=%s"), "docs: ticket follow-ups from review");
+  assert.equal(f.git("diff", "--name-only", "HEAD^", "HEAD"), "ticket.md");
+  assert.equal(readFileSync(join(f.root, "ticket.md"), "utf8"), ticket, "the note is the same, written once");
+  assert.equal(f.gitAt(f.origin, "rev-parse", "sync/main"), f.git("rev-parse", "HEAD"));
+});
+
+test("kit pr --sync-main leaves out kit's own follow-ups commit that no longer applies on the merge made again, and writes the follow-ups again (TOOLS-352)", t => {
+  const f = fixture(t), peer = release(f);
+  f.git("checkout", "-q", "dev"); f.git("pull", "-q", "--ff-only", "origin", "dev"); f.git("checkout", "-q", "-b", "sync/main");
+  const first = f.run(["--sync-main", "--ticket", "ticket.md", "--no-merge"], { FAKE_REVIEW: gapReview });
+  assert.equal(first.status, 0, first.stdout + first.stderr);
+  const note = f.git("rev-parse", "HEAD");
+  // dev rewrites the ticket's last line, so kit's note no longer applies on the newest dev.
+  f.gitAt(peer, "checkout", "-q", "dev"); f.gitAt(peer, "pull", "-q", "--ff-only", "origin", "dev");
+  writeFileSync(join(peer, "ticket.md"), '---\ntitle: "Ticket title"\n---\n\nTask, edited on dev\n');
+  f.gitAt(peer, "commit", "-q", "-am", "Ticket edit on dev"); f.gitAt(peer, "push", "-q", "origin", "dev");
+  const moved = f.run(["--sync-main", "--ticket", "ticket.md", "--no-merge"], { FAKE_REVIEW: gapReview, FAKE_EXISTING: "1" });
+  assert.equal(moved.status, 0, moved.stdout + moved.stderr);
+  assert.match(moved.stdout, new RegExp(`^sync: kit's own follow-ups commit ${note.slice(0, 7)} from an earlier run no longer applies on the merge made again, so it is left out; the PR's comments hold its follow-ups$`, "m"));
+  assert.equal(f.git("rev-parse", "HEAD^^1"), f.git("rev-parse", "origin/dev"));
+  assert.equal(f.git("rev-parse", "HEAD^^2"), f.git("rev-parse", "origin/main"));
+  assert.equal(f.git("log", "-1", "--format=%s"), "docs: ticket follow-ups from review", "this run's review writes its follow-ups again");
+  assert.match(readFileSync(join(f.root, "ticket.md"), "utf8"), /Task, edited on dev\n[\s\S]*### Follow-ups\n\n- Validation gaps \(gap\): Add coverage\./);
+  assert.equal(f.git("status", "--porcelain"), "");
+});
+
+test("kit pr --sync-main takes only kit's own follow-ups commit on a merge as kit's: anything else on the branch is work of its own (TOOLS-352)", t => {
+  const f = fixture(t);
+  release(f);
+  f.git("checkout", "-q", "dev"); f.git("pull", "-q", "--ff-only", "origin", "dev"); f.git("checkout", "-q", "-b", "sync/main");
+  const own = /RESULT: fail sync: a sync branch holds only the merge of origin\/main, and this one has work of its own: /;
+  const refused = (what: string) => {
+    const top = f.git("rev-parse", "HEAD"), result = f.run(["--sync-main", "--ticket", "ticket.md", "--no-merge"], { FAKE_REVIEW: gapReview });
+    assert.equal(result.status, 1, `${what}: ${result.stdout}${result.stderr}`);
+    assert.match(result.stdout, own, what);
+    assert.equal(f.git("rev-parse", "HEAD"), top, `${what}: the branch stays as it was`);
+    assert.equal(f.git("status", "--porcelain"), "", what);
+  };
+  // kit's message on a commit with no merge under it (a fresh cut).
+  writeFileSync(join(f.root, "ticket.md"), "Forged note\n"); f.git("add", "ticket.md"); f.git("commit", "-q", ...kitNote);
+  refused("kit's message on the cut");
+  f.git("reset", "-q", "--hard", "origin/dev"); f.git("fetch", "-q", "origin"); f.git("merge", "-q", "--no-ff", "-m", "Hand-made sync", "origin/main");
+  const merge = f.git("rev-parse", "HEAD");
+  // kit's message on a commit that changes another file too.
+  writeFileSync(join(f.root, "ticket.md"), "Note\n"); writeFileSync(join(f.root, "file.txt"), "changed\n");
+  f.git("add", "ticket.md", "file.txt"); f.git("commit", "-q", ...kitNote);
+  refused("kit's message with another file");
+  // A ticket-only commit with another message, and kit's subject without kit's trailer.
+  f.git("reset", "-q", "--hard", merge); f.commit("Builder's note", "ticket.md", "Note\n");
+  refused("another message");
+  f.git("reset", "-q", "--hard", merge); writeFileSync(join(f.root, "ticket.md"), "Note\n"); f.git("add", "ticket.md");
+  f.git("commit", "-q", "-m", "docs: ticket follow-ups from review");
+  refused("kit's subject without its trailer");
+  // kit's note under a builder's commit: the commit on top is work of its own.
+  f.git("reset", "-q", "--hard", merge); writeFileSync(join(f.root, "ticket.md"), "Note\n"); f.git("add", "ticket.md"); f.git("commit", "-q", ...kitNote);
+  f.commit("Own work", "own.txt");
+  refused("a builder's commit on kit's note");
+  // Without --ticket no commit is kit's note, so kit's message alone takes nothing as kit's.
+  f.git("reset", "-q", "--hard", merge); writeFileSync(join(f.root, "ticket.md"), "Note\n"); f.git("add", "ticket.md"); f.git("commit", "-q", ...kitNote);
+  const top = f.git("rev-parse", "HEAD"), plain = f.run(["--sync-main", "--no-merge"], { FAKE_REVIEW: gapReview });
+  assert.equal(plain.status, 1, plain.stdout + plain.stderr); assert.match(plain.stdout, own);
+  assert.equal(f.git("rev-parse", "HEAD"), top);
+});
+
 test("kit pr --sync-main refuses a hand-made merge made on an older dev that changes files, and keeps it", t => {
   const f = fixture(t), peer = f.peer();
   f.gitAt(peer, "checkout", "-q", "main"); writeFileSync(join(peer, "hotfix.txt"), "hotfix\n");
