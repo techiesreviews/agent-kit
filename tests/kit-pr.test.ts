@@ -3320,6 +3320,32 @@ test("follow-ups for a --ticket file in an ignored folder are written into it, w
   assert.equal(f.git("ls-files", "--", brief), "", "the brief stays out of the repo");
 });
 
+// A brief kit brief wrote in another checkout (the lead's main one) lies outside the repo kit pr runs in (TOOLS-337, producer #25).
+test("follow-ups for a --ticket file outside the repo are written into it, with no commit, and the PR goes on", t => {
+  const f = fixture(t);
+  const brief = join(f.main, ".scratch/kit-briefs/TOOLS-1-build.md"), ticket = '---\ntitle: "Brief title"\n---\n\n## Done (2026-11-19)\n\nImplemented.\n';
+  mkdirSync(dirname(brief), { recursive: true }); writeFileSync(brief, ticket);
+  f.rounds(3);
+  const reviewed = f.git("rev-parse", "HEAD");
+  const result = f.run(["--ticket", brief], { FAKE_REVIEW: minorReview });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, new RegExp(`^follow-ups: ${brief.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")} is outside the repo, so its follow-ups note is written there and not committed$`, "m"));
+  assert.match(result.stdout, /RESULT: ok merged #73/);
+  assert.equal(f.git("rev-parse", "HEAD"), reviewed, "no commit is made for a ticket outside the repo");
+  assert.match(readFileSync(brief, "utf8"), /### Follow-ups\n\n- Spec \(P2\): P2: Minor defect.\n- Validation gaps \(gap\): Add coverage./);
+});
+
+test("a --ticket file git ignores whose Done names its commits gets no commit for them, and the PR goes on", t => {
+  const f = fixture(t);
+  const brief = ".scratch/briefs/TOOLS-1.md", ticket = '---\ntitle: "Brief title"\n---\n\n## Done (2026-11-19)\n\nCommits: none.\n';
+  mkdirSync(join(f.root, ".scratch/briefs"), { recursive: true }); writeFileSync(join(f.root, brief), ticket);
+  const head = f.git("rev-parse", "HEAD"), result = f.run(["--ticket", brief, "--no-merge"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^commits: \.scratch\/briefs\/TOOLS-1\.md is ignored by git, so no commit names its commits$/m);
+  assert.equal(f.git("rev-parse", "HEAD"), head);
+  assert.equal(readFileSync(join(f.root, brief), "utf8"), ticket);
+});
+
 for (const local of [false, true]) for (const source of ["saved", "fresh"]) test(`three completed rounds merge follow-ups, preserve coverage and avoid duplicates (local=${local}, source=${source})`, t => {
   const f = fixture(t);
   const ticket = '---\ntitle: "Ticket title"\n---\n\n## Done (2026-10-19)\n\nImplemented.\n\n## Notes\n\nKeep this section.\n';

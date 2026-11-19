@@ -377,11 +377,14 @@ async function main(args) {
     shieldProcess();
     const gitSync = (args, environment = env) => execFileSync(...gitArgs(["-C", root, ...args]),
       { cwd: root, env: { ...environment, ...safety(environment, gitNetworkCall(args)) }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
-    // A ticket git ignores (kit brief writes its briefs into the ignored .scratch folder) is no file of the repo: kit's notes
-    // go into it, and no commit is made for it (TOOLS-337). git check-ignore exits 1 for a path it does not ignore.
-    const ignoredTicket = () => {
-      try { gitSync(["check-ignore", "-q", "--", relative(root, resolve(root, flags.ticket))]); return true; }
-      catch (error) { if (error.status === 1) return false; throw error; }
+    // A ticket outside the repo, or one git ignores (kit brief writes its briefs into the ignored .scratch folder, often of
+    // another checkout), is no file of the repo: kit's notes go into it, and no commit is made for it (TOOLS-337). The words
+    // why, or "" for a repo file. git check-ignore exits 1 for a path it does not ignore.
+    const notRepoFile = () => {
+      const path = relative(root, resolve(root, flags.ticket));
+      if (!path || path === ".." || path.startsWith(`..${sep}`) || isAbsolute(path)) return "is outside the repo";
+      try { gitSync(["check-ignore", "-q", "--", path]); return "is ignored by git"; }
+      catch (error) { if (error.status === 1) return ""; throw new Error(`could not tell whether git ignores ${flags.ticket}: ${kitHideUserInfo(error.stderr?.toString().trim().split(/\r?\n/).at(-1) || error.message)}`); }
     };
     // Whether a fetch or push runs inside the key lock: when every address it goes to is a folder on this machine, whose
     // hooks git runs without the settings above. The addresses are its remote's (origin when it names none), rewrites
@@ -977,9 +980,12 @@ async function main(args) {
       };
       assertScope();
       const file = resolve(root, flags.ticket);
-      if (!existsSync(file) || ignoredTicket()) return; // The features step names a missing ticket.
+      if (!existsSync(file)) return; // The features step names a missing ticket.
       const original = readFileSync(file, "utf8");
       if (commitsBySubject(original, subjectsTo(captured, true)) === original) return;
+      // No commit is made for a ticket that is no repo file, so none names the commits there.
+      const why = notRepoFile();
+      if (why) { console.log(`commits: ${flags.ticket} ${why}, so no commit names its commits`); return; }
       const subjects = subjectsTo(captured, false), updated = commitsBySubject(original, subjects);
       assertScope();
       writeFileSync(file, updated);
@@ -1332,9 +1338,10 @@ async function main(args) {
       } else if (missing.length) done = `${done.trimEnd()}${eol}${eol}### Follow-ups${eol}${eol}${missing.join(eol)}${eol}${eol}`;
       const followed = prefix + done + rest.slice(doneEnd);
       if (followed === original) return;
-      if (ignoredTicket()) {
+      const why = notRepoFile();
+      if (why) {
         writeFileSync(file, followed);
-        console.log(`follow-ups: ${flags.ticket} is ignored by git, so its follow-ups note is written there and not committed`);
+        console.log(`follow-ups: ${flags.ticket} ${why}, so its follow-ups note is written there and not committed`);
         return;
       }
       // The follow-ups commit carries the Done "Commits:" line as "this commit", naming every commit before it.
