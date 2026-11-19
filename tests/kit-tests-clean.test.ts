@@ -122,8 +122,13 @@ test(guardName, { timeout: limit + 60_000 }, async t => {
   // A state folder of its own: a test that writes the kit's state outside its own state folder leaves it here.
   const state = mkdtempSync(join(tmpdir(), "kit-tests-clean-state-"));
   t.after(() => rmSync(state, { recursive: true, force: true }));
+  // Tests whose HOME must sit outside every git work tree make it in /dev/shm (tests/support/temp-outside-git.ts): a
+  // folder of this suite's own there, checked for leftovers like the TMPDIR, where this process can write one.
+  let shared: string | undefined;
+  try { shared = mkdtempSync("/dev/shm/kit-tests-clean-"); } catch { /* No /dev/shm here: those tests use the TMPDIR. */ }
+  t.after(() => { if (shared) rmSync(shared, { recursive: true, force: true }); });
   const env = { ...kitEnv(), TMPDIR: temporary, TMP: temporary, TEMP: temporary, XDG_STATE_HOME: state,
-    TSX_DISABLE_CACHE: "1", NODE_DISABLE_COMPILE_CACHE: "1" };
+    TSX_DISABLE_CACHE: "1", NODE_DISABLE_COMPILE_CACHE: "1", ...(shared && { KIT_TEST_SHM: shared }) };
   // Node otherwise treats this as an existing test worker and runs no files.
   delete env.NODE_TEST_CONTEXT;
   delete env.ASE_KIT_CLEAN_LIMIT_MS;
@@ -135,7 +140,8 @@ test(guardName, { timeout: limit + 60_000 }, async t => {
   // The tsx CLI creates an empty IPC directory even with its cache disabled.
   // Permit only that empty runtime directory; all test-created paths must go.
   const runtime = `tsx-${process.getuid?.() ?? 0}`;
-  const leftovers = entries(temporary).filter(name => name !== runtime || entries(join(temporary, name)).length > 0);
+  const leftovers = [...entries(temporary).filter(name => name !== runtime || entries(join(temporary, name)).length > 0),
+    ...(shared ? entries(shared).map(name => join(shared, name)) : [])];
   if (result.status !== 0) {
     const failures = result.stdout.match(/^\s*not ok .*(?:\n[ \t]+.*)*/gm)?.join("\n");
     t.diagnostic(failures || (result.stdout + result.stderr).slice(-12_000));

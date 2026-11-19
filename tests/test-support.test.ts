@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -40,9 +40,15 @@ test("a test's own temp folder is outside every git work tree, even when the sys
   const next = tempOutsideGit("kit-ticket-", [join(scratch, "missing"), inRepo, clean]);
   assert.equal(dirname(next), clean);
   assert.equal(existsSync(join(scratch, "missing")), false);
+  assert.deepEqual(readdirSync(inRepo), []);
   assert.throws(() => tempOutsideGit("kit-ticket-", [inRepo]), new RegExp(`no temp folder outside a git work tree: ${inRepo} is inside ${repo}`));
   // The default bases: whatever this machine has, the folder is outside every git work tree.
   const real = tempOutsideGit("kit-ticket-");
   t.after(() => rmSync(real, { recursive: true, force: true }));
   assert.equal(orbitWorkTreeAround(join(real, "orbit.json")), null);
+  // KIT_TEST_SHM (the clean guard's own folder) comes first.
+  const saved = process.env.KIT_TEST_SHM;
+  process.env.KIT_TEST_SHM = clean;
+  try { assert.equal(dirname(tempOutsideGit("kit-ticket-")), clean); }
+  finally { if (saved === undefined) delete process.env.KIT_TEST_SHM; else process.env.KIT_TEST_SHM = saved; }
 });
