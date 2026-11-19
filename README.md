@@ -516,8 +516,9 @@ two split, the next release conflicted, and a "sync main into dev" PR had to be 
   and main makes the same commit and one on a newer dev or main makes it again there. The empty diff has nothing to
   review, so the review and the second look say so, and CI still gates the merge. A branch with work of its own is
   refused, with advice to cut a new branch at `origin/dev`. Kit's own follow-ups commits on the merge (a run with
-  `--ticket <tracked file>` and `--no-merge` writes the review's notes there) are no such work (TOOLS-352): only
-  one-parent commits with kit's exact message that change the ticket alone, held by neither dev nor main, on a merge.
+  `--ticket <tracked file>` that stopped short of landing, `--no-merge` among them, writes the review's notes there) are no such work (TOOLS-352): only
+  one-parent commits with kit's exact message that change the ticket alone, held by neither dev nor main, on a merge
+  dev does not hold.
   A rerun sets them aside while it weighs the merge or makes it again, then puts them back on it (`sync: kit's own
   follow-ups commit <sha> from an earlier run stays on the merge`); one that no longer applies on a merge made again
   is left out, as the PR's comments hold its notes. It needs `branches.release` apart from `branches.land`.

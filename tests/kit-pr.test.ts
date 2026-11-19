@@ -1760,6 +1760,24 @@ test("kit pr --sync-main leaves out kit's own follow-ups commit that no longer a
   assert.equal(f.git("status", "--porcelain"), "");
 });
 
+test("kit pr --sync-main puts kit's own follow-ups commit back on the merge when the sync stops, so the branch stays as it was (TOOLS-352)", t => {
+  const f = fixture(t), peer = f.peer();
+  f.gitAt(peer, "checkout", "-q", "main"); writeFileSync(join(peer, "hotfix.txt"), "hotfix\n");
+  f.gitAt(peer, "add", "hotfix.txt"); f.gitAt(peer, "commit", "-q", "-m", "Hotfix on main"); f.gitAt(peer, "push", "-q", "origin", "main");
+  f.git("checkout", "-q", "dev"); f.git("checkout", "-q", "-b", "sync/main"); f.git("fetch", "-q", "origin");
+  f.git("merge", "-q", "--no-ff", "-m", "Hand-made sync", "origin/main");
+  const first = f.run(["--sync-main", "--ticket", "ticket.md", "--no-merge"], { FAKE_REVIEW: gapReview });
+  assert.equal(first.status, 0, first.stdout + first.stderr);
+  const note = f.git("rev-parse", "HEAD");
+  f.gitAt(peer, "checkout", "-q", "dev"); writeFileSync(join(peer, "later.txt"), "later\n");
+  f.gitAt(peer, "add", "later.txt"); f.gitAt(peer, "commit", "-q", "-m", "Later on dev"); f.gitAt(peer, "push", "-q", "origin", "dev");
+  const again = f.run(["--sync-main", "--ticket", "ticket.md", "--no-merge"], { FAKE_REVIEW: gapReview, FAKE_EXISTING: "1" });
+  assert.equal(again.status, 1, again.stdout + again.stderr);
+  assert.equal(resultLine(again.stdout), "RESULT: fail sync: this branch's merge <sha> was made on an older dev: make it again on origin/dev (git switch -c <name> origin/dev, git merge --no-ff origin/main) and run kit pr --sync-main there");
+  assert.equal(f.git("rev-parse", "HEAD"), note, "kit's note is back on the merge");
+  assert.equal(f.git("status", "--porcelain"), "");
+});
+
 test("kit pr --sync-main takes only kit's own follow-ups commit on a merge as kit's: anything else on the branch is work of its own (TOOLS-352)", t => {
   const f = fixture(t);
   release(f);
@@ -1775,6 +1793,11 @@ test("kit pr --sync-main takes only kit's own follow-ups commit on a merge as ki
   // kit's message on a commit with no merge under it (a fresh cut).
   writeFileSync(join(f.root, "ticket.md"), "Forged note\n"); f.git("add", "ticket.md"); f.git("commit", "-q", ...kitNote);
   refused("kit's message on the cut");
+  // kit's message on a cut whose tip is a merge dev already holds (dev lands syncs and releases as merges).
+  f.git("reset", "-q", "--hard", "origin/dev"); f.git("checkout", "-q", "-b", "side"); f.commit("Side work", "side.txt");
+  f.git("checkout", "-q", "sync/main"); f.git("merge", "-q", "--no-ff", "-m", "Merge side into dev", "side"); f.git("push", "-q", "origin", "HEAD:dev");
+  writeFileSync(join(f.root, "ticket.md"), "Forged note\n"); f.git("add", "ticket.md"); f.git("commit", "-q", ...kitNote);
+  refused("kit's message on a merge dev holds");
   f.git("reset", "-q", "--hard", "origin/dev"); f.git("fetch", "-q", "origin"); f.git("merge", "-q", "--no-ff", "-m", "Hand-made sync", "origin/main");
   const merge = f.git("rev-parse", "HEAD");
   // kit's message on a commit that changes another file too.
