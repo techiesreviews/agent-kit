@@ -349,8 +349,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     a `BASH_FUNC_<name>%%` function, `SHELLOPTS`, `BASHOPTS`, `PS4` or `ZDOTDIR` (TOOLS-326, TOOLS-329). An env under
     another name (GNU env installed as `gnuenv`) joins a name split by quotes, so `'PA''TH=…'` counts as `PATH=` too, and
     an `-S` string among the words (`--split` and other short forms of `--split-string` too) that holds `${…}`, which
-    that env could fill in as `PATH=`, is refused; in git's ssh command so is a word whose `$` sh could fill in as a
-    `NAME=` (`"PA${EMPTY}TH=…"`), while `ssh -i $HOME/…` still runs. The run's PATH leaves
+    that env could fill in as `PATH=`, is refused; so is a word, or a piece of a `sh -c '…'` string, with only name
+    characters before a `$` and an `=` after it (`"PA${EMPTY}TH=…"`), while `ssh -i $HOME/…` still runs. The run's PATH leaves
     those folders out, so `<worktree>/node_modules/.bin` (which npm puts on PATH) supplies none of them; a link elsewhere stays on PATH,
     and the next program on PATH starts in its place, or the run stops and says so. `kit pr` puts links to the git,
     node, gh, bash and sh it found that way in a private folder in the temp folder, first on PATH (and `KIT_NODE` is

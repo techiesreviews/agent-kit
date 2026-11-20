@@ -1491,7 +1491,8 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   // GNU env takes --split-string by any unique start of it, and the -S string joined to its option (S-2); ssh's own -S
   // (a control path) with a ${…} in it is refused too.
   for (const command of [`A=PATH B== gnuenv --split '\${A}\${B}${toLinks} ssh'`, `A=PATH B== gnuenv --s='\${A}\${B}${toLinks} ssh'`, `A=PATH B== gnuenv --split-string='\${A}\${B}${toLinks} ssh'`,
-    `A=PATH B== gnuenv -S'\${A}\${B}${toLinks} ssh'`, `A=PATH B== gnuenv -vS '\${A}\${B}${toLinks} ssh'`, "ssh -S '/tmp/c-${X}' host"]) {
+    `A=PATH B== gnuenv --split-string '\${A}\${B}${toLinks} ssh'`, `A=PATH B== gnuenv -S'\${A}\${B}${toLinks} ssh'`, `A=PATH B== gnuenv -vS '\${A}\${B}${toLinks} ssh'`,
+    "ssh -S '/tmp/c-${X}' host"]) {
     assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: command }), /^kit: git's ssh command \(.*\) cannot be told: an -S string in it holds \$\{…\}/m, command);
   }
   // sh fills in a $ in a double-quoted or bare word before that env reads it (S-1), with EMPTY unset here.
@@ -1499,7 +1500,13 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
     `gnuenv -S "X=1 \${X:-PATH}=${toLinks} ssh"`, `gnuenv PA$EMPTY'TH'=${toLinks} ssh`]) {
     assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: command }), /^kit: git's ssh command \(.*\) cannot be told: sh fills in a \$ in it, which an env there could read as PATH= or BASH_ENV=/m, command);
   }
-  assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: "ssh -i $HOME/.ssh/id_ed25519 -o User=$USER" }, { worktree: root }).problem, null);
+  // A shell the line starts fills in a $ that the outer sh left alone (single quotes) before its env reads the name.
+  for (const command of [`timeout 30 sh -c 'gnuenv PA\${EMPTY}TH=${toLinks} ssh'`, `timeout 30 sh -c 'env "PA\${EMPTY}TH=${toLinks}" ssh'`]) {
+    assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: command }), /^kit: git's ssh command \(.*\) cannot be told: a shell it starts could fill in a \$ in it as PATH= or BASH_ENV=/m, command);
+  }
+  for (const command of ["ssh -i $HOME/.ssh/id_ed25519 -o User=$USER", "ssh -o IdentityFile=$HOME/.ssh/id_ed25519 host", "timeout 30 sh -c 'ssh -i ${HOME}/.ssh/id_ed25519 \"$@\"' ssh"]) {
+    assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root }).problem, null, command);
+  }
   for (const [name, file] of [["BASH_ENV", wrapper("gnuenv-split", `gnuenv -S "'BA''SH_ENV=${startup}' ${bash}"`, "")],
     ["PATH", wrapper("gnuenv-split-path", `gnuenv -S "'PA''TH=${toLinks}' ssh"`, "")],
     ["PATH", wrapper("gnuenv-break-path", `gnuenv -S "X=1\\\\_PATH=${toLinks}" ssh`, "")],
@@ -1507,9 +1514,11 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
     assert.throws(() => start(file), new RegExp(`, which sets ${name} itself`), file);
   }
   for (const file of [wrapper("gnuenv-expanded-path", `A=ATH gnuenv -S P\\\${A}=${toLinks} ssh`, ""), wrapper("gnuenv-expanded-equals", `A=PATH B== gnuenv -S \\\${A}\\\${B}${toLinks} ssh`, ""),
-    wrapper("gnuenv-short-split", `A=ATH gnuenv --split P\\\${A}=${toLinks} ssh`, "")]) {
+    wrapper("gnuenv-short-split", `A=ATH gnuenv --split P\\\${A}=${toLinks} ssh`, ""), wrapper("gnuenv-short-split-joined", `A=ATH gnuenv --s=P\\\${A}=${toLinks} ssh`, "")]) {
     assert.throws(() => start(file), /, whose -S string holds \$\{…\}, which an env there could fill in as PATH or BASH_ENV/, file);
   }
+  const innerShell = wrapper("inner-shell-fill", `sh -c 'gnuenv PA\${EMPTY}TH=${toLinks} ssh'`, "");
+  assert.throws(() => start(innerShell), /, where a shell it starts could fill in a \$ as PATH= or BASH_ENV=/, innerShell);
   // Split names that make other variables still start, and so does a ${…} that ssh fills in itself.
   assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: `gnuenv -S "X'PA'TH=1 MY_E'N'V=2 ssh"` }, { worktree: root }).problem, null);
   assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: "ssh -i '${HOME}/.ssh/id_ed25519'" }, { worktree: root }).problem, null);
