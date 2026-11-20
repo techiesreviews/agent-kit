@@ -372,7 +372,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   git's ssh command starts does with its own words (only the line's words are read: `sh -c '…'` can set PATH in its
   own way, and `timeout 30 node` looks node up by name on the run's PATH, where a link elsewhere into the worktree
   stays), variables there that have a loader or a runtime load code (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `NODE_OPTIONS`,
-  `PYTHONPATH` and the like), a fetch or push reading a global Git
+  `PYTHONPATH` and the like) or move another shell's start-up folder (`HOME` for zsh, `XDG_CONFIG_HOME` for fish), a
+  fetch or push reading a global Git
   config a build wrote, and what ssh itself starts from a config under HOME a build wrote (`~/.ssh/config`'s
   `ProxyCommand`, `Match exec`, or a host name it maps to this machine), and a push host whose address changes between
   `kit pr`'s check and the push. For those the lead's guard is the review before anything a build wrote is run (`kit

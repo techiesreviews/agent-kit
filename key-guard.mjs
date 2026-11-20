@@ -698,8 +698,9 @@ export function sshCommand(env = process.env, { worktree, common, configured } =
     const word = words.find(({ start, end }) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(shell.slice(start, end)));
     if (!word || !word.plain) return unknown("its program is not a plain word");
     // A PATH of its own would bring back folders a link into the worktree sits in, for what the program starts by name,
-    // and one of ownSetting's shell variables would have a shell run code from a file a build wrote (TOOLS-329): before the program
-    // or after it, for an env it starts in turn (timeout 30 env PATH=…), in any form ownSetting reads (R1-1, SL-2).
+    // and one of ownSetting's shell variables would have a shell run code from a file a build wrote (TOOLS-329): before
+    // the program or after it, for an env it starts in turn (timeout 30 env PATH=…), in any form ownSetting reads (R1-1,
+    // SL-2).
     const setting = words.map(({ value }) => ownSetting(value)).find(Boolean);
     if (setting) return unknown(`it sets ${setting} itself`);
     // env started in turn would look its program up by name and read settings of its own (a quoted -S string).
