@@ -26,7 +26,7 @@ main=$(realpath -m -- "$(kit_main_root)")
 dev=$(kit_dev_root 2>/dev/null || :)
 [[ -z $dev ]] || dev=$(realpath -m -- "$dev")
 failed=() skipped=() checks=0 api_warning=''
-# A project has no scripts/agents/worktree.sh of its own (the kit's front door is all it holds), so the hints name the
+# A project may have no scripts/agents/worktree.sh of its own (the kit's front door is all it holds), so the hints name the
 # shared kit's copy the way it is found, through kit --home.
 worktree_script='"$(scripts/agents/kit --home)/worktree.sh"'
 # KIT_DOCTOR_SKIP=help (agent.sh sets it for builds): a broken --help prints a problem: line and does not fail,

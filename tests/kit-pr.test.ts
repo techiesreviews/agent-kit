@@ -1522,6 +1522,20 @@ test("a kit pr --sync-main PR says it joins main into dev and changes no file, a
   assert.match(body, /## Tests/);
 });
 
+test("a kit pr --sync-main PR counts several joined commits in the plural (TOOLS-380)", t => {
+  const f = fixture(t), peer = f.peer();
+  f.git("checkout", "-q", "dev"); const one = f.commit("Dev edit", "file.txt", "dev one\n"); const two = f.commit("Dev edit two", "file.txt", "dev two\n");
+  f.git("push", "-q", "origin", "dev");
+  f.gitAt(peer, "fetch", "-q", "origin"); f.gitAt(peer, "checkout", "-q", "main");
+  f.gitAt(peer, "cherry-pick", one); f.gitAt(peer, "cherry-pick", two); f.gitAt(peer, "push", "-q", "origin", "main");
+  f.commit("Dev edit three", "file.txt", "dev three\n"); f.git("push", "-q", "origin", "dev");
+  f.git("checkout", "-q", "-b", "sync/main"); f.git("fetch", "-q", "origin");
+  const result = f.run(["--sync-main", "--no-merge"], { FAKE_EMPTY: "1", FAKE_LAND_MERGE: peer });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(f.body(), /^## Summary\n\nThis joins origin\/main into dev and changes no file on dev\. It adds no new work: the 2 commits it joins are already in dev's files\.\n/m);
+  assert.doesNotMatch(f.body(), /^- Dev edit/m);
+});
+
 test("kit pr --sync-main refuses a sync that would change dev, and leaves the branch at origin/dev", t => {
   const f = fixture(t), peer = f.peer();
   f.gitAt(peer, "checkout", "-q", "main"); writeFileSync(join(peer, "hotfix.txt"), "hotfix\n");
@@ -1729,6 +1743,10 @@ test("kit pr --sync-main lands a hand-made merge on a rerun with kit's own follo
   assert.equal(f.git("rev-parse", "origin/dev^2"), note, "dev takes the join by a merge commit");
   f.git("merge-base", "--is-ancestor", "origin/main", "origin/dev");
   assert.match(again.stdout, /RESULT: ok merged #73 [a-f0-9]{7}$/m);
+  // TOOLS-380: a merge that changes a file says so and counts what it joins; kit's follow-ups commit (ticket.md) is no part of the join.
+  assert.match(f.body(), /^## Summary\n\nThis joins origin\/main into dev and changes 1 file on dev: hotfix\.txt\. It joins 1 commit of main\.\n/m);
+  assert.doesNotMatch(f.body().split("## Tests")[0].split("## Summary")[1], /ticket\.md/);
+  assert.doesNotMatch(f.body(), /^- Hotfix on main$/m);
 });
 
 test("kit pr --sync-main makes its merge again under kit's own follow-ups commit: the same commits on the same dev and main, the note put on a new merge after dev moved (TOOLS-352)", t => {

@@ -1290,8 +1290,9 @@ async function main(args) {
     if (!prTitle) throw new Error("no title or commits ahead of base");
     // A sync joins old work and is no new work: its Summary says so, with the count of what it joins and never their subjects (TOOLS-380).
     const syncSummary = async () => {
-      const count = Number(await git("body", ["rev-list", "--count", `origin/${release}`, `^origin/${flags.base}`]));
+      // The count and the files come from the merge on the branch, which a hand-made merge may have made on an older origin/<release>.
       const merge = await git("body", ["rev-list", "--merges", "--first-parent", "-n", "1", range]) || "HEAD";
+      const count = Number(await git("body", ["rev-list", "--count", merge === "HEAD" ? `origin/${release}` : `${merge}^2`, `^origin/${flags.base}`]));
       const changed = (await git("body", ["-c", "core.quotepath=false", "diff", "--name-only", whole, `origin/${flags.base}`, merge])).split(/\r?\n/).filter(Boolean);
       const joins = `origin/${release} into ${flags.base}`, commits = `${count} commit${count === 1 ? "" : "s"}`;
       return changed.length
