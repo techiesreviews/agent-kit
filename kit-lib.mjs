@@ -248,7 +248,8 @@ function version(candidate) {
   try {
     if (!statSync(candidate).isFile()) return null;
     accessSync(candidate, constants.X_OK);
-    const output = execFileSync(candidate, ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).replace(/\n+$/, "");
+    // Node on Windows ends the line with CRLF (TOOLS-335).
+    const output = execFileSync(candidate, ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).replace(/[\r\n]+$/, "");
     return /^v([0-9]+)\.([0-9]+)\.([0-9]+)$/.exec(output)?.slice(1).map(Number) ?? null;
   } catch { return null; }
 }

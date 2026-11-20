@@ -138,11 +138,18 @@ kit_owner() {
   printf '%s\n' "${owner:-unknown}"
 }
 
+# What `node --version` prints, without the carriage return Node on Windows ends it with (TOOLS-335).
+kit_node_version() {
+  local version
+  version=$("$1" --version 2>/dev/null) || return 1
+  printf '%s\n' "${version%$'\r'}"
+}
+
 kit_node_find() (
   local candidate version root best='' major=0 minor=0 patch=0
   local next_major next_minor next_patch
   candidate=$(type -P node) || candidate=''
-  if [[ -n $candidate ]] && version=$("$candidate" --version 2>/dev/null) &&
+  if [[ -n $candidate ]] && version=$(kit_node_version "$candidate") &&
     [[ $version =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] && (( 10#${BASH_REMATCH[1]} >= 24 )); then
     printf '%s/%s\n' "$(cd -- "${candidate%/*}" && pwd -P)" "${candidate##*/}"
     return 0
@@ -152,7 +159,7 @@ kit_node_find() (
   shopt -s nullglob
   for candidate in "$root"/.npm/_npx/*/node_modules/node/bin/node "$root"/.nvm/versions/node/*/bin/node; do
     [[ -f $candidate && -x $candidate ]] || continue
-    version=$("$candidate" --version 2>/dev/null) || continue
+    version=$(kit_node_version "$candidate") || continue
     [[ $version =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || continue
     next_major=$((10#${BASH_REMATCH[1]})) next_minor=$((10#${BASH_REMATCH[2]})) next_patch=$((10#${BASH_REMATCH[3]}))
     if (( next_major >= 24 && (next_major > major || (next_major == major && next_minor > minor) || (next_major == major && next_minor == minor && next_patch > patch)) )); then

@@ -450,6 +450,28 @@ test("Node lookup handles npm alone, absent system node, and unsupported install
   assert.equal(child.stdout, "RESULT: ok still-runs finished\n");
 });
 
+// Node on Windows (Git Bash) ends `node --version` with CRLF; the carriage return is not part of the version (TOOLS-335).
+test("Node lookup reads a version printed with a Windows CRLF line ending", (t) => {
+  const directory = temp(t);
+  const env = fixtureEnv(directory);
+  const crlfNode = (file: string, version: string) => {
+    fakeNode(file, version);
+    writeFileSync(file, `#!/bin/sh\nprintf '%s\\r\\n' '${version}'\n`);
+  };
+  const npm = join(directory, ".npm/_npx/install/node_modules/node/bin/node");
+  crlfNode(npm, "v26.1.0");
+  assert.equal(bash("kit_node_find", env).stdout, `${npm}\n`);
+  assert.equal(findNode({ path: env.PATH, searchRoot: directory }), npm);
+  const system = join(directory, "current/node");
+  crlfNode(system, "v26.0.0");
+  assert.equal(bash("kit_node_find", env).stdout, `${system}\n`);
+  assert.equal(findNode({ path: env.PATH, searchRoot: directory }), system);
+  const selected = bash('kit_node && printf "%s\\n" "$KIT_NODE"', env);
+  assert.equal(selected.status, 0, selected.stderr);
+  assert.equal(selected.stdout, `${system}\n`);
+  assert.equal(nodeEnv(env).KIT_NODE, system);
+});
+
 test("bash and mjs roots and owner follow overrides, owner file and branch fallbacks", (t) => {
   const directory = temp(t);
   const initialized = spawnSync("git", ["init", "-b", "feature/x", directory], { encoding: "utf8" });
