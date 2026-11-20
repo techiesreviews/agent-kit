@@ -1331,7 +1331,7 @@ test("TOOLS-326: an ssh wrapper whose #!/usr/bin/env -S line sets PATH never sta
   // env sets a word with = in it whatever its name, so an odd name first hides no PATH after it.
   const oddName = wrapper("ssh-odd-path", `1X=1 PATH=${links}:${bin}:${dirname(shell)}`);
   const emptyName = join(wrappers, "ssh-empty-name");
-  writeFileSync(emptyName, `#!/usr/bin/env -S =x /usr/bin/env -S "X=1 PATH=${links}:${bin}:${dirname(shell)}" sh\nexec ssh "$@"\n`); chmodSync(emptyName, 0o755);
+  writeFileSync(emptyName, `#!/usr/bin/env -S =x /usr/bin/env -S "X=1 'PA''TH=${links}:${bin}:${dirname(shell)}'" sh\nexec ssh "$@"\n`); chmodSync(emptyName, 0o755);
   const long = join(wrappers, "ssh-long-path");
   writeFileSync(long, `#!/usr/bin/env --split-string=PATH=${links}:${bin}:${dirname(shell)} sh\nexec ssh "$@"\n`); chmodSync(long, 0o755);
   // A wrapper whose interpreter is such a script: the line one level down is read too.
@@ -1363,9 +1363,10 @@ test("TOOLS-326: an ssh wrapper whose #!/usr/bin/env -S line sets PATH never sta
     assert.throws(() => startCommand(file, [], base, { worktree: root, kind: "test" }), /, which sets PATH itself/, file);
     assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: file }), /, which sets PATH itself/m, file);
   }
-  // A link to env by another name is env again, whose own -S string could set PATH out of sight.
+  // A link to env by another name is env again, whose own -S string could set PATH out of sight (the split quotes join
+  // to PATH= only when that env splits the string).
   const renamed = join(wrappers, "ssh-renamed-env");
-  writeFileSync(renamed, `#!/usr/bin/env -S ${join(bin, "e")} -S "X=1 PATH=${links}:${bin}:${dirname(shell)}" sh\nexec ssh "$@"\n`); chmodSync(renamed, 0o755);
+  writeFileSync(renamed, `#!/usr/bin/env -S ${join(bin, "e")} -S "X=1 'PA''TH=${links}:${bin}:${dirname(shell)}'" sh\nexec ssh "$@"\n`); chmodSync(renamed, 0o755);
   for (const file of [wrapper("ssh-env-env", "env"), renamed, emptyName]) {
     assert.throws(() => startCommand(file, [], base, { worktree: root, kind: "test" }), /, which starts env again, and that env would look its program up by name/, file);
     assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: file }), /^kit: \S+ starts with env -S .*, which starts env again/m, file);
@@ -1386,6 +1387,112 @@ test("TOOLS-326: an ssh wrapper whose #!/usr/bin/env -S line sets PATH never sta
   // Variables other than PATH stay with env, and the wrapper starts by its interpreter's full path.
   const other = wrapper("ssh-other", "X=1 PATHX=1 XPATH=2");
   assert.deepEqual(startCommand(other, [], base, { worktree: root, kind: "test" }), ["/usr/bin/env", ["X=1", "PATHX=1", "XPATH=2", shell, other]]);
+});
+
+// TOOLS-329: a shell reads the file BASH_ENV (bash) or ENV (sh) names before its script, so an env -S line or git's ssh
+// command that sets one could run a file a build wrote; a PATH= hidden in another program's words (an env started by a
+// multi-call binary, an -S option joined to its string) and an env under another name in git's ssh command are refused
+// too (R1-1, R6-1..R6-4, SL-2).
+test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hide PATH in another env, or reach env by another name never start", t => {
+  const dir = mkdtempSync(join(tmpdir(), "kit-git-ssh-startup-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const root = join(dir, "work"), home = join(dir, "home"), bin = join(dir, "bin"), links = join(dir, "links"), wrappers = join(dir, "wrappers"), noted = join(dir, "noted.txt");
+  for (const folder of [root, home, bin, links, wrappers]) mkdirSync(folder);
+  assert.equal(spawnSync("git", ["-C", root, "init", "-q", "-b", "test"], { encoding: "utf8", env: { ...process.env, HOME: home } }).status, 0);
+  const shell = ["/usr/bin/sh", "/bin/sh"].find(file => existsSync(file))!;
+  const bash = ["/usr/bin/bash", "/bin/bash"].find(file => existsSync(file))!;
+  // The lead's ssh is a bash script outside the worktree; a build left a start-up file and an ssh in the worktree.
+  writeFileSync(join(bin, "ssh"), `#!${bash}\necho "lead's ssh $*" >> ${JSON.stringify(noted)}\nexit 1\n`); chmodSync(join(bin, "ssh"), 0o755);
+  const startup = join(root, "startup.sh");
+  writeFileSync(startup, `echo "planted start-up file" >> ${JSON.stringify(noted)}\n`);
+  mkdirSync(join(root, "tools"));
+  writeFileSync(join(root, "tools/ssh"), `#!/bin/sh\necho "planted ssh $*" >> ${JSON.stringify(noted)}\nexit 1\n`); chmodSync(join(root, "tools/ssh"), 0o755);
+  symlinkSync(join(root, "tools/ssh"), join(links, "ssh"));
+  // A multi-call binary that runs its first word as the program (busybox env, coreutils env), and a link to env.
+  for (const name of ["busybox", "coreutils"]) { writeFileSync(join(bin, name), `#!/bin/sh\nshift\nexec /usr/bin/env "$@"\n`); chmodSync(join(bin, name), 0o755); }
+  symlinkSync("/usr/bin/env", join(bin, "e"));
+  const wrapper = (name: string, words: string, program = "sh") => {
+    const file = join(wrappers, name);
+    writeFileSync(file, `#!/usr/bin/env -S ${words} ${program}\nexec ssh "$@"\n`); chmodSync(file, 0o755);
+    return file;
+  };
+  const base = { ...process.env, HOME: home, PATH: `${bin}:/usr/bin:/bin`, GIT_CONFIG_GLOBAL: undefined, GIT_CONFIG_NOSYSTEM: undefined, GIT_SSH: undefined, GIT_SSH_COMMAND: undefined, GIT_CONFIG_COUNT: undefined, BASH_ENV: undefined, ENV: undefined } as NodeJS.ProcessEnv;
+  const realGit = String(process.env.PATH).split(":").filter(folder => folder.startsWith("/")).map(folder => join(folder, "git")).find(file => existsSync(file))!;
+  const refusedWith = (env: NodeJS.ProcessEnv) => {
+    rmSync(noted, { force: true });
+    const safe = gitSafety({ worktree: root, env, network: true, git: realGit });
+    assert.equal(safe.problem, null);
+    const run = spawnSync(realGit, ["-C", root, "ls-remote", "ssh://example.invalid/repo.git"], { env: { ...env, ...safe.env }, encoding: "utf8" });
+    assert.notEqual(run.status, 0);
+    assert.ok(!existsSync(noted), `an ssh or the start-up file ran: ${existsSync(noted) ? readFileSync(noted, "utf8") : ""}`);
+    return run.stderr;
+  };
+  const start = (file: string) => startCommand(file, [], base, { worktree: root, kind: "test" });
+  // BASH_ENV or ENV in an env -S line, before the program, after it, or in an -S string another env splits.
+  for (const [name, file] of [
+    ["BASH_ENV", wrapper("bash-env", `BASH_ENV=${startup}`, "bash")],
+    ["ENV", wrapper("env-env", `ENV=${startup}`)],
+    ["BASH_ENV", wrapper("bash-env-after", `${bash} -c true BASH_ENV=${startup}`, "")],
+    ["BASH_ENV", wrapper("bash-env-joined", `coreutils env -SBASH_ENV=${startup}`, "bash")],
+  ] as const) {
+    assert.throws(() => start(file), new RegExp(`, which sets ${name} itself`), file);
+    assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: file }), new RegExp(`^kit: \\S+ starts with env -S .*, which sets ${name} itself`, "m"), file);
+    assert.match(refusedWith({ ...base, GIT_SSH: file }), new RegExp(`^kit: \\S+ starts with env -S .*, which sets ${name} itself`, "m"), file);
+  }
+  // In git's ssh command, before the program or after it (an env it starts in turn).
+  for (const command of [`BASH_ENV=${startup} ssh`, `X=1 ENV=${startup} ssh`, `timeout 30 env BASH_ENV=${startup} ssh`]) {
+    assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: command }), /^kit: git's ssh command \(.*\) cannot be told: it sets (BASH_ENV|ENV) itself/m, command);
+  }
+  // A PATH= another env reads: joined to an -S option, inside one quoted -S string, or after a program that is not env.
+  for (const file of [
+    wrapper("coreutils-joined-path", `coreutils env -SPATH=${links}:${bin}:${dirname(shell)}`),
+    wrapper("coreutils-quoted-path", `coreutils env -S "X=1 PATH=${links}:${bin}:${dirname(shell)}"`),
+    wrapper("busybox-path", `busybox env PATH=${links}:${bin}:${dirname(shell)}`),
+  ]) {
+    assert.throws(() => start(file), /, which sets PATH itself/, file);
+    assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: file }), /, which sets PATH itself/m, file);
+  }
+  // A multi-call binary told to run env, or a wrapper that starts env, is env again, which would look its program up by
+  // name and could read a PATH from a quoted -S string of its own.
+  for (const file of [wrapper("busybox-env", "busybox env"), wrapper("coreutils-env", "coreutils env"), wrapper("timeout-env", `timeout 30 env -S "'PA''TH=${links}'"`)]) {
+    assert.throws(() => start(file), /, which starts env again, and that env would look its program up by name/, file);
+    assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: file }), /^kit: \S+ starts with env -S .*, which starts env again/m, file);
+  }
+  // git's ssh command: a PATH= after the program, and env reached by a link of another name (R1-1, SL-2).
+  assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: `timeout 30 env PATH=${links} ssh` }), /^kit: git's ssh command \(.*\) cannot be told: it sets PATH itself/m);
+  assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: `${join(bin, "e")} PATH=${links} ssh` }), /^kit: git's ssh command \(.*\) cannot be told/m);
+  assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: `${join(bin, "e")} ssh` }), /^kit: git's ssh command \(.*\) cannot be told: env looks its program up on PATH/m);
+  // Names that only end in ENV or PATH are other variables, and a plain ssh command still starts the lead's ssh.
+  const others = wrapper("other-names", "MY_ENV=1 XBASH_ENV=2 ENVX=3 XPATH=4");
+  assert.deepEqual(start(others), ["/usr/bin/env", ["MY_ENV=1", "XBASH_ENV=2", "ENVX=3", "XPATH=4", shell, others]]);
+  rmSync(noted, { force: true });
+  const safe = gitSafety({ worktree: root, env: { ...base, GIT_SSH_COMMAND: "MY_ENV=1 ssh" }, network: true, git: realGit });
+  spawnSync(realGit, ["-C", root, "ls-remote", "ssh://example.invalid/repo.git"], { env: { ...base, GIT_SSH_COMMAND: "MY_ENV=1 ssh", ...safe.env }, encoding: "utf8" });
+  assert.match(readFileSync(noted, "utf8"), /^lead's ssh .*example\.invalid/);
+});
+
+// TOOLS-329 (SL-1): env -S splits its string on carriage return, vertical tab and form feed as on blanks, so a first
+// line that uses them names its program in its first word, and that program starts by its full path.
+test("TOOLS-329: an env -S first line split on carriage return, vertical tab or form feed starts its interpreter by its full path", t => {
+  const dir = mkdtempSync(join(tmpdir(), "kit-interpreter-blanks-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const worktree = join(dir, "work"), bin = join(dir, "bin"), links = join(dir, "links"), noted = join(dir, "planted.txt");
+  for (const folder of [worktree, bin, links]) mkdirSync(folder);
+  const node = join(bin, "node");
+  symlinkSync(process.execPath, node);
+  writeFileSync(join(worktree, "node"), `#!/bin/sh\necho planted >> ${JSON.stringify(noted)}\nexec ${process.execPath} "$@"\n`); chmodSync(join(worktree, "node"), 0o755);
+  symlinkSync(join(worktree, "node"), join(links, "node"));
+  const env = { PATH: `${links}:${bin}:/usr/bin:/bin` };
+  for (const [name, blank] of [["return", "\r"], ["vertical-tab", "\v"], ["form-feed", "\f"]]) {
+    const file = join(dir, name);
+    writeFileSync(file, `#!/usr/bin/env -S node${blank}--no-warnings\nconsole.log(JSON.stringify(process.argv.slice(2)));\n`); chmodSync(file, 0o755);
+    assert.deepEqual(startCommand(file, ["a"], env, { worktree, kind: "test" }), [node, ["--no-warnings", file, "a"]], name);
+  }
+  // A blank env never splits on stays in its word: the whole word is the program, which no folder holds.
+  const joined = join(dir, "no-break");
+  writeFileSync(joined, "#!/usr/bin/env -S node --no-warnings\n"); chmodSync(joined, 0o755);
+  assert.deepEqual(startCommand(joined, ["a"], env, { worktree, kind: "test" }), [joined, ["a"]]);
+  assert.ok(!existsSync(noted), "the planted node never started");
 });
 
 test("TOOLS-320: bubblewrap mounts the kit's folders before the key masks and kit pr's own folders after them", t => {

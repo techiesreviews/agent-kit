@@ -379,8 +379,10 @@ async function main(args) {
       Object.assign(process.env, ownGitVariables, safety(env));
     };
     shieldProcess();
-    const gitSync = (args, environment = env) => execFileSync(...gitArgs(["-C", root, ...args]),
-      { cwd: root, env: { ...environment, ...safety(environment, gitNetworkCall(args)) }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    // `network` reads the config as a fetch or push does (the global and system config too), for a read that must see
+    // what such a call will (its push addresses).
+    const gitSync = (args, environment = env, network = gitNetworkCall(args)) => execFileSync(...gitArgs(["-C", root, ...args]),
+      { cwd: root, env: { ...environment, ...safety(environment, network) }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
     // A ticket outside the repo, or one git ignores (kit brief writes its briefs into the ignored .scratch folder, often of
     // another checkout), is no file of the repo: kit's notes go into it, and no commit is made for it (TOOLS-337). The words
     // why, or "" for a repo file. git check-ignore exits 1 for a path it does not ignore.
@@ -392,14 +394,15 @@ async function main(args) {
     };
     // Whether a fetch or push runs inside the key lock: when every address it goes to is a folder on this machine, whose
     // hooks git runs without the settings above. The addresses are its remote's (origin when it names none), rewrites
-    // applied, or the URL it names; a push goes to every push URL the remote lists (TOOLS-320). A push to a folder beside
+    // applied (the global and system config's too, which the push reads, TOOLS-329), or the URL it names; a push goes to
+    // every push URL the remote lists (TOOLS-320). A push to a folder beside
     // other addresses (those need the credentials, which the lock hides), or to this machine itself (its hooks run
     // outside any lock), stops.
     const lockedRemote = async argv => {
       const at = argv.findIndex((arg, i) => !arg.startsWith("-") && argv[i - 1] !== "-c" && argv[i - 1] !== "-C");
       const remote = argv.slice(at + 1).find(arg => !arg.startsWith("-")) ?? "origin", push = argv[at] === "push";
       let urls;
-      try { urls = gitSync(["remote", "get-url", ...(push ? ["--push", "--all"] : []), remote]).split("\n").filter(Boolean); } catch { urls = [remote]; }
+      try { urls = gitSync(["remote", "get-url", ...(push ? ["--push", "--all"] : []), remote], env, true).split("\n").filter(Boolean); } catch { urls = [remote]; }
       const folders = urls.filter(folderRemote), others = urls.filter(url => !folderRemote(url));
       const near = push ? await Promise.all(others.map(loopbackRemote)) : [];
       const here = others.filter((_, index) => near[index]);

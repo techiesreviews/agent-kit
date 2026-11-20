@@ -5596,3 +5596,21 @@ test("kit pr refuses a push whose remote lists a folder after another push addre
   assert.equal(folders.status, 0, folders.stdout + folders.stderr);
   assert.match(readFileSync(noted, "utf8"), /^ran$/m);
 });
+
+// TOOLS-329 (SL-3): the push reads the global and system Git config, so their URL rewrites count in kit pr's check of
+// the push addresses too: one that takes an outside address to this machine stops the push before any ssh starts.
+test("kit pr weighs push addresses with the global and system URL rewrites the push applies", t => {
+  const f = fixture(t);
+  const noted = join(f.dir, "ssh.txt");
+  writeFileSync(join(f.bin, "ssh"), `#!/bin/sh\necho "ssh $*" >> ${JSON.stringify(noted)}\nexit 1\n`, { mode: 0o755 });
+  f.git("config", "--add", "remote.origin.pushurl", "https://mirror.invalid/repo.git");
+  const rewrite = join(f.dir, "rewrite.gitconfig");
+  writeFileSync(rewrite, '[url "ssh://git@localhost/srv/"]\n\tinsteadOf = https://mirror.invalid/\n');
+  for (const [where, overrides] of [["global", { GIT_CONFIG_GLOBAL: rewrite }], ["system", { GIT_CONFIG_NOSYSTEM: undefined, GIT_CONFIG_SYSTEM: rewrite }]] as const) {
+    rmSync(noted, { force: true });
+    const result = f.run([], overrides);
+    assert.equal(result.status, 1, `${where}: ${result.stdout}${result.stderr}`);
+    assert.match(result.stdout, /^RESULT: fail push: origin pushes to this machine itself \(ssh:\/\/(git@)?localhost\/srv\/repo\.git\)/m, where);
+    assert.ok(!existsSync(noted), `${where}: an ssh started: ${existsSync(noted) ? readFileSync(noted, "utf8") : ""}`);
+  }
+});
