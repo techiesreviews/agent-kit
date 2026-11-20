@@ -180,6 +180,25 @@ test("doctor rejects an unrelated branch", (t) => {
   assert.match(result.stdout, /not based on origin\/dev \(merge-base none\)/);
 });
 
+test("doctor's worktree hints name the shared kit's worktree.sh, which exists, not a scripts/agents/worktree.sh the project lacks (TOOLS-380)", (t) => {
+  const f = fixture(t);
+  assert.ok(statSync(join(repo, "worktree.sh")).isFile(), "the kit's own worktree.sh is the file the hint names");
+  const hint = '"$(scripts/agents/kit --home)/worktree.sh"';
+  // The dev worktree is the wrong place to build: doctor says how to make a build worktree.
+  const place = f.run([], f.dev);
+  failure(place, "place");
+  const placeLine = place.stdout.split("\n").find(line => line.startsWith("✗ place: "));
+  assert.ok(placeLine?.includes(`create a worktree with ${hint} <branch> origin/dev`), placeLine);
+  // A branch with no common history with origin/dev gets the same hint when it is recreated.
+  git(f.build, "checkout", "--orphan", "unrelated");
+  git(f.build, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "unrelated");
+  const base = f.run();
+  failure(base, "base");
+  const baseLine = base.stdout.split("\n").find(line => line.startsWith("✗ base: "));
+  assert.ok(baseLine?.includes(`recreate with ${hint} <branch> origin/dev`), baseLine);
+  for (const line of [placeLine, baseLine]) assert.ok(!line?.includes("scripts/agents/worktree.sh"), line);
+});
+
 test("doctor reports missing origin/dev", (t) => {
   const f = fixture(t);
   // GitHub no longer has dev either, so doctor's own fetch cannot bring it back.

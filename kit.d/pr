@@ -1288,10 +1288,21 @@ async function main(args) {
     const title = flags.ticket ? ticketTitle(resolve(root, flags.ticket)) : "";
     const prTitle = flags.title || title || subjects.at(-1);
     if (!prTitle) throw new Error("no title or commits ahead of base");
+    // A sync joins old work and is no new work: its Summary says so, with the count of what it joins and never their subjects (TOOLS-380).
+    const syncSummary = async () => {
+      const count = Number(await git("body", ["rev-list", "--count", `origin/${release}`, `^origin/${flags.base}`]));
+      const merge = await git("body", ["rev-list", "--merges", "--first-parent", "-n", "1", range]) || "HEAD";
+      const changed = (await git("body", ["-c", "core.quotepath=false", "diff", "--name-only", whole, `origin/${flags.base}`, merge])).split(/\r?\n/).filter(Boolean);
+      const joins = `origin/${release} into ${flags.base}`, commits = `${count} commit${count === 1 ? "" : "s"}`;
+      return changed.length
+        ? `This joins ${joins} and changes ${changed.length} file${changed.length === 1 ? "" : "s"} on ${flags.base}: ${few(changed)}. It joins ${commits} of ${release}.`
+        : `This joins ${joins} and changes no file on ${flags.base}. It adds no new work: the ${count === 1 ? "1 commit" : `${count} commits`} it joins ${count === 1 ? "is" : "are"} already in ${flags.base}'s files.`;
+    };
+    const summary = flags.syncMain ? await syncSummary() : subjects.map(subject => `- ${subject}`).join("\n");
     const trailers = await git("body", ["log", "--format=%(trailers:key=Co-Authored-By,valueonly)", range]);
     const claude = env.CLAUDECODE === "1" || /^\s*Claude\b/im.test(trailers);
     const body = join(directory, "body.md");
-    writeFileSync(body, `${flags.ticket ? `Ticket: ${title || prTitle} (${flags.ticket})\n\n` : ""}## Summary\n\n${subjects.map(subject => `- ${subject}`).join("\n")}\n\n## Tests\n\n${tests.join("\n")}\n${claude ? "\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n" : ""}`);
+    writeFileSync(body, `${flags.ticket ? `Ticket: ${title || prTitle} (${flags.ticket})\n\n` : ""}## Summary\n\n${summary}\n\n## Tests\n\n${tests.join("\n")}\n${claude ? "\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n" : ""}`);
     ok("body");
     const pushArgs = () => ["push", `--force-with-lease=refs/heads/${branch}:${pushed}`, "origin", `HEAD:refs/heads/${branch}`];
     const createArgs = ["pr", "create", "--base", flags.base, "--head", branch, "--title", prTitle, "--body-file", body];

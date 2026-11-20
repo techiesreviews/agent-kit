@@ -26,6 +26,9 @@ main=$(realpath -m -- "$(kit_main_root)")
 dev=$(kit_dev_root 2>/dev/null || :)
 [[ -z $dev ]] || dev=$(realpath -m -- "$dev")
 failed=() skipped=() checks=0 api_warning=''
+# A project has no scripts/agents/worktree.sh of its own (the kit's front door is all it holds), so the hints name the
+# shared kit's copy the way it is found, through kit --home.
+worktree_script='"$(scripts/agents/kit --home)/worktree.sh"'
 # KIT_DOCTOR_SKIP=help (agent.sh sets it for builds): a broken --help prints a problem: line and does not fail,
 # so the builder that should repair it can start; so does a failing kit home check (it runs kit version)
 # when the copy's version fails as version's help did: both hang, or both exit alike and print the same.
@@ -70,7 +73,7 @@ elif [[ $root != "$main" && $root != "$dev" ]]; then
 elif [[ $root == "$main" && $allow_main == true ]]; then
   pass place "$root (main checkout; allowMainCheckout)"
 else
-  fail place "main or dev worktree ($root)" "create a worktree with scripts/agents/worktree.sh <branch> origin/${land:-<land>}"
+  fail place "main or dev worktree ($root)" "create a worktree with $worktree_script <branch> origin/${land:-<land>}"
 fi
 
 # Local clones are often behind GitHub (research 02): fetch the land branch before judging the base.
@@ -119,7 +122,7 @@ else
     fail base "stale: origin/$land moved on from merge-base ${base:0:7} over a day ago" "rebase onto origin/$land"
   else
     base=${base:-none}
-    fail base "not based on origin/$land (merge-base ${base:0:7})" "rebase onto origin/$land or recreate with scripts/agents/worktree.sh"
+    fail base "not based on origin/$land (merge-base ${base:0:7})" "rebase onto origin/$land or recreate with $worktree_script <branch> origin/$land"
   fi
 fi
 
