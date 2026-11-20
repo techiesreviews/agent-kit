@@ -360,7 +360,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     there (`"$E"sh` counts as `sh`), or ssh's `ProxyCommand` or `LocalCommand` (not `none`), which ssh runs through the
     user's shell, also in a bundle of flags (`-4oProxyCommand=…`) or with its name quoted. ssh runs `ProxyJump` (`-J`)
     through that shell too, as a command of its own with the jump hosts written into it, so a `ProxyJump` with more
-    than `user@host:port` names in it is refused. `rc` and `es` count only where they name a program PATH or a path
+    than `user@host:port` names in it is refused, and so is one beside a word with a `'` in it or an `-F` path with
+    more than plain characters (ssh writes the host and that path into the same command). `rc` and `es` count only where they name a program PATH or a path
     leads to, and a copy of a shell under a name of its own is not recognised. A plain ssh command (`ssh -i
     ~/.ssh/key`, `timeout 30 ssh`, `-J git@jump.example.com`, `PermitLocalCommand=no`) and an ssh wrapper script still
     run; an env -S first line may still name the script's own shell (`#!/usr/bin/env -S bash -eu -o pipefail`), as
@@ -394,8 +395,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   `PYTHONPATH` and the like) or move another shell's start-up folder (`HOME` for zsh, `XDG_CONFIG_HOME` for fish), a
   fetch or push reading a global Git
   config a build wrote, and what ssh itself starts from a config under HOME a build wrote (`~/.ssh/config`'s
-  `ProxyCommand`, `Match exec`, or a host name it maps to this machine) or that `ssh -F` names (whose path ssh also
-  writes into a `ProxyJump`'s command as it is), and a push host whose address changes between
+  `ProxyCommand`, `Match exec`, or a host name it maps to this machine) or that `ssh -F` names, and a push host whose
+  address changes between
   `kit pr`'s check and the push. For those the lead's guard is the review before anything a build wrote is run (`kit
   review` is read-only).
 - Keyed steps happen only in the lead's own process, never inside a locked run. Already the lead's: `git push`, `kit pr`
