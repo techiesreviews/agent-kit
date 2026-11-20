@@ -1506,6 +1506,22 @@ test("kit pr --sync-main lands a merge of main into dev that changes nothing, as
   assert.match(result.stdout, /RESULT: ok merged #73 [a-f0-9]{7}$/m);
 });
 
+test("a kit pr --sync-main PR says it joins main into dev and changes no file, and lists no joined commit subject (TOOLS-380)", t => {
+  const f = fixture(t), peer = f.peer();
+  f.git("checkout", "-q", "dev"); const first = f.commit("Dev edit", "file.txt", "dev one\n"); f.git("push", "-q", "origin", "dev");
+  f.gitAt(peer, "fetch", "-q", "origin"); f.gitAt(peer, "checkout", "-q", "main"); f.gitAt(peer, "cherry-pick", first); f.gitAt(peer, "push", "-q", "origin", "main");
+  f.commit("Dev edit again", "file.txt", "dev two\n"); f.git("push", "-q", "origin", "dev");
+  f.git("checkout", "-q", "-b", "sync/main"); f.git("fetch", "-q", "origin");
+  const result = f.run(["--sync-main", "--no-merge"], { FAKE_EMPTY: "1", FAKE_LAND_MERGE: peer });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const body = f.body();
+  assert.match(body, /^## Summary\n\nThis joins origin\/main into dev and changes no file on dev\. It adds no new work: the 1 commit it joins is already in dev's files\.\n/m);
+  // The joined old commit and kit's own merge are no new work: neither is listed as a Summary line.
+  assert.doesNotMatch(body, /^- Dev edit$/m);
+  assert.doesNotMatch(body, /Merge origin\/main into dev \(sync, no file changes\)/);
+  assert.match(body, /## Tests/);
+});
+
 test("kit pr --sync-main refuses a sync that would change dev, and leaves the branch at origin/dev", t => {
   const f = fixture(t), peer = f.peer();
   f.gitAt(peer, "checkout", "-q", "main"); writeFileSync(join(peer, "hotfix.txt"), "hotfix\n");
