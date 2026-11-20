@@ -1506,9 +1506,30 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
     `timeout 30 sh -c 'gnuenv $(printf PA)TH=${toLinks} ssh'`, `timeout 30 sh -c 'export "$(printf PA)TH=${toLinks}"; ssh "$@"' ssh`, `timeout 30 sh -c 'gnuenv \`true\`PA\${EMPTY}TH=${toLinks} ssh'`]) {
     assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: command }), /^kit: git's ssh command \(.*\) cannot be told: a \$ or ` in it could be filled in as PATH= or BASH_ENV=/m, command);
   }
-  for (const command of ["ssh -i $HOME/.ssh/id_ed25519 -o User=$USER", "ssh -o IdentityFile=$HOME/.ssh/id_ed25519 host", "timeout 30 sh -c 'ssh -i ${HOME}/.ssh/id_ed25519 \"$@\"' ssh"]) {
+  for (const command of ["ssh -i $HOME/.ssh/id_ed25519 -o User=$USER", "ssh -o IdentityFile=$HOME/.ssh/id_ed25519 host", "timeout 30 ssh -i ~/.ssh/id_ed25519",
+    "ssh -o ProxyCommand=none -o ProxyJump=jump.example.invalid", "nice -n 5 ssh -o 'ProxyCommand none'"]) {
     assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root }).problem, null, command);
   }
+  // Lex's decision (2026-11-20): no shell starts from git's ssh command, since a shell can build PATH= out of pieces no
+  // word holds ("$1$2", "${1}${2}", IFS= with "$*"): by name, behind a wrapper (timeout, nice, gnuenv, busybox), by a
+  // path, from a variable sh fills in, and ssh's ProxyCommand or LocalCommand, which ssh runs through the user's shell.
+  const shellLines = [`timeout 30 sh -c 'gnuenv "$1$2" ssh' sh PA TH=${toLinks}`, `timeout 30 sh -c 'gnuenv "\${1}\${2}" ssh' sh PA TH=${toLinks}`,
+    `timeout 30 sh -c 'IFS=; gnuenv "$*" ssh' sh PA TH=${toLinks}`, `sh -c 'ssh "$@"' ssh`, `nice -n 5 bash -c 'ssh "$@"' ssh`, `timeout 30 dash -c 'ssh "$@"' ssh`,
+    `gnuenv zsh -c 'ssh "$@"' ssh`, `timeout 30 ksh -c 'ssh "$@"' ssh`, `timeout 30 busybox sh -c 'ssh "$@"' ssh`, `timeout 30 ${shell} -c 'ssh "$@"' ssh`,
+    `timeout 30 bash5 -c 'ssh "$@"' ssh`, `timeout 30 $SHELL -c 'ssh "$@"' ssh`, `timeout 30 \${EMPTY}sh -c 'ssh "$@"' ssh`];
+  for (const command of shellLines) {
+    assert.match(sshCommand({ ...base, SHELL: bash, GIT_SSH_COMMAND: command }, { worktree: root }).problem ?? "", /^git's ssh command \(.*\) cannot be told: it starts a shell \((sh|bash|bash5|dash|zsh|ksh)\)/, command);
+  }
+  for (const command of shellLines.slice(0, 3)) {
+    assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: command }), /^kit: git's ssh command \(.*\) cannot be told: it starts a shell \(sh\)/m, command);
+  }
+  for (const command of ["ssh -o 'ProxyCommand=nc %h %p'", "ssh -oProxyCommand='nc %h %p'", "timeout 30 ssh -o 'proxycommand nc %h %p'", "ssh -o PermitLocalCommand=yes -o LocalCommand=true"]) {
+    assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root }).problem ?? "", /cannot be told: it starts a shell \((ProxyCommand|LocalCommand), which ssh runs through the user's shell\)/, command);
+  }
+  // A pattern sh expands after the program could name a shell too.
+  assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: `timeout 30 ${dirname(shell)}/s? -c 'ssh "$@"' ssh` }, { worktree: root }).problem ?? "", /cannot be told: sh expands a pattern in it, which could name a shell/);
+  // GIT_SSH naming a shell starts one as well.
+  assert.match(sshCommand({ ...base, GIT_SSH: bash }, { worktree: root }).problem ?? "", /cannot be told: it starts a shell \(bash\)/);
   for (const [name, file] of [["BASH_ENV", wrapper("gnuenv-split", `gnuenv -S "'BA''SH_ENV=${startup}' ${bash}"`, "")],
     ["PATH", wrapper("gnuenv-split-path", `gnuenv -S "'PA''TH=${toLinks}' ssh"`, "")],
     ["PATH", wrapper("gnuenv-break-path", `gnuenv -S "X=1\\\\_PATH=${toLinks}" ssh`, "")],
@@ -1523,12 +1544,23 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
     assert.throws(() => start(file), /, where a \$ or ` could be filled in as PATH= or BASH_ENV=/, file);
     assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: file }), /^kit: \S+ starts with env -S .*, where a \$ or ` could be filled in/m, file);
   }
-  const innerOk = wrapper("inner-shell-ok", "sh -c 'ssh -i ${HOME}/.ssh/id_ed25519'", "");
-  assert.doesNotThrow(() => start(innerOk));
+  // An env -S first line starts no shell but the script's own interpreter: not one told to run a string (-c, -ec), and
+  // not one behind a wrapper, which runs whatever its words say (Lex's decision, 2026-11-20).
+  for (const file of [wrapper("inner-shell-positional", `sh -c 'gnuenv "$1$2" ssh' PA TH=${toLinks}`, ""), wrapper("inner-shell-braces", `sh -c 'gnuenv "\${1}\${2}" ssh' PA TH=${toLinks}`, ""),
+    wrapper("inner-shell-star", `sh -c 'IFS=; gnuenv "$*" ssh' PA TH=${toLinks}`, ""), wrapper("inner-shell-ok", "sh -c 'ssh -i ${HOME}/.ssh/id_ed25519'", ""),
+    wrapper("bash-bundled-c", "bash -ec 'ssh \"$@\"'", ""), wrapper("timeout-sh", "timeout 30", "sh"), wrapper("timeout-bash-c", "timeout 30 bash -c 'ssh \"$@\"'", ""),
+    wrapper("nice-dash", "nice -n 5 dash", ""), wrapper("busybox-sh", "busybox", "sh"), wrapper("gnuenv-zsh", "gnuenv zsh -c 'ssh \"$@\"'", ""),
+    wrapper("ssh-proxy", "ssh -o 'ProxyCommand=nc %h %p'", "")]) {
+    assert.throws(() => start(file), /, which starts a shell \((sh|bash|dash|zsh|ProxyCommand)[),]/, file);
+    assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: file }), /^kit: \S+ starts with env -S .*, which starts a shell/m, file);
+  }
+  // The script's own interpreter is no extra shell: it runs the script, as #!/bin/sh would.
+  const ownShell = wrapper("own-shell", "X=1", "bash -e");
+  assert.deepEqual(start(ownShell), ["/usr/bin/env", ["X=1", bash, "-e", ownShell]]);
   // Split names that make other variables still start, and so does a ${…} that ssh fills in itself.
   assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: `gnuenv -S "X'PA'TH=1 MY_E'N'V=2 ssh"` }, { worktree: root }).problem, null);
   assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: "ssh -i '${HOME}/.ssh/id_ed25519'" }, { worktree: root }).problem, null);
-  const otherSplit = wrapper("gnuenv-other-split", `gnuenv -S "X'PA'TH=1"`);
+  const otherSplit = wrapper("gnuenv-other-split", `gnuenv -S "X'PA'TH=1" ssh`, "");
   assert.doesNotThrow(() => start(otherSplit));
   // Names that only end in ENV or PATH are other variables, and a plain ssh command still starts the lead's ssh.
   const others = wrapper("other-names", "MY_ENV=1 XBASH_ENV=2 ENVX=3 XPATH=4");
