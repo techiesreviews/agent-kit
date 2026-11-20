@@ -345,7 +345,7 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     would expand (`${NAME}`) or that holds another env option is refused (TOOLS-320), as is one that starts env again,
     as its program or among its words (`busybox env`, `timeout 30 env`), or that sets anywhere in it (joined to an `-S`
     option or inside one quoted string too) `PATH` or a shell variable that runs code from elsewhere: `BASH_ENV`, `ENV`,
-    a `BASH_FUNC_<name>%%` function, `SHELLOPTS`, `BASHOPTS` or `PS4` (TOOLS-326, TOOLS-329). The run's PATH leaves
+    a `BASH_FUNC_<name>%%` function, `SHELLOPTS`, `BASHOPTS`, `PS4` or `ZDOTDIR` (TOOLS-326, TOOLS-329). The run's PATH leaves
     those folders out, so `<worktree>/node_modules/.bin` (which npm puts on PATH) supplies none of them; a link elsewhere stays on PATH,
     and the next program on PATH starts in its place, or the run stops and says so. `kit pr` puts links to the git,
     node, gh, bash and sh it found that way in a private folder in the temp folder, first on PATH (and `KIT_NODE` is

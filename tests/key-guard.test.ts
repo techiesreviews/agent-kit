@@ -1438,6 +1438,9 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
     // A function bash takes from its environment, and a trace prompt it expands, run code from elsewhere just as well.
     ["BASH_FUNC_ssh%%", wrapper("bash-func", `'BASH_FUNC_ssh%%=() { . ${startup}; }'`, "bash")],
     ["SHELLOPTS", wrapper("bash-trace", `SHELLOPTS=xtrace 'PS4=$(. ${startup})'`, "bash")],
+    ["PS4", wrapper("bash-ps4", `'PS4=$(. ${startup})'`, "bash")],
+    ["BASHOPTS", wrapper("bash-opts", "BASHOPTS=extdebug", "bash")],
+    ["ZDOTDIR", wrapper("zsh-dotdir", `ZDOTDIR=${root}`)],
   ] as const) {
     assert.throws(() => start(file), new RegExp(`, which sets ${name} itself`), file);
     assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: file }), new RegExp(`^kit: \\S+ starts with env -S .*, which sets ${name} itself`, "m"), file);
@@ -1446,6 +1449,10 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   // In git's ssh command, before the program or after it (an env it starts in turn).
   for (const command of [`BASH_ENV=${startup} ssh`, `X=1 ENV=${startup} ssh`, `timeout 30 env BASH_ENV=${startup} ssh`, `timeout 30 sh -c "BASH_ENV=${startup} ssh"`]) {
     assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: command }), /^kit: git's ssh command \(.*\) cannot be told: it sets (BASH_ENV|ENV) itself/m, command);
+  }
+  // The other shell variables, written straight into git's ssh command (the lead's ssh here is a bash script).
+  for (const command of [`SHELLOPTS=xtrace 'PS4=$(. ${startup})' ssh`, `timeout 30 env 'BASH_FUNC_ssh%%=() { . ${startup}; }' ssh`]) {
+    assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: command }), /^kit: git's ssh command \(.*\) cannot be told: it sets (SHELLOPTS|BASH_FUNC_ssh%%) itself/m, command);
   }
   // A PATH= another env reads: joined to an -S option, inside one quoted -S string, or after a program that is not env.
   for (const file of [
