@@ -475,8 +475,11 @@ const linkRefusal = (name, file) => `${name} on PATH is ${file}, a link into the
 // SHELLOPTS, BASHOPTS or PS4 (a trace prompt it expands), or ZDOTDIR (the folder whose .zshenv every zsh reads). It
 // counts at the word's start, after a character no variable name holds (a blank inside one quoted -S string, an option's
 // =), or joined to an -S option (-SPATH=…, -iSPATH=…), so another env the line starts (busybox env, coreutils env)
-// cannot hide one in its own words; XPATH= and MY_ENV= are other variables.
-const ownSetting = word => /(?:^|[^A-Za-z0-9_]|^-[A-Za-z]*S)(PATH|BASH_ENV|ENV|BASH_FUNC_[^=\s]*|SHELLOPTS|BASHOPTS|PS4|ZDOTDIR)=/.exec(word)?.[1];
+// cannot hide one in its own words; XPATH= and MY_ENV= are other variables. It counts with the word's quotes,
+// backslashes and ${…} taken out too, as such an env joins them ('PA''TH=…', BA""SH_ENV=…, PA${X}TH=…), for an env
+// the kit cannot tell by its name (GNU env installed as gnuenv).
+const ownSetting = word => [word, word.replace(/\$\{[^}]*\}|['"\\]/g, "")]
+  .map(text => /(?:^|[^A-Za-z0-9_]|^-[A-Za-z]*S)(PATH|BASH_ENV|ENV|BASH_FUNC_[^=\s]*|SHELLOPTS|BASHOPTS|PS4|ZDOTDIR)=/.exec(text)?.[1]).find(Boolean);
 // Whether a word names env: by name or by a path to it (links followed), or as a multi-call binary's choice of it.
 const namesEnv = word => basename(word) === "env" || (word.includes("/") && basename(real(word)) === "env") || /^--coreutils-prog(?:-shebang)?=env$/.test(word);
 
