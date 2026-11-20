@@ -470,11 +470,13 @@ function lookup(name, env, shut) {
 const programFor = (name, env, shut) => lookup(name, env, shut).file;
 // Why a program found only through such a link is not started, with the step that fixes it.
 const linkRefusal = (name, file) => `${name} on PATH is ${file}, a link into the worktree or its Git folder (${real(file)}), where a build can change it, so it is not started; put a ${name} from outside them on PATH, or set ASE_KEY_GUARD=off to run without the lock`;
-// The variable a word sets for an env that reads it, or undefined: PATH, or BASH_ENV or ENV (the file a bash or sh it
-// starts reads before anything else, TOOLS-329). It counts at the word's start, after a character no variable name holds
-// (a blank inside one quoted -S string, an option's =), or joined to an -S option (-SPATH=…, -iSPATH=…), so another env
-// the line starts (busybox env, coreutils env) cannot hide one in its own words; XPATH= and MY_ENV= are other variables.
-const ownSetting = word => /(?:^|[^A-Za-z0-9_]|^-[A-Za-z]*S)(PATH|BASH_ENV|ENV)=/.exec(word)?.[1];
+// The variable a word sets for an env that reads it, or undefined: PATH, or one that has a bash or sh it starts run code
+// from elsewhere (TOOLS-329): BASH_ENV or ENV (a file it reads before anything else), a BASH_FUNC_<name>%% function, or
+// SHELLOPTS, BASHOPTS or PS4 (a trace prompt it expands). It counts at the word's start, after a character no variable
+// name holds (a blank inside one quoted -S string, an option's =), or joined to an -S option (-SPATH=…, -iSPATH=…), so
+// another env the line starts (busybox env, coreutils env) cannot hide one in its own words; XPATH= and MY_ENV= are other
+// variables.
+const ownSetting = word => /(?:^|[^A-Za-z0-9_]|^-[A-Za-z]*S)(PATH|BASH_ENV|ENV|BASH_FUNC_[^=\s]*|SHELLOPTS|BASHOPTS|PS4)=/.exec(word)?.[1];
 // Whether a word names env: by name or by a path to it (links followed), or as a multi-call binary's choice of it.
 const namesEnv = word => basename(word) === "env" || (word.includes("/") && basename(real(word)) === "env") || /^--coreutils-prog(?:-shebang)?=env$/.test(word);
 
@@ -520,10 +522,11 @@ function interpreted(file, args, env, shut, refuse, depth = 0) {
   // A PATH of its own would let the program start another by name from a folder that holds a link into the worktree
   // (TOOLS-326): the folders are the line's, not the run's, so none of them was checked. Any word counts, for an env
   // the program starts in turn (busybox env, a link to env by another name), in any of the forms ownSetting reads. A
-  // BASH_ENV or ENV would have a shell the line starts read a file first, one a build may have written (TOOLS-329).
+  // BASH_ENV, ENV or another of ownSetting's shell variables would have a shell the line starts run code from a file a
+  // build may have written (TOOLS-329).
   const setting = [...assignments, ...words].map(ownSetting).find(Boolean);
   if (setting === "PATH") refuse(`${file} starts with env ${rest}, which sets PATH itself, so a program it starts by name could lead into the worktree or its Git folder; drop PATH= from that line, or set ASE_KEY_GUARD=off to run without the lock`);
-  if (setting) refuse(`${file} starts with env ${rest}, which sets ${setting} itself, a file a shell it starts reads first and a build could have written; drop ${setting}= from that line, or set ASE_KEY_GUARD=off to run without the lock`);
+  if (setting) refuse(`${file} starts with env ${rest}, which sets ${setting} itself, so a shell it starts could run code from a file a build wrote; drop ${setting}= from that line, or set ASE_KEY_GUARD=off to run without the lock`);
   const [name, ...options] = words;
   let found;
   if (name.includes("/")) {

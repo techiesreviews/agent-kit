@@ -1434,13 +1434,17 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
     ["ENV", wrapper("env-env", `ENV=${startup}`)],
     ["BASH_ENV", wrapper("bash-env-after", `${bash} -c true BASH_ENV=${startup}`, "")],
     ["BASH_ENV", wrapper("bash-env-joined", `coreutils env -SBASH_ENV=${startup}`, "bash")],
+    ["BASH_ENV", wrapper("bash-env-bundled", `coreutils env -iSBASH_ENV=${startup}`, "bash")],
+    // A function bash takes from its environment, and a trace prompt it expands, run code from elsewhere just as well.
+    ["BASH_FUNC_ssh%%", wrapper("bash-func", `'BASH_FUNC_ssh%%=() { . ${startup}; }'`, "bash")],
+    ["SHELLOPTS", wrapper("bash-trace", `SHELLOPTS=xtrace 'PS4=$(. ${startup})'`, "bash")],
   ] as const) {
     assert.throws(() => start(file), new RegExp(`, which sets ${name} itself`), file);
     assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: file }), new RegExp(`^kit: \\S+ starts with env -S .*, which sets ${name} itself`, "m"), file);
     assert.match(refusedWith({ ...base, GIT_SSH: file }), new RegExp(`^kit: \\S+ starts with env -S .*, which sets ${name} itself`, "m"), file);
   }
   // In git's ssh command, before the program or after it (an env it starts in turn).
-  for (const command of [`BASH_ENV=${startup} ssh`, `X=1 ENV=${startup} ssh`, `timeout 30 env BASH_ENV=${startup} ssh`]) {
+  for (const command of [`BASH_ENV=${startup} ssh`, `X=1 ENV=${startup} ssh`, `timeout 30 env BASH_ENV=${startup} ssh`, `timeout 30 sh -c "BASH_ENV=${startup} ssh"`]) {
     assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: command }), /^kit: git's ssh command \(.*\) cannot be told: it sets (BASH_ENV|ENV) itself/m, command);
   }
   // A PATH= another env reads: joined to an -S option, inside one quoted -S string, or after a program that is not env.
@@ -1454,14 +1458,17 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   }
   // A multi-call binary told to run env, or a wrapper that starts env, is env again, which would look its program up by
   // name and could read a PATH from a quoted -S string of its own.
-  for (const file of [wrapper("busybox-env", "busybox env"), wrapper("coreutils-env", "coreutils env"), wrapper("timeout-env", `timeout 30 env -S "'PA''TH=${links}'"`)]) {
+  for (const file of [wrapper("busybox-env", "busybox env"), wrapper("coreutils-env", "coreutils env"), wrapper("coreutils-prog-env", "coreutils --coreutils-prog=env"),
+    wrapper("timeout-env", `timeout 30 env -S "'PA''TH=${links}'"`), wrapper("timeout-renamed-env", `timeout 30 ${join(bin, "e")} -S "'PA''TH=${links}'"`)]) {
     assert.throws(() => start(file), /, which starts env again, and that env would look its program up by name/, file);
     assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: file }), /^kit: \S+ starts with env -S .*, which starts env again/m, file);
   }
   // git's ssh command: a PATH= after the program, and env reached by a link of another name (R1-1, SL-2).
   assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: `timeout 30 env PATH=${links} ssh` }), /^kit: git's ssh command \(.*\) cannot be told: it sets PATH itself/m);
   assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: `${join(bin, "e")} PATH=${links} ssh` }), /^kit: git's ssh command \(.*\) cannot be told/m);
-  assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: `${join(bin, "e")} ssh` }), /^kit: git's ssh command \(.*\) cannot be told: env looks its program up on PATH/m);
+  for (const command of [`${join(bin, "e")} ssh`, `timeout 30 ${join(bin, "e")} ssh`]) {
+    assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: command }), /^kit: git's ssh command \(.*\) cannot be told: env looks its program up on PATH/m, command);
+  }
   // Names that only end in ENV or PATH are other variables, and a plain ssh command still starts the lead's ssh.
   const others = wrapper("other-names", "MY_ENV=1 XBASH_ENV=2 ENVX=3 XPATH=4");
   assert.deepEqual(start(others), ["/usr/bin/env", ["MY_ENV=1", "XBASH_ENV=2", "ENVX=3", "XPATH=4", shell, others]]);
@@ -1490,7 +1497,7 @@ test("TOOLS-329: an env -S first line split on carriage return, vertical tab or 
   }
   // A blank env never splits on stays in its word: the whole word is the program, which no folder holds.
   const joined = join(dir, "no-break");
-  writeFileSync(joined, "#!/usr/bin/env -S node --no-warnings\n"); chmodSync(joined, 0o755);
+  writeFileSync(joined, `#!/usr/bin/env -S node${String.fromCharCode(0xa0)}--no-warnings\n`); chmodSync(joined, 0o755);
   assert.deepEqual(startCommand(joined, ["a"], env, { worktree, kind: "test" }), [joined, ["a"]]);
   assert.ok(!existsSync(noted), "the planted node never started");
 });
