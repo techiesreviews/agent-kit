@@ -5,7 +5,7 @@ import { hostname, networkInterfaces, tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { bwrapArgs, bwrapWorks, checkLock, codexPaths, kitFolders, codexProfile, existingPaths, keyGuard, keyGuardReport, keyPathsWarning, linkTargets, lockedPaths, outerLock, resetBwrapProbe, runProgram, scrubbedEnv, startCommand } from "../key-guard.mjs";
+import { bwrapArgs, bwrapWorks, checkLock, codexPaths, kitFolders, codexProfile, existingPaths, keyGuard, keyGuardReport, keyPathsWarning, linkTargets, lockedPaths, outerLock, resetBwrapProbe, runProgram, scrubbedEnv, sshCommand, startCommand } from "../key-guard.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { folderRemote, gitCommonDir, gitNetworkCall, gitSafety, loopbackRemote, remoteHost } from "../git-safety.mjs";
 import { kitEnv, testHomeFolder } from "./support/kit-env.ts";
@@ -1479,12 +1479,24 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   // An env the kit cannot tell by its name (GNU env installed as gnuenv, a file of its own) joins a name split by quotes
   // or ${…} in its -S string, so the words count with those taken out too.
   writeFileSync(join(bin, "gnuenv"), `#!/bin/sh\nexec /usr/bin/env "$@"\n`); chmodSync(join(bin, "gnuenv"), 0o755);
-  for (const command of [`gnuenv -S "'PA''TH=${links}:${bin}:/usr/bin:/bin' ssh"`, `timeout 30 gnuenv -S 'BA""SH_ENV=${startup} ${bash} -c true'`,
-    `gnuenv -S 'PA\${EMPTY}TH=${links}:${bin}:/usr/bin:/bin ssh'`]) {
-    assert.match(refusedWith({ ...base, EMPTY: "", GIT_SSH_COMMAND: command }), /^kit: git's ssh command \(.*\) cannot be told: it sets (PATH|BASH_ENV) itself/m, command);
+  // \_ breaks a word as a blank does; a ${…} in a name could make PATH from a value the line sets itself.
+  const toLinks = `${links}:${bin}:/usr/bin:/bin`;
+  for (const [name, command] of [["PATH", `gnuenv -S "'PA''TH=${toLinks}' ssh"`], ["BASH_ENV", `timeout 30 gnuenv -S 'BA""SH_ENV=${startup} ${bash} -c true'`],
+    ["PATH", `gnuenv -S 'X=1\\_PATH=${toLinks} ssh'`], ["a \\$\\{…\\} name", `gnuenv -S 'PA\${EMPTY}TH=${toLinks} ssh'`],
+    ["a \\$\\{…\\} name", `A=ATH gnuenv -S 'P\${A}=${toLinks} ssh'`]]) {
+    assert.match(refusedWith({ ...base, EMPTY: "", GIT_SSH_COMMAND: command }), new RegExp(`^kit: git's ssh command \\(.*\\) cannot be told: it sets ${name} itself`, "m"), command);
   }
-  const split = wrapper("gnuenv-split", `gnuenv -S "'BA''SH_ENV=${startup}' ${bash}"`, "");
-  assert.throws(() => start(split), /, which sets BASH_ENV itself/, split);
+  for (const [name, file] of [["BASH_ENV", wrapper("gnuenv-split", `gnuenv -S "'BA''SH_ENV=${startup}' ${bash}"`, "")],
+    ["PATH", wrapper("gnuenv-split-path", `gnuenv -S "'PA''TH=${toLinks}' ssh"`, "")],
+    ["PATH", wrapper("gnuenv-break-path", `gnuenv -S "X=1\\\\_PATH=${toLinks}" ssh`, "")],
+    ["a \\$\\{…\\} name", wrapper("gnuenv-expanded-path", `A=ATH gnuenv -S P\\\${A}=${toLinks} ssh`, "")],
+    ["PATH", wrapper("renamed-split-path", `${join(bin, "e")} -S "X=1 'PA''TH=${toLinks}'"`)]] as const) {
+    assert.throws(() => start(file), new RegExp(`, which sets ${name} itself`), file);
+  }
+  // Split names that make other variables still start.
+  assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: `gnuenv -S "X'PA'TH=1 MY_E'N'V=2 ssh"` }, { worktree: root }).problem, null);
+  const otherSplit = wrapper("gnuenv-other-split", `gnuenv -S "X'PA'TH=1"`);
+  assert.doesNotThrow(() => start(otherSplit));
   // Names that only end in ENV or PATH are other variables, and a plain ssh command still starts the lead's ssh.
   const others = wrapper("other-names", "MY_ENV=1 XBASH_ENV=2 ENVX=3 XPATH=4");
   assert.deepEqual(start(others), ["/usr/bin/env", ["MY_ENV=1", "XBASH_ENV=2", "ENVX=3", "XPATH=4", shell, others]]);
