@@ -1488,13 +1488,26 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   for (const command of [`gnuenv -S 'PA\${EMPTY}TH=${toLinks} ssh'`, `A=ATH gnuenv -S 'P\${A}=${toLinks} ssh'`, `A=PATH B== gnuenv -S '\${A}\${B}${toLinks} ssh'`]) {
     assert.match(refusedWith({ ...base, EMPTY: "", GIT_SSH_COMMAND: command }), /^kit: git's ssh command \(.*\) cannot be told: an -S string in it holds \$\{…\}/m, command);
   }
+  // GNU env takes --split-string by any unique start of it, and the -S string joined to its option (S-2); ssh's own -S
+  // (a control path) with a ${…} in it is refused too.
+  for (const command of [`A=PATH B== gnuenv --split '\${A}\${B}${toLinks} ssh'`, `A=PATH B== gnuenv --s='\${A}\${B}${toLinks} ssh'`, `A=PATH B== gnuenv --split-string='\${A}\${B}${toLinks} ssh'`,
+    `A=PATH B== gnuenv -S'\${A}\${B}${toLinks} ssh'`, `A=PATH B== gnuenv -vS '\${A}\${B}${toLinks} ssh'`, "ssh -S '/tmp/c-${X}' host"]) {
+    assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: command }), /^kit: git's ssh command \(.*\) cannot be told: an -S string in it holds \$\{…\}/m, command);
+  }
+  // sh fills in a $ in a double-quoted or bare word before that env reads it (S-1), with EMPTY unset here.
+  for (const command of [`gnuenv -S "PA\${EMPTY}TH=${toLinks} ssh"`, `gnuenv "PA\${EMPTY}TH=${toLinks}" ssh`, `timeout 30 gnuenv "\${X:-PATH}=${toLinks}" ssh`,
+    `gnuenv -S "X=1 \${X:-PATH}=${toLinks} ssh"`, `gnuenv PA$EMPTY'TH'=${toLinks} ssh`]) {
+    assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: command }), /^kit: git's ssh command \(.*\) cannot be told: sh fills in a \$ in it, which an env there could read as PATH= or BASH_ENV=/m, command);
+  }
+  assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: "ssh -i $HOME/.ssh/id_ed25519 -o User=$USER" }, { worktree: root }).problem, null);
   for (const [name, file] of [["BASH_ENV", wrapper("gnuenv-split", `gnuenv -S "'BA''SH_ENV=${startup}' ${bash}"`, "")],
     ["PATH", wrapper("gnuenv-split-path", `gnuenv -S "'PA''TH=${toLinks}' ssh"`, "")],
     ["PATH", wrapper("gnuenv-break-path", `gnuenv -S "X=1\\\\_PATH=${toLinks}" ssh`, "")],
     ["PATH", wrapper("renamed-split-path", `${join(bin, "e")} -S "X=1 'PA''TH=${toLinks}'"`)]] as const) {
     assert.throws(() => start(file), new RegExp(`, which sets ${name} itself`), file);
   }
-  for (const file of [wrapper("gnuenv-expanded-path", `A=ATH gnuenv -S P\\\${A}=${toLinks} ssh`, ""), wrapper("gnuenv-expanded-equals", `A=PATH B== gnuenv -S \\\${A}\\\${B}${toLinks} ssh`, "")]) {
+  for (const file of [wrapper("gnuenv-expanded-path", `A=ATH gnuenv -S P\\\${A}=${toLinks} ssh`, ""), wrapper("gnuenv-expanded-equals", `A=PATH B== gnuenv -S \\\${A}\\\${B}${toLinks} ssh`, ""),
+    wrapper("gnuenv-short-split", `A=ATH gnuenv --split P\\\${A}=${toLinks} ssh`, "")]) {
     assert.throws(() => start(file), /, whose -S string holds \$\{…\}, which an env there could fill in as PATH or BASH_ENV/, file);
   }
   // Split names that make other variables still start, and so does a ${…} that ssh fills in itself.
