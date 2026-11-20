@@ -507,28 +507,43 @@ const namesEnv = word => basename(word) === "env" || (word.includes("/") && base
 // or a PATH entry that leads to one (links followed: /usr/bin/sh is dash), as a word or as a piece of one (sh -c '…
 // bash -c …', a value after an =); so do ssh's ProxyCommand and LocalCommand (but none), which ssh runs through the
 // user's shell: anywhere in a word, so in a bundle of ssh's flags (-4oProxyCommand=…) and with quotes or \ in its name
-// too, which ssh takes out. A copy of a shell under a name of its own is not recognised. startedShell gives what starts
-// the shell, in words, or null; shellAdvice what to do about it.
-const shellName = /^(?:sh|ash|bash|rbash|dash|ksh|ksh93|mksh|lksh|pdksh|oksh|loksh|zsh|yash|posh|hush|sash|csh|tcsh|fish|rc|es|osh|pwsh|xonsh|elvish)(?:-static)?(?:[-.]?\d[\d.]*)?$/;
+// too, which ssh takes out (PermitLocalCommand is another option). ssh also writes a ProxyJump's (-J's) hosts into a
+// command of its own that it runs through that shell, so one with more than user@host:port names in it counts. rc and
+// es, too short to tell from other words, count only where PATH or a path leads to such a program, and take no version.
+// A copy of a shell under a name of its own is not recognised. startedShell gives what starts the shell, in words, or
+// null; shellAdvice what to do about it.
+const shells = "sh|ash|bash|rbash|dash|ksh|ksh93|mksh|lksh|pdksh|oksh|loksh|zsh|yash|posh|hush|sash|csh|tcsh|fish|osh|pwsh|xonsh|elvish";
+const shellNamed = (word, names = shells) => new RegExp(`^(?:${names})(?:-static)?(?:[-.]?\\d[\\d.]*)?$`).test(basename(word));
 const namesShell = (word, env, shut) => {
-  const file = word.includes("/") ? word : programFor(word, env, shut);
-  return shellName.test(basename(word)) || Boolean(file && shellName.test(basename(real(file))));
+  const file = word.includes("/") ? (executable(word) ? word : null) : programFor(word, env, shut);
+  return shellNamed(word) || Boolean(file && (shellNamed(real(file)) || [word, real(file)].some(name => /^(?:rc|es)$/.test(basename(name)))));
 };
-const viaShell = /(proxy|local)command(?:[ \t]*=[ \t]*|[ \t]+|$)(.*)$/is;
+const viaShell = /(?<!permit)(proxy|local)command(?:[ \t]*=[ \t]*|[ \t]+|$)(.*)$/is;
+const jumpOption = /proxyjump(?:[ \t]*=[ \t]*|[ \t]+|$)(.*)$/is;
 const startedShell = (words, env, shut) => {
-  for (const word of words) {
-    const option = viaShell.exec(word.replace(/["'\\]/g, ""));
+  for (const [i, word] of words.entries()) {
+    const bare = word.replace(/["'\\]/g, ""), option = viaShell.exec(bare);
     if (option && option[2].trim().toLowerCase() !== "none") return `${option[1].toLowerCase() === "proxy" ? "ProxyCommand" : "LocalCommand"}, which ssh runs through the user's shell`;
+    const flag = /^-[46AaCfGgKkMNnqsTtVvXxYy]*J(.*)$/s.exec(word), jump = jumpOption.exec(bare)?.[1] ?? (flag ? flag[1] || (words[i + 1] ?? "") : null);
+    if (jump !== null && !/^[\w.@:,%[\]-]+$/.test(jump.trim())) return "ProxyJump with more than host names in it, which ssh runs through the user's shell";
     // Braces and commas split too: where /bin/sh is bash, {s,h} would be a shell's name by brace expansion.
     const piece = word.split(/[\s;&|()<>=`'"{},]+/).find(part => part && namesShell(part, env, shut));
     if (piece) return basename(piece);
   }
   return null;
 };
-const shellAdvice = (started, where) => /^(?:Proxy|Local)Command/.test(started) ? `drop ProxyCommand and LocalCommand${where} (ProxyJump needs no shell)` : null;
+const shellAdvice = (started, where) => started.startsWith("ProxyJump") ? `give ProxyJump (-J)${where} plain user@host:port names`
+  : /^(?:Proxy|Local)Command/.test(started) ? `drop ProxyCommand and LocalCommand${where}, or use ProxyJump (-J) with plain host names instead` : null;
 // A shell told to run a string instead of the script: -c alone or bundled (-ec), --command, --init-command, and fish's
-// -C (bash's and sh's -C is noclobber).
-const runsString = (option, fish) => /^-[A-Za-z]*c/.test(option) || (fish && /^-[A-Za-z]*C/.test(option)) || /^--(?:command|init-command)(?:=|$)/.test(option);
+// -C (bash's and sh's -C is noclobber). pwsh takes any start of -Command, -CommandWithArgs or -EncodedCommand, of any
+// case and with - or --, and -cwa and -ec.
+const runsString = (option, kind) => {
+  if (kind === "pwsh") {
+    const name = /^--?([A-Za-z]+)(?::|$)/.exec(option)?.[1]?.toLowerCase();
+    return Boolean(name) && (["cwa", "ec"].includes(name) || ["command", "commandwithargs", "encodedcommand"].some(full => full.startsWith(name)));
+  }
+  return /^-[A-Za-z]*c/.test(option) || (kind === "fish" && /^-[A-Za-z]*C/.test(option)) || /^--(?:command|init-command)(?:=|$)/.test(option);
+};
 
 // A script's first line names its interpreter, and `#!/usr/bin/env node` has env look node up by its bare name on PATH,
 // where a link a person made into the worktree or the Git folder stays (only the names the kit starts are looked up past
@@ -595,8 +610,8 @@ function interpreted(file, args, env, shut, refuse, depth = 0) {
   // told to run env (busybox env, coreutils env) or a wrapper that starts it (timeout 30 env, TOOLS-329).
   if (namesEnv(found) || options.some(namesEnv)) refuse(`${file} starts with env ${rest}, which starts env again, and that env would look its program up by name; start the program from that line directly, or set ASE_KEY_GUARD=off to run without the lock`);
   // A shell the program starts, or the program as a shell told to run a string, could build PATH= from pieces.
-  const fish = [name, real(found)].some(word => /^fish(?:-static)?(?:[-.]?\d[\d.]*)?$/.test(basename(word)));
-  const shell = startedShell(options, env, shut) ?? (namesShell(found, env, shut) && options.some(option => runsString(option, fish)) ? basename(name) : null);
+  const kind = ["fish", "pwsh"].find(names => [name, real(found)].some(word => shellNamed(word, names)));
+  const shell = startedShell(options, env, shut) ?? (namesShell(found, env, shut) && options.some(option => runsString(option, kind)) ? basename(name) : null);
   if (shell) refuse(`${file} starts with env ${rest}, which starts a shell (${shell}), and a shell can build PATH= or BASH_ENV= out of pieces; ${shellAdvice(shell, " from that line") ?? "start the program from that line directly"}, or set ASE_KEY_GUARD=off to run without the lock`);
   const [command, commandArgs] = interpreted(found, [...options, file, ...args], env, shut, refuse, depth + 1);
   if (!assignments.length) return [command, commandArgs];
