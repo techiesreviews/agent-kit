@@ -1331,7 +1331,7 @@ test("TOOLS-326: an ssh wrapper whose #!/usr/bin/env -S line sets PATH never sta
   // env sets a word with = in it whatever its name, so an odd name first hides no PATH after it.
   const oddName = wrapper("ssh-odd-path", `1X=1 PATH=${links}:${bin}:${dirname(shell)}`);
   const emptyName = join(wrappers, "ssh-empty-name");
-  writeFileSync(emptyName, `#!/usr/bin/env -S =x /usr/bin/env -S "X=1 'PA''TH=${links}:${bin}:${dirname(shell)}'" sh\nexec ssh "$@"\n`); chmodSync(emptyName, 0o755);
+  writeFileSync(emptyName, `#!/usr/bin/env -S =x /usr/bin/env -S "X=1 'X''Y=1'" sh\nexec ssh "$@"\n`); chmodSync(emptyName, 0o755);
   const long = join(wrappers, "ssh-long-path");
   writeFileSync(long, `#!/usr/bin/env --split-string=PATH=${links}:${bin}:${dirname(shell)} sh\nexec ssh "$@"\n`); chmodSync(long, 0o755);
   // A wrapper whose interpreter is such a script: the line one level down is read too.
@@ -1363,10 +1363,10 @@ test("TOOLS-326: an ssh wrapper whose #!/usr/bin/env -S line sets PATH never sta
     assert.throws(() => startCommand(file, [], base, { worktree: root, kind: "test" }), /, which sets PATH itself/, file);
     assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: file }), /, which sets PATH itself/m, file);
   }
-  // A link to env by another name is env again, whose own -S string could set PATH out of sight (the split quotes join
-  // to PATH= only when that env splits the string).
+  // A link to env by another name is env again, which would look its program up by name (a PATH its own -S string sets
+  // with split quotes is refused as a PATH, TOOLS-329).
   const renamed = join(wrappers, "ssh-renamed-env");
-  writeFileSync(renamed, `#!/usr/bin/env -S ${join(bin, "e")} -S "X=1 'PA''TH=${links}:${bin}:${dirname(shell)}'" sh\nexec ssh "$@"\n`); chmodSync(renamed, 0o755);
+  writeFileSync(renamed, `#!/usr/bin/env -S ${join(bin, "e")} -S "X=1 'X''Y=1'" sh\nexec ssh "$@"\n`); chmodSync(renamed, 0o755);
   for (const file of [wrapper("ssh-env-env", "env"), renamed, emptyName]) {
     assert.throws(() => startCommand(file, [], base, { worktree: root, kind: "test" }), /, which starts env again, and that env would look its program up by name/, file);
     assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: file }), /^kit: \S+ starts with env -S .*, which starts env again/m, file);
@@ -1466,7 +1466,7 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   // A multi-call binary told to run env, or a wrapper that starts env, is env again, which would look its program up by
   // name and could read a PATH from a quoted -S string of its own.
   for (const file of [wrapper("busybox-env", "busybox env"), wrapper("coreutils-env", "coreutils env"), wrapper("coreutils-prog-env", "coreutils --coreutils-prog=env"),
-    wrapper("timeout-env", `timeout 30 env -S "'PA''TH=${links}'"`), wrapper("timeout-renamed-env", `timeout 30 ${join(bin, "e")} -S "'PA''TH=${links}'"`)]) {
+    wrapper("timeout-env", `timeout 30 env -S "'X''Y=1'"`), wrapper("timeout-renamed-env", `timeout 30 ${join(bin, "e")} -S "'X''Y=1'"`)]) {
     assert.throws(() => start(file), /, which starts env again, and that env would look its program up by name/, file);
     assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: file }), /^kit: \S+ starts with env -S .*, which starts env again/m, file);
   }
@@ -1476,6 +1476,15 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   for (const command of [`${join(bin, "e")} ssh`, `timeout 30 ${join(bin, "e")} ssh`]) {
     assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: command }), /^kit: git's ssh command \(.*\) cannot be told: env looks its program up on PATH/m, command);
   }
+  // An env the kit cannot tell by its name (GNU env installed as gnuenv, a file of its own) joins a name split by quotes
+  // or ${…} in its -S string, so the words count with those taken out too.
+  writeFileSync(join(bin, "gnuenv"), `#!/bin/sh\nexec /usr/bin/env "$@"\n`); chmodSync(join(bin, "gnuenv"), 0o755);
+  for (const command of [`gnuenv -S "'PA''TH=${links}:${bin}:/usr/bin:/bin' ssh"`, `timeout 30 gnuenv -S 'BA""SH_ENV=${startup} ${bash} -c true'`,
+    `gnuenv -S 'PA\${EMPTY}TH=${links}:${bin}:/usr/bin:/bin ssh'`]) {
+    assert.match(refusedWith({ ...base, EMPTY: "", GIT_SSH_COMMAND: command }), /^kit: git's ssh command \(.*\) cannot be told: it sets (PATH|BASH_ENV) itself/m, command);
+  }
+  const split = wrapper("gnuenv-split", `gnuenv -S "'BA''SH_ENV=${startup}' ${bash}"`, "");
+  assert.throws(() => start(split), /, which sets BASH_ENV itself/, split);
   // Names that only end in ENV or PATH are other variables, and a plain ssh command still starts the lead's ssh.
   const others = wrapper("other-names", "MY_ENV=1 XBASH_ENV=2 ENVX=3 XPATH=4");
   assert.deepEqual(start(others), ["/usr/bin/env", ["MY_ENV=1", "XBASH_ENV=2", "ENVX=3", "XPATH=4", shell, others]]);
