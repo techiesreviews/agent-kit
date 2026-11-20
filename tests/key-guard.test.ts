@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { hostname, networkInterfaces, tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -1507,7 +1507,7 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
     assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: command }), /^kit: git's ssh command \(.*\) cannot be told: a \$ or ` in it could be filled in as PATH= or BASH_ENV=/m, command);
   }
   for (const command of ["ssh -i $HOME/.ssh/id_ed25519 -o User=$USER", "ssh -o IdentityFile=$HOME/.ssh/id_ed25519 host", "timeout 30 ssh -i ~/.ssh/id_ed25519",
-    "ssh -o ProxyCommand=none -o ProxyJump=jump.example.invalid", "nice -n 5 ssh -o 'ProxyCommand none'"]) {
+    "ssh -o ProxyCommand=none -o ProxyJump=jump.example.invalid", "nice -n 5 ssh -o 'ProxyCommand none'", "ssh -o BatchMode=yes -o User=git host"]) {
     assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root }).problem, null, command);
   }
   // Lex's decision (2026-11-20): no shell starts from git's ssh command, since a shell can build PATH= out of pieces no
@@ -1523,8 +1523,29 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   for (const command of shellLines.slice(0, 3)) {
     assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: command }), /^kit: git's ssh command \(.*\) cannot be told: it starts a shell \(sh\)/m, command);
   }
-  for (const command of ["ssh -o 'ProxyCommand=nc %h %p'", "ssh -oProxyCommand='nc %h %p'", "timeout 30 ssh -o 'proxycommand nc %h %p'", "ssh -o PermitLocalCommand=yes -o LocalCommand=true"]) {
-    assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root }).problem ?? "", /cannot be told: it starts a shell \((ProxyCommand|LocalCommand), which ssh runs through the user's shell\)/, command);
+  // sh reads where a name ends before it takes quotes and \ out, so with E empty "$E"sh, $E''sh and $E\sh are sh, and
+  // with D=/bin/ "$D"sh is /bin/sh (round 7).
+  for (const command of [`timeout 30 "$E"sh -c 'ssh "$@"' ssh`, `timeout 30 $E''sh -c 'ssh "$@"' ssh`, `timeout 30 $E\\sh -c 'ssh "$@"' ssh`,
+    `timeout 30 "$D"sh -c 'ssh "$@"' ssh`, `timeout 30 "\${E}"sh -c 'ssh "$@"' ssh`]) {
+    const env = { ...base, E: "", D: `${dirname(shell)}/`, GIT_SSH_COMMAND: command };
+    assert.match(sshCommand(env, { worktree: root }).problem ?? "", /cannot be told: it starts a shell \(sh\)/, command);
+  }
+  assert.match(refusedWith({ ...base, E: "", GIT_SSH_COMMAND: `timeout 30 "$E"sh -c 'gnuenv "$1$2" ssh' sh PA TH=${toLinks}` }), /^kit: git's ssh command \(.*\) cannot be told: it starts a shell \(sh\)/m);
+  // Shells by rarer names, a static build, and busybox's hush; a copy of a shell under a name of its own is not
+  // recognised (the README says so).
+  for (const name of ["lksh", "bash-static"]) symlinkSync(shell, join(bin, name));
+  for (const command of [`timeout 30 lksh -c 'ssh "$@"' ssh`, `timeout 30 bash-static -c 'ssh "$@"' ssh`, `timeout 30 busybox hush -c 'ssh "$@"' ssh`]) {
+    assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root }).problem ?? "", /cannot be told: it starts a shell \((lksh|bash-static|hush)\)/, command);
+  }
+  copyFileSync(shell, join(bin, "notashell")); chmodSync(join(bin, "notashell"), 0o755);
+  assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: `timeout 30 notashell -c 'ssh "$@"' ssh` }, { worktree: root }).problem, null);
+  // ProxyCommand and LocalCommand, also in a bundle of ssh's flags (-4o, -vo, -qo) and with the option's name quoted.
+  for (const command of ["ssh -o 'ProxyCommand=nc %h %p'", "ssh -oProxyCommand='nc %h %p'", "timeout 30 ssh -o 'proxycommand nc %h %p'", "ssh -o PermitLocalCommand=yes -o LocalCommand=true",
+    "ssh -4oProxyCommand='nc %h %p' host", "ssh -vo 'LocalCommand=true' -o PermitLocalCommand=yes host", "ssh -qoLocalCommand=true host", `ssh -o '"ProxyCommand" nc %h %p' host`,
+    `ssh -o 'Proxy"Command"=nc %h %p' host`]) {
+    const problem = sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root }).problem ?? "";
+    assert.match(problem, /cannot be told: it starts a shell \((ProxyCommand|LocalCommand), which ssh runs through the user's shell\)/, command);
+    assert.match(problem, /drop ProxyCommand and LocalCommand \(ProxyJump needs no shell\)/, command);
   }
   // A pattern sh expands after the program could name a shell too.
   assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: `timeout 30 ${dirname(shell)}/s? -c 'ssh "$@"' ssh` }, { worktree: root }).problem ?? "", /cannot be told: sh expands a pattern in it, which could name a shell/);
@@ -1550,13 +1571,20 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
     wrapper("inner-shell-star", `sh -c 'IFS=; gnuenv "$*" ssh' PA TH=${toLinks}`, ""), wrapper("inner-shell-ok", "sh -c 'ssh -i ${HOME}/.ssh/id_ed25519'", ""),
     wrapper("bash-bundled-c", "bash -ec 'ssh \"$@\"'", ""), wrapper("timeout-sh", "timeout 30", "sh"), wrapper("timeout-bash-c", "timeout 30 bash -c 'ssh \"$@\"'", ""),
     wrapper("nice-dash", "nice -n 5 dash", ""), wrapper("busybox-sh", "busybox", "sh"), wrapper("gnuenv-zsh", "gnuenv zsh -c 'ssh \"$@\"'", ""),
-    wrapper("ssh-proxy", "ssh -o 'ProxyCommand=nc %h %p'", "")]) {
+    wrapper("ssh-proxy", "ssh -o 'ProxyCommand=nc %h %p'", ""), wrapper("ssh-bundled-proxy", "ssh -4oProxyCommand='nc %h %p'", ""),
+    wrapper("ssh-quoted-proxy", `ssh -o '"ProxyCommand" nc %h %p'`, "")]) {
     assert.throws(() => start(file), /, which starts a shell \((sh|bash|dash|zsh|ProxyCommand)[),]/, file);
     assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: file }), /^kit: \S+ starts with env -S .*, which starts a shell/m, file);
   }
-  // The script's own interpreter is no extra shell: it runs the script, as #!/bin/sh would.
+  assert.throws(() => start(join(wrappers, "ssh-proxy")), /drop ProxyCommand and LocalCommand from that line \(ProxyJump needs no shell\)/);
+  // The script's own interpreter is no extra shell: it runs the script, as #!/bin/sh would, with options that run no
+  // string (bash's -C is noclobber; only fish's -C runs one).
   const ownShell = wrapper("own-shell", "X=1", "bash -e");
   assert.deepEqual(start(ownShell), ["/usr/bin/env", ["X=1", bash, "-e", ownShell]]);
+  const pipefail = wrapper("own-shell-pipefail", "X=1", "bash -eu -o pipefail");
+  assert.deepEqual(start(pipefail), ["/usr/bin/env", ["X=1", bash, "-eu", "-o", "pipefail", pipefail]]);
+  const noclobber = wrapper("own-shell-noclobber", "X=1", "bash -eC");
+  assert.deepEqual(start(noclobber), ["/usr/bin/env", ["X=1", bash, "-eC", noclobber]]);
   // Split names that make other variables still start, and so does a ${…} that ssh fills in itself.
   assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: `gnuenv -S "X'PA'TH=1 MY_E'N'V=2 ssh"` }, { worktree: root }).problem, null);
   assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: "ssh -i '${HOME}/.ssh/id_ed25519'" }, { worktree: root }).problem, null);
