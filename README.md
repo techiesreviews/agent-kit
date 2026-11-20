@@ -310,9 +310,11 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     repository's is set empty), else `GIT_SSH`, else `ssh`, with the command's other words kept, and where a PATH folder
     holds a link into the worktree or the Git folder the command's PATH leaves that folder out, for a program it starts
     by name in turn (`timeout 30 ssh`, a wrapper script). A command whose program cannot be told (shell syntax beyond
-    words and quotes, an expansion, `env`, a `PATH=` of its own), or an ssh PATH holds only as such a link, is swapped
+    words and quotes, an expansion, `env` by any name or started in turn, a `PATH=`, `BASH_ENV=` or `ENV=` anywhere in
+    it, TOOLS-329), or an ssh PATH holds only as such a link, is swapped
     for one that says so and fails, so only a call to an ssh remote stops. `kit pr` pushes to a folder remote (whose hooks git runs without
-    these settings) inside the key lock. It weighs every push address the remote lists, rewrites applied (TOOLS-320):
+    these settings) inside the key lock. It weighs every push address the remote lists, rewrites applied, the global and
+    system config's too, as the push reads them (TOOLS-320, TOOLS-329):
     a folder beside other addresses (which need the credentials the lock hides), or an address on this machine itself
     (localhost, the machine's own name, or a host any of whose addresses is loopback or one of the machine's own, whose
     hooks run outside any lock), stops the push.
@@ -339,8 +341,10 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     interpreter the same way: a `#!/usr/bin/env node` CLI, or the API route's `#!/usr/bin/env bash` wrapper, starts the
     interpreter by its full path, never a link someone made into the worktree (an `npm link`, a dotfiles `bin`). A
     `#!/usr/bin/env -S MODE=review node` first line is split as env splits it (quotes, escapes, `NAME=value` words, which
-    env still sets), and one env would expand (`${NAME}`) or that holds another env option is refused (TOOLS-320), as
-    is one with a `PATH=` word anywhere in it or env again as its program (TOOLS-326). The run's PATH leaves those folders out,
+    env still sets; blanks are space, tab, carriage return, vertical tab and form feed, as env reads them), and one env
+    would expand (`${NAME}`) or that holds another env option is refused (TOOLS-320), as is one that sets `PATH`,
+    `BASH_ENV` or `ENV` anywhere in it (joined to an `-S` option or inside one quoted string too) or starts env again, as
+    its program or among its words (`busybox env`, `timeout 30 env`) (TOOLS-326, TOOLS-329). The run's PATH leaves those folders out,
     so `<worktree>/node_modules/.bin` (which npm puts on PATH) supplies none of them; a link elsewhere stays on PATH,
     and the next program on PATH starts in its place, or the run stops and says so. `kit pr` puts links to the git,
     node, gh, bash and sh it found that way in a private folder in the temp folder, first on PATH (and `KIT_NODE` is
@@ -363,7 +367,9 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   a build wrote under HOME: `~/.gitconfig`, `~/.bashrc`, a PATH folder there), a Node kept under HOME (an nvm Node),
   which a build or a check can change and `kit pr` then runs, the machine's kit copy where builds and checks run
   unlocked (no bubblewrap, or `ASE_KEY_GUARD=off`; Codex's own sandbox keeps it read-only), a `kit pr` started through
-  `npm run` (its own `#!/usr/bin/env node` is found before `kit pr` can look), a fetch or push reading a global Git
+  `npm run` (its own `#!/usr/bin/env node` is found before `kit pr` can look), what a program an env -S first line
+  starts does with its own words (only the line's words are read: `sh -c '…'` can set PATH in its own way, and
+  `timeout 30 node` looks node up by name on the run's PATH, where a link elsewhere into the worktree stays), a fetch or push reading a global Git
   config a build wrote, and what ssh itself starts from a config under HOME a build wrote (`~/.ssh/config`'s
   `ProxyCommand`, `Match exec`, or a host name it maps to this machine), and a push host whose address changes between
   `kit pr`'s check and the push. For those the lead's guard is the review before anything a build wrote is run (`kit

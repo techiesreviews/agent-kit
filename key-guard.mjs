@@ -470,6 +470,13 @@ function lookup(name, env, shut) {
 const programFor = (name, env, shut) => lookup(name, env, shut).file;
 // Why a program found only through such a link is not started, with the step that fixes it.
 const linkRefusal = (name, file) => `${name} on PATH is ${file}, a link into the worktree or its Git folder (${real(file)}), where a build can change it, so it is not started; put a ${name} from outside them on PATH, or set ASE_KEY_GUARD=off to run without the lock`;
+// The variable a word sets for an env that reads it, or undefined: PATH, or BASH_ENV or ENV (the file a bash or sh it
+// starts reads before anything else, TOOLS-329). It counts at the word's start, after a character no variable name holds
+// (a blank inside one quoted -S string, an option's =), or joined to an -S option (-SPATH=…, -iSPATH=…), so another env
+// the line starts (busybox env, coreutils env) cannot hide one in its own words; XPATH= and MY_ENV= are other variables.
+const ownSetting = word => /(?:^|[^A-Za-z0-9_]|^-[A-Za-z]*S)(PATH|BASH_ENV|ENV)=/.exec(word)?.[1];
+// Whether a word names env: by name or by a path to it (links followed), or as a multi-call binary's choice of it.
+const namesEnv = word => basename(word) === "env" || (word.includes("/") && basename(real(word)) === "env") || /^--coreutils-prog(?:-shebang)?=env$/.test(word);
 
 // A script's first line names its interpreter, and `#!/usr/bin/env node` has env look node up by its bare name on PATH,
 // where a link a person made into the worktree or the Git folder stays (only the names the kit starts are looked up past
@@ -479,7 +486,8 @@ const linkRefusal = (name, file) => `${name} on PATH is ${file}, a link into the
 // for four levels, as the kernel does, and refuses past them. env -S (TOOLS-320) is read as env reads it (splitWords):
 // NAME=value words before the program stay with env, which then gets the program by its full path. A first line that
 // names a full path inside the worktree or the Git folder, an env option other than -S, -S words env would expand or
-// that cannot be split, a PATH among those words or env as the program (TOOLS-326), or a name PATH holds only as such a
+// that cannot be split, a PATH among those words or env as the program (TOOLS-326), a BASH_ENV or ENV among them or env
+// among the program's words (TOOLS-329), or a name PATH holds only as such a
 // link is refused through `refuse`; a name no PATH folder holds is left to start as it is (and fail).
 function interpreted(file, args, env, shut, refuse, depth = 0) {
   let head = "";
@@ -511,8 +519,11 @@ function interpreted(file, args, env, shut, refuse, depth = 0) {
   if (!words.length || words[0].startsWith("-")) unknown();
   // A PATH of its own would let the program start another by name from a folder that holds a link into the worktree
   // (TOOLS-326): the folders are the line's, not the run's, so none of them was checked. Any word counts, for an env
-  // the program starts in turn (busybox env, a link to env by another name).
-  if ([...assignments, ...words].some(word => word.startsWith("PATH="))) refuse(`${file} starts with env ${rest}, which sets PATH itself, so a program it starts by name could lead into the worktree or its Git folder; drop PATH= from that line, or set ASE_KEY_GUARD=off to run without the lock`);
+  // the program starts in turn (busybox env, a link to env by another name), in any of the forms ownSetting reads. A
+  // BASH_ENV or ENV would have a shell the line starts read a file first, one a build may have written (TOOLS-329).
+  const setting = [...assignments, ...words].map(ownSetting).find(Boolean);
+  if (setting === "PATH") refuse(`${file} starts with env ${rest}, which sets PATH itself, so a program it starts by name could lead into the worktree or its Git folder; drop PATH= from that line, or set ASE_KEY_GUARD=off to run without the lock`);
+  if (setting) refuse(`${file} starts with env ${rest}, which sets ${setting} itself, a file a shell it starts reads first and a build could have written; drop ${setting}= from that line, or set ASE_KEY_GUARD=off to run without the lock`);
   const [name, ...options] = words;
   let found;
   if (name.includes("/")) {
@@ -525,8 +536,9 @@ function interpreted(file, args, env, shut, refuse, depth = 0) {
     found = program;
   }
   // An env started by env would look its own program up by name, and could set PATH first (a link to it by another
-  // name too, whose -S words this line holds as one).
-  if (basename(found) === "env" || basename(real(found)) === "env") refuse(`${file} starts with env ${rest}, which starts env again, and that env would look its program up by name; start the program from that line directly, or set ASE_KEY_GUARD=off to run without the lock`);
+  // name too, whose -S words this line holds as one), and so would one the program starts in turn: a multi-call binary
+  // told to run env (busybox env, coreutils env) or a wrapper that starts it (timeout 30 env, TOOLS-329).
+  if (namesEnv(found) || options.some(namesEnv)) refuse(`${file} starts with env ${rest}, which starts env again, and that env would look its program up by name; start the program from that line directly, or set ASE_KEY_GUARD=off to run without the lock`);
   const [command, commandArgs] = interpreted(found, [...options, file, ...args], env, shut, refuse, depth + 1);
   if (!assignments.length) return [command, commandArgs];
   // env sets them and starts the program by the full path it is given (one with = in it would read as one more).
@@ -535,7 +547,8 @@ function interpreted(file, args, env, shut, refuse, depth = 0) {
   return [interpreter, [...assignments, command, ...commandArgs]];
 }
 
-// The words of an env -S string as env splits them (GNU coreutils' and uutils' rules): blanks between words, '…' taken
+// The words of an env -S string as env splits them (GNU coreutils' and uutils' rules): blanks between words (space, tab,
+// and line feed, vertical tab, form feed and carriage return too, TOOLS-329), '…' taken
 // as it is but for \\ and \', "…" and the bare text with the escapes \" \' \\ \# \$ \f \n \r \t \v and \_ (a space in
 // quotes, a word break outside), and # at a word's start ending the line. Null for what env would expand (${NAME}) or
 // stop on (\c), an escape it refuses, and a quote left open: the program cannot be told then.
@@ -560,7 +573,7 @@ function splitWords(string) {
       continue;
     }
     if (quote === '"') { if (char === '"') quote = null; else word += char; continue; }
-    if (char === " " || char === "\t") { end(); continue; }
+    if (" \t\n\v\f\r".includes(char)) { end(); continue; }
     if (char === "#" && word === null) break;
     if (char === "'" || char === '"') { quote = char; word ??= ""; continue; }
     word = (word ?? "") + char;
@@ -661,7 +674,8 @@ function cleanFolders(env, shut) {
  * full path with the line's other words as they were, and where a PATH folder holds such a link the command sets PATH
  * to the folders that hold none (cleanFolders), for any program it starts by name in turn. `problem` in plain words
  * where PATH holds the program only as such a link, the program is inside, or which program runs cannot be told (shell
- * syntax beyond words and quotes, an expansion, env, a name no PATH folder holds); `command` is then one that says so
+ * syntax beyond words and quotes, an expansion, env by any name or started in turn, a PATH, BASH_ENV or ENV it sets, a
+ * name no PATH folder holds); `command` is then one that says so
  * and fails, so only a call that really starts ssh stops. `variant` is the kind of ssh git would have told from the
  * program's name, where the command no longer starts with it (GIT_SSH_VARIANT). With nothing set and no ssh on PATH,
  * command is null: no ssh can start.
@@ -680,8 +694,13 @@ export function sshCommand(env = process.env, { worktree, common, configured } =
     // As sh reads them: an unquoted NAME=value before the program sets a variable.
     const word = words.find(({ start, end }) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(shell.slice(start, end)));
     if (!word || !word.plain) return unknown("its program is not a plain word");
-    // A PATH of its own would bring back folders a link into the worktree sits in, for what the program starts by name.
-    if (words.some(({ start, end }) => start < word.start && /^PATH=/.test(shell.slice(start, end)))) return unknown("it sets PATH itself");
+    // A PATH of its own would bring back folders a link into the worktree sits in, for what the program starts by name,
+    // and a BASH_ENV or ENV would have a shell read a file a build may have written first (TOOLS-329): before the program
+    // or after it, for an env it starts in turn (timeout 30 env PATH=…), in any form ownSetting reads (R1-1, SL-2).
+    const setting = words.map(({ value }) => ownSetting(value)).find(Boolean);
+    if (setting) return unknown(`it sets ${setting} itself`);
+    // env started in turn would look its program up by name and read settings of its own (a quoted -S string).
+    if (words.some(other => other.start > word.start && namesEnv(other.value))) return unknown("env looks its program up on PATH");
     program = word.value; before = shell.slice(0, word.start); after = shell.slice(word.end);
   }
   try {
@@ -695,8 +714,8 @@ export function sshCommand(env = process.env, { worktree, common, configured } =
       if (!found.file) return given === null ? { command: null, problem: null, variant: null } : unknown(`no PATH folder holds ${program}`);
       file = found.file;
     }
-    // env would look its program up by name again.
-    if (basename(file) === "env") return unknown("env looks its program up on PATH");
+    // env would look its program up by name again, by a link of another name too (R1-1).
+    if (namesEnv(file)) return unknown("env looks its program up on PATH");
     const start = interpreted(file, [], env, shut, problem => { throw new Error(problem); }).flat();
     const folders = cleanFolders(env, shut).join(delimiter);
     const path = folders === String(env.PATH ?? systemPath) ? "" : `PATH=${shellQuote(folders)} `;
