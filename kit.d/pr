@@ -1463,6 +1463,16 @@ async function main(args) {
       await recordReviewLoop();
       return true;
     }
+    // A sync made again on a moved dev and main (a "behind" retry) joins other commits: its Summary is written again from the new
+    // merge, and nothing else in the PR text is touched (TOOLS-380).
+    async function refreshSyncSummary() {
+      if (!flags.syncMain) return;
+      const summary = await syncSummary(), current = readFileSync(body, "utf8");
+      const next = current.replace(/(## Summary\n\n)[\s\S]*?(\n\n## Tests)/, (_, open, close) => `${open}${summary}${close}`);
+      if (next === current) return;
+      writeFileSync(body, next);
+      await gh("summary", ["api", "--method", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "-F", `body=@${body}`]);
+    }
     // The text between the review-loop markers of a PR that already has them; `text` null takes the block away. Nothing else
     // is touched, and a PR with no block gets none here (recordReviewLoop writes the first one).
     async function replaceBlock(text) {
@@ -1780,6 +1790,7 @@ async function main(args) {
       // The base may have changed a visible file this PR changes too: what kit ux checked is then no longer what lands.
       if (!flags.release) uxCheck();
       await push();
+      await refreshSyncSummary();
       if (head !== reviewedHead && !await reviewHead()) return 1;
     }
   } catch (error) {

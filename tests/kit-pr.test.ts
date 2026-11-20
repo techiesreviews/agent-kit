@@ -2069,6 +2069,22 @@ test("a sync that is behind when it merges makes its merge again on the moved de
   assert.equal(merges[1].args[merges[1].args.indexOf("--match-head-commit") + 1], f.git("rev-parse", "HEAD"));
 });
 
+test("a sync made again after a behind retry gets its Summary written again from the new merge (TOOLS-380)", t => {
+  const f = fixture(t), peer = release(f);
+  f.gitAt(peer, "checkout", "-q", "dev"); f.gitAt(peer, "pull", "-q", "--ff-only", "origin", "dev");
+  f.git("checkout", "-q", "dev"); f.git("pull", "-q", "--ff-only", "origin", "dev"); f.git("checkout", "-q", "-b", "sync/main");
+  // While CI runs, dev gains a commit and main gains a copy of it: the merge made again joins one more commit.
+  const script = join(f.dir, "main-copy.sh");
+  writeFileSync(script, `#!/bin/sh\nset -e\ncd '${peer}'\ngit checkout -q main\ngit cherry-pick dev\ngit push -q origin main\ngit checkout -q dev\n`, { mode: 0o755 });
+  const result = f.run(["--sync-main"], { FAKE_EMPTY: "1", FAKE_BEHIND: "1", FAKE_ADVANCE: peer, FAKE_AFTER_PUSH: script });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const counted = (text: string) => Number(/the (\d+) commits? it joins/.exec(text)?.[1]);
+  const patched = f.apiCalls().filter(call => call.args.includes("PATCH")).at(-1)!.body!;
+  const first = counted(f.ghCalls("create")[0].body!), last = counted(patched);
+  assert.ok(first >= 1, f.ghCalls("create")[0].body);
+  assert.equal(last, first + 1, `the PR counts the commits of the merge made again\n${patched}`);
+});
+
 test("a release through a merge queue asks for --auto --merge, and a landed commit that is no merge of the head is said", t => {
   const queued = fixture(t), result = queued.run(["--base", "main", "--release"], { FAKE_QUEUE: "1" });
   assert.equal(result.status, 0, result.stdout + result.stderr);
