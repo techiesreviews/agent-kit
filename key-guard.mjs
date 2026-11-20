@@ -485,7 +485,8 @@ const ownSetting = word => [word, word.replace(/\\[_tnvfr]/g, " ").replace(/['"\
 // PATH. An -S of another program (ssh's control path) with a ${…} in it is refused too; ssh -i '${HOME}/…' is not.
 // INNER where a word holds a $ that a shell the line starts would fill in before an env it runs reads the name:
 // sh -c 'gnuenv PA${EMPTY}TH=… ssh' (a piece of the word, cut at blanks and ; & | ( ), with only name characters before
-// its $ and an = after it). ssh -i '${HOME}/…' has no = after its $, so it is not.
+// its $ and an = after it), or any $(…) or `…`, whose output can build a name: sh -c 'gnuenv $(printf PA)TH=… ssh'.
+// ssh -i '${HOME}/…' has no = after its $, so it is not.
 const FILLED = "${…}", INNER = "$";
 // The -S string a word holds, given the word before it: the word after -S (-vS) or --split-string, which GNU env also
 // takes by any unique start of it (--s, --split), or what follows when they are joined (-S'…', --split=…).
@@ -495,7 +496,7 @@ const splitString = (word, before = "") => {
   const [option, joined] = word.split(/=(.*)/s);
   return /^-[A-Za-z]*S(.+)/s.exec(word)?.[1] ?? (joined !== undefined && option.startsWith("--") && splitLong(option) ? joined : undefined);
 };
-const innerFill = word => word.split(/[\s;&|()]+/).some(piece => /^[A-Za-z0-9_]*\$.*=/s.test(piece.replace(/['"\\]/g, "")));
+const innerFill = word => /`|\$\(/.test(word) || word.split(/[\s;&|()]+/).some(piece => /^[A-Za-z0-9_]*\$.*=/s.test(piece.replace(/['"\\]/g, "")));
 const lineSetting = words => words.map(ownSetting).find(Boolean)
   ?? (words.some((word, i) => splitString(word, words[i - 1])?.includes("${")) ? FILLED : words.some(innerFill) ? INNER : undefined);
 // Whether a word names env: by name or by a path to it (links followed), or as a multi-call binary's choice of it.
@@ -547,7 +548,7 @@ function interpreted(file, args, env, shut, refuse, depth = 0) {
   // build may have written (TOOLS-329).
   const setting = lineSetting([...assignments, ...words]);
   if (setting === FILLED) refuse(`${file} starts with env ${rest}, whose -S string holds ${FILLED}, which an env there could fill in as PATH or BASH_ENV; drop the ${FILLED} from that line, or set ASE_KEY_GUARD=off to run without the lock`);
-  if (setting === INNER) refuse(`${file} starts with env ${rest}, where a shell it starts could fill in a $ as PATH= or BASH_ENV=; drop that $ from the line, or set ASE_KEY_GUARD=off to run without the lock`);
+  if (setting === INNER) refuse(`${file} starts with env ${rest}, where a $ or \` could be filled in as PATH= or BASH_ENV=; drop that $ or \` from the line, or set ASE_KEY_GUARD=off to run without the lock`);
   if (setting === "PATH") refuse(`${file} starts with env ${rest}, which sets PATH itself, so a program it starts by name could lead into the worktree or its Git folder; drop PATH= from that line, or set ASE_KEY_GUARD=off to run without the lock`);
   if (setting) refuse(`${file} starts with env ${rest}, which sets ${setting} itself, so a shell it starts could run code from a file a build wrote; drop ${setting}= from that line, or set ASE_KEY_GUARD=off to run without the lock`);
   const [name, ...options] = words;
@@ -727,7 +728,7 @@ export function sshCommand(env = process.env, { worktree, common, configured } =
     // SL-2).
     const setting = lineSetting(words.map(({ value }) => value));
     if (setting === FILLED) return unknown(`an -S string in it holds ${FILLED}, which an env there could fill in as PATH or BASH_ENV`);
-    if (setting === INNER) return unknown("a shell it starts could fill in a $ in it as PATH= or BASH_ENV=");
+    if (setting === INNER) return unknown("a $ or ` in it could be filled in as PATH= or BASH_ENV=");
     if (setting) return unknown(`it sets ${setting} itself`);
     // sh fills in a $ before an env started in turn reads the word, so "PA${EMPTY}TH=…" and ${X:-PATH}=… are PATH= by
     // then: a word after the program whose $ could start a NAME= (only name characters before it, an = after it), or
