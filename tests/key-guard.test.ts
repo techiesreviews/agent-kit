@@ -1531,9 +1531,9 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
     assert.match(sshCommand(env, { worktree: root }).problem ?? "", /cannot be told: it starts a shell \(sh\)/, command);
   }
   assert.match(refusedWith({ ...base, E: "", GIT_SSH_COMMAND: `timeout 30 "$E"sh -c 'gnuenv "$1$2" ssh' sh PA TH=${toLinks}` }), /^kit: git's ssh command \(.*\) cannot be told: it starts a shell \(sh\)/m);
-  // Shells by rarer names, a static build, and busybox's hush; a copy of a shell under a name of its own is not
-  // recognised (the README says so).
-  for (const name of ["lksh", "bash-static"]) symlinkSync(shell, join(bin, name));
+  // Shells by rarer names, a static build, and busybox's hush, told by the name alone (the stand-ins are no shells); a
+  // copy of a shell under a name of its own is not recognised (the README says so).
+  for (const name of ["lksh", "bash-static", "pwsh"]) { writeFileSync(join(bin, name), "#!/bin/sh\nexit 0\n"); chmodSync(join(bin, name), 0o755); }
   for (const command of [`timeout 30 lksh -c 'ssh "$@"' ssh`, `timeout 30 bash-static -c 'ssh "$@"' ssh`, `timeout 30 busybox hush -c 'ssh "$@"' ssh`]) {
     assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root }).problem ?? "", /cannot be told: it starts a shell \((lksh|bash-static|hush)\)/, command);
   }
@@ -1545,7 +1545,17 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
     `ssh -o 'Proxy"Command"=nc %h %p' host`]) {
     const problem = sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root }).problem ?? "";
     assert.match(problem, /cannot be told: it starts a shell \((ProxyCommand|LocalCommand), which ssh runs through the user's shell\)/, command);
-    assert.match(problem, /drop ProxyCommand and LocalCommand \(ProxyJump needs no shell\)/, command);
+    assert.match(problem, /drop ProxyCommand and LocalCommand, or use ProxyJump \(-J\) with plain host names instead/, command);
+  }
+  // ssh writes a ProxyJump's hosts into a command of its own that it runs through the user's shell, so anything beyond
+  // user@host:port names in one is refused; PermitLocalCommand is no LocalCommand, and rc or es as a plain word (no
+  // such program on PATH) or with a version (es2020) is no shell.
+  for (const command of ["ssh -J 'a;b' host", "ssh -o 'ProxyJump=a|b' host", "ssh -4J 'a b' host", "ssh -J", "ssh -oProxyJump='a>b' host"]) {
+    assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root }).problem ?? "", /cannot be told: it starts a shell \(ProxyJump with more than host names in it, which ssh runs through the user's shell\).*; give ProxyJump \(-J\) plain user@host:port names;/, command);
+  }
+  for (const command of ["ssh -J 'git@jump.example.invalid:2222,[::1]:22' host", "ssh -4J jump.example.invalid host", "ssh -o ProxyJump=none host", "ssh -o PermitLocalCommand=no host",
+    "ssh -o SetEnv=LANG=es -l rc host", "ssh -o 'SetEnv=TARGET=es2020' -l rc1 host"]) {
+    assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root }).problem, null, command);
   }
   // A pattern sh expands after the program could name a shell too.
   assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: `timeout 30 ${dirname(shell)}/s? -c 'ssh "$@"' ssh` }, { worktree: root }).problem ?? "", /cannot be told: sh expands a pattern in it, which could name a shell/);
@@ -1576,7 +1586,17 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
     assert.throws(() => start(file), /, which starts a shell \((sh|bash|dash|zsh|ProxyCommand)[),]/, file);
     assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: file }), /^kit: \S+ starts with env -S .*, which starts a shell/m, file);
   }
-  assert.throws(() => start(join(wrappers, "ssh-proxy")), /drop ProxyCommand and LocalCommand from that line \(ProxyJump needs no shell\)/);
+  assert.throws(() => start(join(wrappers, "ssh-proxy")), /drop ProxyCommand and LocalCommand from that line, or use ProxyJump \(-J\) with plain host names instead/);
+  assert.throws(() => start(wrapper("ssh-jump-odd", "ssh -J 'a;b'", "")), /, which starts a shell \(ProxyJump with more than host names in it/);
+  // pwsh reads its options its own way: any start of -Command, -CommandWithArgs or -EncodedCommand (and -cwa, -ec) runs
+  // a string, and -ExecutionPolicy does not.
+  for (const words of ["pwsh -NoProfile -Command", "pwsh -c", "pwsh -EncodedCommand", "pwsh -ec", "pwsh -cwa", "pwsh --command"]) {
+    assert.throws(() => start(wrapper("pwsh-command", words, "")), /, which starts a shell \(pwsh\)/, words);
+  }
+  const pwshPolicy = wrapper("pwsh-policy", "X=1", "pwsh -ExecutionPolicy Bypass -NonInteractive");
+  assert.deepEqual(start(pwshPolicy), ["/usr/bin/env", ["X=1", join(bin, "pwsh"), "-ExecutionPolicy", "Bypass", "-NonInteractive", pwshPolicy]]);
+  // es or rc as a word, or with a version, is no shell's name in an env -S line either.
+  assert.doesNotThrow(() => start(wrapper("es-words", `ssh -o SetEnv=TARGET=es2020 -o SetEnv=LANG=es -l rc`, "")));
   // The script's own interpreter is no extra shell: it runs the script, as #!/bin/sh would, with options that run no
   // string (bash's -C is noclobber; only fish's -C runs one).
   const ownShell = wrapper("own-shell", "X=1", "bash -e");
