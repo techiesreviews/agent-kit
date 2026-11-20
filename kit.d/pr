@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 // kit: open a PR into the land branch, attach the review, merge when checks pass
 import { execFileSync, spawn } from "node:child_process";
-import { appendFileSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { loadavg, tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import { completedFixRounds, openFindings, reviewIncomplete, reviewCoversHead, sameReviewPatch } from "../review-findings.mjs";
-import { branchRisk, budgetReport, earlierSecondLooks, fixRoundsDone, isAncestorOf, isNit, ledgerRows, modelsLine, prLine, renderLedger, reviewChain, roundLimit, secondLookRows, stoppingFindings, waiverCheck, waiverRefusal } from "../review-loop.mjs";
+import { completedFixRounds, openFindings } from "../review-findings.mjs";
+import { branchRisk, budgetReport, fixRoundsDone, isAncestorOf, isNit, ledgerRows, modelsLine, prLine, renderLedger, roundLimit, secondLookRows, stoppingFindings, waiverCheck, waiverRefusal } from "../review-loop.mjs";
+import { coveringReview, earlierSecondLooks, findingsSeenAt, readReviewReport, reviewChain, reviewReportPath, reviewsFolder, secondLookMark } from "../review-records.mjs";
 import { projectCommand, spoken } from "../review-brief.mjs";
 import { briefFollowups, cardBriefFor, closeLandedCard, isCardKey, onOrbit, openOrbitTickets, orbitProblem, ticketCardKey } from "../ticket-cards.mjs";
 
@@ -53,60 +54,6 @@ function ticketTitle(file) {
   const front = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text)?.[1];
   const title = /^title:\s*(.+)$/m.exec(front ?? "")?.[1].trim() ?? "";
   return title.replace(/^(["'])(.*)\1$/, "$2");
-}
-
-/** A second look's mark ({ kind, model, ok }), null for any other review; an unreadable mark is still a second look. */
-function secondLookMark(folder) {
-  try { return JSON.parse(readFileSync(join(folder, "second-look.json"), "utf8")) ?? {}; }
-  catch (error) { return error.code === "ENOENT" ? null : {}; }
-}
-
-// A clean whole-PR review also survives a rebase that preserves the stable patch ID, of HEAD or of `reviewable`
-// (HEAD without kit's own ticket-only commits). A second look's folder (marked second-look.json) is only ever
-// a second look, and only one that ran counts.
-async function savedReview(head, base, patchId, ticket, root, second = false, reviewable = head) {
-  const parent = join(kitMainRoot(), ".scratch/reviews", kitOwner());
-  if (!existsSync(parent)) return;
-  // Review folder names start with UTC timestamps; numeric sorting handles collision suffixes.
-  const folders = readdirSync(parent, { withFileTypes: true }).filter(entry => entry.isDirectory())
-    .map(entry => entry.name).sort((a, b) => b.localeCompare(a, "en", { numeric: true }));
-  let currentIds;
-  for (const name of folders) {
-    const folder = join(parent, name), refs = join(folder, "refs.txt");
-    const result = join(folder, "result.md"), mark = secondLookMark(folder);
-    if (!existsSync(refs) || !existsSync(result) || (second ? mark?.ok !== true : mark)) continue;
-    const [reviewedHead, reviewedBase] = readFileSync(refs, "utf8").split(/\r?\n/);
-    const resultMd = readFileSync(result, "utf8");
-    if (!/^REVIEW_STATUS: complete$/m.test(resultMd)) continue;
-    // A later review loop round that left an earlier id out was marked incomplete when it was saved: never reused.
-    if (reviewIncomplete(folder)) continue;
-    if (reviewedBase === base && reviewCoversHead(reviewedHead, head, ticket, root)) return { folder, samePatch: false };
-    // A review with nothing but nits ended the loop, so it carries over to the same patch like a clean one (a blocker or a should does not).
-    if (!reviewedHead || !reviewedBase || openFindings(resultMd).findings.some(item => !isNit(item))) continue;
-    currentIds ??= [await patchId(base, head), ...(reviewable === head ? [] : [await patchId(base, reviewable)])];
-    const reviewedId = await patchId(reviewedBase, reviewedHead);
-    if (currentIds.some(id => sameReviewPatch(reviewedId, id))) return { folder, samePatch: true };
-  }
-}
-
-// The findings above P3 of the reviews this owner saved for `commit` before this run, as "<id>\n<text>": what the lead could have
-// seen before a rebase changed the head. The ids are the ones a lookAt run gives the same findings (findings.json, else its position).
-function seenAt(commit) {
-  const seen = new Set(), parent = join(kitMainRoot(), ".scratch/reviews", kitOwner());
-  if (!existsSync(parent)) return seen;
-  for (const entry of readdirSync(parent, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const folder = join(parent, entry.name);
-    try {
-      if (readFileSync(join(folder, "refs.txt"), "utf8").split(/\r?\n/)[0] !== commit) continue;
-      const second = Boolean(secondLookMark(folder));
-      const saved = existsSync(join(folder, "findings.json")) ? JSON.parse(readFileSync(join(folder, "findings.json"), "utf8")).findings : null;
-      openFindings(readFileSync(join(folder, "result.md"), "utf8")).findings.forEach((item, index) => {
-        if (!isNit(item)) seen.add(`${second ? `SL-${index + 1}` : saved?.[index]?.id ?? `review-${index + 1}`}\n${item.text}`);
-      });
-    } catch { /* Not a readable review: it shows the lead nothing. */ }
-  }
-  return seen;
 }
 
 /** `checks.extra` as a list of commands: a string is a one-item list, anything else but a list of non-blank strings fails. */
@@ -1360,7 +1307,7 @@ async function main(args) {
     step = "review";
     console.log(`PR #${number}; ${review ? "review running" : `review: skipped (${plan.tier} tier)`}`);
     // The docs tier has no model review; CI still gates the merge.
-    let waived = 0, waivedFindings = [], seenFindings = seenAt(startHead), reviewedHeads = startRebased ? 1 : 0, loopRounds = null, loopSummary = null, loopLeft = 0, loopBudgetUsed = false, secondLookSkipped = null, secondLookModel = null, secondRows = [], loopDeclined = [], nothingToReview = false;
+    let waived = 0, waivedFindings = [], seenFindings = findingsSeenAt(reviewsFolder(kitMainRoot()), kitOwner(), startHead), reviewedHeads = startRebased ? 1 : 0, loopRounds = null, loopSummary = null, loopLeft = 0, loopBudgetUsed = false, secondLookSkipped = null, secondLookModel = null, secondRows = [], loopDeclined = [], nothingToReview = false;
     // `name` is "review" (Claude's) or "second look", whose lines and summary say so.
     async function recordFollowups(findings, name = "review", budgetUsed = true, nitsOnly = true) {
       if (!findings.length) return;
@@ -1530,15 +1477,16 @@ async function main(args) {
     }
     async function lookAt(base, second) {
       const name = second ? "second look" : "review";
-      const saved = await savedReview(head, base, patchId, flags.ticket, root, second, await reviewable(base));
-      let resultPath;
+      const saved = await coveringReview(reviewsFolder(kitMainRoot()), kitOwner(), { head, base, patchId, ticket: flags.ticket, root, second, reviewable: await reviewable(base) });
+      let folder, resultPath;
       if (saved) {
         if (saved.samePatch) console.log(`${name}: reused (same patch on new base)`);
         // A second look reused on this HEAD says so, so a reused look is told apart from a fresh one.
         else if (second) console.log(`second look: reused (${saved.folder})`);
-        resultPath = join(saved.folder, "result.md");
+        folder = saved.folder;
+        resultPath = reviewReportPath(folder);
         const comment = join(directory, second ? "second-look.md" : "review.md");
-        writeFileSync(comment, `Reused ${name}: ${saved.folder}\nHEAD: ${head}\n\n${readFileSync(resultPath, "utf8")}`);
+        writeFileSync(comment, `Reused ${name}: ${saved.folder}\nHEAD: ${head}\n\n${readReviewReport(folder)}`);
         await gh("review", ["pr", "comment", number, "--body-file", comment]);
       } else {
         const result = await execute(second ? "second-look" : "review", kit, [...reviewArgs, number, ...(flags.ticket ? ["--ticket", flags.ticket] : []), ...(second ? ["--second-look"] : [])]);
@@ -1559,16 +1507,17 @@ async function main(args) {
         if (result.status !== 0) throw new Error(childMessage(result, `${kit} exited ${result.status}`));
         const evidence = /^RESULT: ok review .+ evidence (.+)$/m.exec(result.text)?.[1];
         if (!evidence) throw new Error(`${name} did not name its evidence folder`);
-        resultPath = join(resolve(root, evidence), "result.md");
+        folder = resolve(root, evidence);
+        resultPath = reviewReportPath(folder);
       }
       // The model a second look's own mark names (fresh or reused).
-      if (second) { const model = secondLookMark(dirname(resultPath))?.model; secondLookModel = typeof model === "string" && model ? model : null; }
+      if (second) { const model = secondLookMark(folder)?.model; secondLookModel = typeof model === "string" && model ? model : null; }
       let resultMd = "";
-      try { resultMd = readFileSync(resultPath, "utf8"); }
+      try { resultMd = readReviewReport(folder); }
       catch { /* Missing or unreadable evidence fails closed through openFindings. */ }
       const { findings } = openFindings(resultMd);
       // The review's own record: the ids it gave its findings (a second look's are SL-<n>), and what the builder declined along the chain.
-      const chain = reviewChain(dirname(resultPath));
+      const chain = reviewChain(folder);
       // The fix rounds used (TOOLS-287), from the review records: the earlier heads at which Claude's rounds or the branch's second
       // looks left a finding above a nit. Both looks share the budget, so the second look takes the count Claude's review of this
       // head worked out (the docs tier, with no Claude review, counts its second looks alone). The second looks are found from the
@@ -1578,7 +1527,7 @@ async function main(args) {
         join(root, ".scratch/kit-fix", encodeURIComponent(branch)));
       const claude = second ? [] : chain;
       const rounds = loopRounds ?? Math.max(legacyRounds, fixRoundsDone(claude,
-        earlierSecondLooks(join(kitMainRoot(), ".scratch/reviews"), { branch, head: claude.at(-1)?.head ?? head, root, base }), commit => isAncestorOf(root, commit, base)));
+        earlierSecondLooks(reviewsFolder(kitMainRoot()), { branch, head: claude.at(-1)?.head ?? head, root, base }), commit => isAncestorOf(root, commit, base)));
       loopRounds = rounds;
       const limit = roundLimit(loopRisk.risky);
       // Nits alone never block or call for a round; blockers and shoulds do while the budget lasts, then only blockers (nits stop the loop; out of budget is never approval).

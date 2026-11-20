@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 // kit: review a diff or commit and save the evidence
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { inferCli, opencodeModelRuns, parseAgentArgs, plainCode, releaseReviewBudget, reserveReviewBudget } from "../agent-run.mjs";
 import { reviewBrief, reviewScope, ticketReviewBrief } from "../review-brief.mjs";
-import { saveReviewEvidence } from "../review-evidence.mjs";
 import { countsLine, findingsRecord } from "../review-findings.mjs";
-import { branchRisk, findPreviousReview, loopBriefSection, loopReviewerNote, parseMarks, roundLimit, unmarkedIds } from "../review-loop.mjs";
+import { createReviewFolder, gptLookDone, markSecondLook, previousReview, reviewsFolder, saveReview } from "../review-records.mjs";
+import { branchRisk, loopBriefSection, loopReviewerNote, parseMarks, roundLimit, unmarkedIds } from "../review-loop.mjs";
 import { docsOnly as docsOnlyChange, lookFamily, parseChanges, reviewKinds, secondLookEffort, secondLookPick, secondLookTable } from "../pr-tier.mjs";
 import { durationMilliseconds } from "../sol-run.mjs";
 
@@ -62,17 +62,6 @@ function grokDown(temporary) {
   return log.split(/\r?\n/).filter(line => line.trim()).slice(-5).reverse().map(line => line.trim()).find(line => outagePattern.test(line)) ?? null;
 }
 
-function evidenceDirectory() {
-  const parent = join(kitMainRoot(), ".scratch/reviews", kitOwner());
-  mkdirSync(parent, { recursive: true });
-  const time = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
-  for (let suffix = 0; ; suffix++) {
-    const directory = join(parent, time + (suffix ? `-${suffix}` : ""));
-    try { mkdirSync(directory); return directory; }
-    catch (error) { if (error.code !== "EEXIST") throw error; }
-  }
-}
-
 // The label of a scope whose diff is empty (a no-code merge), or null when it has changes or cannot be read: a bad ref or
 // settings problem is left to the review itself, which reports it as before.
 function emptyScope(flags) {
@@ -121,10 +110,8 @@ async function reviewOnce(flags, look) {
     // Review loop: round 1 is a full review; a later round reviews only what changed since the last reviewed head and the open ids.
     // A second look or a --commit review is never a loop round.
     branchName = spawnSync("git", ["-C", root, "branch", "--show-current"], { encoding: "utf8" }).stdout.trim();
-    const reviewsRoot = join(kitMainRoot(), ".scratch/reviews"), owner = kitOwner();
-    // Other owners' folders too: a lead landing a builder's branch answers the builder's rounds (they must name this branch).
-    const otherOwners = existsSync(reviewsRoot) ? readdirSync(reviewsRoot, { withFileTypes: true }).filter(entry => entry.isDirectory() && entry.name !== owner).map(entry => join(reviewsRoot, entry.name)) : [];
-    previous = !look && !scope.commit ? findPreviousReview(join(reviewsRoot, owner), { head: scope.head, base: scope.base, root, branch: branchName, otherOwners }) : null;
+    // Other owners' records too: a lead landing a builder's branch answers the builder's rounds (they must name this branch).
+    previous = !look && !scope.commit ? previousReview(reviewsFolder(kitMainRoot()), kitOwner(), { head: scope.head, base: scope.base, root, branch: branchName }) : null;
     round = previous ? previous.round + 1 : 1;
     loopMeta = look || scope.commit ? {} : { round, ...(branchName ? { branch: branchName } : {}), ...(previous ? { previous: previous.name } : {}) };
     // Every round, the first included, carries the reviewer's loop rules; a later round with open ids adds its section.
@@ -243,10 +230,10 @@ async function reviewOnce(flags, look) {
     try {
       // A second look's folder is marked as soon as it exists, before any review file is copied in, so no
       // lookup ever takes it for Claude's review; `ok` turns true below only for a run that came back.
-      const mark = ok => writeFileSync(join(evidence, "second-look.json"),
-        `${JSON.stringify({ kind: look.kind, model, ok, ...(branchName ? { branch: branchName } : {}), ...(flags.pr ? { pr: flags.pr } : {}) })}\n`);
-      const { record, cleanup } = saveReviewEvidence(temporary, () => {
-        evidence = evidenceDirectory();
+      const mark = ok => markSecondLook(evidence,
+        { kind: look.kind, model, ok, ...(branchName ? { branch: branchName } : {}), ...(flags.pr ? { pr: flags.pr } : {}) });
+      const { record, cleanup } = saveReview(temporary, () => {
+        evidence = createReviewFolder(reviewsFolder(kitMainRoot()), kitOwner());
         if (look) mark(false);
         return evidence;
       }, text => findingsRecord(text, { model, effort, scope: label, head: reviewedHead, ...loopMeta }, previous?.findings ?? []));
@@ -279,37 +266,6 @@ function report({ status, outOfCredit, kept, budget, model, evidence, label, rea
   }
   kitResult(status === 0 ? "ok" : "fail", status === 0 ? `review ${label} evidence ${evidence}` : `${reason} evidence ${evidence}`);
   return status;
-}
-
-// The commits of `head` whose patch is not in `upstream` (git cherry's "+" lines), or null when git fails.
-function cherryPlus(root, upstream, head) {
-  const run = spawnSync("git", ["-C", root, "cherry", upstream, head], { encoding: "utf8" });
-  return run.status === 0 ? run.stdout.split("\n").filter(line => line.startsWith("+ ")).map(line => line.slice(2).trim()) : null;
-}
-
-// The PR's GPT second look that already ran (a mark that came back, for this PR or this branch, under any owner),
-// or null. The cost guard: one GPT second look per PR. A branch match counts unless both name a PR, and only when the
-// look's own work (its HEAD's commits not in origin/<land>, by patch) is all in this HEAD, by commit or by patch, so a
-// rebase keeps it, while an earlier PR on a branch name that comes back (its work already in the base, or never in
-// this branch) leaves the new PR its own GPT look. A look whose refs.txt cannot be read never counts: GPT looks again.
-function gptLookDone(pr, branch, root, head, base) {
-  const reviews = join(kitMainRoot(), ".scratch/reviews");
-  if (!existsSync(reviews)) return null;
-  const folders = readdirSync(reviews, { withFileTypes: true }).filter(entry => entry.isDirectory())
-    .flatMap(owner => readdirSync(join(reviews, owner.name), { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => join(reviews, owner.name, entry.name)));
-  for (const folder of folders.sort().reverse()) {
-    let mark;
-    try { mark = JSON.parse(readFileSync(join(folder, "second-look.json"), "utf8")); } catch { continue; }
-    if (mark?.ok !== true || lookFamily(mark.model) !== "gpt") continue;
-    if (pr && mark.pr === pr) return folder;
-    if (!branch || mark.branch !== branch || (pr && mark.pr)) continue;
-    let looked = "";
-    try { looked = readFileSync(join(folder, "refs.txt"), "utf8").split(/\r?\n/)[0].trim(); } catch { continue; }
-    if (!/^[0-9a-f]{7,64}$/.test(looked)) continue;
-    const own = cherryPlus(root, base, looked), missing = cherryPlus(root, head, looked);
-    if (own?.length && missing && own.every(commit => !missing.includes(commit))) return folder;
-  }
-  return null;
 }
 
 // The second look after Claude's review: the change's kind picks its models in the table, first choice first; the next
@@ -361,7 +317,7 @@ async function secondLook(flags) {
     } else {
       const branch = spawnSync("git", ["-C", root, "branch", "--show-current"], { encoding: "utf8" }).stdout?.trim() ?? "";
       for (const model of pick.order) {
-        const done = lookFamily(model) === "gpt" && !docsOnly && gptLookDone(flags.pr, branch, root, scope.head, `origin/${kitBranch()}`);
+        const done = lookFamily(model) === "gpt" && !docsOnly && gptLookDone(reviewsFolder(kitMainRoot()), { pr: flags.pr, branch, root, head: scope.head, base: `origin/${kitBranch()}` });
         const why = lookFamily(model) !== "gpt" ? null : docsOnly ? "docs-only change" : done ? `one GPT second look per PR, done in ${done}` : null;
         if (why) unused.push({ model, why });
         else models.push(model);

@@ -9,7 +9,7 @@ import { codexReviewConfig, isoWeek, makeCodexReviewHome, opencodeModelRuns } fr
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
 import { builderChecks, plainEnglish, reviewBrief, reviewFormat, ticketReviewBrief } from "../review-brief.mjs";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
-import { saveReviewEvidence } from "../review-evidence.mjs";
+import { saveReview } from "../review-records.mjs";
 import { insideKitPrLock, kitEnv } from "./support/kit-env.ts";
 
 const kit = resolve("kit");
@@ -590,11 +590,11 @@ test("review evidence keeps the temporary folder when findings.json fails after 
   for (const name of sources) writeFileSync(join(temporary, name), `${name}\n`);
   // A directory in the way of findings.json.tmp fails the write once all four copies are in.
   const blocked = () => { mkdirSync(join(evidence, "findings.json.tmp"), { recursive: true }); return evidence; };
-  assert.throws(() => saveReviewEvidence(temporary, blocked, (text: string) => ({ text })), { code: "EISDIR" });
+  assert.throws(() => saveReview(temporary, blocked, (text: string) => ({ text })), { code: "EISDIR" });
   assert.deepEqual(readdirSync(temporary).sort(), sources);
   assert.deepEqual(readdirSync(evidence).sort(), ["diff.patch", "findings.json.tmp", "refs.txt", "result.md", "run.log"]);
   rmSync(evidence, { recursive: true });
-  const saved = saveReviewEvidence(temporary, () => { mkdirSync(evidence); return evidence; }, (text: string) => ({ text }));
+  const saved = saveReview(temporary, () => { mkdirSync(evidence); return evidence; }, (text: string) => ({ text }));
   assert.deepEqual(saved, { evidence, record: { text: "out.md\n" }, cleanup: null });
   assert.equal(existsSync(temporary), false);
   assert.deepEqual(readdirSync(evidence).sort(), ["diff.patch", "findings.json", "refs.txt", "result.md", "run.log"]);
@@ -611,7 +611,7 @@ test("review evidence stays saved when only removing the temporary folder fails"
   // A read-only parent lets the files go but not the folder itself.
   chmodSync(parent, 0o555);
   t.after(() => { chmodSync(parent, 0o755); rmSync(dir, { recursive: true, force: true }); });
-  const saved = saveReviewEvidence(temporary, () => { mkdirSync(evidence); return evidence; }, (text: string) => ({ text }));
+  const saved = saveReview(temporary, () => { mkdirSync(evidence); return evidence; }, (text: string) => ({ text }));
   assert.equal(saved.evidence, evidence);
   assert.match(saved.cleanup, /EACCES/);
   assert.deepEqual(readdirSync(evidence).sort(), ["diff.patch", "findings.json", "refs.txt", "result.md", "run.log"]);
@@ -2263,6 +2263,7 @@ test("a review without a ticket takes skills from the changed files and keeps th
 test("review loop: round 1 is a full review with ids; a later review of changed code gets the open ids and the diff since, and its marks make the ledger", async (t) => {
   const f = fixture(t);
   const loop = await import("../review-loop.mjs");
+  const records = await import("../review-records.mjs");
   const first = f.run([], { FAKE_REPORT: "REVIEW_STATUS: complete\nDefects:\n- file.txt:1 — P1 fault: the save drops the second write.\nValidation gaps: none.\n", ASE_REVIEW_MODEL: "claude-opus-5-5" });
   assert.equal(first.status, 0, first.stderr);
   const firstEvidence = f.evidence(first.stdout);
@@ -2286,7 +2287,7 @@ test("review loop: round 1 is a full review with ids; a later review of changed 
   const secondRecord = JSON.parse(readFileSync(join(secondEvidence, "findings.json"), "utf8"));
   assert.equal(secondRecord.round, 2);
   assert.equal(secondRecord.previous, firstEvidence.split("/").at(-1));
-  assert.deepEqual(loop.ledgerRows(loop.reviewChain(secondEvidence)), [{ id: "R1-1", severity: "blocker", outcome: "resolved" }]);
+  assert.deepEqual(loop.ledgerRows(records.reviewChain(secondEvidence)), [{ id: "R1-1", severity: "blocker", outcome: "resolved" }]);
   // A review that found nothing leaves nothing to answer: the next review is a fresh round 1.
   writeFileSync(join(f.root, "file.txt"), "again\n");
   f.git("add", "file.txt"); f.git("commit", "-m", "another change");
@@ -2298,7 +2299,7 @@ test("review loop: round 1 is a full review with ids; a later review of changed 
   const thirdRecord = JSON.parse(readFileSync(join(f.evidence(third.stdout), "findings.json"), "utf8"));
   assert.equal(thirdRecord.round, 3);
   assert.equal(thirdRecord.previous, secondEvidence.split("/").at(-1));
-  assert.equal(loop.reviewChain(f.evidence(third.stdout)).length, 3);
+  assert.equal(records.reviewChain(f.evidence(third.stdout)).length, 3);
   // Round 1 is told the rules too.
   assert.ok(first.stdout && f.calls()[0].input.includes("start no subagents"));
 });
