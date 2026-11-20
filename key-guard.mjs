@@ -475,11 +475,16 @@ const linkRefusal = (name, file) => `${name} on PATH is ${file}, a link into the
 // SHELLOPTS, BASHOPTS or PS4 (a trace prompt it expands), or ZDOTDIR (the folder whose .zshenv every zsh reads). It
 // counts at the word's start, after a character no variable name holds (a blank inside one quoted -S string, an option's
 // =), or joined to an -S option (-SPATH=…, -iSPATH=…), so another env the line starts (busybox env, coreutils env)
-// cannot hide one in its own words; XPATH= and MY_ENV= are other variables. It counts with the word's quotes,
-// backslashes and ${…} taken out too, as such an env joins them ('PA''TH=…', BA""SH_ENV=…, PA${X}TH=…), for an env
-// the kit cannot tell by its name (GNU env installed as gnuenv).
-const ownSetting = word => [word, word.replace(/\$\{[^}]*\}|['"\\]/g, "")]
-  .map(text => /(?:^|[^A-Za-z0-9_]|^-[A-Za-z]*S)(PATH|BASH_ENV|ENV|BASH_FUNC_[^=\s]*|SHELLOPTS|BASHOPTS|PS4|ZDOTDIR)=/.exec(text)?.[1]).find(Boolean);
+// cannot hide one in its own words; XPATH= and MY_ENV= are other variables. It counts with the word read as an env
+// of a name the kit cannot tell (GNU env installed as gnuenv) splits it too: quotes and backslashes join ('PA''TH=…',
+// BA""SH_ENV=…), but \_ and the blank escapes break (X=1\_PATH=…). A ${…} in a name before = (PA${X}TH=…) could make
+// any of them from a value the line sets itself, so it counts as "a ${…} name".
+const ownSetting = word => {
+  const joined = word.replace(/\\[_tnvfr]/g, " ").replace(/['"\\]/g, "");
+  const name = [word, joined].map(text => /(?:^|[^A-Za-z0-9_]|^-[A-Za-z]*S)(PATH|BASH_ENV|ENV|BASH_FUNC_[^=\s]*|SHELLOPTS|BASHOPTS|PS4|ZDOTDIR)=/.exec(text)?.[1]).find(Boolean);
+  if (name) return name;
+  if (/(?:^|[^A-Za-z0-9_]|^-[A-Za-z]*S)[A-Za-z0-9_]*\$\{[^}]*\}(?:[A-Za-z0-9_]|\$\{[^}]*\})*=/.test(joined)) return "a ${…} name";
+};
 // Whether a word names env: by name or by a path to it (links followed), or as a multi-call binary's choice of it.
 const namesEnv = word => basename(word) === "env" || (word.includes("/") && basename(real(word)) === "env") || /^--coreutils-prog(?:-shebang)?=env$/.test(word);
 
@@ -529,7 +534,7 @@ function interpreted(file, args, env, shut, refuse, depth = 0) {
   // build may have written (TOOLS-329).
   const setting = [...assignments, ...words].map(ownSetting).find(Boolean);
   if (setting === "PATH") refuse(`${file} starts with env ${rest}, which sets PATH itself, so a program it starts by name could lead into the worktree or its Git folder; drop PATH= from that line, or set ASE_KEY_GUARD=off to run without the lock`);
-  if (setting) refuse(`${file} starts with env ${rest}, which sets ${setting} itself, so a shell it starts could run code from a file a build wrote; drop ${setting}= from that line, or set ASE_KEY_GUARD=off to run without the lock`);
+  if (setting) refuse(`${file} starts with env ${rest}, which sets ${setting} itself, so a shell it starts could run code from a file a build wrote; drop ${setting.startsWith("a ") ? "it" : `${setting}=`} from that line, or set ASE_KEY_GUARD=off to run without the lock`);
   const [name, ...options] = words;
   let found;
   if (name.includes("/")) {
