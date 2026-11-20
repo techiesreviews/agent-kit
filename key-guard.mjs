@@ -525,7 +525,7 @@ const startedShell = (words, env, shut) => {
     const bare = word.replace(/["'\\]/g, ""), option = viaShell.exec(bare);
     if (option && option[2].trim().toLowerCase() !== "none") return `${option[1].toLowerCase() === "proxy" ? "ProxyCommand" : "LocalCommand"}, which ssh runs through the user's shell`;
     const flag = /^-[46AaCfGgKkMNnqsTtVvXxYy]*J(.*)$/s.exec(word), jump = jumpOption.exec(bare)?.[1] ?? (flag ? flag[1] || (words[i + 1] ?? "") : null);
-    if (jump !== null && !/^[\w.@:,%[\]-]+$/.test(jump.trim())) return "ProxyJump with more than host names in it, which ssh runs through the user's shell";
+    if (jump !== null && !/^[\w.@:,[\]-]+$/.test(jump.trim())) return "ProxyJump with more than host names in it, which ssh runs through the user's shell";
     // Braces and commas split too: where /bin/sh is bash, {s,h} would be a shell's name by brace expansion.
     const piece = word.split(/[\s;&|()<>=`'"{},]+/).find(part => part && namesShell(part, env, shut));
     if (piece) return basename(piece);
@@ -536,10 +536,10 @@ const shellAdvice = (started, where) => started.startsWith("ProxyJump") ? `give 
   : /^(?:Proxy|Local)Command/.test(started) ? `drop ProxyCommand and LocalCommand${where}, or use ProxyJump (-J) with plain host names instead` : null;
 // A shell told to run a string instead of the script: -c alone or bundled (-ec), --command, --init-command, and fish's
 // -C (bash's and sh's -C is noclobber). pwsh takes any start of -Command, -CommandWithArgs or -EncodedCommand, of any
-// case and with - or --, and -cwa and -ec.
+// case, with blanks around it and one or two dashes (an en dash, em dash or horizontal bar counts as one), and -cwa and -ec.
 const runsString = (option, kind) => {
   if (kind === "pwsh") {
-    const name = /^--?([A-Za-z]+)(?::|$)/.exec(option)?.[1]?.toLowerCase();
+    const name = /^[-–—―]{1,2}([A-Za-z]+)(?::|$)/.exec(option.trim())?.[1]?.toLowerCase();
     return Boolean(name) && (["cwa", "ec"].includes(name) || ["command", "commandwithargs", "encodedcommand"].some(full => full.startsWith(name)));
   }
   return /^-[A-Za-z]*c/.test(option) || (kind === "fish" && /^-[A-Za-z]*C/.test(option)) || /^--(?:command|init-command)(?:=|$)/.test(option);

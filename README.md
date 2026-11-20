@@ -394,7 +394,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   `PYTHONPATH` and the like) or move another shell's start-up folder (`HOME` for zsh, `XDG_CONFIG_HOME` for fish), a
   fetch or push reading a global Git
   config a build wrote, and what ssh itself starts from a config under HOME a build wrote (`~/.ssh/config`'s
-  `ProxyCommand`, `Match exec`, or a host name it maps to this machine), and a push host whose address changes between
+  `ProxyCommand`, `Match exec`, or a host name it maps to this machine) or that `ssh -F` names (whose path ssh also
+  writes into a `ProxyJump`'s command as it is), and a push host whose address changes between
   `kit pr`'s check and the push. For those the lead's guard is the review before anything a build wrote is run (`kit
   review` is read-only).
 - Keyed steps happen only in the lead's own process, never inside a locked run. Already the lead's: `git push`, `kit pr`

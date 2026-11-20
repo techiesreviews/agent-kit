@@ -1550,7 +1550,9 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   // ssh writes a ProxyJump's hosts into a command of its own that it runs through the user's shell, so anything beyond
   // user@host:port names in one is refused; PermitLocalCommand is no LocalCommand, and rc or es as a plain word (no
   // such program on PATH) or with a version (es2020) is no shell.
-  for (const command of ["ssh -J 'a;b' host", "ssh -o 'ProxyJump=a|b' host", "ssh -4J 'a b' host", "ssh -J", "ssh -oProxyJump='a>b' host"]) {
+  // ssh fills % tokens into that command first (%k is the HostKeyAlias, %r the remote user), so a % counts too.
+  for (const command of ["ssh -J 'a;b' host", "ssh -o 'ProxyJump=a|b' host", "ssh -4J 'a b' host", "ssh -J", "ssh -oProxyJump='a>b' host",
+    "ssh -o HostKeyAlias='x;id' -J %k host", "ssh -J '%r@jump.example.invalid' host"]) {
     assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root }).problem ?? "", /cannot be told: it starts a shell \(ProxyJump with more than host names in it, which ssh runs through the user's shell\).*; give ProxyJump \(-J\) plain user@host:port names;/, command);
   }
   for (const command of ["ssh -J 'git@jump.example.invalid:2222,[::1]:22' host", "ssh -4J jump.example.invalid host", "ssh -o ProxyJump=none host", "ssh -o PermitLocalCommand=no host",
@@ -1589,8 +1591,9 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   assert.throws(() => start(join(wrappers, "ssh-proxy")), /drop ProxyCommand and LocalCommand from that line, or use ProxyJump \(-J\) with plain host names instead/);
   assert.throws(() => start(wrapper("ssh-jump-odd", "ssh -J 'a;b'", "")), /, which starts a shell \(ProxyJump with more than host names in it/);
   // pwsh reads its options its own way: any start of -Command, -CommandWithArgs or -EncodedCommand (and -cwa, -ec) runs
-  // a string, and -ExecutionPolicy does not.
-  for (const words of ["pwsh -NoProfile -Command", "pwsh -c", "pwsh -EncodedCommand", "pwsh -ec", "pwsh -cwa", "pwsh --command"]) {
+  // a string, also after an en dash, em dash or horizontal bar and with blanks around it, and -ExecutionPolicy does not.
+  for (const words of ["pwsh -NoProfile -Command", "pwsh -c", "pwsh -EncodedCommand", "pwsh -ec", "pwsh -cwa", "pwsh --command", "pwsh —Command", "pwsh –c",
+    "pwsh ――command", "pwsh ' -c'"]) {
     assert.throws(() => start(wrapper("pwsh-command", words, "")), /, which starts a shell \(pwsh\)/, words);
   }
   const pwshPolicy = wrapper("pwsh-policy", "X=1", "pwsh -ExecutionPolicy Bypass -NonInteractive");
