@@ -311,8 +311,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     repository's is set empty), else `GIT_SSH`, else `ssh`, with the command's other words kept, and where a PATH folder
     holds a link into the worktree or the Git folder the command's PATH leaves that folder out, for a program it starts
     by name in turn (`timeout 30 ssh`, a wrapper script). A command whose program cannot be told (shell syntax beyond
-    words and quotes, an expansion, `env` by any name or started in turn, or anywhere in it a `PATH=` or a shell
-    variable that runs code from elsewhere, below; TOOLS-329), or an ssh PATH holds only as such a link, is swapped for
+    words and quotes, an expansion, `env` by any name or started in turn, a shell started from it, or anywhere in it a
+    `PATH=` or a shell variable that runs code from elsewhere, below; TOOLS-329), or an ssh PATH holds only as such a link, is swapped for
     one that says so and fails, so only a call to an ssh remote stops. `kit pr` pushes to a folder remote (whose hooks
     git runs without these settings) inside the key lock. It weighs every push address the remote lists, rewrites
     applied, the global and system config's too, as the push reads them (TOOLS-320, TOOLS-329): a folder beside other
@@ -351,7 +351,16 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     an `-S` string among the words (`--split` and other short forms of `--split-string` too) that holds `${…}`, which
     that env could fill in as `PATH=`, is refused; so is a word, or a piece of a `sh -c '…'` string, with only name
     characters before a `$` and an `=` after it (`"PA${EMPTY}TH=…"`), or with a `$(…)` or backtick in it, while
-    `ssh -i $HOME/…` still runs. The run's PATH leaves
+    `ssh -i $HOME/…` still runs. A backtick counts even inside single quotes, where sh leaves it alone, so
+    ``ssh -o 'SetEnv=X=`…`'`` is refused too. No shell starts from git's ssh command or from an env -S first line (Lex's
+    decision, TOOLS-329), since a shell can build `PATH=` out of pieces no word holds (`"$1$2"`, `"${1}${2}"`, `IFS=`
+    with `"$*"`): a line that names `sh`, `bash`, `dash`, `zsh`, `ksh` or another shell (by name, by a path or a link
+    that leads to one, from a variable sh fills in such as `$SHELL`, or inside a quoted string), behind a wrapper too
+    (`timeout 30 sh -c '…'`, `nice bash`, `busybox sh`, `gnuenv zsh`), is refused, and so is a pattern sh would expand
+    there, or ssh's `ProxyCommand` or `LocalCommand` (not `none`), which ssh runs through the user's shell. A plain ssh
+    command (`ssh -i ~/.ssh/key`, `timeout 30 ssh`, `ProxyJump`) and an ssh wrapper script still run; an env -S first
+    line may still name the script's own shell (`#!/usr/bin/env -S bash -e`), as long as it is not told to run a
+    string (`-c`). The run's PATH leaves
     those folders out, so `<worktree>/node_modules/.bin` (which npm puts on PATH) supplies none of them; a link elsewhere stays on PATH,
     and the next program on PATH starts in its place, or the run stops and says so. `kit pr` puts links to the git,
     node, gh, bash and sh it found that way in a private folder in the temp folder, first on PATH (and `KIT_NODE` is
@@ -375,8 +384,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   which a build or a check can change and `kit pr` then runs, the machine's kit copy where builds and checks run
   unlocked (no bubblewrap, or `ASE_KEY_GUARD=off`; Codex's own sandbox keeps it read-only), a `kit pr` started through
   `npm run` (its own `#!/usr/bin/env node` is found before `kit pr` can look), what a program an env -S first line or
-  git's ssh command starts does with its own words (only the line's words are read: `sh -c '…'` can set PATH in its
-  own way, and `timeout 30 node` looks node up by name on the run's PATH, where a link elsewhere into the worktree
+  git's ssh command starts does with its own words (only the line's words are read: a program other than a shell can
+  set PATH in its own way, and `timeout 30 node` looks node up by name on the run's PATH, where a link elsewhere into the worktree
   stays), variables there that have a loader or a runtime load code (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `NODE_OPTIONS`,
   `PYTHONPATH` and the like) or move another shell's start-up folder (`HOME` for zsh, `XDG_CONFIG_HOME` for fish), a
   fetch or push reading a global Git

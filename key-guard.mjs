@@ -501,6 +501,29 @@ const lineSetting = words => words.map(ownSetting).find(Boolean)
   ?? (words.some((word, i) => splitString(word, words[i - 1])?.includes("${")) ? FILLED : words.some(innerFill) ? INNER : undefined);
 // Whether a word names env: by name or by a path to it (links followed), or as a multi-call binary's choice of it.
 const namesEnv = word => basename(word) === "env" || (word.includes("/") && basename(real(word)) === "env") || /^--coreutils-prog(?:-shebang)?=env$/.test(word);
+// No shell starts from git's ssh command or from an env -S first line but the script's own interpreter (Lex's decision,
+// 2026-11-20, TOOLS-329): a shell can build PATH= or BASH_ENV= out of pieces no word holds ("$1$2", "${1}${2}", IFS=
+// with "$*"), which no check here could read. A shell counts by name (a version may follow: bash5, zsh-5.9), by a path
+// or a PATH entry that leads to one (links followed: /usr/bin/sh is dash), as a word or as a piece of one (sh -c '…
+// bash -c …', a value after an =); so do ssh's ProxyCommand and LocalCommand (but none), which ssh runs through the
+// user's shell. startedShell gives what starts the shell, in words, or null.
+const shellName = /^(?:sh|ash|bash|rbash|dash|ksh|ksh93|mksh|pdksh|oksh|loksh|zsh|yash|posh|csh|tcsh|fish)(?:[-.]?\d[\d.]*)?$/;
+const namesShell = (word, env, shut) => {
+  const file = word.includes("/") ? word : programFor(word, env, shut);
+  return shellName.test(basename(word)) || Boolean(file && shellName.test(basename(real(file))));
+};
+const viaShell = /^(?:-o)?[ \t]*(proxy|local)command(?:[ \t]*=[ \t]*|[ \t]+)(.*)$/is;
+const startedShell = (words, env, shut) => {
+  for (const word of words) {
+    const option = viaShell.exec(word);
+    if (option && option[2].trim().toLowerCase() !== "none") return `${option[1].toLowerCase() === "proxy" ? "ProxyCommand" : "LocalCommand"}, which ssh runs through the user's shell`;
+    const piece = word.split(/[\s;&|()<>=`'"{},]+/).find(part => part && namesShell(part, env, shut));
+    if (piece) return basename(piece);
+  }
+  return null;
+};
+// A shell told to run a string instead of the script: -c alone or bundled (-ec), fish's -C, --command, --init-command.
+const runsString = option => /^-[A-Za-z]*[cC]/.test(option) || /^--(?:command|init-command)(?:=|$)/.test(option);
 
 // A script's first line names its interpreter, and `#!/usr/bin/env node` has env look node up by its bare name on PATH,
 // where a link a person made into the worktree or the Git folder stays (only the names the kit starts are looked up past
@@ -511,7 +534,7 @@ const namesEnv = word => basename(word) === "env" || (word.includes("/") && base
 // NAME=value words before the program stay with env, which then gets the program by its full path. A first line that
 // names a full path inside the worktree or the Git folder, an env option other than -S, -S words env would expand or
 // that cannot be split, a PATH among those words or env as the program (TOOLS-326), one of ownSetting's shell variables
-// among them or env among the program's words (TOOLS-329), or a name PATH holds only as such a
+// among them, env among the program's words or a shell it starts (startedShell, TOOLS-329), or a name PATH holds only as such a
 // link is refused through `refuse`; a name no PATH folder holds is left to start as it is (and fail).
 function interpreted(file, args, env, shut, refuse, depth = 0) {
   let head = "";
@@ -566,6 +589,9 @@ function interpreted(file, args, env, shut, refuse, depth = 0) {
   // name too, whose -S words this line holds as one), and so would one the program starts in turn: a multi-call binary
   // told to run env (busybox env, coreutils env) or a wrapper that starts it (timeout 30 env, TOOLS-329).
   if (namesEnv(found) || options.some(namesEnv)) refuse(`${file} starts with env ${rest}, which starts env again, and that env would look its program up by name; start the program from that line directly, or set ASE_KEY_GUARD=off to run without the lock`);
+  // A shell the program starts, or the program as a shell told to run a string, could build PATH= from pieces.
+  const shell = startedShell(options, env, shut) ?? (namesShell(found, env, shut) && options.some(runsString) ? basename(name) : null);
+  if (shell) refuse(`${file} starts with env ${rest}, which starts a shell (${shell}), and a shell can build PATH= or BASH_ENV= out of pieces; start the program from that line directly, or set ASE_KEY_GUARD=off to run without the lock`);
   const [command, commandArgs] = interpreted(found, [...options, file, ...args], env, shut, refuse, depth + 1);
   if (!assignments.length) return [command, commandArgs];
   // env sets them and starts the program by the full path it is given (one with = in it would read as one more).
@@ -672,10 +698,11 @@ function shellWords(line) {
         if (at + 1 >= line.length || line[at + 1] === "\n") return null;
         value += line[at + 1]; at += 2;
       } else if (";&|<>()`\n".includes(char) || (char === "$" && line[at + 1] === "(")) return null;
-      else { value += char === "$" ? "\x01" : /[*?[]/.test(char) || ((char === "~" || char === "#") && at === start) ? "\0" : char; at++; }
+      else { value += char === "$" ? "\x01" : /[*?[]/.test(char) ? "\x02" : char === "~" && at === start ? "\x03" : char === "#" && at === start ? "\0" : char; at++; }
     }
-    // marked keeps \x01 where sh fills in a $ and \0 where it would expand anything else (a glob, a ~ or # at the start).
-    words.push({ value: value.replace(/[\0\x01]/g, ""), marked: value, start, end: at, plain: !/[\0\x01]/.test(value) });
+    // marked keeps \x01 where sh fills in a $, \x02 where it expands a pattern, \x03 for a ~ at the start (HOME) and \0
+    // for a # there (the rest of the line is a comment).
+    words.push({ value: value.replace(/[\0-\x03]/g, ""), marked: value, start, end: at, plain: !/[\0-\x03]/.test(value) });
   }
   return words;
 }
@@ -702,8 +729,8 @@ function cleanFolders(env, shut) {
  * full path with the line's other words as they were, and where a PATH folder holds such a link the command sets PATH
  * to the folders that hold none (cleanFolders), for any program it starts by name in turn. `problem` in plain words
  * where PATH holds the program only as such a link, the program is inside, or which program runs cannot be told (shell
- * syntax beyond words and quotes, an expansion, env by any name or started in turn, a PATH or one of ownSetting's shell
- * variables it sets, a name no PATH folder holds); `command` is then one that says so
+ * syntax beyond words and quotes, an expansion, env by any name or started in turn, a shell started from it
+ * (startedShell), a PATH or one of ownSetting's shell variables it sets, a name no PATH folder holds); `command` is then one that says so
  * and fails, so only a call that really starts ssh stops. `variant` is the kind of ssh git would have told from the
  * program's name, where the command no longer starts with it (GIT_SSH_VARIANT). With nothing set and no ssh on PATH,
  * command is null: no ssh can start.
@@ -738,6 +765,14 @@ export function sshCommand(env = process.env, { worktree, common, configured } =
     if (words.some(fills)) return unknown("sh fills in a $ in it, which an env there could read as PATH= or BASH_ENV=");
     // env started in turn would look its program up by name and read settings of its own (a quoted -S string).
     if (words.some(other => other.start > word.start && namesEnv(other.value))) return unknown("env looks its program up on PATH");
+    // A shell started from the line (startedShell), with the words as sh fills them in: a $NAME or ${NAME} from the
+    // environment, a ~ at the start as HOME. A pattern, or a $ in another form ($1, ${X:-sh}), could name one unseen.
+    const later = words.filter(other => other.start >= word.start);
+    if (later.some(other => other.marked.includes("\x02"))) return unknown("sh expands a pattern in it, which could name a shell");
+    const filled = later.map(other => other.marked.replace(/\x01(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))/g, (_, braced, bare) => env[braced ?? bare] ?? "").replace(/^\x03/, home(env)).replace(/\0/g, ""));
+    if (filled.some(other => other.includes("\x01"))) return unknown("sh fills in a $ in it, which could name a shell");
+    const started = startedShell(filled, env, shut);
+    if (started) return unknown(`it starts a shell (${started}), and a shell can build PATH= or BASH_ENV= out of pieces`);
     program = word.value; before = shell.slice(0, word.start); after = shell.slice(word.end);
   }
   try {
@@ -753,6 +788,8 @@ export function sshCommand(env = process.env, { worktree, common, configured } =
     }
     // env would look its program up by name again, by a link of another name too (R1-1).
     if (namesEnv(file)) return unknown("env looks its program up on PATH");
+    // GIT_SSH (or a link of another name) can name a shell too.
+    if (namesShell(file, env, shut)) return unknown(`it starts a shell (${basename(program)}), and a shell can build PATH= or BASH_ENV= out of pieces`);
     const start = interpreted(file, [], env, shut, problem => { throw new Error(problem); }).flat();
     const folders = cleanFolders(env, shut).join(delimiter);
     const path = folders === String(env.PATH ?? systemPath) ? "" : `PATH=${shellQuote(folders)} `;
