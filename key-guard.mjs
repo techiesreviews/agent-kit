@@ -475,16 +475,17 @@ const linkRefusal = (name, file) => `${name} on PATH is ${file}, a link into the
 // SHELLOPTS, BASHOPTS or PS4 (a trace prompt it expands), or ZDOTDIR (the folder whose .zshenv every zsh reads). It
 // counts at the word's start, after a character no variable name holds (a blank inside one quoted -S string, an option's
 // =), or joined to an -S option (-SPATH=…, -iSPATH=…), so another env the line starts (busybox env, coreutils env)
-// cannot hide one in its own words; XPATH= and MY_ENV= are other variables. It counts with the word read as an env
-// of a name the kit cannot tell (GNU env installed as gnuenv) splits it too: quotes and backslashes join ('PA''TH=…',
-// BA""SH_ENV=…), but \_ and the blank escapes break (X=1\_PATH=…). A ${…} in a name before = (PA${X}TH=…) could make
-// any of them from a value the line sets itself, so it counts as "a ${…} name".
-const ownSetting = word => {
-  const joined = word.replace(/\\[_tnvfr]/g, " ").replace(/['"\\]/g, "");
-  const name = [word, joined].map(text => /(?:^|[^A-Za-z0-9_]|^-[A-Za-z]*S)(PATH|BASH_ENV|ENV|BASH_FUNC_[^=\s]*|SHELLOPTS|BASHOPTS|PS4|ZDOTDIR)=/.exec(text)?.[1]).find(Boolean);
-  if (name) return name;
-  if (/(?:^|[^A-Za-z0-9_]|^-[A-Za-z]*S)[A-Za-z0-9_]*\$\{[^}]*\}(?:[A-Za-z0-9_]|\$\{[^}]*\})*=/.test(joined)) return "a ${…} name";
-};
+// cannot hide one in its own words; XPATH= and MY_ENV= are other variables. It also counts the word as such an env
+// would split it when the kit cannot tell it is env (GNU env installed as gnuenv): quotes and backslashes join
+// ('PA''TH=…', BA""SH_ENV=…), and \_ and the blank escapes break (X=1\_PATH=…; inside quotes that refuses a bit more).
+const ownSetting = word => [word, word.replace(/\\[_tnvfr]/g, " ").replace(/['"\\]/g, "")]
+  .map(text => /(?:^|[^A-Za-z0-9_]|^-[A-Za-z]*S)(PATH|BASH_ENV|ENV|BASH_FUNC_[^=\s]*|SHELLOPTS|BASHOPTS|PS4|ZDOTDIR)=/.exec(text)?.[1]).find(Boolean);
+// What a line's words set (ownSetting), or FILLED where an -S string among them (after -S or --split-string, or joined
+// to it) holds a ${…}: such an env fills it in before it reads a NAME=, so A=PATH B== gnuenv -S '${A}${B}…' sets
+// PATH. An -S of another program (ssh's control path) with a ${…} in it is refused too; ssh -i '${HOME}/…' is not.
+const FILLED = "${…}";
+const lineSetting = words => words.map(ownSetting).find(Boolean)
+  ?? (words.some((word, i) => (/^(?:-[A-Za-z]*S|--split-string)$/.test(words[i - 1] ?? "") ? word : /^(?:-[A-Za-z]*S|--split-string=)(.+)/s.exec(word)?.[1] ?? "").includes("${")) ? FILLED : undefined);
 // Whether a word names env: by name or by a path to it (links followed), or as a multi-call binary's choice of it.
 const namesEnv = word => basename(word) === "env" || (word.includes("/") && basename(real(word)) === "env") || /^--coreutils-prog(?:-shebang)?=env$/.test(word);
 
@@ -532,9 +533,10 @@ function interpreted(file, args, env, shut, refuse, depth = 0) {
   // the program starts in turn (busybox env, a link to env by another name), in any of the forms ownSetting reads. A
   // BASH_ENV, ENV or another of ownSetting's shell variables would have a shell the line starts run code from a file a
   // build may have written (TOOLS-329).
-  const setting = [...assignments, ...words].map(ownSetting).find(Boolean);
+  const setting = lineSetting([...assignments, ...words]);
+  if (setting === FILLED) refuse(`${file} starts with env ${rest}, whose -S string holds ${FILLED}, which an env there could fill in as PATH or BASH_ENV; drop the ${FILLED} from that line, or set ASE_KEY_GUARD=off to run without the lock`);
   if (setting === "PATH") refuse(`${file} starts with env ${rest}, which sets PATH itself, so a program it starts by name could lead into the worktree or its Git folder; drop PATH= from that line, or set ASE_KEY_GUARD=off to run without the lock`);
-  if (setting) refuse(`${file} starts with env ${rest}, which sets ${setting} itself, so a shell it starts could run code from a file a build wrote; drop ${setting.startsWith("a ") ? "it" : `${setting}=`} from that line, or set ASE_KEY_GUARD=off to run without the lock`);
+  if (setting) refuse(`${file} starts with env ${rest}, which sets ${setting} itself, so a shell it starts could run code from a file a build wrote; drop ${setting}= from that line, or set ASE_KEY_GUARD=off to run without the lock`);
   const [name, ...options] = words;
   let found;
   if (name.includes("/")) {
@@ -709,7 +711,8 @@ export function sshCommand(env = process.env, { worktree, common, configured } =
     // and one of ownSetting's shell variables would have a shell run code from a file a build wrote (TOOLS-329): before
     // the program or after it, for an env it starts in turn (timeout 30 env PATH=…), in any form ownSetting reads (R1-1,
     // SL-2).
-    const setting = words.map(({ value }) => ownSetting(value)).find(Boolean);
+    const setting = lineSetting(words.map(({ value }) => value));
+    if (setting === FILLED) return unknown(`an -S string in it holds ${FILLED}, which an env there could fill in as PATH or BASH_ENV`);
     if (setting) return unknown(`it sets ${setting} itself`);
     // env started in turn would look its program up by name and read settings of its own (a quoted -S string).
     if (words.some(other => other.start > word.start && namesEnv(other.value))) return unknown("env looks its program up on PATH");
