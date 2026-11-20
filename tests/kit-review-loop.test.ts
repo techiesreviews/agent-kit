@@ -6,7 +6,9 @@ import { join } from "node:path";
 import test from "node:test";
 import { kitEnv } from "./support/kit-env.ts";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { NORMAL_ROUNDS, earlierSecondLooks, fixRoundsDone, modelsLine, RISKY_ROUNDS, branchRisk, budgetReport, findPreviousReview, isNit, ledgerRows, loopBriefSection, loopStop, parseMarks, prLine, renderLedger, reviewChain, riskyChange, roundLimit, secondLookRows, severityWord, stoppingFindings, unmarkedIds, waiverCheck, waiverRefusal, withIds } from "../review-loop.mjs";
+import { NORMAL_ROUNDS, fixRoundsDone, modelsLine, RISKY_ROUNDS, branchRisk, budgetReport, isNit, ledgerRows, loopBriefSection, loopStop, parseMarks, prLine, renderLedger, riskyChange, roundLimit, secondLookRows, severityWord, stoppingFindings, unmarkedIds, waiverCheck, waiverRefusal, withIds } from "../review-loop.mjs";
+// @ts-expect-error The kit's helpers are plain JavaScript without declarations.
+import { earlierSecondLooks, findPreviousReview, reviewChain } from "../review-records.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { findingsRecord, openFindings } from "../review-findings.mjs";
 
