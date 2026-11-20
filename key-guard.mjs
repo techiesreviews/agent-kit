@@ -520,19 +520,29 @@ const namesShell = (word, env, shut) => {
 };
 const viaShell = /(?<!permit)(proxy|local)command(?:[ \t]*=[ \t]*|[ \t]+|$)(.*)$/is;
 const jumpOption = /proxyjump(?:[ \t]*=[ \t]*|[ \t]+|$)(.*)$/is;
+// The value of ssh's flag `letter` in words[i], joined to it in a bundle (-4J host) or in the next word; null if none.
+const flagValue = (words, i, letter) => {
+  const flag = new RegExp(`^-[46AaCfGgKkMNnqsTtVvXxYy]*${letter}(.*)$`, "s").exec(words[i]);
+  return flag ? flag[1] || (words[i + 1] ?? "") : null;
+};
+const jumpOf = (words, i) => jumpOption.exec(words[i].replace(/["'\\]/g, ""))?.[1] ?? flagValue(words, i, "J");
 const startedShell = (words, env, shut) => {
+  // A ProxyJump's command holds the -F path as it is and the host (%h, from HostName too) in single quotes.
+  const jumping = words.some((_, i) => !/^(?:none)?$/i.test(jumpOf(words, i)?.trim() ?? ""));
   for (const [i, word] of words.entries()) {
-    const bare = word.replace(/["'\\]/g, ""), option = viaShell.exec(bare);
+    const option = viaShell.exec(word.replace(/["'\\]/g, ""));
     if (option && option[2].trim().toLowerCase() !== "none") return `${option[1].toLowerCase() === "proxy" ? "ProxyCommand" : "LocalCommand"}, which ssh runs through the user's shell`;
-    const flag = /^-[46AaCfGgKkMNnqsTtVvXxYy]*J(.*)$/s.exec(word), jump = jumpOption.exec(bare)?.[1] ?? (flag ? flag[1] || (words[i + 1] ?? "") : null);
-    if (jump !== null && !/^[\w.@:,[\]-]+$/.test(jump.trim())) return "ProxyJump with more than host names in it, which ssh runs through the user's shell";
+    const jump = jumpOf(words, i);
+    if (jump !== null && !jump.trim().split(",").every(name => /^[\w.@:[\]][\w.@:[\]-]*$/.test(name))) return "ProxyJump with more than host names in it, which ssh runs through the user's shell";
+    if (jumping && (word.includes("'") || !/^[\w./@:,+~-]*$/.test(flagValue(words, i, "F") ?? ""))) return "ProxyJump beside a ' or an -F path with more than plain characters in it, which ssh writes into the command it runs through the user's shell";
     // Braces and commas split too: where /bin/sh is bash, {s,h} would be a shell's name by brace expansion.
     const piece = word.split(/[\s;&|()<>=`'"{},]+/).find(part => part && namesShell(part, env, shut));
     if (piece) return basename(piece);
   }
   return null;
 };
-const shellAdvice = (started, where) => started.startsWith("ProxyJump") ? `give ProxyJump (-J)${where} plain user@host:port names`
+const shellAdvice = (started, where) => started.startsWith("ProxyJump beside") ? `keep the host and the -F path${where} plain, or drop ProxyJump (-J)`
+  : started.startsWith("ProxyJump") ? `give ProxyJump (-J)${where} plain user@host:port names`
   : /^(?:Proxy|Local)Command/.test(started) ? `drop ProxyCommand and LocalCommand${where}, or use ProxyJump (-J) with plain host names instead` : null;
 // A shell told to run a string instead of the script: -c alone or bundled (-ec), --command, --init-command, and fish's
 // -C (bash's and sh's -C is noclobber). pwsh takes any start of -Command, -CommandWithArgs or -EncodedCommand, of any

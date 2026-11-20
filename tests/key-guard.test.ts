@@ -1552,10 +1552,15 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   // such program on PATH) or with a version (es2020) is no shell.
   // ssh fills % tokens into that command first (%k is the HostKeyAlias, %r the remote user), so a % counts too.
   for (const command of ["ssh -J 'a;b' host", "ssh -o 'ProxyJump=a|b' host", "ssh -4J 'a b' host", "ssh -J", "ssh -oProxyJump='a>b' host",
-    "ssh -o HostKeyAlias='x;id' -J %k host", "ssh -J '%r@jump.example.invalid' host"]) {
+    "ssh -o HostKeyAlias='x;id' -J %k host", "ssh -J '%r@jump.example.invalid' host", "ssh -J -Fevil host", "ssh -J 'jump.example.invalid,-oX' host"]) {
     assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root }).problem ?? "", /cannot be told: it starts a shell \(ProxyJump with more than host names in it, which ssh runs through the user's shell\).*; give ProxyJump \(-J\) plain user@host:port names;/, command);
   }
-  for (const command of ["ssh -J 'git@jump.example.invalid:2222,[::1]:22' host", "ssh -4J jump.example.invalid host", "ssh -o ProxyJump=none host", "ssh -o PermitLocalCommand=no host",
+  // ssh writes the -F path into that command as it is, and the host (%h, from HostName too) inside single quotes.
+  for (const command of ["ssh -F '/dev/null;. ./x' -J jump.example.invalid host", `ssh -o "HostName=a';. ./x;'" -J jump.example.invalid host`,
+    "ssh -J jump.example.invalid -F'cfg x' host", `ssh -J jump.example.invalid "a';. ./x;'"`]) {
+    assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root }).problem ?? "", /cannot be told: it starts a shell \(ProxyJump beside a ' or an -F path with more than plain characters in it, which ssh writes into the command it runs through the user's shell\)/, command);
+  }
+  for (const command of ["ssh -J 'git@jump.example.invalid:2222,[::1]:22' host", "ssh -F ~/.ssh/config.d/work -J jump.example.invalid host", "ssh -F '/dev/null;x' -o ProxyJump=none host", "ssh -4J jump.example.invalid host", "ssh -o ProxyJump=none host", "ssh -o PermitLocalCommand=no host",
     "ssh -o SetEnv=LANG=es -l rc host", "ssh -o 'SetEnv=TARGET=es2020' -l rc1 host"]) {
     assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root }).problem, null, command);
   }
