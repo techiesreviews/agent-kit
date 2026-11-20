@@ -484,8 +484,13 @@ const ownSetting = word => [word, word.replace(/\\[_tnvfr]/g, " ").replace(/['"\
 // to it) holds a ${…}: such an env fills it in before it reads a NAME=, so A=PATH B== gnuenv -S '${A}${B}…' sets
 // PATH. An -S of another program (ssh's control path) with a ${…} in it is refused too; ssh -i '${HOME}/…' is not.
 const FILLED = "${…}";
+// The -S string a word holds, given the word before it: the word after -S (-vS) or --split-string, which GNU env also
+// takes by any unique start of it (--s, --split), or what follows when they are joined (-S'…', --split=…).
+const splitLong = text => text.length >= 3 && "--split-string".startsWith(text);
+const splitString = (word, before = "") => /^-[A-Za-z]*S$/.test(before) || splitLong(before) ? word
+  : /^-[A-Za-z]*S(.+)/s.exec(word)?.[1] ?? (/^--[^=]*=/.test(word) && splitLong(word.slice(0, word.indexOf("="))) ? word.slice(word.indexOf("=") + 1) : undefined);
 const lineSetting = words => words.map(ownSetting).find(Boolean)
-  ?? (words.some((word, i) => (/^(?:-[A-Za-z]*S|--split-string)$/.test(words[i - 1] ?? "") ? word : /^(?:-[A-Za-z]*S|--split-string=)(.+)/s.exec(word)?.[1] ?? "").includes("${")) ? FILLED : undefined);
+  ?? (words.some((word, i) => splitString(word, words[i - 1])?.includes("${")) ? FILLED : undefined);
 // Whether a word names env: by name or by a path to it (links followed), or as a multi-call binary's choice of it.
 const namesEnv = word => basename(word) === "env" || (word.includes("/") && basename(real(word)) === "env") || /^--coreutils-prog(?:-shebang)?=env$/.test(word);
 
@@ -650,7 +655,7 @@ function shellWords(line) {
           let inner = line[at], escaped = false;
           if (inner === "\\" && '"\\$`'.includes(line[at + 1] ?? "")) { inner = line[++at]; escaped = true; }
           else if (inner === "`" || (inner === "$" && line[at + 1] === "(")) return null;
-          value += inner === "$" && !escaped ? "\0" : inner;
+          value += inner === "$" && !escaped ? "\x01" : inner;
         }
         if (at >= line.length) return null;
         at++;
@@ -658,9 +663,10 @@ function shellWords(line) {
         if (at + 1 >= line.length || line[at + 1] === "\n") return null;
         value += line[at + 1]; at += 2;
       } else if (";&|<>()`\n".includes(char) || (char === "$" && line[at + 1] === "(")) return null;
-      else { value += /[$*?[]/.test(char) || ((char === "~" || char === "#") && at === start) ? "\0" : char; at++; }
+      else { value += char === "$" ? "\x01" : /[*?[]/.test(char) || ((char === "~" || char === "#") && at === start) ? "\0" : char; at++; }
     }
-    words.push({ value: value.replaceAll("\0", ""), start, end: at, plain: !value.includes("\0") });
+    // marked keeps \x01 where sh fills in a $ and \0 where it would expand anything else (a glob, a ~ or # at the start).
+    words.push({ value: value.replace(/[\0\x01]/g, ""), marked: value, start, end: at, plain: !/[\0\x01]/.test(value) });
   }
   return words;
 }
@@ -714,6 +720,12 @@ export function sshCommand(env = process.env, { worktree, common, configured } =
     const setting = lineSetting(words.map(({ value }) => value));
     if (setting === FILLED) return unknown(`an -S string in it holds ${FILLED}, which an env there could fill in as PATH or BASH_ENV`);
     if (setting) return unknown(`it sets ${setting} itself`);
+    // sh fills in a $ before an env started in turn reads the word, so "PA${EMPTY}TH=…" and ${X:-PATH}=… are PATH= by
+    // then: a word after the program whose $ could start a NAME= (only name characters before it, an = after it), or
+    // an -S string with a $ in it, cannot be told (ssh -i $HOME/… and -o User=$USER still can).
+    const fills = (other, i) => { const at = other.marked.indexOf("\x01");
+      return at >= 0 && other.start > word.start && ((/^[A-Za-z0-9_]*$/.test(other.marked.slice(0, at)) && other.marked.includes("=", at)) || Boolean(splitString(other.marked, words[i - 1]?.value)?.includes("\x01"))); };
+    if (words.some(fills)) return unknown("sh fills in a $ in it, which an env there could read as PATH= or BASH_ENV=");
     // env started in turn would look its program up by name and read settings of its own (a quoted -S string).
     if (words.some(other => other.start > word.start && namesEnv(other.value))) return unknown("env looks its program up on PATH");
     program = word.value; before = shell.slice(0, word.start); after = shell.slice(word.end);
