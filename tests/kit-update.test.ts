@@ -788,9 +788,9 @@ test("a kit whose kit-lib.mjs does not load still runs kit update and --previous
   assert.equal(last(back.stdout), `RESULT: ok update --previous ${short(one)} (was ${short(two)})`);
   assert.equal(k.link("current"), one);
   // Every other command still says the library did not run, and runs nothing.
-  const doctor = frontDoor("doctor");
-  assert.equal(doctor.status, 2);
-  assert.equal(doctor.stdout, "RESULT: fail kit-lib.mjs did not run (its error is above)\n");
+  const unit = frontDoor("unit");
+  assert.equal(unit.status, 2);
+  assert.equal(unit.stdout, "RESULT: fail kit-lib.mjs did not run (its error is above)\n");
 });
 
 test("without Node 24 a kit update stopped by SIGTERM ends with the front door's interrupted line", async (t) => {
