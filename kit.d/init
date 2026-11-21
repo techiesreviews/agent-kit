@@ -80,6 +80,7 @@ const exit = (code) => { throw new Exit(code); };
 // fail never returns: it prints the RESULT line and ends the run, so it also ends expressions such as readJson's catch.
 const fail = (text, code = 1) => { kitResult("fail", `init ${text}`); exit(code); };
 const isObject = (value) => value && typeof value === "object" && !Array.isArray(value);
+const real = (path) => { try { return realpathSync(path); } catch { return path; } };
 
 // kit init's entry: one run with these arguments (as on the command line), giving the run's exit code.
 export async function init(args) {
@@ -502,7 +503,6 @@ map goes from idea to tickets, and \`scripts/agents/kit brief <ticket>\` to star
   const doctorTimeout = 600_000;
   const doctor = spawnSync(join(home, "kit.d/doctor"), [], { cwd: root, env: { ...process.env, KIT_ROOT: root }, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], timeout: doctorTimeout });
   const doctorLines = (doctor.stdout ?? "").split("\n").filter(Boolean);
-  const real = (path) => { try { return realpathSync(path); } catch { return path; } };
   const inMain = [gitMain, projectRoot].some((main) => real(main) === real(root));
   const land = settings.branches.land;
   // Doctor's own fix names origin/<land>; without that remote branch the local one is the start.
@@ -1016,5 +1016,4 @@ function all() {
 }
 
 // Run as a script (not imported, as a test does): one run with the command line's arguments, then its exit code.
-const realPath = (path) => { try { return realpathSync(path); } catch { return path; } };
-if (process.argv[1] && realPath(resolve(process.argv[1])) === realPath(fileURLToPath(import.meta.url))) process.exit(await init(process.argv.slice(2)));
+if (process.argv[1] && real(resolve(process.argv[1])) === real(fileURLToPath(import.meta.url))) process.exit(await init(process.argv.slice(2)));

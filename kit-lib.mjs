@@ -889,6 +889,8 @@ function takeLock(lock) {
     try { owner = readFileSync(join(lock, "owner"), "utf8"); } catch { /* Not written yet, or just released. */ }
     try { seen = statSync(lock); } catch { continue; }
     const pid = Number(owner?.split(" ")[0]), named = owner !== null && Number.isSafeInteger(pid) && pid > 0;
+    // A named owner's lock never ages out while its process lives: a slow writer keeps it. The cost: a crashed owner
+    // whose PID the system has since given to another live process holds it until someone removes it (the error says so).
     if ((named && !alive(pid)) || (!named && Date.now() - seen.mtimeMs > 10 * Math.max(bound, 1_000))) {
       // Move the stale lock aside, then remove it only if it is the folder judged stale (same inode);
       // a fresh lock taken meanwhile is put back when its place is still free.

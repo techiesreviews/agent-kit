@@ -350,9 +350,15 @@ test("--pieces (kit init --all's own step) writes the Messages to Lex section in
 test("kit init runs in-process through its entry: a refusal and a --pieces run each give their exit code", async (t) => {
   const f = fixture(t);
   const { work } = f.repo("in-process", { "scripts/agents/kit.json": JSON.stringify({ project: "p", branches: { land: "dev" } }), "AGENTS.md": "# Agents\n" });
-  const saved = { KIT_ROOT: process.env.KIT_ROOT, KIT_HOME: process.env.KIT_HOME, XDG_STATE_HOME: process.env.XDG_STATE_HOME };
-  t.after(() => { for (const [name, value] of Object.entries(saved)) if (value === undefined) delete process.env[name]; else process.env[name] = value; });
-  Object.assign(process.env, { KIT_ROOT: work, KIT_HOME: resolve("."), XDG_STATE_HOME: f.state });
+  // The run sees the fixture's environment, as a spawned kit init would (temporary HOME and XDG folders, no KIT_LIB_MJS
+  // from a kit pr run, no global git config); this process's own comes back afterwards.
+  const saved = { ...process.env };
+  const environment = (values: NodeJS.ProcessEnv) => {
+    for (const name of Object.keys(process.env)) if (!(name in values)) delete process.env[name];
+    Object.assign(process.env, values);
+  };
+  t.after(() => environment(saved));
+  environment({ ...f.env, KIT_ROOT: work });
   const said: string[] = [];
   t.mock.method(console, "log", (line: string) => { said.push(line); });
   t.mock.method(process.stderr, "write", () => true);
@@ -782,6 +788,22 @@ test("--all lands the missing pieces in every listed project through its own kit
   assert.match(again.stdout, /^RESULT: ok init open: nothing missing on origin\/main$/m);
   assert.equal(existsSync(`${open}-kit-init-pieces`), false);
   assert.match(again.stdout, new RegExp(`^RESULT: fail init stuck: ${stuck}-kit-init-pieces or branch kit/init-pieces is left from an earlier run; land or remove it, then rerun$`, "m"));
+});
+
+test("--all names a settings file on origin that does not parse when the main checkout has none, rather than skip the project", (t) => {
+  const f = fixture(t);
+  Object.assign(f.env, ident);
+  const unread = olderProject(f, "unread", (work) => writeFileSync(join(work, "scripts/agents/kit.json"), "{ not json\n"));
+  rmSync(join(unread, "scripts/agents/kit.json"));
+  writeFileSync(join(f.state, "agent-kit/projects.json"), JSON.stringify(f.projects()));
+  const { all } = standInKit(f);
+  const run = all();
+  assert.equal(run.status, 1, run.stdout + run.stderr);
+  assert.deepEqual(run.stdout.split("\n").filter((line) => line.startsWith("RESULT: ")).map((line) => line.replace(/(is unreadable \().*/, "$1…")), [
+    "RESULT: fail init unread: scripts/agents/kit.json on origin/main is unreadable (…",
+    "RESULT: fail init --all: 0 updated, 0 up to date, 0 skipped, 1 failed (unread)",
+  ]);
+  assert.equal(existsSync(`${unread}-kit-init-pieces`), false);
 });
 
 test("--all skips a project with no origin or no settings on origin, names old kit files, links shared node_modules and stops a slow kit pr", (t) => {

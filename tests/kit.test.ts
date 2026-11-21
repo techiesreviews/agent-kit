@@ -674,6 +674,8 @@ test("the real kit keeps version as an inside helper (kit doctor shows it), unli
 const envAllowed: [string, RegExp][] = [
   ["tests/kit-commit.test.ts", /commitBuilderWork\(|const rootEnv = /],
   ["tests/kit-doctor.test.ts", /spawnSync\("git"/],
+  // The in-process kit init test keeps a copy of the test's own env to put back afterwards; its run sees the fixture's.
+  ["tests/kit-init.test.ts", /^  const saved = \{ \.\.\.process\.env \};$/],
   ["tests/kit-specs.test.ts", /spawnSync\("git"|spawnSync\(process\.argv\[2\]/],
   ["tests/kit-sweep.test.ts", /GIT_AUTHOR_DATE/],
   ["tests/kit-shots.test.ts", /chromium\.launch\(/],
