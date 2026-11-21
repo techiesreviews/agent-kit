@@ -1532,6 +1532,22 @@ test("TOOLS-390 room: real ssh reads the same system config, including root-owne
   assert.match(unsafe.stderr, /Bad owner or permissions/);
 });
 
+test("TOOLS-390 room: user config includes a root-owned file outside /etc/ssh", { skip: noRoom }, t => {
+  const { root, home, base } = roomRepo(t, "outside-system-ssh");
+  mkdirSync(join(home, ".ssh"));
+  const config = join(home, ".ssh/config");
+  // IgnoreUnknown lets the real root-owned /etc/hosts act as a config fixture without changing any system file.
+  writeFileSync(config, "IgnoreUnknown *\nInclude /etc/hosts\n", { mode: 0o600 });
+  const args = ["-F", config, "-G", "-T", "kit-room.invalid"];
+  const outside = spawnSync("/usr/bin/ssh", args, { env: base, encoding: "utf8", timeout: 15_000 });
+  assert.equal(outside.status, 0, outside.stderr);
+  const safe = gitSafety({ worktree: root, env: { ...base, GIT_SSH_COMMAND: "/usr/bin/ssh" }, network: true, git: gitProgram() });
+  const inside = spawnSync("/bin/sh", ["-c", `${safe.env.GIT_SSH_COMMAND} "$@"`, "sh", ...args],
+    { env: { ...base, ...safe.env }, encoding: "utf8", timeout: 15_000 });
+  assert.equal(inside.status, 0, inside.stderr);
+  assert.equal(inside.stdout, outside.stdout);
+});
+
 test("TOOLS-390 room R1-1: git's ssh runs where the worktree holds nothing, so a /proc/self/cwd link and a wrapper's exec ssh start only the lead's ssh", { skip: noRoom }, t => {
   const { dir, root, lead, base, fetch, inRoom } = roomRepo(t, "proc-self");
   // A PATH folder outside the worktree with ssh -> /proc/self/cwd/ssh, which for a program git starts is the worktree's

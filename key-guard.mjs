@@ -30,7 +30,7 @@
 // one does: it installs with one command.
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { accessSync, chmodSync, closeSync, constants, lstatSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, closeSync, constants, globSync, lstatSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
@@ -1348,25 +1348,44 @@ const roomArgs = ["--die-with-parent", "--dev-bind", "/", "/", "--unshare-pid", 
 // owner, even when their permissions are safe. Give the room private, read-only copies of the system client config,
 // owned by the caller in its namespace. Keep the bytes and paths (including links into /usr/lib) unchanged. Never
 // copy a writable file, another user's file, or anything reached through a build folder into the room.
-function roomSystemSsh(folders) {
+function roomSystemSsh(folders, env, named) {
   const files = new Set(), seen = new Set();
-  const visit = path => {
-    if (shutIn(path, folders)) return;
+  const sshHome = home(env);
+  const visit = (path, system, depth = 0) => {
+    if (depth > 16 || shutIn(path, folders)) return;
     let real, info;
     try { real = realpathSync(path); info = statSync(real); } catch { return; }
-    if (seen.has(real)) return;
-    seen.add(real);
-    if (info.uid !== 0 || (info.mode & 0o022)) return;
-    if (info.isDirectory()) {
-      let names;
-      try { names = readdirSync(real); } catch { return; }
-      for (const name of names) visit(join(real, name));
-    } else if (info.isFile()) {
-      try { accessSync(real, constants.R_OK); files.add(real); } catch { /* Not readable outside the room either. */ }
+    const key = `${system}:${real}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    if (info.isFile()) {
+      let content;
+      try { content = readFileSync(real, "utf8"); } catch { return; }
+      if (info.uid === 0 && !(info.mode & 0o022)) files.add(real);
+      // Collect includes without running Host/Match or any command. ssh still parses the original bytes itself.
+      // Relative includes keep the system/user context even when the including file lives somewhere else.
+      for (const line of content.split(/\r?\n/)) {
+        const include = /^\s*Include(?:\s*=\s*|\s+)(.*)/i.exec(line);
+        if (!include) continue;
+        const words = include[1].match(/(?:[^\s"'\\]|\\.|"[^"]*"|'[^']*')+/g) ?? [];
+        for (const word of words) {
+          if (word.startsWith("#")) break;
+          let pattern = word.replace(/\\(.)|["']/g, (_, escaped) => escaped ?? "");
+          pattern = pattern.replace(/\$\{([^}]+)\}/g, (_, name) => env[name] ?? "");
+          if (pattern.startsWith("~/")) pattern = join(sshHome, pattern.slice(2));
+          pattern = resolve(system ? "/etc/ssh" : join(sshHome, ".ssh"), pattern);
+          try { for (const match of globSync(pattern)) visit(match, system, depth + 1); } catch { /* ssh reports an unreadable pattern. */ }
+        }
+      }
     }
   };
-  visit("/etc/ssh/ssh_config");
-  visit("/etc/ssh/ssh_config.d");
+  visit("/etc/ssh/ssh_config", true);
+  visit(join(sshHome, ".ssh/config"), false);
+  const words = named ? leadingWords(named)?.map(word => word.value) ?? [] : [];
+  for (let at = 1; at < words.length; at++) {
+    const path = words[at] === "-F" ? words[++at] : words[at].startsWith("-F") ? words[at].slice(2) : null;
+    if (path) visit(resolve(path), false);
+  }
   return [...files];
 }
 
@@ -1537,14 +1556,16 @@ export function sshRoom(env = process.env, { worktree, common, configured, git }
   // words after the shell's own. ssh also ends with the server's exit status, so the line names both causes.
   const notFound = `kit: a program was not found (exit 127). If it was git's ssh or a program it starts, the clean room keeps these folders empty: ${folders.join(", ")}; start it from a folder outside them. If a "not found" line above came from the server, the server lacks that program`;
   const script = `${inner} "$@"\nstatus=$?\n[ "$status" -ne 127 ] || printf '%s\\n' ${shellQuote(notFound)} >&2\nexit "$status"`;
-  const files = roomSystemSsh(folders);
+  const files = roomSystemSsh(folders, env, named);
   const args = [...roomArgs, ...folders.flatMap(folder => ["--tmpfs", folder]),
     ...files.flatMap((file, index) => ["--ro-bind-data", String(index + 3), file]), "--", "/bin/sh", "-c", script, "sh"];
   const redirections = files.map((file, index) => ` ${index + 3}<${shellQuote(file)}`).join("");
   const line = [bwrap, ...args].map(shellQuote).join(" ");
-  // POSIX shells only promise descriptors 0..9; bash (required by the kit's launcher) handles larger config sets.
+  // POSIX shells only promise descriptors 0..9; find bash outside the build folders for larger config sets.
+  const bash = files.length > 7 ? programFor("bash", env, folders) : null;
+  if (files.length > 7 && !bash) return refused("the clean room for git's ssh needs bash on PATH outside the worktrees and the Git folder to open more than 7 system config files");
   const command = files.length <= 7 ? line + redirections
-    : `/bin/bash -c ${shellQuote(`exec ${line} "$@"${redirections}`)} sh`;
+    : `${shellQuote(bash)} -c ${shellQuote(`exec ${line} "$@"${redirections}`)} sh`;
   return { command, problem: null, variant: first ? sshKind(first) : null };
 }
 
