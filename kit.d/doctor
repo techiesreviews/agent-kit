@@ -53,16 +53,21 @@ if problems=$(kit_settings_problems 2>/dev/null); then
   pass settings "scripts/agents/kit.json ($(setting .project), lands on $land)"
 elif [[ $jq_missing == true ]]; then
   fail settings 'jq is not installed, so scripts/agents/kit.json cannot be read' 'install jq'
-elif ! kit_node_find > /dev/null; then
+elif [[ -f $(kit_settings_file) ]] && ! kit_node_find > /dev/null; then
   # Node checks the file (kit-lib.mjs); the node check below fails and says what to install, and jq still reads it.
   land=$(setting .branches.land)
   pass settings 'skipped (Node >=24 not found)'
+elif [[ -f $(kit_settings_file) && $problems == *'was not checked'* ]]; then
+  # Node ran but kit-lib.mjs did not load (a file beside it is missing or broken): the kit needs repair, not the settings.
+  fail settings "$problems" 'repair the kit: run scripts/agents/kit update, or kit-lib.mjs and the files beside it'
 else
   if [[ -f $(kit_settings_file) ]]; then
     fix='edit scripts/agents/kit.json as the problem says'
     if [[ $problems == *'is unreadable'* || $problems == *'must hold one JSON object'* ]]; then settings_unread=unreadable; fi
   else
     fix='add scripts/agents/kit.json with "project" and "branches": { "land": "<branch>" }'
+    # Without Node the missing file is named here, as Node names it.
+    if [[ $problems == *'was not checked'* ]]; then problems='no scripts/agents/kit.json'; fi
     settings_unread=missing
   fi
   fail settings "${problems//$'\n'/; }" "$fix"

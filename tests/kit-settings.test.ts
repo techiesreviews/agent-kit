@@ -228,6 +228,31 @@ test("kit_main_root is kitMainRoot's answer, read through Node, so the settings'
   }
 });
 
+test("without Node the shell helpers still answer: the settings go unchecked, the main worktree, ASE_OWNER, and no wait", t => {
+  const dir = realpathSync(temp(t)), bin = join(dir, "bin"), empty = join(dir, "empty"), root = join(dir, "work"), lock = join(dir, "state/agent-kit/quiet.lock");
+  for (const path of [bin, empty, root, dirname(lock)]) mkdirSync(path, { recursive: true });
+  executable(join(bin, "node"), "#!/bin/sh\nprintf 'v22.0.0\\n'\n");
+  assert.equal(spawnSync("git", ["init", "-q", root]).status, 0);
+  settingsFile(root, { project: "x", branches: { land: "main" }, mainRoot: "/settings/main" });
+  const noNode = { KIT_ROOT: root, KIT_MAIN_ROOT: "", PATH: `${bin}:/usr/bin:/bin`, CLAUDE_NODE_SEARCH_ROOT: empty, XDG_STATE_HOME: join(dir, "state") };
+  const problems = bash("kit_settings_problems", noNode);
+  assert.equal(problems.status, 1);
+  assert.equal(problems.stdout, "scripts/agents/kit.json was not checked (kit-lib.mjs did not run)\n");
+  assert.match(problems.stderr, /no Node >=24 found/);
+  // The main worktree, quietly, so the front door still runs and kit doctor can say Node is missing.
+  const main = bash("kit_main_root", noNode);
+  assert.equal(main.stdout, `${root}\n`, main.stderr);
+  assert.equal(main.stderr, "");
+  for (const [owner, expected] of [["fleet\nlead", "fleet lead\n"], ["", "unknown\n"]]) {
+    assert.equal(bash("kit_owner", { ...noNode, ASE_OWNER: owner }).stdout, expected, JSON.stringify(owner));
+  }
+  // Another run holds the quiet lock: without Node nothing waits, and nothing says so.
+  writeFileSync(lock, "1 someone 60\n");
+  const quiet = bash(`flock -x ${JSON.stringify(lock)} sleep 3 > /dev/null 2>&1 & holder=$!; sleep 0.3; start=$SECONDS; kit_quiet_wait; echo "waited $((SECONDS - start))"; kill "$holder"`, noNode);
+  assert.equal(quiet.stdout, "waited 0\n", quiet.stderr);
+  assert.equal(quiet.stderr, "");
+});
+
 test("the playwright setting reaches project commands as KIT_PLAYWRIGHT_MODULE, unless the variable is set", t => {
   // Each project has `show`, which prints the variable, and `nest`, which runs a command (`show` by default) in
   // another project through the front door as kit next does for a worktree (KIT_ROOT names the other project).

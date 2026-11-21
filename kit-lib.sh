@@ -89,11 +89,13 @@ kit_quiet_wait() {
 }
 
 # Who works here, as kitOwner in kit-lib.mjs finds it: ASE_OWNER, else the worktree's owner file, else its branch,
-# else unknown (also without Node).
+# else unknown. Without Node it is ASE_OWNER on one line, else unknown.
 kit_owner() {
-  local root
+  local root owner=${ASE_OWNER:-}
   root=$(kit_root)
-  KIT_ROOT=$root kit_lib_node 'console.log(lib.kitOwner())' 2>/dev/null || printf '%s\n' unknown
+  KIT_ROOT=$root kit_lib_node 'console.log(lib.kitOwner())' 2>/dev/null && return
+  owner=${owner//[$'\r\n']/ }
+  printf '%s\n' "${owner:-unknown}"
 }
 
 # What `node --version` prints, without the carriage return Node on Windows ends it with (TOOLS-335).

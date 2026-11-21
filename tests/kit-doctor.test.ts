@@ -505,6 +505,11 @@ test("doctor reports Node below 24 without searching the user's installations", 
   writeFileSync(join(f.build, "scripts/agents/kit.json"), JSON.stringify({ ...settings, skillGuard: { allow: [".claude/skills/heron"] } }));
   const skipped = f.run([], f.build, { PATH: `${bin}:/usr/bin:/bin`, CLAUDE_NODE_SEARCH_ROOT: empty }, true);
   assert.ok(skipped.stdout.includes("✓ skills: skipped (Node not found)\n"), skipped.stdout);
+  // Node checks the settings file, so without it a file that is there goes unchecked; a missing one is still named.
+  assert.ok(skipped.stdout.includes("✓ settings: skipped (Node >=24 not found)\n"), skipped.stdout);
+  rmSync(join(f.build, "scripts/agents/kit.json"));
+  const missing = f.run([], f.build, { PATH: `${bin}:/usr/bin:/bin`, CLAUDE_NODE_SEARCH_ROOT: empty }, true);
+  assert.ok(missing.stdout.includes('✗ settings: no scripts/agents/kit.json; fix: add scripts/agents/kit.json with "project" and "branches": { "land": "<branch>" }\n'), missing.stdout);
 });
 
 for (const kind of ["missing", "real directory", "dangling link", "different shared directory", "shared missing", "shared dangling"]) {
