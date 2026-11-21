@@ -21,10 +21,14 @@ source "$KIT_HOME/kit-lib.sh"
 if [[ ${1-} == --home && $# == 1 ]]; then printf '%s\n' "$KIT_HOME"; exit 0; fi
 # The project root, the RESULT line and URL hiding are kit-lib.mjs's (one copy each, TOOLS-395), so everything after
 # this needs Node >=24: without it, or with an older one, the front door says so and runs nothing but kit update.
-# Outside git the project is the one around this front door, not around KIT_HOME (kitRoot names the rule).
+# Outside git the project is the one around this front door, not around KIT_HOME (kitRoot names the rule). A root
+# already known (the launcher outside git, a nested kit call) skips the lookup, so the library is loaded on its own.
 lib_runs=true
 if ! kit_node; then
   lib_runs=false refusal=$(kit_node_missing)
+elif [[ -n ${KIT_ROOT:-} ]] && ! kit_lib_node ''; then
+  lib_runs=false refusal='RESULT: fail kit-lib.mjs did not run (its error is above)'
+  unset KIT_ROOT
 elif ! KIT_ROOT=$(kit_root "$kit_dir"); then
   lib_runs=false refusal='RESULT: fail kit-lib.mjs did not run (its error is above)'
   unset KIT_ROOT

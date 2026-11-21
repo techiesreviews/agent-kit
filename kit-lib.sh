@@ -129,6 +129,8 @@ kit_node() {
   local node directory path=${PATH-}
   if ! node=$(kit_node_find); then
     printf '%s\n' 'kit: no Node >=24 found (system, npx cache or nvm)' >&2
+    # A KIT_NODE a parent left behind names a Node this lookup just failed to find.
+    unset KIT_NODE
     return 1
   fi
   directory=${node%/*}
