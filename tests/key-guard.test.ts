@@ -1599,6 +1599,15 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
     assert.match(sshCommand({ ...base, ...env, GIT_SSH_COMMAND: command }, { worktree: root }).problem ?? "", why, command);
     assert.match(refusedWith({ ...base, ...env, GIT_SSH_COMMAND: command }), /^kit: git's ssh command \(.*\) cannot be told: sh fills in a \$ in it as/m, command);
   }
+  // ssh splits an option from its value at a line break or carriage return as at a blank (GPT second look, round 5).
+  for (const [command, why] of [[`ssh -o 'ProxyCommand\necho ran > ${marker}' host`, /it starts a shell \(ProxyCommand/], [`ssh -o 'ProxyCommand\recho ran > ${marker}' host`, /it starts a shell \(ProxyCommand/],
+    [`ssh -o PermitLocalCommand=yes -o 'LocalCommand\necho ran > ${marker}' host`, /it starts a shell \(LocalCommand/], [`ssh -o 'ProxyJump\na;b' host`, /it starts a shell \(ProxyJump with more than host names/],
+    [`ssh -o 'ProxyJump\rjump.example.invalid' -F 'a b' host`, /it starts a shell \(ProxyJump beside a '/]] as const) {
+    const result = sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root });
+    assert.match(result.problem ?? "", why, command);
+    spawnSync("/bin/sh", ["-c", result.command!], { env: base, encoding: "utf8" });
+    assert.ok(!existsSync(marker), command);
+  }
   // A pattern sh expands after the program could name a shell too.
   assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: `timeout 30 ${dirname(shell)}/s? -c 'ssh "$@"' ssh` }, { worktree: root }).problem ?? "", /cannot be told: sh expands a pattern in it, which could name a shell/);
   // GIT_SSH naming a shell starts one as well.
@@ -1636,6 +1645,12 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   for (const words of ["pwsh -NoProfile -Command", "pwsh -c", "pwsh -EncodedCommand", "pwsh -ec", "pwsh -cwa", "pwsh --command", "pwsh —Command", "pwsh –c",
     "pwsh ――command", "pwsh ' -c'"]) {
     assert.throws(() => start(wrapper("pwsh-command", words, "")), /, which starts a shell \(pwsh\)/, words);
+  }
+  // sh and bash run a string after +c as after -c, alone or bundled (GPT second look, round 5).
+  for (const [name, words] of [["sh-plus-c", "sh +c 'ssh \"$@\"'"], ["bash-plus-ec", "bash +ec 'ssh \"$@\"'"]]) {
+    const file = wrapper(name, words, "");
+    assert.throws(() => start(file), /, which starts a shell \((sh|bash)\)/, words);
+    assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: file }), /^kit: \S+ starts with env -S .*, which starts a shell/m, words);
   }
   const pwshPolicy = wrapper("pwsh-policy", "X=1", "pwsh -ExecutionPolicy Bypass -NonInteractive");
   assert.deepEqual(start(pwshPolicy), ["/usr/bin/env", ["X=1", join(bin, "pwsh"), "-ExecutionPolicy", "Bypass", "-NonInteractive", pwshPolicy]]);

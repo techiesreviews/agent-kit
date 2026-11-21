@@ -519,8 +519,9 @@ const namesShell = (word, env, shut) => {
   const file = word.includes("/") ? (executable(word) ? word : null) : programFor(word, env, shut);
   return shellNamed(word) || Boolean(file && (shellNamed(real(file)) || [word, real(file)].some(name => /^(?:rc|es)$/.test(basename(name)))));
 };
-const viaShell = /(?<!permit)(proxy|local)command(?:[ \t]*=[ \t]*|[ \t]+|$)(.*)$/is;
-const jumpOption = /proxyjump(?:[ \t]*=[ \t]*|[ \t]+|$)(.*)$/is;
+// ssh splits an option from its value at any blank, a line break and carriage return too, or an =.
+const viaShell = /(?<!permit)(proxy|local)command(?:\s*=\s*|\s+|$)(.*)$/is;
+const jumpOption = /proxyjump(?:\s*=\s*|\s+|$)(.*)$/is;
 // The value of ssh's flag `letter` in words[i], joined to it in a bundle (-4J host) or in the next word; null if none.
 const flagValue = (words, i, letter) => {
   const flag = new RegExp(`^-[46AaCfGgKkMNnqsTtVvXxYy]*${letter}(.*)$`, "s").exec(words[i]);
@@ -547,7 +548,7 @@ const startedShell = (words, env, shut) => {
 const shellAdvice = (started, where) => started.startsWith("ProxyJump beside") ? `keep every word${where} free of ' and the -F path plain, or drop ProxyJump (-J)`
   : started.startsWith("ProxyJump") ? `give ProxyJump (-J)${where} plain user@host:port names`
   : /^(?:Proxy|Local)Command/.test(started) ? `drop ProxyCommand and LocalCommand${where}, or use ProxyJump (-J) with plain host names instead` : null;
-// A shell told to run a string instead of the script: -c alone or bundled (-ec), --command, --init-command, and fish's
+// A shell told to run a string instead of the script: -c or +c alone or bundled (-ec, +ec), --command, --init-command, and fish's
 // -C (bash's and sh's -C is noclobber). pwsh takes any start of -Command, -CommandWithArgs or -EncodedCommand, of any
 // case, with blanks around it and one or two dashes (an en dash, em dash or horizontal bar counts as one), and -cwa and -ec.
 const runsString = (option, kind) => {
@@ -555,7 +556,7 @@ const runsString = (option, kind) => {
     const name = /^[-–—―]{1,2}([A-Za-z]+)(?::|$)/.exec(option.trim())?.[1]?.toLowerCase();
     return Boolean(name) && (["cwa", "ec"].includes(name) || ["command", "commandwithargs", "encodedcommand"].some(full => full.startsWith(name)));
   }
-  return /^-[A-Za-z]*c/.test(option) || (kind === "fish" && /^-[A-Za-z]*C/.test(option)) || /^--(?:command|init-command)(?:=|$)/.test(option);
+  return /^[-+][A-Za-z]*c/.test(option) || (kind === "fish" && /^-[A-Za-z]*C/.test(option)) || /^--(?:command|init-command)(?:=|$)/.test(option);
 };
 
 // A script's first line names its interpreter, and `#!/usr/bin/env node` has env look node up by its bare name on PATH,
