@@ -1557,10 +1557,10 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   }
   // ssh writes the -F path into that command as it is, and the host (%h, from HostName too) inside single quotes.
   for (const command of ["ssh -F '/dev/null;. ./x' -J jump.example.invalid host", `ssh -o "HostName=a';. ./x;'" -J jump.example.invalid host`,
-    "ssh -J jump.example.invalid -F'cfg x' host", `ssh -J jump.example.invalid "a';. ./x;'"`]) {
+    "ssh -J jump.example.invalid -F'cfg x' host", `ssh -J jump.example.invalid "a';. ./x;'"`, "ssh -4F'a b' -J jump.example.invalid host"]) {
     assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root }).problem ?? "", /cannot be told: it starts a shell \(ProxyJump beside a ' or an -F path with more than plain characters in it, which ssh writes into the command it runs through the user's shell\)/, command);
   }
-  for (const command of ["ssh -J 'git@jump.example.invalid:2222,[::1]:22' host", "ssh -F ~/.ssh/config.d/work -J jump.example.invalid host", "ssh -F '/dev/null;x' -o ProxyJump=none host", "ssh -4J jump.example.invalid host", "ssh -o ProxyJump=none host", "ssh -o PermitLocalCommand=no host",
+  for (const command of ["ssh -J 'git@jump.example.invalid:2222,[::1]:22' host", "ssh -F ~/.ssh/config.d/work -J jump.example.invalid host", "ssh -4F/etc/ssh/alt -J jump.example.invalid host", "ssh -F '/dev/null;x' -o ProxyJump=none host", "ssh -4J jump.example.invalid host", "ssh -o ProxyJump=none host", "ssh -o PermitLocalCommand=no host",
     "ssh -o SetEnv=LANG=es -l rc host", "ssh -o 'SetEnv=TARGET=es2020' -l rc1 host"]) {
     assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root }).problem, null, command);
   }
@@ -1595,6 +1595,7 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   }
   assert.throws(() => start(join(wrappers, "ssh-proxy")), /drop ProxyCommand and LocalCommand from that line, or use ProxyJump \(-J\) with plain host names instead/);
   assert.throws(() => start(wrapper("ssh-jump-odd", "ssh -J 'a;b'", "")), /, which starts a shell \(ProxyJump with more than host names in it/);
+  assert.throws(() => start(wrapper("ssh-jump-file", "ssh -F 'a b' -J jump.example.invalid", "")), /, which starts a shell \(ProxyJump beside a ' or an -F path.*; keep every word from that line free of ' and the -F path plain, or drop ProxyJump \(-J\)/);
   // pwsh reads its options its own way: any start of -Command, -CommandWithArgs or -EncodedCommand (and -cwa, -ec) runs
   // a string, also after an en dash, em dash or horizontal bar and with blanks around it, and -ExecutionPolicy does not.
   for (const words of ["pwsh -NoProfile -Command", "pwsh -c", "pwsh -EncodedCommand", "pwsh -ec", "pwsh -cwa", "pwsh --command", "pwsh —Command", "pwsh –c",
