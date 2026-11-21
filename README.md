@@ -629,8 +629,8 @@ two split, the next release conflicted, and a "sync main into dev" PR had to be 
   branch against the changed kit. A kit change lands only when both pass, because every project runs the kit
   once it is released to `main`.
 - After a release to `main`, `kit update` brings it to every project on the machine. `kit update --install-timer`
-  (once per machine, and again after a change to `systemd/` or to `KIT_REPO` or `XDG_DATA_HOME`, which the timer
-  keeps) runs it every 15 minutes through a `systemd --user` timer; `kit update --remove-timer` takes it out.
+  (once per machine, and again after a change to `systemd/`, `KIT_REPO`, `XDG_DATA_HOME` or the folder of the Node
+  24 it found, which the timer keeps) runs it every 15 minutes through a `systemd --user` timer; `kit update --remove-timer` takes it out.
 
 ## Layout
 

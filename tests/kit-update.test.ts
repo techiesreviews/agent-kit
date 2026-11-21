@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { kitFiles } from "./support/kit-files.ts";
 
@@ -494,9 +494,12 @@ test("kit update --install-timer writes both unit files, starts the timer and is
   assert.equal(readFileSync(timer, "utf8"), readFileSync("systemd/agent-kit-update.timer", "utf8"));
   assert.match(readFileSync(timer, "utf8"), /^\[Timer\]\n(?:#.*\n)*OnCalendar=\*:0\/15\nPersistent=true\n\n\[Install\]\nWantedBy=timers\.target\n$/m);
   const written = readFileSync(service, "utf8");
+  // Run on its own, update finds Node itself and leads the service's plain PATH with that Node's folder.
+  const node = spawnSync("bash", ["-c", "source kit-lib.sh && kit_node_find"], { env: k.env, encoding: "utf8" }).stdout.trim();
+  assert.ok(node, "the test machine has a Node 24 or newer");
   assert.equal(written, readFileSync("systemd/agent-kit-update.service", "utf8")
     .replace("@DATA_HOME@", join(k.directory, "data")).replace("@KIT_REPO@", k.env.KIT_REPO!)
-    .replace("@KIT@", join(k.data, "current/kit")));
+    .replace("@KIT@", join(k.data, "current/kit")).replace("@PATH@", `${dirname(node)}:/usr/local/bin:/usr/bin:/bin`));
   assert.match(written, /^Type=oneshot$/m);
   assert.doesNotMatch(written, /@[A-Z_]+@/);
   verifyUnits(t, k);
@@ -556,9 +559,10 @@ test("kit update --install-timer writes %, $ and @ in its paths and repo the way
     // Read back as systemd does (%% is %, $ stays: systemd-analyze verify above resolves the command the way the
     // manager does, and found it), the service updates the copy in that folder. The real user manager is not used.
     const exec = /^ExecStart="([^"]+)" update$/m.exec(written)![1].replaceAll("%%", "%");
+    const path = / "PATH=([^"]+)"$/m.exec(written)![1].replaceAll("%%", "%");
     const sha = k.publish(folder);
     const run = spawnSync(exec, ["update"], { cwd: k.directory, encoding: "utf8", timeout: 30_000,
-      env: { HOME: k.directory, PATH: "/usr/local/bin:/usr/bin:/bin", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
+      env: { HOME: k.directory, PATH: path, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
         XDG_DATA_HOME: dataHome, KIT_REPO: k.env.KIT_REPO } });
     assert.equal(run.status, 0, run.stdout + run.stderr);
     assert.equal(readlinkSync(join(dataHome, "agent-kit/current")), sha);
@@ -686,7 +690,7 @@ test("kit update --install-timer fails plainly without a machine copy, without s
   for (const repo of ['file:///tmp/a"b', "file:///tmp/a\\b", "file:///tmp/a\nb", "file:///tmp/a\tb", "file:///tmp/@DATA_HOME@"]) {
     const refused = k.run(["--install-timer"], { PATH: systemctl.PATH, KIT_REPO: repo });
     assert.equal(refused.status, 1, refused.stdout + refused.stderr);
-    assert.equal(refused.stdout, `RESULT: fail update cannot write the timer's service, because ${repo.replace("\n", " ")} holds a quote, backslash, control character or the text @KIT@, @DATA_HOME@ or @KIT_REPO@\n`);
+    assert.equal(refused.stdout, `RESULT: fail update cannot write the timer's service, because ${repo.replace("\n", " ")} holds a quote, backslash, control character or the text @KIT@, @DATA_HOME@, @KIT_REPO@ or @PATH@\n`);
   }
   assert.equal(existsSync(units(k)), false);
   // A kit without its unit files fails before writing the one it lacks.
