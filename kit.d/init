@@ -817,7 +817,13 @@ function all() {
   const said = (step) => (step.error ? String(step.error.message) : (step.stderr || step.stdout || `exit ${step.status}`)).trim().split("\n").at(-1);
   const lastResult = (text) => String(text ?? "").split("\n").findLast((line) => line.startsWith("RESULT: "))?.replace(/^RESULT: (?:ok|fail) /, "");
   const files = (count) => `${count} file${count === 1 ? "" : "s"}`;
-  const landOf = (text) => { try { const land = JSON.parse(text)?.branches?.land; return typeof land === "string" && land.trim() ? land : null; } catch { return null; } };
+  // A settings file that does not parse fails its project (bring() turns the throw into its RESULT line), never
+  // read as one with no settings.
+  const settingsOf = (text, where) => {
+    try { return JSON.parse(text); }
+    catch (error) { throw new Error(`${kitSettingsFile} ${where} is unreadable (${String(error.message).replace(/\n/g, " ")}); fix it first, kit init never overwrites it`); }
+  };
+  const landOf = (text, where) => { const land = settingsOf(text, where)?.branches?.land; return typeof land === "string" && land.trim() ? land : null; };
 
   // One project: [group, text], the group being updated, current, skipped or failed.
   // A step that throws (a file that cannot be read or written) fails that project alone, and removes its worktree.
@@ -837,11 +843,11 @@ function all() {
     const fetched = git(main, "fetch", "-q", "origin");
     if (fetched.status !== 0) return ["failed", `git fetch origin failed: ${said(fetched)}`];
     // The landing branch: as the main checkout's settings name it, else as the first usual branch on origin with settings does.
-    let land = existsSync(join(main, kitSettingsFile)) ? landOf(readFileSync(join(main, kitSettingsFile), "utf8")) : null;
+    let land = existsSync(join(main, kitSettingsFile)) ? landOf(readFileSync(join(main, kitSettingsFile), "utf8"), `in ${main}`) : null;
     for (const branch of ["dev", "develop", "main", "master"]) {
       if (land) break;
       const shown = git(main, "show", `refs/remotes/origin/${branch}:${kitSettingsFile}`);
-      if (shown.status === 0) land = landOf(shown.stdout);
+      if (shown.status === 0) land = landOf(shown.stdout, `on origin/${branch}`);
     }
     if (!land) return ["skipped", `skipped: no ${kitSettingsFile} naming a landing branch, here or on origin; run kit init there first`];
     if (git(main, "cat-file", "-e", `refs/remotes/origin/${land}:${kitSettingsFile}`).status !== 0) return ["skipped", `skipped: origin/${land} has no ${kitSettingsFile}; land the project's setup first`];
@@ -921,8 +927,7 @@ function all() {
 
     // The project's checks run in kit pr: they find its shared dependencies as in any of its worktrees.
     // As worktree.sh does, the main checkout's worktreeLinks paths are linked in; node_modules comes below.
-    let projectSettings = {};
-    try { projectSettings = JSON.parse(readFileSync(join(path, kitSettingsFile), "utf8")) ?? {}; } catch {}
+    const projectSettings = settingsOf(readFileSync(join(path, kitSettingsFile), "utf8"), `on origin/${land}`) ?? {};
     // --all's own choice: a project without sharedNodeModules keeps its own in the main checkout, and that one
     // serves the checks (worktree.sh leaves such a worktree to install its own).
     const shared = typeof projectSettings.sharedNodeModules === "string" ? resolve(main, projectSettings.sharedNodeModules)
