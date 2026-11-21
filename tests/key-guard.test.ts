@@ -2002,6 +2002,23 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   const safe = gitSafety({ worktree: root, env: { ...base, GIT_SSH_COMMAND: "MY_ENV=1 ssh" }, network: true, git: realGit });
   spawnSync(realGit, ["-C", root, "ls-remote", "ssh://example.invalid/repo.git"], { env: { ...base, GIT_SSH_COMMAND: "MY_ENV=1 ssh", ...safe.env }, encoding: "utf8" });
   assert.match(readFileSync(noted, "utf8"), /^lead's ssh .*example\.invalid/);
+  // env takes an -S string joined to its option, after other flags too (-Ssh, -vSsh), and splits it at the first S
+  // (-SShell runs Shell), so the shell named there counts as well: with env copied under a name of its own (gnuenv), in
+  // git's ssh command and in an env -S first line (GPT second look on 47e3824, G1).
+  const copied = join(dir, "copied"), joinedMarker = join(dir, "joined-split.txt");
+  mkdirSync(copied);
+  copyFileSync("/usr/bin/env", join(copied, "gnuenv")); chmodSync(join(copied, "gnuenv"), 0o755);
+  symlinkSync(bash, join(copied, "Shell"));
+  const viaCopy = { ...base, PATH: `${copied}:${bin}:/usr/bin:/bin` } as NodeJS.ProcessEnv;
+  for (const [flags, name] of [["-Ssh", "sh"], ["-vSsh", "sh"], ["-SShell", "Shell"]]) {
+    const result = sshCommand({ ...viaCopy, GIT_SSH_COMMAND: `timeout 30 gnuenv ${flags} -c 'echo ran > ${joinedMarker}'` }, { worktree: root });
+    assert.match(result.problem ?? "", new RegExp(`cannot be told: it starts a shell \\(${name}\\)`), flags);
+    spawnSync("/bin/sh", ["-c", result.command!], { env: viaCopy, encoding: "utf8" });
+    assert.ok(!existsSync(joinedMarker), flags);
+    assert.match(refusedWith({ ...viaCopy, GIT_SSH_COMMAND: `timeout 30 gnuenv ${flags} -c ssh` }), new RegExp(`^kit: git's ssh command \\(.*\\) cannot be told: it starts a shell \\(${name}\\)`, "m"), flags);
+    const line = wrapper(`copied-env${flags}`, `timeout 30 gnuenv ${flags} -c ssh`, "");
+    assert.throws(() => startCommand(line, [], viaCopy, { worktree: root, kind: "test" }), new RegExp(`, which starts a shell \\(${name}\\)`), flags);
+  }
 });
 
 // GPT second look on be0bc9b: the loader's --argv0 hands busybox the name it acts on, so -sh (a login shell's name)

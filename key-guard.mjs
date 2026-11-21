@@ -517,12 +517,13 @@ const ownSetting = word => [word, word.replace(/\\[_tnvfr]/g, " ").replace(/['"\
 // ssh -i '${HOME}/…' has no = after its $, so it is not.
 const FILLED = "${…}", INNER = "$";
 // The -S string a word holds, given the word before it: the word after -S (-vS) or --split-string, which GNU env also
-// takes by any unique start of it (--s, --split), or what follows when they are joined (-S'…', --split=…).
+// takes by any unique start of it (--s, --split), or what follows when they are joined (-S'…', --split=…), from the
+// first S, as env reads it (-SShell runs Shell: GPT second look on 47e3824).
 const splitLong = text => text.length >= 3 && "--split-string".startsWith(text);
 const splitString = (word, before = "") => {
   if (/^-[A-Za-z]*S$/.test(before) || splitLong(before)) return word;
   const [option, joined] = word.split(/=(.*)/s);
-  return /^-[A-Za-z]*S(.+)/s.exec(word)?.[1] ?? (joined !== undefined && option.startsWith("--") && splitLong(option) ? joined : undefined);
+  return /^-[A-Za-z]*?S(.+)/s.exec(word)?.[1] ?? (joined !== undefined && option.startsWith("--") && splitLong(option) ? joined : undefined);
 };
 const innerFill = word => /`|\$\(/.test(word) || word.split(/[\s;&|()]+/).some(piece => /^[A-Za-z0-9_]*\$.*=/s.test(piece.replace(/['"\\]/g, "")));
 const lineSetting = words => words.map(ownSetting).find(Boolean)
@@ -619,8 +620,10 @@ const startedShell = (given, env, shut) => {
   // piece right after its word, so the line's next word follows the last piece (round 17, Claude review round 16).
   // A piece that is itself an -S string (env -S "ssh -J…" inside another -S string) splits again, and counts as a line
   // word where it holds a blank (GPT second look, round 18). Only a word with a blank, a quote or a \ splits, and env's
-  // split takes out or shrinks each of those, so a piece is always shorter than its word and this ends.
-  const split = word => /[\s\\"']/.test(word) ? splitWords(word) ?? unescaped(word).split(/\s+/).filter(Boolean) : [];
+  // split takes out or shrinks each of those, so a piece is always shorter than its word and this ends. An -S string
+  // joined to its option (-Ssh, -vSsh, --split=sh) counts as a piece too, without the option, so it is shorter as well
+  // (GPT second look on 47e3824, G1).
+  const split = word => [...(/[\s\\"']/.test(word) ? splitWords(word) ?? unescaped(word).split(/\s+/).filter(Boolean) : []), ...[splitString(word)].filter(Boolean)];
   const expand = (word, line) => [{ word, line }, ...split(word).filter(piece => piece !== word).flatMap(piece => expand(piece, /\s/.test(piece)))];
   const entries = given.flatMap(word => expand(word, true));
   const words = entries.map(entry => entry.word);
