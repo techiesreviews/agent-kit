@@ -17,7 +17,12 @@ if [[ $chosen == true ]]; then unset KIT_HOME_DEFAULT; else export KIT_HOME_DEFA
 export KIT_HOME
 # shellcheck source=kit-lib.sh
 source "$KIT_HOME/kit-lib.sh"
-# Outside git the project is the one around this front door, not around KIT_HOME (kit_root names the rule).
+# --home prints this kit's folder, as the launcher does, so a launcher older than its --home still answers it.
+if [[ ${1-} == --home && $# == 1 ]]; then printf '%s\n' "$KIT_HOME"; exit 0; fi
+# The project root, the RESULT line and URL hiding are kit-lib.mjs's (one copy each, TOOLS-395), so everything after
+# this needs Node >=24: without it, or with an older one, the front door says so and runs nothing.
+if ! kit_node; then kit_node_missing; exit 2; fi
+# Outside git the project is the one around this front door, not around KIT_HOME (kitRoot names the rule).
 KIT_ROOT=$(kit_root "$kit_dir")
 
 # KIT_COMMANDS_DIR (tests) replaces both folders.
@@ -90,8 +95,6 @@ list_commands() {
 
 command=${1-}
 case $command in ''|help|--help|-h) list_commands; exit 0 ;; esac
-# --home prints this kit's folder, as the launcher does, so a launcher older than its --home still answers it.
-if [[ $command == --home && $# == 1 ]]; then printf '%s\n' "$KIT_HOME"; exit 0; fi
 shift
 # The first match is the shared command: a project command never hides a shared one (kit doctor names the clash).
 command_file=''
@@ -178,7 +181,6 @@ case $command in
   *) [[ $enforce_result == false ]] || kit_quiet_wait ;;
 esac
 
-kit_node || :
 KIT_MAIN_ROOT=$(kit_main_root)
 export KIT_ROOT KIT_MAIN_ROOT
 # The playwright setting reaches commands as KIT_PLAYWRIGHT_MODULE, against the real top folder as kit doctor reads it;

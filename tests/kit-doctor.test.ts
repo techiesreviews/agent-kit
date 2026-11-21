@@ -78,15 +78,16 @@ function fixture(t: { after: (fn: () => void) => void }) {
   return { directory, main, dev, build, commands, run };
 }
 
-function failure(result: ReturnType<typeof spawnSync<string>>, name: string) {
+// Without Node the RESULT line is kit-lib.sh's fixed one (kit_result asks kit-lib.mjs for it, TOOLS-395).
+function failure(result: ReturnType<typeof spawnSync<string>>, name: string, noNode = false) {
   assert.equal(result.status, 1, result.stdout + result.stderr);
   const lines = result.stdout.trimEnd().split("\n");
   assert.equal(lines.filter(line => line.startsWith("RESULT: ")).length, 1);
   // The kit note shows whenever the kit's own version runs; the PR target, skills and API route notes always show.
   assert.equal(lines.filter(line => !line.startsWith("✓ kit: ") && !line.startsWith("✗ PR target: ") && !/^[✓✗] skills map: /.test(line) && !line.startsWith("api route: ") && !/^(✗ )?key lock: /.test(line)).length, 13, result.stdout);
   assert.ok(lines.some(line => line.startsWith(`✗ ${name}: `) && line.includes("; fix: ")), result.stdout);
-  assert.equal(lines.at(-1), `RESULT: fail doctor 1 failed: ${name}`);
-  assert.equal(result.stderr, "");
+  assert.equal(lines.at(-1), noNode ? "RESULT: fail no Node >=24 found (system, npx cache or nvm)" : `RESULT: fail doctor 1 failed: ${name}`);
+  assert.equal(result.stderr, noNode ? "kit: no Node >=24 found (system, npx cache or nvm)\n" : "");
 }
 
 test("doctor checks all eleven conditions quickly, notes Grok, and quiet success prints only RESULT", (t) => {
@@ -499,7 +500,7 @@ test("doctor reports Node below 24 without searching the user's installations", 
   const empty = join(f.directory, "empty");
   mkdirSync(bin); mkdirSync(empty);
   executable(join(bin, "node"), "printf 'v22.0.0\\n'");
-  failure(f.run([], f.build, { PATH: `${bin}:/usr/bin:/bin`, CLAUDE_NODE_SEARCH_ROOT: empty }, true), "node");
+  failure(f.run([], f.build, { PATH: `${bin}:/usr/bin:/bin`, CLAUDE_NODE_SEARCH_ROOT: empty }, true), "node", true);
   // Without Node the skill guard cannot run: a project's skills check says it skipped.
   const settings = JSON.parse(readFileSync(join(f.build, "scripts/agents/kit.json"), "utf8"));
   writeFileSync(join(f.build, "scripts/agents/kit.json"), JSON.stringify({ ...settings, skillGuard: { allow: [".claude/skills/heron"] } }));

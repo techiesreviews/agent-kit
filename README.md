@@ -636,7 +636,7 @@ two split, the next release conflicted, and a "sync main into dev" PR had to be 
 
 | Path | What |
 | --- | --- |
-| `kit`, `kit-lib.sh`, `kit-lib.mjs` | the front door and the shared library (a rule the shell and Node both need has one copy, in `kit-lib.mjs`, which the shell asks through Node; only what must run before or without Node stays in both: the project root, the RESULT line and hiding a URL's user info, each held to the other by a test; the Node lookup lives only in `kit-lib.sh`) |
+| `kit`, `kit-lib.sh`, `kit-lib.mjs` | the front door and the shared library (a rule the shell and Node both need has one copy, in `kit-lib.mjs`, which the shell asks through Node, the project root, the RESULT line and hiding a URL's user info included; the front door finds Node first and, without Node 24 or newer, says so and runs nothing; the Node lookup lives only in `kit-lib.sh`) |
 | `kit.d/` | one file per shared command, each with a `# kit:` summary line (an inside helper such as `version` says `# kit-inside:` and stays out of the list) |
 | `hooks/` | the guard hooks (`bash-guard`, `agent-cap`, `session-env`, `brief-guard`, `stop-guard`, and the opt-in `status-nudge`) and their `run.sh` |
 | `context-card.mjs`, `learn.mjs`, `worktree.sh`, `tickets.mjs`, `unit.sh`, `review-findings.mjs`, `second-look.json`, … | helpers beside `kit` that commands and a project's forwarders run through `kit --home` |
