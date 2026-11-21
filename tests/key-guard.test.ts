@@ -2047,11 +2047,19 @@ test("TOOLS-329: a login shell name the loader hands busybox, and a .. after a l
   assert.throws(() => start("dots-interpreter", payload), /inside the worktree or its Git folder/);
   assert.match(ssh(`${payload} host`).problem ?? "", /inside the worktree or its Git folder/);
   assert.throws(() => start("dots-env", `/usr/bin/env -S X=1 ${payload}`), /inside the worktree or its Git folder/);
+  // What the kit starts is the path the kernel reads, the one it checked: hop/../work/payload is far/work/payload,
+  // never the worktree's payload that the path tidied as text names (Claude review on c6ee093).
+  mkdirSync(join(dir, "far", "work"));
+  writeFileSync(join(dir, "far", "work", "payload"), "#!/bin/sh\nexit 1\n"); chmodSync(join(dir, "far", "work", "payload"), 0o755);
+  symlinkSync(join(dir, "far", "sub"), join(dir, "hop"));
+  const beside = `${dir}/hop/../work/payload`;
+  assert.equal(ssh(`${beside} host`).command, `${beside} host`);
+  assert.equal(sshCommand({ ...base, GIT_SSH: beside }, { worktree: root }).command, beside);
+  assert.equal(start("dots-text", `/usr/bin/env -S ${beside}`)[0], beside);
   // A PATH folder written with a .. after a link is the folder the kernel reaches: one that holds a link into the
   // worktree (far/ssh) leaves the command's PATH, so timeout never finds it.
   writeFileSync(join(root, "tools", "ssh"), "#!/bin/sh\nexit 1\n"); chmodSync(join(root, "tools", "ssh"), 0o755);
   symlinkSync(join(root, "tools", "ssh"), join(dir, "far", "ssh"));
-  symlinkSync(join(dir, "far", "sub"), join(dir, "hop"));
   const hops = { ...base, PATH: `${dir}/hop/..:${bin}:/usr/bin:/bin` };
   const command = ssh("timeout 1 ssh host", hops);
   assert.equal(command.problem, null);

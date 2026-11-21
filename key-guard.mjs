@@ -464,6 +464,9 @@ function walk(path) {
 const real = path => walk(path).end;
 // A PATH folder's entry by that name, as written: a .. in the folder stays for real and walk to read in kernel order.
 const inFolder = (folder, name) => folder.split("/").includes("..") ? `${folder}/${name}` : join(folder, name);
+// The full path the kit starts for one a line names: with a .. in it kept as written, so the kernel reads the same
+// file that walk checked, never the one the path tidied as text names.
+const toStart = path => { const full = isAbsolute(path) ? path : `${process.cwd()}/${path}`; return full.split("/").includes("..") ? full : resolve(full); };
 // The two folders a build is meant to write, for the comparison: the worktree and the Git folder, links followed.
 const buildFolders = (worktree, common) => [worktree, common].filter(Boolean).map(real);
 const trustedFolders = (env, shut) => pathFolders(env).filter(folder => isAbsolute(folder) && !shut.some(root => inside(real(folder), root)));
@@ -526,7 +529,7 @@ const lineSetting = words => words.map(ownSetting).find(Boolean)
   ?? (words.some((word, i) => splitString(word, words[i - 1])?.includes("${")) ? FILLED : words.some(innerFill) ? INNER : undefined);
 // Whether a word names env: by name or by a path to it (links followed), or as a multi-call binary's choice of it, a
 // leading dash too, which busybox takes off the name it is started by (the loader's --argv0 -env: GPT second look on be0bc9b).
-const namesEnv = word => /^-?env$/.test(basename(word)) ||(word.includes("/") && basename(real(word)) === "env") || /^--coreutils-prog(?:-shebang)?=env$/.test(word);
+const namesEnv = word => /^-?env$/.test(basename(word)) || (word.includes("/") && basename(real(word)) === "env") || /^--coreutils-prog(?:-shebang)?=env$/.test(word);
 // No shell starts from git's ssh command or from an env -S first line but the script's own interpreter (Lex's decision,
 // 2026-11-20, TOOLS-329): a shell can build PATH= or BASH_ENV= out of pieces no word holds ("$1$2", "${1}${2}", IFS=
 // with "$*"), which no check here could read. A shell counts by name (a version may follow: bash5, zsh-5.9), by a path
@@ -795,7 +798,7 @@ function interpreted(file, args, env, shut, refuse, depth = 0, names = env) {
   if (name.includes("/")) {
     if (shutIn(name, shut)) refuse(`${file} starts with env ${name}, inside the worktree or its Git folder, where a build can change it`);
     if (intoProc(name, shut)) refuse(`${file} starts with env ${name}, a path into /proc or /dev, which leads to another program for each process that opens it`);
-    found = resolve(name);
+    found = toStart(name);
   } else {
     const { file: program, refused } = lookup(name, env, shut);
     if (!program && refused) refuse(linkRefusal(name, refused));
@@ -1034,7 +1037,7 @@ export function sshCommand(env = process.env, { worktree, common, configured } =
     if (program.includes("/")) {
       if (shutIn(program, shut)) return refused(`git's ssh (${program}) is inside the worktree or its Git folder, where a build can change it; set GIT_SSH_COMMAND to one outside them, or set ASE_KEY_GUARD=off to run without the lock`);
       if (intoProc(program, shut)) return refused(`git's ssh (${program}) is a path into /proc or /dev, which leads to another program for each process that opens it; set GIT_SSH_COMMAND to a plain path, or set ASE_KEY_GUARD=off to run without the lock`);
-      file = resolve(program);
+      file = toStart(program);
     } else {
       const found = lookup(program, env, shut);
       if (!found.file && found.refused) return refused(linkRefusal(program, found.refused));
