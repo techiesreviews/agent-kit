@@ -73,6 +73,11 @@ test("brief: the build brief holds the owner, setup, pins, commands, every house
     /scripts\/agents\/kit review --ticket docs\/tickets\/07-panel\.md/,
     /scripts\/agents\/kit pr --ticket docs\/tickets\/07-panel\.md/,
     /Paid skills never go in a repo/,
+    /only a working, checked increment merges into dev/,
+    /Unfinished work stays on its branch/,
+    /Report what stays on a branch and why/,
+    /start each feature with 3 to 5 plain lines/,
+    /what Lex will see on the preview, where \(link\), and when \(after which step\)/,
     /Second look: `gpt-6\.1-sol` \(GPT through Codex\), else `grok-4\.7`, else the free `opencode\/deepseek-v4\.1-flash-free`/,
     /GPT may review since 2026-11-09; Claude Opus stays the main reviewer/,
     // kit pr counts a helper's fix rounds from its reviews (TOOLS-287): the budget, then only blockers block.
