@@ -542,9 +542,11 @@ const startedShell = (words, env, shut) => {
     if (jumping && (word.includes("'") || !/^[\w./@:,+~-]*$/.test(flagValue(words, i, "F") ?? ""))) return "ProxyJump beside a ' or an -F path with more than plain characters in it, which ssh writes into the command it runs through the user's shell";
     // Braces and commas split too: where /bin/sh is bash, {s,h} would be a shell's name by brace expansion.
     // The whole word first, so a quoted path with a blank or a ; in it still reaches the link it names; then its pieces,
-    // also with quotes and \ taken out, as an env -S (gnuenv) or a shell joins them: ba's'h is bash.
+    // also with quotes and \ taken out, as an env -S (gnuenv) or a shell joins them: ba's'h is bash; and with env -S's
+    // \_ and blank escapes as blanks, where it splits: \_bash is bash.
     const cut = text => text.split(/[\s;&|()<>=`'"{},]+/);
-    const piece = [word, ...cut(word), ...cut(word.replace(/["'\\]/g, ""))].find(part => part && namesShell(part, env, shut));
+    const piece = [word, ...cut(word), ...cut(word.replace(/["'\\]/g, "")), ...cut(word.replace(/\\[_tnvfr]/g, " ").replace(/["'\\]/g, ""))]
+      .find(part => part && namesShell(part, env, shut));
     if (piece) return basename(piece);
   }
   return null;
@@ -740,7 +742,8 @@ function shellWords(line) {
         if (at + 1 >= line.length || line[at + 1] === "\n") return null;
         value += `\x04${line[at + 1]}`; at += 2;
       } else if (";&|<>()`\n".includes(char) || (char === "$" && line[at + 1] === "(")) return null;
-      else { value += char === "$" ? "\x05\x01" : /[*?[]/.test(char) ? "\x02" : char === "~" && at === start ? "\x03" : char === "#" && at === start ? "\0" : char; at++; }
+      // A { outside quotes, but for a ${…}, counts as a pattern: a bash run as sh expands ba{s..s}h and {a,b}.
+      else { value += char === "$" ? "\x05\x01" : /[*?[]/.test(char) || (char === "{" && !value.endsWith("\x01")) ? "\x02" : char === "~" && at === start ? "\x03" : char === "#" && at === start ? "\0" : char; at++; }
     }
     // marked keeps \x01 where sh fills in a $, \x02 where it expands a pattern, \x03 for a ~ at the start (HOME) and \0
     // for a # there (the rest of the line is a comment); bounded keeps \x04 too, where a quote or a \ ends a $NAME
