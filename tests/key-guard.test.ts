@@ -1597,12 +1597,23 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: viaAccount }), /^kit: git's ssh command \(.*\) cannot be told: sh fills in a ~ in it from somewhere other than HOME/m);
   // ssh keeps quotes and \ in an option's value, so only a plain none turns ProxyCommand, LocalCommand or ProxyJump off.
   for (const [command, why] of [[`ssh -o 'ProxyCommand="none"' host`, /it starts a shell \(ProxyCommand/], [`ssh -o 'ProxyCommand=n\\one' host`, /it starts a shell \(ProxyCommand/],
-    [`ssh -o PermitLocalCommand=yes -o 'LocalCommand "none"' host`, /it starts a shell \(LocalCommand/], [`ssh -o 'ProxyJump="none"' -F 'a b' host`, /it starts a shell \(ProxyJump beside a '/]] as const) {
+    [`ssh -o PermitLocalCommand=yes -o 'LocalCommand "none"' host`, /it starts a shell \(LocalCommand/], [`ssh -o 'ProxyCommand=\\ none' host`, /it starts a shell \(ProxyCommand/],
+    [`ssh -o PermitLocalCommand=yes -o 'LocalCommand=\\ none' host`, /it starts a shell \(LocalCommand/], [`ssh -o 'ProxyJump="none"' -F 'a b' host`, /it starts a shell \(ProxyJump beside a '/]] as const) {
     assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root }).problem ?? "", why, command);
   }
   for (const command of ["ssh -o ProxyCommand=none host", "ssh -o 'LocalCommand none' host", "ssh -o ProxyJump=none -F 'a b' host", "ssh -o 'ProxyCommand = none' host"]) {
     assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root }).problem, null, command);
   }
+  // An env -S string (gnuenv) joins quoted pieces, so ba's'h in one is bash, in git's ssh command and in an env -S first
+  // line (GPT second look, round 10).
+  const joinedName = sshCommand({ ...base, GIT_SSH_COMMAND: `timeout 30 gnuenv -S "ba's'h -c 'echo ran > ${marker}'"` }, { worktree: root });
+  assert.match(joinedName.problem ?? "", /cannot be told: it starts a shell \(bash\)/);
+  spawnSync("/bin/sh", ["-c", joinedName.command!], { env: base, encoding: "utf8" });
+  assert.ok(!existsSync(marker));
+  assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: `timeout 30 gnuenv -S "ba's'h -c 'ssh'"` }), /^kit: git's ssh command \(.*\) cannot be told: it starts a shell \(bash\)/m);
+  const joinedLine = wrapper("gnuenv-joined-shell", `timeout 30 gnuenv -S "ba's'h -c 'ssh'"`, "");
+  assert.throws(() => start(joinedLine), /, which starts a shell \(bash\)/);
+  assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: joinedLine }), /^kit: \S+ starts with env -S .*, which starts a shell/m);
   // sh may set IFS back to blanks at its start (dash does), so an empty IFS from the run still splits $X at blanks
   // (GPT second look, round 8).
   const emptyIfs = { ...base, IFS: "", X: "-v -J jump.example.invalid", GIT_SSH_COMMAND: `ssh $X -o "HostName=a'b" host` };

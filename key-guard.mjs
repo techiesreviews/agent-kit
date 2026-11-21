@@ -536,13 +536,15 @@ const startedShell = (words, env, shut) => {
   const jumping = words.some((word, i) => { const jump = jumpOf(words, i)?.trim(); return jump !== undefined && (!/^(?:none)?$/i.test(jump) || /["'\\]/.test(word)); });
   for (const [i, word] of words.entries()) {
     const option = viaShell.exec(word.replace(/["'\\]/g, ""));
-    if (option && !(option[2].trim().toLowerCase() === "none" && /(?:^|[\s=])none\s*$/i.test(word))) return `${option[1].toLowerCase() === "proxy" ? "ProxyCommand" : "LocalCommand"}, which ssh runs through the user's shell`;
+    if (option && !(option[2].trim().toLowerCase() === "none" && /command["']*(?:\s*=\s*|\s+)none\s*$/i.test(word))) return `${option[1].toLowerCase() === "proxy" ? "ProxyCommand" : "LocalCommand"}, which ssh runs through the user's shell`;
     const jump = jumpOf(words, i);
     if (jump !== null && !jump.trim().split(",").every(name => /^[\w.@:[\]][\w.@:[\]-]*$/.test(name))) return "ProxyJump with more than host names in it, which ssh runs through the user's shell";
     if (jumping && (word.includes("'") || !/^[\w./@:,+~-]*$/.test(flagValue(words, i, "F") ?? ""))) return "ProxyJump beside a ' or an -F path with more than plain characters in it, which ssh writes into the command it runs through the user's shell";
     // Braces and commas split too: where /bin/sh is bash, {s,h} would be a shell's name by brace expansion.
-    // The whole word first, so a quoted path with a blank or a ; in it still reaches the link it names.
-    const piece = [word, ...word.split(/[\s;&|()<>=`'"{},]+/)].find(part => part && namesShell(part, env, shut));
+    // The whole word first, so a quoted path with a blank or a ; in it still reaches the link it names; then its pieces,
+    // also with quotes and \ taken out, as an env -S (gnuenv) or a shell joins them: ba's'h is bash.
+    const cut = text => text.split(/[\s;&|()<>=`'"{},]+/);
+    const piece = [word, ...cut(word), ...cut(word.replace(/["'\\]/g, ""))].find(part => part && namesShell(part, env, shut));
     if (piece) return basename(piece);
   }
   return null;
