@@ -538,7 +538,8 @@ const startedShell = (words, env, shut) => {
     if (jump !== null && !jump.trim().split(",").every(name => /^[\w.@:[\]][\w.@:[\]-]*$/.test(name))) return "ProxyJump with more than host names in it, which ssh runs through the user's shell";
     if (jumping && (word.includes("'") || !/^[\w./@:,+~-]*$/.test(flagValue(words, i, "F") ?? ""))) return "ProxyJump beside a ' or an -F path with more than plain characters in it, which ssh writes into the command it runs through the user's shell";
     // Braces and commas split too: where /bin/sh is bash, {s,h} would be a shell's name by brace expansion.
-    const piece = word.split(/[\s;&|()<>=`'"{},]+/).find(part => part && namesShell(part, env, shut));
+    // The whole word first, so a quoted path with a blank or a ; in it still reaches the link it names.
+    const piece = [word, ...word.split(/[\s;&|()<>=`'"{},]+/)].find(part => part && namesShell(part, env, shut));
     if (piece) return basename(piece);
   }
   return null;

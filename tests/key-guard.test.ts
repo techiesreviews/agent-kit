@@ -1537,6 +1537,15 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   for (const command of [`timeout 30 lksh -c 'ssh "$@"' ssh`, `timeout 30 bash-static -c 'ssh "$@"' ssh`, `timeout 30 busybox hush -c 'ssh "$@"' ssh`]) {
     assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root }).problem ?? "", /cannot be told: it starts a shell \((lksh|bash-static|hush)\)/, command);
   }
+  // A link to a shell in a folder with a blank in its name, quoted whole, is still followed (GPT second look, round 3).
+  mkdirSync(join(dir, "shell tools"));
+  symlinkSync(bash, join(dir, "shell tools", "run"));
+  const spaced = `timeout 30 '${join(dir, "shell tools", "run")}' -c 'ssh "$@"' ssh`;
+  assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: spaced }, { worktree: root }).problem ?? "", /cannot be told: it starts a shell \(run\)/);
+  assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: spaced }), /^kit: git's ssh command \(.*\) cannot be told: it starts a shell \(run\)/m);
+  const spacedLine = wrapper("timeout-spaced-link", `timeout 30 '${join(dir, "shell tools", "run")}' -c 'ssh "$@"'`, "");
+  assert.throws(() => start(spacedLine), /, which starts a shell \(run\)/);
+  assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: spacedLine }), /^kit: \S+ starts with env -S .*, which starts a shell/m);
   copyFileSync(shell, join(bin, "notashell")); chmodSync(join(bin, "notashell"), 0o755);
   assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: `timeout 30 notashell -c 'ssh "$@"' ssh` }, { worktree: root }).problem, null);
   // ProxyCommand and LocalCommand, also in a bundle of ssh's flags (-4o, -vo, -qo) and with the option's name quoted.
