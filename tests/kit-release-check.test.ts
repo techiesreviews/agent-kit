@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { kitEnv } from "./support/kit-env.ts";
+// @ts-expect-error The kit's helpers are plain JavaScript without declarations.
+import { releaseCheck } from "../release-check.mjs";
 
 const check = resolve("kit.d/release-check");
 const kit = resolve("kit");
@@ -51,7 +53,7 @@ function fixture(t: TestContext, branches: Record<string, string> = { land: "dev
     assert.equal(result.error, undefined, result.error?.message);
     return result;
   };
-  return { dir, root, origin, git, gitAt, commit, peer, refs, run, short: () => git("rev-parse", "--short", "HEAD") };
+  return { dir, root, origin, env, git, gitAt, commit, peer, refs, run, short: () => git("rev-parse", "--short", "HEAD") };
 }
 
 const lastLine = (stdout: string) => stdout.trimEnd().split("\n").at(-1) ?? "";
@@ -375,4 +377,26 @@ test("no warning, and still a pass, when the other branch cannot be fetched", t 
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.doesNotMatch(result.stdout, /warning:/);
   assert.match(lastLine(result.stdout), /^RESULT: ok release-check [a-f0-9]{7} is origin\/main, nothing unsaved$/);
+});
+
+// The function kit pr --release calls in its own process: the outcome kit release-check prints, as fields.
+test("releaseCheck returns the check's outcome as fields: a pass, a failure with its problems, a waiver, and the git it is given", t => {
+  const f = fixture(t), owner = process.env.ASE_OWNER;
+  t.after(() => { if (owner === undefined) delete process.env.ASE_OWNER; else process.env.ASE_OWNER = owner; });
+  const short = f.short();
+  assert.deepEqual(releaseCheck({ root: f.root, env: f.env }), { passed: true, summary: `${short} is origin/main, nothing unsaved`, problems: [], warnings: [] });
+  // git is the program with arguments before git's own: kit pr passes its own git and the git settings a child gets.
+  const long = f.git("rev-parse", "--short=12", "HEAD");
+  assert.equal(releaseCheck({ root: f.root, env: f.env, git: ["git", "-c", "core.abbrev=12"] }).summary, `${long} is origin/main, nothing unsaved`);
+  f.commit(f.root, "local fix"); writeFileSync(join(f.root, "draft.html"), "x\n");
+  const failed = releaseCheck({ root: f.root, env: f.env, land: true });
+  assert.equal(failed.passed, false);
+  assert.deepEqual(failed.problems.map((item: { what: string }) => item.what), ["unsaved files (draft.html)", `HEAD ${f.short()} is 1 commit ahead of origin/dev`]);
+  assert.equal(failed.failure, failed.problems.map((item: { what: string; advice: string }) => `${item.what}: ${item.advice}`).join("; "));
+  process.env.ASE_OWNER = "ke-lead";
+  const waived = releaseCheck({ root: f.root, env: f.env, waive: "hotfix tonight" });
+  assert.equal(waived.passed, true);
+  assert.equal(waived.summary, `waived by ke-lead (hotfix tonight): unsaved files (draft.html); HEAD ${f.short()} is 1 commit ahead of origin/main`);
+  // A git that cannot run throws, as the command's own RESULT fail line says.
+  assert.throws(() => releaseCheck({ root: f.root, env: f.env, git: join(f.dir, "no-git") }), /^Error: git status failed: /);
 });

@@ -9,6 +9,8 @@ import { completedFixRounds, openFindings } from "../review-findings.mjs";
 import { branchRisk, budgetReport, fixRoundsDone, isAncestorOf, isNit, ledgerRows, modelsLine, prLine, renderLedger, roundLimit, secondLookRows, stoppingFindings, waiverCheck, waiverRefusal } from "../review-loop.mjs";
 import { coveringReview, earlierSecondLooks, findingsSeenAt, readReviewReport, reviewChain, reviewReportPath, reviewsFolder, secondLookMark } from "../review-records.mjs";
 import { projectCommand, spoken } from "../review-brief.mjs";
+import { releaseCheck as releaseCheckRun } from "../release-check.mjs";
+import { resultLine, review as reviewRun, secondLook as secondLookRun } from "../review-run.mjs";
 import { briefFollowups, cardBriefFor, closeLandedCard, isCardKey, onOrbit, openOrbitTickets, orbitProblem, ticketCardKey } from "../ticket-cards.mjs";
 
 const { kitBranch, kitGhEnv, kitHideUserInfo, kitHidingLog, kitHome, kitMachineLock, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, kitStateDir, nodeEnv, kitScore } = await import(
@@ -21,6 +23,10 @@ const { checkLock, keyGuardOn, runPath, runProgram, startCommand } = await impor
 const { folderRemote, gitCommonDir, gitNetworkCall, gitSafety, gitTop, loopbackRemote } = await import(pathToFileURL(resolve(import.meta.dirname, "../git-safety.mjs")).href);
 const usage = 'Usage: kit pr [--base <land>] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release | --sync-main] [--full] [--waive "<reason>"] [--not-visible "<reason>"]\nBranches come from scripts/agents/kit.json: --base defaults to branches.land; --release needs --base branches.release and first runs kit release-check --land (nothing unsaved, HEAD exactly origin/<land>).\nA release joins origin/<release> into the cut by one merge (keeping <land>\'s files when every commit origin/<release> holds outside <land>\'s history is an exact copy of one of <land>\'s or already in its files, and its files are <land>\'s at a commit made since <land> and <release> were last joined) and lands, once CI passes, as a merge commit: never a rebase or squash (--no-merge only opens it).\n--sync-main, from a branch cut at origin/<land>, merges origin/<release> into it and lands that merge into <land> as a merge commit, never rebased; it refuses when its own merge would change any file on <land>.\nWhere kit cannot prove what such a merge keeps and drops (a squashed copy of work <land> has changed since, a rollback beside copies, a merge there that changes files itself, a conflict), a release or a sync stops, with nothing merged, and names the steps to make the merge by hand.\n--sync-main on a branch whose tip is a merge of origin/<land> and <release> made by hand lands that merge as it was made, through review, the second look and CI, once it drops no change of <release>\'s that <land> does not already hold; otherwise it names the changes it leaves out.\n--waive requires a *-lead owner and may be given more than once (ids count in any reason, counts add up; once any reason names an id, the counts are not read); records the reason for merging with open findings or without a feature-list update;\na waiver for the findings that stop the landing (above P3; once the fix rounds are used up, P0 and P1) must name each one by id in its text (--waive \"R1-2, SL-1: <reason>\") or start with the number of them (--waive \"2 findings: <reason>\", which must match both looks together);\na finding it leaves out stops kit pr with a plain reason that lists it, and so does one that is new at a head a rebase brought, at the start of the run too (the lead sees it and runs kit pr again); P3 findings, test gaps and docs wording need no names;\nwith --release it also passes the release check, which names the reason (kit pr still needs a clean tree).\nA visible change (paths.visible) lands only with a fresh kit ux result: one that passed, with the review, for the visible files and the listed features that cover the change as they are now (kit ux saves it for the branch; a later change to a visible file or to one of those features, a rebase\'s too, needs kit ux again; a list edit about other features does not).\n--not-visible "<reason>" lands a change that matches those paths but shows a person nothing new, with the reason in the PR text (refused when kit ux tried this very change and it did not pass, and with --release; a run whose reviewer did not finish is no such verdict); --waive does not cover the UX check.\nWhen no feature in the list covers the changed files, kit ux has nothing to try and the PR says "UX check: nothing to try".\nA project with no feature list for kit ux (docs/agents/features.md) says "UX check: skipped"; a release carries what each PR already passed.\nAfter the Claude review (none in the docs tier), every change gets a second look (kit review --second-look), whose findings block the same way;\nwhen no model can take it, the PR lands and says "second look: skipped (<reason>)".\nOn Orbit ("tickets": "orbit"), --ticket takes a card KEY or a saved brief of it (.scratch/kit-tickets/KEY.md); when the PR\nlands the card goes to Done with a dated comment naming the PR and its merge SHA (ORBIT_ROLE=lead); a card that cannot be closed is named on the RESULT line.\nA PR a merge queue takes leaves the card open, its follow-ups on the card, and says to close it once the PR lands.\n';
 const kit = process.env.KIT_PR_KIT || resolve(import.meta.dirname, "../kit");
+// The kit's own steps kit pr calls in this process (the release check, the review and the second look); tests replace any
+// of them with KIT_PR_CALLS, a module exporting releaseCheck, review or secondLook, as KIT_PR_KIT replaces the kit program.
+const calls = { releaseCheck: releaseCheckRun, review: reviewRun, secondLook: secondLookRun,
+  ...(process.env.KIT_PR_CALLS ? await import(pathToFileURL(resolve(process.env.KIT_PR_CALLS)).href) : {}) };
 // main's private folder of program links (name: target), removed when the process ends.
 let programs;
 const linked = {};
@@ -384,8 +390,8 @@ async function main(args) {
       step = name;
       if (guarded) checkLinks();
       // A check runs locked whatever its command (a project's check may be a git command too), a git call by its full
-      // path, and everything else with gitSafety's settings: kit review's and gh's own git calls, and kit
-      // release-check's fetch (with the network).
+      // path, and everything else with gitSafety's settings: gh's own git calls. The release
+      // check, the review and the second look run in this process (inProcess) and take the same settings there.
       // node is this process's own, never a bare name PATH may resolve to a link into the worktree.
       let program = command === "node" ? process.execPath : command === "gh" && linked.gh ? linked.gh : command, args = argv, childEnv = { ...(command === "gh" ? ghEnv : env), ...extraEnv };
       if (checkNames.has(name)) { const lock = checksLock(); [program, args] = lock.wrap(program, argv); Object.assign(childEnv, lock.env); }
@@ -398,7 +404,7 @@ async function main(args) {
         if (network && guarded && await lockedRemote(argv)) { const lock = pushLocked ??= lockFor(); [program, args] = lock.wrap(gitBin, argv); Object.assign(childEnv, lock.env); }
       }
       else {
-        Object.assign(childEnv, safety(childEnv, name === "release-check"));
+        Object.assign(childEnv, safety(childEnv));
         if (guarded) [program, args] = startCommand(program, argv, childEnv, { worktree: root, common, kind: "kit pr" });
       }
       const log = join(directory, `${name}.log`);
@@ -441,6 +447,21 @@ async function main(args) {
     }
     // A failed child's message: its last stderr line, user-info hidden, as it may be printed beside RESULT (landed:).
     const childMessage = (result, fallback) => kitHideUserInfo(result.failure || result.stderr.trim().split(/\r?\n/).at(-1) || fallback);
+    // One of the kit's own steps, run in this process (`call(io)`): its output goes to the step's log as a child's would,
+    // with the git settings a child would get, and `stderr` keeps what it wrote there for childMessage.
+    async function inProcess(name, call) {
+      step = name;
+      shieldProcess();
+      const fd = openSync(join(directory, `${name}.log`), "a");
+      const logged = kitHidingLog(text => appendFileSync(fd, text));
+      let stderr = "";
+      const io = { out: text => logged.write("out", text), err: text => { stderr += text; logged.write("err", text); } };
+      try { return { outcome: await call(io), stderr }; }
+      finally {
+        logged.end();
+        closeSync(fd);
+      }
+    }
     async function run(name, command, argv) {
       const result = await execute(name, command, argv);
       if (result.status !== 0) throw new Error(childMessage(result, `${command} exited ${result.status}`));
@@ -494,13 +515,26 @@ async function main(args) {
     // A lead's --waive reaches the check too; its RESULT text, every problem it names, is this step's.
     let releaseCheck = "";
     if (flags.release) {
-      const checked = await execute("release-check", kit, ["release-check", "--land", ...(flags.waive ? ["--waive", flags.waive] : [])]);
-      const line = checked.text.split(/\r?\n/).findLast(text => text.startsWith("RESULT: "))?.slice("RESULT: ".length);
-      if (checked.status !== 0) throw new Error(kitHideUserInfo(line?.replace(/^fail /, "") || childMessage(checked, `${kit} exited ${checked.status}`)));
-      releaseCheck = kitHideUserInfo(line?.replace(/^ok (release-check )?/, "") || "ok");
+      // In this process, with the variables its fetch would get as a child (the network's) and kit pr's own git; its log
+      // holds what kit release-check prints.
+      const { outcome: checked } = await inProcess("release-check", io => {
+        try {
+          const outcome = calls.releaseCheck({ root, land: true, waive: flags.waive, env: { ...env, ...safety(env, true) }, git: gitStart });
+          for (const warning of outcome.warnings) io.out(`${warning}\n`);
+          for (const item of outcome.passed ? [] : outcome.problems) io.err(`problem: ${item.what}: ${item.advice}\n`);
+          io.out(`${resultLine(outcome.passed ? { status: "ok", text: `release-check ${outcome.summary}` } : { status: "fail", text: outcome.failure })}\n`);
+          return outcome;
+        } catch (error) {
+          io.out(`${resultLine({ status: "fail", text: error.message })}\n`);
+          throw error;
+        }
+      });
+      const oneLine = text => kitHideUserInfo(String(text).replace(/[\n\r]/g, " "));
+      if (!checked.passed) throw new Error(oneLine(checked.failure));
+      releaseCheck = oneLine(checked.summary);
       console.log(`release-check: ok (${releaseCheck})`);
       // The check's warnings (main holds commits outside dev's history, TOOLS-325) are shown, never a stop.
-      for (const warning of checked.text.split(/\r?\n/).filter(text => text.startsWith("warning: "))) console.log(kitHideUserInfo(warning));
+      for (const warning of checked.warnings) console.log(kitHideUserInfo(warning));
     }
     // A waiver the check used (not "waiver not needed") goes on the final RESULT line.
     const releaseWaived = () => releaseCheck.startsWith("waived by ") ? ` (release-check waived: ${flags.waive})` : "";
@@ -1489,25 +1523,31 @@ async function main(args) {
         writeFileSync(comment, `Reused ${name}: ${saved.folder}\nHEAD: ${head}\n\n${readReviewReport(folder)}`);
         await gh("review", ["pr", "comment", number, "--body-file", comment]);
       } else {
-        const result = await execute(second ? "second-look" : "review", kit, [...reviewArgs, number, ...(flags.ticket ? ["--ticket", flags.ticket] : []), ...(second ? ["--second-look"] : [])]);
-        // A diff with no change (a no-code merge) has nothing to review: kit review says so with a skip, and the PR goes on.
+        // kit review's own run, in this process; its log holds what kit review prints, its RESULT line too.
+        const look = { base: `origin/${flags.base}`, pr: number, ...(flags.ticket ? { ticket: flags.ticket } : {}), ...(second ? { secondLook: true } : {}) };
+        const { outcome, stderr } = await inProcess(second ? "second-look" : "review", async io => {
+          const outcome = await (second ? calls.secondLook : calls.review)(look, io);
+          io.out(`${resultLine(outcome)}\n`);
+          return outcome;
+        });
+        // A diff with no change (a no-code merge) has nothing to review: the review says so with a skip, and the PR goes on.
         // Findings need a review, so there are none to weigh; CI still gates the merge.
-        if (!second && result.status === 3 && /^RESULT: skip review nothing to review /m.test(result.text)) {
-          console.log(`review: skipped (nothing to review: ${/^RESULT: skip review nothing to review \((.+)\)$/m.exec(result.text)?.[1] ?? "the diff is empty"})`);
+        if (!second && outcome.exit === 3 && outcome.nothing) {
+          console.log(`review: skipped (nothing to review: ${outcome.nothing})`);
           nothingToReview = true;
           return true;
         }
-        // The second look's kind, model and any fallback, as kit review said them.
-        if (second) for (const line of result.text.match(/^second look: .+$/gm) ?? []) console.log(line);
+        // The second look's kind, model and any fallback, as the look said them.
+        if (second) for (const line of outcome.notes ?? []) console.log(line);
         // No model could take the second look: it never blocks on availability.
-        if (second && result.status === 3) {
-          secondLookSkipped = (result.text.match(/^second look: skipped .+$/gm) ?? []).at(-1) ?? "second look: skipped (no reason was given)";
+        if (second && outcome.exit === 3) {
+          secondLookSkipped = outcome.skipped ?? "second look: skipped (no reason was given)";
           return true;
         }
-        if (result.status !== 0) throw new Error(childMessage(result, `${kit} exited ${result.status}`));
-        const evidence = /^RESULT: ok review .+ evidence (.+)$/m.exec(result.text)?.[1];
-        if (!evidence) throw new Error(`${name} did not name its evidence folder`);
-        folder = resolve(root, evidence);
+        // With nothing on stderr, the outcome's own words: those of kit review's RESULT line.
+        if (outcome.exit !== 0) throw new Error(childMessage({ stderr }, outcome.text));
+        if (!outcome.evidence) throw new Error(`${name} did not name its evidence folder`);
+        folder = resolve(root, outcome.evidence);
         resultPath = reviewReportPath(folder);
       }
       // The model a second look's own mark names (fresh or reused).
