@@ -5604,10 +5604,13 @@ test("kit pr's push to an ssh remote never starts an ssh PATH holds only as a li
   };
   const roomed = pushLog(f.run([], { PATH: `${f.bin}:${links}:${pathWithout(f.dir, ["ssh"], "no-ssh-bin")}` }));
   // In the room the worktree is empty, so the link finds no ssh, and the kit says where it looked in plain words.
-  if (roomUsable) assert.match(roomed, /ssh: not found\nkit: a program was not found \(exit 127\)\. If it was git's ssh or a program it starts, the clean room keeps these folders empty: /);
-  // Without bubblewrap (macOS) the path filter refuses that ssh and says why.
-  const filtered = pushLog(f.run([], { PATH: `${f.bin}:${links}:${join(f.dir, "no-ssh-bin")}`, ...onMacos }));
-  assert.match(filtered, /kit: ssh on PATH is \S+\/links\/ssh, a link into the worktree or its Git folder/);
+  // Without the room (macOS, or inside kit pr's own lock for its checks, where a kit pr that takes itself for macOS
+  // would try a lock of its own) the path filter refuses that ssh and says why.
+  const filterRefusal = /kit: ssh on PATH is \S+\/links\/ssh, a link into the worktree or its Git folder/;
+  if (roomUsable) {
+    assert.match(roomed, /ssh: not found\nkit: a program was not found \(exit 127\)\. If it was git's ssh or a program it starts, the clean room keeps these folders empty: /);
+    assert.match(pushLog(f.run([], { PATH: `${f.bin}:${links}:${join(f.dir, "no-ssh-bin")}`, ...onMacos })), filterRefusal);
+  } else assert.match(roomed, new RegExp(`${filterRefusal.source}|the clean room for git.*s ssh cannot start`));
   // A push that starts no ssh (the folder remote) goes through all the same.
   f.git("config", "--unset", "remote.origin.pushurl");
   const folder = f.run([], { PATH: `${f.bin}:${links}:${join(f.dir, "no-ssh-bin")}` });
