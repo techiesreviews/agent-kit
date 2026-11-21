@@ -1323,8 +1323,12 @@ test("TOOLS-390 R1-5: a PATH folder that holds a link into /proc, or leads there
   // The run's own PATH leaves out a folder that leads into /proc as well, though from this process's folder (outside
   // the worktree) it leads elsewhere: a program the run starts in the worktree finds the worktree there.
   assert.equal(runPath({ ...process.env, PATH: `${cwdFolder}:/usr/bin:/bin` }, { worktree: root }), "/usr/bin:/bin");
-  // The kit's own starts skip that folder too and start the next copy on PATH by its full path (review R2-1).
+  // The kit's own starts skip that folder too: with nothing else on PATH they start the bare name with the run's PATH
+  // (before, they refused it), and with a copy further on they start that one by its full path (review R2-1).
   writeFileSync(join(lead, "kit-r15-tool"), "#!/bin/sh\nexit 0\n"); chmodSync(join(lead, "kit-r15-tool"), 0o755);
+  const onlyCwd = { ...process.env, PATH: `${cwdFolder}:/usr/bin:/bin` };
+  assert.equal(runProgram("kit-r15-tool", onlyCwd, { worktree: root, kind: "test" }), "kit-r15-tool");
+  assert.deepEqual(startCommand("kit-r15-tool", [], onlyCwd, { worktree: root, kind: "test" }), ["kit-r15-tool", []]);
   const throughCwd = { ...process.env, PATH: `${cwdFolder}:${lead}:/usr/bin:/bin` };
   assert.equal(runProgram("kit-r15-tool", throughCwd, { worktree: root, kind: "test" }), join(lead, "kit-r15-tool"));
   assert.deepEqual(startCommand("kit-r15-tool", [], throughCwd, { worktree: root, kind: "test" }), [join(lead, "kit-r15-tool"), []]);
@@ -1378,8 +1382,8 @@ test("TOOLS-390 R1-6: a PATH folder or entry that passes through a worktree link
   // A program that starts ssh by its bare name in turn gets PATH without the folder that holds the link.
   const wrapped = sshCommand({ ...withLead, GIT_SSH_COMMAND: "timeout 30 ssh" }, { worktree: root });
   assert.equal(wrapped.problem, null);
-  assert.ok(String(wrapped.command).startsWith(`PATH=${lead}:/usr/bin:/bin /`), String(wrapped.command));
-  assert.ok(String(wrapped.command).endsWith("/timeout 30 ssh"), String(wrapped.command));
+  const leadPattern = lead.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  assert.match(String(wrapped.command), new RegExp(`^PATH=${leadPattern}:/usr/bin:/bin \\S+/timeout 30 ssh$`));
 });
 
 test("TOOLS-326: a percent-coded host is read as the bytes git passes on, decoded as UTF-8", () => {
