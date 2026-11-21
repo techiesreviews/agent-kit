@@ -345,6 +345,28 @@ test("--pieces (kit init --all's own step) writes the Messages to Lex section in
   assert.ok(readFileSync(join(work, "AGENTS.md"), "utf8").includes(`## Messages to Lex\n${section}\n`));
 });
 
+// kit init's entry, called in this process as a test calls it (TOOLS-291): arguments in, the exit code out, and the test
+// process goes on after a failure as after a pass.
+test("kit init runs in-process through its entry: a refusal and a --pieces run each give their exit code", async (t) => {
+  const f = fixture(t);
+  const { work } = f.repo("in-process", { "scripts/agents/kit.json": JSON.stringify({ project: "p", branches: { land: "dev" } }), "AGENTS.md": "# Agents\n" });
+  const saved = { KIT_ROOT: process.env.KIT_ROOT, KIT_HOME: process.env.KIT_HOME, XDG_STATE_HOME: process.env.XDG_STATE_HOME };
+  t.after(() => { for (const [name, value] of Object.entries(saved)) if (value === undefined) delete process.env[name]; else process.env[name] = value; });
+  Object.assign(process.env, { KIT_ROOT: work, KIT_HOME: resolve("."), XDG_STATE_HOME: f.state });
+  const said: string[] = [];
+  t.mock.method(console, "log", (line: string) => { said.push(line); });
+  t.mock.method(process.stderr, "write", () => true);
+  const { init } = await import("../kit.d/init");
+  assert.equal(await init(["--light", "--full"]), 2);
+  assert.equal(said.at(-1), "RESULT: fail init --light and --full do not go together");
+  assert.equal(await init(["--pieces"]), 0);
+  assert.match(said.at(-1) ?? "", /^RESULT: ok init wrote \d+ files?$/);
+  assert.match(readFileSync(join(work, "AGENTS.md"), "utf8"), /## Messages to Lex\n/);
+  // A second run finds nothing left to write: each call starts from its own arguments, not the last run's.
+  assert.equal(await init(["--pieces"]), 0);
+  assert.equal(said.at(-1), "RESULT: ok init nothing to write (already set up)");
+});
+
 test("a rulebook without the rule fails kit init with a RESULT line naming it, and writes nothing", (t) => {
   const f = fixture(t);
   writeFileSync(join(f.kit, "docs/kitchen.md"), "# Rulebook without the rule\n");
