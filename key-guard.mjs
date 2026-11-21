@@ -499,7 +499,7 @@ function lookup(name, env, shut) {
 const programFor = (name, env, shut) => lookup(name, env, shut).file;
 // Why a program found only through such a link is not started, with the step that fixes it.
 const linkRefusal = (name, file) => leadsToProc(file)
-  ? `${name} on PATH is ${file}, which leads into ${magic(file)}, another program for each process that opens it, so it is not started; put a ${name} from outside /proc on PATH, or set ASE_KEY_GUARD=off to run without the lock`
+  ? `${name} on PATH is ${file}, which leads into ${intoProcAt(file)}, another program for each process that opens it, so it is not started; put a ${name} from outside /proc on PATH, or set ASE_KEY_GUARD=off to run without the lock`
   : `${name} on PATH is ${file}, a link into the worktree or its Git folder (${real(file)}), where a build can change it, so it is not started; put a ${name} from outside them on PATH, or set ASE_KEY_GUARD=off to run without the lock`;
 // The variable a word sets for an env that reads it, or undefined: PATH, or one that has a bash or sh it starts run code
 // from elsewhere (TOOLS-329): BASH_ENV or ENV (a file it reads before anything else), a BASH_FUNC_<name>%% function, or
@@ -571,15 +571,16 @@ const systemFolder = /^\/(?:proc|dev)(?:\/|$)/;
 // kernel walks it: a link, a folder link too, is swapped for its target as written, which is checked before anything
 // past it is read (cwd-folder -> /proc/self/cwd leads into /proc, though from the kit's folder it is the kit's own
 // folder: landing review R1-1), and a .. climbs from where the walk has got to, after a folder link from where that
-// link leads (/usr/../proc counts). Past 40 links the kernel stops; so does this, counting it as /proc.
-const magic = path => {
+// link leads (/usr/../proc counts). Past 40 links the kernel stops; so does this, counting it as /proc. `stop` names
+// the folders the walk ends at; leadsToProc walks on through /dev.
+const magic = (path, stop = systemFolder) => {
   let at = "/", rest = (isAbsolute(path) ? path : `${process.cwd()}/${path}`).split("/"), links = 0;
   while (rest.length) {
     const part = rest.shift();
     if (part === "" || part === ".") continue;
     if (part === "..") { at = dirname(at); continue; }
     const next = at === "/" ? `/${part}` : `${at}/${part}`;
-    if (systemFolder.test(next)) return [next, ...rest].join("/");
+    if (stop.test(next)) return [next, ...rest].join("/");
     let target;
     try { if (!lstatSync(next).isSymbolicLink()) { at = next; continue; } target = readlinkSync(next); } catch { return ""; }
     if (++links > 40) return "/proc";
@@ -589,9 +590,11 @@ const magic = path => {
   return "";
 };
 // Whether a path leads into /proc, where what it names is another program, or another folder's file, for each process.
-// One into /dev counts too: /dev/fd is /proc/self/fd, so /dev/fd/../cwd is /proc/self/cwd (GPT second look on
-// 0868fa4), and no program or PATH folder belongs there.
-const leadsToProc = path => magic(path) !== "";
+// The walk goes on through /dev, whose links lead there too: /dev/fd is /proc/self/fd, so /dev/fd/../cwd is
+// /proc/self/cwd (GPT second look on 0868fa4), while /dev/null leads nowhere else (Claude review R5-1).
+const procFolder = /^\/proc(?:\/|$)/;
+const intoProcAt = path => magic(path, procFolder);
+const leadsToProc = path => intoProcAt(path) !== "";
 const intoProc = (path, shut) => path.includes("/") && fromRoots(path, shut).some(place => magic(place));
 // A path's file is read as the kernel reads it (real walks a .. after a link from where the link leads), so
 // <out>/link/../../shell-alias is the shell that link's folder holds (GPT second look on be0bc9b).

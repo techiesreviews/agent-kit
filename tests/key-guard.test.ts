@@ -1336,6 +1336,20 @@ test("TOOLS-390 R1-5: a PATH folder that holds a link into /proc, or leads there
   const throughCwd = { ...process.env, PATH: `${cwdFolder}:${lead}:/usr/bin:/bin` };
   assert.equal(runProgram("kit-r15-tool", throughCwd, { worktree: root, kind: "test" }), join(lead, "kit-r15-tool"));
   assert.deepEqual(startCommand("kit-r15-tool", [], throughCwd, { worktree: root, kind: "test" }), [join(lead, "kit-r15-tool"), []]);
+  // An entry that leads through /dev into /proc is refused by the kit's own starts, and a copy further on starts in its
+  // place (review R5-3); an entry that leads to /dev/null is no program, so it is passed over as before (review R5-4).
+  const devTools = join(dir, "dev-tools");
+  mkdirSync(devTools);
+  symlinkSync("/dev/fd/../cwd/kit-r15-tool", join(devTools, "kit-r15-tool"));
+  symlinkSync("/dev/null", join(devTools, "kit-r15-off"));
+  const viaDev = { ...process.env, PATH: `${devTools}:/usr/bin:/bin` }, viaDevLead = { ...process.env, PATH: `${devTools}:${lead}:/usr/bin:/bin` };
+  const refusedViaDev = /kit-r15-tool on PATH is \S+, which leads into \/proc\//;
+  assert.throws(() => runProgram("kit-r15-tool", viaDev, { worktree: root, kind: "test" }), refusedViaDev);
+  assert.throws(() => startCommand("kit-r15-tool", [], viaDev, { worktree: root, kind: "test" }), refusedViaDev);
+  assert.equal(runProgram("kit-r15-tool", viaDevLead, { worktree: root, kind: "test" }), join(lead, "kit-r15-tool"));
+  assert.deepEqual(startCommand("kit-r15-tool", [], viaDevLead, { worktree: root, kind: "test" }), [join(lead, "kit-r15-tool"), []]);
+  assert.equal(runProgram("kit-r15-off", viaDev, { worktree: root, kind: "test" }), "kit-r15-off");
+  assert.deepEqual(startCommand("kit-r15-off", [], viaDev, { worktree: root, kind: "test" }), ["kit-r15-off", []]);
   // A wrapper script, and a program that starts ssh by its bare name (timeout), both run git's ssh for real.
   for (const first of [procLinks, cwdFolder, devCwd, devLinks]) for (const command of [wrapper, "timeout 30 ssh"]) {
     const env = { ...process.env, HOME: home, PATH: `${first}:${wrappers}:${lead}:/usr/bin:/bin`, GIT_SSH_COMMAND: command,
@@ -1369,10 +1383,15 @@ test("TOOLS-390 R1-6: a PATH folder or entry that passes through a worktree link
   assert.equal(runPath(throughFolder, { worktree: root }), "/usr/bin:/bin");
   assert.equal(runProgram("kit-r16-tool", throughFolder, { worktree: root }), "kit-r16-tool", "found in no trusted folder, so started by its bare name with the run's PATH");
   assert.deepEqual(startCommand("kit-r16-tool", [], throughFolder, { worktree: root, kind: "test" }), ["kit-r16-tool", []]);
-  for (const command of [undefined, "timeout 30 ssh"]) {
-    const ssh = sshCommand({ ...throughFolder, GIT_SSH_COMMAND: command }, { worktree: root });
-    assert.ok(!String(ssh.command).includes(toolsLink), `${command}: ${ssh.command}`);
+  // git's ssh comes from the trusted folders alone, with PATH without the link folder (review R5-5).
+  const plain = sshCommand(throughFolder, { worktree: root });
+  if (existsSync("/usr/bin/ssh") || existsSync("/bin/ssh")) {
+    assert.equal(plain.problem, null);
+    assert.match(String(plain.command), /^PATH=\/usr\/bin:\/bin \/(?:usr\/)?bin\/ssh$/);
   }
+  const timed = sshCommand({ ...throughFolder, GIT_SSH_COMMAND: "timeout 30 ssh" }, { worktree: root });
+  assert.equal(timed.problem, null);
+  assert.match(String(timed.command), /^PATH=\/usr\/bin:\/bin \/\S*\/timeout 30 ssh$/);
   // An entry of a folder outside that leads through such a link: ~/bin/x -> <worktree>/bin/x, <worktree>/bin -> a bin folder.
   symlinkSync(bin, join(root, "bin"));
   for (const name of ["ssh", "kit-r16-tool"]) symlinkSync(join(root, "bin", name), join(homeBin, name));
