@@ -1834,7 +1834,13 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
     ["pwsh-file-short", "pwsh -f payload"], ["pwsh-switch", "pwsh -NoProfile payload.ps1"], ["pwsh-stdin", "pwsh -NoProfile -"],
     // A word with a long dash is a script to bash, and so is any word pwsh does not know (GPT second look, round 23).
     ["shell-long-dash", "bash —payload"], ["shell-long-dash-option", "bash –e"], ["pwsh-unknown", "pwsh -payload.ps1"],
-    ["pwsh-file-colon", "pwsh -File:payload.ps1"], ["pwsh-short-unknown", "pwsh -set x"], ["pwsh-dashes", "pwsh -NoProfile --"]]) {
+    ["pwsh-file-colon", "pwsh -File:payload.ps1"], ["pwsh-short-unknown", "pwsh -set x"], ["pwsh-dashes", "pwsh -NoProfile --"],
+    // Two different dashes are no option to pwsh, a value is never an option that takes the next word, and an option
+    // that loads code from a file is refused (Claude review, round 23; GPT second look, round 24).
+    ["pwsh-mixed-dashes", "pwsh -—NoProfile"], ["pwsh-value-chain", "pwsh -CustomPipeName -ep payload.ps1"],
+    ["pwsh-config-file", "pwsh -ConfigurationFile x.pssc"], ["pwsh-settings-file", "pwsh -SettingsFile x.json"],
+    ["shell-rcfile", `bash --rcfile -o ${join(root, "payload")}`], ["shell-init-file", "bash --init-file -O payload"],
+    ["shell-value-chain", "bash -o -o payload"], ["shell-unknown-long", "bash --debugger"]]) {
     const file = wrapper(name, "X=1", words);
     const why = new RegExp(`hands the shell \\(${words.split(" ")[0]}\\) a script or -s`);
     assert.throws(() => start(file), why, words);

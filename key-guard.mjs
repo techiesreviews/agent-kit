@@ -674,19 +674,28 @@ function interpreted(file, args, env, shut, refuse, depth = 0, names = env) {
   // that take one (any of its switches, -NoProfile and the like, takes none; Claude review, round 21). An option is
   // read by each shell's own rules: only pwsh takes the long dashes, and it runs any word it does not know as a script
   // (-payload.ps1), as bash does a word with a long dash (—payload; GPT second look, round 23). So pwsh gets only the
-  // names and short forms it documents, written out, and the other shells only plain -x, +x and --name options.
-  const pwshValued = ["executionpolicy", "ex", "ep", "workingdirectory", "wd", "outputformat", "o", "of", "inputformat", "inp", "if", "settingsfile", "settings", "configurationname", "config", "configurationfile", "custompipename", "windowstyle", "w"];
+  // names and short forms it documents, written out (a second dash only when it is the first one again, as pwsh reads
+  // it), and the other shells only the options listed here. An option that takes a value takes the next word whatever
+  // it is, so the words are read in order, a value is skipped, and an option is known only if it takes no value or
+  // its value is harmless: bash's --rcfile, pwsh's -ConfigurationFile and -SettingsFile and the like load code from a
+  // file, and bash --rcfile -o payload runs payload (Claude review, round 23; GPT second look, round 24).
+  const pwshValued = ["executionpolicy", "ex", "ep", "workingdirectory", "wd", "outputformat", "o", "of", "inputformat", "inp", "if", "configurationname", "config", "custompipename", "windowstyle", "w"];
   const pwshSwitches = ["interactive", "i", "login", "l", "mta", "sta", "noexit", "noe", "nologo", "nol", "noninteractive", "noni", "noprofile", "nop", "noprofileloadtime", "sshservermode", "sshs", "version", "v"];
-  const pwshName = word => /^[-–—―]{1,2}([A-Za-z]+)$/.exec(word)?.[1]?.toLowerCase();
-  const valueAfter = before => kind === "pwsh" ? pwshValued.includes(pwshName(before)) : /^[-+][A-Za-z]*[oO]$/.test(before);
+  const pwshName = word => /^([-–—―])\1?([A-Za-z]+)$/.exec(word)?.[2]?.toLowerCase();
+  const longKnown = { fish: ["no-config", "private", "login", "interactive", "no-execute"], nu: ["no-config-file", "no-std-lib", "no-history", "login", "interactive"] }[kind]
+    ?? ["norc", "noprofile", "posix", "login", "noediting", "restricted", "verbose", "no-rcs", "no-globalrcs"];
+  const shortKnown = { fish: /^-[ilnNPvh]+$/, nu: /^-[ilnvh]+$/ }[kind] ?? /^[-+](?=[A-Za-z])[abefhiklmnpruvxBCEHP]*[oO]?$/;
+  const valued = option => kind === "pwsh" ? pwshValued.includes(pwshName(option)) : !kind && /[oO]$/.test(option) && shortKnown.test(option);
   const known = option => kind === "pwsh"
-    ? pwshValued.includes(pwshName(option)) || pwshSwitches.includes(pwshName(option))
-    : /^[-+][A-Za-z]+$/.test(option) || /^--[A-Za-z][A-Za-z-]*$/.test(option);
-  const ended = kind === "pwsh" ? -1 : options.findIndex(option => option === "--" || option === "-");
-  const operand = (option, i) => ended >= 0 && i >= ended
-    ? i > ended
-    : (kind !== "pwsh" && /^[-+][A-Za-z]*s/.test(option)) || (!known(option) && !valueAfter(options[i - 1] ?? ""));
-  if (namesShell(found, names, shut) && options.some(operand)) refuse(`${file} starts with env ${rest}, which hands the shell (${basename(name)}) a script or -s besides its options, so it would run something other than ${file}; keep only options on that line, or set ASE_KEY_GUARD=off to run without the lock`);
+    ? valued(option) || pwshSwitches.includes(pwshName(option))
+    : shortKnown.test(option) || (option.startsWith("--") && longKnown.includes(option.slice(2)));
+  let handed = false;
+  for (let i = 0; i < options.length && !handed; i++) {
+    if (kind !== "pwsh" && (options[i] === "--" || options[i] === "-")) { handed = i + 1 < options.length; break; }
+    if (!known(options[i])) handed = true;
+    else if (valued(options[i])) i++;
+  }
+  if (namesShell(found, names, shut) && handed) refuse(`${file} starts with env ${rest}, which hands the shell (${basename(name)}) a script or -s besides its options, so it would run something other than ${file}; keep only options on that line, or set ASE_KEY_GUARD=off to run without the lock`);
   const [command, commandArgs] = interpreted(found, [...options, file, ...args], env, shut, refuse, depth + 1, names);
   if (!assignments.length) return [command, commandArgs];
   // env sets them and starts the program by the full path it is given (one with = in it would read as one more).
