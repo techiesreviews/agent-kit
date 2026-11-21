@@ -1651,12 +1651,17 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   // env -S's split counts for ssh's -J and -F as well: a -J inside the string beside an -F outside it, and the other
   // way round (GPT second look, round 16); a plain jump host still runs. A ProxyCommand\_none in an -S string is
   // refused too: only a plain none is none.
-  for (const command of [`timeout 30 gnuenv -S 'ssh -J jump.example.invalid' -F './cfg;printf PROBE;' host`, `timeout 30 gnuenv -S 'ssh -F ./cfg;x' -J jump.example.invalid host`]) {
+  // A quoted blank keeps an -F path whole, and a flag last in the string takes the line's next word as its value
+  // (GPT second look, round 17; Claude review, round 16).
+  for (const command of [`timeout 30 gnuenv -S 'ssh -J jump.example.invalid' -F './cfg;printf PROBE;' host`, `timeout 30 gnuenv -S 'ssh -F ./cfg;x' -J jump.example.invalid host`,
+    `timeout 30 gnuenv -S 'ssh -J jump.example.invalid -F"cfg ;printf PROBE;"' host`, `timeout 30 gnuenv -S 'ssh -J jump.example.invalid -F' './cfg;x' host`,
+    `timeout 30 gnuenv -S 'ssh -J' jump.example.invalid -F './cfg;x' host`]) {
     assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root }).problem ?? "", /it starts a shell \(ProxyJump beside a ' or an -F path/, command);
     assert.throws(() => start(wrapper(`gnuenv-jump-${command.length}`, command.replace(/ host$/, ""), "")), /, which starts a shell \(ProxyJump beside/, command);
   }
   assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: "timeout 30 gnuenv -S 'ssh -J jump.example.invalid' host" }, { worktree: root }).problem, null);
-  assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: "timeout 30 gnuenv -S 'ssh -o ProxyCommand\\_none host'" }, { worktree: root }).problem ?? "", /ProxyCommand, which ssh runs/);
+  assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: "timeout 30 gnuenv -S 'ssh -o ProxyCommand\\_none' host" }, { worktree: root }).problem ?? "", /ProxyCommand, which ssh runs/);
+  assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: "timeout 30 gnuenv -S 'ssh -o ProxyCommand=none' host" }, { worktree: root }).problem, null);
   // env -S's \_ is a blank inside ssh's options too: ProxyCommand\_nc is ProxyCommand nc (GPT second look, round 15).
   for (const [words, why] of [[`ssh -o "ProxyCommand\\_printf\\_PROBE" example.invalid`, /ProxyCommand, which ssh runs/],
     [`ssh -o PermitLocalCommand=yes -o "LocalCommand\\_true" example.invalid`, /LocalCommand, which ssh runs/],
