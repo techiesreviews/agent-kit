@@ -509,8 +509,9 @@ const namesEnv = word => basename(word) === "env" || (word.includes("/") && base
 // user's shell: anywhere in a word, so in a bundle of ssh's flags (-4oProxyCommand=…) and with quotes or \ in its name
 // too, which ssh takes out (PermitLocalCommand is another option). ssh also writes a ProxyJump's (-J's) hosts into a
 // command of its own that it runs through that shell, so one with more than user@host:port names in it counts, and so
-// does one beside a word with a ' in it or an -F path with more than plain characters, which land in that command. rc and
-// es, too short to tell from other words, count only where PATH or a path leads to such a program, and take no version.
+// does one beside a word with a ' in it or an -F path with more than plain characters, which land in that command. rc,
+// es and nu, too short to tell from other words, count only where PATH or a path leads to such a program, and take no
+// version.
 // A copy of a shell under a name of its own is not recognised. startedShell gives what starts the shell, in words, or
 // null; shellAdvice what to do about it.
 const shells = "sh|ash|bash|rbash|dash|ksh|ksh93|mksh|lksh|pdksh|oksh|loksh|zsh|yash|posh|hush|sash|csh|tcsh|fish|osh|ysh|pwsh|xonsh|elvish";
@@ -518,9 +519,12 @@ const shellNamed = (word, names = shells) => new RegExp(`^(?:${names})(?:-static
 // sh and env take a relative path from the folder git runs in, which is not the kit's own folder: such a path counts
 // from there too, the worktree or the Git folder (GPT second look, round 14).
 const fromRoots = (path, shut) => isAbsolute(path) ? [path] : [path, ...shut.map(root => join(root, path))];
+// Whether a path, relative ones from there too, leads into the worktree or the Git folder, or sits in a folder there:
+// a link a build placed there it can point elsewhere after the check (Claude review, round 14).
+const shutIn = (path, shut) => fromRoots(path, shut).some(place => shut.some(root => inside(real(place), root) || inside(real(dirname(resolve(place))), root)));
 const namesShell = (word, env, shut) => {
   const files = word.includes("/") ? fromRoots(word, shut).filter(executable) : [programFor(word, env, shut)].filter(Boolean);
-  return shellNamed(word) || files.some(file => shellNamed(real(file)) || [word, real(file)].some(name => /^(?:rc|es)$/.test(basename(name))));
+  return shellNamed(word) || files.some(file => shellNamed(real(file)) || [word, real(file)].some(name => /^(?:rc|es|nu)$/.test(basename(name))));
 };
 // ssh splits an option from its value at any blank, a line break and carriage return too, or an =.
 const viaShell = /(?<!permit)(proxy|local)command(?:\s*=\s*|\s+|$)(.*)$/is;
@@ -530,7 +534,11 @@ const flagValue = (words, i, letter) => {
   const flag = new RegExp(`^-[46AaCfGgKkMNnqsTtVvXxYy]*${letter}(.*)$`, "s").exec(words[i]);
   return flag ? flag[1] || (words[i + 1] ?? "") : null;
 };
-const jumpOf = (words, i) => jumpOption.exec(words[i].replace(/["'\\]/g, ""))?.[1] ?? flagValue(words, i, "J");
+// A word with quotes and \ taken out, as ssh reads an option's name; and with env -S's \_, blank escapes and \c as
+// blanks first, as an -S string (gnuenv) splits: ProxyCommand\_nc is ProxyCommand nc (GPT second look, round 15).
+const unquoted = word => word.replace(/["'\\]/g, "");
+const unescaped = word => unquoted(word.replace(/\\[_tnvfrc]/g, " "));
+const jumpOf = (words, i) => (jumpOption.exec(unquoted(words[i])) ?? jumpOption.exec(unescaped(words[i])))?.[1] ?? flagValue(words, i, "J");
 const startedShell = (words, env, shut) => {
   // A ProxyJump's command holds the -F path as it is and the host (%h, from HostName too) in single quotes: a host
   // written in these words is checked here, one git adds from the push address is not (the README says so).
@@ -538,7 +546,7 @@ const startedShell = (words, env, shut) => {
   // values like any other (GPT second look, round 9).
   const jumping = words.some((word, i) => { const jump = jumpOf(words, i)?.trim(); return jump !== undefined && (!/^(?:none)?$/i.test(jump) || /["'\\]/.test(word)); });
   for (const [i, word] of words.entries()) {
-    const option = viaShell.exec(word.replace(/["'\\]/g, ""));
+    const option = viaShell.exec(unquoted(word)) ?? viaShell.exec(unescaped(word));
     if (option && !(option[2].trim().toLowerCase() === "none" && /command["']*(?:\s*=\s*|\s+)none\s*$/i.test(word))) return `${option[1].toLowerCase() === "proxy" ? "ProxyCommand" : "LocalCommand"}, which ssh runs through the user's shell`;
     const jump = jumpOf(words, i);
     if (jump !== null && !jump.trim().split(",").every(name => /^[\w.@:[\]][\w.@:[\]-]*$/.test(name))) return "ProxyJump with more than host names in it, which ssh runs through the user's shell";
@@ -549,7 +557,7 @@ const startedShell = (words, env, shut) => {
     // \_ and blank escapes as blanks, where it splits: \_bash is bash; and its \c, where it stops: sh\c is sh (GPT
     // second look, round 14).
     const cut = text => text.split(/[\s;&|()<>=`'"{},]+/);
-    const piece = [word, ...cut(word), ...cut(word.replace(/["'\\]/g, "")), ...cut(word.replace(/\\[_tnvfrc]/g, " ").replace(/["'\\]/g, ""))]
+    const piece = [word, ...cut(word), ...cut(unquoted(word)), ...cut(unescaped(word))]
       .find(part => part && namesShell(part, env, shut));
     if (piece) return basename(piece);
   }
@@ -559,14 +567,15 @@ const shellAdvice = (started, where) => started.startsWith("ProxyJump beside") ?
   : started.startsWith("ProxyJump") ? `give ProxyJump (-J)${where} plain user@host:port names`
   : /^(?:Proxy|Local)Command/.test(started) ? `drop ProxyCommand and LocalCommand${where}, or use ProxyJump (-J) with plain host names instead` : null;
 // A shell told to run a string instead of the script: -c or +c alone or bundled (-ec, +ec), --command, --init-command, and fish's
-// -C (bash's and sh's -C is noclobber). pwsh takes any start of -Command, -CommandWithArgs or -EncodedCommand, of any
+// -C (bash's and sh's -C is noclobber), and nu's -e, --commands and --execute. pwsh takes any start of -Command, -CommandWithArgs or -EncodedCommand, of any
 // case, with blanks around it and one or two dashes (an en dash, em dash or horizontal bar counts as one), and -cwa and -ec.
 const runsString = (option, kind) => {
   if (kind === "pwsh") {
     const name = /^[-–—―]{1,2}([A-Za-z]+)(?::|$)/.exec(option.trim())?.[1]?.toLowerCase();
     return Boolean(name) && (["cwa", "ec"].includes(name) || ["command", "commandwithargs", "encodedcommand"].some(full => full.startsWith(name)));
   }
-  return /^[-+][A-Za-z]*c/.test(option) || (kind === "fish" && /^-[A-Za-z]*C/.test(option)) || /^--(?:command|init-command)(?:=|$)/.test(option);
+  return /^[-+][A-Za-z]*c/.test(option) || (kind === "fish" && /^-[A-Za-z]*C/.test(option)) || /^--(?:command|init-command)(?:=|$)/.test(option)
+    || (kind === "nu" && /^(?:-[A-Za-z]*e|--(?:commands|execute)(?:=|$))/.test(option));
 };
 
 // A script's first line names its interpreter, and `#!/usr/bin/env node` has env look node up by its bare name on PATH,
@@ -593,7 +602,7 @@ function interpreted(file, args, env, shut, refuse, depth = 0, names = env) {
   const [interpreter] = line.split(/[ \t]+/, 1), rest = line.slice(interpreter.length).trim();
   if (!interpreter) return [file, args];
   if (basename(interpreter) !== "env") {
-    if (shut.some(root => inside(real(interpreter), root))) refuse(`${file} starts with ${interpreter}, inside the worktree or its Git folder, where a build can change it`);
+    if (shutIn(interpreter, shut)) refuse(`${file} starts with ${interpreter}, inside the worktree or its Git folder, where a build can change it`);
     // A binary interpreter the kernel starts itself; one that is a script again is followed (the kernel passes what
     // follows the interpreter as one argument, before the script).
     const next = interpreted(interpreter, [...(rest ? [rest] : []), file, ...args], env, shut, refuse, depth + 1, names);
@@ -635,13 +644,13 @@ function interpreted(file, args, env, shut, refuse, depth = 0, names = env) {
   // told to run env (busybox env, coreutils env) or a wrapper that starts it (timeout 30 env, TOOLS-329).
   if (namesEnv(found) || options.some(namesEnv)) refuse(`${file} starts with env ${rest}, which starts env again, and that env would look its program up by name; start the program from that line directly, or set ASE_KEY_GUARD=off to run without the lock`);
   // A shell the program starts, or the program as a shell told to run a string, could build PATH= from pieces.
-  const kind = ["fish", "pwsh"].find(names => [name, real(found)].some(word => shellNamed(word, names)));
+  const kind = ["fish", "pwsh", "nu"].find(names => [name, real(found)].some(word => shellNamed(word, names)));
   const shell = startedShell(options, names, shut) ?? (namesShell(found, names, shut) && options.some(option => runsString(option, kind)) ? basename(name) : null);
   if (shell) refuse(`${file} starts with env ${rest}, which starts a shell (${shell}), and a shell can build PATH= or BASH_ENV= out of pieces; ${shellAdvice(shell, " from that line") ?? "start the program from that line directly"}, or set ASE_KEY_GUARD=off to run without the lock`);
   const [command, commandArgs] = interpreted(found, [...options, file, ...args], env, shut, refuse, depth + 1, names);
   if (!assignments.length) return [command, commandArgs];
   // env sets them and starts the program by the full path it is given (one with = in it would read as one more).
-  if (shut.some(root => inside(real(interpreter), root))) refuse(`${file} starts with ${interpreter}, inside the worktree or its Git folder, where a build can change it`);
+  if (shutIn(interpreter, shut)) refuse(`${file} starts with ${interpreter}, inside the worktree or its Git folder, where a build can change it`);
   if (command.includes("=")) unknown();
   return [interpreter, [...assignments, command, ...commandArgs]];
 }
@@ -853,7 +862,7 @@ export function sshCommand(env = process.env, { worktree, common, configured } =
   try {
     let file;
     if (program.includes("/")) {
-      if (fromRoots(program, shut).some(path => shut.some(root => inside(real(path), root)))) return refused(`git's ssh (${program}) is inside the worktree or its Git folder, where a build can change it; set GIT_SSH_COMMAND to one outside them, or set ASE_KEY_GUARD=off to run without the lock`);
+      if (shutIn(program, shut)) return refused(`git's ssh (${program}) is inside the worktree or its Git folder, where a build can change it; set GIT_SSH_COMMAND to one outside them, or set ASE_KEY_GUARD=off to run without the lock`);
       file = resolve(program);
     } else {
       const found = lookup(program, env, shut);

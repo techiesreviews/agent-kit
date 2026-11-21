@@ -1634,6 +1634,21 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: `timeout 30 ./runner -c 'echo ran > ${marker}'` }, { worktree: root }).problem ?? "", /cannot be told: it starts a shell \(runner\)/);
   assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: "timeout 30 ./runner -c 'ssh \"$@\"' ssh" }), /^kit: git's ssh command \(.*\) cannot be told: it starts a shell \(runner\)/m);
   assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: "./tools/ssh" }, { worktree: root }).problem ?? "", /git's ssh \(\.\/tools\/ssh\) is inside the worktree or its Git folder/);
+  assert.match(sshCommand({ ...base, GIT_SSH: "./runner" }, { worktree: root }).problem ?? "", /git's ssh \(\.\/runner\) is inside the worktree or its Git folder/);
+  // A link in the worktree counts as inside, wherever it points, since a build can point it elsewhere after the check;
+  // and so does a relative first line, which the kernel takes from the worktree (Claude review, round 14).
+  symlinkSync(join(bin, "ssh"), join(root, "outside-ssh"));
+  assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: join(root, "outside-ssh") }, { worktree: root }).problem ?? "", /is inside the worktree or its Git folder/);
+  const relativeLine = join(wrappers, "relative-line");
+  writeFileSync(relativeLine, "#!tools/ssh\n"); chmodSync(relativeLine, 0o755);
+  assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: relativeLine }, { worktree: root }).problem ?? "", /starts with tools\/ssh, inside the worktree or its Git folder/);
+  // env -S's \_ is a blank inside ssh's options too: ProxyCommand\_nc is ProxyCommand nc (GPT second look, round 15).
+  for (const [words, why] of [[`ssh -o "ProxyCommand\\_printf\\_PROBE" example.invalid`, /ProxyCommand, which ssh runs/],
+    [`ssh -o PermitLocalCommand=yes -o "LocalCommand\\_true" example.invalid`, /LocalCommand, which ssh runs/],
+    [`ssh -o "ProxyJump\\_a;b" example.invalid`, /ProxyJump with more than host names/]] as const) {
+    assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: `timeout 30 gnuenv -S '${words}'` }, { worktree: root }).problem ?? "", why, words);
+    assert.throws(() => start(wrapper(`gnuenv-escaped-${words.length}`, `timeout 30 gnuenv -S '${words}'`, "")), /, which starts a shell/, words);
+  }
   // A bash run as sh expands braces, so ba{s..s}h is bash; a ${…} is no brace pattern (GPT second look, round 11).
   assert.equal(spawnSync(bash, ["--posix", "-c", "echo ba{s..s}h"], { encoding: "utf8" }).stdout.trim(), "bash");
   for (const command of [`timeout 30 ba{s..s}h -c 'echo ran > ${marker}'`, `timeout 30 {bash,x} -c 'echo ran > ${marker}'`, `timeout 30 \\\${a,b} -c true`]) {
@@ -1649,11 +1664,16 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   // folder of their own, so the plain rc words above stay plain.
   const otherShells = join(dir, "other shells");
   mkdirSync(otherShells);
-  for (const name of ["rc", "fish"]) { writeFileSync(join(otherShells, name), "#!/bin/sh\nexit 0\n"); chmodSync(join(otherShells, name), 0o755); }
+  for (const name of ["rc", "fish", "ysh", "nu"]) { writeFileSync(join(otherShells, name), "#!/bin/sh\nexit 0\n"); chmodSync(join(otherShells, name), 0o755); }
   const withOthers = { ...base, PATH: `${otherShells}:${bin}:/usr/bin:/bin` };
-  assert.match(sshCommand({ ...withOthers, GIT_SSH_COMMAND: "timeout 30 rc -c true" }, { worktree: root }).problem ?? "", /cannot be told: it starts a shell \(rc\)/);
-  for (const [name, words] of [["fish-C", "fish -C 'ssh'"], ["fish-command", "fish --command=ssh"], ["fish-init", "fish --init-command=ssh"]]) {
-    assert.throws(() => startCommand(wrapper(name, words, ""), [], withOthers, { worktree: root, kind: "test" }), /, which starts a shell \(fish\)/, words);
+  for (const name of ["rc", "ysh", "nu"]) {
+    assert.match(sshCommand({ ...withOthers, GIT_SSH_COMMAND: `timeout 30 ${name} -c true` }, { worktree: root }).problem ?? "", new RegExp(`cannot be told: it starts a shell \\(${name}\\)`));
+  }
+  // nu, like rc, counts only where PATH leads to it.
+  assert.equal(sshCommand({ ...base, PATH: bin, GIT_SSH_COMMAND: "ssh -l nu -o SetEnv=LANG=nu host" }, { worktree: root }).problem, null);
+  for (const [name, words] of [["fish-C", "fish -C 'ssh'"], ["fish-command", "fish --command=ssh"], ["fish-init", "fish --init-command=ssh"],
+    ["ysh-c", "ysh -c ssh"], ["nu-e", "nu -e ssh"], ["nu-commands", "nu --commands ssh"], ["nu-execute", "nu --execute=ssh"]]) {
+    assert.throws(() => startCommand(wrapper(name, words, ""), [], withOthers, { worktree: root, kind: "test" }), new RegExp(`, which starts a shell \\(${words.split(" ")[0]}\\)`), words);
   }
   // A wrapper whose interpreter PATH holds only as a link into the worktree gets the plain refusal for it (Claude
   // review, round 12): the interpreter is looked up on the run's own PATH, not the cleaned one.
