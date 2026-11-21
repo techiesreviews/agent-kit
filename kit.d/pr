@@ -1363,10 +1363,10 @@ async function main(args) {
     // trusted only because such a commit may change nothing but the ticket, which a review never covers.
     async function reviewable(base) {
       let commit = head;
-      const ticket = flags.ticket && relative(root, resolve(root, flags.ticket));
+      const ticketPath = flags.ticket && relative(root, resolve(root, flags.ticket));
       while (commit !== base && own.includes(await git("review", ["log", "-1", "--format=%s", commit]))) {
         const paths = (await git("review", ["diff-tree", "--no-commit-id", "--name-only", "--no-renames", "-r", "-z", commit])).split("\0").filter(Boolean);
-        if (paths.length !== 1 || paths[0] !== ticket) break;
+        if (paths.length !== 1 || paths[0] !== ticketPath) break;
         commit = await git("review", ["rev-parse", `${commit}^`]);
       }
       return commit;
