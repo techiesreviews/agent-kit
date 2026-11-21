@@ -1337,6 +1337,90 @@ export function outerLock(env = process.env) {
 }
 const outerNote = "inside kit pr's key lock for its checks: that lock hides the key files, and this run starts no sandbox of its own (one cannot start inside another here)";
 
+// The clean room for git's ssh (TOOLS-390): the mirror image of the key lock. ssh needs the keys, so it cannot run inside
+// that lock; it runs instead where the build's folders do not exist. The file system is as it is (devices too), so ssh
+// reads its keys, its agent and known_hosts; the room has a process list of its own and starts in /.
+const roomArgs = ["--die-with-parent", "--dev-bind", "/", "/", "--unshare-pid", "--proc", "/proc", "--chdir", "/"];
+let roomProbed;
+// Whether the room starts here: null, or the problem in plain words. Checked once per process, after bwrapWorks.
+function roomWorks(env, shut) {
+  const problem = bwrapWorks(env, shut);
+  if (problem) return problem;
+  if (roomProbed === undefined) {
+    const result = spawnSync(bwrap, [...roomArgs, "--", "true"], { env, stdio: ["ignore", "ignore", "pipe"], encoding: "utf8", timeout: 15_000 });
+    const said = String(result.stderr ?? result.error?.message ?? "").trim().split("\n").at(-1) || `exit ${result.status}`;
+    roomProbed = result.status === 0 ? null : `bubblewrap cannot start it here (${said}); run bwrap ${roomArgs.join(" ")} -- true to see why`;
+  }
+  return roomProbed;
+}
+
+// The folders the room swaps for empty ones: the worktree, the Git folder, the main worktree (the folder that holds the
+// Git folder as .git) and every linked worktree the Git folder lists (worktrees/<name>/gitdir names its .git file).
+// Real paths of folders that exist, so bubblewrap makes no folder on the real file system; one inside another is
+// hidden with it.
+function roomFolders(worktree, common) {
+  const folders = [worktree, common];
+  if (common && basename(common) === ".git") folders.push(dirname(common));
+  if (common) {
+    let names = [];
+    try { names = readdirSync(join(common, "worktrees")); } catch { /* No linked worktrees. */ }
+    for (const name of names) try { folders.push(dirname(resolve(join(common, "worktrees", name), readFileSync(join(common, "worktrees", name, "gitdir"), "utf8").trim()))); } catch { /* Not a worktree's entry. */ }
+  }
+  const found = [];
+  for (const folder of folders.filter(Boolean)) try { const path = realpathSync(folder); if (statSync(path).isDirectory() && !found.includes(path)) found.push(path); } catch { /* Not there. */ }
+  return found.filter(path => !found.some(other => other !== path && inside(path, other))).sort();
+}
+
+// git's kind of ssh for a program name, as git tells it (any letter case, .exe or not).
+const sshKind = name => /^(ssh|plink|tortoiseplink)(\.exe)?$/i.exec(basename(name))?.[1].toLowerCase() ?? null;
+
+/**
+ * git's ssh for a fetch or push on `worktree` in the clean room, as sshCommand's {command, problem, variant}; or null
+ * where the path filter (sshCommand) guards it instead: with ASE_KEY_GUARD=off, on a system that is not Linux (no
+ * bubblewrap there), and inside kit pr's lock for its checks (outerLock: the key files are hidden there already, and one
+ * sandbox cannot start inside another). The command starts bubblewrap by its full path, which runs the lead's own ssh
+ * command (GIT_SSH_COMMAND, `configured`: core.sshCommand from the lead's own config, GIT_SSH, or ssh) as written,
+ * where the worktrees and the Git folder are empty (roomFolders): whatever path leads there, a /proc/<pid>/cwd link, a
+ * link folder, a link a build changes after this check, it ends in "not found". The rules sshCommand asks of the line
+ * are not needed there. Where the room cannot start on Linux, or would hide the home folder or ssh's agent, `command`
+ * says why and fails, so only a call that really starts ssh stops. `variant` is the kind of ssh git would have told
+ * from the lead's first word, since the command's own first word is bubblewrap now.
+ */
+export function sshRoom(env = process.env, { worktree, common, configured } = {}) {
+  if (!keyGuardOn(env) || process.platform !== "linux" || outerLock(env)) return null;
+  const refused = problem => ({ command: `printf '%s\\n' ${shellQuote(`kit: ${problem}`)} >&2; false`, problem, variant: "ssh" });
+  const problem = roomWorks(env, buildFolders(worktree, common));
+  if (problem) return refused(`the clean room for git's ssh cannot start: ${problem}; or set ASE_KEY_GUARD=off to run without the lock`);
+  const folders = roomFolders(worktree, common);
+  const realOr = path => { try { return realpathSync(path); } catch { return resolve(path); } };
+  const needed = [["your home folder, and ssh's keys with it", home(env)], ["ssh's agent", env.SSH_AUTH_SOCK]]
+    .filter(([, path]) => path && isAbsolute(path)).map(([what, path]) => [what, realOr(path)]);
+  for (const [what, path] of needed) {
+    const folder = folders.find(other => inside(path, other));
+    if (folder) return refused(`the clean room for git's ssh would hide ${what} (${path}), which is inside the worktree or the Git folder (${folder}); keep the repository out of it, or set ASE_KEY_GUARD=off to run without the lock`);
+  }
+  const named = env.GIT_SSH_COMMAND || configured || null;
+  const inner = named ?? (env.GIT_SSH ? shellQuote(env.GIT_SSH) : "ssh");
+  // As sh reads the line: an unquoted NAME=value before the program sets a variable.
+  const first = named === null ? (env.GIT_SSH || "ssh") : shellWords(named)?.find(({ start, end }) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(named.slice(start, end)))?.value;
+  const command = [bwrap, ...roomArgs, ...folders.flatMap(folder => ["--tmpfs", folder]), "--", "/bin/sh", "-c", `${inner} "$@"`, "sh"].map(shellQuote).join(" ");
+  return { command, problem: null, variant: first ? sshKind(first) : null };
+}
+
+/**
+ * kit doctor's keyed-steps note: {state, text}, whether git's ssh runs in the clean room here. States: on; off
+ * (ASE_KEY_GUARD=off); missing (a system without bubblewrap: the path filter, as before); inside (kit pr's lock for its
+ * checks: the path filter there); problem (on Linux the room cannot start: a fetch or push from an ssh remote stops).
+ */
+export function cleanRoomReport(env = process.env, { worktree = process.cwd(), common } = {}) {
+  if (!keyGuardOn(env)) return { state: "off", text: "off (ASE_KEY_GUARD=off)" };
+  if (process.platform !== "linux") return { state: "missing", text: "not on this machine (no bubblewrap): git's ssh is checked by its path, as before" };
+  if (outerLock(env)) return { state: "inside", text: "inside kit pr's key lock for its checks: git's ssh is checked by its path there" };
+  const problem = roomWorks(env, buildFolders(worktree, common));
+  if (problem) return { state: "problem", text: `clean room cannot start: ${problem}` };
+  return { state: "on", text: "clean room on (git's ssh starts where the worktrees and the Git folder are empty)" };
+}
+
 /**
  * The lock for the checks kit pr runs on what a build left (TOOLS-303): the project's check, unit, lint and spec
  * commands come from the worktree's own settings and run the build's code, in the lead's process, where the keys are.
@@ -1396,6 +1480,7 @@ export function keyGuardReport(env = process.env, { worktree = process.cwd(), co
 /** For tests: forget the bubblewrap probe. */
 export function resetBwrapProbe() {
   probed = undefined;
+  roomProbed = undefined;
   absent = false;
   bwrap = null;
 }

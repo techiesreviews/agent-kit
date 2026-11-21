@@ -85,7 +85,7 @@ function failure(result: ReturnType<typeof spawnSync<string>>, name: string, noN
   const lines = result.stdout.trimEnd().split("\n");
   assert.equal(lines.filter(line => line.startsWith("RESULT: ")).length, 1);
   // The kit note shows whenever the kit's own version runs; the PR target, skills and API route notes always show.
-  assert.equal(lines.filter(line => !line.startsWith("✓ kit: ") && !line.startsWith("✗ PR target: ") && !/^[✓✗] skills map: /.test(line) && !line.startsWith("api route: ") && !/^(✗ )?key lock: /.test(line)).length, 13, result.stdout);
+  assert.equal(lines.filter(line => !line.startsWith("✓ kit: ") && !line.startsWith("✗ PR target: ") && !/^[✓✗] skills map: /.test(line) && !line.startsWith("api route: ") && !/^(✗ )?(key lock|keyed steps): /.test(line)).length, 13, result.stdout);
   assert.ok(lines.some(line => line.startsWith(`✗ ${name}: `) && line.includes("; fix: ")), result.stdout);
   assert.equal(lines.at(-1), `RESULT: fail doctor 1 failed: ${name}`);
   assert.equal(result.stderr, noNode ? "kit: no Node >=24 found (system, npx cache or nvm)\n" : "");
@@ -121,8 +121,10 @@ test("doctor checks all eleven conditions quickly, notes Grok, and quiet success
   assert.equal(lines[15], "api route: off (headless Claude calls use the subscription; KIT_API_KEY_FILE turns the API route on)");
   // The key lock: one note, on where bubblewrap runs, else a ✗ note (never a counted check).
   assert.match(lines[16], /^(key lock: on \(bubblewrap runs; agents the kit starts cannot read the key files\)|key lock: on \(inside kit pr's key lock for its checks: .*\)|✗ key lock: .*)$/);
-  assert.equal(lines.length, 18);
-  assert.match(lines[17], /^RESULT: ok doctor 11\/11 checks passed(; warning: key lock (cannot start|has a gap|is off) \(see the ✗ key lock line\))?$/);
+  // Keyed steps (TOOLS-390): whether git's ssh runs in the clean room here, one note under the key lock's.
+  assert.match(lines[17], /^(keyed steps: clean room on \(git's ssh starts where the worktrees and the Git folder are empty\)|keyed steps: inside kit pr's key lock for its checks: .*|keyed steps: not on this machine .*|✗ keyed steps: .*)$/);
+  assert.equal(lines.length, 19);
+  assert.match(lines[18], /^RESULT: ok doctor 11\/11 checks passed(; warning: (key lock (cannot start|has a gap|is off) \(see the ✗ key lock line\)|keyed steps cannot start their clean room \(see the ✗ keyed steps line\)))?$/);
   assert.equal(result.stderr, "");
   const quiet = f.run(["--quiet"]);
   assert.equal(quiet.status, 0, quiet.stderr);
@@ -1417,10 +1419,13 @@ test("the key lock note: on with a working bubblewrap, a ✗ note and a RESULT w
   const on = f.run([], f.build, { PATH: `${bin}:${process.env.PATH}` });
   assert.equal(on.status, 0, on.stdout + on.stderr);
   assert.match(on.stdout, /^key lock: on \(bubblewrap runs; agents the kit starts cannot read the key files\)$/m);
+  assert.match(on.stdout, /^keyed steps: clean room on \(git's ssh starts where the worktrees and the Git folder are empty\)$/m);
   executable(join(bin, "bwrap"), 'echo "bwrap: setting up uid map: Permission denied" >&2; exit 1');
   const blocked = f.run([], f.build, { PATH: `${bin}:${process.env.PATH}` });
   assert.equal(blocked.status, 0, blocked.stdout + blocked.stderr);
   assert.match(blocked.stdout, /^✗ key lock: the system blocks the sandboxes bubblewrap makes \(bwrap: setting up uid map: Permission denied\); give \/usr\/bin\/bwrap an AppArmor profile that allows user namespaces .*sysctl -w kernel\.apparmor_restrict_unprivileged_userns=0 \(the kit's Claude, Grok and OpenCode runs stop until it works\); fix: the step named above, or set ASE_KEY_GUARD=off/m);
+  // The clean room for git's ssh cannot start either: its own ✗ line, but one warning on the RESULT line for both.
+  assert.match(blocked.stdout, /^✗ keyed steps: clean room cannot start: the system blocks the sandboxes bubblewrap makes .*\(a fetch or push from an ssh remote stops until it works\); fix: the step named above, or set ASE_KEY_GUARD=off to run without the lock$/m);
   assert.match(blocked.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: ok doctor 11\/11 checks passed; warning: key lock cannot start \(see the ✗ key lock line\)$/);
   // A bwrap that starts but whose probe never reports back: the lock cannot be checked, so it is not on.
   executable(join(bin, "bwrap"), "exit 0");
@@ -1449,12 +1454,15 @@ test("the key lock note is truthful: off on a system without bubblewrap, a stop 
   assert.equal(missing.status, 0, missing.stdout + missing.stderr);
   assert.match(missing.stdout, /^✗ key lock: off on this machine \(no bubblewrap\); builders can read key files \(token variables are still dropped, and Codex keeps its own profile\); fix: none on a system without bubblewrap \(it is Linux only\); ASE_KEY_GUARD=on stops those runs instead of starting them unwrapped$/m);
   assert.match(missing.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: ok doctor 11\/11 checks passed; warning: key lock is off \(see the ✗ key lock line\)$/);
+  // Git's ssh there keeps today's path filter, and doctor says so (TOOLS-390).
+  assert.match(missing.stdout, /^keyed steps: not on this machine \(no bubblewrap\): git's ssh is checked by its path, as before$/m);
   // ASE_KEY_GUARD=on there, or no bubblewrap on Linux: the runs stop, and the note says that instead, with a step that exists there.
   assert.match(f.run([], f.build, { HOME: home, PATH: none, ...onMacos, ASE_KEY_GUARD: "on" }).stdout,
     /^✗ key lock: this system has no bubblewrap \(it is Linux only\), and ASE_KEY_GUARD=on asks for the lock or no run; unset it to start Claude, Grok and OpenCode unwrapped \(the kit's Claude, Grok and OpenCode runs stop until it works\); fix: the step named above, or set ASE_KEY_GUARD=off/m);
   const linux = f.run([], f.build, { HOME: home, PATH: none, ...onLinux });
   assert.match(linux.stdout, /^✗ key lock: bubblewrap \(bwrap\) is not installed; install it \(apt install bubblewrap\) \(the kit's Claude, Grok and OpenCode runs stop until it works\); fix: the step named above, or set ASE_KEY_GUARD=off/m);
   assert.match(linux.stdout.trimEnd().split("\n").at(-1)!, /; warning: key lock cannot start \(see the ✗ key lock line\)$/);
+  assert.match(linux.stdout, /^✗ keyed steps: clean room cannot start: bubblewrap \(bwrap\) is not installed; install it \(apt install bubblewrap\) \(a fetch or push from an ssh remote stops until it works\)/m);
   // A key folder that links to the worktree, or to the repository's Git folder, would stop the runs that lock it:
   // doctor finds it and does not say "on".
   executable(join(bin, "bwrap"), 'case "$*" in *" -e "*) echo inside; echo done ;; esac; exit 0');
