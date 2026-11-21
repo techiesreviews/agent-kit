@@ -525,27 +525,36 @@ const fromRoots = (path, shut) => isAbsolute(path) ? [path] : [path, ...shut.map
 const shutIn = (path, shut) => fromRoots(path, shut).some(place => shut.some(root => inside(real(place), root) || inside(real(dirname(resolve(place))), root)));
 // /proc/self/exe and the like are whatever program opens them: the shell git starts, when it is that shell that runs
 // them, while the kit sees its own node there (GPT second look, round 27). So a path that leads into /proc or /dev, by
-// a link or a folder link too, counts as a shell when it is a program file (/dev/null, an -F value, is none).
+// a link or a folder link too, counts as a shell: one in /proc whatever the kit sees there (/proc/self/cwd is the
+// folder of the process that opens it, which for git is the worktree), one in /dev when it is a program file
+// (/dev/null, an -F value, is none). A program or interpreter path there is refused outright (intoProc).
 const systemFolder = /^\/(?:proc|dev)(?:\/|$)/;
-// The kernel reads a .. after a folder link from where that link leads, so each step's folder is the one libc's
-// realpath finds, and a link's target is put after it as written, never tidied (Claude review, round 27).
+// Where a path first leads into /proc or /dev ("/proc/…" or "/dev/…"), or "". The kernel reads a .. after a folder
+// link from where that link leads, so the path as written is checked, then each folder on the way as libc's realpath
+// finds it (/usr/../proc counts), and a link's target is put after the real folder as written, never tidied.
 const magic = path => {
   let place = isAbsolute(path) ? path : `${process.cwd()}/${path}`;
   for (let step = 0; step < 40; step++) {
-    // A path written into /proc or /dev goes there whatever realpath makes of it (/proc/self/cwd is the kit's folder).
-    if (systemFolder.test(place)) return true;
-    let folder;
-    try { folder = realpathSync.native(dirname(place)); } catch { return false; }
-    if (systemFolder.test(join(folder, basename(place)))) return true;
-    let target;
-    try { target = readlinkSync(place); } catch { return false; }
+    if (systemFolder.test(place)) return place;
+    const parts = place.split("/");
+    for (let count = 2; count < parts.length; count++) {
+      let folder;
+      try { folder = realpathSync.native(parts.slice(0, count).join("/") || "/"); } catch { return ""; }
+      if (systemFolder.test(folder)) return folder;
+    }
+    let target, folder;
+    try { target = readlinkSync(place); folder = realpathSync.native(dirname(place)); } catch { return ""; }
     place = isAbsolute(target) ? target : `${folder}/${target}`;
   }
-  return true;
+  return "/proc";
 };
+// A path as written, from the kit's folder and from each shut folder, never tidied (a .. counts as the kernel reads it).
+const rawPlaces = (path, shut) => isAbsolute(path) ? [path] : [path, ...shut.map(root => `${root}/${path}`)];
+const intoProc = (path, shut) => path.includes("/") && rawPlaces(path, shut).some(place => magic(place));
 const namesShell = (word, env, shut) => {
   const files = word.includes("/") ? fromRoots(word, shut).filter(executable) : [programFor(word, env, shut)].filter(Boolean);
-  return shellNamed(word) || files.some(magic) || files.some(file => shellNamed(real(file)) || [word, real(file)].some(name => /^(?:rc|es|nu)$/.test(basename(name))));
+  const leadsIn = place => { const where = magic(place); return where.startsWith("/proc") || (where !== "" && executable(place)); };
+  return shellNamed(word) || (word.includes("/") ? rawPlaces(word, shut) : files).some(leadsIn) || files.some(file => shellNamed(real(file)) || [word, real(file)].some(name => /^(?:rc|es|nu)$/.test(basename(name))));
 };
 // ssh splits an option from its value at any blank, a line break and carriage return too, or an =.
 const viaShell = /(?<!permit)(proxy|local)command(?:\s*=\s*|\s+|$)(.*)$/is;
@@ -648,9 +657,11 @@ const setNames = ["errexit", "nounset", "xtrace", "pipefail", "noclobber", "nogl
 const setName = word => setNames.includes(word.toLowerCase().replace(/_/g, ""));
 const handsScript = (found, name, options) => {
   const family = shellKind(found, name) ?? shRules(real(found)) ?? shRules(name);
-  const longKnown = { fish: ["no-config", "private", "login", "interactive", "no-execute"], nu: ["no-config-file", "no-std-lib", "no-history", "login", "interactive"],
-    sh: ["norc", "noprofile", "posix", "login", "noediting", "restricted", "verbose"], zsh: ["no-rcs", "no-globalrcs", "login", "verbose"] }[family] ?? [];
-  const shortKnown = { fish: /^-[ilnNPvh]+$/, nu: /^-[ilnvh]+$/, sh: /^[-+](?=[A-Za-z])[aefhiklmnpruvxBCEHP]*[oO]?$/, zsh: /^[-+](?=[A-Za-z])[aefhiklmnpruvxBCEHP]*o?$/ }[family];
+  // A login or interactive shell reads start-up files (bash -l ~/.profile, bash -i ~/.bashrc, dash -i $ENV, zsh -l
+  // .zprofile, nu --login login.nu), so -i, -l, --login and --interactive are none of them (kit pr review).
+  const longKnown = { fish: ["no-config", "private", "no-execute"], nu: ["no-config-file", "no-std-lib", "no-history"],
+    sh: ["norc", "noprofile", "posix", "noediting", "restricted", "verbose"], zsh: ["no-rcs", "no-globalrcs", "verbose"] }[family] ?? [];
+  const shortKnown = { fish: /^-[nNPvh]+$/, nu: /^-[nvh]+$/, sh: /^[-+](?=[A-Za-z])[aefhkmnpruvxBCEHP]*[oO]?$/, zsh: /^[-+](?=[A-Za-z])[aefhkmnpruvxBCEHP]*o?$/ }[family];
   const valued = option => family === "pwsh" ? pwshValued.includes(pwshName(option)) : (family === "sh" || family === "zsh") && /[oO]$/.test(option) && shortKnown.test(option);
   const known = option => family === "pwsh"
     ? valued(option) || pwshSwitches.includes(pwshName(option))
@@ -686,6 +697,7 @@ function interpreted(file, args, env, shut, refuse, depth = 0, names = env) {
   const line = head.slice(2).split("\n")[0].trim();
   const [interpreter] = line.split(/[ \t]+/, 1), rest = line.slice(interpreter.length).trim();
   if (!interpreter) return [file, args];
+  if (intoProc(interpreter, shut)) refuse(`${file} starts with ${interpreter}, a path into /proc or /dev, which leads to another program for each process that opens it`);
   if (basename(interpreter) !== "env") {
     if (shutIn(interpreter, shut)) refuse(`${file} starts with ${interpreter}, inside the worktree or its Git folder, where a build can change it`);
     // The same holds for a shell the line names itself, which gets what follows it as one word (#!/bin/bash
@@ -722,6 +734,7 @@ function interpreted(file, args, env, shut, refuse, depth = 0, names = env) {
   let found;
   if (name.includes("/")) {
     if (shutIn(name, shut)) refuse(`${file} starts with env ${name}, inside the worktree or its Git folder, where a build can change it`);
+    if (intoProc(name, shut)) refuse(`${file} starts with env ${name}, a path into /proc or /dev, which leads to another program for each process that opens it`);
     found = resolve(name);
   } else {
     const { file: program, refused } = lookup(name, env, shut);
@@ -959,6 +972,7 @@ export function sshCommand(env = process.env, { worktree, common, configured } =
     let file;
     if (program.includes("/")) {
       if (shutIn(program, shut)) return refused(`git's ssh (${program}) is inside the worktree or its Git folder, where a build can change it; set GIT_SSH_COMMAND to one outside them, or set ASE_KEY_GUARD=off to run without the lock`);
+      if (intoProc(program, shut)) return refused(`git's ssh (${program}) is a path into /proc or /dev, which leads to another program for each process that opens it; set GIT_SSH_COMMAND to a plain path, or set ASE_KEY_GUARD=off to run without the lock`);
       file = resolve(program);
     } else {
       const found = lookup(program, env, shut);

@@ -1907,9 +1907,27 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   symlinkSync("../../self-exe", join(dir, "a", "b", "sh2"));
   // A path written into /proc counts even where realpath leads out of it (/proc/self/root/…, /proc/self/cwd/…).
   writeFileSync(join(dir, "tool"), "exit 0\n"); chmodSync(join(dir, "tool"), 0o755);
-  for (const program of ["/proc/self/exe", "/proc/thread-self/exe", join(dir, "self-exe"), join(dir, "self-folder", "exe"), `/dev/fd/${bashOpen}`, `/proc/self/root${bash}`, `${dir}/up/sh2`, `/proc/self/root${join(dir, "tool")}`]) {
-    assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: `${program} -c true` }, { worktree: root }).problem ?? "", /it starts a shell/, program);
-    assert.throws(() => start(wrapper(`proc-${basename(program)}-${program.length}`, "X=1", `${program} -c true`)), /, which starts a shell/, program);
+  // A program or interpreter path there is refused outright, and one a wrapper starts counts as a shell. /proc/self/cwd
+  // is git's folder, the worktree, when git opens it, so a payload only the worktree holds counts too, and so does a ..
+  // that climbs into /proc (kit pr review).
+  writeFileSync(join(root, "cwd-payload"), "exit 0\n"); chmodSync(join(root, "cwd-payload"), 0o755);
+  for (const program of ["/proc/self/exe", "/proc/thread-self/exe", join(dir, "self-exe"), join(dir, "self-folder", "exe"), `/dev/fd/${bashOpen}`, `/proc/self/root${bash}`, `${dir}/up/sh2`,
+    `/proc/self/root${join(dir, "tool")}`, "/proc/self/cwd/cwd-payload", "/usr/../proc/self/cwd/cwd-payload"]) {
+    const tag = `proc-${basename(program)}-${program.length}`;
+    assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: `${program} -c true` }, { worktree: root }).problem ?? "", /is a path into \/proc or \/dev|it starts a shell/, program);
+    assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: `${program} host` }, { worktree: root }).problem ?? "", /is a path into \/proc or \/dev|it starts a shell/, program);
+    assert.match(sshCommand({ ...base, GIT_SSH: program }, { worktree: root }).problem ?? "", /is a path into \/proc or \/dev|it starts a shell/, program);
+    assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: `timeout 30 ${program} -c true` }, { worktree: root }).problem ?? "", /it starts a shell/, program);
+    assert.throws(() => start(wrapper(tag, "X=1", `${program} -c true`)), /starts with env .*, a path into \/proc or \/dev/, program);
+    assert.throws(() => start(wrapper(`${tag}-timeout`, "X=1", `timeout 30 ${program} -c true`)), /, which starts a shell/, program);
+    const plain = join(wrappers, `${tag}-plain`);
+    writeFileSync(plain, `#!${program}\n`); chmodSync(plain, 0o755);
+    assert.throws(() => start(plain), /, a path into \/proc or \/dev/, program);
+  }
+  // A login or interactive shell reads start-up files, so those options are refused too (kit pr review).
+  for (const words of ["bash -l", "bash --login", "bash -i", "bash --interactive", "zsh -l", "fish -i", "nu --login"]) {
+    const why = new RegExp(`hands the shell \\(${words.split(" ")[0]}\\) a script or -s`);
+    assert.throws(() => startCommand(wrapper(`login-${words.replace(/\W+/g, "-")}`, "X=1", words), [], withOthers, { worktree: root, kind: "test" }), why, words);
   }
   // A bare name PATH finds as such a link counts too (round 27).
   const procLinks = join(dir, "proc links");
