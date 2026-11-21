@@ -228,6 +228,9 @@ test("brief: the skills map picks the UI set from the ticket's files, names skil
   const unknown = f.run(["docs/tickets/07-panel.md", "--model", "luna"]);
   assert.match(unknown.stdout, /^- \$good-css \(the good-css skill\)/m);
   assert.doesNotMatch(unknown.stdout, /this model has no skills/);
+  const unknownFix = f.run(["docs/tickets/07-panel.md", "--stage", "fix", "--model", "luna"]);
+  assert.match(unknownFix.stdout, /^- \$good-css \(the good-css skill\)/m);
+  assert.doesNotMatch(unknownFix.stdout, /this model has no skills/);
   const unknownReview = f.run(["docs/tickets/07-panel.md", "--stage", "review", "--model", "luna"]);
   assert.match(unknownReview.stdout, /\(in the kit's own words; this model has no skills\)/);
   const review = f.run(["docs/tickets/07-panel.md", "--stage", "review"]);
