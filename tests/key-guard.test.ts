@@ -1672,18 +1672,57 @@ test("TOOLS-390 room: a folder the Git folder names is hidden only as git would 
   // core.worktree in the Git folder's config names the main worktree; / or a system folder there is skipped too.
   const main = join(dir, "main");
   mkdirSync(main);
-  for (const [value, expected] of [[main, [root, linked, main]], ["../../main", [root, linked, main]], ["/", [root, linked]], ["/etc", [root, linked]], ["/usr/share", [root, linked]], ["/dev", [root, linked]]] as const) {
+  // Inside a system folder only a PATH folder, or one that holds one, is skipped (/usr/bin is on base's PATH); another
+  // folder there, as a checkout under /usr/local/src would be, is hidden (/usr/share stands in for it).
+  for (const [value, expected] of [[main, [root, linked, main]], ["../../main", [root, linked, main]], ["/", [root, linked]], ["/etc", [root, linked]], ["/usr/bin", [root, linked]], ["/usr/share", [root, linked, "/usr/share"]], ["/dev", [root, linked]]] as const) {
     assert.equal(spawnSync("git", ["-C", root, "config", "core.worktree", value]).status, 0);
     assert.deepEqual(hidden(), [...expected].sort(), value);
   }
-  // Read as git reads it: a comment after the value, and a key of the same name in a later section with a subsection
-  // name, which is not core's.
+  // A main worktree outside the system folders is hidden even when it holds a PATH folder: ssh there is not found.
+  mkdirSync(join(main, "bin"));
+  assert.equal(spawnSync("git", ["-C", root, "config", "core.worktree", main]).status, 0);
+  assert.deepEqual(hidden({ ...base, PATH: `${join(main, "bin")}:${base.PATH}` }), [root, linked, main].sort(), "a PATH folder in the main worktree");
+  // Read as git reads it: a comment right after the value, and a key of the same name in a later section with a
+  // subsection name, which is not core's.
   assert.equal(spawnSync("git", ["-C", root, "config", "--unset", "core.worktree"]).status, 0);
-  writeFileSync(join(root, ".git/config"), `${readFileSync(join(root, ".git/config"), "utf8")}[core]\n\tworktree = ${main} # the main checkout\n[remote "origin"]\n\tworktree = /dev\n`);
+  writeFileSync(join(root, ".git/config"), `${readFileSync(join(root, ".git/config"), "utf8")}[core]\n\tworktree = ${main}# the main checkout\n[remote "origin"]\n\tworktree = /dev\n`);
   assert.deepEqual(hidden(), [root, linked, main].sort(), "a comment and a subsection");
-  // With extensions.worktreeConfig, config.worktree holds it.
-  writeFileSync(join(root, ".git/config.worktree"), `[core]\n\tworktree = "${elsewhere}" ; quoted\n`);
+  // config.worktree counts only while config turns on extensions.worktreeConfig, as git reads it.
+  writeFileSync(join(root, ".git/config.worktree"), `[core]\n\tworktree = "${elsewhere}";quoted\n`);
+  assert.deepEqual(hidden(), [root, linked, main].sort(), "config.worktree without extensions.worktreeConfig");
+  assert.equal(spawnSync("git", ["-C", root, "config", "extensions.worktreeConfig", "true"]).status, 0);
   assert.deepEqual(hidden(), [root, linked, elsewhere].sort(), "config.worktree");
+  // A key on its section header's line, and a later subsection name with a quote in it, which is not core's.
+  writeFileSync(join(root, ".git/config.worktree"), `[core] worktree = ${main}\n[remote "a\\"b"]\n\tworktree = ${elsewhere}\n`);
+  assert.deepEqual(hidden(), [root, linked, main].sort(), "a key on the header's line");
+});
+
+test("TOOLS-390 room: a bwrap left in another worktree never starts, even when an earlier lookup found it", { skip: noRoom }, t => {
+  const { dir, root, base, noted } = roomRepo(t, "bwrap");
+  const git = (...args: string[]) => assert.equal(spawnSync("git", ["-C", root, "-c", "user.name=T", "-c", "user.email=t@example.invalid", ...args]).status, 0, args.join(" "));
+  git("commit", "-q", "--allow-empty", "-m", "first");
+  const linked = join(dir, "linked");
+  git("worktree", "add", "-q", linked, "-b", "linked");
+  // A bwrap the build left in the main worktree, first on PATH, that passes everything on to the real one.
+  const real = spawnSync("sh", ["-c", "command -v bwrap"], { encoding: "utf8" }).stdout.trim();
+  mkdirSync(join(root, "bin"));
+  writeFileSync(join(root, "bin/bwrap"), `#!/bin/sh\necho "planted bwrap" >> ${JSON.stringify(noted)}\nexec ${JSON.stringify(real)} "$@"\n`); chmodSync(join(root, "bin/bwrap"), 0o755);
+  const env = { ...base, PATH: `${join(root, "bin")}:${base.PATH}` };
+  const safety = () => gitSafety({ worktree: linked, env, network: true, git: gitProgram() }).env;
+  t.after(resetBwrapProbe);
+  // From the linked worktree the room looks bubblewrap up outside the main one: the planted one never starts.
+  resetBwrapProbe(); rmSync(noted, { force: true });
+  const command = String(safety().GIT_SSH_COMMAND);
+  assert.match(command, /^\/\S*bwrap /, command);
+  assert.ok(!command.includes(join(root, "bin/bwrap")), command);
+  assert.equal(existsSync(noted), false, "the planted bwrap started");
+  // The key lock looks it up shutting out only the linked worktree and the Git folder; the room then refuses that one.
+  resetBwrapProbe();
+  bwrapWorks(env, [linked, join(root, ".git")]);
+  rmSync(noted, { force: true });
+  const refused = String(safety().GIT_SSH_COMMAND);
+  assert.match(refused, /^printf .*bubblewrap on PATH \(.*\/bin\/bwrap\) is inside a worktree or the Git folder/, refused);
+  assert.equal(existsSync(noted), false, "the planted bwrap started");
 });
 
 test("TOOLS-390 room: a plink command with a redirection keeps plink's kind, so git passes a custom port as plink takes it", { skip: noRoom }, t => {
@@ -1692,7 +1731,10 @@ test("TOOLS-390 room: a plink command with a redirection keeps plink's kind, so 
   // cannot set a port.
   const plink = join(lead, "plink");
   writeFileSync(plink, `#!/bin/sh\n[ "$1" = -G ] && exit 1\necho "plink $*" >> ${JSON.stringify(noted)}\nexit 1\n`); chmodSync(plink, 0o755);
-  for (const command of [`${plink} -batch 2>/dev/null`, `${plink} -batch "$@" | cat; :`, `X=1 ${plink} -batch 2>&1`]) {
+  // A ; inside quotes does not end the first word.
+  const quoted = join(lead, "a;b");
+  mkdirSync(quoted); copyFileSync(plink, join(quoted, "plink")); chmodSync(join(quoted, "plink"), 0o755);
+  for (const command of [`${plink} -batch 2>/dev/null`, `${plink} -batch "$@" | cat; :`, `X=1 ${plink} -batch 2>&1`, `'${quoted}/plink' -batch 2>/dev/null`]) {
     rmSync(noted, { force: true });
     const env = { ...base, GIT_SSH_COMMAND: command };
     const safe = gitSafety({ worktree: root, env, network: true, git: gitProgram() });
