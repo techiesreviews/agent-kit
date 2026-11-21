@@ -468,6 +468,10 @@ test("Node lookup handles npm alone, absent system node, and unsupported install
     assert.equal(home.status, 0, home.stderr);
     assert.equal(home.stdout, `${realpathSync(".")}\n`);
   }
+  // kit update still runs, so a timer whose service cannot reach Node 24 still brings the next kit.
+  const update = run(["update", "--help"], env);
+  assert.equal(update.status, 0, update.stderr);
+  assert.match(update.stdout, /^Usage: kit update /);
 });
 
 // Node on Windows (Git Bash) ends `node --version` with CRLF; the carriage return is not part of the version (TOOLS-335).
@@ -679,12 +683,21 @@ test("the shell's project root, RESULT line and URL hiding are kit-lib.mjs's, th
   assert.equal(hidden.stdout, `hidden by mjs: ${JSON.stringify("https://u:t@h/x /c/y")}\n`, hidden.stderr);
 });
 
-test("without Node the shell helpers print no unhidden text: a fixed RESULT line, no root, no hidden text", (t) => {
+test("without Node the shell helpers print no unhidden text: a RESULT line holding back a URL, no root, no hidden text", (t) => {
   const env = fixtureEnv(temp(t));
-  const result = bash("kit_result ok 'https://u:fake-token@h/x'", env);
-  assert.equal(result.status, 1);
-  assert.equal(result.stdout, `RESULT: fail ${nodeError.replace(/^kit: /, "")}\n`);
-  assert.equal(result.stderr, `${nodeError}\n`);
+  // kit update runs without Node: its RESULT line keeps its status, and its words when they hold no URL.
+  for (const status of ["ok", "fail"]) {
+    const plain = bash(`kit_result ${status} $'updated to\\nabc' /c/x`, env);
+    assert.equal(plain.status, 0);
+    assert.equal(plain.stdout, `RESULT: ${status} updated to abc /c/x\n`);
+    assert.equal(plain.stderr, `${nodeError}\n`);
+  }
+  const result = bash("kit_result ok 'cannot fetch https://u:fake-token@h/x'", env);
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, "RESULT: ok (held back: without Node 24 the kit cannot hide a URL's user info)\n");
+  const bad = bash("kit_result $'bad\\nstatus' 'https://u:fake-token@h/x'", env);
+  assert.equal(bad.status, 1);
+  assert.equal(bad.stdout, `RESULT: fail ${nodeError.replace(/^kit: /, "")}\n`);
   const hidden = bash("kit_hide_user_info 'https://u:fake-token@h/x'", env);
   assert.equal(hidden.status, 1);
   assert.equal(hidden.stdout, "");
@@ -693,6 +706,20 @@ test("without Node the shell helpers print no unhidden text: a fixed RESULT line
   assert.equal(root.stdout, "");
   // KIT_ROOT, the root the front door found, still answers.
   assert.equal(bash("kit_root", { ...env, KIT_ROOT: "/given" }).stdout, "/given\n");
+});
+
+test("a kit-lib.mjs that does not load still ends the helper and the front door with one RESULT line", (t) => {
+  const kit = realpathSync(temp(t));
+  for (const file of ["kit", "kit-lib.sh"]) copyFileSync(file, join(kit, file));
+  writeFileSync(join(kit, "kit-lib.mjs"), 'throw new Error("boom");\n');
+  const result = spawnSync("/bin/bash", ["-c", `source "${kit}/kit-lib.sh"; kit_result ok x`], { encoding: "utf8", env: kitEnv(), timeout: 5000 });
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, "RESULT: fail kit-lib.mjs did not run (its error is above)\n");
+  assert.match(result.stderr, /boom/);
+  const frontDoor = spawnSync("/bin/bash", [join(kit, "kit"), "where"], { encoding: "utf8", env: { ...kitEnv(), KIT_ROOT: undefined, KIT_HOME: kit }, timeout: 5000 });
+  assert.equal(frontDoor.status, 2);
+  assert.equal(frontDoor.stdout, "RESULT: fail kit-lib.mjs did not run (its error is above)\n");
+  assert.match(frontDoor.stderr, /boom/);
 });
 
 test("kitHidingLog hides a token split across chunks and on a last line with no newline, keeping each stream apart", () => {

@@ -78,7 +78,8 @@ function fixture(t: { after: (fn: () => void) => void }) {
   return { directory, main, dev, build, commands, run };
 }
 
-// Without Node the RESULT line is kit-lib.sh's fixed one (kit_result asks kit-lib.mjs for it, TOOLS-395).
+// Without Node the RESULT line keeps its words (kit_result holds back only a URL it cannot hide, TOOLS-395), and
+// kit-lib.sh says on stderr that Node is missing.
 function failure(result: ReturnType<typeof spawnSync<string>>, name: string, noNode = false) {
   assert.equal(result.status, 1, result.stdout + result.stderr);
   const lines = result.stdout.trimEnd().split("\n");
@@ -86,7 +87,7 @@ function failure(result: ReturnType<typeof spawnSync<string>>, name: string, noN
   // The kit note shows whenever the kit's own version runs; the PR target, skills and API route notes always show.
   assert.equal(lines.filter(line => !line.startsWith("✓ kit: ") && !line.startsWith("✗ PR target: ") && !/^[✓✗] skills map: /.test(line) && !line.startsWith("api route: ") && !/^(✗ )?key lock: /.test(line)).length, 13, result.stdout);
   assert.ok(lines.some(line => line.startsWith(`✗ ${name}: `) && line.includes("; fix: ")), result.stdout);
-  assert.equal(lines.at(-1), noNode ? "RESULT: fail no Node >=24 found (system, npx cache or nvm)" : `RESULT: fail doctor 1 failed: ${name}`);
+  assert.equal(lines.at(-1), `RESULT: fail doctor 1 failed: ${name}`);
   assert.equal(result.stderr, noNode ? "kit: no Node >=24 found (system, npx cache or nvm)\n" : "");
 }
 
