@@ -312,9 +312,11 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
       hides. So it runs in the mirror image, a bubblewrap room (started by its full path) where the worktree, every
       other worktree of the repository and the Git folder are empty folders, while the rest of the machine is as it is,
       so ssh still reads its keys, its agent and `known_hosts`. Root-owned, safely permissioned client config files in
-      `/etc/ssh/ssh_config` and `/etc/ssh/ssh_config.d` (including their link targets) get private, read-only copies in
-      the room, with the same bytes. This keeps OpenSSH's owner check working when the user namespace shows the
-      machine's root as nobody. Nothing in the machine's config changes. The other worktrees are the main one (the folder that
+      `/etc/ssh/ssh_config` and `/etc/ssh/ssh_config.d`, and files their `Include` lines name, get private, read-only
+      copies in the room, with the same bytes. Includes from the user's config and an explicit `ssh -F` config are
+      followed too, including globs and links. This keeps OpenSSH's owner check working when the user namespace shows
+      the machine's root as nobody. Nothing in the machine's config changes. The other worktrees are the main one (the
+      folder that
       holds the Git folder as `.git`, or the one its `core.worktree` names) and each linked one whose entry in the Git
       folder and `.git` file point at each other, as git checks them. Since a build can write the Git folder, a folder
       named there is not hidden when it is `/`, holds the home folder, `/opt`, `/tmp`, `/var` or a system folder
